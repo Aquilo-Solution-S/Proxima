@@ -186,8 +186,25 @@ async fn pin_migration_search_path(conn: &mut PgConnection) -> Result<(), sqlx::
     sqlx::query("SET statement_timeout = 0")
         .execute(&mut *conn)
         .await?;
+    // Waiting *for* a lock is not the same as holding one. A migration that
+    // takes ACCESS EXCLUSIVE (0011 rewrites four tables) queues behind any
+    // in-flight reader on the outgoing release — and in Postgres a queued
+    // exclusive request blocks every reader that arrives after it. With no
+    // lock_timeout that pile-up is unbounded, so a rolling upgrade stalls the
+    // whole table instead of the migration failing and retrying on the next
+    // pod. Fail fast; the work itself still runs untimed once the lock is in
+    // hand.
+    sqlx::query(MIGRATION_LOCK_TIMEOUT_SQL)
+        .execute(&mut *conn)
+        .await?;
     Ok(())
 }
+
+/// How long a migration waits for a table lock before giving up.
+///
+/// Short on purpose: the cost of failing is one pod restart, the cost of
+/// waiting is every reader queued behind the request.
+const MIGRATION_LOCK_TIMEOUT_SQL: &str = "SET lock_timeout = '5s'";
 
 async fn reset_migration_search_path(conn: &mut PgConnection) -> Result<(), sqlx::Error> {
     sqlx::query("RESET search_path").execute(&mut *conn).await?;

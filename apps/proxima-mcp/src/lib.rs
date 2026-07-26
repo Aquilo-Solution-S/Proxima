@@ -30,6 +30,9 @@ use proxima_storage_pg::{
 const MISTRAL_API_KEY: &str = "MISTRAL_API_KEY";
 const PROXIMA_EMBED_MODEL: &str = "PROXIMA_EMBED_MODEL";
 const MISTRAL_API_BASE: &str = "MISTRAL_API_BASE";
+const PROXIMA_EMBED_BASE_URL: &str = "PROXIMA_EMBED_BASE_URL";
+const PROXIMA_EMBED_API_KEY: &str = "PROXIMA_EMBED_API_KEY";
+const PROXIMA_EMBED_MATRYOSHKA: &str = "PROXIMA_EMBED_MATRYOSHKA";
 const PROXIMA_TOOL_PROFILE: &str = "PROXIMA_TOOL_PROFILE";
 const PROXIMA_TOOL_ALLOW: &str = "PROXIMA_TOOL_ALLOW";
 const PROXIMA_TOOL_DENY: &str = "PROXIMA_TOOL_DENY";
@@ -272,11 +275,15 @@ async fn run_maintain(config: MaintainConfig) -> Result<(), CliError> {
     );
 
     if config.drain {
-        let client = mistral_embedding_client(|key| std::env::var(key).ok())?.ok_or_else(|| {
-            CliError::Runtime(ProximaError::Config(
-                "maintain-embeddings --drain requires MISTRAL_API_KEY".into(),
-            ))
-        })?;
+        let client =
+            embedding_client_from_env(|key| std::env::var(key).ok())?.ok_or_else(|| {
+                CliError::Runtime(ProximaError::Config(
+                    "maintain-embeddings --drain requires an embedding endpoint: set \
+                 PROXIMA_EMBED_BASE_URL (local, e.g. http://127.0.0.1:11434/v1) \
+                 or PROXIMA_EMBED_API_KEY / MISTRAL_API_KEY (hosted)"
+                        .into(),
+                ))
+            })?;
         if client.model_id() != model {
             return Err(CliError::Runtime(ProximaError::Config(format!(
                 "maintain-embeddings --drain model mismatch: queued model {model:?}, Mistral client model {:?}",
@@ -458,7 +465,7 @@ fn build_app(
     if let Some((authenticator, metadata)) = oidc {
         app = app.authenticator(authenticator).resource_metadata(metadata);
     }
-    if let Some(client) = mistral_embedding_client(&lookup)? {
+    if let Some(client) = embedding_client_from_env(&lookup)? {
         app = app.embed_client(Arc::new(client));
     }
     Ok(app)
@@ -679,19 +686,71 @@ fn subject_map_from_env(
     }
 }
 
-fn mistral_embedding_client(
+/// Build the embedding client from env, or `None` for degraded mode.
+///
+/// The endpoint is any OpenAI-compatible `/embeddings` service. A hosted one
+/// needs a key; a locally-hosted one (Ollama, llama.cpp, LM Studio, vLLM)
+/// needs only a base URL, which is why the key is not what switches
+/// embeddings on — `PROXIMA_EMBED_BASE_URL` alone is enough. Requiring a key
+/// would mean inventing a fake one to run fully local, and the resulting
+/// `MISTRAL_API_KEY=unused` in a local config is a lie about what the
+/// deployment talks to.
+///
+/// `MISTRAL_API_KEY` / `MISTRAL_API_BASE` stay accepted as aliases so
+/// existing deployments keep working unchanged.
+///
+/// Whatever the model, it must land in the substrate's single embedding
+/// space: `proxima_core::llm::EMBEDDING_DIM` (1024), which is the width of
+/// the `vector(1024)` column. Set `PROXIMA_EMBED_MATRYOSHKA=true` for a
+/// nested-prefix model (qwen3-embedding, text-embedding-3-*) so the request
+/// asks for 1024 rather than the model's native width.
+fn embedding_client_from_env(
     lookup: impl Fn(&str) -> Option<String>,
 ) -> Result<Option<OpenAiCompatEmbeddingClient>, CliError> {
-    let Some(api_key) = lookup_non_empty(&lookup, MISTRAL_API_KEY) else {
-        return Ok(None);
+    let api_key = lookup_non_empty(&lookup, PROXIMA_EMBED_API_KEY)
+        .or_else(|| lookup_non_empty(&lookup, MISTRAL_API_KEY));
+    let base_url = lookup_non_empty(&lookup, PROXIMA_EMBED_BASE_URL)
+        .or_else(|| lookup_non_empty(&lookup, MISTRAL_API_BASE));
+
+    // Degraded mode only when neither a key nor an endpoint was configured:
+    // an operator who named an endpoint asked for embeddings.
+    let base_url = match (base_url, api_key.as_ref()) {
+        (Some(url), _) => url,
+        (None, Some(_)) => MISTRAL_EMBED_BASE_URL.to_string(),
+        (None, None) => return Ok(None),
     };
-    let model = lookup_non_empty(&lookup, PROXIMA_EMBED_MODEL)
-        .unwrap_or_else(|| MISTRAL_EMBED_MODEL.to_string());
-    let base_url = lookup_non_empty(&lookup, MISTRAL_API_BASE)
-        .unwrap_or_else(|| MISTRAL_EMBED_BASE_URL.to_string());
-    OpenAiCompatEmbeddingClient::mistral(api_key, model, base_url)
-        .map(Some)
-        .map_err(|err| CliError::Runtime(ProximaError::Config(err.to_string())))
+
+    let model = active_embedding_model(&lookup);
+    let matryoshka = parse_bool_env(&lookup, PROXIMA_EMBED_MATRYOSHKA)?;
+    let dim = u32::try_from(proxima_core::llm::EMBEDDING_DIM).map_err(|_| {
+        CliError::Runtime(ProximaError::Config(
+            "EMBEDDING_DIM does not fit u32".into(),
+        ))
+    })?;
+
+    OpenAiCompatEmbeddingClient::new(
+        model,
+        proxima_core::models::EmbedCaps { dim, matryoshka },
+        proxima_llm_openai_compat::OpenAiCompatConfig::new(base_url, api_key),
+    )
+    .map(Some)
+    .map_err(|err| CliError::Runtime(ProximaError::Config(err.to_string())))
+}
+
+fn parse_bool_env(
+    lookup: &impl Fn(&str) -> Option<String>,
+    key: &'static str,
+) -> Result<bool, CliError> {
+    match lookup_non_empty(lookup, key) {
+        None => Ok(false),
+        Some(raw) => match raw.to_ascii_lowercase().as_str() {
+            "1" | "true" | "yes" | "on" => Ok(true),
+            "0" | "false" | "no" | "off" => Ok(false),
+            other => Err(CliError::Runtime(ProximaError::Config(format!(
+                "{key} must be a boolean, got {other:?}"
+            )))),
+        },
+    }
 }
 
 fn active_embedding_model(lookup: impl Fn(&str) -> Option<String>) -> String {
@@ -1045,7 +1104,7 @@ mod tests {
 
     #[test]
     fn mistral_client_is_secret_gated_and_configurable() {
-        let client = mistral_embedding_client(|key| match key {
+        let client = embedding_client_from_env(|key| match key {
             MISTRAL_API_KEY => Some("secret".to_string()),
             PROXIMA_EMBED_MODEL => Some("custom-mistral-embed".to_string()),
             MISTRAL_API_BASE => Some("https://mistral.example/v1".to_string()),
@@ -1056,6 +1115,88 @@ mod tests {
 
         assert_eq!(client.model_id(), "custom-mistral-embed");
         assert_eq!(client.dim(), proxima_core::llm::EMBEDDING_DIM);
+    }
+
+    /// The local-first path: a loopback endpoint and no credential at all.
+    /// Requiring a key here would force `MISTRAL_API_KEY=unused` into every
+    /// fully-local config.
+    #[test]
+    fn local_endpoint_needs_no_api_key() {
+        let client = embedding_client_from_env(|key| match key {
+            PROXIMA_EMBED_BASE_URL => Some("http://127.0.0.1:11434/v1".to_string()),
+            PROXIMA_EMBED_MODEL => Some("qwen3-embedding:0.6b".to_string()),
+            _ => None,
+        })
+        .expect("client construction succeeds")
+        .expect("a base URL alone enables embeddings");
+
+        assert_eq!(client.model_id(), "qwen3-embedding:0.6b");
+        assert_eq!(client.dim(), proxima_core::llm::EMBEDDING_DIM);
+    }
+
+    #[test]
+    fn no_endpoint_and_no_key_stays_degraded() {
+        assert!(
+            embedding_client_from_env(|_| None)
+                .expect("no config is not an error")
+                .is_none()
+        );
+    }
+
+    /// `PROXIMA_EMBED_*` is the provider-neutral spelling; the `MISTRAL_*`
+    /// names remain as aliases so existing deployments keep working.
+    #[test]
+    fn proxima_embed_vars_win_over_the_mistral_aliases() {
+        let client = embedding_client_from_env(|key| match key {
+            PROXIMA_EMBED_BASE_URL => Some("http://127.0.0.1:11434/v1".to_string()),
+            PROXIMA_EMBED_API_KEY => Some("preferred".to_string()),
+            MISTRAL_API_BASE => Some("https://mistral.example/v1".to_string()),
+            MISTRAL_API_KEY => Some("legacy".to_string()),
+            PROXIMA_EMBED_MODEL => Some("local-model".to_string()),
+            _ => None,
+        })
+        .expect("client construction succeeds")
+        .expect("configured");
+        assert_eq!(client.model_id(), "local-model");
+    }
+
+    /// A plaintext endpoint off the local host would put the API key on the
+    /// wire, so the client must refuse to be built at all.
+    #[test]
+    fn remote_plaintext_endpoint_is_refused() {
+        let err = embedding_client_from_env(|key| match key {
+            PROXIMA_EMBED_BASE_URL => Some("http://embeddings.example/v1".to_string()),
+            _ => None,
+        })
+        .expect_err("remote plaintext must not build");
+        assert!(err.to_string().contains("https"), "{err}");
+    }
+
+    #[test]
+    fn matryoshka_flag_parses_and_rejects_garbage() {
+        for raw in ["true", "1", "yes", "on"] {
+            assert!(
+                parse_bool_env(
+                    &|key: &str| (key == PROXIMA_EMBED_MATRYOSHKA).then(|| raw.to_string()),
+                    PROXIMA_EMBED_MATRYOSHKA
+                )
+                .expect("parses")
+            );
+        }
+        assert!(
+            !parse_bool_env(
+                &|key: &str| (key == PROXIMA_EMBED_MATRYOSHKA).then(|| "false".to_string()),
+                PROXIMA_EMBED_MATRYOSHKA
+            )
+            .expect("parses")
+        );
+        assert!(
+            parse_bool_env(
+                &|key: &str| (key == PROXIMA_EMBED_MATRYOSHKA).then(|| "maybe".to_string()),
+                PROXIMA_EMBED_MATRYOSHKA
+            )
+            .is_err()
+        );
     }
 
     #[test]

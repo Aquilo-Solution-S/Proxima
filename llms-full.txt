@@ -37,8 +37,9 @@ gotchas at natural breaks. Use idempotency keys for replayable writes.
 
 ## Safety
 
-- Dev master-token auth is for loopback development.
-- Production deployments use OIDC or another host authenticator.
+- There is no dev or master-token bypass. All MCP auth is a host bearer
+  (OIDC by default), including on loopback; retired `pxm_*` tokens fail
+  closed. Local development runs a local issuer, not a weaker auth path.
 - Non-loopback bind requires explicit exposure gates.
 - Do not call tools not advertised by the current server profile.
 

@@ -2,7 +2,16 @@
 
 ## Start Server
 
-Follow [local-dev.md](local-dev.md), then configure your MCP client:
+Follow [local-dev.md](local-dev.md). `cargo run -p proxima-dev-idp` prints a
+ready-to-paste command for Claude Code:
+
+```sh
+claude mcp add --transport http proxima http://127.0.0.1:31415/mcp \
+  --header "Authorization: Bearer <token-from-dev-idp>" \
+  --header "X-Proxima-Owner: personal:<user-id-from-dev-idp>"
+```
+
+Equivalent JSON, for clients that take a config file:
 
 ```json
 {
@@ -18,8 +27,31 @@ Follow [local-dev.md](local-dev.md), then configure your MCP client:
 }
 ```
 
-For the local quickstart, use an access token from the configured OIDC issuer
-and `personal:$USER_ID`.
+Both headers are required. The bearer must come from the issuer named in
+`PROXIMA_OIDC_ISSUER`; `X-Proxima-Owner` selects which owner the session is
+bound to and is rechecked on every request.
+
+## Index A Repository
+
+With `--features code`, the server exposes code-as-memory tools. Register a
+local checkout and ingest its current tree:
+
+1. `proxima-code_register_repo` with `path` — returns a `repo_handle`
+   (`R:<uuid>`).
+2. `proxima-code_ingest_head_snapshot` with that `repo_handle` — emits one
+   `file-revision-v1` Fact per tracked file and `code-chunk-v1` Abstractions
+   per parsed chunk.
+3. `proxima-mcp maintain-embeddings --missing-only --drain` — ingest does not
+   enqueue embedding jobs itself, so run this before expecting semantic
+   results. Lexical `proxima-code_search_chunks` works immediately.
+
+Then search with `proxima-code_search_chunks`, `proxima-code_search_commits`,
+and read exact revisions with `proxima-code_open_file_revision`.
+
+`proxima-code_search_chunks` is lexical and conjunctive — every term must
+match. Search it with identifiers and paths (`lexical_tsv`,
+`common_candidates_sql`, `crates/storage-pg/src/verbs`), not with
+natural-language questions.
 
 ## First Calls
 

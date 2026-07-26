@@ -1,6 +1,28 @@
+# Secrets. `.env` is gitignored but present in working trees, and `COPY . .`
+# would write it into the builder layer — which survives in an exported or
+# registry-shared BuildKit cache even though the distroless runtime stage
+# copies only the binary.
+.env
+.env.*
+!.env.example
+*.pem
+*.pkcs8
+
+# Local agent/editor state — never part of a build.
+.claude/
+.codex/
+.mcp.json
+.plans/
+
+# Build and VCS artifacts.
 target/
 .git/
 .local/
-docs/superpowers/
+
+# Not needed to compile the binary. Migrations live under crates/, and the
+# only `include_str!` targets are crates/storage-pg/migrations and
+# flavors/code/src/migrations — nothing reads docs/ or bench/ at build time.
+docs/
+bench/
 .github/
 *.log

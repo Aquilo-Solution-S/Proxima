@@ -81,10 +81,61 @@ After v0.0.5, apply these migrations through GitOps before booting a
 | Code flavor | `20260709000020_append_only.sql` | Code sidecar append-only triggers |
 
 Online-safe: nullable column add, idempotent index drops, trigger creation —
-no backfill. `ProximaBuilder::skip_migrations(true)` boot now also runs
-`ensure_core_schema_current`: core migration version ≥ 10 (lane `version <=
-9999`), core v0.0.6 structural markers, and the code-flavor
-`code_chunk_v1_append_only` trigger when `proxima_code` is present.
+no backfill.
+
+### v0.0.7 schema lane (core 10→11)
+
+| Source | Files | Notes |
+|---|---|---|
+| Proxima core | `0011_v007.sql` | `embeddings` primary key rebuilt to include `chunk_index`; STORED generated `search_tsv` on `memories`, `agent_derivation_v1`, `agent_note_v1`; four `proxima_core.lexical_*` functions |
+| Code flavor | — | none |
+
+**This lane is not online-safe.** Unlike v0.0.6, `0011_v007.sql` rewrites
+tables. `ADD COLUMN ... GENERATED ALWAYS AS ... STORED` rewrites each target
+and holds `ACCESS EXCLUSIVE` for the duration, and sqlx runs the file in one
+transaction — so all four tables stay locked until the last one finishes.
+Measured: **54.7s** for a 149k-row `memories` plus a 24.8k-row sidecar, and
+it scales with corpus size. A queued `ACCESS EXCLUSIVE` request also blocks
+every reader that arrives behind it, so this is a read outage, not just a
+write pause.
+
+Plan for it:
+
+- **Large deployments: apply out of band.** Run `0011_v007.sql` through
+  GitOps against a real backup during a maintenance window, then boot with
+  `PROXIMA_SKIP_MIGRATIONS=true`. Do not discover the lock window during a
+  rolling update.
+- **Small deployments** can let boot apply it. Boot migrations now set
+  `lock_timeout = 5s`, so a migration that cannot get the lock fails and
+  retries on the next pod rather than freezing the table behind a lock queue.
+
+Two behaviour changes ride along, neither of which announces itself:
+
+- **`embeddings` primary key changed shape** to `(entity_kind, entity_id,
+  embedding_version, model_id, chunk_index)`. A memory whose text exceeds the
+  provider's input limit is now stored as several chunk rows under one
+  embedding version, where it previously went un-embedded entirely.
+- **Lexical search now stems and drops English stopwords** (`'simple'` →
+  `'english'` text-search config). Result *sets* change, not just ordering:
+  a query of only stopwords no longer matches, and `running` now matches
+  `run`. Re-check any saved query or test that pins exact lexical hits.
+
+`ProximaBuilder::skip_migrations(true)` boot runs `ensure_core_schema_current`,
+which for this release requires core migration version ≥ 11 (lane `version <=
+9999`) plus the structural markers for both lanes: v0.0.6's
+`embedding_jobs.next_attempt_at` and `memories_enforce_immutable` trigger, the
+code-flavor `code_chunk_v1_append_only` trigger when `proxima_code` is
+present, and v0.0.7's `memories.search_tsv`, `embeddings.chunk_index`, and
+`proxima_core.lexical_tsv(text)`. A database one lane behind now fails at
+boot instead of at first query.
+
+**Rollback is by image, never by reversing `0011`.** There are no `.down.sql`
+files, and `DROP COLUMN search_tsv` is a second full-table rewrite under the
+same lock. Rolling the binary back to v0.0.6 against a version-11 database is
+safe **only** if no over-limit memory was chunk-embedded — a v0.0.6 binary
+assumes one embedding row per `(entity, version, model)`. Check with
+`SELECT count(*) FROM proxima_core.embeddings WHERE chunk_index > 0;` and
+delete those rows before downgrading if it is non-zero.
 
 ## 3. Confirm app restart
 
@@ -646,6 +697,59 @@ surfaces were unbounded or truncated silently. Wire changes to review:
   keeps its `Forbidden` category. Custom port implementations must add
   the new methods; cursor plumbing is shared via
   `proxima_core::mcp::cursor`.
+
+## 23. v0.0.7: `SearchProjection` and `MemorySearchProjection` gain `tsv_column`
+
+Stored lexical vectors moved `to_tsvector` off the read path into STORED
+generated columns (`0011_v007.sql`). A projection now declares whether its
+sidecar has such a column, so both structs gained a field:
+
+- `proxima_core::SearchProjection` (re-exported on the Flavor SDK tier as
+  `proxima::flavor::SearchProjection`) gains
+  `tsv_column: Option<&'static str>`.
+- `proxima_core::MemorySearchProjection` gains `tsv_column: Option<String>`.
+
+Neither is `#[non_exhaustive]` and neither derives `Default`, so
+out-of-tree struct literals fail to compile with E0063 until the field is
+added:
+
+```rust
+fn search_projection() -> Option<SearchProjection> {
+    Some(SearchProjection {
+        fields: &[/* ... */],
+        tag_column: None,
+        tsv_column: None, // <- add this
+    })
+}
+```
+
+**Use `None` unless you also add a stored column.** `None` keeps the
+v0.0.6 behaviour exactly: the builder computes the vector inline from the
+projected search text, through the same `proxima_core.lexical_tsv`
+definition the generated columns use, so scoring is identical either way.
+
+Set `tsv_column: Some("search_tsv")` only after your own sidecar migration
+adds a matching column, which must be generated from the same
+concatenation the projection emits:
+
+```sql
+ALTER TABLE my_flavor.my_sidecar
+    ADD COLUMN search_tsv tsvector
+    GENERATED ALWAYS AS (
+        proxima_core.lexical_tsv(proxima_core.lexical_join(
+            NULLIF(title, ''),
+            NULLIF(body, ''),
+            proxima_core.lexical_text_array(tags)))) STORED;
+```
+
+A `tsv_column` naming a column that does not exist surfaces as a Postgres
+error on the first lexical or hybrid search against that schema, not at
+boot — so exercise one search after adding it. Getting the generated
+expression *wrong* is worse: it fails silently, scoring that sidecar
+differently from every other. Pin it with a test in the shape of
+`crates/storage-pg/tests/integration/search_pg/stored_tsv.rs`, which
+asserts the stored column equals `lexical_tsv` over the projection's own
+concatenation.
 
 ## Checks before calling an upgrade done
 

@@ -63,6 +63,8 @@ async fn load_batch_facts_by_id(
                AND e.schema_version = $5
                AND m.tombstoned_at IS NULL"
         ;
+        // SQL-POLICY: fixed-fragment — `sql` is the literal above; all five
+        // parameters are bound.
         let rows: Vec<(uuid::Uuid, i32)> = sqlx::query_as(sqlx::AssertSqlSafe(sql))
             .bind(batch_id)
             .bind(owner_kind)
@@ -132,6 +134,8 @@ pub async fn load_abstraction_heads(
              ORDER BY m.created_at DESC, m.memory_id DESC
              LIMIT $5"
         ;
+        // SQL-POLICY: fixed-fragment — `sql` is the literal above; all five
+        // parameters are bound.
         let rows: Vec<(uuid::Uuid, i32, String, time::OffsetDateTime)> =
             sqlx::query_as(sqlx::AssertSqlSafe(sql))
                 .bind(owner_kind)

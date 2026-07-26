@@ -2287,6 +2287,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "proxima-dev-idp"
+version = "0.1.0"
+dependencies = [
+ "aws-lc-rs",
+ "axum",
+ "base64",
+ "serde_json",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
 name = "proxima-dev-migrate"
 version = "0.1.0"
 dependencies = [
