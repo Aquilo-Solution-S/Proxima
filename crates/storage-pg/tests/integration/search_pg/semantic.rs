@@ -1,0 +1,415 @@
+//! Semantic-branch search behaviour: vector ranking, owner isolation, chunk scoring, and pre-limit filtering.
+
+use super::{
+    brute_cosine, drop_db, fresh_pg, insert_embedded_memory, insert_embedded_memory_with_schema,
+    insert_embedded_memory_with_vec, insert_embedding_with_head, insert_search_abstraction,
+    owner_fixture, padded_embedding, semantic_request, vector_literal,
+};
+
+use proxima_core::llm::EMBEDDING_DIM;
+use proxima_core::storage_ports::*;
+use proxima_core::verbs::query::{
+    EntityKind, MemorySearchRequest, SearchMode, SearchOrder, SupersessionStatus, TagMatch,
+};
+use proxima_core::{OwnerRef, SchemaId, UserId};
+use uuid::Uuid;
+
+#[tokio::test]
+async fn semantic_search_ranks_nearest_vector_and_isolates_owner()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (pg, db_name) = fresh_pg().await;
+    pg.run_migrations().await?;
+
+    let owner = owner_fixture();
+    let other_owner = OwnerRef::Personal(UserId::new(Uuid::from_u128(7)));
+
+    let near = insert_embedded_memory(&pg, &owner, "nearest", [0.99, 0.01, 0.0]).await?;
+    let far = insert_embedded_memory(&pg, &owner, "orthogonal", [0.0, 1.0, 0.0]).await?;
+    let other = insert_embedded_memory(&pg, &other_owner, "other owner", [1.0, 0.0, 0.0]).await?;
+
+    let rows = pg
+        .search_memories(
+            &MemorySearchRequest {
+                owner,
+                read_owners: vec![owner],
+                query: "semantic query".into(),
+                mode: SearchMode::Semantic,
+                supersession: SupersessionStatus::HeadsOnly,
+                limit: 10,
+                kind: Some(EntityKind::Abstraction),
+                schema_id: Some(SchemaId::new("test/search-abstraction-v1".into())),
+                tags: Vec::new(),
+                tag_match: TagMatch::Any,
+                since: None,
+                until: None,
+                order: SearchOrder::Relevance,
+                min_score: None,
+                semantic_weight: None,
+                after: None,
+                query_embedding: Some(padded_embedding([1.0, 0.0, 0.0])),
+                embedding_model_id: Some("test-embed".into()),
+            },
+            &[],
+        )
+        .await?
+        .results;
+
+    assert_eq!(
+        rows.first().map(|row| row.memory_id.into_inner()),
+        Some(near)
+    );
+    assert!(rows.iter().any(|row| row.memory_id.into_inner() == far));
+    assert!(!rows.iter().any(|row| row.memory_id.into_inner() == other));
+
+    drop(pg);
+    drop_db(&db_name).await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn search_heads_only_ignores_cross_owner_supersedes_successor()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (pg, db_name) = fresh_pg().await;
+    pg.run_migrations().await?;
+
+    let victim = owner_fixture();
+    let attacker = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+    let foreign_shadowed = insert_search_abstraction(
+        &pg,
+        &victim,
+        "headscope victim with foreign successor",
+        None,
+    )
+    .await?;
+    let foreign_successor = insert_search_abstraction(
+        &pg,
+        &attacker,
+        "headscope attacker corrupt successor",
+        Some(foreign_shadowed),
+    )
+    .await?;
+    let same_owner_shadowed =
+        insert_search_abstraction(&pg, &victim, "headscope victim superseded", None).await?;
+    let same_owner_successor = insert_search_abstraction(
+        &pg,
+        &victim,
+        "headscope victim same-owner successor",
+        Some(same_owner_shadowed),
+    )
+    .await?;
+
+    let rows = pg
+        .search_memories(
+            &MemorySearchRequest {
+                owner: victim,
+                read_owners: vec![victim],
+                query: "headscope".into(),
+                mode: SearchMode::Lexical,
+                supersession: SupersessionStatus::HeadsOnly,
+                limit: 10,
+                kind: Some(EntityKind::Abstraction),
+                schema_id: Some(SchemaId::new("test/search-abstraction-v1".into())),
+                tags: Vec::new(),
+                tag_match: TagMatch::Any,
+                since: None,
+                until: None,
+                order: SearchOrder::Relevance,
+                min_score: None,
+                semantic_weight: None,
+                after: None,
+                query_embedding: None,
+                embedding_model_id: None,
+            },
+            &[],
+        )
+        .await?
+        .results;
+    let ids = rows
+        .iter()
+        .map(|row| row.memory_id.into_inner())
+        .collect::<Vec<_>>();
+
+    assert!(
+        ids.contains(&foreign_shadowed),
+        "foreign successor must not suppress victim search head: {ids:#?}"
+    );
+    assert!(
+        !ids.contains(&foreign_successor),
+        "attacker successor must remain unreadable in search: {ids:#?}"
+    );
+    assert!(
+        !ids.contains(&same_owner_shadowed),
+        "same-owner successor must suppress prior search head: {ids:#?}"
+    );
+    assert!(
+        ids.contains(&same_owner_successor),
+        "same-owner successor remains searchable head: {ids:#?}"
+    );
+
+    drop(pg);
+    drop_db(&db_name).await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn semantic_search_matches_pgvector_cosine_and_clamps_zero_query()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (pg, db_name) = fresh_pg().await;
+    pg.run_migrations().await?;
+
+    let owner = owner_fixture();
+    let east_vec = padded_embedding([1.0, 0.0, 0.0]);
+    let north_vec = padded_embedding([0.0, 1.0, 0.0]);
+    let diagonal_vec = padded_embedding([0.5, 0.5, 0.0]);
+    let query_vec = padded_embedding([1.0, 0.2, 0.0]);
+
+    let east = insert_embedded_memory_with_vec(&pg, &owner, "east", &east_vec).await?;
+    let north = insert_embedded_memory_with_vec(&pg, &owner, "north", &north_vec).await?;
+    let diagonal = insert_embedded_memory_with_vec(&pg, &owner, "diagonal", &diagonal_vec).await?;
+
+    let indexdef: Option<String> = sqlx::query_scalar(
+        "SELECT indexdef
+           FROM pg_indexes
+          WHERE schemaname = 'proxima_core'
+            AND tablename = 'embeddings'
+            AND indexname = 'idx_embeddings_vec_hnsw'",
+    )
+    .fetch_optional(pg.pool_for_tests())
+    .await?;
+    let indexdef = indexdef.expect("HNSW index exists");
+    assert!(indexdef.contains("USING hnsw"), "{indexdef}");
+
+    let rows = pg
+        .search_memories(&semantic_request(&owner, query_vec.clone()), &[])
+        .await?
+        .results;
+
+    let mut expected = [
+        (east, brute_cosine(&east_vec, &query_vec)),
+        (north, brute_cosine(&north_vec, &query_vec)),
+        (diagonal, brute_cosine(&diagonal_vec, &query_vec)),
+    ];
+    expected.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| b.0.cmp(&a.0)));
+
+    let actual: Vec<_> = rows
+        .iter()
+        .map(|row| (row.memory_id.into_inner(), row.similarity_score))
+        .collect();
+    assert_eq!(
+        actual.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+        expected.iter().map(|(id, _)| *id).collect::<Vec<_>>()
+    );
+    for ((_, actual_score), (_, expected_score)) in actual.iter().zip(expected.iter()) {
+        assert!(
+            (actual_score - expected_score).abs() <= 1.0e-4,
+            "actual {actual_score} expected {expected_score}"
+        );
+    }
+
+    let zero_rows = pg
+        .search_memories(&semantic_request(&owner, vec![0.0; EMBEDDING_DIM]), &[])
+        .await?
+        .results;
+    assert!(
+        zero_rows
+            .iter()
+            .all(|row| row.similarity_score.abs() <= f32::EPSILON),
+        "{zero_rows:#?}"
+    );
+
+    drop(pg);
+    drop_db(&db_name).await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn semantic_search_scores_chunked_memory_by_best_chunk_without_duplicates()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (pg, db_name) = fresh_pg().await;
+    pg.run_migrations().await?;
+
+    let owner = owner_fixture();
+    let (owner_kind, owner_id) = owner.columns();
+    let far_chunk = padded_embedding([0.0, 1.0, 0.0]);
+    let near_chunk = padded_embedding([1.0, 0.0, 0.0]);
+    let middling = padded_embedding([0.5, 0.5, 0.0]);
+    let query_vec = padded_embedding([1.0, 0.0, 0.0]);
+
+    // One over-limit memory embedded as two chunks under one version: the
+    // first chunk is orthogonal to the query, the second matches exactly.
+    let chunked =
+        insert_embedded_memory_with_vec(&pg, &owner, "chunked oversized memory", &far_chunk)
+            .await?;
+    sqlx::query(
+        "INSERT INTO proxima_core.embeddings
+            (entity_kind, entity_id, embedding_version, model_id, vec,
+             owner_kind, owner_id, chunk_index)
+         VALUES ($1, $2, 1, 'test-embed', $3::vector, $4, $5, 1)",
+    )
+    .bind(EntityKind::Abstraction)
+    .bind(chunked)
+    .bind(vector_literal(&near_chunk))
+    .bind(owner_kind)
+    .bind(owner_id)
+    .execute(pg.pool_for_tests())
+    .await?;
+    let plain = insert_embedded_memory_with_vec(&pg, &owner, "plain memory", &middling).await?;
+
+    let rows = pg
+        .search_memories(&semantic_request(&owner, query_vec), &[])
+        .await?
+        .results;
+
+    let ids: Vec<Uuid> = rows.iter().map(|row| row.memory_id.into_inner()).collect();
+    assert_eq!(
+        ids,
+        vec![chunked, plain],
+        "chunked memory must rank by its best chunk and appear exactly once"
+    );
+    assert!(
+        (rows[0].similarity_score - 1.0).abs() <= 1.0e-4,
+        "best-chunk similarity must win, got {}",
+        rows[0].similarity_score
+    );
+
+    drop(pg);
+    drop_db(&db_name).await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn semantic_search_uses_current_embedding_head() -> Result<(), Box<dyn std::error::Error>> {
+    let (pg, db_name) = fresh_pg().await;
+    pg.run_migrations().await?;
+
+    let owner = owner_fixture();
+    let stale_far = padded_embedding([0.0, 1.0, 0.0]);
+    let current_near = padded_embedding([1.0, 0.0, 0.0]);
+    let memory_id =
+        insert_embedded_memory_with_vec(&pg, &owner, "current head", &stale_far).await?;
+    let (owner_kind, owner_id) = owner.columns();
+    insert_embedding_with_head(
+        pg.pool_for_tests(),
+        EntityKind::Abstraction,
+        memory_id,
+        "test-embed",
+        2,
+        &current_near,
+        owner_kind,
+        owner_id,
+    )
+    .await?;
+
+    let rows = pg
+        .search_memories(&semantic_request(&owner, current_near), &[])
+        .await?
+        .results;
+
+    assert_eq!(
+        rows.first().map(|row| row.memory_id.into_inner()),
+        Some(memory_id)
+    );
+    assert!(
+        rows.first().is_some_and(|row| row.similarity_score > 0.99),
+        "{rows:#?}"
+    );
+
+    drop(pg);
+    drop_db(&db_name).await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn semantic_search_filters_current_and_authorized_before_candidate_limit()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (pg, db_name) = fresh_pg().await;
+    pg.run_migrations().await?;
+
+    let owner = owner_fixture();
+    let other_owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+    let query = padded_embedding([1.0, 0.0, 0.0]);
+    let stale_current_far = padded_embedding([0.0, 1.0, 0.0]);
+    let target_vec = padded_embedding([0.8, 0.2, 0.0]);
+    let target =
+        insert_embedded_memory_with_vec(&pg, &owner, "authorized current target", &target_vec)
+            .await?;
+    let (owner_kind, owner_id) = owner.columns();
+
+    for idx in 0..300 {
+        let inaccessible = insert_embedded_memory_with_vec(
+            &pg,
+            &other_owner,
+            &format!("inaccessible near {idx}"),
+            &query,
+        )
+        .await?;
+        assert_ne!(inaccessible, target);
+
+        let stale =
+            insert_embedded_memory_with_vec(&pg, &owner, &format!("stale near {idx}"), &query)
+                .await?;
+        insert_embedding_with_head(
+            pg.pool_for_tests(),
+            EntityKind::Abstraction,
+            stale,
+            "test-embed",
+            2,
+            &stale_current_far,
+            owner_kind,
+            owner_id,
+        )
+        .await?;
+    }
+
+    let mut req = semantic_request(&owner, query);
+    req.limit = 1;
+    let rows = pg.search_memories(&req, &[]).await?.results;
+
+    assert_eq!(
+        rows.first().map(|row| row.memory_id.into_inner()),
+        Some(target),
+        "{rows:#?}"
+    );
+
+    drop(pg);
+    drop_db(&db_name).await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn semantic_search_filters_query_predicates_before_candidate_limit()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (pg, db_name) = fresh_pg().await;
+    pg.run_migrations().await?;
+
+    let owner = owner_fixture();
+    let query = padded_embedding([1.0, 0.0, 0.0]);
+    let target_vec = padded_embedding([0.8, 0.2, 0.0]);
+    let target =
+        insert_embedded_memory_with_vec(&pg, &owner, "matching schema target", &target_vec).await?;
+    for idx in 0..540 {
+        let bad = insert_embedded_memory_with_schema(
+            &pg,
+            &owner,
+            "test/search-other-abstraction-v1",
+            &format!("schema filtered near {idx}"),
+            &query,
+        )
+        .await?;
+        assert_ne!(bad, target);
+    }
+
+    let mut req = semantic_request(&owner, query);
+    req.limit = 1;
+    let rows = pg.search_memories(&req, &[]).await?.results;
+
+    assert_eq!(
+        rows.first().map(|row| row.memory_id.into_inner()),
+        Some(target),
+        "{rows:#?}"
+    );
+
+    drop(pg);
+    drop_db(&db_name).await?;
+    Ok(())
+}
