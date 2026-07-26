@@ -124,7 +124,7 @@ fn parse_optional_u64_env(key: &str) -> Result<Option<u64>, BlobError> {
 
 /// Reject an S3 endpoint that would carry presigned URLs (and the credentials
 /// signed into them) over plaintext HTTP. HTTPS is always accepted; plaintext
-/// HTTP is accepted only for a loopback host (local MinIO/dev), unlike
+/// HTTP is accepted only for a loopback host (local object store/dev), unlike
 /// production S3 endpoints which must be TLS.
 pub(crate) fn validate_endpoint_url(raw: &str) -> Result<(), BlobError> {
     proxima_core::validate_endpoint_url(raw, EndpointUrlPolicy::AllowLoopbackHttp).map_err(

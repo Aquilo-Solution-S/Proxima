@@ -16,6 +16,10 @@ binary/profile.
 | citations | citation/fact resources and tools | Facts only carry citation mappings |
 | membership | `core_membership` | group roster only: `add_member`, `remove_member`, `list_members` |
 | publish | `core_publish` | irreversible owner transfer via `publish_to_world`; not ACL/share |
+| memory reads | `proxima://memory/{id}{?expand_neighbors}`, `proxima://memories{?ids}`, `proxima://memory/{id}/lineage{?direction,depth,limit,cursor}` | batch read takes at most 100 ids; lineage paginates by cursor and reports `has_more` |
+| goal reads | `proxima://goals{?state,limit,cursor}`, `proxima://goal/{id}` | keyset pagination |
+| edge reads | `proxima://edges{?relation,source,target,limit,cursor,payloads}`, `proxima://edge/{id}` | `payloads` hydrates typed edge sidecars |
+| graph | `proxima://graph` | owner-scoped health: schema registry, embedding backlog, `embeddings_client_configured` |
 | introspection | `proxima://tools`, `proxima://how-to` | generated from runtime profile |
 | change-events | `proxima://change-events{?since,limit}` | poll-only change notification |
 | wake-candidates | `proxima://wake-candidates{?fact,limit}` | armed Active Goals admitted for one trigger Fact; arm via `core_goal` `wake`/`clear_wake` |

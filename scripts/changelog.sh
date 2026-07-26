@@ -23,5 +23,16 @@ else
 fi
 
 cd "$(git rev-parse --show-toplevel)"
-git cliff --output CHANGELOG.md
-echo "CHANGELOG.md regenerated."
+
+# An unreleased tag has no commits pointing at it yet, so git-cliff would file
+# this release's commits under "unreleased". Passing --tag stamps them under
+# the version being cut — which is the whole point of running this before the
+# tag exists.
+if [ $# -gt 0 ]; then
+  git cliff --tag "$1" --output CHANGELOG.md
+  echo "CHANGELOG.md regenerated for $1."
+else
+  git cliff --output CHANGELOG.md
+  echo "CHANGELOG.md regenerated (no tag given; this release lands under 'unreleased')."
+  echo "hint: scripts/changelog.sh vX.Y.Z stamps it under the version you are cutting." >&2
+fi

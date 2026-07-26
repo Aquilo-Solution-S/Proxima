@@ -288,8 +288,16 @@ async fn current_embedding_ids_by_distance(
                 .map_err(map_err)?;
         }
     }
+    // DISTINCT ON collapses a chunked memory's several vectors to its
+    // nearest one. Without it the canary counts chunk rows: a corpus where
+    // one memory holds ten chunks yields ten identical ids on both sides,
+    // overlap == exact, and recall reads 1.000 while the ANN scan missed
+    // every *other* memory. The metric would be healthiest exactly where the
+    // index is worst.
     let rows = sqlx::query_scalar::<_, uuid::Uuid>(
-        "SELECT emb.entity_id
+        "SELECT ranked.entity_id FROM (
+         SELECT DISTINCT ON (emb.entity_kind, emb.entity_id)
+                emb.entity_id, emb.vec <=> $4::vector AS distance
            FROM proxima_core.embeddings emb
            JOIN proxima_core.embedding_heads head
              ON head.entity_kind = emb.entity_kind
@@ -301,8 +309,9 @@ async fn current_embedding_ids_by_distance(
           WHERE emb.model_id = $1
             AND emb.owner_kind = $2
             AND emb.owner_id IS NOT DISTINCT FROM $3
-          ORDER BY emb.vec <=> $4::vector,
-                   emb.entity_id ASC
+          ORDER BY emb.entity_kind, emb.entity_id, emb.vec <=> $4::vector
+         ) ranked
+          ORDER BY ranked.distance, ranked.entity_id ASC
           LIMIT $5",
     )
     .bind(model_id)

@@ -54,6 +54,12 @@ pub struct CodeListReposOutput {
     pub has_more: bool,
 }
 
+/// Upper bound on embedding jobs enqueued by one ingest call. A HEAD
+/// snapshot of a large repository can emit tens of thousands of memories;
+/// this bounds the post-ingest enqueue to one generous pass, and the
+/// startup reconcile plus `maintain-embeddings` pick up any remainder.
+const EMBEDDING_BACKFILL_LIMIT: usize = 50_000;
+
 const MAX_REPO_PAGE_LIMIT: u32 = 200;
 const DEFAULT_REPO_PAGE_LIMIT: u32 = 50;
 
@@ -92,6 +98,10 @@ pub struct CodeIngestHeadSnapshotOutput {
     pub head_commit_sha: String,
     pub head_tree_sha: String,
     pub report: IndexReportItem,
+    /// Embedding jobs enqueued for this owner after the ingest. `0` when no
+    /// embedding client is configured (the deployment is lexical-only) or
+    /// when every memory already had one.
+    pub embeddings_enqueued: usize,
 }
 
 #[derive(Debug, Serialize)]
@@ -217,6 +227,18 @@ impl Tool for CodeIngestHeadSnapshotTool {
             .await
             .map_err(map_repo_registry)?;
 
+            // Git ingest writes Facts and derived chunks directly through the
+            // flavor's own sidecar path, which carries no embedding client and
+            // so enqueues no embedding jobs. Without this, a freshly indexed
+            // repository is lexically searchable and semantically invisible —
+            // with nothing to indicate it, until someone happens to run
+            // `maintain-embeddings`. The backfill is owner-scoped and
+            // idempotent, so a re-poll that ingested nothing enqueues nothing.
+            let embeddings_enqueued = engine
+                .backfill_missing_embeddings(ctx.authz(), &ctx.owner(), EMBEDDING_BACKFILL_LIMIT)
+                .await
+                .map_err(|err| ToolError::Other(err.to_string()))?;
+
             let repo = crate::repos::get_repo(pool.pool(), &ctx.owner(), repo.repo_id)
                 .await
                 .map_err(map_repo_registry)?
@@ -227,6 +249,7 @@ impl Tool for CodeIngestHeadSnapshotTool {
                 head_commit_sha: outcome.head_sha,
                 head_tree_sha: outcome.head_tree_sha,
                 report: IndexReportItem::from(outcome.report),
+                embeddings_enqueued,
             })
         })
     }

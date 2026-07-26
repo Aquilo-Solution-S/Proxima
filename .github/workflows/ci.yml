@@ -94,6 +94,28 @@ jobs:
         with:
           command: check advisories licenses bans sources
 
+  image:
+    name: docker build
+    runs-on: ubuntu-latest
+    steps:
+      # actions/checkout@v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+      # Build only, never push. Dependabot bumps the pinned base-image digests
+      # weekly (see .github/dependabot.yml); without this job those bumps land
+      # with zero validation and the first person to discover a broken image is
+      # an operator running the documented `docker build` after a tag is public.
+      - name: build image
+        run: |
+          docker build \
+            --build-arg VERSION="$(sed -n 's/^pub const RELEASE_VERSION: &str = "\(.*\)";$/\1/p' crates/core/src/lib.rs)" \
+            --build-arg REVISION="${GITHUB_SHA}" \
+            -t proxima-mcp:ci .
+      - name: image reports its release
+        run: |
+          docker image inspect proxima-mcp:ci \
+            --format '{{ index .Config.Labels "org.opencontainers.image.version" }}' \
+            | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'
+
   test:
     name: test (postgres + pgvector)
     runs-on: ubuntu-latest
@@ -111,6 +133,20 @@ jobs:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 10
+      # S3-compatible object store for the cited-blob lane. Without it every
+      # test in crates/blob-s3 returns early on `PROXIMA_S3_*` being unset and
+      # nextest reports the lane PASSED having executed nothing — including the
+      # versioned-bucket `purge_owner_objects` erase, which is a compliance
+      # guarantee. RustFS rather than MinIO: Apache-2.0, so it carries none of
+      # MinIO's AGPL licensing constraints. Pinned by digest like every other
+      # image here; note RustFS is pre-1.0, so bump deliberately.
+      s3:
+        image: rustfs/rustfs:1.0.0-beta.11@sha256:84ce557a0245a06a9aae5516f55ee0f007fca78d41df356f419306fdc0cb168c
+        env:
+          RUSTFS_ACCESS_KEY: proxima
+          RUSTFS_SECRET_KEY: proxima-dev
+        ports:
+          - 9000:9000
     env:
       # Force offline sqlx codegen (committed .sqlx cache) so DATABASE_URL below
       # doesn't make sqlx::query! introspect the un-migrated service at BUILD time.
@@ -122,6 +158,13 @@ jobs:
       # reads DATABASE_URL; oidc_e2e.rs reads PROXIMA_TEST_DATABASE_URL.
       DATABASE_URL: postgres://proxima:proxima@localhost:5432/proxima_e2e
       PROXIMA_TEST_DATABASE_URL: postgres://proxima:proxima@localhost:5432/proxima_e2e
+      # Cited-blob lane. `S3RuntimeConfig::present_in_env()` gates those tests
+      # on these being set, so they run here rather than silently skipping.
+      PROXIMA_S3_BUCKET: proxima-cited-blobs
+      PROXIMA_S3_REGION: us-east-1
+      PROXIMA_S3_ENDPOINT_URL: http://localhost:9000
+      AWS_ACCESS_KEY_ID: proxima
+      AWS_SECRET_ACCESS_KEY: proxima-dev
     steps:
       # actions/checkout@v7
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
@@ -136,6 +179,16 @@ jobs:
         # Dedicated DB for the HTTP e2e tests, isolated from pg-testkit's
         # per-test clones (psql ships on the ubuntu-latest runner).
         run: psql "postgres://proxima:proxima@localhost:5432/proxima" -c 'CREATE DATABASE proxima_e2e;'
+      - name: create cited-blob bucket
+        run: |
+          for i in $(seq 1 30); do
+            curl -sf http://localhost:9000 >/dev/null 2>&1 && break
+            sleep 2
+          done
+          aws --endpoint-url http://localhost:9000 s3 mb s3://proxima-cited-blobs
+          aws --endpoint-url http://localhost:9000 s3api put-bucket-versioning \
+            --bucket proxima-cited-blobs \
+            --versioning-configuration Status=Enabled
       - name: install nextest
         # taiki-e/install-action@nextest
         uses: taiki-e/install-action@0c80bcf54d007ab0e714c95f3bcc43c387707535

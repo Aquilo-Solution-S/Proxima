@@ -277,7 +277,12 @@ def run_fixture(path: Path) -> int:
 # stored_tsv.rs) interpolates the pre-0011 tsvector expression, held as a
 # module constant, into a comparison against proxima_core.lexical_tsv. The
 # only interpolated text is that constant; the inputs under test are bound.
-EXPECTED_DYNAMIC_SQL_SITES = 54
+# 2026-07-26 analysis: +1 — the code-flavor equivalent (flavors/code/tests/
+# chunk_search_tsv_pg.rs) interpolates the pre-migration chunk tsvector
+# expression, held as a module constant, into a comparison against the stored
+# generated column. Same shape as the core drift test above: the only
+# interpolated text is that constant; both inputs under test are bound.
+EXPECTED_DYNAMIC_SQL_SITES = 55
 
 
 def run_self_test() -> int:

@@ -122,11 +122,19 @@ impl Tool for CodeSearchChunksTool {
             // so the raw candidate window is widened well past `limit` to
             // leave headroom for historical duplicates collapsing away.
             let candidate_limit = i64::from(limit.saturating_mul(20).max(limit).min(1_000));
+            // `c.search_tsv` is the STORED generated column added by the v0.0.7
+            // flavor migration, holding exactly
+            // `to_tsvector('simple', file_path || ' ' || text)`. Reading it
+            // replaces two per-row `to_tsvector` evaluations — one for the
+            // predicate, one for the rank — with a column read, and the GIN
+            // index now sits on the column rather than on the expression.
+            // `code_chunk_search_tsv_matches_the_scoring_expression` pins the
+            // column against the expression it replaced.
             let rows: Vec<ChunkCandidateRow> = sqlx::query_as(
                 "WITH q AS (SELECT websearch_to_tsquery('pg_catalog.simple'::regconfig, $1) AS tsq)
                  SELECT c.memory_id,
                         (
-                            ts_rank_cd(to_tsvector('pg_catalog.simple'::regconfig, c.file_path || ' ' || c.text), q.tsq)
+                            ts_rank_cd(c.search_tsv, q.tsq)
                             + CASE WHEN lower(c.file_path) = lower($1) THEN 10.0 ELSE 0.0 END
                             + CASE WHEN lower(c.file_path) LIKE $4 ESCAPE '\\' THEN 6.0 ELSE 0.0 END
                             + CASE WHEN lower(c.text) LIKE $4 ESCAPE '\\' THEN 4.0 ELSE 0.0 END
@@ -137,7 +145,7 @@ impl Tool for CodeSearchChunksTool {
                     AND ($3::text IS NULL OR c.language = $3)
                     AND ($5::text IS NULL OR c.chunk_type = $5)
                     AND (
-                        to_tsvector('pg_catalog.simple'::regconfig, c.file_path || ' ' || c.text) @@ q.tsq
+                        c.search_tsv @@ q.tsq
                         OR lower(c.file_path) LIKE $4 ESCAPE '\\'
                         OR lower(c.text) LIKE $4 ESCAPE '\\'
                     )
