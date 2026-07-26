@@ -1,3 +1,4 @@
+use std::fmt::Write as _;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -301,6 +302,89 @@ async fn erase_repo_tool_clears_the_index_and_allows_a_fresh_one()
         1,
         "re-ingest after erase must rebuild the index"
     );
+    Ok(())
+}
+
+/// A match has to carry enough of its chunk to answer with. Snippets were
+/// capped at 480 characters against a chunker that targets 1,500, so a search
+/// returned the right chunk with most of it missing and no way to ask for
+/// more — and nothing in the response said so.
+#[tokio::test]
+async fn search_chunks_returns_whole_chunks_and_flags_truncation()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fixture = TestDb::fresh().await;
+    let owner = owner_fixture();
+    let registry = registry_for_mcp();
+    let temp = TempDir::new()?;
+
+    // One function well past the old 480-character cap but still inside
+    // MAX_CHUNK_CHARS, so it stays a single chunk, with the value that
+    // answers the query at the very end of it.
+    let mut body = String::from("pub fn proxima_long_marker() -> u32 {\n");
+    for i in 0..40 {
+        writeln!(body, "    let filler_{i} = {i}; // padding line").expect("write to String");
+    }
+    body.push_str("    9_753\n}\n");
+    assert!(body.len() > 480, "fixture must exceed the old snippet cap");
+    init_git_repo_with_commit(temp.path(), "src/long.rs", &body)?;
+
+    let registered = run_tool::<CodeRegisterRepoTool>(
+        ctx(fixture.pg.clone(), owner, registry.clone()),
+        json!({ "path": temp.path().to_string_lossy(), "display_name": "Long Repo" }),
+    )
+    .await?;
+    let repo_handle = registered["repo"]["repo_id"].as_str().expect("repo_id");
+    run_tool::<CodeIngestHeadSnapshotTool>(
+        ctx(fixture.pg.clone(), owner, registry.clone()),
+        json!({ "repo_handle": repo_handle }),
+    )
+    .await?;
+
+    let found = run_tool::<CodeSearchChunksTool>(
+        ctx(fixture.pg.clone(), owner, registry.clone()),
+        json!({ "query": "proxima_long_marker", "limit": 5, "include_calls": false }),
+    )
+    .await?;
+    let top = &found["matches"][0];
+    let snippet = top["snippet"].as_str().expect("snippet");
+    assert!(
+        snippet.len() > 480,
+        "default snippet is still capped near 480: {} chars",
+        snippet.len()
+    );
+    assert!(
+        snippet.contains("9_753"),
+        "the value at the end of the chunk did not survive the default budget"
+    );
+    assert_eq!(top["snippet_truncated"], false);
+
+    // An explicit small budget truncates, and says so.
+    let clipped = run_tool::<CodeSearchChunksTool>(
+        ctx(fixture.pg.clone(), owner, registry.clone()),
+        json!({
+            "query": "proxima_long_marker", "limit": 5,
+            "include_calls": false, "snippet_max_chars": 50,
+        }),
+    )
+    .await?;
+    let clipped_top = &clipped["matches"][0];
+    assert_eq!(
+        clipped_top["snippet"]
+            .as_str()
+            .expect("snippet")
+            .chars()
+            .count(),
+        50
+    );
+    assert_eq!(clipped_top["snippet_truncated"], true);
+
+    // Zero is a mistake, not a request for nothing.
+    let rejected = run_tool::<CodeSearchChunksTool>(
+        ctx(fixture.pg.clone(), owner, registry),
+        json!({ "query": "proxima_long_marker", "snippet_max_chars": 0 }),
+    )
+    .await;
+    assert!(rejected.is_err(), "snippet_max_chars=0 must be rejected");
     Ok(())
 }
 
