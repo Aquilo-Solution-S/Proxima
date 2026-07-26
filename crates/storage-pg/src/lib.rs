@@ -170,15 +170,27 @@ pub async fn ensure_v004_baseline_compatible(pool: &PgPool) -> Result<(), Storag
 }
 
 /// Minimum applied core migration version for the current release lane.
-pub const MIN_CORE_MIGRATION_VERSION: i64 = 10;
+///
+/// Bump this with every release that adds a core migration. It is the only
+/// thing standing between a `skip_migrations` boot and a database one lane
+/// behind the binary: the readiness resource does not touch release-specific
+/// columns, so a stale database that boots reports healthy and then fails at
+/// first query.
+pub const MIN_CORE_MIGRATION_VERSION: i64 = 11;
 
 /// Fail closed when `skip_migrations` boot runs against a database that has
-/// not yet applied the v0.0.6 schema lane.
+/// not yet applied the current schema lane.
+///
+/// The version check alone is not enough — a database can carry the ledger
+/// row without the objects, and a split-role deploy applies DDL out of band —
+/// so this also probes the structural artifacts each lane introduced. Every
+/// marker below is something the running binary emits unconditionally, which
+/// is what makes its absence a boot failure rather than a first-query one.
 ///
 /// # Errors
 ///
 /// Returns [`StorageError::Internal`] when the recorded core migration version
-/// or structural v0.0.6 markers are absent.
+/// or the structural markers for the current lane are absent.
 pub async fn ensure_core_schema_current(pool: &PgPool) -> Result<(), StorageError> {
     let migration_table_exists: bool =
         sqlx::query_scalar("SELECT to_regclass('public._sqlx_migrations') IS NOT NULL")
@@ -195,7 +207,7 @@ pub async fn ensure_core_schema_current(pool: &PgPool) -> Result<(), StorageErro
         .map_err(internal)?;
         if max_version.unwrap_or(0) < MIN_CORE_MIGRATION_VERSION {
             return Err(StorageError::Internal(format!(
-                "database core migrations at version {}; version {MIN_CORE_MIGRATION_VERSION}+ required — apply v0.0.6 core migrations before boot (see MIGRATING.md)",
+                "database core migrations at version {}; version {MIN_CORE_MIGRATION_VERSION}+ required — apply the v0.0.7 core lane (0011_v007.sql) before boot (see MIGRATING.md)",
                 max_version.unwrap_or(0)
             )));
         }
@@ -229,7 +241,25 @@ pub async fn ensure_core_schema_current(pool: &PgPool) -> Result<(), StorageErro
                     AND c.relname = 'code_chunk_v1'
                     AND t.tgname = 'code_chunk_v1_append_only'
              )
-         )",
+         )
+         -- v0.0.7 lane. Every search emits memories.search_tsv, every
+         -- sidecar without a stored column calls lexical_tsv(), and every
+         -- embedding write binds chunk_index — none of them have a fallback.
+         AND EXISTS (
+             SELECT 1
+               FROM information_schema.columns
+              WHERE table_schema = 'proxima_core'
+                AND table_name = 'memories'
+                AND column_name = 'search_tsv'
+         )
+         AND EXISTS (
+             SELECT 1
+               FROM information_schema.columns
+              WHERE table_schema = 'proxima_core'
+                AND table_name = 'embeddings'
+                AND column_name = 'chunk_index'
+         )
+         AND to_regprocedure('proxima_core.lexical_tsv(text)') IS NOT NULL",
     )
     .fetch_one(pool)
     .await
@@ -237,7 +267,7 @@ pub async fn ensure_core_schema_current(pool: &PgPool) -> Result<(), StorageErro
 
     if !ready {
         return Err(StorageError::Internal(
-            "database is missing v0.0.6 schema markers (embedding_jobs.next_attempt_at or memories append-only trigger); apply migrations before boot (see MIGRATING.md)".into(),
+            "database is missing schema markers for this release lane (v0.0.6: embedding_jobs.next_attempt_at, memories append-only trigger; v0.0.7: memories.search_tsv, embeddings.chunk_index, proxima_core.lexical_tsv); apply migrations before boot (see MIGRATING.md)".into(),
         ));
     }
     Ok(())

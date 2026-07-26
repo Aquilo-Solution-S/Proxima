@@ -29,7 +29,16 @@ DATABASE_URL=postgres://USER:PASS@HOST:5432/DB?sslmode=verify-full&sslrootcert=/
 TDE / volume encryption is transparent to Proxima. Do NOT use pgcrypto column
 encryption for searched columns: `embeddings.vec`, `memories.text`,
 `goals.text`, `tags`. Run migrations with a DDL-capable role; run the app with
-a narrower DML role.
+a narrower DML role, with `PROXIMA_SKIP_MIGRATIONS=true` so the app never
+attempts DDL.
+
+Migrations run automatically on first boot when that variable is unset. Check
+the release's schema lane in `MIGRATING.md` before relying on that: a lane
+that rewrites tables holds `ACCESS EXCLUSIVE` for the duration and is not
+online-safe. The v0.0.7 lane (`0011_v007.sql`) is one of those — measured
+54.7s on a 149k-row corpus. Boot migrations set `lock_timeout = 5s`, so a
+migration that cannot take the lock fails and retries on the next pod rather
+than queueing behind readers.
 
 ## Environment contract
 
@@ -50,9 +59,13 @@ a narrower DML role.
 | `PROXIMA_TOOL_PROFILE` | no | `memory` | Tool profile. **Unset ⇒ fail-closed `memory`** (excludes `core_membership` + `core_publish`). Set `full` to advertise the whole surface incl. `core_publish` (irreversible World transfer) — logged at startup. |
 | `PROXIMA_TOOL_ALLOW` | no | `core_goal:set` | Comma-separated canonical scope keys added after profile resolution. |
 | `PROXIMA_TOOL_DENY` | no | `core_goal:decompose` | Comma-separated canonical scope keys removed after allow. Compliance erase is not exposed as an MCP action. |
-| `MISTRAL_API_KEY` | no | `sk-...` | Enables Mistral embeddings. |
-| `PROXIMA_EMBED_MODEL` | no | `mistral-embed` | Embedding model id. |
-| `MISTRAL_API_BASE` | no | `https://api.mistral.ai/v1` | Mistral-compatible API base. |
+| `PROXIMA_EMBED_BASE_URL` | no | `https://api.mistral.ai/v1` | OpenAI-compatible `/embeddings` base. Setting it alone enables embeddings; plaintext `http://` is accepted for loopback only. |
+| `PROXIMA_EMBED_API_KEY` | no | `sk-...` | Bearer for a hosted embedding endpoint. Omit for a local one. |
+| `PROXIMA_EMBED_MODEL` | no | `mistral-embed` | Embedding model id. Must return 1024-dim vectors. |
+| `PROXIMA_EMBED_MATRYOSHKA` | no | `false` | Request 1024 dimensions from a nested-prefix model wider than 1024. |
+| `MISTRAL_API_KEY` | no | `sk-...` | Alias for `PROXIMA_EMBED_API_KEY`. |
+| `MISTRAL_API_BASE` | no | `https://api.mistral.ai/v1` | Alias for `PROXIMA_EMBED_BASE_URL`. |
+| `PROXIMA_SKIP_MIGRATIONS` | no | `true` | Boot without applying migrations, for the split-role topology above. The schema must already be at the current lane — boot fails closed otherwise. |
 | `PROXIMA_S3_BUCKET` | no | `proxima-cited-blobs` | Cited-blob bucket. |
 | `PROXIMA_S3_REGION` | no | `us-east-1` | S3 region. |
 | `PROXIMA_S3_ENDPOINT_URL` | no | `https://s3.example.com` | S3-compatible endpoint. |

@@ -368,6 +368,8 @@ async fn load_criterion_rows(
           ORDER BY criterion_index ASC"
     );
     let pool = code_store(ctx)?;
+    // SQL-POLICY: fixed-fragment — the only interpolation is `parent_column`,
+    // chosen from a closed match above; `parent_id` is bound.
     let rows: Vec<CriterionSqlRow> = sqlx::query_as(sqlx::AssertSqlSafe(sql))
         .bind(parent_id.into_inner())
         .fetch_all(pool.pool())
@@ -542,6 +544,8 @@ async fn load_results(
           ORDER BY created_at ASC"
     );
     let pool = code_store(ctx)?;
+    // SQL-POLICY: fixed-fragment — the only interpolation is `fk`, chosen
+    // from a closed match above; `memory_id` is bound.
     let rows: Vec<ResultSqlRow> = sqlx::query_as(sqlx::AssertSqlSafe(sql))
         .bind(memory_id.into_inner())
         .fetch_all(pool.pool())

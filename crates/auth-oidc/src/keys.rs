@@ -8,7 +8,7 @@ use async_trait::async_trait;
 use jsonwebtoken::DecodingKey;
 use tokio::sync::{Mutex, RwLock};
 
-use crate::config::{OidcConfigError, validate_https_url};
+use crate::config::{OidcConfigError, validate_https_url, validate_jwks_url};
 
 /// Minimum spacing between JWKS refetches. Bounds the outbound-fetch rate so a
 /// flood of tokens carrying random unknown `kid`s cannot amplify into one
@@ -119,12 +119,13 @@ impl std::fmt::Debug for HttpJwksResolver {
 impl HttpJwksResolver {
     /// # Errors
     ///
-    /// Returns an error when the issuer or explicit JWKS endpoint is not
-    /// HTTPS. Test builds allow loopback HTTP for mock `IdPs`.
+    /// Returns an error when the issuer is not HTTPS or loopback HTTP, or
+    /// when the JWKS endpoint is plaintext HTTP that this issuer is not
+    /// entitled to name (see [`validate_jwks_url`]).
     pub fn new(issuer: String, jwks_uri: Option<String>) -> Result<Self, OidcConfigError> {
         validate_https_url("issuer", &issuer)?;
         if let Some(uri) = &jwks_uri {
-            validate_https_url("jwks_uri", uri)?;
+            validate_jwks_url("jwks_uri", uri, &issuer)?;
         }
         Ok(Self {
             issuer,
@@ -156,7 +157,7 @@ impl HttpJwksResolver {
             .json()
             .await
             .map_err(|e| KeyError::Parse(e.to_string()))?;
-        validate_https_url("discovered jwks_uri", &cfg.jwks_uri)
+        validate_jwks_url("discovered jwks_uri", &cfg.jwks_uri, &self.issuer)
             .map_err(|err| KeyError::Config(err.to_string()))?;
         Ok(cfg.jwks_uri)
     }

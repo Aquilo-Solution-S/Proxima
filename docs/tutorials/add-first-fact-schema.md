@@ -40,6 +40,11 @@ impl FactPayload for DocumentFiledV1 {
                 kind: SearchProjectionColumnKind::Text,
             }],
             tag_column: None,
+            // Compute the lexical vector at query time. Set this to the
+            // name of a STORED generated column calling
+            // `proxima_core.lexical_tsv(...)` once your sidecar migration
+            // adds one; see MIGRATING.md §23.
+            tsv_column: None,
         })
     }
 }

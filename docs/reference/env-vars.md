@@ -20,12 +20,23 @@ This table is a human reference. Source code and deployment manifests remain aut
 | `PROXIMA_OIDC_SUBJECT_MAP` | OIDC auth | unset | OIDC deployment unless JSON map is used | single-issuer `sub:<uuid>` shorthand bound to `PROXIMA_OIDC_ISSUER`; mutually exclusive with JSON map |
 | `PROXIMA_STREAM_MAX_LIFETIME` | MCP stream auth | source default | long-lived Streamable HTTP responses | max seconds before re-validation |
 | `PROXIMA_STREAM_EPOCH_INTERVAL` | MCP stream auth | source default | open response stream auth checks | auth-epoch re-check seconds |
-| `PROXIMA_TOOL_PROFILE` | MCP tool surface | `full` | narrowed tool surface | `memory` is curated memory-brain palette |
+| `PROXIMA_TOOL_PROFILE` | MCP tool surface | `memory` | widening to the full surface | `full` is opt-in and adds `core_membership`/`core_publish` |
 | `PROXIMA_TOOL_ALLOW` | MCP tool surface | unset | profile extension | comma-separated canonical scope keys unioned into profile |
 | `PROXIMA_TOOL_DENY` | MCP tool surface | unset | profile restriction | comma-separated canonical scope keys removed after allow |
-| `MISTRAL_API_KEY` | embeddings | unset | enable `proxima-mcp` embeddings | absent means semantic search degrades to lexical paths |
-| `PROXIMA_EMBED_MODEL` | embeddings | `mistral-embed` | non-default embedding model | sent to `/embeddings` |
-| `MISTRAL_API_BASE` | embeddings | `https://api.mistral.ai/v1` | Mistral-compatible endpoint | OpenAI-compatible base URL |
+| `PROXIMA_EMBED_BASE_URL` | embeddings | unset | any OpenAI-compatible endpoint, local or hosted | setting it alone enables embeddings; loopback needs no key |
+| `PROXIMA_EMBED_API_KEY` | embeddings | unset | hosted embedding endpoint | bearer sent to `/embeddings` |
+| `PROXIMA_EMBED_MODEL` | embeddings | `mistral-embed` | non-default embedding model | must yield 1024-dim vectors |
+| `PROXIMA_EMBED_MATRYOSHKA` | embeddings | `false` | nested-prefix model wider than 1024 | sends a `dimensions` request parameter |
+| `MISTRAL_API_KEY` | embeddings | unset | alias for `PROXIMA_EMBED_API_KEY` | absent and no base URL means semantic search degrades to lexical paths |
+| `MISTRAL_API_BASE` | embeddings | `https://api.mistral.ai/v1` | alias for `PROXIMA_EMBED_BASE_URL` | OpenAI-compatible base URL |
+| `PROXIMA_SKIP_MIGRATIONS` | boot | `false` | split-role GitOps deploys | boot without applying migrations; the schema must already be at the current lane or boot fails closed |
+| `PROXIMA_PG_MAX_CONNECTIONS` | Postgres pool | `10` | tuning pool size | minimum 1 |
+| `PROXIMA_PG_STATEMENT_TIMEOUT_MS` | Postgres pool | `300000` | tuning request timeouts | `0` disables; migrations and bulk erase opt out separately |
+| `PROXIMA_PG_ACQUIRE_TIMEOUT_SECS` | Postgres pool | `5` | tuning pool acquisition | seconds |
+| `PROXIMA_PG_IDLE_TIMEOUT_SECS` | Postgres pool | `600` | tuning connection reuse | seconds |
+| `PROXIMA_PG_MAX_LIFETIME_SECS` | Postgres pool | `1800` | tuning connection recycling | seconds |
+| `PROXIMA_CHANGE_EVENT_COMMIT_GRACE_MS` | change events | unset (`0`, disabled) | concurrent writers with slow commits | withholds events newer than `now - grace` so a forward cursor cannot skip a late commit |
+| `PROXIMA_S3_MAX_BLOB_BYTES` | cited blobs | unset (uncapped) | bounding cited-blob size | non-negative integer |
 | `PROXIMA_S3_BUCKET` | cited blobs | unset | enable S3 cited-blob storage | credentials use AWS SDK provider chain |
 | `PROXIMA_S3_REGION` | cited blobs | unset | S3 bucket configured | S3 region |
 | `PROXIMA_S3_ENDPOINT_URL` | cited blobs | AWS region endpoint | S3-compatible endpoint | optional |
@@ -55,7 +66,9 @@ This table is a human reference. Source code and deployment manifests remain aut
 ## Source Inventory Reconciliation
 
 Inventory sources checked: `docs/10-configuration.md`, `docs/15-deployment.md`,
-`apps/proxima-mcp/src/lib.rs`, `crates/proxima/src/runtime_config.rs`, and
-`.github/workflows/ci.yml`. Runtime variables from that inventory are listed in
+`apps/proxima-mcp/src/lib.rs`, `crates/proxima/src/runtime_config.rs`,
+`crates/proxima/src/config.rs`, `crates/storage-pg/src/lib.rs`,
+`crates/storage-pg/src/verbs/consolidate/events.rs`,
+`crates/blob-s3/src/config.rs`, and `.github/workflows/ci.yml`. Runtime variables from that inventory are listed in
 the runtime table. Test-only and source-constant names are listed under
 Build/Test/Internal Variables.

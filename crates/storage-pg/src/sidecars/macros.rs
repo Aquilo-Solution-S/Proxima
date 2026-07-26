@@ -398,6 +398,9 @@ macro_rules! pg_sidecar {
                             (::std::stringify!($column), $crate::pg_sidecar_cast! $column_kind),
                         )+],
                     )?;
+                    // SQL-POLICY: PgIdent — `sql` is built by memory_insert_sql
+                    // from macro-literal table/column names validated as PgIdent;
+                    // every value below is bound.
                     ::sqlx::query(::sqlx::AssertSqlSafe(sql))
                         .bind(memory_id.into_inner())
                         $(

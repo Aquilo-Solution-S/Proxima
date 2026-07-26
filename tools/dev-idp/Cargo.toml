@@ -1,0 +1,23 @@
+[package]
+name = "proxima-dev-idp"
+version = "0.1.0"
+publish = false
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "dev-idp"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+aws-lc-rs = { workspace = true }
+axum = { workspace = true }
+base64 = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal", "net"] }
+uuid = { workspace = true }

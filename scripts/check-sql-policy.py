@@ -22,35 +22,16 @@ VALID_PROOFS = (
     "SQL-POLICY: QueryBuilder-bound-values",
 )
 
-# Exact current PR9 dynamic SQL inventory. Each entry is a reviewed site with
-# the same proof vocabulary accepted in source comments; path+line+kind keeps
-# the allowlist narrow so adjacent new dynamic SQL still fails.
-ALLOWLISTED_SITE_LINES = {
-    ("crates/storage-pg/src/sidecars/macros.rs", 401, "sqlx-dynamic-query"): "SQL-POLICY: PgIdent",
-    ("crates/storage-pg/src/verbs/compliance_erase.rs", 1092, "sqlx-dynamic-query"): "SQL-POLICY: PgIdent",
-    ("crates/storage-pg/src/verbs/compliance_erase.rs", 1221, "sqlx-dynamic-query"): "SQL-POLICY: PgIdent",
-    ("crates/storage-pg/src/verbs/consolidate/events.rs", 36, "sqlx-dynamic-query"): "SQL-POLICY: fixed-fragment",
-    ("crates/storage-pg/src/verbs/consolidate/events.rs", 87, "sqlx-dynamic-query"): "SQL-POLICY: fixed-fragment",
-    ("crates/storage-pg/src/verbs/consolidate/memories.rs", 66, "sqlx-dynamic-query"): "SQL-POLICY: fixed-fragment",
-    ("crates/storage-pg/src/verbs/consolidate/memories.rs", 136, "sqlx-dynamic-query"): "SQL-POLICY: fixed-fragment",
-    ("crates/storage-pg/src/verbs/query/lineage.rs", 153, "sqlx-dynamic-query"): "SQL-POLICY: fixed-fragment",
-    ("crates/storage-pg/src/verbs/query/lineage.rs", 175, "sqlx-dynamic-query"): "SQL-POLICY: fixed-fragment",
-    ("crates/storage-pg/src/verbs/query/lineage.rs", 209, "sqlx-dynamic-query"): "SQL-POLICY: fixed-fragment",
-    ("crates/storage-pg/src/verbs/query/rows.rs", 177, "sqlx-dynamic-query"): "SQL-POLICY: fixed-fragment",
-    ("crates/storage-pg/src/verbs/query/search.rs", 208, "sqlx-dynamic-query"): "SQL-POLICY: PgIdent",
-    ("crates/storage-pg/src/verbs/query/search.rs", 299, "sqlx-dynamic-query"): "SQL-POLICY: PgIdent",
-    ("crates/storage-pg/src/verbs/query/search.rs", 348, "sql-push-str"): "SQL-POLICY: fixed-fragment",
-    ("crates/storage-pg/src/verbs/query/search.rs", 420, "sql-push-str"): "SQL-POLICY: fixed-fragment",
-    ("crates/storage-pg/src/verbs/query/search.rs", 432, "sql-push-str"): "SQL-POLICY: PgIdent",
-    ("crates/storage-pg/src/verbs/query/search.rs", 513, "sql-push-str"): "SQL-POLICY: fixed-fragment",
-    ("crates/storage-pg/src/verbs/query/search.rs", 529, "sql-push-str"): "SQL-POLICY: fixed-fragment",
-    ("crates/storage-pg/tests/integration/fact_entity_ingest_pg.rs", 403, "sqlx-dynamic-query"): "SQL-POLICY: fixed-fragment",
-    ("flavors/code/src/ingest/pg_sidecars.rs", 33, "sqlx-dynamic-query"): "SQL-POLICY: fixed-fragment",
-    ("flavors/code/src/mcp/work_item_bundle.rs", 371, "sqlx-dynamic-query"): "SQL-POLICY: fixed-fragment",
-    # 2026-07-16: shifted 543 -> 545 by the EdgeReadRequest cursor/payload fields.
-    ("flavors/code/src/mcp/work_item_bundle.rs", 545, "sqlx-dynamic-query"): "SQL-POLICY: fixed-fragment",
-    ("flavors/code/tests/erase_repo_pg.rs", 117, "sqlx-dynamic-query"): "SQL-POLICY: fixed-fragment",
-}
+# Every reviewed dynamic-SQL site proves itself with an inline
+# `SQL-POLICY:` comment (see VALID_PROOFS) within four lines of the call.
+#
+# This used to be a `(path, line, kind) -> proof` allowlist, and it rotted:
+# by v0.0.7, 16 of its 23 entries matched no site at all. A stale pin is not
+# inert — `intrinsic_proof` returns True on a pin match *before* inspecting
+# any content, so a stale entry silently vouches for whatever dynamic SQL
+# later lands on that line number. The live entries were no better: any
+# insertion above them shifted the line and failed CI for an unrelated
+# change. Proofs are content-addressed now. Do not reintroduce line pins.
 
 
 @dataclass(frozen=True)
@@ -129,8 +110,6 @@ def safe_format_sql(path: Path, line: str, lines: list[str], index: int) -> bool
 
 def intrinsic_proof(path: Path, line: str, kind: str, lines: list[str], index: int) -> bool:
     rel = path.relative_to(ROOT).as_posix() if path.is_relative_to(ROOT) else path.as_posix()
-    if (rel, index + 1, kind) in ALLOWLISTED_SITE_LINES:
-        return True
     window = "\n".join(lines[max(0, index - 5) : min(len(lines), index + 6)])
     if rel == "crates/storage-pg/src/sidecars/sql.rs" and kind == "sql-push-str":
         return True

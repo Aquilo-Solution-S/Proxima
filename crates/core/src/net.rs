@@ -75,6 +75,21 @@ pub fn validate_endpoint_url(raw: &str, policy: EndpointUrlPolicy) -> Result<(),
     Err(EndpointUrlError::InsecureTransport)
 }
 
+/// Whether `raw` is an endpoint URL whose host denotes the local machine.
+///
+/// Callers use this to decide whether a *second* endpoint learned from the
+/// first may relax to plaintext: a loopback-hosted dependency may point at
+/// its own loopback sub-endpoints, but a remote one may not drag key or
+/// token resolution back onto the host. A URL that does not parse, or has no
+/// host, is not loopback.
+#[must_use]
+pub fn is_loopback_endpoint(raw: &str) -> bool {
+    raw.parse::<http::Uri>()
+        .ok()
+        .and_then(|uri| uri.host().map(is_loopback_host))
+        .unwrap_or(false)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

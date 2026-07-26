@@ -25,39 +25,54 @@ product UX or model loop.
 
 ## Five-Minute Local Start
 
+Fully local: your machine, your Postgres, your embedding model. No hosted
+service and no account anywhere.
+
 ```sh
+# 1. Postgres with pgvector
 docker compose -f docker-compose.dev.yml up -d --wait postgres
+
+# 2. A local OIDC issuer. Proxima has exactly one auth path — an RS256
+#    bearer verified against a JWKS — so local means a local *issuer*,
+#    not a bypass. This prints the env and client config to paste.
+cargo run -p proxima-dev-idp
+
+# 3. In another shell, paste what step 2 printed, then:
 export DATABASE_URL=postgres://proxima:proxima@localhost:5434/proxima
-export PROXIMA_PUBLIC_URL=http://127.0.0.1:31415
-export PROXIMA_OIDC_ISSUER=https://idp.example.test
-export PROXIMA_OIDC_AUDIENCE=proxima-mcp
-export PROXIMA_OIDC_SUBJECT_MAP=sub-from-idp:<user-uuid>
-cargo run -p proxima-mcp
+cargo run -p proxima-mcp --features code
 ```
 
-The dev compose file exposes Postgres on `localhost:5434` with pgvector.
-The binary default is `postgres://postgres@localhost/proxima_dev`; set
-`DATABASE_URL` or pass `--database-url` when using compose.
+Headless MCP server at `http://127.0.0.1:31415/mcp`.
 
-Headless MCP server at `http://127.0.0.1:31415/mcp`. Agent-harness users use
-[`apps/proxima-mcp`](apps/proxima-mcp) or embed
-[`crates/mcp-server`](crates/mcp-server). See
-[`docs/getting-started/local-dev.md`](docs/getting-started/local-dev.md) for
-the full local walkthrough.
+Semantic search needs an embedding model. Any OpenAI-compatible
+`/embeddings` endpoint works, including a local one — no API key required:
+
+```sh
+ollama pull qwen3-embedding:0.6b     # 1024-dim, matches the vector column
+export PROXIMA_EMBED_BASE_URL=http://127.0.0.1:11434/v1
+export PROXIMA_EMBED_MODEL=qwen3-embedding:0.6b
+```
+
+Without an embedding endpoint the server starts in degraded mode: lexical
+search works, semantic and hybrid report the missing capability.
+
+See [`docs/getting-started/local-dev.md`](docs/getting-started/local-dev.md)
+for the full walkthrough, and
+[`docs/10-configuration.md`](docs/10-configuration.md) for hosted embedding
+providers.
 
 ## Connecting Your Coding Agent To Proxima
 
-Start the MCP server:
+`cargo run -p proxima-dev-idp` prints a ready-to-paste command. For Claude
+Code it is:
 
 ```sh
-cargo run -p proxima-mcp
+claude mcp add --transport http proxima http://127.0.0.1:31415/mcp \
+  --header "Authorization: Bearer <token-from-dev-idp>" \
+  --header "X-Proxima-Owner: personal:<user-id-from-dev-idp>"
 ```
 
-Configure `PROXIMA_PUBLIC_URL`, `PROXIMA_OIDC_ISSUER`,
-`PROXIMA_OIDC_AUDIENCE`, and an issuer-bound subject map before starting the
-server.
-
-Client config:
+Equivalent JSON, for clients that take a config file:
 
 ```json
 {
@@ -80,9 +95,9 @@ require `PROXIMA_EXPOSE_NETWORK=true` plus the auth/origin/host gates in
 [`docs/10-configuration.md`](docs/10-configuration.md) and
 [`docs/15-deployment.md`](docs/15-deployment.md).
 
-```sh
-cargo check --workspace
-```
+In production, replace `dev-idp` with your real issuer — Entra, Zitadel,
+Auth0, anything serving standard JWKS discovery. Nothing else changes: the
+server verifies both the same way.
 
 Agent-specific setup and copy/paste prompts live in
 [`docs/getting-started/connect-agent.md`](docs/getting-started/connect-agent.md),

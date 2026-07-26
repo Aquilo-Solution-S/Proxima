@@ -400,6 +400,7 @@ async fn create_code_sidecars(pg: &PgStorage) -> Result<(), sqlx::Error> {
             message text NOT NULL
         )",
     ] {
+        // SQL-POLICY: fixed-fragment — `sql` iterates the literal DDL array above.
         sqlx::query(sql).execute(pg.pool_for_tests()).await?;
     }
     Ok(())
