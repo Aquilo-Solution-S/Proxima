@@ -28,7 +28,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       # actions/checkout@v7
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       # rust-toolchain.toml pins the channel (1.96.0) + components (rustfmt, clippy).
       # Swatinem/rust-cache@v2.9.1
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
@@ -48,7 +48,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       # actions/checkout@v7
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - name: install docs dependencies
         run: python3 -m pip install -r requirements-docs.txt
       - name: mkdocs strict build
@@ -86,7 +86,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       # actions/checkout@v7
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       # cargo-deny-action v2.0.20 pinned by commit SHA (bundles cargo-deny 0.19.8,
       # the schema deny.toml targets). Dependabot's github-actions ecosystem keeps
       # this current via reviewable PRs.
@@ -99,7 +99,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       # actions/checkout@v7
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       # Build only, never push. Dependabot bumps the pinned base-image digests
       # weekly (see .github/dependabot.yml); without this job those bumps land
       # with zero validation and the first person to discover a broken image is
@@ -167,7 +167,7 @@ jobs:
       AWS_SECRET_ACCESS_KEY: proxima-dev
     steps:
       # actions/checkout@v7
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           # self_ingestion_pg shallow-clones the workspace and ingests its
           # most-recent commits; a single-commit CI checkout would starve
