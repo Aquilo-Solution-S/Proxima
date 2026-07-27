@@ -2120,3 +2120,162 @@ async fn embedding_job_count(
     .fetch_one(pool)
     .await
 }
+
+/// A Fact can cite a page of an uploaded document, through the shipped
+/// schemas alone.
+///
+/// This was impossible before `core/uploaded-blob-whole-v1` and
+/// `core/uploaded-blob-page-span-v1` existed. `core/uploaded-blob-v1` was a
+/// registered cited object with no registered mapping naming it, and
+/// `authorize_fact_with_citation` requires the mapping's
+/// `cited_object_schema()` to match — so there was no argument a caller
+/// could pass that attached a Fact to an uploaded blob. Every other test in
+/// this file that cites anything defines its own schemas to do it; this one
+/// deliberately uses no test-local types.
+#[tokio::test]
+async fn a_fact_can_cite_a_page_of_an_uploaded_document() -> Result<(), Box<dyn std::error::Error>>
+{
+    let (pg, db_name) = fresh_pg().await;
+    let frozen = Arc::new(FlavorRegistry::new().freeze_or_panic_for_tests());
+    let owner = nil_owner();
+
+    let blob = json!({
+        "content_hash": vec![7u8; 32],
+        "bucket": "proxima-cited",
+        "object_key": "objects/owner/core/uploaded-blob-v1/deadbeef",
+        "sha256": vec![9u8; 32],
+        "byte_len": 4_096,
+        "mime": "application/pdf",
+        "filename": "handbuch.pdf",
+        "etag": null,
+        "uploaded_at": "2026-07-27T00:00:00Z",
+    });
+
+    let cited = call_tool(
+        &pg,
+        &owner,
+        &frozen,
+        author_ctx(),
+        "core_remember",
+        json!({
+            "title": "Mindestbreite einer Tür",
+            "body": "Die lichte Durchgangsbreite beträgt mindestens 90 cm.",
+            "tags": ["din18040"],
+            "idempotency_key": "page-span-cited-note",
+            "citation": {
+                "object_schema_id": proxima_core::UPLOADED_BLOB_SCHEMA_ID,
+                "object_schema_version": 1,
+                "object_payload": blob.clone(),
+                "mapping_schema_id": proxima_core::UPLOADED_BLOB_PAGE_SPAN_SCHEMA_ID,
+                "mapping_schema_version": 1,
+                "mapping_payload": {"page_from": 47, "page_to": 47},
+            }
+        }),
+    )
+    .await?;
+
+    let memory_id = resolve_memory(cited["handle"].as_str().expect("handle"))?.into_inner();
+    let span: (i32, i32, Option<i32>, Option<i32>) = sqlx::query_as(
+        "SELECT s.page_from, s.page_to, s.char_range_start, s.char_range_end
+           FROM proxima_core.memories m
+           JOIN proxima_core.citation_uploaded_blob_page_span_v1 s
+             ON s.citation_mapping_id = m.citation_mapping_id
+          WHERE m.memory_id = $1",
+    )
+    .bind(memory_id)
+    .fetch_one(pg.pool_for_tests())
+    .await?;
+    assert_eq!(
+        span,
+        (47, 47, None, None),
+        "the page span did not round-trip"
+    );
+
+    // Re-ingesting the same document under a different page reuses the one
+    // cited object: that is what makes a book one artefact and its pages N
+    // citations, rather than N copies of the book.
+    call_tool(
+        &pg,
+        &owner,
+        &frozen,
+        author_ctx(),
+        "core_remember",
+        json!({
+            "title": "Bewegungsfläche vor der Tür",
+            "body": "Vor der Tür ist eine Bewegungsfläche vorzusehen.",
+            "tags": ["din18040"],
+            "idempotency_key": "page-span-cited-note-2",
+            "citation": {
+                "object_schema_id": proxima_core::UPLOADED_BLOB_SCHEMA_ID,
+                "object_schema_version": 1,
+                "object_payload": blob,
+                "mapping_schema_id": proxima_core::UPLOADED_BLOB_PAGE_SPAN_SCHEMA_ID,
+                "mapping_schema_version": 1,
+                "mapping_payload": {"page_from": 48, "page_to": 49,
+                                    "char_range_start": 0, "char_range_end": 120},
+            }
+        }),
+    )
+    .await?;
+
+    let objects = count_rows(pg.pool_for_tests(), "proxima_core.cited_objects").await?;
+    assert_eq!(objects, 1, "the same document became two cited objects");
+    let mappings = count_rows(pg.pool_for_tests(), "proxima_core.citation_mappings").await?;
+    assert_eq!(mappings, 2, "each page needs its own mapping");
+
+    drop(pg);
+    drop_db(&db_name).await?;
+    Ok(())
+}
+
+/// The sidecar's constraints, not just the Rust helper, reject a malformed
+/// span. A client that writes the row by any other path gets the same
+/// answer.
+#[tokio::test]
+async fn a_zero_page_span_is_rejected_by_storage() -> Result<(), Box<dyn std::error::Error>> {
+    let (pg, db_name) = fresh_pg().await;
+    let frozen = Arc::new(FlavorRegistry::new().freeze_or_panic_for_tests());
+    let owner = nil_owner();
+
+    let result = call_tool(
+        &pg,
+        &owner,
+        &frozen,
+        author_ctx(),
+        "core_remember",
+        json!({
+            "title": "Ungültige Seitenangabe",
+            "body": "Seite 0 gibt es nicht.",
+            "tags": [],
+            "idempotency_key": "page-span-zero",
+            "citation": {
+                "object_schema_id": proxima_core::UPLOADED_BLOB_SCHEMA_ID,
+                "object_schema_version": 1,
+                "object_payload": {
+                    "content_hash": vec![1u8; 32],
+                    "bucket": "b", "object_key": "k",
+                    "sha256": vec![2u8; 32], "byte_len": 1,
+                    "mime": "application/pdf", "filename": "x.pdf",
+                    "etag": null, "uploaded_at": "2026-07-27T00:00:00Z",
+                },
+                "mapping_schema_id": proxima_core::UPLOADED_BLOB_PAGE_SPAN_SCHEMA_ID,
+                "mapping_schema_version": 1,
+                "mapping_payload": {"page_from": 0, "page_to": 0},
+            }
+        }),
+    )
+    .await;
+    let err = format!("{:?}", result.as_ref().err());
+    assert!(result.is_err(), "page 0 was accepted");
+    assert!(
+        err.contains("citation_blob_page_span_pages_chk"),
+        "rejected for the wrong reason: {err}"
+    );
+
+    let mappings = count_rows(pg.pool_for_tests(), "proxima_core.citation_mappings").await?;
+    assert_eq!(mappings, 0, "a rejected span left a mapping row behind");
+
+    drop(pg);
+    drop_db(&db_name).await?;
+    Ok(())
+}

@@ -42,6 +42,15 @@ impl Default for FlavorRegistry {
         registry
             .try_add_cited_object_schema::<crate::citations::UploadedBlobPayload>()
             .expect("built-in cited-object schema registration must be valid");
+        // Without these two, `core/uploaded-blob-v1` is a cited object no
+        // Fact can reach: a mapping is the only path, and the engine
+        // requires one whose `cited_object_schema()` names it.
+        registry
+            .try_add_citation_mapping_schema::<crate::citations::UploadedBlobWholeV1>()
+            .expect("built-in whole-blob citation-mapping registration must be valid");
+        registry
+            .try_add_citation_mapping_schema::<crate::citations::UploadedBlobPageSpanV1>()
+            .expect("built-in page-span citation-mapping registration must be valid");
         registry
             .try_add_fact_schema::<crate::verbs::persist_mcp_call::McpCallLoggedV1>()
             .expect("built-in MCP call fact schema registration must be valid");
