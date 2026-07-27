@@ -875,6 +875,56 @@ bytes per chunk: Proxima's own 620-file tree enqueues 4,083 jobs.
 Rust embedders: `proxima_code::repos::erase_repo` lost its unused `schemas`
 parameter.
 
+## 26. v0.0.7: lexical ranking changed, and two small surface changes
+
+**Lexical ordering will move.** `LEAST(ts_rank_cd(v, q) * 10.0, 1.0)` was
+1.0 for every row that matched: nothing in this schema assigns A/B/C/D lexeme
+weights, every document is therefore weight D, and `ts_rank_cd` for weight D
+starts at exactly 0.1. Measured on an indexed corpus, 3,170 of 3,170 matching
+rows saturated. Within a band nothing was ranked and the order was whatever
+the plan emitted. Cover density is now normalised with flag 32, so it varies.
+
+Expect `core_search_memories` in `lexical` mode — and any `hybrid` search
+that reports `degraded_to_lexical: true` — to return the same *set* in a
+different, better order. Nothing about the schema or the plan shape changed;
+no re-index is required.
+
+`proxima-code_search_chunks` additionally ranks a query's structured
+identifiers on their own, and prefers a chunk a grammar parsed
+(`chunk_type <> 'file'`) over a line window of a file no grammar could read.
+A query with no identifiers in it is unaffected.
+
+**Two behaviour changes worth checking a client against:**
+
+- `proxima-code_search_chunks` now **rejects `limit: 0`** with
+  `InvalidInput` instead of returning an empty `matches` array that reads
+  exactly like "nothing matched". `snippet_max_chars: 0` was already
+  rejected. Callers that passed 0 to mean "just tell me if anything matches"
+  must pass 1.
+- `proxima-code_open_file_revision` reports `text_line_range` as the span it
+  **actually returned**. When `max_text_bytes` truncates the window, the
+  reported end is now the last line sent rather than the last line selected.
+  A caller that used the old value to place the snippet in the file was
+  wrong about every line after the cut.
+
+**Already-terminal embedding jobs are not recovered by this release.** A
+transient upstream failure that Ollama reports as HTTP 400 used to be filed
+as a permanently rejected input; that is fixed going forward, but rows
+already marked `failed` with the permanent marker stay terminal because
+`reconcile_embeddings` refuses to requeue them by design. To re-offer them
+after upgrading, clear the marker and let `maintain-embeddings` pick them up:
+
+```sql
+UPDATE proxima_core.embedding_jobs
+   SET status = 'pending', attempts = 0, last_error = NULL,
+       next_attempt_at = now()
+ WHERE status = 'failed'
+   AND last_error LIKE '%: EOF%';
+```
+
+Widen the `last_error` filter only to messages you recognise as transport
+failures; a genuinely over-limit input should stay terminal.
+
 ## Checks before calling an upgrade done
 
 ```sh
