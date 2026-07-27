@@ -437,6 +437,84 @@ async fn search_chunks_answers_a_natural_language_question()
     Ok(())
 }
 
+/// A bug report is prose, and prose matches prose. Measured on the `knip`
+/// repository, `search_chunks` answered 5 of 17 real bug reports where plain
+/// ripgrep answered 8: every miss returned Markdown from the docs tree, and
+/// in every case the file the real fix touched *was* indexed and *did* match
+/// the query — it was outranked, because `ts_rank` has no IDF and a doc
+/// matching twenty ordinary English words beats the one source chunk holding
+/// the identifier the report names.
+///
+/// Two things fix it and this pins both: the identifier is ranked on its own
+/// (`distinctive_terms`), and a chunk a grammar parsed outranks a line window
+/// of a file no grammar could read.
+#[tokio::test]
+async fn search_chunks_ranks_parsed_code_over_prose_that_shares_more_words()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fixture = TestDb::fresh().await;
+    let owner = owner_fixture();
+    let registry = registry_for_mcp();
+    let temp = TempDir::new()?;
+
+    // The doc repeats every ordinary word of the query and never names the
+    // identifier. The source file names the identifier once.
+    init_git_repo_with_files(
+        temp.path(),
+        &[
+            (
+                "docs/entries.md",
+                "# Entry configuration\n\n\
+                 The config entry resolution returns the entry the config declares.\n\
+                 When the config is missing, entry resolution returns a default entry.\n\
+                 A missing config entry means the resolution returns nothing at all.\n\
+                 Entry resolution reads the config, resolves each entry, and returns\n\
+                 the resolved entry list when the config declares entries.\n",
+            ),
+            (
+                "src/resolver.rs",
+                "pub fn resolve_from_ast(entry: &str) -> Option<String> {\n\
+                 \x20   Some(entry.to_string())\n\
+                 }\n",
+            ),
+        ],
+    )?;
+
+    let registered = run_tool::<CodeRegisterRepoTool>(
+        ctx(fixture.pg.clone(), owner, registry.clone()),
+        json!({ "path": temp.path().to_string_lossy(), "display_name": "Ranking Repo" }),
+    )
+    .await?;
+    let repo_handle = registered["repo"]["repo_id"].as_str().expect("repo_id");
+    run_tool::<CodeIngestHeadSnapshotTool>(
+        ctx(fixture.pg.clone(), owner, registry.clone()),
+        json!({ "repo_handle": repo_handle }),
+    )
+    .await?;
+
+    let found = run_tool::<CodeSearchChunksTool>(
+        ctx(fixture.pg.clone(), owner, registry),
+        json!({
+            "query": "resolve_from_ast returns the wrong entry when the config is missing",
+            "limit": 10,
+            "include_calls": false,
+        }),
+    )
+    .await?;
+    let matches = found["matches"].as_array().expect("matches");
+    assert!(!matches.is_empty(), "query must return something");
+    assert_eq!(
+        matches[0]["file_path"],
+        "src/resolver.rs",
+        "the chunk naming the identifier must outrank the doc that repeats \
+         every other word of the query; got {:?}",
+        matches
+            .iter()
+            .map(|m| m["file_path"].as_str().unwrap_or_default())
+            .collect::<Vec<_>>()
+    );
+    Ok(())
+}
+
 #[tokio::test]
 async fn search_chunks_returns_only_head_per_nk() -> Result<(), Box<dyn std::error::Error>> {
     let fixture = TestDb::fresh().await;
@@ -1418,12 +1496,21 @@ fn init_git_repo_with_commit(
     relative_path: &str,
     contents: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    init_git_repo_with_files(repo, &[(relative_path, contents)])
+}
+
+fn init_git_repo_with_files(
+    repo: &std::path::Path,
+    files: &[(&str, &str)],
+) -> Result<(), Box<dyn std::error::Error>> {
     run_git(repo, &["init"])?;
-    let file_path = repo.join(relative_path);
-    if let Some(parent) = file_path.parent() {
-        std::fs::create_dir_all(parent)?;
+    for (relative_path, contents) in files {
+        let file_path = repo.join(relative_path);
+        if let Some(parent) = file_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(&file_path, contents)?;
     }
-    std::fs::write(&file_path, contents)?;
     run_git(repo, &["add", "."])?;
     run_git(
         repo,

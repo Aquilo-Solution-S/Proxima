@@ -69,6 +69,57 @@ const DEFAULT_SNIPPET_MAX_CHARS: usize = 2_000;
 /// `body_max_chars`. Covers the p99 chunk (4,488 characters).
 const MAX_SNIPPET_MAX_CHARS: usize = 8_000;
 
+/// Most structured identifiers lifted out of one query. Bounds the size of
+/// the derived tsquery; a query naming more than this many distinct
+/// identifiers is already well served by the first twelve.
+const MAX_DISTINCTIVE_TERMS: usize = 12;
+
+/// Shortest token worth treating as an identifier. `id` and `fs` carry no
+/// selectivity against a code corpus.
+const MIN_DISTINCTIVE_TERM_LEN: usize = 3;
+
+/// The structured identifiers in `query`, space-joined, empty when there are
+/// none.
+///
+/// A token is structured when it carries internal capitalisation, a digit, or
+/// an underscore — the shape of `getModuleScriptSources`, `MAX_CHUNK_CHARS`,
+/// `utf8`. Ordinary prose never has it, so a plain-English question yields an
+/// empty string, the rare bands below stay switched off, and such queries rank
+/// exactly as they did before this function existed.
+///
+/// Shape, deliberately, and not corpus rarity. Rarity was measured on the knip
+/// corpus — keep only terms whose document frequency is under a threshold,
+/// computed exactly — and ranked *worse* than this rule (MRR 0.086 against
+/// 0.142). The rare tokens in a bug report are version numbers and stack-trace
+/// noise; the diagnostic ones are the identifiers, and plenty of those are
+/// common. Shape selects for "is an identifier", which is the question a code
+/// search is actually asking.
+fn distinctive_terms(query: &str) -> String {
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut out: Vec<&str> = Vec::new();
+    for token in query.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_')) {
+        if token.len() < MIN_DISTINCTIVE_TERM_LEN
+            || !token.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_')
+        {
+            continue;
+        }
+        let structured = token
+            .chars()
+            .skip(1)
+            .any(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_');
+        if !structured {
+            continue;
+        }
+        if seen.insert(token.to_ascii_lowercase()) {
+            out.push(token);
+            if out.len() == MAX_DISTINCTIVE_TERMS {
+                break;
+            }
+        }
+    }
+    out.join(" ")
+}
+
 /// Resolve the requested snippet budget against the ceiling.
 fn effective_snippet_max_chars(requested: Option<usize>) -> usize {
     requested.map_or(DEFAULT_SNIPPET_MAX_CHARS, |max| {
@@ -174,11 +225,27 @@ impl Tool for CodeSearchChunksTool {
             // an expression. `code_chunk_search_tsv_matches_the_projection`
             // pins the column against that definition.
             //
-            // Three disjoint score bands, so match *tier* dominates rank:
+            // Four disjoint score bands, so match *tier* dominates rank:
             //
-            //   strict  [2.0, 3.0]   every content lexeme co-occurs
-            //   rescue  [1.0, 1.5]   any content lexeme matched
-            //   neither  0.0         reached only via the substring arms
+            //   strict    [4.0, 4.9]   every content lexeme co-occurs
+            //   rare-all  [3.0, 3.9]   every structured identifier co-occurs
+            //   rare-any  [2.0, 2.9]   some structured identifier matched
+            //   rescue    [1.0, 1.9]   any content lexeme matched
+            //   neither    0.0         reached only via the substring arms
+            //
+            // In-band rank contributes at most 0.6 and the parsed-chunk
+            // preference 0.3, so 0.9 < the 1.0 band gap: no amount of
+            // in-band rank lets a weaker tier overtake a stronger one.
+            //
+            // The two rare bands exist because `ts_rank` has no IDF. Against
+            // the knip corpus a Markdown chunk matching twenty ordinary
+            // English words outranks the one TypeScript chunk holding the
+            // identifier the report actually names, and the substring arms
+            // below cannot help: they match `%<the whole query>%`, which never
+            // fires for a sentence. Ranking a bug report's identifiers on
+            // their own recovers that. `distinctive_terms` returns empty for
+            // a query with no identifiers, leaving both bands NULL and prose
+            // questions ranked exactly as before.
             //
             // The rescue arm is what makes a question answerable at all.
             // `websearch_to_tsquery` is AND-semantics, so a query phrased as a
@@ -210,18 +277,33 @@ impl Tool for CodeSearchChunksTool {
                                     plainto_tsquery('english'::regconfig,
                                         proxima_core.lexical_scrub($1))::text,
                                     ' & ', ' | '),
-                                '')::tsquery AS any_tsq
+                                '')::tsquery AS any_tsq,
+                            websearch_to_tsquery('english'::regconfig,
+                                proxima_core.lexical_scrub(NULLIF($7, ''))) AS rare_all_tsq,
+                            NULLIF(
+                                replace(
+                                    plainto_tsquery('english'::regconfig,
+                                        proxima_core.lexical_scrub(NULLIF($7, '')))::text,
+                                    ' & ', ' | '),
+                                '')::tsquery AS rare_any_tsq
                  )
                  SELECT c.memory_id,
                         (
                             GREATEST(
                                 CASE WHEN c.search_tsv @@ q.tsq
-                                     THEN 2.0 + LEAST(ts_rank_cd(c.search_tsv, q.tsq) * 10.0, 1.0)
+                                     THEN 4.0 + LEAST(ts_rank_cd(c.search_tsv, q.tsq) * 10.0, 1.0) * 0.6
+                                     ELSE 0.0 END,
+                                CASE WHEN q.rare_all_tsq IS NOT NULL AND c.search_tsv @@ q.rare_all_tsq
+                                     THEN 3.0 + LEAST(ts_rank(c.search_tsv, q.rare_all_tsq, 1|32) * 100.0, 1.0) * 0.6
+                                     ELSE 0.0 END,
+                                CASE WHEN q.rare_any_tsq IS NOT NULL AND c.search_tsv @@ q.rare_any_tsq
+                                     THEN 2.0 + LEAST(ts_rank(c.search_tsv, q.rare_any_tsq, 1|32) * 100.0, 1.0) * 0.6
                                      ELSE 0.0 END,
                                 CASE WHEN q.any_tsq IS NOT NULL AND c.search_tsv @@ q.any_tsq
-                                     THEN 1.0 + LEAST(ts_rank(c.search_tsv, q.any_tsq, 1|32) * 100.0, 1.0) * 0.5
+                                     THEN 1.0 + LEAST(ts_rank(c.search_tsv, q.any_tsq, 1|32) * 100.0, 1.0) * 0.6
                                      ELSE 0.0 END
                             )
+                            + CASE WHEN c.chunk_type <> 'file' THEN 0.3 ELSE 0.0 END
                             + CASE WHEN lower(c.file_path) = lower($1) THEN 10.0 ELSE 0.0 END
                             + CASE WHEN lower(c.file_path) LIKE $4 ESCAPE '\\' THEN 6.0 ELSE 0.0 END
                             + CASE WHEN lower(c.text) LIKE $4 ESCAPE '\\' THEN 4.0 ELSE 0.0 END
@@ -234,6 +316,7 @@ impl Tool for CodeSearchChunksTool {
                     AND (
                         c.search_tsv @@ q.tsq
                         OR (q.any_tsq IS NOT NULL AND c.search_tsv @@ q.any_tsq)
+                        OR (q.rare_any_tsq IS NOT NULL AND c.search_tsv @@ q.rare_any_tsq)
                         OR lower(c.file_path) LIKE $4 ESCAPE '\\'
                         OR lower(c.text) LIKE $4 ESCAPE '\\'
                     )
@@ -246,6 +329,7 @@ impl Tool for CodeSearchChunksTool {
             .bind(exact_pattern)
             .bind(args.chunk_type.as_deref())
             .bind(candidate_limit)
+            .bind(distinctive_terms(query))
             .fetch_all(pool.pool())
             .await
             .map_err(map_storage)?;
@@ -507,4 +591,74 @@ struct CallPayloadRow {
     edge_id: uuid::Uuid,
     callee_name: String,
     is_dynamic: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{MAX_DISTINCTIVE_TERMS, distinctive_terms};
+
+    /// The property the rare bands depend on: a question with no identifiers
+    /// must produce no terms, so `rare_all_tsq`/`rare_any_tsq` bind NULL and
+    /// the query ranks exactly as it did before those bands existed.
+    #[test]
+    fn prose_questions_yield_no_distinctive_terms() {
+        for q in [
+            "how does the code chunker decide how big a chunk should be",
+            "where is an input that the embedding provider rejected as too long split",
+            "may a self hosted issuer serve its key set over plain http on loopback",
+            "Fix Windows progress rendering",
+        ] {
+            assert_eq!(distinctive_terms(q), "", "query: {q}");
+        }
+    }
+
+    #[test]
+    fn identifier_shapes_are_picked_up() {
+        assert_eq!(
+            distinctive_terms("the getModuleScriptSources helper only detects src tags"),
+            "getModuleScriptSources"
+        );
+        assert_eq!(
+            distinctive_terms("MAX_CHUNK_CHARS is the hard upper bound"),
+            "MAX_CHUNK_CHARS"
+        );
+        assert_eq!(distinctive_terms("decode as utf8 please"), "utf8");
+    }
+
+    /// Punctuation is a separator, so a scoped package name contributes its
+    /// parts and `resolveFromAST` survives the surrounding backticks.
+    #[test]
+    fn punctuation_separates_without_swallowing_identifiers() {
+        assert_eq!(
+            distinctive_terms("`resolveFromAST` broke for @tailwindcss/postcss v4.1"),
+            "resolveFromAST"
+        );
+    }
+
+    #[test]
+    fn terms_are_deduplicated_case_insensitively_and_ordered() {
+        assert_eq!(
+            distinctive_terms("parseURL then PARSEURL then parseUrl and readFile2"),
+            "parseURL readFile2"
+        );
+    }
+
+    #[test]
+    fn short_and_unstructured_tokens_are_rejected() {
+        // `id` is too short, `fs` too short, `plugin` unstructured, `A1` too
+        // short even though structured.
+        assert_eq!(distinctive_terms("id fs plugin A1 the config"), "");
+    }
+
+    #[test]
+    fn term_count_is_bounded() {
+        let query = (0..40)
+            .map(|i| format!("ident{i}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert_eq!(
+            distinctive_terms(&query).split_whitespace().count(),
+            MAX_DISTINCTIVE_TERMS
+        );
+    }
 }
