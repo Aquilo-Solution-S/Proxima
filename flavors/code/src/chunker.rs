@@ -53,11 +53,34 @@ pub struct Chunk {
 
 /// Slice a single blob into chunks. Returns empty when:
 /// - blob exceeds `MAX_BLOB_BYTES`,
-/// - blob isn't valid UTF-8 (heuristic for "binary"),
+/// - blob contains a `NUL` byte (heuristic for "binary"),
+/// - blob isn't valid UTF-8 (also "binary"),
 /// - blob is empty.
+///
+/// `NUL` is checked separately from the UTF-8 test because `U+0000` *is*
+/// valid UTF-8. A file holding one therefore passed the binary heuristic,
+/// was chunked, and its text reached Postgres — which cannot store `NUL` in
+/// a `text` column and fails the statement:
+///
+/// ```text
+/// invalid byte sequence for encoding "UTF8": 0x00
+/// ```
+///
+/// That killed the **whole HEAD snapshot**, not just the offending file, so
+/// a repository with one such file among thousands could not be indexed at
+/// all. Observed exactly that way: a single stray `NUL` in one source file
+/// of this repository failed `self_ingestion_pg` outright.
+///
+/// Treating it as binary is not a workaround, it is the rule `git` itself
+/// uses to classify a file as binary — and it keeps a value Postgres cannot
+/// store from being constructed at all, rather than discovering that at the
+/// insert.
 #[must_use]
 pub fn chunk_blob(file_path: &str, content: &[u8]) -> Vec<Chunk> {
     if content.len() > MAX_BLOB_BYTES {
+        return Vec::new();
+    }
+    if content.contains(&0) {
         return Vec::new();
     }
     let Ok(text) = std::str::from_utf8(content) else {
@@ -397,6 +420,51 @@ mod tests {
     fn binary_input_skipped() {
         let bytes = vec![0xff, 0xfe, 0x00, 0x01, 0x02];
         assert!(chunk_blob("a.bin", &bytes).is_empty());
+    }
+
+    /// `U+0000` is valid UTF-8, so "is it UTF-8" does not classify these as
+    /// binary — and the chunk text would reach a Postgres `text` column,
+    /// which cannot hold a NUL and fails the whole snapshot with
+    /// `invalid byte sequence for encoding "UTF8": 0x00`.
+    ///
+    /// Each case is valid UTF-8 and named after how it arises in a real
+    /// tree: a source file with a stray NUL, a UTF-16 file `git` did not
+    /// mark binary, and a fixture whose NUL sits past any fixed-size sniff
+    /// window.
+    #[test]
+    fn a_nul_makes_a_blob_binary_even_though_it_is_valid_utf8() {
+        for (label, bytes) in [
+            (
+                "a source file with a stray NUL",
+                b"pub fn main() {\0}\n".to_vec(),
+            ),
+            (
+                "UTF-16LE ASCII, alternating NULs",
+                b"p\0u\0b\0 \0f\0n\0".to_vec(),
+            ),
+            ("a NUL past a fixed sniff window", {
+                let mut bytes = vec![b'x'; 9000];
+                bytes.push(0);
+                bytes
+            }),
+        ] {
+            assert!(
+                std::str::from_utf8(&bytes).is_ok(),
+                "{label}: the premise is that this is valid UTF-8"
+            );
+            assert!(
+                chunk_blob("a.rs", &bytes).is_empty(),
+                "{label}: must be treated as binary"
+            );
+        }
+    }
+
+    /// The check must not reject ordinary control characters. Tabs, CRs and
+    /// form feeds are common in real source and Postgres stores them fine.
+    #[test]
+    fn other_control_characters_are_still_chunked() {
+        let text = b"pub fn main() {\r\n\t\x0clet x = 1;\r\n}\n".to_vec();
+        assert!(!chunk_blob("a.rs", &text).is_empty());
     }
 
     #[test]

@@ -515,6 +515,76 @@ async fn search_chunks_ranks_parsed_code_over_prose_that_shares_more_words()
     Ok(())
 }
 
+/// One file carrying a NUL must not fail the whole snapshot.
+///
+/// `U+0000` is valid UTF-8, so the chunker's "is it UTF-8" binary heuristic
+/// let such a file through, and its chunk text reached a Postgres `text`
+/// column — which cannot store a NUL:
+///
+/// ```text
+/// invalid byte sequence for encoding "UTF8": 0x00
+/// ```
+///
+/// That aborts the entire `ingest_head_snapshot`, so a repository with one
+/// such file among thousands could not be indexed at all. It is not a
+/// contrived input: UTF-16 files git has not marked binary, `.po` files and
+/// test fixtures all carry NULs, and this was found when a stray one in a
+/// single source file of this repository failed `self_ingestion_pg`.
+///
+/// The file is skipped as binary — like any other binary file — and every
+/// other file in the tree still indexes.
+#[tokio::test]
+async fn a_file_containing_nul_is_skipped_not_fatal() -> Result<(), Box<dyn std::error::Error>> {
+    let fixture = TestDb::fresh().await;
+    let owner = owner_fixture();
+    let registry = registry_for_mcp();
+    let temp = TempDir::new()?;
+
+    init_git_repo_with_files(
+        temp.path(),
+        &[
+            ("src/good.rs", "pub fn good() -> u32 {\n    7\n}\n"),
+            // Valid UTF-8, and unstorable as Postgres `text`.
+            ("src/has_nul.rs", "pub fn bad() {\u{0}}\n"),
+        ],
+    )?;
+
+    let registered = run_tool::<CodeRegisterRepoTool>(
+        ctx(fixture.pg.clone(), owner, registry.clone()),
+        json!({ "path": temp.path().to_string_lossy(), "display_name": "Nul Repo" }),
+    )
+    .await?;
+    let repo_handle = registered["repo"]["repo_id"].as_str().expect("repo_id");
+
+    // The whole point: this call used to fail outright.
+    run_tool::<CodeIngestHeadSnapshotTool>(
+        ctx(fixture.pg.clone(), owner, registry.clone()),
+        json!({ "repo_handle": repo_handle }),
+    )
+    .await?;
+
+    let found = run_tool::<CodeSearchChunksTool>(
+        ctx(fixture.pg.clone(), owner, registry),
+        json!({ "query": "good", "repo_handle": repo_handle, "include_calls": false }),
+    )
+    .await?;
+    let paths = found["matches"]
+        .as_array()
+        .expect("matches")
+        .iter()
+        .map(|m| m["file_path"].as_str().unwrap_or_default().to_string())
+        .collect::<Vec<_>>();
+    assert!(
+        paths.iter().any(|p| p == "src/good.rs"),
+        "the rest of the tree must still be indexed; got {paths:?}"
+    );
+    assert!(
+        !paths.iter().any(|p| p == "src/has_nul.rs"),
+        "the NUL-bearing file is binary and must not be chunked; got {paths:?}"
+    );
+    Ok(())
+}
+
 /// Switching back to a branch that was already indexed must not break ingest.
 ///
 /// A file revision's receipt key is (repo, path, commit, content hash, state)
