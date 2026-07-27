@@ -12,12 +12,36 @@ use super::CodeToolCtxExt;
 use super::code_store;
 use super::sql::{map_storage, resolve_repo_identifier};
 
+/// How a chunk search ranks.
+///
+/// Mirrors `core_search_memories`' `mode` argument, including its behaviour
+/// when no embedding client is configured: `hybrid` degrades to `lexical`
+/// and says so in `degraded_to_lexical`, `semantic` fails rather than
+/// silently answering a different question, `lexical` never needed one.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum ChunkSearchMode {
+    /// Full-text bands plus the exact path/substring arms. Never needs an
+    /// embedding client.
+    Lexical,
+    /// Nearest neighbours of the query embedding only.
+    Semantic,
+    /// Both, fused by reciprocal rank. The default.
+    #[default]
+    Hybrid,
+}
+
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct CodeSearchChunksArgs {
     #[schemars(
         description = "Query string for code chunk search, matched against file paths and chunk text. Takes an identifier or path for exact lookup, or a plain-English question — chunks sharing any content word are returned when none share all of them. 1 to 512 chars."
     )]
     pub query: String,
+    #[serde(default)]
+    #[schemars(
+        description = "Ranking mode: `hybrid` (default) fuses full-text and embedding similarity, `lexical` is full-text only, `semantic` is embedding-only. Without a configured embedding model `hybrid` falls back to lexical and reports degraded_to_lexical=true, and `semantic` is rejected."
+    )]
+    pub mode: ChunkSearchMode,
     #[schemars(
         description = "Optional maximum number of chunk matches. Omit or null for 12; values above 50 are clamped, and 0 is rejected."
     )]
@@ -84,6 +108,31 @@ const MAX_SNIPPET_MAX_CHARS: usize = 8_000;
 /// identifiers is already well served by the first twelve.
 const MAX_DISTINCTIVE_TERMS: usize = 12;
 
+/// Reciprocal-rank-fusion damping constant, at its conventional value.
+///
+/// Hybrid ranking fuses *ranks*, not scores. The two arms are not on one
+/// scale and cannot be put on one: a lexical band score is an unbounded sum
+/// of a tier, a `ts_rank`, and up to three substring bonuses, while cosine
+/// similarity is bounded in `[0, 1]` and — for an embedding model over
+/// source code — occupies a narrow, corpus-dependent slice of it. Any
+/// weighted sum of the two needs a normalisation constant fitted to a
+/// corpus, and would be silently wrong on the next one. Rank fusion needs
+/// none: `1 / (k + rank)` per arm, summed.
+///
+/// `k = 60` is the value from the paper that introduced the method
+/// (Cormack, Clarke & Buettcher, SIGIR 2009) and it is not sensitive —
+/// larger `k` flattens the curve so deep ranks matter more, smaller `k`
+/// sharpens the head. Measured over this repository's 24-question gate,
+/// every value from 10 to 120 returns the same answered count.
+const RRF_K: f32 = 60.0;
+
+/// What a caller is told when they ask for `semantic` and the deployment
+/// has no embedding model. Mirrors `core_search_memories`: pure semantic
+/// has no lexical component to fall back on, so answering lexically would
+/// be answering a different question than the one asked.
+const SEMANTIC_CHUNK_SEARCH_UNAVAILABLE: &str = "semantic chunk search unavailable: no embedding model is configured. \
+     Use mode=lexical, or mode=hybrid to rank lexically when embeddings are absent.";
+
 /// Shortest token worth treating as an identifier. `id` and `fs` carry no
 /// selectivity against a code corpus.
 const MIN_DISTINCTIVE_TERM_LEN: usize = 3;
@@ -145,6 +194,16 @@ pub struct CodeSearchChunksOutput {
     /// scanned candidate window; retry with a higher limit (max 50) or
     /// narrow the query. Truncation is a signal, never silent.
     pub has_more: bool,
+    /// The mode that was requested, echoed so a caller reading a stored
+    /// response knows what produced it.
+    pub mode: String,
+    /// A `hybrid` search ranked lexically only — no embedding client is
+    /// configured, the provider call failed, or nothing in the searched
+    /// scope is embedded yet. The results are still real full-text
+    /// matches; they simply had no semantic component. Always `false` for
+    /// `lexical` (which asked for nothing else) and for `semantic` (which
+    /// fails instead of degrading).
+    pub degraded_to_lexical: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -165,7 +224,19 @@ pub struct ChunkMatch {
     pub match_kind: String,
     pub matched_line: Option<i64>,
     pub matched_excerpt: Option<String>,
+    /// The score this match was ranked by, in the units of the mode that
+    /// ran: a lexical band score for `lexical`, cosine similarity for
+    /// `semantic`, a fused rank score for `hybrid`. Comparable within one
+    /// response, not across modes.
     pub score: f32,
+    /// The lexical band score, `0.0` when only the semantic arm found this
+    /// chunk. Reported alongside `score` for the same reason
+    /// `core_search_memories` reports it: a fused number alone cannot tell
+    /// a caller which arm earned the hit.
+    pub lexical_score: f32,
+    /// Cosine similarity to the query embedding in `[0, 1]`, `0.0` when the
+    /// semantic arm did not run or did not reach this chunk.
+    pub similarity_score: f32,
 }
 
 #[derive(Debug, Serialize)]
@@ -220,6 +291,12 @@ impl Tool for CodeSearchChunksTool {
             };
             let pool = code_store(&ctx)?;
             let engine = super::engine(&ctx)?;
+            // Resolved before either arm runs, because the answer decides
+            // which arms run at all: a `semantic` request with no embedding
+            // model is an error, not an empty result set, and a `hybrid` one
+            // becomes a `lexical` one that reports having done so.
+            let (effective_mode, query_embedding) =
+                resolve_query_embedding(&engine, args.mode, query).await?;
 
             // Sidecar-only candidate scan (no owner filter, no core-table
             // supersession dedup): full-text/path rank over every `Present`
@@ -296,7 +373,15 @@ impl Tool for CodeSearchChunksTool {
             // where exact identifier and keyword lookup lives now that the
             // vector stems and drops stopwords. `embed_in_chunks` matches the
             // substring arm verbatim regardless of how it tokenises.
-            let rows: Vec<ChunkCandidateRow> = sqlx::query_as(
+            // A pure `semantic` search runs no lexical branch at all, the
+            // same way storage gates `core_search_memories`' lexical query
+            // to `Lexical`/`Hybrid`.
+            let lexical_rows: Vec<ChunkCandidateRow> = if effective_mode
+                == ChunkSearchMode::Semantic
+            {
+                Vec::new()
+            } else {
+                sqlx::query_as(
                 "WITH q AS (
                      SELECT websearch_to_tsquery('english'::regconfig,
                                 proxima_core.lexical_scrub($1)) AS tsq,
@@ -335,7 +420,23 @@ impl Tool for CodeSearchChunksTool {
                             + CASE WHEN lower(c.file_path) = lower($1) THEN 10.0 ELSE 0.0 END
                             + CASE WHEN lower(c.file_path) LIKE $4 ESCAPE '\\' THEN 6.0 ELSE 0.0 END
                             + CASE WHEN lower(c.text) LIKE $4 ESCAPE '\\' THEN 4.0 ELSE 0.0 END
-                        )::real AS score
+                        )::real AS score,
+                        -- The three literal arms again, on their own. Hybrid
+                        -- ranking fuses *ranks*, which on its own would let a
+                        -- strong embedding neighbour outrank an exact path
+                        -- match — the one case where the caller has told us
+                        -- precisely what they want. Reporting the literal
+                        -- bonus separately lets the fusion keep those hits as
+                        -- an absolute prefix. Deliberately duplicated rather
+                        -- than factored out of `score` above: `score` is the
+                        -- shipped lexical ordering, pinned by the retrieval
+                        -- gate, and re-associating its additions could move a
+                        -- result by a float's last bit.
+                        (
+                            CASE WHEN lower(c.file_path) = lower($1) THEN 10.0 ELSE 0.0 END
+                            + CASE WHEN lower(c.file_path) LIKE $4 ESCAPE '\\' THEN 6.0 ELSE 0.0 END
+                            + CASE WHEN lower(c.text) LIKE $4 ESCAPE '\\' THEN 4.0 ELSE 0.0 END
+                        )::real AS literal_bonus
                    FROM proxima_code.code_chunk_v1 c, q
                   WHERE c.state = 'Present'
                     AND ($2::uuid IS NULL OR c.repo_id = $2)
@@ -360,11 +461,41 @@ impl Tool for CodeSearchChunksTool {
             .bind(distinctive_terms(query))
             .fetch_all(pool.pool())
             .await
-            .map_err(map_storage)?;
-            let candidate_ids = rows.iter().map(|row| row.memory_id).collect::<Vec<_>>();
-            let score_by_id = rows
+            .map_err(map_storage)?
+            };
+
+            // The semantic arm draws on the same candidate budget as the
+            // lexical one and applies the same structural filters — pushed
+            // into the neighbour scan rather than applied to its output,
+            // because a search scoped to one repository would otherwise spend
+            // its whole budget on whichever repository is largest and come
+            // back empty.
+            let semantic_rows = match query_embedding.as_ref() {
+                Some((embedding, model_id)) => {
+                    pool.nearest_code_chunk_candidates(
+                        ctx.owner(),
+                        model_id,
+                        embedding,
+                        proxima::flavor::CodeChunkVectorFilters {
+                            repo_id,
+                            language: args.language.as_deref(),
+                            chunk_type: args.chunk_type.as_deref(),
+                        },
+                        usize::try_from(candidate_limit).unwrap_or(0),
+                    )
+                    .await?
+                }
+                None => Vec::new(),
+            };
+
+            let fused = fuse_candidates(effective_mode, &lexical_rows, &semantic_rows);
+            let candidate_ids = fused
+                .iter()
+                .map(|scores| scores.memory_id)
+                .collect::<Vec<_>>();
+            let score_by_id = fused
                 .into_iter()
-                .map(|row| (row.memory_id, row.score))
+                .map(|scores| (scores.memory_id, scores))
                 .collect::<HashMap<_, _>>();
             let head_id_set = pool
                 .authorized_code_chunk_head_candidates(ctx.owner(), &candidate_ids)
@@ -412,6 +543,7 @@ impl Tool for CodeSearchChunksTool {
                 }
                 let raw_id = memory_id.into_inner();
                 chunk_ids.push(raw_id);
+                let scores = score_by_id.get(&raw_id).copied().unwrap_or_default();
                 let (match_kind, matched_line, matched_excerpt) = match_metadata(
                     query,
                     &payload.file_path,
@@ -443,7 +575,9 @@ impl Tool for CodeSearchChunksTool {
                     match_kind,
                     matched_line,
                     matched_excerpt,
-                    score: score_by_id.get(&raw_id).copied().unwrap_or_default(),
+                    score: scores.score,
+                    lexical_score: scores.lexical_score,
+                    similarity_score: scores.similarity_score,
                 });
             }
 
@@ -454,11 +588,161 @@ impl Tool for CodeSearchChunksTool {
             };
 
             Ok(CodeSearchChunksOutput {
+                degraded_to_lexical: degraded_to_lexical(args.mode, effective_mode, &matches),
+                mode: mode_label(args.mode).to_string(),
                 matches,
                 calls_edges,
                 has_more,
             })
         })
+    }
+}
+
+/// The per-chunk scores a search ranked by, in one place so the ordering
+/// and the reported numbers cannot drift apart.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+struct MatchScores {
+    memory_id: uuid::Uuid,
+    score: f32,
+    lexical_score: f32,
+    similarity_score: f32,
+}
+
+/// Resolve the requested mode against what the deployment can actually do,
+/// returning the mode that will run and the query embedding if one is
+/// needed.
+///
+/// The three outcomes deliberately match `core_search_memories`, because a
+/// caller should not have to learn two rules: `lexical` never asks for an
+/// embedding; `hybrid` degrades to `lexical` and reports it; `semantic`
+/// fails, because it has no other arm to fall back on and answering
+/// lexically would answer a question the caller did not ask.
+async fn resolve_query_embedding(
+    engine: &proxima_core::Engine,
+    mode: ChunkSearchMode,
+    query: &str,
+) -> Result<(ChunkSearchMode, Option<(Vec<f32>, String)>), ToolError> {
+    if mode == ChunkSearchMode::Lexical {
+        return Ok((ChunkSearchMode::Lexical, None));
+    }
+    let Some(embed) = engine.embed_client() else {
+        if mode == ChunkSearchMode::Semantic {
+            return Err(ToolError::Other(
+                SEMANTIC_CHUNK_SEARCH_UNAVAILABLE.to_string(),
+            ));
+        }
+        return Ok((ChunkSearchMode::Lexical, None));
+    };
+    // The client can vanish, or its call fail, between the probe above and
+    // here; both land in the same place.
+    match embed.embed(query).await {
+        Ok(embedding) => Ok((mode, Some((embedding, embed.model_id().to_string())))),
+        Err(err) if mode == ChunkSearchMode::Semantic => Err(ToolError::Other(format!(
+            "semantic chunk search unavailable: embedding provider error: {err}"
+        ))),
+        Err(err) => {
+            // `degraded_to_lexical` tells the caller *that* this happened;
+            // only the log can tell an operator *why*.
+            tracing::warn!(
+                error = %err,
+                "hybrid chunk search query embedding unavailable; degrading to lexical",
+            );
+            Ok((ChunkSearchMode::Lexical, None))
+        }
+    }
+}
+
+/// `1 / (k + rank)` for a zero-based rank.
+fn reciprocal_rank(rank: usize) -> f32 {
+    // The candidate budget is capped at 1,000, so a rank never approaches
+    // `u16::MAX` and the conversion is exact rather than merely saturating.
+    let position = u16::try_from(rank).unwrap_or(u16::MAX);
+    1.0 / (RRF_K + f32::from(position) + 1.0)
+}
+
+/// Merge the two arms into one ranked candidate list.
+///
+/// `Lexical` and `Semantic` each pass their own arm through untouched, so a
+/// lexical search ranks exactly as it did before a semantic arm existed —
+/// including the tiebreak, which reproduces the candidate scan's
+/// `ORDER BY score DESC, memory_id DESC`.
+///
+/// `Hybrid` sums each arm's reciprocal rank and adds the literal bonus on
+/// top. The bonus is 4.0 at the smallest and a reciprocal rank is at most
+/// `1/61`, so a chunk whose path or text literally contains the query
+/// outranks every chunk that merely resembles it, however strong the
+/// resemblance. That is the one place where a caller has said exactly what
+/// they want, and rank fusion on its own would let a confident embedding
+/// neighbour bury it.
+fn fuse_candidates(
+    mode: ChunkSearchMode,
+    lexical: &[ChunkCandidateRow],
+    semantic: &[proxima::flavor::CodeChunkVectorCandidate],
+) -> Vec<MatchScores> {
+    let mut by_id: HashMap<uuid::Uuid, MatchScores> =
+        HashMap::with_capacity(lexical.len() + semantic.len());
+    for (rank, row) in lexical.iter().enumerate() {
+        let entry = by_id.entry(row.memory_id).or_insert(MatchScores {
+            memory_id: row.memory_id,
+            ..MatchScores::default()
+        });
+        entry.lexical_score = row.score;
+        entry.score = if mode == ChunkSearchMode::Hybrid {
+            entry.score + row.literal_bonus + reciprocal_rank(rank)
+        } else {
+            row.score
+        };
+    }
+    for (rank, row) in semantic.iter().enumerate() {
+        let entry = by_id.entry(row.memory_id).or_insert(MatchScores {
+            memory_id: row.memory_id,
+            ..MatchScores::default()
+        });
+        entry.similarity_score = row.similarity_score;
+        entry.score = if mode == ChunkSearchMode::Hybrid {
+            entry.score + reciprocal_rank(rank)
+        } else {
+            row.similarity_score
+        };
+    }
+
+    let mut fused = by_id.into_values().collect::<Vec<_>>();
+    // Deterministic despite the `HashMap`: `memory_id` is unique across the
+    // merged set, so score-then-id is a total order and the randomised
+    // iteration above cannot survive the sort.
+    fused.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| b.memory_id.cmp(&a.memory_id))
+    });
+    fused
+}
+
+/// Whether a `hybrid` search ended up ranked lexically only.
+///
+/// Two ways in: no embedding was available at all, or the semantic arm ran
+/// and reached none of the returned chunks — the symptom of a scope where
+/// nothing is embedded yet. An empty result set is neither; it is a genuine
+/// no-match, and reporting degradation for it would cry wolf on every
+/// query that simply found nothing.
+fn degraded_to_lexical(
+    requested: ChunkSearchMode,
+    effective: ChunkSearchMode,
+    matches: &[ChunkMatch],
+) -> bool {
+    if requested != ChunkSearchMode::Hybrid {
+        return false;
+    }
+    effective == ChunkSearchMode::Lexical
+        || (!matches.is_empty() && matches.iter().all(|m| m.similarity_score <= 0.0))
+}
+
+const fn mode_label(mode: ChunkSearchMode) -> &'static str {
+    match mode {
+        ChunkSearchMode::Lexical => "lexical",
+        ChunkSearchMode::Semantic => "semantic",
+        ChunkSearchMode::Hybrid => "hybrid",
     }
 }
 
@@ -632,6 +916,9 @@ fn like_pattern(query: &str) -> String {
 struct ChunkCandidateRow {
     memory_id: uuid::Uuid,
     score: f32,
+    /// The part of `score` contributed by the exact path / path-substring /
+    /// text-substring arms. Only hybrid fusion reads it.
+    literal_bonus: f32,
 }
 
 #[derive(Debug, sqlx::FromRow)]
