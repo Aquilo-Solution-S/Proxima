@@ -133,4 +133,32 @@ impl CodeFlavorStore {
         )
         .await
     }
+
+    /// Nearest `code-chunk-v1` chunks to a query embedding, best-first.
+    ///
+    /// A candidate producer like
+    /// [`Self::authorized_code_chunk_head_candidates`]: what it returns is
+    /// still narrowed and authorized by that call and then by
+    /// [`Self::authorized_abstraction_payloads`]. The embeddings it ranks
+    /// against live in `proxima_core.embeddings`, which flavor SQL may not
+    /// join, so the query itself is backend-owned.
+    pub(crate) async fn nearest_code_chunk_candidates(
+        &self,
+        owner: Owner,
+        model_id: &str,
+        query_embedding: &[f32],
+        filters: proxima::flavor::CodeChunkVectorFilters<'_>,
+        limit: usize,
+    ) -> Result<Vec<proxima::flavor::CodeChunkVectorCandidate>, ToolError> {
+        proxima::flavor::nearest_code_chunk_candidates(
+            &self.pool,
+            owner,
+            &crate::payloads::CodeChunkV1::schema_id(),
+            model_id,
+            query_embedding,
+            filters,
+            limit,
+        )
+        .await
+    }
 }

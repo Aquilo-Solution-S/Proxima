@@ -42,7 +42,8 @@ mod ports;
 pub mod sidecars;
 pub mod query {
     pub use crate::verbs::query::{
-        MAX_SNAPSHOT_EDGES, authorized_code_chunk_head_candidates, fact_entity_id_for,
+        CodeChunkVectorCandidate, CodeChunkVectorFilters, MAX_SNAPSHOT_EDGES,
+        authorized_code_chunk_head_candidates, fact_entity_id_for, nearest_code_chunk_candidates,
     };
 }
 #[cfg(any(test, feature = "test-fixtures"))]

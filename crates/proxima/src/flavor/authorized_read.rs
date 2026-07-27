@@ -307,6 +307,50 @@ pub async fn authorized_code_chunk_head_candidates(
     Ok(heads)
 }
 
+/// Nearest `code-chunk-v1` chunk memories to a query embedding, best-first,
+/// restricted to `owner`'s scope and to the caller's structural filters.
+///
+/// The semantic sibling of [`authorized_code_chunk_head_candidates`], and
+/// like it a *candidate* producer: the ids it returns carry no visibility
+/// decision of their own. A flavor merges them with its own lexical
+/// candidates and runs the whole merged list through
+/// [`authorized_code_chunk_head_candidates`] and then
+/// [`authorized_abstraction_payloads`], which is where authorization
+/// actually happens.
+///
+/// Split out of the flavor because `proxima_core.embeddings` is a core
+/// table and flavor SQL may not join it
+/// (`scripts/check-architecture-guardrails.py`); see
+/// [`proxima_storage_pg::query::nearest_code_chunk_candidates`] for the
+/// query and for why World-owned chunks are unreachable through it.
+///
+/// # Errors
+///
+/// Returns `ToolError::Storage` on query failure, and
+/// `ToolError::InvalidInput` if `query_embedding` is not the active
+/// embedding dimension.
+pub async fn nearest_code_chunk_candidates(
+    pool: &PgPool,
+    owner: Owner,
+    schema_id: &SchemaId,
+    model_id: &str,
+    query_embedding: &[f32],
+    filters: proxima_storage_pg::query::CodeChunkVectorFilters<'_>,
+    limit: usize,
+) -> Result<Vec<proxima_storage_pg::query::CodeChunkVectorCandidate>, ToolError> {
+    proxima_storage_pg::query::nearest_code_chunk_candidates(
+        pool,
+        owner,
+        schema_id,
+        model_id,
+        query_embedding,
+        filters,
+        i64::try_from(limit).unwrap_or(i64::MAX),
+    )
+    .await
+    .map_err(ToolError::Storage)
+}
+
 fn deduped_candidates(candidates: &[uuid::Uuid]) -> Vec<uuid::Uuid> {
     let mut seen = HashSet::with_capacity(candidates.len());
     candidates
