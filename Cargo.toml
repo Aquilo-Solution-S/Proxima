@@ -41,7 +41,7 @@ reqwest = { version = "0.13", default-features = false, features = ["rustls", "j
 # (already in-tree) and avoid the `rust_crypto` backend's `rsa` dep (RUSTSEC-2023-0071).
 jsonwebtoken = { version = "11", features = ["aws_lc_rs"] }
 aws-lc-rs = "1"
-base64 = "0.22"
+base64 = "0.23"
 axum = { version = "0.8", default-features = false, features = ["http1", "tokio"] }
 http = "1"
 http-body = "1"
