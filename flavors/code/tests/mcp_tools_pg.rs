@@ -1705,6 +1705,121 @@ async fn abstraction_memory(
     Ok(memory_id)
 }
 
+/// A repo handle that names no repository is an error on every tool that
+/// takes one — not silence on some of them.
+///
+/// `ingest_head_snapshot` always said so, because it looks the repo record
+/// up for its own reasons. The read tools did not: a handle or bare UUID
+/// short-circuited on *parse*, so a stale handle after `erase_repo`, a
+/// typo, or another owner's id resolved happily and the reads returned
+/// `matches: []`, `commits: []`, `revision: null`. None of that is
+/// distinguishable from "this code is not indexed", which is the wrong
+/// thing for an agent to conclude. `search_chunks` even disagreed with
+/// itself — a bad display name errored while a bad id did not.
+#[tokio::test]
+async fn an_unknown_repo_handle_is_an_error_on_every_tool_that_takes_one()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fixture = TestDb::fresh().await;
+    let owner = owner_fixture();
+    let registry = registry_for_mcp();
+    let engine = engine_for_test(fixture.pg.clone());
+
+    // A real repository exists, so an empty answer would be about the
+    // handle rather than about an empty index.
+    let real_repo = Uuid::now_v7();
+    ingest_file_revision(
+        fixture.pg.pool_for_tests(),
+        &engine,
+        owner,
+        real_repo,
+        "src/real.rs",
+        "v1",
+    )
+    .await?;
+
+    let absent = Uuid::now_v7().to_string();
+    for (tool, args) in [
+        (
+            "search_chunks",
+            json!({ "query": "real", "repo_handle": absent, "include_calls": false }),
+        ),
+        (
+            "search_commits",
+            json!({ "query": "real", "repo_handle": absent }),
+        ),
+        (
+            "open_file_revision",
+            json!({ "repo_handle": absent, "file_path": "src/real.rs" }),
+        ),
+    ] {
+        let err = match tool {
+            "search_chunks" => run_tool::<CodeSearchChunksTool>(
+                ctx(fixture.pg.clone(), owner, registry.clone()),
+                args,
+            )
+            .await
+            .err(),
+            "search_commits" => run_tool::<CodeSearchCommitsTool>(
+                ctx(fixture.pg.clone(), owner, registry.clone()),
+                args,
+            )
+            .await
+            .err(),
+            _ => run_tool::<CodeOpenFileRevisionTool>(
+                ctx(fixture.pg.clone(), owner, registry.clone()),
+                args,
+            )
+            .await
+            .err(),
+        };
+        let err = err.unwrap_or_else(|| panic!("{tool} must reject an unknown repo handle"));
+        assert!(
+            err.to_string().contains("repo_handle not found"),
+            "{tool} must say the handle is unknown, got: {err}"
+        );
+    }
+
+    // The same handle, well-formed and real, still works.
+    let found = run_tool::<CodeOpenFileRevisionTool>(
+        ctx(fixture.pg.clone(), owner, registry),
+        json!({ "repo_handle": real_repo.to_string(), "file_path": "src/real.rs" }),
+    )
+    .await?;
+    assert_eq!(found["revision"]["indexed_commit_sha"], "v1");
+    Ok(())
+}
+
+/// Give `repo_id` a registry row, the way `register_repo` would.
+///
+/// These fixtures write sidecar rows straight to Postgres, so without this
+/// they describe a repository that has chunks and no registry entry — a
+/// state the tool surface cannot produce. `register_repo` creates the row,
+/// `ingest_head_snapshot` refuses to run without it, and `erase_repo`
+/// removes the row and tombstones the chunks together. Handle resolution
+/// checks that row, so a fixture missing it is testing a shape that does
+/// not occur rather than the behaviour it means to test.
+async fn register_repo_row(
+    pool: &PgPool,
+    owner: Owner,
+    repo_id: Uuid,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let (owner_kind, owner_id) = proxima_storage_pg::access::owner_columns::owner_binds(&owner);
+    sqlx::query(
+        "INSERT INTO proxima_code.repos
+            (owner_kind, owner_id, repo_id, canonical_path, display_name, created_at)
+         VALUES ($1, $2, $3, $4, $5, now())
+         ON CONFLICT (owner_kind, owner_id, repo_id) DO NOTHING",
+    )
+    .bind(owner_kind)
+    .bind(owner_id)
+    .bind(repo_id)
+    .bind(format!("/fixtures/{repo_id}"))
+    .bind(format!("fixture-{repo_id}"))
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
 async fn ingest_file_revision(
     pool: &PgPool,
     engine: &Engine,
@@ -1714,6 +1829,7 @@ async fn ingest_file_revision(
     indexed_commit_sha: &str,
 ) -> Result<Uuid, Box<dyn std::error::Error>> {
     let payload = format!("{file_path}:{indexed_commit_sha}");
+    register_repo_row(pool, owner, repo_id).await?;
     let memory_id =
         fact_memory(engine, owner, FileRevisionV1::SCHEMA_ID, payload.as_bytes()).await?;
     sqlx::query(

@@ -9,6 +9,29 @@ pub fn owner_columns(owner: &Owner) -> (OwnerRefKind, Option<uuid::Uuid>) {
     owner.columns()
 }
 
+/// Resolve a `repo_handle`, a bare repo UUID, or a display name / path to a
+/// repo id that **exists for this owner**.
+///
+/// The existence check used to apply only to the name forms. A handle or a
+/// bare UUID short-circuited on parse, so an id that named no repo — a
+/// stale handle after `erase_repo`, a typo, another owner's repo — resolved
+/// happily and every read then returned nothing: `search_chunks` an empty
+/// `matches`, `search_commits` an empty `commits`, `open_file_revision` a
+/// null `revision`. An agent cannot tell that from "this code is not
+/// indexed", and the only tool that did say so was
+/// `ingest_head_snapshot`, which looks the repo record up for its own
+/// reasons. One tool family, two answers to the same bad input — and
+/// `search_chunks` disagreed with *itself*, since a bad name errored while
+/// a bad id did not.
+///
+/// Both shapes now go through one query, so all of them answer the same
+/// way. That costs a round trip on the id path, which previously did no I/O
+/// at all; it buys back a class of silent wrong answers, and the query is a
+/// primary-key lookup.
+///
+/// A repo belonging to a different owner is reported exactly like one that
+/// does not exist, so this cannot be used to probe for other owners' repo
+/// ids.
 pub async fn resolve_repo_identifier(
     ctx: &ToolCtx,
     identifier: &str,
@@ -17,24 +40,30 @@ pub async fn resolve_repo_identifier(
     if trimmed.is_empty() {
         return Err(ToolError::InvalidInput("repo_handle required".into()));
     }
-    if let Ok(repo_id) = ctx.resolve_flavor_object(trimmed, super::REPO_HANDLE_KIND) {
-        return Ok(repo_id);
-    }
-    if let Ok(repo_id) = uuid::Uuid::parse_str(trimmed) {
-        return Ok(repo_id);
-    }
+    // Parsing an id shape proves only that it *is* an id shape. Whether it
+    // names a repo is the query's business, below.
+    let claimed_id = ctx
+        .resolve_flavor_object(trimmed, super::REPO_HANDLE_KIND)
+        .ok()
+        .or_else(|| uuid::Uuid::parse_str(trimmed).ok());
 
     let (owner_kind, owner_id) = owner_columns(&ctx.owner());
     let pool = code_store(ctx)?;
+    // The name arms stay gated behind `claimed_id IS NULL` so an id-shaped
+    // identifier is still resolved only as an id — matching what the early
+    // return did, minus the missing existence check.
     let rows: Vec<RepoLookupRow> = sqlx::query_as(
         "SELECT repo_id
          FROM proxima_code.repos
          WHERE owner_kind = $1
            AND owner_id = $2
            AND (
-               lower(display_name) = lower($3)
-               OR lower(canonical_path) = lower($3)
-               OR lower(regexp_replace(canonical_path, '^.*/', '')) = lower($3)
+               ($4::uuid IS NOT NULL AND repo_id = $4)
+               OR ($4::uuid IS NULL AND (
+                      lower(display_name) = lower($3)
+                      OR lower(canonical_path) = lower($3)
+                      OR lower(regexp_replace(canonical_path, '^.*/', '')) = lower($3)
+                  ))
            )
          ORDER BY created_at DESC
          LIMIT 2",
@@ -42,6 +71,7 @@ pub async fn resolve_repo_identifier(
     .bind(owner_kind)
     .bind(owner_id)
     .bind(trimmed)
+    .bind(claimed_id)
     .fetch_all(pool.pool())
     .await
     .map_err(map_storage)?;
