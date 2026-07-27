@@ -251,7 +251,7 @@ pub struct CodeSearchChunksTool;
 
 impl Tool for CodeSearchChunksTool {
     const NAME: &'static str = "proxima-code_search_chunks";
-    const DESCRIPTION: &'static str = "Search head code chunks by exact substring, path, or full-text content, including plain-English questions. Each match carries its chunk text up to snippet_max_chars, flagged snippet_truncated when cut. Supports language/chunk_type filters and optional proxima-code/calls neighbor edges.";
+    const DESCRIPTION: &'static str = "Search head code chunks by exact substring, path, or full-text content, including plain-English questions. Ranks by mode: hybrid (default) fuses full-text with embedding similarity, lexical is full-text only, semantic is embedding-only; a hybrid search with no embeddings available answers lexically and reports degraded_to_lexical. Each match carries its chunk text up to snippet_max_chars, flagged snippet_truncated when cut. Supports language/chunk_type filters and optional proxima-code/calls neighbor edges.";
 
     type Args = CodeSearchChunksArgs;
     type Output = CodeSearchChunksOutput;
