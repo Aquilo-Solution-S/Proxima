@@ -120,10 +120,8 @@ const MAX_DISTINCTIVE_TERMS: usize = 12;
 /// none: `1 / (k + rank)` per arm, summed.
 ///
 /// `k = 60` is the value from the paper that introduced the method
-/// (Cormack, Clarke & Buettcher, SIGIR 2009) and it is not sensitive —
-/// larger `k` flattens the curve so deep ranks matter more, smaller `k`
-/// sharpens the head. Measured over this repository's 24-question gate,
-/// every value from 10 to 120 returns the same answered count.
+/// (Cormack, Clarke & Buettcher, SIGIR 2009). Larger `k` flattens the curve
+/// so deep ranks matter more; smaller `k` sharpens the head.
 const RRF_K: f32 = 60.0;
 
 /// What a caller is told when they ask for `semantic` and the deployment
@@ -930,7 +928,145 @@ struct CallPayloadRow {
 
 #[cfg(test)]
 mod tests {
-    use super::{MAX_DISTINCTIVE_TERMS, distinctive_terms, like_pattern};
+    use super::{
+        ChunkCandidateRow, ChunkSearchMode, MAX_DISTINCTIVE_TERMS, MatchScores, distinctive_terms,
+        fuse_candidates, like_pattern, reciprocal_rank,
+    };
+    use proxima::flavor::CodeChunkVectorCandidate;
+
+    fn id(byte: u8) -> uuid::Uuid {
+        uuid::Uuid::from_bytes([byte; 16])
+    }
+
+    fn lex(byte: u8, score: f32, literal_bonus: f32) -> ChunkCandidateRow {
+        ChunkCandidateRow {
+            memory_id: id(byte),
+            score,
+            literal_bonus,
+        }
+    }
+
+    fn sem(byte: u8, similarity_score: f32) -> CodeChunkVectorCandidate {
+        CodeChunkVectorCandidate {
+            memory_id: id(byte),
+            similarity_score,
+        }
+    }
+
+    fn ranked(fused: &[MatchScores]) -> Vec<uuid::Uuid> {
+        fused.iter().map(|scores| scores.memory_id).collect()
+    }
+
+    /// The promise the whole `lexical` mode rests on: with a semantic arm
+    /// available but not asked for, the merge must reproduce the candidate
+    /// scan's own `ORDER BY score DESC, memory_id DESC` exactly — same
+    /// order, same reported score.
+    #[test]
+    fn lexical_mode_passes_its_arm_through_untouched() {
+        let lexical = vec![lex(3, 5.2, 0.0), lex(1, 4.4, 0.0), lex(2, 4.4, 0.0)];
+        let fused = fuse_candidates(ChunkSearchMode::Lexical, &lexical, &[]);
+        // 1 and 2 tie on score, so the id tiebreak decides and it is
+        // descending, matching the SQL.
+        assert_eq!(ranked(&fused), vec![id(3), id(2), id(1)]);
+        assert!((fused[0].score - 5.2).abs() < f32::EPSILON);
+        assert!((fused[0].lexical_score - 5.2).abs() < f32::EPSILON);
+        assert!(fused[0].similarity_score.abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn semantic_mode_ranks_by_similarity_alone() {
+        let semantic = vec![sem(9, 0.81), sem(4, 0.42)];
+        let fused = fuse_candidates(ChunkSearchMode::Semantic, &[], &semantic);
+        assert_eq!(ranked(&fused), vec![id(9), id(4)]);
+        assert!((fused[0].score - 0.81).abs() < f32::EPSILON);
+        assert!((fused[0].similarity_score - 0.81).abs() < f32::EPSILON);
+        assert!(fused[0].lexical_score.abs() < f32::EPSILON);
+    }
+
+    /// A chunk both arms found beats one that only a single arm found, even
+    /// when the single arm ranked it first. This is the whole point of rank
+    /// fusion, and the reason a hybrid search finds what neither arm does
+    /// alone.
+    #[test]
+    fn agreement_between_the_arms_outranks_either_arm_alone() {
+        let lexical = vec![lex(1, 4.9, 0.0), lex(2, 4.8, 0.0)];
+        let semantic = vec![sem(3, 0.9), sem(2, 0.7)];
+        let fused = fuse_candidates(ChunkSearchMode::Hybrid, &lexical, &semantic);
+        // 2 is second in both arms; 1 leads the lexical arm and 3 the
+        // semantic one, and neither appears in the other.
+        assert_eq!(ranked(&fused)[0], id(2));
+    }
+
+    /// Rank fusion alone would let a confident embedding neighbour bury an
+    /// exact path match. It must not: the literal arms are the one case
+    /// where a caller has said precisely what they want.
+    #[test]
+    fn an_exact_path_match_survives_a_confident_semantic_neighbour() {
+        // The path match is *last* lexically and absent semantically; the
+        // rival tops both arms.
+        let lexical = vec![lex(1, 5.2, 0.0), lex(2, 14.9, 10.0)];
+        let semantic = vec![sem(1, 0.99)];
+        let fused = fuse_candidates(ChunkSearchMode::Hybrid, &lexical, &semantic);
+        assert_eq!(ranked(&fused), vec![id(2), id(1)]);
+    }
+
+    /// Even the smallest literal bonus (a text substring, 4.0) outranks the
+    /// largest possible fused rank contribution (2/61 < 0.033).
+    #[test]
+    fn the_smallest_literal_bonus_outranks_the_best_possible_rank_pair() {
+        let best_possible = reciprocal_rank(0) * 2.0;
+        assert!(
+            best_possible < 4.0,
+            "a rank pair scored {best_possible}, which would cross a literal arm",
+        );
+    }
+
+    /// Both arms return the same chunk; it must appear once, carrying both
+    /// scores rather than whichever arm was merged last.
+    #[test]
+    fn a_chunk_found_by_both_arms_is_reported_once_with_both_scores() {
+        let fused = fuse_candidates(
+            ChunkSearchMode::Hybrid,
+            &[lex(7, 4.5, 0.0)],
+            &[sem(7, 0.66)],
+        );
+        assert_eq!(fused.len(), 1);
+        assert!((fused[0].lexical_score - 4.5).abs() < f32::EPSILON);
+        assert!((fused[0].similarity_score - 0.66).abs() < f32::EPSILON);
+        assert!((fused[0].score - (reciprocal_rank(0) * 2.0)).abs() < f32::EPSILON);
+    }
+
+    /// The candidates are merged through a `HashMap`, whose iteration order
+    /// Rust randomises by design — the defect that made `calls_edges`
+    /// return an arbitrary subset per run. `memory_id` is unique across the
+    /// merged set, so score-then-id is a total order and the sort erases it.
+    #[test]
+    fn fusion_is_deterministic_across_runs() {
+        let lexical = (0..40).map(|i| lex(i, 4.0, 0.0)).collect::<Vec<_>>();
+        let semantic = (20..60).map(|i| sem(i, 0.5)).collect::<Vec<_>>();
+        let first = ranked(&fuse_candidates(
+            ChunkSearchMode::Hybrid,
+            &lexical,
+            &semantic,
+        ));
+        for _ in 0..16 {
+            assert_eq!(
+                first,
+                ranked(&fuse_candidates(
+                    ChunkSearchMode::Hybrid,
+                    &lexical,
+                    &semantic
+                ))
+            );
+        }
+    }
+
+    #[test]
+    fn reciprocal_rank_decreases_with_depth() {
+        assert!(reciprocal_rank(0) > reciprocal_rank(1));
+        assert!(reciprocal_rank(1) > reciprocal_rank(999));
+        assert!(reciprocal_rank(999) > 0.0);
+    }
 
     /// Postgres `lower()` folds non-ASCII; the pattern must too, or it can
     /// never match the column it is compared against.
