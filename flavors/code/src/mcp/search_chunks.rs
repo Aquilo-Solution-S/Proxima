@@ -19,7 +19,7 @@ pub struct CodeSearchChunksArgs {
     )]
     pub query: String,
     #[schemars(
-        description = "Optional maximum number of chunk matches. Omit or null for 12; values above 50 are clamped."
+        description = "Optional maximum number of chunk matches. Omit or null for 12; values above 50 are clamped, and 0 is rejected."
     )]
     pub limit: Option<u32>,
     #[schemars(
@@ -193,6 +193,13 @@ impl Tool for CodeSearchChunksTool {
                 return Err(ToolError::InvalidInput(
                     "snippet_max_chars must be at least 1".into(),
                 ));
+            }
+            // Rejected rather than silently answered: a zero limit returns an
+            // empty `matches` array indistinguishable from "nothing matched",
+            // and `snippet_max_chars: 0` is already rejected for the same
+            // reason.
+            if args.limit == Some(0) {
+                return Err(ToolError::InvalidInput("limit must be at least 1".into()));
             }
             let snippet_max_chars = effective_snippet_max_chars(args.snippet_max_chars);
             let limit = args.limit.unwrap_or(12).min(50);
@@ -564,10 +571,19 @@ async fn load_call_edges(
     Ok(out)
 }
 
+/// `%`-wrapped, escaped, lowercased pattern for the substring arms.
+///
+/// Lowercased the same way the SQL side is. The comparison is against
+/// `lower(c.file_path)` / `lower(c.text)`, and Postgres `lower()` folds
+/// non-ASCII: it maps `MÜNCHEN.RS` to `münchen.rs`, where
+/// `to_ascii_lowercase` left `mÜnchen.rs`. The pattern could then never
+/// match, so the substring arms — which is where exact identifier and path
+/// lookup lives now that the vector stems and drops stopwords — silently did
+/// nothing for any query carrying a non-ASCII capital.
 fn like_pattern(query: &str) -> String {
     let mut out = String::with_capacity(query.len() + 2);
     out.push('%');
-    for ch in query.to_ascii_lowercase().chars() {
+    for ch in query.to_lowercase().chars() {
         match ch {
             '%' | '_' | '\\' => {
                 out.push('\\');
@@ -595,7 +611,21 @@ struct CallPayloadRow {
 
 #[cfg(test)]
 mod tests {
-    use super::{MAX_DISTINCTIVE_TERMS, distinctive_terms};
+    use super::{MAX_DISTINCTIVE_TERMS, distinctive_terms, like_pattern};
+
+    /// Postgres `lower()` folds non-ASCII; the pattern must too, or it can
+    /// never match the column it is compared against.
+    #[test]
+    fn like_pattern_lowercases_the_way_postgres_does() {
+        assert_eq!(like_pattern("MÜNCHEN.RS"), "%münchen.rs%");
+        assert_eq!(like_pattern("Straße"), "%straße%");
+        assert_eq!(like_pattern("ÅNGSTRÖM"), "%ångström%");
+    }
+
+    #[test]
+    fn like_pattern_escapes_wildcards() {
+        assert_eq!(like_pattern("a_b%c\\d"), "%a\\_b\\%c\\\\d%");
+    }
 
     /// The property the rare bands depend on: a question with no identifiers
     /// must produce no terms, so `rare_all_tsq`/`rare_any_tsq` bind NULL and
