@@ -48,6 +48,14 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use self::git::{CommitInfo, WalkPlan};
+
+/// Blob bytes held in memory at once while ingesting a HEAD snapshot.
+///
+/// A batch always contains at least one entry, so a blob larger than this
+/// still passes through whole — `MAX_BLOB_BYTES` (1 MiB) is the real per-file
+/// ceiling. This only bounds how many are resident together.
+const BLOB_BATCH_BYTES: u64 = 8 * 1024 * 1024;
+
 use crate::calls::{ExtractedCall, ExtractedDefinition, extract_blob_callgraph};
 use crate::chunker::{Chunk, chunk_blob};
 use crate::ingest::{
@@ -396,9 +404,15 @@ impl LocalGitSource {
         let now = time::OffsetDateTime::now_utc();
         let batch_id = SourceBatchId::new(Uuid::now_v7());
         let permit = ctx.owner_write_permit(&self.owner).await?;
-        let head_files = git::ls_files(&self.repo_path, "HEAD")?;
+        // Listing first, contents in bounded batches. Reading the whole tree
+        // up front held every tracked file of the repository in memory at once
+        // before a single row was written.
+        let head_entries: Vec<git::TreeEntry> = git::ls_tree(&self.repo_path, "HEAD")?
+            .into_iter()
+            .filter(|entry| entry.size <= crate::chunker::MAX_BLOB_BYTES as u64)
+            .collect();
         let present_paths: HashSet<String> =
-            head_files.iter().map(|(path, _)| path.clone()).collect();
+            head_entries.iter().map(|entry| entry.path.clone()).collect();
         let prior_heads: HashMap<_, _> = ctx
             .file_revision_heads(self.owner, self.repo_id)
             .await?
@@ -410,30 +424,19 @@ impl LocalGitSource {
         let mut blob_analysis_cache = HashMap::new();
         let mut pending_present = Vec::new();
         let mut pending_deleted = Vec::new();
-        for (path, blob) in head_files {
-            let content_sha256: [u8; 32] = blake3::hash(&blob).into();
-            let already_current = prior_heads.get(&path).is_some_and(|head| {
-                head.state == FileState::Present && head.content_sha256 == content_sha256
-            });
-            if already_current {
-                continue;
-            }
-            pending_present.push(
-                self.ingest_present_blob(
-                    pool,
-                    &permit,
-                    &head_sha,
-                    batch_id,
-                    now,
-                    &path,
-                    &blob,
-                    None,
-                    &mut report,
-                    &mut blob_analysis_cache,
-                )
-                .await?,
-            );
-        }
+        self.ingest_head_entries(
+            pool,
+            &permit,
+            &head_sha,
+            batch_id,
+            now,
+            &head_entries,
+            &prior_heads,
+            &mut pending_present,
+            &mut report,
+            &mut blob_analysis_cache,
+        )
+        .await?;
 
         for (path, prior) in prior_heads {
             if prior.state == FileState::Present && !present_paths.contains(&path) {
@@ -499,9 +502,12 @@ impl LocalGitSource {
             let parent_tree = git::tree_sha(&self.repo_path, parent_sha)?;
             git::diff_paths(&self.repo_path, &parent_tree, &commit_tree)?
         } else {
-            let added: Vec<String> = git::ls_files(&self.repo_path, &commit_info.sha)?
+            // Listing only: a root commit needs the *paths* it added, and
+            // reading every blob's contents here to throw them away cost two
+            // git processes and the whole tree in memory per root commit.
+            let added: Vec<String> = git::ls_tree(&self.repo_path, &commit_info.sha)?
                 .into_iter()
-                .map(|(p, _)| p)
+                .map(|entry| entry.path)
                 .collect();
             (added, Vec::new())
         };
@@ -626,6 +632,69 @@ impl LocalGitSource {
         )
         .await
         .map(ChangedPathIngest::Present)
+    }
+
+    /// Read a HEAD listing's blobs in byte-bounded batches and ingest each.
+    ///
+    /// One `git cat-file --batch` per batch rather than two `git` processes
+    /// per file, and at most [`BLOB_BATCH_BYTES`] of file contents resident at
+    /// a time rather than the whole tree.
+    #[allow(clippy::too_many_arguments)]
+    async fn ingest_head_entries(
+        &self,
+        pool: &PgPool,
+        permit: &OwnerWritePermit,
+        head_sha: &str,
+        batch_id: SourceBatchId,
+        now: time::OffsetDateTime,
+        entries: &[git::TreeEntry],
+        prior_heads: &HashMap<String, FileRevisionHead>,
+        pending_present: &mut Vec<PendingPresentBlob>,
+        report: &mut IndexReport,
+        blob_analysis_cache: &mut HashMap<BlobAnalysisKey, BlobAnalysis>,
+    ) -> Result<(), IndexError> {
+        let mut cursor = 0usize;
+        while cursor < entries.len() {
+            let mut end = cursor;
+            let mut budget = 0u64;
+            // `end == cursor` keeps a batch non-empty even when the first
+            // entry alone exceeds the budget, so no file is ever skipped.
+            while end < entries.len()
+                && (end == cursor || budget + entries[end].size <= BLOB_BATCH_BYTES)
+            {
+                budget += entries[end].size;
+                end += 1;
+            }
+            let batch = &entries[cursor..end];
+            let oids: Vec<String> = batch.iter().map(|entry| entry.oid.clone()).collect();
+            let blobs = git::cat_blobs(&self.repo_path, &oids)?;
+            for (entry, blob) in batch.iter().zip(blobs) {
+                let content_sha256: [u8; 32] = blake3::hash(&blob).into();
+                let already_current = prior_heads.get(&entry.path).is_some_and(|head| {
+                    head.state == FileState::Present && head.content_sha256 == content_sha256
+                });
+                if already_current {
+                    continue;
+                }
+                pending_present.push(
+                    self.ingest_present_blob(
+                        pool,
+                        permit,
+                        head_sha,
+                        batch_id,
+                        now,
+                        &entry.path,
+                        &blob,
+                        None,
+                        report,
+                        blob_analysis_cache,
+                    )
+                    .await?,
+                );
+            }
+            cursor = end;
+        }
+        Ok(())
     }
 
     /// Emit one Present file revision Fact from an already-loaded blob.
