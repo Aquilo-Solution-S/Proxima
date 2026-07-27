@@ -66,6 +66,27 @@ fn like_literal(query_param: usize) -> String {
 // six unrelated files all scoring exactly 0.45. Flag 32 bounds the value in
 // [0, 1) and it varies (0.091..0.888 over those same rows), leaving `LEAST`
 // as a guard rather than the whole computation.
+//
+// The *rescue* arm ranks with `ts_rank(v, q, 1|32)` and not with cover
+// density, for the same reason the code flavor's rescue arm does. Cover
+// density rewards a short span containing several query terms, which is
+// exactly the shape of repetitive structured data. Measured over an
+// indexed corpus of 4,935 chunks with a real bug report as the query,
+// cover density returned a documentation page and eight chunks of one
+// `schema.json` — several scoring identically to six decimal places —
+// while the file the fix actually touched never appeared. Flag 1 adds
+// division by the log of document length, which is what separates a
+// precise short chunk from a long repetitive one:
+//
+//   corpus                    ts_rank_cd      ts_rank(1|32)
+//   17 knip bug reports       1 of 17         5 of 17
+//   7 prek bug reports        3 of 7          5 of 7
+//   24 prose questions        12 of 24        17 of 24
+//
+// The strict arm keeps cover density: measured on the same three corpora,
+// giving it length normalisation too changes nothing, because a
+// multi-sentence query almost never AND-matches at all and the arm does
+// not fire.
 
 #[derive(Debug)]
 struct SearchRow {
@@ -309,7 +330,7 @@ fn lexical_branch_sql<'p>(
     let rescue = matches!(req.mode, SearchMode::Lexical);
     let rescue_score_arm = if rescue {
         ", CASE WHEN c.search_tsv @@ q.any_tsq
-                THEN 0.25 + LEAST(ts_rank_cd(c.search_tsv, q.any_tsq, 32), 1.0) * 0.2
+                THEN 0.25 + LEAST(ts_rank(c.search_tsv, q.any_tsq, 1|32) * 100.0, 1.0) * 0.2
                 ELSE 0.0 END"
     } else {
         ""

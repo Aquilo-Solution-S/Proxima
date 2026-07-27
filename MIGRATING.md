@@ -889,6 +889,28 @@ that reports `degraded_to_lexical: true` — to return the same *set* in a
 different, better order. Nothing about the schema or the plan shape changed;
 no re-index is required.
 
+**The OR-rescue arm additionally ranks by length-normalised `ts_rank`
+rather than by cover density**, which moves lexical ordering a second time
+and by much more. Cover density rewards a short span containing several
+query terms, and repetitive structured data wins that trivially: against an
+indexed code corpus, a real question returned a documentation page and
+eight chunks of one `schema.json`, several scoring identically to six
+decimal places, while the file that actually answered it never appeared.
+
+| corpus | before | after |
+|---|---|---|
+| 17 real bug reports | 1 of 17 | **5 of 17** |
+| 7 real bug reports | 3 of 7 | **5 of 7** |
+| 24 plain-English questions | 12 of 24 | **17 of 24** |
+
+Only the rescue arm changed. The strict arm keeps cover density, because
+giving it length normalisation too changes nothing on those same corpora —
+a multi-sentence query almost never AND-matches, so the arm does not fire.
+The score bands are unchanged, so anything comparing against the documented
+`[0.5, 1.0]` / `(0.25, 0.45]` / `0.25` ranges still holds. `semantic` and
+undegraded `hybrid` searches are untouched: the rescue arm only exists in
+`lexical` mode.
+
 `proxima-code_search_chunks` additionally ranks a query's structured
 identifiers on their own, and prefers a chunk a grammar parsed
 (`chunk_type <> 'file'`) over a line window of a file no grammar could read.
