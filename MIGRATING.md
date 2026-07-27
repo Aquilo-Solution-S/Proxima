@@ -929,6 +929,18 @@ A query with no identifiers in it is unaffected.
   A caller that used the old value to place the snippet in the file was
   wrong about every line after the cut.
 
+- **A `repo_handle` that names no repository is now rejected** by
+  `proxima-code_search_chunks`, `proxima-code_search_commits` and
+  `proxima-code_open_file_revision`, with
+  `repo_handle not found for owner: <handle>`. They previously returned an
+  empty `matches`/`commits` or a null `revision`, which reads exactly like
+  "this repository has nothing indexed". Only the *name* forms were
+  checked; a handle or a bare UUID short-circuited on parse, so a stale
+  handle after `erase_repo`, a typo, or another owner's id all resolved
+  silently. `proxima-code_ingest_head_snapshot` already errored, so this
+  makes one tool family agree with itself. A handle for a repository owned
+  by someone else reports exactly what a nonexistent one reports.
+
 **Already-terminal embedding jobs are not recovered by this release.** A
 transient upstream failure that Ollama reports as HTTP 400 used to be filed
 as a permanently rejected input; that is fixed going forward, but rows
