@@ -112,14 +112,23 @@ impl ScopeGateBehavior {
         args: &serde_json::Value,
         ctx: &McpToolCtx,
     ) -> Result<(), McpToolError> {
-        let read_only = args
-            .get("action")
-            .and_then(serde_json::Value::as_str)
-            .and_then(|action| core_action_meta(tool, action))
-            .map(|meta| meta.annotations)
-            .or_else(|| core_tool_annotations(tool))
-            .and_then(|annotations| annotations.read_only)
-            .unwrap_or(false);
+        // Resource reads are reads. `read_resource` funnels through this same
+        // gate with the resource's scope key in `tool`, and nothing in the
+        // tool manifest is keyed by a `resource:` name — so the lookups below
+        // all miss and the `unwrap_or(false)` default asks for *write*
+        // access. A read-only role could therefore see every `proxima://`
+        // resource `resources/list` advertises to it and read none of them.
+        let read_only = if tool.starts_with(crate::protocol::resource::SCOPE_PREFIX) {
+            true
+        } else {
+            args.get("action")
+                .and_then(serde_json::Value::as_str)
+                .and_then(|action| core_action_meta(tool, action))
+                .map(|meta| meta.annotations)
+                .or_else(|| core_tool_annotations(tool))
+                .and_then(|annotations| annotations.read_only)
+                .unwrap_or(false)
+        };
         let allowed = if read_only {
             ctx.authz.may_read(&ctx.owner, AccessKind::Fact)
         } else {
@@ -298,6 +307,68 @@ mod tests {
         let authz =
             AuthzContext::single_owner(&owner, AuthPath::HostBearer).with_tool_scope(tool_scope);
         test_ctx_with_authz(owner, authz)
+    }
+
+    /// A viewer on a group owner: may read, may not write.
+    fn read_only_ctx() -> McpToolCtx {
+        let subject = UserId::new(uuid::Uuid::now_v7());
+        let owner = OwnerRef::Group(crate::GroupId::new(uuid::Uuid::now_v7()));
+        let authz = AuthzContext::for_subject_with_role(
+            subject,
+            [(owner, crate::access::Role::viewer())],
+            AuthPath::HostBearer,
+        )
+        .with_tool_scope(ToolScope::All);
+        assert!(authz.may_read(&owner, AccessKind::Fact), "viewer reads");
+        assert!(
+            !authz.may_write(&owner, AccessKind::Fact),
+            "viewer does not write"
+        );
+        test_ctx_with_authz(owner, authz)
+    }
+
+    /// `read_resource` runs through this same gate with the resource's scope
+    /// key as the tool name. Nothing in the tool manifest is keyed by a
+    /// `resource:` name, so before this was special-cased every lookup missed
+    /// and the default demanded write access — a viewer could see every
+    /// `proxima://` resource advertised to it and read none of them.
+    #[tokio::test]
+    async fn a_viewer_may_read_resources() {
+        for scope_key in [
+            crate::protocol::resource::SCHEMAS,
+            crate::protocol::resource::MEMORIES,
+            crate::protocol::resource::GRAPH,
+            crate::protocol::resource::EDGE_TYPES,
+        ] {
+            let behaviors: Vec<Arc<dyn RequestBehavior>> = vec![Arc::new(ScopeGateBehavior)];
+            let terminal: TerminalDispatch<'_> =
+                Box::new(|_call| Box::pin(async { Ok(serde_json::json!({"ok": true})) }));
+            let out = Next::new(&behaviors, terminal)
+                .run(ToolCall {
+                    name: scope_key.to_string(),
+                    args: serde_json::json!({ "uri": "proxima://schemas" }),
+                    ctx: read_only_ctx(),
+                })
+                .await;
+            assert!(out.is_ok(), "{scope_key} must be readable by a viewer");
+        }
+    }
+
+    /// The read exemption is keyed on the `resource:` namespace, so it must
+    /// not hand a viewer a writing tool.
+    #[tokio::test]
+    async fn a_viewer_still_may_not_write() {
+        let behaviors: Vec<Arc<dyn RequestBehavior>> = vec![Arc::new(ScopeGateBehavior)];
+        let terminal: TerminalDispatch<'_> =
+            Box::new(|_call| Box::pin(async { Ok(serde_json::json!({"ok": true})) }));
+        let out = Next::new(&behaviors, terminal)
+            .run(ToolCall {
+                name: protocol_tool::CORE_REMEMBER.to_string(),
+                args: serde_json::json!({ "text": "x" }),
+                ctx: read_only_ctx(),
+            })
+            .await;
+        assert!(out.is_err(), "core_remember must stay denied for a viewer");
     }
 
     fn test_ctx_with_authz(owner: OwnerRef, authz: AuthzContext) -> McpToolCtx {
