@@ -269,7 +269,7 @@ impl ServerHandler for DynamicHandler {
 ///
 /// A Postgres `text` value cannot contain `U+0000` — the server answers
 /// `invalid byte sequence for encoding "UTF8": 0x00` and aborts the
-/// statement. JSON strings can carry it (`" "` is well-formed), so a
+/// statement. JSON strings can carry it (a `\u0000` escape is well-formed), so a
 /// caller could send one through any string argument of any tool, and it
 /// arrived as `-32603 internal server error` plus an `ERROR`-level log
 /// line: a client-driven input mistake reported, and alerted on, as a
