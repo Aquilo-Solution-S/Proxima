@@ -19,6 +19,14 @@ use crate::{
     EmbeddableEntityRef, EntityKind, MemoryId, Owner, OwnerRef, SidecarPayload, SourceBatchId,
 };
 
+/// Input used to ask a provider "are you up?" after it refused a batch.
+///
+/// Deliberately trivial and constant: the probe must be something no
+/// provider can reject on its merits, so that a failed probe means the
+/// provider is unavailable and a successful one means the refused batch's
+/// own contents are at fault.
+const TRANSIENT_BATCH_PROBE: &str = "ok";
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct EmbeddingDrainOutcome {
     pub processed: usize,
@@ -556,6 +564,36 @@ impl Engine {
                         .await?;
                 }
                 Err(err) => {
+                    // A transient batch error is supposed to mean the
+                    // provider failed rather than any input being bad — but
+                    // the two are indistinguishable from the response when
+                    // the provider fails *because of* an input. Observed
+                    // against a local runner: one scanned page whose OCR
+                    // hallucinated a 300-row CJK table killed the model
+                    // process, which surfaces as `400 {"error": "… EOF"}`,
+                    // correctly classified transient because nothing looked
+                    // at the input. Released unburned, the whole claim of 32
+                    // came back every drain and 31 innocent pages of the book
+                    // stayed unembedded indefinitely.
+                    //
+                    // Probing separates the cases. If the provider answers a
+                    // trivial input right after refusing the batch, it is up,
+                    // and this batch's failure is attributable to its
+                    // contents — so isolate them the same way a permanent
+                    // rejection is isolated. If the probe also fails, the
+                    // provider really is down: release without burning
+                    // attempts, exactly as before, for one extra tiny call.
+                    if client.embed(TRANSIENT_BATCH_PROBE).await.is_ok() {
+                        tracing::warn!(
+                            error = %err,
+                            jobs = batch.len(),
+                            "transient embedding batch failure but the provider answers; \
+                             isolating inputs instead of holding the batch"
+                        );
+                        self.embed_claims_individually(&client, batch, &mut outcome)
+                            .await?;
+                        continue;
+                    }
                     let claims: Vec<EmbeddingJobClaim> =
                         batch.into_iter().map(|(claim, _)| claim).collect();
                     tracing::warn!(

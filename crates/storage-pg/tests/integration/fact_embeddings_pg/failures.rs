@@ -1,8 +1,9 @@
 //! Provider failure handling: retry caps, transient releases, terminal rejects, and over-limit rescue.
 
 use super::{
-    FailingEmbedding, PoisonBatchTransientItemEmbedding, PoisonTextEmbedding, TokenCapEmbedding,
-    clear_embedding_backoff, count_fact_embeddings, engine_for, fact_draft, load_embedding_job,
+    CrashOnInputEmbedding, FailingEmbedding, PoisonBatchTransientItemEmbedding,
+    PoisonTextEmbedding, TokenCapEmbedding, clear_embedding_backoff, count_fact_embeddings,
+    engine_for, fact_draft, load_embedding_job,
 };
 
 use std::sync::Arc;
@@ -301,5 +302,91 @@ async fn long_input_rejected_at_every_length_still_goes_terminal()
     .await;
     drop(pg);
     drop_db(&db_name).await?;
+    result
+}
+
+/// One input that kills the provider must not hold its batch-mates.
+///
+/// A transient batch error is meant to say "the provider failed", not "an
+/// input is bad" — but a provider that dies *because of* an input reports
+/// the same thing. Releasing the whole claim then means the poisonous input
+/// comes back with its batch on every drain, forever: the release path does
+/// not burn attempts, so the job never reaches the cap and never goes
+/// terminal. Observed in practice on a book ingest — one scanned page whose
+/// OCR hallucinated a 300-row CJK table left the other 31 pages of its
+/// batch unembedded with `attempts = 0`.
+///
+/// The drain now probes the provider after a transient batch failure. It
+/// answers, so the batch's own contents are at fault and the jobs are
+/// isolated individually.
+#[tokio::test]
+async fn one_crashing_input_does_not_block_its_batch() -> Result<(), Box<dyn std::error::Error>> {
+    let (pg, db_name) = fresh_pg().await;
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let owner = owner_fixture();
+        let engine = engine_for(pg.clone(), Some(Arc::new(CrashOnInputEmbedding)));
+        let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
+
+        let mut healthy = Vec::new();
+        for label in ["first fact", "second fact", "third fact"] {
+            healthy.push(
+                engine
+                    .fact_ingest(&authz, fact_draft(&owner, label))
+                    .await?,
+            );
+        }
+        let poisoned = engine
+            .fact_ingest(&authz, fact_draft(&owner, "poison fact"))
+            .await?;
+
+        // Inline embedding at write time already failed for all four (the
+        // batch call carries the poison), leaving four pending jobs.
+        let drain = engine.drain_embedding_jobs(10).await?;
+        assert_eq!(
+            drain.processed, 4,
+            "every claimed job must be accounted for"
+        );
+        assert_eq!(drain.failed, 1, "only the poisonous input should fail");
+
+        for outcome in &healthy {
+            assert_eq!(
+                count_fact_embeddings(pg.pool_for_tests(), outcome.memory_id).await?,
+                1,
+                "a batch-mate of a crashing input must still be embedded"
+            );
+            assert!(
+                load_embedding_job(pg.pool_for_tests(), outcome.memory_id)
+                    .await?
+                    .is_none(),
+                "an embedded job must be completed, not left pending"
+            );
+        }
+
+        // The poisonous job is now attributable, so it burns attempts and
+        // will reach the cap instead of cycling forever at attempts = 0.
+        let Some((status, attempts, last_error)) =
+            load_embedding_job(pg.pool_for_tests(), poisoned.memory_id).await?
+        else {
+            panic!("the failing job must remain in embedding_jobs");
+        };
+        assert_eq!(status, "pending");
+        assert_eq!(attempts, 1, "an isolated failure must burn an attempt");
+        assert!(
+            last_error
+                .as_deref()
+                .is_some_and(|err| err.contains("runner process no longer running")),
+            "last_error must name the provider failure: {last_error:?}"
+        );
+        assert_eq!(
+            count_fact_embeddings(pg.pool_for_tests(), poisoned.memory_id).await?,
+            0
+        );
+
+        Ok(())
+    }
+    .await;
+
+    drop(pg);
+    let _ = drop_db(&db_name).await;
     result
 }

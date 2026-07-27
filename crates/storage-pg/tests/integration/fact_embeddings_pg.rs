@@ -148,6 +148,45 @@ impl EmbeddingClient for PoisonTextEmbedding {
     }
 }
 
+/// A provider that *dies* on one input rather than rejecting it: the batch
+/// call fails **transiently**, and so does the per-item call for that one
+/// text, while everything else — including a trivial probe — succeeds.
+///
+/// This is a local model runner crashing on a pathological input, observed
+/// with a scanned page whose OCR hallucinated a 300-row CJK table: ollama
+/// answers `400 {"error": "… EOF"}`, which is correctly classified
+/// transient because nothing looked at the input. Indistinguishable from an
+/// outage by the response alone, and the difference is what decides whether
+/// the batch's other 31 jobs make progress.
+#[derive(Debug)]
+struct CrashOnInputEmbedding;
+
+#[async_trait::async_trait]
+impl EmbeddingClient for CrashOnInputEmbedding {
+    async fn embed(&self, text: &str) -> Result<Vec<f32>, LlmError> {
+        if text.contains("poison") {
+            Err(LlmError::Embed("runner process no longer running".into()))
+        } else {
+            Ok(vec![0.25; EMBEDDING_DIM])
+        }
+    }
+
+    async fn embed_many(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, LlmError> {
+        if texts.iter().any(|text| text.contains("poison")) {
+            return Err(LlmError::Embed("runner process no longer running".into()));
+        }
+        Ok(texts.iter().map(|_| vec![0.25; EMBEDDING_DIM]).collect())
+    }
+
+    fn model_id(&self) -> &'static str {
+        "stub-fact-embed"
+    }
+
+    fn dim(&self) -> usize {
+        EMBEDDING_DIM
+    }
+}
+
 /// Mirrors a provider token cap: rejects any input over `CAP` bytes as
 /// permanent (batch and per-item), embeds shorter inputs. Exercises the
 /// chunked-embedding rescue — an over-limit memory should end up with

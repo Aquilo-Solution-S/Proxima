@@ -1122,6 +1122,38 @@ page, and core cannot make that agreement on a producer's behalf. Register
 a flavor `CitationMappingPayload` targeting `core/uploaded-blob-v1` — see
 [docs/11 §Core-registered schemas](docs/11-citations.md#core-registered-schemas).
 
+## 30. v0.0.7: one crashing input no longer blocks its embedding batch
+
+**No action required.** Behaviour-only change to the embedding drain.
+
+A transient batch failure is supposed to mean "the provider failed", not
+"an input is bad" — but a provider that *dies because of* an input reports
+the same thing. Proxima classified that correctly and released the whole
+claim without burning attempts, which is right for an outage and wrong
+here: the poisonous input came back with its batch on every drain, and
+because the release path burns no attempt, the job never reached the cap
+and never went terminal.
+
+Observed while ingesting a scanned book: one page whose OCR hallucinated a
+300-row CJK table killed the local model runner, and the other **31 pages
+of its batch stayed unembedded at `attempts = 0`** — semantically
+invisible, with the cause recorded only in `embedding_jobs.last_error`.
+
+The drain now probes the provider with a trivial input after a transient
+batch failure:
+
+- **provider answers** → the batch's own contents are at fault, so its jobs
+  are embedded individually, exactly as a permanent rejection already
+  isolates them. Batch-mates make progress; the offending job burns an
+  attempt and walks to the cap.
+- **probe also fails** → the provider really is down. Claims are released
+  without burning attempts, exactly as before, at the cost of one extra
+  small request per failed batch.
+
+Nothing to configure, no schema change. If you monitor provider request
+counts, expect one additional single-input request per transient batch
+failure.
+
 ## Checks before calling an upgrade done
 
 ```sh
