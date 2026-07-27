@@ -36,6 +36,18 @@ const TEXT_SEARCH_CONFIG: &str = "english";
 // penalizes wide multi-term covers, so an unbanded strict match can rank
 // below a saturated single-term rescue hit — hence disjoint bands:
 // strict [0.5, 1.0] > rescue (0.25, 0.45] > substring LIKE 0.25.
+//
+// `ts_rank_cd` is normalised with flag 32 (divide by itself + 1) rather than
+// multiplied by a constant. Nothing here assigns A/B/C/D lexeme weights, so
+// every document is weight D, and cover density for weight D starts at 0.1 —
+// which made the old `LEAST(ts_rank_cd(...) * 10.0, 1.0)` equal to 1.0 for
+// every row that matched at all. Measured against an indexed corpus: 3,170
+// of 3,170 matching rows saturated, in both arms. The rank term was a
+// constant, so *within* a band nothing was ranked and the order was whatever
+// the plan happened to emit — a lexical search over 5,142 matches returned
+// six unrelated files all scoring exactly 0.45. Flag 32 bounds the value in
+// [0, 1) and it varies (0.091..0.888 over those same rows), leaving `LEAST`
+// as a guard rather than the whole computation.
 
 #[derive(Debug)]
 struct SearchRow {
@@ -279,7 +291,7 @@ fn lexical_branch_sql<'p>(
     let rescue = matches!(req.mode, SearchMode::Lexical);
     let rescue_score_arm = if rescue {
         ", CASE WHEN c.search_tsv @@ q.any_tsq
-                THEN 0.25 + LEAST(ts_rank_cd(c.search_tsv, q.any_tsq) * 10.0, 1.0) * 0.2
+                THEN 0.25 + LEAST(ts_rank_cd(c.search_tsv, q.any_tsq, 32), 1.0) * 0.2
                 ELSE 0.0 END"
     } else {
         ""
@@ -331,7 +343,7 @@ fn lexical_branch_sql<'p>(
                  left(c.search_text, 480) AS snippet,
                  GREATEST(
                      CASE WHEN c.search_tsv @@ q.tsq
-                          THEN 0.5 + LEAST(ts_rank_cd(c.search_tsv, q.tsq) * 10.0, 1.0) * 0.5
+                          THEN 0.5 + LEAST(ts_rank_cd(c.search_tsv, q.tsq, 32), 1.0) * 0.5
                           ELSE 0.0 END{rescue_score_arm},
                      CASE WHEN lower(c.search_text) LIKE '%' || lower(${query_param}) || '%'
                           THEN 0.25 ELSE 0.0 END

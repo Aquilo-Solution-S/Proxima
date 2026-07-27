@@ -262,6 +262,17 @@ impl Tool for CodeSearchChunksTool {
             // `plainto_tsquery` emits only '&' between lexemes (no phrase or
             // negation operators), so rewriting them to '|' is safe.
             //
+            // `ts_rank_cd` is normalised with flag 32 (divide by itself + 1),
+            // not scaled by a bare multiplier. An unlabelled document — every
+            // document here, since nothing assigns A/B/C/D weights — has
+            // cover density of at least 0.1, so the old
+            // `LEAST(ts_rank_cd(...) * 10.0, 1.0)` was 1.0 for *every* row
+            // that matched at all: measured on the knip corpus, 3,170 of
+            // 3,170. The term contributed nothing and the strict band was a
+            // flat tie. Flag 32 keeps it inside [0, 1) and it varies (0.091
+            // to 0.888 over the same rows), so `LEAST` is now just a
+            // guard rather than the whole story.
+            //
             // Rescue ranks with `ts_rank(..., 1|32)`, not `ts_rank_cd`.
             // Cover density rewards a short span containing several query
             // terms, which repetitive DDL wins trivially: for "how does the
@@ -298,7 +309,7 @@ impl Tool for CodeSearchChunksTool {
                         (
                             GREATEST(
                                 CASE WHEN c.search_tsv @@ q.tsq
-                                     THEN 4.0 + LEAST(ts_rank_cd(c.search_tsv, q.tsq) * 10.0, 1.0) * 0.6
+                                     THEN 4.0 + LEAST(ts_rank_cd(c.search_tsv, q.tsq, 32), 1.0) * 0.6
                                      ELSE 0.0 END,
                                 CASE WHEN q.rare_all_tsq IS NOT NULL AND c.search_tsv @@ q.rare_all_tsq
                                      THEN 3.0 + LEAST(ts_rank(c.search_tsv, q.rare_all_tsq, 1|32) * 100.0, 1.0) * 0.6
