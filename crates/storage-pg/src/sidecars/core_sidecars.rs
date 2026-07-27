@@ -1,7 +1,8 @@
 use super::{
-    EdgeId, GoalId, PgCitedObjectSidecar, PgConnection, PgEdgePayload, PgEdgePayloadBatchFuture,
-    PgEdgeSidecar, PgGoalSidecar, PgSidecarFuture, PgSidecarReadCtx, PgSidecarRegistry,
-    PgSidecarRegistryFrozen, Postgres, SidecarPayload, StorageError, Transaction,
+    EdgeId, GoalId, PgCitationMappingSidecar, PgCitedObjectSidecar, PgConnection, PgEdgePayload,
+    PgEdgePayloadBatchFuture, PgEdgeSidecar, PgGoalSidecar, PgSidecarFuture, PgSidecarReadCtx,
+    PgSidecarRegistry, PgSidecarRegistryFrozen, Postgres, SidecarPayload, StorageError,
+    Transaction,
 };
 
 fn parse_utterance_speaker(value: &str) -> Result<proxima_core::Speaker, StorageError> {
@@ -241,6 +242,53 @@ impl PgCitedObjectSidecar for proxima_core::UploadedBlobPayload {
     }
 }
 
+impl PgCitationMappingSidecar for proxima_core::UploadedBlobPageSpanV1 {
+    fn insert_citation_mapping_sidecar<'t>(
+        &'t self,
+        tx: &'t mut PgConnection,
+        citation_mapping_id: uuid::Uuid,
+    ) -> PgSidecarFuture<'t> {
+        Box::pin(async move {
+            // The CHECK constraints on the table are the authority for any
+            // client; these conversions only keep an out-of-range u32 from
+            // arriving as a negative integer, which would satisfy no check
+            // and report as a confusing constraint violation instead of the
+            // range error it is.
+            let to_i32 = |value: u32, field: &str| {
+                i32::try_from(value).map_err(|err| {
+                    StorageError::ConstraintViolation(format!("{field} out of range: {err}"))
+                })
+            };
+            let page_from = to_i32(self.page_from, "page_from")?;
+            let page_to = to_i32(self.page_to, "page_to")?;
+            let char_start = self
+                .char_range_start
+                .map(|value| to_i32(value, "char_range_start"))
+                .transpose()?;
+            let char_end = self
+                .char_range_end
+                .map(|value| to_i32(value, "char_range_end"))
+                .transpose()?;
+            sqlx::query(
+                "INSERT INTO proxima_core.citation_uploaded_blob_page_span_v1
+                    (citation_mapping_id, page_from, page_to,
+                     char_range_start, char_range_end)
+                 VALUES ($1, $2, $3, $4, $5)
+                 ON CONFLICT (citation_mapping_id) DO NOTHING",
+            )
+            .bind(citation_mapping_id)
+            .bind(page_from)
+            .bind(page_to)
+            .bind(char_start)
+            .bind(char_end)
+            .execute(tx)
+            .await
+            .map_err(crate::error::map_err)?;
+            Ok(())
+        })
+    }
+}
+
 impl PgCitedObjectSidecar for proxima_core::verbs::persist_mcp_call::McpCallIoV1 {
     fn insert_cited_object_sidecar<'t>(
         &'t self,
@@ -302,4 +350,7 @@ pub fn register_core_pg_sidecars(registry: &mut PgSidecarRegistry) {
     registry.add_edge::<proxima_core::AgentLinkV1>();
     registry.add_cited_object::<proxima_core::UploadedBlobPayload>();
     registry.add_cited_object::<proxima_core::verbs::persist_mcp_call::McpCallIoV1>();
+    // `UploadedBlobWholeV1` is a pure link with no sidecar table, so it needs
+    // no entry here — `citation_mappings` is the whole mapping.
+    registry.add_citation_mapping::<proxima_core::UploadedBlobPageSpanV1>();
 }

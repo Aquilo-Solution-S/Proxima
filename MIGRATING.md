@@ -1066,6 +1066,62 @@ German stopwords, not compound splitting: `Türbreite` still does not match
 a query for `Tür`, which needs a hunspell dictionary installed in the
 server.
 
+## 29. v0.0.7: uploaded documents are citable, and citable by page
+
+`core/uploaded-blob-v1` has been a registered `CitedObject` schema since the
+baseline, and the S3 upload lane has been writing rows for it. But **no
+registered `CitationMapping` schema named it**, and a mapping is the only
+path from a Fact to a cited object (`memories.citation_mapping_id`).
+`authorize_fact_with_citation` checks that the mapping schema targets the
+object's schema, so there was no argument any caller could pass that
+attached a Fact to an uploaded blob. Core shipped an upload lane whose
+artefacts nothing could cite.
+
+**Two mappings are now registered**, both targeting `core/uploaded-blob-v1`:
+
+| Schema | Shape |
+|---|---|
+| `core/uploaded-blob-whole-v1` | Pure link — the whole artefact. No sidecar. |
+| `core/uploaded-blob-page-span-v1` | `page_from`, `page_to`, optional `char_range_start`/`char_range_end`. |
+
+Nothing existing changes. These are additive registrations plus one new
+sidecar table (migration 13); no schema you already use is touched.
+
+**Citing a page over MCP** now needs no flavor:
+
+```json
+{
+  "title": "Mindestbreite einer Tür",
+  "body": "Die lichte Durchgangsbreite beträgt mindestens 90 cm.",
+  "citation": {
+    "object_schema_id": "core/uploaded-blob-v1",
+    "object_schema_version": 1,
+    "object_payload": { "content_hash": "…", "bucket": "…", "object_key": "…",
+                        "sha256": "…", "byte_len": 4096, "mime": "application/pdf",
+                        "filename": "handbuch.pdf", "uploaded_at": "2026-07-27T00:00:00Z" },
+    "mapping_schema_id": "core/uploaded-blob-page-span-v1",
+    "mapping_schema_version": 1,
+    "mapping_payload": { "page_from": 47, "page_to": 47 }
+  }
+}
+```
+
+Re-citing the same document reuses its one `cited_objects` row — a book is
+one artefact and its pages are N citations, not N copies of the book.
+
+**Pages are one-based and inclusive at both ends.** A single page has
+`page_from == page_to`. `char_range_start`/`char_range_end` must be present
+together and are relative to the span's text, not the document's, so a
+mapping survives re-extraction as long as the pages did not move. The
+sidecar's `CHECK` constraints enforce all of this for any writer, not only
+for callers that went through the Rust type.
+
+**Regions on a page are deliberately not included.** A bounding box has to
+agree with whoever produced it about pixels, points, or fractions of the
+page, and core cannot make that agreement on a producer's behalf. Register
+a flavor `CitationMappingPayload` targeting `core/uploaded-blob-v1` — see
+[docs/11 §Core-registered schemas](docs/11-citations.md#core-registered-schemas).
+
 ## Checks before calling an upgrade done
 
 ```sh

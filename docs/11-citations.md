@@ -127,6 +127,37 @@ Re-receipt of the same observation produces the same source receipt id
 no-ops. Different chunks of the same artefact land distinct memories
 with distinct mappings, all pointing at one CitedObject.
 
+<a id="core-registered-schemas"></a>
+## Core-registered schemas
+
+Core registers the artefact vocabulary that is not domain-specific.
+Everything else is a flavor's.
+
+| Schema | Kind | Contract |
+|---|---|---|
+| `core/uploaded-blob-v1` | CitedObject | An uploaded artefact; see §Large artefact storage |
+| `core/uploaded-blob-whole-v1` | CitationMapping | The whole artefact. Pure link, no sidecar |
+| `core/uploaded-blob-page-span-v1` | CitationMapping | A page range inside it, optionally a character range |
+| `core/mcp-call-io` + `core/mcp-call-citation` | CitedObject + CitationMapping | Substrate-internal MCP call logging |
+
+Page numbers are **one-based and inclusive at both ends** — a single page
+is `page_from == page_to`. That is how a page is cited in prose and how it
+is printed on the page; zero-based would make "page 1" mean the second
+page in every citation read back by a human. `char_range_start` /
+`char_range_end` are optional, must be present together, and are relative
+to the span's text rather than the document's, so a mapping survives
+re-extraction as long as the pages did not move.
+
+A page span is core, not per-domain, because the artefact it locates into
+already is: a page range in an uploaded document says nothing about what
+kind of document it is, exactly as `uploaded-blob-v1` says nothing about
+what the bytes mean. What stays out of core is anything needing a
+coordinate-system contract — a region on a page has to agree with whoever
+produced the box about pixels, points, or fractions of the page, and that
+agreement belongs with the producer. Flavors register their own
+`CitationMappingPayload` for it, targeting `core/uploaded-blob-v1` or their
+own cited object.
+
 ## Large artefact storage
 
 Large original artefacts live in S3. Postgres stores Owner, schema,
@@ -205,6 +236,7 @@ separate `citations` table for them; the F→A / A→P invocation key
 ## Anchors
 
 - `three-layer-model`
+- `core-registered-schemas`
 - `trait-families`
 - `tables`
 - `multiplicity`
