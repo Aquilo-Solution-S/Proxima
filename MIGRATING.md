@@ -1010,6 +1010,62 @@ Chunks owned by `World` are never embedded at all
 (`embeddings_world_not_write_owner_chk`), so they are reachable only
 through the lexical arm.
 
+## 28. v0.0.7: the lexical text-search configuration is a database setting
+
+Proxima tokenised and queried with `english` written into two places that
+had to agree and had no way to check that they did: the regconfig inside
+`proxima_core.lexical_tsv` (which every stored `search_tsv` column is
+generated from) and a Rust constant in the search builder. Both now read
+`proxima_core.lexical_config()`.
+
+**Nothing changes by default.** The function returns `english`, migration 12
+rewrites no stored vector, and every query builds the same tsquery as
+before. If you index English text you can stop reading here.
+
+**If your corpus is not English, it now can be.** Measured on 2,350 pages of
+German technical literature with 130 verified questions:
+
+| arm | `english` | `german` |
+|---|---|---|
+| recall@5 | 0.438 | **0.577** |
+| MRR | 0.349 | **0.490** |
+| recall@5, questions that do not reuse their page's wording | 0.068 | **0.250** |
+
+The last row is the one that matters. Questions phrased in the source's own
+words score well under any configuration, because string overlap alone
+finds them; the third of questions phrased independently are what separate
+a working lexical arm from a decorative one, and there `english` on German
+text answers 1 in 15.
+
+**Switching is one call, and must not be done any other way:**
+
+```sql
+SELECT * FROM proxima_core.set_lexical_config('german');
+```
+
+It redefines the configuration and rewrites every stored tsvector generated
+from it — including flavor sidecars such as `proxima_code.code_chunk_v1`,
+which it finds by introspection rather than by a list. It returns the
+columns it rebuilt.
+
+**Do not redefine `proxima_core.lexical_config()` yourself.** `PostgreSQL`
+permits it and does not recompute stored generated columns, so rows written
+before the change keep their old tokenisation and rows written after get the
+new one, with no error at any point. Half the corpus stops being reachable
+by the other half's queries. `set_lexical_config` exists because that
+failure is silent.
+
+**Plan for a maintenance window.** Each affected table is rewritten under
+`ACCESS EXCLUSIVE`; migration 11 measured 54.7s for 149k memories plus a
+24.8k-row sidecar.
+
+**Two things the switch does not do.** It does not re-embed anything — the
+semantic arm is unaffected, and on a non-English corpus it is what carries
+retrieval until you switch. And `german` here is Snowball stemming plus
+German stopwords, not compound splitting: `Türbreite` still does not match
+a query for `Tür`, which needs a hunspell dictionary installed in the
+server.
+
 ## Checks before calling an upgrade done
 
 ```sh

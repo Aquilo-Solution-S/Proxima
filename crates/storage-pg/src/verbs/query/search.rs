@@ -19,15 +19,29 @@ use crate::pgvector::SET_HNSW_SEARCH_SQL;
 
 use super::{entity_owner_union, read_owner_columns};
 
-/// Text-search configuration for the lexical branch. `english` stems both
-/// document and query tokens ("adopted" matches "adopt") and drops
-/// stopwords, so a natural-language question's content words drive the
-/// AND-semantics match instead of its function words ("what", "my", …).
-/// With `simple` (the previous config), every question word had to appear
-/// literally — on conversational corpora most queries matched nothing.
-/// A query that is *all* stopwords yields an empty tsquery and falls back
-/// to the substring `LIKE` arm below.
-const TEXT_SEARCH_CONFIG: &str = "english";
+/// Text-search configuration for the lexical branch, read from the database
+/// rather than written here.
+///
+/// The configuration stems both document and query tokens ("adopted" matches
+/// "adopt") and drops stopwords, so a natural-language question's content
+/// words drive the AND-semantics match instead of its function words ("what",
+/// "my", …). With `simple` (the pre-v0.0.7 config), every question word had
+/// to appear literally — on conversational corpora most queries matched
+/// nothing. A query that is *all* stopwords yields an empty tsquery and falls
+/// back to the substring `LIKE` arm below.
+///
+/// It used to be the literal `english` in this file, and separately the
+/// literal `english` inside `proxima_core.lexical_tsv`, which every stored
+/// `search_tsv` column is generated from. Those two must name the same
+/// configuration: a german document vector answered by an english tsquery
+/// does not match worse, it does not match. Emitting the function call keeps
+/// one authority for both sides, so a deployment that switches the
+/// configuration (`proxima_core.set_lexical_config`) moves the query side
+/// with it and cannot half-switch.
+///
+/// `lexical_config()` is IMMUTABLE and returns a constant, so the planner
+/// folds it; this costs nothing per query.
+const TEXT_SEARCH_CONFIG: &str = "proxima_core.lexical_config()";
 
 /// SQL that lowercases a bound query parameter and neutralises the `LIKE`
 /// metacharacters inside it, for use between `'%' || … || '%'` with
@@ -350,7 +364,7 @@ fn lexical_branch_sql<'p>(
         sql,
         " , q AS (
                SELECT websearch_to_tsquery(
-                   '{ts_config}',
+                   {ts_config},
                    regexp_replace(
                        regexp_replace(${query_param}, '[[:punct:]]+', ' ', 'g'),
                        '\\m[[:alnum:]]{{255}}[[:alnum:]]+\\M',
@@ -364,7 +378,7 @@ fn lexical_branch_sql<'p>(
                NULLIF(
                    replace(
                        plainto_tsquery(
-                           '{ts_config}',
+                           {ts_config},
                            regexp_replace(
                                regexp_replace(${query_param}, '[[:punct:]]+', ' ', 'g'),
                                '\\m[[:alnum:]]{{255}}[[:alnum:]]+\\M',

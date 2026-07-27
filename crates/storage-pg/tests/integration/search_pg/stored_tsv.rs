@@ -7,10 +7,16 @@
 //! memory silently scores differently depending on which table it lives
 //! in — no error, just wrong results. These tests pin both against the
 //! literal expression the builder computed before 0011.
+//!
+//! 0012 added the third place they can disagree: *which* text-search
+//! configuration both sides use. The last two tests pin that the switch
+//! moves every stored vector and the query side together.
 
 use crate::common::{drop_db, fresh_pg, owner_fixture};
+use proxima_core::storage_ports::*;
+use proxima_core::verbs::query::EntityKind;
 
-use super::{insert_search_abstraction, insert_text_memory};
+use super::{insert_search_abstraction, insert_text_memory, lexical_request};
 
 /// The exact tsvector expression the lexical branch inlined before 0011,
 /// as a SQL fragment over `$1`.
@@ -159,6 +165,146 @@ async fn stored_sidecar_tsv_matches_the_projection_concatenation()
     assert_eq!(
         mismatches, 0,
         "stored agent_derivation_v1.search_tsv drifted"
+    );
+
+    drop(pg);
+    drop_db(&db_name).await?;
+    Ok(())
+}
+
+/// Switching the configuration must rewrite every stored vector generated
+/// from it — including sidecars in schemas core has never heard of.
+///
+/// Redefining `lexical_config()` by hand does not: `PostgreSQL` permits the
+/// replacement and leaves stored generated columns untouched, so rows
+/// written before the switch keep their old tokenisation while rows written
+/// after get the new one. Nothing raises an error, and half the corpus stops
+/// being reachable by the other half's queries. `set_lexical_config` exists
+/// to make that impossible, and it finds its work by introspection because
+/// core cannot enumerate flavor tables.
+#[tokio::test]
+async fn switching_the_lexical_config_rebuilds_every_stored_vector()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (pg, db_name) = fresh_pg().await;
+    pg.run_migrations().await?;
+
+    // Stand in for a flavor sidecar: a generated column in a schema the core
+    // migration does not know exists.
+    sqlx::query("CREATE SCHEMA proxima_flavorish")
+        .execute(pg.pool_for_tests())
+        .await?;
+    sqlx::query(
+        "CREATE TABLE proxima_flavorish.chunk_v1 (
+             id integer PRIMARY KEY,
+             body text NOT NULL,
+             search_tsv tsvector
+                 GENERATED ALWAYS AS (proxima_core.lexical_tsv(body)) STORED
+         )",
+    )
+    .execute(pg.pool_for_tests())
+    .await?;
+    sqlx::query("INSERT INTO proxima_flavorish.chunk_v1 (id, body) VALUES (1, $1)")
+        .bind("Die Bauleitung überwacht die Ausführung")
+        .execute(pg.pool_for_tests())
+        .await?;
+
+    let owner = owner_fixture();
+    insert_text_memory(&pg, &owner, "Die Bauleitung überwacht die Ausführung").await?;
+
+    let english: String =
+        sqlx::query_scalar("SELECT search_tsv::text FROM proxima_flavorish.chunk_v1 WHERE id = 1")
+            .fetch_one(pg.pool_for_tests())
+            .await?;
+    assert!(
+        english.contains("'die'"),
+        "english indexes the German stopword `die` as a content word: {english}"
+    );
+
+    let rebuilt: Vec<(String, String, String)> = sqlx::query_as(
+        "SELECT rebuilt_schema, rebuilt_table, rebuilt_column
+           FROM proxima_core.set_lexical_config('german')",
+    )
+    .fetch_all(pg.pool_for_tests())
+    .await?;
+    assert!(
+        rebuilt
+            .iter()
+            .any(|(s, t, _)| s == "proxima_flavorish" && t == "chunk_v1"),
+        "the switch skipped a generated column outside proxima_core: {rebuilt:#?}"
+    );
+    assert!(
+        rebuilt
+            .iter()
+            .any(|(s, t, _)| s == "proxima_core" && t == "memories"),
+        "the switch skipped memories.search_tsv: {rebuilt:#?}"
+    );
+
+    let german: String =
+        sqlx::query_scalar("SELECT search_tsv::text FROM proxima_flavorish.chunk_v1 WHERE id = 1")
+            .fetch_one(pg.pool_for_tests())
+            .await?;
+    assert!(
+        !german.contains("'die'") && german.contains("'bauleit'"),
+        "the pre-switch row kept its english vector: {german}"
+    );
+
+    // No column may disagree with the function after the switch — that is
+    // exactly the split-brain state a manual redefinition produces.
+    let drifted: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM proxima_core.memories m
+          WHERE m.search_tsv IS DISTINCT FROM
+                proxima_core.lexical_tsv(COALESCE(m.text, ''))",
+    )
+    .fetch_one(pg.pool_for_tests())
+    .await?;
+    assert_eq!(
+        drifted, 0,
+        "stored memories.search_tsv drifted after the switch"
+    );
+
+    drop(pg);
+    drop_db(&db_name).await?;
+    Ok(())
+}
+
+/// The query side must follow the switch in the same step.
+///
+/// This is the property that makes the configuration safe to change at all:
+/// the builder emits `proxima_core.lexical_config()` rather than a literal,
+/// so the tsquery is always built in the configuration the stored vectors
+/// were built in. Before 0012 the two were independent literals in a
+/// migration and a Rust constant.
+#[tokio::test]
+async fn the_query_side_follows_a_switched_lexical_config() -> Result<(), Box<dyn std::error::Error>>
+{
+    let (pg, db_name) = fresh_pg().await;
+    pg.run_migrations().await?;
+
+    let owner = owner_fixture();
+    let memory_id =
+        insert_text_memory(&pg, &owner, "Die Bauleitung überwacht die Ausführung").await?;
+
+    // `Bauleitungen` shares no literal token with the text; only a German
+    // stemmer conflates it with `Bauleitung`. The substring arm cannot
+    // rescue it either — `bauleitungen` is not a substring of the body.
+    let mut request = lexical_request(&owner, "Bauleitungen");
+    request.kind = Some(EntityKind::Abstraction);
+
+    let before = pg.search_memories(&request, &[]).await?.results;
+    assert!(
+        before.is_empty(),
+        "english matched an inflected German form it cannot stem: {before:#?}"
+    );
+
+    sqlx::query("SELECT proxima_core.set_lexical_config('german')")
+        .execute(pg.pool_for_tests())
+        .await?;
+
+    let after = pg.search_memories(&request, &[]).await?.results;
+    assert_eq!(
+        after.first().map(|row| row.memory_id.into_inner()),
+        Some(memory_id),
+        "german did not match the inflected form after the switch: {after:#?}"
     );
 
     drop(pg);
