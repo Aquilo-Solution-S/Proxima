@@ -2256,6 +2256,7 @@ dependencies = [
  "time",
  "tokio",
  "tokio-stream",
+ "tracing",
  "tree-sitter",
  "tree-sitter-rust",
  "tree-sitter-typescript",
