@@ -246,3 +246,53 @@ async fn world_published_memory_needs_world_in_read_set() -> Result<(), Box<dyn 
     drop_db(&db_name).await?;
     Ok(())
 }
+
+/// `%` and `_` in a query are characters the user typed, not wildcards.
+///
+/// The substring arm concatenated the bound parameter straight into a `LIKE`
+/// pattern, so `_` matched any character and `%` matched any run of them.
+/// Searching for `100%` matched every memory beginning `100` — 70 of 3,000
+/// rows on an indexed corpus where the literal matched none — and a query of
+/// a bare `%` matched the whole corpus at the substring band's score.
+///
+/// The decoy here is reachable *only* through the substring arm: its text
+/// shares no lexeme with the query, so a hit proves wildcard expansion.
+#[tokio::test]
+async fn like_metacharacters_in_a_query_are_literal() -> Result<(), Box<dyn std::error::Error>> {
+    let (pg, db_name) = fresh_pg().await;
+    pg.run_migrations().await?;
+    let owner = owner_fixture();
+
+    let literal = insert_search_abstraction(&pg, &owner, "alpha_beta configuration", None).await?;
+    let decoy = insert_search_abstraction(&pg, &owner, "alphaXbeta configuration", None).await?;
+
+    let req = any_kind_lexical_request(&owner, "alpha_beta");
+    let ids: Vec<_> = pg
+        .search_memories(&req, &[])
+        .await?
+        .results
+        .iter()
+        .map(|row| row.memory_id.into_inner())
+        .collect();
+    assert!(
+        ids.contains(&literal),
+        "the memory containing the literal text must match"
+    );
+    assert!(
+        !ids.contains(&decoy),
+        "`_` must not match an arbitrary character: {ids:?}"
+    );
+
+    // A query that is nothing but wildcards must not sweep the corpus.
+    let req = any_kind_lexical_request(&owner, "%");
+    let swept = pg.search_memories(&req, &[]).await?.results;
+    assert!(
+        swept.is_empty(),
+        "a bare `%` matched {} memories",
+        swept.len()
+    );
+
+    drop(pg);
+    drop_db(&db_name).await?;
+    Ok(())
+}

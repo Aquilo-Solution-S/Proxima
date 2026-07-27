@@ -29,6 +29,24 @@ use super::{entity_owner_union, read_owner_columns};
 /// to the substring `LIKE` arm below.
 const TEXT_SEARCH_CONFIG: &str = "english";
 
+/// SQL that lowercases a bound query parameter and neutralises the `LIKE`
+/// metacharacters inside it, for use between `'%' || … || '%'` with
+/// `ESCAPE '\'`.
+///
+/// The substring arm used to concatenate the parameter in raw, so `%` and `_`
+/// in a user's query were wildcards rather than characters. Searching for
+/// `100%` matched every memory beginning `100` — 70 of 3,000 rows on an
+/// indexed corpus where the literal string matched none — and a query of a
+/// bare `%` matched the entire corpus at the substring band's score.
+///
+/// The backslash is escaped first, so an already-backslashed query cannot
+/// smuggle an escape through the later replacements.
+fn like_literal(query_param: usize) -> String {
+    format!(
+        "replace(replace(replace(lower(${query_param}), '\\\\', '\\\\\\\\'), '%', '\\\\%'), '_', '\\\\_')"
+    )
+}
+
 // Lexical score bands. Websearch AND semantics require every content word
 // to co-occur in one memory; on conversational corpora most multi-word
 // questions match nothing, so an OR-rescue arm re-runs the same lexemes
@@ -345,7 +363,7 @@ fn lexical_branch_sql<'p>(
                      CASE WHEN c.search_tsv @@ q.tsq
                           THEN 0.5 + LEAST(ts_rank_cd(c.search_tsv, q.tsq, 32), 1.0) * 0.5
                           ELSE 0.0 END{rescue_score_arm},
-                     CASE WHEN lower(c.search_text) LIKE '%' || lower(${query_param}) || '%'
+                     CASE WHEN lower(c.search_text) LIKE '%' || {like_literal} || '%' ESCAPE '\\'
                           THEN 0.25 ELSE 0.0 END
                  )::real AS lexical_score,
                  0.0::real AS similarity_score
@@ -353,7 +371,7 @@ fn lexical_branch_sql<'p>(
           WHERE c.search_text <> ''
             AND (
                 c.search_tsv @@ q.tsq{rescue_where_arm}
-                OR lower(c.search_text) LIKE '%' || lower(${query_param}) || '%'
+                OR lower(c.search_text) LIKE '%' || {like_literal} || '%' ESCAPE '\\'
             )
           ORDER BY {order_by}
           LIMIT {}",
@@ -361,7 +379,8 @@ fn lexical_branch_sql<'p>(
         order_by = order_by,
         ts_config = TEXT_SEARCH_CONFIG,
         rescue_score_arm = rescue_score_arm,
-        rescue_where_arm = rescue_where_arm
+        rescue_where_arm = rescue_where_arm,
+        like_literal = like_literal(query_param)
     )
     .expect("write to String is infallible");
     Ok((sql, projections))
