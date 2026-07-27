@@ -50,13 +50,20 @@ local checkout and ingest its current tree:
 Then search with `proxima-code_search_chunks`, `proxima-code_search_commits`,
 and read exact revisions with `proxima-code_open_file_revision`.
 
-`proxima-code_search_chunks` is lexical, and it takes both shapes of query.
-An identifier or path (`lexical_tsv`, `common_candidates_sql`,
+`proxima-code_search_chunks` takes both shapes of query. An identifier or
+path (`lexical_tsv`, `common_candidates_sql`,
 `crates/storage-pg/src/verbs`) matches as a substring and outranks everything
 else. A plain-English question ("how does the chunker decide how big a chunk
 should be") matches on shared content words: chunks containing all of them
 rank above chunks containing some, so a question returns its best candidates
 rather than nothing.
+
+It ranks in one of three `mode`s, defaulting to `hybrid`: full-text and
+embedding similarity fused by reciprocal rank. `lexical` and `semantic`
+select a single arm. With no embedding model configured — or before the
+backlog above has drained — `hybrid` ranks lexically and reports
+`degraded_to_lexical: true` rather than quietly returning less; `semantic`
+fails outright, since it has no other arm to fall back on.
 
 To re-index a repository from scratch — which v0.0.7 requires of indexes
 built by an earlier version, since chunking and rendering both changed —

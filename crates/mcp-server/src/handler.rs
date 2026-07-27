@@ -251,6 +251,7 @@ impl ServerHandler for DynamicHandler {
                 .map_or_else(|| serde_json::json!({}), serde_json::Value::Object);
             let author = author_from_args(&args, auth.as_ref(), &client_name, &client_version)?;
             strip_call_context_args(&mut args);
+            reject_nul_in_args(&args)?;
             let scope = auth.as_ref().map(|ctx| ctx.authz.tool_scope().clone());
             let output = server
                 .call_tool(&canonical_name, args, author, auth)
@@ -262,6 +263,60 @@ impl ServerHandler for DynamicHandler {
             Ok(result)
         }
     }
+}
+
+/// Reject `NUL` anywhere in a tool's arguments before dispatch.
+///
+/// A Postgres `text` value cannot contain `U+0000` — the server answers
+/// `invalid byte sequence for encoding "UTF8": 0x00` and aborts the
+/// statement. JSON strings can carry it (a `\u0000` escape is well-formed), so a
+/// caller could send one through any string argument of any tool, and it
+/// arrived as `-32603 internal server error` plus an `ERROR`-level log
+/// line: a client-driven input mistake reported, and alerted on, as a
+/// server fault. That is the exact failure
+/// [`tool_invocation_error_to_error_data`] exists to prevent, one layer
+/// further out.
+///
+/// Rejected rather than stripped. Silently removing the byte would answer
+/// a different query than the one asked, and the caller would have no way
+/// to know.
+///
+/// Checked over the whole argument tree rather than per tool, because the
+/// constraint is Postgres', not any one tool's: every string that reaches
+/// storage has it, including arguments of tools not yet written.
+fn reject_nul_in_args(args: &serde_json::Value) -> Result<(), ErrorData> {
+    // An explicit worklist rather than recursion. `serde_json` already caps
+    // parse depth at 127, so nothing that arrives here could exhaust the
+    // stack — but that bound belongs to the parser, and this walk should
+    // not depend on it.
+    let mut stack = vec![args];
+    while let Some(value) = stack.pop() {
+        match value {
+            serde_json::Value::String(text) => {
+                if text.contains('\0') {
+                    return Err(ErrorData::invalid_params(
+                        "arguments must not contain NUL (U+0000)".to_string(),
+                        None,
+                    ));
+                }
+            }
+            serde_json::Value::Array(items) => stack.extend(items.iter()),
+            serde_json::Value::Object(map) => {
+                for (key, item) in map {
+                    if key.contains('\0') {
+                        return Err(ErrorData::invalid_params(
+                            "argument names must not contain NUL (U+0000)".to_string(),
+                            None,
+                        ));
+                    }
+                    stack.push(item);
+                }
+            }
+            serde_json::Value::Null | serde_json::Value::Bool(_) | serde_json::Value::Number(_) => {
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Map a tool-invocation failure to a typed JSON-RPC error so external
@@ -904,5 +959,73 @@ mod tests {
 
         // Flavor-shipped / unknown tools get no substrate hints here.
         assert!(core_tool_annotations("company/upsert").is_none());
+    }
+
+    /// A NUL is well-formed JSON and fatal to Postgres, so it has to be
+    /// caught here rather than surfacing as a server fault.
+    #[test]
+    fn nul_in_a_string_argument_is_invalid_params() {
+        let args = serde_json::json!({ "query": "chunk\u{0}er" });
+        let err = reject_nul_in_args(&args).expect_err("NUL must be rejected");
+        assert_eq!(err.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+        assert!(err.message.contains("NUL"), "{}", err.message);
+    }
+
+    #[test]
+    fn nul_nested_in_an_array_or_object_is_found() {
+        for args in [
+            serde_json::json!({ "tags": ["fine", "b\u{0}ad"] }),
+            serde_json::json!({ "outer": { "inner": { "deep": "b\u{0}ad" } } }),
+            serde_json::json!({ "list": [{ "k": ["x", { "y": "b\u{0}ad" }] }] }),
+        ] {
+            assert!(
+                reject_nul_in_args(&args).is_err(),
+                "NUL must be found anywhere in the tree: {args}"
+            );
+        }
+    }
+
+    #[test]
+    fn nul_in_an_argument_name_is_rejected() {
+        let mut map = serde_json::Map::new();
+        map.insert("na\u{0}me".to_string(), serde_json::json!("fine"));
+        let err = reject_nul_in_args(&serde_json::Value::Object(map))
+            .expect_err("NUL in a key must be rejected");
+        assert!(err.message.contains("argument names"), "{}", err.message);
+    }
+
+    /// The check must not reject ordinary arguments, including other
+    /// control characters and non-ASCII text, which Postgres stores fine.
+    #[test]
+    fn ordinary_arguments_pass() {
+        let args = serde_json::json!({
+            "query": "how does the chunker decide\tsize?\nline two",
+            "limit": 12,
+            "include_calls": true,
+            "repo_handle": serde_json::Value::Null,
+            "tags": ["münchen", "\u{1F525} emoji", ""],
+        });
+        assert!(reject_nul_in_args(&args).is_ok());
+    }
+
+    /// The deepest argument tree that can actually arrive.
+    ///
+    /// `serde_json` rejects nesting at depth 128 with "recursion limit
+    /// exceeded", so 127 is the maximum an argument value can reach — this
+    /// walks it without touching the stack. (A hand-built `Value` far deeper
+    /// than that overflows on `Drop`, in `serde_json` itself, before this
+    /// function is ever called; such a value cannot come from a request.)
+    #[test]
+    fn the_deepest_reachable_argument_tree_is_walked() {
+        let deep = format!("{}{}{}", "[".repeat(127), "\"leaf\"", "]".repeat(127));
+        let value: serde_json::Value =
+            serde_json::from_str(&deep).expect("127 levels is under the parser limit");
+        assert!(reject_nul_in_args(&value).is_ok());
+
+        let too_deep = format!("{}{}{}", "[".repeat(128), "\"leaf\"", "]".repeat(128));
+        assert!(
+            serde_json::from_str::<serde_json::Value>(&too_deep).is_err(),
+            "the parser, not this function, is what bounds depth"
+        );
     }
 }

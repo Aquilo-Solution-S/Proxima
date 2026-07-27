@@ -889,6 +889,28 @@ that reports `degraded_to_lexical: true` — to return the same *set* in a
 different, better order. Nothing about the schema or the plan shape changed;
 no re-index is required.
 
+**The OR-rescue arm additionally ranks by length-normalised `ts_rank`
+rather than by cover density**, which moves lexical ordering a second time
+and by much more. Cover density rewards a short span containing several
+query terms, and repetitive structured data wins that trivially: against an
+indexed code corpus, a real question returned a documentation page and
+eight chunks of one `schema.json`, several scoring identically to six
+decimal places, while the file that actually answered it never appeared.
+
+| corpus | before | after |
+|---|---|---|
+| 17 real bug reports | 1 of 17 | **5 of 17** |
+| 7 real bug reports | 3 of 7 | **5 of 7** |
+| 24 plain-English questions | 12 of 24 | **17 of 24** |
+
+Only the rescue arm changed. The strict arm keeps cover density, because
+giving it length normalisation too changes nothing on those same corpora —
+a multi-sentence query almost never AND-matches, so the arm does not fire.
+The score bands are unchanged, so anything comparing against the documented
+`[0.5, 1.0]` / `(0.25, 0.45]` / `0.25` ranges still holds. `semantic` and
+undegraded `hybrid` searches are untouched: the rescue arm only exists in
+`lexical` mode.
+
 `proxima-code_search_chunks` additionally ranks a query's structured
 identifiers on their own, and prefers a chunk a grammar parsed
 (`chunk_type <> 'file'`) over a line window of a file no grammar could read.
@@ -907,6 +929,18 @@ A query with no identifiers in it is unaffected.
   A caller that used the old value to place the snippet in the file was
   wrong about every line after the cut.
 
+- **A `repo_handle` that names no repository is now rejected** by
+  `proxima-code_search_chunks`, `proxima-code_search_commits` and
+  `proxima-code_open_file_revision`, with
+  `repo_handle not found for owner: <handle>`. They previously returned an
+  empty `matches`/`commits` or a null `revision`, which reads exactly like
+  "this repository has nothing indexed". Only the *name* forms were
+  checked; a handle or a bare UUID short-circuited on parse, so a stale
+  handle after `erase_repo`, a typo, or another owner's id all resolved
+  silently. `proxima-code_ingest_head_snapshot` already errored, so this
+  makes one tool family agree with itself. A handle for a repository owned
+  by someone else reports exactly what a nonexistent one reports.
+
 **Already-terminal embedding jobs are not recovered by this release.** A
 transient upstream failure that Ollama reports as HTTP 400 used to be filed
 as a permanently rejected input; that is fixed going forward, but rows
@@ -924,6 +958,57 @@ UPDATE proxima_core.embedding_jobs
 
 Widen the `last_error` filter only to messages you recognise as transport
 failures; a genuinely over-limit input should stay terminal.
+
+## 27. v0.0.7: `proxima-code_search_chunks` gains a semantic arm
+
+`search_chunks` takes a new `mode` argument — `lexical`, `semantic`, or
+`hybrid` — and **defaults to `hybrid`**. The rules are the ones
+`core_search_memories` already follows, so there is one contract to learn
+rather than two.
+
+**If you have no embedding model configured, nothing changes.** `hybrid`
+finds no embedding client, ranks lexically, and sets
+`degraded_to_lexical: true`. The order and the scores are what `lexical`
+returns, which is what this tool returned before this release. Pass
+`mode: "lexical"` to say so explicitly and skip the probe.
+
+**If you do have one, the default result order changes** — that is the
+point of the change. Measured over three corpora, top-8 distinct files:
+
+| corpus | lexical | hybrid |
+|---|---|---|
+| 17 real knip bug reports | 0.331 MRR, 9 of 17 | **0.598, 13 of 17** |
+| 7 real prek bug reports | 0.466, 7 of 7 | **0.592, 6 of 7** |
+| 24 plain-English questions | 0.541, 18 of 24 | **0.636, 22 of 24** |
+
+`mode: "lexical"` pins the old behaviour exactly if you need it.
+
+**Three response fields are new**, all additive:
+
+- `mode` — the mode you asked for, echoed.
+- `degraded_to_lexical` — a `hybrid` search ranked lexically only, because
+  no embedding client is configured, the provider call failed, or nothing
+  in the searched scope is embedded yet. Never true for `lexical` or
+  `semantic`.
+- per match, `lexical_score` and `similarity_score` — the two components
+  behind `score`.
+
+**`score` changes meaning under `hybrid`.** It is a fused rank score of
+roughly 0.0–0.07, not a lexical band score of 0.0–15. Compare scores within
+one response, never across modes or responses. `lexical_score` still
+carries the band score if that is what you were reading.
+
+**`mode: "semantic"` fails** rather than degrading, because it has no other
+arm and answering lexically would answer a different question. The error
+names the cause and the way out.
+
+**Freshly ingested chunks are not immediately searchable semantically.**
+Chunks are embedded by the durable job queue, not by the write that creates
+them, so between `ingest_head_snapshot` and a `maintain-embeddings` drain a
+new repository is lexical-only — and reports it via `degraded_to_lexical`.
+Chunks owned by `World` are never embedded at all
+(`embeddings_world_not_write_owner_chk`), so they are reachable only
+through the lexical arm.
 
 ## Checks before calling an upgrade done
 

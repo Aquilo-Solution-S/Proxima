@@ -186,3 +186,56 @@ async fn lexical_or_rescue_matches_partial_content_words() -> Result<(), Box<dyn
     drop_db(&db_name).await?;
     Ok(())
 }
+
+/// Inside the rescue band, a document that repeats one query word must not
+/// outrank one that contains more distinct query words.
+///
+/// This is the shape that made lexical search useless on a code corpus.
+/// Cover density rewards a short span holding several query terms, and
+/// repetitive structured data wins that trivially: measured against 4,935
+/// indexed chunks with a real bug report as the query, `ts_rank_cd` put a
+/// documentation page and eight chunks of one `schema.json` on top —
+/// several scoring identically to six decimal places — and never returned
+/// the file the fix touched. Length normalisation is what separates the
+/// two, so the rescue arm ranks with `ts_rank(v, q, 1|32)`.
+#[tokio::test]
+async fn rescue_ranks_distinct_terms_above_one_word_repeated()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (pg, db_name) = fresh_pg().await;
+    pg.run_migrations().await?;
+    let owner = owner_fixture();
+
+    // Two of the three content lexemes, in one short sentence.
+    let precise =
+        insert_search_abstraction(&pg, &owner, "the kittens found a shelter", None).await?;
+    // One lexeme, sixty times, in a document twenty times longer — the
+    // schema.json shape.
+    let repetitive = insert_search_abstraction(
+        &pg,
+        &owner,
+        &format!("kittens {}", "kittens ".repeat(60)),
+        None,
+    )
+    .await?;
+
+    let mut req = lexical_request(&owner, "adopted kittens from a shelter");
+    req.kind = Some(EntityKind::Abstraction);
+    let page = pg.search_memories(&req, &[]).await?;
+    let score_of = |id: uuid::Uuid| {
+        page.results
+            .iter()
+            .find(|row| row.memory_id.into_inner() == id)
+            .map(|row| row.score)
+    };
+    let precise_score = score_of(precise).expect("precise match present");
+    let repetitive_score = score_of(repetitive).expect("repetitive match present");
+    assert!(
+        precise_score > repetitive_score,
+        "two distinct query words must outrank one word repeated sixty times: \
+         {precise_score} vs {repetitive_score}"
+    );
+
+    drop(pg);
+    drop_db(&db_name).await?;
+    Ok(())
+}

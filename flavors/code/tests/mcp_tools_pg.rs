@@ -1703,6 +1703,260 @@ fn engine_for_test(pg: PgStorage) -> Engine {
     Engine::new(registry_for_engine()).with_storage_ports(Arc::new(pg).storage_ports())
 }
 
+/// A deterministic stand-in for an embedding model.
+///
+/// Every text that mentions one of `TOPIC_MARKERS` embeds to the same basis
+/// vector; everything else embeds to a different one. Cosine similarity is
+/// then exactly 1.0 within a topic and 0.0 across topics, which is what
+/// makes the semantic assertions below about *Proxima's* behaviour rather
+/// than about how well some real model happens to score. The markers are
+/// chosen so that a query and its intended chunk share no content word, so
+/// no lexical arm can reach the answer.
+#[derive(Debug)]
+struct TopicEmbedding;
+
+const TOPIC_MARKERS: [&str; 2] = ["halt_iteration", "stop going round again"];
+
+#[async_trait::async_trait]
+impl proxima_core::llm::EmbeddingClient for TopicEmbedding {
+    async fn embed(&self, text: &str) -> Result<Vec<f32>, proxima_core::llm::LlmError> {
+        let mut embedding = vec![0.0; proxima_core::llm::EMBEDDING_DIM];
+        let on_topic = TOPIC_MARKERS.iter().any(|marker| text.contains(marker));
+        embedding[usize::from(!on_topic)] = 1.0;
+        Ok(embedding)
+    }
+
+    fn model_id(&self) -> &'static str {
+        "test-topic-embed"
+    }
+
+    fn dim(&self) -> usize {
+        proxima_core::llm::EMBEDDING_DIM
+    }
+}
+
+/// `ctx`, but the engine carries an embedding model, so chunks are embedded
+/// on ingest and the semantic arm has something to search.
+fn embedding_ctx(pg: PgStorage, owner: Owner, registry: Arc<FlavorRegistryFrozen>) -> McpToolCtx {
+    let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
+    let store = CodeFlavorStore::from_backend_pool_for_tests(pg.pool_for_tests().clone());
+    let engine = Arc::new(engine_for_test(pg).with_embed(Arc::new(TopicEmbedding)));
+    McpToolCtx {
+        owner,
+        authz,
+        registry,
+        author: McpAuthorContext {
+            model_id: "test/0".into(),
+            client_name: "test".into(),
+            client_version: "0".into(),
+            caller_self_perspective: None,
+        },
+        caller_self_perspective: None,
+        extensions: McpToolExtensions::with(store),
+        engine: Some(engine),
+    }
+}
+
+/// Register and ingest a two-file repo whose second file is on-topic for
+/// [`TopicEmbedding`] while sharing no content word with the topic query.
+async fn ingest_topic_repo(
+    fixture: &TestDb,
+    owner: Owner,
+    registry: &Arc<FlavorRegistryFrozen>,
+    temp: &TempDir,
+) -> Result<String, Box<dyn std::error::Error>> {
+    init_git_repo_with_files(
+        temp.path(),
+        &[
+            (
+                "docs/notes.md",
+                "# Notes\n\nThis document is about packaging, releases and changelogs.\n",
+            ),
+            (
+                "src/control.rs",
+                "pub fn halt_iteration(count: usize) -> bool {\n\
+                 \x20   count > 3\n\
+                 }\n",
+            ),
+        ],
+    )?;
+    let registered = run_tool::<CodeRegisterRepoTool>(
+        embedding_ctx(fixture.pg.clone(), owner, registry.clone()),
+        json!({ "path": temp.path().to_string_lossy(), "display_name": "Topic Repo" }),
+    )
+    .await?;
+    let repo_handle = registered["repo"]["repo_id"]
+        .as_str()
+        .expect("repo_id")
+        .to_string();
+    run_tool::<CodeIngestHeadSnapshotTool>(
+        embedding_ctx(fixture.pg.clone(), owner, registry.clone()),
+        json!({ "repo_handle": repo_handle }),
+    )
+    .await?;
+
+    // Chunks are not embedded by the write that creates them; a host drains
+    // the durable job queue afterwards. Doing it here is what a deployment
+    // does, and it is also the reason `degraded_to_lexical` matters: between
+    // ingest and this drain, a freshly indexed repository is lexical-only.
+    let engine = engine_for_test(fixture.pg.clone()).with_embed(Arc::new(TopicEmbedding));
+    let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
+    engine
+        .backfill_missing_embeddings(&authz, &owner, 1_000)
+        .await?;
+    let drained = engine.drain_embedding_jobs(1_000).await?;
+    assert!(
+        drained.processed > 0 && drained.failed == 0,
+        "the semantic assertions need embedded chunks; drained {drained:?}"
+    );
+    Ok(repo_handle)
+}
+
+/// The reason the semantic arm exists: a question phrased in words the
+/// answer does not contain.
+///
+/// "stop going round again" shares no content word with
+/// `pub fn halt_iteration(count: usize) -> bool`, so every lexical band is
+/// empty and both substring arms miss. Lexical search cannot answer this
+/// and the assertion below proves it does not; semantic search returns the
+/// function.
+#[tokio::test]
+async fn semantic_search_finds_a_chunk_sharing_no_word_with_the_query()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fixture = TestDb::fresh().await;
+    let owner = owner_fixture();
+    let registry = registry_for_mcp();
+    let temp = TempDir::new()?;
+    ingest_topic_repo(&fixture, owner, &registry, &temp).await?;
+
+    let query = "stop going round again";
+    let lexical = run_tool::<CodeSearchChunksTool>(
+        embedding_ctx(fixture.pg.clone(), owner, registry.clone()),
+        json!({ "query": query, "mode": "lexical", "include_calls": false }),
+    )
+    .await?;
+    let lexical_hits = lexical["matches"]
+        .as_array()
+        .expect("matches")
+        .iter()
+        .filter(|m| m["file_path"] == "src/control.rs")
+        .count();
+    assert_eq!(
+        lexical_hits, 0,
+        "the premise of this test is that no lexical arm reaches the answer; \
+         got {:?}",
+        lexical["matches"]
+    );
+
+    let semantic = run_tool::<CodeSearchChunksTool>(
+        embedding_ctx(fixture.pg.clone(), owner, registry.clone()),
+        json!({ "query": query, "mode": "semantic", "include_calls": false }),
+    )
+    .await?;
+    let matches = semantic["matches"].as_array().expect("matches");
+    assert_eq!(
+        matches[0]["file_path"], "src/control.rs",
+        "semantic search must reach the chunk lexical search cannot; got {matches:?}"
+    );
+    assert!(
+        matches[0]["similarity_score"].as_f64().unwrap_or_default() > 0.9,
+        "similarity must be reported, got {:?}",
+        matches[0]["similarity_score"]
+    );
+    assert_eq!(semantic["degraded_to_lexical"], json!(false));
+
+    // Hybrid inherits the recall without being asked for it — the default.
+    let hybrid = run_tool::<CodeSearchChunksTool>(
+        embedding_ctx(fixture.pg.clone(), owner, registry),
+        json!({ "query": query, "include_calls": false }),
+    )
+    .await?;
+    assert_eq!(hybrid["mode"], json!("hybrid"));
+    assert_eq!(hybrid["degraded_to_lexical"], json!(false));
+    assert!(
+        hybrid["matches"]
+            .as_array()
+            .expect("matches")
+            .iter()
+            .any(|m| m["file_path"] == "src/control.rs"),
+        "the default mode must find it too; got {:?}",
+        hybrid["matches"]
+    );
+    Ok(())
+}
+
+/// An exact path lookup is the one case where the caller has said precisely
+/// what they want. Rank fusion on its own would let a chunk the embedding
+/// model is confident about outrank it, so the literal arms survive fusion
+/// as an absolute prefix — asserted end to end, not just over the fusion
+/// function.
+#[tokio::test]
+async fn an_exact_path_lookup_outranks_the_semantic_favourite()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fixture = TestDb::fresh().await;
+    let owner = owner_fixture();
+    let registry = registry_for_mcp();
+    let temp = TempDir::new()?;
+    ingest_topic_repo(&fixture, owner, &registry, &temp).await?;
+
+    // `docs/notes.md` is off-topic for the embedding model, so the semantic
+    // arm ranks `src/control.rs` first; the exact path must still win.
+    let found = run_tool::<CodeSearchChunksTool>(
+        embedding_ctx(fixture.pg.clone(), owner, registry),
+        json!({ "query": "docs/notes.md", "include_calls": false }),
+    )
+    .await?;
+    let matches = found["matches"].as_array().expect("matches");
+    assert_eq!(
+        matches[0]["file_path"], "docs/notes.md",
+        "an exact path match must outrank the embedding model's favourite; got {matches:?}"
+    );
+    Ok(())
+}
+
+/// The contract for a deployment with no embedding model configured, which
+/// is every deployment that has not set one up: `hybrid` — the default —
+/// still answers, ranked lexically, and reports that it did. Nothing about
+/// the default silently starts requiring an LLM.
+#[tokio::test]
+async fn hybrid_without_an_embedding_model_answers_lexically_and_says_so()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fixture = TestDb::fresh().await;
+    let owner = owner_fixture();
+    let registry = registry_for_mcp();
+    let temp = TempDir::new()?;
+    ingest_topic_repo(&fixture, owner, &registry, &temp).await?;
+
+    // `ctx`, not `embedding_ctx`: no embedding client on this engine.
+    let found = run_tool::<CodeSearchChunksTool>(
+        ctx(fixture.pg.clone(), owner, registry.clone()),
+        json!({ "query": "halt_iteration", "include_calls": false }),
+    )
+    .await?;
+    assert_eq!(found["mode"], json!("hybrid"));
+    assert_eq!(found["degraded_to_lexical"], json!(true));
+    assert_eq!(
+        found["matches"].as_array().expect("matches")[0]["file_path"],
+        "src/control.rs",
+        "a degraded hybrid search still answers lexically"
+    );
+
+    // Pure semantic has no other arm, so it refuses rather than quietly
+    // answering a different question.
+    let refused = run_tool::<CodeSearchChunksTool>(
+        ctx(fixture.pg.clone(), owner, registry),
+        json!({ "query": "halt_iteration", "mode": "semantic", "include_calls": false }),
+    )
+    .await
+    .expect_err("semantic search without an embedding model must fail");
+    let message = refused.to_string();
+    assert!(
+        message.contains("no embedding model is configured"),
+        "the error must name the cause and the way out; got {message}"
+    );
+    Ok(())
+}
+
 fn fact_draft(_owner: Owner, schema_id: &str, payload: &[u8]) -> FactWriteCommand {
     let now = time::OffsetDateTime::now_utc();
     FactWriteCommand {
@@ -1775,6 +2029,121 @@ async fn abstraction_memory(
     Ok(memory_id)
 }
 
+/// A repo handle that names no repository is an error on every tool that
+/// takes one — not silence on some of them.
+///
+/// `ingest_head_snapshot` always said so, because it looks the repo record
+/// up for its own reasons. The read tools did not: a handle or bare UUID
+/// short-circuited on *parse*, so a stale handle after `erase_repo`, a
+/// typo, or another owner's id resolved happily and the reads returned
+/// `matches: []`, `commits: []`, `revision: null`. None of that is
+/// distinguishable from "this code is not indexed", which is the wrong
+/// thing for an agent to conclude. `search_chunks` even disagreed with
+/// itself — a bad display name errored while a bad id did not.
+#[tokio::test]
+async fn an_unknown_repo_handle_is_an_error_on_every_tool_that_takes_one()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fixture = TestDb::fresh().await;
+    let owner = owner_fixture();
+    let registry = registry_for_mcp();
+    let engine = engine_for_test(fixture.pg.clone());
+
+    // A real repository exists, so an empty answer would be about the
+    // handle rather than about an empty index.
+    let real_repo = Uuid::now_v7();
+    ingest_file_revision(
+        fixture.pg.pool_for_tests(),
+        &engine,
+        owner,
+        real_repo,
+        "src/real.rs",
+        "v1",
+    )
+    .await?;
+
+    let absent = Uuid::now_v7().to_string();
+    for (tool, args) in [
+        (
+            "search_chunks",
+            json!({ "query": "real", "repo_handle": absent, "include_calls": false }),
+        ),
+        (
+            "search_commits",
+            json!({ "query": "real", "repo_handle": absent }),
+        ),
+        (
+            "open_file_revision",
+            json!({ "repo_handle": absent, "file_path": "src/real.rs" }),
+        ),
+    ] {
+        let err = match tool {
+            "search_chunks" => run_tool::<CodeSearchChunksTool>(
+                ctx(fixture.pg.clone(), owner, registry.clone()),
+                args,
+            )
+            .await
+            .err(),
+            "search_commits" => run_tool::<CodeSearchCommitsTool>(
+                ctx(fixture.pg.clone(), owner, registry.clone()),
+                args,
+            )
+            .await
+            .err(),
+            _ => run_tool::<CodeOpenFileRevisionTool>(
+                ctx(fixture.pg.clone(), owner, registry.clone()),
+                args,
+            )
+            .await
+            .err(),
+        };
+        let err = err.unwrap_or_else(|| panic!("{tool} must reject an unknown repo handle"));
+        assert!(
+            err.to_string().contains("repo_handle not found"),
+            "{tool} must say the handle is unknown, got: {err}"
+        );
+    }
+
+    // The same handle, well-formed and real, still works.
+    let found = run_tool::<CodeOpenFileRevisionTool>(
+        ctx(fixture.pg.clone(), owner, registry),
+        json!({ "repo_handle": real_repo.to_string(), "file_path": "src/real.rs" }),
+    )
+    .await?;
+    assert_eq!(found["revision"]["indexed_commit_sha"], "v1");
+    Ok(())
+}
+
+/// Give `repo_id` a registry row, the way `register_repo` would.
+///
+/// These fixtures write sidecar rows straight to Postgres, so without this
+/// they describe a repository that has chunks and no registry entry — a
+/// state the tool surface cannot produce. `register_repo` creates the row,
+/// `ingest_head_snapshot` refuses to run without it, and `erase_repo`
+/// removes the row and tombstones the chunks together. Handle resolution
+/// checks that row, so a fixture missing it is testing a shape that does
+/// not occur rather than the behaviour it means to test.
+async fn register_repo_row(
+    pool: &PgPool,
+    owner: Owner,
+    repo_id: Uuid,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let (owner_kind, owner_id) = proxima_storage_pg::access::owner_columns::owner_binds(&owner);
+    sqlx::query(
+        "INSERT INTO proxima_code.repos
+            (owner_kind, owner_id, repo_id, canonical_path, display_name, created_at)
+         VALUES ($1, $2, $3, $4, $5, now())
+         ON CONFLICT (owner_kind, owner_id, repo_id) DO NOTHING",
+    )
+    .bind(owner_kind)
+    .bind(owner_id)
+    .bind(repo_id)
+    .bind(format!("/fixtures/{repo_id}"))
+    .bind(format!("fixture-{repo_id}"))
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
 async fn ingest_file_revision(
     pool: &PgPool,
     engine: &Engine,
@@ -1784,6 +2153,7 @@ async fn ingest_file_revision(
     indexed_commit_sha: &str,
 ) -> Result<Uuid, Box<dyn std::error::Error>> {
     let payload = format!("{file_path}:{indexed_commit_sha}");
+    register_repo_row(pool, owner, repo_id).await?;
     let memory_id =
         fact_memory(engine, owner, FileRevisionV1::SCHEMA_ID, payload.as_bytes()).await?;
     sqlx::query(

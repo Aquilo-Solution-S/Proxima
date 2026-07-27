@@ -23,6 +23,7 @@ use sqlx::{Executor, PgConnection, PgPool, Postgres};
 
 mod abstraction_heads;
 mod citations;
+mod code_chunk_vectors;
 mod edges;
 mod goals;
 mod lineage;
@@ -32,6 +33,9 @@ mod search;
 
 pub use abstraction_heads::authorized_code_chunk_head_candidates;
 pub(crate) use citations::{citation_of_entity_head, citation_of_fact, facts_citing_object};
+pub use code_chunk_vectors::{
+    CodeChunkVectorCandidate, CodeChunkVectorFilters, nearest_code_chunk_candidates,
+};
 pub use edges::MAX_SNAPSHOT_EDGES;
 pub(crate) use edges::{edge_exists, read_edges};
 pub(crate) use lineage::walk_memory_lineage;
