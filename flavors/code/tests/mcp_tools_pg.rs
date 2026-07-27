@@ -515,6 +515,92 @@ async fn search_chunks_ranks_parsed_code_over_prose_that_shares_more_words()
     Ok(())
 }
 
+/// Switching back to a branch that was already indexed must not break ingest.
+///
+/// A file revision's receipt key is (repo, path, commit, content hash, state)
+/// and carries no batch, so re-observing a commit returns the *original*
+/// Fact — whose receipt still names the *original* `source_batch_id`.
+/// Deriving that Fact's chunks under the current batch then trips
+/// `validate_ftoa_input_batch` ("F→A operator `source_batch_id` must match
+/// input Facts") and fails the whole snapshot, leaving the cursor unmoved so
+/// every retry fails identically.
+///
+/// The `already_current` skip does not cover this: it compares against the
+/// current head, and after `main -> feature -> main` the head is the
+/// *feature* revision, so the main revision is re-offered.
+#[tokio::test]
+async fn ingesting_a_previously_indexed_commit_again_succeeds()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fixture = TestDb::fresh().await;
+    let owner = owner_fixture();
+    let registry = registry_for_mcp();
+    let temp = TempDir::new()?;
+
+    init_git_repo_with_files(temp.path(), &[("src/a.rs", "pub fn a() -> u8 { 1 }\n")])?;
+    let registered = run_tool::<CodeRegisterRepoTool>(
+        ctx(fixture.pg.clone(), owner, registry.clone()),
+        json!({ "path": temp.path().to_string_lossy(), "display_name": "Branch Repo" }),
+    )
+    .await?;
+    let repo_handle = registered["repo"]["repo_id"].as_str().expect("repo_id");
+
+    let snapshot = |handle: String, reg: _| {
+        let pg = fixture.pg.clone();
+        async move {
+            run_tool::<CodeIngestHeadSnapshotTool>(
+                ctx(pg, owner, reg),
+                json!({ "repo_handle": handle }),
+            )
+            .await
+        }
+    };
+
+    snapshot(repo_handle.to_string(), registry.clone()).await?;
+
+    // A second revision of the same path, on another branch.
+    run_git(temp.path(), &["checkout", "-q", "-b", "feature"])?;
+    std::fs::write(
+        temp.path().join("src/a.rs"),
+        "pub fn a() -> u8 { 2 }\npub fn b() -> u8 { 3 }\n",
+    )?;
+    run_git(temp.path(), &["add", "."])?;
+    run_git(
+        temp.path(),
+        &[
+            "-c",
+            "user.name=Proxima Test",
+            "-c",
+            "user.email=proxima-test@example.com",
+            "commit",
+            "-m",
+            "second revision",
+        ],
+    )?;
+    snapshot(repo_handle.to_string(), registry.clone()).await?;
+
+    // Back to the first branch: this exact (commit, path, content) has been
+    // observed before, so the Fact replays and its batch is the first one.
+    run_git(temp.path(), &["checkout", "-q", "main"])
+        .or_else(|_| run_git(temp.path(), &["checkout", "-q", "master"]))?;
+    let back = snapshot(repo_handle.to_string(), registry.clone()).await?;
+    assert!(
+        back["report"].is_object(),
+        "returning to an already-indexed commit must ingest, not error"
+    );
+
+    // And the chunks for that revision are still searchable afterwards.
+    let found = run_tool::<CodeSearchChunksTool>(
+        ctx(fixture.pg.clone(), owner, registry),
+        json!({ "query": "src/a.rs", "limit": 10, "include_calls": false }),
+    )
+    .await?;
+    assert!(
+        !found["matches"].as_array().expect("matches").is_empty(),
+        "the replayed revision's chunks must still be searchable"
+    );
+    Ok(())
+}
+
 #[tokio::test]
 async fn search_chunks_returns_only_head_per_nk() -> Result<(), Box<dyn std::error::Error>> {
     let fixture = TestDb::fresh().await;

@@ -411,8 +411,10 @@ impl LocalGitSource {
             .into_iter()
             .filter(|entry| entry.size <= crate::chunker::MAX_BLOB_BYTES as u64)
             .collect();
-        let present_paths: HashSet<String> =
-            head_entries.iter().map(|entry| entry.path.clone()).collect();
+        let present_paths: HashSet<String> = head_entries
+            .iter()
+            .map(|entry| entry.path.clone())
+            .collect();
         let prior_heads: HashMap<_, _> = ctx
             .file_revision_heads(self.owner, self.repo_id)
             .await?
@@ -728,7 +730,9 @@ impl LocalGitSource {
             state: FileState::Present,
         };
         let file_revision = ingest_file_revision(pool, permit, batch_id, &rev_payload, now).await?;
-        report.files_present_emitted += 1;
+        if !file_revision.idempotent_replay {
+            report.files_present_emitted += 1;
+        }
 
         let analysis_key = (content_sha256, language.clone());
         let analysis = if let Some(cached) = blob_analysis_cache.get(&analysis_key) {
@@ -753,6 +757,7 @@ impl LocalGitSource {
             file_revision: file_revision.memory_id,
             source_commit,
             analysis,
+            replayed: file_revision.idempotent_replay,
         })
     }
 
@@ -768,6 +773,22 @@ impl LocalGitSource {
         report: &mut IndexReport,
     ) -> Result<(), IndexError> {
         let pool = ctx.pool();
+        // A receipt-replayed Fact belongs to the batch that first observed
+        // it, not to this one, and its chunks were derived under that batch.
+        // Deriving again here would hand `validate_ftoa_input_batch` a slice
+        // whose `source_batch_id` does not match its input Fact's, and the
+        // resulting `ConstraintViolation` fails the whole snapshot — leaving
+        // the cursor unmoved so every retry fails the same way.
+        //
+        // This is reached by ordinary branch work, not an exotic sequence:
+        // index `main`, index a branch that touches the same path, check
+        // `main` out again. The `already_current` skip does not catch it,
+        // because the current head is by then the *branch's* revision, so
+        // `main`'s revision is re-offered and replays.
+        if pending.replayed {
+            report.chunks_reused += pending.analysis.chunks.len();
+            return Ok(());
+        }
         // Re-derive and tombstone any prior slice indexes that don't
         // appear in the new slice batch (file content shrunk). These
         // tombstones are projection rows tied to this file-revision
@@ -1077,6 +1098,10 @@ struct PendingPresentBlob {
     file_revision: MemoryId,
     source_commit: Option<MemoryId>,
     analysis: BlobAnalysis,
+    /// The Fact was receipt-replayed rather than newly written, so it still
+    /// belongs to the batch that first observed it and its chunks were
+    /// derived then. See [`LocalGitSource::derive_present_blob`].
+    replayed: bool,
 }
 
 #[derive(Debug, Clone)]
