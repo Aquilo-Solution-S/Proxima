@@ -249,6 +249,7 @@ def iter_rust_string_literals(text: str):
 PURE_CORE_SQL_FUNCTIONS = (
     "lexical_scrub",
     "lexical_tsv",
+    "lexical_config",
     "lexical_join",
     "lexical_text_array",
     "memory_entity_kind",
