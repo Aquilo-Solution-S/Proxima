@@ -125,11 +125,26 @@ fn log_args(repo: &Path, base_args: &[&str]) -> Result<Vec<CommitInfo>, IndexErr
     Ok(out)
 }
 
-pub(super) fn ls_files(repo: &Path, rev: &str) -> Result<Vec<(String, Vec<u8>)>, IndexError> {
-    let listing = run_git(repo, &["ls-tree", "-r", "-z", rev])?;
+/// One blob in a tree listing: enough to decide whether to read it, without
+/// reading it.
+#[derive(Debug, Clone)]
+pub(super) struct TreeEntry {
+    pub path: String,
+    pub oid: String,
+    pub size: u64,
+}
+
+/// Every blob reachable from `rev`, with sizes, in one `git` invocation.
+///
+/// `-l` puts the object size in the listing. Without it the only way to learn
+/// a blob's size was `git cat-file -s` per blob, which — together with the
+/// `git cat-file blob` that followed — meant two process spawns for every
+/// file in the tree.
+pub(super) fn ls_tree(repo: &Path, rev: &str) -> Result<Vec<TreeEntry>, IndexError> {
+    let listing = run_git(repo, &["ls-tree", "-r", "-l", "-z", rev])?;
     let listing_str = String::from_utf8(listing).map_err(|_| IndexError::Utf8)?;
 
-    let mut paths = Vec::new();
+    let mut out = Vec::new();
     for entry in listing_str.split('\0') {
         if entry.is_empty() {
             continue;
@@ -137,20 +152,102 @@ pub(super) fn ls_files(repo: &Path, rev: &str) -> Result<Vec<(String, Vec<u8>)>,
         let (header, path) = entry
             .split_once('\t')
             .ok_or_else(|| IndexError::Git(format!("malformed ls-tree entry: {entry:?}")))?;
+        // `<mode> SP <type> SP <oid> SP<pad> <size>`; the size column is
+        // right-aligned, so split on whitespace rather than a single space.
         let cols: Vec<&str> = header.split_whitespace().collect();
-        if cols.len() != 3 || cols[1] != "blob" {
+        if cols.len() != 4 || cols[1] != "blob" {
             continue;
         }
-        paths.push((path.to_string(), cols[2].to_string()));
+        let size = cols[3]
+            .parse::<u64>()
+            .map_err(|e| IndexError::Git(format!("git ls-tree size {:?}: {e}", cols[3])))?;
+        out.push(TreeEntry {
+            path: path.to_string(),
+            oid: cols[2].to_string(),
+            size,
+        });
+    }
+    Ok(out)
+}
+
+/// Contents of `oids`, in order, from a single `git cat-file --batch`.
+///
+/// One process for the whole batch instead of one per blob. stdin is written
+/// from a worker thread: `--batch` streams a reply per request, so writing the
+/// whole request list before reading deadlocks once either pipe buffer fills.
+pub(super) fn cat_blobs(repo: &Path, oids: &[String]) -> Result<Vec<Vec<u8>>, IndexError> {
+    use std::io::{Read, Write};
+
+    if oids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut child = Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(["cat-file", "--batch"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()?;
+
+    let mut stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| IndexError::Git("git cat-file --batch: stdin unavailable".to_string()))?;
+    let request: Vec<u8> = oids.join("\n").into_bytes();
+    let writer = std::thread::spawn(move || {
+        let _ = stdin.write_all(&request);
+        let _ = stdin.write_all(b"\n");
+        let _ = stdin.flush();
+        drop(stdin);
+    });
+
+    let mut stdout = Vec::new();
+    child
+        .stdout
+        .take()
+        .ok_or_else(|| IndexError::Git("git cat-file --batch: stdout unavailable".to_string()))?
+        .read_to_end(&mut stdout)?;
+    let _ = writer.join();
+    if !child.wait()?.success() {
+        return Err(IndexError::Git("git cat-file --batch failed".to_string()));
     }
 
-    let mut out = Vec::with_capacity(paths.len());
-    for (path, oid) in paths {
-        if !blob_within_cap(repo, &oid)? {
-            continue;
+    // Each reply is `<oid> SP <type> SP <size> LF <contents> LF`.
+    let mut out = Vec::with_capacity(oids.len());
+    let mut pos = 0usize;
+    while out.len() < oids.len() {
+        let Some(nl) = stdout[pos..].iter().position(|b| *b == b'\n') else {
+            break;
+        };
+        let header = String::from_utf8_lossy(&stdout[pos..pos + nl]).to_string();
+        pos += nl + 1;
+        let cols: Vec<&str> = header.split_whitespace().collect();
+        if cols.len() != 3 {
+            // `<oid> missing`. The caller listed these from a tree, so this
+            // should not happen — and guessing would shift every later reply
+            // onto the wrong path.
+            return Err(IndexError::Git(format!(
+                "git cat-file --batch: unexpected reply {header:?}"
+            )));
         }
-        let bytes = run_git(repo, &["cat-file", "blob", &oid])?;
-        out.push((path, bytes));
+        let size: usize = cols[2]
+            .parse()
+            .map_err(|e| IndexError::Git(format!("git cat-file --batch size: {e}")))?;
+        if pos + size > stdout.len() {
+            return Err(IndexError::Git(
+                "git cat-file --batch: truncated payload".to_string(),
+            ));
+        }
+        out.push(stdout[pos..pos + size].to_vec());
+        pos += size + 1; // payload plus its trailing LF
+    }
+    if out.len() != oids.len() {
+        return Err(IndexError::Git(format!(
+            "git cat-file --batch: got {} replies for {} requests",
+            out.len(),
+            oids.len()
+        )));
     }
     Ok(out)
 }
@@ -233,15 +330,56 @@ mod tests {
         dir
     }
 
+    /// The listing carries sizes, so the blob cap is applied without reading
+    /// — and without the `git cat-file -s` that used to be spawned per blob.
     #[test]
-    fn ls_files_applies_blob_cap_before_loading_contents() {
+    fn ls_tree_reports_sizes_so_the_cap_needs_no_blob_read() {
         let repo = fixture_repo();
 
-        let files = ls_files(repo.path(), "HEAD").expect("list files");
+        let entries = ls_tree(repo.path(), "HEAD").expect("list tree");
 
-        assert_eq!(files.len(), 1);
-        assert_eq!(files[0].0, "small.txt");
-        assert_eq!(files[0].1, b"small\n");
+        let small = entries
+            .iter()
+            .find(|e| e.path == "small.txt")
+            .expect("small.txt listed");
+        let large = entries
+            .iter()
+            .find(|e| e.path == "large.txt")
+            .expect("large.txt listed");
+        assert_eq!(small.size, b"small\n".len() as u64);
+        assert!(small.size <= MAX_BLOB_BYTES as u64);
+        assert!(large.size > MAX_BLOB_BYTES as u64);
+    }
+
+    /// One process returns every requested blob, in request order.
+    #[test]
+    fn cat_blobs_returns_every_blob_in_request_order() {
+        let repo = fixture_repo();
+        let entries = ls_tree(repo.path(), "HEAD").expect("list tree");
+        let small = entries
+            .iter()
+            .find(|e| e.path == "small.txt")
+            .expect("small.txt");
+        let large = entries
+            .iter()
+            .find(|e| e.path == "large.txt")
+            .expect("large.txt");
+
+        // Deliberately large-then-small: a reply misparse would shift the
+        // payloads onto the wrong requests, which order pins.
+        let oids = vec![large.oid.clone(), small.oid.clone(), small.oid.clone()];
+        let blobs = cat_blobs(repo.path(), &oids).expect("cat blobs");
+
+        assert_eq!(blobs.len(), 3);
+        assert_eq!(blobs[0].len(), MAX_BLOB_BYTES + 1);
+        assert_eq!(blobs[1], b"small\n");
+        assert_eq!(blobs[2], b"small\n");
+    }
+
+    #[test]
+    fn cat_blobs_of_nothing_spawns_nothing() {
+        let repo = fixture_repo();
+        assert!(cat_blobs(repo.path(), &[]).expect("empty batch").is_empty());
     }
 
     #[test]
