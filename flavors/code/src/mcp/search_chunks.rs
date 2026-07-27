@@ -51,6 +51,16 @@ const fn default_include_calls() -> bool {
 /// Relation whose edges are returned as `calls_edges` neighbours.
 const CALLS_RELATION: &str = "proxima-code/calls";
 
+/// Neighbour edges returned across the whole result set.
+///
+/// Applied in request order — chunk by chunk, in search-rank order — so the
+/// edges that survive belong to the best-ranked matches and the same search
+/// answers the same way twice.
+const MAX_CALL_EDGES: usize = 200;
+
+/// Neighbour edges read per chunk per direction before the global cut.
+const CALL_EDGES_PER_CHUNK: u32 = 200;
+
 /// Characters of chunk text returned per match when the caller says nothing.
 ///
 /// This was 480, and a chunk is much larger than that: measured over this
@@ -524,7 +534,7 @@ async fn load_call_edges(
                         owner: ctx.owner(),
                         edge_ids: Vec::new(),
                         filter,
-                        limit: 200,
+                        limit: CALL_EDGES_PER_CHUNK,
                         cursor: None,
                         include_payloads: false,
                     },
@@ -534,14 +544,25 @@ async fn load_call_edges(
     }))
     .await?;
 
-    let mut edges = HashMap::new();
+    // Request order, not hash order. `responses` comes back in the order the
+    // filters were built — chunk by chunk, in search-rank order — and keeping
+    // that order is what makes the `MAX_CALL_EDGES` cut below deterministic
+    // and useful: the same search returns the same edges, and what survives
+    // truncation belongs to the highest-ranked chunks. Collecting into a
+    // `HashMap` and taking 200 of its values returned an arbitrary subset
+    // that varied from run to run.
+    let mut seen: HashSet<uuid::Uuid> = HashSet::new();
+    let mut edges = Vec::new();
     for response in responses {
         for edge in response.edges {
-            edges.entry(edge.id).or_insert(edge);
+            if seen.insert(edge.id) {
+                edges.push(edge);
+            }
         }
     }
+    edges.truncate(MAX_CALL_EDGES);
 
-    let edge_ids = edges.keys().copied().collect::<Vec<_>>();
+    let edge_ids = edges.iter().map(|edge| edge.id).collect::<Vec<_>>();
     let payload_rows: Vec<CallPayloadRow> = sqlx::query_as(
         "SELECT edge_id, callee_name, is_dynamic
            FROM proxima_code.code_calls_v1
@@ -557,7 +578,7 @@ async fn load_call_edges(
         .collect::<HashMap<_, _>>();
 
     let mut out = Vec::new();
-    for edge in edges.into_values().take(200) {
+    for edge in edges {
         let Some(payload) = payloads.get(&edge.id) else {
             continue;
         };
