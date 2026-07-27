@@ -33,6 +33,11 @@ pub mod action {
 }
 
 pub mod resource {
+    /// Namespace every resource scope key carries. An MCP resource is a read
+    /// by definition — the protocol has no resource write verb — so this
+    /// prefix is what tells the authorization gate a request is a read.
+    pub const SCOPE_PREFIX: &str = "resource:";
+
     pub const MEMORY: &str = "resource:memory";
     pub const MEMORIES: &str = "resource:memories";
     pub const MEMORY_LINEAGE: &str = "resource:memory-lineage";
