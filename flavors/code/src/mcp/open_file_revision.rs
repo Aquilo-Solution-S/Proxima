@@ -293,11 +293,23 @@ fn project_text(
     let Some(start) = selected_start else {
         return (None, None);
     };
+    let requested_end = selected_end.unwrap_or(start);
     let projected = truncate_utf8_bytes(selected.join("\n"), max_text_bytes);
-    (
-        Some(projected),
-        Some((start, selected_end.unwrap_or(start))),
-    )
+    // Report the span actually returned, not the span asked for.
+    // `max_text_bytes` drops trailing lines, and reporting the pre-truncation
+    // end makes the response claim text it did not send — a caller that trusts
+    // `text_line_range` to place the snippet in the file is then wrong about
+    // every line after the cut. A line cut mid-way still counts: part of it
+    // was returned.
+    let returned_end = if projected.is_empty() {
+        start
+    } else {
+        let lines = i64::try_from(projected.lines().count()).unwrap_or(i64::MAX);
+        start
+            .saturating_add(lines.saturating_sub(1))
+            .min(requested_end)
+    };
+    (Some(projected), Some((start, returned_end)))
 }
 
 fn truncate_utf8_bytes(text: String, max_text_bytes: Option<usize>) -> String {
@@ -317,4 +329,51 @@ fn truncate_utf8_bytes(text: String, max_text_bytes: Option<usize>) -> String {
 #[derive(Debug, sqlx::FromRow)]
 struct MemoryCandidateRow {
     memory_id: uuid::Uuid,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::project_text;
+
+    const SRC: &str = "line ten\nline eleven\nline twelve\nline thirteen\nline fourteen";
+
+    #[test]
+    fn a_whole_window_reports_the_whole_window() {
+        let (text, range) = project_text(Some(SRC.to_string()), 10, Some((10, 14)), None);
+        assert_eq!(text.as_deref(), Some(SRC));
+        assert_eq!(range, Some((10, 14)));
+    }
+
+    /// The reported span must describe what was sent. Before this, a
+    /// byte-truncated window still reported the span that was *asked* for, so
+    /// a caller placing the snippet in the file was wrong about every line
+    /// after the cut.
+    #[test]
+    fn a_truncated_window_reports_only_the_lines_it_returned() {
+        // Enough bytes for the first two lines and part of the third.
+        let (text, range) = project_text(Some(SRC.to_string()), 10, Some((10, 14)), Some(24));
+        let text = text.expect("text");
+        assert!(text.len() <= 24);
+        let (start, end) = range.expect("range");
+        assert_eq!(start, 10);
+        assert_eq!(
+            end,
+            10 + i64::try_from(text.lines().count()).expect("fits") - 1,
+            "reported end must match the lines actually returned: {text:?}"
+        );
+        assert!(end < 14, "must not claim the untruncated end");
+    }
+
+    #[test]
+    fn the_reported_end_never_exceeds_the_requested_window() {
+        let (_, range) = project_text(Some(SRC.to_string()), 10, Some((10, 11)), None);
+        assert_eq!(range, Some((10, 11)));
+    }
+
+    #[test]
+    fn a_window_matching_no_line_returns_nothing() {
+        let (text, range) = project_text(Some(SRC.to_string()), 10, Some((99, 120)), None);
+        assert!(text.is_none());
+        assert!(range.is_none());
+    }
 }
