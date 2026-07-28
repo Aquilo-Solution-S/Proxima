@@ -428,6 +428,70 @@ impl FlavorBundle for HostApp {
 Consumers call the bundle surface. They do not manually coordinate
 `register`, `register_pg_sidecars`, and `freeze_against`.
 
+## Deriving Abstractions
+
+Declaring an `AbstractionPayload` gives a flavor a derived-memory schema;
+writing one goes through `Engine::author_derived_authorized`. The
+request names the operator that produced the memory, the text it is
+embedded from, its typed sidecar, and the provenance edges back to the
+Facts it was derived from:
+
+```rust
+let relation = ctx.engine.registry()
+    .resolve_relation(CORE_DERIVED_FROM_RELATION)
+    .expect("core/derived-from is a substrate relation");
+
+let edges = [AuthorDerivedEdgeInput {
+    relation,
+    source_kind: EntityKind::Abstraction,
+    source_memory_id: derived_id,
+    target_kind: EntityKind::Fact,
+    target_memory_id: source_fact_id,
+    authorship_kind: EdgeAuthorshipKind::OperatorFtoA,
+    authorship_owner_memory_id: None,
+}];
+
+ctx.engine.author_derived_authorized(&authz, AuthorDerivedRequestInput {
+    memory_id: derived_id,
+    owner,
+    kind: EntityKind::Abstraction,
+    text: rendered,                       // this is what gets embedded
+    schema_id: MySlice::schema_id(),
+    schema_version: SchemaVersion::new(MySlice::SCHEMA_VERSION),
+    operator_kind: MemoryOperatorKind::FtoA,
+    operator_id, input_contract_id,
+    source_batch_id: None,
+    model_id: "my-flavor/slicer-v1",
+    prompt_version: "1",
+    sidecar_payload: SidecarPayload::abstraction(payload),
+    supersedes: None,
+    lexical_language: None,
+    edges: &edges,
+}).await?;
+```
+
+Four contract points that are easy to get wrong:
+
+- **The sidecar is mandatory.** `AbstractionPayload::sidecar_table()`
+  returns `&'static str`, not `Option` — unlike a Fact, a derived memory
+  always has a typed sidecar, so declaring one always means owning a
+  migration for it.
+- **Derive `memory_id` deterministically** (a UUIDv5 over the operator
+  identity plus the source memory and slice index, as `flavors/code`
+  does) so re-running the operator replays onto the same row instead of
+  appending a duplicate. Use `supersedes` when the new output genuinely
+  replaces an earlier one; that also writes a `core/supersedes` edge in
+  the same transaction.
+- **Embedding is synchronous here.** The engine embeds `text` inside the
+  write, so a provider failure fails the write. Facts take the other
+  path — a durable `embedding_jobs` row, batched and retried by a
+  background worker. A flavor deriving many memories should checkpoint
+  per output, not per batch.
+- **`text` is the whole semantic surface.** It lands verbatim in
+  `memories.text`, which is the only string ever embedded;
+  `search_projection()` adds lexical reach over sidecar columns but never
+  affects the vector.
+
 ## Background Workers
 
 `FlavorBundle::spawn_workers(&FlavorWorkerContext) -> Vec<FlavorWorker>`

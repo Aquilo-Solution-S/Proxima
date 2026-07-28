@@ -1404,6 +1404,39 @@ that `AuthzContext::single_owner` denies for a group owner; use
 `AuthzContext::for_subject_with_role` there. `Proxima::build` is
 unchanged and still spawns no workers.
 
+## 35. v0.0.7: flavors can write derived memories
+
+**No action required.** Additive Flavor SDK surface; no migration, no
+behavior change for existing flavors.
+
+`proxima::flavor` already exported `AbstractionPayload` and
+`PerspectivePayload`, so a flavor could *declare* derived schemas — but
+nothing to *write* one. `Engine::author_derived_authorized` is the verb,
+and its `AuthorDerivedRequestInput` was unnameable by a flavor depending
+on `proxima` alone; the in-tree flavor reaches the same lane through a
+direct `proxima-storage-pg` dependency an out-of-tree flavor cannot
+have. Re-exported now: `AuthorDerivedRequestInput`,
+`AuthorDerivedEdgeInput`, `AuthorDerivedAuthorizedOutcome`,
+`MemoryOperatorKind`, `EdgeAuthorshipKind`, `RegisteredRelation`,
+`EntityKind`, `CORE_DERIVED_FROM_RELATION` and
+`CORE_SUPERSEDES_RELATION`.
+
+Nothing new was added to the engine: `author_derived_authorized`,
+`Engine::registry` and `FlavorRegistryFrozen::resolve_relation` were all
+already public. Resolve the relation off `engine.registry()`, point a
+`core/derived-from` edge from the derived memory at each source Fact,
+and set `supersedes` when a re-derivation replaces an earlier output
+(that writes a `core/supersedes` edge in the same transaction).
+
+Two contract details worth knowing before building on it. Unlike a Fact,
+an Abstraction's `sidecar_table()` is required rather than optional, so
+a flavor registering one always owns a migration for it. And a derived
+memory is embedded **synchronously**, inside the write, so a provider
+failure fails the write — Facts instead enqueue a durable
+`embedding_jobs` row that a background worker batches and retries. A
+flavor deriving many memories in a worker should checkpoint per output
+rather than per batch.
+
 ## Checks before calling an upgrade done
 
 ```sh
