@@ -33,15 +33,25 @@ pub use proxima_core::storage_ports::{
     CitedBlobPort, CitedBlobReadUrl, CitedBlobService, CitedBlobUploadAborted,
     CitedBlobUploadCompleted, CitedBlobUploadHeader, CitedBlobUploadPrepared,
 };
+/// [`FactTombstone`] is the return type of [`FactPayload::tombstone`], so a
+/// flavor that declares a *stateful* Fact schema — one with a head per
+/// natural key and an explicit deletion observation — cannot write that
+/// override without it. The in-tree precedent (`flavors/code`'s
+/// `FileRevisionV1`) reaches it through a direct `proxima-core` dependency
+/// an out-of-tree flavor does not have. Without the override a schema can
+/// still declare `natural_key_columns`, but storage has no discriminator
+/// for `PresentOnly` queries, so a deleted entity stays a live head
+/// forever.
 pub use proxima_core::{
     AbstractionPayload, AuthorshipKindMask, CapabilitySet, CitationMappingPayload,
     CitedObjectPayload, EdgeId, EdgePayload, EndpointBinding, EntityKindMask, FactPayload,
-    FactReceiptId, FlavorDescriptor, FlavorProvenance, FlavorRegistry, FlavorRegistryError,
-    FlavorRegistryFrozen, GoalId, GoalPayload, InputContractId, MemoryId, ModelId, OperatorId,
-    PayloadKeyBuilder, PerspectivePayload, PromptVersion, RelationClass, RelationDescriptor,
-    SchemaId, SchemaRef, SchemaVersion, SearchProjection, SearchProjectionColumnKind,
-    SearchProjectionField, SidecarPayload, Tool, ToolCall, ToolCallFn, ToolCtx, ToolDescriptor,
-    ToolError, ToolOrigin, ToolServices, proxima_flavor, proxima_schema_id,
+    FactReceiptId, FactTombstone, FlavorDescriptor, FlavorProvenance, FlavorRegistry,
+    FlavorRegistryError, FlavorRegistryFrozen, GoalId, GoalPayload, InputContractId, MemoryId,
+    ModelId, OperatorId, PayloadKeyBuilder, PerspectivePayload, PromptVersion, RelationClass,
+    RelationDescriptor, SchemaId, SchemaRef, SchemaVersion, SearchProjection,
+    SearchProjectionColumnKind, SearchProjectionField, SidecarPayload, Tool, ToolCall, ToolCallFn,
+    ToolCtx, ToolDescriptor, ToolError, ToolOrigin, ToolServices, proxima_flavor,
+    proxima_schema_id,
 };
 /// Derived-memory authoring: the request/outcome types of
 /// [`proxima_core::Engine::author_derived_authorized`], which is how a

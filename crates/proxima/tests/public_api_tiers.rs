@@ -110,6 +110,68 @@ fn flavor_sdk_exposes_mcp_tool_authoring_surface() {
     )> = None;
 }
 
+/// A stateful Fact declared through the SDK alone: a head per natural key,
+/// plus the discriminator that tells storage which observation means
+/// "gone". Both halves are needed — `natural_key_columns` without
+/// `tombstone` leaves a deleted entity as a live head forever, because
+/// `PresentOnly` has nothing to filter on.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct TierStatefulFact {
+    slot: String,
+    state: String,
+}
+
+impl proxima::flavor::FactPayload for TierStatefulFact {
+    const SCHEMA_ID: &'static str = "proxima-tier/stateful-v1";
+    const SCHEMA_VERSION: u32 = 1;
+
+    fn receipt_key(&self) -> Vec<u8> {
+        let mut key =
+            proxima::flavor::PayloadKeyBuilder::new(Self::SCHEMA_ID, Self::SCHEMA_VERSION);
+        key.field_str("slot", &self.slot);
+        key.field_str("state", &self.state);
+        key.finish()
+    }
+
+    fn render(&self) -> String {
+        String::new()
+    }
+
+    fn sidecar_table() -> Option<&'static str> {
+        Some("proxima_tier.stateful_v1")
+    }
+
+    fn natural_key_columns() -> &'static [&'static str] {
+        &["slot"]
+    }
+
+    fn tombstone() -> Option<proxima::flavor::FactTombstone> {
+        Some(proxima::flavor::FactTombstone {
+            column: "state",
+            value: "Tombstone",
+        })
+    }
+}
+
+#[test]
+fn flavor_sdk_exposes_the_stateful_fact_tombstone() {
+    use proxima::flavor::{FactPayload, FactTombstone};
+
+    // Naming the override's return type is the load-bearing half: without
+    // `FactTombstone` on the facade the signature above is unspellable, and
+    // an out-of-tree flavor cannot declare a stateful Fact schema at all.
+    let tombstone: Option<FactTombstone> = <TierStatefulFact as FactPayload>::tombstone();
+    let tombstone = tombstone.expect("the schema declares a tombstone discriminator");
+    assert_eq!(tombstone.column, "state");
+    assert_eq!(tombstone.value, "Tombstone");
+
+    // The other half of the stateful contract travels with it.
+    assert_eq!(
+        <TierStatefulFact as FactPayload>::natural_key_columns(),
+        &["slot"]
+    );
+}
+
 #[test]
 fn flavor_sdk_exposes_the_cited_blob_lane() {
     // `FlavorWorkerContext::blobs` is a public field, so its type and the
