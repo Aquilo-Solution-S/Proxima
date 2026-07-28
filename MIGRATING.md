@@ -1494,6 +1494,41 @@ index.
 Existing flavors that do keep a text copy keep working; nothing about
 the `Text` / `TextArray` kinds changed.
 
+## 39. v0.0.7: memory search stops resolving owners through the goals union
+
+**No action required.** Query-shape change inside `core_search_memories`;
+no migration, no API change, and the returned
+`(memory_id, lexical_score)` set is unchanged.
+
+Every candidate branch of the search CTE reads
+`FROM proxima_core.memories m`, but resolved the candidate's home owner by
+outer-joining an `entity_owner_union` (`memories UNION ALL goals`) on
+`entity_id = m.memory_id`, and gated the read set with an `EXISTS` over
+the same union. For a memory row that lookup can only ever return `m`
+itself — the goals arm matches only on a uuid collision between a
+`goal_id` and a `memory_id`, which would corrupt the branch by duplicating
+the row rather than help it. `publish_to_world` transfers ownership with
+an UPDATE on `memories`, so `m.owner_kind`/`m.owner_id` is the live home
+owner and not a stale copy.
+
+The cost was not the join itself: the planner drove the whole query off
+that union, seq-scanning `memories` and `goals` per branch, which is also
+why no index could ever serve the lexical predicate.
+
+Measured on a 15,265-memory corpus with the six search projections a
+code-flavor deployment registers, six lexical queries, median of seven
+interleaved runs: **1,832.8 ms to 1,321.9 ms total (1.39x)**, per-query
+1.36x to 1.42x, with byte-identical `(memory_id, lexical_score)` results
+on every query. The plan-shape regression test now also asserts that no
+search branch reads `goals` at all.
+
+Note for anyone reading a diff of search results: rows tied on
+`created_at` between the base `memories` branch and a projection branch
+can swap order, which changes which of the two already-arbitrary snippets
+survives `merge_row`. Ranking and membership do not change. A projection
+that declares `SearchProjectionField::MEMORY_TEXT` removes that ambiguity
+by construction.
+
 ## Checks before calling an upgrade done
 
 ```sh

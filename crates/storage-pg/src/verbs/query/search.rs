@@ -17,7 +17,7 @@ use crate::error::map_err;
 use crate::pg_ident::PgIdent;
 use crate::pgvector::SET_HNSW_SEARCH_SQL;
 
-use super::{entity_owner_union, read_owner_columns};
+use super::read_owner_columns;
 
 /// Default text-search configuration, read from the database rather than
 /// written here.
@@ -701,10 +701,7 @@ fn common_candidates_sql(
         sql,
         "NULL::text[] AS tags, COALESCE(m.text, '') AS search_text{base_tsv} \
          FROM proxima_core.memories m \
-         LEFT JOIN {entity_owner_union} home_owner \
-           ON home_owner.entity_id = m.memory_id \
 ",
-        entity_owner_union = entity_owner_union(),
         // memories.search_tsv is generated from the same COALESCE(text, '')
         // this branch projects, so the column and the expression it
         // replaces are the same value by construction. lexical_language
@@ -742,11 +739,8 @@ fn common_candidates_sql(
             "{tag_expr} AS tags,
              {search_text_expr} AS search_text{tsv_expr}
              FROM proxima_core.memories m
-             LEFT JOIN {entity_owner_union} home_owner
-               ON home_owner.entity_id = m.memory_id
 JOIN {table} s ON s.memory_id = m.memory_id",
             tag_expr = tag_expr.as_str(),
-            entity_owner_union = entity_owner_union(),
             table = table.as_str()
         )
         .expect("write to String is infallible");
@@ -864,10 +858,19 @@ fn projection_tag_expr(projection: &MemorySearchProjection) -> Result<String, St
     Ok(format!("s.{}", column.as_str()))
 }
 
+/// Every candidate branch reads `FROM proxima_core.memories m`, so the
+/// candidate's home owner is `m`'s own owner columns. It used to be read
+/// back off an `entity_owner_union` (memories ∪ goals) outer-joined on
+/// `entity_id = m.memory_id` — for a memory row the union's memories arm
+/// *is* `m`, and its goals arm can only match on a uuid collision between
+/// a `goal_id` and a `memory_id`, which would corrupt the branch by
+/// duplicating the row rather than help it. `publish_to_world` transfers
+/// ownership with an UPDATE on `memories`, so `m.owner_kind`/`m.owner_id`
+/// is the live home owner, not a stale copy.
 fn push_candidate_branch_prefix(sql: &mut String) {
     // SQL-POLICY: fixed-fragment
     sql.push_str(
-        "SELECT m.memory_id, home_owner.owner_kind, home_owner.owner_id, \
+        "SELECT m.memory_id, m.owner_kind, m.owner_id, \
          COALESCE(m.kind, 'Fact'::proxima_core.entity_kind) AS kind, \
          m.schema_id, m.created_at, ",
     );
@@ -882,36 +885,35 @@ fn push_candidate_branch_prefix(sql: &mut String) {
 /// equality join plus — only when World is actually in the read set — a
 /// constant World arm (`owner_id IS NULL` ⇔ World by the owner-shape
 /// checks, and NULL never survives the equality join).
+///
+/// The gate reads `m`'s own owner columns rather than looking the owner up
+/// through an `entity_owner_union` (memories ∪ goals) keyed on
+/// `entity_id = m.memory_id`. Every candidate branch selects
+/// `FROM proxima_core.memories m`, so that lookup could only ever return
+/// `m` itself, but it cost a scan of both `memories` and `goals` per
+/// branch to prove it — and the planner drove the whole query off that
+/// union, which put the text and vector predicates permanently out of
+/// reach of any index. Measured on a 15,265-memory corpus with the six
+/// projections a code-flavor deployment registers, six lexical queries:
+/// 1,799.9 ms → 1,297.3 ms total (1.4×), with identical
+/// `(memory_id, lexical_score)` result sets on every query.
 fn push_read_owner_scope(sql: &mut String, req: &MemorySearchRequest) {
-    write!(
-        sql,
+    // SQL-POLICY: fixed-fragment — the read set arrives as the two bound
+    // arrays $1/$2; nothing here is interpolated.
+    sql.push_str(
         " WHERE (EXISTS (
               SELECT 1
-                FROM {entity_owner_union} eo
-                JOIN unnest($1::proxima_core.owner_ref_kind[], $2::uuid[]) AS s(kind, id)
-                  ON eo.owner_kind = s.kind AND eo.owner_id = s.id
-               WHERE eo.entity_id = m.memory_id
+                FROM unnest($1::proxima_core.owner_ref_kind[], $2::uuid[]) AS s(kind, id)
+               WHERE m.owner_kind = s.kind AND m.owner_id = s.id
            )",
-        entity_owner_union = entity_owner_union(),
-    )
-    .expect("write to String is infallible");
+    );
     if req
         .read_owners
         .iter()
         .any(|owner| matches!(owner, OwnerRef::World))
     {
-        write!(
-            sql,
-            " OR EXISTS (
-              SELECT 1
-                FROM {entity_owner_union} eo
-               WHERE eo.entity_id = m.memory_id
-                 AND eo.owner_kind = 'world'
-                 AND eo.owner_id IS NULL
-           )",
-            entity_owner_union = entity_owner_union(),
-        )
-        .expect("write to String is infallible");
+        // SQL-POLICY: fixed-fragment
+        sql.push_str(" OR (m.owner_kind = 'world' AND m.owner_id IS NULL)");
     }
     sql.push(')');
 }
