@@ -80,6 +80,27 @@ pub(crate) async fn append_derived_in_tx(
         validate_supersedes_in_owner(tx, &draft.owner, prior, draft.kind).await?;
     }
     if let Some(language) = draft.lexical_language {
+        // Replay short-circuit BEFORE registration, mirroring ingest_core's
+        // receipt check: the derive memory_id is deterministic per
+        // idempotency key, and a replayed pipeline re-arrives with whatever
+        // language it resolves today. Registering that would mutate the
+        // active-language set (an extra tsquery arm on every future search)
+        // for a call that writes nothing — and fail outright on a
+        // configuration this database never had, instead of no-oping like
+        // every other replay.
+        let existing: Option<i32> =
+            sqlx::query_scalar("SELECT 1 FROM proxima_core.memories WHERE memory_id = $1")
+                .bind(draft.memory_id)
+                .fetch_optional(&mut **tx)
+                .await
+                .map_err(map_err)?;
+        if existing.is_some() {
+            validate_derived_replay_equivalent(tx, draft, owner_kind, owner_id).await?;
+            return Ok(DerivedOutcome {
+                memory_id: MemoryId::new(draft.memory_id),
+                idempotent_replay: true,
+            });
+        }
         super::lexical_language::register_lexical_language_in_tx(tx, language).await?;
     }
 

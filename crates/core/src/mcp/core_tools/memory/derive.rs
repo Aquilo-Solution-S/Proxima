@@ -127,7 +127,7 @@ pub struct DeriveArgs {
     pub space: Option<String>,
     #[serde(default)]
     #[schemars(
-        description = "Optional lexical language of the derived text: a PostgreSQL text-search configuration name (e.g. 'german'), or 'auto' to detect it from title+body (an unreliable detection falls back to the database default). Affects lexical search tokenisation only; embeddings are language-agnostic. Omit for the database default."
+        description = "Optional lexical language of the derived text: a PostgreSQL text-search configuration name (e.g. 'german'), an ISO 639 / BCP-47 code (e.g. 'de', 'de-DE'), or 'auto' to detect it from title+body (an unreliable detection falls back to the database default). Affects lexical search tokenisation only; embeddings are language-agnostic. Omit for the database default."
     )]
     pub language: Option<String>,
 }

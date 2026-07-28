@@ -223,7 +223,11 @@ pub async fn append_code_slice(
         model_id: CODE_SLICE_OPERATOR_MODEL,
         prompt_version: CODE_SLICE_PROMPT_VERSION,
         supersedes: None,
-        lexical_language: None,
+        // Chunks pin english on every surface (see CODE_LEXICAL_LANGUAGE):
+        // this stamps the owning memories row, the sidecar mirrors the pin
+        // via its column default, and passing it here (not None) keeps
+        // 'english' registered as an active language on every ingest.
+        lexical_language: Some(crate::payloads::CODE_LEXICAL_LANGUAGE),
         embedding: None,
         embedding_model_id: None,
     };

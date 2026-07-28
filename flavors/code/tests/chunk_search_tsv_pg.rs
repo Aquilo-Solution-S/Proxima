@@ -242,3 +242,63 @@ async fn code_chunk_search_tsv_is_stored_and_indexed() {
     drop_db(&db_name).await.ok();
     result.expect("chunk search tsv storage checks");
 }
+
+/// Pinning chunks to `english` only makes them SEARCHABLE if `english` is
+/// in the active-language set the core query builder ORs over. On a
+/// deployment whose default was switched (e.g. `german`) before this
+/// migration, nothing else would ever register it — every chunk would
+/// silently drop out of the strict lexical band.
+#[tokio::test]
+async fn the_pinned_chunk_language_is_registered_and_matchable() {
+    let db_name = unique_db_name("proxima_test");
+    create_db(&db_name).await.expect("PG required for tests");
+    let url = db_url(&db_name);
+
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&url).await?;
+        pg.run_migrations().await?;
+        proxima_code::migrator().run(pg.pool_for_tests()).await?;
+
+        // The deployment this feature exists for: documents in german.
+        sqlx::query("SELECT proxima_core.set_lexical_config('german')")
+            .execute(pg.pool_for_tests())
+            .await?;
+
+        let registered: bool = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM proxima_core.lexical_languages
+              WHERE config = 'english'::regconfig)",
+        )
+        .fetch_one(pg.pool_for_tests())
+        .await?;
+        assert!(
+            registered,
+            "the pinned chunk language is not in the active set: english-stemmed \
+             vectors would never be matched by any tsquery arm"
+        );
+
+        // End to end through the production match shape: an english-stemmed
+        // chunk vector must satisfy the cross-language OR the core builder
+        // constructs from lexical_languages.
+        let matched: bool = sqlx::query_scalar(
+            "SELECT proxima_core.lexical_tsv('english'::regconfig,
+                        'fn register_repo handles adopted branches quickly')
+                    @@ (SELECT proxima_core.tsquery_or_agg(
+                                websearch_to_tsquery(l.config,
+                                    proxima_core.lexical_query_text(l.config, 'adopted branches')))
+                          FROM proxima_core.lexical_languages l)",
+        )
+        .fetch_one(pg.pool_for_tests())
+        .await?;
+        assert!(
+            matched,
+            "an english chunk vector does not match the active-language OR \
+             on a german-default deployment"
+        );
+
+        Ok(())
+    }
+    .await;
+
+    drop_db(&db_name).await.ok();
+    result.expect("chunk language registration checks");
+}

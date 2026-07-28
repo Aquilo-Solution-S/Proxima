@@ -82,6 +82,36 @@ COMMENT ON AGGREGATE proxima_core.tsquery_or_agg(tsquery) IS
 'OR-combines tsqueries, used by the search builder to build one match query across every active lexical language. Empty tsqueries fold away; an empty input set yields NULL (callers COALESCE to the default configuration''s query).';
 
 -- ---------------------------------------------------------------------------
+-- Query text for one language arm of the search OR.
+--
+-- `simple` has no stop list, so one `simple`-stamped row in the database
+-- (one reliably-detected CJK note is enough) would otherwise make every
+-- query's FUNCTION words into match terms: plainto_tsquery('simple',
+-- 'what is the plan') contributes 'is'|'the' to the rescue OR, and any
+-- mixed-language row whose vector happens to carry an incidental English
+-- function word rescue-matches unrelated questions above the substring
+-- band (measured 0.328 for a CJK note matching an English question solely
+-- via ''is''). So for configurations without a stop list, the query text is
+-- first filtered through the DEFAULT configuration's stop list — content
+-- words and CJK tokens survive untouched, function words never become
+-- match terms. Stop-listed configurations pass through unchanged.
+-- ---------------------------------------------------------------------------
+CREATE FUNCTION proxima_core.lexical_query_text(config regconfig, query_text text)
+RETURNS text
+LANGUAGE sql STABLE PARALLEL SAFE AS
+$$ SELECT CASE
+       WHEN config = 'simple'::regconfig THEN
+           (SELECT COALESCE(string_agg(tok, ' '), '')
+              FROM regexp_split_to_table(query_text, '\s+') AS tok
+             WHERE tok <> ''
+               AND to_tsvector(proxima_core.lexical_config(), tok) <> '')
+       ELSE query_text
+   END $$;
+
+COMMENT ON FUNCTION proxima_core.lexical_query_text(regconfig, text) IS
+'The query text to parse under one configuration when building the cross-language match OR. For stop-list-free configurations (simple), tokens that the default configuration treats as stopwords are removed first, so function words never become match terms; every other configuration receives the text unchanged. Query-side only — stored vectors keep every token their row''s configuration keeps.';
+
+-- ---------------------------------------------------------------------------
 -- Per-row language columns. `DEFAULT proxima_core.lexical_config()` keeps
 -- 0012's setting as exactly what it now is: the default. The default is
 -- non-volatile, so ADD COLUMN takes the fast path (no rewrite); the one
@@ -290,6 +320,7 @@ $$
 DECLARE
     holder record;
     found  boolean;
+    locked boolean;
 BEGIN
     IF config_to_forget IS NULL THEN
         RAISE EXCEPTION 'lexical configuration must not be null';
@@ -297,6 +328,21 @@ BEGIN
     IF config_to_forget = proxima_core.lexical_config() THEN
         RAISE EXCEPTION 'cannot forget %: it is the default lexical configuration',
             config_to_forget;
+    END IF;
+
+    -- Lock the registration row BEFORE scanning. Writers stamping a row in
+    -- this language hold FOR KEY SHARE on it until their transaction ends
+    -- (see register_lexical_language_in_tx), and FOR UPDATE conflicts with
+    -- that — so this blocks until every in-flight write in the language has
+    -- committed, and the scan below then sees their rows. Without the
+    -- lock, forget is a check-then-delete that a concurrent write slips
+    -- past, committing rows in a language that no longer matches anything.
+    SELECT true INTO locked
+      FROM proxima_core.lexical_languages
+     WHERE config = config_to_forget
+       FOR UPDATE;
+    IF locked IS NOT TRUE THEN
+        RETURN; -- not registered: nothing to forget
     END IF;
 
     FOR holder IN
@@ -307,7 +353,12 @@ BEGIN
          WHERE a.atttypid = 'regconfig'::regtype
            AND a.attnum > 0
            AND NOT a.attisdropped
-           AND c.relkind IN ('r', 'p')
+           -- 'm': a materialized view stores regconfig values as durably as
+           -- a table and dangles the same way after a config drop. Foreign
+           -- tables ('f') are deliberately NOT scanned — probing one
+           -- queries the remote server, which may hang or error; foreign
+           -- holders are the operator's own responsibility.
+           AND c.relkind IN ('r', 'p', 'm')
            AND NOT (n.nspname = 'proxima_core' AND c.relname = 'lexical_languages')
          ORDER BY n.nspname, c.relname, a.attname
     LOOP
@@ -326,4 +377,4 @@ END
 $$;
 
 COMMENT ON FUNCTION proxima_core.lexical_language_forget(regconfig) IS
-'Remove a configuration from the active-language set, refusing while any table row still holds it in a regconfig column. Run this BEFORE dropping a custom text search configuration: PostgreSQL allows the drop with rows still referencing it, and those rows are then un-updatable (cache lookup failed on the dangling OID).';
+'Remove a configuration from the active-language set, refusing while any table or materialized-view row still holds it in a regconfig column (foreign tables are not scanned). Serialized against in-flight writes via the registration row lock. Run this BEFORE dropping a custom text search configuration: PostgreSQL allows the drop with rows still referencing it, and those rows are then un-updatable (cache lookup failed on the dangling OID).';

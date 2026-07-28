@@ -330,6 +330,7 @@ fn merge_row(candidates: &mut BTreeMap<uuid::Uuid, Candidate>, row: SearchRow) {
 /// tests can assert against precisely what production executes.
 /// Parameter order: read-owner kind/id arrays, per-projection
 /// `(schema_id, version)` pairs, optional filter params, query text.
+#[allow(clippy::too_many_lines)]
 fn lexical_branch_sql<'p>(
     req: &MemorySearchRequest,
     projections: &'p [MemorySearchProjection],
@@ -356,7 +357,9 @@ fn lexical_branch_sql<'p>(
     let rescue_score_arm = if rescue {
         ", CASE WHEN c.search_tsv @@ q.any_tsq
                 THEN 0.25 + LEAST(COALESCE(ts_rank(c.search_tsv,
-                         NULLIF(replace(plainto_tsquery(c.lexical_language, q.scrubbed)::text,
+                         NULLIF(replace(plainto_tsquery(c.lexical_language,
+                                            proxima_core.lexical_query_text(
+                                                c.lexical_language, q.scrubbed))::text,
                                         ' & ', ' | '), '')::tsquery,
                          1|32), 0.0) * 100.0, 1.0) * 0.2
                 ELSE 0.0 END"
@@ -388,12 +391,16 @@ fn lexical_branch_sql<'p>(
                -- One tsquery per active language, OR-combined: the match
                -- side cannot know the query's language, and the OR is
                -- GIN-indexable where a per-row-parsed tsquery is not.
+               -- lexical_query_text stop-filters the text for stop-list-free
+               -- configurations (simple), so one CJK row in the corpus
+               -- cannot turn every query's function words into match terms.
                -- tsquery_or_agg over an empty lexical_languages is NULL;
                -- the COALESCE falls back to the default configuration.
                SELECT s.q AS scrubbed,
                       COALESCE(
                           (SELECT proxima_core.tsquery_or_agg(
-                                      websearch_to_tsquery(l.config, s.q)
+                                      websearch_to_tsquery(l.config,
+                                          proxima_core.lexical_query_text(l.config, s.q))
                                       ORDER BY l.config)
                              FROM proxima_core.lexical_languages l),
                           websearch_to_tsquery({ts_config}, s.q)
@@ -406,7 +413,9 @@ fn lexical_branch_sql<'p>(
                       COALESCE(
                           (SELECT proxima_core.tsquery_or_agg(
                                       NULLIF(
-                                          replace(plainto_tsquery(l.config, s.q)::text,
+                                          replace(plainto_tsquery(l.config,
+                                              proxima_core.lexical_query_text(
+                                                  l.config, s.q))::text,
                                                   ' & ', ' | '),
                                           '')::tsquery
                                       ORDER BY l.config)
@@ -423,7 +432,9 @@ fn lexical_branch_sql<'p>(
                  GREATEST(
                      CASE WHEN c.search_tsv @@ q.tsq
                           THEN 0.5 + LEAST(COALESCE(ts_rank_cd(c.search_tsv,
-                                   websearch_to_tsquery(c.lexical_language, q.scrubbed),
+                                   websearch_to_tsquery(c.lexical_language,
+                                       proxima_core.lexical_query_text(
+                                           c.lexical_language, q.scrubbed)),
                                    32), 0.0), 1.0) * 0.5
                           ELSE 0.0 END{rescue_score_arm},
                      CASE WHEN lower(c.search_text) LIKE '%' || {like_literal} || '%' ESCAPE '\\'
