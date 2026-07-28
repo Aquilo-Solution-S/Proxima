@@ -35,6 +35,7 @@ mod pg_tests {
             schema_version: SchemaVersion::new(1),
             payload: label.as_bytes().to_vec(),
             rendered_text: Some(label.to_string()),
+            lexical_language: None,
             receipt: Some(FactReceiptDraft {
                 source_id: SourceId::new("proxima-test/fact-embedding"),
                 source_batch_id: SourceBatchId::new(Uuid::now_v7()),

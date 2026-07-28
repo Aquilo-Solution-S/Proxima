@@ -223,6 +223,7 @@ pub async fn append_code_slice(
         model_id: CODE_SLICE_OPERATOR_MODEL,
         prompt_version: CODE_SLICE_PROMPT_VERSION,
         supersedes: None,
+        lexical_language: None,
         embedding: None,
         embedding_model_id: None,
     };

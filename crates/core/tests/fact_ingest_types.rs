@@ -13,6 +13,7 @@ fn fresh_command() -> FactWriteCommand {
         schema_version: SchemaVersion::new(1),
         payload: b"hello".to_vec(),
         rendered_text: None,
+        lexical_language: None,
         receipt: Some(FactReceiptDraft {
             source_id: SourceId::new("test/source"),
             source_batch_id: SourceBatchId::new(Uuid::now_v7()),

@@ -69,6 +69,7 @@ fn fresh_fact_draft(_owner: Owner, payload: Vec<u8>) -> FactWriteCommand {
         schema_version: SchemaVersion::new(1),
         payload,
         rendered_text: None,
+        lexical_language: None,
         receipt: Some(FactReceiptDraft {
             source_id: SourceId::new("test/source"),
             source_batch_id: SourceBatchId::new(Uuid::now_v7()),

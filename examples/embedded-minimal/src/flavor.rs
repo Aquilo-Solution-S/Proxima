@@ -39,6 +39,7 @@ impl FactPayload for DocumentFiledV1 {
             }],
             tag_column: None,
             tsv_column: None,
+            language_column: None,
         })
     }
 }

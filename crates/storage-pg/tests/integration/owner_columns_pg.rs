@@ -28,6 +28,7 @@ fn fresh_fact_draft(_owner: Owner) -> FactWriteCommand {
         schema_version: SchemaVersion::new(1),
         payload: Uuid::now_v7().as_bytes().to_vec(),
         rendered_text: Some("entity owner fact".to_string()),
+        lexical_language: None,
         receipt: Some(FactReceiptDraft {
             source_id: SourceId::new("test/entity-owner-source"),
             source_batch_id: SourceBatchId::new(Uuid::now_v7()),

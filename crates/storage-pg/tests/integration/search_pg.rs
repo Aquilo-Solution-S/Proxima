@@ -255,6 +255,7 @@ async fn ingest_fact_memory(
                 schema_version: SchemaVersion::new(1),
                 payload: payload.to_vec(),
                 rendered_text: None,
+                lexical_language: None,
                 receipt: Some(FactReceiptDraft {
                     source_id: SourceId::new("test/search"),
                     source_batch_id: SourceBatchId::new(Uuid::now_v7()),
@@ -452,6 +453,7 @@ fn code_chunk_projection() -> MemorySearchProjection {
         ],
         tag_column: None,
         tsv_column: None,
+        language_column: None,
     }
 }
 
@@ -477,6 +479,7 @@ fn tagged_abstraction_projection() -> MemorySearchProjection {
         ],
         tag_column: Some("tags".into()),
         tsv_column: None,
+        language_column: None,
     }
 }
 
@@ -524,6 +527,7 @@ fn plan_seq_scans_relation(plan: &serde_json::Value, relation: &str) -> bool {
 mod filters;
 mod lexical;
 mod pagination;
+mod per_row_language;
 mod plans;
 mod ranking;
 mod semantic;

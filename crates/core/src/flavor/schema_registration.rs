@@ -336,5 +336,6 @@ fn maybe_add_search_projection(
             .collect(),
         tag_column: projection.tag_column,
         tsv_column: projection.tsv_column.map(str::to_string),
+        language_column: projection.language_column.map(str::to_string),
     });
 }

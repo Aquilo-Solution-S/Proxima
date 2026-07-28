@@ -225,6 +225,7 @@ impl ToolHarness {
                 model_id: Some("codex-test".into()),
                 idempotency_key: Some("list-events-source".into()),
                 space: None,
+                language: None,
             })
             .await?;
         let edge = self
@@ -266,6 +267,7 @@ fn remember_args(title: &str, body: &str, idempotency_key: &str) -> RememberArgs
         space: None,
         observed_at: None,
         source_batch_key: None,
+        language: None,
     }
 }
 

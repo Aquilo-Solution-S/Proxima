@@ -207,6 +207,7 @@ fn draft(_owner: &Owner, note: &str) -> FactWriteCommand {
             note: note.to_string(),
         }),
         rendered_text: None,
+        lexical_language: None,
         receipt: Some(FactReceiptDraft {
             source_id: SourceId::new("test/inline-cited-source"),
             source_batch_id: SourceBatchId::new(Uuid::now_v7()),

@@ -124,6 +124,14 @@ pub struct FactWriteCommand {
     pub payload: Vec<u8>,
     #[serde(default, skip)]
     pub rendered_text: Option<String>,
+    /// Text-search configuration to stamp on the memory row, resolved by
+    /// [`crate::lexical_language::resolve_lexical_language`]; `None`
+    /// applies the database default. `skip` like `rendered_text`: the
+    /// language describes how the text is indexed, it is not receipt
+    /// key material, and replaying an import with detection newly
+    /// enabled must stay a replay.
+    #[serde(default, skip)]
+    pub lexical_language: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub receipt: Option<FactReceiptDraft>,
     pub citation: Option<Citation>,
@@ -424,6 +432,7 @@ impl FactWriteCommand {
             schema_version: SchemaVersion::new(P::SCHEMA_VERSION),
             payload: payload.receipt_key(),
             rendered_text: Some(payload.render()),
+            lexical_language: None,
             receipt: Some(FactReceiptDraft {
                 source_id: SourceId::new(source_id.into()),
                 source_batch_id,
@@ -438,6 +447,14 @@ impl FactWriteCommand {
     #[must_use]
     pub fn with_citation(mut self, citation: impl Into<Citation>) -> Self {
         self.citation = Some(citation.into());
+        self
+    }
+
+    /// Stamp an explicit lexical language (a resolved text-search
+    /// configuration name); `None` keeps the database default.
+    #[must_use]
+    pub fn with_lexical_language(mut self, lexical_language: Option<String>) -> Self {
+        self.lexical_language = lexical_language;
         self
     }
 
@@ -503,6 +520,7 @@ mod tests {
             schema_version: SchemaVersion::new(1),
             payload,
             rendered_text: None,
+            lexical_language: None,
             receipt: Some(FactReceiptDraft {
                 source_id: SourceId::new("test/source"),
                 source_batch_id: SourceBatchId::new(Uuid::nil()),
@@ -543,6 +561,7 @@ mod tests {
             schema_version: SchemaVersion::new(1),
             payload: b"golden-payload".to_vec(),
             rendered_text: None,
+            lexical_language: None,
             receipt: Some(FactReceiptDraft {
                 source_id: SourceId::new("golden/source"),
                 source_batch_id: SourceBatchId::new(Uuid::nil()),

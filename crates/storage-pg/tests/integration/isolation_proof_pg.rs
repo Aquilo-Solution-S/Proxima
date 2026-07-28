@@ -265,6 +265,7 @@ async fn ingest_cited_fact(
         schema_version: SchemaVersion::new(1),
         payload: b"isolation cited payload".to_vec(),
         rendered_text: Some("isolation cited payload".to_string()),
+        lexical_language: None,
         receipt: Some(FactReceiptDraft {
             source_id: SourceId::new("test/isolation-citation"),
             source_batch_id: SourceBatchId::new(Uuid::now_v7()),

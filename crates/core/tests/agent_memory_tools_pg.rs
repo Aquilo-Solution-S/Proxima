@@ -2279,3 +2279,99 @@ async fn a_zero_page_span_is_rejected_by_storage() -> Result<(), Box<dyn std::er
     drop_db(&db_name).await?;
     Ok(())
 }
+
+/// `language: "auto"` on `core_remember`: the detector stamps the row and
+/// its sidecar german, and the note becomes reachable through a German
+/// inflection no English stemmer can conflate. The reliability gate is
+/// what makes "auto" safe — measured ≥98% accurate wherever the detector
+/// calls itself reliable, and falling back to the default where it does
+/// not (second write below).
+#[tokio::test]
+async fn auto_detection_stamps_a_german_note_and_makes_it_searchable()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (pg, db_name) = fresh_pg().await;
+    let frozen = Arc::new(FlavorRegistry::new().freeze_or_panic_for_tests());
+    let owner = nil_owner();
+
+    let noted = call_tool(
+        &pg,
+        &owner,
+        &frozen,
+        author_ctx(),
+        "core_remember",
+        json!({
+            "title": "Bauleitung beauftragt",
+            "body": "Die Bauleitung wurde beauftragt, die Fluchtwege nach DIN 18040 \
+                     barrierefrei zu planen und die Türbreiten zu prüfen.",
+            "tags": [],
+            "language": "auto",
+        }),
+    )
+    .await?;
+    let memory_id = resolve_memory(noted["handle"].as_str().expect("handle"))?.into_inner();
+
+    let (row_language, sidecar_language): (String, String) = sqlx::query_as(
+        "SELECT m.lexical_language::text, n.lexical_language::text
+           FROM proxima_core.memories m
+           JOIN proxima_core.agent_note_v1 n USING (memory_id)
+          WHERE m.memory_id = $1",
+    )
+    .bind(memory_id)
+    .fetch_one(pg.pool_for_tests())
+    .await?;
+    assert_eq!(row_language, "german", "auto did not detect German");
+    assert_eq!(
+        sidecar_language, "german",
+        "the note sidecar did not mirror the detected language"
+    );
+
+    // `Bauleitungen` shares no token or substring with the note; only the
+    // German stemmer reaches it.
+    let page = call_tool(
+        &pg,
+        &owner,
+        &frozen,
+        author_ctx(),
+        "core_search_memories",
+        json!({"query": "Bauleitungen", "mode": "lexical", "limit": 5}),
+    )
+    .await?;
+    let memories = page["memories"].as_array().expect("memories array");
+    assert!(
+        memories
+            .iter()
+            .any(|memory| memory["memory"].as_str() == noted["handle"].as_str()),
+        "the auto-stamped note is unreachable through its German inflection: {page:#}"
+    );
+
+    // No language signal → no guess: the row takes the database default.
+    let defaulted = call_tool(
+        &pg,
+        &owner,
+        &frozen,
+        author_ctx(),
+        "core_remember",
+        json!({
+            "title": "42",
+            "body": "1024 2048 4096",
+            "tags": [],
+            "language": "auto",
+        }),
+    )
+    .await?;
+    let defaulted_id = resolve_memory(defaulted["handle"].as_str().expect("handle"))?.into_inner();
+    let stamped: String = sqlx::query_scalar(
+        "SELECT lexical_language::text FROM proxima_core.memories WHERE memory_id = $1",
+    )
+    .bind(defaulted_id)
+    .fetch_one(pg.pool_for_tests())
+    .await?;
+    assert_eq!(
+        stamped, "english",
+        "an unreliable detection must fall back to the default, not guess"
+    );
+
+    drop(pg);
+    drop_db(&db_name).await?;
+    Ok(())
+}

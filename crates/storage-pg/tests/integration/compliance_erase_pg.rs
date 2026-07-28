@@ -103,6 +103,7 @@ fn receipt_draft(source_id: &str, batch: Uuid, payload: &[u8]) -> FactWriteComma
         schema_version: SchemaVersion::new(1),
         payload: payload.to_vec(),
         rendered_text: Some(String::from_utf8_lossy(payload).to_string()),
+        lexical_language: None,
         receipt: Some(FactReceiptDraft {
             source_id: SourceId::new(source_id),
             source_batch_id: SourceBatchId::new(batch),

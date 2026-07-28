@@ -1964,6 +1964,7 @@ fn fact_draft(_owner: Owner, schema_id: &str, payload: &[u8]) -> FactWriteComman
         schema_version: SchemaVersion::new(1),
         payload: payload.to_vec(),
         rendered_text: None,
+        lexical_language: None,
         receipt: Some(FactReceiptDraft {
             source_id: SourceId::new("test/source"),
             source_batch_id: SourceBatchId::new(Uuid::now_v7()),

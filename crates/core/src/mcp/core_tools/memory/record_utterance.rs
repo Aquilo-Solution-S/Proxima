@@ -32,6 +32,11 @@ pub struct RecordUtteranceArgs {
         description = "Optional RFC3339 timestamp of when this utterance originally happened, for importing historical conversations (must not be in the future). Recorded as receipt provenance (observed_at/occurred_at); recency ordering still follows ingestion time. Omit for 'now'."
     )]
     pub observed_at: Option<String>,
+    #[serde(default)]
+    #[schemars(
+        description = "Optional lexical language of the utterance: a PostgreSQL text-search configuration name (e.g. 'german'), or 'auto' to detect it from the text (an unreliable detection falls back to the database default). Affects lexical search tokenisation only; embeddings are language-agnostic. Omit for the database default."
+    )]
+    pub language: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -92,12 +97,16 @@ impl McpTool for RecordUtteranceTool {
 
             let observed_at = super::util::parse_observed_at(args.observed_at.as_deref())?
                 .unwrap_or_else(time::OffsetDateTime::now_utc);
+            let lexical_language =
+                crate::lexical_language::resolve_lexical_language(args.language.as_deref(), text)
+                    .map_err(|err| McpToolError::InvalidInput(err.to_string()))?;
             let draft = FactWriteCommand::from_payload(
                 source_id,
                 SourceBatchId::new(uuid::Uuid::now_v7()),
                 &payload,
                 observed_at,
-            );
+            )
+            .with_lexical_language(lexical_language);
 
             let engine = ctx.require_engine()?;
             let embedding_client = engine.embed_client();

@@ -42,6 +42,10 @@ pub struct AuthorDerivedRequestInput<'a> {
     /// records both `memories.supersedes` and a same-transaction
     /// `core/supersedes` edge.
     pub supersedes: Option<MemoryId>,
+    /// Text-search configuration to stamp on the derived row, resolved
+    /// by [`crate::lexical_language::resolve_lexical_language`]; `None`
+    /// applies the database default.
+    pub lexical_language: Option<&'a str>,
     pub edges: &'a [AuthorDerivedEdgeInput<'a>],
 }
 
@@ -174,6 +178,7 @@ impl Engine {
                     prompt_version: req.prompt_version,
                     sidecar_payload: req.sidecar_payload,
                     supersedes: req.supersedes,
+                    lexical_language: req.lexical_language,
                     edges: &edges,
                 },
             )
@@ -372,6 +377,7 @@ impl Engine {
             prompt_version: req.prompt_version,
             sidecar_payload: req.sidecar_payload,
             supersedes: req.supersedes,
+            lexical_language: req.lexical_language,
             embedding,
             embedding_model_id: embedding_model_id.as_deref(),
             edges: &edges,
@@ -790,6 +796,7 @@ mod tests {
                     prompt_version: "test",
                     sidecar_payload: derivation_sidecar(),
                     supersedes: None,
+                    lexical_language: None,
                     edges: &[],
                 },
             )
@@ -824,6 +831,7 @@ mod tests {
                     prompt_version: "test",
                     sidecar_payload: derivation_sidecar(),
                     supersedes: None,
+                    lexical_language: None,
                     edges: &[],
                 },
             )

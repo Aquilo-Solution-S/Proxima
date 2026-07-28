@@ -125,6 +125,11 @@ pub struct DeriveArgs {
         description = "Memory space key from core_memory_spaces. The new memory is authored in this space; source handles may be in other readable spaces."
     )]
     pub space: Option<String>,
+    #[serde(default)]
+    #[schemars(
+        description = "Optional lexical language of the derived text: a PostgreSQL text-search configuration name (e.g. 'german'), or 'auto' to detect it from title+body (an unreliable detection falls back to the database default). Affects lexical search tokenisation only; embeddings are language-agnostic. Omit for the database default."
+    )]
+    pub language: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, JsonSchema)]
@@ -240,6 +245,11 @@ impl McpTool for DeriveTool {
                     })?,
             );
 
+            let lexical_language = crate::lexical_language::resolve_lexical_language(
+                args.language.as_deref(),
+                &format!("{title}\n{body}"),
+            )
+            .map_err(|err| McpToolError::InvalidInput(err.to_string()))?;
             let key = idempotency_key.clone().unwrap_or_else(|| {
                 format!("{}:{}", model_id, blake3::hash(body.as_bytes()).to_hex())
             });
@@ -309,6 +319,7 @@ impl McpTool for DeriveTool {
                             DerivedKind::Perspective => SidecarPayload::perspective(sidecar),
                         },
                         supersedes: None,
+                        lexical_language: lexical_language.as_deref(),
                         edges: &edges,
                     },
                 )

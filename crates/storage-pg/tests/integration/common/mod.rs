@@ -170,6 +170,7 @@ pub async fn seed_memory(
             schema_version: SchemaVersion::new(1),
             payload: text.as_bytes().to_vec(),
             rendered_text: Some(text.to_string()),
+            lexical_language: None,
             receipt: Some(FactReceiptDraft {
                 source_id: SourceId::new("test/edge-access"),
                 source_batch_id: SourceBatchId::new(Uuid::now_v7()),

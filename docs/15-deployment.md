@@ -17,6 +17,32 @@ and a Mistral-compatible embedding client; when configured, the server
 drains embeddings in-process automatically. Without embeddings the server
 operates in degraded lexical-only mode.
 
+## PostgreSQL extensions and search performance
+
+What actually moves retrieval quality and speed on the database side, in
+descending order of leverage. Only the first row is required.
+
+| Piece | Required | What it does for Proxima |
+|---|---|---|
+| `pgvector >= 0.8.0` | **yes** | The semantic arm: HNSW index + `hnsw.iterative_scan` for filtered vector search. Without it the server refuses to boot. |
+| Snowball configurations (built in) | shipped | The lexical arm's stemming. Per-row since v0.0.7 (`memories.lexical_language`); 30 configurations ship in `pg_catalog`, no install needed. |
+| hunspell dictionaries | no | Compound splitting for compounding languages: `german` alone never matches `Tür` in `Türbreite`. Requires the `.dict`/`.affix` files in the server's `$SHAREDIR/tsearch_data` and a `CREATE TEXT SEARCH CONFIGURATION` on top — a server-filesystem operation, not a migration. Stamp rows with the custom configuration via the `language` argument. |
+| `pg_trgm` | no | Trigram GIN indexes can serve `LIKE '%…%'` substring predicates. Proxima's core substring arm runs over an owner-scoped candidate CTE no base-table index can serve, so this helps only flavor surfaces whose substring predicates hit a table directly (e.g. code-chunk path/text bonuses) — measure before adding, every write pays for the index. |
+| `pg_stat_statements` | no | The profiling loop: find the queries that actually cost, before tuning anything. |
+
+Two operational notes that repeatedly matter:
+
+- **VACUUM after bulk ingest.** GIN indexes buffer inserts in a fastupdate
+  pending list; until it is flushed the planner misprices the index and
+  falls back to sequential scans (observed: bitmap plans only won naturally
+  after `VACUUM (ANALYZE)` on a 40k-row bulk load). Autovacuum gets there
+  eventually; after a large import, running it explicitly gets there now.
+- **Custom text search configurations** are referenced by per-row
+  `regconfig` values since v0.0.7. Before dropping one, run
+  `proxima_core.lexical_language_forget('cfg')` — `PostgreSQL` permits the
+  drop while rows still reference it, leaving dangling OIDs that make those
+  rows fail on UPDATE (see MIGRATING §31).
+
 ## Connecting to encrypted PostgreSQL
 
 Verified TLS:

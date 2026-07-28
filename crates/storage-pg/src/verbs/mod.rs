@@ -19,6 +19,7 @@ pub mod fact_ingest;
 pub mod fact_retention;
 pub(crate) mod goal_wake_candidates;
 pub(crate) mod goal_write;
+pub(crate) mod lexical_language;
 pub(crate) mod mcp_call_history;
 pub mod persist_mcp_call;
 pub mod query;

@@ -979,11 +979,18 @@ where
         }
     }
 
+    if let Some(language) = draft.lexical_language.as_deref() {
+        super::lexical_language::register_lexical_language_in_tx(tx, language).await?;
+    }
+
+    // NULL language means the column DEFAULT — the COALESCE spells that
+    // out rather than branching the statement text on the option.
     sqlx::query(
         "INSERT INTO proxima_core.memories
             (memory_id, owner_kind, owner_id, schema_id, schema_version,
-             receipt_id, citation_mapping_id, text)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+             receipt_id, citation_mapping_id, text, lexical_language)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8,
+                 COALESCE($9::regconfig, proxima_core.lexical_config()))",
     )
     .bind(memory_id)
     .bind(owner_kind)
@@ -993,6 +1000,7 @@ where
     .bind(receipt_id_bytes.as_ref().map(|bytes| &bytes[..]))
     .bind(citation_mapping_id)
     .bind(draft.rendered_text.as_deref())
+    .bind(draft.lexical_language.as_deref())
     .execute(tx.as_mut())
     .await
     .map_err(map_err)?;

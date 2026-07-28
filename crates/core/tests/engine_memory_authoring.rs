@@ -102,6 +102,7 @@ async fn engine_author_derived_writes_memory_edge_and_embedding()
                 prompt_version: "test-prompt",
                 sidecar_payload,
                 supersedes: None,
+                lexical_language: None,
                 edges: &edges,
             },
         )
@@ -211,6 +212,7 @@ async fn engine_author_derived_supersedes_in_same_transaction()
                 prompt_version: "test-prompt",
                 sidecar_payload: old_sidecar,
                 supersedes: None,
+                lexical_language: None,
                 edges: &old_edges,
             },
         )
@@ -255,6 +257,7 @@ async fn engine_author_derived_supersedes_in_same_transaction()
                 prompt_version: "test-prompt",
                 sidecar_payload: new_sidecar,
                 supersedes: Some(old_memory_id),
+                lexical_language: None,
                 edges: &new_edges,
             },
         )
@@ -445,6 +448,7 @@ async fn author_derived_authorized_enforces_intra_owner_same_kind_supersedes()
                         client_version: "1".into(),
                     }),
                     supersedes: Some(attacker_prior),
+                    lexical_language: None,
                     edges: &same_owner_edges,
                 },
             )
@@ -556,6 +560,7 @@ async fn author_derived_rejects_empty_operator_inputs() {
                     client_version: "1".into(),
                 }),
                 supersedes: None,
+                lexical_language: None,
                 edges: &[],
             },
         )
@@ -643,6 +648,7 @@ async fn author_derived_authorized_rejects_operator_edge_sourced_from_wrong_memo
                         client_version: "1".into(),
                     }),
                     supersedes: None,
+                    lexical_language: None,
                     edges: &edges,
                 },
             )
@@ -740,6 +746,7 @@ async fn author_derived_authorized_rejects_operator_input_missing_provenance_edg
                         client_version: "1".into(),
                     }),
                     supersedes: None,
+                    lexical_language: None,
                     edges: &edges,
                 },
             )
@@ -814,6 +821,7 @@ async fn author_derived_authorized_rejects_operator_ftoa_without_source_batch_vi
                         client_version: "1".into(),
                     }),
                     supersedes: None,
+                    lexical_language: None,
                     edges: &[],
                 },
             )
@@ -951,6 +959,7 @@ fn derived_authorized_request(
         prompt_version: "test-prompt",
         sidecar_payload: derivation_sidecar(kind, title),
         supersedes,
+        lexical_language: None,
         edges: &[],
     }
 }

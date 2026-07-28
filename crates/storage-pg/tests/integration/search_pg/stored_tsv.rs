@@ -172,16 +172,19 @@ async fn stored_sidecar_tsv_matches_the_projection_concatenation()
     Ok(())
 }
 
-/// Switching the configuration must rewrite every stored vector generated
-/// from it — including sidecars in schemas core has never heard of.
+/// Switching the default must rebuild exactly the columns that still bind
+/// to it — legacy one-argument sidecars in schemas core has never heard
+/// of — and must NOT touch per-row columns.
 ///
-/// Redefining `lexical_config()` by hand does not: `PostgreSQL` permits the
-/// replacement and leaves stored generated columns untouched, so rows
-/// written before the switch keep their old tokenisation while rows written
-/// after get the new one. Nothing raises an error, and half the corpus stops
-/// being reachable by the other half's queries. `set_lexical_config` exists
-/// to make that impossible, and it finds its work by introspection because
-/// core cannot enumerate flavor tables.
+/// Redefining `lexical_config()` by hand leaves stored generated columns
+/// untouched (`PostgreSQL` permits the replacement without recomputing), so
+/// legacy columns still need the rebuild machinery. Per-row columns
+/// (migration 0014) get their language from the row itself: a default
+/// switch must leave them alone — rows keep the language they were stamped
+/// with, and rebuilding them would be a wasted ACCESS EXCLUSIVE rewrite
+/// per table per switch. Discovery is by `pg_depend` on the exact functions
+/// whose value the switch changes, so the two classes separate
+/// structurally.
 #[tokio::test]
 async fn switching_the_lexical_config_rebuilds_every_stored_vector()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -230,13 +233,12 @@ async fn switching_the_lexical_config_rebuilds_every_stored_vector()
         rebuilt
             .iter()
             .any(|(s, t, _)| s == "proxima_flavorish" && t == "chunk_v1"),
-        "the switch skipped a generated column outside proxima_core: {rebuilt:#?}"
+        "the switch skipped a legacy generated column outside proxima_core: {rebuilt:#?}"
     );
     assert!(
-        rebuilt
-            .iter()
-            .any(|(s, t, _)| s == "proxima_core" && t == "memories"),
-        "the switch skipped memories.search_tsv: {rebuilt:#?}"
+        !rebuilt.iter().any(|(s, _, _)| s == "proxima_core"),
+        "the switch rebuilt a per-row column — a default change must not \
+         rewrite tables whose language lives on the row: {rebuilt:#?}"
     );
 
     let german: String =
@@ -245,35 +247,60 @@ async fn switching_the_lexical_config_rebuilds_every_stored_vector()
             .await?;
     assert!(
         !german.contains("'die'") && german.contains("'bauleit'"),
-        "the pre-switch row kept its english vector: {german}"
+        "the pre-switch legacy row kept its english vector: {german}"
     );
 
-    // No column may disagree with the function after the switch — that is
-    // exactly the split-brain state a manual redefinition produces.
+    // The per-row memories vector keeps its stamped tokenisation: the row
+    // was written under the english default and stays english.
+    let memory_tsv: String = sqlx::query_scalar(
+        "SELECT search_tsv::text FROM proxima_core.memories
+          WHERE lexical_language = 'english'::regconfig",
+    )
+    .fetch_one(pg.pool_for_tests())
+    .await?;
+    assert!(
+        memory_tsv.contains("'die'"),
+        "the per-row memories vector was retokenised by a default switch: {memory_tsv}"
+    );
+
+    // No per-row column may disagree with its own row's language — the
+    // split-brain a manual redefinition produced before 0012 stays
+    // impossible when the configuration is data on the row.
     let drifted: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM proxima_core.memories m
           WHERE m.search_tsv IS DISTINCT FROM
-                proxima_core.lexical_tsv(COALESCE(m.text, ''))",
+                proxima_core.lexical_tsv(m.lexical_language, COALESCE(m.text, ''))",
     )
     .fetch_one(pg.pool_for_tests())
     .await?;
     assert_eq!(
         drifted, 0,
-        "stored memories.search_tsv drifted after the switch"
+        "stored memories.search_tsv drifted from its row language after the switch"
     );
+
+    // The new default joins the active-language set the query side ORs
+    // over.
+    let active: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM proxima_core.lexical_languages
+          WHERE config IN ('english'::regconfig, 'german'::regconfig)",
+    )
+    .fetch_one(pg.pool_for_tests())
+    .await?;
+    assert_eq!(active, 2, "set_lexical_config did not register 'german'");
 
     drop(pg);
     drop_db(&db_name).await?;
     Ok(())
 }
 
-/// The query side must follow the switch in the same step.
+/// The query side must follow a default switch for rows written AFTER it —
+/// and keep finding the rows written before it by their own tokenisation.
 ///
-/// This is the property that makes the configuration safe to change at all:
-/// the builder emits `proxima_core.lexical_config()` rather than a literal,
-/// so the tsquery is always built in the configuration the stored vectors
-/// were built in. Before 0012 the two were independent literals in a
-/// migration and a Rust constant.
+/// The per-row contract (0014): a switch changes what new rows are stamped
+/// with; existing rows keep their language. The query builder ORs one
+/// tsquery per active language, so the corpus stays mixed and both halves
+/// stay reachable — the pre-0014 behavior was to rewrite the whole corpus
+/// to the new configuration instead.
 #[tokio::test]
 async fn the_query_side_follows_a_switched_lexical_config() -> Result<(), Box<dyn std::error::Error>>
 {
@@ -281,7 +308,7 @@ async fn the_query_side_follows_a_switched_lexical_config() -> Result<(), Box<dy
     pg.run_migrations().await?;
 
     let owner = owner_fixture();
-    let memory_id =
+    let english_row =
         insert_text_memory(&pg, &owner, "Die Bauleitung überwacht die Ausführung").await?;
 
     // `Bauleitungen` shares no literal token with the text; only a German
@@ -300,11 +327,35 @@ async fn the_query_side_follows_a_switched_lexical_config() -> Result<(), Box<dy
         .execute(pg.pool_for_tests())
         .await?;
 
+    // A row written after the switch is stamped german by default and is
+    // reachable through the inflected form.
+    let german_row =
+        insert_text_memory(&pg, &owner, "Die Bauleitung überwacht die Ausführung").await?;
+    let stamped: String = sqlx::query_scalar(
+        "SELECT lexical_language::text FROM proxima_core.memories WHERE memory_id = $1",
+    )
+    .bind(german_row)
+    .fetch_one(pg.pool_for_tests())
+    .await?;
+    assert_eq!(stamped, "german", "the new default did not stamp new rows");
+
     let after = pg.search_memories(&request, &[]).await?.results;
     assert_eq!(
         after.first().map(|row| row.memory_id.into_inner()),
-        Some(memory_id),
-        "german did not match the inflected form after the switch: {after:#?}"
+        Some(german_row),
+        "german did not match the inflected form for a post-switch row: {after:#?}"
+    );
+
+    // The pre-switch row keeps its english language and stays reachable by
+    // the form english CAN match — the mixed corpus loses nothing.
+    let mut exact = lexical_request(&owner, "Bauleitung überwacht");
+    exact.kind = Some(EntityKind::Abstraction);
+    let exact_hits = pg.search_memories(&exact, &[]).await?.results;
+    assert!(
+        exact_hits
+            .iter()
+            .any(|row| row.memory_id.into_inner() == english_row),
+        "the pre-switch english row became unreachable: {exact_hits:#?}"
     );
 
     drop(pg);

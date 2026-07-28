@@ -64,6 +64,11 @@ pub struct RememberArgs {
         description = "Optional key grouping several core_remember calls into ONE source batch (e.g. one key per imported chat session). Multi-Fact consolidation requires this: core_derive's F→A inputs must share a source batch, and without a key every call gets its own. Deriving an Abstraction from the batch closes it; later writes with the same key are then rejected. Omit for the default batch-per-call."
     )]
     pub source_batch_key: Option<String>,
+    #[serde(default)]
+    #[schemars(
+        description = "Optional lexical language of the content: a PostgreSQL text-search configuration name (e.g. 'german'), or 'auto' to detect it from title+body (an unreliable detection falls back to the database default). Affects lexical search tokenisation only; embeddings are language-agnostic. Omit for the database default."
+    )]
+    pub language: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -153,8 +158,14 @@ impl McpTool for RememberTool {
                 || SourceBatchId::new(uuid::Uuid::now_v7()),
                 |key| keyed_source_batch_id(space.owner, key),
             );
+            let lexical_language = crate::lexical_language::resolve_lexical_language(
+                args.language.as_deref(),
+                &format!("{title}\n{body}"),
+            )
+            .map_err(|err| McpToolError::InvalidInput(err.to_string()))?;
             let draft =
-                FactWriteCommand::from_payload(SOURCE_ID, source_batch_id, &payload, observed_at);
+                FactWriteCommand::from_payload(SOURCE_ID, source_batch_id, &payload, observed_at)
+                    .with_lexical_language(lexical_language);
 
             let engine = ctx.require_engine()?;
             let embedding_client = engine.embed_client();
