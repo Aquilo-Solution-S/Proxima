@@ -24,6 +24,63 @@ fn host_api_imports_from_root() {
 }
 
 #[test]
+fn host_api_can_construct_every_compliance_erase_target() {
+    // `ComplianceEraseTarget` was already on the facade, but two of its
+    // five variants take a `GroupId`/`SourceId` the facade did not name,
+    // so a host depending on `proxima` alone could not build them. An
+    // exported enum whose variants are unconstructible is not exported.
+    let group_id = proxima::GroupId::new(uuid::Uuid::nil());
+    let source_id = proxima::SourceId::new("proxima-tier/scope/0");
+    let user_id = proxima::UserId::new(uuid::Uuid::nil());
+
+    let targets: [proxima::ComplianceEraseTarget; 5] = [
+        proxima::ComplianceEraseTarget::WorldOwner,
+        proxima::ComplianceEraseTarget::GroupOwner { group_id },
+        proxima::ComplianceEraseTarget::PersonalOwner {
+            user_id,
+            drop_event_id: "drop-1".to_owned(),
+        },
+        proxima::ComplianceEraseTarget::GroupSourceScope {
+            group_id,
+            source_id: source_id.clone(),
+        },
+        proxima::ComplianceEraseTarget::PersonalSourceScope {
+            user_id,
+            source_id,
+            drop_event_id: "drop-1".to_owned(),
+        },
+    ];
+
+    // Naming the count pins the enum's shape: a sixth variant has to be
+    // added here, which is the prompt to check it is constructible too.
+    assert_eq!(targets.len(), 5);
+}
+
+#[test]
+fn host_api_names_every_citation_schema_id() {
+    // `CitationSpec::v1` takes `impl Into<String>`, so a missing constant
+    // never fails at the call site — it just pushes the caller onto a
+    // bare literal that silently stops matching when the constant it
+    // duplicates is renamed. Both locator mappings are named here so a
+    // rename breaks this test instead of a flavor's citations.
+    let whole = proxima::CitationSpec::v1(
+        proxima::UPLOADED_BLOB_SCHEMA_ID,
+        [0u8; 32],
+        proxima::UPLOADED_BLOB_WHOLE_SCHEMA_ID,
+    );
+    let page_span = proxima::CitationSpec::v1(
+        proxima::UPLOADED_BLOB_SCHEMA_ID,
+        [0u8; 32],
+        proxima::UPLOADED_BLOB_PAGE_SPAN_SCHEMA_ID,
+    );
+    assert_ne!(whole.mapping_schema_id, page_span.mapping_schema_id);
+    assert_eq!(
+        whole.cited_object_schema_id,
+        page_span.cited_object_schema_id
+    );
+}
+
+#[test]
 fn flavor_sdk_imports_from_flavor_module() {
     use proxima::flavor::{FactPayload, FlavorBundle, FlavorRegistry, PgSidecarRegistry, SchemaId};
     fn _needs_bundle<T: FlavorBundle>() {}

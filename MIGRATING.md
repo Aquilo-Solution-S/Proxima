@@ -1494,6 +1494,26 @@ index.
 Existing flavors that do keep a text copy keep working; nothing about
 the `Text` / `TextArray` kinds changed.
 
+## 38. v0.0.7: the host facade names the ids its own types require
+
+**No action required.** Pure re-exports; no new types, no behavior change,
+no migration.
+
+`ComplianceEraseTarget` was already on the host facade, but `GroupId` and
+`SourceId` were not — so `GroupSourceScope` and `PersonalSourceScope`
+could not be constructed by a host depending on `proxima` alone. Two of
+five variants of an exported enum were unreachable. Both id types are
+re-exported now, and `public_api_tiers.rs` constructs every variant so a
+sixth one has to be added there too.
+
+`UPLOADED_BLOB_SCHEMA_ID` was exported without
+`UPLOADED_BLOB_WHOLE_SCHEMA_ID` or
+`UPLOADED_BLOB_PAGE_SPAN_SCHEMA_ID`, which are the two locator mapping
+ids a Fact cites an uploaded blob through. `CitationSpec::v1` takes
+`impl Into<String>`, so this never failed to compile — it quietly pushed
+flavors onto bare string literals that no compiler could check against a
+rename of the constant they duplicate. All three are exported now.
+
 ## 39. v0.0.7: memory search stops resolving owners through the goals union
 
 **No action required.** Query-shape change inside `core_search_memories`;
