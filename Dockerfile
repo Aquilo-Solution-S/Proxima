@@ -15,7 +15,7 @@ RUN cargo build --release -p proxima-mcp --features code \
 
 # Distroless cc image: glibc + libstdc++ (for aws-lc) + ca-certificates
 # (for outbound TLS to Zitadel/S3/embeddings), non-root by default.
-FROM gcr.io/distroless/cc-debian12@sha256:7ee09f36862efbdbf70422db263e411c2618409ca46faa555bd5b636155307df AS runtime
+FROM gcr.io/distroless/cc-debian12@sha256:e8e7ee4b8b106d4c5fde9e422a321b2b8a2d5cca546c97adcce927f3e1d36e36 AS runtime
 # Provenance. Without these a running container cannot be attributed to a
 # release or a commit — `initialize.serverInfo` reports the version, but only
 # to an MCP client that can already reach it.
