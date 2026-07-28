@@ -1463,6 +1463,37 @@ enforces that. The intended shape is a flavor-owned store type built from
 must treat an absent service as a typed failure rather than assume the
 host wired it.
 
+## 37. v0.0.7: a search projection can project the memory's own text
+
+**No action required.** Additive: a new
+`SearchProjectionColumnKind::MemoryText` variant and a
+`SearchProjectionField::MEMORY_TEXT` constructor. Existing projections
+are untouched, and no migration runs.
+
+A sidecar declares a `search_projection()` mostly to contribute a
+`tag_column`, because a tag filter is the only predicate that scopes
+`core_search_memories` to part of a corpus. The base `memories` candidate
+branch has no tags to offer — `push_tag_filter` gets the literal
+`NULL::text[]` there — so a tag-filtered query is served entirely by
+projection branches. That left one way to stay both scoped and
+retrievable: copy `memories.text` into the sidecar and keep the two
+byte-identical forever. The copy bought nothing — every candidate branch
+already joins `proxima_core.memories` — and it made a second corpus that
+silently returns different text from a scoped query than from an unscoped
+one the moment it drifts.
+
+Projecting `SearchProjectionField::MEMORY_TEXT` reads `m.text` directly.
+A projection of exactly that one field with no `language_column` also
+resolves its lexical vector to the stored `memories.search_tsv` instead
+of tokenising per candidate row: migration 0014 generates that column as
+`lexical_tsv(lexical_language, COALESCE(text, ''))`, which is the same
+vector the branch would compute. Such a sidecar needs no text column, no
+tsvector column and no GIN index on text — only `tags` and its GIN
+index.
+
+Existing flavors that do keep a text copy keep working; nothing about
+the `Text` / `TextArray` kinds changed.
+
 ## Checks before calling an upgrade done
 
 ```sh

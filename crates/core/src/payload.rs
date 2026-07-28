@@ -181,12 +181,46 @@ pub fn schema_only_key(schema_id: &str, schema_version: u32) -> Vec<u8> {
 pub enum SearchProjectionColumnKind {
     Text,
     TextArray,
+    /// Not a sidecar column at all: the owning `proxima_core.memories`
+    /// row's `text`, the same string the memory was embedded from.
+    ///
+    /// A sidecar usually declares a projection to contribute *retrieval
+    /// structure* rather than new content — above all a `tag_column`,
+    /// which is the only predicate that can scope a search to a subset
+    /// of a corpus. The base `memories` branch has no tags to offer
+    /// (`push_tag_filter` gets the literal `NULL::text[]` there), so a
+    /// tag-filtered query is served by projection branches alone. Absent
+    /// this kind, staying reachable under a tag filter means copying
+    /// `memories.text` into the sidecar and keeping the two
+    /// byte-identical forever — a second copy of the corpus, a second
+    /// tsvector and a second GIN index, to project a string the branch
+    /// already has in scope: every candidate branch joins `memories`.
+    ///
+    /// Construct it as [`SearchProjectionField::MEMORY_TEXT`].
+    MemoryText,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct SearchProjectionField {
     pub column: &'static str,
     pub kind: SearchProjectionColumnKind,
+}
+
+impl SearchProjectionField {
+    /// The owning memory row's `text`. `column` is unused — the value
+    /// does not come from the sidecar table.
+    ///
+    /// A projection of exactly this one field, with no `language_column`,
+    /// is the whole reason the kind exists: the branch then projects the
+    /// identical string, tsvector and snippet as the base `memories`
+    /// branch, so a tag-scoped search and an unscoped one cannot return
+    /// different text for the same memory. Combine it with sidecar
+    /// fields when the sidecar genuinely adds searchable content the
+    /// memory text does not carry.
+    pub const MEMORY_TEXT: Self = Self {
+        column: "",
+        kind: SearchProjectionColumnKind::MemoryText,
+    };
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

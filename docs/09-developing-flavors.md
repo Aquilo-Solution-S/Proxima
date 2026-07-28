@@ -491,6 +491,34 @@ Four contract points that are easy to get wrong:
   `memories.text`, which is the only string ever embedded;
   `search_projection()` adds lexical reach over sidecar columns but never
   affects the vector.
+- **Scoping a search takes a projection, not a copy of the text.** A tag
+  filter is the only predicate that narrows `core_search_memories` to
+  part of a corpus — `schema_id` is exact-match and there is no
+  per-column filter — and the base `memories` branch carries no tags, so
+  a tag-filtered query is served by projection branches alone. Declare a
+  `tags text[]` column, name it as `tag_column`, and project the memory's
+  own text with `SearchProjectionField::MEMORY_TEXT`:
+
+  ```rust
+  fn search_projection() -> Option<SearchProjection> {
+      Some(SearchProjection {
+          fields: &[SearchProjectionField::MEMORY_TEXT],
+          tag_column: Some("tags".to_owned()),
+          tsv_column: None,
+          language_column: None,
+      })
+  }
+  ```
+
+  Do not copy `memories.text` into the sidecar to achieve this. The copy
+  is a second corpus that must stay byte-identical forever, and the day
+  it drifts a scoped and an unscoped search return different text for
+  one memory. Exactly this projection — the single `MEMORY_TEXT` field,
+  no `language_column` — also reads the stored `memories.search_tsv`
+  rather than tokenising each candidate row, so the sidecar needs no
+  tsvector column and no GIN index on text, only on `tags`. Add sidecar
+  fields alongside it when the sidecar genuinely holds searchable
+  content the memory text does not.
 
 ## Background Workers
 

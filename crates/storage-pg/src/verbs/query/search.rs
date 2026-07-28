@@ -768,6 +768,14 @@ JOIN {table} s ON s.memory_id = m.memory_id",
 fn projection_search_expr(fields: &[MemorySearchProjectionField]) -> Result<String, StorageError> {
     let mut expressions = Vec::with_capacity(fields.len());
     for field in fields {
+        // `MemoryText` names no sidecar column, so it is resolved before
+        // the identifier check rather than being made to pass one.
+        // Every candidate branch joins `proxima_core.memories m` (see
+        // the UNION ALL above), so `m.text` is in scope here.
+        if matches!(field.kind, SearchProjectionColumnKind::MemoryText) {
+            expressions.push("NULLIF(m.text, '')".to_string());
+            continue;
+        }
         let column = PgIdent::column(&field.column)?;
         let expression = match field.kind {
             SearchProjectionColumnKind::Text => {
@@ -776,10 +784,38 @@ fn projection_search_expr(fields: &[MemorySearchProjectionField]) -> Result<Stri
             SearchProjectionColumnKind::TextArray => {
                 format!("NULLIF(array_to_string(s.{}, ' '), '')", column.as_str())
             }
+            SearchProjectionColumnKind::MemoryText => unreachable!("handled above"),
         };
         expressions.push(expression);
     }
     Ok(expressions.join(", "))
+}
+
+/// True when a branch's search text is exactly the owning memory's text,
+/// ranked in that memory's own language — in which case the stored
+/// `memories.search_tsv` *is* this branch's vector and there is nothing
+/// to tokenise.
+///
+/// Migration 0014 generates that column as `lexical_tsv(lexical_language,
+/// COALESCE(text, ''))`. This branch's search text is
+/// `NULLIF(concat_ws(' ', NULLIF(m.text, '')), '')`, which equals
+/// `COALESCE(m.text, '')` for every row with non-empty text and is NULL
+/// for the rest — and a NULL search text and an empty tsvector are both
+/// unmatchable, so the two spellings cannot rank a candidate differently.
+///
+/// A declared `language_column` breaks the equivalence: the sidecar then
+/// pins a configuration the memories column was not tokenised with (the
+/// code flavor pins `english`), so that case falls through to the inline
+/// vector.
+fn projection_is_memory_text_only(projection: &MemorySearchProjection) -> bool {
+    projection.language_column.is_none()
+        && matches!(
+            projection.fields.as_slice(),
+            [MemorySearchProjectionField {
+                kind: SearchProjectionColumnKind::MemoryText,
+                ..
+            }]
+        )
 }
 
 /// The candidate's lexical vector: the stored column when the sidecar
@@ -796,6 +832,9 @@ fn projection_tsv_expr(
     search_text_expr: &str,
 ) -> Result<String, StorageError> {
     let Some(tsv_column) = &projection.tsv_column else {
+        if projection_is_memory_text_only(projection) {
+            return Ok("m.search_tsv".to_string());
+        }
         return Ok(format!(
             "proxima_core.lexical_tsv(m.lexical_language, {search_text_expr})"
         ));
