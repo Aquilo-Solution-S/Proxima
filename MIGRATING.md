@@ -1358,6 +1358,21 @@ API: `authorize_fact_with_citation_by_ref` /
 `ingest_fact_with_citation_ref_and_typed_sidecar`. Custom
 `FactIngestPort` implementations must add the new
 `ingest_fact_with_citation_ref_and_typed_sidecar` method.
+## 33. v0.0.7: flavors can contribute background workers
+
+**No action required.** Additive Flavor SDK surface; no migration, no
+behavior change for existing flavors.
+
+`FlavorBundle` gains `spawn_workers(&FlavorWorkerContext) ->
+Vec<FlavorWorker>` with a default empty body, so every existing bundle
+compiles and behaves exactly as before. A flavor that needs a durable
+background worker (e.g. a document-ingestion flavor driving OCR jobs)
+returns it from `spawn_workers`; any host built on `crates/proxima`
+spawns the returned workers in `Proxima::run` and joins them in
+`RunningProxima::shutdown()`. Workers must terminate on the provided
+cancellation token; a worker panic is logged at join and never takes the
+host down. The serverless `Proxima::build` variant is unchanged and
+spawns no workers.
 
 ## Checks before calling an upgrade done
 

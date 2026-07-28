@@ -33,6 +33,7 @@ pub mod host;
 mod migrations;
 mod runtime;
 mod runtime_config;
+mod workers;
 
 pub use host::*;
 pub use proxima_core::authz::SystemAuthority;

@@ -2,6 +2,10 @@
 
 pub use crate::bundle::FlavorBundle;
 pub use crate::migrations::NamedMigrator;
+/// Background-worker surface for [`FlavorBundle::spawn_workers`]: the
+/// runtime handles a spawning flavor receives and the named join handle
+/// it returns.
+pub use crate::workers::{FlavorWorker, FlavorWorkerContext};
 /// MCP tool-authoring surface: implement [`McpTool`] with typed
 /// [`McpToolCtx`] / [`McpToolError`] instead of reaching into
 /// `proxima_core::mcp`. Mirrors what `docs/tutorials/add-first-mcp-tool.md`
