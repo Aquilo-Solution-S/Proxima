@@ -1437,6 +1437,32 @@ failure fails the write — Facts instead enqueue a durable
 flavor deriving many memories in a worker should checkpoint per output
 rather than per batch.
 
+## 36. v0.0.7: flavors can supply MCP tool extensions
+
+**No action required.** Additive Flavor SDK surface; no migration, no
+behavior change for existing flavors.
+
+`McpToolExtensions` is re-exported from `proxima::flavor`. It is the
+return type of `FlavorApp::mcp_tool_extensions`, so without it an
+out-of-tree flavor could not write that override at all — and that
+override is the only sanctioned route by which a flavor's MCP tools reach
+a host-owned dependency, including a database handle for their own
+sidecar tables. The in-tree host imports the type straight from
+`proxima_core::mcp`, which is what kept the gap invisible.
+
+Nothing else changed: the type was already `pub` with a complete API
+(`with`, `insert`, `get`), `AppContext` and `FlavorApp` were already on
+the host facade, and `AppContext::clone_pool_for_host` was already `pub`.
+
+The pool stays off the supported export tier on purpose — `host.rs` and
+`flavor.rs` still name no `PgPool`, and `public_api_tiers.rs` still
+enforces that. The intended shape is a flavor-owned store type built from
+`clone_pool_for_host` that keeps `proxima_core.*` SQL private, mirroring
+`proxima-code`'s `CodeFlavorStore`. `docs/09-developing-flavors.md`
+§ MCP Tools now documents both halves of the seam, including that a tool
+must treat an absent service as a typed failure rather than assume the
+host wired it.
+
 ## Checks before calling an upgrade done
 
 ```sh

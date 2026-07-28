@@ -581,6 +581,46 @@ Tool contract:
 MCP JSON is protocol boundary only. Flavor SDK tool code targets `Tool`;
 MCP is an adapter projection.
 
+### Host-owned dependencies: the extension seam
+
+Core cannot name a flavor's own service types, so anything a tool needs
+beyond the engine travels through `McpToolExtensions` — a `TypeId`-keyed
+map the host fills and the tool reads back. This is how `core_upload`
+finds its `CitedBlobService`, and how a flavor's tools reach their own
+sidecar tables.
+
+The host half is a `FlavorApp::mcp_tool_extensions` override:
+
+```rust
+fn mcp_tool_extensions(ctx: &AppContext) -> McpToolExtensions {
+    let mut extensions = McpToolExtensions::default();
+    extensions.insert(MyFlavorStore::from_backend_pool_for_host(
+        ctx.clone_pool_for_host(),
+    ));
+    extensions
+}
+```
+
+The tool half resolves it by type, and must handle absence rather than
+assume it:
+
+```rust
+let Some(store) = ctx.extensions.get::<MyFlavorStore>() else {
+    return Err(McpToolError::new(
+        McpToolErrorKind::Internal,
+        "host did not wire MyFlavorStore",
+    ));
+};
+```
+
+Two things to note. `AppContext::clone_pool_for_host` is the only route
+to a `PgPool`, and it is deliberately kept off the supported export tier:
+wrap it in a store type that keeps `proxima_core.*` SQL private, exactly
+as `proxima-code` does, rather than passing the pool around. And the
+runtime calls
+`mcp_tool_extensions` *before* `spawn_workers`, so a service built here
+can also be handed to a worker.
+
 ## Tests
 
 Minimum:

@@ -10,9 +10,19 @@ pub use crate::workers::{FlavorWorker, FlavorWorkerContext};
 /// [`McpToolCtx`] / [`McpToolError`] instead of reaching into
 /// `proxima_core::mcp`. Mirrors what `docs/tutorials/add-first-mcp-tool.md`
 /// imports.
+///
+/// [`McpToolExtensions`] is the seam for anything core cannot name. A host
+/// composes its flavors' services into it by overriding
+/// `FlavorApp::mcp_tool_extensions`, and a tool resolves one back with
+/// `ctx.extensions.get::<MyService>()` — which is exactly how core's own
+/// `core_upload` finds the [`CitedBlobService`] below. It is re-exported
+/// here because it is the *return type* of that override: without it an
+/// out-of-tree flavor cannot write the signature at all, so its tools have
+/// no sanctioned route to a database handle or any other host-owned
+/// dependency. See `docs/09-developing-flavors.md` § MCP Tools.
 pub use proxima_core::mcp::{
     McpActionArgSpec, McpAuthorContext, McpTool, McpToolAnnotations, McpToolCtx, McpToolError,
-    McpToolErrorKind,
+    McpToolErrorKind, McpToolExtensions,
 };
 /// Host-wired cited-blob lane, handed to workers as
 /// [`FlavorWorkerContext::blobs`]. Present only when the host configured

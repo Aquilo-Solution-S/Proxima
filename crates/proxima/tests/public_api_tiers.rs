@@ -178,6 +178,88 @@ fn flavor_sdk_exposes_the_derived_memory_write_lane() {
     );
 }
 
+/// A flavor-owned service, standing in for the store a real flavor hands
+/// its tools (`proxima-code` puts a `CodeFlavorStore` here). Core cannot
+/// name this type, which is the entire point of the extension map.
+struct TierFlavorStore {
+    marker: &'static str,
+}
+
+/// The override a flavor host must be able to *write*. This is the load-
+/// bearing half: `mcp_tool_extensions` returns `McpToolExtensions`, so
+/// without that type on the flavor facade the signature is unspellable and
+/// a flavor depending only on `proxima` cannot supply its tools with a
+/// database handle or any other host-owned dependency.
+struct TierExtensionApp;
+
+impl proxima::flavor::FlavorBundle for TierExtensionApp {
+    fn register(
+        _registry: &mut proxima::flavor::FlavorRegistry,
+    ) -> Result<(), proxima::flavor::FlavorRegistryError> {
+        Ok(())
+    }
+
+    fn migrators() -> Vec<proxima::flavor::NamedMigrator> {
+        Vec::new()
+    }
+}
+
+impl proxima::FlavorApp for TierExtensionApp {
+    fn app_info() -> proxima::AppInfo {
+        proxima::AppInfo {
+            id: "proxima-tier",
+            title: "Tier Extension App",
+            version: "0",
+        }
+    }
+
+    fn mcp_tool_extensions(ctx: &proxima::AppContext) -> proxima::flavor::McpToolExtensions {
+        // A real host composes its store from `ctx.clone_pool_for_host()`.
+        // The pool stays off the supported tier deliberately (see
+        // `raw_storage_surfaces_are_not_supported_tier_exports`), so this
+        // test only pins that the override is writable at all.
+        let _ = ctx;
+        let mut extensions = proxima::flavor::McpToolExtensions::default();
+        extensions.insert(TierFlavorStore { marker: "store" });
+        extensions
+    }
+}
+
+#[test]
+fn flavor_sdk_exposes_the_mcp_tool_extension_seam() {
+    use proxima::flavor::McpToolExtensions;
+
+    // Both halves must be reachable: the host inserts a service core
+    // cannot name, and the tool resolves it back by type.
+    let mut extensions = McpToolExtensions::default();
+    extensions.insert(TierFlavorStore { marker: "store" });
+    let resolved = extensions
+        .get::<TierFlavorStore>()
+        .expect("a tool must resolve the service its host inserted");
+    assert_eq!(resolved.marker, "store");
+
+    // The one-shot constructor is the common case for a single service.
+    let single = McpToolExtensions::with(TierFlavorStore { marker: "single" });
+    assert_eq!(
+        single
+            .get::<TierFlavorStore>()
+            .expect("with() inserts the value")
+            .marker,
+        "single"
+    );
+
+    // An absent service resolves to None rather than panicking — the
+    // degraded mode every extension-resolving tool has to handle.
+    assert!(single.get::<u64>().is_none());
+
+    // And the override itself is nameable; calling it needs an AppContext
+    // only a booted runtime can make, so this pins the signature.
+    std::hint::black_box(
+        <TierExtensionApp as proxima::FlavorApp>::mcp_tool_extensions
+            as fn(&proxima::AppContext) -> McpToolExtensions,
+    );
+}
+
 #[test]
 fn raw_storage_surfaces_are_not_supported_tier_exports() {
     let host_exports = include_str!("../src/host.rs");
