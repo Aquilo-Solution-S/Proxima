@@ -1549,6 +1549,27 @@ survives `merge_row`. Ranking and membership do not change. A projection
 that declares `SearchProjectionField::MEMORY_TEXT` removes that ambiguity
 by construction.
 
+## 40. v0.0.7: the flavor SDK names the stateful-Fact tombstone
+
+**No action required.** One re-export; no new types, no migration, no
+behavior change.
+
+`FactTombstone` is the return type of `FactPayload::tombstone`, so a flavor
+declaring a *stateful* Fact schema — a head per natural key plus an explicit
+deletion observation — could not write that override at all from
+`proxima::flavor`. The in-tree precedent (`flavors/code`'s `FileRevisionV1`)
+reaches the type through a direct `proxima-core` dependency an out-of-tree
+flavor does not have, which is what kept the gap invisible.
+
+The failure mode without it is quiet rather than loud: a schema can still
+declare `natural_key_columns` and get head-by-natural-key resolution, but
+storage has no discriminator for `PresentOnly`, so an entity that is deleted
+upstream stays a live head forever.
+
+`public_api_tiers.rs` now declares a stateful Fact through the SDK alone and
+asserts both halves of the contract — the tombstone column/value and the
+natural key.
+
 ## Checks before calling an upgrade done
 
 ```sh
