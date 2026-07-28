@@ -224,6 +224,15 @@ host-wired cited-blob service; a host without `PROXIMA_S3_*` configured
 fails typed at call time with the enabling configuration in the message
 (docs/10 §Large Artefact S3).
 
+Citation read-back (`core_fact` `citation_of_fact` /
+`citation_of_entity_head`) returns the locator alongside the ids: the
+`core/uploaded-blob-page-span-v1` payload as `page_span` when the
+mapping carries one, and — when the cited object is an uploaded blob —
+a `document` block with `filename`/`mime`/`byte_len`/`sha256_hex`/
+`uploaded_at`. What the document IS, never where it lives:
+`bucket`/`object_key` stay internal, and fetching bytes goes through
+`read_url`.
+
 ## Owner scoping
 
 CitedObject carries Owner. A document ingested for `User(A)` is not
