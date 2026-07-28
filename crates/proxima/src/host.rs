@@ -28,6 +28,14 @@ pub use proxima_core::cursor::Cursor;
 pub use proxima_core::engine::{ListWakeCandidatesReadRequest, ListWakeCandidatesReadResponse};
 pub use proxima_core::error::ProtocolError;
 pub use proxima_core::llm;
+/// [`EmbedCaps`] is the second parameter of
+/// [`OpenAiCompatEmbeddingClient::new`], so without it on the facade that
+/// constructor is unspellable and `mistral()` is the only embedding client
+/// a host depending on `proxima` alone can build. That rules out every
+/// other OpenAI-compatible endpoint — a local Ollama, a self-hosted
+/// inference server, any provider needing `matryoshka` to return
+/// [`llm::EMBEDDING_DIM`] rather than its native width.
+pub use proxima_core::models::EmbedCaps;
 pub use proxima_core::verbs::change_history::{ChangeHistoryRequest, ChangeHistoryResponse};
 pub use proxima_core::verbs::fact_ingest::{
     CitationSpec, FactIngestOutcome, FactReceiptDraft, FactWriteCommand,

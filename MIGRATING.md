@@ -1570,6 +1570,26 @@ upstream stays a live head forever.
 asserts both halves of the contract — the tombstone column/value and the
 natural key.
 
+## 41. v0.0.7: the host facade names `EmbedCaps`
+
+**No action required.** One re-export; no new types, no migration.
+
+`OpenAiCompatEmbeddingClient` has been on the host facade since the
+embedding lane shipped, but `OpenAiCompatEmbeddingClient::new` takes an
+`EmbedCaps` that was not. The convenience constructor `mistral()` supplies
+its own, so it worked — and that made the gap easy to miss, because the
+one supported path was the one everybody tried first.
+
+Every other OpenAI-compatible endpoint was unreachable: a local Ollama, a
+self-hosted inference server, or any provider whose native width is not
+`EMBEDDING_DIM` and therefore needs `matryoshka: true` to return a nested
+prefix. `mistral()` hardcodes `matryoshka: false` and requires a bearer
+token, so it cannot stand in for a local endpoint.
+
+Found while developing an out-of-tree ingestion flavor against a local
+model before pointing it at Mistral — which is exactly the workflow the
+gap prevented.
+
 ## Checks before calling an upgrade done
 
 ```sh
