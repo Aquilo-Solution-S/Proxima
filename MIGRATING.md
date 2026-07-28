@@ -1590,6 +1590,27 @@ Found while developing an out-of-tree ingestion flavor against a local
 model before pointing it at Mistral — which is exactly the workflow the
 gap prevented.
 
+## 42. v0.0.7: the host facade names the search read surface
+
+**No action required.** Re-exports only; no new types, no migration.
+
+`Engine::search` has always been public, but every type in its signature
+was off the facade: `SearchReadRequest`/`SearchReadResponse`,
+`MemorySearchRequest`/`MemorySearchResult`/`MemorySearchPage`,
+`SearchMode`, `SearchOrder`, `TagMatch`, `SearchCursor`, and the
+`DEFAULT_HYBRID_SEMANTIC_WEIGHT` / `MAX_SEARCH_PAGE_LIMIT` constants.
+
+So an out-of-tree flavor could write a corpus and had no sanctioned way to
+query it. Its own MCP tools would have had to re-implement search against
+raw SQL — precisely the coupling the tiered facade exists to prevent, and
+a guarantee it cannot keep if the read path is unreachable.
+
+Worth knowing when you use it: `MemorySearchRequest::tags` is the ONLY
+predicate that narrows a search to a subset of a corpus. `schema_id` is
+exact-match and there is no per-column filter, so a flavor that wants
+"search inside this book" declares a `tag_column` on its projection and
+filters here.
+
 ## Checks before calling an upgrade done
 
 ```sh
