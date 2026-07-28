@@ -25,7 +25,23 @@ pub use proxima_core::compliance::{
     ComplianceEraseTarget,
 };
 pub use proxima_core::cursor::Cursor;
-pub use proxima_core::engine::{ListWakeCandidatesReadRequest, ListWakeCandidatesReadResponse};
+/// The read verb a flavor searches its own corpus with.
+///
+/// [`proxima_core::Engine::search`] was already public, but every type in
+/// its signature was off the facade — so a flavor could write a corpus and
+/// had no sanctioned way to query it. Its own MCP tools would have had to
+/// re-implement search against raw SQL, which is exactly the coupling the
+/// tiered facade exists to prevent.
+///
+/// [`MemorySearchRequest::tags`] is worth knowing about: it is the only
+/// predicate that narrows a search to a subset of a corpus. `schema_id` is
+/// exact-match and there is no per-column filter, so a flavor that wants
+/// "search inside this book" declares a `tag_column` on its projection and
+/// filters here.
+pub use proxima_core::engine::{
+    ListWakeCandidatesReadRequest, ListWakeCandidatesReadResponse, SearchReadRequest,
+    SearchReadResponse,
+};
 pub use proxima_core::error::ProtocolError;
 pub use proxima_core::llm;
 /// [`EmbedCaps`] is the second parameter of
@@ -51,10 +67,12 @@ pub use proxima_core::verbs::mcp_call_history::{
 };
 pub use proxima_core::verbs::persist_mcp_call::{McpCallLogInput, McpCallLogOutcome};
 pub use proxima_core::verbs::query::{
-    EdgeExistsRequest, EdgeExistsResponse, EdgeFilter, EdgeReadRequest, EdgeReadResponse, EdgeRow,
-    EntityKind, FactCitationReadback, MemoryLineageDirection, MemoryLineageEdge, MemoryLineageNode,
-    MemoryLineageRequest, MemoryLineageResponse, MemoryRow, QueryRequest, QueryResponse,
-    SupersessionStatus, TombstoneFilter,
+    DEFAULT_HYBRID_SEMANTIC_WEIGHT, EdgeExistsRequest, EdgeExistsResponse, EdgeFilter,
+    EdgeReadRequest, EdgeReadResponse, EdgeRow, EntityKind, FactCitationReadback,
+    MAX_SEARCH_PAGE_LIMIT, MemoryLineageDirection, MemoryLineageEdge, MemoryLineageNode,
+    MemoryLineageRequest, MemoryLineageResponse, MemoryRow, MemorySearchPage, MemorySearchRequest,
+    MemorySearchResult, QueryRequest, QueryResponse, SearchCursor, SearchMode, SearchOrder,
+    SupersessionStatus, TagMatch, TombstoneFilter,
 };
 pub use proxima_core::verbs::schema::{
     PayloadKind, RelationInfo, RelationPayloadSchemaRef, SchemaRequest, SchemaResponse,

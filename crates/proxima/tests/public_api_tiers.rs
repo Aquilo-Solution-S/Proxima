@@ -107,6 +107,51 @@ fn host_api_can_build_a_non_mistral_embedding_client() {
 }
 
 #[test]
+fn host_api_can_build_a_search_read_request() {
+    // `Engine::search` was already public, but every type in its signature
+    // was off the facade — so a flavor could write a corpus and had no
+    // sanctioned way to query it. Constructing the request rather than
+    // merely naming the types means a field added or retyped upstream
+    // breaks here instead of at some flavor's next pin bump.
+    let owner: proxima::Owner = proxima::company_owner(uuid::Uuid::nil());
+    let request = proxima::SearchReadRequest {
+        search: proxima::MemorySearchRequest {
+            owner,
+            read_owners: vec![owner],
+            query: "Schnittzeichnung Getriebe".to_owned(),
+            mode: proxima::SearchMode::Hybrid,
+            supersession: proxima::SupersessionStatus::HeadsOnly,
+            limit: 5,
+            kind: None,
+            schema_id: None,
+            // The only predicate that narrows a search to part of a corpus.
+            tags: vec!["book:0198f0d2".to_owned()],
+            tag_match: proxima::TagMatch::Any,
+            since: None,
+            until: None,
+            order: proxima::SearchOrder::Relevance,
+            min_score: None,
+            semantic_weight: Some(proxima::DEFAULT_HYBRID_SEMANTIC_WEIGHT),
+            after: None,
+            query_embedding: None,
+            embedding_model_id: None,
+        },
+        include_body: false,
+        include_neighbor_edges: false,
+    };
+    assert!(request.search.limit <= proxima::MAX_SEARCH_PAGE_LIMIT);
+
+    // The response types must be nameable too — a caller has to bind what
+    // `search` returns and read a hit out of it.
+    let _: Option<(
+        &proxima::SearchReadResponse,
+        &proxima::MemorySearchResult,
+        &proxima::MemorySearchPage,
+        &proxima::SearchCursor,
+    )> = None;
+}
+
+#[test]
 fn flavor_sdk_imports_from_flavor_module() {
     use proxima::flavor::{FactPayload, FlavorBundle, FlavorRegistry, PgSidecarRegistry, SchemaId};
     fn _needs_bundle<T: FlavorBundle>() {}
