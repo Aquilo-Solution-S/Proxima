@@ -43,8 +43,8 @@ const PROXIMA_TOOL_DENY: &str = "PROXIMA_TOOL_DENY";
 fn memory_keep_set() -> Vec<&'static str> {
     use proxima_core::mcp::McpTool;
     use proxima_core::mcp::core_tools::{
-        CoreFactTool, CoreGoalTool, DeriveTool, LinkTool, MemorySpacesTool, RecordUtteranceTool,
-        RememberTool, SearchMemoriesTool,
+        CoreFactTool, CoreGoalTool, CoreUploadTool, DeriveTool, LinkTool, MemorySpacesTool,
+        RecordUtteranceTool, RememberTool, SearchMemoriesTool,
     };
 
     #[allow(unused_mut)]
@@ -58,12 +58,17 @@ fn memory_keep_set() -> Vec<&'static str> {
         SearchMemoriesTool::NAME,
         MemorySpacesTool::NAME,
     ];
-    // The memory profile carries the full goal lifecycle plus non-destructive
-    // fact/citation actions. Retention/cleanup are host/config-only.
-    // Retention/cleanup stay out.
+    // The memory profile carries the full goal lifecycle, non-destructive
+    // fact/citation actions, and the cited-blob upload lane (an upload is
+    // memory authoring: it exists to be cited by a Fact).
+    // Retention/cleanup are host/config-only and stay out.
     ids.extend(
         all_core_actions()
-            .filter(|action| action.tool == CoreGoalTool::NAME || action.tool == CoreFactTool::NAME)
+            .filter(|action| {
+                action.tool == CoreGoalTool::NAME
+                    || action.tool == CoreFactTool::NAME
+                    || action.tool == CoreUploadTool::NAME
+            })
             .map(|action| action.scope_key),
     );
     ids.extend(all_core_resources().map(|resource| resource.scope_key));

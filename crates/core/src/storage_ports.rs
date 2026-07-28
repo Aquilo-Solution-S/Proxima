@@ -6,6 +6,7 @@
 mod access;
 mod bundle;
 mod change;
+mod cited_blob;
 mod cited_object_erase;
 mod compliance;
 mod cursors;
@@ -25,6 +26,10 @@ pub(crate) use bundle::{
 };
 pub use bundle::{StoragePorts, StoragePortsBuildError, StoragePortsBuilder};
 pub use change::ChangeEventPort;
+pub use cited_blob::{
+    CitedBlobPort, CitedBlobReadUrl, CitedBlobService, CitedBlobUploadAborted,
+    CitedBlobUploadCompleted, CitedBlobUploadHeader, CitedBlobUploadPrepared,
+};
 pub use cited_object_erase::CitedObjectErasePort;
 pub use compliance::{
     ComplianceAdminPort, ComplianceErasePort, FactRetentionPort, OwnerDropProofPort,

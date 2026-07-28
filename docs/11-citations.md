@@ -190,6 +190,30 @@ Direct upload:
 S3 preserves original bytes only. It does not replace
 `CitationMapping`, Fact-only citations, or provenance edges.
 
+<a id="mcp-surface"></a>
+## MCP surface
+
+The upload lane above is reachable over MCP through the `core_upload`
+dispatcher (actions `prepare` / `complete` / `abort` / `read_url`).
+Artefact bytes never travel through a tool call — the MCP transport caps
+request bodies, and the presigned-URL policy above is the transfer path:
+
+1. `core_upload` `prepare` (`filename`, `mime`, `byte_len`) → pending
+   upload + presigned `upload_url` with its required `headers`.
+2. The client HTTP `PUT`s the raw bytes to `upload_url` with exactly
+   those headers, before `expires_at`.
+3. `core_upload` `complete` (`upload_id`) verifies the bytes and returns
+   the canonical `cited_object_id` (plus hex `content_hash`/`sha256`,
+   `byte_len`, `mime`, `filename`; replays report `idempotent_replay`).
+4. `core_upload` `read_url` (`cited_object_id`) mints a presigned
+   download URL later.
+
+All four actions resolve a `space` key exactly like `core_remember` and
+re-authorize against the resolved owner. The tool is served by the
+host-wired cited-blob service; a host without `PROXIMA_S3_*` configured
+fails typed at call time with the enabling configuration in the message
+(docs/10 §Large Artefact S3).
+
 ## Owner scoping
 
 CitedObject carries Owner. A document ingested for `User(A)` is not
@@ -242,6 +266,7 @@ separate `citations` table for them; the F→A / A→P invocation key
 - `multiplicity`
 - `idempotency`
 - `large-artefact-storage`
+- `mcp-surface`
 - `owner-scoping`
 - `edges-do-not-cite`
 - `operator-invocation-provenance-lives-on-the-memory-row`

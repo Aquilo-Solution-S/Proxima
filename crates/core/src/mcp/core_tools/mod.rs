@@ -20,6 +20,7 @@ pub mod memory;
 pub mod memory_spaces;
 pub mod publish;
 pub mod read_edges;
+pub mod upload;
 pub mod walk_memory_lineage;
 pub(crate) mod wire_ref;
 
@@ -30,6 +31,7 @@ pub use memory::{DeriveTool, LinkTool, RecordUtteranceTool, RememberTool};
 pub use memory_spaces::MemorySpacesTool;
 pub use publish::CorePublishTool;
 pub use search_memories::SearchMemoriesTool;
+pub use upload::CoreUploadTool;
 
 use crate::mcp::McpToolAnnotations;
 
@@ -85,5 +87,6 @@ pub(crate) fn register_all(
     registry.try_add_mcp_tool::<CoreFactTool>("core")?;
     registry.try_add_mcp_tool::<CoreMembershipTool>("core")?;
     registry.try_add_mcp_tool::<CorePublishTool>("core")?;
+    registry.try_add_mcp_tool::<CoreUploadTool>("core")?;
     Ok(())
 }
