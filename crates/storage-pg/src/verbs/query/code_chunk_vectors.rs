@@ -78,9 +78,10 @@ pub async fn nearest_code_chunk_candidates(
         return Ok(Vec::new());
     }
     if query_embedding.len() != proxima_core::llm::EMBEDDING_DIM {
-        return Err(StorageError::ConstraintViolation(
-            "semantic chunk search embedding length must be 1024".into(),
-        ));
+        return Err(StorageError::ConstraintViolation(format!(
+            "semantic chunk search embedding length must be {}",
+            proxima_core::llm::EMBEDDING_DIM
+        )));
     }
     let (owner_kind, owner_id) = owner.columns();
 
