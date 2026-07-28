@@ -149,6 +149,16 @@ async fn search_branches_enumerate_candidates_via_owner_index()
             !plan_seq_scans_relation(&root, "memories"),
             "{label} branch must not seq-scan memories for owner scoping; plan:\n{plan:#}"
         );
+        // A candidate branch reads `FROM proxima_core.memories m`, so its
+        // owner columns are `m`'s own. Resolving them through the
+        // `memories ∪ goals` union instead put `goals` in every plan and
+        // made that union the driving relation — which is what kept the
+        // text and vector predicates out of reach of any index. Touching
+        // `goals` at all in a memory search is the regression.
+        assert!(
+            !plan_seq_scans_relation(&root, "goals"),
+            "{label} branch must not read goals to scope a memory's owner; plan:\n{plan:#}"
+        );
     }
 
     drop(pg);

@@ -282,7 +282,12 @@ def run_fixture(path: Path) -> int:
 # expression, held as a module constant, into a comparison against the stored
 # generated column. Same shape as the core drift test above: the only
 # interpolated text is that constant; both inputs under test are bound.
-EXPECTED_DYNAMIC_SQL_SITES = 55
+# 2026-07-28 analysis: +1 — search.rs's owner-scope gate stopped interpolating
+# entity_owner_union() and became a fixed fragment, which moves it from write!
+# (uncounted) to sql.push_str (counted). Nothing is interpolated: the read set
+# arrives as the bound arrays $1/$2. A counted site with a fixed fragment is a
+# smaller surface than the interpolating write! it replaced, not a larger one.
+EXPECTED_DYNAMIC_SQL_SITES = 56
 
 
 def run_self_test() -> int:
