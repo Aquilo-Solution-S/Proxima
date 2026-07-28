@@ -483,6 +483,80 @@ fn tagged_abstraction_projection() -> MemorySearchProjection {
     }
 }
 
+/// A sidecar that carries tags and *no text column at all* — the shape
+/// [`SearchProjectionColumnKind::MemoryText`] exists to make legal. Every
+/// other projection fixture here copies the memory's text into the
+/// sidecar to stay reachable under a tag filter; this one does not, so a
+/// match proves the branch really read `proxima_core.memories.text`.
+async fn create_memory_text_sidecar(pool: &sqlx::PgPool) -> Result<(), sqlx::Error> {
+    sqlx::query("CREATE SCHEMA IF NOT EXISTS proxima_test")
+        .execute(pool)
+        .await?;
+    sqlx::query(
+        "CREATE TABLE proxima_test.memory_text_abstraction_v1 (
+             memory_id uuid PRIMARY KEY REFERENCES proxima_core.memories(memory_id),
+             tags text[] NOT NULL
+         )",
+    )
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+async fn insert_memory_text_abstraction(
+    pg: &proxima_storage_pg::PgStorage,
+    owner: &Owner,
+    memory_id: Uuid,
+    text: &str,
+    tags: &[&str],
+    created_at: time::OffsetDateTime,
+) -> Result<MemoryId, Box<dyn std::error::Error>> {
+    let (owner_kind, owner_id) = owner.columns();
+    sqlx::query(
+        "INSERT INTO proxima_core.memories
+            (memory_id, owner_kind, owner_id, schema_id, schema_version, created_at,
+             kind, text, operator_kind, operator_id, input_contract_id, source_batch_id, model_id, prompt_version)
+         VALUES ($1, $2, $3, 'proxima-test/memory-text-abstraction-v1', 1,
+                 $4, 'Abstraction', $5, 'AtoA',
+                 '00000000-0000-0000-0000-000000000331'::uuid,
+                 '00000000-0000-0000-0000-000000000332'::uuid, NULL,
+                 'test-model', 'test-v1')"
+    )
+    .bind(memory_id)
+    .bind(owner_kind)
+    .bind(owner_id)
+    .bind(created_at)
+    .bind(text)
+    .execute(pg.pool_for_tests())
+    .await?;
+    let tags: Vec<String> = tags.iter().map(|tag| (*tag).to_string()).collect();
+    sqlx::query(
+        "INSERT INTO proxima_test.memory_text_abstraction_v1 (memory_id, tags)
+         VALUES ($1, $2)",
+    )
+    .bind(memory_id)
+    .bind(tags)
+    .execute(pg.pool_for_tests())
+    .await?;
+    Ok(MemoryId::new(memory_id))
+}
+
+fn memory_text_projection() -> MemorySearchProjection {
+    MemorySearchProjection {
+        schema_id: SchemaId::new("proxima-test/memory-text-abstraction-v1".into()),
+        schema_version: SchemaVersion::new(1),
+        kind: PayloadKind::Abstraction,
+        sidecar_table: "proxima_test.memory_text_abstraction_v1".into(),
+        fields: vec![MemorySearchProjectionField {
+            column: String::new(),
+            kind: SearchProjectionColumnKind::MemoryText,
+        }],
+        tag_column: Some("tags".into()),
+        tsv_column: None,
+        language_column: None,
+    }
+}
+
 fn any_kind_lexical_request(owner: &Owner, query: &str) -> MemorySearchRequest {
     MemorySearchRequest {
         owner: *owner,

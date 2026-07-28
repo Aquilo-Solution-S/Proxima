@@ -1,15 +1,98 @@
 //! Request-level filters: tags, created-at ranges, and owner/World read-set scoping.
 
 use super::{
-    TaggedAbstractionInsert, any_kind_lexical_request, create_tagged_search_sidecars, drop_db,
-    fresh_pg, insert_search_abstraction, insert_tagged_abstraction, insert_text_memory,
-    owner_fixture, padded_embedding, tagged_abstraction_projection, tagged_search_request,
+    TaggedAbstractionInsert, any_kind_lexical_request, create_memory_text_sidecar,
+    create_tagged_search_sidecars, drop_db, fresh_pg, insert_memory_text_abstraction,
+    insert_search_abstraction, insert_tagged_abstraction, insert_text_memory,
+    memory_text_projection, owner_fixture, padded_embedding, tagged_abstraction_projection,
+    tagged_search_request,
 };
 
 use proxima_core::storage_ports::*;
 use proxima_core::verbs::query::{SearchMode, TagMatch};
 use proxima_core::{MemoryId, OwnerRef, UserId};
 use uuid::Uuid;
+
+/// A tag filter is the only predicate that scopes a search to a subset of
+/// a corpus, and the base `memories` branch cannot carry one — so a flavor
+/// that wants scoped search must project. Before
+/// `SearchProjectionColumnKind::MemoryText` the only way to project the
+/// text was to keep a byte-identical copy of `memories.text` in the
+/// sidecar. Here the sidecar has no text column at all: a lexical match on
+/// words that exist *only* in `memories.text` proves the branch read the
+/// memory row, and the snippet equality proves a scoped query and an
+/// unscoped one cannot disagree about a memory's text.
+#[tokio::test]
+async fn tag_scoped_search_projects_memory_text_without_a_sidecar_copy()
+-> Result<(), Box<dyn std::error::Error>> {
+    const HYDRAULIC_TEXT: &str = "hydraulic accumulator bladder precharge procedure";
+
+    let (pg, db_name) = fresh_pg().await;
+    pg.run_migrations().await?;
+    create_memory_text_sidecar(pg.pool_for_tests()).await?;
+
+    let owner = owner_fixture();
+    let now = time::OffsetDateTime::from_unix_timestamp(1_700_000_000)?;
+    let hydraulic = insert_memory_text_abstraction(
+        &pg,
+        &owner,
+        Uuid::from_u128(41),
+        HYDRAULIC_TEXT,
+        &["manual", "hydraulics"],
+        now,
+    )
+    .await?;
+    let electrical = insert_memory_text_abstraction(
+        &pg,
+        &owner,
+        Uuid::from_u128(42),
+        "electrical accumulator bonding strap precharge interval",
+        &["manual", "electrical"],
+        now + time::Duration::seconds(1),
+    )
+    .await?;
+    let projections = vec![memory_text_projection()];
+
+    let mut scoped = any_kind_lexical_request(&owner, "accumulator precharge");
+    scoped.tags = vec!["hydraulics".into()];
+    let rows = pg.search_memories(&scoped, &projections).await?.results;
+    let ids: Vec<_> = rows.iter().map(|row| row.memory_id).collect();
+    assert!(
+        ids.contains(&hydraulic),
+        "a sidecar with no text column must still match on the memory's text: {rows:#?}"
+    );
+    assert!(
+        !ids.contains(&electrical),
+        "the tag filter must still exclude the other tag: {rows:#?}"
+    );
+
+    let scoped_snippet = rows
+        .iter()
+        .find(|row| row.memory_id == hydraulic)
+        .map(|row| row.snippet.clone())
+        .expect("the hydraulic row is present");
+    assert_eq!(
+        scoped_snippet, HYDRAULIC_TEXT,
+        "the projected search text is the memory's own text, not a sidecar copy"
+    );
+
+    // The same memory, reached through the base branch instead: a tag
+    // filter excludes that branch entirely, so the two spellings of the
+    // snippet have to agree or a scoped and an unscoped search return
+    // different text for one memory.
+    let unscoped = any_kind_lexical_request(&owner, "accumulator precharge");
+    let rows = pg.search_memories(&unscoped, &projections).await?.results;
+    let unscoped_snippet = rows
+        .iter()
+        .find(|row| row.memory_id == hydraulic)
+        .map(|row| row.snippet.clone())
+        .expect("an unscoped search still finds the memory");
+    assert_eq!(unscoped_snippet, scoped_snippet);
+
+    drop(pg);
+    drop_db(&db_name).await?;
+    Ok(())
+}
 
 #[tokio::test]
 async fn search_filters_tags_across_modes_and_excludes_untagged()
