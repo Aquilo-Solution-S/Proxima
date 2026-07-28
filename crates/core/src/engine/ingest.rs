@@ -9,9 +9,9 @@ use crate::llm::{EMBEDDING_BATCH_SIZE, EmbeddingClient, LlmError};
 use crate::storage::{EmbeddingJobClaim, StorageError};
 use crate::verbs::close_batch::CloseBatchOutcome;
 use crate::verbs::fact_ingest::{
-    AuthorizedCitationAttachment, AuthorizedFactWithCitation, AuthorizedFactWrite,
-    AuthorizedInlineCitationMapping, AuthorizedInlineCitedObject, FactIngestOutcome,
-    FactWriteCommand, InlineCitationMappingDraft, InlineCitedObjectDraft,
+    AuthorizedCitationAttachment, AuthorizedFactWithCitation, AuthorizedFactWithCitationRef,
+    AuthorizedFactWrite, AuthorizedInlineCitationMapping, AuthorizedInlineCitedObject,
+    FactIngestOutcome, FactWriteCommand, InlineCitationMappingDraft, InlineCitedObjectDraft,
 };
 use crate::verbs::persist_mcp_call::{McpCallLogInput, McpCallLogOutcome};
 use crate::verbs::schema::{PayloadKind, ProtocolPayload, SchemaInfo};
@@ -161,6 +161,46 @@ impl Engine {
         ))
     }
 
+    /// Authorize + schema-validate + owner-stamp a Fact that cites an
+    /// ALREADY-STORED cited object by id. Does NOT write, and does not
+    /// resolve the referenced object — existence, owner, and schema of
+    /// the stored row are storage's check, inside the same transaction
+    /// that writes the mapping (no TOCTOU window).
+    ///
+    /// # Errors
+    ///
+    /// Returns `Forbidden` when the context cannot resolve exactly one
+    /// writable owner or lacks `relation`; `UnknownSchema` when the Fact
+    /// or mapping schema is absent for the required kind;
+    /// `InvalidArgument` when the mapping payload fails validation; or
+    /// `Internal` when the mapping schema declares no cited-object
+    /// target.
+    pub async fn authorize_fact_with_citation_by_ref(
+        &self,
+        authz: &AuthzContext,
+        relation: Relation,
+        draft: FactWriteCommand,
+        cited_object_id: uuid::Uuid,
+        mapping: InlineCitationMappingDraft,
+    ) -> Result<AuthorizedFactWithCitationRef, ProtocolError> {
+        let owner = self.single_write_owner_for(authz, relation).await?;
+        let permit = self.authorize_write(authz, &owner, relation).await?;
+        let fact_info = self.fact_schema_info(&draft.schema_id, draft.schema_version)?;
+        let fact_sidecar_table = fact_info.sidecar_table.clone();
+        let fact_natural_key_columns = fact_info.natural_key_columns.clone();
+        let (mapping, expected_object_schema) = self.authorize_citation_mapping_draft(mapping)?;
+
+        Ok(AuthorizedFactWithCitationRef::new(
+            permit.into(),
+            draft,
+            cited_object_id,
+            expected_object_schema,
+            mapping,
+            fact_sidecar_table,
+            fact_natural_key_columns,
+        ))
+    }
+
     async fn single_write_owner_for(
         &self,
         authz: &AuthzContext,
@@ -222,6 +262,38 @@ impl Engine {
             .ingest
             .fact_ingest
             .ingest_fact_with_citation_and_typed_sidecar(authorized, sidecar, embedding_model_id)
+            .await
+            .map_err(|err| {
+                super::errors::map_write_storage_error(
+                    err,
+                    "fact",
+                    "fact ingest referenced row not found",
+                )
+            })
+    }
+
+    /// Persist an already-authorized typed-sidecar Fact citing an
+    /// existing object by reference.
+    ///
+    /// # Errors
+    ///
+    /// Returns caller-fixable storage rejections (closed batch, missing
+    /// or foreign cited object, mapping-target mismatch) as
+    /// `InvalidArgument` and infrastructure faults as `Internal`.
+    pub async fn ingest_fact_with_citation_ref_and_typed_sidecar(
+        &self,
+        authorized: &AuthorizedFactWithCitationRef,
+        sidecar: &SidecarPayload,
+        embedding_model_id: Option<&str>,
+    ) -> Result<FactIngestOutcome, ProtocolError> {
+        self.storage()
+            .ingest
+            .fact_ingest
+            .ingest_fact_with_citation_ref_and_typed_sidecar(
+                authorized,
+                sidecar,
+                embedding_model_id,
+            )
             .await
             .map_err(|err| {
                 super::errors::map_write_storage_error(
@@ -331,6 +403,42 @@ impl Engine {
                 mapping.schema_version,
                 mapping_sidecar,
             ),
+        ))
+    }
+
+    /// Validate a citation-mapping draft alone (no inline cited object),
+    /// returning the authorized mapping plus the cited-object schema it
+    /// targets — the schema the referenced stored object must carry.
+    fn authorize_citation_mapping_draft(
+        &self,
+        mapping: InlineCitationMappingDraft,
+    ) -> Result<(AuthorizedInlineCitationMapping, crate::SchemaId), ProtocolError> {
+        let (mapping_info, mapping_payload) = self.ingest_protocol_payload(
+            &mapping.schema_id,
+            mapping.schema_version,
+            PayloadKind::CitationMapping,
+            &mapping.payload_bytes,
+            "mapping.payload_bytes",
+        )?;
+        let expected_object_schema = mapping_info.cited_object_schema.clone().ok_or_else(|| {
+            ProtocolError::internal(format!(
+                "citation mapping schema {} v{} declares no cited-object schema",
+                mapping.schema_id.as_str(),
+                mapping.schema_version.into_inner(),
+            ))
+        })?;
+        let mapping_sidecar = if mapping_info.sidecar_table.is_some() {
+            Some(mapping_payload.sidecar_payload)
+        } else {
+            None
+        };
+        Ok((
+            AuthorizedInlineCitationMapping::new(
+                mapping.schema_id,
+                mapping.schema_version,
+                mapping_sidecar,
+            ),
+            expected_object_schema,
         ))
     }
 

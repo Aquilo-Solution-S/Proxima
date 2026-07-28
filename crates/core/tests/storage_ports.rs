@@ -45,6 +45,15 @@ impl FactIngestPort for FactIngestFake {
     ) -> Result<FactIngestOutcome, StorageError> {
         fake_error()
     }
+
+    async fn ingest_fact_with_citation_ref_and_typed_sidecar(
+        &self,
+        authorized: &proxima_core::verbs::fact_ingest::AuthorizedFactWithCitationRef,
+        sidecar_payload: &SidecarPayload,
+        embedding_model_id: Option<&str>,
+    ) -> Result<FactIngestOutcome, StorageError> {
+        fake_error()
+    }
 }
 
 #[derive(Debug)]

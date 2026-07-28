@@ -169,6 +169,17 @@ pub(in crate::engine) mod tests {
                 "MembershipStorage rejects writes".into(),
             ))
         }
+
+        async fn ingest_fact_with_citation_ref_and_typed_sidecar(
+            &self,
+            _authorized: &crate::verbs::fact_ingest::AuthorizedFactWithCitationRef,
+            _sidecar_payload: &SidecarPayload,
+            _embedding_model_id: Option<&str>,
+        ) -> Result<FactIngestOutcome, StorageError> {
+            Err(StorageError::Internal(
+                "MembershipStorage rejects writes".into(),
+            ))
+        }
     }
 
     #[async_trait::async_trait]
