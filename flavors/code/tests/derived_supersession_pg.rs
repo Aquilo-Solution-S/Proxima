@@ -99,6 +99,7 @@ async fn code_execution_plan_can_use_core_superseding_derived_authoring() {
                 prompt_version: "proxima-code/test-plan-v1",
                 sidecar_payload: SidecarPayload::abstraction(old_payload),
                 supersedes: None,
+                lexical_language: None,
                 edges: &old_edges,
             },
         )
@@ -134,6 +135,7 @@ async fn code_execution_plan_can_use_core_superseding_derived_authoring() {
                 prompt_version: "proxima-code/test-plan-v1",
                 sidecar_payload: SidecarPayload::abstraction(new_payload),
                 supersedes: Some(old_memory_id),
+                lexical_language: None,
                 edges: &new_edges,
             },
         )

@@ -264,7 +264,20 @@ pub async fn ensure_core_schema_current(pool: &PgPool) -> Result<(), StorageErro
          -- Every lexical search emits proxima_core.lexical_config() to build
          -- its tsquery, and every stored search_tsv was generated through it.
          -- A database without it answers no lexical query at all.
-         AND to_regprocedure('proxima_core.lexical_config()') IS NOT NULL",
+         AND to_regprocedure('proxima_core.lexical_config()') IS NOT NULL
+         -- v0.0.7 per-row language lane (0014): every memory INSERT binds
+         -- memories.lexical_language, every lexical query reads
+         -- lexical_languages and ranks with the row's configuration through
+         -- the two-argument lexical_tsv — none of them have a fallback.
+         AND EXISTS (
+             SELECT 1
+               FROM information_schema.columns
+              WHERE table_schema = 'proxima_core'
+                AND table_name = 'memories'
+                AND column_name = 'lexical_language'
+         )
+         AND to_regprocedure('proxima_core.lexical_tsv(regconfig, text)') IS NOT NULL
+         AND to_regclass('proxima_core.lexical_languages') IS NOT NULL",
     )
     .fetch_one(pool)
     .await
@@ -272,7 +285,7 @@ pub async fn ensure_core_schema_current(pool: &PgPool) -> Result<(), StorageErro
 
     if !ready {
         return Err(StorageError::Internal(
-            "database is missing schema markers for this release lane (v0.0.6: embedding_jobs.next_attempt_at, memories append-only trigger; v0.0.7: memories.search_tsv, embeddings.chunk_index, proxima_core.lexical_tsv, proxima_core.lexical_config); apply migrations before boot (see MIGRATING.md)".into(),
+            "database is missing schema markers for this release lane (v0.0.6: embedding_jobs.next_attempt_at, memories append-only trigger; v0.0.7: memories.search_tsv, embeddings.chunk_index, proxima_core.lexical_tsv, proxima_core.lexical_config, memories.lexical_language, proxima_core.lexical_languages); apply migrations before boot (see MIGRATING.md)".into(),
         ));
     }
     Ok(())

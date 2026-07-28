@@ -229,6 +229,7 @@ async fn author_abstraction_over_target(
                     client_version: "1".to_string(),
                 }),
                 supersedes: None,
+                lexical_language: None,
                 edges: &edges,
             },
         )

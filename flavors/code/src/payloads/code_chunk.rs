@@ -59,6 +59,7 @@ impl AbstractionPayload for CodeChunkV1 {
             ],
             tag_column: None,
             tsv_column: Some("search_tsv"),
+            language_column: Some("lexical_language"),
         })
     }
 

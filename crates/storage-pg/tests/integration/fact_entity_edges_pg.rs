@@ -460,6 +460,7 @@ fn draft_for_payload<F: FactPayload>(_owner: &Owner, payload_value: &Value) -> F
         schema_version: SchemaVersion::new(F::SCHEMA_VERSION),
         payload: canonical_json_bytes(payload_value),
         rendered_text: None,
+        lexical_language: None,
         receipt: Some(FactReceiptDraft {
             source_id: SourceId::new(format!("test/fact-entity-edge/{}", Uuid::now_v7())),
             source_batch_id: SourceBatchId::new(Uuid::now_v7()),

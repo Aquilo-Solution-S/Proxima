@@ -284,6 +284,7 @@ async fn author_derived_rejects_extra_same_output_wrong_operator_authorship()
             model_id: "test-model",
             prompt_version: "operator-proofs-pg",
             supersedes: None,
+            lexical_language: None,
             embedding: None,
             embedding_model_id: None,
         };
@@ -511,6 +512,7 @@ async fn engine_author_derived_rejects_operator_input_created_at_not_strictly_be
                         client_version: "1".into(),
                     }),
                     supersedes: None,
+                    lexical_language: None,
                     edges: &edges,
                 },
             )
@@ -679,6 +681,7 @@ async fn author_test_abstraction_multi(
         model_id: "test-model",
         prompt_version: "operator-proofs-pg",
         supersedes: None,
+        lexical_language: None,
         embedding: None,
         embedding_model_id: None,
     };

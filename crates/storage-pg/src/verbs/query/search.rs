@@ -19,8 +19,8 @@ use crate::pgvector::SET_HNSW_SEARCH_SQL;
 
 use super::{entity_owner_union, read_owner_columns};
 
-/// Text-search configuration for the lexical branch, read from the database
-/// rather than written here.
+/// Default text-search configuration, read from the database rather than
+/// written here.
 ///
 /// The configuration stems both document and query tokens ("adopted" matches
 /// "adopt") and drops stopwords, so a natural-language question's content
@@ -30,17 +30,23 @@ use super::{entity_owner_union, read_owner_columns};
 /// nothing. A query that is *all* stopwords yields an empty tsquery and falls
 /// back to the substring `LIKE` arm below.
 ///
-/// It used to be the literal `english` in this file, and separately the
-/// literal `english` inside `proxima_core.lexical_tsv`, which every stored
-/// `search_tsv` column is generated from. Those two must name the same
-/// configuration: a german document vector answered by an english tsquery
-/// does not match worse, it does not match. Emitting the function call keeps
-/// one authority for both sides, so a deployment that switches the
-/// configuration (`proxima_core.set_lexical_config`) moves the query side
-/// with it and cannot half-switch.
+/// Since per-row languages (migration 0014) this is only the FALLBACK for a
+/// database whose `lexical_languages` table is empty. The real query side is
+/// two-part, shaped by measurement (130-question German goldset, this exact
+/// band SQL):
 ///
-/// `lexical_config()` is IMMUTABLE and returns a constant, so the planner
-/// folds it; this costs nothing per query.
+/// - **Match** with the OR of one `websearch_to_tsquery` per active language
+///   (`proxima_core.lexical_languages`). Constant-config tsqueries fold to
+///   one OR constant the GIN index serves; the per-row spelling
+///   `websearch_to_tsquery(c.lexical_language, …)` in a WHERE clause has no
+///   index path at all.
+/// - **Rank** each candidate with its own row's configuration. Ranked this
+///   way the multi-language OR is bit-identical to a single-language
+///   baseline (0/130 top-5 sets changed); ranked against the OR query it
+///   costs 6.2 points of recall@5, because wrong-config covers inflate
+///   non-gold rows. A cross-config strict match whose row-config rank finds
+///   no cover scores the bare band base — which is exactly the measured-free
+///   behavior, hence the COALESCE(…, 0) around the rank terms.
 const TEXT_SEARCH_CONFIG: &str = "proxima_core.lexical_config()";
 
 /// SQL that lowercases a bound query parameter and neutralises the `LIKE`
@@ -342,9 +348,17 @@ fn lexical_branch_sql<'p>(
     // 0.99 → 0.82 when fused) — so hybrid keeps the strict+substring arms
     // only and lets the semantic leg carry recall.
     let rescue = matches!(req.mode, SearchMode::Lexical);
+    // Match against the cross-language `q.any_tsq`; rank with the row's own
+    // configuration (see TEXT_SEARCH_CONFIG). The row-config rescue tsquery
+    // can be NULL where the query has no lexemes under that configuration —
+    // ts_rank is STRICT, so COALESCE keeps the arm at its band base instead
+    // of dropping it to NULL.
     let rescue_score_arm = if rescue {
         ", CASE WHEN c.search_tsv @@ q.any_tsq
-                THEN 0.25 + LEAST(ts_rank(c.search_tsv, q.any_tsq, 1|32) * 100.0, 1.0) * 0.2
+                THEN 0.25 + LEAST(COALESCE(ts_rank(c.search_tsv,
+                         NULLIF(replace(plainto_tsquery(c.lexical_language, q.scrubbed)::text,
+                                        ' & ', ' | '), '')::tsquery,
+                         1|32), 0.0) * 100.0, 1.0) * 0.2
                 ELSE 0.0 END"
     } else {
         ""
@@ -362,41 +376,55 @@ fn lexical_branch_sql<'p>(
     // share it rather than each re-tokenising the document.
     write!(
         sql,
-        " , q AS (
-               SELECT websearch_to_tsquery(
-                   {ts_config},
-                   regexp_replace(
-                       regexp_replace(${query_param}, '[[:punct:]]+', ' ', 'g'),
-                       '\\m[[:alnum:]]{{255}}[[:alnum:]]+\\M',
-                       ' ',
-                       'g'
-                   )
-               ) AS tsq,
-               -- OR-rescue arm: the same content lexemes any-matched.
-               -- plainto_tsquery emits only '&' between lexemes (no phrase
-               -- or negation operators), so the operator swap is safe.
-               NULLIF(
-                   replace(
-                       plainto_tsquery(
-                           {ts_config},
-                           regexp_replace(
-                               regexp_replace(${query_param}, '[[:punct:]]+', ' ', 'g'),
-                               '\\m[[:alnum:]]{{255}}[[:alnum:]]+\\M',
-                               ' ',
-                               'g'
-                           )
-                       )::text,
-                       ' & ',
-                       ' | '
-                   ),
-                   ''
-               )::tsquery AS any_tsq
+        " , scrubbed AS (
+               SELECT regexp_replace(
+                          regexp_replace(${query_param}, '[[:punct:]]+', ' ', 'g'),
+                          '\\m[[:alnum:]]{{255}}[[:alnum:]]+\\M',
+                          ' ',
+                          'g'
+                      ) AS q
+          )
+          , q AS (
+               -- One tsquery per active language, OR-combined: the match
+               -- side cannot know the query's language, and the OR is
+               -- GIN-indexable where a per-row-parsed tsquery is not.
+               -- tsquery_or_agg over an empty lexical_languages is NULL;
+               -- the COALESCE falls back to the default configuration.
+               SELECT s.q AS scrubbed,
+                      COALESCE(
+                          (SELECT proxima_core.tsquery_or_agg(
+                                      websearch_to_tsquery(l.config, s.q)
+                                      ORDER BY l.config)
+                             FROM proxima_core.lexical_languages l),
+                          websearch_to_tsquery({ts_config}, s.q)
+                      ) AS tsq,
+                      -- OR-rescue arm: the same content lexemes any-matched.
+                      -- plainto_tsquery emits only '&' between lexemes (no
+                      -- phrase or negation operators), so the operator swap
+                      -- is safe. NULLIF folds a no-lexeme language out; the
+                      -- STRICT transition function skips those NULLs.
+                      COALESCE(
+                          (SELECT proxima_core.tsquery_or_agg(
+                                      NULLIF(
+                                          replace(plainto_tsquery(l.config, s.q)::text,
+                                                  ' & ', ' | '),
+                                          '')::tsquery
+                                      ORDER BY l.config)
+                             FROM proxima_core.lexical_languages l),
+                          NULLIF(
+                              replace(plainto_tsquery({ts_config}, s.q)::text,
+                                      ' & ', ' | '),
+                              '')::tsquery
+                      ) AS any_tsq
+                 FROM scrubbed s
           )
           SELECT c.memory_id, c.kind, c.schema_id, c.created_at,
                  left(c.search_text, 480) AS snippet,
                  GREATEST(
                      CASE WHEN c.search_tsv @@ q.tsq
-                          THEN 0.5 + LEAST(ts_rank_cd(c.search_tsv, q.tsq, 32), 1.0) * 0.5
+                          THEN 0.5 + LEAST(COALESCE(ts_rank_cd(c.search_tsv,
+                                   websearch_to_tsquery(c.lexical_language, q.scrubbed),
+                                   32), 0.0), 1.0) * 0.5
                           ELSE 0.0 END{rescue_score_arm},
                      CASE WHEN lower(c.search_text) LIKE '%' || {like_literal} || '%' ESCAPE '\\'
                           THEN 0.25 ELSE 0.0 END
@@ -668,9 +696,10 @@ fn common_candidates_sql(
         entity_owner_union = entity_owner_union(),
         // memories.search_tsv is generated from the same COALESCE(text, '')
         // this branch projects, so the column and the expression it
-        // replaces are the same value by construction.
+        // replaces are the same value by construction. lexical_language
+        // rides along for the per-row rank tsquery.
         base_tsv = if include_tsv {
-            ", m.search_tsv AS search_tsv"
+            ", m.search_tsv AS search_tsv, m.lexical_language AS lexical_language"
         } else {
             ""
         },
@@ -688,8 +717,9 @@ fn common_candidates_sql(
         let search_text_expr = format!("NULLIF(concat_ws(' ', {projection_expr}), '')");
         let tsv_expr = if include_tsv {
             format!(
-                ", {} AS search_tsv",
-                projection_tsv_expr(projection, &search_text_expr)?
+                ", {} AS search_tsv, {} AS lexical_language",
+                projection_tsv_expr(projection, &search_text_expr)?,
+                projection_language_expr(projection)?
             )
         } else {
             String::new()
@@ -746,16 +776,33 @@ fn projection_search_expr(fields: &[MemorySearchProjectionField]) -> Result<Stri
 ///
 /// Both spellings resolve to `proxima_core.lexical_tsv` over the branch's
 /// projected search text — the stored column is generated from it (see
-/// migration 0011), so a sidecar with a column and one without cannot
-/// score differently for the same content.
+/// migrations 0011/0014), so a sidecar with a column and one without cannot
+/// score differently for the same content. The inline fallback tokenises
+/// with the owning memory row's language, which is what a stored sidecar
+/// column mirrors at insert (0014's sidecar trigger).
 fn projection_tsv_expr(
     projection: &MemorySearchProjection,
     search_text_expr: &str,
 ) -> Result<String, StorageError> {
     let Some(tsv_column) = &projection.tsv_column else {
-        return Ok(format!("proxima_core.lexical_tsv({search_text_expr})"));
+        return Ok(format!(
+            "proxima_core.lexical_tsv(m.lexical_language, {search_text_expr})"
+        ));
     };
     let column = PgIdent::column(tsv_column)?;
+    Ok(format!("s.{}", column.as_str()))
+}
+
+/// The candidate's lexical language, for the per-row rank tsquery: the
+/// sidecar's own column when declared (the code flavor pins `english`
+/// there), else the owning memory row's. Must name the configuration the
+/// branch's `search_tsv` was actually tokenised with, or ranking stems
+/// the query differently from the document.
+fn projection_language_expr(projection: &MemorySearchProjection) -> Result<String, StorageError> {
+    let Some(language_column) = &projection.language_column else {
+        return Ok("m.lexical_language".to_string());
+    };
+    let column = PgIdent::column(language_column)?;
     Ok(format!("s.{}", column.as_str()))
 }
 

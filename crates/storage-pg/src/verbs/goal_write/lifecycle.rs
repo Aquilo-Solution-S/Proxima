@@ -122,6 +122,7 @@ where
         schema_version: SchemaVersion::new(T::SCHEMA_VERSION),
         payload: payload.receipt_key(),
         rendered_text: Some(payload.render()),
+        lexical_language: None,
         receipt: Some(FactReceiptDraft {
             source_id: SourceId::new(LIFECYCLE_SOURCE_ID),
             source_batch_id: SourceBatchId::new(uuid::Uuid::now_v7()),

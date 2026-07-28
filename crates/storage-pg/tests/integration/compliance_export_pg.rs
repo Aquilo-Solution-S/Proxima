@@ -91,6 +91,7 @@ fn fact_command(label: &str) -> FactWriteCommand {
         })
         .expect("serialize test payload"),
         rendered_text: Some(label.to_string()),
+        lexical_language: None,
         receipt: Some(FactReceiptDraft {
             source_id: SourceId::new("test/compliance-export"),
             source_batch_id: SourceBatchId::new(Uuid::now_v7()),

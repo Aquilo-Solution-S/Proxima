@@ -31,6 +31,7 @@ fn receiptless_command() -> FactWriteCommand {
         schema_version: SchemaVersion::new(1),
         payload: format!("receiptless {}", Uuid::now_v7()).into_bytes(),
         rendered_text: Some("receiptless fact".to_string()),
+        lexical_language: None,
         receipt: None,
         citation: None,
     }

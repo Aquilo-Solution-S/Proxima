@@ -95,6 +95,7 @@ pub(super) async fn append_execution_plan(
         model_id: caller.model_id(),
         prompt_version: "proxima-code/emit_execution_plan-v1",
         supersedes: None,
+        lexical_language: None,
         embedding: None,
         embedding_model_id: None,
     };

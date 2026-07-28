@@ -75,6 +75,7 @@ fn fact_command() -> FactWriteCommand {
         schema_version: SchemaVersion::new(1),
         payload: b"erase matrix fact".to_vec(),
         rendered_text: Some("erase matrix fact".into()),
+        lexical_language: None,
         receipt: Some(FactReceiptDraft {
             source_id: SourceId::new("test/erase-matrix"),
             source_batch_id: SourceBatchId::new(Uuid::now_v7()),

@@ -33,6 +33,7 @@ futures-util = { workspace = true }
 futures = { workspace = true }
 schemars = { workspace = true }
 http = { workspace = true }
+whatlang = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "test-util"] }

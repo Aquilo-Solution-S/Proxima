@@ -92,12 +92,17 @@ async fn code_chunk_search_tsv_matches_the_projection() {
         // connection per statement and TEMP tables are session-scoped. The
         // whole database is dropped at the end of the test either way.
         //
+        // `lexical_language` mirrors the chunk table's pinned-english column
+        // (migration 20260728000020): the generation expression read back
+        // from the catalog references it per row.
+        //
         // SQL-POLICY: fixed-fragment — `generation` is read from
         // information_schema, not from a caller.
         sqlx::query(sqlx::AssertSqlSafe(format!(
             "CREATE TABLE tsv_probe (
                  file_path text,
                  text text,
+                 lexical_language regconfig NOT NULL DEFAULT 'english'::regconfig,
                  stored tsvector GENERATED ALWAYS AS ({generation}) STORED
              )"
         )))
@@ -116,8 +121,9 @@ async fn code_chunk_search_tsv_matches_the_projection() {
             "SELECT file_path, text
                FROM tsv_probe
               WHERE stored IS DISTINCT FROM
-                    proxima_core.lexical_tsv(proxima_core.lexical_join(
-                        NULLIF(file_path, ''), NULLIF(text, '')))",
+                    proxima_core.lexical_tsv(lexical_language,
+                        proxima_core.lexical_join(
+                            NULLIF(file_path, ''), NULLIF(text, '')))",
         )
         .fetch_all(pg.pool_for_tests())
         .await?;

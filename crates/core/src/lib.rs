@@ -28,6 +28,7 @@ pub mod error;
 pub mod flavor;
 pub mod goal;
 pub mod ids;
+pub mod lexical_language;
 pub mod llm;
 pub mod mcp;
 pub mod memory;

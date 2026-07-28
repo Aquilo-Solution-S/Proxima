@@ -399,6 +399,7 @@ async fn facade_engine_reads_lineage_edges_and_derives_without_embedding_client(
                         source_count: 1,
                     }),
                     supersedes: None,
+                    lexical_language: None,
                     edges: &derived_edges,
                 },
             )

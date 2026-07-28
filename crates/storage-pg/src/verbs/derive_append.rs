@@ -46,6 +46,9 @@ pub struct DerivedDraft<'a> {
     pub model_id: &'a str,
     pub prompt_version: &'a str,
     pub supersedes: Option<MemoryId>,
+    /// Resolved text-search configuration name; `None` applies the
+    /// database default (`proxima_core.lexical_config()`).
+    pub lexical_language: Option<&'a str>,
     pub embedding: Option<Vec<f32>>,
     pub embedding_model_id: Option<&'a str>,
 }
@@ -76,13 +79,19 @@ pub(crate) async fn append_derived_in_tx(
     if let Some(prior) = draft.supersedes {
         validate_supersedes_in_owner(tx, &draft.owner, prior, draft.kind).await?;
     }
+    if let Some(language) = draft.lexical_language {
+        super::lexical_language::register_lexical_language_in_tx(tx, language).await?;
+    }
 
+    // NULL language means the column DEFAULT — the COALESCE spells that
+    // out rather than branching the statement text on the option.
     let inserted: Option<(uuid::Uuid,)> = sqlx::query_as(
         "INSERT INTO proxima_core.memories
             (memory_id, owner_kind, owner_id, schema_id, schema_version, kind, text,
              operator_kind, operator_id, input_contract_id, source_batch_id,
-             model_id, prompt_version, supersedes)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+             model_id, prompt_version, supersedes, lexical_language)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14,
+                 COALESCE($15::regconfig, proxima_core.lexical_config()))
          ON CONFLICT (memory_id) DO NOTHING
          RETURNING memory_id",
     )
@@ -100,6 +109,7 @@ pub(crate) async fn append_derived_in_tx(
     .bind(draft.model_id)
     .bind(draft.prompt_version)
     .bind(draft.supersedes.map(MemoryId::into_inner))
+    .bind(draft.lexical_language)
     .fetch_optional(&mut **tx)
     .await
     .map_err(map_err)?;

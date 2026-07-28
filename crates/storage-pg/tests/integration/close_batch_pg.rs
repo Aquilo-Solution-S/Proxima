@@ -60,6 +60,7 @@ fn fresh_draft(_owner: Owner, source_batch_id: SourceBatchId) -> FactWriteComman
         schema_version: SchemaVersion::new(1),
         payload: format!("payload-{}", Uuid::now_v7()).into_bytes(),
         rendered_text: None,
+        lexical_language: None,
         receipt: Some(FactReceiptDraft {
             source_id: SourceId::new("test/source"),
             source_batch_id,

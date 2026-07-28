@@ -156,6 +156,7 @@ fn draft_for(_owner: &Owner, payload_value: &Value) -> FactWriteCommand {
         schema_version: SchemaVersion::new(StatefulFactV1::SCHEMA_VERSION),
         payload: canonical_json_bytes(payload_value),
         rendered_text: None,
+        lexical_language: None,
         receipt: Some(FactReceiptDraft {
             source_id: SourceId::new(format!("test/fact-entity-citation/{}", Uuid::now_v7())),
             source_batch_id: SourceBatchId::new(Uuid::now_v7()),

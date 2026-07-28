@@ -198,6 +198,15 @@ pub struct SearchProjection {
     /// Declaring it lets search read the stored vector instead of
     /// tokenising the projected text on every candidate row.
     pub tsv_column: Option<&'static str>,
+    /// Column holding the row's lexical language (`regconfig`), for
+    /// sidecar tables whose migration adds one. Search ranks each
+    /// candidate with its own language's tsquery; declared, it reads the
+    /// sidecar's column (which may be pinned, as the code flavor pins
+    /// `english`), absent it falls back to the owning memory row's
+    /// `lexical_language`. A sidecar declaring `tsv_column` over a
+    /// per-row-language vector should declare this too, or ranking uses
+    /// the wrong configuration for pinned rows.
+    pub language_column: Option<&'static str>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

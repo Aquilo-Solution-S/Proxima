@@ -143,6 +143,11 @@ pub struct MemorySearchProjection {
     /// instead of tokenising the projected text on every candidate;
     /// absent, it falls back to computing the same vector inline.
     pub tsv_column: Option<String>,
+    /// Column holding the row's lexical language, when the sidecar
+    /// table carries one. Present, the search builder ranks the
+    /// candidate with that language's tsquery; absent, it ranks with
+    /// the owning memory row's `lexical_language`.
+    pub language_column: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]

@@ -390,20 +390,26 @@ impl Tool for CodeSearchChunksTool {
                 Vec::new()
             } else {
                 sqlx::query_as(
+                // 'english' literal, not lexical_config(): chunk vectors are
+                // pinned english per row (migration 20260728000020 — code is
+                // not prose in the deployment's language), so the query side
+                // pins the same constant. Following the database default
+                // here would stem the query german against english vectors
+                // the moment a deployment switches its documents.
                 "WITH q AS (
-                     SELECT websearch_to_tsquery(proxima_core.lexical_config(),
+                     SELECT websearch_to_tsquery('english'::regconfig,
                                 proxima_core.lexical_scrub($1)) AS tsq,
                             NULLIF(
                                 replace(
-                                    plainto_tsquery(proxima_core.lexical_config(),
+                                    plainto_tsquery('english'::regconfig,
                                         proxima_core.lexical_scrub($1))::text,
                                     ' & ', ' | '),
                                 '')::tsquery AS any_tsq,
-                            websearch_to_tsquery(proxima_core.lexical_config(),
+                            websearch_to_tsquery('english'::regconfig,
                                 proxima_core.lexical_scrub(NULLIF($7, ''))) AS rare_all_tsq,
                             NULLIF(
                                 replace(
-                                    plainto_tsquery(proxima_core.lexical_config(),
+                                    plainto_tsquery('english'::regconfig,
                                         proxima_core.lexical_scrub(NULLIF($7, '')))::text,
                                     ' & ', ' | '),
                                 '')::tsquery AS rare_any_tsq

@@ -36,6 +36,7 @@ fn agent_draft(
         model_id: "claude-opus-4.7",
         prompt_version: "mcp-agent-v1",
         supersedes: None,
+        lexical_language: None,
         embedding: None,
         embedding_model_id: None,
     }

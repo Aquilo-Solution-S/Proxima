@@ -1154,6 +1154,85 @@ Nothing to configure, no schema change. If you monitor provider request
 counts, expect one additional single-input request per transient batch
 failure.
 
+## 31. v0.0.7: the lexical language is per row; the database setting becomes the default
+
+§28 made the text-search configuration one database-wide value. That is the
+wrong shape the moment a corpus mixes languages, which real corpora do — a
+German handbook and English design notes cannot share a stemmer. Migration
+14 makes the language a `regconfig` column on every row that owns a stored
+search vector (`memories.lexical_language`, mirrored onto the
+`agent_note_v1`/`agent_derivation_v1` sidecars by a `BEFORE INSERT`
+trigger), and demotes `lexical_config()` to what it now is: **the default
+for rows that do not say.**
+
+**Nothing changes by default.** Rows written without a language are stamped
+with the default; a single-language database builds the same tsquery and
+the same vectors as before. Migration 14 rewrites each vector-bearing table
+once (`ACCESS EXCLUSIVE`, values unchanged — §28's timing numbers apply) to
+rebind the generated columns to the two-argument
+`lexical_tsv(lexical_language, …)`.
+
+**Choosing a language per write.** `core_remember`, `core_record_utterance`
+and `core_derive` gain an optional `language`: a configuration name
+(`"german"`), or `"auto"` to detect it from the content. Detection is gated
+on the detector's own reliability signal — measured ≥98% accurate wherever
+the gate opens (2,350 German pages, 130 short German questions, 300 English
+paragraphs), while ungated detection under ~80 characters is 50–83%, worse
+than useless. An unreliable detection falls back to the default rather than
+guessing; a reliably detected language with no shipped stemmer (CJK, most
+Slavic and Indic) maps to `simple`. Typed ingest paths set
+`FactWriteCommand::lexical_language` (or `with_lexical_language`); the
+language is not receipt-key material, so enabling detection later replays
+cleanly.
+
+**Search stays one query over the mixed corpus.** The builder MATCHES with
+the OR of one tsquery per active language
+(`proxima_core.lexical_languages`, populated automatically as languages are
+first used) and RANKS each candidate with its own row's configuration.
+Measured against the same goldset: ranked per-row the OR is bit-identical
+to a single-language baseline (0/130 top-5 sets changed); ranked against
+the OR query it costs 6.2 points of recall@5 — which is why the rank
+expression reads `c.lexical_language` and not the combined query.
+
+**`set_lexical_config` changes meaning.** It now sets the default and
+registers it as an active language. Existing rows keep the language they
+were stamped with — the pre-14 behaviour was to rewrite the whole corpus.
+Stored vectors still generated through the one-argument `lexical_tsv`
+(flavor sidecars that have not migrated) are found by `pg_depend` and
+rebuilt exactly as before; per-row columns are structurally excluded, so a
+default switch stops paying a full rewrite per migrated table.
+
+**The language is immutable, like the text it describes.**
+`memories_enforce_immutable` now freezes it, and sidecar rows were already
+append-only. Re-languaging is a re-ingest, not an UPDATE — the sidecar
+mirror is written once, and a mutable memories-side value would silently
+diverge from it.
+
+**Code chunks stop following the default.** `proxima_code.code_chunk_v1`
+pins `english` per row (flavor migration `20260728000020`), and
+`proxima-code_search_chunks` pins the same constant. Before this, switching
+a deployment to `german` for its documents retokenised every code chunk
+with a German stemmer as collateral.
+
+**Flavor authors: two surface changes.** `SearchProjection` gains
+`language_column: Option<&'static str>` — a compile-time break for struct
+literals; declare `Some("lexical_language")` if your sidecar stores a
+vector (and add the column + mirror trigger in your migration, see the
+updated tutorial), `None` otherwise. And new sidecar tsv columns should use
+the two-argument `lexical_tsv(lexical_language, …)`; the one-argument form
+keeps working with §28's rebuild-on-switch behaviour.
+
+**Removing a language is guarded.** `PostgreSQL` does not block `DROP TEXT
+SEARCH CONFIGURATION` while rows still hold the value — the rows are left
+with dangling OIDs and fail on any UPDATE. Run
+`proxima_core.lexical_language_forget('cfg')` first; it refuses while any
+row references the configuration.
+
+**What this does not change.** Embeddings and hybrid fusion are untouched —
+the semantic arm is language-agnostic and remains what carries cross-language
+recall. And `german` is still stemming plus stopwords, not compound
+splitting (§28).
+
 ## Checks before calling an upgrade done
 
 ```sh

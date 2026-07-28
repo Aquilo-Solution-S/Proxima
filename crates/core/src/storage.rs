@@ -294,6 +294,10 @@ pub struct AuthorDerivedRequest<'a> {
     /// persist this on `memories.supersedes` in the same transaction as
     /// the row, sidecar, and edge writes.
     pub supersedes: Option<MemoryId>,
+    /// Resolved text-search configuration name to stamp on the row;
+    /// `None` applies the database default. Storage verifies the name
+    /// against the catalog inside the write transaction.
+    pub lexical_language: Option<&'a str>,
     pub embedding: Option<Vec<f32>>,
     pub embedding_model_id: Option<&'a str>,
     pub edges: &'a [DerivedEdgeSpec<'a>],
