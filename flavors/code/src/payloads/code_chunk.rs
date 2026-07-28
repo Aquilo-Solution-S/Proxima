@@ -7,6 +7,16 @@ use serde::{Deserialize, Serialize};
 
 use crate::payloads::file_revision::FileState;
 
+/// The lexical language every code chunk is pinned to, on all three
+/// surfaces that must agree: the ingest draft (`append_code_slice`), the
+/// stored sidecar column (flavor migration `20260728000020`), and the
+/// tsquery builders in `search_chunks.rs` (SQL literals — keep them equal
+/// to this). Code is not prose in the deployment's language: identifiers,
+/// keywords, and comments are English-dominant, and following the
+/// database default would retokenise code search as collateral of a
+/// `set_lexical_config` switch.
+pub const CODE_LEXICAL_LANGUAGE: &str = "english";
+
 /// Derived code-slice projection produced by the local-git F→A operator
 /// over `file-revision-v1` Facts. It is code intelligence, not an
 /// external observation: identity is scoped to the source file revision

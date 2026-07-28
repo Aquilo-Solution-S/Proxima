@@ -177,7 +177,7 @@ pub async fn ensure_v004_baseline_compatible(pool: &PgPool) -> Result<(), Storag
 /// behind the binary: the readiness resource does not touch release-specific
 /// columns, so a stale database that boots reports healthy and then fails at
 /// first query.
-pub const MIN_CORE_MIGRATION_VERSION: i64 = 11;
+pub const MIN_CORE_MIGRATION_VERSION: i64 = 14;
 
 /// Fail closed when `skip_migrations` boot runs against a database that has
 /// not yet applied the current schema lane.
@@ -192,6 +192,7 @@ pub const MIN_CORE_MIGRATION_VERSION: i64 = 11;
 ///
 /// Returns [`StorageError::Internal`] when the recorded core migration version
 /// or the structural markers for the current lane are absent.
+#[allow(clippy::too_many_lines)]
 pub async fn ensure_core_schema_current(pool: &PgPool) -> Result<(), StorageError> {
     let migration_table_exists: bool =
         sqlx::query_scalar("SELECT to_regclass('public._sqlx_migrations') IS NOT NULL")
@@ -208,7 +209,7 @@ pub async fn ensure_core_schema_current(pool: &PgPool) -> Result<(), StorageErro
         .map_err(internal)?;
         if max_version.unwrap_or(0) < MIN_CORE_MIGRATION_VERSION {
             return Err(StorageError::Internal(format!(
-                "database core migrations at version {}; version {MIN_CORE_MIGRATION_VERSION}+ required — apply the v0.0.7 core lane (0011_v007.sql) before boot (see MIGRATING.md)",
+                "database core migrations at version {}; version {MIN_CORE_MIGRATION_VERSION}+ required — apply the v0.0.7 core lane (0011..0014_v007.sql) before boot (see MIGRATING.md)",
                 max_version.unwrap_or(0)
             )));
         }
@@ -277,7 +278,32 @@ pub async fn ensure_core_schema_current(pool: &PgPool) -> Result<(), StorageErro
                 AND column_name = 'lexical_language'
          )
          AND to_regprocedure('proxima_core.lexical_tsv(regconfig, text)') IS NOT NULL
-         AND to_regclass('proxima_core.lexical_languages') IS NOT NULL",
+         AND to_regclass('proxima_core.lexical_languages') IS NOT NULL
+         -- Flavor lane skew: when the code flavor's tables exist, its
+         -- language migration must have run too — the search builder emits
+         -- s.lexical_language for the chunk projection (and reads its
+         -- stored search_tsv), so a core-migrated/flavor-stale database
+         -- would pass core markers at boot and then fail EVERY search with
+         -- an undefined column at runtime.
+         AND (
+             to_regclass('proxima_code.code_chunk_v1') IS NULL
+             OR (
+                 EXISTS (
+                     SELECT 1
+                       FROM information_schema.columns
+                      WHERE table_schema = 'proxima_code'
+                        AND table_name = 'code_chunk_v1'
+                        AND column_name = 'lexical_language'
+                 )
+                 AND EXISTS (
+                     SELECT 1
+                       FROM information_schema.columns
+                      WHERE table_schema = 'proxima_code'
+                        AND table_name = 'code_chunk_v1'
+                        AND column_name = 'search_tsv'
+                 )
+             )
+         )",
     )
     .fetch_one(pool)
     .await
@@ -285,7 +311,7 @@ pub async fn ensure_core_schema_current(pool: &PgPool) -> Result<(), StorageErro
 
     if !ready {
         return Err(StorageError::Internal(
-            "database is missing schema markers for this release lane (v0.0.6: embedding_jobs.next_attempt_at, memories append-only trigger; v0.0.7: memories.search_tsv, embeddings.chunk_index, proxima_core.lexical_tsv, proxima_core.lexical_config, memories.lexical_language, proxima_core.lexical_languages); apply migrations before boot (see MIGRATING.md)".into(),
+            "database is missing schema markers for this release lane (v0.0.6: embedding_jobs.next_attempt_at, memories append-only trigger; v0.0.7: memories.search_tsv, embeddings.chunk_index, proxima_core.lexical_tsv, proxima_core.lexical_config, memories.lexical_language, proxima_core.lexical_languages; code flavor, when present: code_chunk_v1.search_tsv and code_chunk_v1.lexical_language via flavor migration 20260728000020); apply migrations before boot (see MIGRATING.md)".into(),
         ));
     }
     Ok(())

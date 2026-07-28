@@ -492,3 +492,117 @@ async fn supersedes_pointer_count(
         .fetch_one(pg.pool_for_tests())
         .await
 }
+
+/// A derive replay must not mutate the active-language set: the replayed
+/// pipeline re-arrives with whatever language it resolves today (possibly
+/// one this database has never seen, possibly one that does not exist),
+/// and the whole point of `idempotent_replay` is that nothing happened.
+#[tokio::test]
+async fn derived_replay_does_not_register_its_language() -> Result<(), Box<dyn std::error::Error>> {
+    let (pg, db_name) = fresh_pg().await;
+
+    let result = async {
+        pg.run_migrations().await?;
+        let owner = owner_fixture();
+        let registry = test_registry();
+        let source = insert_source_abstraction(&pg, &owner, "derive-lang-replay-source").await?;
+        let memory_id = uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_OID, b"derive-lang-replay");
+        let operator_id = OperatorId::new(uuid::Uuid::new_v5(
+            &uuid::Uuid::NAMESPACE_OID,
+            b"derive-lang-replay-op",
+        ));
+        let input_contract_id = InputContractId::new(uuid::Uuid::new_v5(
+            &uuid::Uuid::NAMESPACE_OID,
+            b"derive-lang-replay-contract",
+        ));
+        let draft_in = |language: Option<&'static str>| DerivedDraft {
+            memory_id,
+            owner,
+            kind: EntityKind::Abstraction,
+            schema_id: SchemaId::new("core/agent-derivation-v1".into()),
+            schema_version: SchemaVersion::new(1),
+            text: "die zusammengefasste Sicht".into(),
+            operator_kind: MemoryOperatorKind::AtoA,
+            operator_id,
+            input_contract_id,
+            source_batch_id: None,
+            model_id: "claude-opus-4.7",
+            prompt_version: "mcp-agent-v1",
+            supersedes: None,
+            lexical_language: language,
+            embedding: None,
+            embedding_model_id: None,
+        };
+        let sidecar = agent_sidecar(EntityKind::Abstraction, "x", "die zusammengefasste Sicht");
+
+        let mut tx = pg.pool_for_tests().begin().await?;
+        let outcome = append_with_sidecar(
+            &mut tx,
+            pg.sidecars(),
+            &registry,
+            &draft_in(Some("german")),
+            &sidecar,
+            source,
+        )
+        .await?;
+        tx.commit().await?;
+        assert!(!outcome.idempotent_replay);
+        let stamped: String = sqlx::query_scalar(
+            "SELECT lexical_language::text FROM proxima_core.memories WHERE memory_id = $1",
+        )
+        .bind(memory_id)
+        .fetch_one(pg.pool_for_tests())
+        .await?;
+        assert_eq!(
+            stamped, "german",
+            "the fresh insert must stamp and register"
+        );
+
+        // Replay with a DIFFERENT language: still a replay, and the
+        // language set must not grow by a configuration nothing is
+        // stamped with.
+        let mut tx = pg.pool_for_tests().begin().await?;
+        let replay = append_with_sidecar(
+            &mut tx,
+            pg.sidecars(),
+            &registry,
+            &draft_in(Some("italian")),
+            &sidecar,
+            source,
+        )
+        .await?;
+        tx.commit().await?;
+        assert!(replay.idempotent_replay);
+        let italian_registered: bool = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM proxima_core.lexical_languages
+              WHERE config = 'italian'::regconfig)",
+        )
+        .fetch_one(pg.pool_for_tests())
+        .await?;
+        assert!(
+            !italian_registered,
+            "a replay registered a language no row is stamped with"
+        );
+
+        // Replay with a configuration this database does not even have:
+        // must no-op like every other replay, not fail validation.
+        let mut tx = pg.pool_for_tests().begin().await?;
+        let replay = append_with_sidecar(
+            &mut tx,
+            pg.sidecars(),
+            &registry,
+            &draft_in(Some("klingon")),
+            &sidecar,
+            source,
+        )
+        .await?;
+        tx.commit().await?;
+        assert!(replay.idempotent_replay);
+
+        Ok::<(), Box<dyn std::error::Error>>(())
+    }
+    .await;
+
+    let _ = drop_db(&db_name).await;
+    result
+}

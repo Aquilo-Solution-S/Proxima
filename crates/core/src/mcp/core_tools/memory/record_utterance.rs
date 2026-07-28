@@ -34,7 +34,7 @@ pub struct RecordUtteranceArgs {
     pub observed_at: Option<String>,
     #[serde(default)]
     #[schemars(
-        description = "Optional lexical language of the utterance: a PostgreSQL text-search configuration name (e.g. 'german'), or 'auto' to detect it from the text (an unreliable detection falls back to the database default). Affects lexical search tokenisation only; embeddings are language-agnostic. Omit for the database default."
+        description = "Optional lexical language of the utterance: a PostgreSQL text-search configuration name (e.g. 'german'), an ISO 639 / BCP-47 code (e.g. 'de', 'de-DE'), or 'auto' to detect it from the text (an unreliable detection falls back to the database default). Affects lexical search tokenisation only; embeddings are language-agnostic. Omit for the database default."
     )]
     pub language: Option<String>,
 }

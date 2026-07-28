@@ -32,7 +32,8 @@ pub const LEXICAL_LANGUAGE_AUTO: &str = "auto";
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 #[error(
     "invalid lexical language {supplied:?}: pass a PostgreSQL text-search configuration name \
-     (e.g. 'english', 'german', optionally schema-qualified), or 'auto' to detect from content"
+     (e.g. 'english', 'german', optionally schema-qualified), an ISO 639 / BCP-47 code \
+     (e.g. 'de', 'de-DE'), or 'auto' to detect from content"
 )]
 pub struct InvalidLexicalLanguage {
     pub supplied: String,
@@ -90,17 +91,79 @@ pub fn detect_lexical_language(text: &str) -> Option<&'static str> {
     Some(shipped_config_for(info.lang()).unwrap_or("simple"))
 }
 
+/// The configuration for an ISO 639-1/639-3 code (a BCP-47 primary
+/// subtag), if the code names a language this module knows.
+///
+/// Callers speak ISO — agents, HTML `lang` attributes, PDF and Office
+/// metadata all carry BCP-47 tags — while the stored value is a
+/// `regconfig` catalog reference, so ISO codes are accepted as *aliases*
+/// and the configuration name stays canonical. Codes for languages
+/// without a shipped stemmer map to `simple`, exactly as the detector
+/// treats those languages; unknown codes fall through to the
+/// config-name path (no 2–3-letter shipped configuration exists, and a
+/// custom one can always be addressed schema-qualified).
+#[must_use]
+fn config_for_iso_code(code: &str) -> Option<&'static str> {
+    Some(match code {
+        // Shipped Snowball configurations (ISO 639-1, then 639-2/3 forms).
+        "ar" | "ara" => "arabic",
+        "hy" | "hye" => "armenian",
+        "eu" | "eus" | "baq" => "basque",
+        "ca" | "cat" => "catalan",
+        "da" | "dan" => "danish",
+        "nl" | "nld" | "dut" => "dutch",
+        "en" | "eng" => "english",
+        "et" | "est" => "estonian",
+        "fi" | "fin" => "finnish",
+        "fr" | "fra" | "fre" => "french",
+        "de" | "deu" | "ger" => "german",
+        "el" | "ell" | "gre" => "greek",
+        "hi" | "hin" => "hindi",
+        "hu" | "hun" => "hungarian",
+        "id" | "ind" => "indonesian",
+        "ga" | "gle" => "irish",
+        "it" | "ita" => "italian",
+        "lt" | "lit" => "lithuanian",
+        "ne" | "nep" => "nepali",
+        "no" | "nb" | "nn" | "nor" | "nob" | "nno" => "norwegian",
+        "pt" | "por" => "portuguese",
+        "ro" | "ron" | "rum" => "romanian",
+        "ru" | "rus" => "russian",
+        "sr" | "srp" => "serbian",
+        "es" | "spa" => "spanish",
+        "sv" | "swe" => "swedish",
+        "ta" | "tam" => "tamil",
+        "tr" | "tur" => "turkish",
+        "yi" | "yid" => "yiddish",
+        // Known languages without a shipped stemmer → simple, matching
+        // the detector's treatment of the same languages.
+        "zh" | "cmn" | "zho" | "ja" | "jpn" | "ko" | "kor" | "pl" | "pol" | "cs" | "ces"
+        | "cze" | "sk" | "slk" | "uk" | "ukr" | "be" | "bel" | "bg" | "bul" | "hr" | "hrv"
+        | "sl" | "slv" | "mk" | "mkd" | "lv" | "lav" | "vi" | "vie" | "th" | "tha" | "he"
+        | "heb" | "fa" | "fas" | "pes" | "ur" | "urd" | "bn" | "ben" | "mr" | "mar" | "gu"
+        | "guj" | "pa" | "pan" | "te" | "tel" | "kn" | "kan" | "ml" | "mal" | "si" | "sin"
+        | "my" | "mya" | "km" | "khm" | "az" | "aze" | "uz" | "uzb" | "tl" | "tgl" | "jv"
+        | "jav" | "af" | "afr" | "la" | "lat" | "eo" | "epo" | "am" | "amh" => "simple",
+        _ => return None,
+    })
+}
+
 /// Resolve a write surface's optional `language` argument to the
 /// configuration name storage should stamp, or `None` for the database
 /// default.
 ///
+/// Accepted forms: a `PostgreSQL` text-search configuration name
+/// (`"german"`, optionally schema-qualified), an ISO 639 code or BCP-47
+/// tag (`"de"`, `"deu"`, `"de-DE"` — the primary subtag decides), or
+/// `"auto"`.
+///
 /// # Errors
 ///
-/// Returns [`InvalidLexicalLanguage`] when an explicit name is not a
-/// plausible configuration identifier. Existence is verified by storage
-/// against the actual catalog — this check only rejects what could
-/// never be one, so the caller gets a clean error instead of a failed
-/// transaction.
+/// Returns [`InvalidLexicalLanguage`] when an explicit name is neither a
+/// known ISO code nor a plausible configuration identifier. Existence of
+/// configuration names is verified by storage against the actual catalog
+/// — this check only rejects what could never be one, so the caller gets
+/// a clean error instead of a failed transaction.
 pub fn resolve_lexical_language(
     requested: Option<&str>,
     text: &str,
@@ -112,6 +175,12 @@ pub fn resolve_lexical_language(
         return Ok(detect_lexical_language(text).map(str::to_string));
     }
     let normalized = requested.to_ascii_lowercase();
+    // BCP-47: the primary subtag carries the language; region and script
+    // subtags ("de-DE", "zh-Hans-CN") never change the stemmer.
+    let primary_subtag = normalized.split('-').next().unwrap_or(&normalized);
+    if let Some(config) = config_for_iso_code(primary_subtag) {
+        return Ok(Some(config.to_string()));
+    }
     if is_plausible_config_name(&normalized) {
         Ok(Some(normalized))
     } else {
@@ -170,6 +239,34 @@ mod tests {
         for bad in ["ger man", "a.b.c", "1german", "gérman", "x'; DROP--"] {
             assert!(resolve_lexical_language(Some(bad), "").is_err(), "{bad}");
         }
+    }
+
+    #[test]
+    fn iso_codes_and_bcp47_tags_alias_the_shipped_configurations() {
+        for (code, config) in [
+            ("de", "german"),
+            ("deu", "german"),
+            ("DE-de", "german"),
+            ("de-DE", "german"),
+            ("en", "english"),
+            ("pt-BR", "portuguese"),
+            ("nb", "norwegian"),
+            // Known languages without a shipped stemmer map to `simple`,
+            // exactly as the detector treats them.
+            ("zh", "simple"),
+            ("zh-Hans-CN", "simple"),
+            ("ja", "simple"),
+            ("pl", "simple"),
+        ] {
+            assert_eq!(
+                resolve_lexical_language(Some(code), ""),
+                Ok(Some(config.to_string())),
+                "{code}"
+            );
+        }
+        // An unknown code with a subtag separator can only be a BCP-47 tag,
+        // and an unknown tag is an error, not a config name.
+        assert!(resolve_lexical_language(Some("xx-YY"), "").is_err());
     }
 
     #[test]

@@ -299,10 +299,33 @@ async fn lexical_language_forget_refuses_while_referenced() -> Result<(), Box<dy
             .contains("default"),
     );
 
+    // A materialized view stores regconfig values as durably as a table
+    // and dangles the same way after a config drop — it holds the guard.
+    sqlx::query(
+        "CREATE MATERIALIZED VIEW held_language AS
+         SELECT lexical_language FROM proxima_core.memories
+          WHERE lexical_language = 'german'::regconfig",
+    )
+    .execute(pg.pool_for_tests())
+    .await?;
+
     sqlx::query("DELETE FROM proxima_core.memories WHERE memory_id = $1")
         .bind(memory_id)
         .execute(pg.pool_for_tests())
         .await?;
+    let matview_refused = sqlx::query("SELECT proxima_core.lexical_language_forget('german')")
+        .execute(pg.pool_for_tests())
+        .await;
+    assert!(
+        matview_refused
+            .expect_err("forget must refuse: a materialized view still holds the language")
+            .to_string()
+            .contains("held_language"),
+    );
+    sqlx::query("DROP MATERIALIZED VIEW held_language")
+        .execute(pg.pool_for_tests())
+        .await?;
+
     sqlx::query("SELECT proxima_core.lexical_language_forget('german')")
         .execute(pg.pool_for_tests())
         .await?;
@@ -313,6 +336,149 @@ async fn lexical_language_forget_refuses_while_referenced() -> Result<(), Box<dy
     .fetch_one(pg.pool_for_tests())
     .await?;
     assert!(gone, "an unreferenced language was not forgotten");
+
+    drop(pg);
+    drop_db(&db_name).await?;
+    Ok(())
+}
+
+/// One CJK note must not turn every query's function words into match
+/// terms. `simple` keeps stopwords in its vectors; without the
+/// query-side stop filter (`proxima_core.lexical_query_text`), activating
+/// it once would let any row carrying an incidental English function word
+/// rescue-match unrelated questions above the substring band.
+#[tokio::test]
+async fn an_active_simple_language_does_not_make_stopwords_match_terms()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (pg, db_name) = fresh_pg().await;
+    pg.run_migrations().await?;
+
+    let owner = owner_fixture();
+    // The realistic polluter: a mostly-CJK note quoting an English error
+    // line, reliably detected as Chinese and stamped `simple`.
+    let cjk_row = insert_text_memory_in_language(
+        &pg,
+        &owner,
+        "这个部署报错 the connection is refused 请检查网络配置",
+        "simple",
+    )
+    .await?;
+    let english_row = insert_text_memory_in_language(
+        &pg,
+        &owner,
+        "The migration plan covers the staged rollout",
+        "english",
+    )
+    .await?;
+
+    // An English question sharing ONLY function words with the CJK note
+    // must not surface it.
+    let mut unrelated = lexical_request(&owner, "what is the plan for the migration");
+    unrelated.kind = Some(EntityKind::Abstraction);
+    let hits = pg.search_memories(&unrelated, &[]).await?.results;
+    assert!(
+        !hits.iter().any(|row| row.memory_id.into_inner() == cjk_row),
+        "a simple-stamped row matched an unrelated question through stopwords: {hits:#?}"
+    );
+    assert!(
+        hits.iter()
+            .any(|row| row.memory_id.into_inner() == english_row),
+        "the actually relevant row went missing: {hits:#?}"
+    );
+
+    // Content words still reach the simple row — the filter must not cost
+    // its legitimate reachability.
+    let mut by_content = lexical_request(&owner, "connection refused");
+    by_content.kind = Some(EntityKind::Abstraction);
+    let hits = pg.search_memories(&by_content, &[]).await?.results;
+    assert!(
+        hits.iter().any(|row| row.memory_id.into_inner() == cjk_row),
+        "the simple-stamped row lost its content-word reachability: {hits:#?}"
+    );
+
+    drop(pg);
+    drop_db(&db_name).await?;
+    Ok(())
+}
+
+/// `lexical_language_forget` must not certify a language unreferenced
+/// while a write stamping it is still in flight: the writer holds FOR KEY
+/// SHARE on the registration row until commit, and forget's FOR UPDATE
+/// blocks on it.
+#[tokio::test]
+async fn forget_blocks_on_an_in_flight_write_in_that_language()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (pg, db_name) = fresh_pg().await;
+    pg.run_migrations().await?;
+
+    let owner = owner_fixture();
+    let (owner_kind, owner_id) = proxima_storage_pg::access::owner_columns::owner_binds(&owner);
+
+    // 'german' is already active (committed) — the hazard is a NEW write
+    // in an active language racing a forget, not a first-time registration
+    // (which stays invisible to forget until the writer commits).
+    sqlx::query("INSERT INTO proxima_core.lexical_languages (config) VALUES ('german'::regconfig)")
+        .execute(pg.pool_for_tests())
+        .await?;
+
+    // Session A: the write path's exact statement sequence, held open.
+    let mut writer = pg.pool_for_tests().begin().await?;
+    sqlx::query(
+        "INSERT INTO proxima_core.lexical_languages (config)
+         VALUES ('german'::regconfig) ON CONFLICT (config) DO NOTHING",
+    )
+    .execute(writer.as_mut())
+    .await?;
+    sqlx::query(
+        "SELECT 1 FROM proxima_core.lexical_languages
+          WHERE config = 'german'::regconfig FOR KEY SHARE",
+    )
+    .execute(writer.as_mut())
+    .await?;
+    sqlx::query(
+        "INSERT INTO proxima_core.memories
+            (memory_id, owner_kind, owner_id, schema_id, schema_version, kind, text,
+             operator_kind, operator_id, input_contract_id, source_batch_id,
+             model_id, prompt_version, lexical_language)
+         VALUES ($1, $2, $3, 'test/search-language-v1', 1, 'Abstraction',
+                 'Die Bauleitung prüft', 'AtoA',
+                 '00000000-0000-0000-0000-000000000343'::uuid,
+                 '00000000-0000-0000-0000-000000000344'::uuid, NULL,
+                 'test-model', 'test-v1', 'german'::regconfig)",
+    )
+    .bind(Uuid::now_v7())
+    .bind(owner_kind)
+    .bind(owner_id)
+    .execute(writer.as_mut())
+    .await?;
+
+    // Session B: forget must block on the writer's row lock, not succeed.
+    let mut forgetter = pg.pool_for_tests().begin().await?;
+    sqlx::query("SET LOCAL lock_timeout = '500ms'")
+        .execute(forgetter.as_mut())
+        .await?;
+    let raced = sqlx::query("SELECT proxima_core.lexical_language_forget('german')")
+        .execute(forgetter.as_mut())
+        .await;
+    let err = raced.expect_err("forget must block on the in-flight write, then time out");
+    assert!(
+        err.to_string().contains("lock timeout"),
+        "expected a lock timeout, got: {err}"
+    );
+    forgetter.rollback().await?;
+
+    // After the writer commits, forget sees the committed row and refuses
+    // on the referencing-rows scan instead.
+    writer.commit().await?;
+    let refused = sqlx::query("SELECT proxima_core.lexical_language_forget('german')")
+        .execute(pg.pool_for_tests())
+        .await;
+    assert!(
+        refused
+            .expect_err("forget must refuse: a committed row references the language")
+            .to_string()
+            .contains("still reference"),
+    );
 
     drop(pg);
     drop_db(&db_name).await?;

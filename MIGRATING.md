@@ -1174,7 +1174,9 @@ rebind the generated columns to the two-argument
 
 **Choosing a language per write.** `core_remember`, `core_record_utterance`
 and `core_derive` gain an optional `language`: a configuration name
-(`"german"`), or `"auto"` to detect it from the content. Detection is gated
+(`"german"`), an ISO 639 code or BCP-47 tag (`"de"`, `"de-DE"` — the
+primary subtag decides, and configuration names stay canonical), or
+`"auto"` to detect it from the content. Detection is gated
 on the detector's own reliability signal — measured ≥98% accurate wherever
 the gate opens (2,350 German pages, 130 short German questions, 300 English
 paragraphs), while ungated detection under ~80 characters is 50–83%, worse
@@ -1192,7 +1194,11 @@ first used) and RANKS each candidate with its own row's configuration.
 Measured against the same goldset: ranked per-row the OR is bit-identical
 to a single-language baseline (0/130 top-5 sets changed); ranked against
 the OR query it costs 6.2 points of recall@5 — which is why the rank
-expression reads `c.lexical_language` and not the combined query.
+expression reads `c.lexical_language` and not the combined query. For
+stop-list-free configurations (`simple`, which detected-but-unstemmed
+languages map to), the query text is stop-filtered through the default
+configuration first (`proxima_core.lexical_query_text`), so one CJK note
+in the corpus cannot turn every query's function words into match terms.
 
 **`set_lexical_config` changes meaning.** It now sets the default and
 registers it as an active language. Existing rows keep the language they
@@ -1209,10 +1215,15 @@ mirror is written once, and a mutable memories-side value would silently
 diverge from it.
 
 **Code chunks stop following the default.** `proxima_code.code_chunk_v1`
-pins `english` per row (flavor migration `20260728000020`), and
-`proxima-code_search_chunks` pins the same constant. Before this, switching
-a deployment to `german` for its documents retokenised every code chunk
-with a German stemmer as collateral.
+pins `english` per row (flavor migration `20260728000020`, which also
+registers `english` as an active language — pinned vectors nothing builds
+a tsquery for would be unreachable), chunk ingest stamps and re-registers
+it on every write, and `proxima-code_search_chunks` pins the same
+constant (`CODE_LEXICAL_LANGUAGE`). Before this, switching a deployment
+to `german` for its documents retokenised every code chunk with a German
+stemmer as collateral. Run `set_lexical_config` only after the full
+v0.0.7 lane (core and flavor migrations) has been applied, not between
+its steps.
 
 **Flavor authors: two surface changes.** `SearchProjection` gains
 `language_column: Option<&'static str>` — a compile-time break for struct

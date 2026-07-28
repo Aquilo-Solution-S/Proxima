@@ -88,7 +88,7 @@ pub use acceptance::{
     AcceptanceCriteriaV1, AcceptanceCriterionV1, AcceptanceVerifierKind, AcceptanceVerifierSpecV1,
 };
 pub use agent_perspective::{CodeCommitSummarizerSelfV1, CodeEngineerSelfV1};
-pub use code_chunk::CodeChunkV1;
+pub use code_chunk::{CODE_LEXICAL_LANGUAGE, CodeChunkV1};
 pub use commit::CommitV1;
 pub use commit_summary::CommitSummaryV1;
 pub use development_perspective::CodeDevelopmentPerspectiveV1;

@@ -30,6 +30,19 @@ ALTER TABLE proxima_code.code_chunk_v1
     ADD COLUMN lexical_language regconfig NOT NULL
     DEFAULT 'english'::regconfig;
 
+-- Pinning a language only makes chunks SEARCHABLE if that language is in
+-- the active set the query builder ORs over — membership there is, per the
+-- table's own comment, what makes a language searchable. A deployment
+-- whose default is not english (set_lexical_config ran before this
+-- migration) would otherwise stamp every chunk english while never
+-- building an english tsquery: every chunk silently drops out of the
+-- strict lexical band with no error anywhere. The write path re-registers
+-- on every chunk ingest as well; this covers the rows this migration
+-- creates.
+INSERT INTO proxima_core.lexical_languages (config)
+VALUES ('english'::regconfig)
+ON CONFLICT (config) DO NOTHING;
+
 COMMENT ON COLUMN proxima_code.code_chunk_v1.lexical_language IS
 'Text-search configuration for this chunk''s stored vector. Pinned english per row: code search must not follow proxima_core.set_lexical_config, which serves the deployment''s prose.';
 
