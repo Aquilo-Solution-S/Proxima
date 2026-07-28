@@ -81,6 +81,32 @@ fn host_api_names_every_citation_schema_id() {
 }
 
 #[test]
+fn host_api_can_build_a_non_mistral_embedding_client() {
+    // `OpenAiCompatEmbeddingClient` was already exported, but its `new`
+    // takes an `EmbedCaps` the facade did not name — so `mistral()` was the
+    // only constructible embedding client, and every other
+    // OpenAI-compatible endpoint (a local Ollama, a self-hosted server) was
+    // out of reach for a host depending on `proxima` alone.
+    let caps = proxima::EmbedCaps {
+        dim: u32::try_from(proxima::llm::EMBEDDING_DIM).expect("the width fits u32"),
+        // The reason a local endpoint needs this at all: a model whose
+        // native width is not EMBEDDING_DIM must be asked for a nested
+        // prefix, or every write fails the fixed-width vector column.
+        matryoshka: true,
+    };
+    assert_eq!(caps.dim as usize, proxima::llm::EMBEDDING_DIM);
+
+    // Loopback plaintext is accepted; the point is that the signature is
+    // writable at all.
+    let client = proxima::OpenAiCompatEmbeddingClient::new(
+        "some-local-model",
+        caps,
+        proxima::OpenAiCompatConfig::new("http://localhost:11434/v1", None),
+    );
+    assert!(client.is_ok(), "a loopback OpenAI-compatible client builds");
+}
+
+#[test]
 fn flavor_sdk_imports_from_flavor_module() {
     use proxima::flavor::{FactPayload, FlavorBundle, FlavorRegistry, PgSidecarRegistry, SchemaId};
     fn _needs_bundle<T: FlavorBundle>() {}
