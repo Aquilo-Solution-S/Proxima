@@ -1319,6 +1319,27 @@ caller could send validated, so the whole-artefact mapping was unusable
 over MCP (nothing shipped ever exercised it; §29's example used the page
 span). It is now a braced empty struct: pass `"mapping_payload": {}`.
 
+**Citation read-back returns the locator.** `core_fact`
+`citation_of_fact` / `citation_of_entity_head` previously returned ids
+only — a caller holding a cited Fact learned *that* it cited something,
+not *what*. The `citation` object now additionally carries, when
+applicable:
+
+- `page_span` — the `core/uploaded-blob-page-span-v1` payload
+  (`page_from`, `page_to`, optional char range), when the mapping has
+  one;
+- `document` — `filename`, `mime`, `byte_len`, `sha256_hex`,
+  `uploaded_at`, when the cited object is a `core/uploaded-blob-v1`.
+
+Both are omitted (not `null`) when absent, so existing consumers see an
+unchanged shape for non-blob citations. Deliberately NOT included:
+`bucket`/`object_key` — the read-back policy stands; fetch bytes with
+`core_upload`'s `read_url`. On the Rust surface,
+`FactCitationReadback` gains `page_span: Option<UploadedBlobPageSpanV1>`
+and `uploaded_blob: Option<UploadedBlobRef>` (a new
+`filename`/`mime`/`byte_len`/`sha256_hex`/`uploaded_at` struct);
+construct-site updates are additive.
+
 Embedding hosts driving the engine directly get the same pair as Rust
 API: `authorize_fact_with_citation_by_ref` /
 `ingest_fact_with_citation_ref_and_typed_sidecar`. Custom

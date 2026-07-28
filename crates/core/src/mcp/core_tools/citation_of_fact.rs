@@ -39,6 +39,27 @@ pub struct FactCitationOutput {
     pub mapping_schema_id: String,
     pub cited_object_id: String,
     pub cited_object_schema_id: String,
+    /// The `core/uploaded-blob-page-span-v1` locator, when the mapping
+    /// carries one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub page_span: Option<crate::citations::UploadedBlobPageSpanV1>,
+    /// Uploaded-document metadata, when the cited object is a
+    /// `core/uploaded-blob-v1`. Never carries storage coordinates —
+    /// fetch bytes via `core_upload` `read_url`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub document: Option<UploadedBlobDocumentOutput>,
+}
+
+/// What the cited document IS (name, type, size, content hash, upload
+/// time) — deliberately not where it lives.
+#[derive(Debug, Serialize)]
+pub struct UploadedBlobDocumentOutput {
+    pub filename: String,
+    pub mime: String,
+    pub byte_len: u64,
+    pub sha256_hex: String,
+    #[serde(with = "time::serde::rfc3339")]
+    pub uploaded_at: time::OffsetDateTime,
 }
 
 pub(super) async fn citation_of_fact(
@@ -86,5 +107,16 @@ fn fact_citation_output(row: &crate::verbs::query::FactCitationReadback) -> Fact
         mapping_schema_id: row.mapping_schema_id.as_str().to_string(),
         cited_object_id: row.cited_object_id.to_string(),
         cited_object_schema_id: row.cited_object_schema_id.as_str().to_string(),
+        page_span: row.page_span,
+        document: row
+            .uploaded_blob
+            .as_ref()
+            .map(|blob| UploadedBlobDocumentOutput {
+                filename: blob.filename.clone(),
+                mime: blob.mime.clone(),
+                byte_len: blob.byte_len,
+                sha256_hex: blob.sha256_hex.clone(),
+                uploaded_at: blob.uploaded_at,
+            }),
     }
 }

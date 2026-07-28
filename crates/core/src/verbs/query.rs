@@ -202,6 +202,25 @@ pub struct FactCitationReadback {
     pub mapping_schema_id: SchemaId,
     pub cited_object_id: uuid::Uuid,
     pub cited_object_schema_id: SchemaId,
+    /// The `core/uploaded-blob-page-span-v1` locator, when the mapping
+    /// carries one.
+    pub page_span: Option<crate::citations::UploadedBlobPageSpanV1>,
+    /// Uploaded-document metadata, when the cited object is a
+    /// `core/uploaded-blob-v1`.
+    pub uploaded_blob: Option<UploadedBlobRef>,
+}
+
+/// Client-safe description of an uploaded cited blob: what the document
+/// IS, never where it lives. `bucket`/`object_key` are deliberately
+/// absent (docs/10 §Large Artefact S3 — presigned URLs only); fetching
+/// bytes goes through `core_upload`'s `read_url`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UploadedBlobRef {
+    pub filename: String,
+    pub mime: String,
+    pub byte_len: u64,
+    pub sha256_hex: String,
+    pub uploaded_at: time::OffsetDateTime,
 }
 
 /// Keyset position in the citing-Facts total order

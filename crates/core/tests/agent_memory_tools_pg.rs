@@ -2133,6 +2133,7 @@ async fn embedding_job_count(
 /// this file that cites anything defines its own schemas to do it; this one
 /// deliberately uses no test-local types.
 #[tokio::test]
+#[allow(clippy::too_many_lines)] // linear PG flow: cite, span row, read-back locator, dedupe
 async fn a_fact_can_cite_a_page_of_an_uploaded_document() -> Result<(), Box<dyn std::error::Error>>
 {
     let (pg, db_name) = fresh_pg().await;
@@ -2189,6 +2190,40 @@ async fn a_fact_can_cite_a_page_of_an_uploaded_document() -> Result<(), Box<dyn 
         span,
         (47, 47, None, None),
         "the page span did not round-trip"
+    );
+
+    // The citation read-back returns the locator, not just ids: the page
+    // span and what the document IS — never bucket/object_key, which the
+    // read-back policy reserves for presigned-URL surfaces.
+    let read_back = call_tool(
+        &pg,
+        &owner,
+        &frozen,
+        author_ctx(),
+        "core_fact",
+        json!({ "action": "citation_of_fact", "fact": cited["handle"] }),
+    )
+    .await?;
+    let citation = &read_back["citation"];
+    assert_eq!(
+        citation["page_span"],
+        json!({"page_from": 47, "page_to": 47}),
+        "read-back page span: {citation:#}"
+    );
+    assert_eq!(
+        citation["document"],
+        json!({
+            "filename": "handbuch.pdf",
+            "mime": "application/pdf",
+            "byte_len": 4_096,
+            "sha256_hex": "09".repeat(32),
+            "uploaded_at": "2026-07-27T00:00:00Z",
+        }),
+        "read-back document metadata: {citation:#}"
+    );
+    assert!(
+        citation.get("bucket").is_none() && citation["document"].get("bucket").is_none(),
+        "storage coordinates must never appear in read-back: {citation:#}"
     );
 
     // Re-ingesting the same document under a different page reuses the one
