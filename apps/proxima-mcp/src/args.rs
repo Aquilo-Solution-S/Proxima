@@ -76,6 +76,7 @@ Tools:
   core_fact
   core_membership
   core_publish
+  core_upload
 ";
 
 pub const MAINTAIN_USAGE: &str = "\

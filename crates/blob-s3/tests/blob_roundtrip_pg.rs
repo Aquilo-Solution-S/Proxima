@@ -6,7 +6,7 @@ use proxima_blob_s3::{
     CitedBlobReadUrlTs, CitedBlobStore, CitedBlobUploadCompleteTs, CitedBlobUploadPrepareTs,
     S3RuntimeConfig,
 };
-use proxima_core::storage_ports::CitedObjectErasePort;
+use proxima_core::storage_ports::{CitedBlobPort, CitedObjectErasePort};
 use proxima_core::test_fixtures::owner_fixture;
 use proxima_core::{AuthPath, AuthzContext};
 use proxima_pg_testkit::{create_db, db_url, drop_db, unique_db_name};
@@ -157,6 +157,102 @@ async fn prepare_then_complete_then_read_roundtrip() {
             .contains("response-content-disposition=attachment"),
         "presigned GET forces an attachment disposition (no inline stored-XSS)"
     );
+
+    drop(pool);
+    drop_db(&db_name).await.expect("drop db");
+}
+
+/// The same roundtrip through the core-defined [`CitedBlobPort`] — the
+/// seam `core_upload` dispatches through. Exercised as a `dyn` object so
+/// the trait surface (plain args in, core-owned outcomes out, hex hashes,
+/// parsed expiry timestamps) is what is under test, not the inherent
+/// methods the Tauri path uses.
+#[tokio::test]
+async fn port_level_prepare_complete_read_roundtrip() {
+    use sha2::Digest;
+
+    if !S3RuntimeConfig::present_in_env() {
+        eprintln!("skipped: PROXIMA_S3_* unset (run the s3 service to enable)");
+        return;
+    }
+
+    let (pool, db_name) = fresh_pool().await;
+    let config = s3_config_for_dev();
+    let store = CitedBlobStore::new(pool.clone(), config.clone()).expect("valid S3 config");
+    let port: &dyn CitedBlobPort = &store;
+    let body = b"port-level-bytes";
+    let owner = owner_fixture();
+    let ctx = AuthzContext::single_owner(&owner, AuthPath::System);
+
+    let prepared = port
+        .prepare_upload(
+            &ctx,
+            owner,
+            "port.pdf",
+            "application/pdf",
+            body.len() as u64,
+        )
+        .await
+        .expect("port prepare");
+    assert!(
+        prepared.expires_at > time::OffsetDateTime::now_utc(),
+        "expiry is a parsed future timestamp"
+    );
+
+    // Upload the bytes to the pending key exactly as an MCP client would
+    // PUT to the presigned URL (the SDK PUT targets the same object).
+    let pending: (String,) = sqlx::query_as(
+        "SELECT object_key FROM proxima_core.cited_object_uploads WHERE upload_id = $1",
+    )
+    .bind(Uuid::parse_str(&prepared.upload_id).expect("upload id"))
+    .fetch_one(&pool)
+    .await
+    .expect("upload row");
+    put_object_via_sdk(&config, &pending.0, body).await;
+
+    let completed = port
+        .complete_upload(&ctx, owner, &prepared.upload_id)
+        .await
+        .expect("port complete");
+    assert_eq!(completed.byte_len, body.len() as u64);
+    assert_eq!(completed.mime, "application/pdf");
+    assert_eq!(completed.filename, "port.pdf");
+    assert!(!completed.idempotent_replay);
+    // Hashes are hex on the port surface — 32 bytes each.
+    assert_eq!(completed.content_hash.len(), 64);
+    assert_eq!(completed.sha256.len(), 64);
+    assert_eq!(completed.sha256, hex::encode(sha2::Sha256::digest(body)));
+
+    // A second complete of the same upload is an idempotent replay.
+    let replay = port
+        .complete_upload(&ctx, owner, &prepared.upload_id)
+        .await
+        .expect("port complete replay");
+    assert!(replay.idempotent_replay);
+    assert_eq!(replay.cited_object_id, completed.cited_object_id);
+
+    let read = port
+        .read_url(
+            &ctx,
+            owner,
+            Uuid::parse_str(&completed.cited_object_id).expect("cited object id"),
+        )
+        .await
+        .expect("port read url");
+    assert!(
+        read.read_url
+            .contains("response-content-disposition=attachment")
+    );
+    // The port never exposes bucket/object_key fields; the URL is the
+    // only locator handed out.
+    assert!(read.expires_at > time::OffsetDateTime::now_utc());
+
+    // An abort after completion reports aborted == false and keeps the blob.
+    let aborted = port
+        .abort_upload(&ctx, owner, &prepared.upload_id)
+        .await
+        .expect("port abort");
+    assert!(!aborted.aborted);
 
     drop(pool);
     drop_db(&db_name).await.expect("drop db");

@@ -1244,6 +1244,42 @@ the semantic arm is language-agnostic and remains what carries cross-language
 recall. And `german` is still stemming plus stopwords, not compound
 splitting (§28).
 
+## 32. v0.0.7: the upload lane is an MCP tool
+
+**No migrations.** This lane adds no schema change of any kind — the
+tables it touches (`cited_object_uploads`, `cited_objects`,
+`cited_uploaded_blob_v1`) have existed since the baseline. It is
+additive surface only.
+
+§29 made uploaded documents citable, but the S3 upload lane itself was
+reachable only as a Rust library (`proxima_blob_s3::CitedBlobStore`) —
+an MCP agent had no way to get a document *into* the substrate. A new
+`core_upload` dispatcher closes that:
+
+| Action | Does |
+|---|---|
+| `prepare` | Mint a presigned S3 `PUT` (`upload_url` + `headers`) and record the pending upload |
+| `complete` | Verify the uploaded bytes; return the canonical `cited_object_id` |
+| `abort` | Discard a pending upload |
+| `read_url` | Mint a presigned download URL for a completed blob |
+
+Bytes never travel through MCP — the transport caps request bodies, and
+the configuration contract (docs/10 §Large Artefact S3) already mandates
+presigned URLs only, never `bucket`/`object_key`. The client `PUT`s the
+raw bytes to `upload_url` with exactly the returned headers, then calls
+`complete`.
+
+Wiring is automatic: any `Proxima::<App>` host that configures
+`PROXIMA_S3_*` gets the tool served; without S3 the tool fails typed at
+call time naming the enabling env vars, exactly like the embedding
+client's degraded mode. Hosts composing their own `McpToolExtensions`
+need no change — the runtime inserts the substrate-owned
+`CitedBlobService` alongside whatever the host returns.
+
+`core_upload` joins the `memory` tool profile (its four action scope
+keys `core_upload:prepare|complete|abort|read_url` are valid in
+`PROXIMA_TOOL_ALLOW`/`PROXIMA_TOOL_DENY`).
+
 ## Checks before calling an upgrade done
 
 ```sh

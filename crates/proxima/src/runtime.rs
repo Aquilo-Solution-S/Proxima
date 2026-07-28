@@ -194,7 +194,7 @@ impl<A: FlavorApp + 'static> Proxima<A> {
             blobs: booted.blobs.clone(),
             owner: booted.owner,
         };
-        let tool_extensions = A::mcp_tool_extensions(&app_ctx);
+        let tool_extensions = assemble_tool_extensions::<A>(&app_ctx);
 
         let service = if let Some(allowlist) = allowlist {
             Some(build_router::<A>(
@@ -245,7 +245,7 @@ impl<A: FlavorApp + 'static> Proxima<A> {
             blobs: booted.blobs.clone(),
             owner: booted.owner,
         };
-        let tool_extensions = A::mcp_tool_extensions(&app_ctx);
+        let tool_extensions = assemble_tool_extensions::<A>(&app_ctx);
 
         let (mcp_addr, server) = if let (Some(mcp), Some(allowlist)) = (config.mcp, allowlist) {
             if !config.expose_network {
@@ -611,6 +611,21 @@ where
         .layer(axum::middleware::from_fn(
             proxima_mcp_server::enforce_body_limit,
         ))
+}
+
+/// Host tool extensions plus the substrate-owned services every composed
+/// binary gets for free. Today that is one entry: when S3 is configured
+/// (`app_ctx.blobs`), the cited-blob store is published as
+/// [`proxima_core::storage_ports::CitedBlobService`] so `core_upload`
+/// can reach the upload lane without any host wiring.
+fn assemble_tool_extensions<A: FlavorApp>(app_ctx: &AppContext) -> McpToolExtensions {
+    let mut tool_extensions = A::mcp_tool_extensions(app_ctx);
+    if let Some(blobs) = &app_ctx.blobs {
+        tool_extensions.insert(proxima_core::storage_ports::CitedBlobService(Arc::new(
+            blobs.clone(),
+        )));
+    }
+    tool_extensions
 }
 
 async fn boot_app<A: FlavorApp + 'static>(

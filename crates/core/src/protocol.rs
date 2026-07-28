@@ -12,6 +12,7 @@ pub mod tool {
     pub const CORE_FACT: &str = "core_fact";
     pub const CORE_MEMBERSHIP: &str = "core_membership";
     pub const CORE_PUBLISH: &str = "core_publish";
+    pub const CORE_UPLOAD: &str = "core_upload";
 }
 
 pub mod action {
@@ -30,6 +31,11 @@ pub mod action {
     pub const CORE_MEMBERSHIP_LIST_MEMBERS: &str = "core_membership:list_members";
 
     pub const CORE_PUBLISH_TO_WORLD: &str = "core_publish:publish_to_world";
+
+    pub const CORE_UPLOAD_PREPARE: &str = "core_upload:prepare";
+    pub const CORE_UPLOAD_COMPLETE: &str = "core_upload:complete";
+    pub const CORE_UPLOAD_ABORT: &str = "core_upload:abort";
+    pub const CORE_UPLOAD_READ_URL: &str = "core_upload:read_url";
 }
 
 pub mod resource {

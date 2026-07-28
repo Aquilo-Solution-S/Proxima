@@ -2,7 +2,10 @@ use std::time::Duration;
 
 use aws_sdk_s3::presigning::PresigningConfig;
 use aws_sdk_s3::types::{Delete, ObjectIdentifier};
-use proxima_core::storage_ports::CitedObjectErasePort;
+use proxima_core::storage_ports::{
+    CitedBlobPort, CitedBlobReadUrl, CitedBlobUploadAborted, CitedBlobUploadCompleted,
+    CitedBlobUploadHeader, CitedBlobUploadPrepared, CitedObjectErasePort,
+};
 use proxima_core::{
     AccessKind, AuthzContext, Owner, OwnerRef, OwnerRefKind, StorageError, UPLOADED_BLOB_SCHEMA_ID,
 };
@@ -445,6 +448,141 @@ impl CitedBlobStore {
         Ok(CitedBlobReadUrlOutcomeTs {
             read_url: presigned.uri().to_string(),
             expires_at: format_time(expires_at)?,
+        })
+    }
+}
+
+/// Map a [`BlobError`] onto the core storage-error taxonomy for the
+/// [`CitedBlobPort`] boundary, preserving the message text.
+///
+/// Config/S3/database faults are infrastructure unavailability; state
+/// violations (missing/expired upload, invalid input) and access denials
+/// are caller-fixable `ConstraintViolation`s, which the MCP error mapper
+/// surfaces verbatim instead of redacting to "internal server error".
+fn blob_error_to_storage(err: BlobError) -> StorageError {
+    match err {
+        BlobError::Config(message) => {
+            StorageError::Unavailable(format!("S3 config error: {message}"))
+        }
+        BlobError::S3(message) => StorageError::Unavailable(format!("S3 error: {message}")),
+        BlobError::Db(err) => StorageError::Unavailable(format!("db error: {err}")),
+        BlobError::Denied(message) => {
+            StorageError::ConstraintViolation(format!("access denied: {message}"))
+        }
+        BlobError::State(message) => StorageError::ConstraintViolation(message),
+    }
+}
+
+fn parse_port_time(value: &str) -> Result<OffsetDateTime, StorageError> {
+    OffsetDateTime::parse(value, &Rfc3339)
+        .map_err(|err| StorageError::Internal(format!("malformed expiry timestamp: {err}")))
+}
+
+#[async_trait::async_trait]
+impl CitedBlobPort for CitedBlobStore {
+    async fn prepare_upload(
+        &self,
+        authz: &AuthzContext,
+        owner: OwnerRef,
+        filename: &str,
+        mime: &str,
+        byte_len: u64,
+    ) -> Result<CitedBlobUploadPrepared, StorageError> {
+        let outcome = Self::prepare_upload(
+            self,
+            authz,
+            CitedBlobUploadPrepareTs {
+                owner,
+                filename: filename.to_string(),
+                mime: mime.to_string(),
+                byte_len,
+            },
+        )
+        .await
+        .map_err(blob_error_to_storage)?;
+        Ok(CitedBlobUploadPrepared {
+            upload_id: outcome.upload_id,
+            upload_url: outcome.upload_url,
+            expires_at: parse_port_time(&outcome.expires_at)?,
+            headers: outcome
+                .headers
+                .into_iter()
+                .map(|header| CitedBlobUploadHeader {
+                    name: header.name,
+                    value: header.value,
+                })
+                .collect(),
+        })
+    }
+
+    async fn complete_upload(
+        &self,
+        authz: &AuthzContext,
+        owner: OwnerRef,
+        upload_id: &str,
+    ) -> Result<CitedBlobUploadCompleted, StorageError> {
+        let outcome = Self::complete_upload(
+            self,
+            authz,
+            CitedBlobUploadCompleteTs {
+                owner,
+                upload_id: upload_id.to_string(),
+            },
+        )
+        .await
+        .map_err(blob_error_to_storage)?;
+        Ok(CitedBlobUploadCompleted {
+            cited_object_id: outcome.cited_object_id,
+            schema: outcome.schema,
+            content_hash: outcome.content_hash,
+            sha256: outcome.sha256,
+            byte_len: outcome.byte_len,
+            mime: outcome.mime,
+            filename: outcome.filename,
+            idempotent_replay: outcome.idempotent_replay,
+        })
+    }
+
+    async fn abort_upload(
+        &self,
+        authz: &AuthzContext,
+        owner: OwnerRef,
+        upload_id: &str,
+    ) -> Result<CitedBlobUploadAborted, StorageError> {
+        let outcome = Self::abort_upload(
+            self,
+            authz,
+            CitedBlobUploadAbortTs {
+                owner,
+                upload_id: upload_id.to_string(),
+            },
+        )
+        .await
+        .map_err(blob_error_to_storage)?;
+        Ok(CitedBlobUploadAborted {
+            aborted: outcome.aborted,
+        })
+    }
+
+    async fn read_url(
+        &self,
+        authz: &AuthzContext,
+        owner: OwnerRef,
+        cited_object_id: uuid::Uuid,
+    ) -> Result<CitedBlobReadUrl, StorageError> {
+        let outcome = Self::read_url(
+            self,
+            authz,
+            CitedBlobReadUrlTs {
+                owner,
+                cited_object_id: cited_object_id.to_string(),
+            },
+        )
+        .await
+        .map_err(blob_error_to_storage)?;
+        Ok(CitedBlobReadUrl {
+            read_url: outcome.read_url,
+            expires_at: parse_port_time(&outcome.expires_at)?,
         })
     }
 }
