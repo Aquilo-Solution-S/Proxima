@@ -24,6 +24,7 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tower::Service;
 
+use crate::workers::{FlavorWorker, FlavorWorkerContext};
 use crate::{
     AppContext, CoreMcpTools, EmbedConfig, FlavorApp, ProximaBuilder, ProximaError, RuntimeBuilder,
 };
@@ -246,6 +247,12 @@ impl<A: FlavorApp + 'static> Proxima<A> {
             owner: booted.owner,
         };
         let tool_extensions = assemble_tool_extensions::<A>(&app_ctx);
+        let worker_ctx = FlavorWorkerContext {
+            engine: booted.engine.clone(),
+            pool: booted.pool.clone(),
+            cancel: cancel.clone(),
+        };
+        let workers = A::spawn_workers(&worker_ctx);
 
         let (mcp_addr, server) = if let (Some(mcp), Some(allowlist)) = (config.mcp, allowlist) {
             if !config.expose_network {
@@ -300,6 +307,7 @@ impl<A: FlavorApp + 'static> Proxima<A> {
             cancel,
             insecure_single_owner: config.insecure_single_owner,
             tool_extensions,
+            workers,
         })
     }
 
@@ -408,6 +416,9 @@ pub struct RunningProxima {
     pub cancel: CancellationToken,
     pub insecure_single_owner: bool,
     tool_extensions: McpToolExtensions,
+    /// Flavor-contributed background workers spawned by [`Proxima::run`]
+    /// via `FlavorBundle::spawn_workers`; joined by [`Self::shutdown`].
+    workers: Vec<FlavorWorker>,
 }
 
 impl RunningProxima {
@@ -417,6 +428,11 @@ impl RunningProxima {
             && let Err(err) = server.await
         {
             tracing::warn!(error = %err, "proxima facade server join failed");
+        }
+        for worker in self.workers {
+            if let Err(err) = worker.handle.await {
+                tracing::warn!(worker = worker.name, error = %err, "flavor worker join failed");
+            }
         }
         self.engine.stop(self.handle);
     }
@@ -492,6 +508,14 @@ impl std::fmt::Debug for RunningProxima {
             .field("mcp_addr", &self.mcp_addr)
             .field("has_server", &self.server.is_some())
             .field("insecure_single_owner", &self.insecure_single_owner)
+            .field(
+                "workers",
+                &self
+                    .workers
+                    .iter()
+                    .map(|worker| worker.name)
+                    .collect::<Vec<_>>(),
+            )
             .finish_non_exhaustive()
     }
 }

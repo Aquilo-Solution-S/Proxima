@@ -6,6 +6,7 @@ use proxima_core::{FlavorRegistry, FlavorRegistryError};
 use proxima_storage_pg::PgSidecarRegistry;
 
 use crate::NamedMigrator;
+use crate::workers::{FlavorWorker, FlavorWorkerContext};
 
 pub trait FlavorBundle {
     /// # Errors
@@ -16,6 +17,66 @@ pub trait FlavorBundle {
     /// By-value, order-preserving. The facade force-sets
     /// `ignore_missing(true)` on every returned migrator at boot.
     fn migrators() -> Vec<NamedMigrator>;
+
+    /// Spawn this flavor's background workers. Default: none.
+    ///
+    /// The serving runtime ([`Proxima::run`](crate::Proxima::run)) calls
+    /// this once after boot and stores the returned workers; they run for
+    /// the lifetime of the serving app and are joined by
+    /// [`RunningProxima::shutdown`](crate::RunningProxima::shutdown).
+    /// Tuple bundles chain element workers in tuple order. The serverless
+    /// [`Proxima::build`](crate::Proxima::build) variant never calls this;
+    /// hosts driving a `BuiltProxima` own their own background tasks.
+    ///
+    /// Contract:
+    ///
+    /// - Every returned worker MUST terminate when `ctx.cancel` is
+    ///   cancelled — select on the token in the work loop, mirroring the
+    ///   core embedding worker.
+    /// - A panicking worker never takes the host down: its join error is
+    ///   logged at shutdown, not propagated.
+    ///
+    /// ```rust,no_run
+    /// use proxima::flavor::{
+    ///     FlavorBundle, FlavorRegistry, FlavorRegistryError, FlavorWorker, FlavorWorkerContext,
+    ///     NamedMigrator,
+    /// };
+    ///
+    /// struct OcrFlavor;
+    ///
+    /// impl FlavorBundle for OcrFlavor {
+    ///     fn register(_registry: &mut FlavorRegistry) -> Result<(), FlavorRegistryError> {
+    ///         Ok(())
+    ///     }
+    ///
+    ///     fn migrators() -> Vec<NamedMigrator> {
+    ///         Vec::new()
+    ///     }
+    ///
+    ///     fn spawn_workers(ctx: &FlavorWorkerContext) -> Vec<FlavorWorker> {
+    ///         let cancel = ctx.cancel.clone();
+    ///         let engine = ctx.engine.clone();
+    ///         vec![FlavorWorker {
+    ///             name: "ocr-jobs",
+    ///             handle: tokio::spawn(async move {
+    ///                 loop {
+    ///                     tokio::select! {
+    ///                         () = cancel.cancelled() => break,
+    ///                         () = tokio::time::sleep(std::time::Duration::from_secs(5)) => {
+    ///                             let _ = engine.registry();
+    ///                             /* drive one round of jobs */
+    ///                         }
+    ///                     }
+    ///                 }
+    ///             }),
+    ///         }]
+    ///     }
+    /// }
+    /// ```
+    #[must_use]
+    fn spawn_workers(_ctx: &FlavorWorkerContext) -> Vec<FlavorWorker> {
+        Vec::new()
+    }
 }
 
 impl FlavorBundle for () {
@@ -45,6 +106,12 @@ macro_rules! impl_flavor_bundle_tuple {
                 $(out.extend($name::migrators());)+
                 out
             }
+
+            fn spawn_workers(ctx: &FlavorWorkerContext) -> Vec<FlavorWorker> {
+                let mut out = Vec::new();
+                $(out.extend($name::spawn_workers(ctx));)+
+                out
+            }
         }
     };
 }
@@ -69,6 +136,7 @@ mod tests {
 
     use super::FlavorBundle;
     use crate::NamedMigrator;
+    use crate::workers::{FlavorWorker, FlavorWorkerContext};
 
     mod alpha {
         proxima_core::proxima_flavor! {
@@ -120,6 +188,44 @@ mod tests {
 
         fn migrators() -> Vec<NamedMigrator> {
             vec![NamedMigrator::new("beta", migrator(&[3]))]
+        }
+    }
+
+    /// Contributes two named workers; every other test bundle keeps the
+    /// default empty `spawn_workers`.
+    struct GammaBundle;
+
+    impl FlavorBundle for GammaBundle {
+        fn register(_registry: &mut FlavorRegistry) -> Result<(), FlavorRegistryError> {
+            Ok(())
+        }
+
+        fn migrators() -> Vec<NamedMigrator> {
+            Vec::new()
+        }
+
+        fn spawn_workers(ctx: &FlavorWorkerContext) -> Vec<FlavorWorker> {
+            ["gamma-first", "gamma-second"]
+                .into_iter()
+                .map(|name| {
+                    let cancel = ctx.cancel.clone();
+                    FlavorWorker {
+                        name,
+                        handle: tokio::spawn(cancel.cancelled_owned()),
+                    }
+                })
+                .collect()
+        }
+    }
+
+    fn worker_ctx() -> FlavorWorkerContext {
+        FlavorWorkerContext {
+            engine: std::sync::Arc::new(proxima_core::Engine::new(
+                FlavorRegistry::new().freeze_or_panic_for_tests(),
+            )),
+            pool: sqlx::PgPool::connect_lazy("postgres://unused@127.0.0.1:1/unused")
+                .expect("lazy pool never connects"),
+            cancel: tokio_util::sync::CancellationToken::new(),
         }
     }
 
@@ -177,6 +283,25 @@ mod tests {
             .collect();
 
         assert_eq!(versions, [1, 2, 3]);
+    }
+
+    #[tokio::test]
+    async fn tuple_chains_spawn_workers_in_order_and_default_is_empty() {
+        let ctx = worker_ctx();
+
+        assert!(
+            <(AlphaBundle, BetaBundle) as FlavorBundle>::spawn_workers(&ctx).is_empty(),
+            "bundles on the default spawn_workers contribute nothing"
+        );
+
+        let workers = <(AlphaBundle, GammaBundle) as FlavorBundle>::spawn_workers(&ctx);
+        let names: Vec<_> = workers.iter().map(|worker| worker.name).collect();
+        assert_eq!(names, ["gamma-first", "gamma-second"]);
+
+        ctx.cancel.cancel();
+        for worker in workers {
+            worker.handle.await.expect("worker terminates on cancel");
+        }
     }
 
     #[test]
