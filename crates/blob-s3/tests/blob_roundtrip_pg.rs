@@ -295,6 +295,54 @@ async fn forge_uploaded_blob_row(
     cited_object_id
 }
 
+/// Drive a full prepare -> PUT -> complete for `owner`, returning the
+/// resulting cited-object id and the canonical `object_key` the store
+/// wrote for it.
+async fn complete_upload_fixture(
+    store: &CitedBlobStore,
+    config: &S3RuntimeConfig,
+    pool: &sqlx::PgPool,
+    ctx: &AuthzContext,
+    owner: OwnerRef,
+) -> Result<(String, String), BlobError> {
+    let prepared = store
+        .prepare_upload(
+            ctx,
+            CitedBlobUploadPrepareTs {
+                owner,
+                filename: "genuine.pdf".into(),
+                mime: "application/pdf".into(),
+                byte_len: 4,
+            },
+        )
+        .await?;
+    let pending: (String,) = sqlx::query_as(
+        "SELECT object_key FROM proxima_core.cited_object_uploads WHERE upload_id = $1",
+    )
+    .bind(Uuid::parse_str(&prepared.upload_id).expect("upload id"))
+    .fetch_one(pool)
+    .await
+    .expect("upload row");
+    put_object_via_sdk(config, &pending.0, b"real").await;
+    let completed = store
+        .complete_upload(
+            ctx,
+            CitedBlobUploadCompleteTs {
+                owner,
+                upload_id: prepared.upload_id,
+            },
+        )
+        .await?;
+    let stored: (String,) = sqlx::query_as(
+        "SELECT object_key FROM proxima_core.cited_uploaded_blob_v1 WHERE cited_object_id = $1",
+    )
+    .bind(Uuid::parse_str(&completed.cited_object_id).expect("cited object id"))
+    .fetch_one(pool)
+    .await
+    .expect("completed blob row");
+    Ok((completed.cited_object_id, stored.0))
+}
+
 /// `read_url` presigns only locators the store itself wrote. The locator
 /// columns are client-writable (an inline `core/uploaded-blob-v1` citation
 /// stores the caller's `bucket`/`object_key` verbatim) and presigning is
@@ -327,19 +375,18 @@ async fn read_url_refuses_locators_the_store_did_not_write() {
         .await
         .expect_err("missing cited object");
 
-    // (a) a bucket other than the store's; (b) the configured bucket, but a
-    // key under some other owner's canonical prefix.
-    let foreign_bucket = forge_uploaded_blob_row(
-        &pool,
-        "not-the-configured-bucket",
-        &format!(
-            "objects/{}/core/uploaded-blob-v1/{}",
-            "ab".repeat(32),
-            "cd".repeat(32)
-        ),
-        1,
-    )
-    .await;
+    // A genuine upload, so the caller's own canonical key can be forged
+    // against without restating the store's key scheme here.
+    let (genuine_id, genuine_key) = complete_upload_fixture(&store, &config, &pool, &ctx, owner)
+        .await
+        .expect("genuine upload");
+
+    // Each clause of the gate is forged against on its own, so dropping
+    // either one fails a case: (a) another bucket under this owner's real
+    // canonical key — the cross-environment read the bucket check exists
+    // for; (b) this bucket, under another owner's prefix; (c) both wrong.
+    let foreign_bucket =
+        forge_uploaded_blob_row(&pool, "not-the-configured-bucket", &genuine_key, 1).await;
     let foreign_prefix = forge_uploaded_blob_row(
         &pool,
         &config.bucket,
@@ -351,10 +398,22 @@ async fn read_url_refuses_locators_the_store_did_not_write() {
         2,
     )
     .await;
+    let both_foreign = forge_uploaded_blob_row(
+        &pool,
+        "not-the-configured-bucket",
+        &format!(
+            "objects/{}/core/uploaded-blob-v1/{}",
+            "ab".repeat(32),
+            "cd".repeat(32)
+        ),
+        3,
+    )
+    .await;
 
     for (case, forged_id) in [
-        ("foreign bucket", foreign_bucket),
+        ("foreign bucket, own key", foreign_bucket),
         ("foreign owner prefix", foreign_prefix),
+        ("foreign bucket and prefix", both_foreign),
     ] {
         let err = store
             .read_url(
@@ -372,6 +431,19 @@ async fn read_url_refuses_locators_the_store_did_not_write() {
             "forged locator ({case}) must be indistinguishable from a missing row"
         );
     }
+
+    // The same bytes at the same key, reached through the row the store
+    // wrote: the gate discriminates on provenance, not on the locator.
+    store
+        .read_url(
+            &ctx,
+            CitedBlobReadUrlTs {
+                owner,
+                cited_object_id: genuine_id,
+            },
+        )
+        .await
+        .expect("a locator this store wrote still presigns");
 
     drop(pool);
     drop_db(&db_name).await.expect("drop db");
