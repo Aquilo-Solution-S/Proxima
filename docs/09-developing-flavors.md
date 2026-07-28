@@ -435,13 +435,18 @@ Consumers call the bundle surface. They do not manually coordinate
 e.g. a document-ingestion flavor driving OCR jobs. The serving runtime
 (`Proxima::run`) calls it once after boot; tuple bundles chain element
 workers in tuple order, and `RunningProxima::shutdown()` cancels and
-joins every worker. `FlavorWorkerContext` carries the engine and the
-runtime's `CancellationToken`; each worker MUST terminate when that
-token is cancelled (select on `cancel.cancelled()` in the work loop,
-mirroring the core embedding worker). A panicking worker never takes
-the host down — its join error is logged at shutdown. The serverless
-`Proxima::build` variant spawns no workers; hosts driving a
-`BuiltProxima` own their own background tasks.
+joins every worker. `FlavorWorkerContext` carries the engine and a
+`CancellationToken` that observes the runtime's shutdown (a child of
+the runtime's own token — cancelling it does not shut the runtime
+down); each worker MUST terminate when that token is cancelled (select
+on `cancel.cancelled()` in the work loop, mirroring the core embedding
+worker). A panicking worker never takes the host down — its join error
+is logged at shutdown. The serverless `Proxima::build` variant spawns
+no workers; hosts driving a `BuiltProxima` own their own background
+tasks. To unit-test a `spawn_workers` implementation without booting
+the runtime, build the context with
+`FlavorWorkerContext::new_for_tests(engine, cancel)` (available under
+`cfg(test)`, the `testkit` feature, or debug builds).
 
 ## Migrations
 

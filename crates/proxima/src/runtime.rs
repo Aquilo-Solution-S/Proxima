@@ -247,12 +247,6 @@ impl<A: FlavorApp + 'static> Proxima<A> {
             owner: booted.owner,
         };
         let tool_extensions = assemble_tool_extensions::<A>(&app_ctx);
-        let worker_ctx = FlavorWorkerContext {
-            engine: booted.engine.clone(),
-            pool: booted.pool.clone(),
-            cancel: cancel.clone(),
-        };
-        let workers = A::spawn_workers(&worker_ctx);
 
         let (mcp_addr, server) = if let (Some(mcp), Some(allowlist)) = (config.mcp, allowlist) {
             if !config.expose_network {
@@ -292,6 +286,18 @@ impl<A: FlavorApp + 'static> Proxima<A> {
         } else {
             (None, None)
         };
+
+        // Workers are spawned only after the last fallible step: an early
+        // `?` return would drop their join handles and the uncancelled
+        // token, leaving the tasks running detached. The child token lets
+        // workers observe the runtime's shutdown without being able to
+        // trigger it.
+        let worker_ctx = FlavorWorkerContext {
+            engine: booted.engine.clone(),
+            pool: booted.pool.clone(),
+            cancel: cancel.child_token(),
+        };
+        let workers = A::spawn_workers(&worker_ctx);
 
         Ok(RunningProxima {
             engine: booted.engine,
