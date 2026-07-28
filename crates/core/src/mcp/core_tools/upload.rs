@@ -15,10 +15,11 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use time::format_description::well_known::Rfc3339;
 
+use crate::error::ProtocolError;
 use crate::mcp::{CoreActionMeta, McpActionArgSpec, McpTool, McpToolCtx, McpToolError};
 use crate::protocol::{action as protocol_action, tool as protocol_tool};
 use crate::storage_ports::CitedBlobService;
-use crate::{AuthzContext, Owner};
+use crate::{AccessKind, AuthzContext, Owner, Relation};
 
 use super::facts_citing_object::parse_cited_object_id;
 use super::memory_spaces::{SpaceDefault, resolve_space_owner};
@@ -196,7 +197,8 @@ impl McpTool for CoreUploadTool {
         Box::pin(async move {
             match args {
                 CoreUploadArgs::Prepare(args) => {
-                    let (authz, owner) = narrowed_space(&ctx, args.space.as_deref())?;
+                    let (authz, owner) =
+                        narrowed_space(&ctx, args.space.as_deref(), SpaceAuthority::Write)?;
                     let service = blob_service(&ctx)?;
                     let outcome = service
                         .0
@@ -223,7 +225,8 @@ impl McpTool for CoreUploadTool {
                     }))
                 }
                 CoreUploadArgs::Complete(args) => {
-                    let (authz, owner) = narrowed_space(&ctx, args.space.as_deref())?;
+                    let (authz, owner) =
+                        narrowed_space(&ctx, args.space.as_deref(), SpaceAuthority::Write)?;
                     let service = blob_service(&ctx)?;
                     let outcome = service
                         .0
@@ -241,7 +244,8 @@ impl McpTool for CoreUploadTool {
                     }))
                 }
                 CoreUploadArgs::Abort(args) => {
-                    let (authz, owner) = narrowed_space(&ctx, args.space.as_deref())?;
+                    let (authz, owner) =
+                        narrowed_space(&ctx, args.space.as_deref(), SpaceAuthority::Write)?;
                     let service = blob_service(&ctx)?;
                     let outcome = service
                         .0
@@ -253,7 +257,8 @@ impl McpTool for CoreUploadTool {
                 }
                 CoreUploadArgs::ReadUrl(args) => {
                     let cited_object_id = parse_cited_object_id(&args.cited_object_id)?;
-                    let (authz, owner) = narrowed_space(&ctx, args.space.as_deref())?;
+                    let (authz, owner) =
+                        narrowed_space(&ctx, args.space.as_deref(), SpaceAuthority::Read)?;
                     let service = blob_service(&ctx)?;
                     let outcome = service.0.read_url(&authz, owner, cited_object_id).await?;
                     Ok(CoreUploadOutput::ReadUrl(UploadReadUrlOutput {
@@ -266,12 +271,29 @@ impl McpTool for CoreUploadTool {
     }
 }
 
+/// The authority an upload action needs on the resolved space owner:
+/// prepare/complete/abort mutate rows under it, `read_url` only reads a
+/// completed blob.
+#[derive(Debug, Clone, Copy)]
+enum SpaceAuthority {
+    Write,
+    Read,
+}
+
 /// Space resolution + authz narrowing, exactly like `core_remember`: the
 /// key is a selector only, and the narrowed context is what the port
 /// re-authorizes against.
+///
+/// `narrowed_to_owner` keeps whatever role the caller holds — a group
+/// Viewer narrows successfully — so role authority is gated here, with
+/// the same `forbidden` denial `core_remember` raises for the identical
+/// refusal. The port re-checks the same predicate as defense in depth,
+/// but its storage taxonomy would misreport the denial as caller-fixable
+/// invalid input.
 fn narrowed_space(
     ctx: &McpToolCtx,
     space: Option<&str>,
+    authority: SpaceAuthority,
 ) -> Result<(AuthzContext, Owner), McpToolError> {
     let space = resolve_space_owner(ctx, space, SpaceDefault::Current)?;
     let authz = ctx
@@ -279,6 +301,21 @@ fn narrowed_space(
         .clone()
         .narrowed_to_owner(space.owner)
         .ok_or_else(|| McpToolError::NotAuthorized("memory space write".into()))?;
+    let (allowed, required) = match authority {
+        SpaceAuthority::Write => (
+            authz.may_write(&space.owner, AccessKind::Fact),
+            Relation::Editor,
+        ),
+        SpaceAuthority::Read => (
+            authz.may_read(&space.owner, AccessKind::Fact),
+            Relation::Viewer,
+        ),
+    };
+    if !allowed {
+        return Err(McpToolError::Protocol(ProtocolError::forbidden(
+            required.denied_message(),
+        )));
+    }
     Ok((authz, space.owner))
 }
 
@@ -486,6 +523,49 @@ mod tests {
         assert_eq!(err.kind(), McpToolErrorKind::InvalidInput);
         assert!(err.to_string().contains("unknown memory space"));
         assert!(port.calls.lock().expect("lock").is_empty());
+    }
+
+    /// A group Viewer's write denial carries the exact error `core_remember`
+    /// raises for the same refusal (forbidden -> `invalid_request`), not
+    /// model-fixable invalid input: a client that re-prompts on
+    /// `invalid_params` must not retry a permissions failure. The port is
+    /// never reached.
+    #[tokio::test]
+    async fn viewer_write_denial_matches_core_remember_error_class() {
+        let subject = UserId::new(uuid::Uuid::now_v7());
+        let group = OwnerRef::Group(GroupId::new(uuid::Uuid::now_v7()));
+        let (ctx, port) = ctx_with_port(subject, vec![(group, Role::viewer())]);
+        let space_key = super::super::memory_spaces::MemorySpaceKey::owner(group).to_wire();
+
+        let err = CoreUploadTool::call(ctx, prepare_args(Some(&space_key)))
+            .await
+            .expect_err("viewer cannot prepare an upload in the group space");
+        let remember_denial =
+            McpToolError::Protocol(ProtocolError::forbidden(Relation::Editor.denied_message()));
+        assert_eq!(err.kind(), remember_denial.kind());
+        assert_eq!(err.client_message(), remember_denial.client_message());
+        assert!(port.calls.lock().expect("lock").is_empty());
+    }
+
+    /// `read_url` needs read authority only: the same Viewer that cannot
+    /// prepare can mint a download URL for the group's blobs.
+    #[tokio::test]
+    async fn viewer_read_url_reaches_the_port() {
+        let subject = UserId::new(uuid::Uuid::now_v7());
+        let group = OwnerRef::Group(GroupId::new(uuid::Uuid::now_v7()));
+        let (ctx, port) = ctx_with_port(subject, vec![(group, Role::viewer())]);
+        let space_key = super::super::memory_spaces::MemorySpaceKey::owner(group).to_wire();
+
+        CoreUploadTool::call(
+            ctx,
+            CoreUploadArgs::ReadUrl(UploadReadUrlArgs {
+                cited_object_id: uuid::Uuid::now_v7().to_string(),
+                space: Some(space_key),
+            }),
+        )
+        .await
+        .expect("viewer read_url reaches the port");
+        assert_eq!(port.calls.lock().expect("lock")[0].action, "read_url");
     }
 
     #[tokio::test]

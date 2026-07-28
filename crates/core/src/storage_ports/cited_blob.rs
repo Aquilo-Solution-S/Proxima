@@ -69,16 +69,19 @@ pub struct CitedBlobReadUrl {
 /// Cited-blob upload/read capability implemented by the blob backend
 /// (`CitedBlobStore` in `proxima-blob-s3`). Each method re-authorizes
 /// against `owner` with the caller's `authz`; the port never trusts a
-/// client-supplied owner without that gate.
+/// client-supplied owner without that gate. That re-check is defense in
+/// depth, not the caller-facing authz surface: the tool layer gates the
+/// same owner authority first and surfaces denials as `forbidden`,
+/// because `StorageError` has no forbidden class and a port-level denial
+/// would misreport as caller-fixable input.
 #[async_trait::async_trait]
 pub trait CitedBlobPort: Send + Sync {
     /// Record a pending upload and mint its presigned `PUT`.
     ///
     /// # Errors
     ///
-    /// Returns [`StorageError::ConstraintViolation`] for invalid input or
-    /// denied owner access, and [`StorageError::Unavailable`] for S3 or
-    /// database faults.
+    /// Returns [`StorageError::ConstraintViolation`] for invalid input,
+    /// and [`StorageError::Unavailable`] for S3 or database faults.
     async fn prepare_upload(
         &self,
         authz: &AuthzContext,
@@ -93,8 +96,8 @@ pub trait CitedBlobPort: Send + Sync {
     /// # Errors
     ///
     /// Returns [`StorageError::ConstraintViolation`] for a missing,
-    /// expired, aborted, or length-mismatched upload (or denied owner
-    /// access), and [`StorageError::Unavailable`] for S3/database faults.
+    /// expired, aborted, or length-mismatched upload, and
+    /// [`StorageError::Unavailable`] for S3/database faults.
     async fn complete_upload(
         &self,
         authz: &AuthzContext,
@@ -106,9 +109,8 @@ pub trait CitedBlobPort: Send + Sync {
     ///
     /// # Errors
     ///
-    /// Returns [`StorageError::ConstraintViolation`] for a missing upload
-    /// or denied owner access, and [`StorageError::Unavailable`] for
-    /// S3/database faults.
+    /// Returns [`StorageError::ConstraintViolation`] for a missing
+    /// upload, and [`StorageError::Unavailable`] for S3/database faults.
     async fn abort_upload(
         &self,
         authz: &AuthzContext,
@@ -121,8 +123,8 @@ pub trait CitedBlobPort: Send + Sync {
     /// # Errors
     ///
     /// Returns [`StorageError::ConstraintViolation`] when the cited
-    /// object is absent for `owner` (or access is denied), and
-    /// [`StorageError::Unavailable`] for S3/database faults.
+    /// object is absent for `owner`, and [`StorageError::Unavailable`]
+    /// for S3/database faults.
     async fn read_url(
         &self,
         authz: &AuthzContext,

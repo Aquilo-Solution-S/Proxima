@@ -2504,9 +2504,13 @@ async fn by_ref_citation_rejects_missing_and_foreign_objects()
     }
 
     // Neither failed attempt left a Fact or mapping behind for B, and A
-    // keeps exactly its one mapping.
+    // keeps exactly its one mapping. Both tables matter: a regression that
+    // commits the Fact before verifying the citation would keep the
+    // mapping count green while leaving an uncited Fact behind.
     let mappings = count_rows(pg.pool_for_tests(), "proxima_core.citation_mappings").await?;
-    assert_eq!(mappings, 1, "failed by-ref attempts must write nothing");
+    assert_eq!(mappings, 1, "failed by-ref attempts must write no mapping");
+    let memories = count_rows(pg.pool_for_tests(), "proxima_core.memories").await?;
+    assert_eq!(memories, 1, "failed by-ref attempts must write no Fact");
 
     drop(pg);
     drop_db(&db_name).await?;
@@ -2589,8 +2593,12 @@ async fn by_ref_citation_rejects_a_mapping_target_mismatch()
         other => panic!("expected invalid-argument protocol error, got {other:?}"),
     }
 
+    // The mapping count alone would stay green if a regression committed
+    // the Fact before the target check; the memories count pins that too.
     let mappings = count_rows(pg.pool_for_tests(), "proxima_core.citation_mappings").await?;
-    assert_eq!(mappings, 1, "the mismatch must write nothing");
+    assert_eq!(mappings, 1, "the mismatch must write no mapping");
+    let memories = count_rows(pg.pool_for_tests(), "proxima_core.memories").await?;
+    assert_eq!(memories, 1, "the mismatch must write no Fact");
 
     drop(pg);
     drop_db(&db_name).await?;
