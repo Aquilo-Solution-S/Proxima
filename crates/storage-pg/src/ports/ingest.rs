@@ -2,7 +2,8 @@ use proxima_core::storage_ports::{
     FactIngestPort, McpCallReadPort, McpCallWritePort, OwnerWritePermit,
 };
 use proxima_core::verbs::fact_ingest::{
-    AuthorizedFactWithCitation, AuthorizedFactWrite, FactIngestOutcome, FactWriteCommand,
+    AuthorizedFactWithCitation, AuthorizedFactWithCitationRef, AuthorizedFactWrite,
+    FactIngestOutcome, FactWriteCommand,
 };
 use proxima_core::verbs::mcp_call_history::{McpCallHistoryRequest, McpCallHistoryResponse};
 use proxima_core::verbs::persist_mcp_call::{McpCallLogInput, McpCallLogOutcome};
@@ -72,6 +73,42 @@ impl FactIngestPort for PgStorage {
             async move {
                 let mut tx = self.pool.begin().await.map_err(internal)?;
                 let outcome = verbs::fact_ingest::ingest_fact_with_citation_in_tx(
+                    &mut tx,
+                    &sidecars,
+                    authorized,
+                    embedding_model_id,
+                    move |tx, outcome| {
+                        Box::pin(async move {
+                            fact_sidecars
+                                .insert_memory_sidecar(tx, outcome.memory_id, &payload)
+                                .await
+                        })
+                    },
+                )
+                .await?;
+                tx.commit().await.map_err(crate::error::map_err)?;
+                Ok(outcome)
+            }
+        })
+        .await
+    }
+
+    async fn ingest_fact_with_citation_ref_and_typed_sidecar(
+        &self,
+        authorized: &AuthorizedFactWithCitationRef,
+        sidecar_payload: &SidecarPayload,
+        embedding_model_id: Option<&str>,
+    ) -> Result<FactIngestOutcome, StorageError> {
+        // Retry the whole begin→body→commit on transient deadlock/
+        // serialization; re-clone the sidecar payload per attempt, same as
+        // the inline-citation path above.
+        with_bounded_retry(move || {
+            let sidecars = self.sidecars.clone();
+            let fact_sidecars = sidecars.clone();
+            let payload = sidecar_payload.clone();
+            async move {
+                let mut tx = self.pool.begin().await.map_err(internal)?;
+                let outcome = verbs::fact_ingest::ingest_fact_with_citation_ref_in_tx(
                     &mut tx,
                     &sidecars,
                     authorized,

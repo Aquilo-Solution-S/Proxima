@@ -1280,6 +1280,51 @@ need no change — the runtime inserts the substrate-owned
 keys `core_upload:prepare|complete|abort|read_url` are valid in
 `PROXIMA_TOOL_ALLOW`/`PROXIMA_TOOL_DENY`).
 
+**A Fact can now cite an already-stored object by id.** `complete`
+returns a `cited_object_id` but deliberately no `bucket`/`object_key`,
+and the inline citation path (§29) requires them in `object_payload` —
+so before this, the upload lane and the citation lane did not connect
+for an MCP client. `core_remember`'s `citation` now accepts
+`cited_object_id` (optionally `C:`-prefixed) as an alternative to the
+three inline `object_*` fields, which have become optional-but-together;
+the `mapping_*` fields stay required either way:
+
+```json
+{
+  "title": "Mindestbreite einer Tür",
+  "body": "Die lichte Durchgangsbreite beträgt mindestens 90 cm.",
+  "citation": {
+    "cited_object_id": "C:0198…",
+    "mapping_schema_id": "core/uploaded-blob-page-span-v1",
+    "mapping_schema_version": 1,
+    "mapping_payload": { "page_from": 47, "page_to": 47 }
+  }
+}
+```
+
+Exactly one of the two shapes must be present. Storage verifies the
+referenced object exists for the Fact's owner and carries the schema the
+mapping targets — inside the transaction that writes the mapping, so
+there is no check-then-write window. A missing id and another owner's id
+produce the same error deliberately. Existing inline callers are
+unaffected: the wire shape they send is still valid. Receipt/idempotency
+semantics are unchanged — the citation was never part of the receipt key
+on the inline path either, and a receipt replay returns before any
+citation row is written.
+
+One repair along the way: `core/uploaded-blob-whole-v1` was a Rust unit
+struct, which serde only deserializes from JSON `null` — while the typed
+ingest boundary requires every payload to be a JSON object. No payload a
+caller could send validated, so the whole-artefact mapping was unusable
+over MCP (nothing shipped ever exercised it; §29's example used the page
+span). It is now a braced empty struct: pass `"mapping_payload": {}`.
+
+Embedding hosts driving the engine directly get the same pair as Rust
+API: `authorize_fact_with_citation_by_ref` /
+`ingest_fact_with_citation_ref_and_typed_sidecar`. Custom
+`FactIngestPort` implementations must add the new
+`ingest_fact_with_citation_ref_and_typed_sidecar` method.
+
 ## Checks before calling an upgrade done
 
 ```sh

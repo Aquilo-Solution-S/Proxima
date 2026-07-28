@@ -19,8 +19,9 @@ use proxima_core::verbs::fact_ingest::{
     Citation, CitationSpec, FactIngestOutcome, FactWriteCommand,
 };
 use proxima_core::{
-    AuthorizedFactWithCitation, AuthorizedFactWrite, EntityKind, FactPayload, FactReceiptId,
-    MemoryId, Owner, OwnerRefKind, SourceBatchId, StorageError,
+    AuthorizedFactWithCitation, AuthorizedFactWithCitationRef, AuthorizedFactWrite, EntityKind,
+    FactPayload, FactReceiptId, MemoryId, Owner, OwnerRefKind, SchemaId, SourceBatchId,
+    StorageError,
 };
 use sqlx::{PgPool, Postgres, Transaction};
 
@@ -114,6 +115,16 @@ enum CitationPlan<'a> {
     DraftHint,
     Inline {
         cited_object: &'a AuthorizedInlineCitedObject,
+        mapping: &'a AuthorizedInlineCitationMapping,
+        sidecars: &'a PgSidecarRegistryFrozen,
+    },
+    /// Cite an EXISTING cited object by id: no cited-object insert, no
+    /// object sidecar — only the mapping row (+ mapping sidecar) against
+    /// the stored object, after verifying it exists for the Fact's owner
+    /// and carries the schema the mapping targets.
+    ByRef {
+        cited_object_id: uuid::Uuid,
+        expected_object_schema: &'a SchemaId,
         mapping: &'a AuthorizedInlineCitationMapping,
         sidecars: &'a PgSidecarRegistryFrozen,
     },
@@ -565,6 +576,102 @@ where
     .await
 }
 
+/// Run gated Fact ingest citing an EXISTING cited object by id inside an
+/// already-open transaction.
+///
+/// The by-ref twin of [`ingest_fact_with_citation_in_tx`]: verifies the
+/// referenced object (existence, owner, schema) in the same transaction,
+/// then reuses the mapping-insert plumbing against the existing row.
+/// Receipt/idempotency semantics are identical to the inline path — a
+/// receipt replay returns before any citation row is written.
+///
+/// # Errors
+///
+/// Returns `ConstraintViolation` when the referenced object is missing
+/// for the Fact's owner or its schema differs from the mapping's target;
+/// otherwise storage errors from core row materialization, Fact sidecar
+/// insertion, or citation-mapping sidecar insertion. The caller owns
+/// transaction rollback/commit.
+pub async fn ingest_fact_with_citation_ref_in_tx<F>(
+    tx: &mut Transaction<'_, Postgres>,
+    sidecars: &PgSidecarRegistryFrozen,
+    authorized: &AuthorizedFactWithCitationRef,
+    embedding_model_id: Option<&str>,
+    fact_sidecar: F,
+) -> Result<FactIngestOutcome, StorageError>
+where
+    F: for<'t> FnOnce(
+        &'t mut Transaction<'_, Postgres>,
+        &'t FactIngestOutcome,
+    ) -> FactIngestSidecarFuture<'t>,
+{
+    let draft = authorized.draft();
+    let derive_inputs = FactEntityDeriveInputs {
+        sidecar_table: authorized.fact_sidecar_table(),
+        natural_key_columns: authorized.fact_natural_key_columns(),
+    };
+    let options = IngestCoreOptions {
+        embedding_model_id,
+        derive_inputs: Some(derive_inputs),
+        citation_plan: CitationPlan::ByRef {
+            cited_object_id: authorized.cited_object_id(),
+            expected_object_schema: authorized.expected_object_schema(),
+            mapping: authorized.mapping(),
+            sidecars,
+        },
+    };
+    ingest_core(
+        tx,
+        authorized.owner_write_permit().owner(),
+        draft,
+        options,
+        fact_sidecar,
+    )
+    .await
+}
+
+/// Verify a by-ref citation target: the cited object must exist for the
+/// Fact's owner and carry exactly the schema the mapping targets. Both
+/// failures are caller-fixable `ConstraintViolation`s whose messages the
+/// MCP surface passes through verbatim.
+async fn verify_cited_object_ref_in_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    owner: &Owner,
+    cited_object_id: uuid::Uuid,
+    expected_object_schema: &SchemaId,
+) -> Result<(), StorageError> {
+    let (owner_kind, owner_id) = owner_binds(owner);
+    let schema_id: Option<String> = sqlx::query_scalar(
+        "SELECT schema_id
+           FROM proxima_core.cited_objects
+          WHERE cited_object_id = $1
+            AND owner_kind = $2
+            AND owner_id IS NOT DISTINCT FROM $3",
+    )
+    .bind(cited_object_id)
+    .bind(owner_kind)
+    .bind(owner_id)
+    .fetch_optional(tx.as_mut())
+    .await
+    .map_err(map_err)?;
+
+    // Absent and other-owner are deliberately the same message: whether
+    // the row exists under a foreign owner must not be observable.
+    let Some(schema_id) = schema_id else {
+        return Err(StorageError::ConstraintViolation(format!(
+            "cited object {cited_object_id} not found for this owner"
+        )));
+    };
+    if schema_id != expected_object_schema.as_str() {
+        return Err(StorageError::ConstraintViolation(format!(
+            "citation mapping targets cited-object schema {}, but cited object \
+             {cited_object_id} has schema {schema_id}",
+            expected_object_schema.as_str(),
+        )));
+    }
+    Ok(())
+}
+
 /// Attach a typed inline citation to an existing uncited Fact inside an
 /// already-open transaction.
 ///
@@ -879,6 +986,21 @@ where
                 mapping,
                 sidecars,
                 citation_mapping_id,
+                cited_object_id,
+            })
+        }
+        CitationPlan::ByRef {
+            cited_object_id,
+            expected_object_schema,
+            mapping,
+            sidecars,
+        } => {
+            verify_cited_object_ref_in_tx(tx, owner, cited_object_id, expected_object_schema)
+                .await?;
+            Some(PendingCitation::Inline {
+                mapping,
+                sidecars,
+                citation_mapping_id: uuid::Uuid::now_v7(),
                 cited_object_id,
             })
         }

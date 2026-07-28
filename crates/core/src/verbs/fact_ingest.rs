@@ -416,6 +416,98 @@ impl AuthorizedFactWithCitation {
     }
 }
 
+/// Proof that a Fact ingest citing an EXISTING cited object by id passed
+/// authorization, kind-specific schema validation, and mapping-payload
+/// validation.
+///
+/// The by-ref twin of [`AuthorizedFactWithCitation`]: it carries no
+/// inline cited-object payload — only the referenced id plus the object
+/// schema the mapping targets, which storage checks against the stored
+/// row (existence, owner, schema) before writing the mapping. Receipt
+/// and idempotency semantics are identical to the inline path: the
+/// citation is not part of the receipt key on either path, and a receipt
+/// replay short-circuits before any citation row is written.
+#[derive(Debug)]
+pub struct AuthorizedFactWithCitationRef {
+    permit: MemoryPermit,
+    draft: FactWriteCommand,
+    cited_object_id: Uuid,
+    expected_object_schema: SchemaId,
+    mapping: AuthorizedInlineCitationMapping,
+    fact_sidecar_table: Option<String>,
+    fact_natural_key_columns: Vec<String>,
+}
+
+impl AuthorizedFactWithCitationRef {
+    pub(crate) fn new(
+        permit: MemoryPermit,
+        draft: FactWriteCommand,
+        cited_object_id: Uuid,
+        expected_object_schema: SchemaId,
+        mapping: AuthorizedInlineCitationMapping,
+        fact_sidecar_table: Option<String>,
+        fact_natural_key_columns: Vec<String>,
+    ) -> Self {
+        Self {
+            permit,
+            draft,
+            cited_object_id,
+            expected_object_schema,
+            mapping,
+            fact_sidecar_table,
+            fact_natural_key_columns,
+        }
+    }
+
+    #[must_use]
+    pub fn permit(&self) -> &MemoryPermit {
+        &self.permit
+    }
+
+    /// # Panics
+    ///
+    /// Panics only if this authorized wrapper was not constructed through the
+    /// engine by-ref fact-with-citation authorization path.
+    #[must_use]
+    pub fn owner_write_permit(&self) -> &OwnerWritePermit {
+        self.permit
+            .owner_write_permit()
+            .expect("AuthorizedFactWithCitationRef is constructed from a write permit")
+    }
+
+    #[must_use]
+    pub fn draft(&self) -> &FactWriteCommand {
+        &self.draft
+    }
+
+    #[must_use]
+    pub const fn cited_object_id(&self) -> Uuid {
+        self.cited_object_id
+    }
+
+    /// The cited-object schema the mapping targets; storage rejects the
+    /// write when the referenced object's stored `schema_id` differs.
+    #[must_use]
+    pub fn expected_object_schema(&self) -> &SchemaId {
+        &self.expected_object_schema
+    }
+
+    #[must_use]
+    pub const fn mapping(&self) -> &AuthorizedInlineCitationMapping {
+        &self.mapping
+    }
+
+    #[must_use]
+    pub fn fact_sidecar_table(&self) -> Option<&str> {
+        self.fact_sidecar_table.as_deref()
+    }
+
+    #[must_use]
+    pub fn fact_natural_key_columns(&self) -> &[String] {
+        &self.fact_natural_key_columns
+    }
+}
+
 impl FactWriteCommand {
     /// Build a receipt-backed Fact write command from a typed payload using
     /// the payload's schema id/version and schema-owned receipt key. The

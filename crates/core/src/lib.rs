@@ -95,8 +95,8 @@ pub use tool::*;
 
 // Re-export verb modules for convenience.
 pub use verbs::fact_ingest::{
-    AuthorizedFactWithCitation, AuthorizedFactWrite, FactIngestOutcome, FactReceiptDraft,
-    FactWriteCommand,
+    AuthorizedFactWithCitation, AuthorizedFactWithCitationRef, AuthorizedFactWrite,
+    FactIngestOutcome, FactReceiptDraft, FactWriteCommand,
 };
 pub use verbs::goal_write::{
     GoalAssignmentTarget, GoalDependencyRef, GoalEvidenceRef, GoalTopologyWrite,

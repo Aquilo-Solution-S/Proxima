@@ -2228,6 +2228,407 @@ async fn a_fact_can_cite_a_page_of_an_uploaded_document() -> Result<(), Box<dyn 
     Ok(())
 }
 
+/// A Fact can cite an ALREADY-STORED object by `cited_object_id` — the
+/// only path an MCP client has after `core_upload`, since `complete`
+/// deliberately never returns `bucket`/`object_key` and the inline
+/// `object_payload` requires them. The by-ref mapping lands on the same
+/// object row the inline path created, and `citation_of_fact` reads it
+/// back.
+#[tokio::test]
+#[allow(clippy::too_many_lines)] // linear PG flow: inline object, by-ref cite, read-back assertions
+async fn a_fact_can_cite_an_already_stored_object_by_id() -> Result<(), Box<dyn std::error::Error>>
+{
+    let (pg, db_name) = fresh_pg().await;
+    let frozen = Arc::new(FlavorRegistry::new().freeze_or_panic_for_tests());
+    let owner = nil_owner();
+
+    let blob = json!({
+        "content_hash": vec![7u8; 32],
+        "bucket": "proxima-cited",
+        "object_key": "objects/owner/core/uploaded-blob-v1/deadbeef",
+        "sha256": vec![9u8; 32],
+        "byte_len": 4_096,
+        "mime": "application/pdf",
+        "filename": "handbuch.pdf",
+        "etag": null,
+        "uploaded_at": "2026-07-27T00:00:00Z",
+    });
+    let inline = call_tool(
+        &pg,
+        &owner,
+        &frozen,
+        author_ctx(),
+        "core_remember",
+        json!({
+            "title": "Türbreite (inline zitiert)",
+            "body": "Die lichte Durchgangsbreite beträgt mindestens 90 cm.",
+            "tags": [],
+            "citation": {
+                "object_schema_id": proxima_core::UPLOADED_BLOB_SCHEMA_ID,
+                "object_schema_version": 1,
+                "object_payload": blob,
+                "mapping_schema_id": proxima_core::UPLOADED_BLOB_WHOLE_SCHEMA_ID,
+                "mapping_schema_version": 1,
+                "mapping_payload": {},
+            }
+        }),
+    )
+    .await?;
+    let inline_citation = call_tool(
+        &pg,
+        &owner,
+        &frozen,
+        author_ctx(),
+        "core_fact",
+        json!({ "action": "citation_of_fact", "fact": inline["handle"] }),
+    )
+    .await?;
+    let cited_object_id = inline_citation["citation"]["cited_object_id"]
+        .as_str()
+        .expect("cited_object_id")
+        .to_string();
+
+    // By-ref cite with the `C:` prefix and a page-span mapping: no
+    // object payload anywhere in the call.
+    let by_ref = call_tool(
+        &pg,
+        &owner,
+        &frozen,
+        author_ctx(),
+        "core_remember",
+        json!({
+            "title": "Bewegungsfläche (per Referenz zitiert)",
+            "body": "Vor der Tür ist eine Bewegungsfläche vorzusehen.",
+            "tags": [],
+            "citation": {
+                "cited_object_id": format!("C:{cited_object_id}"),
+                "mapping_schema_id": proxima_core::UPLOADED_BLOB_PAGE_SPAN_SCHEMA_ID,
+                "mapping_schema_version": 1,
+                "mapping_payload": {"page_from": 47, "page_to": 47},
+            }
+        }),
+    )
+    .await?;
+    let read_back = call_tool(
+        &pg,
+        &owner,
+        &frozen,
+        author_ctx(),
+        "core_fact",
+        json!({ "action": "citation_of_fact", "fact": by_ref["handle"] }),
+    )
+    .await?;
+    assert_eq!(
+        read_back["citation"]["cited_object_id"]
+            .as_str()
+            .expect("by-ref cited_object_id"),
+        cited_object_id,
+        "the by-ref mapping must land on the referenced object"
+    );
+    assert_eq!(
+        read_back["citation"]["mapping_schema_id"],
+        json!(proxima_core::UPLOADED_BLOB_PAGE_SPAN_SCHEMA_ID)
+    );
+
+    // One artefact, two citations: by-ref must not have minted a second
+    // object row, and its mapping sidecar (the page span) must exist.
+    let objects = count_rows(pg.pool_for_tests(), "proxima_core.cited_objects").await?;
+    assert_eq!(objects, 1, "by-ref citing duplicated the cited object");
+    let mappings = count_rows(pg.pool_for_tests(), "proxima_core.citation_mappings").await?;
+    assert_eq!(mappings, 2);
+    let by_ref_memory = resolve_memory(by_ref["handle"].as_str().expect("handle"))?.into_inner();
+    let span: (i32, i32) = sqlx::query_as(
+        "SELECT s.page_from, s.page_to
+           FROM proxima_core.memories m
+           JOIN proxima_core.citation_uploaded_blob_page_span_v1 s
+             ON s.citation_mapping_id = m.citation_mapping_id
+          WHERE m.memory_id = $1",
+    )
+    .bind(by_ref_memory)
+    .fetch_one(pg.pool_for_tests())
+    .await?;
+    assert_eq!(span, (47, 47), "by-ref mapping sidecar did not land");
+
+    drop(pg);
+    drop_db(&db_name).await?;
+    Ok(())
+}
+
+/// A by-ref citation against an id that does not exist — or that exists
+/// only under ANOTHER owner — fails with the same clean, caller-fixable
+/// error, and writes nothing.
+#[tokio::test]
+#[allow(clippy::too_many_lines)] // linear PG flow: the missing-id and foreign-owner arms read best together
+async fn by_ref_citation_rejects_missing_and_foreign_objects()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (pg, db_name) = fresh_pg().await;
+    let frozen = Arc::new(FlavorRegistry::new().freeze_or_panic_for_tests());
+    let owner = nil_owner();
+
+    // Nonexistent id.
+    let missing = uuid::Uuid::now_v7();
+    let err = call_tool(
+        &pg,
+        &owner,
+        &frozen,
+        author_ctx(),
+        "core_remember",
+        json!({
+            "title": "Zitat ins Leere",
+            "body": "Es gibt kein Objekt.",
+            "tags": [],
+            "citation": {
+                "cited_object_id": missing.to_string(),
+                "mapping_schema_id": proxima_core::UPLOADED_BLOB_WHOLE_SCHEMA_ID,
+                "mapping_schema_version": 1,
+                "mapping_payload": {},
+            }
+        }),
+    )
+    .await
+    .expect_err("citing a nonexistent object must fail");
+    match &err {
+        McpToolError::Protocol(protocol) => {
+            assert_eq!(protocol.code, ErrorCode::InvalidArgument, "{err:?}");
+            assert!(
+                protocol.message.contains("not found for this owner"),
+                "message: {}",
+                protocol.message
+            );
+        }
+        other => panic!("expected clean invalid-argument protocol error, got {other:?}"),
+    }
+
+    // Owner A stores an object; owner B tries to cite it by id. Same
+    // error as nonexistent — foreign existence must not be observable.
+    call_tool(
+        &pg,
+        &owner,
+        &frozen,
+        author_ctx(),
+        "core_remember",
+        json!({
+            "title": "As Dokument",
+            "body": "Gehört Owner A.",
+            "tags": [],
+            "citation": {
+                "object_schema_id": proxima_core::UPLOADED_BLOB_SCHEMA_ID,
+                "object_schema_version": 1,
+                "object_payload": {
+                    "content_hash": vec![3u8; 32],
+                    "bucket": "b", "object_key": "k",
+                    "sha256": vec![4u8; 32], "byte_len": 1,
+                    "mime": "application/pdf", "filename": "a.pdf",
+                    "etag": null, "uploaded_at": "2026-07-27T00:00:00Z",
+                },
+                "mapping_schema_id": proxima_core::UPLOADED_BLOB_WHOLE_SCHEMA_ID,
+                "mapping_schema_version": 1,
+                "mapping_payload": {},
+            }
+        }),
+    )
+    .await?;
+    let a_object: uuid::Uuid =
+        sqlx::query_scalar("SELECT cited_object_id FROM proxima_core.cited_objects")
+            .fetch_one(pg.pool_for_tests())
+            .await?;
+
+    let owner_b = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+    let err = call_tool_as(
+        &pg,
+        &owner_b,
+        AuthzContext::single_owner(&owner_b, AuthPath::HostBearer),
+        &frozen,
+        author_ctx(),
+        Some(engine_for_registry(&frozen, &pg)),
+        "core_remember",
+        json!({
+            "title": "Bs Zitatversuch",
+            "body": "Zeigt auf As Objekt.",
+            "tags": [],
+            "citation": {
+                "cited_object_id": a_object.to_string(),
+                "mapping_schema_id": proxima_core::UPLOADED_BLOB_WHOLE_SCHEMA_ID,
+                "mapping_schema_version": 1,
+                "mapping_payload": {},
+            }
+        }),
+    )
+    .await
+    .expect_err("citing another owner's object must fail");
+    match &err {
+        McpToolError::Protocol(protocol) => {
+            assert_eq!(protocol.code, ErrorCode::InvalidArgument, "{err:?}");
+            assert!(
+                protocol.message.contains("not found for this owner"),
+                "message: {}",
+                protocol.message
+            );
+        }
+        other => panic!("expected clean invalid-argument protocol error, got {other:?}"),
+    }
+
+    // Neither failed attempt left a Fact or mapping behind for B, and A
+    // keeps exactly its one mapping.
+    let mappings = count_rows(pg.pool_for_tests(), "proxima_core.citation_mappings").await?;
+    assert_eq!(mappings, 1, "failed by-ref attempts must write nothing");
+
+    drop(pg);
+    drop_db(&db_name).await?;
+    Ok(())
+}
+
+/// The mapping's declared cited-object schema must match the referenced
+/// object's stored schema — the same target check the inline path runs,
+/// enforced against the stored row for by-ref.
+#[tokio::test]
+async fn by_ref_citation_rejects_a_mapping_target_mismatch()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (pg, db_name) = fresh_pg_with_remember_sidecars().await;
+    create_remember_citation_sidecars(pg.pool_for_tests()).await?;
+    let frozen = registry_with_remember_test_citation();
+    let owner = nil_owner();
+
+    // Store an object of the TEST schema inline.
+    call_tool(
+        &pg,
+        &owner,
+        &frozen,
+        author_ctx(),
+        "core_remember",
+        json!({
+            "title": "Testartefakt",
+            "body": "Ein Objekt mit Testschema.",
+            "tags": [],
+            "citation": {
+                "object_schema_id": RememberTestCitedObject::SCHEMA_ID,
+                "object_schema_version": 1,
+                "object_payload": {"artifact_id": "art-1", "locator": "loc-1"},
+                "mapping_schema_id": RememberTestCitationMapping::SCHEMA_ID,
+                "mapping_schema_version": 1,
+                "mapping_payload": {"section": "s", "byte_start": 0, "byte_end": 1},
+            }
+        }),
+    )
+    .await?;
+    let test_object: uuid::Uuid =
+        sqlx::query_scalar("SELECT cited_object_id FROM proxima_core.cited_objects")
+            .fetch_one(pg.pool_for_tests())
+            .await?;
+
+    // By-ref with a mapping that targets core/uploaded-blob-v1 instead.
+    let err = call_tool(
+        &pg,
+        &owner,
+        &frozen,
+        author_ctx(),
+        "core_remember",
+        json!({
+            "title": "Falsches Mapping",
+            "body": "Die Zuordnung passt nicht zum Objekt.",
+            "tags": [],
+            "citation": {
+                "cited_object_id": test_object.to_string(),
+                "mapping_schema_id": proxima_core::UPLOADED_BLOB_WHOLE_SCHEMA_ID,
+                "mapping_schema_version": 1,
+                "mapping_payload": {},
+            }
+        }),
+    )
+    .await
+    .expect_err("mapping target mismatch must be rejected");
+    match &err {
+        McpToolError::Protocol(protocol) => {
+            assert_eq!(protocol.code, ErrorCode::InvalidArgument, "{err:?}");
+            assert!(
+                protocol
+                    .message
+                    .contains(proxima_core::UPLOADED_BLOB_SCHEMA_ID)
+                    && protocol
+                        .message
+                        .contains(RememberTestCitedObject::SCHEMA_ID),
+                "message must name both schemas: {}",
+                protocol.message
+            );
+        }
+        other => panic!("expected invalid-argument protocol error, got {other:?}"),
+    }
+
+    let mappings = count_rows(pg.pool_for_tests(), "proxima_core.citation_mappings").await?;
+    assert_eq!(mappings, 1, "the mismatch must write nothing");
+
+    drop(pg);
+    drop_db(&db_name).await?;
+    Ok(())
+}
+
+/// The citation argument's arity is validated before any engine work:
+/// by-ref and inline are mutually exclusive, and one of them is required.
+#[tokio::test]
+async fn remember_citation_arity_is_validated() -> Result<(), Box<dyn std::error::Error>> {
+    let (pg, db_name) = fresh_pg().await;
+    let frozen = Arc::new(FlavorRegistry::new().freeze_or_panic_for_tests());
+    let owner = nil_owner();
+
+    let both = call_tool(
+        &pg,
+        &owner,
+        &frozen,
+        author_ctx(),
+        "core_remember",
+        json!({
+            "title": "Beides",
+            "body": "Referenz und Inline zugleich.",
+            "tags": [],
+            "citation": {
+                "cited_object_id": Uuid::now_v7().to_string(),
+                "object_schema_id": proxima_core::UPLOADED_BLOB_SCHEMA_ID,
+                "object_schema_version": 1,
+                "object_payload": {},
+                "mapping_schema_id": proxima_core::UPLOADED_BLOB_WHOLE_SCHEMA_ID,
+                "mapping_schema_version": 1,
+                "mapping_payload": {},
+            }
+        }),
+    )
+    .await;
+    match both {
+        Err(McpToolError::InvalidInput(message)) => {
+            assert!(message.contains("not both"), "message: {message}");
+        }
+        other => panic!("expected InvalidInput for both shapes, got {other:?}"),
+    }
+
+    let neither = call_tool(
+        &pg,
+        &owner,
+        &frozen,
+        author_ctx(),
+        "core_remember",
+        json!({
+            "title": "Keines",
+            "body": "Weder Referenz noch Inline.",
+            "tags": [],
+            "citation": {
+                "mapping_schema_id": proxima_core::UPLOADED_BLOB_WHOLE_SCHEMA_ID,
+                "mapping_schema_version": 1,
+                "mapping_payload": {},
+            }
+        }),
+    )
+    .await;
+    match neither {
+        Err(McpToolError::InvalidInput(message)) => {
+            assert!(message.contains("cited_object_id"), "message: {message}");
+        }
+        other => panic!("expected InvalidInput for neither shape, got {other:?}"),
+    }
+
+    drop(pg);
+    drop_db(&db_name).await?;
+    Ok(())
+}
+
 /// The sidecar's constraints, not just the Rust helper, reject a malformed
 /// span. A client that writes the row by any other path gets the same
 /// answer.

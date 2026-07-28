@@ -66,8 +66,15 @@ impl CitedObjectPayload for UploadedBlobPayload {
 /// `citation_mappings` row, so there is no sidecar table (see
 /// `CitationMappingPayload::sidecar_table`, which defaults to `None` —
 /// do not mint an empty table to satisfy the trait).
+///
+/// A braced empty struct, not a unit struct, deliberately: serde
+/// deserializes a unit struct from JSON `null` only, while the typed
+/// ingest boundary (`FlavorRegistryFrozen::ingest_protocol_payload`)
+/// requires every payload to be a JSON object — so as a unit struct this
+/// mapping was unusable over MCP, with no payload a caller could pass.
+/// The braced form accepts `{}` on the wire like every other mapping.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct UploadedBlobWholeV1;
+pub struct UploadedBlobWholeV1 {}
 
 impl CitationMappingPayload for UploadedBlobWholeV1 {
     const SCHEMA_ID: &'static str = UPLOADED_BLOB_WHOLE_SCHEMA_ID;

@@ -28,7 +28,8 @@ use crate::storage::{AuthorDerivedOutcome, AuthorDerivedRequest, EmbeddingJobCla
 use crate::verbs::change_history::{ChangeHistoryRequest, ChangeHistoryResponse};
 use crate::verbs::close_batch::CloseBatchOutcome;
 use crate::verbs::fact_ingest::{
-    AuthorizedFactWithCitation, AuthorizedFactWrite, FactIngestOutcome, FactWriteCommand,
+    AuthorizedFactWithCitation, AuthorizedFactWithCitationRef, AuthorizedFactWrite,
+    FactIngestOutcome, FactWriteCommand,
 };
 use crate::verbs::goal_write::{
     AchieveGoalAtomicRequest, CreateGoalAtomicRequest, DecomposeGoalAtomicRequest,
@@ -72,6 +73,17 @@ impl FactIngestPort for RejectingStorage {
     async fn ingest_fact_with_citation_and_typed_sidecar(
         &self,
         _authorized: &AuthorizedFactWithCitation,
+        _sidecar_payload: &SidecarPayload,
+        _embedding_model_id: Option<&str>,
+    ) -> Result<FactIngestOutcome, StorageError> {
+        Err(StorageError::Internal(
+            "RejectingStorage rejects writes".into(),
+        ))
+    }
+
+    async fn ingest_fact_with_citation_ref_and_typed_sidecar(
+        &self,
+        _authorized: &AuthorizedFactWithCitationRef,
         _sidecar_payload: &SidecarPayload,
         _embedding_model_id: Option<&str>,
     ) -> Result<FactIngestOutcome, StorageError> {

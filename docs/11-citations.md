@@ -205,7 +205,17 @@ request bodies, and the presigned-URL policy above is the transfer path:
 3. `core_upload` `complete` (`upload_id`) verifies the bytes and returns
    the canonical `cited_object_id` (plus hex `content_hash`/`sha256`,
    `byte_len`, `mime`, `filename`; replays report `idempotent_replay`).
-4. `core_upload` `read_url` (`cited_object_id`) mints a presigned
+4. A Fact cites the object via `core_remember`'s
+   `citation.cited_object_id` (by reference; `C:` prefix accepted) with a
+   registered mapping such as `core/uploaded-blob-whole-v1` or
+   `core/uploaded-blob-page-span-v1`. This is deliberately the only way
+   an MCP client can cite its own upload: `complete` never returns
+   `bucket`/`object_key`, and the inline `object_payload` path requires
+   them. By-ref and the inline `object_*` fields are mutually exclusive;
+   storage verifies the referenced object exists for the Fact's owner and
+   carries the schema the mapping targets, in the same transaction that
+   writes the mapping.
+5. `core_upload` `read_url` (`cited_object_id`) mints a presigned
    download URL later.
 
 All four actions resolve a `space` key exactly like `core_remember` and
