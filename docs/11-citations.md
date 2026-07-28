@@ -187,6 +187,14 @@ Direct upload:
 5. `abort` deletes the pending object when present and marks the
    upload aborted.
 
+The upload lane is the only writer the presigner trusts. An inline
+`core/uploaded-blob-v1` citation payload is a caller-asserted locator:
+the substrate stores its `bucket`/`object_key` verbatim and never
+verifies they point at anything. `read_url` therefore serves only
+locators the store itself wrote — the configured bucket, under the
+owner's canonical `objects/<owner-hash>/` prefix — and answers any
+other row exactly like a missing object.
+
 S3 preserves original bytes only. It does not replace
 `CitationMapping`, Fact-only citations, or provenance edges.
 
@@ -216,7 +224,9 @@ request bodies, and the presigned-URL policy above is the transfer path:
    carries the schema the mapping targets, in the same transaction that
    writes the mapping.
 5. `core_upload` `read_url` (`cited_object_id`) mints a presigned
-   download URL later.
+   download URL later — only for locators the upload lane itself wrote;
+   a caller-asserted inline locator never presigns (see §Large artefact
+   storage).
 
 All four actions resolve a `space` key exactly like `core_remember` and
 re-authorize against the resolved owner. The tool is served by the

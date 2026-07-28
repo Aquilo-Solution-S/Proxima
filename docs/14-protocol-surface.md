@@ -56,6 +56,7 @@ Canonical substrate tools:
 | `core_publish` | owner-transfer dispatcher: `publish_to_world`; irreversible transfer to `OwnerRef::World`, not membership or ACL |
 | `core_goal` | goal action dispatcher: `set`, `transition`, `modify`, `mark_achieved`, `decompose` |
 | `core_fact` | Fact action dispatcher: `citation_of_fact`, `citation_of_entity_head`, `facts_citing_object`. `facts_citing_object` pages newest-first (default 50, max 200) with keyset `cursor`/`next_cursor` + `has_more`, cursor bound to the cited object |
+| `core_upload` | cited-blob upload dispatcher: `prepare`, `complete`, `abort`, `read_url`; artefact bytes travel by presigned URL only, and the tool never emits `bucket`/`object_key` |
 
 Compatibility: `core_membership:publish_to_world` is removed. Clients and
 tool-scope palettes must use `core_publish:publish_to_world`; no compatibility

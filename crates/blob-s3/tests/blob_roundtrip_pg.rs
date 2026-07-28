@@ -3,12 +3,12 @@ use aws_sdk_s3::Client;
 use aws_sdk_s3::config::Region;
 use aws_sdk_s3::primitives::ByteStream;
 use proxima_blob_s3::{
-    CitedBlobReadUrlTs, CitedBlobStore, CitedBlobUploadCompleteTs, CitedBlobUploadPrepareTs,
-    S3RuntimeConfig,
+    BlobError, CitedBlobReadUrlTs, CitedBlobStore, CitedBlobUploadAbortTs,
+    CitedBlobUploadCompleteTs, CitedBlobUploadPrepareTs, S3RuntimeConfig,
 };
 use proxima_core::storage_ports::{CitedBlobPort, CitedObjectErasePort};
 use proxima_core::test_fixtures::owner_fixture;
-use proxima_core::{AuthPath, AuthzContext};
+use proxima_core::{AuthPath, AuthzContext, OwnerRef, UserId};
 use proxima_pg_testkit::{create_db, db_url, drop_db, unique_db_name};
 use proxima_storage_pg::PgStorage;
 use uuid::Uuid;
@@ -253,6 +253,241 @@ async fn port_level_prepare_complete_read_roundtrip() {
         .await
         .expect("port abort");
     assert!(!aborted.aborted);
+
+    drop(pool);
+    drop_db(&db_name).await.expect("drop db");
+}
+
+/// Insert a `cited_objects` + `cited_uploaded_blob_v1` pair directly, the
+/// way an inline `core/uploaded-blob-v1` citation lands one: the locator
+/// columns hold whatever the caller asserted, under the caller's own
+/// owner (`owner_fixture()` here, the nil personal owner).
+async fn forge_uploaded_blob_row(
+    pool: &sqlx::PgPool,
+    bucket: &str,
+    object_key: &str,
+    content_hash_seed: u8,
+) -> Uuid {
+    let cited_object_id = Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO proxima_core.cited_objects \
+            (cited_object_id, schema_id, owner_kind, owner_id, content_hash) \
+         VALUES ($1, 'core/uploaded-blob-v1', 'personal', $2, $3)",
+    )
+    .bind(cited_object_id)
+    .bind(Uuid::nil())
+    .bind(vec![content_hash_seed; 32])
+    .execute(pool)
+    .await
+    .expect("forged cited_objects row");
+    sqlx::query(
+        "INSERT INTO proxima_core.cited_uploaded_blob_v1 \
+            (cited_object_id, bucket, object_key, sha256, byte_len, mime, filename, etag) \
+         VALUES ($1, $2, $3, $4, 1, 'application/pdf', 'forged.pdf', NULL)",
+    )
+    .bind(cited_object_id)
+    .bind(bucket)
+    .bind(object_key)
+    .bind(vec![content_hash_seed; 32])
+    .execute(pool)
+    .await
+    .expect("forged cited_uploaded_blob_v1 row");
+    cited_object_id
+}
+
+/// `read_url` presigns only locators the store itself wrote. The locator
+/// columns are client-writable (an inline `core/uploaded-blob-v1` citation
+/// stores the caller's `bucket`/`object_key` verbatim) and presigning is
+/// offline — without the gate, a forged row for the caller's own owner
+/// yields a working GET, signed with the substrate's credentials, for any
+/// object the substrate's role can read. Forged rows must answer exactly
+/// like missing ones.
+#[tokio::test]
+async fn read_url_refuses_locators_the_store_did_not_write() {
+    if !S3RuntimeConfig::present_in_env() {
+        eprintln!("skipped: PROXIMA_S3_* unset (run the s3 service to enable)");
+        return;
+    }
+
+    let (pool, db_name) = fresh_pool().await;
+    let config = s3_config_for_dev();
+    let store = CitedBlobStore::new(pool.clone(), config.clone()).expect("valid S3 config");
+    let owner = owner_fixture();
+    let ctx = AuthzContext::single_owner(&owner, AuthPath::System);
+
+    // The baseline answer for a cited object that does not exist at all.
+    let missing = store
+        .read_url(
+            &ctx,
+            CitedBlobReadUrlTs {
+                owner,
+                cited_object_id: Uuid::now_v7().to_string(),
+            },
+        )
+        .await
+        .expect_err("missing cited object");
+
+    // (a) a bucket other than the store's; (b) the configured bucket, but a
+    // key under some other owner's canonical prefix.
+    let foreign_bucket = forge_uploaded_blob_row(
+        &pool,
+        "not-the-configured-bucket",
+        &format!(
+            "objects/{}/core/uploaded-blob-v1/{}",
+            "ab".repeat(32),
+            "cd".repeat(32)
+        ),
+        1,
+    )
+    .await;
+    let foreign_prefix = forge_uploaded_blob_row(
+        &pool,
+        &config.bucket,
+        &format!(
+            "objects/{}/core/uploaded-blob-v1/{}",
+            "ab".repeat(32),
+            "ef".repeat(32)
+        ),
+        2,
+    )
+    .await;
+
+    for (case, forged_id) in [
+        ("foreign bucket", foreign_bucket),
+        ("foreign owner prefix", foreign_prefix),
+    ] {
+        let err = store
+            .read_url(
+                &ctx,
+                CitedBlobReadUrlTs {
+                    owner,
+                    cited_object_id: forged_id.to_string(),
+                },
+            )
+            .await
+            .expect_err(&format!("forged locator ({case}) must not presign"));
+        assert_eq!(
+            err.to_string(),
+            missing.to_string(),
+            "forged locator ({case}) must be indistinguishable from a missing row"
+        );
+    }
+
+    drop(pool);
+    drop_db(&db_name).await.expect("drop db");
+}
+
+/// Once the authz gate has passed for the caller's own owner, the SQL
+/// owner predicates in the upload/blob lookups are the only boundary
+/// keeping one owner's ids out of another owner's hands. Owner B, under
+/// its own authority, must be refused on A's upload and cited-object ids
+/// — and must not disturb A's rows in the attempt.
+#[tokio::test]
+async fn cross_owner_ids_are_refused_under_the_other_owners_authz() {
+    if !S3RuntimeConfig::present_in_env() {
+        eprintln!("skipped: PROXIMA_S3_* unset (run the s3 service to enable)");
+        return;
+    }
+
+    let (pool, db_name) = fresh_pool().await;
+    let config = s3_config_for_dev();
+    let store = CitedBlobStore::new(pool.clone(), config.clone()).expect("valid S3 config");
+    let body = b"cross-owner-bytes";
+    let owner_a = owner_fixture();
+    let ctx_a = AuthzContext::single_owner(&owner_a, AuthPath::System);
+
+    let prepared = store
+        .prepare_upload(
+            &ctx_a,
+            CitedBlobUploadPrepareTs {
+                owner: owner_a,
+                filename: "a.pdf".into(),
+                mime: "application/pdf".into(),
+                byte_len: body.len() as u64,
+            },
+        )
+        .await
+        .expect("prepare");
+    let upload_id = Uuid::parse_str(&prepared.upload_id).expect("upload id");
+    let pending: (String,) = sqlx::query_as(
+        "SELECT object_key FROM proxima_core.cited_object_uploads WHERE upload_id = $1",
+    )
+    .bind(upload_id)
+    .fetch_one(&pool)
+    .await
+    .expect("upload row");
+    put_object_via_sdk(&config, &pending.0, body).await;
+    let completed = store
+        .complete_upload(
+            &ctx_a,
+            CitedBlobUploadCompleteTs {
+                owner: owner_a,
+                upload_id: prepared.upload_id.clone(),
+            },
+        )
+        .await
+        .expect("complete");
+
+    let owner_b = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+    let ctx_b = AuthzContext::single_owner(&owner_b, AuthPath::System);
+
+    let err = store
+        .complete_upload(
+            &ctx_b,
+            CitedBlobUploadCompleteTs {
+                owner: owner_b,
+                upload_id: prepared.upload_id.clone(),
+            },
+        )
+        .await
+        .expect_err("A's upload id under B's owner must be refused");
+    assert!(matches!(err, BlobError::State(_)), "got {err:?}");
+
+    let err = store
+        .abort_upload(
+            &ctx_b,
+            CitedBlobUploadAbortTs {
+                owner: owner_b,
+                upload_id: prepared.upload_id.clone(),
+            },
+        )
+        .await
+        .expect_err("A's upload id under B's owner must not abort");
+    assert!(matches!(err, BlobError::State(_)), "got {err:?}");
+    // B's attempts left A's upload row exactly as A completed it.
+    let status: (String,) = sqlx::query_as(
+        "SELECT status::text FROM proxima_core.cited_object_uploads WHERE upload_id = $1",
+    )
+    .bind(upload_id)
+    .fetch_one(&pool)
+    .await
+    .expect("status");
+    assert_eq!(status.0, "completed");
+
+    let err = store
+        .read_url(
+            &ctx_b,
+            CitedBlobReadUrlTs {
+                owner: owner_b,
+                cited_object_id: completed.cited_object_id.clone(),
+            },
+        )
+        .await
+        .expect_err("A's cited object id under B's owner must be refused");
+    assert!(matches!(err, BlobError::State(_)), "got {err:?}");
+
+    // Naming A's owner outright fails the authz gate before any SQL runs.
+    let err = store
+        .read_url(
+            &ctx_b,
+            CitedBlobReadUrlTs {
+                owner: owner_a,
+                cited_object_id: completed.cited_object_id,
+            },
+        )
+        .await
+        .expect_err("A's owner under B's authz must be denied");
+    assert!(matches!(err, BlobError::Denied(_)), "got {err:?}");
 
     drop(pool);
     drop_db(&db_name).await.expect("drop db");

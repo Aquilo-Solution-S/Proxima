@@ -1280,6 +1280,19 @@ need no change — the runtime inserts the substrate-owned
 keys `core_upload:prepare|complete|abort|read_url` are valid in
 `PROXIMA_TOOL_ALLOW`/`PROXIMA_TOOL_DENY`).
 
+Two contracts on this surface:
+
+- `read_url` presigns only locators the upload lane itself wrote — the
+  configured bucket, under the owner's canonical object prefix. The
+  inline citation path (§29) stores a caller-asserted `bucket`/
+  `object_key` verbatim and never verifies it; asking `read_url` for
+  such an object answers exactly like a missing one. A download URL
+  exists only for objects that went through `prepare`/`complete`.
+- `prepare`/`complete`/`abort` require Fact-write on the resolved
+  space, `read_url` requires read; a caller without it (e.g. a group
+  Viewer) is refused with the same `forbidden` error class
+  `core_remember` raises, not `invalid_params`.
+
 **A Fact can now cite an already-stored object by id.** `complete`
 returns a `cited_object_id` but deliberately no `bucket`/`object_key`,
 and the inline citation path (§29) requires them in `object_payload` —

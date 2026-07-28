@@ -428,6 +428,21 @@ impl CitedBlobStore {
         ensure_owner_access(ctx, &owner)?;
         let cited_object_id = parse_uuid(&req.cited_object_id)?;
         let row = load_blob_location(&self.pool, &owner, cited_object_id).await?;
+        // The locator columns are client-writable: `core/uploaded-blob-v1`
+        // is a registered cited-object schema, so an inline citation can
+        // persist an arbitrary bucket/object_key row under the caller's own
+        // owner — and SigV4 presigning is offline, with no S3 existence
+        // check. Presign only locators this store itself wrote (the
+        // configured bucket, under the owner's canonical objects/ prefix),
+        // and answer anything else exactly like a missing row so a probe
+        // cannot learn whether the forged row exists.
+        if row.bucket != self.config.bucket
+            || !row
+                .object_key
+                .starts_with(&objects_owner_prefix(&owner_hash_hex(&owner)))
+        {
+            return Err(BlobError::State("cited object not found for Owner".into()));
+        }
         let client = self.client().await?;
         let expires_at = OffsetDateTime::now_utc()
             + time::Duration::seconds(
@@ -456,9 +471,13 @@ impl CitedBlobStore {
 /// [`CitedBlobPort`] boundary, preserving the message text.
 ///
 /// Config/S3/database faults are infrastructure unavailability; state
-/// violations (missing/expired upload, invalid input) and access denials
-/// are caller-fixable `ConstraintViolation`s, which the MCP error mapper
-/// surfaces verbatim instead of redacting to "internal server error".
+/// violations (missing/expired upload, invalid input) are caller-fixable
+/// `ConstraintViolation`s, which the MCP error mapper surfaces verbatim
+/// instead of redacting to "internal server error". `Denied` is NOT
+/// caller-fixable model input: the storage taxonomy has no forbidden
+/// class, so it lands in `ConstraintViolation` only as a defense-in-depth
+/// backstop — `core_upload` gates the same owner authority before the
+/// port and surfaces denials as `forbidden`, matching `core_remember`.
 fn blob_error_to_storage(err: BlobError) -> StorageError {
     match err {
         BlobError::Config(message) => {
