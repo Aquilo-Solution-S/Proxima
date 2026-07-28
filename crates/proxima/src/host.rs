@@ -48,7 +48,7 @@ pub use proxima_core::{
     AuthPath, AuthzContext, EmbeddingAnnObservability, EmbeddingJobBacklog, EmbeddingOrphanCounts,
     EmbeddingOrphanSweepOutcome, EmbeddingRecallCanary, Engine, EngineHandle, FlavorRegistryFrozen,
     GoalWakeCandidate, GoalWakeHardMemory, MemoryId, Owner, OwnerAccessPort,
-    OwnerExternalKeyParseError, OwnerRef, Relation, SourceBatchId, StorageError, ToolScope,
+    OwnerExternalKeyParseError, OwnerRef, Relation, Role, SourceBatchId, StorageError, ToolScope,
     UPLOADED_BLOB_SCHEMA_ID, UserId, canonical_json_bytes, parse_external_key,
     provider_safe_tool_name,
 };

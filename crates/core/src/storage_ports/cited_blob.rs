@@ -1,4 +1,5 @@
-//! Host-wired cited-blob upload/read port for MCP tools.
+//! Host-wired cited-blob upload/read port for MCP tools and flavor
+//! background workers.
 //!
 //! Core stays blob/storage-agnostic (docs/07): the S3-backed cited-blob
 //! lane (`proxima-blob-s3`) is reachable as a Rust library, but MCP tools
@@ -7,7 +8,9 @@
 //! extensions when S3 is configured, and `core_upload` resolves it via
 //! `ctx.extensions.get::<CitedBlobService>()`. When absent, the tool
 //! fails typed with a configuration hint — exactly like the embedding
-//! client's degraded mode.
+//! client's degraded mode. The serving runtime publishes the same
+//! service to flavor workers, which need it for the half of artefact
+//! work that outlives a tool call.
 //!
 //! Transfer is by presigned URL only (docs/10 §Large Artefact S3): the
 //! MCP transport caps request bodies, and clients must never see
@@ -133,7 +136,8 @@ pub trait CitedBlobPort: Send + Sync {
     ) -> Result<CitedBlobReadUrl, StorageError>;
 }
 
-/// Shared handle MCP tools resolve from `McpToolCtx::extensions`.
+/// Shared handle MCP tools resolve from `McpToolCtx::extensions`, and
+/// that the serving runtime also hands flavor workers directly.
 /// A newtype (not a bare `Arc<dyn ...>`) so the `TypeId`-keyed extension
 /// map has a unique, intention-revealing key.
 #[derive(Clone)]
