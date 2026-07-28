@@ -610,9 +610,9 @@ async fn run_semantic(
         ));
     };
     if query_embedding.len() != EMBEDDING_DIM {
-        return Err(StorageError::ConstraintViolation(
-            "semantic search embedding length must be 1024".into(),
-        ));
+        return Err(StorageError::ConstraintViolation(format!(
+            "semantic search embedding length must be {EMBEDDING_DIM}"
+        )));
     }
 
     let (sql, projections) = semantic_branch_sql(req, projections, limit, candidate_overfetch)?;

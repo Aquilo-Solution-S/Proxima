@@ -668,3 +668,48 @@ async fn embedding_lifecycle_legal_hold_blocks_cascade() -> Result<(), Box<dyn s
     drop_db(&db_name).await?;
     result
 }
+
+/// `EMBEDDING_DIM` is the single source of truth for the vector width,
+/// and every Rust check already references it. The one place that
+/// cannot is the DDL: `0001_init.sql` declares `vec vector(1024)` as a
+/// literal, because SQL has no way to see a Rust const. That makes the
+/// migration a genuine second statement of the same fact, and a
+/// divergence would be silent — the constant would be raised, every
+/// in-process length check would happily accept the wider vector, and
+/// Postgres would reject each insert at runtime with a type error.
+///
+/// Reading the width back out of the live column closes that loop. For
+/// pgvector `atttypmod` *is* the declared dimension (no offset, unlike
+/// varchar), which the assertion below relies on; `format_type` is
+/// carried alongside so a failure reports `vector(N)` in the message
+/// rather than a bare integer.
+#[tokio::test]
+async fn embeddings_column_width_matches_the_embedding_dim_constant()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (pg, db_name) = fresh_pg().await;
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let (typmod, rendered): (i32, String) = sqlx::query_as(
+            "SELECT atttypmod, format_type(atttypid, atttypmod)
+               FROM pg_attribute
+              WHERE attrelid = 'proxima_core.embeddings'::regclass
+                AND attname = 'vec'
+                AND NOT attisdropped",
+        )
+        .fetch_one(pg.pool_for_tests())
+        .await?;
+
+        assert_eq!(
+            usize::try_from(typmod).expect("a declared vector width is positive"),
+            EMBEDDING_DIM,
+            "proxima_core.embeddings.vec is {rendered} but EMBEDDING_DIM is \
+             {EMBEDDING_DIM}; the migration and the constant must agree, and a \
+             shipped migration is never edited — change the constant back, or \
+             add a new migration that alters the column"
+        );
+        Ok(())
+    }
+    .await;
+
+    drop_db(&db_name).await?;
+    result
+}

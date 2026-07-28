@@ -101,9 +101,9 @@ pub(crate) async fn insert_embedding_chunks(
         ));
     }
     if dim != EMBEDDING_DIM || chunks.iter().any(|vec| vec.len() != EMBEDDING_DIM) {
-        return Err(StorageError::ConstraintViolation(
-            "embedding length must be 1024".into(),
-        ));
+        return Err(StorageError::ConstraintViolation(format!(
+            "embedding length must be {EMBEDDING_DIM}"
+        )));
     }
 
     let entity_kind = entity.entity_kind();
