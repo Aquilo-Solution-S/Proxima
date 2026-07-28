@@ -36,6 +36,11 @@ pub trait FlavorBundle {
     /// - A panicking worker never takes the host down: its join error is
     ///   logged at shutdown, not propagated.
     ///
+    /// To unit-test an implementation without booting the serving
+    /// runtime, build the context with
+    /// [`FlavorWorkerContext::new_for_tests`] (available under `cfg(test)`,
+    /// the `testkit` feature, or debug builds).
+    ///
     /// ```rust,no_run
     /// use proxima::flavor::{
     ///     FlavorBundle, FlavorRegistry, FlavorRegistryError, FlavorWorker, FlavorWorkerContext,
@@ -218,17 +223,6 @@ mod tests {
         }
     }
 
-    fn worker_ctx() -> FlavorWorkerContext {
-        FlavorWorkerContext {
-            engine: std::sync::Arc::new(proxima_core::Engine::new(
-                FlavorRegistry::new().freeze_or_panic_for_tests(),
-            )),
-            pool: sqlx::PgPool::connect_lazy("postgres://unused@127.0.0.1:1/unused")
-                .expect("lazy pool never connects"),
-            cancel: tokio_util::sync::CancellationToken::new(),
-        }
-    }
-
     fn migrator(versions: &[i64]) -> Migrator {
         let migrations = versions
             .iter()
@@ -287,7 +281,12 @@ mod tests {
 
     #[tokio::test]
     async fn tuple_chains_spawn_workers_in_order_and_default_is_empty() {
-        let ctx = worker_ctx();
+        let ctx = FlavorWorkerContext::new_for_tests(
+            std::sync::Arc::new(proxima_core::Engine::new(
+                FlavorRegistry::new().freeze_or_panic_for_tests(),
+            )),
+            tokio_util::sync::CancellationToken::new(),
+        );
 
         assert!(
             <(AlphaBundle, BetaBundle) as FlavorBundle>::spawn_workers(&ctx).is_empty(),

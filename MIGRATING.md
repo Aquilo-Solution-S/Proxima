@@ -1358,6 +1358,7 @@ API: `authorize_fact_with_citation_by_ref` /
 `ingest_fact_with_citation_ref_and_typed_sidecar`. Custom
 `FactIngestPort` implementations must add the new
 `ingest_fact_with_citation_ref_and_typed_sidecar` method.
+
 ## 33. v0.0.7: flavors can contribute background workers
 
 **No action required.** Additive Flavor SDK surface; no migration, no
