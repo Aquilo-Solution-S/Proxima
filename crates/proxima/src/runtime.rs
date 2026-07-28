@@ -10,6 +10,7 @@ use axum::response::IntoResponse;
 use proxima_blob_s3::{CitedBlobStore, S3RuntimeConfig};
 use proxima_core::authz::SystemAuthority;
 use proxima_core::mcp::McpToolExtensions;
+use proxima_core::storage_ports::CitedBlobService;
 use proxima_core::{
     AnthropicClient, AuthPath, Authenticator, AuthzContext, EmbeddingClient, FlavorRegistryFrozen,
     OwnerAccessPort, RevalidationConfig, ToolScope,
@@ -296,6 +297,7 @@ impl<A: FlavorApp + 'static> Proxima<A> {
             engine: booted.engine.clone(),
             pool: booted.pool.clone(),
             cancel: cancel.child_token(),
+            blobs: cited_blob_service(booted.blobs.as_ref()),
         };
         let workers = A::spawn_workers(&worker_ctx);
 
@@ -643,17 +645,24 @@ where
         ))
 }
 
+/// The single erasure site for the cited-blob lane: the concrete
+/// `CitedBlobStore` becomes the core [`CitedBlobService`] port newtype, so
+/// every in-process consumer — MCP tools and flavor workers alike — holds
+/// one abstract handle and none of them names `proxima-blob-s3`.
+fn cited_blob_service(blobs: Option<&CitedBlobStore>) -> Option<CitedBlobService> {
+    blobs.map(|store| CitedBlobService(Arc::new(store.clone())))
+}
+
 /// Host tool extensions plus the substrate-owned services every composed
 /// binary gets for free. Today that is one entry: when S3 is configured
 /// (`app_ctx.blobs`), the cited-blob store is published as
-/// [`proxima_core::storage_ports::CitedBlobService`] so `core_upload`
-/// can reach the upload lane without any host wiring.
+/// [`CitedBlobService`] so `core_upload` can reach the upload lane
+/// without any host wiring. Flavor workers receive the same service
+/// through [`FlavorWorkerContext::blobs`], not through this map.
 fn assemble_tool_extensions<A: FlavorApp>(app_ctx: &AppContext) -> McpToolExtensions {
     let mut tool_extensions = A::mcp_tool_extensions(app_ctx);
-    if let Some(blobs) = &app_ctx.blobs {
-        tool_extensions.insert(proxima_core::storage_ports::CitedBlobService(Arc::new(
-            blobs.clone(),
-        )));
+    if let Some(service) = cited_blob_service(app_ctx.blobs.as_ref()) {
+        tool_extensions.insert(service);
     }
     tool_extensions
 }

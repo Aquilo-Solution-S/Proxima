@@ -35,6 +35,10 @@ pub trait FlavorBundle {
     ///   core embedding worker.
     /// - A panicking worker never takes the host down: its join error is
     ///   logged at shutdown, not propagated.
+    /// - `ctx.blobs` is the host-wired cited-blob service, `Some` only
+    ///   when the host configured S3. A worker that needs it MUST fail
+    ///   its job typed when it is absent — a `let Some(..) else { return }`
+    ///   no-op turns a misconfigured host into a silently idle one.
     ///
     /// To unit-test an implementation without booting the serving
     /// runtime, build the context with
@@ -134,7 +138,11 @@ impl_flavor_bundle_tuple!(A, B, C, D, E, F, G, H);
 mod tests {
     use std::borrow::Cow;
 
-    use proxima_core::{FlavorRegistry, FlavorRegistryError};
+    use proxima_core::storage_ports::{
+        CitedBlobPort, CitedBlobReadUrl, CitedBlobService, CitedBlobUploadAborted,
+        CitedBlobUploadCompleted, CitedBlobUploadPrepared,
+    };
+    use proxima_core::{AuthzContext, FlavorRegistry, FlavorRegistryError, OwnerRef, StorageError};
     use proxima_storage_pg::PgSidecarRegistry;
     use sqlx::SqlSafeStr;
     use sqlx::migrate::{Migration, MigrationType, Migrator};
@@ -277,6 +285,69 @@ mod tests {
             .collect();
 
         assert_eq!(versions, [1, 2, 3]);
+    }
+
+    /// Every method fails `Unavailable`: the tests here only need a
+    /// `CitedBlobPort` that exists, never one that works.
+    struct StubBlobPort;
+
+    #[async_trait::async_trait]
+    impl CitedBlobPort for StubBlobPort {
+        async fn prepare_upload(
+            &self,
+            _authz: &AuthzContext,
+            _owner: OwnerRef,
+            _filename: &str,
+            _mime: &str,
+            _byte_len: u64,
+        ) -> Result<CitedBlobUploadPrepared, StorageError> {
+            Err(StorageError::Unavailable("stub".into()))
+        }
+
+        async fn complete_upload(
+            &self,
+            _authz: &AuthzContext,
+            _owner: OwnerRef,
+            _upload_id: &str,
+        ) -> Result<CitedBlobUploadCompleted, StorageError> {
+            Err(StorageError::Unavailable("stub".into()))
+        }
+
+        async fn abort_upload(
+            &self,
+            _authz: &AuthzContext,
+            _owner: OwnerRef,
+            _upload_id: &str,
+        ) -> Result<CitedBlobUploadAborted, StorageError> {
+            Err(StorageError::Unavailable("stub".into()))
+        }
+
+        async fn read_url(
+            &self,
+            _authz: &AuthzContext,
+            _owner: OwnerRef,
+            _cited_object_id: uuid::Uuid,
+        ) -> Result<CitedBlobReadUrl, StorageError> {
+            Err(StorageError::Unavailable("stub".into()))
+        }
+    }
+
+    /// The context defaults to no blob service, and `with_blobs` is the
+    /// only way to attach one. Doubles as the compile-check that a flavor
+    /// can implement the exported `CitedBlobPort` from `proxima::flavor`
+    /// alone.
+    #[tokio::test]
+    async fn test_context_has_no_blob_service_until_one_is_attached() {
+        let ctx = FlavorWorkerContext::new_for_tests(
+            std::sync::Arc::new(proxima_core::Engine::new(
+                FlavorRegistry::new().freeze_or_panic_for_tests(),
+            )),
+            tokio_util::sync::CancellationToken::new(),
+        );
+        assert!(ctx.blobs.is_none(), "a bare test context wires no S3");
+
+        let ctx = ctx.with_blobs(CitedBlobService(std::sync::Arc::new(StubBlobPort)));
+        assert!(ctx.blobs.is_some(), "with_blobs attaches the service");
     }
 
     #[tokio::test]

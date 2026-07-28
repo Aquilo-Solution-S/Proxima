@@ -435,18 +435,38 @@ Consumers call the bundle surface. They do not manually coordinate
 e.g. a document-ingestion flavor driving OCR jobs. The serving runtime
 (`Proxima::run`) calls it once after boot; tuple bundles chain element
 workers in tuple order, and `RunningProxima::shutdown()` cancels and
-joins every worker. `FlavorWorkerContext` carries the engine and a
+joins every worker. `FlavorWorkerContext` carries the engine, a
 `CancellationToken` that observes the runtime's shutdown (a child of
 the runtime's own token — cancelling it does not shut the runtime
-down); each worker MUST terminate when that token is cancelled (select
-on `cancel.cancelled()` in the work loop, mirroring the core embedding
-worker). A panicking worker never takes the host down — its join error
-is logged at shutdown. The serverless `Proxima::build` variant spawns
-no workers; hosts driving a `BuiltProxima` own their own background
-tasks. To unit-test a `spawn_workers` implementation without booting
-the runtime, build the context with
+down), and `blobs`; each worker MUST terminate when that token is
+cancelled (select on `cancel.cancelled()` in the work loop, mirroring
+the core embedding worker). A panicking worker never takes the host
+down — its join error is logged at shutdown. The serverless
+`Proxima::build` variant spawns no workers; hosts driving a
+`BuiltProxima` own their own background tasks.
+
+`blobs` is the host-wired cited-blob lane — the same `CitedBlobService`
+`core_upload` resolves from its MCP tool extensions, re-exported from
+`proxima::flavor` along with `CitedBlobPort`. It is `Some` only when
+the host configured S3 (see
+[10-configuration.md](10-configuration.md) §Large Artefact S3), so a
+worker that needs it should fail its job typed
+rather than no-op into a silently idle loop. Unlike an MCP tool, a
+worker has no request to inherit authority from: every port method
+takes an `AuthzContext` and an `OwnerRef` that the worker supplies per
+job, normally from the job row that its tool wrote when the upload
+landed. `AuthzContext::single_owner` covers personal owners only — it
+returns a denied context for a group owner, where
+`AuthzContext::for_subject_with_role` is the right mint. `read_url`
+answers a presigned URL, never the bucket or object key, so a worker
+that needs the bytes fetches them itself over HTTP.
+
+To unit-test a `spawn_workers` implementation without booting the
+runtime, build the context with
 `FlavorWorkerContext::new_for_tests(engine, cancel)` (available under
-`cfg(test)`, the `testkit` feature, or debug builds).
+`cfg(test)`, the `testkit` feature, or debug builds; it needs a Tokio
+context, so call it from `#[tokio::test]`). Attach a fake blob service
+to it with `.with_blobs(CitedBlobService(Arc::new(MyFake)))`.
 
 ## Migrations
 

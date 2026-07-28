@@ -54,6 +54,41 @@ fn flavor_sdk_exposes_mcp_tool_authoring_surface() {
 }
 
 #[test]
+fn flavor_sdk_exposes_the_cited_blob_lane() {
+    // `FlavorWorkerContext::blobs` is a public field, so its type and the
+    // trait behind it must be nameable from `proxima::flavor` alone — a
+    // flavor depending only on `proxima` cannot reach into
+    // `proxima_core::storage_ports`.
+    use proxima::flavor::{
+        CitedBlobPort, CitedBlobReadUrl, CitedBlobService, CitedBlobUploadAborted,
+        CitedBlobUploadCompleted, CitedBlobUploadHeader, CitedBlobUploadPrepared,
+    };
+    fn _needs_port<T: CitedBlobPort>() {}
+    let _: Option<(
+        &CitedBlobService,
+        &CitedBlobReadUrl,
+        &CitedBlobUploadPrepared,
+        &CitedBlobUploadCompleted,
+        &CitedBlobUploadAborted,
+        &CitedBlobUploadHeader,
+    )> = None;
+}
+
+#[test]
+fn host_api_exposes_role_for_worker_authorization() {
+    // A flavor worker mints its own `AuthzContext` per job, and
+    // `for_subject_with_role` is the only mint that works for a group
+    // owner — which `company_owner` produces. Without `Role` on the host
+    // facade its parameter type is unnameable.
+    let owner: proxima::Owner = proxima::company_owner(uuid::Uuid::nil());
+    let _authz: proxima::AuthzContext = proxima::AuthzContext::for_subject_with_role(
+        proxima::UserId::new(uuid::Uuid::nil()),
+        [(owner, proxima::Role::admin())],
+        proxima::AuthPath::System,
+    );
+}
+
+#[test]
 fn raw_storage_surfaces_are_not_supported_tier_exports() {
     let host_exports = include_str!("../src/host.rs");
     let flavor_exports = include_str!("../src/flavor.rs");

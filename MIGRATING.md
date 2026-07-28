@@ -1375,6 +1375,35 @@ cancellation token; a worker panic is logged at join and never takes the
 host down. The serverless `Proxima::build` variant is unchanged and
 spawns no workers.
 
+## 34. v0.0.7: flavor workers can reach the cited-blob lane
+
+**No action required.** Additive Flavor SDK surface; no migration, no
+behavior change for existing flavors.
+
+`FlavorWorkerContext` gains `blobs: Option<CitedBlobService>` — the same
+host-wired service `core_upload` already resolves from its MCP tool
+extensions, so §33's worker (a document-ingestion flavor driving OCR
+jobs) can now read the artefact a tool call accepted. It is `None`
+unless the host configured `PROXIMA_S3_*`. Adding the field breaks no
+one: the struct's `pool` is `pub(crate)`, so out-of-tree literals were
+never possible, and `new_for_tests(engine, cancel)` keeps its signature
+— a new test-gated `with_blobs(..)` builder attaches a service (for
+example a flavor's own `impl CitedBlobPort` fake).
+
+`CitedBlobService` and `CitedBlobPort`, plus the four upload/read
+outcome types, are now re-exported from `proxima::flavor`; before this
+the field's type was unnameable by a flavor depending on `proxima`
+alone. `Role` is re-exported from the host facade for the same reason:
+minting a group-owner `AuthzContext` needs it, and `company_owner`
+makes exactly a group.
+
+A worker is not an MCP tool and has no request to inherit authority
+from: it supplies its own `AuthzContext` and `OwnerRef` per job — the
+port's re-check is defense in depth, not a caller-facing gate. Note
+that `AuthzContext::single_owner` denies for a group owner; use
+`AuthzContext::for_subject_with_role` there. `Proxima::build` is
+unchanged and still spawns no workers.
+
 ## Checks before calling an upgrade done
 
 ```sh

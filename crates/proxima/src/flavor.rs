@@ -14,6 +14,15 @@ pub use proxima_core::mcp::{
     McpActionArgSpec, McpAuthorContext, McpTool, McpToolAnnotations, McpToolCtx, McpToolError,
     McpToolErrorKind,
 };
+/// Host-wired cited-blob lane, handed to workers as
+/// [`FlavorWorkerContext::blobs`]. Present only when the host configured
+/// S3; the concrete backend (`proxima-blob-s3`) is never named across
+/// this seam, so a flavor codes against [`CitedBlobPort`] and can fake it
+/// wholesale in tests.
+pub use proxima_core::storage_ports::{
+    CitedBlobPort, CitedBlobReadUrl, CitedBlobService, CitedBlobUploadAborted,
+    CitedBlobUploadCompleted, CitedBlobUploadHeader, CitedBlobUploadPrepared,
+};
 pub use proxima_core::{
     AbstractionPayload, AuthorshipKindMask, CapabilitySet, CitationMappingPayload,
     CitedObjectPayload, EdgeId, EdgePayload, EndpointBinding, EntityKindMask, FactPayload,
