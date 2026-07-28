@@ -88,6 +88,96 @@ fn host_api_exposes_role_for_worker_authorization() {
     );
 }
 
+/// A flavor-owned Abstraction, defined through the SDK alone. Note
+/// `sidecar_table` is required rather than optional on this trait: unlike
+/// a Fact, a derived memory always has a typed sidecar, so a flavor
+/// registering one always owns a migration for it too.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct TierAbstraction {
+    note: String,
+}
+
+impl proxima::flavor::AbstractionPayload for TierAbstraction {
+    const SCHEMA_ID: &'static str = "proxima-tier/abstraction-v1";
+    const SCHEMA_VERSION: u32 = 1;
+
+    fn sidecar_table() -> &'static str {
+        "proxima_tier.abstraction_v1"
+    }
+}
+
+#[test]
+fn flavor_sdk_exposes_the_derived_memory_write_lane() {
+    // `AbstractionPayload` and `PerspectivePayload` let a flavor *declare*
+    // derived schemas; without these types it could never *write* one,
+    // because `Engine::author_derived_authorized` takes an
+    // `AuthorDerivedRequestInput` an out-of-tree flavor could not name.
+    // The in-tree precedent (`flavors/code`) reaches the same lane through
+    // a direct `proxima-storage-pg` dependency, which a flavor depending
+    // only on `proxima` does not have.
+    //
+    // This constructs the request rather than merely naming the types, so
+    // a field added, removed or retyped upstream breaks here instead of
+    // silently breaking every out-of-tree flavor at its next pin bump.
+    use proxima::flavor::{
+        AbstractionPayload, AuthorDerivedEdgeInput, AuthorDerivedRequestInput,
+        CORE_DERIVED_FROM_RELATION, EdgeAuthorshipKind, EntityKind, FlavorRegistry,
+        InputContractId, MemoryId, MemoryOperatorKind, OperatorId, SchemaVersion, SidecarPayload,
+    };
+
+    let frozen = FlavorRegistry::new()
+        .try_freeze()
+        .expect("an empty registry freezes");
+    let relation = frozen
+        .resolve_relation(CORE_DERIVED_FROM_RELATION)
+        .expect("core/derived-from is a substrate relation, present without any flavor");
+
+    let owner: proxima::Owner = proxima::company_owner(uuid::Uuid::nil());
+    let derived = MemoryId::new(uuid::Uuid::nil());
+    let source_fact = MemoryId::new(uuid::Uuid::nil());
+
+    let edges = [AuthorDerivedEdgeInput {
+        relation,
+        source_kind: EntityKind::Abstraction,
+        source_memory_id: derived,
+        target_kind: EntityKind::Fact,
+        target_memory_id: source_fact,
+        authorship_kind: EdgeAuthorshipKind::OperatorFtoA,
+        authorship_owner_memory_id: None,
+    }];
+
+    let _req = AuthorDerivedRequestInput {
+        memory_id: derived,
+        owner,
+        kind: EntityKind::Abstraction,
+        text: "the text a derived memory is embedded from".to_owned(),
+        schema_id: <TierAbstraction as proxima::flavor::AbstractionPayload>::schema_id(),
+        schema_version: SchemaVersion::new(TierAbstraction::SCHEMA_VERSION),
+        operator_kind: MemoryOperatorKind::FtoA,
+        operator_id: OperatorId::new(uuid::Uuid::nil()),
+        input_contract_id: InputContractId::new(uuid::Uuid::nil()),
+        source_batch_id: None,
+        model_id: "tier-test",
+        prompt_version: "1",
+        sidecar_payload: SidecarPayload::abstraction(TierAbstraction {
+            note: "sidecar".to_owned(),
+        }),
+        supersedes: None,
+        lexical_language: None,
+        edges: &edges,
+    };
+
+    // The outcome type must be nameable too — a caller has to bind what
+    // `author_derived_authorized` returns.
+    let _: Option<&proxima::flavor::AuthorDerivedAuthorizedOutcome> = None;
+    // `supersedes` above is the re-derivation path; naming the relation it
+    // writes keeps that half of the contract pinned as well.
+    assert_ne!(
+        proxima::flavor::CORE_SUPERSEDES_RELATION,
+        CORE_DERIVED_FROM_RELATION
+    );
+}
+
 #[test]
 fn raw_storage_surfaces_are_not_supported_tier_exports() {
     let host_exports = include_str!("../src/host.rs");
