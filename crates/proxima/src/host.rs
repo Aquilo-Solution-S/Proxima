@@ -13,6 +13,13 @@ pub use crate::runtime::{
 pub use crate::runtime_config::{
     McpSettings, ProximaError, RuntimeBuilder, RuntimeConfig, RuntimeParts,
 };
+/// Compliance erase surface. Note that [`ComplianceEraseTarget`]'s
+/// variants take id newtypes rather than bare UUIDs and strings:
+/// `GroupOwner` takes a [`GroupId`], the two source-scope variants add a
+/// [`SourceId`], and the personal variants take a [`UserId`]. All of
+/// those are re-exported below, so every variant of this enum is
+/// constructible by a host depending on `proxima` alone — an exported
+/// enum whose variants cannot be built is not actually exported.
 pub use proxima_core::compliance::{
     ComplianceEraseCounts, ComplianceEraseOutcome, ComplianceEraseRefusal, ComplianceEraseRequest,
     ComplianceEraseTarget,
@@ -47,10 +54,22 @@ pub use proxima_core::verbs::schema::{
 pub use proxima_core::{
     AuthPath, AuthzContext, EmbeddingAnnObservability, EmbeddingJobBacklog, EmbeddingOrphanCounts,
     EmbeddingOrphanSweepOutcome, EmbeddingRecallCanary, Engine, EngineHandle, FlavorRegistryFrozen,
-    GoalWakeCandidate, GoalWakeHardMemory, MemoryId, Owner, OwnerAccessPort,
-    OwnerExternalKeyParseError, OwnerRef, Relation, Role, SourceBatchId, StorageError, ToolScope,
-    UPLOADED_BLOB_SCHEMA_ID, UserId, canonical_json_bytes, parse_external_key,
-    provider_safe_tool_name,
+    GoalWakeCandidate, GoalWakeHardMemory, GroupId, MemoryId, Owner, OwnerAccessPort,
+    OwnerExternalKeyParseError, OwnerRef, Relation, Role, SourceBatchId, SourceId, StorageError,
+    ToolScope, UserId, canonical_json_bytes, parse_external_key, provider_safe_tool_name,
+};
+/// The three citation schema ids [`CitationSpec`] is written with:
+/// `UPLOADED_BLOB_SCHEMA_ID` names the cited object, and the other two
+/// name the locator mapping through which a Fact cites it — the whole
+/// object, or a page span within it.
+///
+/// A flavor citing an uploaded blob names a mapping id in every
+/// `CitationSpec::v1` call. `CitationSpec::v1` takes `impl Into<String>`,
+/// so leaving two of the three off the facade did not block anything —
+/// it silently pushed flavors onto bare string literals that no compiler
+/// could check against a rename of the constant they duplicate.
+pub use proxima_core::{
+    UPLOADED_BLOB_PAGE_SPAN_SCHEMA_ID, UPLOADED_BLOB_SCHEMA_ID, UPLOADED_BLOB_WHOLE_SCHEMA_ID,
 };
 #[cfg(feature = "openai-compat-embed")]
 pub use proxima_llm_openai_compat::{
