@@ -1611,6 +1611,29 @@ exact-match and there is no per-column filter, so a flavor that wants
 "search inside this book" declares a `tag_column` on its projection and
 filters here.
 
+## 43. v0.0.7: the host facade names the blob lane and `OwnerRefKind`
+
+**No action required.** Re-exports only; no new types, no migration.
+
+Three types were already part of the public surface and could not be
+named from `proxima`:
+
+* `CitedBlobStore` — the type of `BuiltProxima::blobs`, a `pub` field.
+* `S3RuntimeConfig` — the parameter of `Proxima::s3`, a `pub` method, and
+  of `RuntimeConfig::s3`, a `pub` field.
+* `OwnerRefKind` — half the return of `OwnerRef::columns()`, which every
+  flavor with its own tables calls to bind owner columns.
+
+Each was reachable by inference and unwritable in a signature. The
+practical cost was not cosmetic: with `S3RuntimeConfig` unnameable,
+`S3RuntimeConfig::from_env()` was the ONLY way to configure the blob lane,
+so a library API demanded process environment. A host that keeps its
+credentials in a secret manager had no way in, and a test could not
+configure a bucket without mutating the environment — which a workspace
+denying `unsafe_code` cannot do at all.
+
+`BlobError` comes along because `from_env` returns it.
+
 ## Checks before calling an upgrade done
 
 ```sh

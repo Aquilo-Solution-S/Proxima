@@ -451,6 +451,55 @@ fn flavor_sdk_exposes_the_mcp_tool_extension_seam() {
 }
 
 #[test]
+fn host_api_can_configure_the_blob_lane_without_the_environment() {
+    // `Proxima::s3` is a `pub` method and `BuiltProxima::blobs` is a `pub`
+    // field of type `Option<CitedBlobStore>`, so both types were already
+    // part of the public surface — they just could not be NAMED from
+    // `proxima`. A host could reach them by inference and could not write
+    // either in a signature, hold one in a struct, or configure S3 at all
+    // except through `S3RuntimeConfig::from_env`, which makes process
+    // environment a hard requirement of a library API.
+    // Nameable in a signature, which is what "the field can be held" means.
+    fn _holds_the_lane(_lane: Option<proxima::CitedBlobStore>) {}
+
+    let config = proxima::S3RuntimeConfig {
+        bucket: "some-bucket".to_owned(),
+        region: "us-east-1".to_owned(),
+        endpoint_url: Some("http://localhost:9000".to_owned()),
+        force_path_style: true,
+        upload_ttl_seconds: 900,
+        read_ttl_seconds: 300,
+        max_blob_bytes: None,
+    };
+    assert_eq!(config.bucket, "some-bucket");
+
+    // The builder method that takes it is writable, which is the point.
+    std::hint::black_box(
+        proxima::Proxima::<TierExtensionApp>::s3
+            as fn(
+                proxima::Proxima<TierExtensionApp>,
+                proxima::S3RuntimeConfig,
+            ) -> proxima::Proxima<TierExtensionApp>,
+    );
+}
+
+#[test]
+fn host_api_can_name_the_owner_ref_discriminant() {
+    // `OwnerRef::columns()` is public and returns `(OwnerRefKind, Option<Uuid>)`.
+    // Every flavor with its own tables calls it to bind owner columns, and
+    // could only ever pass the result straight into a query — the moment one
+    // wants to store it, return it, or match on it, the type has no name.
+    let (kind, id) = proxima::OwnerRef::World.columns();
+    assert_eq!(kind, proxima::OwnerRefKind::World);
+    assert!(id.is_none());
+
+    let user = proxima::UserId::new(uuid::Uuid::nil());
+    let (kind, id) = proxima::OwnerRef::Personal(user).columns();
+    assert_eq!(kind, proxima::OwnerRefKind::Personal);
+    assert_eq!(id, Some(uuid::Uuid::nil()));
+}
+
+#[test]
 fn raw_storage_surfaces_are_not_supported_tier_exports() {
     let host_exports = include_str!("../src/host.rs");
     let flavor_exports = include_str!("../src/flavor.rs");
