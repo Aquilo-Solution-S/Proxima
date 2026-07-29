@@ -1739,6 +1739,44 @@ convenience methods do not cover, and reports the one canonical error
 when a tool was invoked outside the MCP adapter. `flavors/code` deleted
 its copy in the same change.
 
+## 47. v0.0.7: a tool that declares no behaviour no longer boots
+
+**Action required only if you serve an MCP tool with no `ANNOTATIONS`.**
+Then the host fails at registry freeze — at startup, before serving —
+with:
+
+```
+tool proxima-yours_search declares no ANNOTATIONS, so the owner-role gate
+cannot tell a read from a write and will demand write access; set
+`const ANNOTATIONS` on the tool
+```
+
+The fix is one const on the tool:
+
+```rust
+const ANNOTATIONS: Option<McpToolAnnotations> =
+    Some(McpToolAnnotations::new().read_only(true).open_world(false));
+```
+
+Why it is now fatal rather than a default: `ScopeGateBehavior::
+enforce_owner_role` asks whether a tool is read-only and demands WRITE
+when it cannot tell. Before `ANNOTATIONS` existed, every flavor tool
+missed, so a viewer-role principal was refused `proxima-code_search_
+chunks` — a read, refused, with nothing in the response naming the cause.
+Silence has to keep meaning "write", because guessing "read" would hand a
+viewer a mutation. So the only way to stop the misclassification is to
+stop accepting silence.
+
+Freeze is where it is caught because Rust cannot express it at compile
+time: a trait const with a default is always satisfiable. A per-flavor
+test is the alternative, and it is one each flavor has to remember to
+write. Substrate tools may still answer through the core manifest;
+`try_freeze` checks the tool's own declaration first and the manifest
+second, which is exactly the order the gate resolves them in — so if it
+freezes, the gate can classify it.
+
+The new error is `FlavorRegistryError::UndeclaredToolBehavior`.
+
 ## Checks before calling an upgrade done
 
 ```sh

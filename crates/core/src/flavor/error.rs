@@ -56,6 +56,13 @@ pub enum FlavorRegistryError {
         relation: String,
         side: &'static str,
     },
+    /// A registered MCP tool has no resolvable behaviour declaration, so the
+    /// owner-role gate cannot tell a read from a write and has to assume a
+    /// write. Substrate tools may answer through the core manifest; a flavor
+    /// tool has only `ANNOTATIONS`.
+    UndeclaredToolBehavior {
+        name: &'static str,
+    },
 }
 
 impl std::fmt::Display for FlavorRegistryError {
@@ -133,6 +140,11 @@ impl std::fmt::Display for FlavorRegistryError {
             Self::UnsatisfiableRelationTags { relation, side } => write!(
                 f,
                 "relation descriptor {relation} has unsatisfiable {side} required capability tags"
+            ),
+            Self::UndeclaredToolBehavior { name } => write!(
+                f,
+                "tool {name} declares no ANNOTATIONS, so the owner-role gate cannot tell a read \
+                 from a write and will demand write access; set `const ANNOTATIONS` on the tool"
             ),
         }
     }

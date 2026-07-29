@@ -77,6 +77,7 @@ impl FlavorRegistry {
                 return Err(FlavorRegistryError::DuplicateTool { name: tool.name });
             }
         }
+        self.validate_tools_declare_behavior()?;
         let mut seen_dependency_rules: std::collections::HashSet<&str> =
             std::collections::HashSet::new();
         for (schema_id, _) in &self.dependency_satisfaction_rules {
@@ -159,6 +160,31 @@ impl FlavorRegistry {
                 relation: relation.relation.clone(),
                 side,
             });
+        }
+        Ok(())
+    }
+
+    /// Cross-check: the owner-role gate can classify every registered tool.
+    ///
+    /// `ScopeGateBehavior::enforce_owner_role` asks whether a tool is
+    /// read-only and demands WRITE when it cannot tell. It resolves that in
+    /// two steps — the tool's own `ANNOTATIONS`, then the core manifest —
+    /// and this checks the same two, in the same order. A tool neither
+    /// answers is not merely undocumented: it is silently reclassified as a
+    /// write, and the symptom is a viewer refused a read with no stated
+    /// cause. That is exactly what happened to every `proxima-code_*` tool
+    /// before `ANNOTATIONS` existed.
+    ///
+    /// Boot is the right place to say so. The alternative is a compile-time
+    /// requirement Rust cannot express (a trait const with a default is
+    /// always satisfiable) or a per-flavor test each flavor has to remember
+    /// to write.
+    fn validate_tools_declare_behavior(&self) -> Result<(), FlavorRegistryError> {
+        for tool in &self.mcp_tools {
+            if tool.annotations.is_none() && crate::mcp::core_tool_annotations(tool.name).is_none()
+            {
+                return Err(FlavorRegistryError::UndeclaredToolBehavior { name: tool.name });
+            }
         }
         Ok(())
     }
