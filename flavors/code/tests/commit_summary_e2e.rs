@@ -6,6 +6,7 @@
 mod common;
 
 use common::{migrated_db, owner_write_permit, test_owner};
+use proxima_code::RepoScope;
 use proxima_code::testkit::{ingest_commit, register_repo};
 use proxima_code::{CommitSummaryV1, CommitV1};
 use proxima_core::{AccessKind, SourceBatchId};
@@ -25,6 +26,7 @@ async fn commit_summary_e2e_produces_abstraction_with_correct_provenance() {
             repo_id,
             "/tmp/commit-summary-e2e",
             "e2e",
+            &RepoScope::default(),
         )
         .await?;
         let permit = owner_write_permit(&owner, AccessKind::Fact).await?;

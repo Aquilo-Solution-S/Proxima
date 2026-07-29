@@ -27,6 +27,7 @@ tracing = { workspace = true }
 uuid = { workspace = true }
 time = { workspace = true }
 blake3 = { workspace = true }
+globset = { workspace = true }
 hex = { workspace = true }
 tree-sitter = { workspace = true }
 tree-sitter-rust = { workspace = true }

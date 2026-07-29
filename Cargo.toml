@@ -50,6 +50,13 @@ tokio-util = "0.7"
 tower = "0.5"
 hex = "0.4"
 whatlang = "0.18"
+# Ingest scoping. `git ls-tree` takes no pathspec magic (no `:(exclude)`, no
+# `:(glob)`) and the incremental poller lists arbitrary commit SHAs, where
+# `git ls-files` cannot reach at all — so scope matching happens in-process
+# over the listing. globset is ripgrep's matcher: gitignore-shaped `**`
+# semantics, and it compiles a pattern set into one automaton rather than
+# testing patterns one at a time per path.
+globset = "0.4"
 sha2 = "0.11"
 aws-config = "1"
 # Drop aws-sdk-s3's default `rustls` feature: it pulls the LEGACY rustls 0.21
