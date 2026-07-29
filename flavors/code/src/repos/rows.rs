@@ -1,4 +1,5 @@
 use super::records::{RepoIngestionRun, RepoRecord, RunStage, RunStatus};
+use super::scope::RepoScope;
 use uuid::Uuid;
 
 fn u32_from_i32(v: i32) -> u32 {
@@ -14,6 +15,8 @@ pub(super) struct RepoRow {
     last_cursor: Option<Vec<u8>>,
     last_polled_at: Option<time::OffsetDateTime>,
     created_at: time::OffsetDateTime,
+    include_globs: Vec<String>,
+    exclude_globs: Vec<String>,
 }
 
 #[derive(Debug, sqlx::FromRow)]
@@ -71,6 +74,10 @@ impl From<RepoRow> for RepoRecord {
             last_cursor: row.last_cursor,
             last_polled_at: row.last_polled_at,
             created_at: row.created_at,
+            scope: RepoScope {
+                include: row.include_globs,
+                exclude: row.exclude_globs,
+            },
         }
     }
 }

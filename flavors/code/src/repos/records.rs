@@ -10,6 +10,10 @@ pub struct RepoRecord {
     pub last_cursor: Option<Vec<u8>>,
     pub last_polled_at: Option<time::OffsetDateTime>,
     pub created_at: time::OffsetDateTime,
+    /// Which of the repository's paths ingest indexes. Empty lists mean
+    /// every tracked blob under the size cap, which is what every repo
+    /// registered before scoping existed has.
+    pub scope: super::scope::RepoScope,
 }
 
 #[derive(Debug, Clone)]
@@ -180,6 +184,12 @@ pub enum RepoRegistryError {
         repo_id: Uuid,
         target_branch: String,
         reason: String,
+    },
+    #[error("invalid ingest scope for repo {repo_id}: {source}")]
+    InvalidScope {
+        repo_id: Uuid,
+        #[source]
+        source: super::scope::ScopeError,
     },
     #[error("ingestion run not found: {run_id}")]
     RunNotFound { run_id: Uuid },

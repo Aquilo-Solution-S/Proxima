@@ -1668,6 +1668,48 @@ contract.
 Upper bounds are unchanged: over-large limits still clamp silently, and an
 omitted limit still takes the tool's default.
 
+## 45. v0.0.7: a repository can say which of its paths get indexed
+
+**No action required.** Both glob lists default to empty, which is the
+behaviour every existing repo already has — every tracked blob under the
+size cap. One metadata-only `ADD COLUMN`, no table rewrite.
+
+`proxima-code_register_repo` takes `include_globs` and `exclude_globs`,
+gitignore-shaped:
+
+```json
+{"path": "/src/knip", "exclude_globs": ["**/fixtures/**"]}
+```
+
+`*` stops at a `/` and `**` crosses directories, as in `.gitignore`. A
+path is indexed when it matches some include (or there are no includes)
+and matches no exclude — excludes win where both match.
+
+Why it exists, measured over the three-repo dogfood index: 3,389 of
+knip's 4,935 chunks (68.7%) sit under a `fixtures/` or test path, and
+those chunks are 3,387 of the deployment's 15,244 embeddings — 22% of the
+whole index is one repository's test fixtures, with no way to say so.
+
+Three things worth knowing:
+
+* **Scope belongs to the repo, not to a call.** The incremental poller
+  lists arbitrary commit SHAs and applies the same scope the snapshot
+  does. A poll that skipped it would re-add exactly what a snapshot had
+  just excluded, so the indexed set would depend on which verb ran last.
+* **Re-registering an existing path updates the scope.** This is
+  deliberately unlike `display_name`, which is ignored on replay: scope
+  decides what is indexed, and there is no other verb that changes it.
+  Sending either list replaces both, so `{"exclude_globs": []}` clears a
+  scope; omitting both leaves it alone.
+* **Narrowing a scope tombstones what left it,** on the next ingest,
+  through the same path a deleted file takes. `files_excluded` in the
+  ingest report counts what scope removed, and `list_repos` echoes both
+  lists, so a file missing from search can be traced to the scope that
+  dropped it rather than guessed at.
+
+A malformed glob is rejected at `register_repo` rather than stored, so a
+repo cannot end up with a scope that fails every future ingest.
+
 ## Checks before calling an upgrade done
 
 ```sh

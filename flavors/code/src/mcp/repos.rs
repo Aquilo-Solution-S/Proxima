@@ -27,6 +27,35 @@ pub struct CodeRegisterRepoArgs {
         description = "Optional target branch for workspace runs. Omit or null to use the current symbolic branch when available."
     )]
     pub target_branch: Option<String>,
+    #[serde(default)]
+    #[schemars(
+        description = "Gitignore-shaped globs limiting ingest to matching paths, for example `src/**` or `packages/*/src/**/*.ts`. `*` stops at a `/`; use `**` to cross directories. Omit or leave empty to consider every tracked file. At most 64 patterns."
+    )]
+    pub include_globs: Option<Vec<String>>,
+    #[serde(default)]
+    #[schemars(
+        description = "Gitignore-shaped globs removing paths from ingest, for example `**/fixtures/**`. Beats include_globs where both match. Omit or leave empty to exclude nothing. At most 64 patterns."
+    )]
+    pub exclude_globs: Option<Vec<String>>,
+}
+
+impl CodeRegisterRepoArgs {
+    /// The scope this call asks for, or `None` when it says nothing about
+    /// scope at all.
+    ///
+    /// Omitting both lists on a re-registration leaves the stored scope
+    /// alone; sending either one replaces both, so `exclude_globs: []` is
+    /// how an operator clears a scope rather than an accident that
+    /// silently keeps it.
+    fn requested_scope(&self) -> Option<crate::repos::RepoScope> {
+        match (&self.include_globs, &self.exclude_globs) {
+            (None, None) => None,
+            (include, exclude) => Some(crate::repos::RepoScope {
+                include: include.clone().unwrap_or_default(),
+                exclude: exclude.clone().unwrap_or_default(),
+            }),
+        }
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -116,6 +145,12 @@ pub struct RepoItem {
     pub has_cursor: bool,
     pub last_polled_at: Option<String>,
     pub created_at: String,
+    /// Which paths ingest indexes. Both empty means every tracked file
+    /// under the size cap. Always present, so a caller who wonders why a
+    /// file is missing from search can see the scope that dropped it
+    /// rather than having to guess.
+    pub include_globs: Vec<String>,
+    pub exclude_globs: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -127,6 +162,11 @@ pub struct IndexReportItem {
     pub chunks_emitted: usize,
     pub chunks_reused: usize,
     pub chunks_tombstoned: usize,
+    /// Tracked files this repo's `include_globs`/`exclude_globs` kept out
+    /// of the ingest. Non-zero means the index deliberately does not hold
+    /// them — check the repo's scope in proxima-code_list_repos before
+    /// concluding a file is missing.
+    pub files_excluded: usize,
 }
 
 #[derive(Debug)]
@@ -146,9 +186,28 @@ impl Tool for CodeRegisterRepoTool {
         Box::pin(async move {
             let canonical = canonical_git_repo(&args.path)?;
             let canonical_path = canonical.to_string_lossy().into_owned();
+            let requested_scope = args.requested_scope();
             if let Some(existing) = repo_by_path(&ctx, &canonical_path).await? {
                 let repo =
                     maybe_set_target_branch(&ctx, existing, args.target_branch.as_deref()).await?;
+                // Unlike `display_name`, which is ignored on replay,
+                // scope is authoritative when the caller states it: it
+                // decides what gets indexed, and there is no other verb
+                // that can change it once a repo exists.
+                let repo = match requested_scope {
+                    Some(scope) => {
+                        let pool = code_store(&ctx)?;
+                        crate::repos::set_repo_scope(
+                            pool.pool(),
+                            &ctx.owner(),
+                            repo.repo_id,
+                            &scope,
+                        )
+                        .await
+                        .map_err(map_repo_registry)?
+                    }
+                    None => repo,
+                };
                 return Ok(CodeRegisterRepoOutput {
                     repo: repo_item(&ctx, repo)?,
                     created: false,
@@ -166,12 +225,20 @@ impl Tool for CodeRegisterRepoTool {
                 );
             let repo_id = Uuid::now_v7();
             let pool = code_store(&ctx)?;
+            let scope = requested_scope.unwrap_or_default();
+            // Validated before the row exists, so a malformed glob is a
+            // rejected registration rather than a repo whose every ingest
+            // fails on a pattern nobody can now change.
+            scope.compile().map_err(|source| {
+                map_repo_registry(RepoRegistryError::InvalidScope { repo_id, source })
+            })?;
             let record = crate::repos::register_repo(
                 pool.pool(),
                 &ctx.owner(),
                 repo_id,
                 &canonical_path,
                 &display_name,
+                &scope,
             )
             .await
             .map_err(map_repo_registry)?;
@@ -395,6 +462,8 @@ fn repo_item(ctx: &ToolCtx, record: RepoRecord) -> Result<RepoItem, ToolError> {
         has_cursor: record.last_cursor.is_some(),
         last_polled_at,
         created_at: format_time(record.created_at)?,
+        include_globs: record.scope.include,
+        exclude_globs: record.scope.exclude,
     })
 }
 
@@ -511,6 +580,7 @@ impl From<IndexReport> for IndexReportItem {
             chunks_emitted: report.chunks_emitted,
             chunks_reused: report.chunks_reused,
             chunks_tombstoned: report.chunks_tombstoned,
+            files_excluded: report.files_excluded,
         }
     }
 }
@@ -534,6 +604,9 @@ fn map_repo_registry(error: RepoRegistryError) -> ToolError {
         } => ToolError::InvalidInput(format!(
             "invalid target branch for repo {repo_id}: {target_branch} ({reason})"
         )),
+        RepoRegistryError::InvalidScope { repo_id, source } => {
+            ToolError::InvalidInput(format!("invalid ingest scope for repo {repo_id}: {source}"))
+        }
         RepoRegistryError::RunNotFound { run_id } => {
             ToolError::InvalidInput(format!("ingestion run not found: {run_id}"))
         }

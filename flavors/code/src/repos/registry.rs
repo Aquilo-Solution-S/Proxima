@@ -2,6 +2,7 @@
 
 use super::records::{RepoEraseReceipt, RepoRecord, RepoRegistryError};
 use super::rows::RepoRow;
+use super::scope::RepoScope;
 use proxima_core::Owner;
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -17,7 +18,7 @@ pub async fn list_repos(
     let (kind, principal_id) = owner.columns();
 
     let rows = sqlx::query_as::<_, RepoRow>(
-        "SELECT repo_id, canonical_path, display_name, target_branch, last_cursor, last_polled_at, created_at \
+        "SELECT repo_id, canonical_path, display_name, target_branch, last_cursor, last_polled_at, created_at, include_globs, exclude_globs \
          FROM proxima_code.repos \
          WHERE owner_kind = $1 \
            AND owner_id = $2 \
@@ -49,7 +50,7 @@ pub async fn list_repos_page(
     let after_repo_id = after.map(|(_, repo_id)| repo_id);
 
     let rows = sqlx::query_as::<_, RepoRow>(
-        "SELECT repo_id, canonical_path, display_name, target_branch, last_cursor, last_polled_at, created_at \
+        "SELECT repo_id, canonical_path, display_name, target_branch, last_cursor, last_polled_at, created_at, include_globs, exclude_globs \
          FROM proxima_code.repos \
          WHERE owner_kind = $1 \
            AND owner_id = $2 \
@@ -81,6 +82,7 @@ pub async fn register_repo(
     repo_id: Uuid,
     canonical_path: &str,
     display_name: &str,
+    scope: &RepoScope,
 ) -> Result<RepoRecord, RepoRegistryError> {
     let (kind, principal_id) = owner.columns();
     let target_branch = detect_target_branch(canonical_path);
@@ -88,11 +90,12 @@ pub async fn register_repo(
     let row = sqlx::query_as::<_, RepoRow>(
         "INSERT INTO proxima_code.repos \
             (owner_kind, owner_id, \
-             repo_id, canonical_path, display_name, target_branch, created_at) \
-         VALUES ($1, $2, $3, $4, $5, $6, now()) \
+             repo_id, canonical_path, display_name, target_branch, created_at, \
+             include_globs, exclude_globs) \
+         VALUES ($1, $2, $3, $4, $5, $6, now(), $7, $8) \
          ON CONFLICT (owner_kind, owner_id, canonical_path) \
          DO NOTHING \
-         RETURNING repo_id, canonical_path, display_name, target_branch, last_cursor, last_polled_at, created_at",
+         RETURNING repo_id, canonical_path, display_name, target_branch, last_cursor, last_polled_at, created_at, include_globs, exclude_globs",
     )
     .bind(kind)
     .bind(principal_id)
@@ -100,6 +103,8 @@ pub async fn register_repo(
     .bind(canonical_path)
     .bind(display_name)
     .bind(target_branch)
+    .bind(&scope.include)
+    .bind(&scope.exclude)
     .fetch_optional(pool)
     .await?;
 
@@ -151,6 +156,50 @@ pub async fn set_repo_target_branch(
         verify_target_branch(repo_id, &record.canonical_path, branch)?;
     }
     update_target_branch(pool, owner, repo_id, target_branch).await
+}
+
+/// Replace a repo's ingest scope.
+///
+/// Validated before it is written, so an unparseable glob is a rejected
+/// call rather than a repo whose next ingest fails. The stored strings are
+/// exactly what the caller sent — an operator reads back the pattern they
+/// wrote, not a normalisation of it.
+///
+/// Takes effect on the next ingest, and it is a full replacement, not a
+/// merge: paths that leave scope are tombstoned exactly as deleted files
+/// are, and paths that enter it are indexed as new.
+///
+/// # Errors
+/// `RepoRegistryError::NotFound` if the repo is not registered,
+/// `RepoRegistryError::InvalidScope` if a glob is malformed or a list is
+/// oversized, `RepoRegistryError::Database` on database failures.
+pub async fn set_repo_scope(
+    pool: &PgPool,
+    owner: &Owner,
+    repo_id: Uuid,
+    scope: &RepoScope,
+) -> Result<RepoRecord, RepoRegistryError> {
+    scope
+        .compile()
+        .map_err(|source| RepoRegistryError::InvalidScope { repo_id, source })?;
+    let (kind, principal_id) = owner.columns();
+    let row = sqlx::query_as::<_, RepoRow>(
+        "UPDATE proxima_code.repos \
+            SET include_globs = $4, exclude_globs = $5 \
+         WHERE owner_kind = $1 \
+           AND owner_id = $2 \
+           AND repo_id = $3 \
+         RETURNING repo_id, canonical_path, display_name, target_branch, last_cursor, last_polled_at, created_at, include_globs, exclude_globs",
+    )
+    .bind(kind)
+    .bind(principal_id)
+    .bind(repo_id)
+    .bind(&scope.include)
+    .bind(&scope.exclude)
+    .fetch_optional(pool)
+    .await?;
+    row.map(Into::into)
+        .ok_or(RepoRegistryError::NotFound { repo_id })
 }
 
 /// Fill a legacy `NULL` target branch from the worktree's current branch.
@@ -250,7 +299,7 @@ pub async fn get_repo(
     let (kind, principal_id) = owner.columns();
 
     let row = sqlx::query_as::<_, RepoRow>(
-        "SELECT repo_id, canonical_path, display_name, target_branch, last_cursor, last_polled_at, created_at \
+        "SELECT repo_id, canonical_path, display_name, target_branch, last_cursor, last_polled_at, created_at, include_globs, exclude_globs \
          FROM proxima_code.repos \
          WHERE owner_kind = $1 \
            AND owner_id = $2 \
@@ -278,7 +327,7 @@ async fn update_target_branch(
          WHERE owner_kind = $1 \
            AND owner_id = $2 \
            AND repo_id = $3 \
-         RETURNING repo_id, canonical_path, display_name, target_branch, last_cursor, last_polled_at, created_at",
+         RETURNING repo_id, canonical_path, display_name, target_branch, last_cursor, last_polled_at, created_at, include_globs, exclude_globs",
     )
     .bind(kind)
     .bind(principal_id)

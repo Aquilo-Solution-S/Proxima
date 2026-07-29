@@ -2,6 +2,7 @@ mod common;
 
 use common::{migrated_db, test_owner};
 use proxima_code::CommitV1;
+use proxima_code::RepoScope;
 use proxima_code::testkit::{erase_repo, register_repo};
 use proxima_core::{FactPayload, Owner};
 use proxima_pg_testkit::drop_db;
@@ -108,13 +109,22 @@ async fn exercise_repo_erase(pool: &sqlx::PgPool) -> Result<(), Box<dyn std::err
     let repo_id = Uuid::now_v7();
     let other_repo_id = Uuid::now_v7();
     let repo_path = format!("/tmp/proxima-erase-repo-{repo_id}");
-    register_repo(pool, &owner, repo_id, &repo_path, "erase repo fixture").await?;
+    register_repo(
+        pool,
+        &owner,
+        repo_id,
+        &repo_path,
+        "erase repo fixture",
+        &RepoScope::default(),
+    )
+    .await?;
     register_repo(
         pool,
         &owner,
         other_repo_id,
         &format!("/tmp/proxima-erase-repo-keep-{other_repo_id}"),
         "keep repo fixture",
+        &RepoScope::default(),
     )
     .await?;
 
@@ -221,7 +231,15 @@ async fn assert_repo_rebuild_allowed(
     repo_id: Uuid,
     repo_path: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    register_repo(pool, owner, repo_id, repo_path, "rebuilt repo fixture").await?;
+    register_repo(
+        pool,
+        owner,
+        repo_id,
+        repo_path,
+        "rebuilt repo fixture",
+        &RepoScope::default(),
+    )
+    .await?;
     let rebuilt_memory_id = Uuid::now_v7();
     insert_repo_commit_with_test_request(pool, owner, repo_id, rebuilt_memory_id).await?;
     assert_eq!(

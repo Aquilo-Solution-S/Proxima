@@ -63,6 +63,7 @@ use crate::ingest::{
     ingest_commit, ingest_file_revision,
 };
 use crate::payloads::{CodeChunkV1, CommitV1, FileRevisionV1, FileState};
+use crate::repos::ScopeMatcher;
 use crate::store::CodeFlavorStore;
 
 #[derive(Debug, thiserror::Error)]
@@ -77,6 +78,12 @@ pub enum IndexError {
     Utf8,
     #[error("cursor: {0}")]
     Cursor(String),
+    /// The repo's stored ingest scope will not compile. Validated on
+    /// write, so this means the row was edited outside the tool surface.
+    /// Fails the ingest rather than silently indexing everything: a scope
+    /// that cannot be applied is not the same as no scope.
+    #[error("ingest scope: {0}")]
+    Scope(#[from] crate::repos::ScopeError),
 }
 
 /// Counters returned by [`LocalGitSource::run_poll`]. Sums across
@@ -95,6 +102,10 @@ pub struct IndexReport {
     pub chunks_emitted: usize,
     pub chunks_reused: usize,
     pub chunks_tombstoned: usize,
+    /// Tracked blobs the repo's scope removed from this ingest. Reported
+    /// rather than silent: a caller who cannot find a file in search
+    /// should be able to see that scope, not a bug, is why.
+    pub files_excluded: usize,
 }
 
 /// Per-commit progress event emitted between commit boundaries
@@ -295,6 +306,27 @@ impl LocalGitSource {
         }
     }
 
+    /// The repo's stored ingest scope, compiled once per ingest.
+    ///
+    /// Loaded here rather than taken as a constructor argument on
+    /// purpose: both ingest verbs must apply the same scope, and a
+    /// snapshot that filtered while a poll did not would make the indexed
+    /// set depend on which verb ran last. Reading it from the row is the
+    /// only way a caller cannot forget.
+    ///
+    /// A repo row that has vanished admits everything — the ingest verbs
+    /// resolve the repo themselves and report a missing one better than a
+    /// scope lookup can.
+    async fn load_scope(&self, pool: &sqlx::PgPool) -> Result<ScopeMatcher, IndexError> {
+        let record = crate::repos::get_repo(pool, &self.owner, self.repo_id)
+            .await
+            .map_err(|err| IndexError::Git(err.to_string()))?;
+        match record {
+            Some(record) => Ok(record.scope.compile()?),
+            None => Ok(ScopeMatcher::allow_all()),
+        }
+    }
+
     /// Pure git walk under `cursor`. Pool-free; returns the commits
     /// to ingest plus head shas for cursor advance. Per-commit tree
     /// diffs are computed inside `run_poll` (one diff per commit).
@@ -345,6 +377,10 @@ impl LocalGitSource {
     ) -> Result<(IndexReport, Cursor), IndexError> {
         let parsed = decode_cursor(cursor)?;
         let plan = self.walk_git(&parsed)?;
+        // Same scope the snapshot applies. A poll that skipped it would
+        // re-add exactly what a snapshot had just excluded, making the
+        // indexed set depend on which verb ran most recently.
+        let scope = self.load_scope(ctx.pool()).await?;
         let mut report = IndexReport::default();
         let commit_limit = max_commits.unwrap_or(usize::MAX);
         let selected_total = plan.commits.len().min(commit_limit);
@@ -360,8 +396,14 @@ impl LocalGitSource {
         // historical order, and the NK head advances monotonically.
         let mut last_ingested_sha: Option<String> = None;
         for (i, commit_info) in plan.commits.iter().rev().take(selected_total).enumerate() {
-            self.ingest_one_commit(ctx, commit_info, &mut report, &mut blob_analysis_cache)
-                .await?;
+            self.ingest_one_commit(
+                ctx,
+                commit_info,
+                &scope,
+                &mut report,
+                &mut blob_analysis_cache,
+            )
+            .await?;
             last_ingested_sha = Some(commit_info.sha.clone());
             progress(IngestProgress {
                 commit_index: i,
@@ -407,10 +449,24 @@ impl LocalGitSource {
         // Listing first, contents in bounded batches. Reading the whole tree
         // up front held every tracked file of the repository in memory at once
         // before a single row was written.
-        let head_entries: Vec<git::TreeEntry> = git::ls_tree(&self.repo_path, "HEAD")?
+        let scope = self.load_scope(pool).await?;
+        let within_cap: Vec<git::TreeEntry> = git::ls_tree(&self.repo_path, "HEAD")?
             .into_iter()
             .filter(|entry| entry.size <= crate::chunker::MAX_BLOB_BYTES as u64)
             .collect();
+        let within_cap_count = within_cap.len();
+        // Everything the scope removes stays out of `present_paths` below,
+        // so a path that has just left scope is tombstoned by exactly the
+        // branch that handles a deleted file. Changing a scope is therefore
+        // one re-ingest away, and it never leaves orphans behind.
+        let head_entries: Vec<git::TreeEntry> = within_cap
+            .into_iter()
+            .filter(|entry| scope.admits(&entry.path))
+            .collect();
+        // Counted against the size cap, not against the raw listing: an
+        // oversized blob was never a candidate, and folding it in here
+        // would report scope for a decision scope did not make.
+        let files_excluded = within_cap_count.saturating_sub(head_entries.len());
         let present_paths: HashSet<String> = head_entries
             .iter()
             .map(|entry| entry.path.clone())
@@ -422,7 +478,10 @@ impl LocalGitSource {
             .map(|head| (head.file_path.clone(), head))
             .collect();
 
-        let mut report = IndexReport::default();
+        let mut report = IndexReport {
+            files_excluded,
+            ..IndexReport::default()
+        };
         let mut blob_analysis_cache = HashMap::new();
         let mut pending_present = Vec::new();
         let mut pending_deleted = Vec::new();
@@ -488,6 +547,7 @@ impl LocalGitSource {
         &self,
         ctx: &CodeIngestContext<'_>,
         commit_info: &CommitInfo,
+        scope: &ScopeMatcher,
         report: &mut IndexReport,
         blob_analysis_cache: &mut HashMap<BlobAnalysisKey, BlobAnalysis>,
     ) -> Result<(), IndexError> {
@@ -512,6 +572,18 @@ impl LocalGitSource {
                 .map(|entry| entry.path)
                 .collect();
             (added, Vec::new())
+        };
+        // Out-of-scope paths are dropped from BOTH lists. Dropping them
+        // only from `changed` would let a delete of a never-indexed path
+        // write a tombstone for a file the index has never heard of.
+        let (changed, deleted) = if scope.admits_everything() {
+            (changed, deleted)
+        } else {
+            let before = changed.len();
+            let changed: Vec<String> = changed.into_iter().filter(|p| scope.admits(p)).collect();
+            report.files_excluded += before.saturating_sub(changed.len());
+            let deleted: Vec<String> = deleted.into_iter().filter(|p| scope.admits(p)).collect();
+            (changed, deleted)
         };
 
         // Phase 1 — the commit Fact itself.

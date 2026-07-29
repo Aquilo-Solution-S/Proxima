@@ -1,5 +1,6 @@
 #![allow(clippy::doc_markdown, clippy::too_many_lines)]
 
+use proxima_code::RepoScope;
 use std::fmt::Write as _;
 
 mod common;
@@ -22,9 +23,16 @@ fn owner_cols(owner: &Owner) -> (proxima_core::OwnerRefKind, Option<Uuid>) {
 }
 
 async fn register_test_repo(pool: &sqlx::PgPool, owner: &Owner, repo_id: Uuid) {
-    register_repo(pool, owner, repo_id, "/tmp/proxima-e2e", "proxima-e2e")
-        .await
-        .expect("register repo");
+    register_repo(
+        pool,
+        owner,
+        repo_id,
+        "/tmp/proxima-e2e",
+        "proxima-e2e",
+        &RepoScope::default(),
+    )
+    .await
+    .expect("register repo");
 }
 
 fn make_tiny_repo() -> TempDir {
@@ -102,6 +110,7 @@ async fn run_transitions_and_failure_persist() {
             repo_id2,
             "/tmp/proxima-e2e-2",
             "repo2",
+            &RepoScope::default(),
         )
         .await?;
         let failed = start_run(pg.pool_for_tests(), &owner, repo_id2).await?;
@@ -128,6 +137,7 @@ async fn sweep_retires_orphans_and_unblocks_start_run() {
             queued_repo,
             "/tmp/proxima-sweep-q",
             "queued",
+            &RepoScope::default(),
         )
         .await?;
         register_repo(
@@ -136,6 +146,7 @@ async fn sweep_retires_orphans_and_unblocks_start_run() {
             running_repo,
             "/tmp/proxima-sweep-r",
             "running",
+            &RepoScope::default(),
         )
         .await?;
 
@@ -198,7 +209,7 @@ async fn local_ingestion_lands_facts_citations_edges_and_replays_idempotently() 
         let repo = make_tiny_repo();
         let repo_id = Uuid::now_v7();
         let path = repo.path().to_string_lossy().into_owned();
-        register_repo(pg.pool_for_tests(), &owner, repo_id, &path, "fixture").await?;
+        register_repo(pg.pool_for_tests(), &owner, repo_id, &path, "fixture", &RepoScope::default()).await?;
         let engine = build_engine(pg.clone());
         let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
         let store = CodeFlavorStore::from_backend_pool_for_tests(pg.pool_for_tests().clone());

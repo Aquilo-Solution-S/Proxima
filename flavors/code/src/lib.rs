@@ -40,8 +40,8 @@ use proxima_core::{
     SchemaId, SchemaRef, SchemaVersion,
 };
 pub use repos::{
-    RepoEraseReceipt, RepoIngestionRun, RepoRecord, RepoRegistryError, RunStage, RunStatus,
-    StageCounters,
+    MAX_SCOPE_GLOB_LEN, MAX_SCOPE_GLOBS, RepoEraseReceipt, RepoIngestionRun, RepoRecord,
+    RepoRegistryError, RepoScope, RunStage, RunStatus, ScopeError, ScopeMatcher, StageCounters,
 };
 
 #[cfg(any(test, debug_assertions))]
@@ -54,8 +54,8 @@ pub mod testkit {
     pub use crate::repos::{
         advance_stage, begin_run, delete_repo, erase_repo, get_active_run, get_repo, get_run,
         infer_missing_target_branch, list_repos, mark_failed, mark_succeeded, register_repo,
-        set_repo_target_branch, start_run, start_run_with_created, sweep_orphaned_runs,
-        update_cursor,
+        set_repo_scope, set_repo_target_branch, start_run, start_run_with_created,
+        sweep_orphaned_runs, update_cursor,
     };
 }
 

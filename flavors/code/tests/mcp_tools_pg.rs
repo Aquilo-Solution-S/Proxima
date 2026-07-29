@@ -1,3 +1,4 @@
+use proxima_code::RepoScope;
 use std::fmt::Write as _;
 use std::sync::Arc;
 use std::time::Duration;
@@ -195,6 +196,129 @@ async fn ingest_head_snapshot_tool_indexes_current_tree() -> Result<(), Box<dyn 
     .await?;
     assert_eq!(chunks["matches"].as_array().expect("matches").len(), 1);
     assert_eq!(chunks["matches"][0]["file_path"], "src/lib.rs");
+    Ok(())
+}
+
+/// A repo's ingest scope decides what gets indexed, is reported rather
+/// than silent, and is re-appliable: narrowing it tombstones what left.
+///
+/// The motivating measurement is knip, where 3,389 of 4,935 chunks
+/// (68.7%) sit under a fixture path and account for 22% of the whole
+/// deployment's embeddings. This is that in miniature.
+#[tokio::test]
+async fn an_ingest_scope_excludes_fixtures_and_tombstones_what_leaves_it()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fixture = TestDb::fresh().await;
+    let owner = owner_fixture();
+    let registry = registry_for_mcp();
+    let temp = TempDir::new()?;
+    init_git_repo_with_files(
+        temp.path(),
+        &[
+            ("src/lib.rs", "pub fn scope_kept_marker() -> u64 { 1 }\n"),
+            (
+                "fixtures/plugins/a.rs",
+                "pub fn scope_dropped_marker() -> u64 { 2 }\n",
+            ),
+        ],
+    )?;
+    let path = temp.path().to_string_lossy().into_owned();
+
+    // Registered unscoped first, so the assertions below compare against
+    // a real indexed state rather than against nothing.
+    let registered = run_tool::<CodeRegisterRepoTool>(
+        ctx(fixture.pg.clone(), owner, registry.clone()),
+        json!({ "path": path, "display_name": "Scope Repo" }),
+    )
+    .await?;
+    let repo_handle = registered["repo"]["repo_id"]
+        .as_str()
+        .expect("repo_id")
+        .to_string();
+    assert_eq!(
+        registered["repo"]["exclude_globs"].as_array().map(Vec::len),
+        Some(0),
+        "an unscoped repo reports empty lists, not null: {registered}"
+    );
+
+    let wide = run_tool::<CodeIngestHeadSnapshotTool>(
+        ctx(fixture.pg.clone(), owner, registry.clone()),
+        json!({ "repo_handle": repo_handle }),
+    )
+    .await?;
+    assert_eq!(wide["report"]["files_present_emitted"], 2);
+    assert_eq!(
+        wide["report"]["files_excluded"], 0,
+        "no scope excludes nothing: {wide}"
+    );
+    let both = run_tool::<CodeSearchChunksTool>(
+        ctx(fixture.pg.clone(), owner, registry.clone()),
+        json!({ "query": "scope_dropped_marker", "repo_handle": repo_handle, "limit": 10 }),
+    )
+    .await?;
+    assert!(
+        match_paths(&both).contains(&"fixtures/plugins/a.rs".to_string()),
+        "the fixture must be indexed before the scope removes it: {both}"
+    );
+
+    // Re-registering with a scope is how an existing repo is narrowed:
+    // `display_name` is ignored on replay, scope is not.
+    let rescoped = run_tool::<CodeRegisterRepoTool>(
+        ctx(fixture.pg.clone(), owner, registry.clone()),
+        json!({ "path": path, "exclude_globs": ["**/fixtures/**"] }),
+    )
+    .await?;
+    assert_eq!(rescoped["created"], false);
+    assert_eq!(
+        rescoped["repo"]["exclude_globs"][0], "**/fixtures/**",
+        "the scope reads back exactly as written: {rescoped}"
+    );
+
+    let narrowed = run_tool::<CodeIngestHeadSnapshotTool>(
+        ctx(fixture.pg.clone(), owner, registry.clone()),
+        json!({ "repo_handle": repo_handle }),
+    )
+    .await?;
+    assert_eq!(
+        narrowed["report"]["files_excluded"], 1,
+        "the excluded file is counted, not silently dropped: {narrowed}"
+    );
+    assert_eq!(
+        narrowed["report"]["files_tombstoned"], 1,
+        "a path that leaves scope is tombstoned like a deleted one: {narrowed}"
+    );
+
+    let dropped = run_tool::<CodeSearchChunksTool>(
+        ctx(fixture.pg.clone(), owner, registry.clone()),
+        json!({ "query": "scope_dropped_marker", "repo_handle": repo_handle, "limit": 10 }),
+    )
+    .await?;
+    assert!(
+        !match_paths(&dropped).contains(&"fixtures/plugins/a.rs".to_string()),
+        "the out-of-scope chunk must be gone from search: {dropped}"
+    );
+    let kept = run_tool::<CodeSearchChunksTool>(
+        ctx(fixture.pg.clone(), owner, registry.clone()),
+        json!({ "query": "scope_kept_marker", "repo_handle": repo_handle, "limit": 10 }),
+    )
+    .await?;
+    assert!(
+        match_paths(&kept).contains(&"src/lib.rs".to_string()),
+        "the file beside the fixture is untouched: {kept}"
+    );
+
+    // A malformed glob is a rejected call, not a repo whose every future
+    // ingest fails on a pattern nobody can now change.
+    let bad = run_tool::<CodeRegisterRepoTool>(
+        ctx(fixture.pg.clone(), owner, registry),
+        json!({ "path": path, "exclude_globs": ["src/["] }),
+    )
+    .await
+    .expect_err("a malformed glob must be rejected");
+    assert!(
+        bad.to_string().contains("invalid ingest scope"),
+        "unexpected error: {bad}"
+    );
     Ok(())
 }
 
@@ -1139,6 +1263,7 @@ async fn open_file_revision_accepts_unambiguous_repo_display_name()
         repo_id,
         "/tmp/proxima-mcp-display",
         "Proxima",
+        &RepoScope::default(),
     )
     .await?;
 
@@ -1338,6 +1463,7 @@ async fn emit_execution_plan_uses_abstraction_proof_source()
         repo_id,
         "/tmp/proxima-plan-proof",
         "Plan Proof Repo",
+        &RepoScope::default(),
     )
     .await?;
     let shell_self = seed_perspective(&fixture.pg, &owner, "Planner Root").await?;
@@ -1703,6 +1829,21 @@ fn registry_for_engine() -> FlavorRegistryFrozen {
             PayloadKind::CitationMapping,
         ),
     ])
+}
+
+/// The `file_path` of every match, in rank order.
+///
+/// Asserting on paths rather than on a count: the lexical rescue band
+/// returns anything sharing a content word, so two files that both say
+/// `marker` both come back and a count assertion would be testing the
+/// ranker rather than the scope.
+fn match_paths(result: &serde_json::Value) -> Vec<String> {
+    result["matches"]
+        .as_array()
+        .expect("matches")
+        .iter()
+        .map(|m| m["file_path"].as_str().expect("file_path").to_string())
+        .collect()
 }
 
 fn init_git_repo_with_commit(
