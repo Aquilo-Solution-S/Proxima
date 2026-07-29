@@ -18,7 +18,7 @@ use super::memory::search::{NeighborEdge, neighbor_edges_from_rows};
 
 const SEMANTIC_SEARCH_UNAVAILABLE: &str =
     "semantic search unavailable: no embedding client is configured for this host";
-const DEFAULT_BODY_MAX_CHARS: usize = 8_000;
+const DEFAULT_BODY_MAX_CHARS: usize = crate::MAX_TEXT_CAP_CHARS;
 /// Each distinct space costs one full storage search, so the space list is
 /// this tool's only per-request work multiplier; cap it like every other
 /// list argument.
@@ -224,12 +224,7 @@ impl McpTool for SearchMemoriesTool {
         args: SearchMemoriesArgs,
     ) -> BoxFuture<'static, Result<SearchMemoriesOutput, McpToolError>> {
         Box::pin(async move {
-            let query = args.query.trim();
-            if query.is_empty() || query.chars().count() > 512 {
-                return Err(McpToolError::InvalidInput(
-                    "query must be 1..=512 chars".into(),
-                ));
-            }
+            let query = crate::validate_search_query(&args.query)?;
             validate_score_args(&args)?;
             validate_body_max_chars(args.body_max_chars)?;
             crate::reject_zero_limit(Some(args.limit))?;
