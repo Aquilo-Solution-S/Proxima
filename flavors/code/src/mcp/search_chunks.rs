@@ -273,7 +273,7 @@ impl Tool for CodeSearchChunksTool {
                     "snippet_max_chars must be at least 1".into(),
                 ));
             }
-            super::reject_zero_limit(args.limit)?;
+            proxima_core::reject_zero_limit(args.limit)?;
             let snippet_max_chars = effective_snippet_max_chars(args.snippet_max_chars);
             let limit = args.limit.unwrap_or(12).min(50);
             let exact_pattern = like_pattern(query);

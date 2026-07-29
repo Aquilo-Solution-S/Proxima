@@ -232,7 +232,7 @@ impl McpTool for SearchMemoriesTool {
             }
             validate_score_args(&args)?;
             validate_body_max_chars(args.body_max_chars)?;
-            super::reject_zero_limit(args.limit)?;
+            crate::reject_zero_limit(Some(args.limit))?;
             validate_list_caps(&args)?;
 
             let mode = SearchMode::from(args.mode);

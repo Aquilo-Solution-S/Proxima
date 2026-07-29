@@ -43,31 +43,13 @@ use crate::mcp::McpToolAnnotations;
 pub(crate) const DEFAULT_PAGE_LIMIT: u32 = 50;
 pub(crate) const MAX_PAGE_LIMIT: u32 = 200;
 
-/// Reject `limit: 0` on any paged read.
-///
-/// The two ends of the range are not symmetric. A limit *above* the
-/// maximum is clamped, because "as many as you will give me" is still the
-/// caller's intent and the page they get answers it. Zero answers nothing:
-/// it produces a well-formed empty page that is indistinguishable from
-/// "nothing matched", so a mistyped bound reads as a real absence. Same
-/// reasoning as `search_memories`' `body_max_chars`, which has rejected
-/// zero for exactly this since it was written.
-pub(crate) fn reject_zero_limit(limit: u32) -> Result<(), crate::mcp::McpToolError> {
-    if limit == 0 {
-        return Err(crate::mcp::McpToolError::InvalidInput(
-            "limit must be at least 1".into(),
-        ));
-    }
-    Ok(())
-}
-
 /// Resolve an optional wire `limit` to `1..=`[`MAX_PAGE_LIMIT`],
 /// defaulting to [`DEFAULT_PAGE_LIMIT`] when omitted and rejecting zero
-/// per [`reject_zero_limit`].
+/// per [`crate::reject_zero_limit`], which is shared with the flavor tool
+/// trait so both surfaces cannot drift on the same rule.
 pub(crate) fn resolve_page_limit(limit: Option<u32>) -> Result<u32, crate::mcp::McpToolError> {
-    let limit = limit.unwrap_or(DEFAULT_PAGE_LIMIT);
-    reject_zero_limit(limit)?;
-    Ok(limit.min(MAX_PAGE_LIMIT))
+    crate::reject_zero_limit(limit)?;
+    Ok(limit.unwrap_or(DEFAULT_PAGE_LIMIT).min(MAX_PAGE_LIMIT))
 }
 
 const READ_ONLY: McpToolAnnotations = McpToolAnnotations::new().read_only(true).open_world(false);
@@ -114,12 +96,15 @@ pub(crate) fn register_all(
 
 #[cfg(test)]
 mod page_limit_tests {
-    use super::{DEFAULT_PAGE_LIMIT, MAX_PAGE_LIMIT, reject_zero_limit, resolve_page_limit};
+    use super::{DEFAULT_PAGE_LIMIT, MAX_PAGE_LIMIT, resolve_page_limit};
+    use crate::reject_zero_limit;
 
     #[test]
     fn zero_is_rejected_and_the_upper_bound_is_clamped() {
-        assert!(reject_zero_limit(0).is_err());
-        assert!(reject_zero_limit(1).is_ok());
+        assert!(reject_zero_limit(Some(0)).is_err());
+        assert!(reject_zero_limit(Some(1)).is_ok());
+        assert!(reject_zero_limit(None).is_ok());
+        assert!(reject_zero_limit(Some(u32::MAX)).is_ok());
         assert!(resolve_page_limit(Some(0)).is_err());
         assert_eq!(resolve_page_limit(Some(1)).unwrap(), 1);
         assert_eq!(
@@ -138,15 +123,27 @@ mod page_limit_tests {
     /// `limit == 0` guards (`engine::query`, `engine::read_verbs`) could
     /// never fire through a tool call. Rejecting here keeps the two layers
     /// saying the same thing rather than one hiding the other.
+    ///
+    /// Also pins the mechanism that lets ONE helper serve both tool traits:
+    /// `reject_zero_limit` returns [`crate::ToolError`], and an `McpTool`
+    /// body reaches it through `?`. If `From<ToolError> for McpToolError`
+    /// ever stopped mapping `InvalidInput` to `InvalidInput`, core's paged
+    /// reads would start reporting a client mistake as something else.
     #[test]
-    fn the_rejection_names_the_bound_it_wants() {
-        let crate::mcp::McpToolError::InvalidInput(message) = reject_zero_limit(0).unwrap_err()
+    fn the_rejection_survives_the_hop_to_mcp_tool_error() {
+        let crate::ToolError::InvalidInput(message) = reject_zero_limit(Some(0)).unwrap_err()
         else {
             panic!("a zero limit must be invalid input, not any other error kind");
         };
         assert!(
             message.contains("at least 1"),
             "the message must tell the caller the bound: {message}"
+        );
+
+        let promoted: crate::mcp::McpToolError = reject_zero_limit(Some(0)).unwrap_err().into();
+        assert!(
+            matches!(promoted, crate::mcp::McpToolError::InvalidInput(_)),
+            "the shared helper must still read as invalid input on the MCP surface: {promoted:?}"
         );
     }
 }

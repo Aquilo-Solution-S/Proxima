@@ -86,7 +86,7 @@ impl Tool for CodeSearchCommitsTool {
                     "query must be 1..=512 chars".into(),
                 ));
             }
-            super::reject_zero_limit(args.limit)?;
+            proxima_core::reject_zero_limit(args.limit)?;
             let limit = args.limit.unwrap_or(10).min(50);
             let repo_id = match args.repo_handle.as_deref() {
                 Some(handle) => Some(resolve_repo_identifier(&ctx, handle).await?),

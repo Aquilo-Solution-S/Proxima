@@ -189,6 +189,37 @@ impl ToolCtx {
     }
 }
 
+/// Reject `limit: 0` on any paged read. `None` means the caller omitted
+/// the bound and takes the tool's default, which is always fine.
+///
+/// The two ends of a page bound are not symmetric. A limit *above* the
+/// maximum can be clamped, because "as many as you will give me" is still
+/// the caller's intent and the page they get answers it. Zero answers
+/// nothing: it yields a well-formed empty page that no client can tell
+/// apart from "nothing matched", or — worse — a clamped page of one, which
+/// answers a question that was not asked.
+///
+/// This lives on `ToolError` rather than `McpToolError` so one
+/// implementation serves both tool traits: `From<ToolError> for
+/// McpToolError` maps `InvalidInput` straight through, so an
+/// `McpTool` body can `?` this directly. It is `pub` because every flavor
+/// with a paged read needs the same rule, and a rule an out-of-tree flavor
+/// cannot reach is a rule it will reimplement differently.
+///
+/// The engine has enforced this from the start (`engine::query`,
+/// `engine::read_verbs`); this is the tool layer agreeing with it instead
+/// of clamping first and hiding it.
+///
+/// # Errors
+///
+/// [`ToolError::InvalidInput`] when `limit` is `Some(0)`.
+pub fn reject_zero_limit(limit: Option<u32>) -> Result<(), ToolError> {
+    if limit == Some(0) {
+        return Err(ToolError::InvalidInput("limit must be at least 1".into()));
+    }
+    Ok(())
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum ToolError {
     #[error("invalid input: {0}")]

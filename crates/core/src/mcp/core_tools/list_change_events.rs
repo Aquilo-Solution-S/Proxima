@@ -72,7 +72,7 @@ pub async fn list_change_events(
         })?,
     };
     let limit = args.limit.unwrap_or(100);
-    super::reject_zero_limit(limit)?;
+    crate::reject_zero_limit(Some(limit))?;
     let limit = limit.min(1000) as usize;
     let engine = ctx.require_engine()?;
     let response = engine

@@ -24,6 +24,17 @@ pub use proxima_core::mcp::{
     McpActionArgSpec, McpAuthorContext, McpTool, McpToolAnnotations, McpToolCtx, McpToolError,
     McpToolErrorKind, McpToolExtensions,
 };
+/// The zero-page-bound rule, shared so a flavor does not have to invent
+/// its own.
+///
+/// Every paged read faces the same question and the in-tree tools once
+/// answered it three different ways: one rejected `limit: 0`, one returned
+/// a well-formed empty page indistinguishable from "nothing matched", and
+/// one clamped to 1 and answered a question nobody asked. The engine has
+/// rejected zero from the start; this is how a flavor agrees with it in
+/// one line. Upper bounds stay the flavor's own business — clamping those
+/// still serves the caller's intent.
+pub use proxima_core::reject_zero_limit;
 /// Host-wired cited-blob lane, handed to workers as
 /// [`FlavorWorkerContext::blobs`]. Present only when the host configured
 /// S3; the concrete backend (`proxima-blob-s3`) is never named across
