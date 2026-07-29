@@ -203,7 +203,10 @@ impl ServerHandler for DynamicHandler {
                     Cow::Borrowed(descriptor.description),
                     Arc::new(rmcp::model::object(schema)),
                 );
-                match core_tool_annotations(descriptor.name) {
+                match descriptor
+                    .annotations
+                    .or_else(|| core_tool_annotations(descriptor.name))
+                {
                     Some(annotations) => tool.annotate(to_rmcp_annotations(annotations)),
                     None => tool,
                 }
@@ -227,7 +230,10 @@ impl ServerHandler for DynamicHandler {
                     Cow::Borrowed(descriptor.description),
                     Arc::new(rmcp::model::object(descriptor.args_schema.clone())),
                 );
-                match core_tool_annotations(descriptor.name) {
+                match descriptor
+                    .annotations
+                    .or_else(|| core_tool_annotations(descriptor.name))
+                {
                     Some(annotations) => tool.annotate(to_rmcp_annotations(annotations)),
                     None => tool,
                 }

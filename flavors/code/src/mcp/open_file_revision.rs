@@ -73,6 +73,7 @@ impl Tool for CodeOpenFileRevisionTool {
     const NAME: &'static str = "proxima-code_open_file_revision";
     const DESCRIPTION: &'static str =
         "Return the current head revision and head chunks for one repo_handle/file_path pair.";
+    const ANNOTATIONS: Option<proxima_core::mcp::McpToolAnnotations> = Some(super::READ_ONLY);
 
     type Args = CodeOpenFileRevisionArgs;
     type Output = CodeOpenFileRevisionOutput;

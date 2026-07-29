@@ -70,6 +70,7 @@ impl Tool for CodeSearchCommitsTool {
     const NAME: &'static str = "proxima-code_search_commits";
     const DESCRIPTION: &'static str =
         "Search Git commit facts and operator-authored commit summaries.";
+    const ANNOTATIONS: Option<proxima_core::mcp::McpToolAnnotations> = Some(super::READ_ONLY);
 
     type Args = CodeSearchCommitsArgs;
     type Output = CodeSearchCommitsOutput;

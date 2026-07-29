@@ -274,6 +274,77 @@ mod tests {
         assert_eq!(derived_from.payload_sidecar_table, None);
     }
 
+    /// Every tool this flavor serves declares what it does to the world.
+    ///
+    /// Not cosmetic. `ScopeGateBehavior::enforce_owner_role` asks whether
+    /// a tool is read-only and demands WRITE access when it cannot tell,
+    /// and its only source was a hardcoded match over *core* tool names —
+    /// so every tool here was billed as a write, and a viewer was refused
+    /// a search. The other half is `erase_repo`, which is irreversible and
+    /// advertised nothing at all to a client deciding what to
+    /// auto-approve.
+    ///
+    /// Asserted over the whole registered set rather than tool by tool, so
+    /// a tool added later cannot ship silent.
+    #[test]
+    fn every_served_tool_declares_its_behavior() {
+        let mut registry = FlavorRegistry::new();
+        super::register(&mut registry).unwrap();
+        let frozen = registry.try_freeze().unwrap();
+
+        let mut read_only = Vec::new();
+        for tool in frozen.list_mcp_tools() {
+            if !tool.name.starts_with("proxima-code") {
+                continue; // core's own tools answer through core's table.
+            }
+            let annotations = tool.annotations.unwrap_or_else(|| {
+                panic!(
+                    "{} declares no ANNOTATIONS, so the owner-role gate will bill it as a write",
+                    tool.name
+                )
+            });
+            assert_eq!(
+                annotations.open_world,
+                Some(false),
+                "{} reaches only this deployment's database",
+                tool.name
+            );
+            if annotations.read_only == Some(true) {
+                read_only.push(tool.name);
+            }
+        }
+
+        assert!(
+            read_only.contains(&"proxima-code_search_chunks"),
+            "the search tools must be callable by a read-only role: {read_only:?}"
+        );
+        assert!(
+            read_only.contains(&"proxima-code_search_commits"),
+            "{read_only:?}"
+        );
+        assert!(
+            read_only.contains(&"proxima-code_list_repos"),
+            "{read_only:?}"
+        );
+        assert!(
+            read_only.contains(&"proxima-code_open_file_revision"),
+            "{read_only:?}"
+        );
+
+        let erase = frozen
+            .list_mcp_tools()
+            .iter()
+            .find(|tool| tool.name == "proxima-code_erase_repo")
+            .and_then(|tool| tool.annotations)
+            .expect("erase_repo is registered and annotated");
+        assert_eq!(
+            erase.destructive,
+            Some(true),
+            "erase_repo is irreversible and must say so before a client auto-approves it"
+        );
+        assert_eq!(erase.read_only, Some(false));
+    }
+
     #[test]
     fn registry_lists_all_mcp_tools() {
         let mut registry = FlavorRegistry::new();

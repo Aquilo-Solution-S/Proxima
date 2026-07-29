@@ -34,6 +34,8 @@ pub struct CodeEmitExecutionPlanTool;
 impl Tool for CodeEmitExecutionPlanTool {
     const NAME: &'static str = "proxima-code_emit_execution_plan";
     const DESCRIPTION: &'static str = "Atomically emit a repo-scoped execution-plan Abstraction plus implementation/test request Facts and core/depends-on edges.";
+    const ANNOTATIONS: Option<proxima_core::mcp::McpToolAnnotations> =
+        Some(crate::mcp::WRITE_NON_IDEMPOTENT);
     const PRODUCES_SCHEMA_IDS: &'static [&'static str] = &[
         CodeExecutionPlanV1::SCHEMA_ID,
         ExecutionRequestV1::SCHEMA_ID,

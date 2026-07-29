@@ -125,6 +125,18 @@ impl ScopeGateBehavior {
                 .and_then(serde_json::Value::as_str)
                 .and_then(|action| core_action_meta(tool, action))
                 .map(|meta| meta.annotations)
+                // What the tool itself declared. `core_tool_annotations`
+                // is a hardcoded match over core names and returns None
+                // for every flavor tool, so before the descriptor carried
+                // this a flavor's READ was billed as a write and refused
+                // to every read-only role.
+                .or_else(|| {
+                    ctx.registry
+                        .list_mcp_tools()
+                        .iter()
+                        .find(|descriptor| descriptor.name == tool)
+                        .and_then(|descriptor| descriptor.annotations)
+                })
                 .or_else(|| core_tool_annotations(tool))
                 .and_then(|annotations| annotations.read_only)
                 .unwrap_or(false)
@@ -386,5 +398,117 @@ mod tests {
             extensions: McpToolExtensions::default(),
             engine: None,
         }
+    }
+}
+
+#[cfg(test)]
+mod owner_role_tests {
+    use super::ScopeGateBehavior;
+    use crate::access::Role;
+    use crate::mcp::{
+        McpAuthorContext, McpTool, McpToolAnnotations, McpToolCtx, McpToolError, McpToolExtensions,
+    };
+    use crate::{AuthPath, AuthzContext, FlavorRegistry, GroupId, OwnerRef, UserId};
+    use futures::future::BoxFuture;
+    use std::sync::Arc;
+
+    #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+    struct StubArgs {
+        #[schemars(description = "anything")]
+        _query: String,
+    }
+
+    /// A flavor tool that says it only reads.
+    #[derive(Debug)]
+    struct DeclaredReadTool;
+
+    impl McpTool for DeclaredReadTool {
+        const NAME: &'static str = "proxima-stub_search";
+        const DESCRIPTION: &'static str = "A flavor read tool that declares itself read-only.";
+        const ANNOTATIONS: Option<McpToolAnnotations> =
+            Some(McpToolAnnotations::new().read_only(true).open_world(false));
+        type Args = StubArgs;
+        type Output = ();
+        fn call(_: McpToolCtx, _: Self::Args) -> BoxFuture<'static, Result<(), McpToolError>> {
+            Box::pin(async { Ok(()) })
+        }
+    }
+
+    /// A flavor tool that says nothing, the pre-existing shape.
+    #[derive(Debug)]
+    struct SilentTool;
+
+    impl McpTool for SilentTool {
+        const NAME: &'static str = "proxima-stub_silent";
+        const DESCRIPTION: &'static str = "A flavor tool that declares no annotations.";
+        type Args = StubArgs;
+        type Output = ();
+        fn call(_: McpToolCtx, _: Self::Args) -> BoxFuture<'static, Result<(), McpToolError>> {
+            Box::pin(async { Ok(()) })
+        }
+    }
+
+    /// A group viewer: read on everything, write on nothing.
+    fn viewer_ctx(tool_owner: OwnerRef) -> McpToolCtx {
+        let subject = UserId::new(uuid::Uuid::now_v7());
+        let mut registry = FlavorRegistry::new();
+        registry.add_mcp_tool_or_panic_for_tests::<DeclaredReadTool>("proxima-stub");
+        registry.add_mcp_tool_or_panic_for_tests::<SilentTool>("proxima-stub");
+        McpToolCtx {
+            owner: tool_owner,
+            authz: AuthzContext::for_subject_with_role(
+                subject,
+                [(tool_owner, Role::viewer())],
+                AuthPath::HostBearer,
+            ),
+            registry: Arc::new(registry.freeze_or_panic_for_tests()),
+            author: McpAuthorContext {
+                model_id: "t".into(),
+                client_name: "t".into(),
+                client_version: "0".into(),
+                caller_self_perspective: None,
+            },
+            caller_self_perspective: None,
+            extensions: McpToolExtensions::default(),
+            engine: None,
+        }
+    }
+
+    /// A read-only role can call a read-only tool — including a FLAVOR's.
+    ///
+    /// `enforce_owner_role` asks whether a tool is read-only and demands
+    /// WRITE when it cannot tell. Its only source used to be
+    /// `core_tool_annotations`, a hardcoded match over core tool names
+    /// that returns `None` for every flavor tool — so a flavor's read was
+    /// billed as a write and refused to every read-only role. Reading the
+    /// tool's own declaration off the descriptor is the fix.
+    #[test]
+    fn a_viewer_may_call_a_flavor_tool_that_declares_itself_read_only() {
+        let owner = OwnerRef::Group(GroupId::new(uuid::Uuid::now_v7()));
+        let ctx = viewer_ctx(owner);
+        let args = serde_json::json!({"query": "anything"});
+
+        assert!(
+            ScopeGateBehavior::enforce_owner_role("core_search_memories", &args, &ctx).is_ok(),
+            "core's read tool is annotated read-only, so a viewer passes"
+        );
+        assert!(
+            ScopeGateBehavior::enforce_owner_role(DeclaredReadTool::NAME, &args, &ctx).is_ok(),
+            "a flavor read tool that declares read_only must not be billed as a write"
+        );
+    }
+
+    /// Declaring nothing still means write. The default has to stay
+    /// conservative: a tool that has not thought about it may well write,
+    /// and guessing "read" would hand a viewer a mutation.
+    #[test]
+    fn a_flavor_tool_that_declares_nothing_is_still_a_write() {
+        let owner = OwnerRef::Group(GroupId::new(uuid::Uuid::now_v7()));
+        let ctx = viewer_ctx(owner);
+        let args = serde_json::json!({"query": "anything"});
+        assert!(
+            ScopeGateBehavior::enforce_owner_role(SilentTool::NAME, &args, &ctx).is_err(),
+            "silence must not be read as a promise to only read"
+        );
     }
 }

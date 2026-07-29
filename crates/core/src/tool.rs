@@ -310,6 +310,15 @@ pub trait Tool: Send + Sync + 'static {
     const NAME: &'static str;
     const DESCRIPTION: &'static str;
     const PRODUCES_SCHEMA_IDS: &'static [&'static str] = &[];
+    /// MCP behaviour hints for this tool.
+    ///
+    /// Not cosmetic. `ScopeGateBehavior::enforce_owner_role` asks whether
+    /// a tool is read-only and demands WRITE access when it cannot tell,
+    /// so a read tool that declares nothing is refused to every read-only
+    /// role. Defaulting to `None` keeps that conservative behaviour for a
+    /// tool that has not thought about it, which is the right default —
+    /// but a read tool should say so.
+    const ANNOTATIONS: Option<crate::mcp::McpToolAnnotations> = None;
 
     type Args: serde::de::DeserializeOwned + schemars::JsonSchema + Send + 'static;
     type Output: serde::Serialize + Send + 'static;

@@ -3,11 +3,41 @@ mod sql;
 use std::sync::Arc;
 
 use crate::CodeFlavorStore;
-use proxima_core::mcp::{McpToolCaller, McpToolPresentation};
+use proxima_core::mcp::{McpToolAnnotations, McpToolCaller, McpToolPresentation};
 use proxima_core::{EdgeId, GoalId, MemoryId, ToolCtx, ToolError};
 
 pub(crate) const REPO_HANDLE_KIND: &str = "proxima-code/repo";
 pub(crate) const REPO_HANDLE_PREFIX: char = 'R';
+
+/// MCP behaviour hints, one set of constants so eleven tools cannot drift
+/// apart on the same four booleans. Mirrors core's `core_tools::READ_ONLY`
+/// and friends.
+///
+/// These are load-bearing, not decorative. `ScopeGateBehavior`'s owner-role
+/// check asks whether a tool is read-only and demands WRITE access when it
+/// cannot tell — so before this flavor declared anything, a viewer was
+/// refused `proxima-code_search_chunks`. `open_world(false)` on all of them
+/// is true by construction: every one of these tools reads or writes this
+/// deployment's own Postgres and reaches nothing else.
+pub(crate) const READ_ONLY: McpToolAnnotations =
+    McpToolAnnotations::new().read_only(true).open_world(false);
+pub(crate) const WRITE_IDEMPOTENT: McpToolAnnotations = McpToolAnnotations::new()
+    .read_only(false)
+    .destructive(false)
+    .idempotent(true)
+    .open_world(false);
+pub(crate) const WRITE_NON_IDEMPOTENT: McpToolAnnotations = McpToolAnnotations::new()
+    .read_only(false)
+    .destructive(false)
+    .idempotent(false)
+    .open_world(false);
+/// `proxima-code_erase_repo` only. Irreversible, and the one annotation a
+/// client most needs before deciding what to auto-approve.
+pub(crate) const DESTRUCTIVE_NON_IDEMPOTENT: McpToolAnnotations = McpToolAnnotations::new()
+    .read_only(false)
+    .destructive(true)
+    .idempotent(false)
+    .open_world(false);
 
 pub(crate) fn code_store(ctx: &ToolCtx) -> Result<Arc<CodeFlavorStore>, ToolError> {
     ctx.service::<CodeFlavorStore>().ok_or_else(|| {

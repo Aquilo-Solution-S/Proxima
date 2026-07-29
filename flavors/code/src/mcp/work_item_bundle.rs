@@ -112,6 +112,7 @@ pub struct CodeWorkItemBundleTool;
 impl Tool for CodeWorkItemBundleTool {
     const NAME: &'static str = "proxima-code_work_item_bundle";
     const DESCRIPTION: &'static str = "Read a Goal-native Code work/test item bundle: request, repo, criteria, dependencies, evidence, target Perspectives, active-goal provenance, and results.";
+    const ANNOTATIONS: Option<proxima_core::mcp::McpToolAnnotations> = Some(super::READ_ONLY);
     const PRODUCES_SCHEMA_IDS: &'static [&'static str] = &[];
 
     type Args = CodeWorkItemBundleArgs;
