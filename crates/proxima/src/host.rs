@@ -13,6 +13,18 @@ pub use crate::runtime::{
 pub use crate::runtime_config::{
     McpSettings, ProximaError, RuntimeBuilder, RuntimeConfig, RuntimeParts,
 };
+/// The S3-backed cited-blob lane.
+///
+/// [`BuiltProxima::blobs`] is a `pub` field of type `Option<CitedBlobStore>`
+/// and [`crate::Proxima::s3`] is a `pub` method taking `S3RuntimeConfig`, so
+/// both types were already part of the public surface — just not nameable
+/// from `proxima`. A flavor could reach them by inference and could not
+/// write either one in a signature, store one in a struct, or configure S3
+/// programmatically; `S3RuntimeConfig::from_env` was the only route in, and
+/// it reads process environment a library has no business requiring.
+///
+/// `BlobError` comes with them because `from_env` returns it.
+pub use proxima_blob_s3::{BlobError, CitedBlobStore, S3RuntimeConfig};
 /// Compliance erase surface. Note that [`ComplianceEraseTarget`]'s
 /// variants take id newtypes rather than bare UUIDs and strings:
 /// `GroupOwner` takes a [`GroupId`], the two source-scope variants add a
@@ -81,8 +93,9 @@ pub use proxima_core::{
     AuthPath, AuthzContext, EmbeddingAnnObservability, EmbeddingJobBacklog, EmbeddingOrphanCounts,
     EmbeddingOrphanSweepOutcome, EmbeddingRecallCanary, Engine, EngineHandle, FlavorRegistryFrozen,
     GoalWakeCandidate, GoalWakeHardMemory, GroupId, MemoryId, Owner, OwnerAccessPort,
-    OwnerExternalKeyParseError, OwnerRef, Relation, Role, SourceBatchId, SourceId, StorageError,
-    ToolScope, UserId, canonical_json_bytes, parse_external_key, provider_safe_tool_name,
+    OwnerExternalKeyParseError, OwnerRef, OwnerRefKind, Relation, Role, SourceBatchId, SourceId,
+    StorageError, ToolScope, UserId, canonical_json_bytes, parse_external_key,
+    provider_safe_tool_name,
 };
 /// The three citation schema ids [`CitationSpec`] is written with:
 /// `UPLOADED_BLOB_SCHEMA_ID` names the cited object, and the other two

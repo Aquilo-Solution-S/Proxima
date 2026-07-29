@@ -41,9 +41,9 @@ pub use proxima_core::authz::SystemAuthority;
 use std::sync::Arc;
 
 use crate::bundle::FlavorBundle;
-use proxima_blob_s3::CitedBlobStore;
 use proxima_core::llm::{AnthropicClient, EmbeddingClient};
-// `GroupId` is not imported here: it is re-exported through `host::*`
+// `CitedBlobStore` and `GroupId` are not imported here: both are
+// re-exported through `host::*`
 // above, and a private import of the same name would shadow that
 // re-export back out of the public facade (`hidden_glob_reexports`).
 use proxima_core::FlavorRegistry;
