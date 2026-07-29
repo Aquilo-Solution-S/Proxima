@@ -9,21 +9,6 @@ use proxima_core::{EdgeId, GoalId, MemoryId, ToolCtx, ToolError};
 pub(crate) const REPO_HANDLE_KIND: &str = "proxima-code/repo";
 pub(crate) const REPO_HANDLE_PREFIX: char = 'R';
 
-/// Reject `limit: 0` on any paged read, matching core's
-/// `reject_zero_limit`.
-///
-/// The two ends of the range are not symmetric. A limit *above* the
-/// maximum is clamped, because "as many as you will give me" is still the
-/// caller's intent and the page they get answers it. Zero answers nothing:
-/// it produces a well-formed empty page that no client can tell apart from
-/// "nothing matched".
-pub(crate) fn reject_zero_limit(limit: Option<u32>) -> Result<(), ToolError> {
-    if limit == Some(0) {
-        return Err(ToolError::InvalidInput("limit must be at least 1".into()));
-    }
-    Ok(())
-}
-
 pub(crate) fn code_store(ctx: &ToolCtx) -> Result<Arc<CodeFlavorStore>, ToolError> {
     ctx.service::<CodeFlavorStore>().ok_or_else(|| {
         ToolError::Other("code flavor requires a CodeFlavorStore tool service".into())
@@ -131,28 +116,3 @@ pub use repos::{
 pub use search_chunks::CodeSearchChunksTool;
 pub use search_commits::CodeSearchCommitsTool;
 pub use work_item_bundle::CodeWorkItemBundleTool;
-
-#[cfg(test)]
-mod page_limit_tests {
-    use super::reject_zero_limit;
-    use proxima_core::ToolError;
-
-    #[test]
-    fn zero_is_rejected_and_omitted_is_not() {
-        assert!(reject_zero_limit(Some(0)).is_err());
-        assert!(reject_zero_limit(Some(1)).is_ok());
-        assert!(reject_zero_limit(None).is_ok());
-        assert!(reject_zero_limit(Some(u32::MAX)).is_ok());
-    }
-
-    #[test]
-    fn the_rejection_is_invalid_input_not_a_server_fault() {
-        let ToolError::InvalidInput(message) = reject_zero_limit(Some(0)).unwrap_err() else {
-            panic!("a zero limit must be invalid input, not any other error kind");
-        };
-        assert!(
-            message.contains("at least 1"),
-            "the message must tell the caller the bound: {message}"
-        );
-    }
-}

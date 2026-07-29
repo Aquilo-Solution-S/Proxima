@@ -126,3 +126,39 @@ mod mcp_tool_authoring {
         assert_eq!(ExampleLookupTool::NAME, "conformance_lookup");
     }
 }
+
+/// An out-of-tree flavor can reach the zero-page-bound rule through the
+/// SDK, in both of the error types the two tool traits use.
+///
+/// The rule was implemented twice before this — once in core for `McpTool`
+/// and once in the code flavor for `Tool` — because the helper was
+/// `pub(crate)` and the two traits carry different error enums. A flavor
+/// that depends on `proxima` alone had no route to either copy, so the
+/// third implementation would have been someone else's, spelled
+/// differently. One `ToolError`-returning function serves both: `?`
+/// promotes it through `From<ToolError> for McpToolError`.
+#[test]
+fn the_zero_page_bound_rule_is_reachable_from_the_sdk() {
+    use proxima::flavor::{McpToolError, ToolError, reject_zero_limit};
+
+    fn flavor_tool_body(limit: Option<u32>) -> Result<u32, ToolError> {
+        reject_zero_limit(limit)?;
+        Ok(limit.unwrap_or(10).min(50))
+    }
+
+    fn mcp_tool_body(limit: Option<u32>) -> Result<u32, McpToolError> {
+        reject_zero_limit(limit)?;
+        Ok(limit.unwrap_or(10).min(50))
+    }
+
+    assert!(matches!(
+        flavor_tool_body(Some(0)),
+        Err(ToolError::InvalidInput(_))
+    ));
+    assert!(matches!(
+        mcp_tool_body(Some(0)),
+        Err(McpToolError::InvalidInput(_))
+    ));
+    assert_eq!(flavor_tool_body(None).unwrap(), 10);
+    assert_eq!(mcp_tool_body(Some(500)).unwrap(), 50);
+}

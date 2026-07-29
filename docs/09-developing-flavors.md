@@ -609,6 +609,16 @@ Tool contract:
 MCP JSON is protocol boundary only. Flavor SDK tool code targets `Tool`;
 MCP is an adapter projection.
 
+Paged reads: call `proxima::flavor::reject_zero_limit(args.limit)?` before
+anything else, then clamp the upper bound however the tool likes. The two
+ends are not symmetric — a limit above the maximum still answers the
+caller's intent, `limit: 0` cannot. Answering it yields either a
+well-formed empty page indistinguishable from "nothing matched" or a page
+of one that answers a question nobody asked, and the engine has rejected
+`limit == 0` from the start. The helper is shared rather than reimplemented
+because the in-tree tools proved that three implementations means three
+behaviours.
+
 ### Host-owned dependencies: the extension seam
 
 Core cannot name a flavor's own service types, so anything a tool needs

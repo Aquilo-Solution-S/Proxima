@@ -128,7 +128,7 @@ pub async fn walk_memory_lineage(
     args: WalkMemoryLineageArgs,
 ) -> Result<WalkMemoryLineageOutput, McpToolError> {
     let start = ctx.resolve_memory(&args.memory)?;
-    super::reject_zero_limit(args.limit)?;
+    crate::reject_zero_limit(Some(args.limit))?;
     let direction = MemoryLineageDirection::from(args.direction);
     let depth = u8::try_from(args.depth.clamp(1, MAX_LINEAGE_DEPTH)).unwrap_or(8);
     let fingerprint = lineage_fingerprint(&args.memory, direction, depth);

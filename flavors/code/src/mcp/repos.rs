@@ -37,7 +37,9 @@ pub struct CodeRegisterRepoOutput {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct CodeListReposArgs {
-    #[schemars(description = "Max repos per page; values above 200 are clamped, 0 is rejected, default 50.")]
+    #[schemars(
+        description = "Max repos per page; values above 200 are clamped, 0 is rejected, default 50."
+    )]
     #[serde(default)]
     pub limit: Option<u32>,
     #[schemars(
@@ -272,7 +274,7 @@ impl Tool for CodeListReposTool {
     ) -> futures::future::BoxFuture<'static, Result<CodeListReposOutput, ToolError>> {
         Box::pin(async move {
             let pool = code_store(&ctx)?;
-            super::reject_zero_limit(args.limit)?;
+            proxima_core::reject_zero_limit(args.limit)?;
             let limit = args
                 .limit
                 .unwrap_or(DEFAULT_REPO_PAGE_LIMIT)
