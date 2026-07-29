@@ -1710,6 +1710,35 @@ Three things worth knowing:
 A malformed glob is rejected at `register_repo` rather than stored, so a
 repo cannot end up with a scope that fails every future ingest.
 
+## 46. v0.0.7: minting MCP handles no longer needs a per-flavor shim
+
+**No action required.** Nothing changed on the wire and no signature
+moved; this only adds an export.
+
+A flavor implementing the transport-neutral `Tool` trait is handed a
+`ToolCtx`, which deliberately knows nothing about the MCP wire-reference
+grammar (`F:`/`A:`/`P:`/`G:`/`E:` prefixed uuids). `McpToolCtx` carries
+`format_*`/`resolve_*` as inherent methods, so core's own tools never
+felt this; a flavor had to pull `McpToolPresentation` out of the service
+map and forward all twelve methods by hand. `flavors/code` carried
+exactly that shim, and it is the kind of boilerplate every next flavor
+copies rather than shares.
+
+Core now owns it. Import the trait and the methods appear:
+
+```rust
+use proxima::flavor::McpPresentationExt;
+
+let handle = ctx.format_fact_memory(memory_id);   // "F:<uuid>"
+let id = ctx.resolve_fact_memory(&handle)?;
+```
+
+`ToolCtx` stays transport-neutral — without the import the methods do not
+exist. `mcp_presentation()` is on the same trait for anything the
+convenience methods do not cover, and reports the one canonical error
+when a tool was invoked outside the MCP adapter. `flavors/code` deleted
+its copy in the same change.
+
 ## Checks before calling an upgrade done
 
 ```sh

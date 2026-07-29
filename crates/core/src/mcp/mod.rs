@@ -33,7 +33,7 @@ pub use manifest::{
     all_core_resources, core_action_meta, core_tool_annotations, core_tool_has_actions,
 };
 pub use names::{provider_safe_tool_name, tool_name_matches};
-pub use presentation::{McpToolCaller, McpToolPresentation};
+pub use presentation::{McpPresentationExt, McpToolCaller, McpToolPresentation};
 pub use tool::{McpActionArgSpec, McpCallFn, McpTool, McpToolDescriptor, McpToolOrigin};
 pub(crate) use tool::{prepare_flat_tool_args, validate_action_args};
 pub use types::{McpAuthorContext, McpToolCtx, McpToolExtensions};
