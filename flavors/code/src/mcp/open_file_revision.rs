@@ -23,15 +23,15 @@ pub struct CodeOpenFileRevisionArgs {
     )]
     pub include_text: bool,
     #[schemars(
-        description = "Optional 1-based starting line for a text window. Omit or null to return chunk snippets only."
+        description = "Optional 1-based starting line for a text window. Must be >= 1. Omit or null to return chunk snippets only."
     )]
     pub line_start: Option<i64>,
     #[schemars(
-        description = "Optional maximum number of lines from `line_start`. Omit or null when no line window is needed."
+        description = "Optional maximum number of lines from `line_start`; values above 500 are clamped, 0 is rejected, default 120. Omit or null when no line window is needed."
     )]
     pub line_limit: Option<i64>,
     #[schemars(
-        description = "Optional cap on returned text bytes per chunk. Omit or null to use the default projection."
+        description = "Optional cap on returned text bytes per chunk, at least 1; a cut chunk is flagged text_truncated=true. Omit or null to use the default projection, and pass include_text=false to skip text entirely."
     )]
     pub max_text_bytes: Option<usize>,
 }
@@ -64,6 +64,13 @@ pub struct ChunkSummary {
     pub text: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub text_line_range: Option<(i64, i64)>,
+    /// `true` when `max_text_bytes` cut this chunk's text. Its two siblings
+    /// have always said so — `core_search_memories` with `body_truncated`,
+    /// `proxima-code_search_chunks` with `snippet_truncated` — and without
+    /// it a caller cannot tell a chunk that ends there from one that was
+    /// cut off mid-statement.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub text_truncated: bool,
 }
 
 #[derive(Debug)]
@@ -86,6 +93,17 @@ impl Tool for CodeOpenFileRevisionTool {
         Box::pin(async move {
             if args.file_path.trim().is_empty() {
                 return Err(ToolError::InvalidInput("file_path required".into()));
+            }
+            // A zero cap used to be accepted and answered with `text: ""` on
+            // every chunk — a well-formed response indistinguishable from an
+            // empty file, and it silently turned text ON (`want_text` below
+            // keys off `max_text_bytes.is_some()`) only to blank it. Both
+            // sibling tools already refuse zero here.
+            if args.max_text_bytes == Some(0) {
+                return Err(ToolError::InvalidInput(
+                    "max_text_bytes must be >= 1 when provided; use include_text=false to skip text"
+                        .into(),
+                ));
             }
             let line_window = requested_line_window(args.line_start, args.line_limit)?;
             let include_text =
@@ -220,12 +238,17 @@ impl Tool for CodeOpenFileRevisionTool {
                         && in_line_window
                 })
                 .map(|(memory_id, row)| {
-                    let (text, text_line_range) = project_text(
+                    let projected = project_text(
                         include_text.then_some(row.text.clone()),
                         i64::from(row.line_range_start),
                         line_window,
                         args.max_text_bytes,
                     );
+                    let ProjectedText {
+                        text,
+                        text_line_range,
+                        text_truncated,
+                    } = projected;
                     Ok::<_, ToolError>(ChunkSummary {
                         handle: ctx.format_abstraction_memory(memory_id),
                         chunk_index: i32::try_from(row.chunk_index)
@@ -238,6 +261,7 @@ impl Tool for CodeOpenFileRevisionTool {
                         snippet: row.text.chars().take(480).collect(),
                         text,
                         text_line_range,
+                        text_truncated,
                     })
                 })
                 .collect::<Result<Vec<_>, _>>()?;
@@ -248,6 +272,14 @@ impl Tool for CodeOpenFileRevisionTool {
     }
 }
 
+/// Default window height when only `line_start` is given.
+const DEFAULT_LINE_LIMIT: i64 = 120;
+/// Ceiling on `line_limit`. Reject at or below zero, clamp above — the
+/// substrate's rule for every other bound, and the one this used to break
+/// by refusing 501 outright. The response reports the span actually
+/// returned, so a clamped caller is told rather than quietly shortchanged.
+const MAX_LINE_LIMIT: i64 = 500;
+
 fn requested_line_window(
     line_start: Option<i64>,
     line_limit: Option<i64>,
@@ -256,14 +288,24 @@ fn requested_line_window(
         return Ok(None);
     }
     let start = line_start.unwrap_or(1);
-    let limit = line_limit.unwrap_or(120);
+    let limit = line_limit.unwrap_or(DEFAULT_LINE_LIMIT);
     if start < 1 {
         return Err(ToolError::InvalidInput("line_start must be >= 1".into()));
     }
-    if !(1..=500).contains(&limit) {
-        return Err(ToolError::InvalidInput("line_limit must be 1..=500".into()));
+    if limit < 1 {
+        return Err(ToolError::InvalidInput(
+            "line_limit must be at least 1".into(),
+        ));
     }
+    let limit = limit.min(MAX_LINE_LIMIT);
     Ok(Some((start, start.saturating_add(limit - 1))))
+}
+
+/// One chunk's projected text and what the projection did to it.
+struct ProjectedText {
+    text: Option<String>,
+    text_line_range: Option<(i64, i64)>,
+    text_truncated: bool,
 }
 
 fn project_text(
@@ -271,12 +313,21 @@ fn project_text(
     chunk_line_start: i64,
     line_window: Option<(i64, i64)>,
     max_text_bytes: Option<usize>,
-) -> (Option<String>, Option<(i64, i64)>) {
+) -> ProjectedText {
     let Some(text) = text else {
-        return (None, None);
+        return ProjectedText {
+            text: None,
+            text_line_range: None,
+            text_truncated: false,
+        };
     };
     let Some((window_start, window_end)) = line_window else {
-        return (Some(truncate_utf8_bytes(text, max_text_bytes)), None);
+        let (text, truncated) = truncate_utf8_bytes(text, max_text_bytes);
+        return ProjectedText {
+            text: Some(text),
+            text_line_range: None,
+            text_truncated: truncated,
+        };
     };
 
     let mut selected = Vec::new();
@@ -292,10 +343,14 @@ fn project_text(
         selected.push(line);
     }
     let Some(start) = selected_start else {
-        return (None, None);
+        return ProjectedText {
+            text: None,
+            text_line_range: None,
+            text_truncated: false,
+        };
     };
     let requested_end = selected_end.unwrap_or(start);
-    let projected = truncate_utf8_bytes(selected.join("\n"), max_text_bytes);
+    let (projected, truncated) = truncate_utf8_bytes(selected.join("\n"), max_text_bytes);
     // Report the span actually returned, not the span asked for.
     // `max_text_bytes` drops trailing lines, and reporting the pre-truncation
     // end makes the response claim text it did not send — a caller that trusts
@@ -310,21 +365,28 @@ fn project_text(
             .saturating_add(lines.saturating_sub(1))
             .min(requested_end)
     };
-    (Some(projected), Some((start, returned_end)))
+    ProjectedText {
+        text: Some(projected),
+        text_line_range: Some((start, returned_end)),
+        text_truncated: truncated,
+    }
 }
 
-fn truncate_utf8_bytes(text: String, max_text_bytes: Option<usize>) -> String {
+/// Cut `text` to at most `max_text_bytes` on a char boundary. Returns
+/// whether anything was actually dropped, which is what the caller reports
+/// as `text_truncated`.
+fn truncate_utf8_bytes(text: String, max_text_bytes: Option<usize>) -> (String, bool) {
     let Some(max) = max_text_bytes else {
-        return text;
+        return (text, false);
     };
     if text.len() <= max {
-        return text;
+        return (text, false);
     }
     let mut end = max;
     while !text.is_char_boundary(end) {
         end = end.saturating_sub(1);
     }
-    text[..end].to_string()
+    (text[..end].to_string(), true)
 }
 
 #[derive(Debug, sqlx::FromRow)]
@@ -334,15 +396,16 @@ struct MemoryCandidateRow {
 
 #[cfg(test)]
 mod tests {
-    use super::project_text;
+    use super::{project_text, requested_line_window};
 
     const SRC: &str = "line ten\nline eleven\nline twelve\nline thirteen\nline fourteen";
 
     #[test]
     fn a_whole_window_reports_the_whole_window() {
-        let (text, range) = project_text(Some(SRC.to_string()), 10, Some((10, 14)), None);
-        assert_eq!(text.as_deref(), Some(SRC));
-        assert_eq!(range, Some((10, 14)));
+        let projected = project_text(Some(SRC.to_string()), 10, Some((10, 14)), None);
+        assert_eq!(projected.text.as_deref(), Some(SRC));
+        assert_eq!(projected.text_line_range, Some((10, 14)));
+        assert!(!projected.text_truncated);
     }
 
     /// The reported span must describe what was sent. Before this, a
@@ -352,10 +415,10 @@ mod tests {
     #[test]
     fn a_truncated_window_reports_only_the_lines_it_returned() {
         // Enough bytes for the first two lines and part of the third.
-        let (text, range) = project_text(Some(SRC.to_string()), 10, Some((10, 14)), Some(24));
-        let text = text.expect("text");
+        let projected = project_text(Some(SRC.to_string()), 10, Some((10, 14)), Some(24));
+        let text = projected.text.expect("text");
         assert!(text.len() <= 24);
-        let (start, end) = range.expect("range");
+        let (start, end) = projected.text_line_range.expect("range");
         assert_eq!(start, 10);
         assert_eq!(
             end,
@@ -363,18 +426,75 @@ mod tests {
             "reported end must match the lines actually returned: {text:?}"
         );
         assert!(end < 14, "must not claim the untruncated end");
+        assert!(projected.text_truncated, "a cut chunk must say it was cut");
     }
 
     #[test]
     fn the_reported_end_never_exceeds_the_requested_window() {
-        let (_, range) = project_text(Some(SRC.to_string()), 10, Some((10, 11)), None);
-        assert_eq!(range, Some((10, 11)));
+        let projected = project_text(Some(SRC.to_string()), 10, Some((10, 11)), None);
+        assert_eq!(projected.text_line_range, Some((10, 11)));
     }
 
     #[test]
     fn a_window_matching_no_line_returns_nothing() {
-        let (text, range) = project_text(Some(SRC.to_string()), 10, Some((99, 120)), None);
-        assert!(text.is_none());
-        assert!(range.is_none());
+        let projected = project_text(Some(SRC.to_string()), 10, Some((99, 120)), None);
+        assert!(projected.text.is_none());
+        assert!(projected.text_line_range.is_none());
+        assert!(!projected.text_truncated);
+    }
+
+    /// A cap that fits is not a truncation. The flag has to distinguish
+    /// "this is the whole chunk" from "this is where I stopped", which is
+    /// the whole reason it exists.
+    #[test]
+    fn a_cap_larger_than_the_text_is_not_a_truncation() {
+        let projected = project_text(Some(SRC.to_string()), 10, None, Some(SRC.len()));
+        assert_eq!(projected.text.as_deref(), Some(SRC));
+        assert!(!projected.text_truncated);
+
+        let projected = project_text(Some(SRC.to_string()), 10, None, Some(SRC.len() - 1));
+        assert!(projected.text_truncated);
+    }
+
+    /// Cutting mid-character must not split a codepoint, and must still be
+    /// reported as a cut.
+    #[test]
+    fn a_cap_falling_inside_a_multibyte_char_backs_off_to_a_boundary() {
+        let text = "äöü".to_string(); // three 2-byte chars
+        let projected = project_text(Some(text), 1, None, Some(3));
+        let out = projected.text.expect("text");
+        assert_eq!(out, "ä", "must back off to a char boundary, got {out:?}");
+        assert!(projected.text_truncated);
+    }
+
+    /// `line_limit` follows the substrate's rule for every other bound:
+    /// reject at zero, clamp above the ceiling. It used to refuse 501
+    /// outright, which is the one shape no other paged read uses.
+    #[test]
+    fn the_line_limit_rejects_zero_and_clamps_high() {
+        assert!(requested_line_window(Some(1), Some(0)).is_err());
+        assert!(requested_line_window(Some(1), Some(-5)).is_err());
+        assert!(requested_line_window(Some(0), Some(5)).is_err());
+
+        assert_eq!(
+            requested_line_window(Some(1), Some(500)).unwrap(),
+            Some((1, 500))
+        );
+        assert_eq!(
+            requested_line_window(Some(1), Some(501)).unwrap(),
+            Some((1, 500)),
+            "past the ceiling is clamped, not refused"
+        );
+        assert_eq!(
+            requested_line_window(Some(1), Some(i64::MAX)).unwrap(),
+            Some((1, 500)),
+        );
+        // Neither bound given is not a window at all.
+        assert_eq!(requested_line_window(None, None).unwrap(), None);
+        // `line_start` alone takes the default height.
+        assert_eq!(
+            requested_line_window(Some(10), None).unwrap(),
+            Some((10, 129))
+        );
     }
 }
