@@ -162,3 +162,60 @@ fn the_zero_page_bound_rule_is_reachable_from_the_sdk() {
     assert_eq!(flavor_tool_body(None).unwrap(), 10);
     assert_eq!(mcp_tool_body(Some(500)).unwrap(), 50);
 }
+
+/// An out-of-tree flavor implementing the transport-neutral [`Tool`] trait
+/// can mint and parse MCP wire references off the `ToolCtx` it is handed.
+///
+/// `McpToolCtx` has these as inherent methods, so core's own tools never
+/// noticed. A `Tool` gets a `ToolCtx`, which deliberately knows nothing
+/// about the wire grammar, and had to fetch `McpToolPresentation` out of the
+/// service map and forward every method by hand — `flavors/code` carried
+/// twelve such methods for eleven tools. This asserts the round trip, which
+/// is what the shim actually existed to do.
+///
+/// [`Tool`]: proxima::flavor::Tool
+#[test]
+fn wire_references_round_trip_through_a_transport_neutral_tool_ctx() {
+    use proxima::flavor::{McpPresentationExt, McpToolPresentation, ToolCtx, ToolServices};
+    use proxima::host::{AuthPath, AuthzContext, MemoryId, Owner, UserId};
+
+    let registry = std::sync::Arc::new(FlavorRegistry::new().try_freeze().unwrap());
+    let owner = Owner::Personal(UserId::new(Uuid::now_v7()));
+    let ctx = ToolCtx::new(
+        owner,
+        AuthzContext::single_owner(&owner, AuthPath::System),
+        registry,
+        ToolServices::with(McpToolPresentation::new()),
+    );
+
+    let fact = MemoryId::new(Uuid::now_v7());
+    let handle = ctx.format_fact_memory(fact);
+    assert!(handle.starts_with("F:"), "got {handle}");
+    assert_eq!(ctx.resolve_fact_memory(&handle).unwrap(), fact);
+
+    let object = Uuid::now_v7();
+    let flavor_handle = ctx.format_flavor_object("conformance/thing", object, 'R');
+    assert_eq!(flavor_handle, format!("R:{object}"));
+    assert_eq!(
+        ctx.resolve_flavor_object(&flavor_handle, "conformance/thing")
+            .unwrap(),
+        object
+    );
+
+    // A handle of the wrong class is an input error, not a silent coercion.
+    assert!(matches!(
+        ctx.resolve_abstraction_memory(&handle),
+        Err(proxima::flavor::ToolError::InvalidInput(_))
+    ));
+
+    // Absent the MCP adapter there is no presentation service, and the
+    // fallible half says so rather than inventing a reference.
+    let bare = ToolCtx::new(
+        owner,
+        AuthzContext::single_owner(&owner, AuthPath::System),
+        std::sync::Arc::new(FlavorRegistry::new().try_freeze().unwrap()),
+        ToolServices::new(),
+    );
+    assert!(bare.mcp_presentation().is_err());
+    assert!(bare.resolve_fact_memory(&handle).is_err());
+}

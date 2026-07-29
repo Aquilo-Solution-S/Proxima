@@ -20,9 +20,18 @@ pub use crate::workers::{FlavorWorker, FlavorWorkerContext};
 /// out-of-tree flavor cannot write the signature at all, so its tools have
 /// no sanctioned route to a database handle or any other host-owned
 /// dependency. See `docs/09-developing-flavors.md` § MCP Tools.
+///
+/// [`McpPresentationExt`] is how a flavor implementing the transport-neutral
+/// [`Tool`] trait mints and parses MCP wire references (`F:`/`A:`/`P:`/`G:`/
+/// `E:` prefixed uuids). [`McpToolCtx`] carries those as inherent methods,
+/// but [`Tool`] is handed a [`ToolCtx`], which deliberately knows nothing
+/// about the wire; importing this trait is the sanctioned bridge. Without it
+/// each flavor writes the same twelve-method forwarding shim over
+/// [`McpToolPresentation`] — `flavors/code` carried one until core took it
+/// over.
 pub use proxima_core::mcp::{
-    McpActionArgSpec, McpAuthorContext, McpTool, McpToolAnnotations, McpToolCtx, McpToolError,
-    McpToolErrorKind, McpToolExtensions,
+    McpActionArgSpec, McpAuthorContext, McpPresentationExt, McpTool, McpToolAnnotations,
+    McpToolCtx, McpToolError, McpToolErrorKind, McpToolExtensions, McpToolPresentation,
 };
 /// Host-wired cited-blob lane, handed to workers as
 /// [`FlavorWorkerContext::blobs`]. Present only when the host configured

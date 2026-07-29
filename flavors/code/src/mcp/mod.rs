@@ -3,8 +3,8 @@ mod sql;
 use std::sync::Arc;
 
 use crate::CodeFlavorStore;
-use proxima_core::mcp::{McpToolAnnotations, McpToolCaller, McpToolPresentation};
-use proxima_core::{EdgeId, GoalId, MemoryId, ToolCtx, ToolError};
+use proxima_core::mcp::{McpToolAnnotations, McpToolCaller};
+use proxima_core::{ToolCtx, ToolError};
 
 pub(crate) const REPO_HANDLE_KIND: &str = "proxima-code/repo";
 pub(crate) const REPO_HANDLE_PREFIX: char = 'R';
@@ -55,78 +55,11 @@ pub(crate) fn caller(ctx: &ToolCtx) -> Result<Arc<McpToolCaller>, ToolError> {
         .ok_or_else(|| ToolError::Other("code flavor MCP tools require caller metadata".into()))
 }
 
-fn presentation(ctx: &ToolCtx) -> Result<Arc<McpToolPresentation>, ToolError> {
-    ctx.service::<McpToolPresentation>().ok_or_else(|| {
-        ToolError::Other("code flavor MCP tools require presentation service".into())
-    })
-}
-
-pub(crate) trait CodeToolCtxExt {
-    fn format_fact_memory(&self, id: MemoryId) -> String;
-    fn format_abstraction_memory(&self, id: MemoryId) -> String;
-    fn format_perspective_memory(&self, id: MemoryId) -> String;
-    fn format_goal(&self, id: GoalId) -> String;
-    fn format_edge(&self, id: EdgeId) -> String;
-    fn format_flavor_object(&self, kind: &str, id: uuid::Uuid, prefix: char) -> String;
-    fn resolve_fact_memory(&self, raw: &str) -> Result<MemoryId, ToolError>;
-    fn resolve_abstraction_memory(&self, raw: &str) -> Result<MemoryId, ToolError>;
-    fn resolve_perspective_memory(&self, raw: &str) -> Result<MemoryId, ToolError>;
-    fn resolve_flavor_object(&self, raw: &str, kind: &str) -> Result<uuid::Uuid, ToolError>;
-}
-
-impl CodeToolCtxExt for ToolCtx {
-    fn format_fact_memory(&self, id: MemoryId) -> String {
-        presentation(self)
-            .expect("MCP presentation service must be present")
-            .format_fact_memory(id)
-    }
-
-    fn format_abstraction_memory(&self, id: MemoryId) -> String {
-        presentation(self)
-            .expect("MCP presentation service must be present")
-            .format_abstraction_memory(id)
-    }
-
-    fn format_perspective_memory(&self, id: MemoryId) -> String {
-        presentation(self)
-            .expect("MCP presentation service must be present")
-            .format_perspective_memory(id)
-    }
-
-    fn format_goal(&self, id: GoalId) -> String {
-        presentation(self)
-            .expect("MCP presentation service must be present")
-            .format_goal(id)
-    }
-
-    fn format_edge(&self, id: EdgeId) -> String {
-        presentation(self)
-            .expect("MCP presentation service must be present")
-            .format_edge(id)
-    }
-
-    fn format_flavor_object(&self, kind: &str, id: uuid::Uuid, prefix: char) -> String {
-        presentation(self)
-            .expect("MCP presentation service must be present")
-            .format_flavor_object(kind, id, prefix)
-    }
-
-    fn resolve_fact_memory(&self, raw: &str) -> Result<MemoryId, ToolError> {
-        presentation(self)?.resolve_fact_memory(raw)
-    }
-
-    fn resolve_abstraction_memory(&self, raw: &str) -> Result<MemoryId, ToolError> {
-        presentation(self)?.resolve_abstraction_memory(raw)
-    }
-
-    fn resolve_perspective_memory(&self, raw: &str) -> Result<MemoryId, ToolError> {
-        presentation(self)?.resolve_perspective_memory(raw)
-    }
-
-    fn resolve_flavor_object(&self, raw: &str, kind: &str) -> Result<uuid::Uuid, ToolError> {
-        presentation(self)?.resolve_flavor_object(raw, kind)
-    }
-}
+/// The wire-reference grammar reaches `ToolCtx` through core's extension
+/// trait. This flavor used to carry its own twelve-method forwarding shim
+/// over the same presentation service; core owns the grammar, so core owns
+/// the shim.
+pub(crate) use proxima_core::mcp::McpPresentationExt as CodeToolCtxExt;
 
 pub mod emit_execution_request;
 pub mod open_file_revision;
