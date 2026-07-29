@@ -273,13 +273,7 @@ impl Tool for CodeSearchChunksTool {
                     "snippet_max_chars must be at least 1".into(),
                 ));
             }
-            // Rejected rather than silently answered: a zero limit returns an
-            // empty `matches` array indistinguishable from "nothing matched",
-            // and `snippet_max_chars: 0` is already rejected for the same
-            // reason.
-            if args.limit == Some(0) {
-                return Err(ToolError::InvalidInput("limit must be at least 1".into()));
-            }
+            super::reject_zero_limit(args.limit)?;
             let snippet_max_chars = effective_snippet_max_chars(args.snippet_max_chars);
             let limit = args.limit.unwrap_or(12).min(50);
             let exact_pattern = like_pattern(query);

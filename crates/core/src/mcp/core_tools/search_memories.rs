@@ -114,7 +114,7 @@ pub struct SearchMemoriesArgs {
     pub mode: SearchMemoriesMode,
     #[serde(default = "default_limit")]
     #[schemars(
-        description = "Maximum number of memories to return. Defaults to 8; values are clamped to 1..=50."
+        description = "Maximum number of memories to return. Defaults to 8; values above 50 are clamped, and 0 is rejected."
     )]
     pub limit: u32,
     #[serde(default = "default_supersession")]
@@ -232,6 +232,7 @@ impl McpTool for SearchMemoriesTool {
             }
             validate_score_args(&args)?;
             validate_body_max_chars(args.body_max_chars)?;
+            super::reject_zero_limit(args.limit)?;
             validate_list_caps(&args)?;
 
             let mode = SearchMode::from(args.mode);
@@ -289,7 +290,7 @@ impl McpTool for SearchMemoriesTool {
                 query_embedding,
                 embedding_model_id,
                 body_max_chars: effective_body_max_chars(args.body_max_chars),
-                limit: args.limit.clamp(1, 50),
+                limit: args.limit.min(50),
                 after,
             };
             let mut all_memories = Vec::new();

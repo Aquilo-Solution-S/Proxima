@@ -25,7 +25,8 @@ const CITATION_CURSOR: wire_cursor::FingerprintedCursor = wire_cursor::Fingerpri
 pub struct FactsCitingObjectArgs {
     /// Cited object uuid, optionally prefixed as `C:<uuid>`.
     pub cited_object_id: String,
-    /// Max citing Facts per page; clamped to 1..=200, default 50.
+    /// Max citing Facts per page; values above 200 are clamped, 0 is
+    /// rejected, default 50.
     #[serde(default)]
     pub limit: Option<u32>,
     /// Opaque pagination cursor from a previous response's `next_cursor`.
@@ -60,7 +61,7 @@ pub(super) async fn facts_citing_object(
     args: FactsCitingObjectArgs,
 ) -> Result<FactsCitingObjectOutput, McpToolError> {
     let cited_object_id = parse_cited_object_id(&args.cited_object_id)?;
-    let limit = super::clamp_page_limit(args.limit);
+    let limit = super::resolve_page_limit(args.limit)?;
     let fingerprint = citation_fingerprint(cited_object_id);
     let after = args
         .cursor

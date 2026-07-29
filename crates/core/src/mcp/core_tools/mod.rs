@@ -43,10 +43,31 @@ use crate::mcp::McpToolAnnotations;
 pub(crate) const DEFAULT_PAGE_LIMIT: u32 = 50;
 pub(crate) const MAX_PAGE_LIMIT: u32 = 200;
 
-/// Clamp an optional wire `limit` to `1..=`[`MAX_PAGE_LIMIT`], defaulting
-/// to [`DEFAULT_PAGE_LIMIT`] when omitted.
-pub(crate) fn clamp_page_limit(limit: Option<u32>) -> u32 {
-    limit.unwrap_or(DEFAULT_PAGE_LIMIT).clamp(1, MAX_PAGE_LIMIT)
+/// Reject `limit: 0` on any paged read.
+///
+/// The two ends of the range are not symmetric. A limit *above* the
+/// maximum is clamped, because "as many as you will give me" is still the
+/// caller's intent and the page they get answers it. Zero answers nothing:
+/// it produces a well-formed empty page that is indistinguishable from
+/// "nothing matched", so a mistyped bound reads as a real absence. Same
+/// reasoning as `search_memories`' `body_max_chars`, which has rejected
+/// zero for exactly this since it was written.
+pub(crate) fn reject_zero_limit(limit: u32) -> Result<(), crate::mcp::McpToolError> {
+    if limit == 0 {
+        return Err(crate::mcp::McpToolError::InvalidInput(
+            "limit must be at least 1".into(),
+        ));
+    }
+    Ok(())
+}
+
+/// Resolve an optional wire `limit` to `1..=`[`MAX_PAGE_LIMIT`],
+/// defaulting to [`DEFAULT_PAGE_LIMIT`] when omitted and rejecting zero
+/// per [`reject_zero_limit`].
+pub(crate) fn resolve_page_limit(limit: Option<u32>) -> Result<u32, crate::mcp::McpToolError> {
+    let limit = limit.unwrap_or(DEFAULT_PAGE_LIMIT);
+    reject_zero_limit(limit)?;
+    Ok(limit.min(MAX_PAGE_LIMIT))
 }
 
 const READ_ONLY: McpToolAnnotations = McpToolAnnotations::new().read_only(true).open_world(false);
@@ -89,4 +110,43 @@ pub(crate) fn register_all(
     registry.try_add_mcp_tool::<CorePublishTool>("core")?;
     registry.try_add_mcp_tool::<CoreUploadTool>("core")?;
     Ok(())
+}
+
+#[cfg(test)]
+mod page_limit_tests {
+    use super::{DEFAULT_PAGE_LIMIT, MAX_PAGE_LIMIT, reject_zero_limit, resolve_page_limit};
+
+    #[test]
+    fn zero_is_rejected_and_the_upper_bound_is_clamped() {
+        assert!(reject_zero_limit(0).is_err());
+        assert!(reject_zero_limit(1).is_ok());
+        assert!(resolve_page_limit(Some(0)).is_err());
+        assert_eq!(resolve_page_limit(Some(1)).unwrap(), 1);
+        assert_eq!(
+            resolve_page_limit(Some(MAX_PAGE_LIMIT + 1)).unwrap(),
+            MAX_PAGE_LIMIT,
+        );
+        assert_eq!(resolve_page_limit(Some(u32::MAX)).unwrap(), MAX_PAGE_LIMIT);
+    }
+
+    #[test]
+    fn an_omitted_limit_is_the_default_not_zero() {
+        assert_eq!(resolve_page_limit(None).unwrap(), DEFAULT_PAGE_LIMIT);
+    }
+
+    /// The MCP layer used to clamp `0` to `1`, which meant the engine's own
+    /// `limit == 0` guards (`engine::query`, `engine::read_verbs`) could
+    /// never fire through a tool call. Rejecting here keeps the two layers
+    /// saying the same thing rather than one hiding the other.
+    #[test]
+    fn the_rejection_names_the_bound_it_wants() {
+        let crate::mcp::McpToolError::InvalidInput(message) = reject_zero_limit(0).unwrap_err()
+        else {
+            panic!("a zero limit must be invalid input, not any other error kind");
+        };
+        assert!(
+            message.contains("at least 1"),
+            "the message must tell the caller the bound: {message}"
+        );
+    }
 }

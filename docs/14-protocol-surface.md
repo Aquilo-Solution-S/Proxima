@@ -202,7 +202,7 @@ Bounded read of `change_event`, newest-first, scoped to the server-resolved auth
 | Field | Contract |
 |---|---|
 | owner set | `AuthzContext` resolves `S_read`; request principal is not an authority vector |
-| `limit` | required; `1..=1000`, server-clamped |
+| `limit` | required; above `1000` is clamped, `0` is `InvalidArgument` |
 | `before` | optional UUIDv7 cursor; returns `seq < before` |
 | filters | authorized-owner set only in current implementation |
 | return order | newest-first |

@@ -28,7 +28,8 @@ pub struct WalkMemoryLineageArgs {
     /// default 3.
     #[serde(default = "default_depth")]
     pub depth: u32,
-    /// Max lineage edges per page; clamped to 1..=200, default 50.
+    /// Max lineage edges per page; values above 200 are clamped, 0 is
+    /// rejected, default 50.
     #[serde(default = "default_limit")]
     pub limit: u32,
     /// Opaque pagination cursor from a previous response's `next_cursor`.
@@ -127,6 +128,7 @@ pub async fn walk_memory_lineage(
     args: WalkMemoryLineageArgs,
 ) -> Result<WalkMemoryLineageOutput, McpToolError> {
     let start = ctx.resolve_memory(&args.memory)?;
+    super::reject_zero_limit(args.limit)?;
     let direction = MemoryLineageDirection::from(args.direction);
     let depth = u8::try_from(args.depth.clamp(1, MAX_LINEAGE_DEPTH)).unwrap_or(8);
     let fingerprint = lineage_fingerprint(&args.memory, direction, depth);
@@ -144,7 +146,7 @@ pub async fn walk_memory_lineage(
                 start_memory_id: start,
                 direction,
                 depth,
-                limit: args.limit.clamp(1, super::MAX_PAGE_LIMIT),
+                limit: args.limit.min(super::MAX_PAGE_LIMIT),
                 after,
             },
         )

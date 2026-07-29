@@ -30,7 +30,8 @@ pub struct ListGoalsArgs {
     /// Goal state filter: Active, Paused, Achieved, or Abandoned
     /// (case-insensitive). Omit for all states.
     pub state: Option<String>,
-    /// Max goals per page; clamped to 1..=200, default 50.
+    /// Max goals per page; values above 200 are clamped, 0 is rejected,
+    /// default 50.
     pub limit: Option<u32>,
     /// Opaque pagination cursor from a previous response's `next_cursor`.
     pub cursor: Option<String>,
@@ -103,7 +104,7 @@ pub async fn list_goals(
         .as_deref()
         .map(|raw| decode_goal_cursor(raw, state_tag.as_deref()))
         .transpose()?;
-    let limit = super::clamp_page_limit(args.limit);
+    let limit = super::resolve_page_limit(args.limit)?;
 
     let engine = ctx.require_engine()?;
     let mut req = QueryRequest::for_owner(ctx.owner);
