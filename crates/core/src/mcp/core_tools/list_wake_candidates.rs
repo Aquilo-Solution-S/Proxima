@@ -18,7 +18,8 @@ pub struct ListWakeCandidatesArgs {
     /// Trigger Fact reference (`F:<uuid>`), exactly as emitted by
     /// `proxima://change-events`. Non-Fact references are rejected at parse.
     pub fact: String,
-    /// Max candidates; clamped to 1..=200, default 50.
+    /// Max candidates; values above 200 are clamped, 0 is rejected,
+    /// default 50.
     pub limit: Option<u32>,
 }
 
@@ -53,7 +54,7 @@ pub async fn list_wake_candidates(
     args: ListWakeCandidatesArgs,
 ) -> Result<ListWakeCandidatesOutput, McpToolError> {
     let trigger_fact_id = ctx.resolve_fact_memory(&args.fact)?;
-    let limit = super::clamp_page_limit(args.limit) as usize;
+    let limit = super::resolve_page_limit(args.limit)? as usize;
     debug_assert!(limit <= MAX_WAKE_CANDIDATE_LIMIT);
     let engine = ctx.require_engine()?;
     let response = engine

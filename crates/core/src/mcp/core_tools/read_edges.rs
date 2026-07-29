@@ -32,7 +32,8 @@ pub struct ListEdgesArgs {
     pub source: Option<String>,
     /// Target endpoint filter: `F:`/`A:`/`P:`/`G:` prefixed id.
     pub target: Option<String>,
-    /// Max edges per page; clamped to 1..=200, default 50.
+    /// Max edges per page; values above 200 are clamped, 0 is rejected,
+    /// default 50.
     pub limit: Option<u32>,
     /// Opaque pagination cursor from a previous response's `next_cursor`.
     pub cursor: Option<String>,
@@ -116,7 +117,7 @@ pub async fn list_edges(
         .as_deref()
         .map(|raw| decode_edge_cursor(raw, &args))
         .transpose()?;
-    let limit = super::clamp_page_limit(args.limit);
+    let limit = super::resolve_page_limit(args.limit)?;
 
     let engine = ctx.require_engine()?;
     let response = engine

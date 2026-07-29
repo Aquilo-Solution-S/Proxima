@@ -83,7 +83,8 @@ pub struct RemoveMemberArgs {
 pub struct ListMembersArgs {
     /// Group space key from `core_memory_spaces`, e.g. `group:<uuid>`.
     pub group: String,
-    /// Max members per page; clamped to 1..=200, default 50.
+    /// Max members per page; values above 200 are clamped, 0 is rejected,
+    /// default 50.
     #[serde(default)]
     pub limit: Option<u32>,
     /// Opaque pagination cursor from a previous response's `next_cursor`.
@@ -250,7 +251,7 @@ async fn execute_membership(
         }
         CoreMembershipArgs::ListMembers(args) => {
             let group = resolve_group(ctx, &args.group)?;
-            let limit = super::clamp_page_limit(args.limit);
+            let limit = super::resolve_page_limit(args.limit)?;
             let fingerprint = member_fingerprint(group);
             let after = args
                 .cursor

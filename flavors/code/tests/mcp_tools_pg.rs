@@ -1453,6 +1453,64 @@ async fn retry_execution_request_rejects_unknown_target_perspective()
     Ok(())
 }
 
+/// Every paged read in this flavor rejects `limit: 0` with the same
+/// error.
+///
+/// They used to disagree three ways on the same nonsense input:
+/// `search_chunks` rejected it, `search_commits` returned `{"commits":
+/// []}` — a well-formed empty page no client can tell apart from "nothing
+/// matched" — and `list_repos` clamped to 1 and answered a question that
+/// was not asked. The engine has rejected `limit == 0` all along
+/// (`engine::query`, `engine::read_verbs`); the tool layer was the only
+/// place that hid it.
+#[tokio::test]
+async fn every_paged_read_rejects_a_zero_limit_the_same_way()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fixture = TestDb::fresh().await;
+    let owner = owner_fixture();
+    let registry = registry_for_mcp();
+
+    let chunks = run_tool::<CodeSearchChunksTool>(
+        ctx(fixture.pg.clone(), owner, registry.clone()),
+        json!({ "query": "anything", "limit": 0 }),
+    )
+    .await
+    .expect_err("search_chunks must reject limit: 0");
+    let commits = run_tool::<CodeSearchCommitsTool>(
+        ctx(fixture.pg.clone(), owner, registry.clone()),
+        json!({ "query": "anything", "limit": 0 }),
+    )
+    .await
+    .expect_err("search_commits must reject limit: 0, not answer with an empty page");
+    let repos = run_tool::<CodeListReposTool>(
+        ctx(fixture.pg.clone(), owner, registry.clone()),
+        json!({ "limit": 0 }),
+    )
+    .await
+    .expect_err("list_repos must reject limit: 0, not clamp it to 1");
+
+    for (tool, err) in [
+        ("search_chunks", &chunks),
+        ("search_commits", &commits),
+        ("list_repos", &repos),
+    ] {
+        assert!(
+            err.to_string().contains("limit must be at least 1"),
+            "{tool} rejected for the wrong reason: {err}"
+        );
+    }
+
+    // And the neighbouring value still works, so the guard is a floor and
+    // not an accidental ban on small pages.
+    let one = run_tool::<CodeListReposTool>(
+        ctx(fixture.pg.clone(), owner, registry),
+        json!({ "limit": 1 }),
+    )
+    .await?;
+    assert!(one["repos"].is_array(), "limit: 1 must still answer: {one}");
+    Ok(())
+}
+
 async fn run_tool<T: McpTool>(
     ctx: McpToolCtx,
     args: serde_json::Value,

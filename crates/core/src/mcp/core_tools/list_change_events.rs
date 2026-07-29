@@ -22,7 +22,8 @@ use crate::{EdgeId, EntityKind};
 pub struct ListChangeEventsArgs {
     /// Opaque cursor from a prior `next_since`. Omit to read from the beginning.
     pub since: Option<String>,
-    /// Max events; clamped to 1..=1000, default 100.
+    /// Max events; values above 1000 are clamped, 0 is rejected,
+    /// default 100.
     pub limit: Option<u32>,
 }
 
@@ -70,7 +71,9 @@ pub async fn list_change_events(
             McpToolError::InvalidInput(format!("since is not a valid seq cursor: {err}"))
         })?,
     };
-    let limit = args.limit.unwrap_or(100).clamp(1, 1000) as usize;
+    let limit = args.limit.unwrap_or(100);
+    super::reject_zero_limit(limit)?;
+    let limit = limit.min(1000) as usize;
     let engine = ctx.require_engine()?;
     let response = engine
         .list_change_events(

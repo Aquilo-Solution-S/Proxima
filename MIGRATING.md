@@ -1634,6 +1634,40 @@ denying `unsafe_code` cannot do at all.
 
 `BlobError` comes along because `from_env` returns it.
 
+## 44. v0.0.7: `limit: 0` is rejected on every paged read
+
+**Action required only if a client sends `limit: 0`,** which no client
+should: it now returns `InvalidInput` where it previously returned a
+clamped or empty page.
+
+The two ends of a page bound are not symmetric, and the tool surface was
+treating them as if they were. A limit *above* the maximum can be clamped,
+because "as many as you will give me" is still the caller's intent and the
+page they get answers it. Zero answers nothing — and it answered
+differently everywhere:
+
+| | before | now |
+|---|---|---|
+| `proxima-code_search_chunks` | `InvalidInput` | `InvalidInput` |
+| `proxima-code_search_commits` | `{"commits": []}` | `InvalidInput` |
+| `proxima-code_list_repos` | one repo (clamped to 1) | `InvalidInput` |
+| `core_search_memories` | one memory (clamped to 1) | `InvalidInput` |
+| `proxima://goals`, `edges`, `members`, `citing`, `wake-candidates`, `lineage`, `change-events` | one row (clamped to 1) | `InvalidInput` |
+
+An empty page is the worst of the three: it is well-formed, and no client
+can tell it apart from "nothing matched". A page of one is not much
+better — it answers a question that was not asked.
+
+The engine has rejected `limit == 0` from the start (`engine::query`,
+`engine::read_verbs`, four call sites, `InvalidArgument` with the same
+"must be > 0"). The MCP layer clamped to 1 *before* those guards could
+fire, so the substrate's own rule was unreachable through a tool call.
+This change stops the tool layer hiding it rather than inventing a new
+contract.
+
+Upper bounds are unchanged: over-large limits still clamp silently, and an
+omitted limit still takes the tool's default.
+
 ## Checks before calling an upgrade done
 
 ```sh

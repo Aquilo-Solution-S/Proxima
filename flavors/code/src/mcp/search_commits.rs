@@ -15,7 +15,7 @@ pub struct CodeSearchCommitsArgs {
     )]
     pub query: String,
     #[schemars(
-        description = "Optional maximum number of commit and summary matches. Omit or null for 10; values above 50 are clamped."
+        description = "Optional maximum number of commit and summary matches. Omit or null for 10; values above 50 are clamped, and 0 is rejected."
     )]
     pub limit: Option<u32>,
     #[schemars(
@@ -86,6 +86,7 @@ impl Tool for CodeSearchCommitsTool {
                     "query must be 1..=512 chars".into(),
                 ));
             }
+            super::reject_zero_limit(args.limit)?;
             let limit = args.limit.unwrap_or(10).min(50);
             let repo_id = match args.repo_handle.as_deref() {
                 Some(handle) => Some(resolve_repo_identifier(&ctx, handle).await?),
