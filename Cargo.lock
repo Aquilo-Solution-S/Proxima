@@ -2198,6 +2198,7 @@ dependencies = [
  "axum",
  "futures",
  "http 1.4.2",
+ "proxima-auth-oidc",
  "proxima-blob-s3",
  "proxima-core",
  "proxima-llm-openai-compat",

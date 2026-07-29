@@ -90,12 +90,12 @@ pub use proxima_core::verbs::schema::{
     PayloadKind, RelationInfo, RelationPayloadSchemaRef, SchemaRequest, SchemaResponse,
 };
 pub use proxima_core::{
-    AuthPath, AuthzContext, EmbeddingAnnObservability, EmbeddingJobBacklog, EmbeddingOrphanCounts,
-    EmbeddingOrphanSweepOutcome, EmbeddingRecallCanary, Engine, EngineHandle, FlavorRegistryFrozen,
-    GoalWakeCandidate, GoalWakeHardMemory, GroupId, MemoryId, Owner, OwnerAccessPort,
-    OwnerExternalKeyParseError, OwnerRef, OwnerRefKind, Relation, Role, SourceBatchId, SourceId,
-    StorageError, ToolScope, UserId, canonical_json_bytes, parse_external_key,
-    provider_safe_tool_name,
+    AuthPath, Authenticator, AuthzContext, EmbeddingAnnObservability, EmbeddingJobBacklog,
+    EmbeddingOrphanCounts, EmbeddingOrphanSweepOutcome, EmbeddingRecallCanary, Engine,
+    EngineHandle, FlavorRegistryFrozen, GoalWakeCandidate, GoalWakeHardMemory, GroupId, MemoryId,
+    Owner, OwnerAccessPort, OwnerExternalKeyParseError, OwnerRef, OwnerRefKind, Relation, Role,
+    SourceBatchId, SourceId, StorageError, ToolScope, UserId, canonical_json_bytes,
+    parse_external_key, provider_safe_tool_name,
 };
 /// The three citation schema ids [`CitationSpec`] is written with:
 /// `UPLOADED_BLOB_SCHEMA_ID` names the cited object, and the other two
