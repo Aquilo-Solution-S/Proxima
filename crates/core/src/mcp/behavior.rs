@@ -434,7 +434,9 @@ mod owner_role_tests {
         }
     }
 
-    /// A flavor tool that says nothing, the pre-existing shape.
+    /// A flavor tool that says nothing. `try_freeze` refuses to seal a
+    /// registry containing one, so this never reaches a served registry —
+    /// see `crate::flavor::freeze`. It stays here to pin that refusal.
     #[derive(Debug)]
     struct SilentTool;
 
@@ -453,7 +455,6 @@ mod owner_role_tests {
         let subject = UserId::new(uuid::Uuid::now_v7());
         let mut registry = FlavorRegistry::new();
         registry.add_mcp_tool_or_panic_for_tests::<DeclaredReadTool>("proxima-stub");
-        registry.add_mcp_tool_or_panic_for_tests::<SilentTool>("proxima-stub");
         McpToolCtx {
             owner: tool_owner,
             authz: AuthzContext::for_subject_with_role(
@@ -498,11 +499,41 @@ mod owner_role_tests {
         );
     }
 
+    /// A registry containing a tool that declares nothing does not seal.
+    ///
+    /// This is the primary defence, and it fires at boot rather than at the
+    /// first refused call. The gate's `unwrap_or(false)` below is the second
+    /// one, for a name that never reached the registry at all.
+    #[test]
+    fn a_flavor_tool_that_declares_nothing_cannot_be_frozen() {
+        let mut registry = FlavorRegistry::new();
+        registry.add_mcp_tool_or_panic_for_tests::<DeclaredReadTool>("proxima-stub");
+        registry.add_mcp_tool_or_panic_for_tests::<SilentTool>("proxima-stub");
+        let err = registry.try_freeze().expect_err("silence must not seal");
+        assert!(
+            matches!(
+                err,
+                crate::FlavorRegistryError::UndeclaredToolBehavior {
+                    name: "proxima-stub_silent"
+                }
+            ),
+            "got {err:?}",
+        );
+        // The message has to name the fix; the symptom it prevents is a
+        // viewer refused a read with no stated cause.
+        let rendered = err.to_string();
+        assert!(rendered.contains("ANNOTATIONS"), "{rendered}");
+    }
+
     /// Declaring nothing still means write. The default has to stay
     /// conservative: a tool that has not thought about it may well write,
     /// and guessing "read" would hand a viewer a mutation.
+    ///
+    /// Freeze now rejects a *registered* silent tool, so the reachable case
+    /// is a name the registry never saw — a tool dispatched by a name that
+    /// does not match any descriptor.
     #[test]
-    fn a_flavor_tool_that_declares_nothing_is_still_a_write() {
+    fn a_tool_the_registry_never_saw_is_still_a_write() {
         let owner = OwnerRef::Group(GroupId::new(uuid::Uuid::now_v7()));
         let ctx = viewer_ctx(owner);
         let args = serde_json::json!({"query": "anything"});

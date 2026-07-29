@@ -29,6 +29,13 @@ struct Demo;
 impl McpTool for Demo {
     const NAME: &'static str = "proxima-test_demo";
     const DESCRIPTION: &'static str = "test";
+    // Required: `try_freeze` refuses to seal a flavor tool whose behaviour
+    // the owner-role gate cannot resolve.
+    const ANNOTATIONS: Option<crate::mcp::McpToolAnnotations> = Some(
+        crate::mcp::McpToolAnnotations::new()
+            .read_only(true)
+            .open_world(false),
+    );
     type Args = EmptyDemoArgs;
     type Output = ();
 
