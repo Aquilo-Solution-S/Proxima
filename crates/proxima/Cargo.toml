@@ -12,6 +12,13 @@ workspace = true
 
 [dependencies]
 proxima-core = { path = "../core" }
+# auth-oidc: the only Authenticator that ships. Optional and on by default
+# because `Proxima::app().authenticator(..)` is otherwise a public builder
+# method taking a type no out-of-tree host can construct — and MCP serving
+# refuses insecure single-owner mode, so without this there is no way for a
+# flavor outside this repo to serve MCP at all. Optional so an embedded
+# host that only uses the Host API can drop the JWT and HTTP stack.
+proxima-auth-oidc = { path = "../auth-oidc", optional = true }
 proxima-storage-pg = { path = "../storage-pg", features = ["backend-api"] }
 proxima-blob-s3 = { path = "../blob-s3" }
 proxima-llm-openai-compat = { path = "../llm-openai-compat", optional = true }
@@ -29,7 +36,8 @@ thiserror = { workspace = true }
 uuid = { workspace = true }
 
 [features]
-default = ["openai-compat-embed"]
+default = ["openai-compat-embed", "auth-oidc"]
+auth-oidc = ["dep:proxima-auth-oidc"]
 openai-compat-embed = ["dep:proxima-llm-openai-compat"]
 testkit = ["dep:proxima-pg-testkit"]
 

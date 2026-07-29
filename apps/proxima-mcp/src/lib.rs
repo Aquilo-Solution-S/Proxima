@@ -598,97 +598,20 @@ fn reject_unknown_tool_ids(
     Ok(())
 }
 
+/// The OIDC bundle for this process, from the shared facade contract.
+///
+/// The env parsing itself lives in `proxima::auth` rather than here. It has
+/// to: MCP serving requires an `Authenticator`, the only one that ships is
+/// `proxima-auth-oidc`, and an out-of-tree flavor takes exactly one
+/// dependency on this repository — so a copy that lived only in this binary
+/// meant only in-tree binaries could serve MCP. Two copies of an
+/// access-control contract that could answer differently for the same
+/// variables is the failure mode worth avoiding; this one maps the error.
 fn oidc_from_env(
     lookup: &impl Fn(&str) -> Option<String>,
     owner_access: Arc<dyn OwnerAccessPort>,
 ) -> Result<Option<OidcBundle>, CliError> {
-    let Some(issuer) = lookup_non_empty(lookup, "PROXIMA_OIDC_ISSUER") else {
-        return Ok(None);
-    };
-    let audience = lookup_non_empty(lookup, "PROXIMA_OIDC_AUDIENCE").ok_or_else(|| {
-        CliError::Runtime(ProximaError::Config(
-            "PROXIMA_OIDC_ISSUER set without PROXIMA_OIDC_AUDIENCE".into(),
-        ))
-    })?;
-    let public_url = lookup_non_empty(lookup, "PROXIMA_PUBLIC_URL").ok_or_else(|| {
-        CliError::Runtime(ProximaError::Config(
-            "PROXIMA_OIDC_ISSUER set without PROXIMA_PUBLIC_URL".into(),
-        ))
-    })?;
-    let jwks_uri = lookup_non_empty(lookup, "PROXIMA_OIDC_JWKS_URI");
-    let allowed_subjects = lookup_non_empty(lookup, "PROXIMA_OIDC_ALLOWED_SUBJECTS").map(|raw| {
-        raw.split(',')
-            .map(str::trim)
-            .filter(|subject| !subject.is_empty())
-            .map(ToOwned::to_owned)
-            .collect::<std::collections::HashSet<String>>()
-    });
-    let oidc_config = proxima_auth_oidc::OidcAuthConfig {
-        issuer: issuer.clone(),
-        jwks_uri,
-        audience,
-        allowed_subjects,
-        leeway_secs: 60,
-    };
-    // Validate the JWKS/issuer boundary before touching the subject map or
-    // storage, matching the pre-split ordering so an insecure-URL rejection
-    // still short-circuits (see `oidc_env_rejects_http_issuer_and_jwks_uri`).
-    let resolver =
-        proxima_auth_oidc::HttpJwksResolver::new(issuer.clone(), oidc_config.jwks_uri.clone())
-            .map_err(|err| CliError::Runtime(ProximaError::Config(err.to_string())))?;
-
-    let subject_map = subject_map_from_env(lookup, &issuer)?;
-    // The pool connects lazily: constructing it here never touches the
-    // network, so this stays safe to call from synchronous unit tests that
-    // never open a real Postgres connection.
-    let authn = proxima_auth_oidc::OidcAuthenticator::new(
-        oidc_config,
-        Arc::new(resolver),
-        subject_map,
-        owner_access,
-    )
-    .map_err(|err| CliError::Runtime(ProximaError::Config(err.to_string())))?;
-    let metadata = proxima::ResourceServerMetadata {
-        public_url,
-        authorization_servers: vec![issuer],
-    };
-    Ok(Some((Arc::new(authn), metadata)))
-}
-
-const PROXIMA_OIDC_SUBJECT_MAP_JSON: &str = "PROXIMA_OIDC_SUBJECT_MAP_JSON";
-const PROXIMA_OIDC_SUBJECT_MAP: &str = "PROXIMA_OIDC_SUBJECT_MAP";
-
-/// Parse the issuer-aware subject map from env. Exactly one of
-/// `PROXIMA_OIDC_SUBJECT_MAP_JSON` (issuer-aware) or `PROXIMA_OIDC_SUBJECT_MAP`
-/// (legacy single-issuer shorthand, bound to `issuer`) must be set whenever
-/// `PROXIMA_OIDC_ISSUER` is configured.
-fn subject_map_from_env(
-    lookup: &impl Fn(&str) -> Option<String>,
-    issuer: &str,
-) -> Result<proxima_auth_oidc::OidcSubjectMap, CliError> {
-    let json_raw = lookup_non_empty(lookup, PROXIMA_OIDC_SUBJECT_MAP_JSON);
-    let legacy_raw = lookup_non_empty(lookup, PROXIMA_OIDC_SUBJECT_MAP);
-    match (json_raw, legacy_raw) {
-        (Some(_), Some(_)) => Err(CliError::Runtime(ProximaError::Config(format!(
-            "{PROXIMA_OIDC_SUBJECT_MAP_JSON} and {PROXIMA_OIDC_SUBJECT_MAP} are mutually exclusive"
-        )))),
-        (Some(json), None) => proxima_auth_oidc::OidcSubjectMap::from_json(&json).map_err(|err| {
-            CliError::Runtime(ProximaError::Config(format!(
-                "{PROXIMA_OIDC_SUBJECT_MAP_JSON}: {err}"
-            )))
-        }),
-        (None, Some(legacy)) => {
-            proxima_auth_oidc::OidcSubjectMap::from_legacy_shorthand(&legacy, &[issuer.to_string()])
-                .map_err(|err| {
-                    CliError::Runtime(ProximaError::Config(format!(
-                        "{PROXIMA_OIDC_SUBJECT_MAP}: {err}"
-                    )))
-                })
-        }
-        (None, None) => Err(CliError::Runtime(ProximaError::Config(format!(
-            "PROXIMA_OIDC_ISSUER set without {PROXIMA_OIDC_SUBJECT_MAP_JSON} or {PROXIMA_OIDC_SUBJECT_MAP}"
-        )))),
-    }
+    proxima::auth::oidc_from_lookup(lookup, owner_access).map_err(CliError::Runtime)
 }
 
 /// Build the embedding client from env, or `None` for degraded mode.

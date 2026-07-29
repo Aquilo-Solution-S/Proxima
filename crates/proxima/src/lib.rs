@@ -25,6 +25,8 @@
 //!   SDK boundary.
 
 mod app;
+#[cfg(feature = "auth-oidc")]
+pub mod auth;
 mod bundle;
 mod config;
 mod core_mcp;
