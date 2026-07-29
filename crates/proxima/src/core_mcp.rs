@@ -209,7 +209,10 @@ fn find_tool_descriptor<'a>(
 }
 
 fn tool_info_from_descriptor(descriptor: &McpToolDescriptor) -> CoreToolInfo {
-    let annotations = core_tool_annotations(descriptor.name).unwrap_or_default();
+    let annotations = descriptor
+        .annotations
+        .or_else(|| core_tool_annotations(descriptor.name))
+        .unwrap_or_default();
     CoreToolInfo {
         name: provider_safe_tool_name(descriptor.name),
         description: descriptor.description.to_string(),
@@ -275,6 +278,7 @@ mod tests {
             produces_schema_ids: &[],
             args_schema: serde_json::json!({ "type": "object" }),
             action_arg_specs: &[],
+            annotations: None,
             call: &call,
         }];
 

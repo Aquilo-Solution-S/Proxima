@@ -67,6 +67,7 @@ impl FlavorRegistry {
             produces_schema_ids: T::PRODUCES_SCHEMA_IDS,
             args_schema,
             action_arg_specs: &[],
+            annotations: <T as Tool>::ANNOTATIONS,
             call,
         });
         Ok(())
@@ -120,6 +121,7 @@ impl FlavorRegistry {
             produces_schema_ids: T::PRODUCES_SCHEMA_IDS,
             args_schema,
             action_arg_specs: T::ACTION_ARG_SPECS,
+            annotations: <T as McpTool>::ANNOTATIONS,
             call,
         });
         Ok(())

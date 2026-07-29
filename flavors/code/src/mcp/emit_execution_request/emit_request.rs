@@ -20,6 +20,8 @@ impl Tool for CodeEmitExecutionRequestTool {
     const NAME: &'static str = "proxima-code_emit_execution_request";
     const DESCRIPTION: &'static str =
         "Emit a repo-scoped proxima-code/work-requested-v1 Fact for an Active Goal.";
+    const ANNOTATIONS: Option<proxima_core::mcp::McpToolAnnotations> =
+        Some(crate::mcp::WRITE_NON_IDEMPOTENT);
     const PRODUCES_SCHEMA_IDS: &'static [&'static str] = &[ExecutionRequestV1::SCHEMA_ID];
 
     type Args = CodeEmitExecutionRequestArgs;

@@ -23,6 +23,8 @@ pub struct CodeRetryExecutionRequestTool;
 impl Tool for CodeRetryExecutionRequestTool {
     const NAME: &'static str = "proxima-code_retry_execution_request";
     const DESCRIPTION: &'static str = "Shell-author override: retry a prior proxima-code/work-requested-v1 Fact for a target worker.";
+    const ANNOTATIONS: Option<proxima_core::mcp::McpToolAnnotations> =
+        Some(crate::mcp::WRITE_NON_IDEMPOTENT);
     const PRODUCES_SCHEMA_IDS: &'static [&'static str] = &[ExecutionRequestV1::SCHEMA_ID];
 
     type Args = CodeRetryExecutionRequestArgs;

@@ -18,6 +18,10 @@ pub struct McpToolDescriptor {
     pub produces_schema_ids: &'static [&'static str],
     pub args_schema: serde_json::Value,
     pub action_arg_specs: &'static [McpActionArgSpec],
+    /// What the tool declared about its own behaviour, or `None` when it
+    /// declared nothing. Substrate tools may still resolve through
+    /// `core_tool_annotations`; a flavor tool has no other route.
+    pub annotations: Option<crate::mcp::McpToolAnnotations>,
     pub call: McpCallFn,
 }
 
@@ -31,6 +35,7 @@ impl std::fmt::Debug for McpToolDescriptor {
             .field("produces_schema_ids", &self.produces_schema_ids)
             .field("args_schema", &self.args_schema)
             .field("action_arg_specs", &self.action_arg_specs)
+            .field("annotations", &self.annotations)
             .field("call", &"<callable>")
             .finish()
     }
@@ -199,6 +204,9 @@ pub trait McpTool: Send + Sync + 'static {
     const DESCRIPTION: &'static str;
     const PRODUCES_SCHEMA_IDS: &'static [&'static str] = &[];
     const ACTION_ARG_SPECS: &'static [McpActionArgSpec] = &[];
+    /// MCP behaviour hints for this tool. See [`crate::Tool::ANNOTATIONS`]
+    /// — a tool that declares nothing is treated as a write.
+    const ANNOTATIONS: Option<crate::mcp::McpToolAnnotations> = None;
 
     type Args: serde::de::DeserializeOwned + schemars::JsonSchema + Send + 'static;
     type Output: serde::Serialize + Send + 'static;
