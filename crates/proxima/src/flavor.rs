@@ -24,17 +24,6 @@ pub use proxima_core::mcp::{
     McpActionArgSpec, McpAuthorContext, McpTool, McpToolAnnotations, McpToolCtx, McpToolError,
     McpToolErrorKind, McpToolExtensions,
 };
-/// The zero-page-bound rule, shared so a flavor does not have to invent
-/// its own.
-///
-/// Every paged read faces the same question and the in-tree tools once
-/// answered it three different ways: one rejected `limit: 0`, one returned
-/// a well-formed empty page indistinguishable from "nothing matched", and
-/// one clamped to 1 and answered a question nobody asked. The engine has
-/// rejected zero from the start; this is how a flavor agrees with it in
-/// one line. Upper bounds stay the flavor's own business — clamping those
-/// still serves the caller's intent.
-pub use proxima_core::reject_zero_limit;
 /// Host-wired cited-blob lane, handed to workers as
 /// [`FlavorWorkerContext::blobs`]. Present only when the host configured
 /// S3; the concrete backend (`proxima-blob-s3`) is never named across
@@ -90,6 +79,27 @@ pub use proxima_core::{
     AuthorDerivedAuthorizedOutcome, AuthorDerivedEdgeInput, AuthorDerivedRequestInput,
     CORE_DERIVED_FROM_RELATION, CORE_SUPERSEDES_RELATION, EdgeAuthorshipKind, EntityKind,
     MemoryOperatorKind, RegisteredRelation,
+};
+/// Shared argument rules for search and paged reads, so a flavor does not
+/// have to invent its own — and so the in-tree tools cannot drift apart.
+///
+/// [`reject_zero_limit`]: every paged read faces the same question, and
+/// the in-tree tools once answered it three different ways: one rejected
+/// `limit: 0`, one returned a well-formed empty page indistinguishable
+/// from "nothing matched", and one clamped to 1 and answered a question
+/// nobody asked. The engine has rejected zero from the start; this is how
+/// a flavor agrees with it in one line. Upper bounds stay the flavor's own
+/// business — clamping those still serves the caller's intent.
+///
+/// [`validate_search_query`] and [`MAX_QUERY_CHARS`]: three tools carried
+/// a byte-identical copy of the same check with `512` inlined in each.
+///
+/// [`MAX_TEXT_CAP_CHARS`] is the ceiling on a caller-supplied cap over
+/// returned text (`body_max_chars`, `snippet_max_chars`). The *default*
+/// under it is deliberately not shared — how much of a code chunk versus a
+/// memory body is worth returning is a property of the object.
+pub use proxima_core::{
+    MAX_QUERY_CHARS, MAX_TEXT_CAP_CHARS, reject_zero_limit, validate_search_query,
 };
 pub use proxima_storage_pg::pg_sidecar;
 pub use proxima_storage_pg::sidecars::{

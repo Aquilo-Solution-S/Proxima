@@ -220,6 +220,50 @@ pub fn reject_zero_limit(limit: Option<u32>) -> Result<(), ToolError> {
     Ok(())
 }
 
+/// Longest search query any tool accepts, in characters.
+///
+/// One number because the arguments for it are not tool-specific: it
+/// bounds the tsquery the lexical arm builds and the token count the
+/// embedding arm pays for, and a caller who has to remember a different
+/// cap per tool will get it wrong.
+pub const MAX_QUERY_CHARS: usize = 512;
+
+/// Longest text cap a caller may ask a search result to carry, in
+/// characters — `core_search_memories`' `body_max_chars`,
+/// `proxima-code_search_chunks`' `snippet_max_chars`, and whatever a
+/// flavor names its own.
+///
+/// Shared rather than copied because the two in-tree values were already
+/// the same number by intent (the code flavor's comment said "matching
+/// `core_search_memories`") and nothing would have caught them drifting
+/// apart. Defaults are deliberately NOT shared: 2,000 for a code chunk and
+/// 8,000 for a memory body are different because the objects are.
+pub const MAX_TEXT_CAP_CHARS: usize = 8_000;
+
+/// Trim `query` and check it against [`MAX_QUERY_CHARS`].
+///
+/// Counts characters, not bytes: the cap exists to bound what the query
+/// planner and the embedding provider see, and a byte cap would reject a
+/// shorter question written in a language that does not fit in ASCII.
+///
+/// Three tools carried a byte-identical copy of this with `512` inlined
+/// as a literal in each — see [`reject_zero_limit`] for why a rule with no
+/// shared home is a rule that eventually disagrees with itself.
+///
+/// # Errors
+///
+/// [`ToolError::InvalidInput`] when the trimmed query is empty or longer
+/// than [`MAX_QUERY_CHARS`].
+pub fn validate_search_query(query: &str) -> Result<&str, ToolError> {
+    let query = query.trim();
+    if query.is_empty() || query.chars().count() > MAX_QUERY_CHARS {
+        return Err(ToolError::InvalidInput(format!(
+            "query must be 1..={MAX_QUERY_CHARS} chars"
+        )));
+    }
+    Ok(query)
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum ToolError {
     #[error("invalid input: {0}")]
@@ -271,4 +315,66 @@ pub trait Tool: Send + Sync + 'static {
     type Output: serde::Serialize + Send + 'static;
 
     fn call(ctx: ToolCtx, args: Self::Args) -> BoxFuture<'static, Result<Self::Output, ToolError>>;
+}
+
+#[cfg(test)]
+mod shared_arg_rule_tests {
+    use super::{MAX_QUERY_CHARS, MAX_TEXT_CAP_CHARS, ToolError, validate_search_query};
+
+    #[test]
+    fn a_query_is_trimmed_and_bounded() {
+        assert_eq!(validate_search_query("  hello  ").unwrap(), "hello");
+        assert_eq!(
+            validate_search_query(&"a".repeat(MAX_QUERY_CHARS))
+                .unwrap()
+                .len(),
+            MAX_QUERY_CHARS
+        );
+        assert!(validate_search_query("").is_err());
+        assert!(validate_search_query("   ").is_err());
+        assert!(validate_search_query(&"a".repeat(MAX_QUERY_CHARS + 1)).is_err());
+    }
+
+    /// Whitespace-only is rejected AFTER trimming, not before: `"   "` is
+    /// an empty query, and the three tools this replaced all trimmed
+    /// first for exactly that reason.
+    #[test]
+    fn the_bound_applies_to_the_trimmed_query() {
+        let padded = format!("  {}  ", "a".repeat(MAX_QUERY_CHARS));
+        assert!(
+            validate_search_query(&padded).is_ok(),
+            "padding must not push a legal query over the cap"
+        );
+    }
+
+    /// Characters, not bytes. A byte cap would reject a shorter question
+    /// for being written in a language that does not fit in ASCII.
+    #[test]
+    fn the_cap_counts_characters_not_bytes() {
+        let cyrillic = "я".repeat(MAX_QUERY_CHARS);
+        assert_eq!(cyrillic.len(), MAX_QUERY_CHARS * 2, "two bytes per char");
+        assert!(
+            validate_search_query(&cyrillic).is_ok(),
+            "a 512-character Russian query is as legal as a 512-character English one"
+        );
+        assert!(validate_search_query(&"я".repeat(MAX_QUERY_CHARS + 1)).is_err());
+    }
+
+    #[test]
+    fn the_rejection_is_invalid_input_and_names_the_bound() {
+        let ToolError::InvalidInput(message) = validate_search_query("").unwrap_err() else {
+            panic!("a bad query must be invalid input, not any other error kind");
+        };
+        assert!(
+            message.contains(&MAX_QUERY_CHARS.to_string()),
+            "the message must carry the bound: {message}"
+        );
+    }
+
+    /// The two in-tree text caps were already the same number by intent;
+    /// sharing the constant is what makes that true by construction.
+    #[test]
+    fn the_shared_text_cap_is_the_number_both_tools_documented() {
+        assert_eq!(MAX_TEXT_CAP_CHARS, 8_000);
+    }
 }

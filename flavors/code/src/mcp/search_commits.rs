@@ -80,12 +80,7 @@ impl Tool for CodeSearchCommitsTool {
         args: CodeSearchCommitsArgs,
     ) -> futures::future::BoxFuture<'static, Result<CodeSearchCommitsOutput, ToolError>> {
         Box::pin(async move {
-            let query = args.query.trim();
-            if query.is_empty() || query.chars().count() > 512 {
-                return Err(ToolError::InvalidInput(
-                    "query must be 1..=512 chars".into(),
-                ));
-            }
+            let query = proxima_core::validate_search_query(&args.query)?;
             proxima_core::reject_zero_limit(args.limit)?;
             let limit = args.limit.unwrap_or(10).min(50);
             let repo_id = match args.repo_handle.as_deref() {

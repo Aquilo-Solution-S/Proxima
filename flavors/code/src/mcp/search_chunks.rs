@@ -101,7 +101,7 @@ const DEFAULT_SNIPPET_MAX_CHARS: usize = 2_000;
 
 /// Ceiling on `snippet_max_chars`, matching `core_search_memories`'
 /// `body_max_chars`. Covers the p99 chunk (4,488 characters).
-const MAX_SNIPPET_MAX_CHARS: usize = 8_000;
+const MAX_SNIPPET_MAX_CHARS: usize = proxima_core::MAX_TEXT_CAP_CHARS;
 
 /// Most structured identifiers lifted out of one query. Bounds the size of
 /// the derived tsquery; a query naming more than this many distinct
@@ -262,12 +262,7 @@ impl Tool for CodeSearchChunksTool {
         args: CodeSearchChunksArgs,
     ) -> futures::future::BoxFuture<'static, Result<CodeSearchChunksOutput, ToolError>> {
         Box::pin(async move {
-            let query = args.query.trim();
-            if query.is_empty() || query.chars().count() > 512 {
-                return Err(ToolError::InvalidInput(
-                    "query must be 1..=512 chars".into(),
-                ));
-            }
+            let query = proxima_core::validate_search_query(&args.query)?;
             if args.snippet_max_chars == Some(0) {
                 return Err(ToolError::InvalidInput(
                     "snippet_max_chars must be at least 1".into(),
