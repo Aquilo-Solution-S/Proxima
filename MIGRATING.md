@@ -2101,6 +2101,59 @@ match err {
 `proxima::host`, since a variant payload a host cannot name is a variant a
 host cannot match.
 
+## 57. v0.0.7: a derive replay is a replay of the same content
+
+**Action required for callers that rely on `core_derive` deduplicating
+without an explicit `idempotency_key`.** The auto-derived key changes, so a
+derivation replayed across this upgrade is a new write, not a no-op. Callers
+that pass their own `idempotency_key` are unaffected.
+
+`idempotent_replay: true` means "the write you asked for is already stored",
+and a caller acts on it by moving on. It was not true.
+
+The auto-derived key hashed the **body alone**. The storage-side replay
+proof (`validate_derived_replay_equivalent`) compares the `memories` row —
+text, kind, operator, model, owner — where `text` is also the body alone.
+The title and tags live in the `agent_derivation_v1` sidecar, which the
+proof never reads and which the replay path never even writes. So two
+Abstractions over one body with different titles were one write:
+
+```
+derive title="Deployment risks in Q3"  body=B  -> A:e684… replay=false
+derive title="Customer churn drivers"  body=B  -> A:e684… replay=true
+read   A:e684…                                 -> title "Deployment risks in Q3"
+```
+
+The second caller's Abstraction was never stored and they were told it
+already existed. A success flag over discarded content is the worst shape a
+write can fail in.
+
+The rule now is: **the auto-derived key covers everything the write stores
+that the proof does not** — title, body and tags. An *explicit*
+`idempotency_key` is deliberately unchanged: there the caller is asserting
+"these calls are the same derivation", which is what the parameter is for,
+and a re-generated body differing by a space must still replay. That
+asymmetry is now stated in the parameter's own description.
+
+With the key fixed, a second Abstraction over one source batch reaches the
+rule that actually governs it — and said:
+
+```
+duplicate key value violates unique constraint "memories_ftoa_batch_exclusive_uidx"
+```
+
+An index name is part of no contract the caller can see, and the rule it
+enforces was never stated. `map_err` already matched that index by name and
+then forwarded Postgres's sentence anyway; it now says what the rule is.
+Constraints it does not recognise still forward Postgres's text — a wider
+leak, since each one needs its rule written out, and only the one
+demonstrably reachable from an agent tool is translated.
+
+Both were found by the invariant soak, by the schema-driven probe added in
+this cycle: it seeds real handles in order to reach tools whose companion
+arguments are references, and reaching `core_derive` at all is what exposed
+this.
+
 ## Checks before calling an upgrade done
 
 ```sh

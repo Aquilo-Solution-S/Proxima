@@ -126,7 +126,7 @@ pub struct DeriveArgs {
     )]
     pub model_id: Option<String>,
     #[schemars(
-        description = "Optional stable idempotency key. Omit or null to derive one from model_id and body."
+        description = "Optional stable idempotency key. Omit or null to derive one from model_id and the authored content (title, body, tags), so two derivations that differ in any of them are two writes. Supplying one asserts that calls sharing it are the same derivation even if the text differs; the first body written under a key is the one kept."
     )]
     pub idempotency_key: Option<String>,
     #[serde(default)]
@@ -251,8 +251,34 @@ impl McpTool for DeriveTool {
                 &format!("{title}\n{body}"),
             )
             .map_err(|err| McpToolError::InvalidInput(err.to_string()))?;
+            // The auto-derived key must cover everything this write stores
+            // that the storage-side replay proof does not.
+            //
+            // That proof (`validate_derived_replay_equivalent`) compares the
+            // `memories` row: text, kind, operator, model, owner. `text` is
+            // the body alone — the title and tags live in the
+            // `agent_derivation_v1` sidecar, which the proof never reads and
+            // which the replay path never even writes. So hashing the body
+            // alone made two derivations with one body and different titles a
+            // single write: the second caller got `idempotent_replay: true`
+            // and a handle to somebody else's Abstraction, with their own
+            // title silently discarded. A success flag over dropped content
+            // is the worst shape a write can fail in.
+            //
+            // An *explicit* key is deliberately left alone. There the caller
+            // is asserting "this is the same derivation" — that is what the
+            // parameter is for, and a re-generated body differing by a space
+            // must still replay.
             let key = idempotency_key.clone().unwrap_or_else(|| {
-                format!("{}:{}", model_id, blake3::hash(body.as_bytes()).to_hex())
+                let mut content = blake3::Hasher::new();
+                content.update(title.as_bytes());
+                content.update(b"\0");
+                content.update(body.as_bytes());
+                for tag in &tags {
+                    content.update(b"\0");
+                    content.update(tag.as_bytes());
+                }
+                format!("{}:{}", model_id, content.finalize().to_hex())
             });
             let memory_id = derived_memory_id(&space.owner, args.kind.as_str(), &key);
             let sidecar = AgentDerivationV1 {
