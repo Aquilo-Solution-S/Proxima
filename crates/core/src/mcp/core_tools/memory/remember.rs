@@ -35,15 +35,18 @@ fn keyed_source_batch_id(owner: crate::OwnerRef, key: &str) -> SourceBatchId {
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct RememberArgs {
     #[schemars(
+        length(max = 240),
         description = "Short title for the agent-observed Fact, 1 to 240 chars. Leading and trailing whitespace is removed before the length check."
     )]
     pub title: String,
     #[schemars(
+        length(max = 20000),
         description = "Body text for the agent-observed Fact, 1 to 20000 chars. Leading and trailing whitespace is removed before the length check."
     )]
     pub body: String,
     #[serde(default)]
     #[schemars(
+        length(max = 16),
         description = "Optional tags for later search, at most 16. Each is stored trimmed and lowercased, so `Rust` is stored and matched as `rust`. Use `[]` when no tags are needed."
     )]
     pub tags: Vec<String>,

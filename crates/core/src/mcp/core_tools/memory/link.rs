@@ -19,6 +19,7 @@ pub struct LinkArgs {
     )]
     pub target: String,
     #[schemars(
+        length(max = 1000),
         description = "Reason for linking source to target, 1 to 1000 chars. Leading and trailing whitespace is removed before the length check."
     )]
     pub reason: String,
