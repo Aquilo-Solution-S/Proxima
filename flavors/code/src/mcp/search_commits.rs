@@ -15,6 +15,7 @@ pub struct CodeSearchCommitsArgs {
     )]
     pub query: String,
     #[schemars(
+        range(min = 1),
         description = "Optional maximum number of commit and summary matches. Omit or null for 10; values above 50 are clamped, and 0 is rejected."
     )]
     pub limit: Option<u32>,

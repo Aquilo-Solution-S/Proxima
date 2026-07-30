@@ -28,6 +28,7 @@ pub struct FactsCitingObjectArgs {
     /// Max citing Facts per page; values above 200 are clamped, 0 is
     /// rejected, default 50.
     #[serde(default)]
+    #[schemars(range(min = 1))]
     pub limit: Option<u32>,
     /// Opaque pagination cursor from a previous response's `next_cursor`.
     /// The `cited_object_id` must stay unchanged between pages; `limit`
