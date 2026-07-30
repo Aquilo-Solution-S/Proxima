@@ -75,6 +75,9 @@ pub fn parse_observed_at(raw: Option<&str>) -> Result<Option<time::OffsetDateTim
 /// Upper bound on distinct normalized tags per memory.
 const MAX_TAGS: usize = 16;
 
+/// Upper bound on one normalized tag, in characters.
+const MAX_TAG_CHARS: usize = 48;
+
 /// Fold one tag to the form it is stored and compared in: trimmed and
 /// ASCII-lowercased.
 ///
@@ -96,18 +99,14 @@ pub fn fold_tag(tag: &str) -> String {
 /// # Errors
 ///
 /// Returns [`McpToolError::InvalidInput`] when a tag is blank, a tag
-/// exceeds 48 characters, or more than [`MAX_TAGS`] distinct tags remain
-/// after normalization.
+/// exceeds [`MAX_TAG_CHARS`], or more than [`MAX_TAGS`] distinct tags
+/// remain after normalization. Blank and oversized get different
+/// messages — see [`crate::tool::validate_trimmed_len`].
 pub fn normalize_tags(tags: Vec<String>) -> Result<Vec<String>, McpToolError> {
     let mut out = Vec::with_capacity(tags.len());
     for tag in tags {
         let tag = fold_tag(&tag);
-        if tag.is_empty() || tag.chars().count() > 48 {
-            return Err(McpToolError::InvalidInput(
-                "tag must be 1..=48 chars".into(),
-            ));
-        }
-        out.push(tag);
+        out.push(crate::tool::validate_trimmed_len("tag", &tag, MAX_TAG_CHARS)?.to_string());
     }
     out.sort();
     out.dedup();
@@ -121,7 +120,9 @@ pub fn normalize_tags(tags: Vec<String>) -> Result<Vec<String>, McpToolError> {
 
 #[cfg(test)]
 mod tests {
-    use super::{MAX_TAGS, normalize_idempotency_key, normalize_tags, parse_observed_at};
+    use super::{
+        MAX_TAGS, McpToolError, normalize_idempotency_key, normalize_tags, parse_observed_at,
+    };
     use crate::verbs::goal_write::IdempotencyKey;
 
     #[test]
@@ -177,6 +178,32 @@ mod tests {
         assert!(normalize_tags(vec!["  ".into()]).is_err());
         assert!(normalize_tags(vec!["x".repeat(49)]).is_err());
         assert!(normalize_tags(vec!["x".repeat(48)]).is_ok());
+    }
+
+    /// A blank tag and an over-length one are different mistakes, and the
+    /// old shared `tag must be 1..=48 chars` quoted the blank one a range
+    /// it satisfies.
+    #[test]
+    fn a_blank_tag_and_an_oversized_tag_are_told_apart() {
+        let McpToolError::InvalidInput(blank) =
+            normalize_tags(vec!["  ".into()]).expect_err("blank tag")
+        else {
+            panic!("a bad tag must be invalid input");
+        };
+        let McpToolError::InvalidInput(over) =
+            normalize_tags(vec!["x".repeat(49)]).expect_err("oversized tag")
+        else {
+            panic!("a bad tag must be invalid input");
+        };
+        assert_ne!(blank, over, "one message for two mistakes tells neither");
+        assert!(
+            !blank.contains("48"),
+            "blank quoted a bound it meets: {blank}"
+        );
+        assert!(
+            over.contains("49"),
+            "oversized must say what it sent: {over}"
+        );
     }
 
     #[test]
