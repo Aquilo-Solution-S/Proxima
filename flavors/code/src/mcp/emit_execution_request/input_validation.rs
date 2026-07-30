@@ -7,20 +7,24 @@ use crate::payloads::{AcceptanceCriterionV1, AcceptanceVerifierKind};
 use super::super::CodeToolCtxExt;
 use super::types::{ExecutionPlanItemArgs, ExecutionPlanItemKind};
 
-pub(super) fn normalize_text(
-    field: &str,
-    value: &str,
-    min: usize,
-    max: usize,
-) -> Result<String, ToolError> {
-    let trimmed = value.trim();
-    let len = trimmed.chars().count();
-    if len < min || len > max {
-        return Err(ToolError::InvalidInput(format!(
-            "{field} must be {min}..={max} chars"
-        )));
-    }
-    Ok(trimmed.to_string())
+/// Trim `value` and check it against `1..=max` characters.
+///
+/// Delegates to [`proxima_core::validate_trimmed_len`] rather than
+/// repeating the check, so this flavor and the substrate refuse a blank
+/// value in the same words. The copy this replaced answered a blank value
+/// and an over-length one with one message, `{field} must be 1..=240
+/// chars` — a range a blank value satisfies, which reads as a server fault
+/// rather than an instruction to send content.
+///
+/// The `min` parameter went with it: all eighteen call sites passed 1,
+/// and a floor that is always the same number is not a parameter.
+///
+/// # Errors
+///
+/// [`ToolError::InvalidInput`] when `value` is empty after trimming, or
+/// longer than `max` characters.
+pub(super) fn normalize_text(field: &str, value: &str, max: usize) -> Result<String, ToolError> {
+    proxima_core::validate_trimmed_len(field, value, max).map(str::to_string)
 }
 
 pub(super) fn validate_acceptance_criteria(
@@ -29,11 +33,10 @@ pub(super) fn validate_acceptance_criteria(
     let mut seen = HashSet::new();
     let mut out = Vec::with_capacity(criteria.len());
     for mut criterion in criteria {
-        criterion.key = normalize_text("acceptance_criteria.key", &criterion.key, 1, 80)?;
+        criterion.key = normalize_text("acceptance_criteria.key", &criterion.key, 80)?;
         criterion.description = normalize_text(
             "acceptance_criteria.description",
             &criterion.description,
-            1,
             1000,
         )?;
         if !criterion
@@ -70,7 +73,7 @@ pub(super) fn validate_plan_items(
     let mut prior = HashSet::new();
     let mut out = Vec::with_capacity(items.len());
     for mut item in items {
-        item.key = normalize_text("items.key", &item.key, 1, 80)?;
+        item.key = normalize_text("items.key", &item.key, 80)?;
         if !item
             .key
             .chars()
@@ -86,10 +89,9 @@ pub(super) fn validate_plan_items(
                 item.key
             )));
         }
-        item.title = normalize_text("items.title", &item.title, 1, 240)?;
-        item.instructions = normalize_text("items.instructions", &item.instructions, 1, 20_000)?;
-        item.idempotency_key =
-            normalize_text("items.idempotency_key", &item.idempotency_key, 1, 240)?;
+        item.title = normalize_text("items.title", &item.title, 240)?;
+        item.instructions = normalize_text("items.instructions", &item.instructions, 20_000)?;
+        item.idempotency_key = normalize_text("items.idempotency_key", &item.idempotency_key, 240)?;
         item.acceptance_criteria = validate_acceptance_criteria(item.acceptance_criteria)?;
         item.test_criteria = validate_acceptance_criteria(item.test_criteria)?;
         match item.kind {
@@ -129,7 +131,7 @@ pub(super) fn validate_plan_items(
         let mut item_deps = HashSet::new();
         let mut normalized_deps = Vec::with_capacity(item.depends_on.len());
         for dep in &item.depends_on {
-            let dep = normalize_text("items.depends_on[]", dep, 1, 80)?;
+            let dep = normalize_text("items.depends_on[]", dep, 80)?;
             if !prior.contains(&dep) {
                 return Err(ToolError::InvalidInput(format!(
                     "{} item {} depends on {}, but dependencies must reference earlier item keys",
@@ -162,7 +164,7 @@ fn validate_acceptance_verifier_spec(criterion: &AcceptanceCriterionV1) -> Resul
                     criterion.key
                 ))
             })?;
-            let _ = normalize_text("acceptance_criteria.verifier_spec.path", path, 1, 1000)?;
+            let _ = normalize_text("acceptance_criteria.verifier_spec.path", path, 1000)?;
         }
         AcceptanceVerifierKind::Command => {
             let command = criterion.verifier_spec.command.as_ref().ok_or_else(|| {
@@ -178,8 +180,7 @@ fn validate_acceptance_verifier_spec(criterion: &AcceptanceCriterionV1) -> Resul
                 )));
             }
             for part in command {
-                let _ =
-                    normalize_text("acceptance_criteria.verifier_spec.command[]", part, 1, 2000)?;
+                let _ = normalize_text("acceptance_criteria.verifier_spec.command[]", part, 2000)?;
             }
         }
         AcceptanceVerifierKind::BrowserSmoke
@@ -193,4 +194,65 @@ pub(super) fn resolve_evidence(ctx: &ToolCtx, raw: &[String]) -> Result<Vec<Memo
     raw.iter()
         .map(|value| ctx.resolve_fact_memory(value))
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalize_text;
+    use proxima_core::ToolError;
+
+    fn message(result: Result<String, ToolError>) -> String {
+        match result.expect_err("must be refused") {
+            ToolError::InvalidInput(message) => message,
+            other => panic!("must be invalid input, got {other:?}"),
+        }
+    }
+
+    /// A blank value and an over-length one are different mistakes with
+    /// different fixes. The copy this replaced answered both with `{field}
+    /// must be 1..=240 chars` — a range a blank value satisfies.
+    #[test]
+    fn blank_and_oversized_do_not_share_one_message() {
+        let blank = message(normalize_text("title", "   ", 240));
+        let over = message(normalize_text("title", &"a".repeat(241), 240));
+        assert_ne!(blank, over, "one message for two mistakes tells neither");
+        assert!(
+            !blank.contains("240"),
+            "a blank value must not be quoted a bound it satisfies: {blank}"
+        );
+        assert!(
+            over.contains("240") && over.contains("241"),
+            "an oversized value must be told the cap and what it sent: {over}"
+        );
+    }
+
+    /// The point of delegating is that the flavor and the substrate refuse
+    /// the same input in the same words. Comparing the two messages directly
+    /// is what stops a well-meaning local copy from reappearing.
+    #[test]
+    fn the_flavor_refuses_in_the_substrate_s_words() {
+        for (value, max) in [("   ", 240), (&"a".repeat(241) as &str, 240)] {
+            let flavor = message(normalize_text("title", value, max));
+            let substrate = match proxima_core::validate_trimmed_len("title", value, max)
+                .expect_err("must be refused")
+            {
+                ToolError::InvalidInput(message) => message,
+                other => panic!("must be invalid input, got {other:?}"),
+            };
+            assert_eq!(
+                flavor, substrate,
+                "the flavor must refuse in the substrate's words, not its own",
+            );
+        }
+    }
+
+    /// The field name is the caller's only pointer back into the schema, so
+    /// it has to survive delegation.
+    #[test]
+    fn the_message_names_the_field_that_failed() {
+        assert!(
+            message(normalize_text("items.instructions", "", 20_000))
+                .starts_with("items.instructions")
+        );
+    }
 }

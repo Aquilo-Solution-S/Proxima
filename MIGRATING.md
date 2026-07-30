@@ -1982,6 +1982,29 @@ it is used, matching `normalize_idempotency_key`. A caller who has been
 sending a padded `model_id` and relying on the derived key will see one
 new Abstraction on the first call after upgrading, then replays collapse.
 
+## 55. v0.0.7: the code flavor refuses in the substrate's words
+
+**Action required only for clients that match on error text.** The same
+inputs are refused; the sentence explaining why changes.
+
+§53 fixed this in core and left the flavor's copy standing.
+`proxima-code`'s `emit_execution_request` family carried its own
+`normalize_text`, with the same defect: a blank value and an over-length
+one both got `{field} must be 1..=240 chars`, a range the blank value
+satisfies.
+
+It now delegates to `proxima_core::validate_trimmed_len`, so the flavor
+and the substrate refuse the same input in the same words — and
+`the_flavor_refuses_in_the_substrate_s_words` compares the two messages
+directly, which is what stops a well-meaning local copy from reappearing.
+
+The `min` parameter went with it. All eighteen call sites passed `1`, and
+a floor that is always the same number is not a parameter.
+
+This is the pattern for any out-of-tree flavor with its own text
+validation: `validate_trimmed_len` is `pub` for the same reason
+`reject_zero_limit` is — a rule a flavor cannot reach is a rule it will
+reimplement differently.
 ## 54. v0.0.7: a schema states the upper bound it enforces
 
 **Action required only for clients that validate against `inputSchema`

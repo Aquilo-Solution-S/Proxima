@@ -36,9 +36,9 @@ impl Tool for CodeEmitExecutionRequestTool {
             let repo_id = resolve_repo_identifier(&ctx, &args.repo_handle).await?;
             validate_repo(&ctx, repo_id).await?;
 
-            let title = normalize_text("title", &args.title, 1, 240)?;
-            let instructions = normalize_text("instructions", &args.instructions, 1, 20_000)?;
-            let request_key = normalize_text("idempotency_key", &args.idempotency_key, 1, 240)?;
+            let title = normalize_text("title", &args.title, 240)?;
+            let instructions = normalize_text("instructions", &args.instructions, 20_000)?;
+            let request_key = normalize_text("idempotency_key", &args.idempotency_key, 240)?;
             let acceptance_criteria = validate_acceptance_criteria(args.acceptance_criteria)?;
 
             let planner_root = ctx.caller_self_perspective().ok_or_else(|| {

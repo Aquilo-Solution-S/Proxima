@@ -73,11 +73,11 @@ impl Tool for CodeEmitExecutionPlanTool {
             validate_evidence_in_owner(&mut tx, &ctx, &evidence).await?;
 
             let plan_key = match args.plan_key {
-                Some(value) => normalize_text("plan_key", &value, 1, 240)?,
+                Some(value) => normalize_text("plan_key", &value, 240)?,
                 None => default_plan_key(goal_activated_memory_id, &plan_items),
             };
             let plan_summary = match args.plan_summary {
-                Some(value) => normalize_text("plan_summary", &value, 1, 4_000)?,
+                Some(value) => normalize_text("plan_summary", &value, 4_000)?,
                 None => format!("Plan with {} work/test item(s)", plan_items.len()),
             };
             let plan_payload = CodeExecutionPlanV1 {

@@ -26,11 +26,11 @@ pub(super) fn retry_instructions(
         request_key
     );
     if let Some(extra) = instructions_append {
-        let extra = normalize_text("instructions_append", extra, 1, 20_000)?;
+        let extra = normalize_text("instructions_append", extra, 20_000)?;
         instructions.push_str("\n\nRetry instructions:\n");
         instructions.push_str(&extra);
     }
-    normalize_text("instructions", &instructions, 1, 20_000)
+    normalize_text("instructions", &instructions, 20_000)
 }
 
 pub(super) fn resolve_target_perspective_id(
