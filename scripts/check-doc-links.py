@@ -43,7 +43,14 @@ def is_public_site_doc(path: Path) -> bool:
 def markdown_files() -> list[Path]:
     files = [
         ROOT / name
-        for name in ["README.md", "CONTRIBUTING.md", "SECURITY.md", "CHANGELOG.md"]
+        for name in [
+            "README.md",
+            "CONTRIBUTING.md",
+            "SECURITY.md",
+            "CHANGELOG.md",
+            "MIGRATING.md",
+            "RELEASING.md",
+        ]
         if (ROOT / name).exists()
     ]
     files.extend(sorted((ROOT / "docs").glob("**/*.md")))

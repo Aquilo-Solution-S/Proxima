@@ -41,7 +41,8 @@ Two operational notes that repeatedly matter:
   `regconfig` values since v0.0.7. Before dropping one, run
   `proxima_core.lexical_language_forget('cfg')` — `PostgreSQL` permits the
   drop while rows still reference it, leaving dangling OIDs that make those
-  rows fail on UPDATE (see MIGRATING §31).
+  rows fail on UPDATE (see MIGRATING.md, *Optional: change the lexical
+  language*).
 
 ## Connecting to encrypted PostgreSQL
 
