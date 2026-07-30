@@ -4,6 +4,7 @@ mod common;
 
 use common::{ConstantEmbedding, drop_db, fresh_pg, owner_fixture};
 use proxima_core::engine::Engine;
+use proxima_core::mcp::core_tools::get_memories::{GetMemoriesArgs, get_memories};
 use proxima_core::mcp::core_tools::get_memory::{GetMemoryArgs, get_memory};
 use proxima_core::mcp::{
     McpAuthorContext, McpToolCtx, McpToolExtensions, PrefixedUuidClass, PrefixedUuidError,
@@ -196,6 +197,99 @@ async fn remember_then_search_round_trip() -> Result<(), Box<dyn std::error::Err
     assert_eq!(searched["neighbor_edges"][0]["source"], derived["handle"]);
 
     assert_search_since_rejects_invalid_timestamp(&pg, &owner, &frozen, author).await;
+
+    drop(pg);
+    drop_db(&db_name).await?;
+    Ok(())
+}
+
+/// Every surface that reports a `space` must report a key that
+/// `core_memory_spaces` advertises and a write accepts. The read path used to
+/// emit the literal "entry", which is not a space: an agent following the
+/// documented "use a returned `space` key" loop fed it straight back into
+/// `core_remember` and got `unknown memory space: entry`. Asserting membership
+/// in the advertised set — rather than a literal — keeps the two surfaces tied
+/// together if the key vocabulary ever changes.
+#[tokio::test]
+async fn a_read_reports_a_space_key_that_a_write_accepts() -> Result<(), Box<dyn std::error::Error>>
+{
+    let (pg, db_name) = fresh_pg().await;
+
+    let registry = FlavorRegistry::new();
+    let frozen = Arc::new(registry.freeze_or_panic_for_tests());
+    let owner = nil_owner();
+    let author = author_ctx();
+
+    let remembered = call_tool(
+        &pg,
+        &owner,
+        &frozen,
+        author.clone(),
+        "core_remember",
+        json!({ "title": "Space key round trip", "body": "Read it back." }),
+    )
+    .await?;
+    let handle = remembered["handle"].as_str().expect("handle");
+
+    let advertised = call_tool(
+        &pg,
+        &owner,
+        &frozen,
+        author.clone(),
+        "core_memory_spaces",
+        json!({}),
+    )
+    .await?;
+    let keys: Vec<String> = advertised["spaces"]
+        .as_array()
+        .expect("spaces")
+        .iter()
+        .map(|space| space["key"].as_str().expect("key").to_string())
+        .collect();
+
+    let read = read_memory_prefixed(&pg, &owner, &frozen, author.clone(), handle, false).await?;
+    let reported = read["space"].as_str().expect("space").to_string();
+    assert!(
+        keys.contains(&reported),
+        "get_memory reported space {reported:?}, which core_memory_spaces does not advertise: {keys:?}",
+    );
+
+    // `get_memories` has no tool name -- it is reached as a resource -- so it
+    // is called directly, the same way `read_memory_prefixed` calls
+    // `get_memory`. It carried its own copy of the sentinel.
+    let batch = get_memories(
+        McpToolCtx {
+            owner,
+            authz: AuthzContext::single_owner(&owner, AuthPath::HostBearer),
+            registry: frozen.clone(),
+            author: author.clone(),
+            caller_self_perspective: author.caller_self_perspective,
+            extensions: McpToolExtensions::with(pg.pool_for_tests().clone()),
+            engine: Some(engine_for_registry(&frozen, &pg)),
+        },
+        GetMemoriesArgs {
+            memories: vec![handle.to_string()],
+        },
+    )
+    .await?;
+    let batch_space = batch.memories[0].space.clone();
+    assert!(
+        keys.contains(&batch_space),
+        "get_memories reported space {batch_space:?}, not advertised: {keys:?}",
+    );
+
+    // The loop the server instructions actually prescribe: read a memory,
+    // reuse its reported space key on the next write.
+    call_tool(
+        &pg,
+        &owner,
+        &frozen,
+        author,
+        "core_remember",
+        json!({ "title": "Reused key", "body": "b", "space": reported }),
+    )
+    .await
+    .map_err(|err| format!("a write rejected the space key a read reported: {err}"))?;
 
     drop(pg);
     drop_db(&db_name).await?;
