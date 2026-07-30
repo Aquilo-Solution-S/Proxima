@@ -16,9 +16,13 @@ const UTTERANCE_NAMESPACE: uuid::Uuid = uuid::Uuid::from_bytes([
 pub struct RecordUtteranceArgs {
     #[schemars(description = "Who produced the utterance: `user` or `agent`.")]
     pub speaker: Speaker,
-    #[schemars(description = "Stable id grouping the utterances of one conversation.")]
+    #[schemars(
+        description = "Stable id grouping the utterances of one conversation. Leading and trailing whitespace is removed."
+    )]
     pub conversation_id: String,
-    #[schemars(description = "The utterance text, 1 to 20000 chars.")]
+    #[schemars(
+        description = "The utterance text, 1 to 20000 chars. Leading and trailing whitespace is removed before the length check."
+    )]
     pub text: String,
     #[schemars(
         description = "Optional stable idempotency key; replaying the same key is a no-op, not a duplicate."

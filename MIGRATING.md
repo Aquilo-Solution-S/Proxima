@@ -1851,6 +1851,63 @@ A host or flavor reading a descriptor's behaviour should call these
 rather than reaching for `core_tool_annotations`, which answers for
 substrate tools only.
 
+## 50. v0.0.7: a memory read reports a space key that a write accepts
+
+**Action required only if you parsed the literal `entry`.** The `space`
+field of a single- or batch-memory read changes value; its type and
+position do not.
+
+`core_memory_spaces` defines the space-key vocabulary — `current`,
+`world`, and `personal:<uuid>` spellings — and every write validates
+against it. The read path did not draw from that vocabulary at all: it
+reported the literal `entry`, a placeholder no space is called.
+
+That broke the loop the server instructions prescribe, *use a returned
+`space` key in `core_remember`*. Reading a memory through
+`proxima://memory/{id}` and reusing its reported `space` on the next
+write failed with `unknown memory space: entry`. The value was only ever
+correct to display, never to send back — but nothing on the wire said so,
+and it shares a field name with the keys that are.
+
+`get_memory` and `get_memories` now resolve the key through
+`memory_spaces::resolve_space_owner`, the same resolver
+`core_search_memories` already used — which is why search reported
+`current` for the very memory the resource called `entry`. A caller-
+supplied `space` is now validated rather than echoed back unchanged.
+
+Expect `current` where you previously saw `entry` for a caller reading
+their own memory, and `personal:<uuid>` when reading across owners.
+
+## 51. v0.0.7: a schema states the lower bound it enforces
+
+**Action required only for clients that validate against `inputSchema`
+locally.** No runtime behaviour changes; values that were refused before
+are refused now, just earlier.
+
+Ten parameters promised a floor in prose — `0 is rejected`, `at least 1`,
+`Must be >= 1` — while the schema said otherwise. An `Option<u32>` or
+`usize` emits `minimum: 0` from the Rust type, and a signed `i64` emits
+no bound at all, so a strict JSON-Schema client was told `limit: 0`
+validates and only learned otherwise from a runtime rejection. §44 made
+the rule uniform across tools; it was never machine-readable.
+
+Now carrying `minimum: 1`: `core_search_memories.limit` and
+`.body_max_chars`, `core_fact:facts_citing_object.limit`,
+`core_membership:list_members.limit`,
+`proxima-code_list_repos.limit`, `proxima-code_search_chunks.limit` and
+`.snippet_max_chars`, `proxima-code_search_commits.limit`,
+`proxima-code_open_file_revision.max_text_bytes`, `.line_start` and
+`.line_limit`. `core_link.confidence` now declares `maximum: 100`
+instead of the `u8` type's `255`.
+
+The rule is `proxima_core::mcp::schema_bound_mismatches`, which reports
+every parameter whose description promises a bound its schema omits. The
+core suite and `proxima-code` both call it, and an out-of-tree flavor can
+call it on its own frozen registry. It is deliberately **not** enforced
+in `try_freeze`: unlike an undeclared `ANNOTATIONS` (§47), which stops a
+gate from working, a bound stated only in prose is a documentation defect
+and should not stop an existing deployment from booting.
+
 ## 52. v0.0.7: a tag filter matches the tag that was stored
 
 **No action required.** Searches that previously returned nothing now

@@ -84,10 +84,12 @@ pub struct GoalPayloadArgs {
     pub schema_id: String,
     #[schemars(description = "Goal-payload schema version. Omit to default to 1.")]
     pub schema_version: Option<u32>,
-    #[schemars(description = "Short, human-readable goal title, 1 to 240 chars.")]
+    #[schemars(
+        description = "Short, human-readable goal title, 1 to 240 chars. Leading and trailing whitespace is removed before the length check."
+    )]
     pub title: String,
     #[schemars(
-        description = "The goal stated in prose, 1 to 20000 chars — what pursuing or achieving it means."
+        description = "The goal stated in prose, 1 to 20000 chars — what pursuing or achieving it means. Leading and trailing whitespace is removed before the length check."
     )]
     pub text: String,
     #[serde(default = "default_empty_object")]
