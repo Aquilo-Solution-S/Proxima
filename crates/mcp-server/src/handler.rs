@@ -10,8 +10,8 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use proxima_core::mcp::{
-    McpToolAnnotations, McpToolError, McpToolErrorKind, all_core_actions, all_core_resources,
-    core_tool_annotations, provider_safe_tool_name, scope_permits_action, tool_name_matches,
+    McpToolAnnotations, McpToolDescriptor, McpToolError, McpToolErrorKind, all_core_actions,
+    all_core_resources, provider_safe_tool_name, scope_permits_action, tool_name_matches,
 };
 use proxima_core::{AccessKind, McpAuthorContext, MemoryId};
 use rmcp::ServerHandler;
@@ -47,7 +47,7 @@ impl DynamicHandler {
             .registry()
             .list_mcp_tools()
             .iter()
-            .filter(|descriptor| tool_allowed_for_auth(auth, descriptor.name))
+            .filter(|descriptor| tool_allowed_for_auth(auth, descriptor))
             .map(|descriptor| descriptor.name)
             .collect()
     }
@@ -154,7 +154,7 @@ impl ServerHandler for DynamicHandler {
                     .registry()
                     .list_mcp_tools()
                     .iter()
-                    .filter(|descriptor| tool_allowed_for_auth(auth.as_ref(), descriptor.name))
+                    .filter(|descriptor| tool_allowed_for_auth(auth.as_ref(), descriptor))
                     .map(|descriptor| descriptor.name)
                     .collect();
                 let advertised_resources = advertised_resource_scope_keys(scope);
@@ -194,7 +194,7 @@ impl ServerHandler for DynamicHandler {
             .registry()
             .list_mcp_tools()
             .iter()
-            .filter(|descriptor| tool_allowed_for_auth(auth.as_ref(), descriptor.name))
+            .filter(|descriptor| tool_allowed_for_auth(auth.as_ref(), descriptor))
             .map(|descriptor| {
                 let schema =
                     project_dispatcher_actions(&descriptor.args_schema, scope, descriptor.name);
@@ -203,10 +203,7 @@ impl ServerHandler for DynamicHandler {
                     Cow::Borrowed(descriptor.description),
                     Arc::new(rmcp::model::object(schema)),
                 );
-                match descriptor
-                    .annotations
-                    .or_else(|| core_tool_annotations(descriptor.name))
-                {
+                match descriptor.resolved_annotations() {
                     Some(annotations) => tool.annotate(to_rmcp_annotations(annotations)),
                     None => tool,
                 }
@@ -230,10 +227,7 @@ impl ServerHandler for DynamicHandler {
                     Cow::Borrowed(descriptor.description),
                     Arc::new(rmcp::model::object(descriptor.args_schema.clone())),
                 );
-                match descriptor
-                    .annotations
-                    .or_else(|| core_tool_annotations(descriptor.name))
-                {
+                match descriptor.resolved_annotations() {
                     Some(annotations) => tool.annotate(to_rmcp_annotations(annotations)),
                     None => tool,
                 }
@@ -590,19 +584,22 @@ fn scope_allows(scope: Option<&ToolScope>, name: &str) -> bool {
     }
 }
 
-fn tool_allowed_for_auth(auth: Option<&McpAuthContext>, name: &str) -> bool {
+/// Whether this caller may see and call `descriptor`.
+///
+/// Takes the descriptor rather than the name because the name alone
+/// cannot answer the read-vs-write question for a flavor tool: the only
+/// place a flavor's behaviour is recorded is its own `ANNOTATIONS`, which
+/// lives on the descriptor. Every call site already had one.
+fn tool_allowed_for_auth(auth: Option<&McpAuthContext>, descriptor: &McpToolDescriptor) -> bool {
     let scope = auth.map(|ctx| ctx.authz.tool_scope());
-    scope_allows(scope, name) && owner_role_allows_tool(auth, name)
+    scope_allows(scope, descriptor.name) && owner_role_allows_tool(auth, descriptor)
 }
 
-fn owner_role_allows_tool(auth: Option<&McpAuthContext>, name: &str) -> bool {
+fn owner_role_allows_tool(auth: Option<&McpAuthContext>, descriptor: &McpToolDescriptor) -> bool {
     let Some(ctx) = auth else {
         return UNAUTHENTICATED_SCOPE_ALLOWS;
     };
-    if core_tool_annotations(name)
-        .and_then(|annotations| annotations.read_only)
-        .unwrap_or(false)
-    {
+    if descriptor.is_read_only() {
         ctx.authz.may_read(&ctx.owner, AccessKind::Fact)
     } else {
         ctx.authz.may_write(&ctx.owner, AccessKind::Fact)
@@ -681,6 +678,10 @@ fn strip_call_context_args(args: &mut serde_json::Value) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // The lib no longer reaches the core manifest directly — every gate
+    // goes through `McpToolDescriptor::resolved_annotations`. These tests
+    // still assert the manifest's own contents.
+    use proxima_core::mcp::core_tool_annotations;
     use proxima_core::protocol::{action as protocol_action, tool as protocol_tool};
 
     #[test]
@@ -904,6 +905,79 @@ mod tests {
                 "tool {} not authorized for this MCP token",
                 protocol_action::CORE_GOAL_SET
             )
+        );
+    }
+
+    /// A viewer sees a flavor's read tool in `tools/list`.
+    ///
+    /// This gate resolved read-vs-write from `core_tool_annotations(name)`
+    /// alone — a table over *core* names — and fell through to
+    /// `may_write` for everything else. So every flavor tool, read or
+    /// not, was hidden from a read-only principal: not refused with a
+    /// reason, just absent, which is the harder symptom to trace.
+    ///
+    /// PR 130 fixed the sibling gate on the *call* path
+    /// (`ScopeGateBehavior::enforce_owner_role`). This is the
+    /// *visibility* path, and it kept the bug. The call sites all had the
+    /// descriptor in hand and passed only its name.
+    #[test]
+    fn a_viewer_sees_a_flavor_read_tool_and_not_its_write_tool() {
+        use proxima_core::mcp::{McpToolAnnotations, McpToolOrigin};
+        use proxima_core::{AuthPath, AuthzContext, GroupId, Owner, UserId, access::Role};
+
+        fn descriptor(
+            name: &'static str,
+            annotations: Option<McpToolAnnotations>,
+        ) -> McpToolDescriptor {
+            McpToolDescriptor {
+                name,
+                description: "stub",
+                origin: McpToolOrigin::Flavor("proxima-stub".to_string()),
+                produces_schema_ids: &[],
+                args_schema: serde_json::json!({"type": "object"}),
+                action_arg_specs: &[],
+                annotations,
+                call: &|_, _| Box::pin(async { Ok(serde_json::Value::Null) }),
+            }
+        }
+
+        let owner = Owner::Group(GroupId::new(uuid::Uuid::now_v7()));
+        let viewer = McpAuthContext {
+            owner,
+            authz: AuthzContext::for_subject_with_role(
+                UserId::new(uuid::Uuid::now_v7()),
+                [(owner, Role::viewer())],
+                AuthPath::HostBearer,
+            ),
+            model_id: None,
+        };
+
+        let read = descriptor(
+            "proxima-stub_search",
+            Some(McpToolAnnotations::new().read_only(true).open_world(false)),
+        );
+        let write = descriptor(
+            "proxima-stub_write",
+            Some(McpToolAnnotations::new().read_only(false).open_world(false)),
+        );
+        // Core still answers through the manifest, with no descriptor
+        // annotations of its own.
+        let core_read = McpToolDescriptor {
+            origin: McpToolOrigin::Substrate,
+            ..descriptor(protocol_tool::CORE_SEARCH_MEMORIES, None)
+        };
+
+        assert!(
+            owner_role_allows_tool(Some(&viewer), &read),
+            "a flavor tool that declares read_only must be visible to a viewer"
+        );
+        assert!(
+            !owner_role_allows_tool(Some(&viewer), &write),
+            "a flavor write tool must stay hidden from a viewer"
+        );
+        assert!(
+            owner_role_allows_tool(Some(&viewer), &core_read),
+            "core still resolves through the manifest"
         );
     }
 

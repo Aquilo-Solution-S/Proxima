@@ -25,6 +25,37 @@ pub struct McpToolDescriptor {
     pub call: McpCallFn,
 }
 
+impl McpToolDescriptor {
+    /// What this tool does: its own declaration, then the core manifest.
+    ///
+    /// One resolution order for the whole substrate. Four places needed the
+    /// answer — the call gate (`ScopeGateBehavior::enforce_owner_role`), the
+    /// visibility gate and the `tools/list` projection in the MCP adapter,
+    /// and the embedded host's tool listing — and each had its own copy of
+    /// this two-step. They are supposed to agree, and one of them did not:
+    /// the visibility gate asked only `core_tool_annotations`, a table over
+    /// *core* names, so a read-only principal saw no flavor tool at all.
+    ///
+    /// `FlavorRegistry::try_freeze` guarantees this returns `Some` for every
+    /// registered tool.
+    #[must_use]
+    pub fn resolved_annotations(&self) -> Option<crate::mcp::McpToolAnnotations> {
+        self.annotations
+            .or_else(|| crate::mcp::core_tool_annotations(self.name))
+    }
+
+    /// Whether the owner-role gate should treat this tool as a read.
+    ///
+    /// Silence means write. A tool that has not said what it does may well
+    /// write, and guessing "read" would hand a viewer a mutation.
+    #[must_use]
+    pub fn is_read_only(&self) -> bool {
+        self.resolved_annotations()
+            .and_then(|annotations| annotations.read_only)
+            .unwrap_or(false)
+    }
+}
+
 impl std::fmt::Debug for McpToolDescriptor {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter

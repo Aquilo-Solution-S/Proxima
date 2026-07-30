@@ -6,7 +6,8 @@ use futures::future::BoxFuture;
 use crate::AccessKind;
 
 use super::{
-    McpToolCtx, McpToolError, core_action_meta, core_tool_annotations, core_tool_has_actions,
+    McpToolCtx, McpToolDescriptor, McpToolError, core_action_meta, core_tool_annotations,
+    core_tool_has_actions,
 };
 
 #[derive(Debug)]
@@ -125,17 +126,19 @@ impl ScopeGateBehavior {
                 .and_then(serde_json::Value::as_str)
                 .and_then(|action| core_action_meta(tool, action))
                 .map(|meta| meta.annotations)
-                // What the tool itself declared. `core_tool_annotations`
-                // is a hardcoded match over core names and returns None
-                // for every flavor tool, so before the descriptor carried
-                // this a flavor's READ was billed as a write and refused
-                // to every read-only role.
+                // Failing a per-action answer, what the tool itself says.
+                // `McpToolDescriptor::resolved_annotations` is the one
+                // two-step every gate uses: the tool's own declaration,
+                // then the core manifest. Before the descriptor carried a
+                // declaration, only the manifest was consulted here — a
+                // table over core names — so a flavor's READ was billed as
+                // a write and refused to every read-only role.
                 .or_else(|| {
                     ctx.registry
                         .list_mcp_tools()
                         .iter()
                         .find(|descriptor| descriptor.name == tool)
-                        .and_then(|descriptor| descriptor.annotations)
+                        .and_then(McpToolDescriptor::resolved_annotations)
                 })
                 .or_else(|| core_tool_annotations(tool))
                 .and_then(|annotations| annotations.read_only)
