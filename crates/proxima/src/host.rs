@@ -71,9 +71,14 @@ pub use proxima_core::verbs::fact_ingest::{
 pub use proxima_core::verbs::goal_write::{
     GoalAssignmentTarget, GoalAuthorship, GoalCreateRequest, GoalEvidenceRef, GoalPayloadWrite,
     GoalState, GoalWakeConfigWrite, GoalWakeToolId, GoalWakeTrigger, GoalWriteBuildError,
-    GoalWriteOutcome, IdempotencyKey, MAX_GOAL_TEXT_CHARS, MAX_GOAL_TITLE_CHARS, OperatorKind,
-    SystemOrigin,
+    GoalWriteOutcome, IdempotencyKey, MAX_GOAL_TEXT_CHARS, MAX_GOAL_TITLE_CHARS,
+    MAX_WAKE_TOOL_ID_CHARS, OperatorKind, SystemOrigin,
 };
+// `GoalWriteBuildError`'s variants carry this, so a host that matches on
+// them cannot bind the payload without being able to name its type. An
+// unnameable type in a public signature is the usual shape of an
+// out-of-tree blocker, so it is re-exported beside the error itself.
+pub use proxima_core::text_bounds::{TrimmedLenViolation, check_trimmed_len};
 pub use proxima_core::verbs::mcp_call_history::{
     MAX_MCP_CALL_HISTORY_LIMIT, McpCallHistoryRequest, McpCallHistoryResponse, McpCallRecord,
 };

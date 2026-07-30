@@ -4,6 +4,7 @@
 //! docs/06-goals-and-self.md §"Goal entity". The
 //! storage-side body lives in proxima-storage-pg.
 
+use crate::text_bounds::{TrimmedLenViolation, check_trimmed_len};
 use crate::{FlavorRegistryFrozen, ProtocolError};
 use crate::{
     GoalId, GoalPayload, InputContractId, MemoryId, ModelId, OperatorId, Owner, OwnerRef,
@@ -97,12 +98,23 @@ pub enum GoalAuthorship {
 pub const MAX_GOAL_TITLE_CHARS: usize = 240;
 pub const MAX_GOAL_TEXT_CHARS: usize = 20_000;
 
+/// Why a typed goal payload could not be built.
+///
+/// Each variant carries the [`TrimmedLenViolation`] that produced it. The
+/// variants used to be unit-only, which left their `#[error]` strings fixed
+/// at `goal title must be 1..={MAX_GOAL_TITLE_CHARS} chars` — one sentence
+/// for both a blank title and an over-long one, quoting a range a blank
+/// title satisfies. A unit variant structurally cannot say which end broke
+/// or by how much, so the payload is the fix, not better wording.
+///
+/// Still [`Copy`] and still matchable by variant: hosts that match
+/// `InvalidTitle` need only add `(_)`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum GoalWriteBuildError {
-    #[error("goal title must be 1..={MAX_GOAL_TITLE_CHARS} chars")]
-    InvalidTitle,
-    #[error("goal text must be 1..={MAX_GOAL_TEXT_CHARS} chars")]
-    InvalidText,
+    #[error("{}", .0.reason("goal title"))]
+    InvalidTitle(TrimmedLenViolation),
+    #[error("{}", .0.reason("goal text"))]
+    InvalidText(TrimmedLenViolation),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -177,18 +189,31 @@ impl IdempotencyKey {
 
     /// # Errors
     ///
-    /// Returns an error when the trimmed key is empty or longer than
-    /// `MAX_CHARS`.
+    /// Returns the rejection reason when the trimmed key is empty or longer
+    /// than `MAX_CHARS`.
     pub fn new(raw: impl Into<String>) -> Result<Self, String> {
-        let trimmed = raw.into().trim().to_string();
-        let count = trimmed.chars().count();
-        if count == 0 || count > Self::MAX_CHARS {
-            return Err(format!(
-                "idempotency_key must be 1..={} chars",
-                Self::MAX_CHARS
-            ));
+        Self::new_named("idempotency_key", raw)
+    }
+
+    /// Same contract as [`IdempotencyKey::new`], but the rejection names
+    /// `field` rather than `idempotency_key`.
+    ///
+    /// `core_remember`'s `source_batch_key` is the same 1..=180 trimmed key
+    /// under another name, and the memory tools used to enforce it by
+    /// parsing through this type and then *discarding* its error to
+    /// substitute their own sentence. Two sentences for one rule is how they
+    /// drift; passing the field name in keeps one.
+    ///
+    /// # Errors
+    ///
+    /// Returns the rejection reason when the trimmed key is empty or longer
+    /// than `MAX_CHARS`.
+    pub fn new_named(field: &str, raw: impl Into<String>) -> Result<Self, String> {
+        let raw = raw.into();
+        match check_trimmed_len(&raw, Self::MAX_CHARS) {
+            Ok(trimmed) => Ok(Self(trimmed.to_string())),
+            Err(violation) => Err(violation.reason(field)),
         }
-        Ok(Self(trimmed))
     }
 
     #[must_use]
@@ -343,6 +368,11 @@ pub enum GoalWakeTrigger {
     },
 }
 
+/// Longest wake tool id, in characters. Generous: the point of the bound is
+/// to refuse something that is clearly not a tool id, and the registry
+/// lookup below is what actually decides.
+pub const MAX_WAKE_TOOL_ID_CHARS: usize = 200;
+
 #[derive(
     Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
 )]
@@ -357,13 +387,15 @@ impl GoalWakeToolId {
         raw: impl Into<String>,
         registry: &FlavorRegistryFrozen,
     ) -> Result<Self, ProtocolError> {
-        let value = raw.into().trim().to_string();
-        if value.is_empty() || value.len() > 200 {
-            return Err(ProtocolError::invalid_argument(
-                "tool_id",
-                "tool id must be 1..=200 characters",
-            ));
-        }
+        let raw = raw.into();
+        // `value.len() > 200` counted bytes while the message said
+        // "characters", so a 120-character non-ASCII id was refused for
+        // being over 200 of something the caller could not measure.
+        let value = check_trimmed_len(&raw, MAX_WAKE_TOOL_ID_CHARS)
+            .map_err(|violation| {
+                ProtocolError::invalid_argument("tool_id", violation.reason("tool id"))
+            })?
+            .to_string();
         if value.contains('/') {
             return Err(ProtocolError::invalid_argument(
                 "tool_id",
@@ -437,13 +469,12 @@ impl GoalWakeConfigWrite {
         prompt: impl Into<String>,
         hard_memory_ids: &[MemoryId],
     ) -> Result<Self, ProtocolError> {
-        let prompt = prompt.into().trim().to_string();
-        if prompt.is_empty() || prompt.chars().count() > Self::MAX_PROMPT_CHARS {
-            return Err(ProtocolError::invalid_argument(
-                "prompt",
-                "wake prompt must be 1..=20000 chars",
-            ));
-        }
+        let raw = prompt.into();
+        let prompt = check_trimmed_len(&raw, Self::MAX_PROMPT_CHARS)
+            .map_err(|violation| {
+                ProtocolError::invalid_argument("prompt", violation.reason("wake prompt"))
+            })?
+            .to_string();
         if tool_ids.is_empty() {
             return Err(ProtocolError::invalid_argument(
                 "tool_ids",
@@ -542,17 +573,20 @@ impl GoalPayloadWrite {
     }
 }
 
+/// Trim and bound one goal display field, tagging the violation with the
+/// field it came from.
+///
+/// `wrap` is the tuple variant itself — `GoalWriteBuildError::InvalidTitle`
+/// used as a function — so the caller names the field once and the rule
+/// stays in [`check_trimmed_len`].
 fn normalize_goal_display_field(
     value: &str,
     max_chars: usize,
-    err: GoalWriteBuildError,
+    wrap: fn(TrimmedLenViolation) -> GoalWriteBuildError,
 ) -> Result<String, GoalWriteBuildError> {
-    let trimmed = value.trim();
-    let count = trimmed.chars().count();
-    if count == 0 || count > max_chars {
-        return Err(err);
-    }
-    Ok(trimmed.to_string())
+    check_trimmed_len(value, max_chars)
+        .map(str::to_string)
+        .map_err(wrap)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

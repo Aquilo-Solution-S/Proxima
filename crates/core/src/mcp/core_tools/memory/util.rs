@@ -23,7 +23,13 @@ pub fn normalize_idempotency_key(key: Option<String>) -> Result<Option<String>, 
 }
 
 /// Normalize an optional `source_batch_key` under the same trimmed
-/// 1..=180-char contract as idempotency keys, with its own error text.
+/// 1..=180-char contract as idempotency keys.
+///
+/// The field name is passed down rather than the error being discarded and
+/// replaced. The replacement sentence said `source_batch_key must be
+/// 1..=180 chars after trimming` for a blank key as well as an over-long
+/// one — the very shape [`IdempotencyKey::new_named`] exists to avoid, and
+/// a second sentence for one rule besides.
 ///
 /// # Errors
 ///
@@ -31,13 +37,9 @@ pub fn normalize_idempotency_key(key: Option<String>) -> Result<Option<String>, 
 /// trimming or over the character cap.
 pub fn normalize_batch_key(key: Option<String>) -> Result<Option<String>, McpToolError> {
     key.map(|raw| {
-        IdempotencyKey::new(raw)
+        IdempotencyKey::new_named("source_batch_key", raw)
             .map(IdempotencyKey::into_string)
-            .map_err(|_| {
-                McpToolError::InvalidInput(
-                    "source_batch_key must be 1..=180 chars after trimming".into(),
-                )
-            })
+            .map_err(McpToolError::InvalidInput)
     })
     .transpose()
 }
