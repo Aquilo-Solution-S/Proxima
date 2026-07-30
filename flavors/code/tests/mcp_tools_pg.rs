@@ -1153,6 +1153,76 @@ async fn open_file_revision_returns_head_with_chunks() -> Result<(), Box<dyn std
     assert_eq!(bounded_chunks[0]["text"], "    call();");
     assert_eq!(bounded_chunks[0]["text_line_range"][0], 2);
     assert_eq!(bounded_chunks[0]["text_line_range"][1], 2);
+    assert!(
+        bounded_chunks[0].get("text_truncated").is_none(),
+        "a cap that fits must not claim a truncation: {}",
+        bounded_chunks[0]
+    );
+
+    Ok(())
+}
+
+/// A chunk the cap cut says so, and one it fits does not.
+///
+/// `search_chunks` has always flagged `snippet_truncated`; this tool sent
+/// the cut text with nothing to distinguish it from a chunk that
+/// genuinely ends where the text stops.
+#[tokio::test]
+async fn open_file_revision_flags_a_chunk_the_cap_cut() -> Result<(), Box<dyn std::error::Error>> {
+    let fixture = TestDb::fresh().await;
+    let owner = owner_fixture();
+    let engine = engine_for_test(fixture.pg.clone());
+    let repo_id = Uuid::now_v7();
+
+    ingest_file_revision(
+        fixture.pg.pool_for_tests(),
+        &engine,
+        owner,
+        repo_id,
+        "src/atlas.rs",
+        "v1",
+    )
+    .await?;
+    ingest_code_chunk(
+        fixture.pg.pool_for_tests(),
+        &engine,
+        owner,
+        repo_id,
+        "src/atlas.rs",
+        0,
+        "fn a() {\n    call();\n}",
+    )
+    .await?;
+
+    let cut = run_tool::<CodeOpenFileRevisionTool>(
+        ctx(fixture.pg.clone(), owner, registry_for_mcp()),
+        json!({
+            "repo_handle": repo_id.to_string(),
+            "file_path": "src/atlas.rs",
+            "include_text": true,
+            "max_text_bytes": 6
+        }),
+    )
+    .await?;
+    assert_eq!(cut["chunks"][0]["text"], "fn a()");
+    assert_eq!(cut["chunks"][0]["text_truncated"], true);
+
+    let whole = run_tool::<CodeOpenFileRevisionTool>(
+        ctx(fixture.pg.clone(), owner, registry_for_mcp()),
+        json!({
+            "repo_handle": repo_id.to_string(),
+            "file_path": "src/atlas.rs",
+            "include_text": true,
+            "max_text_bytes": 4096
+        }),
+    )
+    .await?;
+    assert_eq!(whole["chunks"][0]["text"], "fn a() {\n    call();\n}");
+    assert!(
+        whole["chunks"][0].get("text_truncated").is_none(),
+        "a cap that fits must not claim a truncation: {}",
+        whole["chunks"][0]
+    );
     Ok(())
 }
 
@@ -1634,6 +1704,53 @@ async fn every_paged_read_rejects_a_zero_limit_the_same_way()
     )
     .await?;
     assert!(one["repos"].is_array(), "limit: 1 must still answer: {one}");
+    Ok(())
+}
+
+/// The same rule, one layer down: a cap on *returned text* is a page
+/// bound too, and zero is the same nonsense.
+///
+/// `search_chunks` already refused `snippet_max_chars: 0`, and so does
+/// `core_search_memories` for `body_max_chars`. `open_file_revision`
+/// accepted `max_text_bytes: 0` and answered `text: ""` on every chunk —
+/// the empty-page shape the sibling rule exists to prevent, and worse
+/// here because passing the cap at all turns text *on* (`want_text` keys
+/// off `max_text_bytes.is_some()`), so the caller asked for text, was
+/// given text, and the text was blank.
+#[tokio::test]
+async fn every_text_cap_rejects_zero_the_same_way() -> Result<(), Box<dyn std::error::Error>> {
+    let fixture = TestDb::fresh().await;
+    let owner = owner_fixture();
+    let registry = registry_for_mcp();
+
+    let snippet = run_tool::<CodeSearchChunksTool>(
+        ctx(fixture.pg.clone(), owner, registry.clone()),
+        json!({ "query": "anything", "snippet_max_chars": 0 }),
+    )
+    .await
+    .expect_err("search_chunks must reject snippet_max_chars: 0");
+    assert!(
+        snippet.to_string().contains("must be at least 1"),
+        "got {snippet}"
+    );
+
+    let bytes = run_tool::<CodeOpenFileRevisionTool>(
+        ctx(fixture.pg.clone(), owner, registry.clone()),
+        json!({ "repo_handle": Uuid::now_v7().to_string(), "file_path": "src/x.rs", "max_text_bytes": 0 }),
+    )
+    .await
+    .expect_err("open_file_revision must reject max_text_bytes: 0");
+    assert!(
+        bytes.to_string().contains("max_text_bytes must be >= 1"),
+        "got {bytes}"
+    );
+    // The cap is checked before the repo handle is resolved, so the caller
+    // is told what is actually wrong with the request rather than being
+    // sent chasing a handle that was never the problem.
+    assert!(
+        !bytes.to_string().contains("repo_handle"),
+        "the zero cap must be named first: {bytes}"
+    );
     Ok(())
 }
 

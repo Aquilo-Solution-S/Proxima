@@ -1805,6 +1805,43 @@ For a viewer-role token against a deployment serving `proxima-code` or
 `..._list_repos`, `..._open_file_revision`, `..._search_commits` and
 `proxima-docs_search` appear in `tools/list` where they previously did
 not. Write tools stay hidden, unchanged.
+## 48. v0.0.7: `open_file_revision` agrees with its siblings about text
+
+**Action required only if you pass `max_text_bytes: 0`.** That is now
+refused instead of answered.
+
+Three tools cap returned text. Two of them agreed; this one did not:
+
+| tool | cap argument | `0` | above the ceiling | says it cut |
+|---|---|---|---|---|
+| `core_search_memories` | `body_max_chars` | rejected | clamped | `body_truncated` |
+| `proxima-code_search_chunks` | `snippet_max_chars` | rejected | clamped | `snippet_truncated` |
+| `proxima-code_open_file_revision` | `max_text_bytes` | **accepted** | — | **nothing** |
+
+Three changes, all to `proxima-code_open_file_revision`:
+
+* **`max_text_bytes: 0` is rejected.** It used to return `text: ""` on
+  every chunk — the well-formed-empty-answer shape §44 exists to prevent
+  — and it was worse here than for a page limit: passing the cap at all
+  turns text *on*, so a caller asked for text, was given text, and the
+  text was blank. The message is
+  `max_text_bytes must be >= 1 when provided; use include_text=false to
+  skip text`, and the check runs before the repo handle is resolved so
+  the response names the real problem.
+* **`text_truncated: true` on a chunk the cap cut.** Its siblings have
+  always said so. Without it, a chunk cut mid-statement is
+  indistinguishable from one that genuinely ends there. The field is
+  omitted when false, so nothing changes for a response that was not
+  truncated.
+* **`line_limit` above 500 is clamped, not refused.** It used to error
+  with `line_limit must be 1..=500` — the one shape no other bound in the
+  substrate uses. Zero and negative are still rejected, now with
+  `line_limit must be at least 1`, matching §44. This is a loosening:
+  nothing that worked before fails now. The response already reports the
+  span actually returned, so a clamped caller is told.
+
+The schema descriptions state all three bounds; they previously stated
+none of them, which is how the disagreement went unnoticed.
 
 The two-step is now `McpToolDescriptor::resolved_annotations()`, with
 `is_read_only()` beside it, so the four places that needed the answer
