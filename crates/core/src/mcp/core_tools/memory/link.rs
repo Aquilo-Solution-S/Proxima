@@ -20,7 +20,10 @@ pub struct LinkArgs {
     #[schemars(description = "Reason for linking source to target, 1 to 1000 chars.")]
     pub reason: String,
     #[serde(default = "default_confidence")]
-    #[schemars(description = "Confidence score from 0 to 100. Defaults to 80.")]
+    #[schemars(
+        range(max = 100),
+        description = "Confidence score from 0 to 100. Defaults to 80."
+    )]
     pub confidence: u8,
     #[serde(default)]
     #[schemars(

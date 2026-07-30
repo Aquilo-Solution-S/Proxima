@@ -43,6 +43,7 @@ pub struct CodeSearchChunksArgs {
     )]
     pub mode: ChunkSearchMode,
     #[schemars(
+        range(min = 1),
         description = "Optional maximum number of chunk matches. Omit or null for 12; values above 50 are clamped, and 0 is rejected."
     )]
     pub limit: Option<u32>,
@@ -63,6 +64,7 @@ pub struct CodeSearchChunksArgs {
     pub include_calls: bool,
     #[serde(default)]
     #[schemars(
+        range(min = 1),
         description = "Maximum characters of chunk text per match. Omit or null for 2000; values above 8000 are clamped, and 0 is rejected. A match whose text was cut carries snippet_truncated=true — read the whole chunk with proxima-code_open_file_revision."
     )]
     pub snippet_max_chars: Option<usize>,
