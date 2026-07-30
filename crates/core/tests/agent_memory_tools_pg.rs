@@ -2819,3 +2819,77 @@ async fn auto_detection_stamps_a_german_note_and_makes_it_searchable()
     drop_db(&db_name).await?;
     Ok(())
 }
+
+/// Authoring surfaces strip leading and trailing whitespace before validating
+/// length, and the descriptions now say so. Two consequences follow from the
+/// order, and both are worth pinning: a whitespace-only value is rejected as
+/// empty rather than stored blank, and a value that only exceeds the cap
+/// because of trailing whitespace is accepted rather than refused.
+///
+/// Appended at the end of the file rather than beside the other search tests
+/// to keep it off the anchor two other branches insert at.
+#[tokio::test]
+async fn authoring_trims_before_it_checks_length() -> Result<(), Box<dyn std::error::Error>> {
+    let (pg, db_name) = fresh_pg().await;
+
+    let registry = FlavorRegistry::new();
+    let frozen = Arc::new(registry.freeze_or_panic_for_tests());
+    let owner = nil_owner();
+    let author = author_ctx();
+
+    let padded = call_tool(
+        &pg,
+        &owner,
+        &frozen,
+        author.clone(),
+        "core_remember",
+        json!({ "title": "  Padded title  ", "body": "  padded body\n" }),
+    )
+    .await?;
+    let read = read_memory_prefixed(
+        &pg,
+        &owner,
+        &frozen,
+        author.clone(),
+        padded["handle"].as_str().expect("handle"),
+        false,
+    )
+    .await?;
+    assert_eq!(read["title"], json!("Padded title"));
+    assert_eq!(read["body"], json!("padded body"));
+
+    let blank = call_tool(
+        &pg,
+        &owner,
+        &frozen,
+        author.clone(),
+        "core_remember",
+        json!({ "title": "ok", "body": "   " }),
+    )
+    .await;
+    assert!(
+        blank.is_err(),
+        "a whitespace-only body trims to empty and must be refused, not stored blank",
+    );
+
+    // At the cap once trimmed: the trailing newline must not push it over.
+    let at_cap = call_tool(
+        &pg,
+        &owner,
+        &frozen,
+        author,
+        "core_remember",
+        json!({ "title": "at cap", "body": format!("{}\n", "a".repeat(20_000)) }),
+    )
+    .await?;
+    assert!(
+        at_cap["handle"]
+            .as_str()
+            .is_some_and(|h| h.starts_with("F:")),
+        "20000 chars plus trailing whitespace trims to exactly the cap: {at_cap}",
+    );
+
+    drop(pg);
+    drop_db(&db_name).await?;
+    Ok(())
+}
