@@ -1,5 +1,6 @@
 use crate::mcp::{McpTool, McpToolCtx, McpToolError};
 use crate::protocol::tool as protocol_tool;
+use crate::tool::validate_trimmed_len;
 use crate::{AppendMemoryEdgeRequestInput, EdgeAuthorshipKind, MemoryId, SidecarPayload};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -58,12 +59,7 @@ impl McpTool for LinkTool {
         args: LinkArgs,
     ) -> futures::future::BoxFuture<'static, Result<LinkOutput, McpToolError>> {
         Box::pin(async move {
-            let reason = args.reason.trim();
-            if reason.is_empty() || reason.chars().count() > 1000 {
-                return Err(McpToolError::InvalidInput(
-                    "reason must be 1..=1000 chars".into(),
-                ));
-            }
+            let reason = validate_trimmed_len("reason", &args.reason, 1000)?;
             if args.confidence > 100 {
                 return Err(McpToolError::InvalidInput(
                     "confidence must be 0..=100".into(),

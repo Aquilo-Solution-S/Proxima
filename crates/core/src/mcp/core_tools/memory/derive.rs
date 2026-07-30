@@ -1,5 +1,6 @@
 use crate::mcp::{McpTool, McpToolCtx, McpToolError, MemoryHandleClass};
 use crate::protocol::tool as protocol_tool;
+use crate::tool::validate_trimmed_len;
 use crate::{
     AbstractionPayload, AuthorDerivedEdgeInput, AuthorDerivedRequestInput,
     CORE_DERIVED_FROM_RELATION, InputContractId, MemoryId, OperatorId, SchemaId, SchemaVersion,
@@ -183,33 +184,25 @@ impl McpTool for DeriveTool {
         args: DeriveArgs,
     ) -> futures::future::BoxFuture<'static, Result<DeriveOutput, McpToolError>> {
         Box::pin(async move {
-            let title = args.title.trim();
-            let body = args.body.trim();
             // 240 matches the goal-title cap: same-named field, same bound
             // on every authoring surface.
-            if title.is_empty() || title.chars().count() > 240 {
-                return Err(McpToolError::InvalidInput(
-                    "title must be 1..=240 chars".into(),
-                ));
-            }
-            if body.is_empty() || body.chars().count() > 20_000 {
-                return Err(McpToolError::InvalidInput(
-                    "body must be 1..=20000 chars".into(),
-                ));
-            }
+            let title = validate_trimmed_len("title", &args.title, 240)?;
+            let body = validate_trimmed_len("body", &args.body, 20_000)?;
             let idempotency_key = normalize_idempotency_key(args.idempotency_key)?;
             // `model_id` is the reserved operator label. It may arrive as an
             // explicit arg or via the request-context `model_id` (which the MCP
             // server strips into `ctx.author.model_id`); fall back to the latter.
-            let model_id = args
+            let raw_model_id = args
                 .model_id
                 .clone()
                 .unwrap_or_else(|| ctx.author.model_id.clone());
-            if model_id.trim().is_empty() || model_id.chars().count() > 120 {
-                return Err(McpToolError::InvalidInput(
-                    "model_id required, 1..=120 chars".into(),
-                ));
-            }
+            // Trimmed before it is *used*, not just before it is checked. The
+            // old guard tested `model_id.trim().is_empty()` and then stored
+            // and hashed the untrimmed string, so `" claude "` and `"claude"`
+            // were one label to the validator and two to the idempotency key
+            // derived from it — the same replay-dedup miss
+            // `normalize_idempotency_key` exists to prevent.
+            let model_id = validate_trimmed_len("model_id", &raw_model_id, 120)?.to_string();
             let tags = normalize_tags(args.tags)?;
 
             if args.source_handles.len() > MAX_SOURCE_HANDLES {

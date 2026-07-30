@@ -1,5 +1,6 @@
 use crate::mcp::{McpTool, McpToolCtx, McpToolError};
 use crate::protocol::tool as protocol_tool;
+use crate::tool::validate_trimmed_len;
 use crate::verbs::fact_ingest::FactWriteCommand;
 use crate::{Relation, SourceBatchId};
 use schemars::JsonSchema;
@@ -69,12 +70,7 @@ impl McpTool for RecordUtteranceTool {
                     "conversation_id must be non-empty".into(),
                 ));
             }
-            let text = args.text.trim();
-            if text.is_empty() || text.chars().count() > 20_000 {
-                return Err(McpToolError::InvalidInput(
-                    "text must be 1..=20000 chars".into(),
-                ));
-            }
+            let text = validate_trimmed_len("text", &args.text, 20_000)?;
             let idempotency_key = super::util::normalize_idempotency_key(args.idempotency_key)?;
 
             let space = super::super::memory_spaces::resolve_space_owner(

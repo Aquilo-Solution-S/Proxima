@@ -240,11 +240,51 @@ pub const MAX_QUERY_CHARS: usize = 512;
 /// 8,000 for a memory body are different because the objects are.
 pub const MAX_TEXT_CAP_CHARS: usize = 8_000;
 
-/// Trim `query` and check it against [`MAX_QUERY_CHARS`].
+/// Trim `value` and check its length against `1..=max` characters,
+/// returning the trimmed text and naming the bound that was actually
+/// broken.
 ///
-/// Counts characters, not bytes: the cap exists to bound what the query
-/// planner and the embedding provider see, and a byte cap would reject a
-/// shorter question written in a language that does not fit in ASCII.
+/// Blank and oversized are two different mistakes with two different
+/// fixes, and a caller can only act on the one they made. Every authoring
+/// surface carried this shape with a single message for both, so a
+/// two-space body and a 20,001-character body were both answered with
+/// `body must be 1..=20000 chars`. For the blank case that names a range
+/// the input satisfies — two characters *is* within 1..=20000 — which
+/// reads as a server fault rather than an instruction to send content, and
+/// the natural next move is to retry the same request unchanged.
+///
+/// Counts characters, not bytes, for the reason
+/// [`validate_search_query`] does: a cap that bound bytes would reject a
+/// shorter text written in a language that does not fit in ASCII.
+///
+/// `field` is the wire name of the parameter, so the message points at
+/// something the caller can see in the schema.
+///
+/// # Errors
+///
+/// [`ToolError::InvalidInput`] when `value` is empty after trimming, or
+/// longer than `max` characters.
+pub fn validate_trimmed_len<'a>(
+    field: &str,
+    value: &'a str,
+    max: usize,
+) -> Result<&'a str, ToolError> {
+    let value = value.trim();
+    if value.is_empty() {
+        return Err(ToolError::InvalidInput(format!(
+            "{field} must not be blank; it is empty after trimming whitespace"
+        )));
+    }
+    let chars = value.chars().count();
+    if chars > max {
+        return Err(ToolError::InvalidInput(format!(
+            "{field} must be at most {max} chars after trimming; got {chars}"
+        )));
+    }
+    Ok(value)
+}
+
+/// Trim `query` and check it against [`MAX_QUERY_CHARS`].
 ///
 /// Three tools carried a byte-identical copy of this with `512` inlined
 /// as a literal in each — see [`reject_zero_limit`] for why a rule with no
@@ -255,13 +295,7 @@ pub const MAX_TEXT_CAP_CHARS: usize = 8_000;
 /// [`ToolError::InvalidInput`] when the trimmed query is empty or longer
 /// than [`MAX_QUERY_CHARS`].
 pub fn validate_search_query(query: &str) -> Result<&str, ToolError> {
-    let query = query.trim();
-    if query.is_empty() || query.chars().count() > MAX_QUERY_CHARS {
-        return Err(ToolError::InvalidInput(format!(
-            "query must be 1..={MAX_QUERY_CHARS} chars"
-        )));
-    }
-    Ok(query)
+    validate_trimmed_len("query", query, MAX_QUERY_CHARS)
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -371,12 +405,69 @@ mod shared_arg_rule_tests {
 
     #[test]
     fn the_rejection_is_invalid_input_and_names_the_bound() {
-        let ToolError::InvalidInput(message) = validate_search_query("").unwrap_err() else {
+        let ToolError::InvalidInput(message) =
+            validate_search_query(&"a".repeat(MAX_QUERY_CHARS + 1)).unwrap_err()
+        else {
             panic!("a bad query must be invalid input, not any other error kind");
         };
         assert!(
             message.contains(&MAX_QUERY_CHARS.to_string()),
             "the message must carry the bound: {message}"
+        );
+    }
+
+    /// Blank and oversized are different mistakes, so they get different
+    /// messages. Answering a blank query with `must be 1..=512 chars` names
+    /// a range the input satisfies, which reads as a server fault rather
+    /// than an instruction to send content.
+    #[test]
+    fn blank_and_oversized_do_not_share_one_message() {
+        let ToolError::InvalidInput(blank) = validate_search_query("   ").unwrap_err() else {
+            panic!("blank must be invalid input");
+        };
+        let ToolError::InvalidInput(over) =
+            validate_search_query(&"a".repeat(MAX_QUERY_CHARS + 1)).unwrap_err()
+        else {
+            panic!("oversized must be invalid input");
+        };
+        assert_ne!(blank, over, "one message for two mistakes tells neither");
+        assert!(
+            blank.contains("blank"),
+            "a blank query must be told it is blank: {blank}"
+        );
+        assert!(
+            !blank.contains(&MAX_QUERY_CHARS.to_string()),
+            "a blank query must not be quoted a length bound it satisfies: {blank}"
+        );
+    }
+
+    /// The message reports what the caller actually sent, so an agent one
+    /// character over does not have to guess how far over it is.
+    #[test]
+    fn the_oversize_message_reports_the_length_that_was_sent() {
+        let ToolError::InvalidInput(message) =
+            validate_search_query(&"a".repeat(MAX_QUERY_CHARS + 7)).unwrap_err()
+        else {
+            panic!("oversized must be invalid input");
+        };
+        assert!(
+            message.contains(&(MAX_QUERY_CHARS + 7).to_string()),
+            "the message must carry the length sent: {message}"
+        );
+    }
+
+    /// The length reported is the trimmed one, matching the length that
+    /// was actually measured.
+    #[test]
+    fn the_reported_length_is_the_trimmed_length() {
+        let padded = format!("   {}   ", "a".repeat(MAX_QUERY_CHARS + 1));
+        let ToolError::InvalidInput(message) = validate_search_query(&padded).unwrap_err() else {
+            panic!("oversized must be invalid input");
+        };
+        assert!(
+            message.contains(&(MAX_QUERY_CHARS + 1).to_string())
+                && !message.contains(&padded.chars().count().to_string()),
+            "the reported length must be the trimmed one: {message}"
         );
     }
 
