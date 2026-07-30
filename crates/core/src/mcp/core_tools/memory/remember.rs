@@ -43,7 +43,7 @@ pub struct RememberArgs {
     pub body: String,
     #[serde(default)]
     #[schemars(
-        description = "Optional normalized tags for later search. Use `[]` when no tags are needed."
+        description = "Optional tags for later search, at most 16. Each is stored trimmed and lowercased, so `Rust` is stored and matched as `rust`. Use `[]` when no tags are needed."
     )]
     pub tags: Vec<String>,
     #[schemars(
