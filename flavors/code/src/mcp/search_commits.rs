@@ -11,6 +11,7 @@ use super::sql::{map_storage, resolve_repo_identifier};
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct CodeSearchCommitsArgs {
     #[schemars(
+        length(max = proxima_core::MAX_QUERY_CHARS),
         description = "Lexical query string for Git commit and commit-summary search. Matches SHA, message, and summary text; 1 to 512 chars."
     )]
     pub query: String,

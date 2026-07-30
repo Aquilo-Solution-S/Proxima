@@ -22,6 +22,7 @@ pub struct RecordUtteranceArgs {
     )]
     pub conversation_id: String,
     #[schemars(
+        length(max = 20000),
         description = "The utterance text, 1 to 20000 chars. Leading and trailing whitespace is removed before the length check."
     )]
     pub text: String,

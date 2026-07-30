@@ -100,15 +100,18 @@ pub struct DeriveArgs {
     #[schemars(description = "Derived memory kind to author: Abstraction or Perspective.")]
     pub kind: DerivedKind,
     #[schemars(
+        length(max = 240),
         description = "Short title for the derived memory, 1 to 240 chars. Leading and trailing whitespace is removed before the length check."
     )]
     pub title: String,
     #[schemars(
+        length(max = 20000),
         description = "Body text for the derived memory, 1 to 20000 chars. Leading and trailing whitespace is removed before the length check."
     )]
     pub body: String,
     #[serde(default)]
     #[schemars(
+        length(max = 16),
         description = "Optional tags for later search, at most 16. Each is stored trimmed and lowercased, so `Rust` is stored and matched as `rust`. Use `[]` when no tags are needed."
     )]
     pub tags: Vec<String>,
@@ -118,6 +121,7 @@ pub struct DeriveArgs {
     pub source_handles: Vec<String>,
     #[serde(default)]
     #[schemars(
+        length(max = 120),
         description = "Optional model/agent label recorded as operator provenance (e.g. `claude-opus-4-8`), 1 to 120 chars. Defaults to the reserved `model_id` request-context field when omitted."
     )]
     pub model_id: Option<String>,

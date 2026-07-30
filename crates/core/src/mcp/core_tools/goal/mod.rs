@@ -86,10 +86,12 @@ pub struct GoalPayloadArgs {
     #[schemars(description = "Goal-payload schema version. Omit to default to 1.")]
     pub schema_version: Option<u32>,
     #[schemars(
+        length(max = 240),
         description = "Short, human-readable goal title, 1 to 240 chars. Leading and trailing whitespace is removed before the length check."
     )]
     pub title: String,
     #[schemars(
+        length(max = 20000),
         description = "The goal stated in prose, 1 to 20000 chars — what pursuing or achieving it means. Leading and trailing whitespace is removed before the length check."
     )]
     pub text: String,
@@ -477,6 +479,7 @@ pub struct GoalDecomposeArgs {
     )]
     pub parent_goal: String,
     #[schemars(
+        length(max = 50),
         description = "Child goals to create (1 to 50); each is set Active and linked to the parent."
     )]
     pub children: Vec<ChildGoalInput>,
