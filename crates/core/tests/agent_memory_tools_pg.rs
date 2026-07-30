@@ -203,6 +203,82 @@ async fn remember_then_search_round_trip() -> Result<(), Box<dyn std::error::Err
     Ok(())
 }
 
+/// A tag filter must match tags the way they were stored. The write side folds
+/// a tag (trim + lowercase); the filter did not, so a memory tagged `Rust` was
+/// invisible to a search for `Rust` — and invisibly so, because a filter that
+/// matches nothing looks exactly like a memory that does not exist.
+///
+/// The assertion is that every spelling of one tag finds the same memory,
+/// rather than that a particular spelling works, so it still holds if the
+/// folding rule changes.
+#[tokio::test]
+async fn a_tag_filter_matches_every_spelling_of_the_tag_it_stored()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (pg, db_name) = fresh_pg().await;
+
+    let registry = FlavorRegistry::new();
+    let frozen = Arc::new(registry.freeze_or_panic_for_tests());
+    let owner = nil_owner();
+    let author = author_ctx();
+
+    let remembered = call_tool(
+        &pg,
+        &owner,
+        &frozen,
+        author.clone(),
+        "core_remember",
+        json!({
+            "title": "Tag folding",
+            "body": "Written with a capitalised, padded tag.",
+            "tags": ["Rust", "  Spaced  "],
+        }),
+    )
+    .await?;
+    let handle = remembered["handle"].clone();
+
+    for spelling in [
+        json!(["Rust"]),
+        json!(["rust"]),
+        json!(["RUST"]),
+        json!(["  rust  "]),
+        json!(["Spaced"]),
+        json!(["spaced"]),
+        // One tag sent twice under two spellings is one predicate, not two,
+        // so `all` must still match rather than demanding two distinct tags.
+        json!(["Rust", "rust"]),
+    ] {
+        let found = call_tool(
+            &pg,
+            &owner,
+            &frozen,
+            author.clone(),
+            "core_search_memories",
+            json!({
+                "query": "tag folding",
+                "mode": "lexical",
+                "limit": 5,
+                "tags": spelling,
+                "tag_match": "all",
+            }),
+        )
+        .await?;
+        let hits = found["memories"]
+            .as_array()
+            .expect("memories")
+            .iter()
+            .map(|memory| memory["memory"].clone())
+            .collect::<Vec<_>>();
+        assert!(
+            hits.contains(&handle),
+            "tag filter {spelling} missed the memory it was stored on; got {hits:?}",
+        );
+    }
+
+    drop(pg);
+    drop_db(&db_name).await?;
+    Ok(())
+}
+
 /// Every surface that reports a `space` must report a key that
 /// `core_memory_spaces` advertises and a write accepts. The read path used to
 /// emit the literal "entry", which is not a space: an agent following the

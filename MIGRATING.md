@@ -1851,6 +1851,33 @@ A host or flavor reading a descriptor's behaviour should call these
 rather than reaching for `core_tool_annotations`, which answers for
 substrate tools only.
 
+## 50. v0.0.7: a memory read reports a space key that a write accepts
+
+**Action required only if you parsed the literal `entry`.** The `space`
+field of a single- or batch-memory read changes value; its type and
+position do not.
+
+`core_memory_spaces` defines the space-key vocabulary — `current`,
+`world`, and `personal:<uuid>` spellings — and every write validates
+against it. The read path did not draw from that vocabulary at all: it
+reported the literal `entry`, a placeholder no space is called.
+
+That broke the loop the server instructions prescribe, *use a returned
+`space` key in `core_remember`*. Reading a memory through
+`proxima://memory/{id}` and reusing its reported `space` on the next
+write failed with `unknown memory space: entry`. The value was only ever
+correct to display, never to send back — but nothing on the wire said so,
+and it shares a field name with the keys that are.
+
+`get_memory` and `get_memories` now resolve the key through
+`memory_spaces::resolve_space_owner`, the same resolver
+`core_search_memories` already used — which is why search reported
+`current` for the very memory the resource called `entry`. A caller-
+supplied `space` is now validated rather than echoed back unchanged.
+
+Expect `current` where you previously saw `entry` for a caller reading
+their own memory, and `personal:<uuid>` when reading across owners.
+
 ## 51. v0.0.7: a schema states the lower bound it enforces
 
 **Action required only for clients that validate against `inputSchema`
@@ -1880,32 +1907,38 @@ call it on its own frozen registry. It is deliberately **not** enforced
 in `try_freeze`: unlike an undeclared `ANNOTATIONS` (§47), which stops a
 gate from working, a bound stated only in prose is a documentation defect
 and should not stop an existing deployment from booting.
-## 50. v0.0.7: a memory read reports a space key that a write accepts
 
-**Action required only if you parsed the literal `entry`.** The `space`
-field of a single- or batch-memory read changes value; its type and
-position do not.
+## 52. v0.0.7: a tag filter matches the tag that was stored
 
-`core_memory_spaces` defines the space-key vocabulary — `current`,
-`world`, and `personal:<uuid>` spellings — and every write validates
-against it. The read path did not draw from that vocabulary at all: it
-reported the literal `entry`, a placeholder no space is called.
+**No action required.** Searches that previously returned nothing now
+return matches; nothing that matched before stops matching.
 
-That broke the loop the server instructions prescribe, *use a returned
-`space` key in `core_remember`*. Reading a memory through
-`proxima://memory/{id}` and reusing its reported `space` on the next
-write failed with `unknown memory space: entry`. The value was only ever
-correct to display, never to send back — but nothing on the wire said so,
-and it shares a field name with the keys that are.
+The write side folds a tag to `trim().to_ascii_lowercase()` before
+storing it, so `core_remember` with `tags: ["Rust"]` holds `rust`. The
+search filter did not fold, and matched the raw string. A caller using
+the same literal on both sides — the obvious thing to do — got nothing:
 
-`get_memory` and `get_memories` now resolve the key through
-`memory_spaces::resolve_space_owner`, the same resolver
-`core_search_memories` already used — which is why search reported
-`current` for the very memory the resource called `entry`. A caller-
-supplied `space` is now validated rather than echoed back unchanged.
+```
+core_remember        tags: ["Rust"]     -> stored as ["rust"]
+core_search_memories tags: ["Rust"]     -> no matches
+core_search_memories tags: ["rust"]     -> matches
+```
 
-Expect `current` where you previously saw `entry` for a caller reading
-their own memory, and `personal:<uuid>` when reading across owners.
+This failed **silently**. There is no error to read, and a filter that
+matches nothing is indistinguishable from a memory that was never
+written, so the natural conclusion is that the memory is missing.
+
+Both sides now call `memory::util::fold_tag`, and the filter sorts and
+dedups after folding, so `["Rust", "rust"]` is one predicate rather than
+two — which matters under `tag_match: all`, where two spellings of one
+tag previously demanded two distinct tags. A blank filter entry is
+dropped rather than rejected: the write side refuses to store one, so it
+can never match, and dropping it stops a stray empty string from forcing
+an empty result.
+
+The descriptions said as much if read side by side — the write side
+advertised "normalized tags" and the filter "exact tag filter" — without
+either naming the normalization. Both now state it.
 
 ## 53. v0.0.7: a length rejection names the bound that was broken
 

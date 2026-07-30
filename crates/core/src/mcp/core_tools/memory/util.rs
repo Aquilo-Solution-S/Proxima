@@ -75,6 +75,18 @@ pub fn parse_observed_at(raw: Option<&str>) -> Result<Option<time::OffsetDateTim
 /// Upper bound on distinct normalized tags per memory.
 const MAX_TAGS: usize = 16;
 
+/// Fold one tag to the form it is stored and compared in: trimmed and
+/// ASCII-lowercased.
+///
+/// The write side and the search filter must fold identically or a tag
+/// written as `Rust` cannot be found by searching `Rust` — a silent miss,
+/// since a filter that matches nothing is indistinguishable from a memory
+/// that does not exist. Both call this rather than repeating the two steps.
+#[must_use]
+pub fn fold_tag(tag: &str) -> String {
+    tag.trim().to_ascii_lowercase()
+}
+
 /// Trim, lowercase, sort, and dedup `tags`, then cap the *distinct* result
 /// at [`MAX_TAGS`]. The cap deliberately applies after normalization: a
 /// caller sending `["Rust", "rust", " RUST "]` holds one tag, not three,
@@ -89,7 +101,7 @@ const MAX_TAGS: usize = 16;
 pub fn normalize_tags(tags: Vec<String>) -> Result<Vec<String>, McpToolError> {
     let mut out = Vec::with_capacity(tags.len());
     for tag in tags {
-        let tag = tag.trim().to_ascii_lowercase();
+        let tag = fold_tag(&tag);
         if tag.is_empty() || tag.chars().count() > 48 {
             return Err(McpToolError::InvalidInput(
                 "tag must be 1..=48 chars".into(),
