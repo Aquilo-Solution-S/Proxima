@@ -1777,34 +1777,6 @@ freezes, the gate can classify it.
 
 The new error is `FlavorRegistryError::UndeclaredToolBehavior`.
 
-## 49. v0.0.7: a viewer can see a flavor's read tools
-
-**No action required.** Nothing is removed; some tools become visible
-that were not.
-
-`tools/list` filtered on a gate that resolved read-vs-write from
-`core_tool_annotations(name)` alone — a table over *core* tool names —
-and fell through to "demand write" for anything it did not recognise. So
-a read-only principal saw no flavor tool at all, read or write. Not
-refused with a reason: **absent**, which is the harder symptom to trace,
-because the client's own tool list is the thing that is wrong.
-
-The same filter drives the advertised-tool set behind `initialize`'s
-instructions and the `proxima://how-to` self-doc, so a viewer's
-onboarding text also omitted every flavor tool.
-
-§44's fix (`ANNOTATIONS`) and §47's boot check made the answer available
-and mandatory; this gate never asked for it. It now resolves the tool's
-own declaration first and the core manifest second — the same order
-`ScopeGateBehavior::enforce_owner_role` uses on the call path and
-`try_freeze` guarantees resolves. All three call sites already held the
-descriptor and passed only its name.
-
-For a viewer-role token against a deployment serving `proxima-code` or
-`proxima-docs`, the practical effect is that `..._search_chunks`,
-`..._list_repos`, `..._open_file_revision`, `..._search_commits` and
-`proxima-docs_search` appear in `tools/list` where they previously did
-not. Write tools stay hidden, unchanged.
 ## 48. v0.0.7: `open_file_revision` agrees with its siblings about text
 
 **Action required only if you pass `max_text_bytes: 0`.** That is now
@@ -1842,6 +1814,35 @@ Three changes, all to `proxima-code_open_file_revision`:
 
 The schema descriptions state all three bounds; they previously stated
 none of them, which is how the disagreement went unnoticed.
+
+## 49. v0.0.7: a viewer can see a flavor's read tools
+
+**No action required.** Nothing is removed; some tools become visible
+that were not.
+
+`tools/list` filtered on a gate that resolved read-vs-write from
+`core_tool_annotations(name)` alone — a table over *core* tool names —
+and fell through to "demand write" for anything it did not recognise. So
+a read-only principal saw no flavor tool at all, read or write. Not
+refused with a reason: **absent**, which is the harder symptom to trace,
+because the client's own tool list is the thing that is wrong.
+
+The same filter drives the advertised-tool set behind `initialize`'s
+instructions and the `proxima://how-to` self-doc, so a viewer's
+onboarding text also omitted every flavor tool.
+
+The `ANNOTATIONS` const made the answer available and §47's boot check
+made it mandatory; this gate never asked for it. It now resolves the tool's
+own declaration first and the core manifest second — the same order
+`ScopeGateBehavior::enforce_owner_role` uses on the call path and
+`try_freeze` guarantees resolves. All three call sites already held the
+descriptor and passed only its name.
+
+For a viewer-role token against a deployment serving `proxima-code` or
+`proxima-docs`, the practical effect is that `..._search_chunks`,
+`..._list_repos`, `..._open_file_revision`, `..._search_commits` and
+`proxima-docs_search` appear in `tools/list` where they previously did
+not. Write tools stay hidden, unchanged.
 
 The two-step is now `McpToolDescriptor::resolved_annotations()`, with
 `is_read_only()` beside it, so the four places that needed the answer
