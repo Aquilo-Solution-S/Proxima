@@ -83,6 +83,16 @@ pub async fn get_memories(
         .map(|snapshot| (snapshot.memory_id, snapshot))
         .collect();
 
+    // One resolution for the whole batch: same caller, same owner, so the
+    // reported key cannot differ per row. See `get_memory` for why this is
+    // not the literal "entry".
+    let output_space = super::memory_spaces::resolve_space_owner(
+        &ctx,
+        None,
+        super::memory_spaces::SpaceDefault::Current,
+    )?
+    .key;
+
     let mut memories = Vec::with_capacity(requested.len());
     let mut missing = Vec::new();
     for (id, raw) in requested {
@@ -91,7 +101,7 @@ pub async fn get_memories(
                 memories.push(project_memory_snapshot(
                     &ctx,
                     snapshot,
-                    "entry".into(),
+                    output_space.clone(),
                     None,
                 )?);
             }

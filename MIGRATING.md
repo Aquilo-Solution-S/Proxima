@@ -1851,6 +1851,33 @@ A host or flavor reading a descriptor's behaviour should call these
 rather than reaching for `core_tool_annotations`, which answers for
 substrate tools only.
 
+## 50. v0.0.7: a memory read reports a space key that a write accepts
+
+**Action required only if you parsed the literal `entry`.** The `space`
+field of a single- or batch-memory read changes value; its type and
+position do not.
+
+`core_memory_spaces` defines the space-key vocabulary — `current`,
+`world`, and `personal:<uuid>` spellings — and every write validates
+against it. The read path did not draw from that vocabulary at all: it
+reported the literal `entry`, a placeholder no space is called.
+
+That broke the loop the server instructions prescribe, *use a returned
+`space` key in `core_remember`*. Reading a memory through
+`proxima://memory/{id}` and reusing its reported `space` on the next
+write failed with `unknown memory space: entry`. The value was only ever
+correct to display, never to send back — but nothing on the wire said so,
+and it shares a field name with the keys that are.
+
+`get_memory` and `get_memories` now resolve the key through
+`memory_spaces::resolve_space_owner`, the same resolver
+`core_search_memories` already used — which is why search reported
+`current` for the very memory the resource called `entry`. A caller-
+supplied `space` is now validated rather than echoed back unchanged.
+
+Expect `current` where you previously saw `entry` for a caller reading
+their own memory, and `personal:<uuid>` when reading across owners.
+
 ## Checks before calling an upgrade done
 
 ```sh
