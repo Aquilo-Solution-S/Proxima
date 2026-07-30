@@ -3313,3 +3313,130 @@ async fn the_declared_maximum_is_the_one_the_server_enforces()
     drop_db(&db_name).await?;
     Ok(())
 }
+
+/// A replay must be a replay. `idempotent_replay: true` means "the write you
+/// asked for is already stored", and a caller acts on it by moving on.
+///
+/// It was not true. The auto-derived idempotency key hashed the body alone,
+/// while the title and tags live in the `agent_derivation_v1` sidecar — which
+/// the storage-side replay proof never reads and the replay path never even
+/// writes. So two Abstractions over one body with different titles were one
+/// write: the second caller was told their derivation already existed and
+/// handed a handle to the first one's, their own title gone. Found by the
+/// invariant soak's schema-driven probe.
+#[tokio::test]
+async fn a_derive_replay_is_a_replay_of_the_same_content() -> Result<(), Box<dyn std::error::Error>>
+{
+    let (pg, db_name) = fresh_pg().await;
+
+    let registry = FlavorRegistry::new();
+    let frozen = Arc::new(registry.freeze_or_panic_for_tests());
+    let owner = nil_owner();
+    let author = author_ctx();
+
+    let mut sources = Vec::new();
+    for i in 0..2 {
+        let fact = call_tool(
+            &pg,
+            &owner,
+            &frozen,
+            author.clone(),
+            "core_remember",
+            json!({
+                "title": format!("source {i}"),
+                "body": "grounding observation",
+                "source_batch_key": "replay-identity",
+            }),
+        )
+        .await?;
+        sources.push(fact["handle"].clone());
+    }
+
+    let shared_body = "One body two people would title differently.";
+    let derive = |title: &'static str| {
+        let sources = sources.clone();
+        json!({
+            "kind": "Abstraction",
+            "title": title,
+            "body": shared_body,
+            "source_handles": sources,
+        })
+    };
+
+    let first = call_tool(
+        &pg,
+        &owner,
+        &frozen,
+        author.clone(),
+        "core_derive",
+        derive("Deployment risks in Q3"),
+    )
+    .await?;
+    assert_eq!(
+        first["idempotent_replay"],
+        json!(false),
+        "the first derivation is a new write: {first}",
+    );
+
+    // Same body, different title. Whatever the substrate does with this, it
+    // must not report it as a replay of a memory holding the other title.
+    let second = call_tool(
+        &pg,
+        &owner,
+        &frozen,
+        author.clone(),
+        "core_derive",
+        derive("Customer churn drivers"),
+    )
+    .await;
+
+    match second {
+        Ok(second) => {
+            assert_ne!(
+                second["handle"], first["handle"],
+                "a differently-titled derivation was answered with the first \
+                 one's handle, discarding the title the caller sent: {second}",
+            );
+            assert_eq!(
+                second["idempotent_replay"],
+                json!(false),
+                "a write that stores different content is not a replay: {second}",
+            );
+        }
+        // Refusing is the other honest answer: one source batch consolidates
+        // into one Abstraction, so the second derivation legitimately
+        // conflicts. What it must not do is silently succeed as a replay.
+        Err(err) => {
+            let message = err.to_string();
+            assert!(
+                !message.contains("uidx") && !message.contains("duplicate key"),
+                "a refusal must state the rule, not leak the index enforcing \
+                 it: {message}",
+            );
+        }
+    }
+
+    // The genuine replay -- identical content -- must still collapse.
+    let replay = call_tool(
+        &pg,
+        &owner,
+        &frozen,
+        author,
+        "core_derive",
+        derive("Deployment risks in Q3"),
+    )
+    .await?;
+    assert_eq!(
+        replay["handle"], first["handle"],
+        "identical content must still replay onto the same memory: {replay}",
+    );
+    assert_eq!(
+        replay["idempotent_replay"],
+        json!(true),
+        "identical content must still be flagged as a replay: {replay}",
+    );
+
+    drop(pg);
+    drop_db(&db_name).await?;
+    Ok(())
+}
