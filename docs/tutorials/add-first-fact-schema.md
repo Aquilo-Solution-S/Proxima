@@ -43,7 +43,8 @@ impl FactPayload for DocumentFiledV1 {
             // Compute the lexical vector at query time. Set this to the
             // name of a STORED generated column calling the two-argument
             // `proxima_core.lexical_tsv(lexical_language, ...)` once your
-            // sidecar migration adds one; see MIGRATING.md §23 and §31.
+            // sidecar migration adds one; see MIGRATING.md,
+            // *Flavor SDK changes*.
             tsv_column: None,
             // With a stored vector, also add a `lexical_language regconfig`
             // column mirrored from the owning memories row (attach
