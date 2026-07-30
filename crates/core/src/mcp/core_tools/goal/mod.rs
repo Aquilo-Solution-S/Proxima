@@ -4,6 +4,7 @@ use crate::engine::{
 };
 use crate::mcp::{CoreActionMeta, McpActionArgSpec, McpTool, McpToolCtx, McpToolError};
 use crate::protocol::{action as protocol_action, tool as protocol_tool};
+use crate::tool::validate_trimmed_len;
 use crate::verbs::goal_write::{
     ChildGoalDraft, GoalAssignmentTarget, GoalAuthorship, GoalEvidenceRef, GoalPayloadWrite,
     GoalState, GoalTopologyWrite, GoalWakeConfigWrite, GoalWakeToolId, GoalWakeTrigger,
@@ -576,18 +577,8 @@ fn encode_goal_payload(
     ctx: &McpToolCtx,
     args: GoalPayloadArgs,
 ) -> Result<GoalPayloadWrite, McpToolError> {
-    let title = args.title.trim();
-    if title.is_empty() || title.chars().count() > 240 {
-        return Err(McpToolError::InvalidInput(
-            "goal title must be 1..=240 chars".into(),
-        ));
-    }
-    let text = args.text.trim();
-    if text.is_empty() || text.chars().count() > 20_000 {
-        return Err(McpToolError::InvalidInput(
-            "goal text must be 1..=20000 chars".into(),
-        ));
-    }
+    let title = validate_trimmed_len("goal title", &args.title, 240)?;
+    let text = validate_trimmed_len("goal text", &args.text, 20_000)?;
     let schema_id = SchemaId::new(args.schema_id);
     let schema_version = SchemaVersion::new(args.schema_version.unwrap_or(1));
     let schema = ctx
@@ -670,7 +661,15 @@ fn encode_wake_config(
         .iter()
         .map(|handle| ctx.resolve_memory(handle))
         .collect::<Result<Vec<_>, _>>()?;
-    GoalWakeConfigWrite::new(trigger, tool_ids, args.prompt, &hard_memory_ids)
+    // Checked here rather than left to `GoalWakeConfigWrite::new`, which
+    // enforces the same bound for embedding hosts but cannot name which end
+    // of it was broken. Its check stays as the defensive one.
+    let prompt = validate_trimmed_len(
+        "wake prompt",
+        &args.prompt,
+        GoalWakeConfigWrite::MAX_PROMPT_CHARS,
+    )?;
+    GoalWakeConfigWrite::new(trigger, tool_ids, prompt, &hard_memory_ids)
         .map_err(McpToolError::Protocol)
 }
 

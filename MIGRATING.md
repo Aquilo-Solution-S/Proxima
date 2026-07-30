@@ -1940,6 +1940,48 @@ The descriptions said as much if read side by side — the write side
 advertised "normalized tags" and the filter "exact tag filter" — without
 either naming the normalization. Both now state it.
 
+## 53. v0.0.7: a length rejection names the bound that was broken
+
+**Action required only for clients that match on error text.** The same
+inputs are refused; the sentence explaining why changes, and one
+`core_derive` replay that used to duplicate now collapses.
+
+Every authoring surface answered a blank value and an oversized one with
+one message. `core_remember` told a two-space body `body must be
+1..=20000 chars` — a range two characters satisfies — so the rejection
+read as a server fault rather than an instruction to send content, and
+the obvious next move was to retry the request unchanged. §52 documented
+that these surfaces trim before they measure; it did not make the
+rejection say so.
+
+```
+core_remember body: "  "                 -> body must not be blank; it is
+                                            empty after trimming whitespace
+core_remember body: "a" x 20001          -> body must be at most 20000 chars
+                                            after trimming; got 20001
+```
+
+The rule is `proxima_core::tool::validate_trimmed_len`, beside
+`reject_zero_limit` and `validate_search_query` for the same reason: a
+bound with no shared home is a bound that eventually disagrees with
+itself. It now backs `core_remember` (title, body), `core_derive` (title,
+body, `model_id`), `core_record_utterance` (text), `core_link` (reason),
+`core_goal` (title, text, wake prompt), and `validate_search_query`,
+which delegates to it.
+
+`GoalWriteBuildError::InvalidTitle` / `InvalidText` are unchanged: their
+messages are fixed strings on a `Copy` enum embedding hosts match on, and
+the MCP layer now validates before reaching them.
+
+One behaviour change beyond the text. `core_derive` tested
+`model_id.trim().is_empty()` and then stored and hashed the *untrimmed*
+string, so `" claude "` and `"claude"` were one label to the validator and
+two to the idempotency key derived from it — a replay that should have
+been a no-op wrote a second Abstraction. `model_id` is now trimmed before
+it is used, matching `normalize_idempotency_key`. A caller who has been
+sending a padded `model_id` and relying on the derived key will see one
+new Abstraction on the first call after upgrading, then replays collapse.
+
 ## Checks before calling an upgrade done
 
 ```sh

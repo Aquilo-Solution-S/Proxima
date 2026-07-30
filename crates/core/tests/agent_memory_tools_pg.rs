@@ -3063,3 +3063,177 @@ async fn authoring_trims_before_it_checks_length() -> Result<(), Box<dyn std::er
     drop_db(&db_name).await?;
     Ok(())
 }
+
+/// Blank and oversized are two different mistakes with two different fixes,
+/// and every authoring surface used to answer both with the same sentence.
+/// `core_remember` told a two-space body `body must be 1..=20000 chars` — a
+/// range two characters satisfies — so the message read as a server fault and
+/// the obvious next move was to retry the same request unchanged.
+///
+/// The assertion is that the two messages differ and that the blank one does
+/// not quote a bound the input meets, rather than that either says a
+/// particular sentence, so rewording the text does not break it.
+#[tokio::test]
+async fn a_length_rejection_names_the_bound_that_was_broken()
+-> Result<(), Box<dyn std::error::Error>> {
+    /// Tool name, bounded field, its cap, and a builder putting a value
+    /// into that field.
+    type BoundedField<'a> = (
+        &'a str,
+        &'a str,
+        usize,
+        &'a dyn Fn(&str) -> serde_json::Value,
+    );
+
+    let (pg, db_name) = fresh_pg().await;
+
+    let registry = FlavorRegistry::new();
+    let frozen = Arc::new(registry.freeze_or_panic_for_tests());
+    let owner = nil_owner();
+    let author = author_ctx();
+
+    // Every agent-facing authoring surface, with the field each one bounds.
+    // `core_derive` and `core_link` validate their text before they resolve
+    // handles, so deliberately unresolvable ones still exercise the check.
+    let surfaces: [BoundedField<'_>; 5] = [
+        (
+            "core_remember",
+            "title",
+            240,
+            &|value| json!({ "title": value, "body": "b" }),
+        ),
+        (
+            "core_remember",
+            "body",
+            20_000,
+            &|value| json!({ "title": "t", "body": value }),
+        ),
+        (
+            "core_record_utterance",
+            "text",
+            20_000,
+            &|value| json!({ "conversation_id": "c", "speaker": "user", "text": value }),
+        ),
+        ("core_derive", "body", 20_000, &|value| {
+            json!({
+                "kind": "Abstraction",
+                "title": "t",
+                "body": value,
+                "source_handles": ["F:00000000-0000-7000-8000-000000000000"],
+            })
+        }),
+        ("core_link", "reason", 1000, &|value| {
+            json!({
+                "source": "A:00000000-0000-7000-8000-000000000000",
+                "target": "A:00000000-0000-7000-8000-000000000001",
+                "reason": value,
+                "confidence": 50,
+            })
+        }),
+    ];
+
+    for (tool, field, cap, build) in surfaces {
+        let blank = call_tool(&pg, &owner, &frozen, author.clone(), tool, build("   "))
+            .await
+            .expect_err(&format!("{tool}.{field}: a blank value must be refused"))
+            .to_string();
+        let over = call_tool(
+            &pg,
+            &owner,
+            &frozen,
+            author.clone(),
+            tool,
+            build(&"a".repeat(cap + 1)),
+        )
+        .await
+        .expect_err(&format!(
+            "{tool}.{field}: an oversized value must be refused"
+        ))
+        .to_string();
+
+        assert_ne!(
+            blank, over,
+            "{tool}.{field}: one message for two mistakes tells the caller neither",
+        );
+        assert!(
+            !blank.contains(&cap.to_string()),
+            "{tool}.{field}: a blank value was quoted a length bound it satisfies: {blank}",
+        );
+        assert!(
+            over.contains(&cap.to_string()) && over.contains(&(cap + 1).to_string()),
+            "{tool}.{field}: an oversized value must be told the cap and what it sent: {over}",
+        );
+    }
+
+    drop(pg);
+    drop_db(&db_name).await?;
+    Ok(())
+}
+
+/// `core_derive` trimmed `model_id` to decide whether it was blank and then
+/// stored and hashed the untrimmed string, so `" m "` and `"m"` were one
+/// label to the validator and two to the idempotency key derived from it —
+/// the replay that should have been a no-op wrote a second Abstraction.
+#[tokio::test]
+async fn derive_trims_the_model_id_it_hashes() -> Result<(), Box<dyn std::error::Error>> {
+    let (pg, db_name) = fresh_pg().await;
+
+    let registry = FlavorRegistry::new();
+    let frozen = Arc::new(registry.freeze_or_panic_for_tests());
+    let owner = nil_owner();
+    let author = author_ctx();
+
+    let mut sources = Vec::new();
+    for i in 0..2 {
+        let fact = call_tool(
+            &pg,
+            &owner,
+            &frozen,
+            author.clone(),
+            "core_remember",
+            json!({
+                "title": format!("source {i}"),
+                "body": "grounding observation",
+                "source_batch_key": "model-id-trim",
+            }),
+        )
+        .await?;
+        sources.push(fact["handle"].clone());
+    }
+
+    let derive = |model_id: &'static str| {
+        let sources = sources.clone();
+        json!({
+            "kind": "Abstraction",
+            "title": "Trimmed operator label",
+            "body": "The same derivation, twice.",
+            "source_handles": sources,
+            "model_id": model_id,
+        })
+    };
+
+    let padded = call_tool(
+        &pg,
+        &owner,
+        &frozen,
+        author.clone(),
+        "core_derive",
+        derive(" m "),
+    )
+    .await?;
+    let bare = call_tool(&pg, &owner, &frozen, author, "core_derive", derive("m")).await?;
+
+    assert_eq!(
+        padded["handle"], bare["handle"],
+        "a padded and a bare model_id are one operator label, so the replay must collapse",
+    );
+    assert_eq!(
+        bare["idempotent_replay"],
+        json!(true),
+        "the second call is a replay, not a new Abstraction: {bare}",
+    );
+
+    drop(pg);
+    drop_db(&db_name).await?;
+    Ok(())
+}

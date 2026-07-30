@@ -1,5 +1,6 @@
 use crate::mcp::{McpTool, McpToolCtx, McpToolError};
 use crate::protocol::tool as protocol_tool;
+use crate::tool::validate_trimmed_len;
 use crate::verbs::fact_ingest::{
     FactWriteCommand, InlineCitationMappingDraft, InlineCitedObjectDraft,
 };
@@ -127,20 +128,10 @@ impl McpTool for RememberTool {
         args: RememberArgs,
     ) -> futures::future::BoxFuture<'static, Result<RememberOutput, McpToolError>> {
         Box::pin(async move {
-            let title = args.title.trim();
-            let body = args.body.trim();
             // 240 matches the goal-title cap: same-named field, same bound
             // on every authoring surface.
-            if title.is_empty() || title.chars().count() > 240 {
-                return Err(McpToolError::InvalidInput(
-                    "title must be 1..=240 chars".into(),
-                ));
-            }
-            if body.is_empty() || body.chars().count() > 20_000 {
-                return Err(McpToolError::InvalidInput(
-                    "body must be 1..=20000 chars".into(),
-                ));
-            }
+            let title = validate_trimmed_len("title", &args.title, 240)?;
+            let body = validate_trimmed_len("body", &args.body, 20_000)?;
             let idempotency_key = normalize_idempotency_key(args.idempotency_key)?;
             let space = super::super::memory_spaces::resolve_space_owner(
                 &ctx,
