@@ -34,6 +34,7 @@ pub enum ChunkSearchMode {
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct CodeSearchChunksArgs {
     #[schemars(
+        length(max = proxima_core::MAX_QUERY_CHARS),
         description = "Query string for code chunk search, matched against file paths and chunk text. Takes an identifier or path for exact lookup, or a plain-English question — chunks sharing any content word are returned when none share all of them. 1 to 512 chars."
     )]
     pub query: String,

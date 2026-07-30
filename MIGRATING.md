@@ -2005,6 +2005,46 @@ This is the pattern for any out-of-tree flavor with its own text
 validation: `validate_trimmed_len` is `pub` for the same reason
 `reject_zero_limit` is — a rule a flavor cannot reach is a rule it will
 reimplement differently.
+## 54. v0.0.7: a schema states the upper bound it enforces
+
+**Action required only for clients that validate against `inputSchema`
+locally.** No runtime behaviour changes; values that were refused before
+are refused now, just earlier and without being sent.
+
+§51 made floors machine-readable and stopped there. Ceilings are the worse
+half: a floor at least has a Rust default behind it (`usize` emits
+`minimum: 0`), while nothing in `String` says 240. Twenty-two parameters
+stated a cap in prose — `1 to 240 chars`, `at most 16 tags`, `At most 64
+patterns` — and declared nothing, so a strict client was told a
+30,000-character body validates and only learned otherwise after paying
+to send it.
+
+Now carrying `maxLength`: `core_remember.title`/`.body`,
+`core_derive.title`/`.body`/`.model_id`, `core_record_utterance.text`,
+`core_link.reason`, `core_goal.title`/`.text`,
+`core_search_memories.query`, `proxima-code_search_chunks.query`,
+`proxima-code_search_commits.query`, and
+`proxima-code_emit_execution_request.title`/`.instructions`/
+`.idempotency_key`. Now carrying `maxItems`:
+`core_remember.tags`, `core_derive.tags`, `core_search_memories.tags`/
+`.spaces`, `core_goal.children`, and
+`proxima-code_register_repo.include_globs`/`.exclude_globs`.
+
+`schema_bound_mismatches` now reports both ends, and picks the keyword
+from the parameter's own JSON type rather than from the unit word in the
+prose — `at most 16 tags` and `at most 16` mean the same thing on an
+array, and guessing from English is the part that goes wrong. The
+phrase list it matches is deliberately closed, so it under-reports rather
+than inventing a bound; the parser has its own unit tests pinned against
+the phrasings that actually ship.
+
+Where a constant already existed it is named rather than restated:
+`proxima-code`'s glob caps declare `MAX_SCOPE_GLOBS` and its query caps
+declare `proxima_core::MAX_QUERY_CHARS`.
+
+`the_declared_maximum_is_the_one_the_server_enforces` reads `maxLength`
+off the live registry and probes the server at exactly that length and one
+past it, so a declared cap cannot be a number nobody enforces.
 
 ## Checks before calling an upgrade done
 

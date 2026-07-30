@@ -9,13 +9,18 @@ pub struct CodeEmitExecutionRequestArgs {
         description = "Repo handle from code search/list context, typically `R...` in wake output. This selects the repo for the execution request."
     )]
     pub repo_handle: String,
-    #[schemars(description = "Short human-readable execution-request title, 1 to 240 chars.")]
+    #[schemars(
+        length(max = 240),
+        description = "Short human-readable execution-request title, 1 to 240 chars."
+    )]
     pub title: String,
     #[schemars(
+        length(max = 20_000),
         description = "Concrete implementation instructions for the worker wake, 1 to 20000 chars."
     )]
     pub instructions: String,
     #[schemars(
+        length(max = 240),
         description = "Stable idempotency key for this requested work slice, 1 to 240 chars. Reuse only for exact replay."
     )]
     pub idempotency_key: String,

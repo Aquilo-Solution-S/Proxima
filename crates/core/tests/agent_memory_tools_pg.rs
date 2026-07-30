@@ -3237,3 +3237,79 @@ async fn derive_trims_the_model_id_it_hashes() -> Result<(), Box<dyn std::error:
     drop_db(&db_name).await?;
     Ok(())
 }
+
+/// A declared bound is only worth anything if it is the bound the server
+/// actually enforces. `schema_bound_mismatches` ties the schema to the prose
+/// and the authoring tests tie the prose to the code; this closes the triangle
+/// by reading `maxLength` off the live registry schema and probing the server
+/// at exactly that length and one past it.
+///
+/// Without this, the schema could declare a number nobody enforces and every
+/// other check would still pass.
+#[tokio::test]
+async fn the_declared_maximum_is_the_one_the_server_enforces()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (pg, db_name) = fresh_pg().await;
+
+    let registry = FlavorRegistry::new();
+    let frozen = Arc::new(registry.freeze_or_panic_for_tests());
+    let owner = nil_owner();
+    let author = author_ctx();
+
+    let tools = frozen.list_mcp_tools();
+    let remember = tools
+        .iter()
+        .find(|tool| tool.name == "core_remember")
+        .expect("core_remember is registered");
+    let declared = |field: &str| {
+        remember
+            .args_schema
+            .pointer(&format!("/properties/{field}/maxLength"))
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or_else(|| panic!("core_remember.{field} must declare maxLength"))
+    };
+
+    for (field, build) in [
+        (
+            "title",
+            &(|v: String| json!({ "title": v, "body": "b" }))
+                as &dyn Fn(String) -> serde_json::Value,
+        ),
+        ("body", &(|v: String| json!({ "title": "t", "body": v }))),
+    ] {
+        let cap = usize::try_from(declared(field)).expect("cap fits in usize");
+        let at_cap = call_tool(
+            &pg,
+            &owner,
+            &frozen,
+            author.clone(),
+            "core_remember",
+            build("a".repeat(cap)),
+        )
+        .await;
+        assert!(
+            at_cap.is_ok(),
+            "{field}: the schema declares maxLength {cap}, but the server \
+             refused a value of exactly that length: {at_cap:?}",
+        );
+        let over = call_tool(
+            &pg,
+            &owner,
+            &frozen,
+            author.clone(),
+            "core_remember",
+            build("a".repeat(cap + 1)),
+        )
+        .await;
+        assert!(
+            over.is_err(),
+            "{field}: the schema declares maxLength {cap}, so a client that \
+             validates locally will never send {}, but the server accepted it",
+            cap + 1,
+        );
+    }
+
+    drop(pg);
+    drop_db(&db_name).await?;
+    Ok(())
+}

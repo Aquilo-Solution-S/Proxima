@@ -38,14 +38,76 @@ const CLAIMS_MIN_ONE: &[&str] = &[
     "Must be >= 1",
 ];
 
-/// Report parameters whose description promises a lower bound of 1 that the
-/// schema does not declare, as `"<tool>.<field>: ..."` strings. Empty means
-/// every promise is machine-readable.
+/// Phrases a description uses to introduce a ceiling, each followed
+/// immediately by the number.
 ///
-/// A Rust `Option<u32>`/`usize` emits `minimum: 0` from its type and a signed
-/// type emits nothing, so a strict JSON-Schema client is told `limit: 0`
-/// validates and only learns otherwise from a runtime rejection. Adding
-/// `#[schemars(range(min = 1))]` beside the description fixes it.
+/// Deliberately a closed list rather than a general parser. The throwaway
+/// harness that first went looking for these used loose regexes and
+/// produced four false positives before it produced a true finding —
+/// bounds written as free prose cannot be matched reliably. A closed list
+/// under-reports rather than over-reports, and a missed bound costs one
+/// undeclared keyword while a false one costs a suite nobody trusts.
+const CEILING_PHRASES: &[&str] = &["1 to ", "at most ", "At most "];
+
+/// The ceiling `prose` promises, or `None` if it states none in a
+/// recognised phrasing.
+///
+/// Only the *number* is read from prose. Which keyword should carry it is
+/// decided by the parameter's own JSON type, not by the unit word after
+/// the number — `at most 16 tags` and `at most 16` mean the same thing on
+/// an array, and guessing from English is the part that goes wrong.
+fn claimed_ceiling(prose: &str) -> Option<u64> {
+    for phrase in CEILING_PHRASES {
+        let Some(at) = prose.find(phrase) else {
+            continue;
+        };
+        let after = &prose[at + phrase.len()..];
+        let number = after
+            .split_whitespace()
+            .next()
+            .unwrap_or_default()
+            .trim_end_matches([')', ',', '.', ';', ':']);
+        if let Ok(value) = number.parse::<u64>() {
+            return Some(value);
+        }
+    }
+    None
+}
+
+/// The schema keyword that carries a ceiling for a parameter of this type:
+/// `maxItems` for an array, `maxLength` for a string, `maximum` for a
+/// number. `None` when the type is absent or is something else.
+fn ceiling_keyword(spec: &serde_json::Value) -> Option<&'static str> {
+    // An `Option<T>` emits `type: ["string", "null"]`, so match on
+    // membership rather than equality.
+    let mentions = |wanted: &str| match spec.get("type") {
+        Some(serde_json::Value::String(one)) => one == wanted,
+        Some(serde_json::Value::Array(many)) => many.iter().any(|item| item == wanted),
+        _ => false,
+    };
+    if mentions("array") {
+        Some("maxItems")
+    } else if mentions("string") {
+        Some("maxLength")
+    } else if mentions("integer") || mentions("number") {
+        Some("maximum")
+    } else {
+        None
+    }
+}
+
+/// Report parameters whose description promises a bound that the schema does
+/// not declare, as `"<tool>.<field>: ..."` strings. Empty means every promise
+/// is machine-readable.
+///
+/// Both ends are checked. A Rust `Option<u32>`/`usize` emits `minimum: 0` from
+/// its type and a signed type emits nothing, so a strict JSON-Schema client is
+/// told `limit: 0` validates and only learns otherwise from a runtime
+/// rejection; `#[schemars(range(min = 1))]` fixes it. Ceilings are worse,
+/// because Rust supplies no default at all: nothing in `String` says 240, so a
+/// client is told a 30,000-character body validates and pays to send it before
+/// being refused. `#[schemars(length(max = 240))]` emits `maxLength` on a
+/// string and `maxItems` on a `Vec`.
 ///
 /// In-tree suites run this over the core registry and over `proxima-code`;
 /// an out-of-tree flavor can call it on its own frozen registry to get the
@@ -91,15 +153,33 @@ pub fn schema_bound_mismatches(registry: &crate::FlavorRegistryFrozen) -> Vec<St
                 .split_whitespace()
                 .collect::<Vec<_>>()
                 .join(" ");
-            if !CLAIMS_MIN_ONE.iter().any(|claim| joined.contains(claim)) {
-                continue;
+            if CLAIMS_MIN_ONE.iter().any(|claim| joined.contains(claim)) {
+                let minimum = spec.get("minimum").and_then(serde_json::Value::as_i64);
+                if minimum != Some(1) {
+                    offenders.push(format!(
+                        "{}.{field}: description promises a minimum of 1, schema says {minimum:?}",
+                        tool.name
+                    ));
+                }
             }
-            let minimum = spec.get("minimum").and_then(serde_json::Value::as_i64);
-            if minimum != Some(1) {
-                offenders.push(format!(
-                    "{}.{field}: description promises a minimum of 1, schema says {minimum:?}",
-                    tool.name
-                ));
+            if let Some(promised) = claimed_ceiling(&joined) {
+                match ceiling_keyword(spec) {
+                    Some(keyword) => {
+                        let declared = spec.get(keyword).and_then(serde_json::Value::as_u64);
+                        if declared != Some(promised) {
+                            offenders.push(format!(
+                                "{}.{field}: description promises a maximum of {promised}, \
+                                 schema {keyword} says {declared:?}",
+                                tool.name
+                            ));
+                        }
+                    }
+                    None => offenders.push(format!(
+                        "{}.{field}: description promises a maximum of {promised}, but the \
+                         schema declares no type that can carry one",
+                        tool.name
+                    )),
+                }
             }
         }
     }
@@ -622,6 +702,83 @@ mod tests {
         #[schemars(description = "A described field.")]
         described: String,
         bare: String,
+    }
+
+    /// The prose parser is the part of this check most likely to be wrong,
+    /// so it is pinned against the phrasings that actually ship rather than
+    /// against invented ones. The throwaway harness this replaced produced
+    /// four false positives from loose regexes before it produced one true
+    /// finding.
+    #[test]
+    fn the_ceiling_parser_reads_the_phrasings_that_ship() {
+        for (prose, expected) in [
+            (
+                "Body text for the derived memory, 1 to 20000 chars.",
+                Some(20_000),
+            ),
+            (
+                "Short title for the agent-observed Fact, 1 to 240 chars.",
+                Some(240),
+            ),
+            (
+                "Optional tags for later search, at most 16. Each is stored",
+                Some(16),
+            ),
+            (
+                "Optional tag filter, at most 16 tags. Tags are matched",
+                Some(16),
+            ),
+            (
+                "Child goals to create (1 to 50); each is set Active",
+                Some(50),
+            ),
+            ("At most 64 patterns.", Some(64)),
+            (
+                "Search query over owner-visible memories. 1 to 512 chars.",
+                Some(512),
+            ),
+        ] {
+            assert_eq!(claimed_ceiling(prose), expected, "prose: {prose}");
+        }
+    }
+
+    /// Under-reporting is the deliberate failure mode: a phrasing outside
+    /// the closed list yields nothing rather than a wrong number.
+    #[test]
+    fn the_ceiling_parser_declines_rather_than_guesses() {
+        for prose in [
+            "Omit or null for 10.",
+            "Defaults to 8 when omitted.",
+            "Page past the 50-result cap by passing next_cursor back.",
+            "at most a handful",
+            "",
+        ] {
+            assert_eq!(claimed_ceiling(prose), None, "prose: {prose}");
+        }
+    }
+
+    /// The keyword follows the JSON type, not the English unit word, so an
+    /// `Option<String>` (which emits `["string", "null"]`) still resolves.
+    #[test]
+    fn the_ceiling_keyword_follows_the_declared_type() {
+        let cases = [
+            (serde_json::json!({"type": "string"}), Some("maxLength")),
+            (
+                serde_json::json!({"type": ["string", "null"]}),
+                Some("maxLength"),
+            ),
+            (serde_json::json!({"type": "array"}), Some("maxItems")),
+            (
+                serde_json::json!({"type": ["array", "null"]}),
+                Some("maxItems"),
+            ),
+            (serde_json::json!({"type": "integer"}), Some("maximum")),
+            (serde_json::json!({"type": "boolean"}), None),
+            (serde_json::json!({}), None),
+        ];
+        for (spec, expected) in cases {
+            assert_eq!(ceiling_keyword(&spec), expected, "spec: {spec}");
+        }
     }
 
     #[test]

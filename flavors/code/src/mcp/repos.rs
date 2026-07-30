@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::IndexReport;
-use crate::repos::{RepoRecord, RepoRegistryError};
+use crate::repos::{MAX_SCOPE_GLOBS, RepoRecord, RepoRegistryError};
 
 use super::CodeToolCtxExt;
 use super::code_store;
@@ -29,11 +29,13 @@ pub struct CodeRegisterRepoArgs {
     pub target_branch: Option<String>,
     #[serde(default)]
     #[schemars(
+        length(max = MAX_SCOPE_GLOBS),
         description = "Gitignore-shaped globs limiting ingest to matching paths, for example `src/**` or `packages/*/src/**/*.ts`. `*` stops at a `/`; use `**` to cross directories. Omit or leave empty to consider every tracked file. At most 64 patterns."
     )]
     pub include_globs: Option<Vec<String>>,
     #[serde(default)]
     #[schemars(
+        length(max = MAX_SCOPE_GLOBS),
         description = "Gitignore-shaped globs removing paths from ingest, for example `**/fixtures/**`. Beats include_globs where both match. Omit or leave empty to exclude nothing. At most 64 patterns."
     )]
     pub exclude_globs: Option<Vec<String>>,
