@@ -67,6 +67,7 @@ pub struct CodeRegisterRepoOutput {
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct CodeListReposArgs {
     #[schemars(
+        range(min = 1),
         description = "Max repos per page; values above 200 are clamped, 0 is rejected, default 50."
     )]
     #[serde(default)]

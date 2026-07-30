@@ -30,6 +30,82 @@ pub(crate) fn mcp_tool_schema<T: JsonSchema>() -> serde_json::Value {
     value
 }
 
+/// Phrases a description uses to promise that a parameter's floor is 1.
+const CLAIMS_MIN_ONE: &[&str] = &[
+    "0 is rejected",
+    "at least 1",
+    "must be >= 1",
+    "Must be >= 1",
+];
+
+/// Report parameters whose description promises a lower bound of 1 that the
+/// schema does not declare, as `"<tool>.<field>: ..."` strings. Empty means
+/// every promise is machine-readable.
+///
+/// A Rust `Option<u32>`/`usize` emits `minimum: 0` from its type and a signed
+/// type emits nothing, so a strict JSON-Schema client is told `limit: 0`
+/// validates and only learns otherwise from a runtime rejection. Adding
+/// `#[schemars(range(min = 1))]` beside the description fixes it.
+///
+/// In-tree suites run this over the core registry and over `proxima-code`;
+/// an out-of-tree flavor can call it on its own frozen registry to get the
+/// same guarantee. This deliberately is *not* enforced in `try_freeze` —
+/// unlike an undeclared `ANNOTATIONS`, which stops a gate from working, a
+/// bound stated only in prose is a documentation defect and should not stop
+/// an existing deployment from booting.
+#[must_use]
+pub fn schema_bound_mismatches(registry: &crate::FlavorRegistryFrozen) -> Vec<String> {
+    let mut offenders = Vec::new();
+    for tool in registry.list_mcp_tools() {
+        let Some(properties) = tool
+            .args_schema
+            .get("properties")
+            .and_then(serde_json::Value::as_object)
+        else {
+            continue;
+        };
+        for (field, spec) in properties {
+            // A dispatcher's top-level description is a placeholder pointing at
+            // `x-proxima-actions`, where the real prose lives; `minimum` stays
+            // on the top-level property.
+            let mut prose = vec![
+                spec.get("description")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default(),
+            ];
+            if let Some(actions) = tool
+                .args_schema
+                .get("x-proxima-actions")
+                .and_then(serde_json::Value::as_object)
+            {
+                prose.extend(actions.values().filter_map(|action| {
+                    action
+                        .get("field_descriptions")
+                        .and_then(|described| described.get(field))
+                        .and_then(serde_json::Value::as_str)
+                }));
+            }
+            // Descriptions wrap, so a claim can straddle a newline.
+            let joined = prose
+                .join(" ")
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ");
+            if !CLAIMS_MIN_ONE.iter().any(|claim| joined.contains(claim)) {
+                continue;
+            }
+            let minimum = spec.get("minimum").and_then(serde_json::Value::as_i64);
+            if minimum != Some(1) {
+                offenders.push(format!(
+                    "{}.{field}: description promises a minimum of 1, schema says {minimum:?}",
+                    tool.name
+                ));
+            }
+        }
+    }
+    offenders
+}
+
 /// Flatten a schemars root `oneOf` for an internally tagged enum into a plain
 /// object schema whose discriminator is the enum's own `#[serde(tag = "...")]`
 /// key (e.g. `action`, `kind`), exposed as a string enum.

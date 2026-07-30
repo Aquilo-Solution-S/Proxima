@@ -114,6 +114,7 @@ pub struct SearchMemoriesArgs {
     pub mode: SearchMemoriesMode,
     #[serde(default = "default_limit")]
     #[schemars(
+        range(min = 1),
         description = "Maximum number of memories to return. Defaults to 8; values above 50 are clamped, and 0 is rejected."
     )]
     pub limit: u32,
@@ -167,6 +168,7 @@ pub struct SearchMemoriesArgs {
     pub include_body: bool,
     #[serde(default)]
     #[schemars(
+        range(min = 1),
         description = "Optional max character count for hydrated body text, at least 1; values above 8000 are clamped to 8000 (also the default). Applies only when include_body=true. When a body is cut to this cap the result carries body_truncated=true; fetch the full text via proxima://memory/{id}."
     )]
     pub body_max_chars: Option<usize>,

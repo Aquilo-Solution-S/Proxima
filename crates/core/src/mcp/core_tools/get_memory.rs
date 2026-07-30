@@ -16,7 +16,8 @@ pub struct GetMemoryArgs {
     /// Include edges touching the memory. Default: false.
     #[serde(default)]
     pub expand_neighbors: bool,
-    /// Optional display space key. Authorization resolves the entry owner.
+    /// Optional space key from `core_memory_spaces`. Authorization resolves
+    /// the entry owner; this only selects how the space is reported back.
     #[serde(default)]
     pub space: Option<String>,
 }
@@ -46,7 +47,16 @@ pub async fn get_memory(
     args: GetMemoryArgs,
 ) -> Result<GetMemoryOutput, McpToolError> {
     let memory_id = ctx.resolve_memory(&args.memory)?;
-    let output_space = args.space.unwrap_or_else(|| "entry".into());
+    // Report a key `core_memory_spaces` actually advertises. This used to
+    // default to the literal "entry", which no space is called: an agent
+    // following the documented "use a returned `space` key" loop fed it back
+    // to a write and got `unknown memory space: entry`.
+    let output_space = super::memory_spaces::resolve_space_owner(
+        &ctx,
+        args.space.as_deref(),
+        super::memory_spaces::SpaceDefault::Current,
+    )?
+    .key;
     let engine = ctx.require_engine()?;
     let response = engine
         .get_memory(

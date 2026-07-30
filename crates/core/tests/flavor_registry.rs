@@ -27,6 +27,22 @@ fn all_mcp_tool_arg_schemas_have_object_root() {
     }
 }
 
+/// A parameter whose prose promises a lower bound must declare it in the
+/// schema too, so a strict JSON-Schema client is not told `limit: 0`
+/// validates and then refused at runtime. The rule lives in
+/// `schema_bound_mismatches` so the core registry, `proxima-code`, and any
+/// out-of-tree flavor check it the same way instead of keeping three copies.
+#[test]
+fn a_schema_declares_the_lower_bound_its_description_promises() {
+    let frozen = FlavorRegistry::default().freeze_or_panic_for_tests();
+    let offenders = proxima_core::mcp::schema_bound_mismatches(&frozen);
+    assert!(
+        offenders.is_empty(),
+        "schema and description disagree about the lower bound:\n  {}",
+        offenders.join("\n  "),
+    );
+}
+
 #[test]
 fn all_mcp_tool_arg_schemas_avoid_root_combinators() {
     let frozen = FlavorRegistry::default().freeze_or_panic_for_tests();

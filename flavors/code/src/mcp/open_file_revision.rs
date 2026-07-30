@@ -23,14 +23,17 @@ pub struct CodeOpenFileRevisionArgs {
     )]
     pub include_text: bool,
     #[schemars(
+        range(min = 1),
         description = "Optional 1-based starting line for a text window. Must be >= 1. Omit or null to return chunk snippets only."
     )]
     pub line_start: Option<i64>,
     #[schemars(
+        range(min = 1),
         description = "Optional maximum number of lines from `line_start`; values above 500 are clamped, 0 is rejected, default 120. Omit or null when no line window is needed."
     )]
     pub line_limit: Option<i64>,
     #[schemars(
+        range(min = 1),
         description = "Optional cap on returned text bytes per chunk, at least 1; a cut chunk is flagged text_truncated=true. Omit or null to use the default projection, and pass include_text=false to skip text entirely."
     )]
     pub max_text_bytes: Option<usize>,
