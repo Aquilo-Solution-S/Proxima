@@ -98,9 +98,13 @@ fn operator_shape(
 pub struct DeriveArgs {
     #[schemars(description = "Derived memory kind to author: Abstraction or Perspective.")]
     pub kind: DerivedKind,
-    #[schemars(description = "Short title for the derived memory, 1 to 240 chars.")]
+    #[schemars(
+        description = "Short title for the derived memory, 1 to 240 chars. Leading and trailing whitespace is removed before the length check."
+    )]
     pub title: String,
-    #[schemars(description = "Body text for the derived memory, 1 to 20000 chars.")]
+    #[schemars(
+        description = "Body text for the derived memory, 1 to 20000 chars. Leading and trailing whitespace is removed before the length check."
+    )]
     pub body: String,
     #[serde(default)]
     #[schemars(

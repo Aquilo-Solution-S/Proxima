@@ -17,7 +17,9 @@ pub struct LinkArgs {
         description = "`F...`, `A...`, or `P...` target memory handle for the agent-authored link edge."
     )]
     pub target: String,
-    #[schemars(description = "Reason for linking source to target, 1 to 1000 chars.")]
+    #[schemars(
+        description = "Reason for linking source to target, 1 to 1000 chars. Leading and trailing whitespace is removed before the length check."
+    )]
     pub reason: String,
     #[serde(default = "default_confidence")]
     #[schemars(
