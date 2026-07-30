@@ -2046,6 +2046,61 @@ declare `proxima_core::MAX_QUERY_CHARS`.
 off the live registry and probes the server at exactly that length and one
 past it, so a declared cap cannot be a number nobody enforces.
 
+## 56. v0.0.7: every length rejection names the bound that was broken
+
+**Action required for hosts that match on `GoalWriteBuildError`.** Its two
+variants now carry a payload; matching arms need `(_)` added. No behaviour
+changes for MCP clients beyond better wording.
+
+§53 split blank from oversized across the MCP tools and stopped at the
+crate's tool SDK, because `validate_trimmed_len` returns a `ToolError` and
+`verbs` sits below the SDK and cannot call it. Five copies of the old shape
+stayed behind, and two of them are reachable from an agent, not just from
+an embedding host: `idempotency_key` (every write surface takes one) and
+`core_remember.source_batch_key`. Both answered a blank key and a 181-
+character key with the same sentence, quoting a range a blank key satisfies.
+
+The rule and its wording now live in `proxima_core::text_bounds`, the
+lowest module either layer can reach. `check_trimmed_len` decides *which*
+half of `1..=max` broke and returns a `TrimmedLenViolation`;
+`TrimmedLenViolation::reason(field)` renders it. Each layer wraps that
+string in whichever error type it speaks — `ToolError::InvalidInput`,
+`ProtocolError::invalid_argument`, or `GoalWriteBuildError` — so three
+error types refuse the same input in the same words without depending on
+one another. `validate_trimmed_len` is now the tool-SDK spelling of it and
+its messages are unchanged.
+
+Fixed at the same time, in `GoalWakeToolId::parse`: the id was bounded with
+`value.len() > 200` — bytes — behind a message that said `tool id must be
+1..=200 characters`. A 120-character Cyrillic id is 240 bytes, so it was
+refused for exceeding a limit it was nowhere near in the unit the message
+named. It now counts characters, against the new
+`MAX_WAKE_TOOL_ID_CHARS`.
+
+`normalize_batch_key` no longer parses through `IdempotencyKey` and then
+discards its error to substitute a second sentence; `IdempotencyKey::
+new_named` takes the field name instead.
+
+Migration for the one breaking signature:
+
+```rust
+// before
+match err {
+    GoalWriteBuildError::InvalidTitle => ...,
+    GoalWriteBuildError::InvalidText => ...,
+}
+
+// after — or bind the violation to report max/got yourself
+match err {
+    GoalWriteBuildError::InvalidTitle(_) => ...,
+    GoalWriteBuildError::InvalidText(_) => ...,
+}
+```
+
+`TrimmedLenViolation` and `check_trimmed_len` are re-exported from
+`proxima::host`, since a variant payload a host cannot name is a variant a
+host cannot match.
+
 ## Checks before calling an upgrade done
 
 ```sh

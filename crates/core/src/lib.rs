@@ -46,6 +46,7 @@ pub mod storage;
 pub mod storage_ports;
 #[cfg(feature = "test-fixtures")]
 pub mod test_fixtures;
+pub mod text_bounds;
 pub mod tool;
 pub mod verbs;
 
@@ -91,6 +92,7 @@ pub use read_models::*;
 pub use relation::*;
 pub use secrets::*;
 pub use storage::*;
+pub use text_bounds::*;
 pub use tool::*;
 
 // Re-export verb modules for convenience.

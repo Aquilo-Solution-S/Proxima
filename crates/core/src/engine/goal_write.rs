@@ -647,10 +647,10 @@ impl Engine {
 
 fn map_goal_build_error(err: GoalWriteBuildError) -> ProtocolError {
     match err {
-        GoalWriteBuildError::InvalidTitle => {
+        GoalWriteBuildError::InvalidTitle(_) => {
             ProtocolError::invalid_argument("title", err.to_string())
         }
-        GoalWriteBuildError::InvalidText => {
+        GoalWriteBuildError::InvalidText(_) => {
             ProtocolError::invalid_argument("text", err.to_string())
         }
     }

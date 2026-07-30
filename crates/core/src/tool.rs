@@ -8,6 +8,7 @@ use futures::future::BoxFuture;
 
 use crate::access::AccessKind;
 use crate::storage_ports::OwnerWritePermit;
+use crate::text_bounds::check_trimmed_len;
 use crate::{AuthzContext, Engine, FlavorRegistryFrozen, MemoryId, Owner};
 
 #[derive(Clone, Default)]
@@ -260,6 +261,10 @@ pub const MAX_TEXT_CAP_CHARS: usize = 8_000;
 /// `field` is the wire name of the parameter, so the message points at
 /// something the caller can see in the schema.
 ///
+/// This is the tool-SDK spelling of [`check_trimmed_len`]; the rule and its
+/// wording live there because `verbs` enforces the same contract on
+/// `IdempotencyKey` and goal display fields and cannot reach this module.
+///
 /// # Errors
 ///
 /// [`ToolError::InvalidInput`] when `value` is empty after trimming, or
@@ -269,19 +274,8 @@ pub fn validate_trimmed_len<'a>(
     value: &'a str,
     max: usize,
 ) -> Result<&'a str, ToolError> {
-    let value = value.trim();
-    if value.is_empty() {
-        return Err(ToolError::InvalidInput(format!(
-            "{field} must not be blank; it is empty after trimming whitespace"
-        )));
-    }
-    let chars = value.chars().count();
-    if chars > max {
-        return Err(ToolError::InvalidInput(format!(
-            "{field} must be at most {max} chars after trimming; got {chars}"
-        )));
-    }
-    Ok(value)
+    check_trimmed_len(value, max)
+        .map_err(|violation| ToolError::InvalidInput(violation.reason(field)))
 }
 
 /// Trim `query` and check it against [`MAX_QUERY_CHARS`].
