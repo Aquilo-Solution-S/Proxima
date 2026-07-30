@@ -51,7 +51,7 @@ impl Tool for CodeRetryExecutionRequestTool {
             let prior_memory_id = ctx.resolve_fact_memory(&args.prior_execution_request)?;
             let target_perspective_id =
                 resolve_target_perspective_id(&ctx, &args.target_perspective)?;
-            let request_key = normalize_text("idempotency_key", &args.idempotency_key, 1, 240)?;
+            let request_key = normalize_text("idempotency_key", &args.idempotency_key, 240)?;
             let explicit_evidence = resolve_evidence(&ctx, &args.evidence)?;
 
             let pool = code_store(&ctx)?;
@@ -73,7 +73,7 @@ impl Tool for CodeRetryExecutionRequestTool {
             validate_evidence_in_owner(&mut tx, &ctx, &explicit_evidence).await?;
 
             let title = match args.title {
-                Some(value) => normalize_text("title", &value, 1, 240)?,
+                Some(value) => normalize_text("title", &value, 240)?,
                 None => prior.title,
             };
             let instructions = retry_instructions(
