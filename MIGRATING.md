@@ -1966,8 +1966,8 @@ The rule is `proxima_core::tool::validate_trimmed_len`, beside
 bound with no shared home is a bound that eventually disagrees with
 itself. It now backs `core_remember` (title, body), `core_derive` (title,
 body, `model_id`), `core_record_utterance` (text), `core_link` (reason),
-`core_goal` (title, text, wake prompt), and `validate_search_query`,
-which delegates to it.
+`core_goal` (title, text, wake prompt), `normalize_tags` (each tag), and
+`validate_search_query`, which delegates to it.
 
 `GoalWriteBuildError::InvalidTitle` / `InvalidText` are unchanged: their
 messages are fixed strings on a `Copy` enum embedding hosts match on, and
