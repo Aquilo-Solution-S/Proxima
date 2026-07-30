@@ -1851,6 +1851,38 @@ A host or flavor reading a descriptor's behaviour should call these
 rather than reaching for `core_tool_annotations`, which answers for
 substrate tools only.
 
+## 52. v0.0.7: a tag filter matches the tag that was stored
+
+**No action required.** Searches that previously returned nothing now
+return matches; nothing that matched before stops matching.
+
+The write side folds a tag to `trim().to_ascii_lowercase()` before
+storing it, so `core_remember` with `tags: ["Rust"]` holds `rust`. The
+search filter did not fold, and matched the raw string. A caller using
+the same literal on both sides — the obvious thing to do — got nothing:
+
+```
+core_remember        tags: ["Rust"]     -> stored as ["rust"]
+core_search_memories tags: ["Rust"]     -> no matches
+core_search_memories tags: ["rust"]     -> matches
+```
+
+This failed **silently**. There is no error to read, and a filter that
+matches nothing is indistinguishable from a memory that was never
+written, so the natural conclusion is that the memory is missing.
+
+Both sides now call `memory::util::fold_tag`, and the filter sorts and
+dedups after folding, so `["Rust", "rust"]` is one predicate rather than
+two — which matters under `tag_match: all`, where two spellings of one
+tag previously demanded two distinct tags. A blank filter entry is
+dropped rather than rejected: the write side refuses to store one, so it
+can never match, and dropping it stops a stray empty string from forcing
+an empty result.
+
+The descriptions said as much if read side by side — the write side
+advertised "normalized tags" and the filter "exact tag filter" — without
+either naming the normalization. Both now state it.
+
 ## Checks before calling an upgrade done
 
 ```sh

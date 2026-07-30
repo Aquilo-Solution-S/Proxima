@@ -132,7 +132,7 @@ pub struct SearchMemoriesArgs {
     pub schema_id: Option<String>,
     #[serde(default)]
     #[schemars(
-        description = "Optional exact tag filter, at most 16 tags. Empty means no tag filter."
+        description = "Optional tag filter, at most 16 tags. Tags are matched in stored form — trimmed and lowercased — so `Rust` and `rust` filter alike. Empty means no tag filter."
     )]
     pub tags: Vec<String>,
     #[serde(default)]
@@ -221,7 +221,7 @@ impl McpTool for SearchMemoriesTool {
 
     fn call(
         ctx: McpToolCtx,
-        args: SearchMemoriesArgs,
+        mut args: SearchMemoriesArgs,
     ) -> BoxFuture<'static, Result<SearchMemoriesOutput, McpToolError>> {
         Box::pin(async move {
             let query = crate::validate_search_query(&args.query)?;
@@ -229,6 +229,11 @@ impl McpTool for SearchMemoriesTool {
             validate_body_max_chars(args.body_max_chars)?;
             crate::reject_zero_limit(Some(args.limit))?;
             validate_list_caps(&args)?;
+            // Fold the filter the way the write side folds a stored tag, and
+            // before anything reads `args.tags`: both the storage request and
+            // the cursor fingerprint consume it, and a cursor must rebind to
+            // the same query whichever spelling the caller sent.
+            fold_tag_filter(&mut args.tags);
 
             let mode = SearchMode::from(args.mode);
             let embeddings_available = ctx
@@ -635,6 +640,22 @@ fn validate_body_max_chars(requested: Option<usize>) -> Result<(), McpToolError>
 /// `tags` were the only uncapped list inputs on the tool surface; without
 /// a cap a single request could fan out into one storage search per
 /// listed space.
+/// Fold every filter tag to its stored form, then sort and dedup so
+/// `["Rust", "rust"]` is one predicate rather than two.
+///
+/// Blank tags are dropped rather than rejected: the write side refuses to
+/// store one, so a blank filter entry can never match, and silently ignoring
+/// it keeps an empty-string element from turning a good filter into a
+/// guaranteed-empty result.
+fn fold_tag_filter(tags: &mut Vec<String>) {
+    for tag in tags.iter_mut() {
+        *tag = super::memory::util::fold_tag(tag);
+    }
+    tags.retain(|tag| !tag.is_empty());
+    tags.sort_unstable();
+    tags.dedup();
+}
+
 fn validate_list_caps(args: &SearchMemoriesArgs) -> Result<(), McpToolError> {
     if args.spaces.len() > MAX_SEARCH_SPACES {
         return Err(McpToolError::InvalidInput(format!(
