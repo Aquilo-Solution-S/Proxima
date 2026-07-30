@@ -1806,6 +1806,13 @@ For a viewer-role token against a deployment serving `proxima-code` or
 `proxima-docs_search` appear in `tools/list` where they previously did
 not. Write tools stay hidden, unchanged.
 
+The two-step is now `McpToolDescriptor::resolved_annotations()`, with
+`is_read_only()` beside it, so the four places that needed the answer
+share one order instead of four copies that were only supposed to agree.
+A host or flavor reading a descriptor's behaviour should call these
+rather than reaching for `core_tool_annotations`, which answers for
+substrate tools only.
+
 ## Checks before calling an upgrade done
 
 ```sh

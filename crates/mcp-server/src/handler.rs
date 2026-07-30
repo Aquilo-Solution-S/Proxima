@@ -11,8 +11,7 @@ use std::sync::Arc;
 
 use proxima_core::mcp::{
     McpToolAnnotations, McpToolDescriptor, McpToolError, McpToolErrorKind, all_core_actions,
-    all_core_resources, core_tool_annotations, provider_safe_tool_name, scope_permits_action,
-    tool_name_matches,
+    all_core_resources, provider_safe_tool_name, scope_permits_action, tool_name_matches,
 };
 use proxima_core::{AccessKind, McpAuthorContext, MemoryId};
 use rmcp::ServerHandler;
@@ -204,7 +203,7 @@ impl ServerHandler for DynamicHandler {
                     Cow::Borrowed(descriptor.description),
                     Arc::new(rmcp::model::object(schema)),
                 );
-                match resolved_annotations(descriptor) {
+                match descriptor.resolved_annotations() {
                     Some(annotations) => tool.annotate(to_rmcp_annotations(annotations)),
                     None => tool,
                 }
@@ -228,7 +227,7 @@ impl ServerHandler for DynamicHandler {
                     Cow::Borrowed(descriptor.description),
                     Arc::new(rmcp::model::object(descriptor.args_schema.clone())),
                 );
-                match resolved_annotations(descriptor) {
+                match descriptor.resolved_annotations() {
                     Some(annotations) => tool.annotate(to_rmcp_annotations(annotations)),
                     None => tool,
                 }
@@ -600,31 +599,11 @@ fn owner_role_allows_tool(auth: Option<&McpAuthContext>, descriptor: &McpToolDes
     let Some(ctx) = auth else {
         return UNAUTHENTICATED_SCOPE_ALLOWS;
     };
-    if descriptor_is_read_only(descriptor) {
+    if descriptor.is_read_only() {
         ctx.authz.may_read(&ctx.owner, AccessKind::Fact)
     } else {
         ctx.authz.may_write(&ctx.owner, AccessKind::Fact)
     }
-}
-
-/// The tool's own declaration, then the core manifest.
-///
-/// One resolution order, used by everything in this adapter that needs to
-/// know what a tool does: the visibility gate below, the `tools/list`
-/// projection, and `get_tool`. It matches
-/// `ScopeGateBehavior::enforce_owner_role`, and it is the order
-/// `FlavorRegistry::try_freeze` guarantees resolves to `Some` for every
-/// registered tool.
-fn resolved_annotations(descriptor: &McpToolDescriptor) -> Option<McpToolAnnotations> {
-    descriptor
-        .annotations
-        .or_else(|| core_tool_annotations(descriptor.name))
-}
-
-fn descriptor_is_read_only(descriptor: &McpToolDescriptor) -> bool {
-    resolved_annotations(descriptor)
-        .and_then(|annotations| annotations.read_only)
-        .unwrap_or(false)
 }
 
 /// Whether a request that carries no bound auth context may see or call
@@ -699,6 +678,10 @@ fn strip_call_context_args(args: &mut serde_json::Value) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // The lib no longer reaches the core manifest directly — every gate
+    // goes through `McpToolDescriptor::resolved_annotations`. These tests
+    // still assert the manifest's own contents.
+    use proxima_core::mcp::core_tool_annotations;
     use proxima_core::protocol::{action as protocol_action, tool as protocol_tool};
 
     #[test]

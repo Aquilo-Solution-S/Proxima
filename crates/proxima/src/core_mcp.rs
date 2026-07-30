@@ -3,8 +3,7 @@ use std::sync::Arc;
 use proxima_core::mcp::McpToolExtensions;
 use proxima_core::{
     AuthzContext, Engine, FlavorRegistryFrozen, McpAuthorContext, McpToolDescriptor,
-    McpToolErrorKind, Owner, ToolScope, core_tool_annotations, provider_safe_tool_name,
-    tool_name_matches,
+    McpToolErrorKind, Owner, ToolScope, provider_safe_tool_name, tool_name_matches,
 };
 use proxima_mcp_server::{McpAuthContext, McpToolHost, ToolInvocationError};
 
@@ -209,10 +208,7 @@ fn find_tool_descriptor<'a>(
 }
 
 fn tool_info_from_descriptor(descriptor: &McpToolDescriptor) -> CoreToolInfo {
-    let annotations = descriptor
-        .annotations
-        .or_else(|| core_tool_annotations(descriptor.name))
-        .unwrap_or_default();
+    let annotations = descriptor.resolved_annotations().unwrap_or_default();
     CoreToolInfo {
         name: provider_safe_tool_name(descriptor.name),
         description: descriptor.description.to_string(),
