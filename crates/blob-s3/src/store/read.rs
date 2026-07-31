@@ -1,0 +1,81 @@
+//! The read lane: one presigned GET, over a locator this store itself wrote.
+
+use proxima_core::AuthzContext;
+use time::OffsetDateTime;
+
+use super::CitedBlobStore;
+use super::dto::{CitedBlobReadUrlOutcomeTs, CitedBlobReadUrlTs};
+use super::guards::{ensure_owner_access, format_time, parse_uuid, presign_config};
+use super::keys::{objects_owner_prefix, owner_hash_hex};
+use super::rows::load_blob_location;
+use crate::error::BlobError;
+
+impl CitedBlobStore {
+    /// Produce a presigned read URL for a completed cited blob.
+    ///
+    /// # Errors
+    /// Returns `BlobError` when the cited object is missing or S3
+    /// presigning fails.
+    pub async fn read_url(
+        &self,
+        ctx: &AuthzContext,
+        req: CitedBlobReadUrlTs,
+    ) -> Result<CitedBlobReadUrlOutcomeTs, BlobError> {
+        let owner = req.owner();
+        ensure_owner_access(ctx, &owner)?;
+        let cited_object_id = parse_uuid(&req.cited_object_id)?;
+        let row = load_blob_location(&self.pool, &owner, cited_object_id).await?;
+        // The locator columns are client-writable: `core/uploaded-blob-v1`
+        // is a registered cited-object schema, so an inline citation can
+        // persist an arbitrary bucket/object_key row under the caller's own
+        // owner — and SigV4 presigning is offline, with no S3 existence
+        // check. Presign only locators this store itself wrote (the
+        // configured bucket, under the owner's canonical objects/ prefix),
+        // and answer anything else exactly like a missing row so a probe
+        // cannot learn whether the forged row exists.
+        if row.bucket != self.config.bucket
+            || !row
+                .object_key
+                .starts_with(&objects_owner_prefix(&owner_hash_hex(&owner)))
+        {
+            return Err(BlobError::State("cited object not found for Owner".into()));
+        }
+        let client = self.client().await?;
+        let expires_at = OffsetDateTime::now_utc()
+            + time::Duration::seconds(
+                i64::try_from(self.config.read_ttl_seconds).unwrap_or(i64::MAX),
+            );
+        // Force a download disposition and a non-renderable content type on the
+        // presigned GET so a blob whose stored mime is `text/html` (or similar)
+        // cannot execute in the browser as stored XSS when the link is opened.
+        let presigned = client
+            .get_object()
+            .bucket(&row.bucket)
+            .key(&row.object_key)
+            .response_content_disposition("attachment")
+            .response_content_type("application/octet-stream")
+            .presigned(presign_config(self.config.read_ttl_seconds)?)
+            .await
+            .map_err(|e| BlobError::S3(format!("prepare read URL failed: {e}")))?;
+        Ok(CitedBlobReadUrlOutcomeTs {
+            read_url: presigned.uri().to_string(),
+            expires_at: format_time(expires_at)?,
+        })
+    }
+}
+
+// There is deliberately NO unit test in this module for the forced
+// attachment disposition. The one that used to exist built its own client,
+// re-issued `.response_content_disposition(...)` and
+// `.response_content_type(...)` itself, and asserted on the string it had
+// just supplied — so deleting both lines from `read_url` left it green, and
+// because every *_pg test skips without `PROXIMA_S3_*`, it was also the ONLY
+// disposition test a bare `cargo test --workspace` ran. It reported a
+// guarantee nothing was checking.
+//
+// A presign built outside `read_url` cannot observe `read_url`'s builder
+// chain, so this property is only assertable through the store. Its carriers
+// are `blob_roundtrip_pg::presigned_put_and_get_carry_the_bytes` (asserts the
+// headers on the actual HTTP response) and
+// `prepare_then_complete_then_read_roundtrip` (asserts the production URL).
+// Both fail if the overrides are removed; this one did not.
