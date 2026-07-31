@@ -13,6 +13,6 @@ pub use config::S3RuntimeConfig;
 pub use error::BlobError;
 pub use store::{
     CitedBlobReadUrlOutcomeTs, CitedBlobReadUrlTs, CitedBlobStore, CitedBlobUploadAbortOutcomeTs,
-    CitedBlobUploadAbortTs, CitedBlobUploadCompleteOutcomeTs, CitedBlobUploadCompleteTs,
-    CitedBlobUploadPrepareOutcomeTs, CitedBlobUploadPrepareTs, PresignedHeaderTs,
+    CitedBlobUploadAbortTs, CitedBlobUploadCompleteTs, CitedBlobUploadPrepareOutcomeTs,
+    CitedBlobUploadPrepareTs, PresignedHeaderTs,
 };

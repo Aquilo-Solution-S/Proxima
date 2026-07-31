@@ -32,7 +32,7 @@ pub const UPLOADED_BLOB_SCHEMA_ID: &str = "core/uploaded-blob-v1";
 pub const UPLOADED_BLOB_WHOLE_SCHEMA_ID: &str = "core/uploaded-blob-whole-v1";
 pub const UPLOADED_BLOB_PAGE_SPAN_SCHEMA_ID: &str = "core/uploaded-blob-page-span-v1";
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct UploadedBlobPayload {
     pub content_hash: [u8; 32],
     pub bucket: String,

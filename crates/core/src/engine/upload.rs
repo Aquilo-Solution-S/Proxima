@@ -1,11 +1,21 @@
-//! Completing an upload, and recording that it happened.
+//! Completing an upload: the artefact and the record of its arrival, in
+//! one write.
 //!
-//! [`Engine::complete_upload_as_fact`] is the whole upload-completion verb:
-//! it finishes the blob-store side and mints the `core/upload-v1` Fact that
-//! cites the resulting artefact. Callers that want the Fact — which is all
-//! of them, since "a file entered the corpus" is a substrate guarantee —
-//! use this instead of reaching for [`CitedBlobPort::complete_upload`]
-//! directly.
+//! [`Engine::complete_upload_as_fact`] is the whole completion verb. There
+//! is no other: [`CitedBlobPort`] stages bytes and is told what they were
+//! recorded as, but it no longer persists anything, so a caller reaching
+//! past this verb would leave the corpus with nothing in it.
+//!
+//! The shape follows from where the transaction has to be. Persisting a
+//! cited object is a Fact write with an inline citation — storage already
+//! upserts the object on `(owner, schema, content_hash)` and inserts its
+//! typed row through the registered cited-object sidecar — so once the
+//! Fact carries the artefact as its citation, the two cannot come apart.
+//! What could not be in that transaction is the object-store work:
+//! streaming, hashing, and copying an S3 object is not a database
+//! statement and must not hold a transaction open while it runs. Hence the
+//! split: [`CitedBlobPort::stage_upload`] before, one transaction, then
+//! [`CitedBlobPort::finish_upload`] after.
 //!
 //! The blob port arrives as an argument rather than as an `Engine` field.
 //! The store is host-wired and optional (a host without S3 has none), while
@@ -18,13 +28,18 @@ use super::Engine;
 use super::errors::map_write_storage_error;
 use crate::access::Relation;
 use crate::authz::AuthzContext;
-use crate::citations::{UPLOADED_BLOB_WHOLE_SCHEMA_ID, UploadedBlobWholeV1};
+use crate::citations::{
+    UPLOADED_BLOB_SCHEMA_ID, UPLOADED_BLOB_WHOLE_SCHEMA_ID, UploadedBlobPayload,
+    UploadedBlobWholeV1,
+};
 use crate::error::ProtocolError;
 use crate::storage_ports::{CitedBlobPort, CitedBlobUploadCompleted};
-use crate::verbs::fact_ingest::{FactWriteCommand, InlineCitationMappingDraft};
+use crate::verbs::fact_ingest::{
+    FactWriteCommand, InlineCitationMappingDraft, InlineCitedObjectDraft,
+};
 use crate::{
-    CitationMappingPayload, FactIngestOutcome, OwnerRef, SchemaId, SchemaVersion, SidecarPayload,
-    SourceBatchId, UploadV1,
+    CitationMappingPayload, CitedObjectPayload, FactIngestOutcome, OwnerRef, SchemaId,
+    SchemaVersion, SidecarPayload, SourceBatchId, UploadV1,
 };
 
 /// Provenance of every upload Fact. Constant, not per-call: the source is
@@ -34,14 +49,12 @@ use crate::{
 const UPLOAD_SOURCE_ID: &str = "core/upload";
 
 /// A finished upload: the stored artefact, and the Fact that records it.
+/// Both were written together, so neither exists without the other.
 #[derive(Debug, Clone)]
 pub struct UploadCompleted {
-    /// What the blob store holds. `idempotent_replay` here is about the
-    /// BYTES: true when these bytes were already in the corpus.
+    /// The artefact as the corpus now holds it.
     pub blob: CitedBlobUploadCompleted,
     /// The `core/upload-v1` Fact citing that artefact.
-    /// `idempotent_replay` here is about the EVENT: true when this owner's
-    /// upload of these bytes was already recorded.
     pub fact: FactIngestOutcome,
 }
 
@@ -55,22 +68,27 @@ impl Engine {
     /// none. A flavor may only ADD rows against schemas it has registered,
     /// and cannot alter the Fact itself.
     ///
+    /// # What is atomic
+    ///
+    /// The cited object, its typed `cited_uploaded_blob_v1` row, the
+    /// citation, the Fact, its receipt, its embedding job, and every
+    /// extension row are one transaction. Nothing a reader can observe
+    /// survives a failure partway: an artefact with no recorded arrival is
+    /// not a state this verb can leave behind.
+    ///
+    /// Two things sit outside it, both deliberately, and neither is corpus
+    /// content. Staging streams and copies an S3 object — no transaction
+    /// may be held open across that. Finishing marks the upload row and
+    /// deletes the redundant pending object. A crash before finishing
+    /// leaves an upload row still saying `pending` whose artefact is
+    /// already recorded; completing the same upload again resolves it.
+    ///
     /// # Idempotency
     ///
-    /// Safe to call again with the same `upload_id`. The blob side is
-    /// content-addressed and returns the stored artefact unchanged; the
-    /// Fact side replays on its receipt and returns the same `memory_id`.
-    /// Retrying is therefore also the repair path for the gap below.
-    ///
-    /// # The two-transaction gap
-    ///
-    /// The artefact is committed by the blob store before the Fact write
-    /// begins — two transactions, because [`CitedBlobPort`] owns the first
-    /// and this crate cannot reach inside it. A crash in between leaves a
-    /// cited object that nothing cites: recoverable (complete again) but
-    /// not atomic, and until it is completed again the corpus holds a file
-    /// with no record of its arrival. Closing that is a separate change to
-    /// the boundary itself, not something a caller can arrange.
+    /// Safe to call again with the same `upload_id`. Staging is
+    /// content-addressed, the Fact replays on its receipt and returns the
+    /// same `memory_id` and cited object, and finishing tolerates an
+    /// upload already completed against the same artefact.
     ///
     /// # Errors
     ///
@@ -88,23 +106,20 @@ impl Engine {
         upload_id: &str,
         extensions: &[SidecarPayload],
     ) -> Result<UploadCompleted, ProtocolError> {
-        let blob = blobs
-            .complete_upload(authz, owner, upload_id)
+        // Staging does the object-store half and stops: bytes verified,
+        // moved to their canonical content-addressed key, nothing
+        // recorded. Everything below this line is one transaction.
+        let staged = blobs
+            .stage_upload(authz, owner, upload_id)
             .await
             .map_err(|err| map_write_storage_error(err, "upload_id", "upload not found"))?;
 
-        let cited_object_id = Uuid::parse_str(&blob.cited_object_id).map_err(|err| {
-            ProtocolError::internal(format!(
-                "blob store returned a malformed cited_object_id {}: {err}",
-                blob.cited_object_id,
-            ))
-        })?;
-
+        let content_hash = hex::encode(staged.payload.content_hash);
         let payload = UploadV1 {
-            filename: blob.filename.clone(),
-            mime: blob.mime.clone(),
-            byte_len: blob.byte_len,
-            content_hash: blob.content_hash.clone(),
+            filename: staged.payload.filename.clone(),
+            mime: staged.payload.mime.clone(),
+            byte_len: staged.payload.byte_len,
+            content_hash: content_hash.clone(),
         };
         // No lexical language is stamped: a filename is not prose, and
         // guessing a text-search configuration from one would be a guess
@@ -116,17 +131,26 @@ impl Engine {
             time::OffsetDateTime::now_utc(),
         );
 
-        // By reference, not inline: the cited object already exists with
-        // its full typed payload. The inline path would upsert an opaque
-        // object on the same content hash; the by-ref path makes storage
-        // verify existence, owner, and schema in the transaction that
-        // writes the citation.
+        // Inline, carrying the artefact's full typed payload. Storage
+        // upserts the cited object on `(owner, schema, content_hash)` —
+        // the same key the blob lane deduplicates on — inserts its
+        // `cited_uploaded_blob_v1` row through the registered cited-object
+        // sidecar, and writes the citation and the Fact, all in the one
+        // transaction. That is the point of the split: the artefact and
+        // the record of its arrival are now the same write.
+        let cited_object = InlineCitedObjectDraft {
+            schema_id: SchemaId::new(UPLOADED_BLOB_SCHEMA_ID.to_string()),
+            schema_version: SchemaVersion::new(UploadedBlobPayload::SCHEMA_VERSION),
+            payload_bytes: serde_json::to_vec(&staged.payload).map_err(|err| {
+                ProtocolError::internal(format!("serialize staged blob payload: {err}"))
+            })?,
+        };
         let authorized = self
-            .authorize_fact_with_citation_by_ref(
+            .authorize_fact_with_citation(
                 authz,
                 Relation::Editor,
                 draft,
-                cited_object_id,
+                cited_object,
                 whole_blob_mapping(),
             )
             .await?;
@@ -134,7 +158,7 @@ impl Engine {
         let resolved = *authorized.owner_write_permit().owner();
         if resolved != owner {
             return Err(ProtocolError::internal(format!(
-                "upload was stored under {owner:?} but the Fact write resolved to {resolved:?}; \
+                "upload was staged under {owner:?} but the Fact write resolved to {resolved:?}; \
                  refusing to record an upload against an owner that does not hold the artefact",
             )));
         }
@@ -142,13 +166,45 @@ impl Engine {
         let embedding_client = self.embed_client();
         let embedding_model_id = embedding_client.as_ref().map(|client| client.model_id());
         let fact = self
-            .ingest_fact_with_citation_ref_and_typed_sidecar(
+            .ingest_fact_with_citation_and_typed_sidecar(
                 &authorized,
                 extensions,
                 embedding_model_id,
             )
             .await?;
 
+        // Present on every citation-bearing write, including a replay,
+        // where it is read back from the Fact that already exists.
+        let cited_object_id = fact.cited_object_id.ok_or_else(|| {
+            ProtocolError::internal(
+                "upload Fact was written with a citation but storage reported no cited object",
+            )
+        })?;
+
+        // Outside the transaction, and necessarily so: it marks the
+        // upload row and deletes the now-redundant pending object, one of
+        // which is not a database write at all. A crash before this leaves
+        // an upload row still saying `pending` while its artefact and the
+        // Fact are committed — bookkeeping for the transfer protocol,
+        // invisible in the corpus, and repaired by completing again.
+        blobs
+            .finish_upload(authz, owner, upload_id, cited_object_id)
+            .await
+            .map_err(|err| map_write_storage_error(err, "upload_id", "upload not found"))?;
+
+        let blob = CitedBlobUploadCompleted {
+            cited_object_id: cited_object_id.to_string(),
+            schema: UPLOADED_BLOB_SCHEMA_ID.to_string(),
+            content_hash,
+            sha256: hex::encode(staged.payload.sha256),
+            byte_len: staged.payload.byte_len,
+            mime: staged.payload.mime,
+            filename: staged.payload.filename,
+            // "You added nothing new." True when this owner's upload of
+            // these bytes was already recorded, and when the upload id
+            // itself had already been completed.
+            idempotent_replay: fact.idempotent_replay || staged.already_completed.is_some(),
+        };
         Ok(UploadCompleted { blob, fact })
     }
 }

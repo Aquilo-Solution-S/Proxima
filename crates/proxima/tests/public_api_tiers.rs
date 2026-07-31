@@ -267,7 +267,7 @@ fn flavor_sdk_exposes_the_cited_blob_lane() {
     // flavor depending only on `proxima` cannot reach into
     // `proxima_core::storage_ports`.
     use proxima::flavor::{
-        CitedBlobPort, CitedBlobReadUrl, CitedBlobService, CitedBlobUploadAborted,
+        CitedBlobPort, CitedBlobReadUrl, CitedBlobService, CitedBlobStaged, CitedBlobUploadAborted,
         CitedBlobUploadCompleted, CitedBlobUploadHeader, CitedBlobUploadPrepared,
     };
     fn _needs_port<T: CitedBlobPort>() {}
@@ -275,6 +275,9 @@ fn flavor_sdk_exposes_the_cited_blob_lane() {
         &CitedBlobService,
         &CitedBlobReadUrl,
         &CitedBlobUploadPrepared,
+        // `stage_upload` returns this, so a flavor implementing the port
+        // must be able to name it.
+        &CitedBlobStaged,
         &CitedBlobUploadCompleted,
         &CitedBlobUploadAborted,
         &CitedBlobUploadHeader,

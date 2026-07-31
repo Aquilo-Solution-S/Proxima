@@ -55,6 +55,29 @@ pub struct CitedBlobUploadCompleted {
     pub idempotent_replay: bool,
 }
 
+/// An artefact that is in the object store, and in nothing else.
+///
+/// The bytes have been verified and moved to their canonical,
+/// content-addressed key; no row in the substrate refers to them yet.
+/// Everything after this point is one database transaction, which is why
+/// staging stops here rather than persisting what it staged.
+///
+/// This struct carries `bucket`/`object_key` inside its `payload` — it is
+/// the cited-object payload, and those coordinates are what makes an
+/// artefact retrievable later. That does not weaken the rule the outcome
+/// structs above keep: coordinates never reach a CLIENT. This one never
+/// leaves the process.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CitedBlobStaged {
+    /// The typed description of the artefact, ready to persist as a
+    /// `core/uploaded-blob-v1` cited object.
+    pub payload: crate::citations::UploadedBlobPayload,
+    /// Set when this upload was already completed on an earlier call: the
+    /// artefact is in the corpus under this id, and staging touched no
+    /// object storage. `None` on the first completion.
+    pub already_completed: Option<uuid::Uuid>,
+}
+
 /// Abort outcome; `aborted == false` means the upload had already
 /// completed and its cited object remains.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -94,19 +117,55 @@ pub trait CitedBlobPort: Send + Sync {
         byte_len: u64,
     ) -> Result<CitedBlobUploadPrepared, StorageError>;
 
-    /// Verify the uploaded bytes and persist the canonical cited object.
+    /// Verify the uploaded bytes and move them to their canonical
+    /// content-addressed key, WITHOUT recording anything about them.
+    ///
+    /// The split exists so that persisting the artefact and recording its
+    /// arrival can be one transaction. This half is the part that cannot
+    /// be: it streams, hashes, and copies in the object store. It is
+    /// idempotent — the canonical key is the content hash — so a caller
+    /// that crashes before persisting may stage again.
+    ///
+    /// The pending object is deliberately NOT deleted here. It is the
+    /// only copy a retry can re-read if persistence fails; `finish_upload`
+    /// removes it once the artefact is in the corpus.
     ///
     /// # Errors
     ///
     /// Returns [`StorageError::ConstraintViolation`] for a missing,
     /// expired, aborted, or length-mismatched upload, and
     /// [`StorageError::Unavailable`] for S3/database faults.
-    async fn complete_upload(
+    async fn stage_upload(
         &self,
         authz: &AuthzContext,
         owner: OwnerRef,
         upload_id: &str,
-    ) -> Result<CitedBlobUploadCompleted, StorageError>;
+    ) -> Result<CitedBlobStaged, StorageError>;
+
+    /// Close out a staged upload whose artefact is now in the corpus:
+    /// mark the pending upload completed against `cited_object_id` and
+    /// drop the redundant pending object.
+    ///
+    /// Called after the artefact and its Fact are committed, never
+    /// before — so a crash in between leaves an upload row that still
+    /// says `pending` while its artefact is already recorded. That is
+    /// bookkeeping for the transfer protocol, invisible in the corpus,
+    /// and repaired by completing the same upload again.
+    ///
+    /// Idempotent: an upload already marked completed is not an error.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError::ConstraintViolation`] when the upload is
+    /// absent for `owner`, and [`StorageError::Unavailable`] for
+    /// S3/database faults.
+    async fn finish_upload(
+        &self,
+        authz: &AuthzContext,
+        owner: OwnerRef,
+        upload_id: &str,
+        cited_object_id: uuid::Uuid,
+    ) -> Result<(), StorageError>;
 
     /// Abort a pending upload; idempotent across replays and races.
     ///

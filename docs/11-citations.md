@@ -228,10 +228,35 @@ alongside; it lands in the Fact's transaction or not at all. It extends
 the substrate's event rather than owning a parallel one. See docs/09
 §Extending a substrate Fact.
 
-The artefact is committed by the blob store before the Fact write
-begins — two transactions, since the blob store owns the first. A crash
-between them leaves a CitedObject that nothing cites; completing again
-repairs it.
+### One write
+
+The CitedObject, its `cited_uploaded_blob_v1` row, the citation, the Fact,
+its receipt, its embedding job, and any flavor extension rows are one
+transaction. An artefact whose arrival nothing recorded is not a state
+completion can leave behind.
+
+That works because persisting a CitedObject already *is* a Fact write with
+an inline citation: storage upserts the object on
+`(owner, schema, content_hash)` — the key the upload lane deduplicates on —
+and inserts its typed row through the registered cited-object sidecar. Once
+the Fact carries the artefact as its citation, the two cannot come apart.
+The blob store no longer writes those rows itself.
+
+What cannot be inside that transaction is the object-store work. Streaming,
+hashing, and copying an S3 object is not a database statement and must not
+hold a transaction open while it runs. Completion is therefore three steps:
+
+1. **stage** — verify the bytes, move them to their canonical
+   content-addressed key, record nothing. Idempotent; the pending object is
+   left in place so a retry can re-read it.
+2. **the transaction** — everything above.
+3. **finish** — mark the upload row completed against the cited object and
+   delete the now-redundant pending object.
+
+A crash before step 3 leaves an upload row still saying `pending` whose
+artefact is already recorded. That is bookkeeping for the transfer
+protocol, invisible in the corpus, and resolved by completing the same
+upload again.
 
 <a id="mcp-surface"></a>
 ## MCP surface

@@ -139,10 +139,8 @@ pub struct UploadCompleteOutput {
     pub byte_len: u64,
     pub mime: String,
     pub filename: String,
-    /// True when these bytes were already in the corpus. About the
-    /// artefact, not about the `fact` handle below — a second completion
-    /// of the same upload replays both, but a first upload of bytes some
-    /// other owner already holds replays neither.
+    /// True when this completion added nothing: the artefact and its
+    /// arrival were already recorded for this owner.
     pub idempotent_replay: bool,
     /// Handle of the `core/upload-v1` Fact recording this arrival. It
     /// cites the artefact, so `core_fact` on it reaches the same
@@ -363,8 +361,8 @@ mod tests {
     use crate::access::Role;
     use crate::mcp::{McpToolErrorKind, validate_action_args};
     use crate::storage_ports::{
-        CitedBlobPort, CitedBlobReadUrl, CitedBlobService, CitedBlobUploadAborted,
-        CitedBlobUploadCompleted, CitedBlobUploadPrepared,
+        CitedBlobPort, CitedBlobReadUrl, CitedBlobService, CitedBlobStaged, CitedBlobUploadAborted,
+        CitedBlobUploadPrepared,
     };
     use crate::{AuthzContext, GroupId, OwnerRef, StorageError, UserId};
 
@@ -414,23 +412,38 @@ mod tests {
             })
         }
 
-        async fn complete_upload(
+        async fn stage_upload(
             &self,
             authz: &AuthzContext,
             owner: OwnerRef,
             _upload_id: &str,
-        ) -> Result<CitedBlobUploadCompleted, StorageError> {
-            self.record("complete", authz, owner);
-            Ok(CitedBlobUploadCompleted {
-                cited_object_id: uuid::Uuid::nil().to_string(),
-                schema: crate::UPLOADED_BLOB_SCHEMA_ID.into(),
-                content_hash: "00".repeat(32),
-                sha256: "11".repeat(32),
-                byte_len: 4,
-                mime: "application/pdf".into(),
-                filename: "x.pdf".into(),
-                idempotent_replay: false,
+        ) -> Result<CitedBlobStaged, StorageError> {
+            self.record("stage", authz, owner);
+            Ok(CitedBlobStaged {
+                payload: crate::citations::UploadedBlobPayload {
+                    content_hash: [0x00; 32],
+                    bucket: "test-bucket".into(),
+                    object_key: "objects/test/x.pdf".into(),
+                    sha256: [0x11; 32],
+                    byte_len: 4,
+                    mime: "application/pdf".into(),
+                    filename: "x.pdf".into(),
+                    etag: None,
+                    uploaded_at: time::OffsetDateTime::UNIX_EPOCH,
+                },
+                already_completed: None,
             })
+        }
+
+        async fn finish_upload(
+            &self,
+            authz: &AuthzContext,
+            owner: OwnerRef,
+            _upload_id: &str,
+            _cited_object_id: uuid::Uuid,
+        ) -> Result<(), StorageError> {
+            self.record("finish", authz, owner);
+            Ok(())
         }
 
         async fn abort_upload(

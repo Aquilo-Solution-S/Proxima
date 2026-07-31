@@ -39,7 +39,7 @@ pub use proxima_core::mcp::{
 /// this seam, so a flavor codes against [`CitedBlobPort`] and can fake it
 /// wholesale in tests.
 pub use proxima_core::storage_ports::{
-    CitedBlobPort, CitedBlobReadUrl, CitedBlobService, CitedBlobUploadAborted,
+    CitedBlobPort, CitedBlobReadUrl, CitedBlobService, CitedBlobStaged, CitedBlobUploadAborted,
     CitedBlobUploadCompleted, CitedBlobUploadHeader, CitedBlobUploadPrepared,
 };
 /// [`FactTombstone`] is the return type of [`FactPayload::tombstone`], so a
