@@ -147,7 +147,7 @@ mod tests {
                 .engine
                 .ingest_fact_with_typed_sidecar(
                     &authorized,
-                    &SidecarPayload::fact(payload.clone()),
+                    std::slice::from_ref(&SidecarPayload::fact(payload.clone())),
                     None,
                 )
                 .await?;

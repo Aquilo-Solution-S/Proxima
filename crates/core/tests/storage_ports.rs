@@ -31,7 +31,7 @@ impl FactIngestPort for FactIngestFake {
     async fn ingest_fact_with_typed_sidecar(
         &self,
         authorized: &AuthorizedFactWrite,
-        sidecar_payload: &SidecarPayload,
+        sidecar_payloads: &[SidecarPayload],
         embedding_model_id: Option<&str>,
     ) -> Result<FactIngestOutcome, StorageError> {
         fake_error()
@@ -40,7 +40,7 @@ impl FactIngestPort for FactIngestFake {
     async fn ingest_fact_with_citation_and_typed_sidecar(
         &self,
         authorized: &AuthorizedFactWithCitation,
-        sidecar_payload: &SidecarPayload,
+        sidecar_payloads: &[SidecarPayload],
         embedding_model_id: Option<&str>,
     ) -> Result<FactIngestOutcome, StorageError> {
         fake_error()
@@ -49,7 +49,7 @@ impl FactIngestPort for FactIngestFake {
     async fn ingest_fact_with_citation_ref_and_typed_sidecar(
         &self,
         authorized: &proxima_core::verbs::fact_ingest::AuthorizedFactWithCitationRef,
-        sidecar_payload: &SidecarPayload,
+        sidecar_payloads: &[SidecarPayload],
         embedding_model_id: Option<&str>,
     ) -> Result<FactIngestOutcome, StorageError> {
         fake_error()

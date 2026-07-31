@@ -200,7 +200,7 @@ async fn ingest_fact(
         .await
         .map_err(|err| StorageError::Internal(err.to_string()))?;
     let sidecar_payload = SidecarPayload::fact(payload.clone());
-    pg.ingest_fact_with_typed_sidecar(&authorized, &sidecar_payload, None)
+    pg.ingest_fact_with_typed_sidecar(&authorized, std::slice::from_ref(&sidecar_payload), None)
         .await
 }
 

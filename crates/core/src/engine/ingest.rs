@@ -230,13 +230,13 @@ impl Engine {
     pub async fn ingest_fact_with_typed_sidecar(
         &self,
         authorized: &AuthorizedFactWrite,
-        sidecar: &SidecarPayload,
+        sidecars: &[SidecarPayload],
         embedding_model_id: Option<&str>,
     ) -> Result<FactIngestOutcome, ProtocolError> {
         self.storage()
             .ingest
             .fact_ingest
-            .ingest_fact_with_typed_sidecar(authorized, sidecar, embedding_model_id)
+            .ingest_fact_with_typed_sidecar(authorized, sidecars, embedding_model_id)
             .await
             .map_err(|err| {
                 super::errors::map_write_storage_error(
@@ -257,13 +257,13 @@ impl Engine {
     pub async fn ingest_fact_with_citation_and_typed_sidecar(
         &self,
         authorized: &AuthorizedFactWithCitation,
-        sidecar: &SidecarPayload,
+        sidecars: &[SidecarPayload],
         embedding_model_id: Option<&str>,
     ) -> Result<FactIngestOutcome, ProtocolError> {
         self.storage()
             .ingest
             .fact_ingest
-            .ingest_fact_with_citation_and_typed_sidecar(authorized, sidecar, embedding_model_id)
+            .ingest_fact_with_citation_and_typed_sidecar(authorized, sidecars, embedding_model_id)
             .await
             .map_err(|err| {
                 super::errors::map_write_storage_error(
@@ -285,7 +285,7 @@ impl Engine {
     pub async fn ingest_fact_with_citation_ref_and_typed_sidecar(
         &self,
         authorized: &AuthorizedFactWithCitationRef,
-        sidecar: &SidecarPayload,
+        sidecars: &[SidecarPayload],
         embedding_model_id: Option<&str>,
     ) -> Result<FactIngestOutcome, ProtocolError> {
         self.storage()
@@ -293,7 +293,7 @@ impl Engine {
             .fact_ingest
             .ingest_fact_with_citation_ref_and_typed_sidecar(
                 authorized,
-                sidecar,
+                sidecars,
                 embedding_model_id,
             )
             .await

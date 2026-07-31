@@ -118,7 +118,7 @@ impl McpTool for RecordUtteranceTool {
             let outcome = engine
                 .ingest_fact_with_typed_sidecar(
                     &authorized,
-                    &SidecarPayload::fact(payload.clone()),
+                    std::slice::from_ref(&SidecarPayload::fact(payload.clone())),
                     embedding_model_id,
                 )
                 .await?;
