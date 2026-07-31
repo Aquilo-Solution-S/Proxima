@@ -247,8 +247,8 @@ impl CitedBlobStore {
         ensure_owner_write_access(ctx, &owner)?;
         let upload_id = parse_uuid(&req.upload_id)?;
         let row = load_upload(&self.pool, &owner, upload_id).await?;
-        match row.status.as_str() {
-            "completed" => {
+        match row.status {
+            UploadStatus::Completed => {
                 let Some(cited_object_id) = row.cited_object_id else {
                     return Err(BlobError::State(
                         "completed upload is missing cited_object_id".into(),
@@ -260,16 +260,13 @@ impl CitedBlobStore {
                 // object that `finish_upload` has already deleted.
                 return load_staged_payload(&self.pool, &owner, cited_object_id).await;
             }
-            "aborted" => {
+            UploadStatus::Aborted => {
                 return Err(BlobError::State("upload is aborted".into()));
             }
-            "expired" => {
+            UploadStatus::Expired => {
                 return Err(BlobError::State("upload is expired".into()));
             }
-            "pending" => {}
-            other => {
-                return Err(BlobError::State(format!("unknown upload status {other}")));
-            }
+            UploadStatus::Pending => {}
         }
         if row.expires_at < OffsetDateTime::now_utc() {
             mark_upload_expired(&self.pool, &owner, upload_id).await?;
@@ -359,18 +356,18 @@ impl CitedBlobStore {
         ensure_owner_write_access(ctx, &owner)?;
         let upload_id = parse_uuid(upload_id)?;
         let row = load_upload(&self.pool, &owner, upload_id).await?;
-        match row.status.as_str() {
+        match row.status {
             // Idempotent: the same upload finished twice is not an error.
             // Finishing it against a DIFFERENT artefact would mean
             // something else was staged under this upload id, which is.
-            "completed" => {
+            UploadStatus::Completed => {
                 if row.cited_object_id != Some(cited_object_id) {
                     return Err(BlobError::State(
                         "upload already completed against a different cited object".into(),
                     ));
                 }
             }
-            "pending" => {
+            UploadStatus::Pending => {
                 let (owner_kind, owner_id) = db_owner_columns(&owner);
                 let rows_affected = sqlx::query(
                     "UPDATE proxima_core.cited_object_uploads \
@@ -394,9 +391,9 @@ impl CitedBlobStore {
                     ));
                 }
             }
-            other => {
+            status @ (UploadStatus::Aborted | UploadStatus::Expired) => {
                 return Err(BlobError::State(format!(
-                    "upload cannot be finished from status {other}"
+                    "upload cannot be finished from status {status:?}"
                 )));
             }
         }
@@ -426,11 +423,14 @@ impl CitedBlobStore {
         ensure_owner_write_access(ctx, &owner)?;
         let upload_id = parse_uuid(&req.upload_id)?;
         let row = load_upload(&self.pool, &owner, upload_id).await?;
-        if row.status == "completed" {
-            return Ok(CitedBlobUploadAbortOutcomeTs { aborted: false });
-        }
-        if row.status == "aborted" || row.status == "expired" {
-            return Ok(CitedBlobUploadAbortOutcomeTs { aborted: true });
+        match row.status {
+            UploadStatus::Completed => {
+                return Ok(CitedBlobUploadAbortOutcomeTs { aborted: false });
+            }
+            UploadStatus::Aborted | UploadStatus::Expired => {
+                return Ok(CitedBlobUploadAbortOutcomeTs { aborted: true });
+            }
+            UploadStatus::Pending => {}
         }
 
         let (owner_kind, owner_id) = db_owner_columns(&owner);
@@ -455,7 +455,7 @@ impl CitedBlobStore {
         } else {
             row.status
         };
-        match abort_transition_decision(&decision_status, rows_affected)? {
+        match abort_transition_decision(decision_status, rows_affected)? {
             AbortTransitionDecision::WonPending => {
                 let client = self.client().await?;
                 client
@@ -804,9 +804,31 @@ struct UploadRow {
     filename: String,
     mime: String,
     expected_byte_len: i64,
-    status: String,
+    status: UploadStatus,
     cited_object_id: Option<Uuid>,
     expires_at: OffsetDateTime,
+}
+
+/// `proxima_core.cited_object_upload_status`, decoded as the enum Postgres
+/// declares it to be.
+///
+/// The column has been a database enum since `0001_init`. Reading it back
+/// through `::text` and matching strings threw that away: every match
+/// needed an arm for a value the database cannot hold, and a typo in a
+/// literal compiled fine and simply never matched. Decoding the enum makes
+/// these four the only four, so the matches below are exhaustive by
+/// construction and a fifth state could not be added without breaking
+/// them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, sqlx::Type)]
+#[sqlx(
+    type_name = "proxima_core.cited_object_upload_status",
+    rename_all = "lowercase"
+)]
+enum UploadStatus {
+    Pending,
+    Completed,
+    Aborted,
+    Expired,
 }
 
 #[derive(Debug, Clone)]
@@ -831,7 +853,7 @@ async fn load_upload(
     let (owner_kind, owner_id) = db_owner_columns(owner);
     let row = sqlx::query(
         "SELECT bucket, object_key, filename, mime, expected_byte_len, \
-                status::text AS status, cited_object_id, expires_at \
+                status, cited_object_id, expires_at \
            FROM proxima_core.cited_object_uploads \
           WHERE owner_kind = $1 \
             AND owner_id IS NOT DISTINCT FROM $2 \
@@ -1139,18 +1161,19 @@ enum AbortTransitionDecision {
 }
 
 fn abort_transition_decision(
-    observed_status: &str,
+    observed_status: UploadStatus,
     rows_affected: u64,
 ) -> Result<AbortTransitionDecision, BlobError> {
     match rows_affected {
         1 => Ok(AbortTransitionDecision::WonPending),
         0 => match observed_status {
-            "completed" => Ok(AbortTransitionDecision::Completed),
-            "aborted" | "expired" => Ok(AbortTransitionDecision::AbortedOrExpired),
-            "pending" => Err(BlobError::State(
+            UploadStatus::Completed => Ok(AbortTransitionDecision::Completed),
+            UploadStatus::Aborted | UploadStatus::Expired => {
+                Ok(AbortTransitionDecision::AbortedOrExpired)
+            }
+            UploadStatus::Pending => Err(BlobError::State(
                 "upload abort did not transition pending row".into(),
             )),
-            other => Err(BlobError::State(format!("unknown upload status {other}"))),
         },
         other => Err(BlobError::State(format!(
             "upload abort affected {other} rows"
@@ -1391,23 +1414,26 @@ mod tests {
     #[test]
     fn abort_transition_decision_is_race_idempotent() {
         assert_eq!(
-            abort_transition_decision("pending", 1).expect("pending transition wins"),
+            abort_transition_decision(UploadStatus::Pending, 1).expect("pending transition wins"),
             AbortTransitionDecision::WonPending
         );
         assert_eq!(
-            abort_transition_decision("completed", 0).expect("completed race loss is idempotent"),
+            abort_transition_decision(UploadStatus::Completed, 0)
+                .expect("completed race loss is idempotent"),
             AbortTransitionDecision::Completed
         );
         assert_eq!(
-            abort_transition_decision("aborted", 0).expect("aborted replay is idempotent"),
+            abort_transition_decision(UploadStatus::Aborted, 0)
+                .expect("aborted replay is idempotent"),
             AbortTransitionDecision::AbortedOrExpired
         );
         assert_eq!(
-            abort_transition_decision("expired", 0).expect("expired replay is idempotent"),
+            abort_transition_decision(UploadStatus::Expired, 0)
+                .expect("expired replay is idempotent"),
             AbortTransitionDecision::AbortedOrExpired
         );
         assert!(matches!(
-            abort_transition_decision("pending", 0),
+            abort_transition_decision(UploadStatus::Pending, 0),
             Err(BlobError::State(message))
                 if message == "upload abort did not transition pending row"
         ));
