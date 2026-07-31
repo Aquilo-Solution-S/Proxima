@@ -271,6 +271,51 @@ its memory-id-bound sidecar query helpers. Do not reference
 Storage dispatches typed `SidecarPayload`. Protocol adapters serialize
 only at MCP/protocol output.
 
+### Extending a substrate Fact
+
+A Fact write carries a *slice* of sidecar payloads, not one. The
+substrate owns the Fact and its own sidecar; a flavor may add further
+rows against the same `memory_id` — extra columns on an event the
+substrate defines, without owning the event. `core/upload-v1` is the
+worked example (docs/11 §The upload Fact): core records that a file
+arrived, and a flavor records what it intends to do with it.
+
+Register the extension schema and its PG sidecar exactly as you would
+your own, then pass its payload alongside the substrate's:
+
+```rust
+engine
+    .complete_upload_as_fact(blobs, &authz, owner, &upload_id, &[
+        SidecarPayload::fact(AcmeIngestQueuedV1 { queue: "ocr".into() }),
+    ])
+    .await?;
+```
+
+What the mechanism guarantees, and why it is data rather than a callback:
+
+- **Destination is resolved per payload.** Storage routes each payload by
+  its own `(kind, schema_id, schema_version)` through the sidecar
+  registry; an unregistered schema is a `ConstraintViolation`. Two
+  payloads cannot be transposed into each other's tables by an ordering
+  slip, and a flavor cannot name a destination it has not registered.
+- **All or nothing.** Every payload lands in the Fact's transaction; one
+  failure rolls back the Fact and the substrate's own sidecar with it.
+- **Add only.** Storage keeps sole authority over the transaction, so an
+  extension can only insert rows it registered. There is no handle to the
+  Fact row and none to misuse.
+- **Re-entrant.** Payloads are data, so the bounded retry around
+  begin→body→commit rebuilds them on every attempt; a closure could not
+  be re-run.
+
+The Fact's own identity is not extensible: `fact_sidecar_table` and its
+natural-key columns still come from the Fact's registered schema, because
+a stateful Fact's identity belongs to the event, not to whatever a flavor
+stapled onto it.
+
+A schema that declares a sidecar table with no PG sidecar registered is
+refused at boot, not at write time — so the failure a flavor can actually
+reach is a registered sidecar whose migration never ran.
+
 ## Typed Citations
 
 Use the typed inline path when the cited artefact or mapping has
