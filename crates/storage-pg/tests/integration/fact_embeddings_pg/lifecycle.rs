@@ -2,7 +2,7 @@
 
 use super::{
     SequenceEmbedding, compliance_engine_for, count_embedding_jobs, count_fact_embeddings,
-    engine_for, fact_draft, load_embedding_head_version, load_embedding_vec_text,
+    declining_draft, engine_for, fact_draft, load_embedding_head_version, load_embedding_vec_text,
     load_embedding_versions, load_memory_created_at, load_memory_text, padded_embedding,
     reconcile_stub_fact_embeddings, seed_embedding_row_with_head,
 };
@@ -61,6 +61,176 @@ async fn fact_ingest_with_embed_client_enqueues_pending_embedding_job_once()
             count_embedding_jobs(pg.pool_for_tests(), outcome.memory_id).await?,
             1
         );
+        Ok(())
+    }
+    .await;
+    drop(pg);
+    drop_db(&db_name).await?;
+    result
+}
+
+/// `Engine::fact_ingest` honours the schema's declaration.
+///
+/// The paired control is the point: both Facts are written by the same call
+/// with the same embedder configured, and only the declaration differs, so
+/// this fails if the gate is dropped rather than merely reporting that
+/// nothing was embedded. `fact_ingest` computes
+/// `embed_client().map(model_id)` — "is there an embedder" — which the
+/// schema overrides; it was the one verb of four that did not consult
+/// `vector_model_for`, because it does not share the `ingest_fact_*` name.
+#[tokio::test]
+async fn fact_ingest_does_not_embed_a_schema_that_declined()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (pg, db_name) = fresh_pg().await;
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let owner = owner_fixture();
+        let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
+        let engine = engine_for(
+            pg.clone(),
+            Some(Arc::new(ConstantEmbedding::prefixed(
+                "stub-fact-embed",
+                &[0.25, 0.5, 0.75],
+            ))),
+        );
+
+        let declined = engine
+            .fact_ingest(&authz, declining_draft("a fact that declined a vector"))
+            .await?;
+        let embedded = engine
+            .fact_ingest(&authz, fact_draft(&owner, "a fact that wants one"))
+            .await?;
+
+        assert_eq!(
+            count_embedding_jobs(pg.pool_for_tests(), declined.memory_id).await?,
+            0,
+            "EMBEDDABLE = false still queued a vector through fact_ingest"
+        );
+        assert_eq!(
+            count_embedding_jobs(pg.pool_for_tests(), embedded.memory_id).await?,
+            1,
+            "the control must be queued, or this test proves only that \
+             nothing is ever embedded"
+        );
+
+        // The row is written and readable either way: declining a vector is
+        // not declining the Fact.
+        assert_eq!(
+            load_memory_text(pg.pool_for_tests(), declined.memory_id).await?,
+            Some("a fact that declined a vector".to_string()),
+        );
+        Ok(())
+    }
+    .await;
+    drop(pg);
+    drop_db(&db_name).await?;
+    result
+}
+
+/// Asking for one row's embedding by id does not override the schema.
+///
+/// This path holds a `MemoryId` and never passes through the job queue, so
+/// none of the enqueue-side exclusions apply to it and it writes the vector
+/// directly — no `embedding_jobs` row is ever created, which is why the SQL
+/// filters cannot see it. It was the second way a declined vector could be
+/// written anyway.
+#[tokio::test]
+async fn ensure_fact_embedding_leaves_a_declined_schema_alone()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (pg, db_name) = fresh_pg().await;
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let owner = owner_fixture();
+        let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
+        let engine = engine_for(
+            pg.clone(),
+            Some(Arc::new(ConstantEmbedding::prefixed(
+                "stub-fact-embed",
+                &[0.25, 0.5, 0.75],
+            ))),
+        );
+
+        let declined = engine
+            .fact_ingest(&authz, declining_draft("declines a vector"))
+            .await?;
+        let embedded = engine
+            .fact_ingest(&authz, fact_draft(&owner, "wants a vector"))
+            .await?;
+
+        engine
+            .ensure_fact_embedding(&owner, declined.memory_id)
+            .await?;
+        engine
+            .ensure_fact_embedding(&owner, embedded.memory_id)
+            .await?;
+
+        assert_eq!(
+            count_fact_embeddings(pg.pool_for_tests(), declined.memory_id).await?,
+            0,
+            "a direct embed-this-row request wrote the vector the schema declined"
+        );
+        assert_eq!(
+            count_fact_embeddings(pg.pool_for_tests(), embedded.memory_id).await?,
+            1,
+            "the control must be embedded, or this proves only that the call \
+             does nothing at all"
+        );
+        Ok(())
+    }
+    .await;
+    drop(pg);
+    drop_db(&db_name).await?;
+    result
+}
+
+/// The owner-scoped backfill does not undo the write path's decision.
+///
+/// Sibling of the reconcile exclusion, and separately reachable: this is the
+/// operator-facing "heal anything missing a vector" sweep, and a row that
+/// declined one looks exactly like a row that is missing one. The Facts are
+/// written by a client-less engine so nothing is queued at write time and
+/// the backfill is the only thing that could queue them.
+#[tokio::test]
+async fn backfill_does_not_queue_a_schema_that_declined() -> Result<(), Box<dyn std::error::Error>>
+{
+    let (pg, db_name) = fresh_pg().await;
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let owner = owner_fixture();
+        let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
+
+        let writer = engine_for(pg.clone(), None);
+        let declined = writer
+            .fact_ingest(&authz, declining_draft("declines a vector"))
+            .await?;
+        let embedded = writer
+            .fact_ingest(&authz, fact_draft(&owner, "wants a vector"))
+            .await?;
+        assert_eq!(
+            count_embedding_jobs(pg.pool_for_tests(), embedded.memory_id).await?,
+            0,
+            "no client at write time means nothing is queued yet"
+        );
+
+        let healer = engine_for(
+            pg.clone(),
+            Some(Arc::new(ConstantEmbedding::prefixed(
+                "stub-fact-embed",
+                &[0.25, 0.5, 0.75],
+            ))),
+        );
+        let enqueued = healer
+            .backfill_missing_embeddings(&authz, &owner, 100)
+            .await?;
+
+        assert_eq!(
+            count_embedding_jobs(pg.pool_for_tests(), declined.memory_id).await?,
+            0,
+            "the backfill queued a vector the schema declined"
+        );
+        assert_eq!(
+            count_embedding_jobs(pg.pool_for_tests(), embedded.memory_id).await?,
+            1,
+            "the control must be healed, or the backfill is simply inert"
+        );
+        assert_eq!(enqueued, 1, "the backfill reports only the row it queued");
         Ok(())
     }
     .await;

@@ -38,6 +38,41 @@ impl FactPayload for TestFactV1 {
     }
 }
 
+/// A Fact schema that declines a vector. Identical to [`TestFactV1`] in
+/// every respect that could affect embedding except the declaration, so a
+/// test pairing them isolates exactly the flag.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct DeclinesVectorV1 {
+    label: String,
+}
+
+impl FactPayload for DeclinesVectorV1 {
+    const SCHEMA_ID: &'static str = "proxima-test/declines-vector-v1";
+    const SCHEMA_VERSION: u32 = 1;
+    const EMBEDDABLE: bool = false;
+
+    fn receipt_key(&self) -> Vec<u8> {
+        let mut key = PayloadKeyBuilder::new(Self::SCHEMA_ID, Self::SCHEMA_VERSION);
+        key.field_str("label", &self.label);
+        key.finish()
+    }
+
+    fn render(&self) -> String {
+        self.label.clone()
+    }
+}
+
+fn declining_draft(label: &str) -> FactWriteCommand {
+    FactWriteCommand::from_payload(
+        "proxima-test/fact-embedding",
+        SourceBatchId::new(Uuid::now_v7()),
+        &DeclinesVectorV1 {
+            label: label.to_string(),
+        },
+        time::OffsetDateTime::now_utc(),
+    )
+}
+
 #[derive(Debug)]
 struct FailingEmbedding;
 
@@ -275,6 +310,7 @@ fn engine_for(
 ) -> proxima_core::Engine {
     let mut registry = FlavorRegistry::new();
     registry.add_fact_schema_or_panic_for_tests::<TestFactV1>();
+    registry.add_fact_schema_or_panic_for_tests::<DeclinesVectorV1>();
     let engine = proxima_core::Engine::new(registry.freeze_or_panic_for_tests())
         .with_storage_ports(Arc::new(pg).storage_ports());
     if let Some(embed) = embed {

@@ -276,6 +276,7 @@ impl EmbeddingTextPort for RejectingStorage {
         _owner: &Owner,
         _entity_kind: EntityKind,
         _memory_id: crate::MemoryId,
+        _non_embeddable_schemas: &[String],
     ) -> Result<Option<String>, StorageError> {
         Ok(None)
     }

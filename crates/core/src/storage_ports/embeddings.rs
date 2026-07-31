@@ -12,11 +12,23 @@ pub const PERMANENT_EMBED_FAILURE_MARKER: &str = "permanent: ";
 
 #[async_trait::async_trait]
 pub trait EmbeddingTextPort: Send + Sync {
+    /// The text to embed for one entity, or `None` when there is nothing
+    /// to embed.
+    ///
+    /// `non_embeddable_schemas` are excluded exactly as in
+    /// [`Self::list_facts_missing_embedding`]: a row whose schema declared
+    /// [`crate::FactPayload::EMBEDDABLE`] `= false` has no text to embed,
+    /// however it is reached. The exclusion lives here, not only at the
+    /// enqueue sites, because a caller holding a `MemoryId` can ask to
+    /// embed one row directly and never passes through a job queue —
+    /// which is how the declaration used to be bypassed. Empty slice =
+    /// exclude nothing.
     async fn load_embedding_text(
         &self,
         owner: &Owner,
         entity_kind: EntityKind,
         memory_id: crate::MemoryId,
+        non_embeddable_schemas: &[String],
     ) -> Result<Option<String>, StorageError>;
 
     /// Facts with text but no vector under `model_id`.

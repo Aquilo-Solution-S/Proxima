@@ -376,6 +376,7 @@ pub(in crate::engine) mod tests {
             _owner: &Owner,
             _entity_kind: EntityKind,
             _memory_id: MemoryId,
+            _non_embeddable_schemas: &[String],
         ) -> Result<Option<String>, StorageError> {
             Ok(None)
         }

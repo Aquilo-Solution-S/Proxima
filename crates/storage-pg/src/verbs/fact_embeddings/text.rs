@@ -51,6 +51,7 @@ pub async fn load_embedding_text(
     owner: &Owner,
     entity_kind: EntityKind,
     memory_id: MemoryId,
+    non_embeddable_schemas: &[String],
 ) -> Result<Option<String>, StorageError> {
     let (owner_kind, owner_id) = owner_parts(owner);
     sqlx::query_scalar(
@@ -66,6 +67,7 @@ pub async fn load_embedding_text(
 )
             AND text IS NOT NULL
             AND tombstoned_at IS NULL
+            AND schema_id <> ALL($5::text[])
             AND (
                 ($4 = 'Fact'::proxima_core.entity_kind
                  AND kind IS NULL)
@@ -76,6 +78,7 @@ pub async fn load_embedding_text(
     .bind(owner_kind)
     .bind(owner_id)
     .bind(entity_kind)
+    .bind(non_embeddable_schemas)
     .fetch_optional(pool)
     .await
     .map_err(map_err)

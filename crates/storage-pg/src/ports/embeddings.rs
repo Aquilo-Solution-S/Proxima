@@ -16,8 +16,16 @@ impl EmbeddingTextPort for PgStorage {
         owner: &Owner,
         entity_kind: proxima_core::EntityKind,
         memory_id: MemoryId,
+        non_embeddable_schemas: &[String],
     ) -> Result<Option<String>, StorageError> {
-        verbs::fact_embeddings::load_embedding_text(&self.pool, owner, entity_kind, memory_id).await
+        verbs::fact_embeddings::load_embedding_text(
+            &self.pool,
+            owner,
+            entity_kind,
+            memory_id,
+            non_embeddable_schemas,
+        )
+        .await
     }
 
     async fn list_facts_missing_embedding(
