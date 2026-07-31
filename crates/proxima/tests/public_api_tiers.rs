@@ -1,3 +1,5 @@
+use std::num::NonZeroU32;
+
 #[test]
 fn host_api_imports_from_root() {
     fn assert_send_sync<T: Send + Sync>() {}
@@ -87,14 +89,29 @@ fn host_api_can_build_a_non_mistral_embedding_client() {
     // only constructible embedding client, and every other
     // OpenAI-compatible endpoint (a local Ollama, a self-hosted server) was
     // out of reach for a host depending on `proxima` alone.
-    let caps = proxima::EmbedCaps {
-        dim: u32::try_from(proxima::llm::EMBEDDING_DIM).expect("the width fits u32"),
+    // Built through the constructor, not a struct literal, and deliberately:
+    // a literal names every field, so each new capability axis breaks every
+    // out-of-tree host that ever built one. `new` + `with_*` keeps them
+    // compiling across a version that adds an axis they do not set.
+    let caps = proxima::EmbedCaps::new(
+        u32::try_from(proxima::llm::EMBEDDING_DIM).expect("the width fits u32"),
         // The reason a local endpoint needs this at all: a model whose
         // native width is not EMBEDDING_DIM must be asked for a nested
         // prefix, or every write fails the fixed-width vector column.
-        matryoshka: true,
-    };
+        true,
+    )
+    // The other reason a local endpoint needs the facade to name this: a
+    // runner that dies on over-long input rather than refusing it can only
+    // be protected from outside, by the caller declining to send.
+    .with_max_input_chars(
+        NonZeroU32::try_from(u32::try_from(proxima::llm::MIN_EMBED_INPUT_CAP_CHARS).unwrap())
+            .expect("the floor is positive"),
+    );
     assert_eq!(caps.dim as usize, proxima::llm::EMBEDDING_DIM);
+    assert!(
+        caps.max_input_chars.is_some(),
+        "the cap survives the builder"
+    );
 
     // Loopback plaintext is accepted; the point is that the signature is
     // writable at all.

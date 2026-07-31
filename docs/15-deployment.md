@@ -90,6 +90,7 @@ than queueing behind readers.
 | `PROXIMA_EMBED_API_KEY` | no | `sk-...` | Bearer for a hosted embedding endpoint. Omit for a local one. |
 | `PROXIMA_EMBED_MODEL` | no | `mistral-embed` | Embedding model id. Must return 1024-dim vectors. |
 | `PROXIMA_EMBED_MATRYOSHKA` | no | `false` | Request 1024 dimensions from a nested-prefix model wider than 1024. |
+| `PROXIMA_EMBED_MAX_INPUT_CHARS` | no | `16384` | Longest input, in characters, that will be *sent*. Unset ⇒ no client-side bound. Over-cap input is refused without a request and split into chunked embeddings instead. Minimum `4095`; below that the split cannot satisfy the cap and boot fails. Set it for a provider that dies on over-long input rather than rejecting it (a local Ollama does) — see docs/10 §Bounding embedding input. |
 | `MISTRAL_API_KEY` | no | `sk-...` | Alias for `PROXIMA_EMBED_API_KEY`. |
 | `MISTRAL_API_BASE` | no | `https://api.mistral.ai/v1` | Alias for `PROXIMA_EMBED_BASE_URL`. |
 | `PROXIMA_SKIP_MIGRATIONS` | no | `true` | Boot without applying migrations, for the split-role topology above. The schema must already be at the current lane — boot fails closed otherwise. |

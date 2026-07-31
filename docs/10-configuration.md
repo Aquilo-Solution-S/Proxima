@@ -64,6 +64,7 @@ Proxima::<App>::app()
 | `PROXIMA_EMBED_API_KEY` | Optional bearer for a hosted embedding endpoint. |
 | `PROXIMA_EMBED_MODEL` | Embedding model id; defaults to `mistral-embed`. |
 | `PROXIMA_EMBED_MATRYOSHKA` | Send a `dimensions` request parameter for nested-prefix models. Default `false`. |
+| `PROXIMA_EMBED_MAX_INPUT_CHARS` | Longest input, in characters, the client will send. Unset (default) sends every input and lets the provider judge it. Set this when the provider does not reject over-long input cleanly — see below. Minimum 4095. |
 | `MISTRAL_API_KEY` | Alias for `PROXIMA_EMBED_API_KEY`. |
 | `MISTRAL_API_BASE` | Alias for `PROXIMA_EMBED_BASE_URL`; defaults to `https://api.mistral.ai/v1` when only a key is set. |
 | `PROXIMA_TOOL_PROFILE` | `proxima-mcp` deployment tool profile: `memory` (default, fail-closed) or `full` (opt-in). |
@@ -160,8 +161,41 @@ local deployment never has to invent a fake credential:
 | `PROXIMA_EMBED_API_KEY` | one of these two | - | Bearer for a hosted endpoint. Omit for a local one. |
 | `PROXIMA_EMBED_MODEL` | no | `mistral-embed` | Model id sent to `/embeddings`. |
 | `PROXIMA_EMBED_MATRYOSHKA` | no | `false` | Send a `dimensions` parameter so a nested-prefix model returns 1024 rather than its native width. |
+| `PROXIMA_EMBED_MAX_INPUT_CHARS` | no | - | Longest input, in characters, that will be sent. Unset ⇒ no client-side bound. Minimum `4095`. |
 | `MISTRAL_API_KEY` | no | - | Alias for `PROXIMA_EMBED_API_KEY`. |
 | `MISTRAL_API_BASE` | no | - | Alias for `PROXIMA_EMBED_BASE_URL`. |
+
+<a id="bounding-embedding-input"></a>
+### Bounding embedding input
+
+`PROXIMA_EMBED_MAX_INPUT_CHARS` refuses an over-long input **before a
+request is made**, rather than letting the provider judge it.
+
+Leave it unset against a provider that rejects over-long input cleanly —
+that is the normal case, and the rejection is what triggers the chunked
+rescue below. Set it when the provider does *not*. A local Ollama sizes a
+model runner's context when the runner loads; an input past that limit
+kills the runner rather than being refused, and the death arrives as a
+transport error, which is indistinguishable at the response from a runner
+that was already down. Retried unchanged, one such input can take the
+embedder down repeatedly and fail every *unrelated* embed while it is
+down. A limit should never be discovered by killing a process.
+
+Refused input is not lost. The refusal is permanent rather than transient,
+which is what routes it into the bisecting rescue
+(`proxima_core::llm::embed_in_chunks`): the text is halved until the pieces
+fit and stored as one chunked embedding, with no request leaving the
+process until a piece is inside the bound.
+
+That coupling sets the **minimum of 4095 characters**
+(`proxima_core::llm::MIN_EMBED_INPUT_CAP_CHARS`) — the largest piece the
+split can emit. A lower cap would refuse pieces the split cannot make any
+smaller, turning a rescuable input into a permanently un-embedded one, so
+a cap below the floor fails at boot rather than at some later drain.
+
+Characters, not tokens: no tokenizer is provider-independent. Pick the
+value from your model's context window with room to spare — for a runner
+loaded at 16k tokens, `16384` characters is comfortably conservative.
 
 The model must return **1024-dimensional** vectors — the width of the
 `vector(1024)` column that is the substrate's single embedding space.
