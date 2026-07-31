@@ -151,7 +151,7 @@ pub(in crate::engine) mod tests {
         async fn ingest_fact_with_typed_sidecar(
             &self,
             _authorized: &AuthorizedFactWrite,
-            _sidecar_payload: &SidecarPayload,
+            _sidecar_payloads: &[SidecarPayload],
             _embedding_model_id: Option<&str>,
         ) -> Result<FactIngestOutcome, StorageError> {
             Err(StorageError::Internal(
@@ -162,7 +162,7 @@ pub(in crate::engine) mod tests {
         async fn ingest_fact_with_citation_and_typed_sidecar(
             &self,
             _authorized: &AuthorizedFactWithCitation,
-            _sidecar_payload: &SidecarPayload,
+            _sidecar_payloads: &[SidecarPayload],
             _embedding_model_id: Option<&str>,
         ) -> Result<FactIngestOutcome, StorageError> {
             Err(StorageError::Internal(
@@ -173,7 +173,7 @@ pub(in crate::engine) mod tests {
         async fn ingest_fact_with_citation_ref_and_typed_sidecar(
             &self,
             _authorized: &crate::verbs::fact_ingest::AuthorizedFactWithCitationRef,
-            _sidecar_payload: &SidecarPayload,
+            _sidecar_payloads: &[SidecarPayload],
             _embedding_model_id: Option<&str>,
         ) -> Result<FactIngestOutcome, StorageError> {
             Err(StorageError::Internal(

@@ -184,7 +184,7 @@ impl McpTool for RememberTool {
                     &authz,
                     draft,
                     remember_citation_drafts(citation)?,
-                    &SidecarPayload::fact(payload.clone()),
+                    std::slice::from_ref(&SidecarPayload::fact(payload.clone())),
                     embedding_model_id,
                 )
                 .await?
@@ -195,7 +195,7 @@ impl McpTool for RememberTool {
                 engine
                     .ingest_fact_with_typed_sidecar(
                         &authorized,
-                        &SidecarPayload::fact(payload.clone()),
+                        std::slice::from_ref(&SidecarPayload::fact(payload.clone())),
                         embedding_model_id,
                     )
                     .await?
@@ -225,7 +225,7 @@ async fn ingest_cited_fact(
     authz: &crate::AuthzContext,
     draft: FactWriteCommand,
     drafts: RememberCitationDrafts,
-    sidecar: &SidecarPayload,
+    sidecars: &[SidecarPayload],
     embedding_model_id: Option<&str>,
 ) -> Result<crate::FactIngestOutcome, McpToolError> {
     match drafts {
@@ -239,7 +239,7 @@ async fn ingest_cited_fact(
             Ok(engine
                 .ingest_fact_with_citation_and_typed_sidecar(
                     &authorized,
-                    sidecar,
+                    sidecars,
                     embedding_model_id,
                 )
                 .await?)
@@ -260,7 +260,7 @@ async fn ingest_cited_fact(
             Ok(engine
                 .ingest_fact_with_citation_ref_and_typed_sidecar(
                     &authorized,
-                    sidecar,
+                    sidecars,
                     embedding_model_id,
                 )
                 .await?)

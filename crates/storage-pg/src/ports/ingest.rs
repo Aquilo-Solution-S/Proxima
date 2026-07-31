@@ -26,7 +26,7 @@ impl FactIngestPort for PgStorage {
     async fn ingest_fact_with_typed_sidecar(
         &self,
         authorized: &AuthorizedFactWrite,
-        sidecar_payload: &SidecarPayload,
+        sidecar_payloads: &[SidecarPayload],
         embedding_model_id: Option<&str>,
     ) -> Result<FactIngestOutcome, StorageError> {
         // Retry the whole begin→body→commit on transient deadlock/
@@ -35,7 +35,7 @@ impl FactIngestPort for PgStorage {
         // `FnOnce` closure, this is safely re-runnable.
         with_bounded_retry(move || {
             let fact_sidecars = self.sidecars.clone();
-            let payload = sidecar_payload.clone();
+            let payloads = sidecar_payloads.to_vec();
             async move {
                 let mut tx = self.pool.begin().await.map_err(internal)?;
                 let outcome = verbs::fact_ingest::ingest_fact_with_sidecar_in_tx(
@@ -44,9 +44,13 @@ impl FactIngestPort for PgStorage {
                     embedding_model_id,
                     move |tx, outcome| {
                         Box::pin(async move {
-                            fact_sidecars
-                                .insert_memory_sidecar(tx, outcome.memory_id, &payload)
-                                .await
+                            for payload in &payloads {
+                                fact_sidecars
+                                    .insert_memory_sidecar(tx, outcome.memory_id, payload)
+                                    .await?;
+                            }
+
+                            Ok(())
                         })
                     },
                 )
@@ -61,7 +65,7 @@ impl FactIngestPort for PgStorage {
     async fn ingest_fact_with_citation_and_typed_sidecar(
         &self,
         authorized: &AuthorizedFactWithCitation,
-        sidecar_payload: &SidecarPayload,
+        sidecar_payloads: &[SidecarPayload],
         embedding_model_id: Option<&str>,
     ) -> Result<FactIngestOutcome, StorageError> {
         // Retry the whole begin→body→commit on transient deadlock/
@@ -69,7 +73,7 @@ impl FactIngestPort for PgStorage {
         with_bounded_retry(move || {
             let sidecars = self.sidecars.clone();
             let fact_sidecars = sidecars.clone();
-            let payload = sidecar_payload.clone();
+            let payloads = sidecar_payloads.to_vec();
             async move {
                 let mut tx = self.pool.begin().await.map_err(internal)?;
                 let outcome = verbs::fact_ingest::ingest_fact_with_citation_in_tx(
@@ -79,9 +83,13 @@ impl FactIngestPort for PgStorage {
                     embedding_model_id,
                     move |tx, outcome| {
                         Box::pin(async move {
-                            fact_sidecars
-                                .insert_memory_sidecar(tx, outcome.memory_id, &payload)
-                                .await
+                            for payload in &payloads {
+                                fact_sidecars
+                                    .insert_memory_sidecar(tx, outcome.memory_id, payload)
+                                    .await?;
+                            }
+
+                            Ok(())
                         })
                     },
                 )
@@ -96,7 +104,7 @@ impl FactIngestPort for PgStorage {
     async fn ingest_fact_with_citation_ref_and_typed_sidecar(
         &self,
         authorized: &AuthorizedFactWithCitationRef,
-        sidecar_payload: &SidecarPayload,
+        sidecar_payloads: &[SidecarPayload],
         embedding_model_id: Option<&str>,
     ) -> Result<FactIngestOutcome, StorageError> {
         // Retry the whole begin→body→commit on transient deadlock/
@@ -105,7 +113,7 @@ impl FactIngestPort for PgStorage {
         with_bounded_retry(move || {
             let sidecars = self.sidecars.clone();
             let fact_sidecars = sidecars.clone();
-            let payload = sidecar_payload.clone();
+            let payloads = sidecar_payloads.to_vec();
             async move {
                 let mut tx = self.pool.begin().await.map_err(internal)?;
                 let outcome = verbs::fact_ingest::ingest_fact_with_citation_ref_in_tx(
@@ -115,9 +123,13 @@ impl FactIngestPort for PgStorage {
                     embedding_model_id,
                     move |tx, outcome| {
                         Box::pin(async move {
-                            fact_sidecars
-                                .insert_memory_sidecar(tx, outcome.memory_id, &payload)
-                                .await
+                            for payload in &payloads {
+                                fact_sidecars
+                                    .insert_memory_sidecar(tx, outcome.memory_id, payload)
+                                    .await?;
+                            }
+
+                            Ok(())
                         })
                     },
                 )

@@ -446,7 +446,7 @@ where
         .await
         .map_err(|err| StorageError::Internal(err.to_string()))?;
     let sidecar_payload = SidecarPayload::fact(payload.clone());
-    pg.ingest_fact_with_typed_sidecar(&authorized, &sidecar_payload, None)
+    pg.ingest_fact_with_typed_sidecar(&authorized, std::slice::from_ref(&sidecar_payload), None)
         .await
 }
 
@@ -737,13 +737,21 @@ async fn replay_is_idempotent_and_does_not_mint_or_move_entity() {
 
         let sidecar_payload = SidecarPayload::fact(payload.clone());
         let first = pg
-            .ingest_fact_with_typed_sidecar(&authorized, &sidecar_payload, None)
+            .ingest_fact_with_typed_sidecar(
+                &authorized,
+                std::slice::from_ref(&sidecar_payload),
+                None,
+            )
             .await?;
         let fact_entity_id = memory_fact_entity_id(&pg, first.memory_id)
             .await?
             .expect("first row entity");
         let replay = pg
-            .ingest_fact_with_typed_sidecar(&authorized, &sidecar_payload, None)
+            .ingest_fact_with_typed_sidecar(
+                &authorized,
+                std::slice::from_ref(&sidecar_payload),
+                None,
+            )
             .await?;
 
         assert!(replay.idempotent_replay);
