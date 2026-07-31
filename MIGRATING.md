@@ -109,6 +109,20 @@ all three change what a query returns.
 exceeds the provider's input limit is stored as several chunk rows under one
 embedding version, where it previously went un-embedded entirely.
 
+**A derived memory whose text the embedder refuses is now written anyway.**
+`core_derive` and every `Engine::author_derived_authorized` caller used to
+fail the whole write — deterministically, on every retry — when one
+`/embeddings` call refused or crashed on the text, taking every model call
+already paid for upstream with it. The memory now lands with no vector and a
+pending embedding job enqueued in the same transaction, so the drain (which
+bisects over-limit input) supplies the vector; the response carries
+`embedding_deferred: true` and the memory is lexically findable but not
+semantically findable until a drain runs. A provider that is simply *down*
+still fails the write, so an outage cannot quietly produce a corpus of
+unembedded memories. Hosts that run no drain should call
+`Engine::drain_embedding_jobs` or `maintain-embeddings --drain` — see
+[scheduled maintenance](#scheduled-maintenance-changes).
+
 **Lexical search stems and drops English stopwords** (`simple` → `english`),
 in core and in the code flavor alike. Result *sets* change, not just
 ordering: a query of only stopwords no longer matches, and `running` now
@@ -257,6 +271,12 @@ failures; a genuinely over-limit input should stay terminal.
 | `proxima-code_open_file_revision` `max_text_bytes: 0` | `text: ""` | `InvalidInput` |
 | `proxima-code_search_chunks` default mode | lexical | **hybrid** |
 | `core_derive` auto-derived idempotency key | hashes body | hashes title + body + tags |
+| `core_derive` on an unembeddable body | tool error, nothing written | memory written, `embedding_deferred: true` |
+
+`core_derive`'s new `embedding_deferred` field is **omitted when false**, so
+an ordinary response is byte-identical to v0.0.6's. Present and `true`, it
+means the memory exists and semantic search will not find it until an
+embedding drain runs.
 
 Four of these need more than a line.
 
@@ -548,8 +568,12 @@ Every row here is a compile error until you act on it.
 | `GoalWriteBuildError::InvalidTitle` / `InvalidText` | now carry a `TrimmedLenViolation` payload |
 | `proxima_code::repos::erase_repo` | lost its unused `schemas` parameter |
 | `EmbedCaps` | new `max_input_chars` field — a struct literal no longer compiles; use `EmbedCaps::new(dim, matryoshka)` |
+| `AuthorDerivedRequest` | `embedding: Option<Vec<f32>>` + `embedding_model_id: Option<&str>` collapsed into one `embedding: DerivedEmbedding` |
+| `AuthorDerivedOutcome` | new `embedding_deferred: bool` — storage sets it when it enqueued a job instead of writing a vector |
+| `AuthorDerivedAuthorizedOutcome` | same new `embedding_deferred: bool` |
+| `proxima_storage_pg::verbs::derive_append::DerivedDraft` | same two fields collapsed into `embedding: DerivedEmbedding` |
 
-Four of these are more than a signature.
+Five of these are more than a signature.
 
 **`EmbedCaps` gained a field**, which breaks every struct literal:
 
@@ -576,6 +600,34 @@ and bisected into chunked embeddings instead. The floor is
 construction — see [docs/10 §Bounding embedding
 input](docs/10-configuration.md#bounding-embedding-input). Operators of
 `apps/proxima-mcp` set `PROXIMA_EMBED_MAX_INPUT_CHARS` instead.
+
+**The derived write's two embedding fields became one enum.** A custom
+`MemoryAuthoringPort` (or a flavor building a `DerivedDraft`) now reads:
+
+```rust
+// before
+(req.embedding.as_ref(), req.embedding_model_id)
+// after
+match &req.embedding {
+    DerivedEmbedding::None => { /* write no vector, enqueue nothing */ }
+    DerivedEmbedding::Ready { model_id, vector } => { /* write the vector */ }
+    DerivedEmbedding::Deferred { model_id } => {
+        // NEW, and required: enqueue an embedding job for (owner, kind,
+        // memory_id, model_id) in the SAME transaction as the row.
+    }
+}
+```
+
+A pair of `Option`s could spell two states that mean nothing, and the
+third — write the row, owe the vector — could not be spelled at all, which
+is why an unembeddable derived text was a permanently failing write. Flavor
+drafts that passed `embedding: None, embedding_model_id: None` become
+`embedding: DerivedEmbedding::None` and behave exactly as before.
+
+An implementation that ignores the `Deferred` arm compiles (it is a match
+arm, not a new method) but silently drops the memory's only route to a
+vector, so treat it as required work, not a rename. `PgStorage` users are
+unaffected.
 
 **`backfill_fact_embeddings` → `backfill_missing_embeddings`** is a widening,
 not a rename. It now enqueues missing embeddings for Facts **and** derived

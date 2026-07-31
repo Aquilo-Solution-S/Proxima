@@ -24,8 +24,10 @@ use crate::{
 /// Deliberately trivial and constant: the probe must be something no
 /// provider can reject on its merits, so that a failed probe means the
 /// provider is unavailable and a successful one means the refused batch's
-/// own contents are at fault.
-const TRANSIENT_BATCH_PROBE: &str = "ok";
+/// own contents are at fault. Shared with the derived-write path
+/// ([`crate::llm::embed_failure_blames_the_input`]) so the drain and the
+/// write ask the provider the same question.
+const TRANSIENT_BATCH_PROBE: &str = crate::llm::EMBED_LIVENESS_PROBE;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct EmbeddingDrainOutcome {

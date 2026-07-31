@@ -482,11 +482,16 @@ Four contract points that are easy to get wrong:
   appending a duplicate. Use `supersedes` when the new output genuinely
   replaces an earlier one; that also writes a `core/supersedes` edge in
   the same transaction.
-- **Embedding is synchronous here.** The engine embeds `text` inside the
-  write, so a provider failure fails the write. Facts take the other
-  path — a durable `embedding_jobs` row, batched and retried by a
-  background worker. A flavor deriving many memories should checkpoint
-  per output, not per batch.
+- **Embedding is synchronous here, but a refused text is not a lost
+  write.** The engine embeds `text` inside the write. When the provider
+  refuses that text — or dies on it — and still answers a liveness probe,
+  the memory lands with no vector and a durable `embedding_jobs` row
+  enqueued in the same transaction, exactly the path a Fact always takes,
+  and the outcome's `embedding_deferred` says so. The memory is lexically
+  findable immediately and semantically findable once a drain runs (which
+  is also what bisects an over-limit text into chunks). Only a provider
+  that is genuinely unavailable fails the write. A flavor deriving many
+  memories should still checkpoint per output, not per batch.
 - **`text` is the whole semantic surface.** It lands verbatim in
   `memories.text`, which is the only string ever embedded;
   `search_projection()` adds lexical reach over sidecar columns but never

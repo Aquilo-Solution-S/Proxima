@@ -3,7 +3,9 @@ mod common;
 
 use std::sync::Arc;
 
-use common::{ConstantEmbedding, drop_db, fresh_pg, owner_fixture};
+use common::{
+    ConstantEmbedding, EmbedRefusal, RefusingEmbedding, drop_db, fresh_pg, owner_fixture,
+};
 use proxima_core::llm::EMBEDDING_DIM;
 use proxima_core::verbs::fact_ingest::FactWriteCommand;
 use proxima_core::{
@@ -499,6 +501,260 @@ async fn author_derived_authorized_enforces_intra_owner_same_kind_supersedes()
     drop(pg);
     let _ = drop_db(&db_name).await;
     result
+}
+
+/// Long enough that [`RefusingEmbedding`] refuses it and short enough that
+/// its length is obviously not the point — the fixture's threshold is.
+const UNEMBEDDABLE_BODY: &str = "a derived body no local runner will take";
+
+/// The threshold the fixtures refuse above. Well under
+/// [`UNEMBEDDABLE_BODY`] and well over the engine's liveness probe, so
+/// "refuses the real text" and "answers the probe" are independent.
+const REFUSES_ABOVE_CHARS: usize = 8;
+
+/// Author one Abstraction through the public verb with `client` wired as
+/// the engine's embedder. Hands the engine back so a test can drain, and
+/// the result unresolved so a test can assert on the failure.
+async fn derive_once_with(
+    pg: &proxima_storage_pg::PgStorage,
+    owner: Owner,
+    client: Arc<dyn proxima_core::llm::EmbeddingClient>,
+    body: &str,
+) -> (
+    proxima_core::Engine,
+    MemoryId,
+    Result<proxima_core::AuthorDerivedAuthorizedOutcome, proxima_core::ProtocolError>,
+) {
+    let source = insert_source_abstraction(pg, &owner)
+        .await
+        .expect("source abstraction inserts");
+    let engine = proxima_core::Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests())
+        .with_storage_ports(Arc::new(pg.clone()).storage_ports())
+        .with_embed(client);
+    let relation = engine
+        .registry()
+        .resolve_relation(CORE_DERIVED_FROM_RELATION)
+        .expect("core relation registered");
+    let memory_id = MemoryId::new(Uuid::now_v7());
+    let edges = [proxima_core::AuthorDerivedEdgeInput {
+        relation,
+        source_kind: EntityKind::Abstraction,
+        source_memory_id: memory_id,
+        target_kind: EntityKind::Abstraction,
+        target_memory_id: source,
+        authorship_kind: EdgeAuthorshipKind::OperatorAtoA,
+        authorship_owner_memory_id: Some(source),
+    }];
+    let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
+    let outcome = engine
+        .author_derived_authorized(
+            &authz,
+            proxima_core::AuthorDerivedRequestInput {
+                edges: &edges,
+                text: body.to_string(),
+                ..derived_authorized_request(memory_id, owner, EntityKind::Abstraction, body, None)
+            },
+        )
+        .await;
+    (engine, memory_id, outcome)
+}
+
+/// `(status, model_id)` of every embedding job standing against a memory.
+async fn embedding_jobs_for(
+    pg: &proxima_storage_pg::PgStorage,
+    memory_id: MemoryId,
+) -> Result<Vec<(String, String, EntityKind)>, sqlx::Error> {
+    sqlx::query_as(
+        "SELECT status::text, model_id, entity_kind
+           FROM proxima_core.embedding_jobs
+          WHERE entity_id = $1",
+    )
+    .bind(memory_id.into_inner())
+    .fetch_all(pg.pool_for_tests())
+    .await
+}
+
+async fn embedding_row_count(
+    pg: &proxima_storage_pg::PgStorage,
+    memory_id: MemoryId,
+) -> Result<i64, sqlx::Error> {
+    sqlx::query_scalar("SELECT count(*) FROM proxima_core.embeddings WHERE entity_id = $1")
+        .bind(memory_id.into_inner())
+        .fetch_one(pg.pool_for_tests())
+        .await
+}
+
+/// The defect, at its narrowest: the derive phase of a corpus ingest died
+/// on one over-long section unit, discarding 326 written units and twenty
+/// minutes of GPU already spent upstream, because the derived write embeds
+/// synchronously and had no rescue. Facts have survived this since ingest
+/// existed — they enqueue a job and let the drain (which bisects
+/// over-limit input) deal with it. Nothing tested this path with a failing
+/// embedder at all, which is how the asymmetry shipped.
+#[tokio::test]
+async fn a_permanently_refused_derived_text_is_still_written()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (pg, db_name) = fresh_pg().await;
+    let owner = owner_fixture();
+
+    let (engine, memory_id, outcome) = derive_once_with(
+        &pg,
+        owner,
+        Arc::new(RefusingEmbedding::provider_up(
+            "test-embed",
+            REFUSES_ABOVE_CHARS,
+            EmbedRefusal::Permanent,
+        )),
+        UNEMBEDDABLE_BODY,
+    )
+    .await;
+
+    let outcome = outcome.expect("a text one provider call refuses is not a failed write");
+    assert_eq!(outcome.memory_id, memory_id);
+    assert!(
+        outcome.embedding_deferred,
+        "a memory that landed with no vector must say so, not only in a log line",
+    );
+    assert_eq!(memory_count(&pg, memory_id).await?, 1);
+    assert_eq!(embedding_row_count(&pg, memory_id).await?, 0);
+    assert_eq!(
+        embedding_jobs_for(&pg, memory_id).await?,
+        vec![(
+            "pending".to_string(),
+            "test-embed".to_string(),
+            EntityKind::Abstraction,
+        )],
+        "the vector must be owed by a job row, in the same transaction as the memory",
+    );
+
+    drop(engine);
+    drop(pg);
+    drop_db(&db_name).await?;
+    Ok(())
+}
+
+/// The error production actually saw is *not* the clean one. A local
+/// runner that an over-long input kills answers `400 {"error": "… EOF"}`,
+/// which is classified transient because nothing looked at the input — so
+/// keying the rescue on `EmbedPermanent` alone would have left the
+/// reported failure unfixed. The provider answering a liveness probe right
+/// afterwards is what attributes the refusal to the text.
+#[tokio::test]
+async fn a_transient_refusal_from_a_live_provider_defers_instead_of_failing()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (pg, db_name) = fresh_pg().await;
+    let owner = owner_fixture();
+
+    let (engine, memory_id, outcome) = derive_once_with(
+        &pg,
+        owner,
+        Arc::new(RefusingEmbedding::provider_up(
+            "test-embed",
+            REFUSES_ABOVE_CHARS,
+            EmbedRefusal::Transient,
+        )),
+        UNEMBEDDABLE_BODY,
+    )
+    .await;
+
+    assert!(
+        outcome
+            .expect("a live provider refusing one text is not a failed write")
+            .embedding_deferred,
+    );
+    assert_eq!(memory_count(&pg, memory_id).await?, 1);
+    assert_eq!(embedding_jobs_for(&pg, memory_id).await?.len(), 1);
+
+    drop(engine);
+    drop(pg);
+    drop_db(&db_name).await?;
+    Ok(())
+}
+
+/// Deferring is only worth anything if something collects the debt. The
+/// enqueued job must be claimable by the drain that owns the bisecting
+/// rescue, and a drain against a working client must leave the memory with
+/// the vector the write could not produce.
+#[tokio::test]
+async fn a_deferred_derived_embedding_is_drained_into_a_vector()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (pg, db_name) = fresh_pg().await;
+    let owner = owner_fixture();
+
+    let (engine, memory_id, outcome) = derive_once_with(
+        &pg,
+        owner,
+        Arc::new(RefusingEmbedding::provider_up(
+            "test-embed",
+            REFUSES_ABOVE_CHARS,
+            EmbedRefusal::Permanent,
+        )),
+        UNEMBEDDABLE_BODY,
+    )
+    .await;
+    assert!(outcome?.embedding_deferred);
+
+    // Same model id, or the claim query would not see the job: the drain
+    // is scoped to the currently active embedding model.
+    engine
+        .set_embed_client(Some(Arc::new(ConstantEmbedding::prefixed(
+            "test-embed",
+            &[12.0, 1.0, 2.0],
+        ))))
+        .await;
+    let drained = engine.drain_embedding_jobs(16).await?;
+    assert_eq!(drained.processed, 1);
+    assert_eq!(drained.failed, 0);
+
+    assert_embedding_row(pg.pool_for_tests(), memory_id.into_inner()).await?;
+    assert!(
+        embedding_jobs_for(&pg, memory_id).await?.is_empty(),
+        "a completed job is deleted, not left claimable forever",
+    );
+
+    drop(engine);
+    drop(pg);
+    drop_db(&db_name).await?;
+    Ok(())
+}
+
+/// The other side of the classification, and the reason it cannot simply
+/// be "defer on any error". A provider that is merely down says nothing
+/// about the text, and quietly writing every derived memory of a long run
+/// with no vector would trade one loud failure for a silent corpus of
+/// half-written memories. The probe fails here too, so the write fails —
+/// exactly as it did before this change.
+#[tokio::test]
+async fn a_provider_that_is_down_still_fails_the_derived_write()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (pg, db_name) = fresh_pg().await;
+    let owner = owner_fixture();
+
+    let (engine, memory_id, outcome) = derive_once_with(
+        &pg,
+        owner,
+        Arc::new(RefusingEmbedding::provider_down(
+            "test-embed",
+            EmbedRefusal::Transient,
+        )),
+        UNEMBEDDABLE_BODY,
+    )
+    .await;
+
+    let err = outcome.expect_err("an unavailable provider must not mint unembedded memories");
+    assert_eq!(err.code, ErrorCode::Internal);
+    assert!(
+        err.message.contains("embed derived memory text"),
+        "unexpected message: {}",
+        err.message,
+    );
+    assert_eq!(memory_count(&pg, memory_id).await?, 0);
+    assert!(embedding_jobs_for(&pg, memory_id).await?.is_empty());
+
+    drop(engine);
+    drop(pg);
+    drop_db(&db_name).await?;
+    Ok(())
 }
 
 async fn assert_embedding_row(

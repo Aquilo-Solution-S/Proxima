@@ -7,7 +7,7 @@
 mod core_test_fixtures;
 
 #[allow(unused_imports)]
-pub use core_test_fixtures::{ConstantEmbedding, owner_fixture};
+pub use core_test_fixtures::{ConstantEmbedding, EmbedRefusal, RefusingEmbedding, owner_fixture};
 #[allow(unused_imports)]
 pub use proxima_pg_testkit::{
     create_db, create_db_from_template, db_url, drop_db, ensure_template, unique_db_name,

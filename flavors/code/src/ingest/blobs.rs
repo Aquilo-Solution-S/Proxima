@@ -1,9 +1,9 @@
 use proxima_core::storage_ports::OwnerWritePermit;
 use proxima_core::verbs::fact_ingest::{CitationSpec, FactIngestOutcome};
 use proxima_core::{
-    AbstractionPayload, CORE_DERIVED_FROM_RELATION, DerivedEdgeSpec, EdgeAuthorshipKind,
-    EntityKind, FactPayload, InputContractId, MemoryId, MemoryOperatorKind, OperatorId, Owner,
-    RegisteredRelation, SchemaVersion, SourceBatchId,
+    AbstractionPayload, CORE_DERIVED_FROM_RELATION, DerivedEdgeSpec, DerivedEmbedding,
+    EdgeAuthorshipKind, EntityKind, FactPayload, InputContractId, MemoryId, MemoryOperatorKind,
+    OperatorId, Owner, RegisteredRelation, SchemaVersion, SourceBatchId,
 };
 use proxima_storage_pg::sidecars::PgMemorySidecar;
 use proxima_storage_pg::verbs::derive_append::{
@@ -228,8 +228,7 @@ pub async fn append_code_slice(
         // via its column default, and passing it here (not None) keeps
         // 'english' registered as an active language on every ingest.
         lexical_language: Some(crate::payloads::CODE_LEXICAL_LANGUAGE),
-        embedding: None,
-        embedding_model_id: None,
+        embedding: DerivedEmbedding::None,
     };
     let registry = schema_registry();
     let relation = registry
