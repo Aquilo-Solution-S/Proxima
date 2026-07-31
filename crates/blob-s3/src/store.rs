@@ -2,8 +2,9 @@ use std::time::Duration;
 
 use aws_sdk_s3::presigning::PresigningConfig;
 use aws_sdk_s3::types::{Delete, ObjectIdentifier};
+use proxima_core::citations::UploadedBlobPayload;
 use proxima_core::storage_ports::{
-    CitedBlobPort, CitedBlobReadUrl, CitedBlobUploadAborted, CitedBlobUploadCompleted,
+    CitedBlobPort, CitedBlobReadUrl, CitedBlobStaged, CitedBlobUploadAborted,
     CitedBlobUploadHeader, CitedBlobUploadPrepared, CitedObjectErasePort,
 };
 use proxima_core::{
@@ -49,19 +50,6 @@ pub struct PresignedHeaderTs {
 pub struct CitedBlobUploadCompleteTs {
     pub owner: OwnerRef,
     pub upload_id: String,
-}
-
-/// Tauri/TS-compatible cited-blob completion response.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct CitedBlobUploadCompleteOutcomeTs {
-    pub cited_object_id: String,
-    pub schema: String,
-    pub content_hash: String,
-    pub sha256: String,
-    pub byte_len: u64,
-    pub mime: String,
-    pub filename: String,
-    pub idempotent_replay: bool,
 }
 
 /// Tauri/TS-compatible cited-blob abort request.
@@ -234,16 +222,27 @@ impl CitedBlobStore {
         })
     }
 
-    /// Complete a pending upload and persist the cited-object row.
+    /// Verify a pending upload's bytes and move them to their canonical
+    /// content-addressed key, recording nothing.
+    ///
+    /// Everything this returns is destined for ONE database transaction
+    /// that the caller runs: the cited object, its typed row, and the
+    /// Fact that records the arrival. Staging deliberately stops short of
+    /// that transaction rather than opening one of its own — which is the
+    /// reason completion is split at all.
+    ///
+    /// The pending object survives this call. It is the only copy a retry
+    /// can re-read if the caller's transaction fails; `finish_upload`
+    /// removes it once the artefact is recorded.
     ///
     /// # Errors
     /// Returns `BlobError` when the upload is missing, expired,
     /// malformed, or any S3/database operation fails.
-    pub async fn complete_upload(
+    pub async fn stage_upload(
         &self,
         ctx: &AuthzContext,
         req: CitedBlobUploadCompleteTs,
-    ) -> Result<CitedBlobUploadCompleteOutcomeTs, BlobError> {
+    ) -> Result<CitedBlobStaged, BlobError> {
         let owner = req.owner();
         ensure_owner_write_access(ctx, &owner)?;
         let upload_id = parse_uuid(&req.upload_id)?;
@@ -255,7 +254,11 @@ impl CitedBlobStore {
                         "completed upload is missing cited_object_id".into(),
                     ));
                 };
-                return load_completed_blob(&self.pool, &owner, cited_object_id, true).await;
+                // Already in the corpus. Read back what was stored rather
+                // than re-deriving it: the stored row is the truth about
+                // this artefact, and re-hashing would need a pending
+                // object that `finish_upload` has already deleted.
+                return load_staged_payload(&self.pool, &owner, cited_object_id).await;
             }
             "aborted" => {
                 return Err(BlobError::State("upload is aborted".into()));
@@ -312,42 +315,101 @@ impl CitedBlobStore {
             .and_then(|r| r.e_tag())
             .map(ToString::to_string);
 
-        // Persist the canonical blob BEFORE deleting the pending object. If
-        // persistence fails, the pending object must survive so the client can
-        // retry (the copy + persist are idempotent on the content hash). Deleting
-        // first would orphan the canonical blob in S3 and leave the upload
-        // unrecoverable on failure.
-        let completed = persist_completed_blob(
-            &self.pool,
-            &owner,
-            upload_id,
-            &row,
-            &canonical_key,
-            &streamed,
-            etag.as_deref(),
-        )
-        .await?;
+        Ok(CitedBlobStaged {
+            payload: UploadedBlobPayload {
+                content_hash: streamed.blake3,
+                bucket: row.bucket,
+                object_key: canonical_key,
+                sha256: streamed.sha256,
+                byte_len: streamed.byte_len,
+                mime: row.mime,
+                filename: row.filename,
+                etag,
+                uploaded_at: OffsetDateTime::now_utc(),
+            },
+            already_completed: None,
+        })
+    }
 
-        // Canonical blob is recorded; the pending object is now redundant. A
-        // delete failure here is idempotently retryable. There is no in-process
-        // pending-expiry sweep: leftover `pending/` objects (from a crashed
-        // complete, an abandoned prepare, or an expired upload) MUST be reclaimed
-        // by a mandatory S3 lifecycle-expiration rule on the `pending/` prefix
-        // (see docs/15 deployment). Do not rely on application code to GC them.
-        client
+    /// Close out an upload whose artefact is now recorded: mark the row
+    /// completed against `cited_object_id`, then drop the pending object.
+    ///
+    /// The order matters. The canonical blob is already referenced by a
+    /// committed cited object, so the pending copy is redundant — but only
+    /// once the row says so. Deleting first would leave a retry with
+    /// nothing to re-read if the mark failed.
+    ///
+    /// There is no in-process pending-expiry sweep: leftover `pending/`
+    /// objects (from a crashed complete, an abandoned prepare, or an
+    /// expired upload) MUST be reclaimed by a mandatory S3
+    /// lifecycle-expiration rule on the `pending/` prefix (see docs/15
+    /// deployment). Do not rely on application code to GC them.
+    ///
+    /// # Errors
+    /// Returns `BlobError` when the upload is missing for `owner`, is not
+    /// finishable from its current status, or any S3/database operation
+    /// fails.
+    pub async fn finish_upload(
+        &self,
+        ctx: &AuthzContext,
+        owner: OwnerRef,
+        upload_id: &str,
+        cited_object_id: Uuid,
+    ) -> Result<(), BlobError> {
+        ensure_owner_write_access(ctx, &owner)?;
+        let upload_id = parse_uuid(upload_id)?;
+        let row = load_upload(&self.pool, &owner, upload_id).await?;
+        match row.status.as_str() {
+            // Idempotent: the same upload finished twice is not an error.
+            // Finishing it against a DIFFERENT artefact would mean
+            // something else was staged under this upload id, which is.
+            "completed" => {
+                if row.cited_object_id != Some(cited_object_id) {
+                    return Err(BlobError::State(
+                        "upload already completed against a different cited object".into(),
+                    ));
+                }
+            }
+            "pending" => {
+                let (owner_kind, owner_id) = db_owner_columns(&owner);
+                let rows_affected = sqlx::query(
+                    "UPDATE proxima_core.cited_object_uploads \
+                        SET status = 'completed', cited_object_id = $1, completed_at = now() \
+                      WHERE owner_kind = $2 \
+                        AND owner_id IS NOT DISTINCT FROM $3 \
+                        AND upload_id = $4 \
+                        AND status = 'pending'",
+                )
+                .bind(cited_object_id)
+                .bind(owner_kind)
+                .bind(owner_id)
+                .bind(upload_id)
+                .execute(&self.pool)
+                .await
+                .map_err(BlobError::Db)?
+                .rows_affected();
+                if rows_affected == 0 {
+                    return Err(BlobError::State(
+                        "upload no longer pending (aborted/expired)".into(),
+                    ));
+                }
+            }
+            other => {
+                return Err(BlobError::State(format!(
+                    "upload cannot be finished from status {other}"
+                )));
+            }
+        }
+
+        self.client()
+            .await?
             .delete_object()
             .bucket(&row.bucket)
             .key(&row.object_key)
             .send()
             .await
             .map_err(|e| BlobError::S3(format!("delete pending upload failed: {e}")))?;
-        load_completed_blob(
-            &self.pool,
-            &owner,
-            completed.cited_object_id,
-            completed.idempotent_replay,
-        )
-        .await
+        Ok(())
     }
 
     /// Abort a pending upload.
@@ -534,13 +596,13 @@ impl CitedBlobPort for CitedBlobStore {
         })
     }
 
-    async fn complete_upload(
+    async fn stage_upload(
         &self,
         authz: &AuthzContext,
         owner: OwnerRef,
         upload_id: &str,
-    ) -> Result<CitedBlobUploadCompleted, StorageError> {
-        let outcome = Self::complete_upload(
+    ) -> Result<CitedBlobStaged, StorageError> {
+        Self::stage_upload(
             self,
             authz,
             CitedBlobUploadCompleteTs {
@@ -549,17 +611,19 @@ impl CitedBlobPort for CitedBlobStore {
             },
         )
         .await
-        .map_err(blob_error_to_storage)?;
-        Ok(CitedBlobUploadCompleted {
-            cited_object_id: outcome.cited_object_id,
-            schema: outcome.schema,
-            content_hash: outcome.content_hash,
-            sha256: outcome.sha256,
-            byte_len: outcome.byte_len,
-            mime: outcome.mime,
-            filename: outcome.filename,
-            idempotent_replay: outcome.idempotent_replay,
-        })
+        .map_err(blob_error_to_storage)
+    }
+
+    async fn finish_upload(
+        &self,
+        authz: &AuthzContext,
+        owner: OwnerRef,
+        upload_id: &str,
+        cited_object_id: Uuid,
+    ) -> Result<(), StorageError> {
+        Self::finish_upload(self, authz, owner, upload_id, cited_object_id)
+            .await
+            .map_err(blob_error_to_storage)
     }
 
     async fn abort_upload(
@@ -754,12 +818,6 @@ struct StreamedObject {
 }
 
 #[derive(Debug, Clone)]
-struct CompletedBlob {
-    cited_object_id: Uuid,
-    idempotent_replay: bool,
-}
-
-#[derive(Debug, Clone)]
 struct BlobLocation {
     bucket: String,
     object_key: String,
@@ -872,108 +930,20 @@ async fn hash_uploaded_object(
     })
 }
 
-#[allow(clippy::too_many_arguments)]
-async fn persist_completed_blob(
-    pool: &sqlx::PgPool,
-    owner: &Owner,
-    upload_id: Uuid,
-    upload: &UploadRow,
-    canonical_key: &str,
-    streamed: &StreamedObject,
-    etag: Option<&str>,
-) -> Result<CompletedBlob, BlobError> {
-    let (owner_kind, owner_id) = db_owner_columns(owner);
-    let mut tx = pool.begin().await.map_err(BlobError::Db)?;
-
-    let row = sqlx::query(
-        "WITH ins AS ( \
-             INSERT INTO proxima_core.cited_objects \
-                 (cited_object_id, schema_id, owner_kind, \
-                  owner_id, content_hash) \
-             VALUES ($1, $2, $3, $4, $5) \
-             ON CONFLICT (owner_kind, owner_id, schema_id, content_hash) \
-             DO NOTHING \
-             RETURNING cited_object_id \
-         ) \
-         SELECT cited_object_id, false AS idempotent_replay FROM ins \
-         UNION ALL \
-         SELECT cited_object_id, true AS idempotent_replay \
-           FROM proxima_core.cited_objects \
-          WHERE owner_kind = $3 \
-            AND owner_id IS NOT DISTINCT FROM $4 \
-            AND schema_id = $2 \
-            AND content_hash = $5 \
-            AND NOT EXISTS (SELECT 1 FROM ins) \
-          LIMIT 1",
-    )
-    .bind(Uuid::now_v7())
-    .bind(UPLOADED_BLOB_SCHEMA_ID)
-    .bind(owner_kind)
-    .bind(owner_id)
-    .bind(&streamed.blake3[..])
-    .fetch_one(tx.as_mut())
-    .await
-    .map_err(BlobError::Db)?;
-    let cited_object_id: Uuid = row.get("cited_object_id");
-    let idempotent_replay: bool = row.get("idempotent_replay");
-
-    sqlx::query(
-        "INSERT INTO proxima_core.cited_uploaded_blob_v1 \
-            (cited_object_id, bucket, object_key, sha256, byte_len, mime, filename, etag) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8) \
-         ON CONFLICT (cited_object_id) DO NOTHING",
-    )
-    .bind(cited_object_id)
-    .bind(&upload.bucket)
-    .bind(canonical_key)
-    .bind(&streamed.sha256[..])
-    .bind(i64::try_from(streamed.byte_len).unwrap_or(i64::MAX))
-    .bind(&upload.mime)
-    .bind(&upload.filename)
-    .bind(etag)
-    .execute(tx.as_mut())
-    .await
-    .map_err(BlobError::Db)?;
-
-    let rows_affected = sqlx::query(
-        "UPDATE proxima_core.cited_object_uploads \
-            SET status = 'completed', cited_object_id = $1, completed_at = now() \
-          WHERE owner_kind = $2 \
-            AND owner_id IS NOT DISTINCT FROM $3 \
-            AND upload_id = $4 \
-            AND status = 'pending'",
-    )
-    .bind(cited_object_id)
-    .bind(owner_kind)
-    .bind(owner_id)
-    .bind(upload_id)
-    .execute(tx.as_mut())
-    .await
-    .map_err(BlobError::Db)?
-    .rows_affected();
-    if rows_affected == 0 {
-        return Err(BlobError::State(
-            "upload no longer pending (aborted/expired)".into(),
-        ));
-    }
-
-    tx.commit().await.map_err(BlobError::Db)?;
-    Ok(CompletedBlob {
-        cited_object_id,
-        idempotent_replay,
-    })
-}
-
-async fn load_completed_blob(
+/// Read back the typed description of an artefact already in the corpus.
+///
+/// Used when an upload is staged a second time: the pending object is
+/// gone, so the stored row is the only remaining truth about the bytes —
+/// and, being content-addressed, it is the right one.
+async fn load_staged_payload(
     pool: &sqlx::PgPool,
     owner: &Owner,
     cited_object_id: Uuid,
-    idempotent_replay: bool,
-) -> Result<CitedBlobUploadCompleteOutcomeTs, BlobError> {
+) -> Result<CitedBlobStaged, BlobError> {
     let (owner_kind, owner_id) = db_owner_columns(owner);
     let row = sqlx::query(
-        "SELECT encode(co.content_hash, 'hex') AS content_hash, \
-                encode(b.sha256, 'hex') AS sha256, b.byte_len, b.mime, b.filename \
+        "SELECT co.content_hash, b.bucket, b.object_key, b.sha256, b.byte_len, \
+                b.mime, b.filename, b.etag, b.uploaded_at \
            FROM proxima_core.cited_objects co \
            JOIN proxima_core.cited_uploaded_blob_v1 b USING (cited_object_id) \
           WHERE co.cited_object_id = $1 \
@@ -989,17 +959,29 @@ async fn load_completed_blob(
     .await
     .map_err(BlobError::Db)?
     .ok_or_else(|| BlobError::State("cited object not found for Owner".into()))?;
+
     let byte_len: i64 = row.get("byte_len");
-    Ok(CitedBlobUploadCompleteOutcomeTs {
-        cited_object_id: cited_object_id.to_string(),
-        schema: UPLOADED_BLOB_SCHEMA_ID.to_string(),
-        content_hash: row.get("content_hash"),
-        sha256: row.get("sha256"),
-        byte_len: u64::try_from(byte_len).unwrap_or(u64::MAX),
-        mime: row.get("mime"),
-        filename: row.get("filename"),
-        idempotent_replay,
+    Ok(CitedBlobStaged {
+        payload: UploadedBlobPayload {
+            content_hash: hash32(&row.get::<Vec<u8>, _>("content_hash"), "content_hash")?,
+            bucket: row.get("bucket"),
+            object_key: row.get("object_key"),
+            sha256: hash32(&row.get::<Vec<u8>, _>("sha256"), "sha256")?,
+            byte_len: u64::try_from(byte_len).unwrap_or(u64::MAX),
+            mime: row.get("mime"),
+            filename: row.get("filename"),
+            etag: row.get("etag"),
+            uploaded_at: row.get("uploaded_at"),
+        },
+        already_completed: Some(cited_object_id),
     })
+}
+
+/// A stored 32-byte digest. A wrong width here means the row was written
+/// by something other than this lane, so it is a fault, not a truncation.
+fn hash32(bytes: &[u8], field: &str) -> Result<[u8; 32], BlobError> {
+    <[u8; 32]>::try_from(bytes)
+        .map_err(|_| BlobError::State(format!("stored {field} is not 32 bytes")))
 }
 
 async fn load_blob_location(

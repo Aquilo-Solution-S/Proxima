@@ -1,48 +1,48 @@
-//! An upload leaves a Fact behind, and the same file leaves exactly one.
+//! An upload is one write: the artefact and the record of its arrival.
 //!
-//! The blob store is faked, but content-addressed exactly as the real one
-//! is: it writes the same two rows `persist_completed_blob` writes, on the
-//! same `(owner_kind, owner_id, schema_id, content_hash)` conflict target.
-//! A permissive fake — one that minted a fresh cited object per call —
-//! would let every assertion here pass under an assumption production does
-//! not make, which is the whole property under test.
+//! The blob store is faked down to what it now actually does — verify and
+//! stage bytes, then be told the id they were recorded under. It no longer
+//! needs to imitate a content-addressed upsert, because the upsert is not
+//! its job any more; the substrate performs it, which is what these tests
+//! check.
 //!
 //! Faked rather than real S3 so this runs on the default
 //! `cargo test --workspace`; the real store's roundtrip is covered in
 //! `proxima-blob-s3`.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 mod common;
 
 use common::{ConstantEmbedding, drop_db, fresh_pg};
+use proxima_core::citations::UploadedBlobPayload;
 use proxima_core::engine::Engine;
 use proxima_core::storage_ports::{
-    CitedBlobPort, CitedBlobReadUrl, CitedBlobUploadAborted, CitedBlobUploadCompleted,
+    CitedBlobPort, CitedBlobReadUrl, CitedBlobStaged, CitedBlobUploadAborted,
     CitedBlobUploadPrepared,
 };
 use proxima_core::{
-    AuthPath, AuthzContext, FlavorRegistry, Owner, OwnerRef, StorageError, UPLOADED_BLOB_SCHEMA_ID,
-    UserId,
+    AuthPath, AuthzContext, FactPayload, FlavorRegistry, Owner, OwnerRef, PayloadKeyBuilder,
+    SidecarPayload, StorageError, UserId,
 };
 use proxima_storage_pg::PgStorage;
 
 const MODEL: &str = "test-upload-embed";
 
-/// A blob store that has already committed its transaction — which is
-/// precisely the state `complete_upload_as_fact` inherits.
-struct CommittedBlobs {
-    pool: sqlx::PgPool,
-    /// Bytes keyed by `upload_id`, so one fake can serve several uploads
-    /// and a caller can re-complete the same one.
+/// A blob store that has staged its bytes and recorded nothing.
+struct StagingBlobs {
+    /// Bytes keyed by `upload_id`.
     pending: std::collections::HashMap<String, (&'static str, &'static [u8])>,
+    /// Every `finish_upload` this store was told to perform. Empty means
+    /// the caller never got far enough to record anything.
+    finished: Mutex<Vec<(String, uuid::Uuid)>>,
 }
 
-impl CommittedBlobs {
-    fn new(pool: sqlx::PgPool) -> Self {
+impl StagingBlobs {
+    fn new() -> Self {
         Self {
-            pool,
             pending: std::collections::HashMap::new(),
+            finished: Mutex::new(Vec::new()),
         }
     }
 
@@ -50,10 +50,14 @@ impl CommittedBlobs {
         self.pending.insert(upload_id.to_string(), (filename, body));
         self
     }
+
+    fn finished(&self) -> Vec<(String, uuid::Uuid)> {
+        self.finished.lock().expect("lock").clone()
+    }
 }
 
 #[async_trait::async_trait]
-impl CitedBlobPort for CommittedBlobs {
+impl CitedBlobPort for StagingBlobs {
     async fn prepare_upload(
         &self,
         _authz: &AuthzContext,
@@ -65,84 +69,45 @@ impl CitedBlobPort for CommittedBlobs {
         unimplemented!("the fixture prepares its uploads up front")
     }
 
-    async fn complete_upload(
+    async fn stage_upload(
         &self,
         _authz: &AuthzContext,
-        owner: OwnerRef,
+        _owner: OwnerRef,
         upload_id: &str,
-    ) -> Result<CitedBlobUploadCompleted, StorageError> {
+    ) -> Result<CitedBlobStaged, StorageError> {
         let (filename, body) = *self
             .pending
             .get(upload_id)
             .ok_or_else(|| StorageError::ConstraintViolation(format!("no upload {upload_id}")))?;
-        let blake3 = *blake3::hash(body).as_bytes();
-        let (owner_kind, owner_id) = owner.columns();
-
-        // The same upsert the real store performs: content-addressed, so
-        // the same bytes under this owner resolve to the one cited object.
-        let row: (uuid::Uuid, bool) = sqlx::query_as(
-            "WITH ins AS (
-                 INSERT INTO proxima_core.cited_objects
-                     (cited_object_id, schema_id, owner_kind, owner_id, content_hash)
-                 VALUES ($1, $2, $3, $4, $5)
-                 ON CONFLICT (owner_kind, owner_id, schema_id, content_hash) DO NOTHING
-                 RETURNING cited_object_id
-             )
-             SELECT cited_object_id, false FROM ins
-             UNION ALL
-             SELECT cited_object_id, true
-               FROM proxima_core.cited_objects
-              WHERE owner_kind = $3
-                AND owner_id IS NOT DISTINCT FROM $4
-                AND schema_id = $2
-                AND content_hash = $5
-                AND NOT EXISTS (SELECT 1 FROM ins)
-              LIMIT 1",
-        )
-        .bind(uuid::Uuid::now_v7())
-        .bind(UPLOADED_BLOB_SCHEMA_ID)
-        .bind(owner_kind)
-        .bind(owner_id)
-        .bind(&blake3[..])
-        .fetch_one(&self.pool)
-        .await
-        .map_err(|err| StorageError::Internal(err.to_string()))?;
-
-        sqlx::query(
-            "INSERT INTO proxima_core.cited_uploaded_blob_v1
-                (cited_object_id, bucket, object_key, sha256, byte_len, mime, filename)
-             VALUES ($1, 'test-bucket', $2, $3, $4, 'application/pdf', $5)
-             ON CONFLICT (cited_object_id) DO NOTHING",
-        )
-        .bind(row.0)
-        .bind(hex::encode(blake3))
-        .bind(&blake3[..])
-        .bind(i64::try_from(body.len()).expect("test body fits i64"))
-        .bind(filename)
-        .execute(&self.pool)
-        .await
-        .map_err(|err| StorageError::Internal(err.to_string()))?;
-
-        // The store reports what it HOLDS, so a replay reports the
-        // filename of the first upload, not of this call.
-        let stored_filename: String = sqlx::query_scalar(
-            "SELECT filename FROM proxima_core.cited_uploaded_blob_v1 WHERE cited_object_id = $1",
-        )
-        .bind(row.0)
-        .fetch_one(&self.pool)
-        .await
-        .map_err(|err| StorageError::Internal(err.to_string()))?;
-
-        Ok(CitedBlobUploadCompleted {
-            cited_object_id: row.0.to_string(),
-            schema: UPLOADED_BLOB_SCHEMA_ID.to_string(),
-            content_hash: hex::encode(blake3),
-            sha256: hex::encode(blake3),
-            byte_len: body.len() as u64,
-            mime: "application/pdf".to_string(),
-            filename: stored_filename,
-            idempotent_replay: row.1,
+        let content_hash = *blake3::hash(body).as_bytes();
+        Ok(CitedBlobStaged {
+            payload: UploadedBlobPayload {
+                content_hash,
+                bucket: "test-bucket".into(),
+                object_key: format!("objects/test/{}", hex::encode(content_hash)),
+                sha256: content_hash,
+                byte_len: body.len() as u64,
+                mime: "application/pdf".into(),
+                filename: filename.into(),
+                etag: None,
+                uploaded_at: time::OffsetDateTime::UNIX_EPOCH,
+            },
+            already_completed: None,
         })
+    }
+
+    async fn finish_upload(
+        &self,
+        _authz: &AuthzContext,
+        _owner: OwnerRef,
+        upload_id: &str,
+        cited_object_id: uuid::Uuid,
+    ) -> Result<(), StorageError> {
+        self.finished
+            .lock()
+            .expect("lock")
+            .push((upload_id.to_string(), cited_object_id));
+        Ok(())
     }
 
     async fn abort_upload(
@@ -164,13 +129,47 @@ impl CitedBlobPort for CommittedBlobs {
     }
 }
 
+/// A Fact payload that no PG sidecar routes. It stands in for a flavor
+/// extension whose migration never ran — the failure a flavor can actually
+/// reach, since a schema declaring a sidecar table with no PG sidecar
+/// registered is refused at boot instead.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct UnroutableExtensionV1 {
+    note: String,
+}
+
+impl FactPayload for UnroutableExtensionV1 {
+    const SCHEMA_ID: &'static str = "test/unroutable-extension-v1";
+    const SCHEMA_VERSION: u32 = 1;
+
+    fn receipt_key(&self) -> Vec<u8> {
+        let mut key = PayloadKeyBuilder::new(Self::SCHEMA_ID, Self::SCHEMA_VERSION);
+        key.field_str("note", &self.note);
+        key.finish()
+    }
+
+    fn render(&self) -> String {
+        self.note.clone()
+    }
+
+    fn sidecar_table() -> Option<&'static str> {
+        Some("public.unroutable_extension")
+    }
+}
+
 fn engine_for(pg: &PgStorage) -> Engine {
     Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests())
         .with_storage_ports(Arc::new(pg.clone()).storage_ports())
         .with_embed(Arc::new(ConstantEmbedding::zero(MODEL)))
 }
 
-/// How many `core/upload-v1` Facts this owner holds, and what each cites.
+fn owner_and_authz() -> (Owner, AuthzContext) {
+    let owner: Owner = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
+    let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
+    (owner, authz)
+}
+
+/// Every `core/upload-v1` Fact, with the object it cites and its text.
 async fn upload_facts(pool: &sqlx::PgPool) -> Vec<(uuid::Uuid, uuid::Uuid, String)> {
     sqlx::query_as(
         "SELECT m.memory_id, cm.cited_object_id, m.text
@@ -184,32 +183,66 @@ async fn upload_facts(pool: &sqlx::PgPool) -> Vec<(uuid::Uuid, uuid::Uuid, Strin
     .expect("read upload facts")
 }
 
-/// The substrate guarantee: the artefact is stored AND its arrival is
-/// recorded, joined to it by a citation, without the caller arranging
-/// anything.
+// One literal per counter rather than a helper taking the statement: a
+// helper that accepts `sql` is a dynamic-SQL site to the policy checker
+// even when every caller passes a literal, and the ratchet is there to
+// keep that number falling.
+async fn cited_object_count(pool: &sqlx::PgPool) -> i64 {
+    sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_core.cited_objects")
+        .fetch_one(pool)
+        .await
+        .expect("count cited objects")
+}
+
+async fn stored_blob_count(pool: &sqlx::PgPool) -> i64 {
+    sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_core.cited_uploaded_blob_v1")
+        .fetch_one(pool)
+        .await
+        .expect("count stored blobs")
+}
+
+async fn fact_embedding_job_count(pool: &sqlx::PgPool) -> i64 {
+    sqlx::query_scalar(
+        "SELECT count(*)::bigint FROM proxima_core.embedding_jobs WHERE entity_kind = 'Fact'",
+    )
+    .fetch_one(pool)
+    .await
+    .expect("count embedding jobs")
+}
+
+/// The artefact and the record of its arrival are one write, and the blob
+/// store is told the id only after that write committed.
 #[tokio::test]
-async fn completing_an_upload_records_a_fact_that_cites_the_artefact() {
+async fn completing_an_upload_records_the_artefact_and_its_arrival_together() {
     let (pg, db_name) = fresh_pg().await;
     let pool = pg.pool_for_tests().clone();
-    let owner: Owner = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
-    let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
+    let (owner, authz) = owner_and_authz();
     let engine = engine_for(&pg);
-    let blobs = CommittedBlobs::new(pool.clone()).with_upload(
-        "upload-1",
-        "handbuch.pdf",
-        b"the bytes of a handbook",
-    );
+    let blobs =
+        StagingBlobs::new().with_upload("upload-1", "handbuch.pdf", b"the bytes of a handbook");
 
     let completed = engine
         .complete_upload_as_fact(&blobs, &authz, owner, "upload-1", &[])
         .await
         .expect("complete the upload");
 
-    assert!(
-        !completed.blob.idempotent_replay,
-        "first upload of these bytes"
-    );
-    assert!(!completed.fact.idempotent_replay, "first record of it");
+    assert!(!completed.blob.idempotent_replay);
+    assert!(!completed.fact.idempotent_replay);
+
+    // The cited object and its typed row: written by the substrate through
+    // the registered cited-object sidecar, not by the blob store.
+    let blob_row: (String, String, String, i64) = sqlx::query_as(
+        "SELECT b.bucket, b.object_key, b.filename, b.byte_len
+           FROM proxima_core.cited_uploaded_blob_v1 b
+           JOIN proxima_core.cited_objects co USING (cited_object_id)
+          WHERE co.schema_id = 'core/uploaded-blob-v1'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("the staged artefact is stored");
+    assert_eq!(blob_row.0, "test-bucket");
+    assert_eq!(blob_row.2, "handbuch.pdf");
+    assert_eq!(blob_row.3, 23);
 
     let facts = upload_facts(&pool).await;
     assert_eq!(facts.len(), 1, "one upload, one Fact: {facts:?}");
@@ -217,25 +250,73 @@ async fn completing_an_upload_records_a_fact_that_cites_the_artefact() {
     assert_eq!(
         facts[0].1.to_string(),
         completed.blob.cited_object_id,
-        "the Fact must cite the artefact the caller was handed"
+        "the Fact cites the artefact the caller was handed"
     );
-    assert!(
-        facts[0].2.contains("handbuch.pdf"),
-        "the filename must reach the indexed text: {}",
-        facts[0].2
+    assert!(facts[0].2.contains("handbuch.pdf"), "{}", facts[0].2);
+
+    // The blob store learns the id only from the committed write.
+    assert_eq!(
+        blobs.finished(),
+        vec![("upload-1".to_string(), facts[0].1)],
+        "the upload is closed out against the object that was recorded"
     );
 
-    // The Fact is searchable like any other, not a silent bookkeeping row.
-    let jobs: i64 = sqlx::query_scalar(
-        "SELECT count(*)::bigint FROM proxima_core.embedding_jobs
-          WHERE entity_kind = 'Fact' AND entity_id = $1 AND model_id = $2",
-    )
-    .bind(facts[0].0)
-    .bind(MODEL)
-    .fetch_one(&pool)
-    .await
-    .expect("count embedding jobs");
-    assert_eq!(jobs, 1, "the upload Fact is queued for embedding");
+    assert_eq!(
+        fact_embedding_job_count(&pool).await,
+        1,
+        "the upload Fact is queued for embedding"
+    );
+
+    drop(pg);
+    drop_db(&db_name).await.expect("drop test db");
+}
+
+/// **The point of the change.** When the Fact write is refused, the
+/// artefact must not survive it. While completion was two transactions the
+/// cited object was already committed by the time anything could refuse,
+/// and a failure here left a file in the corpus whose arrival nothing
+/// recorded.
+#[tokio::test]
+async fn a_refused_fact_write_leaves_no_artefact_behind() {
+    let (pg, db_name) = fresh_pg().await;
+    let pool = pg.pool_for_tests().clone();
+    let (owner, authz) = owner_and_authz();
+    let engine = engine_for(&pg);
+    let blobs =
+        StagingBlobs::new().with_upload("upload-1", "handbuch.pdf", b"the bytes of a handbook");
+
+    let err = engine
+        .complete_upload_as_fact(
+            &blobs,
+            &authz,
+            owner,
+            "upload-1",
+            &[SidecarPayload::fact(UnroutableExtensionV1 {
+                note: "a flavor row with nowhere to land".into(),
+            })],
+        )
+        .await
+        .expect_err("an unroutable extension must refuse the write");
+    assert!(
+        err.to_string().contains("test/unroutable-extension-v1"),
+        "the refusal names the schema that could not be routed: {err}"
+    );
+
+    assert_eq!(
+        cited_object_count(&pool).await,
+        0,
+        "the artefact rolled back with the Fact"
+    );
+    assert_eq!(
+        stored_blob_count(&pool).await,
+        0,
+        "and so did its typed row"
+    );
+    assert!(upload_facts(&pool).await.is_empty(), "and the Fact itself");
+    assert!(
+        blobs.finished().is_empty(),
+        "an upload that recorded nothing is never closed out"
+    );
 
     drop(pg);
     drop_db(&db_name).await.expect("drop test db");
@@ -243,19 +324,16 @@ async fn completing_an_upload_records_a_fact_that_cites_the_artefact() {
 
 /// Uploading the same bytes again is one artefact and one arrival. The
 /// second call must not mint a second Fact citing the same object — the
-/// corpus would then say the file arrived twice, and a reader counting
-/// arrivals would be wrong.
+/// corpus would then say the file arrived twice.
 #[tokio::test]
 async fn the_same_file_uploaded_twice_is_one_artefact_and_one_upload_fact() {
     let (pg, db_name) = fresh_pg().await;
     let pool = pg.pool_for_tests().clone();
-    let owner: Owner = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
-    let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
+    let (owner, authz) = owner_and_authz();
     let engine = engine_for(&pg);
-    // Same bytes, different names — the second caller does not get to
-    // rename what the corpus already holds, so both completions describe
-    // one artefact and share one receipt key.
-    let blobs = CommittedBlobs::new(pool.clone())
+    // Same bytes, different names. The second completion replays the Fact
+    // on its content hash, so the name it staged never reaches the corpus.
+    let blobs = StagingBlobs::new()
         .with_upload("upload-1", "handbuch.pdf", b"the bytes of a handbook")
         .with_upload("upload-2", "kopie.pdf", b"the bytes of a handbook");
 
@@ -268,42 +346,43 @@ async fn the_same_file_uploaded_twice_is_one_artefact_and_one_upload_fact() {
         .await
         .expect("second completion");
 
-    assert!(second.blob.idempotent_replay, "the bytes were already held");
-    assert!(
-        second.fact.idempotent_replay,
-        "the arrival was already recorded"
-    );
+    assert!(second.fact.idempotent_replay, "the arrival was recorded");
+    assert!(second.blob.idempotent_replay);
     assert_eq!(
         second.fact.memory_id, first.fact.memory_id,
         "a replay returns the Fact that already exists"
     );
-    assert_eq!(second.blob.filename, "handbuch.pdf", "the stored name wins");
+    assert_eq!(
+        second.blob.cited_object_id, first.blob.cited_object_id,
+        "and the object it cites, read back from that Fact's mapping"
+    );
 
-    let facts = upload_facts(&pool).await;
-    assert_eq!(facts.len(), 1, "one file, one upload Fact: {facts:?}");
-
-    let objects: i64 =
-        sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_core.cited_objects")
+    assert_eq!(upload_facts(&pool).await.len(), 1, "one file, one Fact");
+    assert_eq!(cited_object_count(&pool).await, 1, "one file, one artefact");
+    let stored_filename: String =
+        sqlx::query_scalar("SELECT filename FROM proxima_core.cited_uploaded_blob_v1")
             .fetch_one(&pool)
             .await
-            .expect("count cited objects");
-    assert_eq!(objects, 1, "one file, one artefact");
+            .expect("read filename");
+    assert_eq!(
+        stored_filename, "handbuch.pdf",
+        "the corpus keeps the name it recorded first"
+    );
 
     drop(pg);
     drop_db(&db_name).await.expect("drop test db");
 }
 
-/// Two distinct files are two arrivals, each citing its own artefact.
-/// Without this, a receipt key that collapsed too far would pass the
-/// replay test above by recording nothing at all after the first upload.
+/// Two distinct files are two arrivals citing their own artefacts. Without
+/// this, a receipt key that collapsed too far would pass the replay test
+/// above by recording nothing at all after the first upload.
 #[tokio::test]
 async fn two_different_files_are_two_upload_facts() {
     let (pg, db_name) = fresh_pg().await;
     let pool = pg.pool_for_tests().clone();
-    let owner: Owner = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
-    let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
+    let (owner, authz) = owner_and_authz();
     let engine = engine_for(&pg);
-    let blobs = CommittedBlobs::new(pool.clone())
+    let blobs = StagingBlobs::new()
         .with_upload("upload-1", "handbuch.pdf", b"the bytes of a handbook")
         .with_upload("upload-2", "atlas.pdf", b"the bytes of an atlas");
 
@@ -316,7 +395,6 @@ async fn two_different_files_are_two_upload_facts() {
         .await
         .expect("second completion");
 
-    assert!(!second.blob.idempotent_replay);
     assert!(!second.fact.idempotent_replay);
     assert_ne!(first.fact.memory_id, second.fact.memory_id);
 

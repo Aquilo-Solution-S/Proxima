@@ -145,6 +145,17 @@ enum PendingCitation<'a> {
 }
 
 impl PendingCitation<'_> {
+    const fn cited_object_id(self) -> uuid::Uuid {
+        match self {
+            Self::DraftHint {
+                cited_object_id, ..
+            }
+            | Self::Inline {
+                cited_object_id, ..
+            } => cited_object_id,
+        }
+    }
+
     const fn citation_mapping_id(self) -> uuid::Uuid {
         match self {
             Self::DraftHint {
@@ -1007,6 +1018,9 @@ where
     let citation_mapping_id = citation_refs
         .as_ref()
         .map(|pending| (*pending).citation_mapping_id());
+    let cited_object_id = citation_refs
+        .as_ref()
+        .map(|pending| (*pending).cited_object_id());
 
     if let (Some(receipt), Some(receipt_id_bytes)) = (&draft.receipt, receipt_id_bytes) {
         sqlx::query(
@@ -1131,6 +1145,7 @@ where
         memory_id: proxima_core::MemoryId::new(memory_id),
         change_event_seq: change_seq,
         idempotent_replay: false,
+        cited_object_id,
     };
 
     sidecar(tx, &outcome).await?;
@@ -1269,11 +1284,27 @@ async fn fact_replay_outcome(
     .fetch_one(tx.as_mut())
     .await
     .map_err(map_err)?;
+    // The citation the ORIGINAL write made. A replay writes no citation
+    // rows (this function returns before the citation plan runs), so
+    // without this read a replayed caller could not learn which object
+    // its Fact reaches — which for a content-addressed upload is the one
+    // answer it came for.
+    let cited_object_id = sqlx::query_scalar::<_, uuid::Uuid>(
+        "SELECT cm.cited_object_id
+           FROM proxima_core.memories m
+           JOIN proxima_core.citation_mappings cm USING (citation_mapping_id)
+          WHERE m.memory_id = $1",
+    )
+    .bind(memory_id)
+    .fetch_optional(tx.as_mut())
+    .await
+    .map_err(map_err)?;
     Ok(FactIngestOutcome {
         receipt_id,
         memory_id: proxima_core::MemoryId::new(memory_id),
         change_event_seq: seq,
         idempotent_replay: true,
+        cited_object_id,
     })
 }
 

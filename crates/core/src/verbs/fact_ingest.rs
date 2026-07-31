@@ -589,6 +589,15 @@ pub struct FactIngestOutcome {
     /// True iff the same receipt id was already ingested.
     /// Receiptless Facts are never receipt-replayed.
     pub idempotent_replay: bool,
+    /// The cited object this Fact reaches, when it carries a citation.
+    ///
+    /// Server-generated inside the write transaction, so a caller that
+    /// supplied the artefact rather than its id has no other way to learn
+    /// it. Populated on replay too — reading it back from the existing
+    /// Fact's mapping — because the whole point of a content-addressed
+    /// upload is that the second caller gets the first caller's object.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cited_object_id: Option<Uuid>,
 }
 
 #[cfg(test)]

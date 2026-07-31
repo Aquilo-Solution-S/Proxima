@@ -139,8 +139,8 @@ mod tests {
     use std::borrow::Cow;
 
     use proxima_core::storage_ports::{
-        CitedBlobPort, CitedBlobReadUrl, CitedBlobService, CitedBlobUploadAborted,
-        CitedBlobUploadCompleted, CitedBlobUploadPrepared,
+        CitedBlobPort, CitedBlobReadUrl, CitedBlobService, CitedBlobStaged, CitedBlobUploadAborted,
+        CitedBlobUploadPrepared,
     };
     use proxima_core::{AuthzContext, FlavorRegistry, FlavorRegistryError, OwnerRef, StorageError};
     use proxima_storage_pg::PgSidecarRegistry;
@@ -304,12 +304,22 @@ mod tests {
             Err(StorageError::Unavailable("stub".into()))
         }
 
-        async fn complete_upload(
+        async fn stage_upload(
             &self,
             _authz: &AuthzContext,
             _owner: OwnerRef,
             _upload_id: &str,
-        ) -> Result<CitedBlobUploadCompleted, StorageError> {
+        ) -> Result<CitedBlobStaged, StorageError> {
+            Err(StorageError::Unavailable("stub".into()))
+        }
+
+        async fn finish_upload(
+            &self,
+            _authz: &AuthzContext,
+            _owner: OwnerRef,
+            _upload_id: &str,
+            _cited_object_id: uuid::Uuid,
+        ) -> Result<(), StorageError> {
             Err(StorageError::Unavailable("stub".into()))
         }
 

@@ -1,8 +1,8 @@
 //! `core/upload-v1` — the Fact that a file entered the corpus.
 //!
-//! The upload lane already stored the artefact: `complete_upload` writes a
+//! The upload lane stored the artefact and stopped there: a
 //! `core/uploaded-blob-v1` cited object, content-addressed by BLAKE3, and
-//! hands back its id. What it did not write was any record that the upload
+//! its id handed back. What nothing wrote was a record that the upload
 //! HAPPENED. A cited object is a thing that can be cited; it is not an
 //! event, it carries no receipt, it appears in no change history, and
 //! nothing in the substrate says who put it there or when. Flavors filled
@@ -11,7 +11,9 @@
 //!
 //! This schema makes it a substrate guarantee. The Fact cites the artefact
 //! through `core/uploaded-blob-whole-v1`, so the event and the bytes are one
-//! hop apart in both directions.
+//! hop apart in both directions — and, since the citation is what persists
+//! the artefact, they are written together or not at all
+//! ([`crate::engine::UploadCompleted`]).
 
 use crate::{FactPayload, PayloadKeyBuilder};
 use schemars::JsonSchema;

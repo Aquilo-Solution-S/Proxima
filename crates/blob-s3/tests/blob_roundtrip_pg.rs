@@ -6,14 +6,22 @@ use proxima_blob_s3::{
     BlobError, CitedBlobReadUrlTs, CitedBlobStore, CitedBlobUploadAbortTs,
     CitedBlobUploadCompleteTs, CitedBlobUploadPrepareTs, S3RuntimeConfig,
 };
+use proxima_core::engine::{Engine, UploadCompleted};
+use proxima_core::error::ProtocolError;
 use proxima_core::storage_ports::{CitedBlobPort, CitedObjectErasePort};
 use proxima_core::test_fixtures::owner_fixture;
-use proxima_core::{AuthPath, AuthzContext, OwnerRef, UserId};
+use proxima_core::{AuthPath, AuthzContext, FlavorRegistry, OwnerRef, UserId};
+
+// Contexts here are `AuthPath::HostBearer`, matching every production
+// caller. Completion writes a Fact through the engine, and an
+// `AuthPath::System` context needs the host-held `SystemAuthority` witness
+// to issue any owner-write permit — a witness a test cannot mint. Before
+// completion went through the engine the store alone never asked.
 use proxima_pg_testkit::{create_db, db_url, drop_db, unique_db_name};
 use proxima_storage_pg::PgStorage;
 use uuid::Uuid;
 
-async fn fresh_pool() -> (sqlx::PgPool, String) {
+async fn fresh_storage() -> (PgStorage, String) {
     let db_name = unique_db_name("proxima_blob_s3_test");
     if let Err(e) = create_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
@@ -26,7 +34,24 @@ async fn fresh_pool() -> (sqlx::PgPool, String) {
         let _ = drop_db(&db_name).await;
         panic!("migration failed: {err}");
     }
-    (pg.pool_for_tests().clone(), db_name)
+    (pg, db_name)
+}
+
+/// Completion as production runs it: the store stages the bytes, then ONE
+/// transaction records the artefact and the `core/upload-v1` Fact that
+/// cites it. `CitedBlobStore` no longer persists anything by itself, so a
+/// test that only called it would be testing half a completion.
+async fn complete_via_engine(
+    pg: &PgStorage,
+    store: &CitedBlobStore,
+    ctx: &AuthzContext,
+    owner: OwnerRef,
+    upload_id: &str,
+) -> Result<UploadCompleted, ProtocolError> {
+    Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests())
+        .with_storage_ports(std::sync::Arc::new(pg.clone()).storage_ports())
+        .complete_upload_as_fact(store, ctx, owner, upload_id, &[])
+        .await
 }
 
 fn s3_config_for_dev() -> S3RuntimeConfig {
@@ -81,12 +106,13 @@ async fn prepare_then_complete_then_read_roundtrip() {
         return;
     }
 
-    let (pool, db_name) = fresh_pool().await;
+    let (pg, db_name) = fresh_storage().await;
+    let pool = pg.pool_for_tests().clone();
     let config = s3_config_for_dev();
     let store = CitedBlobStore::new(pool.clone(), config.clone()).expect("valid S3 config");
     let body = b"test-bytes";
     let owner = owner_fixture();
-    let ctx = AuthzContext::single_owner(&owner, AuthPath::System);
+    let ctx = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
 
     let prepared = store
         .prepare_upload(
@@ -112,16 +138,10 @@ async fn prepare_then_complete_then_read_roundtrip() {
     assert_eq!(row.0, config.bucket);
     put_object_via_sdk(&config, &row.1, body).await;
 
-    let completed = store
-        .complete_upload(
-            &ctx,
-            CitedBlobUploadCompleteTs {
-                owner,
-                upload_id: prepared.upload_id,
-            },
-        )
+    let completed = complete_via_engine(&pg, &store, &ctx, owner, &prepared.upload_id)
         .await
-        .expect("complete");
+        .expect("complete")
+        .blob;
     let url = store
         .read_url(
             &ctx,
@@ -176,13 +196,14 @@ async fn port_level_prepare_complete_read_roundtrip() {
         return;
     }
 
-    let (pool, db_name) = fresh_pool().await;
+    let (pg, db_name) = fresh_storage().await;
+    let pool = pg.pool_for_tests().clone();
     let config = s3_config_for_dev();
     let store = CitedBlobStore::new(pool.clone(), config.clone()).expect("valid S3 config");
     let port: &dyn CitedBlobPort = &store;
     let body = b"port-level-bytes";
     let owner = owner_fixture();
-    let ctx = AuthzContext::single_owner(&owner, AuthPath::System);
+    let ctx = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
 
     let prepared = port
         .prepare_upload(
@@ -210,10 +231,10 @@ async fn port_level_prepare_complete_read_roundtrip() {
     .expect("upload row");
     put_object_via_sdk(&config, &pending.0, body).await;
 
-    let completed = port
-        .complete_upload(&ctx, owner, &prepared.upload_id)
+    let completed = complete_via_engine(&pg, &store, &ctx, owner, &prepared.upload_id)
         .await
-        .expect("port complete");
+        .expect("port complete")
+        .blob;
     assert_eq!(completed.byte_len, body.len() as u64);
     assert_eq!(completed.mime, "application/pdf");
     assert_eq!(completed.filename, "port.pdf");
@@ -224,10 +245,10 @@ async fn port_level_prepare_complete_read_roundtrip() {
     assert_eq!(completed.sha256, hex::encode(sha2::Sha256::digest(body)));
 
     // A second complete of the same upload is an idempotent replay.
-    let replay = port
-        .complete_upload(&ctx, owner, &prepared.upload_id)
+    let replay = complete_via_engine(&pg, &store, &ctx, owner, &prepared.upload_id)
         .await
-        .expect("port complete replay");
+        .expect("port complete replay")
+        .blob;
     assert!(replay.idempotent_replay);
     assert_eq!(replay.cited_object_id, completed.cited_object_id);
 
@@ -299,6 +320,7 @@ async fn forge_uploaded_blob_row(
 /// resulting cited-object id and the canonical `object_key` the store
 /// wrote for it.
 async fn complete_upload_fixture(
+    pg: &PgStorage,
     store: &CitedBlobStore,
     config: &S3RuntimeConfig,
     pool: &sqlx::PgPool,
@@ -324,15 +346,10 @@ async fn complete_upload_fixture(
     .await
     .expect("upload row");
     put_object_via_sdk(config, &pending.0, b"real").await;
-    let completed = store
-        .complete_upload(
-            ctx,
-            CitedBlobUploadCompleteTs {
-                owner,
-                upload_id: prepared.upload_id,
-            },
-        )
-        .await?;
+    let completed = complete_via_engine(pg, store, ctx, owner, &prepared.upload_id)
+        .await
+        .map_err(|err| BlobError::State(err.to_string()))?
+        .blob;
     let stored: (String,) = sqlx::query_as(
         "SELECT object_key FROM proxima_core.cited_uploaded_blob_v1 WHERE cited_object_id = $1",
     )
@@ -357,11 +374,12 @@ async fn read_url_refuses_locators_the_store_did_not_write() {
         return;
     }
 
-    let (pool, db_name) = fresh_pool().await;
+    let (pg, db_name) = fresh_storage().await;
+    let pool = pg.pool_for_tests().clone();
     let config = s3_config_for_dev();
     let store = CitedBlobStore::new(pool.clone(), config.clone()).expect("valid S3 config");
     let owner = owner_fixture();
-    let ctx = AuthzContext::single_owner(&owner, AuthPath::System);
+    let ctx = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
 
     // The baseline answer for a cited object that does not exist at all.
     let missing = store
@@ -377,9 +395,10 @@ async fn read_url_refuses_locators_the_store_did_not_write() {
 
     // A genuine upload, so the caller's own canonical key can be forged
     // against without restating the store's key scheme here.
-    let (genuine_id, genuine_key) = complete_upload_fixture(&store, &config, &pool, &ctx, owner)
-        .await
-        .expect("genuine upload");
+    let (genuine_id, genuine_key) =
+        complete_upload_fixture(&pg, &store, &config, &pool, &ctx, owner)
+            .await
+            .expect("genuine upload");
 
     // Each clause of the gate is forged against on its own, so dropping
     // either one fails a case: (a) another bucket under this owner's real
@@ -461,12 +480,13 @@ async fn cross_owner_ids_are_refused_under_the_other_owners_authz() {
         return;
     }
 
-    let (pool, db_name) = fresh_pool().await;
+    let (pg, db_name) = fresh_storage().await;
+    let pool = pg.pool_for_tests().clone();
     let config = s3_config_for_dev();
     let store = CitedBlobStore::new(pool.clone(), config.clone()).expect("valid S3 config");
     let body = b"cross-owner-bytes";
     let owner_a = owner_fixture();
-    let ctx_a = AuthzContext::single_owner(&owner_a, AuthPath::System);
+    let ctx_a = AuthzContext::single_owner(&owner_a, AuthPath::HostBearer);
 
     let prepared = store
         .prepare_upload(
@@ -489,22 +509,16 @@ async fn cross_owner_ids_are_refused_under_the_other_owners_authz() {
     .await
     .expect("upload row");
     put_object_via_sdk(&config, &pending.0, body).await;
-    let completed = store
-        .complete_upload(
-            &ctx_a,
-            CitedBlobUploadCompleteTs {
-                owner: owner_a,
-                upload_id: prepared.upload_id.clone(),
-            },
-        )
+    let completed = complete_via_engine(&pg, &store, &ctx_a, owner_a, &prepared.upload_id)
         .await
-        .expect("complete");
+        .expect("complete")
+        .blob;
 
     let owner_b = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
-    let ctx_b = AuthzContext::single_owner(&owner_b, AuthPath::System);
+    let ctx_b = AuthzContext::single_owner(&owner_b, AuthPath::HostBearer);
 
     let err = store
-        .complete_upload(
+        .stage_upload(
             &ctx_b,
             CitedBlobUploadCompleteTs {
                 owner: owner_b,
@@ -574,12 +588,13 @@ async fn purge_owner_objects_removes_completed_blob() {
         return;
     }
 
-    let (pool, db_name) = fresh_pool().await;
+    let (pg, db_name) = fresh_storage().await;
+    let pool = pg.pool_for_tests().clone();
     let config = s3_config_for_dev();
     let store = CitedBlobStore::new(pool.clone(), config.clone()).expect("valid S3 config");
     let body = b"ocr-scan-with-pii";
     let owner = owner_fixture();
-    let ctx = AuthzContext::single_owner(&owner, AuthPath::System);
+    let ctx = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
 
     // Upload + complete: leaves a canonical object at objects/<owner_hash>/<blake3>.
     let prepared = store
@@ -603,16 +618,10 @@ async fn purge_owner_objects_removes_completed_blob() {
     .await
     .expect("upload row");
     put_object_via_sdk(&config, &pending.1, body).await;
-    let completed = store
-        .complete_upload(
-            &ctx,
-            CitedBlobUploadCompleteTs {
-                owner,
-                upload_id: prepared.upload_id,
-            },
-        )
+    let completed = complete_via_engine(&pg, &store, &ctx, owner, &prepared.upload_id)
         .await
-        .expect("complete");
+        .expect("complete")
+        .blob;
     let cited_object_id = Uuid::parse_str(&completed.cited_object_id).expect("cited object id");
     let final_key: (String,) = sqlx::query_as(
         "SELECT object_key FROM proxima_core.cited_uploaded_blob_v1 WHERE cited_object_id = $1",
@@ -667,7 +676,8 @@ async fn versioned_bucket_purge_removes_all_object_versions() {
         return;
     }
 
-    let (pool, db_name) = fresh_pool().await;
+    let (pg, db_name) = fresh_storage().await;
+    let pool = pg.pool_for_tests().clone();
     let base = s3_config_for_dev();
     let config = S3RuntimeConfig {
         bucket: format!("{}-versioned", base.bucket),
@@ -691,7 +701,7 @@ async fn versioned_bucket_purge_removes_all_object_versions() {
 
     let store = CitedBlobStore::new(pool.clone(), config.clone()).expect("valid S3 config");
     let owner = owner_fixture();
-    let ctx = AuthzContext::single_owner(&owner, AuthPath::System);
+    let ctx = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
     let body = b"versioned-pii-bytes";
 
     let prepared = store
@@ -714,16 +724,10 @@ async fn versioned_bucket_purge_removes_all_object_versions() {
     .await
     .expect("upload row");
     put_object_via_sdk(&config, &pending.1, body).await;
-    let completed = store
-        .complete_upload(
-            &ctx,
-            CitedBlobUploadCompleteTs {
-                owner,
-                upload_id: prepared.upload_id,
-            },
-        )
+    let completed = complete_via_engine(&pg, &store, &ctx, owner, &prepared.upload_id)
         .await
-        .expect("complete");
+        .expect("complete")
+        .blob;
     let cited_object_id = Uuid::parse_str(&completed.cited_object_id).expect("cited object id");
     let final_key: (String,) = sqlx::query_as(
         "SELECT object_key FROM proxima_core.cited_uploaded_blob_v1 WHERE cited_object_id = $1",
