@@ -17,7 +17,9 @@ use time::format_description::well_known::Rfc3339;
 use tokio::io::AsyncReadExt;
 use uuid::Uuid;
 
-use crate::config::{DEFAULT_MAX_BLOB_BYTES, S3RuntimeConfig, validate_endpoint_url};
+use crate::config::{
+    DEFAULT_MAX_BLOB_BYTES, S3RuntimeConfig, validate_endpoint_url, validate_presign_ttl,
+};
 use crate::error::BlobError;
 
 /// Tauri/TS-compatible cited-blob upload request.
@@ -133,6 +135,11 @@ impl CitedBlobStore {
         if let Some(endpoint_url) = &config.endpoint_url {
             validate_endpoint_url(endpoint_url)?;
         }
+        // Checked at the consuming boundary too, not only in `from_env`: a
+        // host may build this struct directly, and an out-of-range TTL must
+        // fail here rather than panic inside a request.
+        validate_presign_ttl("PROXIMA_S3_UPLOAD_TTL_SECONDS", config.upload_ttl_seconds)?;
+        validate_presign_ttl("PROXIMA_S3_READ_TTL_SECONDS", config.read_ttl_seconds)?;
         config.max_blob_bytes.get_or_insert(DEFAULT_MAX_BLOB_BYTES);
 
         Ok(Self {
@@ -356,19 +363,9 @@ impl CitedBlobStore {
         ensure_owner_write_access(ctx, &owner)?;
         let upload_id = parse_uuid(upload_id)?;
         let row = load_upload(&self.pool, &owner, upload_id).await?;
-        match row.status {
-            // Idempotent: the same upload finished twice is not an error.
-            // Finishing it against a DIFFERENT artefact would mean
-            // something else was staged under this upload id, which is.
-            UploadStatus::Completed => {
-                if row.cited_object_id != Some(cited_object_id) {
-                    return Err(BlobError::State(
-                        "upload already completed against a different cited object".into(),
-                    ));
-                }
-            }
+        let (owner_kind, owner_id) = db_owner_columns(&owner);
+        let decision = match row.status {
             UploadStatus::Pending => {
-                let (owner_kind, owner_id) = db_owner_columns(&owner);
                 let rows_affected = sqlx::query(
                     "UPDATE proxima_core.cited_object_uploads \
                         SET status = 'completed', cited_object_id = $1, completed_at = now() \
@@ -385,17 +382,46 @@ impl CitedBlobStore {
                 .await
                 .map_err(BlobError::Db)?
                 .rows_affected();
-                if rows_affected == 0 {
-                    return Err(BlobError::State(
-                        "upload no longer pending (aborted/expired)".into(),
-                    ));
+                if rows_affected == 1 {
+                    FinishTransitionDecision::WonPending
+                } else {
+                    // Lost the race against a concurrent abort or finish.
+                    // Re-read rather than assume: the row loaded above is
+                    // stale, and the caller's write has already committed.
+                    let observed = load_upload(&self.pool, &owner, upload_id).await?;
+                    finish_transition_decision(
+                        observed.status,
+                        observed.cited_object_id,
+                        cited_object_id,
+                        0,
+                    )?
                 }
             }
-            status @ (UploadStatus::Aborted | UploadStatus::Expired) => {
-                return Err(BlobError::State(format!(
-                    "upload cannot be finished from status {status:?}"
-                )));
-            }
+            status => finish_transition_decision(status, row.cited_object_id, cited_object_id, 0)?,
+        };
+
+        if decision == FinishTransitionDecision::OvertookTerminal {
+            // The artefact and its Fact are committed — `cited_object_id`
+            // exists only because that transaction succeeded — so the
+            // transfer's outcome is `completed` no matter what an abort or
+            // an expiry sweep wrote while the transaction was in flight.
+            // Failing here would report a committed write as failed and
+            // leave an upload id the caller can never retry.
+            sqlx::query(
+                "UPDATE proxima_core.cited_object_uploads \
+                    SET status = 'completed', cited_object_id = $1, completed_at = now() \
+                  WHERE owner_kind = $2 \
+                    AND owner_id IS NOT DISTINCT FROM $3 \
+                    AND upload_id = $4 \
+                    AND status IN ('aborted', 'expired')",
+            )
+            .bind(cited_object_id)
+            .bind(owner_kind)
+            .bind(owner_id)
+            .bind(upload_id)
+            .execute(&self.pool)
+            .await
+            .map_err(BlobError::Db)?;
         }
 
         self.client()
@@ -1160,6 +1186,58 @@ enum AbortTransitionDecision {
     AbortedOrExpired,
 }
 
+/// What a `finish_upload` that changed no row should do, given the status
+/// the upload actually holds now.
+///
+/// `finish_upload` runs AFTER the transaction that recorded the artefact and
+/// its Fact committed, so an error here reports a failure for a write that
+/// succeeded — and leaves an `upload_id` the caller can never retry. The
+/// lost race is therefore classified, not assumed: only a genuinely
+/// contradictory state is an error.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FinishTransitionDecision {
+    /// This call performed the transition.
+    WonPending,
+    /// Someone else completed it against the same artefact. Idempotent —
+    /// the same guarantee the `Completed` arm already grants a replay.
+    AlreadyFinished,
+    /// An abort or an expiry reached the row first, but the artefact and
+    /// its Fact are already committed. Record the completion over the
+    /// terminal status: the transfer's outcome IS completed, and an abort
+    /// that lost this race did not undo a committed write.
+    OvertookTerminal,
+}
+
+fn finish_transition_decision(
+    observed_status: UploadStatus,
+    observed_cited_object_id: Option<Uuid>,
+    cited_object_id: Uuid,
+    rows_affected: u64,
+) -> Result<FinishTransitionDecision, BlobError> {
+    match rows_affected {
+        1 => Ok(FinishTransitionDecision::WonPending),
+        0 => match observed_status {
+            UploadStatus::Completed if observed_cited_object_id == Some(cited_object_id) => {
+                Ok(FinishTransitionDecision::AlreadyFinished)
+            }
+            // The only genuinely contradictory state: something else was
+            // staged under this upload id.
+            UploadStatus::Completed => Err(BlobError::State(
+                "upload already completed against a different cited object".into(),
+            )),
+            UploadStatus::Aborted | UploadStatus::Expired => {
+                Ok(FinishTransitionDecision::OvertookTerminal)
+            }
+            UploadStatus::Pending => Err(BlobError::State(
+                "upload finish did not transition pending row".into(),
+            )),
+        },
+        other => Err(BlobError::State(format!(
+            "upload finish affected {other} rows"
+        ))),
+    }
+}
+
 fn abort_transition_decision(
     observed_status: UploadStatus,
     rows_affected: u64,
@@ -1298,6 +1376,41 @@ mod tests {
         assert!(error.to_string().contains("exceeds max blob size"));
     }
 
+    /// An out-of-range TTL is a startup error, not a request-path panic.
+    ///
+    /// `read_url` and `prepare_upload` compute `now + Duration::seconds(ttl)`
+    /// before ever reaching `PresigningConfig::expires_in`, and that
+    /// addition panics on overflow — so the only validator sat downstream of
+    /// the arithmetic it was supposed to guard, and a misconfigured host
+    /// took down every read instead of refusing to boot.
+    #[tokio::test]
+    async fn store_rejects_a_ttl_no_presigned_url_could_carry() {
+        let mut config = store_config(None, None);
+        config.read_ttl_seconds = u64::MAX;
+
+        let error = CitedBlobStore::new(lazy_test_pool(), config)
+            .expect_err("an unusable read TTL is refused at construction");
+        assert!(matches!(error, BlobError::Config(_)));
+        assert!(
+            error.to_string().contains("PROXIMA_S3_READ_TTL_SECONDS"),
+            "the refusal names the variable to fix: {error}"
+        );
+
+        let mut config = store_config(None, None);
+        config.upload_ttl_seconds = 0;
+        let error = CitedBlobStore::new(lazy_test_pool(), config)
+            .expect_err("a zero upload TTL is refused");
+        assert!(
+            error.to_string().contains("PROXIMA_S3_UPLOAD_TTL_SECONDS"),
+            "the refusal names the variable to fix: {error}"
+        );
+
+        // The boundary itself is usable, so the bound is not merely small.
+        let mut config = store_config(None, None);
+        config.read_ttl_seconds = crate::config::MAX_PRESIGN_TTL_SECONDS;
+        CitedBlobStore::new(lazy_test_pool(), config).expect("7 days is allowed");
+    }
+
     #[test]
     fn validate_prepare_rejects_byte_len_over_cap() {
         let err = validate_prepare(&prepare_req(1_025), Some(1_024))
@@ -1361,33 +1474,21 @@ mod tests {
         ensure_owner_write_access(&ctx, &OwnerRef::Personal(subject)).expect("self is writable");
     }
 
-    #[tokio::test]
-    async fn read_presign_forces_attachment_disposition() {
-        use aws_config::BehaviorVersion;
-        use aws_sdk_s3::config::{Credentials, Region};
-
-        let creds = Credentials::new("AKIDTEST", "secret", None, None, "test");
-        let conf = aws_sdk_s3::config::Builder::new()
-            .behavior_version(BehaviorVersion::latest())
-            .region(Region::new("us-east-1"))
-            .credentials_provider(creds)
-            .build();
-        let client = aws_sdk_s3::Client::from_conf(conf);
-        let presigned = client
-            .get_object()
-            .bucket("bucket")
-            .key("objects/abc")
-            .response_content_disposition("attachment")
-            .response_content_type("application/octet-stream")
-            .presigned(presign_config(300).expect("presign config"))
-            .await
-            .expect("presign get");
-        let uri = presigned.uri().to_string();
-        assert!(
-            uri.contains("response-content-disposition=attachment"),
-            "presigned GET must force attachment disposition: {uri}"
-        );
-    }
+    // There is deliberately NO unit test here for the forced attachment
+    // disposition. The one that used to sit at this spot built its own
+    // client, re-issued `.response_content_disposition(...)` and
+    // `.response_content_type(...)` itself, and asserted on the string it
+    // had just supplied — so deleting both lines from `read_url` left it
+    // green, and because every *_pg test skips without `PROXIMA_S3_*`, it
+    // was also the ONLY disposition test a bare `cargo test --workspace`
+    // ran. It reported a guarantee nothing was checking.
+    //
+    // A presign built outside `read_url` cannot observe `read_url`'s
+    // builder chain, so this property is only assertable through the store.
+    // Its carriers are `blob_roundtrip_pg::presigned_put_and_get_carry_the_bytes`
+    // (asserts the headers on the actual HTTP response) and
+    // `prepare_then_complete_then_read_roundtrip` (asserts the production
+    // URL). Both fail if the overrides are removed; this one did not.
 
     #[test]
     fn owner_hash_is_owner_scoped() {
@@ -1409,6 +1510,49 @@ mod tests {
             owner_hash_hex(&owner),
             "c022815b2b51727207c5f3014833f1a5c09ae92edfb752c394c9caa3d96374ce"
         );
+    }
+
+    #[test]
+    fn finish_transition_decision_is_race_idempotent() {
+        let object = Uuid::now_v7();
+        let other = Uuid::now_v7();
+
+        assert_eq!(
+            finish_transition_decision(UploadStatus::Pending, None, object, 1)
+                .expect("pending transition wins"),
+            FinishTransitionDecision::WonPending
+        );
+        // The case that used to be reported as "aborted/expired": another
+        // caller finished this upload against the same artefact. The write
+        // the caller is being told about has already committed.
+        assert_eq!(
+            finish_transition_decision(UploadStatus::Completed, Some(object), object, 0)
+                .expect("a concurrent finish against the same artefact is idempotent"),
+            FinishTransitionDecision::AlreadyFinished
+        );
+        // Genuinely contradictory: something else was staged under this id.
+        assert!(matches!(
+            finish_transition_decision(UploadStatus::Completed, Some(other), object, 0),
+            Err(BlobError::State(message))
+                if message.contains("different cited object")
+        ));
+        // An abort or an expiry that reached the row first does NOT fail the
+        // completion: `cited_object_id` exists only because the corpus
+        // transaction committed, so the write being reported on succeeded.
+        assert_eq!(
+            finish_transition_decision(UploadStatus::Aborted, None, object, 0)
+                .expect("an abort that lost the race cannot fail a committed write"),
+            FinishTransitionDecision::OvertookTerminal
+        );
+        assert_eq!(
+            finish_transition_decision(UploadStatus::Expired, None, object, 0)
+                .expect("an expiry sweep cannot fail a committed write"),
+            FinishTransitionDecision::OvertookTerminal
+        );
+        assert!(matches!(
+            finish_transition_decision(UploadStatus::Pending, None, object, 0),
+            Err(BlobError::State(message)) if message.contains("did not transition")
+        ));
     }
 
     #[test]

@@ -230,13 +230,28 @@ paths (`reconcile_embeddings`, the owner-scoped backfill). Gating only
 the write would be undone by the next operator maintenance pass, since
 healing a missing job is exactly what those passes do.
 
-The Fact's replay key is the **content hash alone**. For one owner the
-store resolves a content hash to exactly one CitedObject and reports that
-object's filename, mime, and length — so the other fields are functions
-of the hash, and keying on them too would let one file acquire two
-arrival Facts. One file, one upload Fact, per owner: the Fact replays
-exactly when the upload does, and re-completing is both idempotent and
-the repair path.
+The Fact's replay key is the **content hash alone**. For one owner a
+content hash resolves to exactly one CitedObject, so keying on filename or
+mime as well would let one file acquire two arrival Facts by being
+uploaded under a second name. One file, one upload Fact, per owner: the
+Fact replays exactly when the upload does, and re-completing is both
+idempotent and the repair path.
+
+**On a replay the corpus and the response name different files, and that
+is deliberate.** `cited_uploaded_blob_v1` is inserted `ON CONFLICT DO
+NOTHING`, so the corpus keeps the filename and mime it recorded *first*;
+the completion response is built from what *this* call staged, so it
+returns the name the caller just uploaded. Upload `vertrag.pdf`, then the
+same bytes as `rechnung-2026.pdf`, and you get back `rechnung-2026.pdf`
+with `idempotent_replay: true` while the stored row still says
+`vertrag.pdf`. Answering a caller with a filename they never sent would be
+worse, and the artefact genuinely is the one already held — the name is
+metadata about an observation, not part of the artefact's identity. A
+client that needs the recorded name must read it back
+(`core_fact`'s `citation_of_fact`) rather than trust the completion
+response. The kernel states the row's side of this as CH-U15 in the
+proxima-docs Charta module, which is why that theorem is asserted by
+selecting the row rather than by reading a response field.
 
 A flavor that wants more columns on that arrival — extraction status, a
 source system's id — registers its own sidecar schema and passes the row

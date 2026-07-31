@@ -450,6 +450,20 @@ async fn the_same_file_uploaded_twice_is_one_artefact_and_one_upload_fact() {
         stored_filename, "handbuch.pdf",
         "the corpus keeps the name it recorded first"
     );
+    // The response names what THIS call staged, and the two deliberately
+    // disagree on a replay (docs/11 §Findable, not embedded). Pinned from
+    // both sides: the assertion above reads the stored row, this one reads
+    // the response, and a change that collapsed them would otherwise be
+    // invisible — which is exactly how the stored-row property lost its
+    // carrier once before, when it was asserted on the response struct.
+    assert_eq!(
+        second.blob.filename, "kopie.pdf",
+        "the caller is answered with the name it just uploaded, not one it never sent"
+    );
+    assert_eq!(
+        first.blob.filename, "handbuch.pdf",
+        "and the first call is unaffected"
+    );
 
     drop(pg);
     drop_db(&db_name).await.expect("drop test db");

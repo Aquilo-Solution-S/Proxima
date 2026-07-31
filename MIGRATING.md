@@ -640,6 +640,29 @@ and semantically empty until someone ran a *global* pass. Custom
 `EmbeddingJobPort` implementations need no change, but if yours filters to
 Facts internally, widen it.
 
+**`EmbeddingTextPort::load_embedding_text` takes a
+`non_embeddable_schemas: &[String]`**, matching its sibling
+`list_facts_missing_embedding`, which already carried one. Implementors must
+add the parameter and exclude those schema ids — a row whose schema declared
+`FactPayload::EMBEDDABLE = false` has no text to embed, however it is
+reached. Passing an empty slice restores the old behaviour and is correct
+only where the caller cannot see a declined schema (the inline job drain,
+which only ever sees rows a job was enqueued for).
+
+The exclusion could not stay solely at the enqueue sites. `Engine::
+ensure_fact_embedding` takes a `MemoryId`, never passes through the job
+queue, and writes the vector directly with no `embedding_jobs` row — so the
+three SQL filters that guard reconcile and both backfills were structurally
+unable to see it. `PgStorage` users are unaffected.
+
+Relatedly, **`Engine::fact_ingest` now honours `EMBEDDABLE`**. It previously
+computed `embed_client().map(model_id)` and passed it straight to storage,
+which asks "is there an embedder" — a question the schema's declaration
+overrides. It was the one of four Fact-writing verbs that did not consult
+the gate, because it does not share the `ingest_fact_*` name. No signature
+changed; a schema that declared `EMBEDDABLE = false` simply stops receiving
+a vector through this verb.
+
 **`GoalWriteBuildError`'s variants carry a payload**, so matching arms need
 `(_)`:
 

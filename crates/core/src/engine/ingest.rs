@@ -53,6 +53,9 @@ impl Engine {
     /// Caller-fixable storage rejections (closed batch, concurrent
     /// citation) surface as `InvalidArgument`; infrastructure faults as
     /// `Internal`.
+    ///
+    /// A schema that declared `EMBEDDABLE = false` is written without a
+    /// vector even when the host has an embedder configured.
     pub async fn fact_ingest(
         &self,
         authz: &AuthzContext,
@@ -62,7 +65,11 @@ impl Engine {
             .authorize_fact_ingest(authz, Relation::Ingest, draft)
             .await?;
         let embedding_client = self.embed_client();
-        let embedding_model_id = embedding_client.as_ref().map(|client| client.model_id());
+        let requested = embedding_client.as_ref().map(|client| client.model_id());
+        // `embed_client().map(model_id)` asks "is there an embedder", which
+        // the schema's own declaration overrides — see `vector_model_for`.
+        let embedding_model_id =
+            self.vector_model_for(authorized.draft().schema_id.as_str(), requested);
         let outcome = self
             .storage
             .ingest
@@ -225,8 +232,11 @@ impl Engine {
     /// declared `EMBEDDABLE = false`.
     ///
     /// APPLIED HERE, NOT AT THE CALL SITES, because every typed Fact
-    /// write in the process funnels through the three verbs below and
-    /// none of them should have to remember. A caller that computes
+    /// write in the process funnels through one of the four verbs that
+    /// persist one — `fact_ingest` above, plus the three below — and none
+    /// of them should have to remember. Count them when adding a fifth:
+    /// `fact_ingest` was missed for a release because it does not share
+    /// the `ingest_fact_*` name. A caller that computes
     /// `embed_client().map(model_id)` — which is what the upload verb
     /// does, and the obvious thing to write — is asking "is there an
     /// embedder", a question the schema's own declaration overrides.
@@ -506,6 +516,8 @@ impl Engine {
     /// Returns storage errors from text load/upsert, `Internal` for
     /// embedding client failures, and `ConstraintViolation` when the
     /// client returns a vector whose length differs from `dim()`.
+    /// A Fact whose schema declared `EMBEDDABLE = false` is left alone:
+    /// this is a no-op for it, not a forced vector.
     pub async fn ensure_fact_embedding(
         &self,
         owner: &Owner,
@@ -538,11 +550,19 @@ impl Engine {
         entity_kind: EntityKind,
         memory_id: MemoryId,
     ) -> Result<EmbedStep, StorageError> {
+        // This path holds a `MemoryId` and never passes through the job
+        // queue, so the enqueue-side exclusions do not apply to it. The
+        // schema's declaration is enforced here instead.
         let Some(text) = self
             .storage
             .ingest
             .embedding_text
-            .load_embedding_text(owner, entity_kind, memory_id)
+            .load_embedding_text(
+                owner,
+                entity_kind,
+                memory_id,
+                self.registry().non_embeddable_schema_ids(),
+            )
             .await?
         else {
             return Ok(EmbedStep::NothingToEmbed);
@@ -674,7 +694,16 @@ impl Engine {
                     .storage
                     .ingest
                     .embedding_text
-                    .load_embedding_text(&claim.owner, claim.entity_kind, claim.entity_id)
+                    .load_embedding_text(
+                        &claim.owner,
+                        claim.entity_kind,
+                        claim.entity_id,
+                        // Also excluded here, not just at enqueue: a job
+                        // queued before its schema declared
+                        // `EMBEDDABLE = false` completes as a no-op
+                        // instead of embedding what now declines a vector.
+                        self.registry().non_embeddable_schema_ids(),
+                    )
                     .await?;
                 if let Some(text) = text {
                     batch.push((claim, text));

@@ -182,6 +182,296 @@ async fn prepare_then_complete_then_read_roundtrip() {
     drop_db(&db_name).await.expect("drop db");
 }
 
+/// One response header as a string, or empty when absent.
+fn header<'a>(response: &'a reqwest::Response, name: &str) -> &'a str {
+    response
+        .headers()
+        .get(name)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+}
+
+/// Prepare an upload and put its bytes at the pending key, returning the
+/// `upload_id`. The concurrency tests below need several of these.
+async fn staged_upload(
+    pool: &sqlx::PgPool,
+    store: &CitedBlobStore,
+    config: &S3RuntimeConfig,
+    ctx: &AuthzContext,
+    owner: OwnerRef,
+    filename: &str,
+    body: &'static [u8],
+) -> String {
+    let prepared = store
+        .prepare_upload(
+            ctx,
+            CitedBlobUploadPrepareTs {
+                owner,
+                filename: filename.into(),
+                mime: "application/pdf".into(),
+                byte_len: body.len() as u64,
+            },
+        )
+        .await
+        .expect("prepare");
+    let upload_id = Uuid::parse_str(&prepared.upload_id).expect("upload id");
+    let key: (String,) = sqlx::query_as(
+        "SELECT object_key FROM proxima_core.cited_object_uploads WHERE upload_id = $1",
+    )
+    .bind(upload_id)
+    .fetch_one(pool)
+    .await
+    .expect("upload row");
+    put_object_via_sdk(config, &key.0, body).await;
+    prepared.upload_id
+}
+
+/// Two completions of the SAME bytes, running at once under different
+/// upload ids, converge on one artefact and one arrival — and neither
+/// caller sees an error.
+///
+/// The dedup conclusion was previously read off the SQL: nothing in this
+/// crate ever ran two completions concurrently, so whether the
+/// content-addressed upsert actually tolerates a contended
+/// `(owner, schema, content_hash)` was an argument rather than a result.
+/// The loser of that race must come back as an idempotent replay, not as a
+/// unique-violation surfaced to the client as an internal error.
+#[tokio::test]
+async fn concurrent_completions_of_one_file_converge_on_one_artefact() {
+    if !S3RuntimeConfig::present_in_env() {
+        eprintln!("skipped: PROXIMA_S3_* unset");
+        return;
+    }
+
+    let (pg, db_name) = fresh_storage().await;
+    let pool = pg.pool_for_tests().clone();
+    let config = s3_config_for_dev();
+    let store = CitedBlobStore::new(pool.clone(), config.clone()).expect("valid S3 config");
+    let body: &[u8] = b"%PDF-1.7 the same handbook, uploaded twice at once";
+    let owner = owner_fixture();
+    let ctx = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
+
+    let first = staged_upload(&pool, &store, &config, &ctx, owner, "handbuch.pdf", body).await;
+    let second = staged_upload(&pool, &store, &config, &ctx, owner, "kopie.pdf", body).await;
+
+    let (a, b) = tokio::join!(
+        complete_via_engine(&pg, &store, &ctx, owner, &first),
+        complete_via_engine(&pg, &store, &ctx, owner, &second),
+    );
+    let a = a.expect("the first concurrent completion must not error");
+    let b = b.expect("the loser of the race is a replay, not a failure");
+
+    assert_eq!(
+        a.blob.cited_object_id, b.blob.cited_object_id,
+        "the same bytes under one owner are one artefact"
+    );
+    assert_eq!(a.fact.memory_id, b.fact.memory_id, "and one arrival Fact");
+    assert!(
+        a.fact.idempotent_replay ^ b.fact.idempotent_replay,
+        "exactly one of the two recorded the arrival; the other replayed it \
+         (got {} and {})",
+        a.fact.idempotent_replay,
+        b.fact.idempotent_replay
+    );
+
+    let objects: i64 =
+        sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_core.cited_objects")
+            .fetch_one(&pool)
+            .await
+            .expect("count");
+    assert_eq!(objects, 1, "one file, one row");
+    let facts: i64 = sqlx::query_scalar(
+        "SELECT count(*)::bigint FROM proxima_core.memories WHERE schema_id = 'core/upload-v1'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("count");
+    assert_eq!(facts, 1, "one file, one arrival");
+
+    drop(pool);
+    drop_db(&db_name).await.expect("drop db");
+}
+
+/// A completion racing an abort resolves one way or the other, and the
+/// caller is never told a committed write failed.
+///
+/// `finish_upload` runs after the transaction that recorded the artefact
+/// and its Fact has committed, so if an abort wins that window the
+/// completion must still report success — the corpus already holds the
+/// artefact, and the upload id is spent either way. The disjunction is the
+/// assertion: either the abort won and nothing was recorded, or the
+/// completion won and it is consistent.
+#[tokio::test]
+async fn a_completion_racing_an_abort_never_reports_a_committed_write_as_failed() {
+    if !S3RuntimeConfig::present_in_env() {
+        eprintln!("skipped: PROXIMA_S3_* unset");
+        return;
+    }
+
+    let (pg, db_name) = fresh_storage().await;
+    let pool = pg.pool_for_tests().clone();
+    let config = s3_config_for_dev();
+    let store = CitedBlobStore::new(pool.clone(), config.clone()).expect("valid S3 config");
+    let body: &[u8] = b"%PDF-1.7 a handbook whose upload is contested";
+    let owner = owner_fixture();
+    let ctx = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
+
+    let upload_id = staged_upload(&pool, &store, &config, &ctx, owner, "handbuch.pdf", body).await;
+
+    let (completed, aborted) = tokio::join!(
+        complete_via_engine(&pg, &store, &ctx, owner, &upload_id),
+        store.abort_upload(
+            &ctx,
+            CitedBlobUploadAbortTs {
+                owner,
+                upload_id: upload_id.clone(),
+            },
+        ),
+    );
+    aborted.expect("abort itself must not fault");
+
+    let facts: i64 = sqlx::query_scalar(
+        "SELECT count(*)::bigint FROM proxima_core.memories WHERE schema_id = 'core/upload-v1'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("count");
+    let objects: i64 =
+        sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_core.cited_objects")
+            .fetch_one(&pool)
+            .await
+            .expect("count");
+
+    match completed {
+        // The completion won, or lost only the bookkeeping UPDATE. Either
+        // way the corpus holds exactly one artefact and one arrival, and
+        // saying Ok to the caller is the truth.
+        Ok(outcome) => {
+            assert_eq!(facts, 1, "a successful completion recorded its arrival");
+            assert_eq!(objects, 1, "and its artefact");
+            assert!(
+                !outcome.blob.cited_object_id.is_empty(),
+                "the caller was handed the id it can cite"
+            );
+        }
+        // The abort won before the transaction ran. Nothing may survive.
+        Err(err) => {
+            assert_eq!(
+                facts, 0,
+                "the completion failed but an arrival Fact survives: {err}"
+            );
+            assert_eq!(
+                objects, 0,
+                "the completion failed but the artefact survives: {err}"
+            );
+        }
+    }
+
+    drop(pool);
+    drop_db(&db_name).await.expect("drop db");
+}
+
+/// The whole transfer contract, executed rather than described: PUT the
+/// bytes to the presigned URL as a real client does, complete, then GET the
+/// presigned download and compare what comes back.
+///
+/// Every other test in this file substitutes the SDK for the upload hop and
+/// asserts on the *shape* of the download URL. Neither presigned URL was
+/// ever dereferenced, so "a completed PDF is retrievable from Proxima" had
+/// no carrier at any layer — the two hops that actually carry bytes were
+/// the untested ones. The headers matter: `prepare_upload` presigns with
+/// `content_type`, so a client that ignores `prepared.headers` gets
+/// `SignatureDoesNotMatch`, and that contract was documented but unproven.
+#[tokio::test]
+async fn presigned_put_and_get_carry_the_bytes() {
+    if !S3RuntimeConfig::present_in_env() {
+        eprintln!("skipped: PROXIMA_S3_* unset");
+        return;
+    }
+
+    let (pg, db_name) = fresh_storage().await;
+    let pool = pg.pool_for_tests().clone();
+    let config = s3_config_for_dev();
+    let store = CitedBlobStore::new(pool.clone(), config.clone()).expect("valid S3 config");
+    let body: &[u8] = b"%PDF-1.7 a handbook that must survive the round trip";
+    let owner = owner_fixture();
+    let ctx = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
+    let http = reqwest::Client::new();
+
+    let prepared = store
+        .prepare_upload(
+            &ctx,
+            CitedBlobUploadPrepareTs {
+                owner,
+                filename: "handbuch.pdf".into(),
+                mime: "application/pdf".into(),
+                byte_len: body.len() as u64,
+            },
+        )
+        .await
+        .expect("prepare");
+
+    // Hop 1: the client's PUT, with exactly the headers it was handed.
+    let mut put = http.put(&prepared.upload_url);
+    for header in &prepared.headers {
+        put = put.header(header.name.as_str(), header.value.as_str());
+    }
+    let put_response = put.body(body.to_vec()).send().await.expect("presigned PUT");
+    assert!(
+        put_response.status().is_success(),
+        "presigned PUT rejected the client that used the headers it was given: {} {}",
+        put_response.status(),
+        put_response.text().await.unwrap_or_default()
+    );
+
+    let completed = complete_via_engine(&pg, &store, &ctx, owner, &prepared.upload_id)
+        .await
+        .expect("complete")
+        .blob;
+
+    // Hop 2: the client's GET.
+    let url = store
+        .read_url(
+            &ctx,
+            CitedBlobReadUrlTs {
+                owner,
+                cited_object_id: completed.cited_object_id.clone(),
+            },
+        )
+        .await
+        .expect("read url");
+    let response = http.get(&url.read_url).send().await.expect("presigned GET");
+    assert!(
+        response.status().is_success(),
+        "presigned GET failed: {}",
+        response.status()
+    );
+
+    // Asserted on the RESPONSE, not on the URL string we asked for: this is
+    // what a browser actually receives, and it is the only assertion in the
+    // repo that fails if the production overrides are removed.
+    assert_eq!(
+        header(&response, "content-disposition"),
+        "attachment",
+        "the download must not render inline"
+    );
+    assert_eq!(
+        header(&response, "content-type"),
+        "application/octet-stream",
+        "a stored text/html mime must not execute in the browser"
+    );
+
+    let fetched = response.bytes().await.expect("read body");
+    assert_eq!(
+        fetched.as_ref(),
+        body,
+        "the bytes that came back are not the bytes that went up"
+    );
+
+    drop(pool);
+    drop_db(&db_name).await.expect("drop db");
+}
+
 /// The same roundtrip through the core-defined [`CitedBlobPort`] — the
 /// seam `core_upload` dispatches through. Exercised as a `dyn` object so
 /// the trait surface (plain args in, core-owned outcomes out, hex hashes,

@@ -312,7 +312,8 @@ mod pg_tests {
                     pg.pool_for_tests(),
                     &owner,
                     EntityKind::Fact,
-                    outcome.memory_id
+                    outcome.memory_id,
+                    &[],
                 )
                 .await?,
                 Some("deleted before embedding write".to_string()),
@@ -350,7 +351,8 @@ mod pg_tests {
                     pg.pool_for_tests(),
                     &owner,
                     EntityKind::Fact,
-                    outcome.memory_id
+                    outcome.memory_id,
+                    &[],
                 )
                 .await?,
                 None,

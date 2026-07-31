@@ -9,6 +9,30 @@ pub(crate) const DEFAULT_UPLOAD_TTL_SECONDS: u64 = 900;
 pub(crate) const DEFAULT_MAX_BLOB_BYTES: u64 = 100 * 1024 * 1024;
 pub(crate) const DEFAULT_READ_TTL_SECONDS: u64 = 300;
 
+/// `SigV4`'s own ceiling on a presigned URL's lifetime (7 days). Bounding
+/// here rather than at the presign call is what keeps an out-of-range value
+/// a startup error instead of a request-path fault: `read_url` and
+/// `prepare_upload` compute `now + Duration::seconds(ttl)` BEFORE reaching
+/// `PresigningConfig::expires_in`, and that addition panics on overflow, so
+/// the only validator used to sit downstream of the thing it had to guard.
+pub(crate) const MAX_PRESIGN_TTL_SECONDS: u64 = 7 * 24 * 60 * 60;
+
+/// Reject a TTL no presigned URL could carry, naming the variable.
+pub(crate) fn validate_presign_ttl(key: &str, seconds: u64) -> Result<(), BlobError> {
+    if seconds == 0 {
+        return Err(BlobError::Config(format!(
+            "{key} must be greater than zero"
+        )));
+    }
+    if seconds > MAX_PRESIGN_TTL_SECONDS {
+        return Err(BlobError::Config(format!(
+            "{key}={seconds} exceeds the maximum presigned-URL lifetime of \
+             {MAX_PRESIGN_TTL_SECONDS} seconds (7 days)"
+        )));
+    }
+    Ok(())
+}
+
 /// Runtime S3 target and TTL settings for cited-blob uploads.
 #[derive(Debug, Clone)]
 pub struct S3RuntimeConfig {
@@ -43,11 +67,11 @@ impl S3RuntimeConfig {
             region,
             endpoint_url,
             force_path_style: parse_bool_env("PROXIMA_S3_FORCE_PATH_STYLE")?,
-            upload_ttl_seconds: parse_u64_env(
+            upload_ttl_seconds: parse_presign_ttl_env(
                 "PROXIMA_S3_UPLOAD_TTL_SECONDS",
                 DEFAULT_UPLOAD_TTL_SECONDS,
             )?,
-            read_ttl_seconds: parse_u64_env(
+            read_ttl_seconds: parse_presign_ttl_env(
                 "PROXIMA_S3_READ_TTL_SECONDS",
                 DEFAULT_READ_TTL_SECONDS,
             )?,
@@ -110,6 +134,12 @@ fn parse_u64_env(key: &str, default: u64) -> Result<u64, BlobError> {
     value
         .parse::<u64>()
         .map_err(|_| BlobError::Config(format!("invalid integer {key}={value}")))
+}
+
+fn parse_presign_ttl_env(key: &str, default: u64) -> Result<u64, BlobError> {
+    let seconds = parse_u64_env(key, default)?;
+    validate_presign_ttl(key, seconds)?;
+    Ok(seconds)
 }
 
 fn parse_optional_u64_env(key: &str) -> Result<Option<u64>, BlobError> {

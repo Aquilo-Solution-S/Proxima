@@ -237,6 +237,7 @@ impl EmbeddingTextPort for EmbeddingTextFake {
         owner: &Owner,
         entity_kind: EntityKind,
         memory_id: proxima_core::MemoryId,
+        non_embeddable_schemas: &[String],
     ) -> Result<Option<String>, StorageError> {
         fake_error()
     }

@@ -266,8 +266,13 @@ async fn embed_claim(
     client: &dyn EmbeddingClient,
     claim: &EmbeddingJobClaim,
 ) -> Result<bool, EmbedClaimFailure> {
+    // Empty exclusion list: this drain only ever sees rows that a job was
+    // enqueued for, and every enqueue site already filters the schemas that
+    // declined a vector. Storage does not hold the flavor registry, so the
+    // list is not reachable here — the gate for a caller that bypasses the
+    // queue lives on `EmbeddingTextPort::load_embedding_text`.
     let Some(text) =
-        load_embedding_text(pool, &claim.owner, claim.entity_kind, claim.entity_id).await?
+        load_embedding_text(pool, &claim.owner, claim.entity_kind, claim.entity_id, &[]).await?
     else {
         return Ok(false);
     };
