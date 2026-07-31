@@ -108,10 +108,31 @@ pub use proxima_core::{
 /// genuinely unavailable — still fails the write. A flavor deriving many
 /// memories in a worker should checkpoint per output rather than per
 /// batch.
+///
+/// [`AppendMemoryEdgeRequestInput`] is the input to
+/// [`proxima_core::Engine::append_memory_edge_authorized`], the verb for an
+/// edge that is NOT a by-product of authoring a derived memory. A flavor
+/// whose pipeline records that one Fact was produced from another — an OCR
+/// reading from the PDF it read — has no derived memory to hang the edge
+/// off, so `edges` on [`AuthorDerivedRequestInput`] cannot carry it.
+///
+/// Every other part of that call was already reachable: the relation comes
+/// from `resolve_relation`, and the remaining fields are [`MemoryId`],
+/// [`EdgeAuthorshipKind`], [`SidecarPayload`] and `OwnerRef`. The verb was
+/// therefore callable in principle and unnameable in practice — the same
+/// shape as every earlier gap, where the blocker is one type in a public
+/// signature rather than a missing capability.
+///
+/// THIS IS NOT THE WITHHELD SURFACE. `append_edge`, `append_edge_in_tx`,
+/// `EdgeDraft` and the storage-tier `edge_append` route stay off the
+/// facade, and `facade_does_not_export_raw_edge_append_surface` still
+/// asserts it. This is the engine verb, which authorizes the owner, checks
+/// both endpoints live in that owner's space, and validates the shape
+/// against the registered relation before anything is written.
 pub use proxima_core::{
-    AuthorDerivedAuthorizedOutcome, AuthorDerivedEdgeInput, AuthorDerivedRequestInput,
-    CORE_DERIVED_FROM_RELATION, CORE_SUPERSEDES_RELATION, EdgeAuthorshipKind, EntityKind,
-    MemoryOperatorKind, RegisteredRelation,
+    AppendMemoryEdgeRequestInput, AuthorDerivedAuthorizedOutcome, AuthorDerivedEdgeInput,
+    AuthorDerivedRequestInput, CORE_DERIVED_FROM_RELATION, CORE_SUPERSEDES_RELATION,
+    EdgeAuthorshipKind, EntityKind, MemoryOperatorKind, RegisteredRelation,
 };
 /// Shared argument rules for search and paged reads, so a flavor does not
 /// have to invent its own — and so the in-tree tools cannot drift apart.

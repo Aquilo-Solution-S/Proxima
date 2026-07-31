@@ -215,6 +215,17 @@ impl Engine {
 
     /// Authorized graph-write verb for appending one memory edge.
     ///
+    /// Whether a Fact may be the SOURCE is the registered relation's
+    /// business, not this verb's. `validate_edge_shape` refuses a
+    /// Fact-to-Fact edge for [`RelationClass::Causal`],
+    /// [`RelationClass::Interpretive`] and [`RelationClass::Supersession`]
+    /// — interpretation belongs to a Perspective over Facts, never to an
+    /// edge between them — and admits it for the other classes. So a
+    /// [`Provenance`](RelationClass::Provenance) relation such as
+    /// [`CORE_DERIVED_FROM_RELATION`](crate::CORE_DERIVED_FROM_RELATION),
+    /// whose source mask is `EntityKindMask::all()`, records one Fact as
+    /// derived from another through here.
+    ///
     /// # Errors
     ///
     /// Returns `Forbidden` when the context lacks [`Relation::Editor`] on the
@@ -228,9 +239,8 @@ impl Engine {
     ) -> Result<EdgeId, ProtocolError> {
         // Authorize the caller-declared owner space before any storage
         // read, matching `author_derived_authorized`: a denied caller gets
-        // `Forbidden` without learning which memories exist. Agent edges
-        // always require Editor — Fact sources are rejected by the shape
-        // validation below, and Ingest never authors edges.
+        // `Forbidden` without learning which memories exist. Editor is
+        // required of every caller here, and Ingest never authors edges.
         let write_permit = self
             .authorize_write(authz, &req.owner, Relation::Editor)
             .await?;

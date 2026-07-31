@@ -1,8 +1,9 @@
 use std::collections::BTreeSet;
 
 use proxima::flavor::{
-    AbstractionPayload, AuthorshipKindMask, EntityKindMask, FactPayload, FlavorBundle,
-    FlavorRegistry, InputContractId, MemoryId, OperatorId, PayloadKeyBuilder, PgMemoryPayload,
+    AbstractionPayload, AppendMemoryEdgeRequestInput, AuthorshipKindMask,
+    CORE_DERIVED_FROM_RELATION, EntityKindMask, FactPayload, FlavorBundle, FlavorRegistry,
+    InputContractId, MemoryId, OperatorId, PayloadKeyBuilder, PgMemoryPayload,
     PgMemoryPayloadFuture, PgMemorySidecar, PgSidecarFuture, PgSidecarReadCtx, PgSidecarRegistry,
     RelationClass, RelationDescriptor, SchemaId, SchemaVersion, SidecarPayload,
 };
@@ -540,6 +541,150 @@ async fn facade_engine_reads_lineage_edges_and_derives_without_embedding_client(
         );
 
         drop(conn);
+        built.shutdown();
+        Ok(())
+    }
+    .await;
+
+    let _ = drop_db(&db_name).await;
+    result
+}
+
+/// A flavor can record that one Fact was produced from another, using
+/// `proxima` alone.
+///
+/// This is the shape every ingest pipeline that reads an artefact needs:
+/// an OCR reading is a Fact, the upload it read is a Fact, and the corpus
+/// should be able to answer "where did this come from?". There is no
+/// derived memory in that story, so [`AuthorDerivedRequestInput::edges`]
+/// cannot carry it — [`AppendMemoryEdgeRequestInput`] is the only route,
+/// and until it was re-exported an out-of-tree flavor could not name it.
+///
+/// CONSTRUCTED, NOT NAMED. A `use` of the struct compiles even when a
+/// FIELD's type is unreachable, which is how this gap has hidden before.
+/// The value is built field by field from facade symbols, so an
+/// unnameable field would fail this test rather than the next flavor.
+///
+/// The edge is a real [`CORE_DERIVED_FROM_RELATION`] between two real
+/// Facts, and the assertion is that `walk_memory_lineage` reaches the
+/// origin — `edge_exists` alone would pass on an edge no lineage query
+/// traverses, and lineage is filtered to
+/// `relation_class IN ('Provenance','Supersession')`.
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn facade_flavor_appends_a_fact_to_fact_provenance_edge()
+-> Result<(), Box<dyn std::error::Error>> {
+    let db_name = unique_db_name("proxima_facade_fact_edge");
+    create_db(&db_name).await.expect("PG required for tests");
+    let db_url = db_url(&db_name);
+
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let owner = company_owner(Uuid::now_v7());
+        let built = Proxima::<FacadeSurfaceApp>::app()
+            .database_url(db_url)
+            .owner(owner)
+            .tool_scope(ToolScope::All)
+            .build()
+            .await?;
+        create_sidecar_tables(built.pool_for_tests()).await?;
+        let authz = AuthzContext::for_subject_with_role(
+            UserId::new(Uuid::now_v7()),
+            [(owner, Role::admin())],
+            AuthPath::HostBearer,
+        );
+        let permit = built
+            .engine
+            .authorize_owner_write(&authz, &owner, proxima_core::AccessKind::Fact)
+            .await?;
+
+        // Two Facts: the artefact that arrived, and the reading of it.
+        let mut ingested = Vec::new();
+        for title in ["the pdf that arrived", "what reading it produced"] {
+            let fact = FacadeFact {
+                note_id: Uuid::now_v7(),
+                title: title.to_string(),
+                body: format!("{title} — body"),
+            };
+            let for_sidecar = fact.clone();
+            let outcome = proxima_storage_pg::verbs::fact_ingest::ingest_fact_for_owner(
+                built.pool_for_tests(),
+                &permit,
+                &fact,
+                None,
+                move |tx, outcome| {
+                    Box::pin(async move {
+                        for_sidecar
+                            .insert_memory_sidecar(tx, outcome.memory_id)
+                            .await
+                    })
+                },
+            )
+            .await?;
+            ingested.push(outcome.memory_id);
+        }
+        let (origin, reading) = (ingested[0], ingested[1]);
+
+        let derived_from = built
+            .engine
+            .registry()
+            .resolve_relation(CORE_DERIVED_FROM_RELATION)
+            .expect("core/derived-from is a substrate relation");
+
+        let edge_id = built
+            .engine
+            .append_memory_edge_authorized(
+                &authz,
+                AppendMemoryEdgeRequestInput {
+                    owner,
+                    relation: derived_from,
+                    source_memory_id: reading,
+                    target_memory_id: origin,
+                    authorship_kind: EdgeAuthorshipKind::ExternalAgent,
+                    authorship_owner_memory_id: None,
+                    sidecar_payload: None,
+                },
+            )
+            .await?;
+
+        let exists = built
+            .engine
+            .edge_exists(
+                &authz,
+                &EdgeExistsRequest {
+                    owner,
+                    edge_ids: vec![edge_id],
+                    filter: EdgeFilter {
+                        relation: None,
+                        source: None,
+                        target: None,
+                    },
+                },
+            )
+            .await?;
+        assert!(exists.exists, "the appended edge is readable back");
+
+        // The assertion that matters: lineage traverses Provenance, so the
+        // reading can answer what produced it. A Causal or Structural edge
+        // would be invisible here even where the shape validation admits it.
+        let lineage = built
+            .engine
+            .walk_memory_lineage(
+                &authz,
+                &MemoryLineageRequest {
+                    owner,
+                    start_memory_id: reading,
+                    direction: MemoryLineageDirection::Ancestors,
+                    depth: 2,
+                    limit: 10,
+                    after: None,
+                },
+            )
+            .await?;
+        assert!(
+            lineage.nodes.iter().any(|node| node.memory_id == origin),
+            "lineage from the reading reaches the Fact it was produced from"
+        );
+
         built.shutdown();
         Ok(())
     }
