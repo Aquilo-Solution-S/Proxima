@@ -563,6 +563,7 @@ async fn reconcile_stub_fact_embeddings(
     scope: EmbeddingReconcileScope,
 ) -> Result<EmbeddingReconcileOutcome, proxima_core::StorageError> {
     pg.reconcile_embeddings(EmbeddingReconcileOptions {
+        non_embeddable_schemas: &[],
         model_id: "stub-fact-embed",
         scope,
         limit: None,

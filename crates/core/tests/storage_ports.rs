@@ -246,6 +246,7 @@ impl EmbeddingTextPort for EmbeddingTextFake {
         owner: &Owner,
         model_id: &str,
         limit: usize,
+        _non_embeddable_schemas: &[String],
     ) -> Result<Vec<proxima_core::MemoryId>, StorageError> {
         fake_error()
     }
@@ -331,6 +332,7 @@ impl EmbeddingJobPort for EmbeddingJobFake {
         _permit: &OwnerWritePermit,
         model_id: &str,
         limit: i64,
+        _non_embeddable_schemas: &[String],
     ) -> Result<u64, StorageError> {
         fake_error()
     }

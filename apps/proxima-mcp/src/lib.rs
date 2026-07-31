@@ -268,17 +268,32 @@ async fn run_maintain(config: MaintainConfig) -> Result<(), CliError> {
         sweep.embeddings_deleted, sweep.heads_deleted, sweep.jobs_deleted
     );
 
+    // This pass runs against a bare `PgStorage` with no flavor app booted,
+    // so the only declarations it can see are core's own — which is where
+    // `core/upload-v1` lives, and it is the schema that motivated the
+    // exclusion. A host whose FLAVORS declare non-embeddable schemas must
+    // reconcile through its own binary, where the full registry exists;
+    // this pass would re-enqueue those. Printed below rather than left
+    // implicit, so the scope of the pass is visible in its own output.
+    let core_registry = proxima_core::FlavorRegistry::new()
+        .try_freeze()
+        .map_err(|err| ProximaError::Storage(err.to_string()))?;
+    let non_embeddable = core_registry.non_embeddable_schema_ids();
     let outcome = storage
         .reconcile_embeddings(EmbeddingReconcileOptions {
             model_id: &model,
             scope: reconcile_scope(config.scope),
             limit: config.limit,
+            non_embeddable_schemas: non_embeddable,
         })
         .await
         .map_err(|err| ProximaError::Storage(err.to_string()))?;
     println!(
-        "reconcile: scanned={} enqueued={} skipped={}",
-        outcome.scanned, outcome.enqueued, outcome.skipped
+        "reconcile: scanned={} enqueued={} skipped={} not-embeddable=[{}]",
+        outcome.scanned,
+        outcome.enqueued,
+        outcome.skipped,
+        non_embeddable.join(", ")
     );
 
     if config.drain {

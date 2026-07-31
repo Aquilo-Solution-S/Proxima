@@ -22,6 +22,7 @@ fn schemas_for_test() -> Vec<SchemaInfo> {
         tombstone: None,
         has_typed_ingress: false,
         cited_object_schema: None,
+        embeddable: true,
     }]
 }
 
@@ -87,7 +88,8 @@ async fn receiptless_fact_ingest_creates_fresh_queryable_facts() {
             Some("receiptless fact".to_string())
         );
         let missing =
-            list_facts_missing_embedding(pg.pool_for_tests(), &owner, "test-embed", 10).await?;
+            list_facts_missing_embedding(pg.pool_for_tests(), &owner, "test-embed", 10, &[])
+                .await?;
         assert!(missing.contains(&first.memory_id));
         assert!(missing.contains(&second.memory_id));
 

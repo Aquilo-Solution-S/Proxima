@@ -83,6 +83,11 @@ pub struct SchemaInfo {
     /// `CitedObjectPayload` schema id accepted by a `CitationMappingPayload`.
     /// Populated only for citation-mapping schemas.
     pub cited_object_schema: Option<SchemaId>,
+    /// `FactPayload::EMBEDDABLE`. `true` for every other kind: derived
+    /// memories are embedded inside their own write and cited
+    /// objects/mappings are not memories at all, so the flag would have
+    /// nothing to gate.
+    pub embeddable: bool,
 }
 
 impl SchemaInfo {
@@ -108,6 +113,10 @@ impl SchemaInfo {
             tombstone: None,
             has_typed_ingress: false,
             cited_object_schema: None,
+            // An opaque schema is a cited object or a citation mapping,
+            // never a memory, so nothing here is ever a candidate for a
+            // vector. `true` keeps the default meaning "nobody opted out".
+            embeddable: true,
         }
     }
 }
@@ -239,6 +248,14 @@ struct FrozenIndex {
     protocol_ingress_by_key: HashMap<(SchemaId, SchemaVersion, PayloadKind), usize>,
     /// `relations` keyed by relation id.
     relation_by_name: HashMap<String, usize>,
+    /// Schema ids of Fact schemas that declared `EMBEDDABLE = false`.
+    ///
+    /// Precomputed as a flat `Vec<String>` because its consumer is a SQL
+    /// bind: the enqueue-side queries exclude these ids, and building the
+    /// list per call would rescan every schema on every reconcile. Sorted
+    /// and deduplicated so the bound array is stable across processes —
+    /// a query plan should not depend on registration order.
+    non_embeddable_schema_ids: Vec<String>,
 }
 
 impl FrozenIndex {
@@ -274,6 +291,13 @@ impl FrozenIndex {
                 .entry(relation.relation.clone())
                 .or_insert(position);
         }
+        index.non_embeddable_schema_ids = schemas
+            .iter()
+            .filter(|schema| schema.kind == PayloadKind::Fact && !schema.embeddable)
+            .map(|schema| schema.schema_id.as_str().to_owned())
+            .collect();
+        index.non_embeddable_schema_ids.sort();
+        index.non_embeddable_schema_ids.dedup();
         index
     }
 }
@@ -415,6 +439,36 @@ impl FlavorRegistryFrozen {
     #[must_use]
     pub fn schemas(&self) -> &[SchemaInfo] {
         &self.schemas
+    }
+
+    /// Whether a Fact written under `schema_id` earns a vector.
+    ///
+    /// UNKNOWN SCHEMAS ARE EMBEDDABLE, and that direction is chosen. The
+    /// two failure modes are not symmetric: a vector nobody wanted is
+    /// waste, while a missing vector is a memory that is semantically
+    /// invisible and reports no error anywhere. Opting out is a
+    /// declaration, so it must be present to take effect.
+    ///
+    /// Version-agnostic, because embeddability is a statement about what
+    /// a schema's text IS rather than about its shape. A v2 that wanted
+    /// the opposite answer would be describing different content.
+    #[must_use]
+    pub fn schema_is_embeddable(&self, schema_id: &str) -> bool {
+        !self
+            .index
+            .non_embeddable_schema_ids
+            .iter()
+            .any(|id| id == schema_id)
+    }
+
+    /// Fact schema ids that declared `EMBEDDABLE = false`, sorted.
+    ///
+    /// For the enqueue-side queries, which exclude them: the inline write
+    /// path is not enough on its own, because reconciliation would find
+    /// the rows it skipped and enqueue them anyway.
+    #[must_use]
+    pub fn non_embeddable_schema_ids(&self) -> &[String] {
+        &self.index.non_embeddable_schema_ids
     }
 
     #[must_use]

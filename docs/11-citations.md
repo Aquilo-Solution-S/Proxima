@@ -214,6 +214,22 @@ artefact through `core/uploaded-blob-whole-v1`. Its rendered text names
 the file, so an upload is findable by name through
 `core/search_memories` with nobody having written a Fact for it.
 
+**Findable, not embedded.** `UploadV1` declares
+`FactPayload::EMBEDDABLE = false`, so the Fact keeps its text — and with
+it lexical search on the filename, which is the whole point of rendering
+one — and is never queued for a vector. A filename is worth finding and
+not worth embedding: every upload renders from the same template and
+differs only in a name, a mime and an integer, so their vectors would be
+mutual near-neighbours crowding the index that real prose lives in. This
+matters at scale because an upload is not necessarily a document: a
+flavor that stores page scans and figure crops as their own artefacts
+produces tens of thousands of these Facts per corpus.
+
+The exclusion holds on the write path *and* on both enqueue-side repair
+paths (`reconcile_embeddings`, the owner-scoped backfill). Gating only
+the write would be undone by the next operator maintenance pass, since
+healing a missing job is exactly what those passes do.
+
 The Fact's replay key is the **content hash alone**. For one owner the
 store resolves a content hash to exactly one CitedObject and reports that
 object's filename, mime, and length — so the other fields are functions

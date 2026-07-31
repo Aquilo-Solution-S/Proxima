@@ -260,6 +260,34 @@ pub trait FactPayload:
     /// override to `true`. See docs/03 §Special-category declaration
     /// and docs/13 §Compliance vocabulary.
     const SPECIAL_CATEGORY: bool = false;
+    /// Whether this schema's rendered text earns a VECTOR. Defaults to
+    /// `true`; a schema whose render is a template rather than prose
+    /// should override to `false`.
+    ///
+    /// GATES THE VECTOR ONLY — never the text, and never lexical search.
+    /// A non-embeddable Fact still writes [`Self::render`] to
+    /// `memories.text`, so it is still readable and still matched by
+    /// full-text search. That distinction is the whole point: a filename
+    /// is often the ONLY handle a person has on a file they are looking
+    /// for, which is a lexical need, while `"uploaded page-00042.png\n
+    /// image/png, 18332 bytes"` has no semantic neighbourhood worth
+    /// having. The alternative already available — setting
+    /// `rendered_text` to `None` — buys the same saving by making the
+    /// Fact unfindable, which is not the same trade.
+    ///
+    /// The cost this exists to avoid is not primarily money. Tens of
+    /// thousands of renders off one template differ only in a filename
+    /// and an integer, so their vectors are mutual near-neighbours, and
+    /// a dense cluster of them in the index is a retrieval problem
+    /// before it is a bill.
+    ///
+    /// A PROPERTY OF THE SCHEMA, READ FROM THE SCHEMA. It is deliberately
+    /// not stamped on the row: flip this declaration and the next
+    /// reconcile picks the rows up (or drops them), because the registry
+    /// is the single place the answer lives. A per-row copy would freeze
+    /// today's decision into history and drift from the type that owns
+    /// it.
+    const EMBEDDABLE: bool = true;
     /// Schema-owned receipt replay key material. This is not a payload
     /// serialization format; the typed sidecar remains the payload.
     #[must_use]

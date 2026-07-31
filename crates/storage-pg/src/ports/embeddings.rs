@@ -25,9 +25,16 @@ impl EmbeddingTextPort for PgStorage {
         owner: &Owner,
         model_id: &str,
         limit: usize,
+        non_embeddable_schemas: &[String],
     ) -> Result<Vec<MemoryId>, StorageError> {
-        verbs::fact_embeddings::list_facts_missing_embedding(&self.pool, owner, model_id, limit)
-            .await
+        verbs::fact_embeddings::list_facts_missing_embedding(
+            &self.pool,
+            owner,
+            model_id,
+            limit,
+            non_embeddable_schemas,
+        )
+        .await
     }
 }
 
@@ -146,9 +153,16 @@ impl EmbeddingJobPort for PgStorage {
         permit: &OwnerWritePermit,
         model_id: &str,
         limit: i64,
+        non_embeddable_schemas: &[String],
     ) -> Result<u64, StorageError> {
-        verbs::fact_embeddings::enqueue_missing_embedding_jobs(&self.pool, permit, model_id, limit)
-            .await
+        verbs::fact_embeddings::enqueue_missing_embedding_jobs(
+            &self.pool,
+            permit,
+            model_id,
+            limit,
+            non_embeddable_schemas,
+        )
+        .await
     }
 
     async fn count_pending_embedding_jobs(&self, owner: &Owner) -> Result<u64, StorageError> {

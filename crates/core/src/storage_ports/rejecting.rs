@@ -285,6 +285,7 @@ impl EmbeddingTextPort for RejectingStorage {
         _owner: &Owner,
         _model_id: &str,
         _limit: usize,
+        _non_embeddable_schemas: &[String],
     ) -> Result<Vec<crate::MemoryId>, StorageError> {
         Ok(Vec::new())
     }
@@ -374,6 +375,7 @@ impl EmbeddingJobPort for RejectingStorage {
         _permit: &OwnerWritePermit,
         _model_id: &str,
         _limit: i64,
+        _non_embeddable_schemas: &[String],
     ) -> Result<u64, StorageError> {
         Err(StorageError::Internal(
             "RejectingStorage rejects writes".into(),

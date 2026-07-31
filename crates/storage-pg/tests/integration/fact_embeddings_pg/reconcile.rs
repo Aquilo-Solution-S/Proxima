@@ -54,6 +54,7 @@ async fn reconcile_requeues_failed_embedding_jobs() -> Result<(), Box<dyn std::e
         // process restart can retry it.
         let reconciled = pg
             .reconcile_embeddings(EmbeddingReconcileOptions {
+                non_embeddable_schemas: &[],
                 model_id: "stub-fact-embed",
                 scope: EmbeddingReconcileScope::MissingOnly,
                 limit: None,
@@ -331,6 +332,7 @@ async fn reconcile_limit_skips_existing_heads_before_bounding()
 
         let outcome = pg
             .reconcile_embeddings(EmbeddingReconcileOptions {
+                non_embeddable_schemas: &[],
                 model_id: "stub-fact-embed",
                 scope: EmbeddingReconcileScope::MissingOnly,
                 limit: Some(1),

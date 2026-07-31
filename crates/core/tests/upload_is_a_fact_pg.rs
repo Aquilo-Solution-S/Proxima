@@ -261,14 +261,96 @@ async fn completing_an_upload_records_the_artefact_and_its_arrival_together() {
         "the upload is closed out against the object that was recorded"
     );
 
+    // READABLE, FINDABLE, NOT EMBEDDED. `UploadV1::EMBEDDABLE` is false,
+    // and the assertion above that the text carries `handbuch.pdf` is the
+    // other half of the same statement: the filename still reaches
+    // `memories.text`, so full-text search can find the file, and only the
+    // vector is declined.
     assert_eq!(
         fact_embedding_job_count(&pool).await,
-        1,
-        "the upload Fact is queued for embedding"
+        0,
+        "an upload Fact was queued for embedding; its render is a template \
+         with a filename in it and every upload produces a near-identical \
+         one, which is a crowded index rather than a useful neighbourhood"
     );
 
     drop(pg);
     drop_db(&db_name).await.expect("drop test db");
+}
+
+/// Reconciliation must not undo the write path's decision.
+///
+/// The load-bearing half of `EMBEDDABLE`, and the half a write-path-only
+/// implementation gets wrong. Reconcile heals the *absence* of a job —
+/// exactly the state a non-embeddable schema is supposed to stay in — so
+/// without the same exclusion it would find every row the write path
+/// skipped and queue it on the next operator pass. The bug would not
+/// appear until someone ran maintenance.
+#[tokio::test]
+async fn reconciliation_does_not_queue_what_the_write_path_declined() {
+    let (pg, db_name) = fresh_pg().await;
+    let pool = pg.pool_for_tests().clone();
+    let (owner, authz) = owner_and_authz();
+    let engine = engine_for(&pg);
+    let blobs =
+        StagingBlobs::new().with_upload("upload-1", "handbuch.pdf", b"the bytes of a handbook");
+
+    engine
+        .complete_upload_as_fact(&blobs, &authz, owner, "upload-1", &[])
+        .await
+        .expect("completion");
+    assert_eq!(fact_embedding_job_count(&pool).await, 0);
+
+    // A Fact with text and no vector is precisely what reconcile exists to
+    // find, so this call is the adversary, not a formality.
+    let outcome = engine
+        .reconcile_embeddings(proxima_core::EmbeddingReconcileScope::MissingOnly, None)
+        .await
+        .expect("reconcile");
+
+    assert_eq!(
+        fact_embedding_job_count(&pool).await,
+        0,
+        "reconciliation queued an upload Fact the write path deliberately \
+         skipped: {outcome:?}"
+    );
+    assert_eq!(
+        outcome.enqueued, 0,
+        "reconcile reported work it should not have found"
+    );
+
+    drop(pg);
+    drop_db(&db_name).await.expect("drop test db");
+}
+
+/// The exclusion is a declaration, not a hardcoded list of schema ids.
+///
+/// Without this, a `non_embeddable_schema_ids()` that returned a constant
+/// would pass every other test in this file. It also pins the default:
+/// a schema that says nothing keeps its vector, because a silently
+/// missing embedding reports no error anywhere.
+#[test]
+fn the_registry_reads_embeddability_from_the_schema() {
+    let registry = FlavorRegistry::new().freeze_or_panic_for_tests();
+
+    assert!(
+        !registry.schema_is_embeddable(proxima_core::UploadV1::SCHEMA_ID),
+        "core/upload-v1 declares EMBEDDABLE = false"
+    );
+    assert!(
+        registry.schema_is_embeddable(proxima_core::UtteranceV1::SCHEMA_ID),
+        "a schema that declares nothing keeps its vector"
+    );
+    assert!(
+        registry.schema_is_embeddable("nobody/registered-this-v1"),
+        "an unknown schema is embeddable: opting out has to be said out loud, \
+         and a missing vector is silent where a surplus one is merely waste"
+    );
+    assert_eq!(
+        registry.non_embeddable_schema_ids(),
+        [proxima_core::UploadV1::SCHEMA_ID],
+        "the list is derived from the declarations, not written down twice"
+    );
 }
 
 /// **The point of the change.** When the Fact write is refused, the
