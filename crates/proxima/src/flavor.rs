@@ -6,6 +6,25 @@ pub use crate::migrations::NamedMigrator;
 /// runtime handles a spawning flavor receives and the named join handle
 /// it returns.
 pub use crate::workers::{FlavorWorker, FlavorWorkerContext};
+/// The typed artefact inside [`CitedBlobStaged`], and the outcome of
+/// [`proxima_core::Engine::complete_upload_as_fact`].
+///
+/// NAMING A TYPE IS NOT ENOUGH TO RETURN ONE. `stage_upload` returns
+/// `CitedBlobStaged`, whose `payload` field is an
+/// [`UploadedBlobPayload`] — a struct with no constructor, so an
+/// out-of-tree flavor that could name the outer type still could not
+/// build one, and the port was unimplementable for exactly as long as
+/// this line was missing. That is the recurring shape of a facade gap
+/// here: the blocker is never the trait, it is a field type one level
+/// down that no `use` can reach. The tier test below constructs the
+/// struct rather than only naming it, because only construction
+/// exercises the difference.
+///
+/// [`UploadCompleted`] rides along for the caller's half of the same
+/// verb: without it the result of a completion cannot be bound to a
+/// named local or returned from a flavor's own function.
+pub use proxima_core::citations::UploadedBlobPayload;
+pub use proxima_core::engine::UploadCompleted;
 /// MCP tool-authoring surface: implement [`McpTool`] with typed
 /// [`McpToolCtx`] / [`McpToolError`] instead of reaching into
 /// `proxima_core::mcp`. Mirrors what `docs/tutorials/add-first-mcp-tool.md`
