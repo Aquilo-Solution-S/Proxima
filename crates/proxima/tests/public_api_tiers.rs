@@ -269,19 +269,39 @@ fn flavor_sdk_exposes_the_cited_blob_lane() {
     use proxima::flavor::{
         CitedBlobPort, CitedBlobReadUrl, CitedBlobService, CitedBlobStaged, CitedBlobUploadAborted,
         CitedBlobUploadCompleted, CitedBlobUploadHeader, CitedBlobUploadPrepared,
+        UploadedBlobPayload,
     };
     fn _needs_port<T: CitedBlobPort>() {}
     let _: Option<(
         &CitedBlobService,
         &CitedBlobReadUrl,
         &CitedBlobUploadPrepared,
-        // `stage_upload` returns this, so a flavor implementing the port
-        // must be able to name it.
-        &CitedBlobStaged,
         &CitedBlobUploadCompleted,
         &CitedBlobUploadAborted,
         &CitedBlobUploadHeader,
     )> = None;
+
+    // CONSTRUCTED, NOT NAMED. `stage_upload` must RETURN this, and the
+    // naming form above passed for a release while the port was
+    // unimplementable out-of-tree: `payload` is an `UploadedBlobPayload`,
+    // which was not on the facade, so no `use` could complete this
+    // literal. A nameability assertion cannot see that, because the
+    // unreachable type is a field rather than the type under test.
+    let staged = CitedBlobStaged {
+        payload: UploadedBlobPayload {
+            content_hash: [0u8; 32],
+            bucket: "bucket".to_owned(),
+            object_key: "objects/aa/bb".to_owned(),
+            sha256: [0u8; 32],
+            byte_len: 1,
+            mime: "application/pdf".to_owned(),
+            filename: "handbuch.pdf".to_owned(),
+            etag: None,
+            uploaded_at: time::OffsetDateTime::UNIX_EPOCH,
+        },
+        already_completed: None,
+    };
+    assert!(staged.already_completed.is_none());
 }
 
 #[test]
