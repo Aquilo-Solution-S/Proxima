@@ -36,7 +36,7 @@ fn baseline_schema_contains_pr7_operator_proof_carriers() {
 use std::sync::Arc;
 
 use crate::common::{drop_db, fresh_pg, owner_fixture, owner_write_permit};
-use proxima_core::storage::DerivedEdgeSpec;
+use proxima_core::storage::{DerivedEdgeSpec, DerivedEmbedding};
 use proxima_core::{
     AbstractionPayload, AgentDerivationV1, AuthPath, AuthzContext, CORE_DERIVED_FROM_RELATION,
     EdgeAuthorshipKind, EntityKind, ErrorCode, FlavorRegistry, InputContractId, MemoryId,
@@ -285,8 +285,7 @@ async fn author_derived_rejects_extra_same_output_wrong_operator_authorship()
             prompt_version: "operator-proofs-pg",
             supersedes: None,
             lexical_language: None,
-            embedding: None,
-            embedding_model_id: None,
+            embedding: DerivedEmbedding::None,
         };
         let sidecars = pg.sidecars().clone();
         let mut tx = pg.pool_for_tests().begin().await?;
@@ -682,8 +681,7 @@ async fn author_test_abstraction_multi(
         prompt_version: "operator-proofs-pg",
         supersedes: None,
         lexical_language: None,
-        embedding: None,
-        embedding_model_id: None,
+        embedding: DerivedEmbedding::None,
     };
     let sidecar = SidecarPayload::abstraction(AgentDerivationV1 {
         title: "derived".into(),

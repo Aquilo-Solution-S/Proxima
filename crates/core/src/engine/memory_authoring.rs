@@ -2,7 +2,9 @@ use super::Engine;
 use crate::access::Relation;
 use crate::authz::AuthzContext;
 use crate::error::ProtocolError;
-use crate::storage::{AuthorDerivedOutcome, AuthorDerivedRequest, DerivedEdgeSpec, StorageError};
+use crate::storage::{
+    AuthorDerivedOutcome, AuthorDerivedRequest, DerivedEdgeSpec, DerivedEmbedding, StorageError,
+};
 use crate::storage_ports::OwnerWritePermit;
 use crate::{
     CORE_SUPERSEDES_RELATION, EdgeAuthorshipKind, EdgeId, EndpointBinding, EntityId, EntityKind,
@@ -54,6 +56,11 @@ pub struct AuthorDerivedAuthorizedOutcome {
     pub memory_id: MemoryId,
     pub idempotent_replay: bool,
     pub edge_ids: Vec<EdgeId>,
+    /// The memory landed with no vector and a pending embedding job; it is
+    /// lexically findable and semantically invisible until a drain runs.
+    /// Callers that need it searchable immediately can see that here rather
+    /// than by reading logs — see [`crate::AuthorDerivedOutcome`].
+    pub embedding_deferred: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -202,6 +209,7 @@ impl Engine {
             memory_id: outcome.memory_id,
             idempotent_replay: outcome.idempotent_replay,
             edge_ids,
+            embedding_deferred: outcome.embedding_deferred,
         })
     }
 
@@ -285,11 +293,27 @@ impl Engine {
 
     /// Author one derived Memory and its already-resolved edges. When an
     /// embedding client is configured, the Engine embeds before storage;
-    /// otherwise storage receives `None` and persists no embedding row.
+    /// otherwise storage receives [`DerivedEmbedding::None`] and persists no
+    /// embedding row.
+    ///
+    /// An input this client cannot embed does not fail the write. The
+    /// memory lands with no vector and a pending embedding job enqueued in
+    /// the same transaction ([`DerivedEmbedding::Deferred`]), so
+    /// [`Engine::drain_embedding_jobs`] — which owns the bisecting
+    /// over-limit rescue that this path has never had — picks it up. The
+    /// alternative is what production hit: a derive phase that dies
+    /// deterministically, forever, on one over-long section, discarding
+    /// every model call already paid for upstream of it.
+    ///
+    /// A provider that is merely *down* is a different thing and still
+    /// fails the write, so an outage cannot quietly mint a corpus of
+    /// unembedded memories. [`crate::llm::embed_failure_blames_the_input`]
+    /// is what separates the two.
     ///
     /// # Errors
     ///
-    /// Returns `Internal` when the embedding client fails,
+    /// Returns `Internal` when the embedding client fails *and* the
+    /// provider does not answer a liveness probe,
     /// `ConstraintViolation` on embedding dimension mismatch, and storage
     /// errors from the atomic write.
     ///
@@ -302,21 +326,12 @@ impl Engine {
         req: AuthorDerivedRequestInput<'_>,
     ) -> Result<AuthorDerivedOutcome, StorageError> {
         validate_operator_memory_invocation_request(&req)?;
-        let (embedding, embedding_model_id) = if let Some(client) = self.embed_client() {
-            let embedding = client
-                .embed(&req.text)
-                .await
-                .map_err(|e| StorageError::Internal(format!("embed derived memory text: {e}")))?;
-            if embedding.len() != client.dim() {
-                return Err(StorageError::ConstraintViolation(format!(
-                    "embedding dim mismatch: client dim {} but vector len {}",
-                    client.dim(),
-                    embedding.len(),
-                )));
-            }
-            (Some(embedding), Some(client.model_id().to_string()))
-        } else {
-            (None, None)
+        // Bound outside the call: `DerivedEmbedding` borrows the client's
+        // model id for the length of the storage request.
+        let client = self.embed_client();
+        let embedding = match client.as_deref() {
+            None => DerivedEmbedding::None,
+            Some(client) => resolve_derived_embedding(client, req.memory_id, &req.text).await?,
         };
 
         let supersedes_relation = if req.supersedes.is_some() {
@@ -379,7 +394,6 @@ impl Engine {
             supersedes: req.supersedes,
             lexical_language: req.lexical_language,
             embedding,
-            embedding_model_id: embedding_model_id.as_deref(),
             edges: &edges,
         };
         self.storage()
@@ -594,6 +608,62 @@ impl Engine {
                 })
             })
             .collect()
+    }
+}
+
+/// Decide what a derived write should do about its vector, given a
+/// configured embedding client.
+///
+/// The interesting arm is the middle one. A text this client will not
+/// embed used to fail the write outright, which made a derive phase die
+/// deterministically on its longest unit and discard every model call
+/// already spent on the ones before it — the memory is the expensive
+/// artifact, and the vector is recoverable later by a drain that knows how
+/// to bisect. So the refusal downgrades the write instead of failing it,
+/// but only once the provider has proved it is up: an outage says nothing
+/// about the text, and deferring on it would trade one loud failure for a
+/// corpus of silently unembedded memories.
+///
+/// # Errors
+///
+/// `ConstraintViolation` when the vector's length disagrees with the
+/// client's declared `dim` (a misconfiguration, never the input's fault,
+/// so it is not deferrable), and `Internal` when the provider fails and
+/// does not answer a liveness probe.
+async fn resolve_derived_embedding<'client>(
+    client: &'client dyn crate::llm::EmbeddingClient,
+    memory_id: MemoryId,
+    text: &str,
+) -> Result<DerivedEmbedding<'client>, StorageError> {
+    match client.embed(text).await {
+        Ok(vector) => {
+            if vector.len() != client.dim() {
+                return Err(StorageError::ConstraintViolation(format!(
+                    "embedding dim mismatch: client dim {} but vector len {}",
+                    client.dim(),
+                    vector.len(),
+                )));
+            }
+            Ok(DerivedEmbedding::Ready {
+                model_id: client.model_id(),
+                vector,
+            })
+        }
+        Err(err) if crate::llm::embed_failure_blames_the_input(client, &err).await => {
+            tracing::warn!(
+                error = %err,
+                memory_id = ?memory_id,
+                text_bytes = text.len(),
+                "derived memory text refused by a live embedding provider; \
+                 writing the memory without a vector and enqueueing an embedding job"
+            );
+            Ok(DerivedEmbedding::Deferred {
+                model_id: client.model_id(),
+            })
+        }
+        Err(err) => Err(StorageError::Internal(format!(
+            "embed derived memory text: {err}"
+        ))),
     }
 }
 

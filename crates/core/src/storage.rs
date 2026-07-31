@@ -275,6 +275,44 @@ pub struct DerivedEdgeSpec<'a> {
     pub sidecar_payload: Option<&'a SidecarPayload>,
 }
 
+/// What storage must do about a derived memory's vector, decided by the
+/// engine before the write opens its transaction.
+///
+/// The three cases are mutually exclusive and each one names its own
+/// consequence, so "no vector was written" can never again be confused with
+/// "no vector was wanted". A pair of `Option`s could spell the same states,
+/// but it could also spell the two that mean nothing (a vector with no model
+/// id, a model id with neither a vector nor a deferral) — and it was the
+/// silent version of the third case that made an unembeddable derived text a
+/// permanently failing write.
+#[derive(Debug, Clone, PartialEq)]
+pub enum DerivedEmbedding<'a> {
+    /// No embedding client is configured. Storage writes no vector and
+    /// enqueues nothing; a later `reconcile_embeddings` is what covers
+    /// these rows.
+    None,
+    /// The client embedded the text. Storage writes the vector inline, in
+    /// the same transaction as the row.
+    Ready { model_id: &'a str, vector: Vec<f32> },
+    /// The client could not embed this text but the provider is up, so the
+    /// input — not the provider — is what failed. Storage writes no vector
+    /// and enqueues a durable embedding job for `model_id` **in the same
+    /// transaction as the row**, so the drain (which owns the bisecting
+    /// over-limit rescue) picks the memory up. Losing the whole write, and
+    /// every model call upstream of it, is not the right answer to an input
+    /// one provider call refused.
+    Deferred { model_id: &'a str },
+}
+
+impl DerivedEmbedding<'_> {
+    /// Whether storage is expected to enqueue an embedding job instead of
+    /// writing a vector.
+    #[must_use]
+    pub const fn is_deferred(&self) -> bool {
+        matches!(self, Self::Deferred { .. })
+    }
+}
+
 #[derive(Debug)]
 pub struct AuthorDerivedRequest<'a> {
     pub memory_id: MemoryId,
@@ -298,8 +336,7 @@ pub struct AuthorDerivedRequest<'a> {
     /// `None` applies the database default. Storage verifies the name
     /// against the catalog inside the write transaction.
     pub lexical_language: Option<&'a str>,
-    pub embedding: Option<Vec<f32>>,
-    pub embedding_model_id: Option<&'a str>,
+    pub embedding: DerivedEmbedding<'a>,
     pub edges: &'a [DerivedEdgeSpec<'a>],
 }
 
@@ -308,6 +345,12 @@ pub struct AuthorDerivedOutcome {
     pub memory_id: MemoryId,
     pub idempotent_replay: bool,
     pub edge_count: usize,
+    /// The memory landed without a vector and carries a pending embedding
+    /// job instead ([`DerivedEmbedding::Deferred`]). Until a drain runs, the
+    /// memory is lexically findable and semantically invisible — a caller
+    /// that needs it searchable now must say so, which it cannot do if the
+    /// only record is a log line.
+    pub embedding_deferred: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

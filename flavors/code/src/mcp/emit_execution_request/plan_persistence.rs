@@ -2,8 +2,8 @@ use proxima_core::access::AccessKind;
 use proxima_core::relation::{CORE_AUTHORED_RELATION, CORE_DERIVED_FROM_RELATION};
 use proxima_core::storage_ports::OwnerWritePermit;
 use proxima_core::{
-    AbstractionPayload, DerivedEdgeSpec, EdgeAuthorshipKind, EdgeId, EntityKind, MemoryId,
-    MemoryOperatorKind, Owner, RegisteredRelation, SchemaVersion, ToolCtx, ToolError,
+    AbstractionPayload, DerivedEdgeSpec, DerivedEmbedding, EdgeAuthorshipKind, EdgeId, EntityKind,
+    MemoryId, MemoryOperatorKind, Owner, RegisteredRelation, SchemaVersion, ToolCtx, ToolError,
 };
 use proxima_storage_pg::sidecars::PgMemorySidecar;
 use proxima_storage_pg::verbs::derive_append::{DerivedDraft, append_derived_with_edges_in_tx};
@@ -96,8 +96,7 @@ pub(super) async fn append_execution_plan(
         prompt_version: "proxima-code/emit_execution_plan-v1",
         supersedes: None,
         lexical_language: None,
-        embedding: None,
-        embedding_model_id: None,
+        embedding: DerivedEmbedding::None,
     };
     let derived_relation = ctx
         .registry()

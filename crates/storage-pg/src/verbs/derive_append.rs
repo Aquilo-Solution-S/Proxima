@@ -5,9 +5,9 @@ use std::collections::BTreeSet;
 
 use proxima_core::storage_ports::OwnerWritePermit;
 use proxima_core::{
-    DerivedEdgeSpec, EdgeAuthorshipKind, EntityKind, InputContractId, MemoryId, MemoryOperatorKind,
-    OperatorId, Owner, OwnerRefKind, RelationClass, SchemaId, SchemaVersion, SourceBatchId,
-    StorageError,
+    DerivedEdgeSpec, DerivedEmbedding, EdgeAuthorshipKind, EntityKind, InputContractId, MemoryId,
+    MemoryOperatorKind, OperatorId, Owner, OwnerRefKind, RelationClass, SchemaId, SchemaVersion,
+    SourceBatchId, StorageError,
 };
 use sqlx::{Postgres, Transaction};
 
@@ -49,8 +49,10 @@ pub struct DerivedDraft<'a> {
     /// Resolved text-search configuration name; `None` applies the
     /// database default (`proxima_core.lexical_config()`).
     pub lexical_language: Option<&'a str>,
-    pub embedding: Option<Vec<f32>>,
-    pub embedding_model_id: Option<&'a str>,
+    /// Vector to write inline, embedding job to enqueue, or neither — see
+    /// [`DerivedEmbedding`]. Whichever it is happens inside this write's
+    /// transaction.
+    pub embedding: DerivedEmbedding<'a>,
 }
 
 #[derive(Debug, Clone)]
@@ -610,25 +612,45 @@ async fn validate_supersedes_in_owner(
     }
 }
 
+/// Settle the derived row's vector inside the row's own transaction:
+/// write it, or enqueue the job that will.
+///
+/// The deferred arm is the whole reason the owner columns are threaded
+/// here. It is what makes an unembeddable derived text a *later* embedding
+/// rather than a permanently failing write — and it must share this
+/// transaction, or a committed memory can exist with no vector and no job
+/// to give it one.
 async fn insert_embedding_in_tx(
     tx: &mut Transaction<'_, Postgres>,
     draft: &DerivedDraft<'_>,
-    _owner_kind: OwnerRefKind,
-    _owner_id: Option<uuid::Uuid>,
+    owner_kind: OwnerRefKind,
+    owner_id: Option<uuid::Uuid>,
 ) -> Result<(), StorageError> {
-    let (Some(embedding), Some(embedding_model_id)) = (&draft.embedding, draft.embedding_model_id)
-    else {
-        return Ok(());
-    };
-    crate::verbs::fact_embeddings::insert_memory_embedding(
-        tx,
-        &draft.owner,
-        draft.kind,
-        MemoryId::new(draft.memory_id),
-        embedding_model_id,
-        EMBEDDING_DIM,
-        embedding,
-    )
-    .await?;
-    Ok(())
+    match &draft.embedding {
+        DerivedEmbedding::None => Ok(()),
+        DerivedEmbedding::Ready { model_id, vector } => {
+            crate::verbs::fact_embeddings::insert_memory_embedding(
+                tx,
+                &draft.owner,
+                draft.kind,
+                MemoryId::new(draft.memory_id),
+                model_id,
+                EMBEDDING_DIM,
+                vector,
+            )
+            .await
+            .map(|_outcome| ())
+        }
+        DerivedEmbedding::Deferred { model_id } => {
+            crate::verbs::fact_embeddings::enqueue_embedding_job_in_tx(
+                tx,
+                owner_kind,
+                owner_id,
+                draft.kind,
+                draft.memory_id,
+                model_id,
+            )
+            .await
+        }
+    }
 }

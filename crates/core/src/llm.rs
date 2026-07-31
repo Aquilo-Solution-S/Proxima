@@ -50,6 +50,43 @@ pub trait EmbeddingClient: Send + Sync + std::fmt::Debug {
     fn dim(&self) -> usize;
 }
 
+/// The trivial input used to ask a provider whether it is up, right after
+/// it refused a real one.
+///
+/// Short enough that no cap, context window, or token limit can be what
+/// refuses it, so the only thing its answer reports is liveness.
+pub(crate) const EMBED_LIVENESS_PROBE: &str = "ok";
+
+/// Whether an embedding failure is the *input's* fault rather than the
+/// provider's — the question that decides whether retrying this input
+/// unchanged could ever work.
+///
+/// [`LlmError::EmbedPermanent`] already answers it: the provider looked at
+/// the input and refused it. Every other variant is ambiguous, and
+/// unavoidably so. A provider that *dies on* an input and a provider that
+/// was already down produce the same response — observed against a local
+/// runner as `400 {"error": "… EOF"}` — so no per-request inspection can
+/// separate them.
+///
+/// One extra tiny call can. If the provider answers
+/// [`EMBED_LIVENESS_PROBE`] immediately after refusing the real input, it is
+/// up, and the refusal is attributable to what was sent. If the probe fails
+/// too, the provider really is down and nothing about the input has been
+/// learned.
+///
+/// This is the same question [`crate::Engine::drain_embedding_jobs`] asks of
+/// a failed batch, asked here of a single text, so a derived write and the
+/// drain cannot disagree about whose fault a failure was.
+pub(crate) async fn embed_failure_blames_the_input(
+    client: &dyn EmbeddingClient,
+    err: &LlmError,
+) -> bool {
+    if matches!(err, LlmError::EmbedPermanent(_)) {
+        return true;
+    }
+    client.embed(EMBED_LIVENESS_PROBE).await.is_ok()
+}
+
 /// Smallest piece, in bytes, the chunked-embedding rescue is willing to
 /// produce. A segment whose halves would fall below this is not split
 /// further: at that size a rejection is read as genuinely invalid input

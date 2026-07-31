@@ -503,3 +503,47 @@ pub async fn count_embedding_job_status(
         .map_err(|_| StorageError::Internal("failed embedding job count is negative".into()))?;
     Ok(EmbeddingJobStatusCounts { pending, failed })
 }
+
+/// Enqueue one durable embedding job in the caller's transaction, so the
+/// job row and the memory row land together or not at all.
+///
+/// Idempotent on the table's natural key `(owner, entity_kind, entity_id,
+/// model_id, embedding_version)`, which is why a replayed write and a
+/// re-enqueued deferral are both free.
+///
+/// `entity_kind` is deliberately a parameter rather than `Fact`: the
+/// column is the full `proxima_core.entity_kind` enum, so an `Abstraction`
+/// or `Perspective` job needs no schema change — only a caller. Facts have
+/// enqueued here since ingest existed; derived memories acquired the same
+/// rescue when an unembeddable text stopped meaning a failed write.
+///
+/// # Errors
+///
+/// Maps SQL failures through the shared mapper.
+pub(crate) async fn enqueue_embedding_job_in_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    owner_kind: OwnerRefKind,
+    owner_id: Option<uuid::Uuid>,
+    entity_kind: EntityKind,
+    entity_id: uuid::Uuid,
+    model_id: &str,
+) -> Result<(), StorageError> {
+    sqlx::query(
+        "INSERT INTO proxima_core.embedding_jobs
+            (owner_kind, owner_id,
+             entity_kind, entity_id, model_id)
+         VALUES ($1, $2, $3, $4, $5)
+         ON CONFLICT (owner_kind, owner_id,
+                      entity_kind, entity_id, model_id, embedding_version)
+         DO NOTHING",
+    )
+    .bind(owner_kind)
+    .bind(owner_id)
+    .bind(entity_kind)
+    .bind(entity_id)
+    .bind(model_id)
+    .execute(&mut **tx)
+    .await
+    .map_err(map_err)?;
+    Ok(())
+}

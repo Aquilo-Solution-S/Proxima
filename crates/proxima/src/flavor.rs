@@ -79,11 +79,16 @@ pub use proxima_core::{
 /// replaces an earlier output sets `supersedes` (which also writes a
 /// [`CORE_SUPERSEDES_RELATION`] edge in the same transaction).
 ///
-/// Note the embedding asymmetry against Facts: a derived memory is
-/// embedded *synchronously*, inside the write, so a provider failure
-/// fails the write. Facts enqueue a durable job instead. A flavor
-/// deriving many memories in a worker should checkpoint per output rather
-/// than per batch.
+/// A derived memory is embedded *synchronously*, inside the write, where a
+/// Fact enqueues a durable job — but the two now agree about failure. A
+/// text the provider refuses (or dies on) leaves the memory written with
+/// no vector and an embedding job enqueued in the same transaction, and
+/// [`AuthorDerivedAuthorizedOutcome::embedding_deferred`] says so; the
+/// memory is lexically findable and not semantically findable until a
+/// drain runs. Only a provider that fails a liveness probe — one that is
+/// genuinely unavailable — still fails the write. A flavor deriving many
+/// memories in a worker should checkpoint per output rather than per
+/// batch.
 pub use proxima_core::{
     AuthorDerivedAuthorizedOutcome, AuthorDerivedEdgeInput, AuthorDerivedRequestInput,
     CORE_DERIVED_FROM_RELATION, CORE_SUPERSEDES_RELATION, EdgeAuthorshipKind, EntityKind,

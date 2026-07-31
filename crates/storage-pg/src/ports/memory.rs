@@ -112,7 +112,6 @@ impl MemoryAuthoringPort for PgStorage {
                 supersedes: req.supersedes,
                 lexical_language: req.lexical_language,
                 embedding: req.embedding.clone(),
-                embedding_model_id: req.embedding_model_id,
             };
             // ONE validator for both derived-write paths (this engine port and
             // the flavor-SDK `append_derived_with_edges_in_tx`): the port used
@@ -168,6 +167,10 @@ impl MemoryAuthoringPort for PgStorage {
                 memory_id: outcome.memory_id,
                 idempotent_replay: outcome.idempotent_replay,
                 edge_count,
+                // A replay wrote nothing, so it deferred nothing: the row it
+                // found already carries whatever vector (or job) the write
+                // that minted it left behind.
+                embedding_deferred: req.embedding.is_deferred() && !outcome.idempotent_replay,
             })
         })
         .await

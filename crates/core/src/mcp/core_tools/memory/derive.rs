@@ -170,6 +170,16 @@ pub struct DeriveOutput {
     pub handle: String,
     pub idempotent_replay: bool,
     pub provenance_edge_handles: Vec<String>,
+    /// Present only when the memory landed without a vector because the
+    /// embedding provider refused its text. The memory is written and
+    /// lexically findable; a pending embedding job will give it a vector
+    /// (in bisected pieces if the text was over the provider's limit), so
+    /// semantic search will not find it until a drain runs.
+    ///
+    /// Skipped when false so the ordinary response is byte-identical to
+    /// what it has always been.
+    #[serde(skip_serializing_if = "core::ops::Not::not")]
+    pub embedding_deferred: bool,
 }
 
 #[derive(Debug)]
@@ -366,6 +376,7 @@ impl McpTool for DeriveTool {
                 },
                 idempotent_replay: outcome.idempotent_replay,
                 provenance_edge_handles,
+                embedding_deferred: outcome.embedding_deferred,
             })
         })
     }

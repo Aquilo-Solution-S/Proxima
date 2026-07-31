@@ -8,6 +8,7 @@ mod tests;
 mod text;
 mod write;
 
+pub(crate) use jobs::enqueue_embedding_job_in_tx;
 pub use jobs::{
     claim_pending_embedding_jobs, complete_embedding_job, count_embedding_job_status,
     count_failed_embedding_jobs, count_pending_embedding_jobs, enqueue_missing_embedding_jobs,

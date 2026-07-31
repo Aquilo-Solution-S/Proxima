@@ -1,7 +1,7 @@
 use crate::common::{drop_db, fresh_pg, owner_fixture, owner_write_permit, test_registry};
 use proxima_core::storage::StorageError;
 use proxima_core::{
-    AgentDerivationV1, CORE_DERIVED_FROM_RELATION, DerivedEdgeSpec, EntityKind,
+    AgentDerivationV1, CORE_DERIVED_FROM_RELATION, DerivedEdgeSpec, DerivedEmbedding, EntityKind,
     FlavorRegistryFrozen, InputContractId, MemoryId, MemoryOperatorKind, OperatorId, Owner,
     OwnerRef, RegisteredRelation, SchemaId, SchemaVersion, SidecarPayload, UserId,
 };
@@ -37,8 +37,7 @@ fn agent_draft(
         prompt_version: "mcp-agent-v1",
         supersedes: None,
         lexical_language: None,
-        embedding: None,
-        embedding_model_id: None,
+        embedding: DerivedEmbedding::None,
     }
 }
 
@@ -530,8 +529,7 @@ async fn derived_replay_does_not_register_its_language() -> Result<(), Box<dyn s
             prompt_version: "mcp-agent-v1",
             supersedes: None,
             lexical_language: language,
-            embedding: None,
-            embedding_model_id: None,
+            embedding: DerivedEmbedding::None,
         };
         let sidecar = agent_sidecar(EntityKind::Abstraction, "x", "die zusammengefasste Sicht");
 

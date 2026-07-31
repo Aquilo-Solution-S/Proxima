@@ -20,8 +20,7 @@ use proxima_core::verbs::fact_ingest::{
 };
 use proxima_core::{
     AuthorizedFactWithCitation, AuthorizedFactWithCitationRef, AuthorizedFactWrite, EntityKind,
-    FactPayload, FactReceiptId, MemoryId, Owner, OwnerRefKind, SchemaId, SourceBatchId,
-    StorageError,
+    FactPayload, FactReceiptId, MemoryId, Owner, SchemaId, SourceBatchId, StorageError,
 };
 use sqlx::{PgPool, Postgres, Transaction};
 
@@ -1146,15 +1145,17 @@ where
         )
         .await?;
     }
-    enqueue_embedding_job_in_tx(
-        tx,
-        owner_kind,
-        owner_id,
-        EntityKind::Fact,
-        memory_id,
-        options.embedding_model_id,
-    )
-    .await?;
+    if let Some(embedding_model_id) = options.embedding_model_id {
+        crate::verbs::fact_embeddings::enqueue_embedding_job_in_tx(
+            tx,
+            owner_kind,
+            owner_id,
+            EntityKind::Fact,
+            memory_id,
+            embedding_model_id,
+        )
+        .await?;
+    }
 
     if let Some(pending) = citation_refs {
         match pending {
@@ -1398,36 +1399,4 @@ async fn fact_natural_key_after_sidecar(
                 sidecar_table.as_str(),
             ))
         })
-}
-
-async fn enqueue_embedding_job_in_tx(
-    tx: &mut Transaction<'_, Postgres>,
-    owner_kind: OwnerRefKind,
-    owner_id: Option<uuid::Uuid>,
-    entity_kind: EntityKind,
-    entity_id: uuid::Uuid,
-    model_id: Option<&str>,
-) -> Result<(), StorageError> {
-    let Some(model_id) = model_id else {
-        return Ok(());
-    };
-
-    sqlx::query(
-        "INSERT INTO proxima_core.embedding_jobs
-            (owner_kind, owner_id,
-             entity_kind, entity_id, model_id)
-         VALUES ($1, $2, $3, $4, $5)
-         ON CONFLICT (owner_kind, owner_id,
-                      entity_kind, entity_id, model_id, embedding_version)
-         DO NOTHING",
-    )
-    .bind(owner_kind)
-    .bind(owner_id)
-    .bind(entity_kind)
-    .bind(entity_id)
-    .bind(model_id)
-    .execute(&mut **tx)
-    .await
-    .map_err(map_err)?;
-    Ok(())
 }
