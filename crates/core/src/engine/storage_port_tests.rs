@@ -384,6 +384,7 @@ mod storage_port_tests_support {
             _permit: &crate::storage_ports::OwnerWritePermit,
             _model_id: &str,
             _limit: i64,
+            _non_embeddable_schemas: &[String],
         ) -> Result<u64, StorageError> {
             Ok(0)
         }

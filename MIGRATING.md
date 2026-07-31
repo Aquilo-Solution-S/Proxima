@@ -809,6 +809,7 @@ resolving the tool's own declaration first and the manifest second is the order
 | `FactTombstone` | the return type of `FactPayload::tombstone`, needed to declare a *stateful* Fact schema |
 | `AuthorDerivedRequestInput` + 8 companions | `Engine::author_derived_authorized` — a flavor could declare derived schemas but not write one |
 | `SearchProjectionColumnKind::MemoryText`, `SearchProjectionField::MEMORY_TEXT` | projecting `memories.text` instead of copying it into the sidecar |
+| `FactPayload::EMBEDDABLE` (defaults to `true`) | a Fact that should be readable and lexically findable but never vectorised |
 
 Contract details worth knowing before building on these:
 
@@ -825,6 +826,16 @@ Contract details worth knowing before building on these:
 - **A stateful Fact without `FactTombstone` fails quietly**: the schema still
   gets head-by-natural-key resolution, but storage has no discriminator for
   `PresentOnly`, so an entity deleted upstream stays a live head forever.
+- **`EMBEDDABLE = false` gates the vector only.** The Fact still writes
+  `render()` to `memories.text`, so it stays readable and stays matched by
+  full-text search; only the embedding job is skipped, on the write path and
+  on both repair paths. Nothing to do for existing schemas — the default is
+  `true`, and an unknown schema is treated as embeddable, because a surplus
+  vector is waste while a missing one is silent. `core/upload-v1` is the
+  first schema to opt out (docs/11 §The upload Fact); if you were relying on
+  upload Facts appearing in semantic results, they now appear in lexical
+  ones only, and existing rows are left as they are — nothing deletes a
+  vector already written.
 - **`MemoryText` also resolves the stored vector.** A projection of exactly
   that one field with no `language_column` reads `memories.search_tsv` instead
   of tokenising per candidate row. Such a sidecar needs no text column, no

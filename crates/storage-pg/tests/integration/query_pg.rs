@@ -93,6 +93,7 @@ fn schemas_for_test() -> Vec<SchemaInfo> {
             tombstone: None,
             has_typed_ingress: false,
             cited_object_schema: None,
+            embeddable: true,
         },
         SchemaInfo {
             schema_id: SchemaId::new("test/fact_blob_v2".into()),
@@ -104,6 +105,7 @@ fn schemas_for_test() -> Vec<SchemaInfo> {
             tombstone: None,
             has_typed_ingress: false,
             cited_object_schema: None,
+            embeddable: true,
         },
         SchemaInfo {
             schema_id: SchemaId::new("test/cited_blob".into()),
@@ -115,6 +117,7 @@ fn schemas_for_test() -> Vec<SchemaInfo> {
             tombstone: None,
             has_typed_ingress: false,
             cited_object_schema: None,
+            embeddable: true,
         },
         SchemaInfo {
             schema_id: SchemaId::new("test/citation_blob".into()),
@@ -126,6 +129,7 @@ fn schemas_for_test() -> Vec<SchemaInfo> {
             tombstone: None,
             has_typed_ingress: false,
             cited_object_schema: None,
+            embeddable: true,
         },
         SchemaInfo {
             schema_id: SchemaId::new("test/goal_blob".into()),
@@ -137,6 +141,7 @@ fn schemas_for_test() -> Vec<SchemaInfo> {
             tombstone: None,
             has_typed_ingress: false,
             cited_object_schema: None,
+            embeddable: true,
         },
         SchemaInfo {
             schema_id: SchemaId::new("test/goal_blob_v2".into()),
@@ -148,6 +153,7 @@ fn schemas_for_test() -> Vec<SchemaInfo> {
             tombstone: None,
             has_typed_ingress: false,
             cited_object_schema: None,
+            embeddable: true,
         },
     ]
 }

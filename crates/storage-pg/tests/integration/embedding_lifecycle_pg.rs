@@ -81,6 +81,7 @@ fn embedding_registry() -> FlavorRegistryFrozen {
         tombstone: None,
         has_typed_ingress: false,
         cited_object_schema: None,
+        embeddable: true,
     }])
 }
 

@@ -27,6 +27,7 @@ fn schemas_for_test() -> Vec<SchemaInfo> {
             tombstone: None,
             has_typed_ingress: false,
             cited_object_schema: None,
+            embeddable: true,
         },
         SchemaInfo {
             schema_id: SchemaId::new("test/cited_blob".into()),
@@ -38,6 +39,7 @@ fn schemas_for_test() -> Vec<SchemaInfo> {
             tombstone: None,
             has_typed_ingress: false,
             cited_object_schema: None,
+            embeddable: true,
         },
         SchemaInfo {
             schema_id: SchemaId::new("test/citation_blob".into()),
@@ -49,6 +51,7 @@ fn schemas_for_test() -> Vec<SchemaInfo> {
             tombstone: None,
             has_typed_ingress: false,
             cited_object_schema: None,
+            embeddable: true,
         },
     ]
 }

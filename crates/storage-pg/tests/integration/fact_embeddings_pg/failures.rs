@@ -194,6 +194,7 @@ async fn permanently_rejected_input_goes_terminal_and_batch_mates_still_embed()
         // one oversized memory into an immortal retry loop.)
         let reconciled = pg
             .reconcile_embeddings(EmbeddingReconcileOptions {
+                non_embeddable_schemas: &[],
                 model_id: "stub-fact-embed",
                 scope: EmbeddingReconcileScope::MissingOnly,
                 limit: None,

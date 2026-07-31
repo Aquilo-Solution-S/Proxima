@@ -19,11 +19,19 @@ pub trait EmbeddingTextPort: Send + Sync {
         memory_id: crate::MemoryId,
     ) -> Result<Option<String>, StorageError>;
 
+    /// Facts with text but no vector under `model_id`.
+    ///
+    /// `non_embeddable_schemas` are excluded — they are not missing a
+    /// vector, they declined one ([`crate::FactPayload::EMBEDDABLE`]).
+    /// Without the exclusion this reports a backlog that no drain can
+    /// ever clear, which is the same shape of lie as a queue that never
+    /// empties. Empty slice = exclude nothing.
     async fn list_facts_missing_embedding(
         &self,
         owner: &Owner,
         model_id: &str,
         limit: usize,
+        non_embeddable_schemas: &[String],
     ) -> Result<Vec<crate::MemoryId>, StorageError>;
 }
 
@@ -227,11 +235,19 @@ pub trait EmbeddingJobPort: Send + Sync {
         error: &str,
     ) -> Result<(), StorageError>;
 
+    /// Owner-scoped backfill: enqueue jobs for embeddable memories that
+    /// have none.
+    ///
+    /// `non_embeddable_schemas` are excluded. Gating only the inline
+    /// write path would be a half-measure — this is the call that would
+    /// find every row that path deliberately skipped and enqueue it
+    /// anyway. Empty slice = exclude nothing.
     async fn enqueue_missing_embedding_jobs(
         &self,
         permit: &OwnerWritePermit,
         model_id: &str,
         limit: i64,
+        non_embeddable_schemas: &[String],
     ) -> Result<u64, StorageError>;
 
     async fn count_pending_embedding_jobs(&self, owner: &Owner) -> Result<u64, StorageError>;
@@ -280,6 +296,14 @@ pub struct EmbeddingReconcileOptions<'a> {
     pub model_id: &'a str,
     pub scope: EmbeddingReconcileScope,
     pub limit: Option<i64>,
+    /// Fact schema ids that declined a vector
+    /// ([`crate::FactPayload::EMBEDDABLE`]), excluded from the scan.
+    ///
+    /// Reconcile is the global counterpart to the owner-scoped backfill,
+    /// and it heals "no job exists" — precisely the state a
+    /// non-embeddable schema is supposed to stay in. Empty slice =
+    /// exclude nothing.
+    pub non_embeddable_schemas: &'a [String],
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]

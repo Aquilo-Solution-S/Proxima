@@ -70,6 +70,7 @@ fn stateful_filters_for_schema_returns_all_versions() {
             }),
             has_typed_ingress: false,
             cited_object_schema: None,
+            embeddable: true,
         },
         SchemaInfo {
             schema_id: schema_id.clone(),
@@ -84,6 +85,7 @@ fn stateful_filters_for_schema_returns_all_versions() {
             }),
             has_typed_ingress: false,
             cited_object_schema: None,
+            embeddable: true,
         },
         SchemaInfo {
             schema_id: SchemaId::new("test/stateless".into()),
@@ -95,6 +97,7 @@ fn stateful_filters_for_schema_returns_all_versions() {
             tombstone: None,
             has_typed_ingress: false,
             cited_object_schema: None,
+            embeddable: true,
         },
     ]);
 

@@ -220,7 +220,28 @@ impl Engine {
         }
     }
 
+    /// The model a Fact of `schema_id` should be embedded under, given
+    /// what the caller asked for: the caller's answer, unless the schema
+    /// declared `EMBEDDABLE = false`.
+    ///
+    /// APPLIED HERE, NOT AT THE CALL SITES, because every typed Fact
+    /// write in the process funnels through the three verbs below and
+    /// none of them should have to remember. A caller that computes
+    /// `embed_client().map(model_id)` — which is what the upload verb
+    /// does, and the obvious thing to write — is asking "is there an
+    /// embedder", a question the schema's own declaration overrides.
+    ///
+    /// Storage would be the lower boundary, and cannot host this: the
+    /// answer lives in the flavor registry, which storage does not hold.
+    fn vector_model_for<'a>(&self, schema_id: &str, requested: Option<&'a str>) -> Option<&'a str> {
+        requested.filter(|_| self.registry().schema_is_embeddable(schema_id))
+    }
+
     /// Persist an already-authorized typed-sidecar Fact ingest.
+    ///
+    /// `embedding_model_id` is a request, not an instruction: a schema
+    /// that declared `EMBEDDABLE = false` is written without a vector
+    /// whatever the caller passes.
     ///
     /// # Errors
     ///
@@ -233,6 +254,8 @@ impl Engine {
         sidecars: &[SidecarPayload],
         embedding_model_id: Option<&str>,
     ) -> Result<FactIngestOutcome, ProtocolError> {
+        let embedding_model_id =
+            self.vector_model_for(authorized.draft().schema_id.as_str(), embedding_model_id);
         self.storage()
             .ingest
             .fact_ingest
@@ -260,6 +283,8 @@ impl Engine {
         sidecars: &[SidecarPayload],
         embedding_model_id: Option<&str>,
     ) -> Result<FactIngestOutcome, ProtocolError> {
+        let embedding_model_id =
+            self.vector_model_for(authorized.draft().schema_id.as_str(), embedding_model_id);
         self.storage()
             .ingest
             .fact_ingest
@@ -288,6 +313,8 @@ impl Engine {
         sidecars: &[SidecarPayload],
         embedding_model_id: Option<&str>,
     ) -> Result<FactIngestOutcome, ProtocolError> {
+        let embedding_model_id =
+            self.vector_model_for(authorized.draft().schema_id.as_str(), embedding_model_id);
         self.storage()
             .ingest
             .fact_ingest
@@ -578,7 +605,12 @@ impl Engine {
             .storage
             .ingest
             .embedding_job
-            .enqueue_missing_embedding_jobs(permit.owner_write_permit(), client.model_id(), limit)
+            .enqueue_missing_embedding_jobs(
+                permit.owner_write_permit(),
+                client.model_id(),
+                limit,
+                self.registry().non_embeddable_schema_ids(),
+            )
             .await
             .map_err(|err| ProtocolError::internal(err.to_string()))?;
         usize::try_from(enqueued)
@@ -922,6 +954,7 @@ impl Engine {
                     model_id: client.model_id(),
                     scope,
                     limit,
+                    non_embeddable_schemas: self.registry().non_embeddable_schema_ids(),
                 },
                 crate::storage_ports::OperatorMaintenanceProof::new(),
             )

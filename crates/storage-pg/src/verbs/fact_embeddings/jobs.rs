@@ -49,6 +49,7 @@ pub async fn list_facts_missing_embedding(
     owner: &Owner,
     model_id: &str,
     limit: usize,
+    non_embeddable_schemas: &[String],
 ) -> Result<Vec<MemoryId>, StorageError> {
     let (owner_kind, owner_id) = owner_parts(owner);
     let limit = i64::try_from(limit)
@@ -65,6 +66,10 @@ pub async fn list_facts_missing_embedding(
 )
             AND m.kind IS NULL
             AND m.text IS NOT NULL
+            -- Declined a vector rather than lacking one; see
+            -- `FactPayload::EMBEDDABLE`. `<> ALL('{}')` is TRUE, so an
+            -- empty list leaves the query exactly as it was.
+            AND m.schema_id <> ALL($5::text[])
             AND m.tombstoned_at IS NULL
             AND NOT EXISTS (
                 SELECT 1
@@ -80,6 +85,7 @@ pub async fn list_facts_missing_embedding(
     .bind(owner_id)
     .bind(model_id)
     .bind(limit)
+    .bind(non_embeddable_schemas)
     .fetch_all(pool)
     .await
     .map_err(map_err)?;
@@ -354,6 +360,7 @@ pub async fn enqueue_missing_embedding_jobs(
     permit: &OwnerWritePermit,
     model_id: &str,
     limit: i64,
+    non_embeddable_schemas: &[String],
 ) -> Result<u64, StorageError> {
     let limit = ensure_nonnegative_limit(limit)?;
     if limit == 0 {
@@ -387,6 +394,10 @@ pub async fn enqueue_missing_embedding_jobs(
                     )
                 )
                 AND m.text IS NOT NULL
+                -- See `FactPayload::EMBEDDABLE`. Gating only the inline
+                -- write path would leave this call to re-enqueue every
+                -- row that path skipped.
+                AND m.schema_id <> ALL($5::text[])
                 AND m.tombstoned_at IS NULL
                 AND NOT EXISTS (
                     SELECT 1
@@ -412,6 +423,7 @@ pub async fn enqueue_missing_embedding_jobs(
     .bind(owner_id)
     .bind(model_id)
     .bind(limit)
+    .bind(non_embeddable_schemas)
     .execute(pool)
     .await
     .map_err(map_err)?;

@@ -385,6 +385,7 @@ pub(in crate::engine) mod tests {
             _owner: &Owner,
             _model_id: &str,
             _limit: usize,
+            _non_embeddable_schemas: &[String],
         ) -> Result<Vec<MemoryId>, StorageError> {
             Ok(Vec::new())
         }
@@ -477,6 +478,7 @@ pub(in crate::engine) mod tests {
             _permit: &crate::storage_ports::OwnerWritePermit,
             _model_id: &str,
             _limit: i64,
+            _non_embeddable_schemas: &[String],
         ) -> Result<u64, StorageError> {
             Err(StorageError::Internal(
                 "MembershipStorage rejects writes".into(),

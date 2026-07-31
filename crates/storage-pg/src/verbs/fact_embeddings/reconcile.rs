@@ -44,6 +44,12 @@ WHERE NULLIF(btrim(m.text), '') IS NOT NULL
             )
         )
         AND ($3::text <> 'since' OR m.created_at >= $4)
+        -- Declined a vector rather than lacking one; see
+        -- FactPayload::EMBEDDABLE. This is the call that heals a missing
+        -- job, which is exactly the state such a schema must stay in, so
+        -- the exclusion belongs here as much as on the write path.
+        -- <> ALL of an empty array is TRUE, so an empty list is a no-op.
+        AND m.schema_id <> ALL($5::text[])
  ),
  eligible AS MATERIALIZED (
      SELECT s.*,
@@ -139,6 +145,7 @@ pub async fn reconcile_embeddings(
         .bind(limit)
         .bind(scope)
         .bind(since)
+        .bind(options.non_embeddable_schemas)
         .fetch_one(pool)
         .await
         .map_err(map_err)?;
