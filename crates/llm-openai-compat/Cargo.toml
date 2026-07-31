@@ -17,5 +17,11 @@ serde_json = { workspace = true }
 async-trait = { workspace = true }
 reqwest = { workspace = true, features = ["http2"] }
 
+[dev-dependencies]
+# The input cap's whole claim is that an over-limit input is refused
+# *without a request being made*, which can only be shown by pointing a real
+# client at an endpoint that would fail if it were reached.
+tokio = { workspace = true }
+
 [lints]
 workspace = true

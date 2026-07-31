@@ -547,8 +547,35 @@ Every row here is a compile error until you act on it.
 | `Engine::backfill_fact_embeddings` | renamed `backfill_missing_embeddings`; returns `ProtocolError`, not `StorageError` |
 | `GoalWriteBuildError::InvalidTitle` / `InvalidText` | now carry a `TrimmedLenViolation` payload |
 | `proxima_code::repos::erase_repo` | lost its unused `schemas` parameter |
+| `EmbedCaps` | new `max_input_chars` field — a struct literal no longer compiles; use `EmbedCaps::new(dim, matryoshka)` |
 
-Three of these are more than a signature.
+Four of these are more than a signature.
+
+**`EmbedCaps` gained a field**, which breaks every struct literal:
+
+```rust
+// before
+EmbedCaps { dim, matryoshka }
+// after
+EmbedCaps::new(dim, matryoshka)
+// and, if your provider does not reject over-long input cleanly:
+EmbedCaps::new(dim, matryoshka).with_max_input_chars(NonZeroU32::new(16_384).unwrap())
+```
+
+Behaviour is unchanged when you do nothing but switch to the constructor:
+`max_input_chars` defaults to `None`, which sends every input exactly as
+before. Prefer `new` + `with_*` over a literal from here on — a literal
+names every field, so the next capability axis breaks you again.
+
+Set the cap for a provider that *dies* on over-long input instead of
+rejecting it (a local Ollama does — it sizes a runner's context at load and
+an input past it kills the runner, which arrives as a transport error and
+gets retried unchanged). Over-cap input is then refused without a request
+and bisected into chunked embeddings instead. The floor is
+`llm::MIN_EMBED_INPUT_CAP_CHARS` (4095) and a lower value fails at
+construction — see [docs/10 §Bounding embedding
+input](docs/10-configuration.md#bounding-embedding-input). Operators of
+`apps/proxima-mcp` set `PROXIMA_EMBED_MAX_INPUT_CHARS` instead.
 
 **`backfill_fact_embeddings` → `backfill_missing_embeddings`** is a widening,
 not a rename. It now enqueues missing embeddings for Facts **and** derived

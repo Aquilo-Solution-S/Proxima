@@ -7,6 +7,7 @@ pub use args::{
 };
 
 use std::collections::{BTreeSet, HashSet};
+use std::num::NonZeroU32;
 use std::sync::Arc;
 
 use proxima::flavor::FlavorBundle;
@@ -33,6 +34,7 @@ const MISTRAL_API_BASE: &str = "MISTRAL_API_BASE";
 const PROXIMA_EMBED_BASE_URL: &str = "PROXIMA_EMBED_BASE_URL";
 const PROXIMA_EMBED_API_KEY: &str = "PROXIMA_EMBED_API_KEY";
 const PROXIMA_EMBED_MATRYOSHKA: &str = "PROXIMA_EMBED_MATRYOSHKA";
+const PROXIMA_EMBED_MAX_INPUT_CHARS: &str = "PROXIMA_EMBED_MAX_INPUT_CHARS";
 const PROXIMA_TOOL_PROFILE: &str = "PROXIMA_TOOL_PROFILE";
 const PROXIMA_TOOL_ALLOW: &str = "PROXIMA_TOOL_ALLOW";
 const PROXIMA_TOOL_DENY: &str = "PROXIMA_TOOL_DENY";
@@ -632,6 +634,12 @@ fn oidc_from_env(
 /// the `vector(1024)` column. Set `PROXIMA_EMBED_MATRYOSHKA=true` for a
 /// nested-prefix model (qwen3-embedding, text-embedding-3-*) so the request
 /// asks for 1024 rather than the model's native width.
+///
+/// `PROXIMA_EMBED_MAX_INPUT_CHARS` bounds what is *sent*. Unset by default,
+/// because a provider that rejects over-long input cleanly needs no help;
+/// set it for one that does not, such as a local Ollama, whose runner dies
+/// on input past the context it was loaded with. See docs/10 §Bounding
+/// embedding input.
 fn embedding_client_from_env(
     lookup: impl Fn(&str) -> Option<String>,
 ) -> Result<Option<OpenAiCompatEmbeddingClient>, CliError> {
@@ -656,13 +664,37 @@ fn embedding_client_from_env(
         ))
     })?;
 
+    let mut caps = proxima_core::models::EmbedCaps::new(dim, matryoshka);
+    if let Some(max) = parse_positive_u32_env(&lookup, PROXIMA_EMBED_MAX_INPUT_CHARS)? {
+        caps = caps.with_max_input_chars(max);
+    }
+
     OpenAiCompatEmbeddingClient::new(
         model,
-        proxima_core::models::EmbedCaps { dim, matryoshka },
+        caps,
         proxima_llm_openai_compat::OpenAiCompatConfig::new(base_url, api_key),
     )
     .map(Some)
     .map_err(|err| CliError::Runtime(ProximaError::Config(err.to_string())))
+}
+
+/// Parse an optional positive integer setting.
+///
+/// Zero is refused rather than treated as "unset": a cap of zero would
+/// reject every input, and an operator who typed `0` was reaching for
+/// "no limit", which is spelled by leaving the variable out.
+fn parse_positive_u32_env(
+    lookup: &impl Fn(&str) -> Option<String>,
+    key: &'static str,
+) -> Result<Option<NonZeroU32>, CliError> {
+    let Some(raw) = lookup_non_empty(lookup, key) else {
+        return Ok(None);
+    };
+    raw.parse::<NonZeroU32>().map(Some).map_err(|_| {
+        CliError::Runtime(ProximaError::Config(format!(
+            "{key} must be a positive integer, got {raw:?}; omit it for no limit"
+        )))
+    })
 }
 
 fn parse_bool_env(
@@ -1086,6 +1118,69 @@ mod tests {
         .expect("client construction succeeds")
         .expect("configured");
         assert_eq!(client.model_id(), "local-model");
+    }
+
+    /// The cap is opt-in: a deployment that says nothing keeps sending every
+    /// input, exactly as before.
+    #[test]
+    fn no_input_cap_is_configured_by_default() {
+        let client = embedding_client_from_env(|key| match key {
+            PROXIMA_EMBED_BASE_URL => Some("http://127.0.0.1:11434/v1".to_string()),
+            _ => None,
+        })
+        .expect("client construction succeeds")
+        .expect("configured");
+        assert!(client.caps().max_input_chars.is_none());
+    }
+
+    #[test]
+    fn an_input_cap_is_read_from_the_environment() {
+        let cap = proxima_core::llm::MIN_EMBED_INPUT_CAP_CHARS;
+        let client = embedding_client_from_env(|key| match key {
+            PROXIMA_EMBED_BASE_URL => Some("http://127.0.0.1:11434/v1".to_string()),
+            PROXIMA_EMBED_MAX_INPUT_CHARS => Some(cap.to_string()),
+            _ => None,
+        })
+        .expect("client construction succeeds")
+        .expect("configured");
+        assert_eq!(
+            client.caps().max_input_chars.map(NonZeroU32::get),
+            Some(u32::try_from(cap).expect("the floor fits u32")),
+        );
+    }
+
+    /// A cap the chunked rescue cannot satisfy must stop the process, not be
+    /// clamped to something workable: the operator picked that number from
+    /// their model's context, and silently substituting another means the
+    /// running config is not the one they wrote.
+    #[test]
+    fn an_input_cap_below_the_rescue_floor_refuses_to_boot() {
+        let too_low = proxima_core::llm::MIN_EMBED_INPUT_CAP_CHARS - 1;
+        let err = embedding_client_from_env(|key| match key {
+            PROXIMA_EMBED_BASE_URL => Some("http://127.0.0.1:11434/v1".to_string()),
+            PROXIMA_EMBED_MAX_INPUT_CHARS => Some(too_low.to_string()),
+            _ => None,
+        })
+        .expect_err("a cap under the floor must not build");
+        assert!(err.to_string().contains("terminal"), "{err}");
+    }
+
+    /// Zero is the interesting rejection: as a number it parses, and as a cap
+    /// it refuses every input. An operator typing it meant "no limit", which
+    /// is spelled by leaving the variable unset.
+    #[test]
+    fn an_input_cap_must_be_a_positive_integer() {
+        for raw in ["0", "-1", "lots", "16k", ""] {
+            let lookup =
+                |key: &str| (key == PROXIMA_EMBED_MAX_INPUT_CHARS).then(|| raw.to_string());
+            let parsed = parse_positive_u32_env(&lookup, PROXIMA_EMBED_MAX_INPUT_CHARS);
+            if raw.is_empty() {
+                // An empty value is an unset value everywhere else here.
+                assert!(matches!(parsed, Ok(None)), "empty must read as unset");
+            } else {
+                assert!(parsed.is_err(), "{raw:?} must not parse as a cap");
+            }
+        }
     }
 
     /// A plaintext endpoint off the local host would put the API key on the

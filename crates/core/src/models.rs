@@ -17,6 +17,8 @@
 //!
 //! See docs/10 §Capability vocabulary.
 
+use std::num::NonZeroU32;
+
 /// Which HTTP API shape a runtime model client speaks. Independent
 /// of vendor: most non-Anthropic vendors expose the `OpenAI` dialect,
 /// so a runtime entry like
@@ -92,6 +94,56 @@ impl LlmCaps {
 pub struct EmbedCaps {
     pub dim: u32,
     pub matryoshka: bool,
+    /// Longest input, in characters, the client will *send*. `None` sends
+    /// every input and lets the provider judge it.
+    ///
+    /// This exists because a provider's limit is not always enforced by the
+    /// provider. A local Ollama sizes a model runner's context when the
+    /// runner loads; an input past that killed the runner with SIGTRAP
+    /// rather than being rejected, and the death surfaced as a transport
+    /// error — indistinguishable, at the response, from a runner that was
+    /// already down. Retried unchanged, one input took the embedder down
+    /// 329 times in ten hours. A bound applied *before* the request removes
+    /// the class: a limit is never discovered by killing a process.
+    ///
+    /// Characters, not tokens: no tokenizer is provider-independent, so
+    /// this is a deliberately conservative proxy that any deployment can
+    /// set from its own model's context. Characters, not bytes, for the
+    /// same reason as [`crate::text_bounds`] — a byte cap would refuse a
+    /// shorter text merely for not being written in ASCII.
+    ///
+    /// Over-cap input is refused as [`crate::llm::LlmError::EmbedPermanent`],
+    /// which is what routes it into [`crate::llm::embed_in_chunks`]. That
+    /// couples the two constants — see
+    /// [`crate::llm::MIN_EMBED_INPUT_CAP_CHARS`], which is the floor a cap
+    /// must clear for the rescue to be able to succeed at all.
+    pub max_input_chars: Option<NonZeroU32>,
+}
+
+impl EmbedCaps {
+    /// Caps for a model of `dim` dimensions, sending every input.
+    ///
+    /// Prefer this over a struct literal: it is the construction path that
+    /// survives a new capability axis being added.
+    #[must_use]
+    pub const fn new(dim: u32, matryoshka: bool) -> Self {
+        Self {
+            dim,
+            matryoshka,
+            max_input_chars: None,
+        }
+    }
+
+    /// Refuse, without sending, any input longer than `chars` characters.
+    ///
+    /// See [`EmbedCaps::max_input_chars`] for why a client-side bound is
+    /// worth having, and [`crate::llm::MIN_EMBED_INPUT_CAP_CHARS`] for how
+    /// low it can usefully go.
+    #[must_use]
+    pub const fn with_max_input_chars(mut self, chars: NonZeroU32) -> Self {
+        self.max_input_chars = Some(chars);
+        self
+    }
 }
 
 #[cfg(test)]

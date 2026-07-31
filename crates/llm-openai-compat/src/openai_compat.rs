@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use async_trait::async_trait;
-use proxima_core::llm::{EMBEDDING_DIM, EmbeddingClient, LlmError};
+use proxima_core::llm::{EMBEDDING_DIM, EmbeddingClient, LlmError, MIN_EMBED_INPUT_CAP_CHARS};
 use proxima_core::models::EmbedCaps;
 use serde::{Deserialize, Serialize};
 
@@ -87,15 +87,31 @@ impl OpenAiCompatEmbeddingClient {
     /// `caps.dim` rather than the model's native size.
     ///
     /// # Errors
-    /// Returns `LlmError::Internal` if the HTTP client cannot be built or if
+    /// Returns `LlmError::Internal` if the HTTP client cannot be built, if
     /// `config.base_url` is a non-loopback plaintext `http://` endpoint (which
-    /// would leak the bearer token in transit).
+    /// would leak the bearer token in transit), or if
+    /// [`EmbedCaps::max_input_chars`] is set below
+    /// [`proxima_core::llm::MIN_EMBED_INPUT_CAP_CHARS`].
     pub fn new(
         model_id: impl Into<String>,
         caps: EmbedCaps,
         config: OpenAiCompatConfig,
     ) -> Result<Self, LlmError> {
         ensure_secure_base_url(&config.base_url)?;
+        // Rejected at construction rather than tolerated at call time: a cap
+        // under the floor makes over-long input terminal instead of chunked,
+        // and it does so invisibly — every component behaves as documented
+        // and the memory is simply never embedded. Refusing to boot names the
+        // misconfiguration while someone is still looking at it.
+        if let Some(max) = caps.max_input_chars {
+            let floor = MIN_EMBED_INPUT_CAP_CHARS;
+            if (max.get() as usize) < floor {
+                return Err(LlmError::Internal(format!(
+                    "max_input_chars is {max}, below the {floor}-char floor the chunked-embedding \
+                     rescue can satisfy; a longer input would go terminal instead of being split",
+                )));
+            }
+        }
         let client = build_client(config.timeout)?;
         Ok(Self {
             config,
@@ -119,10 +135,7 @@ impl OpenAiCompatEmbeddingClient {
             .map_err(|_| LlmError::Internal("EMBEDDING_DIM does not fit u32".into()))?;
         Self::new(
             model_id,
-            EmbedCaps {
-                matryoshka: false,
-                dim,
-            },
+            EmbedCaps::new(dim, false),
             OpenAiCompatConfig::new(base_url, Some(bearer_token.into())),
         )
     }
@@ -183,7 +196,49 @@ fn permanent_embed_status(status: reqwest::StatusCode, body: &str) -> bool {
 }
 
 impl OpenAiCompatEmbeddingClient {
+    /// The capabilities this client was built with.
+    ///
+    /// Public so a host can assert what it configured — an input cap that
+    /// silently failed to be read looks identical, at runtime, to a provider
+    /// that never sees a long input.
+    #[must_use]
+    pub fn caps(&self) -> EmbedCaps {
+        self.caps
+    }
+
+    /// Refuse over-cap input *before* it is sent, naming the bound it broke.
+    ///
+    /// Returned as [`LlmError::EmbedPermanent`] on two counts. It is true —
+    /// no retry of this text at this length can succeed — and it is what
+    /// routes a batch into per-input isolation and a single input into
+    /// [`proxima_core::llm::embed_in_chunks`], so an over-long memory is
+    /// still embedded, in pieces, without a request ever leaving the
+    /// process.
+    ///
+    /// The message names the length that was sent and the cap, and never
+    /// quotes a bound the input satisfies: a caller shortening a body needs
+    /// to know by how much, and one told a limit they already meet reads it
+    /// as a server fault and retries unchanged.
+    fn refuse_over_cap(&self, inputs: &[&str]) -> Result<(), LlmError> {
+        let Some(max) = self.caps.max_input_chars else {
+            return Ok(());
+        };
+        let max = max.get() as usize;
+        for input in inputs {
+            let chars = input.chars().count();
+            if chars > max {
+                return Err(LlmError::EmbedPermanent(format!(
+                    "input of {chars} chars exceeds the {max}-char limit configured for \
+                     model {}; not sent",
+                    self.model_id,
+                )));
+            }
+        }
+        Ok(())
+    }
+
     async fn embed_call(&self, inputs: &[&str]) -> Result<Vec<Vec<f32>>, LlmError> {
+        self.refuse_over_cap(inputs)?;
         let url = join_endpoint(&self.config.base_url, "embeddings");
         let body = EmbedRequest {
             model: &self.model_id,
@@ -279,16 +334,141 @@ impl EmbeddingClient for OpenAiCompatEmbeddingClient {
 
 #[cfg(test)]
 mod tests {
+    use std::num::NonZeroU32;
     use std::time::Duration;
 
-    use proxima_core::llm::LlmError;
+    use proxima_core::llm::{EmbeddingClient, LlmError, MIN_EMBED_INPUT_CAP_CHARS};
     use proxima_core::models::EmbedCaps;
 
     fn probe_caps() -> EmbedCaps {
-        EmbedCaps {
-            matryoshka: false,
-            dim: 8,
+        EmbedCaps::new(8, false)
+    }
+
+    /// An endpoint that cannot answer. Any request that actually leaves the
+    /// process fails here, which is what makes "the input was refused before
+    /// it was sent" observable: the guard returns `EmbedPermanent`, a request
+    /// returns a transport `Embed`.
+    const UNREACHABLE: &str = "http://127.0.0.1:9/v1";
+
+    fn floor_u32() -> u32 {
+        u32::try_from(MIN_EMBED_INPUT_CAP_CHARS).expect("the floor fits u32")
+    }
+
+    fn capped_client(max_chars: u32) -> super::OpenAiCompatEmbeddingClient {
+        super::OpenAiCompatEmbeddingClient::new(
+            "test-embed",
+            probe_caps().with_max_input_chars(NonZeroU32::new(max_chars).expect("positive")),
+            super::OpenAiCompatConfig::new(UNREACHABLE, None),
+        )
+        .expect("a cap at or above the floor is accepted")
+    }
+
+    #[tokio::test]
+    async fn an_over_cap_input_is_refused_without_being_sent() {
+        let client = capped_client(floor_u32());
+        let too_long = "a".repeat(MIN_EMBED_INPUT_CAP_CHARS + 1);
+
+        match client.embed(&too_long).await {
+            Err(LlmError::EmbedPermanent(message)) => {
+                // The rejection must name what was sent and the limit, and
+                // must not quote a bound the input already satisfies: a
+                // caller told a limit they meet reads it as a server fault
+                // and retries the same input unchanged, which is the loop
+                // this whole guard exists to break.
+                assert!(
+                    message.contains(&(MIN_EMBED_INPUT_CAP_CHARS + 1).to_string()),
+                    "the length that was refused is missing: {message}",
+                );
+                assert!(
+                    message.contains(&MIN_EMBED_INPUT_CAP_CHARS.to_string()),
+                    "the limit is missing: {message}",
+                );
+            }
+            Err(LlmError::Embed(message)) => panic!(
+                "the input reached the network before being judged: {message}. \
+                 A provider that dies on over-long input is exactly the one \
+                 that must never receive it."
+            ),
+            other => panic!("expected a permanent refusal, got {other:?}"),
         }
+    }
+
+    /// The other half: the guard must not stand in for the provider's own
+    /// judgement. An input inside the cap is sent, and against an endpoint
+    /// that cannot answer that surfaces as an ordinary retryable error.
+    #[tokio::test]
+    async fn an_input_within_the_cap_is_still_sent() {
+        let client = capped_client(floor_u32());
+        let err = client
+            .embed(&"a".repeat(MIN_EMBED_INPUT_CAP_CHARS))
+            .await
+            .expect_err("the endpoint is unreachable");
+        assert!(
+            matches!(err, LlmError::Embed(_)),
+            "an in-bounds input must reach the transport, got {err:?}",
+        );
+    }
+
+    /// A batch is judged per input. One over-cap text refuses the call, which
+    /// is what routes the drain into per-input isolation so the other 31
+    /// still embed.
+    #[tokio::test]
+    async fn one_over_cap_text_refuses_the_batch_it_travels_in() {
+        let client = capped_client(floor_u32());
+        let batch = vec![
+            "short".to_string(),
+            "a".repeat(MIN_EMBED_INPUT_CAP_CHARS + 1),
+            "also short".to_string(),
+        ];
+        assert!(
+            matches!(
+                client.embed_many(&batch).await,
+                Err(LlmError::EmbedPermanent(_))
+            ),
+            "an over-cap member must refuse the batch before it is sent",
+        );
+    }
+
+    /// No cap is the default and preserves the prior behaviour exactly: the
+    /// provider judges its own input. A deployment whose provider rejects
+    /// cleanly does not need this guard.
+    #[tokio::test]
+    async fn without_a_cap_every_input_is_offered_to_the_provider() {
+        let client = super::OpenAiCompatEmbeddingClient::new(
+            "test-embed",
+            probe_caps(),
+            super::OpenAiCompatConfig::new(UNREACHABLE, None),
+        )
+        .expect("no cap is a valid configuration");
+        assert!(client.caps.max_input_chars.is_none());
+
+        let err = client
+            .embed(&"a".repeat(MIN_EMBED_INPUT_CAP_CHARS * 10))
+            .await
+            .expect_err("the endpoint is unreachable");
+        assert!(
+            matches!(err, LlmError::Embed(_)),
+            "with no cap the input must still be offered, got {err:?}",
+        );
+    }
+
+    /// A cap below the floor is refused while someone is looking at it. The
+    /// alternative is a configuration that boots, behaves as documented at
+    /// every layer, and silently never embeds a long memory.
+    #[test]
+    fn a_cap_the_chunked_rescue_cannot_satisfy_is_refused_at_construction() {
+        let err = super::OpenAiCompatEmbeddingClient::new(
+            "test-embed",
+            probe_caps().with_max_input_chars(
+                NonZeroU32::new(floor_u32() - 1).expect("one under the floor is positive"),
+            ),
+            super::OpenAiCompatConfig::new(UNREACHABLE, None),
+        )
+        .expect_err("a cap under the floor must not build a client");
+        assert!(
+            matches!(err, LlmError::Internal(ref m) if m.contains("terminal")),
+            "the refusal must say what goes wrong, not just that it did: {err:?}",
+        );
     }
 
     #[test]
