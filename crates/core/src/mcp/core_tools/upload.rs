@@ -38,7 +38,7 @@ pub const CORE_UPLOAD_ACTIONS: &[CoreActionMeta] = &[
         tool: CoreUploadTool::NAME,
         action: "complete",
         scope_key: protocol_action::CORE_UPLOAD_COMPLETE,
-        description: "Verify an uploaded artefact and persist its canonical cited object.",
+        description: "Verify an uploaded artefact, persist its canonical cited object, and record the upload as a core/upload-v1 Fact citing it.",
         produces_schema_ids: &[],
         annotations: WRITE_NON_IDEMPOTENT,
     },
@@ -139,7 +139,16 @@ pub struct UploadCompleteOutput {
     pub byte_len: u64,
     pub mime: String,
     pub filename: String,
+    /// True when these bytes were already in the corpus. About the
+    /// artefact, not about the `fact` handle below — a second completion
+    /// of the same upload replays both, but a first upload of bytes some
+    /// other owner already holds replays neither.
     pub idempotent_replay: bool,
+    /// Handle of the `core/upload-v1` Fact recording this arrival. It
+    /// cites the artefact, so `core_fact` on it reaches the same
+    /// `cited_object_id`, and `core/search_memories` finds the file by
+    /// its name.
+    pub fact: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -164,7 +173,7 @@ pub enum CoreUploadOutput {
 
 impl McpTool for CoreUploadTool {
     const NAME: &'static str = protocol_tool::CORE_UPLOAD;
-    const DESCRIPTION: &'static str = "Upload dispatcher for cited artefacts (documents, images, transcripts) — prepare/complete/abort/read_url. Bytes never travel through MCP: `prepare` (filename, mime, byte_len) returns a presigned `upload_url` plus `headers`; HTTP PUT the raw bytes to that URL with exactly those headers before `expires_at`; then `complete` (upload_id) verifies the bytes and returns the canonical `cited_object_id`. Cite it from a Fact via core_remember's `citation.cited_object_id`; fetch the artefact later with `read_url` (cited_object_id), which returns a presigned download URL. `abort` discards a pending upload.";
+    const DESCRIPTION: &'static str = "Upload dispatcher for cited artefacts (documents, images, transcripts) — prepare/complete/abort/read_url. Bytes never travel through MCP: `prepare` (filename, mime, byte_len) returns a presigned `upload_url` plus `headers`; HTTP PUT the raw bytes to that URL with exactly those headers before `expires_at`; then `complete` (upload_id) verifies the bytes and returns the canonical `cited_object_id`. `complete` also records the arrival itself as a `core/upload-v1` Fact citing that artefact and returns its handle as `fact`, so an uploaded file is findable by name through core_search_memories without anyone writing a Fact for it. Cite the artefact from further Facts via core_remember's `citation.cited_object_id`; fetch it later with `read_url` (cited_object_id), which returns a presigned download URL. `abort` discards a pending upload.";
     const ACTION_ARG_SPECS: &'static [McpActionArgSpec] = &[
         McpActionArgSpec {
             action: "prepare",
@@ -228,10 +237,20 @@ impl McpTool for CoreUploadTool {
                     let (authz, owner) =
                         narrowed_space(&ctx, args.space.as_deref(), SpaceAuthority::Write)?;
                     let service = blob_service(&ctx)?;
-                    let outcome = service
-                        .0
-                        .complete_upload(&authz, owner, args.upload_id.trim())
+                    let engine = ctx.require_engine()?;
+                    // No extension sidecars from the MCP surface: a tool
+                    // caller has no registered schema of its own to add.
+                    // Flavors reach the same verb in-process and pass theirs.
+                    let completed = engine
+                        .complete_upload_as_fact(
+                            service.0.as_ref(),
+                            &authz,
+                            owner,
+                            args.upload_id.trim(),
+                            &[],
+                        )
                         .await?;
+                    let outcome = completed.blob;
                     Ok(CoreUploadOutput::Complete(UploadCompleteOutput {
                         cited_object_id: outcome.cited_object_id,
                         schema: outcome.schema,
@@ -241,6 +260,7 @@ impl McpTool for CoreUploadTool {
                         mime: outcome.mime,
                         filename: outcome.filename,
                         idempotent_replay: outcome.idempotent_replay,
+                        fact: ctx.format_fact_memory(completed.fact.memory_id),
                     }))
                 }
                 CoreUploadArgs::Abort(args) => {

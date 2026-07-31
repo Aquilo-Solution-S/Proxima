@@ -2,7 +2,7 @@
 
 pub mod payloads;
 
-pub use payloads::{AgentDerivationV1, AgentLinkV1, AgentNoteV1, Speaker, UtteranceV1};
+pub use payloads::{AgentDerivationV1, AgentLinkV1, AgentNoteV1, Speaker, UploadV1, UtteranceV1};
 
 use crate::{
     AuthorshipKindMask, EndpointBinding, EntityKindMask, FlavorRegistry, RelationClass,
@@ -16,6 +16,7 @@ pub(crate) fn register_all(
 ) -> Result<(), crate::FlavorRegistryError> {
     registry.try_add_fact_schema::<AgentNoteV1>()?;
     registry.try_add_fact_schema::<UtteranceV1>()?;
+    registry.try_add_fact_schema::<UploadV1>()?;
     registry.try_add_abstraction_schema::<AgentDerivationV1>()?;
     registry.try_add_perspective_schema::<AgentDerivationV1>()?;
     registry.try_add_edge_schema::<AgentLinkV1>()?;

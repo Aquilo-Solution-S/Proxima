@@ -138,6 +138,7 @@ Everything else is a flavor's.
 | `core/uploaded-blob-v1` | CitedObject | An uploaded artefact; see §Large artefact storage |
 | `core/uploaded-blob-whole-v1` | CitationMapping | The whole artefact. Pure link, no sidecar |
 | `core/uploaded-blob-page-span-v1` | CitationMapping | A page range inside it, optionally a character range |
+| `core/upload-v1` | Fact | That an artefact arrived, citing it through `core/uploaded-blob-whole-v1`. Minted by `complete`; no sidecar of its own |
 | `core/mcp-call-io` + `core/mcp-call-citation` | CitedObject + CitationMapping | Substrate-internal MCP call logging |
 
 Page numbers are **one-based and inclusive at both ends** — a single page
@@ -198,6 +199,40 @@ other row exactly like a missing object.
 S3 preserves original bytes only. It does not replace
 `CitationMapping`, Fact-only citations, or provenance edges.
 
+<a id="the-upload-fact"></a>
+## The upload Fact
+
+A CitedObject is a thing that can be cited. It is not an event: it holds
+no receipt, appears in no change history, and says nothing about who put
+it there or when. So a corpus built only from `complete` could hold a
+file that nothing in the substrate records the arrival of — and did,
+until flavors wrote that record themselves, which made "a file entered
+the corpus" true only in the flavors that bothered.
+
+`complete` therefore also mints a `core/upload-v1` Fact citing the
+artefact through `core/uploaded-blob-whole-v1`. Its rendered text names
+the file, so an upload is findable by name through
+`core/search_memories` with nobody having written a Fact for it.
+
+The Fact's replay key is the **content hash alone**. For one owner the
+store resolves a content hash to exactly one CitedObject and reports that
+object's filename, mime, and length — so the other fields are functions
+of the hash, and keying on them too would let one file acquire two
+arrival Facts. One file, one upload Fact, per owner: the Fact replays
+exactly when the upload does, and re-completing is both idempotent and
+the repair path.
+
+A flavor that wants more columns on that arrival — extraction status, a
+source system's id — registers its own sidecar schema and passes the row
+alongside; it lands in the Fact's transaction or not at all. It extends
+the substrate's event rather than owning a parallel one. See docs/09
+§Extending a substrate Fact.
+
+The artefact is committed by the blob store before the Fact write
+begins — two transactions, since the blob store owns the first. A crash
+between them leaves a CitedObject that nothing cites; completing again
+repairs it.
+
 <a id="mcp-surface"></a>
 ## MCP surface
 
@@ -210,10 +245,13 @@ request bodies, and the presigned-URL policy above is the transfer path:
    upload + presigned `upload_url` with its required `headers`.
 2. The client HTTP `PUT`s the raw bytes to `upload_url` with exactly
    those headers, before `expires_at`.
-3. `core_upload` `complete` (`upload_id`) verifies the bytes and returns
-   the canonical `cited_object_id` (plus hex `content_hash`/`sha256`,
-   `byte_len`, `mime`, `filename`; replays report `idempotent_replay`).
-4. A Fact cites the object via `core_remember`'s
+3. `core_upload` `complete` (`upload_id`) verifies the bytes, records
+   the arrival as a `core/upload-v1` Fact citing the artefact, and
+   returns the canonical `cited_object_id` (plus hex
+   `content_hash`/`sha256`, `byte_len`, `mime`, `filename`; replays
+   report `idempotent_replay`) together with the Fact's handle as
+   `fact`. See §The upload Fact.
+4. Further Facts cite the same object via `core_remember`'s
    `citation.cited_object_id` (by reference; `C:` prefix accepted) with a
    registered mapping such as `core/uploaded-blob-whole-v1` or
    `core/uploaded-blob-page-span-v1`. This is deliberately the only way

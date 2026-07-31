@@ -18,6 +18,7 @@ mod read_verbs;
 mod source_cursors;
 #[cfg(test)]
 mod storage_port_tests;
+mod upload;
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -53,6 +54,7 @@ pub use read_verbs::{
     ListChangeEventsReadResponse, ListWakeCandidatesReadRequest, ListWakeCandidatesReadResponse,
     MAX_WAKE_CANDIDATE_LIMIT, SearchReadRequest, SearchReadResponse,
 };
+pub use upload::UploadCompleted;
 
 pub struct Engine {
     registry: FlavorRegistryFrozen,
