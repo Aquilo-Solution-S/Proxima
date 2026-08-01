@@ -185,7 +185,7 @@ Status labels used below:
   config surface for Postgres, MCP, S3, auth, tool profiles, and embeddings.
 - [`docs/11-citations.md`](docs/11-citations.md) — **current + design
   rationale**. CitedObject/CitationMapping traits, bibliographic provenance,
-  and Fact-only citation rule.
+  and the Fact ∪ Abstraction citation rule.
 - [`docs/12-tool-manifest.md`](docs/12-tool-manifest.md) — **current + deferred
   sections**. Build-time tool vocabulary, MCP dispatch, Goal wake toolsets,
   and deferred compliance enforcement.
