@@ -33,7 +33,7 @@ pub struct EdgeKey {
     pub kind: String,
 }
 
-/// Collect runtime witnesses for Lean `MemoryGraphValid` / `EdgeCoreValid` drift.
+/// Collect runtime witnesses for Lean `MemoryGraphValid` / `EdgeValid` drift.
 ///
 /// This is intentionally a test fixture, not a production verifier. Production
 /// paths validate before write; this scanner lets integration tests assert that
