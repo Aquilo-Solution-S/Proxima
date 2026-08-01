@@ -1,0 +1,15 @@
+{
+  "jsonrpc": "2.0",
+  "id": 4,
+  "method": "tools/call",
+  "params": {
+    "name": "core_interpret",
+    "arguments": {
+      "claim": "The missing worked examples are why agents skip live discovery, not the connection snippet.",
+      "confidence": 80,
+      "subjects": ["F:019f46e0-9fd5-7ec9-9df2-e7cc60189f71", "A:019f46e0-64f5-793f-abfd-435e4c7af08b"],
+      "model_id": "docs-plan-operator"
+    }
+  },
+  "note": "Returns a P: handle. A reason and a confidence are a judgment, so the claim is an interpretation Perspective; its subjects become that Perspective's own references. There is no connect verb, and a Fact is never an interpretation source."
+}

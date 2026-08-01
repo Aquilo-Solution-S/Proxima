@@ -10,7 +10,7 @@ binary/profile.
 
 | Area | Examples | Notes |
 |---|---|---|
-| memory | `core_search_memories`, `core_remember`, `core_derive`, `core_link` | agent-authored `core_link` Fact→Fact links are rejected; derive instead |
+| memory | `core_search_memories`, `core_remember`, `core_derive`, `core_interpret` | no tool writes an edge; `core_derive` lands `origin` entries from `source_handles`, `core_interpret` authors an interpretation Perspective and returns a `P:` handle |
 | spaces | `core_memory_spaces` | server-issued owner selectors; selectors are not authority |
 | goals | `core_goal` | advertised only when profile includes goals |
 | citations | citation/fact resources and tools | Facts only carry citation mappings |
@@ -18,7 +18,7 @@ binary/profile.
 | publish | `core_publish` | irreversible owner transfer via `publish_to_world`; not ACL/share |
 | memory reads | `proxima://memory/{id}{?expand_neighbors}`, `proxima://memories{?ids}`, `proxima://memory/{id}/lineage{?direction,depth,limit,cursor}` | batch read takes at most 100 ids; lineage paginates by cursor and reports `has_more` |
 | goal reads | `proxima://goals{?state,limit,cursor}`, `proxima://goal/{id}` | keyset pagination |
-| edge reads | `proxima://edges{?relation,source,target,limit,cursor,payloads}`, `proxima://edge/{id}` | `payloads` hydrates typed edge sidecars |
+| edge reads | `proxima://edges{?kind,source,target,limit,cursor}` | at least one filter required; a row is `(source, target, kind, created_at)` and nothing else — no edge id to dereference, no payload to hydrate |
 | graph | `proxima://graph` | owner-scoped health: schema registry, embedding backlog, `embeddings_client_configured` |
 | introspection | `proxima://tools`, `proxima://how-to` | generated from runtime profile |
 | change-events | `proxima://change-events{?since,limit}` | poll-only change notification |

@@ -89,7 +89,7 @@ changed, so files that have not moved keep their old chunks.
 ## First Memory Flow
 
 1. Search with `core_search_memories`.
-2. In multi-space hosts, call `core_memory_spaces` before durable memory writes. Use a returned `space` key in `core_remember`, `core_record_utterance`, `core_search_memories`, `core_derive`, and `core_link`; hydrate a memory through `proxima://memory/{id}`. Omitted `space` preserves the current bound owner.
+2. In multi-space hosts, call `core_memory_spaces` before durable memory writes. Use a returned `space` key in `core_remember`, `core_record_utterance`, `core_search_memories`, `core_derive`, and `core_interpret`; hydrate a memory through `proxima://memory/{id}`. Omitted `space` preserves the current bound owner.
 3. Record one observation with `core_remember`.
 4. Record a derived pattern with `core_derive` over one or more source handles.
 5. Read the created memory resource with neighbors expanded.
@@ -98,7 +98,11 @@ changed, so files that have not moved keep their old chunks.
 
 ## Hard Law
 
-Agent-authored `core_link` calls cannot link Facts to Facts. Relate Facts by deriving an Abstraction over them.
+No tool writes a connection. Every edge follows from what a node says: an
+`origin` entry from the handles a write declares it was made from, a `reference`
+entry from a schema-declared payload field. Relate Facts by deriving an
+Abstraction over them; claim what existing memories mean with `core_interpret`,
+which authors an interpretation Perspective rather than an edge.
 
 ## Offline Agent Files
 

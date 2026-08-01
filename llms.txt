@@ -15,12 +15,18 @@ Live server discovery is authoritative. This file is a compact offline guide.
 
 ## Hard Law
 
-Agent-authored `core_link` edges cannot link Facts to Facts. To semantically
-relate Facts, derive an Abstraction over them with
-`core_derive(kind="Abstraction", source_handles=[...])`. Use `core_link` only
-from an Abstraction or Perspective to another memory. Structural/provenance Fact
-edges, when present, are authored by the substrate or trusted sources, not by
-agent `core_link` calls.
+No tool writes a connection. An edge carries no information beyond its
+existence, so every edge is a consequence of what some node says: an `origin`
+entry from the handles a write declares it was made from, a `reference` entry
+from a schema-declared payload field. Nothing you call takes an edge kind as an
+argument.
+
+To semantically relate Facts, derive an Abstraction over them with
+`core_derive(kind="Abstraction", source_handles=[...])`; those handles land the
+`origin` entries. When the claim is a judgment about memories that already
+exist — a reason and a confidence — call `core_interpret`, which authors an
+interpretation Perspective over its `subjects` and returns a `P:` handle. A Fact
+never interprets: layering refuses a Fact as an interpretation source.
 
 ## Tool Choice
 
@@ -30,7 +36,9 @@ agent `core_link` calls.
 | record an observation | `core_remember` |
 | capture a pattern/lesson | `core_derive` as `Abstraction` |
 | record stance/self-model | `core_derive` as `Perspective` |
+| claim what existing memories mean | `core_interpret` if advertised |
 | set/refine objective | `core_goal` if advertised |
+| relate/connect memories | no connect verb — derive or interpret over them |
 
 Search before architectural/debugging work. Consolidate durable decisions and
 gotchas at natural breaks. Use idempotency keys for replayable writes.
