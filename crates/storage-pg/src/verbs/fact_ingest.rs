@@ -56,6 +56,14 @@ pub struct FactIngestContext<'a> {
     pub source_batch_id: SourceBatchId,
     pub observed_at: time::OffsetDateTime,
     pub embedding_model_id: Option<&'a str>,
+    /// What this Fact declares it was made from. One
+    /// [`EdgeKind::Origin`] row per entry, in the Fact's own transaction.
+    /// Endpoints only — the kind follows from the field, never from a
+    /// caller.
+    pub derived_from: &'a [EdgeEndpoint],
+    /// Perspective that emitted this Fact. A column on the row, because
+    /// "emitted by P" is known at write time and belongs to the node.
+    pub authoring_perspective_id: Option<MemoryId>,
 }
 
 impl<'a> FactIngestContext<'a> {
@@ -72,6 +80,8 @@ impl<'a> FactIngestContext<'a> {
             source_batch_id,
             observed_at: time::OffsetDateTime::now_utc(),
             embedding_model_id: None,
+            derived_from: &[],
+            authoring_perspective_id: None,
         }
     }
 
@@ -86,6 +96,22 @@ impl<'a> FactIngestContext<'a> {
     #[must_use]
     pub const fn embedding_model_id(mut self, model_id: Option<&'a str>) -> Self {
         self.embedding_model_id = model_id;
+        self
+    }
+
+    /// Declare what this Fact was made from. Each endpoint becomes one
+    /// `origin` index row inside the Fact's write transaction, which is
+    /// what makes the provenance idempotent without an id scheme.
+    #[must_use]
+    pub const fn derived_from(mut self, derived_from: &'a [EdgeEndpoint]) -> Self {
+        self.derived_from = derived_from;
+        self
+    }
+
+    /// Stamp the Perspective that emitted this Fact on the row.
+    #[must_use]
+    pub const fn authoring_perspective_id(mut self, memory_id: Option<MemoryId>) -> Self {
+        self.authoring_perspective_id = memory_id;
         self
     }
 }
@@ -503,7 +529,8 @@ where
         payload,
         ctx.observed_at,
     )
-    .with_citation(citation);
+    .with_citation(citation)
+    .with_derived_from(ctx.derived_from.to_vec());
     let sidecar_payload = payload.clone();
     let references = payload_reference_targets(payload)?;
     ingest_fact_with_derived_sidecar_in_tx(
@@ -514,6 +541,7 @@ where
         P::sidecar_table(),
         P::natural_key_columns(),
         &references,
+        ctx.authoring_perspective_id,
         move |tx, outcome| {
             Box::pin(async move {
                 sidecar_payload
@@ -578,6 +606,7 @@ pub(crate) async fn ingest_fact_with_derived_sidecar_in_tx<F>(
     sidecar_table: Option<&str>,
     natural_key_columns: &[&str],
     references: &[EdgeEndpoint],
+    authoring_perspective_id: Option<MemoryId>,
     sidecar: F,
 ) -> Result<FactIngestOutcome, StorageError>
 where
@@ -600,7 +629,7 @@ where
         derive_inputs: Some(derive_inputs),
         citation_plan: CitationPlan::DraftHint,
         links: FactLinks::new(&draft.derived_from, references),
-        authoring_perspective_id: None,
+        authoring_perspective_id,
     };
     ingest_core(tx, permit.owner(), draft, options, sidecar).await
 }
