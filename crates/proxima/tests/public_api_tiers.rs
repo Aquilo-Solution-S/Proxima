@@ -350,31 +350,18 @@ fn flavor_sdk_exposes_the_derived_memory_write_lane() {
     // a field added, removed or retyped upstream breaks here instead of
     // silently breaking every out-of-tree flavor at its next pin bump.
     use proxima::flavor::{
-        AbstractionPayload, AuthorDerivedEdgeInput, AuthorDerivedRequestInput,
-        CORE_DERIVED_FROM_RELATION, EdgeAuthorshipKind, EntityKind, FlavorRegistry,
-        InputContractId, MemoryId, MemoryOperatorKind, OperatorId, SchemaVersion, SidecarPayload,
+        AbstractionPayload, AuthorDerivedRequestInput, EdgeEndpoint, EntityKind, InputContractId,
+        MemoryId, MemoryOperatorKind, OperatorId, SchemaVersion, SidecarPayload,
     };
-
-    let frozen = FlavorRegistry::new()
-        .try_freeze()
-        .expect("an empty registry freezes");
-    let relation = frozen
-        .resolve_relation(CORE_DERIVED_FROM_RELATION)
-        .expect("core/derived-from is a substrate relation, present without any flavor");
 
     let owner: proxima::Owner = proxima::company_owner(uuid::Uuid::nil());
     let derived = MemoryId::new(uuid::Uuid::nil());
     let source_fact = MemoryId::new(uuid::Uuid::nil());
 
-    let edges = [AuthorDerivedEdgeInput {
-        relation,
-        source_kind: EntityKind::Abstraction,
-        source_memory_id: derived,
-        target_kind: EntityKind::Fact,
-        target_memory_id: source_fact,
-        authorship_kind: EdgeAuthorshipKind::OperatorFtoA,
-        authorship_owner_memory_id: None,
-    }];
+    // What the write was made from, as endpoints. There is no kind here to
+    // pass and no relation to resolve: the entries become `origin` rows
+    // because of which field they arrived in (docs/16 §The Model).
+    let derived_from = [EdgeEndpoint::memory(EntityKind::Fact, source_fact)];
 
     let _req = AuthorDerivedRequestInput {
         memory_id: derived,
@@ -392,20 +379,60 @@ fn flavor_sdk_exposes_the_derived_memory_write_lane() {
         sidecar_payload: SidecarPayload::abstraction(TierAbstraction {
             note: "sidecar".to_owned(),
         }),
+        authoring_perspective_id: None,
+        derived_from: &derived_from,
         supersedes: None,
         lexical_language: None,
-        edges: &edges,
     };
 
     // The outcome type must be nameable too — a caller has to bind what
     // `author_derived_authorized` returns.
     let _: Option<&proxima::flavor::AuthorDerivedAuthorizedOutcome> = None;
-    // `supersedes` above is the re-derivation path; naming the relation it
-    // writes keeps that half of the contract pinned as well.
-    assert_ne!(
-        proxima::flavor::CORE_SUPERSEDES_RELATION,
-        CORE_DERIVED_FROM_RELATION
-    );
+}
+
+/// A payload that points at another node, built through the facade alone.
+///
+/// This is the whole of how an out-of-tree flavor creates a connection: it
+/// declares reference fields, ingest reads them, and the index rows follow.
+/// If [`PayloadReference`] or its binding vocabulary were missing from the
+/// facade, the override could not be written at all and a flavor's schemas
+/// could only ever be islands.
+#[test]
+fn flavor_sdk_exposes_the_payload_reference_lane() {
+    use proxima::flavor::{
+        EdgeKind, EntityKind, FactEntityId, MemoryId, PayloadReference, ReferenceBinding,
+    };
+
+    struct TierReferrer {
+        parent: MemoryId,
+        observed_entity: FactEntityId,
+    }
+
+    impl TierReferrer {
+        fn references(&self) -> Vec<PayloadReference> {
+            vec![
+                PayloadReference::memory("parent", EntityKind::Fact, self.parent),
+                PayloadReference::fact_entity_head("observed_entity", self.observed_entity),
+            ]
+        }
+    }
+
+    let referrer = TierReferrer {
+        parent: MemoryId::new(uuid::Uuid::nil()),
+        observed_entity: FactEntityId::new(uuid::Uuid::nil()),
+    };
+    let references = referrer.references();
+    assert_eq!(references.len(), 2);
+    assert_eq!(references[0].binding, ReferenceBinding::Pin);
+    assert_eq!(references[1].binding, ReferenceBinding::FollowHead);
+    for reference in &references {
+        reference.validate().expect("binding matches address form");
+    }
+
+    // A kind is read, never written: it is what an edge IS, decided by the
+    // write that produced the row.
+    assert_eq!(EdgeKind::Reference.as_str(), "reference");
+    assert_eq!(EdgeKind::Origin.as_str(), "origin");
 }
 
 /// A flavor-owned service, standing in for the store a real flavor hands

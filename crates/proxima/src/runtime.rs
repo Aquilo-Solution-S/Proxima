@@ -789,8 +789,6 @@ mod tests {
             abstraction_schemas = [],
             perspective_schemas = [],
             goal_schemas = [],
-            edge_schemas = [],
-            relations = [],
             mcp_tools = [],
         }
     }
@@ -802,8 +800,6 @@ mod tests {
             abstraction_schemas = [],
             perspective_schemas = [],
             goal_schemas = [],
-            edge_schemas = [],
-            relations = [],
             mcp_tools = [],
         }
     }

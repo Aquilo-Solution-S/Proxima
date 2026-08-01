@@ -85,15 +85,13 @@ pub use proxima_core::verbs::mcp_call_history::{
 pub use proxima_core::verbs::persist_mcp_call::{McpCallLogInput, McpCallLogOutcome};
 pub use proxima_core::verbs::query::{
     DEFAULT_HYBRID_SEMANTIC_WEIGHT, EdgeExistsRequest, EdgeExistsResponse, EdgeFilter,
-    EdgeReadRequest, EdgeReadResponse, EdgeRow, EntityKind, FactCitationReadback,
+    EdgeReadCursor, EdgeReadRequest, EdgeReadResponse, EntityKind, FactCitationReadback,
     MAX_SEARCH_PAGE_LIMIT, MemoryLineageDirection, MemoryLineageEdge, MemoryLineageNode,
     MemoryLineageRequest, MemoryLineageResponse, MemoryRow, MemorySearchPage, MemorySearchRequest,
     MemorySearchResult, QueryRequest, QueryResponse, SearchCursor, SearchMode, SearchOrder,
     SupersessionStatus, TagMatch, TombstoneFilter,
 };
-pub use proxima_core::verbs::schema::{
-    PayloadKind, RelationInfo, RelationPayloadSchemaRef, SchemaRequest, SchemaResponse,
-};
+pub use proxima_core::verbs::schema::{PayloadKind, SchemaRequest, SchemaResponse};
 pub use proxima_core::{
     AuthPath, Authenticator, AuthzContext, EmbeddingAnnObservability, EmbeddingJobBacklog,
     EmbeddingOrphanCounts, EmbeddingOrphanSweepOutcome, EmbeddingRecallCanary, Engine,

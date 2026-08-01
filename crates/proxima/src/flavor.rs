@@ -71,15 +71,13 @@ pub use proxima_core::storage_ports::{
 /// for `PresentOnly` queries, so a deleted entity stays a live head
 /// forever.
 pub use proxima_core::{
-    AbstractionPayload, AuthorshipKindMask, CapabilitySet, CitationMappingPayload,
-    CitedObjectPayload, EdgeId, EdgePayload, EndpointBinding, EntityKindMask, FactPayload,
+    AbstractionPayload, CapabilitySet, CitationMappingPayload, CitedObjectPayload, FactPayload,
     FactReceiptId, FactTombstone, FlavorDescriptor, FlavorProvenance, FlavorRegistry,
     FlavorRegistryError, FlavorRegistryFrozen, GoalId, GoalPayload, InputContractId, MemoryId,
-    ModelId, OperatorId, PayloadKeyBuilder, PerspectivePayload, PromptVersion, RelationClass,
-    RelationDescriptor, SchemaId, SchemaRef, SchemaVersion, SearchProjection,
-    SearchProjectionColumnKind, SearchProjectionField, SidecarPayload, Tool, ToolCall, ToolCallFn,
-    ToolCtx, ToolDescriptor, ToolError, ToolOrigin, ToolServices, proxima_flavor,
-    proxima_schema_id,
+    ModelId, OperatorId, PayloadKeyBuilder, PerspectivePayload, PromptVersion, SchemaId,
+    SchemaVersion, SearchProjection, SearchProjectionColumnKind, SearchProjectionField,
+    SidecarPayload, Tool, ToolCall, ToolCallFn, ToolCtx, ToolDescriptor, ToolError, ToolOrigin,
+    ToolServices, proxima_flavor, proxima_schema_id,
 };
 /// Derived-memory authoring: the request/outcome types of
 /// [`proxima_core::Engine::author_derived_authorized`], which is how a
@@ -91,12 +89,11 @@ pub use proxima_core::{
 /// the in-tree precedent (`flavors/code`) reaches the same lane through a
 /// direct `proxima-storage-pg` dependency it cannot have.
 ///
-/// [`RegisteredRelation`] is obtained from
-/// [`FlavorRegistryFrozen::resolve_relation`] via
-/// [`proxima_core::Engine::registry`]; provenance edges back to the source
-/// Facts use [`CORE_DERIVED_FROM_RELATION`], and a re-derivation that
-/// replaces an earlier output sets `supersedes` (which also writes a
-/// [`CORE_SUPERSEDES_RELATION`] edge in the same transaction).
+/// Provenance is `derived_from` on the request: a slice of [`EdgeEndpoint`]s
+/// naming what the write was made from, which lands one
+/// [`EdgeKind::Origin`] row each inside the write's own transaction. A
+/// re-derivation that replaces an earlier output sets `supersedes`, which
+/// is a lineage pointer on the two rows and writes no edge at all.
 ///
 /// A derived memory is embedded *synchronously*, inside the write, where a
 /// Fact enqueues a durable job — but the two now agree about failure. A
@@ -109,9 +106,27 @@ pub use proxima_core::{
 /// memories in a worker should checkpoint per output rather than per
 /// batch.
 pub use proxima_core::{
-    AuthorDerivedAuthorizedOutcome, AuthorDerivedEdgeInput, AuthorDerivedRequestInput,
-    CORE_DERIVED_FROM_RELATION, CORE_SUPERSEDES_RELATION, EdgeAuthorshipKind, EntityKind,
-    MemoryOperatorKind, RegisteredRelation,
+    AuthorDerivedAuthorizedOutcome, AuthorDerivedRequestInput, EntityKind, MemoryOperatorKind,
+};
+/// The connection vocabulary a flavor is allowed to speak (docs/16-edges.md).
+///
+/// A flavor never writes an edge, so none of these is a write surface.
+/// [`PayloadReference`] is the whole of what a payload declares — the field
+/// it was read from, the binding, and the target — and the defaulted
+/// `references()` on every payload trait returns a `Vec` of them, so a
+/// schema that points at another node cannot be written without naming this
+/// type. [`ReferenceBinding`] is where the retired descriptor's
+/// `FollowHead`/`Pin` cell went: a property of the field, decided once by
+/// the schema author.
+///
+/// [`EdgeEndpoint`] is the address form the constructors below mint
+/// (`memory`, `goal`, `fact_entity`); [`EdgeKind`] is exported to be *read*
+/// — off a listed [`Edge`], or when filtering — never passed to a writer,
+/// because the kind follows the operation. [`FactEntityId`] rides along
+/// because `PayloadReference::fact_entity_head` cannot be called without it.
+pub use proxima_core::{
+    Edge, EdgeEndpoint, EdgeKind, EdgeTargetProjection, EntityRef, FactEntityId, PayloadReference,
+    ReferenceBinding,
 };
 /// Shared argument rules for search and paged reads, so a flavor does not
 /// have to invent its own — and so the in-tree tools cannot drift apart.
@@ -136,7 +151,7 @@ pub use proxima_core::{
 };
 pub use proxima_storage_pg::pg_sidecar;
 pub use proxima_storage_pg::sidecars::{
-    PgCitationMappingSidecar, PgCitedObjectSidecar, PgEdgeSidecar, PgGoalSidecar, PgMemoryPayload,
+    PgCitationMappingSidecar, PgCitedObjectSidecar, PgGoalSidecar, PgMemoryPayload,
     PgMemoryPayloadFuture, PgMemorySidecar, PgSidecarFuture, PgSidecarReadCtx,
 };
 pub use proxima_storage_pg::{
