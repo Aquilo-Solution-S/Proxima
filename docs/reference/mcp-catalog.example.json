@@ -31,6 +31,15 @@
         "source_handles": ["F:example-1"],
         "model_id": "example-operator"
       }
+    },
+    {
+      "name": "core_interpret",
+      "purpose": "Author an interpretation Perspective: a claim about existing memories, with a confidence. Returns a P: handle, never an edge handle.",
+      "exampleArguments": {
+        "claim": "The second outage repeated the first one's cause.",
+        "confidence": 80,
+        "subjects": ["F:example-1", "A:example-2"]
+      }
     }
   ],
   "resources": [
@@ -38,6 +47,7 @@
     "proxima://tools",
     "proxima://change-events{?since,limit}",
     "proxima://wake-candidates{?fact,limit}",
-    "proxima://memory/{id}"
+    "proxima://memory/{id}",
+    "proxima://edges{?kind,source,target,limit,cursor}"
   ]
 }

@@ -13,8 +13,9 @@ tool surface in a host/flavor without violating Proxima invariants.
 
 ## Guardrails
 
-- Schemas, tools, sources, prompts, and relations are build-time registered.
+- Schemas, tools, sources, and prompts are build-time registered.
 - Facts are immutable observations.
 - A/P payloads require typed sidecars.
-- Relations must resolve to registered descriptors.
-- Cross-owner edges are rejected.
+- Connections are not registered vocabulary: a payload declares `references()`
+  and ingest writes one index row per declaration. No tool writes an edge.
+- An edge is always owned by its source.

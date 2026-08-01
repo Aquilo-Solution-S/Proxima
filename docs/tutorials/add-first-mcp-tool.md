@@ -5,7 +5,8 @@
 A tool is a build-time registered call surface. It is not a runtime plugin, not
 a table row, and not an autonomous action planner. External agents decide when
 to call it; Proxima validates auth/owner/tool scope, decodes typed args, and
-persists any effects through normal Fact/Edge/Goal paths.
+persists any effects through normal Fact/A/P/Goal write paths; no tool writes
+an edge.
 
 Do not add runtime registration endpoints.
 
@@ -76,8 +77,6 @@ proxima_core::proxima_flavor! {
     abstraction_schemas = [],
     perspective_schemas = [],
     goal_schemas = [],
-    edge_schemas = [],
-    relations = [],
     mcp_tools = [ExampleLookupTool],
 }
 ```

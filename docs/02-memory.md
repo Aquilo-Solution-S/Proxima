@@ -18,12 +18,13 @@ part the table names hide:
 | **Fact** | An accepted observation. Never revised. Receipt metadata may link it to a source identity, but receiptless Facts are valid. | `memories` (`kind` NULL, optional `receipt_id`) + optional `fact_receipts` | Fact write / receipt-backed FactIngest |
 | **Abstraction** | A re-derivable interpretation over Facts. | `memories` (`kind = 'Abstraction'`) | `F→A` operator |
 | **Perspective** | A re-derivable integration over Abstractions; the lens reads are taken through. Self is a query over Perspective rows and active Goal heads, not a row or authz carrier. | `memories` (`kind = 'Perspective'`) | `A→P` operator |
-| **Goal** | A desired end-state with a lifecycle (`state`). Goal↔Goal topology is ordinary Edge topology, not a Goal row field. | `goals` (its own table) | user / external / `A→Goal` operator |
-| **Citation** | *Not a node.* An immutable, content-addressed outside-proof attached to a Fact ("I assert this because of that source"). | `cited_objects` + a `cited_<schema>` byte sidecar, linked to a Fact by `citation_mappings` | attached at Fact ingest |
+| **Goal** | A desired end-state with a lifecycle (`state`). Goal↔Goal topology is declared on the Goal row (`dependency_goal_ids`); the edge index is derived from it. | `goals` (its own table) | user / external / `A→Goal` operator |
+| **Citation** | *Not a node.* An immutable, content-addressed outside-proof attached to a Fact or an Abstraction ("I assert this because of that source"). | `cited_objects` + a `cited_<schema>` byte sidecar, linked to the memory by `citation_mappings` | attached at Fact ingest / at the Abstraction write |
 
 So `memories` is **three** node kinds in one table (Fact, Abstraction,
 Perspective), discriminated by `kind`; Goals are a separate axis; Citations
-are bibliography hanging off Facts, never a node of their own. The same
+are bibliography hanging off a Fact or an Abstraction, never a node of their
+own. The same
 breakdown is mirrored as `COMMENT ON` text on the tables in
 `0001_init.sql`. Goal detail is in [06](06-goals-and-self.md); Citation
 mechanics in [11](11-citations.md).
@@ -50,21 +51,22 @@ Production rules:
 |---|---|---|
 | F→A | `2^F × Π → A` | Facts become a typed Abstraction. Cross-domain input is legal only when the output schema is an explicit cross-domain Abstraction. |
 | A→P | `2^A × Π → P` | Abstractions become a typed Perspective under the active Perspective context. |
-| frame | `P × A_cross → Edge` | Perspective may frame a cross-domain Abstraction. Facts stay unchanged. |
+| frame | `P × A_cross → P` | Perspective may frame a cross-domain Abstraction. The frame is a Perspective whose payload references the Abstraction — never a standalone edge. Facts stay unchanged. |
 | A→Goal | `2^A × Π → Goal` | Core derives / updates Goals from visible evidence (see 06). |
 
 `Π` = active Perspective context selected by an authorized query or write.
 Runtime identity is the Perspective memory row; type-level behavior comes from
 the registered flavor. Load-bearing type evolution is a new flavor/type id;
-load-bearing runtime lineage evolution is a new Perspective row linked by
-registered edges.
+load-bearing runtime lineage evolution is a new Perspective row whose own
+declarations produce the index entries.
 
 Forbidden:
 
 - A→F, P→A, P→F writes.
 - Upward F/A/P edges: Fact→Abstraction, Fact→Perspective,
   Abstraction→Perspective.
-- Semantic or causal Fact→Fact edges.
+- A Fact as an interpretation source: an interpretation is a judgment, and a
+  Fact asserts none. The layering rule already enforces it.
 - Mutation of existing memories by later passes.
 
 ## Why This Layering — The Trauma Test
@@ -92,8 +94,8 @@ Kind-specific content:
 | Kind | Content | Citation | Text | Supersession |
 |---|---|---|---|---|
 | Fact | Typed `FactPayload` sidecar | Optional `citation_mapping_id` | none; render on demand | never |
-| Abstraction | Typed `AbstractionPayload` sidecar + immutable `text` | none | operator-authored | allowed |
-| Perspective | Typed `PerspectivePayload` sidecar + immutable `text` | none | operator-authored | allowed |
+| Abstraction | Typed `AbstractionPayload` sidecar + immutable `text` | Optional `citation_mapping_id` (see 11) | operator-authored | allowed |
+| Perspective | Typed `PerspectivePayload` sidecar + immutable `text` | none — grounds through its references | operator-authored | allowed |
 
 Facts are observations. Receipt-backed Facts come from source identities; receiptless
 Facts are valid Fact writes without source-batch metadata. Fact identity is the
@@ -101,113 +103,141 @@ UUIDv7 `memory_id`, not the content hash or optional `receipt_id`.
 `FactIngest` / `FactReceiptId` names are the current protocol vocabulary.
 
 Abstractions and Perspectives are derived memories. Their provenance is
-edge-based, not JSON inside the memory row. Their reproducibility metadata
-lives inline on the memory row: operator kind, model id, prompt version, and
-edge-backed declared inputs/provenance.
+declared by the write that produced them (`derived_from`) and indexed as
+`origin` entries, not stored as JSON inside the memory row. Their
+reproducibility metadata lives inline on the memory row: operator kind, model
+id, prompt version, the authoring Perspective (`authoring_perspective_id`), and
+the declared inputs the `origin` entries index.
 
 There is no `description` field. Facts render from payload. A/P text is
 the authored cognitive surface. Typed sidecars are the query surface.
 
 ## Provenance
 
-Provenance points downward:
+Provenance points downward, and it is an `origin` entry (see 16):
 
 ```
-Perspective ──core/derived-from──► Abstraction ──core/derived-from──► Fact
+Perspective ──origin──► Abstraction ──origin──► Fact
 ```
 
 Rules:
 
-- F→A writes `Abstraction → Fact*` provenance edges.
-- A→P writes `Perspective → Abstraction*` provenance edges.
+- F→A declares its Facts as `derived_from`; the write lands `Abstraction →
+  Fact*` `origin` entries in its own transaction.
+- A→P declares its Abstractions the same way, landing `Perspective →
+  Abstraction*`.
 - Cross-domain Fact synthesis is `Abstraction_cross → Fact*`.
-- Perspective framing of cross-domain synthesis is `Perspective → Abstraction_cross`.
-- Bibliographic provenance for A/P is the transitive closure to Facts and
-  their citation mappings.
-- Edges have no citation id. Edge authorship is reasoning provenance, not
-  bibliography.
+- Perspective framing of cross-domain synthesis is a Perspective whose payload
+  references `Abstraction_cross`.
+- Bibliographic provenance for A/P is the transitive closure to Fact and
+  Abstraction citations (see 11).
+- Edges carry no citation id, no payload and no authorship column. Who
+  reasoned is answered by the node that owns the statement — its
+  `authoring_perspective_id`, its operator columns.
 
 ## Edges
 
-Edges connect Memories and Goals. Memories obey F/A/P layering; Goals are a
-separate entity axis (see 06).
+Edges connect Memories and Goals, and they are an *index*, not a place content
+lives. [16-edges.md](16-edges.md) is the reference for the model; this section
+is the part a reader of 02 needs.
 
-## Relation Registry
+> An edge carries no information beyond its existence: its endpoints, its
+> direction, its creation time, and its kind. All content lives in nodes;
+> meaning arises from the synthesis of the connected nodes.
 
-Every edge relation resolves to a build-time `RelationDescriptor`
-registered by core or a flavor (see 08). Unregistered relations are
-invalid. The descriptor is the policy row: class, endpoint mask, owner
-policy, target write-admission policy, and mask-tightening proof.
+```
+proxima_core.edges (
+    source_kind, source_id,        -- memory | goal | fact-entity head
+    target_kind, target_id,
+    kind,                          -- 'origin' | 'reference'
+    owner_kind, owner_id,          -- always the source owner
+    created_at,
+    PRIMARY KEY (source_kind, source_id, target_kind, target_id, kind)
+)
+```
 
-Closed relation classes:
+There is no edge id, so no edge handle: the row is its own identity, and
+replaying a write re-asserts it instead of minting a duplicate. There is no
+payload, no sidecar, no citation, no status, no relation, no namespace and no
+authorship column.
 
-| Class | Use |
+## Kinds Are Closed
+
+Two kinds, and the enum is not extensible — not by flavors, not by core
+features. The kind is a *consequence* of the write that produced the row, never
+a parameter a writer picks:
+
+| Kind | Statement lives in | Written by |
+|---|---|---|
+| `origin` | the derived node's write (`derived_from`) | that write's own transaction |
+| `reference` | the node's payload, as schema-declared reference fields | ingest / derivation, from payload content |
+
+Two consequences follow, and they are what the rest of this document leans on:
+
+- **Kind follows operation.** No public API takes an edge kind from a caller,
+  and no verb writes an edge as a free-standing act. A feature that seems to
+  need a third kind fails the node-home test and is missing a node.
+- **Rebuildability.** Dropping the edge table and re-deriving it from node
+  content yields the same set. This is the master invariant; every other edge
+  guarantee is a corollary.
+
+What used to be relation vocabulary now lives on the node that owns the
+statement:
+
+| Was | Now |
 |---|---|
-| `Structural` | Payload / system structure. |
-| `Provenance` | Derived-from lineage. |
-| `Supersession` | New entity supersedes prior entity. |
-| `Causal` | Perspective-relative cause / motivation. |
-| `Interpretive` | Perspective-relative non-causal interpretation. |
+| `core/derived-from` | `origin`, from the write's `derived_from` |
+| `core/supersedes` | `supersedes` / `superseded_by` pointers on the row |
+| `core/authored` | `memories.authoring_perspective_id` |
+| `core/inspires` | `goals.assignment_perspective_id` → one `reference` |
+| `core/depends-on` | `goals.dependency_goal_ids` → one `reference` each |
+| `core/motivated-by`, `core/wake-motivated-by` | `goals.evidence_memory_ids` → one `reference` each |
+| `core/agent-link-refers-to` + its sidecar | an interpretation Perspective (`core_interpret`), whose subjects are payload references |
 
-Core relations:
-
-| Relation | Class | Shape |
-|---|---|---|
-| `core/derived-from` | `Provenance` | Derived entity → evidence |
-| `core/supersedes` | `Supersession` | A→A, P→P, Goal→Goal |
-| `core/inspires` | `Causal` | Goal → Root Perspective |
-| `core/authored` | `Causal` | Root Perspective → emitted memory |
-| `core/depends-on` | `Structural` | Memory → Memory |
-| `core/motivated-by` | `Structural` | Goal → Fact / Abstraction evidence |
-
-Relation classes are substrate vocabulary. Flavors add relation ids, not new
-classes. Relation policy fields are closed substrate vocabulary:
-
-| Field | Values | Meaning |
-|---|---|---|
-| `ownerPolicy` | `SourceOwned`, `SameOwner` | Whether the target may cross Owner boundaries. Edge row owner is always source Owner. |
-| `targetAccessPolicy` | `None`, `Read`, `Write` | Extra target-side gate for edge writes; source write is always required. |
-
-Core relation policy cells are descriptor data, not edge-row columns; they are
-pinned relation-by-relation in the registry.
+Multiplicity collapses: ten call sites from chunk A to chunk B are one index
+row and ten entries in A's payload. The index answers "is there a connection";
+the node answers "what it is".
 
 ## The Directionality Rule
 
-Universal edge constraints:
+Universal edge constraints, all enforced in storage (see 07):
 
 - Endpoint ids must exist.
 - Declared endpoint kind must equal stored endpoint kind.
 - Edges are source-owned: `edge.owner == source.owner`.
-- Descriptor `ownerPolicy` selects cross-owner admissibility:
-  `SourceOwned` permits a foreign target; `SameOwner` requires
-  `target.owner == source.owner`.
-- Supersession-class descriptors must use `SameOwner`.
 - F/A/P layer rule: `ℓ(source) ≥ ℓ(target)`.
-- Goal endpoints sit outside F/A/P layer comparison; descriptor masks govern.
-- Descriptor masks may tighten legal shapes, never relax F/A/P layering.
-- Edge write admission requires source write authority plus the descriptor's
-  target gate (`None` / `Read` / `Write`).
-- Fact-sourced agent/user links are rejected by `core_link`; derive an
-  Abstraction/Perspective and link from that.
-- `Causal` / `Interpretive` Fact→Fact edges are forbidden.
-- `Supersession` Fact→Fact edges are forbidden.
-- `Structural` / `Provenance` Fact→Fact edges are legal.
-- Relation enforcement lives in `crates/core/src/relation.rs`;
-  `core_link` adds the no-Fact-source agent-link rule.
+- Goal endpoints sit outside the F/A/P layer comparison.
+- No self-loop: an edge cannot point at its own source.
+- The source of an edge is the node that owns the statement — the derived node
+  for `origin`, the referrer for `reference`.
 
-F/A/P matrix:
+Admission is one uniform rule, not a per-relation policy matrix: the write is
+admitted iff the writer holds write authority on the source and read authority
+on the target at write time. Since no verb writes an edge directly, that check
+runs as part of the node write that declares it.
 
-| From → To | Legal | Classes |
-|---|---:|---|
-| Fact → Fact | yes | `Structural`, `Provenance`; never `Causal`, `Interpretive`, `Supersession` |
-| Abstraction → Fact | yes | `Provenance`, `Structural` |
-| Abstraction → Abstraction | yes | `Structural`, `Supersession` |
-| Perspective → Fact | yes | `Causal`, `Interpretive`, `Structural` |
-| Perspective → Abstraction | yes | `Provenance`, `Causal`, `Interpretive`, `Structural` |
-| Perspective → Perspective | yes | `Structural`, `Supersession`, `Causal`, `Interpretive` |
-| Fact → Abstraction | no | — |
-| Fact → Perspective | no | — |
-| Abstraction → Perspective | no | — |
+The endpoint's address form *is* its durable binding, so there is nothing to
+configure: a Fact-entity-head endpoint follows the head as it is re-observed,
+and a memory or Goal endpoint pins the row.
+
+F/A/P matrix (`origin` and `reference` alike — the kind does not widen or
+narrow it):
+
+| From → To | Legal |
+|---|---:|
+| Fact → Fact | yes |
+| Abstraction → Fact | yes |
+| Abstraction → Abstraction | yes |
+| Perspective → Fact | yes |
+| Perspective → Abstraction | yes |
+| Perspective → Perspective | yes |
+| Fact → Abstraction | no |
+| Fact → Perspective | no |
+| Abstraction → Perspective | no |
+
+The row that used to say "a Fact may not causally link a Fact" is now
+structural: a causal claim is an interpretation, an interpretation is a
+Perspective, and a Fact is never the source of one.
 
 ## Edge Scope Invariant
 
@@ -217,31 +247,16 @@ Edges are source-owned:
 edge.owner == source.owner
 ```
 
-The target may belong to a different Owner only when the relation descriptor
-uses `SourceOwned`. This is what makes cross-owner provenance expressible: an
-Abstraction owned by one group may cite/prove itself from another group's Fact
-while the edge remains owned by the Abstraction's source. Relations whose
-descriptor uses `SameOwner` are stricter; Supersession-class descriptors must
-be `SameOwner`, because a row supersedes its own prior head, never another
-Owner's entity.
+The target may belong to a different Owner. That is what makes cross-owner
+provenance expressible: an Abstraction owned by one group may ground itself in
+another group's Fact while the edge remains owned by the Abstraction's source.
+Supersession never crosses Owners, because it is not an edge at all — it is a
+pointer on the row, and a row supersedes its own prior head.
 
 Query visibility is not row ownership: source-readable edges may still redact
-or suppress unreadable targets.
-
-Edge authorship vocabulary:
-
-| Authorship | Use |
-|---|---|
-| `SourceIngest` | Payload-derived structural edges from typed Fact ingest. |
-| `OperatorFtoA` | F→A provenance. |
-| `OperatorAtoA` | A→A provenance. |
-| `OperatorAtoP` | A→P provenance. |
-| `OperatorAtoGoal` | A→Goal evidence/provenance shape. |
-| `PerspectiveLink` | P-authored causal / interpretive framing. |
-| `PerspectiveGoalLink` | Perspective-authored causal claim involving a Goal: `core/inspires` Goal→Perspective inspiration or Goal→Fact outcome attribution. |
-| `Engine` | Substrate-authored edges such as supersession / authored. |
-| `User` | Explicit user/API-authored graph edits. |
-| `ExternalAgent` | Agent-authored MCP / imported edges. |
+or suppress unreadable targets. A readable edge with an unreadable endpoint
+comes back with the target withheld rather than the row suppressed, so the
+existence of a connection is neither leaked nor hidden by accident.
 
 ## Causal Chain Query
 
@@ -250,14 +265,16 @@ structure. Causal claims are Perspective-relative.
 
 ```
 chain(f, P_active)
-  = Structural Fact backbone
-  + Causal / Interpretive edges authored by P_active
-  + provenance closure from contributing P/A nodes to Facts
+  = reference backbone among Facts
+  + interpretation Perspectives under P_active, through their own references
+  + origin closure from contributing P/A nodes to Facts
 ```
 
 Rules:
 
 - `chain(f, P_active)` is a query, not an entity.
+- A causal claim is a node, not an edge kind: an interpretation Perspective
+  whose payload references the memories it is about (`core_interpret`, see 12).
 - Different active Perspectives can produce different valid chains.
 - Supersession changes which P/A heads participate in future queries; old
   chains remain reconstructable from the append-only graph.
@@ -266,13 +283,13 @@ Rules:
 ## Wake / Dream / Write
 
 Dreaming is flavor-declared consolidation through ordinary wake/write paths.
-No Dream entity, Dream relation class, or Core dream pipeline.
+No Dream entity, Dream edge kind, or Core dream pipeline.
 
 ```
 change_event
   -> armed Active Goal wake match
   -> actor/tool-scope admission
-  -> typed Memory / Goal / Edge writes
+  -> typed Memory / Goal writes (edges follow from what they declare)
   -> registry + edge invariant enforcement
 ```
 
@@ -288,25 +305,32 @@ Dream forms:
 | Self/Perspective revision | `2^A × P_active × G_active → P_new` | Perspective |
 | Goal reorientation | `P/A evidence → Goal write` | Goal write / supersession |
 
-Dream outputs are ordinary writes. They obey schema registration, relation
-registration, owner scope, layer direction, citation rules, and append-only
-rules.
+Dream outputs are ordinary writes. They obey schema registration, owner scope,
+layer direction, citation rules, and append-only rules. They write no edge of
+their own: what they declare produces the index entries.
 
 ## Re-derivation and Supersession
 
 Facts never supersede and are never superseded.
 
-A, P, and Goals may supersede:
+A, P, and Goals may supersede. Supersession is **not an edge**: it is the same
+thing persisting through revision, so it is a pair of pointers on the rows —
+the successor's `supersedes` and the predecessor's `superseded_by`, both
+written in the successor's own transaction:
 
 ```
-new_entity --core/supersedes--> old_entity
+new_entity.supersedes    = old_entity
+old_entity.superseded_by = new_entity
 ```
 
 Rules:
 
-- Supersession is append-only: new row + edge / lineage pointer.
-- Endpoint kind must match.
-- Facts have no `Supersession` relation.
+- Supersession is append-only: a new row plus the two pointers. No edge row is
+  written for a supersession.
+- Endpoint kind must match, and both rows share an Owner by construction —
+  the pointer lives on the row, so it cannot cross an Owner boundary.
+- Facts are never superseded (enforced in storage: `superseded_by` requires a
+  non-NULL `kind`).
 - Stateful Fact projections use head-by-natural-key queries on sidecars
   (see 03), not supersession.
 - Deletion observations are Facts with state in their sidecar, not erased
@@ -314,9 +338,9 @@ Rules:
 - Hard delete exists only as compliance erasure (see 13), outside cognitive
   graph semantics.
 
-Default lineage scope is the owner plus the derived memory's registered
-provenance edges. Cross-context supersession is an explicit user/API editorial
-gesture, never an operator decision.
+Default lineage scope is the owner plus the derived memory's `origin` entries.
+Cross-context supersession is an explicit user/API editorial gesture, never an
+operator decision.
 
 ## Assertion Lifecycle Pattern
 
@@ -324,34 +348,36 @@ Assertion = typed Abstraction whose sidecar carries a flavor-owned stable
 key plus claim fields. Core owns lifecycle mechanics only.
 
 ```
-Fact evidence* --core/derived-from--> Assertion(A)
-Assertion(A_new) --core/supersedes--> Assertion(A_old)
-Assertion(A) --flavor/structural-endpoint--> Fact entity head*
+Fact evidence*   --origin (declared as derived_from)--> Assertion(A)
+Assertion(A_new) --supersedes / superseded_by pointers-> Assertion(A_old)
+Assertion(A)     --reference (payload field)----------> Fact entity head*
 ```
 
 Core requirements:
 
 - assertion payload is an `AbstractionPayload` sidecar; no generic
-  relation entity;
-- evidence is `core/derived-from` to Facts; citations stay Fact-only;
-- endpoint refs use ordinary registered structural edges, preferably
-  `FollowHead` Fact-entity endpoints for stateful entities;
-- supersession writes both `memories.supersedes` and `core/supersedes` in
-  the same transaction;
+  connection entity;
+- evidence is declared as `derived_from`, landing `origin` entries; citations
+  are Fact ∪ Abstraction (see 11);
+- endpoint refs are ordinary schema-declared `references()` on the payload,
+  preferably Fact-entity-head references for stateful entities, which follow
+  the head;
+- supersession writes `memories.supersedes` and the predecessor's
+  `superseded_by` in the same transaction;
 - current / superseded state is query-derived from heads, disposition, and
   flavor-owned validity fields.
 
 Flavor responsibilities:
 
 - stable assertion key shape;
-- endpoint vocabulary and payload fields;
+- reference fields and payload fields;
 - validity scope (`Date` interval, repo commit range, etc.);
 - confidence / disposition enums;
 - domain MCP wrappers and projection caches.
 
-Do not add edge citation/status fields, runtime relation vocabularies, a
-core `RelationAssertion` entity, or authoritative materialized relation
-edges for this pattern.
+Do not add edge citation/status fields, an extensible connection vocabulary, a
+core `RelationAssertion` entity, or authoritative materialized connection rows
+for this pattern.
 
 ## Perspective context and wake
 
@@ -361,18 +387,18 @@ control reads and writes.
 
 Substrate responsibilities:
 
-- store typed Perspective rows and provenance edges;
+- store typed Perspective rows and index their `origin` entries;
 - store Goal-owned wake config for armed Active Goals;
 - expose pull reads over `change_event`;
-- enforce Owner roles, schema, relation, and tool-scope gates;
-- record produced A/P rows with edge-backed provenance;
+- enforce Owner roles, schema, and tool-scope gates;
+- record produced A/P rows with their declared provenance;
 - enforce registry and edge invariants.
 
 Flavor responsibilities:
 
 - prompt / instructions;
 - Perspective schemas and default payloads;
-- writeable schemas and relations;
+- writeable schemas and the reference fields they declare;
 - external harness decision policy.
 
 Multiple Perspective contexts may be active for one Owner. Same Facts or
@@ -384,9 +410,12 @@ Abstractions under different contexts produce parallel lineages.
 - Facts immutable; A/P/Goals append and may supersede.
 - Cross-domain Fact synthesis is a typed Abstraction, not Fact→Fact semantics.
 - A/P are always typed and always carry immutable text.
-- Citations are Fact-only and bibliographic.
-- Relations are build-time registered and classed by closed substrate enum.
+- Citations are Fact ∪ Abstraction and bibliographic (see 11).
+- Edge kinds are a closed two-variant substrate enum; no verb writes an edge.
 - Edge invariants are storage-enforced (see 07).
+- The edge set is a function of node content — drop it and re-derive it, and
+  it comes back the same.
+- Supersession is a row pointer, not an edge.
 - Causal chains and Self are queries, not entities (see 06).
 - Dreaming is ordinary wake/write behavior, not a substrate component.
 
@@ -398,7 +427,7 @@ Abstractions under different contexts produce parallel lineages.
 - `the-core-entity`
 - `provenance`
 - `edges`
-- `relation-registry`
+- `kinds-are-closed`
 - `the-directionality-rule`
 - `edge-scope-invariant`
 - `causal-chain-query`

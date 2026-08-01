@@ -54,7 +54,7 @@ v1 constraints:
 
 No per-memory ACL or `AccessGrant` layer exists. Cross-owner access is represented by server-resolved group membership / `OwnerRoles` over concrete `OwnerRef`s.
 
-Owner remains the storage and graph isolation primitive. Access is server-resolved `OwnerRoles` over concrete `OwnerRef`s; Core enforces those roles at verb/tool entry and never adds org/share-set semantics. Edge rows are owned by their source endpoint; a registered descriptor may admit a foreign target only with its declared target gate (`None`, `Read`, or `Write`).
+Owner remains the storage and graph isolation primitive. Access is server-resolved `OwnerRoles` over concrete `OwnerRef`s; Core enforces those roles at verb/tool entry and never adds org/share-set semantics. Edge rows are owned by their source endpoint, and one uniform rule admits them: the writer needs write authority on the source and read authority on the target at write time.
 
 ### Owner resolution — the host's trust boundary
 

@@ -11,7 +11,7 @@ Tool = build-time registered call surface.
 | Registration | core/flavor crates only; frozen in `FlavorRegistry` at startup |
 | Selection | auth token tool scope ∩ deployment tool-surface profile |
 | Execution | MCP dispatch; external harnesses drive decisions |
-| Persistence | normal Fact / Edge / Goal paths only |
+| Persistence | normal Fact / A/P / Goal write paths only; no tool writes an edge |
 | Observation | clients observe change events and stored entities, not a Tool entity |
 
 No runtime registration tier. No install/revoke API. No `tools` table.
@@ -31,7 +31,7 @@ Stored ids:
 | Flavor MCP projection | provider-safe `<flavor>_<name>` |
 
 Registered MCP tool names are already provider-safe. Slash-separated
-schema/relation ids remain separate from MCP wire ids.
+schema ids remain separate from MCP wire ids.
 
 ## Rust Surface
 
@@ -91,8 +91,8 @@ Prefix rules live in 08:
 | substrate MCP tool | `core_` |
 | flavor MCP tool | `<flavor>_` |
 
-`FlavorRegistry::try_freeze()` rejects duplicate tool names. Schema and
-relation validation remains the registry's build-time responsibility
+`FlavorRegistry::try_freeze()` rejects duplicate tool names. Schema
+validation remains the registry's build-time responsibility
 (see 08 §Freeze Guards).
 
 ## Tool Schema Contract
@@ -184,7 +184,7 @@ MCP dispatch contract:
 | Tool scope | token capabilities intersected with deployment profile and bound-owner role |
 | Args | action-dispatch tools validate fields strictly (see Tool Schema Contract), then JSON decoded into typed args |
 | Output | serialized typed output |
-| Ids | prefixed ids (`F:/A:/P:/G:/E:` form) — the only wire reference grammar |
+| Ids | prefixed ids (`F:`/`A:`/`P:`/`G:` form) — the only wire reference grammar. There is no `E:`: an edge has no id to name. |
 
 ## Persistence
 
@@ -192,7 +192,7 @@ Current storage:
 
 | Data | Storage |
 |---|---|
-| tool effects | `memories`, sidecar tables, `edges`, `goals`, change events |
+| tool effects | `memories`, sidecar tables, `goals`, change events, and the `edges` rows those writes imply |
 
 Not present in v1:
 
@@ -206,9 +206,8 @@ Not present in v1:
 | runtime manifest upload | absent |
 | signed external tool body registry | deferred |
 
-Tool output that persists must pass the same registered schema,
-relation, Owner, layering, citation, and append-only checks as any other
-engine write.
+Tool output that persists must pass the same registered schema, Owner,
+layering, citation, and append-only checks as any other engine write.
 
 ## Compliance Metadata
 
@@ -237,7 +236,9 @@ Owner-policy enforcement belongs to 13.
 
 ## Non-Goals
 
-- No runtime schema, relation, source, prompt, or tool registration.
+- No runtime schema, source, prompt, or tool registration.
+- No connection vocabulary at all — the edge kinds are closed and no tool
+  writes one.
 - No dynamic tool install path in v1.
 - No OpenAI-function manifest as substrate authority.
 - No MCP capability model as substrate authority.

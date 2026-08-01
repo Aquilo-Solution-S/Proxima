@@ -1,7 +1,7 @@
 # 10 - Configuration
 
 Current runtime configuration contract. Build-time registration owns
-schemas, relations, prompts, tools, source types, and wake trigger vocabulary
+schemas, prompts, tools, source types, and wake trigger vocabulary
 (see [08](08-core-and-flavors.md)). Runtime config
 selects the Postgres connection, the MCP endpoint and its authentication,
 deployment-level artefact storage, and an optional host-injected
@@ -30,9 +30,9 @@ host injects for vector retrieval and an optional model-seat client.
 | Large artefact S3 storage | binary-wide | process env + AWS SDK credential chain |
 | source credentials | per source instance | source-owned, not engine-owned |
 
-Not runtime configurable: schema ids, payload types, relation
-descriptors, prompts, tool definitions, source types, wake trigger kinds,
-and agent type registration.
+Not runtime configurable: schema ids, payload types, edge kinds, prompts,
+tool definitions, source types, wake trigger kinds, and agent type
+registration.
 
 Wake config is per-Goal data written through GoalWrite and stored as
 `Goal.wake`, not an env/boot surface and not a separate runtime config

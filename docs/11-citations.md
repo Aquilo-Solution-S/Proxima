@@ -1,19 +1,20 @@
 # 11 — Citations
 
-A citation answers "**what artefact in Reality does this Fact come
+A citation answers "**what artefact in Reality does this memory come
 from?**" Three entities, two trait families. The Memory graph already
-covers reasoning provenance via edges; citations cover *bibliographic*
-provenance — the documents, images, videos, chat sessions, etc. that
-Facts point at.
+covers reasoning provenance via `origin` and `reference` entries; citations
+cover *bibliographic* provenance — the documents, images, videos, chat
+sessions, computation records, etc. that a Fact or an Abstraction points at.
 
 ## Three-layer model
 
 ```
-Fact ──► CitationMapping ──► CitedObject
-         (annotation)          (artefact)
+Fact        ──► CitationMapping ──► CitedObject
+Abstraction ──► CitationMapping ──► CitedObject
+                (annotation)          (artefact)
 
-A / P    no citation_mapping_id; citations accumulate transitively
-         via provenance edges (A → F, P → A → F).
+Perspective     no citation_mapping_id; citations accumulate transitively
+                through its references and origin entries (P → A → F).
 ```
 
 - **CitedObject** — the artefact. Uploaded blob with internal S3
@@ -24,18 +25,28 @@ A / P    no citation_mapping_id; citations accumulate transitively
 - **CitationMapping** — the typed annotation pointing one Memory at one
   CitedObject (page, paragraph, bbox, message id, time range, …).
   Typed-per-domain via `CitationMappingPayload`.
-- **Memory.citation_mapping_id** — OPTIONAL for Fact (a Fact may cite or
-  not, as of 2026-06-13 — Facts are the event stream; citations are
-  optional outside-proofs), absent on Abstraction and Perspective. A cited
-  Fact cites one artefact via one mapping.
+- **Memory.citation_mapping_id** — OPTIONAL for **Fact and Abstraction**,
+  forbidden on Perspective. A cited memory cites one artefact via one
+  mapping.
 
-A/P never cite an artefact directly. "What grounds this Perspective?"
-is `chain(p)` over `Provenance` edges → Facts → their CitationMappings
-→ CitedObjects. Citations on A/P would be redundant with the
-provenance graph and would invite drift between the two.
+An Abstraction may cite because a **computed score is an Abstraction**
+(see [16 §Computed Scores Are Abstractions](16-edges.md#computed-scores-are-abstractions)):
+a similarity, ranking, or quality verdict about other nodes holds the value
+and the method in its payload, points at its inputs with references, and
+proves itself by citing the computation record — parameters, model id,
+receipt — as a content-addressed CitedObject. Without that, the proof of an
+algorithmic verdict had nowhere to live but an edge property or a cache row,
+and neither is a claim anything can check.
+
+Perspectives never cite directly. "What grounds this Perspective?" is
+`chain(p)` over its references and `origin` entries → Facts and Abstractions
+→ their CitationMappings → CitedObjects. A citation on a Perspective would
+be redundant with that graph and would invite drift between the two.
 
 This matches the biological story: your interpretation does not cite
-the source — it cites the memory that holds the source.
+the source — it cites the memory that holds the source. What changed in
+v0.0.8 is only that a *computation* is also a source, and the memory that
+holds it is an Abstraction.
 
 ## Trait families
 
@@ -95,7 +106,7 @@ citation_mappings(
     cited_object_id     FK cited_objects,
     owner_*,
     created_at,
-    UNIQUE (memory_id)                       -- one mapping per Fact (multiplicity 0..1)
+    UNIQUE (memory_id)                       -- one mapping per memory (multiplicity 0..1)
 )
 -- Optional per-schema sidecar (only when CitationMappingPayload::sidecar_table() = Some):
 citation_doc_pdf_page_paragraph_v1(citation_mapping_id pk FK, page, paragraph, char_range, ...)
@@ -108,11 +119,14 @@ citation_chat_telegram_message_v1(citation_mapping_id pk FK, message_external_id
 - One CitedObject ↔ N CitationMappings ↔ N Facts. Re-ingesting the
   same PDF reuses the CitedObject row; new chunks add new mappings
   pointing at it.
-- One cited Fact ↔ exactly one CitationMapping ↔ one CitedObject. A Fact
+- One cited memory ↔ exactly one CitationMapping ↔ one CitedObject. A Fact
   needing to reference multiple artefacts is a modelling smell — emit
   multiple Facts, or model the relationship as Abstractions citing
   several memories.
-- A/P → zero direct citations. Accumulate via provenance edges.
+- Fact → 0..1 citations. Abstraction → 0..1 citations. Perspective → zero;
+  it accumulates through its references and `origin` entries.
+- Bibliographic closure for A/P terminates at Fact citations **and** direct
+  Abstraction citations.
 
 ## Idempotency
 
@@ -197,7 +211,7 @@ owner's canonical `objects/<owner-hash>/` prefix — and answers any
 other row exactly like a missing object.
 
 S3 preserves original bytes only. It does not replace
-`CitationMapping`, Fact-only citations, or provenance edges.
+`CitationMapping`, the 0..1 citation on a memory, or `origin` provenance.
 
 <a id="the-upload-fact"></a>
 ## The upload Fact
@@ -355,22 +369,23 @@ its CitedObject — the engine checks they match).
 
 ## Edges do not cite
 
-`Edge` has no `citation_id`. An edge's authorship class is the closed
-`authorship_kind` vocabulary (`SourceIngest`, `OperatorFtoA`, `OperatorAtoA`,
-`OperatorAtoP`, `OperatorAtoGoal`, `PerspectiveLink`, `PerspectiveGoalLink`,
-`User`, `Engine`, `ExternalAgent`). Memory/operator provenance lives in
-`authorship_owner_memory_id`, relation descriptors, and operator invocation
-metadata; enum variants do not carry payload IDs.
+An edge has no citation, and no column that could hold one: it is
+`(source, target, kind, owner, created_at)` and nothing else. There is no
+authorship column either — who reasoned is answered by the node that owns the
+statement (its `authoring_perspective_id` and operator columns), not by the
+index row that follows from it.
 
-Anything you'd want a "citation" to express on an edge is already
-encoded by the authoring memory's own citation chain.
+Anything you'd want a "citation" to express on an edge is already encoded by
+the citing memory's own citation chain. An edge that seemed to need a
+citation is a node that has not been written yet.
 
 ## Operator-invocation provenance lives on the Memory row
 
 Bibliographic citation is artefact-only. The reproducibility metadata
 for an operator-derived memory — `(operator_kind, model_id,
-prompt_version)` plus edge-backed input/context provenance — are inline columns
-and relations, NULL for Facts where not applicable and present for A/P. There is no
+prompt_version)` plus the declared inputs its `origin` entries index — are
+inline columns, NULL for Facts where not applicable and present for A/P.
+There is no
 separate `citations` table for them; the F→A / A→P invocation key
 (see [04 §Idempotence and reproducibility](04-consolidation.md#idempotence-and-reproducibility)) is built from those columns directly.
 
@@ -383,9 +398,9 @@ separate `citations` table for them; the F→A / A→P invocation key
   ACLs (e.g., one document shared with N users) are a v2+ extension
   layered above Owner.
 - **Versioned artefacts.** A new revision of a PDF with a different
-  `sha256` is a new CitedObject. Linking revisions across CitedObjects
-  is a flavor concern, modelled via Abstractions or domain-specific
-  edges if needed.
+  `sha256` is a new CitedObject. Relating revisions across CitedObjects
+  is a flavor concern, modelled as an Abstraction over them or as
+  schema-declared references, never as a new edge kind.
 
 ## Anchors
 

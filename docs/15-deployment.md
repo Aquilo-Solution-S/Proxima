@@ -191,7 +191,7 @@ host's policy.
 MCP clients send `X-Proxima-Owner` on `initialize`; the bound owner is
 server-side session state, not a per-call tool argument.
 
-In multi-space hosts, call `core_memory_spaces` before durable memory writes. Use a returned `space` key in `core_remember`, `core_record_utterance`, `core_search_memories`, `core_derive`, and `core_link`; hydrate a memory through `proxima://memory/{id}`. Omitted `space` preserves the current bound owner.
+In multi-space hosts, call `core_memory_spaces` before durable memory writes. Use a returned `space` key in `core_remember`, `core_record_utterance`, `core_search_memories`, `core_derive`, and `core_interpret`; hydrate a memory through `proxima://memory/{id}`. Omitted `space` preserves the current bound owner. A cross-space derivation or interpretation may ground in readable handles outside the selected write space.
 
 ## Embedding Ops
 

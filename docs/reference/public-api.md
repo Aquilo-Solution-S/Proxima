@@ -12,7 +12,7 @@ Post-PR9 supported Rust tiers:
 | Tier | Import | Use |
 |---|---|---|
 | Host API | `use proxima::{Proxima, RuntimeBuilder, RuntimeConfig, Engine, CancellationToken};` | boot composed binaries; call graph/admin/projector verbs through server-resolved `AuthzContext` |
-| Flavor SDK | `use proxima::flavor::{FlavorBundle, FlavorRegistry, FactPayload, pg_sidecar};` | build-time schemas, relations, tools, sidecars |
+| Flavor SDK | `use proxima::flavor::{FlavorBundle, FlavorRegistry, FactPayload, pg_sidecar};` | build-time schemas, payload references, tools, sidecars |
 | Flavor SDK (MCP tools) | `use proxima::flavor::{McpTool, McpToolCtx, McpToolError, McpToolErrorKind, McpToolAnnotations, McpActionArgSpec, McpAuthorContext};` | author flavor MCP tools without reaching into `proxima_core::mcp` — see [add-first-mcp-tool](../tutorials/add-first-mcp-tool.md) |
 | Flavor SDK (authorized reads) | `use proxima::flavor::{authorized_memory_ids, authorized_fact_payloads, authorized_fact_payloads_include_tombstones, authorized_abstraction_payloads, authorized_code_chunk_head_candidates};` | typed, authz-filtered candidate/payload reads — see [Authorized Flavor-Read Facade](#authorized-flavor-read-facade) below |
 
@@ -189,7 +189,7 @@ Contract:
 | observability | rows, relation bytes, HNSW bytes, job backlog, stale processing jobs, orphan rows, recall canary |
 | orphan sweep | deletes embeddings, heads, and jobs whose source `memories` / `goals` row no longer exists |
 | compliance erase | not dependent on sweep; erase deletes embedding infra synchronously at transaction commit |
-| graph authority | embeddings remain engine infrastructure; similarity never authors graph edges |
+| graph authority | embeddings remain engine infrastructure; similarity never authors a connection |
 
 ## Consumer Projector Guidance
 
@@ -219,7 +219,7 @@ Embedding contract:
 | entity tables | no FK from entity rows to embeddings |
 | write semantics | re-embedding appends a new `(entity_kind, entity_id, embedding_version, model_id)` row |
 | latest pointer | `embedding_heads` metadata, rebuildable from `embeddings` |
-| graph authority | similarity is query-time evidence only; embeddings never author edges |
+| graph authority | similarity is query-time evidence only; embeddings never author a connection |
 
 See [07 Vector Store - Independent](../07-storage.md#vector-store--independent).
 

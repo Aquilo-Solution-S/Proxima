@@ -1,12 +1,12 @@
 # 16. Edges
 
-Target model for the v0.0.8 edge layer. Once implemented, this document
-supersedes [02-memory.md](02-memory.md) §Edges, §Relation Registry and
-§The Directionality Rule, and amends [11-citations.md](11-citations.md)
-§Multiplicity. Until then, 02 describes what runs; this describes what
-is being built. Proxima is pre-1.0 (v0.0.7): the changes below break
-the MCP wire surface and the database schema without a compatibility
-shim, deliberately.
+The reference for the edge layer, shipped in v0.0.8. It supersedes what
+[02-memory.md](02-memory.md) used to say under §Edges, §Relation Registry
+and §The Directionality Rule — 02 now restates the parts a reader of 02
+needs and points here — and it amends [11-citations.md](11-citations.md)
+§Multiplicity, which is why an Abstraction may cite. Proxima is pre-1.0:
+the changes below broke the MCP wire surface and the database schema
+without a compatibility shim, deliberately.
 
 ## The Thesis
 
@@ -190,50 +190,75 @@ expressed, only where it lives.
 
 | Tool | Change |
 |---|---|
-| `core_link` | **removed.** Its use case — an agent connecting two existing memories with a reason and a confidence — becomes `core_interpret`: authors an interpretation Perspective (claim, confidence, subject handles) and returns a memory handle, not an edge handle. |
-| `core_list_edge_types` | removed |
-| `core_read_edges`, `core_get_graph` | return `(source, target, kind, created_at)`; edge handles no longer exist |
-| `core_walk_memory_lineage` | traverses `origin` |
-| `core_derive` | unchanged shape; provenance lands as `origin` entries |
+| `core_link` | **removed.** Its use case — an agent connecting two existing memories with a reason and a confidence — became `core_interpret`: authors an interpretation Perspective (`claim`, `confidence` 0..=100 defaulting to 80, subject memory handles) under `core/interpretation-v1`, and returns a `P:` memory handle. |
+| `core_list_edge_types` | removed; the vocabulary is this document |
+| `proxima://edge-types`, `proxima://edge/{id}` | removed. `proxima://edges{?kind,source,target,limit,cursor}` remains, filtered by `kind` rather than relation |
+| edge reads (`proxima://edges`, `proxima://graph`, `?expand_neighbors`) | return `(source, target, kind, created_at)`; there is no edge handle to dereference and no payload to hydrate |
+| `core_derive`, `core_goal`, `core_interpret` | report an `edge_count` where they used to hand back edge handles |
+| memory lineage | traverses `origin`; dependency reads read `reference` |
+| the `E:` handle prefix | removed from the wire grammar — an edge has no id to name |
+| `core_derive` | unchanged argument shape; provenance lands as `origin` entries |
 | Fact ingest `derived_from` (#156) | unchanged shape; the API introduced there is the origin path |
 
 ## Flavor Migration (In-Tree)
 
 | Old relation | Becomes |
 |---|---|
-| `proxima-code/calls` + `EdgeCallsV1` sidecar | call sites move into the caller chunk's payload (callee ref + site); `reference` entries derived at ingest |
-| `code/targets-execution-request` | the execution-plan Perspective's payload references the request Fact |
+| `proxima-code/calls` + `EdgeCallsV1` sidecar | call sites moved into the caller chunk's payload (`CodeChunkV1.calls`: one `CodeCallV1` per callee, its `sites` carrying the multiplicity); one `reference` entry per callee, derived at ingest |
+| `code/targets-execution-request` | a **new node**: the `proxima-code/work-assignment-v1` Perspective, whose payload references the worker Perspective and the request Fact. The node-home test at work — the in-tree "execution plan" is an Abstraction and the assignment target is a worker Perspective, so neither existing endpoint owned the targeting claim, and a Fact asserts no judgment so the request could not be the source. Missing a node, not a kind. |
 | `code/has-acceptance-criteria` | the acceptance-criteria Fact's payload references the request Fact |
 | `commit→parent`, `chunk→file_revision` (SourceIngest) | already payload-borne; ingest writes `reference` entries instead of relation rows |
 | `core/derived-from` | `origin` |
-| `core/supersedes` | `superseded_by` pointer |
-| `core/authored` | author column on the memory row |
-| `core/inspires`, `core/wake-motivated-by` | references declared by the creating node/row of the goal–self machinery (the root Perspective knows its inspiring Goal; the wake record knows its motivating Fact) |
-| `core/depends-on` | goal/memory references declared on the depending row |
-| `core/agent-link-refers-to` + `AgentLinkV1` | interpretation Perspective with `reason`/`confidence` as payload |
+| `core/supersedes` | `supersedes` / `superseded_by` pointers on the row |
+| `core/authored` | `memories.authoring_perspective_id` |
+| `core/inspires`, `core/wake-motivated-by` | `goals.assignment_perspective_id` and `goals.evidence_memory_ids` — the Goal row knows the Perspective it inspires and the evidence it rests on |
+| `core/depends-on` | `goals.dependency_goal_ids`; on the memory side, `depends_on_memory_ids` on the depending request payload |
+| `core/agent-link-refers-to` + `AgentLinkV1` | the `core/interpretation-v1` Perspective (`proxima_core.interpretation_v1`): the reason became the claim, the confidence stayed, and the two endpoints became subject references |
 
 ## Storage Migration
 
-A v0.0.8 lane in `MIGRATING.md`, in the spirit of the
-v0.0.4 reset: the edges table is replaced, not evolved.
+Two lanes, both resets, in the spirit of the v0.0.4 reset: the edges
+table is replaced, not evolved, and nothing carries over. The choice
+between a transform and a reset was made in favour of the reset —
+mechanically transforming rows would have been the more elaborate way to
+arrive at data the substrate can regenerate from what the nodes already
+say, which is exactly what rebuildability means.
 
-- `origin` and supersession rows carry over mechanically (lossless:
-  Provenance edges → `origin`; Supersession edges → pointers;
-  agent-link edges + sidecars → interpretation Perspectives).
-- Structural rows are re-derived by re-ingest; the code flavor already
-  has a re-index runbook.
-- Edge sidecar tables are dropped after their content lands in node
-  payloads.
-- `MIN_CORE_MIGRATION_VERSION` bumps; no `PROXIMA_SKIP_MIGRATIONS`
-  path across this lane.
+**Core lane — `0015_v008.sql`.** Drops `proxima_core.edges`, its
+`agent_link_v1` sidecar and the `relation_class` / `edge_authorship_kind`
+enums; creates the two-kind `edge_kind` enum, the five-label endpoint
+enum (including `FactEntityHead`), the new `edges` table with its
+structural primary key, the layering / owner / self-loop CHECKs and the
+existence trigger; adds `superseded_by` to memories and goals,
+`authoring_perspective_id` to memories, and
+`assignment_perspective_id` / `dependency_goal_ids` / `evidence_memory_ids`
+to goals; widens the citation constraint to Fact ∪ Abstraction; creates
+`proxima_core.interpretation_v1`; and reshapes `change_event` to carry
+the whole edge rather than a handle to it.
+`MIN_CORE_MIGRATION_VERSION` bumps to **15**, so a database one lane
+behind the binary fails at boot rather than at first query.
 
-Exact migration mechanics (transform order, whether the lane offers an
-in-place transform or requires the reset) are decided in the
-implementing PR, not here.
+**Flavor lane — `20260801000020_v008_baseline.sql`.** `DROP SCHEMA
+proxima_code CASCADE` plus a folded schema; the five superseded lanes are
+deleted from the tree. This one is not a preference: the old baseline
+created `proxima_code.code_calls_v1` with a foreign key to
+`proxima_core.edges(edge_id)`, and 0015 removed that column along with the
+identity it stood for, so the old lane can no longer run at all — not on a
+fresh database and not on an old one.
+
+The way back is **re-register and re-index**, which the code flavor
+already ships a runbook for (`proxima-code_erase_repo`, then
+`proxima-code_register_repo` and `proxima-code_ingest_head_snapshot`).
+Origin rows come back the moment a node write declares what it was made
+from; reference rows come back with re-ingest. Operational steps are in
+`MIGRATING.md`.
 
 ## Kernel Invariants
 
-The Lean kernel's edge obligations shrink to:
+The runtime enforces all of these today (CHECKs, a trigger, and the
+write paths that are the only producers of rows). Restating them in the
+Lean kernel is the remaining work; there, the edge obligations shrink
+to:
 
 - **E1 Existence** — both endpoints exist.
 - **E2 Ownership** — `edge.owner = source.owner`.
