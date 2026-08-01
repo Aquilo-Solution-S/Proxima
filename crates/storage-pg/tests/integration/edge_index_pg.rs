@@ -262,6 +262,82 @@ async fn an_interpretation_writes_references_derivable_from_its_payload()
     result
 }
 
+/// A subject kind the payload type cannot represent is refused by the
+/// DATABASE, not merely by the Rust enum in front of it.
+///
+/// `subject_kinds` was `text[]` until v0.0.8, so any string at all was a
+/// legal column value and only the loader's hand-rolled parser stood between
+/// a typo and a wrong endpoint kind. As
+/// `proxima_core.interpretation_subject_kind[]` the widening is unrepresentable
+/// — including `Goal`, which is a real `entity_kind` label and exactly the
+/// value reusing that enum would have admitted. Without this test the column
+/// type would be an assertion nothing checks.
+#[tokio::test]
+async fn the_database_refuses_a_subject_kind_the_payload_cannot_represent()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (pg, db_name) = fresh_pg().await;
+    let result = async {
+        // First: the COLUMN is the enum. Without this the refusals below
+        // would pass against a `text[]` column too, since an explicit cast
+        // to the enum type would do the rejecting instead of the row.
+        let udt: String = sqlx::query_scalar(
+            "SELECT udt_name FROM information_schema.columns
+              WHERE table_schema = 'proxima_core'
+                AND table_name = 'interpretation_v1'
+                AND column_name = 'subject_kinds'",
+        )
+        .fetch_one(pg.pool_for_tests())
+        .await?;
+        assert_eq!(
+            udt, "_interpretation_subject_kind",
+            "subject_kinds must be an array of the enum, not text[]"
+        );
+
+        // Then: a label outside the vocabulary is refused ON THE WAY INTO
+        // THE COLUMN, with the literal deliberately uncast so the column's
+        // own type does the rejecting.
+        //
+        // Every row here is otherwise fully valid — the memory is really
+        // seeded, so the FK, the PK and both CHECKs are satisfied. That is
+        // what makes this discriminating: against a `text[]` column these
+        // inserts would SUCCEED. (Without the seed they would fail on the
+        // foreign key, 23503, and the test would pass for the wrong reason.)
+        let owner = fresh_owner();
+        for bogus in ["Goal", "fact", "Bogus"] {
+            let subject = seed_memory(&pg, &owner, EntityKind::Fact, "subject").await?;
+            // The label is a BOUND parameter, so the statement stays static
+            // and carries no cast: sqlx sends it as `text`, and the column's
+            // own type is what refuses the assignment.
+            let err = sqlx::query(
+                "INSERT INTO proxima_core.interpretation_v1
+                    (memory_id, claim, confidence, subject_memory_ids, subject_kinds,
+                     model_id, client_name, client_version)
+                 VALUES ($1, 'c', 50, ARRAY[$1::uuid], ARRAY[$2], 'm', 'c', '1')",
+            )
+            .bind(subject.into_inner())
+            .bind(bogus)
+            .execute(pg.pool_for_tests())
+            .await
+            .expect_err("the column must refuse a label outside the vocabulary");
+
+            let db_err = err.as_database_error().expect("a database error");
+            let code = db_err.code().unwrap_or_default().to_string();
+            // 42804 (datatype_mismatch) when Postgres types the literal
+            // array as text[], 22P02 (invalid_text_representation) when it
+            // coerces per-element. Both are the enum refusing the label;
+            // neither is reachable with a text[] column.
+            assert!(
+                code == "42804" || code == "22P02",
+                "expected the enum to refuse {bogus}, got {db_err:?}"
+            );
+        }
+        Ok::<_, Box<dyn std::error::Error>>(())
+    }
+    .await;
+    drop_db(&db_name).await.ok();
+    result
+}
+
 /// A Fact declaring what it was read from lands its origin row inside its own
 /// ingest transaction — and a receipt replay re-asserts the same key rather
 /// than minting a second row. That is what #156's id scheme and its partial
@@ -393,7 +469,7 @@ async fn the_index_is_rebuildable_from_node_content() -> Result<(), Box<dyn std:
             "INSERT INTO proxima_core.edges
                 (source_kind, source_id, target_kind, target_id, kind, owner_kind, owner_id)
              SELECT 'Perspective', i.memory_id,
-                    subject.kind::proxima_core.edge_endpoint_kind, subject.memory_id,
+                    subject.kind::text::proxima_core.edge_endpoint_kind, subject.memory_id,
                     'reference', m.owner_kind, m.owner_id
                FROM proxima_core.interpretation_v1 i
                JOIN proxima_core.memories m ON m.memory_id = i.memory_id

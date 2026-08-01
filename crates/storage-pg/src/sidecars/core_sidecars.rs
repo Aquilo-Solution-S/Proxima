@@ -168,31 +168,10 @@ struct InterpretationPayloadRow {
     claim: String,
     confidence: i16,
     subject_memory_ids: Vec<uuid::Uuid>,
-    subject_kinds: Vec<String>,
+    subject_kinds: Vec<proxima_core::InterpretationSubjectKind>,
     model_id: String,
     client_name: String,
     client_version: String,
-}
-
-fn interpretation_subject_kind_str(kind: proxima_core::InterpretationSubjectKind) -> &'static str {
-    match kind {
-        proxima_core::InterpretationSubjectKind::Fact => "Fact",
-        proxima_core::InterpretationSubjectKind::Abstraction => "Abstraction",
-        proxima_core::InterpretationSubjectKind::Perspective => "Perspective",
-    }
-}
-
-fn parse_interpretation_subject_kind(
-    value: &str,
-) -> Result<proxima_core::InterpretationSubjectKind, StorageError> {
-    match value {
-        "Fact" => Ok(proxima_core::InterpretationSubjectKind::Fact),
-        "Abstraction" => Ok(proxima_core::InterpretationSubjectKind::Abstraction),
-        "Perspective" => Ok(proxima_core::InterpretationSubjectKind::Perspective),
-        other => Err(StorageError::Internal(format!(
-            "invalid interpretation subject kind {other}"
-        ))),
-    }
 }
 
 impl PgMemorySidecar for proxima_core::InterpretationV1 {
@@ -212,13 +191,7 @@ impl PgMemorySidecar for proxima_core::InterpretationV1 {
             .bind(&self.claim)
             .bind(i16::from(self.confidence))
             .bind(&self.subject_memory_ids)
-            .bind(
-                self.subject_kinds
-                    .iter()
-                    .copied()
-                    .map(interpretation_subject_kind_str)
-                    .collect::<Vec<_>>(),
-            )
+            .bind(&self.subject_kinds)
             .bind(&self.model_id)
             .bind(&self.client_name)
             .bind(&self.client_version)
@@ -254,18 +227,13 @@ impl PgMemoryPayload for proxima_core::InterpretationV1 {
                             row.confidence, row.memory_id
                         ))
                     })?;
-                    let subject_kinds = row
-                        .subject_kinds
-                        .iter()
-                        .map(|kind| parse_interpretation_subject_kind(kind))
-                        .collect::<Result<Vec<_>, _>>()?;
                     Ok((
                         MemoryId::new(row.memory_id),
                         SidecarPayload::perspective(proxima_core::InterpretationV1 {
                             claim: row.claim,
                             confidence,
                             subject_memory_ids: row.subject_memory_ids,
-                            subject_kinds,
+                            subject_kinds: row.subject_kinds,
                             model_id: row.model_id,
                             client_name: row.client_name,
                             client_version: row.client_version,

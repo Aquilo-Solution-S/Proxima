@@ -34,7 +34,13 @@ pub struct InterpretationV1 {
 /// Memory layer of an interpretation subject. A Perspective may
 /// interpret any layer — the layering rule is satisfied because the
 /// Perspective, not the subject, is the source.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+///
+/// Closed here and closed in the database: the discriminators match the
+/// SQL enum `proxima_core.interpretation_subject_kind`, so the column
+/// cannot hold a value this type is unable to represent. It is
+/// deliberately not [`EntityKind`], which carries `Goal`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, sqlx::Type)]
+#[sqlx(type_name = "proxima_core.interpretation_subject_kind")]
 pub enum InterpretationSubjectKind {
     Fact,
     Abstraction,

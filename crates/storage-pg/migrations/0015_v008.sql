@@ -362,12 +362,27 @@ COMMENT ON COLUMN proxima_core.memories.citation_mapping_id IS
 -- connect an interpretation to what it interprets are re-derivable from this
 -- row alone.
 -- ---------------------------------------------------------------------------
+
+-- A subject kind is a closed vocabulary, so it is an enum and not text. It is
+-- deliberately NOT entity_kind: that enum carries 'Goal', and a Goal is not a
+-- memory and cannot be an interpretation subject on this payload. Reusing it
+-- would let the column hold a value `InterpretationSubjectKind` cannot
+-- represent, which is the widening this type exists to refuse.
+CREATE TYPE proxima_core.interpretation_subject_kind AS ENUM (
+    'Fact',
+    'Abstraction',
+    'Perspective'
+);
+
+COMMENT ON TYPE proxima_core.interpretation_subject_kind IS
+  'Memory layer of an interpretation subject. F/A/P only — a Goal is not a memory and cannot be a subject here. A Perspective may interpret any layer: the layering rule is satisfied because the Perspective, not the subject, is the edge source.';
+
 CREATE TABLE proxima_core.interpretation_v1 (
     memory_id uuid NOT NULL,
     claim text NOT NULL,
     confidence smallint NOT NULL,
     subject_memory_ids uuid[] NOT NULL,
-    subject_kinds text[] NOT NULL,
+    subject_kinds proxima_core.interpretation_subject_kind[] NOT NULL,
     model_id text NOT NULL,
     client_name text NOT NULL,
     client_version text NOT NULL,
