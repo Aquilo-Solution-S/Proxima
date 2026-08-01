@@ -183,6 +183,7 @@ fn fresh_draft(_owner: Owner) -> FactWriteCommand {
                 schema_version: SchemaVersion::new(1),
             },
         }),
+        derived_from: Vec::new(),
     }
 }
 
@@ -191,61 +192,69 @@ async fn insert_test_edge(
     owner: &Owner,
     source: Uuid,
     target: Uuid,
+    kind: &str,
     created_offset_seconds: i64,
-) -> Result<Uuid, Box<dyn std::error::Error>> {
-    let edge_id = Uuid::now_v7();
+) -> Result<(), Box<dyn std::error::Error>> {
     let (owner_kind, owner_id) = proxima_storage_pg::access::owner_columns::owner_binds(owner);
     sqlx::query(
         "INSERT INTO proxima_core.edges
-           (edge_id, owner_kind, owner_id, relation, relation_class,
-            source_kind, source_memory_id, source_goal_id,
-            target_kind, target_memory_id, target_goal_id,
-            authorship_kind, authorship_owner_memory_id, created_at)
+           (source_kind, source_id, target_kind, target_id, kind,
+            owner_kind, owner_id, created_at)
          VALUES
-           ($1, $2, $3, 'test/structural', 'Structural',
-            'Fact', $4, NULL,
-            'Fact', $5, NULL,
-            'SourceIngest', NULL,
+           ('Fact', $3, 'Fact', $4, $5::proxima_core.edge_kind, $1, $2,
             now() + ($6 * interval '1 second'))",
     )
-    .bind(edge_id)
     .bind(owner_kind)
     .bind(owner_id)
     .bind(source)
     .bind(target)
+    .bind(kind)
     .bind(created_offset_seconds)
     .execute(pg.pool_for_tests())
     .await?;
-    Ok(edge_id)
+    Ok(())
 }
 
-async fn insert_n_test_edges_bulk(
+/// Fan `count` distinct targets out of one source.
+///
+/// Multiplicity collapsed with the redesign — ten pointers from A to B are one
+/// row — so a large edge set now needs a large node set, which is what this
+/// builds. The memory rows are raw inserts: the point is the edge cap, not the
+/// ingest path.
+/// Mint `nodes` Facts under one owner and wire `edges` distinct pairs between
+/// them.
+///
+/// The fan has to be spread over many nodes now: the key IS the row, so one
+/// pair of endpoints admits one row per kind and no more. A cap test therefore
+/// needs a wide graph rather than a deep pile on a single pair.
+async fn insert_dense_edge_graph(
     pg: &PgStorage,
     owner: &Owner,
-    source: Uuid,
-    target: Uuid,
-    count: usize,
+    nodes: i64,
+    edges: i64,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let edge_ids: Vec<Uuid> = (0..count).map(|_| Uuid::now_v7()).collect();
     let (owner_kind, owner_id) = proxima_storage_pg::access::owner_columns::owner_binds(owner);
     sqlx::query(
-        "INSERT INTO proxima_core.edges
-           (edge_id, owner_kind, owner_id, relation, relation_class,
-            source_kind, source_memory_id, source_goal_id,
-            target_kind, target_memory_id, target_goal_id,
-            authorship_kind, authorship_owner_memory_id, created_at)
-         SELECT ids.edge_id, $3, $4, 'test/structural', 'Structural',
-                'Fact', $1, NULL,
-                'Fact', $2, NULL,
-                'SourceIngest', NULL,
-                now() + (ids.ord * interval '1 microsecond')
-         FROM unnest($5::uuid[]) WITH ORDINALITY AS ids(edge_id, ord)",
+        "WITH minted AS (
+             INSERT INTO proxima_core.memories
+                 (memory_id, owner_kind, owner_id, schema_id, schema_version, text)
+             SELECT gen_random_uuid(), $1, $2, 'test/snapshot-node', 1, 'node ' || g
+               FROM generate_series(1, $3) AS g
+             RETURNING memory_id
+         ), numbered AS (
+             SELECT memory_id, row_number() OVER (ORDER BY memory_id) AS n FROM minted
+         )
+         INSERT INTO proxima_core.edges
+             (source_kind, source_id, target_kind, target_id, kind, owner_kind, owner_id)
+         SELECT 'Fact', s.memory_id, 'Fact', t.memory_id, 'reference', $1, $2
+           FROM numbered s
+           JOIN numbered t ON s.n <> t.n
+          LIMIT $4",
     )
-    .bind(source)
-    .bind(target)
     .bind(owner_kind)
     .bind(owner_id)
-    .bind(edge_ids)
+    .bind(nodes)
+    .bind(edges)
     .execute(pg.pool_for_tests())
     .await?;
     Ok(())
@@ -444,9 +453,35 @@ async fn query_returns_all_edges_between_returned_nodes_even_when_edge_count_exc
             .await?
             .memory_id;
 
-        let e1 = insert_test_edge(&pg, &owner, first.into_inner(), second.into_inner(), 1).await?;
-        let e2 = insert_test_edge(&pg, &owner, first.into_inner(), second.into_inner(), 2).await?;
-        let e3 = insert_test_edge(&pg, &owner, first.into_inner(), second.into_inner(), 3).await?;
+        // One pair, both kinds: multiplicity collapsed, so the only way two
+        // rows connect the same two nodes is that they say different things.
+        insert_test_edge(
+            &pg,
+            &owner,
+            first.into_inner(),
+            second.into_inner(),
+            "origin",
+            1,
+        )
+        .await?;
+        insert_test_edge(
+            &pg,
+            &owner,
+            first.into_inner(),
+            second.into_inner(),
+            "reference",
+            2,
+        )
+        .await?;
+        insert_test_edge(
+            &pg,
+            &owner,
+            second.into_inner(),
+            first.into_inner(),
+            "reference",
+            3,
+        )
+        .await?;
 
         let mut req = QueryRequest::for_owner(owner);
         req.limit = 2;
@@ -461,12 +496,11 @@ async fn query_returns_all_edges_between_returned_nodes_even_when_edge_count_exc
             .await?;
 
         assert_eq!(resp.memories.len(), 2);
-        let edge_ids = resp
-            .edges
-            .iter()
-            .map(|edge| edge.id)
-            .collect::<std::collections::BTreeSet<_>>();
-        assert_eq!(edge_ids, std::collections::BTreeSet::from([e1, e2, e3]));
+        assert_eq!(
+            resp.edges.len(),
+            3,
+            "every edge between the returned nodes comes back, node limit or not"
+        );
         Ok(())
     }
     .await;
@@ -540,10 +574,24 @@ async fn query_excludes_edges_with_endpoint_outside_returned_node_window() {
         set_memory_created_offset(&pg, inside_a.into_inner(), 2).await?;
         set_memory_created_offset(&pg, inside_b.into_inner(), 3).await?;
 
-        let visible_edge =
-            insert_test_edge(&pg, &owner, inside_a.into_inner(), inside_b.into_inner(), 1).await?;
-        let hidden_edge =
-            insert_test_edge(&pg, &owner, outside.into_inner(), inside_b.into_inner(), 2).await?;
+        insert_test_edge(
+            &pg,
+            &owner,
+            inside_a.into_inner(),
+            inside_b.into_inner(),
+            "reference",
+            1,
+        )
+        .await?;
+        insert_test_edge(
+            &pg,
+            &owner,
+            outside.into_inner(),
+            inside_b.into_inner(),
+            "reference",
+            2,
+        )
+        .await?;
 
         let mut req = QueryRequest::for_owner(owner);
         req.limit = 2;
@@ -558,87 +606,19 @@ async fn query_excludes_edges_with_endpoint_outside_returned_node_window() {
             .await?;
 
         assert_eq!(resp.memories.len(), 2);
-        let edge_ids = resp
+        let sources = resp
             .edges
             .iter()
-            .map(|edge| edge.id)
-            .collect::<std::collections::BTreeSet<_>>();
-        assert_eq!(edge_ids, std::collections::BTreeSet::from([visible_edge]));
-        assert!(!edge_ids.contains(&hidden_edge));
+            .map(|edge| edge.source.entity)
+            .collect::<Vec<_>>();
+        assert_eq!(sources, vec![proxima_core::EntityRef::Memory(inside_a)]);
+        assert!(!sources.contains(&proxima_core::EntityRef::Memory(outside)));
         Ok(())
     }
     .await;
 
     let _ = drop_db(&db_name).await;
     result.expect("query_excludes_edges_with_endpoint_outside_returned_node_window failed");
-}
-
-#[tokio::test]
-async fn query_edge_id_hydration_returns_requested_edge_without_visible_nodes() {
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    create_db(&db_name).await.expect("PG required for tests");
-    let url = db_url(&db_name);
-
-    let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&url).await?;
-        pg.run_migrations().await?;
-        let storage = Arc::new(pg.clone()).storage_ports();
-
-        let user = UserId::new(Uuid::now_v7());
-        let owner = OwnerRef::Personal(user);
-        let registry = FlavorRegistryFrozen::with_schemas(schemas_for_test());
-        let engine = Engine::new(registry).with_storage_ports(storage);
-
-        let a = engine
-            .fact_ingest(
-                &proxima_core::AuthzContext::single_owner(
-                    &owner,
-                    proxima_core::AuthPath::HostBearer,
-                ),
-                fresh_draft(owner),
-            )
-            .await?
-            .memory_id;
-        let b = engine
-            .fact_ingest(
-                &proxima_core::AuthzContext::single_owner(
-                    &owner,
-                    proxima_core::AuthPath::HostBearer,
-                ),
-                {
-                    let mut draft = fresh_draft(owner);
-                    draft.payload = b"target".to_vec();
-                    draft.receipt.as_mut().expect("receipt").source_batch_id =
-                        SourceBatchId::new(Uuid::now_v7());
-                    draft
-                },
-            )
-            .await?
-            .memory_id;
-        let edge_id = insert_test_edge(&pg, &owner, a.into_inner(), b.into_inner(), 1).await?;
-
-        let mut req = QueryRequest::for_owner(owner);
-        req.limit = 1;
-        req.edge_ids = vec![edge_id];
-        let resp = engine
-            .query(
-                &proxima_core::AuthzContext::single_owner(
-                    &owner,
-                    proxima_core::AuthPath::HostBearer,
-                ),
-                &req,
-            )
-            .await?;
-
-        assert!(resp.memories.is_empty());
-        assert_eq!(resp.edges.len(), 1);
-        assert_eq!(resp.edges[0].id, edge_id);
-        Ok(())
-    }
-    .await;
-
-    let _ = drop_db(&db_name).await;
-    result.expect("query_edge_id_hydration_returns_requested_edge_without_visible_nodes failed");
 }
 
 #[tokio::test]
@@ -657,38 +637,15 @@ async fn query_caps_snapshot_edges_at_max_snapshot_edges() {
         let registry = FlavorRegistryFrozen::with_schemas(schemas_for_test());
         let engine = Engine::new(registry).with_storage_ports(storage);
 
-        let a = engine
-            .fact_ingest(
-                &proxima_core::AuthzContext::single_owner(
-                    &owner,
-                    proxima_core::AuthPath::HostBearer,
-                ),
-                fresh_draft(owner),
-            )
-            .await?
-            .memory_id;
-        let b = engine
-            .fact_ingest(
-                &proxima_core::AuthzContext::single_owner(
-                    &owner,
-                    proxima_core::AuthPath::HostBearer,
-                ),
-                {
-                    let mut draft = fresh_draft(owner);
-                    draft.payload = b"second".to_vec();
-                    draft.receipt.as_mut().expect("receipt").source_batch_id =
-                        SourceBatchId::new(Uuid::now_v7());
-                    draft
-                },
-            )
-            .await?
-            .memory_id;
-
-        let total = proxima_storage_pg::query::MAX_SNAPSHOT_EDGES + 1;
-        insert_n_test_edges_bulk(&pg, &owner, a.into_inner(), b.into_inner(), total).await?;
+        let nodes = 320;
+        let total = i64::try_from(proxima_storage_pg::query::MAX_SNAPSHOT_EDGES + 1)?;
+        insert_dense_edge_graph(&pg, &owner, nodes, total).await?;
 
         let mut req = QueryRequest::for_owner(owner);
-        req.limit = 2;
+        // The whole graph is inside the node window, so the only thing that
+        // can bound the edge list is the snapshot cap itself.
+        req.limit = u32::try_from(nodes)? + 8;
+        req.include_payloads = false;
         let resp = engine
             .query(
                 &proxima_core::AuthzContext::single_owner(
@@ -699,7 +656,7 @@ async fn query_caps_snapshot_edges_at_max_snapshot_edges() {
             )
             .await?;
 
-        assert_eq!(resp.memories.len(), 2);
+        assert_eq!(resp.memories.len(), usize::try_from(nodes)?);
         assert_eq!(
             resp.edges.len(),
             proxima_storage_pg::query::MAX_SNAPSHOT_EDGES
@@ -806,7 +763,6 @@ async fn query_filter_abstraction_returns_empty() {
             include_payloads: true,
             memory_ids: Vec::new(),
             goal_ids: Vec::new(),
-            edge_ids: Vec::new(),
             stateful_heads: Vec::new(),
         };
         let resp = engine
@@ -877,7 +833,6 @@ async fn query_heads_only_ignores_cross_owner_supersedes_successor() {
             include_payloads: false,
             memory_ids: Vec::new(),
             goal_ids: Vec::new(),
-            edge_ids: Vec::new(),
             stateful_heads: Vec::new(),
         };
         let resp = engine
@@ -965,7 +920,6 @@ async fn query_goals_filter_by_schema_id() {
             include_payloads: true,
             memory_ids: Vec::new(),
             goal_ids: Vec::new(),
-            edge_ids: Vec::new(),
             stateful_heads: Vec::new(),
         };
         let resp = engine.query(&authz, &req_fact_filter).await?;
@@ -989,7 +943,6 @@ async fn query_goals_filter_by_schema_id() {
             include_payloads: true,
             memory_ids: Vec::new(),
             goal_ids: Vec::new(),
-            edge_ids: Vec::new(),
             stateful_heads: Vec::new(),
         };
         let resp = engine.query(&authz, &req_goal_filter).await?;
@@ -1009,7 +962,6 @@ async fn query_goals_filter_by_schema_id() {
             include_payloads: true,
             memory_ids: Vec::new(),
             goal_ids: Vec::new(),
-            edge_ids: Vec::new(),
             stateful_heads: Vec::new(),
         };
         let resp = engine.query(&authz, &req_unknown).await?;
@@ -1119,7 +1071,6 @@ async fn query_filter_nonexistent_schema_returns_empty() {
             include_payloads: true,
             memory_ids: Vec::new(),
             goal_ids: Vec::new(),
-            edge_ids: Vec::new(),
             stateful_heads: Vec::new(),
         };
         let resp = engine

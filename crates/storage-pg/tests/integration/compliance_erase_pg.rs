@@ -112,6 +112,7 @@ fn receipt_draft(source_id: &str, batch: Uuid, payload: &[u8]) -> FactWriteComma
             occurred_at: now,
         }),
         citation: None,
+        derived_from: Vec::new(),
     }
 }
 
@@ -229,7 +230,6 @@ struct SharedFactEntityFixture {
     erased_memory: Uuid,
     kept_memory: Uuid,
     fact_entity: Uuid,
-    edge: Uuid,
 }
 
 async fn seed_shared_fact_entity_fixture(
@@ -268,20 +268,14 @@ async fn seed_shared_fact_entity_fixture(
     .bind(kept.memory_id.into_inner())
     .execute(pg.pool_for_tests())
     .await?;
-    let edge_id = Uuid::now_v7();
+    // A Fact-entity head as the SOURCE address: the edge follows the head, so
+    // it must survive an erase that takes the observation the head used to
+    // point at.
     sqlx::query(
         "INSERT INTO proxima_core.edges(
-            edge_id, owner_kind, owner_id, relation, relation_class,
-            source_kind, source_memory_id, source_goal_id, source_fact_entity_id,
-            target_kind, target_memory_id, target_goal_id, target_fact_entity_id,
-            authorship_kind, authorship_owner_memory_id)
-         VALUES ($1, $2, $3, 'test/compliance/shared-entity-source',
-                 'Structural'::proxima_core.relation_class,
-                 'Fact'::proxima_core.entity_kind, NULL, NULL, $4,
-                 'Fact'::proxima_core.entity_kind, $5, NULL, NULL,
-                 'Engine'::proxima_core.edge_authorship_kind, NULL)",
+            source_kind, source_id, target_kind, target_id, kind, owner_kind, owner_id)
+         VALUES ('FactEntityHead', $3, 'Fact', $4, 'reference', $1, $2)",
     )
-    .bind(edge_id)
     .bind(owner_kind)
     .bind(owner_id)
     .bind(fact_entity_id)
@@ -292,7 +286,6 @@ async fn seed_shared_fact_entity_fixture(
         erased_memory: erased.memory_id.into_inner(),
         kept_memory: kept.memory_id.into_inner(),
         fact_entity: fact_entity_id,
-        edge: edge_id,
     })
 }
 
@@ -323,9 +316,8 @@ async fn assert_shared_fact_entity_survives_source_scope_erase(
     let edge_rows: i64 = sqlx::query_scalar(
         "SELECT count(*)::bigint
            FROM proxima_core.edges
-          WHERE edge_id = $1 AND source_fact_entity_id = $2",
+          WHERE source_kind = 'FactEntityHead' AND source_id = $1",
     )
-    .bind(fixture.edge)
     .bind(fixture.fact_entity)
     .fetch_one(pg.pool_for_tests())
     .await?;

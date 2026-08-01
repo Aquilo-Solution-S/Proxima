@@ -18,9 +18,8 @@ pub use proxima_core::test_fixtures::owner_fixture;
 use proxima_core::verbs::fact_ingest::{FactReceiptDraft, FactWriteCommand};
 use proxima_core::verbs::schema::FlavorRegistryFrozen;
 use proxima_core::{
-    AccessKind, AuthPath, AuthzContext, EdgeId, Engine, EntityKind, FlavorRegistry, MemoryId,
-    Owner, OwnerRef, OwnerRefKind, RelationClass, Role, SchemaId, SchemaVersion, SourceBatchId,
-    SourceId, UserId,
+    AccessKind, AuthPath, AuthzContext, EdgeKind, Engine, EntityKind, FlavorRegistry, MemoryId,
+    Owner, OwnerRef, OwnerRefKind, Role, SchemaId, SchemaVersion, SourceBatchId, SourceId, UserId,
 };
 #[allow(unused_imports)]
 pub use proxima_pg_testkit::{
@@ -178,6 +177,7 @@ pub async fn seed_memory(
                 occurred_at: now,
             }),
             citation: None,
+            derived_from: Vec::new(),
         };
         let permit = owner_write_permit(owner, AccessKind::Fact).await?;
         let outcome = pg.ingest_fact_atomic(&permit, &draft, None).await?;
@@ -209,37 +209,55 @@ pub async fn seed_memory(
     Ok(MemoryId::new(memory_id))
 }
 
+/// Seed one index row between two memories, straight into the table.
+///
+/// Production code never writes an edge as a free-standing act, so there is
+/// no verb for this and there should not be one: the fixture exists to stand
+/// up read-path graphs without also standing up the node writes that would
+/// have produced them. `kind` is a fixture parameter for the same reason —
+/// the tests need both kinds present, and no production caller may choose.
 pub async fn seed_memory_edge(
     pg: &PgStorage,
     owner: &Owner,
     source: (EntityKind, MemoryId),
     target: (EntityKind, MemoryId),
-    relation: &str,
-    relation_class: RelationClass,
-) -> Result<EdgeId, sqlx::Error> {
-    let edge_id = Uuid::now_v7();
+    kind: EdgeKind,
+) -> Result<(), sqlx::Error> {
     let (owner_kind, owner_id) = proxima_storage_pg::access::owner_columns::owner_binds(owner);
     let (source_kind, source_memory_id) = source;
     let (target_kind, target_memory_id) = target;
     sqlx::query(
         "INSERT INTO proxima_core.edges
-            (edge_id, owner_kind, owner_id, relation, relation_class,
-             source_kind, source_memory_id, source_goal_id,
-             target_kind, target_memory_id, target_goal_id,
-             authorship_kind, authorship_owner_memory_id)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, NULL, $8, $9, NULL,
-                 'Engine', NULL)",
+            (source_kind, source_id, target_kind, target_id, kind, owner_kind, owner_id)
+         VALUES ($1::text::proxima_core.edge_endpoint_kind, $2,
+                 $3::text::proxima_core.edge_endpoint_kind, $4,
+                 $5::text::proxima_core.edge_kind, $6, $7)
+         ON CONFLICT DO NOTHING",
     )
-    .bind(edge_id)
+    .bind(source_kind.as_str())
+    .bind(source_memory_id.into_inner())
+    .bind(target_kind.as_str())
+    .bind(target_memory_id.into_inner())
+    .bind(kind.as_str())
     .bind(owner_kind)
     .bind(owner_id)
-    .bind(relation)
-    .bind(relation_class)
-    .bind(source_kind)
-    .bind(source_memory_id.into_inner())
-    .bind(target_kind)
-    .bind(target_memory_id.into_inner())
     .execute(pg.pool_for_tests())
     .await?;
-    Ok(EdgeId::new(edge_id))
+    Ok(())
+}
+
+/// Count index rows between two memories, in either kind.
+pub async fn count_memory_edges(
+    pg: &PgStorage,
+    source: MemoryId,
+    target: MemoryId,
+) -> Result<i64, sqlx::Error> {
+    sqlx::query_scalar(
+        "SELECT count(*)::bigint FROM proxima_core.edges
+          WHERE source_id = $1 AND target_id = $2",
+    )
+    .bind(source.into_inner())
+    .bind(target.into_inner())
+    .fetch_one(pg.pool_for_tests())
+    .await
 }

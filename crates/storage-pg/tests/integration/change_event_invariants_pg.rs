@@ -54,8 +54,8 @@ async fn check_rejects_undecodable_change_event_rows() {
             "INSERT INTO proxima_core.change_event
                 (seq, owner_kind, owner_id,
                  kind, entity_kind, entity_memory_id, entity_schema_id,
-                 entity_schema_version, edge_source_memory_id)
-             VALUES ($1, $2, $3, 'EntityAppend', 'Fact', $4, 'proxima/test', 1, $5)",
+                 entity_schema_version, edge_source_kind, edge_source_id)
+             VALUES ($1, $2, $3, 'EntityAppend', 'Fact', $4, 'proxima/test', 1, 'Fact', $5)",
         )
         .bind(Uuid::now_v7())
         .bind(owner_kind)
@@ -83,26 +83,39 @@ async fn check_rejects_undecodable_change_event_rows() {
         .expect_err("EntityAppend without schema columns must be rejected");
         assert!(err.to_string().contains("change_event_endpoint_chk"));
 
-        // 4. EdgeAppend with both source endpoints set -> edge XOR violated.
-        // edge_source_goal_id has no FK on change_event, so a synthetic id
-        // reaches the CHECK rather than tripping referential integrity first.
+        // 4. EdgeAppend missing half its edge -> undecodable. An edge event
+        // carries the whole edge now, so "half an endpoint" is the shape the
+        // CHECK has to refuse.
         let err = sqlx::query(
             "INSERT INTO proxima_core.change_event
                 (seq, owner_kind, owner_id,
-                 kind, edge_id, edge_relation,
-                 edge_source_memory_id, edge_source_goal_id, edge_target_memory_id)
-             VALUES ($1, $2, $3, 'EdgeAppend', $4, 'test/relation', $5, $6, $7)",
+                 kind, edge_kind, edge_source_kind, edge_source_id, edge_target_kind)
+             VALUES ($1, $2, $3, 'EdgeAppend', 'origin', 'Abstraction', $4, 'Fact')",
+        )
+        .bind(Uuid::now_v7())
+        .bind(owner_kind)
+        .bind(owner_id)
+        .bind(Uuid::now_v7())
+        .execute(pg.pool_for_tests())
+        .await
+        .expect_err("EdgeAppend without a target id must be rejected");
+        assert!(err.to_string().contains("change_event_endpoint_chk"));
+
+        // 5. EdgeAppend without a kind -> the row cannot say what it is.
+        let err = sqlx::query(
+            "INSERT INTO proxima_core.change_event
+                (seq, owner_kind, owner_id,
+                 kind, edge_source_kind, edge_source_id, edge_target_kind, edge_target_id)
+             VALUES ($1, $2, $3, 'EdgeAppend', 'Abstraction', $4, 'Fact', $5)",
         )
         .bind(Uuid::now_v7())
         .bind(owner_kind)
         .bind(owner_id)
         .bind(Uuid::now_v7())
         .bind(Uuid::now_v7())
-        .bind(Uuid::now_v7())
-        .bind(Uuid::now_v7())
         .execute(pg.pool_for_tests())
         .await
-        .expect_err("EdgeAppend with both source endpoints must be rejected");
+        .expect_err("EdgeAppend without an edge kind must be rejected");
         assert!(err.to_string().contains("change_event_endpoint_chk"));
 
         Ok(())

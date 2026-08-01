@@ -83,6 +83,7 @@ fn fact_command() -> FactWriteCommand {
             occurred_at: now,
         }),
         citation: None,
+        derived_from: Vec::new(),
     }
 }
 

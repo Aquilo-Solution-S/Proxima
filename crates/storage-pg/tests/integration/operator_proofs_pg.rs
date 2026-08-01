@@ -36,12 +36,11 @@ fn baseline_schema_contains_pr7_operator_proof_carriers() {
 use std::sync::Arc;
 
 use crate::common::{drop_db, fresh_pg, owner_fixture, owner_write_permit};
-use proxima_core::storage::{DerivedEdgeSpec, DerivedEmbedding};
+use proxima_core::storage::DerivedEmbedding;
 use proxima_core::{
-    AbstractionPayload, AgentDerivationV1, AuthPath, AuthzContext, CORE_DERIVED_FROM_RELATION,
-    EdgeAuthorshipKind, EntityKind, ErrorCode, FlavorRegistry, InputContractId, MemoryId,
-    MemoryOperatorKind, OperatorId, Owner, SchemaId, SchemaVersion, SidecarPayload, SourceBatchId,
-    StorageError,
+    AbstractionPayload, AgentDerivationV1, AuthPath, AuthzContext, EdgeEndpoint, EntityKind,
+    ErrorCode, FlavorRegistry, InputContractId, MemoryId, MemoryOperatorKind, OperatorId, Owner,
+    SchemaId, SchemaVersion, SidecarPayload, SourceBatchId, StorageError,
 };
 use proxima_storage_pg::verbs::derive_append::{
     DerivedDraft, DerivedOutcome, append_derived_with_edges_in_tx,
@@ -150,8 +149,8 @@ async fn replay_rejects_omitted_operator_edge_set() -> Result<(), Box<dyn std::e
 }
 
 #[tokio::test]
-async fn replay_rejects_persisted_wrong_operator_authorship_edge()
--> Result<(), Box<dyn std::error::Error>> {
+async fn replay_rejects_an_undeclared_persisted_index_row() -> Result<(), Box<dyn std::error::Error>>
+{
     let (pg, db_name) = fresh_pg().await;
     let result = async {
         let owner = owner_fixture();
@@ -177,16 +176,16 @@ async fn replay_rejects_persisted_wrong_operator_authorship_edge()
         )
         .await?;
 
+        // Smuggle in an index row the write never declared. Rebuildability is
+        // the master invariant: the stored set must be a function of what the
+        // node says, so a replay that finds more than it declared is a
+        // conflict, not a no-op.
         let (owner_kind, owner_id) = owner.columns();
         sqlx::query(
             "INSERT INTO proxima_core.edges
-                (edge_id, relation, relation_class, source_kind, source_memory_id, target_kind,
-                 target_memory_id, authorship_kind, owner_kind, owner_id)
-             VALUES ($1, $2, 'Provenance', 'Abstraction', $3, 'Fact', $4,
-                     'OperatorFtoA', $5, $6)",
+                (source_kind, source_id, target_kind, target_id, kind, owner_kind, owner_id)
+             VALUES ('Abstraction', $1, 'Fact', $2, 'origin', $3, $4)",
         )
-        .bind(Uuid::now_v7())
-        .bind(CORE_DERIVED_FROM_RELATION)
         .bind(memory_id.into_inner())
         .bind(fact.into_inner())
         .bind(owner_kind)
@@ -206,7 +205,7 @@ async fn replay_rejects_persisted_wrong_operator_authorship_edge()
             None,
         )
         .await
-        .expect_err("same memory replay must detect persisted wrong-authorship proof edge");
+        .expect_err("a replay must detect an index row the declaration does not account for");
         assert!(
             matches!(err, StorageError::Conflict(_)),
             "unexpected {err:?}"
@@ -218,99 +217,47 @@ async fn replay_rejects_persisted_wrong_operator_authorship_edge()
     result
 }
 
+/// The declared origins ARE the operator's inputs, so the only shape check
+/// left is the one the phase actually implies: an A→A invocation is grounded
+/// by Abstractions. There is no authorship kind to mismatch any more — the
+/// mask it lived on went with the relation vocabulary.
 #[tokio::test]
-async fn author_derived_rejects_extra_same_output_wrong_operator_authorship()
+async fn an_origin_of_the_wrong_layer_for_the_phase_is_refused()
 -> Result<(), Box<dyn std::error::Error>> {
     let (pg, db_name) = fresh_pg().await;
     let result = async {
         let owner = owner_fixture();
-        let source_a = insert_source_abstraction(&pg, &owner, "wrong-auth-proof-a").await?;
         let fact_batch = SourceBatchId::new(Uuid::now_v7());
-        let fact = insert_fact(&pg, &owner, fact_batch, true, "wrong-auth-extra-fact").await?;
+        let fact = insert_fact(&pg, &owner, fact_batch, true, "wrong-phase-fact").await?;
         let engine = proxima_core::Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests())
             .with_storage_ports(Arc::new(pg.clone()).storage_ports());
-        let relation = engine
-            .registry()
-            .resolve_relation(CORE_DERIVED_FROM_RELATION)
-            .expect("core derived-from relation registered");
         let memory_id = MemoryId::new(Uuid::now_v7());
-        let operator_id = OperatorId::new(Uuid::now_v7());
-        let input_contract_id = InputContractId::new(Uuid::now_v7());
-        let sidecar_payload = SidecarPayload::abstraction(AgentDerivationV1 {
-            title: "derived".into(),
-            body: "derived".into(),
-            tags: Vec::new(),
-            idempotency_key: None,
-            source_memory_ids: vec![source_a.into_inner()],
-            model_id: "test-model".into(),
-            client_name: "test".into(),
-            client_version: "1".into(),
-        });
-        let edges = vec![
-            DerivedEdgeSpec {
-                owner: &owner,
-                relation,
-                source_kind: EntityKind::Abstraction,
-                source_memory_id: memory_id,
-                target_kind: EntityKind::Abstraction,
-                target_memory_id: source_a,
-                authorship_kind: EdgeAuthorshipKind::OperatorAtoA,
-                authorship_owner_memory_id: Some(source_a),
-                sidecar_payload: None,
-            },
-            DerivedEdgeSpec {
-                owner: &owner,
-                relation,
-                source_kind: EntityKind::Abstraction,
-                source_memory_id: memory_id,
-                target_kind: EntityKind::Fact,
-                target_memory_id: fact,
-                authorship_kind: EdgeAuthorshipKind::OperatorFtoA,
-                authorship_owner_memory_id: None,
-                sidecar_payload: None,
-            },
-        ];
-        let draft = DerivedDraft {
-            memory_id: memory_id.into_inner(),
+
+        let err = author_test_abstraction(
+            &pg,
+            &engine,
             owner,
-            kind: EntityKind::Abstraction,
-            schema_id: SchemaId::new(AgentDerivationV1::SCHEMA_ID.into()),
-            schema_version: SchemaVersion::new(AgentDerivationV1::SCHEMA_VERSION),
-            text: "derived".into(),
-            operator_kind: MemoryOperatorKind::AtoA,
-            operator_id,
-            input_contract_id,
-            source_batch_id: None,
-            model_id: "test-model",
-            prompt_version: "operator-proofs-pg",
-            supersedes: None,
-            lexical_language: None,
-            embedding: DerivedEmbedding::None,
-        };
-        let sidecars = pg.sidecars().clone();
-        let mut tx = pg.pool_for_tests().begin().await?;
-        let permit = owner_write_permit(&owner, proxima_core::AccessKind::Abstraction).await?;
-        let err = append_derived_with_edges_in_tx(
-            &mut tx,
-            &permit,
-            &draft,
-            &edges,
-            move |tx, outcome| {
-                Box::pin(async move {
-                    sidecars
-                        .insert_memory_sidecar(tx, outcome.memory_id, &sidecar_payload)
-                        .await
-                })
-            },
+            memory_id,
+            fact,
+            // A→A takes Abstraction inputs; a Fact origin is the wrong phase.
+            MemoryOperatorKind::AtoA,
+            OperatorId::new(Uuid::now_v7()),
+            InputContractId::new(Uuid::now_v7()),
+            None,
         )
         .await
-        .expect_err("same-output wrong operator authorship must be rejected");
-        tx.rollback().await?;
+        .expect_err("an A→A invocation is not grounded by a Fact");
         assert!(
             err.to_string()
-                .contains("authorship kind does not match operator phase"),
+                .contains("operator origin kind does not match operator phase"),
             "unexpected {err:?}"
         );
+        let persisted: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM proxima_core.memories WHERE memory_id = $1")
+                .bind(memory_id.into_inner())
+                .fetch_one(pg.pool_for_tests())
+                .await?;
+        assert_eq!(persisted, 0, "a rejected derivation persists no output row");
         Ok::<(), Box<dyn std::error::Error>>(())
     }
     .await;
@@ -468,21 +415,9 @@ async fn engine_author_derived_rejects_operator_input_created_at_not_strictly_be
         .await?;
         let engine = proxima_core::Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests())
             .with_storage_ports(Arc::new(pg.clone()).storage_ports());
-        let relation = engine
-            .registry()
-            .resolve_relation(CORE_DERIVED_FROM_RELATION)
-            .expect("core derived-from relation registered");
         let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
         let output_memory_id = MemoryId::new(Uuid::now_v7());
-        let edges = [proxima_core::AuthorDerivedEdgeInput {
-            relation,
-            source_kind: EntityKind::Abstraction,
-            source_memory_id: output_memory_id,
-            target_kind: EntityKind::Abstraction,
-            target_memory_id: future_input,
-            authorship_kind: EdgeAuthorshipKind::OperatorAtoA,
-            authorship_owner_memory_id: Some(future_input),
-        }];
+        let derived_from = [EdgeEndpoint::memory(EntityKind::Abstraction, future_input)];
 
         let err = engine
             .author_derived_authorized(
@@ -510,9 +445,10 @@ async fn engine_author_derived_rejects_operator_input_created_at_not_strictly_be
                         client_name: "test".into(),
                         client_version: "1".into(),
                     }),
+                    authoring_perspective_id: None,
                     supersedes: None,
                     lexical_language: None,
-                    edges: &edges,
+                    derived_from: &derived_from,
                 },
             )
             .await
@@ -541,10 +477,12 @@ async fn engine_author_derived_rejects_operator_input_created_at_not_strictly_be
     result
 }
 
+/// E1 has no foreign key behind it — an endpoint can be tombstoned out from
+/// under a live edge — so the scanner is what witnesses the drift.
 #[cfg(feature = "test-fixtures")]
 #[tokio::test]
-async fn graph_fixture_flags_invalid_atogoal_fact_target() -> Result<(), Box<dyn std::error::Error>>
-{
+async fn graph_fixture_flags_an_edge_whose_endpoint_is_gone()
+-> Result<(), Box<dyn std::error::Error>> {
     use proxima_storage_pg::test_fixtures::operator_proofs::{
         GraphValidityViolation, collect_memory_graph_violations,
     };
@@ -553,47 +491,39 @@ async fn graph_fixture_flags_invalid_atogoal_fact_target() -> Result<(), Box<dyn
     let result = async {
         let owner = owner_fixture();
         let batch = SourceBatchId::new(Uuid::now_v7());
-        let fact = insert_fact(&pg, &owner, batch, true, "bad-atogoal-target").await?;
-        let goal_id = proxima_core::GoalId::new(Uuid::now_v7());
-        let request_id = Uuid::now_v7();
-        // Insert just enough rows for the fixture scan; this deliberately bypasses
-        // the storage goal writer because production correctly rejects Fact evidence.
-        let (owner_kind, owner_id) = owner.columns();
-        sqlx::query(
-            "INSERT INTO proxima_core.goals
-                (goal_id, owner_kind, owner_id, state, schema_id, schema_version, title, text,
-                 payload, request_id, idempotency_key, authorship_kind, authorship_origin,
-                 operator_kind, authorship_operator_id, input_contract_id, model_id, prompt_version)
-             VALUES ($1, $2, $3, 'Active', 'test/goal', 1, 'goal', 'goal', '{}'::bytea,
-                     $4, 'bad-atogoal', 'System', 'Operator', 'AtoGoal', $5, $6, 'test', 'test')",
+        let input = insert_fact(&pg, &owner, batch, true, "vanishing-input").await?;
+        let engine = proxima_core::Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests())
+            .with_storage_ports(Arc::new(pg.clone()).storage_ports());
+        let memory_id = MemoryId::new(Uuid::now_v7());
+        author_test_abstraction(
+            &pg,
+            &engine,
+            owner,
+            memory_id,
+            input,
+            MemoryOperatorKind::FtoA,
+            OperatorId::new(Uuid::now_v7()),
+            InputContractId::new(Uuid::now_v7()),
+            Some(batch),
         )
-        .bind(goal_id.into_inner())
-        .bind(owner_kind)
-        .bind(owner_id)
-        .bind(request_id)
-        .bind(OperatorId::new(Uuid::now_v7()).into_inner())
-        .bind(InputContractId::new(Uuid::now_v7()).into_inner())
-        .execute(pg.pool_for_tests())
         .await?;
-        sqlx::query(
-            "INSERT INTO proxima_core.edges
-                (edge_id, relation, relation_class, source_kind, source_goal_id, target_kind,
-                 target_memory_id, authorship_kind, owner_kind, owner_id)
-             VALUES ($1, $2, 'Structural', 'Goal', $3, 'Fact', $4, 'OperatorAtoGoal', $5, $6)",
-        )
-        .bind(Uuid::now_v7())
-        .bind(proxima_core::CORE_MOTIVATED_BY_RELATION)
-        .bind(goal_id.into_inner())
-        .bind(fact.into_inner())
-        .bind(owner_kind)
-        .bind(owner_id)
-        .execute(pg.pool_for_tests())
-        .await?;
+        assert!(
+            collect_memory_graph_violations(pg.pool_for_tests())
+                .await?
+                .is_empty(),
+            "a well-formed derivation witnesses nothing"
+        );
+
+        sqlx::query("UPDATE proxima_core.memories SET tombstoned_at = now() WHERE memory_id = $1")
+            .bind(input.into_inner())
+            .execute(pg.pool_for_tests())
+            .await?;
         let violations = collect_memory_graph_violations(pg.pool_for_tests()).await?;
         assert!(
             violations
                 .iter()
-                .any(|v| matches!(v, GraphValidityViolation::InvalidOperatorEdgeShape { .. }))
+                .any(|v| matches!(v, GraphValidityViolation::MissingEndpoint { .. })),
+            "unexpected {violations:?}"
         );
         Ok::<(), Box<dyn std::error::Error>>(())
     }
@@ -646,26 +576,19 @@ async fn author_test_abstraction_multi(
     input_contract_id: InputContractId,
     source_batch_id: Option<SourceBatchId>,
 ) -> Result<DerivedOutcome, StorageError> {
-    let relation = engine
-        .registry()
-        .resolve_relation(CORE_DERIVED_FROM_RELATION)
-        .expect("core derived-from relation registered");
-    let target_kind = operator_kind.phase().input_kind();
-    let edges = inputs
-        .iter()
-        .copied()
-        .map(|input| DerivedEdgeSpec {
-            owner: &owner,
-            relation,
-            source_kind: EntityKind::Abstraction,
-            source_memory_id: memory_id,
-            target_kind,
-            target_memory_id: input,
-            authorship_kind: operator_kind.edge_authorship(),
-            authorship_owner_memory_id: Some(input),
-            sidecar_payload: None,
-        })
-        .collect::<Vec<_>>();
+    let _ = engine;
+    // The declaration names each input by its real kind, because the address
+    // form IS the binding — a helper that stamped the phase's expected kind on
+    // every origin would be testing a lie, not a derivation.
+    let mut origins = Vec::with_capacity(inputs.len());
+    for input in inputs {
+        origins.push(EdgeEndpoint::memory(
+            stored_entity_kind(pg, *input)
+                .await
+                .map_err(|err| StorageError::Internal(err.to_string()))?,
+            *input,
+        ));
+    }
     let draft = DerivedDraft {
         memory_id: memory_id.into_inner(),
         owner,
@@ -679,6 +602,7 @@ async fn author_test_abstraction_multi(
         source_batch_id,
         model_id: "test-model",
         prompt_version: "operator-proofs-pg",
+        authoring_perspective_id: None,
         supersedes: None,
         lexical_language: None,
         embedding: DerivedEmbedding::None,
@@ -702,19 +626,39 @@ async fn author_test_abstraction_multi(
         .begin()
         .await
         .map_err(|err| StorageError::Internal(format!("begin operator proof tx: {err}")))?;
-    let outcome =
-        append_derived_with_edges_in_tx(&mut tx, &permit, &draft, &edges, move |tx, outcome| {
+    let outcome = append_derived_with_edges_in_tx(
+        &mut tx,
+        &permit,
+        &draft,
+        &origins,
+        &[],
+        move |tx, outcome| {
             Box::pin(async move {
                 sidecars
                     .insert_memory_sidecar(tx, outcome.memory_id, &sidecar)
                     .await
             })
-        })
-        .await?;
+        },
+    )
+    .await?;
     tx.commit()
         .await
         .map_err(|err| StorageError::Internal(format!("commit operator proof tx: {err}")))?;
     Ok(outcome)
+}
+
+/// A Fact is the row whose `kind` column is NULL — it has no operator phase
+/// that produced it, so there is nothing to record there.
+async fn stored_entity_kind(
+    pg: &proxima_storage_pg::PgStorage,
+    memory_id: MemoryId,
+) -> Result<EntityKind, sqlx::Error> {
+    let kind: Option<EntityKind> =
+        sqlx::query_scalar("SELECT kind FROM proxima_core.memories WHERE memory_id = $1")
+            .bind(memory_id.into_inner())
+            .fetch_one(pg.pool_for_tests())
+            .await?;
+    Ok(kind.unwrap_or(EntityKind::Fact))
 }
 
 async fn insert_source_abstraction(

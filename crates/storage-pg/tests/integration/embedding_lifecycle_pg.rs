@@ -128,6 +128,7 @@ fn receipt_draft(source_id: &str, payload: &[u8]) -> FactWriteCommand {
             occurred_at: now,
         }),
         citation: None,
+        derived_from: Vec::new(),
     }
 }
 

@@ -36,6 +36,7 @@ fn fresh_fact_draft(_owner: Owner) -> FactWriteCommand {
             occurred_at: now,
         }),
         citation: None,
+        derived_from: Vec::new(),
     }
 }
 
@@ -221,22 +222,13 @@ async fn seed_edge_between_memories(
     owner: OwnerRef,
     source: MemoryId,
     target: MemoryId,
-) -> uuid::Uuid {
-    let edge_id = uuid::Uuid::now_v7();
+) {
     let (owner_kind, owner_id) = proxima_storage_pg::access::owner_columns::owner_binds(&owner);
     sqlx::query(
         "INSERT INTO proxima_core.edges
-           (edge_id, owner_kind, owner_id, relation, relation_class,
-            source_kind, source_memory_id, source_goal_id,
-            target_kind, target_memory_id, target_goal_id,
-            authorship_kind, authorship_owner_memory_id)
-         VALUES
-           ($1, $2, $3, 'test/leaky-edge', 'Structural',
-            'Fact', $4, NULL,
-            'Fact', $5, NULL,
-            'SourceIngest', NULL)",
+           (source_kind, source_id, target_kind, target_id, kind, owner_kind, owner_id)
+         VALUES ('Fact', $3, 'Fact', $4, 'reference', $1, $2)",
     )
-    .bind(edge_id)
     .bind(owner_kind)
     .bind(owner_id)
     .bind(source.into_inner())
@@ -244,7 +236,6 @@ async fn seed_edge_between_memories(
     .execute(pg.pool_for_tests())
     .await
     .unwrap();
-    edge_id
 }
 
 async fn read_owners(pg: &proxima_storage_pg::PgStorage, principal: &OwnerRef) -> Vec<OwnerRef> {

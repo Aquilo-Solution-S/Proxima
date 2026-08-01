@@ -2,9 +2,7 @@ use proxima_core::storage_ports::GoalWritePort;
 use proxima_core::verbs::goal_write::{
     GoalAuthorship, GoalEvidenceRef, GoalState, IdempotencyKey, ModifyGoalAtomicRequest,
 };
-use proxima_core::{
-    CORE_MOTIVATED_BY_RELATION, EdgeAuthorshipKind, FlavorRegistry, OwnerRef, UserId,
-};
+use proxima_core::{FlavorRegistry, OwnerRef, UserId};
 use proxima_storage_pg::PgStorage;
 use uuid::Uuid;
 
@@ -90,11 +88,7 @@ async fn goal_modify_atom_writes_replacement() {
         assert!(replay.idempotent_replay);
         assert_eq!(replay.goal_id, outcome.goal_id);
         assert_eq!(replay.lifecycle_memory_id, outcome.lifecycle_memory_id);
-        let mut replay_edge_ids = replay.edge_ids;
-        let mut outcome_edge_ids = outcome.edge_ids;
-        replay_edge_ids.sort_unstable();
-        outcome_edge_ids.sort_unstable();
-        assert_eq!(replay_edge_ids, outcome_edge_ids);
+        assert_eq!(replay.edge_count, outcome.edge_count);
 
         Ok(())
     }
@@ -148,18 +142,18 @@ async fn goal_modify_operator_authorship_writes_atogoal_evidence_edges() {
             .await?;
 
         let row: (String,) = sqlx::query_as(
-            "SELECT authorship_kind::text
-               FROM proxima_core.edges
-              WHERE relation = $1
-                AND source_goal_id = $2
-                AND target_memory_id = $3",
+            "SELECT e.kind::text
+               FROM proxima_core.edges e
+               JOIN proxima_core.goals g ON g.goal_id = e.source_id
+              WHERE e.source_id = $1
+                AND e.target_id = $2
+                AND $2 = ANY(g.evidence_memory_ids)",
         )
-        .bind(CORE_MOTIVATED_BY_RELATION)
         .bind(outcome.goal_id.into_inner())
         .bind(evidence_id.into_inner())
         .fetch_one(pg.pool_for_tests())
         .await?;
-        assert_eq!(row.0, EdgeAuthorshipKind::OperatorAtoGoal.as_str());
+        assert_eq!(row.0, "reference");
 
         Ok(())
     }

@@ -1,17 +1,32 @@
-use crate::common::{drop_db, fresh_pg, seed_memory, seed_memory_edge};
+//! Edge reads: source-owned visibility, target redaction, kind filtering, and
+//! a keyset whose position is the row itself.
+
 use proxima_core::access::world;
 use proxima_core::storage_ports::*;
-use proxima_core::verbs::query::{
-    EdgeExistsRequest, EdgeFilter, EdgePayloadSpec, EdgeReadRequest, EdgeTargetProjection,
-    MemoryLineageDirection, MemoryLineageRequest,
-};
+use proxima_core::verbs::query::{EdgeExistsRequest, EdgeFilter, EdgeReadRequest};
 use proxima_core::{
-    AGENT_LINK_RELATION, AgentLinkV1, CORE_DERIVED_FROM_RELATION, EdgeId, EntityKind, EntityRef,
-    GroupId, MemoryId, OwnerRef, RelationClass, SchemaId, SchemaVersion, UserId,
+    EdgeKind, EdgeTargetProjection, EntityKind, EntityRef, GroupId, MemoryId, OwnerRef, UserId,
 };
+use proxima_storage_pg::PgStorage;
 use uuid::Uuid;
 
-struct EdgeReadFixture {
+use crate::common::{drop_db, fresh_pg, seed_memory, seed_memory_edge};
+
+/// The persisted result of an owner transfer: the node becomes World-owned
+/// while the edge keeps the owner that wrote it.
+async fn publish_to_world(pg: &PgStorage, memory_id: MemoryId) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "UPDATE proxima_core.memories
+            SET owner_kind = 'world', owner_id = NULL
+          WHERE memory_id = $1",
+    )
+    .bind(memory_id.into_inner())
+    .execute(pg.pool_for_tests())
+    .await
+    .map(|_| ())
+}
+
+struct Fixture {
     p: OwnerRef,
     q: OwnerRef,
     p_read: Vec<OwnerRef>,
@@ -20,462 +35,291 @@ struct EdgeReadFixture {
     world_read: Vec<OwnerRef>,
     a: MemoryId,
     f1: MemoryId,
-    a_to_f1: EdgeId,
-    public_to_private: EdgeId,
+    public: MemoryId,
 }
 
-#[tokio::test]
-async fn direct_edge_reads_are_source_owned_with_redaction_and_guard()
--> Result<(), Box<dyn std::error::Error>> {
-    let (pg, db_name) = fresh_pg().await;
-
-    let result = async {
-        let fixture = seed_edge_read_fixture(&pg).await?;
-
-        let q_read = read_edge_by_id(&pg, &fixture.q_read, &fixture.q, fixture.a_to_f1).await?;
-        assert!(q_read.edges.is_empty(), "unreadable source hides edge");
-        let q_exists = edge_exists_by_id(&pg, &fixture.q_read, &fixture.q, fixture.a_to_f1).await?;
-        assert!(!q_exists.exists);
-
-        let p_read = read_edge_by_id(&pg, &fixture.p_read, &fixture.p, fixture.a_to_f1).await?;
-        assert_eq!(p_read.edges.len(), 1);
-        assert!(matches!(
-            p_read.edges[0].target,
-            EdgeTargetProjection::Visible { target } if target == EntityRef::Memory(fixture.f1)
-        ));
-        assert_eq!(p_read.edges[0].source_kind, EntityKind::Abstraction);
-        assert_eq!(p_read.edges[0].target_kind, Some(EntityKind::Fact));
-
-        let p_without_g1 =
-            read_edge_by_id(&pg, &fixture.p_without_g1_read, &fixture.p, fixture.a_to_f1).await?;
-        assert_eq!(p_without_g1.edges.len(), 1);
-        assert_eq!(p_without_g1.edges[0].target, EdgeTargetProjection::Redacted);
-        assert_eq!(
-            p_without_g1.edges[0].target_kind, None,
-            "redacted target must not leak its kind"
-        );
-
-        let p_target_probe = read_edge_by_target_filter(
-            &pg,
-            &fixture.p_without_g1_read,
-            &fixture.p,
-            fixture.a_to_f1,
-            EntityRef::Memory(fixture.f1),
-        )
-        .await?;
-        assert!(
-            p_target_probe.edges.is_empty(),
-            "target-id filters must not confirm an unreadable redacted target"
-        );
-
-        let world_read = read_edge_by_id(
-            &pg,
-            &fixture.world_read,
-            &world(),
-            fixture.public_to_private,
-        )
-        .await?;
-        assert!(
-            world_read.edges.is_empty(),
-            "public-source guard omits private target"
-        );
-        let world_exists = edge_exists_by_id(
-            &pg,
-            &fixture.world_read,
-            &world(),
-            fixture.public_to_private,
-        )
-        .await?;
-        assert!(!world_exists.exists);
-
-        Ok::<(), Box<dyn std::error::Error>>(())
-    }
-    .await;
-
-    drop(pg);
-    let _ = drop_db(&db_name).await;
-    result
-}
-
-#[tokio::test]
-async fn lineage_hides_unreadable_sources_and_stops_at_redacted_fact_targets()
--> Result<(), Box<dyn std::error::Error>> {
-    let (pg, db_name) = fresh_pg().await;
-
-    let result = async {
-        let fixture = seed_edge_read_fixture(&pg).await?;
-        let gp = fixture.p_without_g1_read[1];
-        let g1 = fixture.q_read[1];
-        let lifecycle = seed_memory(&pg, &gp, EntityKind::Fact, "lifecycle").await?;
-        let evidence = seed_memory(&pg, &g1, EntityKind::Fact, "evidence").await?;
-        let lifecycle_edge = seed_memory_edge(
-            &pg,
-            &gp,
-            (EntityKind::Fact, lifecycle),
-            (EntityKind::Fact, evidence),
-            CORE_DERIVED_FROM_RELATION,
-            RelationClass::Provenance,
-        )
-        .await?;
-
-        let q_from_f1 = pg
-            .walk_memory_lineage(
-                &fixture.q_read,
-                &MemoryLineageRequest {
-                    owner: fixture.q,
-                    start_memory_id: fixture.f1,
-                    direction: MemoryLineageDirection::Descendants,
-                    depth: 3,
-                    limit: 20,
-                    after: None,
-                },
-            )
-            .await?;
-        assert!(
-            q_from_f1
-                .edges
-                .iter()
-                .all(|edge| edge.edge_id != fixture.a_to_f1.into_inner()),
-            "lineage from F1 must not surface unreadable source A"
-        );
-        assert!(
-            q_from_f1
-                .nodes
-                .iter()
-                .all(|node| node.memory_id != fixture.a)
-        );
-
-        let p_from_lifecycle = pg
-            .walk_memory_lineage(
-                &fixture.p_without_g1_read,
-                &MemoryLineageRequest {
-                    owner: fixture.p,
-                    start_memory_id: lifecycle,
-                    direction: MemoryLineageDirection::Ancestors,
-                    depth: 2,
-                    limit: 20,
-                    after: None,
-                },
-            )
-            .await?;
-        assert!(
-            p_from_lifecycle
-                .edges
-                .iter()
-                .any(|edge| edge.edge_id == lifecycle_edge.into_inner()),
-            "readable Fact source exposes its provenance edge"
-        );
-        assert!(
-            p_from_lifecycle
-                .nodes
-                .iter()
-                .all(|node| node.memory_id != evidence),
-            "unreadable evidence target is a handle-only frontier, not a node"
-        );
-
-        let q_from_evidence = pg
-            .walk_memory_lineage(
-                &fixture.q_read,
-                &MemoryLineageRequest {
-                    owner: fixture.q,
-                    start_memory_id: evidence,
-                    direction: MemoryLineageDirection::Descendants,
-                    depth: 2,
-                    limit: 20,
-                    after: None,
-                },
-            )
-            .await?;
-        assert!(
-            q_from_evidence
-                .edges
-                .iter()
-                .all(|edge| edge.edge_id != lifecycle_edge.into_inner()),
-            "Fact-source edge is hidden when the lifecycle source is unreadable"
-        );
-
-        Ok::<(), Box<dyn std::error::Error>>(())
-    }
-    .await;
-
-    drop(pg);
-    let _ = drop_db(&db_name).await;
-    result
-}
-
-struct AgentLinkFixture {
-    owner: OwnerRef,
-    seeded: Vec<EdgeId>,
-    source_filter: EdgeFilter,
-}
-
-/// Seed one Abstraction hub agent-linked to five Facts, each with a
-/// `agent_link_v1` sidecar row (`link {i}` / confidence `40+i`).
-async fn seed_agent_link_fixture(
-    pg: &proxima_storage_pg::PgStorage,
-) -> Result<AgentLinkFixture, Box<dyn std::error::Error>> {
-    let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
-    let hub = seed_memory(pg, &owner, EntityKind::Abstraction, "hub").await?;
-    let mut seeded = Vec::new();
-    for index in 0..5u8 {
-        let fact = seed_memory(pg, &owner, EntityKind::Fact, &format!("fact {index}")).await?;
-        let edge = seed_memory_edge(
-            pg,
-            &owner,
-            (EntityKind::Abstraction, hub),
-            (EntityKind::Fact, fact),
-            AGENT_LINK_RELATION,
-            RelationClass::Interpretive,
-        )
-        .await?;
-        sqlx::query(
-            "INSERT INTO proxima_core.agent_link_v1 (edge_id, reason, confidence)
-             VALUES ($1, $2, $3)",
-        )
-        .bind(edge.into_inner())
-        .bind(format!("link {index}"))
-        .bind(i16::from(40 + index))
-        .execute(pg.pool_for_tests())
-        .await?;
-        seeded.push(edge);
-    }
-    Ok(AgentLinkFixture {
-        owner,
-        seeded,
-        source_filter: EdgeFilter {
-            relation: Some(AGENT_LINK_RELATION.to_string()),
-            source: Some(EntityRef::Memory(hub)),
-            target: None,
-        },
-    })
-}
-
-fn filtered_request(
-    fixture: &AgentLinkFixture,
-    limit: u32,
-    include_payloads: bool,
-) -> EdgeReadRequest {
-    EdgeReadRequest {
-        owner: fixture.owner,
-        edge_ids: Vec::new(),
-        filter: fixture.source_filter.clone(),
-        limit,
-        cursor: None,
-        include_payloads,
-    }
-}
-
-#[tokio::test]
-async fn filtered_edge_reads_hydrate_agent_link_payloads_on_opt_in()
--> Result<(), Box<dyn std::error::Error>> {
-    let (pg, db_name) = fresh_pg().await;
-
-    let result = async {
-        let fixture = seed_agent_link_fixture(&pg).await?;
-        let read_owners = vec![fixture.owner];
-        let specs = vec![EdgePayloadSpec {
-            relation: AGENT_LINK_RELATION.to_string(),
-            schema_id: SchemaId::new("core/agent-link-v1".into()),
-            schema_version: SchemaVersion::new(1),
-        }];
-
-        // Full page: endpoint kinds surface, payloads hydrate, no next cursor.
-        let full = pg
-            .read_edges(&read_owners, &filtered_request(&fixture, 10, true), &specs)
-            .await?;
-        assert_eq!(full.edges.len(), 5);
-        assert!(full.next_cursor.is_none());
-        for edge in &full.edges {
-            assert_eq!(edge.source_kind, EntityKind::Abstraction);
-            assert_eq!(edge.target_kind, Some(EntityKind::Fact));
-            let payload = edge.payload.as_ref().expect("agent-link payload hydrates");
-            let link = payload
-                .downcast_ref::<AgentLinkV1>()
-                .expect("payload downcasts to AgentLinkV1");
-            assert!(link.reason.starts_with("link "));
-            assert!((40..45).contains(&link.confidence));
-        }
-
-        // Payload hydration is opt-in: same read without the flag stays lean.
-        let lean = pg
-            .read_edges(&read_owners, &filtered_request(&fixture, 10, false), &specs)
-            .await?;
-        assert!(lean.edges.iter().all(|edge| edge.payload.is_none()));
-
-        Ok::<(), Box<dyn std::error::Error>>(())
-    }
-    .await;
-
-    drop(pg);
-    let _ = drop_db(&db_name).await;
-    result
-}
-
-#[tokio::test]
-async fn filtered_edge_reads_paginate_by_keyset_cursor() -> Result<(), Box<dyn std::error::Error>> {
-    let (pg, db_name) = fresh_pg().await;
-
-    let result = async {
-        let fixture = seed_agent_link_fixture(&pg).await?;
-        let read_owners = vec![fixture.owner];
-
-        // Keyset pagination: pages of 2 chain by cursor, cover all edges
-        // exactly once, and follow (created_at, edge_id) descending order.
-        let mut collected = Vec::new();
-        let mut cursor = None;
-        let mut pages = 0;
-        loop {
-            let mut request = filtered_request(&fixture, 2, false);
-            request.cursor = cursor;
-            let page = pg.read_edges(&read_owners, &request, &[]).await?;
-            pages += 1;
-            collected.extend(page.edges);
-            cursor = page.next_cursor;
-            if cursor.is_none() {
-                break;
-            }
-            assert!(pages < 10, "cursor chain must terminate");
-        }
-        assert_eq!(pages, 3, "5 edges at limit 2 paginate as 2+2+1");
-        assert_eq!(collected.len(), 5);
-        let mut unique = collected.iter().map(|edge| edge.id).collect::<Vec<_>>();
-        unique.sort_unstable();
-        unique.dedup();
-        assert_eq!(unique.len(), 5, "pages must not overlap");
-        assert!(
-            collected
-                .windows(2)
-                .all(|pair| (pair[0].created_at, pair[0].id) > (pair[1].created_at, pair[1].id)),
-            "pages follow (created_at, edge_id) descending keyset order"
-        );
-        let mut expected = fixture
-            .seeded
-            .iter()
-            .map(|edge| edge.into_inner())
-            .collect::<Vec<_>>();
-        expected.sort_unstable();
-        assert_eq!(
-            unique, expected,
-            "pagination covers exactly the seeded edges"
-        );
-
-        Ok::<(), Box<dyn std::error::Error>>(())
-    }
-    .await;
-
-    drop(pg);
-    let _ = drop_db(&db_name).await;
-    result
-}
-
-async fn read_edge_by_id(
-    pg: &proxima_storage_pg::PgStorage,
-    read_owners: &[OwnerRef],
-    owner: &OwnerRef,
-    edge_id: EdgeId,
-) -> Result<proxima_core::verbs::query::EdgeReadResponse, proxima_core::StorageError> {
-    pg.read_edges(
-        read_owners,
-        &EdgeReadRequest {
-            owner: *owner,
-            edge_ids: vec![edge_id],
-            filter: EdgeFilter::default(),
-            limit: 10,
-            cursor: None,
-            include_payloads: false,
-        },
-        &[],
-    )
-    .await
-}
-
-async fn edge_exists_by_id(
-    pg: &proxima_storage_pg::PgStorage,
-    read_owners: &[OwnerRef],
-    owner: &OwnerRef,
-    edge_id: EdgeId,
-) -> Result<proxima_core::verbs::query::EdgeExistsResponse, proxima_core::StorageError> {
-    pg.edge_exists(
-        read_owners,
-        &EdgeExistsRequest {
-            owner: *owner,
-            edge_ids: vec![edge_id],
-            filter: EdgeFilter::default(),
-        },
-    )
-    .await
-}
-
-async fn read_edge_by_target_filter(
-    pg: &proxima_storage_pg::PgStorage,
-    read_owners: &[OwnerRef],
-    owner: &OwnerRef,
-    edge_id: EdgeId,
-    target: EntityRef,
-) -> Result<proxima_core::verbs::query::EdgeReadResponse, proxima_core::StorageError> {
-    pg.read_edges(
-        read_owners,
-        &EdgeReadRequest {
-            owner: *owner,
-            edge_ids: vec![edge_id],
-            filter: EdgeFilter {
-                relation: None,
-                source: None,
-                target: Some(target),
-            },
-            limit: 10,
-            cursor: None,
-            include_payloads: false,
-        },
-        &[],
-    )
-    .await
-}
-
-async fn seed_edge_read_fixture(
-    pg: &proxima_storage_pg::PgStorage,
-) -> Result<EdgeReadFixture, Box<dyn std::error::Error>> {
+/// P owns an Abstraction; group G1 owns the Fact it was made from; a
+/// World-owned Abstraction points at a private Fact of Q.
+async fn seed(pg: &PgStorage) -> Result<Fixture, Box<dyn std::error::Error>> {
     let p = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
     let q = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
-    let gp = OwnerRef::Group(GroupId::new(Uuid::now_v7()));
     let g1 = OwnerRef::Group(GroupId::new(Uuid::now_v7()));
-    let private = OwnerRef::Group(GroupId::new(Uuid::now_v7()));
-    let world = world();
 
-    let f1 = seed_memory(pg, &g1, EntityKind::Fact, "F1").await?;
-    let a = seed_memory(pg, &gp, EntityKind::Abstraction, "A").await?;
-    let a_public = seed_memory(pg, &gp, EntityKind::Abstraction, "A public").await?;
-    let f_private = seed_memory(pg, &private, EntityKind::Fact, "private").await?;
-
-    let a_to_f1 = seed_memory_edge(
+    let a = seed_memory(pg, &p, EntityKind::Abstraction, "abstraction").await?;
+    let f1 = seed_memory(pg, &g1, EntityKind::Fact, "grounding fact").await?;
+    seed_memory_edge(
         pg,
-        &gp,
+        &p,
         (EntityKind::Abstraction, a),
         (EntityKind::Fact, f1),
-        CORE_DERIVED_FROM_RELATION,
-        RelationClass::Provenance,
-    )
-    .await?;
-    let public_to_private = seed_memory_edge(
-        pg,
-        &gp,
-        (EntityKind::Abstraction, a_public),
-        (EntityKind::Fact, f_private),
-        CORE_DERIVED_FROM_RELATION,
-        RelationClass::Provenance,
+        EdgeKind::Origin,
     )
     .await?;
 
-    Ok(EdgeReadFixture {
+    // World ownership is the persisted result of publish-to-World, so the
+    // edge is written under the authoring owner and the NODE moves afterwards.
+    // World is never a write owner, on an edge or anywhere else.
+    let public = seed_memory(pg, &p, EntityKind::Abstraction, "published").await?;
+    let private = seed_memory(pg, &q, EntityKind::Fact, "private").await?;
+    seed_memory_edge(
+        pg,
+        &p,
+        (EntityKind::Abstraction, public),
+        (EntityKind::Fact, private),
+        EdgeKind::Origin,
+    )
+    .await?;
+    publish_to_world(pg, public).await?;
+
+    Ok(Fixture {
         p,
         q,
-        p_read: vec![p, gp, g1, world],
-        q_read: vec![q, g1, world],
-        p_without_g1_read: vec![p, gp, world],
-        world_read: vec![world],
+        p_read: vec![p, g1],
+        q_read: vec![q],
+        p_without_g1_read: vec![p],
+        world_read: vec![q, world()],
         a,
         f1,
-        a_to_f1,
-        public_to_private,
+        public,
     })
+}
+
+async fn read(
+    pg: &PgStorage,
+    read_owners: &[OwnerRef],
+    owner: OwnerRef,
+    filter: EdgeFilter,
+) -> Result<Vec<proxima_core::Edge>, Box<dyn std::error::Error>> {
+    let response = pg
+        .read_edges(
+            read_owners,
+            &EdgeReadRequest {
+                owner,
+                filter,
+                limit: 50,
+                cursor: None,
+            },
+        )
+        .await?;
+    Ok(response.edges)
+}
+
+fn source_filter(memory_id: MemoryId) -> EdgeFilter {
+    EdgeFilter {
+        kind: None,
+        source: Some(EntityRef::Memory(memory_id)),
+        target: None,
+    }
+}
+
+#[tokio::test]
+async fn an_edge_is_visible_to_whoever_can_read_its_source()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (pg, db_name) = fresh_pg().await;
+    let result = async {
+        let fx = seed(&pg).await?;
+
+        let unreadable = read(&pg, &fx.q_read, fx.q, source_filter(fx.a)).await?;
+        assert!(
+            unreadable.is_empty(),
+            "an unreadable source hides the edge entirely"
+        );
+
+        let visible = read(&pg, &fx.p_read, fx.p, source_filter(fx.a)).await?;
+        assert_eq!(visible.len(), 1);
+        assert_eq!(visible[0].kind, EdgeKind::Origin);
+        assert_eq!(visible[0].source.kind, EntityKind::Abstraction);
+        assert_eq!(
+            visible[0].target.endpoint().map(|target| target.entity),
+            Some(EntityRef::Memory(fx.f1))
+        );
+        assert_eq!(
+            visible[0].target.endpoint().map(|target| target.kind),
+            Some(EntityKind::Fact)
+        );
+        Ok::<_, Box<dyn std::error::Error>>(())
+    }
+    .await;
+    drop_db(&db_name).await.ok();
+    result
+}
+
+/// A readable edge with an unreadable target keeps its shape: the row comes
+/// back with the endpoint withheld, disclosing neither id nor kind.
+#[tokio::test]
+async fn an_unreadable_target_is_redacted_not_suppressed() -> Result<(), Box<dyn std::error::Error>>
+{
+    let (pg, db_name) = fresh_pg().await;
+    let result = async {
+        let fx = seed(&pg).await?;
+
+        let redacted = read(&pg, &fx.p_without_g1_read, fx.p, source_filter(fx.a)).await?;
+        assert_eq!(redacted.len(), 1);
+        assert_eq!(redacted[0].target, EdgeTargetProjection::Redacted);
+        assert!(redacted[0].target.endpoint().is_none());
+
+        // A target-id filter must not become an oracle for the same fact.
+        let probe = read(
+            &pg,
+            &fx.p_without_g1_read,
+            fx.p,
+            EdgeFilter {
+                kind: None,
+                source: Some(EntityRef::Memory(fx.a)),
+                target: Some(EntityRef::Memory(fx.f1)),
+            },
+        )
+        .await?;
+        assert!(
+            probe.is_empty(),
+            "a target filter must not confirm an unreadable target"
+        );
+        Ok::<_, Box<dyn std::error::Error>>(())
+    }
+    .await;
+    drop_db(&db_name).await.ok();
+    result
+}
+
+/// Publishing a node must not publish what it points at: a World-readable
+/// source whose target the reader cannot see drops out of the page entirely.
+#[tokio::test]
+async fn a_world_readable_source_never_leaks_a_private_target()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (pg, db_name) = fresh_pg().await;
+    let result = async {
+        let fx = seed(&pg).await?;
+        let stranger = vec![OwnerRef::Personal(UserId::new(Uuid::now_v7())), world()];
+        let edges = read(&pg, &stranger, world(), source_filter(fx.public)).await?;
+        assert!(edges.is_empty(), "public-source guard omits private target");
+
+        // The owner of the private target still sees it.
+        let owner_view = read(&pg, &fx.world_read, world(), source_filter(fx.public)).await?;
+        assert_eq!(owner_view.len(), 1);
+        Ok::<_, Box<dyn std::error::Error>>(())
+    }
+    .await;
+    drop_db(&db_name).await.ok();
+    result
+}
+
+#[tokio::test]
+async fn the_kind_filter_narrows_to_one_kind() -> Result<(), Box<dyn std::error::Error>> {
+    let (pg, db_name) = fresh_pg().await;
+    let result = async {
+        let fx = seed(&pg).await?;
+        seed_memory_edge(
+            &pg,
+            &fx.p,
+            (EntityKind::Abstraction, fx.a),
+            (EntityKind::Fact, fx.f1),
+            EdgeKind::Reference,
+        )
+        .await?;
+
+        let all = read(&pg, &fx.p_read, fx.p, source_filter(fx.a)).await?;
+        assert_eq!(all.len(), 2, "one origin and one reference, same endpoints");
+
+        let origins = read(
+            &pg,
+            &fx.p_read,
+            fx.p,
+            EdgeFilter {
+                kind: Some(EdgeKind::Origin),
+                source: Some(EntityRef::Memory(fx.a)),
+                target: None,
+            },
+        )
+        .await?;
+        assert_eq!(origins.len(), 1);
+        assert_eq!(origins[0].kind, EdgeKind::Origin);
+        Ok::<_, Box<dyn std::error::Error>>(())
+    }
+    .await;
+    drop_db(&db_name).await.ok();
+    result
+}
+
+/// The keyset position is the edge itself — there is no id to resume from —
+/// and a paged walk visits every row exactly once.
+#[tokio::test]
+async fn the_keyset_pages_without_skipping_or_repeating() -> Result<(), Box<dyn std::error::Error>>
+{
+    let (pg, db_name) = fresh_pg().await;
+    let result = async {
+        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let source = seed_memory(&pg, &owner, EntityKind::Abstraction, "source").await?;
+        let mut targets = Vec::new();
+        for index in 0..5 {
+            let target =
+                seed_memory(&pg, &owner, EntityKind::Fact, &format!("fact {index}")).await?;
+            seed_memory_edge(
+                &pg,
+                &owner,
+                (EntityKind::Abstraction, source),
+                (EntityKind::Fact, target),
+                EdgeKind::Origin,
+            )
+            .await?;
+            targets.push(target);
+        }
+
+        let mut seen = Vec::new();
+        let mut cursor = None;
+        loop {
+            let page = pg
+                .read_edges(
+                    std::slice::from_ref(&owner),
+                    &EdgeReadRequest {
+                        owner,
+                        filter: source_filter(source),
+                        limit: 2,
+                        cursor,
+                    },
+                )
+                .await?;
+            seen.extend(
+                page.edges
+                    .iter()
+                    .filter_map(|edge| edge.target.endpoint().map(|target| target.entity)),
+            );
+            match page.next_cursor {
+                Some(next) => cursor = Some(next),
+                None => break,
+            }
+        }
+
+        assert_eq!(seen.len(), 5, "every row is visited");
+        let mut unique = seen.clone();
+        unique.sort_by_key(|entity| match entity {
+            EntityRef::Memory(id) => id.into_inner(),
+            EntityRef::Goal(id) => id.into_inner(),
+            EntityRef::FactEntity(id) => id.into_inner(),
+        });
+        unique.dedup();
+        assert_eq!(unique.len(), 5, "no row is visited twice");
+        Ok::<_, Box<dyn std::error::Error>>(())
+    }
+    .await;
+    drop_db(&db_name).await.ok();
+    result
+}
+
+#[tokio::test]
+async fn existence_is_disclosed_only_for_readable_sources() -> Result<(), Box<dyn std::error::Error>>
+{
+    let (pg, db_name) = fresh_pg().await;
+    let result = async {
+        let fx = seed(&pg).await?;
+        let request = EdgeExistsRequest {
+            owner: fx.p,
+            filter: source_filter(fx.a),
+        };
+        assert!(pg.edge_exists(&fx.p_read, &request).await?.exists);
+        assert!(!pg.edge_exists(&fx.q_read, &request).await?.exists);
+        Ok::<_, Box<dyn std::error::Error>>(())
+    }
+    .await;
+    drop_db(&db_name).await.ok();
+    result
 }

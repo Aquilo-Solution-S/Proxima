@@ -215,6 +215,7 @@ fn draft(_owner: &Owner, note: &str) -> FactWriteCommand {
             occurred_at: now,
         }),
         citation: None,
+        derived_from: Vec::new(),
     }
 }
 
@@ -354,6 +355,7 @@ async fn fact_with_inline_citation_writes_rows_and_reuses_cited_object()
                 draft(&owner, "first fact"),
                 cited_object(),
                 citation_mapping(0, 4),
+                &[],
             )
             .await?;
         let second = engine
@@ -363,6 +365,7 @@ async fn fact_with_inline_citation_writes_rows_and_reuses_cited_object()
                 draft(&owner, "second fact"),
                 cited_object(),
                 citation_mapping(5, 9),
+                &[],
             )
             .await?;
         let expected_content_hash = TestCitedObject {
@@ -455,6 +458,7 @@ async fn attach_citation_adds_readback_and_is_idempotent() -> Result<(), Box<dyn
                 Relation::Ingest,
                 owner,
                 fact_outcome.memory_id,
+                proxima_core::EntityKind::Fact,
                 cited_object(),
                 citation_mapping(1, 5),
             )
@@ -522,6 +526,7 @@ async fn attach_citation_adds_readback_and_is_idempotent() -> Result<(), Box<dyn
                 Relation::Ingest,
                 owner,
                 MemoryId::new(Uuid::now_v7()),
+                proxima_core::EntityKind::Fact,
                 cited_object(),
                 citation_mapping(1, 5),
             )
@@ -569,6 +574,7 @@ async fn facts_citing_object_filters_by_read_owners() -> Result<(), Box<dyn std:
                 draft(&g1, "group fact"),
                 cited_object(),
                 citation_mapping(0, 4),
+                &[],
             )
             .await?;
         let p_authorized = engine
@@ -578,6 +584,7 @@ async fn facts_citing_object_filters_by_read_owners() -> Result<(), Box<dyn std:
                 draft(&p, "p fact"),
                 cited_object(),
                 citation_mapping(0, 4),
+                &[],
             )
             .await?;
 
@@ -680,6 +687,7 @@ async fn facts_citing_object_pages_newest_first() -> Result<(), Box<dyn std::err
                     draft(&p, &format!("citing fact {index}")),
                     cited_object(),
                     citation_mapping(0, 4),
+                    &[],
                 )
                 .await?;
             let outcome = ingest_fact_with_citation_atomic(
@@ -768,6 +776,7 @@ async fn fact_sidecar_failure_rolls_back_whole_inline_citation_ingest()
                 draft(&owner, "rollback fact"),
                 cited_object(),
                 citation_mapping(0, 4),
+                &[],
             )
             .await?;
         let receipt_id = authorized

@@ -182,6 +182,7 @@ fn draft_for(_owner: &Owner, payload_value: &Value) -> FactWriteCommand {
                 schema_version: SchemaVersion::new(1),
             },
         }),
+        derived_from: Vec::new(),
     }
 }
 
@@ -195,11 +196,16 @@ async fn ingest_fact(
         serde_json::to_value(payload).map_err(|err| StorageError::Internal(err.to_string()))?;
     let draft = draft_for(owner, &payload_value);
     let authz = AuthzContext::single_owner(owner, AuthPath::HostBearer);
+    let sidecar_payload = SidecarPayload::fact(payload.clone());
     let authorized = engine
-        .authorize_fact_ingest(&authz, Relation::Ingest, draft)
+        .authorize_fact_ingest(
+            &authz,
+            Relation::Ingest,
+            draft,
+            std::slice::from_ref(&sidecar_payload),
+        )
         .await
         .map_err(|err| StorageError::Internal(err.to_string()))?;
-    let sidecar_payload = SidecarPayload::fact(payload.clone());
     pg.ingest_fact_with_typed_sidecar(&authorized, std::slice::from_ref(&sidecar_payload), None)
         .await
 }

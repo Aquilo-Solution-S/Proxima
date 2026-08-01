@@ -125,62 +125,47 @@ async fn fact_entity_schema_matches_task_1_contract() {
         let memories_fk = constraint_def(&pg, "memories", "memories_fact_entity_id_fkey").await?;
         assert!(memories_fk.contains("REFERENCES proxima_core.fact_entities(fact_entity_id)"));
         assert!(memories_fk.contains("ON DELETE SET NULL"));
-        assert!(index_def(&pg, "idx_memories_fact_entity")
-            .await?
-            .contains("WHERE (fact_entity_id IS NOT NULL)"));
+        assert!(
+            index_def(&pg, "idx_memories_fact_entity")
+                .await?
+                .contains("WHERE (fact_entity_id IS NOT NULL)")
+        );
 
-        for column_name in ["source_fact_entity_id", "target_fact_entity_id"] {
-            column_exists(&pg, "edges", column_name, "uuid").await?;
-        }
-        let source_chk = constraint_def(&pg, "edges", "edges_source_endpoint_chk").await?;
-        assert!(source_chk.contains("num_nonnulls(source_memory_id, source_goal_id, source_fact_entity_id) = 1"));
-        assert!(source_chk.contains("source_fact_entity_id IS NULL"));
-        assert!(source_chk.contains("source_kind = 'Fact'"));
-        let target_chk = constraint_def(&pg, "edges", "edges_target_endpoint_chk").await?;
-        assert!(target_chk.contains("num_nonnulls(target_memory_id, target_goal_id, target_fact_entity_id) = 1"));
-        assert!(target_chk.contains("target_fact_entity_id IS NULL"));
-        assert!(target_chk.contains("target_kind = 'Fact'"));
-        let source_fk = constraint_def(&pg, "edges", "edges_source_fact_entity_id_fkey").await?;
-        assert!(source_fk.contains("REFERENCES proxima_core.fact_entities(fact_entity_id)"));
-        assert!(source_fk.contains("ON DELETE RESTRICT"));
-        // The bare `idx_edges_{source,target}_fact_entity` partial indexes were
-        // dropped in 0010_v006 as prefix-redundant; the `_created` supersets
-        // (fact_entity_id, created_at) WHERE (… IS NOT NULL) serve the same
-        // endpoint lookups, so the contract pins those instead.
-        for (index_name, index_column) in [
-            ("idx_edges_source_fact_entity_created", "source_fact_entity_id"),
-            ("idx_edges_target_fact_entity_created", "target_fact_entity_id"),
-        ] {
-            let index = index_def(&pg, index_name).await?;
-            assert!(index.contains(index_column));
-            assert!(index.contains(&format!("WHERE ({index_column} IS NOT NULL)")));
-        }
-        let target_fk_count: i64 = sqlx::query_scalar(
+        // A Fact-entity endpoint is now an address form, not a third column
+        // per side: `FactEntityHead` in `edge_endpoint_kind` says both what
+        // the endpoint is and how it is addressed.
+        let endpoint_labels: Vec<String> = sqlx::query_scalar(
+            "SELECT enumlabel::text FROM pg_enum e
+               JOIN pg_type t ON t.oid = e.enumtypid
+               JOIN pg_namespace n ON n.oid = t.typnamespace
+              WHERE n.nspname = 'proxima_core' AND t.typname = 'edge_endpoint_kind'
+              ORDER BY e.enumsortorder",
+        )
+        .fetch_all(pg.pool_for_tests())
+        .await?;
+        assert!(endpoint_labels.contains(&"FactEntityHead".to_string()));
+        column_exists(&pg, "edges", "source_id", "uuid").await?;
+        column_exists(&pg, "edges", "target_id", "uuid").await?;
+
+        // No FK on either endpoint: the index is projection-relaxed on both
+        // sides, and existence is the trigger's business.
+        let endpoint_fk_count: i64 = sqlx::query_scalar(
             "SELECT count(*)::bigint
                FROM pg_constraint c
                JOIN pg_class t ON t.oid = c.conrelid
                JOIN pg_namespace n ON n.oid = t.relnamespace
               WHERE n.nspname = 'proxima_core'
                 AND t.relname = 'edges'
-                AND c.conname IN (
-                    'edges_target_memory_id_fkey',
-                    'edges_target_goal_id_fkey',
-                    'edges_target_fact_entity_id_fkey'
-                )",
+                AND c.contype = 'f'",
         )
         .fetch_one(pg.pool_for_tests())
         .await?;
-        assert_eq!(target_fk_count, 0, "PR9 target endpoints are projection-relaxed");
+        assert_eq!(endpoint_fk_count, 0);
 
-        for column_name in ["edge_source_fact_entity_id", "edge_target_fact_entity_id"] {
-            column_exists(&pg, "change_event", column_name, "uuid").await?;
-        }
-        let change_chk =
-            constraint_def(&pg, "change_event", "change_event_endpoint_chk").await?;
-        assert!(change_chk.contains("edge_source_fact_entity_id"));
-        assert!(change_chk.contains("edge_target_fact_entity_id"));
-        assert!(change_chk.contains("num_nonnulls(edge_source_memory_id, edge_source_goal_id, edge_source_fact_entity_id) = 1"));
-        assert!(change_chk.contains("num_nonnulls(edge_target_memory_id, edge_target_goal_id, edge_target_fact_entity_id) = 1"));
+        let change_chk = constraint_def(&pg, "change_event", "change_event_endpoint_chk").await?;
+        assert!(change_chk.contains("edge_source_kind"));
+        assert!(change_chk.contains("edge_target_kind"));
+        assert!(change_chk.contains("edge_kind"));
 
         Ok(())
     }

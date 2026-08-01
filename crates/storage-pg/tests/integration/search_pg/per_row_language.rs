@@ -180,6 +180,7 @@ fn draft_in_language(language: Option<&str>) -> FactWriteCommand {
             occurred_at: now,
         }),
         citation: None,
+        derived_from: Vec::new(),
     }
 }
 

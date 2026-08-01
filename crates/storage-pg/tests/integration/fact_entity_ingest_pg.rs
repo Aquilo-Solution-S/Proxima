@@ -425,6 +425,7 @@ fn draft_for<P: FactPayload>(_owner: &Owner, payload_value: &Value) -> FactWrite
             occurred_at: now,
         }),
         citation: None,
+        derived_from: Vec::new(),
     }
 }
 
@@ -441,11 +442,16 @@ where
         serde_json::to_value(payload).map_err(|err| StorageError::Internal(err.to_string()))?;
     let draft = draft_for::<P>(owner, &payload_value);
     let authz = AuthzContext::single_owner(owner, AuthPath::HostBearer);
+    let sidecar_payload = SidecarPayload::fact(payload.clone());
     let authorized = engine
-        .authorize_fact_ingest(&authz, Relation::Ingest, draft)
+        .authorize_fact_ingest(
+            &authz,
+            Relation::Ingest,
+            draft,
+            std::slice::from_ref(&sidecar_payload),
+        )
         .await
         .map_err(|err| StorageError::Internal(err.to_string()))?;
-    let sidecar_payload = SidecarPayload::fact(payload.clone());
     pg.ingest_fact_with_typed_sidecar(&authorized, std::slice::from_ref(&sidecar_payload), None)
         .await
 }
@@ -732,6 +738,7 @@ async fn replay_is_idempotent_and_does_not_mint_or_move_entity() {
                 &AuthzContext::single_owner(&owner, AuthPath::HostBearer),
                 Relation::Ingest,
                 draft,
+                &[],
             )
             .await?;
 

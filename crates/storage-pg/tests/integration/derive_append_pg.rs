@@ -1,9 +1,9 @@
-use crate::common::{drop_db, fresh_pg, owner_fixture, owner_write_permit, test_registry};
+use crate::common::{drop_db, fresh_pg, owner_fixture, owner_write_permit};
 use proxima_core::storage::StorageError;
 use proxima_core::{
-    AgentDerivationV1, CORE_DERIVED_FROM_RELATION, DerivedEdgeSpec, DerivedEmbedding, EntityKind,
-    FlavorRegistryFrozen, InputContractId, MemoryId, MemoryOperatorKind, OperatorId, Owner,
-    OwnerRef, RegisteredRelation, SchemaId, SchemaVersion, SidecarPayload, UserId,
+    AgentDerivationV1, DerivedEmbedding, EdgeEndpoint, EntityKind, InputContractId, MemoryId,
+    MemoryOperatorKind, OperatorId, Owner, OwnerRef, SchemaId, SchemaVersion, SidecarPayload,
+    UserId,
 };
 use proxima_storage_pg::verbs::derive_append::{DerivedDraft, append_derived_with_edges_in_tx};
 use proxima_storage_pg::{PgSidecarRegistryFrozen, verbs::derive_append::DerivedOutcome};
@@ -35,6 +35,7 @@ fn agent_draft(
         source_batch_id: None,
         model_id: "claude-opus-4.7",
         prompt_version: "mcp-agent-v1",
+        authoring_perspective_id: None,
         supersedes: None,
         lexical_language: None,
         embedding: DerivedEmbedding::None,
@@ -89,15 +90,16 @@ fn agent_sidecar(kind: EntityKind, title: &'static str, body: &'static str) -> S
 async fn append_with_sidecar(
     tx: &mut Transaction<'_, Postgres>,
     sidecars: &PgSidecarRegistryFrozen,
-    registry: &FlavorRegistryFrozen,
     draft: &DerivedDraft<'_>,
     sidecar: &SidecarPayload,
     source: MemoryId,
 ) -> Result<DerivedOutcome, StorageError> {
-    let relation = registry
-        .resolve_relation(CORE_DERIVED_FROM_RELATION)
-        .expect("core derived-from relation registered");
-    let edges = [derived_edge(&draft.owner, draft, source, relation)];
+    // The declaration is a target, never a kind: what follows is an `origin`
+    // row because a derivation declaration is what produced it.
+    let origins = [EdgeEndpoint::memory(
+        draft.operator_kind.phase().input_kind(),
+        source,
+    )];
     let sidecars = sidecars.clone();
     let sidecar = sidecar.clone();
     let access_kind = match draft.kind {
@@ -109,7 +111,7 @@ async fn append_with_sidecar(
     let permit = owner_write_permit(&draft.owner, access_kind)
         .await
         .map_err(|err| StorageError::Internal(err.to_string()))?;
-    append_derived_with_edges_in_tx(tx, &permit, draft, &edges, move |tx, outcome| {
+    append_derived_with_edges_in_tx(tx, &permit, draft, &origins, &[], move |tx, outcome| {
         Box::pin(async move {
             sidecars
                 .insert_memory_sidecar(tx, outcome.memory_id, &sidecar)
@@ -117,26 +119,6 @@ async fn append_with_sidecar(
         })
     })
     .await
-}
-
-fn derived_edge<'a>(
-    owner: &'a Owner,
-    draft: &DerivedDraft<'_>,
-    source: MemoryId,
-    relation: RegisteredRelation<'a>,
-) -> DerivedEdgeSpec<'a> {
-    let target_kind = draft.operator_kind.phase().input_kind();
-    DerivedEdgeSpec {
-        owner,
-        relation,
-        source_kind: draft.kind,
-        source_memory_id: MemoryId::new(draft.memory_id),
-        target_kind,
-        target_memory_id: source,
-        authorship_kind: draft.operator_kind.edge_authorship(),
-        authorship_owner_memory_id: Some(source),
-        sidecar_payload: None,
-    }
 }
 
 #[tokio::test]
@@ -147,7 +129,6 @@ async fn external_agent_abstraction_persists_with_replay() -> Result<(), Box<dyn
     let result = async {
         pg.run_migrations().await?;
         let owner = owner_fixture();
-        let registry = test_registry();
         let source = insert_source_abstraction(&pg, &owner, "derive-test-1-source").await?;
         let memory_id = uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_OID, b"derive-test-1");
         let draft = agent_draft(
@@ -160,17 +141,13 @@ async fn external_agent_abstraction_persists_with_replay() -> Result<(), Box<dyn
         let sidecar = agent_sidecar(EntityKind::Abstraction, "x", "the agent view");
 
         let mut tx = pg.pool_for_tests().begin().await?;
-        let outcome =
-            append_with_sidecar(&mut tx, pg.sidecars(), &registry, &draft, &sidecar, source)
-                .await?;
+        let outcome = append_with_sidecar(&mut tx, pg.sidecars(), &draft, &sidecar, source).await?;
         tx.commit().await?;
         assert_eq!(outcome.memory_id.into_inner(), memory_id);
         assert!(!outcome.idempotent_replay);
 
         let mut tx = pg.pool_for_tests().begin().await?;
-        let replay =
-            append_with_sidecar(&mut tx, pg.sidecars(), &registry, &draft, &sidecar, source)
-                .await?;
+        let replay = append_with_sidecar(&mut tx, pg.sidecars(), &draft, &sidecar, source).await?;
         tx.commit().await?;
         assert!(replay.idempotent_replay);
 
@@ -197,7 +174,6 @@ async fn derived_replay_rejects_mismatched_input_contract() -> Result<(), Box<dy
     let result = async {
         pg.run_migrations().await?;
         let owner = owner_fixture();
-        let registry = test_registry();
         let source =
             insert_source_abstraction(&pg, &owner, "derive-mismatch-contract-source").await?;
         let memory_id = Uuid::new_v5(&Uuid::NAMESPACE_OID, b"derive-mismatch-contract");
@@ -211,22 +187,15 @@ async fn derived_replay_rejects_mismatched_input_contract() -> Result<(), Box<dy
         let sidecar = agent_sidecar(EntityKind::Abstraction, "x", "the agent view");
 
         let mut tx = pg.pool_for_tests().begin().await?;
-        append_with_sidecar(&mut tx, pg.sidecars(), &registry, &draft, &sidecar, source).await?;
+        append_with_sidecar(&mut tx, pg.sidecars(), &draft, &sidecar, source).await?;
         tx.commit().await?;
 
         let mut mismatch = draft.clone();
         mismatch.input_contract_id = InputContractId::new(Uuid::now_v7());
         let mut tx = pg.pool_for_tests().begin().await?;
-        let err = append_with_sidecar(
-            &mut tx,
-            pg.sidecars(),
-            &registry,
-            &mismatch,
-            &sidecar,
-            source,
-        )
-        .await
-        .expect_err("mismatched proof metadata must not replay");
+        let err = append_with_sidecar(&mut tx, pg.sidecars(), &mismatch, &sidecar, source)
+            .await
+            .expect_err("mismatched proof metadata must not replay");
         tx.rollback().await?;
         assert!(
             err.to_string()
@@ -247,7 +216,6 @@ async fn external_agent_perspective_persists() -> Result<(), Box<dyn std::error:
     let result = async {
         pg.run_migrations().await?;
         let owner = owner_fixture();
-        let registry = test_registry();
         let source = insert_source_abstraction(&pg, &owner, "derive-test-2-source").await?;
         let memory_id = uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_OID, b"derive-test-2");
         let draft = agent_draft(
@@ -259,7 +227,7 @@ async fn external_agent_perspective_persists() -> Result<(), Box<dyn std::error:
         );
         let sidecar = agent_sidecar(EntityKind::Perspective, "p", "perspective body");
         let mut tx = pg.pool_for_tests().begin().await?;
-        append_with_sidecar(&mut tx, pg.sidecars(), &registry, &draft, &sidecar, source).await?;
+        append_with_sidecar(&mut tx, pg.sidecars(), &draft, &sidecar, source).await?;
         tx.commit().await?;
         let kind: EntityKind =
             sqlx::query_scalar("SELECT kind FROM proxima_core.memories WHERE memory_id = $1")
@@ -285,7 +253,6 @@ async fn append_derived_in_tx_enforces_supersedes_owner_and_kind()
         pg.run_migrations().await?;
         let attacker = owner_fixture();
         let victim = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
-        let registry = test_registry();
         let victim_source = insert_source_abstraction(&pg, &victim, "derive-victim-source").await?;
         let attacker_source =
             insert_source_abstraction(&pg, &attacker, "derive-attacker-source").await?;
@@ -303,7 +270,6 @@ async fn append_derived_in_tx_enforces_supersedes_owner_and_kind()
         append_with_sidecar(
             &mut tx,
             pg.sidecars(),
-            &registry,
             &victim_prior,
             &victim_sidecar,
             victim_source,
@@ -325,7 +291,6 @@ async fn append_derived_in_tx_enforces_supersedes_owner_and_kind()
         let err = append_with_sidecar(
             &mut tx,
             pg.sidecars(),
-            &registry,
             &foreign,
             &foreign_sidecar,
             attacker_source,
@@ -350,7 +315,6 @@ async fn append_derived_in_tx_enforces_supersedes_owner_and_kind()
         append_with_sidecar(
             &mut tx,
             pg.sidecars(),
-            &registry,
             &attacker_prior,
             &attacker_sidecar,
             attacker_source,
@@ -375,7 +339,6 @@ async fn append_derived_in_tx_enforces_supersedes_owner_and_kind()
         append_with_sidecar(
             &mut tx,
             pg.sidecars(),
-            &registry,
             &same_owner,
             &same_owner_sidecar,
             attacker_source,
@@ -404,7 +367,6 @@ async fn append_derived_in_tx_enforces_supersedes_owner_and_kind()
         append_with_sidecar(
             &mut tx,
             pg.sidecars(),
-            &registry,
             &attacker_perspective,
             &perspective_sidecar,
             attacker_source,
@@ -429,7 +391,6 @@ async fn append_derived_in_tx_enforces_supersedes_owner_and_kind()
         let err = append_with_sidecar(
             &mut tx,
             pg.sidecars(),
-            &registry,
             &wrong_kind,
             &wrong_kind_sidecar,
             attacker_source,
@@ -503,7 +464,6 @@ async fn derived_replay_does_not_register_its_language() -> Result<(), Box<dyn s
     let result = async {
         pg.run_migrations().await?;
         let owner = owner_fixture();
-        let registry = test_registry();
         let source = insert_source_abstraction(&pg, &owner, "derive-lang-replay-source").await?;
         let memory_id = uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_OID, b"derive-lang-replay");
         let operator_id = OperatorId::new(uuid::Uuid::new_v5(
@@ -527,6 +487,7 @@ async fn derived_replay_does_not_register_its_language() -> Result<(), Box<dyn s
             source_batch_id: None,
             model_id: "claude-opus-4.7",
             prompt_version: "mcp-agent-v1",
+            authoring_perspective_id: None,
             supersedes: None,
             lexical_language: language,
             embedding: DerivedEmbedding::None,
@@ -537,7 +498,6 @@ async fn derived_replay_does_not_register_its_language() -> Result<(), Box<dyn s
         let outcome = append_with_sidecar(
             &mut tx,
             pg.sidecars(),
-            &registry,
             &draft_in(Some("german")),
             &sidecar,
             source,
@@ -563,7 +523,6 @@ async fn derived_replay_does_not_register_its_language() -> Result<(), Box<dyn s
         let replay = append_with_sidecar(
             &mut tx,
             pg.sidecars(),
-            &registry,
             &draft_in(Some("italian")),
             &sidecar,
             source,
@@ -588,7 +547,6 @@ async fn derived_replay_does_not_register_its_language() -> Result<(), Box<dyn s
         let replay = append_with_sidecar(
             &mut tx,
             pg.sidecars(),
-            &registry,
             &draft_in(Some("klingon")),
             &sidecar,
             source,
