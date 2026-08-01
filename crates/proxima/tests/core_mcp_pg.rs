@@ -484,13 +484,9 @@ async fn cross_space_derive_succeeds_when_sources_readable() {
                 .is_some_and(|handle| handle.starts_with("A:")),
             "cross-space derive must return an Abstraction handle, got {derived}"
         );
-        assert_eq!(
-            derived["provenance_edge_handles"]
-                .as_array()
-                .expect("provenance edges")
-                .len(),
-            2
-        );
+        // Two `origin` rows, reported as a count: an edge has no handle to
+        // hand back, and re-running the derivation re-asserts the same rows.
+        assert_eq!(derived["edge_count"], serde_json::json!(2));
 
         built.shutdown();
         Ok(())

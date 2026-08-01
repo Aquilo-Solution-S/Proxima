@@ -1,8 +1,7 @@
 use proxima::flavor::{
-    AuthorshipKindMask, EntityKindMask, FactPayload, FlavorDescriptor, FlavorProvenance,
-    FlavorRegistry, FlavorRegistryError, PayloadKeyBuilder, RelationClass, RelationDescriptor,
+    FactPayload, FlavorDescriptor, FlavorProvenance, FlavorRegistry, FlavorRegistryError,
+    PayloadKeyBuilder,
 };
-use proxima_core::EndpointBinding;
 use proxima_core::mcp::core_tools::SearchMemoriesTool;
 use uuid::Uuid;
 
@@ -27,27 +26,12 @@ impl FactPayload for ConformanceFact {
 }
 
 #[test]
-fn duplicate_schema_relation_tool_and_flavor_return_typed_errors() {
+fn duplicate_schema_tool_and_flavor_return_typed_errors() {
     let mut registry = FlavorRegistry::new();
     registry.try_add_fact_schema::<ConformanceFact>().unwrap();
     registry.try_add_fact_schema::<ConformanceFact>().unwrap();
     let err = registry.try_freeze().unwrap_err();
     assert!(matches!(err, FlavorRegistryError::DuplicateSchema { .. }));
-
-    let mut registry = FlavorRegistry::new();
-    let descriptor = RelationDescriptor::substrate(
-        "proxima-conformance/rel",
-        RelationClass::Structural,
-        EndpointBinding::Pin,
-        EndpointBinding::Pin,
-        EntityKindMask::memory(),
-        EntityKindMask::memory(),
-        AuthorshipKindMask::external_agent(),
-    );
-    registry.try_add_relation(descriptor.clone()).unwrap();
-    registry.try_add_relation(descriptor).unwrap();
-    let err = registry.try_freeze().unwrap_err();
-    assert!(matches!(err, FlavorRegistryError::DuplicateRelation { .. }));
 
     let mut registry = FlavorRegistry::new();
     registry

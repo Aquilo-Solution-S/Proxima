@@ -63,8 +63,6 @@ proxima::flavor::proxima_flavor! {
     abstraction_schemas = [],
     perspective_schemas = [],
     goal_schemas = [],
-    edge_schemas = [],
-    relations = [],
     mcp_tools = [],
 }
 
@@ -139,17 +137,17 @@ mod tests {
                 &payload,
                 time::OffsetDateTime::now_utc(),
             );
+            // The sidecars go in at authorization now: the engine reads the
+            // typed payload's `references()` there, resolves each target and
+            // read-checks it before storage ever sees an index row.
+            let sidecars = [SidecarPayload::fact(payload.clone())];
             let authorized = booted
                 .engine
-                .authorize_fact_ingest(&authz, Relation::Ingest, draft)
+                .authorize_fact_ingest(&authz, Relation::Ingest, draft, &sidecars)
                 .await?;
             let outcome = booted
                 .engine
-                .ingest_fact_with_typed_sidecar(
-                    &authorized,
-                    std::slice::from_ref(&SidecarPayload::fact(payload.clone())),
-                    None,
-                )
+                .ingest_fact_with_typed_sidecar(&authorized, &sidecars, None)
                 .await?;
 
             let loaded = DocumentFiledV1::load_batch(
