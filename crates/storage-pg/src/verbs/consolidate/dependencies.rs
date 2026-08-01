@@ -1,10 +1,13 @@
-use proxima_core::{
-    CORE_DEPENDS_ON_RELATION, MemoryDependency, MemoryId, Owner, SchemaId, StorageError,
-};
+use proxima_core::{MemoryDependency, MemoryId, Owner, SchemaId, StorageError};
 use sqlx::{PgPool, Row};
 
 use crate::error::map_err;
 
+/// What one memory points at.
+///
+/// A dependency used to be its own relation; it is now simply a reference the
+/// memory's payload declared. The index answers "is there a connection"; the
+/// payload answers "what is it".
 pub async fn list_memory_dependencies(
     pool: &PgPool,
     owner: &Owner,
@@ -12,27 +15,23 @@ pub async fn list_memory_dependencies(
 ) -> Result<Vec<MemoryDependency>, StorageError> {
     let (owner_kind, owner_id) = owner.columns();
     let rows = sqlx::query(
-        "SELECT e.target_memory_id, m.schema_id
+        "SELECT e.target_id AS target_memory_id, m.schema_id
          FROM proxima_core.edges e
          JOIN proxima_core.memories m
-           ON m.memory_id = e.target_memory_id
+           ON m.memory_id = e.target_id
           AND m.tombstoned_at IS NULL
-         WHERE EXISTS (
-                    SELECT 1
-                      FROM (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) eo
-                     WHERE eo.entity_id = e.source_memory_id
-                       AND eo.owner_kind = $1
-                       AND eo.owner_id = $2
-)
-           AND e.relation = $3
-           AND e.source_kind IN ('Fact', 'Abstraction', 'Perspective')
-           AND e.source_memory_id = $4
-           AND e.target_memory_id IS NOT NULL
-         ORDER BY e.created_at, e.edge_id",
+         WHERE e.kind = 'reference'::proxima_core.edge_kind
+           AND e.source_kind IN ('Fact'::proxima_core.edge_endpoint_kind,
+                                 'Abstraction'::proxima_core.edge_endpoint_kind,
+                                 'Perspective'::proxima_core.edge_endpoint_kind)
+           AND e.target_kind <> 'Goal'::proxima_core.edge_endpoint_kind
+           AND e.source_id = $3
+           AND e.owner_kind = $1
+           AND e.owner_id IS NOT DISTINCT FROM $2
+         ORDER BY e.created_at, e.target_id",
     )
     .bind(owner_kind)
     .bind(owner_id)
-    .bind(CORE_DEPENDS_ON_RELATION)
     .bind(source_memory_id.into_inner())
     .fetch_all(pool)
     .await

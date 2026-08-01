@@ -1,4 +1,4 @@
-use super::{EdgeId, FromRow, MemoryId, PgPool, PgRow, Postgres, StorageError};
+use super::{FromRow, MemoryId, PgPool, PgRow, Postgres, StorageError};
 
 #[derive(Clone, Copy, Debug)]
 pub struct PgSidecarReadCtx<'a> {
@@ -89,31 +89,6 @@ impl PgSidecarReadCtx<'_> {
             .collect::<Vec<_>>();
         sqlx::query_as(sqlx::AssertSqlSafe(sql))
             .bind(&raw_memory_ids)
-            .fetch_all(self.pool)
-            .await
-            .map_err(|err| StorageError::Internal(err.to_string()))
-    }
-
-    /// Fetch sidecar rows using a backend-owned, `ANY($1)` edge-id query.
-    ///
-    /// # Errors
-    ///
-    /// Returns `StorageError` when SQL validation or query execution fails.
-    pub async fn fetch_all_by_edge_ids<T>(
-        self,
-        sql: &str,
-        edge_ids: &[EdgeId],
-    ) -> Result<Vec<T>, StorageError>
-    where
-        for<'r> T: FromRow<'r, PgRow> + Send + Unpin,
-    {
-        validate_sidecar_read_sql(sql, self.allow_core_schema)?;
-        let raw_edge_ids = edge_ids
-            .iter()
-            .map(|edge_id| (*edge_id).into_inner())
-            .collect::<Vec<_>>();
-        sqlx::query_as(sqlx::AssertSqlSafe(sql))
-            .bind(&raw_edge_ids)
             .fetch_all(self.pool)
             .await
             .map_err(|err| StorageError::Internal(err.to_string()))

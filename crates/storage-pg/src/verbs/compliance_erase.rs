@@ -76,7 +76,6 @@ pub async fn erase_group_owner_if_abandoned(
     object_purge_planned: bool,
     fact_sidecar_tables: &[String],
     goal_sidecar_tables: &[String],
-    edge_sidecar_tables: &[String],
     citation_mapping_sidecar_tables: &[String],
     cited_object_sidecar_tables: &[String],
 ) -> Result<ComplianceEraseOutcome, StorageError> {
@@ -106,7 +105,6 @@ pub async fn erase_group_owner_if_abandoned(
         SelectionScope::Owner,
         fact_sidecar_tables,
         goal_sidecar_tables,
-        edge_sidecar_tables,
         citation_mapping_sidecar_tables,
         cited_object_sidecar_tables,
     )
@@ -129,7 +127,6 @@ pub async fn erase_personal_owner_if_drop_verified(
     object_purge_planned: bool,
     fact_sidecar_tables: &[String],
     goal_sidecar_tables: &[String],
-    edge_sidecar_tables: &[String],
     citation_mapping_sidecar_tables: &[String],
     cited_object_sidecar_tables: &[String],
 ) -> Result<ComplianceEraseOutcome, StorageError> {
@@ -146,7 +143,6 @@ pub async fn erase_personal_owner_if_drop_verified(
         SelectionScope::Owner,
         fact_sidecar_tables,
         goal_sidecar_tables,
-        edge_sidecar_tables,
         citation_mapping_sidecar_tables,
         cited_object_sidecar_tables,
     )
@@ -169,7 +165,6 @@ pub async fn erase_group_source_scope_if_owner_abandoned(
     source_id: &SourceId,
     fact_sidecar_tables: &[String],
     goal_sidecar_tables: &[String],
-    edge_sidecar_tables: &[String],
     citation_mapping_sidecar_tables: &[String],
     cited_object_sidecar_tables: &[String],
 ) -> Result<ComplianceEraseOutcome, StorageError> {
@@ -199,7 +194,6 @@ pub async fn erase_group_source_scope_if_owner_abandoned(
         SelectionScope::Source(source_id),
         fact_sidecar_tables,
         goal_sidecar_tables,
-        edge_sidecar_tables,
         citation_mapping_sidecar_tables,
         cited_object_sidecar_tables,
     )
@@ -222,7 +216,6 @@ pub async fn erase_personal_source_scope_if_drop_verified(
     source_id: &SourceId,
     fact_sidecar_tables: &[String],
     goal_sidecar_tables: &[String],
-    edge_sidecar_tables: &[String],
     citation_mapping_sidecar_tables: &[String],
     cited_object_sidecar_tables: &[String],
 ) -> Result<ComplianceEraseOutcome, StorageError> {
@@ -239,7 +232,6 @@ pub async fn erase_personal_source_scope_if_drop_verified(
         SelectionScope::Source(source_id),
         fact_sidecar_tables,
         goal_sidecar_tables,
-        edge_sidecar_tables,
         citation_mapping_sidecar_tables,
         cited_object_sidecar_tables,
     )
@@ -286,7 +278,6 @@ async fn erase_selected(
     scope: SelectionScope<'_>,
     fact_sidecar_tables: &[String],
     goal_sidecar_tables: &[String],
-    edge_sidecar_tables: &[String],
     citation_mapping_sidecar_tables: &[String],
     cited_object_sidecar_tables: &[String],
 ) -> Result<(), StorageError> {
@@ -311,31 +302,9 @@ async fn erase_selected(
     record_count(tx, "redacted_edge_targets", redactions).await?;
     record_count(tx, "suppressed_keys", suppressed).await?;
 
-    delete_dynamic_sidecars(
-        tx,
-        edge_sidecar_tables,
-        "edge_id",
-        "selected_edges",
-        "edge_id",
-    )
-    .await?;
-    delete_fixed_by_selected(
-        tx,
-        "proxima_core.agent_link_v1",
-        "edge_id",
-        "selected_edges",
-        "edge_id",
-        "edges",
-    )
-    .await?;
-    let edges = delete_selected_table(
-        tx,
-        "proxima_core.edges",
-        "edge_id",
-        "selected_edges",
-        "edge_id",
-    )
-    .await?;
+    // No edge sidecars to sweep: an edge carries no content, so there is
+    // nothing hanging off it to erase.
+    let edges = delete_selected_edges(tx).await?;
     record_count(tx, "edges", edges).await?;
 
     let change_events = delete_change_events(tx, owner).await?;
@@ -704,44 +673,55 @@ async fn create_selected_sets(
     .await
     .map_err(map_err)?;
 
-    sqlx::query("CREATE TEMP TABLE selected_edges(edge_id uuid PRIMARY KEY) ON COMMIT DROP")
-        .execute(&mut **tx)
-        .await
-        .map_err(map_err)?;
-    match scope {
-        SelectionScope::Owner => {
-            sqlx::query(
-                "INSERT INTO selected_edges(edge_id)
-                 SELECT e.edge_id
-                   FROM proxima_core.edges e
-                  WHERE (e.owner_kind = $1 AND e.owner_id IS NOT DISTINCT FROM $2)
-                     OR EXISTS (SELECT 1 FROM selected_memories sm WHERE sm.memory_id = e.source_memory_id)
-                     OR EXISTS (SELECT 1 FROM selected_goals sg WHERE sg.goal_id = e.source_goal_id)
-                     OR EXISTS (SELECT 1 FROM selected_fact_entities sfe WHERE sfe.fact_entity_id = e.source_fact_entity_id)
-                     OR EXISTS (SELECT 1 FROM selected_memories sm WHERE sm.memory_id = e.authorship_owner_memory_id)",
-            )
-            .bind(owner_kind)
-            .bind(owner_id)
-            .execute(&mut **tx)
-            .await
-            .map_err(map_err)?;
-        }
-        SelectionScope::Source(_) => {
-            sqlx::query(
-                "INSERT INTO selected_edges(edge_id)
-                 SELECT e.edge_id
-                   FROM proxima_core.edges e
-                  WHERE EXISTS (SELECT 1 FROM selected_memories sm WHERE sm.memory_id = e.source_memory_id)
-                     OR EXISTS (SELECT 1 FROM selected_goals sg WHERE sg.goal_id = e.source_goal_id)
-                     OR EXISTS (SELECT 1 FROM selected_fact_entities sfe WHERE sfe.fact_entity_id = e.source_fact_entity_id)
-                     OR EXISTS (SELECT 1 FROM selected_memories sm WHERE sm.memory_id = e.authorship_owner_memory_id)",
-            )
-            .execute(&mut **tx)
-            .await
-            .map_err(map_err)?;
-        }
-    }
+    // An edge has no id, so the selection carries the key itself. It is
+    // selected when its SOURCE is going — the row is owned by the source
+    // owner, and an edge whose source survives keeps existing with its
+    // target withheld (that is what the redaction table records).
+    sqlx::query(
+        "CREATE TEMP TABLE selected_edges(
+             source_kind proxima_core.edge_endpoint_kind,
+             source_id uuid,
+             target_kind proxima_core.edge_endpoint_kind,
+             target_id uuid,
+             kind proxima_core.edge_kind,
+             PRIMARY KEY (source_kind, source_id, target_kind, target_id, kind)
+         ) ON COMMIT DROP",
+    )
+    .execute(&mut **tx)
+    .await
+    .map_err(map_err)?;
+    let owner_scoped = matches!(scope, SelectionScope::Owner);
+    sqlx::query(
+        "INSERT INTO selected_edges(source_kind, source_id, target_kind, target_id, kind)
+         SELECT e.source_kind, e.source_id, e.target_kind, e.target_id, e.kind
+           FROM proxima_core.edges e
+          WHERE ($3::boolean AND e.owner_kind = $1 AND e.owner_id IS NOT DISTINCT FROM $2)
+             OR EXISTS (SELECT 1 FROM selected_memories sm WHERE sm.memory_id = e.source_id)
+             OR EXISTS (SELECT 1 FROM selected_goals sg WHERE sg.goal_id = e.source_id)
+             OR EXISTS (SELECT 1 FROM selected_fact_entities sfe
+                         WHERE sfe.fact_entity_id = e.source_id)",
+    )
+    .bind(owner_kind)
+    .bind(owner_id)
+    .bind(owner_scoped)
+    .execute(&mut **tx)
+    .await
+    .map_err(map_err)?;
     Ok(())
+}
+
+async fn delete_selected_edges(tx: &mut Tx<'_>) -> Result<u64, StorageError> {
+    let result = sqlx::query(
+        "DELETE FROM proxima_core.edges e
+          USING selected_edges se
+          WHERE e.source_kind = se.source_kind AND e.source_id = se.source_id
+            AND e.target_kind = se.target_kind AND e.target_id = se.target_id
+            AND e.kind = se.kind",
+    )
+    .execute(&mut **tx)
+    .await
+    .map_err(map_err)?;
+    Ok(result.rows_affected())
 }
 
 async fn repoint_surviving_fact_entity_heads(tx: &mut Tx<'_>) -> Result<(), StorageError> {
@@ -775,15 +755,21 @@ async fn repoint_surviving_fact_entity_heads(tx: &mut Tx<'_>) -> Result<(), Stor
 
 async fn insert_redactions(tx: &mut Tx<'_>, operation_id: uuid::Uuid) -> Result<u64, StorageError> {
     let result = sqlx::query(
-        "INSERT INTO proxima_core.compliance_edge_target_redactions(operation_id, edge_id, target_kind, target_id)
-         SELECT $1, e.edge_id, e.target_kind,
-                COALESCE(e.target_memory_id, e.target_goal_id, e.target_fact_entity_id)
+        "INSERT INTO proxima_core.compliance_edge_target_redactions
+            (operation_id, source_kind, source_id, target_kind, target_id, kind)
+         SELECT $1, e.source_kind, e.source_id, e.target_kind, e.target_id, e.kind
            FROM proxima_core.edges e
-          WHERE NOT EXISTS (SELECT 1 FROM selected_edges se WHERE se.edge_id = e.edge_id)
+          WHERE NOT EXISTS (
+                    SELECT 1 FROM selected_edges se
+                     WHERE se.source_kind = e.source_kind AND se.source_id = e.source_id
+                       AND se.target_kind = e.target_kind AND se.target_id = e.target_id
+                       AND se.kind = e.kind
+                )
             AND (
-                EXISTS (SELECT 1 FROM selected_memories sm WHERE sm.memory_id = e.target_memory_id)
-                OR EXISTS (SELECT 1 FROM selected_goals sg WHERE sg.goal_id = e.target_goal_id)
-                OR EXISTS (SELECT 1 FROM selected_fact_entities sfe WHERE sfe.fact_entity_id = e.target_fact_entity_id)
+                EXISTS (SELECT 1 FROM selected_memories sm WHERE sm.memory_id = e.target_id)
+                OR EXISTS (SELECT 1 FROM selected_goals sg WHERE sg.goal_id = e.target_id)
+                OR EXISTS (SELECT 1 FROM selected_fact_entities sfe
+                            WHERE sfe.fact_entity_id = e.target_id)
             )
          ON CONFLICT DO NOTHING",
     )
@@ -1324,9 +1310,28 @@ async fn delete_goal_refs(tx: &mut Tx<'_>) -> Result<(), StorageError> {
 }
 
 async fn delete_memory_refs(tx: &mut Tx<'_>) -> Result<(), StorageError> {
+    // Both ends of the lineage pointer, and the authorship column: every
+    // reference into the selection has to be cleared before the rows go.
     sqlx::query(
         "UPDATE proxima_core.memories m SET supersedes = NULL
           WHERE EXISTS (SELECT 1 FROM selected_memories sm WHERE sm.memory_id = m.supersedes)",
+    )
+    .execute(&mut **tx)
+    .await
+    .map_err(map_err)?;
+    sqlx::query(
+        "UPDATE proxima_core.memories m SET superseded_by = NULL
+          WHERE EXISTS (SELECT 1 FROM selected_memories sm WHERE sm.memory_id = m.superseded_by)",
+    )
+    .execute(&mut **tx)
+    .await
+    .map_err(map_err)?;
+    sqlx::query(
+        "UPDATE proxima_core.memories m SET authoring_perspective_id = NULL
+          WHERE EXISTS (
+              SELECT 1 FROM selected_memories sm
+               WHERE sm.memory_id = m.authoring_perspective_id
+          )",
     )
     .execute(&mut **tx)
     .await
@@ -1343,10 +1348,15 @@ async fn delete_change_events(tx: &mut Tx<'_>, owner: OwnerRef) -> Result<u64, S
             AND (
                 EXISTS (SELECT 1 FROM selected_memories sm WHERE sm.memory_id = ce.entity_memory_id)
                 OR EXISTS (SELECT 1 FROM selected_goals sg WHERE sg.goal_id = ce.entity_goal_id)
-                OR EXISTS (SELECT 1 FROM selected_edges se WHERE se.edge_id = ce.edge_id)
-                OR EXISTS (SELECT 1 FROM selected_memories sm WHERE sm.memory_id = ce.edge_source_memory_id OR sm.memory_id = ce.edge_target_memory_id)
-                OR EXISTS (SELECT 1 FROM selected_goals sg WHERE sg.goal_id = ce.edge_source_goal_id OR sg.goal_id = ce.edge_target_goal_id)
-                OR EXISTS (SELECT 1 FROM selected_fact_entities sfe WHERE sfe.fact_entity_id = ce.edge_source_fact_entity_id OR sfe.fact_entity_id = ce.edge_target_fact_entity_id)
+                OR EXISTS (
+                    SELECT 1 FROM selected_edges se
+                     WHERE se.source_kind = ce.edge_source_kind AND se.source_id = ce.edge_source_id
+                       AND se.target_kind = ce.edge_target_kind AND se.target_id = ce.edge_target_id
+                       AND se.kind = ce.edge_kind
+                )
+                OR EXISTS (SELECT 1 FROM selected_memories sm WHERE sm.memory_id = ce.edge_source_id OR sm.memory_id = ce.edge_target_id)
+                OR EXISTS (SELECT 1 FROM selected_goals sg WHERE sg.goal_id = ce.edge_source_id OR sg.goal_id = ce.edge_target_id)
+                OR EXISTS (SELECT 1 FROM selected_fact_entities sfe WHERE sfe.fact_entity_id = ce.edge_source_id OR sfe.fact_entity_id = ce.edge_target_id)
             )",
     )
     .bind(owner_kind)

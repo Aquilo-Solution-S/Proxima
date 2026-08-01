@@ -19,8 +19,9 @@ use proxima_core::verbs::fact_ingest::{
     Citation, CitationSpec, FactIngestOutcome, FactWriteCommand,
 };
 use proxima_core::{
-    AuthorizedFactWithCitation, AuthorizedFactWithCitationRef, AuthorizedFactWrite, EntityKind,
-    FactPayload, FactReceiptId, MemoryId, Owner, SchemaId, SourceBatchId, StorageError,
+    AuthorizedFactWithCitation, AuthorizedFactWithCitationRef, AuthorizedFactWrite, EdgeEndpoint,
+    EdgeKind, EntityKind, FactPayload, FactReceiptId, MemoryId, Owner, SchemaId, SourceBatchId,
+    StorageError,
 };
 use sqlx::{PgPool, Postgres, Transaction};
 
@@ -28,6 +29,7 @@ use crate::access::owner_columns::owner_binds;
 use crate::error::{internal, map_err, with_bounded_retry};
 use crate::pg_ident::PgIdent;
 use crate::sidecars::{PgMemorySidecar, PgSidecarRegistryFrozen};
+use crate::verbs::edge_index::assert_index_rows_in_tx;
 
 pub type FactIngestSidecarFuture<'t> =
     Pin<Box<dyn Future<Output = Result<(), StorageError>> + Send + 't>>;
@@ -107,6 +109,32 @@ struct IngestCoreOptions<'a> {
     embedding_model_id: Option<&'a str>,
     derive_inputs: Option<FactEntityDeriveInputs<'a>>,
     citation_plan: CitationPlan<'a>,
+    /// What the Fact declares it was made from, and what its typed payload
+    /// points at. One `origin` row per entry of the first, one `reference`
+    /// row per entry of the second, written in this Fact's own transaction —
+    /// which is what makes them idempotent without an id scheme.
+    links: FactLinks<'a>,
+    /// Perspective that emitted this Fact, stamped on the row.
+    authoring_perspective_id: Option<MemoryId>,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct FactLinks<'a> {
+    origins: &'a [EdgeEndpoint],
+    references: &'a [EdgeEndpoint],
+}
+
+impl<'a> FactLinks<'a> {
+    const fn new(origins: &'a [EdgeEndpoint], references: &'a [EdgeEndpoint]) -> Self {
+        Self {
+            origins,
+            references,
+        }
+    }
+
+    const fn is_empty(&self) -> bool {
+        self.origins.is_empty() && self.references.is_empty()
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -186,7 +214,8 @@ pub async fn ingest_fact_atomic(
     // Retry the whole transaction on transient deadlock/serialization.
     with_bounded_retry(move || async move {
         let mut tx = pool.begin().await.map_err(internal)?;
-        let outcome = ingest_fact_command_in_tx(&mut tx, permit, draft, embedding_model_id).await?;
+        let outcome =
+            ingest_fact_command_in_tx(&mut tx, permit, draft, embedding_model_id, None).await?;
         tx.commit().await.map_err(map_err)?;
         Ok(outcome)
     })
@@ -315,12 +344,39 @@ where
         sidecar_table: P::sidecar_table(),
         natural_key_columns: &natural_key_columns,
     };
+    // A payload's schema-declared reference fields are read here, not passed
+    // in: the payload IS the declaration, so a flavor ingest helper cannot
+    // forget to hand them over and cannot invent one either.
+    let references = payload_reference_targets(payload)?;
     let options = IngestCoreOptions {
         embedding_model_id,
         derive_inputs: Some(derive_inputs),
         citation_plan: CitationPlan::DraftHint,
+        links: FactLinks::new(&draft.derived_from, &references),
+        authoring_perspective_id: None,
     };
     ingest_core(tx, permit.owner(), &draft, options, sidecar).await
+}
+
+/// Read a typed Fact payload's schema-declared reference fields as index
+/// targets.
+///
+/// A declaration whose binding disagrees with the address form it produced is
+/// refused rather than coerced: `FollowHead` and `Pin` are different
+/// statements about what the reference means when the target is re-observed.
+fn payload_reference_targets<P: FactPayload>(
+    payload: &P,
+) -> Result<Vec<EdgeEndpoint>, StorageError> {
+    payload
+        .references()
+        .into_iter()
+        .map(|reference| {
+            reference
+                .validate()
+                .map(|()| reference.target)
+                .map_err(StorageError::ConstraintViolation)
+        })
+        .collect()
 }
 
 /// Transaction-scoped uncited Fact ingest helper with no caller-owned sidecar.
@@ -449,6 +505,7 @@ where
     )
     .with_citation(citation);
     let sidecar_payload = payload.clone();
+    let references = payload_reference_targets(payload)?;
     ingest_fact_with_derived_sidecar_in_tx(
         tx,
         ctx.permit,
@@ -456,6 +513,7 @@ where
         ctx.embedding_model_id,
         P::sidecar_table(),
         P::natural_key_columns(),
+        &references,
         move |tx, outcome| {
             Box::pin(async move {
                 sidecar_payload
@@ -483,11 +541,14 @@ pub(crate) async fn ingest_fact_command_in_tx(
     permit: &OwnerWritePermit,
     draft: &FactWriteCommand,
     embedding_model_id: Option<&str>,
+    authoring_perspective_id: Option<MemoryId>,
 ) -> Result<FactIngestOutcome, StorageError> {
     let options = IngestCoreOptions {
         embedding_model_id,
         derive_inputs: None,
         citation_plan: CitationPlan::DraftHint,
+        links: FactLinks::new(&draft.derived_from, &[]),
+        authoring_perspective_id,
     };
     ingest_core(tx, permit.owner(), draft, options, |_tx, _outcome| {
         Box::pin(async { Ok(()) })
@@ -508,6 +569,7 @@ pub(crate) async fn ingest_fact_command_in_tx(
 /// Returns storage errors from Fact materialization, sidecar
 /// insertion, Fact-entity derivation, or embedding enqueue. The caller
 /// owns transaction rollback/commit.
+#[allow(clippy::too_many_arguments)] // one parameter per typed-ingest input
 pub(crate) async fn ingest_fact_with_derived_sidecar_in_tx<F>(
     tx: &mut Transaction<'_, Postgres>,
     permit: &OwnerWritePermit,
@@ -515,6 +577,7 @@ pub(crate) async fn ingest_fact_with_derived_sidecar_in_tx<F>(
     embedding_model_id: Option<&str>,
     sidecar_table: Option<&str>,
     natural_key_columns: &[&str],
+    references: &[EdgeEndpoint],
     sidecar: F,
 ) -> Result<FactIngestOutcome, StorageError>
 where
@@ -536,6 +599,8 @@ where
         embedding_model_id,
         derive_inputs: Some(derive_inputs),
         citation_plan: CitationPlan::DraftHint,
+        links: FactLinks::new(&draft.derived_from, references),
+        authoring_perspective_id: None,
     };
     ingest_core(tx, permit.owner(), draft, options, sidecar).await
 }
@@ -575,6 +640,11 @@ where
             mapping: authorized.mapping(),
             sidecars,
         },
+        links: FactLinks::new(
+            authorized.links().origins(),
+            authorized.links().references(),
+        ),
+        authoring_perspective_id: None,
     };
     ingest_core(
         tx,
@@ -629,6 +699,11 @@ where
             mapping: authorized.mapping(),
             sidecars,
         },
+        links: FactLinks::new(
+            authorized.links().origins(),
+            authorized.links().references(),
+        ),
+        authoring_perspective_id: None,
     };
     ingest_core(
         tx,
@@ -701,22 +776,42 @@ pub async fn attach_citation_in_tx(
     let owner = authorized.owner_write_permit().owner();
     let (owner_kind, owner_id) = owner_binds(owner);
 
-    let existing_mapping_id = sqlx::query_scalar::<_, Option<uuid::Uuid>>(
-        "SELECT citation_mapping_id
-            FROM proxima_core.memories m
-           WHERE m.memory_id = $1
-             AND m.owner_kind = $2
-             AND m.owner_id IS NOT DISTINCT FROM $3
-             AND m.kind IS NULL
-             AND m.tombstoned_at IS NULL",
-    )
-    .bind(memory_uuid)
-    .bind(owner_kind)
-    .bind(owner_id)
-    .fetch_optional(tx.as_mut())
-    .await
-    .map_err(map_err)?
-    .ok_or(StorageError::NotFound)?;
+    // A computed score is an Abstraction and an Abstraction may cite the
+    // record of the computation that produced it (docs/16 §Computed Scores
+    // Are Abstractions), so the target kind is no longer implied. The caller
+    // declares it, already checked against `kind_may_cite_directly`; storage
+    // reads the STORED kind and refuses when the two disagree — a declared
+    // kind must never be able to widen what the row actually is.
+    let (stored_kind, existing_mapping_id) =
+        sqlx::query_as::<_, (Option<EntityKind>, Option<uuid::Uuid>)>(
+            "SELECT m.kind, m.citation_mapping_id
+                FROM proxima_core.memories m
+               WHERE m.memory_id = $1
+                 AND m.owner_kind = $2
+                 AND m.owner_id IS NOT DISTINCT FROM $3
+                 AND m.tombstoned_at IS NULL",
+        )
+        .bind(memory_uuid)
+        .bind(owner_kind)
+        .bind(owner_id)
+        .fetch_optional(tx.as_mut())
+        .await
+        .map_err(map_err)?
+        .ok_or(StorageError::NotFound)?;
+    let stored_kind = stored_kind.unwrap_or(EntityKind::Fact);
+    if stored_kind != authorized.memory_kind() {
+        return Err(StorageError::ConstraintViolation(format!(
+            "citation target {memory_uuid} is a {}, not a {}",
+            stored_kind.as_str(),
+            authorized.memory_kind().as_str(),
+        )));
+    }
+    if !proxima_core::citations::kind_may_cite_directly(stored_kind) {
+        return Err(StorageError::ConstraintViolation(format!(
+            "a {} does not cite directly",
+            stored_kind.as_str(),
+        )));
+    }
 
     if let Some(citation_mapping_id) = existing_mapping_id {
         let cited_object_id =
@@ -902,6 +997,11 @@ where
         embedding_model_id,
         derive_inputs: Some(derive_inputs),
         citation_plan: CitationPlan::DraftHint,
+        links: FactLinks::new(
+            authorized.links().origins(),
+            authorized.links().references(),
+        ),
+        authoring_perspective_id: None,
     };
     ingest_core(
         tx,
@@ -946,7 +1046,9 @@ where
     if let Some(receipt_id_bytes) = receipt_id_bytes
         && let Some(memory_id) = existing_fact_memory_by_receipt(tx, &receipt_id_bytes[..]).await?
     {
-        return fact_replay_outcome(tx, receipt_id, memory_id).await;
+        let outcome = fact_replay_outcome(tx, receipt_id, memory_id).await?;
+        assert_fact_index_rows(tx, owner, memory_id, options.links).await?;
+        return Ok(outcome);
     }
 
     let memory_id = uuid::Uuid::now_v7();
@@ -1104,7 +1206,9 @@ where
                 if let Some(memory_id) =
                     existing_fact_memory_by_receipt(tx, &receipt_id_bytes[..]).await?
                 {
-                    return fact_replay_outcome(tx, receipt_id, memory_id).await;
+                    let outcome = fact_replay_outcome(tx, receipt_id, memory_id).await?;
+                    assert_fact_index_rows(tx, owner, memory_id, options.links).await?;
+                    return Ok(outcome);
                 }
                 // Receipt occupied but no live memory row (e.g. tombstoned):
                 // a genuine conflict, not a concurrent-ingest replay.
@@ -1123,9 +1227,10 @@ where
     sqlx::query(
         "INSERT INTO proxima_core.memories
             (memory_id, owner_kind, owner_id, schema_id, schema_version,
-             receipt_id, citation_mapping_id, text, lexical_language)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8,
-                 COALESCE($9::regconfig, proxima_core.lexical_config()))",
+             receipt_id, citation_mapping_id, text, authoring_perspective_id,
+             lexical_language)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9,
+                 COALESCE($10::regconfig, proxima_core.lexical_config()))",
     )
     .bind(memory_id)
     .bind(owner_kind)
@@ -1135,10 +1240,13 @@ where
     .bind(receipt_id_bytes.as_ref().map(|bytes| &bytes[..]))
     .bind(citation_mapping_id)
     .bind(draft.rendered_text.as_deref())
+    .bind(options.authoring_perspective_id.map(MemoryId::into_inner))
     .bind(draft.lexical_language.as_deref())
     .execute(tx.as_mut())
     .await
     .map_err(map_err)?;
+
+    assert_fact_index_rows(tx, owner, memory_id, options.links).await?;
 
     let outcome = FactIngestOutcome {
         receipt_id,
@@ -1235,6 +1343,35 @@ where
     .map_err(map_err)?;
 
     Ok(outcome)
+}
+
+/// Assert the index rows a Fact write declared, inside the Fact's own
+/// transaction.
+///
+/// Also called on the receipt-replay path. That is not a double write: the
+/// primary key is the row, so re-asserting the same declaration inserts
+/// nothing and announces nothing, while a declaration the first ingest did
+/// not carry still lands. Idempotency here is structural, not conditional.
+async fn assert_fact_index_rows(
+    tx: &mut Transaction<'_, Postgres>,
+    owner: &Owner,
+    memory_id: uuid::Uuid,
+    links: FactLinks<'_>,
+) -> Result<(), StorageError> {
+    if links.is_empty() {
+        return Ok(());
+    }
+    let source = EdgeEndpoint::memory(EntityKind::Fact, MemoryId::new(memory_id));
+    assert_index_rows_in_tx(tx.as_mut(), owner, source, EdgeKind::Origin, links.origins).await?;
+    assert_index_rows_in_tx(
+        tx.as_mut(),
+        owner,
+        source,
+        EdgeKind::Reference,
+        links.references,
+    )
+    .await?;
+    Ok(())
 }
 
 /// True when a `fact_receipts`/`memories` insert failed because another

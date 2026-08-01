@@ -1,8 +1,8 @@
 use super::{
-    EdgeId, GoalId, MemoryId, PayloadKind, PgCitationMappingSidecar, PgCitedObjectSidecar,
-    PgConnection, PgEdgePayload, PgEdgePayloadBatchFuture, PgEdgeSidecar, PgGoalSidecar,
-    PgMemoryPayload, PgMemoryPayloadBatchFuture, PgMemoryPayloadFuture, PgMemorySidecar,
-    PgSidecarFuture, PgSidecarReadCtx, Postgres, SidecarPayload, StorageError, Transaction,
+    GoalId, MemoryId, PayloadKind, PgCitationMappingSidecar, PgCitedObjectSidecar, PgConnection,
+    PgGoalSidecar, PgMemoryPayload, PgMemoryPayloadBatchFuture, PgMemoryPayloadFuture,
+    PgMemorySidecar, PgSidecarFuture, PgSidecarReadCtx, Postgres, SidecarPayload, StorageError,
+    Transaction,
 };
 
 pub(super) fn insert_memory_sidecar<'t, P>(
@@ -45,37 +45,6 @@ where
     P: PgMemoryPayload,
 {
     P::load_batch(ctx, kind, memory_ids)
-}
-
-pub(super) fn insert_edge_sidecar<'t, P>(
-    tx: &'t mut PgConnection,
-    edge_id: EdgeId,
-    payload: &'t SidecarPayload,
-) -> PgSidecarFuture<'t>
-where
-    P: PgEdgeSidecar,
-{
-    Box::pin(async move {
-        let typed = payload.downcast_ref::<P>().ok_or_else(|| {
-            StorageError::ConstraintViolation(format!(
-                "sidecar payload type mismatch for {} v{} {:?}",
-                payload.schema_id.as_str(),
-                payload.schema_version.into_inner(),
-                payload.kind,
-            ))
-        })?;
-        typed.insert_edge_sidecar(tx, edge_id).await
-    })
-}
-
-pub(super) fn load_edge_payload_batch<'t, P>(
-    ctx: PgSidecarReadCtx<'t>,
-    edge_ids: &'t [EdgeId],
-) -> PgEdgePayloadBatchFuture<'t>
-where
-    P: PgEdgePayload,
-{
-    P::load_edge_batch(ctx, edge_ids)
 }
 
 pub(super) fn insert_cited_object_sidecar<'t, P>(

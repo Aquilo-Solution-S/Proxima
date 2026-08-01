@@ -21,8 +21,7 @@ pub(super) async fn query_goals(
     schema_id_filter: Option<&str>,
 ) -> Result<(Vec<GoalRow>, Option<QueryCursor>), StorageError> {
     let goal_ids: Vec<uuid::Uuid> = req.goal_ids.iter().map(|id| id.into_inner()).collect();
-    let id_hydration =
-        !req.memory_ids.is_empty() || !req.goal_ids.is_empty() || !req.edge_ids.is_empty();
+    let id_hydration = !req.memory_ids.is_empty() || !req.goal_ids.is_empty();
     if id_hydration && goal_ids.is_empty() {
         return Ok((Vec::new(), None));
     }
@@ -61,13 +60,8 @@ pub(super) async fn query_goals(
                     g.owner_kind, g.owner_id, \
                     g.title, g.text, g.state, \
                     g.supersedes, {payload_projection} AS payload, \
-                    COALESCE(array_agg(e.target_goal_id) FILTER \
-                    (WHERE e.target_goal_id IS NOT NULL), '{{}}'::uuid[]) AS dependency_goal_ids \
+                    g.dependency_goal_ids \
                FROM proxima_core.goals g \
-               LEFT JOIN proxima_core.edges e \
-                 ON e.source_goal_id = g.goal_id \
-                AND e.relation = 'core/depends-on' \
-                AND e.target_goal_id IS NOT NULL \
               WHERE {read_owner_predicate}",
         read_owner_predicate = read_owner_predicate("g", "s"),
     );
@@ -116,10 +110,7 @@ pub(super) async fn query_goals(
         .expect("write to String is infallible");
     }
     // SQL-POLICY: fixed-fragment
-    sql.push_str(
-        " GROUP BY g.goal_id, g.owner_kind, g.owner_id \
-          ORDER BY g.created_at DESC, g.goal_id DESC LIMIT ",
-    );
+    sql.push_str(" ORDER BY g.created_at DESC, g.goal_id DESC LIMIT ");
     // SQL-POLICY: fixed-fragment
     sql.push_str(&fetch_limit.to_string());
     // SQL-POLICY: fixed-fragment

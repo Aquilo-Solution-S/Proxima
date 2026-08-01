@@ -1,7 +1,7 @@
 use super::{
-    ChildGoalDraft, GoalAuthorship, GoalDraft, GoalId, GoalPayloadWrite, GoalState, MemoryId,
-    Owner, Postgres, SchemaId, SchemaVersion, StorageError, StoredGoal, StoredGoalRow, Transaction,
-    map_err,
+    ChildGoalDraft, EvidenceTarget, GoalAuthorship, GoalDraft, GoalId, GoalPayloadWrite, GoalState,
+    MemoryId, Owner, Postgres, SchemaId, SchemaVersion, StorageError, StoredGoal, StoredGoalRow,
+    Transaction, map_err,
 };
 
 pub(super) async fn load_prior_goal(
@@ -11,7 +11,8 @@ pub(super) async fn load_prior_goal(
 ) -> Result<StoredGoal, StorageError> {
     let (owner_kind, owner_id) = owner.columns();
     let row: Option<StoredGoalRow> = sqlx::query_as(
-        "SELECT schema_id, schema_version, title, text, payload, state
+        "SELECT schema_id, schema_version, title, text, payload, state,
+                assignment_perspective_id, dependency_goal_ids
            FROM proxima_core.goals
           WHERE goal_id = $1
             AND owner_kind = $2
@@ -26,6 +27,12 @@ pub(super) async fn load_prior_goal(
     let Some(row) = row else {
         return Err(StorageError::NotFound);
     };
+    // The assignment is what the Goal row says it is. A row without one
+    // predates the topology columns — the v0.0.8 lane replaced the index, it
+    // did not back-fill it — and there is nothing left to infer it from.
+    let assignment = row.assignment_perspective_id.ok_or_else(|| {
+        StorageError::ConstraintViolation("goal assignment perspective missing".into())
+    })?;
     Ok(StoredGoal {
         schema_id: SchemaId::new(row.schema_id),
         schema_version: SchemaVersion::new(row.schema_version.cast_unsigned()),
@@ -33,49 +40,13 @@ pub(super) async fn load_prior_goal(
         text: row.text,
         payload: row.payload,
         state: row.state,
-        assignment: goal_assignment_target(tx, goal_id).await?,
-        dependencies: dependency_goal_ids(tx, goal_id).await?,
+        assignment: MemoryId::new(assignment),
+        dependencies: row
+            .dependency_goal_ids
+            .into_iter()
+            .map(GoalId::new)
+            .collect(),
     })
-}
-
-pub(super) async fn dependency_goal_ids(
-    tx: &mut Transaction<'_, Postgres>,
-    goal_id: GoalId,
-) -> Result<Vec<GoalId>, StorageError> {
-    let rows: Vec<(uuid::Uuid,)> = sqlx::query_as(
-        "SELECT target_goal_id
-           FROM proxima_core.edges
-          WHERE source_goal_id = $1
-            AND relation = 'core/depends-on'
-            AND target_goal_id IS NOT NULL
-          ORDER BY target_goal_id",
-    )
-    .bind(goal_id.into_inner())
-    .fetch_all(&mut **tx)
-    .await
-    .map_err(map_err)?;
-    Ok(rows.into_iter().map(|(id,)| GoalId::new(id)).collect())
-}
-
-async fn goal_assignment_target(
-    tx: &mut Transaction<'_, Postgres>,
-    goal_id: GoalId,
-) -> Result<MemoryId, StorageError> {
-    let row: Option<(uuid::Uuid,)> = sqlx::query_as(
-        "SELECT target_memory_id
-           FROM proxima_core.edges
-          WHERE source_goal_id = $1
-            AND relation = 'core/inspires'
-            AND target_memory_id IS NOT NULL
-          ORDER BY created_at ASC
-          LIMIT 1",
-    )
-    .bind(goal_id.into_inner())
-    .fetch_optional(&mut **tx)
-    .await
-    .map_err(map_err)?;
-    row.map(|(id,)| MemoryId::new(id))
-        .ok_or_else(|| StorageError::ConstraintViolation("goal assignment edge missing".into()))
 }
 
 pub(super) async fn validate_active_head(
@@ -138,6 +109,18 @@ pub(super) fn validate_goal_achievement(prior: GoalState) -> Result<(), StorageE
     }
 }
 
+/// The evidence a successor Goal rests on, in the shape the topology takes.
+///
+/// The evidence column is the statement and the reference rows are its
+/// consequence, so a successor that omits it from the column would leave rows
+/// nothing could rebuild.
+fn evidence_refs(evidence: &[EvidenceTarget]) -> Vec<proxima_core::GoalEvidenceRef> {
+    evidence
+        .iter()
+        .map(|target| proxima_core::GoalEvidenceRef::new(target.memory_id))
+        .collect()
+}
+
 pub(super) fn draft_from_stored(
     owner: &Owner,
     stored: &StoredGoal,
@@ -145,6 +128,7 @@ pub(super) fn draft_from_stored(
     supersedes: Option<GoalId>,
     authorship: GoalAuthorship,
     request_id: &str,
+    evidence: &[EvidenceTarget],
 ) -> GoalDraft {
     GoalDraft {
         owner: *owner,
@@ -163,7 +147,7 @@ pub(super) fn draft_from_stored(
                 .copied()
                 .map(proxima_core::GoalDependencyRef::new)
                 .collect(),
-            Vec::new(),
+            evidence_refs(evidence),
         )
         .expect("stored topology has unique dependencies"),
         wake: None,
@@ -182,6 +166,7 @@ pub(super) struct DraftFromPayload<'a> {
     pub(super) supersedes: Option<GoalId>,
     pub(super) authorship: GoalAuthorship,
     pub(super) request_id: &'a str,
+    pub(super) evidence: &'a [EvidenceTarget],
 }
 
 pub(super) fn draft_from_payload(input: DraftFromPayload<'_>) -> GoalDraft {
@@ -201,7 +186,7 @@ pub(super) fn draft_from_payload(input: DraftFromPayload<'_>) -> GoalDraft {
                 .into_iter()
                 .map(proxima_core::GoalDependencyRef::new)
                 .collect(),
-            Vec::new(),
+            evidence_refs(input.evidence),
         )
         .expect("stored topology has unique dependencies"),
         wake: None,

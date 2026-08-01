@@ -13,7 +13,6 @@
 //! Payload projection: the selected memory rows are hydrated through
 //! typed PG sidecar loaders registered by the owning flavor.
 
-use std::collections::HashMap;
 use std::fmt::Write as _;
 
 use proxima_core::{
@@ -152,23 +151,4 @@ where
     .await
     .map_err(crate::error::map_err)?;
     Ok(id.map(FactEntityId::new))
-}
-
-pub(crate) async fn resolve_heads_by_fact_entity_id(
-    pool: &PgPool,
-    fact_entity_ids: &[uuid::Uuid],
-) -> Result<HashMap<uuid::Uuid, uuid::Uuid>, StorageError> {
-    if fact_entity_ids.is_empty() {
-        return Ok(HashMap::new());
-    }
-    let rows = sqlx::query_as::<_, (uuid::Uuid, uuid::Uuid)>(
-        "SELECT fact_entity_id, current_memory_id
-           FROM proxima_core.fact_entities
-          WHERE fact_entity_id = ANY($1::uuid[])",
-    )
-    .bind(fact_entity_ids)
-    .fetch_all(pool)
-    .await
-    .map_err(crate::error::map_err)?;
-    Ok(rows.into_iter().collect())
 }

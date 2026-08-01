@@ -198,17 +198,19 @@ pub(crate) fn edge_event_visibility_predicate(
     world_kind_param: usize,
     world_id_param: usize,
 ) -> String {
+    // A Fact-entity endpoint is an address that follows the head, so its
+    // visibility is the visibility of whatever observation is current.
     let source_entity = "COALESCE(
-        ce.edge_source_memory_id, ce.edge_source_goal_id,
         (SELECT fe.current_memory_id FROM proxima_core.fact_entities fe
-          WHERE fe.fact_entity_id = ce.edge_source_fact_entity_id))";
+          WHERE fe.fact_entity_id = ce.edge_source_id),
+        ce.edge_source_id)";
     let target_entity = "COALESCE(
-        ce.edge_target_memory_id, ce.edge_target_goal_id,
         (SELECT fe.current_memory_id FROM proxima_core.fact_entities fe
-          WHERE fe.fact_entity_id = ce.edge_target_fact_entity_id))";
+          WHERE fe.fact_entity_id = ce.edge_target_id),
+        ce.edge_target_id)";
     format!(
         "(
-                    ce.edge_id IS NULL
+                    ce.edge_kind IS NULL
                     OR (
                         EXISTS (
                             SELECT 1

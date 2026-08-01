@@ -1,10 +1,9 @@
 use super::{
-    FactPayload, FactReceiptDraft, FactWriteCommand, GoalAbandonedV1, GoalAchievedV1,
-    GoalActivatedV1, GoalAtomicContext, GoalId, GoalLifecycleFact, GoalPausedV1, GoalWriteOutcome,
-    InsertedGoal, MemoryId, Owner, OwnerWritePermit, Postgres, SchemaId, SchemaVersion,
-    SourceBatchId, SourceId, StorageError, Transaction, append_goal_to_self_edge,
-    append_lifecycle_authored_edge, edge_ids_for_goal_relations, edge_ids_for_lifecycle_memory,
-    ingest_fact_command_in_tx, map_err,
+    EdgeEndpoint, EntityKind, EvidenceTarget, FactPayload, FactReceiptDraft, FactWriteCommand,
+    GoalAbandonedV1, GoalAchievedV1, GoalActivatedV1, GoalAtomicContext, GoalId, GoalLifecycleFact,
+    GoalPausedV1, GoalWriteOutcome, InsertedGoal, MemoryId, Owner, OwnerWritePermit, Postgres,
+    SchemaId, SchemaVersion, SourceBatchId, SourceId, StorageError, Transaction,
+    assert_goal_topology_references, goal_topology_edge_count, ingest_fact_command_in_tx, map_err,
 };
 
 const LIFECYCLE_SOURCE_ID: &str = "core/goal-lifecycle";
@@ -65,6 +64,13 @@ impl GoalLifecyclePayload for GoalAbandonedV1 {
     }
 }
 
+/// Emit the Fact that records one lifecycle transition.
+///
+/// `evidence` is what the transition rested on, and an achievement Fact
+/// declares it as `derived_from` — a derivation declaration, so the index
+/// rows that follow are `origin` rows. The Perspective that drove the
+/// transition is stamped on the Fact row as its author, which is where the
+/// old `core/authored` edge went.
 pub(super) async fn emit_lifecycle_fact(
     tx: &mut Transaction<'_, Postgres>,
     permit: &OwnerWritePermit,
@@ -72,6 +78,7 @@ pub(super) async fn emit_lifecycle_fact(
     owner: &Owner,
     goal_id: GoalId,
     lifecycle: GoalLifecycleFact,
+    evidence: &[EvidenceTarget],
 ) -> Result<MemoryId, StorageError> {
     let now = time::OffsetDateTime::now_utc();
     match lifecycle {
@@ -80,28 +87,28 @@ pub(super) async fn emit_lifecycle_fact(
                 goal_id: goal_id.into_inner(),
                 transitioned_at: now,
             };
-            ingest_lifecycle_fact(tx, permit, context, owner, &payload).await
+            ingest_lifecycle_fact(tx, permit, context, owner, &payload, evidence).await
         }
         GoalLifecycleFact::Paused => {
             let payload = GoalPausedV1 {
                 goal_id: goal_id.into_inner(),
                 transitioned_at: now,
             };
-            ingest_lifecycle_fact(tx, permit, context, owner, &payload).await
+            ingest_lifecycle_fact(tx, permit, context, owner, &payload, evidence).await
         }
         GoalLifecycleFact::Achieved => {
             let payload = GoalAchievedV1 {
                 goal_id: goal_id.into_inner(),
                 transitioned_at: now,
             };
-            ingest_lifecycle_fact(tx, permit, context, owner, &payload).await
+            ingest_lifecycle_fact(tx, permit, context, owner, &payload, evidence).await
         }
         GoalLifecycleFact::Abandoned => {
             let payload = GoalAbandonedV1 {
                 goal_id: goal_id.into_inner(),
                 transitioned_at: now,
             };
-            ingest_lifecycle_fact(tx, permit, context, owner, &payload).await
+            ingest_lifecycle_fact(tx, permit, context, owner, &payload, evidence).await
         }
     }
 }
@@ -112,11 +119,20 @@ async fn ingest_lifecycle_fact<T>(
     context: GoalAtomicContext<'_>,
     owner: &Owner,
     payload: &T,
+    evidence: &[EvidenceTarget],
 ) -> Result<MemoryId, StorageError>
 where
     T: GoalLifecyclePayload,
 {
     let now = time::OffsetDateTime::now_utc();
+    // Only Fact evidence can ground a Fact: a Fact asserts no judgment, so a
+    // Fact origin pointing up the F/A/P order is not a thing the layering
+    // rule admits.
+    let derived_from = evidence
+        .iter()
+        .filter(|target| target.kind == EntityKind::Fact)
+        .map(|target| EdgeEndpoint::memory(EntityKind::Fact, target.memory_id))
+        .collect::<Vec<_>>();
     let draft = FactWriteCommand {
         schema_id: SchemaId::new(T::SCHEMA_ID.to_string()),
         schema_version: SchemaVersion::new(T::SCHEMA_VERSION),
@@ -130,13 +146,21 @@ where
             occurred_at: now,
         }),
         citation: None,
+        derived_from,
     };
     if permit.owner() != owner {
         return Err(StorageError::ConstraintViolation(
             "OwnerWritePermit owner does not match lifecycle Fact owner".into(),
         ));
     }
-    let outcome = ingest_fact_command_in_tx(tx, permit, &draft, context.embedding_model_id).await?;
+    let outcome = ingest_fact_command_in_tx(
+        tx,
+        permit,
+        &draft,
+        context.embedding_model_id,
+        context.author_self_perspective_id,
+    )
+    .await?;
     if !outcome.idempotent_replay {
         insert_lifecycle_sidecar(tx, outcome.memory_id, payload).await?;
     }
@@ -169,6 +193,7 @@ where
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)] // one parameter per lifecycle input
 pub(super) async fn lifecycle_outcome(
     tx: &mut Transaction<'_, Postgres>,
     permit: &OwnerWritePermit,
@@ -177,32 +202,28 @@ pub(super) async fn lifecycle_outcome(
     inserted: InsertedGoal,
     lifecycle: GoalLifecycleFact,
     assignment: MemoryId,
+    dependencies: &[GoalId],
 ) -> Result<GoalWriteOutcome, StorageError> {
     if inserted.idempotent_replay {
         return replay_goal_outcome(
             tx,
             inserted,
             lifecycle,
-            &[proxima_core::relation::CORE_INSPIRES_RELATION],
+            goal_topology_edge_count(dependencies, &[]),
         )
         .await;
     }
-    let lifecycle_memory_id =
-        Some(emit_lifecycle_fact(tx, permit, context, owner, inserted.goal_id, lifecycle).await?);
-    let mut edge_ids = Vec::new();
-    edge_ids
-        .push(append_goal_to_self_edge(tx, context, owner, inserted.goal_id, assignment).await?);
-    if let Some(lifecycle_id) = lifecycle_memory_id
-        && let Some(edge_id) =
-            append_lifecycle_authored_edge(tx, context, owner, lifecycle_id).await?
-    {
-        edge_ids.push(edge_id);
-    }
+    let lifecycle_memory_id = Some(
+        emit_lifecycle_fact(tx, permit, context, owner, inserted.goal_id, lifecycle, &[]).await?,
+    );
+    let edge_count =
+        assert_goal_topology_references(tx, owner, inserted.goal_id, assignment, dependencies, &[])
+            .await?;
     Ok(GoalWriteOutcome {
         goal_id: inserted.goal_id,
         change_event_seq: inserted.change_event_seq,
         lifecycle_memory_id,
-        edge_ids,
+        edge_count,
         idempotent_replay: false,
     })
 }
@@ -211,19 +232,16 @@ pub(super) async fn replay_goal_outcome(
     tx: &mut Transaction<'_, Postgres>,
     inserted: InsertedGoal,
     lifecycle: GoalLifecycleFact,
-    source_goal_relations: &[&str],
+    edge_count: usize,
 ) -> Result<GoalWriteOutcome, StorageError> {
     let lifecycle_memory_id = lifecycle_memory_for_goal(tx, inserted.goal_id, lifecycle).await?;
-    let mut edge_ids =
-        edge_ids_for_goal_relations(tx, inserted.goal_id, source_goal_relations).await?;
-    if let Some(memory_id) = lifecycle_memory_id {
-        edge_ids.extend(edge_ids_for_lifecycle_memory(tx, memory_id).await?);
-    }
     Ok(GoalWriteOutcome {
         goal_id: inserted.goal_id,
         change_event_seq: inserted.change_event_seq,
         lifecycle_memory_id,
-        edge_ids,
+        // A replay re-asserts the same rows and therefore reports the same
+        // count; there are no ids to hand back and nothing to re-read.
+        edge_count,
         idempotent_replay: true,
     })
 }

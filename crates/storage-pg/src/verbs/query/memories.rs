@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::fmt::Write as _;
 
 use futures_util::future::try_join_all;
@@ -29,11 +29,10 @@ pub(crate) async fn query_memories(
     pool: &PgPool,
     sidecars: &PgSidecarRegistryFrozen,
     req: &QueryRequest,
-    schemas: &[SchemaInfo],
+    _schemas: &[SchemaInfo],
 ) -> Result<QueryResponse, StorageError> {
     let (read_owner_kinds, read_owner_ids) = read_owner_columns(&req.read_owners);
-    let id_hydration =
-        !req.memory_ids.is_empty() || !req.goal_ids.is_empty() || !req.edge_ids.is_empty();
+    let id_hydration = !req.memory_ids.is_empty() || !req.goal_ids.is_empty();
     let schema_id_filter = req.schema_id.as_ref().map(|s| s.as_str().to_string());
     if matches!(req.entity_kind, Some(EntityKind::Goal)) {
         let (goals, next_cursor) = query_goals(
@@ -206,16 +205,7 @@ pub(crate) async fn query_memories(
     let visible_memory_ids: Vec<uuid::Uuid> =
         memories.iter().map(|row| row.id.into_inner()).collect();
     let visible_goal_ids: Vec<uuid::Uuid> = goals.iter().map(|row| row.id.into_inner()).collect();
-    let edges = query_edges(
-        pool,
-        sidecars,
-        req,
-        &req.read_owners,
-        &visible_memory_ids,
-        &visible_goal_ids,
-        schemas,
-    )
-    .await?;
+    let edges = query_edges(pool, req, &visible_memory_ids, &visible_goal_ids).await?;
     let seq_high_water = read_seq_high_water(pool, &read_owner_kinds, &read_owner_ids).await?;
 
     Ok(QueryResponse {
@@ -265,136 +255,6 @@ async fn load_row_payloads_batch(
     });
     let rows = try_join_all(batches).await?;
     Ok(rows.into_iter().flatten().collect())
-}
-
-pub(super) async fn visible_ids_for(
-    pool: &PgPool,
-    req: &QueryRequest,
-    read_owner_kinds: &[proxima_core::OwnerRefKind],
-    read_owner_ids: &[Option<uuid::Uuid>],
-    candidate_memory_ids: &[uuid::Uuid],
-    candidate_goal_ids: &[uuid::Uuid],
-    schemas: &[SchemaInfo],
-) -> Result<(HashSet<uuid::Uuid>, HashSet<uuid::Uuid>), StorageError> {
-    let memory_ids = query_visible_memory_ids(
-        pool,
-        req,
-        read_owner_kinds,
-        read_owner_ids,
-        candidate_memory_ids,
-        schemas,
-    )
-    .await?;
-    let goal_ids = query_visible_goal_ids(
-        pool,
-        req,
-        read_owner_kinds,
-        read_owner_ids,
-        candidate_goal_ids,
-    )
-    .await?;
-    Ok((memory_ids, goal_ids))
-}
-
-async fn query_visible_memory_ids(
-    pool: &PgPool,
-    req: &QueryRequest,
-    read_owner_kinds: &[proxima_core::OwnerRefKind],
-    read_owner_ids: &[Option<uuid::Uuid>],
-    candidate_memory_ids: &[uuid::Uuid],
-    _schemas: &[SchemaInfo],
-) -> Result<HashSet<uuid::Uuid>, StorageError> {
-    if candidate_memory_ids.is_empty() || matches!(req.entity_kind, Some(EntityKind::Goal)) {
-        return Ok(HashSet::new());
-    }
-    let stateful = validated_stateful_filters(req)?;
-    let schema_id_filter = req.schema_id.as_ref().map(|s| s.as_str().to_string());
-
-    let mut sql = format!(
-        "SELECT m.memory_id \
-           FROM unnest($1::proxima_core.owner_ref_kind[], $2::uuid[]) AS s(kind, id) \
-           JOIN proxima_core.memories m \
-             ON {read_owner_predicate} \
-        ",
-        read_owner_predicate = read_owner_predicate("m", "s"),
-    );
-    for (idx, sf) in stateful.iter().enumerate() {
-        let alias = stateful_alias(idx);
-        write!(
-            sql,
-            " LEFT JOIN {sidecar} {alias} ON {alias}.memory_id = m.memory_id",
-            sidecar = sf.sidecar_table,
-            alias = alias,
-        )
-        .expect("write to String is infallible");
-    }
-
-    sql.push_str(" WHERE m.tombstoned_at IS NULL");
-    sql.push_str(" AND m.memory_id = ANY($3::uuid[])");
-    let mut next_param = 4;
-    let schema = schema_id_filter.as_ref().map(|_| {
-        let param = next_param;
-        next_param += 1;
-        param
-    });
-    let stateful_params = allocate_stateful_params(&stateful, &mut next_param);
-
-    push_heads_predicate(&mut sql, req, schema, &stateful, &stateful_params);
-
-    // SQL-POLICY: fixed-fragment
-    let mut q = sqlx::query_as::<_, (uuid::Uuid,)>(sqlx::AssertSqlSafe(sql))
-        .bind(read_owner_kinds)
-        .bind(read_owner_ids)
-        .bind(candidate_memory_ids);
-    if let Some(sid) = &schema_id_filter {
-        q = q.bind(sid.clone());
-    }
-    q = bind_stateful_filters(q, &stateful);
-    let rows = q.fetch_all(pool).await.map_err(map_err)?;
-    Ok(rows.into_iter().map(|(id,)| id).collect())
-}
-
-async fn query_visible_goal_ids(
-    pool: &PgPool,
-    req: &QueryRequest,
-    read_owner_kinds: &[proxima_core::OwnerRefKind],
-    read_owner_ids: &[Option<uuid::Uuid>],
-    candidate_goal_ids: &[uuid::Uuid],
-) -> Result<HashSet<uuid::Uuid>, StorageError> {
-    if candidate_goal_ids.is_empty()
-        || matches!(
-            req.entity_kind,
-            Some(EntityKind::Fact | EntityKind::Abstraction | EntityKind::Perspective)
-        )
-    {
-        return Ok(HashSet::new());
-    }
-    let mut sql = format!(
-        "SELECT g.goal_id \
-           FROM unnest($1::proxima_core.owner_ref_kind[], $2::uuid[]) AS s(kind, id) \
-           JOIN proxima_core.goals g \
-             ON {read_owner_predicate} \
-          WHERE g.goal_id = ANY($3::uuid[])",
-        read_owner_predicate = read_owner_predicate("g", "s"),
-    );
-    let schema_id_filter = req.schema_id.as_ref().map(|s| s.as_str().to_string());
-    if schema_id_filter.is_some() {
-        // SQL-POLICY: fixed-fragment
-        sql.push_str(" AND g.schema_id = $4");
-    }
-    if matches!(req.supersession, SupersessionStatus::HeadsOnly) {
-        super::push_goal_heads_only_predicate(&mut sql);
-    }
-    // SQL-POLICY: fixed-fragment
-    let mut q = sqlx::query_as::<_, (uuid::Uuid,)>(sqlx::AssertSqlSafe(sql))
-        .bind(read_owner_kinds)
-        .bind(read_owner_ids)
-        .bind(candidate_goal_ids);
-    if let Some(sid) = schema_id_filter {
-        q = q.bind(sid);
-    }
-    let rows = q.fetch_all(pool).await.map_err(map_err)?;
-    Ok(rows.into_iter().map(|(id,)| id).collect())
 }
 
 fn validated_stateful_filters(

@@ -5,24 +5,18 @@ use std::collections::BTreeSet;
 
 use proxima_core::storage_ports::OwnerWritePermit;
 use proxima_core::{
-    DerivedEdgeSpec, DerivedEmbedding, EdgeAuthorshipKind, EntityKind, InputContractId, MemoryId,
-    MemoryOperatorKind, OperatorId, Owner, OwnerRefKind, RelationClass, SchemaId, SchemaVersion,
-    SourceBatchId, StorageError,
+    DerivedEmbedding, EdgeEndpoint, EdgeKind, EntityKind, InputContractId, MemoryId,
+    MemoryOperatorKind, OperatorId, Owner, OwnerRefKind, SchemaId, SchemaVersion, SourceBatchId,
+    StorageError,
 };
 use sqlx::{Postgres, Transaction};
 
 use crate::error::map_err;
 use crate::sidecars::PgSidecarFuture;
+use crate::verbs::edge_index::{
+    assert_index_rows_in_tx, declared_index_rows, stored_index_rows_in_tx,
+};
 
-type StoredEdgeProofRow = (
-    String,
-    EntityKind,
-    uuid::Uuid,
-    EntityKind,
-    uuid::Uuid,
-    EdgeAuthorshipKind,
-    Option<uuid::Uuid>,
-);
 type InputProofRow = (
     uuid::Uuid,
     Option<EntityKind>,
@@ -45,6 +39,13 @@ pub struct DerivedDraft<'a> {
     pub source_batch_id: Option<SourceBatchId>,
     pub model_id: &'a str,
     pub prompt_version: &'a str,
+    /// Perspective that emitted this memory. A column on the row, because
+    /// "emitted by P" is known at write time and answered by the node.
+    pub authoring_perspective_id: Option<MemoryId>,
+    /// Prior head this row revises. Storage stamps `supersedes` here and
+    /// `superseded_by` on the prior row, in this transaction, and writes
+    /// no edge: supersession is the same thing persisting, not a
+    /// connection between two things.
     pub supersedes: Option<MemoryId>,
     /// Resolved text-search configuration name; `None` applies the
     /// database default (`proxima_core.lexical_config()`).
@@ -79,7 +80,7 @@ pub(crate) async fn append_derived_in_tx(
     crate::access::owner_columns::reject_world_write_owner(&draft.owner)?;
     let (owner_kind, owner_id) = crate::access::owner_columns::owner_binds(&draft.owner);
     if let Some(prior) = draft.supersedes {
-        validate_supersedes_in_owner(tx, &draft.owner, prior, draft.kind).await?;
+        validate_supersedes_in_owner(tx, &draft.owner, prior, draft.kind, draft.memory_id).await?;
     }
     if let Some(language) = draft.lexical_language {
         // Replay short-circuit BEFORE registration, mirroring ingest_core's
@@ -112,9 +113,10 @@ pub(crate) async fn append_derived_in_tx(
         "INSERT INTO proxima_core.memories
             (memory_id, owner_kind, owner_id, schema_id, schema_version, kind, text,
              operator_kind, operator_id, input_contract_id, source_batch_id,
-             model_id, prompt_version, supersedes, lexical_language)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14,
-                 COALESCE($15::regconfig, proxima_core.lexical_config()))
+             model_id, prompt_version, supersedes, authoring_perspective_id,
+             lexical_language)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15,
+                 COALESCE($16::regconfig, proxima_core.lexical_config()))
          ON CONFLICT (memory_id) DO NOTHING
          RETURNING memory_id",
     )
@@ -132,6 +134,7 @@ pub(crate) async fn append_derived_in_tx(
     .bind(draft.model_id)
     .bind(draft.prompt_version)
     .bind(draft.supersedes.map(MemoryId::into_inner))
+    .bind(draft.authoring_perspective_id.map(MemoryId::into_inner))
     .bind(draft.lexical_language)
     .fetch_optional(&mut **tx)
     .await
@@ -143,6 +146,9 @@ pub(crate) async fn append_derived_in_tx(
             memory_id: MemoryId::new(draft.memory_id),
             idempotent_replay: true,
         });
+    }
+    if let Some(prior) = draft.supersedes {
+        point_prior_head_forward(tx, prior, draft.memory_id).await?;
     }
     let outcome = DerivedOutcome {
         memory_id: MemoryId::new(draft.memory_id),
@@ -175,10 +181,10 @@ pub(crate) async fn append_derived_in_tx(
     Ok(outcome)
 }
 
-/// Append one operator-derived memory with its declared output→input ledger
-/// edges in the same transaction.
+/// Append one operator-derived memory together with the index rows its own
+/// declarations imply, in the same transaction.
 ///
-/// Flavor-SDK in-tx write tier: validates the operator proof ledger (edge
+/// Flavor-SDK in-tx write tier: validates the operator proof ledger (origin
 /// shape, input liveness, F→A batch closure, supersedes owner/kind) but does
 /// NOT authorize the caller against the owner. Stays `pub` because
 /// `proxima-code` persists derived memories inside multi-write transactions
@@ -186,16 +192,21 @@ pub(crate) async fn append_derived_in_tx(
 /// tier behind a permit is flavor-boundary work, not the engine-verb proof
 /// gate.
 ///
+/// `origins` and `references` are endpoints, never kinds: the first list is
+/// what the write says it was made from, the second is what its payload
+/// points at, and each list's [`EdgeKind`] follows from which list it is.
+///
 /// # Errors
 ///
 /// Returns `ConstraintViolation` when the operator proof shape does not match
 /// persisted input rows, `Conflict` when an idempotent replay changes proof
-/// metadata or ledger edges, and storage errors from Postgres.
+/// metadata or declared index rows, and storage errors from Postgres.
 pub async fn append_derived_with_edges_in_tx(
     tx: &mut Transaction<'_, Postgres>,
     permit: &OwnerWritePermit,
     draft: &DerivedDraft<'_>,
-    edges: &[DerivedEdgeSpec<'_>],
+    origins: &[EdgeEndpoint],
+    references: &[EdgeEndpoint],
     sidecar: impl for<'t> FnOnce(
         &'t mut Transaction<'_, Postgres>,
         &'t DerivedOutcome,
@@ -203,17 +214,51 @@ pub async fn append_derived_with_edges_in_tx(
 ) -> Result<DerivedOutcome, StorageError> {
     validate_permit_owner(permit, &draft.owner)?;
     crate::access::owner_columns::reject_world_write_owner(&draft.owner)?;
-    validate_derived_draft_edges_in_tx(tx, draft, edges).await?;
+    validate_derived_origins_in_tx(tx, draft, origins).await?;
     let outcome = append_derived_in_tx(tx, permit, draft, sidecar).await?;
-    if outcome.idempotent_replay {
-        validate_derived_edge_replay_equivalent(tx, draft, edges).await?;
-        return Ok(outcome);
-    }
-    for edge in edges {
-        let draft = edge_draft_from_spec(edge);
-        crate::verbs::edge_append::append_edge_in_tx(tx.as_mut(), &draft).await?;
-    }
+    assert_derived_index_rows(tx, draft, &outcome, origins, references).await?;
     Ok(outcome)
+}
+
+/// Write (or, on replay, re-verify) the index rows a derived write declares.
+///
+/// Shared by the flavor-SDK tier above and the engine port, so the two
+/// cannot drift apart on what a replay is allowed to change.
+///
+/// # Errors
+///
+/// Returns `Conflict` when a replay declares a different set of rows than the
+/// write that minted the memory, and storage errors from Postgres.
+pub(crate) async fn assert_derived_index_rows(
+    tx: &mut Transaction<'_, Postgres>,
+    draft: &DerivedDraft<'_>,
+    outcome: &DerivedOutcome,
+    origins: &[EdgeEndpoint],
+    references: &[EdgeEndpoint],
+) -> Result<usize, StorageError> {
+    let source = EdgeEndpoint::memory(draft.kind, outcome.memory_id);
+    if outcome.idempotent_replay {
+        let stored = stored_index_rows_in_tx(tx.as_mut(), source).await?;
+        let declared = declared_index_rows(origins, references)?;
+        if stored != declared {
+            return Err(StorageError::Conflict(
+                "derived memory idempotent replay index mismatch".into(),
+            ));
+        }
+        return Ok(declared.len());
+    }
+    let mut asserted =
+        assert_index_rows_in_tx(tx.as_mut(), &draft.owner, source, EdgeKind::Origin, origins)
+            .await?;
+    asserted += assert_index_rows_in_tx(
+        tx.as_mut(),
+        &draft.owner,
+        source,
+        EdgeKind::Reference,
+        references,
+    )
+    .await?;
+    Ok(asserted)
 }
 
 fn validate_permit_owner(permit: &OwnerWritePermit, owner: &Owner) -> Result<(), StorageError> {
@@ -226,104 +271,60 @@ fn validate_permit_owner(permit: &OwnerWritePermit, owner: &Owner) -> Result<(),
     }
 }
 
-fn edge_draft_from_spec<'a>(
-    edge: &'a DerivedEdgeSpec<'a>,
-) -> crate::verbs::edge_append::EdgeDraft<'a> {
-    crate::verbs::edge_append::EdgeDraft {
-        edge_id: uuid::Uuid::now_v7(),
-        relation: edge.relation,
-        source_kind: edge.source_kind,
-        source_memory_id: Some(edge.source_memory_id.into_inner()),
-        source_goal_id: None,
-        source_fact_entity_id: None,
-        target_kind: edge.target_kind,
-        target_memory_id: Some(edge.target_memory_id.into_inner()),
-        target_goal_id: None,
-        target_fact_entity_id: None,
-        authorship_kind: edge.authorship_kind,
-        authorship_owner_memory_id: edge.authorship_owner_memory_id.map(MemoryId::into_inner),
-        owner: edge.owner,
-    }
-}
-
-/// Shared operator proof-ledger validation for BOTH derived-write paths:
-/// the flavor-SDK in-tx tier (`append_derived_with_edges_in_tx`) and the
-/// engine port (`PgStorage::author_derived` in `lib.rs`). A prior review found the engine port carrying its own
-/// near-duplicate of this validation that had silently missed the
-/// `created_at` strict-time gate — one validator, `pub(crate)`, kills that
-/// drift class structurally (same spirit as the `engine::authorize_action`
-/// consolidation).
-pub(crate) async fn validate_derived_draft_edges_in_tx(
+/// Operator proof-ledger validation for BOTH derived-write paths: the
+/// flavor-SDK in-tx tier (`append_derived_with_edges_in_tx`) and the engine
+/// port (`PgStorage::author_derived`). A prior review found the engine port
+/// carrying its own near-duplicate of this validation that had silently
+/// missed the `created_at` strict-time gate — one validator, `pub(crate)`,
+/// kills that drift class structurally.
+///
+/// The declared origins ARE the operator's inputs. There is no separate
+/// ledger to cross-check any more, and no authorship kind to match against a
+/// phase: what the write says it was made from is the whole claim, so the
+/// only questions left are whether those rows exist, whether they are of the
+/// phase's input kind, and whether they are older than the row they ground.
+///
+/// A write that declares no origins declares no derivation, which is legal —
+/// an interpretation Perspective grounds through its references, not through
+/// inputs it consumed. F→A is the exception the batch rule keeps honest.
+pub(crate) async fn validate_derived_origins_in_tx(
     tx: &mut Transaction<'_, Postgres>,
     draft: &DerivedDraft<'_>,
-    edges: &[DerivedEdgeSpec<'_>],
+    origins: &[EdgeEndpoint],
 ) -> Result<(), StorageError> {
-    let expected_authorship = draft.operator_kind.edge_authorship();
     let expected_input_kind = draft.operator_kind.phase().input_kind();
-    validate_no_wrong_phase_operator_edges(draft, edges, expected_authorship)?;
-    let input_ids = validate_proof_edges_and_collect_inputs(
-        draft,
-        edges,
-        expected_authorship,
-        expected_input_kind,
-    )?;
+    let input_ids = collect_operator_inputs(origins, expected_input_kind)?;
+    if input_ids.is_empty() {
+        return validate_derived_source_batch(draft, None);
+    }
     let rows = load_live_input_proof_rows_in_tx(tx, &input_ids).await?;
     let ftoa_batch = validate_input_proof_rows(draft, rows, input_ids.len(), expected_input_kind)?;
     validate_derived_source_batch(draft, ftoa_batch)
 }
 
-fn validate_no_wrong_phase_operator_edges(
-    draft: &DerivedDraft<'_>,
-    edges: &[DerivedEdgeSpec<'_>],
-    expected_authorship: EdgeAuthorshipKind,
-) -> Result<(), StorageError> {
-    for edge in edges {
-        if edge.source_memory_id.into_inner() == draft.memory_id
-            && edge.relation.descriptor.class == RelationClass::Provenance
-            && edge.authorship_kind.is_operator()
-            && edge.authorship_kind != expected_authorship
-        {
-            return Err(StorageError::ConstraintViolation(
-                "operator provenance edge authorship kind does not match operator phase".into(),
-            ));
-        }
-    }
-    Ok(())
-}
-
-fn validate_proof_edges_and_collect_inputs(
-    draft: &DerivedDraft<'_>,
-    edges: &[DerivedEdgeSpec<'_>],
-    expected_authorship: EdgeAuthorshipKind,
+fn collect_operator_inputs(
+    origins: &[EdgeEndpoint],
     expected_input_kind: EntityKind,
 ) -> Result<Vec<uuid::Uuid>, StorageError> {
     let mut input_ids = Vec::new();
     let mut seen = BTreeSet::new();
-    for edge in edges.iter().filter(|edge| {
-        edge.source_memory_id.into_inner() == draft.memory_id
-            && edge.authorship_kind == expected_authorship
-    }) {
-        if edge.relation.descriptor.class != RelationClass::Provenance {
+    for origin in origins {
+        let Some(memory_id) = origin.memory_id() else {
             return Err(StorageError::ConstraintViolation(
-                "operator proof edges must use Provenance relations".into(),
+                "an operator provenance origin must name a memory row".into(),
+            ));
+        };
+        if origin.kind != expected_input_kind {
+            return Err(StorageError::ConstraintViolation(
+                "operator origin kind does not match operator phase".into(),
             ));
         }
-        if edge.source_kind != draft.kind || edge.target_kind != expected_input_kind {
-            return Err(StorageError::ConstraintViolation(
-                "operator proof edge shape does not match operator phase".into(),
-            ));
-        }
-        if !seen.insert(edge.target_memory_id) {
+        if !seen.insert(memory_id) {
             return Err(StorageError::ConstraintViolation(
                 "operator invocation inputs must be unique".into(),
             ));
         }
-        input_ids.push(edge.target_memory_id.into_inner());
-    }
-    if input_ids.is_empty() {
-        return Err(StorageError::ConstraintViolation(
-            "operator invocation inputs must be nonempty".into(),
-        ));
+        input_ids.push(memory_id.into_inner());
     }
     Ok(input_ids)
 }
@@ -434,89 +435,6 @@ fn validate_derived_source_batch(
     Ok(())
 }
 
-fn operator_edge_authorship_values() -> [&'static str; 4] {
-    [
-        EdgeAuthorshipKind::OperatorFtoA.as_str(),
-        EdgeAuthorshipKind::OperatorAtoA.as_str(),
-        EdgeAuthorshipKind::OperatorAtoP.as_str(),
-        EdgeAuthorshipKind::OperatorAtoGoal.as_str(),
-    ]
-}
-
-/// Shared idempotent-replay edge-proof equivalence check, used by both
-/// derived-write paths (see `validate_derived_draft_edges_in_tx` — same
-/// consolidation, same drift-class rationale).
-pub(crate) async fn validate_derived_edge_replay_equivalent(
-    tx: &mut Transaction<'_, Postgres>,
-    draft: &DerivedDraft<'_>,
-    edges: &[DerivedEdgeSpec<'_>],
-) -> Result<(), StorageError> {
-    let expected_authorship = draft.operator_kind.edge_authorship();
-    let expected = edges
-        .iter()
-        .filter(|edge| {
-            edge.source_memory_id.into_inner() == draft.memory_id
-                && edge.authorship_kind == expected_authorship
-                && edge.relation.descriptor.class == RelationClass::Provenance
-        })
-        .map(|edge| {
-            (
-                edge.relation.descriptor.relation.as_str().to_string(),
-                format!("{:?}", edge.source_kind),
-                edge.source_memory_id.into_inner(),
-                format!("{:?}", edge.target_kind),
-                edge.target_memory_id.into_inner(),
-                format!("{:?}", edge.authorship_kind),
-                edge.authorship_owner_memory_id.map(MemoryId::into_inner),
-            )
-        })
-        .collect::<BTreeSet<_>>();
-    let rows: Vec<StoredEdgeProofRow> = sqlx::query_as(
-        "SELECT relation, source_kind, source_memory_id, target_kind, target_memory_id,
-                authorship_kind, authorship_owner_memory_id
-           FROM proxima_core.edges
-          WHERE source_memory_id = $1
-            AND relation_class = 'Provenance'
-            AND authorship_kind::text = ANY($2::text[])",
-    )
-    .bind(draft.memory_id)
-    .bind(operator_edge_authorship_values())
-    .fetch_all(&mut **tx)
-    .await
-    .map_err(map_err)?;
-    let actual = rows
-        .into_iter()
-        .map(
-            |(
-                relation,
-                source_kind,
-                source_memory_id,
-                target_kind,
-                target_memory_id,
-                authorship_kind,
-                authorship_owner_memory_id,
-            )| {
-                (
-                    relation,
-                    format!("{source_kind:?}"),
-                    source_memory_id,
-                    format!("{target_kind:?}"),
-                    target_memory_id,
-                    format!("{authorship_kind:?}"),
-                    authorship_owner_memory_id,
-                )
-            },
-        )
-        .collect::<BTreeSet<_>>();
-    if actual == expected {
-        Ok(())
-    } else {
-        Err(StorageError::Conflict(
-            "derived memory idempotent replay edge proof mismatch".into(),
-        ))
-    }
-}
-
 async fn validate_derived_replay_equivalent(
     tx: &mut Transaction<'_, Postgres>,
     draft: &DerivedDraft<'_>,
@@ -541,8 +459,8 @@ async fn validate_derived_replay_equivalent(
                 AND model_id = $12
                 AND prompt_version = $13
                 AND supersedes IS NOT DISTINCT FROM $14
+                AND authoring_perspective_id IS NOT DISTINCT FROM $15
                 AND receipt_id IS NULL
-                AND citation_mapping_id IS NULL
                 AND tombstoned_at IS NULL
          )",
     )
@@ -560,6 +478,7 @@ async fn validate_derived_replay_equivalent(
     .bind(draft.model_id)
     .bind(draft.prompt_version)
     .bind(draft.supersedes.map(MemoryId::into_inner))
+    .bind(draft.authoring_perspective_id.map(MemoryId::into_inner))
     .fetch_one(&mut **tx)
     .await
     .map_err(map_err)?;
@@ -573,16 +492,56 @@ async fn validate_derived_replay_equivalent(
     }
 }
 
+/// Close the lineage pointer on the row this write revises.
+///
+/// The successor already carries `supersedes`; this stamps the predecessor's
+/// `superseded_by` in the same transaction, so "is this the head?" is a
+/// column read on either row. The `WHERE superseded_by IS NULL` guard is what
+/// makes a second successor a conflict rather than a silent overwrite — the
+/// unique index would catch it anyway, and this names it.
+async fn point_prior_head_forward(
+    tx: &mut Transaction<'_, Postgres>,
+    prior: MemoryId,
+    successor: uuid::Uuid,
+) -> Result<(), StorageError> {
+    let updated = sqlx::query(
+        "UPDATE proxima_core.memories
+            SET superseded_by = $2
+          WHERE memory_id = $1
+            AND superseded_by IS NULL",
+    )
+    .bind(prior.into_inner())
+    .bind(successor)
+    .execute(&mut **tx)
+    .await
+    .map_err(map_err)?;
+    if updated.rows_affected() == 1 {
+        Ok(())
+    } else {
+        Err(StorageError::Conflict(
+            "supersedes target is not the current head".into(),
+        ))
+    }
+}
+
+/// The prior row must exist, live in this Owner, share the successor's kind —
+/// and still be the head.
+///
+/// The head check is here, before the INSERT, because `supersedes` is unique:
+/// without it a second successor surfaces as a raw unique-violation from a
+/// column the caller never named. Reading the pointer first lets the refusal
+/// say what actually went wrong. A replay of the very same successor reads its
+/// own id back out of `superseded_by` and is not a conflict.
 async fn validate_supersedes_in_owner(
     tx: &mut Transaction<'_, Postgres>,
     owner: &Owner,
     prior: MemoryId,
     kind: EntityKind,
+    successor: uuid::Uuid,
 ) -> Result<(), StorageError> {
     let (owner_kind, owner_id) = owner.columns();
-    let exists: bool = sqlx::query_scalar(
-        "SELECT EXISTS (
-             SELECT 1
+    let head: Option<(Option<uuid::Uuid>,)> = sqlx::query_as(
+        "SELECT m.superseded_by
                FROM proxima_core.memories m
               WHERE m.memory_id = $1
                 AND m.tombstoned_at IS NULL
@@ -593,22 +552,24 @@ async fn validate_supersedes_in_owner(
                      WHERE eo.entity_id = m.memory_id
                        AND eo.owner_kind = $2
                        AND eo.owner_id = $3
-)
-         )",
+                )",
     )
     .bind(prior.into_inner())
     .bind(owner_kind)
     .bind(owner_id)
     .bind(kind)
-    .fetch_one(&mut **tx)
+    .fetch_optional(&mut **tx)
     .await
     .map_err(map_err)?;
-    if exists {
-        Ok(())
-    } else {
-        Err(StorageError::ConstraintViolation(
+    match head {
+        None => Err(StorageError::ConstraintViolation(
             "supersedes crosses Owner boundary or does not exist".into(),
-        ))
+        )),
+        Some((None,)) => Ok(()),
+        Some((Some(existing),)) if existing == successor => Ok(()),
+        Some((Some(_),)) => Err(StorageError::Conflict(
+            "supersedes target is not the current head".into(),
+        )),
     }
 }
 

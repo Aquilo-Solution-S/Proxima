@@ -4,12 +4,14 @@
 //! pull-only durable log; consumers read it by `seq` cursor.
 
 use proxima_core::{
-    ChangeEvent, ChangeEventKind, ChangeEventKindTag, EdgeTargetProjection, EntityKind, EntityRef,
-    FactEntityId, GoalId, MemoryId, OwnerRef, OwnerRefKind, SchemaId, SchemaVersion, StorageError,
+    ChangeEvent, ChangeEventKind, ChangeEventKindTag, EdgeEndpoint, EdgeKind, EdgeTargetProjection,
+    EntityKind, EntityRef, GoalId, MemoryId, OwnerRef, OwnerRefKind, SchemaId, SchemaVersion,
+    StorageError,
 };
 use uuid::Uuid;
 
 use crate::error::internal;
+use crate::verbs::edge_index::{PgEndpointKind, endpoint_from_columns};
 
 #[derive(Debug, sqlx::FromRow)]
 struct ChangeEventRow {
@@ -24,14 +26,11 @@ struct ChangeEventRow {
     entity_schema_version: Option<i32>,
     supersedes_memory_id: Option<Uuid>,
     supersedes_goal_id: Option<Uuid>,
-    edge_id: Option<Uuid>,
-    edge_relation: Option<String>,
-    edge_source_memory_id: Option<Uuid>,
-    edge_source_goal_id: Option<Uuid>,
-    edge_source_fact_entity_id: Option<Uuid>,
-    edge_target_memory_id: Option<Uuid>,
-    edge_target_goal_id: Option<Uuid>,
-    edge_target_fact_entity_id: Option<Uuid>,
+    edge_kind: Option<EdgeKind>,
+    edge_source_kind: Option<PgEndpointKind>,
+    edge_source_id: Option<Uuid>,
+    edge_target_kind: Option<PgEndpointKind>,
+    edge_target_id: Option<Uuid>,
     entity_memory_present: bool,
     edge_target_available: bool,
     edge_target_visible: bool,
@@ -58,9 +57,8 @@ pub(crate) async fn hydrate_change_event(
                   entity_memory_id, entity_goal_id,
                   entity_schema_id, entity_schema_version,
                   supersedes_memory_id, supersedes_goal_id,
-                  edge_id, edge_relation,
-                  edge_source_memory_id, edge_source_goal_id, edge_source_fact_entity_id,
-                  edge_target_memory_id, edge_target_goal_id, edge_target_fact_entity_id,
+                  edge_kind, edge_source_kind, edge_source_id,
+                  edge_target_kind, edge_target_id,
                   (
                       entity_memory_id IS NULL
                       OR EXISTS (
@@ -71,23 +69,23 @@ pub(crate) async fn hydrate_change_event(
                       )
                   ) AS entity_memory_present,
                   (
-                      edge_id IS NULL OR EXISTS (
+                      edge_kind IS NULL OR EXISTS (
                           SELECT 1
                             FROM (SELECT memory_id AS entity_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id FROM proxima_core.goals UNION ALL SELECT fact_entity_id AS entity_id FROM proxima_core.fact_entities) teo
-                           WHERE teo.entity_id = COALESCE(edge_target_memory_id, edge_target_goal_id, edge_target_fact_entity_id)
+                           WHERE teo.entity_id = edge_target_id
                       )
                   ) AS edge_target_available,
                   (
-                      edge_id IS NULL OR EXISTS (
+                      edge_kind IS NULL OR EXISTS (
                           SELECT 1
                             FROM (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) teo
                             JOIN unnest($2::proxima_core.owner_ref_kind[], $3::uuid[]) AS rs(kind, id)
                               ON teo.owner_kind = rs.kind
                              AND teo.owner_id IS NOT DISTINCT FROM rs.id
                            WHERE teo.entity_id = COALESCE(
-                               edge_target_memory_id, edge_target_goal_id,
                                (SELECT fe.current_memory_id FROM proxima_core.fact_entities fe
-                                 WHERE fe.fact_entity_id = edge_target_fact_entity_id))
+                                 WHERE fe.fact_entity_id = edge_target_id),
+                               edge_target_id)
                       )
                   ) AS edge_target_visible
              FROM proxima_core.change_event WHERE seq = $1",
@@ -123,9 +121,8 @@ pub(crate) async fn hydrate_change_events_batch(
                   entity_memory_id, entity_goal_id,
                   entity_schema_id, entity_schema_version,
                   supersedes_memory_id, supersedes_goal_id,
-                  edge_id, edge_relation,
-                  edge_source_memory_id, edge_source_goal_id, edge_source_fact_entity_id,
-                  edge_target_memory_id, edge_target_goal_id, edge_target_fact_entity_id,
+                  edge_kind, edge_source_kind, edge_source_id,
+                  edge_target_kind, edge_target_id,
                   (
                       entity_memory_id IS NULL
                       OR EXISTS (
@@ -136,23 +133,23 @@ pub(crate) async fn hydrate_change_events_batch(
                       )
                   ) AS entity_memory_present,
                   (
-                      edge_id IS NULL OR EXISTS (
+                      edge_kind IS NULL OR EXISTS (
                           SELECT 1
                             FROM (SELECT memory_id AS entity_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id FROM proxima_core.goals UNION ALL SELECT fact_entity_id AS entity_id FROM proxima_core.fact_entities) teo
-                           WHERE teo.entity_id = COALESCE(edge_target_memory_id, edge_target_goal_id, edge_target_fact_entity_id)
+                           WHERE teo.entity_id = edge_target_id
                       )
                   ) AS edge_target_available,
                   (
-                      edge_id IS NULL OR EXISTS (
+                      edge_kind IS NULL OR EXISTS (
                           SELECT 1
                             FROM (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) teo
                             JOIN unnest($2::proxima_core.owner_ref_kind[], $3::uuid[]) AS rs(kind, id)
                               ON teo.owner_kind = rs.kind
                              AND teo.owner_id IS NOT DISTINCT FROM rs.id
                            WHERE teo.entity_id = COALESCE(
-                               edge_target_memory_id, edge_target_goal_id,
                                (SELECT fe.current_memory_id FROM proxima_core.fact_entities fe
-                                 WHERE fe.fact_entity_id = edge_target_fact_entity_id))
+                                 WHERE fe.fact_entity_id = edge_target_id),
+                               edge_target_id)
                       )
                   ) AS edge_target_visible
              FROM proxima_core.change_event
@@ -193,63 +190,65 @@ fn decode_change_event_row(row: &ChangeEventRow) -> Result<ChangeEvent, StorageE
 fn decode_edge_append(row: &ChangeEventRow) -> Result<ChangeEventKind, StorageError> {
     let edge = decode_edge_event(row)?;
     Ok(ChangeEventKind::EdgeAppend {
-        edge_id: edge.edge_id,
-        relation: edge.relation,
         source: edge.source,
         target: edge.target,
+        kind: edge.kind,
     })
 }
 
 fn decode_edge_delete(row: &ChangeEventRow) -> Result<ChangeEventKind, StorageError> {
     let edge = decode_edge_event(row)?;
     Ok(ChangeEventKind::EdgeDelete {
-        edge_id: edge.edge_id,
-        relation: edge.relation,
         source: edge.source,
         target: edge.target,
+        kind: edge.kind,
     })
 }
 
 #[derive(Debug)]
 struct EdgeEvent {
-    edge_id: Uuid,
-    relation: String,
-    source: EntityRef,
+    source: EdgeEndpoint,
     target: EdgeTargetProjection,
+    kind: EdgeKind,
 }
 
+/// The row carries the whole edge, so the endpoint kinds come back with the
+/// event instead of through a second lookup keyed by an id that no longer
+/// exists.
 fn decode_edge_event(row: &ChangeEventRow) -> Result<EdgeEvent, StorageError> {
-    let edge_id = row
-        .edge_id
-        .ok_or_else(|| StorageError::Internal("missing edge_id".into()))?;
-    let relation = row
-        .edge_relation
-        .clone()
-        .ok_or_else(|| StorageError::Internal("missing edge_relation".into()))?;
-    let source = decode_entity_ref(
-        row.edge_source_memory_id,
-        row.edge_source_goal_id,
-        row.edge_source_fact_entity_id,
-    )?;
+    let kind = row
+        .edge_kind
+        .ok_or_else(|| StorageError::Internal("missing edge_kind".into()))?;
+    let source = decode_edge_endpoint(row.edge_source_kind, row.edge_source_id, "source")?;
     let target = if !row.edge_target_available {
         EdgeTargetProjection::Unavailable
     } else if row.edge_target_visible {
-        EdgeTargetProjection::Visible {
-            target: decode_entity_ref(
-                row.edge_target_memory_id,
-                row.edge_target_goal_id,
-                row.edge_target_fact_entity_id,
-            )?,
-        }
+        EdgeTargetProjection::visible(decode_edge_endpoint(
+            row.edge_target_kind,
+            row.edge_target_id,
+            "target",
+        )?)
     } else {
         EdgeTargetProjection::Redacted
     };
     Ok(EdgeEvent {
-        edge_id,
-        relation,
         source,
         target,
+        kind,
     })
+}
+
+fn decode_edge_endpoint(
+    kind: Option<PgEndpointKind>,
+    id: Option<Uuid>,
+    side: &str,
+) -> Result<EdgeEndpoint, StorageError> {
+    let (Some(kind), Some(id)) = (kind, id) else {
+        return Err(StorageError::Internal(format!(
+            "change_event edge {side} endpoint columns violate CHECK constraint"
+        )));
+    };
+    Ok(endpoint_from_columns(kind, id))
 }
 
 fn decode_entity_append_or_absent_delete(
@@ -330,19 +329,4 @@ fn decode_entity_event(row: &ChangeEventRow) -> Result<EntityEvent, StorageError
         schema_id,
         schema_version,
     })
-}
-
-fn decode_entity_ref(
-    memory_id: Option<Uuid>,
-    goal_id: Option<Uuid>,
-    fact_entity_id: Option<Uuid>,
-) -> Result<EntityRef, StorageError> {
-    match (memory_id, goal_id, fact_entity_id) {
-        (Some(m), None, None) => Ok(EntityRef::Memory(MemoryId::new(m))),
-        (None, Some(g), None) => Ok(EntityRef::Goal(GoalId::new(g))),
-        (None, None, Some(fe)) => Ok(EntityRef::FactEntity(FactEntityId::new(fe))),
-        _ => Err(StorageError::Internal(
-            "change_event endpoint columns violate CHECK constraint".into(),
-        )),
-    }
 }

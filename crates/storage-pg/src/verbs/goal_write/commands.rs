@@ -1,18 +1,16 @@
 use super::{
-    AchieveGoalAtomicRequest, CORE_DERIVED_FROM_RELATION, CORE_MOTIVATED_BY_RELATION,
-    CreateGoalAtomicRequest, CreateGoalReplayExpectation, DecomposeGoalAtomicRequest,
-    DecomposeGoalOutcome, DecomposedGoalOutcome, DraftFromPayload, EdgeAuthorshipKind,
-    EvidenceTarget, GoalAtomicContext, GoalAuthorship, GoalLifecycleFact, GoalState,
+    AchieveGoalAtomicRequest, CreateGoalAtomicRequest, CreateGoalReplayExpectation,
+    DecomposeGoalAtomicRequest, DecomposeGoalOutcome, DecomposedGoalOutcome, DraftFromPayload,
+    EvidenceTarget, GoalAtomicContext, GoalAuthorship, GoalId, GoalLifecycleFact, GoalState,
     GoalWriteOutcome, InsertedGoal, MemoryId, ModifyGoalAtomicRequest, Owner, OwnerWritePermit,
     PgPool, PgSidecarRegistryFrozen, Postgres, StorageError, SystemOrigin, Transaction,
-    TransitionGoalAtomicRequest, WakeWrite, append_goal_to_self_edge,
-    append_lifecycle_authored_edge, append_lifecycle_derived_from_edges, append_motivated_by_edges,
-    child_draft, draft_from_payload, draft_from_stored, emit_lifecycle_fact,
-    ensure_create_goal_replay_side_effects_match, goal_evidence_edges_match, idempotency_conflict,
-    insert_or_replay_goal, internal, lifecycle_outcome, load_prior_goal, map_err,
-    motivated_by_authorship_kind, outgoing_motivated_by_evidence, replay_goal_outcome,
-    validate_active_head, validate_evidence_in_owner, validate_goal_achievement,
-    validate_goal_transition, validate_operator_goal_evidence,
+    TransitionGoalAtomicRequest, WakeWrite, assert_goal_topology_references, child_draft,
+    draft_from_payload, draft_from_stored, emit_lifecycle_fact,
+    ensure_create_goal_replay_side_effects_match, goal_evidence_matches, goal_topology_edge_count,
+    idempotency_conflict, insert_or_replay_goal, internal, lifecycle_outcome, load_prior_goal,
+    map_err, outgoing_motivated_by_evidence, replay_goal_outcome, validate_active_head,
+    validate_evidence_in_owner, validate_goal_achievement, validate_goal_transition,
+    validate_operator_goal_evidence,
 };
 use crate::error::with_bounded_retry;
 
@@ -101,6 +99,7 @@ pub(crate) async fn create_goal_atomic_in_pool(
         WakeWrite::Explicit(req.draft.wake.as_ref()),
     )
     .await?;
+    let dependencies = draft_dependency_ids(&req.draft);
     let outcome = if inserted.idempotent_replay {
         ensure_create_goal_replay_side_effects_match(
             &mut tx,
@@ -108,7 +107,6 @@ pub(crate) async fn create_goal_atomic_in_pool(
                 goal_id: inserted.goal_id,
                 target_self_perspective_id: req.draft.topology.assignment().perspective_id(),
                 evidence: &evidence,
-                evidence_authorship_kind: motivated_by_authorship_kind(&req.draft.authorship),
                 author_self_perspective_id: req.context.author_self_perspective_id,
                 wake_write: WakeWrite::Explicit(req.draft.wake.as_ref()),
                 expected_prior: None,
@@ -120,14 +118,10 @@ pub(crate) async fn create_goal_atomic_in_pool(
             &mut tx,
             inserted,
             GoalLifecycleFact::Activated,
-            &[
-                CORE_MOTIVATED_BY_RELATION,
-                proxima_core::relation::CORE_INSPIRES_RELATION,
-            ],
+            goal_topology_edge_count(&dependencies, &evidence),
         )
         .await?
     } else {
-        let mut edge_ids = Vec::new();
         let lifecycle_memory_id = Some(
             emit_lifecycle_fact(
                 &mut tx,
@@ -136,51 +130,24 @@ pub(crate) async fn create_goal_atomic_in_pool(
                 &req.draft.owner(),
                 inserted.goal_id,
                 GoalLifecycleFact::Activated,
-            )
-            .await?,
-        );
-        // Order matters: goal-sourced edges (inspires, then motivated_by)
-        // first, then the lifecycle authored edge last — this mirrors
-        // `replay_goal_outcome` (goal-relation edges by created_at, then
-        // lifecycle-memory edges) so idempotent replay returns identical
-        // edge_ids.
-        edge_ids.push(
-            append_goal_to_self_edge(
-                &mut tx,
-                req.context,
-                &req.draft.owner(),
-                inserted.goal_id,
-                req.draft.topology.assignment().perspective_id(),
-            )
-            .await?,
-        );
-        edge_ids.extend(
-            append_motivated_by_edges(
-                &mut tx,
-                req.context,
-                &req.draft.owner(),
-                inserted.goal_id,
                 &evidence,
-                motivated_by_authorship_kind(&req.draft.authorship),
             )
             .await?,
         );
-        if let Some(lifecycle_id) = lifecycle_memory_id
-            && let Some(edge_id) = append_lifecycle_authored_edge(
-                &mut tx,
-                req.context,
-                &req.draft.owner(),
-                lifecycle_id,
-            )
-            .await?
-        {
-            edge_ids.push(edge_id);
-        }
+        let edge_count = assert_goal_topology_references(
+            &mut tx,
+            &req.draft.owner(),
+            inserted.goal_id,
+            req.draft.topology.assignment().perspective_id(),
+            &dependencies,
+            &evidence,
+        )
+        .await?;
         GoalWriteOutcome {
             goal_id: inserted.goal_id,
             change_event_seq: inserted.change_event_seq,
             lifecycle_memory_id,
-            edge_ids,
+            edge_count,
             idempotent_replay: false,
         }
     };
@@ -217,6 +184,9 @@ pub(crate) async fn transition_goal_atomic_in_pool(
         Some(req.prior_goal_id),
         req.authorship.clone(),
         req.request_id.as_str(),
+        // A plain transition rests on nothing it names: no evidence column,
+        // and so no evidence reference rows.
+        &[],
     );
     let inserted = insert_or_replay_goal(
         &mut tx,
@@ -228,6 +198,7 @@ pub(crate) async fn transition_goal_atomic_in_pool(
     )
     .await?;
     let lifecycle = GoalLifecycleFact::for_state(req.next_state);
+    let dependencies = prior.dependencies.clone();
     let outcome = lifecycle_outcome(
         &mut tx,
         permit,
@@ -236,6 +207,7 @@ pub(crate) async fn transition_goal_atomic_in_pool(
         inserted,
         lifecycle,
         prior.assignment,
+        &dependencies,
     )
     .await?;
     tx.commit().await.map_err(map_err)?;
@@ -265,6 +237,7 @@ pub(crate) async fn achieve_goal_atomic_in_pool(
         Some(req.prior_goal_id),
         req.authorship.clone(),
         req.request_id.as_str(),
+        &evidence,
     );
     let inserted = insert_or_replay_goal(
         &mut tx,
@@ -275,26 +248,16 @@ pub(crate) async fn achieve_goal_atomic_in_pool(
         WakeWrite::CarryFrom(req.prior_goal_id),
     )
     .await?;
+    let dependencies = prior.dependencies.clone();
     let outcome = if inserted.idempotent_replay {
-        if !goal_evidence_edges_match(
-            &mut tx,
-            inserted.goal_id,
-            &evidence,
-            motivated_by_authorship_kind(&req.authorship),
-        )
-        .await?
-        {
+        if !goal_evidence_matches(&mut tx, inserted.goal_id, &evidence).await? {
             return Err(idempotency_conflict(req.request_id.as_str()));
         }
         replay_goal_outcome(
             &mut tx,
             inserted,
             GoalLifecycleFact::Achieved,
-            &[
-                proxima_core::relation::CORE_INSPIRES_RELATION,
-                CORE_MOTIVATED_BY_RELATION,
-                CORE_DERIVED_FROM_RELATION,
-            ],
+            goal_topology_edge_count(&dependencies, &evidence),
         )
         .await?
     } else {
@@ -307,7 +270,7 @@ pub(crate) async fn achieve_goal_atomic_in_pool(
                 inserted,
                 evidence: &evidence,
                 assignment: prior.assignment,
-                authorship_kind: motivated_by_authorship_kind(&req.authorship),
+                dependencies: &dependencies,
             },
         )
         .await?
@@ -323,13 +286,15 @@ struct AchieveGoalNonReplay<'a> {
     inserted: InsertedGoal,
     evidence: &'a [EvidenceTarget],
     assignment: MemoryId,
-    authorship_kind: EdgeAuthorshipKind,
+    dependencies: &'a [GoalId],
 }
 
 async fn achieve_goal_non_replay(
     tx: &mut Transaction<'_, Postgres>,
     args: AchieveGoalNonReplay<'_>,
 ) -> Result<GoalWriteOutcome, StorageError> {
+    // The achievement Fact declares the evidence it was made from, so its
+    // origin rows land inside its own ingest transaction.
     let lifecycle_memory_id = Some(
         emit_lifecycle_fact(
             tx,
@@ -338,52 +303,36 @@ async fn achieve_goal_non_replay(
             args.owner,
             args.inserted.goal_id,
             GoalLifecycleFact::Achieved,
+            args.evidence,
         )
         .await?,
     );
-    let mut edge_ids = append_motivated_by_edges(
+    let edge_count = assert_goal_topology_references(
         tx,
-        args.context,
         args.owner,
         args.inserted.goal_id,
+        args.assignment,
+        args.dependencies,
         args.evidence,
-        args.authorship_kind,
     )
     .await?;
-    edge_ids.push(
-        append_goal_to_self_edge(
-            tx,
-            args.context,
-            args.owner,
-            args.inserted.goal_id,
-            args.assignment,
-        )
-        .await?,
-    );
-    if let Some(lifecycle_id) = lifecycle_memory_id {
-        if let Some(edge_id) =
-            append_lifecycle_authored_edge(tx, args.context, args.owner, lifecycle_id).await?
-        {
-            edge_ids.push(edge_id);
-        }
-        edge_ids.extend(
-            append_lifecycle_derived_from_edges(
-                tx,
-                args.context,
-                args.owner,
-                lifecycle_id,
-                args.evidence,
-            )
-            .await?,
-        );
-    }
     Ok(GoalWriteOutcome {
         goal_id: args.inserted.goal_id,
         change_event_seq: args.inserted.change_event_seq,
         lifecycle_memory_id,
-        edge_ids,
+        edge_count,
         idempotent_replay: false,
     })
+}
+
+/// Dependency ids a draft declares, in the shape the topology writer wants.
+fn draft_dependency_ids(draft: &proxima_core::verbs::goal_write::GoalDraft) -> Vec<GoalId> {
+    draft
+        .topology
+        .dependencies()
+        .iter()
+        .map(|dependency| dependency.goal_id())
+        .collect()
 }
 
 #[allow(clippy::too_many_lines)] // atomic Goal replace path keeps replay/proof side effects together
@@ -413,6 +362,7 @@ pub(crate) async fn modify_goal_atomic_in_pool(
         supersedes: Some(req.prior_goal_id),
         authorship: req.authorship.clone(),
         request_id: req.request_id.as_str(),
+        evidence: &evidence,
     });
     validate_operator_goal_evidence(&draft.authorship, &evidence)?;
     let wake_write = match &req.wake {
@@ -428,25 +378,16 @@ pub(crate) async fn modify_goal_atomic_in_pool(
         wake_write,
     )
     .await?;
+    let dependencies = draft_dependency_ids(&draft);
     let outcome = if inserted.idempotent_replay {
-        if !goal_evidence_edges_match(
-            &mut tx,
-            inserted.goal_id,
-            &evidence,
-            motivated_by_authorship_kind(&req.authorship),
-        )
-        .await?
-        {
+        if !goal_evidence_matches(&mut tx, inserted.goal_id, &evidence).await? {
             return Err(idempotency_conflict(req.request_id.as_str()));
         }
         replay_goal_outcome(
             &mut tx,
             inserted,
             GoalLifecycleFact::Activated,
-            &[
-                proxima_core::relation::CORE_INSPIRES_RELATION,
-                CORE_MOTIVATED_BY_RELATION,
-            ],
+            goal_topology_edge_count(&dependencies, &evidence),
         )
         .await?
     } else {
@@ -458,43 +399,24 @@ pub(crate) async fn modify_goal_atomic_in_pool(
                 &req.owner,
                 inserted.goal_id,
                 GoalLifecycleFact::Activated,
-            )
-            .await?,
-        );
-        let mut edge_ids = Vec::new();
-        edge_ids.push(
-            append_goal_to_self_edge(
-                &mut tx,
-                req.context,
-                &req.owner,
-                inserted.goal_id,
-                prior.assignment,
-            )
-            .await?,
-        );
-        if let Some(lifecycle_id) = lifecycle_memory_id
-            && let Some(edge_id) =
-                append_lifecycle_authored_edge(&mut tx, req.context, &req.owner, lifecycle_id)
-                    .await?
-        {
-            edge_ids.push(edge_id);
-        }
-        edge_ids.extend(
-            append_motivated_by_edges(
-                &mut tx,
-                req.context,
-                &req.owner,
-                inserted.goal_id,
                 &evidence,
-                motivated_by_authorship_kind(&req.authorship),
             )
             .await?,
         );
+        let edge_count = assert_goal_topology_references(
+            &mut tx,
+            &req.owner,
+            inserted.goal_id,
+            prior.assignment,
+            &dependencies,
+            &evidence,
+        )
+        .await?;
         GoalWriteOutcome {
             goal_id: inserted.goal_id,
             change_event_seq: inserted.change_event_seq,
             lifecycle_memory_id,
-            edge_ids,
+            edge_count,
             idempotent_replay: false,
         }
     };
@@ -532,25 +454,16 @@ pub(crate) async fn decompose_goal_atomic_in_pool(
             WakeWrite::Explicit(child.wake.as_ref()),
         )
         .await?;
+        let dependencies = draft_dependency_ids(&draft);
         let outcome = if inserted.idempotent_replay {
-            if !goal_evidence_edges_match(
-                &mut tx,
-                inserted.goal_id,
-                &evidence,
-                motivated_by_authorship_kind(&req.authorship),
-            )
-            .await?
-            {
+            if !goal_evidence_matches(&mut tx, inserted.goal_id, &evidence).await? {
                 return Err(idempotency_conflict(child.request_id.as_str()));
             }
             replay_goal_outcome(
                 &mut tx,
                 inserted,
                 GoalLifecycleFact::Activated,
-                &[
-                    CORE_MOTIVATED_BY_RELATION,
-                    proxima_core::relation::CORE_INSPIRES_RELATION,
-                ],
+                goal_topology_edge_count(&dependencies, &evidence),
             )
             .await?
         } else {
@@ -562,43 +475,24 @@ pub(crate) async fn decompose_goal_atomic_in_pool(
                     &req.owner,
                     inserted.goal_id,
                     GoalLifecycleFact::Activated,
-                )
-                .await?,
-            );
-            let mut edge_ids = Vec::new();
-            if let Some(lifecycle_id) = lifecycle_memory_id
-                && let Some(edge_id) =
-                    append_lifecycle_authored_edge(&mut tx, req.context, &req.owner, lifecycle_id)
-                        .await?
-            {
-                edge_ids.push(edge_id);
-            }
-            edge_ids.push(
-                append_goal_to_self_edge(
-                    &mut tx,
-                    req.context,
-                    &req.owner,
-                    inserted.goal_id,
-                    req.topology.assignment().perspective_id(),
-                )
-                .await?,
-            );
-            edge_ids.extend(
-                append_motivated_by_edges(
-                    &mut tx,
-                    req.context,
-                    &req.owner,
-                    inserted.goal_id,
                     &evidence,
-                    motivated_by_authorship_kind(&req.authorship),
                 )
                 .await?,
             );
+            let edge_count = assert_goal_topology_references(
+                &mut tx,
+                &req.owner,
+                inserted.goal_id,
+                req.topology.assignment().perspective_id(),
+                &dependencies,
+                &evidence,
+            )
+            .await?;
             GoalWriteOutcome {
                 goal_id: inserted.goal_id,
                 change_event_seq: inserted.change_event_seq,
                 lifecycle_memory_id,
-                edge_ids,
+                edge_count,
                 idempotent_replay: false,
             }
         };

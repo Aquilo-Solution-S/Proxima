@@ -1,26 +1,28 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use proxima_core::change_event::{EdgeTargetProjection, EntityRef};
 use proxima_core::verbs::query::{
     EntityKind, MemoryLineageCursor, MemoryLineageDirection, MemoryLineageEdge, MemoryLineageNode,
     MemoryLineageRequest, MemoryLineageResponse,
 };
-use proxima_core::{MemoryId, OwnerRef, OwnerRefKind, RelationClass, SchemaId, StorageError};
+use proxima_core::{
+    Edge, EdgeKind, EdgeTargetProjection, EntityRef, MemoryId, OwnerRef, OwnerRefKind, SchemaId,
+    StorageError,
+};
 use sqlx::PgPool;
 
 use crate::error::map_err;
+use crate::verbs::edge_index::{PgEndpointKind, endpoint_from_columns};
 
 use super::{entity_owner_union, read_owner_columns, read_owner_predicate};
 
 #[derive(Debug, sqlx::FromRow)]
 struct EdgeWalkRow {
     distance: i32,
-    edge_id: uuid::Uuid,
-    relation: String,
-    relation_class: RelationClass,
-    source_kind: EntityKind,
+    source_kind: PgEndpointKind,
     source_memory_id: uuid::Uuid,
+    target_kind: PgEndpointKind,
     target_memory_id: uuid::Uuid,
+    created_at: time::OffsetDateTime,
     next_memory_id: uuid::Uuid,
     next_readable: bool,
 }
@@ -84,7 +86,8 @@ pub(crate) async fn walk_memory_lineage(
         let last = edge_rows.last().expect("non-empty page");
         MemoryLineageCursor {
             distance: u8::try_from(last.distance).unwrap_or(u8::MAX),
-            edge_id: last.edge_id,
+            source: EntityRef::Memory(MemoryId::new(last.source_memory_id)),
+            target: EntityRef::Memory(MemoryId::new(last.target_memory_id)),
         }
     });
 
@@ -107,17 +110,21 @@ pub(crate) async fn walk_memory_lineage(
         .into_iter()
         .filter(|row| visible_ids.contains(&row.source_memory_id))
         .map(|row| MemoryLineageEdge {
-            edge_id: row.edge_id,
-            relation: row.relation,
-            relation_class: row.relation_class.as_str().to_string(),
-            source_kind: row.source_kind,
-            source_memory_id: MemoryId::new(row.source_memory_id),
-            target: if row.next_readable {
-                EdgeTargetProjection::Visible {
-                    target: EntityRef::Memory(MemoryId::new(row.target_memory_id)),
-                }
-            } else {
-                EdgeTargetProjection::Redacted
+            edge: Edge {
+                source: endpoint_from_columns(row.source_kind, row.source_memory_id),
+                target: if row.next_readable {
+                    EdgeTargetProjection::visible(endpoint_from_columns(
+                        row.target_kind,
+                        row.target_memory_id,
+                    ))
+                } else {
+                    EdgeTargetProjection::Redacted
+                },
+                // The walk traverses origin and nothing else: lineage is the
+                // provenance chain, and supersession left the edge table for
+                // a pointer on the row.
+                kind: EdgeKind::Origin,
+                created_at: row.created_at,
             },
             distance: u8::try_from(row.distance).unwrap_or(u8::MAX),
         })
@@ -209,7 +216,8 @@ async fn walk_edges(
     let (world_kind, world_id) =
         crate::access::owner_columns::owner_binds(&proxima_core::access::world());
     let after_distance = req.after.map(|after| i32::from(after.distance));
-    let after_edge_id = req.after.map(|after| after.edge_id);
+    let after_source = req.after.map(|after| lineage_cursor_id(after.source));
+    let after_target = req.after.map(|after| lineage_cursor_id(after.target));
     // SQL-POLICY: fixed-fragment
     let query = sqlx::query_as::<_, EdgeWalkRow>(sqlx::AssertSqlSafe(sql))
         .bind(read_owner_kinds)
@@ -220,8 +228,20 @@ async fn walk_edges(
         .bind(i32::from(depth))
         .bind(i64::from(limit))
         .bind(after_distance)
-        .bind(after_edge_id);
+        .bind(after_source)
+        .bind(after_target);
     query.fetch_all(pool).await.map_err(map_err)
+}
+
+/// The walk is over memory rows, so a lineage cursor's endpoints always name
+/// memories; the other two `EntityRef` forms are accepted and read for their
+/// id rather than refused, because a cursor is opaque to its holder.
+fn lineage_cursor_id(entity: EntityRef) -> uuid::Uuid {
+    match entity {
+        EntityRef::Memory(id) => id.into_inner(),
+        EntityRef::Goal(id) => id.into_inner(),
+        EntityRef::FactEntity(id) => id.into_inner(),
+    }
 }
 
 async fn load_nodes(
@@ -258,7 +278,14 @@ async fn load_nodes(
     Ok(rows)
 }
 
-fn ancestors_sql() -> String {
+/// Shared prelude for both walk directions: the readable memory set, then the
+/// `origin` edges with Fact-entity endpoints resolved to their current heads.
+///
+/// Only `origin` rows are traversed. Lineage is the provenance chain — what a
+/// memory was made from — and that is now exactly one kind. Supersession
+/// walked here too under the old model; it is a pointer on the row now, and a
+/// lineage walk that followed it would be answering a different question.
+fn walk_prelude() -> String {
     format!(
         "
 WITH RECURSIVE read_set(kind, id) AS (
@@ -277,17 +304,25 @@ readable_memories AS (
        AND m.tombstoned_at IS NULL
 ),
 edge_endpoints AS (
-    SELECT e.edge_id, e.relation, e.relation_class,
-           e.source_kind, e.target_kind,
-           COALESCE(e.source_memory_id, sfe.current_memory_id) AS source_memory_id,
-           COALESCE(e.target_memory_id, tfe.current_memory_id) AS target_memory_id,
-           COALESCE(e.source_memory_id, e.source_goal_id, sfe.current_memory_id) AS source_entity_id,
-           COALESCE(e.target_memory_id, e.target_goal_id, tfe.current_memory_id) AS target_entity_id
+    SELECT e.kind, e.created_at,
+           CASE WHEN e.source_kind = 'FactEntityHead'::proxima_core.edge_endpoint_kind
+                THEN 'Fact'::proxima_core.edge_endpoint_kind ELSE e.source_kind END
+                AS source_kind,
+           CASE WHEN e.target_kind = 'FactEntityHead'::proxima_core.edge_endpoint_kind
+                THEN 'Fact'::proxima_core.edge_endpoint_kind ELSE e.target_kind END
+                AS target_kind,
+           COALESCE(sfe.current_memory_id, e.source_id) AS source_memory_id,
+           COALESCE(tfe.current_memory_id, e.target_id) AS target_memory_id
       FROM proxima_core.edges e
       LEFT JOIN proxima_core.fact_entities sfe
-        ON sfe.fact_entity_id = e.source_fact_entity_id
+        ON e.source_kind = 'FactEntityHead'::proxima_core.edge_endpoint_kind
+       AND sfe.fact_entity_id = e.source_id
       LEFT JOIN proxima_core.fact_entities tfe
-        ON tfe.fact_entity_id = e.target_fact_entity_id
+        ON e.target_kind = 'FactEntityHead'::proxima_core.edge_endpoint_kind
+       AND tfe.fact_entity_id = e.target_id
+     WHERE e.kind = 'origin'::proxima_core.edge_kind
+       AND e.source_kind <> 'Goal'::proxima_core.edge_endpoint_kind
+       AND e.target_kind <> 'Goal'::proxima_core.edge_endpoint_kind
 ),
 edge_heads AS (
     SELECT edge_endpoints.*,
@@ -302,154 +337,117 @@ edge_heads AS (
            EXISTS (
                SELECT 1
                  FROM {entity_owner_union} weo
-                WHERE weo.entity_id = edge_endpoints.source_entity_id
+                WHERE weo.entity_id = edge_endpoints.source_memory_id
                   AND weo.owner_kind = $3
                   AND weo.owner_id IS NOT DISTINCT FROM $4
            ) AS source_world_visible
       FROM edge_endpoints
-),
+)",
+        entity_owner_union = entity_owner_union(),
+        read_owner_predicate = read_owner_predicate("eo", "rs"),
+    )
+}
+
+/// Keyset tail shared by both directions. `(distance ASC, source DESC, target
+/// DESC)` is the total order; the cursor is the edge itself because an edge
+/// has no id.
+const WALK_TAIL: &str = "
+SELECT DISTINCT distance, source_kind, source_memory_id, target_kind, target_memory_id,
+       created_at, next_memory_id, next_readable
+FROM walk
+WHERE ($8::int IS NULL
+       OR distance > $8
+       OR (distance = $8
+           AND (source_memory_id, target_memory_id) < ($9::uuid, $10::uuid)))
+ORDER BY distance ASC, source_memory_id DESC, target_memory_id DESC
+LIMIT $7
+";
+
+fn ancestors_sql() -> String {
+    format!(
+        "{prelude},
 walk AS (
     SELECT 1 AS distance,
            ARRAY[$5::uuid, e.target_memory_id] AS path,
-           e.edge_id, e.relation, e.relation_class,
            e.source_kind, e.source_memory_id,
-           e.target_kind, e.target_memory_id,
+           e.target_kind, e.target_memory_id, e.created_at,
            e.target_memory_id AS next_memory_id,
            e.target_visible AS next_readable
     FROM edge_heads e
     WHERE e.source_memory_id = $5
       AND e.source_readable
-      AND e.target_memory_id IS NOT NULL
-      AND e.relation_class IN ('Provenance', 'Supersession')
       AND NOT (e.source_world_visible AND NOT e.target_visible)
     UNION ALL
     SELECT w.distance + 1,
            w.path || e.target_memory_id,
-           e.edge_id, e.relation, e.relation_class,
            e.source_kind, e.source_memory_id,
-           e.target_kind, e.target_memory_id,
+           e.target_kind, e.target_memory_id, e.created_at,
            e.target_memory_id,
            e.target_visible
     FROM walk w
     JOIN edge_heads e
       ON e.source_memory_id = w.next_memory_id
-     AND e.target_memory_id IS NOT NULL
-     AND e.relation_class IN ('Provenance', 'Supersession')
     WHERE w.distance < $6
       AND w.next_readable
       AND e.source_readable
       AND NOT e.target_memory_id = ANY(w.path)
       AND NOT (e.source_world_visible AND NOT e.target_visible)
 )
-SELECT DISTINCT distance, edge_id, relation, relation_class,
-       source_kind, source_memory_id, target_kind, target_memory_id,
-       next_memory_id, next_readable
-FROM walk
-WHERE ($8::int IS NULL
-       OR distance > $8
-       OR (distance = $8 AND edge_id < $9::uuid))
-ORDER BY distance ASC, edge_id DESC
-LIMIT $7
-",
-        entity_owner_union = entity_owner_union(),
-        read_owner_predicate = read_owner_predicate("eo", "rs"),
+{WALK_TAIL}",
+        prelude = walk_prelude(),
     )
 }
 
 fn descendants_sql() -> String {
     format!(
-        "
-WITH RECURSIVE read_set(kind, id) AS (
-    SELECT * FROM unnest($1::proxima_core.owner_ref_kind[], $2::uuid[])
-),
-readable_memories AS (
-    SELECT m.memory_id
-      FROM proxima_core.memories m
-     WHERE EXISTS (
-               SELECT 1
-                 FROM {entity_owner_union} eo
-                 JOIN read_set rs
-                   ON {read_owner_predicate}
-                WHERE eo.entity_id = m.memory_id
-           )
-       AND m.tombstoned_at IS NULL
-),
-edge_endpoints AS (
-    SELECT e.edge_id, e.relation, e.relation_class,
-           e.source_kind, e.target_kind,
-           COALESCE(e.source_memory_id, sfe.current_memory_id) AS source_memory_id,
-           COALESCE(e.target_memory_id, tfe.current_memory_id) AS target_memory_id,
-           COALESCE(e.source_memory_id, e.source_goal_id, sfe.current_memory_id) AS source_entity_id,
-           COALESCE(e.target_memory_id, e.target_goal_id, tfe.current_memory_id) AS target_entity_id
-      FROM proxima_core.edges e
-      LEFT JOIN proxima_core.fact_entities sfe
-        ON sfe.fact_entity_id = e.source_fact_entity_id
-      LEFT JOIN proxima_core.fact_entities tfe
-        ON tfe.fact_entity_id = e.target_fact_entity_id
-),
-edge_heads AS (
-    SELECT edge_endpoints.*,
-           EXISTS (
-               SELECT 1 FROM readable_memories rm
-                WHERE rm.memory_id = edge_endpoints.source_memory_id
-           ) AS source_readable,
-           EXISTS (
-               SELECT 1 FROM readable_memories rm
-                WHERE rm.memory_id = edge_endpoints.target_memory_id
-           ) AS target_visible,
-           EXISTS (
-               SELECT 1
-                 FROM {entity_owner_union} weo
-                WHERE weo.entity_id = edge_endpoints.source_entity_id
-                  AND weo.owner_kind = $3
-                  AND weo.owner_id IS NOT DISTINCT FROM $4
-           ) AS source_world_visible
-      FROM edge_endpoints
-),
+        "{prelude},
 walk AS (
     SELECT 1 AS distance,
            ARRAY[$5::uuid, e.source_memory_id] AS path,
-           e.edge_id, e.relation, e.relation_class,
            e.source_kind, e.source_memory_id,
-           e.target_kind, e.target_memory_id,
+           e.target_kind, e.target_memory_id, e.created_at,
            e.source_memory_id AS next_memory_id,
            e.source_readable AS next_readable
     FROM edge_heads e
     WHERE e.target_memory_id = $5
       AND e.source_readable
-      AND e.source_memory_id IS NOT NULL
-      AND e.relation_class IN ('Provenance', 'Supersession')
       AND NOT (e.source_world_visible AND NOT e.target_visible)
     UNION ALL
     SELECT w.distance + 1,
            w.path || e.source_memory_id,
-           e.edge_id, e.relation, e.relation_class,
            e.source_kind, e.source_memory_id,
-           e.target_kind, e.target_memory_id,
+           e.target_kind, e.target_memory_id, e.created_at,
            e.source_memory_id,
            e.source_readable
     FROM walk w
     JOIN edge_heads e
       ON e.target_memory_id = w.next_memory_id
-     AND e.source_memory_id IS NOT NULL
-     AND e.relation_class IN ('Provenance', 'Supersession')
     WHERE w.distance < $6
       AND w.next_readable
       AND e.source_readable
       AND NOT e.source_memory_id = ANY(w.path)
       AND NOT (e.source_world_visible AND NOT e.target_visible)
 )
-SELECT DISTINCT distance, edge_id, relation, relation_class,
-       source_kind, source_memory_id, target_kind, target_memory_id,
-       next_memory_id, next_readable
-FROM walk
-WHERE ($8::int IS NULL
-       OR distance > $8
-       OR (distance = $8 AND edge_id < $9::uuid))
-ORDER BY distance ASC, edge_id DESC
-LIMIT $7
-",
-        entity_owner_union = entity_owner_union(),
-        read_owner_predicate = read_owner_predicate("eo", "rs"),
+{WALK_TAIL}",
+        prelude = walk_prelude(),
     )
+}
+
+/// A lineage edge always sources at a memory row, so the endpoint decode
+/// below can never see a Goal address; this is the assertion that says so.
+#[cfg(test)]
+mod tests {
+    use super::{PgEndpointKind, endpoint_from_columns};
+    use proxima_core::{EdgeEndpoint, EntityKind};
+
+    #[test]
+    fn a_resolved_head_decodes_as_a_pinned_fact_memory() {
+        let id = uuid::Uuid::now_v7();
+        let endpoint: EdgeEndpoint = endpoint_from_columns(PgEndpointKind::Fact, id);
+        assert_eq!(endpoint.kind, EntityKind::Fact);
+        assert_eq!(
+            endpoint.memory_id().map(proxima_core::MemoryId::into_inner),
+            Some(id)
+        );
+    }
 }
