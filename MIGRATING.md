@@ -14,10 +14,10 @@ not a reference. Deployment and env vars live in
 | You are | Read |
 |---|---|
 | An **operator** promoting a deployment | [the v0.0.8 edge reset](#the-v008-edge-reset), then [the v0.0.7 schema lane](#the-v007-schema-lane) and [scheduled maintenance](#scheduled-maintenance-changes) |
-| Running the **code flavor** | the above, then [re-index every repository](#re-index-every-code-repository) |
-| An **MCP client / agent** author | [wire changes](#wire-changes-mcp-clients) |
-| An **embedding host** driving `Engine` in Rust | [Rust host changes](#rust-host-changes) |
-| A **flavor** author | [flavor SDK changes](#flavor-sdk-changes) |
+| Running the **code flavor** | the above, then [re-register and re-index](#re-register-and-re-index-every-code-repository) |
+| An **MCP client / agent** author | [v0.0.8 wire changes](#wire-changes-mcp-clients-v008), then [v0.0.7 wire changes](#wire-changes-mcp-clients) |
+| An **embedding host** driving `Engine` in Rust | [v0.0.8 Rust host changes](#rust-host-changes-v008), then [v0.0.7](#rust-host-changes) |
+| A **flavor** author | [v0.0.8 flavor SDK changes](#flavor-sdk-changes-v008), then [v0.0.7](#flavor-sdk-changes) |
 | Booting against a **pre-v0.0.4 database** | [the v0.0.4 reset](#the-v004-reset) first — nothing else applies until it is done |
 
 Every upgrade also needs [the lock-step rules](#rules-for-every-upgrade) and
@@ -120,6 +120,211 @@ apply it out of band during a maintenance window and boot with
 `PROXIMA_SKIP_MIGRATIONS=true`. Small deployments can let boot apply it — boot
 migrations set `lock_timeout = 5s`, so a migration that cannot get the lock
 fails and retries on the next pod.
+
+### The code flavor lane is a full rebuild
+
+The code flavor's five migration files are gone from the tree, replaced by a
+single destructive baseline:
+
+| Source | File | Rewrites tables? |
+|---|---|---|
+| code flavor | `20260801000020_v008_baseline.sql` | **yes** — `DROP SCHEMA proxima_code CASCADE`, then a folded schema |
+
+This one is not a preference. The old baseline created
+`proxima_code.code_calls_v1` with a foreign key to
+`proxima_core.edges(edge_id)`, and `0015_v008.sql` removed that column along
+with the identity it stood for — so the old lane can no longer run at all, on
+a fresh database or an old one. `migrator()` sets `ignore_missing`, so a
+database that already applied the five superseded lanes
+(`20260516000020`, `20260709000020`, `20260726000020`, `20260728000020`,
+`20260729000020`) tolerates their absence and applies this one.
+
+What changed inside the schema:
+
+- **`code_calls_v1` is gone.** It was an edge sidecar holding one call site
+  per edge, so a second call to the same callee needed a second edge and a
+  synthetic id to keep them apart. Call sites now live in the caller chunk's
+  payload (`proxima_code.code_chunk_call_v1`), and the connection is one
+  `reference` row derived from it. Ten call sites, one index row.
+- **`work_assignment_v1` is new** — the `proxima-code/work-assignment-v1`
+  Perspective that replaced the `code/targets-execution-request` relation.
+  Neither endpoint owned the targeting claim, so the model was missing a node.
+- **`work_requested_v1` and `test_requested_v1` gain `depends_on_memory_ids`**;
+  `core/depends-on` moved onto the depending row.
+- **`execution_plan_item_v1` gains `request_memory_id`**: the plan is written
+  after its items and names each one, instead of pointing at them with edges
+  appended afterwards.
+
+### Re-register and re-index every code repository
+
+**Required if you run the code flavor.** The schema drop takes the repository
+index with it, and re-ingest is also how `reference` rows come back. The
+runbook is the flavor's existing one:
+
+```
+proxima-code_register_repo        { path }
+proxima-code_ingest_head_snapshot { repo_handle }
+```
+
+There is no `erase_repo` step this time — the schema no longer exists to erase
+from. Budget for the re-embed exactly as in
+[the v0.0.7 re-index](#re-index-every-code-repository): the queue is
+proportional to corpus size.
+
+<a id="wire-changes-mcp-clients-v008"></a>
+
+## Wire changes: MCP clients (v0.0.8)
+
+### Breaking
+
+| Change | Was | Now |
+|---|---|---|
+| connecting two existing memories | `core_link(source, target, reason, confidence)` → `E:` handle | `core_interpret(claim, confidence, subjects)` → `P:` handle |
+| `core_list_edge_types` | listed registered relation descriptors | **removed** — the vocabulary is two kinds, and it is documented, not queried |
+| `proxima://edge-types` | registered relation descriptors | **removed** |
+| `proxima://edge/{id}` | single-edge read by `E:` handle | **removed** — an edge has no id |
+| `proxima://edges` query | `{?relation,source,target,limit,cursor,payloads}` | `{?kind,source,target,limit,cursor}`; `kind` is `origin` or `reference` |
+| an edge on the wire | id, relation, authorship, optional typed payload | `(source, target, kind, created_at)` and nothing else |
+| the `E:` handle prefix | part of the reference grammar | **gone**; the grammar is `F:`/`A:`/`P:`/`G:` |
+| `core_derive`, `core_goal` outputs | edge handles | `edge_count` |
+| `proxima-code_emit_execution_request` output | edge handles | `{handle, origin_count, acceptance_criteria_handle, idempotent_replay}` |
+| `proxima-code_emit_execution_plan` output | `dependency_edge_handles` per item | `{plan_handle, plan_edge_count, plan_idempotent_replay, items}`; items lost `dependency_edge_handles` |
+| `proxima-code_retry_execution_request` output | edge handles | `{handle, assignment_handle, origin_count, idempotent_replay}`; `assignment_handle` is the `P:` assignment Perspective |
+| `proxima-code_search_chunks` `call_edges[]` | one entry per call site, each with its own edge | `{source, target, sites[]}` — one entry per callee, multiplicity in `sites` |
+
+**`core_link` did not move, it dissolved.** Its arguments were a reason and a
+confidence stored on an edge, and a claim with a reason and a confidence is a
+judgment — which is a Perspective, not a connection. `core_interpret` takes
+`claim` (1..=1000 chars), `confidence` (0..=100, default 80, **rejected** past
+the scale rather than clamped) and `subjects` (at most 64 memory handles, any
+layer), and returns the interpretation Perspective's `P:` handle plus an
+`edge_count`. It writes no edge of its own: the subjects are payload fields, so
+they arrive as ordinary `reference` rows. A Fact can never be the source of one,
+which is the layering rule doing what the old no-Fact-source special case did
+by hand.
+
+**Nothing you call takes an edge kind as an argument.** That is the whole
+model in one sentence: `origin` follows a write declaring what it was made
+from, `reference` follows a schema-declared payload field, and no verb writes
+an edge as a free-standing act. A client looking for the connect verb is
+looking for something that was removed on purpose.
+
+**`edge_count` is not a weaker `edge_handles`.** There is no handle to return —
+the row is `(source, target, kind)`, and re-running the same write re-asserts
+the same rows instead of minting new ones. A client that stored edge handles
+should drop the column; a client that wants the neighbours of a node reads
+`proxima://edges?source=…`.
+
+## Rust host changes (v0.0.8)
+
+### Removed from `proxima::host`
+
+| Removed | Replacement |
+|---|---|
+| `EdgeRow` | `EdgeReadResponse` rows carry the four-field edge |
+| `RelationInfo`, `RelationPayloadSchemaRef` | none — `SchemaResponse` no longer reports relations |
+
+`EdgeReadCursor` is now exported for keyset paging over `EdgeReadRequest`.
+
+### Removed from `proxima::flavor`
+
+| Removed | Replacement |
+|---|---|
+| `EdgeId`, `EdgePayload` | none — an edge has no id and carries no payload |
+| `RelationClass`, `RelationDescriptor`, `RegisteredRelation` | none |
+| `CORE_DERIVED_FROM_RELATION`, `CORE_SUPERSEDES_RELATION` | `derived_from` on the write; `supersedes` as a row pointer |
+| `EdgeAuthorshipKind`, `AuthorshipKindMask`, `EntityKindMask` | none — authorship is `memories.authoring_perspective_id` |
+| `EndpointBinding` | `ReferenceBinding`, and the address form already carries it |
+| `AuthorDerivedEdgeInput` | `AuthorDerivedRequestInput::derived_from: &[EdgeEndpoint]` |
+| `PgEdgeSidecar` | none — there are no edge sidecars |
+| `SchemaRef` | none |
+
+### Added to `proxima::flavor`
+
+`Edge`, `EdgeEndpoint`, `EdgeKind`, `EdgeTargetProjection`, `EntityRef`,
+`FactEntityId`, `PayloadReference`, `ReferenceBinding`. None of them is a
+write surface: `EdgeKind` is exported to be *read* (off a listed `Edge`, or
+when filtering), never handed to a writer.
+
+### `author_derived_authorized` lost its edge argument
+
+```rust
+// v0.0.7
+let relation = ctx.engine.registry().resolve_relation(CORE_DERIVED_FROM_RELATION)?;
+let edges = [AuthorDerivedEdgeInput {
+    relation, source_kind: EntityKind::Abstraction, source_memory_id: derived_id,
+    target_kind: EntityKind::Fact, target_memory_id: source_fact_id,
+    authorship_kind: EdgeAuthorshipKind::OperatorFtoA,
+    authorship_owner_memory_id: None,
+}];
+// ... AuthorDerivedRequestInput { ..., edges: &edges }
+
+// v0.0.8
+let derived_from = [EdgeEndpoint::memory(EntityKind::Fact, source_fact_id)];
+// ... AuthorDerivedRequestInput { ..., authoring_perspective_id: None,
+//                                 derived_from: &derived_from }
+```
+
+The request names targets; it never names a kind, a relation, or an authorship
+class. The outcome reports `edge_count` where it used to imply handles.
+
+## Flavor SDK changes (v0.0.8)
+
+### `proxima_flavor!` lost two keys
+
+```diff
+ proxima_flavor! {
+     name = "my-flavor",
+     fact_schemas = [...],
+     abstraction_schemas = [...],
+     perspective_schemas = [...],
+     goal_schemas = [...],
+-    edge_schemas = [],
+-    relations = [],
+     mcp_tools = [...],
+ }
+```
+
+Both are now unknown keys, which is a compile error. `PgSidecarRegistry::add_edge`
+is gone for the same reason.
+
+### Connections are declared, not registered
+
+A flavor connects nodes by declaring which of its payload's own fields point
+at other nodes. `references()` is defaulted on all four payload traits, so a
+schema that connects nothing needs no change at all:
+
+```rust
+fn references(&self) -> Vec<PayloadReference> {
+    vec![PayloadReference::memory(
+        "work_item_memory_id",
+        EntityKind::Fact,
+        MemoryId::new(self.work_item_memory_id),
+    )]
+}
+```
+
+Ingest turns each declaration into exactly one `reference` row, in the node
+write's own transaction. Three constructors: `memory` and `goal` pin a row,
+`fact_entity_head` follows the head as it is re-observed — which is where the
+retired descriptor's `FollowHead`/`Pin` cell went, into the address itself, so
+the two cannot disagree.
+
+Porting a registered relation:
+
+| Old relation shape | Port to |
+|---|---|
+| a structural relation between two of your nodes | a reference field on whichever payload owns the statement |
+| a relation with a typed edge sidecar | move the sidecar's fields into that payload; the connection is one row, the detail is N payload entries |
+| a relation carrying a reason, a confidence, or any judgment | a node — a Perspective whose payload references its subjects |
+| a relation neither endpoint's payload could own | you are missing a node, not an edge kind (see `proxima-code/work-assignment-v1`) |
+
+**Deliberately lost, not overlooked:** a third-party flavor can no longer
+define a novel traversable link vocabulary without touching core. The in-tree
+evidence — three registered relations across the whole tree, all expressible
+as node content — said that flexibility was speculative. The escape valve is
+total: any relationship whatsoever can be asserted as an interpretation node.
+The question is never whether something can be expressed, only where it lives.
 
 ### Rollback is by image, and it costs the edges again
 
@@ -567,7 +772,7 @@ small request per failed batch.
 | Added | What it gives you |
 |---|---|
 | `proxima://goals{?state,limit,cursor}`, `proxima://goal/{id}` | owner-scoped goal listing and single read, including stored wake config |
-| `proxima://edges{?relation,source,target,…}`, `proxima://edge/{id}` | the graph was writable but not traversable — `core_link` returned an `E:` handle no verb could dereference |
+| `proxima://edges{?relation,source,target,…}`, `proxima://edge/{id}` | the graph was writable but not traversable — `core_link` returned an `E:` handle no verb could dereference (both reshaped again in v0.0.8; see [the v0.0.8 wire changes](#wire-changes-mcp-clients-v008)) |
 | `proxima://memories{?ids}` | batch read, at most 100 prefixed ids, in request order plus a `missing` list |
 | `core_upload` (`prepare`/`complete`/`abort`/`read_url`) | the S3 lane as an MCP tool; served automatically when `PROXIMA_S3_*` is configured |
 | `core_search_memories` `min_score`, `semantic_weight`, `cursor` | relevance floor, hybrid fusion weight, keyset resume |
