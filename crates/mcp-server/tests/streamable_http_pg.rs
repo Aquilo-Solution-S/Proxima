@@ -169,7 +169,10 @@ async fn host_bearer_lists_all_tools_without_origin() -> Result<(), Box<dyn std:
         .iter()
         .filter_map(|resource| resource["uri"].as_str())
         .collect();
-    assert!(resource_uris.contains(&"proxima://edge-types"));
+    assert!(
+        resource_uris.contains(&"proxima://tools"),
+        "got {resource_uris:?}"
+    );
 
     let templates = post_rpc_without_origin(
         &client,
@@ -198,6 +201,7 @@ async fn host_bearer_lists_all_tools_without_origin() -> Result<(), Box<dyn std:
     assert!(
         template_uris.contains(&"proxima://memory/{id}/lineage{?direction,depth,limit,cursor}")
     );
+    assert!(template_uris.contains(&"proxima://edges{?kind,source,target,limit,cursor}"));
 
     common::stop_server(handle, &db_name).await?;
     Ok(())

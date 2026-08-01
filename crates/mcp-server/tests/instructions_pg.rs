@@ -100,9 +100,10 @@ async fn initialize_returns_instructions_and_how_to_resource()
         .expect("instructions present at initialize");
     assert!(!instructions.is_empty());
     assert!(
-        instructions.contains("agent-authored `core_link` edges cannot use Facts as sources"),
+        instructions.contains("NO TOOL WRITES A CONNECTION"),
         "got: {instructions}"
     );
+    assert!(instructions.contains("`core_interpret`"));
     assert!(instructions.contains("`core_derive`"));
     assert!(instructions.contains("proxima://how-to"));
     // Full surface advertises goals.
@@ -144,8 +145,8 @@ async fn initialize_returns_instructions_and_how_to_resource()
     let body = read["result"]["contents"][0]["text"]
         .as_str()
         .expect("resource text");
-    assert!(body.contains("The one hard law for agent-authored links"));
-    assert!(body.contains("derived-from"));
+    assert!(body.contains("The one hard law for agent-authored connections"));
+    assert!(body.contains("## Edge kinds"));
     assert!(body.contains("## Worked example"));
 
     common::stop_server(handle, &db_name).await?;
@@ -163,7 +164,7 @@ async fn memory_profile_instructions_omit_excluded_tools() -> Result<(), Box<dyn
         [
             "core_remember",
             "core_derive",
-            "core_link",
+            "core_interpret",
             "core_search_memories",
             "resource:memory",
         ]
@@ -184,7 +185,7 @@ async fn memory_profile_instructions_omit_excluded_tools() -> Result<(), Box<dyn
         .expect("instructions present");
     // Core contract still taught.
     assert!(
-        instructions.contains("agent-authored `core_link` edges cannot use Facts as sources"),
+        instructions.contains("NO TOOL WRITES A CONNECTION"),
         "got: {instructions}"
     );
     assert!(instructions.contains("`core_remember`"));

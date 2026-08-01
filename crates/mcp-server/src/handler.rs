@@ -1026,9 +1026,14 @@ mod tests {
         assert_eq!(fact.destructive, Some(false));
         assert_eq!(fact.idempotent, Some(true));
 
-        // Create-new-each-call write is not replay-safe.
-        let link = core_tool_annotations(protocol_tool::CORE_LINK).expect("create tool");
-        assert_eq!(link.idempotent, Some(false));
+        // Idempotent by content: the interpretation's memory id folds the
+        // claim, its confidence and its subjects, so re-asserting the same
+        // judgment lands on one memory rather than a pile of duplicates.
+        let interpret =
+            core_tool_annotations(protocol_tool::CORE_INTERPRET).expect("interpret tool");
+        assert_eq!(interpret.read_only, Some(false));
+        assert_eq!(interpret.destructive, Some(false));
+        assert_eq!(interpret.idempotent, Some(true));
 
         // Grouped goal dispatcher aggregates mixed write actions, so it is
         // advertised as non-idempotent at tool level.

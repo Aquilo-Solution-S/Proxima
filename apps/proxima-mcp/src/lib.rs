@@ -45,7 +45,7 @@ const PROXIMA_TOOL_DENY: &str = "PROXIMA_TOOL_DENY";
 fn memory_keep_set() -> Vec<&'static str> {
     use proxima_core::mcp::McpTool;
     use proxima_core::mcp::core_tools::{
-        CoreFactTool, CoreGoalTool, CoreUploadTool, DeriveTool, LinkTool, MemorySpacesTool,
+        CoreFactTool, CoreGoalTool, CoreUploadTool, DeriveTool, InterpretTool, MemorySpacesTool,
         RecordUtteranceTool, RememberTool, SearchMemoriesTool,
     };
 
@@ -54,7 +54,7 @@ fn memory_keep_set() -> Vec<&'static str> {
         // authoring
         RememberTool::NAME,
         DeriveTool::NAME,
-        LinkTool::NAME,
+        InterpretTool::NAME,
         RecordUtteranceTool::NAME,
         // retrieval
         SearchMemoriesTool::NAME,
