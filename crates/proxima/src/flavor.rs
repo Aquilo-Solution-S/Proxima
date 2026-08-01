@@ -41,8 +41,8 @@ pub use proxima_core::engine::UploadCompleted;
 /// dependency. See `docs/09-developing-flavors.md` § MCP Tools.
 ///
 /// [`McpPresentationExt`] is how a flavor implementing the transport-neutral
-/// [`Tool`] trait mints and parses MCP wire references (`F:`/`A:`/`P:`/`G:`/
-/// `E:` prefixed uuids). [`McpToolCtx`] carries those as inherent methods,
+/// [`Tool`] trait mints and parses MCP wire references (`F:`/`A:`/`P:`/`G:`
+/// prefixed uuids — there is no edge prefix, because an edge has no id). [`McpToolCtx`] carries those as inherent methods,
 /// but [`Tool`] is handed a [`ToolCtx`], which deliberately knows nothing
 /// about the wire; importing this trait is the sanctioned bridge. Without it
 /// each flavor writes the same twelve-method forwarding shim over
