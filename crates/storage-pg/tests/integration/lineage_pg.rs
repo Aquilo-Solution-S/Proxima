@@ -1,324 +1,268 @@
-use crate::common::{drop_db, fresh_pg, owner_fixture};
-use proxima_core::storage_ports::*;
+//! The lineage walk traverses `origin`, and nothing else.
+//!
+//! Lineage is the provenance chain — what a memory was made from — and that is
+//! exactly one kind now. Supersession used to be walked here too; it is a
+//! pointer on the row, and a walk that followed it would be answering a
+//! different question.
 
+use proxima_core::storage_ports::*;
 use proxima_core::verbs::query::{MemoryLineageDirection, MemoryLineageRequest};
-use proxima_core::{MemoryId, Owner, OwnerRef, RelationClass, UserId};
+use proxima_core::{
+    EdgeKind, EdgeTargetProjection, EntityKind, EntityRef, GroupId, MemoryId, OwnerRef, UserId,
+};
+use proxima_storage_pg::PgStorage;
 use uuid::Uuid;
 
-#[tokio::test]
-async fn walk_memory_lineage_follows_provenance_and_supersession_by_owner()
--> Result<(), Box<dyn std::error::Error>> {
-    let (pg, db_name) = fresh_pg().await;
-    pg.run_migrations().await?;
+use crate::common::{drop_db, fresh_pg, seed_memory, seed_memory_edge};
 
-    let owner = owner_fixture();
-    let other_owner = OwnerRef::Personal(UserId::new(Uuid::from_u128(99)));
-
-    let old = insert_memory(&pg, &owner, "old abstraction").await?;
-    let new = insert_memory(&pg, &owner, "new abstraction").await?;
-    let perspective = insert_memory(&pg, &owner, "perspective").await?;
-    let other_old = insert_memory(&pg, &other_owner, "other owner old").await?;
-    let other = insert_memory(&pg, &other_owner, "other owner").await?;
-    let world = OwnerRef::World;
-    let world_old = insert_memory(&pg, &world, "world old").await?;
-    let world_ref = insert_memory(&pg, &owner, "world ref").await?;
-
-    insert_edge(
-        &pg,
-        &owner,
-        new,
-        old,
-        "core/supersedes",
-        RelationClass::Supersession,
-    )
-    .await?;
-    insert_edge(
-        &pg,
-        &owner,
-        perspective,
-        new,
-        "core/derived-from",
-        RelationClass::Provenance,
-    )
-    .await?;
-    insert_edge(
-        &pg,
-        &other_owner,
-        other,
-        other_old,
-        "other/derived-from",
-        RelationClass::Provenance,
-    )
-    .await?;
-    insert_edge(
-        &pg,
-        &owner,
-        world_ref,
-        world_old,
-        "world/derived-from",
-        RelationClass::Provenance,
-    )
-    .await?;
-
-    assert_owner_lineage(&pg, owner, old, perspective, other).await?;
-    assert_world_lineage(&pg, owner, world, world_old, world_ref).await?;
-
-    drop(pg);
-    drop_db(&db_name).await?;
-    Ok(())
+struct Chain {
+    perspective: MemoryId,
+    abstraction: MemoryId,
+    fact: MemoryId,
 }
 
-/// Diamond fan-out: the same edge reachable through two equal-length
-/// paths must project once (the recursive walk used to emit one row per
-/// path), and keyset pages must cover the whole walk exactly once.
-#[tokio::test]
-async fn walk_memory_lineage_pages_and_deduplicates_diamonds()
--> Result<(), Box<dyn std::error::Error>> {
-    let (pg, db_name) = fresh_pg().await;
-    pg.run_migrations().await?;
+/// P ← A ← F, all origins, all one owner.
+async fn seed_chain(pg: &PgStorage, owner: OwnerRef) -> Result<Chain, Box<dyn std::error::Error>> {
+    let fact = seed_memory(pg, &owner, EntityKind::Fact, "the observation").await?;
+    let abstraction = seed_memory(pg, &owner, EntityKind::Abstraction, "the summary").await?;
+    let perspective = seed_memory(pg, &owner, EntityKind::Perspective, "the judgment").await?;
+    seed_memory_edge(
+        pg,
+        &owner,
+        (EntityKind::Abstraction, abstraction),
+        (EntityKind::Fact, fact),
+        EdgeKind::Origin,
+    )
+    .await?;
+    seed_memory_edge(
+        pg,
+        &owner,
+        (EntityKind::Perspective, perspective),
+        (EntityKind::Abstraction, abstraction),
+        EdgeKind::Origin,
+    )
+    .await?;
+    Ok(Chain {
+        perspective,
+        abstraction,
+        fact,
+    })
+}
 
-    let owner = owner_fixture();
-    let start = insert_memory(&pg, &owner, "start").await?;
-    let a1 = insert_memory(&pg, &owner, "arm one").await?;
-    let a2 = insert_memory(&pg, &owner, "arm two").await?;
-    let joint = insert_memory(&pg, &owner, "joint").await?;
-    let origin = insert_memory(&pg, &owner, "origin").await?;
-
-    let mut expected_edges = Vec::new();
-    for (source, target) in [(start, a1), (start, a2), (a1, joint), (a2, joint)] {
-        expected_edges.push(
-            insert_edge(
-                &pg,
-                &owner,
-                source,
-                target,
-                "core/derived-from",
-                RelationClass::Provenance,
-            )
-            .await?,
-        );
+fn request(
+    owner: OwnerRef,
+    start: MemoryId,
+    direction: MemoryLineageDirection,
+) -> MemoryLineageRequest {
+    MemoryLineageRequest {
+        owner,
+        start_memory_id: start,
+        direction,
+        depth: 4,
+        limit: 50,
+        after: None,
     }
-    // The diamond joint's outgoing edge is reachable through both arms at
-    // the same distance — the duplicate-projection case.
-    expected_edges.push(
-        insert_edge(
+}
+
+#[tokio::test]
+async fn ancestors_follow_origin_upstream() -> Result<(), Box<dyn std::error::Error>> {
+    let (pg, db_name) = fresh_pg().await;
+    let result = async {
+        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let chain = seed_chain(&pg, owner).await?;
+
+        let response = pg
+            .walk_memory_lineage(
+                &[owner],
+                &request(owner, chain.perspective, MemoryLineageDirection::Ancestors),
+            )
+            .await?;
+        assert_eq!(response.edges.len(), 2, "P→A and A→F");
+        assert!(
+            response
+                .edges
+                .iter()
+                .all(|edge| edge.edge.kind == EdgeKind::Origin)
+        );
+        let distances: Vec<_> = response.edges.iter().map(|edge| edge.distance).collect();
+        assert!(distances.contains(&1) && distances.contains(&2));
+        let node_ids: Vec<_> = response
+            .nodes
+            .iter()
+            .map(|node| node.memory_id)
+            .collect::<Vec<_>>();
+        assert!(node_ids.contains(&chain.abstraction));
+        assert!(node_ids.contains(&chain.fact));
+        Ok::<_, Box<dyn std::error::Error>>(())
+    }
+    .await;
+    drop_db(&db_name).await.ok();
+    result
+}
+
+#[tokio::test]
+async fn descendants_follow_origin_downstream() -> Result<(), Box<dyn std::error::Error>> {
+    let (pg, db_name) = fresh_pg().await;
+    let result = async {
+        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let chain = seed_chain(&pg, owner).await?;
+
+        let response = pg
+            .walk_memory_lineage(
+                &[owner],
+                &request(owner, chain.fact, MemoryLineageDirection::Descendants),
+            )
+            .await?;
+        assert_eq!(response.edges.len(), 2);
+        assert!(
+            response
+                .nodes
+                .iter()
+                .any(|node| node.memory_id == chain.perspective)
+        );
+        Ok::<_, Box<dyn std::error::Error>>(())
+    }
+    .await;
+    drop_db(&db_name).await.ok();
+    result
+}
+
+/// A `reference` row between the same nodes is not lineage: the walk does not
+/// see it, because it is not a claim about what the node was made from.
+#[tokio::test]
+async fn a_reference_is_not_lineage() -> Result<(), Box<dyn std::error::Error>> {
+    let (pg, db_name) = fresh_pg().await;
+    let result = async {
+        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let subject = seed_memory(&pg, &owner, EntityKind::Fact, "subject").await?;
+        let claim = seed_memory(&pg, &owner, EntityKind::Perspective, "a claim about it").await?;
+        seed_memory_edge(
             &pg,
             &owner,
-            joint,
-            origin,
-            "core/derived-from",
-            RelationClass::Provenance,
-        )
-        .await?,
-    );
-
-    let owner_read = vec![owner];
-    let request = |after| MemoryLineageRequest {
-        owner,
-        start_memory_id: MemoryId::new(start),
-        direction: MemoryLineageDirection::Ancestors,
-        depth: 4,
-        limit: 2,
-        after,
-    };
-
-    // Unpaged full walk projects each edge exactly once despite the
-    // two equal-length paths through the diamond.
-    let full = pg
-        .walk_memory_lineage(
-            &owner_read,
-            &MemoryLineageRequest {
-                limit: 20,
-                after: None,
-                ..request(None)
-            },
+            (EntityKind::Perspective, claim),
+            (EntityKind::Fact, subject),
+            EdgeKind::Reference,
         )
         .await?;
-    assert_eq!(full.edges.len(), expected_edges.len());
-    assert!(!full.truncated);
-    assert!(full.next_cursor.is_none());
 
-    // Keyset pages: 2 + 2 + 1, no duplicates, exact coverage.
-    let mut walked = Vec::new();
-    let mut after = None;
-    let mut pages = 0;
-    loop {
-        let page = pg.walk_memory_lineage(&owner_read, &request(after)).await?;
-        pages += 1;
-        assert!(pages <= 3, "walk must exhaust in three pages");
+        let response = pg
+            .walk_memory_lineage(
+                &[owner],
+                &request(owner, claim, MemoryLineageDirection::Ancestors),
+            )
+            .await?;
         assert!(
-            page.nodes
-                .iter()
-                .any(|node| node.memory_id.into_inner() == start && node.distance == 0),
-            "every page carries the start node"
+            response.edges.is_empty(),
+            "an interpretation grounds through references, which lineage does not walk"
         );
-        walked.extend(page.edges.iter().map(|edge| edge.edge_id));
-        assert_eq!(page.truncated, page.next_cursor.is_some());
-        match page.next_cursor {
-            Some(cursor) => after = Some(cursor),
-            None => break,
-        }
+        Ok::<_, Box<dyn std::error::Error>>(())
     }
-    assert_eq!(pages, 3);
-    let mut expected = expected_edges.clone();
-    expected.sort_unstable();
-    let mut walked_sorted = walked.clone();
-    walked_sorted.sort_unstable();
-    assert_eq!(
-        walked_sorted, expected,
-        "pages must cover every lineage edge exactly once"
-    );
-
-    drop(pg);
-    drop_db(&db_name).await?;
-    Ok(())
+    .await;
+    drop_db(&db_name).await.ok();
+    result
 }
 
-async fn assert_owner_lineage(
-    pg: &proxima_storage_pg::PgStorage,
-    owner: Owner,
-    old: Uuid,
-    perspective: Uuid,
-    other: Uuid,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let owner_read = vec![owner];
-    let ancestors = pg
-        .walk_memory_lineage(
-            &owner_read,
-            &MemoryLineageRequest {
-                owner,
-                start_memory_id: MemoryId::new(perspective),
-                direction: MemoryLineageDirection::Ancestors,
-                depth: 3,
-                limit: 10,
-                after: None,
-            },
+/// An unreadable next endpoint is withheld, and the walk stops there rather
+/// than crossing into what the reader may not see.
+#[tokio::test]
+async fn an_unreadable_hop_is_redacted_and_terminal() -> Result<(), Box<dyn std::error::Error>> {
+    let (pg, db_name) = fresh_pg().await;
+    let result = async {
+        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let group = OwnerRef::Group(GroupId::new(Uuid::now_v7()));
+
+        let hidden = seed_memory(&pg, &group, EntityKind::Fact, "not yours").await?;
+        let mine = seed_memory(&pg, &owner, EntityKind::Abstraction, "mine").await?;
+        seed_memory_edge(
+            &pg,
+            &owner,
+            (EntityKind::Abstraction, mine),
+            (EntityKind::Fact, hidden),
+            EdgeKind::Origin,
         )
         .await?;
-    assert_eq!(ancestors.nodes.len(), 3);
-    assert_eq!(ancestors.edges.len(), 2);
-    assert!(
-        ancestors
-            .nodes
-            .iter()
-            .any(|node| node.memory_id.into_inner() == old && node.distance == 2)
-    );
-    assert!(
-        !ancestors
-            .nodes
-            .iter()
-            .any(|node| node.memory_id.into_inner() == other)
-    );
 
-    let descendants = pg
-        .walk_memory_lineage(
-            &owner_read,
-            &MemoryLineageRequest {
-                owner,
-                start_memory_id: MemoryId::new(old),
-                direction: MemoryLineageDirection::Descendants,
-                depth: 3,
-                limit: 10,
-                after: None,
-            },
-        )
-        .await?;
-    assert_eq!(descendants.nodes.len(), 3);
-    assert!(
-        descendants
-            .nodes
-            .iter()
-            .any(|node| node.memory_id.into_inner() == perspective && node.distance == 2)
-    );
-    Ok(())
+        let response = pg
+            .walk_memory_lineage(
+                &[owner],
+                &request(owner, mine, MemoryLineageDirection::Ancestors),
+            )
+            .await?;
+        assert_eq!(response.edges.len(), 1);
+        assert_eq!(
+            response.edges[0].edge.target,
+            EdgeTargetProjection::Redacted
+        );
+        assert!(
+            !response.nodes.iter().any(|node| node.memory_id == hidden),
+            "a redacted endpoint contributes no node"
+        );
+        Ok::<_, Box<dyn std::error::Error>>(())
+    }
+    .await;
+    drop_db(&db_name).await.ok();
+    result
 }
 
-async fn assert_world_lineage(
-    pg: &proxima_storage_pg::PgStorage,
-    owner: Owner,
-    world: Owner,
-    world_old: Uuid,
-    world_ref: Uuid,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let world_read = vec![owner, world];
-    let world_ancestors = pg
-        .walk_memory_lineage(
-            &world_read,
-            &MemoryLineageRequest {
-                owner: world,
-                start_memory_id: MemoryId::new(world_old),
-                direction: MemoryLineageDirection::Descendants,
-                depth: 2,
-                limit: 10,
-                after: None,
-            },
-        )
-        .await?;
-    assert_eq!(world_ancestors.nodes.len(), 2);
-    assert!(
-        world_ancestors
-            .nodes
-            .iter()
-            .any(|node| node.memory_id.into_inner() == world_ref && node.distance == 1),
-        "World-owned lineage must match read_set rows with NULL owner_id"
-    );
-    Ok(())
-}
+/// The cursor is the edge, because an edge has no id.
+#[tokio::test]
+async fn the_lineage_cursor_is_the_edge() -> Result<(), Box<dyn std::error::Error>> {
+    let (pg, db_name) = fresh_pg().await;
+    let result = async {
+        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let source = seed_memory(&pg, &owner, EntityKind::Abstraction, "source").await?;
+        for index in 0..4 {
+            let target =
+                seed_memory(&pg, &owner, EntityKind::Fact, &format!("input {index}")).await?;
+            seed_memory_edge(
+                &pg,
+                &owner,
+                (EntityKind::Abstraction, source),
+                (EntityKind::Fact, target),
+                EdgeKind::Origin,
+            )
+            .await?;
+        }
 
-async fn insert_memory(
-    pg: &proxima_storage_pg::PgStorage,
-    owner: &Owner,
-    text: &str,
-) -> Result<Uuid, Box<dyn std::error::Error>> {
-    let memory_id = Uuid::now_v7();
-    let (owner_kind, owner_id) = proxima_storage_pg::access::owner_columns::owner_binds(owner);
-    sqlx::query(
-        "INSERT INTO proxima_core.memories
-            (memory_id, owner_kind, owner_id, schema_id, schema_version, kind, text,
-             operator_kind, operator_id, input_contract_id, source_batch_id, model_id, prompt_version)
-         VALUES ($1, $2, $3, 'test/lineage-v1', 1, 'Abstraction',
-                 $4, 'AtoA', '00000000-0000-0000-0000-000000000311'::uuid,
-                 '00000000-0000-0000-0000-000000000312'::uuid, NULL,
-                 'test-model', 'test-v1')",
-    )
-    .bind(memory_id)
-    .bind(owner_kind)
-    .bind(owner_id)
-    .bind(text)
-    .execute(pg.pool_for_tests())
-    .await?;
-    Ok(memory_id)
-}
-
-async fn insert_edge(
-    pg: &proxima_storage_pg::PgStorage,
-    owner: &Owner,
-    source: Uuid,
-    target: Uuid,
-    relation: &str,
-    relation_class: RelationClass,
-) -> Result<Uuid, Box<dyn std::error::Error>> {
-    let edge_id = Uuid::now_v7();
-    let (owner_kind, owner_id) = proxima_storage_pg::access::owner_columns::owner_binds(owner);
-    sqlx::query(
-        "INSERT INTO proxima_core.edges
-            (edge_id, owner_kind, owner_id, relation, relation_class,
-             source_kind, source_memory_id, source_goal_id,
-             target_kind, target_memory_id, target_goal_id,
-             authorship_kind, authorship_owner_memory_id)
-         VALUES ($1, $2, $3, $4, $5,
-                 'Abstraction', $6, NULL,
-                 'Abstraction', $7, NULL,
-                 'Engine', NULL)",
-    )
-    .bind(edge_id)
-    .bind(owner_kind)
-    .bind(owner_id)
-    .bind(relation)
-    .bind(relation_class)
-    .bind(source)
-    .bind(target)
-    .execute(pg.pool_for_tests())
-    .await?;
-    Ok(edge_id)
+        let mut seen: Vec<EntityRef> = Vec::new();
+        let mut after = None;
+        loop {
+            let response = pg
+                .walk_memory_lineage(
+                    &[owner],
+                    &MemoryLineageRequest {
+                        owner,
+                        start_memory_id: source,
+                        direction: MemoryLineageDirection::Ancestors,
+                        depth: 1,
+                        limit: 2,
+                        after,
+                    },
+                )
+                .await?;
+            seen.extend(
+                response
+                    .edges
+                    .iter()
+                    .filter_map(|edge| edge.edge.target.endpoint().map(|target| target.entity)),
+            );
+            match response.next_cursor {
+                Some(cursor) => after = Some(cursor),
+                None => break,
+            }
+        }
+        assert_eq!(seen.len(), 4);
+        let mut unique = seen.clone();
+        unique.sort_by_key(|entity| match entity {
+            EntityRef::Memory(id) => id.into_inner(),
+            EntityRef::Goal(id) => id.into_inner(),
+            EntityRef::FactEntity(id) => id.into_inner(),
+        });
+        unique.dedup();
+        assert_eq!(unique.len(), 4, "paging visits each edge exactly once");
+        Ok::<_, Box<dyn std::error::Error>>(())
+    }
+    .await;
+    drop_db(&db_name).await.ok();
+    result
 }

@@ -8,8 +8,8 @@ use proxima_core::verbs::query::{
     QueryRequest, SearchMode, SearchOrder, SupersessionStatus, TagMatch,
 };
 use proxima_core::{
-    AccessKind, Cursor, FactPayload, MemoryId, Owner, OwnerRef, PayloadKeyBuilder, RelationClass,
-    SchemaId, SchemaVersion, SourceBatchId, SourceId, StorageError, UserId,
+    AccessKind, Cursor, FactPayload, MemoryId, Owner, OwnerRef, PayloadKeyBuilder, SchemaId,
+    SchemaVersion, SourceBatchId, SourceId, StorageError, UserId,
 };
 use proxima_storage_pg::verbs::fact_ingest::ingest_fact;
 use uuid::Uuid;
@@ -79,15 +79,7 @@ async fn isolation_proof_covers_reads_replay_and_receipt_scope()
 
         let source_memory = insert_memory(&pg, &owner_a, "isolation source").await?;
         let target_memory = insert_memory(&pg, &owner_a, "isolation target").await?;
-        let edge_id = insert_edge(
-            &pg,
-            &owner_a,
-            source_memory,
-            target_memory,
-            "test/isolation-edge",
-            RelationClass::Provenance,
-        )
-        .await?;
+        insert_edge(&pg, &owner_a, source_memory, target_memory).await?;
 
         assert_owner_b_cannot_see_owner_a(
             &pg,
@@ -96,7 +88,6 @@ async fn isolation_proof_covers_reads_replay_and_receipt_scope()
             cited_object_id,
             source,
             source_memory,
-            edge_id,
         )
         .await?;
 
@@ -146,7 +137,6 @@ async fn assert_owner_b_cannot_see_owner_a(
     cited_object_id: Uuid,
     cursor_source: &str,
     lineage_start: Uuid,
-    edge_id: Uuid,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut query = QueryRequest::for_owner(owner_b);
     query.include_payloads = false;
@@ -212,13 +202,16 @@ async fn assert_owner_b_cannot_see_owner_a(
             &[owner_b],
             &EdgeReadRequest {
                 owner: owner_b,
-                edge_ids: vec![proxima_core::EdgeId::new(edge_id)],
-                filter: EdgeFilter::default(),
+                filter: EdgeFilter {
+                    kind: None,
+                    source: Some(proxima_core::EntityRef::Memory(MemoryId::new(
+                        lineage_start,
+                    ))),
+                    target: None,
+                },
                 limit: 10,
                 cursor: None,
-                include_payloads: false,
             },
-            &[],
         )
         .await?;
     assert!(edges.edges.is_empty(), "owner B edge read must be empty");
@@ -283,6 +276,7 @@ async fn ingest_cited_fact(
                 schema_version: SchemaVersion::new(1),
             },
         }),
+        derived_from: Vec::new(),
     };
     let outcome = pg.ingest_fact_atomic(permit, &draft, None).await?;
     let (owner_kind, owner_id) = proxima_storage_pg::access::owner_columns::owner_binds(owner);
@@ -331,32 +325,20 @@ async fn insert_edge(
     owner: &Owner,
     source: Uuid,
     target: Uuid,
-    relation: &str,
-    relation_class: RelationClass,
-) -> Result<Uuid, Box<dyn std::error::Error>> {
-    let edge_id = Uuid::now_v7();
+) -> Result<(), Box<dyn std::error::Error>> {
     let (owner_kind, owner_id) = proxima_storage_pg::access::owner_columns::owner_binds(owner);
     sqlx::query(
         "INSERT INTO proxima_core.edges
-            (edge_id, owner_kind, owner_id, relation, relation_class,
-             source_kind, source_memory_id, source_goal_id,
-             target_kind, target_memory_id, target_goal_id,
-             authorship_kind, authorship_owner_memory_id)
-         VALUES ($1, $2, $3, $4, $5,
-                 'Abstraction', $6, NULL,
-                 'Abstraction', $7, NULL,
-                 'Engine', NULL)",
+            (source_kind, source_id, target_kind, target_id, kind, owner_kind, owner_id)
+         VALUES ('Abstraction', $3, 'Abstraction', $4, 'origin', $1, $2)",
     )
-    .bind(edge_id)
     .bind(owner_kind)
     .bind(owner_id)
-    .bind(relation)
-    .bind(relation_class)
     .bind(source)
     .bind(target)
     .execute(pg.pool_for_tests())
     .await?;
-    Ok(edge_id)
+    Ok(())
 }
 
 async fn memory_count_for_schema(

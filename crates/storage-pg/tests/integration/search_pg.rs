@@ -273,6 +273,7 @@ async fn ingest_fact_memory(
                         schema_version: SchemaVersion::new(1),
                     },
                 }),
+                derived_from: Vec::new(),
             },
             None,
         )

@@ -1,8 +1,5 @@
 use proxima_core::verbs::goal_write::{GoalState, GoalWakeConfigWrite, GoalWakeTrigger};
-use proxima_core::{
-    CORE_DEPENDS_ON_RELATION, FlavorRegistry, GoalPayload, OwnerRef, SchemaId, SchemaVersion,
-    UserId,
-};
+use proxima_core::{FlavorRegistry, GoalPayload, OwnerRef, SchemaId, SchemaVersion, UserId};
 use proxima_storage_pg::PgStorage;
 use uuid::Uuid;
 
@@ -28,7 +25,7 @@ async fn goal_create_atom_writes_goal_side_effects_and_replays() {
         let outcome = create_goal(&pg, &registry, self_id, draft.clone()).await?;
         assert!(!outcome.idempotent_replay);
         assert!(outcome.lifecycle_memory_id.is_some());
-        assert!(!outcome.edge_ids.is_empty());
+        assert!(outcome.edge_count > 0);
 
         let payload: Vec<u8> =
             sqlx::query_scalar("SELECT payload FROM proxima_core.goals WHERE goal_id = $1")
@@ -41,7 +38,7 @@ async fn goal_create_atom_writes_goal_side_effects_and_replays() {
         assert!(replay.idempotent_replay);
         assert_eq!(replay.goal_id, outcome.goal_id);
         assert_eq!(replay.lifecycle_memory_id, outcome.lifecycle_memory_id);
-        assert_eq!(replay.edge_ids, outcome.edge_ids);
+        assert_eq!(replay.edge_count, outcome.edge_count);
 
         let mut mutated = draft.clone();
         mutated.text = "Different text".to_string();
@@ -186,13 +183,16 @@ async fn goal_create_atom_with_parent_writes_goal_parent() {
         let child_outcome = create_goal(&pg, &registry, self_id, child).await?;
         assert!(!child_outcome.idempotent_replay);
 
+        // A dependency is a reference the child Goal declares; the index row
+        // that follows points from the child at the Goal it waits on.
         let parents: (i64,) = sqlx::query_as(
             "SELECT count(*)::bigint
                FROM proxima_core.edges
-              WHERE relation = $1
-                AND source_goal_id = $2",
+              WHERE kind = 'reference'::proxima_core.edge_kind
+                AND source_kind = 'Goal'::proxima_core.edge_endpoint_kind
+                AND target_kind = 'Goal'::proxima_core.edge_endpoint_kind
+                AND source_id = $1",
         )
-        .bind(CORE_DEPENDS_ON_RELATION)
         .bind(child_outcome.goal_id.into_inner())
         .fetch_one(pg.pool_for_tests())
         .await?;

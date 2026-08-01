@@ -1,26 +1,22 @@
-use proxima_core::{
-    EntityKind, MemoryId, MemoryOperatorKind, Owner, OwnerRef, RelationClass, UserId,
-};
+//! What the edge table refuses.
+//!
+//! Every check here is enforced by the schema, not by the caller: the CHECK
+//! constraints and the invariant trigger are what make E1–E3 true of any row
+//! that reaches the table, including one a hand-written INSERT tries to
+//! smuggle in. The Rust-side validators run first in production; these tests
+//! prove the floor beneath them.
+
+use proxima_core::{EdgeKind, EntityKind, MemoryId, MemoryOperatorKind, Owner, OwnerRef, UserId};
 use proxima_storage_pg::PgStorage;
 use uuid::Uuid;
+
+use crate::common::{drop_db, fresh_pg, seed_memory};
 
 const TEST_ABSTRACTION_SCHEMA: &str = "test/edge-invariant-abstraction-v1";
 const TEST_PERSPECTIVE_SCHEMA: &str = "test/edge-invariant-perspective-v1";
 
 fn other_owner() -> Owner {
     OwnerRef::Personal(UserId::new(Uuid::now_v7()))
-}
-
-async fn ingest_test_fact(pg: &PgStorage, owner: &Owner, text: &str) -> MemoryId {
-    crate::common::seed_memory(pg, owner, EntityKind::Fact, text)
-        .await
-        .expect("seed fact")
-}
-
-async fn ingest_other_fact(pg: &PgStorage, owner: &Owner, text: &str) -> MemoryId {
-    crate::common::seed_memory(pg, owner, EntityKind::Fact, text)
-        .await
-        .expect("seed other fact")
 }
 
 async fn insert_derived_memory(
@@ -58,173 +54,283 @@ async fn insert_derived_memory(
     Ok(MemoryId::new(memory_id))
 }
 
-#[allow(clippy::too_many_arguments)]
-async fn insert_memory_edge(
+/// Raw insert, deliberately bypassing every Rust-side validator.
+async fn insert_edge_row(
     pg: &PgStorage,
     owner: &Owner,
-    relation_class: RelationClass,
-    source_kind: EntityKind,
-    source_memory_id: MemoryId,
-    target_kind: EntityKind,
-    target_memory_id: MemoryId,
+    source: (EntityKind, Uuid),
+    target: (EntityKind, Uuid),
+    kind: EdgeKind,
 ) -> Result<(), sqlx::Error> {
     let (owner_kind, owner_id) = proxima_storage_pg::access::owner_columns::owner_binds(owner);
     sqlx::query(
         "INSERT INTO proxima_core.edges
-            (edge_id, owner_kind, owner_id, relation, relation_class,
-             source_kind, source_memory_id, source_goal_id,
-             target_kind, target_memory_id, target_goal_id,
-             authorship_kind, authorship_owner_memory_id)
-         VALUES ($1, $2, $3, 'test/relation', $4,
-                 $5, $6, NULL,
-                 $7, $8, NULL,
-                 'Engine', NULL)",
+            (source_kind, source_id, target_kind, target_id, kind, owner_kind, owner_id)
+         VALUES ($1::text::proxima_core.edge_endpoint_kind, $2,
+                 $3::text::proxima_core.edge_endpoint_kind, $4,
+                 $5::text::proxima_core.edge_kind, $6, $7)",
     )
-    .bind(Uuid::now_v7())
+    .bind(source.0.as_str())
+    .bind(source.1)
+    .bind(target.0.as_str())
+    .bind(target.1)
+    .bind(kind.as_str())
     .bind(owner_kind)
     .bind(owner_id)
-    .bind(relation_class)
-    .bind(source_kind)
-    .bind(source_memory_id.into_inner())
-    .bind(target_kind)
-    .bind(target_memory_id.into_inner())
     .execute(pg.pool_for_tests())
-    .await?;
-    Ok(())
+    .await
+    .map(|_| ())
 }
 
+/// E3. A Fact asserts no judgment, so it cannot be the source of an edge
+/// pointing at an Abstraction or a Perspective. The rule is one CHECK over two
+/// columns — it never has to read another table.
 #[tokio::test]
-async fn trigger_rejects_upward_edges_and_semantic_fact_to_fact() {
-    let (pg, db_name) = crate::common::fresh_pg().await;
-
-    let result: Result<(), Box<dyn std::error::Error>> = async {
-        pg.run_migrations().await?;
-        let owner = crate::common::owner_fixture();
-        let fact_a = ingest_test_fact(&pg, &owner, "a").await;
-        let fact_b = ingest_test_fact(&pg, &owner, "b").await;
-        let perspective = insert_derived_memory(&pg, &owner, EntityKind::Perspective).await?;
-
-        let err = insert_memory_edge(
-            &pg,
-            &owner,
-            RelationClass::Provenance,
-            EntityKind::Fact,
-            fact_a,
-            EntityKind::Perspective,
-            perspective,
-        )
-        .await
-        .expect_err("Fact -> Perspective must be rejected");
-        assert!(err.to_string().contains("layer violation"));
-
-        let err = insert_memory_edge(
-            &pg,
-            &owner,
-            RelationClass::Causal,
-            EntityKind::Fact,
-            fact_a,
-            EntityKind::Fact,
-            fact_b,
-        )
-        .await
-        .expect_err("Causal Fact -> Fact must be rejected");
-        assert!(err.to_string().contains("semantic Fact-to-Fact"));
-
-        insert_memory_edge(
-            &pg,
-            &owner,
-            RelationClass::Structural,
-            EntityKind::Fact,
-            fact_a,
-            EntityKind::Fact,
-            fact_b,
-        )
-        .await?;
-        Ok(())
-    }
-    .await;
-
-    let _ = crate::common::drop_db(&db_name).await;
-    result.expect("edge invariant trigger rejects invalid edge shapes");
-}
-
-#[tokio::test]
-async fn trigger_rejects_endpoint_kind_and_allows_cross_owner_edges() {
-    let (pg, db_name) = crate::common::fresh_pg().await;
-
-    let result: Result<(), Box<dyn std::error::Error>> = async {
-        pg.run_migrations().await?;
-        let owner = crate::common::owner_fixture();
-        let other = other_owner();
-        let fact = ingest_test_fact(&pg, &owner, "a").await;
-        let other_fact = ingest_test_fact(&pg, &other, "b").await;
-
-        let err = insert_memory_edge(
-            &pg,
-            &owner,
-            RelationClass::Structural,
-            EntityKind::Abstraction,
-            fact,
-            EntityKind::Fact,
-            fact,
-        )
-        .await
-        .expect_err("stored Fact endpoint cannot be declared Abstraction");
-        assert!(err.to_string().contains("source kind"));
-
-        insert_memory_edge(
-            &pg,
-            &owner,
-            RelationClass::Structural,
-            EntityKind::Fact,
-            fact,
-            EntityKind::Fact,
-            other_fact,
-        )
-        .await?;
-        Ok(())
-    }
-    .await;
-
-    let _ = crate::common::drop_db(&db_name).await;
-    result.expect("edge invariant trigger rejects endpoint lies and allows cross-owner edges");
-}
-
-#[tokio::test]
-async fn trigger_allows_cross_domain_fact_set_abstraction() {
-    let (pg, db_name) = crate::common::fresh_pg().await;
-
-    let result: Result<(), Box<dyn std::error::Error>> = async {
-        pg.run_migrations().await?;
-        let owner = crate::common::owner_fixture();
-        let fact_a = ingest_test_fact(&pg, &owner, "a").await;
-        let fact_b = ingest_other_fact(&pg, &owner, "b").await;
+async fn an_upward_memory_edge_is_refused() -> Result<(), Box<dyn std::error::Error>> {
+    let (pg, db_name) = fresh_pg().await;
+    let result = async {
+        let owner = other_owner();
+        let fact = seed_memory(&pg, &owner, EntityKind::Fact, "grounding fact").await?;
         let abstraction = insert_derived_memory(&pg, &owner, EntityKind::Abstraction).await?;
 
-        insert_memory_edge(
+        let err = insert_edge_row(
             &pg,
             &owner,
-            RelationClass::Provenance,
-            EntityKind::Abstraction,
-            abstraction,
-            EntityKind::Fact,
-            fact_a,
+            (EntityKind::Fact, fact.into_inner()),
+            (EntityKind::Abstraction, abstraction.into_inner()),
+            EdgeKind::Reference,
         )
-        .await?;
-        insert_memory_edge(
+        .await
+        .expect_err("a Fact cannot point up the F/A/P order");
+        assert!(
+            err.to_string().contains("edges_layering_chk"),
+            "unexpected error: {err}"
+        );
+
+        // The same pair the other way round is exactly what the model is for.
+        insert_edge_row(
             &pg,
             &owner,
-            RelationClass::Provenance,
-            EntityKind::Abstraction,
-            abstraction,
-            EntityKind::Fact,
-            fact_b,
+            (EntityKind::Abstraction, abstraction.into_inner()),
+            (EntityKind::Fact, fact.into_inner()),
+            EdgeKind::Origin,
         )
         .await?;
-        Ok(())
+        Ok::<_, Box<dyn std::error::Error>>(())
     }
     .await;
+    drop_db(&db_name).await.ok();
+    result
+}
 
-    let _ = crate::common::drop_db(&db_name).await;
-    result.expect("cross-domain facts may be connected through an Abstraction");
+/// A row asserting that a node relates to itself is not a connection between
+/// two things, and no node write can mean it.
+#[tokio::test]
+async fn a_self_loop_is_refused() -> Result<(), Box<dyn std::error::Error>> {
+    let (pg, db_name) = fresh_pg().await;
+    let result = async {
+        let owner = other_owner();
+        let fact = seed_memory(&pg, &owner, EntityKind::Fact, "alone").await?;
+        let err = insert_edge_row(
+            &pg,
+            &owner,
+            (EntityKind::Fact, fact.into_inner()),
+            (EntityKind::Fact, fact.into_inner()),
+            EdgeKind::Reference,
+        )
+        .await
+        .expect_err("self-loop");
+        assert!(
+            err.to_string().contains("edges_no_self_loop_chk"),
+            "unexpected error: {err}"
+        );
+        Ok::<_, Box<dyn std::error::Error>>(())
+    }
+    .await;
+    drop_db(&db_name).await.ok();
+    result
+}
+
+/// E1. Both endpoints exist, or there is no row.
+#[tokio::test]
+async fn an_absent_endpoint_is_refused() -> Result<(), Box<dyn std::error::Error>> {
+    let (pg, db_name) = fresh_pg().await;
+    let result = async {
+        let owner = other_owner();
+        let fact = seed_memory(&pg, &owner, EntityKind::Fact, "present").await?;
+
+        let missing_target = insert_edge_row(
+            &pg,
+            &owner,
+            (EntityKind::Fact, fact.into_inner()),
+            (EntityKind::Fact, Uuid::now_v7()),
+            EdgeKind::Reference,
+        )
+        .await
+        .expect_err("absent target");
+        assert!(
+            missing_target
+                .to_string()
+                .contains("target endpoint not found"),
+            "unexpected error: {missing_target}"
+        );
+
+        let missing_source = insert_edge_row(
+            &pg,
+            &owner,
+            (EntityKind::Fact, Uuid::now_v7()),
+            (EntityKind::Fact, fact.into_inner()),
+            EdgeKind::Reference,
+        )
+        .await
+        .expect_err("absent source");
+        assert!(
+            missing_source
+                .to_string()
+                .contains("source endpoint not found"),
+            "unexpected error: {missing_source}"
+        );
+        Ok::<_, Box<dyn std::error::Error>>(())
+    }
+    .await;
+    drop_db(&db_name).await.ok();
+    result
+}
+
+/// A declared endpoint kind that disagrees with the stored row is refused, so
+/// a caller cannot widen what the layering rule sees by lying about a kind.
+#[tokio::test]
+async fn a_lying_endpoint_kind_is_refused() -> Result<(), Box<dyn std::error::Error>> {
+    let (pg, db_name) = fresh_pg().await;
+    let result = async {
+        let owner = other_owner();
+        let fact = seed_memory(&pg, &owner, EntityKind::Fact, "really a fact").await?;
+        let perspective = insert_derived_memory(&pg, &owner, EntityKind::Perspective).await?;
+
+        // Claim the Fact is a Perspective, which would make the upward edge
+        // below look legal to the layering CHECK.
+        let err = insert_edge_row(
+            &pg,
+            &owner,
+            (EntityKind::Perspective, fact.into_inner()),
+            (EntityKind::Perspective, perspective.into_inner()),
+            EdgeKind::Reference,
+        )
+        .await
+        .expect_err("declared source kind must match the stored row");
+        assert!(
+            err.to_string().contains("source kind"),
+            "unexpected error: {err}"
+        );
+        Ok::<_, Box<dyn std::error::Error>>(())
+    }
+    .await;
+    drop_db(&db_name).await.ok();
+    result
+}
+
+/// E2. The row is owned by the source owner — always, with no per-relation
+/// policy cell left to consult.
+#[tokio::test]
+async fn an_edge_owner_that_is_not_the_source_owner_is_refused()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (pg, db_name) = fresh_pg().await;
+    let result = async {
+        let owner = other_owner();
+        let stranger = other_owner();
+        let source = seed_memory(&pg, &owner, EntityKind::Fact, "mine").await?;
+        let target = seed_memory(&pg, &owner, EntityKind::Fact, "also mine").await?;
+
+        let err = insert_edge_row(
+            &pg,
+            &stranger,
+            (EntityKind::Fact, source.into_inner()),
+            (EntityKind::Fact, target.into_inner()),
+            EdgeKind::Reference,
+        )
+        .await
+        .expect_err("edge owner must be the source owner");
+        assert!(
+            err.to_string().contains("owner is not the source owner"),
+            "unexpected error: {err}"
+        );
+        Ok::<_, Box<dyn std::error::Error>>(())
+    }
+    .await;
+    drop_db(&db_name).await.ok();
+    result
+}
+
+/// A cross-owner TARGET is admitted when the source owner owns the row. That
+/// is what makes cross-owner provenance expressible at all.
+#[tokio::test]
+async fn a_cross_owner_target_is_admitted() -> Result<(), Box<dyn std::error::Error>> {
+    let (pg, db_name) = fresh_pg().await;
+    let result = async {
+        let owner = other_owner();
+        let stranger = other_owner();
+        let source = insert_derived_memory(&pg, &owner, EntityKind::Abstraction).await?;
+        let target = seed_memory(&pg, &stranger, EntityKind::Fact, "theirs").await?;
+
+        insert_edge_row(
+            &pg,
+            &owner,
+            (EntityKind::Abstraction, source.into_inner()),
+            (EntityKind::Fact, target.into_inner()),
+            EdgeKind::Origin,
+        )
+        .await?;
+        Ok::<_, Box<dyn std::error::Error>>(())
+    }
+    .await;
+    drop_db(&db_name).await.ok();
+    result
+}
+
+/// E5, at the level of the table: the primary key IS the row, so the same
+/// content cannot be present twice — and the kind is part of the key, so
+/// origin and reference between one pair are two different rows.
+#[tokio::test]
+async fn the_same_row_cannot_exist_twice() -> Result<(), Box<dyn std::error::Error>> {
+    let (pg, db_name) = fresh_pg().await;
+    let result = async {
+        let owner = other_owner();
+        let source = insert_derived_memory(&pg, &owner, EntityKind::Abstraction).await?;
+        let target = seed_memory(&pg, &owner, EntityKind::Fact, "target").await?;
+
+        insert_edge_row(
+            &pg,
+            &owner,
+            (EntityKind::Abstraction, source.into_inner()),
+            (EntityKind::Fact, target.into_inner()),
+            EdgeKind::Origin,
+        )
+        .await?;
+        let err = insert_edge_row(
+            &pg,
+            &owner,
+            (EntityKind::Abstraction, source.into_inner()),
+            (EntityKind::Fact, target.into_inner()),
+            EdgeKind::Origin,
+        )
+        .await
+        .expect_err("the key is the row");
+        assert!(
+            err.to_string().contains("edges_pkey"),
+            "unexpected error: {err}"
+        );
+
+        insert_edge_row(
+            &pg,
+            &owner,
+            (EntityKind::Abstraction, source.into_inner()),
+            (EntityKind::Fact, target.into_inner()),
+            EdgeKind::Reference,
+        )
+        .await?;
+        Ok::<_, Box<dyn std::error::Error>>(())
+    }
+    .await;
+    drop_db(&db_name).await.ok();
+    result
 }

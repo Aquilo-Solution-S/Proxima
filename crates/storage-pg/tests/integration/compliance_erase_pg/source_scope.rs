@@ -6,12 +6,11 @@ use super::{
 };
 
 use crate::common::{create_db, db_url, drop_db, seed_memory_edge};
-use proxima_core::change_event::EdgeTargetProjection;
 use proxima_core::storage_ports::{EdgeReadPort, FactIngestPort};
 use proxima_core::verbs::query::{EdgeFilter, EdgeReadRequest};
 use proxima_core::{
-    AuthPath, AuthzContext, ComplianceEraseOutcome, EdgeId, EntityKind, GroupId, OwnerRef,
-    RelationClass, SourceId, UserId,
+    AuthPath, AuthzContext, ComplianceEraseOutcome, EdgeKind, EdgeTargetProjection, EntityKind,
+    EntityRef, GroupId, OwnerRef, SourceId, UserId,
 };
 use proxima_storage_pg::PgStorage;
 use uuid::Uuid;
@@ -32,13 +31,12 @@ async fn group_source_scope_erases_only_requested_source_and_suppresses_new_batc
         let kept_draft = receipt_draft("test/source-b", Uuid::now_v7(), b"keep-source-b");
         let erased = seed_fact(&pg, &owner, &erased_draft).await?;
         let kept = seed_fact(&pg, &owner, &kept_draft).await?;
-        let surviving_edge = seed_memory_edge(
+        seed_memory_edge(
             &pg,
             &owner,
             (EntityKind::Fact, kept.memory_id),
             (EntityKind::Fact, erased.memory_id),
-            "test/compliance/source-scope-mentions",
-            RelationClass::Structural,
+            EdgeKind::Reference,
         )
         .await?;
 
@@ -70,13 +68,14 @@ async fn group_source_scope_erases_only_requested_source_and_suppresses_new_batc
                 &[owner],
                 &EdgeReadRequest {
                     owner,
-                    edge_ids: vec![EdgeId::new(surviving_edge.into_inner())],
-                    filter: EdgeFilter::default(),
+                    filter: EdgeFilter {
+                        kind: None,
+                        source: Some(EntityRef::Memory(kept.memory_id)),
+                        target: None,
+                    },
                     limit: 10,
                     cursor: None,
-                    include_payloads: false,
                 },
-                &[],
             )
             .await?;
         assert_eq!(edge_rows.edges.len(), 1);

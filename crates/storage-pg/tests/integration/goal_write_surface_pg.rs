@@ -194,7 +194,7 @@ async fn engine_goalwrite_writes_product_goal_idempotently_without_table_sql() {
             .await?;
         assert!(!outcome.idempotent_replay);
         assert!(outcome.lifecycle_memory_id.is_some());
-        assert!(!outcome.edge_ids.is_empty());
+        assert!(outcome.edge_count > 0);
 
         let replay = engine
             .create_goal(
@@ -221,10 +221,11 @@ async fn engine_goalwrite_writes_product_goal_idempotently_without_table_sql() {
         let assigned: (i64,) = sqlx::query_as(
             "SELECT count(*)::bigint
                FROM proxima_core.edges
-              WHERE source_kind = 'Goal'::proxima_core.entity_kind
-                AND source_goal_id = $1
-                AND target_kind = 'Perspective'::proxima_core.entity_kind
-                AND target_memory_id = $2",
+              WHERE source_kind = 'Goal'::proxima_core.edge_endpoint_kind
+                AND source_id = $1
+                AND target_kind = 'Perspective'::proxima_core.edge_endpoint_kind
+                AND target_id = $2
+                AND kind = 'reference'::proxima_core.edge_kind",
         )
         .bind(outcome.goal_id.into_inner())
         .bind(target_self.into_inner())
@@ -380,7 +381,7 @@ async fn engine_goalwrite_requires_readable_evidence_before_write() {
                     .with_evidence(vec![GoalEvidenceRef::new(evidence)]),
             )
             .await?;
-        assert!(!outcome.edge_ids.is_empty());
+        assert!(outcome.edge_count > 0);
 
         Ok(())
     }

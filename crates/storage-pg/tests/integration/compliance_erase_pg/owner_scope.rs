@@ -5,12 +5,11 @@ use super::{
 };
 
 use crate::common::{create_db, db_url, drop_db, seed_memory, seed_memory_edge};
-use proxima_core::change_event::EdgeTargetProjection;
 use proxima_core::storage_ports::{ComplianceErasePort, EdgeReadPort, FactIngestPort};
 use proxima_core::verbs::query::{EdgeFilter, EdgeReadRequest};
 use proxima_core::{
-    AuthPath, AuthzContext, ComplianceEraseOutcome, EdgeId, EntityKind, GroupId, OwnerRef,
-    RelationClass, UserId,
+    AuthPath, AuthzContext, ComplianceEraseOutcome, EdgeKind, EdgeTargetProjection, EntityKind,
+    EntityRef, GroupId, OwnerRef, UserId,
 };
 use proxima_storage_pg::PgStorage;
 use uuid::Uuid;
@@ -77,13 +76,12 @@ async fn target_abandoned_keeps_live_source_edge_as_unavailable()
         let target_owner = OwnerRef::Group(group);
         let source = seed_memory(&pg, &live, EntityKind::Fact, "source").await?;
         let target = seed_memory(&pg, &target_owner, EntityKind::Fact, "target").await?;
-        let edge = seed_memory_edge(
+        seed_memory_edge(
             &pg,
             &live,
             (EntityKind::Fact, source),
             (EntityKind::Fact, target),
-            "test/compliance/mentions",
-            RelationClass::Structural,
+            EdgeKind::Reference,
         )
         .await?;
 
@@ -96,17 +94,21 @@ async fn target_abandoned_keeps_live_source_edge_as_unavailable()
         assert!(matches!(outcome, ComplianceEraseOutcome::Completed { .. }));
 
         let edge_rows: i64 = sqlx::query_scalar(
-            "SELECT count(*)::bigint FROM proxima_core.edges WHERE edge_id = $1",
+            "SELECT count(*)::bigint FROM proxima_core.edges WHERE source_id = $1",
         )
-        .bind(edge.into_inner())
+        .bind(source.into_inner())
         .fetch_one(pg.pool_for_tests())
         .await?;
         assert_eq!(edge_rows, 1, "live source-owned edge row survives");
 
+        // The redaction is keyed by the edge, and the edge is its own key.
         let redactions: i64 = sqlx::query_scalar(
-            "SELECT count(*)::bigint FROM proxima_core.compliance_edge_target_redactions WHERE edge_id = $1",
+            "SELECT count(*)::bigint
+               FROM proxima_core.compliance_edge_target_redactions
+              WHERE source_id = $1 AND target_id = $2",
         )
-        .bind(edge.into_inner())
+        .bind(source.into_inner())
+        .bind(target.into_inner())
         .fetch_one(pg.pool_for_tests())
         .await?;
         assert_eq!(redactions, 1);
@@ -116,13 +118,14 @@ async fn target_abandoned_keeps_live_source_edge_as_unavailable()
                 &[live],
                 &EdgeReadRequest {
                     owner: live,
-                    edge_ids: vec![EdgeId::new(edge.into_inner())],
-                    filter: EdgeFilter::default(),
+                    filter: EdgeFilter {
+                        kind: None,
+                        source: Some(EntityRef::Memory(source)),
+                        target: None,
+                    },
                     limit: 10,
                     cursor: None,
-                    include_payloads: false,
                 },
-                &[],
             )
             .await?;
         assert_eq!(read.edges.len(), 1);

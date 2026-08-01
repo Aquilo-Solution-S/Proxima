@@ -1,5 +1,5 @@
 use proxima_core::verbs::goal_write::{ChildGoalDraft, GoalEvidenceRef, GoalState, IdempotencyKey};
-use proxima_core::{CORE_DEPENDS_ON_RELATION, FlavorRegistry, OwnerRef, UserId};
+use proxima_core::{FlavorRegistry, OwnerRef, UserId};
 use proxima_storage_pg::PgStorage;
 use uuid::Uuid;
 
@@ -55,11 +55,12 @@ async fn goal_decompose_atom_writes_children_and_parents() {
             let parents: (i64,) = sqlx::query_as(
                 "SELECT count(*)::bigint
                    FROM proxima_core.edges
-                  WHERE relation = $1
-                    AND source_goal_id = $2
-                    AND target_goal_id = $3",
+                  WHERE kind = 'reference'::proxima_core.edge_kind
+                    AND source_kind = 'Goal'::proxima_core.edge_endpoint_kind
+                    AND target_kind = 'Goal'::proxima_core.edge_endpoint_kind
+                    AND source_id = $1
+                    AND target_id = $2",
             )
-            .bind(CORE_DEPENDS_ON_RELATION)
             .bind(child.outcome.goal_id.into_inner())
             .bind(parent.goal_id.into_inner())
             .fetch_one(pg.pool_for_tests())

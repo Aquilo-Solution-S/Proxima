@@ -312,7 +312,7 @@ async fn a_flavor_extension_lands_alongside_the_substrate_sidecar() {
     let authz = authz_for(owner);
 
     let authorized = engine
-        .authorize_fact_ingest(&authz, Relation::Ingest, draft("both rows"))
+        .authorize_fact_ingest(&authz, Relation::Ingest, draft("both rows"), &[])
         .await
         .expect("authorized");
 
@@ -361,7 +361,7 @@ async fn a_failed_extension_rolls_back_the_fact_and_the_good_sidecar() {
     let authz = authz_for(owner);
 
     let authorized = engine
-        .authorize_fact_ingest(&authz, Relation::Ingest, draft("must not survive"))
+        .authorize_fact_ingest(&authz, Relation::Ingest, draft("must not survive"), &[])
         .await
         .expect("authorized");
 

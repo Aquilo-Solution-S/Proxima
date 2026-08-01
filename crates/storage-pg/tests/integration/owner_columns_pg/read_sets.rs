@@ -48,7 +48,7 @@ async fn discovery_reads_filter_by_owner_read_set() {
         "boundaryneedle personal abstraction",
     )
     .await;
-    let leaky_edge = seed_edge_between_memories(&pg, OwnerRef::Group(g1), f1, hidden_target).await;
+    seed_edge_between_memories(&pg, OwnerRef::Group(g1), f1, hidden_target).await;
     let q_read_owners = read_owners(&pg, &q).await;
 
     let query = pg
@@ -66,7 +66,6 @@ async fn discovery_reads_filter_by_owner_read_set() {
                 include_payloads: false,
                 memory_ids: Vec::new(),
                 goal_ids: Vec::new(),
-                edge_ids: Vec::new(),
                 stateful_heads: Vec::new(),
             },
             &[],
@@ -81,42 +80,12 @@ async fn discovery_reads_filter_by_owner_read_set() {
     );
     assert!(!query_ids.contains(&a), "Q must not query P's singleton A");
     assert!(
-        query.edges.iter().all(|edge| edge.id != leaky_edge),
+        query
+            .edges
+            .iter()
+            .all(|edge| edge.target.endpoint().map(|target| target.entity)
+                != Some(proxima_core::EntityRef::Memory(hidden_target))),
         "query_memories must not return an edge whose target is unreadable"
-    );
-
-    let edge_by_id = pg
-        .query_memories(
-            &QueryRequest {
-                owner: q,
-                read_owners: q_read_owners.clone(),
-                entity_kind: None,
-                schema_id: None,
-                supersession: SupersessionStatus::HeadsOnly,
-                tombstones: proxima_core::verbs::query::TombstoneFilter::PresentOnly,
-                goal_state: None,
-                limit: 50,
-                page: proxima_core::verbs::query::QueryPage::default(),
-                include_payloads: false,
-                memory_ids: Vec::new(),
-                goal_ids: Vec::new(),
-                edge_ids: vec![leaky_edge],
-                stateful_heads: Vec::new(),
-            },
-            &[],
-        )
-        .await
-        .unwrap();
-    assert_eq!(
-        edge_by_id.edges.len(),
-        1,
-        "edge-id hydration is source-owned and keeps a target stub"
-    );
-    assert_eq!(edge_by_id.edges[0].id, leaky_edge);
-    assert_eq!(
-        edge_by_id.edges[0].target,
-        proxima_core::verbs::query::EdgeTargetProjection::Redacted,
-        "unreadable edge target is redacted"
     );
 
     let search = pg

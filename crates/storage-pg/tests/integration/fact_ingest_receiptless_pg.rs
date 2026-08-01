@@ -35,6 +35,7 @@ fn receiptless_command() -> FactWriteCommand {
         lexical_language: None,
         receipt: None,
         citation: None,
+        derived_from: Vec::new(),
     }
 }
 

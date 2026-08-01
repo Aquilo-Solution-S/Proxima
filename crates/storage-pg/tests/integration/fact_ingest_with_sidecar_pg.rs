@@ -96,6 +96,7 @@ fn fresh_draft(_owner: &Owner) -> FactWriteCommand {
                 schema_version: SchemaVersion::new(1),
             },
         }),
+        derived_from: Vec::new(),
     }
 }
 
@@ -178,7 +179,7 @@ async fn authz_rejection_writes_nothing() -> Result<(), Box<dyn std::error::Erro
         .narrowed_to_owner(owner)
         .expect("viewer role narrows to target owner");
     let err = engine
-        .authorize_fact_ingest(&authz, Relation::Ingest, draft)
+        .authorize_fact_ingest(&authz, Relation::Ingest, draft, &[])
         .await
         .expect_err("missing fact_ingest role must reject before storage");
 
@@ -207,7 +208,7 @@ async fn source_ingest_only_authorizes_fact_ingest_with_write_grant()
         .expect("viewer role narrows to target owner");
 
     let err = engine
-        .authorize_fact_ingest(&authz, Relation::Ingest, fresh_draft(&owner))
+        .authorize_fact_ingest(&authz, Relation::Ingest, fresh_draft(&owner), &[])
         .await
         .expect_err("missing ingest grant must reject");
     assert_eq!(err.code, ErrorCode::Forbidden);
@@ -219,12 +220,12 @@ async fn source_ingest_only_authorizes_fact_ingest_with_write_grant()
         .expect("ingest role narrows to target owner");
 
     let authorized = engine
-        .authorize_fact_ingest(&authz, Relation::Ingest, fresh_draft(&owner))
+        .authorize_fact_ingest(&authz, Relation::Ingest, fresh_draft(&owner), &[])
         .await?;
     assert_eq!(*authorized.permit().owner(), owner);
 
     let err = engine
-        .authorize_fact_ingest(&authz, Relation::Editor, fresh_draft(&owner))
+        .authorize_fact_ingest(&authz, Relation::Editor, fresh_draft(&owner), &[])
         .await
         .expect_err("ingest grant must not authorize editor writes");
     assert_eq!(err.code, ErrorCode::Forbidden);
@@ -247,6 +248,7 @@ async fn sidecar_failure_rolls_back_fact() -> Result<(), Box<dyn std::error::Err
             &AuthzContext::single_owner(&owner, AuthPath::HostBearer),
             Relation::Ingest,
             draft,
+            &[],
         )
         .await?;
     let receipt_id = authorized

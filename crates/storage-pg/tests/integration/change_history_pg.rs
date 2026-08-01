@@ -10,14 +10,13 @@ use proxima_core::verbs::fact_ingest::{
     Citation, CitationMappingHint, CitedObjectHint, FactReceiptDraft, FactWriteCommand,
 };
 use proxima_core::verbs::query::{
-    EdgeFilter, EdgeReadRequest, EdgeTargetProjection, QueryRequest, SupersessionStatus,
-    TombstoneFilter,
+    EdgeFilter, EdgeReadRequest, QueryRequest, SupersessionStatus, TombstoneFilter,
 };
 use proxima_core::verbs::schema::{FlavorRegistryFrozen, PayloadKind, SchemaInfo};
 use proxima_core::{
-    AuthPath, AuthzContext, CORE_DERIVED_FROM_RELATION, ChangeEventKind, EdgeId, EntityKind,
-    GroupId, MemoryId, Owner, OwnerRef, RelationClass, Role, SchemaId, SchemaVersion,
-    SourceBatchId, SourceId, UserId,
+    AuthPath, AuthzContext, ChangeEventKind, EdgeKind, EdgeTargetProjection, EntityKind, EntityRef,
+    GroupId, MemoryId, Owner, OwnerRef, Role, SchemaId, SchemaVersion, SourceBatchId, SourceId,
+    UserId,
 };
 use proxima_storage_pg::PgStorage;
 use uuid::Uuid;
@@ -90,6 +89,7 @@ fn fresh_fact_draft(_owner: Owner, payload: Vec<u8>) -> FactWriteCommand {
                 schema_version: SchemaVersion::new(1),
             },
         }),
+        derived_from: Vec::new(),
     }
 }
 
@@ -221,16 +221,15 @@ async fn change_history_surfaces_readable_non_world_source_edge_events()
         let a_source = seed_memory(&pg, &gp, EntityKind::Abstraction, "A source").await?;
         let f_private = seed_memory(&pg, &private, EntityKind::Fact, "private").await?;
 
-        let edge = seed_memory_edge(
+        seed_memory_edge(
             &pg,
             &gp,
             (EntityKind::Abstraction, a_source),
             (EntityKind::Fact, f_private),
-            CORE_DERIVED_FROM_RELATION,
-            RelationClass::Provenance,
+            EdgeKind::Origin,
         )
         .await?;
-        insert_edge_append_event(&pg, &gp, edge, a_source, f_private).await?;
+        insert_edge_append_event(&pg, &gp, a_source, f_private).await?;
 
         let p_read = vec![p, gp];
         let read_edges = pg
@@ -238,13 +237,14 @@ async fn change_history_surfaces_readable_non_world_source_edge_events()
                 &p_read,
                 &EdgeReadRequest {
                     owner: p,
-                    edge_ids: vec![edge],
-                    filter: EdgeFilter::default(),
+                    filter: EdgeFilter {
+                        kind: None,
+                        source: Some(EntityRef::Memory(a_source)),
+                        target: None,
+                    },
                     limit: 10,
                     cursor: None,
-                    include_payloads: false,
                 },
-                &[],
             )
             .await?;
         assert_eq!(read_edges.edges.len(), 1);
@@ -271,8 +271,10 @@ async fn change_history_surfaces_readable_non_world_source_edge_events()
         assert!(
             history.events.iter().any(|e| matches!(
                 &e.kind,
-                ChangeEventKind::EdgeAppend { edge_id, target, .. }
-                    if *edge_id == edge.into_inner() && *target == EdgeTargetProjection::Redacted
+                ChangeEventKind::EdgeAppend { source, target, kind }
+                    if source.entity == EntityRef::Memory(a_source)
+                        && *kind == EdgeKind::Origin
+                        && *target == EdgeTargetProjection::Redacted
             )),
             "change_history surfaces source-owned non-world edge events with redacted target"
         );
@@ -281,6 +283,8 @@ async fn change_history_surfaces_readable_non_world_source_edge_events()
             "high-water is computed over visible source-owned events"
         );
 
+        // The endpoint kinds arrive with the event now; the old two-step
+        // hydration keyed by edge id is gone with the id.
         let listed = engine
             .list_change_events(
                 &authz,
@@ -290,15 +294,25 @@ async fn change_history_surfaces_readable_non_world_source_edge_events()
                 },
             )
             .await?;
-        let endpoint_kind = listed
-            .edge_endpoint_kinds
+        let edge_event = listed
+            .events
             .iter()
-            .find(|row| row.edge_id == edge)
-            .expect("edge endpoint kind row");
-        assert_eq!(endpoint_kind.source_kind, EntityKind::Abstraction);
+            .find_map(|event| match &event.event.kind {
+                ChangeEventKind::EdgeAppend {
+                    source,
+                    target,
+                    kind,
+                } if source.entity == EntityRef::Memory(a_source) => {
+                    Some((*source, *target, *kind))
+                }
+                _ => None,
+            })
+            .expect("edge append event");
+        assert_eq!(edge_event.0.kind, EntityKind::Abstraction);
         assert_eq!(
-            endpoint_kind.target_kind, None,
-            "redacted target kind must not be exposed through ListChangeEventsReadResponse"
+            edge_event.1,
+            EdgeTargetProjection::Redacted,
+            "a redacted target exposes neither id nor kind"
         );
 
         Ok::<(), Box<dyn std::error::Error>>(())
@@ -322,16 +336,15 @@ async fn query_high_water_includes_readable_non_world_source_edge_events()
         let a_source = seed_memory(&pg, &gp, EntityKind::Abstraction, "A source").await?;
         let f_private = seed_memory(&pg, &private, EntityKind::Fact, "private").await?;
 
-        let edge = seed_memory_edge(
+        seed_memory_edge(
             &pg,
             &gp,
             (EntityKind::Abstraction, a_source),
             (EntityKind::Fact, f_private),
-            CORE_DERIVED_FROM_RELATION,
-            RelationClass::Provenance,
+            EdgeKind::Origin,
         )
         .await?;
-        let visible_seq = insert_edge_append_event(&pg, &gp, edge, a_source, f_private).await?;
+        let visible_seq = insert_edge_append_event(&pg, &gp, a_source, f_private).await?;
 
         let p_read = vec![p, gp];
         let query = pg
@@ -349,7 +362,6 @@ async fn query_high_water_includes_readable_non_world_source_edge_events()
                     include_payloads: false,
                     memory_ids: Vec::new(),
                     goal_ids: Vec::new(),
-                    edge_ids: Vec::new(),
                     stateful_heads: Vec::new(),
                 },
                 &[],
@@ -371,10 +383,11 @@ async fn query_high_water_includes_readable_non_world_source_edge_events()
     result
 }
 
+/// The change-event row carries the whole edge — both endpoints with their
+/// kinds — so the reader never has to dereference an id it no longer has.
 async fn insert_edge_append_event(
     pg: &PgStorage,
     owner: &OwnerRef,
-    edge_id: EdgeId,
     source_memory_id: MemoryId,
     target_memory_id: MemoryId,
 ) -> Result<Uuid, sqlx::Error> {
@@ -382,17 +395,13 @@ async fn insert_edge_append_event(
     let seq = Uuid::now_v7();
     sqlx::query(
         "INSERT INTO proxima_core.change_event \
-            (seq, owner_kind, owner_id, kind, \
-             edge_id, edge_relation, \
-             edge_source_memory_id, edge_source_goal_id, edge_source_fact_entity_id, \
-             edge_target_memory_id, edge_target_goal_id, edge_target_fact_entity_id) \
-         VALUES ($1, $2, $3, 'EdgeAppend', $4, $5, $6, NULL, NULL, $7, NULL, NULL)",
+            (seq, owner_kind, owner_id, kind, edge_kind, \
+             edge_source_kind, edge_source_id, edge_target_kind, edge_target_id) \
+         VALUES ($1, $2, $3, 'EdgeAppend', 'origin', 'Abstraction', $4, 'Fact', $5)",
     )
     .bind(seq)
     .bind(owner_kind)
     .bind(owner_id)
-    .bind(edge_id.into_inner())
-    .bind(CORE_DERIVED_FROM_RELATION)
     .bind(source_memory_id.into_inner())
     .bind(target_memory_id.into_inner())
     .execute(pg.pool_for_tests())

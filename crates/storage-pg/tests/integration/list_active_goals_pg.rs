@@ -1,14 +1,9 @@
-use crate::common::{drop_db, fresh_pg, owner_fixture, owner_parts, owner_write_permit};
+use crate::common::{drop_db, fresh_pg, owner_fixture, owner_parts};
 
-use proxima_core::relation::CORE_INSPIRES_RELATION;
 use proxima_core::storage_ports::*;
 use proxima_core::verbs::goal_write::GoalState;
-use proxima_core::{
-    EdgeAuthorshipKind, FlavorRegistry, GoalId, GroupId, MemoryId, Owner, OwnerRef, Relation,
-    UserId,
-};
+use proxima_core::{GoalId, GroupId, MemoryId, Owner, OwnerRef, Relation, UserId};
 use proxima_storage_pg::PgStorage;
-use proxima_storage_pg::verbs::edge_write::{CheckedEdgeEndpoint, append_owner_checked_edge};
 use uuid::Uuid;
 
 fn other_owner() -> Owner {
@@ -74,30 +69,19 @@ async fn insert_goal(
     Ok(goal_id)
 }
 
+/// The Goal's assignment is a column on the Goal row; the reference row in
+/// the index is derived from it, so the fixture writes the column.
 async fn link_goal_to_self(
     pg: &PgStorage,
-    owner: &Owner,
+    _owner: &Owner,
     goal_id: GoalId,
     self_id: MemoryId,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let registry = FlavorRegistry::new().freeze_or_panic_for_tests();
-    let relation = registry
-        .resolve_relation(CORE_INSPIRES_RELATION)
-        .expect("core/inspires relation");
-    let permit = owner_write_permit(owner, proxima_core::AccessKind::Goal).await?;
-    let mut tx = pg.pool_for_tests().begin().await?;
-    append_owner_checked_edge(
-        &mut tx,
-        &permit,
-        proxima_core::EdgeId::new(Uuid::now_v7()),
-        relation,
-        CheckedEdgeEndpoint::goal(goal_id),
-        CheckedEdgeEndpoint::perspective(self_id),
-        EdgeAuthorshipKind::PerspectiveGoalLink,
-        Some(self_id),
-    )
-    .await?;
-    tx.commit().await?;
+    sqlx::query("UPDATE proxima_core.goals SET assignment_perspective_id = $2 WHERE goal_id = $1")
+        .bind(goal_id.into_inner())
+        .bind(self_id.into_inner())
+        .execute(pg.pool_for_tests())
+        .await?;
     Ok(())
 }
 
@@ -348,8 +332,12 @@ async fn list_active_goals_filters_by_read_owners() -> Result<(), Box<dyn std::e
     result
 }
 
+/// An assignment may cross an Owner boundary — nothing in the index forbids
+/// pointing at someone else's row — but reading it takes both sides. A caller
+/// who holds only the assignee's Owner sees no goal, because the goal is not
+/// theirs to see.
 #[tokio::test]
-async fn list_active_goals_rejects_cross_owner_inspires_edges()
+async fn a_cross_owner_assignment_needs_both_owners_to_be_read()
 -> Result<(), Box<dyn std::error::Error>> {
     let (pg, db_name) = fresh_pg().await;
 
@@ -366,15 +354,21 @@ async fn list_active_goals_rejects_cross_owner_inspires_edges()
             "private-active",
         )
         .await?;
-        let err = link_goal_to_self(&pg, &source_owner, goal, private_self)
-            .await
-            .expect_err("core/inspires is SameOwner in PR4");
+        link_goal_to_self(&pg, &source_owner, goal, private_self).await?;
+
+        let assignee_only = pg
+            .list_active_goals(std::slice::from_ref(&target_owner), private_self, 100)
+            .await?;
         assert!(
-            err.to_string().contains("same owner")
-                || err.to_string().contains("same Owner")
-                || err.to_string().contains("same-owner"),
-            "unexpected error: {err}"
+            assignee_only.is_empty(),
+            "a goal in another Owner is not in this caller's wake view"
         );
+
+        let both = pg
+            .list_active_goals(&[target_owner, source_owner], private_self, 100)
+            .await?;
+        assert_eq!(both.len(), 1);
+        assert_eq!(both[0].goal_id, goal);
 
         Ok::<(), Box<dyn std::error::Error>>(())
     }
