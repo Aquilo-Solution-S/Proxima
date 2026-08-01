@@ -36,6 +36,7 @@ fn fresh_fact_draft(_owner: Owner) -> FactWriteCommand {
             occurred_at: now,
         }),
         citation: None,
+        derived_from: None,
     }
 }
 

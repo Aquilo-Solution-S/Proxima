@@ -522,7 +522,7 @@ impl Engine {
         Ok(out)
     }
 
-    async fn load_memory_owner_kind(
+    pub(super) async fn load_memory_owner_kind(
         &self,
         memory_id: MemoryId,
     ) -> Result<(Owner, EntityKind), ProtocolError> {
@@ -771,7 +771,7 @@ fn memory_kind_for_edge(kind: Option<EntityKind>) -> EntityKind {
     }
 }
 
-fn validate_relation_shape(
+pub(super) fn validate_relation_shape(
     relation: RegisteredRelation<'_>,
     source_kind: EntityKind,
     target_kind: EntityKind,

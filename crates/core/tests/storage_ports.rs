@@ -33,6 +33,7 @@ impl FactIngestPort for FactIngestFake {
         authorized: &AuthorizedFactWrite,
         sidecar_payloads: &[SidecarPayload],
         embedding_model_id: Option<&str>,
+        provenance: Option<FactProvenanceSpec<'_>>,
     ) -> Result<FactIngestOutcome, StorageError> {
         fake_error()
     }
@@ -42,6 +43,7 @@ impl FactIngestPort for FactIngestFake {
         authorized: &AuthorizedFactWithCitation,
         sidecar_payloads: &[SidecarPayload],
         embedding_model_id: Option<&str>,
+        provenance: Option<FactProvenanceSpec<'_>>,
     ) -> Result<FactIngestOutcome, StorageError> {
         fake_error()
     }
@@ -51,6 +53,7 @@ impl FactIngestPort for FactIngestFake {
         authorized: &proxima_core::verbs::fact_ingest::AuthorizedFactWithCitationRef,
         sidecar_payloads: &[SidecarPayload],
         embedding_model_id: Option<&str>,
+        provenance: Option<FactProvenanceSpec<'_>>,
     ) -> Result<FactIngestOutcome, StorageError> {
         fake_error()
     }

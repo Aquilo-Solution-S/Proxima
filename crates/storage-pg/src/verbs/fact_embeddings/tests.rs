@@ -43,6 +43,7 @@ mod pg_tests {
                 occurred_at: now,
             }),
             citation: None,
+            derived_from: None,
         }
     }
 

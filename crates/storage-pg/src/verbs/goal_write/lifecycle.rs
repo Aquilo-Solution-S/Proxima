@@ -130,6 +130,7 @@ where
             occurred_at: now,
         }),
         citation: None,
+        derived_from: None,
     };
     if permit.owner() != owner {
         return Err(StorageError::ConstraintViolation(

@@ -328,6 +328,7 @@ async fn a_flavor_extension_lands_alongside_the_substrate_sidecar() {
                 }),
             ],
             None,
+            None,
         )
         .await
         .expect("a Fact with one extension ingests");
@@ -379,6 +380,7 @@ async fn a_failed_extension_rolls_back_the_fact_and_the_good_sidecar() {
                     whatever: "this table was never created".into(),
                 }),
             ],
+            None,
             None,
         )
         .await

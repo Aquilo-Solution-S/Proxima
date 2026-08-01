@@ -425,6 +425,7 @@ fn draft_for<P: FactPayload>(_owner: &Owner, payload_value: &Value) -> FactWrite
             occurred_at: now,
         }),
         citation: None,
+        derived_from: None,
     }
 }
 
@@ -446,8 +447,13 @@ where
         .await
         .map_err(|err| StorageError::Internal(err.to_string()))?;
     let sidecar_payload = SidecarPayload::fact(payload.clone());
-    pg.ingest_fact_with_typed_sidecar(&authorized, std::slice::from_ref(&sidecar_payload), None)
-        .await
+    pg.ingest_fact_with_typed_sidecar(
+        &authorized,
+        std::slice::from_ref(&sidecar_payload),
+        None,
+        None,
+    )
+    .await
 }
 
 fn file_revision(repo_id: Uuid, file_path: &str, version: &str) -> FileRevisionV1 {
@@ -741,6 +747,7 @@ async fn replay_is_idempotent_and_does_not_mint_or_move_entity() {
                 &authorized,
                 std::slice::from_ref(&sidecar_payload),
                 None,
+                None,
             )
             .await?;
         let fact_entity_id = memory_fact_entity_id(&pg, first.memory_id)
@@ -750,6 +757,7 @@ async fn replay_is_idempotent_and_does_not_mint_or_move_entity() {
             .ingest_fact_with_typed_sidecar(
                 &authorized,
                 std::slice::from_ref(&sidecar_payload),
+                None,
                 None,
             )
             .await?;

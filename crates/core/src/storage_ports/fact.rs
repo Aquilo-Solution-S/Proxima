@@ -1,6 +1,6 @@
 use crate::SidecarPayload;
 use crate::SourceBatchId;
-use crate::storage::StorageError;
+use crate::storage::{FactProvenanceSpec, StorageError};
 use crate::storage_ports::OwnerWritePermit;
 use crate::verbs::close_batch::CloseBatchOutcome;
 use crate::verbs::fact_ingest::{
@@ -54,11 +54,15 @@ pub trait FactIngestPort: Send + Sync {
     ///
     /// `ConstraintViolation` when any payload's schema is not registered as
     /// a memory sidecar; otherwise storage faults.
+    /// `provenance`, when present, is written in the SAME transaction. Its
+    /// source endpoint is the Fact's own `memory_id`, which is why it
+    /// cannot be a second call.
     async fn ingest_fact_with_typed_sidecar(
         &self,
         authorized: &AuthorizedFactWrite,
         sidecar_payloads: &[SidecarPayload],
         embedding_model_id: Option<&str>,
+        provenance: Option<FactProvenanceSpec<'_>>,
     ) -> Result<FactIngestOutcome, StorageError>;
 
     async fn ingest_fact_with_citation_and_typed_sidecar(
@@ -66,6 +70,7 @@ pub trait FactIngestPort: Send + Sync {
         authorized: &AuthorizedFactWithCitation,
         sidecar_payloads: &[SidecarPayload],
         embedding_model_id: Option<&str>,
+        provenance: Option<FactProvenanceSpec<'_>>,
     ) -> Result<FactIngestOutcome, StorageError>;
 
     /// The by-ref twin of
@@ -78,6 +83,7 @@ pub trait FactIngestPort: Send + Sync {
         authorized: &AuthorizedFactWithCitationRef,
         sidecar_payloads: &[SidecarPayload],
         embedding_model_id: Option<&str>,
+        provenance: Option<FactProvenanceSpec<'_>>,
     ) -> Result<FactIngestOutcome, StorageError>;
 }
 

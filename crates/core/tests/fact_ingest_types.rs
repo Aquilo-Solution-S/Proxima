@@ -31,6 +31,7 @@ fn fresh_command() -> FactWriteCommand {
                 schema_version: SchemaVersion::new(1),
             },
         }),
+        derived_from: None,
     }
 }
 

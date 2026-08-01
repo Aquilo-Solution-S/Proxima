@@ -81,6 +81,7 @@ fn fresh_draft(_owner: Owner, schema: &str, payload: &[u8]) -> FactWriteCommand 
                 schema_version: SchemaVersion::new(1),
             },
         }),
+        derived_from: None,
     }
 }
 

@@ -7,8 +7,9 @@ use proxima::flavor::{
     RelationClass, RelationDescriptor, SchemaId, SchemaVersion, SidecarPayload,
 };
 use proxima::{
-    AppInfo, AuthPath, AuthzContext, EdgeExistsRequest, EdgeFilter, EdgeReadRequest, FlavorApp,
-    MemoryLineageDirection, MemoryLineageRequest, Proxima, StorageError, ToolScope, company_owner,
+    AppInfo, AuthPath, AuthzContext, EdgeExistsRequest, EdgeFilter, EdgeReadRequest,
+    FactWriteCommand, FlavorApp, MemoryLineageDirection, MemoryLineageRequest, Proxima, Relation,
+    SourceBatchId, StorageError, ToolScope, company_owner,
 };
 use proxima_core::{
     AuthorDerivedEdgeInput, AuthorDerivedRequestInput, EdgeAuthorshipKind, EdgeTargetProjection,
@@ -547,6 +548,213 @@ async fn facade_engine_reads_lineage_edges_and_derives_without_embedding_client(
 
     let _ = drop_db(&db_name).await;
     result
+}
+
+/// A flavor records that one Fact was produced from another without ever
+/// naming an edge — the shape an OCR reading needs to point at the upload
+/// it read.
+///
+/// Asserts LINEAGE, not `edge_exists`: lineage is filtered to
+/// `relation_class IN ('Provenance','Supersession')`, so an edge of the
+/// wrong class would exist and still answer nothing.
+///
+/// Note what this test does not import: no edge type, no relation
+/// constant, no append verb. Needing any of them would mean a new facade
+/// symbol.
+#[tokio::test]
+async fn facade_flavor_records_where_a_fact_came_from() -> Result<(), Box<dyn std::error::Error>> {
+    let db_name = unique_db_name("proxima_facade_fact_provenance");
+    create_db(&db_name).await.expect("PG required for tests");
+    let db_url = db_url(&db_name);
+
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let owner = proxima_core::OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let built = Proxima::<FacadeSurfaceApp>::app()
+            .database_url(db_url)
+            .owner(owner)
+            .tool_scope(ToolScope::All)
+            .build()
+            .await?;
+        create_sidecar_tables(built.pool_for_tests()).await?;
+        let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
+
+        let origin = ingest_facade_fact(&built, &authz, "the pdf that arrived", None).await?;
+        let reading =
+            ingest_facade_fact(&built, &authz, "what reading it produced", Some(origin)).await?;
+
+        let lineage = built
+            .engine
+            .walk_memory_lineage(
+                &authz,
+                &MemoryLineageRequest {
+                    owner,
+                    start_memory_id: reading,
+                    direction: MemoryLineageDirection::Ancestors,
+                    depth: 2,
+                    limit: 10,
+                    after: None,
+                },
+            )
+            .await?;
+        assert!(
+            lineage.nodes.iter().any(|node| node.memory_id == origin),
+            "lineage from the reading reaches the Fact it was produced from"
+        );
+
+        built.shutdown();
+        Ok(())
+    }
+    .await;
+
+    let _ = drop_db(&db_name).await;
+    result
+}
+
+/// Re-ingesting a Fact that declares provenance leaves ONE edge.
+///
+/// Why provenance is a field on the write and not a second call: an edge
+/// appended after the Fact lands is appended again on every retry, and a
+/// chunked reading of a long document resumes as a matter of course.
+///
+/// Counted in SQL, because `walk_memory_lineage` deduplicates nodes and
+/// would report the same answer either way.
+#[tokio::test]
+async fn facade_replayed_fact_does_not_duplicate_its_provenance_edge()
+-> Result<(), Box<dyn std::error::Error>> {
+    let db_name = unique_db_name("proxima_facade_provenance_replay");
+    create_db(&db_name).await.expect("PG required for tests");
+    let db_url = db_url(&db_name);
+
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let owner = proxima_core::OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let built = Proxima::<FacadeSurfaceApp>::app()
+            .database_url(db_url)
+            .owner(owner)
+            .tool_scope(ToolScope::All)
+            .build()
+            .await?;
+        create_sidecar_tables(built.pool_for_tests()).await?;
+        let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
+
+        let origin = ingest_facade_fact(&built, &authz, "the pdf that arrived", None).await?;
+        let note_id = Uuid::now_v7();
+        let first = ingest_keyed_facade_fact(&built, &authz, note_id, Some(origin)).await?;
+        let replayed = ingest_keyed_facade_fact(&built, &authz, note_id, Some(origin)).await?;
+        assert_eq!(
+            first, replayed,
+            "the second write replays onto the same Fact"
+        );
+
+        let edges: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM proxima_core.edges \
+             WHERE source_memory_id = $1 AND target_memory_id = $2",
+        )
+        .bind(first.into_inner())
+        .bind(origin.into_inner())
+        .fetch_one(built.pool_for_tests())
+        .await?;
+        assert_eq!(
+            edges, 1,
+            "a replayed Fact converges on its one provenance edge instead of appending another"
+        );
+
+        built.shutdown();
+        Ok(())
+    }
+    .await;
+
+    let _ = drop_db(&db_name).await;
+    result
+}
+
+/// Provenance pointing outside the owner space is refused the way a
+/// missing memory is: the caller must not learn it exists elsewhere.
+#[tokio::test]
+async fn facade_provenance_outside_the_owner_space_is_not_found()
+-> Result<(), Box<dyn std::error::Error>> {
+    let db_name = unique_db_name("proxima_facade_provenance_owner");
+    create_db(&db_name).await.expect("PG required for tests");
+    let db_url = db_url(&db_name);
+
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let owner = proxima_core::OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let built = Proxima::<FacadeSurfaceApp>::app()
+            .database_url(db_url)
+            .owner(owner)
+            .tool_scope(ToolScope::All)
+            .build()
+            .await?;
+        create_sidecar_tables(built.pool_for_tests()).await?;
+        let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
+
+        let stranger = MemoryId::new(Uuid::now_v7());
+        let err = ingest_facade_fact(&built, &authz, "a reading of nothing", Some(stranger))
+            .await
+            .expect_err("provenance to a memory this owner cannot see is refused");
+        assert!(
+            err.to_string().contains("memory not found"),
+            "refusal says only that the memory was not found, got: {err}"
+        );
+
+        built.shutdown();
+        Ok(())
+    }
+    .await;
+
+    let _ = drop_db(&db_name).await;
+    result
+}
+
+async fn ingest_facade_fact(
+    built: &proxima::BuiltProxima,
+    authz: &AuthzContext,
+    title: &str,
+    derived_from: Option<MemoryId>,
+) -> Result<MemoryId, Box<dyn std::error::Error>> {
+    ingest_facade_fact_inner(built, authz, Uuid::now_v7(), title, derived_from).await
+}
+
+async fn ingest_keyed_facade_fact(
+    built: &proxima::BuiltProxima,
+    authz: &AuthzContext,
+    note_id: Uuid,
+    derived_from: Option<MemoryId>,
+) -> Result<MemoryId, Box<dyn std::error::Error>> {
+    ingest_facade_fact_inner(built, authz, note_id, "a reading", derived_from).await
+}
+
+/// The whole flavor-facing surface under test: build a draft, say where it
+/// came from, ingest it.
+async fn ingest_facade_fact_inner(
+    built: &proxima::BuiltProxima,
+    authz: &AuthzContext,
+    note_id: Uuid,
+    title: &str,
+    derived_from: Option<MemoryId>,
+) -> Result<MemoryId, Box<dyn std::error::Error>> {
+    let fact = FacadeFact {
+        note_id,
+        title: title.to_string(),
+        body: format!("{title} — body"),
+    };
+    let mut draft = FactWriteCommand::from_payload(
+        "facade-test/source",
+        SourceBatchId::new(Uuid::now_v7()),
+        &fact,
+        time::OffsetDateTime::now_utc(),
+    );
+    if let Some(source) = derived_from {
+        draft = draft.derived_from(source);
+    }
+    let authorized = built
+        .engine
+        .authorize_fact_ingest(authz, Relation::Ingest, draft)
+        .await?;
+    let outcome = built
+        .engine
+        .ingest_fact_with_typed_sidecar(&authorized, &[SidecarPayload::fact(fact)], None)
+        .await?;
+    Ok(outcome.memory_id)
 }
 
 async fn create_sidecar_tables(pool: &sqlx::PgPool) -> Result<(), sqlx::Error> {

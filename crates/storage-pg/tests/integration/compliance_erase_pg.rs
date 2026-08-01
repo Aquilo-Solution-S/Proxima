@@ -112,6 +112,7 @@ fn receipt_draft(source_id: &str, batch: Uuid, payload: &[u8]) -> FactWriteComma
             occurred_at: now,
         }),
         citation: None,
+        derived_from: None,
     }
 }
 

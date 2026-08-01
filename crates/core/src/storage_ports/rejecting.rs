@@ -24,7 +24,9 @@ use crate::read_models::{
     AbstractionRow, ActiveGoalSummary, ChangeEventForWake, FactRow, GoalWakeCandidate,
     GoalWakeCandidateRequest, MemorySnapshot, SidecarSpec,
 };
-use crate::storage::{AuthorDerivedOutcome, AuthorDerivedRequest, EmbeddingJobClaim, StorageError};
+use crate::storage::{
+    AuthorDerivedOutcome, AuthorDerivedRequest, EmbeddingJobClaim, FactProvenanceSpec, StorageError,
+};
 use crate::verbs::change_history::{ChangeHistoryRequest, ChangeHistoryResponse};
 use crate::verbs::close_batch::CloseBatchOutcome;
 use crate::verbs::fact_ingest::{
@@ -64,6 +66,7 @@ impl FactIngestPort for RejectingStorage {
         _authorized: &AuthorizedFactWrite,
         _sidecar_payloads: &[SidecarPayload],
         _embedding_model_id: Option<&str>,
+        _provenance: Option<FactProvenanceSpec<'_>>,
     ) -> Result<FactIngestOutcome, StorageError> {
         Err(StorageError::Internal(
             "RejectingStorage rejects writes".into(),
@@ -75,6 +78,7 @@ impl FactIngestPort for RejectingStorage {
         _authorized: &AuthorizedFactWithCitation,
         _sidecar_payloads: &[SidecarPayload],
         _embedding_model_id: Option<&str>,
+        _provenance: Option<FactProvenanceSpec<'_>>,
     ) -> Result<FactIngestOutcome, StorageError> {
         Err(StorageError::Internal(
             "RejectingStorage rejects writes".into(),
@@ -86,6 +90,7 @@ impl FactIngestPort for RejectingStorage {
         _authorized: &AuthorizedFactWithCitationRef,
         _sidecar_payloads: &[SidecarPayload],
         _embedding_model_id: Option<&str>,
+        _provenance: Option<FactProvenanceSpec<'_>>,
     ) -> Result<FactIngestOutcome, StorageError> {
         Err(StorageError::Internal(
             "RejectingStorage rejects writes".into(),

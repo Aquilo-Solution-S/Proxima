@@ -81,6 +81,7 @@ fn fresh_draft(_owner: Owner, source_batch_id: SourceBatchId) -> FactWriteComman
                 schema_version: SchemaVersion::new(1),
             },
         }),
+        derived_from: None,
     }
 }
 

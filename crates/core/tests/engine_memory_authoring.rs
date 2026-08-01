@@ -1125,7 +1125,12 @@ async fn ingest_fact_with_sidecar_writes_fact_and_note_sidecar()
         .authorize_fact_ingest(&authz, Relation::Ingest, draft)
         .await?;
     let outcome = pg
-        .ingest_fact_with_typed_sidecar(&authorized, std::slice::from_ref(&sidecar_payload), None)
+        .ingest_fact_with_typed_sidecar(
+            &authorized,
+            std::slice::from_ref(&sidecar_payload),
+            None,
+            None,
+        )
         .await?;
 
     let memory_row: (Option<EntityKind>, String) =

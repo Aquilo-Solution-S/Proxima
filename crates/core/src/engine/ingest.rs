@@ -6,7 +6,7 @@ use crate::access::Relation;
 use crate::authz::AuthzContext;
 use crate::error::ProtocolError;
 use crate::llm::{EMBEDDING_BATCH_SIZE, EmbeddingClient, LlmError};
-use crate::storage::{EmbeddingJobClaim, StorageError};
+use crate::storage::{EmbeddingJobClaim, FactProvenanceSpec, StorageError};
 use crate::verbs::close_batch::CloseBatchOutcome;
 use crate::verbs::fact_ingest::{
     AuthorizedCitationAttachment, AuthorizedFactWithCitation, AuthorizedFactWithCitationRef,
@@ -16,7 +16,8 @@ use crate::verbs::fact_ingest::{
 use crate::verbs::persist_mcp_call::{McpCallLogInput, McpCallLogOutcome};
 use crate::verbs::schema::{PayloadKind, ProtocolPayload, SchemaInfo};
 use crate::{
-    EmbeddableEntityRef, EntityKind, MemoryId, Owner, OwnerRef, SidecarPayload, SourceBatchId,
+    EdgeAuthorshipKind, EmbeddableEntityRef, EntityKind, MemoryId, Owner, OwnerRef, SidecarPayload,
+    SourceBatchId,
 };
 
 /// Input used to ask a provider "are you up?" after it refused a batch.
@@ -247,6 +248,51 @@ impl Engine {
         requested.filter(|_| self.registry().schema_is_embeddable(schema_id))
     }
 
+    /// Resolve `FactWriteCommand::derived_from` into an edge storage can
+    /// write.
+    ///
+    /// The caller names no relation, so this picks
+    /// [`CORE_DERIVED_FROM_RELATION`](crate::CORE_DERIVED_FROM_RELATION):
+    /// its class is `Provenance`, which is what `walk_memory_lineage`
+    /// traverses. A `Causal` or `Structural` edge would exist and still
+    /// leave the Fact unable to say where it came from.
+    async fn fact_provenance_spec(
+        &self,
+        owner: &Owner,
+        derived_from: Option<MemoryId>,
+    ) -> Result<Option<FactProvenanceSpec<'_>>, ProtocolError> {
+        let Some(target_memory_id) = derived_from else {
+            return Ok(None);
+        };
+        let relation = self
+            .registry()
+            .resolve_relation(crate::CORE_DERIVED_FROM_RELATION)
+            .ok_or_else(|| {
+                ProtocolError::internal("core/derived-from is not registered".to_string())
+            })?;
+        let (target_owner, target_kind) = self.load_memory_owner_kind(target_memory_id).await?;
+        // A target in another space answers exactly like a missing one, so
+        // the check discloses nothing about memories outside this owner.
+        if &target_owner != owner {
+            return Err(ProtocolError::invalid_argument(
+                "derived_from",
+                "memory not found",
+            ));
+        }
+        super::memory_authoring::validate_relation_shape(
+            relation,
+            EntityKind::Fact,
+            target_kind,
+            EdgeAuthorshipKind::SourceIngest,
+            "derived_from",
+        )?;
+        Ok(Some(FactProvenanceSpec {
+            relation,
+            target_kind,
+            target_memory_id,
+        }))
+    }
+
     /// Persist an already-authorized typed-sidecar Fact ingest.
     ///
     /// `embedding_model_id` is a request, not an instruction: a schema
@@ -266,10 +312,13 @@ impl Engine {
     ) -> Result<FactIngestOutcome, ProtocolError> {
         let embedding_model_id =
             self.vector_model_for(authorized.draft().schema_id.as_str(), embedding_model_id);
+        let provenance = self
+            .fact_provenance_spec(authorized.permit().owner(), authorized.draft().derived_from)
+            .await?;
         self.storage()
             .ingest
             .fact_ingest
-            .ingest_fact_with_typed_sidecar(authorized, sidecars, embedding_model_id)
+            .ingest_fact_with_typed_sidecar(authorized, sidecars, embedding_model_id, provenance)
             .await
             .map_err(|err| {
                 super::errors::map_write_storage_error(
@@ -295,10 +344,18 @@ impl Engine {
     ) -> Result<FactIngestOutcome, ProtocolError> {
         let embedding_model_id =
             self.vector_model_for(authorized.draft().schema_id.as_str(), embedding_model_id);
+        let provenance = self
+            .fact_provenance_spec(authorized.permit().owner(), authorized.draft().derived_from)
+            .await?;
         self.storage()
             .ingest
             .fact_ingest
-            .ingest_fact_with_citation_and_typed_sidecar(authorized, sidecars, embedding_model_id)
+            .ingest_fact_with_citation_and_typed_sidecar(
+                authorized,
+                sidecars,
+                embedding_model_id,
+                provenance,
+            )
             .await
             .map_err(|err| {
                 super::errors::map_write_storage_error(
@@ -325,6 +382,9 @@ impl Engine {
     ) -> Result<FactIngestOutcome, ProtocolError> {
         let embedding_model_id =
             self.vector_model_for(authorized.draft().schema_id.as_str(), embedding_model_id);
+        let provenance = self
+            .fact_provenance_spec(authorized.permit().owner(), authorized.draft().derived_from)
+            .await?;
         self.storage()
             .ingest
             .fact_ingest
@@ -332,6 +392,7 @@ impl Engine {
                 authorized,
                 sidecars,
                 embedding_model_id,
+                provenance,
             )
             .await
             .map_err(|err| {

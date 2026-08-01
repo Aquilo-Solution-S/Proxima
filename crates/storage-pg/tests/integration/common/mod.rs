@@ -178,6 +178,7 @@ pub async fn seed_memory(
                 occurred_at: now,
             }),
             citation: None,
+            derived_from: None,
         };
         let permit = owner_write_permit(owner, AccessKind::Fact).await?;
         let outcome = pg.ingest_fact_atomic(&permit, &draft, None).await?;

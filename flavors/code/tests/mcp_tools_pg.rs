@@ -2287,6 +2287,7 @@ fn fact_draft(_owner: Owner, schema_id: &str, payload: &[u8]) -> FactWriteComman
             observed_at: now,
             occurred_at: now,
         }),
+        derived_from: None,
         citation: Some(Citation {
             object: CitedObjectHint {
                 schema_id: SchemaId::new("test/cited_blob".into()),

@@ -275,6 +275,17 @@ pub struct DerivedEdgeSpec<'a> {
     pub sidecar_payload: Option<&'a SidecarPayload>,
 }
 
+/// A Fact's declared provenance, resolved and validated by the engine.
+///
+/// No source endpoint: it is the Fact being written, whose id storage
+/// mints inside the same transaction.
+#[derive(Debug, Clone, Copy)]
+pub struct FactProvenanceSpec<'a> {
+    pub relation: RegisteredRelation<'a>,
+    pub target_kind: EntityKind,
+    pub target_memory_id: MemoryId,
+}
+
 /// What storage must do about a derived memory's vector, decided by the
 /// engine before the write opens its transaction.
 ///

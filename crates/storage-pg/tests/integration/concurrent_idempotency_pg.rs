@@ -40,6 +40,7 @@ fn race_draft() -> FactWriteCommand {
             occurred_at: now,
         }),
         citation: None,
+        derived_from: None,
     }
 }
 

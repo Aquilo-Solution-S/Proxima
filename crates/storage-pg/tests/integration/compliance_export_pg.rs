@@ -99,6 +99,7 @@ fn fact_command(label: &str) -> FactWriteCommand {
             occurred_at: now,
         }),
         citation: None,
+        derived_from: None,
     }
 }
 

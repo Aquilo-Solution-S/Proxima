@@ -153,6 +153,7 @@ pub(in crate::engine) mod tests {
             _authorized: &AuthorizedFactWrite,
             _sidecar_payloads: &[SidecarPayload],
             _embedding_model_id: Option<&str>,
+            _provenance: Option<FactProvenanceSpec<'_>>,
         ) -> Result<FactIngestOutcome, StorageError> {
             Err(StorageError::Internal(
                 "MembershipStorage rejects writes".into(),
@@ -164,6 +165,7 @@ pub(in crate::engine) mod tests {
             _authorized: &AuthorizedFactWithCitation,
             _sidecar_payloads: &[SidecarPayload],
             _embedding_model_id: Option<&str>,
+            _provenance: Option<FactProvenanceSpec<'_>>,
         ) -> Result<FactIngestOutcome, StorageError> {
             Err(StorageError::Internal(
                 "MembershipStorage rejects writes".into(),
@@ -175,6 +177,7 @@ pub(in crate::engine) mod tests {
             _authorized: &crate::verbs::fact_ingest::AuthorizedFactWithCitationRef,
             _sidecar_payloads: &[SidecarPayload],
             _embedding_model_id: Option<&str>,
+            _provenance: Option<FactProvenanceSpec<'_>>,
         ) -> Result<FactIngestOutcome, StorageError> {
             Err(StorageError::Internal(
                 "MembershipStorage rejects writes".into(),

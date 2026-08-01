@@ -468,6 +468,7 @@ fn draft_for_payload<F: FactPayload>(_owner: &Owner, payload_value: &Value) -> F
             occurred_at: now,
         }),
         citation: None,
+        derived_from: None,
     }
 }
 
@@ -498,8 +499,13 @@ where
         .await
         .map_err(|err| StorageError::Internal(err.to_string()))?;
     let sidecar_payload = SidecarPayload::fact(payload.clone());
-    pg.ingest_fact_with_typed_sidecar(&authorized, std::slice::from_ref(&sidecar_payload), None)
-        .await
+    pg.ingest_fact_with_typed_sidecar(
+        &authorized,
+        std::slice::from_ref(&sidecar_payload),
+        None,
+        None,
+    )
+    .await
 }
 
 async fn memory_fact_entity_id(

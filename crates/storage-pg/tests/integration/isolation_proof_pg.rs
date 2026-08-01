@@ -283,6 +283,7 @@ async fn ingest_cited_fact(
                 schema_version: SchemaVersion::new(1),
             },
         }),
+        derived_from: None,
     };
     let outcome = pg.ingest_fact_atomic(permit, &draft, None).await?;
     let (owner_kind, owner_id) = proxima_storage_pg::access::owner_columns::owner_binds(owner);

@@ -17,6 +17,40 @@ use proxima_core::{
 use crate::error::map_err;
 use crate::sidecars::PgSidecarFuture;
 
+/// Namespace for edge ids minted from the edge's own content. Random
+/// once, then fixed forever: changing it would make existing edges
+/// unrecognisable and re-runs would duplicate them.
+const CONTENT_EDGE_NAMESPACE: uuid::Uuid =
+    uuid::Uuid::from_u128(0x89a4_7127_5a52_4f7d_8519_1506_d1a9_875d);
+
+/// An edge id derived from the edge itself, making the write idempotent.
+///
+/// Edge ids are otherwise `now_v7()` and `proxima_core.edges` has no
+/// unique constraint over (source, target, relation), so
+/// `ON CONFLICT (edge_id) DO NOTHING` never fires and writing "the same"
+/// edge twice writes two rows.
+pub(crate) fn content_addressed_edge_id(
+    owner: Owner,
+    relation: &str,
+    source_memory_id: uuid::Uuid,
+    target_memory_id: uuid::Uuid,
+    authorship_kind: EdgeAuthorshipKind,
+) -> uuid::Uuid {
+    // 0x00 separators: without them ("ab","c") and ("a","bc") hash alike,
+    // and relation names are caller-supplied strings.
+    let mut name = Vec::new();
+    name.extend_from_slice(owner.stable_key_uuid().as_bytes());
+    name.push(0);
+    name.extend_from_slice(relation.as_bytes());
+    name.push(0);
+    name.extend_from_slice(source_memory_id.as_bytes());
+    name.push(0);
+    name.extend_from_slice(target_memory_id.as_bytes());
+    name.push(0);
+    name.extend_from_slice(format!("{authorship_kind:?}").as_bytes());
+    uuid::Uuid::new_v5(&CONTENT_EDGE_NAMESPACE, &name)
+}
+
 /// Draft of an edge to be written.
 #[derive(Debug, Clone)]
 pub(crate) struct EdgeDraft<'a> {

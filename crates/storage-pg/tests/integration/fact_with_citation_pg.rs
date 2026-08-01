@@ -215,6 +215,7 @@ fn draft(_owner: &Owner, note: &str) -> FactWriteCommand {
             occurred_at: now,
         }),
         citation: None,
+        derived_from: None,
     }
 }
 

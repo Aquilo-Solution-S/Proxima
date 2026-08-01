@@ -90,6 +90,7 @@ fn fresh_fact_draft(_owner: Owner, payload: Vec<u8>) -> FactWriteCommand {
                 schema_version: SchemaVersion::new(1),
             },
         }),
+        derived_from: None,
     }
 }
 

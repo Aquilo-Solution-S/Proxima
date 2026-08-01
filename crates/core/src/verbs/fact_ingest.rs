@@ -135,6 +135,14 @@ pub struct FactWriteCommand {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub receipt: Option<FactReceiptDraft>,
     pub citation: Option<Citation>,
+    /// The memory this Fact was produced from. The engine writes a
+    /// `core/derived-from` edge to it in the Fact's own transaction.
+    ///
+    /// `skip` like `rendered_text`: two runs that read the same bytes the
+    /// same way are one observation whether or not the second bothered to
+    /// say where it came from.
+    #[serde(default, skip)]
+    pub derived_from: Option<MemoryId>,
 }
 
 /// Proof that a Fact write passed authorization + schema validation
@@ -532,6 +540,7 @@ impl FactWriteCommand {
                 occurred_at: observed_at,
             }),
             citation: None,
+            derived_from: None,
         }
     }
 
@@ -539,6 +548,16 @@ impl FactWriteCommand {
     #[must_use]
     pub fn with_citation(mut self, citation: impl Into<Citation>) -> Self {
         self.citation = Some(citation.into());
+        self
+    }
+
+    /// Declare the memory this Fact was produced from.
+    ///
+    /// The caller names the memory, not the edge: the engine resolves
+    /// `core/derived-from` and writes it with the Fact.
+    #[must_use]
+    pub fn derived_from(mut self, source: MemoryId) -> Self {
+        self.derived_from = Some(source);
         self
     }
 
@@ -629,6 +648,7 @@ mod tests {
                 occurred_at: now,
             }),
             citation: None,
+            derived_from: None,
         }
     }
 
@@ -670,6 +690,7 @@ mod tests {
                 occurred_at: time::OffsetDateTime::UNIX_EPOCH,
             }),
             citation: None,
+            derived_from: None,
         };
         assert_eq!(
             hex::encode(
