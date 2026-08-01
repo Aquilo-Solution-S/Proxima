@@ -8,7 +8,7 @@
 //! Perspective's own payload — nobody writes them, and nobody can write
 //! them without writing the node that owns the statement.
 
-use crate::mcp::{McpTool, McpToolCtx, McpToolError, MemoryHandleClass};
+use crate::mcp::{McpTool, McpToolCtx, McpToolError};
 use crate::protocol::tool as protocol_tool;
 use crate::tool::validate_trimmed_len;
 use crate::{
@@ -221,8 +221,9 @@ fn resolve_subject(
     if let Ok(memory_id) = ctx.resolve_perspective_memory(handle) {
         return Ok((memory_id, InterpretationSubjectKind::Perspective));
     }
+    // An unprefixed handle is a Fact by the same convention every other
+    // memory-resolving tool uses.
     let memory_id = ctx.resolve_memory(handle)?;
-    let _ = MemoryHandleClass::Fact;
     Ok((memory_id, InterpretationSubjectKind::Fact))
 }
 
