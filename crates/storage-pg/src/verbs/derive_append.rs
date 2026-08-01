@@ -220,6 +220,66 @@ pub async fn append_derived_with_edges_in_tx(
     Ok(outcome)
 }
 
+/// One derived node in a batch that must be written as a unit.
+#[derive(Debug, Clone, Copy)]
+pub struct DerivedBatchEntry<'a> {
+    pub draft: &'a DerivedDraft<'a>,
+    pub origins: &'a [EdgeEndpoint],
+    pub references: &'a [EdgeEndpoint],
+}
+
+/// Append a set of derived memories whose references point at each other.
+///
+/// The reason this exists rather than a loop over
+/// [`append_derived_with_edges_in_tx`]: an index row's target must already
+/// exist (Lean E1), so a group of nodes that refer to one another cannot be
+/// written one complete node at a time. A file's code chunks are exactly that
+/// group — chunk 2 calls chunk 7 and chunk 7 calls chunk 2 — and the ids are
+/// deterministic, so every member can be *named* before any of them is
+/// written.
+///
+/// So the write is two phases in one transaction: every node row and sidecar
+/// first, then every node's declared index rows. Nothing about what a write
+/// may declare changes; only the order in which the group lands.
+///
+/// # Errors
+///
+/// Same as [`append_derived_with_edges_in_tx`], for any member.
+pub async fn append_derived_batch_with_edges_in_tx<S>(
+    tx: &mut Transaction<'_, Postgres>,
+    permit: &OwnerWritePermit,
+    entries: &[DerivedBatchEntry<'_>],
+    mut sidecar: S,
+) -> Result<Vec<DerivedOutcome>, StorageError>
+where
+    S: for<'t> FnMut(
+        usize,
+        &'t mut Transaction<'_, Postgres>,
+        &'t DerivedOutcome,
+    ) -> PgSidecarFuture<'t>,
+{
+    for entry in entries {
+        validate_permit_owner(permit, &entry.draft.owner)?;
+        crate::access::owner_columns::reject_world_write_owner(&entry.draft.owner)?;
+        validate_derived_origins_in_tx(tx, entry.draft, entry.origins).await?;
+    }
+    let mut outcomes = Vec::with_capacity(entries.len());
+    for (index, entry) in entries.iter().enumerate() {
+        let sidecar = &mut sidecar;
+        outcomes.push(
+            append_derived_in_tx(tx, permit, entry.draft, move |tx, outcome| {
+                sidecar(index, tx, outcome)
+            })
+            .await?,
+        );
+    }
+    for (entry, outcome) in entries.iter().zip(&outcomes) {
+        assert_derived_index_rows(tx, entry.draft, outcome, entry.origins, entry.references)
+            .await?;
+    }
+    Ok(outcomes)
+}
+
 /// Write (or, on replay, re-verify) the index rows a derived write declares.
 ///
 /// Shared by the flavor-SDK tier above and the engine port, so the two

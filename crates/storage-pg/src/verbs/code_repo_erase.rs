@@ -404,21 +404,38 @@ async fn create_selected_citations(tx: &mut Tx<'_>) -> Result<(), sqlx::Error> {
     Ok(())
 }
 
+/// Select the index rows an erase takes with it.
+///
+/// The selection is by endpoint rather than by id, because an edge has no id:
+/// the row IS its identity, so the temp table holds the whole primary key.
+/// The endpoint columns are also uniform now — one (kind, id) pair per side,
+/// with a Fact-entity head addressed the same way as a memory — so the four
+/// old columns collapse into two comparisons.
 async fn create_selected_edges(tx: &mut Tx<'_>) -> Result<(), sqlx::Error> {
-    sqlx::query("CREATE TEMP TABLE erase_repo_edges(edge_id uuid PRIMARY KEY) ON COMMIT DROP")
-        .execute(&mut **tx)
-        .await?;
     sqlx::query(
-        "INSERT INTO erase_repo_edges(edge_id)
-         SELECT DISTINCT e.edge_id
+        "CREATE TEMP TABLE erase_repo_edges(
+             source_kind proxima_core.edge_endpoint_kind NOT NULL,
+             source_id uuid NOT NULL,
+             target_kind proxima_core.edge_endpoint_kind NOT NULL,
+             target_id uuid NOT NULL,
+             kind proxima_core.edge_kind NOT NULL,
+             PRIMARY KEY (source_kind, source_id, target_kind, target_id, kind)
+         ) ON COMMIT DROP",
+    )
+    .execute(&mut **tx)
+    .await?;
+    sqlx::query(
+        "INSERT INTO erase_repo_edges(source_kind, source_id, target_kind, target_id, kind)
+         SELECT e.source_kind, e.source_id, e.target_kind, e.target_id, e.kind
            FROM proxima_core.edges e
-          WHERE EXISTS (SELECT 1 FROM erase_repo_memories s WHERE s.memory_id = e.source_memory_id)
-             OR EXISTS (SELECT 1 FROM erase_repo_memories s WHERE s.memory_id = e.target_memory_id)
-             OR EXISTS (SELECT 1 FROM erase_repo_memories s WHERE s.memory_id = e.authorship_owner_memory_id)
+          WHERE EXISTS (SELECT 1 FROM erase_repo_memories s WHERE s.memory_id = e.source_id)
+             OR EXISTS (SELECT 1 FROM erase_repo_memories s WHERE s.memory_id = e.target_id)
              OR EXISTS (
                  SELECT 1 FROM erase_repo_fact_entities fe
-                  WHERE fe.fact_entity_id = e.source_fact_entity_id
-                     OR fe.fact_entity_id = e.target_fact_entity_id
+                  WHERE (e.source_kind = 'FactEntityHead'::proxima_core.edge_endpoint_kind
+                         AND fe.fact_entity_id = e.source_id)
+                     OR (e.target_kind = 'FactEntityHead'::proxima_core.edge_endpoint_kind
+                         AND fe.fact_entity_id = e.target_id)
              )
          ON CONFLICT DO NOTHING",
     )
@@ -443,9 +460,9 @@ async fn delete_flavor_sidecars(tx: &mut Tx<'_>) -> Result<(), sqlx::Error> {
     execute_query(tx, sqlx::query(DELETE_DEVELOPMENT_PERSPECTIVE_SIDECAR_SQL)).await?;
     execute_query(tx, sqlx::query(DELETE_COMMIT_SIDECAR_SQL)).await?;
     execute_query(tx, sqlx::query(DELETE_COMMIT_SUMMARY_SIDECAR_SQL)).await?;
+    execute_query(tx, sqlx::query(DELETE_CODE_CHUNK_CALL_SIDECAR_SQL)).await?;
     execute_query(tx, sqlx::query(DELETE_CODE_CHUNK_SIDECAR_SQL)).await?;
-    execute_query(tx, sqlx::query(DELETE_CODE_EDGE_SIDECAR_SQL)).await?;
-    execute_query(tx, sqlx::query(DELETE_CORE_EDGE_SIDECAR_SQL)).await?;
+    execute_query(tx, sqlx::query(DELETE_WORK_ASSIGNMENT_SIDECAR_SQL)).await?;
     Ok(())
 }
 
@@ -651,10 +668,14 @@ const DELETE_COMMIT_SUMMARY_SIDECAR_SQL: &str = "DELETE FROM proxima_code.commit
 const DELETE_CODE_CHUNK_SIDECAR_SQL: &str = "DELETE FROM proxima_code.code_chunk_v1
       WHERE memory_id IN (SELECT memory_id FROM erase_repo_memories)";
 
-const DELETE_CODE_EDGE_SIDECAR_SQL: &str = "DELETE FROM proxima_code.code_calls_v1
-  WHERE edge_id IN (SELECT edge_id FROM erase_repo_edges)";
-const DELETE_CORE_EDGE_SIDECAR_SQL: &str = "DELETE FROM proxima_core.agent_link_v1
-  WHERE edge_id IN (SELECT edge_id FROM erase_repo_edges)";
+// Call sites belong to the caller chunk, so they leave with the chunk row
+// rather than with the index rows the chunk implied.
+const DELETE_CODE_CHUNK_CALL_SIDECAR_SQL: &str = "DELETE FROM proxima_code.code_chunk_call_v1
+  WHERE caller_memory_id IN (SELECT memory_id FROM erase_repo_memories)
+     OR callee_memory_id IN (SELECT memory_id FROM erase_repo_memories)";
+const DELETE_WORK_ASSIGNMENT_SIDECAR_SQL: &str = "DELETE FROM proxima_code.work_assignment_v1
+  WHERE memory_id IN (SELECT memory_id FROM erase_repo_memories)
+     OR work_item_memory_id IN (SELECT memory_id FROM erase_repo_memories)";
 const DELETE_EMBEDDING_JOBS_SQL: &str = "DELETE FROM proxima_core.embedding_jobs
   WHERE entity_id IN (SELECT memory_id FROM erase_repo_memories)";
 const DELETE_EMBEDDING_HEADS_SQL: &str = "DELETE FROM proxima_core.embedding_heads
@@ -667,14 +688,16 @@ const DELETE_AGENT_DERIVATION_SIDECAR_SQL: &str = "DELETE FROM proxima_core.agen
   WHERE memory_id IN (SELECT memory_id FROM erase_repo_memories)";
 const DELETE_AGENT_NOTE_SIDECAR_SQL: &str = "DELETE FROM proxima_core.agent_note_v1
   WHERE memory_id IN (SELECT memory_id FROM erase_repo_memories)";
-const DELETE_SELECTED_EDGES_SQL: &str = "DELETE FROM proxima_core.edges
-  WHERE edge_id IN (SELECT edge_id FROM erase_repo_edges)";
+const DELETE_SELECTED_EDGES_SQL: &str = "DELETE FROM proxima_core.edges e
+  USING erase_repo_edges s
+  WHERE e.source_kind = s.source_kind AND e.source_id = s.source_id
+    AND e.target_kind = s.target_kind AND e.target_id = s.target_id
+    AND e.kind = s.kind";
 const DELETE_CHANGE_EVENTS_SQL: &str = "DELETE FROM proxima_core.change_event
   WHERE entity_memory_id IN (SELECT memory_id FROM erase_repo_memories)
      OR supersedes_memory_id IN (SELECT memory_id FROM erase_repo_memories)
-     OR edge_id IN (SELECT edge_id FROM erase_repo_edges)
-     OR edge_source_memory_id IN (SELECT memory_id FROM erase_repo_memories)
-     OR edge_target_memory_id IN (SELECT memory_id FROM erase_repo_memories)";
+     OR edge_source_id IN (SELECT memory_id FROM erase_repo_memories)
+     OR edge_target_id IN (SELECT memory_id FROM erase_repo_memories)";
 const DELETE_CITED_UPLOADS_SQL: &str = "DELETE FROM proxima_core.cited_object_uploads
   WHERE cited_object_id IN (SELECT cited_object_id FROM erase_repo_cited_objects)";
 const DELETE_CITED_UPLOADED_BLOB_SQL: &str = "DELETE FROM proxima_core.cited_uploaded_blob_v1
