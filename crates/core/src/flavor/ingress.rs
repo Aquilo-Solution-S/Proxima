@@ -1,6 +1,6 @@
 use super::{
-    AbstractionPayload, CitationMappingPayload, CitedObjectPayload, EdgePayload, FactPayload,
-    GoalPayload, PerspectivePayload, ProtocolPayload, SidecarPayload,
+    AbstractionPayload, CitationMappingPayload, CitedObjectPayload, FactPayload, GoalPayload,
+    PerspectivePayload, ProtocolPayload, SidecarPayload,
 };
 
 pub(super) fn decode_protocol_payload<T>(value: &serde_json::Value) -> Result<T, String>
@@ -64,19 +64,6 @@ where
     Ok(ProtocolPayload {
         key_bytes,
         sidecar_payload: SidecarPayload::goal(payload),
-        rendered_text: None,
-        content_hash: None,
-    })
-}
-
-pub(super) fn ingest_edge_payload<E>(value: &serde_json::Value) -> Result<ProtocolPayload, String>
-where
-    E: EdgePayload + Send + Sync,
-{
-    let payload = decode_protocol_payload::<E>(value)?;
-    Ok(ProtocolPayload {
-        key_bytes: None,
-        sidecar_payload: SidecarPayload::edge(payload),
         rendered_text: None,
         content_hash: None,
     })

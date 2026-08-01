@@ -77,14 +77,6 @@ pub const CORE_RESOURCES: &[CoreResourceMeta] = &[
         is_template: false,
     },
     CoreResourceMeta {
-        uri_template: protocol_resource_uri::EDGE_TYPES,
-        name: "proxima-edge-types",
-        title: "Proxima Edge Types",
-        scope_key: protocol_resource::EDGE_TYPES,
-        description: "Registered relation descriptors and relation classes.",
-        is_template: false,
-    },
-    CoreResourceMeta {
         uri_template: protocol_resource_uri::TOOLS,
         name: "proxima-tools",
         title: "Proxima Tools",
@@ -97,7 +89,7 @@ pub const CORE_RESOURCES: &[CoreResourceMeta] = &[
         name: "proxima-graph",
         title: "Proxima Graph",
         scope_key: protocol_resource::GRAPH,
-        description: "Owner-scoped memory graph plus schema, edge-type, and tool catalogs.",
+        description: "Owner-scoped memory graph plus schema and tool catalogs.",
         is_template: false,
     },
     CoreResourceMeta {
@@ -122,7 +114,7 @@ pub const CORE_RESOURCES: &[CoreResourceMeta] = &[
         name: "proxima-memory-lineage",
         title: "Proxima Memory Lineage",
         scope_key: protocol_resource::MEMORY_LINEAGE,
-        description: "Owner-scoped Provenance/Supersession lineage from a prefixed memory id, \
+        description: "Owner-scoped origin lineage from a prefixed memory id, \
                       with keyset cursor pagination.",
         is_template: true,
     },
@@ -163,16 +155,9 @@ pub const CORE_RESOURCES: &[CoreResourceMeta] = &[
         name: "proxima-edges",
         title: "Proxima Edges",
         scope_key: protocol_resource::EDGES,
-        description: "Owner-scoped edge listing filtered by relation and/or source/target \
-                      endpoint, with keyset cursor and typed payload read-back.",
-        is_template: true,
-    },
-    CoreResourceMeta {
-        uri_template: protocol_resource_uri::EDGE,
-        name: "proxima-edge",
-        title: "Proxima Edge",
-        scope_key: protocol_resource::EDGE,
-        description: "Single-edge read by E:<uuid> reference, including its typed payload.",
+        description: "Owner-scoped edge listing filtered by kind and/or source/target \
+                      endpoint, with keyset cursor. Each edge is source, target, kind, \
+                      created_at — an edge carries nothing else.",
         is_template: true,
     },
 ];
@@ -211,12 +196,15 @@ pub fn core_tool_annotations(canonical_name: &str) -> Option<McpToolAnnotations>
             base.read_only(true)
         }
 
-        protocol_tool::CORE_DERIVE => base.read_only(false).destructive(false).idempotent(true),
+        // Idempotent by content: the interpretation's memory id is
+        // folded from the claim, so re-asserting it lands on one memory.
+        protocol_tool::CORE_DERIVE | protocol_tool::CORE_INTERPRET => {
+            base.read_only(false).destructive(false).idempotent(true)
+        }
 
         protocol_tool::CORE_REMEMBER
         | protocol_tool::CORE_RECORD_UTTERANCE
         | protocol_tool::CORE_GOAL
-        | protocol_tool::CORE_LINK
         | protocol_tool::CORE_UPLOAD => base.read_only(false).destructive(false).idempotent(false),
 
         protocol_tool::CORE_MEMBERSHIP | protocol_tool::CORE_PUBLISH => {

@@ -2,9 +2,8 @@ use crate::mcp::{McpTool, McpToolCtx, McpToolError, MemoryHandleClass};
 use crate::protocol::tool as protocol_tool;
 use crate::tool::validate_trimmed_len;
 use crate::{
-    AbstractionPayload, AuthorDerivedEdgeInput, AuthorDerivedRequestInput,
-    CORE_DERIVED_FROM_RELATION, InputContractId, MemoryId, OperatorId, SchemaId, SchemaVersion,
-    SidecarPayload,
+    AbstractionPayload, AuthorDerivedRequestInput, EdgeEndpoint, InputContractId, MemoryId,
+    OperatorId, SchemaId, SchemaVersion, SidecarPayload,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -169,7 +168,10 @@ impl DerivedKind {
 pub struct DeriveOutput {
     pub handle: String,
     pub idempotent_replay: bool,
-    pub provenance_edge_handles: Vec<String>,
+    /// Number of index rows this write asserted. An edge has no handle
+    /// to return: the row is `(source, target, kind)` and re-running the
+    /// same derivation re-asserts the same rows.
+    pub edge_count: usize,
     /// Present only when the memory landed without a vector because the
     /// embedding provider refused its text. The memory is written and
     /// lexically findable; a pending embedding job will give it a vector
@@ -246,16 +248,6 @@ impl McpTool for DeriveTool {
                     "source_handles must be nonempty for operator derivation".into(),
                 ));
             }
-            let relation = Some(
-                ctx.registry
-                    .resolve_relation(CORE_DERIVED_FROM_RELATION)
-                    .ok_or_else(|| {
-                        McpToolError::Other(format!(
-                            "relation {CORE_DERIVED_FROM_RELATION} not registered"
-                        ))
-                    })?,
-            );
-
             let lexical_language = crate::lexical_language::resolve_lexical_language(
                 args.language.as_deref(),
                 &format!("{title}\n{body}"),
@@ -307,21 +299,13 @@ impl McpTool for DeriveTool {
 
             let memory_id = MemoryId::new(memory_id);
             let (operator_kind, target_kind) = operator_shape(args.kind, &sources)?;
-            let edge_authorship = operator_kind.edge_authorship();
-            let edges: Vec<_> = relation.map_or_else(Vec::new, |relation| {
-                sources
-                    .iter()
-                    .map(|(source_id, _class)| AuthorDerivedEdgeInput {
-                        relation,
-                        source_kind: args.kind.to_entity_kind(),
-                        source_memory_id: memory_id,
-                        target_kind,
-                        target_memory_id: *source_id,
-                        authorship_kind: edge_authorship,
-                        authorship_owner_memory_id: ctx.caller_self_perspective,
-                    })
-                    .collect()
-            });
+            // The declaration is a list of targets. Its kind — `origin` —
+            // follows from what this operation IS, so there is nothing
+            // here for the caller to pick.
+            let derived_from: Vec<EdgeEndpoint> = sources
+                .iter()
+                .map(|(source_id, _class)| EdgeEndpoint::memory(target_kind, *source_id))
+                .collect();
             let engine = ctx.require_engine()?;
             // Consolidating a keyed source batch (grouped core_remember
             // writes) is what completes it: close the F→A input batch if
@@ -355,19 +339,14 @@ impl McpTool for DeriveTool {
                             DerivedKind::Abstraction => SidecarPayload::abstraction(sidecar),
                             DerivedKind::Perspective => SidecarPayload::perspective(sidecar),
                         },
+                        authoring_perspective_id: ctx.caller_self_perspective,
+                        derived_from: &derived_from,
                         supersedes: None,
                         lexical_language: lexical_language.as_deref(),
-                        edges: &edges,
                     },
                 )
                 .await
                 .map_err(map_derive_authoring_error)?;
-
-            let provenance_edge_handles = outcome
-                .edge_ids
-                .into_iter()
-                .map(|edge_id| ctx.format_edge(edge_id))
-                .collect();
 
             Ok(DeriveOutput {
                 handle: match args.kind {
@@ -375,7 +354,7 @@ impl McpTool for DeriveTool {
                     DerivedKind::Perspective => ctx.format_perspective_memory(outcome.memory_id),
                 },
                 idempotent_replay: outcome.idempotent_replay,
-                provenance_edge_handles,
+                edge_count: outcome.edge_count,
                 embedding_deferred: outcome.embedding_deferred,
             })
         })
@@ -384,11 +363,11 @@ impl McpTool for DeriveTool {
 
 fn map_derive_authoring_error(err: crate::error::ProtocolError) -> McpToolError {
     if err.code == crate::error::ErrorCode::InvalidArgument
-        && err.message.contains("relation core/derived-from")
+        && err.message.contains("layering violation")
     {
         return McpToolError::LayeringViolation(
             err.message
-                .strip_prefix("invalid argument edges: ")
+                .strip_prefix("invalid argument derived_from: ")
                 .unwrap_or(err.message.as_str())
                 .to_string(),
         );

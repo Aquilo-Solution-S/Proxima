@@ -11,9 +11,7 @@ use crate::verbs::goal_write::{
     GoalWriteOutcome, IdempotencyKey, OperatorKind, SystemOrigin,
 };
 use crate::verbs::schema::PayloadKind;
-use crate::{
-    EdgeId, InputContractId, ModelId, OperatorId, PromptVersion, SchemaId, SchemaVersion, ToolId,
-};
+use crate::{InputContractId, ModelId, OperatorId, PromptVersion, SchemaId, SchemaVersion, ToolId};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -157,7 +155,8 @@ pub struct GoalWakeArgs {
 pub struct GoalWriteOutput {
     pub handle: String,
     pub lifecycle_memory: Option<String>,
-    pub edge_handles: Vec<String>,
+    /// Index rows the write asserted. Not handles: an edge has no id.
+    pub edge_count: usize,
     pub idempotent_replay: bool,
 }
 
@@ -300,7 +299,7 @@ async fn goal_set(ctx: McpToolCtx, args: GoalSetArgs) -> Result<GoalWriteOutput,
         )
         .await
         .map_err(McpToolError::Protocol)?;
-    Ok(format_goal_write_output(&ctx, outcome))
+    Ok(format_goal_write_output(&ctx, &outcome))
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -353,7 +352,7 @@ async fn goal_transition(
         )
         .await
         .map_err(McpToolError::Protocol)?;
-    Ok(format_goal_write_output(&ctx, outcome))
+    Ok(format_goal_write_output(&ctx, &outcome))
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -401,7 +400,7 @@ async fn goal_mark_achieved(
         )
         .await
         .map_err(McpToolError::Protocol)?;
-    Ok(format_goal_write_output(&ctx, outcome))
+    Ok(format_goal_write_output(&ctx, &outcome))
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -469,7 +468,7 @@ async fn goal_modify(
         )
         .await
         .map_err(McpToolError::Protocol)?;
-    Ok(format_goal_write_output(&ctx, outcome))
+    Ok(format_goal_write_output(&ctx, &outcome))
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -570,7 +569,7 @@ async fn goal_decompose(
         children: outcome
             .children
             .into_iter()
-            .map(|child| format_goal_write_output(&ctx, child.outcome))
+            .map(|child| format_goal_write_output(&ctx, &child.outcome))
             .collect(),
         idempotent_replay: outcome.idempotent_replay,
     })
@@ -728,17 +727,13 @@ fn system_operator_authorship(ctx: &McpToolCtx, prompt_version: &str) -> GoalAut
     })
 }
 
-fn format_goal_write_output(ctx: &McpToolCtx, outcome: GoalWriteOutcome) -> GoalWriteOutput {
+fn format_goal_write_output(ctx: &McpToolCtx, outcome: &GoalWriteOutcome) -> GoalWriteOutput {
     GoalWriteOutput {
         handle: ctx.format_goal(outcome.goal_id),
         lifecycle_memory: outcome
             .lifecycle_memory_id
             .map(|memory_id| ctx.format_fact_memory(memory_id)),
-        edge_handles: outcome
-            .edge_ids
-            .into_iter()
-            .map(|edge_id| ctx.format_edge(EdgeId::new(edge_id)))
-            .collect(),
+        edge_count: outcome.edge_count,
         idempotent_replay: outcome.idempotent_replay,
     }
 }

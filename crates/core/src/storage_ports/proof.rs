@@ -34,25 +34,11 @@ impl OwnerWritePermit {
     }
 }
 
-/// Unforgeable witness that engine admission already enforced the relation
-/// descriptor's source-owner, owner-policy, and target-access gates before a
-/// storage backend performs the atomic edge append.
-#[derive(Debug, Clone, Copy)]
-pub struct EdgeWriteProof {
-    _private: (),
-}
-
-impl EdgeWriteProof {
-    #[must_use]
-    pub(crate) const fn new() -> Self {
-        Self { _private: () }
-    }
-}
-
 /// Unforgeable witness that engine admission already authorized the
-/// agent-authored derived-memory write (owner write permit, supersedes
-/// ownership/kind checks, and edge target-access gates) before a storage
-/// backend performs the atomic derive append.
+/// agent-authored derived-memory write — owner write permit, supersedes
+/// ownership/kind checks, and read authority on every declared origin and
+/// reference target — before a storage backend performs the atomic derive
+/// append.
 #[derive(Debug, Clone, Copy)]
 pub struct OperatorWriteProof {
     _private: (),

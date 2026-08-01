@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use crate::{EdgeId, GoalId, MemoryId, ToolCtx, ToolError};
+use crate::{GoalId, MemoryId, ToolCtx, ToolError};
 
 use super::handles::{
     MemoryHandleClass, PrefixedUuidClass, format_prefixed_uuid, parse_prefixed_uuid,
@@ -56,11 +56,6 @@ impl McpToolPresentation {
     #[must_use]
     pub fn format_goal(&self, id: GoalId) -> String {
         format_prefixed_uuid(id.into_inner(), PrefixedUuidClass::Goal)
-    }
-
-    #[must_use]
-    pub fn format_edge(&self, id: EdgeId) -> String {
-        format_prefixed_uuid(id.into_inner(), PrefixedUuidClass::Edge)
     }
 
     #[must_use]
@@ -140,7 +135,6 @@ pub trait McpPresentationExt {
     fn format_abstraction_memory(&self, id: MemoryId) -> String;
     fn format_perspective_memory(&self, id: MemoryId) -> String;
     fn format_goal(&self, id: GoalId) -> String;
-    fn format_edge(&self, id: EdgeId) -> String;
     fn format_flavor_object(&self, kind: &str, id: uuid::Uuid, prefix: char) -> String;
 
     /// # Errors
@@ -200,12 +194,6 @@ impl McpPresentationExt for ToolCtx {
         self.mcp_presentation()
             .expect(NO_PRESENTATION)
             .format_goal(id)
-    }
-
-    fn format_edge(&self, id: EdgeId) -> String {
-        self.mcp_presentation()
-            .expect(NO_PRESENTATION)
-            .format_edge(id)
     }
 
     fn format_flavor_object(&self, kind: &str, id: uuid::Uuid, prefix: char) -> String {

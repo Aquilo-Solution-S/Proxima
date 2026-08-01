@@ -23,6 +23,7 @@ pub mod citations;
 pub mod compliance;
 pub mod cursor;
 pub mod dependency;
+pub mod edge;
 pub mod engine;
 pub mod error;
 pub mod flavor;
@@ -40,7 +41,6 @@ pub mod payload;
 pub mod payload_contract;
 pub mod protocol;
 pub mod read_models;
-pub mod relation;
 pub mod secrets;
 pub mod storage;
 pub mod storage_ports;
@@ -64,12 +64,13 @@ pub use compliance::{
 };
 pub use cursor::*;
 pub use dependency::*;
+pub use edge::*;
 pub use engine::*;
 pub use error::*;
 pub use flavor::*;
 pub use goal::{
-    CORE_MOTIVATED_BY_RELATION, GoalAbandonedV1, GoalAchievedV1, GoalActivatedV1, GoalPausedV1,
-    SimpleTextGoalV1, TaskGoalV1, TaskPriority, motivated_by_descriptor,
+    GoalAbandonedV1, GoalAchievedV1, GoalActivatedV1, GoalPausedV1, SimpleTextGoalV1, TaskGoalV1,
+    TaskPriority,
 };
 pub use ids::*;
 pub use llm::*;
@@ -89,7 +90,6 @@ pub use owner::*;
 pub use payload::*;
 pub use payload_contract::assert_no_serde_json_value_fields;
 pub use read_models::*;
-pub use relation::*;
 pub use secrets::*;
 pub use storage::*;
 pub use text_bounds::*;
@@ -123,26 +123,24 @@ macro_rules! proxima_schema_id {
 
 /// Build-time registration macro. v1 subset — supports
 /// `fact_schemas`, `abstraction_schemas`, `perspective_schemas`,
-/// `goal_schemas`, `edge_schemas`, `cited_object_schemas`,
-/// `citation_mapping_schemas`, `opaque_cited_object_schemas`,
-/// `opaque_citation_mapping_schemas`, `schema_capability_tags`,
-/// `relations`, `mcp_tools`.
+/// `goal_schemas`, `cited_object_schemas`, `citation_mapping_schemas`,
+/// `opaque_cited_object_schemas`, `opaque_citation_mapping_schemas`,
+/// `schema_capability_tags`, `mcp_tools`.
 /// Expands to a
 /// `pub fn register(registry: &mut FlavorRegistry) -> Result<(), FlavorRegistryError>`
-/// that adds each schema / relation.
+/// that adds each schema.
 ///
-/// Prefix enforcement is tiered. Schema, `mcp_tools`, and
-/// Prefix enforcement is tiered. Schema and `mcp_tools` prefixes resolve to associated `const`s or
-/// literals, so they are checked by a `const` assertion — a misprefix
-/// fails the build. `relations` and `dependency_satisfaction_rules`
-/// carry their prefix on a runtime expression (a `RelationDescriptor`
-/// field, a trait-object method), so those prefixes are asserted in
-/// `register` and fail at startup instead.
+/// There is no `relations` or `edge_schemas` arm: edge kinds are a
+/// closed core vocabulary (docs/16 §Kinds are closed) and edges carry no
+/// payload. A flavor connects nodes by declaring reference fields on its
+/// payloads, or by authoring an interpretation node.
 ///
-/// `edge_schemas` registers `EdgePayload` impls; `relations`
-/// registers `RelationDescriptor` literals — typed relations
-/// must reference an edge schema also listed in `edge_schemas`,
-/// cross-checked at `FlavorRegistry::freeze`.
+/// Prefix enforcement is tiered. Schema and `mcp_tools` prefixes resolve
+/// to associated `const`s or literals, so they are checked by a `const`
+/// assertion — a misprefix fails the build.
+/// `dependency_satisfaction_rules` carries its prefix on a runtime
+/// expression (a trait-object method), so that prefix is asserted in
+/// `register` and fails at startup instead.
 ///
 /// Build-time owns the *capability vocabulary* (`LlmCaps`,
 /// `EmbedCaps`) and operator `requires` declarations; specific
@@ -157,17 +155,10 @@ macro_rules! proxima_schema_id {
 /// proxima_flavor! {
 ///     name = "proxima-code",
 ///     fact_schemas = [ CommitV1, FileChangeV1 ],
-///     edge_schemas = [ EdgeCallsV1 ],
 ///     cited_object_schemas = [ SourceFileV1 ],
 ///     citation_mapping_schemas = [ SourceFileSpanV1 ],
 ///     opaque_cited_object_schemas = [ "proxima-code/code-blob-v1" ],
 ///     opaque_citation_mapping_schemas = [ "proxima-code/code-blob-whole-v1" ],
-///     relations = [ RelationDescriptor::typed(
-///         "proxima-code/calls",
-///         RelationClass::Structural,
-///         SchemaRef::new(SchemaId::new("proxima-code/calls".into()),
-///                        SchemaVersion::new(1)),
-///     ) ],
 ///     mcp_tools = [ MyTool ],
 /// }
 /// ```
@@ -305,13 +296,11 @@ macro_rules! proxima_flavor {
         $(, abstraction_schemas = [ $($abs:ty),* $(,)? ])?
         $(, perspective_schemas = [ $($persp:ty),* $(,)? ])?
         $(, goal_schemas = [ $($goal:ty),* $(,)? ])?
-        $(, edge_schemas = [ $($edge:ty),* $(,)? ])?
         $(, cited_object_schemas = [ $($cited:ty),* $(,)? ])?
         $(, citation_mapping_schemas = [ $($citemap:ty),* $(,)? ])?
         $(, opaque_cited_object_schemas = [ $($opaque_cited:expr),* $(,)? ])?
         $(, opaque_citation_mapping_schemas = [ $($opaque_citemap:expr),* $(,)? ])?
         $(, schema_capability_tags = [ $(($cap_kind:ident, $cap_ty:ty) => [ $($cap_tag:expr),* $(,)? ]),* $(,)? ])?
-        $(, relations = [ $($rel:expr),* $(,)? ])?
         $(, mcp_tools = [ $($tool:ty),* $(,)? ])?
         $(, dependency_satisfaction_rules = [ $($dependency_rule:ty),* $(,)? ])?
         $(,)?
@@ -319,9 +308,9 @@ macro_rules! proxima_flavor {
         /// Generated by `proxima_flavor!`. Composite binaries
         /// call this once per linked flavor at startup.
         pub fn register(registry: &mut $crate::FlavorRegistry) -> ::std::result::Result<(), $crate::FlavorRegistryError> {
-            // Used by the `relations` / `dependency_satisfaction_rules`
-            // arms, whose prefix-bearing value is a runtime expression
-            // and so cannot be checked at `const` time like schemas are.
+            // Used by the `dependency_satisfaction_rules` arm, whose
+            // prefix-bearing value is a runtime expression and so cannot
+            // be checked at `const` time like schemas are.
             #[allow(dead_code)]
             const EXPECTED_PREFIX: &str = ::std::concat!($name, "/");
             {
@@ -351,8 +340,6 @@ macro_rules! proxima_flavor {
             $($crate::proxima_flavor!(@schemas registry $name
                 GoalPayload try_add_goal_schema [ $($goal),* ]);)?
             $($crate::proxima_flavor!(@schemas registry $name
-                EdgePayload try_add_edge_schema [ $($edge),* ]);)?
-            $($crate::proxima_flavor!(@schemas registry $name
                 CitedObjectPayload try_add_cited_object_schema [ $($cited),* ]);)?
             $($crate::proxima_flavor!(@schemas registry $name
                 CitationMappingPayload try_add_citation_mapping_schema [ $($citemap),* ]);)?
@@ -363,18 +350,6 @@ macro_rules! proxima_flavor {
             $($crate::proxima_flavor!(@schema_capability_tags registry $name [
                 $(($cap_kind, $cap_ty) => [ $($cap_tag),* ]),*
             ]);)?
-            $($(
-                {
-                    let descriptor: $crate::RelationDescriptor = $rel;
-                    if !descriptor.relation.starts_with(EXPECTED_PREFIX) {
-                        return ::std::result::Result::Err($crate::FlavorRegistryError::InvalidRelationDescriptor {
-                            relation: descriptor.relation,
-                            message: ::std::format!("relation must start with crate prefix {EXPECTED_PREFIX:?}"),
-                        });
-                    }
-                    registry.try_add_relation(descriptor)?;
-                }
-            )*)?
             $($(
                 {
                     // Tool wire names may use the "<flavor>/" namespace separator

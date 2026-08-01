@@ -53,12 +53,11 @@ impl Engine {
         query_authorized(&self.storage.query, &self.registry, &read_owners, req).await
     }
 
-    /// Edge read scoped to the context's read access set (`S_read`). Same auth
-    /// shape as `Query`; callers can hydrate by edge id or by
-    /// relation/source/target filter. Edges are source-owned: an edge is
-    /// visible iff its source is readable; an unreadable target is rendered as
-    /// `EdgeTargetProjection::Redacted` without id/kind leakage, and a
-    /// World-readable source with an unreadable target is omitted entirely.
+    /// Edge read scoped to the context's read access set (`S_read`). Same
+    /// auth shape as `Query`; callers narrow by kind and/or endpoint.
+    /// Edges are source-owned: an edge is visible iff its source is
+    /// readable; an unreadable target is rendered as
+    /// `EdgeTargetProjection::Redacted` without id/kind leakage.
     ///
     /// # Errors
     ///
@@ -71,12 +70,7 @@ impl Engine {
         req: &EdgeReadRequest,
     ) -> Result<EdgeReadResponse, ProtocolError> {
         let read_owners = self.authorize_read(authz).await?;
-        let payload_specs = if req.include_payloads {
-            edge_payload_specs(&self.registry)
-        } else {
-            Vec::new()
-        };
-        read_edges_authorized(&self.storage.query, &read_owners, req, &payload_specs).await
+        read_edges_authorized(&self.storage.query, &read_owners, req).await
     }
 
     /// Edge existence probe scoped to the context's read set (`S_read`), same
@@ -203,38 +197,17 @@ fn validate_query_cursor(req: &QueryRequest) -> Result<(), ProtocolError> {
     }
 }
 
-/// Relations that declare an edge sidecar payload schema, resolved once per
-/// call from the frozen registry so storage can dispatch typed hydration.
-fn edge_payload_specs(
-    registry: &FlavorRegistryFrozen,
-) -> Vec<crate::verbs::query::EdgePayloadSpec> {
-    registry
-        .list_relations()
-        .iter()
-        .filter_map(|rel| {
-            rel.payload_schema
-                .as_ref()
-                .map(|schema| crate::verbs::query::EdgePayloadSpec {
-                    relation: rel.relation.clone(),
-                    schema_id: schema.schema_id.clone(),
-                    schema_version: schema.schema_version,
-                })
-        })
-        .collect()
-}
-
 pub(in crate::engine) async fn read_edges_authorized(
     ports: &QueryStoragePorts,
     read_owners: &[OwnerRef],
     req: &EdgeReadRequest,
-    payload_specs: &[crate::verbs::query::EdgePayloadSpec],
 ) -> Result<EdgeReadResponse, ProtocolError> {
     if req.limit == 0 {
         return Err(ProtocolError::invalid_argument("limit", "must be > 0"));
     }
     ports
         .edge_read
-        .read_edges(read_owners, req, payload_specs)
+        .read_edges(read_owners, req)
         .await
         .map_err(|e| ProtocolError::internal(e.to_string()))
 }

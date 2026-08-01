@@ -218,17 +218,6 @@ pub(in crate::engine) mod tests {
             ))
         }
 
-        async fn append_memory_edge(
-            &self,
-            _edge: &DerivedEdgeSpec<'_>,
-            _permit: &crate::storage_ports::OwnerWritePermit,
-            _proof: crate::storage_ports::EdgeWriteProof,
-        ) -> Result<EdgeId, StorageError> {
-            Err(StorageError::Internal(
-                "MembershipStorage rejects writes".into(),
-            ))
-        }
-
         async fn load_memory_kinds(
             &self,
             _owner: &Owner,
@@ -253,16 +242,6 @@ pub(in crate::engine) mod tests {
             _owner: &Owner,
             _memory_ids: &[MemoryId],
         ) -> Result<Vec<FactSourceBatchRow>, StorageError> {
-            Ok(Vec::new())
-        }
-
-        async fn load_memory_edge_ids(
-            &self,
-            _owner: &Owner,
-            _relation: &str,
-            _source_memory_id: MemoryId,
-            _target_memory_ids: &[MemoryId],
-        ) -> Result<Vec<EdgeId>, StorageError> {
             Ok(Vec::new())
         }
     }
@@ -329,14 +308,7 @@ pub(in crate::engine) mod tests {
             _read_owners: &[OwnerRef],
             _memory_ids: &[MemoryId],
             _limit: usize,
-        ) -> Result<Vec<NeighborEdgeRow>, StorageError> {
-            Ok(Vec::new())
-        }
-
-        async fn load_edge_endpoint_kinds(
-            &self,
-            _edge_ids: &[EdgeId],
-        ) -> Result<Vec<EdgeEndpointKindRow>, StorageError> {
+        ) -> Result<Vec<crate::Edge>, StorageError> {
             Ok(Vec::new())
         }
     }
@@ -638,7 +610,6 @@ pub(in crate::engine) mod tests {
             &self,
             _read_owners: &[OwnerRef],
             _req: &verbs::query::EdgeReadRequest,
-            _payload_specs: &[verbs::query::EdgePayloadSpec],
         ) -> Result<verbs::query::EdgeReadResponse, StorageError> {
             Ok(verbs::query::EdgeReadResponse {
                 edges: Vec::new(),
@@ -918,7 +889,6 @@ pub(in crate::engine) mod tests {
             _object_purge_planned: bool,
             _fact_sidecar_tables: &[String],
             _goal_sidecar_tables: &[String],
-            _edge_sidecar_tables: &[String],
             _citation_mapping_sidecar_tables: &[String],
             _cited_object_sidecar_tables: &[String],
         ) -> Result<proxima_core::compliance::ComplianceEraseOutcome, StorageError> {
@@ -934,7 +904,6 @@ pub(in crate::engine) mod tests {
             _object_purge_planned: bool,
             _fact_sidecar_tables: &[String],
             _goal_sidecar_tables: &[String],
-            _edge_sidecar_tables: &[String],
             _citation_mapping_sidecar_tables: &[String],
             _cited_object_sidecar_tables: &[String],
         ) -> Result<proxima_core::compliance::ComplianceEraseOutcome, StorageError> {
@@ -950,7 +919,6 @@ pub(in crate::engine) mod tests {
             _source_id: &SourceId,
             _fact_sidecar_tables: &[String],
             _goal_sidecar_tables: &[String],
-            _edge_sidecar_tables: &[String],
             _citation_mapping_sidecar_tables: &[String],
             _cited_object_sidecar_tables: &[String],
         ) -> Result<proxima_core::compliance::ComplianceEraseOutcome, StorageError> {
@@ -966,7 +934,6 @@ pub(in crate::engine) mod tests {
             _source_id: &SourceId,
             _fact_sidecar_tables: &[String],
             _goal_sidecar_tables: &[String],
-            _edge_sidecar_tables: &[String],
             _citation_mapping_sidecar_tables: &[String],
             _cited_object_sidecar_tables: &[String],
         ) -> Result<proxima_core::compliance::ComplianceEraseOutcome, StorageError> {
@@ -980,7 +947,6 @@ pub(in crate::engine) mod tests {
             _auth: &proxima_core::compliance::ExportAuthorization,
             _fact_sidecar_tables: &[String],
             _goal_sidecar_tables: &[String],
-            _edge_sidecar_tables: &[String],
             _citation_mapping_sidecar_tables: &[String],
             _cited_object_sidecar_tables: &[String],
         ) -> Result<proxima_core::compliance::ComplianceExportBundle, StorageError> {

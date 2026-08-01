@@ -1,37 +1,10 @@
 use super::{
     Arc, AuthorizationHook, BTreeSet, CapabilityTag, DependencySatisfactionRule, FlavorDescriptor,
-    FlavorRegistry, FlavorRegistryError, OwnerResolver, PayloadKind, RelationDescriptor,
-    RequestBehavior, SchemaCapabilityTags, SchemaId, SchemaVersion,
+    FlavorRegistry, FlavorRegistryError, OwnerResolver, PayloadKind, RequestBehavior,
+    SchemaCapabilityTags, SchemaId, SchemaVersion,
 };
 
 impl FlavorRegistry {
-    /// Register a relation. Substrate-only relations carry no
-    /// `payload_schema`; typed relations point at a registered
-    /// `EdgePayload` schema.
-    /// # Errors
-    ///
-    /// Returns `InvalidRelationDescriptor` when descriptor-local masks are
-    /// invalid.
-    pub fn try_add_relation(
-        &mut self,
-        descriptor: RelationDescriptor,
-    ) -> Result<(), FlavorRegistryError> {
-        if let Err(message) = descriptor.validate_descriptor() {
-            return Err(FlavorRegistryError::InvalidRelationDescriptor {
-                relation: descriptor.relation,
-                message,
-            });
-        }
-        self.relations.push(descriptor);
-        Ok(())
-    }
-
-    #[doc(hidden)]
-    pub fn add_relation_or_panic_for_tests(&mut self, descriptor: RelationDescriptor) {
-        self.try_add_relation(descriptor)
-            .expect("relation descriptor registration must be valid");
-    }
-
     /// Attach opaque capability tags to a registered payload schema.
     ///
     /// # Panics

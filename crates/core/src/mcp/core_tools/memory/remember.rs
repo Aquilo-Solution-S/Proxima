@@ -189,15 +189,12 @@ impl McpTool for RememberTool {
                 )
                 .await?
             } else {
+                let sidecars = [SidecarPayload::fact(payload.clone())];
                 let authorized = engine
-                    .authorize_fact_ingest(&authz, Relation::Editor, draft)
+                    .authorize_fact_ingest(&authz, Relation::Editor, draft, &sidecars)
                     .await?;
                 engine
-                    .ingest_fact_with_typed_sidecar(
-                        &authorized,
-                        std::slice::from_ref(&SidecarPayload::fact(payload.clone())),
-                        embedding_model_id,
-                    )
+                    .ingest_fact_with_typed_sidecar(&authorized, &sidecars, embedding_model_id)
                     .await?
             };
 
@@ -234,7 +231,14 @@ async fn ingest_cited_fact(
             mapping,
         } => {
             let authorized = engine
-                .authorize_fact_with_citation(authz, Relation::Editor, draft, cited_object, mapping)
+                .authorize_fact_with_citation(
+                    authz,
+                    Relation::Editor,
+                    draft,
+                    cited_object,
+                    mapping,
+                    sidecars,
+                )
                 .await?;
             Ok(engine
                 .ingest_fact_with_citation_and_typed_sidecar(
@@ -255,6 +259,7 @@ async fn ingest_cited_fact(
                     draft,
                     cited_object_id,
                     mapping,
+                    sidecars,
                 )
                 .await?;
             Ok(engine

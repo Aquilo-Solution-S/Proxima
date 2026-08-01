@@ -1,4 +1,9 @@
-//! `core/get_graph` — single-shot read of owner graph metadata plus static catalogs.
+//! `core/get_graph` — single-shot read of owner graph metadata plus
+//! static catalogs.
+//!
+//! There is no edge-type catalog here any more: the edge vocabulary is
+//! closed at two kinds and lives in docs/16, not in a registry a client
+//! has to enumerate.
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -7,7 +12,6 @@ use crate::engine::GetGraphReadRequest;
 use crate::mcp::{McpToolCtx, McpToolError};
 use crate::verbs::schema::PayloadKind;
 
-use super::list_edge_types::EdgeTypeItem;
 use super::list_schemas::SchemaItem;
 use super::list_substrate_tools::{
     SubstrateToolItem, substrate_tool_actions, substrate_tool_source,
@@ -36,8 +40,6 @@ pub struct GetGraphOutput {
     pub fact_retention_seconds: Option<i64>,
     /// Static schema catalog from the frozen `FlavorRegistry`.
     pub schemas: Vec<SchemaItem>,
-    /// Static edge-type catalog from the frozen `FlavorRegistry`.
-    pub edge_types: Vec<EdgeTypeItem>,
     /// Dispatchable substrate and flavor-registered MCP tool ids.
     pub substrate_tools: Vec<SubstrateToolItem>,
 }
@@ -48,7 +50,6 @@ fn kind_str(k: PayloadKind) -> &'static str {
         PayloadKind::Abstraction => "Abstraction",
         PayloadKind::Perspective => "Perspective",
         PayloadKind::Goal => "Goal",
-        PayloadKind::Edge => "Edge",
         PayloadKind::CitedObject => "CitedObject",
         PayloadKind::CitationMapping => "CitationMapping",
     }
@@ -78,13 +79,6 @@ pub async fn get_graph(
         })
         .collect();
 
-    let edge_types = ctx
-        .registry
-        .list_relations()
-        .iter()
-        .map(super::list_edge_types::edge_type_item)
-        .collect();
-
     let substrate_tools = scoped_substrate_tools(&ctx);
 
     Ok(GetGraphOutput {
@@ -93,7 +87,6 @@ pub async fn get_graph(
         failed_embedding_jobs: graph.failed_embedding_jobs,
         fact_retention_seconds: graph.fact_retention_seconds,
         schemas,
-        edge_types,
         substrate_tools,
     })
 }

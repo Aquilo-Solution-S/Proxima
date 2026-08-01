@@ -1,6 +1,6 @@
 use super::{
     BTreeSet, CapabilityTag, FlavorRegistry, FlavorRegistryError, FlavorRegistryFrozen,
-    PayloadKind, RelationDescriptor, SchemaCapabilityTags, SchemaId, SchemaVersion,
+    PayloadKind, SchemaCapabilityTags, SchemaId, SchemaVersion,
 };
 
 impl FlavorRegistry {
@@ -10,29 +10,7 @@ impl FlavorRegistry {
     /// Returns typed registry errors for invalid descriptors, unregistered
     /// references, ingress mismatches, unsatisfiable tags, and duplicate ids.
     pub fn try_freeze(self) -> Result<FlavorRegistryFrozen, FlavorRegistryError> {
-        for rel in &self.relations {
-            if let Err(message) = rel.validate_descriptor() {
-                return Err(FlavorRegistryError::InvalidRelationDescriptor {
-                    relation: rel.relation.clone(),
-                    message,
-                });
-            }
-            if let Some(payload_schema) = &rel.payload_schema
-                && !self.schemas.iter().any(|s| {
-                    s.kind == PayloadKind::Edge
-                        && s.schema_id == payload_schema.schema_id
-                        && s.schema_version == payload_schema.schema_version
-                })
-            {
-                return Err(FlavorRegistryError::UnregisteredRelationPayload {
-                    relation: rel.relation.clone(),
-                    schema_id: payload_schema.schema_id.clone(),
-                    schema_version: payload_schema.schema_version,
-                });
-            }
-        }
         self.validate_schema_capability_tags_resolve()?;
-        self.validate_required_relation_tags_satisfiable()?;
         self.validate_flavor_descriptors()?;
         // Every schema is either typed (a protocol-ingress parser) or
         // opaque. A typed schema whose ingress parser was dropped would
@@ -60,14 +38,6 @@ impl FlavorRegistry {
                     schema_id: schema.schema_id.clone(),
                     schema_version: schema.schema_version,
                     kind: schema.kind,
-                });
-            }
-        }
-        let mut seen_relations = std::collections::HashSet::new();
-        for rel in &self.relations {
-            if !seen_relations.insert(rel.relation.clone()) {
-                return Err(FlavorRegistryError::DuplicateRelation {
-                    relation: rel.relation.clone(),
                 });
             }
         }
@@ -110,56 +80,6 @@ impl FlavorRegistry {
                     kind: binding.kind,
                 });
             }
-        }
-        Ok(())
-    }
-
-    fn validate_required_relation_tags_satisfiable(&self) -> Result<(), FlavorRegistryError> {
-        let declared = schema_capability_map(&self.schema_capability_tags);
-        for relation in &self.relations {
-            self.validate_relation_side_tags_satisfiable(
-                relation,
-                "source",
-                relation.source_kind_mask,
-                &relation.source_required_tags,
-                &declared,
-            )?;
-            self.validate_relation_side_tags_satisfiable(
-                relation,
-                "target",
-                relation.target_kind_mask,
-                &relation.target_required_tags,
-                &declared,
-            )?;
-        }
-        Ok(())
-    }
-
-    fn validate_relation_side_tags_satisfiable(
-        &self,
-        relation: &RelationDescriptor,
-        side: &'static str,
-        kind_mask: crate::EntityKindMask,
-        required_tags: &BTreeSet<CapabilityTag>,
-        declared: &std::collections::HashMap<
-            (SchemaId, SchemaVersion, PayloadKind),
-            BTreeSet<CapabilityTag>,
-        >,
-    ) -> Result<(), FlavorRegistryError> {
-        if required_tags.is_empty() {
-            return Ok(());
-        }
-        let admitted = self.schemas.iter().any(|schema| {
-            payload_kind_admitted_by_mask(schema.kind, kind_mask)
-                && declared
-                    .get(&(schema.schema_id.clone(), schema.schema_version, schema.kind))
-                    .is_some_and(|tags| required_tags.is_subset(tags))
-        });
-        if !admitted {
-            return Err(FlavorRegistryError::UnsatisfiableRelationTags {
-                relation: relation.relation.clone(),
-                side,
-            });
         }
         Ok(())
     }
@@ -218,14 +138,4 @@ pub(crate) fn schema_capability_map(
         .extend(binding.tags.iter().cloned());
     }
     out
-}
-
-fn payload_kind_admitted_by_mask(kind: PayloadKind, mask: crate::EntityKindMask) -> bool {
-    match kind {
-        PayloadKind::Fact => mask.contains_str("Fact"),
-        PayloadKind::Abstraction => mask.contains_str("Abstraction"),
-        PayloadKind::Perspective => mask.contains_str("Perspective"),
-        PayloadKind::Goal => mask.contains_str("Goal"),
-        PayloadKind::Edge | PayloadKind::CitedObject | PayloadKind::CitationMapping => false,
-    }
 }

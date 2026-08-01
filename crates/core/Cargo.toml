@@ -38,6 +38,4 @@ whatlang = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "test-util"] }
-proxima-storage-pg = { path = "../storage-pg", features = ["test-fixtures"] }
-proxima-pg-testkit = { path = "../pg-testkit" }
 sqlx = { workspace = true }

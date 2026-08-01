@@ -8,9 +8,6 @@ pub enum FlavorRegistryError {
         schema_version: SchemaVersion,
         kind: PayloadKind,
     },
-    DuplicateRelation {
-        relation: String,
-    },
     DuplicateTool {
         name: &'static str,
     },
@@ -19,10 +16,6 @@ pub enum FlavorRegistryError {
     },
     DuplicateDependencyRule {
         schema_id: String,
-    },
-    InvalidRelationDescriptor {
-        relation: String,
-        message: String,
     },
     InvalidCapabilityTag {
         schema_id: SchemaId,
@@ -37,11 +30,6 @@ pub enum FlavorRegistryError {
         message: String,
     },
     DuplicateOwnerResolver,
-    UnregisteredRelationPayload {
-        relation: String,
-        schema_id: SchemaId,
-        schema_version: SchemaVersion,
-    },
     SchemaIngressMismatch {
         schema_id: SchemaId,
         schema_version: SchemaVersion,
@@ -51,10 +39,6 @@ pub enum FlavorRegistryError {
         schema_id: SchemaId,
         schema_version: SchemaVersion,
         kind: PayloadKind,
-    },
-    UnsatisfiableRelationTags {
-        relation: String,
-        side: &'static str,
     },
     /// A registered MCP tool has no resolvable behaviour declaration, so the
     /// owner-role gate cannot tell a read from a write and has to assume a
@@ -76,9 +60,6 @@ impl std::fmt::Display for FlavorRegistryError {
                 f,
                 "duplicate schema registered: {schema_id} v{schema_version} {kind:?}"
             ),
-            Self::DuplicateRelation { relation } => {
-                write!(f, "duplicate relation descriptor registered: {relation}")
-            }
             Self::DuplicateTool { name } => {
                 write!(f, "duplicate tool name registered: {name}")
             }
@@ -90,9 +71,6 @@ impl std::fmt::Display for FlavorRegistryError {
                     f,
                     "duplicate dependency satisfaction rule for schema {schema_id}"
                 )
-            }
-            Self::InvalidRelationDescriptor { relation, message } => {
-                write!(f, "relation descriptor {relation} is invalid: {message}")
             }
             Self::InvalidCapabilityTag {
                 schema_id,
@@ -113,14 +91,6 @@ impl std::fmt::Display for FlavorRegistryError {
                 "tool name {name:?} is invalid for prefix {expected_prefix:?}: {message}"
             ),
             Self::DuplicateOwnerResolver => f.write_str("duplicate owner resolver registered"),
-            Self::UnregisteredRelationPayload {
-                relation,
-                schema_id,
-                schema_version,
-            } => write!(
-                f,
-                "relation descriptor {relation} references unregistered EdgePayload schema {schema_id} v{schema_version}"
-            ),
             Self::SchemaIngressMismatch {
                 schema_id,
                 schema_version,
@@ -136,10 +106,6 @@ impl std::fmt::Display for FlavorRegistryError {
             } => write!(
                 f,
                 "schema capability tags reference unregistered schema: {schema_id} v{schema_version} {kind:?}"
-            ),
-            Self::UnsatisfiableRelationTags { relation, side } => write!(
-                f,
-                "relation descriptor {relation} has unsatisfiable {side} required capability tags"
             ),
             Self::UndeclaredToolBehavior { name } => write!(
                 f,

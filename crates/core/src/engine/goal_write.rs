@@ -73,7 +73,8 @@ impl Engine {
     /// caller without exposing `proxima_core.goals` storage shape.
     ///
     /// The request must name the target Perspective explicitly;
-    /// current Proxima Goal assignment is `Goal --core/inspires--> Perspective`,
+    /// current Proxima Goal assignment is a Goal-declared reference to its
+    /// Perspective,
     /// not a detached owner-scoped Goal row.
     ///
     /// # Errors

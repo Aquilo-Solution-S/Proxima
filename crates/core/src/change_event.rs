@@ -6,6 +6,7 @@
 
 use uuid::Uuid;
 
+use crate::edge::{EdgeEndpoint, EdgeKind, EdgeTargetProjection};
 use crate::{FactEntityId, GoalId, MemoryId, Owner, SchemaId, SchemaVersion};
 
 #[derive(
@@ -84,15 +85,6 @@ impl MemoryOperatorKind {
             Self::AtoP => crate::OperatorPhase::AtoP,
         }
     }
-
-    #[must_use]
-    pub const fn edge_authorship(self) -> crate::EdgeAuthorshipKind {
-        match self {
-            Self::FtoA => crate::EdgeAuthorshipKind::OperatorFtoA,
-            Self::AtoA => crate::EdgeAuthorshipKind::OperatorAtoA,
-            Self::AtoP => crate::EdgeAuthorshipKind::OperatorAtoP,
-        }
-    }
 }
 
 /// Discriminant tag for `ChangeEventKind`, mirrors the SQL enum
@@ -119,14 +111,6 @@ pub enum EntityRef {
     FactEntity(FactEntityId),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
-#[serde(tag = "state", rename_all = "snake_case")]
-pub enum EdgeTargetProjection {
-    Visible { target: EntityRef },
-    Redacted,
-    Unavailable,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ChangeEventKind {
     EntityAppend {
@@ -142,17 +126,18 @@ pub enum ChangeEventKind {
         schema_id: SchemaId,
         schema_version: SchemaVersion,
     },
+    /// One index row asserted. There is no edge id and no relation to
+    /// report — the row's content is its identity (docs/16 §The edge
+    /// table is an index).
     EdgeAppend {
-        edge_id: Uuid,
-        relation: String,
-        source: EntityRef,
+        source: EdgeEndpoint,
         target: EdgeTargetProjection,
+        kind: EdgeKind,
     },
     EdgeDelete {
-        edge_id: Uuid,
-        relation: String,
-        source: EntityRef,
+        source: EdgeEndpoint,
         target: EdgeTargetProjection,
+        kind: EdgeKind,
     },
 }
 

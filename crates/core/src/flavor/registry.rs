@@ -1,8 +1,7 @@
 use super::{
     Arc, AuthorizationHook, DependencySatisfactionRule, FlavorDescriptor, McpToolDescriptor,
-    MemorySearchProjection, OwnerResolver, ProtocolPayloadIngressEntry, RelationDescriptor,
-    RequestBehavior, SchemaCapabilityTags, SchemaInfo, ScopeGateBehavior,
-    core_relation_descriptors,
+    MemorySearchProjection, OwnerResolver, ProtocolPayloadIngressEntry, RequestBehavior,
+    SchemaCapabilityTags, SchemaInfo, ScopeGateBehavior,
 };
 
 /// Mutable build-time registry. Flavors push into it during their
@@ -14,7 +13,6 @@ pub struct FlavorRegistry {
     pub(crate) schemas: Vec<SchemaInfo>,
     pub(crate) schema_capability_tags: Vec<SchemaCapabilityTags>,
     pub(crate) search_projections: Vec<MemorySearchProjection>,
-    pub(crate) relations: Vec<RelationDescriptor>,
     pub(crate) protocol_ingress: Vec<ProtocolPayloadIngressEntry>,
     pub(crate) mcp_tools: Vec<McpToolDescriptor>,
     pub(crate) request_behaviors: Vec<Arc<dyn RequestBehavior>>,
@@ -30,7 +28,6 @@ impl Default for FlavorRegistry {
             schemas: Vec::new(),
             schema_capability_tags: Vec::new(),
             search_projections: Vec::new(),
-            relations: core_relation_descriptors(),
             protocol_ingress: Vec::new(),
             mcp_tools: Vec::new(),
             request_behaviors: vec![Arc::new(ScopeGateBehavior)],

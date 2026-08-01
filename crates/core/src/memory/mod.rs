@@ -1,15 +1,13 @@
-//! Core long-term memory payloads and relations.
+//! Core long-term memory payloads.
 
 pub mod payloads;
 
-pub use payloads::{AgentDerivationV1, AgentLinkV1, AgentNoteV1, Speaker, UploadV1, UtteranceV1};
-
-use crate::{
-    AuthorshipKindMask, EndpointBinding, EntityKindMask, FlavorRegistry, RelationClass,
-    RelationDescriptor, SchemaId, SchemaRef, SchemaVersion,
+pub use payloads::{
+    AgentDerivationV1, AgentNoteV1, InterpretationSubjectKind, InterpretationV1, Speaker, UploadV1,
+    UtteranceV1,
 };
 
-pub const AGENT_LINK_RELATION: &str = "core/agent-link-refers-to";
+use crate::FlavorRegistry;
 
 pub(crate) fn register_all(
     registry: &mut FlavorRegistry,
@@ -19,19 +17,6 @@ pub(crate) fn register_all(
     registry.try_add_fact_schema::<UploadV1>()?;
     registry.try_add_abstraction_schema::<AgentDerivationV1>()?;
     registry.try_add_perspective_schema::<AgentDerivationV1>()?;
-    registry.try_add_edge_schema::<AgentLinkV1>()?;
-    registry.try_add_relation(RelationDescriptor::typed(
-        AGENT_LINK_RELATION,
-        RelationClass::Interpretive,
-        SchemaRef::new(
-            SchemaId::new("core/agent-link-v1".into()),
-            SchemaVersion::new(1),
-        ),
-        EndpointBinding::Pin,
-        EndpointBinding::Pin,
-        EntityKindMask::abstraction_perspective(),
-        EntityKindMask::memory(),
-        AuthorshipKindMask::external_agent(),
-    ))?;
+    registry.try_add_perspective_schema::<InterpretationV1>()?;
     Ok(())
 }

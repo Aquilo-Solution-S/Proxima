@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use crate::mcp::cursor as wire_cursor;
 use crate::mcp::{McpToolCtx, McpToolError};
 use crate::verbs::query::{MemoryLineageCursor, MemoryLineageDirection, MemoryLineageRequest};
-use crate::{EdgeId, MemoryHandleClass, MemoryId};
+use crate::{MemoryHandleClass, MemoryId};
 
 use super::get_memory::memory_class;
 
@@ -19,9 +19,9 @@ const DEFAULT_LINEAGE_DEPTH: u32 = 3;
 pub struct WalkMemoryLineageArgs {
     /// `F:<uuid>`, `A:<uuid>`, or `P:<uuid>` memory id.
     pub memory: String,
-    /// Walk direction: `ancestors` follows provenance/supersession edges
-    /// toward what this memory was derived from (default); `descendants`
-    /// follows them toward what was derived from it.
+    /// Walk direction: `ancestors` follows `origin` edges toward what
+    /// this memory was made from (default); `descendants` follows them
+    /// toward what was made from it.
     #[serde(default = "default_direction")]
     pub direction: WalkMemoryLineageDirectionArg,
     /// Maximum hop distance from the start memory; clamped to 1..=8,
@@ -82,13 +82,14 @@ pub struct LineageNodeOutput {
     pub distance: u8,
 }
 
+/// One hop of the walk. Lineage traverses `origin` and nothing else, so
+/// every edge here carries that kind; it is reported anyway so the shape
+/// matches every other edge-bearing output.
 #[derive(Debug, Serialize)]
 pub struct LineageEdgeOutput {
-    pub edge: String,
-    pub relation: String,
-    pub relation_class: String,
     pub source: String,
     pub target: String,
+    pub kind: String,
     pub distance: u8,
 }
 
@@ -184,13 +185,11 @@ pub async fn walk_memory_lineage(
     let edges = response
         .edges
         .into_iter()
-        .map(|edge| LineageEdgeOutput {
-            edge: ctx.format_edge(EdgeId::new(edge.edge_id)),
-            relation: edge.relation,
-            relation_class: edge.relation_class,
-            source: format_lineage_memory(&ctx, &classes, edge.source_memory_id, edge.source_kind),
-            target: format_lineage_target(&ctx, &classes, &edge.target),
-            distance: edge.distance,
+        .map(|hop| LineageEdgeOutput {
+            source: format_lineage_endpoint(&ctx, &classes, hop.edge.source),
+            target: format_lineage_target(&ctx, &classes, hop.edge.target),
+            kind: hop.edge.kind.as_str().to_string(),
+            distance: hop.distance,
         })
         .collect();
 
@@ -215,7 +214,7 @@ pub async fn walk_memory_lineage(
 fn format_lineage_target(
     ctx: &McpToolCtx,
     classes: &HashMap<MemoryId, MemoryHandleClass>,
-    target: &crate::EdgeTargetProjection,
+    target: crate::EdgeTargetProjection,
 ) -> String {
     // Memory prefixes come from the per-walk class map (built off the
     // node projection) rather than a single kind, so this goes through
@@ -229,16 +228,17 @@ fn format_lineage_target(
     })
 }
 
-fn format_lineage_memory(
+fn format_lineage_endpoint(
     ctx: &McpToolCtx,
     classes: &HashMap<MemoryId, MemoryHandleClass>,
-    memory_id: MemoryId,
-    kind: crate::EntityKind,
+    endpoint: crate::EdgeEndpoint,
 ) -> String {
-    let class = classes
-        .get(&memory_id)
-        .copied()
-        .unwrap_or_else(|| memory_class(&format!("{kind:?}")).unwrap_or(MemoryHandleClass::Fact));
+    let Some(memory_id) = endpoint.memory_id() else {
+        return super::wire_ref::format_endpoint(ctx, endpoint);
+    };
+    let class = classes.get(&memory_id).copied().unwrap_or_else(|| {
+        memory_class(&format!("{:?}", endpoint.kind)).unwrap_or(MemoryHandleClass::Fact)
+    });
     ctx.format_memory_with_class(memory_id, class)
 }
 
@@ -256,7 +256,8 @@ mod tests {
         let fingerprint = lineage_fingerprint(memory, MemoryLineageDirection::Ancestors, 3);
         let cursor = MemoryLineageCursor {
             distance: 2,
-            edge_id: uuid::Uuid::now_v7(),
+            source: crate::EntityRef::Memory(crate::MemoryId::new(uuid::Uuid::now_v7())),
+            target: crate::EntityRef::Memory(crate::MemoryId::new(uuid::Uuid::now_v7())),
         };
         let token = LINEAGE_CURSOR.encode(&fingerprint, &cursor);
         let decoded: MemoryLineageCursor = LINEAGE_CURSOR

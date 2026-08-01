@@ -54,7 +54,7 @@ pub struct GoalItem {
     pub schema_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub supersedes: Option<String>,
-    /// `core/depends-on` targets (`G:<uuid>`).
+    /// Goals this one depends on (`G:<uuid>`), as declared on its own row.
     pub dependencies: Vec<String>,
     /// Stored wake configuration; absent when the goal is not armed.
     #[serde(skip_serializing_if = "Option::is_none")]

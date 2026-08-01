@@ -45,7 +45,6 @@ pub trait ComplianceErasePort: Send + Sync {
         object_purge_planned: bool,
         fact_sidecar_tables: &[String],
         goal_sidecar_tables: &[String],
-        edge_sidecar_tables: &[String],
         citation_mapping_sidecar_tables: &[String],
         cited_object_sidecar_tables: &[String],
     ) -> Result<crate::compliance::ComplianceEraseOutcome, StorageError>;
@@ -59,7 +58,6 @@ pub trait ComplianceErasePort: Send + Sync {
         object_purge_planned: bool,
         fact_sidecar_tables: &[String],
         goal_sidecar_tables: &[String],
-        edge_sidecar_tables: &[String],
         citation_mapping_sidecar_tables: &[String],
         cited_object_sidecar_tables: &[String],
     ) -> Result<crate::compliance::ComplianceEraseOutcome, StorageError>;
@@ -71,7 +69,6 @@ pub trait ComplianceErasePort: Send + Sync {
         source_id: &SourceId,
         fact_sidecar_tables: &[String],
         goal_sidecar_tables: &[String],
-        edge_sidecar_tables: &[String],
         citation_mapping_sidecar_tables: &[String],
         cited_object_sidecar_tables: &[String],
     ) -> Result<crate::compliance::ComplianceEraseOutcome, StorageError>;
@@ -83,7 +80,6 @@ pub trait ComplianceErasePort: Send + Sync {
         source_id: &SourceId,
         fact_sidecar_tables: &[String],
         goal_sidecar_tables: &[String],
-        edge_sidecar_tables: &[String],
         citation_mapping_sidecar_tables: &[String],
         cited_object_sidecar_tables: &[String],
     ) -> Result<crate::compliance::ComplianceEraseOutcome, StorageError>;
@@ -93,7 +89,6 @@ pub trait ComplianceErasePort: Send + Sync {
         auth: &crate::compliance::ExportAuthorization,
         fact_sidecar_tables: &[String],
         goal_sidecar_tables: &[String],
-        edge_sidecar_tables: &[String],
         citation_mapping_sidecar_tables: &[String],
         cited_object_sidecar_tables: &[String],
     ) -> Result<crate::compliance::ComplianceExportBundle, StorageError>;

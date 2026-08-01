@@ -175,7 +175,11 @@ pub struct GoalWriteOutcome {
     pub goal_id: GoalId,
     pub change_event_seq: uuid::Uuid,
     pub lifecycle_memory_id: Option<MemoryId>,
-    pub edge_ids: Vec<uuid::Uuid>,
+    /// Index rows the goal write asserted — one `reference` per
+    /// declared topology entry (assignment Perspective, dependency
+    /// Goals, evidence memories). A count, not ids: an edge has no
+    /// identity beyond its content.
+    pub edge_count: usize,
     /// True when the same `(owner, request_id)` existed and the
     /// body matched — see docs/14 §`GoalWrite`.
     pub idempotent_replay: bool,
@@ -300,6 +304,14 @@ impl GoalDependencyRef {
     }
 }
 
+/// What a Goal row points at, declared by its creating write.
+///
+/// Every entry here is a reference the Goal itself owns the statement
+/// for — the Goal knows the Perspective it inspires, the Goals it waits
+/// on, and the evidence it rests on — so storage derives one
+/// [`crate::EdgeKind::Reference`] index row per entry inside the goal
+/// write's own transaction (docs/16 §Flavor Migration). No relation is
+/// named and no kind is chosen: the declaration is the whole statement.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct GoalTopologyWrite {
     assignment: GoalAssignmentTarget,
@@ -611,8 +623,9 @@ impl<P> GoalCreateRequest<P> {
     /// system-originated goals.
     ///
     /// The assignment Perspective is explicit by design: current
-    /// Proxima Goal assignment is a `Goal --core/inspires--> Perspective`
-    /// edge, not an unassigned owner-scoped row.
+    /// Proxima Goal assignment is a reference the Goal row declares at
+    /// creation — the Goal knows the Perspective it inspires — not an
+    /// unassigned owner-scoped row.
     ///
     /// # Panics
     ///

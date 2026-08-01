@@ -49,7 +49,6 @@ pub enum PrefixedUuidClass {
     Fact,
     Abstraction,
     Perspective,
-    Edge,
     Goal,
 }
 
@@ -60,7 +59,6 @@ impl PrefixedUuidClass {
             Self::Fact => MemoryHandleClass::Fact.prefix(),
             Self::Abstraction => MemoryHandleClass::Abstraction.prefix(),
             Self::Perspective => MemoryHandleClass::Perspective.prefix(),
-            Self::Edge => 'E',
             Self::Goal => 'G',
         }
     }
@@ -72,7 +70,6 @@ impl std::fmt::Display for PrefixedUuidClass {
             Self::Fact => write!(f, "Fact"),
             Self::Abstraction => write!(f, "Abstraction"),
             Self::Perspective => write!(f, "Perspective"),
-            Self::Edge => write!(f, "Edge"),
             Self::Goal => write!(f, "Goal"),
         }
     }
@@ -164,7 +161,6 @@ mod tests {
             PrefixedUuidClass::Abstraction,
             PrefixedUuidClass::Perspective,
             PrefixedUuidClass::Goal,
-            PrefixedUuidClass::Edge,
         ] {
             let id = Uuid::now_v7();
             let raw = format_prefixed_uuid(id, class);
