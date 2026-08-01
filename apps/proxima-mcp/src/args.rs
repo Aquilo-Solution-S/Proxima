@@ -71,7 +71,7 @@ Tools:
   core_remember
   core_record_utterance
   core_derive
-  core_link
+  core_interpret
   core_goal
   core_fact
   core_membership

@@ -18,7 +18,7 @@ use std::fmt::Write as _;
 
 use proxima_core::mcp::McpTool;
 use proxima_core::mcp::core_tools::{
-    CoreGoalTool, DeriveTool, LinkTool, MemorySpacesTool, RememberTool, SearchMemoriesTool,
+    CoreGoalTool, DeriveTool, InterpretTool, MemorySpacesTool, RememberTool, SearchMemoriesTool,
 };
 use proxima_core::protocol::resource as protocol_resource;
 
@@ -30,7 +30,7 @@ pub const HOW_TO_NAME: &str = "proxima-how-to";
 pub const HOW_TO_TITLE: &str = "Proxima shared-brain: how to use it";
 /// One-line description of the How-To resource.
 pub const HOW_TO_DESCRIPTION: &str = "The Proxima memory contract in depth: the Fact/Abstraction/Perspective \
-     layering law, remember-vs-derive-vs-link, worked examples, the edge-class \
+     layering law, remember-vs-derive-vs-interpret, worked examples, the edge-kind \
      table, and the read-resource decision guide.";
 /// MIME type of the How-To resource body.
 pub const HOW_TO_MIME: &str = "text/markdown";
@@ -51,12 +51,12 @@ const CODE_REGISTER_REPO: &str = "proxima-code_register_repo";
 struct Surface {
     remember: bool,
     derive: bool,
-    link: bool,
+    interpret: bool,
     search: bool,
     memory_spaces: bool,
     get_memory: bool,
     lineage: bool,
-    list_edge_types: bool,
+    edges: bool,
     goals: bool,
     code: bool,
 }
@@ -71,12 +71,12 @@ impl Surface {
         Self {
             remember: has_tool(RememberTool::NAME),
             derive: has_tool(DeriveTool::NAME),
-            link: has_tool(LinkTool::NAME),
+            interpret: has_tool(InterpretTool::NAME),
             search: has_tool(SearchMemoriesTool::NAME),
             memory_spaces: has_tool(MemorySpacesTool::NAME),
             get_memory: has_resource(protocol_resource::MEMORY),
             lineage: has_resource(protocol_resource::MEMORY_LINEAGE),
-            list_edge_types: has_resource(protocol_resource::EDGE_TYPES),
+            edges: has_resource(protocol_resource::EDGES),
             goals: has_tool(CoreGoalTool::NAME),
             code: has_tool(CODE_SEARCH_CHUNKS) || has_tool(CODE_REGISTER_REPO),
         }
@@ -106,26 +106,32 @@ pub fn build_instructions(
     );
 
     if s.derive {
-        out.push_str("HARD LAW FOR AGENT LINKS: agent-authored `core_link` edges cannot use Facts as sources. ");
-        if s.link {
+        out.push_str(
+            "HARD LAW — NO TOOL WRITES A CONNECTION. Every edge follows from what a node says — \
+             an `origin` entry from the handles a write declares it was made from, a `reference` \
+             entry from a schema-declared payload field. ",
+        );
+        out.push_str(
+            "To semantically relate Facts you `core_derive` an Abstraction (or Perspective) over \
+             them and pass their handles as `source_handles`, which lands the `origin` entries. ",
+        );
+        if s.interpret {
             out.push_str(
-                "`core_link` authors edges only from an Abstraction or Perspective; a Fact \
-                 source is rejected at storage (\"rejects source kind Fact\"). ",
+                "When the claim is a judgment about memories that already exist — a reason and a \
+                 confidence — `core_interpret` authors an interpretation Perspective over its \
+                 `subjects` and returns a `P:` handle; the connections are that Perspective's own \
+                 references. ",
             );
         }
         out.push_str(
-            "To semantically relate Facts you do not link them — you `core_derive` an Abstraction \
-             (or Perspective) over them and pass their handles as `source_handles`, which \
-             auto-creates the `derived-from` provenance edges. Structural/provenance Fact edges, \
-             when present, are authored by the substrate or trusted sources, not by agent \
-             `core_link` calls. That IS how the agent graph is built; the urge to connect two \
-             Facts is the signal to abstract, not to link. ",
+            "A Fact never interprets: it is an observation, and an interpretation is a \
+             Perspective. The urge to connect two Facts is the signal to abstract. ",
         );
     }
 
     if s.remember || s.derive {
         if s.memory_spaces {
-            out.push_str("In multi-space hosts, call `core_memory_spaces` before durable memory writes. Use a returned `space` key in `core_remember`, `core_record_utterance`, `core_search_memories`, `core_derive`, and `core_link`; hydrate a memory by reading `proxima://memory/{id}`. Omitted `space` preserves the current bound owner. Cross-space derive/link may ground in readable handles outside the selected write space. ");
+            out.push_str("In multi-space hosts, call `core_memory_spaces` before durable memory writes. Use a returned `space` key in `core_remember`, `core_record_utterance`, `core_search_memories`, `core_derive`, and `core_interpret`; hydrate a memory by reading `proxima://memory/{id}`. Omitted `space` preserves the current bound owner. A cross-space derivation or interpretation may ground in readable handles outside the selected write space. ");
         }
         if s.remember {
             out.push_str("`core_remember` appends a Fact (an observation). ");
@@ -165,8 +171,8 @@ pub fn build_instructions(
                  only when provenance is the question. ",
             );
         }
-        if s.list_edge_types {
-            out.push_str("Read the edge-type catalog at `proxima://edge-types`; it includes source-owned/same-owner policy and target access gates. Redacted edge targets are normal source-owned graph behavior, not corruption. ");
+        if s.edges {
+            out.push_str("List connections at `proxima://edges?kind=origin|reference` filtered by source/target; each row is source, target, kind, created_at and carries nothing else. Redacted edge targets are normal source-owned graph behavior, not corruption. ");
         }
         out.push_str("Discover reads with `resources/list` and `resources/templates/list`. ");
         out.push_str(
@@ -184,7 +190,7 @@ pub fn build_instructions(
 
     out.push_str(
         "Recall before you act, and consolidate at natural breaks. Full playbook with worked \
-         examples, the edge-class table, and the read-resource decision guide: read the \
+         examples, the edge-kind table, and the read-resource decision guide: read the \
          `proxima://how-to` resource.",
     );
 
@@ -221,7 +227,7 @@ pub fn how_to_markdown(
 
     push_law(&mut out, s);
     if s.memory_spaces {
-        out.push_str("## Memory spaces\n\nIn multi-space hosts, call `core_memory_spaces` before durable memory writes. Use a returned `space` key in `core_remember`, `core_record_utterance`, `core_search_memories`, `core_derive`, and `core_link`; hydrate a memory by reading `proxima://memory/{id}`. Omitted `space` preserves the current bound owner. Space keys are selectors only; every write/read is re-authorized by the server. Cross-space derive/link may ground in readable handles outside the selected write space.\n\n");
+        out.push_str("## Memory spaces\n\nIn multi-space hosts, call `core_memory_spaces` before durable memory writes. Use a returned `space` key in `core_remember`, `core_record_utterance`, `core_search_memories`, `core_derive`, and `core_interpret`; hydrate a memory by reading `proxima://memory/{id}`. Omitted `space` preserves the current bound owner. Space keys are selectors only; every write/read is re-authorized by the server. A cross-space derivation or interpretation may ground in readable handles outside the selected write space.\n\n");
     }
     push_capture_table(&mut out, s);
     push_edges(&mut out, s);
@@ -243,17 +249,14 @@ fn push_law(out: &mut String, s: Surface) {
     if !s.derive {
         return;
     }
-    out.push_str("## The one hard law for agent-authored links\n\n");
-    if s.link {
-        out.push_str(
-            "`core_link` authors edges **only from an Abstraction or Perspective**. A Fact \
-             source is rejected at storage: `relation core/agent-link-refers-to rejects source \
-             kind Fact`. Facts are immutable observations; semantic interpretation belongs in \
-             Abstractions/Perspectives. Structural/provenance Fact edges, when present, are \
-             authored by the substrate or trusted sources, not by agent `core_link` calls.\n\n",
-        );
-    }
-    out.push_str("**To semantically relate Facts, do not link them — derive over them:**\n\n");
+    out.push_str("## The one hard law for agent-authored connections\n\n");
+    out.push_str(
+        "**No tool writes a connection.** An edge carries no information beyond its existence, \
+         so every edge is a consequence of what some node says: an `origin` entry from the \
+         handles a write declares it was made from, a `reference` entry from a schema-declared \
+         payload field. Nothing you call takes an edge kind as an argument.\n\n",
+    );
+    out.push_str("**To semantically relate Facts, derive over them:**\n\n");
     out.push_str("```\n");
     out.push_str(
         "core_derive(kind=\"Abstraction\", title=..., body=...,\n\
@@ -262,14 +265,24 @@ fn push_law(out: &mut String, s: Surface) {
     );
     out.push_str("```\n\n");
     out.push_str(
-        "`source_handles` auto-creates `derived-from` provenance edges from the new \
-         Abstraction/Perspective down to each source. **That is the graph.** Wanting to connect \
-         two `F:` handles is the signal to *abstract*, not to link.",
+        "`source_handles` lands `origin` entries from the new Abstraction/Perspective down to \
+         each source. **That is the graph.** Wanting to connect two `F:` handles is the signal \
+         to *abstract*.",
     );
-    if s.link {
+    if s.interpret {
         out.push_str(
-            " (`core_link` is for the rarer case of one Abstraction/Perspective pointing at \
-             other memories.)",
+            "\n\n**A claim about memories that already exist is a Perspective, not an edge:**\n\n",
+        );
+        out.push_str("```\n");
+        out.push_str(
+            "core_interpret(claim=\"the outage followed the deploy\", confidence=80,\n\
+            \x20              subjects=[\"F:aaaa\", \"A:bbbb\"])\n",
+        );
+        out.push_str("```\n\n");
+        out.push_str(
+            "It returns a `P:` handle. A reason and a confidence are a judgment, and a judgment \
+             is a Perspective; its subjects become that Perspective's own references. A Fact \
+             never interprets — layering refuses a Fact as an interpretation source.",
         );
     }
     out.push_str("\n\n");
@@ -291,7 +304,13 @@ fn push_capture_table(out: &mut String, s: Surface) {
              | Record or update a stance / self-model (\"how I see X\", \"who I am\") | \
              `core_derive` kind=**Perspective** |\n\
              | **Relate / connect memories** | derive an Abstraction/Perspective over them — \
-             **NOT** a Fact→Fact link |\n",
+             there is no connect verb |\n",
+        );
+    }
+    if s.interpret {
+        out.push_str(
+            "| Claim what existing memories mean, with a confidence | `core_interpret` → \
+             interpretation Perspective |\n",
         );
     }
     if s.goals {
@@ -319,26 +338,36 @@ fn push_capture_table(out: &mut String, s: Surface) {
 }
 
 fn push_edges(out: &mut String, s: Surface) {
-    if !s.derive && !s.link {
+    if !s.derive && !s.interpret {
         return;
     }
-    out.push_str("## Edge classes\n\n| Edge | Authored by | Direction |\n|---|---|---|\n");
+    out.push_str(
+        "## Edge kinds\n\nTwo kinds, and the vocabulary is closed. The kind follows the write \
+         that produced the row; nobody picks one.\n\n",
+    );
+    out.push_str("| Kind | Written by | Direction |\n|---|---|---|\n");
     if s.derive {
         out.push_str(
-            "| `derived-from` | auto, when you pass `source_handles` to `core_derive` | new \
-             Abstraction/Perspective → each source memory |\n",
+            "| `origin` | the write that declares what it was made from — `source_handles` on \
+             `core_derive` | new Abstraction/Perspective → each source memory |\n",
         );
     }
-    if s.link {
+    out.push_str(
+        "| `reference` | a schema-declared payload field of the node itself | referrer → \
+         referent |\n",
+    );
+    if s.interpret {
         out.push_str(
-            "| `core/agent-link-refers-to` | `core_link` (source must be an Abstraction or \
-             Perspective) | interpreter → referent |\n",
+            "\n`core_interpret` writes no edge of its own: its `subjects` are payload fields of \
+             the interpretation Perspective, so they arrive as `reference` entries.\n",
         );
     }
-    if s.list_edge_types {
+    if s.edges {
         out.push_str(
-            "\nFor the authoritative, live list of edge classes in this deployment, read \
-             `proxima://edge-types`; entries include owner policy, target access policy, endpoint bindings, masks, and payload schema. Edge rows are source-owned; target handles may be `visible`, `redacted`, or `unavailable` independently.\n",
+            "\nRead the live set at `proxima://edges{?kind,source,target,limit,cursor}`; at least \
+             one filter is required. Each row is source, target, kind and created_at — there is \
+             no edge id to dereference and no payload to fetch. Rows are source-owned; a target \
+             handle may come back `visible`, `redacted`, or `unavailable` independently.\n",
         );
     }
     out.push('\n');
@@ -358,7 +387,7 @@ fn push_worked_example(out: &mut String, s: Surface) {
         out,
         "2. **Abstract.** Once a pattern recurs across those Facts: \
          `core_derive(kind=\"Abstraction\", source_handles=[\"F:a\",\"F:b\",\"F:c\"], …)` → \
-         `A:d`, with `derived-from` edges to each Fact."
+         `A:d`, with an `origin` entry to each Fact."
     );
     let _ = writeln!(
         out,
@@ -395,8 +424,8 @@ fn push_reading(out: &mut String, s: Surface) {
              lineage only when you specifically need it.\n",
         );
     }
-    if s.list_edge_types {
-        out.push_str("4. `proxima://edge-types` — inspect the live relation catalog, owner/access policies, and target projection semantics.\n");
+    if s.edges {
+        out.push_str("4. `proxima://edges?kind=…&source=…` — list connections directly when you know an endpoint and want its neighbours, not its lineage.\n");
     }
     out.push_str(
         "\nDiscover available reads with `resources/list` and `resources/templates/list`. \
@@ -413,7 +442,7 @@ mod tests {
         [
             RememberTool::NAME,
             DeriveTool::NAME,
-            LinkTool::NAME,
+            InterpretTool::NAME,
             SearchMemoriesTool::NAME,
             CoreGoalTool::NAME,
             CODE_SEARCH_CHUNKS,
@@ -427,7 +456,7 @@ mod tests {
         [
             protocol_resource::MEMORY,
             protocol_resource::MEMORY_LINEAGE,
-            protocol_resource::EDGE_TYPES,
+            protocol_resource::EDGES,
         ]
         .into_iter()
         .collect()
@@ -439,7 +468,7 @@ mod tests {
         [
             RememberTool::NAME,
             DeriveTool::NAME,
-            LinkTool::NAME,
+            InterpretTool::NAME,
             SearchMemoriesTool::NAME,
         ]
         .into_iter()
@@ -453,9 +482,9 @@ mod tests {
     #[test]
     fn instructions_teach_the_hard_law_and_remember_vs_derive() {
         let s = build_instructions(&full_tool_set(), &full_resource_set());
-        assert!(s.contains("agent-authored `core_link` edges cannot use Facts as sources"));
-        assert!(s.contains("rejects source kind Fact"));
-        assert!(s.contains("Structural/provenance Fact edges"));
+        assert!(s.contains("NO TOOL WRITES A CONNECTION"));
+        assert!(s.contains("A Fact never interprets"));
+        assert!(s.contains("`core_interpret`"));
         assert!(s.contains("source_handles"));
         assert!(s.contains("`core_remember`"));
         assert!(s.contains("`core_derive`"));
@@ -479,7 +508,7 @@ mod tests {
         assert!(!trimmed.contains("goal"));
         assert!(!trimmed.contains("proxima-code_"));
         // Core memory contract still present.
-        assert!(trimmed.contains("agent-authored `core_link` edges cannot use Facts as sources"));
+        assert!(trimmed.contains("NO TOOL WRITES A CONNECTION"));
         assert!(trimmed.contains("`core_remember`"));
     }
 
@@ -509,34 +538,67 @@ mod tests {
     }
 
     #[test]
-    fn instructions_without_link_tool_omit_link_specifics() {
+    fn instructions_without_interpret_tool_omit_interpret_specifics() {
         let mut tools = full_tool_set();
-        tools.remove(LinkTool::NAME);
+        tools.remove(InterpretTool::NAME);
         let s = build_instructions(&tools, &full_resource_set());
-        // The law (derive over Facts) survives; the core_link specifics don't.
-        assert!(s.contains("agent-authored `core_link` edges cannot use Facts as sources"));
-        assert!(!s.contains("`core_link` authors edges"));
+        // The law (nobody writes an edge) survives; the core_interpret
+        // specifics don't.
+        assert!(s.contains("NO TOOL WRITES A CONNECTION"));
+        assert!(!s.contains("`core_interpret`"));
+    }
+
+    /// The retired vocabulary must not survive anywhere in the generated
+    /// text: a profile that still advertised `core_link` or an edge-type
+    /// catalog would be telling agents to call surfaces that no longer exist.
+    #[test]
+    fn no_profile_names_the_retired_edge_vocabulary() {
+        for (tools, resources) in [
+            (full_tool_set(), full_resource_set()),
+            (
+                memory_minus_goals_tool_set(),
+                memory_minus_goals_resource_set(),
+            ),
+        ] {
+            for text in [
+                build_instructions(&tools, &resources),
+                how_to_markdown(&tools, &resources),
+            ] {
+                for retired in [
+                    "core_link",
+                    "edge-types",
+                    "core_list_edge_types",
+                    "agent-link-refers-to",
+                    "derived-from",
+                    "relation",
+                ] {
+                    assert!(!text.contains(retired), "selfdoc leaked {retired}");
+                }
+            }
+        }
     }
 
     #[test]
     fn instructions_empty_when_no_memory_tools() {
         let tools = BTreeSet::new();
-        let resources: BTreeSet<&str> = [protocol_resource::EDGE_TYPES].into_iter().collect();
+        let resources: BTreeSet<&str> = [protocol_resource::EDGES].into_iter().collect();
         assert!(build_instructions(&tools, &resources).is_empty());
     }
 
     #[test]
     fn how_to_documents_law_examples_and_decision_guide() {
         let s = how_to_markdown(&full_tool_set(), &full_resource_set());
-        assert!(s.contains("The one hard law for agent-authored links"));
-        assert!(s.contains("Structural/provenance Fact edges"));
-        assert!(s.contains("derived-from"));
+        assert!(s.contains("The one hard law for agent-authored connections"));
+        assert!(s.contains("**No tool writes a connection.**"));
+        assert!(s.contains("`origin`"));
+        assert!(s.contains("`reference`"));
         assert!(s.contains("core_derive(kind=\"Abstraction\""));
+        assert!(s.contains("core_interpret(claim="));
         assert!(s.contains("## What to capture → which tool"));
-        assert!(s.contains("## Edge classes"));
+        assert!(s.contains("## Edge kinds"));
         assert!(s.contains("## Worked example"));
         assert!(s.contains("## Reading: which surface first"));
-        assert!(s.contains("proxima://edge-types"));
+        assert!(s.contains("proxima://edges"));
     }
 
     #[test]
@@ -548,7 +610,7 @@ mod tests {
         assert!(!trimmed.contains("core_goal"));
         assert!(!trimmed.contains("proxima-code_"));
         // Layering law + relate-memories row still taught.
-        assert!(trimmed.contains("The one hard law for agent-authored links"));
+        assert!(trimmed.contains("The one hard law for agent-authored connections"));
         assert!(trimmed.contains("Relate / connect memories"));
     }
 }

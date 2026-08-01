@@ -4,9 +4,7 @@ use std::sync::Arc;
 
 use common::{create_db, db_url, drop_db};
 use proxima_core::mcp::{McpAuthorContext, McpToolExtensions};
-use proxima_core::{
-    AuthPath, AuthzContext, Engine, FlavorRegistry, Owner, OwnerRef, RelationClass, UserId,
-};
+use proxima_core::{AuthPath, AuthzContext, Engine, FlavorRegistry, Owner, OwnerRef, UserId};
 use proxima_mcp_server::{McpAuthContext, McpToolHost};
 use proxima_storage_pg::PgStorage;
 
@@ -21,7 +19,7 @@ async fn core_read_resources_return_prefixed_ids_and_author()
     let owner = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
     let source = insert_memory(&pg, &owner, "source lineage memory").await?;
     let derived = insert_memory(&pg, &owner, "derived lineage memory").await?;
-    let edge = insert_edge(&pg, &owner, derived, source).await?;
+    insert_origin_edge(&pg, &owner, derived, source).await?;
 
     let registry = FlavorRegistry::new().freeze_or_panic_for_tests();
     let engine = Arc::new(
@@ -76,7 +74,8 @@ async fn core_read_resources_return_prefixed_ids_and_author()
         )
         .await?;
     assert_eq!(expanded["memory"], format!("A:{derived}"));
-    assert_eq!(expanded["neighbor_edges"][0]["edge"], format!("E:{edge}"));
+    // Four fields is the whole edge: no handle, no relation, no payload.
+    assert_eq!(expanded["neighbor_edges"][0]["kind"], "origin");
     assert_eq!(
         expanded["neighbor_edges"][0]["source"],
         format!("A:{derived}")
@@ -84,6 +83,10 @@ async fn core_read_resources_return_prefixed_ids_and_author()
     assert_eq!(
         expanded["neighbor_edges"][0]["target"],
         format!("A:{source}")
+    );
+    assert!(
+        expanded["neighbor_edges"][0].get("edge").is_none(),
+        "an edge has no id to hand back"
     );
 
     let lineage = server
@@ -101,7 +104,7 @@ async fn core_read_resources_return_prefixed_ids_and_author()
             .iter()
             .any(|node| node["memory"] == format!("A:{source}"))
     );
-    assert_eq!(lineage["edges"][0]["edge"], format!("E:{edge}"));
+    assert_eq!(lineage["edges"][0]["kind"], "origin");
     assert_eq!(lineage["edges"][0]["source"], format!("A:{derived}"));
     assert_eq!(lineage["edges"][0]["target"], format!("A:{source}"));
 
@@ -167,8 +170,8 @@ async fn batch_memories_resource_error_classes_and_lineage_paging()
     // the opaque cursor to exhaustion, and a missing start is a not-found.
     let d1 = insert_memory(&pg, &owner, "derived one").await?;
     let d2 = insert_memory(&pg, &owner, "derived two").await?;
-    insert_edge(&pg, &owner, d1, first).await?;
-    insert_edge(&pg, &owner, d2, d1).await?;
+    insert_origin_edge(&pg, &owner, d1, first).await?;
+    insert_origin_edge(&pg, &owner, d2, d1).await?;
     assert_lineage_clamps_pages_and_reports_missing_start(&server, &auth, d2, absent).await?;
 
     drop(server);
@@ -284,7 +287,11 @@ async fn assert_lineage_clamps_pages_and_reports_missing_start(
             .read_resource(&uri, author_ctx(), Some(auth.clone()))
             .await?;
         for edge in page["edges"].as_array().expect("edges") {
-            edges_seen.push(edge["edge"].as_str().expect("edge handle").to_string());
+            edges_seen.push(format!(
+                "{}->{}",
+                edge["source"].as_str().expect("edge source"),
+                edge["target"].as_str().expect("edge target"),
+            ));
         }
         assert_eq!(
             page["has_more"] == serde_json::json!(true),
@@ -492,8 +499,13 @@ async fn goal_resources_list_read_back_wake_config_and_paginate()
     Ok(())
 }
 
+/// The whole loop the v0.0.8 edge lane leaves standing: an agent authors an
+/// interpretation Perspective, and the connections it implies show up in the
+/// index as `reference` rows nobody wrote. There is no edge handle to
+/// dereference, because an edge has no id.
 #[tokio::test]
-async fn edge_resources_read_back_agent_links_with_payload()
+#[allow(clippy::too_many_lines)]
+async fn edge_resources_read_back_interpretation_references()
 -> Result<(), Box<dyn std::error::Error>> {
     let db_name = create_db().await?;
     let database_url = db_url(&db_name);
@@ -517,89 +529,100 @@ async fn edge_resources_read_back_agent_links_with_payload()
         model_id: None,
     };
 
-    // Author a link through the write surface, then dereference the very
-    // handle it returned — the loop that was impossible before this slice.
-    let linked = server
+    let interpreted = server
         .call_tool(
-            "core_link",
+            "core_interpret",
             serde_json::json!({
-                "source": format!("A:{hub}"),
-                "target": format!("A:{spoke}"),
-                "reason": "hub summarizes spoke",
+                "claim": "the hub summarizes the spoke",
                 "confidence": 61,
+                "subjects": [format!("A:{hub}"), format!("A:{spoke}")],
             }),
             author_ctx(),
             Some(auth.clone()),
         )
         .await?;
-    let edge_handle = linked["edge_handle"].as_str().expect("edge handle");
+    let handle = interpreted["handle"]
+        .as_str()
+        .expect("interpretation handle")
+        .to_string();
+    assert!(
+        handle.starts_with("P:"),
+        "an interpretation is a Perspective"
+    );
+    assert_eq!(
+        interpreted["edge_count"],
+        serde_json::json!(2),
+        "a count, not handles: {interpreted}"
+    );
 
     let listed = server
         .read_resource(
-            &format!("proxima://edges?relation=core/agent-link-refers-to&source=A:{hub}"),
+            &format!("proxima://edges?kind=reference&source={handle}"),
             author_ctx(),
             Some(auth.clone()),
         )
         .await?;
     let edges = listed["edges"].as_array().expect("edges array");
-    assert_eq!(edges.len(), 1);
-    assert_eq!(edges[0]["edge"], edge_handle);
-    assert_eq!(edges[0]["relation"], "core/agent-link-refers-to");
-    assert_eq!(edges[0]["source"], format!("A:{hub}"));
-    assert_eq!(edges[0]["target"], format!("A:{spoke}"));
-    assert_eq!(edges[0]["payload"]["reason"], "hub summarizes spoke");
-    assert_eq!(edges[0]["payload"]["confidence"], 61);
+    assert_eq!(edges.len(), 2);
+    let targets: Vec<&str> = edges
+        .iter()
+        .map(|edge| edge["target"].as_str().expect("target handle"))
+        .collect();
     assert!(
-        edges[0]["created_at"]
-            .as_str()
-            .is_some_and(|value| value.contains('T')),
-        "created_at is RFC3339: {:?}",
-        edges[0]["created_at"]
+        targets.contains(&format!("A:{hub}").as_str()),
+        "{targets:?}"
     );
+    assert!(
+        targets.contains(&format!("A:{spoke}").as_str()),
+        "{targets:?}"
+    );
+    for edge in edges {
+        assert_eq!(edge["source"], handle);
+        assert_eq!(edge["kind"], "reference");
+        assert!(
+            edge.get("payload").is_none() && edge.get("relation").is_none(),
+            "an edge carries no content: {edge}"
+        );
+        assert!(
+            edge["created_at"]
+                .as_str()
+                .is_some_and(|value| value.contains('T')),
+            "created_at is RFC3339: {:?}",
+            edge["created_at"]
+        );
+    }
     assert_eq!(listed["has_more"], serde_json::json!(false));
     assert_eq!(listed["next_cursor"], serde_json::Value::Null);
 
-    // The exact source+target+relation probe an idempotent linker would run.
+    // The exact source+target probe an idempotent writer would run — the
+    // replacement for asking "does this edge id already exist".
     let probe = server
         .read_resource(
-            &format!(
-                "proxima://edges?relation=core/agent-link-refers-to&source=A:{hub}&target=A:{spoke}"
-            ),
+            &format!("proxima://edges?source={handle}&target=A:{spoke}"),
             author_ctx(),
             Some(auth.clone()),
         )
         .await?;
     assert_eq!(probe["edges"].as_array().expect("edges").len(), 1);
 
-    // Single-edge dereference by the handle core_link returned.
-    let single = server
-        .read_resource(
-            &format!("proxima://edge/{edge_handle}"),
+    // Re-asserting the same judgment is one memory and the same two rows:
+    // structural idempotency, with no id scheme to keep honest.
+    let replay = server
+        .call_tool(
+            "core_interpret",
+            serde_json::json!({
+                "claim": "the hub summarizes the spoke",
+                "confidence": 61,
+                "subjects": [format!("A:{hub}"), format!("A:{spoke}")],
+            }),
             author_ctx(),
             Some(auth.clone()),
         )
         .await?;
-    assert_eq!(single["edge"], edge_handle);
-    assert_eq!(single["payload"]["reason"], "hub summarizes spoke");
-    assert_eq!(single["payload"]["confidence"], 61);
+    assert_eq!(replay["handle"], serde_json::json!(handle));
+    assert_eq!(replay["idempotent_replay"], serde_json::json!(true));
 
-    // Lean read: payloads=false suppresses hydration.
-    let lean = server
-        .read_resource(
-            &format!(
-                "proxima://edges?relation=core/agent-link-refers-to&source=A:{hub}&payloads=false"
-            ),
-            author_ctx(),
-            Some(auth.clone()),
-        )
-        .await?;
-    assert_eq!(
-        lean["edges"][0]["payload"],
-        serde_json::Value::Null,
-        "payloads=false stays lean"
-    );
-
-    assert_edge_filter_rejections(&server, &auth).await;
+    assert_edge_filter_rejections(&server, &auth, &handle).await;
 
     drop(server);
     drop(pg);
@@ -607,9 +630,9 @@ async fn edge_resources_read_back_agent_links_with_payload()
     Ok(())
 }
 
-/// Unfiltered dumps, unknown relations, foreign cursors, and bare uuid edge
-/// references all fail closed with actionable messages.
-async fn assert_edge_filter_rejections(server: &McpToolHost, auth: &McpAuthContext) {
+/// Unfiltered dumps, kinds outside the closed vocabulary, foreign cursors,
+/// and the retired single-edge path all fail closed.
+async fn assert_edge_filter_rejections(server: &McpToolHost, auth: &McpAuthContext, source: &str) {
     let unfiltered = server
         .read_resource("proxima://edges", author_ctx(), Some(auth.clone()))
         .await
@@ -618,21 +641,21 @@ async fn assert_edge_filter_rejections(server: &McpToolHost, auth: &McpAuthConte
         unfiltered.to_string().contains("at least one filter"),
         "{unfiltered}"
     );
-    let unknown_relation = server
+    let unknown_kind = server
         .read_resource(
-            "proxima://edges?relation=core/not-a-relation",
+            "proxima://edges?kind=structural",
             author_ctx(),
             Some(auth.clone()),
         )
         .await
-        .expect_err("unknown relation must be rejected");
+        .expect_err("the kind vocabulary is closed at origin and reference");
     assert!(
-        unknown_relation.to_string().contains("unknown relation"),
-        "{unknown_relation}"
+        unknown_kind.to_string().contains("unknown edge kind"),
+        "{unknown_kind}"
     );
     let bad_cursor = server
         .read_resource(
-            "proxima://edges?relation=core/agent-link-refers-to&cursor=garbage",
+            &format!("proxima://edges?source={source}&cursor=garbage"),
             author_ctx(),
             Some(auth.clone()),
         )
@@ -642,15 +665,23 @@ async fn assert_edge_filter_rejections(server: &McpToolHost, auth: &McpAuthConte
         bad_cursor.to_string().contains("malformed cursor"),
         "{bad_cursor}"
     );
-    let bare = server
+    // `proxima://edge/{id}` is gone with the id it dereferenced: it is not a
+    // bad parameter on a known template, it is not a template.
+    let retired = server
         .read_resource(
             &format!("proxima://edge/{}", uuid::Uuid::now_v7()),
             author_ctx(),
             Some(auth.clone()),
         )
         .await
-        .expect_err("bare uuid edge reference must be rejected");
-    assert!(bare.to_string().contains("malformed"), "{bare}");
+        .expect_err("the single-edge resource is retired");
+    assert!(
+        matches!(
+            &retired,
+            proxima_mcp_server::ToolInvocationError::ToolNotFound(_)
+        ),
+        "a retired template is resource-not-found: {retired}"
+    );
 }
 
 /// Class-checked reference and closed state vocabulary fail closed.
@@ -803,34 +834,27 @@ async fn insert_memory(
     Ok(memory_id)
 }
 
-async fn insert_edge(
+/// Assert one `origin` row directly. Five columns is the whole insert —
+/// there is no id to mint and no relation to name.
+async fn insert_origin_edge(
     pg: &PgStorage,
     owner: &Owner,
     source: uuid::Uuid,
     target: uuid::Uuid,
-) -> Result<uuid::Uuid, Box<dyn std::error::Error>> {
-    let edge_id = uuid::Uuid::now_v7();
+) -> Result<(), Box<dyn std::error::Error>> {
     let (owner_kind, owner_id) = owner.columns();
     sqlx::query(
         "INSERT INTO proxima_core.edges
-            (edge_id, owner_kind, owner_id, relation, relation_class,
-             source_kind, source_memory_id, source_goal_id,
-             target_kind, target_memory_id, target_goal_id,
-             authorship_kind, authorship_owner_memory_id)
-         VALUES ($1, $2, $3, 'core/derived-from', $4,
-                 'Abstraction', $5, NULL,
-                 'Abstraction', $6, NULL,
-                 'Engine', NULL)",
+            (source_kind, source_id, target_kind, target_id, kind, owner_kind, owner_id)
+         VALUES ('Abstraction', $1, 'Abstraction', $2, 'origin', $3, $4)",
     )
-    .bind(edge_id)
-    .bind(owner_kind)
-    .bind(owner_id)
-    .bind(RelationClass::Provenance)
     .bind(source)
     .bind(target)
+    .bind(owner_kind)
+    .bind(owner_id)
     .execute(pg.pool_for_tests())
     .await?;
-    Ok(edge_id)
+    Ok(())
 }
 
 fn author_ctx() -> McpAuthorContext {

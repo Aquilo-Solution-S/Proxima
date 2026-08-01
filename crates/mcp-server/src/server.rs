@@ -8,11 +8,10 @@ use proxima_core::mcp::core_tools::{
     get_memory::{GetMemoryArgs, get_memory},
     goal_reads::{ListGoalsArgs, get_goal, list_goals},
     list_change_events::{ListChangeEventsArgs, list_change_events},
-    list_edge_types::{ListEdgeTypesArgs, list_edge_types},
     list_schemas::{ListSchemasArgs, list_schemas},
     list_substrate_tools::{ListSubstrateToolsArgs, list_substrate_tools},
     list_wake_candidates::{ListWakeCandidatesArgs, list_wake_candidates},
-    read_edges::{ListEdgesArgs, get_edge, list_edges},
+    read_edges::{ListEdgesArgs, list_edges},
     walk_memory_lineage::{
         WalkMemoryLineageArgs, WalkMemoryLineageDirectionArg, walk_memory_lineage,
     },
@@ -194,7 +193,6 @@ async fn dispatch_resource(
 ) -> Result<serde_json::Value, McpToolError> {
     match parsed {
         ParsedResource::Schemas(args) => resource_output_value(list_schemas(ctx, args).await?),
-        ParsedResource::EdgeTypes(args) => resource_output_value(list_edge_types(ctx, args).await?),
         ParsedResource::Tools(args) => {
             resource_output_value(list_substrate_tools(ctx, args).await?)
         }
@@ -213,7 +211,6 @@ async fn dispatch_resource(
         ParsedResource::Goals(args) => resource_output_value(list_goals(ctx, args).await?),
         ParsedResource::Goal(reference) => resource_output_value(get_goal(ctx, &reference).await?),
         ParsedResource::Edges(args) => resource_output_value(list_edges(ctx, args).await?),
-        ParsedResource::Edge(reference) => resource_output_value(get_edge(ctx, &reference).await?),
     }
 }
 
@@ -294,7 +291,6 @@ impl ResourceUriError {
 #[derive(Debug)]
 enum ParsedResource {
     Schemas(ListSchemasArgs),
-    EdgeTypes(ListEdgeTypesArgs),
     Tools(ListSubstrateToolsArgs),
     Graph(GetGraphArgs),
     Memory(GetMemoryArgs),
@@ -305,14 +301,12 @@ enum ParsedResource {
     Goals(ListGoalsArgs),
     Goal(String),
     Edges(ListEdgesArgs),
-    Edge(String),
 }
 
 impl ParsedResource {
     const fn scope_key(&self) -> &'static str {
         match self {
             Self::Schemas(_) => protocol_resource::SCHEMAS,
-            Self::EdgeTypes(_) => protocol_resource::EDGE_TYPES,
             Self::Tools(_) => protocol_resource::TOOLS,
             Self::Graph(_) => protocol_resource::GRAPH,
             Self::Memory(_) => protocol_resource::MEMORY,
@@ -323,7 +317,6 @@ impl ParsedResource {
             Self::Goals(_) => protocol_resource::GOALS,
             Self::Goal(_) => protocol_resource::GOAL,
             Self::Edges(_) => protocol_resource::EDGES,
-            Self::Edge(_) => protocol_resource::EDGE,
         }
     }
 }
@@ -341,7 +334,6 @@ fn parse_resource_uri(uri: &str) -> Result<ParsedResource, ResourceUriError> {
         protocol_resource_path::SCHEMAS => Ok(ParsedResource::Schemas(ListSchemasArgs {
             kind: query_value(&query, "kind").map(ToOwned::to_owned),
         })),
-        protocol_resource_path::EDGE_TYPES => Ok(ParsedResource::EdgeTypes(ListEdgeTypesArgs {})),
         protocol_resource_path::TOOLS => Ok(ParsedResource::Tools(ListSubstrateToolsArgs {})),
         protocol_resource_path::GRAPH => Ok(ParsedResource::Graph(GetGraphArgs {})),
         protocol_resource_path::CHANGE_EVENTS => {
@@ -373,12 +365,11 @@ fn parse_resource_uri(uri: &str) -> Result<ParsedResource, ResourceUriError> {
             cursor: query_value(&query, "cursor").map(ToOwned::to_owned),
         })),
         protocol_resource_path::EDGES => Ok(ParsedResource::Edges(ListEdgesArgs {
-            relation: query_value(&query, "relation").map(ToOwned::to_owned),
+            kind: query_value(&query, "kind").map(ToOwned::to_owned),
             source: query_value(&query, "source").map(ToOwned::to_owned),
             target: query_value(&query, "target").map(ToOwned::to_owned),
             limit: query_parse(&query, "limit", "a non-negative integer")?,
             cursor: query_value(&query, "cursor").map(ToOwned::to_owned),
-            payloads: query_parse(&query, "payloads", "'true' or 'false'")?,
         })),
         path if path.starts_with("memory/") => parse_memory_resource_path(path, &query),
         path if path.starts_with("goal/") => {
@@ -387,13 +378,6 @@ fn parse_resource_uri(uri: &str) -> Result<ParsedResource, ResourceUriError> {
                 return Err(ResourceUriError::UnknownPath);
             }
             Ok(ParsedResource::Goal(id.to_string()))
-        }
-        path if path.starts_with("edge/") => {
-            let id = path.strip_prefix("edge/").unwrap_or_default();
-            if id.is_empty() || id.contains('/') {
-                return Err(ResourceUriError::UnknownPath);
-            }
-            Ok(ParsedResource::Edge(id.to_string()))
         }
         _ => Err(ResourceUriError::UnknownPath),
     }
@@ -655,8 +639,8 @@ mod tests {
     fn resource_constants_match_server_resource_keys() {
         let cases = [
             ("proxima://schemas", protocol_resource::SCHEMAS),
-            ("proxima://edge-types", protocol_resource::EDGE_TYPES),
             ("proxima://tools", protocol_resource::TOOLS),
+            ("proxima://edges?kind=origin", protocol_resource::EDGES),
             ("proxima://graph", protocol_resource::GRAPH),
             (
                 "proxima://memory/F:018f0000-0000-7000-8000-000000000001",
