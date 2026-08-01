@@ -22,6 +22,12 @@ Proxima owns exactly two durable stores; back up both:
 - Restore order on a fresh DB: restore Postgres, then point the host at it. S3
   blobs are content-addressed, so a PG restore ahead of an S3 restore leaves
   citations that resolve once the bucket is back; no cross-store transaction.
+- **Verify the two stores agree after any restore that touched one of them**,
+  with `proxima-mcp maintain-blobs`. A row whose object never came back is not
+  self-correcting: the upload lane skips artefacts the corpus already claims to
+  hold, so re-ingesting the same document will NOT replace the missing bytes,
+  and the citation stays unresolvable with no error anywhere. `missing=` is the
+  number that matters; `orphans=` is only cost.
 - Embeddings are rebuildable rows, not source of truth: a lost embedding row
   re-enqueues (see the backlog signals below), so a PG-only restore is
   functionally complete for search once the drainer catches up.

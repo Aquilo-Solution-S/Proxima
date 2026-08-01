@@ -58,6 +58,9 @@ Maintenance:
   maintain-retention       One retention pass: tombstone Facts past their
                            owner's retention window and/or prune old
                            change_event rows. Cron-safe; legal holds skip
+  maintain-blobs           One reconcile pass over the S3 bucket: report
+                           artefacts whose object is gone, objects no row
+                           claims, and rows naming another store. Read-only
 
 Endpoint:
   http://127.0.0.1:31415/mcp
@@ -97,6 +100,30 @@ Optional:
   --limit <N>              Maximum memories to scan
   --drain                  Process queued jobs inline with the Mistral embedding client
   -h, --help               Print this message
+";
+
+pub const MAINTAIN_BLOBS_USAGE: &str = "\
+Usage: proxima-mcp maintain-blobs [OPTIONS]
+
+One reconcile pass over the configured S3 bucket and the rows that name it.
+READ-ONLY: it deletes nothing and repairs nothing, because the direction that
+matters cannot be repaired from here — the bytes are gone, and only a bucket
+version or a backup still has them.
+
+Reports three separate numbers, which are three different problems:
+  missing   an artefact the corpus claims to hold whose object is absent.
+            A CITATION THAT CANNOT BE RESOLVED. This is the one to alert on
+  orphans   objects no row claims: cost and retention, nothing broken
+  foreign   rows naming another bucket or a key outside objects/. Neither
+            loss nor waste - usually a legacy or hand-written locator
+
+Requires the same PROXIMA_S3_* block the host runs with; the bucket is taken
+from the environment rather than a flag so it cannot be pointed at a store
+the database has no relation to.
+
+Optional:
+  --database-url <URL>     Postgres URL (defaults to DATABASE_URL or proxima_dev)
+  -h, --help               Print this help
 ";
 
 pub const RETENTION_USAGE: &str = "\
@@ -319,6 +346,52 @@ pub fn parse_maintain_args<I: IntoIterator<Item = String>>(
     })
 }
 
+/// What `maintain-blobs` needs, which is only where the database is.
+///
+/// The bucket comes from `PROXIMA_S3_*` and not from a flag, because it must
+/// be the SAME bucket the running host writes to. A `--bucket` flag would
+/// let an operator reconcile a database against a store it has no relation
+/// to and be told, truthfully and uselessly, that every artefact is missing.
+pub struct MaintainBlobsConfig {
+    pub database_url: String,
+}
+
+impl std::fmt::Debug for MaintainBlobsConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MaintainBlobsConfig")
+            .field("database_url", &"<redacted>")
+            .finish()
+    }
+}
+
+/// # Errors
+///
+/// Returns `ArgsError` for help, unknown flags, or a missing value.
+pub fn parse_maintain_blobs_args<I: IntoIterator<Item = String>>(
+    args: I,
+) -> Result<MaintainBlobsConfig, ArgsError> {
+    let mut database_url: Option<String> = None;
+    let mut iter = args.into_iter();
+    while let Some(flag) = iter.next() {
+        match flag.as_str() {
+            "-h" | "--help" => return Err(ArgsError::Help),
+            f => {
+                let value = iter
+                    .next()
+                    .ok_or_else(|| ArgsError::Invalid(format!("flag {f} expects a value")))?;
+                match f {
+                    "--database-url" => database_url = Some(value),
+                    other => return Err(ArgsError::Invalid(format!("unknown flag: {other}"))),
+                }
+            }
+        }
+    }
+    let database_url = database_url.unwrap_or_else(|| {
+        std::env::var("DATABASE_URL").unwrap_or_else(|_| DEFAULT_DATABASE_URL.to_string())
+    });
+    Ok(MaintainBlobsConfig { database_url })
+}
+
 /// # Errors
 ///
 /// Returns `ArgsError` for help, unknown flags, missing values, an invalid
@@ -447,6 +520,27 @@ mod tests {
     fn non_loopback_bind_rejected() {
         let err = parse_args(["--bind".into(), "0.0.0.0:31415".into()]).expect_err("non-loopback");
         assert!(err.to_string().contains("loopback"));
+    }
+
+    #[test]
+    fn maintain_blobs_help_flag_returns_help() {
+        let err = parse_maintain_blobs_args(["--help".to_string()]).expect_err("help");
+        assert!(err.is_help());
+    }
+
+    #[test]
+    fn maintain_blobs_takes_a_database_url_and_refuses_a_bucket() {
+        let cfg = parse_maintain_blobs_args(["--database-url".into(), "postgres://x/y".into()])
+            .expect("valid args");
+        assert_eq!(cfg.database_url, "postgres://x/y");
+
+        // The bucket is deliberately NOT a flag: it must be the one the host
+        // writes to, and a mismatched pair would report total loss with a
+        // straight face. If this ever starts parsing, the usage text and the
+        // reason in `MaintainBlobsConfig` are what to re-read.
+        let err = parse_maintain_blobs_args(["--bucket".into(), "somewhere-else".into()])
+            .expect_err("--bucket must not be accepted");
+        assert!(!err.is_help(), "{err:?}");
     }
 
     #[test]

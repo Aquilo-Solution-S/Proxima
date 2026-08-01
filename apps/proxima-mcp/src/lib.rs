@@ -1,10 +1,13 @@
 pub mod args;
 
 pub use args::{
-    ArgsError, DEFAULT_BIND, DEFAULT_DATABASE_URL, MAINTAIN_USAGE, MaintainConfig, McpConfig,
-    RETENTION_USAGE, ReconcileScope, RetentionConfig, USAGE, parse_args, parse_maintain_args,
+    ArgsError, DEFAULT_BIND, DEFAULT_DATABASE_URL, MAINTAIN_BLOBS_USAGE, MAINTAIN_USAGE,
+    MaintainBlobsConfig, MaintainConfig, McpConfig, RETENTION_USAGE, ReconcileScope,
+    RetentionConfig, USAGE, parse_args, parse_maintain_args, parse_maintain_blobs_args,
     parse_retention_args,
 };
+
+use proxima_blob_s3::{CitedBlobStore, S3RuntimeConfig};
 
 use std::collections::{BTreeSet, HashSet};
 use std::num::NonZeroU32;
@@ -180,6 +183,14 @@ pub async fn run<I: IntoIterator<Item = String>>(args: I) -> Result<(), CliError
         })?;
         return run_maintain_retention(config).await;
     }
+    if args.first().is_some_and(|arg| arg == "maintain-blobs") {
+        args.remove(0);
+        let config = parse_maintain_blobs_args(args).map_err(|err| match err {
+            ArgsError::Help => CliError::Help(MAINTAIN_BLOBS_USAGE),
+            other @ ArgsError::Invalid(_) => CliError::Args(other),
+        })?;
+        return run_maintain_blobs(config).await;
+    }
     if args
         .first()
         .is_some_and(|arg| arg == "reconcile-embeddings")
@@ -238,6 +249,70 @@ pub async fn run<I: IntoIterator<Item = String>>(args: I) -> Result<(), CliError
 /// optional inline drain, health report. Serialized across processes by a
 /// Postgres advisory lock — an overlapping pass skips with exit 0 so cron
 /// overlap is harmless by construction, not by scheduling discipline.
+/// Reconcile the blob store against the rows that name it, and print what
+/// disagrees.
+///
+/// NO ADVISORY LOCK, unlike `maintain-embeddings`. That pass mutates —
+/// it deletes orphan rows and enqueues jobs — so two of them racing would
+/// duplicate work. This one only reads, so concurrent passes are merely
+/// redundant, and a lock would add a failure mode (a crashed holder blocking
+/// the health check) to a verb whose whole job is telling you something is
+/// wrong.
+///
+/// EXITS 0 EVEN WHEN ARTEFACTS ARE MISSING, matching `maintain-embeddings`
+/// and `maintain-retention`. A non-zero exit here would mean "the pass
+/// failed", and the pass did not fail — it succeeded, and the news is bad.
+/// Alert on the `missing=` number.
+async fn run_maintain_blobs(config: MaintainBlobsConfig) -> Result<(), CliError> {
+    let storage = PgStorage::connect(&config.database_url)
+        .await
+        .map_err(|err| ProximaError::Storage(err.to_string()))?;
+    storage
+        .run_migrations()
+        .await
+        .map_err(|err| ProximaError::Storage(err.to_string()))?;
+
+    let s3 = S3RuntimeConfig::from_env().map_err(|err| {
+        ProximaError::Config(format!(
+            "maintain-blobs needs the host's PROXIMA_S3_* block: {err}"
+        ))
+    })?;
+    let store = CitedBlobStore::new(storage.clone_pool_for_backend(), s3)
+        .map_err(|err| ProximaError::Config(err.to_string()))?;
+
+    let outcome = store
+        .reconcile_cited_blobs()
+        .await
+        .map_err(|err| ProximaError::Storage(err.to_string()))?;
+
+    println!(
+        "reconcile-blobs: rows={} objects={} missing={} orphans={} foreign={}",
+        outcome.rows_scanned,
+        outcome.objects_scanned,
+        outcome.missing_objects,
+        outcome.orphan_objects,
+        outcome.foreign_locators,
+    );
+    // The samples are what an operator acts on, and they are bounded by
+    // `MAX_RECONCILE_SAMPLE` rather than by anything decided here.
+    for missing in &outcome.missing_sample {
+        println!(
+            "  missing: {} ({} bytes, {}) cited_object_id={}",
+            missing.object_key, missing.byte_len, missing.filename, missing.cited_object_id,
+        );
+    }
+    for orphan in &outcome.orphan_sample {
+        println!("  orphan: {orphan}");
+    }
+    for foreign in &outcome.foreign_sample {
+        println!("  foreign: {foreign}");
+    }
+    if outcome.is_intact() {
+        println!("every artefact this store is responsible for has its object");
+    }
+    Ok(())
+}
+
 async fn run_maintain(config: MaintainConfig) -> Result<(), CliError> {
     let model = config
         .model

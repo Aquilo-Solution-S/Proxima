@@ -12,7 +12,8 @@ proxima-auth-oidc = { path = "../../crates/auth-oidc" }
 proxima-code = { path = "../../flavors/code", optional = true }
 proxima-core = { path = "../../crates/core" }
 proxima-llm-openai-compat = { path = "../../crates/llm-openai-compat" }
-proxima-storage-pg = { path = "../../crates/storage-pg" }
+proxima-blob-s3 = { path = "../../crates/blob-s3" }
+proxima-storage-pg = { path = "../../crates/storage-pg", features = ["backend-api"] }
 proxima = { path = "../../crates/proxima" }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
 uuid = { workspace = true }

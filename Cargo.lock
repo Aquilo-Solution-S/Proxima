@@ -2380,6 +2380,7 @@ dependencies = [
  "jsonwebtoken",
  "proxima",
  "proxima-auth-oidc",
+ "proxima-blob-s3",
  "proxima-code",
  "proxima-core",
  "proxima-llm-openai-compat",
