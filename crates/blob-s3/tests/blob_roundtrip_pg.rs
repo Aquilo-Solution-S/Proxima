@@ -1178,3 +1178,124 @@ async fn find_held_blobs_reports_only_this_owners_artefacts() {
     drop(pool);
     drop_db(&db_name).await.expect("drop db");
 }
+
+/// A row whose object is gone is the divergence `find_held_blobs` cannot
+/// see, and this is the sweep that sees it.
+///
+/// FOUR STATES IN ONE BUCKET, because the value of this verb is entirely in
+/// telling them apart. A healthy artefact must not be reported; a deleted
+/// object must be; an object nobody claims must be reported as a DIFFERENT
+/// thing, because it costs money rather than breaking a citation; and a row
+/// naming somewhere this store never wrote must be a third thing again,
+/// because reporting a forged or legacy locator as data loss would send an
+/// operator hunting for bytes that were never there.
+///
+/// THE BUCKET IS SHARED WITH EVERY OTHER TEST in this file and with the dev
+/// environment, so absolute counts are meaningless here — the assertions
+/// are all on THIS run's keys appearing (or not) in the samples, and on the
+/// deltas. A test that asserted `missing_objects == 1` would pass alone and
+/// fail under `--test-threads`.
+#[tokio::test]
+async fn reconcile_tells_a_lost_object_from_an_orphan_and_from_a_forged_locator() {
+    if !S3RuntimeConfig::present_in_env() {
+        eprintln!("skipped: PROXIMA_S3_* unset (run the s3 service to enable)");
+        return;
+    }
+    let (pg, db_name) = fresh_storage().await;
+    let pool = pg.pool_for_tests().clone();
+    let config = s3_config_for_dev();
+    let store = CitedBlobStore::new(pool.clone(), config.clone()).expect("valid S3 config");
+    let owner = owner_fixture();
+    let ctx = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
+
+    // 1. HEALTHY: a real upload, left alone.
+    let (_healthy_id, healthy_key) =
+        complete_upload_fixture(&pg, &store, &config, &pool, &ctx, owner)
+            .await
+            .expect("healthy upload");
+
+    // 2. LOST: a real upload whose object is then deleted underneath it.
+    let other = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+    let other_ctx = AuthzContext::single_owner(&other, AuthPath::HostBearer);
+    let (_lost_id, lost_key) =
+        complete_upload_fixture(&pg, &store, &config, &pool, &other_ctx, other)
+            .await
+            .expect("second upload");
+    s3_client(&config)
+        .await
+        .delete_object()
+        .bucket(&config.bucket)
+        .key(&lost_key)
+        .send()
+        .await
+        .expect("delete the object out from under its row");
+
+    // 3. ORPHAN: bytes under the canonical prefix that no row claims.
+    let orphan_key = format!(
+        "objects/{}/core/uploaded-blob-v1/{}",
+        "0".repeat(64),
+        "f".repeat(64)
+    );
+    put_object_via_sdk(&config, &orphan_key, b"nobody claims me").await;
+
+    // 4. FOREIGN: a row pointing outside anything this store wrote.
+    forge_uploaded_blob_row(&pool, "some-other-bucket", "elsewhere/object", 0xAB).await;
+
+    let outcome = store.reconcile_cited_blobs().await.expect("reconcile runs");
+    // Counts only. `{brief}` carries up to MAX_RECONCILE_SAMPLE keys per
+    // direction, and a failure that prints three hundred hex strings is a
+    // failure nobody reads.
+    let brief = format!(
+        "rows={} objects={} missing={} orphans={} foreign={}",
+        outcome.rows_scanned,
+        outcome.objects_scanned,
+        outcome.missing_objects,
+        outcome.orphan_objects,
+        outcome.foreign_locators,
+    );
+
+    let missing: Vec<&str> = outcome
+        .missing_sample
+        .iter()
+        .map(|m| m.object_key.as_str())
+        .collect();
+    assert!(
+        missing.contains(&lost_key.as_str()),
+        "the artefact whose object was deleted was not reported as missing: {brief}"
+    );
+    assert!(
+        !missing.contains(&healthy_key.as_str()),
+        "an intact artefact was reported as missing — the sweep cannot tell loss from health: {brief}"
+    );
+    assert!(
+        outcome.orphan_sample.contains(&orphan_key),
+        "an object no row claims was not reported as an orphan: {brief}"
+    );
+    assert!(
+        !outcome.orphan_sample.contains(&healthy_key),
+        "an intact artefact was reported as an orphan: {brief}"
+    );
+    assert!(
+        outcome
+            .foreign_sample
+            .iter()
+            .any(|f| f.contains("elsewhere/object")),
+        "a row naming another bucket was not counted as a foreign locator: {brief}"
+    );
+    assert!(
+        !missing.iter().any(|k| k.contains("elsewhere/object")),
+        "a foreign locator was reported as DATA LOSS; it is a row that never named this store, \
+         and an operator reading this would go looking for bytes that were never here: {brief}"
+    );
+    assert!(
+        !outcome.is_intact(),
+        "is_intact must be false while an artefact's object is missing"
+    );
+    assert!(
+        outcome.rows_scanned >= 2 && outcome.objects_scanned >= 1,
+        "both sides must have been read: {brief}"
+    );
+
+    drop(pool);
+    drop_db(&db_name).await.expect("drop db");
+}
