@@ -239,6 +239,35 @@ Cron/deploy command form:
 command: ["proxima-mcp", "maintain-embeddings"]
 ```
 
+### Blob store reconcile
+
+A second, unrelated pass answers a different question: does the object store
+still hold what the database says it holds?
+
+```sh
+proxima-mcp maintain-blobs
+```
+
+Read-only — it deletes nothing and repairs nothing. It reports three numbers
+that are three different problems:
+
+| Number | Meaning | Severity |
+|---|---|---|
+| `missing` | an artefact the corpus claims to hold whose object is absent | **a citation that cannot be resolved**; alert on this |
+| `orphans` | objects no row claims | cost and retention only |
+| `foreign` | rows naming another bucket, or a key outside `objects/` | usually a legacy or hand-written locator |
+
+`missing` cannot be repaired by re-ingesting: the upload lane skips artefacts
+the corpus already claims to hold, so only a bucket version, a backup, or a
+direct re-upload restores the bytes. This is why bucket versioning is listed
+as a deployment requirement in [operate](how-to/operate.md).
+
+Takes no advisory lock, unlike `maintain-embeddings`: the pass only reads, so
+concurrent runs are redundant rather than unsafe, and a crashed holder must
+not be able to block a health check. Exits `0` even when artefacts are
+missing — a non-zero exit would mean the pass failed, and it did not; it
+succeeded and the news is bad.
+
 Passes are serialized by a Postgres advisory lock: an invocation that
 finds the lock held prints a skip notice and exits `0`, so overlapping
 cron fires are harmless by construction. `--drain` processes queued jobs
