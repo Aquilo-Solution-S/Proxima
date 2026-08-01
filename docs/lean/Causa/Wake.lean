@@ -33,10 +33,16 @@ the same discipline as `Role.write_le_read` and `Causa.Flavor`:
                         loop runs forward forever but is grounded in the world.
   - W5 goal-context   — every emitted Fact is motivated by the firing Goal
                         (`each_motivated`); the organism cannot emit a
-                        contextless action. And that motivation edge is FORCED
-                        perspectival (N4, `wake_motivation_is_perspectival`):
-                        you cannot attribute an action to a goal as an
-                        observer-independent fact.
+                        contextless action. Motivation is a Goal-row
+                        DECLARATION (`evidence_memory_ids`, where
+                        `core/wake-motivated-by` went), so the index row it
+                        implies is a `reference`
+                        (`wake_motivation_is_never_causal`). N4's commitment
+                        survives the two-kind vocabulary by having nowhere to
+                        put a causal claim: attributing an action to a goal as
+                        an observer-independent fact is not expressible, and
+                        the judgment form of it is an interpretation
+                        Perspective, a node.
   - W6 tool-bounded   — every invoked Action is admitted by the Goal's
                         `WakeConfig.toolset` (`each_action_allowed`). Concrete
                         tool execution policy remains engine/flavor-side; the
@@ -70,13 +76,13 @@ def MemoryKind.access : MemoryKind → AccessKind
 -- Goal-context: an emitted Fact is causally tied to the firing Goal
 -- ============================================================
 
-/-- W5 relation: memory `m` is motivated by `goal` — there is a valid
-    Causal-class edge from the Goal to the memory. By `EdgeGoalCausalValidWith`
-    (N4) any such edge is necessarily `PerspectiveGoalLink`-authored: a
-    perspectival causal claim, never an observer-independent fact. -/
-def motivatedByGoal (registry : RelationRegistry) (m : Memory) (goal : Goal) : Prop :=
-  ∃ e, EdgeHasClass registry e .Causal ∧
-    edge_source e = .goal goal ∧ edge_target e = .memory m
+/-- W5 relation: memory `m` is motivated by `goal` — the GOAL ROW says so, by
+    naming `m` among the memories it rests on (`evidence_memory_ids`, where
+    `core/wake-motivated-by` went in v0.0.8). The statement lives on the node
+    that owns it; the `reference` index row is derived from that column and
+    carries nothing else. -/
+def motivatedByGoal (m : Memory) (goal : Goal) : Prop :=
+  memory_id m ∈ goal_evidence goal
 
 -- ============================================================
 -- The firing — one wake step, all safety properties as fields
@@ -87,7 +93,6 @@ def motivatedByGoal (registry : RelationRegistry) (m : Memory) (goal : Goal) : P
     action"), having injected `injected` as context. The proof fields ARE the
     safety guarantees; none is an axiom. -/
 structure Firing where
-  registry : RelationRegistry
   actor    : User
   goal     : Goal
   config   : WakeConfig
@@ -118,7 +123,7 @@ structure Firing where
   /-- W2: every emission is within the agent's GRANTED write authority -/
   each_authzd        : ∀ m ∈ emitted, may_write actor (memory_owner m) .fact
   /-- W5: every emission is motivated by the firing Goal -/
-  each_motivated     : ∀ m ∈ emitted, motivatedByGoal registry m goal
+  each_motivated     : ∀ m ∈ emitted, motivatedByGoal m goal
   /-- W6: every invoked Action is admitted by the Goal's WakeConfig.toolset -/
   each_action_allowed : ∀ a ∈ invoked, a ∈ config.toolset
 
@@ -163,15 +168,19 @@ theorem wake_context_readable (fr : Firing) :
     contextless Fact. This is the formal content of "action without a Goal is
     useless". -/
 theorem wake_action_has_goal_context (fr : Firing) :
-    ∀ m ∈ fr.emitted, motivatedByGoal fr.registry m fr.goal := fr.each_motivated
+    ∀ m ∈ fr.emitted, motivatedByGoal m fr.goal := fr.each_motivated
 
-/-- W5 (N4) — the goal-context edge is necessarily PERSPECTIVAL: an action's
-    attribution to a goal is a perspective-relative causal claim, never an
-    observer-independent fact (`causal_goal_edge_perspectival`). -/
-theorem wake_motivation_is_perspectival (fr : Firing) (m : Memory) (hm : m ∈ fr.emitted) :
-    ∃ e : Edge, edge_authorship e = .PerspectiveGoalLink := by
-  obtain ⟨e, hclass, hs, _⟩ := fr.each_motivated m hm
-  exact ⟨e, causal_goal_edge_perspectival fr.registry e hclass (Or.inl ⟨fr.goal, hs⟩)⟩
+/-- W5 (N4, restated for the two-kind model) — the goal-context is a Goal-row
+    DECLARATION, so every index row the firing Goal implies is a `reference`.
+    There is no causal kind left for an attribution to ride on: "this action
+    was taken because of that goal" is a judgment, and a judgment is an
+    interpretation Perspective (`Causa.interpretationOf`), a node. You still
+    cannot attribute an action to a goal as an observer-independent fact —
+    now because the vocabulary has nowhere to put it. -/
+theorem wake_motivation_is_never_causal (fr : Firing) (d : NodeDeclaration)
+    (hd : GoalDeclarationValid fr.goal d) :
+    ∀ e : Edge, e ∈ d.edges → edge_kind e = .reference :=
+  goal_declared_rows_are_references fr.goal d hd
 
 -- ============================================================
 -- W4 — the capstone: causation is well-founded (the arrow of time)
@@ -211,13 +220,12 @@ theorem organism_grounded : WellFounded fires :=
 /-- The no-op firing: the agent does nothing. Every ∀-over-emitted obligation
     is vacuous, so a wake step exists with no writes and no edges — the
     structure is consistent. This IS "doing nothing is also an Action". -/
-def noopFiring (registry : RelationRegistry) (actor : User) (goal : Goal) (config : WakeConfig) (trig : Fact)
+def noopFiring (actor : User) (goal : Goal) (config : WakeConfig) (trig : Fact)
     (hcfg : goal_wake goal = some config)
     (harm : goalArmed goal)
     (hactive : goal_state goal = GoalState.Active)
     (hmem : goal_owner goal actor ≠ none)
     (hread : may_read actor (memory_owner trig.memory) .fact) : Firing where
-  registry := registry
   actor := actor
   goal := goal
   config := config
@@ -238,68 +246,32 @@ def noopFiring (registry : RelationRegistry) (actor : User) (goal : Goal) (confi
   each_action_allowed := by intro a ha; simp at ha
 
 -- ============================================================
--- Inhabitation 2 — a genuine emission with its motivation edge
+-- Inhabitation 2 — a genuine emission with its motivation
 -- (the loop closes non-vacuously: one Fact in, one Fact out)
 -- ============================================================
 
-/-- A build-time relation row admitting Goal→Memory Causal edges. Admits NO
-    memory→memory pair, so `masksTightenOnly` is vacuous — it never relaxes the
-    F/A/P matrix. -/
-def motivationDescriptor (relId : RelationId) : RelationDescriptor where
-  id := relId
-  relClass := .Causal
-  sourceBinding := .Pin
-  targetBinding := .Pin
-  ownerPolicy := .SourceOwned
-  targetAccessPolicy := .None
-  endpointAdmitted := fun s t => (∃ g : Goal, s = .goal g) ∧ (∃ m : Memory, t = .memory m)
-  masksTightenOnly := by
-    intro s _ _ _ h hs _
-    obtain ⟨⟨g, hg⟩, _⟩ := h
-    rw [hg] at hs
-    cases hs
-  supersessionSameOwner := by intro h; cases h
+/-- The Goal head that records one emission among the memories it rests on.
+    Goal writes are append-only, so naming a new emission is a new row in the
+    same lineage; every wake-relevant field carries over unchanged, which the
+    `rfl` lemmas below make explicit. No edge is written: the column IS the
+    statement, and its `reference` index row is derived from it. -/
+def recordEvidence (goal : Goal) (i : MemoryId) : Goal :=
+  { goal with evidence := [i] }
 
-/-- A concrete Goal→Fact motivation edge (PerspectiveGoalLink, N4). -/
-def motivationEdge (goal : Goal) (m : Memory) (relId : RelationId) (uuid : EdgeUuid) : Edge where
-  id := .authored uuid
-  source := .goal goal
-  target := .memory m
-  relation := relId
-  owner := goal_owner goal
-  authorship := .PerspectiveGoalLink
+theorem recordEvidence_wake (goal : Goal) (i : MemoryId) :
+    goal_wake (recordEvidence goal i) = goal_wake goal := rfl
 
-/-- The motivation edge validates against its descriptor. -/
-def motivationValid (goal : Goal) (m : Memory) (relId : RelationId) (uuid : EdgeUuid) :
-    EdgeValidWith (motivationDescriptor relId) (motivationEdge goal m relId uuid) where
-  relationMatches := rfl
-  idAuthorship := by
-    constructor
-    · intro h
-      rcases h with ⟨_, hh⟩
-      cases hh
-    · intro h
-      cases h
-  goalCausal := fun _ _ => rfl
-  sourceOwned := rfl
-  endpointBinding := ⟨trivial, trivial⟩
-  ownerPolicy := trivial
-  mask := ⟨⟨goal, rfl⟩, ⟨m, rfl⟩⟩
-  supersessionEndpointShape := by intro h; cases h
+theorem recordEvidence_state (goal : Goal) (i : MemoryId) :
+    goal_state (recordEvidence goal i) = goal_state goal := rfl
 
-/-- The singleton registry containing the motivation relation descriptor. -/
-def motivationRegistry (relId : RelationId) : RelationRegistry where
-  descriptors := fun d => d = motivationDescriptor relId
-  relationIdUnique := by
-    intro d₁ d₂ h₁ h₂ _
-    rw [h₁, h₂]
+theorem recordEvidence_owner (goal : Goal) (i : MemoryId) :
+    goal_owner (recordEvidence goal i) = goal_owner goal := rfl
 
-/-- Hence the edge is Causal, hence `m` is motivated by `goal`. -/
-theorem motivation_holds (goal : Goal) (m : Memory) (relId : RelationId) (uuid : EdgeUuid) :
-    motivatedByGoal (motivationRegistry relId) m goal :=
-  ⟨motivationEdge goal m relId uuid,
-    ⟨motivationDescriptor relId, rfl,
-      motivationValid goal m relId uuid, rfl⟩, rfl, rfl⟩
+/-- Hence the emission is motivated by that Goal head — W5 discharged by a
+    column read, with no edge to construct. -/
+theorem motivation_holds (goal : Goal) (m : Memory) :
+    motivatedByGoal m (recordEvidence goal (memory_id m)) :=
+  List.mem_singleton_self (memory_id m)
 
 /-- A genuine single-emission firing: the Mail-Fact arrives, the agent emits
     one Fact `g` owned in a group it may write, created later than the trigger,
@@ -314,13 +286,12 @@ def oneShotFiring
     (o : Owner) (gid : MemoryId) (schema : SchemaRef) (t : Instant)
     (hw : may_write actor o .fact)
     (hlate : memory_created_at trig.memory < t)
-    (relId : RelationId) (uuid : EdgeUuid) : Firing where
-  registry := motivationRegistry relId
+    (hmot : gid ∈ goal_evidence goal) : Firing where
   actor := actor
   goal := goal
   config := config
   trigger := trig
-  emitted := [⟨gid, .Fact, o, schema, none, none, none, none, t⟩]
+  emitted := [⟨gid, .Fact, o, schema, none, none, none, none, t, none, none, fun _ => rfl⟩]
   injected := []
   invoked := []
   wake_config := hcfg
@@ -334,7 +305,7 @@ def oneShotFiring
   each_authzd := by intro m hm; simp at hm; subst hm; exact hw
   each_motivated := by
     intro m hm; simp at hm; subst hm
-    exact motivation_holds goal _ relId uuid
+    exact hmot
   each_action_allowed := by intro a ha; simp at ha
 
 /-- The emitted Fact of a `oneShotFiring` is genuinely caused by its trigger:
@@ -349,9 +320,9 @@ theorem oneShot_fires
     (o : Owner) (gid : MemoryId) (schema : SchemaRef) (t : Instant)
     (hw : may_write actor o .fact)
     (hlate : memory_created_at trig.memory < t)
-    (relId : RelationId) (uuid : EdgeUuid) :
-    fires trig.memory ⟨gid, .Fact, o, schema, none, none, none, none, t⟩ :=
-  ⟨oneShotFiring actor goal config trig hcfg harm hactive hmem hread o gid schema t hw hlate relId uuid,
+    (hmot : gid ∈ goal_evidence goal) :
+    fires trig.memory ⟨gid, .Fact, o, schema, none, none, none, none, t, none, none, fun _ => rfl⟩ :=
+  ⟨oneShotFiring actor goal config trig hcfg harm hactive hmem hread o gid schema t hw hlate hmot,
     by rfl, by simp [oneShotFiring]⟩
 
 -- ============================================================
@@ -392,6 +363,12 @@ def closeGoal (goal : Goal) (closeFact : Memory) (hk : memory_kind closeFact = .
   authorship := .SystemTool
   close_fact := some closeFact
   wake := none
+  assignment := goal_assignment goal
+  dependencies := goal_dependencies goal
+  -- The close-Fact is what the closed Goal rests on: closing is an act, the
+  -- act emits a Fact (P3), and the Goal row names it. One `reference` row
+  -- follows; no verb writes it.
+  evidence := [memory_id closeFact]
   terminal_close_fact := fun _ => ⟨closeFact, rfl, hk⟩
 
 /-- The close successor is terminal. -/
@@ -441,10 +418,10 @@ theorem agent_can_act
     (hmem : goal_owner goal actor ≠ none)
     (hread : may_read actor (memory_owner trig.memory) .fact)
     (o : Owner) (hw : may_write actor o .fact)
-    (gid : MemoryId) (schema : SchemaRef) (relId : RelationId) (uuid : EdgeUuid) :
+    (gid : MemoryId) (schema : SchemaRef) (hmot : gid ∈ goal_evidence goal) :
     ∃ g : Memory, fires trig.memory g :=
   ⟨_, oneShot_fires actor goal config trig hcfg harm hactive hmem hread o gid schema
-        (memory_created_at trig.memory + 1) hw (Nat.lt_succ_self _) relId uuid⟩
+        (memory_created_at trig.memory + 1) hw (Nat.lt_succ_self _) hmot⟩
 
 /-- TARGET 1 (the IFF) — proper config fixed, the actor can emit a Fact IFF it
     has Fact-write authority somewhere. Necessity is `powerless_actor_noops`;
@@ -456,13 +433,13 @@ theorem act_iff_fact_write_authority
     (harm : goalArmed goal) (hactive : goal_state goal = GoalState.Active)
     (hmem : goal_owner goal actor ≠ none)
     (hread : may_read actor (memory_owner trig.memory) .fact)
-    (gid : MemoryId) (schema : SchemaRef) (relId : RelationId) (uuid : EdgeUuid) :
+    (gid : MemoryId) (schema : SchemaRef) (hmot : gid ∈ goal_evidence goal) :
     (∃ o : Owner, may_write actor o .fact)
       ↔ (∃ fr : Firing, fr.actor = actor ∧ fr.goal = goal ∧ fr.emitted ≠ []) := by
   constructor
   · rintro ⟨o, hw⟩
     exact ⟨oneShotFiring actor goal config trig hcfg harm hactive hmem hread o gid schema
-            (memory_created_at trig.memory + 1) hw (Nat.lt_succ_self _) relId uuid,
+            (memory_created_at trig.memory + 1) hw (Nat.lt_succ_self _) hmot,
            rfl, rfl, by simp [oneShotFiring]⟩
   · rintro ⟨fr, hact, _, hne⟩
     cases hl : fr.emitted with
@@ -479,7 +456,9 @@ theorem act_iff_fact_write_authority
 def autonomousRun (seed : Fact) (o : Owner) (schema : SchemaRef) (ids : Nat → MemoryId) :
     Nat → Memory
   | 0 => seed.memory
-  | (n+1) => ⟨ids n, .Fact, o, schema, none, none, none, none, memory_created_at seed.memory + (n+1)⟩
+  | (n+1) =>
+      ⟨ids n, .Fact, o, schema, none, none, none, none,
+       memory_created_at seed.memory + (n+1), none, none, fun _ => rfl⟩
 
 theorem autonomousRun_fact (seed : Fact) (o : Owner) (schema : SchemaRef) (ids : Nat → MemoryId) :
     ∀ n, memory_kind (autonomousRun seed o schema ids n) = .Fact
@@ -508,7 +487,7 @@ theorem organism_autonomous
     (hmem : goal_owner goal actor ≠ none)
     (hread : may_read actor (memory_owner seed.memory) .fact)
     (o : Owner) (hw : may_write actor o .fact)
-    (schema : SchemaRef) (ids : Nat → MemoryId) (uuids : Nat → EdgeUuid) (relId : RelationId) :
+    (schema : SchemaRef) (ids : Nat → MemoryId) :
     ∃ run : Nat → Memory, ∀ n : Nat, fires (run n) (run (n+1)) := by
   refine ⟨autonomousRun seed o schema ids, fun n => ?_⟩
   have hlate : memory_created_at (autonomousRun seed o schema ids n)
@@ -518,10 +497,13 @@ theorem organism_autonomous
     cases n with
     | zero => exact hread
     | succ _ => exact may_write_implies_read actor o .fact hw
-  exact oneShot_fires actor goal config
+  -- Step n fires under the Goal head that records step n's emission: Goal
+  -- writes are append-only, so naming a new emission is a new row in the same
+  -- lineage, and every wake-relevant field is carried over definitionally.
+  exact oneShot_fires actor (recordEvidence goal (ids n)) config
     ⟨autonomousRun seed o schema ids n, autonomousRun_fact seed o schema ids n⟩
     hcfg harm hactive hmem hread_n o (ids n) schema (memory_created_at seed.memory + (n+1))
-    hw hlate relId (uuids n)
+    hw hlate (List.mem_singleton_self (ids n))
 
 -- ============================================================
 -- THE openness guarantee — no Causa axioms
@@ -532,7 +514,7 @@ theorem organism_autonomous
 #print axioms powerless_actor_noops
 #print axioms wake_action_has_goal_context
 #print axioms wake_invoked_actions_allowed
-#print axioms wake_motivation_is_perspectival
+#print axioms wake_motivation_is_never_causal
 #print axioms oneShot_fires
 #print axioms terminal_cannot_fire
 #print axioms closeGoal_halts_wake

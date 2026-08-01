@@ -59,13 +59,13 @@ theorem drop_personal_abandoned (u : User) :
 /-- CO-7' edge face — cascade soundness (re-cast of the old `erasure_removes_edges`,
     now a one-liner): a VALID edge whose source endpoint has an abandoned owner is
     itself abandoned, because a valid edge inherits its source's owner
-    (`edge_source_owned`, projected from `EdgeCoreValid`). Wiping abandoned nodes
+    (`edge_source_owned`, projected from `EdgeValid`). Wiping abandoned nodes
     therefore licenses wiping their edges — the cascade is sound. THEOREM, no axiom. -/
 theorem source_abandoned_cascades_to_edge
-    (registry : RelationRegistry) (e : Edge) (hv : EdgeCoreValid registry e) :
+    (e : Edge) (hv : EdgeValid e) :
     abandoned (edge_source e).owner → abandoned (edge_owner e) := by
   intro h
-  rw [← edge_source_owned registry e hv]
+  rw [← edge_source_owned e hv]
   exact h
 
 /-- Target-side erasure state for source-owned edges: the target endpoint's
@@ -111,13 +111,13 @@ theorem target_abandoned_redacts_edge_target
     the target owner is abandoned. The target consequence is redaction/suppression
     (`target_abandoned_redacts_edge_target`), not source cascade. -/
 theorem target_abandoned_does_not_abandon_source_owned_edge
-    (registry : RelationRegistry) (e : Edge) (hv : EdgeCoreValid registry e)
+    (e : Edge) (hv : EdgeValid e)
     (hsourceLive : ¬ abandoned (edge_source e).owner)
     (_htarget : edge_target_abandoned e) :
     ¬ abandoned (edge_owner e) := by
   intro hedge
   apply hsourceLive
-  rw [edge_source_owned registry e hv]
+  rw [edge_source_owned e hv]
   exact hedge
 
 /-- The retention boundary: World is never abandoned — every user is a member at

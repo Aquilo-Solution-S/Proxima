@@ -17,32 +17,24 @@ theorem principle_1_facts_below_perspective :
     MemoryKind.layer .Fact < MemoryKind.layer .Perspective := by
   simp [MemoryKind.layer]
 
-/-- P2 (weakened) — operator-derived Goals carry evidence by an
-    A→Goal Structural edge from the Goal to a non-Perspective Memory.
-    This does NOT say every Goal carries evidence: User/External Goals
-    need none here. Whether the evidence satisfies the Goal is a
-    measurement/decider judgment, not a universal kernel rule. -/
+/-- P2 (weakened) — operator-derived Goals carry evidence: the Goal ROW names
+    at least one admitted non-Perspective memory it rests on
+    (`evidence_memory_ids`). This does NOT say every Goal carries evidence:
+    User/External Goals need none here. Whether the evidence satisfies the Goal
+    is a measurement/decider judgment, not a universal kernel rule. -/
 theorem principle_2_operator_goals_carry_evidence :
-    ∀ registry (e : Edge), EdgeOperatorShapeValid registry e →
-      edge_authorship e = .OperatorAtoGoal →
-      EdgeHasClass registry e .Structural ∧
-      (∃ g : Goal, edge_source e = .goal g) ∧
-      (∃ mt : Memory, edge_target e = .memory mt ∧ memory_kind mt ≠ .Perspective) := by
-  intro registry e hshape ha
-  have h := operator_edges_shaped registry e hshape
-  rw [ha] at h
-  exact h
+    ∀ goals memories,
+      GoalEvidenceValid goals memories →
+      ∀ g : Goal, g ∈ goals → goal_authorship g = .SystemOperator →
+        ∃ m : Memory, m ∈ memories ∧ memory_id m ∈ goal_evidence g ∧
+          memory_kind m ≠ .Perspective :=
+  system_operator_goal_has_evidence
 
 /-- P3 — operator memory outputs are never Facts. Discharged by
     CN-5 `operator_memory_output_not_fact`. -/
 theorem principle_3_operators_never_output_facts :
-    ∀ registry (e : Edge) (m : Memory),
-      EdgeOperatorShapeValid registry e →
-      (edge_authorship e = .OperatorFtoA ∨
-       edge_authorship e = .OperatorAtoA ∨
-       edge_authorship e = .OperatorAtoP) →
-      edge_source e = .memory m →
-      memory_kind m ≠ .Fact :=
+    ∀ (inv : OperatorInvocation) (m : Memory),
+      InvocationShapeValid inv → m ∈ inv.outputMemories → memory_kind m ≠ .Fact :=
   operator_memory_output_not_fact
 
 /-- P3b — closing a Goal is an act, and the close-act emits a Fact. -/
@@ -51,113 +43,101 @@ theorem principle_3b_goal_close_is_an_act :
       ∃ m : Memory, goal_close_fact g = some m ∧ memory_kind m = .Fact :=
   terminal_goal_closes_with_fact
 
-/-- P3c — the loop's causal closure is perspectival: a goal and a
-    fact may be related causally ONLY by a perspective-authored
-    claim, never a structural/source-ingest/user edge. -/
+/-- P3c — the loop's causal closure is perspectival, and in the two-kind model
+    that is enforced by there being nowhere else to put it: every index row a
+    Goal declares is a `reference`, so a Goal↔Fact connection asserts only that
+    the Goal named the Fact. The claim that one caused the other is a judgment,
+    and a judgment is an interpretation Perspective — a node. -/
 theorem principle_3c_causal_closure_is_perspectival :
-    ∀ registry e, EdgeHasClass registry e .Causal →
-      ((∃ g : Goal, edge_source e = .goal g) ∨
-        (∃ g : Goal, edge_target e = .goal g)) →
-      edge_authorship e = .PerspectiveGoalLink :=
-  causal_goal_edge_perspectival
+    ∀ (g : Goal) (d : NodeDeclaration), GoalDeclarationValid g d →
+      ∀ e : Edge, e ∈ d.edges → edge_kind e = .reference :=
+  goal_declared_rows_are_references
 
-/-- P4 — direct Fact→Fact relations are non-interpretive: the matrix
-    permits exactly Structural or Provenance for Fact→Fact. -/
+/-- P4 — direct Fact→Fact connections are non-interpretive. A Fact source
+    reaches only Fact targets (E3), so no Fact-sourced row can be about an
+    Abstraction or a Perspective in the first place. -/
 theorem principle_4_facts_connect_non_interpretively :
-    ∀ c : RelationClass,
-      c ∈ legalClasses .Fact .Fact ↔ c = .Structural ∨ c = .Provenance := by
-  intro c
-  rfl
+    ∀ e : Edge, EdgeLayeringValid e →
+      (edge_source e).memoryKind? = some .Fact →
+      ∀ kt : MemoryKind, (edge_target e).memoryKind? = some kt → kt = .Fact :=
+  fact_source_reaches_only_facts
 
-/-- Epistemic corollary — a valid Fact→Fact edge cannot carry a Causal class.
-    Causal claims must be represented above Facts / perspective-relatively. -/
-theorem principle_epistemic_fact_to_fact_not_causal :
-    ∀ registry (e : Edge) (source target : Memory),
-      EdgeHasClass registry e .Causal →
-      edge_source e = .memory source →
-      edge_target e = .memory target →
-      memory_kind source = .Fact →
-      memory_kind target = .Fact →
-      False := by
-  intro registry e source target hclass hsource htarget hsourceFact htargetFact
-  have hlegal := edge_class_legal registry e .Causal hclass source target hsource htarget
-  rw [hsourceFact, htargetFact] at hlegal
-  rcases hlegal with h | h <;> exact (nomatch h)
+/-- Epistemic corollary — an index row carries `origin` or `reference` and
+    NOTHING else. THEOREM by exhaustion over the closed vocabulary: there is
+    no causal and no interpretive value a Fact→Fact row could take, so
+    "cosine similarity cannot encode an observer-relative relation" is not a
+    rule to enforce but a shape that cannot be written. -/
+theorem principle_epistemic_edge_kinds_are_exactly_two :
+    ∀ e : Edge, edge_kind e = .origin ∨ edge_kind e = .reference := by
+  intro e
+  cases edge_kind e with
+  | origin => exact Or.inl rfl
+  | reference => exact Or.inr rfl
 
-/-- Epistemic corollary — a valid Fact→Fact edge cannot carry an Interpretive
-    class. Interpretation is not an observer-independent Fact edge. -/
-theorem principle_epistemic_fact_to_fact_not_interpretive :
-    ∀ registry (e : Edge) (source target : Memory),
-      EdgeHasClass registry e .Interpretive →
-      edge_source e = .memory source →
-      edge_target e = .memory target →
-      memory_kind source = .Fact →
-      memory_kind target = .Fact →
-      False := by
-  intro registry e source target hclass hsource htarget hsourceFact htargetFact
-  have hlegal := edge_class_legal registry e .Interpretive hclass source target hsource htarget
-  rw [hsourceFact, htargetFact] at hlegal
-  rcases hlegal with h | h <;> exact (nomatch h)
+/-- Epistemic corollary — an interpretation is never a Fact. A Fact asserts no
+    judgment, so it cannot occupy the interpreting position; the claim lives in
+    a Perspective's payload and the index only records that it points at its
+    subjects. -/
+theorem principle_epistemic_fact_never_interprets :
+    ∀ (edges : Set Edge) (p : Memory) (subject : NodeRef),
+      interpretationOf edges p subject → memory_kind p ≠ .Fact :=
+  interpretation_is_never_a_fact
 
 /-- Epistemic corollary — operator-emitted generalizations/interpretations cannot
     become new immutable Facts. This is a representation bound, not a solution to
     Hume's problem of induction. -/
 theorem principle_epistemic_operator_output_not_fact :
-    ∀ registry (e : Edge) (output : Memory),
-      EdgeOperatorShapeValid registry e →
-      (edge_authorship e = .OperatorFtoA ∨
-       edge_authorship e = .OperatorAtoA ∨
-       edge_authorship e = .OperatorAtoP) →
-      edge_source e = .memory output →
-      memory_kind output ≠ .Fact :=
+    ∀ (inv : OperatorInvocation) (output : Memory),
+      InvocationShapeValid inv → output ∈ inv.outputMemories →
+        memory_kind output ≠ .Fact :=
   operator_memory_output_not_fact
 
-/-- Epistemic corollary — valid Supersession cannot revise Fact identity:
-    neither endpoint of a valid Supersession memory edge can be a Fact. -/
+/-- Epistemic corollary — supersession cannot revise Fact identity: neither end
+    of an admitted supersession lineage is a Fact. -/
 theorem principle_epistemic_supersession_cannot_touch_facts :
-    ∀ registry (e : Edge) (source target : Memory),
-      EdgeHasClass registry e .Supersession →
-      edge_source e = .memory source →
-      edge_target e = .memory target →
-      memory_kind source ≠ .Fact ∧ memory_kind target ≠ .Fact :=
+    ∀ (memories : Set Memory), MemorySupersessionValid memories →
+      ∀ new old : Memory, memorySupersedes memories new old →
+        memory_kind new ≠ .Fact ∧ memory_kind old ≠ .Fact :=
   facts_never_supersede
 
-/-- P5 — every admitted memory is grounded in Facts: a well-founded derivation/
-    supersession descent (incl. higher-order A→A provenance) bottoms out
-    at Facts inside the admitted memory graph. Names the Provenance.lean
-    table-scoped grounding theorem. -/
+/-- P5 — every admitted memory is grounded in Facts: a well-founded descent
+    along the index (origins for what a row was made from, references for what
+    it is about) bottoms out at Facts inside the admitted memory graph. Names
+    the Provenance.lean table-scoped grounding theorem. -/
 theorem principle_5_memories_grounded_in_facts :
-    ∀ registry memories goals factEntities edges,
-      MemoryGraphValid registry memories goals factEntities edges →
-      ∀ m : Memory, m ∈ memories → GroundsInFact registry edges m :=
+    ∀ memories goals factEntities edges,
+      MemoryGraphValid memories goals factEntities edges →
+      ∀ m : Memory, m ∈ memories → GroundsInFact edges m :=
   memory_grounds_in_facts
 
 /-- Epistemic corollary — every admitted Abstraction is empirically grounded:
     it has finite descent to Facts inside the valid memory graph. -/
 theorem principle_epistemic_abstraction_grounded_in_facts :
-    ∀ registry memories goals factEntities edges,
-      MemoryGraphValid registry memories goals factEntities edges →
+    ∀ memories goals factEntities edges,
+      MemoryGraphValid memories goals factEntities edges →
       ∀ m : Memory, m ∈ memories → memory_kind m = .Abstraction →
-        GroundsInFact registry edges m :=
+        GroundsInFact edges m :=
   abstraction_grounds_in_facts
 
-/-- Epistemic corollary — every admitted Perspective has persisted Provenance
-    to an admitted Abstraction; no Perspective is a view from nowhere. -/
-theorem principle_epistemic_perspective_has_abstraction_provenance :
-    ∀ registry memories goals factEntities edges,
-      MemoryGraphValid registry memories goals factEntities edges →
+/-- Epistemic corollary — no Perspective is a view from nowhere: every admitted
+    Perspective names at least one admitted memory row it rests on, and so
+    descends to Facts. WEAKENED from "…to an Abstraction" with the class
+    matrix: an interpretation Perspective references its subjects directly,
+    whatever kind they are (doc 16 §The Model). -/
+theorem principle_epistemic_perspective_is_no_view_from_nowhere :
+    ∀ memories goals factEntities edges,
+      MemoryGraphValid memories goals factEntities edges →
       ∀ m : Memory, m ∈ memories → memory_kind m = .Perspective →
-        ∃ e : Edge, e ∈ edges ∧ EdgeHasClass registry e .Provenance ∧
+        ∃ e : Edge, e ∈ edges ∧
           edge_source e = .memory m ∧
-          (∃ mt : Memory, mt ∈ memories ∧ edge_target e = .memory mt ∧
-            memory_kind mt = .Abstraction) :=
+          (∃ mt : Memory, mt ∈ memories ∧ edge_target e = .memory mt) :=
   perspective_has_provenance
 
-/-- P6a — derivation/provenance edges obey the layer directionality
-    law: for memory→memory edges, ℓ(source) ≥ ℓ(target). This names
-    existing theorem ME-10 `edge_layer_rule`. -/
+/-- P6a — index rows obey the layer directionality law: for memory→memory
+    rows, ℓ(source) ≥ ℓ(target). This names existing theorem ME-10
+    `edge_layer_rule`. -/
 theorem principle_6a_derivation_provenance_strictly_upward :
-    ∀ registry (e : Edge), EdgeCoreValid registry e → ∀ (ms mt : Memory),
+    ∀ e : Edge, EdgeValid e → ∀ ms mt : Memory,
       edge_source e = .memory ms →
       edge_target e = .memory mt →
       (memory_kind mt).layer ≤ (memory_kind ms).layer :=
@@ -165,8 +145,8 @@ theorem principle_6a_derivation_provenance_strictly_upward :
 
 /-- P6b — materialized personality read-scope was removed: there is no
     kernel `PersonalityInstance`, `read_scope`, or authored-personality
-    accessor. Wake/read context is modeled from Goals, Facts, access roles,
-    and Perspective-context edges, not a materialized personality scope. -/
+    accessor. Wake/read context is modeled from Goals, Facts, and access roles,
+    not a materialized personality scope. -/
 def principle_6b_personality_read_scope_removed : String :=
   "no kernel PersonalityInstance/read_scope; wake context is not materialized"
 
@@ -189,5 +169,17 @@ theorem principle_8b_long_term_knowledge_artifact_has_text_memory :
       KnowledgeArtifactIn memories a →
         a.carrier ∈ memories ∧ ∃ text : Text, memory_text a.carrier = some text :=
   long_term_knowledge_artifact_has_text_memory
+
+/-- P9 (v0.0.8) — REBUILDABILITY, the master edge invariant: the index is a
+    function of node content, so dropping it and re-deriving it from the nodes
+    yields the same set, and a store whose declarations are layer-legal
+    rebuilds into a VALID index. Every other edge guarantee is a corollary of
+    this one holding. -/
+theorem principle_9_index_is_a_function_of_node_content :
+    ∀ (content : Set NodeDeclaration) (edges : Set Edge),
+      (∀ d : NodeDeclaration, d ∈ content → NodeDeclarationValid d) →
+      EdgeTableRebuildable content edges →
+      EdgeTableValid edges :=
+  rebuilt_table_valid
 
 end Causa

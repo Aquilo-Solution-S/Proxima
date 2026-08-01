@@ -7,18 +7,23 @@ all storage coordinates, hashes, byte ranges, pages, message ids,
 rendering, fetching, and idempotency mechanics live in flavor sidecars
 or engine code.
 
-The three-layer model remains Fact-only: only Facts may cite
-(OPTIONAL as of 2026-06-13). Here "Fact" means lossless observed source
-atom/transcription, not interpretation. Abstractions and Perspectives
-NEVER cite directly — their bibliography is the transitive closure
-through provenance edges down to cited Facts (CI-3, and CN-6 supplies
-the edges).
+Who may cite is Fact ∪ Abstraction (doc 16 §Computed Scores Are Abstractions,
+amending doc 11 §Multiplicity). A Fact cites the source it transcribes; an
+Abstraction cites the computation record that produced it — a persisted
+computed score is a claim, so it is an Abstraction with its proof attached
+rather than an edge property or a cache row. Citation stays OPTIONAL (since
+2026-06-13) and stays 0..1 per memory.
 
-Minimized trusted core (D8): the Fact↔mapping relation is stored ONCE —
-`CitationMapping.fact` is primitive; the Fact-side pointer
+PERSPECTIVES STILL NEVER CITE (`citation_perspective_never_cites`). An
+interpretation grounds through its references, so bibliographic closure for
+A/P terminates at Fact citations AND direct Abstraction citations (CI-3, with
+the admitted index supplying the descent).
+
+Minimized trusted core (D8): the subject↔mapping relation is stored ONCE —
+`CitationMapping.subject` is primitive; the memory-side pointer
 `memory_citation mappings` is a noncomputable DEF over the actual
 mapping table via choice, and CI-1/CI-2a/CI-2c are PROVED from the
-table-scoped `CitationMappingUniqueByFact mappings` validity predicate.
+table-scoped `CitationMappingUniqueBySubject mappings` validity predicate.
 Doc 11 treats the pointer and the FK as one relation kept consistent by
 the engine; the kernel now encodes exactly one.
 
@@ -69,15 +74,27 @@ def CitedObjectIdUnique (objects : Set CitedObject) : Prop :=
 instance : Immutable CitedObject := ⟨⟩
 instance : AppendOnly CitedObject := ⟨⟩
 
-/-- One thin evidence link from one lossless observed Fact to one
-    CitedObject. Location/range metadata (page, paragraph, bbox, …) is
-    flavor sidecar data, not a kernel field. Insert-only (ST-8). -/
+/-- The citable half of the F/A/P ontology: a Fact (a lossless observed source
+    atom) or an Abstraction (a computed claim citing the record that produced
+    it). NOT a Perspective — an interpretation grounds through its references,
+    never through a direct citation. -/
+def Citable : Type := { m : Memory // memory_kind m = .Fact ∨ memory_kind m = .Abstraction }
+
+/-- Projection from the Citable subtype back to the memory row. -/
+def Citable.memory (c : Citable) : Memory := c.val
+
+/-- Every Fact is citable. -/
+def Fact.citable (f : Fact) : Citable := ⟨f.val, Or.inl f.property⟩
+
+/-- One thin evidence link from one citable memory to one CitedObject.
+    Location/range metadata (page, paragraph, bbox, …) is flavor sidecar data,
+    not a kernel field. Insert-only (ST-8). -/
 structure CitationMapping where
   id          : CitationMappingId
   schema      : SchemaRef
-  fact        : Fact
+  subject     : Citable
   object      : CitedObject
-  owner_match : memory_owner fact.memory = object.owner
+  owner_match : memory_owner subject.memory = object.owner
 
 /-- Compatibility accessor for prose/Rust vocabulary. -/
 def citation_mapping_id : CitationMapping → CitationMappingId := CitationMapping.id
@@ -85,11 +102,11 @@ def citation_mapping_id : CitationMapping → CitationMappingId := CitationMappi
 /-- Compatibility accessor for prose/Rust vocabulary. -/
 def citation_mapping_schema : CitationMapping → SchemaRef := CitationMapping.schema
 
-/-- The Fact-side target as the Fact subtype. -/
-def citation_fact_ref : CitationMapping → Fact := CitationMapping.fact
+/-- The citing side as the Citable subtype. -/
+def citation_subject_ref : CitationMapping → Citable := CitationMapping.subject
 
-/-- Compatibility accessor: the cited Fact projected as its Memory row. -/
-def citation_fact (c : CitationMapping) : Memory := c.fact.memory
+/-- Compatibility accessor: the citing memory projected as its Memory row. -/
+def citation_subject (c : CitationMapping) : Memory := c.subject.memory
 
 /-- Compatibility accessor for prose/Rust vocabulary. -/
 def citation_object : CitationMapping → CitedObject := CitationMapping.object
@@ -104,72 +121,92 @@ def CitationMappingIdUnique (mappings : Set CitationMapping) : Prop :=
     c1 = c2
 
 /-- CI-2b — the actual citation-mapping table is a partial function
-    `Fact ⇀ CitedObject`: at most one mapping per Fact. This is not a
-    global property of raw `CitationMapping` values; two invalid rows with
-    the same Fact can be constructed, but not admitted into a valid table. -/
-def CitationMappingUniqueByFact (mappings : Set CitationMapping) : Prop :=
+    `Citable ⇀ CitedObject`: at most one mapping per memory (multiplicity
+    stays 0..1). This is not a global property of raw `CitationMapping`
+    values; two invalid rows with the same subject can be constructed, but not
+    admitted into a valid table. -/
+def CitationMappingUniqueBySubject (mappings : Set CitationMapping) : Prop :=
   ∀ c1 c2 : CitationMapping,
     c1 ∈ mappings →
     c2 ∈ mappings →
-    citation_fact c1 = citation_fact c2 →
+    citation_subject c1 = citation_subject c2 →
     c1 = c2
 
 instance : Immutable CitationMapping := ⟨⟩
 instance : AppendOnly CitationMapping := ⟨⟩
 
 -- ============================================================
--- The Fact-only rule (doc 11 §Three-layer model) — trusted core
+-- The Fact ∪ Abstraction rule (doc 16 §Computed Scores Are
+-- Abstractions, amending doc 11 §Three-layer model) — trusted core
 -- ============================================================
 
-/-- CI-1b — a mapping's target IS a Fact by structure: no mapping may
-    point at an Abstraction or Perspective (doc 11 §Three-layer model). -/
-theorem citation_fact_is_fact :
-  ∀ c : CitationMapping, memory_kind (citation_fact c) = .Fact := by
+/-- CI-1b — a mapping's subject IS a Fact or an Abstraction by structure. -/
+theorem citation_subject_is_citable :
+  ∀ c : CitationMapping,
+    memory_kind (citation_subject c) = .Fact ∨
+      memory_kind (citation_subject c) = .Abstraction := by
   intro c
-  exact fact_memory_kind c.fact
+  exact c.subject.property
 
--- CI-1a RETIRED 2026-06-13 — citations are OPTIONAL on Facts. A Fact may
--- carry no citation (Facts are the event stream; citations are optional
--- outside-proofs). The former axiom `fact_has_citation` ("every Fact has a
--- mapping / NOT NULL for Fact") no longer holds; `memories_variant_chk` was
--- relaxed to match. Only the citation ⇒ Fact direction survives (CI-1).
+/-- CI-1 — a Perspective NEVER cites directly. THEOREM: the subtype admits
+    only the two lower layers, so there is no mapping row a Perspective could
+    occupy. Its bibliography is the closure through its references. -/
+theorem citation_perspective_never_cites :
+  ∀ c : CitationMapping, memory_kind (citation_subject c) ≠ .Perspective := by
+  intro c hperspective
+  rcases citation_subject_is_citable c with h | h <;> rw [h] at hperspective <;>
+    exact (nomatch hperspective)
+
+-- CI-1a RETIRED 2026-06-13 — citations are OPTIONAL. A Fact may carry no
+-- citation (Facts are the event stream; citations are optional
+-- outside-proofs), and so may an Abstraction. The former axiom
+-- `fact_has_citation` no longer holds; `memories_variant_chk` was relaxed to
+-- match, and v0.0.8 widened it again to Fact ∪ Abstraction. Only the
+-- citation ⇒ not-a-Perspective direction survives (CI-1).
 
 -- ============================================================
--- The Fact-side pointer — a DEF, with CI-1/2a/2c as THEOREMS
+-- The memory-side pointer — a DEF, with CI-1/2a/2c as THEOREMS
 -- ============================================================
 
 open Classical in
-/-- `Memory.citation_mapping_id` — the Fact-side pointer, DEFINED from the
+/-- `Memory.citation_mapping_id` — the memory-side pointer, DEFINED from the
     actual mapping table (one relation, stored once). -/
 noncomputable def memory_citation
     (mappings : Set CitationMapping) (m : Memory) : Option CitationMapping :=
-  if h : ∃ c : CitationMapping, c ∈ mappings ∧ citation_fact c = m
+  if h : ∃ c : CitationMapping, c ∈ mappings ∧ citation_subject c = m
   then some h.choose
   else none
 
-/-- CI-1 — only a Fact may carry a citation (citation ⇒ Fact). THEOREM.
-    Citations are OPTIONAL on Facts as of 2026-06-13, so the reverse
-    implication (Fact ⇒ has citation) no longer holds; this weakened from
-    an `↔` (which relied on the retired `fact_has_citation`) to a `→`. -/
-theorem citation_implies_fact :
+/-- CI-1 — only a Fact or an Abstraction may carry a citation. THEOREM.
+    Citations are OPTIONAL, so the reverse implication does not hold. -/
+theorem citation_implies_citable :
     ∀ (mappings : Set CitationMapping) (m : Memory),
-      (memory_citation mappings m).isSome → memory_kind m = .Fact := by
+      (memory_citation mappings m).isSome →
+        memory_kind m = .Fact ∨ memory_kind m = .Abstraction := by
   intro mappings m h
   unfold memory_citation at h
-  by_cases hex : ∃ c : CitationMapping, c ∈ mappings ∧ citation_fact c = m
+  by_cases hex : ∃ c : CitationMapping, c ∈ mappings ∧ citation_subject c = m
   · have hspec := hex.choose_spec
     rw [← hspec.2]
-    exact citation_fact_is_fact hex.choose
+    exact citation_subject_is_citable hex.choose
   · rw [dif_neg hex] at h
     exact (nomatch h)
+
+/-- CI-1 — a Perspective carries no citation pointer at all. -/
+theorem citation_pointer_never_on_perspective :
+    ∀ (mappings : Set CitationMapping) (m : Memory),
+      memory_kind m = .Perspective → (memory_citation mappings m).isSome → False := by
+  intro mappings m hkind hsome
+  rcases citation_implies_citable mappings m hsome with h | h <;>
+    rw [hkind] at h <;> exact (nomatch h)
 
 /-- CI-2a — the pointer and the mapping agree. THEOREM. -/
 theorem citation_points_back :
     ∀ (mappings : Set CitationMapping) (m : Memory) (c : CitationMapping),
-      memory_citation mappings m = some c → citation_fact c = m := by
+      memory_citation mappings m = some c → citation_subject c = m := by
   intro mappings m c h
   unfold memory_citation at h
-  by_cases hex : ∃ c' : CitationMapping, c' ∈ mappings ∧ citation_fact c' = m
+  by_cases hex : ∃ c' : CitationMapping, c' ∈ mappings ∧ citation_subject c' = m
   · rw [dif_pos hex] at h
     have hspec := hex.choose_spec
     have hc : hex.choose = c := Option.some.inj h
@@ -184,7 +221,7 @@ theorem citation_points_to_row :
       memory_citation mappings m = some c → c ∈ mappings := by
   intro mappings m c h
   unfold memory_citation at h
-  by_cases hex : ∃ c' : CitationMapping, c' ∈ mappings ∧ citation_fact c' = m
+  by_cases hex : ∃ c' : CitationMapping, c' ∈ mappings ∧ citation_subject c' = m
   · rw [dif_pos hex] at h
     have hspec := hex.choose_spec
     have hc : hex.choose = c := Option.some.inj h
@@ -198,37 +235,37 @@ theorem citation_points_to_row :
     collapses choice onto c). -/
 theorem citation_reverse_total :
     ∀ (mappings : Set CitationMapping),
-      CitationMappingUniqueByFact mappings →
+      CitationMappingUniqueBySubject mappings →
       ∀ c : CitationMapping,
-        c ∈ mappings → memory_citation mappings (citation_fact c) = some c := by
+        c ∈ mappings → memory_citation mappings (citation_subject c) = some c := by
   intro mappings huniq c hc
   have hex : ∃ c' : CitationMapping,
-      c' ∈ mappings ∧ citation_fact c' = citation_fact c := ⟨c, hc, rfl⟩
+      c' ∈ mappings ∧ citation_subject c' = citation_subject c := ⟨c, hc, rfl⟩
   unfold memory_citation
   rw [dif_pos hex]
   exact congrArg some (huniq hex.choose c hex.choose_spec.1 hc hex.choose_spec.2)
 
 /-- CI-2b in its r1 name — projection theorem over a valid mapping table. -/
-theorem citation_unique_per_fact :
+theorem citation_unique_per_subject :
     ∀ (mappings : Set CitationMapping),
-      CitationMappingUniqueByFact mappings →
+      CitationMappingUniqueBySubject mappings →
       ∀ c1 c2 : CitationMapping,
         c1 ∈ mappings →
         c2 ∈ mappings →
-        citation_fact c1 = citation_fact c2 → c1 = c2 := by
-  intro mappings huniq c1 c2 hc1 hc2 hfact
-  exact huniq c1 c2 hc1 hc2 hfact
+        citation_subject c1 = citation_subject c2 → c1 = c2 := by
+  intro mappings huniq c1 c2 hc1 hc2 hsubject
+  exact huniq c1 c2 hc1 hc2 hsubject
 
 -- ============================================================
 -- Owner scoping (doc 11 §Owner scoping)
 -- ============================================================
 
-/-- CI-7/CI-8 — a mapping inherits its Fact's owner. Same artefact for
+/-- CI-7/CI-8 — a mapping inherits its subject's owner. Same artefact for
     a different Owner is a separate CitedObject row (no cross-owner
     citation reuse). The match is structural, not an extra axiom. -/
 theorem citation_owner_match :
   ∀ c : CitationMapping,
-    memory_owner (citation_fact c) = cited_object_owner (citation_object c) := by
+    memory_owner (citation_subject c) = cited_object_owner (citation_object c) := by
   intro c
   exact c.owner_match
 

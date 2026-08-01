@@ -9,7 +9,12 @@ compliance erasure (ST-11, ST-13 — see Causa.Compliance).
 Identity rules (doc 07 §Identity Rules):
   - Fact / Abstraction / Perspective: fresh UUIDv7 MemoryId.
   - Goal: fresh GoalId; supersession writes a new row.
-  - Edge: insert-only.
+  - Edge: insert-only, and it has NO id at all. The index row is its own
+    identity — the primary key is `(source, target, kind)` — so there is no
+    `EdgeId` type here, no content-hash arm, and nothing to mint. That
+    ABSENCE is E5 (doc 16 §The edge table is an index); the v0.0.7
+    identity-hash scheme existed to approximate what the row now has by
+    construction.
   - Source/flavor ingest deduplication is metadata around typed Facts,
     not a separate core Event entity.
   - Embeddings are engine-side: the kernel models no `Embedding` entity,
@@ -74,8 +79,6 @@ structure OwnerState where
   world_resolves : resolve .world = world
   personal_resolves : ∀ u : User, resolve (.personal u) = Owner.ofUser u
 
-/-- The fresh-token half of `EdgeId` (operator / user / engine edges). -/
-abbrev EdgeUuid          : Type := Id
 /-- A source/flavor ingest batch grouping token. -/
 abbrev SourceBatchId     : Type := Id
 
@@ -90,23 +93,14 @@ opaque OperatorId : Type := String
     only its equality as a gate dimension. -/
 opaque InputContract : Type := String
 
-/-- The content-addressable arm's id. The kernel cannot observe "hash-ness" — it
-    sees no payload — so a content hash is, to the kernel, the same opaque
-    equality-token as any other `Id`. That source-ingest edges are
-    content-addressable (so re-ingest dedups, AGENTS.md invariant 17) is an engine
-    commitment, carried by the `sourceAuthored` CONSTRUCTOR, not by a distinct id
-    type. The name is kept only to document which `EdgeId` arm it is; the split
-    read by `edge_id_authorship_split` (Causa.Edges) is the constructor. -/
-abbrev ContentHash : Type := Id
+/- `ContentHash` and `EdgeId` retired with the edge id (doc 16 §What This
+   Removes). Edge rows have no identity beyond their content, so there is no
+   id to represent and no authorship-conditioned id split to constrain; a
+   replayed write re-asserts the same primary key instead of minting a
+   deduplicable hash. Content-addressability of uploaded artefacts remains an
+   engine concern below the payload-opacity boundary. -/
 
-/-- EdgeId is a SUM: source-ingest-authored edges carry a content-addressable id
-    (deduplicable); operator / user / engine edges carry a fresh `Id`. The kernel
-    distinguishes the two by CONSTRUCTOR alone — both arms are `Id` underneath. -/
-inductive EdgeId where
-  | sourceAuthored (h : ContentHash)
-  | authored       (u : EdgeUuid)
-
-/-- The opaque per-row schema tag every Memory/Goal/Edge/CitedObject carries —
+/-- The opaque per-row schema tag every Memory/Goal/CitedObject carries —
     NOT an identity. THE domainless boundary, payload opacity in its strongest
     form: the kernel sees a row is schema-typed but has NO accessor on it at all
     (no resolution, no payload, no capabilities). A flavor's sidecar conforms to
@@ -125,7 +119,7 @@ opaque SchemaRef : Type := String
     instance asserts rows of α are never mutated in place. -/
 class AppendOnly (α : Type) : Prop
 
-/-- Never superseded, never updated. Facts, Edges, cited objects,
+/-- Never superseded, never updated. Facts, index rows, cited objects,
     citation mappings (ST-2, ST-5..8). -/
 class Immutable (α : Type) : Prop
 

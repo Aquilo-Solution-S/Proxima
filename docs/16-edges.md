@@ -256,9 +256,9 @@ from; reference rows come back with re-ingest. Operational steps are in
 ## Kernel Invariants
 
 The runtime enforces all of these today (CHECKs, a trigger, and the
-write paths that are the only producers of rows). Restating them in the
-Lean kernel is the remaining work; there, the edge obligations shrink
-to:
+write paths that are the only producers of rows), and the Lean kernel
+restates them in `docs/lean/Causa/Edges.lean` (coverage rows E1–E7 in
+`docs/lean/COVERAGE.md`). The edge obligations are:
 
 - **E1 Existence** — both endpoints exist.
 - **E2 Ownership** — `edge.owner = source.owner`.
@@ -266,14 +266,21 @@ to:
 - **E4 Kind-follows-operation** — `origin` rows are written only by
   node writes carrying a derivation declaration; `reference` rows only
   from schema-declared reference fields. No code path writes an edge
-  as a free-standing act.
+  as a free-standing act. A write with **zero** origins is legal: an
+  interpretation Perspective grounds through its references and
+  consumes nothing, so the operator-invocation manifest is skipped
+  rather than failed — a manifest proves a derivation, and a write
+  with no derivation has none to prove.
 - **E5 Structural idempotency** — the primary key is the row.
 - **E6 No content** — edges carry no payload, citation, or status.
 - **E7 Rebuildability** — the edge set is a function of node content.
   This is the master invariant; E4–E6 are its preconditions.
 
-`EdgeIdAuthorshipValid` and `EdgeOperatorShapeValid` retire with the
-columns they constrain.
+`EdgeIdAuthorshipValid` and `EdgeOperatorShapeValid` retired with the
+columns they constrained, along with `RelationClass`,
+`RelationDescriptor`, `RelationRegistry`, `EdgeAuthorship`, the class
+matrix and `EdgeId` itself. Supersession, authorship and Goal topology
+became row fields in the kernel exactly as they did in the schema.
 
 ## Relationship to Open Work
 

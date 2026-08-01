@@ -95,9 +95,10 @@ materialized Personality/Self authz, owner-reachability compatibility,
 core Event/EventSource identity, legacy Goal parent tables,
 public aggregate `Storage`, raw flavor `PgPool` / core-table SQL capability,
 and stale MCP/wire names. Do not weaken the Lean guardrails: server-resolved
-`OwnerRef`, source-owned edges with target redaction,
-optional sidecars/receipts, `MemoryGraphValid`, `OperatorInvocation`
-completeness, abandonment-only hard deletion, build-time flavor registries,
+`OwnerRef`, source-owned index rows with target redaction,
+optional Memory/Goal sidecars and receipts, `MemoryGraphValid`,
+`OperatorInvocation` completeness for writes that declare a derivation,
+abandonment-only hard deletion, build-time flavor registries,
 set-based authorized reads, and atomic command-port writes.
 
 ## Agent operating discipline
@@ -190,27 +191,36 @@ runtime checklist most likely to prevent regressions.
   not external truth. Fact identity is the row id, not content hash, source id,
   or receipt id.
 - **Sidecars:** Memory/Goal sidecars and Fact receipts are optional kernel
-  witnesses. Edges have no sidecar at all. A schema/engine contract may require
-  a typed sidecar; the kernel never requires a global sidecar nor permits
-  untyped JSON escape hatches for typed payloads.
+  witnesses. Edges have no sidecar at all — there is no `OptionalEdgeSidecar`
+  in `Causa.Flavor`. A schema/engine contract may require a typed sidecar; the
+  kernel never requires a global sidecar nor permits untyped JSON escape
+  hatches for typed payloads.
 - **Edges:** an edge carries no information beyond its existence — endpoints,
   direction, creation time, kind. Two closed kinds (`origin`, `reference`), the
   kind follows the operation, and no verb writes an edge. Rows are source-owned
   with no id and no payload; the edge set is a function of node content
   (rebuildability is the master invariant). Target rendering is separately
-  `Visible` / `Redacted` / `Unavailable`. See `docs/16-edges.md`.
+  `Visible` / `Redacted` / `Unavailable`. Kernel carriers are E1–E7 in
+  `Causa.Edges` (`EdgeValid`, `deriveEdges`, `EdgeTableRebuildable`); there is
+  no relation registry, descriptor, mask, authorship column or edge id to
+  reintroduce. See `docs/16-edges.md`.
 - **Provenance/operators:** derived rows are valid only in an admitted table
   graph (`MemoryGraphValid`). Operator outputs carry an `OperatorInvocation`
-  manifest/witness proving declared-input provenance/evidence completeness.
+  manifest/witness proving declared-input provenance/evidence completeness — a
+  write that declares NO derivation (an interpretation Perspective grounding
+  through its references) declares no inputs and carries no manifest, which is
+  legal and is the E4 case the kernel accommodates.
 - **Goals/Self/Wake:** Goals are structural entities. Lifecycle supersession is
   row-local; topology/assignment/evidence are Goal row columns
-  (`dependency_goal_ids`, `assignment_perspective_id`, `evidence_memory_ids`)
-  from which the index entries are derived. Self is a
+  (`dependency_goal_ids`, `assignment_perspective_id`, `evidence_memory_ids` —
+  `Goal.dependencies` / `.assignment` / `.evidence` in the kernel) from which
+  the index entries are derived. Memory supersession and authorship are row
+  columns too (`Memory.supersedes`, `Memory.authoring_perspective`). Self is a
   query, never a row. Wake is armed Goal behavior, not a separate kernel entity.
-- **Citations/compliance/embeddings:** citations are Fact ∪ Abstraction (a
-  computed score is an Abstraction citing its computation record); hard deletion
-  is abandonment-only; embeddings are independent rows and never graph
-  authors.
+- **Citations/compliance/embeddings:** citations are Fact ∪ Abstraction (the
+  kernel's `Citable` subtype; a computed score is an Abstraction citing its
+  computation record, and a Perspective never cites); hard deletion is
+  abandonment-only; embeddings are independent rows and never graph authors.
 - **Flavor/API/storage:** flavor composition is build-time; no runtime registry
   or plugin tier. Flavor code must use authorized helpers/private permits, not
   raw core-table SQL. Writes are atomic command-port operations or explicit
