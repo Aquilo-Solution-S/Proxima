@@ -39,7 +39,7 @@ Current export bundle:
 | Section | Rows |
 |---|---|
 | substrate | `memories`, `goals`, `edges`, `fact_entities`, `fact_receipts`, `source_batches`, `citation_mappings`, `cited_objects`, `source_cursors` |
-| sidecars | registered memory/goal/edge/citation/cited-object sidecar rows for the target owner |
+| sidecars | registered memory/goal/citation/cited-object sidecar rows for the target owner |
 | blob refs | `cited_uploaded_blob_v1` / other registered cited-object sidecars; object bytes remain external |
 | audit | matching `compliance_audit_log` rows by owner digest |
 | excluded | persona/self rows, caller-supplied auth path, caller-supplied audit context |
@@ -131,7 +131,7 @@ Hard deletion must not reopen ingest.
 
 Audit survives `delete_owner` for the same Owner.
 
-Owner remains the storage and graph isolation primitive. Access is server-resolved `OwnerRoles` over concrete `OwnerRef`s; Core enforces those roles at verb/tool entry and never adds org/share-set semantics. Edge rows are source-owned; descriptor policy and target gates control cross-owner target admission. Compliance export/delete redacts or omits unreadable targets independently from source-readable edge rows.
+Owner remains the storage and graph isolation primitive. Access is server-resolved `OwnerRoles` over concrete `OwnerRef`s; Core enforces those roles at verb/tool entry and never adds org/share-set semantics. Edge rows are source-owned, admitted by one uniform rule (write authority on the source, read authority on the target). Compliance export/delete redacts or omits unreadable targets independently from source-readable edge rows; a redaction is keyed by the edge itself, which is its own key.
 
 ## External side effects
 

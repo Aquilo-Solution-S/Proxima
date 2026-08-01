@@ -89,8 +89,9 @@ F→A / A→P / A→Goal operators under an active Perspective context. Core
 constrains writes; external harnesses drive wake loops. Flavors define
 compaction, reflection, synthesis, self-update, prompts, schemas, and retrieval
 policy. Dreams produce ordinary typed
-Abstractions, Perspectives, Goals, and registered edges. There is no Dream
-entity, Dream relation class, or Core dream pipeline.
+Abstractions, Perspectives, and Goals; the index entries follow from what
+those nodes declare. There is no Dream entity, Dream edge kind, or Core dream
+pipeline.
 
 ## 3. Philosophical commitments
 
@@ -114,10 +115,15 @@ causes, it infers them under priors.
 The load-bearing architectural consequence: **Perspective is the locus of
 causal claims**, never Facts. Facts from multiple domains may be connected only
 by a typed Abstraction over those Facts, optionally framed by a Perspective.
-Direct semantic or causal Fact-to-Fact edges are forbidden. Mechanical
-Fact-to-Fact edges remain structural/provenance only. Cosine similarity is
-observer-independent and so cannot encode an observer-relative relation. This
-grounds invariants 6 and 20 and the directionality rule of `02-memory.md`.
+A causal claim is therefore a *node* — an interpretation Perspective whose
+payload references what it is about — and never a kind of edge, which is why
+the edge vocabulary can be closed at two mechanical kinds (`origin`,
+`reference`) without losing any expressive power. A Fact can never be the
+source of an interpretation, because the layering rule refuses it. Cosine
+similarity is observer-independent and so cannot encode an observer-relative
+claim; a similarity worth persisting is an Abstraction citing its computation
+record, not an edge property. This grounds invariants 6 and 20, the
+directionality rule of `02-memory.md`, and the thesis of `16-edges.md`.
 
 ### "Causa proxima" as abductive inference, not legal proximity
 
@@ -135,8 +141,8 @@ of perspectivism, not a bug.
 These positions are not original to Proxima. The contribution is **treating
 them as load-bearing engineering invariants in a running system**:
 append-only storage that cannot overwrite a Perspective, build-time-typed
-payloads that force operators to commit to a causal interpretation, schemas
-that forbid similarity-wired edges. Cognitive architectures (SOAR, ACT-R,
+payloads that force operators to commit to a causal interpretation, an edge
+table that can carry no claim at all. Cognitive architectures (SOAR, ACT-R,
 LIDA) and philosophy of science have articulated the shape for decades;
 what was missing was the operational discipline to ship it on top of LLMs
 that can finally serve as F→A and A→P operators.
@@ -150,14 +156,14 @@ domains. Three mappings:
 ### Code World
 
 - **Reality:** registered sources — repositories from different providers.
-- **Memories:** state of the code at time point t, with edges between states that follow the causa proxima principle.
+- **Memories:** state of the code at time point t, with connections between states that follow the causa proxima principle.
 - **Perspective:** extraction across repositories — meta principles, shared architectures, shared code segments. Drift across multiple repositories is detected at this layer.
 - **Goals:** aligned with repository goals — reduce drift, increase output.
 
 ### Learning World
 
 - **Reality:** provided documents — university scripts, books, research papers, conversations with the user about the topics, generated exams, interaction events.
-- **Memories:** state of the documents at time point t, with edges between memorable events such as conversations, tests, exams.
+- **Memories:** state of the documents at time point t, with connections between memorable events such as conversations, tests, exams.
 - **Perspective:** extraction from user sessions with user-centric observation — what does the user need to understand about topic X to be prepared for the exam's challenges.
 - **Goals:** understand X.
 
@@ -179,8 +185,9 @@ distinct working contexts:
 - **Abstracted memories** aggregate over factual memories without themselves
   referring to a single source — they hold patterns, not records.
 - **Perspective memories** sit above both layers and carry the system's
-  reasoning. They may frame cross-domain Abstractions, but do not create direct
-  semantic Fact-to-Fact edges.
+  reasoning. They may frame cross-domain Abstractions, but never put a
+  semantic claim between two Facts — a claim about Facts is a Perspective over
+  them.
 
 The architectural commitment is that this layering is *strict and irreversible*:
 no operator may produce a lower-layer memory from a higher-layer one. That is

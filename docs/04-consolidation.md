@@ -10,15 +10,15 @@ policy, and retrieval policy.
 
 ```
 source receipt metadata
-  -> receipt-backed Fact + structural Edge
+  -> receipt-backed Fact + its payload's reference entries
   -> closed source batch
-  -> Abstraction + provenance Edge
+  -> Abstraction + origin entries
 
 change_event(F/A/P/Goal/Edge)
   -> external harness pull
   -> armed Active Goal wake match
   -> harness decision
-  -> typed A/P/Goal/Edge writes
+  -> typed A/P/Goal writes (edges follow from what they declare)
   -> change_event(...)
 ```
 
@@ -26,10 +26,10 @@ Phase split:
 
 | Phase | Input | Output | Runtime |
 |---|---|---|---|
-| FactIngest | external observation + receipt metadata | receipt-backed Fact + structural Edge | 01 / 03 / 05 |
-| F->A | Fact set, source batch | Abstraction + provenance Edge | flavor-operator discipline |
-| A->P | Abstraction set, active Perspective context | Perspective + provenance Edge | operator / harness |
-| A->Goal | Abstraction set, active Perspective context | Goal + evidence Edge | operator / harness |
+| FactIngest | external observation + receipt metadata | receipt-backed Fact + its payload's `reference` entries | 01 / 03 / 05 |
+| F->A | Fact set, source batch | Abstraction + `origin` entries | flavor-operator discipline |
+| A->P | Abstraction set, active Perspective context | Perspective + `origin` entries | operator / harness |
+| A->Goal | Abstraction set, active Perspective context | Goal + `reference` entries from its evidence column | operator / harness |
 
 ## Source-batch lifecycle
 
@@ -74,10 +74,11 @@ F(D1) + F(D2) -> A(D1,D2)
 ```
 
 The join object is a typed Abstraction with provenance to every input Fact.
-Direct semantic / causal Fact-to-Fact edges remain forbidden (see 02 §Edges).
+A semantic or causal claim about two Facts is a node over them, never a
+connection between them (see [02 §Edges](02-memory.md#edges)).
 
-A->P, A->Goal, and mechanical Edge writes are intentionally plural: different
-Perspective contexts can frame the same Abstractions differently.
+A->P and A->Goal are intentionally plural: different Perspective contexts can
+frame the same Abstractions differently.
 
 ## Prompt locality
 
@@ -117,9 +118,10 @@ Harness wake loop (driven externally, served by core pull verbs):
    Steps 2-5 are one admission read: `Engine::list_goal_wake_candidates`
    (MCP: `proxima://wake-candidates{?fact,limit}`).
 6. Execute externally; core does not run a scheduler, plugin host, or tool executor.
-7. Validate every write through schema and relation registries.
-8. Commit output rows and emitted `change_event` rows atomically; any emitted Fact
-   must receive a same-transaction `core/wake-motivated-by` Goal-context edge.
+7. Validate every write through the schema registry.
+8. Commit output rows and emitted `change_event` rows atomically; the Goal
+   records its wake evidence in `goals.evidence_memory_ids`, from which the
+   `reference` entries are derived in that same transaction.
 9. Advance the harness cursor after consideration, independent of output count.
 
 Fired-wake idempotency is the harness's responsibility; core does not keep a
@@ -128,7 +130,8 @@ server-side invocation ledger.
 Isolation:
 
 - Owner is the access boundary.
-- Cross-owner reads and edges are invalid.
+- Cross-owner reads are governed by owner roles; an edge is always owned by
+  its source.
 - Server-resolved owner roles govern cross-owner reads.
 - External harness cursors and policy terminate wake cycles.
 
@@ -141,9 +144,12 @@ Operators write ordinary typed entities only:
 | Abstraction | memory row, typed sidecar, text, operator provenance |
 | Perspective | memory row, typed sidecar, text, operator provenance |
 | Goal | goal row, typed sidecar, authorship, optional supersession |
-| Edge | registered relation, legal endpoint kinds, owner match |
 
-No Dream entity. No Dream relation class. No Core dream pipeline.
+Edges are not in that table because operators do not write them. They follow
+from what the nodes above declare: `derived_from` on the write, reference
+fields on the payload.
+
+No Dream entity. No Dream edge kind. No Core dream pipeline.
 
 Dreaming is flavor policy expressed as ordinary F->A / A->P / A->Goal
 operators under the same registry and edge invariants as every other
@@ -167,10 +173,9 @@ Reproducibility metadata:
 |---|---|
 | Abstraction / Perspective | operator kind, model id, prompt version, declared input/provenance context |
 | Goal | authorship, schema id/version, supersession lineage |
-| Edge | relation id, authoring path, endpoint ids |
 
-Bibliographic citation remains Fact-only (see 11). Operator reproducibility is
-inline provenance, not citation.
+Bibliographic citation is Fact ∪ Abstraction (see 11). Operator reproducibility
+is inline provenance, not citation.
 
 Retries append only through the same idempotency boundary. A changed prompt,
 model binding, operator version, Perspective context, or input contract is a
@@ -178,10 +183,11 @@ new derivation, not mutation of the old row.
 
 ## Invariants
 
-- F/A/P layering and edge direction: 02 §Edges.
+- F/A/P layering and edge direction: 02 §The Directionality Rule; the model
+  itself: 16.
 - Typed A/P sidecars: 03 §Sidecar tables.
 - Append-only identity and supersession: 07 §Append-only.
-- Build-time schemas, relations, prompts, tools: 08 §Registration mechanism.
-- Fact-only bibliographic citation: 11 §Three-layer model.
+- Build-time schemas, prompts, tools: 08 §Registration mechanism.
+- Bibliographic citation on Fact and Abstraction: 11 §Three-layer model.
 - Source-batch lifecycle is core; domain metadata is citation-sidecar data.
 - F->A exclusivity is per output Abstraction schema and operator.

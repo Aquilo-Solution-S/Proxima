@@ -9,7 +9,11 @@ Owned here:
 | `FactPayload` | `proxima_core.memories` | `memory_id` | no stored `text`; render on demand |
 | `AbstractionPayload` | `proxima_core.memories` | `memory_id` | operator-authored `text` required |
 | `PerspectivePayload` | `proxima_core.memories` | `memory_id` | operator-authored `text` required |
-| `EdgePayload` | `proxima_core.edges` | `edge_id` | no text |
+
+There is no edge payload family. `proxima_core.edges` is an index with no
+payload, no sidecar and no id to key one by (see
+[16](16-edges.md#the-edge-table-is-an-index)); a payload's `references()`
+declaration is what puts rows in it.
 
 Same registry, separate owner docs:
 
@@ -28,7 +32,7 @@ Registry rules:
 | every sidecar-backed write inserts the entity row and sidecar row atomically | no orphan typed storage |
 | registry freezes at startup from core plus linked flavors | no runtime schema registration |
 | schema evolution moves sidecar bytes only | entity identity and provenance stay fixed |
-| `CitedObject` / `CitationMapping` schemas may be *opaque* — content-addressed blobs with no Rust payload type | F/A/P/Goal/Edge are never opaque |
+| `CitedObject` / `CitationMapping` schemas may be *opaque* — content-addressed blobs with no Rust payload type | F/A/P/Goal are never opaque |
 
 An opaque schema is registered through `FlavorRegistry::add_opaque_schema`
 and carries no validator, no CBOR encoder, and no sidecar table; its
@@ -44,7 +48,6 @@ Optional typed-sidecar exceptions:
 | Abstraction | required |
 | Perspective | required |
 | Goal | optional |
-| Edge | required only when relation descriptor declares payload schema |
 | CitedObject | required for typed cited-object schemas |
 | CitationMapping | optional; pure links need no sidecar |
 | Opaque citation schemas | none |
@@ -98,12 +101,16 @@ Fact-only metadata:
 | `natural_key_columns` | non-empty only for stateful Fact schemas |
 | `tombstone` | optional state discriminator for stateful Fact deletion observations |
 
-Edge-only metadata:
+Connection metadata (every family):
 
 | Field | Meaning |
 |---|---|
-| `relation_class` | closed substrate traversal class |
-| `payload_schema` on relation descriptor | opt-in sidecar payload for that relation |
+| `references()` | the node references this payload's fields carry; ingest derives one `Reference` index entry per declaration, in the node write's own transaction. Default: none. |
+
+`references()` is the *only* way a schema puts rows in `proxima_core.edges`.
+There is no edge kind to choose and no relation to register: a
+Fact-entity-head reference follows the head, every other reference pins the
+row, and the address form is the whole binding.
 
 ### `FactPayload`
 
@@ -149,48 +156,46 @@ F(D1) + F(D2) -> A(D1,D2)
 No direct semantic Fact-to-Fact edge is needed. The typed Abstraction
 is the cross-domain join object; a Perspective may frame or reuse it.
 
-### `EdgePayload`
+### Reference fields
 
-Edge schema = optional typed sidecar for one registered relation.
+A schema does not register a connection vocabulary. It declares which of its
+own fields point at other nodes, and ingest turns each declaration into one
+`reference` row:
 
-Substrate edge row:
+```rust
+fn references(&self) -> Vec<PayloadReference> {
+    vec![PayloadReference::memory(
+        "work_item_memory_id",
+        EntityKind::Fact,
+        self.work_item_memory_id,
+    )]
+}
+```
 
-| Column | Meaning |
+The substrate edge row that results carries only source, target, kind, owner
+and `created_at` — no relation, no class, no payload, no authorship column,
+no id. Domain detail stays in the payload that declared the reference: ten
+call sites from chunk A to chunk B are **one** index row and ten entries in
+A's payload.
+
+Constructors and what they bind to:
+
+| Constructor | Address | Binding |
+|---|---|---|
+| `PayloadReference::memory` | a `memories` row | pins that observation |
+| `PayloadReference::goal` | a `goals` row | pins that Goal |
+| `PayloadReference::fact_entity_head` | a `fact_entities` head | follows the head as it is re-observed |
+
+Rules:
+
+| Rule | Consequence |
 |---|---|
-| `relation` | flavor-qualified relation id |
-| `relation_class` | closed substrate class |
-| source endpoint | Memory / Goal / Fact entity |
-| target endpoint | Memory / Goal / Fact entity |
-| owner pair (`owner_kind`, `owner_id`) | source endpoint Owner |
-| relation policy | descriptor `SourceOwned` / `SameOwner` plus target gate `None` / `Read` / `Write` |
-| authorship | edge author class |
+| the declaration is the only source of `reference` rows | the edge set is a function of node content, and re-deriving it from payloads reproduces it exactly |
+| the primary key is `(source, target, kind)` | replaying a write re-asserts the row; no duplicate, no id to reconcile |
+| kind is never a parameter | a schema cannot invent a third kind; a feature that seems to need one is missing a node |
 
-Payload rule:
-
-| Relation descriptor | Storage |
-|---|---|
-| no `payload_schema` | edge row only |
-| `payload_schema = E` | edge row + `E` sidecar keyed by `edge_id` |
-
-Core substrate relations carry no payload:
-
-| Relation | Class |
-|---|---|
-| `core/derived-from` | `Provenance` |
-| `core/supersedes` | `Supersession` |
-| `core/inspires` | `Causal` |
-| `core/authored` | `Causal` |
-| `core/depends-on` | `Structural` |
-| `core/motivated-by` | `Structural` |
-
-Flavor relations may carry payloads, e.g. `proxima-code/calls` with
-`proxima_code.code_calls_v1`.
-
-`relation_class` is not extensible by flavors. Flavors choose among the
-closed classes and use `relation` + `EdgePayload` for domain detail.
-
-Edges are immutable in v1. Rewrites produce new memories and new edges;
-old edges remain attached to old observations.
+Edges are immutable. Rewrites produce new memories and new index rows; the
+rows attached to old observations stay attached to them.
 
 ### Selective extraction — design intent
 
@@ -252,7 +257,6 @@ Sidecar table contract, when a sidecar exists:
 | Abstraction | `memory_id` | `proxima_core.memories(memory_id)` |
 | Perspective | `memory_id` | `proxima_core.memories(memory_id)` |
 | Goal | `goal_id` | `proxima_core.goals(goal_id)` |
-| Edge | `edge_id` | `proxima_core.edges(edge_id)` |
 | CitedObject | `cited_object_id` | `proxima_core.cited_objects(cited_object_id)` |
 | CitationMapping | `citation_mapping_id` | `proxima_core.citation_mappings(citation_mapping_id)` |
 
@@ -367,7 +371,6 @@ Allowed:
 | Fact vN | Fact vN+1 |
 | Abstraction vN | Abstraction vN+1 |
 | Perspective vN | Perspective vN+1 |
-| Edge vN | Edge vN+1 |
 
 Forbidden:
 
@@ -441,7 +444,7 @@ Migration keeps:
 | entity id | yes |
 | event id / citation | yes |
 | A/P text | yes |
-| provenance edges | yes |
+| `origin` provenance entries | yes |
 | active query shape | yes |
 
 Only the typed sidecar representation changes.
@@ -462,7 +465,8 @@ Rules:
 No renderer for A/P. Their `Memory.text` is the authored text view.
 
 No "dream renderer." Dream/wake passes write new Abstractions,
-Perspectives, Goals, or edges through flavor-declared operators (see
+Perspectives, or Goals through flavor-declared operators; the index entries
+follow from what those nodes declare (see
 [02 §Wake / Dream / Write](02-memory.md#wake--dream--write)).
 
 ## What this gives us
@@ -470,7 +474,7 @@ Perspectives, Goals, or edges through flavor-declared operators (see
 | Capability | Source |
 |---|---|
 | typed query over F/A/P | sidecar tables |
-| typed edge metadata | `EdgePayload` + relation descriptor |
+| connections without a connection vocabulary | payload `references()` |
 | schema-aware UI/protocol | Schema verb |
 | compliance classification | `special_category` |
 | current-state projections | stateful Fact heads |
@@ -493,7 +497,7 @@ Perspectives, Goals, or edges through flavor-declared operators (see
 - `what-a-schema-is`
 - `factpayload`
 - `abstractionpayload-and-perspectivepayload`
-- `edgepayload`
+- `reference-fields`
 - `selective-extraction-design-intent`
 - `special-category-declaration`
 - `sidecar-tables`

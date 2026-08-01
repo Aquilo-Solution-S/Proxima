@@ -22,6 +22,7 @@ explicit request.
 | `docs/universe.md` | Origin doc: ontology, the Spinning Wheel, three Realities |
 | `docs/01-event-source.md` | Membrane between Reality and the agent; `Owner` scoping |
 | `docs/02-memory.md` | F/A/P layering, edges, directionality |
+| `docs/16-edges.md` | the edge model: two closed kinds, kind-follows-operation, rebuildability |
 | `docs/03-schema-registry.md` | Payload traits (`FactPayload`, `AbstractionPayload`, `PerspectivePayload` — all required), sidecar tables, migration |
 | `docs/04-consolidation.md` | F→A and A→P operators; prompt locality |
 | `docs/05-actions.md` | Actions as ordinary Facts; wake/tool boundary |
@@ -94,7 +95,7 @@ materialized Personality/Self authz, owner-reachability compatibility,
 core Event/EventSource identity, legacy Goal parent tables,
 public aggregate `Storage`, raw flavor `PgPool` / core-table SQL capability,
 and stale MCP/wire names. Do not weaken the Lean guardrails: server-resolved
-`OwnerRef`, source-owned descriptor-admitted edges with target redaction,
+`OwnerRef`, source-owned edges with target redaction,
 optional sidecars/receipts, `MemoryGraphValid`, `OperatorInvocation`
 completeness, abandonment-only hard deletion, build-time flavor registries,
 set-based authorized reads, and atomic command-port writes.
@@ -188,21 +189,28 @@ runtime checklist most likely to prevent regressions.
 - **Facts:** Facts are admitted `Memory` rows; receipts prove admission only,
   not external truth. Fact identity is the row id, not content hash, source id,
   or receipt id.
-- **Sidecars:** Memory/Goal/Edge sidecars and Fact receipts are optional kernel
-  witnesses. A schema/engine contract may require a typed sidecar; the kernel
-  never requires a global sidecar nor permits untyped JSON escape hatches for
-  typed payloads.
-- **Edges:** edges are source-owned claims. Relation descriptors are registered
-  at build time and choose target access policy; target rendering is separately
-  `Visible` / `Redacted` / `Unavailable`.
+- **Sidecars:** Memory/Goal sidecars and Fact receipts are optional kernel
+  witnesses. Edges have no sidecar at all. A schema/engine contract may require
+  a typed sidecar; the kernel never requires a global sidecar nor permits
+  untyped JSON escape hatches for typed payloads.
+- **Edges:** an edge carries no information beyond its existence — endpoints,
+  direction, creation time, kind. Two closed kinds (`origin`, `reference`), the
+  kind follows the operation, and no verb writes an edge. Rows are source-owned
+  with no id and no payload; the edge set is a function of node content
+  (rebuildability is the master invariant). Target rendering is separately
+  `Visible` / `Redacted` / `Unavailable`. See `docs/16-edges.md`.
 - **Provenance/operators:** derived rows are valid only in an admitted table
   graph (`MemoryGraphValid`). Operator outputs carry an `OperatorInvocation`
   manifest/witness proving declared-input provenance/evidence completeness.
 - **Goals/Self/Wake:** Goals are structural entities. Lifecycle supersession is
-  row-local; topology/assignment/evidence is ordinary Edge topology. Self is a
+  row-local; topology/assignment/evidence are Goal row columns
+  (`dependency_goal_ids`, `assignment_perspective_id`, `evidence_memory_ids`)
+  from which the index entries are derived. Self is a
   query, never a row. Wake is armed Goal behavior, not a separate kernel entity.
-- **Citations/compliance/embeddings:** citations are Fact-only; hard deletion is
-  abandonment-only; embeddings are independent rows and never graph authors.
+- **Citations/compliance/embeddings:** citations are Fact ∪ Abstraction (a
+  computed score is an Abstraction citing its computation record); hard deletion
+  is abandonment-only; embeddings are independent rows and never graph
+  authors.
 - **Flavor/API/storage:** flavor composition is build-time; no runtime registry
   or plugin tier. Flavor code must use authorized helpers/private permits, not
   raw core-table SQL. Writes are atomic command-port operations or explicit
@@ -252,7 +260,9 @@ runtime checklist most likely to prevent regressions.
   or public access to storage internals.
 - Turning compliance into broad source-scope deletion. Hard delete needs
   abandonment proof.
-- Using embeddings/similarity to author graph edges.
+- Using embeddings/similarity to author a connection.
+- Reaching for a verb that writes an edge, or a third edge kind. A feature that
+  seems to need one fails the node-home test and is missing a node.
 - "Fixing" terse docs by adding explanatory paragraphs instead of technical
   facts, signatures, tables, and cross-references.
 

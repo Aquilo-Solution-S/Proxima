@@ -16,7 +16,6 @@ types.
 | `SchemaId` | text | flavor-qualified, binary-scoped id (03) |
 | `ToolId` | text | build-time declared tool id (05 / 12) |
 | `ReceiptId` | content hash | hash of source, Owner, and payload for re-receipt dedup |
-| `EdgeId` | UUIDv7 or descriptor-defined deterministic id | graph relation identity; no similarity-authored edges |
 | `MemoryId` | UUIDv7 | Fact, Abstraction, and Perspective identity |
 | `GoalId` | UUIDv7 | Goal identity |
 | `SourceBatchId` | UUIDv7 | source-declared batch id; unique within `(source_id, Owner)` |
@@ -43,7 +42,7 @@ metadata lives in `fact_receipts`; `receipt_id` proves admission only.
 | Abstraction | fresh `MemoryId` | supersession writes a new row |
 | Perspective | fresh `MemoryId` | supersession writes a new row |
 | Goal | fresh `GoalId` | supersession writes a new row |
-| Edge | `EdgeId` rule by authorship class | insert-only |
+| Edge | the row is its own identity: `(source, target, kind)` | insert-only; a replayed write re-asserts the same primary key |
 | Source batch | source-declared `SourceBatchId` | core lifecycle row, not flavor-typed |
 | Cited object | fresh `CitedObjectId`; idempotent by payload key | insert-only |
 | Citation mapping | fresh `CitationMappingId`; one per Fact | insert-only |
@@ -83,7 +82,7 @@ under one Postgres schema per linked flavor:
 
 | Owner | Sidecar namespace |
 |---|---|
-| core memory | `proxima_core.agent_note_v1`, `proxima_core.agent_derivation_v1`, `proxima_core.agent_link_v1`, `proxima_core.utterance_v1` |
+| core memory | `proxima_core.agent_note_v1`, `proxima_core.agent_derivation_v1`, `proxima_core.interpretation_v1`, `proxima_core.utterance_v1` |
 | core goals | `proxima_core.goal_*_v1` |
 | `proxima-code` | `proxima_code.*` |
 
@@ -94,7 +93,7 @@ Rules:
 
 | Rule | Consequence |
 |---|---|
-| core owns entity tables | flavors do not redefine Memory / Goal / Edge |
+| core owns entity tables | flavors do not redefine Memory / Goal / the edge index |
 | core owns generic agent memory sidecars | one `proxima_core` migration stream, starting at `0001_init.sql` |
 | flavor owns its sidecars | migration ownership stays local |
 | cross-flavor reads are allowed | query composition can span all linked flavors |
@@ -109,19 +108,19 @@ Rules:
 Closed DB vocabularies are PostgreSQL enums. Do not model closed
 storage values as `text` plus membership `CHECK`. `CHECK` remains for
 shape, subset, range, and cross-column rules. Open identifiers remain
-text: schema ids, relation ids, tool ids, model ids, vendors, handles,
+text: schema ids, tool ids, model ids, vendors, handles,
 paths, and payload text.
 
 | Table family | Owns | Contract |
 |---|---|---|
 | `fact_receipts` | source receipt and observed payload metadata | optional admission receipt for accepted Fact payloads |
 | `memories` | Fact / Abstraction / Perspective identity | common identity, Owner, schema, and lifecycle metadata |
-| `edges` | graph relations between Memories and Goals | relation id must resolve to a build-time `RelationDescriptor`; endpoints are typed entity refs; descriptor policy governs masks / owner policy / target write gate; Goal↔Goal topology lives here |
+| `edges` | the connection index over Memories, Goals and Fact-entity heads | no id, no payload, no sidecar; PK is `(source_kind, source_id, target_kind, target_id, kind)`; `kind` is the closed enum `origin`/`reference`; owner is always the source owner; existence, endpoint-kind agreement, layering, and the self-loop refusal are enforced by CHECKs and a trigger; rebuildable from node content |
 | `goals` | Goal identity and lifecycle | distinct entity; typed GoalPayload sidecar; supersession-only lifecycle |
 | `cited_objects` | bibliographic cited-object identity | Owner-scoped idempotency by payload key |
-| `citation_mappings` | Fact-only citation mapping | at most one mapping per Fact |
+| `citation_mappings` | citation mapping for a Fact or an Abstraction | at most one mapping per memory |
 | `source_batches` | core source-batch lifecycle | fixed shape; domain metadata belongs on cited objects |
-| `change_event` | change-event pull log | same transaction as announced entity or edge append |
+| `change_event` | change-event pull log | same transaction as the announced entity write; an edge append is announced with the whole edge (source kind/id, target kind/id, edge kind), not a handle to it |
 | `schema_migrations` | applied SQL migrations | tracks physical sidecar/core migration files |
 
 Memory-specific rules:
@@ -135,8 +134,9 @@ Physical SQL encoding: the kernel `.Fact` branch is represented by `memories.kin
 | Perspective | `memories` derived branch | required `PerspectivePayload` sidecar | schema/owner lineage |
 
 Goal-specific rules live in [06](06-goals-and-self.md#goal-entity).
-Citation rules live in [11](11-citations.md). Edge layering rules live
-in [02](02-memory.md#edges).
+Citation rules live in [11](11-citations.md). The edge model lives in
+[16](16-edges.md); its layering rule is restated in
+[02](02-memory.md#the-directionality-rule).
 
 Physical shape source of truth:
 
@@ -177,7 +177,7 @@ is explicitly defined as a content hash.
 | Surface | Collision behavior |
 |---|---|
 | Fact receipt re-receipt | silent replay/drop |
-| deterministic edge re-receipt | silent replay/drop |
+| edge re-assertion (structural PK) | silent replay/drop |
 | UUIDv7 entity id collision | storage error |
 
 No conflict-resolution protocol is attached to deterministic re-receipt.
@@ -216,8 +216,10 @@ The vector store is independent from entity tables.
 | backend is pluggable | pgvector today, dedicated store later |
 
 Embeddings may point at Facts, Abstractions, Perspectives, and Goals.
-Edges are not embedded as relations. Similarity is query-time evidence;
-it never authors graph edges (02 §Why this layering).
+Edges are not embedded: they carry no content to embed. Similarity is
+query-time evidence and never authors a connection — a similarity score that
+is worth persisting is an Abstraction citing its computation record
+(16 §Computed Scores Are Abstractions), not an edge.
 
 Postgres implementation:
 

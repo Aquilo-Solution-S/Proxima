@@ -8,9 +8,9 @@ Flavor = build-time vocabulary crate.
 
 | Owns | Examples |
 |---|---|
-| Payload schemas | `FactPayload`, `AbstractionPayload`, `PerspectivePayload`, `GoalPayload`, `EdgePayload` |
+| Payload schemas | `FactPayload`, `AbstractionPayload`, `PerspectivePayload`, `GoalPayload` |
 | Sidecar storage | SQL tables + typed PG insert/load impls |
-| Relations | `RelationDescriptor` values under the flavor prefix |
+| Connections | reference fields declared by `references()` on those payloads |
 | Tools | MCP tools under the flavor prefix |
 | Sources/operators | Domain ingestion and F/A/P/G derivation code |
 | Migrations | One per flavor migrator, global SQLx version namespace |
@@ -57,7 +57,7 @@ Reference: `examples/embedded-minimal/src/flavor.rs`.
 3. Implement payload traits and schema-owned keys.
 4. Write sidecar SQL tables.
 5. Implement PG sidecar insert/load traits.
-6. Register schemas/relations/tools with `proxima_flavor!`.
+6. Register schemas/tools with `proxima_flavor!`.
 7. Wrap the flavor in `FlavorBundle`.
 8. Add ingestion/operators/tools.
 9. Add tests.
@@ -69,7 +69,6 @@ Reference: `examples/embedded-minimal/src/flavor.rs`.
 |---|---|
 | Flavor id | `kebab-case`; stable persisted prefix |
 | Schema ids | `<flavor_id>/<local-schema-vN>` |
-| Relation ids | `<flavor_id>/<local-relation>` |
 | MCP tools | provider-safe `<flavor_id>_<tool>` |
 | SQL schema | `<flavor_id>` converted to snake case |
 | Rust crate | `proxima-<local>` for in-repo first-party flavors |
@@ -110,11 +109,66 @@ Rules:
 | Abstraction | immutable `text` on memory row + typed sidecar |
 | Perspective | immutable `text` on memory row + typed sidecar |
 | Goal | `goal_key()`; title/text live on `goals` |
-| Edge | typed sidecar only when relation descriptor has payload schema |
 
 No `serde_json::Value` payload fields. No generic canonical payload
 encoder. Keys are schema-owned semantic identity bytes, built with
 `PayloadKeyBuilder`.
+
+## Declaring references
+
+A flavor does not register a connection vocabulary and cannot invent an edge
+kind. It declares which of its payload's own fields point at other nodes, and
+ingest turns each declaration into exactly one `reference` index row, inside
+the node write's own transaction:
+
+```rust
+impl PerspectivePayload for CodeWorkAssignmentV1 {
+    // ...
+    fn references(&self) -> Vec<PayloadReference> {
+        vec![
+            PayloadReference::memory(
+                "target_perspective_memory_id",
+                EntityKind::Perspective,
+                MemoryId::new(self.target_perspective_memory_id),
+            ),
+            PayloadReference::memory(
+                "work_item_memory_id",
+                EntityKind::Fact,
+                MemoryId::new(self.work_item_memory_id),
+            ),
+        ]
+    }
+}
+```
+
+`references()` is available on all four payload traits and defaults to none.
+
+| Constructor | Address | Binding |
+|---|---|---|
+| `PayloadReference::memory` | a `memories` row | pins that observation |
+| `PayloadReference::goal` | a `goals` row | pins that Goal |
+| `PayloadReference::fact_entity_head` | a `fact_entities` head | follows the head as it is re-observed |
+
+The address form *is* the binding — there is no `FollowHead` / `Pin` cell to
+configure, and the two cannot disagree.
+
+Rules worth internalizing before designing a flavor's graph:
+
+- **The kind follows the operation.** `origin` comes from a write's
+  `derived_from`; `reference` comes from `references()`. Nothing else writes
+  an edge, and nothing takes a kind as an argument.
+- **Multiplicity lives in the payload.** Ten call sites from chunk A to chunk
+  B are **one** index row and ten entries in A's payload. The index answers
+  "is there a connection"; the node answers "what it is".
+- **The node-home test.** If a connection needs to carry something —
+  a reason, a confidence, a byte range, a score — that something belongs in a
+  node. If no existing node owns the statement, the flavor is missing a node,
+  not an edge kind. (`proxima-code/work-assignment-v1` exists for exactly this
+  reason: neither the plan Abstraction nor the worker Perspective owned the
+  targeting claim.)
+- **Rebuildability.** Dropping `proxima_core.edges` and re-deriving it from
+  node content must reproduce the same set, which is why a reference is a
+  function of payload content and nothing else.
 
 ## Key Selection
 
@@ -131,8 +185,9 @@ Key = replay/idempotency contract.
 Embedded hosts create product-authored Goals through
 `Engine::create_goal(GoalCreateRequest::product(...))`. The helper calls
 `GoalPayload::goal_key()`, validates the registered Goal schema, applies
-the stable request id, and writes the required Self assignment edge; host
-apps do not insert `proxima_core.goals` rows directly.
+the stable request id, and records the Self assignment on the Goal row
+(`assignment_perspective_id`), from which the index entry follows; host apps
+do not insert `proxima_core.goals` rows directly.
 
 Include `SCHEMA_ID` and `SCHEMA_VERSION` through `PayloadKeyBuilder::new`.
 Never derive keys from arbitrary JSON serialization.
@@ -416,17 +471,14 @@ proxima::flavor::proxima_flavor! {
     abstraction_schemas = [],
     perspective_schemas = [],
     goal_schemas = [],
-    edge_schemas = [],
-    relations = [],
     mcp_tools = [],
 }
 ```
 
 Macro keys and prefix guards: see 08 §Macro Surface.
 
-Register every schema exactly once. Register every typed relation payload
-as an `edge_schemas` entry and point the relation descriptor at that
-schema.
+Register every schema exactly once. There is no `relations` or
+`edge_schemas` key to fill in — see §Declaring references below.
 
 ## FlavorBundle
 
@@ -478,23 +530,15 @@ Consumers call the bundle surface. They do not manually coordinate
 Declaring an `AbstractionPayload` gives a flavor a derived-memory schema;
 writing one goes through `Engine::author_derived_authorized`. The
 request names the operator that produced the memory, the text it is
-embedded from, its typed sidecar, and the provenance edges back to the
-Facts it was derived from:
+embedded from, its typed sidecar, and what it was derived from.
+
+Note what the request does *not* contain: a relation, an authorship kind, or
+an edge kind. `derived_from` names targets only; the engine writes one
+`origin` index row per entry, in this write's own transaction, because that
+is what a derivation declaration *means*.
 
 ```rust
-let relation = ctx.engine.registry()
-    .resolve_relation(CORE_DERIVED_FROM_RELATION)
-    .expect("core/derived-from is a substrate relation");
-
-let edges = [AuthorDerivedEdgeInput {
-    relation,
-    source_kind: EntityKind::Abstraction,
-    source_memory_id: derived_id,
-    target_kind: EntityKind::Fact,
-    target_memory_id: source_fact_id,
-    authorship_kind: EdgeAuthorshipKind::OperatorFtoA,
-    authorship_owner_memory_id: None,
-}];
+let derived_from = [EdgeEndpoint::memory(EntityKind::Fact, source_fact_id)];
 
 ctx.engine.author_derived_authorized(&authz, AuthorDerivedRequestInput {
     memory_id: derived_id,
@@ -509,11 +553,15 @@ ctx.engine.author_derived_authorized(&authz, AuthorDerivedRequestInput {
     model_id: "my-flavor/slicer-v1",
     prompt_version: "1",
     sidecar_payload: SidecarPayload::abstraction(payload),
+    authoring_perspective_id: None,
+    derived_from: &derived_from,
     supersedes: None,
     lexical_language: None,
-    edges: &edges,
 }).await?;
 ```
+
+The outcome reports an `edge_count`, not a list of handles: an edge has no id
+to hand back, and re-running the write re-asserts the same rows.
 
 Four contract points that are easy to get wrong:
 
@@ -525,8 +573,10 @@ Four contract points that are easy to get wrong:
   identity plus the source memory and slice index, as `flavors/code`
   does) so re-running the operator replays onto the same row instead of
   appending a duplicate. Use `supersedes` when the new output genuinely
-  replaces an earlier one; that also writes a `core/supersedes` edge in
-  the same transaction.
+  replaces an earlier one; that records the lineage pointers
+  (`supersedes` on the new row, `superseded_by` on the old one) in the same
+  transaction. Supersession is never an edge — it is the same thing
+  persisting through revision.
 - **Embedding is synchronous here, but a refused text is not a lost
   write.** The engine embeds `text` inside the write. When the provider
   refuses that text — or dies on it — and still answers a liveness probe,
@@ -654,7 +704,7 @@ Tool contract:
 | Output | `Serialize` |
 | Context | `ToolCtx`: Owner, AuthzContext, frozen registry, optional Engine, typed ToolServices |
 | Storage | use typed engine/storage APIs and flavor services; no public raw `PgPool` capability |
-| Writes | emit typed Facts / A/P / Goals / Edges through registered schemas |
+| Writes | emit typed Facts / A/P / Goals through registered schemas; no tool writes an edge |
 
 MCP JSON is protocol boundary only. Flavor SDK tool code targets `Tool`;
 MCP is an adapter projection.
@@ -715,16 +765,17 @@ Minimum:
 
 | Test | Assertion |
 |---|---|
-| Registry | all schemas, relations, tools registered and prefixed |
+| Registry | all schemas and tools registered and prefixed |
 | Sidecar insert | typed payload writes memory row + sidecar row atomically |
 | Sidecar load | query/open returns typed payload projection |
 | Migration | fresh DB has every sidecar table/enum/index |
 | Idempotency | same key replays; changed semantic key inserts |
 | Search projection | only schema-declared columns indexed |
+| References | `references()` yields one index row per declaration, and a replay re-asserts the same rows |
 | MCP tool | tool emits/reads typed payloads |
 
 Use `examples/embedded-minimal` for the smallest shape and
-`flavors/code` for full Fact/A/P/Edge/MCP coverage.
+`flavors/code` for full Fact/A/P/reference/MCP coverage.
 
 ## Verification
 

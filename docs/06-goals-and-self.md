@@ -7,7 +7,7 @@
 | Goal | Direction: desired future state, lifecycle head, topology source |
 | Memory | Observation or interpretation; never a Goal |
 | Self | Query result, not entity |
-| Assignment | `Goal --core/inspires--> Perspective` |
+| Assignment | `goals.assignment_perspective_id` -> Perspective |
 | Wake policy | `Goal.wake : Option<WakeConfig>`; no wake entity |
 
 <a id="goal-entity"></a>
@@ -48,8 +48,12 @@ States:
 | `Achieved` | no | yes | Positive close |
 | `Abandoned` | no | yes | Post-active negative close |
 
-Goal-to-Goal decomposition, dependency, and inspiration are ordinary
-Edge topology with relation descriptors, not Goal row fields.
+Goal-to-Goal decomposition, dependency, and inspiration are **Goal row
+fields**: `dependency_goal_ids`, `evidence_memory_ids`, and
+`assignment_perspective_id`. The Goal is the node that owns the statement, so
+the `reference` entries in `proxima_core.edges` are derived from those columns
+in the Goal's own transaction — which is what makes the goal side of the index
+rebuildable.
 
 Lifecycle:
 
@@ -115,8 +119,8 @@ an embedded product flow writes on behalf of the authenticated owner.
 System-originated host flows may override authorship explicitly; External
 authorship still cannot seed concrete Goal state. The host must pass
 `target_perspective_id`; assignment is explicit because active-goal
-projection is defined through `core/inspires` edges to a Perspective
-selector. Simple owner-scoped, unassigned Goal creation remains out-of-scope.
+projection is defined through `goals.assignment_perspective_id` against a
+Perspective selector. Simple owner-scoped, unassigned Goal creation remains out-of-scope.
 
 <a id="self--flavor-projection"></a>
 
@@ -148,34 +152,26 @@ Self is never cached as:
 
 ## Goal Assignment
 
-Assignment is a typed edge:
+Assignment is a column on the Goal row:
 
 ```
-Goal
-  --core/inspires-->
-Perspective
+goals.assignment_perspective_id -> the Perspective this Goal inspires
 ```
 
-Storage endpoint kinds:
-
-| Endpoint | Kind |
-|---|---|
-| source | `Goal` |
-| target | `Perspective` |
-
-No `GoalConnection` sidecar.
+One `reference` index entry is derived from it, Goal → Perspective. There is
+no `GoalConnection` sidecar and no assignment edge to write: the Goal knows
+who it inspires, so the statement lives on the Goal.
 
 `active_goals(perspective_id, read_owners)`:
 
 ```
-assigned = incoming core/inspires targets where target = perspective_id
-heads = follow Goal supersession for each assigned source
+assigned = goals where assignment_perspective_id = perspective_id
+heads = follow Goal supersession for each assigned Goal
 return heads where state = Active and Goal owner is readable
 ```
 
-Assignment means "this Goal may inspire this Perspective." It is a causal
-edge (`core/inspires`), not a structural membership edge. It does not
-imply execution, obligation, repository scope, or wake policy.
+Assignment means "this Goal may inspire this Perspective." It does not imply
+execution, obligation, repository scope, or wake policy.
 
 ## Goal Core Boundary
 
@@ -188,24 +184,25 @@ Core owns:
 | Verb | `GoalWrite` |
 | Lifecycle Facts | activated / paused / achieved / abandoned schemas |
 | Tools | `core_goal` action dispatcher: `set`, `transition` (pause / resume / abandon), `modify`, `mark_achieved`, `decompose` |
-| Relations | `core/inspires`, `core/motivated-by`, `core/wake-motivated-by` |
+| Topology | `assignment_perspective_id`, `dependency_goal_ids`, `evidence_memory_ids` on the Goal row; the index entries are derived from them |
 | Query | active-goal traversal |
 | Renderers | Goal and lifecycle payload views |
 
 Evidence:
 
 ```
-Goal --core/motivated-by--> Fact
-Goal --core/motivated-by--> Abstraction
+goals.evidence_memory_ids -> the Facts and Abstractions this Goal rests on
 ```
+
+One `reference` index entry per element.
 
 Lifecycle Fact provenance:
 
 ```
-Lifecycle Fact --core/derived-from--> Fact evidence
+Lifecycle Fact --origin--> Fact evidence     (declared as derived_from)
 ```
 
-Abstraction evidence remains represented by `core/motivated-by`.
+Abstraction evidence stays in `goals.evidence_memory_ids`.
 
 ## Goal-Scoped Wake Policy
 
@@ -241,10 +238,10 @@ Protocol reachability (see [14 §Core Memory MCP Surface](14-protocol-surface.md
 
 PR6 does not add a scheduler, executor, runtime plugin body, tool table, or
 tool invocation table. External harnesses plan and execute; emitted outputs
-must be ordinary Facts written through FactIngest and linked:
+must be ordinary Facts written through FactIngest and recorded on the Goal:
 
 ```
-Goal --core/wake-motivated-by--> emitted Fact
+goals.evidence_memory_ids <- emitted Fact   (one reference entry follows)
 ```
 
 Goals do not bind repos, worktrees, commands, or workers directly.
@@ -259,15 +256,16 @@ Owner is per row.
 |---|---|
 | Goal | Owner columns on Goal row |
 | Perspective | Owner columns on Memory row |
-| `core/inspires` edge | source-owned: edge Owner = source Goal Owner; descriptor/write policy may tighten target scope |
-| `core/motivated-by` edge | source-owned: edge Owner = source Goal Owner; descriptor/write policy may tighten target scope |
-| `core/wake-motivated-by` edge | source-owned: edge Owner = source Goal Owner; emitted Fact write authority checked separately |
+| assignment entry | source-owned: edge Owner = source Goal Owner |
+| evidence entry | source-owned: edge Owner = source Goal Owner |
+| dependency entry | source-owned: edge Owner = source Goal Owner |
 | WakeConfig | Goal-owned row; no independent Owner or handle |
 | Lifecycle Fact | same Owner as Goal write |
 
-Cross-owner Goal assignment/evidence is relation/write-surface policy,
-not the global Edge ownership law. Owner means the owning Group — org is
-not part of Owner.
+Cross-owner Goal assignment/evidence is write-surface policy — the writer
+needs write authority on the Goal and read authority on the target — not the
+global edge ownership law, which is uniformly "the row is owned by the source
+owner". Owner means the owning Group — org is not part of Owner.
 
 ## Authorship
 
@@ -280,6 +278,7 @@ Goal authorship:
 | `System(Tool)` | tool-authored lifecycle close |
 | `System(Operator)` | A->Goal operator output |
 
-Memory authorship remains separate. Perspective attribution is represented
-with `core/authored` edges. Operator-invocation proof carriers are deferred
+Memory authorship remains separate. Perspective attribution is the
+`memories.authoring_perspective_id` column: "emitted by P" is known at write
+time and belongs to the node. Operator-invocation proof carriers are deferred
 to PR7; PR6 does not preserve row-level authorship ids as substitutes.

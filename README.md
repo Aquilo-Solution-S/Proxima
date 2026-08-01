@@ -160,7 +160,8 @@ Status labels used below:
   and the agent.
 - [`docs/02-memory.md`](docs/02-memory.md) — **current + design rationale**.
   Core memory entity, strict Facts → Abstraction → Perspective layering,
-  source-owned edges, operator provenance, and owner-role scoped reads.
+  source-owned edges, operator provenance, and owner-role scoped reads. The
+  edge model itself is [`docs/16-edges.md`](docs/16-edges.md).
 - [`docs/03-schema-registry.md`](docs/03-schema-registry.md) — **current +
   design rationale**. Compile-time payload traits, sidecars, registrations,
   renderers, and migration discipline.
@@ -197,6 +198,9 @@ Status labels used below:
 - [`docs/15-deployment.md`](docs/15-deployment.md) — **current deployment
   guide**. Code-flavor MCP deployment, Docker, OIDC bearer auth, network
   exposure, and tool-surface profiles.
+- [`docs/16-edges.md`](docs/16-edges.md) — **current + design rationale**. The
+  edge model: two closed kinds, kind-follows-operation, the node-home test, and
+  rebuildability as the master invariant.
 - [`docs/dev-perf.md`](docs/dev-perf.md) — **current developer fixture note**.
   Perf reducer fixture format.
 

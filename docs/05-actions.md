@@ -16,7 +16,8 @@ Substrate shape:
 | Action schema | registered `FactPayload`; no separate action payload family |
 | Motivation | later A/P interpretation or Goal evidence, never Fact mutation |
 
-No Action entity. No Action lifecycle. No special action edge class.
+No Action entity. No Action lifecycle. No special action edge kind — the
+vocabulary is closed at two, and neither of them is about actions.
 Actions become traceable because attempts and consequences re-enter the
 append-only Fact stream.
 
@@ -41,7 +42,7 @@ Automated action selection is wake execution.
 
 | Trigger | Selector | Output |
 |---|---|---|
-| `change_event` | matching armed Goal wake trigger | tool call, A/P/Goal/Edge write, or no output |
+| `change_event` | matching armed Goal wake trigger | tool call, A/P/Goal write, or no output |
 | UI / chat / trusted source | user or source policy | action-attempt Fact |
 | external callback | source | effect Fact |
 
@@ -63,7 +64,7 @@ Tools are effect adapters.
 | Tool vocabulary | 12 owns build-time tool classes, MCP dispatch, and compliance declarations |
 | Runtime tool scope | auth token scope ∩ deployment profile (`ToolScope::Palette` when narrowed) |
 | Owner roles | memory reads/writes/actions are gated by server-resolved `OwnerRoles` plus tool scope; roles are `Viewer`/`Ingest`/`Editor`/`Admin` over concrete `OwnerRef`s, not a separate action vocabulary |
-| Persistence | tool result enters storage only as registered Fact / Edge writes |
+| Persistence | tool result enters storage only as registered Fact / A/P / Goal writes; no tool writes an edge |
 | A/P writes | operator/wake output protocol only; tools do not bypass 04 |
 | Failure | failed attempts are Facts when the source/tool schema models them |
 
@@ -79,9 +80,10 @@ Rules:
 
 - A successful tool call may change Reality before Proxima observes the result.
 - The observed consequence returns through the normal FactIngest path.
-- Request ids, message ids, branch names, issue ids, and payload references may
-  create ordinary structural edges.
-- No action-effect shortcut relation is required.
+- Request ids, message ids, branch names, and issue ids live in the Fact
+  payload; where one of them names another node, the payload declares it as a
+  reference and the index entry follows.
+- No action-effect shortcut edge kind is required.
 - No rollback is implied by deleting or superseding Proxima rows (see 13).
 
 ## MCP-call Facts
@@ -138,9 +140,9 @@ Every action-attempt or effect Fact follows the ordinary ingest contract:
 | owner | source/tool may write only within the authorized Owner |
 | owner roles | memory writes require a resolved write-capable role for that `Owner`; cross-owner copy/publish is not a current protocol action |
 | schema | `schema_id` / version must resolve to a registered `FactPayload` |
-| relation | structural edges must use registered relation descriptors |
-| capability | tool output must stay within registered schemas/relations and resolved tool scope |
-| atomicity | Fact, sidecar, structural edges, and change event commit together |
+| references | index entries come from the payload's own `references()`; nothing writes one directly |
+| capability | tool output must stay within registered schemas and resolved tool scope |
+| atomicity | Fact, sidecar, its reference entries, and change event commit together |
 
 Publication is synchronous with Fact materialization for engine-mediated tool
 paths: the wake run sees its own emitted Fact before any later step depends on

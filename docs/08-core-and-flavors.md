@@ -22,10 +22,10 @@ boundary.
 
 ```
 runtime framework core (`proxima-core`)
-  ids, Owner, Memory / Goal / Edge contracts
+  ids, Owner, Memory / Goal contracts
+  the closed edge kinds and the edge index
   F/A/P and Goal payload traits
   core GoalPayload schemas + lifecycle Fact schemas
-  relation descriptor validation
   frozen registry
   storage ports
   agent long-term memory sidecars + tools
@@ -35,8 +35,7 @@ runtime framework core (`proxima-core`)
 
 flavor crate
   typed payload schemas
-  typed EdgePayload schemas
-  relation descriptors
+  reference fields declared on those payloads
   MCP tools
 
 composite binary
@@ -46,8 +45,10 @@ composite binary
   wires storage + model clients + transports
 ```
 
-No runtime registration tier. Schemas, tools, sources, prompts, and
-relations are build-time vocabulary.
+No runtime registration tier. Schemas, tools, sources, and prompts are
+build-time vocabulary. Connections are not vocabulary at all: a flavor
+connects nodes only by declaring `references()` on its payloads, and the two
+edge kinds are closed to core.
 
 <a id="registration-mechanism"></a>
 ## Registration Mechanism
@@ -57,8 +58,8 @@ flavor's generated `register(&mut FlavorRegistry) -> Result<(), FlavorRegistryEr
 then calls `try_freeze()`. Registry failure is typed startup failure.
 
 Core registers substrate schemas, core GoalPayload schemas, Goal
-lifecycle Fact schemas, core relation descriptors, and substrate MCP
-memory/config/goal tools in the default registry. Flavor crates append
+lifecycle Fact schemas, and substrate MCP memory/config/goal tools in the
+default registry. Flavor crates append
 their own descriptors through `proxima_flavor!`.
 
 <a id="macro-surface"></a>
@@ -80,26 +81,29 @@ Supported keys:
 | `abstraction_schemas` | `AbstractionPayload` sidecar schemas. |
 | `perspective_schemas` | `PerspectivePayload` sidecar schemas. |
 | `goal_schemas` | `GoalPayload` sidecar schemas. |
-| `edge_schemas` | `EdgePayload` sidecar schemas for typed relations. |
 | `cited_object_schemas` | `CitedObjectPayload` sidecar schemas (see 11). |
 | `citation_mapping_schemas` | `CitationMappingPayload` sidecar schemas (see 11). |
 | `opaque_cited_object_schemas` | Untyped cited-object schema ids. |
 | `opaque_citation_mapping_schemas` | Untyped citation-mapping schema ids. |
 | `schema_capability_tags` | Build-time capability tags on registered payload schemas. |
-| `relations` | `RelationDescriptor` values. |
 | `mcp_tools` | Flavor tool descriptors projected to MCP; tool names must use the flavor prefix. |
 | `dependency_satisfaction_rules` | Build-time dependency rules for flavor schemas. |
 
-Unknown keys are compile errors. Macro-registered schemas, relations,
-tools, and dependency rules must start with `name + "/"`, except
-dependency rules may target `core/` schemas.
+Unknown keys are compile errors. Macro-registered schemas, tools, and
+dependency rules must start with `name + "/"`, except dependency rules may
+target `core/` schemas.
+
+There is no `relations` or `edge_schemas` key. A flavor that needs its nodes
+connected declares reference fields on the payload that owns the statement
+(see [09](09-developing-flavors.md#declaring-references)); the index rows
+follow.
 
 ## Public Tiers
 
 | Tier | Import | Surface |
 |---|---|---|
 | Host API | `use proxima::{Proxima, RuntimeBuilder, Engine, AuthzContext};` | boot/migrate/serve/query |
-| Flavor SDK | `use proxima::flavor::{FlavorBundle, FlavorRegistry, FactPayload, Tool};` | schemas, relations, sidecars, tools |
+| Flavor SDK | `use proxima::flavor::{FlavorBundle, FlavorRegistry, FactPayload, Tool};` | schemas, reference declarations, sidecars, tools |
 
 Root `proxima::*` is host-facing. Flavor authoring imports live under
 `proxima::flavor`.
@@ -112,7 +116,6 @@ Flavor-owned ids use `flavor_id/local_name`.
 | Id kind | Prefix rule |
 |---|---|
 | Schema ids | Flavor schemas start with `flavor_id + "/"`; core schemas start with `core/`. |
-| Relation ids | Flavor relations start with `flavor_id + "/"`; core relations start with `core/`. |
 | Tool names | Flavor tools start with `flavor_id + "/"` or provider-safe `flavor_id + "_"`; substrate tools use provider-safe `core_...` names. |
 
 `proxima_schema_id!("x")` expands to `CARGO_PKG_NAME + "/x"`.
@@ -141,7 +144,7 @@ Self is a query over existing rows:
 ```
 Self(perspective_id, read_owners)
   readable Perspective selector
-  active Goal heads assigned by core/inspires
+  active Goal heads whose `assignment_perspective_id` names it
 ```
 
 Wake is Goal-owned config:
@@ -152,7 +155,7 @@ WakeConfig.toolset subset-of actor ToolScope intersect deployment profile
 ```
 
 There is no flavor-owned runtime agent trait. A flavor may provide payload
-schemas, relation descriptors, MCP tools, and dependency rules. External
+schemas, the reference fields on them, MCP tools, and dependency rules. External
 harnesses drive model and execution decisions; PR6 core exposes candidate
 reads only, not an executor.
 
@@ -165,7 +168,7 @@ Default substrate memory surface:
 | `proxima://memory/{id}` resource | `core_derive` |
 | `core_search_memories` | `core_remember` |
 | `proxima://memory/{id}/lineage` resource | `core_record_utterance` |
-|  | `core_link` |
+| `proxima://edges{?kind,source,target,limit,cursor}` resource | `core_interpret` |
 
 Substrate MCP config tools are core-registered flat tools plus action
 dispatchers for goals and Facts. Schema,
@@ -176,9 +179,9 @@ Flavor MCP tools extend the MCP catalog. Goal WakeConfig validation checks
 registered trigger/tool shape; candidate reads apply actor and deployment
 tool-scope narrowing.
 
-Core exposes no generic `create_edge` tool. Relation creation
-is relation-specific because typed relations require descriptor masks and
-payload validation.
+Core exposes no edge-writing tool at all — not a generic one and not a
+specific one. An edge follows from what a node says, so the write that owns
+the statement is the only thing that can produce one.
 
 ## Goal Boundary
 
@@ -189,7 +192,7 @@ Core owns:
 | Entity | Goal identity and 4-state lifecycle (`Active`, `Paused`, `Achieved`, `Abandoned`) |
 | Verb | `GoalWrite` create / supersede semantics |
 | Query | active-goal heads and assignment traversal |
-| Relations | `core/inspires`, `core/motivated-by`, `core/wake-motivated-by` |
+| Topology | `assignment_perspective_id`, `dependency_goal_ids`, `evidence_memory_ids` on the Goal row; the index entries are derived from them |
 | Payloads | core `GoalPayload` schemas |
 | Tools | `core_goal` action dispatcher: `set`, `transition`, `mark_achieved`, `modify`, `decompose` |
 
@@ -201,15 +204,14 @@ writes use the same tool with the matching action key.
 
 `FlavorRegistry::try_freeze()` rejects with `FlavorRegistryError`:
 
-1. Invalid relation descriptor masks.
-2. Typed relations whose payload schema is not a registered Edge schema.
-3. Duplicate schemas, relations, tool names, `FlavorDescriptor::flavor_id`,
-   and dependency satisfaction rules.
-4. Capability tags for unregistered schemas.
-5. Relation endpoint capability tags with no satisfying registered schema.
+1. Duplicate schemas, tool names, `FlavorDescriptor::flavor_id`, and
+   dependency satisfaction rules.
+2. Capability tags for unregistered schemas.
+3. A registered MCP tool with no resolvable behaviour declaration.
 
-Prefix violations in macro-registered schemas, relations, MCP tools, and
-dependency rules fail during registration before freeze.
+Prefix violations in macro-registered schemas, MCP tools, and dependency
+rules fail during registration before freeze — schema-id prefixes as `const`
+assertions, so a misprefixed id fails the build rather than the first boot.
 
 <a id="inclusion"></a>
 ## Inclusion
@@ -237,8 +239,8 @@ runtime feature-flag matrix.
 Composite binaries may combine flavors, but registry ownership remains
 per flavor id:
 
-1. Each schema, relation, MCP tool, and dependency rule keeps its flavor
-   prefix.
+1. Each schema, MCP tool, and dependency rule keeps its flavor prefix.
 2. Cross-flavor reads obey Owner role resolution and authorized read-owner sets.
-3. Cross-flavor edges must use registered relation descriptors.
+3. Cross-flavor connections are ordinary references declared by whichever
+   payload owns the statement; there is no vocabulary to agree on.
 4. Composite binaries do not introduce ad-hoc runtime vocabulary.

@@ -26,7 +26,7 @@ Rust embedding has two public tiers:
 | Tier | Import | Contract |
 |---|---|---|
 | Host API | `use proxima::{Proxima, RuntimeBuilder, Engine};` | compose/run a binary, call graph verbs, hold server-resolved `AuthzContext` |
-| Flavor SDK | `use proxima::flavor::{FlavorBundle, FlavorRegistry, FactPayload, pg_sidecar};` | register schemas/relations/tools/sidecars at build time; no raw `PgPool`, no `proxima_core.*` SQL |
+| Flavor SDK | `use proxima::flavor::{FlavorBundle, FlavorRegistry, FactPayload, pg_sidecar};` | register schemas/tools/sidecars at build time; declare payload references; no raw `PgPool`, no `proxima_core.*` SQL |
 
 Transport adapters (MCP/HTTP) project the Host API. Flavor crates target
 the Flavor SDK and typed services only.
@@ -40,7 +40,7 @@ resources; `proxima://tools` returns the live tool catalog only, and
 resources are discovered through MCP `resources/list` and
 `resources/templates/list`.
 
-Owner remains the storage and graph isolation primitive. Access is server-resolved `OwnerRoles` over concrete `OwnerRef`s; Core enforces those roles at verb/tool entry and never adds org/share-set semantics. Edge rows are source-owned; registered relation descriptors decide whether a foreign target is admitted and whether target read/write is required. Read projection is source-local for the edge row with independent target `Visible` / `Redacted` / `Unavailable` rendering.
+Owner remains the storage and graph isolation primitive. Access is server-resolved `OwnerRoles` over concrete `OwnerRef`s; Core enforces those roles at verb/tool entry and never adds org/share-set semantics. Edge rows are source-owned, and one uniform rule admits them: the writer needs write authority on the source and read authority on the target at write time. Read projection is source-local for the edge row with independent target `Visible` / `Redacted` / `Unavailable` rendering.
 
 Canonical substrate tools:
 
@@ -49,7 +49,7 @@ Canonical substrate tools:
 | `core_remember` | write agent-authored Fact |
 | `core_record_utterance` | write utterance Fact |
 | `core_derive` | write agent-authored Abstraction |
-| `core_link` | write registered relation edge |
+| `core_interpret` | author an interpretation Perspective: a claim about existing memories (`claim`, `confidence` 0..=100 defaulting to 80, `subjects`). Returns a `P:` handle and an `edge_count`; it writes no edge of its own — the subjects are payload references |
 | `core_search_memories` | search memories; may include neighbor edges, per-result tags, lexical-degradation status, and selected memory-space labels. Optional `min_score` relevance floor and hybrid `semantic_weight` (default 0.6 semantic / 0.4 lexical). Pages of at most 50: `has_more` plus an opaque `next_cursor` that is passed back as `cursor` with the identical query shape (the cursor is fingerprint-bound and fails closed on any other query, order, filter, or space set) |
 | `core_memory_spaces` | list server-issued memory-space keys with labels and coarse unrestricted-access flags |
 | `core_membership` | group roster dispatcher: `add_member`, `remove_member`, `list_members`; host/controller scoped. `list_members` pages (default 50, max 200) with keyset `cursor`/`next_cursor` + `has_more`, cursor bound to the group |
@@ -70,7 +70,6 @@ Canonical substrate resources:
 | Resource | Contract |
 |---|---|
 | `proxima://schemas{?kind}` | registered payload schemas |
-| `proxima://edge-types` | registered relation descriptors |
 | `proxima://tools` | live tool catalog |
 | `proxima://graph` | graph snapshot and status fields, including `fact_retention_seconds` |
 | `proxima://memory/{id}{?expand_neighbors}` | hydrate memory by id; optional neighbor edges |
@@ -80,10 +79,9 @@ Canonical substrate resources:
 | `proxima://goals{?state,limit,cursor}` | owner-scoped goal listing: optional state filter (Active/Paused/Achieved/Abandoned), keyset `cursor`/`next_cursor` + `has_more`, wake-config read-back per goal |
 | `proxima://goal/{id}` | single-goal read by `G:<uuid>` reference, including stored wake configuration |
 | `proxima://wake-candidates{?fact,limit}` | armed Active Goal heads admitted for wake planning by one readable trigger Fact; read model only, no executor |
-| `proxima://edges{?relation,source,target,limit,cursor,payloads}` | owner-scoped edge listing by relation and/or endpoint (at least one filter required), keyset `cursor`/`next_cursor` + `has_more`, typed payload read-back (default on; `payloads=false` for lean); source-owned visibility with target redaction |
-| `proxima://edge/{id}` | single-edge read by `E:<uuid>` reference (the handle `core_link` returns), including its typed payload |
+| `proxima://edges{?kind,source,target,limit,cursor}` | owner-scoped edge listing by kind (`origin`/`reference`) and/or endpoint (at least one filter required), keyset `cursor`/`next_cursor` + `has_more`; each row is source, target, kind, `created_at` and nothing else; source-owned visibility with target redaction. There is no single-edge resource and no `E:` reference — an edge has no id |
 
-`proxima://how-to` is an instructional MCP resource outside the 13-resource
+`proxima://how-to` is an instructional MCP resource outside the 11-resource
 protocol count.
 
 ### Resource errors
@@ -177,7 +175,7 @@ Snapshot read of memories, goals, and edges scoped to the server-resolved author
 | payloads | optional typed payload projections; identity hydration by memory/goal/edge ids |
 | stateful Facts | heads by registered natural key; tombstone heads suppress prior present rows |
 | flavor-typed filters | design intent; advertised/validated only when implemented by a linked flavor |
-| edge traversal / time range | deferred (single-hop edge reads by relation/endpoint ship via `EdgeRead` and `proxima://edges`; the multi-hop traversal *query axis* stays deferred) |
+| edge traversal / time range | deferred (single-hop edge reads by kind/endpoint ship via `EdgeRead` and `proxima://edges`; the multi-hop traversal *query axis* stays deferred) |
 
 Cursor streams:
 
@@ -246,7 +244,8 @@ let outcome = engine
 ```
 
 Current create semantics assign every new Active Goal to an explicit
-Perspective by writing `Goal --core/inspires--> Perspective`.
+Perspective by setting `goals.assignment_perspective_id`; one `reference`
+index entry is derived from it in the same transaction.
 Unassigned owner-only Goal rows are not part of the public helper.
 
 ### FactIngest
@@ -259,7 +258,7 @@ witness.
 |---|---|
 | receipt id | optional server-computed content hash of source, Owner, payload; public response field is `receipt_id` and omitted/null when receiptless |
 | replay | duplicate receipt id returns prior outcome / no new Fact; receiptless writes do not replay |
-| commit | returns after Fact, optional receipt row, optional sidecar/citation, and structural edges are committed |
+| commit | returns after Fact, optional receipt row, optional sidecar/citation, and the `reference` entries its payload declares are committed |
 | log | success commits the corresponding `change_event` rows |
 | auth | user or source credential, resolved through server-built `AuthzContext` |
 
@@ -270,7 +269,6 @@ Binary-scoped registry introspection.
 | Includes | Contract |
 |---|---|
 | payload schemas | registered Fact / Abstraction / Perspective / Goal / cited-object / citation-mapping schemas |
-| relations | registered `RelationDescriptor`s |
 | filters | only keys actually registered by the running binary |
 
 Schema is structural metadata. Deployments may expose it without
@@ -421,7 +419,7 @@ or the owning wire surface.
 ## Source Registration
 
 Source identities register at startup from linked flavor crates, same
-build-time posture as schemas, relations, prompts, and tools. Runtime
+build-time posture as schemas, prompts, and tools. Runtime
 source registration is deferred and requires a new ADR.
 
 ## Backpressure
@@ -446,7 +444,8 @@ Current contract:
 ## Cross-References
 
 - Owner and source-ingest invariants: [01](01-event-source.md).
-- Entity / edge model: [02](02-memory.md).
+- Entity model: [02](02-memory.md).
+- Edge model: [16](16-edges.md).
 - Payload/schema registry: [03](03-schema-registry.md).
 - Operators: [04](04-consolidation.md).
 - Actions and human approval: [05](05-actions.md).

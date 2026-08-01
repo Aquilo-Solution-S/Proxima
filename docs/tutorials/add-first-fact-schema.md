@@ -90,8 +90,6 @@ proxima_core::proxima_flavor! {
     abstraction_schemas = [],
     perspective_schemas = [],
     goal_schemas = [],
-    edge_schemas = [],
-    relations = [],
     mcp_tools = [],
 }
 ```
