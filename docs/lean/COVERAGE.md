@@ -111,9 +111,25 @@ that distinguishes a carrier from a decoy.
 
 The edge obligations in full. E7 is the master invariant; E4–E6 are its
 preconditions, and E2/E3 fall out of it for any table that is actually
-rebuilt. `Causa/Edges.lean` ends with a `#print axioms` block over the E1–E7
-theorems — the build prints "does not depend on any axioms" for each, which is
-the only part of this table that checks itself.
+rebuilt.
+
+`Causa/Edges.lean` ends with an axiom block over the fourteen HEADLINE E1–E7
+theorems — not over every declaration in the file — and it is the one part of
+this table that checks itself, but only because the block is
+`#guard_msgs`-pinned. A bare `#print axioms` would NOT check anything:
+it emits an `info` message, so a proof that started depending on an axiom would
+print a different line and the build would still go green. With each expected
+message pinned in a docstring, a changed axiom surface is a build ERROR, and so
+is a theorem that stops existing. Confirmed by negative control — corrupting one
+expectation fails the build with "Docstring on `#guard_msgs` does not match".
+
+All fourteen of those are axiom-free OUTRIGHT: not merely free of `Causa` axioms, but of
+`propext` and `Quot.sound` as well. That is stronger than the kernel-wide
+policy, which is what `scripts/check-lean-axioms.py` pins — that script counts
+DECLARED `Causa` axioms (zero, everywhere), while this block pins what these
+particular theorems CONSUME. Elsewhere in the kernel the weaker property is the
+honest one and is stated as such: `Flavor.published_readable`,
+`Wake.organism_autonomous` and others do depend on `propext`/`Quot.sound`.
 
 | ID | Invariant | Carrier |
 |---|---|---|

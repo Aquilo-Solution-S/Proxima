@@ -319,8 +319,8 @@ theorem fact_source_reaches_only_facts :
   have hle := hlayer (MemoryKind.layer .Fact) (MemoryKind.layer kt) hsl htl
   cases kt with
   | Fact => rfl
-  | Abstraction => exact absurd hle (by simp [MemoryKind.layer])
-  | Perspective => exact absurd hle (by simp [MemoryKind.layer])
+  | Abstraction => exact absurd hle (by decide)
+  | Perspective => exact absurd hle (by decide)
 
 -- ============================================================
 -- E5 — the primary key IS the row
@@ -715,22 +715,78 @@ theorem interpretation_rows_are_references :
 -- The E1–E7 guarantee, machine-checked: no Causa axioms
 -- ============================================================
 
--- Each list below names no Causa axiom. E1 is table validity and E4's
--- accommodation of the zero-origin write is a theorem, not a carve-out; the
--- rest are proved from the row shape and the derivation.
+-- E1 is table validity and E4's accommodation of the zero-origin write is a
+-- theorem, not a carve-out; the rest are proved from the row shape and the
+-- derivation. Every E1–E7 theorem below is axiom-free OUTRIGHT — not merely
+-- free of Causa axioms, but of `propext` and `Quot.sound` too.
+--
+-- `#guard_msgs` is what makes that a CHECK rather than a claim. A bare
+-- `#print axioms` only prints: a proof that started depending on an axiom
+-- would emit a different line and the build would still succeed, so the
+-- guarantee would decay in silence — the exact failure mode COVERAGE.md's
+-- preamble describes. With the expected message pinned in the docstring, a
+-- changed axiom surface is a BUILD ERROR, and so is a theorem that stops
+-- existing. Verified by negative control: corrupting one expectation fails
+-- the build with "Docstring on `#guard_msgs` does not match".
+--
+-- `scripts/check-lean-axioms.py` is the complementary half — it pins the set
+-- of DECLARED `Causa` axioms at zero, across the whole kernel. This block
+-- pins what these particular theorems CONSUME.
+
+/-- info: 'Causa.edge_source_owned' does not depend on any axioms -/
+#guard_msgs in
 #print axioms edge_source_owned
+
+/-- info: 'Causa.edge_layer_rule' does not depend on any axioms -/
+#guard_msgs in
 #print axioms edge_layer_rule
+
+/-- info: 'Causa.fact_source_reaches_only_facts' does not depend on any axioms -/
+#guard_msgs in
 #print axioms fact_source_reaches_only_facts
+
+/-- info: 'Causa.edge_key_determines_row' does not depend on any axioms -/
+#guard_msgs in
 #print axioms edge_key_determines_row
+
+/-- info: 'Causa.edge_table_key_unique' does not depend on any axioms -/
+#guard_msgs in
 #print axioms edge_table_key_unique
+
+/-- info: 'Causa.derived_edge_kind_follows_operation' does not depend on any axioms -/
+#guard_msgs in
 #print axioms derived_edge_kind_follows_operation
+
+/-- info: 'Causa.origin_row_needs_a_derivation_declaration' does not depend on any axioms -/
+#guard_msgs in
 #print axioms origin_row_needs_a_derivation_declaration
+
+/-- info: 'Causa.reference_row_needs_a_declared_reference_field' does not depend on any axioms -/
+#guard_msgs in
 #print axioms reference_row_needs_a_declared_reference_field
+
+/-- info: 'Causa.declaration_without_origins_writes_no_origin_rows' does not depend on any axioms -/
+#guard_msgs in
 #print axioms declaration_without_origins_writes_no_origin_rows
+
+/-- info: 'Causa.declared_edges_valid' does not depend on any axioms -/
+#guard_msgs in
 #print axioms declared_edges_valid
+
+/-- info: 'Causa.rebuilt_table_valid' does not depend on any axioms -/
+#guard_msgs in
 #print axioms rebuilt_table_valid
+
+/-- info: 'Causa.rebuild_deterministic' does not depend on any axioms -/
+#guard_msgs in
 #print axioms rebuild_deterministic
+
+/-- info: 'Causa.replay_asserts_nothing_new' does not depend on any axioms -/
+#guard_msgs in
 #print axioms replay_asserts_nothing_new
+
+/-- info: 'Causa.goal_declared_rows_are_references' does not depend on any axioms -/
+#guard_msgs in
 #print axioms goal_declared_rows_are_references
 
 end Causa
