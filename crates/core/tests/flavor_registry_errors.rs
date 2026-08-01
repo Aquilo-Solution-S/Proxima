@@ -5,10 +5,8 @@ use proxima_core::error::ProtocolError;
 use proxima_core::mcp::{McpTool, McpToolCtx, McpToolError};
 use proxima_core::verbs::schema::PayloadKind;
 use proxima_core::{
-    AuthorshipKindMask, AuthzContext, DependencySatisfactionRule, EndpointBinding, EntityKindMask,
-    FlavorDescriptor, FlavorProvenance, FlavorRegistry, FlavorRegistryError, MemoryId,
-    MemoryInspectPort, Owner, RelationClass, RelationDescriptor, SchemaId, SchemaRef,
-    SchemaVersion, StorageError, core_relation_descriptors,
+    AuthzContext, DependencySatisfactionRule, FlavorDescriptor, FlavorProvenance, FlavorRegistry,
+    FlavorRegistryError, MemoryId, MemoryInspectPort, Owner, SchemaId, SchemaVersion, StorageError,
 };
 
 #[derive(schemars::JsonSchema, serde::Deserialize)]
@@ -113,23 +111,6 @@ fn duplicate_schema_is_typed_freeze_error() {
 }
 
 #[test]
-fn duplicate_relation_is_typed_freeze_error() {
-    let duplicate = core_relation_descriptors()
-        .into_iter()
-        .next()
-        .expect("core relation descriptors are seeded");
-    let relation = duplicate.relation.clone();
-    let mut registry = FlavorRegistry::new();
-    registry.try_add_relation(duplicate).unwrap();
-
-    let err = registry.try_freeze().unwrap_err();
-    assert!(matches!(
-        err,
-        FlavorRegistryError::DuplicateRelation { relation: ref found } if found == &relation
-    ));
-}
-
-#[test]
 fn duplicate_tool_is_typed_freeze_error() {
     let mut registry = FlavorRegistry::new();
     registry
@@ -200,28 +181,6 @@ fn duplicate_owner_resolver_is_typed_add_error() {
 }
 
 #[test]
-fn invalid_relation_descriptor_is_typed_add_error() {
-    let descriptor = RelationDescriptor::substrate(
-        "proxima-test/bad-fact-causal",
-        RelationClass::Causal,
-        EndpointBinding::Pin,
-        EndpointBinding::Pin,
-        EntityKindMask::fact(),
-        EntityKindMask::fact(),
-        AuthorshipKindMask::user(),
-    );
-    let mut registry = FlavorRegistry::new();
-
-    let err = registry.try_add_relation(descriptor).unwrap_err();
-    assert!(matches!(
-        err,
-        FlavorRegistryError::InvalidRelationDescriptor { relation, message }
-            if relation == "proxima-test/bad-fact-causal"
-                && message.contains("Fact-to-Fact")
-    ));
-}
-
-#[test]
 fn invalid_capability_tag_is_typed_add_error() {
     let schema_id = SchemaId::new("proxima-test/fact".to_string());
     let mut registry = FlavorRegistry::new();
@@ -273,36 +232,6 @@ fn invalid_tool_names_are_typed_add_errors() {
 }
 
 #[test]
-fn unregistered_relation_payload_is_typed_freeze_error() {
-    let schema_id = SchemaId::new("proxima-test/edge-v1".to_string());
-    let mut registry = FlavorRegistry::new();
-    registry
-        .try_add_relation(RelationDescriptor::typed(
-            "proxima-test/typed",
-            RelationClass::Structural,
-            SchemaRef::new(schema_id.clone(), SchemaVersion::new(1)),
-            EndpointBinding::Pin,
-            EndpointBinding::Pin,
-            EntityKindMask::fact(),
-            EntityKindMask::fact(),
-            AuthorshipKindMask::source_ingest(),
-        ))
-        .unwrap();
-
-    let err = registry.try_freeze().unwrap_err();
-    assert!(matches!(
-        err,
-        FlavorRegistryError::UnregisteredRelationPayload {
-            relation,
-            schema_id: ref id,
-            schema_version,
-        } if relation == "proxima-test/typed"
-            && id == &schema_id
-            && schema_version == SchemaVersion::new(1)
-    ));
-}
-
-#[test]
 fn unregistered_schema_capability_tags_are_typed_freeze_error() {
     let schema_id = SchemaId::new("proxima-test/missing".to_string());
     let mut registry = FlavorRegistry::new();
@@ -326,41 +255,6 @@ fn unregistered_schema_capability_tags_are_typed_freeze_error() {
     ));
 }
 
-#[test]
-fn unsatisfiable_relation_tags_are_typed_freeze_error() {
-    let mut registry = FlavorRegistry::new();
-    registry
-        .try_add_opaque_schema(
-            SchemaId::new("proxima-test/plain-fact".to_string()),
-            SchemaVersion::new(1),
-            PayloadKind::Fact,
-        )
-        .unwrap();
-    registry
-        .try_add_relation(
-            RelationDescriptor::substrate(
-                "proxima-test/requires-actor",
-                RelationClass::Structural,
-                EndpointBinding::Pin,
-                EndpointBinding::Pin,
-                EntityKindMask::fact(),
-                EntityKindMask::fact(),
-                AuthorshipKindMask::external_agent(),
-            )
-            .with_required_tags(&[], &["actor"]),
-        )
-        .unwrap();
-
-    let err = registry.try_freeze().unwrap_err();
-    assert!(matches!(
-        err,
-        FlavorRegistryError::UnsatisfiableRelationTags {
-            relation,
-            side: "target",
-        } if relation == "proxima-test/requires-actor"
-    ));
-}
-
 mod bad_opaque_prefix_flavor {
     proxima_core::proxima_flavor! {
         name = "proxima-test",
@@ -369,10 +263,8 @@ mod bad_opaque_prefix_flavor {
         abstraction_schemas = [],
         perspective_schemas = [],
         goal_schemas = [],
-        edge_schemas = [],
         opaque_cited_object_schemas = ["wrong-prefix/blob-v1"],
         opaque_citation_mapping_schemas = [],
-        relations = [],
         mcp_tools = [],
     }
 }

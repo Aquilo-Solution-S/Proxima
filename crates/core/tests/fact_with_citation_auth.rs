@@ -5,7 +5,7 @@ use proxima_core::verbs::fact_ingest::{
 };
 use proxima_core::verbs::schema::PayloadKind;
 use proxima_core::{
-    AuthPath, AuthzContext, CitationMappingPayload, CitedObjectPayload, FactPayload,
+    AuthPath, AuthzContext, CitationMappingPayload, CitedObjectPayload, EntityKind, FactPayload,
     FlavorRegistry, Owner, OwnerRef, PayloadKeyBuilder, Relation, SchemaId, SchemaVersion,
     SourceBatchId, SourceId, UserId, canonical_json_bytes,
 };
@@ -127,6 +127,7 @@ fn draft(_owner: &Owner) -> FactWriteCommand {
             occurred_at: now,
         }),
         citation: None,
+        derived_from: Vec::new(),
     }
 }
 
@@ -167,6 +168,7 @@ async fn authorize_fact_with_citation_rejects_kind_mismatch() {
             draft(&owner),
             cited_object,
             mapping(TestCitationMapping::schema_id()),
+            &[],
         )
         .await
         .expect_err("Fact schema must not authorize as a CitedObject schema");
@@ -190,6 +192,7 @@ async fn authorize_fact_with_citation_derives_cited_object_content_hash() {
             draft(&owner),
             cited_object(),
             mapping(TestCitationMapping::schema_id()),
+            &[],
         )
         .await
         .expect("registered cited object payload must authorize");
@@ -209,6 +212,7 @@ async fn authorize_fact_with_citation_rejects_mapping_target_mismatch() {
             draft(&owner),
             cited_object(),
             mapping(MismatchedCitationMapping::schema_id()),
+            &[],
         )
         .await
         .expect_err("mapping target schema must match cited object schema");
@@ -232,6 +236,7 @@ async fn authorize_citation_attachment_accepts_valid_pair() {
             Relation::Ingest,
             owner,
             memory_id,
+            EntityKind::Fact,
             cited_object(),
             mapping(TestCitationMapping::schema_id()),
         )
@@ -258,6 +263,7 @@ async fn authorize_citation_attachment_rejects_mapping_target_mismatch() {
             Relation::Ingest,
             owner,
             proxima_core::MemoryId::new(Uuid::now_v7()),
+            EntityKind::Fact,
             cited_object(),
             mapping(MismatchedCitationMapping::schema_id()),
         )
@@ -281,6 +287,7 @@ async fn authorize_fact_with_citation_rejects_unknown_schema_ids() {
             draft(&owner),
             cited_object,
             mapping(TestCitationMapping::schema_id()),
+            &[],
         )
         .await
         .expect_err("unknown cited object schema must be rejected");
@@ -303,4 +310,47 @@ fn registered_cited_object_schema_exposes_sidecar_table() {
         .expect("registered cited-object schema must be present");
 
     assert_eq!(info.sidecar_table.as_deref(), Some("test.cited_object_v1"));
+}
+
+/// A computed score is an Abstraction whose citation is its computation
+/// record, so `citation_mapping_id` is legal for Abstractions as well as
+/// Facts. A Perspective still never cites directly — it grounds through
+/// the nodes its payload references.
+#[tokio::test]
+async fn an_abstraction_may_cite_and_a_perspective_may_not() {
+    let owner = owner();
+    let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
+    let memory_id = proxima_core::MemoryId::new(Uuid::now_v7());
+
+    for kind in [EntityKind::Fact, EntityKind::Abstraction] {
+        engine()
+            .authorize_citation_attachment(
+                &authz,
+                Relation::Ingest,
+                owner,
+                memory_id,
+                kind,
+                cited_object(),
+                mapping(TestCitationMapping::schema_id()),
+            )
+            .await
+            .unwrap_or_else(|err| panic!("{kind:?} must be able to cite directly: {err}"));
+    }
+
+    for kind in [EntityKind::Perspective, EntityKind::Goal] {
+        let err = engine()
+            .authorize_citation_attachment(
+                &authz,
+                Relation::Ingest,
+                owner,
+                memory_id,
+                kind,
+                cited_object(),
+                mapping(TestCitationMapping::schema_id()),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, ErrorCode::InvalidArgument, "{kind:?}");
+        assert!(err.message.contains("cite directly"), "{}", err.message);
+    }
 }

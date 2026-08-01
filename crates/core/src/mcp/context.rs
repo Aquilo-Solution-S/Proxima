@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use crate::{EdgeId, GoalId, MemoryId};
+use crate::{GoalId, MemoryId};
 
 use super::error::McpToolError;
 use super::handles::{
@@ -68,11 +68,6 @@ impl McpToolCtx {
     }
 
     #[must_use]
-    pub fn format_edge(&self, id: EdgeId) -> String {
-        format_prefixed_uuid(id.into_inner(), PrefixedUuidClass::Edge)
-    }
-
-    #[must_use]
     pub fn format_flavor_object(&self, _kind: &str, id: uuid::Uuid, prefix: char) -> String {
         format!("{prefix}:{id}")
     }
@@ -128,17 +123,6 @@ impl McpToolCtx {
     pub fn resolve_goal(&self, raw: &str) -> Result<GoalId, McpToolError> {
         parse_prefixed_uuid(raw, PrefixedUuidClass::Goal)
             .map(GoalId::new)
-            .map_err(|e| McpToolError::InvalidInput(e.to_string()))
-    }
-
-    /// Parse `raw` as an edge reference (`E:<uuid>`).
-    ///
-    /// # Errors
-    ///
-    /// See [`McpToolCtx::resolve_memory`].
-    pub fn resolve_edge(&self, raw: &str) -> Result<EdgeId, McpToolError> {
-        parse_prefixed_uuid(raw, PrefixedUuidClass::Edge)
-            .map(EdgeId::new)
             .map_err(|e| McpToolError::InvalidInput(e.to_string()))
     }
 

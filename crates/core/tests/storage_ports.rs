@@ -97,15 +97,6 @@ impl MemoryAuthoringPort for MemoryAuthoringFake {
         fake_error()
     }
 
-    async fn append_memory_edge(
-        &self,
-        edge: &DerivedEdgeSpec<'_>,
-        _permit: &OwnerWritePermit,
-        _proof: proxima_core::storage_ports::EdgeWriteProof,
-    ) -> Result<EdgeId, StorageError> {
-        fake_error()
-    }
-
     async fn load_memory_kinds(
         &self,
         _owner: &Owner,
@@ -119,16 +110,6 @@ impl MemoryAuthoringPort for MemoryAuthoringFake {
         _owner: &Owner,
         _memory_ids: &[MemoryId],
     ) -> Result<Vec<FactSourceBatchRow>, StorageError> {
-        fake_error()
-    }
-
-    async fn load_memory_edge_ids(
-        &self,
-        _owner: &Owner,
-        _relation: &str,
-        _source_memory_id: MemoryId,
-        _target_memory_ids: &[MemoryId],
-    ) -> Result<Vec<EdgeId>, StorageError> {
         fake_error()
     }
 }
@@ -160,14 +141,7 @@ impl MemoryReadPort for MemoryReadFake {
         _read_owners: &[OwnerRef],
         _memory_ids: &[MemoryId],
         _limit: usize,
-    ) -> Result<Vec<NeighborEdgeRow>, StorageError> {
-        fake_error()
-    }
-
-    async fn load_edge_endpoint_kinds(
-        &self,
-        _edge_ids: &[EdgeId],
-    ) -> Result<Vec<EdgeEndpointKindRow>, StorageError> {
+    ) -> Result<Vec<proxima_core::Edge>, StorageError> {
         fake_error()
     }
 
@@ -486,7 +460,6 @@ impl EdgeReadPort for EdgeReadFake {
         &self,
         read_owners: &[OwnerRef],
         req: &proxima_core::verbs::query::EdgeReadRequest,
-        payload_specs: &[proxima_core::verbs::query::EdgePayloadSpec],
     ) -> Result<proxima_core::verbs::query::EdgeReadResponse, StorageError> {
         fake_error()
     }
@@ -718,7 +691,6 @@ impl ComplianceErasePort for ComplianceEraseFake {
         _object_purge_planned: bool,
         _fact_sidecar_tables: &[String],
         _goal_sidecar_tables: &[String],
-        _edge_sidecar_tables: &[String],
         _citation_mapping_sidecar_tables: &[String],
         _cited_object_sidecar_tables: &[String],
     ) -> Result<proxima_core::compliance::ComplianceEraseOutcome, StorageError> {
@@ -732,7 +704,6 @@ impl ComplianceErasePort for ComplianceEraseFake {
         _object_purge_planned: bool,
         _fact_sidecar_tables: &[String],
         _goal_sidecar_tables: &[String],
-        _edge_sidecar_tables: &[String],
         _citation_mapping_sidecar_tables: &[String],
         _cited_object_sidecar_tables: &[String],
     ) -> Result<proxima_core::compliance::ComplianceEraseOutcome, StorageError> {
@@ -746,7 +717,6 @@ impl ComplianceErasePort for ComplianceEraseFake {
         _source_id: &SourceId,
         _fact_sidecar_tables: &[String],
         _goal_sidecar_tables: &[String],
-        _edge_sidecar_tables: &[String],
         _citation_mapping_sidecar_tables: &[String],
         _cited_object_sidecar_tables: &[String],
     ) -> Result<proxima_core::compliance::ComplianceEraseOutcome, StorageError> {
@@ -760,7 +730,6 @@ impl ComplianceErasePort for ComplianceEraseFake {
         _source_id: &SourceId,
         _fact_sidecar_tables: &[String],
         _goal_sidecar_tables: &[String],
-        _edge_sidecar_tables: &[String],
         _citation_mapping_sidecar_tables: &[String],
         _cited_object_sidecar_tables: &[String],
     ) -> Result<proxima_core::compliance::ComplianceEraseOutcome, StorageError> {
@@ -772,7 +741,6 @@ impl ComplianceErasePort for ComplianceEraseFake {
         _auth: &proxima_core::compliance::ExportAuthorization,
         _fact_sidecar_tables: &[String],
         _goal_sidecar_tables: &[String],
-        _edge_sidecar_tables: &[String],
         _citation_mapping_sidecar_tables: &[String],
         _cited_object_sidecar_tables: &[String],
     ) -> Result<proxima_core::compliance::ComplianceExportBundle, StorageError> {

@@ -6,10 +6,7 @@
 
 use std::collections::BTreeSet;
 
-use crate::{
-    EdgeAuthorshipKind, EntityKind, GoalId, InputContractId, MemoryId, OperatorId, SchemaId,
-    SchemaVersion,
-};
+use crate::{EntityKind, GoalId, InputContractId, MemoryId, OperatorId, SchemaId, SchemaVersion};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum OperatorPhase {
@@ -34,16 +31,6 @@ impl OperatorPhase {
             Self::FtoA | Self::AtoA => Some(EntityKind::Abstraction),
             Self::AtoP => Some(EntityKind::Perspective),
             Self::AtoGoal => None,
-        }
-    }
-
-    #[must_use]
-    pub const fn edge_authorship(self) -> EdgeAuthorshipKind {
-        match self {
-            Self::FtoA => EdgeAuthorshipKind::OperatorFtoA,
-            Self::AtoA => EdgeAuthorshipKind::OperatorAtoA,
-            Self::AtoP => EdgeAuthorshipKind::OperatorAtoP,
-            Self::AtoGoal => EdgeAuthorshipKind::OperatorAtoGoal,
         }
     }
 }
@@ -82,37 +69,33 @@ pub enum OutputNodeRef {
     Goal(GoalId),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+/// One origin index row an operator invocation must have asserted: from
+/// the output node to a declared input.
+///
+/// It carries no kind. Every row an operator invocation produces is an
+/// [`crate::EdgeKind::Origin`] row by construction — a derivation is
+/// exactly what `origin` means — so an authorship field here could only
+/// ever disagree with the operation that wrote it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct OutputEdgeManifest {
     pub source: OutputNodeRef,
     pub target_memory_id: MemoryId,
-    pub authorship_kind: EdgeAuthorshipKind,
 }
 
 impl OutputEdgeManifest {
     #[must_use]
-    pub const fn memory_to_memory(
-        source_memory_id: MemoryId,
-        target_memory_id: MemoryId,
-        authorship_kind: EdgeAuthorshipKind,
-    ) -> Self {
+    pub const fn memory_to_memory(source_memory_id: MemoryId, target_memory_id: MemoryId) -> Self {
         Self {
             source: OutputNodeRef::Memory(source_memory_id),
             target_memory_id,
-            authorship_kind,
         }
     }
 
     #[must_use]
-    pub const fn goal_to_memory(
-        source_goal_id: GoalId,
-        target_memory_id: MemoryId,
-        authorship_kind: EdgeAuthorshipKind,
-    ) -> Self {
+    pub const fn goal_to_memory(source_goal_id: GoalId, target_memory_id: MemoryId) -> Self {
         Self {
             source: OutputNodeRef::Goal(source_goal_id),
             target_memory_id,
-            authorship_kind,
         }
     }
 }
@@ -215,16 +198,6 @@ impl OperatorInvocationManifest {
             }
         }
 
-        let expected_edge_authorship = self.phase.edge_authorship();
-        for edge in &self.output_edges {
-            if edge.authorship_kind != expected_edge_authorship {
-                return Err(OperatorProofError::InvalidEdgeAuthorship {
-                    expected: expected_edge_authorship,
-                    actual: edge.authorship_kind,
-                });
-            }
-        }
-
         for output in &self.outputs {
             match output {
                 OperatorOutputManifest::Memory {
@@ -246,7 +219,6 @@ impl OperatorInvocationManifest {
                         if !self.output_edges.iter().any(|edge| {
                             edge.source == OutputNodeRef::Memory(*memory_id)
                                 && edge.target_memory_id == input.memory_id
-                                && edge.authorship_kind == expected_edge_authorship
                         }) {
                             return Err(OperatorProofError::MissingProvenanceEdge {
                                 output_memory_id: *memory_id,
@@ -265,7 +237,6 @@ impl OperatorInvocationManifest {
                         if !self.output_edges.iter().any(|edge| {
                             edge.source == OutputNodeRef::Goal(*goal_id)
                                 && edge.target_memory_id == input.memory_id
-                                && edge.authorship_kind == expected_edge_authorship
                         }) {
                             return Err(OperatorProofError::MissingEvidenceEdge {
                                 output_goal_id: *goal_id,
@@ -305,11 +276,6 @@ pub enum OperatorProofError {
     PhaseCannotOutputMemory { phase: OperatorPhase },
     #[error("phase cannot output goal: {phase:?}")]
     PhaseCannotOutputGoal { phase: OperatorPhase },
-    #[error("invalid edge authorship: expected {expected:?}, got {actual:?}")]
-    InvalidEdgeAuthorship {
-        expected: EdgeAuthorshipKind,
-        actual: EdgeAuthorshipKind,
-    },
     #[error(
         "missing provenance edge from {output_memory_id:?} to declared input {input_memory_id:?}"
     )]

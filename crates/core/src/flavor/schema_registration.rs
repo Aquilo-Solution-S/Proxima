@@ -1,12 +1,12 @@
 use super::ingress::{
     ingest_abstraction_payload, ingest_citation_mapping_payload, ingest_cited_object_payload,
-    ingest_edge_payload, ingest_fact_payload, ingest_goal_payload, ingest_perspective_payload,
+    ingest_fact_payload, ingest_goal_payload, ingest_perspective_payload,
 };
 use super::{
-    AbstractionPayload, CitationMappingPayload, CitedObjectPayload, EdgePayload, FactPayload,
-    FlavorRegistry, FlavorRegistryError, GoalPayload, MemorySearchProjection,
-    MemorySearchProjectionField, PayloadKind, PerspectivePayload, ProtocolPayloadIngress,
-    ProtocolPayloadIngressEntry, SchemaId, SchemaInfo, SchemaVersion,
+    AbstractionPayload, CitationMappingPayload, CitedObjectPayload, FactPayload, FlavorRegistry,
+    FlavorRegistryError, GoalPayload, MemorySearchProjection, MemorySearchProjectionField,
+    PayloadKind, PerspectivePayload, ProtocolPayloadIngress, ProtocolPayloadIngressEntry, SchemaId,
+    SchemaInfo, SchemaVersion,
 };
 
 impl FlavorRegistry {
@@ -174,41 +174,6 @@ impl FlavorRegistry {
     pub fn add_goal_schema_or_panic_for_tests<G: GoalPayload>(&mut self) {
         self.try_add_goal_schema::<G>()
             .expect("goal schema registration must be valid");
-    }
-
-    /// Register a typed `EdgePayload` schema. The descriptor that
-    /// references this schema must be registered separately via
-    /// `add_relation`; the substrate cross-checks the linkage at
-    /// `freeze()` time.
-    /// # Errors
-    ///
-    /// Currently infallible; returns a registry error if schema admission adds
-    /// validation.
-    pub fn try_add_edge_schema<E: EdgePayload>(&mut self) -> Result<(), FlavorRegistryError> {
-        self.register_schema(
-            SchemaInfo {
-                schema_id: E::schema_id(),
-                schema_version: SchemaVersion::new(E::SCHEMA_VERSION),
-                kind: PayloadKind::Edge,
-                filter_keys: vec![],
-                sidecar_table: Some(E::sidecar_table().to_string()),
-                natural_key_columns: vec![],
-                tombstone: None,
-                has_typed_ingress: true,
-                cited_object_schema: None,
-                embeddable: true,
-            },
-            None,
-            ingest_edge_payload::<E>,
-            E::json_schema(),
-        );
-        Ok(())
-    }
-
-    #[doc(hidden)]
-    pub fn add_edge_schema_or_panic_for_tests<E: EdgePayload>(&mut self) {
-        self.try_add_edge_schema::<E>()
-            .expect("edge schema registration must be valid");
     }
 
     /// # Errors

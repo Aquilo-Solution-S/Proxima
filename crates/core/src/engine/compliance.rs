@@ -17,7 +17,6 @@ use crate::{GroupId, OwnerRef, SourceId, UserId};
 struct ComplianceSidecarTables {
     fact: Vec<String>,
     goal: Vec<String>,
-    edge: Vec<String>,
     citation_mapping: Vec<String>,
     cited_object: Vec<String>,
 }
@@ -42,7 +41,6 @@ impl Engine {
         ComplianceSidecarTables {
             fact: self.compliance_memory_sidecar_tables(),
             goal: sidecar_tables(self.registry.schemas(), PayloadKind::Goal),
-            edge: sidecar_tables(self.registry.schemas(), PayloadKind::Edge),
             citation_mapping: sidecar_tables(self.registry.schemas(), PayloadKind::CitationMapping),
             cited_object: sidecar_tables(self.registry.schemas(), PayloadKind::CitedObject),
         }
@@ -341,7 +339,6 @@ impl Engine {
                 &auth,
                 &sidecars.fact,
                 &sidecars.goal,
-                &sidecars.edge,
                 &sidecars.citation_mapping,
                 &sidecars.cited_object,
             )
@@ -388,7 +385,6 @@ impl Engine {
                 object_purge_planned,
                 &sidecars.fact,
                 &sidecars.goal,
-                &sidecars.edge,
                 &sidecars.citation_mapping,
                 &sidecars.cited_object,
             )
@@ -458,7 +454,6 @@ impl Engine {
                 object_purge_planned,
                 &sidecars.fact,
                 &sidecars.goal,
-                &sidecars.edge,
                 &sidecars.citation_mapping,
                 &sidecars.cited_object,
             )
@@ -514,7 +509,6 @@ impl Engine {
                 &source_id,
                 &sidecars.fact,
                 &sidecars.goal,
-                &sidecars.edge,
                 &sidecars.citation_mapping,
                 &sidecars.cited_object,
             )
@@ -583,7 +577,6 @@ impl Engine {
                 &source_id,
                 &sidecars.fact,
                 &sidecars.goal,
-                &sidecars.edge,
                 &sidecars.citation_mapping,
                 &sidecars.cited_object,
             )
@@ -668,7 +661,6 @@ mod purge_tests {
             _object_purge_planned: bool,
             _fact: &[String],
             _goal: &[String],
-            _edge: &[String],
             _citation_mapping: &[String],
             _cited_object: &[String],
         ) -> Result<ComplianceEraseOutcome, StorageError> {
@@ -682,7 +674,6 @@ mod purge_tests {
             _object_purge_planned: bool,
             _fact: &[String],
             _goal: &[String],
-            _edge: &[String],
             _citation_mapping: &[String],
             _cited_object: &[String],
         ) -> Result<ComplianceEraseOutcome, StorageError> {
@@ -696,7 +687,6 @@ mod purge_tests {
             _source_id: &SourceId,
             _fact: &[String],
             _goal: &[String],
-            _edge: &[String],
             _citation_mapping: &[String],
             _cited_object: &[String],
         ) -> Result<ComplianceEraseOutcome, StorageError> {
@@ -710,7 +700,6 @@ mod purge_tests {
             _source_id: &SourceId,
             _fact: &[String],
             _goal: &[String],
-            _edge: &[String],
             _citation_mapping: &[String],
             _cited_object: &[String],
         ) -> Result<ComplianceEraseOutcome, StorageError> {
@@ -722,7 +711,6 @@ mod purge_tests {
             _auth: &ExportAuthorization,
             _fact: &[String],
             _goal: &[String],
-            _edge: &[String],
             _citation_mapping: &[String],
             _cited_object: &[String],
         ) -> Result<ComplianceExportBundle, StorageError> {

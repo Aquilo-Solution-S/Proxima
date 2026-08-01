@@ -751,9 +751,13 @@ async fn embed_query_for_search(
 }
 
 /// Drop neighbor edges that no longer touch a surviving (post-truncation)
-/// memory, and dedupe by edge handle. Per-space searches over-fetch edges
-/// against their own candidate sets; after the merged set is sorted and
-/// truncated, edges to hits that were truncated out are dangling references.
+/// memory, and dedupe by the edge's own content. Per-space searches
+/// over-fetch edges against their own candidate sets; after the merged
+/// set is sorted and truncated, edges to hits that were truncated out are
+/// dangling references.
+///
+/// The dedupe key is `(source, target, kind)` because that IS the edge —
+/// there is no handle to key on, and none is needed.
 fn retain_surviving_neighbor_edges(memories: &[SearchMemoryOutput], edges: &mut Vec<NeighborEdge>) {
     let surviving: std::collections::HashSet<&str> = memories
         .iter()
@@ -761,17 +765,11 @@ fn retain_surviving_neighbor_edges(memories: &[SearchMemoryOutput], edges: &mut 
         .collect();
     let mut seen_edges = std::collections::HashSet::new();
     edges.retain(|edge| {
-        let touches = edge
-            .source
-            .as_deref()
-            .is_some_and(|source| surviving.contains(source))
-            || edge
-                .target
-                .as_deref()
-                .is_some_and(|target| surviving.contains(target));
+        let touches =
+            surviving.contains(edge.source.as_str()) || surviving.contains(edge.target.as_str());
         // `&&` short-circuits: a non-touching edge is never marked seen, so a
         // later touching duplicate is still evaluated on its own merits.
-        touches && seen_edges.insert(edge.edge.clone())
+        touches && seen_edges.insert((edge.source.clone(), edge.target.clone(), edge.kind.clone()))
     });
 }
 
@@ -833,12 +831,11 @@ mod tests {
         }
     }
 
-    fn neighbor_edge(edge: &str, source: Option<&str>, target: Option<&str>) -> NeighborEdge {
+    fn neighbor_edge(source: &str, target: &str) -> NeighborEdge {
         NeighborEdge {
-            edge: edge.to_string(),
-            relation: "core/derived-from".into(),
-            source: source.map(str::to_string),
-            target: target.map(str::to_string),
+            source: source.to_string(),
+            target: target.to_string(),
+            kind: "origin".into(),
         }
     }
 
@@ -968,17 +965,21 @@ mod tests {
         let memories = [memory_output("F:1"), memory_output("A:2")];
         let mut edges = vec![
             // Touches a surviving hit via source.
-            neighbor_edge("E:keep", Some("A:2"), Some("F:99")),
+            neighbor_edge("A:2", "F:99"),
             // Both endpoints truncated out — dropped.
-            neighbor_edge("E:drop", Some("F:98"), Some("F:97")),
-            // Duplicate of E:keep — deduped.
-            neighbor_edge("E:keep", Some("A:2"), Some("F:99")),
+            neighbor_edge("F:98", "F:97"),
+            // Same content as the first — deduped, because content IS
+            // the edge's identity.
+            neighbor_edge("A:2", "F:99"),
             // Touches a surviving hit via target.
-            neighbor_edge("E:target", Some("F:96"), Some("F:1")),
+            neighbor_edge("F:96", "F:1"),
         ];
         retain_surviving_neighbor_edges(&memories, &mut edges);
-        let kept: Vec<_> = edges.iter().map(|edge| edge.edge.as_str()).collect();
-        assert_eq!(kept, ["E:keep", "E:target"]);
+        let kept: Vec<_> = edges
+            .iter()
+            .map(|edge| (edge.source.as_str(), edge.target.as_str()))
+            .collect();
+        assert_eq!(kept, [("A:2", "F:99"), ("F:96", "F:1")]);
     }
 
     #[test]

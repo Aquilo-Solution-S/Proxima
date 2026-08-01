@@ -8,8 +8,7 @@ use crate::error::ProtocolError;
 use crate::mcp::RequestBehavior;
 use crate::{
     CapabilityTag, DependencySatisfactionRule, FlavorDescriptor, McpToolDescriptor, Owner,
-    RegisteredRelation, RelationDescriptor, SchemaId, SchemaVersion, SearchProjectionColumnKind,
-    SidecarPayload,
+    SchemaId, SchemaVersion, SearchProjectionColumnKind, SidecarPayload,
 };
 use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
@@ -47,10 +46,6 @@ pub enum PayloadKind {
     Abstraction,
     Perspective,
     Goal,
-    /// Typed sidecar for an edge row, keyed on `edge_id`. See
-    /// `EdgePayload` (docs/03 §`EdgePayload`) and the relation registry
-    /// (docs/02 §"Relation registry").
-    Edge,
     CitedObject,
     CitationMapping,
 }
@@ -162,67 +157,9 @@ pub struct MemorySearchProjection {
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct SchemaRequest;
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct RelationPayloadSchemaRef {
-    pub schema_id: SchemaId,
-    pub schema_version: SchemaVersion,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct RelationInfo {
-    pub relation: String,
-    pub class: String,
-    pub owner_policy: String,
-    pub target_access_policy: String,
-    pub source_binding: String,
-    pub target_binding: String,
-    pub source_kind_mask: Vec<String>,
-    pub target_kind_mask: Vec<String>,
-    pub authorship_mask: Vec<String>,
-    pub payload_schema: Option<RelationPayloadSchemaRef>,
-}
-
-impl From<&RelationDescriptor> for RelationInfo {
-    fn from(relation: &RelationDescriptor) -> Self {
-        Self {
-            relation: relation.relation.clone(),
-            class: relation.class.as_str().to_string(),
-            owner_policy: relation.owner_policy.as_str().to_string(),
-            target_access_policy: relation.target_access_policy.as_str().to_string(),
-            source_binding: relation.source_binding.as_str().to_string(),
-            target_binding: relation.target_binding.as_str().to_string(),
-            source_kind_mask: relation
-                .source_kind_mask
-                .as_strings()
-                .into_iter()
-                .map(str::to_string)
-                .collect(),
-            target_kind_mask: relation
-                .target_kind_mask
-                .as_strings()
-                .into_iter()
-                .map(str::to_string)
-                .collect(),
-            authorship_mask: relation
-                .authorship_mask
-                .as_strings()
-                .into_iter()
-                .map(str::to_string)
-                .collect(),
-            payload_schema: relation.payload_schema.as_ref().map(|schema| {
-                RelationPayloadSchemaRef {
-                    schema_id: schema.schema_id.clone(),
-                    schema_version: schema.schema_version,
-                }
-            }),
-        }
-    }
-}
-
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SchemaResponse {
     pub schemas: Vec<SchemaInfo>,
-    pub relations: Vec<RelationInfo>,
 }
 
 /// Build-time lookup acceleration for `FlavorRegistryFrozen`. Each map
@@ -233,7 +170,7 @@ pub struct SchemaResponse {
 /// the whole index after extending `schemas`.
 ///
 /// Only the collections that scale with *schema* count and sit on the
-/// `FactIngest` / `GoalWrite` / edge-write paths are indexed. `flavors`
+/// `FactIngest` / `GoalWrite` paths are indexed. `flavors`
 /// and `dependency_satisfaction_rules` scale with *flavor* count (bounded
 /// by linked crates) and stay linear scans — indexing a handful of
 /// entries would not earn its keep.
@@ -246,8 +183,6 @@ struct FrozenIndex {
     schema_by_id_version_kind: HashMap<(SchemaId, SchemaVersion, PayloadKind), usize>,
     /// Protocol-ingress parsers keyed by `(schema_id, version, kind)`.
     protocol_ingress_by_key: HashMap<(SchemaId, SchemaVersion, PayloadKind), usize>,
-    /// `relations` keyed by relation id.
-    relation_by_name: HashMap<String, usize>,
     /// Schema ids of Fact schemas that declared `EMBEDDABLE = false`.
     ///
     /// Precomputed as a flat `Vec<String>` because its consumer is a SQL
@@ -259,11 +194,7 @@ struct FrozenIndex {
 }
 
 impl FrozenIndex {
-    fn build(
-        schemas: &[SchemaInfo],
-        protocol_ingress: &[ProtocolPayloadIngressEntry],
-        relations: &[RelationDescriptor],
-    ) -> Self {
+    fn build(schemas: &[SchemaInfo], protocol_ingress: &[ProtocolPayloadIngressEntry]) -> Self {
         let mut index = Self::default();
         for (position, schema) in schemas.iter().enumerate() {
             index
@@ -285,12 +216,6 @@ impl FrozenIndex {
                 ))
                 .or_insert(position);
         }
-        for (position, relation) in relations.iter().enumerate() {
-            index
-                .relation_by_name
-                .entry(relation.relation.clone())
-                .or_insert(position);
-        }
         index.non_embeddable_schema_ids = schemas
             .iter()
             .filter(|schema| schema.kind == PayloadKind::Fact && !schema.embeddable)
@@ -308,7 +233,6 @@ pub struct FlavorRegistryFrozen {
     schema_capability_tags:
         HashMap<(SchemaId, SchemaVersion, PayloadKind), BTreeSet<CapabilityTag>>,
     search_projections: Vec<MemorySearchProjection>,
-    relations: Vec<RelationDescriptor>,
     protocol_ingress: Vec<ProtocolPayloadIngressEntry>,
     mcp_tools: Vec<McpToolDescriptor>,
     request_behaviors: Vec<Arc<dyn RequestBehavior>>,
@@ -333,27 +257,10 @@ impl FlavorRegistryFrozen {
     /// vocabulary field beyond `schemas` empty.
     #[must_use]
     pub fn with_schemas(schemas: Vec<SchemaInfo>) -> Self {
-        let index = FrozenIndex::build(&schemas, &[], &[]);
+        let index = FrozenIndex::build(&schemas, &[]);
         Self {
             schemas,
             schema_capability_tags: HashMap::new(),
-            index,
-            ..Self::default()
-        }
-    }
-
-    /// Build-time / test-time constructor that also seeds the
-    /// relation registry.
-    #[must_use]
-    pub fn with_schemas_and_relations(
-        schemas: Vec<SchemaInfo>,
-        relations: Vec<RelationDescriptor>,
-    ) -> Self {
-        let index = FrozenIndex::build(&schemas, &[], &relations);
-        Self {
-            schemas,
-            schema_capability_tags: HashMap::new(),
-            relations,
             index,
             ..Self::default()
         }
@@ -371,7 +278,6 @@ impl FlavorRegistryFrozen {
             schemas,
             schema_capability_tags,
             search_projections,
-            relations,
             protocol_ingress,
             mcp_tools,
             request_behaviors,
@@ -381,12 +287,11 @@ impl FlavorRegistryFrozen {
             authorization_hooks,
         } = registry;
         let schema_capability_tags = crate::flavor::schema_capability_map(&schema_capability_tags);
-        let index = FrozenIndex::build(&schemas, &protocol_ingress, &relations);
+        let index = FrozenIndex::build(&schemas, &protocol_ingress);
         Self {
             schemas,
             schema_capability_tags,
             search_projections,
-            relations,
             protocol_ingress,
             mcp_tools,
             request_behaviors,
@@ -427,7 +332,7 @@ impl FlavorRegistryFrozen {
         self.schemas.extend(added);
         // Rebuild the index over the extended schema list — a stale
         // index would silently miss the appended schemas.
-        self.index = FrozenIndex::build(&self.schemas, &self.protocol_ingress, &self.relations);
+        self.index = FrozenIndex::build(&self.schemas, &self.protocol_ingress);
         self
     }
 
@@ -583,50 +488,6 @@ impl FlavorRegistryFrozen {
         self.schemas.clone()
     }
 
-    /// All registered relations. Order matches the order flavors
-    /// pushed them in.
-    #[must_use]
-    pub fn list_relations(&self) -> &[RelationDescriptor] {
-        &self.relations
-    }
-
-    #[must_use]
-    pub fn list_relation_info(&self) -> Vec<RelationInfo> {
-        self.relations.iter().map(RelationInfo::from).collect()
-    }
-
-    /// Lookup a `RelationDescriptor` by its flavor-qualified
-    /// relation id (`"proxima-code/calls"`, etc.).
-    #[must_use]
-    pub fn lookup_relation(&self, relation: &str) -> Option<&RelationDescriptor> {
-        let position = *self.index.relation_by_name.get(relation)?;
-        Some(&self.relations[position])
-    }
-
-    /// Resolve a relation for an edge write. Typed relations also
-    /// resolve their registered `EdgePayload` sidecar table; substrate
-    /// relations return `payload_sidecar_table = None`.
-    #[must_use]
-    pub fn resolve_relation(&self, relation: &str) -> Option<RegisteredRelation<'_>> {
-        let descriptor = self.lookup_relation(relation)?;
-        let payload_sidecar_table = match &descriptor.payload_schema {
-            Some(payload_schema) => {
-                let position = *self.index.schema_by_id_version_kind.get(&(
-                    payload_schema.schema_id.clone(),
-                    payload_schema.schema_version,
-                    PayloadKind::Edge,
-                ))?;
-                Some(self.schemas[position].sidecar_table.as_deref()?)
-            }
-            None => None,
-        };
-        Some(RegisteredRelation {
-            descriptor,
-            payload_sidecar_table,
-            registry: self,
-        })
-    }
-
     /// Lookup by `(schema_id, schema_version)`. Used by
     /// `FactIngest` / `GoalWrite` to validate incoming payloads.
     #[must_use]
@@ -736,7 +597,6 @@ impl FlavorRegistryFrozen {
     pub fn handle(&self, _req: &SchemaRequest) -> SchemaResponse {
         SchemaResponse {
             schemas: self.list(),
-            relations: self.list_relation_info(),
         }
     }
 }

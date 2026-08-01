@@ -71,14 +71,7 @@ impl crate::MemoryReadPort for ReadOnlyFake {
         _read_owners: &[OwnerRef],
         _memory_ids: &[crate::MemoryId],
         _limit: usize,
-    ) -> Result<Vec<crate::NeighborEdgeRow>, StorageError> {
-        Ok(Vec::new())
-    }
-
-    async fn load_edge_endpoint_kinds(
-        &self,
-        _edge_ids: &[crate::EdgeId],
-    ) -> Result<Vec<crate::EdgeEndpointKindRow>, StorageError> {
+    ) -> Result<Vec<crate::Edge>, StorageError> {
         Ok(Vec::new())
     }
 }
@@ -545,7 +538,6 @@ mod storage_port_tests_support {
             &self,
             _read_owners: &[OwnerRef],
             _req: &crate::verbs::query::EdgeReadRequest,
-            _payload_specs: &[crate::verbs::query::EdgePayloadSpec],
         ) -> Result<crate::verbs::query::EdgeReadResponse, StorageError> {
             Ok(crate::verbs::query::EdgeReadResponse {
                 edges: Vec::new(),

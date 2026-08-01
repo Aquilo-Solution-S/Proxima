@@ -1,7 +1,6 @@
 use proxima_core::{
-    EdgeAuthorshipKind, EntityKind, InputContractId, MemoryId, MemoryOperatorKind,
-    MemoryOutputInvocation, OperatorId, OperatorInvocationManifest, OperatorPhase,
-    OutputEdgeManifest, SchemaId, SchemaVersion,
+    EntityKind, InputContractId, MemoryId, MemoryOperatorKind, MemoryOutputInvocation, OperatorId,
+    OperatorInvocationManifest, OperatorPhase, OutputEdgeManifest, SchemaId, SchemaVersion,
 };
 use uuid::Uuid;
 
@@ -44,11 +43,7 @@ fn ftoa_manifest_requires_fact_inputs_abstraction_output_and_complete_edges() {
         output_kind: EntityKind::Abstraction,
         schema_id: SchemaId::new("proxima-core/agent-derivation".to_string()),
         schema_version: SchemaVersion::new(1),
-        output_edges: vec![OutputEdgeManifest::memory_to_memory(
-            output,
-            input,
-            EdgeAuthorshipKind::OperatorFtoA,
-        )],
+        output_edges: vec![OutputEdgeManifest::memory_to_memory(output, input)],
     });
 
     manifest.validate().expect("manifest is valid");
@@ -86,11 +81,7 @@ fn atogoal_manifest_requires_abstraction_inputs_and_structural_edges() {
         contract_id("test/atogoal"),
         vec![(input, EntityKind::Abstraction)],
         goal,
-        vec![OutputEdgeManifest::goal_to_memory(
-            goal,
-            input,
-            EdgeAuthorshipKind::OperatorAtoGoal,
-        )],
+        vec![OutputEdgeManifest::goal_to_memory(goal, input)],
     );
 
     manifest.validate().expect("A→Goal manifest is valid");
@@ -106,11 +97,7 @@ fn atog_manifest_rejects_goal_output_for_memory_phase() {
         contract_id("test/bad"),
         vec![(input, EntityKind::Abstraction)],
         goal,
-        vec![OutputEdgeManifest::goal_to_memory(
-            goal,
-            input,
-            EdgeAuthorshipKind::OperatorAtoP,
-        )],
+        vec![OutputEdgeManifest::goal_to_memory(goal, input)],
     );
 
     let err = manifest

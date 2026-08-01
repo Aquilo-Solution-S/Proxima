@@ -9,7 +9,7 @@ use crate::verbs::schema::PayloadKind;
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct ListSchemasArgs {
     /// Optional filter. One of "Fact", "Abstraction", "Perspective",
-    /// "Goal", "Edge", "`CitedObject`", "`CitationMapping`"
+    /// "Goal", "`CitedObject`", "`CitationMapping`"
     /// (case-insensitive). Omit to return all kinds.
     #[serde(default)]
     pub kind: Option<String>,
@@ -36,7 +36,6 @@ fn parse_kind(s: &str) -> Option<PayloadKind> {
         "abstraction" => Some(PayloadKind::Abstraction),
         "perspective" => Some(PayloadKind::Perspective),
         "goal" => Some(PayloadKind::Goal),
-        "edge" => Some(PayloadKind::Edge),
         "citedobject" => Some(PayloadKind::CitedObject),
         "citationmapping" => Some(PayloadKind::CitationMapping),
         _ => None,
@@ -49,7 +48,6 @@ fn kind_str(k: PayloadKind) -> &'static str {
         PayloadKind::Abstraction => "Abstraction",
         PayloadKind::Perspective => "Perspective",
         PayloadKind::Goal => "Goal",
-        PayloadKind::Edge => "Edge",
         PayloadKind::CitedObject => "CitedObject",
         PayloadKind::CitationMapping => "CitationMapping",
     }
@@ -69,7 +67,7 @@ pub async fn list_schemas(
         Some(raw) => Some(parse_kind(raw).ok_or_else(|| {
             McpToolError::InvalidInput(format!(
                 "unknown kind '{raw}'; expected one of: Fact, Abstraction, \
-                         Perspective, Goal, Edge, CitedObject, CitationMapping"
+                         Perspective, Goal, CitedObject, CitationMapping"
             ))
         })?),
         None => None,

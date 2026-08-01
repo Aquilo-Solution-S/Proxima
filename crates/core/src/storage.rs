@@ -6,14 +6,14 @@
 use std::any::{Any, TypeId};
 use std::sync::Arc;
 
-use crate::change_event::EdgeTargetProjection;
+use crate::edge::EdgeEndpoint;
 use crate::{
-    AbstractionPayload, CitationMappingPayload, CitedObjectPayload, EdgePayload, FactPayload,
-    GoalPayload, PerspectivePayload,
+    AbstractionPayload, CitationMappingPayload, CitedObjectPayload, FactPayload, GoalPayload,
+    PayloadReference, PerspectivePayload,
 };
 use crate::{
-    EdgeAuthorshipKind, EdgeId, EntityKind, InputContractId, MemoryId, MemoryOperatorKind,
-    OperatorId, Owner, RegisteredRelation, SchemaId, SchemaVersion, SourceBatchId,
+    EntityKind, InputContractId, MemoryId, MemoryOperatorKind, OperatorId, Owner, SchemaId,
+    SchemaVersion, SourceBatchId,
 };
 
 #[derive(Debug, Clone, thiserror::Error)]
@@ -70,26 +70,6 @@ pub struct MemoryGraphPayloadRow {
     pub body: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NeighborEdgeRow {
-    pub edge_id: EdgeId,
-    pub relation: String,
-    pub source_kind: EntityKind,
-    pub source_memory_id: Option<MemoryId>,
-    /// Kind of a visible memory target. `None` for redacted/unavailable targets
-    /// and non-memory targets to avoid leaking redacted target kind.
-    pub target_memory_kind: Option<EntityKind>,
-    pub target: EdgeTargetProjection,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct EdgeEndpointKindRow {
-    pub edge_id: EdgeId,
-    pub source_kind: EntityKind,
-    /// Present only when the already-projected event target is visible.
-    pub target_kind: Option<EntityKind>,
-}
-
 #[derive(Clone)]
 pub struct SidecarPayload {
     pub kind: crate::verbs::schema::PayloadKind,
@@ -98,6 +78,11 @@ pub struct SidecarPayload {
     type_id: TypeId,
     value: Arc<dyn Any + Send + Sync>,
     protocol_json: fn(&dyn Any) -> Result<serde_json::Value, String>,
+    /// Schema-declared reference fields, read back through the erased
+    /// value. Ingest needs them without knowing the concrete payload
+    /// type, and a per-kind function pointer is how the typed
+    /// declaration survives the erasure.
+    references: fn(&dyn Any) -> Vec<PayloadReference>,
 }
 
 impl PartialEq for SidecarPayload {
@@ -128,6 +113,7 @@ impl SidecarPayload {
         schema_id: SchemaId,
         schema_version: SchemaVersion,
         value: T,
+        references: fn(&dyn Any) -> Vec<PayloadReference>,
     ) -> Self
     where
         T: serde::Serialize + Send + Sync + 'static,
@@ -139,6 +125,7 @@ impl SidecarPayload {
             type_id: TypeId::of::<T>(),
             value: Arc::new(value),
             protocol_json: encode_protocol_json::<T>,
+            references,
         }
     }
 
@@ -152,6 +139,7 @@ impl SidecarPayload {
             T::schema_id(),
             SchemaVersion::new(T::SCHEMA_VERSION),
             value,
+            fact_references::<T>,
         )
     }
 
@@ -165,6 +153,7 @@ impl SidecarPayload {
             T::schema_id(),
             SchemaVersion::new(T::SCHEMA_VERSION),
             value,
+            abstraction_references::<T>,
         )
     }
 
@@ -178,6 +167,7 @@ impl SidecarPayload {
             T::schema_id(),
             SchemaVersion::new(T::SCHEMA_VERSION),
             value,
+            perspective_references::<T>,
         )
     }
 
@@ -191,19 +181,7 @@ impl SidecarPayload {
             T::schema_id(),
             SchemaVersion::new(T::SCHEMA_VERSION),
             value,
-        )
-    }
-
-    #[must_use]
-    pub fn edge<T>(value: T) -> Self
-    where
-        T: EdgePayload + Send + Sync,
-    {
-        Self::new(
-            crate::verbs::schema::PayloadKind::Edge,
-            T::schema_id(),
-            SchemaVersion::new(T::SCHEMA_VERSION),
-            value,
+            goal_references::<T>,
         )
     }
 
@@ -217,6 +195,7 @@ impl SidecarPayload {
             T::schema_id(),
             SchemaVersion::new(T::SCHEMA_VERSION),
             value,
+            no_references,
         )
     }
 
@@ -230,6 +209,7 @@ impl SidecarPayload {
             T::schema_id(),
             SchemaVersion::new(T::SCHEMA_VERSION),
             value,
+            no_references,
         )
     }
 
@@ -239,6 +219,13 @@ impl SidecarPayload {
         T: Send + Sync + 'static,
     {
         self.value.downcast_ref::<T>()
+    }
+
+    /// Node references this payload declares (docs/16 §Reference).
+    /// Empty for payload kinds that cannot reference nodes.
+    #[must_use]
+    pub fn references(&self) -> Vec<PayloadReference> {
+        (self.references)(self.value.as_ref())
     }
 
     /// Render this typed payload as JSON for protocol output.
@@ -262,17 +249,38 @@ where
     serde_json::to_value(typed).map_err(|err| err.to_string())
 }
 
-#[derive(Debug, Clone)]
-pub struct DerivedEdgeSpec<'a> {
-    pub owner: &'a Owner,
-    pub relation: RegisteredRelation<'a>,
-    pub source_kind: EntityKind,
-    pub source_memory_id: MemoryId,
-    pub target_kind: EntityKind,
-    pub target_memory_id: MemoryId,
-    pub authorship_kind: EdgeAuthorshipKind,
-    pub authorship_owner_memory_id: Option<MemoryId>,
-    pub sidecar_payload: Option<&'a SidecarPayload>,
+fn fact_references<T: FactPayload>(value: &dyn Any) -> Vec<PayloadReference> {
+    value
+        .downcast_ref::<T>()
+        .map(T::references)
+        .unwrap_or_default()
+}
+
+fn abstraction_references<T: AbstractionPayload>(value: &dyn Any) -> Vec<PayloadReference> {
+    value
+        .downcast_ref::<T>()
+        .map(T::references)
+        .unwrap_or_default()
+}
+
+fn perspective_references<T: PerspectivePayload>(value: &dyn Any) -> Vec<PayloadReference> {
+    value
+        .downcast_ref::<T>()
+        .map(T::references)
+        .unwrap_or_default()
+}
+
+fn goal_references<T: GoalPayload>(value: &dyn Any) -> Vec<PayloadReference> {
+    value
+        .downcast_ref::<T>()
+        .map(T::references)
+        .unwrap_or_default()
+}
+
+/// Cited objects and citation mappings are not nodes in the F/A/P graph,
+/// so they have no reference fields to declare.
+fn no_references(_value: &dyn Any) -> Vec<PayloadReference> {
+    Vec::new()
 }
 
 /// What storage must do about a derived memory's vector, decided by the
@@ -328,22 +336,41 @@ pub struct AuthorDerivedRequest<'a> {
     pub model_id: &'a str,
     pub prompt_version: &'a str,
     pub sidecar_payload: SidecarPayload,
-    /// Prior A/P memory superseded by this derived memory. Storage must
-    /// persist this on `memories.supersedes` in the same transaction as
-    /// the row, sidecar, and edge writes.
+    /// Perspective that emitted this memory, when one did. Node
+    /// metadata, known at write time: storage stamps it on the memory
+    /// row. Authorship is not a connection between two things, so it is
+    /// not an edge (docs/16 §The Model).
+    pub authoring_perspective_id: Option<MemoryId>,
+    /// Prior A/P memory this one revises. Supersession is the same thing
+    /// persisting through revision, not a connection between two things:
+    /// storage records the lineage pointer on the rows themselves — the
+    /// prior row's `superseded_by` and this row's `supersedes` — in the
+    /// same transaction, and writes NO edge.
     pub supersedes: Option<MemoryId>,
     /// Resolved text-search configuration name to stamp on the row;
     /// `None` applies the database default. Storage verifies the name
     /// against the catalog inside the write transaction.
     pub lexical_language: Option<&'a str>,
     pub embedding: DerivedEmbedding<'a>,
-    pub edges: &'a [DerivedEdgeSpec<'a>],
+    /// What this memory was made from. Storage writes one
+    /// [`crate::EdgeKind::Origin`] index row per entry, sourced at this
+    /// memory, in the same transaction as the row — the kind is a
+    /// consequence of the declaration, never a parameter.
+    pub origins: &'a [EdgeEndpoint],
+    /// Nodes this memory's payload points at, read off its
+    /// schema-declared reference fields by the engine. Storage writes one
+    /// [`crate::EdgeKind::Reference`] index row per entry, sourced at
+    /// this memory, in the same transaction as the row.
+    pub references: &'a [EdgeEndpoint],
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AuthorDerivedOutcome {
     pub memory_id: MemoryId,
     pub idempotent_replay: bool,
+    /// Index rows this write asserted. Structural idempotency makes this
+    /// a count, not a list of ids: replaying the write re-asserts the
+    /// same primary keys, and there are no edge ids to hand back.
     pub edge_count: usize,
     /// The memory landed without a vector and carries a pending embedding
     /// job instead ([`DerivedEmbedding::Deferred`]). Until a drain runs, the

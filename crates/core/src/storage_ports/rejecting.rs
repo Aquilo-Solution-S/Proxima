@@ -12,8 +12,8 @@ use super::fact::{FactIngestPort, SourceBatchPort};
 use super::goals::{GoalReadPort, GoalWakeCandidatePort, GoalWritePort};
 use super::mcp::{McpCallReadPort, McpCallWritePort};
 use super::memory::{
-    CitationPort, EdgeReadPort, EdgeWriteProof, MemoryAuthoringPort, MemoryInspectPort,
-    MemoryReadPort, OperatorWriteProof,
+    CitationPort, EdgeReadPort, MemoryAuthoringPort, MemoryInspectPort, MemoryReadPort,
+    OperatorWriteProof,
 };
 use super::proof::{OperatorMaintenanceProof, OwnerWritePermit};
 use super::registry::RegistryProjectionPort;
@@ -38,9 +38,8 @@ use crate::verbs::goal_write::{
 use crate::verbs::mcp_call_history::{McpCallHistoryRequest, McpCallHistoryResponse};
 use crate::verbs::persist_mcp_call::{McpCallLogInput, McpCallLogOutcome};
 use crate::{
-    DerivedEdgeSpec, EdgeId, EmbeddableEntityRef, EntityId, EntityKind, FactEntityId, GroupId,
-    MembershipRow, Owner, OwnerRef, Relation, SchemaId, SchemaVersion, SidecarPayload, SourceId,
-    UserId,
+    EmbeddableEntityRef, EntityId, EntityKind, FactEntityId, GroupId, MembershipRow, Owner,
+    OwnerRef, Relation, SchemaId, SchemaVersion, SidecarPayload, SourceId, UserId,
 };
 
 #[derive(Debug)]
@@ -129,17 +128,6 @@ impl MemoryAuthoringPort for RejectingStorage {
         ))
     }
 
-    async fn append_memory_edge(
-        &self,
-        _edge: &DerivedEdgeSpec<'_>,
-        _permit: &OwnerWritePermit,
-        _proof: EdgeWriteProof,
-    ) -> Result<EdgeId, StorageError> {
-        Err(StorageError::Internal(
-            "RejectingStorage rejects writes".into(),
-        ))
-    }
-
     async fn load_memory_kinds(
         &self,
         _owner: &Owner,
@@ -153,16 +141,6 @@ impl MemoryAuthoringPort for RejectingStorage {
         _owner: &Owner,
         _memory_ids: &[crate::MemoryId],
     ) -> Result<Vec<crate::FactSourceBatchRow>, StorageError> {
-        Ok(Vec::new())
-    }
-
-    async fn load_memory_edge_ids(
-        &self,
-        _owner: &Owner,
-        _relation: &str,
-        _source_memory_id: crate::MemoryId,
-        _target_memory_ids: &[crate::MemoryId],
-    ) -> Result<Vec<EdgeId>, StorageError> {
         Ok(Vec::new())
     }
 }
@@ -229,14 +207,7 @@ impl MemoryReadPort for RejectingStorage {
         _read_owners: &[OwnerRef],
         _memory_ids: &[crate::MemoryId],
         _limit: usize,
-    ) -> Result<Vec<crate::NeighborEdgeRow>, StorageError> {
-        Ok(Vec::new())
-    }
-
-    async fn load_edge_endpoint_kinds(
-        &self,
-        _edge_ids: &[EdgeId],
-    ) -> Result<Vec<crate::EdgeEndpointKindRow>, StorageError> {
+    ) -> Result<Vec<crate::Edge>, StorageError> {
         Ok(Vec::new())
     }
 }
@@ -535,7 +506,6 @@ impl EdgeReadPort for RejectingStorage {
         &self,
         _read_owners: &[OwnerRef],
         _req: &crate::verbs::query::EdgeReadRequest,
-        _payload_specs: &[crate::verbs::query::EdgePayloadSpec],
     ) -> Result<crate::verbs::query::EdgeReadResponse, StorageError> {
         Ok(crate::verbs::query::EdgeReadResponse {
             edges: Vec::new(),
@@ -793,7 +763,6 @@ impl ComplianceErasePort for RejectingStorage {
         _object_purge_planned: bool,
         _fact_sidecar_tables: &[String],
         _goal_sidecar_tables: &[String],
-        _edge_sidecar_tables: &[String],
         _citation_mapping_sidecar_tables: &[String],
         _cited_object_sidecar_tables: &[String],
     ) -> Result<crate::compliance::ComplianceEraseOutcome, StorageError> {
@@ -809,7 +778,6 @@ impl ComplianceErasePort for RejectingStorage {
         _object_purge_planned: bool,
         _fact_sidecar_tables: &[String],
         _goal_sidecar_tables: &[String],
-        _edge_sidecar_tables: &[String],
         _citation_mapping_sidecar_tables: &[String],
         _cited_object_sidecar_tables: &[String],
     ) -> Result<crate::compliance::ComplianceEraseOutcome, StorageError> {
@@ -825,7 +793,6 @@ impl ComplianceErasePort for RejectingStorage {
         _source_id: &SourceId,
         _fact_sidecar_tables: &[String],
         _goal_sidecar_tables: &[String],
-        _edge_sidecar_tables: &[String],
         _citation_mapping_sidecar_tables: &[String],
         _cited_object_sidecar_tables: &[String],
     ) -> Result<crate::compliance::ComplianceEraseOutcome, StorageError> {
@@ -841,7 +808,6 @@ impl ComplianceErasePort for RejectingStorage {
         _source_id: &SourceId,
         _fact_sidecar_tables: &[String],
         _goal_sidecar_tables: &[String],
-        _edge_sidecar_tables: &[String],
         _citation_mapping_sidecar_tables: &[String],
         _cited_object_sidecar_tables: &[String],
     ) -> Result<crate::compliance::ComplianceEraseOutcome, StorageError> {
@@ -855,7 +821,6 @@ impl ComplianceErasePort for RejectingStorage {
         _auth: &crate::compliance::ExportAuthorization,
         _fact_sidecar_tables: &[String],
         _goal_sidecar_tables: &[String],
-        _edge_sidecar_tables: &[String],
         _citation_mapping_sidecar_tables: &[String],
         _cited_object_sidecar_tables: &[String],
     ) -> Result<crate::compliance::ComplianceExportBundle, StorageError> {

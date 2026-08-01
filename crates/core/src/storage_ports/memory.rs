@@ -1,35 +1,40 @@
-pub use super::proof::{EdgeWriteProof, OperatorWriteProof, OwnerWritePermit};
+pub use super::proof::{OperatorWriteProof, OwnerWritePermit};
 
 use crate::dependency::MemoryDependency;
+use crate::edge::Edge;
 use crate::read_models::{MemorySnapshot, SidecarSpec};
 use crate::storage::{
-    AuthorDerivedOutcome, AuthorDerivedRequest, EdgeEndpointKindRow, FactSourceBatchRow,
-    MemoryGraphPayloadRow, MemoryKindRow, NeighborEdgeRow, StorageError,
+    AuthorDerivedOutcome, AuthorDerivedRequest, FactSourceBatchRow, MemoryGraphPayloadRow,
+    MemoryKindRow, StorageError,
 };
-use crate::{
-    DerivedEdgeSpec, EdgeId, FactEntityId, MemoryId, Owner, OwnerRef, SchemaId, SchemaVersion,
-};
+use crate::{FactEntityId, MemoryId, Owner, OwnerRef, SchemaId, SchemaVersion};
 
+/// Node writes that also assert index rows.
+///
+/// There is deliberately no edge-append method. An edge is never a
+/// free-standing act (docs/16 §Kernel Invariants, E4): every index row
+/// this port writes is a consequence of the node write carrying it, in
+/// that write's own transaction, and the row's kind follows the
+/// declaration it came from — `origins` produce
+/// [`crate::EdgeKind::Origin`] rows, `references`
+/// [`crate::EdgeKind::Reference`] rows. Storage never reads a kind off
+/// the request because none is transmitted.
 #[async_trait::async_trait]
 pub trait MemoryAuthoringPort: Send + Sync {
-    /// Append one already-authorized derived memory. Public callers cannot
-    /// forge `OperatorWriteProof`; route through
-    /// `Engine::author_derived_authorized` instead.
+    /// Append one already-authorized derived memory together with the
+    /// index rows its declarations imply and, when it revises a prior
+    /// head, the supersession lineage pointer — one transaction.
+    ///
+    /// Index writes are idempotent by construction: the primary key is
+    /// `(source, target, kind)`, so a replayed write re-asserts the same
+    /// rows. Public callers cannot forge `OperatorWriteProof`; route
+    /// through `Engine::author_derived_authorized` instead.
     async fn author_derived(
         &self,
         req: &AuthorDerivedRequest<'_>,
         permit: &OwnerWritePermit,
         proof: OperatorWriteProof,
     ) -> Result<AuthorDerivedOutcome, StorageError>;
-
-    /// Append one already-authorized memory edge. Public callers cannot forge
-    /// `EdgeWriteProof`; route through engine/checked edge-write APIs instead.
-    async fn append_memory_edge(
-        &self,
-        edge: &DerivedEdgeSpec<'_>,
-        permit: &OwnerWritePermit,
-        proof: EdgeWriteProof,
-    ) -> Result<EdgeId, StorageError>;
 
     async fn load_memory_kinds(
         &self,
@@ -42,14 +47,6 @@ pub trait MemoryAuthoringPort: Send + Sync {
         owner: &Owner,
         memory_ids: &[MemoryId],
     ) -> Result<Vec<FactSourceBatchRow>, StorageError>;
-
-    async fn load_memory_edge_ids(
-        &self,
-        owner: &Owner,
-        relation: &str,
-        source_memory_id: MemoryId,
-        target_memory_ids: &[MemoryId],
-    ) -> Result<Vec<EdgeId>, StorageError>;
 }
 
 #[async_trait::async_trait]
@@ -67,17 +64,17 @@ pub trait MemoryReadPort: Send + Sync {
         include_body: bool,
     ) -> Result<Vec<MemoryGraphPayloadRow>, StorageError>;
 
+    /// Edges touching any of `memory_ids`, in either direction, capped at
+    /// `limit`. A row is returned when its source is readable; an
+    /// unreadable endpoint comes back as
+    /// [`crate::EdgeTargetProjection::Redacted`] rather than removing the
+    /// row, so redaction never rewrites the shape of the graph.
     async fn load_neighbor_memory_edges(
         &self,
         read_owners: &[OwnerRef],
         memory_ids: &[MemoryId],
         limit: usize,
-    ) -> Result<Vec<NeighborEdgeRow>, StorageError>;
-
-    async fn load_edge_endpoint_kinds(
-        &self,
-        edge_ids: &[EdgeId],
-    ) -> Result<Vec<EdgeEndpointKindRow>, StorageError>;
+    ) -> Result<Vec<Edge>, StorageError>;
 
     async fn query_memories(
         &self,
@@ -124,20 +121,23 @@ pub trait MemoryInspectPort: Send + Sync {
     ) -> Result<Vec<MemoryDependency>, StorageError>;
 }
 
+/// Reads over the edge index. Every row is four fields — source,
+/// target, kind, `created_at` — and there is nothing else to hydrate: no
+/// id to dereference, no payload to join, no status to project.
 #[async_trait::async_trait]
 pub trait EdgeReadPort: Send + Sync {
-    /// `payload_specs` maps relations to their edge sidecar payload schemas
-    /// (engine-resolved from the frozen flavor registry, mirroring
-    /// [`MemoryInspectPort::load_memory_by_id`]'s `sidecars`). Hydration
-    /// runs only when `req.include_payloads` is set and a returned edge's
-    /// relation appears in the specs.
+    /// One page of edges matching `req.filter`, newest first, resuming
+    /// strictly after `req.cursor`. Ordering is
+    /// `created_at DESC, (source, target, kind) DESC` — the full primary
+    /// key, so the order is total and the keyset cannot skip or repeat.
     async fn read_edges(
         &self,
         read_owners: &[OwnerRef],
         req: &crate::verbs::query::EdgeReadRequest,
-        payload_specs: &[crate::verbs::query::EdgePayloadSpec],
     ) -> Result<crate::verbs::query::EdgeReadResponse, StorageError>;
 
+    /// Whether any edge matches `req.filter`. Existence is disclosed only
+    /// for edges whose source is readable by `read_owners`.
     async fn edge_exists(
         &self,
         read_owners: &[OwnerRef],

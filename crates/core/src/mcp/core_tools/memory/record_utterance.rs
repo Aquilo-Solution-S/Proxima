@@ -112,15 +112,12 @@ impl McpTool for RecordUtteranceTool {
             let engine = ctx.require_engine()?;
             let embedding_client = engine.embed_client();
             let embedding_model_id = embedding_client.as_ref().map(|client| client.model_id());
+            let sidecars = [SidecarPayload::fact(payload.clone())];
             let authorized = engine
-                .authorize_fact_ingest(&authz, Relation::Editor, draft)
+                .authorize_fact_ingest(&authz, Relation::Editor, draft, &sidecars)
                 .await?;
             let outcome = engine
-                .ingest_fact_with_typed_sidecar(
-                    &authorized,
-                    std::slice::from_ref(&SidecarPayload::fact(payload.clone())),
-                    embedding_model_id,
-                )
+                .ingest_fact_with_typed_sidecar(&authorized, &sidecars, embedding_model_id)
                 .await?;
 
             Ok(RecordUtteranceOutput {

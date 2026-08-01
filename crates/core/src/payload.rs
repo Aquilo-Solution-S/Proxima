@@ -8,7 +8,105 @@
 //! `const SCHEMA_ID: SchemaId = ...` shape: that requires
 //! const-construction of `String`, which Rust does not allow.
 
-use crate::{RelationClass, SchemaId};
+use crate::edge::EdgeEndpoint;
+use crate::{EntityKind, FactEntityId, GoalId, MemoryId, SchemaId};
+
+/// How a schema-declared reference field addresses the node it points
+/// at. This is where the old relation descriptor's endpoint-binding cell
+/// went: a binding is a property of the *field*, decided by the schema
+/// author once, not a policy row consulted per write.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub enum ReferenceBinding {
+    /// Point at the exact memory or goal row named by the field.
+    Pin,
+    /// Point at a Fact-entity head, so the reference follows re-observation
+    /// instead of freezing one observation.
+    FollowHead,
+}
+
+impl ReferenceBinding {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Pin => "Pin",
+            Self::FollowHead => "FollowHead",
+        }
+    }
+}
+
+/// One node reference read out of a payload field.
+///
+/// A payload that declares these is saying: *this field points at
+/// another node, and I am the home of that statement*. Ingest turns each
+/// one into a `Reference` index entry in the node write's own
+/// transaction (docs/16 §The Model). The index answers "is there a
+/// connection"; the payload answers "what is it" — ten call sites from
+/// chunk A to chunk B are one index row and ten payload entries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct PayloadReference {
+    /// Payload field the reference was read from. Diagnostics only — it
+    /// is deliberately not persisted, because a field name is schema
+    /// detail and the index carries no content.
+    pub field: &'static str,
+    pub binding: ReferenceBinding,
+    pub target: EdgeEndpoint,
+}
+
+impl PayloadReference {
+    /// Reference a pinned memory row.
+    #[must_use]
+    pub const fn memory(field: &'static str, kind: EntityKind, memory_id: MemoryId) -> Self {
+        Self {
+            field,
+            binding: ReferenceBinding::Pin,
+            target: EdgeEndpoint::memory(kind, memory_id),
+        }
+    }
+
+    /// Reference a Goal row.
+    #[must_use]
+    pub const fn goal(field: &'static str, goal_id: GoalId) -> Self {
+        Self {
+            field,
+            binding: ReferenceBinding::Pin,
+            target: EdgeEndpoint::goal(goal_id),
+        }
+    }
+
+    /// Reference a Fact-entity head, following it as it is re-observed.
+    #[must_use]
+    pub const fn fact_entity_head(field: &'static str, fact_entity_id: FactEntityId) -> Self {
+        Self {
+            field,
+            binding: ReferenceBinding::FollowHead,
+            target: EdgeEndpoint::fact_entity(fact_entity_id),
+        }
+    }
+
+    /// Check that the declared binding agrees with the address form it
+    /// produced. The two cannot disagree through the constructors above;
+    /// the check exists for hand-built declarations and is what ingest
+    /// calls before writing an index entry.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message when a `FollowHead` reference does not address a
+    /// Fact-entity head, or a `Pin` reference does.
+    pub fn validate(&self) -> Result<(), String> {
+        let is_head = matches!(self.target.entity, crate::EntityRef::FactEntity(_));
+        match (self.binding, is_head) {
+            (ReferenceBinding::FollowHead, true) | (ReferenceBinding::Pin, false) => Ok(()),
+            (ReferenceBinding::FollowHead, false) => Err(format!(
+                "reference field {} declares FollowHead but does not address a Fact-entity head",
+                self.field
+            )),
+            (ReferenceBinding::Pin, true) => Err(format!(
+                "reference field {} declares Pin but addresses a Fact-entity head",
+                self.field
+            )),
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct PayloadKeyBuilder {
@@ -293,6 +391,15 @@ pub trait FactPayload:
     #[must_use]
     fn receipt_key(&self) -> Vec<u8>;
     fn render(&self) -> String;
+    /// Node references this payload's fields carry (docs/16
+    /// §Reference). Ingest derives one `Reference` index entry per
+    /// declaration, in the node write's own transaction, so the edge set
+    /// stays a function of node content and re-deriving it from payloads
+    /// reproduces it exactly. Default: none.
+    #[must_use]
+    fn references(&self) -> Vec<PayloadReference> {
+        Vec::new()
+    }
     /// Per-schema typed Fact sidecar table, or `None` when the Fact
     /// carries no sidecar of its own (its typed payload lives elsewhere,
     /// e.g. in a citation cited-object). Defaults to `None`; mirrors the
@@ -340,6 +447,15 @@ pub trait AbstractionPayload:
     /// See `FactPayload::SPECIAL_CATEGORY`.
     const SPECIAL_CATEGORY: bool = false;
     fn sidecar_table() -> &'static str;
+    /// Node references this payload's fields carry (docs/16
+    /// §Reference). Ingest derives one `Reference` index entry per
+    /// declaration, in the node write's own transaction, so the edge set
+    /// stays a function of node content and re-deriving it from payloads
+    /// reproduces it exactly. Default: none.
+    #[must_use]
+    fn references(&self) -> Vec<PayloadReference> {
+        Vec::new()
+    }
     #[must_use]
     fn search_projection() -> Option<SearchProjection> {
         None
@@ -362,6 +478,15 @@ pub trait PerspectivePayload:
     /// See `FactPayload::SPECIAL_CATEGORY`.
     const SPECIAL_CATEGORY: bool = false;
     fn sidecar_table() -> &'static str;
+    /// Node references this payload's fields carry (docs/16
+    /// §Reference). Ingest derives one `Reference` index entry per
+    /// declaration, in the node write's own transaction, so the edge set
+    /// stays a function of node content and re-deriving it from payloads
+    /// reproduces it exactly. Default: none.
+    #[must_use]
+    fn references(&self) -> Vec<PayloadReference> {
+        Vec::new()
+    }
     #[must_use]
     fn search_projection() -> Option<SearchProjection> {
         None
@@ -391,6 +516,15 @@ pub trait GoalPayload:
     /// checks. Title/text and authorship are compared separately.
     #[must_use]
     fn goal_key(&self) -> Vec<u8>;
+    /// Node references this payload's fields carry (docs/16
+    /// §Reference). Ingest derives one `Reference` index entry per
+    /// declaration, in the node write's own transaction, so the edge set
+    /// stays a function of node content and re-deriving it from payloads
+    /// reproduces it exactly. Default: none.
+    #[must_use]
+    fn references(&self) -> Vec<PayloadReference> {
+        Vec::new()
+    }
     /// Per-schema typed Goal sidecar table, or `None` when the Goal's
     /// typed payload has no schema-specific storage beyond
     /// `proxima_core.goals.payload`.
@@ -398,38 +532,6 @@ pub trait GoalPayload:
     fn sidecar_table() -> Option<&'static str> {
         None
     }
-    #[must_use]
-    fn json_schema() -> Option<serde_json::Value> {
-        None
-    }
-    #[must_use]
-    fn schema_id() -> SchemaId {
-        SchemaId::new(Self::SCHEMA_ID.to_string())
-    }
-}
-
-/// Typed payload for an edge row in `proxima_core.edges`. Mirrors
-/// `FactPayload` / `AbstractionPayload` for the edge layer; opt-in
-/// per relation via `RelationDescriptor::payload_schema`.
-///
-/// `RELATION_CLASS` pins the substrate class that edges carrying this
-/// payload must declare. The atomic edge-write verb cross-checks the
-/// descriptor's class against this constant at registration time so
-/// a payload cannot be misfiled across classes.
-///
-/// See docs/03 §`EdgePayload` and docs/02 §"Typed edge payloads".
-pub trait EdgePayload:
-    serde::Serialize + serde::de::DeserializeOwned + Send + Sync + 'static
-{
-    const SCHEMA_ID: &'static str;
-    const SCHEMA_VERSION: u32;
-    const RELATION_CLASS: RelationClass;
-    /// See `FactPayload::SPECIAL_CATEGORY`.
-    const SPECIAL_CATEGORY: bool = false;
-    /// Sidecar table identifier (qualified, e.g.
-    /// `"proxima_code.code_calls_v1"`). The table's primary key is
-    /// `edge_id uuid` referencing `proxima_core.edges(edge_id)`.
-    fn sidecar_table() -> &'static str;
     #[must_use]
     fn json_schema() -> Option<serde_json::Value> {
         None

@@ -211,42 +211,6 @@ fn flavor_macro_accepts_empty_goal_schemas() {
     );
 }
 
-// A misprefixed *relation*. Schema / tool / trigger prefixes are now
-// compile-checked by a `const` assertion (so a misprefixed SCHEMA_ID
-// fails the build and cannot be expressed in a compiled test).
-// `relations` carry their prefix on a runtime `RelationDescriptor`
-// field, so that arm still asserts at `register` time — this test
-// covers the surviving runtime branch.
-mod nested {
-    use proxima_core::{
-        AuthorshipKindMask, EndpointBinding, EntityKindMask, RelationClass, RelationDescriptor,
-        proxima_flavor,
-    };
-    proxima_flavor! {
-        name = "proxima-core",
-        relations = [ RelationDescriptor::substrate(
-            "wrong-crate/bad",
-            RelationClass::Provenance,
-            EndpointBinding::Pin,
-            EndpointBinding::Pin,
-            EntityKindMask::all(),
-            EntityKindMask::all(),
-            AuthorshipKindMask::core(),
-        ) ],
-    }
-}
-
-#[test]
-fn flavor_macro_rejects_wrong_prefix() {
-    let mut registry = FlavorRegistry::new();
-    let err = nested::register(&mut registry).unwrap_err();
-    assert!(
-        err.to_string()
-            .contains("relation must start with crate prefix"),
-        "{err}"
-    );
-}
-
 #[derive(Debug, Default)]
 struct CoreSchemaDependencyRule;
 

@@ -14,10 +14,9 @@ use crate::verbs::schema::{
 };
 use crate::{
     AbstractionPayload, CapabilityTag, CitationMappingPayload, CitedObjectPayload,
-    DependencySatisfactionRule, EdgePayload, FactPayload, GoalPayload, McpCallFn, McpTool,
-    McpToolDescriptor, McpToolError, McpToolOrigin, PerspectivePayload, RelationDescriptor,
-    RequestBehavior, SchemaId, SchemaVersion, ScopeGateBehavior, SidecarPayload, Tool,
-    core_relation_descriptors,
+    DependencySatisfactionRule, FactPayload, GoalPayload, McpCallFn, McpTool, McpToolDescriptor,
+    McpToolError, McpToolOrigin, PerspectivePayload, RequestBehavior, SchemaId, SchemaVersion,
+    ScopeGateBehavior, SidecarPayload, Tool,
 };
 
 use std::collections::BTreeSet;

@@ -5,11 +5,12 @@
 
 use uuid::Uuid;
 
-pub use crate::change_event::EdgeTargetProjection;
 use crate::change_event::EntityRef;
+pub use crate::edge::EdgeTargetProjection;
+use crate::edge::{Edge, EdgeKind};
 use crate::verbs::goal_write::GoalState;
 use crate::verbs::schema::SchemaTombstone;
-use crate::{EdgeId, GoalId, MemoryId, Owner, OwnerRef, SchemaId, SchemaVersion, SidecarPayload};
+use crate::{GoalId, MemoryId, Owner, OwnerRef, SchemaId, SchemaVersion, SidecarPayload};
 
 /// Re-export the canonical `EntityKind` from `change_event` so query
 /// callers don't need a second import path. The duplicate
@@ -260,13 +261,19 @@ pub struct MemoryLineageRequest {
 }
 
 /// Keyset position in the lineage walk's total order
-/// (`distance ASC, edge_id DESC`): the next page starts strictly after
-/// this edge. Pages recompute the walk, so the usual keyset caveat
-/// applies — mutations between pages shift later pages.
+/// (`distance ASC`, then the edge primary key descending): the next page
+/// starts strictly after this edge. Pages recompute the walk, so the
+/// usual keyset caveat applies — mutations between pages shift later
+/// pages.
+///
+/// The position is the edge itself because an edge has no id: its
+/// content is its identity, and `(source, target)` is what remains to
+/// order by.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct MemoryLineageCursor {
     pub distance: u8,
-    pub edge_id: uuid::Uuid,
+    pub source: EntityRef,
+    pub target: EntityRef,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -278,14 +285,9 @@ pub struct MemoryLineageNode {
     pub distance: u8,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MemoryLineageEdge {
-    pub edge_id: uuid::Uuid,
-    pub relation: String,
-    pub relation_class: String,
-    pub source_kind: EntityKind,
-    pub source_memory_id: MemoryId,
-    pub target: EdgeTargetProjection,
+    pub edge: Edge,
     pub distance: u8,
 }
 
@@ -383,8 +385,6 @@ pub struct QueryRequest {
     pub memory_ids: Vec<MemoryId>,
     #[serde(default)]
     pub goal_ids: Vec<GoalId>,
-    #[serde(default)]
-    pub edge_ids: Vec<uuid::Uuid>,
     /// Engine-resolved metadata for stateful-Fact heads-only queries.
     /// Skipped over the wire — clients don't set this; the engine
     /// populates it from the schema registry before dispatch.
@@ -410,7 +410,6 @@ impl QueryRequest {
             include_payloads: true,
             memory_ids: Vec::new(),
             goal_ids: Vec::new(),
-            edge_ids: Vec::new(),
             stateful_heads: Vec::new(),
         }
     }
@@ -444,69 +443,42 @@ pub struct GoalRow {
     pub payload: Vec<u8>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct EdgeRow {
-    pub id: uuid::Uuid,
-    pub relation: String,
-    pub relation_class: String,
-    pub source: EntityRef,
-    /// Entity kind of the source endpoint (Goal for Goal endpoints).
-    pub source_kind: EntityKind,
-    pub target: EdgeTargetProjection,
-    /// Entity kind of a visible target. `None` for redacted/unavailable
-    /// targets to avoid leaking the redacted target's kind.
-    pub target_kind: Option<EntityKind>,
-    pub created_at: time::OffsetDateTime,
-    /// Typed sidecar projection populated by storage at read time when the
-    /// request opts in via `include_payloads`. Protocol adapters serialize
-    /// it at the transport boundary.
-    pub payload: Option<SidecarPayload>,
-}
-
+/// Edge listing filter. Every field is a narrowing predicate over the
+/// index; a request with none of them is refused by the read surface
+/// rather than dumping the graph.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct EdgeFilter {
-    pub relation: Option<String>,
+    pub kind: Option<EdgeKind>,
     pub source: Option<EntityRef>,
     pub target: Option<EntityRef>,
 }
 
-/// Engine-resolved mapping from a relation to its edge sidecar payload
-/// schema. Storage uses it to dispatch typed payload hydration for
-/// [`EdgeReadRequest::include_payloads`] reads; clients never supply it.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct EdgePayloadSpec {
-    pub relation: String,
-    pub schema_id: SchemaId,
-    pub schema_version: SchemaVersion,
-}
-
-/// Keyset cursor over the `(created_at, edge_id)` descending edge order.
+/// Keyset cursor over the newest-first edge order. An edge has no id, so
+/// the tiebreaker after `created_at` is the rest of the primary key —
+/// `(source, target, kind)` — which is exactly what makes the order
+/// total.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct EdgeReadCursor {
     pub created_at: time::OffsetDateTime,
-    pub edge_id: EdgeId,
+    pub source: EntityRef,
+    pub target: EntityRef,
+    pub kind: EdgeKind,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct EdgeReadRequest {
     pub owner: OwnerRef,
     #[serde(default)]
-    pub edge_ids: Vec<EdgeId>,
-    #[serde(default)]
     pub filter: EdgeFilter,
     pub limit: u32,
     /// Resume after this keyset position (newest-first order).
     #[serde(default)]
     pub cursor: Option<EdgeReadCursor>,
-    /// Hydrate typed edge sidecar payloads for relations that declare a
-    /// payload schema.
-    #[serde(default)]
-    pub include_payloads: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EdgeReadResponse {
-    pub edges: Vec<EdgeRow>,
+    pub edges: Vec<Edge>,
     /// Present when more edges match beyond this page; pass back via
     /// [`EdgeReadRequest::cursor`] to resume.
     pub next_cursor: Option<EdgeReadCursor>,
@@ -515,8 +487,6 @@ pub struct EdgeReadResponse {
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct EdgeExistsRequest {
     pub owner: OwnerRef,
-    #[serde(default)]
-    pub edge_ids: Vec<EdgeId>,
     #[serde(default)]
     pub filter: EdgeFilter,
 }
@@ -530,7 +500,7 @@ pub struct EdgeExistsResponse {
 pub struct QueryResponse {
     pub memories: Vec<MemoryRow>,
     pub goals: Vec<GoalRow>,
-    pub edges: Vec<EdgeRow>,
+    pub edges: Vec<Edge>,
     pub next_cursor: Option<QueryCursor>,
     /// docs/14 §"Cursor & resume".
     pub seq_high_water: Option<Uuid>,

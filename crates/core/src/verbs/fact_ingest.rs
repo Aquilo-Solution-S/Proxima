@@ -6,6 +6,7 @@
 
 use uuid::Uuid;
 
+use crate::edge::EdgeEndpoint;
 use crate::engine::MemoryPermit;
 use crate::storage_ports::OwnerWritePermit;
 use crate::{
@@ -135,6 +136,18 @@ pub struct FactWriteCommand {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub receipt: Option<FactReceiptDraft>,
     pub citation: Option<Citation>,
+    /// What this Fact was made from — an OCR reading declaring the
+    /// upload it read, say. Each entry becomes an
+    /// [`crate::EdgeKind::Origin`] index row inside the Fact's own write
+    /// transaction, which is what makes the provenance idempotent
+    /// without an id scheme: replaying the ingest re-asserts the same
+    /// primary key.
+    ///
+    /// Not receipt key material and `skip`ped like `rendered_text`: the
+    /// same observation is the same Fact whether or not a caller repeats
+    /// the declaration, and a receipt replay must stay a replay.
+    #[serde(default, skip)]
+    pub derived_from: Vec<EdgeEndpoint>,
 }
 
 /// Proof that a Fact write passed authorization + schema validation
@@ -147,6 +160,41 @@ pub struct AuthorizedFactWrite {
     draft: FactWriteCommand,
     fact_sidecar_table: Option<String>,
     fact_natural_key_columns: Vec<String>,
+    links: AuthorizedNodeLinks,
+}
+
+/// The index rows a node write is admitted to assert, resolved and
+/// read-checked by the engine before storage sees them.
+///
+/// Both lists are endpoints only. Their kinds are not carried because
+/// they are not chosen: `origins` are [`crate::EdgeKind::Origin`] rows
+/// and `references` are [`crate::EdgeKind::Reference`] rows, by virtue
+/// of where they came from.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct AuthorizedNodeLinks {
+    origins: Vec<EdgeEndpoint>,
+    references: Vec<EdgeEndpoint>,
+}
+
+impl AuthorizedNodeLinks {
+    pub(crate) fn new(origins: Vec<EdgeEndpoint>, references: Vec<EdgeEndpoint>) -> Self {
+        Self {
+            origins,
+            references,
+        }
+    }
+
+    /// Targets the write declared it was made from.
+    #[must_use]
+    pub fn origins(&self) -> &[EdgeEndpoint] {
+        &self.origins
+    }
+
+    /// Targets the write's typed payload points at.
+    #[must_use]
+    pub fn references(&self) -> &[EdgeEndpoint] {
+        &self.references
+    }
 }
 
 impl AuthorizedFactWrite {
@@ -155,13 +203,22 @@ impl AuthorizedFactWrite {
         draft: FactWriteCommand,
         fact_sidecar_table: Option<String>,
         fact_natural_key_columns: Vec<String>,
+        links: AuthorizedNodeLinks,
     ) -> Self {
         Self {
             permit,
             draft,
             fact_sidecar_table,
             fact_natural_key_columns,
+            links,
         }
+    }
+
+    /// Index rows storage must assert alongside the Fact row, in the
+    /// same transaction.
+    #[must_use]
+    pub fn links(&self) -> &AuthorizedNodeLinks {
+        &self.links
     }
 
     #[must_use]
@@ -283,6 +340,7 @@ impl AuthorizedInlineCitationMapping {
 pub struct AuthorizedCitationAttachment {
     permit: MemoryPermit,
     memory_id: MemoryId,
+    memory_kind: crate::EntityKind,
     owner: Owner,
     cited_object: AuthorizedInlineCitedObject,
     mapping: AuthorizedInlineCitationMapping,
@@ -292,6 +350,7 @@ impl AuthorizedCitationAttachment {
     pub(crate) fn new(
         permit: MemoryPermit,
         memory_id: MemoryId,
+        memory_kind: crate::EntityKind,
         owner: Owner,
         cited_object: AuthorizedInlineCitedObject,
         mapping: AuthorizedInlineCitationMapping,
@@ -299,10 +358,19 @@ impl AuthorizedCitationAttachment {
         Self {
             permit,
             memory_id,
+            memory_kind,
             owner,
             cited_object,
             mapping,
         }
+    }
+
+    /// Kind the caller declared for the target memory, already checked
+    /// against [`crate::citations::kind_may_cite_directly`]. Storage must
+    /// reject the write when the stored row disagrees.
+    #[must_use]
+    pub const fn memory_kind(&self) -> crate::EntityKind {
+        self.memory_kind
     }
 
     #[must_use]
@@ -353,6 +421,7 @@ pub struct AuthorizedFactWithCitation {
     mapping: AuthorizedInlineCitationMapping,
     fact_sidecar_table: Option<String>,
     fact_natural_key_columns: Vec<String>,
+    links: AuthorizedNodeLinks,
 }
 
 impl AuthorizedFactWithCitation {
@@ -363,6 +432,7 @@ impl AuthorizedFactWithCitation {
         mapping: AuthorizedInlineCitationMapping,
         fact_sidecar_table: Option<String>,
         fact_natural_key_columns: Vec<String>,
+        links: AuthorizedNodeLinks,
     ) -> Self {
         Self {
             permit,
@@ -371,7 +441,14 @@ impl AuthorizedFactWithCitation {
             mapping,
             fact_sidecar_table,
             fact_natural_key_columns,
+            links,
         }
+    }
+
+    /// Index rows storage must assert alongside the Fact row.
+    #[must_use]
+    pub fn links(&self) -> &AuthorizedNodeLinks {
+        &self.links
     }
 
     #[must_use]
@@ -436,9 +513,11 @@ pub struct AuthorizedFactWithCitationRef {
     mapping: AuthorizedInlineCitationMapping,
     fact_sidecar_table: Option<String>,
     fact_natural_key_columns: Vec<String>,
+    links: AuthorizedNodeLinks,
 }
 
 impl AuthorizedFactWithCitationRef {
+    #[allow(clippy::too_many_arguments)] // one parameter per authorized fact
     pub(crate) fn new(
         permit: MemoryPermit,
         draft: FactWriteCommand,
@@ -447,6 +526,7 @@ impl AuthorizedFactWithCitationRef {
         mapping: AuthorizedInlineCitationMapping,
         fact_sidecar_table: Option<String>,
         fact_natural_key_columns: Vec<String>,
+        links: AuthorizedNodeLinks,
     ) -> Self {
         Self {
             permit,
@@ -456,7 +536,14 @@ impl AuthorizedFactWithCitationRef {
             mapping,
             fact_sidecar_table,
             fact_natural_key_columns,
+            links,
         }
+    }
+
+    /// Index rows storage must assert alongside the Fact row.
+    #[must_use]
+    pub fn links(&self) -> &AuthorizedNodeLinks {
+        &self.links
     }
 
     #[must_use]
@@ -532,7 +619,17 @@ impl FactWriteCommand {
                 occurred_at: observed_at,
             }),
             citation: None,
+            derived_from: Vec::new(),
         }
+    }
+
+    /// Declare what this Fact was made from. The index rows that follow
+    /// are `origin` rows because *that is what a derivation declaration
+    /// means* — the caller names targets, never a kind.
+    #[must_use]
+    pub fn with_derived_from(mut self, derived_from: Vec<EdgeEndpoint>) -> Self {
+        self.derived_from = derived_from;
+        self
     }
 
     /// Attach an opaque citation hint to the draft.
@@ -629,6 +726,7 @@ mod tests {
                 occurred_at: now,
             }),
             citation: None,
+            derived_from: Vec::new(),
         }
     }
 
@@ -670,6 +768,7 @@ mod tests {
                 occurred_at: time::OffsetDateTime::UNIX_EPOCH,
             }),
             citation: None,
+            derived_from: Vec::new(),
         };
         assert_eq!(
             hex::encode(

@@ -5,7 +5,7 @@
 //! neighbor edges, lineage).
 
 use crate::mcp::McpToolCtx;
-use crate::{EdgeTargetProjection, EntityKind, EntityRef, MemoryId};
+use crate::{EdgeEndpoint, EdgeTargetProjection, EntityKind, EntityRef, MemoryId};
 
 /// Placeholder for an edge target the caller may not see. Part of the
 /// wire contract: every edge-bearing output uses this exact string.
@@ -44,36 +44,36 @@ pub(crate) fn format_entity_ref(
     }
 }
 
+/// Format an edge endpoint. The endpoint carries its own kind, so there
+/// is nothing to look up and nothing to guess.
+pub(crate) fn format_endpoint(ctx: &McpToolCtx, endpoint: EdgeEndpoint) -> String {
+    format_entity_ref(ctx, &endpoint.entity, Some(endpoint.kind))
+}
+
 /// Format a target projection with a caller-supplied memory formatter —
 /// lineage resolves memory prefixes through its per-walk class map
-/// instead of a single kind.
+/// instead of the endpoint's own kind.
 pub(crate) fn format_target_projection_with(
     ctx: &McpToolCtx,
-    target: &EdgeTargetProjection,
+    target: EdgeTargetProjection,
     format_memory: impl Fn(MemoryId) -> String,
 ) -> String {
     match target {
-        EdgeTargetProjection::Visible {
-            target: EntityRef::Memory(memory_id),
-        } => format_memory(*memory_id),
-        EdgeTargetProjection::Visible {
-            target: EntityRef::Goal(goal_id),
-        } => ctx.format_goal(*goal_id),
-        EdgeTargetProjection::Visible {
-            target: EntityRef::FactEntity(fact_entity_id),
-        } => format!("fact_entity:{}", fact_entity_id.into_inner()),
+        EdgeTargetProjection::Visible { target } => match target.entity {
+            EntityRef::Memory(memory_id) => format_memory(memory_id),
+            EntityRef::Goal(goal_id) => ctx.format_goal(goal_id),
+            EntityRef::FactEntity(fact_entity_id) => {
+                format!("fact_entity:{}", fact_entity_id.into_inner())
+            }
+        },
         EdgeTargetProjection::Redacted => REDACTED_TARGET.into(),
         EdgeTargetProjection::Unavailable => UNAVAILABLE_TARGET.into(),
     }
 }
 
-/// Format a target projection whose memory kind (when known) picks the
-/// handle prefix.
-pub(crate) fn format_target_projection(
-    ctx: &McpToolCtx,
-    target: &EdgeTargetProjection,
-    memory_kind: Option<EntityKind>,
-) -> String {
+/// Format a target projection using the endpoint's own kind.
+pub(crate) fn format_target_projection(ctx: &McpToolCtx, target: EdgeTargetProjection) -> String {
+    let memory_kind = target.endpoint().map(|endpoint| endpoint.kind);
     format_target_projection_with(ctx, target, |memory_id| {
         format_memory_by_kind(ctx, memory_id, memory_kind)
     })

@@ -7,7 +7,7 @@ pub mod tool {
     pub const CORE_REMEMBER: &str = "core_remember";
     pub const CORE_RECORD_UTTERANCE: &str = "core_record_utterance";
     pub const CORE_DERIVE: &str = "core_derive";
-    pub const CORE_LINK: &str = "core_link";
+    pub const CORE_INTERPRET: &str = "core_interpret";
     pub const CORE_GOAL: &str = "core_goal";
     pub const CORE_FACT: &str = "core_fact";
     pub const CORE_MEMBERSHIP: &str = "core_membership";
@@ -47,7 +47,6 @@ pub mod resource {
     pub const MEMORY: &str = "resource:memory";
     pub const MEMORIES: &str = "resource:memories";
     pub const MEMORY_LINEAGE: &str = "resource:memory-lineage";
-    pub const EDGE_TYPES: &str = "resource:edge-types";
     pub const TOOLS: &str = "resource:tools";
     pub const GRAPH: &str = "resource:graph";
     pub const CHANGE_EVENTS: &str = "resource:change-events";
@@ -56,12 +55,10 @@ pub mod resource {
     pub const GOALS: &str = "resource:goals";
     pub const GOAL: &str = "resource:goal";
     pub const EDGES: &str = "resource:edges";
-    pub const EDGE: &str = "resource:edge";
 }
 
 pub mod resource_path {
     pub const SCHEMAS: &str = "schemas";
-    pub const EDGE_TYPES: &str = "edge-types";
     pub const TOOLS: &str = "tools";
     pub const GRAPH: &str = "graph";
     pub const CHANGE_EVENTS: &str = "change-events";
@@ -71,12 +68,10 @@ pub mod resource_path {
     pub const GOALS: &str = "goals";
     pub const GOAL: &str = "goal";
     pub const EDGES: &str = "edges";
-    pub const EDGE: &str = "edge";
 }
 
 pub mod resource_uri {
     pub const SCHEMAS: &str = "proxima://schemas{?kind}";
-    pub const EDGE_TYPES: &str = "proxima://edge-types";
     pub const TOOLS: &str = "proxima://tools";
     pub const GRAPH: &str = "proxima://graph";
     pub const MEMORY: &str = "proxima://memory/{id}{?expand_neighbors}";
@@ -86,8 +81,7 @@ pub mod resource_uri {
     pub const WAKE_CANDIDATES: &str = "proxima://wake-candidates{?fact,limit}";
     pub const GOALS: &str = "proxima://goals{?state,limit,cursor}";
     pub const GOAL: &str = "proxima://goal/{id}";
-    pub const EDGES: &str = "proxima://edges{?relation,source,target,limit,cursor,payloads}";
-    pub const EDGE: &str = "proxima://edge/{id}";
+    pub const EDGES: &str = "proxima://edges{?kind,source,target,limit,cursor}";
 }
 
 pub mod profile {

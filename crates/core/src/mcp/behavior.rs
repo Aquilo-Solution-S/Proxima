@@ -353,7 +353,6 @@ mod tests {
             crate::protocol::resource::SCHEMAS,
             crate::protocol::resource::MEMORIES,
             crate::protocol::resource::GRAPH,
-            crate::protocol::resource::EDGE_TYPES,
         ] {
             let behaviors: Vec<Arc<dyn RequestBehavior>> = vec![Arc::new(ScopeGateBehavior)];
             let terminal: TerminalDispatch<'_> =

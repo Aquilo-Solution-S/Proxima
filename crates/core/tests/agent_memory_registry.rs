@@ -1,4 +1,5 @@
-use proxima_core::{CORE_DERIVED_FROM_RELATION, FlavorRegistry};
+use proxima_core::FlavorRegistry;
+use proxima_core::verbs::schema::PayloadKind;
 use std::collections::HashSet;
 
 #[test]
@@ -11,21 +12,25 @@ fn substrate_schemas_register() {
     assert!(schema_ids.contains("core/agent-note-v1"));
     assert!(schema_ids.contains("core/utterance-v1"));
     assert!(schema_ids.contains("core/agent-derivation-v1"));
-    assert!(schema_ids.contains("core/agent-link-v1"));
+    // The interpretation Perspective is where `core_link`'s reason and
+    // confidence went: into a node, not onto an edge.
+    assert!(schema_ids.contains("core/interpretation-v1"));
+}
 
-    let relation_ids: HashSet<_> = frozen
-        .list_relations()
-        .iter()
-        .map(|r| r.relation.as_str())
-        .collect();
-    assert!(relation_ids.contains("core/agent-link-refers-to"));
-    assert!(relation_ids.contains(CORE_DERIVED_FROM_RELATION));
-
-    let resolved = frozen
-        .resolve_relation("core/agent-link-refers-to")
-        .expect("relation resolves");
+/// A judgment about other memories is a Perspective. Nothing registers
+/// it as anything else, and there is no edge-payload kind left for it to
+/// have been registered as.
+#[test]
+fn the_interpretation_schema_is_a_perspective() {
+    let frozen = FlavorRegistry::new().freeze_or_panic_for_tests();
+    let interpretation = frozen
+        .list()
+        .into_iter()
+        .find(|schema| schema.schema_id.as_str() == "core/interpretation-v1")
+        .expect("interpretation schema registered");
+    assert_eq!(interpretation.kind, PayloadKind::Perspective);
     assert_eq!(
-        resolved.payload_sidecar_table,
-        Some("proxima_core.agent_link_v1")
+        interpretation.sidecar_table.as_deref(),
+        Some("proxima_core.interpretation_v1")
     );
 }

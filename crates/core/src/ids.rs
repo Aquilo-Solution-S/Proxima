@@ -83,21 +83,6 @@ impl GoalId {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
-pub struct EdgeId(Uuid);
-
-impl EdgeId {
-    #[must_use]
-    pub const fn new(inner: Uuid) -> Self {
-        Self(inner)
-    }
-
-    #[must_use]
-    pub const fn into_inner(self) -> Uuid {
-        self.0
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct SchemaId(String);
 

@@ -26,7 +26,26 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 
-use crate::{CitationMappingPayload, CitedObjectPayload, SchemaId};
+use crate::{CitationMappingPayload, CitedObjectPayload, EntityKind, SchemaId};
+
+/// Which memory kinds may hold a direct citation
+/// (`Memory.citation_mapping_id`), at multiplicity 0..1 each.
+///
+/// Fact and Abstraction, never Perspective. A Fact cites the artefact it
+/// was read from. An Abstraction cites its proof — a computed score is
+/// an Abstraction whose payload holds the value and the method and whose
+/// citation is the computation record, which is what keeps such a score
+/// from becoming an edge property or a cache row (docs/16 §Computed
+/// Scores Are Abstractions). A Perspective never cites directly: an
+/// interpretation grounds through the nodes it references, and a
+/// bibliography of its own would be a second, competing ground.
+///
+/// Bibliographic closure for A/P therefore terminates at Fact citations
+/// *and* direct Abstraction citations (amending docs/11 §Multiplicity).
+#[must_use]
+pub const fn kind_may_cite_directly(kind: EntityKind) -> bool {
+    matches!(kind, EntityKind::Fact | EntityKind::Abstraction)
+}
 
 pub const UPLOADED_BLOB_SCHEMA_ID: &str = "core/uploaded-blob-v1";
 pub const UPLOADED_BLOB_WHOLE_SCHEMA_ID: &str = "core/uploaded-blob-whole-v1";

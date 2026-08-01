@@ -152,6 +152,7 @@ impl Engine {
                 draft,
                 cited_object,
                 whole_blob_mapping(),
+                extensions,
             )
             .await?;
 

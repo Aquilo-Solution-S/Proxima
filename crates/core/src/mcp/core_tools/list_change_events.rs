@@ -7,16 +7,14 @@
 //! lookup; if the edge row is absent, memory endpoints fall back to the
 //! Fact prefix. The id still resolves regardless of the display prefix.
 
-use std::collections::HashMap;
-
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use crate::EntityKind;
 use crate::change_event::{ChangeEventKind, EntityRef};
 use crate::engine::ListChangeEventsReadRequest;
 use crate::mcp::{McpToolCtx, McpToolError};
 use crate::read_models::ChangeEventForWake;
-use crate::{EdgeId, EntityKind};
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ListChangeEventsArgs {
@@ -48,10 +46,10 @@ pub struct ChangeEventItem {
     pub schema_version: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub supersedes: Option<String>,
+    /// `origin` or `reference` on edge events. There is no edge handle
+    /// alongside it: an edge is identified by its endpoints and kind.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub edge: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub relation: Option<String>,
+    pub edge_kind: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -84,16 +82,10 @@ pub async fn list_change_events(
             },
         )
         .await?;
-    let edge_kinds = response
-        .edge_endpoint_kinds
-        .into_iter()
-        .map(|row| (row.edge_id.into_inner(), (row.source_kind, row.target_kind)))
-        .collect::<HashMap<_, _>>();
-
     let (rows, has_more) = page_rows(response.events, limit);
     let events = rows
         .into_iter()
-        .map(|row| event_item(&ctx, row, &edge_kinds))
+        .map(|row| event_item(&ctx, row))
         .collect::<Vec<_>>();
     let next_since = events.last().map(|event| event.seq.clone()).or(args.since);
 
@@ -114,11 +106,7 @@ fn page_rows(mut rows: Vec<ChangeEventForWake>, limit: usize) -> (Vec<ChangeEven
     (rows, has_more)
 }
 
-fn event_item(
-    ctx: &McpToolCtx,
-    row: ChangeEventForWake,
-    edge_kinds: &HashMap<uuid::Uuid, (EntityKind, Option<EntityKind>)>,
-) -> ChangeEventItem {
+fn event_item(ctx: &McpToolCtx, row: ChangeEventForWake) -> ChangeEventItem {
     let seq = row.event.seq.to_string();
     match row.event.kind {
         ChangeEventKind::EntityAppend {
@@ -135,8 +123,7 @@ fn event_item(
             schema_id: Some(schema_id.as_str().to_string()),
             schema_version: Some(schema_version.into_inner()),
             supersedes: supersedes.as_ref().map(|r| format_ref(ctx, r, entity_kind)),
-            edge: None,
-            relation: None,
+            edge_kind: None,
             source: None,
             target: None,
         },
@@ -153,79 +140,47 @@ fn event_item(
             schema_id: Some(schema_id.as_str().to_string()),
             schema_version: Some(schema_version.into_inner()),
             supersedes: None,
-            edge: None,
-            relation: None,
+            edge_kind: None,
             source: None,
             target: None,
         },
         ChangeEventKind::EdgeAppend {
-            edge_id,
-            relation,
             source,
             target,
-        } => {
-            let (source_kind, target_kind) = edge_kinds
-                .get(&edge_id)
-                .copied()
-                .unwrap_or((EntityKind::Fact, None));
-            ChangeEventItem {
-                seq,
-                kind: "edge_append".into(),
-                entity: None,
-                entity_kind: None,
-                schema_id: None,
-                schema_version: None,
-                supersedes: None,
-                edge: Some(ctx.format_edge(EdgeId::new(edge_id))),
-                relation: Some(relation),
-                source: Some(format_ref(ctx, &source, source_kind)),
-                target: Some(super::wire_ref::format_target_projection(
-                    ctx,
-                    &target,
-                    target_kind,
-                )),
-            }
-        }
+            kind,
+        } => edge_event_item(ctx, seq, "edge_append", source, target, kind),
         ChangeEventKind::EdgeDelete {
-            edge_id,
-            relation,
             source,
             target,
-        } => {
-            let (source_kind, target_kind) = edge_kinds
-                .get(&edge_id)
-                .copied()
-                .unwrap_or((kind_from_ref(&source), None));
-            ChangeEventItem {
-                seq,
-                kind: "edge_delete".into(),
-                entity: None,
-                entity_kind: None,
-                schema_id: None,
-                schema_version: None,
-                supersedes: None,
-                edge: Some(ctx.format_edge(EdgeId::new(edge_id))),
-                relation: Some(relation),
-                source: Some(format_ref(ctx, &source, source_kind)),
-                target: Some(super::wire_ref::format_target_projection(
-                    ctx,
-                    &target,
-                    target_kind,
-                )),
-            }
-        }
-    }
-}
-
-fn kind_from_ref(r: &EntityRef) -> EntityKind {
-    match r {
-        EntityRef::Goal(_) => EntityKind::Goal,
-        EntityRef::FactEntity(_) | EntityRef::Memory(_) => EntityKind::Fact,
+            kind,
+        } => edge_event_item(ctx, seq, "edge_delete", source, target, kind),
     }
 }
 
 fn format_ref(ctx: &McpToolCtx, r: &EntityRef, kind: EntityKind) -> String {
     super::wire_ref::format_entity_ref(ctx, r, Some(kind))
+}
+
+fn edge_event_item(
+    ctx: &McpToolCtx,
+    seq: String,
+    wire_kind: &str,
+    source: crate::EdgeEndpoint,
+    target: crate::EdgeTargetProjection,
+    kind: crate::EdgeKind,
+) -> ChangeEventItem {
+    ChangeEventItem {
+        seq,
+        kind: wire_kind.into(),
+        entity: None,
+        entity_kind: None,
+        schema_id: None,
+        schema_version: None,
+        supersedes: None,
+        edge_kind: Some(kind.as_str().to_string()),
+        source: Some(super::wire_ref::format_endpoint(ctx, source)),
+        target: Some(super::wire_ref::format_target_projection(ctx, target)),
+    }
 }
 
 #[cfg(test)]

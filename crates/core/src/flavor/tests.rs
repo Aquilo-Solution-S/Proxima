@@ -113,49 +113,6 @@ fn freeze_rejects_capability_tags_for_unregistered_schema() {
 }
 
 #[test]
-fn freeze_rejects_unsatisfiable_required_tag_relation() {
-    let mut registry = FlavorRegistry::new();
-    registry.add_opaque_schema_or_panic_for_tests(
-        SchemaId::new("proxima-test/plain-fact".to_string()),
-        SchemaVersion::new(1),
-        PayloadKind::Fact,
-    );
-    registry.add_relation_or_panic_for_tests(
-        RelationDescriptor::substrate(
-            "proxima-test/requires-actor",
-            crate::RelationClass::Structural,
-            crate::EndpointBinding::Pin,
-            crate::EndpointBinding::Pin,
-            crate::EntityKindMask::fact(),
-            crate::EntityKindMask::fact(),
-            crate::AuthorshipKindMask::external_agent(),
-        )
-        .with_required_tags(&[], &["actor"]),
-    );
-    let err = registry
-        .try_freeze()
-        .expect_err("unsatisfiable required tags must fail");
-    assert!(matches!(
-        err,
-        FlavorRegistryError::UnsatisfiableRelationTags { side: "target", .. }
-    ));
-}
-
-#[test]
-fn freeze_rejects_duplicate_relation_names() {
-    let mut registry = FlavorRegistry::new();
-    let duplicate_core_relation = core_relation_descriptors()
-        .into_iter()
-        .next()
-        .expect("core relation descriptors are seeded");
-    registry.add_relation_or_panic_for_tests(duplicate_core_relation);
-    let err = registry
-        .try_freeze()
-        .expect_err("duplicate relation must fail");
-    assert!(matches!(err, FlavorRegistryError::DuplicateRelation { .. }));
-}
-
-#[test]
 fn add_mcp_tool_rejects_unprefixed_tool_name() {
     struct Bad;
 
@@ -191,7 +148,7 @@ fn default_registry_includes_all_11_substrate_mcp_tools() {
         protocol_tool::CORE_REMEMBER,
         protocol_tool::CORE_RECORD_UTTERANCE,
         protocol_tool::CORE_DERIVE,
-        protocol_tool::CORE_LINK,
+        protocol_tool::CORE_INTERPRET,
         protocol_tool::CORE_GOAL,
         protocol_tool::CORE_FACT,
         protocol_tool::CORE_MEMBERSHIP,

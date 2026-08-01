@@ -9,9 +9,7 @@ mod manifest_tests {
     use super::*;
     use crate::protocol::tool as protocol_tool;
     use crate::protocol::{action as protocol_action, resource as protocol_resource};
-    use crate::{
-        AuthPath, AuthzContext, EdgeId, FlavorRegistry, GoalId, MemoryId, OwnerRef, UserId,
-    };
+    use crate::{AuthPath, AuthzContext, FlavorRegistry, GoalId, MemoryId, OwnerRef, UserId};
 
     #[test]
     fn provider_safe_tool_name_replaces_runner_invalid_separators() {
@@ -30,20 +28,20 @@ mod manifest_tests {
     fn core_resources_manifest_has_expected_shape() {
         let resources = all_core_resources().collect::<Vec<_>>();
 
-        assert_eq!(resources.len(), 13);
+        assert_eq!(resources.len(), 11);
         assert_eq!(
             resources
                 .iter()
                 .filter(|resource| !resource.is_template)
                 .count(),
-            4
+            3
         );
         assert_eq!(
             resources
                 .iter()
                 .filter(|resource| resource.is_template)
                 .count(),
-            9
+            8
         );
         assert!(
             resources
@@ -56,7 +54,6 @@ mod manifest_tests {
     fn resource_constants_match_manifest_scope_keys() {
         let expected = BTreeSet::from([
             protocol_resource::SCHEMAS,
-            protocol_resource::EDGE_TYPES,
             protocol_resource::TOOLS,
             protocol_resource::GRAPH,
             protocol_resource::MEMORY,
@@ -67,7 +64,6 @@ mod manifest_tests {
             protocol_resource::GOALS,
             protocol_resource::GOAL,
             protocol_resource::EDGES,
-            protocol_resource::EDGE,
         ]);
         let actual = all_core_resources()
             .map(|resource| resource.scope_key)
@@ -244,19 +240,16 @@ mod manifest_tests {
         let abstraction = MemoryId::new(uuid::Uuid::now_v7());
         let perspective = MemoryId::new(uuid::Uuid::now_v7());
         let goal = GoalId::new(uuid::Uuid::now_v7());
-        let edge = EdgeId::new(uuid::Uuid::now_v7());
 
         let fact_ref = ctx.format_fact_memory(fact);
         let abstraction_ref = ctx.format_abstraction_memory(abstraction);
         let perspective_ref = ctx.format_perspective_memory(perspective);
         let goal_ref = ctx.format_goal(goal);
-        let edge_ref = ctx.format_edge(edge);
 
         assert_prefixed_uuid(&fact_ref, 'F');
         assert_prefixed_uuid(&abstraction_ref, 'A');
         assert_prefixed_uuid(&perspective_ref, 'P');
         assert_prefixed_uuid(&goal_ref, 'G');
-        assert_prefixed_uuid(&edge_ref, 'E');
 
         assert_eq!(ctx.resolve_fact_memory(&fact_ref).expect("fact"), fact);
         assert_eq!(
@@ -281,7 +274,6 @@ mod manifest_tests {
             perspective
         );
         assert_eq!(ctx.resolve_goal(&goal_ref).expect("goal"), goal);
-        assert_eq!(ctx.resolve_edge(&edge_ref).expect("edge"), edge);
     }
 
     #[tokio::test]

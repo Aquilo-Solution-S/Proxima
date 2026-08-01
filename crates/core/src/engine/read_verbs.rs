@@ -1,20 +1,18 @@
 use crate::access::Relation;
 use crate::authz::AuthzContext;
-use crate::change_event::{ChangeEventKind, EdgeTargetProjection};
+use crate::edge::Edge;
 use crate::error::ProtocolError;
 use crate::read_models::{
     ChangeEventForWake, GoalWakeCandidate, GoalWakeCandidateRequest, MemorySnapshot, SidecarSpec,
 };
-use crate::storage::{EdgeEndpointKindRow, MemoryGraphPayloadRow, NeighborEdgeRow, StorageError};
+use crate::storage::{MemoryGraphPayloadRow, StorageError};
 use crate::storage_ports::ReadVerbStoragePorts;
 use crate::verbs::query::{
     FactCitationReadback, MAX_RELEVANCE_SEARCH_DEPTH, MemorySearchRequest, MemorySearchResult,
     SearchCursor,
 };
 use crate::verbs::schema::{MemorySearchProjection, PayloadKind};
-use crate::{
-    EdgeId, EntityId, EntityKind, FactEntityId, MemoryId, OwnerRef, SchemaId, SchemaVersion,
-};
+use crate::{EntityId, EntityKind, FactEntityId, MemoryId, OwnerRef, SchemaId, SchemaVersion};
 
 use super::Engine;
 
@@ -35,7 +33,7 @@ pub struct SearchReadResponse {
     /// see [`crate::verbs::query::MemorySearchPage`].
     pub has_more: bool,
     pub payloads: Vec<MemoryGraphPayloadRow>,
-    pub neighbor_edges: Vec<NeighborEdgeRow>,
+    pub neighbor_edges: Vec<Edge>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -47,7 +45,7 @@ pub struct GetMemoryReadRequest {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GetMemoryReadResponse {
     pub memory: Option<MemorySnapshot>,
-    pub neighbor_edges: Vec<NeighborEdgeRow>,
+    pub neighbor_edges: Vec<Edge>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -83,7 +81,6 @@ pub struct ListChangeEventsReadRequest {
 #[derive(Debug, Clone)]
 pub struct ListChangeEventsReadResponse {
     pub events: Vec<ChangeEventForWake>,
-    pub edge_endpoint_kinds: Vec<EdgeEndpointKindRow>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -565,54 +562,7 @@ pub(in crate::engine) async fn list_change_events_authorized(
         .list_change_events_after(read_owners, req.after, req.limit)
         .await
         .map_err(|err| storage_error("list_change_events_after", &err))?;
-    let target_visible_by_edge = events
-        .iter()
-        .filter_map(|row| match &row.event.kind {
-            ChangeEventKind::EdgeAppend {
-                edge_id,
-                target: EdgeTargetProjection::Visible { .. },
-                ..
-            }
-            | ChangeEventKind::EdgeDelete {
-                edge_id,
-                target: EdgeTargetProjection::Visible { .. },
-                ..
-            } => Some((*edge_id, true)),
-            ChangeEventKind::EdgeAppend { edge_id, .. }
-            | ChangeEventKind::EdgeDelete { edge_id, .. } => Some((*edge_id, false)),
-            ChangeEventKind::EntityAppend { .. } | ChangeEventKind::EntityDelete { .. } => None,
-        })
-        .collect::<std::collections::HashMap<_, _>>();
-    let edge_ids = target_visible_by_edge
-        .keys()
-        .copied()
-        .map(EdgeId::new)
-        .collect::<Vec<_>>();
-    let edge_endpoint_kinds = if edge_ids.is_empty() {
-        Vec::new()
-    } else {
-        ports
-            .memory_read
-            .load_edge_endpoint_kinds(&edge_ids)
-            .await
-            .map_err(|err| storage_error("load_edge_endpoint_kinds", &err))?
-            .into_iter()
-            .map(|mut row| {
-                if !target_visible_by_edge
-                    .get(&row.edge_id.into_inner())
-                    .copied()
-                    .unwrap_or(false)
-                {
-                    row.target_kind = None;
-                }
-                row
-            })
-            .collect()
-    };
-    Ok(ListChangeEventsReadResponse {
-        events,
-        edge_endpoint_kinds,
-    })
+    Ok(ListChangeEventsReadResponse { events })
 }
 
 pub(in crate::engine) async fn read_fact_citation_authorized(

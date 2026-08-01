@@ -227,6 +227,17 @@ impl StoragePorts {
         ports.owner_drop_proof = owner_drop_proof;
         ports
     }
+
+    /// Rejecting everywhere except the node-write port. Lets a test
+    /// observe exactly what a write hands storage — above all which
+    /// index rows it asserts — without standing up a database.
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn rejecting_with_memory_authoring(memory_authoring: MemoryAuthoringHandle) -> Self {
+        let mut ports = Self::rejecting();
+        ports.memory_authoring = memory_authoring;
+        ports
+    }
 }
 
 impl From<StoragePorts> for EngineStoragePorts {
