@@ -177,7 +177,7 @@ pub async fn ensure_v004_baseline_compatible(pool: &PgPool) -> Result<(), Storag
 /// behind the binary: the readiness resource does not touch release-specific
 /// columns, so a stale database that boots reports healthy and then fails at
 /// first query.
-pub const MIN_CORE_MIGRATION_VERSION: i64 = 14;
+pub const MIN_CORE_MIGRATION_VERSION: i64 = 15;
 
 /// Fail closed when `skip_migrations` boot runs against a database that has
 /// not yet applied the current schema lane.
@@ -209,7 +209,7 @@ pub async fn ensure_core_schema_current(pool: &PgPool) -> Result<(), StorageErro
         .map_err(internal)?;
         if max_version.unwrap_or(0) < MIN_CORE_MIGRATION_VERSION {
             return Err(StorageError::Internal(format!(
-                "database core migrations at version {}; version {MIN_CORE_MIGRATION_VERSION}+ required — apply the v0.0.7 core lane (0011..0014_v007.sql) before boot (see MIGRATING.md)",
+                "database core migrations at version {}; version {MIN_CORE_MIGRATION_VERSION}+ required — apply the v0.0.7 core lane (0011..0015_v007.sql) before boot (see MIGRATING.md)",
                 max_version.unwrap_or(0)
             )));
         }

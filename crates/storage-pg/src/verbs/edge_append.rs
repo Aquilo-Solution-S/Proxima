@@ -17,18 +17,22 @@ use proxima_core::{
 use crate::error::map_err;
 use crate::sidecars::PgSidecarFuture;
 
-/// Namespace for edge ids minted from the edge's own content. Random
-/// once, then fixed forever: changing it would make existing edges
-/// unrecognisable and re-runs would duplicate them.
-const CONTENT_EDGE_NAMESPACE: uuid::Uuid =
-    uuid::Uuid::from_u128(0x89a4_7127_5a52_4f7d_8519_1506_d1a9_875d);
-
-/// An edge id derived from the edge itself, making the write idempotent.
+/// The edge id required of a source-ingest edge: BLAKE3 of the edge's own
+/// identity columns, as a v8 UUID.
 ///
-/// Edge ids are otherwise `now_v7()` and `proxima_core.edges` has no
-/// unique constraint over (source, target, relation), so
-/// `ON CONFLICT (edge_id) DO NOTHING` never fires and writing "the same"
-/// edge twice writes two rows.
+/// Not a choice. doc/07 §ID Types and the kernel's `EdgeIdAuthorshipValid`
+/// state it as an iff — a `SourceIngest` edge carries a content-derived id
+/// and every other authorship carries a fresh v7 — so re-ingesting a source
+/// converges on the edges it already wrote instead of appending copies.
+///
+/// BLAKE3 over 0x00-separated fields rather than a v5 UUID, because that is
+/// how this codebase already derives an identity from content: receipt ids
+/// (`FactWriteCommand::receipt_id_for_owner`) and payload keys
+/// (`PayloadKeyBuilder`) are the same hash with the same separators. A v5 id
+/// would need a namespace constant that means nothing and could never move.
+///
+/// The version nibble carries the distinction: v8 here, v7 everywhere else,
+/// so which arm of that iff a stored row belongs to is legible from the id.
 pub(crate) fn content_addressed_edge_id(
     owner: Owner,
     relation: &str,
@@ -38,17 +42,19 @@ pub(crate) fn content_addressed_edge_id(
 ) -> uuid::Uuid {
     // 0x00 separators: without them ("ab","c") and ("a","bc") hash alike,
     // and relation names are caller-supplied strings.
-    let mut name = Vec::new();
-    name.extend_from_slice(owner.stable_key_uuid().as_bytes());
-    name.push(0);
-    name.extend_from_slice(relation.as_bytes());
-    name.push(0);
-    name.extend_from_slice(source_memory_id.as_bytes());
-    name.push(0);
-    name.extend_from_slice(target_memory_id.as_bytes());
-    name.push(0);
-    name.extend_from_slice(format!("{authorship_kind:?}").as_bytes());
-    uuid::Uuid::new_v5(&CONTENT_EDGE_NAMESPACE, &name)
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(owner.stable_key_uuid().as_bytes());
+    hasher.update(b"\x00");
+    hasher.update(relation.as_bytes());
+    hasher.update(b"\x00");
+    hasher.update(source_memory_id.as_bytes());
+    hasher.update(b"\x00");
+    hasher.update(target_memory_id.as_bytes());
+    hasher.update(b"\x00");
+    hasher.update(authorship_kind.as_str().as_bytes());
+    let mut bytes = [0u8; 16];
+    bytes.copy_from_slice(&hasher.finalize().as_bytes()[..16]);
+    uuid::Uuid::new_v8(bytes)
 }
 
 /// Draft of an edge to be written.

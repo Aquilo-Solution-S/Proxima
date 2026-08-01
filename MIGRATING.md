@@ -32,7 +32,7 @@ Older lanes are kept below: [v0.0.5 → v0.0.6](#v005--v006) and
 
 ## The v0.0.7 schema lane
 
-Seven migrations, in this order. **Apply all of them.** A host booting with
+Eight migrations, in this order. **Apply all of them.** A host booting with
 `PROXIMA_SKIP_MIGRATIONS=true` against a database missing any of them fails
 at `ensure_core_schema_current`, not at first query — but it does fail.
 
@@ -42,6 +42,7 @@ at `ensure_core_schema_current`, not at first query — but it does fail.
 | 12 | core | `0012_v007.sql` | no — functions only |
 | 13 | core | `0013_v007.sql` | no — one new table |
 | 14 | core | `0014_v007.sql` | **yes** |
+| 15 | core | `0015_v007.sql` | no — one new index |
 | — | code flavor | `20260726000020_v007.sql` | **yes** |
 | — | code flavor | `20260728000020_v007_language.sql` | **yes** |
 | — | code flavor | `20260729000020_v007_ingest_scope.sql` | no — metadata-only `ADD COLUMN` |
@@ -59,6 +60,16 @@ What each one does:
 - **0014** makes the lexical language a `regconfig` **column** per row and
   demotes `lexical_config()` to the default for rows that do not say.
   Rebinds each generated column to the two-argument `lexical_tsv`.
+- **0015** adds a partial unique index making a `SourceIngest` edge unique
+  by identity. It creates no table and rewrites nothing, but it **fails** if
+  the database already holds two source-ingest edges with the same owner,
+  relation, endpoints, authorship kind and authorship owner. That is
+  deliberate. No in-tree production path has ever written a `SourceIngest`
+  edge, but a flavor can: the typed edge-write verb takes the authorship
+  kind as an argument. If this index fails, a flavor has been minting
+  random ids for edges the kernel says are content-addressed, and that is
+  worth reading before anything is deleted. Duplicate edges under every
+  other authorship stay legal and are untouched.
 - **`20260726000020`** puts `search_tsv` on `code_chunk_v1`, built from
   `proxima_core.lexical_tsv` — config `english`, changed from `simple`.
 - **`20260728000020`** pins code chunks to `english` per row so a deployment

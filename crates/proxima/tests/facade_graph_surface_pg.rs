@@ -705,6 +705,70 @@ async fn facade_provenance_outside_the_owner_space_is_not_found()
     result
 }
 
+/// The DATABASE refuses a second source-ingest edge, not just the writer.
+///
+/// The content-derived id makes the append path converge; this proves the
+/// convergence does not depend on the writer getting the derivation right.
+/// The insert goes in behind the substrate with a DIFFERENT `edge_id` — the
+/// exact shape a drifted derivation would produce, and the one the append
+/// path's `ON CONFLICT (edge_id)` cannot catch.
+///
+/// It must RAISE rather than no-op: a source-ingest edge whose identity is
+/// already taken but whose id is not means the derivation stopped covering
+/// the identity columns, and that is a defect to report, not to absorb.
+#[tokio::test]
+async fn facade_database_refuses_a_second_source_ingest_edge()
+-> Result<(), Box<dyn std::error::Error>> {
+    let db_name = unique_db_name("proxima_facade_edge_identity");
+    create_db(&db_name).await.expect("PG required for tests");
+    let db_url = db_url(&db_name);
+
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let owner = proxima_core::OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let built = Proxima::<FacadeSurfaceApp>::app()
+            .database_url(db_url)
+            .owner(owner)
+            .tool_scope(ToolScope::All)
+            .build()
+            .await?;
+        create_sidecar_tables(built.pool_for_tests()).await?;
+        let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
+
+        let origin = ingest_facade_fact(&built, &authz, "the pdf that arrived", None).await?;
+        let reading =
+            ingest_facade_fact(&built, &authz, "what reading it produced", Some(origin)).await?;
+
+        let (owner_kind, owner_id) = owner.columns();
+        let duplicate = sqlx::query(
+            "INSERT INTO proxima_core.edges \
+                (edge_id, relation, relation_class, source_kind, source_memory_id, \
+                 target_kind, target_memory_id, authorship_kind, owner_kind, owner_id) \
+             VALUES ($1, 'core/derived-from', 'Provenance', 'Fact', $2, \
+                     'Fact', $3, 'SourceIngest', $4, $5)",
+        )
+        .bind(Uuid::now_v7())
+        .bind(reading.into_inner())
+        .bind(origin.into_inner())
+        .bind(owner_kind)
+        .bind(owner_id)
+        .execute(built.pool_for_tests())
+        .await;
+
+        let err = duplicate.expect_err("the identity index refuses the second edge");
+        assert!(
+            err.to_string().contains("edges_source_ingest_identity_uq"),
+            "refused by the identity index, got: {err}"
+        );
+
+        built.shutdown();
+        Ok(())
+    }
+    .await;
+
+    let _ = drop_db(&db_name).await;
+    result
+}
+
 async fn ingest_facade_fact(
     built: &proxima::BuiltProxima,
     authz: &AuthzContext,

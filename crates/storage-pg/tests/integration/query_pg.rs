@@ -206,7 +206,7 @@ async fn insert_test_edge(
            ($1, $2, $3, 'test/structural', 'Structural',
             'Fact', $4, NULL,
             'Fact', $5, NULL,
-            'SourceIngest', NULL,
+            'Engine', NULL,
             now() + ($6 * interval '1 second'))",
     )
     .bind(edge_id)
@@ -238,7 +238,7 @@ async fn insert_n_test_edges_bulk(
          SELECT ids.edge_id, $3, $4, 'test/structural', 'Structural',
                 'Fact', $1, NULL,
                 'Fact', $2, NULL,
-                'SourceIngest', NULL,
+                'Engine', NULL,
                 now() + (ids.ord * interval '1 microsecond')
          FROM unnest($5::uuid[]) WITH ORDINALITY AS ids(edge_id, ord)",
     )

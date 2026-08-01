@@ -21,7 +21,7 @@ module_name_repetitions = "allow"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 rust_decimal = { version = "1", default-features = false, features = ["serde"] }
-uuid = { version = "1", features = ["v4", "v5", "v7", "serde"] }
+uuid = { version = "1", features = ["v4", "v5", "v7", "v8", "serde"] }
 thiserror = "2"
 tokio = { version = "1", default-features = false, features = ["rt-multi-thread", "macros", "sync"] }
 sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "tls-rustls-aws-lc-rs", "postgres", "uuid", "time", "macros", "migrate"] }
