@@ -1,8 +1,5 @@
-use std::collections::HashSet;
-
-use proxima_core::relation::CORE_DERIVED_FROM_RELATION;
-use proxima_core::verbs::query::{EdgeFilter, EdgeReadRequest, EdgeTargetProjection};
-use proxima_core::{EntityKind, EntityRef, MemoryId, ToolCtx, ToolError};
+use proxima_core::verbs::query::{EdgeFilter, EdgeReadRequest};
+use proxima_core::{EdgeEndpoint, EdgeKind, EntityKind, EntityRef, MemoryId, ToolCtx, ToolError};
 use sqlx::{Postgres, Transaction};
 use uuid::Uuid;
 
@@ -10,7 +7,6 @@ use crate::payloads::ExecutionRequestV1;
 
 use super::super::sql::map_storage;
 use super::super::{CodeToolCtxExt, code_store, engine};
-use super::edges::append_derived_edge;
 use super::input_validation::normalize_text;
 
 pub(super) fn retry_instructions(
@@ -139,7 +135,10 @@ pub(super) async fn validate_target_perspective(
     Ok(())
 }
 
-pub(super) async fn load_prior_derived_targets(
+/// What the prior request declared it was made from — its `origin` rows.
+/// The retry carries the same grounding forward, which is what makes the
+/// retry a continuation rather than an unmoored second request.
+pub(super) async fn load_prior_origins(
     _tx: &mut Transaction<'_, Postgres>,
     ctx: &ToolCtx,
     prior_memory_id: MemoryId,
@@ -150,42 +149,19 @@ pub(super) async fn load_prior_derived_targets(
             ctx.authz(),
             &EdgeReadRequest {
                 owner: ctx.owner(),
-                edge_ids: Vec::new(),
                 filter: EdgeFilter {
-                    relation: Some(CORE_DERIVED_FROM_RELATION.to_string()),
+                    kind: Some(EdgeKind::Origin),
                     source: Some(EntityRef::Memory(prior_memory_id)),
                     target: None,
                 },
                 limit: 500,
                 cursor: None,
-                include_payloads: false,
             },
         )
         .await?;
     Ok(response
         .edges
         .into_iter()
-        .filter_map(|edge| match edge.target {
-            EdgeTargetProjection::Visible {
-                target: EntityRef::Memory(id),
-            } => Some(id),
-            EdgeTargetProjection::Visible { .. }
-            | EdgeTargetProjection::Redacted
-            | EdgeTargetProjection::Unavailable => None,
-        })
+        .filter_map(|edge| edge.target.endpoint().and_then(EdgeEndpoint::memory_id))
         .collect())
-}
-
-pub(super) async fn push_derived_edge(
-    tx: &mut Transaction<'_, Postgres>,
-    ctx: &ToolCtx,
-    request_memory_id: MemoryId,
-    evidence_memory_id: MemoryId,
-    seen: &mut HashSet<MemoryId>,
-    edge_ids: &mut Vec<Uuid>,
-) -> Result<(), ToolError> {
-    if seen.insert(evidence_memory_id) {
-        edge_ids.push(append_derived_edge(tx, ctx, request_memory_id, evidence_memory_id).await?);
-    }
-    Ok(())
 }

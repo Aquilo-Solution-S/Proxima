@@ -1,13 +1,12 @@
 use proxima_core::storage_ports::OwnerWritePermit;
 use proxima_core::verbs::fact_ingest::{CitationSpec, FactIngestOutcome};
 use proxima_core::{
-    AbstractionPayload, CORE_DERIVED_FROM_RELATION, DerivedEdgeSpec, DerivedEmbedding,
-    EdgeAuthorshipKind, EntityKind, FactPayload, InputContractId, MemoryId, MemoryOperatorKind,
-    OperatorId, Owner, RegisteredRelation, SchemaVersion, SourceBatchId,
+    AbstractionPayload, DerivedEmbedding, EdgeEndpoint, EntityKind, FactPayload, InputContractId,
+    MemoryId, MemoryOperatorKind, OperatorId, PayloadReference, SchemaVersion, SourceBatchId,
 };
 use proxima_storage_pg::sidecars::PgMemorySidecar;
 use proxima_storage_pg::verbs::derive_append::{
-    DerivedDraft, DerivedOutcome, append_derived_with_edges_in_tx,
+    DerivedBatchEntry, DerivedDraft, DerivedOutcome, append_derived_batch_with_edges_in_tx,
 };
 use proxima_storage_pg::verbs::fact_ingest::{FactIngestContext, ingest_fact_with_sidecar};
 use sqlx::PgPool;
@@ -17,7 +16,7 @@ use crate::payloads::{CodeChunkV1, CommitV1, FileRevisionV1};
 use super::IngestError;
 use super::schemas::{
     CODE_BLOB_SCHEMA, CODE_BLOB_WHOLE_SCHEMA, CODE_COMMIT_OBJECT_SCHEMA, CODE_COMMIT_WHOLE_SCHEMA,
-    LOCAL_GIT_SOURCE_ID, schema_registry,
+    LOCAL_GIT_SOURCE_ID,
 };
 
 const CODE_SLICE_OPERATOR_MODEL: &str = "proxima-code/local-git-source";
@@ -47,8 +46,8 @@ const CODE_SLICE_OPERATOR_MODEL: &str = "proxima-code/local-git-source";
 /// produces new Facts in new batches. What this constant guarantees is
 /// narrower and still worth having: the two derivations can never collide on
 /// an id, so a stale chunk cannot masquerade as a current one.
-const CODE_SLICE_IDENTITY: &[u8] = b"proxima-code/code-slice:local-git-file-facts-v2";
-const CODE_SLICE_PROMPT_VERSION: &str = "code-slice-v2";
+const CODE_SLICE_IDENTITY: &[u8] = b"proxima-code/code-slice:local-git-file-facts-v3";
+const CODE_SLICE_PROMPT_VERSION: &str = "code-slice-v3";
 
 const CODE_SLICE_NAMESPACE: uuid::Uuid = uuid::Uuid::from_bytes([
     0x8d, 0xb6, 0x89, 0x67, 0x17, 0x34, 0x44, 0x11, 0xaa, 0xe6, 0x68, 0xef, 0x6c, 0x2a, 0x31, 0x8d,
@@ -65,7 +64,7 @@ const CODE_SLICE_INPUT_CONTRACT_NAMESPACE: uuid::Uuid = uuid::Uuid::from_bytes([
 fn code_slice_operator_id() -> OperatorId {
     OperatorId::new(uuid::Uuid::new_v5(
         &CODE_SLICE_OPERATOR_NAMESPACE,
-        b"proxima-code/local-git-source:code-slice-v2",
+        b"proxima-code/local-git-source:code-slice-v3",
     ))
 }
 
@@ -188,14 +187,95 @@ pub async fn ingest_file_revision(
     .await
 }
 
-/// Atomic derived code-slice Abstraction + sidecar write plus
-/// `core/derived-from` provenance edges to the source file-revision
-/// Fact and, when available, the source commit Fact.
+/// Atomic derived code-slice Abstractions for one file revision, plus the
+/// index rows their own declarations imply: `origin` entries to the source
+/// file-revision Fact and, when available, the source commit Fact, and one
+/// `reference` entry per callee each chunk's payload names.
+///
+/// The whole file lands as one group in one transaction, because the group
+/// refers to itself: chunk 2 calls chunk 7 and chunk 7 calls chunk 2, and an
+/// index row cannot point at a node that is not there yet. Every chunk id is
+/// a pure function of its position, so all of them can be named before any of
+/// them is written — see [`code_slice_memory_id_for`].
+///
+/// The flavor names endpoints and content; it never names a kind. Origins are
+/// what these writes say they were made from, references are read back off
+/// the payloads by [`CodeChunkV1::references`], and both land inside this
+/// transaction — which is what makes a re-ingest re-assert the same rows
+/// instead of minting new ones.
 ///
 /// Chunking is deterministic F→A operator work over file/blob Facts;
 /// callers must materialize all batch Facts and close `source_batch_id`
 /// before invoking this helper. This helper deliberately does not write
 /// an event, source batch, or Fact citation.
+pub async fn append_code_slices(
+    pool: &PgPool,
+    permit: &OwnerWritePermit,
+    source_batch_id: SourceBatchId,
+    payloads: &[CodeChunkV1],
+    source_file_revision: MemoryId,
+    source_commit: Option<MemoryId>,
+) -> Result<Vec<DerivedOutcome>, IngestError> {
+    if payloads.is_empty() {
+        return Ok(Vec::new());
+    }
+    let owner = permit.owner();
+    let mut origins = vec![EdgeEndpoint::memory(EntityKind::Fact, source_file_revision)];
+    if let Some(commit) = source_commit {
+        origins.push(EdgeEndpoint::memory(EntityKind::Fact, commit));
+    }
+    let drafts = payloads
+        .iter()
+        .map(|payload| DerivedDraft {
+            memory_id: code_slice_memory_id(payload, source_file_revision),
+            owner: *owner,
+            kind: EntityKind::Abstraction,
+            schema_id: <CodeChunkV1 as AbstractionPayload>::schema_id(),
+            schema_version: SchemaVersion::new(CodeChunkV1::SCHEMA_VERSION),
+            text: render_code_slice(payload),
+            operator_kind: MemoryOperatorKind::FtoA,
+            operator_id: code_slice_operator_id(),
+            input_contract_id: code_slice_input_contract_id(payload, source_file_revision),
+            source_batch_id: Some(source_batch_id),
+            model_id: CODE_SLICE_OPERATOR_MODEL,
+            prompt_version: CODE_SLICE_PROMPT_VERSION,
+            authoring_perspective_id: None,
+            supersedes: None,
+            // Chunks pin english on every surface (see CODE_LEXICAL_LANGUAGE):
+            // this stamps the owning memories row, the sidecar mirrors the pin
+            // via its column default, and passing it here (not None) keeps
+            // 'english' registered as an active language on every ingest.
+            lexical_language: Some(crate::payloads::CODE_LEXICAL_LANGUAGE),
+            embedding: DerivedEmbedding::None,
+        })
+        .collect::<Vec<_>>();
+    let references = payloads
+        .iter()
+        .map(payload_reference_endpoints)
+        .collect::<Result<Vec<_>, _>>()?;
+    let entries = drafts
+        .iter()
+        .zip(&references)
+        .map(|(draft, references)| DerivedBatchEntry {
+            draft,
+            origins: &origins,
+            references,
+        })
+        .collect::<Vec<_>>();
+
+    let mut tx = pool.begin().await?;
+    let outcomes =
+        append_derived_batch_with_edges_in_tx(&mut tx, permit, &entries, |index, tx, outcome| {
+            let payload = payloads[index].clone();
+            Box::pin(async move { payload.insert_memory_sidecar(tx, outcome.memory_id).await })
+        })
+        .await?;
+    tx.commit().await?;
+    Ok(outcomes)
+}
+
+/// One code slice, on its own. The tombstone path writes a single chunk that
+/// declares no calls, so it needs no group.
 pub async fn append_code_slice(
     pool: &PgPool,
     permit: &OwnerWritePermit,
@@ -204,66 +284,44 @@ pub async fn append_code_slice(
     source_file_revision: MemoryId,
     source_commit: Option<MemoryId>,
 ) -> Result<DerivedOutcome, IngestError> {
-    let owner = permit.owner();
-    let memory_id = code_slice_memory_id(payload, source_file_revision);
-    let output_memory_id = MemoryId::new(memory_id);
-    let mut tx = pool.begin().await?;
-    let text = render_code_slice(payload);
-    let draft = DerivedDraft {
-        memory_id,
-        owner: *owner,
-        kind: EntityKind::Abstraction,
-        schema_id: <CodeChunkV1 as AbstractionPayload>::schema_id(),
-        schema_version: SchemaVersion::new(CodeChunkV1::SCHEMA_VERSION),
-        text,
-        operator_kind: MemoryOperatorKind::FtoA,
-        operator_id: code_slice_operator_id(),
-        input_contract_id: code_slice_input_contract_id(payload, source_file_revision),
-        source_batch_id: Some(source_batch_id),
-        model_id: CODE_SLICE_OPERATOR_MODEL,
-        prompt_version: CODE_SLICE_PROMPT_VERSION,
-        supersedes: None,
-        // Chunks pin english on every surface (see CODE_LEXICAL_LANGUAGE):
-        // this stamps the owning memories row, the sidecar mirrors the pin
-        // via its column default, and passing it here (not None) keeps
-        // 'english' registered as an active language on every ingest.
-        lexical_language: Some(crate::payloads::CODE_LEXICAL_LANGUAGE),
-        embedding: DerivedEmbedding::None,
-    };
-    let registry = schema_registry();
-    let relation = registry
-        .resolve_relation(CORE_DERIVED_FROM_RELATION)
-        .ok_or_else(|| {
-            IngestError::Storage(format!(
-                "missing registered relation {CORE_DERIVED_FROM_RELATION}"
-            ))
-        })?;
-    let mut edges = vec![code_slice_provenance_edge(
-        owner,
-        output_memory_id,
+    let outcomes = append_code_slices(
+        pool,
+        permit,
+        source_batch_id,
+        std::slice::from_ref(payload),
         source_file_revision,
-        relation,
-    )];
-    if let Some(commit) = source_commit {
-        edges.push(code_slice_provenance_edge(
-            owner,
-            output_memory_id,
-            commit,
-            relation,
-        ));
-    }
-    let sidecar_payload = payload.clone();
-    let outcome =
-        append_derived_with_edges_in_tx(&mut tx, permit, &draft, &edges, move |tx, outcome| {
-            Box::pin(async move {
-                sidecar_payload
-                    .insert_memory_sidecar(tx, outcome.memory_id)
-                    .await
-            })
+        source_commit,
+    )
+    .await?;
+    outcomes
+        .into_iter()
+        .next()
+        .ok_or_else(|| IngestError::Storage("code slice batch returned no outcome".into()))
+}
+
+/// Read the payload's schema-declared references and check each binding
+/// against the address form it produced, before handing storage the
+/// endpoints. `validate` is what catches a hand-built declaration whose
+/// binding and address disagree; the constructors cannot produce one.
+fn payload_reference_endpoints(payload: &CodeChunkV1) -> Result<Vec<EdgeEndpoint>, IngestError> {
+    <CodeChunkV1 as AbstractionPayload>::references(payload)
+        .into_iter()
+        .map(|reference: PayloadReference| {
+            reference.validate().map_err(IngestError::Storage)?;
+            Ok(reference.target)
         })
-        .await?;
-    tx.commit().await?;
-    Ok(outcome)
+        .collect()
+}
+
+/// Deterministic id of the code slice at this position in this file
+/// revision.
+///
+/// Public because call resolution needs it: a caller chunk's payload names
+/// its callee chunks, so every chunk of a file has to be addressable
+/// *before* any of them is written.
+#[must_use]
+pub fn code_slice_memory_id_for(payload: &CodeChunkV1, source_file_revision: MemoryId) -> MemoryId {
+    MemoryId::new(code_slice_memory_id(payload, source_file_revision))
 }
 
 fn code_slice_memory_id(payload: &CodeChunkV1, source_file_revision: MemoryId) -> uuid::Uuid {
@@ -271,25 +329,6 @@ fn code_slice_memory_id(payload: &CodeChunkV1, source_file_revision: MemoryId) -
         &CODE_SLICE_NAMESPACE,
         &code_slice_identity_key(payload, source_file_revision),
     )
-}
-
-fn code_slice_provenance_edge<'a>(
-    owner: &'a Owner,
-    code_slice: MemoryId,
-    source_fact: MemoryId,
-    relation: RegisteredRelation<'a>,
-) -> DerivedEdgeSpec<'a> {
-    DerivedEdgeSpec {
-        owner,
-        relation,
-        source_kind: EntityKind::Abstraction,
-        source_memory_id: code_slice,
-        target_kind: EntityKind::Fact,
-        target_memory_id: source_fact,
-        authorship_kind: EdgeAuthorshipKind::OperatorFtoA,
-        authorship_owner_memory_id: Some(code_slice),
-        sidecar_payload: None,
-    }
 }
 
 /// The chunk's rendered form: a `path:start-end` header line followed by

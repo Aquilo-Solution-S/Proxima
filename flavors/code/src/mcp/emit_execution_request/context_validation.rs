@@ -1,9 +1,10 @@
 use std::collections::HashSet;
 
-use proxima_core::relation::CORE_INSPIRES_RELATION;
 use proxima_core::verbs::goal_write::GoalState;
 use proxima_core::verbs::query::{EdgeFilter, EdgeReadRequest, QueryRequest};
-use proxima_core::{EntityKind, EntityRef, GoalActivatedV1, GoalId, MemoryId, ToolCtx, ToolError};
+use proxima_core::{
+    EdgeKind, EntityKind, EntityRef, GoalActivatedV1, GoalId, MemoryId, ToolCtx, ToolError,
+};
 use sqlx::{Postgres, Transaction};
 use uuid::Uuid;
 
@@ -113,17 +114,18 @@ async fn goal_lineage_assigned_to(
         let edges = engine
             .read_edges(
                 ctx.authz(),
+                // The Goal knows the Perspective it inspires: the
+                // assignment is a column on the goal row, and this
+                // `reference` entry is the index derived from it.
                 &EdgeReadRequest {
                     owner: ctx.owner(),
-                    edge_ids: Vec::new(),
                     filter: EdgeFilter {
-                        relation: Some(CORE_INSPIRES_RELATION.to_string()),
+                        kind: Some(EdgeKind::Reference),
                         source: Some(EntityRef::Goal(goal_id)),
                         target: Some(EntityRef::Memory(planner_root)),
                     },
                     limit: 1,
                     cursor: None,
-                    include_payloads: false,
                 },
             )
             .await?;

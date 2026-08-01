@@ -1,4 +1,6 @@
-use proxima_core::{FactPayload, PayloadKeyBuilder, proxima_schema_id};
+use proxima_core::{
+    EntityKind, FactPayload, MemoryId, PayloadKeyBuilder, PayloadReference, proxima_schema_id,
+};
 use serde::{Deserialize, Serialize};
 
 /// Dispatch-boundary Fact: a planner requested implementation work for
@@ -10,6 +12,15 @@ pub struct WorkRequestedV1 {
     pub title: String,
     pub instructions: String,
     pub request_key: String,
+    /// Work items that must land before this one can dispatch. The
+    /// schema-declared reference field that replaced `core/depends-on`:
+    /// the dependency is a property of the depending row, so the index
+    /// rows come from here (docs/16 §Flavor Migration).
+    ///
+    /// Not receipt key material — `repo_id` plus `request_key` is what
+    /// makes a request the same request.
+    #[serde(default)]
+    pub depends_on_memory_ids: Vec<uuid::Uuid>,
 }
 
 impl FactPayload for WorkRequestedV1 {
@@ -29,6 +40,19 @@ impl FactPayload for WorkRequestedV1 {
 
     fn render(&self) -> String {
         format!("{}: {}", self.request_key, self.title)
+    }
+
+    fn references(&self) -> Vec<PayloadReference> {
+        self.depends_on_memory_ids
+            .iter()
+            .map(|memory_id| {
+                PayloadReference::memory(
+                    "depends_on_memory_ids",
+                    EntityKind::Fact,
+                    MemoryId::new(*memory_id),
+                )
+            })
+            .collect()
     }
 }
 

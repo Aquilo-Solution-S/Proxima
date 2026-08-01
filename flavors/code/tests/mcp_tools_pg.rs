@@ -7,9 +7,9 @@ mod common;
 
 use common::{TestDb, test_owner as owner_fixture};
 use proxima_code::mcp::{
-    CodeEmitExecutionPlanTool, CodeEraseRepoTool, CodeIngestHeadSnapshotTool, CodeListReposTool,
-    CodeOpenFileRevisionTool, CodeRegisterRepoTool, CodeRetryExecutionRequestTool,
-    CodeSearchChunksTool, CodeSearchCommitsTool,
+    CodeEmitExecutionPlanTool, CodeEmitExecutionRequestTool, CodeEraseRepoTool,
+    CodeIngestHeadSnapshotTool, CodeListReposTool, CodeOpenFileRevisionTool, CodeRegisterRepoTool,
+    CodeRetryExecutionRequestTool, CodeSearchChunksTool, CodeSearchCommitsTool,
 };
 use proxima_code::testkit::register_repo;
 use proxima_code::{
@@ -22,9 +22,8 @@ use proxima_core::verbs::fact_ingest::{
 };
 use proxima_core::verbs::schema::{PayloadKind, SchemaInfo};
 use proxima_core::{
-    AbstractionPayload, AuthPath, AuthzContext, CORE_DERIVED_FROM_RELATION, CORE_INSPIRES_RELATION,
-    FactPayload, FlavorRegistry, FlavorRegistryFrozen, MemoryId, Owner, SchemaId, SchemaVersion,
-    SourceBatchId, SourceId,
+    AbstractionPayload, AuthPath, AuthzContext, FactPayload, FlavorRegistry, FlavorRegistryFrozen,
+    MemoryId, Owner, SchemaId, SchemaVersion, SourceBatchId, SourceId,
 };
 use proxima_storage_pg::PgStorage;
 use serde_json::json;
@@ -983,9 +982,21 @@ async fn search_chunks_includes_calls_edges_when_present() -> Result<(), Box<dyn
     )
     .await?;
 
+    // Two call sites, one connection. The index answers "is there a
+    // connection"; the payload answers "what is it".
     let calls = result["calls_edges"].as_array().expect("calls array");
-    assert!(!calls.is_empty(), "calls edge must surface");
-    assert_eq!(calls[0]["callee_name"], "b");
+    assert_eq!(calls.len(), 1, "two sites collapse to one connection");
+    assert_eq!(calls[0]["source"], format!("A:{source_chunk}"));
+    assert_eq!(calls[0]["target"], format!("A:{target_chunk}"));
+    let sites = calls[0]["sites"].as_array().expect("sites array");
+    assert_eq!(sites.len(), 2, "both sites come back from the payload");
+    assert_eq!(sites[0]["callee_name"], "b");
+    assert_eq!(sites[0]["byte_start"], 0);
+    assert_eq!(sites[1]["byte_start"], 10);
+    assert!(
+        calls[0].get("edge_handle").is_none(),
+        "an edge has no id to hand back"
+    );
     Ok(())
 }
 
@@ -1409,6 +1420,116 @@ async fn search_commits_unions_commit_and_summary_legs() -> Result<(), Box<dyn s
     Ok(())
 }
 
+/// The whole of what `proxima-code/has-acceptance-criteria` became: the
+/// criteria Fact names the request it is the bar for, and the `reference`
+/// index row falls out of that field. Nobody writes an edge, and the
+/// request's author is a column.
+#[tokio::test]
+async fn emit_execution_request_grounds_and_attaches_acceptance_criteria()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fixture = TestDb::fresh().await;
+    let owner = owner_fixture();
+    let registry = registry_for_mcp();
+    let repo_id = Uuid::now_v7();
+    register_repo(
+        fixture.pg.pool_for_tests(),
+        &owner,
+        repo_id,
+        "/tmp/proxima-criteria",
+        "Criteria Repo",
+        &RepoScope::default(),
+    )
+    .await?;
+    let planner_root = seed_perspective(&fixture.pg, &owner, "Planner Root").await?;
+    let goal_activated = seed_active_goal_activation(&fixture.pg, &owner, planner_root).await?;
+
+    let output = run_tool::<CodeEmitExecutionRequestTool>(
+        shell_ctx(
+            fixture.pg.clone(),
+            owner,
+            registry,
+            MemoryId::new(planner_root),
+        ),
+        json!({
+            "repo_handle": repo_id.to_string(),
+            "title": "Harden the chunker",
+            "instructions": "Split on syntax, not on bytes.",
+            "idempotency_key": "criteria-1",
+            "goal_activated_memory": format!("F:{goal_activated}"),
+            "evidence": [],
+            "acceptance_criteria": [{
+                "key": "build",
+                "description": "cargo build succeeds",
+                "required": true,
+                "verifier_kind": "command",
+                "verifier_spec": { "command": ["cargo", "build"] }
+            }]
+        }),
+    )
+    .await?;
+
+    let request_id: Uuid = output["handle"]
+        .as_str()
+        .expect("handle")
+        .strip_prefix("F:")
+        .expect("fact prefix")
+        .parse()?;
+    let criteria_id: Uuid = output["acceptance_criteria_handle"]
+        .as_str()
+        .expect("acceptance criteria handle")
+        .strip_prefix("F:")
+        .expect("fact prefix")
+        .parse()?;
+
+    // The criteria Fact's payload field is the home of the statement...
+    let work_item: Uuid = sqlx::query_scalar(
+        "SELECT work_item_memory_id
+           FROM proxima_code.acceptance_criteria_v1
+          WHERE memory_id = $1",
+    )
+    .bind(criteria_id)
+    .fetch_one(fixture.pg.pool_for_tests())
+    .await?;
+    assert_eq!(work_item, request_id);
+
+    // ...and the index row is derived from it, sourced at the criteria.
+    let references: Vec<Uuid> = sqlx::query_scalar(
+        "SELECT target_id
+           FROM proxima_core.edges
+          WHERE source_id = $1
+            AND kind = 'reference'",
+    )
+    .bind(criteria_id)
+    .fetch_all(fixture.pg.pool_for_tests())
+    .await?;
+    assert_eq!(references, vec![request_id]);
+
+    // The request declares what it was made from: the activation Fact.
+    let origins: Vec<Uuid> = sqlx::query_scalar(
+        "SELECT target_id
+           FROM proxima_core.edges
+          WHERE source_id = $1
+            AND kind = 'origin'",
+    )
+    .bind(request_id)
+    .fetch_all(fixture.pg.pool_for_tests())
+    .await?;
+    assert_eq!(origins, vec![goal_activated]);
+    assert_eq!(output["origin_count"], serde_json::json!(1));
+
+    // The planner authored both, and that is a column on each row.
+    for memory_id in [request_id, criteria_id] {
+        let authoring: Option<Uuid> = sqlx::query_scalar(
+            "SELECT authoring_perspective_id FROM proxima_core.memories WHERE memory_id = $1",
+        )
+        .bind(memory_id)
+        .fetch_one(fixture.pg.pool_for_tests())
+        .await?;
+        assert_eq!(authoring, Some(planner_root));
+    }
+    Ok(())
+}
+
 #[tokio::test]
 async fn retry_execution_request_succeeds_with_target_perspective()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -1452,17 +1573,62 @@ async fn retry_execution_request_succeeds_with_target_perspective()
         result["handle"].as_str().expect("handle").starts_with("F:"),
         "new request is a Fact handle"
     );
+    // The assignment is a node now, not an edge: a `P:` handle comes back,
+    // and the two connections it implies are that Perspective's own
+    // references.
+    let assignment = result["assignment_handle"]
+        .as_str()
+        .expect("assignment handle");
+    assert!(assignment.starts_with("P:"), "got {assignment}");
     assert!(
-        result["target_edge_handle"]
-            .as_str()
-            .expect("target edge")
-            .starts_with("E:"),
-        "retry assigns the worker via a target edge"
+        result["origin_count"].as_u64().expect("origin count") >= 1,
+        "the retry declares the request it retries"
     );
-    assert!(
-        result["authored_edge_handle"].as_str().is_some(),
-        "shell author edge present"
-    );
+
+    let assignment_id: Uuid = assignment
+        .strip_prefix("P:")
+        .expect("checked prefix")
+        .parse()?;
+    let assigned_worker: Uuid = sqlx::query_scalar(
+        "SELECT target_perspective_memory_id
+           FROM proxima_code.work_assignment_v1
+          WHERE memory_id = $1",
+    )
+    .bind(assignment_id)
+    .fetch_one(fixture.pg.pool_for_tests())
+    .await?;
+    assert_eq!(assigned_worker, target);
+
+    // Two reference rows, derived from the payload, sourced at the
+    // assignment: nobody wrote them.
+    let reference_targets: Vec<Uuid> = sqlx::query_scalar(
+        "SELECT target_id
+           FROM proxima_core.edges
+          WHERE source_kind = 'Perspective'
+            AND source_id = $1
+            AND kind = 'reference'
+          ORDER BY target_kind",
+    )
+    .bind(assignment_id)
+    .fetch_all(fixture.pg.pool_for_tests())
+    .await?;
+    assert_eq!(reference_targets.len(), 2, "worker and work item");
+    assert!(reference_targets.contains(&target));
+
+    // The shell author is a column on the request row, not an edge.
+    let request_id: Uuid = result["handle"]
+        .as_str()
+        .expect("handle")
+        .strip_prefix("F:")
+        .expect("fact prefix")
+        .parse()?;
+    let authoring: Option<Uuid> = sqlx::query_scalar(
+        "SELECT authoring_perspective_id FROM proxima_core.memories WHERE memory_id = $1",
+    )
+    .bind(request_id)
+    .fetch_one(fixture.pg.pool_for_tests())
+    .await?;
+    assert_eq!(authoring, Some(shell_self));
 
     // The retry request actually landed under its idempotency key.
     let count: i64 = sqlx::query_scalar(
@@ -1577,19 +1743,65 @@ async fn emit_execution_plan_uses_abstraction_proof_source()
             .strip_prefix("A:")
             .expect("prefixed Abstraction handle"),
     )?;
-    let edge: (String, String, Uuid) = sqlx::query_as(
-        "SELECT relation, authorship_kind::text, target_memory_id
+    // The plan's Abstraction input is what it was made from: one `origin`
+    // row, and no other. Everything else the plan touches — the activation
+    // Fact, the item's request Fact — is what its payload points at, so
+    // those are `reference` rows.
+    let origins: Vec<Uuid> = sqlx::query_scalar(
+        "SELECT target_id
            FROM proxima_core.edges
-          WHERE source_memory_id = $1
-            AND relation = 'core/derived-from'
-          LIMIT 1",
+          WHERE source_id = $1
+            AND kind = 'origin'",
+    )
+    .bind(plan_id)
+    .fetch_all(fixture.pg.pool_for_tests())
+    .await?;
+    assert_eq!(origins, vec![plan_source]);
+
+    let references: Vec<Uuid> = sqlx::query_scalar(
+        "SELECT target_id
+           FROM proxima_core.edges
+          WHERE source_id = $1
+            AND kind = 'reference'",
+    )
+    .bind(plan_id)
+    .fetch_all(fixture.pg.pool_for_tests())
+    .await?;
+    assert!(references.contains(&goal_activated), "{references:?}");
+
+    // The plan names the request Fact each item became, and that is where
+    // the plan→item connection now comes from.
+    let item_request: Uuid = sqlx::query_scalar(
+        "SELECT request_memory_id
+           FROM proxima_code.execution_plan_item_v1
+          WHERE plan_memory_id = $1",
     )
     .bind(plan_id)
     .fetch_one(fixture.pg.pool_for_tests())
     .await?;
-    assert_eq!(edge.0, "core/derived-from");
-    assert_eq!(edge.1, "OperatorAtoA");
-    assert_eq!(edge.2, plan_source);
+    assert!(references.contains(&item_request), "{references:?}");
+    let item_handle = output["items"][0]["handle"]
+        .as_str()
+        .expect("item handle")
+        .strip_prefix("F:")
+        .expect("fact prefix")
+        .to_string();
+    assert_eq!(item_request.to_string(), item_handle);
+
+    // One origin plus one reference per payload target.
+    assert_eq!(
+        output["plan_edge_count"],
+        serde_json::json!(1 + references.len())
+    );
+
+    // "Authored by the planner" is a column, not an edge.
+    let authoring: Option<Uuid> = sqlx::query_scalar(
+        "SELECT authoring_perspective_id FROM proxima_core.memories WHERE memory_id = $1",
+    )
+    .bind(plan_id)
+    .fetch_one(fixture.pg.pool_for_tests())
+    .await?;
+    assert_eq!(authoring, Some(shell_self));
 
     Ok(())
 }
@@ -1817,7 +2029,6 @@ async fn seed_active_goal_activation(
 ) -> Result<Uuid, Box<dyn std::error::Error>> {
     let goal_id = Uuid::now_v7();
     let memory_id = Uuid::now_v7();
-    let edge_id = Uuid::now_v7();
     let (owner_kind, owner_id) = proxima_storage_pg::access::owner_columns::owner_binds(owner);
     sqlx::query(
         "INSERT INTO proxima_core.goals
@@ -1851,19 +2062,27 @@ async fn seed_active_goal_activation(
     .bind(goal_id)
     .execute(pg.pool_for_tests())
     .await?;
+    // The Goal knows the Perspective it inspires: the assignment is a column
+    // on the goal row, and the `reference` index row is derived from it.
     sqlx::query(
-        "INSERT INTO proxima_core.edges
-            (edge_id, owner_kind, owner_id, relation, relation_class, source_kind, source_goal_id,
-             target_kind, target_memory_id, authorship_kind)
-         VALUES ($1, $2, $3, $4, 'Causal', 'Goal', $5,
-                 'Perspective', $6, 'PerspectiveGoalLink')",
+        "UPDATE proxima_core.goals
+            SET assignment_perspective_id = $2
+          WHERE goal_id = $1",
     )
-    .bind(edge_id)
-    .bind(owner_kind)
-    .bind(owner_id)
-    .bind(CORE_INSPIRES_RELATION)
     .bind(goal_id)
     .bind(self_id)
+    .execute(pg.pool_for_tests())
+    .await?;
+    sqlx::query(
+        "INSERT INTO proxima_core.edges
+            (source_kind, source_id, target_kind, target_id, kind, owner_kind, owner_id)
+         VALUES ('Goal', $1, 'Perspective', $2, 'reference', $3, $4)
+         ON CONFLICT DO NOTHING",
+    )
+    .bind(goal_id)
+    .bind(self_id)
+    .bind(owner_kind)
+    .bind(owner_id)
     .execute(pg.pool_for_tests())
     .await?;
     Ok(memory_id)
@@ -2298,6 +2517,7 @@ fn fact_draft(_owner: Owner, schema_id: &str, payload: &[u8]) -> FactWriteComman
                 schema_version: SchemaVersion::new(1),
             },
         }),
+        derived_from: Vec::new(),
     }
 }
 
@@ -2579,7 +2799,7 @@ async fn ingest_code_chunk_with_type(
     .bind(line_count)
     .execute(pool)
     .await?;
-    insert_derived_from_edge(pool, &owner, memory_id, file_revision).await?;
+    insert_origin_edge(pool, &owner, memory_id, file_revision).await?;
     Ok(memory_id)
 }
 
@@ -2609,7 +2829,7 @@ async fn ingest_code_chunk_tombstone(
     .bind(chunk_index)
     .execute(pool)
     .await?;
-    insert_derived_from_edge(pool, &owner, memory_id, file_revision).await?;
+    insert_origin_edge(pool, &owner, memory_id, file_revision).await?;
     Ok(memory_id)
 }
 
@@ -2726,7 +2946,7 @@ async fn code_chunk_memory(
     Ok(memory_id)
 }
 
-async fn insert_derived_from_edge(
+async fn insert_origin_edge(
     pool: &PgPool,
     owner: &Owner,
     chunk_memory_id: Uuid,
@@ -2735,14 +2955,9 @@ async fn insert_derived_from_edge(
     let (owner_kind, owner_id) = proxima_storage_pg::access::owner_columns::owner_binds(owner);
     sqlx::query(
         "INSERT INTO proxima_core.edges
-            (edge_id, relation, relation_class, source_kind, source_memory_id,
-             target_kind, target_memory_id, authorship_kind, authorship_owner_memory_id,
-             owner_kind, owner_id)
-         VALUES ($1, $2, 'Provenance', 'Abstraction', $3,
-             'Fact', $4, 'OperatorFtoA', $3, $5, $6)",
+            (source_kind, source_id, target_kind, target_id, kind, owner_kind, owner_id)
+         VALUES ('Abstraction', $1, 'Fact', $2, 'origin', $3, $4)",
     )
-    .bind(Uuid::now_v7())
-    .bind(CORE_DERIVED_FROM_RELATION)
     .bind(chunk_memory_id)
     .bind(file_revision_memory_id)
     .bind(owner_kind)
@@ -2842,39 +3057,44 @@ async fn ingest_commit_summary(
     Ok(memory_id)
 }
 
+/// Two call sites from one chunk into another: the sites go in the caller
+/// chunk's payload table, and the single index row they imply goes in the
+/// edge index. Written by hand here because the fixture chunks are seeded
+/// directly rather than derived through `append_code_slice`.
 async fn ingest_calls_edge(
     pool: &PgPool,
     owner: &Owner,
     source_chunk: Uuid,
     target_chunk: Uuid,
     callee_name: &str,
-) -> Result<Uuid, Box<dyn std::error::Error>> {
-    let edge_id = Uuid::now_v7();
+) -> Result<(), Box<dyn std::error::Error>> {
     let (owner_kind, owner_id) = proxima_storage_pg::access::owner_columns::owner_binds(owner);
+    for site_index in 0..2_i32 {
+        sqlx::query(
+            "INSERT INTO proxima_code.code_chunk_call_v1
+                (caller_memory_id, callee_memory_id, site_index,
+                 byte_start, byte_end, callee_name, is_dynamic)
+             VALUES ($1, $2, $3, $4, $5, $6, false)",
+        )
+        .bind(source_chunk)
+        .bind(target_chunk)
+        .bind(site_index)
+        .bind(i64::from(site_index) * 10)
+        .bind(i64::from(site_index) * 10 + 1)
+        .bind(callee_name)
+        .execute(pool)
+        .await?;
+    }
     sqlx::query(
         "INSERT INTO proxima_core.edges
-            (edge_id, owner_kind, owner_id, relation, relation_class,
-             source_kind, source_memory_id, target_kind, target_memory_id,
-             authorship_kind)
-         VALUES ($1, $2, $3, 'proxima-code/calls', 'Structural',
-             'Abstraction', $4, 'Abstraction', $5,
-             'Engine')",
+            (source_kind, source_id, target_kind, target_id, kind, owner_kind, owner_id)
+         VALUES ('Abstraction', $1, 'Abstraction', $2, 'reference', $3, $4)",
     )
-    .bind(edge_id)
-    .bind(owner_kind)
-    .bind(owner_id)
     .bind(source_chunk)
     .bind(target_chunk)
+    .bind(owner_kind)
+    .bind(owner_id)
     .execute(pool)
     .await?;
-    sqlx::query(
-        "INSERT INTO proxima_code.code_calls_v1
-            (edge_id, callsite_byte_start, callsite_byte_end, callee_name, is_dynamic)
-         VALUES ($1, 0, 1, $2, false)",
-    )
-    .bind(edge_id)
-    .bind(callee_name)
-    .execute(pool)
-    .await?;
-    Ok(edge_id)
+    Ok(())
 }

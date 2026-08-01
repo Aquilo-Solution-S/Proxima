@@ -43,10 +43,11 @@ pub struct CodeEmitExecutionRequestArgs {
 #[derive(Debug, Serialize)]
 pub struct CodeEmitExecutionRequestOutput {
     pub handle: String,
-    pub authored_edge_handle: Option<String>,
-    pub derived_edge_handles: Vec<String>,
+    /// How many `origin` index rows the write asserted — the activation
+    /// Fact plus each evidence Fact. A count, not handles: an edge has no
+    /// id, and replaying the emit re-asserts the same rows.
+    pub origin_count: usize,
     pub acceptance_criteria_handle: Option<String>,
-    pub acceptance_criteria_edge_handle: Option<String>,
     pub idempotent_replay: bool,
 }
 
@@ -126,14 +127,16 @@ pub struct ExecutionPlanItemOutput {
     pub key: String,
     pub kind: ExecutionPlanItemKind,
     pub handle: String,
-    pub dependency_edge_handles: Vec<String>,
     pub idempotent_replay: bool,
 }
 
 #[derive(Debug, Serialize)]
 pub struct CodeEmitExecutionPlanOutput {
     pub plan_handle: String,
-    pub plan_derived_edge_handles: Vec<String>,
+    /// Index rows the plan write asserted: one `origin` to its Abstraction
+    /// input plus one `reference` per target its payload names — the
+    /// activation Fact, the evidence Facts, and each item's request Fact.
+    pub plan_edge_count: usize,
     pub plan_idempotent_replay: bool,
     pub items: Vec<ExecutionPlanItemOutput>,
 }
@@ -172,8 +175,13 @@ pub struct CodeRetryExecutionRequestArgs {
 #[derive(Debug, Serialize)]
 pub struct CodeRetryExecutionRequestOutput {
     pub handle: String,
-    pub authored_edge_handle: Option<String>,
-    pub target_edge_handle: Option<String>,
-    pub derived_edge_handles: Vec<String>,
+    /// `P:` handle of the assignment Perspective that names the target
+    /// worker and this request. The successor to the retired
+    /// `proxima-code/targets-execution-request` edge: a memory handle,
+    /// because the claim is a node.
+    pub assignment_handle: Option<String>,
+    /// `origin` rows asserted by the retry: the prior request, everything
+    /// it was made from, and any extra evidence.
+    pub origin_count: usize,
     pub idempotent_replay: bool,
 }

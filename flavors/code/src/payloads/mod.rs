@@ -4,11 +4,11 @@ pub mod code_chunk;
 pub mod commit;
 pub mod commit_summary;
 pub mod development_perspective;
-pub mod edge_calls;
 pub mod execution_plan;
 pub mod execution_request;
 pub mod file_revision;
 pub mod test_request;
+pub mod work_assignment;
 pub mod work_results;
 
 /// Serde adapter for 32-byte content hashes that emits stable hex in
@@ -88,15 +88,15 @@ pub use acceptance::{
     AcceptanceCriteriaV1, AcceptanceCriterionV1, AcceptanceVerifierKind, AcceptanceVerifierSpecV1,
 };
 pub use agent_perspective::{CodeCommitSummarizerSelfV1, CodeEngineerSelfV1};
-pub use code_chunk::{CODE_LEXICAL_LANGUAGE, CodeChunkV1};
+pub use code_chunk::{CODE_LEXICAL_LANGUAGE, CodeCallSiteV1, CodeCallV1, CodeChunkV1};
 pub use commit::CommitV1;
 pub use commit_summary::CommitSummaryV1;
 pub use development_perspective::CodeDevelopmentPerspectiveV1;
-pub use edge_calls::EdgeCallsV1;
 pub use execution_plan::{CodeExecutionPlanItemKind, CodeExecutionPlanItemV1, CodeExecutionPlanV1};
 pub use execution_request::{ExecutionRequestV1, WorkRequestedV1};
 pub use file_revision::{FileRevisionV1, FileState};
 pub use test_request::{TestRequestV1, TestRequestedV1};
+pub use work_assignment::CodeWorkAssignmentV1;
 pub use work_results::{
     AcceptanceSummaryV1, AcceptanceVerificationStatus, AcceptanceVerificationV1, ExecutionResultV1,
     TestResultV1, WorkResultStatus,

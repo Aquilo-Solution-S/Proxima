@@ -69,7 +69,6 @@ pub mod search_commits;
 pub mod work_item_bundle;
 
 pub use emit_execution_request::{
-    CODE_HAS_ACCEPTANCE_CRITERIA_RELATION, CODE_TARGETS_EXECUTION_REQUEST_RELATION,
     CodeEmitExecutionPlanTool, CodeEmitExecutionRequestTool, CodeRetryExecutionRequestTool,
 };
 pub use open_file_revision::CodeOpenFileRevisionTool;

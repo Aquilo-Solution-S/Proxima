@@ -189,7 +189,6 @@ async fn self_ingestion_streams_proxima_main() {
                     include_payloads: true,
                     memory_ids: Vec::new(),
                     goal_ids: Vec::new(),
-                    edge_ids: Vec::new(),
                     stateful_heads: Vec::new(),
                 },
             )
@@ -246,7 +245,6 @@ async fn self_ingestion_streams_proxima_main() {
                     include_payloads: true,
                     memory_ids: Vec::new(),
                     goal_ids: Vec::new(),
-                    edge_ids: Vec::new(),
                     stateful_heads: Vec::new(),
                 },
             )

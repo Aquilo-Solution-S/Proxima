@@ -144,7 +144,7 @@ def self_test() -> int:
             {
                 "crates/storage-pg/migrations": ["0001_init.sql", "0008_v005.sql"],
                 "examples/embedded-minimal/migrations": ["20260612000010_baseline.sql"],
-                "flavors/code/migrations": ["20260516000020_baseline.sql"],
+                "flavors/code/migrations": ["20260801000020_v008_baseline.sql"],
             },
             False,
         ),
@@ -162,7 +162,7 @@ def self_test() -> int:
             {
                 "crates/storage-pg/migrations": ["0001_init.sql"],
                 "examples/embedded-minimal/migrations": ["20260612000020_baseline.sql"],
-                "flavors/code/migrations": ["20260516000020_baseline.sql"],
+                "flavors/code/migrations": ["20260801000020_v008_baseline.sql"],
             },
             True,
         ),

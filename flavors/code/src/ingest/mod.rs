@@ -18,14 +18,15 @@
 //! population in one tx is non-negotiable (AGENTS.md invariant 15).
 
 pub mod blobs;
-pub mod calls;
 pub mod engine;
 pub mod heads;
 mod pg_sidecars;
 pub mod schemas;
 
-pub use blobs::{append_code_slice, close_local_git_batch, ingest_commit, ingest_file_revision};
-pub use calls::{CallEdgeDraft, ingest_calls_edge};
+pub use blobs::{
+    append_code_slice, append_code_slices, close_local_git_batch, code_slice_memory_id_for,
+    ingest_commit, ingest_file_revision,
+};
 pub use engine::{build_engine, build_engine_with};
 pub use heads::FileRevisionHead;
 pub use schemas::{

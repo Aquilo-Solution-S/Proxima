@@ -23,8 +23,7 @@ use proxima_code::{
 };
 use proxima_core::verbs::query::{QueryRequest, SupersessionStatus};
 use proxima_core::{
-    AbstractionPayload, AuthPath, AuthzContext, CORE_DERIVED_FROM_RELATION, FactPayload, Owner,
-    SchemaId, SchemaVersion,
+    AbstractionPayload, AuthPath, AuthzContext, FactPayload, Owner, SchemaId, SchemaVersion,
 };
 use proxima_pg_testkit::drop_db;
 use sqlx::Row;
@@ -198,8 +197,8 @@ async fn local_git_source_full_cycle() {
         assert!(chunks_after_initial >= 3);
 
         // Provenance proof — code chunks are derived code-slice
-        // Abstractions with `core/derived-from` edges back to their
-        // parent `file-revision-v1` Facts.
+        // Abstractions with `origin` index rows back to their parent
+        // `file-revision-v1` Facts.
         let linkage: (i64, i64) = sqlx::query_as(
             "WITH chunks AS ( \
                  SELECT ch.memory_id \
@@ -215,16 +214,15 @@ async fn local_git_source_full_cycle() {
                   WHERE EXISTS ( \
                       SELECT 1 FROM proxima_core.edges e \
                       JOIN proxima_code.file_revision_v1 fr \
-                        ON fr.memory_id = e.target_memory_id \
-                      WHERE e.relation = $2 \
+                        ON fr.memory_id = e.target_id \
+                      WHERE e.kind = 'origin' \
                         AND e.source_kind = 'Abstraction' \
                         AND e.target_kind = 'Fact' \
-                        AND e.source_memory_id = c.memory_id \
+                        AND e.source_id = c.memory_id \
                         AND fr.repo_id = $1 \
                         AND fr.file_path = 'src/lib.rs'))",
         )
         .bind(repo_id)
-        .bind(CORE_DERIVED_FROM_RELATION)
         .fetch_one(pg.pool_for_tests())
         .await?;
         assert!(linkage.0 > 0, "expected at least one chunk for src/lib.rs");
@@ -251,7 +249,6 @@ async fn local_git_source_full_cycle() {
             include_payloads: true,
             memory_ids: Vec::new(),
             goal_ids: Vec::new(),
-            edge_ids: Vec::new(),
             stateful_heads: Vec::new(),
         };
         let resp = engine
@@ -328,7 +325,6 @@ async fn local_git_source_full_cycle() {
             include_payloads: true,
             memory_ids: Vec::new(),
             goal_ids: Vec::new(),
-            edge_ids: Vec::new(),
             stateful_heads: Vec::new(),
         };
         let resp_all = engine

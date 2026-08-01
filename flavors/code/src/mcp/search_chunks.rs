@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
-use proxima_core::verbs::query::{EdgeFilter, EdgeReadRequest, EdgeTargetProjection};
-use proxima_core::{EdgeId, EntityRef, MemoryId};
+use proxima_core::verbs::query::{EdgeFilter, EdgeReadRequest};
+use proxima_core::{EdgeEndpoint, EdgeKind, EntityRef, MemoryId};
 use proxima_core::{Tool, ToolCtx, ToolError};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -60,7 +60,7 @@ pub struct CodeSearchChunksArgs {
     pub chunk_type: Option<String>,
     #[serde(default = "default_include_calls")]
     #[schemars(
-        description = "Whether to include neighboring proxima-code/calls edges. Defaults to true."
+        description = "Whether to include neighbouring call connections, in both directions. Defaults to true."
     )]
     pub include_calls: bool,
     #[serde(default)]
@@ -74,9 +74,6 @@ pub struct CodeSearchChunksArgs {
 const fn default_include_calls() -> bool {
     true
 }
-
-/// Relation whose edges are returned as `calls_edges` neighbours.
-const CALLS_RELATION: &str = "proxima-code/calls";
 
 /// Neighbour edges returned across the whole result set.
 ///
@@ -240,13 +237,29 @@ pub struct ChunkMatch {
     pub similarity_score: f32,
 }
 
+/// One caller→callee connection between two code chunks, with every call
+/// site the caller's payload records for it.
+///
+/// There is no `edge_handle`: an edge has no id, and it never carried the
+/// call site anyway. The connection comes back from the index; the sites
+/// come back from the caller chunk's own payload, which is where they now
+/// live (docs/16 §Flavor Migration).
 #[derive(Debug, Serialize)]
 pub struct CallEdge {
-    pub edge_handle: String,
     pub source: Option<String>,
     pub target: Option<String>,
+    /// Call sites in the caller chunk that reach this callee, in payload
+    /// order. Empty when the caller chunk is not readable by this caller,
+    /// which is also when `source` comes back `null`.
+    pub sites: Vec<CallSite>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct CallSite {
     pub callee_name: String,
     pub is_dynamic: bool,
+    pub byte_start: i64,
+    pub byte_end: i64,
 }
 
 #[derive(Debug)]
@@ -254,7 +267,7 @@ pub struct CodeSearchChunksTool;
 
 impl Tool for CodeSearchChunksTool {
     const NAME: &'static str = "proxima-code_search_chunks";
-    const DESCRIPTION: &'static str = "Search head code chunks by exact substring, path, or full-text content, including plain-English questions. Ranks by mode: hybrid (default) fuses full-text with embedding similarity, lexical is full-text only, semantic is embedding-only; a hybrid search with no embeddings available answers lexically and reports degraded_to_lexical. Each match carries its chunk text up to snippet_max_chars, flagged snippet_truncated when cut. Supports language/chunk_type filters and optional proxima-code/calls neighbor edges.";
+    const DESCRIPTION: &'static str = "Search head code chunks by exact substring, path, or full-text content, including plain-English questions. Ranks by mode: hybrid (default) fuses full-text with embedding similarity, lexical is full-text only, semantic is embedding-only; a hybrid search with no embeddings available answers lexically and reports degraded_to_lexical. Each match carries its chunk text up to snippet_max_chars, flagged snippet_truncated when cut. Supports language/chunk_type filters and optional call-neighbour connections with their call sites.";
     const ANNOTATIONS: Option<proxima_core::mcp::McpToolAnnotations> = Some(super::READ_ONLY);
 
     type Args = CodeSearchChunksArgs;
@@ -800,16 +813,20 @@ async fn load_call_edges(
     // serialising them cost roughly half the tool's latency (measured on
     // this repository's index: 105ms with neighbours, 57ms without).
     // `include_calls` defaults to true, so every default search paid it.
+    //
+    // The filter is `reference` rather than a relation name: a chunk's only
+    // schema-declared reference field is its callee list, so the kind alone
+    // is exactly as precise as the retired `proxima-code/calls` filter was.
     let requests = chunk_ids.iter().flat_map(|chunk_id| {
         let entity = EntityRef::Memory(MemoryId::new(*chunk_id));
         [
             EdgeFilter {
-                relation: Some(CALLS_RELATION.to_string()),
+                kind: Some(EdgeKind::Reference),
                 source: Some(entity),
                 target: None,
             },
             EdgeFilter {
-                relation: Some(CALLS_RELATION.to_string()),
+                kind: Some(EdgeKind::Reference),
                 source: None,
                 target: Some(entity),
             },
@@ -823,11 +840,9 @@ async fn load_call_edges(
                     ctx.authz(),
                     &EdgeReadRequest {
                         owner: ctx.owner(),
-                        edge_ids: Vec::new(),
                         filter,
                         limit: CALL_EDGES_PER_CHUNK,
                         cursor: None,
-                        include_payloads: false,
                     },
                 )
                 .await
@@ -842,56 +857,73 @@ async fn load_call_edges(
     // truncation belongs to the highest-ranked chunks. Collecting into a
     // `HashMap` and taking 200 of its values returned an arbitrary subset
     // that varied from run to run.
-    let mut seen: HashSet<uuid::Uuid> = HashSet::new();
-    let mut edges = Vec::new();
+    //
+    // The dedup key is the row itself now: an edge has no id, so
+    // (source, target) IS its identity for this purpose.
+    let mut seen: HashSet<(uuid::Uuid, uuid::Uuid)> = HashSet::new();
+    let mut pairs: Vec<(MemoryId, MemoryId)> = Vec::new();
     for response in responses {
         for edge in response.edges {
-            if seen.insert(edge.id) {
-                edges.push(edge);
+            let (Some(source), Some(target)) = (
+                edge.source.memory_id(),
+                edge.target.endpoint().and_then(EdgeEndpoint::memory_id),
+            ) else {
+                continue;
+            };
+            if seen.insert((source.into_inner(), target.into_inner())) {
+                pairs.push((source, target));
             }
         }
     }
-    edges.truncate(MAX_CALL_EDGES);
+    pairs.truncate(MAX_CALL_EDGES);
 
-    let edge_ids = edges.iter().map(|edge| edge.id).collect::<Vec<_>>();
-    let payload_rows: Vec<CallPayloadRow> = sqlx::query_as(
-        "SELECT edge_id, callee_name, is_dynamic
-           FROM proxima_code.code_calls_v1
-          WHERE edge_id = ANY($1::uuid[])",
+    // Hydrate the sites from the caller chunks' payload rows. The index
+    // answers "is there a connection"; this is the node answering "what is
+    // it", and it is one query for the whole page.
+    let sources = pairs
+        .iter()
+        .map(|(source, _)| source.into_inner())
+        .collect::<Vec<_>>();
+    let targets = pairs
+        .iter()
+        .map(|(_, target)| target.into_inner())
+        .collect::<Vec<_>>();
+    let site_rows: Vec<CallSiteRow> = sqlx::query_as(
+        "SELECT caller_memory_id, callee_memory_id, callee_name, is_dynamic,
+                byte_start, byte_end
+           FROM proxima_code.code_chunk_call_v1
+          WHERE caller_memory_id = ANY($1::uuid[])
+            AND callee_memory_id = ANY($2::uuid[])
+          ORDER BY caller_memory_id, callee_memory_id, site_index",
     )
-    .bind(&edge_ids)
+    .bind(&sources)
+    .bind(&targets)
     .fetch_all(pool.pool())
     .await
     .map_err(map_storage)?;
-    let payloads = payload_rows
-        .into_iter()
-        .map(|row| (row.edge_id, row))
-        .collect::<HashMap<_, _>>();
-
-    let mut out = Vec::new();
-    for edge in edges {
-        let Some(payload) = payloads.get(&edge.id) else {
-            continue;
-        };
-        out.push(CallEdge {
-            edge_handle: ctx.format_edge(EdgeId::new(edge.id)),
-            source: match edge.source {
-                EntityRef::Memory(id) => Some(ctx.format_abstraction_memory(id)),
-                EntityRef::Goal(_) | EntityRef::FactEntity(_) => None,
-            },
-            target: match edge.target {
-                EdgeTargetProjection::Visible {
-                    target: EntityRef::Memory(id),
-                } => Some(ctx.format_abstraction_memory(id)),
-                EdgeTargetProjection::Visible { .. }
-                | EdgeTargetProjection::Redacted
-                | EdgeTargetProjection::Unavailable => None,
-            },
-            callee_name: payload.callee_name.clone(),
-            is_dynamic: payload.is_dynamic,
-        });
+    let mut sites: HashMap<(uuid::Uuid, uuid::Uuid), Vec<CallSite>> = HashMap::new();
+    for row in site_rows {
+        sites
+            .entry((row.caller_memory_id, row.callee_memory_id))
+            .or_default()
+            .push(CallSite {
+                callee_name: row.callee_name,
+                is_dynamic: row.is_dynamic,
+                byte_start: row.byte_start,
+                byte_end: row.byte_end,
+            });
     }
-    Ok(out)
+
+    Ok(pairs
+        .into_iter()
+        .map(|(source, target)| CallEdge {
+            source: Some(ctx.format_abstraction_memory(source)),
+            target: Some(ctx.format_abstraction_memory(target)),
+            sites: sites
+                .remove(&(source.into_inner(), target.into_inner()))
+                .unwrap_or_default(),
+        })
+        .collect())
 }
 
 /// `%`-wrapped, escaped, lowercased pattern for the substring arms.
@@ -929,10 +961,13 @@ struct ChunkCandidateRow {
 }
 
 #[derive(Debug, sqlx::FromRow)]
-struct CallPayloadRow {
-    edge_id: uuid::Uuid,
+struct CallSiteRow {
+    caller_memory_id: uuid::Uuid,
+    callee_memory_id: uuid::Uuid,
     callee_name: String,
     is_dynamic: bool,
+    byte_start: i64,
+    byte_end: i64,
 }
 
 #[cfg(test)]

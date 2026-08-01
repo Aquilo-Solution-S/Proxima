@@ -11,10 +11,13 @@ use proxima_code::testkit::{
     register_repo, start_run, sweep_orphaned_runs,
 };
 use proxima_code::{
-    CodeFlavorStore, CodeIngestContext, LocalGitSource, RunStage, RunStatus, StageCounters,
+    CodeChunkV1, CodeFlavorStore, CodeIngestContext, LocalGitSource, RunStage, RunStatus,
+    StageCounters,
 };
-use proxima_core::{AuthPath, AuthzContext, Cursor, Owner};
+use proxima_core::verbs::schema::PayloadKind;
+use proxima_core::{AbstractionPayload, AuthPath, AuthzContext, Cursor, MemoryId, Owner};
 use proxima_pg_testkit::drop_db;
+use proxima_storage_pg::sidecars::{PgMemoryPayload, PgSidecarReadCtx};
 use tempfile::TempDir;
 use uuid::Uuid;
 
@@ -268,18 +271,83 @@ async fn local_ingestion_lands_facts_citations_edges_and_replays_idempotently() 
             .await?;
         assert!(cited_objects < citation_mappings);
 
-        let ast_edges: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*)::bigint \
-             FROM proxima_core.edges e \
-             JOIN proxima_code.code_calls_v1 cc ON cc.edge_id = e.edge_id \
-             JOIN proxima_code.code_chunk_v1 src ON src.memory_id = e.source_memory_id \
-             JOIN proxima_code.code_chunk_v1 tgt ON tgt.memory_id = e.target_memory_id \
-             WHERE src.repo_id = $1 AND tgt.repo_id = $1",
+        // Call connections: one `reference` row per (caller, callee), with the
+        // sites in the caller chunk's payload. Every index row must be
+        // re-derivable from a payload row, which is what the join asserts —
+        // drop the index and rebuild it from `code_chunk_call_v1` and you get
+        // the same set back (docs/16 §Rebuildable, E7).
+        let (call_edges, call_pairs, call_sites): (i64, i64, i64) = sqlx::query_as(
+            "SELECT \
+                (SELECT COUNT(*)::bigint \
+                   FROM proxima_core.edges e \
+                   JOIN proxima_code.code_chunk_v1 src ON src.memory_id = e.source_id \
+                   JOIN proxima_code.code_chunk_v1 tgt ON tgt.memory_id = e.target_id \
+                  WHERE e.kind = 'reference' \
+                    AND src.repo_id = $1 AND tgt.repo_id = $1), \
+                (SELECT COUNT(DISTINCT (cc.caller_memory_id, cc.callee_memory_id))::bigint \
+                   FROM proxima_code.code_chunk_call_v1 cc \
+                   JOIN proxima_code.code_chunk_v1 src ON src.memory_id = cc.caller_memory_id \
+                  WHERE src.repo_id = $1), \
+                (SELECT COUNT(*)::bigint \
+                   FROM proxima_code.code_chunk_call_v1 cc \
+                   JOIN proxima_code.code_chunk_v1 src ON src.memory_id = cc.caller_memory_id \
+                  WHERE src.repo_id = $1)",
         )
         .bind(repo_id)
         .fetch_one(pg.pool_for_tests())
         .await?;
-        assert!(ast_edges > 0, "expected typed AST call edges");
+        assert!(call_pairs > 0, "expected call sites in chunk payloads");
+        assert_eq!(
+            call_edges, call_pairs,
+            "one index row per distinct callee, no more and no fewer"
+        );
+        assert!(
+            call_sites >= call_pairs,
+            "sites live in the payload, so there are at least as many as pairs"
+        );
+
+        // Read the caller chunk back through the payload surface: the calls
+        // must come back with it, because they ARE the payload now. This is
+        // the half a raw row count cannot see.
+        let caller_id: Uuid = sqlx::query_scalar(
+            "SELECT DISTINCT cc.caller_memory_id
+               FROM proxima_code.code_chunk_call_v1 cc
+               JOIN proxima_code.code_chunk_v1 src ON src.memory_id = cc.caller_memory_id
+              WHERE src.repo_id = $1
+              LIMIT 1",
+        )
+        .bind(repo_id)
+        .fetch_one(pg.pool_for_tests())
+        .await?;
+        let loaded = <CodeChunkV1 as PgMemoryPayload>::load_batch(
+            PgSidecarReadCtx::from(pg.pool_for_tests()),
+            PayloadKind::Abstraction,
+            &[MemoryId::new(caller_id)],
+        )
+        .await?;
+        let (_, payload) = loaded.into_iter().next().expect("caller chunk payload");
+        let payload = payload
+            .downcast_ref::<CodeChunkV1>()
+            .expect("code-chunk payload");
+        assert!(
+            !payload.calls.is_empty(),
+            "a caller chunk's payload carries its callees"
+        );
+        for call in &payload.calls {
+            assert!(!call.sites.is_empty(), "a callee entry carries its sites");
+        }
+        // Every declared callee is exactly one index row, and no more.
+        let declared = <CodeChunkV1 as AbstractionPayload>::references(payload);
+        assert_eq!(declared.len(), payload.calls.len());
+        let index_rows: i64 = sqlx::query_scalar(
+            "SELECT count(*)::bigint
+               FROM proxima_core.edges
+              WHERE source_id = $1 AND kind = 'reference'",
+        )
+        .bind(caller_id)
+        .fetch_one(pg.pool_for_tests())
+        .await?;
+        assert_eq!(index_rows, i64::try_from(declared.len()).expect("fits"));
 
         let cursor_before: Option<Vec<u8>> =
             sqlx::query_scalar("SELECT last_cursor FROM proxima_code.repos WHERE repo_id = $1")

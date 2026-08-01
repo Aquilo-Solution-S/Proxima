@@ -1,4 +1,6 @@
-use proxima_core::{FactPayload, PayloadKeyBuilder, proxima_schema_id};
+use proxima_core::{
+    EntityKind, FactPayload, MemoryId, PayloadKeyBuilder, PayloadReference, proxima_schema_id,
+};
 use serde::{Deserialize, Serialize};
 
 use super::AcceptanceCriterionV1;
@@ -11,6 +13,11 @@ pub struct TestRequestedV1 {
     pub instructions: String,
     pub test_key: String,
     pub criteria: Vec<AcceptanceCriterionV1>,
+    /// Work items that must land before this test can dispatch — the
+    /// same reference field `WorkRequestedV1` carries, for the same
+    /// reason: a dependency belongs to the depending row.
+    #[serde(default)]
+    pub depends_on_memory_ids: Vec<uuid::Uuid>,
 }
 
 impl FactPayload for TestRequestedV1 {
@@ -30,6 +37,19 @@ impl FactPayload for TestRequestedV1 {
 
     fn render(&self) -> String {
         format!("{}: {}", self.test_key, self.title)
+    }
+
+    fn references(&self) -> Vec<PayloadReference> {
+        self.depends_on_memory_ids
+            .iter()
+            .map(|memory_id| {
+                PayloadReference::memory(
+                    "depends_on_memory_ids",
+                    EntityKind::Fact,
+                    MemoryId::new(*memory_id),
+                )
+            })
+            .collect()
     }
 }
 

@@ -1,5 +1,5 @@
 use proxima_core::verbs::query::{EdgeFilter, EdgeReadRequest};
-use proxima_core::{CORE_DERIVED_FROM_RELATION, EntityRef, Tool, ToolCtx, ToolError};
+use proxima_core::{EdgeKind, EntityRef, MemoryId, Tool, ToolCtx, ToolError};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -187,8 +187,8 @@ impl Tool for CodeOpenFileRevisionTool {
             let revision_memory_id = revision_memory_id
                 .ok_or_else(|| ToolError::Other("authorized revision disappeared".into()))?;
 
-            // The current head file revision's own `derived-from` in-edges
-            // are exactly its current chunk set (each commit's F->A pass
+            // The current head file revision's own `origin` in-edges are
+            // exactly its current chunk set (each commit's F->A pass
             // re-derives the full chunk set for every file it touches), so
             // no separate core-table dedup is needed here — restricting to
             // this one authorized revision id is precise on its own.
@@ -197,25 +197,20 @@ impl Tool for CodeOpenFileRevisionTool {
                     ctx.authz(),
                     &EdgeReadRequest {
                         owner: ctx.owner(),
-                        edge_ids: Vec::new(),
                         filter: EdgeFilter {
-                            relation: Some(CORE_DERIVED_FROM_RELATION.to_string()),
+                            kind: Some(EdgeKind::Origin),
                             source: None,
                             target: Some(EntityRef::Memory(revision_memory_id)),
                         },
                         limit: 2_000,
                         cursor: None,
-                        include_payloads: false,
                     },
                 )
                 .await?;
             let chunk_ids = derived_edges
                 .edges
                 .into_iter()
-                .filter_map(|edge| match edge.source {
-                    EntityRef::Memory(id) => Some(id.into_inner()),
-                    EntityRef::Goal(_) | EntityRef::FactEntity(_) => None,
-                })
+                .filter_map(|edge| edge.source.memory_id().map(MemoryId::into_inner))
                 .collect::<Vec<_>>();
             let mut chunks = pool
                 .authorized_abstraction_payloads::<CodeChunkV1>(
