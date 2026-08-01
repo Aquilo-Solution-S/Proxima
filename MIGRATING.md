@@ -326,6 +326,45 @@ as node content — said that flexibility was speculative. The escape valve is
 total: any relationship whatsoever can be asserted as an interpretation node.
 The question is never whether something can be expressed, only where it lives.
 
+### `CitedBlobPort` gained a required method: `find_held_blobs`
+
+Anything implementing `CitedBlobPort` — including a test fake — must add it.
+It is **required rather than defaulted on purpose**: a default body would have
+to answer "I hold nothing", which is exactly the answer a caller acts on by
+uploading, so an implementor that inherited it would silently report every
+artefact as absent. A default is only safe on this trait when it is *derived*
+from other required methods; nothing here answers "do I hold these bytes".
+
+```rust
+async fn find_held_blobs(
+    &self,
+    authz: &AuthzContext,
+    owner: OwnerRef,
+    content_hashes: &[[u8; 32]],
+) -> Result<Vec<CitedBlobHeld>, StorageError>;
+```
+
+A fake with no storage answers `Ok(Vec::new())`; one that models storage should
+answer from whatever it models.
+
+**What it is for.** Storage is content-addressed, so re-uploading bytes the
+corpus already holds was always *correct* — it converges on one artefact and
+reports `idempotent_replay`. It was never *free*: the bytes crossed the wire,
+were streamed and hashed, and were copied in the object store before the caller
+learned none of it was needed. This moves that discovery in front of the
+transfer. Re-offering a corpus now costs one indexed query instead of its full
+size in bandwidth.
+
+Digests are raw `[u8; 32]`, not hex — hex is the client-facing spelling and
+stays at the MCP boundary. Batches are capped at `MAX_HELD_BLOB_DIGESTS`
+(1000); both it and `CitedBlobHeld` are on the flavor facade.
+
+Two properties it deliberately keeps: it returns **no storage coordinates**, and
+**"absent" and "not yours" are the same answer**, so a batch sweep cannot become
+an enumeration oracle over another owner's corpus. It gates on *read* authority,
+matching `read_url` — checking before uploading must not be a stricter question
+than downloading the bytes.
+
 ### Rollback is by image, and it costs the edges again
 
 There are no `.down.sql` files. Rolling the binary back to v0.0.7 against a

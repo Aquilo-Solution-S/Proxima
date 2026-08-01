@@ -267,9 +267,9 @@ fn flavor_sdk_exposes_the_cited_blob_lane() {
     // flavor depending only on `proxima` cannot reach into
     // `proxima_core::storage_ports`.
     use proxima::flavor::{
-        CitedBlobPort, CitedBlobReadUrl, CitedBlobService, CitedBlobStaged, CitedBlobUploadAborted,
-        CitedBlobUploadCompleted, CitedBlobUploadHeader, CitedBlobUploadPrepared,
-        UploadedBlobPayload,
+        CitedBlobHeld, CitedBlobPort, CitedBlobReadUrl, CitedBlobService, CitedBlobStaged,
+        CitedBlobUploadAborted, CitedBlobUploadCompleted, CitedBlobUploadHeader,
+        CitedBlobUploadPrepared, MAX_HELD_BLOB_DIGESTS, UploadedBlobPayload,
     };
     fn _needs_port<T: CitedBlobPort>() {}
     let _: Option<(
@@ -302,6 +302,25 @@ fn flavor_sdk_exposes_the_cited_blob_lane() {
         already_completed: None,
     };
     assert!(staged.already_completed.is_none());
+
+    // CONSTRUCTED FOR THE SAME REASON. `find_held_blobs` is a REQUIRED
+    // method, so an out-of-tree fake must be able to build its outcome, not
+    // merely name it — and a flavor that only ever received these would
+    // never notice an unreachable field type. The bound rides along because
+    // a caller batching digests has to read it rather than copy it.
+    let held = CitedBlobHeld {
+        content_hash: [0u8; 32],
+        cited_object_id: uuid::Uuid::nil(),
+        byte_len: 1,
+        mime: "image/jpeg".to_owned(),
+        filename: "page-00001.jpg".to_owned(),
+    };
+    assert_eq!(held.byte_len, 1);
+    // USED, not asserted against: its value is a constant, so comparing it
+    // proves nothing. What needs proving is that a flavor can reach it to
+    // size its own batches — which is exactly this call.
+    let batch: Vec<[u8; 32]> = Vec::with_capacity(MAX_HELD_BLOB_DIGESTS);
+    assert!(batch.is_empty());
 }
 
 #[test]

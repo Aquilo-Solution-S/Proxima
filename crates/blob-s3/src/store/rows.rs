@@ -6,7 +6,7 @@
 //! rather than forbidden — so a probe cannot learn that it exists.
 
 use proxima_core::citations::UploadedBlobPayload;
-use proxima_core::storage_ports::CitedBlobStaged;
+use proxima_core::storage_ports::{CitedBlobHeld, CitedBlobStaged};
 use proxima_core::{Owner, UPLOADED_BLOB_SCHEMA_ID};
 use sqlx::Row;
 use time::OffsetDateTime;
@@ -164,6 +164,57 @@ pub(super) async fn load_staged_payload(
 fn hash32(bytes: &[u8], field: &str) -> Result<[u8; 32], BlobError> {
     <[u8; 32]>::try_from(bytes)
         .map_err(|_| BlobError::State(format!("stored {field} is not 32 bytes")))
+}
+
+/// Which of `content_hashes` this owner already holds, with the identity a
+/// caller needs in order to skip re-uploading them.
+///
+/// ONE ARRAY PARAMETER, NOT AN `IN` LIST BUILT PER CALL. `= ANY($4::bytea[])`
+/// keeps this a fixed string literal — so it is static SQL with no
+/// `SQL-POLICY:` obligation, and the bind count does not grow with the batch,
+/// which is what keeps Postgres' 65535-parameter ceiling out of the picture
+/// however many digests are asked about.
+///
+/// The predicate lists `owner_kind, owner_id, schema_id, content_hash` in
+/// that order on purpose: it is exactly `cited_objects_unique_per_owner`
+/// (`0001_init.sql`:1133), so this is an index scan and the batch costs one
+/// probe per digest rather than a sweep of the owner's artefacts.
+pub(super) async fn find_held_blobs(
+    pool: &sqlx::PgPool,
+    owner: &Owner,
+    content_hashes: &[[u8; 32]],
+) -> Result<Vec<CitedBlobHeld>, BlobError> {
+    let (owner_kind, owner_id) = db_owner_columns(owner);
+    let digests: Vec<Vec<u8>> = content_hashes.iter().map(|hash| hash.to_vec()).collect();
+    let rows = sqlx::query(
+        "SELECT co.content_hash, co.cited_object_id, b.byte_len, b.mime, b.filename \
+           FROM proxima_core.cited_objects co \
+           JOIN proxima_core.cited_uploaded_blob_v1 b USING (cited_object_id) \
+          WHERE co.owner_kind = $1 \
+            AND co.owner_id IS NOT DISTINCT FROM $2 \
+            AND co.schema_id = $3 \
+            AND co.content_hash = ANY($4::bytea[])",
+    )
+    .bind(owner_kind)
+    .bind(owner_id)
+    .bind(UPLOADED_BLOB_SCHEMA_ID)
+    .bind(&digests)
+    .fetch_all(pool)
+    .await
+    .map_err(BlobError::Db)?;
+
+    rows.into_iter()
+        .map(|row| {
+            let byte_len: i64 = row.get("byte_len");
+            Ok(CitedBlobHeld {
+                content_hash: hash32(&row.get::<Vec<u8>, _>("content_hash"), "content_hash")?,
+                cited_object_id: row.get("cited_object_id"),
+                byte_len: u64::try_from(byte_len).unwrap_or(u64::MAX),
+                mime: row.get("mime"),
+                filename: row.get("filename"),
+            })
+        })
+        .collect()
 }
 
 pub(super) async fn load_blob_location(

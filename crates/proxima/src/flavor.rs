@@ -58,9 +58,16 @@ pub use proxima_core::mcp::{
 /// S3; the concrete backend (`proxima-blob-s3`) is never named across
 /// this seam, so a flavor codes against [`CitedBlobPort`] and can fake it
 /// wholesale in tests.
+///
+/// [`CitedBlobHeld`] and [`MAX_HELD_BLOB_DIGESTS`] are the two halves of
+/// `find_held_blobs`, and both have to cross this seam for the same reason:
+/// a flavor faking the port must be able to RETURN the outcome type, and a
+/// flavor batching its digests must be able to read the bound it is being
+/// held to rather than hardcode a copy that drifts from it.
 pub use proxima_core::storage_ports::{
-    CitedBlobPort, CitedBlobReadUrl, CitedBlobService, CitedBlobStaged, CitedBlobUploadAborted,
-    CitedBlobUploadCompleted, CitedBlobUploadHeader, CitedBlobUploadPrepared,
+    CitedBlobHeld, CitedBlobPort, CitedBlobReadUrl, CitedBlobService, CitedBlobStaged,
+    CitedBlobUploadAborted, CitedBlobUploadCompleted, CitedBlobUploadHeader,
+    CitedBlobUploadPrepared, MAX_HELD_BLOB_DIGESTS,
 };
 /// [`FactTombstone`] is the return type of [`FactPayload::tombstone`], so a
 /// flavor that declares a *stateful* Fact schema — one with a head per

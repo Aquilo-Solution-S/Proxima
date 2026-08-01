@@ -139,8 +139,8 @@ mod tests {
     use std::borrow::Cow;
 
     use proxima_core::storage_ports::{
-        CitedBlobPort, CitedBlobReadUrl, CitedBlobService, CitedBlobStaged, CitedBlobUploadAborted,
-        CitedBlobUploadPrepared,
+        CitedBlobHeld, CitedBlobPort, CitedBlobReadUrl, CitedBlobService, CitedBlobStaged,
+        CitedBlobUploadAborted, CitedBlobUploadPrepared,
     };
     use proxima_core::{AuthzContext, FlavorRegistry, FlavorRegistryError, OwnerRef, StorageError};
     use proxima_storage_pg::PgSidecarRegistry;
@@ -334,6 +334,15 @@ mod tests {
             _owner: OwnerRef,
             _cited_object_id: uuid::Uuid,
         ) -> Result<CitedBlobReadUrl, StorageError> {
+            Err(StorageError::Unavailable("stub".into()))
+        }
+
+        async fn find_held_blobs(
+            &self,
+            _authz: &AuthzContext,
+            _owner: OwnerRef,
+            _content_hashes: &[[u8; 32]],
+        ) -> Result<Vec<CitedBlobHeld>, StorageError> {
             Err(StorageError::Unavailable("stub".into()))
         }
     }

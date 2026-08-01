@@ -6,7 +6,7 @@
 //! change belongs in `upload.rs` or `read.rs`, never in this file.
 
 use proxima_core::storage_ports::{
-    CitedBlobPort, CitedBlobReadUrl, CitedBlobStaged, CitedBlobUploadAborted,
+    CitedBlobHeld, CitedBlobPort, CitedBlobReadUrl, CitedBlobStaged, CitedBlobUploadAborted,
     CitedBlobUploadHeader, CitedBlobUploadPrepared,
 };
 use proxima_core::{AuthzContext, OwnerRef, StorageError};
@@ -158,5 +158,19 @@ impl CitedBlobPort for CitedBlobStore {
             read_url: outcome.read_url,
             expires_at: parse_port_time(&outcome.expires_at)?,
         })
+    }
+
+    async fn find_held_blobs(
+        &self,
+        authz: &AuthzContext,
+        owner: OwnerRef,
+        content_hashes: &[[u8; 32]],
+    ) -> Result<Vec<CitedBlobHeld>, StorageError> {
+        // No shape to translate: the inherent verb already answers in the
+        // core taxonomy, exactly as `stage_upload` does with `CitedBlobStaged`.
+        // Only the error crosses a boundary here.
+        Self::find_held_blobs(self, authz, owner, content_hashes)
+            .await
+            .map_err(blob_error_to_storage)
     }
 }

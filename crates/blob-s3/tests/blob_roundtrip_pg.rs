@@ -8,7 +8,7 @@ use proxima_blob_s3::{
 };
 use proxima_core::engine::{Engine, UploadCompleted};
 use proxima_core::error::ProtocolError;
-use proxima_core::storage_ports::{CitedBlobPort, CitedObjectErasePort};
+use proxima_core::storage_ports::{CitedBlobPort, CitedObjectErasePort, MAX_HELD_BLOB_DIGESTS};
 use proxima_core::test_fixtures::owner_fixture;
 use proxima_core::{AuthPath, AuthzContext, FlavorRegistry, OwnerRef, UserId};
 
@@ -1046,6 +1046,133 @@ async fn versioned_bucket_purge_removes_all_object_versions() {
          found {} version(s) / {} marker(s)",
         versions.versions().len(),
         versions.delete_markers().len(),
+    );
+
+    drop(pool);
+    drop_db(&db_name).await.expect("drop db");
+}
+
+/// Lowercase hex to the 32 raw bytes the port asks for. The completion
+/// outcome speaks hex because it is client-facing; the port speaks bytes
+/// because it is not.
+fn hex32(hex: &str) -> [u8; 32] {
+    let mut out = [0u8; 32];
+    for (slot, pair) in out.iter_mut().zip(hex.as_bytes().chunks_exact(2)) {
+        *slot = u8::from_str_radix(std::str::from_utf8(pair).expect("hex"), 16).expect("hex byte");
+    }
+    out
+}
+
+/// The existence check reports what this owner holds — and, the property
+/// that actually needs a test, cannot be turned into a probe of anyone
+/// else's corpus.
+///
+/// A batch verb is where an enumeration oracle would appear if one were
+/// going to: a caller can sweep digests cheaply and diff the hits, so
+/// "absent" and "present but not yours" have to be the same answer. Every
+/// other read in this lane collapses them; this asserts that the batch one
+/// does too, against a digest that genuinely exists under another owner.
+#[tokio::test]
+async fn find_held_blobs_reports_only_this_owners_artefacts() {
+    if !S3RuntimeConfig::present_in_env() {
+        eprintln!("skipped: PROXIMA_S3_* unset (run the s3 service to enable)");
+        return;
+    }
+
+    let (pg, db_name) = fresh_storage().await;
+    let pool = pg.pool_for_tests().clone();
+    let config = s3_config_for_dev();
+    let store = CitedBlobStore::new(pool.clone(), config.clone()).expect("valid S3 config");
+
+    let owner = owner_fixture();
+    let ctx = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
+
+    let prepared = store
+        .prepare_upload(
+            &ctx,
+            CitedBlobUploadPrepareTs {
+                owner,
+                filename: "page-00001.jpg".into(),
+                mime: "image/jpeg".into(),
+                byte_len: 4,
+            },
+        )
+        .await
+        .expect("prepare");
+    let pending: (String,) = sqlx::query_as(
+        "SELECT object_key FROM proxima_core.cited_object_uploads WHERE upload_id = $1",
+    )
+    .bind(Uuid::parse_str(&prepared.upload_id).expect("upload id"))
+    .fetch_one(&pool)
+    .await
+    .expect("upload row");
+    put_object_via_sdk(&config, &pending.0, b"real").await;
+    let completed = complete_via_engine(&pg, &store, &ctx, owner, &prepared.upload_id)
+        .await
+        .expect("complete")
+        .blob;
+
+    let held_hash = hex32(&completed.content_hash);
+    let absent_hash = [0xABu8; 32];
+
+    // The artefact is found, and carries the identity a caller needs in
+    // order to skip re-uploading it: the same cited object completion
+    // returned, with its length and its recorded name.
+    let held = store
+        .find_held_blobs(&ctx, owner, &[held_hash, absent_hash])
+        .await
+        .expect("find held");
+    assert_eq!(held.len(), 1, "one of the two digests is held: {held:?}");
+    assert_eq!(held[0].content_hash, held_hash);
+    assert_eq!(
+        held[0].cited_object_id.to_string(),
+        completed.cited_object_id
+    );
+    assert_eq!(held[0].byte_len, 4);
+    assert_eq!(held[0].mime, "image/jpeg");
+    assert_eq!(held[0].filename, "page-00001.jpg");
+
+    // THE ORACLE PROPERTY. A different owner asking about a digest that
+    // genuinely exists gets the same answer as for one that does not:
+    // nothing. Not a denial, which would itself confirm the artefact.
+    let other = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+    let other_ctx = AuthzContext::single_owner(&other, AuthPath::HostBearer);
+    let cross = store
+        .find_held_blobs(&other_ctx, other, &[held_hash])
+        .await
+        .expect("a foreign digest is answered, not refused");
+    assert!(
+        cross.is_empty(),
+        "another owner must not learn this artefact exists: {cross:?}"
+    );
+
+    // And the read gate still refuses an owner the context cannot reach at
+    // all, which is a different question from the one above.
+    let denied = store.find_held_blobs(&ctx, other, &[held_hash]).await;
+    assert!(
+        matches!(denied, Err(BlobError::Denied(_))),
+        "an unreachable owner is denied, not answered: {denied:?}"
+    );
+
+    // Asking about nothing is answered, not refused.
+    assert!(
+        store
+            .find_held_blobs(&ctx, owner, &[])
+            .await
+            .expect("empty batch")
+            .is_empty()
+    );
+
+    // The bound is enforced and names itself, so a caller that trips it
+    // learns how to cut its batch.
+    let too_many = vec![[0u8; 32]; MAX_HELD_BLOB_DIGESTS + 1];
+    let err = store
+        .find_held_blobs(&ctx, owner, &too_many)
+        .await
+        .expect_err("over the bound");
+    assert!(
+        err.to_string().contains(&MAX_HELD_BLOB_DIGESTS.to_string()),
+        "the refusal must quote the bound it enforces: {err}"
     );
 
     drop(pool);
