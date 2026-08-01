@@ -1,33 +1,84 @@
 /-
 Causa — Edges
 
-Edges connect pinned Memories, Goals, and FollowHead FactEntity handles
-(doc 02 §Edges plus FactEntity endpoint design). Every relation resolves to a
-build-time RelationDescriptor; unregistered relations are invalid.
+The connection index (doc 16-edges.md, which supersedes doc 02 §Edges,
+§Relation Registry and §The Directionality Rule). The thesis, verbatim:
 
-The philosophical load (universe §Perspectivist constructivism):
-causal claims are perspective-relative, so **Perspective is the locus
-of causal claims, never Facts**. Direct semantic or causal Fact→Fact
-edges are forbidden — "cosine similarity is observer-independent and
-so cannot encode an observer-relative relation". The class-legality
-matrix below is where that commitment becomes structural.
+  "Edges are fundamental, non-extensible connection patterns. An edge
+   carries no information beyond its existence: its endpoints, its
+   direction, its creation time, and its kind. All content lives in
+   nodes; meaning arises from the synthesis of the connected nodes."
 
-Minimized trusted core (D14/D16): `Edge` is a raw row shape;
-row-admission laws are predicates over valid rows, not global axioms
-over every constructible Lean value. Relation-specific policy lives on
-`RelationDescriptor` rows: endpoint binding, endpoint masks, ownership
-policy, target access policy, and mask-tightening proofs travel together.
+Seven obligations, and E7 is the master invariant the rest serve:
 
-ME-15 — causal chains are queries, not entities: chain(f, P_active)
-= structural Fact backbone + Causal/Interpretive edges authored by
-P_active + provenance closure. Different active Perspectives yield
-different valid chains; a materialized chain view is a cache only,
-never authoritative (doc 02 §Causal Chain Query). No Chain primitive
-exists here by design.
+  E1 Existence    — both endpoints exist (`EdgeEndpointsExist`, resolved
+                    against the admitted node tables).
+  E2 Ownership    — `edge.owner = source.owner` (`EdgeSourceOwned`). It
+                    constrains the SOURCE owner only; a cross-owner target is
+                    what makes cross-owner provenance expressible, and it is
+                    admitted when readable — the uniform admission rule lives
+                    in `Causa.EdgeAuthorization`.
+  E3 Layering     — ℓ(source) ≥ ℓ(target) for memory endpoints, Goal
+                    endpoints outside the comparison (`EdgeLayeringValid`).
+  E4 Kind follows — `origin` rows come only from a node write's derivation
+     operation      declaration, `reference` rows only from schema-declared
+                    reference fields
+                    (`derived_edge_kind_follows_operation`). Raw `Edge` values
+                    remain constructible, as every row shape in this kernel is
+                    (D14/D16); what E4 says is that no row is ADMITTED except
+                    through some node's declaration, and `deriveEdges` is the
+                    only producer an admitted table has. A declaration with
+                    ZERO origins is legal and contributes no `origin` rows — an
+                    interpretation Perspective grounds through its references
+                    and consumes nothing.
+  E5 Structural   — the primary key IS the row. There is no `EdgeId` type to
+     idempotency     mint from (Causa.Identity); two rows satisfying E2 with
+                    the same endpoints and kind are the SAME VALUE
+                    (`edge_key_determines_row`), and in an admitted table the
+                    same holds of the stored ADDRESSES, which is `edges_pkey`
+                    itself (`edge_table_key_unique`, via E1 and row-id
+                    uniqueness). Under edge ids both were false, which is why
+                    replay needed a content hash and a partial unique index.
+  E6 No content   — no payload, sidecar, citation or status accessor exists on
+                    `Edge`. Structural absence, sharpened by E5: there is no
+                    field two rows with one key could differ in.
+  E7 Rebuildability — the edge set is a FUNCTION of node content
+                    (`deriveEdges`). Dropping the table and re-deriving it
+                    yields the same set (`EdgeTableRebuildable`), and a store
+                    whose declarations are layer-legal rebuilds into a VALID
+                    table (`rebuilt_table_valid`) — E2 and E3 fall out of the
+                    derivation rather than being checked after the fact.
 
-CI-12 — edges do not cite: there is no citation accessor on Edge.
-An edge's reasoning provenance is its authorship; anything
-citation-worthy is already on the authoring memory's citation chain.
+What is deliberately absent, and why the absence is the invariant:
+
+  * No `RelationClass`, `RelationDescriptor`, `RelationRegistry`,
+    `RelationId`, endpoint/authorship mask, owner policy, or target-access
+    policy. The kind is a consequence of the write, so there is no vocabulary
+    for a writer to pick from and no per-relation policy cell to consult.
+  * No `EdgeAuthorship`. Who reasoned is answered by the node that owns the
+    statement (`memories.authoring_perspective_id`).
+  * No Supersession kind. Supersession is a lineage pointer on the row
+    (Causa.Memory, Causa.Goals) — the same thing persisting through revision
+    is not a connection between two things.
+  * No Causal or Interpretive kind. A causal or interpretive claim is a NODE:
+    an interpretation Perspective whose payload references its subjects
+    (`interpretationOf`). That is where U-2's commitment now lives — "cosine
+    similarity is observer-independent and so cannot encode an
+    observer-relative relation" is enforced by there being nowhere to put such
+    a relation, plus E3 keeping a Fact source from reaching anything above a
+    Fact (`fact_source_reaches_only_facts`).
+  * No creation time. It is the one column of the runtime row that is NOT a
+    function of node content; modeling it would make E7 false as stated, and
+    no kernel obligation reads it (the kernel's time axis is
+    `Memory.created_at`).
+
+ME-15 — causal chains are queries, not entities: chain(f, P_active) =
+reference backbone among Facts + interpretation Perspectives under P_active,
+through their own references + origin closure to Facts. No Chain primitive
+exists here, by design (doc 02 §Causal Chain Query).
+
+CI-12/13 — edges do not cite: there is no citation accessor on `Edge`.
+Anything citation-worthy is on the node that owns the statement.
 -/
 
 import Causa.Prelude
@@ -39,71 +90,74 @@ import Causa.Goals
 namespace Causa
 
 -- ============================================================
--- Relation classes (doc 02 §Relation Registry)
+-- The closed kind vocabulary (doc 16 §Kinds are closed)
 -- ============================================================
 
-/-- The CLOSED substrate vocabulary — five classes, doc 02 verbatim.
-    Flavors add relation *ids*, never classes (doc 03: "relation_class
-    is not extensible by flavors"). Closedness is carried by the
-    inductive itself (CF-F). -/
-inductive RelationClass where
-  | Structural    -- payload / system structure
-  | Provenance    -- derived-from lineage
-  | Supersession  -- new entity supersedes prior entity
-  | Causal        -- perspective-relative cause / motivation
-  | Interpretive  -- perspective-relative non-causal interpretation
-  deriving DecidableEq, Repr
-
-/-- Relation-local owner policy. Every Edge row is still source-owned
-    (`edge.owner = source.owner`); this policy says whether the target
-    may cross Owner boundaries for this relation. -/
-inductive RelationOwnerPolicy where
-  | SourceOwned -- target may be cross-owner
-  | SameOwner   -- target.owner = source.owner
-  deriving DecidableEq, Repr
-
-/-- Relation-local write-admission policy for the target endpoint.
-    Source write authority is universal for edge writes; this field says
-    whether the relation additionally requires target read/write authority.
-    The requester-sensitive gate lives in EdgeAuthorization, not row shape. -/
-inductive RelationTargetAccessPolicy where
-  | None
-  | Read
-  | Write
-  deriving DecidableEq, Repr
-
-/-- Durable endpoint binding for one relation side. `Pin` means the edge names
-    an exact Memory/Goal row. `FollowHead` means the edge names a FactEntity
-    aggregate and resolves through its current Fact head. -/
-inductive EndpointBinding where
-  | Pin
-  | FollowHead
-  deriving DecidableEq, Repr
-
-/-- Edge authorship vocabulary (doc 02 §Edge Scope Invariant). -/
-inductive EdgeAuthorship where
-  | SourceIngest    -- payload-derived structural edges from typed Fact ingest
-  | OperatorFtoA    -- F→A provenance
-  | OperatorAtoA    -- A→A provenance
-  | OperatorAtoP    -- A→P provenance
-  | OperatorAtoGoal -- A→Goal provenance
-  | PerspectiveLink -- P-authored causal / interpretive framing
-  /-- Goal-analogue of `PerspectiveLink`: carries perspectival causal
-      claims involving Goals, including `core/inspires` Goal→Perspective
-      inspiration and Goal→Fact outcome attribution. -/
-  | PerspectiveGoalLink
-  | Engine          -- substrate-authored (supersession / authored)
-  | User            -- explicit user/API graph edits
-  | ExternalAgent   -- agent-authored MCP / imported edges
+/-- The CLOSED substrate vocabulary — two kinds, and the enum is not
+    extensible, not by flavors and not by core features. A feature that seems
+    to need a third kind fails the node-home test and is missing a NODE, not a
+    kind. Closedness is carried by the inductive itself (CF-F). -/
+inductive EdgeKind where
+  /-- A node declared what it was made from. Written only by the node write
+      carrying that derivation declaration, in its own transaction. -/
+  | origin
+  /-- A schema-declared reference field of the source's payload points here.
+      Derived at ingest from payload content. -/
+  | reference
   deriving DecidableEq, Repr
 
 -- ============================================================
--- Endpoints
+-- Endpoints (doc 16 §The edge table is an index)
 -- ============================================================
 
-/-- An edge endpoint: a pinned Memory/Goal row or a FollowHead stateful-Fact
-    aggregate. `FactEntity` is not a fifth semantic node kind: it resolves to
-    its current Fact memory and is treated as Fact for layer/class checks. -/
+/-- The five endpoint labels the index stores (`proxima_core.edge_endpoint_kind`).
+    It is a superset of the memory kinds because the ADDRESS FORM is part of
+    what an endpoint is: F/A/P address a memory row, `Goal` a goal row, and
+    `FactEntityHead` a stateful-Fact aggregate that follows its head. That is
+    where the retired descriptor's `FollowHead`/`Pin` cell went — into the
+    address itself, so the two can never disagree (ST-FE). -/
+inductive EndpointKind where
+  | Fact
+  | Abstraction
+  | Perspective
+  | Goal
+  | FactEntityHead
+  deriving DecidableEq, Repr
+
+/-- ℓ over endpoint labels (`proxima_core.edge_endpoint_layer`): F=0, A=1,
+    P=2, a FactEntity head is Fact-like, and `Goal` has NO layer — Goal
+    endpoints sit outside the F/A/P comparison as their own entity axis. -/
+def EndpointKind.layer : EndpointKind → Option Nat
+  | .Fact           => some 0
+  | .FactEntityHead => some 0
+  | .Abstraction    => some 1
+  | .Perspective    => some 2
+  | .Goal           => none
+
+/-- The endpoint label a memory kind addresses. -/
+def MemoryKind.endpointKind : MemoryKind → EndpointKind
+  | .Fact        => .Fact
+  | .Abstraction => .Abstraction
+  | .Perspective => .Perspective
+
+/-- The endpoint labels agree with the F/A/P layer order. -/
+theorem memoryKind_endpoint_layer (k : MemoryKind) :
+    k.endpointKind.layer = some k.layer := by
+  cases k <;> rfl
+
+/-- A memory row never addresses the Goal axis. -/
+theorem memoryKind_endpointKind_ne_goal (k : MemoryKind) : k.endpointKind ≠ .Goal := by
+  cases k <;> intro h <;> exact (nomatch h)
+
+/-- A memory row never addresses a stateful-Fact head: pinning a row and
+    following a head are different address forms. -/
+theorem memoryKind_endpointKind_ne_head (k : MemoryKind) :
+    k.endpointKind ≠ .FactEntityHead := by
+  cases k <;> intro h <;> exact (nomatch h)
+
+/-- An edge endpoint: a memory row, a Goal row, or a stateful-Fact head.
+    `FactEntity` is not a fifth semantic node kind — it resolves to its current
+    Fact and is Fact-like for the layer rule. -/
 inductive NodeRef where
   | memory     (m : Memory)
   | goal       (g : Goal)
@@ -114,72 +168,65 @@ def NodeRef.owner : NodeRef → Owner
   | .goal g       => goal_owner g
   | .factEntity e => fact_entity_owner e
 
-def NodeRef.schema : NodeRef → SchemaRef
-  | .memory m     => memory_schema m
-  | .goal g       => goal_schema g
-  | .factEntity e => fact_entity_schema e
+/-- The address half of an endpoint: which row it names. -/
+def NodeRef.id : NodeRef → Id
+  | .memory m     => memory_id m
+  | .goal g       => goal_id g
+  | .factEntity e => fact_entity_id e
 
-/-- Memory-kind view for endpoints that participate in F/A/P layer rules.
-    FactEntity endpoints are Fact-like; Goal endpoints sit outside the F/A/P
-    comparison. -/
+/-- The label half of an endpoint. -/
+def NodeRef.endpointKind : NodeRef → EndpointKind
+  | .memory m     => (memory_kind m).endpointKind
+  | .goal _       => .Goal
+  | .factEntity _ => .FactEntityHead
+
+/-- The two columns that address one endpoint, together. Row identity is by
+    address, not by object: this is what the primary key and the self-loop
+    refusal compare. -/
+def NodeRef.addr (r : NodeRef) : EndpointKind × Id := (r.endpointKind, r.id)
+
+/-- Memory-kind view for endpoints that participate in F/A/P rules. FactEntity
+    endpoints are Fact-like; Goal endpoints sit outside the comparison. -/
 def NodeRef.memoryKind? : NodeRef → Option MemoryKind
   | .memory m     => some (memory_kind m)
   | .goal _       => none
   | .factEntity _ => some .Fact
 
-/-- FollowHead endpoints resolve to the current Fact version. -/
-def NodeRef.resolvedFact? : NodeRef → Option Fact
-  | .factEntity e => some (fact_entity_current e)
-  | .memory m =>
-      if h : memory_kind m = .Fact then some ⟨m, h⟩ else none
-  | .goal _ => none
+/-- The memory-kind view and the endpoint label agree on the layer. -/
+theorem nodeRef_layer_of_memoryKind (r : NodeRef) (k : MemoryKind) :
+    r.memoryKind? = some k → r.endpointKind.layer = some k.layer := by
+  cases r with
+  | memory m =>
+    intro h
+    have hk : memory_kind m = k := Option.some.inj h
+    rw [NodeRef.endpointKind, hk]
+    exact memoryKind_endpoint_layer k
+  | goal _ => intro h; exact (nomatch h)
+  | factEntity _ =>
+    intro h
+    have hk : MemoryKind.Fact = k := Option.some.inj h
+    rw [← hk]
+    rfl
 
-/-- Binding alignment between a relation side and the concrete endpoint ref. -/
-def endpointBindingAligned : EndpointBinding → NodeRef → Prop
-  | .Pin, .memory _ => True
-  | .Pin, .goal _ => True
-  | .Pin, .factEntity _ => False
-  | .FollowHead, .factEntity _ => True
-  | .FollowHead, .memory _ => False
-  | .FollowHead, .goal _ => False
-
-/-- A FollowHead endpoint is always Fact-like. -/
-theorem followHeadEndpointIsFact :
-    ∀ ref : NodeRef,
-      endpointBindingAligned .FollowHead ref → ref.memoryKind? = some .Fact := by
-  intro ref h
-  cases ref <;> simp [endpointBindingAligned, NodeRef.memoryKind?] at h ⊢
-
-/-- Pin endpoints never use the FactEntity aggregate handle. -/
-theorem pinEndpointIsPinnedRow :
-    ∀ ref : NodeRef,
-      endpointBindingAligned .Pin ref →
-        (∃ m : Memory, ref = .memory m) ∨ (∃ g : Goal, ref = .goal g) := by
-  intro ref h
-  cases ref with
-  | memory m => exact Or.inl ⟨m, rfl⟩
-  | goal g => exact Or.inr ⟨g, rfl⟩
-  | factEntity _ => cases h
+/-- A stateful-Fact head endpoint is always Fact-like: the address form is the
+    binding, so there is no descriptor cell that could claim otherwise. -/
+theorem factEntityEndpointIsFact (e : FactEntity) :
+    (NodeRef.factEntity e).memoryKind? = some .Fact := rfl
 
 -- ============================================================
--- Relations and edges
+-- The row (doc 16 §The edge table is an index)
 -- ============================================================
 
-/-- Flavor-qualified relation identity (e.g. `core/derived-from`,
-    `core/motivated-by`). Runtime/storage encoding and namespace
-    validation are registry concerns; the kernel needs only the id value. -/
-abbrev RelationId : Type := String
-
+/-- One index row, and this is the WHOLE model. No id, no relation, no
+    namespace, no authorship column, no payload, no citation, no status (E6) —
+    a connection that needs to say more than "these two, this way" is a node.
+    `owner` is present because the runtime row denormalizes it; E2 is what
+    pins it to the source. -/
 structure Edge where
-  id         : EdgeId
-  source     : NodeRef
-  target     : NodeRef
-  relation   : RelationId
-  owner      : Owner
-  authorship : EdgeAuthorship
-
-/-- Compatibility accessor for prose/Rust vocabulary. -/
-def edge_id : Edge → EdgeId := Edge.id
+  source : NodeRef
+  target : NodeRef
+  kind   : EdgeKind
+  owner  : Owner
 
 /-- Compatibility accessor for prose/Rust vocabulary. -/
 def edge_source : Edge → NodeRef := Edge.source
@@ -188,580 +235,502 @@ def edge_source : Edge → NodeRef := Edge.source
 def edge_target : Edge → NodeRef := Edge.target
 
 /-- Compatibility accessor for prose/Rust vocabulary. -/
-def edge_relation : Edge → RelationId := Edge.relation
+def edge_kind : Edge → EdgeKind := Edge.kind
 
 /-- Compatibility accessor for prose/Rust vocabulary. -/
 def edge_owner : Edge → Owner := Edge.owner
 
-/-- Compatibility accessor for prose/Rust vocabulary. -/
-def edge_authorship : Edge → EdgeAuthorship := Edge.authorship
-
--- ============================================================
--- Row-validity predicates
--- ============================================================
-
-/-- AGENTS.md invariant 17 / doc 07 §ID Types — the id-representation
-    split is coupled to authorship: source-ingest-authored edges carry
-    the deterministic content hash (deduplicable payload-derived
-    structure); every other authorship carries a fresh UUIDv7.
-    Table/row validity, not a global property of raw `Edge` values. -/
-def EdgeIdAuthorshipValid (e : Edge) : Prop :=
-  (∃ h : ContentHash, edge_id e = .sourceAuthored h) ↔
-    edge_authorship e = .SourceIngest
-
-/-- N4 — any Causal edge touching a Goal endpoint is perspectival.
-    `core/inspires` is intentionally Causal: Goal→Perspective inspiration
-    is a perspectival causal claim, alongside Goal→Fact outcome attribution. -/
-def EdgeGoalCausalValidWith (c : RelationClass) (e : Edge) : Prop :=
-  c = .Causal →
-    ((∃ g : Goal, edge_source e = .goal g) ∨
-      (∃ g : Goal, edge_target e = .goal g)) →
-    edge_authorship e = .PerspectiveGoalLink
-
-/-- ME-9 (group-ownership realign) — edges are SOURCE-owned: an edge's
-    Owner is its source endpoint's Owner. Query surfaces may still redact
-    or suppress unreadable targets; ownership is source-local. -/
-def EdgeSourceOwned (e : Edge) : Prop :=
-  (edge_source e).owner = edge_owner e
-
-/-- SR-25 / ST-5 — edges are immutable and insert-only in v1; rewrites
-    produce new memories and new edges, old edges remain attached. -/
+/-- SR-25 / ST-5 — index rows are immutable and insert-only; a re-derivation
+    re-asserts the same row rather than replacing one. -/
 instance : Immutable Edge := ⟨⟩
 instance : AppendOnly Edge := ⟨⟩
 
 -- ============================================================
--- The class-legality matrix (doc 02 §The Directionality Rule)
+-- E2, E3 — row validity
 -- ============================================================
 
-/-- The matrix, doc 02 §The Directionality Rule, transcribed cell by
-    cell. Upward rows are `False` (no legal class).
+/-- E2 (ME-9) — index rows are SOURCE-owned: the row's Owner is its source
+    endpoint's Owner. The TARGET is deliberately unconstrained; that is what
+    makes cross-owner provenance expressible. Query surfaces may still redact
+    an unreadable target (Causa.Compliance). -/
+def EdgeSourceOwned (e : Edge) : Prop :=
+  (edge_source e).owner = edge_owner e
 
-    Carries in one place:
-      - no upward F/A/P edges (ME-10 follows — proved below);
-      - no semantic/causal Fact→Fact edges (U-2: Fact→Fact admits
-        only Structural, Provenance — never Causal, Interpretive,
-        Supersession);
-      - Supersession never touches Facts;
-      - Supersession same-kind between memories (only the A→A and
-        P→P cells admit it). -/
-def legalClasses : MemoryKind → MemoryKind → Set RelationClass
-  | .Fact, .Fact =>
-      fun c => c = .Structural ∨ c = .Provenance
-  | .Abstraction, .Fact =>
-      fun c => c = .Provenance ∨ c = .Structural
-  | .Abstraction, .Abstraction =>
-      fun c => c = .Structural ∨ c = .Supersession ∨ c = .Provenance
-  | .Perspective, .Fact =>
-      fun c => c = .Causal ∨ c = .Interpretive ∨ c = .Structural
-  | .Perspective, .Abstraction =>
-      fun c => c = .Provenance ∨ c = .Causal ∨ c = .Interpretive ∨ c = .Structural
-  | .Perspective, .Perspective =>
-      fun c => c = .Structural ∨ c = .Supersession ∨ c = .Causal ∨ c = .Interpretive
-  | _, _ => fun _ => False
+/-- The layer rule between two endpoints: whenever both carry a layer,
+    ℓ(source) ≥ ℓ(target). A Goal endpoint carries none, so it is outside the
+    comparison on either side. -/
+def endpointsLayered (source target : NodeRef) : Prop :=
+  ∀ ls lt : Nat,
+    source.endpointKind.layer = some ls →
+    target.endpointKind.layer = some lt →
+    lt ≤ ls
 
--- ============================================================
--- Relation descriptors — the PRIMITIVE write-legality layer
--- (doc 02: "Descriptor masks may tighten legal shapes, never relax
--- F/A/P layering.")
--- ============================================================
+/-- E3 (ME-10) — the F/A/P directionality rule, stated on the endpoints
+    themselves. The nine-cell class matrix it replaces said exactly this and
+    nothing more once the class vocabulary closed at two kinds that neither
+    widen nor narrow it (doc 02 §The Directionality Rule). -/
+def EdgeLayeringValid (e : Edge) : Prop :=
+  endpointsLayered (edge_source e) (edge_target e)
 
-/-- ME-14/D16 — one build-time relation descriptor row. The descriptor is
-    the matrix row: class, endpoint binding mode, endpoint mask, source/target
-    ownership policy, write-admission target policy, and the proof that every
-    memory-like endpoint pair (including FollowHead FactEntity refs) only
-    tightens the closed F/A/P class matrix. -/
-structure RelationDescriptor where
-  id : RelationId
-  relClass : RelationClass
-  sourceBinding : EndpointBinding
-  targetBinding : EndpointBinding
-  ownerPolicy : RelationOwnerPolicy
-  targetAccessPolicy : RelationTargetAccessPolicy
-  endpointAdmitted : NodeRef → NodeRef → Prop
-  masksTightenOnly :
-    ∀ (s t : NodeRef) (ks kt : MemoryKind),
-      endpointAdmitted s t →
-      s.memoryKind? = some ks →
-      t.memoryKind? = some kt →
-      relClass ∈ legalClasses ks kt
-  supersessionSameOwner : relClass = .Supersession → ownerPolicy = .SameOwner
+/-- A row is admitted only between two distinct addresses. A self-loop asserts
+    that a node relates to itself, which no node write can mean
+    (`edges_no_self_loop_chk`). -/
+def EdgeNoSelfLoop (e : Edge) : Prop :=
+  (edge_source e).addr ≠ (edge_target e).addr
 
-/-- Minimal build-time relation registry. This is deliberately narrower than
-    the deleted Composition module: no flavor ontology, runtime registration,
-    tool registry, or schema namespace model. It only says valid edge rows are
-    checked against a frozen set of relation descriptors, with unique ids. -/
-structure RelationRegistry where
-  descriptors : Set RelationDescriptor
-  relationIdUnique :
-    ∀ d₁ d₂ : RelationDescriptor,
-      d₁ ∈ descriptors →
-      d₂ ∈ descriptors →
-      d₁.id = d₂.id →
-      d₁ = d₂
-
-/-- Relation owner-policy satisfaction for a concrete edge. Source-owned
-    edge rows are universal (`EdgeSourceOwned`); `.SameOwner` is a stricter
-    relation-local target policy. -/
-def ownerPolicySatisfied (p : RelationOwnerPolicy) (e : Edge) : Prop :=
-  match p with
-  | .SourceOwned => True
-  | .SameOwner => (edge_target e).owner = (edge_source e).owner
-
-/-- A valid edge satisfies its descriptor's endpoint mask. -/
-def EdgeMaskValidWith (d : RelationDescriptor) (e : Edge) : Prop :=
-  d.endpointAdmitted (edge_source e) (edge_target e)
-
-/-- A valid edge's concrete endpoint refs match the descriptor's durable binding
-    mode: Pin uses Memory/Goal rows; FollowHead uses FactEntity refs. -/
-def EdgeEndpointBindingValidWith (d : RelationDescriptor) (e : Edge) : Prop :=
-  endpointBindingAligned d.sourceBinding (edge_source e) ∧
-  endpointBindingAligned d.targetBinding (edge_target e)
-
-/-- A valid edge satisfies its descriptor's owner policy. -/
-def EdgeOwnerPolicyValidWith (d : RelationDescriptor) (e : Edge) : Prop :=
-  ownerPolicySatisfied d.ownerPolicy e
-
-/-- ME-12 residue — a Supersession-class edge never mixes a Memory endpoint
-    with a Goal endpoint. The same-kind memory half remains proved from the
-    matrix; Goal→Goal carries no F/A/P kind. -/
-def EdgeSupersessionEndpointShapeValidWith (c : RelationClass) (e : Edge) : Prop :=
-  c = .Supersession →
-    ((∃ ms mt : Memory, edge_source e = .memory ms ∧ edge_target e = .memory mt) ∨
-     (∃ gs gt : Goal, edge_source e = .goal gs ∧ edge_target e = .goal gt))
-
-/-- A persisted Edge row validated against one descriptor row. -/
-structure EdgeValidWith (d : RelationDescriptor) (e : Edge) : Prop where
-  relationMatches : edge_relation e = d.id
-  idAuthorship : EdgeIdAuthorshipValid e
-  goalCausal : EdgeGoalCausalValidWith d.relClass e
+/-- One persisted index row's validity: everything the row itself can be
+    checked against. E1 needs the node tables and lives below; E4–E7 are
+    properties of how rows come to exist, not of a row in isolation. -/
+structure EdgeValid (e : Edge) : Prop where
   sourceOwned : EdgeSourceOwned e
-  endpointBinding : EdgeEndpointBindingValidWith d e
-  ownerPolicy : EdgeOwnerPolicyValidWith d e
-  mask : EdgeMaskValidWith d e
-  supersessionEndpointShape : EdgeSupersessionEndpointShapeValidWith d.relClass e
+  layering : EdgeLayeringValid e
+  noSelfLoop : EdgeNoSelfLoop e
 
-/-- Core validity for one persisted Edge row under the active build-time
-    relation registry. The descriptor witness must be registered; ad-hoc
-    descriptors cannot validate rows. -/
-def EdgeCoreValid (registry : RelationRegistry) (e : Edge) : Prop :=
-  ∃ d : RelationDescriptor, d ∈ registry.descriptors ∧ EdgeValidWith d e
+/-- Table-scoped index validity. -/
+def EdgeTableValid (edges : Set Edge) : Prop :=
+  ∀ e : Edge, e ∈ edges → EdgeValid e
 
-/-- A valid edge classified by its registered validating descriptor. This
-    replaces the former global `relation_class : RelationId → RelationClass`
-    accessor. -/
-def EdgeHasClass (registry : RelationRegistry) (e : Edge) (c : RelationClass) : Prop :=
-  ∃ d : RelationDescriptor, d ∈ registry.descriptors ∧ EdgeValidWith d e ∧ d.relClass = c
-
-/-- Class evidence already includes ordinary core validity under the same
-    registry. -/
-theorem edge_has_class_core_valid :
-    ∀ registry e c, EdgeHasClass registry e c → EdgeCoreValid registry e := by
-  intro registry e c h
-  rcases h with ⟨d, hregistered, hvalid, _⟩
-  exact ⟨d, hregistered, hvalid⟩
-
-/-- Registered relation ids resolve to a unique descriptor for a given edge. -/
-theorem registered_edge_descriptor_unique :
-    ∀ (registry : RelationRegistry) (e : Edge) (d₁ d₂ : RelationDescriptor),
-      d₁ ∈ registry.descriptors →
-      d₂ ∈ registry.descriptors →
-      EdgeValidWith d₁ e →
-      EdgeValidWith d₂ e →
-      d₁ = d₂ := by
-  intro registry e d₁ d₂ h₁ h₂ hv₁ hv₂
-  exact registry.relationIdUnique d₁ d₂ h₁ h₂ (hv₁.relationMatches.symm.trans hv₂.relationMatches)
-
-/-- Table-scoped Edge validity under one frozen registry. -/
-def EdgeTableValid (registry : RelationRegistry) (edges : Set Edge) : Prop :=
-  ∀ e : Edge, e ∈ edges → EdgeCoreValid registry e
-
--- ============================================================
--- Goal assignment and evidence queries (doc 06 §Goal Assignment)
--- ============================================================
-
-/-- GO-12 — Goal assignment to a Self-Perspective, without introducing a Self
-    entity or pinning a named `core/inspires` relation id in Lean. The kernel
-    face is the registered Causal Goal→Perspective edge shape; the concrete
-    relation id remains build-time vocabulary. -/
-def goalAssignedToPerspective
-    (registry : RelationRegistry) (edges : Set Edge) (goal : Goal) (self : Memory) : Prop :=
-  memory_kind self = .Perspective ∧
-  ∃ e : Edge,
-    e ∈ edges ∧
-    EdgeHasClass registry e .Causal ∧
-    edge_source e = .goal goal ∧
-    edge_target e = .memory self
-
-/-- Projection: an assignment target is a Perspective row. -/
-theorem goal_assignment_target_perspective :
-    ∀ registry edges goal self,
-      goalAssignedToPerspective registry edges goal self → memory_kind self = .Perspective := by
-  intro _ _ _ _ h
-  exact h.1
-
-/-- GO-12 — active goals for a queried Self-Perspective: begin at assigned
-    Goal sources, follow Goal supersession inside the Goal table, and return
-    only current Active heads. This is a query over Goals+Edges, not a Self row. -/
-def activeGoalsForSelf
-    (registry : RelationRegistry) (goals : Set Goal) (edges : Set Edge)
-    (self : Memory) : Set Goal :=
-  fun head =>
-    memory_kind self = .Perspective ∧
-    ∃ source : Goal,
-      source ∈ goals ∧
-      goalAssignedToPerspective registry edges source self ∧
-      activeGoalHeadFrom goals source head
-
-/-- Projection: every Self-assigned active Goal is Active. -/
-theorem active_goal_for_self_active :
-    ∀ registry goals edges self head,
-      head ∈ activeGoalsForSelf registry goals edges self → goal_state head = .Active := by
-  intro registry goals edges self head h
-  rcases h with ⟨_, source, _, _, hhead⟩
-  exact active_goal_head_from_active goals source head hhead
-
-/-- Projection: every Self-assigned active Goal is a lifecycle head. -/
-theorem active_goal_for_self_head :
-    ∀ registry goals edges self head,
-      head ∈ activeGoalsForSelf registry goals edges self → goalIsHead goals head := by
-  intro registry goals edges self head h
-  rcases h with ⟨_, source, _, _, hhead⟩
-  exact active_goal_head_from_head goals source head hhead
-
-/-- Projection: Self-assigned active Goals come from Perspective-targeted
-    assignment, not from an owner-only active-goal scan. -/
-theorem active_goal_for_self_has_assignment :
-    ∀ registry goals edges self head,
-      head ∈ activeGoalsForSelf registry goals edges self →
-        ∃ source : Goal,
-          source ∈ goals ∧
-          goalAssignedToPerspective registry edges source self ∧
-          activeGoalHeadFrom goals source head := by
-  intro registry goals edges self head h
-  exact h.2
-
-/-- Goal evidence edge shape: Goal → Fact/Abstraction evidence. In the Rust
-    vocabulary this is `core/motivated-by`; Lean keeps the relation id opaque
-    and records the kernel-visible Structural shape. -/
-def goalEvidenceEdge
-    (registry : RelationRegistry) (edges : Set Edge) (goal : Goal) (memory : Memory) : Prop :=
-  ∃ e : Edge,
-    e ∈ edges ∧
-    EdgeHasClass registry e .Structural ∧
-    edge_source e = .goal goal ∧
-    edge_target e = .memory memory ∧
-    (memory_kind memory = .Fact ∨ memory_kind memory = .Abstraction)
-
-/-- GO-14/GO-16 — table-scoped evidence requirement for operator-authored
-    Goals. User/External Goals may be intent without evidence here; A→Goal
-    operator output must carry a Goal→Fact/Abstraction evidence edge. -/
-def GoalEvidenceValid
-    (registry : RelationRegistry) (goals : Set Goal) (memories : Set Memory)
-    (edges : Set Edge) : Prop :=
-  ∀ g : Goal,
-    g ∈ goals →
-    goal_authorship g = .SystemOperator →
-      ∃ m : Memory, m ∈ memories ∧ goalEvidenceEdge registry edges g m
-
-/-- Projection: every SystemOperator Goal has table-resolved evidence. -/
-theorem system_operator_goal_has_evidence :
-    ∀ registry goals memories edges,
-      GoalEvidenceValid registry goals memories edges →
-      ∀ g : Goal,
-        g ∈ goals →
-        goal_authorship g = .SystemOperator →
-          ∃ m : Memory, m ∈ memories ∧ goalEvidenceEdge registry edges g m := by
-  intro registry goals memories edges hvalid g hg hauth
-  exact hvalid g hg hauth
-
-/-- Projection: Goal evidence never points at a Perspective. -/
-theorem goal_evidence_not_perspective :
-    ∀ registry edges g m,
-      goalEvidenceEdge registry edges g m → memory_kind m ≠ .Perspective := by
-  intro registry edges g m h hperspective
-  rcases h with ⟨_, _, _, _, _, hkind⟩
-  rcases hkind with hfact | habstraction
-  · rw [hfact] at hperspective
-    exact (nomatch hperspective)
-  · rw [habstraction] at hperspective
-    exact (nomatch hperspective)
-
--- ============================================================
--- Validity projection theorems
--- ============================================================
-
-/-- Former `edge_id_authorship_split` axiom, now projected from registered row validity. -/
-theorem edge_id_authorship_split :
-    ∀ registry e, EdgeCoreValid registry e →
-      ((∃ h : ContentHash, edge_id e = .sourceAuthored h) ↔
-        edge_authorship e = .SourceIngest) := by
-  intro registry e hvalid
-  rcases hvalid with ⟨d, _, h⟩
-  exact h.idAuthorship
-
-/-- Former `causal_goal_edge_perspectival` axiom, now projected from registered row validity. -/
-theorem causal_goal_edge_perspectival :
-    ∀ registry e, EdgeHasClass registry e .Causal →
-      ((∃ g : Goal, edge_source e = .goal g) ∨
-        (∃ g : Goal, edge_target e = .goal g)) →
-      edge_authorship e = .PerspectiveGoalLink := by
-  intro registry e hclass hgoal
-  rcases hclass with ⟨d, _, h, hd⟩
-  exact h.goalCausal hd hgoal
-
-/-- Former `edge_source_owned` axiom, now projected from registered row validity. -/
-theorem edge_source_owned :
-    ∀ registry e, EdgeCoreValid registry e → (edge_source e).owner = edge_owner e := by
-  intro registry e hvalid
-  rcases hvalid with ⟨d, _, h⟩
+/-- E2 in its projection shape. -/
+theorem edge_source_owned : ∀ e : Edge, EdgeValid e → (edge_source e).owner = edge_owner e := by
+  intro e h
   exact h.sourceOwned
 
-/-- Former `supersession_intra_owner` axiom, now projected from descriptor
-    owner policy: Supersession-class descriptors are `.SameOwner`, and a
-    valid edge satisfies that descriptor policy. -/
-theorem supersession_intra_owner :
-    ∀ registry e, EdgeHasClass registry e .Supersession →
-      (edge_target e).owner = (edge_source e).owner := by
-  intro registry e hclass
-  rcases hclass with ⟨d, _, h, hd⟩
-  have hpolicy : d.ownerPolicy = .SameOwner := d.supersessionSameOwner hd
-  have howner := h.ownerPolicy
-  unfold EdgeOwnerPolicyValidWith ownerPolicySatisfied at howner
-  rw [hpolicy] at howner
-  exact howner
-
-/-- Former `edge_respects_mask` axiom, now projected from the registered
-    descriptor witness used to validate the row. -/
-theorem edge_respects_mask :
-    ∀ registry e, EdgeCoreValid registry e →
-      ∃ d : RelationDescriptor,
-        d ∈ registry.descriptors ∧
-        EdgeValidWith d e ∧ d.endpointAdmitted (edge_source e) (edge_target e) := by
-  intro registry e hvalid
-  rcases hvalid with ⟨d, hregistered, h⟩
-  exact ⟨d, hregistered, h, h.mask⟩
-
-/-- Projection: a FollowHead source endpoint is Fact-like. -/
-theorem source_follow_head_endpoint_is_fact :
-    ∀ (d : RelationDescriptor) (e : Edge),
-      EdgeValidWith d e →
-      d.sourceBinding = .FollowHead →
-      (edge_source e).memoryKind? = some .Fact := by
-  intro d e hvalid hbinding
-  have h := hvalid.endpointBinding.1
-  rw [hbinding] at h
-  exact followHeadEndpointIsFact (edge_source e) h
-
-/-- Projection: a FollowHead target endpoint is Fact-like. -/
-theorem target_follow_head_endpoint_is_fact :
-    ∀ (d : RelationDescriptor) (e : Edge),
-      EdgeValidWith d e →
-      d.targetBinding = .FollowHead →
-      (edge_target e).memoryKind? = some .Fact := by
-  intro d e hvalid hbinding
-  have h := hvalid.endpointBinding.2
-  rw [hbinding] at h
-  exact followHeadEndpointIsFact (edge_target e) h
-
--- ============================================================
--- ME-11 and ME-10 — PROVED from valid rows + mask layer
--- ============================================================
-
-/-- ME-11 — every valid edge whose endpoints are memory-like (Memory rows or
-    FollowHead FactEntity refs) has a relation class legal for the resolved
-    endpoint kinds. THEOREM: valid edges satisfy their mask, and masks only
-    tighten the matrix. -/
-theorem edge_class_legal_for_node :
-    ∀ registry (e : Edge) (c : RelationClass), EdgeHasClass registry e c →
-      ∀ (ks kt : MemoryKind),
-        (edge_source e).memoryKind? = some ks →
-        (edge_target e).memoryKind? = some kt →
-        c ∈ legalClasses ks kt := by
-  intro registry e c hclass ks kt hs ht
-  rcases hclass with ⟨d, _, h, hd⟩
-  have hmask := h.mask
-  unfold EdgeMaskValidWith at hmask
-  have hlegal := d.masksTightenOnly (edge_source e) (edge_target e) ks kt hmask hs ht
-  rw [hd] at hlegal
-  exact hlegal
-
-/-- ME-11 — memory→memory specialization of `edge_class_legal_for_node`. -/
-theorem edge_class_legal :
-    ∀ registry (e : Edge) (c : RelationClass), EdgeHasClass registry e c → ∀ (ms mt : Memory),
-      edge_source e = .memory ms → edge_target e = .memory mt →
-      c ∈ legalClasses (memory_kind ms) (memory_kind mt) := by
-  intro registry e c hclass ms mt hs ht
-  apply edge_class_legal_for_node registry e c hclass
-  · rw [hs]
-    rfl
-  · rw [ht]
-    rfl
-
-/-- ME-10 — ℓ(source) ≥ ℓ(target) for valid memory→memory edges.
-    THEOREM: the matrix's upward cells admit no class at all. -/
+/-- ME-10 — ℓ(source) ≥ ℓ(target) for valid memory→memory rows. -/
 theorem edge_layer_rule :
-    ∀ registry (e : Edge), EdgeCoreValid registry e → ∀ (ms mt : Memory),
+    ∀ e : Edge, EdgeValid e → ∀ ms mt : Memory,
       edge_source e = .memory ms → edge_target e = .memory mt →
       (memory_kind mt).layer ≤ (memory_kind ms).layer := by
-  intro registry e hvalid ms mt hs ht
-  rcases hvalid with ⟨d, hregistered, h⟩
-  have h := edge_class_legal registry e d.relClass ⟨d, hregistered, h, rfl⟩ ms mt hs ht
-  revert h
-  cases memory_kind ms <;> cases memory_kind mt <;> intro h <;>
-    first
-      | exact h.elim
-      | simp [MemoryKind.layer]
+  intro e h ms mt hs ht
+  refine h.layering _ _ ?_ ?_
+  · rw [hs]; exact memoryKind_endpoint_layer (memory_kind ms)
+  · rw [ht]; exact memoryKind_endpoint_layer (memory_kind mt)
+
+/-- U-2 / P4 — a Fact source reaches only Fact targets. A Fact asserts no
+    judgment, so it can never be the source of an interpretation: the
+    interpretation is a Perspective, and E3 forbids a Fact row from pointing
+    at anything above a Fact. THEOREM from the layer rule alone. -/
+theorem fact_source_reaches_only_facts :
+    ∀ e : Edge, EdgeLayeringValid e →
+      (edge_source e).memoryKind? = some .Fact →
+      ∀ kt : MemoryKind, (edge_target e).memoryKind? = some kt → kt = .Fact := by
+  intro e hlayer hs kt ht
+  have hsl := nodeRef_layer_of_memoryKind (edge_source e) .Fact hs
+  have htl := nodeRef_layer_of_memoryKind (edge_target e) kt ht
+  have hle := hlayer (MemoryKind.layer .Fact) (MemoryKind.layer kt) hsl htl
+  cases kt with
+  | Fact => rfl
+  | Abstraction => exact absurd hle (by simp [MemoryKind.layer])
+  | Perspective => exact absurd hle (by simp [MemoryKind.layer])
 
 -- ============================================================
--- Memory supersession — PROVED from valid Supersession-class edges
--- (doc 02 §Re-derivation and Supersession)
+-- E5 — the primary key IS the row
 -- ============================================================
 
-/-- Memory supersession is not a Memory row field. It is the existence
-    of a valid Supersession-class edge from the new row to the old row. -/
-def memorySupersedes (registry : RelationRegistry) (new old : Memory) : Prop :=
-  ∃ e : Edge,
-    EdgeHasClass registry e .Supersession ∧
-    edge_source e = .memory new ∧
-    edge_target e = .memory old
+/-- The primary key: `(source_kind, source_id, target_kind, target_id, kind)`,
+    in the kernel's endpoint spelling. -/
+def edgeKey (e : Edge) : (EndpointKind × Id) × (EndpointKind × Id) × EdgeKind :=
+  ((edge_source e).addr, (edge_target e).addr, edge_kind e)
 
-/-- Table-scoped memory supersession: the superseding edge must be present in the
-    admitted Edge table. This is the query shape consumers need for current-head
-    projections; raw `memorySupersedes` remains only the relation predicate. -/
-def memorySupersedesInTable
-    (registry : RelationRegistry) (edges : Set Edge) (new old : Memory) : Prop :=
-  ∃ e : Edge,
-    e ∈ edges ∧
-    EdgeHasClass registry e .Supersession ∧
-    edge_source e = .memory new ∧
-    edge_target e = .memory old
+/-- E5 — two valid rows with the same primary key are the SAME ROW. The owner
+    column cannot distinguish them (E2 pins it to the source), and there is no
+    other column to differ in (E6) — so idempotency is structural rather than
+    approximated by a content-derived id. Under `EdgeId` this was FALSE: a
+    replayed write minted a fresh id and produced a genuinely different value,
+    which is exactly why v0.0.7 needed a BLAKE3 identity hash and a partial
+    unique index. -/
+theorem edge_key_determines_row :
+    ∀ e₁ e₂ : Edge, EdgeSourceOwned e₁ → EdgeSourceOwned e₂ →
+      edge_source e₁ = edge_source e₂ →
+      edge_target e₁ = edge_target e₂ →
+      edge_kind e₁ = edge_kind e₂ →
+      e₁ = e₂ := by
+  intro e₁ e₂ ho₁ ho₂ hs ht hk
+  obtain ⟨s₁, t₁, k₁, o₁⟩ := e₁
+  obtain ⟨s₂, t₂, k₂, o₂⟩ := e₂
+  cases hs
+  cases ht
+  cases hk
+  have howner : o₁ = o₂ := by
+    have h₁ : s₁.owner = o₁ := ho₁
+    have h₂ : s₁.owner = o₂ := ho₂
+    rw [← h₁, ← h₂]
+  cases howner
+  rfl
 
-/-- Projection: table-scoped supersession is ordinary memory supersession. -/
-theorem memory_supersedes_in_table :
-    ∀ registry edges new old,
-      memorySupersedesInTable registry edges new old →
-      memorySupersedes registry new old := by
-  intro registry edges new old h
-  rcases h with ⟨e, _he, hclass, hsource, htarget⟩
-  exact ⟨e, hclass, hsource, htarget⟩
+/-- Asserting one index row into a table. `ON CONFLICT … DO NOTHING` in the
+    write path; set union here. -/
+def assertEdge (edges : Set Edge) (e : Edge) : Set Edge :=
+  fun x => x ∈ edges ∨ x = e
 
-/-- A Memory lifecycle head in the actual admitted tables: the row is present and
-    no later admitted Memory row supersedes it through an admitted Supersession
-    edge. -/
-def memoryIsHead
-    (registry : RelationRegistry) (memories : Set Memory) (edges : Set Edge)
-    (m : Memory) : Prop :=
-  m ∈ memories ∧
-  ¬ ∃ m' : Memory, m' ∈ memories ∧ memorySupersedesInTable registry edges m' m
+/-- E5 — re-asserting a row that is already present changes nothing. -/
+theorem assert_present_row_changes_nothing :
+    ∀ (edges : Set Edge) (e : Edge), e ∈ edges →
+      ∀ x : Edge, x ∈ assertEdge edges e ↔ x ∈ edges := by
+  intro edges e hmem x
+  constructor
+  · rintro (hx | rfl)
+    · exact hx
+    · exact hmem
+  · intro hx
+    exact Or.inl hx
 
-/-- Generic current Memory-head query. -/
-def memoryHeads
-    (registry : RelationRegistry) (memories : Set Memory) (edges : Set Edge) :
-    Set Memory :=
-  fun m => memoryIsHead registry memories edges m
+-- ============================================================
+-- E1 — both endpoints exist
+-- ============================================================
 
-/-- Generic current Perspective-head query. Downstream apps can add their own
-    schema/payload filters; the kernel only supplies the F/A/P head shape. -/
-def perspectiveHeads
-    (registry : RelationRegistry) (memories : Set Memory) (edges : Set Edge) :
-    Set Memory :=
-  fun m => memory_kind m = .Perspective ∧ memoryIsHead registry memories edges m
+/-- Endpoint membership in the admitted node tables. A FactEntity endpoint must
+    name an admitted aggregate whose current Fact head is an admitted memory
+    row. -/
+def NodeRefInTables
+    (memories : Set Memory) (goals : Set Goal) (factEntities : Set FactEntity) : NodeRef → Prop
+  | .memory m => m ∈ memories
+  | .goal g   => g ∈ goals
+  | .factEntity e => e ∈ factEntities ∧ e.current.memory ∈ memories
 
-/-- Superseded rows are not Memory lifecycle heads. -/
-theorem memory_superseded_not_head :
-    ∀ registry memories edges old new,
-      new ∈ memories →
-      memorySupersedesInTable registry edges new old →
-      ¬ memoryIsHead registry memories edges old := by
-  intro registry memories edges old new hnew hsup hhead
-  exact hhead.2 ⟨new, hnew, hsup⟩
+/-- E1 — every index row resolves both of its endpoints in the node tables.
+    The runtime spells this as the existence trigger; no row survives a write
+    whose endpoints are not there. -/
+def EdgeEndpointsExist
+    (memories : Set Memory) (goals : Set Goal) (factEntities : Set FactEntity)
+    (edges : Set Edge) : Prop :=
+  ∀ e : Edge, e ∈ edges →
+    NodeRefInTables memories goals factEntities (edge_source e) ∧
+    NodeRefInTables memories goals factEntities (edge_target e)
 
-/-- Projection: a Perspective head is a Perspective. -/
-theorem perspective_head_is_perspective :
-    ∀ registry memories edges m,
-      m ∈ perspectiveHeads registry memories edges →
-      memory_kind m = .Perspective := by
-  intro registry memories edges m h
-  exact h.1
+/-- E1 ⇒ an endpoint ADDRESS names at most one admitted row. The index stores
+    `(kind, id)` pairs, not row objects, so this is what makes the primary key
+    below say anything about rows at all — and it is exactly the id-uniqueness
+    the node tables already carry. -/
+theorem nodeRef_addr_determines_row
+    (memories : Set Memory) (goals : Set Goal) (factEntities : Set FactEntity)
+    (huniqM : MemoryIdUnique memories) (huniqG : GoalIdUnique goals)
+    (huniqF : FactEntityIdUnique factEntities) :
+    ∀ r₁ r₂ : NodeRef,
+      NodeRefInTables memories goals factEntities r₁ →
+      NodeRefInTables memories goals factEntities r₂ →
+      r₁.addr = r₂.addr → r₁ = r₂ := by
+  intro r₁ r₂ h₁ h₂ haddr
+  have hkind : r₁.endpointKind = r₂.endpointKind := congrArg Prod.fst haddr
+  have hid : r₁.id = r₂.id := congrArg Prod.snd haddr
+  cases r₁ with
+  | memory m₁ =>
+    cases r₂ with
+    | memory m₂ => exact congrArg NodeRef.memory (huniqM m₁ m₂ h₁ h₂ hid)
+    | goal _ => exact absurd hkind (memoryKind_endpointKind_ne_goal (memory_kind m₁))
+    | factEntity _ =>
+      exact absurd hkind (memoryKind_endpointKind_ne_head (memory_kind m₁))
+  | goal g₁ =>
+    cases r₂ with
+    | memory m₂ => exact absurd hkind.symm (memoryKind_endpointKind_ne_goal (memory_kind m₂))
+    | goal g₂ => exact congrArg NodeRef.goal (huniqG g₁ g₂ h₁ h₂ hid)
+    | factEntity _ => exact (nomatch hkind)
+  | factEntity e₁ =>
+    cases r₂ with
+    | memory m₂ => exact absurd hkind.symm (memoryKind_endpointKind_ne_head (memory_kind m₂))
+    | goal _ => exact (nomatch hkind)
+    | factEntity e₂ => exact congrArg NodeRef.factEntity (huniqF e₁ e₂ h₁.1 h₂.1 hid)
 
-/-- Projection: a Perspective head is also a Memory head. -/
-theorem perspective_head_is_memory_head :
-    ∀ registry memories edges m,
-      m ∈ perspectiveHeads registry memories edges →
-      memoryIsHead registry memories edges m := by
-  intro registry memories edges m h
+/-- E5, table shape — THE PRIMARY KEY. An admitted index table holds at most
+    one row per `(source_kind, source_id, target_kind, target_id, kind)`,
+    exactly the columns `edges_pkey` names. THEOREM: the addresses resolve to
+    unique rows (E1 + id uniqueness), the endpoints are therefore equal, and
+    the owner column cannot differ (E2). Nothing is assumed about uniqueness —
+    it is what having no id buys. -/
+theorem edge_table_key_unique
+    (memories : Set Memory) (goals : Set Goal) (factEntities : Set FactEntity)
+    (edges : Set Edge)
+    (huniqM : MemoryIdUnique memories) (huniqG : GoalIdUnique goals)
+    (huniqF : FactEntityIdUnique factEntities)
+    (hendpoints : EdgeEndpointsExist memories goals factEntities edges)
+    (hvalid : EdgeTableValid edges) :
+    ∀ e₁ e₂ : Edge, e₁ ∈ edges → e₂ ∈ edges → edgeKey e₁ = edgeKey e₂ → e₁ = e₂ := by
+  intro e₁ e₂ h₁ h₂ hkey
+  have hsaddr : (edge_source e₁).addr = (edge_source e₂).addr := congrArg Prod.fst hkey
+  have hrest := congrArg Prod.snd hkey
+  have htaddr : (edge_target e₁).addr = (edge_target e₂).addr := congrArg Prod.fst hrest
+  have hkind : edge_kind e₁ = edge_kind e₂ := congrArg Prod.snd hrest
+  have hs := nodeRef_addr_determines_row memories goals factEntities huniqM huniqG huniqF
+    (edge_source e₁) (edge_source e₂) (hendpoints e₁ h₁).1 (hendpoints e₂ h₂).1 hsaddr
+  have ht := nodeRef_addr_determines_row memories goals factEntities huniqM huniqG huniqF
+    (edge_target e₁) (edge_target e₂) (hendpoints e₁ h₁).2 (hendpoints e₂ h₂).2 htaddr
+  exact edge_key_determines_row e₁ e₂ (hvalid e₁ h₁).sourceOwned (hvalid e₂ h₂).sourceOwned
+    hs ht hkind
+
+-- ============================================================
+-- E4 + E7 — node content is the only producer, and it is a function
+-- ============================================================
+
+/-- What ONE node's content declares about other nodes.
+
+    `origins` is the node write's derivation declaration (`derived_from`) —
+    what the node says it was made from. `references` are the schema-declared
+    reference fields of its payload. Both are read OFF the node; neither is a
+    parameter beside it, which is E4: there is no third list, and no way to
+    ask for a row without a node saying something.
+
+    The kernel sees resolved endpoints because it cannot see payloads (CF-G):
+    which payload fields are reference fields is schema-registry knowledge
+    below the opacity boundary. What it can state is that the row set is a
+    function of this declaration, and that the declaration belongs to the
+    node. -/
+structure NodeDeclaration where
+  node       : NodeRef
+  origins    : List NodeRef
+  references : List NodeRef
+
+/-- E4 — the index rows one node's content implies, and the ONLY way rows come
+    to exist in this file. The kind is read off which list the target was
+    declared in; the owner is the declaring node's, which is E2 by
+    construction. -/
+def NodeDeclaration.edges (d : NodeDeclaration) : Set Edge :=
+  fun e =>
+    edge_source e = d.node ∧
+    edge_owner e = d.node.owner ∧
+    ((edge_kind e = .origin ∧ edge_target e ∈ d.origins) ∨
+     (edge_kind e = .reference ∧ edge_target e ∈ d.references))
+
+/-- What a node write may declare: only targets at or below its own layer, and
+    never itself. Checking legality HERE, on the declaration, is the point —
+    the statement is what is admitted or refused, and the index follows. -/
+structure NodeDeclarationValid (d : NodeDeclaration) : Prop where
+  originsLegal : ∀ t : NodeRef, t ∈ d.origins →
+    endpointsLayered d.node t ∧ d.node.addr ≠ t.addr
+  referencesLegal : ∀ t : NodeRef, t ∈ d.references →
+    endpointsLayered d.node t ∧ d.node.addr ≠ t.addr
+
+/-- E7 — THE derivation: node content in, index rows out. A function, which is
+    the whole of rebuildability; everything else in this file is a lemma about
+    it. -/
+def deriveEdges (content : Set NodeDeclaration) : Set Edge :=
+  fun e => ∃ d : NodeDeclaration, d ∈ content ∧ e ∈ d.edges
+
+/-- E7 — an index table is rebuildable when it is exactly what the store's node
+    content derives. "Drop the table and re-derive it from node content and you
+    get the same set back." -/
+def EdgeTableRebuildable (content : Set NodeDeclaration) (edges : Set Edge) : Prop :=
+  ∀ e : Edge, e ∈ edges ↔ e ∈ deriveEdges content
+
+/-- E7 — the derived table is rebuildable from the content it was derived
+    from. The rebuild is idempotent because it is a function. -/
+theorem derived_table_rebuildable :
+    ∀ content : Set NodeDeclaration, EdgeTableRebuildable content (deriveEdges content) := by
+  intro _ _
+  exact Iff.rfl
+
+/-- E7 — rebuilding is deterministic: two tables rebuilt from the same node
+    content hold the same rows. This is what makes the index droppable. -/
+theorem rebuild_deterministic :
+    ∀ (content : Set NodeDeclaration) (edges₁ edges₂ : Set Edge),
+      EdgeTableRebuildable content edges₁ →
+      EdgeTableRebuildable content edges₂ →
+      ∀ e : Edge, e ∈ edges₁ ↔ e ∈ edges₂ := by
+  intro content edges₁ edges₂ h₁ h₂ e
+  exact (h₁ e).trans (h₂ e).symm
+
+/-- E4 — every derived row is backed by a declaration on its own source node,
+    and its kind says WHICH declaration. No row is a free-standing act. -/
+theorem derived_edge_kind_follows_operation :
+    ∀ (content : Set NodeDeclaration) (e : Edge), e ∈ deriveEdges content →
+      ∃ d : NodeDeclaration, d ∈ content ∧ edge_source e = d.node ∧
+        ((edge_kind e = .origin ∧ edge_target e ∈ d.origins) ∨
+         (edge_kind e = .reference ∧ edge_target e ∈ d.references)) := by
+  intro content e h
+  obtain ⟨d, hd, hsource, _, hkind⟩ := h
+  exact ⟨d, hd, hsource, hkind⟩
+
+/-- E4 — an `origin` row exists only where a node write carried a derivation
+    declaration naming that target. -/
+theorem origin_row_needs_a_derivation_declaration :
+    ∀ (content : Set NodeDeclaration) (e : Edge),
+      e ∈ deriveEdges content → edge_kind e = .origin →
+      ∃ d : NodeDeclaration, d ∈ content ∧ edge_source e = d.node ∧
+        edge_target e ∈ d.origins := by
+  intro content e h hkind
+  obtain ⟨d, hd, hsource, harm⟩ := derived_edge_kind_follows_operation content e h
+  rcases harm with ⟨_, htarget⟩ | ⟨href, _⟩
+  · exact ⟨d, hd, hsource, htarget⟩
+  · rw [hkind] at href
+    exact (nomatch href)
+
+/-- E4 — a `reference` row exists only where a schema-declared reference field
+    of the source's payload named that target. -/
+theorem reference_row_needs_a_declared_reference_field :
+    ∀ (content : Set NodeDeclaration) (e : Edge),
+      e ∈ deriveEdges content → edge_kind e = .reference →
+      ∃ d : NodeDeclaration, d ∈ content ∧ edge_source e = d.node ∧
+        edge_target e ∈ d.references := by
+  intro content e h hkind
+  obtain ⟨d, hd, hsource, harm⟩ := derived_edge_kind_follows_operation content e h
+  rcases harm with ⟨horigin, _⟩ | ⟨_, htarget⟩
+  · rw [hkind] at horigin
+    exact (nomatch horigin)
+  · exact ⟨d, hd, hsource, htarget⟩
+
+/-- E4, the case the rule must ACCOMMODATE — a write that declares no
+    derivation is legal and simply contributes no `origin` rows. An
+    interpretation Perspective is exactly this: it grounds through its
+    references and consumes nothing, so there is no manifest to skip and
+    nothing for one to prove (Causa.Operators). -/
+theorem declaration_without_origins_writes_no_origin_rows :
+    ∀ d : NodeDeclaration, d.origins = [] →
+      ∀ e : Edge, e ∈ d.edges → edge_kind e = .reference := by
+  intro d hnone e he
+  obtain ⟨_, _, harm⟩ := he
+  rcases harm with ⟨_, htarget⟩ | ⟨hkind, _⟩
+  · rw [hnone] at htarget
+    exact (nomatch htarget)
+  · exact hkind
+
+/-- E4 inhabitation — the zero-origin write is not a corner case argued in
+    prose but a constructible declaration: a Perspective that declares only
+    references. Its derived rows are all `reference` rows, and it is valid
+    whenever its subjects are legal endpoints. -/
+def interpretationDeclaration (p : Memory) (subjects : List NodeRef) : NodeDeclaration where
+  node := .memory p
+  origins := []
+  references := subjects
+
+theorem interpretation_declaration_writes_only_references :
+    ∀ (p : Memory) (subjects : List NodeRef) (e : Edge),
+      e ∈ (interpretationDeclaration p subjects).edges → edge_kind e = .reference :=
+  fun p subjects => declaration_without_origins_writes_no_origin_rows
+    (interpretationDeclaration p subjects) rfl
+
+/-- E7 ⇒ E2 + E3 — a legal declaration derives VALID rows. Ownership is not
+    checked after the fact: the row is owned by the node that made the
+    statement because that is how the derivation builds it. -/
+theorem declared_edges_valid :
+    ∀ d : NodeDeclaration, NodeDeclarationValid d →
+      ∀ e : Edge, e ∈ d.edges → EdgeValid e := by
+  intro d hd e he
+  obtain ⟨hsource, howner, harm⟩ := he
+  have hlegal : endpointsLayered d.node (edge_target e) ∧ d.node.addr ≠ (edge_target e).addr := by
+    rcases harm with ⟨_, htarget⟩ | ⟨_, htarget⟩
+    · exact hd.originsLegal _ htarget
+    · exact hd.referencesLegal _ htarget
+  refine ⟨?_, ?_, ?_⟩
+  · show (edge_source e).owner = edge_owner e
+    rw [hsource, howner]
+  · show endpointsLayered (edge_source e) (edge_target e)
+    rw [hsource]
+    exact hlegal.1
+  · show (edge_source e).addr ≠ (edge_target e).addr
+    rw [hsource]
+    exact hlegal.2
+
+/-- E7 (headline) — a store whose node content is legal rebuilds into a VALID
+    index table. E2 and E3 are consequences of the derivation, not separate
+    admission gates run over the result. -/
+theorem rebuilt_table_valid :
+    ∀ (content : Set NodeDeclaration) (edges : Set Edge),
+      (∀ d : NodeDeclaration, d ∈ content → NodeDeclarationValid d) →
+      EdgeTableRebuildable content edges →
+      EdgeTableValid edges := by
+  intro content edges hcontent hbuilt e he
+  obtain ⟨d, hd, hedge⟩ := (hbuilt e).mp he
+  exact declared_edges_valid d (hcontent d hd) e hedge
+
+/-- E5 ∘ E7 — replaying a write asserts nothing new. The write re-derives the
+    same rows (E7), those rows are already present, and a present row cannot
+    be duplicated by a differing id because there is none (E5). -/
+theorem replay_asserts_nothing_new :
+    ∀ (content : Set NodeDeclaration) (edges : Set Edge),
+      EdgeTableRebuildable content edges →
+      ∀ e : Edge, e ∈ deriveEdges content →
+        ∀ x : Edge, x ∈ assertEdge edges e ↔ x ∈ edges := by
+  intro content edges hbuilt e hderived
+  exact assert_present_row_changes_nothing edges e ((hbuilt e).mpr hderived)
+
+-- ============================================================
+-- The Goal side of node content (doc 16 §Flavor Migration)
+-- ============================================================
+
+/-- A Goal row's declaration is EXACTLY its three topology columns, in the
+    order the write asserts them, resolved to rows. Ids are what a row holds;
+    E1 is what resolves them. -/
+def GoalDeclarationValid (g : Goal) (d : NodeDeclaration) : Prop :=
+  d.node = .goal g ∧
+  d.origins = [] ∧
+  d.references.map NodeRef.id = goalDeclaredTargetIds g
+
+/-- N4 residue — every row a Goal declares is a `reference` row. A Goal never
+    declares a derivation, and the kind vocabulary has no causal variant left,
+    so a Goal→Fact row carries no observer-independent causal claim: the
+    perspectival claim that used to ride on a `Causal` edge is now a node. -/
+theorem goal_declared_rows_are_references :
+    ∀ (g : Goal) (d : NodeDeclaration), GoalDeclarationValid g d →
+      ∀ e : Edge, e ∈ d.edges → edge_kind e = .reference := by
+  intro g d hd e he
+  exact declaration_without_origins_writes_no_origin_rows d hd.2.1 e he
+
+/-- The index rows a Goal write asserts, counted from its declaration rather
+    than from the table — one per declared id, which is what the write path
+    reports back (`goal_topology_edge_count`). -/
+theorem goal_declared_row_count :
+    ∀ (g : Goal) (d : NodeDeclaration), GoalDeclarationValid g d →
+      d.references.length = (goalDeclaredTargetIds g).length := by
+  intro g d hd
+  have h := hd.2.2
+  calc d.references.length = (d.references.map NodeRef.id).length := (List.length_map _ _).symm
+    _ = (goalDeclaredTargetIds g).length := by rw [h]
+
+-- ============================================================
+-- Interpretation is a node (doc 16 §The Model)
+-- ============================================================
+
+/-- An interpretation — a causal or non-causal claim about existing nodes — is
+    a PERSPECTIVE whose payload references its subjects
+    (`proxima_core.interpretation_v1`), never an edge. The index only records
+    that the Perspective points at its subjects; the claim, its reason and its
+    confidence are the node's payload. This definition is where U-2's
+    commitment lives now that the kind vocabulary has nowhere to put a Causal
+    or Interpretive row. -/
+def interpretationOf (edges : Set Edge) (p : Memory) (subject : NodeRef) : Prop :=
+  memory_kind p = .Perspective ∧
+  ∃ e : Edge, e ∈ edges ∧ edge_kind e = .reference ∧
+    edge_source e = .memory p ∧ edge_target e = subject
+
+/-- P3c / U-2 — an interpretation is never a Fact. A Fact asserts no judgment,
+    so it cannot occupy the interpreting position; and by E3 a Fact-sourced row
+    could not reach an Abstraction or a Perspective to interpret it even if the
+    vocabulary allowed it (`fact_source_reaches_only_facts`). -/
+theorem interpretation_is_never_a_fact :
+    ∀ (edges : Set Edge) (p : Memory) (subject : NodeRef),
+      interpretationOf edges p subject → memory_kind p ≠ .Fact := by
+  intro edges p subject h hfact
+  rw [h.1] at hfact
+  exact (nomatch hfact)
+
+/-- An interpretation's index rows are `reference` rows — the claim is in the
+    node, so the index has nothing to carry. -/
+theorem interpretation_rows_are_references :
+    ∀ (edges : Set Edge) (p : Memory) (subject : NodeRef),
+      interpretationOf edges p subject →
+        ∃ e : Edge, e ∈ edges ∧ edge_kind e = .reference ∧
+          edge_source e = .memory p ∧ edge_target e = subject := by
+  intro _ _ _ h
   exact h.2
 
-/-- ME-5a — supersession endpoint kind must match (doc 02). THEOREM:
-    only the A→A and P→P matrix cells admit Supersession. -/
-theorem supersession_same_kind :
-    ∀ registry (e : Edge), ∀ (m m' : Memory),
-      EdgeHasClass registry e .Supersession →
-      edge_source e = .memory m →
-      edge_target e = .memory m' →
-      memory_kind m = memory_kind m' := by
-  intro registry e m m' hsup hs ht
-  have hleg := edge_class_legal registry e .Supersession hsup m m' hs ht
-  revert hleg
-  cases memory_kind m <;> cases memory_kind m' <;> intro hleg <;>
-    first
-      | rfl
-      | exact hleg.elim
-      | (rcases hleg with h' | h' <;> first | exact (nomatch h') | rcases h' with h'' | h'' <;> first | exact (nomatch h'') | rcases h'' with h3 | h3 <;> exact (nomatch h3))
+-- ============================================================
+-- The E1–E7 guarantee, machine-checked: no Causa axioms
+-- ============================================================
 
-/-- ME-4 — "Facts never supersede and are never superseded"
-    (doc 02, verbatim). THEOREM: no Fact cell admits Supersession. -/
-theorem facts_never_supersede :
-    ∀ registry (e : Edge), ∀ (m m' : Memory),
-      EdgeHasClass registry e .Supersession →
-      edge_source e = .memory m →
-      edge_target e = .memory m' →
-      memory_kind m ≠ .Fact ∧ memory_kind m' ≠ .Fact := by
-  intro registry e m m' hsup hs ht
-  have hleg := edge_class_legal registry e .Supersession hsup m m' hs ht
-  have hk := supersession_same_kind registry e m m' hsup hs ht
-  constructor
-  · intro hf
-    rw [hf, ← hk, hf] at hleg
-    rcases hleg with h' | h' <;> exact (nomatch h')
-  · intro hf
-    rw [hf] at hk
-    rw [hk, hf] at hleg
-    rcases hleg with h' | h' <;> exact (nomatch h')
-
-/-- ME-5b — supersession stays within one Owner. THEOREM: from the
-    valid Supersession-class edge and Supersession intra-Owner validity. -/
-theorem supersession_same_owner :
-    ∀ registry (e : Edge), ∀ (m m' : Memory),
-      EdgeHasClass registry e .Supersession →
-      edge_source e = .memory m →
-      edge_target e = .memory m' →
-      memory_owner m = memory_owner m' := by
-  intro registry e m m' hsup hs ht
-  have htgt := supersession_intra_owner registry e hsup
-  rw [hs, ht] at htgt
-  -- htgt : NodeRef.owner (.memory m') = NodeRef.owner (.memory m)
-  --      ≡ memory_owner m' = memory_owner m
-  exact htgt.symm
-
-/-- ME-12 — Supersession-class edges connect same-shaped endpoints:
-    memory→memory (same kind — that part PROVABLE from the matrix) or
-    Goal→Goal. The residue the matrix cannot supply — that a
-    Supersession edge never mixes a Memory endpoint with a Goal
-    endpoint — is row validity (doc 02 §Relation Registry:
-    `core/supersedes` is A→A, P→P, Goal→Goal). -/
-theorem supersession_same_endpoint_shape :
-    ∀ registry e,
-      EdgeHasClass registry e .Supersession →
-      ((∃ ms mt : Memory, edge_source e = .memory ms ∧ edge_target e = .memory mt ∧
-          memory_kind ms = memory_kind mt) ∨
-       (∃ gs gt : Goal, edge_source e = .goal gs ∧ edge_target e = .goal gt)) := by
-  intro registry e hsup
-  rcases hsup with ⟨d, hregistered, h, hd⟩
-  have hshape := h.supersessionEndpointShape hd
-  rcases hshape with hmem | hgoal
-  · rcases hmem with ⟨ms, mt, hs, ht⟩
-    exact Or.inl ⟨ms, mt, hs, ht, supersession_same_kind registry e ms mt ⟨d, hregistered, h, hd⟩ hs ht⟩
-  · exact Or.inr hgoal
+-- Each list below names no Causa axiom. E1 is table validity and E4's
+-- accommodation of the zero-origin write is a theorem, not a carve-out; the
+-- rest are proved from the row shape and the derivation.
+#print axioms edge_source_owned
+#print axioms edge_layer_rule
+#print axioms fact_source_reaches_only_facts
+#print axioms edge_key_determines_row
+#print axioms edge_table_key_unique
+#print axioms derived_edge_kind_follows_operation
+#print axioms origin_row_needs_a_derivation_declaration
+#print axioms reference_row_needs_a_declared_reference_field
+#print axioms declaration_without_origins_writes_no_origin_rows
+#print axioms declared_edges_valid
+#print axioms rebuilt_table_valid
+#print axioms rebuild_deterministic
+#print axioms replay_asserts_nothing_new
+#print axioms goal_declared_rows_are_references
 
 end Causa

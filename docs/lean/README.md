@@ -26,19 +26,19 @@ minimization discipline) — a failing build is drift.
 | `Causa/Prelude.lean` | minimal `Set`, `Instant`, `Text` |
 | `Causa/Owner.lean` | resolved Owner/group model and role ladder (doc 01) |
 | `Causa/Identity.lean` | ids, stable `OwnerRef`, source batches, append-only/immutable classes, vector-store independence (docs 01, 07) |
-| `Causa/Memory.lean` | F/A/P kinds, layer order, row fields, Fact/FactEntity typing (doc 02) |
+| `Causa/Memory.lean` | F/A/P kinds, layer order, row fields, lineage/authorship pointers, supersession + head queries, Fact/FactEntity typing (docs 02, 16) |
 | `Causa/Knowledge.lean` | text-bearing knowledge artifacts and interpreter-class recoverability |
-| `Causa/Goals.lean` | Goal states, lifecycle, supersession heads, active set, Self query projection (doc 06) |
-| `Causa/Edges.lean` | relation classes, directionality matrix, source-owner scope, masks, memory supersession/head queries (doc 02) |
+| `Causa/Goals.lean` | Goal states, lifecycle, supersession heads, active set, row-declared topology/assignment/evidence, Self query projection (docs 06, 16) |
+| `Causa/Edges.lean` | the connection index: two closed kinds, E1–E7, node-content derivation, interpretation-as-node (doc 16) |
 | `Causa/Authorization.lean` | owner-role read/write ceilings, owner-state resolution, world/personal/group access theorems |
-| `Causa/EdgeAuthorization.lean` | source-owned edge reads and descriptor-selected target write gates |
-| `Causa/Operators.lean` | F→A / A→P / A→Goal shapes, no downward writes, provenance obligations, batch gate (docs 02, 04) |
+| `Causa/EdgeAuthorization.lean` | source-owned index reads and the uniform source-write + target-read admission rule |
+| `Causa/Operators.lean` | F→A / A→P / A→Goal phase contracts, no downward writes, invocation-ledger completeness, batch gate (docs 02, 04) |
 | `Causa/Provenance.lean` | admitted graph validity, grounding, table-scoped provenance/uniqueness witnesses |
 | `Causa/Wake.lean` | Goal-armed wake firing, no-escalation, tool bounds, autonomy/termination theorems |
-| `Causa/Citations.lean` | Fact-only bibliography, 1:1 mapping, owner match (doc 11) |
+| `Causa/Citations.lean` | Fact ∪ Abstraction bibliography, 0..1 mapping, owner match (docs 11, 16) |
 | `Causa/Compliance.lean` | abandonment-gated erasure, source cascade, target projection redaction (doc 13) |
 | `Causa/Principles.lean` | named principle rollups over lower-level theorems |
-| `Causa/Flavor.lean` | core independence, namespace discipline, optional sidecars/receipts, payload opacity (docs 03, 08) |
+| `Causa/Flavor.lean` | core independence, optional Memory/Goal sidecars and receipts, payload opacity (docs 03, 08) |
 
 ## Coverage
 

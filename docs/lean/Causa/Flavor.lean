@@ -7,15 +7,14 @@ namespacing, or registration. All of that is build-time/engine mechanics
 integrates as a flavor with ZERO kernel change.
 
 This file is the constructive WITNESS of that openness, and it adds NO axiom.
-A flavor's "vocabulary" is just inhabitants of the kernel's existing opaque types
-— a `SchemaRef` (its schema tag), a `RelationId` (its edge kinds). Those are
-PARAMETERS here, never axioms. Optional sidecars are flavor-owned wrappers around
-ordinary `Memory`, `Goal`, and `Edge` rows; the kernel only sees the projected
-core row. We build concrete flavor rows and discharge the kernel's universal
-invariants on them using only pre-existing theorems: a flavor Fact is a Fact, a
-flavor Abstraction grounds in Facts (N1), a flavor Perspective has Abstraction
-provenance when admitted, flavor rows are access-controlled and
-compliance-governed — none of it flavor-specific.
+A flavor's "vocabulary" is just inhabitants of the kernel's existing opaque type
+`SchemaRef` — its schema tag — taken as a PARAMETER here, never an axiom.
+Optional sidecars are flavor-owned wrappers around ordinary `Memory` and `Goal`
+rows; the kernel only sees the projected core row. We build concrete flavor rows
+and discharge the kernel's universal invariants on them using only pre-existing
+theorems: a flavor Fact is a Fact, a flavor Abstraction grounds in Facts (N1), a
+flavor Perspective rests on an admitted memory when admitted, flavor rows are
+access-controlled and compliance-governed — none of it flavor-specific.
 
 The guarantee is `#print axioms` (below): every flavor theorem rests on no Causa
 axioms — never one named `flavor`, because none exists. That ABSENCE,
@@ -23,11 +22,14 @@ machine-checked, IS the openness. A flavor adds vocabulary; it never adds a
 rule, and never adds a trusted assumption. Compliance is derived, not
 axiomatized.
 
-Goals and edges extend the same way: a flavor Goal is a `Goal` carrying the
-flavor's schema; a flavor edge is a valid `Edge` with the flavor's `RelationId`,
-whose class is forced into the CLOSED `RelationClass` inductive — flavors add
-relation ids, never classes (CF-F). Optional sidecar payloads can refine any of
-these rows without changing kernel validity.
+Goals extend the same way: a flavor Goal is a `Goal` carrying the flavor's
+schema. EDGES DO NOT EXTEND AT ALL, and that is the deliberate v0.0.8 loss
+(doc 16 §What This Removes): there is no `RelationId` for a flavor to mint, no
+edge sidecar to type, and the kind vocabulary is closed at two. A flavor that
+wants a novel traversable link expresses it as an interpretation node — the
+escape valve is total, and the question is never whether something can be
+expressed, only where it lives. Optional Memory/Goal sidecar payloads can still
+refine those rows without changing kernel validity.
 -/
 
 import Causa.Provenance
@@ -42,20 +44,20 @@ namespace Causa.Flavor
 
 /-- A concrete flavor Fact — an ordinary `Memory` carrying the flavor's schema. -/
 def fact (schema : SchemaRef) (owner : Owner) (id : MemoryId) (t : Instant) : Memory :=
-  ⟨id, .Fact, owner, schema, none, none, none, none, t⟩
+  ⟨id, .Fact, owner, schema, none, none, none, none, t, none, none, fun _ => rfl⟩
 
 /-- A concrete flavor Abstraction. -/
 def abstraction (schema : SchemaRef) (owner : Owner) (id : MemoryId) (t : Instant) : Memory :=
-  ⟨id, .Abstraction, owner, schema, none, none, none, none, t⟩
+  ⟨id, .Abstraction, owner, schema, none, none, none, none, t, none, none, fun h => nomatch h⟩
 
 /-- A concrete flavor Perspective — useful for app-owned policy/current-state
     views. -/
 def perspective (schema : SchemaRef) (owner : Owner) (id : MemoryId) (t : Instant) : Memory :=
-  ⟨id, .Perspective, owner, schema, none, none, none, none, t⟩
+  ⟨id, .Perspective, owner, schema, none, none, none, none, t, none, none, fun h => nomatch h⟩
 
 /-- A flavor Fact published to World (the universal read-only group). -/
 def published (schema : SchemaRef) (id : MemoryId) (t : Instant) : Memory :=
-  ⟨id, .Fact, world, schema, none, none, none, none, t⟩
+  ⟨id, .Fact, world, schema, none, none, none, none, t, none, none, fun _ => rfl⟩
 
 /-- Optional flavor-owned Memory sidecar. There is intentionally no theorem
     requiring such a wrapper for every memory row; sidecars are flavor/engine
@@ -70,11 +72,10 @@ structure OptionalGoalSidecar (Payload : Type) where
   goal    : Goal
   payload : Payload
 
-/-- Optional flavor-owned Edge sidecar. Edge typing is still governed by the
-    registered relation descriptor; additional payload is flavor/engine storage. -/
-structure OptionalEdgeSidecar (Payload : Type) where
-  edge    : Edge
-  payload : Payload
+/- There is deliberately NO `OptionalEdgeSidecar`. Typed edge sidecars are
+   gone with the relation layer (doc 16 §What This Removes): an index row
+   carries no payload at all (E6), and content that wanted a sidecar belongs in
+   a node's payload. -/
 
 /-- Optional event/receipt metadata for an admitted Fact. A receipt can represent
     any observed source: webhook, alert, sensor spike, API write, or a direct
@@ -96,12 +97,6 @@ theorem goal_sidecar_payload_irrelevant
     (OptionalGoalSidecar.mk goal payload₁).goal =
       (OptionalGoalSidecar.mk goal payload₂).goal := rfl
 
-/-- Changing Edge-sidecar payload does not change the kernel-visible row. -/
-theorem edge_sidecar_payload_irrelevant
-    {Payload : Type} (edge : Edge) (payload₁ payload₂ : Payload) :
-    (OptionalEdgeSidecar.mk edge payload₁).edge =
-      (OptionalEdgeSidecar.mk edge payload₂).edge := rfl
-
 /-- Changing receipt payload does not change the admitted Fact. -/
 theorem fact_receipt_payload_irrelevant
     {Payload : Type} (fact : Fact) (payload₁ payload₂ : Payload) :
@@ -111,13 +106,13 @@ theorem fact_receipt_payload_irrelevant
 /-- Memory invariants apply to the projected `Memory`, independently of the
     optional sidecar payload, once that row belongs to an admitted graph. -/
 theorem memory_sidecar_grounded
-    (registry : RelationRegistry) (memories : Set Memory) (goals : Set Goal)
+    (memories : Set Memory) (goals : Set Goal)
     (factEntities : Set FactEntity) (edges : Set Edge)
-    (hgraph : MemoryGraphValid registry memories goals factEntities edges)
+    (hgraph : MemoryGraphValid memories goals factEntities edges)
     {Payload : Type} (row : OptionalMemorySidecar Payload)
     (hm : row.memory ∈ memories) :
-    GroundsInFact registry edges row.memory :=
-  memory_grounds_in_facts registry memories goals factEntities edges hgraph row.memory hm
+    GroundsInFact edges row.memory :=
+  memory_grounds_in_facts memories goals factEntities edges hgraph row.memory hm
 
 /-- Goal invariants apply to the projected `Goal`, independently of the optional
     sidecar payload. This is intentionally just projection: sidecars add no new
@@ -126,12 +121,14 @@ theorem goal_sidecar_state_projection
     {Payload : Type} (row : OptionalGoalSidecar Payload) :
     goal_state row.goal = row.goal.state := rfl
 
-/-- Edge validity applies to the projected `Edge`, independently of the optional
-    sidecar payload. Relation descriptors remain the only kernel typing gate. -/
-theorem edge_sidecar_core_valid
-    (registry : RelationRegistry) {Payload : Type} (row : OptionalEdgeSidecar Payload)
-    (h : EdgeCoreValid registry row.edge) :
-    EdgeCoreValid registry row.edge := h
+/-- A flavor's index rows are ordinary rows: they come from the flavor node's
+    own declaration, and a legal declaration derives valid rows by the same
+    theorem that governs core (`declared_edges_valid`). A flavor adds no
+    typing gate, because there is none left to add to. -/
+theorem flavor_declared_edges_valid
+    (d : NodeDeclaration) (hd : NodeDeclarationValid d) :
+    ∀ e : Edge, e ∈ d.edges → EdgeValid e :=
+  declared_edges_valid d hd
 
 /-- A receipt witnesses only admission of a Fact-shaped row. It does not certify
     external truth; source-specific trust belongs to flavor/engine policy. -/
@@ -155,29 +152,27 @@ theorem perspective_is_perspective
     memory graph. The flavor inherits provenance grounding from the table bundle;
     no flavor-specific axiom is added. -/
 theorem abstraction_grounded
-    (registry : RelationRegistry) (memories : Set Memory) (goals : Set Goal)
+    (memories : Set Memory) (goals : Set Goal)
     (factEntities : Set FactEntity) (edges : Set Edge)
-    (hgraph : MemoryGraphValid registry memories goals factEntities edges)
+    (hgraph : MemoryGraphValid memories goals factEntities edges)
     (schema : SchemaRef) (owner : Owner) (id : MemoryId) (t : Instant)
     (hm : abstraction schema owner id t ∈ memories) :
-    GroundsInFact registry edges (abstraction schema owner id t) :=
-  memory_grounds_in_facts registry memories goals factEntities edges hgraph _ hm
+    GroundsInFact edges (abstraction schema owner id t) :=
+  memory_grounds_in_facts memories goals factEntities edges hgraph _ hm
 
-/-- The flavor's Perspective inherits the universal Perspective provenance rule:
-    once admitted to a valid graph, it must carry Provenance to an admitted
-    Abstraction. -/
-theorem perspective_has_abstraction_provenance
-    (registry : RelationRegistry) (memories : Set Memory) (goals : Set Goal)
+/-- The flavor's Perspective inherits the universal Perspective rule: once
+    admitted to a valid graph it must rest on an admitted memory row — its
+    origins if it derived, its subjects if it interprets. -/
+theorem flavor_perspective_has_provenance
+    (memories : Set Memory) (goals : Set Goal)
     (factEntities : Set FactEntity) (edges : Set Edge)
-    (hgraph : MemoryGraphValid registry memories goals factEntities edges)
+    (hgraph : MemoryGraphValid memories goals factEntities edges)
     (schema : SchemaRef) (owner : Owner) (id : MemoryId) (t : Instant)
     (hm : perspective schema owner id t ∈ memories) :
-    ∃ e : Edge, e ∈ edges ∧ EdgeHasClass registry e .Provenance ∧
+    ∃ e : Edge, e ∈ edges ∧
       edge_source e = .memory (perspective schema owner id t) ∧
-      (∃ mt : Memory, mt ∈ memories ∧ edge_target e = .memory mt ∧
-        memory_kind mt = .Abstraction) :=
-  Causa.perspective_has_provenance registry memories goals factEntities edges
-    hgraph _ hm rfl
+      (∃ mt : Memory, mt ∈ memories ∧ edge_target e = .memory mt) :=
+  Causa.perspective_has_provenance memories goals factEntities edges hgraph _ hm rfl
 
 /-- A flavor Fact published to World is readable by every requester — its access
     is its owner's, governed by the universal rule (`world_universally_readable`). -/
@@ -205,16 +200,15 @@ theorem wipeable_when_abandoned (schema : SchemaRef) (owner : Owner) (id : Memor
 -- proven, not assumed.
 #print axioms memory_sidecar_payload_irrelevant
 #print axioms goal_sidecar_payload_irrelevant
-#print axioms edge_sidecar_payload_irrelevant
 #print axioms fact_receipt_payload_irrelevant
 #print axioms memory_sidecar_grounded
 #print axioms goal_sidecar_state_projection
-#print axioms edge_sidecar_core_valid
+#print axioms flavor_declared_edges_valid
 #print axioms fact_receipt_is_fact
 #print axioms fact_is_fact
 #print axioms perspective_is_perspective
 #print axioms abstraction_grounded
-#print axioms perspective_has_abstraction_provenance
+#print axioms flavor_perspective_has_provenance
 #print axioms published_readable
 #print axioms published_read_only
 #print axioms wipeable_when_abandoned

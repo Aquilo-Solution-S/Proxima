@@ -6,15 +6,17 @@ Goal: intended direction — desired future state, lifecycle head
 Memory (doc 06 §Goal Entity, "Not Memory"). The two distinct Lean
 Types carry GO-6 structurally.
 
-Goal-to-Goal decomposition / dependency / inspiration is ordinary Edge
-topology, not a `Goal` row field. Decisions about Goal↔Goal relations
-live with Edge rows and relation descriptors; the kernel keeps no
-`goal_parents` DAG primitive.
+Goal↔Goal decomposition/dependency, assignment, and evidence are declared ON
+THE GOAL ROW (`dependency_goal_ids`, `assignment_perspective_id`,
+`evidence_memory_ids`; doc 16 §Flavor Migration). The index rows are DERIVED
+from those columns, which is what makes the goal side of the edge table
+rebuildable (E7) — the Goal row is the home of the statement, the index only
+records that it was made. The kernel keeps no `goal_parents` DAG primitive.
 
 GO-7 — there is no Self primitive in this kernel, BY DESIGN:
 "There is no Self row" (doc 06 §Self). Self(instance) is a query —
 readable Perspective selector rows + active Goal heads. Head-aware Perspective
-queries require Edge-table supersession state and live in `Causa.Edges`
+queries read the memory row's lineage pointer and live in `Causa.Memory`
 (`perspectiveHeads`). Self must never be cached as a Memory row, a Goal row,
 Personality instance, or materialized causal chain ("cache would become
 authority"). The absence of a `Self` axiom here is the invariant;
@@ -111,9 +113,8 @@ structure WakeConfig where
   hard_memories : Set MemoryId
 
 /-- Goal row shape. Supersession stores the prior Goal id, not a recursive
-    object pointer. Goal↔Goal DAG/topology is deliberately absent: those
-    decisions are represented by ordinary Edge rows and relation descriptors.
-    `wake` arms the Goal (D-A); `none` = a passive standing intent. -/
+    object pointer, and the three topology columns store ids for the same
+    reason. `wake` arms the Goal (D-A); `none` = a passive standing intent. -/
 structure Goal where
   id          : GoalId
   owner       : Owner
@@ -125,6 +126,15 @@ structure Goal where
   authorship  : GoalAuthorship
   close_fact  : Option Memory
   wake        : Option WakeConfig
+  /-- GO-12 — the self Perspective this Goal inspires
+      (`goals.assignment_perspective_id`, where `core/inspires` went). -/
+  assignment  : Option MemoryId
+  /-- GO-3/GO-4 — the Goals this one waits on (`goals.dependency_goal_ids`,
+      where `core/depends-on` went). -/
+  dependencies : List GoalId
+  /-- GO-14 — the memories this Goal rests on (`goals.evidence_memory_ids`,
+      where `core/motivated-by` / `core/wake-motivated-by` went). -/
+  evidence    : List MemoryId
   terminal_close_fact :
     state.terminal = true →
       ∃ m : Memory, close_fact = some m ∧ memory_kind m = .Fact
@@ -158,6 +168,23 @@ def goal_close_fact : Goal → Option Memory := Goal.close_fact
 
 /-- Compatibility accessor for prose/Rust vocabulary. -/
 def goal_wake : Goal → Option WakeConfig := Goal.wake
+
+/-- Compatibility accessor for prose/Rust vocabulary. -/
+def goal_assignment : Goal → Option MemoryId := Goal.assignment
+
+/-- Compatibility accessor for prose/Rust vocabulary. -/
+def goal_dependencies : Goal → List GoalId := Goal.dependencies
+
+/-- Compatibility accessor for prose/Rust vocabulary. -/
+def goal_evidence : Goal → List MemoryId := Goal.evidence
+
+/-- E7, Goal side — every id a Goal row declares about another node, in the
+    order the write asserts them: the Perspective it inspires, the Goals it
+    waits on, the memories it rests on. Exactly one `reference` index row per
+    entry (`goal_topology_edge_count` in storage), and nothing else: a Goal
+    declares no derivation, so it sources no `origin` row. -/
+def goalDeclaredTargetIds (g : Goal) : List Id :=
+  (goal_assignment g).toList ++ goal_dependencies g ++ goal_evidence g
 
 /-- A Goal is ARMED when it carries wake configuration — only then does it
     react to Facts. The passive case (`none`) is a standing intent. -/
@@ -273,14 +300,14 @@ theorem goal_root_active :
   exact hvalid g hg hroot
 
 -- ============================================================
--- Goal-to-Goal topology
+-- Goal-to-Goal topology (doc 16 §Flavor Migration)
 -- ============================================================
 
-/- GO-3/GO-4 retired from the Goal row: no `goal_parents` accessor,
-   no Goal-local DAG. Goal decomposition/dependency/inspiration is
-   Edge topology, with relation descriptor masks and edge ownership
-   governing legality. Relation-specific acyclicity, if needed, is
-   engine/relation validation, not a core Goal-row invariant. -/
+/- GO-3/GO-4: no `goal_parents` accessor and no Goal-local DAG entity.
+   Decomposition/dependency is the `dependency_goal_ids` column above, and the
+   index rows it implies are ordinary `reference` entries derived from it.
+   Relation-specific acyclicity, if needed, is engine validation, not a core
+   Goal-row invariant. -/
 
 -- ============================================================
 -- Heads and the active set (doc 06 §Goal Entity)
@@ -456,5 +483,101 @@ theorem self_perspective_kind :
       m ∈ selfPerspectives memories o → memory_kind m = .Perspective := by
   intro memories o m h
   exact h.2.2
+
+-- ============================================================
+-- Goal assignment and evidence (doc 06 §Goal Assignment; doc 16)
+-- ============================================================
+
+/-- GO-12 — Goal assignment to a Self-Perspective, read off the Goal row's
+    own `assignment_perspective_id`. No Self entity, no relation id, and no
+    edge: the Goal knows the Perspective it inspires, and the `reference`
+    index row is derived from that column. -/
+def goalAssignedToPerspective (memories : Set Memory) (goal : Goal) (self : Memory) : Prop :=
+  self ∈ memories ∧
+  memory_kind self = .Perspective ∧
+  goal_assignment goal = some (memory_id self)
+
+/-- Projection: an assignment target is a Perspective row. -/
+theorem goal_assignment_target_perspective :
+    ∀ memories goal self,
+      goalAssignedToPerspective memories goal self → memory_kind self = .Perspective := by
+  intro _ _ _ h
+  exact h.2.1
+
+/-- GO-12 — active goals for a queried Self-Perspective: begin at assigned
+    Goal rows, follow Goal supersession inside the Goal table, and return only
+    current Active heads. A query over Goals + Memories, not a Self row. -/
+def activeGoalsForSelf
+    (goals : Set Goal) (memories : Set Memory) (self : Memory) : Set Goal :=
+  fun head =>
+    ∃ source : Goal,
+      source ∈ goals ∧
+      goalAssignedToPerspective memories source self ∧
+      activeGoalHeadFrom goals source head
+
+/-- Projection: every Self-assigned active Goal is Active. -/
+theorem active_goal_for_self_active :
+    ∀ goals memories self head,
+      head ∈ activeGoalsForSelf goals memories self → goal_state head = .Active := by
+  intro goals memories self head h
+  rcases h with ⟨source, _, _, hhead⟩
+  exact active_goal_head_from_active goals source head hhead
+
+/-- Projection: every Self-assigned active Goal is a lifecycle head. -/
+theorem active_goal_for_self_head :
+    ∀ goals memories self head,
+      head ∈ activeGoalsForSelf goals memories self → goalIsHead goals head := by
+  intro goals memories self head h
+  rcases h with ⟨source, _, _, hhead⟩
+  exact active_goal_head_from_head goals source head hhead
+
+/-- Projection: Self-assigned active Goals come from Perspective-targeted
+    assignment, not from an owner-only active-goal scan. -/
+theorem active_goal_for_self_has_assignment :
+    ∀ goals memories self head,
+      head ∈ activeGoalsForSelf goals memories self →
+        ∃ source : Goal,
+          source ∈ goals ∧
+          goalAssignedToPerspective memories source self ∧
+          activeGoalHeadFrom goals source head := by
+  intro goals memories self head h
+  exact h
+
+/-- GO-14/GO-16 — table-scoped evidence validity for Goal rows. Every declared
+    evidence id resolves to an admitted non-Perspective memory (the write path
+    admits Fact and Abstraction only), and an operator-authored Goal must rest
+    on at least one. User/External Goals may be intent without evidence. -/
+structure GoalEvidenceValid (goals : Set Goal) (memories : Set Memory) : Prop where
+  resolved : ∀ g : Goal, g ∈ goals → ∀ i : MemoryId, i ∈ goal_evidence g →
+    ∃ m : Memory, m ∈ memories ∧ memory_id m = i ∧ memory_kind m ≠ .Perspective
+  operatorGrounded : ∀ g : Goal, g ∈ goals →
+    goal_authorship g = .SystemOperator → goal_evidence g ≠ []
+
+/-- Projection: every SystemOperator Goal has table-resolved evidence. -/
+theorem system_operator_goal_has_evidence :
+    ∀ goals memories,
+      GoalEvidenceValid goals memories →
+      ∀ g : Goal, g ∈ goals → goal_authorship g = .SystemOperator →
+        ∃ m : Memory, m ∈ memories ∧ memory_id m ∈ goal_evidence g ∧
+          memory_kind m ≠ .Perspective := by
+  intro goals memories hvalid g hg hauth
+  have hne := hvalid.operatorGrounded g hg hauth
+  obtain ⟨i, hi⟩ : ∃ i : MemoryId, i ∈ goal_evidence g := by
+    cases hlist : goal_evidence g with
+    | nil => exact absurd hlist hne
+    | cons a rest => exact ⟨a, List.mem_cons_self _ _⟩
+  obtain ⟨m, hm, hid, hkind⟩ := hvalid.resolved g hg i hi
+  exact ⟨m, hm, by rw [hid]; exact hi, hkind⟩
+
+/-- Projection: Goal evidence never points at a Perspective. Every declared
+    evidence id resolves to an admitted Fact or Abstraction — a Goal rests on
+    what was observed or derived, never on a judgment. -/
+theorem goal_evidence_not_perspective :
+    ∀ goals memories,
+      GoalEvidenceValid goals memories →
+      ∀ (g : Goal) (i : MemoryId), g ∈ goals → i ∈ goal_evidence g →
+        ∃ m : Memory, m ∈ memories ∧ memory_id m = i ∧ memory_kind m ≠ .Perspective := by
+  intro goals memories hvalid g i hg hi
+  exact hvalid.resolved g hg i hi
 
 end Causa
