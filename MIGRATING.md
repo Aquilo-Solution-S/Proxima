@@ -13,7 +13,7 @@ not a reference. Deployment and env vars live in
 
 | You are | Read |
 |---|---|
-| An **operator** promoting a deployment | [the v0.0.7 schema lane](#the-v007-schema-lane), then [scheduled maintenance](#scheduled-maintenance-changes) |
+| An **operator** promoting a deployment | [the v0.0.8 edge reset](#the-v008-edge-reset), then [the v0.0.7 schema lane](#the-v007-schema-lane) and [scheduled maintenance](#scheduled-maintenance-changes) |
 | Running the **code flavor** | the above, then [re-index every repository](#re-index-every-code-repository) |
 | An **MCP client / agent** author | [wire changes](#wire-changes-mcp-clients) |
 | An **embedding host** driving `Engine` in Rust | [Rust host changes](#rust-host-changes) |
@@ -23,8 +23,110 @@ not a reference. Deployment and env vars live in
 Every upgrade also needs [the lock-step rules](#rules-for-every-upgrade) and
 [the closing checks](#checks-before-calling-an-upgrade-done).
 
-Older lanes are kept below: [v0.0.5 → v0.0.6](#v005--v006) and
-[the v0.0.4 reset](#the-v004-reset).
+Older lanes are kept below: [v0.0.6 → v0.0.7](#v006--v007),
+[v0.0.5 → v0.0.6](#v005--v006) and [the v0.0.4 reset](#the-v004-reset).
+
+---
+
+# v0.0.7 → v0.0.8
+
+## The v0.0.8 edge reset
+
+One core migration, `0015_v008.sql` (version 15). It is a **reset lane**, in
+the spirit of [the v0.0.4 reset](#the-v004-reset): the edge layer is replaced,
+not transformed. Read [16-edges.md](docs/16-edges.md) for why.
+
+| # | Source | File | Rewrites tables? |
+|---|---|---|---|
+| 15 | core | `0015_v008.sql` | **yes** — `edges` is dropped and recreated |
+
+`MIN_CORE_MIGRATION_VERSION` bumps to 15. A host booting with
+`PROXIMA_SKIP_MIGRATIONS=true` against a database that has not applied it
+fails at `ensure_core_schema_current`, naming the lane, rather than failing at
+first query.
+
+### Every existing edge row is dropped
+
+There is no transform and no carry-over. `proxima_core.edges` is dropped with
+its typed sidecar (`agent_link_v1`), its relation vocabulary
+(`relation_class`, `edge_authorship_kind`) and its identity column, and a new
+table is created in its place:
+
+```
+edges(source_kind, source_id, target_kind, target_id, kind,
+      owner_kind, owner_id, created_at)
+PRIMARY KEY (source_kind, source_id, target_kind, target_id, kind)
+```
+
+An edge now has no id, no payload, no relation string and no authorship mask —
+its whole content is its existence. There are exactly two kinds, `origin` and
+`reference`, and the enum is not extensible.
+
+**Back up first**, then plan the rebuild:
+
+```sh
+pg_dump "$DATABASE_URL" -Fc -f pre-v0.0.8-backup.dump
+```
+
+- **Origin rows come back on their own** for everything written after the
+  upgrade: a derivation declares what it was made from, and storage writes the
+  row inside the same transaction. Historical provenance is *not*
+  reconstructed; `supersedes` (a column, untouched by this lane) still carries
+  revision history.
+- **Reference rows come back with re-ingest.** A reference row is derived from
+  a schema-declared payload field, so re-ingesting a source rebuilds every
+  reference its payloads declare. For the code flavor that means
+  [re-index every repository](#re-index-every-code-repository).
+
+There is no migration path back to the reference rows other than re-ingest.
+That is deliberate: a reference row that no payload declares is a row nothing
+can rebuild, and rebuildability is the invariant the whole layer rests on.
+
+### What moved out of the edge table
+
+Four things that used to be edges are now node state. If your host or flavor
+reads them, it reads columns now.
+
+| Was | Is |
+|---|---|
+| a supersession edge | `memories.superseded_by` / `goals.superseded_by`, plus the existing `supersedes` |
+| an authorship mask on the edge | `memories.authoring_perspective_id` |
+| `core/inspires`, `core/depends-on`, `core/motivated-by` | `goals.assignment_perspective_id`, `goals.dependency_goal_ids`, `goals.evidence_memory_ids` |
+| `agent_link_v1`'s reason + confidence | `proxima_core.interpretation_v1`, a Perspective sidecar |
+
+The goal columns are the statement; the `reference` rows in `edges` are
+derived from them in the same transaction, which is what makes the goal side
+of the index rebuildable.
+
+`memories.citation_mapping_id` is now allowed on Abstraction as well as Fact —
+a computed score is an Abstraction, and an Abstraction may cite. Perspectives
+still never cite directly.
+
+### `change_event` carries the edge, not a handle to it
+
+`edge_id`, `edge_relation` and the six `edge_{source,target}_*_id` columns are
+dropped. In their place: `edge_kind`, `edge_source_kind`, `edge_source_id`,
+`edge_target_kind`, `edge_target_id`. A consumer that stored `edge_id` from a
+change event has nothing to look the row up with — the endpoints and the kind
+are the row. Subscribers should re-sync from `seq_high_water` after the
+upgrade rather than resuming against pre-lane edge events.
+
+### This lane is not online-safe
+
+`DROP TABLE` and `ADD COLUMN ... NOT NULL DEFAULT` on `goals` take
+`ACCESS EXCLUSIVE`, and sqlx runs the file in one transaction, so every table
+it touches stays locked until the file finishes. Large deployments should
+apply it out of band during a maintenance window and boot with
+`PROXIMA_SKIP_MIGRATIONS=true`. Small deployments can let boot apply it — boot
+migrations set `lock_timeout = 5s`, so a migration that cannot get the lock
+fails and retries on the next pod.
+
+### Rollback is by image, and it costs the edges again
+
+There are no `.down.sql` files. Rolling the binary back to v0.0.7 against a
+version-15 database does not work: the v0.0.7 binary expects `edges.edge_id`
+and the relation vocabulary, and `ensure_core_schema_current` will not accept
+the new shape. Roll back by restoring the pre-upgrade dump.
 
 ---
 

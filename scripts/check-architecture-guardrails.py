@@ -482,10 +482,10 @@ def check_owner_write_permit_surfaces(findings: list[Finding]) -> None:
             "close_batch",
         ],
         "crates/core/src/storage_ports/mcp.rs": ["persist_mcp_call_atomic"],
-        "crates/core/src/storage_ports/memory.rs": [
-            "author_derived",
-            "append_memory_edge",
-        ],
+        # There is no edge-write surface to guard. An edge is not a thing a
+        # caller appends; it is the index row a node write leaves behind, so
+        # the permit that guards the node write is the only one there is.
+        "crates/core/src/storage_ports/memory.rs": ["author_derived"],
         "crates/core/src/storage_ports/embeddings.rs": ["enqueue_missing_embedding_jobs"],
         "crates/core/src/storage_ports/goals.rs": [
             "create_goal_atomic",
@@ -518,12 +518,6 @@ def check_owner_write_permit_surfaces(findings: list[Finding]) -> None:
         "crates/storage-pg/src/verbs/derive_append.rs": [
             "append_derived_in_tx",
             "append_derived_with_edges_in_tx",
-        ],
-        "crates/storage-pg/src/verbs/edge_write.rs": [
-            "append_owner_checked_memory_edge",
-            "append_owner_checked_edge",
-            "append_owner_checked_typed_memory_edge",
-            "append_owner_checked_typed_edge",
         ],
         "crates/storage-pg/src/verbs/close_batch.rs": ["close_batch"],
         "crates/storage-pg/src/verbs/persist_mcp_call.rs": [
