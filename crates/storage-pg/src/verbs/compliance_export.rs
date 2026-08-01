@@ -16,7 +16,6 @@ pub async fn export_owner_bundle(
     auth: &ExportAuthorization,
     fact_sidecar_tables: &[String],
     goal_sidecar_tables: &[String],
-    edge_sidecar_tables: &[String],
     citation_mapping_sidecar_tables: &[String],
     cited_object_sidecar_tables: &[String],
 ) -> Result<ComplianceExportBundle, StorageError> {
@@ -37,7 +36,6 @@ pub async fn export_owner_bundle(
         SidecarTables {
             fact: fact_sidecar_tables,
             goal: goal_sidecar_tables,
-            edge: edge_sidecar_tables,
             citation_mapping: citation_mapping_sidecar_tables,
             cited_object: cited_object_sidecar_tables,
         },
@@ -83,7 +81,6 @@ pub async fn export_owner_bundle(
 struct SidecarTables<'a> {
     fact: &'a [String],
     goal: &'a [String],
-    edge: &'a [String],
     citation_mapping: &'a [String],
     cited_object: &'a [String],
 }
@@ -128,18 +125,6 @@ async fn export_sidecars(
             sidecar_column: "goal_id",
             base_table: "proxima_core.goals",
             base_column: "goal_id",
-        },
-    )
-    .await?;
-    extend_sidecars(
-        pool,
-        owner,
-        &mut sidecars,
-        tables.edge,
-        SidecarJoin {
-            sidecar_column: "edge_id",
-            base_table: "proxima_core.edges",
-            base_column: "edge_id",
         },
     )
     .await?;
@@ -328,7 +313,7 @@ SELECT to_jsonb(e)
   FROM proxima_core.edges e
  WHERE e.owner_kind = $1
    AND e.owner_id IS NOT DISTINCT FROM $2
- ORDER BY e.created_at, e.edge_id";
+ ORDER BY e.created_at, e.source_kind, e.source_id, e.target_kind, e.target_id, e.kind";
 
 const FACT_ENTITY_ROWS_SQL: &str = "
 SELECT to_jsonb(fe)

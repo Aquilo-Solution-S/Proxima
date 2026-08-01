@@ -24,7 +24,6 @@ impl ComplianceErasePort for PgStorage {
         object_purge_planned: bool,
         fact_sidecar_tables: &[String],
         goal_sidecar_tables: &[String],
-        edge_sidecar_tables: &[String],
         citation_mapping_sidecar_tables: &[String],
         cited_object_sidecar_tables: &[String],
     ) -> Result<ComplianceEraseOutcome, StorageError> {
@@ -35,7 +34,6 @@ impl ComplianceErasePort for PgStorage {
             object_purge_planned,
             fact_sidecar_tables,
             goal_sidecar_tables,
-            edge_sidecar_tables,
             citation_mapping_sidecar_tables,
             cited_object_sidecar_tables,
         )
@@ -49,7 +47,6 @@ impl ComplianceErasePort for PgStorage {
         object_purge_planned: bool,
         fact_sidecar_tables: &[String],
         goal_sidecar_tables: &[String],
-        edge_sidecar_tables: &[String],
         citation_mapping_sidecar_tables: &[String],
         cited_object_sidecar_tables: &[String],
     ) -> Result<ComplianceEraseOutcome, StorageError> {
@@ -60,7 +57,6 @@ impl ComplianceErasePort for PgStorage {
             object_purge_planned,
             fact_sidecar_tables,
             goal_sidecar_tables,
-            edge_sidecar_tables,
             citation_mapping_sidecar_tables,
             cited_object_sidecar_tables,
         )
@@ -74,7 +70,6 @@ impl ComplianceErasePort for PgStorage {
         source_id: &SourceId,
         fact_sidecar_tables: &[String],
         goal_sidecar_tables: &[String],
-        edge_sidecar_tables: &[String],
         citation_mapping_sidecar_tables: &[String],
         cited_object_sidecar_tables: &[String],
     ) -> Result<ComplianceEraseOutcome, StorageError> {
@@ -85,7 +80,6 @@ impl ComplianceErasePort for PgStorage {
             source_id,
             fact_sidecar_tables,
             goal_sidecar_tables,
-            edge_sidecar_tables,
             citation_mapping_sidecar_tables,
             cited_object_sidecar_tables,
         )
@@ -99,7 +93,6 @@ impl ComplianceErasePort for PgStorage {
         source_id: &SourceId,
         fact_sidecar_tables: &[String],
         goal_sidecar_tables: &[String],
-        edge_sidecar_tables: &[String],
         citation_mapping_sidecar_tables: &[String],
         cited_object_sidecar_tables: &[String],
     ) -> Result<ComplianceEraseOutcome, StorageError> {
@@ -110,7 +103,6 @@ impl ComplianceErasePort for PgStorage {
             source_id,
             fact_sidecar_tables,
             goal_sidecar_tables,
-            edge_sidecar_tables,
             citation_mapping_sidecar_tables,
             cited_object_sidecar_tables,
         )
@@ -122,7 +114,6 @@ impl ComplianceErasePort for PgStorage {
         auth: &ExportAuthorization,
         fact_sidecar_tables: &[String],
         goal_sidecar_tables: &[String],
-        edge_sidecar_tables: &[String],
         citation_mapping_sidecar_tables: &[String],
         cited_object_sidecar_tables: &[String],
     ) -> Result<ComplianceExportBundle, StorageError> {
@@ -131,7 +122,6 @@ impl ComplianceErasePort for PgStorage {
             auth,
             fact_sidecar_tables,
             goal_sidecar_tables,
-            edge_sidecar_tables,
             citation_mapping_sidecar_tables,
             cited_object_sidecar_tables,
         )

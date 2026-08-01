@@ -1,5 +1,5 @@
 use super::{
-    Arc, EdgeId, GoalId, HashMap, HashSet, MemoryId, PgConnection, PgSidecarEntry, PgSidecarKey,
+    Arc, GoalId, HashMap, HashSet, MemoryId, PgConnection, PgSidecarEntry, PgSidecarKey,
     PgSidecarReadCtx, Postgres, SchemaInfo, SidecarPayload, StorageError, Transaction,
 };
 
@@ -132,76 +132,6 @@ impl PgSidecarRegistryFrozen {
             memory_ids,
         )
         .await
-    }
-
-    /// Load typed sidecar payload projections for already-created Edge rows.
-    ///
-    /// # Errors
-    ///
-    /// Returns `ConstraintViolation` when no PG edge sidecar with a batch
-    /// reader is registered for the schema. Returns storage errors from the
-    /// concrete loader.
-    pub async fn load_edge_payloads_batch(
-        &self,
-        ctx: PgSidecarReadCtx<'_>,
-        key: &PgSidecarKey,
-        edge_ids: &[EdgeId],
-    ) -> Result<Vec<(EdgeId, SidecarPayload)>, StorageError> {
-        let entry = self.entries.get(key).ok_or_else(|| {
-            StorageError::ConstraintViolation(format!(
-                "no PG sidecar registered for {} v{} {:?}",
-                key.schema_id.as_str(),
-                key.schema_version.into_inner(),
-                key.kind,
-            ))
-        })?;
-        let load = entry.edge_load_batch.ok_or_else(|| {
-            StorageError::ConstraintViolation(format!(
-                "PG sidecar for {} v{} {:?} is not an edge sidecar",
-                key.schema_id.as_str(),
-                key.schema_version.into_inner(),
-                key.kind,
-            ))
-        })?;
-        load(ctx.for_registered_table(&entry.sidecar_table), edge_ids).await
-    }
-
-    /// Insert a typed sidecar row for an already-created Edge row.
-    ///
-    /// # Errors
-    ///
-    /// Returns `ConstraintViolation` when no PG edge sidecar is registered
-    /// for the payload schema or when the erased payload type does not match
-    /// the registered Rust type. Returns storage errors from the concrete
-    /// inserter.
-    pub async fn insert_edge_sidecar(
-        &self,
-        tx: &mut PgConnection,
-        edge_id: EdgeId,
-        payload: &SidecarPayload,
-    ) -> Result<(), StorageError> {
-        let key = PgSidecarKey::new(
-            payload.kind,
-            payload.schema_id.clone(),
-            payload.schema_version,
-        );
-        let entry = self.entries.get(&key).ok_or_else(|| {
-            StorageError::ConstraintViolation(format!(
-                "no PG sidecar registered for {} v{} {:?}",
-                key.schema_id.as_str(),
-                key.schema_version.into_inner(),
-                key.kind,
-            ))
-        })?;
-        let insert = entry.edge_insert.ok_or_else(|| {
-            StorageError::ConstraintViolation(format!(
-                "PG sidecar for {} v{} {:?} is not an edge sidecar",
-                key.schema_id.as_str(),
-                key.schema_version.into_inner(),
-                key.kind,
-            ))
-        })?;
-        insert(tx, edge_id, payload).await
     }
 
     /// Insert a typed sidecar row for an already-created cited-object row.

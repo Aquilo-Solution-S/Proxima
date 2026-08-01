@@ -970,10 +970,9 @@ fn push_payload_kind_filter(sql: &mut String, kind: PayloadKind) {
         PayloadKind::Fact => sql.push_str(" AND m.kind IS NULL"),
         PayloadKind::Abstraction => sql.push_str(" AND m.kind = 'Abstraction'"),
         PayloadKind::Perspective => sql.push_str(" AND m.kind = 'Perspective'"),
-        PayloadKind::Goal
-        | PayloadKind::Edge
-        | PayloadKind::CitedObject
-        | PayloadKind::CitationMapping => sql.push_str(" AND false"),
+        PayloadKind::Goal | PayloadKind::CitedObject | PayloadKind::CitationMapping => {
+            sql.push_str(" AND false");
+        }
     }
 }
 

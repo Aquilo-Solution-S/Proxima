@@ -177,7 +177,7 @@ pub async fn ensure_v004_baseline_compatible(pool: &PgPool) -> Result<(), Storag
 /// behind the binary: the readiness resource does not touch release-specific
 /// columns, so a stale database that boots reports healthy and then fails at
 /// first query.
-pub const MIN_CORE_MIGRATION_VERSION: i64 = 14;
+pub const MIN_CORE_MIGRATION_VERSION: i64 = 15;
 
 /// Fail closed when `skip_migrations` boot runs against a database that has
 /// not yet applied the current schema lane.
@@ -209,7 +209,7 @@ pub async fn ensure_core_schema_current(pool: &PgPool) -> Result<(), StorageErro
         .map_err(internal)?;
         if max_version.unwrap_or(0) < MIN_CORE_MIGRATION_VERSION {
             return Err(StorageError::Internal(format!(
-                "database core migrations at version {}; version {MIN_CORE_MIGRATION_VERSION}+ required — apply the v0.0.7 core lane (0011..0014_v007.sql) before boot (see MIGRATING.md)",
+                "database core migrations at version {}; version {MIN_CORE_MIGRATION_VERSION}+ required — apply the v0.0.8 edge lane (0015_v008.sql) before boot (see MIGRATING.md)",
                 max_version.unwrap_or(0)
             )));
         }
@@ -279,6 +279,34 @@ pub async fn ensure_core_schema_current(pool: &PgPool) -> Result<(), StorageErro
          )
          AND to_regprocedure('proxima_core.lexical_tsv(regconfig, text)') IS NOT NULL
          AND to_regclass('proxima_core.lexical_languages') IS NOT NULL
+         -- v0.0.8 edge lane (0015). Every index write binds the new edge
+         -- columns, every derived write binds authoring_perspective_id, and
+         -- every goal write binds the topology columns — none of them have a
+         -- fallback, and a pre-lane database would fail at first write rather
+         -- than at boot. The lane REPLACED the edges table, so the marker is
+         -- the new column, not the table.
+         AND EXISTS (
+             SELECT 1
+               FROM information_schema.columns
+              WHERE table_schema = 'proxima_core'
+                AND table_name = 'edges'
+                AND column_name = 'source_id'
+         )
+         AND EXISTS (
+             SELECT 1
+               FROM information_schema.columns
+              WHERE table_schema = 'proxima_core'
+                AND table_name = 'memories'
+                AND column_name = 'authoring_perspective_id'
+         )
+         AND EXISTS (
+             SELECT 1
+               FROM information_schema.columns
+              WHERE table_schema = 'proxima_core'
+                AND table_name = 'goals'
+                AND column_name = 'assignment_perspective_id'
+         )
+         AND to_regclass('proxima_core.interpretation_v1') IS NOT NULL
          -- Flavor lane skew: when the code flavor's tables exist, its
          -- language migration must have run too — the search builder emits
          -- s.lexical_language for the chunk projection (and reads its
@@ -311,7 +339,7 @@ pub async fn ensure_core_schema_current(pool: &PgPool) -> Result<(), StorageErro
 
     if !ready {
         return Err(StorageError::Internal(
-            "database is missing schema markers for this release lane (v0.0.6: embedding_jobs.next_attempt_at, memories append-only trigger; v0.0.7: memories.search_tsv, embeddings.chunk_index, proxima_core.lexical_tsv, proxima_core.lexical_config, memories.lexical_language, proxima_core.lexical_languages; code flavor, when present: code_chunk_v1.search_tsv and code_chunk_v1.lexical_language via flavor migration 20260728000020); apply migrations before boot (see MIGRATING.md)".into(),
+            "database is missing schema markers for this release lane (v0.0.6: embedding_jobs.next_attempt_at, memories append-only trigger; v0.0.7: memories.search_tsv, embeddings.chunk_index, proxima_core.lexical_tsv, proxima_core.lexical_config, memories.lexical_language, proxima_core.lexical_languages; v0.0.8: edges.source_id, memories.authoring_perspective_id, goals.assignment_perspective_id, proxima_core.interpretation_v1; code flavor, when present: code_chunk_v1.search_tsv and code_chunk_v1.lexical_language via flavor migration 20260728000020); apply migrations before boot (see MIGRATING.md)".into(),
         ));
     }
     Ok(())
@@ -775,6 +803,22 @@ mod pgvector_tests {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn core_migrator_contains_the_v008_edge_lane() {
+        let versions: Vec<i64> = super::core_migrator()
+            .iter()
+            .map(|migration| migration.version)
+            .collect();
+        assert!(
+            versions.contains(&15),
+            "core migrator must embed 0015_v008.sql"
+        );
+        assert!(
+            versions.iter().copied().max().unwrap_or(0) >= super::MIN_CORE_MIGRATION_VERSION,
+            "the boot floor must be a version the migrator can actually reach"
+        );
+    }
+
     #[test]
     fn core_migrator_contains_v006_migrations() {
         let versions: Vec<i64> = super::core_migrator()

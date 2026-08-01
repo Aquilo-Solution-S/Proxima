@@ -1,9 +1,9 @@
+use super::wake::write_goal_wake_config;
 use super::{
-    EdgeAuthorshipKind, EdgeDraft, EntityKind, ExistingGoalRow, GoalAtomicContext, GoalDraft,
-    GoalId, GoalState, InsertedGoal, PayloadKind, PgSidecarKey, PgSidecarRegistryFrozen, Postgres,
-    StorageError, Transaction, WakeWrite, append_edge_in_tx, authorship_columns,
-    authorship_matches, existing_goal_body_matches, idempotency_conflict, map_err,
-    resolve_relation, validate_active_head, write_goal_wake_config,
+    ExistingGoalRow, GoalAtomicContext, GoalDraft, GoalId, GoalState, InsertedGoal, PayloadKind,
+    PgSidecarKey, PgSidecarRegistryFrozen, Postgres, StorageError, Transaction, WakeWrite,
+    authorship_columns, authorship_matches, existing_goal_body_matches, idempotency_conflict,
+    map_err, validate_active_head,
 };
 
 pub(super) async fn insert_or_replay_goal(
@@ -104,7 +104,11 @@ async fn insert_new_goal(
 ) -> Result<InsertedGoal, StorageError> {
     let goal_id = uuid::Uuid::now_v7();
     let change_seq = uuid::Uuid::now_v7();
+    validate_goal_dependencies(tx, draft).await?;
     insert_goal_row(tx, draft, goal_id, expected_prior).await?;
+    if let Some(prior) = expected_prior {
+        point_prior_goal_head_forward(tx, prior, goal_id).await?;
+    }
     insert_goal_sidecar(
         tx,
         sidecars,
@@ -114,7 +118,6 @@ async fn insert_new_goal(
         expected_prior,
     )
     .await?;
-    insert_goal_dependency_edges(tx, context, draft, goal_id).await?;
     write_goal_wake_config(tx, context, GoalId::new(goal_id), wake_write).await?;
     insert_goal_change_event(tx, draft, goal_id, change_seq, expected_prior).await?;
     Ok(InsertedGoal {
@@ -211,16 +214,22 @@ async fn insert_goal_row(
     let owner = draft.owner();
     let (owner_kind, owner_id) = owner.columns();
     let authorship = authorship_columns(&draft.authorship);
+    // The topology columns travel with the row: the Goal is the home of the
+    // statement that it inspires this Perspective, waits on these Goals and
+    // rests on this evidence. The reference rows in `edges` are derived from
+    // them afterwards, in this same transaction.
     sqlx::query(
         "INSERT INTO proxima_core.goals
             (goal_id, schema_id, schema_version, owner_kind, owner_id,
              title, text, payload, state, supersedes,
              authorship_kind, authorship_origin, authorship_operator_id,
              authorship_tool_id, operator_kind, input_contract_id, model_id, prompt_version,
-             request_id, idempotency_key)
+             request_id, idempotency_key,
+             assignment_perspective_id, dependency_goal_ids, evidence_memory_ids)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
                  $11, $12, $13, $14, $15, $16, $17, $18, $19,
-                 md5($4::text || ':' || $5::text || ':' || $19))",
+                 md5($4::text || ':' || $5::text || ':' || $19),
+                 $20, $21, $22)",
     )
     .bind(goal_id)
     .bind(draft.schema_id.as_str())
@@ -241,10 +250,53 @@ async fn insert_goal_row(
     .bind(authorship.model_id)
     .bind(authorship.prompt_version)
     .bind(&draft.request_id)
+    .bind(draft.topology.assignment().perspective_id().into_inner())
+    .bind(
+        draft
+            .topology
+            .dependencies()
+            .iter()
+            .map(|dependency| dependency.goal_id().into_inner())
+            .collect::<Vec<_>>(),
+    )
+    .bind(
+        draft
+            .topology
+            .evidence()
+            .iter()
+            .map(|item| item.memory_id().into_inner())
+            .collect::<Vec<_>>(),
+    )
     .execute(&mut **tx)
     .await
     .map_err(map_goal_insert_err)?;
     Ok(())
+}
+
+/// Close the lineage pointer on the Goal this write revises. Same shape as
+/// the memory-side pointer: the successor already carries `supersedes`, and
+/// this stamps the predecessor.
+async fn point_prior_goal_head_forward(
+    tx: &mut Transaction<'_, Postgres>,
+    prior: GoalId,
+    successor: uuid::Uuid,
+) -> Result<(), StorageError> {
+    let updated = sqlx::query(
+        "UPDATE proxima_core.goals
+            SET superseded_by = $2
+          WHERE goal_id = $1
+            AND superseded_by IS NULL",
+    )
+    .bind(prior.into_inner())
+    .bind(successor)
+    .execute(&mut **tx)
+    .await
+    .map_err(map_err)?;
+    if updated.rows_affected() == 1 {
+        Ok(())
+    } else {
+        Err(StorageError::Conflict("stale goal head".into()))
+    }
 }
 
 fn map_goal_insert_err(err: sqlx::Error) -> StorageError {
@@ -266,33 +318,16 @@ fn map_goal_insert_err(err: sqlx::Error) -> StorageError {
     map_err(err)
 }
 
-async fn insert_goal_dependency_edges(
+/// A declared dependency must be a live head at write time. The reference
+/// row that follows is derived from the column, so this is the only place the
+/// dependency is checked.
+async fn validate_goal_dependencies(
     tx: &mut Transaction<'_, Postgres>,
-    context: GoalAtomicContext<'_>,
     draft: &GoalDraft,
-    goal_id: uuid::Uuid,
 ) -> Result<(), StorageError> {
     let owner = draft.owner();
-    let relation = resolve_relation(context, proxima_core::relation::CORE_DEPENDS_ON_RELATION)?;
     for dependency in draft.topology.dependencies() {
-        let dependency_id = dependency.goal_id();
-        validate_active_head(tx, &owner, dependency_id).await?;
-        let edge = EdgeDraft {
-            edge_id: uuid::Uuid::now_v7(),
-            relation,
-            source_kind: EntityKind::Goal,
-            source_memory_id: None,
-            source_goal_id: Some(goal_id),
-            source_fact_entity_id: None,
-            target_kind: EntityKind::Goal,
-            target_memory_id: None,
-            target_goal_id: Some(dependency_id.into_inner()),
-            target_fact_entity_id: None,
-            authorship_kind: EdgeAuthorshipKind::Engine,
-            authorship_owner_memory_id: None,
-            owner: &owner,
-        };
-        append_edge_in_tx(tx.as_mut(), &edge).await?;
+        validate_active_head(tx, &owner, dependency.goal_id()).await?;
     }
     Ok(())
 }

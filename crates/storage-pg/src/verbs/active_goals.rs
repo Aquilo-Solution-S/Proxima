@@ -25,14 +25,13 @@ pub(crate) async fn list_active_goals(
     // the caller's wake view, and a successor the caller cannot read must
     // not silently hide a goal they can.
     let sql = format!(
+        // The Goal knows the Perspective it inspires: the assignment is a
+        // column on the row, so this reads the statement rather than the
+        // index row derived from it.
         "WITH RECURSIVE linked_goals(goal_id) AS (
-             SELECT e.source_goal_id
-               FROM proxima_core.edges e
-              WHERE e.relation = 'core/inspires'
-                AND e.source_kind = 'Goal'
-                AND e.source_goal_id IS NOT NULL
-                AND e.target_kind = 'Perspective'
-                AND e.target_memory_id = $3
+             SELECT g0.goal_id
+               FROM proxima_core.goals g0
+              WHERE g0.assignment_perspective_id = $3
                 AND EXISTS (
                     SELECT 1
                       FROM {eo_union} teo
@@ -47,7 +46,7 @@ pub(crate) async fn list_active_goals(
                       JOIN unnest($1::proxima_core.owner_ref_kind[], $2::uuid[]) AS s(kind, id)
                         ON eo.owner_kind = s.kind
                        AND eo.owner_id IS NOT DISTINCT FROM s.id
-                     WHERE eo.entity_id = e.source_goal_id
+                     WHERE eo.entity_id = g0.goal_id
                 )
              UNION
              SELECT child.goal_id

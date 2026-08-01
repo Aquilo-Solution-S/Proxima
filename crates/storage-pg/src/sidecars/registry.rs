@@ -1,14 +1,12 @@
 use super::dispatch::{
     copy_goal_sidecar, insert_citation_mapping_sidecar, insert_cited_object_sidecar,
-    insert_edge_sidecar, insert_goal_sidecar, insert_memory_sidecar, load_edge_payload_batch,
-    load_memory_payload, load_memory_payload_batch,
+    insert_goal_sidecar, insert_memory_sidecar, load_memory_payload, load_memory_payload_batch,
 };
 use super::{
-    AbstractionPayload, Arc, CitationMappingPayload, CitedObjectPayload, EdgePayload, FactPayload,
-    GoalPayload, HashMap, PayloadKind, PerspectivePayload, PgCitationMappingSidecar,
-    PgCitedObjectSidecar, PgEdgePayload, PgEdgeSidecar, PgGoalSidecar, PgMemoryPayload,
-    PgMemorySidecar, PgSidecarEntry, PgSidecarKey, PgSidecarRegistryFrozen, SchemaId, SchemaInfo,
-    SchemaVersion, StorageError,
+    AbstractionPayload, Arc, CitationMappingPayload, CitedObjectPayload, FactPayload, GoalPayload,
+    HashMap, PayloadKind, PerspectivePayload, PgCitationMappingSidecar, PgCitedObjectSidecar,
+    PgGoalSidecar, PgMemoryPayload, PgMemorySidecar, PgSidecarEntry, PgSidecarKey,
+    PgSidecarRegistryFrozen, SchemaId, SchemaInfo, SchemaVersion, StorageError,
 };
 
 #[derive(Debug, Clone, Default)]
@@ -42,8 +40,6 @@ impl PgSidecarRegistry {
                     memory_insert: Some(insert_memory_sidecar::<P>),
                     memory_load: Some(load_memory_payload::<P>),
                     memory_load_batch: Some(load_memory_payload_batch::<P>),
-                    edge_insert: None,
-                    edge_load_batch: None,
                     cited_object_insert: None,
                     citation_mapping_insert: None,
                     goal_insert: None,
@@ -106,8 +102,6 @@ impl PgSidecarRegistry {
                     memory_insert: None,
                     memory_load: None,
                     memory_load_batch: None,
-                    edge_insert: None,
-                    edge_load_batch: None,
                     cited_object_insert: None,
                     citation_mapping_insert: None,
                     goal_insert: Some(insert_goal_sidecar::<P>),
@@ -120,41 +114,6 @@ impl PgSidecarRegistry {
                 prior.map(|entry| entry.key),
             );
         }
-    }
-
-    /// Register one Edge sidecar with a typed inserter and batch payload
-    /// reader.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the same Edge schema/version is registered twice.
-    pub fn add_edge<P: EdgePayload + PgEdgeSidecar + PgEdgePayload>(&mut self) {
-        let key = PgSidecarKey::new(
-            PayloadKind::Edge,
-            P::schema_id(),
-            SchemaVersion::new(P::SCHEMA_VERSION),
-        );
-        let prior = self.entries.insert(
-            key.clone(),
-            PgSidecarEntry {
-                key,
-                sidecar_table: P::sidecar_table().to_string(),
-                memory_insert: None,
-                memory_load: None,
-                memory_load_batch: None,
-                edge_insert: Some(insert_edge_sidecar::<P>),
-                edge_load_batch: Some(load_edge_payload_batch::<P>),
-                cited_object_insert: None,
-                citation_mapping_insert: None,
-                goal_insert: None,
-                goal_copy: None,
-            },
-        );
-        assert!(
-            prior.is_none(),
-            "duplicate PG sidecar registration for {:?}",
-            prior.map(|entry| entry.key),
-        );
     }
 
     /// Register one `CitedObject` sidecar with a typed inserter.
@@ -176,8 +135,6 @@ impl PgSidecarRegistry {
                 memory_insert: None,
                 memory_load: None,
                 memory_load_batch: None,
-                edge_insert: None,
-                edge_load_batch: None,
                 cited_object_insert: Some(insert_cited_object_sidecar::<P>),
                 citation_mapping_insert: None,
                 goal_insert: None,
@@ -214,8 +171,6 @@ impl PgSidecarRegistry {
                     memory_insert: None,
                     memory_load: None,
                     memory_load_batch: None,
-                    edge_insert: None,
-                    edge_load_batch: None,
                     cited_object_insert: None,
                     citation_mapping_insert: Some(insert_citation_mapping_sidecar::<P>),
                     goal_insert: None,
@@ -248,8 +203,6 @@ impl PgSidecarRegistry {
                 memory_insert: Some(insert_memory_sidecar::<P>),
                 memory_load: Some(load_memory_payload::<P>),
                 memory_load_batch: Some(load_memory_payload_batch::<P>),
-                edge_insert: None,
-                edge_load_batch: None,
                 cited_object_insert: None,
                 citation_mapping_insert: None,
                 goal_insert: None,
@@ -315,7 +268,6 @@ impl PgSidecarRegistry {
                         && entry.memory_load.is_some()
                         && entry.memory_load_batch.is_some()
                 }
-                PayloadKind::Edge => entry.edge_insert.is_some() && entry.edge_load_batch.is_some(),
                 PayloadKind::CitedObject => entry.cited_object_insert.is_some(),
                 PayloadKind::CitationMapping => entry.citation_mapping_insert.is_some(),
                 PayloadKind::Goal => entry.goal_insert.is_some() && entry.goal_copy.is_some(),

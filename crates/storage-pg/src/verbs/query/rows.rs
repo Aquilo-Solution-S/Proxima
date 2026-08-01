@@ -1,15 +1,16 @@
-use proxima_core::change_event::{EdgeTargetProjection, EntityKind, EntityRef};
-use proxima_core::relation::RelationClass;
+use proxima_core::change_event::EntityKind;
 use proxima_core::verbs::goal_write::GoalState;
-use proxima_core::verbs::query::{EdgeRow, GoalRow, MemoryRow, StatefulHeadsFilter};
+use proxima_core::verbs::query::{GoalRow, MemoryRow, StatefulHeadsFilter};
 use proxima_core::{
-    GoalId, MemoryId, Owner, OwnerRefKind, SchemaId, SchemaVersion, SidecarPayload, StorageError,
+    Edge, EdgeKind, EdgeTargetProjection, GoalId, MemoryId, Owner, OwnerRefKind, SchemaId,
+    SchemaVersion, SidecarPayload, StorageError,
 };
 use sqlx::PgPool;
 
 use crate::error::map_err;
 use crate::pg_ident::PgIdent;
 use crate::verbs::consolidate::edge_event_visibility_predicate;
+use crate::verbs::edge_index::{PgEndpointKind, endpoint_from_columns};
 
 use super::read_owner_predicate;
 
@@ -59,53 +60,24 @@ pub(super) fn goal_row_from_db(r: GoalRowDb) -> Result<GoalRow, StorageError> {
     })
 }
 
-pub(super) fn edge_row_from_db(r: EdgeRowDb) -> Result<EdgeRow, StorageError> {
-    let source = entity_ref_from_endpoint(
-        r.source_memory_id,
-        r.source_goal_id,
-        r.source_fact_entity_id,
-    )?;
-    let target = if r.target_unavailable {
-        EdgeTargetProjection::Unavailable
-    } else if r.target_visible {
-        EdgeTargetProjection::Visible {
-            target: entity_ref_from_endpoint(
-                r.target_memory_id,
-                r.target_goal_id,
-                r.target_fact_entity_id,
-            )?,
-        }
-    } else {
-        EdgeTargetProjection::Redacted
-    };
-    // Disclose the target kind only alongside a visible target so a
-    // redacted/unavailable projection leaks neither id nor kind.
-    let target_kind =
-        matches!(target, EdgeTargetProjection::Visible { .. }).then_some(r.target_kind);
-    Ok(EdgeRow {
-        id: r.edge_id,
-        relation: r.relation,
-        relation_class: r.relation_class.as_str().to_string(),
-        source,
-        source_kind: r.source_kind,
-        target,
-        target_kind,
+/// Project one stored edge for one reader.
+///
+/// Four fields is the whole model, so there is nothing to hydrate and nothing
+/// that can fail: no id to dereference, no payload to join, no status. The
+/// only decision is which of the three target projections the reader gets,
+/// and a withheld target discloses neither id nor kind.
+pub(super) fn edge_from_db(r: &EdgeRowDb) -> Edge {
+    Edge {
+        source: endpoint_from_columns(r.source_kind, r.source_id),
+        target: if r.target_unavailable {
+            EdgeTargetProjection::Unavailable
+        } else if r.target_visible {
+            EdgeTargetProjection::visible(endpoint_from_columns(r.target_kind, r.target_id))
+        } else {
+            EdgeTargetProjection::Redacted
+        },
+        kind: r.kind,
         created_at: r.created_at,
-        payload: None,
-    })
-}
-
-fn entity_ref_from_endpoint(
-    memory_id: Option<uuid::Uuid>,
-    goal_id: Option<uuid::Uuid>,
-    fact_entity_id: Option<uuid::Uuid>,
-) -> Result<EntityRef, StorageError> {
-    match (memory_id, goal_id, fact_entity_id) {
-        (Some(m), None, None | Some(_)) => Ok(EntityRef::Memory(MemoryId::new(m))),
-        (None, Some(g), None) => Ok(EntityRef::Goal(GoalId::new(g))),
-        _ => Err(StorageError::Internal(
-            "edge endpoint columns violate CHECK constraint".into(),
-        )),
     }
 }
 
@@ -135,18 +107,12 @@ pub(super) struct GoalRowDb {
 
 #[derive(Debug, sqlx::FromRow)]
 pub(super) struct EdgeRowDb {
-    pub(super) edge_id: uuid::Uuid,
-    pub(super) relation: String,
-    pub(super) relation_class: RelationClass,
-    pub(super) source_kind: EntityKind,
-    pub(super) target_kind: EntityKind,
+    pub(super) source_kind: PgEndpointKind,
+    pub(super) source_id: uuid::Uuid,
+    pub(super) target_kind: PgEndpointKind,
+    pub(super) target_id: uuid::Uuid,
+    pub(super) kind: EdgeKind,
     pub(super) created_at: time::OffsetDateTime,
-    pub(super) source_memory_id: Option<uuid::Uuid>,
-    pub(super) source_goal_id: Option<uuid::Uuid>,
-    pub(super) source_fact_entity_id: Option<uuid::Uuid>,
-    pub(super) target_memory_id: Option<uuid::Uuid>,
-    pub(super) target_goal_id: Option<uuid::Uuid>,
-    pub(super) target_fact_entity_id: Option<uuid::Uuid>,
     pub(super) target_visible: bool,
     pub(super) target_unavailable: bool,
 }

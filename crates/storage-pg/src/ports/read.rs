@@ -2,8 +2,7 @@ use proxima_core::read_models::{ChangeEventForWake, SidecarSpec};
 use proxima_core::storage_ports::{ChangeEventPort, CitationPort, EdgeReadPort};
 use proxima_core::verbs::change_history::{ChangeHistoryRequest, ChangeHistoryResponse};
 use proxima_core::verbs::query::{
-    EdgeExistsRequest, EdgeExistsResponse, EdgePayloadSpec, EdgeReadRequest, EdgeReadResponse,
-    FactCitationReadback,
+    EdgeExistsRequest, EdgeExistsResponse, EdgeReadRequest, EdgeReadResponse, FactCitationReadback,
 };
 use proxima_core::{
     FactEntityId, MemoryId, Owner, OwnerRef, SchemaId, SchemaVersion, StorageError,
@@ -48,9 +47,8 @@ impl EdgeReadPort for PgStorage {
         &self,
         read_owners: &[OwnerRef],
         req: &EdgeReadRequest,
-        payload_specs: &[EdgePayloadSpec],
     ) -> Result<EdgeReadResponse, StorageError> {
-        verbs::query::read_edges(&self.pool, &self.sidecars, read_owners, req, payload_specs).await
+        verbs::query::read_edges(&self.pool, read_owners, req).await
     }
 
     async fn edge_exists(
@@ -58,7 +56,7 @@ impl EdgeReadPort for PgStorage {
         read_owners: &[OwnerRef],
         req: &EdgeExistsRequest,
     ) -> Result<EdgeExistsResponse, StorageError> {
-        verbs::query::edge_exists(&self.pool, &self.sidecars, read_owners, req).await
+        verbs::query::edge_exists(&self.pool, read_owners, req).await
     }
 }
 

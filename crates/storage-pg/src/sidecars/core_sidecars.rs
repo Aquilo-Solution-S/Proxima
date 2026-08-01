@@ -1,9 +1,10 @@
 use super::{
-    EdgeId, GoalId, PgCitationMappingSidecar, PgCitedObjectSidecar, PgConnection, PgEdgePayload,
-    PgEdgePayloadBatchFuture, PgEdgeSidecar, PgGoalSidecar, PgSidecarFuture, PgSidecarReadCtx,
-    PgSidecarRegistry, PgSidecarRegistryFrozen, Postgres, SidecarPayload, StorageError,
-    Transaction,
+    GoalId, MemoryId, PgCitationMappingSidecar, PgCitedObjectSidecar, PgConnection, PgGoalSidecar,
+    PgMemoryPayload, PgMemoryPayloadBatchFuture, PgMemorySidecar, PgSidecarFuture,
+    PgSidecarReadCtx, PgSidecarRegistry, PgSidecarRegistryFrozen, Postgres, SidecarPayload,
+    StorageError, Transaction,
 };
+use proxima_core::verbs::schema::PayloadKind;
 
 fn parse_utterance_speaker(value: &str) -> Result<proxima_core::Speaker, StorageError> {
     match value {
@@ -154,22 +155,74 @@ impl PgGoalSidecar for proxima_core::TaskGoalV1 {
     }
 }
 
-impl PgEdgeSidecar for proxima_core::AgentLinkV1 {
-    fn insert_edge_sidecar<'t>(
+/// The interpretation Perspective — what `core_link` used to put on an edge.
+///
+/// Hand-written rather than `pg_sidecar!`-generated: the payload carries a
+/// `u8` confidence and a positionally aligned enum array, and neither is a
+/// column shape the macro spells. The subjects are payload fields, so the
+/// reference rows that connect an interpretation to what it interprets are
+/// re-derivable from this row alone.
+#[derive(Debug, sqlx::FromRow)]
+struct InterpretationPayloadRow {
+    memory_id: uuid::Uuid,
+    claim: String,
+    confidence: i16,
+    subject_memory_ids: Vec<uuid::Uuid>,
+    subject_kinds: Vec<String>,
+    model_id: String,
+    client_name: String,
+    client_version: String,
+}
+
+fn interpretation_subject_kind_str(kind: proxima_core::InterpretationSubjectKind) -> &'static str {
+    match kind {
+        proxima_core::InterpretationSubjectKind::Fact => "Fact",
+        proxima_core::InterpretationSubjectKind::Abstraction => "Abstraction",
+        proxima_core::InterpretationSubjectKind::Perspective => "Perspective",
+    }
+}
+
+fn parse_interpretation_subject_kind(
+    value: &str,
+) -> Result<proxima_core::InterpretationSubjectKind, StorageError> {
+    match value {
+        "Fact" => Ok(proxima_core::InterpretationSubjectKind::Fact),
+        "Abstraction" => Ok(proxima_core::InterpretationSubjectKind::Abstraction),
+        "Perspective" => Ok(proxima_core::InterpretationSubjectKind::Perspective),
+        other => Err(StorageError::Internal(format!(
+            "invalid interpretation subject kind {other}"
+        ))),
+    }
+}
+
+impl PgMemorySidecar for proxima_core::InterpretationV1 {
+    fn insert_memory_sidecar<'t>(
         &'t self,
-        tx: &'t mut PgConnection,
-        edge_id: EdgeId,
+        tx: &'t mut Transaction<'_, Postgres>,
+        memory_id: MemoryId,
     ) -> PgSidecarFuture<'t> {
         Box::pin(async move {
             sqlx::query(
-                "INSERT INTO proxima_core.agent_link_v1
-                    (edge_id, reason, confidence)
-                 VALUES ($1, $2, $3)",
+                "INSERT INTO proxima_core.interpretation_v1
+                    (memory_id, claim, confidence, subject_memory_ids, subject_kinds,
+                     model_id, client_name, client_version)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
             )
-            .bind(edge_id.into_inner())
-            .bind(&self.reason)
+            .bind(memory_id.into_inner())
+            .bind(&self.claim)
             .bind(i16::from(self.confidence))
-            .execute(tx)
+            .bind(&self.subject_memory_ids)
+            .bind(
+                self.subject_kinds
+                    .iter()
+                    .copied()
+                    .map(interpretation_subject_kind_str)
+                    .collect::<Vec<_>>(),
+            )
+            .bind(&self.model_id)
+            .bind(&self.client_name)
+            .bind(&self.client_version)
+            .execute(tx.as_mut())
             .await
             .map_err(crate::error::map_err)?;
             Ok(())
@@ -177,30 +230,46 @@ impl PgEdgeSidecar for proxima_core::AgentLinkV1 {
     }
 }
 
-impl PgEdgePayload for proxima_core::AgentLinkV1 {
-    fn load_edge_batch<'t>(
+impl PgMemoryPayload for proxima_core::InterpretationV1 {
+    fn load_batch<'t>(
         ctx: PgSidecarReadCtx<'t>,
-        edge_ids: &'t [EdgeId],
-    ) -> PgEdgePayloadBatchFuture<'t> {
+        _kind: PayloadKind,
+        memory_ids: &'t [MemoryId],
+    ) -> PgMemoryPayloadBatchFuture<'t> {
         Box::pin(async move {
-            let rows: Vec<(uuid::Uuid, String, i16)> = ctx
-                .fetch_all_by_edge_ids(
-                    "SELECT edge_id, reason, confidence
-                       FROM proxima_core.agent_link_v1
-                      WHERE edge_id = ANY($1::uuid[])",
-                    edge_ids,
+            let rows: Vec<InterpretationPayloadRow> = ctx
+                .fetch_all_by_memory_ids(
+                    "SELECT memory_id, claim, confidence, subject_memory_ids, subject_kinds,
+                            model_id, client_name, client_version
+                       FROM proxima_core.interpretation_v1
+                      WHERE memory_id = ANY($1::uuid[])",
+                    memory_ids,
                 )
                 .await?;
             rows.into_iter()
-                .map(|(edge_id, reason, confidence)| {
-                    let confidence = u8::try_from(confidence).map_err(|_| {
+                .map(|row| {
+                    let confidence = u8::try_from(row.confidence).map_err(|_| {
                         StorageError::Internal(format!(
-                            "agent_link_v1 confidence {confidence} out of range for edge {edge_id}"
+                            "interpretation_v1 confidence {} out of range for memory {}",
+                            row.confidence, row.memory_id
                         ))
                     })?;
+                    let subject_kinds = row
+                        .subject_kinds
+                        .iter()
+                        .map(|kind| parse_interpretation_subject_kind(kind))
+                        .collect::<Result<Vec<_>, _>>()?;
                     Ok((
-                        EdgeId::new(edge_id),
-                        SidecarPayload::edge(proxima_core::AgentLinkV1 { reason, confidence }),
+                        MemoryId::new(row.memory_id),
+                        SidecarPayload::perspective(proxima_core::InterpretationV1 {
+                            claim: row.claim,
+                            confidence,
+                            subject_memory_ids: row.subject_memory_ids,
+                            subject_kinds,
+                            model_id: row.model_id,
+                            client_name: row.client_name,
+                            client_version: row.client_version,
+                        }),
                     ))
                 })
                 .collect()
@@ -346,8 +415,8 @@ pub fn register_core_pg_sidecars(registry: &mut PgSidecarRegistry) {
     registry.add_fact::<proxima_core::GoalAbandonedV1>();
     registry.add_abstraction::<proxima_core::AgentDerivationV1>();
     registry.add_perspective::<proxima_core::AgentDerivationV1>();
+    registry.add_perspective::<proxima_core::InterpretationV1>();
     registry.add_goal::<proxima_core::TaskGoalV1>();
-    registry.add_edge::<proxima_core::AgentLinkV1>();
     registry.add_cited_object::<proxima_core::UploadedBlobPayload>();
     registry.add_cited_object::<proxima_core::verbs::persist_mcp_call::McpCallIoV1>();
     // `UploadedBlobWholeV1` is a pure link with no sidecar table, so it needs

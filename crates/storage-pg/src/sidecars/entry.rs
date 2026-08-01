@@ -1,7 +1,7 @@
 use super::{
-    EdgeId, GoalId, MemoryId, PayloadKind, PgConnection, PgEdgePayloadBatchFuture,
-    PgMemoryPayloadBatchFuture, PgMemoryPayloadFuture, PgSidecarFuture, PgSidecarReadCtx, Postgres,
-    SchemaId, SchemaVersion, SidecarPayload, Transaction,
+    GoalId, MemoryId, PayloadKind, PgConnection, PgMemoryPayloadBatchFuture, PgMemoryPayloadFuture,
+    PgSidecarFuture, PgSidecarReadCtx, Postgres, SchemaId, SchemaVersion, SidecarPayload,
+    Transaction,
 };
 
 type PgMemorySidecarInserter = for<'t> fn(
@@ -14,10 +14,6 @@ type PgMemoryPayloadLoader =
 type PgMemoryPayloadBatchLoader =
     for<'t> fn(PgSidecarReadCtx<'t>, PayloadKind, &'t [MemoryId]) -> PgMemoryPayloadBatchFuture<'t>;
 
-type PgEdgeSidecarInserter =
-    for<'t> fn(&'t mut PgConnection, EdgeId, &'t SidecarPayload) -> PgSidecarFuture<'t>;
-type PgEdgePayloadBatchLoader =
-    for<'t> fn(PgSidecarReadCtx<'t>, &'t [EdgeId]) -> PgEdgePayloadBatchFuture<'t>;
 type PgCitedObjectSidecarInserter =
     for<'t> fn(&'t mut PgConnection, uuid::Uuid, &'t SidecarPayload) -> PgSidecarFuture<'t>;
 type PgCitationMappingSidecarInserter =
@@ -55,8 +51,6 @@ pub struct PgSidecarEntry {
     pub(super) memory_insert: Option<PgMemorySidecarInserter>,
     pub(super) memory_load: Option<PgMemoryPayloadLoader>,
     pub(super) memory_load_batch: Option<PgMemoryPayloadBatchLoader>,
-    pub(super) edge_insert: Option<PgEdgeSidecarInserter>,
-    pub(super) edge_load_batch: Option<PgEdgePayloadBatchLoader>,
     pub(super) cited_object_insert: Option<PgCitedObjectSidecarInserter>,
     pub(super) citation_mapping_insert: Option<PgCitationMappingSidecarInserter>,
     pub(super) goal_insert: Option<PgGoalSidecarInserter>,

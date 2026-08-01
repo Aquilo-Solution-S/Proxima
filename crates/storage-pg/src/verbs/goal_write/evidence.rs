@@ -1,7 +1,6 @@
 use super::{
-    CORE_MOTIVATED_BY_RELATION, EntityKind, EvidenceRow, EvidenceTarget, GoalAuthorship,
-    GoalEvidenceRef, GoalId, HashSet, MemoryId, Owner, Postgres, StorageError, SystemOrigin,
-    Transaction, map_err,
+    EntityKind, EvidenceRow, EvidenceTarget, GoalAuthorship, GoalEvidenceRef, GoalId, HashSet,
+    MemoryId, Owner, Postgres, StorageError, SystemOrigin, Transaction, map_err,
 };
 
 pub(super) fn validate_operator_goal_evidence(
@@ -74,23 +73,28 @@ pub(super) async fn validate_evidence_in_owner(
     Ok(out)
 }
 
+/// The evidence a Goal already rests on, read from the Goal's own column.
+///
+/// The kinds come from the memories rows because the column stores what the
+/// Goal said, not what those memories are — the index rows carry the kind for
+/// traversal, and this path needs it for the operator-evidence rule.
 pub(super) async fn outgoing_motivated_by_evidence(
     tx: &mut Transaction<'_, Postgres>,
     owner: &Owner,
     goal_id: GoalId,
 ) -> Result<Vec<EvidenceTarget>, StorageError> {
     let (owner_kind, owner_id) = owner.columns();
-    let rows: Vec<(EntityKind, uuid::Uuid)> = sqlx::query_as(
-        "SELECT target_kind, target_memory_id
-           FROM proxima_core.edges e
-          WHERE relation = $1
-            AND source_goal_id = $2
-            AND e.owner_kind = $3
-            AND e.owner_id IS NOT DISTINCT FROM $4
-            AND target_memory_id IS NOT NULL
-          ORDER BY created_at ASC",
+    let rows: Vec<(uuid::Uuid, Option<EntityKind>)> = sqlx::query_as(
+        "SELECT m.memory_id, m.kind
+           FROM proxima_core.goals g
+           JOIN LATERAL unnest(g.evidence_memory_ids) WITH ORDINALITY AS ev(memory_id, ord)
+             ON TRUE
+           JOIN proxima_core.memories m ON m.memory_id = ev.memory_id
+          WHERE g.goal_id = $1
+            AND g.owner_kind = $2
+            AND g.owner_id IS NOT DISTINCT FROM $3
+          ORDER BY ev.ord",
     )
-    .bind(CORE_MOTIVATED_BY_RELATION)
     .bind(goal_id.into_inner())
     .bind(owner_kind)
     .bind(owner_id)
@@ -99,8 +103,8 @@ pub(super) async fn outgoing_motivated_by_evidence(
     .map_err(map_err)?;
     Ok(rows
         .into_iter()
-        .map(|(kind, memory_id)| EvidenceTarget {
-            kind,
+        .map(|(memory_id, kind)| EvidenceTarget {
+            kind: kind.unwrap_or(EntityKind::Fact),
             memory_id: MemoryId::new(memory_id),
         })
         .collect())

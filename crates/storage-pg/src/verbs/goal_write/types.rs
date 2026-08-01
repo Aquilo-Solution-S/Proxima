@@ -29,6 +29,8 @@ pub(super) struct StoredGoalRow {
     pub(super) text: String,
     pub(super) payload: Vec<u8>,
     pub(super) state: GoalState,
+    pub(super) assignment_perspective_id: Option<uuid::Uuid>,
+    pub(super) dependency_goal_ids: Vec<uuid::Uuid>,
 }
 
 #[derive(Debug, sqlx::FromRow)]
@@ -46,6 +48,7 @@ pub(super) struct GoalBodyRow {
     pub(super) payload: Vec<u8>,
     pub(super) state: GoalState,
     pub(super) supersedes: Option<uuid::Uuid>,
+    pub(super) dependency_goal_ids: Vec<uuid::Uuid>,
 }
 
 #[derive(Debug, sqlx::FromRow)]

@@ -1,4 +1,3 @@
-use proxima_core::change_event::{EdgeTargetProjection, EntityRef};
 use proxima_core::read_models::{MemorySnapshot, SidecarSpec};
 use proxima_core::storage_ports::{
     MemoryAuthoringPort, MemoryInspectPort, MemoryReadPort, OwnerWritePermit,
@@ -8,66 +7,72 @@ use proxima_core::verbs::query::{
     QueryRequest, QueryResponse,
 };
 use proxima_core::{
-    AuthorDerivedOutcome, AuthorDerivedRequest, DerivedEdgeSpec, EdgeEndpointKindRow, EdgeId,
-    FactSourceBatchRow, MemoryDependency, MemoryGraphPayloadRow, MemoryId, MemoryKindRow,
-    NeighborEdgeRow, Owner, OwnerRef, SourceBatchId, StorageError,
+    AuthorDerivedOutcome, AuthorDerivedRequest, Edge, EdgeKind, EdgeTargetProjection,
+    FactSourceBatchRow, MemoryDependency, MemoryGraphPayloadRow, MemoryId, MemoryKindRow, Owner,
+    OwnerRef, SourceBatchId, StorageError,
 };
 
-use super::edge_draft_from_spec;
 use crate::error::{internal, with_bounded_retry};
+use crate::verbs::edge_index::{PgEndpointKind, endpoint_from_columns};
 use crate::{PgStorage, verbs};
 
 type NeighborMemoryEdgeTuple = (
+    PgEndpointKind,
     uuid::Uuid,
-    String,
-    proxima_core::EntityKind,
-    Option<uuid::Uuid>,
-    proxima_core::EntityKind,
-    Option<uuid::Uuid>,
-    bool,
+    PgEndpointKind,
+    uuid::Uuid,
+    EdgeKind,
+    time::OffsetDateTime,
     bool,
 );
 
+/// Edges touching any of the requested memories, in either direction.
+///
+/// Fact-entity endpoints resolve through their current head so a neighbor
+/// window sees the observation that is live now, not the one the reference
+/// was first written against — that is what a follow-head address means.
 const NEIGHBOR_MEMORY_EDGES_SQL: &str = "
 WITH read_set(owner_kind, owner_id) AS (
     SELECT * FROM unnest($1::proxima_core.owner_ref_kind[], $2::uuid[])
+),
+touching AS (
+    SELECT e.source_id, e.target_id, e.kind, e.created_at,
+           CASE WHEN e.source_kind = 'FactEntityHead'::proxima_core.edge_endpoint_kind
+                THEN 'Fact'::proxima_core.edge_endpoint_kind ELSE e.source_kind END
+                AS source_kind,
+           CASE WHEN e.target_kind = 'FactEntityHead'::proxima_core.edge_endpoint_kind
+                THEN 'Fact'::proxima_core.edge_endpoint_kind ELSE e.target_kind END
+                AS target_kind,
+           COALESCE(sfe.current_memory_id, e.source_id) AS source_entity_id,
+           COALESCE(tfe.current_memory_id, e.target_id) AS target_entity_id
+      FROM proxima_core.edges e
+      LEFT JOIN proxima_core.fact_entities sfe
+        ON e.source_kind = 'FactEntityHead'::proxima_core.edge_endpoint_kind
+       AND sfe.fact_entity_id = e.source_id
+      LEFT JOIN proxima_core.fact_entities tfe
+        ON e.target_kind = 'FactEntityHead'::proxima_core.edge_endpoint_kind
+       AND tfe.fact_entity_id = e.target_id
 )
-SELECT e.edge_id, e.relation,
-       e.source_kind,
-       COALESCE(e.source_memory_id, sfe.current_memory_id) AS source_memory_id,
-       e.target_kind,
-       COALESCE(e.target_memory_id, tfe.current_memory_id) AS target_memory_id,
+SELECT t.source_kind, t.source_entity_id, t.target_kind, t.target_entity_id,
+       t.kind, t.created_at,
        EXISTS (
            SELECT 1
              FROM read_set rs
             WHERE rs.owner_kind = COALESCE(tm.owner_kind, tg.owner_kind)
               AND rs.owner_id IS NOT DISTINCT FROM COALESCE(tm.owner_id, tg.owner_id)
-       ) AS target_visible,
-       COALESCE(sm.owner_kind, sg.owner_kind) = $3
-       AND COALESCE(sm.owner_id, sg.owner_id) IS NOT DISTINCT FROM $4 AS source_world_visible
-  FROM proxima_core.edges e
-  LEFT JOIN proxima_core.fact_entities sfe
-    ON sfe.fact_entity_id = e.source_fact_entity_id
-  LEFT JOIN proxima_core.fact_entities tfe
-    ON tfe.fact_entity_id = e.target_fact_entity_id
-  LEFT JOIN proxima_core.memories sm
-    ON sm.memory_id = COALESCE(e.source_memory_id, sfe.current_memory_id)
-  LEFT JOIN proxima_core.goals sg
-    ON sg.goal_id = e.source_goal_id
-  LEFT JOIN proxima_core.memories tm
-    ON tm.memory_id = COALESCE(e.target_memory_id, tfe.current_memory_id)
-  LEFT JOIN proxima_core.goals tg
-    ON tg.goal_id = e.target_goal_id
+       ) AS target_visible
+  FROM touching t
+  LEFT JOIN proxima_core.memories sm ON sm.memory_id = t.source_entity_id
+  LEFT JOIN proxima_core.goals sg ON sg.goal_id = t.source_entity_id
+  LEFT JOIN proxima_core.memories tm ON tm.memory_id = t.target_entity_id
+  LEFT JOIN proxima_core.goals tg ON tg.goal_id = t.target_entity_id
  WHERE EXISTS (
            SELECT 1
              FROM read_set rs
             WHERE rs.owner_kind = COALESCE(sm.owner_kind, sg.owner_kind)
               AND rs.owner_id IS NOT DISTINCT FROM COALESCE(sm.owner_id, sg.owner_id)
        )
-   AND (e.source_memory_id = ANY($5::uuid[])
-        OR e.target_memory_id = ANY($5::uuid[])
-        OR sfe.current_memory_id = ANY($5::uuid[])
-        OR tfe.current_memory_id = ANY($5::uuid[]))
+   AND (t.source_entity_id = ANY($5::uuid[]) OR t.target_entity_id = ANY($5::uuid[]))
    AND NOT (
         COALESCE(sm.owner_kind, sg.owner_kind) = $3
         AND COALESCE(sm.owner_id, sg.owner_id) IS NOT DISTINCT FROM $4
@@ -78,7 +83,8 @@ SELECT e.edge_id, e.relation,
                AND rs.owner_id IS NOT DISTINCT FROM COALESCE(tm.owner_id, tg.owner_id)
         )
    )
- ORDER BY e.edge_id DESC
+ ORDER BY t.created_at DESC, t.source_kind DESC, t.source_id DESC,
+          t.target_kind DESC, t.target_id DESC, t.kind DESC
  LIMIT $6
 ";
 
@@ -93,7 +99,7 @@ impl MemoryAuthoringPort for PgStorage {
         // Retry the whole begin→body→commit on transient deadlock/
         // serialization. A retryable error fully rolls the transaction back, so
         // re-running is clean — the derived row replays on its idempotency key
-        // and any edges mint fresh ids on the fresh attempt.
+        // and the index rows re-assert the same primary keys.
         with_bounded_retry(move || async move {
             let mut tx = self.pool.begin().await.map_err(internal)?;
             let draft = verbs::derive_append::DerivedDraft {
@@ -109,6 +115,7 @@ impl MemoryAuthoringPort for PgStorage {
                 source_batch_id: req.source_batch_id,
                 model_id: req.model_id,
                 prompt_version: req.prompt_version,
+                authoring_perspective_id: req.authoring_perspective_id,
                 supersedes: req.supersedes,
                 lexical_language: req.lexical_language,
                 embedding: req.embedding.clone(),
@@ -117,7 +124,7 @@ impl MemoryAuthoringPort for PgStorage {
             // the flavor-SDK `append_derived_with_edges_in_tx`): the port used
             // to carry its own near-duplicate proof validation here, which
             // silently missed the created_at strict-time gate.
-            verbs::derive_append::validate_derived_draft_edges_in_tx(&mut tx, &draft, req.edges)
+            verbs::derive_append::validate_derived_origins_in_tx(&mut tx, &draft, req.origins)
                 .await?;
             let sidecars = self.sidecars.clone();
             let sidecar_payload = req.sidecar_payload.clone();
@@ -134,34 +141,14 @@ impl MemoryAuthoringPort for PgStorage {
                 },
             )
             .await?;
-            let mut edge_count = 0;
-            if outcome.idempotent_replay {
-                verbs::derive_append::validate_derived_edge_replay_equivalent(
-                    &mut tx, &draft, req.edges,
-                )
-                .await?;
-            } else {
-                for edge in req.edges {
-                    let draft = edge_draft_from_spec(edge);
-                    if let Some(sidecar_payload) = edge.sidecar_payload {
-                        let sidecars = self.sidecars.clone();
-                        let payload = sidecar_payload.clone();
-                        verbs::edge_append::append_edge_with_sidecar_in_tx(
-                            tx.as_mut(),
-                            &draft,
-                            move |tx, edge_id| {
-                                Box::pin(async move {
-                                    sidecars.insert_edge_sidecar(tx, edge_id, &payload).await
-                                })
-                            },
-                        )
-                        .await?;
-                    } else {
-                        verbs::edge_append::append_edge_in_tx(tx.as_mut(), &draft).await?;
-                    }
-                    edge_count += 1;
-                }
-            }
+            let edge_count = verbs::derive_append::assert_derived_index_rows(
+                &mut tx,
+                &draft,
+                &outcome,
+                req.origins,
+                req.references,
+            )
+            .await?;
             tx.commit().await.map_err(crate::error::map_err)?;
             Ok(AuthorDerivedOutcome {
                 memory_id: outcome.memory_id,
@@ -172,51 +159,6 @@ impl MemoryAuthoringPort for PgStorage {
                 // that minted it left behind.
                 embedding_deferred: req.embedding.is_deferred() && !outcome.idempotent_replay,
             })
-        })
-        .await
-    }
-
-    async fn append_memory_edge(
-        &self,
-        edge: &DerivedEdgeSpec<'_>,
-        permit: &OwnerWritePermit,
-        _proof: proxima_core::storage_ports::EdgeWriteProof,
-    ) -> Result<EdgeId, StorageError> {
-        if edge.owner != permit.owner() {
-            return Err(StorageError::ConstraintViolation(
-                "edge owner does not match owner write permit".into(),
-            ));
-        }
-        if edge.authorship_kind.is_operator() {
-            return Err(StorageError::ConstraintViolation(
-                "operator-authored edges require an operator proof-carrier write path".into(),
-            ));
-        }
-        // Retry the whole begin→body→commit on transient deadlock/
-        // serialization. A retryable error fully rolls the transaction back;
-        // the edge id is minted per attempt, so a re-run inserts exactly one edge.
-        with_bounded_retry(move || async move {
-            let mut tx = self.pool.begin().await.map_err(internal)?;
-            let draft = edge_draft_from_spec(edge);
-            let edge_id = EdgeId::new(draft.edge_id);
-            if let Some(sidecar_payload) = edge.sidecar_payload {
-                let sidecars = self.sidecars.clone();
-                let payload = sidecar_payload.clone();
-                verbs::edge_append::append_edge_with_sidecar_in_tx(
-                    tx.as_mut(),
-                    &draft,
-                    move |tx, edge_id| {
-                        Box::pin(async move {
-                            sidecars.insert_edge_sidecar(tx, edge_id, &payload).await
-                        })
-                    },
-                )
-                .await?;
-            } else {
-                verbs::edge_append::append_edge_in_tx(tx.as_mut(), &draft).await?;
-            }
-            tx.commit().await.map_err(crate::error::map_err)?;
-            Ok(edge_id)
         })
         .await
     }
@@ -290,38 +232,6 @@ impl MemoryAuthoringPort for PgStorage {
             })
             .collect())
     }
-
-    async fn load_memory_edge_ids(
-        &self,
-        _owner: &Owner,
-        relation: &str,
-        source_memory_id: MemoryId,
-        target_memory_ids: &[MemoryId],
-    ) -> Result<Vec<EdgeId>, StorageError> {
-        if target_memory_ids.is_empty() {
-            return Ok(Vec::new());
-        }
-        let target_ids = target_memory_ids
-            .iter()
-            .copied()
-            .map(MemoryId::into_inner)
-            .collect::<Vec<_>>();
-        let rows: Vec<uuid::Uuid> = sqlx::query_scalar(
-            "SELECT edge_id
-             FROM proxima_core.edges
-             WHERE relation = $1
-               AND source_memory_id = $2
-               AND target_memory_id = ANY($3::uuid[])
-             ORDER BY edge_id DESC",
-        )
-        .bind(relation)
-        .bind(source_memory_id.into_inner())
-        .bind(&target_ids)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(internal)?;
-        Ok(rows.into_iter().map(EdgeId::new).collect())
-    }
 }
 
 #[async_trait::async_trait]
@@ -385,7 +295,7 @@ impl MemoryReadPort for PgStorage {
         read_owners: &[OwnerRef],
         memory_ids: &[MemoryId],
         limit: usize,
-    ) -> Result<Vec<NeighborEdgeRow>, StorageError> {
+    ) -> Result<Vec<Edge>, StorageError> {
         if memory_ids.is_empty() {
             return Ok(Vec::new());
         }
@@ -417,70 +327,27 @@ impl MemoryReadPort for PgStorage {
             .into_iter()
             .map(
                 |(
-                    edge_id,
-                    relation,
                     source_kind,
-                    source_memory_id,
+                    source_id,
                     target_kind,
-                    target_memory_id,
+                    target_id,
+                    kind,
+                    created_at,
                     target_visible,
-                    _source_world_visible,
-                )| {
-                    let target_memory_kind = target_visible.then_some(target_kind);
-                    let target = if target_visible {
-                        target_memory_id.map_or(EdgeTargetProjection::Unavailable, |id| {
-                            EdgeTargetProjection::Visible {
-                                target: EntityRef::Memory(MemoryId::new(id)),
-                            }
-                        })
+                )| Edge {
+                    source: endpoint_from_columns(source_kind, source_id),
+                    // A readable edge whose target the reader may not see is
+                    // returned with the endpoint withheld, not suppressed:
+                    // redaction must not rewrite the shape of the graph.
+                    target: if target_visible {
+                        EdgeTargetProjection::visible(endpoint_from_columns(target_kind, target_id))
                     } else {
                         EdgeTargetProjection::Redacted
-                    };
-                    NeighborEdgeRow {
-                        edge_id: EdgeId::new(edge_id),
-                        relation,
-                        source_kind,
-                        source_memory_id: source_memory_id.map(MemoryId::new),
-                        target_memory_kind,
-                        target,
-                    }
+                    },
+                    kind,
+                    created_at,
                 },
             )
-            .collect())
-    }
-
-    async fn load_edge_endpoint_kinds(
-        &self,
-        edge_ids: &[EdgeId],
-    ) -> Result<Vec<EdgeEndpointKindRow>, StorageError> {
-        if edge_ids.is_empty() {
-            return Ok(Vec::new());
-        }
-        let ids = edge_ids
-            .iter()
-            .copied()
-            .map(EdgeId::into_inner)
-            .collect::<Vec<_>>();
-        let rows: Vec<(
-            uuid::Uuid,
-            proxima_core::EntityKind,
-            proxima_core::EntityKind,
-        )> = sqlx::query_as(
-            "SELECT edge_id, source_kind, target_kind
-                 FROM proxima_core.edges
-                 WHERE edge_id = ANY($1::uuid[])",
-        )
-        .bind(&ids)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(internal)?;
-        Ok(rows
-            .into_iter()
-            .map(|(edge_id, source_kind, target_kind)| EdgeEndpointKindRow {
-                edge_id: EdgeId::new(edge_id),
-                source_kind,
-                target_kind: Some(target_kind),
-            })
             .collect())
     }
 
