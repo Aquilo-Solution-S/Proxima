@@ -12,7 +12,7 @@ use super::types::McpToolCtx;
 /// implementations through [`crate::ToolCtx::service`].
 ///
 /// `ToolCtx` stays transport-neutral and opaque; the MCP wire-reference
-/// grammar (typed `F:`/`A:`/`P:`/`G:`/`E:` prefixed uuids) remains in this
+/// grammar (typed `F:`/`A:`/`P:`/`G:` prefixed uuids) remains in this
 /// module and is only injected by the MCP adapter.
 #[derive(Debug, Clone, Default)]
 pub struct McpToolPresentation;

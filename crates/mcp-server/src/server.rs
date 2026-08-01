@@ -93,7 +93,7 @@ impl McpToolHost {
     /// Build a per-call `McpToolCtx` derived from the auth regime.
     ///
     /// All references cross the wire as typed prefixed uuids
-    /// (`F:`/`A:`/`P:`/`G:`/`E:`).
+    /// (`F:`/`A:`/`P:`/`G:`).
     #[must_use]
     pub fn ctx_for(&self, author: McpAuthorContext, auth: &McpAuthContext) -> McpToolCtx {
         let owner = auth.owner;
