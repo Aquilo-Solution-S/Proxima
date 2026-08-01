@@ -27,8 +27,9 @@ pub(crate) use bundle::{
 pub use bundle::{StoragePorts, StoragePortsBuildError, StoragePortsBuilder};
 pub use change::ChangeEventPort;
 pub use cited_blob::{
-    CitedBlobPort, CitedBlobReadUrl, CitedBlobService, CitedBlobStaged, CitedBlobUploadAborted,
-    CitedBlobUploadCompleted, CitedBlobUploadHeader, CitedBlobUploadPrepared,
+    CitedBlobHeld, CitedBlobPort, CitedBlobReadUrl, CitedBlobService, CitedBlobStaged,
+    CitedBlobUploadAborted, CitedBlobUploadCompleted, CitedBlobUploadHeader,
+    CitedBlobUploadPrepared, MAX_HELD_BLOB_DIGESTS,
 };
 pub use cited_object_erase::CitedObjectErasePort;
 pub use compliance::{

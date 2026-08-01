@@ -7,10 +7,50 @@ use super::CitedBlobStore;
 use super::dto::{CitedBlobReadUrlOutcomeTs, CitedBlobReadUrlTs};
 use super::guards::{ensure_owner_access, format_time, parse_uuid, presign_config};
 use super::keys::{objects_owner_prefix, owner_hash_hex};
-use super::rows::load_blob_location;
+use super::rows::{find_held_blobs, load_blob_location};
 use crate::error::BlobError;
+use proxima_core::OwnerRef;
+use proxima_core::storage_ports::{CitedBlobHeld, MAX_HELD_BLOB_DIGESTS};
 
 impl CitedBlobStore {
+    /// Which of `content_hashes` this owner already holds.
+    ///
+    /// READ AUTHORITY, NOT WRITE. The caller is asking what the corpus
+    /// contains, and the answer is metadata about artefacts it may already
+    /// read — so this gates exactly like [`Self::read_url`] does. Gating it
+    /// as a write instead would refuse a group Viewer an answer it is
+    /// entitled to, and would make "may I check before uploading" a stricter
+    /// question than "may I download the bytes".
+    ///
+    /// TOUCHES NO OBJECT STORAGE. It is one indexed Postgres query; nothing
+    /// here reaches S3, so a caller can ask cheaply and often.
+    ///
+    /// # Errors
+    /// Returns `BlobError::Denied` when `owner` is not readable under `ctx`,
+    /// `BlobError::State` when more than [`MAX_HELD_BLOB_DIGESTS`] digests
+    /// are asked about, and `BlobError::Db` on a database fault.
+    pub async fn find_held_blobs(
+        &self,
+        ctx: &AuthzContext,
+        owner: OwnerRef,
+        content_hashes: &[[u8; 32]],
+    ) -> Result<Vec<CitedBlobHeld>, BlobError> {
+        ensure_owner_access(ctx, &owner)?;
+        if content_hashes.len() > MAX_HELD_BLOB_DIGESTS {
+            return Err(BlobError::State(format!(
+                "at most {MAX_HELD_BLOB_DIGESTS} content hashes per call; got {}",
+                content_hashes.len()
+            )));
+        }
+        // Asking about nothing is answered, not refused. A caller cutting a
+        // long digest list into batches reaches an empty tail naturally, and
+        // "I hold none of the zero artefacts you named" is both the true
+        // answer and the one that saves every such caller a guard.
+        if content_hashes.is_empty() {
+            return Ok(Vec::new());
+        }
+        find_held_blobs(&self.pool, &owner, content_hashes).await
+    }
     /// Produce a presigned read URL for a completed cited blob.
     ///
     /// # Errors

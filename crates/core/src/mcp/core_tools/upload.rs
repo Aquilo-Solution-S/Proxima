@@ -361,8 +361,8 @@ mod tests {
     use crate::access::Role;
     use crate::mcp::{McpToolErrorKind, validate_action_args};
     use crate::storage_ports::{
-        CitedBlobPort, CitedBlobReadUrl, CitedBlobService, CitedBlobStaged, CitedBlobUploadAborted,
-        CitedBlobUploadPrepared,
+        CitedBlobHeld, CitedBlobPort, CitedBlobReadUrl, CitedBlobService, CitedBlobStaged,
+        CitedBlobUploadAborted, CitedBlobUploadPrepared,
     };
     use crate::{AuthzContext, GroupId, OwnerRef, StorageError, UserId};
 
@@ -467,6 +467,16 @@ mod tests {
                 read_url: "https://s3.test/get".into(),
                 expires_at: time::OffsetDateTime::UNIX_EPOCH,
             })
+        }
+
+        async fn find_held_blobs(
+            &self,
+            authz: &AuthzContext,
+            owner: OwnerRef,
+            _content_hashes: &[[u8; 32]],
+        ) -> Result<Vec<CitedBlobHeld>, StorageError> {
+            self.record("find_held", authz, owner);
+            Ok(Vec::new())
         }
     }
 

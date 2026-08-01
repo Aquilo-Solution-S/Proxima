@@ -92,6 +92,36 @@ pub struct CitedBlobReadUrl {
     pub expires_at: OffsetDateTime,
 }
 
+/// An artefact this owner already holds, as [`CitedBlobPort::find_held_blobs`]
+/// reports it.
+///
+/// NO STORAGE COORDINATES. `bucket`/`object_key` are deliberately absent, for
+/// the same reason every other outcome struct in this file omits them: the
+/// answer travels to whoever asked, and a caller that learns a locator can
+/// forge a citation row pointing at it. What a caller needs in order to SKIP
+/// an upload is the identity it would otherwise have received from
+/// completion, and that is all this carries.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CitedBlobHeld {
+    /// The digest that was asked about, echoed back so a caller can match
+    /// this row to its request without relying on ordering.
+    pub content_hash: [u8; 32],
+    pub cited_object_id: uuid::Uuid,
+    pub byte_len: u64,
+    pub mime: String,
+    pub filename: String,
+}
+
+/// Largest number of digests one [`CitedBlobPort::find_held_blobs`] call
+/// may ask about.
+///
+/// The query binds ONE array parameter regardless of length, so Postgres'
+/// parameter ceiling never binds — what this bounds is the RESPONSE, which
+/// carries a filename and a mime per hit. A caller with more digests than
+/// this asks more than once; the answer does not depend on how the batch was
+/// cut, because each digest is resolved independently.
+pub const MAX_HELD_BLOB_DIGESTS: usize = 1000;
+
 /// Cited-blob upload/read capability implemented by the blob backend
 /// (`CitedBlobStore` in `proxima-blob-s3`). Each method re-authorizes
 /// against `owner` with the caller's `authz`; the port never trusts a
@@ -193,6 +223,51 @@ pub trait CitedBlobPort: Send + Sync {
         owner: OwnerRef,
         cited_object_id: uuid::Uuid,
     ) -> Result<CitedBlobReadUrl, StorageError>;
+
+    /// Which of `content_hashes` this owner already holds as a
+    /// `core/uploaded-blob-v1` artefact.
+    ///
+    /// WHAT IT IS FOR. Storage is content-addressed, so re-uploading bytes
+    /// the corpus already has is already harmless — it converges on the one
+    /// artefact and reports `idempotent_replay`. What it is not is free: the
+    /// bytes cross the wire, get streamed and hashed, and are copied in the
+    /// object store, and only then does the caller learn none of it was
+    /// needed. This verb moves that discovery in front of the transfer, which
+    /// is the difference between re-offering a large corpus costing its full
+    /// size in bandwidth and costing one query.
+    ///
+    /// ONLY THE HITS COME BACK, in unspecified order. A digest that is
+    /// absent from the result was not found; the caller matches rows to
+    /// requests on `content_hash`, never on position.
+    ///
+    /// NOT FOUND AND NOT YOURS ARE THE SAME ANSWER, deliberately. Every read
+    /// in this lane collapses the two so a probe cannot learn that an
+    /// artefact exists under an owner it cannot read — and a batch verb is
+    /// exactly where that would otherwise leak, since a caller could sweep
+    /// digests and diff the hits. Gate on read authority for `owner` and let
+    /// the owner-scoped predicate do the rest.
+    ///
+    /// REQUIRED, NOT DEFAULTED, and the distinction is load-bearing here. A
+    /// defaulted method is safe when its body is DERIVED from other required
+    /// methods on the trait, because an implementor that inherits it can
+    /// only be slower, never wrong. Nothing on this port answers "do I hold
+    /// these bytes", so any default body would have to assert one — and
+    /// `Ok(vec![])` is precisely the assertion a caller acts on by uploading.
+    /// A fake that models storage would inherit that silently and report
+    /// every artefact as absent. Better to break every implementor at
+    /// compile time and have each say what it holds.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError::ConstraintViolation`] when more than
+    /// [`MAX_HELD_BLOB_DIGESTS`] digests are asked about, and
+    /// [`StorageError::Unavailable`] for database faults.
+    async fn find_held_blobs(
+        &self,
+        authz: &AuthzContext,
+        owner: OwnerRef,
+        content_hashes: &[[u8; 32]],
+    ) -> Result<Vec<CitedBlobHeld>, StorageError>;
 }
 
 /// Shared handle MCP tools resolve from `McpToolCtx::extensions`, and
