@@ -31,7 +31,7 @@ explicit request.
 | `docs/08-core-and-flavors.md` | Bare core / flavor layering; `proxima-mcp` default-off `code` packaging feature |
 | `docs/09-developing-flavors.md` | Agent implementation checklist for flavor crates: typed keys, sidecars, registration, migrations, tools |
 | `docs/10-configuration.md` | Env config surface (Postgres/MCP/S3), MCP auth modes, host-injected embedding client; no inference targets/tiers |
-| `docs/11-citations.md` | `CitedObject` / `CitationMapping` traits; bibliographic provenance, Fact-only citation rule |
+| `docs/11-citations.md` | `CitedObject` / `CitationMapping` traits; bibliographic provenance, the Fact ∪ Abstraction citation rule |
 | `docs/12-tool-manifest.md` | Tool = build-time registered call surface; tool classes (core MCP / flavor MCP); no runtime tier |
 | `docs/13-compliance.md` | Compliance primitives: owner deletion, source-scope deletion, pause/resume, export, suppression, audit |
 | `docs/14-protocol-surface.md` | Engine's contract to clients: five verbs (Query / ChangeHistory / GoalWrite / FactIngest / Schema), owner-scoped, transport-agnostic |
