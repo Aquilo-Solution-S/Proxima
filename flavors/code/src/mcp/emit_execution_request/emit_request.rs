@@ -1,4 +1,4 @@
-use proxima_core::{EdgeId, FactPayload, Tool, ToolCtx, ToolError};
+use proxima_core::{EdgeEndpoint, EntityKind, FactPayload, Tool, ToolCtx, ToolError};
 
 use crate::payloads::{AcceptanceCriteriaV1, ExecutionRequestV1};
 
@@ -8,8 +8,7 @@ use super::context_validation::{
     validate_active_goal_context, validate_evidence_in_owner, validate_goal_activated_fact,
     validate_repo,
 };
-use super::edges::{append_acceptance_criteria_edge, append_authored_edge, append_derived_edge};
-use super::ingest::{ingest_acceptance_criteria, ingest_execution_request};
+use super::ingest::{FactProvenance, ingest_acceptance_criteria, ingest_execution_request};
 use super::input_validation::{normalize_text, resolve_evidence, validate_acceptance_criteria};
 use super::types::{CodeEmitExecutionRequestArgs, CodeEmitExecutionRequestOutput};
 
@@ -56,81 +55,69 @@ impl Tool for CodeEmitExecutionRequestTool {
             validate_active_goal_context(&mut tx, &ctx, goal_id, planner_root).await?;
             validate_evidence_in_owner(&mut tx, &ctx, &evidence).await?;
 
+            // What the request was made from — the activation Fact and the
+            // evidence — travels with the write instead of following it as
+            // separate edge appends, so a replayed emit re-asserts the same
+            // rows rather than minting new ones. The planner Perspective is
+            // the author, which is a column, not a connection.
+            let mut origins = Vec::with_capacity(1 + evidence.len());
+            origins.push(EdgeEndpoint::memory(
+                EntityKind::Fact,
+                goal_activated_memory_id,
+            ));
+            origins.extend(
+                evidence
+                    .iter()
+                    .map(|memory_id| EdgeEndpoint::memory(EntityKind::Fact, *memory_id)),
+            );
+            let provenance = FactProvenance {
+                derived_from: &origins,
+                authoring_perspective_id: Some(planner_root),
+            };
+
             let payload = ExecutionRequestV1 {
                 repo_id,
                 title,
                 instructions,
                 request_key,
+                depends_on_memory_ids: Vec::new(),
             };
-            let outcome = ingest_execution_request(&mut tx, &ctx, &payload).await?;
-            let (authored_edge_id, derived_edge_ids, acceptance_memory_id, acceptance_edge_id) =
-                if outcome.idempotent_replay {
-                    (None, Vec::new(), None, None)
+            let outcome = ingest_execution_request(&mut tx, &ctx, &payload, provenance).await?;
+            let acceptance_memory_id =
+                if outcome.idempotent_replay || acceptance_criteria.is_empty() {
+                    None
                 } else {
-                    let authored_edge_id =
-                        append_authored_edge(&mut tx, &ctx, planner_root, outcome.memory_id)
-                            .await?;
-                    let mut derived_edge_ids = Vec::with_capacity(1 + evidence.len());
-                    derived_edge_ids.push(
-                        append_derived_edge(
-                            &mut tx,
-                            &ctx,
-                            outcome.memory_id,
-                            goal_activated_memory_id,
-                        )
-                        .await?,
-                    );
-                    for memory_id in evidence {
-                        derived_edge_ids.push(
-                            append_derived_edge(&mut tx, &ctx, outcome.memory_id, memory_id)
-                                .await?,
-                        );
-                    }
-                    let (acceptance_memory_id, acceptance_edge_id) = if acceptance_criteria
-                        .is_empty()
-                    {
-                        (None, None)
-                    } else {
-                        let criteria_payload = AcceptanceCriteriaV1 {
-                            work_item_memory_id: outcome.memory_id.into_inner(),
-                            criteria: acceptance_criteria,
-                        };
-                        let criteria_outcome =
-                            ingest_acceptance_criteria(&mut tx, &ctx, &criteria_payload).await?;
-                        if criteria_outcome.idempotent_replay {
-                            (Some(criteria_outcome.memory_id), None)
-                        } else {
-                            let edge_id = append_acceptance_criteria_edge(
-                                &mut tx,
-                                &ctx,
-                                outcome.memory_id,
-                                criteria_outcome.memory_id,
-                            )
-                            .await?;
-                            (Some(criteria_outcome.memory_id), Some(edge_id))
-                        }
+                    // The criteria Fact is the node that owns "these are the
+                    // criteria for that request": `work_item_memory_id` is a
+                    // schema-declared reference field, so the index row falls
+                    // out of this ingest and nobody writes an edge.
+                    let criteria_payload = AcceptanceCriteriaV1 {
+                        work_item_memory_id: outcome.memory_id.into_inner(),
+                        criteria: acceptance_criteria,
                     };
-                    (
-                        Some(authored_edge_id),
-                        derived_edge_ids,
-                        acceptance_memory_id,
-                        acceptance_edge_id,
+                    let criteria_outcome = ingest_acceptance_criteria(
+                        &mut tx,
+                        &ctx,
+                        &criteria_payload,
+                        FactProvenance {
+                            derived_from: &[],
+                            authoring_perspective_id: Some(planner_root),
+                        },
                     )
+                    .await?;
+                    Some(criteria_outcome.memory_id)
                 };
             tx.commit().await.map_err(map_storage)?;
 
             Ok(CodeEmitExecutionRequestOutput {
                 handle: ctx.format_fact_memory(outcome.memory_id),
-                authored_edge_handle: authored_edge_id
-                    .map(|edge_id| ctx.format_edge(EdgeId::new(edge_id))),
-                derived_edge_handles: derived_edge_ids
-                    .into_iter()
-                    .map(|edge_id| ctx.format_edge(EdgeId::new(edge_id)))
-                    .collect(),
+                origin_count: if outcome.idempotent_replay {
+                    0
+                } else {
+                    origins.len()
+                },
                 acceptance_criteria_handle: acceptance_memory_id
                     .map(|id| ctx.format_fact_memory(id)),
-                acceptance_criteria_edge_handle: acceptance_edge_id
-                    .map(|edge_id| ctx.format_edge(EdgeId::new(edge_id))),
                 idempotent_replay: outcome.idempotent_replay,
             })
         })

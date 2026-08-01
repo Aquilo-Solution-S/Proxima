@@ -24,8 +24,8 @@ use proxima_core::verbs::fact_ingest::{
 use proxima_core::verbs::query::{QueryRequest, SupersessionStatus, TombstoneFilter};
 use proxima_core::verbs::schema::{FlavorRegistryFrozen, PayloadKind, SchemaInfo, SchemaTombstone};
 use proxima_core::{
-    AbstractionPayload, CORE_DERIVED_FROM_RELATION, FactPayload, FlavorRegistry, Owner, OwnerRef,
-    SchemaId, SchemaVersion, SourceBatchId, SourceId, UserId,
+    AbstractionPayload, EdgeKind, EntityKind, FactPayload, FlavorRegistry, MemoryId, Owner,
+    OwnerRef, SchemaId, SchemaVersion, SourceBatchId, SourceId, UserId,
 };
 use proxima_pg_testkit::drop_db;
 use sqlx::PgPool;
@@ -81,6 +81,7 @@ fn fresh_draft(_owner: Owner, schema: &str, payload: &[u8]) -> FactWriteCommand 
                 schema_version: SchemaVersion::new(1),
             },
         }),
+        derived_from: Vec::new(),
     }
 }
 
@@ -141,29 +142,41 @@ async fn seed_file_revision_state(
     Ok(memory_id)
 }
 
+/// Assert one `origin` row between two Fact rows. Five columns is the whole
+/// insert: no id to mint, no relation to name, no authorship to declare.
 async fn insert_memory_edge(
     pool: &PgPool,
     owner: &Owner,
     source_memory_id: Uuid,
     target_memory_id: Uuid,
-) -> Result<Uuid, Box<dyn std::error::Error>> {
-    let edge_id = Uuid::now_v7();
+) -> Result<(), Box<dyn std::error::Error>> {
     let (owner_kind, owner_id) = proxima_storage_pg::access::owner_columns::owner_binds(owner);
     sqlx::query(
         "INSERT INTO proxima_core.edges \
-            (edge_id, owner_kind, owner_id, relation, relation_class, source_kind, source_memory_id, \
-             target_kind, target_memory_id, authorship_kind) \
-         VALUES ($1, $2, $3, $4, 'Provenance', 'Fact', $5, 'Fact', $6, 'Engine')",
+            (source_kind, source_id, target_kind, target_id, kind, owner_kind, owner_id) \
+         VALUES ('Fact', $1, 'Fact', $2, 'origin', $3, $4)",
     )
-    .bind(edge_id)
-    .bind(owner_kind)
-    .bind(owner_id)
-    .bind(CORE_DERIVED_FROM_RELATION)
     .bind(source_memory_id)
     .bind(target_memory_id)
+    .bind(owner_kind)
+    .bind(owner_id)
     .execute(pool)
     .await?;
-    Ok(edge_id)
+    Ok(())
+}
+
+/// Is the `(active -> deleted)` origin row in this snapshot? An edge has no
+/// id, so the row itself is what the assertion matches on.
+fn snapshot_has_edge(edges: &[proxima_core::Edge], source: Uuid, target: Uuid) -> bool {
+    edges.iter().any(|edge| {
+        edge.kind == EdgeKind::Origin
+            && edge.source
+                == proxima_core::EdgeEndpoint::memory(EntityKind::Fact, MemoryId::new(source))
+            && edge
+                .target
+                .endpoint()
+                .is_some_and(|end| end.memory_id() == Some(MemoryId::new(target)))
+    })
 }
 
 #[tokio::test]
@@ -237,7 +250,6 @@ async fn heads_only_returns_latest_per_natural_key() {
             include_payloads: true,
             memory_ids: Vec::new(),
             goal_ids: Vec::new(),
-            edge_ids: Vec::new(),
             stateful_heads: Vec::new(),
         };
         let resp = engine
@@ -279,7 +291,6 @@ async fn heads_only_returns_latest_per_natural_key() {
             include_payloads: true,
             memory_ids: Vec::new(),
             goal_ids: Vec::new(),
-            edge_ids: Vec::new(),
             stateful_heads: Vec::new(),
         };
         let resp_all = engine
@@ -345,7 +356,6 @@ async fn heads_only_no_op_for_stateless_fact_schema() {
             include_payloads: true,
             memory_ids: Vec::new(),
             goal_ids: Vec::new(),
-            edge_ids: Vec::new(),
             stateful_heads: Vec::new(),
         };
         let resp = engine
@@ -417,7 +427,6 @@ async fn heads_only_supersedes_older_same_principal_nk_revision() {
             include_payloads: true,
             memory_ids: Vec::new(),
             goal_ids: Vec::new(),
-            edge_ids: Vec::new(),
             stateful_heads: Vec::new(),
         };
         let resp = engine
@@ -633,7 +642,7 @@ async fn present_only_snapshot_excludes_edges_to_tombstoned_heads() {
             FileState::Tombstone,
         )
         .await?;
-        let edge_id = insert_memory_edge(pg.pool_for_tests(), &owner, active, deleted).await?;
+        insert_memory_edge(pg.pool_for_tests(), &owner, active, deleted).await?;
 
         let mut req = QueryRequest::for_owner(owner);
         req.limit = 100;
@@ -648,7 +657,7 @@ async fn present_only_snapshot_excludes_edges_to_tombstoned_heads() {
             .await?;
         assert!(resp.memories.iter().any(|m| m.id.into_inner() == active));
         assert!(!resp.memories.iter().any(|m| m.id.into_inner() == deleted));
-        assert!(!resp.edges.iter().any(|e| e.id == edge_id));
+        assert!(!snapshot_has_edge(&resp.edges, active, deleted));
 
         req.tombstones = TombstoneFilter::IncludeTombstoned;
         let resp = engine
@@ -661,77 +670,13 @@ async fn present_only_snapshot_excludes_edges_to_tombstoned_heads() {
             )
             .await?;
         assert!(resp.memories.iter().any(|m| m.id.into_inner() == deleted));
-        assert!(resp.edges.iter().any(|e| e.id == edge_id));
+        assert!(snapshot_has_edge(&resp.edges, active, deleted));
         Ok(())
     }
     .await;
 
     let _ = drop_db(&db_name).await;
     result.expect("present_only_snapshot_excludes_edges_to_tombstoned_heads failed");
-}
-
-#[tokio::test]
-async fn present_only_edge_id_hydration_excludes_edges_with_hidden_endpoint() {
-    let (db_name, pg) = migrated_db().await;
-
-    let result: Result<(), Box<dyn std::error::Error>> = async {
-        let storage = Arc::new(pg.clone()).storage_ports();
-        let (_user, owner) = make_owner();
-        let engine = Engine::new(registry_for_test()).with_storage_ports(storage);
-        let repo_id = Uuid::now_v7();
-        let active = seed_file_revision_state(
-            pg.pool_for_tests(),
-            &engine,
-            owner,
-            repo_id,
-            "src/live.rs",
-            b"live",
-            FileState::Present,
-        )
-        .await?;
-        let deleted = seed_file_revision_state(
-            pg.pool_for_tests(),
-            &engine,
-            owner,
-            repo_id,
-            "src/deleted.rs",
-            b"gone",
-            FileState::Tombstone,
-        )
-        .await?;
-        let edge_id = insert_memory_edge(pg.pool_for_tests(), &owner, active, deleted).await?;
-
-        let mut req = QueryRequest::for_owner(owner);
-        req.edge_ids = vec![edge_id];
-        req.limit = 1;
-        let resp = engine
-            .query(
-                &proxima_core::AuthzContext::single_owner(
-                    &owner,
-                    proxima_core::AuthPath::HostBearer,
-                ),
-                &req,
-            )
-            .await?;
-        assert!(resp.edges.is_empty());
-
-        req.tombstones = TombstoneFilter::IncludeTombstoned;
-        let resp = engine
-            .query(
-                &proxima_core::AuthzContext::single_owner(
-                    &owner,
-                    proxima_core::AuthPath::HostBearer,
-                ),
-                &req,
-            )
-            .await?;
-        assert_eq!(resp.edges.len(), 1);
-        Ok(())
-    }
-    .await;
-
-    let _ = drop_db(&db_name).await;
-    result.expect("present_only_edge_id_hydration_excludes_edges_with_hidden_endpoint failed");
 }
 
 // Smoke check the registry-side wiring: raw observations retain NK

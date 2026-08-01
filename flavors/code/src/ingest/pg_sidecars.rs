@@ -1,18 +1,21 @@
-use proxima_core::{EdgeId, MemoryId, SidecarPayload, StorageError};
+use std::collections::BTreeMap;
+
+use proxima_core::verbs::schema::PayloadKind;
+use proxima_core::{MemoryId, SidecarPayload, StorageError};
 use proxima_storage_pg::sidecars::{
-    PgEdgePayload, PgEdgePayloadBatchFuture, PgEdgeSidecar, PgMemoryPayload, PgMemoryPayloadFuture,
-    PgMemorySidecar, PgSidecarFuture, PgSidecarReadCtx,
+    PgMemoryPayload, PgMemoryPayloadBatchFuture, PgMemoryPayloadFuture, PgMemorySidecar,
+    PgSidecarFuture, PgSidecarReadCtx,
 };
 use proxima_storage_pg::verbs::fact_ingest::{FactIngestSidecarFuture, PgFactSidecar};
 use sqlx::{Postgres, Transaction};
 
 use crate::payloads::{
     AcceptanceCriteriaV1, AcceptanceCriterionV1, AcceptanceSummaryV1, AcceptanceVerificationStatus,
-    AcceptanceVerificationV1, AcceptanceVerifierKind, AcceptanceVerifierSpecV1, CodeChunkV1,
-    CodeCommitSummarizerSelfV1, CodeDevelopmentPerspectiveV1, CodeEngineerSelfV1,
-    CodeExecutionPlanItemKind, CodeExecutionPlanItemV1, CodeExecutionPlanV1, CommitSummaryV1,
-    CommitV1, EdgeCallsV1, ExecutionRequestV1, ExecutionResultV1, FileRevisionV1, FileState,
-    TestRequestV1, TestResultV1, WorkResultStatus,
+    AcceptanceVerificationV1, AcceptanceVerifierKind, AcceptanceVerifierSpecV1, CodeCallSiteV1,
+    CodeCallV1, CodeChunkV1, CodeCommitSummarizerSelfV1, CodeDevelopmentPerspectiveV1,
+    CodeEngineerSelfV1, CodeExecutionPlanItemKind, CodeExecutionPlanItemV1, CodeExecutionPlanV1,
+    CodeWorkAssignmentV1, CommitSummaryV1, CommitV1, ExecutionRequestV1, ExecutionResultV1,
+    FileRevisionV1, FileState, TestRequestV1, TestResultV1, WorkResultStatus,
 };
 
 async fn insert_criteria_rows(
@@ -193,6 +196,7 @@ proxima_storage_pg::pg_sidecar! {
         title => title: (text),
         instructions => instructions: (text),
         request_key => request_key: (text),
+        depends_on_memory_ids => depends_on_memory_ids: (uuid_array),
     },
 }
 
@@ -256,29 +260,169 @@ proxima_storage_pg::pg_sidecar! {
     },
 }
 
-proxima_storage_pg::pg_sidecar! {
-    payload: CodeChunkV1,
-    row: CodeChunkPayloadRow,
-    kinds: [Abstraction],
-    table: "proxima_code.code_chunk_v1",
-    key: memory_id,
-    fields: {
-        repo_id => repo_id: (uuid),
-        file_path => file_path: (text),
-        chunk_index => chunk_index: (u32_as_i32_saturating),
-        text => text: (text),
-        language => language: (opt_text),
-        chunk_type => chunk_type: (text),
-        byte_range_start => byte_range_start: (u32_as_i64),
-        byte_range_end => byte_range_end: (u32_as_i64),
-        line_range_start => line_range_start: (u32_as_i64),
-        line_range_end => line_range_end: (u32_as_i64),
-        state => state: (enum_copy {
-            to_str: file_state_to_str,
-            pg_type: "proxima_code.file_state",
-            from_str: parse_file_state
-        }),
-    },
+// Hand-written rather than `pg_sidecar!`: a chunk carries a nested call
+// list, and the macro maps one payload field to one column. The sites live
+// in a child table keyed by (chunk, callee), which is what makes "ten call
+// sites, one index row" storable — the index cannot hold ten rows for one
+// pair, and the payload must.
+impl PgMemorySidecar for CodeChunkV1 {
+    fn insert_memory_sidecar<'t>(
+        &'t self,
+        tx: &'t mut Transaction<'_, Postgres>,
+        memory_id: MemoryId,
+    ) -> PgSidecarFuture<'t> {
+        Box::pin(async move {
+            sqlx::query(
+                "INSERT INTO proxima_code.code_chunk_v1
+                    (memory_id, repo_id, file_path, chunk_index, text, language, chunk_type,
+                     byte_range_start, byte_range_end, line_range_start, line_range_end, state)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
+                         $12::proxima_code.file_state)",
+            )
+            .bind(memory_id.into_inner())
+            .bind(self.repo_id)
+            .bind(&self.file_path)
+            .bind(i32::try_from(self.chunk_index).unwrap_or(i32::MAX))
+            .bind(&self.text)
+            .bind(self.language.as_deref())
+            .bind(&self.chunk_type)
+            .bind(i64::from(self.byte_range_start))
+            .bind(i64::from(self.byte_range_end))
+            .bind(i64::from(self.line_range_start))
+            .bind(i64::from(self.line_range_end))
+            .bind(file_state_to_str(self.state))
+            .execute(tx.as_mut())
+            .await
+            .map_err(proxima_storage_pg::map_err)?;
+            for call in &self.calls {
+                for (index, site) in call.sites.iter().enumerate() {
+                    sqlx::query(
+                        "INSERT INTO proxima_code.code_chunk_call_v1
+                            (caller_memory_id, callee_memory_id, site_index,
+                             byte_start, byte_end, callee_name, is_dynamic)
+                         VALUES ($1, $2, $3, $4, $5, $6, $7)",
+                    )
+                    .bind(memory_id.into_inner())
+                    .bind(call.callee_memory_id)
+                    .bind(i32::try_from(index).unwrap_or(i32::MAX))
+                    .bind(i64::from(site.byte_start))
+                    .bind(i64::from(site.byte_end))
+                    .bind(&site.callee_name)
+                    .bind(site.is_dynamic)
+                    .execute(tx.as_mut())
+                    .await
+                    .map_err(proxima_storage_pg::map_err)?;
+                }
+            }
+            Ok(())
+        })
+    }
+}
+
+#[derive(Debug, sqlx::FromRow)]
+struct CodeChunkPayloadRow {
+    memory_id: uuid::Uuid,
+    repo_id: uuid::Uuid,
+    file_path: String,
+    chunk_index: i32,
+    text: String,
+    language: Option<String>,
+    chunk_type: String,
+    byte_range_start: i64,
+    byte_range_end: i64,
+    line_range_start: i64,
+    line_range_end: i64,
+    state: String,
+}
+
+#[derive(Debug, sqlx::FromRow)]
+struct CodeChunkCallRow {
+    caller_memory_id: uuid::Uuid,
+    callee_memory_id: uuid::Uuid,
+    byte_start: i64,
+    byte_end: i64,
+    callee_name: String,
+    is_dynamic: bool,
+}
+
+impl PgMemoryPayload for CodeChunkV1 {
+    fn load_batch<'t>(
+        ctx: PgSidecarReadCtx<'t>,
+        kind: PayloadKind,
+        memory_ids: &'t [MemoryId],
+    ) -> PgMemoryPayloadBatchFuture<'t> {
+        Box::pin(async move {
+            if memory_ids.is_empty() || kind != PayloadKind::Abstraction {
+                return Ok(Vec::new());
+            }
+            let rows: Vec<CodeChunkPayloadRow> = ctx
+                .fetch_all_by_memory_ids(
+                    "SELECT memory_id, repo_id, file_path, chunk_index, text, language,
+                            chunk_type, byte_range_start, byte_range_end,
+                            line_range_start, line_range_end, state::text AS state
+                       FROM proxima_code.code_chunk_v1
+                      WHERE memory_id = ANY($1::uuid[])",
+                    memory_ids,
+                )
+                .await?;
+            // One extra query for the whole page, not one per chunk: the
+            // call list is part of the payload, so it must not turn a
+            // search page into N round trips.
+            let call_rows: Vec<CodeChunkCallRow> = ctx
+                .fetch_all_by_memory_ids(
+                    "SELECT caller_memory_id, callee_memory_id, byte_start, byte_end,
+                            callee_name, is_dynamic
+                       FROM proxima_code.code_chunk_call_v1
+                      WHERE caller_memory_id = ANY($1::uuid[])
+                      ORDER BY caller_memory_id, callee_memory_id, site_index",
+                    memory_ids,
+                )
+                .await?;
+            let mut calls_by_caller: BTreeMap<uuid::Uuid, Vec<CodeCallV1>> = BTreeMap::new();
+            for row in call_rows {
+                let entry = calls_by_caller.entry(row.caller_memory_id).or_default();
+                let site = CodeCallSiteV1 {
+                    byte_start: u32::try_from(row.byte_start).unwrap_or(u32::MAX),
+                    byte_end: u32::try_from(row.byte_end).unwrap_or(u32::MAX),
+                    callee_name: row.callee_name,
+                    is_dynamic: row.is_dynamic,
+                };
+                match entry
+                    .last_mut()
+                    .filter(|call| call.callee_memory_id == row.callee_memory_id)
+                {
+                    Some(call) => call.sites.push(site),
+                    None => entry.push(CodeCallV1 {
+                        callee_memory_id: row.callee_memory_id,
+                        sites: vec![site],
+                    }),
+                }
+            }
+            rows.into_iter()
+                .map(|row| {
+                    let memory_id = MemoryId::new(row.memory_id);
+                    let payload = CodeChunkV1 {
+                        repo_id: row.repo_id,
+                        file_path: row.file_path,
+                        chunk_index: u32::try_from(row.chunk_index).unwrap_or(u32::MAX),
+                        text: row.text,
+                        language: row.language,
+                        chunk_type: row.chunk_type,
+                        byte_range_start: u32::try_from(row.byte_range_start).unwrap_or(u32::MAX),
+                        byte_range_end: u32::try_from(row.byte_range_end).unwrap_or(u32::MAX),
+                        line_range_start: u32::try_from(row.line_range_start).unwrap_or(u32::MAX),
+                        line_range_end: u32::try_from(row.line_range_end).unwrap_or(u32::MAX),
+                        state: parse_file_state(&row.state)?,
+                        calls: calls_by_caller
+                            .get(&row.memory_id)
+                            .cloned()
+                            .unwrap_or_default(),
+                    };
+                    Ok((memory_id, SidecarPayload::abstraction(payload)))
+                })
+                .collect::<Result<Vec<_>, StorageError>>()
+        })
+    }
 }
 
 proxima_storage_pg::pg_sidecar! {
@@ -351,62 +495,18 @@ proxima_storage_pg::pg_sidecar! {
     },
 }
 
-impl PgEdgeSidecar for EdgeCallsV1 {
-    fn insert_edge_sidecar<'t>(
-        &'t self,
-        tx: &'t mut sqlx::PgConnection,
-        edge_id: EdgeId,
-    ) -> PgSidecarFuture<'t> {
-        Box::pin(async move {
-            sqlx::query(
-                "INSERT INTO proxima_code.code_calls_v1
-                    (edge_id, callsite_byte_start, callsite_byte_end, callee_name, is_dynamic)
-                 VALUES ($1, $2, $3, $4, $5)",
-            )
-            .bind(edge_id.into_inner())
-            .bind(i32::try_from(self.callsite_byte_start).unwrap_or(i32::MAX))
-            .bind(i32::try_from(self.callsite_byte_end).unwrap_or(i32::MAX))
-            .bind(&self.callee_name)
-            .bind(self.is_dynamic)
-            .execute(tx)
-            .await
-            .map_err(proxima_storage_pg::map_err)?;
-            Ok(())
-        })
-    }
-}
-
-impl PgEdgePayload for EdgeCallsV1 {
-    fn load_edge_batch<'t>(
-        ctx: PgSidecarReadCtx<'t>,
-        edge_ids: &'t [EdgeId],
-    ) -> PgEdgePayloadBatchFuture<'t> {
-        Box::pin(async move {
-            let rows: Vec<(uuid::Uuid, i32, i32, String, bool)> = ctx
-                .fetch_all_by_edge_ids(
-                    "SELECT edge_id, callsite_byte_start, callsite_byte_end,
-                            callee_name, is_dynamic
-                       FROM proxima_code.code_calls_v1
-                      WHERE edge_id = ANY($1::uuid[])",
-                    edge_ids,
-                )
-                .await?;
-            Ok(rows
-                .into_iter()
-                .map(|(edge_id, byte_start, byte_end, callee_name, is_dynamic)| {
-                    (
-                        EdgeId::new(edge_id),
-                        SidecarPayload::edge(EdgeCallsV1 {
-                            callsite_byte_start: u32::try_from(byte_start).unwrap_or(u32::MAX),
-                            callsite_byte_end: u32::try_from(byte_end).unwrap_or(u32::MAX),
-                            callee_name,
-                            is_dynamic,
-                        }),
-                    )
-                })
-                .collect())
-        })
-    }
+proxima_storage_pg::pg_sidecar! {
+    payload: CodeWorkAssignmentV1,
+    row: CodeWorkAssignmentPayloadRow,
+    kinds: [Perspective],
+    table: "proxima_code.work_assignment_v1",
+    key: memory_id,
+    fields: {
+        repo_id => repo_id: (uuid),
+        target_perspective_memory_id => target_perspective_memory_id: (uuid),
+        work_item_memory_id => work_item_memory_id: (uuid),
+        reason => reason: (text),
+    },
 }
 
 impl PgFactSidecar for AcceptanceCriteriaV1 {
@@ -488,8 +588,9 @@ impl PgFactSidecar for TestRequestV1 {
         Box::pin(async move {
             sqlx::query(
                 "INSERT INTO proxima_code.test_requested_v1
-                    (memory_id, repo_id, title, instructions, test_key, criteria_count)
-                 VALUES ($1, $2, $3, $4, $5, $6)",
+                    (memory_id, repo_id, title, instructions, test_key, criteria_count,
+                     depends_on_memory_ids)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7)",
             )
             .bind(memory_id.into_inner())
             .bind(self.repo_id)
@@ -497,6 +598,7 @@ impl PgFactSidecar for TestRequestV1 {
             .bind(&self.instructions)
             .bind(&self.test_key)
             .bind(i32::try_from(self.criteria.len()).unwrap_or(i32::MAX))
+            .bind(&self.depends_on_memory_ids)
             .execute(tx.as_mut())
             .await
             .map_err(proxima_storage_pg::map_err)?;
@@ -520,15 +622,15 @@ impl PgMemoryPayload for TestRequestV1 {
         memory_id: MemoryId,
     ) -> PgMemoryPayloadFuture<'_> {
         Box::pin(async move {
-            let row: Option<(uuid::Uuid, String, String, String)> = ctx
+            let row: Option<(uuid::Uuid, String, String, String, Vec<uuid::Uuid>)> = ctx
                 .fetch_optional_by_memory_id(
-                    "SELECT repo_id, title, instructions, test_key
+                    "SELECT repo_id, title, instructions, test_key, depends_on_memory_ids
                        FROM proxima_code.test_requested_v1
                       WHERE memory_id = $1",
                     memory_id,
                 )
                 .await?;
-            let Some((repo_id, title, instructions, test_key)) = row else {
+            let Some((repo_id, title, instructions, test_key, depends_on_memory_ids)) = row else {
                 return Ok(None);
             };
             let criteria = load_criteria_rows(
@@ -544,6 +646,7 @@ impl PgMemoryPayload for TestRequestV1 {
                 instructions,
                 test_key,
                 criteria,
+                depends_on_memory_ids,
             })))
         })
     }
@@ -576,8 +679,8 @@ impl PgMemorySidecar for CodeExecutionPlanV1 {
                 sqlx::query(
                     "INSERT INTO proxima_code.execution_plan_item_v1
                         (plan_memory_id, item_index, item_key, kind,
-                         title, depends_on, request_key)
-                     VALUES ($1, $2, $3, $4, $5, $6, $7)",
+                         title, depends_on, request_key, request_memory_id)
+                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
                 )
                 .bind(memory_id.into_inner())
                 .bind(i32::try_from(index).unwrap_or(i32::MAX))
@@ -586,6 +689,7 @@ impl PgMemorySidecar for CodeExecutionPlanV1 {
                 .bind(&item.title)
                 .bind(&item.depends_on)
                 .bind(&item.request_key)
+                .bind(item.request_memory_id)
                 .execute(tx.as_mut())
                 .await
                 .map_err(proxima_storage_pg::map_err)?;
@@ -598,6 +702,7 @@ impl PgMemorySidecar for CodeExecutionPlanV1 {
 #[derive(Debug, sqlx::FromRow)]
 struct ExecutionPlanItemPayloadRow {
     item_key: String,
+    request_memory_id: uuid::Uuid,
     kind: CodeExecutionPlanItemKind,
     title: String,
     depends_on: Vec<String>,
@@ -627,7 +732,7 @@ impl PgMemoryPayload for CodeExecutionPlanV1 {
             };
             let item_rows: Vec<ExecutionPlanItemPayloadRow> = ctx
                 .fetch_all_by_memory_id(
-                    "SELECT item_key, kind, title, depends_on, request_key
+                    "SELECT item_key, kind, title, depends_on, request_key, request_memory_id
                        FROM proxima_code.execution_plan_item_v1
                       WHERE plan_memory_id = $1
                       ORDER BY item_index ASC",
@@ -642,6 +747,7 @@ impl PgMemoryPayload for CodeExecutionPlanV1 {
                     title: row.title,
                     depends_on: row.depends_on,
                     request_key: row.request_key,
+                    request_memory_id: row.request_memory_id,
                 })
                 .collect();
             Ok(Some(SidecarPayload::abstraction(CodeExecutionPlanV1 {

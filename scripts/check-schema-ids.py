@@ -21,7 +21,6 @@ PAYLOAD_TRAITS = {
     "AbstractionPayload": "Abstraction",
     "PerspectivePayload": "Perspective",
     "GoalPayload": "Goal",
-    "EdgePayload": "Edge",
     "CitedObjectPayload": "CitedObject",
     "CitationMappingPayload": "CitationMapping",
 }

@@ -33,6 +33,10 @@ async fn flavor_migrations_apply_to_fresh_db() {
             "test_result_v1",
             "acceptance_verification_v1",
             "acceptance_summary_v1",
+            // v0.0.8: call sites moved out of the edge sidecar and into the
+            // caller chunk's payload, and the work assignment became a node.
+            "code_chunk_call_v1",
+            "work_assignment_v1",
         ] {
             let row = sqlx::query(
                 "SELECT 1 AS ok FROM information_schema.tables
@@ -49,6 +53,9 @@ async fn flavor_migrations_apply_to_fresh_db() {
             "workspace_run_v1",
             "workspace_decision_v1",
             "workspace_review_v1",
+            // The typed edge sidecar. A flavor cannot declare one any more,
+            // and this one could never hold a second call site anyway.
+            "code_calls_v1",
         ] {
             let row = sqlx::query(
                 "SELECT 1 AS ok FROM information_schema.tables

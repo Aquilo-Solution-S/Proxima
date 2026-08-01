@@ -59,10 +59,12 @@ const BLOB_BATCH_BYTES: u64 = 8 * 1024 * 1024;
 use crate::calls::{ExtractedCall, ExtractedDefinition, extract_blob_callgraph};
 use crate::chunker::{Chunk, chunk_blob};
 use crate::ingest::{
-    CallEdgeDraft, FileRevisionHead, IngestError, append_code_slice, ingest_calls_edge,
+    FileRevisionHead, IngestError, append_code_slice, append_code_slices, code_slice_memory_id_for,
     ingest_commit, ingest_file_revision,
 };
-use crate::payloads::{CodeChunkV1, CommitV1, FileRevisionV1, FileState};
+use crate::payloads::{
+    CodeCallSiteV1, CodeCallV1, CodeChunkV1, CommitV1, FileRevisionV1, FileState,
+};
 use crate::repos::ScopeMatcher;
 use crate::store::CodeFlavorStore;
 
@@ -102,6 +104,10 @@ pub struct IndexReport {
     pub chunks_emitted: usize,
     pub chunks_reused: usize,
     pub chunks_tombstoned: usize,
+    /// Distinct caller→callee pairs the chunk payloads declared. One per
+    /// callee, not one per call site: the index collapses multiplicity and
+    /// this counts what the index gained.
+    pub call_references_emitted: usize,
     /// Tracked blobs the repo's scope removed from this ingest. Reported
     /// rather than silent: a caller who cannot find a file in search
     /// should be able to see that scope, not a bug, is why.
@@ -888,6 +894,11 @@ impl LocalGitSource {
             }
         }
 
+        // Build every chunk of the file before writing any of them: a
+        // caller chunk's payload names its callee chunks, so the callee's
+        // id has to exist before the caller is written. It does — the id
+        // is a pure function of position (file revision, repo, path, chunk
+        // index, state), which is what makes naming it up front legal.
         let mut file_chunks: Vec<ChunkInfo> = Vec::new();
         for (idx, chunk) in pending.analysis.chunks.iter().enumerate() {
             let chunk_index = u32::try_from(idx).unwrap_or(u32::MAX);
@@ -903,20 +914,9 @@ impl LocalGitSource {
                 line_range_start: chunk.line_range_start,
                 line_range_end: chunk.line_range_end,
                 state: FileState::Present,
+                calls: Vec::new(),
             };
-            let outcome = append_code_slice(
-                pool,
-                permit,
-                batch_id,
-                &payload,
-                pending.file_revision,
-                pending.source_commit,
-            )
-            .await?;
-            if !outcome.idempotent_replay {
-                report.chunks_emitted += 1;
-            }
-
+            let memory_id = code_slice_memory_id_for(&payload, pending.file_revision);
             let item_names: Vec<String> = pending
                 .analysis
                 .definitions
@@ -926,54 +926,84 @@ impl LocalGitSource {
                 })
                 .map(|d| d.name.clone())
                 .collect();
-
             file_chunks.push(ChunkInfo {
-                memory_id: outcome.memory_id,
-                byte_range_start: chunk.byte_range_start,
-                byte_range_end: chunk.byte_range_end,
+                memory_id,
+                payload,
                 item_names,
             });
         }
 
-        // After all slices for this file, resolve calls into the
-        // caller/callee code-slice pair and emit one Engine-authored
-        // typed edge each. Resolution is intra-file v1; cross-file
-        // calls wait for an indexed name table.
-        for call in pending.analysis.calls {
-            let caller_chunk = file_chunks
+        // Resolve each call into the caller/callee chunk pair and record it
+        // in the *caller's payload*. Resolution is intra-file v1;
+        // cross-file calls wait for an indexed name table. Ten sites into
+        // the same callee are ten entries here and one index row — the
+        // multiplicity belongs to the node (docs/16 §The edge table is an
+        // index).
+        for call in &pending.analysis.calls {
+            let Some(caller_index) = file_chunks
                 .iter()
-                .filter(|c| {
-                    c.byte_range_start <= call.byte_start && c.byte_range_end >= call.byte_end
+                .enumerate()
+                .filter(|(_, c)| {
+                    c.payload.byte_range_start <= call.byte_start
+                        && c.payload.byte_range_end >= call.byte_end
                 })
-                .max_by_key(|c| c.byte_range_start);
-            let Some(caller) = caller_chunk else { continue };
-
-            let callee_chunk = file_chunks
+                .max_by_key(|(_, c)| c.payload.byte_range_start)
+                .map(|(index, _)| index)
+            else {
+                continue;
+            };
+            let Some(callee_memory_id) = file_chunks
                 .iter()
-                .find(|c| c.item_names.iter().any(|n| n == &call.callee_name));
-            let Some(callee) = callee_chunk else { continue };
-
-            if caller.memory_id == callee.memory_id {
+                .find(|c| c.item_names.iter().any(|n| n == &call.callee_name))
+                .map(|c| c.memory_id)
+            else {
+                continue;
+            };
+            // A chunk that calls itself is not a connection between two
+            // things, and the index refuses the row outright.
+            if file_chunks[caller_index].memory_id == callee_memory_id {
                 continue;
             }
+            let site = CodeCallSiteV1 {
+                byte_start: call.byte_start,
+                byte_end: call.byte_end,
+                callee_name: call.callee_name.clone(),
+                is_dynamic: call.is_dynamic,
+            };
+            let calls = &mut file_chunks[caller_index].payload.calls;
+            match calls
+                .iter_mut()
+                .find(|existing| existing.callee_memory_id == callee_memory_id.into_inner())
+            {
+                Some(existing) => existing.sites.push(site),
+                None => calls.push(CodeCallV1 {
+                    callee_memory_id: callee_memory_id.into_inner(),
+                    sites: vec![site],
+                }),
+            }
+        }
 
-            let callsite_byte_start_in_source_chunk =
-                call.byte_start.saturating_sub(caller.byte_range_start);
-
-            ingest_calls_edge(
-                pool,
-                permit,
-                &CallEdgeDraft {
-                    source_memory_id: caller.memory_id.into_inner(),
-                    target_memory_id: callee.memory_id.into_inner(),
-                    callsite_byte_start: call.byte_start,
-                    callsite_byte_end: call.byte_end,
-                    callsite_byte_start_in_source_chunk,
-                    callee_name: call.callee_name,
-                    is_dynamic: call.is_dynamic,
-                },
-            )
-            .await?;
+        // One transaction for the file: the chunks reference each other, so
+        // they are written as a group and their index rows land after every
+        // member exists.
+        let payloads = file_chunks
+            .iter()
+            .map(|chunk| chunk.payload.clone())
+            .collect::<Vec<_>>();
+        let outcomes = append_code_slices(
+            pool,
+            permit,
+            batch_id,
+            &payloads,
+            pending.file_revision,
+            pending.source_commit,
+        )
+        .await?;
+        for (chunk, outcome) in file_chunks.iter().zip(&outcomes) {
+            if !outcome.idempotent_replay {
+                report.chunks_emitted += 1;
+            }
+            report.call_references_emitted += chunk.payload.calls.len();
         }
         Ok(())
     }
@@ -1063,6 +1093,10 @@ fn tombstone_chunk(
         line_range_start: 0,
         line_range_end: 0,
         state: FileState::Tombstone,
+        // A tombstone slice asserts that the position is gone. It calls
+        // nothing, so it declares nothing and its index rows disappear
+        // with it.
+        calls: Vec::new(),
     }
 }
 
@@ -1187,7 +1221,6 @@ struct PendingDeletedPath {
 #[derive(Debug, Clone)]
 struct ChunkInfo {
     memory_id: MemoryId,
-    byte_range_start: u32,
-    byte_range_end: u32,
+    payload: CodeChunkV1,
     item_names: Vec<String>,
 }

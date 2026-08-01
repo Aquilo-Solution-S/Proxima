@@ -1,6 +1,8 @@
-use proxima_core::relation::{CORE_DEPENDS_ON_RELATION, CORE_DERIVED_FROM_RELATION};
-use proxima_core::verbs::query::{EdgeFilter, EdgeReadRequest, EdgeTargetProjection, EntityKind};
-use proxima_core::{AbstractionPayload, EntityRef, FactPayload, GoalActivatedV1, MemoryId};
+use proxima_core::verbs::query::{EdgeFilter, EdgeReadRequest, EntityKind};
+use proxima_core::{
+    AbstractionPayload, EdgeEndpoint, EdgeKind, EntityRef, FactPayload, GoalActivatedV1, MemoryId,
+    PerspectivePayload,
+};
 use proxima_core::{Tool, ToolCtx, ToolError};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -8,12 +10,11 @@ use uuid::Uuid;
 
 use crate::payloads::{
     AcceptanceCriterionV1, AcceptanceVerifierKind, AcceptanceVerifierSpecV1, CodeExecutionPlanV1,
-    ExecutionRequestV1, TestRequestV1,
+    CodeWorkAssignmentV1, ExecutionRequestV1, TestRequestV1,
 };
 
 use super::CodeToolCtxExt;
 use super::code_store;
-use super::emit_execution_request::CODE_TARGETS_EXECUTION_REQUEST_RELATION;
 use super::sql::{map_storage, owner_columns};
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -127,20 +128,27 @@ impl Tool for CodeWorkItemBundleTool {
             let item = load_work_item(&ctx, memory_id).await?;
             let repo = load_repo(&ctx, item.repo_id).await?;
             let criteria = load_criteria(&ctx, memory_id).await?;
-            let dependency_handles = load_memory_edge_targets(
+            // A work item's only outgoing references are the items it
+            // depends on — the dependency is a property of the depending
+            // row, so it is the item's own payload that declares it.
+            let dependency_handles = load_work_item_neighbours(
                 &ctx,
                 memory_id,
-                CORE_DEPENDS_ON_RELATION,
+                EdgeKind::Reference,
                 EdgeDirection::Outgoing,
             )
             .await?
             .into_iter()
             .map(|id| ctx.format_fact_memory(id))
             .collect();
-            let dependent_handles = load_memory_edge_targets(
+            // Incoming references reach this item from several kinds of
+            // node — the criteria Fact, the plan Abstraction, an assignment
+            // Perspective — so the dependents are the ones that are
+            // themselves work/test requests.
+            let dependent_handles = load_work_item_neighbours(
                 &ctx,
                 memory_id,
-                CORE_DEPENDS_ON_RELATION,
+                EdgeKind::Reference,
                 EdgeDirection::Incoming,
             )
             .await?
@@ -150,7 +158,7 @@ impl Tool for CodeWorkItemBundleTool {
             let derived_targets = load_memory_edge_targets(
                 &ctx,
                 memory_id,
-                CORE_DERIVED_FROM_RELATION,
+                EdgeKind::Origin,
                 EdgeDirection::Outgoing,
             )
             .await?;
@@ -402,19 +410,19 @@ enum EdgeDirection {
 async fn load_memory_edge_targets(
     ctx: &ToolCtx,
     memory_id: MemoryId,
-    relation: &str,
+    kind: EdgeKind,
     direction: EdgeDirection,
 ) -> Result<Vec<MemoryId>, ToolError> {
     let engine = super::engine(ctx)?;
     let endpoint = EntityRef::Memory(memory_id);
     let filter = match direction {
         EdgeDirection::Outgoing => EdgeFilter {
-            relation: Some(relation.to_string()),
+            kind: Some(kind),
             source: Some(endpoint),
             target: None,
         },
         EdgeDirection::Incoming => EdgeFilter {
-            relation: Some(relation.to_string()),
+            kind: Some(kind),
             source: None,
             target: Some(endpoint),
         },
@@ -424,33 +432,70 @@ async fn load_memory_edge_targets(
             ctx.authz(),
             &EdgeReadRequest {
                 owner: ctx.owner(),
-                edge_ids: Vec::new(),
                 filter,
                 limit: 500,
                 cursor: None,
-                include_payloads: false,
             },
         )
         .await?;
     let mut out = Vec::new();
     for edge in response.edges {
-        match direction {
-            EdgeDirection::Outgoing => {
-                if let EdgeTargetProjection::Visible {
-                    target: EntityRef::Memory(id),
-                } = edge.target
-                {
-                    out.push(id);
-                }
-            }
-            EdgeDirection::Incoming => {
-                if let EntityRef::Memory(id) = edge.source {
-                    out.push(id);
-                }
-            }
+        let endpoint = match direction {
+            EdgeDirection::Outgoing => edge.target.endpoint(),
+            EdgeDirection::Incoming => Some(edge.source),
+        };
+        if let Some(id) = endpoint.and_then(EdgeEndpoint::memory_id) {
+            out.push(id);
         }
     }
     Ok(out)
+}
+
+/// Neighbours that are themselves work/test requests.
+///
+/// The kind filter alone is not enough any more: a `reference` row reaching
+/// a request comes from whichever node declared it — the criteria Fact, the
+/// plan Abstraction, an assignment Perspective — so the schema does the
+/// narrowing the relation name used to do.
+async fn load_work_item_neighbours(
+    ctx: &ToolCtx,
+    memory_id: MemoryId,
+    kind: EdgeKind,
+    direction: EdgeDirection,
+) -> Result<Vec<MemoryId>, ToolError> {
+    let candidates = load_memory_edge_targets(ctx, memory_id, kind, direction).await?;
+    if candidates.is_empty() {
+        return Ok(Vec::new());
+    }
+    let raw = candidates
+        .iter()
+        .map(|id| (*id).into_inner())
+        .collect::<Vec<_>>();
+    let pool = code_store(ctx)?;
+    let engine = super::engine(ctx)?;
+    let mut out = Vec::new();
+    for schema_id in [
+        <ExecutionRequestV1 as FactPayload>::schema_id(),
+        <TestRequestV1 as FactPayload>::schema_id(),
+    ] {
+        out.extend(
+            pool.authorized_memory_ids(
+                &engine,
+                ctx.authz(),
+                ctx.owner(),
+                &raw,
+                EntityKind::Fact,
+                Some(schema_id),
+                500,
+            )
+            .await?,
+        );
+    }
+    // Request order, so the bundle reads the same way twice.
+    Ok(candidates
+        .into_iter()
+        .filter(|id| out.contains(id))
+        .collect())
 }
 
 async fn load_goal_activation(
@@ -473,27 +518,61 @@ async fn load_goal_activation(
         .map(|(_, payload)| payload.goal_id))
 }
 
+/// Workers this item is assigned to.
+///
+/// The assignment used to be a `targets-execution-request` edge from the
+/// worker Perspective. It is now a node: an assignment Perspective
+/// references both the worker and the item, so this reads the incoming
+/// assignment Perspectives and returns the worker each one names.
 async fn load_target_perspectives(
     ctx: &ToolCtx,
     memory_id: MemoryId,
 ) -> Result<Vec<MemoryId>, ToolError> {
-    let candidates = load_memory_edge_targets(
-        ctx,
-        memory_id,
-        CODE_TARGETS_EXECUTION_REQUEST_RELATION,
-        EdgeDirection::Incoming,
-    )
-    .await?;
+    let candidates =
+        load_memory_edge_targets(ctx, memory_id, EdgeKind::Reference, EdgeDirection::Incoming)
+            .await?;
+    if candidates.is_empty() {
+        return Ok(Vec::new());
+    }
     let pool = code_store(ctx)?;
     let engine = super::engine(ctx)?;
+    let assignments = pool
+        .authorized_memory_ids(
+            &engine,
+            ctx.authz(),
+            ctx.owner(),
+            &candidates
+                .into_iter()
+                .map(MemoryId::into_inner)
+                .collect::<Vec<_>>(),
+            EntityKind::Perspective,
+            Some(<CodeWorkAssignmentV1 as PerspectivePayload>::schema_id()),
+            500,
+        )
+        .await?;
+    if assignments.is_empty() {
+        return Ok(Vec::new());
+    }
+    let workers: Vec<Uuid> = sqlx::query_scalar(
+        "SELECT target_perspective_memory_id
+           FROM proxima_code.work_assignment_v1
+          WHERE memory_id = ANY($1::uuid[])
+          ORDER BY memory_id",
+    )
+    .bind(
+        assignments
+            .into_iter()
+            .map(MemoryId::into_inner)
+            .collect::<Vec<_>>(),
+    )
+    .fetch_all(pool.pool())
+    .await
+    .map_err(map_storage)?;
     pool.authorized_memory_ids(
         &engine,
         ctx.authz(),
         ctx.owner(),
-        &candidates
-            .into_iter()
-            .map(MemoryId::into_inner)
-            .collect::<Vec<_>>(),
+        &workers,
         EntityKind::Perspective,
         None,
         500,
@@ -501,14 +580,13 @@ async fn load_target_perspectives(
     .await
 }
 
+/// Plans that name this item. The plan's payload references the request
+/// Fact behind each of its items, so the connection is an incoming
+/// `reference` from an execution-plan Abstraction.
 async fn load_plan_sources(ctx: &ToolCtx, memory_id: MemoryId) -> Result<Vec<MemoryId>, ToolError> {
-    let candidates = load_memory_edge_targets(
-        ctx,
-        memory_id,
-        CORE_DERIVED_FROM_RELATION,
-        EdgeDirection::Incoming,
-    )
-    .await?;
+    let candidates =
+        load_memory_edge_targets(ctx, memory_id, EdgeKind::Reference, EdgeDirection::Incoming)
+            .await?;
     let pool = code_store(ctx)?;
     let engine = super::engine(ctx)?;
     pool.authorized_memory_ids(

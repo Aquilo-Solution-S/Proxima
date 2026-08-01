@@ -11,8 +11,16 @@
 //! check.
 
 /// Embedded migration set. Compile-time `include_str!`s every file under
-/// `flavors/code/migrations/`. Pre-v0.0.1 flavor schema changes stay squashed
-/// into the baseline migration instead of accumulating incremental recipes.
+/// `flavors/code/migrations/`.
+///
+/// The set is a single v0.0.8 baseline. The pre-v0.0.8 lanes were folded into
+/// it and deleted: the old baseline created an edge sidecar with a foreign key
+/// to `proxima_core.edges(edge_id)`, and core's v0.0.8 lane removed that
+/// column along with the idea of an edge having an id, so the old lane can no
+/// longer run on any database. `ignore_missing` above is what lets a database
+/// that already applied those versions tolerate their absence and apply the
+/// reset. Re-register and re-index is the way back — the flavor already ships
+/// that runbook.
 #[must_use]
 pub fn migrator() -> sqlx::migrate::Migrator {
     let mut m = sqlx::migrate!("./migrations");

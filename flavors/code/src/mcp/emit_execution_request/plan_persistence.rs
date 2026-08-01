@@ -1,13 +1,10 @@
 use proxima_core::access::AccessKind;
-use proxima_core::relation::{CORE_AUTHORED_RELATION, CORE_DERIVED_FROM_RELATION};
-use proxima_core::storage_ports::OwnerWritePermit;
 use proxima_core::{
-    AbstractionPayload, DerivedEdgeSpec, DerivedEmbedding, EdgeAuthorshipKind, EdgeId, EntityKind,
-    MemoryId, MemoryOperatorKind, Owner, RegisteredRelation, SchemaVersion, ToolCtx, ToolError,
+    AbstractionPayload, DerivedEmbedding, EdgeEndpoint, EntityKind, MemoryId, MemoryOperatorKind,
+    Owner, PayloadReference, SchemaVersion, ToolCtx, ToolError,
 };
 use proxima_storage_pg::sidecars::PgMemorySidecar;
 use proxima_storage_pg::verbs::derive_append::{DerivedDraft, append_derived_with_edges_in_tx};
-use proxima_storage_pg::verbs::edge_write::{MemoryEndpoint, append_owner_checked_memory_edge};
 use sqlx::{Postgres, Transaction};
 use uuid::Uuid;
 
@@ -20,7 +17,10 @@ use super::{execution_plan_input_contract_id, execution_plan_operator_id};
 #[derive(Debug)]
 pub(super) struct PlanAppendOutcome {
     pub(super) memory_id: MemoryId,
-    pub(super) edge_ids: Vec<Uuid>,
+    /// Index rows the plan write asserted: one `origin` to the Abstraction
+    /// it was derived from, plus one `reference` per target its payload
+    /// names. A count, not handles — an edge has no id.
+    pub(super) edge_count: usize,
     pub(super) idempotent_replay: bool,
 }
 
@@ -64,14 +64,19 @@ pub(super) fn execution_plan_memory_id(
     MemoryId::new(Uuid::new_v5(&Uuid::NAMESPACE_OID, &key))
 }
 
-#[allow(clippy::too_many_arguments)]
+/// Append the plan Abstraction after its items exist.
+///
+/// The order is load-bearing. A plan's payload names the request Fact
+/// behind each item, and an index row cannot point at a node that is not
+/// there yet — so the items are emitted first and the plan is written last,
+/// referring back to them. Under the old model the plan came first and the
+/// plan→item edges were appended afterwards, which is exactly the
+/// free-standing edge write the model no longer has.
 pub(super) async fn append_execution_plan(
     tx: &mut Transaction<'_, Postgres>,
     ctx: &ToolCtx,
     planner_root: MemoryId,
-    goal_activated_memory_id: MemoryId,
     plan_source_memory_id: MemoryId,
-    evidence: &[MemoryId],
     plan_key: &str,
     plan_summary: &str,
     payload: &CodeExecutionPlanV1,
@@ -79,8 +84,12 @@ pub(super) async fn append_execution_plan(
     let owner = ctx.owner();
     let permit = ctx.owner_write_permit(AccessKind::Perspective).await?;
     let caller = caller(ctx)?;
-    let memory_id =
-        execution_plan_memory_id(&owner, payload.repo_id, goal_activated_memory_id, plan_key);
+    let memory_id = execution_plan_memory_id(
+        &owner,
+        payload.repo_id,
+        MemoryId::new(payload.goal_activated_memory_id),
+        plan_key,
+    );
     let draft = DerivedDraft {
         memory_id: memory_id.into_inner(),
         owner,
@@ -94,117 +103,56 @@ pub(super) async fn append_execution_plan(
         source_batch_id: None,
         model_id: caller.model_id(),
         prompt_version: "proxima-code/emit_execution_plan-v1",
+        // "Emitted by the planner" is known at write time, so it is a
+        // column on the row rather than a `core/authored` edge.
+        authoring_perspective_id: Some(planner_root),
         supersedes: None,
         lexical_language: None,
         embedding: DerivedEmbedding::None,
     };
-    let derived_relation = ctx
-        .registry()
-        .resolve_relation(CORE_DERIVED_FROM_RELATION)
-        .ok_or_else(|| ToolError::Other("core/derived-from relation not registered".into()))?;
-    let proof_edges = [execution_plan_proof_edge(
-        &owner,
-        memory_id,
+    // The plan's Abstraction input is what it was made from; everything the
+    // payload names — activation Fact, evidence, item requests — is what it
+    // points at. Two lists, no kinds.
+    let origins = [EdgeEndpoint::memory(
+        EntityKind::Abstraction,
         plan_source_memory_id,
-        derived_relation,
     )];
+    let references = payload_reference_endpoints(payload)?;
+    let edge_count = origins.len() + references.len();
     let sidecar_payload = payload.clone();
-    let outcome =
-        append_derived_with_edges_in_tx(tx, &permit, &draft, &proof_edges, move |tx, outcome| {
+    let outcome = append_derived_with_edges_in_tx(
+        tx,
+        &permit,
+        &draft,
+        &origins,
+        &references,
+        move |tx, outcome| {
             Box::pin(async move {
                 sidecar_payload
                     .insert_memory_sidecar(tx, outcome.memory_id)
                     .await
             })
-        })
-        .await
-        .map_err(ToolError::Storage)?;
-    let mut edge_ids = Vec::new();
-    if !outcome.idempotent_replay {
-        edge_ids.push(append_plan_authored_edge(tx, ctx, &permit, planner_root, memory_id).await?);
-        for memory_id in evidence {
-            edge_ids.push(
-                append_plan_fact_evidence_edge(tx, ctx, &permit, outcome.memory_id, *memory_id)
-                    .await?,
-            );
-        }
-    }
+        },
+    )
+    .await
+    .map_err(ToolError::Storage)?;
     Ok(PlanAppendOutcome {
         memory_id: outcome.memory_id,
-        edge_ids,
+        edge_count,
         idempotent_replay: outcome.idempotent_replay,
     })
 }
 
-async fn append_plan_authored_edge(
-    tx: &mut Transaction<'_, Postgres>,
-    ctx: &ToolCtx,
-    permit: &OwnerWritePermit,
-    planner_root: MemoryId,
-    plan_memory_id: MemoryId,
-) -> Result<Uuid, ToolError> {
-    let relation = ctx
-        .registry()
-        .resolve_relation(CORE_AUTHORED_RELATION)
-        .ok_or_else(|| ToolError::Other("core/authored relation not registered".into()))?;
-    let edge_id = Uuid::now_v7();
-    append_owner_checked_memory_edge(
-        tx.as_mut(),
-        permit,
-        EdgeId::new(edge_id),
-        relation,
-        MemoryEndpoint::perspective(planner_root),
-        MemoryEndpoint::abstraction(plan_memory_id),
-        EdgeAuthorshipKind::ExternalAgent,
-        Some(planner_root),
-    )
-    .await
-    .map_err(ToolError::Storage)?;
-    Ok(edge_id)
-}
-
-fn execution_plan_proof_edge<'a>(
-    owner: &'a Owner,
-    plan_memory_id: MemoryId,
-    plan_source_memory_id: MemoryId,
-    relation: RegisteredRelation<'a>,
-) -> DerivedEdgeSpec<'a> {
-    DerivedEdgeSpec {
-        owner,
-        relation,
-        source_kind: EntityKind::Abstraction,
-        source_memory_id: plan_memory_id,
-        target_kind: EntityKind::Abstraction,
-        target_memory_id: plan_source_memory_id,
-        authorship_kind: EdgeAuthorshipKind::OperatorAtoA,
-        authorship_owner_memory_id: Some(plan_source_memory_id),
-        sidecar_payload: None,
-    }
-}
-
-pub(super) async fn append_plan_fact_evidence_edge(
-    tx: &mut Transaction<'_, Postgres>,
-    ctx: &ToolCtx,
-    permit: &OwnerWritePermit,
-    plan_memory_id: MemoryId,
-    target_memory_id: MemoryId,
-) -> Result<Uuid, ToolError> {
-    let relation = ctx
-        .registry()
-        .resolve_relation(CORE_DERIVED_FROM_RELATION)
-        .ok_or_else(|| ToolError::Other("core/derived-from relation not registered".into()))?;
-    let edge_id = Uuid::now_v7();
-    append_owner_checked_memory_edge(
-        tx.as_mut(),
-        permit,
-        EdgeId::new(edge_id),
-        relation,
-        MemoryEndpoint::abstraction(plan_memory_id),
-        MemoryEndpoint::fact(target_memory_id),
-        EdgeAuthorshipKind::ExternalAgent,
-        ctx.caller_self_perspective(),
-    )
-    .await
-    .map_err(ToolError::Storage)?;
-    Ok(edge_id)
+/// Read the payload's schema-declared references, checking each binding
+/// against the address form it produced before storage sees the endpoints.
+fn payload_reference_endpoints(
+    payload: &CodeExecutionPlanV1,
+) -> Result<Vec<EdgeEndpoint>, ToolError> {
+    <CodeExecutionPlanV1 as AbstractionPayload>::references(payload)
+        .into_iter()
+        .map(|reference: PayloadReference| {
+            reference.validate().map_err(ToolError::Other)?;
+            Ok(reference.target)
+        })
+        .collect()
 }

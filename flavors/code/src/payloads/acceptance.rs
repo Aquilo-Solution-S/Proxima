@@ -1,4 +1,6 @@
-use proxima_core::{FactPayload, PayloadKeyBuilder, proxima_schema_id};
+use proxima_core::{
+    EntityKind, FactPayload, MemoryId, PayloadKeyBuilder, PayloadReference, proxima_schema_id,
+};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -75,6 +77,13 @@ pub struct AcceptanceCriterionV1 {
     pub verifier_spec: AcceptanceVerifierSpecV1,
 }
 
+/// The acceptance bar for one work item.
+///
+/// `work_item_memory_id` is the schema-declared reference field that
+/// replaced the `proxima-code/has-acceptance-criteria` relation: the
+/// criteria Fact is the node that owns the statement "these are the
+/// criteria for that request", so the index row is derived from it and
+/// nobody writes an edge (docs/16 §Flavor Migration).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AcceptanceCriteriaV1 {
     pub work_item_memory_id: uuid::Uuid,
@@ -120,5 +129,13 @@ impl FactPayload for AcceptanceCriteriaV1 {
 
     fn render(&self) -> String {
         format!("Acceptance criteria: {} criteria", self.criteria.len())
+    }
+
+    fn references(&self) -> Vec<PayloadReference> {
+        vec![PayloadReference::memory(
+            "work_item_memory_id",
+            EntityKind::Fact,
+            MemoryId::new(self.work_item_memory_id),
+        )]
     }
 }

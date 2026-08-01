@@ -8,9 +8,8 @@ use proxima_code::testkit::build_engine;
 use proxima_code::{CodeExecutionPlanItemKind, CodeExecutionPlanItemV1, CodeExecutionPlanV1};
 use proxima_core::llm::{EMBEDDING_DIM, EmbeddingClient, LlmError};
 use proxima_core::{
-    AbstractionPayload, AuthPath, AuthzContext, CORE_DERIVED_FROM_RELATION, EdgeAuthorshipKind,
-    EntityKind, InputContractId, MemoryId, MemoryOperatorKind, OperatorId, SchemaId, SchemaVersion,
-    SidecarPayload,
+    AbstractionPayload, AuthPath, AuthzContext, EdgeEndpoint, EntityKind, InputContractId,
+    MemoryId, MemoryOperatorKind, OperatorId, SchemaId, SchemaVersion, SidecarPayload,
 };
 use uuid::Uuid;
 
@@ -42,44 +41,51 @@ async fn code_execution_plan_can_use_core_superseding_derived_authoring() {
     let engine = build_engine(db.pg.clone()).with_embed(Arc::new(ConstantEmbedding));
 
     let repo_id = Uuid::now_v7();
-    let goal_activated_memory_id = Uuid::now_v7();
     let (owner_kind, owner_id) = proxima_storage_pg::access::owner_columns::owner_binds(&owner);
+    // The plan's Abstraction *input* — what it was made from.
+    let plan_source_memory_id = Uuid::now_v7();
     sqlx::query(
         "INSERT INTO proxima_core.memories
             (memory_id, owner_kind, owner_id, schema_id, schema_version, kind, text,
              operator_kind, operator_id, input_contract_id, source_batch_id, model_id,
              prompt_version)
-         VALUES ($1, $2, $3, 'test/goal-activation', 1, 'Abstraction',
-                 'goal activation evidence', 'AtoA',
+         VALUES ($1, $2, $3, 'test/plan-source', 1, 'Abstraction',
+                 'planning synthesis', 'AtoA',
                  '00000000-0000-0000-0000-000000000451'::uuid,
                  '00000000-0000-0000-0000-000000000452'::uuid, NULL,
                  'test', 'test')",
     )
-    .bind(goal_activated_memory_id)
+    .bind(plan_source_memory_id)
     .bind(owner_kind)
     .bind(owner_id)
     .execute(db.pg.pool_for_tests())
     .await
-    .expect("insert goal activation evidence");
+    .expect("insert plan source abstraction");
+
+    // The Facts the plan's payload points at: the activation it was planned
+    // under, and the request behind its one item. Both must exist before the
+    // plan is written — an index row cannot point at a node that is not there.
+    let goal_activated_memory_id = seed_fact(&db, owner, "goal activation").await;
+    let request_memory_id = seed_fact(&db, owner, "work requested").await;
 
     let old_memory_id = MemoryId::new(Uuid::now_v7());
     let new_memory_id = MemoryId::new(Uuid::now_v7());
     let plan_key = "goal:repo:plan";
 
-    let relation = engine
-        .registry()
-        .resolve_relation(CORE_DERIVED_FROM_RELATION)
-        .expect("core derived-from relation registered");
-    let old_edges = [proxima_core::AuthorDerivedEdgeInput {
-        relation,
-        source_kind: EntityKind::Abstraction,
-        source_memory_id: old_memory_id,
-        target_kind: EntityKind::Abstraction,
-        target_memory_id: MemoryId::new(goal_activated_memory_id),
-        authorship_kind: EdgeAuthorshipKind::OperatorAtoA,
-        authorship_owner_memory_id: Some(MemoryId::new(goal_activated_memory_id)),
-    }];
-    let old_payload = plan_payload(repo_id, goal_activated_memory_id, plan_key, "old plan");
+    // What the plan was made from is a list of endpoints on the request; the
+    // two Facts its payload names arrive as references, derived from the
+    // payload rather than passed beside it.
+    let derived_from = [EdgeEndpoint::memory(
+        EntityKind::Abstraction,
+        MemoryId::new(plan_source_memory_id),
+    )];
+    let old_payload = plan_payload(
+        repo_id,
+        goal_activated_memory_id,
+        request_memory_id,
+        plan_key,
+        "old plan",
+    );
     let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
     let old_outcome = engine
         .author_derived_authorized(
@@ -98,25 +104,25 @@ async fn code_execution_plan_can_use_core_superseding_derived_authoring() {
                 model_id: "test-planner",
                 prompt_version: "proxima-code/test-plan-v1",
                 sidecar_payload: SidecarPayload::abstraction(old_payload),
+                authoring_perspective_id: None,
+                derived_from: &derived_from,
                 supersedes: None,
                 lexical_language: None,
-                edges: &old_edges,
             },
         )
         .await
         .expect("old plan authored");
-    assert_eq!(old_outcome.edge_ids.len(), 1);
+    // One origin (the Abstraction input) and two references (the activation
+    // Fact and the item's request Fact).
+    assert_eq!(old_outcome.edge_count, 3);
 
-    let new_edges = [proxima_core::AuthorDerivedEdgeInput {
-        relation,
-        source_kind: EntityKind::Abstraction,
-        source_memory_id: new_memory_id,
-        target_kind: EntityKind::Abstraction,
-        target_memory_id: MemoryId::new(goal_activated_memory_id),
-        authorship_kind: EdgeAuthorshipKind::OperatorAtoA,
-        authorship_owner_memory_id: Some(MemoryId::new(goal_activated_memory_id)),
-    }];
-    let new_payload = plan_payload(repo_id, goal_activated_memory_id, plan_key, "new plan");
+    let new_payload = plan_payload(
+        repo_id,
+        goal_activated_memory_id,
+        request_memory_id,
+        plan_key,
+        "new plan",
+    );
     let new_outcome = engine
         .author_derived_authorized(
             &authz,
@@ -134,14 +140,15 @@ async fn code_execution_plan_can_use_core_superseding_derived_authoring() {
                 model_id: "test-planner",
                 prompt_version: "proxima-code/test-plan-v1",
                 sidecar_payload: SidecarPayload::abstraction(new_payload),
+                authoring_perspective_id: None,
+                derived_from: &derived_from,
                 supersedes: Some(old_memory_id),
                 lexical_language: None,
-                edges: &new_edges,
             },
         )
         .await
         .expect("new plan authored");
-    assert_eq!(new_outcome.edge_ids.len(), 1);
+    assert_eq!(new_outcome.edge_count, 3);
 
     let supersedes: Option<Uuid> =
         sqlx::query_scalar("SELECT supersedes FROM proxima_core.memories WHERE memory_id = $1")
@@ -151,21 +158,29 @@ async fn code_execution_plan_can_use_core_superseding_derived_authoring() {
             .expect("read supersedes column");
     assert_eq!(supersedes, Some(old_memory_id.into_inner()));
 
-    let edge_count: i64 = sqlx::query_scalar(
+    // Supersession is not a connection between two things — it is the same
+    // thing persisting through revision — so it is a pointer on both rows and
+    // no edge exists to find.
+    let superseded_by: Option<Uuid> =
+        sqlx::query_scalar("SELECT superseded_by FROM proxima_core.memories WHERE memory_id = $1")
+            .bind(old_memory_id.into_inner())
+            .fetch_one(db.pg.pool_for_tests())
+            .await
+            .expect("read superseded_by column");
+    assert_eq!(superseded_by, Some(new_memory_id.into_inner()));
+
+    let supersession_edges: i64 = sqlx::query_scalar(
         "SELECT count(*)
            FROM proxima_core.edges
-          WHERE relation = $1
-            AND source_memory_id = $2
-            AND target_memory_id = $3
-            AND relation_class = 'Supersession'",
+          WHERE source_id = $1
+            AND target_id = $2",
     )
-    .bind(proxima_core::CORE_SUPERSEDES_RELATION)
     .bind(new_memory_id.into_inner())
     .bind(old_memory_id.into_inner())
     .fetch_one(db.pg.pool_for_tests())
     .await
-    .expect("read supersedes edge");
-    assert_eq!(edge_count, 1);
+    .expect("read supersession edges");
+    assert_eq!(supersession_edges, 0, "supersession writes no edge");
 
     let current_plan_ids: Vec<Uuid> =
         sqlx::query_scalar(
@@ -194,9 +209,33 @@ WHERE eo.owner_kind = $1
     assert_eq!(current_plan_ids, vec![new_memory_id.into_inner()]);
 }
 
+/// A Fact row the plan's payload may point at. Receiptless, which is legal
+/// for a seeded fixture and is all the index needs: the endpoint has to
+/// exist and be of the declared kind.
+async fn seed_fact(db: &TestDb, owner: proxima_core::Owner, text: &str) -> Uuid {
+    let memory_id = Uuid::now_v7();
+    let (owner_kind, owner_id) = proxima_storage_pg::access::owner_columns::owner_binds(&owner);
+    // A Fact row carries `kind = NULL`; the F/A/P discriminator only names
+    // the derived layers.
+    sqlx::query(
+        "INSERT INTO proxima_core.memories
+            (memory_id, owner_kind, owner_id, schema_id, schema_version, kind, text)
+         VALUES ($1, $2, $3, 'test/plan-subject', 1, NULL, $4)",
+    )
+    .bind(memory_id)
+    .bind(owner_kind)
+    .bind(owner_id)
+    .bind(text)
+    .execute(db.pg.pool_for_tests())
+    .await
+    .expect("insert plan subject fact");
+    memory_id
+}
+
 fn plan_payload(
     repo_id: Uuid,
     goal_activated_memory_id: Uuid,
+    request_memory_id: Uuid,
     plan_key: &str,
     summary: &str,
 ) -> CodeExecutionPlanV1 {
@@ -211,6 +250,7 @@ fn plan_payload(
             title: "Implement work".to_string(),
             depends_on: Vec::new(),
             request_key: "request-work".to_string(),
+            request_memory_id,
         }],
         evidence_memory_ids: Vec::new(),
     }

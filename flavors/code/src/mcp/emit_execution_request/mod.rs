@@ -1,5 +1,4 @@
 mod context_validation;
-mod edges;
 mod emit_plan;
 mod emit_request;
 mod ingest;
@@ -24,7 +23,6 @@ pub use types::{
 };
 
 const EXECUTION_REQUEST_SOURCE_ID: &str = "proxima-code/execution-request";
-pub const CODE_TARGETS_EXECUTION_REQUEST_RELATION: &str = "proxima-code/targets-execution-request";
 
 const EXECUTION_PLAN_OPERATOR_NAMESPACE: Uuid = Uuid::from_bytes([
     0x65, 0xf8, 0x8d, 0xc6, 0x96, 0x8c, 0x45, 0x9b, 0x8d, 0x32, 0x9a, 0xde, 0x41, 0xfa, 0x5f, 0x21,
@@ -47,6 +45,39 @@ fn execution_plan_input_contract_id() -> InputContractId {
     ))
 }
 
-pub const CODE_HAS_ACCEPTANCE_CRITERIA_RELATION: &str = "proxima-code/has-acceptance-criteria";
+const WORK_ASSIGNMENT_NAMESPACE: Uuid = Uuid::from_bytes([
+    0x3c, 0x91, 0x77, 0x4a, 0xd2, 0x8e, 0x4f, 0x13, 0x9b, 0x60, 0x2a, 0xf5, 0x0d, 0x6c, 0x84, 0xe7,
+]);
+
+fn work_assignment_operator_id() -> OperatorId {
+    OperatorId::new(Uuid::new_v5(
+        &WORK_ASSIGNMENT_NAMESPACE,
+        b"proxima-code/work-assignment-v1:operator",
+    ))
+}
+
+fn work_assignment_input_contract_id() -> InputContractId {
+    InputContractId::new(Uuid::new_v5(
+        &WORK_ASSIGNMENT_NAMESPACE,
+        b"proxima-code/work-assignment-v1:subjects",
+    ))
+}
+
+/// Deterministic id for an assignment Perspective, folded from the owner
+/// principal, the worker it names and the item it assigns. Re-asserting the
+/// same assignment lands on one memory rather than a pile of identical
+/// claims.
+fn work_assignment_memory_id(
+    owner: &proxima_core::Owner,
+    target_perspective_memory_id: proxima_core::MemoryId,
+    work_item_memory_id: proxima_core::MemoryId,
+) -> proxima_core::MemoryId {
+    let mut key = Vec::with_capacity(48);
+    key.extend_from_slice(owner.stable_key_uuid().as_bytes());
+    key.extend_from_slice(target_perspective_memory_id.into_inner().as_bytes());
+    key.extend_from_slice(work_item_memory_id.into_inner().as_bytes());
+    proxima_core::MemoryId::new(Uuid::new_v5(&WORK_ASSIGNMENT_NAMESPACE, &key))
+}
+
 const ACCEPTANCE_CRITERIA_SOURCE_ID: &str = "proxima-code/acceptance-criteria";
 const TEST_REQUEST_SOURCE_ID: &str = "proxima-code/test-request";

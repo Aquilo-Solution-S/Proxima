@@ -27,18 +27,15 @@ pub use local_git_source::{
 pub use migrations::migrator;
 pub use payloads::{
     AcceptanceCriteriaV1, AcceptanceCriterionV1, AcceptanceSummaryV1, AcceptanceVerificationStatus,
-    AcceptanceVerificationV1, AcceptanceVerifierKind, AcceptanceVerifierSpecV1, CodeChunkV1,
-    CodeCommitSummarizerSelfV1, CodeDevelopmentPerspectiveV1, CodeEngineerSelfV1,
-    CodeExecutionPlanItemKind, CodeExecutionPlanItemV1, CodeExecutionPlanV1, CommitSummaryV1,
-    CommitV1, EdgeCallsV1, ExecutionRequestV1, ExecutionResultV1, FileRevisionV1, FileState,
-    TestRequestV1, TestRequestedV1, TestResultV1, WorkRequestedV1, WorkResultStatus,
+    AcceptanceVerificationV1, AcceptanceVerifierKind, AcceptanceVerifierSpecV1, CodeCallSiteV1,
+    CodeCallV1, CodeChunkV1, CodeCommitSummarizerSelfV1, CodeDevelopmentPerspectiveV1,
+    CodeEngineerSelfV1, CodeExecutionPlanItemKind, CodeExecutionPlanItemV1, CodeExecutionPlanV1,
+    CodeWorkAssignmentV1, CommitSummaryV1, CommitV1, ExecutionRequestV1, ExecutionResultV1,
+    FileRevisionV1, FileState, TestRequestV1, TestRequestedV1, TestResultV1, WorkRequestedV1,
+    WorkResultStatus,
 };
 pub use store::CodeFlavorStore;
 
-use proxima_core::{
-    AuthorshipKindMask, EndpointBinding, EntityKindMask, RelationClass, RelationDescriptor,
-    SchemaId, SchemaRef, SchemaVersion,
-};
 pub use repos::{
     MAX_SCOPE_GLOB_LEN, MAX_SCOPE_GLOBS, RepoEraseReceipt, RepoIngestionRun, RepoRecord,
     RepoRegistryError, RepoScope, RunStage, RunStatus, ScopeError, ScopeMatcher, StageCounters,
@@ -82,9 +79,7 @@ proxima::flavor::proxima_flavor! {
         payloads::CodeDevelopmentPerspectiveV1,
         payloads::CodeCommitSummarizerSelfV1,
         payloads::CodeEngineerSelfV1,
-    ],
-    edge_schemas = [
-        payloads::EdgeCallsV1,
+        payloads::CodeWorkAssignmentV1,
     ],
     opaque_cited_object_schemas = [
         CODE_BLOB_SCHEMA,
@@ -105,39 +100,6 @@ proxima::flavor::proxima_flavor! {
         EXECUTION_RESULT_WHOLE_SCHEMA,
         TEST_RESULT_WHOLE_SCHEMA,
         ACCEPTANCE_VERIFICATION_WHOLE_SCHEMA,
-    ],
-    relations = [
-        RelationDescriptor::typed(
-            "proxima-code/calls",
-            RelationClass::Structural,
-            SchemaRef::new(
-                SchemaId::new("proxima-code/calls".into()),
-                SchemaVersion::new(1),
-            ),
-            EndpointBinding::Pin,
-            EndpointBinding::Pin,
-            EntityKindMask::abstraction(),
-            EntityKindMask::abstraction(),
-            AuthorshipKindMask::engine(),
-        ),
-        RelationDescriptor::substrate(
-            mcp::CODE_TARGETS_EXECUTION_REQUEST_RELATION,
-            RelationClass::Causal,
-            EndpointBinding::Pin,
-            EndpointBinding::Pin,
-            EntityKindMask::perspective(),
-            EntityKindMask::fact(),
-            AuthorshipKindMask::external_agent(),
-        ),
-        RelationDescriptor::substrate(
-            mcp::CODE_HAS_ACCEPTANCE_CRITERIA_RELATION,
-            RelationClass::Provenance,
-            EndpointBinding::Pin,
-            EndpointBinding::Pin,
-            EntityKindMask::fact(),
-            EntityKindMask::fact(),
-            AuthorshipKindMask::external_agent(),
-        ),
     ],
     mcp_tools = [
         mcp::CodeListReposTool,
@@ -170,7 +132,7 @@ pub fn register_pg_sidecars(registry: &mut proxima_storage_pg::PgSidecarRegistry
     registry.add_perspective::<payloads::CodeDevelopmentPerspectiveV1>();
     registry.add_perspective::<payloads::CodeCommitSummarizerSelfV1>();
     registry.add_perspective::<payloads::CodeEngineerSelfV1>();
-    registry.add_edge::<payloads::EdgeCallsV1>();
+    registry.add_perspective::<payloads::CodeWorkAssignmentV1>();
 }
 
 #[derive(Debug)]
@@ -202,11 +164,11 @@ mod tests {
         EXECUTION_RESULT_OBJECT_SCHEMA, EXECUTION_RESULT_WHOLE_SCHEMA, TEST_REQUEST_OBJECT_SCHEMA,
         TEST_REQUEST_WHOLE_SCHEMA, TEST_RESULT_OBJECT_SCHEMA, TEST_RESULT_WHOLE_SCHEMA,
     };
-    use proxima_core::{CORE_DERIVED_FROM_RELATION, FlavorRegistry};
+    use proxima_core::{EntityKind, FlavorRegistry, MemoryId, PerspectivePayload};
     use std::collections::HashSet;
 
     #[test]
-    fn registry_contains_all_schemas_and_relations() {
+    fn registry_contains_all_schemas() {
         let mut registry = FlavorRegistry::new();
         super::register(&mut registry).unwrap();
         let frozen = registry.try_freeze().unwrap();
@@ -232,8 +194,11 @@ mod tests {
         assert!(schema_ids.contains("proxima-code/development-perspective-v1"));
         assert!(schema_ids.contains("proxima-code/commit-summarizer-self-v1"));
         assert!(schema_ids.contains("proxima-code/engineer-self-v1"));
-        // Edge schemas
-        assert!(schema_ids.contains("proxima-code/calls"));
+        assert!(schema_ids.contains("proxima-code/work-assignment-v1"));
+        // The retired edge schema. `proxima-code/calls` was a typed edge
+        // payload; a flavor cannot declare one any more, and the call sites
+        // it held live in the caller chunk's payload.
+        assert!(!schema_ids.contains("proxima-code/calls"));
         // Opaque cited-object / citation-mapping schemas
         assert!(schema_ids.contains(CODE_BLOB_SCHEMA));
         assert!(schema_ids.contains(CODE_COMMIT_OBJECT_SCHEMA));
@@ -251,27 +216,100 @@ mod tests {
         assert!(schema_ids.contains(EXECUTION_RESULT_WHOLE_SCHEMA));
         assert!(schema_ids.contains(TEST_RESULT_WHOLE_SCHEMA));
         assert!(schema_ids.contains(ACCEPTANCE_VERIFICATION_WHOLE_SCHEMA));
+    }
 
-        // Check relations
-        let relations = frozen.list_relations();
-        let relation_ids: HashSet<_> = relations.iter().map(|r| r.relation.as_str()).collect();
-        assert!(relation_ids.contains("proxima-code/calls"));
-        assert!(relation_ids.contains("proxima-code/targets-execution-request"));
-        assert!(relation_ids.contains("proxima-code/has-acceptance-criteria"));
-        assert!(relation_ids.contains(CORE_DERIVED_FROM_RELATION));
+    /// What the three retired relations became: every connection this flavor
+    /// creates is now a field on a payload, and the payload says so itself.
+    ///
+    /// This is the checkable half of docs/16 §Flavor Migration. There is no
+    /// relation registry left to interrogate, so the assertion is against the
+    /// schemas that own the statements instead.
+    #[test]
+    fn every_retired_relation_has_a_payload_that_owns_it() {
+        use super::payloads::{
+            AcceptanceCriteriaV1, CodeCallSiteV1, CodeCallV1, CodeChunkV1, CodeWorkAssignmentV1,
+            FileState,
+        };
+        use proxima_core::{AbstractionPayload, FactPayload};
 
-        let calls = frozen
-            .resolve_relation("proxima-code/calls")
-            .expect("typed calls relation resolves");
+        let callee = uuid::Uuid::now_v7();
+        // proxima-code/calls: the callee moved into the caller's payload, and
+        // multiplicity collapsed — two sites, one reference.
+        let chunk = CodeChunkV1 {
+            repo_id: uuid::Uuid::now_v7(),
+            file_path: "src/lib.rs".into(),
+            chunk_index: 0,
+            text: "fn caller() { callee(); callee(); }".into(),
+            language: Some("rust".into()),
+            chunk_type: "block".into(),
+            byte_range_start: 0,
+            byte_range_end: 34,
+            line_range_start: 1,
+            line_range_end: 1,
+            state: FileState::Present,
+            calls: vec![CodeCallV1 {
+                callee_memory_id: callee,
+                sites: vec![
+                    CodeCallSiteV1 {
+                        byte_start: 14,
+                        byte_end: 22,
+                        callee_name: "callee".into(),
+                        is_dynamic: false,
+                    },
+                    CodeCallSiteV1 {
+                        byte_start: 24,
+                        byte_end: 32,
+                        callee_name: "callee".into(),
+                        is_dynamic: false,
+                    },
+                ],
+            }],
+        };
+        let references = <CodeChunkV1 as AbstractionPayload>::references(&chunk);
+        assert_eq!(references.len(), 1, "two sites are one connection");
+        assert_eq!(references[0].field, "calls.callee_memory_id");
         assert_eq!(
-            calls.payload_sidecar_table,
-            Some("proxima_code.code_calls_v1")
+            references[0].target,
+            proxima_core::EdgeEndpoint::memory(EntityKind::Abstraction, MemoryId::new(callee))
         );
 
-        let derived_from = frozen
-            .resolve_relation(CORE_DERIVED_FROM_RELATION)
-            .expect("core provenance relation resolves");
-        assert_eq!(derived_from.payload_sidecar_table, None);
+        // proxima-code/has-acceptance-criteria: the criteria Fact points at
+        // the request it is the bar for.
+        let work_item = uuid::Uuid::now_v7();
+        let criteria = AcceptanceCriteriaV1 {
+            work_item_memory_id: work_item,
+            criteria: Vec::new(),
+        };
+        let references = <AcceptanceCriteriaV1 as FactPayload>::references(&criteria);
+        assert_eq!(references.len(), 1);
+        assert_eq!(references[0].field, "work_item_memory_id");
+        assert_eq!(
+            references[0].target,
+            proxima_core::EdgeEndpoint::memory(EntityKind::Fact, MemoryId::new(work_item))
+        );
+
+        // proxima-code/targets-execution-request: neither endpoint could own
+        // the claim, so it became a node that names both.
+        let worker = uuid::Uuid::now_v7();
+        let assignment = CodeWorkAssignmentV1 {
+            repo_id: uuid::Uuid::now_v7(),
+            target_perspective_memory_id: worker,
+            work_item_memory_id: work_item,
+            reason: "retry".into(),
+        };
+        let references = <CodeWorkAssignmentV1 as PerspectivePayload>::references(&assignment);
+        assert_eq!(references.len(), 2);
+        for reference in &references {
+            reference.validate().expect("binding matches address form");
+        }
+        assert_eq!(
+            references[0].target,
+            proxima_core::EdgeEndpoint::memory(EntityKind::Perspective, MemoryId::new(worker))
+        );
+        assert_eq!(
+            references[1].target,
+            proxima_core::EdgeEndpoint::memory(EntityKind::Fact, MemoryId::new(work_item))
+        );
     }
 
     /// Every tool this flavor serves declares what it does to the world.

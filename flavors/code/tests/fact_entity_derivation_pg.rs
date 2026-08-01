@@ -47,6 +47,7 @@ fn code_chunk(repo_id: Uuid, file_path: &str, chunk_index: u32) -> CodeChunkV1 {
         line_range_start: 1,
         line_range_end: 1,
         state: FileState::Present,
+        calls: Vec::new(),
     }
 }
 

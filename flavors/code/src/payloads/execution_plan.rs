@@ -1,4 +1,4 @@
-use proxima_core::{AbstractionPayload, proxima_schema_id};
+use proxima_core::{AbstractionPayload, EntityKind, MemoryId, PayloadReference, proxima_schema_id};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -20,6 +20,11 @@ pub struct CodeExecutionPlanItemV1 {
     pub title: String,
     pub depends_on: Vec<String>,
     pub request_key: String,
+    /// The request Fact this item was emitted as. A schema-declared
+    /// reference field: the plan is the node that owns "this plan item is
+    /// that request", so the plan is written *after* its items and the
+    /// index rows follow from this field.
+    pub request_memory_id: uuid::Uuid,
 }
 
 /// Goal-native Code work plan. The durable desired future remains the
@@ -49,5 +54,33 @@ impl AbstractionPayload for CodeExecutionPlanV1 {
             serde_json::to_value(schemars::schema_for!(Self))
                 .expect("CodeExecutionPlanV1 schema serializes"),
         )
+    }
+
+    /// Everything this plan points at: the activation Fact it was planned
+    /// under, the evidence Facts it read, and the request Fact behind each
+    /// item. Its Abstraction *input* is a separate claim and travels as
+    /// `derived_from`, which lands `origin` rows instead.
+    fn references(&self) -> Vec<PayloadReference> {
+        let mut references = Vec::with_capacity(2 + self.evidence_memory_ids.len());
+        references.push(PayloadReference::memory(
+            "goal_activated_memory_id",
+            EntityKind::Fact,
+            MemoryId::new(self.goal_activated_memory_id),
+        ));
+        references.extend(self.evidence_memory_ids.iter().map(|memory_id| {
+            PayloadReference::memory(
+                "evidence_memory_ids",
+                EntityKind::Fact,
+                MemoryId::new(*memory_id),
+            )
+        }));
+        references.extend(self.items.iter().map(|item| {
+            PayloadReference::memory(
+                "items.request_memory_id",
+                EntityKind::Fact,
+                MemoryId::new(item.request_memory_id),
+            )
+        }));
+        references
     }
 }
