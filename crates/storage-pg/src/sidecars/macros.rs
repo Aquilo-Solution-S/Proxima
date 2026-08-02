@@ -51,14 +51,23 @@ macro_rules! pg_sidecar_row_ty {
     (u32_as_i32) => {
         i32
     };
+    (opt_u32_as_i32) => {
+        ::std::option::Option<i32>
+    };
     (u32_as_i32_saturating) => {
         i32
     };
     (u32_as_i64) => {
         i64
     };
+    (opt_u32_as_i64) => {
+        ::std::option::Option<i64>
+    };
     (u64_as_i64) => {
         i64
+    };
+    (opt_u64_as_i64) => {
+        ::std::option::Option<i64>
     };
     (u64_as_i64_saturating) => {
         i64
@@ -211,12 +220,27 @@ macro_rules! pg_sidecar_bind {
             },
         )?
     };
+    ((opt_u32_as_i32), $self:ident, $field:ident) => {
+        $self
+            .$field
+            .map(<::std::primitive::i32 as ::std::convert::TryFrom<_>>::try_from)
+            .transpose()
+            .map_err(|err| {
+                $crate::core::StorageError::ConstraintViolation(::std::format!(
+                    "{} out of range: {err}",
+                    ::std::stringify!($field)
+                ))
+            })?
+    };
     ((u32_as_i32_saturating), $self:ident, $field:ident) => {
         <::std::primitive::i32 as ::std::convert::TryFrom<_>>::try_from($self.$field)
             .unwrap_or(::std::primitive::i32::MAX)
     };
     ((u32_as_i64), $self:ident, $field:ident) => {
         ::std::primitive::i64::from($self.$field)
+    };
+    ((opt_u32_as_i64), $self:ident, $field:ident) => {
+        $self.$field.map(::std::primitive::i64::from)
     };
     ((u64_as_i64), $self:ident, $field:ident) => {
         <::std::primitive::i64 as ::std::convert::TryFrom<_>>::try_from($self.$field).map_err(
@@ -227,6 +251,18 @@ macro_rules! pg_sidecar_bind {
                 ))
             },
         )?
+    };
+    ((opt_u64_as_i64), $self:ident, $field:ident) => {
+        $self
+            .$field
+            .map(<::std::primitive::i64 as ::std::convert::TryFrom<_>>::try_from)
+            .transpose()
+            .map_err(|err| {
+                $crate::core::StorageError::ConstraintViolation(::std::format!(
+                    "{} out of range: {err}",
+                    ::std::stringify!($field)
+                ))
+            })?
     };
     ((u64_as_i64_saturating), $self:ident, $field:ident) => {
         <::std::primitive::i64 as ::std::convert::TryFrom<_>>::try_from($self.$field)
@@ -305,6 +341,11 @@ macro_rules! pg_sidecar_decode {
     ((u32_as_i32), $row:ident, $field:ident) => {
         $crate::sidecars::int_to_u32($row.$field, ::std::stringify!($field))?
     };
+    ((opt_u32_as_i32), $row:ident, $field:ident) => {
+        $row.$field
+            .map(|value| $crate::sidecars::int_to_u32(value, ::std::stringify!($field)))
+            .transpose()?
+    };
     ((u32_as_i32_saturating), $row:ident, $field:ident) => {
         $crate::sidecars::int_to_u32($row.$field, ::std::stringify!($field))?
     };
@@ -318,8 +359,27 @@ macro_rules! pg_sidecar_decode {
             },
         )?
     };
+    ((opt_u32_as_i64), $row:ident, $field:ident) => {
+        $row.$field
+            .map(|value| {
+                <::std::primitive::u32 as ::std::convert::TryFrom<_>>::try_from(value).map_err(
+                    |err| {
+                        $crate::core::StorageError::Internal(::std::format!(
+                            "invalid {}: {err}",
+                            ::std::stringify!($field)
+                        ))
+                    },
+                )
+            })
+            .transpose()?
+    };
     ((u64_as_i64), $row:ident, $field:ident) => {
         $crate::sidecars::int_to_u64($row.$field, ::std::stringify!($field))?
+    };
+    ((opt_u64_as_i64), $row:ident, $field:ident) => {
+        $row.$field
+            .map(|value| $crate::sidecars::int_to_u64(value, ::std::stringify!($field)))
+            .transpose()?
     };
     ((u64_as_i64_saturating), $row:ident, $field:ident) => {
         $crate::sidecars::int_to_u64($row.$field, ::std::stringify!($field))?
