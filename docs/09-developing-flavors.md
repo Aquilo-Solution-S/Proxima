@@ -263,6 +263,7 @@ Column kinds:
 | `naive_date`, `opt_naive_date` | `time::Date` | `date` |
 | `bytea32` | 32-byte data | `bytea` with 32-byte validation |
 | `u32_as_i32`, `u32_as_i64`, `u64_as_i64` | unsigned Rust integers | checked SQL integer width |
+| `opt_u32_as_i32`, `opt_u32_as_i64`, `opt_u64_as_i64` | the same as `Option<u32>` / `Option<u64>` | same widths, nullable |
 | `enum { ... }`, `enum_copy { ... }` | Rust enum | PostgreSQL enum cast through text |
 | `jsonb`, `opt_jsonb` | `serde_json::Value` | protocol/metadata only; not a payload escape hatch |
 
