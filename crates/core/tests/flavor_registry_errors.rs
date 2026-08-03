@@ -66,6 +66,11 @@ impl McpTool for ProviderUnsafeTool {
 const STUB_ANNOTATIONS: Option<McpToolAnnotations> =
     Some(McpToolAnnotations::new().read_only(false).open_world(false));
 
+/// The same declaration with the read/write answer flipped, for the one stub
+/// whose tool-level `read_only` is the subject.
+const READ_ONLY_ANNOTATIONS: Option<McpToolAnnotations> =
+    Some(McpToolAnnotations::new().read_only(true).open_world(false));
+
 #[derive(schemars::JsonSchema, serde::Deserialize)]
 #[serde(tag = "action", rename_all = "snake_case")]
 #[expect(
@@ -113,13 +118,16 @@ enum TwoActionArgs {
 
 macro_rules! stub_tool {
     ($tool:ident, $name:literal, $args:ty, $specs:expr) => {
+        stub_tool!($tool, $name, $args, $specs, STUB_ANNOTATIONS);
+    };
+    ($tool:ident, $name:literal, $args:ty, $specs:expr, $annotations:expr) => {
         struct $tool;
 
         impl McpTool for $tool {
             const NAME: &'static str = $name;
             const DESCRIPTION: &'static str = "test";
             const ACTION_ARG_SPECS: &'static [McpActionArgSpec] = $specs;
-            const ANNOTATIONS: Option<McpToolAnnotations> = STUB_ANNOTATIONS;
+            const ANNOTATIONS: Option<McpToolAnnotations> = $annotations;
             type Args = $args;
             type Output = ();
 
@@ -180,6 +188,66 @@ stub_tool!(
             required_fields: &["id", "note"],
         },
     ]
+);
+stub_tool!(
+    ReadOnlyDispatcherTool,
+    "proxima-test_readonlydispatch",
+    TaggedArgs,
+    &[McpActionArgSpec {
+        action: "look",
+        allowed_fields: &["id"],
+        required_fields: &["id"],
+    }],
+    READ_ONLY_ANNOTATIONS
+);
+// Two specs for one action, with identical field lists so the field-set loop
+// has nothing to report either: only counting the specs catches this.
+stub_tool!(
+    DuplicateSpecsTool,
+    "proxima-test_dupspecs",
+    TaggedArgs,
+    &[
+        McpActionArgSpec {
+            action: "look",
+            allowed_fields: &["id"],
+            required_fields: &["id"],
+        },
+        McpActionArgSpec {
+            action: "look",
+            allowed_fields: &["id"],
+            required_fields: &["id"],
+        },
+    ]
+);
+
+/// A hand-written `JsonSchema` — the only way to reach the malformed-extension
+/// branch. The derive path runs the flattener, which writes `x-proxima-actions`
+/// as an object or not at all.
+#[derive(serde::Deserialize)]
+struct BogusExtensionArgs {}
+
+impl schemars::JsonSchema for BogusExtensionArgs {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "BogusExtensionArgs".into()
+    }
+
+    fn json_schema(_generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        schemars::json_schema!({
+            "type": "object",
+            "properties": {},
+            "x-proxima-actions": "bogus",
+        })
+    }
+}
+
+// Empty specs on purpose: this is the shape that used to seal — the extension
+// was read with `as_object()`, so a non-object one was indistinguishable from
+// no extension at all and the tool passed as flat.
+stub_tool!(
+    BogusExtensionTool,
+    "proxima-test_bogusext",
+    BogusExtensionArgs,
+    &[]
 );
 
 #[derive(Debug)]
@@ -505,6 +573,92 @@ fn a_dispatcher_whose_field_sets_drift_cannot_be_frozen() {
     let rendered = err.to_string();
     assert!(rendered.contains("allowed_fields"), "{rendered}");
     assert!(rendered.contains("note"), "{rendered}");
+}
+
+/// Per-action annotations are a substrate table, so a flavor dispatcher's
+/// tool-level `read_only` answers for *every* action it dispatches. Declared
+/// `true`, it hands a viewer role the whole dispatcher — writes included, and
+/// including the write action added to the enum later — and tells REST that
+/// each of them is `QUERY`, which a proxy may safely retry. There is no
+/// per-action override to rescue it, so freeze refuses the declaration.
+///
+/// The write-annotated counterpart seals: `flavor_dispatcher.rs` freezes a
+/// two-action flavor dispatcher declaring `read_only(false)` in `frozen()`,
+/// which every test in that file depends on.
+#[test]
+fn a_read_only_flavor_dispatcher_without_per_action_annotations_cannot_be_frozen() {
+    let err = freeze_error::<ReadOnlyDispatcherTool>();
+    assert!(
+        matches!(
+            err,
+            FlavorRegistryError::InvalidActionSpecs {
+                name: "proxima-test_readonlydispatch",
+                ..
+            }
+        ),
+        "got {err:?}",
+    );
+    let rendered = err.to_string();
+    assert!(rendered.contains("read-only at tool level"), "{rendered}");
+    assert!(rendered.contains("read_only(false)"), "{rendered}");
+}
+
+/// The inverse shape, and why the guard above keys on origin rather than on
+/// the annotation value: `core_membership` is write/destructive at tool level
+/// and its `list_members` is read-only through `CoreActionMeta`, while
+/// `core_fact` is read-only at tool level with per-action meta behind it. Both
+/// are substrate dispatchers that have somewhere to put a per-action answer,
+/// and both must keep sealing.
+#[test]
+fn a_substrate_dispatcher_with_a_read_only_action_still_freezes() {
+    FlavorRegistry::default()
+        .try_freeze()
+        .expect("the substrate tools registered by `FlavorRegistry::default` seal");
+}
+
+/// A `BTreeSet` cannot report this: the two specs collapse to one member and
+/// the action set matches the derived one exactly. The second spec is dead
+/// weight — `validate_action_args` and the scope gate both take the first
+/// match — so whichever of the two the author meant to be the contract, one
+/// of them silently is not.
+#[test]
+fn duplicate_action_names_in_specs_cannot_be_frozen() {
+    let err = freeze_error::<DuplicateSpecsTool>();
+    assert!(
+        matches!(
+            err,
+            FlavorRegistryError::InvalidActionSpecs {
+                name: "proxima-test_dupspecs",
+                ..
+            }
+        ),
+        "got {err:?}",
+    );
+    assert!(err.to_string().contains("duplicate"), "{err}");
+}
+
+/// `x-proxima-actions` present but not an object is not the same answer as
+/// absent. Read as absent — which `as_object()` did — a hand-written schema
+/// carrying a dispatcher-shaped extension sealed as a flat tool.
+#[test]
+fn a_non_object_actions_extension_cannot_be_frozen() {
+    let err = freeze_error::<BogusExtensionTool>();
+    assert!(
+        matches!(
+            err,
+            FlavorRegistryError::InvalidActionSpecs {
+                name: "proxima-test_bogusext",
+                ..
+            }
+        ),
+        "got {err:?}",
+    );
+    let rendered = err.to_string();
+    assert!(
+        rendered.contains("malformed `x-proxima-actions`"),
+        "{rendered}",
+    );
+    assert!(rendered.contains("bogus"), "{rendered}");
 }
 
 #[test]

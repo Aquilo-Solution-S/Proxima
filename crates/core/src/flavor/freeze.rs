@@ -1,6 +1,6 @@
 use super::{
     BTreeSet, CapabilityTag, FlavorRegistry, FlavorRegistryError, FlavorRegistryFrozen,
-    PayloadKind, SchemaCapabilityTags, SchemaId, SchemaVersion,
+    McpToolDescriptor, McpToolOrigin, PayloadKind, SchemaCapabilityTags, SchemaId, SchemaVersion,
 };
 
 impl FlavorRegistry {
@@ -49,6 +49,7 @@ impl FlavorRegistry {
         }
         self.validate_tools_declare_behavior()?;
         self.validate_dispatcher_action_specs()?;
+        self.validate_flavor_dispatcher_annotations()?;
         let mut seen_dependency_rules: std::collections::HashSet<&str> =
             std::collections::HashSet::new();
         for (schema_id, _) in &self.dependency_satisfaction_rules {
@@ -132,18 +133,36 @@ impl FlavorRegistry {
     /// actions at all.
     fn validate_dispatcher_action_specs(&self) -> Result<(), FlavorRegistryError> {
         for tool in &self.mcp_tools {
-            let extension = tool
-                .args_schema
-                .get("x-proxima-actions")
-                .and_then(serde_json::Value::as_object);
+            // Absent and malformed are different answers. Reading them as one
+            // — `.and_then(Value::as_object)` — let a schema that *carries*
+            // the extension, and so may well be read as a dispatcher by
+            // anything less forgiving, pass here as a flat tool. The derive
+            // always writes an object; a hand-written `JsonSchema` need not.
+            let extension = match tool.args_schema.get("x-proxima-actions") {
+                Some(serde_json::Value::Object(extension)) => Some(extension),
+                Some(malformed) => {
+                    return Err(FlavorRegistryError::InvalidActionSpecs {
+                        name: tool.name,
+                        message: format!(
+                            "its schema carries a malformed `x-proxima-actions` extension: \
+                             expected an object keyed by action name, found {malformed}. \
+                             Nothing can enumerate the actions of an extension it cannot read"
+                        ),
+                    });
+                }
+                None => None,
+            };
             let Some(extension) = extension else {
                 if tool.action_arg_specs.is_empty() {
                     continue;
                 }
                 return Err(FlavorRegistryError::InvalidActionSpecs {
                     name: tool.name,
-                    message: "declares ACTION_ARG_SPECS but its `Args` is not an internally \
-                              tagged enum, so there is no action schema to validate against"
+                    message: "declares ACTION_ARG_SPECS but its `Args` produced no action \
+                              schema: either it is not an internally tagged enum, or one of \
+                              its variants did not flatten — the flattener needs every variant \
+                              to be an object schema carrying a string `const` at the \
+                              discriminator. Either way there is nothing to validate against"
                         .to_string(),
                 });
             };
@@ -173,6 +192,23 @@ impl FlavorRegistry {
                 .iter()
                 .map(|spec| spec.action)
                 .collect::<BTreeSet<_>>();
+            // Before the set comparison, because a set cannot report this:
+            // two specs for one action collapse into one member and compare
+            // equal to a correct derived key set. The second spec is dead —
+            // `validate_action_args` and the scope gate both take the first
+            // match — so its fields are silently never the contract.
+            if tool.action_arg_specs.len() != declared.len() {
+                return Err(FlavorRegistryError::InvalidActionSpecs {
+                    name: tool.name,
+                    message: format!(
+                        "ACTION_ARG_SPECS holds {} specs naming {} distinct actions, so an \
+                         action name is duplicated; the later spec for a duplicate action is \
+                         never read",
+                        tool.action_arg_specs.len(),
+                        declared.len()
+                    ),
+                });
+            }
             let derived = extension
                 .keys()
                 .map(String::as_str)
@@ -186,34 +222,55 @@ impl FlavorRegistry {
                     ),
                 });
             }
-            for spec in tool.action_arg_specs {
-                let meta = &extension[spec.action];
-                for (key, fields) in [
-                    ("allowed_fields", spec.allowed_fields),
-                    ("required_fields", spec.required_fields),
-                ] {
-                    let declared_fields = fields.iter().copied().collect::<BTreeSet<_>>();
-                    let derived_fields = meta
-                        .get(key)
-                        .and_then(serde_json::Value::as_array)
-                        .map(|items| {
-                            items
-                                .iter()
-                                .filter_map(serde_json::Value::as_str)
-                                .collect::<BTreeSet<_>>()
-                        })
-                        .unwrap_or_default();
-                    if declared_fields != derived_fields {
-                        return Err(FlavorRegistryError::InvalidActionSpecs {
-                            name: tool.name,
-                            message: format!(
-                                "action `{}` declares {key} {declared_fields:?} but the derived \
-                                 schema says {derived_fields:?}",
-                                spec.action
-                            ),
-                        });
-                    }
-                }
+            validate_action_field_sets(tool, extension)?;
+        }
+        Ok(())
+    }
+
+    /// Cross-check: a flavor dispatcher does not declare itself read-only at
+    /// tool level.
+    ///
+    /// `CoreActionMeta` is the only per-action annotation table and it is
+    /// keyed by substrate tool name, so a flavor dispatcher has no per-action
+    /// answer to give: its own `ANNOTATIONS` decide read from write for
+    /// *every* action it dispatches. `read_only(true)` there is therefore not
+    /// a claim about one action but about all of them, including the write
+    /// action added to the enum next month — the owner-role gate would admit
+    /// a viewer role to it, and the REST surface would advertise it as
+    /// `QUERY`, which any proxy or client library may safely retry.
+    ///
+    /// The guard keys on *origin*, not on the annotation value, because the
+    /// substrate legitimately has both shapes and both must keep freezing:
+    /// `core_fact` is read-only at tool level, and `core_membership` is
+    /// write/destructive at tool level with a read-only `list_members`
+    /// rescued by `CoreActionMeta`. Until `McpActionArgSpec` carries an
+    /// annotation slot of its own (docs/12 §Known gaps), the only honest
+    /// tool-level answer for a flavor dispatcher is `read_only(false)`.
+    fn validate_flavor_dispatcher_annotations(&self) -> Result<(), FlavorRegistryError> {
+        for tool in &self.mcp_tools {
+            if tool.action_arg_specs.is_empty() || !matches!(tool.origin, McpToolOrigin::Flavor(_))
+            {
+                continue;
+            }
+            // The tool's OWN declaration, not `resolved_annotations()`: the
+            // only thing that fallback adds is the substrate manifest, a
+            // table over core names this tool is not in. The two coincide for
+            // a flavor tool; asking for the declaration names what is being
+            // refused.
+            if tool
+                .annotations
+                .and_then(|annotations| annotations.read_only)
+                == Some(true)
+            {
+                return Err(FlavorRegistryError::InvalidActionSpecs {
+                    name: tool.name,
+                    message: "a dispatcher without per-action annotations cannot declare itself \
+                              read-only at tool level: every action, including any write action \
+                              added later, would inherit read-only owner-role gating and REST \
+                              QUERY eligibility. Declare `read_only(false)`, or leave read_only \
+                              unset, until per-action annotations exist"
+                        .to_string(),
+                });
             }
         }
         Ok(())
@@ -231,6 +288,46 @@ impl FlavorRegistry {
         }
         Ok(())
     }
+}
+
+/// The per-action half of [`FlavorRegistry::validate_dispatcher_action_specs`]:
+/// each spec's field lists against the ones the schema derived for that action.
+/// The action sets are known to agree by the time this runs, so `extension`
+/// has a key for every spec.
+fn validate_action_field_sets(
+    tool: &McpToolDescriptor,
+    extension: &serde_json::Map<String, serde_json::Value>,
+) -> Result<(), FlavorRegistryError> {
+    for spec in tool.action_arg_specs {
+        let meta = &extension[spec.action];
+        for (key, fields) in [
+            ("allowed_fields", spec.allowed_fields),
+            ("required_fields", spec.required_fields),
+        ] {
+            let declared_fields = fields.iter().copied().collect::<BTreeSet<_>>();
+            let derived_fields = meta
+                .get(key)
+                .and_then(serde_json::Value::as_array)
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(serde_json::Value::as_str)
+                        .collect::<BTreeSet<_>>()
+                })
+                .unwrap_or_default();
+            if declared_fields != derived_fields {
+                return Err(FlavorRegistryError::InvalidActionSpecs {
+                    name: tool.name,
+                    message: format!(
+                        "action `{}` declares {key} {declared_fields:?} but the derived schema \
+                         says {derived_fields:?}",
+                        spec.action
+                    ),
+                });
+            }
+        }
+    }
+    Ok(())
 }
 
 pub(crate) fn schema_capability_map(

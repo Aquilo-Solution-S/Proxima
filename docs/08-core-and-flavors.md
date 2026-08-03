@@ -224,8 +224,20 @@ writes use the same tool with the matching action key.
    fields merged together.
 5. `ACTION_ARG_SPECS` that disagree with the derived schema: a discriminator
    other than `action`, a different action set, or different
-   `allowed_fields`/`required_fields` for an action. Specs on a tool whose
-   `Args` is a plain struct fail here too.
+   `allowed_fields`/`required_fields` for an action. Two specs naming the same
+   action fail here too — a set comparison cannot see the collapse, and the
+   later spec would never be read — as do specs on a tool whose `Args` is a
+   plain struct, and a schema whose `x-proxima-actions` is present but not an
+   object, which is a malformed extension rather than an absent one.
+6. A flavor-origin dispatcher declaring `read_only(true)` at tool level.
+   `CoreActionMeta` is a substrate table, so that declaration answers for
+   every action the dispatcher has and every one it gains later: a viewer
+   role would be admitted to its writes and REST would advertise them as
+   `QUERY`. `read_only(false)`, or no `read_only` at all, until per-action
+   annotations exist ([12 §Known gaps](12-tool-manifest.md#known-gaps-for-flavor-dispatchers)).
+   The guard keys on origin, not on the value: the substrate has tools of
+   both shapes — `core_fact` read-only at tool level, `core_membership`
+   write/destructive with a read-only `list_members` — and both keep sealing.
 
 Prefix violations in macro-registered schemas, MCP tools, and dependency
 rules fail during registration before freeze — schema-id prefixes as `const`
