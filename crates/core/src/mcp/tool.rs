@@ -240,9 +240,14 @@ pub trait McpTool: Send + Sync + 'static {
     const NAME: &'static str;
     const DESCRIPTION: &'static str;
     const PRODUCES_SCHEMA_IDS: &'static [&'static str] = &[];
+    /// The actions this tool dispatches, or `&[]` for a flat tool. See
+    /// [`crate::Tool::ACTION_ARG_SPECS`] — this is the single enumeration of
+    /// a dispatcher's action set, and the blanket impl below forwards it
+    /// from `Tool` so a flavor dispatcher declares it in exactly one place.
     const ACTION_ARG_SPECS: &'static [McpActionArgSpec] = &[];
     /// MCP behaviour hints for this tool. See [`crate::Tool::ANNOTATIONS`]
-    /// — a tool that declares nothing is treated as a write.
+    /// — a tool that declares nothing is treated as a write. Forwarded from
+    /// `Tool` by the blanket impl below.
     const ANNOTATIONS: Option<crate::mcp::McpToolAnnotations> = None;
 
     type Args: serde::de::DeserializeOwned + schemars::JsonSchema + Send + 'static;
@@ -263,6 +268,8 @@ where
     const NAME: &'static str = T::NAME;
     const DESCRIPTION: &'static str = T::DESCRIPTION;
     const PRODUCES_SCHEMA_IDS: &'static [&'static str] = T::PRODUCES_SCHEMA_IDS;
+    const ACTION_ARG_SPECS: &'static [McpActionArgSpec] = <T as crate::Tool>::ACTION_ARG_SPECS;
+    const ANNOTATIONS: Option<crate::mcp::McpToolAnnotations> = <T as crate::Tool>::ANNOTATIONS;
 
     type Args = T::Args;
     type Output = T::Output;

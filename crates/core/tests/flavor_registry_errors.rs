@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use proxima_core::authz::OwnerResolver;
 use proxima_core::error::ProtocolError;
-use proxima_core::mcp::{McpTool, McpToolCtx, McpToolError};
+use proxima_core::mcp::{McpActionArgSpec, McpTool, McpToolAnnotations, McpToolCtx, McpToolError};
 use proxima_core::verbs::schema::PayloadKind;
 use proxima_core::{
     AuthzContext, DependencySatisfactionRule, FlavorDescriptor, FlavorProvenance, FlavorRegistry,
@@ -59,6 +59,128 @@ impl McpTool for ProviderUnsafeTool {
         Box::pin(async { Ok(()) })
     }
 }
+
+/// The behaviour declaration every stub below shares, so that
+/// `UndeclaredToolBehavior` (checked first at freeze) never stands in for
+/// the dispatcher guard under test.
+const STUB_ANNOTATIONS: Option<McpToolAnnotations> =
+    Some(McpToolAnnotations::new().read_only(false).open_world(false));
+
+#[derive(schemars::JsonSchema, serde::Deserialize)]
+#[serde(tag = "action", rename_all = "snake_case")]
+#[expect(
+    dead_code,
+    reason = "the derived schema is the subject, not the values"
+)]
+enum TaggedArgs {
+    Look {
+        #[schemars(description = "what to look at")]
+        id: String,
+    },
+}
+
+#[derive(schemars::JsonSchema, serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+#[expect(
+    dead_code,
+    reason = "the derived schema is the subject, not the values"
+)]
+enum WrongTagArgs {
+    Look {
+        #[schemars(description = "what to look at")]
+        id: String,
+    },
+}
+
+#[derive(schemars::JsonSchema, serde::Deserialize)]
+#[serde(tag = "action", rename_all = "snake_case")]
+#[expect(
+    dead_code,
+    reason = "the derived schema is the subject, not the values"
+)]
+enum TwoActionArgs {
+    Look {
+        #[schemars(description = "what to look at")]
+        id: String,
+    },
+    Touch {
+        #[schemars(description = "what to touch")]
+        id: String,
+        #[schemars(description = "why")]
+        note: String,
+    },
+}
+
+macro_rules! stub_tool {
+    ($tool:ident, $name:literal, $args:ty, $specs:expr) => {
+        struct $tool;
+
+        impl McpTool for $tool {
+            const NAME: &'static str = $name;
+            const DESCRIPTION: &'static str = "test";
+            const ACTION_ARG_SPECS: &'static [McpActionArgSpec] = $specs;
+            const ANNOTATIONS: Option<McpToolAnnotations> = STUB_ANNOTATIONS;
+            type Args = $args;
+            type Output = ();
+
+            fn call(
+                _ctx: McpToolCtx,
+                _args: Self::Args,
+            ) -> futures::future::BoxFuture<'static, Result<(), McpToolError>> {
+                Box::pin(async { Ok(()) })
+            }
+        }
+    };
+}
+
+stub_tool!(TaggedNoSpecsTool, "proxima-test_tagged", TaggedArgs, &[]);
+stub_tool!(
+    WrongTagTool,
+    "proxima-test_wrongtag",
+    WrongTagArgs,
+    &[McpActionArgSpec {
+        action: "look",
+        allowed_fields: &["id"],
+        required_fields: &["id"],
+    }]
+);
+stub_tool!(
+    FlatWithSpecsTool,
+    "proxima-test_flatspecs",
+    EmptyArgs,
+    &[McpActionArgSpec {
+        action: "look",
+        allowed_fields: &[],
+        required_fields: &[],
+    }]
+);
+stub_tool!(
+    DriftedActionsTool,
+    "proxima-test_driftactions",
+    TwoActionArgs,
+    &[McpActionArgSpec {
+        action: "look",
+        allowed_fields: &["id"],
+        required_fields: &["id"],
+    }]
+);
+stub_tool!(
+    DriftedFieldsTool,
+    "proxima-test_driftfields",
+    TwoActionArgs,
+    &[
+        McpActionArgSpec {
+            action: "look",
+            allowed_fields: &["id"],
+            required_fields: &["id"],
+        },
+        McpActionArgSpec {
+            action: "touch",
+            allowed_fields: &["id"],
+            required_fields: &["id", "note"],
+        },
+    ]
+);
 
 #[derive(Debug)]
 struct TestRule(&'static str);
@@ -267,6 +389,122 @@ mod bad_opaque_prefix_flavor {
         opaque_citation_mapping_schemas = [],
         mcp_tools = [],
     }
+}
+
+/// Register one stub and try to seal.
+fn freeze_error<T: McpTool>() -> FlavorRegistryError {
+    let mut registry = FlavorRegistry::new();
+    registry
+        .try_add_mcp_tool::<T>("proxima-test")
+        .expect("stub registration is valid");
+    registry
+        .try_freeze()
+        .expect_err("an inconsistent dispatcher must not seal")
+}
+
+/// An internally tagged `Args` is what makes a client see a dispatcher —
+/// the schema pass stamps `x-proxima-actions` onto it unconditionally. With
+/// no `ACTION_ARG_SPECS` nothing enumerates the actions, so the scope gate
+/// falls back to whole-tool grants and arguments are validated against every
+/// variant's fields merged together. Boot is where that is caught.
+#[test]
+fn a_tagged_args_tool_without_action_specs_cannot_be_frozen() {
+    let err = freeze_error::<TaggedNoSpecsTool>();
+    assert!(
+        matches!(
+            err,
+            FlavorRegistryError::DispatcherWithoutActionSpecs {
+                name: "proxima-test_tagged"
+            }
+        ),
+        "got {err:?}",
+    );
+    assert!(err.to_string().contains("ACTION_ARG_SPECS"), "{err}");
+}
+
+/// The discriminator is a contract, not a preference: `ToolScope` keys are
+/// `"{tool}:{action}"`, the gate and `validate_action_args` read
+/// `args["action"]`, and the REST narrowed route injects `"action"`. A
+/// dispatcher tagged on anything else is enumerated correctly and then
+/// gated, validated, and routed as if it had no actions at all.
+#[test]
+fn a_dispatcher_tagged_on_something_other_than_action_cannot_be_frozen() {
+    let err = freeze_error::<WrongTagTool>();
+    assert!(
+        matches!(
+            err,
+            FlavorRegistryError::InvalidActionSpecs {
+                name: "proxima-test_wrongtag",
+                ..
+            }
+        ),
+        "got {err:?}",
+    );
+    assert!(err.to_string().contains("must tag on `action`"), "{err}");
+}
+
+/// The other direction: specs on a tool whose `Args` is a plain struct.
+/// Nothing derives an action schema for it, so the specs describe a
+/// dispatcher that does not exist and `validate_action_args` would demand an
+/// `action` field the type cannot carry.
+#[test]
+fn specs_without_a_tagged_args_type_cannot_be_frozen() {
+    let err = freeze_error::<FlatWithSpecsTool>();
+    assert!(
+        matches!(
+            err,
+            FlavorRegistryError::InvalidActionSpecs {
+                name: "proxima-test_flatspecs",
+                ..
+            }
+        ),
+        "got {err:?}",
+    );
+    assert!(
+        err.to_string().contains("not an internally tagged enum"),
+        "{err}",
+    );
+}
+
+/// A variant added to the enum and not to the specs: the client is told the
+/// action exists, and the gate refuses it as unknown.
+#[test]
+fn a_dispatcher_whose_specs_drift_from_its_schema_cannot_be_frozen() {
+    let err = freeze_error::<DriftedActionsTool>();
+    assert!(
+        matches!(
+            err,
+            FlavorRegistryError::InvalidActionSpecs {
+                name: "proxima-test_driftactions",
+                ..
+            }
+        ),
+        "got {err:?}",
+    );
+    let rendered = err.to_string();
+    assert!(rendered.contains("look"), "{rendered}");
+    assert!(rendered.contains("touch"), "{rendered}");
+}
+
+/// The action set agrees and the field sets do not — a field serde will
+/// happily deserialize that `validate_action_args` rejects before it gets
+/// the chance.
+#[test]
+fn a_dispatcher_whose_field_sets_drift_cannot_be_frozen() {
+    let err = freeze_error::<DriftedFieldsTool>();
+    assert!(
+        matches!(
+            err,
+            FlavorRegistryError::InvalidActionSpecs {
+                name: "proxima-test_driftfields",
+                ..
+            }
+        ),
+        "got {err:?}",
+    );
+    let rendered = err.to_string();
+    assert!(rendered.contains("allowed_fields"), "{rendered}");
+    assert!(rendered.contains("note"), "{rendered}");
 }
 
 #[test]

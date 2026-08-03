@@ -347,6 +347,18 @@ pub trait Tool: Send + Sync + 'static {
     /// tool that has not thought about it, which is the right default —
     /// but a read tool should say so.
     const ANNOTATIONS: Option<crate::mcp::McpToolAnnotations> = None;
+    /// The actions this tool dispatches, or `&[]` for a flat tool.
+    ///
+    /// This is THE enumeration of a dispatcher's action set — the scope
+    /// gate, the tool catalog, the REST action routes, and the `OpenAPI`
+    /// document all read it off `McpToolDescriptor::action_arg_specs`.
+    /// Declaring it turns a tool into a dispatcher: its `Args` must be an
+    /// internally tagged enum tagged on `action`, its arguments are
+    /// validated per action before decode, and its scope keys become
+    /// `tool:action` leaves rather than the bare tool name.
+    /// `FlavorRegistry::try_freeze` refuses a registry where these and the
+    /// schemars-derived `x-proxima-actions` disagree.
+    const ACTION_ARG_SPECS: &'static [crate::mcp::McpActionArgSpec] = &[];
 
     type Args: serde::de::DeserializeOwned + schemars::JsonSchema + Send + 'static;
     /// What the tool answers with. `JsonSchema` is required for the same

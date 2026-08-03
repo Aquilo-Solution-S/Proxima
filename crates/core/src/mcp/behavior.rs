@@ -6,8 +6,8 @@ use futures::future::BoxFuture;
 use crate::AccessKind;
 
 use super::{
-    McpToolCtx, McpToolDescriptor, McpToolError, core_action_meta, core_tool_annotations,
-    core_tool_has_actions,
+    McpActionArgSpec, McpToolCtx, McpToolDescriptor, McpToolError, core_action_meta,
+    core_tool_annotations,
 };
 
 #[derive(Debug)]
@@ -84,7 +84,18 @@ impl ScopeGateBehavior {
         ctx: &McpToolCtx,
     ) -> Result<(), McpToolError> {
         let scope = ctx.authz.tool_scope();
-        if core_tool_has_actions(tool) {
+        // Whether a tool dispatches actions is read off its descriptor, not
+        // off the substrate `CoreActionMeta` tables. Keying it on those meant
+        // a flavor dispatcher fell to the whole-tool branch below: a palette
+        // holding only `flavor_tool:action` denied the tool outright, and an
+        // unknown action sailed past this gate into the tool.
+        let descriptor = ctx.registry.mcp_tool(tool);
+        let specs = descriptor.map_or(&[] as &[McpActionArgSpec], |d| d.action_arg_specs);
+        if specs.is_empty() {
+            if !scope.allows(tool) {
+                return Err(McpToolError::NotAuthorized(tool.to_string()));
+            }
+        } else {
             if !scope.allows_group_advertisement(tool) {
                 return Err(McpToolError::NotAuthorized(tool.to_string()));
             }
@@ -93,7 +104,7 @@ impl ScopeGateBehavior {
                     "tool {tool} requires string action"
                 )));
             };
-            if core_action_meta(tool, action).is_none() {
+            if !specs.iter().any(|spec| spec.action == action) {
                 return Err(McpToolError::InvalidInput(format!(
                     "unknown action {action:?} for tool {tool}"
                 )));
@@ -101,16 +112,15 @@ impl ScopeGateBehavior {
             if !scope.allows_action(tool, action) {
                 return Err(McpToolError::NotAuthorized(format!("{tool}:{action}")));
             }
-        } else if !scope.allows(tool) {
-            return Err(McpToolError::NotAuthorized(tool.to_string()));
         }
-        Self::enforce_owner_role(tool, args, ctx)?;
+        Self::enforce_owner_role(tool, args, descriptor, ctx)?;
         Ok(())
     }
 
     fn enforce_owner_role(
         tool: &str,
         args: &serde_json::Value,
+        descriptor: Option<&McpToolDescriptor>,
         ctx: &McpToolCtx,
     ) -> Result<(), McpToolError> {
         // Resource reads are reads. `read_resource` funnels through this same
@@ -124,6 +134,11 @@ impl ScopeGateBehavior {
         } else {
             args.get("action")
                 .and_then(serde_json::Value::as_str)
+                // Substrate per-action decoration, and decoration only: it
+                // answers "what does this substrate action do", never "does
+                // this action exist" — the descriptor's specs settled that
+                // above. A flavor action has no entry here and resolves at
+                // tool level (docs/12 §Known gaps).
                 .and_then(|action| core_action_meta(tool, action))
                 .map(|meta| meta.annotations)
                 // Failing a per-action answer, what the tool itself says.
@@ -133,13 +148,7 @@ impl ScopeGateBehavior {
                 // declaration, only the manifest was consulted here — a
                 // table over core names — so a flavor's READ was billed as
                 // a write and refused to every read-only role.
-                .or_else(|| {
-                    ctx.registry
-                        .list_mcp_tools()
-                        .iter()
-                        .find(|descriptor| descriptor.name == tool)
-                        .and_then(McpToolDescriptor::resolved_annotations)
-                })
+                .or_else(|| descriptor.and_then(McpToolDescriptor::resolved_annotations))
                 .or_else(|| core_tool_annotations(tool))
                 .and_then(|annotations| annotations.read_only)
                 .unwrap_or(false)
@@ -492,11 +501,23 @@ mod owner_role_tests {
         let args = serde_json::json!({"query": "anything"});
 
         assert!(
-            ScopeGateBehavior::enforce_owner_role("core_search_memories", &args, &ctx).is_ok(),
+            ScopeGateBehavior::enforce_owner_role(
+                "core_search_memories",
+                &args,
+                ctx.registry.mcp_tool("core_search_memories"),
+                &ctx,
+            )
+            .is_ok(),
             "core's read tool is annotated read-only, so a viewer passes"
         );
         assert!(
-            ScopeGateBehavior::enforce_owner_role(DeclaredReadTool::NAME, &args, &ctx).is_ok(),
+            ScopeGateBehavior::enforce_owner_role(
+                DeclaredReadTool::NAME,
+                &args,
+                ctx.registry.mcp_tool(DeclaredReadTool::NAME),
+                &ctx,
+            )
+            .is_ok(),
             "a flavor read tool that declares read_only must not be billed as a write"
         );
     }
@@ -540,7 +561,13 @@ mod owner_role_tests {
         let ctx = viewer_ctx(owner);
         let args = serde_json::json!({"query": "anything"});
         assert!(
-            ScopeGateBehavior::enforce_owner_role(SilentTool::NAME, &args, &ctx).is_err(),
+            ScopeGateBehavior::enforce_owner_role(
+                SilentTool::NAME,
+                &args,
+                ctx.registry.mcp_tool(SilentTool::NAME),
+                &ctx,
+            )
+            .is_err(),
             "silence must not be read as a promise to only read"
         );
     }
