@@ -29,6 +29,7 @@ pub struct RuntimeBuilder {
     stream_max_lifetime: Option<Duration>,
     epoch_check_interval: Option<Duration>,
     insecure_single_owner: bool,
+    rest_enabled: Option<bool>,
     skip_migrations: Option<bool>,
     authenticator: Option<Arc<dyn Authenticator>>,
     owner_access: Option<Arc<dyn OwnerAccessPort>>,
@@ -52,6 +53,7 @@ impl std::fmt::Debug for RuntimeBuilder {
             .field("stream_max_lifetime", &self.stream_max_lifetime)
             .field("epoch_check_interval", &self.epoch_check_interval)
             .field("insecure_single_owner", &self.insecure_single_owner)
+            .field("rest_enabled", &self.rest_enabled)
             .field("skip_migrations", &self.skip_migrations)
             .field("has_authenticator", &self.authenticator.is_some())
             .field("has_owner_access", &self.owner_access.is_some())
@@ -78,6 +80,7 @@ impl RuntimeBuilder {
             stream_max_lifetime: self.stream_max_lifetime.or(base.stream_max_lifetime),
             epoch_check_interval: self.epoch_check_interval.or(base.epoch_check_interval),
             insecure_single_owner: self.insecure_single_owner || base.insecure_single_owner,
+            rest_enabled: self.rest_enabled.or(base.rest_enabled),
             skip_migrations: self.skip_migrations.or(base.skip_migrations),
             authenticator: self.authenticator.or(base.authenticator),
             owner_access: self.owner_access.or(base.owner_access),
@@ -185,6 +188,16 @@ impl RuntimeBuilder {
         self
     }
 
+    /// Serve the `/v1` REST rendering of the tool manifest beside `/mcp`
+    /// (see docs/17). Off by default, and only effective when the crate is
+    /// built with the `rest` feature. Env equivalent:
+    /// `PROXIMA_REST_ENABLED`.
+    #[must_use]
+    pub fn rest_enabled(mut self, rest_enabled: bool) -> Self {
+        self.rest_enabled = Some(rest_enabled);
+        self
+    }
+
     /// Boot without applying migrations (preflight only).
     ///
     /// For split-role `GitOps` deploys: migrate out-of-band under a DDL role,
@@ -271,6 +284,11 @@ impl RuntimeBuilder {
                 .map(|raw| parse_bool_value("PROXIMA_EXPOSE_NETWORK", &raw))
                 .transpose()?;
         }
+        if self.rest_enabled.is_none() {
+            self.rest_enabled = lookup("PROXIMA_REST_ENABLED")
+                .map(|raw| parse_bool_value("PROXIMA_REST_ENABLED", &raw))
+                .transpose()?;
+        }
         if self.skip_migrations.is_none() {
             self.skip_migrations = lookup("PROXIMA_SKIP_MIGRATIONS")
                 .map(|raw| parse_bool_value("PROXIMA_SKIP_MIGRATIONS", &raw))
@@ -351,6 +369,7 @@ impl RuntimeBuilder {
             tool_scope,
             stream_revalidation,
             insecure_single_owner: self.insecure_single_owner,
+            rest_enabled: self.rest_enabled.unwrap_or(false),
             skip_migrations: self.skip_migrations.unwrap_or(false),
             auth: RuntimeAuthState {
                 has_host_authenticator: parts.authenticator.is_some(),
@@ -364,6 +383,13 @@ impl RuntimeBuilder {
 }
 
 /// Pure, validated runtime config.
+///
+/// The booleans are independent deployment gates — expose the network,
+/// serve `/v1`, skip migrations, allow insecure single-owner — not the
+/// states of one machine. Folding them into enums would invent
+/// relationships between them that do not exist, and each already carries
+/// its own env var and its own validation rule.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Clone)]
 pub struct RuntimeConfig {
     pub database_url: String,
@@ -379,6 +405,12 @@ pub struct RuntimeConfig {
     pub tool_scope: ToolScope,
     pub stream_revalidation: RevalidationConfig,
     pub insecure_single_owner: bool,
+    /// Serve `/v1` beside `/mcp` on the same listener, inside the same auth
+    /// and body-limit layers (docs/17). Two gates, both required: the
+    /// `rest` cargo feature compiles the module, this flag serves it. A
+    /// second transport projection is opt-in twice on purpose — compiling
+    /// it is a build decision, exposing it is a deployment one.
+    pub rest_enabled: bool,
     /// Boot without applying migrations (preflight only) — schema is migrated
     /// out-of-band under a DDL role in split-role `GitOps` deploys.
     pub skip_migrations: bool,
@@ -405,6 +437,7 @@ impl std::fmt::Debug for RuntimeConfig {
             .field("tool_scope", &self.tool_scope)
             .field("stream_revalidation", &self.stream_revalidation)
             .field("insecure_single_owner", &self.insecure_single_owner)
+            .field("rest_enabled", &self.rest_enabled)
             .field("skip_migrations", &self.skip_migrations)
             .field("auth", &self.auth)
             .field("resource_metadata", &self.resource_metadata)
@@ -714,6 +747,7 @@ mod tests {
             tool_scope: ToolScope::All,
             stream_revalidation: RevalidationConfig::default(),
             insecure_single_owner: false,
+            rest_enabled: false,
             skip_migrations: false,
             auth: RuntimeAuthState {
                 has_host_authenticator: true,

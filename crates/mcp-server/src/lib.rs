@@ -7,6 +7,8 @@ mod auth;
 mod error;
 mod handler;
 pub mod oauth;
+#[cfg(feature = "rest")]
+pub mod rest;
 pub mod security;
 pub mod selfdoc;
 mod server;

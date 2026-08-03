@@ -15,9 +15,27 @@ pub struct ResourceServerMetadata {
 }
 
 impl ResourceServerMetadata {
+    /// The RFC 9728 protected-resource identifier: the deployment's public
+    /// origin, covering every surface it serves.
+    ///
+    /// It used to be `{public_url}/mcp`. That identifier is per-surface, and
+    /// a second surface (`/v1`, docs/17) makes it wrong. One identifier means
+    /// one audience, one metadata document, and one token that reaches both
+    /// surfaces; two would mean non-interchangeable tokens, which is a
+    /// feature only for deployments that want surface-scoped credentials and
+    /// a permanent tax for everyone else.
+    ///
+    /// The timing is the substance. This is the `resource` value clients
+    /// pass under RFC 8707 and the audience an authorization server stamps
+    /// into tokens, so broadening it invalidates issued tokens and requires
+    /// every client to re-request. That population is small and pre-1.0
+    /// today; once `/v1` ships under a separate identifier the two-audience
+    /// split is baked into every deployment and every issued credential, and
+    /// consolidating later is a coordinated break across two client
+    /// populations instead of one. See `MIGRATING.md`.
     #[must_use]
     pub fn resource(&self) -> String {
-        format!("{}/mcp", self.public_url.trim_end_matches('/'))
+        self.public_url.trim_end_matches('/').to_string()
     }
 
     #[must_use]
@@ -69,9 +87,19 @@ mod tests {
         }
     }
 
+    /// One identifier for the whole deployment, not one per surface — so a
+    /// token minted for it reaches `/mcp` and `/v1` alike. A regression to
+    /// `{public_url}/mcp` would silently re-split the audience.
     #[test]
-    fn resource_uses_mcp_path() {
-        assert_eq!(metadata().resource(), "https://proxima.example.com/mcp");
+    fn resource_is_the_public_origin_not_a_per_surface_path() {
+        assert_eq!(metadata().resource(), "https://proxima.example.com");
+        assert!(!metadata().resource().ends_with("/mcp"));
+
+        let trailing = ResourceServerMetadata {
+            public_url: "https://proxima.example.com/".to_string(),
+            authorization_servers: vec!["https://idp.example.com".to_string()],
+        };
+        assert_eq!(trailing.resource(), "https://proxima.example.com");
     }
 
     #[test]
@@ -86,7 +114,7 @@ mod tests {
     fn json_contains_rfc_9728_fields() {
         let json = metadata().to_json();
 
-        assert_eq!(json["resource"], "https://proxima.example.com/mcp");
+        assert_eq!(json["resource"], "https://proxima.example.com");
         assert_eq!(json["authorization_servers"][0], "https://idp.example.com");
         assert_eq!(json["bearer_methods_supported"][0], "header");
     }

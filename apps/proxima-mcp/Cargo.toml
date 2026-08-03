@@ -25,6 +25,9 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 [features]
 default = []
 code = ["dep:proxima-code", "proxima-code/host-api"]
+# Compile the `/v1` REST surface into the binary. Serving it still needs
+# `PROXIMA_REST_ENABLED=true` at runtime — see docs/17-rest-surface.md.
+rest = ["proxima/rest"]
 
 [dev-dependencies]
 reqwest = { workspace = true }

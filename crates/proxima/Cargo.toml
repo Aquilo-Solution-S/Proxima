@@ -39,6 +39,9 @@ uuid = { workspace = true }
 default = ["openai-compat-embed", "auth-oidc"]
 auth-oidc = ["dep:proxima-auth-oidc"]
 openai-compat-embed = ["dep:proxima-llm-openai-compat"]
+# Compile the `/v1` REST rendering of the tool manifest (docs/17). Compiling
+# it is not enabling it: the surface still needs `PROXIMA_REST_ENABLED`.
+rest = ["proxima-mcp-server/rest"]
 testkit = ["dep:proxima-pg-testkit"]
 
 [dev-dependencies]
