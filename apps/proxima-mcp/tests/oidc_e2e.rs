@@ -127,7 +127,18 @@ async fn oidc_e2e_discovery_public_and_code_tools_behind_bearer()
         "discovery must be reachable unauthenticated"
     );
     let disc_json: serde_json::Value = disc.json().await?;
-    assert_eq!(disc_json["resource"], "https://proxima.e2e.test/mcp");
+    // The public origin, not a per-surface path. One identifier is one
+    // audience, so a single token reaches both `/mcp` and `/v1`; a
+    // path-suffixed identifier would mint non-interchangeable tokens per
+    // surface (17 §Protected-resource identifier).
+    assert_eq!(disc_json["resource"], "https://proxima.e2e.test");
+    assert!(
+        !disc_json["resource"]
+            .as_str()
+            .expect("resource is a string")
+            .ends_with("/mcp"),
+        "the identifier must not be scoped to one surface: {disc_json}",
+    );
     assert_eq!(disc_json["authorization_servers"][0], ISSUER);
 
     // 2. /mcp without a bearer → 401 carrying WWW-Authenticate.
