@@ -16,11 +16,11 @@ use proxima_core::mcp::{
 use proxima_core::{AccessKind, McpAuthorContext, MemoryId};
 use rmcp::ServerHandler;
 use rmcp::model::{
-    CallToolRequestParams, CallToolResult, ContentBlock, ErrorData, Implementation,
-    InitializeRequestParams, InitializeResult, ListResourceTemplatesResult, ListResourcesResult,
-    ListToolsResult, PaginatedRequestParams, ReadResourceRequestParams, ReadResourceResult,
-    Resource, ResourceContents, ResourceTemplate, ServerCapabilities, ServerInfo, Tool,
-    ToolAnnotations,
+    CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, ErrorData,
+    Implementation, InitializeRequestParams, InitializeResult, ListResourceTemplatesResult,
+    ListResourcesResult, ListToolsResult, PaginatedRequestParams, ReadResourceRequestParams,
+    ReadResourceResponse, ReadResourceResult, Resource, ResourceContents, ResourceTemplate,
+    ServerCapabilities, ServerInfo, Tool, ToolAnnotations,
 };
 use rmcp::service::{MaybeSendFuture, RequestContext, RoleServer};
 
@@ -138,11 +138,19 @@ impl ServerHandler for DynamicHandler {
         }))
     }
 
+    /// Answers are always [`ReadResourceResponse::Complete`]. rmcp 3 widened
+    /// this return type for MRTR (SEP-2322), whose other variant lets a server
+    /// pause mid-request to ask the *client* for input. Proxima resolves every
+    /// resource from its own store under the caller's already-established
+    /// scope, so there is nothing to ask back for — see [`call_tool`] for the
+    /// same reasoning on the tool path.
+    ///
+    /// [`call_tool`]: DynamicHandler::call_tool
     fn read_resource(
         &self,
         request: ReadResourceRequestParams,
         context: RequestContext<RoleServer>,
-    ) -> impl Future<Output = Result<ReadResourceResult, ErrorData>> + MaybeSendFuture + '_ {
+    ) -> impl Future<Output = Result<ReadResourceResponse, ErrorData>> + MaybeSendFuture + '_ {
         let uri = request.uri;
         let auth = auth_context(&context);
         let (client_name, client_version) = peer_implementation(&context);
@@ -162,7 +170,8 @@ impl ServerHandler for DynamicHandler {
                 return Ok(ReadResourceResult::new(vec![
                     ResourceContents::text(body, selfdoc::HOW_TO_URI)
                         .with_mime_type(selfdoc::HOW_TO_MIME),
-                ]));
+                ])
+                .into());
             }
             if !uri.starts_with("proxima://") {
                 return Err(ErrorData::resource_not_found(
@@ -178,7 +187,8 @@ impl ServerHandler for DynamicHandler {
             let text = serde_json::to_string(&value).map_err(generic_internal_error)?;
             Ok(ReadResourceResult::new(vec![
                 ResourceContents::text(text, uri).with_mime_type("application/json"),
-            ]))
+            ])
+            .into())
         }
     }
 
@@ -234,11 +244,27 @@ impl ServerHandler for DynamicHandler {
             })
     }
 
+    /// Answers are always [`CallToolResponse::Complete`]. rmcp 3 widened this
+    /// return type for two draft extensions Proxima deliberately does not
+    /// implement:
+    ///
+    /// - `InputRequired` (MRTR, SEP-2322) pauses a call to elicit input from
+    ///   the client. Every Proxima tool is a single authorized store
+    ///   operation whose arguments arrive complete; a missing or malformed one
+    ///   is a caller error, reported as such by
+    ///   `tool_invocation_error_to_error_data`, not a prompt to fill in.
+    /// - `Task` (SEP-2663) hands back a task id for the client to poll. That
+    ///   is for long-running work; Proxima answers inline.
+    ///
+    /// Neither is advertised in [`get_info`]'s capabilities, so a spec-abiding
+    /// client never expects them.
+    ///
+    /// [`get_info`]: DynamicHandler::get_info
     fn call_tool(
         &self,
         request: CallToolRequestParams,
         context: RequestContext<RoleServer>,
-    ) -> impl Future<Output = Result<CallToolResult, ErrorData>> + MaybeSendFuture + '_ {
+    ) -> impl Future<Output = Result<CallToolResponse, ErrorData>> + MaybeSendFuture + '_ {
         let server = self.server.clone();
         let auth = auth_context(&context);
         let (client_name, client_version) = peer_implementation(&context);
@@ -260,7 +286,7 @@ impl ServerHandler for DynamicHandler {
             let text = serde_json::to_string(&output).map_err(generic_internal_error)?;
             let mut result = CallToolResult::success(vec![ContentBlock::text(text)]);
             result.structured_content = Some(output);
-            Ok(result)
+            Ok(result.into())
         }
     }
 }
