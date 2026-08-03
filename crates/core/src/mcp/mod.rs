@@ -30,7 +30,7 @@ pub use handles::{
 };
 pub use manifest::{
     CORE_RESOURCES, CoreActionMeta, CoreResourceMeta, McpToolAnnotations, all_core_actions,
-    all_core_resources, core_action_meta, core_tool_annotations, core_tool_has_actions,
+    all_core_resources, core_action_meta, core_tool_annotations,
 };
 pub use names::{provider_safe_tool_name, tool_name_matches};
 pub use presentation::{McpPresentationExt, McpToolCaller, McpToolPresentation};

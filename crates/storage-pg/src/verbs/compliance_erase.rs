@@ -1,4 +1,9 @@
-#![allow(clippy::too_many_arguments, clippy::too_many_lines)]
+// Five erase entry points take (pool, owner parts, source scope, audit
+// context, authorization) — every argument is a distinct authority the erase
+// has to be handed, and bundling them into a struct would only move the arity
+// to its constructor. `too_many_lines` is narrowed to the two functions that
+// earn it, below.
+#![allow(clippy::too_many_arguments)]
 
 use proxima_core::compliance::{
     ComplianceAuditContext, ComplianceEraseCounts, ComplianceEraseOutcome, ComplianceEraseRefusal,
@@ -271,6 +276,10 @@ async fn refuse_if_legal_hold_active(
     Ok(Some(outcome))
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "one erase transaction: every delete is ordered against the next and splitting it would hide that order behind call sites"
+)]
 async fn erase_selected(
     tx: &mut Tx<'_>,
     auth: &EraseAuthorization,
@@ -438,6 +447,10 @@ async fn erase_selected(
     Ok(())
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "one temp-table build: the selection sets are defined against each other and a split would let a caller build half of them"
+)]
 async fn create_selected_sets(
     tx: &mut Tx<'_>,
     owner: OwnerRef,

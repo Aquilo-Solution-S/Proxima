@@ -12,6 +12,11 @@ use sqlx::PgPool;
 use crate::error::map_err;
 use crate::sidecars::{PgSidecarKey, PgSidecarReadCtx, PgSidecarRegistryFrozen};
 
+/// The Facts of one source batch, with their typed sidecar payloads.
+///
+/// # Errors
+///
+/// Returns [`StorageError`] when a head or sidecar read fails.
 pub async fn load_memory_batch_facts(
     pool: &PgPool,
     pg_sidecars: &PgSidecarRegistryFrozen,
@@ -100,6 +105,11 @@ async fn load_batch_facts_by_id(
         .collect())
 }
 
+/// One owner's Abstraction heads, newest first, with sidecar payloads.
+///
+/// # Errors
+///
+/// Returns [`StorageError`] when a head or sidecar read fails.
 pub async fn load_abstraction_heads(
     pool: &PgPool,
     pg_sidecars: &PgSidecarRegistryFrozen,
@@ -184,6 +194,12 @@ pub async fn load_abstraction_heads(
         .collect())
 }
 
+/// One memory by id, with its typed sidecar payload. `None` when the id is
+/// unknown or tombstoned.
+///
+/// # Errors
+///
+/// Returns [`StorageError`] when the head or sidecar read fails.
 pub async fn load_memory_by_id(
     pool: &PgPool,
     pg_sidecars: &PgSidecarRegistryFrozen,
@@ -269,6 +285,10 @@ async fn snapshot_with_payload(
 /// come back in one owner-predicated query, then each row resolves its
 /// typed sidecar payload. Unknown, invisible, and tombstoned ids are
 /// simply absent from the result.
+///
+/// # Errors
+///
+/// Returns [`StorageError`] when a head or sidecar read fails.
 pub async fn load_memories_by_ids(
     pool: &PgPool,
     pg_sidecars: &PgSidecarRegistryFrozen,

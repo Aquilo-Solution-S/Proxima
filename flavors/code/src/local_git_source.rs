@@ -1,8 +1,3 @@
-#![allow(
-    clippy::missing_errors_doc,
-    clippy::doc_markdown,
-    clippy::similar_names
-)]
 //! `LocalGitSource` — pull-mode git ingest over a local repository.
 //!
 //! [`LocalGitSource::run_poll`] walks git since the supplied
@@ -359,6 +354,11 @@ impl LocalGitSource {
     /// code-slice Abstractions/call edges from those Facts, then
     /// closes the batch. F→A in M5+ consumes one batch = one commit's
     /// worth of causally-coherent Facts.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`IndexError`] when git cannot be walked, when a batch fails
+    /// to open, ingest or close, or when the cursor cannot be encoded.
     pub async fn run_poll(
         &self,
         ctx: &CodeIngestContext<'_>,
@@ -442,6 +442,11 @@ impl LocalGitSource {
     /// indexed heads, tombstones indexed files that disappeared from
     /// HEAD, and returns a cursor advanced to HEAD. It intentionally
     /// emits no commit Facts and does not walk history.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`IndexError`] when HEAD cannot be read, when a batch fails to
+    /// open, ingest or close, or when the cursor cannot be encoded.
     pub async fn run_head_snapshot(
         &self,
         ctx: &CodeIngestContext<'_>,

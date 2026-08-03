@@ -8,6 +8,10 @@ use crate::error::map_err;
 /// A dependency used to be its own relation; it is now simply a reference the
 /// memory's payload declared. The index answers "is there a connection"; the
 /// payload answers "what is it".
+///
+/// # Errors
+///
+/// Returns [`StorageError`] when the index read fails.
 pub async fn list_memory_dependencies(
     pool: &PgPool,
     owner: &Owner,

@@ -256,7 +256,11 @@ pub const MIN_CORE_MIGRATION_VERSION: i64 = 11;
 ///
 /// Returns [`StorageError::Internal`] when the recorded core migration version
 /// or the structural markers for the current lane are absent.
-#[allow(clippy::too_many_lines)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one boot probe: every marker is a separate EXISTS arm of the same \
+              query, and the comment above each is what makes it auditable"
+)]
 pub async fn ensure_core_schema_current(pool: &PgPool) -> Result<(), StorageError> {
     let migration_table_exists: bool =
         sqlx::query_scalar("SELECT to_regclass('public._sqlx_migrations') IS NOT NULL")

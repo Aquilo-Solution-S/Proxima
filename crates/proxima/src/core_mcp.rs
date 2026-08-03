@@ -20,6 +20,11 @@ pub struct CoreToolInfo {
     pub name: String,
     pub description: String,
     pub args_schema: serde_json::Value,
+    /// The schema of what a successful call returns, as the descriptor
+    /// derives it. The MCP handler puts it on `Tool::output_schema` and the
+    /// REST document puts it on the 200 response; a host driving the tools
+    /// through this facade had no way to see it at all.
+    pub output_schema: serde_json::Value,
     pub read_only: Option<bool>,
     pub destructive: Option<bool>,
     pub idempotent: Option<bool>,
@@ -213,6 +218,7 @@ fn tool_info_from_descriptor(descriptor: &McpToolDescriptor) -> CoreToolInfo {
         name: provider_safe_tool_name(descriptor.name),
         description: descriptor.description.to_string(),
         args_schema: descriptor.args_schema.clone(),
+        output_schema: descriptor.output_schema.clone(),
         read_only: annotations.read_only,
         destructive: annotations.destructive,
         idempotent: annotations.idempotent,
