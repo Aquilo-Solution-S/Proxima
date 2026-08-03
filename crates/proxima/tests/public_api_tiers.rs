@@ -570,6 +570,52 @@ fn host_api_can_configure_the_blob_lane_without_the_environment() {
 }
 
 #[test]
+fn host_api_names_the_reconcile_outcome_it_returns() {
+    // `CitedBlobStore::reconcile_cited_blobs` is a `pub async fn` reachable
+    // through `AppContext::blobs` / `BuiltProxima::blobs` /
+    // `RunningProxima::blobs` (all `Option<CitedBlobStore>`, pinned
+    // nameable above), and it returns `CitedBlobReconcileOutcome`. Before
+    // this export a host could call the method and bind its result only by
+    // inference — no signature could hold it, no struct field could carry
+    // it forward, and nothing beyond `is_intact()` could be matched on.
+    use proxima::{CitedBlobMissingObject, CitedBlobReconcileOutcome, MAX_RECONCILE_SAMPLE};
+
+    // Nameable in a signature, which is what "the return type can be held"
+    // means.
+    fn _returns_the_outcome() -> proxima::CitedBlobReconcileOutcome {
+        CitedBlobReconcileOutcome::default()
+    }
+
+    // CONSTRUCTED, NOT NAMED: a nameability check alone would not notice an
+    // unreachable field type on `missing_sample`'s element.
+    let missing = CitedBlobMissingObject {
+        cited_object_id: uuid::Uuid::nil(),
+        object_key: "objects/aa/bb".to_owned(),
+        byte_len: 1,
+        filename: "handbuch.pdf".to_owned(),
+    };
+
+    let outcome = CitedBlobReconcileOutcome {
+        rows_scanned: 1,
+        objects_scanned: 0,
+        missing_objects: 1,
+        missing_sample: vec![missing],
+        orphan_objects: 0,
+        orphan_sample: Vec::new(),
+        foreign_locators: 0,
+        foreign_sample: Vec::new(),
+    };
+    assert!(!outcome.is_intact());
+    assert_eq!(outcome.missing_sample[0].filename, "handbuch.pdf");
+
+    // USED, not asserted against: its value is a constant, so comparing it
+    // proves nothing. What needs proving is that a host can reach it to
+    // size its own buffers against the sample bound.
+    let buffer: Vec<CitedBlobMissingObject> = Vec::with_capacity(MAX_RECONCILE_SAMPLE);
+    assert!(buffer.is_empty());
+}
+
+#[test]
 fn host_api_can_name_the_owner_ref_discriminant() {
     // `OwnerRef::columns()` is public and returns `(OwnerRefKind, Option<Uuid>)`.
     // Every flavor with its own tables calls it to bind owner columns, and
