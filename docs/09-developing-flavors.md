@@ -112,7 +112,8 @@ Rules:
 
 No `serde_json::Value` payload fields. No generic canonical payload
 encoder. Keys are schema-owned semantic identity bytes, built with
-`PayloadKeyBuilder`.
+`PayloadKeyBuilder` — including the optional ones, which have their own
+methods rather than a per-flavor spelling (see *Key Selection* below).
 
 ## Declaring references
 
@@ -191,6 +192,18 @@ do not insert `proxima_core.goals` rows directly.
 
 Include `SCHEMA_ID` and `SCHEMA_VERSION` through `PayloadKeyBuilder::new`.
 Never derive keys from arbitrary JSON serialization.
+
+Optional key fields have blessed spellings — `field_option_str`,
+`field_option_uuid`, `field_option_bool`, `field_option_time`,
+`field_option_u8`/`u32`/`i32`/`i64`/`u64`/`usize`, `field_option_bytes`.
+Use them, and never invent a per-flavor absence encoding: not the empty
+string, not a zero sentinel, not skipping the field when it is `None`.
+Absent, `None`, and `Some(default)` are three different statements about
+the world and the builder gives them three different keys, so a field
+nobody asked about does not replay onto a field observed to be empty.
+Switching an existing schema from a hand-rolled encoding to
+`field_option_*` changes its keys, which re-mints every Fact that used
+it — so that switch rides a `SCHEMA_VERSION` bump.
 
 ## Sidecar Tables
 
