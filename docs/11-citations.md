@@ -45,7 +45,7 @@ be redundant with that graph and would invite drift between the two.
 
 This matches the biological story: your interpretation does not cite
 the source — it cites the memory that holds the source. What changed in
-v0.0.8 is only that a *computation* is also a source, and the memory that
+v0.0.7 is only that a *computation* is also a source, and the memory that
 holds it is an Abstraction.
 
 ## Trait families

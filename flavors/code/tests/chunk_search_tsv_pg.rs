@@ -93,7 +93,7 @@ async fn code_chunk_search_tsv_matches_the_projection() {
         // whole database is dropped at the end of the test either way.
         //
         // `lexical_language` mirrors the chunk table's pinned-english column
-        // (migration 20260728000020): the generation expression read back
+        // (the flavor baseline): the generation expression read back
         // from the catalog references it per row.
         //
         // SQL-POLICY: fixed-fragment — `generation` is read from

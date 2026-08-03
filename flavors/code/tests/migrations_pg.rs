@@ -33,7 +33,7 @@ async fn flavor_migrations_apply_to_fresh_db() {
             "test_result_v1",
             "acceptance_verification_v1",
             "acceptance_summary_v1",
-            // v0.0.8: call sites moved out of the edge sidecar and into the
+            // v0.0.7: call sites moved out of the edge sidecar and into the
             // caller chunk's payload, and the work assignment became a node.
             "code_chunk_call_v1",
             "work_assignment_v1",

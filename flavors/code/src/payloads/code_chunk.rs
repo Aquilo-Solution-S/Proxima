@@ -9,7 +9,7 @@ use crate::payloads::file_revision::FileState;
 
 /// The lexical language every code chunk is pinned to, on all three
 /// surfaces that must agree: the ingest draft (`append_code_slice`), the
-/// stored sidecar column (flavor migration `20260728000020`), and the
+/// stored sidecar column (the flavor baseline migration), and the
 /// tsquery builders in `search_chunks.rs` (SQL literals — keep them equal
 /// to this). Code is not prose in the deployment's language: identifiers,
 /// keywords, and comments are English-dominant, and following the

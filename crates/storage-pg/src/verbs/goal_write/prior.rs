@@ -28,7 +28,7 @@ pub(super) async fn load_prior_goal(
         return Err(StorageError::NotFound);
     };
     // The assignment is what the Goal row says it is. A row without one
-    // predates the topology columns — the v0.0.8 lane replaced the index, it
+    // predates the topology columns — the v0.0.7 lane replaced the index, it
     // did not back-fill it — and there is nothing left to infer it from.
     let assignment = row.assignment_perspective_id.ok_or_else(|| {
         StorageError::ConstraintViolation("goal assignment perspective missing".into())
