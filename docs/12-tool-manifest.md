@@ -199,7 +199,11 @@ stated here rather than left to be discovered:
   hazard is the same one per-action resolution exists to close: a flavor
   dispatcher annotated `read_only` at tool level offers `QUERY` — safe, and
   auto-retryable by any proxy or client library — on a write action added to
-  it later. The fix direction is a per-action annotation slot on
+  it later, and admits a viewer role to it besides. That hazard is
+  unreachable rather than merely documented: `try_freeze` refuses a
+  flavor-origin dispatcher that declares `read_only(true)` at tool level, so
+  the declaration cannot be made until per-action annotations exist to
+  qualify it. The fix direction is a per-action annotation slot on
   `McpActionArgSpec`, which every reader already has in hand.
 - **Per-action description.** A flavor action's `description` in the catalog
   is the empty string. The fix direction is to lift the enum variant's own
