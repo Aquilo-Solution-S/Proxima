@@ -1,6 +1,6 @@
 # 16. Edges
 
-The reference for the edge layer, shipped in v0.0.8. It supersedes what
+The reference for the edge layer, shipped in v0.0.7. It supersedes what
 [02-memory.md](02-memory.md) used to say under §Edges, §Relation Registry
 and §The Directionality Rule — 02 now restates the parts a reader of 02
 needs and points here — and it amends [11-citations.md](11-citations.md)
@@ -92,8 +92,8 @@ proxima_core.edges (
 
 - **No `edge_id`.** Rows have no identity beyond their content, so
   idempotency is structural: replaying any write re-asserts the same
-  primary key. The v0.0.7 identity-hash scheme (BLAKE3-derived v8
-  ids, the partial unique index) exists to approximate what this
+  primary key. The identity-hash scheme this replaced (BLAKE3-derived
+  v8 ids, the partial unique index) existed to approximate what this
   table has by construction.
 - **No payload, no sidecar, no citation, no status.** A connection
   that needs to say more than "these two, this way, since then" is a
@@ -224,7 +224,7 @@ mechanically transforming rows would have been the more elaborate way to
 arrive at data the substrate can regenerate from what the nodes already
 say, which is exactly what rebuildability means.
 
-**Core lane — `0015_v008.sql`.** Drops `proxima_core.edges`, its
+**Core lane — `0011_v007.sql`.** Drops `proxima_core.edges`, its
 `agent_link_v1` sidecar and the `relation_class` / `edge_authorship_kind`
 enums; creates the two-kind `edge_kind` enum, the five-label endpoint
 enum (including `FactEntityHead`), the new `edges` table with its
@@ -235,16 +235,21 @@ existence trigger; adds `superseded_by` to memories and goals,
 to goals; widens the citation constraint to Fact ∪ Abstraction; creates
 `proxima_core.interpretation_v1`; and reshapes `change_event` to carry
 the whole edge rather than a handle to it.
-`MIN_CORE_MIGRATION_VERSION` bumps to **15**, so a database one lane
-behind the binary fails at boot rather than at first query.
+`MIN_CORE_MIGRATION_VERSION` is **11**, so a database one lane
+behind the binary fails at boot rather than at first query. The edge reset
+shares that file with the rest of the v0.0.7 lane: it was authored as
+`0015_v008.sql` and folded into `0011_v007.sql` before the tag, so a v0.0.6
+database reaches the whole model in one transaction.
 
-**Flavor lane — `20260801000020_v008_baseline.sql`.** `DROP SCHEMA
+**Flavor lane — `20260801000020_v007_baseline.sql`.** `DROP SCHEMA
 proxima_code CASCADE` plus a folded schema; the five superseded lanes are
 deleted from the tree. This one is not a preference: the old baseline
 created `proxima_code.code_calls_v1` with a foreign key to
-`proxima_core.edges(edge_id)`, and 0015 removed that column along with the
-identity it stood for, so the old lane can no longer run at all — not on a
-fresh database and not on an old one.
+`proxima_core.edges(edge_id)`, and the core lane removed that column along
+with the identity it stood for, so the old lane can no longer run at all —
+not on a fresh database and not on an old one. (The file's own header still
+says v0.0.8 and names `0015`: `SQLx` checksums content, not filenames, so
+the rename was free and an edit would not have been.)
 
 The way back is **re-register and re-index**, which the code flavor
 already ships a runbook for (`proxima-code_erase_repo`, then

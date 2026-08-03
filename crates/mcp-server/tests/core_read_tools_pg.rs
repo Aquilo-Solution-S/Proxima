@@ -499,7 +499,7 @@ async fn goal_resources_list_read_back_wake_config_and_paginate()
     Ok(())
 }
 
-/// The whole loop the v0.0.8 edge lane leaves standing: an agent authors an
+/// The whole loop the v0.0.7 edge reset leaves standing: an agent authors an
 /// interpretation Perspective, and the connections it implies show up in the
 /// index as `reference` rows nobody wrote. There is no edge handle to
 /// dereference, because an edge has no id.

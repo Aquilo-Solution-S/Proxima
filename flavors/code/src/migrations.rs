@@ -13,14 +13,22 @@
 /// Embedded migration set. Compile-time `include_str!`s every file under
 /// `flavors/code/migrations/`.
 ///
-/// The set is a single v0.0.8 baseline. The pre-v0.0.8 lanes were folded into
-/// it and deleted: the old baseline created an edge sidecar with a foreign key
-/// to `proxima_core.edges(edge_id)`, and core's v0.0.8 lane removed that
-/// column along with the idea of an edge having an id, so the old lane can no
-/// longer run on any database. `ignore_missing` above is what lets a database
-/// that already applied those versions tolerate their absence and apply the
-/// reset. Re-register and re-index is the way back — the flavor already ships
-/// that runbook.
+/// The set is a single v0.0.7 baseline, `20260801000020_v007_baseline.sql`.
+/// The earlier lanes were folded into it and deleted: the old baseline created
+/// an edge sidecar with a foreign key to `proxima_core.edges(edge_id)`, and
+/// core's v0.0.7 lane removed that column along with the idea of an edge
+/// having an id, so the old lane can no longer run on any database.
+/// `ignore_missing` above is what lets a database that already applied those
+/// versions tolerate their absence and apply the reset. Re-register and
+/// re-index is the way back — the flavor already ships that runbook.
+///
+/// The file's own header still says "v0.0.8" and names core migration `0015`,
+/// which the v0.0.7 release preparation renamed and squashed. That text is
+/// deliberately not corrected: `SQLx` checksums a migration's CONTENT and not
+/// its filename, so the rename to `_v007_baseline` left every recorded
+/// checksum valid while editing one comment byte would invalidate all of
+/// them. Read the header as describing the lane it replaced, not the release
+/// it ships in.
 #[must_use]
 pub fn migrator() -> sqlx::migrate::Migrator {
     let mut m = sqlx::migrate!("./migrations");

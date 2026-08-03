@@ -397,7 +397,7 @@ impl Tool for CodeSearchChunksTool {
             } else {
                 sqlx::query_as(
                 // 'english' literal, not lexical_config(): chunk vectors are
-                // pinned english per row (migration 20260728000020 — code is
+                // pinned english per row (the flavor baseline — code is
                 // not prose in the deployment's language), so the query side
                 // pins the same constant. Following the database default
                 // here would stem the query german against english vectors

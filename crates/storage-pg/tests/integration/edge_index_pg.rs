@@ -265,7 +265,7 @@ async fn an_interpretation_writes_references_derivable_from_its_payload()
 /// A subject kind the payload type cannot represent is refused by the
 /// DATABASE, not merely by the Rust enum in front of it.
 ///
-/// `subject_kinds` was `text[]` until v0.0.8, so any string at all was a
+/// `subject_kinds` was `text[]` until v0.0.7, so any string at all was a
 /// legal column value and only the loader's hand-rolled parser stood between
 /// a typo and a wrong endpoint kind. As
 /// `proxima_core.interpretation_subject_kind[]` the widening is unrepresentable

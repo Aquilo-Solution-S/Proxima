@@ -287,7 +287,7 @@ def run_fixture(path: Path) -> int:
 # (uncounted) to sql.push_str (counted). Nothing is interpolated: the read set
 # arrives as the bound arrays $1/$2. A counted site with a fixed fragment is a
 # smaller surface than the interpolating write! it replaced, not a larger one.
-# 2026-08-01 analysis: -5 — the v0.0.8 edge lane. An edge has no id and no
+# 2026-08-01 analysis: -5 — the v0.0.7 edge reset. An edge has no id and no
 # payload, so the sidecar-driven edge read (whose statement text grew with the
 # registered payload specs) is gone, and the edge write, lineage walk and
 # compliance erase now assemble fixed fragments instead of per-request column
