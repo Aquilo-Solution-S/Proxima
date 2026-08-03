@@ -23,6 +23,12 @@ No runtime registration tier. No install/revoke API. No `tools` table.
 | Core tools | core | internal `try_add_mcp_tool<T>("core")` adapter | `McpToolCtx` |
 | Flavor tools | flavor crate | `try_add_tool<T>(prefix)` | `ToolCtx` |
 
+`try_add_tool` delegates to `try_add_mcp_tool`: the blanket
+`impl<T: Tool> McpTool for T` adapts the context and forwards `ANNOTATIONS`
+and `ACTION_ARG_SPECS`, so a flavor dispatcher is registered, validated, and
+gated exactly as a substrate one. Two registration bodies is what let those
+two drift.
+
 Stored ids:
 
 | Surface | Id form |
@@ -42,6 +48,20 @@ pub trait Tool: Send + Sync + 'static {
     const NAME: &'static str;
     const DESCRIPTION: &'static str;
     const PRODUCES_SCHEMA_IDS: &'static [&'static str] = &[];
+    /// MCP behaviour hints. Not cosmetic: the owner-role gate asks whether a
+    /// tool is read-only and demands WRITE when it cannot tell, so a read
+    /// tool that declares nothing is refused to every read-only role.
+    /// `try_freeze` refuses a registry containing a tool that says nothing.
+    const ANNOTATIONS: Option<McpToolAnnotations> = None;
+    /// The actions this tool dispatches, or `&[]` for a flat tool. THE
+    /// enumeration of a dispatcher's action set — the scope gate, the tool
+    /// catalog, the REST action routes, and the OpenAPI document all read it
+    /// off `McpToolDescriptor::action_arg_specs`. Declaring it turns a tool
+    /// into a dispatcher: its `Args` must be an internally tagged enum
+    /// tagged on `action`, its arguments are validated per action before
+    /// decode, and its scope keys become `tool:action` leaves rather than the
+    /// bare tool name.
+    const ACTION_ARG_SPECS: &'static [McpActionArgSpec] = &[];
 
     type Args: serde::de::DeserializeOwned + schemars::JsonSchema + Send + 'static;
     type Output: serde::Serialize + schemars::JsonSchema + Send + 'static;
@@ -124,12 +144,14 @@ normalization of action-dispatch tools described below.
 
 ### Action-Dispatch Tools
 
-Tools whose argument type is an internally-tagged (`action`) enum —
-currently `core_goal`, `core_fact`, `core_membership`, `core_publish`,
-and `core_upload` —
-are normalized into a client-safe shape after `schemars` generation, because MCP clients
-reject an `inputSchema` whose root is not `type: object` or that carries a
-root `oneOf`/`anyOf`/`allOf`:
+A dispatcher is any tool whose argument type is an internally-tagged enum
+**and** which declares `ACTION_ARG_SPECS`. The substrate ships five —
+`core_goal`, `core_fact`, `core_membership`, `core_publish`, `core_upload` —
+and a flavor declares its own the same way, through `proxima_flavor!`.
+
+Their argument schema is normalized into a client-safe shape after
+`schemars` generation, because MCP clients reject an `inputSchema` whose root
+is not `type: object` or that carries a root `oneOf`/`anyOf`/`allOf`:
 
 - The per-variant `oneOf` is flattened into one object: a unioned top-level
   `properties` map, an `action` string-enum discriminator, and
@@ -139,10 +161,51 @@ root `oneOf`/`anyOf`/`allOf`:
   `field_descriptions` keyed by action — and mirrored in the
   `proxima://tools` catalog. Fields shared across actions carry a neutral
   root description that points back to this metadata.
-- **Argument validation is strict and pre-decode.** Before an action's
-  arguments are deserialized, any field outside that action's
-  `allowed_fields`, or a missing `required_field`, is rejected with
-  JSON-RPC `-32602`. Unknown fields are an error, not silently dropped.
+- **Argument validation is strict and pre-decode**, for every dispatcher
+  including a flavor's. Before an action's arguments are deserialized, any
+  field outside that action's `allowed_fields`, or a missing
+  `required_field`, is rejected with JSON-RPC `-32602`. Unknown fields are an
+  error, not silently dropped.
+
+**The discriminator must literally be `action`.** Not a style preference:
+`ToolScope` keys are spelled `"{tool}:{action}"`, `validate_action_args` and
+`ScopeGateBehavior::enforce_scope` both read `args["action"]`, and the REST
+narrowed route injects `"action"` into the body before dispatch. A dispatcher
+tagged on anything else would be enumerated correctly and then gated,
+validated, and routed as if it had no actions at all, so `try_freeze` refuses
+to seal a registry containing one.
+
+Three descriptions, one authority:
+
+| Surface | What it is |
+|---|---|
+| `McpToolDescriptor.action_arg_specs` | THE enumeration. Every seam that asks "which actions does this tool have" reads this. |
+| `x-proxima-actions` | Derived from the `Args` type by the schema pass; the client-facing description, and the only one carrying per-field prose. |
+| `CoreActionMeta` | Substrate-only decoration: per-action scope key, description, produced schema ids, annotations. Never an existence claim. |
+
+`FlavorRegistry::try_freeze` refuses a registry where the first two disagree
+(see [08 §Freeze Guards](08-core-and-flavors.md#freeze-guards)).
+
+#### Known gaps for flavor dispatchers
+
+Two pieces of per-action decoration are substrate-only today. Both are
+stated here rather than left to be discovered:
+
+- **Per-action annotations.** `CoreActionMeta.annotations` is what gives
+  `core_membership:list_members` a read-only answer under a write-annotated
+  parent. A flavor dispatcher has no such table, so every one of its actions
+  resolves read/write at *tool* level — in the owner-role gate, in the
+  `proxima://tools` catalog, and in the REST `POST` vs `QUERY` choice. The
+  hazard is the same one per-action resolution exists to close: a flavor
+  dispatcher annotated `read_only` at tool level offers `QUERY` — safe, and
+  auto-retryable by any proxy or client library — on a write action added to
+  it later. The fix direction is a per-action annotation slot on
+  `McpActionArgSpec`, which every reader already has in hand.
+- **Per-action description.** A flavor action's `description` in the catalog
+  is the empty string. The fix direction is to lift the enum variant's own
+  doc comment into `x-proxima-actions` in `merge_variant` (the schema pass
+  already reads per-field descriptions there), so it costs the flavor author
+  nothing beyond documenting the variant.
 
 ## Goal Wake Config
 
