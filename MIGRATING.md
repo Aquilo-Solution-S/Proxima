@@ -221,8 +221,77 @@ Every tool in `tools/list` now carries an `outputSchema` alongside its
 `inputSchema`, derived from the tool's Rust output type. `structuredContent`
 was already on every reply; it is now declared, so a client can validate it
 instead of inferring the shape. Ignoring the field leaves behaviour unchanged.
+### The OAuth protected-resource identifier broadened to the public origin
+
+`/.well-known/oauth-protected-resource` advertised `{public_url}/mcp` as the
+RFC 9728 `resource`. It now advertises `{public_url}`.
+
+| | Was | Now |
+|---|---|---|
+| `resource` in the discovery document | `https://proxima.example.com/mcp` | `https://proxima.example.com` |
+| RFC 8707 `resource` parameter clients send | `https://proxima.example.com/mcp` | `https://proxima.example.com` |
+| Audience stamped into issued tokens | `…/mcp` | the origin |
+
+**Every already-issued token is invalid** against the new identifier, because
+that string *is* the audience an authorization server stamps in. Every client
+must re-request with the new `resource` value, and any audience literal
+configured out-of-band — `PROXIMA_OIDC_AUDIENCE`, an authorization-server
+resource/scope registration, a gateway's audience check — must be updated to
+match. Do the server and the authorization server together; a client holding
+an old token gets `401`.
+
+**Why now rather than later.** The old identifier was per-surface, and this
+tag adds a second surface: `/v1`, the REST rendering of the tool manifest
+(`docs/17-rest-surface.md`). One identifier means one audience, one
+metadata document, and one token that reaches both surfaces. Two would mean
+two audiences and therefore non-interchangeable tokens — a feature only for
+deployments that want surface-scoped credentials, and a permanent tax for
+everyone else. The population holding tokens today is small and pre-1.0;
+once `/v1` ships under its own identifier the split is baked into every
+deployment and every issued credential, and consolidating later is a
+coordinated break across two client populations instead of one.
+
+Nothing else in the discovery document changed: `authorization_servers`,
+`bearer_methods_supported`, the `WWW-Authenticate` challenge and the
+`/.well-known` path are all as they were.
+
+### The `/v1` REST surface is available, and off
+
+Optional and additive; no action is required to keep using MCP. It is a
+rendering of the same frozen tool manifest through the same dispatch seam and
+the same `ScopeGateBehavior`, so it grants no authority MCP does not already
+grant. Two gates turn it on, both required: build with the `rest` cargo
+feature, then set `PROXIMA_REST_ENABLED=true`. See
+`docs/17-rest-surface.md` for the routes and
+[10](docs/10-configuration.md#mcp-endpoint-and-authentication) for the flag.
 
 ## Rust host changes (v0.0.8)
+
+### `proxima_core::error::ErrorCode` is no longer `#[non_exhaustive]`
+
+Only affects code that `match`es on `ErrorCode` from outside `proxima-core`.
+The enum is unchanged; the attribute is gone, so a match on it must now be
+exhaustive and cannot carry a `_ =>` arm alone.
+
+**Symptom:** `error[E0004]: non-exhaustive patterns` disappears and is
+replaced by nothing — existing matches with a wildcard keep compiling. The
+break arrives later, when a future release adds a variant and your wildcard
+is no longer optional but your match is.
+
+**Fix:** name the variants you handle and keep a `_ =>` arm if you want the
+old behaviour. Nothing needs changing today.
+
+**Why.** `ErrorCode` says of itself that "additional variants land with the
+verbs that raise them", and that growth is exactly the moment a decision is
+owed: a transport has to say what a new code renders as. The REST surface
+maps every code onto an HTTP status (`docs/17-rest-surface.md` §Status
+mapping) and that map is required to carry no wildcard, so adding a code is
+a compile error until someone chooses its rendering. `#[non_exhaustive]`
+would have forced the wildcard that silently buckets a new code as `500`.
+The cost lands only on out-of-tree matchers: `ErrorCode` is not re-exported
+from the `proxima` facade or from `proxima_core`'s root, and every in-tree
+matcher already lives inside `proxima-core`, where the attribute never
+applied.
 
 ### Removed from `proxima::host`
 

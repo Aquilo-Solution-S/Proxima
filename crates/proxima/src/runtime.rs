@@ -709,6 +709,7 @@ fn build_router<A: FlavorApp>(
     let mcp_host = McpToolHost::from_parts(Arc::new(engine.registry().clone()), tool_extensions)
         .with_engine(engine);
     let allowed_hosts = resolve_allowed_hosts(config);
+    let rest_router = rest_router(&mcp_host, config);
     let mcp_service = streamable_http_service(mcp_host, &allowlist, &allowed_hosts, cancel);
     let app_router = A::mount_http(Router::new(), app_ctx);
     let www = config
@@ -723,6 +724,7 @@ fn build_router<A: FlavorApp>(
     );
     let mut router = Router::new()
         .nest_service("/mcp", mcp_service)
+        .merge(rest_router)
         .merge(app_router)
         .layer(auth_layer)
         .layer(axum::middleware::from_fn(
@@ -732,6 +734,42 @@ fn build_router<A: FlavorApp>(
         router = router.merge(proxima_mcp_server::protected_resource_router(md));
     }
     router
+}
+
+/// The `/v1` REST surface, merged *inside* the auth and body-limit layers
+/// above — which is the whole reason it inherits bearer validation, origin
+/// allowlisting, owner resolution and stream revalidation without restating
+/// any of them. Its routes already carry the `/v1` prefix, so this is a
+/// `merge`, not a `nest`: nesting would rewrite the inner request URI and
+/// strip the prefix off every problem document's `instance`.
+#[cfg(feature = "rest")]
+fn rest_router(host: &McpToolHost, config: &crate::RuntimeConfig) -> Router {
+    if !config.rest_enabled {
+        return Router::new();
+    }
+    proxima_mcp_server::rest::router(
+        host.clone(),
+        config
+            .resource_metadata
+            .as_ref()
+            .map(|md| md.public_url.clone()),
+    )
+}
+
+/// Feature-off shape. `PROXIMA_REST_ENABLED` in a binary built without the
+/// `rest` feature is an operator asking for a surface that is not in the
+/// build; say so once at boot rather than serving 404s that look like a
+/// routing bug.
+#[cfg(not(feature = "rest"))]
+fn rest_router(host: &McpToolHost, config: &crate::RuntimeConfig) -> Router {
+    let _ = host;
+    if config.rest_enabled {
+        tracing::warn!(
+            "PROXIMA_REST_ENABLED is set but this binary was built without the `rest` \
+             cargo feature; /v1 is not served"
+        );
+    }
+    Router::new()
 }
 
 fn resolve_allowlist(config: &crate::RuntimeConfig) -> Result<OriginAllowlist, ProximaError> {

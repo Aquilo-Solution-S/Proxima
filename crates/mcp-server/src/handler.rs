@@ -436,7 +436,7 @@ fn generic_internal_error(err: impl std::fmt::Display) -> ErrorData {
 /// to the actions a `Palette` scope permits, so `tools/list` never advertises
 /// an action the caller cannot invoke. `All` (or absent) scopes and flat tools
 /// are returned unchanged.
-fn project_dispatcher_actions(
+pub(crate) fn project_dispatcher_actions(
     schema: &serde_json::Value,
     scope: Option<&ToolScope>,
     tool: &str,
@@ -535,14 +535,14 @@ fn static_resource_uri(uri_template: &str) -> String {
         .to_string()
 }
 
-fn resource_scope_allows(scope: Option<&ToolScope>, scope_key: &str) -> bool {
+pub(crate) fn resource_scope_allows(scope: Option<&ToolScope>, scope_key: &str) -> bool {
     match scope {
         Some(scope) => scope.allows(scope_key),
         None => UNAUTHENTICATED_SCOPE_ALLOWS,
     }
 }
 
-fn advertised_resource_scope_keys(scope: Option<&ToolScope>) -> BTreeSet<&'static str> {
+pub(crate) fn advertised_resource_scope_keys(scope: Option<&ToolScope>) -> BTreeSet<&'static str> {
     all_core_resources()
         .filter(|resource| resource_scope_allows(scope, resource.scope_key))
         .map(|resource| resource.scope_key)
@@ -622,7 +622,10 @@ fn scope_allows(scope: Option<&ToolScope>, name: &str) -> bool {
 /// cannot answer the read-vs-write question for a flavor tool: the only
 /// place a flavor's behaviour is recorded is its own `ANNOTATIONS`, which
 /// lives on the descriptor. Every call site already had one.
-fn tool_allowed_for_auth(auth: Option<&McpAuthContext>, descriptor: &McpToolDescriptor) -> bool {
+pub(crate) fn tool_allowed_for_auth(
+    auth: Option<&McpAuthContext>,
+    descriptor: &McpToolDescriptor,
+) -> bool {
     let scope = auth.map(|ctx| ctx.authz.tool_scope());
     scope_allows(scope, descriptor.name) && owner_role_allows_tool(auth, descriptor)
 }

@@ -24,6 +24,7 @@ host injects for vector retrieval and an optional model-seat client.
 |---|---|---|
 | Postgres connection | binary-wide | `DATABASE_URL` |
 | MCP endpoint | binary-wide | bind addr, network exposure, origin allowlist |
+| REST surface | binary-wide | `rest` cargo feature + `PROXIMA_REST_ENABLED`; same listener, same layers |
 | MCP authentication | per request | host `Authenticator` only; owner roles resolved server-side |
 | Embedding client | binary-wide | optional `Arc<dyn EmbeddingClient>` injected at boot |
 | Anthropic model client | binary-wide | optional `Arc<dyn AnthropicClient>` host-injected; programmatic only |
@@ -67,6 +68,7 @@ Proxima::<App>::app()
 | `PROXIMA_EMBED_MAX_INPUT_CHARS` | Longest input, in characters, the client will send. Unset (default) sends every input and lets the provider judge it. Set this when the provider does not reject over-long input cleanly — see below. Minimum 4095. |
 | `MISTRAL_API_KEY` | Alias for `PROXIMA_EMBED_API_KEY`. |
 | `MISTRAL_API_BASE` | Alias for `PROXIMA_EMBED_BASE_URL`; defaults to `https://api.mistral.ai/v1` when only a key is set. |
+| `PROXIMA_REST_ENABLED` | Serve the `/v1` REST rendering of the tool manifest beside `/mcp` (see `17-rest-surface.md`). Default `false`; requires the `rest` cargo feature at build time. |
 | `PROXIMA_TOOL_PROFILE` | `proxima-mcp` deployment tool profile: `memory` (default, fail-closed) or `full` (opt-in). |
 | `PROXIMA_TOOL_ALLOW` | Optional comma-separated canonical scope keys unioned into the resolved profile. |
 | `PROXIMA_TOOL_DENY` | Optional comma-separated canonical scope keys subtracted from the resolved profile. |
@@ -103,6 +105,20 @@ binds accept loopback hosts only, and a network-exposed bind must
 resolve at least one public host (`PROXIMA_ALLOWED_HOSTS`, else the host
 of `PROXIMA_PUBLIC_URL` / the allowed origins) or `validate()` fails
 closed. Secrets are never streamed to clients.
+
+### REST Surface
+
+`/v1` is the same tool manifest rendered as REST
+(`17-rest-surface.md`). Two gates, both required, and they are
+different kinds of decision: the `rest` cargo feature compiles the
+module (a build decision), `PROXIMA_REST_ENABLED=true` serves it (a
+deployment one). Default off at both.
+
+It mounts on the MCP listener inside the same auth and body-limit
+layers, so it inherits bearer validation, origin allowlisting, owner
+resolution and stream revalidation unchanged, and grants no authority
+MCP does not already grant. Setting `PROXIMA_REST_ENABLED` in a binary
+built without the feature logs a warning at boot and serves nothing.
 
 ### Tool Surface Profile
 

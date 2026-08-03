@@ -1,0 +1,621 @@
+//! The `/v1` surface's obligations from docs/17 §Test Obligations.
+//!
+//! These are what make "REST is a rendering of the manifest, not a second
+//! API" checkable rather than aspirational. Everything here runs against a
+//! registry-only [`McpToolHost`] with no engine: the claims under test are
+//! about surface derivation, gating, and error class — none of which is
+//! allowed to depend on storage, and all of which would be untestable if it
+//! did.
+#![cfg(feature = "rest")]
+
+use std::collections::BTreeSet;
+use std::sync::Arc;
+
+use axum::Router;
+use axum::body::{Body, Bytes};
+use axum::http::{Method, Request, StatusCode, header};
+use proxima_core::mcp::{McpAuthorContext, McpToolExtensions};
+use proxima_core::protocol::{
+    action as protocol_action, resource as protocol_resource, tool as protocol_tool,
+};
+use proxima_core::{AuthPath, AuthzContext, FlavorRegistry, Owner, OwnerRef, ToolScope, UserId};
+use proxima_mcp_server::{McpAuthContext, McpToolHost};
+use tower::ServiceExt;
+
+fn host() -> McpToolHost {
+    McpToolHost::from_parts(
+        Arc::new(FlavorRegistry::new().freeze_or_panic_for_tests()),
+        McpToolExtensions::default(),
+    )
+}
+
+/// A principal with full owner rights, so the owner-role gate never
+/// confounds a test about tool scope.
+fn auth(scope: ToolScope) -> McpAuthContext {
+    let owner: Owner = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
+    McpAuthContext {
+        owner,
+        authz: AuthzContext::single_owner(&owner, AuthPath::HostBearer).with_tool_scope(scope),
+        model_id: None,
+    }
+}
+
+fn author() -> McpAuthorContext {
+    McpAuthorContext {
+        model_id: "test-model".into(),
+        client_name: "test".into(),
+        client_version: "0".into(),
+        caller_self_perspective: None,
+    }
+}
+
+fn app(host: McpToolHost) -> Router {
+    proxima_mcp_server::rest::router(host, None)
+}
+
+struct Answer {
+    status: StatusCode,
+    headers: axum::http::HeaderMap,
+    body: Bytes,
+}
+
+impl Answer {
+    fn json(&self) -> serde_json::Value {
+        serde_json::from_slice(&self.body).unwrap_or_else(|err| {
+            panic!(
+                "body is not JSON ({err}): {}",
+                String::from_utf8_lossy(&self.body)
+            )
+        })
+    }
+
+    fn header(&self, name: header::HeaderName) -> Option<&str> {
+        self.headers.get(name).and_then(|value| value.to_str().ok())
+    }
+}
+
+/// Send one request with the auth context the shared `mcp_auth` layer would
+/// have injected. Nothing here authenticates — that layer is not under test,
+/// and re-implementing it is what R3 forbids.
+async fn call(
+    router: &Router,
+    method: Method,
+    uri: &str,
+    ctx: &McpAuthContext,
+    body: Option<serde_json::Value>,
+) -> Answer {
+    let mut request = Request::builder()
+        .method(method)
+        .uri(uri)
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(body.map_or_else(Body::empty, |value| Body::from(value.to_string())))
+        .expect("request builds");
+    request.extensions_mut().insert(ctx.clone());
+    let response = router
+        .clone()
+        .oneshot(request)
+        .await
+        .expect("router is infallible");
+    let status = response.status();
+    let headers = response.headers().clone();
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("body collects");
+    Answer {
+        status,
+        headers,
+        body,
+    }
+}
+
+async fn get(router: &Router, uri: &str, ctx: &McpAuthContext) -> Answer {
+    call(router, Method::GET, uri, ctx, None).await
+}
+
+// --------------------------------------------------------- surface parity
+
+/// The REST tool list equals the MCP tool catalog id for id, for whatever
+/// `ToolScope` the caller holds.
+///
+/// `proxima://tools` is the catalog authority for a running server, and it
+/// is reached here through the same [`McpToolHost::read_resource`] seam an
+/// MCP client uses — so this compares two surfaces, not one surface against
+/// a restatement of its own filter.
+#[tokio::test]
+async fn rest_tool_list_equals_the_mcp_catalog_for_every_scope() {
+    let host = host();
+    let router = app(host.clone());
+
+    for scope in [
+        ToolScope::All,
+        // `resource:tools` is in the palette because the catalog resource is
+        // itself scope-gated; without it the MCP side would be refused and
+        // the comparison would be against nothing.
+        ToolScope::Palette(vec![
+            protocol_resource::TOOLS.to_string(),
+            protocol_tool::CORE_SEARCH_MEMORIES.to_string(),
+            protocol_action::CORE_GOAL_SET.to_string(),
+        ]),
+    ] {
+        let ctx = auth(scope.clone());
+        let expected: BTreeSet<String> = host
+            .read_resource("proxima://tools", author(), Some(ctx.clone()))
+            .await
+            .expect("the MCP catalog is readable under this scope")["tools"]
+            .as_array()
+            .expect("tools array")
+            .iter()
+            .map(|tool| tool["tool_id"].as_str().expect("tool_id").to_string())
+            .collect();
+        assert!(!expected.is_empty(), "nothing to compare for {scope:?}");
+
+        let answer = get(&router, "/v1/tools", &ctx).await;
+        assert_eq!(answer.status, StatusCode::OK);
+        let actual: BTreeSet<String> = answer.json()["tools"]
+            .as_array()
+            .expect("tools array")
+            .iter()
+            .map(|tool| tool["id"].as_str().expect("id").to_string())
+            .collect();
+        assert_eq!(actual, expected, "surface drift for {scope:?}");
+    }
+
+    // The fail-closed end of the range: an empty palette advertises nothing
+    // on either surface, rather than REST falling open to the full registry.
+    let empty = auth(ToolScope::Palette(Vec::new()));
+    assert!(
+        host.read_resource("proxima://tools", author(), Some(empty.clone()))
+            .await
+            .is_err(),
+        "an empty palette denies the MCP catalog"
+    );
+    let answer = get(&router, "/v1/tools", &empty).await;
+    assert_eq!(answer.json()["tools"].as_array().map(Vec::len), Some(0));
+}
+
+/// R6 reaches per-action narrowing too: a palette holding one leaf of a
+/// dispatcher advertises one leaf, not the whole flattened schema.
+#[tokio::test]
+async fn a_palette_narrows_the_advertised_dispatcher_actions() {
+    let router = app(host());
+    let ctx = auth(ToolScope::Palette(vec![
+        protocol_action::CORE_GOAL_SET.to_string(),
+    ]));
+
+    let answer = get(&router, "/v1/tools", &ctx).await;
+    let goal = answer.json()["tools"]
+        .as_array()
+        .expect("tools")
+        .iter()
+        .find(|tool| tool["id"] == protocol_tool::CORE_GOAL)
+        .cloned()
+        .expect("core_goal is advertised");
+    let actions: Vec<String> = goal["args_schema"]["x-proxima-actions"]
+        .as_object()
+        .expect("x-proxima-actions")
+        .keys()
+        .cloned()
+        .collect();
+    assert_eq!(actions, vec!["set".to_string()]);
+}
+
+// ------------------------------------------------------------ gate parity
+
+/// A tool denied over MCP is denied over REST — `403`, from
+/// `ScopeGateBehavior` below the seam, not a `404` that would make the
+/// refusal indistinguishable from absence.
+///
+/// The catalog read is the deliberate exception: `GET /v1/tools/{tool}`
+/// answers "what is in your catalog", and a tool that is not in it is
+/// absent.
+#[tokio::test]
+async fn a_denied_tool_is_403_on_invocation_and_404_in_the_catalog() {
+    let router = app(host());
+    let ctx = auth(ToolScope::Palette(vec![
+        protocol_tool::CORE_SEARCH_MEMORIES.to_string(),
+    ]));
+
+    let invoked = call(
+        &router,
+        Method::POST,
+        "/v1/tools/core_remember",
+        &ctx,
+        Some(serde_json::json!({ "text": "x" })),
+    )
+    .await;
+    assert_eq!(invoked.status, StatusCode::FORBIDDEN);
+    assert_eq!(
+        invoked.header(header::CONTENT_TYPE),
+        Some("application/problem+json")
+    );
+    let problem = invoked.json();
+    assert_eq!(problem["type"], "https://proxima.dev/errors/not-authorized");
+    assert_eq!(problem["instance"], "/v1/tools/core_remember");
+    assert!(
+        problem["detail"]
+            .as_str()
+            .expect("detail")
+            .contains("not authorized"),
+        "{problem}"
+    );
+
+    let catalog = get(&router, "/v1/tools/core_remember", &ctx).await;
+    assert_eq!(catalog.status, StatusCode::NOT_FOUND);
+
+    let visible = get(&router, "/v1/tools/core_search_memories", &ctx).await;
+    assert_eq!(visible.status, StatusCode::OK);
+    assert_eq!(
+        visible.json()["id"],
+        protocol_tool::CORE_SEARCH_MEMORIES,
+        "an in-palette tool is readable"
+    );
+}
+
+/// No bound auth context means the request never passed the shared auth
+/// layer. Fail closed rather than dispatch.
+#[tokio::test]
+async fn a_request_without_a_bound_auth_context_is_401() {
+    let router = app(host());
+    let response = router
+        .oneshot(
+            Request::builder()
+                .uri("/v1/tools")
+                .body(Body::empty())
+                .expect("request builds"),
+        )
+        .await
+        .expect("infallible");
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+// --------------------------------------------------------- reserved fields
+
+/// Each reserved name is refused, and the refusal carries the exact fix.
+/// The cost is one failed request during integration; the alternative is a
+/// corpus of Facts silently attributed to `unknown` in an append-only store.
+#[tokio::test]
+async fn every_reserved_argument_is_400_naming_its_header() {
+    let router = app(host());
+    let ctx = auth(ToolScope::All);
+
+    for (field, expected_header) in [
+        ("model_id", "X-Proxima-Model-Id"),
+        ("caller_self_perspective", "X-Proxima-Self-Perspective"),
+        (
+            "_proxima_caller_self_perspective",
+            "X-Proxima-Self-Perspective",
+        ),
+        (
+            "current_root_perspective_memory_id",
+            "X-Proxima-Self-Perspective",
+        ),
+    ] {
+        let answer = call(
+            &router,
+            Method::POST,
+            "/v1/tools/core_remember",
+            &ctx,
+            Some(serde_json::json!({ "text": "hello", field: "value" })),
+        )
+        .await;
+        assert_eq!(answer.status, StatusCode::BAD_REQUEST, "{field}");
+        let problem = answer.json();
+        assert_eq!(
+            problem["type"],
+            "https://proxima.dev/errors/reserved-argument"
+        );
+        let detail = problem["detail"].as_str().expect("detail");
+        assert!(detail.contains(field), "{detail}");
+        assert!(detail.contains(expected_header), "{detail}");
+    }
+}
+
+// -------------------------------------------------------- action injection
+
+#[tokio::test]
+async fn a_conflicting_body_action_is_400_and_an_unknown_action_is_404() {
+    let router = app(host());
+    let ctx = auth(ToolScope::All);
+
+    // Rejected even when the values agree: silent agreement invites a client
+    // that sets only the body field and breaks when the route changes.
+    for body_action in ["set", "transition"] {
+        let answer = call(
+            &router,
+            Method::POST,
+            "/v1/tools/core_goal/set",
+            &ctx,
+            Some(serde_json::json!({ "action": body_action, "title": "t" })),
+        )
+        .await;
+        assert_eq!(answer.status, StatusCode::BAD_REQUEST, "{body_action}");
+        assert_eq!(
+            answer.json()["type"],
+            "https://proxima.dev/errors/action-conflict"
+        );
+    }
+
+    // Refused at the route layer, before dispatch, so it reads as "no such
+    // route" rather than as an argument error.
+    let unknown = call(
+        &router,
+        Method::POST,
+        "/v1/tools/core_goal/no_such_action",
+        &ctx,
+        Some(serde_json::json!({})),
+    )
+    .await;
+    assert_eq!(unknown.status, StatusCode::NOT_FOUND);
+    assert_eq!(
+        unknown.json()["instance"],
+        "/v1/tools/core_goal/no_such_action"
+    );
+}
+
+// ---------------------------------------------------------- method gating
+
+#[tokio::test]
+async fn query_on_a_write_tool_is_405_with_allow() {
+    let router = app(host());
+    let ctx = auth(ToolScope::All);
+
+    let answer = call(
+        &router,
+        Method::QUERY,
+        "/v1/tools/core_remember",
+        &ctx,
+        Some(serde_json::json!({ "text": "x" })),
+    )
+    .await;
+    assert_eq!(answer.status, StatusCode::METHOD_NOT_ALLOWED);
+    let allow = answer
+        .header(header::ALLOW)
+        .expect("Allow is emitted by hand");
+    assert!(allow.contains("POST"), "{allow}");
+    assert!(
+        !allow.contains("QUERY"),
+        "a write tool must not advertise QUERY: {allow}"
+    );
+}
+
+/// The dispatcher-action routes carry no `GET`, so `Allow` is exactly the
+/// invocation methods.
+#[tokio::test]
+async fn query_on_a_write_action_is_405_with_allow_post() {
+    let router = app(host());
+    let ctx = auth(ToolScope::All);
+
+    let answer = call(
+        &router,
+        Method::QUERY,
+        "/v1/tools/core_upload/prepare",
+        &ctx,
+        Some(serde_json::json!({})),
+    )
+    .await;
+    assert_eq!(answer.status, StatusCode::METHOD_NOT_ALLOWED);
+    assert_eq!(answer.header(header::ALLOW), Some("POST"));
+}
+
+/// Read/write is resolved per action, never inherited from the parent tool.
+/// `core_upload` and `core_membership` are write-annotated dispatchers with
+/// one read-only leaf each; gating on the tool would strip `QUERY` from a
+/// genuine read, and — the direction that actually bites — would hand
+/// `QUERY` to a write the day one is added under a read-only parent.
+#[tokio::test]
+async fn a_read_only_action_under_a_write_parent_keeps_query() {
+    let router = app(host());
+    let ctx = auth(ToolScope::All);
+
+    for (uri, sibling) in [
+        (
+            "/v1/tools/core_upload/read_url",
+            "/v1/tools/core_upload/abort",
+        ),
+        (
+            "/v1/tools/core_membership/list_members",
+            "/v1/tools/core_membership/add_member",
+        ),
+    ] {
+        let read = call(
+            &router,
+            Method::QUERY,
+            uri,
+            &ctx,
+            Some(serde_json::json!({})),
+        )
+        .await;
+        assert_ne!(
+            read.status,
+            StatusCode::METHOD_NOT_ALLOWED,
+            "{uri} is read-only and must accept QUERY"
+        );
+
+        let write = call(
+            &router,
+            Method::QUERY,
+            sibling,
+            &ctx,
+            Some(serde_json::json!({})),
+        )
+        .await;
+        assert_eq!(
+            write.status,
+            StatusCode::METHOD_NOT_ALLOWED,
+            "{sibling} is a write and must refuse QUERY"
+        );
+        assert_eq!(write.header(header::ALLOW), Some("POST"));
+    }
+}
+
+/// `QUERY` and `POST` are the same read, so they must answer identically —
+/// byte for byte. Any divergence would mean the method, not the arguments,
+/// changed the answer.
+#[tokio::test]
+async fn query_and_post_on_a_read_only_tool_are_byte_identical() {
+    let router = app(host());
+    let ctx = auth(ToolScope::All);
+    let body = serde_json::json!({ "query": "anything" });
+
+    let via_post = call(
+        &router,
+        Method::POST,
+        "/v1/tools/core_search_memories",
+        &ctx,
+        Some(body.clone()),
+    )
+    .await;
+    let via_query = call(
+        &router,
+        Method::QUERY,
+        "/v1/tools/core_search_memories",
+        &ctx,
+        Some(body),
+    )
+    .await;
+
+    assert_ne!(via_post.status, StatusCode::METHOD_NOT_ALLOWED);
+    assert_eq!(via_post.status, via_query.status);
+    assert_eq!(via_post.body, via_query.body);
+    assert_eq!(
+        via_post.header(header::CONTENT_TYPE),
+        via_query.header(header::CONTENT_TYPE)
+    );
+    // Owner- and token-scoped either way; QUERY's cacheability is unused.
+    assert_eq!(
+        via_post.header(header::CACHE_CONTROL),
+        Some("private, no-store")
+    );
+    assert_eq!(
+        via_query.header(header::CACHE_CONTROL),
+        Some("private, no-store")
+    );
+}
+
+// ---------------------------------------------------- resource passthrough
+
+/// The path and raw query are pasted back onto `proxima://` and handed to
+/// the same seam MCP uses, so a malformed parameter produces the same error
+/// class — REST adds no parser that could classify it differently.
+#[tokio::test]
+async fn resource_reads_match_the_mcp_error_class() {
+    let host = host();
+    let router = app(host.clone());
+    let ctx = auth(ToolScope::All);
+
+    for (rest_uri, resource_uri, expected) in [
+        (
+            "/v1/resources/change-events?limit=not-a-number",
+            "proxima://change-events?limit=not-a-number",
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            "/v1/resources/memory/F:018f0000-0000-7000-8000-000000000001/lineage?direction=sideways",
+            "proxima://memory/F:018f0000-0000-7000-8000-000000000001/lineage?direction=sideways",
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            "/v1/resources/no-such-resource",
+            "proxima://no-such-resource",
+            StatusCode::NOT_FOUND,
+        ),
+        (
+            "/v1/resources/wake-candidates",
+            "proxima://wake-candidates",
+            StatusCode::BAD_REQUEST,
+        ),
+    ] {
+        let mcp_error = host
+            .read_resource(resource_uri, author(), Some(ctx.clone()))
+            .await
+            .expect_err("the MCP read fails too");
+
+        let answer = get(&router, rest_uri, &ctx).await;
+        assert_eq!(answer.status, expected, "{rest_uri}");
+        assert_eq!(
+            answer.header(header::CONTENT_TYPE),
+            Some("application/problem+json")
+        );
+        // Same fault, same words: `detail` is the client message the MCP
+        // surface would have sent, not a REST-side restatement.
+        let detail = answer.json()["detail"]
+            .as_str()
+            .expect("detail")
+            .to_string();
+        assert!(
+            detail.contains(
+                resource_uri
+                    .trim_start_matches("proxima://")
+                    .split('?')
+                    .next()
+                    .unwrap_or_default()
+            ) || detail == format!("tool {resource_uri} not found"),
+            "detail {detail} does not describe {mcp_error:?}"
+        );
+    }
+}
+
+/// `proxima://how-to` is synthesized per request rather than served through
+/// the seam, so it is unreachable through the resource passthrough and has
+/// its own route.
+#[tokio::test]
+async fn how_to_has_its_own_route_and_is_not_a_passthrough_resource() {
+    let router = app(host());
+    let ctx = auth(ToolScope::All);
+
+    let passthrough = get(&router, "/v1/resources/how-to", &ctx).await;
+    assert_eq!(passthrough.status, StatusCode::NOT_FOUND);
+
+    let answer = get(&router, "/v1/how-to", &ctx).await;
+    assert_eq!(answer.status, StatusCode::OK);
+    assert_eq!(
+        answer.header(header::CONTENT_TYPE),
+        Some("text/markdown; charset=utf-8")
+    );
+    assert!(!answer.body.is_empty());
+}
+
+#[tokio::test]
+async fn the_resource_catalog_is_scope_filtered_and_maps_onto_rest_paths() {
+    let router = app(host());
+
+    let full = get(&router, "/v1/resources", &auth(ToolScope::All)).await;
+    assert_eq!(full.status, StatusCode::OK);
+    let resources = full.json()["resources"]
+        .as_array()
+        .expect("resources")
+        .clone();
+    assert!(!resources.is_empty());
+    for resource in &resources {
+        let path = resource["path"].as_str().expect("path");
+        assert!(path.starts_with("/v1/resources/"), "{path}");
+    }
+
+    let empty = get(
+        &router,
+        "/v1/resources",
+        &auth(ToolScope::Palette(Vec::new())),
+    )
+    .await;
+    assert_eq!(
+        empty.json()["resources"].as_array().map(Vec::len),
+        Some(0),
+        "an empty palette advertises no resources"
+    );
+}
+
+#[tokio::test]
+async fn the_openapi_document_is_caller_scoped_and_never_shared_cacheable() {
+    let router = app(host());
+    let answer = get(&router, "/v1/openapi.json", &auth(ToolScope::All)).await;
+    assert_eq!(answer.status, StatusCode::OK);
+    assert_eq!(
+        answer.header(header::CONTENT_TYPE),
+        Some("application/json")
+    );
+    assert_eq!(
+        answer.header(header::CACHE_CONTROL),
+        Some("private, no-store")
+    );
+    assert!(answer.json()["openapi"].as_str().is_some());
+}

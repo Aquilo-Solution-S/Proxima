@@ -10,8 +10,15 @@ pub struct ProtocolError {
 
 /// Subset of docs/14's `ErrorCode` exercised so far. Additional
 /// variants land with the verbs that raise them.
+///
+/// Deliberately NOT `#[non_exhaustive]`. Transport adapters map every code
+/// onto their own vocabulary — the REST surface's RFC 9457 status table
+/// (docs/17 §Status mapping) is the first — and that map is required to be
+/// exhaustive with no wildcard arm, so adding a variant here is a compile
+/// error until someone chooses its rendering. `#[non_exhaustive]` would
+/// force exactly the wildcard that silently buckets a new code as an
+/// internal server error.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[non_exhaustive]
 #[serde(rename_all = "snake_case")]
 pub enum ErrorCode {
     AuthRequired,
