@@ -11,6 +11,7 @@ use std::collections::BTreeMap;
 use proxima_core::StorageError;
 use proxima_storage_pg::{
     PgStorage, core_migrator, ensure_core_schema_current, ensure_v004_baseline_compatible,
+    ensure_v007_lane_squash_compatible,
 };
 use sqlx::PgConnection;
 use sqlx::migrate::{MigrateError, Migrator};
@@ -100,6 +101,9 @@ pub async fn run_core_and_flavor_migrations(
     ensure_v004_baseline_compatible(&pool)
         .await
         .map_err(MigrationError::CorePreflight)?;
+    ensure_v007_lane_squash_compatible(&pool)
+        .await
+        .map_err(MigrationError::CorePreflight)?;
     let mut conn = pool.acquire().await.map_err(MigrationError::Connection)?;
 
     pin_migration_search_path(&mut conn)
@@ -160,6 +164,9 @@ pub async fn preflight_without_migrations(
     let report = MigrationRunReport::from_sources(&sources);
     let pool = pg.clone_pool_for_backend();
     ensure_v004_baseline_compatible(&pool)
+        .await
+        .map_err(MigrationError::CorePreflight)?;
+    ensure_v007_lane_squash_compatible(&pool)
         .await
         .map_err(MigrationError::CorePreflight)?;
     ensure_core_schema_current(&pool)

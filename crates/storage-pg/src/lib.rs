@@ -68,6 +68,20 @@ pub const DEFAULT_DATABASE_URL: &str = "postgres://postgres@localhost/proxima_de
 /// guarded local reset path; do not delete broad version ranges.
 pub const RETIRED_PRE_V004_MIGRATION_VERSIONS: &[i64] = &[2, 3, 4, 5, 6, 7, 20_260_622_000_000];
 
+/// Core migration versions folded into `0011_v007.sql` before the v0.0.7 tag.
+///
+/// The v0.0.7 lane was authored as five files (11..15) and squashed into one
+/// at release preparation, so 12..15 no longer exist. No tagged release ever
+/// shipped them: only dev and staging databases can carry these rows.
+///
+/// Such a database fails CLOSED at boot — version 11's checksum changed with
+/// the squash, so `SQLx` raises `VersionMismatch(11)` before any DDL runs. The
+/// remedy is `tools/dev-migrate --reset`, which needs this list to clear the
+/// orphaned ledger rows; without it the reset drops the schemas but leaves
+/// 12..15 recorded as applied, and the boot floor below is then satisfied by
+/// versions no file can account for.
+pub const RETIRED_V007_LANE_MIGRATION_VERSIONS: &[i64] = &[12, 13, 14, 15];
+
 /// Embedded core migration set under `crates/storage-pg/migrations/`.
 ///
 /// `ignore_missing = true` is load-bearing when the same database also
@@ -170,6 +184,56 @@ pub async fn ensure_v004_baseline_compatible(pool: &PgPool) -> Result<(), Storag
     })
 }
 
+/// Fail closed, and legibly, on a database that applied the pre-squash v0.0.7
+/// lane (core versions 12..15).
+///
+/// Such a database also fails without this check — version 11's checksum
+/// changed when the five files were folded into it, so `SQLx` raises
+/// `VersionMismatch(11)`, which is fail-closed but says only "previously
+/// applied but has been modified" and names no remedy. This runs first and
+/// says what happened and what to do about it.
+///
+/// Only dev and staging databases can be in this state: no tagged release ever
+/// shipped versions 12..15.
+///
+/// # Errors
+///
+/// Returns [`StorageError::Internal`] when the ledger records any of
+/// [`RETIRED_V007_LANE_MIGRATION_VERSIONS`], or when the catalog query fails.
+pub async fn ensure_v007_lane_squash_compatible(pool: &PgPool) -> Result<(), StorageError> {
+    let migration_table_exists: bool =
+        sqlx::query_scalar("SELECT to_regclass('public._sqlx_migrations') IS NOT NULL")
+            .fetch_one(pool)
+            .await
+            .map_err(internal)?;
+    if !migration_table_exists {
+        return Ok(());
+    }
+
+    let folded: Vec<i64> = sqlx::query_scalar(
+        "SELECT version
+           FROM public._sqlx_migrations
+          WHERE version = ANY($1::bigint[])
+          ORDER BY version",
+    )
+    .bind(RETIRED_V007_LANE_MIGRATION_VERSIONS)
+    .fetch_all(pool)
+    .await
+    .map_err(internal)?;
+
+    if folded.is_empty() {
+        return Ok(());
+    }
+
+    Err(StorageError::Internal(format!(
+        "database applied the pre-release v0.0.7 migration lane (core versions {folded:?}), which was folded into 0011_v007.sql before the tag. \
+         Version 11's checksum changed with the fold, so this database cannot be migrated forward. \
+         No tagged release shipped these versions, so only development and staging databases are affected: \
+         reset with `PROXIMA_V004_RESET_CONFIRM=reset-my-dev-db cargo run -p proxima-dev-migrate -- --reset --database-url <URL>`, \
+         then re-register and re-index (see MIGRATING.md)"
+    )))
+}
+
 /// Minimum applied core migration version for the current release lane.
 ///
 /// Bump this with every release that adds a core migration. It is the only
@@ -177,7 +241,7 @@ pub async fn ensure_v004_baseline_compatible(pool: &PgPool) -> Result<(), Storag
 /// behind the binary: the readiness resource does not touch release-specific
 /// columns, so a stale database that boots reports healthy and then fails at
 /// first query.
-pub const MIN_CORE_MIGRATION_VERSION: i64 = 15;
+pub const MIN_CORE_MIGRATION_VERSION: i64 = 11;
 
 /// Fail closed when `skip_migrations` boot runs against a database that has
 /// not yet applied the current schema lane.
@@ -209,7 +273,7 @@ pub async fn ensure_core_schema_current(pool: &PgPool) -> Result<(), StorageErro
         .map_err(internal)?;
         if max_version.unwrap_or(0) < MIN_CORE_MIGRATION_VERSION {
             return Err(StorageError::Internal(format!(
-                "database core migrations at version {}; version {MIN_CORE_MIGRATION_VERSION}+ required — apply the v0.0.8 edge lane (0015_v008.sql) before boot (see MIGRATING.md)",
+                "database core migrations at version {}; version {MIN_CORE_MIGRATION_VERSION}+ required — apply the v0.0.7 lane (0011_v007.sql) before boot (see MIGRATING.md)",
                 max_version.unwrap_or(0)
             )));
         }
@@ -244,9 +308,10 @@ pub async fn ensure_core_schema_current(pool: &PgPool) -> Result<(), StorageErro
                     AND t.tgname = 'code_chunk_v1_append_only'
              )
          )
-         -- v0.0.7 lane. Every search emits memories.search_tsv, every
-         -- sidecar without a stored column calls lexical_tsv(), and every
-         -- embedding write binds chunk_index — none of them have a fallback.
+         -- v0.0.7 lane (0011_v007.sql), marker by marker. Every search emits
+         -- memories.search_tsv, every sidecar without a stored column calls
+         -- lexical_tsv(), and every embedding write binds chunk_index — none
+         -- of them have a fallback.
          AND EXISTS (
              SELECT 1
                FROM information_schema.columns
@@ -266,7 +331,7 @@ pub async fn ensure_core_schema_current(pool: &PgPool) -> Result<(), StorageErro
          -- its tsquery, and every stored search_tsv was generated through it.
          -- A database without it answers no lexical query at all.
          AND to_regprocedure('proxima_core.lexical_config()') IS NOT NULL
-         -- v0.0.7 per-row language lane (0014): every memory INSERT binds
+         -- Per-row language: every memory INSERT binds
          -- memories.lexical_language, every lexical query reads
          -- lexical_languages and ranks with the row's configuration through
          -- the two-argument lexical_tsv — none of them have a fallback.
@@ -279,7 +344,7 @@ pub async fn ensure_core_schema_current(pool: &PgPool) -> Result<(), StorageErro
          )
          AND to_regprocedure('proxima_core.lexical_tsv(regconfig, text)') IS NOT NULL
          AND to_regclass('proxima_core.lexical_languages') IS NOT NULL
-         -- v0.0.8 edge lane (0015). Every index write binds the new edge
+         -- Edge reset. Every index write binds the new edge
          -- columns, every derived write binds authoring_perspective_id, and
          -- every goal write binds the topology columns — none of them have a
          -- fallback, and a pre-lane database would fail at first write rather
@@ -339,7 +404,7 @@ pub async fn ensure_core_schema_current(pool: &PgPool) -> Result<(), StorageErro
 
     if !ready {
         return Err(StorageError::Internal(
-            "database is missing schema markers for this release lane (v0.0.6: embedding_jobs.next_attempt_at, memories append-only trigger; v0.0.7: memories.search_tsv, embeddings.chunk_index, proxima_core.lexical_tsv, proxima_core.lexical_config, memories.lexical_language, proxima_core.lexical_languages; v0.0.8: edges.source_id, memories.authoring_perspective_id, goals.assignment_perspective_id, proxima_core.interpretation_v1; code flavor, when present: code_chunk_v1.search_tsv and code_chunk_v1.lexical_language via flavor migration 20260728000020); apply migrations before boot (see MIGRATING.md)".into(),
+            "database is missing schema markers for this release lane (v0.0.6: embedding_jobs.next_attempt_at, memories append-only trigger; v0.0.7 (0011_v007.sql): memories.search_tsv, embeddings.chunk_index, proxima_core.lexical_tsv, proxima_core.lexical_config, memories.lexical_language, proxima_core.lexical_languages, edges.source_id, memories.authoring_perspective_id, goals.assignment_perspective_id, proxima_core.interpretation_v1; code flavor, when present: code_chunk_v1.search_tsv and code_chunk_v1.lexical_language via flavor migration 20260801000020_v007_baseline.sql); apply migrations before boot (see MIGRATING.md)".into(),
         ));
     }
     Ok(())
@@ -761,6 +826,7 @@ impl PgStorage {
     /// recorded checksum, etc.).
     pub async fn run_migrations(&self) -> Result<(), StorageError> {
         ensure_v004_baseline_compatible(&self.pool).await?;
+        ensure_v007_lane_squash_compatible(&self.pool).await?;
         // The pool's default `statement_timeout`
         // bounds request-serving queries, but a schema migration (CREATE INDEX,
         // backfill) may legitimately run longer than that — aborting one
@@ -804,15 +870,21 @@ mod pgvector_tests {
 #[cfg(test)]
 mod tests {
     #[test]
-    fn core_migrator_contains_the_v008_edge_lane() {
+    fn core_migrator_contains_the_squashed_v007_lane() {
         let versions: Vec<i64> = super::core_migrator()
             .iter()
             .map(|migration| migration.version)
             .collect();
         assert!(
-            versions.contains(&15),
-            "core migrator must embed 0015_v008.sql"
+            versions.contains(&11),
+            "core migrator must embed 0011_v007.sql"
         );
+        for retired in super::RETIRED_V007_LANE_MIGRATION_VERSIONS {
+            assert!(
+                !versions.contains(retired),
+                "version {retired} was folded into 0011_v007.sql and must not reappear as a file"
+            );
+        }
         assert!(
             versions.iter().copied().max().unwrap_or(0) >= super::MIN_CORE_MIGRATION_VERSION,
             "the boot floor must be a version the migrator can actually reach"
