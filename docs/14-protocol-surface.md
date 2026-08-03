@@ -454,6 +454,7 @@ Current contract:
 - Flavor composition: [08](08-core-and-flavors.md).
 - Runtime configuration: [10](10-configuration.md).
 - Compliance primitives: [13](13-compliance.md).
+- REST transport projection (design intent): [17](17-rest-surface.md).
 
 ## Anchors
 
