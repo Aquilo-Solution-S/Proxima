@@ -1,4 +1,4 @@
-//! rmcp 2.x entrypoint:
+//! rmcp 3.x entrypoint:
 //! `rmcp::transport::streamable_http_server::StreamableHttpService`.
 //!
 //! The service is a Tower service composed into
