@@ -242,7 +242,7 @@ an old token gets `401`.
 
 **Why now rather than later.** The old identifier was per-surface, and this
 tag adds a second surface: `/v1`, the REST rendering of the tool manifest
-(`docs/17-rest-surface.md`). One identifier means one audience, one
+([17](docs/17-rest-surface.md)). One identifier means one audience, one
 metadata document, and one token that reaches both surfaces. Two would mean
 two audiences and therefore non-interchangeable tokens — a feature only for
 deployments that want surface-scoped credentials, and a permanent tax for
@@ -262,7 +262,7 @@ rendering of the same frozen tool manifest through the same dispatch seam and
 the same `ScopeGateBehavior`, so it grants no authority MCP does not already
 grant. Two gates turn it on, both required: build with the `rest` cargo
 feature, then set `PROXIMA_REST_ENABLED=true`. See
-`docs/17-rest-surface.md` for the routes and
+[17](docs/17-rest-surface.md) for the routes and
 [10](docs/10-configuration.md#mcp-endpoint-and-authentication) for the flag.
 
 ## Rust host changes (v0.0.8)
@@ -284,7 +284,7 @@ old behaviour. Nothing needs changing today.
 **Why.** `ErrorCode` says of itself that "additional variants land with the
 verbs that raise them", and that growth is exactly the moment a decision is
 owed: a transport has to say what a new code renders as. The REST surface
-maps every code onto an HTTP status (`docs/17-rest-surface.md` §Status
+maps every code onto an HTTP status ([17](docs/17-rest-surface.md) §Status
 mapping) and that map is required to carry no wildcard, so adding a code is
 a compile error until someone chooses its rendering. `#[non_exhaustive]`
 would have forced the wildcard that silently buckets a new code as `500`.

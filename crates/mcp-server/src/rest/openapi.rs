@@ -141,6 +141,9 @@ struct Operation<'a> {
     parameters: Vec<Value>,
     request_schema: Option<Value>,
     produces_schema_ids: &'a [&'a str],
+    /// The tool's derived reply schema. `None` for resources, which are
+    /// served straight off the dispatch seam and have no descriptor.
+    output_schema: Option<&'a Value>,
     annotations: McpToolAnnotations,
 }
 
@@ -182,7 +185,10 @@ impl Operation<'_> {
                 }),
             );
         }
-        operation.insert("responses".to_string(), responses(self.produces_schema_ids));
+        operation.insert(
+            "responses".to_string(),
+            responses(self.produces_schema_ids, self.output_schema),
+        );
         // Stated per operation rather than once at the root: this document is
         // generated per caller and routinely sliced by client generators, and
         // a root default does not survive that.
@@ -206,6 +212,7 @@ fn collect_tool_paths(tool: &McpToolDescriptor, paths: &mut BTreeMap<String, Val
         parameters: context_parameter_refs(),
         request_schema: Some(embeddable_schema(&tool.args_schema)),
         produces_schema_ids: tool.produces_schema_ids,
+        output_schema: Some(&tool.output_schema),
         annotations,
     };
     paths.insert(format!("/v1/tools/{}", tool.name), tool_path_item(&whole));
@@ -240,6 +247,7 @@ fn collect_tool_paths(tool: &McpToolDescriptor, paths: &mut BTreeMap<String, Val
                 action_meta,
             )),
             produces_schema_ids: tool.produces_schema_ids,
+            output_schema: Some(&tool.output_schema),
             annotations: action_annotations,
         };
         paths.insert(
@@ -298,6 +306,7 @@ fn collect_resource_path(resource: &CoreResourceMeta, paths: &mut BTreeMap<Strin
         // Resources are the browsable read surface; every one of them is a
         // read, which is why they exist as a separate concept from tools.
         produces_schema_ids: &[],
+        output_schema: None,
         annotations: McpToolAnnotations::new().read_only(true),
     };
     let mut item = Map::new();
@@ -411,9 +420,12 @@ fn embeddable_schema(args_schema: &Value) -> Value {
     schema
 }
 
-fn responses(produces_schema_ids: &[&str]) -> Value {
+fn responses(produces_schema_ids: &[&str], output_schema: Option<&Value>) -> Value {
     let mut responses = Map::new();
-    responses.insert("200".to_string(), success_response(produces_schema_ids));
+    responses.insert(
+        "200".to_string(),
+        success_response(produces_schema_ids, output_schema),
+    );
     for (status, _) in PROBLEM_STATUSES {
         responses.insert(
             status.to_string(),
@@ -425,25 +437,29 @@ fn responses(produces_schema_ids: &[&str]) -> Value {
 
 /// The success body of an operation.
 ///
-/// TODO(`output_schema`): `McpToolDescriptor` carries `args_schema` but no
-/// output schema — only `produces_schema_ids` — so the best available answer
-/// is an unconstrained object annotated with the schema ids the tool may
-/// produce (17 §`OpenAPI`, "Response schemas are the known gap"). A separate
-/// slice adds `McpToolDescriptor::output_schema`, derived from `T::Output`
-/// exactly as `args_schema` is derived from `T::Args`; when it lands, swap
-/// the `type: object` placeholder below for it. Nothing outside this
-/// function body needs to change.
-fn success_response(produces_schema_ids: &[&str]) -> Value {
+/// The reply a client validates, taken from the tool's own `Output` type.
+///
+/// `produces_schema_ids` names the *registry* payloads a tool writes and is
+/// kept alongside as an annotation — it answers a different question, and a
+/// tool can write payloads without echoing them. Resources have no
+/// descriptor, so they fall back to an unconstrained object.
+fn success_response(produces_schema_ids: &[&str], output_schema: Option<&Value>) -> Value {
+    let mut schema = if let Some(Value::Object(map)) = output_schema {
+        map.clone()
+    } else {
+        let mut map = Map::new();
+        map.insert("type".to_string(), json!("object"));
+        map
+    };
+    if !produces_schema_ids.is_empty() {
+        schema.insert(
+            "x-proxima-produces-schema-ids".to_string(),
+            json!(produces_schema_ids),
+        );
+    }
     json!({
         "description": "Tool or resource result.",
-        "content": {
-            "application/json": {
-                "schema": {
-                    "type": "object",
-                    "x-proxima-produces-schema-ids": produces_schema_ids,
-                },
-            },
-        },
+        "content": { "application/json": { "schema": Value::Object(schema) } },
     })
 }
 
@@ -636,6 +652,42 @@ mod tests {
             item.pointer("/post/operationId"),
             item.pointer("/query/operationId"),
             "the two operations on one path must not collide: {item:#}",
+        );
+    }
+
+    /// The 200 body is the tool's own derived reply schema, not a bare
+    /// object. `produces_schema_ids` rides alongside as an annotation because
+    /// it answers a different question — which registry payloads the tool
+    /// writes — and a tool can write payloads without echoing them.
+    #[test]
+    fn a_success_response_carries_the_derived_output_schema() {
+        let registry = frozen_registry();
+        let document = core_document(&registry);
+        let schema = path_item(
+            &document,
+            &format!("/v1/tools/{}", protocol_tool::CORE_REMEMBER),
+        )
+        .pointer("/post/responses/200/content/application~1json/schema")
+        .expect("a 200 schema");
+        assert_eq!(
+            schema.get("type").and_then(Value::as_str),
+            Some("object"),
+            "{schema:#}",
+        );
+        assert!(
+            schema.get("properties").is_some_and(Value::is_object),
+            "the reply schema must describe real fields, not an empty object: {schema:#}",
+        );
+
+        let remember = registry
+            .list_mcp_tools()
+            .iter()
+            .find(|tool| tool.name == protocol_tool::CORE_REMEMBER)
+            .expect("core_remember is registered");
+        assert_eq!(
+            schema.get("properties"),
+            remember.output_schema.get("properties"),
+            "the document must carry the manifest's schema verbatim",
         );
     }
 
