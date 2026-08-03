@@ -40,7 +40,7 @@ pub struct CodeEmitExecutionRequestArgs {
     pub acceptance_criteria: Vec<AcceptanceCriterionV1>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, JsonSchema)]
 pub struct CodeEmitExecutionRequestOutput {
     pub handle: String,
     /// How many `origin` index rows the write asserted — the activation
@@ -122,7 +122,7 @@ pub struct CodeEmitExecutionPlanArgs {
     pub items: Vec<ExecutionPlanItemArgs>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, JsonSchema)]
 pub struct ExecutionPlanItemOutput {
     pub key: String,
     pub kind: ExecutionPlanItemKind,
@@ -130,7 +130,7 @@ pub struct ExecutionPlanItemOutput {
     pub idempotent_replay: bool,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, JsonSchema)]
 pub struct CodeEmitExecutionPlanOutput {
     pub plan_handle: String,
     /// Index rows the plan write asserted: one `origin` to its Abstraction
@@ -172,7 +172,7 @@ pub struct CodeRetryExecutionRequestArgs {
     pub evidence: Vec<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, JsonSchema)]
 pub struct CodeRetryExecutionRequestOutput {
     pub handle: String,
     /// `P:` handle of the assignment Perspective that names the target

@@ -1,11 +1,12 @@
 use crate::mcp::McpToolCtx;
 use crate::mcp::core_tools::wire_ref;
+use schemars::JsonSchema;
 use serde::Serialize;
 
 /// One edge touching the memory being read: the same four fields every
 /// other edge-bearing output carries, minus `created_at`, which a
 /// neighbor listing has no use for.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, JsonSchema)]
 pub struct NeighborEdge {
     pub source: String,
     pub target: String,

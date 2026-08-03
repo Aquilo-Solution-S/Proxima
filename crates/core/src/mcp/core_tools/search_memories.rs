@@ -189,7 +189,7 @@ pub struct SearchMemoriesArgs {
     pub cursor: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, JsonSchema)]
 pub struct SearchMemoriesOutput {
     pub mode: String,
     pub degraded_to_lexical: bool,
@@ -199,7 +199,7 @@ pub struct SearchMemoriesOutput {
     pub has_more: bool,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, JsonSchema)]
 pub struct SearchMemoryOutput {
     pub memory: String,
     pub space: String,

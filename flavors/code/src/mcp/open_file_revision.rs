@@ -39,13 +39,13 @@ pub struct CodeOpenFileRevisionArgs {
     pub max_text_bytes: Option<usize>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, JsonSchema)]
 pub struct CodeOpenFileRevisionOutput {
     pub revision: Option<FileRevisionInfo>,
     pub chunks: Vec<ChunkSummary>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, JsonSchema)]
 pub struct FileRevisionInfo {
     pub handle: String,
     pub repo_handle: String,
@@ -56,7 +56,7 @@ pub struct FileRevisionInfo {
     pub state: FileState,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, JsonSchema)]
 pub struct ChunkSummary {
     pub handle: String,
     pub chunk_index: i32,

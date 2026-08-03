@@ -164,7 +164,7 @@ impl DerivedKind {
     }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, JsonSchema)]
 pub struct DeriveOutput {
     pub handle: String,
     pub idempotent_replay: bool,

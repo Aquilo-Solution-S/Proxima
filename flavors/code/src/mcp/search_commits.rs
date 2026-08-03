@@ -30,7 +30,7 @@ pub struct CodeSearchCommitsArgs {
     pub change_kind: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, JsonSchema)]
 pub struct CodeSearchCommitsOutput {
     pub commits: Vec<CommitMatch>,
     pub summaries: Vec<SummaryMatch>,
@@ -43,18 +43,21 @@ pub struct CodeSearchCommitsOutput {
     pub summaries_has_more: bool,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, JsonSchema)]
 pub struct CommitMatch {
     pub handle: String,
     pub repo_handle: String,
     pub sha: String,
     pub author_name: String,
+    // `time`'s own `Serialize` writes a timestamp string, so the schema says
+    // string; schemars has no impl of its own for `OffsetDateTime`.
+    #[schemars(with = "String")]
     pub committer_time: time::OffsetDateTime,
     pub message_snippet: String,
     pub score: f32,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, JsonSchema)]
 pub struct SummaryMatch {
     pub handle: String,
     pub repo_handle: String,

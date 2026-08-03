@@ -273,6 +273,7 @@ mod tests {
             origin: proxima_core::McpToolOrigin::Flavor("provider".into()),
             produces_schema_ids: &[],
             args_schema: serde_json::json!({ "type": "object" }),
+            output_schema: serde_json::json!({ "type": "object" }),
             action_arg_specs: &[],
             annotations: None,
             call: &call,

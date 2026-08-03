@@ -17,6 +17,11 @@ pub struct McpToolDescriptor {
     pub origin: McpToolOrigin,
     pub produces_schema_ids: &'static [&'static str],
     pub args_schema: serde_json::Value,
+    /// JSON Schema for what the tool answers with, derived from its `Output`
+    /// type. `produces_schema_ids` names the *registry* payloads a tool
+    /// writes; this describes the tool's own reply envelope, which is a
+    /// different thing and was previously undescribed.
+    pub output_schema: serde_json::Value,
     pub action_arg_specs: &'static [McpActionArgSpec],
     /// What the tool declared about its own behaviour, or `None` when it
     /// declared nothing. Substrate tools may still resolve through
@@ -65,6 +70,7 @@ impl std::fmt::Debug for McpToolDescriptor {
             .field("origin", &self.origin)
             .field("produces_schema_ids", &self.produces_schema_ids)
             .field("args_schema", &self.args_schema)
+            .field("output_schema", &self.output_schema)
             .field("action_arg_specs", &self.action_arg_specs)
             .field("annotations", &self.annotations)
             .field("call", &"<callable>")
@@ -240,7 +246,9 @@ pub trait McpTool: Send + Sync + 'static {
     const ANNOTATIONS: Option<crate::mcp::McpToolAnnotations> = None;
 
     type Args: serde::de::DeserializeOwned + schemars::JsonSchema + Send + 'static;
-    type Output: serde::Serialize + Send + 'static;
+    /// See [`crate::Tool::Output`] — the manifest derives an output schema
+    /// from this type just as it derives the argument schema from `Args`.
+    type Output: serde::Serialize + schemars::JsonSchema + Send + 'static;
 
     fn call(
         ctx: McpToolCtx,

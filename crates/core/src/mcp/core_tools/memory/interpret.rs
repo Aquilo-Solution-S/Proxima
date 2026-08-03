@@ -63,7 +63,7 @@ pub struct InterpretArgs {
     pub space: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, JsonSchema)]
 pub struct InterpretOutput {
     /// `P:<uuid>` handle of the interpretation Perspective.
     pub handle: String,

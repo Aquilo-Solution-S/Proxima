@@ -111,7 +111,7 @@ pub struct RememberCitation {
     pub mapping_payload: serde_json::Value,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, JsonSchema)]
 pub struct RememberOutput {
     pub handle: String,
     pub idempotent_replay: bool,

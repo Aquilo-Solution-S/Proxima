@@ -212,7 +212,10 @@ impl ServerHandler for DynamicHandler {
                     Cow::Owned(provider_safe_tool_name(descriptor.name)),
                     Cow::Borrowed(descriptor.description),
                     Arc::new(rmcp::model::object(schema)),
-                );
+                )
+                .with_raw_output_schema(Arc::new(rmcp::model::object(
+                    descriptor.output_schema.clone(),
+                )));
                 match descriptor.resolved_annotations() {
                     Some(annotations) => tool.annotate(to_rmcp_annotations(annotations)),
                     None => tool,
@@ -236,7 +239,10 @@ impl ServerHandler for DynamicHandler {
                     Cow::Owned(provider_safe_tool_name(descriptor.name)),
                     Cow::Borrowed(descriptor.description),
                     Arc::new(rmcp::model::object(descriptor.args_schema.clone())),
-                );
+                )
+                .with_raw_output_schema(Arc::new(rmcp::model::object(
+                    descriptor.output_schema.clone(),
+                )));
                 match descriptor.resolved_annotations() {
                     Some(annotations) => tool.annotate(to_rmcp_annotations(annotations)),
                     None => tool,
@@ -961,6 +967,7 @@ mod tests {
                 origin: McpToolOrigin::Flavor("proxima-stub".to_string()),
                 produces_schema_ids: &[],
                 args_schema: serde_json::json!({"type": "object"}),
+                output_schema: serde_json::json!({"type": "object"}),
                 action_arg_specs: &[],
                 annotations,
                 call: &|_, _| Box::pin(async { Ok(serde_json::Value::Null) }),

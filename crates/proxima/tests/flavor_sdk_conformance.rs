@@ -78,7 +78,7 @@ mod mcp_tool_authoring {
         external_id: String,
     }
 
-    #[derive(Debug, serde::Serialize)]
+    #[derive(Debug, serde::Serialize, schemars::JsonSchema)]
     struct ExampleLookupOutput {
         found: bool,
     }

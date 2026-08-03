@@ -22,7 +22,7 @@ pub struct GetMemoryArgs {
     pub space: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, JsonSchema)]
 pub struct GetMemoryOutput {
     pub handle: String,
     pub memory: String,

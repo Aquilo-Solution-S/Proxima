@@ -8,19 +8,19 @@ use crate::{AccessKind, GroupId, Owner, OwnerRef, OwnerRefKind, UserId};
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct MemorySpacesArgs {}
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, JsonSchema)]
 pub struct MemorySpacesOutput {
     pub spaces: Vec<MemorySpaceOutput>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct MemorySpaceOutput {
     pub key: String,
     pub label: String,
     pub access: MemorySpaceAccessOutput,
 }
 
-#[derive(Debug, Clone, Copy, Serialize)]
+#[derive(Debug, Clone, Copy, Serialize, JsonSchema)]
 pub struct MemorySpaceAccessOutput {
     /// Whether the caller holds write authority (Fact-write) on this space, as
     /// opposed to read-only visibility. Resolved per space from the caller's

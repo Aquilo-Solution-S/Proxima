@@ -407,6 +407,18 @@ mod tests {
 
     #[test]
     fn composed_registry_mcp_tool_schemas_are_client_safe() {
+        fn describes_an_object(schema: &serde_json::Value) -> bool {
+            if schema.get("type").and_then(serde_json::Value::as_str) == Some("object") {
+                return true;
+            }
+            for key in ["anyOf", "oneOf"] {
+                if let Some(branches) = schema.get(key).and_then(serde_json::Value::as_array) {
+                    return !branches.is_empty() && branches.iter().all(describes_an_object);
+                }
+            }
+            false
+        }
+
         fn contains_key(value: &serde_json::Value, key: &str) -> bool {
             match value {
                 serde_json::Value::Object(map) => {
@@ -466,6 +478,57 @@ mod tests {
                 tool.name,
                 tool.args_schema,
             );
+            assert!(
+                !contains_key(&tool.output_schema, "$ref")
+                    && !contains_key(&tool.output_schema, "$defs"),
+                "tool {} output schema must be $ref/$defs-free: {:#}",
+                tool.name,
+                tool.output_schema,
+            );
+            // MCP carries a typed reply in `structuredContent`, which is a
+            // JSON object. A flavor tool answering with a scalar, array, or
+            // unit would advertise a shape its own replies violate — wrap it
+            // in a struct instead. Union roots are fine if every branch is an
+            // object, which is what the untagged dispatchers answer with.
+            assert!(
+                describes_an_object(&tool.output_schema),
+                "tool {} advertises an output that is not an object: {:#}",
+                tool.name,
+                tool.output_schema,
+            );
         }
+    }
+
+    /// `proxima-code_work_item_bundle` answers with an internally tagged enum
+    /// (`#[serde(tag = "kind")]`) nested under `payload`. That is the exact
+    /// shape the *argument* normalization flattens into a dispatcher, and
+    /// doing so here would tell a client that a `work` reply may carry the
+    /// `test` variant's fields. The output pass leaves the union alone.
+    #[test]
+    fn a_tagged_output_enum_is_not_flattened_into_a_dispatcher() {
+        let mut registry = FlavorRegistry::default();
+        super::register(&mut registry).unwrap();
+        let frozen = registry.try_freeze().unwrap();
+        let bundle = frozen
+            .list_mcp_tools()
+            .iter()
+            .find(|tool| tool.name == "proxima-code_work_item_bundle")
+            .expect("work item bundle tool is registered");
+        assert!(
+            bundle
+                .output_schema
+                .pointer("/properties/payload/oneOf")
+                .is_some_and(serde_json::Value::is_array),
+            "the tagged payload union must survive into the output schema: {:#}",
+            bundle.output_schema,
+        );
+        assert!(
+            bundle
+                .output_schema
+                .pointer("/properties/payload/x-proxima-actions")
+                .is_none(),
+            "an output union must not be given dispatcher action metadata: {:#}",
+            bundle.output_schema,
+        );
     }
 }
