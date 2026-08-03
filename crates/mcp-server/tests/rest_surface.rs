@@ -29,6 +29,73 @@ fn host() -> McpToolHost {
     )
 }
 
+const FLAVOR_DISPATCH: &str = "proxima-stub_dispatch";
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+#[serde(tag = "action", rename_all = "snake_case")]
+#[expect(
+    dead_code,
+    reason = "the derived schema is the subject, not the values"
+)]
+enum StubDispatchArgs {
+    Look {
+        #[schemars(description = "Which thing to look at.")]
+        id: String,
+    },
+    Touch {
+        #[schemars(description = "Which thing to touch.")]
+        id: String,
+    },
+}
+
+/// A flavor dispatcher: an internally tagged `Args` plus the specs that
+/// enumerate its actions. Before both registration paths filled the specs,
+/// a tool shaped like this was advertised as a dispatcher and served no
+/// action route at all.
+#[derive(Debug)]
+struct StubDispatchTool;
+
+impl proxima_core::mcp::McpTool for StubDispatchTool {
+    const NAME: &'static str = FLAVOR_DISPATCH;
+    const DESCRIPTION: &'static str = "A flavor dispatcher.";
+    const ANNOTATIONS: Option<proxima_core::mcp::McpToolAnnotations> = Some(
+        proxima_core::mcp::McpToolAnnotations::new()
+            .read_only(false)
+            .open_world(false),
+    );
+    const ACTION_ARG_SPECS: &'static [proxima_core::mcp::McpActionArgSpec] = &[
+        proxima_core::mcp::McpActionArgSpec {
+            action: "look",
+            allowed_fields: &["id"],
+            required_fields: &["id"],
+        },
+        proxima_core::mcp::McpActionArgSpec {
+            action: "touch",
+            allowed_fields: &["id"],
+            required_fields: &["id"],
+        },
+    ];
+    type Args = StubDispatchArgs;
+    type Output = ();
+
+    fn call(
+        _ctx: proxima_core::mcp::McpToolCtx,
+        _args: Self::Args,
+    ) -> futures_util::future::BoxFuture<'static, Result<(), proxima_core::mcp::McpToolError>> {
+        Box::pin(async { Ok(()) })
+    }
+}
+
+/// The same registry-only host, with one flavor dispatcher added.
+fn flavor_host() -> McpToolHost {
+    let mut registry = FlavorRegistry::new();
+    registry.add_mcp_tool_or_panic_for_tests::<StubDispatchTool>("proxima-stub");
+    McpToolHost::from_parts(
+        Arc::new(registry.freeze_or_panic_for_tests()),
+        McpToolExtensions::default(),
+    )
+}
+
 /// A principal with full owner rights, so the owner-role gate never
 /// confounds a test about tool scope.
 fn auth(scope: ToolScope) -> McpAuthContext {
@@ -350,6 +417,168 @@ async fn a_conflicting_body_action_is_400_and_an_unknown_action_is_404() {
         unknown.json()["instance"],
         "/v1/tools/core_goal/no_such_action"
     );
+}
+
+// ------------------------------------------------- flavor dispatcher routes
+
+/// A flavor dispatcher's action routes are served, not 404'd.
+///
+/// The router enumerates actions from `McpToolDescriptor::action_arg_specs`.
+/// `try_add_tool` — the path `proxima_flavor!` uses — hardcoded an empty
+/// slice, so this exact request was a `404` while the same tool's flattened
+/// schema advertised the action to every client.
+#[tokio::test]
+async fn a_flavor_dispatcher_serves_its_action_routes() {
+    let router = app(flavor_host());
+    let ctx = auth(ToolScope::All);
+
+    let answer = call(
+        &router,
+        Method::POST,
+        &format!("/v1/tools/{FLAVOR_DISPATCH}/look"),
+        &ctx,
+        Some(serde_json::json!({ "id": "x" })),
+    )
+    .await;
+    assert_eq!(
+        answer.status,
+        StatusCode::OK,
+        "body: {}",
+        String::from_utf8_lossy(&answer.body)
+    );
+}
+
+#[tokio::test]
+async fn an_unknown_flavor_dispatcher_action_is_404() {
+    let router = app(flavor_host());
+    let ctx = auth(ToolScope::All);
+
+    let answer = call(
+        &router,
+        Method::POST,
+        &format!("/v1/tools/{FLAVOR_DISPATCH}/vanish"),
+        &ctx,
+        Some(serde_json::json!({})),
+    )
+    .await;
+    assert_eq!(answer.status, StatusCode::NOT_FOUND);
+    assert_eq!(
+        answer.json()["instance"],
+        format!("/v1/tools/{FLAVOR_DISPATCH}/vanish")
+    );
+}
+
+#[tokio::test]
+async fn a_conflicting_body_action_on_a_flavor_route_is_400() {
+    let router = app(flavor_host());
+    let ctx = auth(ToolScope::All);
+
+    for body_action in ["look", "touch"] {
+        let answer = call(
+            &router,
+            Method::POST,
+            &format!("/v1/tools/{FLAVOR_DISPATCH}/look"),
+            &ctx,
+            Some(serde_json::json!({ "action": body_action, "id": "x" })),
+        )
+        .await;
+        assert_eq!(answer.status, StatusCode::BAD_REQUEST, "{body_action}");
+        assert_eq!(
+            answer.json()["type"],
+            "https://proxima.dev/errors/action-conflict"
+        );
+    }
+}
+
+#[tokio::test]
+async fn the_openapi_document_advertises_a_flavor_dispatchers_actions() {
+    let router = app(flavor_host());
+    let answer = get(&router, "/v1/openapi.json", &auth(ToolScope::All)).await;
+    assert_eq!(answer.status, StatusCode::OK);
+
+    let document = answer.json();
+    let path = format!("/v1/tools/{FLAVOR_DISPATCH}/look");
+    let item = document["paths"]
+        .as_object()
+        .expect("paths object")
+        .get(&path)
+        .unwrap_or_else(|| panic!("{path} is advertised: {document:#}"));
+    let schema = item
+        .pointer("/post/requestBody/content/application~1json/schema")
+        .expect("the narrowed operation carries a request schema");
+    assert!(
+        schema.pointer("/properties/id").is_some(),
+        "the narrowed schema keeps the action's own fields: {schema:#}",
+    );
+    assert!(
+        schema.pointer("/properties/action").is_none(),
+        "`action` is carried by the route, not the body: {schema:#}",
+    );
+}
+
+/// R6 for a flavor: a palette holding one leaf advertises one leaf. Keyed on
+/// the substrate tables, the narrowing projection had nothing to narrow with
+/// and the whole flattened schema was advertised.
+#[tokio::test]
+async fn a_palette_narrows_a_flavor_dispatchers_advertised_actions() {
+    let router = app(flavor_host());
+    let ctx = auth(ToolScope::Palette(vec![format!("{FLAVOR_DISPATCH}:look")]));
+
+    let answer = get(&router, "/v1/tools", &ctx).await;
+    let dispatch = answer.json()["tools"]
+        .as_array()
+        .expect("tools")
+        .iter()
+        .find(|tool| tool["id"] == FLAVOR_DISPATCH)
+        .cloned()
+        .unwrap_or_else(|| panic!("{FLAVOR_DISPATCH} is advertised: {}", answer.json()));
+    let actions: Vec<String> = dispatch["args_schema"]["x-proxima-actions"]
+        .as_object()
+        .expect("x-proxima-actions")
+        .keys()
+        .cloned()
+        .collect();
+    assert_eq!(actions, vec!["look".to_string()]);
+}
+
+/// And the gate refuses the leaf the palette does not carry — `403` from
+/// `ScopeGateBehavior` below the seam, naming the leaf rather than the tool.
+#[tokio::test]
+async fn a_denied_flavor_dispatcher_action_is_403() {
+    let router = app(flavor_host());
+    let ctx = auth(ToolScope::Palette(vec![format!("{FLAVOR_DISPATCH}:look")]));
+
+    let answer = call(
+        &router,
+        Method::POST,
+        &format!("/v1/tools/{FLAVOR_DISPATCH}/touch"),
+        &ctx,
+        Some(serde_json::json!({ "id": "x" })),
+    )
+    .await;
+    assert_eq!(answer.status, StatusCode::FORBIDDEN);
+    assert_eq!(
+        answer.header(header::CONTENT_TYPE),
+        Some("application/problem+json")
+    );
+    let detail = answer.json()["detail"]
+        .as_str()
+        .expect("detail")
+        .to_string();
+    assert!(
+        detail.contains(&format!("{FLAVOR_DISPATCH}:touch")),
+        "the denial names the leaf: {detail}",
+    );
+
+    let granted = call(
+        &router,
+        Method::POST,
+        &format!("/v1/tools/{FLAVOR_DISPATCH}/look"),
+        &ctx,
+        Some(serde_json::json!({ "id": "x" })),
+    )
+    .await;
+    assert_eq!(granted.status, StatusCode::OK);
 }
 
 // ---------------------------------------------------------- method gating
