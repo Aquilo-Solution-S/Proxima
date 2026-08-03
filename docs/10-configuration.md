@@ -68,7 +68,7 @@ Proxima::<App>::app()
 | `PROXIMA_EMBED_MAX_INPUT_CHARS` | Longest input, in characters, the client will send. Unset (default) sends every input and lets the provider judge it. Set this when the provider does not reject over-long input cleanly — see below. Minimum 4095. |
 | `MISTRAL_API_KEY` | Alias for `PROXIMA_EMBED_API_KEY`. |
 | `MISTRAL_API_BASE` | Alias for `PROXIMA_EMBED_BASE_URL`; defaults to `https://api.mistral.ai/v1` when only a key is set. |
-| `PROXIMA_REST_ENABLED` | Serve the `/v1` REST rendering of the tool manifest beside `/mcp` (see `17-rest-surface.md`). Default `false`; requires the `rest` cargo feature at build time. |
+| `PROXIMA_REST_ENABLED` | Serve the `/v1` REST rendering of the tool manifest beside `/mcp` (see [17](17-rest-surface.md)). Default `false`; requires the `rest` cargo feature at build time. |
 | `PROXIMA_TOOL_PROFILE` | `proxima-mcp` deployment tool profile: `memory` (default, fail-closed) or `full` (opt-in). |
 | `PROXIMA_TOOL_ALLOW` | Optional comma-separated canonical scope keys unioned into the resolved profile. |
 | `PROXIMA_TOOL_DENY` | Optional comma-separated canonical scope keys subtracted from the resolved profile. |
@@ -109,7 +109,7 @@ closed. Secrets are never streamed to clients.
 ### REST Surface
 
 `/v1` is the same tool manifest rendered as REST
-(`17-rest-surface.md`). Two gates, both required, and they are
+([17](17-rest-surface.md)). Two gates, both required, and they are
 different kinds of decision: the `rest` cargo feature compiles the
 module (a build decision), `PROXIMA_REST_ENABLED=true` serves it (a
 deployment one). Default off at both.
