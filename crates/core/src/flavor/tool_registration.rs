@@ -30,6 +30,18 @@ fn warn_undescribed_properties(tool_name: &str, args_schema: &serde_json::Value)
 }
 
 impl FlavorRegistry {
+    /// Register a flavor-shipped [`Tool`] under `expected_prefix`.
+    ///
+    /// Identical in every respect to [`Self::try_add_mcp_tool`], because it
+    /// *is* that function: the blanket `impl<T: Tool> McpTool for T` adapts
+    /// the context and forwards `ANNOTATIONS` and `ACTION_ARG_SPECS`, so a
+    /// flavor dispatcher is registered, validated, and gated exactly as a
+    /// substrate one. Keeping a second body here is what let the two drift —
+    /// a flavor tool with an internally tagged `Args` used to be stored with
+    /// empty `action_arg_specs` and validated as if it were flat, so nothing
+    /// enumerated its actions and every field of every variant was accepted
+    /// on every call.
+    ///
     /// # Errors
     ///
     /// Returns `InvalidToolName` when the tool name does not match the expected
@@ -38,41 +50,7 @@ impl FlavorRegistry {
         &mut self,
         expected_prefix: &str,
     ) -> Result<(), FlavorRegistryError> {
-        let slash = format!("{expected_prefix}/");
-        let under = format!("{expected_prefix}_");
-        validate_tool_name(T::NAME, expected_prefix, &slash, &under)?;
-        let args_schema = mcp_tool_schema::<T::Args>();
-        let output_schema = mcp_output_schema::<T::Output>();
-        warn_undescribed_properties(T::NAME, &args_schema);
-        let properties = flat_tool_property_names(&args_schema);
-        // Tool registrations live for the process lifetime; leaking the
-        // closure preserves the descriptor's copyable call-handle semantics.
-        let call: McpCallFn = Box::leak(Box::new(move |ctx, mut args| -> BoxFuture<'static, _> {
-            let properties = properties.clone();
-            Box::pin(async move {
-                prepare_flat_tool_args(T::NAME, &properties, &mut args)?;
-                let typed: T::Args = serde_json::from_value(args)
-                    .map_err(|e| McpToolError::InvalidInput(e.to_string()))?;
-                let output = <T as McpTool>::call(ctx, typed).await?;
-                serde_json::to_value(output).map_err(|e| McpToolError::InvalidInput(e.to_string()))
-            })
-        }));
-        self.mcp_tools.push(McpToolDescriptor {
-            name: T::NAME,
-            description: T::DESCRIPTION,
-            origin: if expected_prefix == "core" {
-                McpToolOrigin::Substrate
-            } else {
-                McpToolOrigin::Flavor(expected_prefix.to_string())
-            },
-            produces_schema_ids: T::PRODUCES_SCHEMA_IDS,
-            args_schema,
-            output_schema,
-            action_arg_specs: &[],
-            annotations: <T as Tool>::ANNOTATIONS,
-            call,
-        });
-        Ok(())
+        self.try_add_mcp_tool::<T>(expected_prefix)
     }
 
     #[doc(hidden)]

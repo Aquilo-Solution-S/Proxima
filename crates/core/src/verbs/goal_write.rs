@@ -414,13 +414,20 @@ impl GoalWakeToolId {
                 "tool id must be provider-safe canonical id",
             ));
         }
-        let registered = registry.mcp_tool_ids();
+        // Both halves resolve through the descriptor's own `action_arg_specs`
+        // rather than the substrate `CoreActionMeta` tables, so a flavor
+        // dispatcher's leaf is nameable in a wake config — and the old
+        // `HashSet<String>` of every registered id, built per call, is gone.
         if let Some((tool, action)) = value.split_once(':') {
             if value.matches(':').count() == 1
                 && crate::provider_safe_tool_name(tool) == tool
                 && crate::provider_safe_tool_name(action) == action
-                && registered.contains(tool)
-                && crate::core_action_meta(tool, action).is_some()
+                && registry.mcp_tool(tool).is_some_and(|descriptor| {
+                    descriptor
+                        .action_arg_specs
+                        .iter()
+                        .any(|spec| spec.action == action)
+                })
             {
                 return Ok(Self(value));
             }
@@ -435,8 +442,8 @@ impl GoalWakeToolId {
                 "tool id must be provider-safe canonical id",
             ));
         }
-        if registered.contains(&value) {
-            if crate::core_tool_has_actions(&value) {
+        if let Some(descriptor) = registry.mcp_tool(&value) {
+            if !descriptor.action_arg_specs.is_empty() {
                 return Err(ProtocolError::invalid_argument(
                     "tool_id",
                     "leaf action scope required for grouped tools",

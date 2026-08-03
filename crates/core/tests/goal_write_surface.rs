@@ -1,3 +1,4 @@
+use proxima_core::mcp::{McpActionArgSpec, McpTool, McpToolAnnotations, McpToolCtx, McpToolError};
 use proxima_core::protocol::{action as protocol_action, tool as protocol_tool};
 use proxima_core::verbs::goal_write::{
     GoalAssignmentTarget, GoalAuthorship, GoalCreateRequest, GoalPayloadWrite, GoalWakeConfigWrite,
@@ -235,6 +236,67 @@ fn goal_wake_tool_id_requires_leaf_scope_for_grouped_core_tools() {
     let flat = GoalWakeToolId::parse(protocol_tool::CORE_SEARCH_MEMORIES, &registry)
         .expect("flat registered non-action tool is valid");
     assert_eq!(flat.as_str(), protocol_tool::CORE_SEARCH_MEMORIES);
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+#[serde(tag = "action", rename_all = "snake_case")]
+#[expect(
+    dead_code,
+    reason = "the derived schema is the subject, not the values"
+)]
+enum StubDispatchArgs {
+    Look {
+        #[schemars(description = "Which thing to look at.")]
+        id: String,
+    },
+}
+
+#[derive(Debug)]
+struct StubDispatchTool;
+
+impl McpTool for StubDispatchTool {
+    const NAME: &'static str = "proxima-stub_dispatch";
+    const DESCRIPTION: &'static str = "A flavor dispatcher.";
+    const ANNOTATIONS: Option<McpToolAnnotations> =
+        Some(McpToolAnnotations::new().read_only(true).open_world(false));
+    const ACTION_ARG_SPECS: &'static [McpActionArgSpec] = &[McpActionArgSpec {
+        action: "look",
+        allowed_fields: &["id"],
+        required_fields: &["id"],
+    }];
+    type Args = StubDispatchArgs;
+    type Output = ();
+
+    fn call(
+        _ctx: McpToolCtx,
+        _args: Self::Args,
+    ) -> futures::future::BoxFuture<'static, Result<(), McpToolError>> {
+        Box::pin(async { Ok(()) })
+    }
+}
+
+/// A wake config may name a FLAVOR dispatcher's leaf. Both halves of this
+/// parse used to read the substrate `CoreActionMeta` tables, so a flavor
+/// dispatcher was a bare id that parsed — granting the whole tool to a wake
+/// — and its leaves did not exist.
+#[test]
+fn goal_wake_tool_id_accepts_a_flavor_dispatcher_leaf() {
+    let mut registry = FlavorRegistry::new();
+    registry.add_mcp_tool_or_panic_for_tests::<StubDispatchTool>("proxima-stub");
+    let registry = registry.freeze_or_panic_for_tests();
+
+    let err = GoalWakeToolId::parse(StubDispatchTool::NAME, &registry)
+        .expect_err("a dispatcher's bare name is not a wake target");
+    assert!(err.message.contains("leaf action scope required"));
+
+    let leaf = GoalWakeToolId::parse(format!("{}:look", StubDispatchTool::NAME), &registry)
+        .expect("a declared flavor action leaf is valid");
+    assert_eq!(leaf.as_str(), "proxima-stub_dispatch:look");
+
+    assert!(
+        GoalWakeToolId::parse(format!("{}:vanish", StubDispatchTool::NAME), &registry).is_err(),
+        "an action the tool does not declare is not a wake target",
+    );
 }
 
 #[test]

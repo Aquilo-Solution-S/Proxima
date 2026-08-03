@@ -48,6 +48,7 @@ impl FlavorRegistry {
             }
         }
         self.validate_tools_declare_behavior()?;
+        self.validate_dispatcher_action_specs()?;
         let mut seen_dependency_rules: std::collections::HashSet<&str> =
             std::collections::HashSet::new();
         for (schema_id, _) in &self.dependency_satisfaction_rules {
@@ -104,6 +105,115 @@ impl FlavorRegistry {
             if tool.annotations.is_none() && crate::mcp::core_tool_annotations(tool.name).is_none()
             {
                 return Err(FlavorRegistryError::UndeclaredToolBehavior { name: tool.name });
+            }
+        }
+        Ok(())
+    }
+
+    /// Cross-check: a dispatcher's declared actions and its derived schema
+    /// describe the same dispatcher.
+    ///
+    /// A dispatcher used to be described in three places that nothing tied
+    /// together: `ACTION_ARG_SPECS` (what the argument validator and the REST
+    /// router read), the schemars-derived `x-proxima-actions` extension (what
+    /// MCP clients read), and the substrate-only `CoreActionMeta` tables (what
+    /// the scope gate read). Substrate tools kept all three in step by hand;
+    /// a flavor tool could not write the third at all. `McpToolDescriptor::
+    /// action_arg_specs` is now the one enumeration, and this is what makes
+    /// declaring it non-optional for anything that *looks* like a dispatcher
+    /// to a client.
+    ///
+    /// The discriminator must literally be `action`. That is not cosmetic:
+    /// `ToolScope` keys are spelled `"{tool}:{action}"`, `validate_action_args`
+    /// and `ScopeGateBehavior::enforce_scope` both read `args["action"]`, and
+    /// the REST narrowed route injects `"action"` into the body before
+    /// dispatch. A dispatcher tagged on anything else would be enumerated
+    /// correctly and then gated, validated, and routed as if it had no
+    /// actions at all.
+    fn validate_dispatcher_action_specs(&self) -> Result<(), FlavorRegistryError> {
+        for tool in &self.mcp_tools {
+            let extension = tool
+                .args_schema
+                .get("x-proxima-actions")
+                .and_then(serde_json::Value::as_object);
+            let Some(extension) = extension else {
+                if tool.action_arg_specs.is_empty() {
+                    continue;
+                }
+                return Err(FlavorRegistryError::InvalidActionSpecs {
+                    name: tool.name,
+                    message: "declares ACTION_ARG_SPECS but its `Args` is not an internally \
+                              tagged enum, so there is no action schema to validate against"
+                        .to_string(),
+                });
+            };
+            if tool.action_arg_specs.is_empty() {
+                return Err(FlavorRegistryError::DispatcherWithoutActionSpecs { name: tool.name });
+            }
+            // The flattener writes `required = [discriminator]`, so the tag
+            // name is readable straight off the normalized schema.
+            let discriminator = tool
+                .args_schema
+                .get("required")
+                .and_then(serde_json::Value::as_array)
+                .and_then(|required| required.first())
+                .and_then(serde_json::Value::as_str);
+            if discriminator != Some("action") {
+                return Err(FlavorRegistryError::InvalidActionSpecs {
+                    name: tool.name,
+                    message: format!(
+                        "dispatcher discriminator is {discriminator:?}; a dispatcher must tag on \
+                         `action` (#[serde(tag = \"action\")]) because scope keys, the scope \
+                         gate, and the REST action routes all read that field"
+                    ),
+                });
+            }
+            let declared = tool
+                .action_arg_specs
+                .iter()
+                .map(|spec| spec.action)
+                .collect::<BTreeSet<_>>();
+            let derived = extension
+                .keys()
+                .map(String::as_str)
+                .collect::<BTreeSet<_>>();
+            if declared != derived {
+                return Err(FlavorRegistryError::InvalidActionSpecs {
+                    name: tool.name,
+                    message: format!(
+                        "ACTION_ARG_SPECS names {declared:?} but the derived schema names \
+                         {derived:?}"
+                    ),
+                });
+            }
+            for spec in tool.action_arg_specs {
+                let meta = &extension[spec.action];
+                for (key, fields) in [
+                    ("allowed_fields", spec.allowed_fields),
+                    ("required_fields", spec.required_fields),
+                ] {
+                    let declared_fields = fields.iter().copied().collect::<BTreeSet<_>>();
+                    let derived_fields = meta
+                        .get(key)
+                        .and_then(serde_json::Value::as_array)
+                        .map(|items| {
+                            items
+                                .iter()
+                                .filter_map(serde_json::Value::as_str)
+                                .collect::<BTreeSet<_>>()
+                        })
+                        .unwrap_or_default();
+                    if declared_fields != derived_fields {
+                        return Err(FlavorRegistryError::InvalidActionSpecs {
+                            name: tool.name,
+                            message: format!(
+                                "action `{}` declares {key} {declared_fields:?} but the derived \
+                                 schema says {derived_fields:?}",
+                                spec.action
+                            ),
+                        });
+                    }
+                }
             }
         }
         Ok(())

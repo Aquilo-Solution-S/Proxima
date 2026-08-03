@@ -47,6 +47,21 @@ pub enum FlavorRegistryError {
     UndeclaredToolBehavior {
         name: &'static str,
     },
+    /// A tool whose `Args` is an internally tagged enum — so its schema
+    /// carries `x-proxima-actions` and MCP clients see a dispatcher —
+    /// declared no `ACTION_ARG_SPECS`. Nothing then enumerates its
+    /// actions: the scope gate falls back to whole-tool grants, the
+    /// catalog lists none, REST serves no action route, and arguments are
+    /// validated against every variant's fields merged together.
+    DispatcherWithoutActionSpecs {
+        name: &'static str,
+    },
+    /// A tool's `ACTION_ARG_SPECS` and its schemars-derived
+    /// `x-proxima-actions` do not describe the same dispatcher.
+    InvalidActionSpecs {
+        name: &'static str,
+        message: String,
+    },
 }
 
 impl std::fmt::Display for FlavorRegistryError {
@@ -112,6 +127,19 @@ impl std::fmt::Display for FlavorRegistryError {
                 "tool {name} declares no ANNOTATIONS, so the owner-role gate cannot tell a read \
                  from a write and will demand write access; set `const ANNOTATIONS` on the tool"
             ),
+            Self::DispatcherWithoutActionSpecs { name } => write!(
+                f,
+                "tool {name} has an internally tagged `Args` (its schema carries \
+                 x-proxima-actions) but declares no ACTION_ARG_SPECS, so nothing enumerates its \
+                 actions: set `const ACTION_ARG_SPECS` on the tool, or give it a plain struct \
+                 `Args`"
+            ),
+            Self::InvalidActionSpecs { name, message } => {
+                write!(
+                    f,
+                    "tool {name} has inconsistent ACTION_ARG_SPECS: {message}"
+                )
+            }
         }
     }
 }

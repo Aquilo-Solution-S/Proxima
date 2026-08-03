@@ -4,8 +4,8 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::mcp::{
-    McpActionArgSpec, McpToolAnnotations, McpToolCtx, McpToolDescriptor, McpToolError,
-    McpToolOrigin, all_core_actions,
+    McpToolAnnotations, McpToolCtx, McpToolDescriptor, McpToolError, McpToolOrigin,
+    core_action_meta,
 };
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]
@@ -66,51 +66,63 @@ pub async fn list_substrate_tools(
     Ok(ListSubstrateToolsOutput { tools })
 }
 
+/// The catalog's per-action rows for one tool.
+///
+/// Driven by the descriptor's `action_arg_specs`, which is THE enumeration
+/// of a dispatcher's actions. `core_action_meta` is decoration a substrate
+/// action gets and a flavor action does not — scope key, prose, produced
+/// schema ids, per-action annotations — so it is looked up per already-known
+/// action rather than iterated. Driving the loop from `all_core_actions()`
+/// meant a flavor dispatcher listed no actions at all in `proxima://tools`:
+/// present in the catalog, described as if it were flat.
+///
+/// A flavor action's `description` is empty and its annotations come from
+/// the tool, both known gaps with a stated fix direction in docs/12.
 pub(super) fn substrate_tool_actions(
     ctx: &McpToolCtx,
     desc: &McpToolDescriptor,
 ) -> Vec<SubstrateToolActionItem> {
-    all_core_actions()
-        .filter(|meta| meta.tool == desc.name)
-        .filter(|meta| action_visible(ctx, meta.tool, meta.action))
-        .map(|meta| {
-            let spec = action_spec(desc.action_arg_specs, meta.action);
+    desc.action_arg_specs
+        .iter()
+        .filter(|spec| action_visible(ctx, desc.name, spec.action))
+        .map(|spec| {
+            let meta = core_action_meta(desc.name, spec.action);
             SubstrateToolActionItem {
-                action: meta.action.to_string(),
-                scope_key: meta.scope_key.to_string(),
-                description: meta.description.to_string(),
+                action: spec.action.to_string(),
+                scope_key: meta.map_or_else(
+                    || format!("{}:{}", desc.name, spec.action),
+                    |meta| meta.scope_key.to_string(),
+                ),
+                description: meta
+                    .map(|meta| meta.description)
+                    .unwrap_or_default()
+                    .to_string(),
                 produces_schema_ids: meta
-                    .produces_schema_ids
+                    .map(|meta| meta.produces_schema_ids)
+                    .unwrap_or_default()
                     .iter()
                     .map(|id| (*id).to_string())
                     .collect(),
-                annotations: meta.annotations,
+                // The same fallback REST and the OpenAPI generator apply: a
+                // flavor dispatcher has no per-action override, so the tool's
+                // own annotations decide.
+                annotations: meta.map_or_else(
+                    || desc.resolved_annotations().unwrap_or_default(),
+                    |meta| meta.annotations,
+                ),
                 allowed_fields: spec
-                    .map(|spec| {
-                        spec.allowed_fields
-                            .iter()
-                            .map(|field| (*field).to_string())
-                            .collect()
-                    })
-                    .unwrap_or_default(),
+                    .allowed_fields
+                    .iter()
+                    .map(|field| (*field).to_string())
+                    .collect(),
                 required_fields: spec
-                    .map(|spec| {
-                        spec.required_fields
-                            .iter()
-                            .map(|field| (*field).to_string())
-                            .collect()
-                    })
-                    .unwrap_or_default(),
+                    .required_fields
+                    .iter()
+                    .map(|field| (*field).to_string())
+                    .collect(),
             }
         })
         .collect()
-}
-
-fn action_spec(
-    specs: &'static [McpActionArgSpec],
-    action: &str,
-) -> Option<&'static McpActionArgSpec> {
-    specs.iter().find(|spec| spec.action == action)
 }
 
 fn action_visible(ctx: &McpToolCtx, tool: &str, action: &str) -> bool {

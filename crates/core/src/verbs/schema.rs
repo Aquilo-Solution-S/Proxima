@@ -392,6 +392,18 @@ impl FlavorRegistryFrozen {
         &self.mcp_tools
     }
 
+    /// The descriptor registered under `name`, if any.
+    ///
+    /// Several call sites open-coded this scan — both `ScopeGateBehavior`
+    /// halves and wake-tool validation among them, the last of which
+    /// allocated a `HashSet<String>` of every registered tool id per call.
+    /// Exact-name only: the REST router keeps its own lookup because it also
+    /// accepts a request's provider-safe alias for a canonical name.
+    #[must_use]
+    pub fn mcp_tool(&self, name: &str) -> Option<&McpToolDescriptor> {
+        self.mcp_tools.iter().find(|tool| tool.name == name)
+    }
+
     #[must_use]
     pub fn request_behaviors(&self) -> &[Arc<dyn RequestBehavior>] {
         &self.request_behaviors

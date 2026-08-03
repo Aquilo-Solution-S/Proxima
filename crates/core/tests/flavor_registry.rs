@@ -223,6 +223,13 @@ fn core_goal_action_metadata_preserves_required_fields() {
 /// drift: add a field to a dispatcher variant struct and forget its
 /// `allowed_fields` entry, and `validate_action_args` starts rejecting valid
 /// calls; drop one and it starts accepting fields serde cannot deserialize.
+///
+/// The same invariant is now also a boot guard —
+/// `FlavorRegistry::try_freeze` refuses a registry whose specs and derived
+/// schema disagree, for every registered tool including a flavor's. This
+/// stays as the backstop that says which field of which action drifted:
+/// freeze answers "this registry does not seal", and a per-action message
+/// is what makes the fix a one-line edit rather than a bisect.
 #[test]
 fn action_arg_specs_match_schema_derived_action_fields() {
     use std::collections::BTreeSet;
@@ -288,11 +295,73 @@ fn action_arg_specs_match_schema_derived_action_fields() {
         }
     }
 
-    for expected in ["core_goal", "core_fact", "core_membership", "core_publish"] {
+    for expected in [
+        "core_goal",
+        "core_fact",
+        "core_membership",
+        "core_publish",
+        "core_upload",
+    ] {
         assert!(
             dispatchers_seen.contains(expected),
             "expected dispatcher {expected} to carry ACTION_ARG_SPECS; saw {dispatchers_seen:?}",
         );
+    }
+}
+
+/// `CoreActionMeta` is decoration, not enumeration.
+///
+/// A substrate action is described in two places on purpose: the
+/// descriptor's `ACTION_ARG_SPECS` say which actions exist and what fields
+/// each takes, and the `CoreActionMeta` table adds what only a substrate
+/// action gets — a scope key, prose, produced schema ids, per-action
+/// annotations. The split is fine; the two silently disagreeing is not. A
+/// meta entry for an action no spec declares describes a call nobody can
+/// make; a declared action with no meta entry is a substrate action that
+/// lists no description in `proxima://tools` and answers the owner-role gate
+/// at tool level.
+///
+/// A test rather than a freeze guard: `all_core_actions()` is a curated
+/// substrate allow-list (`memory_keep_set` in `proxima-mcp` reads it as
+/// exactly that), and boot has no business refusing to start over a missing
+/// sentence.
+#[test]
+fn core_action_meta_decorates_only_declared_actions() {
+    use proxima_core::mcp::{McpToolOrigin, all_core_actions};
+    use std::collections::BTreeSet;
+
+    let frozen = FlavorRegistry::default().freeze_or_panic_for_tests();
+
+    for meta in all_core_actions() {
+        let declared: BTreeSet<&str> = frozen
+            .mcp_tool(meta.tool)
+            .unwrap_or_else(|| panic!("CoreActionMeta names unregistered tool {}", meta.tool))
+            .action_arg_specs
+            .iter()
+            .map(|spec| spec.action)
+            .collect();
+        assert!(
+            declared.contains(meta.action),
+            "CoreActionMeta describes {}:{}, which its ACTION_ARG_SPECS do not declare; \
+             the enumeration is the specs, so this action does not exist (declared: {declared:?})",
+            meta.tool,
+            meta.action,
+        );
+    }
+
+    for tool in frozen.list_mcp_tools() {
+        if tool.origin != McpToolOrigin::Substrate {
+            continue;
+        }
+        for spec in tool.action_arg_specs {
+            assert!(
+                proxima_core::mcp::core_action_meta(tool.name, spec.action).is_some(),
+                "substrate action {}:{} declares itself but has no CoreActionMeta, so it has no \
+                 scope key, no description, and resolves read/write at tool level",
+                tool.name,
+                spec.action,
+            );
+        }
     }
 }
 
