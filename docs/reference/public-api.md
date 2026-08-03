@@ -191,6 +191,28 @@ Contract:
 | compliance erase | not dependent on sweep; erase deletes embedding infra synchronously at transaction commit |
 | graph authority | embeddings remain engine infrastructure; similarity never authors a connection |
 
+## Cited-Blob Reconcile Host API
+
+Public facade status:
+
+| Type / verb | Import | Status |
+|---|---|---|
+| `CitedBlobReconcileOutcome` | `proxima::CitedBlobReconcileOutcome` | Host API DTO |
+| `CitedBlobMissingObject` | `proxima::CitedBlobMissingObject` | Host API DTO |
+| `MAX_RECONCILE_SAMPLE` | `proxima::MAX_RECONCILE_SAMPLE` | Host API constant |
+| `CitedBlobStore::reconcile_cited_blobs()` | `proxima::CitedBlobStore` (via `AppContext`/`BuiltProxima`/`RunningProxima`/`EmbeddedProxima`'s `.blobs` field) | Host API verb |
+
+`reconcile_cited_blobs` lists the configured bucket, streams the
+`cited_uploaded_blob_v1` rows, and diffs them: rows with no object are
+`missing_objects` (a citation that cannot be resolved — `is_intact()` is
+false whenever this is non-zero), objects with no row are `orphan_objects`
+(cost and retention, not correctness), and rows naming another bucket or a
+key outside the canonical prefix are `foreign_locators`. Each count carries
+a bounded sample (`missing_sample`/`orphan_sample`/`foreign_sample`, capped
+at `MAX_RECONCILE_SAMPLE`) for an operator to recognise the cause without
+being handed an unbounded work queue. It reports; it does not repair or
+delete.
+
 ## Consumer Projector Guidance
 
 Rules for a downstream projector (a host process that writes derived
