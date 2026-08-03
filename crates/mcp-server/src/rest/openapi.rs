@@ -217,15 +217,33 @@ fn collect_tool_paths(tool: &McpToolDescriptor, paths: &mut BTreeMap<String, Val
     };
     paths.insert(format!("/v1/tools/{}", tool.name), tool_path_item(&whole));
 
-    let Some(actions) = tool
+    // Action routes come from `action_arg_specs`, which is what the router
+    // enumerates — not from the `x-proxima-actions` extension. The two are
+    // not interchangeable: the schema pass stamps the extension onto *any*
+    // internally tagged `Args`, while only `try_add_mcp_tool` fills the
+    // specs. A flavor tool registered through `try_add_tool` with a tagged
+    // `Args` therefore carries the extension and no specs, and a document
+    // built off the extension would advertise action routes that 404.
+    let extension = tool
         .args_schema
         .get("x-proxima-actions")
-        .and_then(Value::as_object)
-    else {
-        return;
-    };
+        .and_then(Value::as_object);
     let discriminator = discriminator_key(&tool.args_schema).unwrap_or("action");
-    for (action, action_meta) in actions {
+    for spec in tool.action_arg_specs {
+        let action = spec.action;
+        // The extension carries the same field sets plus per-field prose, so
+        // prefer it; a tool that declared specs without it still narrows.
+        let synthesized;
+        let action_meta = if let Some(meta) = extension.and_then(|map| map.get(action)) {
+            meta
+        } else {
+            synthesized = json!({
+                "allowed_fields": spec.allowed_fields,
+                "required_fields": spec.required_fields,
+                "field_descriptions": {},
+            });
+            &synthesized
+        };
         // Per-action, not tool-level. `ScopeGateBehavior::enforce_owner_role`
         // already resolves read-only this way — per-action first, descriptor
         // second — so anything coarser here would advertise a method the gate
@@ -551,7 +569,7 @@ mod tests {
     use proxima_core::protocol::tool as protocol_tool;
     use proxima_core::{FlavorRegistry, FlavorRegistryFrozen};
 
-    use super::{CoreResourceMeta, McpToolDescriptor, Value, document};
+    use super::{CoreResourceMeta, McpToolDescriptor, Value, document, json};
 
     fn frozen_registry() -> FlavorRegistryFrozen {
         FlavorRegistry::default()
@@ -652,6 +670,59 @@ mod tests {
             item.pointer("/post/operationId"),
             item.pointer("/query/operationId"),
             "the two operations on one path must not collide: {item:#}",
+        );
+    }
+
+    /// The router enumerates dispatcher actions from
+    /// `McpToolDescriptor::action_arg_specs`, so the document must too. The
+    /// two sources are not interchangeable: `x-proxima-actions` is stamped
+    /// into `args_schema` by the schema pass for *any* internally tagged
+    /// `Args`, while `action_arg_specs` is populated only by
+    /// `try_add_mcp_tool`. A flavor tool registered through `try_add_tool`
+    /// with a tagged `Args` therefore carries the extension and no specs —
+    /// and a document built off the extension would advertise action routes
+    /// that 404.
+    #[test]
+    fn action_routes_follow_the_specs_the_router_reads() {
+        let descriptor = McpToolDescriptor {
+            name: "proxima-stub_dispatch",
+            description: "stub",
+            origin: proxima_core::mcp::McpToolOrigin::Flavor("proxima-stub".to_string()),
+            produces_schema_ids: &[],
+            args_schema: json!({
+                "type": "object",
+                "properties": {
+                    "action": { "type": "string", "enum": ["look"] },
+                    "id": { "type": "string" },
+                },
+                "required": ["action"],
+                "x-proxima-actions": {
+                    "look": {
+                        "allowed_fields": ["id"],
+                        "required_fields": ["id"],
+                        "field_descriptions": {},
+                    },
+                },
+            }),
+            output_schema: json!({ "type": "object" }),
+            // What `try_add_tool` stores for every flavor tool.
+            action_arg_specs: &[],
+            annotations: None,
+            call: &|_, _| Box::pin(async { Ok(Value::Null) }),
+        };
+        let document = document(&[&descriptor], &[], None);
+        let paths = document
+            .get("paths")
+            .and_then(Value::as_object)
+            .expect("paths object");
+        assert!(
+            paths.contains_key("/v1/tools/proxima-stub_dispatch"),
+            "the whole-tool route is still advertised: {paths:#?}",
+        );
+        assert!(
+            !paths.contains_key("/v1/tools/proxima-stub_dispatch/look"),
+            "no action route may be advertised when the router would not \
+             serve one: {paths:#?}",
         );
     }
 
