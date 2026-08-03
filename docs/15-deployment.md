@@ -62,10 +62,13 @@ attempts DDL.
 Migrations run automatically on first boot when that variable is unset. Check
 the release's schema lane in `MIGRATING.md` before relying on that: a lane
 that rewrites tables holds `ACCESS EXCLUSIVE` for the duration and is not
-online-safe. The v0.0.7 lane (`0011_v007.sql`) is one of those — measured
-54.7s on a 149k-row corpus. Boot migrations set `lock_timeout = 5s`, so a
-migration that cannot take the lock fails and retries on the next pod rather
-than queueing behind readers.
+online-safe. The v0.0.7 lane is one of those, and it is a single core file —
+`0011_v007.sql`, which sqlx runs in one transaction, so its lock window is the
+whole lane's rather than one step's. Measured 54.7s on a 149k-row corpus,
+taken on the pre-squash form of that file: the right order of magnitude for
+the table rewrites, not a measurement of the file end to end. Boot migrations
+set `lock_timeout = 5s`, so a migration that cannot take the lock fails and
+retries on the next pod rather than queueing behind readers.
 
 ## Environment contract
 

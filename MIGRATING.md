@@ -13,44 +13,83 @@ not a reference. Deployment and env vars live in
 
 | You are | Read |
 |---|---|
-| An **operator** promoting a deployment | [the v0.0.8 edge reset](#the-v008-edge-reset), then [the v0.0.7 schema lane](#the-v007-schema-lane) and [scheduled maintenance](#scheduled-maintenance-changes) |
+| An **operator** promoting a deployment | [the v0.0.7 schema lane](#the-v007-schema-lane), then [operator changes](#operator-changes) |
 | Running the **code flavor** | the above, then [re-register and re-index](#re-register-and-re-index-every-code-repository) |
-| An **MCP client / agent** author | [v0.0.8 wire changes](#wire-changes-mcp-clients-v008), then [v0.0.7 wire changes](#wire-changes-mcp-clients) |
-| An **embedding host** driving `Engine` in Rust | [v0.0.8 Rust host changes](#rust-host-changes-v008), then [v0.0.7](#rust-host-changes) |
-| A **flavor** author | [v0.0.8 flavor SDK changes](#flavor-sdk-changes-v008), then [v0.0.7](#flavor-sdk-changes) |
+| An **MCP client / agent** author | [wire changes](#wire-changes-mcp-clients) |
+| An **embedding host** driving `Engine` in Rust | [Rust host changes](#rust-host-changes) |
+| A **flavor** author | [flavor SDK changes](#flavor-sdk-changes) |
 | Booting against a **pre-v0.0.4 database** | [the v0.0.4 reset](#the-v004-reset) first — nothing else applies until it is done |
 
 Every upgrade also needs [the lock-step rules](#rules-for-every-upgrade) and
 [the closing checks](#checks-before-calling-an-upgrade-done).
 
-Older lanes are kept below: [v0.0.6 → v0.0.7](#v006--v007),
-[v0.0.5 → v0.0.6](#v005--v006) and [the v0.0.4 reset](#the-v004-reset).
+Older lanes are kept below: [v0.0.5 → v0.0.6](#v005--v006) and
+[the v0.0.4 reset](#the-v004-reset).
 
 ---
 
-# v0.0.7 → v0.0.8
+# v0.0.6 → v0.0.7
 
-## The v0.0.8 edge reset
+This is a large release and a **reset release**: the edge layer is replaced
+rather than transformed, in the spirit of [the v0.0.4
+reset](#the-v004-reset), and the code flavor's schema is rebuilt from
+scratch. Read [16-edges.md](docs/16-edges.md) for why the edge model
+changed. Take a backup before you start:
 
-One core migration, `0015_v008.sql` (version 15). It is a **reset lane**, in
-the spirit of [the v0.0.4 reset](#the-v004-reset): the edge layer is replaced,
-not transformed. Read [16-edges.md](docs/16-edges.md) for why.
+```sh
+pg_dump "$DATABASE_URL" -Fc -f pre-v0.0.7-backup.dump
+```
+
+## The v0.0.7 schema lane
+
+Two files. **Apply both.** A host booting with `PROXIMA_SKIP_MIGRATIONS=true`
+against a database missing either fails at `ensure_core_schema_current`,
+naming the lane, rather than failing at first query.
 
 | # | Source | File | Rewrites tables? |
 |---|---|---|---|
-| 15 | core | `0015_v008.sql` | **yes** — `edges` is dropped and recreated |
+| 11 | core | `0011_v007.sql` | **yes** — three tables rewritten, and `edges` dropped and recreated |
+| — | code flavor | `20260801000020_v007_baseline.sql` | **yes** — `DROP SCHEMA proxima_code CASCADE`, then a folded schema |
+| — | example flavor | none | — |
 
-`MIN_CORE_MIGRATION_VERSION` bumps to 15. A host booting with
-`PROXIMA_SKIP_MIGRATIONS=true` against a database that has not applied it
-fails at `ensure_core_schema_current`, naming the lane, rather than failing at
-first query.
+`MIN_CORE_MIGRATION_VERSION` is **11**.
+
+**The core file is the whole lane.** It was authored during the cycle as five
+files (versions 11 through 15) and folded into one before the tag, so what it
+applies is final-state DDL rather than five steps replayed. What it does:
+
+- Rebuilds the `embeddings` primary key to include `chunk_index`, so an
+  over-limit memory can be embedded as several chunk rows under one embedding
+  version instead of going un-embedded.
+- Adds the `proxima_core.lexical_*` function family and the
+  `lexical_languages` table, makes the lexical language a `regconfig`
+  **column** on `memories` and the two core sidecars, and adds STORED
+  generated `search_tsv` columns generated through it. `lexical_config()` is
+  the default for rows that do not say; it returns `english`.
+- Adds `citation_uploaded_blob_page_span_v1`, the table behind citing an
+  uploaded document by page.
+- **Resets the edge layer**: drops `proxima_core.edges`, its typed sidecar
+  `agent_link_v1` and its relation vocabulary (`relation_class`,
+  `edge_authorship_kind`), and creates a new table in their place; adds the
+  node columns that replaced what edges used to carry; creates
+  `proxima_core.interpretation_v1`; widens `memories.citation_mapping_id` to
+  Abstraction as well as Fact; and reshapes `change_event` to carry the whole
+  edge rather than a handle to it.
+
+**The code-flavor file is a full rebuild**, and that one is not a preference.
+The old baseline created `proxima_code.code_calls_v1` with a foreign key to
+`proxima_core.edges(edge_id)`, and the core lane removed that column along
+with the identity it stood for — so the old lane can no longer run at all, on
+a fresh database or an old one. `migrator()` sets `ignore_missing`, so a
+database that already applied the superseded flavor lanes tolerates their
+absence and applies this one. (Its header comment still says "v0.0.8" and
+names core migration `0015`: `SQLx` checksums a migration's content and not
+its filename, so renaming the file was free and editing one comment byte
+would have invalidated every recorded checksum.)
 
 ### Every existing edge row is dropped
 
-There is no transform and no carry-over. `proxima_core.edges` is dropped with
-its typed sidecar (`agent_link_v1`), its relation vocabulary
-(`relation_class`, `edge_authorship_kind`) and its identity column, and a new
-table is created in its place:
+There is no transform and no carry-over. The new table is:
 
 ```
 edges(source_kind, source_id, target_kind, target_id, kind,
@@ -62,21 +101,15 @@ An edge now has no id, no payload, no relation string and no authorship mask —
 its whole content is its existence. There are exactly two kinds, `origin` and
 `reference`, and the enum is not extensible.
 
-**Back up first**, then plan the rebuild:
-
-```sh
-pg_dump "$DATABASE_URL" -Fc -f pre-v0.0.8-backup.dump
-```
-
 - **Origin rows come back on their own** for everything written after the
   upgrade: a derivation declares what it was made from, and storage writes the
   row inside the same transaction. Historical provenance is *not*
-  reconstructed; `supersedes` (a column, untouched by this lane) still carries
-  revision history.
+  reconstructed; `supersedes` (a column, untouched) still carries revision
+  history.
 - **Reference rows come back with re-ingest.** A reference row is derived from
   a schema-declared payload field, so re-ingesting a source rebuilds every
   reference its payloads declare. For the code flavor that means
-  [re-index every repository](#re-index-every-code-repository).
+  [re-register and re-index](#re-register-and-re-index-every-code-repository).
 
 There is no migration path back to the reference rows other than re-ingest.
 That is deliberate: a reference row that no payload declares is a row nothing
@@ -113,67 +146,63 @@ upgrade rather than resuming against pre-lane edge events.
 
 ### This lane is not online-safe
 
-`DROP TABLE` and `ADD COLUMN ... NOT NULL DEFAULT` on `goals` take
-`ACCESS EXCLUSIVE`, and sqlx runs the file in one transaction, so every table
-it touches stays locked until the file finishes. Large deployments should
-apply it out of band during a maintenance window and boot with
-`PROXIMA_SKIP_MIGRATIONS=true`. Small deployments can let boot apply it — boot
-migrations set `lock_timeout = 5s`, so a migration that cannot get the lock
-fails and retries on the next pod.
+Both files rewrite tables. `ADD COLUMN ... GENERATED ALWAYS AS ... STORED`
+rewrites its target, `DROP TABLE` and `DROP SCHEMA` take `ACCESS EXCLUSIVE`,
+and sqlx runs each file in **one transaction** — so every table a file touches
+stays locked until that file finishes.
 
-### The code flavor lane is a full rebuild
+Because the core lane is now one file rather than five, its lock window is the
+sum of what were five separate windows, taken once. That is strictly less
+total work than five files were — the fold removed a second rewrite of every
+generated column — but it is one uninterruptible window rather than five
+resumable ones.
 
-The code flavor's five migration files are gone from the tree, replaced by a
-single destructive baseline:
+Measured **54.7 s** for a 149k-row `memories` plus a 24.8k-row sidecar. That
+figure was taken on the pre-fold version of this file, which did the same
+generated-column work the folded file does, so it is the right order of
+magnitude for the rewrite portion and not a measurement of the folded file end
+to end. It scales with corpus size. A queued `ACCESS EXCLUSIVE` request also
+blocks every reader that arrives behind it, so this is a read outage, not a
+write pause.
 
-| Source | File | Rewrites tables? |
-|---|---|---|
-| code flavor | `20260801000020_v008_baseline.sql` | **yes** — `DROP SCHEMA proxima_code CASCADE`, then a folded schema |
+- **Large deployments: apply out of band.** Run the files through GitOps
+  against a real backup during a maintenance window, then boot with
+  `PROXIMA_SKIP_MIGRATIONS=true`. Do not discover the lock window during a
+  rolling update.
+- **Small deployments** can let boot apply it. Boot migrations set
+  `lock_timeout = 5s`, so a migration that cannot get the lock fails and
+  retries on the next pod rather than freezing the table behind a lock queue.
 
-This one is not a preference. The old baseline created
-`proxima_code.code_calls_v1` with a foreign key to
-`proxima_core.edges(edge_id)`, and `0015_v008.sql` removed that column along
-with the identity it stood for — so the old lane can no longer run at all, on
-a fresh database or an old one. `migrator()` sets `ignore_missing`, so a
-database that already applied the five superseded lanes
-(`20260516000020`, `20260709000020`, `20260726000020`, `20260728000020`,
-`20260729000020`) tolerates their absence and applies this one.
+### A database that applied the pre-release lane must be reset
 
-What changed inside the schema:
+**Only development and staging databases can be affected — no tagged release
+ever shipped the five-file form of this lane.** If yours applied core versions
+12 through 15 while the cycle was in flight, it cannot be migrated forward:
+version 11's checksum changed when the five files were folded into it, so
+`SQLx` would refuse the run.
 
-- **`code_calls_v1` is gone.** It was an edge sidecar holding one call site
-  per edge, so a second call to the same callee needed a second edge and a
-  synthetic id to keep them apart. Call sites now live in the caller chunk's
-  payload (`proxima_code.code_chunk_call_v1`), and the connection is one
-  `reference` row derived from it. Ten call sites, one index row.
-- **`work_assignment_v1` is new** — the `proxima-code/work-assignment-v1`
-  Perspective that replaced the `code/targets-execution-request` relation.
-  Neither endpoint owned the targeting claim, so the model was missing a node.
-- **`work_requested_v1` and `test_requested_v1` gain `depends_on_memory_ids`**;
-  `core/depends-on` moved onto the depending row.
-- **`execution_plan_item_v1` gains `request_memory_id`**: the plan is written
-  after its items and names each one, instead of pointing at them with edges
-  appended afterwards.
+Boot fails closed and names the remedy:
 
-### Re-register and re-index every code repository
-
-**Required if you run the code flavor.** The schema drop takes the repository
-index with it, and re-ingest is also how `reference` rows come back. The
-runbook is the flavor's existing one:
-
-```
-proxima-code_register_repo        { path }
-proxima-code_ingest_head_snapshot { repo_handle }
+```sh
+PROXIMA_V004_RESET_CONFIRM=reset-my-dev-db \
+  cargo run -p proxima-dev-migrate -- --reset --database-url "$DATABASE_URL"
 ```
 
-There is no `erase_repo` step this time — the schema no longer exists to erase
-from. Budget for the re-embed exactly as in
-[the v0.0.7 re-index](#re-index-every-code-repository): the queue is
-proportional to corpus size.
+The reset drops `proxima_core` and `proxima_code`, clears the orphaned ledger
+rows for versions 12–15, and re-applies the lane. Re-register and re-index
+afterwards, exactly as a production upgrade does. A database at the v0.0.6
+lane — versions 1, 8, 9 and 10 — is unaffected and upgrades normally.
 
-<a id="wire-changes-mcp-clients-v008"></a>
+### Rollback is by image, never by reversing a migration
 
-## Wire changes: MCP clients (v0.0.8)
+There are no `.down.sql` files, and rolling the binary back to v0.0.6 against
+a version-11 database does **not** work: the v0.0.6 binary expects
+`edges.edge_id` and the relation vocabulary, and its
+`ensure_core_schema_current` will not accept the new shape. Roll back by
+restoring the pre-upgrade dump. This is why the backup at the top of this
+section is not optional.
+
+## Wire changes: MCP clients
 
 ### Breaking
 
@@ -182,15 +211,33 @@ proportional to corpus size.
 | connecting two existing memories | `core_link(source, target, reason, confidence)` → `E:` handle | `core_interpret(claim, confidence, subjects)` → `P:` handle |
 | `core_list_edge_types` | listed registered relation descriptors | **removed** — the vocabulary is two kinds, and it is documented, not queried |
 | `proxima://edge-types` | registered relation descriptors | **removed** |
-| `proxima://edge/{id}` | single-edge read by `E:` handle | **removed** — an edge has no id |
-| `proxima://edges` query | `{?relation,source,target,limit,cursor,payloads}` | `{?kind,source,target,limit,cursor}`; `kind` is `origin` or `reference` |
-| an edge on the wire | id, relation, authorship, optional typed payload | `(source, target, kind, created_at)` and nothing else |
 | the `E:` handle prefix | part of the reference grammar | **gone**; the grammar is `F:`/`A:`/`P:`/`G:` |
 | `core_derive`, `core_goal` outputs | edge handles | `edge_count` |
 | `proxima-code_emit_execution_request` output | edge handles | `{handle, origin_count, acceptance_criteria_handle, idempotent_replay}` |
 | `proxima-code_emit_execution_plan` output | `dependency_edge_handles` per item | `{plan_handle, plan_edge_count, plan_idempotent_replay, items}`; items lost `dependency_edge_handles` |
 | `proxima-code_retry_execution_request` output | edge handles | `{handle, assignment_handle, origin_count, idempotent_replay}`; `assignment_handle` is the `P:` assignment Perspective |
 | `proxima-code_search_chunks` `call_edges[]` | one entry per call site, each with its own edge | `{source, target, sites[]}` — one entry per callee, multiplicity in `sites` |
+| `core_get_memory` `memory` arg | bare uuid accepted | prefixed `F:`/`A:`/`P:` only |
+| Unknown `proxima://` path | `invalid_params` | `resource_not_found` (-32002) |
+| Missing/invisible memory or goal via a resource | `invalid_request: "Forbidden: entry not found"` | `resource_not_found` with the wire handle |
+| `Protocol(NotFound)` tool errors | -32600 | -32602 |
+| `core_membership:list_members` output | bare array | `{members, next_cursor, has_more}` |
+| lineage `truncated` flag | `truncated` | `has_more` |
+| `neighbor_edges[].handle` | `handle` | `edge` |
+| `idempotency_key` | untrimmed 1..=200 | trimmed, 1..=180 |
+| memory read `space` field | literal `entry` | `current` / `personal:<uuid>` |
+| `limit: 0` on any paged read | clamped to 1, or an empty page | `InvalidInput` |
+| `proxima-code_open_file_revision` `max_text_bytes: 0` | `text: ""` | `InvalidInput` |
+| `proxima-code_search_chunks` default mode | lexical | **hybrid** |
+| `core_derive` auto-derived idempotency key | hashes body | hashes title + body + tags |
+| `core_derive` on an unembeddable body | tool error, nothing written | memory written, `embedding_deferred: true` |
+
+`core_derive`'s new `embedding_deferred` field is **omitted when false**, so
+an ordinary response is byte-identical to v0.0.6's. Present and `true`, it
+means the memory exists and semantic search will not find it until an
+embedding drain runs.
+
+Several of these need more than a line.
 
 **`core_link` did not move, it dissolved.** Its arguments were a reason and a
 confidence stored on an edge, and a claim with a reason and a confidence is a
@@ -214,537 +261,6 @@ the row is `(source, target, kind)`, and re-running the same write re-asserts
 the same rows instead of minting new ones. A client that stored edge handles
 should drop the column; a client that wants the neighbours of a node reads
 `proxima://edges?source=…`.
-
-### Additive, nothing to do
-
-Every tool in `tools/list` now carries an `outputSchema` alongside its
-`inputSchema`, derived from the tool's Rust output type. `structuredContent`
-was already on every reply; it is now declared, so a client can validate it
-instead of inferring the shape. Ignoring the field leaves behaviour unchanged.
-### The OAuth protected-resource identifier broadened to the public origin
-
-`/.well-known/oauth-protected-resource` advertised `{public_url}/mcp` as the
-RFC 9728 `resource`. It now advertises `{public_url}`.
-
-| | Was | Now |
-|---|---|---|
-| `resource` in the discovery document | `https://proxima.example.com/mcp` | `https://proxima.example.com` |
-| RFC 8707 `resource` parameter clients send | `https://proxima.example.com/mcp` | `https://proxima.example.com` |
-| Audience stamped into issued tokens | `…/mcp` | the origin |
-
-**Every already-issued token is invalid** against the new identifier, because
-that string *is* the audience an authorization server stamps in. Every client
-must re-request with the new `resource` value, and any audience literal
-configured out-of-band — `PROXIMA_OIDC_AUDIENCE`, an authorization-server
-resource/scope registration, a gateway's audience check — must be updated to
-match. Do the server and the authorization server together; a client holding
-an old token gets `401`.
-
-**Why now rather than later.** The old identifier was per-surface, and this
-tag adds a second surface: `/v1`, the REST rendering of the tool manifest
-([17](docs/17-rest-surface.md)). One identifier means one audience, one
-metadata document, and one token that reaches both surfaces. Two would mean
-two audiences and therefore non-interchangeable tokens — a feature only for
-deployments that want surface-scoped credentials, and a permanent tax for
-everyone else. The population holding tokens today is small and pre-1.0;
-once `/v1` ships under its own identifier the split is baked into every
-deployment and every issued credential, and consolidating later is a
-coordinated break across two client populations instead of one.
-
-Nothing else in the discovery document changed: `authorization_servers`,
-`bearer_methods_supported`, the `WWW-Authenticate` challenge and the
-`/.well-known` path are all as they were.
-
-### The `/v1` REST surface is available, and off
-
-Optional and additive; no action is required to keep using MCP. It is a
-rendering of the same frozen tool manifest through the same dispatch seam and
-the same `ScopeGateBehavior`, so it grants no authority MCP does not already
-grant. Two gates turn it on, both required: build with the `rest` cargo
-feature, then set `PROXIMA_REST_ENABLED=true`. See
-[17](docs/17-rest-surface.md) for the routes and
-[10](docs/10-configuration.md#mcp-endpoint-and-authentication) for the flag.
-
-## Rust host changes (v0.0.8)
-
-### `proxima_core::error::ErrorCode` is no longer `#[non_exhaustive]`
-
-Only affects code that `match`es on `ErrorCode` from outside `proxima-core`.
-The enum is unchanged; the attribute is gone, so a match on it must now be
-exhaustive and cannot carry a `_ =>` arm alone.
-
-**Symptom:** `error[E0004]: non-exhaustive patterns` disappears and is
-replaced by nothing — existing matches with a wildcard keep compiling. The
-break arrives later, when a future release adds a variant and your wildcard
-is no longer optional but your match is.
-
-**Fix:** name the variants you handle and keep a `_ =>` arm if you want the
-old behaviour. Nothing needs changing today.
-
-**Why.** `ErrorCode` says of itself that "additional variants land with the
-verbs that raise them", and that growth is exactly the moment a decision is
-owed: a transport has to say what a new code renders as. The REST surface
-maps every code onto an HTTP status ([17](docs/17-rest-surface.md) §Status
-mapping) and that map is required to carry no wildcard, so adding a code is
-a compile error until someone chooses its rendering. `#[non_exhaustive]`
-would have forced the wildcard that silently buckets a new code as `500`.
-The cost lands only on out-of-tree matchers: `ErrorCode` is not re-exported
-from the `proxima` facade or from `proxima_core`'s root, and every in-tree
-matcher already lives inside `proxima-core`, where the attribute never
-applied.
-
-### Removed from `proxima::host`
-
-| Removed | Replacement |
-|---|---|
-| `EdgeRow` | `EdgeReadResponse` rows carry the four-field edge |
-| `RelationInfo`, `RelationPayloadSchemaRef` | none — `SchemaResponse` no longer reports relations |
-
-`EdgeReadCursor` is now exported for keyset paging over `EdgeReadRequest`.
-
-### Removed from `proxima::flavor`
-
-| Removed | Replacement |
-|---|---|
-| `EdgeId`, `EdgePayload` | none — an edge has no id and carries no payload |
-| `RelationClass`, `RelationDescriptor`, `RegisteredRelation` | none |
-| `CORE_DERIVED_FROM_RELATION`, `CORE_SUPERSEDES_RELATION` | `derived_from` on the write; `supersedes` as a row pointer |
-| `EdgeAuthorshipKind`, `AuthorshipKindMask`, `EntityKindMask` | none — authorship is `memories.authoring_perspective_id` |
-| `EndpointBinding` | `ReferenceBinding`, and the address form already carries it |
-| `AuthorDerivedEdgeInput` | `AuthorDerivedRequestInput::derived_from: &[EdgeEndpoint]` |
-| `PgEdgeSidecar` | none — there are no edge sidecars |
-| `SchemaRef` | none |
-
-### Added to `proxima::flavor`
-
-`Edge`, `EdgeEndpoint`, `EdgeKind`, `EdgeTargetProjection`, `EntityRef`,
-`FactEntityId`, `PayloadReference`, `ReferenceBinding`. None of them is a
-write surface: `EdgeKind` is exported to be *read* (off a listed `Edge`, or
-when filtering), never handed to a writer.
-
-### `author_derived_authorized` lost its edge argument
-
-```rust
-// v0.0.7
-let relation = ctx.engine.registry().resolve_relation(CORE_DERIVED_FROM_RELATION)?;
-let edges = [AuthorDerivedEdgeInput {
-    relation, source_kind: EntityKind::Abstraction, source_memory_id: derived_id,
-    target_kind: EntityKind::Fact, target_memory_id: source_fact_id,
-    authorship_kind: EdgeAuthorshipKind::OperatorFtoA,
-    authorship_owner_memory_id: None,
-}];
-// ... AuthorDerivedRequestInput { ..., edges: &edges }
-
-// v0.0.8
-let derived_from = [EdgeEndpoint::memory(EntityKind::Fact, source_fact_id)];
-// ... AuthorDerivedRequestInput { ..., authoring_perspective_id: None,
-//                                 derived_from: &derived_from }
-```
-
-The request names targets; it never names a kind, a relation, or an authorship
-class. The outcome reports `edge_count` where it used to imply handles.
-
-## Flavor SDK changes (v0.0.8)
-
-### `proxima_flavor!` lost two keys
-
-```diff
- proxima_flavor! {
-     name = "my-flavor",
-     fact_schemas = [...],
-     abstraction_schemas = [...],
-     perspective_schemas = [...],
-     goal_schemas = [...],
--    edge_schemas = [],
--    relations = [],
-     mcp_tools = [...],
- }
-```
-
-Both are now unknown keys, which is a compile error. `PgSidecarRegistry::add_edge`
-is gone for the same reason.
-
-### Connections are declared, not registered
-
-A flavor connects nodes by declaring which of its payload's own fields point
-at other nodes. `references()` is defaulted on all four payload traits, so a
-schema that connects nothing needs no change at all:
-
-```rust
-fn references(&self) -> Vec<PayloadReference> {
-    vec![PayloadReference::memory(
-        "work_item_memory_id",
-        EntityKind::Fact,
-        MemoryId::new(self.work_item_memory_id),
-    )]
-}
-```
-
-Ingest turns each declaration into exactly one `reference` row, in the node
-write's own transaction. Three constructors: `memory` and `goal` pin a row,
-`fact_entity_head` follows the head as it is re-observed — which is where the
-retired descriptor's `FollowHead`/`Pin` cell went, into the address itself, so
-the two cannot disagree.
-
-Porting a registered relation:
-
-| Old relation shape | Port to |
-|---|---|
-| a structural relation between two of your nodes | a reference field on whichever payload owns the statement |
-| a relation with a typed edge sidecar | move the sidecar's fields into that payload; the connection is one row, the detail is N payload entries |
-| a relation carrying a reason, a confidence, or any judgment | a node — a Perspective whose payload references its subjects |
-| a relation neither endpoint's payload could own | you are missing a node, not an edge kind (see `proxima-code/work-assignment-v1`) |
-
-**Deliberately lost, not overlooked:** a third-party flavor can no longer
-define a novel traversable link vocabulary without touching core. The in-tree
-evidence — three registered relations across the whole tree, all expressible
-as node content — said that flexibility was speculative. The escape valve is
-total: any relationship whatsoever can be asserted as an interpretation node.
-The question is never whether something can be expressed, only where it lives.
-
-### `Tool::Output` and `McpTool::Output` must derive `JsonSchema`
-
-The bound on both traits gained one term:
-
-```diff
--type Output: serde::Serialize + Send + 'static;
-+type Output: serde::Serialize + schemars::JsonSchema + Send + 'static;
-```
-
-The symptom is a compile error at your `impl Tool`/`impl McpTool` block, not
-at the type: `the trait bound `MyToolOutput: JsonSchema` is not satisfied`,
-pointing at the `type Output = MyToolOutput;` line. The fix is to add the
-derive to the output type and to every type it nests:
-
-```diff
--#[derive(Debug, Serialize)]
-+#[derive(Debug, Serialize, JsonSchema)]
- pub struct MyToolOutput { ... }
-```
-
-Two derives that will not compile on the first pass. A field carrying
-`#[serde(with = "...")]` needs `#[schemars(with = "String")]` (or whatever
-the module writes) beside it, because schemars reads the serde attribute and
-tries to resolve the module path as a type. A `time::OffsetDateTime` field
-needs the same, with or without a serde attribute — schemars ships no impl
-for it.
-
-**Why the bound and not an `Option`.** `McpToolDescriptor` gained
-`output_schema: serde_json::Value`, derived from `Output` exactly as
-`args_schema` is derived from `Args`, and served as MCP `outputSchema`. A
-defaulted or optional schema would have made the manifest describe some
-tools' replies and not others, which is the state this replaces.
-
-**A recursive output type is a registration error**, the same rule the
-argument side has always had: the schema is emitted `$ref`-free so clients
-that do not resolve references still render every field, and a recursive type
-has no finite `$ref`-free form.
-
-The schema is generated by `mcp_output_schema`, a *sibling* of
-`mcp_tool_schema` rather than a caller of it. The dispatcher normalization
-that flattens an internally tagged `Args` enum into an `action` discriminator
-is an argument-side pass; an output union stays a union, and an output root
-may be any schema, not only `type: object`.
-
-### `CitedBlobPort` gained a required method: `find_held_blobs`
-
-Anything implementing `CitedBlobPort` — including a test fake — must add it.
-It is **required rather than defaulted on purpose**: a default body would have
-to answer "I hold nothing", which is exactly the answer a caller acts on by
-uploading, so an implementor that inherited it would silently report every
-artefact as absent. A default is only safe on this trait when it is *derived*
-from other required methods; nothing here answers "do I hold these bytes".
-
-```rust
-async fn find_held_blobs(
-    &self,
-    authz: &AuthzContext,
-    owner: OwnerRef,
-    content_hashes: &[[u8; 32]],
-) -> Result<Vec<CitedBlobHeld>, StorageError>;
-```
-
-A fake with no storage answers `Ok(Vec::new())`; one that models storage should
-answer from whatever it models.
-
-**What it is for.** Storage is content-addressed, so re-uploading bytes the
-corpus already holds was always *correct* — it converges on one artefact and
-reports `idempotent_replay`. It was never *free*: the bytes crossed the wire,
-were streamed and hashed, and were copied in the object store before the caller
-learned none of it was needed. This moves that discovery in front of the
-transfer. Re-offering a corpus now costs one indexed query instead of its full
-size in bandwidth.
-
-Digests are raw `[u8; 32]`, not hex — hex is the client-facing spelling and
-stays at the MCP boundary. Batches are capped at `MAX_HELD_BLOB_DIGESTS`
-(1000); both it and `CitedBlobHeld` are on the flavor facade.
-
-Two properties it deliberately keeps: it returns **no storage coordinates**, and
-**"absent" and "not yours" are the same answer**, so a batch sweep cannot become
-an enumeration oracle over another owner's corpus. It gates on *read* authority,
-matching `read_url` — checking before uploading must not be a stricter question
-than downloading the bytes.
-
-### Rollback is by image, and it costs the edges again
-
-There are no `.down.sql` files. Rolling the binary back to v0.0.7 against a
-version-15 database does not work: the v0.0.7 binary expects `edges.edge_id`
-and the relation vocabulary, and `ensure_core_schema_current` will not accept
-the new shape. Roll back by restoring the pre-upgrade dump.
-
----
-
-# v0.0.6 → v0.0.7
-
-## The v0.0.7 schema lane
-
-Seven migrations, in this order. **Apply all of them.** A host booting with
-`PROXIMA_SKIP_MIGRATIONS=true` against a database missing any of them fails
-at `ensure_core_schema_current`, not at first query — but it does fail.
-
-| # | Source | File | Rewrites tables? |
-|---|---|---|---|
-| 11 | core | `0011_v007.sql` | **yes** |
-| 12 | core | `0012_v007.sql` | no — functions only |
-| 13 | core | `0013_v007.sql` | no — one new table |
-| 14 | core | `0014_v007.sql` | **yes** |
-| — | code flavor | `20260726000020_v007.sql` | **yes** |
-| — | code flavor | `20260728000020_v007_language.sql` | **yes** |
-| — | code flavor | `20260729000020_v007_ingest_scope.sql` | no — metadata-only `ADD COLUMN` |
-
-What each one does:
-
-- **0011** rebuilds the `embeddings` primary key to include `chunk_index`;
-  adds STORED generated `search_tsv` to `memories`, `agent_derivation_v1`,
-  `agent_note_v1`; adds four `proxima_core.lexical_*` functions.
-- **0012** makes the text-search configuration a database property
-  (`proxima_core.lexical_config()`), so the document side and the query side
-  cannot drift. Returns `english`; rewrites nothing.
-- **0013** adds `citation_uploaded_blob_page_span_v1` — the table behind
-  citing an uploaded document by page.
-- **0014** makes the lexical language a `regconfig` **column** per row and
-  demotes `lexical_config()` to the default for rows that do not say.
-  Rebinds each generated column to the two-argument `lexical_tsv`.
-- **`20260726000020`** puts `search_tsv` on `code_chunk_v1`, built from
-  `proxima_core.lexical_tsv` — config `english`, changed from `simple`.
-- **`20260728000020`** pins code chunks to `english` per row so a deployment
-  that switches its documents to another language does not retokenise its
-  code as collateral.
-- **`20260729000020`** adds `include_globs`/`exclude_globs` to
-  `proxima_code.repos`, both defaulting to empty.
-
-### This lane is not online-safe
-
-Unlike v0.0.6, four of these files rewrite tables. `ADD COLUMN ... GENERATED
-ALWAYS AS ... STORED` and `ALTER COLUMN ... SET EXPRESSION` each rewrite their
-target and hold `ACCESS EXCLUSIVE` for the duration, and sqlx runs each file
-in one transaction — so every table in a file stays locked until the last one
-finishes.
-
-Measured: **54.7 s** for a 149k-row `memories` plus a 24.8k-row sidecar, and
-it scales with corpus size. A queued `ACCESS EXCLUSIVE` request also blocks
-every reader that arrives behind it, so this is a read outage, not a write
-pause.
-
-- **Large deployments: apply out of band.** Run the files through GitOps
-  against a real backup during a maintenance window, then boot with
-  `PROXIMA_SKIP_MIGRATIONS=true`. Do not discover the lock window during a
-  rolling update.
-- **Small deployments** can let boot apply it. Boot migrations set
-  `lock_timeout = 5s`, so a migration that cannot get the lock fails and
-  retries on the next pod rather than freezing the table behind a lock queue.
-
-### Rollback is by image, never by reversing a migration
-
-There are no `.down.sql` files, and `DROP COLUMN search_tsv` is a second full
-rewrite under the same lock. Rolling the binary back to v0.0.6 against a
-version-14 database is safe **only** if no over-limit memory was
-chunk-embedded — a v0.0.6 binary assumes one embedding row per
-`(entity, version, model)`. Check and clear first:
-
-```sql
-SELECT count(*) FROM proxima_core.embeddings WHERE chunk_index > 0;
-```
-
-## Behaviour that changes with no action from you
-
-Three things move as soon as the lane is applied. None needs configuration;
-all three change what a query returns.
-
-**Over-limit memories are now embedded in chunks.** A memory whose text
-exceeds the provider's input limit is stored as several chunk rows under one
-embedding version, where it previously went un-embedded entirely.
-
-**A derived memory whose text the embedder refuses is now written anyway.**
-`core_derive` and every `Engine::author_derived_authorized` caller used to
-fail the whole write — deterministically, on every retry — when one
-`/embeddings` call refused or crashed on the text, taking every model call
-already paid for upstream with it. The memory now lands with no vector and a
-pending embedding job enqueued in the same transaction, so the drain (which
-bisects over-limit input) supplies the vector; the response carries
-`embedding_deferred: true` and the memory is lexically findable but not
-semantically findable until a drain runs. A provider that is simply *down*
-still fails the write, so an outage cannot quietly produce a corpus of
-unembedded memories. Hosts that run no drain should call
-`Engine::drain_embedding_jobs` or `maintain-embeddings --drain` — see
-[scheduled maintenance](#scheduled-maintenance-changes).
-
-**Lexical search stems and drops English stopwords** (`simple` → `english`),
-in core and in the code flavor alike. Result *sets* change, not just
-ordering: a query of only stopwords no longer matches, and `running` now
-matches `run`. Re-check any saved query or test that pins exact lexical hits.
-Exact identifier lookup moved to the substring arm, which carries a larger
-score bonus than any rank, so `embed_in_chunks` still matches verbatim.
-
-**Lexical ranking moves, and by a lot.** `LEAST(ts_rank_cd(v, q) * 10.0, 1.0)`
-returned 1.0 for every matching row — nothing in this schema assigns lexeme
-weights, so every document is weight D, where `ts_rank_cd` starts at exactly
-0.1. Measured on an indexed corpus, **3,170 of 3,170 matching rows
-saturated**: within a score band nothing was ranked at all. Cover density is
-now normalised, and the OR-rescue arm ranks by length-normalised `ts_rank`
-instead of cover density:
-
-| corpus | before | after |
-|---|---|---|
-| 17 real bug reports | 1 of 17 | **5 of 17** |
-| 7 real bug reports | 3 of 7 | **5 of 7** |
-| 24 plain-English questions | 12 of 24 | **17 of 24** |
-
-Same set, different and better order; no re-index required. Only the rescue
-arm changed — the strict arm keeps cover density. Score *bands* are unchanged,
-so anything comparing against the documented `[0.5, 1.0]` / `(0.25, 0.45]` /
-`0.25` ranges still holds. `semantic` and undegraded `hybrid` are untouched.
-
-## Re-index every code repository
-
-**Required if you run the code flavor.** Two changes alter how a repository is
-chunked and rendered, and neither reaches an index that already exists:
-
-- **The chunker no longer drops comments.** In the Rust grammar a doc comment
-  is a *sibling* of the item it documents, and the merge step skipped comment
-  nodes — so every `///` and `//!` block was excluded from the corpus.
-  Measured over 444 indexed Rust files, chunk spans covered 95.3% of source
-  bytes overall but only 14.2% of `flavors/code/src/migrations.rs`: the loss
-  landed exactly on the files that carry their reasoning in prose. After the
-  fix, 99.2%.
-- **`code-chunk-v1` renders its body**, as `path:start-end` plus the chunk
-  text rather than the header alone. That render is `memories.text`, so it is
-  what gets embedded — chunk embeddings previously encoded a file path and two
-  line numbers, and search could only retrieve code whose *filename* resembled
-  the question.
-
-A HEAD snapshot re-derives only files whose blob hash moved, so an unchanged
-repository keeps its old chunks permanently. That skip cannot be bypassed: a
-derived Abstraction must carry the same `source_batch_id` as the Facts it came
-from. The supported path is erase and re-ingest:
-
-```
-proxima-code_erase_repo    { repo_handle, confirm_canonical_path }
-proxima-code_register_repo { path }
-proxima-code_ingest_head_snapshot { repo_handle }
-```
-
-`proxima-code_erase_repo` is new, and is the first supported way to remove an
-indexed repository at all — the storage verb existed but was reachable only
-through `cfg(debug_assertions)` testkit, so in a release build a repository
-once indexed was permanent. It deletes every Fact, Abstraction, edge,
-embedding, receipt, citation mapping and cited object derived from that
-repository and returns a receipt counting each. Irreversible;
-`confirm_canonical_path` must match the stored path exactly.
-
-**Budget for the re-embed.** Chunk embeddings now cover real content, so the
-queue is proportional to corpus size: a 620-file tree enqueues 4,083 jobs.
-
-While you are here, consider [scoping the repository](#scoping-what-gets-indexed)
-— 22% of one measured three-repo index was a single repository's test
-fixtures.
-
-## Scheduled maintenance changes
-
-**The reconcile CLI is renamed.** `proxima-mcp reconcile-embeddings` is now
-`proxima-mcp maintain-embeddings`, same flags. **Update cron and deploy
-specs**; the old subcommand fails with a message naming the new one. The pass
-gained an orphan-row sweep and a health report (job backlog, orphan counts,
-ANN recall canary), and is serialized by a Postgres advisory lock — a run that
-finds the lock held prints a skip notice and exits `0`, so cron overlap is
-safe.
-
-**Startup catch-up is automatic.** When an embedding client is configured, the
-in-process worker runs one `missing-only` reconcile before its first drain, so
-Facts ingested while no client was configured, and jobs stuck in the `failed`
-dead-end, are re-enqueued on restart. There is still no recurring in-process
-scheduler; recurring maintenance stays external.
-
-**Retention is now enforceable — decide before you schedule it.**
-`owner_fact_retention.retention_seconds` was inert config, and `change_event`
-grew without bound. One new cron-safe pass handles both:
-
-```sh
-proxima-mcp maintain-retention --enforce-fact-retention \
-    --prune-change-events-older-than 90d
-```
-
-Review before scheduling:
-
-- **Configured windows become real.** Owners with a `retention_seconds` value
-  have Facts older than the window tombstoned — hidden from present-only
-  reads, rows and provenance kept; physical destruction stays exclusive to the
-  compliance-erase family. Audit Facts (`core/mcp-call-logged-v1`) are always
-  excluded. **If a window was set speculatively, clear it before scheduling.**
-- **Tombstoning emits `EntityDelete` change events** — the first producer of
-  that kind. The variant has been on the wire since v0.0.4, but consumers that
-  only ever matched `EntityAppend` should be checked.
-- **Pruned change events are gone for every consumer.** A forward poller whose
-  `since` cursor predates the prune horizon misses them with no gap signal.
-  Pick a horizon comfortably larger than the slowest consumer's lag, or
-  re-baseline lagging consumers via cold-start stitching (docs/14 §Change Log).
-- **Legal holds gate both halves.** Held owners are skipped and reported; the
-  pass never blocks on a hold.
-
-**Embedding jobs already marked terminal are not recovered.** A transient
-upstream failure that Ollama reports as HTTP 400 used to be filed as a
-permanently rejected input. That is fixed going forward, but rows already
-marked `failed` with the permanent marker stay terminal by design. To re-offer
-them:
-
-```sql
-UPDATE proxima_core.embedding_jobs
-   SET status = 'pending', attempts = 0, last_error = NULL,
-       next_attempt_at = now()
- WHERE status = 'failed'
-   AND last_error LIKE '%: EOF%';
-```
-
-Widen the `last_error` filter only to messages you recognise as transport
-failures; a genuinely over-limit input should stay terminal.
-
-## Wire changes: MCP clients
-
-### Breaking
-
-| Change | Was | Now |
-|---|---|---|
-| `core_get_memory` `memory` arg | bare uuid accepted | prefixed `F:`/`A:`/`P:` only |
-| Unknown `proxima://` path | `invalid_params` | `resource_not_found` (-32002) |
-| Missing/invisible memory, goal, edge via a resource | `invalid_request: "Forbidden: entry not found"` | `resource_not_found` with the wire handle |
-| `Protocol(NotFound)` tool errors | -32600 | -32602 |
-| `core_membership:list_members` output | bare array | `{members, next_cursor, has_more}` |
-| lineage `truncated` flag | `truncated` | `has_more` |
-| `neighbor_edges[].handle` | `handle` | `edge` |
-| `idempotency_key` | untrimmed 1..=200 | trimmed, 1..=180 |
-| memory read `space` field | literal `entry` | `current` / `personal:<uuid>` |
-| `limit: 0` on any paged read | clamped to 1, or an empty page | `InvalidInput` |
-| `proxima-code_open_file_revision` `max_text_bytes: 0` | `text: ""` | `InvalidInput` |
-| `proxima-code_search_chunks` default mode | lexical | **hybrid** |
-| `core_derive` auto-derived idempotency key | hashes body | hashes title + body + tags |
-| `core_derive` on an unembeddable body | tool error, nothing written | memory written, `embedding_deferred: true` |
-
-`core_derive`'s new `embedding_deferred` field is **omitted when false**, so
-an ordinary response is byte-identical to v0.0.6's. Present and `true`, it
-means the memory exists and semantic search will not find it until an
-embedding drain runs.
-
-Four of these need more than a line.
 
 **`space: "entry"` was never a value you could send back.**
 `core_memory_spaces` defines the space-key vocabulary and every write
@@ -814,7 +330,7 @@ The rule is `proxima_core::text_bounds::check_trimmed_len`, the lowest module
 in the crate, so the tool SDK, the `verbs` layer and the code flavor all refuse
 the same input in the same words. It backs `core_remember` (title, body),
 `core_derive` (title, body, `model_id`), `core_record_utterance` (text),
-`core_link` (reason), `core_goal` (title, text, wake prompt), every
+`core_interpret` (claim), `core_goal` (title, text, wake prompt), every
 `idempotency_key`, `core_remember.source_batch_key`, each tag, the search
 query, and `proxima-code`'s `emit_execution_request` family.
 
@@ -856,12 +372,14 @@ Now carrying `minimum: 1`: `core_search_memories.limit`/`.body_max_chars`,
 `proxima-code_list_repos.limit`, `proxima-code_search_chunks.limit`/
 `.snippet_max_chars`, `proxima-code_search_commits.limit`,
 `proxima-code_open_file_revision.max_text_bytes`/`.line_start`/`.line_limit`.
-`core_link.confidence` declares `maximum: 100` instead of the `u8` type's 255.
+`core_interpret.confidence` declares `maximum: 100` instead of the `u8` type's
+255.
 
 Now carrying `maxLength`: `core_remember.title`/`.body`,
 `core_derive.title`/`.body`/`.model_id`, `core_record_utterance.text`,
-`core_link.reason`, `core_goal.title`/`.text`, `core_search_memories.query`,
-`proxima-code_search_chunks.query`, `proxima-code_search_commits.query`,
+`core_interpret.claim`, `core_goal.title`/`.text`,
+`core_search_memories.query`, `proxima-code_search_chunks.query`,
+`proxima-code_search_commits.query`,
 `proxima-code_emit_execution_request.title`/`.instructions`/`.idempotency_key`.
 Now carrying `maxItems`: `core_remember.tags`, `core_derive.tags`,
 `core_search_memories.tags`/`.spaces`, `core_goal.children`,
@@ -874,140 +392,13 @@ enforced in `try_freeze`: unlike an undeclared `ANNOTATIONS`, a bound stated
 only in prose is a documentation defect and should not stop a deployment from
 booting.
 
-### Fixed silently — nothing to do, but searches that returned nothing may now match
+### Every tool now declares an `outputSchema`
 
-**A tag filter matches the tag that was stored.** The write side folds a tag to
-`trim().to_ascii_lowercase()`; the search filter did not fold and matched the
-raw string. A caller using the same literal on both sides got nothing:
-
-```
-core_remember        tags: ["Rust"]  -> stored as ["rust"]
-core_search_memories tags: ["Rust"]  -> no matches
-```
-
-There was no error to read, and a filter that matches nothing is
-indistinguishable from a memory that was never written. Both sides now fold,
-and the filter sorts and dedups afterwards, so `["Rust", "rust"]` is one
-predicate — which matters under `tag_match: all`.
-
-**A viewer can see a flavor's read tools.** `tools/list` resolved
-read-vs-write from a table over *core* tool names and fell through to "demand
-write" for anything else, so a read-only principal saw no flavor tool at all —
-not refused, **absent**, which is the harder symptom to trace. The same filter
-drives `initialize`'s instructions and `proxima://how-to`, so a viewer's
-onboarding text omitted them too. Expect `..._search_chunks`, `..._list_repos`,
-`..._open_file_revision`, `..._search_commits` and `proxima-docs_search` to
-appear for viewer-role tokens. Write tools stay hidden.
-
-**`proxima-code_open_file_revision` reports the span it actually returned.**
-When `max_text_bytes` truncates the window, the reported `text_line_range` end
-is now the last line *sent* rather than the last line selected; a caller using
-the old value to place the snippet was wrong about every line after the cut. A
-truncated chunk also carries `text_truncated: true` (omitted when false), and
-`line_limit` above 500 now clamps instead of erroring.
-
-**A `repo_handle` naming no repository is rejected** by
-`proxima-code_search_chunks`, `_search_commits` and `_open_file_revision`,
-with `repo_handle not found for owner: <handle>`. They previously returned an
-empty result, which reads exactly like "this repository has nothing indexed".
-Only the *name* forms were checked; a handle or bare UUID short-circuited on
-parse, so a stale handle after `erase_repo`, a typo, or another owner's id all
-resolved silently. Another owner's repository reports exactly what a
-nonexistent one does.
-
-**One crashing input no longer blocks its embedding batch.** A provider that
-*dies because of* an input reports the same thing as an outage; Proxima
-released the whole claim without burning attempts, so the poisonous input came
-back with its batch on every drain and never went terminal. Observed while
-ingesting a scanned book: one page whose OCR hallucinated a 300-row CJK table
-killed the model runner, and the other **31 pages of its batch stayed
-unembedded at `attempts = 0`**. The drain now probes the provider with a
-trivial input after a transient batch failure — if it answers, the batch's
-contents are at fault and its jobs are embedded individually. Expect one extra
-small request per failed batch.
-
-### New surface, nothing to do
-
-| Added | What it gives you |
-|---|---|
-| `proxima://goals{?state,limit,cursor}`, `proxima://goal/{id}` | owner-scoped goal listing and single read, including stored wake config |
-| `proxima://edges{?relation,source,target,…}`, `proxima://edge/{id}` | the graph was writable but not traversable — `core_link` returned an `E:` handle no verb could dereference (both reshaped again in v0.0.8; see [the v0.0.8 wire changes](#wire-changes-mcp-clients-v008)) |
-| `proxima://memories{?ids}` | batch read, at most 100 prefixed ids, in request order plus a `missing` list |
-| `core_upload` (`prepare`/`complete`/`abort`/`read_url`) | the S3 lane as an MCP tool; served automatically when `PROXIMA_S3_*` is configured |
-| `core_search_memories` `min_score`, `semantic_weight`, `cursor` | relevance floor, hybrid fusion weight, keyset resume |
-| `proxima://wake-candidates` `has_more` | truncation at the 200-candidate cap is signalled, never silent |
-| `core_fact` citation read-back `page_span` / `document` | a caller holding a cited Fact learned *that* it cited something, not *what* |
-
-Two of these have contracts worth reading before you build on them.
-
-**Citing an uploaded document.** `core/uploaded-blob-v1` has been a registered
-`CitedObject` schema since the baseline and the upload lane has been writing
-rows for it — but no registered `CitationMapping` named it, and a mapping is
-the only path from a Fact to a cited object. Core shipped an upload lane whose
-artefacts nothing could cite. Two mappings now target it:
-`core/uploaded-blob-whole-v1` (pure link, pass `"mapping_payload": {}`) and
-`core/uploaded-blob-page-span-v1` (`page_from`, `page_to`, optional
-`char_range_start`/`char_range_end`). Pages are one-based and inclusive at
-both ends; char ranges are relative to the span's text, not the document's, so
-a mapping survives re-extraction as long as the pages did not move. Re-citing
-one document reuses its single `cited_objects` row.
-
-`core_remember`'s `citation` accepts either `cited_object_id` (optionally
-`C:`-prefixed, as returned by `core_upload` `complete`) or the three inline
-`object_*` fields — exactly one shape, `mapping_*` required either way:
-
-```json
-{
-  "title": "Mindestbreite einer Tür",
-  "body": "Die lichte Durchgangsbreite beträgt mindestens 90 cm.",
-  "citation": {
-    "cited_object_id": "C:0198…",
-    "mapping_schema_id": "core/uploaded-blob-page-span-v1",
-    "mapping_schema_version": 1,
-    "mapping_payload": { "page_from": 47, "page_to": 47 }
-  }
-}
-```
-
-Regions on a page are deliberately not included — a bounding box has to agree
-with whoever produced it about pixels, points, or fractions of the page, and
-core cannot make that agreement on a producer's behalf. Register a flavor
-mapping targeting `core/uploaded-blob-v1`; see
-[docs/11 §Core-registered schemas](docs/11-citations.md#core-registered-schemas).
-
-**Bytes never travel through MCP.** `core_upload` mints presigned URLs; the
-client `PUT`s raw bytes to `upload_url` with exactly the returned headers,
-then calls `complete`. `read_url` presigns only locators the upload lane
-itself wrote — the inline citation path stores a caller-asserted
-`bucket`/`object_key` verbatim and never verifies it, and asking `read_url`
-for such an object answers exactly like a missing one.
-
-### Scoping what gets indexed
-
-`proxima-code_register_repo` takes `include_globs` and `exclude_globs`,
-gitignore-shaped, both defaulting to empty — which is what every existing repo
-already has.
-
-```json
-{"path": "/src/knip", "exclude_globs": ["**/fixtures/**"]}
-```
-
-`*` stops at a `/` and `**` crosses directories. A path is indexed when it
-matches some include (or there are no includes) and matches no exclude.
-Measured over a three-repo dogfood index, 3,389 of knip's 4,935 chunks (68.7%)
-sit under a `fixtures/` or test path — 22% of the whole deployment's
-embeddings, with no way to say so.
-
-- **Scope belongs to the repo, not to a call.** The incremental poller applies
-  the same scope the snapshot does, or the indexed set would depend on which
-  verb ran last.
-- **Re-registering an existing path updates the scope** — deliberately unlike
-  `display_name`, which is ignored on replay. Sending either list replaces
-  both, so `{"exclude_globs": []}` clears a scope; omitting both leaves it
-  alone.
-- **Narrowing a scope tombstones what left it** on the next ingest.
-  `files_excluded` in the ingest report counts what scope removed, and
-  `list_repos` echoes both lists.
+Additive, nothing to do. Every entry in `tools/list` carries an `outputSchema`
+alongside its `inputSchema`, derived from the tool's Rust output type.
+`structuredContent` was already on every reply; it is now declared, so a client
+can validate it instead of inferring the shape. Ignoring the field leaves
+behaviour unchanged.
 
 ## Rust host changes
 
@@ -1022,9 +413,7 @@ Every row here is a compile error until you act on it.
 | `GoalReadPort` | new `load_goal_wake_configs(read_owners, goal_ids)` — an empty vec preserves prior behaviour |
 | `ReadVerbStoragePorts` | carries a `goal_read` handle |
 | `EmbeddingMaintenancePort` | new `reconcile_embeddings(options, proof)` |
-| `EdgeRow` | gained `source_kind`, `target_kind`, `created_at`; dead `payload: Vec<u8>` became `Option<SidecarPayload>`; no longer derives serde |
-| `EdgeReadRequest` | new `cursor`, `include_payloads` |
-| `EdgeReadPort::read_edges` | takes `payload_specs: &[EdgePayloadSpec]`; ignoring it preserves lean reads |
+| `EdgeReadRequest` | new `cursor`; `EdgeReadCursor` is exported for keyset paging |
 | `MemoryInspectPort` | new `load_memories_by_ids` |
 | `CitationPort::facts_citing_object` | takes `after`/`limit`, returns `FactCitationPage` |
 | `OwnerMembershipAdminPort` | new `list_group_members_page` |
@@ -1034,12 +423,84 @@ Every row here is a compile error until you act on it.
 | `GoalWriteBuildError::InvalidTitle` / `InvalidText` | now carry a `TrimmedLenViolation` payload |
 | `proxima_code::repos::erase_repo` | lost its unused `schemas` parameter |
 | `EmbedCaps` | new `max_input_chars` field — a struct literal no longer compiles; use `EmbedCaps::new(dim, matryoshka)` |
+| `CoreToolInfo` | new `output_schema: serde_json::Value` field — the type is not `#[non_exhaustive]`, so a struct literal no longer compiles |
 | `AuthorDerivedRequest` | `embedding: Option<Vec<f32>>` + `embedding_model_id: Option<&str>` collapsed into one `embedding: DerivedEmbedding` |
 | `AuthorDerivedOutcome` | new `embedding_deferred: bool` — storage sets it when it enqueued a job instead of writing a vector |
 | `AuthorDerivedAuthorizedOutcome` | same new `embedding_deferred: bool` |
 | `proxima_storage_pg::verbs::derive_append::DerivedDraft` | same two fields collapsed into `embedding: DerivedEmbedding` |
 
-Five of these are more than a signature.
+### The edge types are gone from the facade
+
+| Removed from `proxima::host` | Replacement |
+|---|---|
+| `EdgeRow` | `EdgeReadResponse` rows carry the four-field edge |
+| `RelationInfo`, `RelationPayloadSchemaRef` | none — `SchemaResponse` no longer reports relations |
+
+| Removed from `proxima::flavor` | Replacement |
+|---|---|
+| `EdgeId`, `EdgePayload` | none — an edge has no id and carries no payload |
+| `RelationClass`, `RelationDescriptor`, `RegisteredRelation` | none |
+| `CORE_DERIVED_FROM_RELATION`, `CORE_SUPERSEDES_RELATION` | `derived_from` on the write; `supersedes` as a row pointer |
+| `EdgeAuthorshipKind`, `AuthorshipKindMask`, `EntityKindMask` | none — authorship is `memories.authoring_perspective_id` |
+| `EndpointBinding` | `ReferenceBinding`, and the address form already carries it |
+| `AuthorDerivedEdgeInput` | `AuthorDerivedRequestInput::derived_from: &[EdgeEndpoint]` |
+| `PgEdgeSidecar` | none — there are no edge sidecars |
+| `SchemaRef` | none |
+
+Added to `proxima::flavor`: `Edge`, `EdgeEndpoint`, `EdgeKind`,
+`EdgeTargetProjection`, `EntityRef`, `FactEntityId`, `PayloadReference`,
+`ReferenceBinding`. None of them is a write surface: `EdgeKind` is exported to
+be *read* (off a listed `Edge`, or when filtering), never handed to a writer.
+
+**`author_derived_authorized` lost its edge argument.**
+
+```rust
+// v0.0.6
+let relation = ctx.engine.registry().resolve_relation(CORE_DERIVED_FROM_RELATION)?;
+let edges = [AuthorDerivedEdgeInput {
+    relation, source_kind: EntityKind::Abstraction, source_memory_id: derived_id,
+    target_kind: EntityKind::Fact, target_memory_id: source_fact_id,
+    authorship_kind: EdgeAuthorshipKind::OperatorFtoA,
+    authorship_owner_memory_id: None,
+}];
+// ... AuthorDerivedRequestInput { ..., edges: &edges }
+
+// v0.0.7
+let derived_from = [EdgeEndpoint::memory(EntityKind::Fact, source_fact_id)];
+// ... AuthorDerivedRequestInput { ..., authoring_perspective_id: None,
+//                                 derived_from: &derived_from }
+```
+
+The request names targets; it never names a kind, a relation, or an authorship
+class. The outcome reports `edge_count` where it used to imply handles.
+
+### `proxima_core::error::ErrorCode` is no longer `#[non_exhaustive]`
+
+Only affects code that `match`es on `ErrorCode` from outside `proxima-core`.
+The enum is unchanged; the attribute is gone, so a match on it must now be
+exhaustive and cannot carry a `_ =>` arm alone.
+
+**Symptom:** `error[E0004]: non-exhaustive patterns` disappears and is
+replaced by nothing — existing matches with a wildcard keep compiling. The
+break arrives later, when a future release adds a variant and your wildcard
+is no longer optional but your match is.
+
+**Fix:** name the variants you handle and keep a `_ =>` arm if you want the
+old behaviour. Nothing needs changing today.
+
+**Why.** `ErrorCode` says of itself that "additional variants land with the
+verbs that raise them", and that growth is exactly the moment a decision is
+owed: a transport has to say what a new code renders as. The REST surface
+maps every code onto an HTTP status ([17](docs/17-rest-surface.md) §Status
+mapping) and that map is required to carry no wildcard, so adding a code is
+a compile error until someone chooses its rendering. `#[non_exhaustive]`
+would have forced the wildcard that silently buckets a new code as `500`.
+The cost lands only on out-of-tree matchers: `ErrorCode` is not re-exported
+from the `proxima` facade or from `proxima_core`'s root, and every in-tree
+matcher already lives inside `proxima-core`, where the attribute never
+applied.
+
+### Five signatures that are more than a rename
 
 **`EmbedCaps` gained a field**, which breaks every struct literal:
 
@@ -1066,6 +527,13 @@ and bisected into chunked embeddings instead. The floor is
 construction — see [docs/10 §Bounding embedding
 input](docs/10-configuration.md#bounding-embedding-input). Operators of
 `apps/proxima-mcp` set `PROXIMA_EMBED_MAX_INPUT_CHARS` instead.
+
+**`CoreToolInfo` gained `output_schema`**, which breaks a struct literal the
+same way — the type is public and not `#[non_exhaustive]`. Hosts that only
+*read* the listing are unaffected and gain the field. It carries the tool's
+derived output schema, the same value MCP serves as `outputSchema` and the
+REST document serves as the 200 response schema; before this the Rust facade
+was the one surface that could dispatch a call and not describe its reply.
 
 **The derived write's two embedding fields became one enum.** A custom
 `MemoryAuthoringPort` (or a flavor building a `DerivedDraft`) now reads:
@@ -1173,6 +641,7 @@ missing feature, an unnameable type.
 | `EmbedCaps` | `OpenAiCompatEmbeddingClient::new` — `mistral()` supplies its own, which is why the gap was easy to miss; every other OpenAI-compatible endpoint (a local Ollama, any provider needing `matryoshka: true`) was unreachable |
 | `SearchReadRequest`/`Response`, `MemorySearchRequest`/`Result`/`Page`, `SearchMode`, `SearchOrder`, `TagMatch`, `SearchCursor`, `DEFAULT_HYBRID_SEMANTIC_WEIGHT`, `MAX_SEARCH_PAGE_LIMIT` | `Engine::search` — an out-of-tree flavor could write a corpus and had no sanctioned way to query it |
 | `CitedBlobStore`, `S3RuntimeConfig`, `BlobError` | `BuiltProxima::blobs` (a `pub` field) and `Proxima::s3` — with `S3RuntimeConfig` unnameable, `from_env()` was the only way to configure the blob lane, so a library API demanded process environment |
+| `CitedBlobReconcileOutcome`, `CitedBlobMissingObject`, `MAX_RECONCILE_SAMPLE` | `CitedBlobStore::reconcile_cited_blobs` — the method was reachable from every host tier and its result could only be bound by inference |
 | `OwnerRefKind` | half the return of `OwnerRef::columns()`, which every flavor with its own tables calls |
 | `TrimmedLenViolation`, `check_trimmed_len` | `GoalWriteBuildError`'s variant payloads |
 | `Role` | minting a group-owner `AuthzContext` |
@@ -1180,31 +649,107 @@ missing feature, an unnameable type.
 `public_api_tiers.rs` now constructs every variant of the scope enum, so a
 sixth one has to be added there too.
 
-### Search stopped resolving owners through the goals union
-
-**No action required.** Query-shape change inside `core_search_memories`; the
-returned `(memory_id, lexical_score)` set is unchanged.
-
-Every candidate branch reads `FROM proxima_core.memories m` but resolved the
-candidate's home owner by outer-joining a `memories UNION ALL goals` union —
-which for a memory row can only ever return `m` itself. The cost was not the
-join: the planner drove the whole query off that union, seq-scanning both
-tables per branch, which is also why no index could serve the lexical
-predicate.
-
-Measured on a 15,265-memory corpus with six search projections, six lexical
-queries, median of seven interleaved runs: **1,832.8 ms → 1,321.9 ms
-(1.39×)**, per-query 1.36×–1.42×, byte-identical results on every query.
-
-One note for anyone diffing search results: rows tied on `created_at` between
-the base branch and a projection branch can swap order, which changes which of
-two already-arbitrary snippets survives `merge_row`. Ranking and membership do
-not change; a projection declaring `SearchProjectionField::MEMORY_TEXT` removes
-the ambiguity by construction.
-
 ## Flavor SDK changes
 
 ### Breaking
+
+**`proxima_flavor!` lost two keys.**
+
+```diff
+ proxima_flavor! {
+     name = "my-flavor",
+     fact_schemas = [...],
+     abstraction_schemas = [...],
+     perspective_schemas = [...],
+     goal_schemas = [...],
+-    edge_schemas = [],
+-    relations = [],
+     mcp_tools = [...],
+ }
+```
+
+Both are now unknown keys, which is a compile error. `PgSidecarRegistry::add_edge`
+is gone for the same reason, along with `PgEdgeSidecar` and `PgEdgePayload`.
+
+**Connections are declared, not registered.** A flavor connects nodes by
+declaring which of its payload's own fields point at other nodes.
+`references()` is defaulted on all four payload traits, so a schema that
+connects nothing needs no change at all:
+
+```rust
+fn references(&self) -> Vec<PayloadReference> {
+    vec![PayloadReference::memory(
+        "work_item_memory_id",
+        EntityKind::Fact,
+        MemoryId::new(self.work_item_memory_id),
+    )]
+}
+```
+
+Ingest turns each declaration into exactly one `reference` row, in the node
+write's own transaction. Three constructors: `memory` and `goal` pin a row,
+`fact_entity_head` follows the head as it is re-observed — which is where the
+retired descriptor's `FollowHead`/`Pin` cell went, into the address itself, so
+the two cannot disagree.
+
+Porting a registered relation:
+
+| Old relation shape | Port to |
+|---|---|
+| a structural relation between two of your nodes | a reference field on whichever payload owns the statement |
+| a relation with a typed edge sidecar | move the sidecar's fields into that payload; the connection is one row, the detail is N payload entries |
+| a relation carrying a reason, a confidence, or any judgment | a node — a Perspective whose payload references its subjects |
+| a relation neither endpoint's payload could own | you are missing a node, not an edge kind (see `proxima-code/work-assignment-v1`) |
+
+**Deliberately lost, not overlooked:** a third-party flavor can no longer
+define a novel traversable link vocabulary without touching core. The in-tree
+evidence — three registered relations across the whole tree, all expressible
+as node content — said that flexibility was speculative. The escape valve is
+total: any relationship whatsoever can be asserted as an interpretation node.
+The question is never whether something can be expressed, only where it lives.
+
+**`Tool::Output` and `McpTool::Output` must derive `JsonSchema`.** The bound on
+both traits gained one term:
+
+```diff
+-type Output: serde::Serialize + Send + 'static;
++type Output: serde::Serialize + schemars::JsonSchema + Send + 'static;
+```
+
+The symptom is a compile error at your `impl Tool`/`impl McpTool` block, not
+at the type: `the trait bound `MyToolOutput: JsonSchema` is not satisfied`,
+pointing at the `type Output = MyToolOutput;` line. The fix is to add the
+derive to the output type and to every type it nests:
+
+```diff
+-#[derive(Debug, Serialize)]
++#[derive(Debug, Serialize, JsonSchema)]
+ pub struct MyToolOutput { ... }
+```
+
+Two derives that will not compile on the first pass. A field carrying
+`#[serde(with = "...")]` needs `#[schemars(with = "String")]` (or whatever
+the module writes) beside it, because schemars reads the serde attribute and
+tries to resolve the module path as a type. A `time::OffsetDateTime` field
+needs the same, with or without a serde attribute — schemars ships no impl
+for it.
+
+**Why the bound and not an `Option`.** `McpToolDescriptor` gained
+`output_schema: serde_json::Value`, derived from `Output` exactly as
+`args_schema` is derived from `Args`, and served as MCP `outputSchema`. A
+defaulted or optional schema would have made the manifest describe some
+tools' replies and not others, which is the state this replaces.
+
+**A recursive output type is a registration error**, the same rule the
+argument side has always had: the schema is emitted `$ref`-free so clients
+that do not resolve references still render every field, and a recursive type
+has no finite `$ref`-free form.
+
+The schema is generated by `mcp_output_schema`, a *sibling* of
+`mcp_tool_schema` rather than a caller of it. The dispatcher normalization
+that flattens an internally tagged `Args` enum into an `action` discriminator
+is an argument-side pass; an output union stays a union, and an output root
+may be any schema, not only `type: object`.
 
 **`SearchProjection` and `MemorySearchProjection` gained two fields.** Neither
 is `#[non_exhaustive]` and neither derives `Default`, so out-of-tree struct
@@ -1249,13 +794,43 @@ the stored column equals `lexical_tsv` over the projection's own
 concatenation. Declare `language_column: Some("lexical_language")` alongside
 it, and add the column plus mirror trigger in your migration.
 
-**Edge sidecars must implement read-back.** `PgSidecarRegistry::add_edge` now
-requires `PgEdgePayload` — a batched `load_edge_batch(ctx, edge_ids)` loader —
-alongside `PgEdgeSidecar`, and `freeze_against` rejects an edge sidecar
-without one. An edge payload that can be written but never read back is a
-write-only API hole. Core ships readers for `AgentLinkV1` and the code
-flavor's `EdgeCallsV1`; a custom one needs a single
-`SELECT ... WHERE edge_id = ANY($1)`.
+**`CitedBlobPort` gained a required method: `find_held_blobs`.** Anything
+implementing `CitedBlobPort` — including a test fake — must add it. It is
+**required rather than defaulted on purpose**: a default body would have to
+answer "I hold nothing", which is exactly the answer a caller acts on by
+uploading, so an implementor that inherited it would silently report every
+artefact as absent. A default is only safe on this trait when it is *derived*
+from other required methods; nothing here answers "do I hold these bytes".
+
+```rust
+async fn find_held_blobs(
+    &self,
+    authz: &AuthzContext,
+    owner: OwnerRef,
+    content_hashes: &[[u8; 32]],
+) -> Result<Vec<CitedBlobHeld>, StorageError>;
+```
+
+A fake with no storage answers `Ok(Vec::new())`; one that models storage should
+answer from whatever it models.
+
+**What it is for.** Storage is content-addressed, so re-uploading bytes the
+corpus already holds was always *correct* — it converges on one artefact and
+reports `idempotent_replay`. It was never *free*: the bytes crossed the wire,
+were streamed and hashed, and were copied in the object store before the caller
+learned none of it was needed. This moves that discovery in front of the
+transfer. Re-offering a corpus now costs one indexed query instead of its full
+size in bandwidth.
+
+Digests are raw `[u8; 32]`, not hex — hex is the client-facing spelling and
+stays at the MCP boundary. Batches are capped at `MAX_HELD_BLOB_DIGESTS`
+(1000); both it and `CitedBlobHeld` are on the flavor facade.
+
+Two properties it deliberately keeps: it returns **no storage coordinates**, and
+**"absent" and "not yours" are the same answer**, so a batch sweep cannot become
+an enumeration oracle over another owner's corpus. It gates on *read* authority,
+matching `read_url` — checking before uploading must not be a stricter question
+than downloading the bytes.
 
 **A tool that declares no `ANNOTATIONS` no longer boots.** The host fails at
 registry freeze — at startup, before serving — with
@@ -1287,6 +862,20 @@ Code that needs to know whether a tool is a read should call
 resolving the tool's own declaration first and the manifest second is the order
 `try_freeze` guarantees and the call-path gate uses.
 
+**A dispatcher's actions are its descriptor's `action_arg_specs`.** A flavor
+tool whose `Args` is an internally tagged enum is now a dispatcher everywhere,
+not only on the wire: `try_add_tool` — the path `proxima_flavor!` uses —
+populates `McpToolDescriptor::action_arg_specs`, and every reader that used to
+ask the substrate's `CoreActionMeta` tables asks the descriptor instead.
+`try_freeze` refuses a tagged `Args` with no specs, specs that disagree with
+the derived schema, and any discriminator other than `action`.
+
+`proxima_core::core_tool_has_actions` is **removed** as part of that: it
+answered "does this tool have actions" from the substrate table, which was
+never the right authority for a flavor tool. Read
+`McpToolDescriptor::action_arg_specs` off the frozen registry — non-empty is
+the same answer, for substrate and flavor tools alike.
+
 ### Additive
 
 | Added | For |
@@ -1299,6 +888,7 @@ resolving the tool's own declaration first and the manifest second is the order
 | `AuthorDerivedRequestInput` + 8 companions | `Engine::author_derived_authorized` — a flavor could declare derived schemas but not write one |
 | `SearchProjectionColumnKind::MemoryText`, `SearchProjectionField::MEMORY_TEXT` | projecting `memories.text` instead of copying it into the sidecar |
 | `FactPayload::EMBEDDABLE` (defaults to `true`) | a Fact that should be readable and lexically findable but never vectorised |
+| `PayloadKeyBuilder::field_option_*` for `u8`/`u32`/`i32`/`i64`/`u64`/`usize`/`bytes` | an optional field in a receipt key, without inventing a per-schema absence encoding |
 
 Contract details worth knowing before building on these:
 
@@ -1332,6 +922,9 @@ Contract details worth knowing before building on these:
   bought nothing (every branch already joins `memories`) and made a second
   corpus that silently returns different text from a scoped query than from an
   unscoped one the moment it drifts.
+- **Adopting `field_option_*` in an existing payload key changes it**, and a
+  receipt key is identity — every re-registration mints a new Fact instead of
+  replaying. Adopt it on a new `SCHEMA_VERSION`, never in place.
 - **The pool stays off the supported export tier on purpose.** The intended
   shape is a flavor-owned store type built from `clone_pool_for_host` that
   keeps `proxima_core.*` SQL private, mirroring `proxima-code`'s
@@ -1353,6 +946,383 @@ a flavor that could not call them would have to restate the definition its own
 generated column is built from, which is exactly the drift they prevent. The
 guardrail masks those calls and still fails on any literal naming a core table
 or view.
+
+## Operator changes
+
+### Re-register and re-index every code repository
+
+**Required if you run the code flavor.** Three separate reasons converge on
+one action:
+
+- The flavor migration drops `proxima_code` and rebuilds it, so the repository
+  index is gone either way.
+- Re-ingest is how `reference` rows come back into the edge index.
+- The chunker changed. It **no longer drops comments** — in the Rust grammar a
+  doc comment is a *sibling* of the item it documents, and the merge step
+  skipped comment nodes, so every `///` and `//!` block was excluded from the
+  corpus. Measured over 444 indexed Rust files, chunk spans covered 95.3% of
+  source bytes overall but only 14.2% of `flavors/code/src/migrations.rs`: the
+  loss landed exactly on the files that carry their reasoning in prose. After
+  the fix, 99.2%. And **`code-chunk-v1` renders its body** as `path:start-end`
+  plus the chunk text rather than the header alone — that render is
+  `memories.text`, so it is what gets embedded. Chunk embeddings previously
+  encoded a file path and two line numbers, and search could only retrieve code
+  whose *filename* resembled the question.
+
+```
+proxima-code_register_repo        { path }
+proxima-code_ingest_head_snapshot { repo_handle }
+```
+
+There is no `erase_repo` step: the schema no longer exists to erase from. (A
+HEAD snapshot re-derives only files whose blob hash moved, so on a schema that
+survived, an unchanged repository would keep its old chunks permanently. That
+skip cannot be bypassed — a derived Abstraction must carry the same
+`source_batch_id` as the Facts it came from — which is why the rebuild is the
+supported path rather than an inconvenience.)
+
+**Budget for the re-embed.** Chunk embeddings now cover real content, so the
+queue is proportional to corpus size: a 620-file tree enqueues 4,083 jobs.
+
+While you are here, consider [scoping the repository](#scoping-what-gets-indexed)
+— 22% of one measured three-repo index was a single repository's test
+fixtures.
+
+### Scheduled maintenance changes
+
+**The reconcile CLI is renamed.** `proxima-mcp reconcile-embeddings` is now
+`proxima-mcp maintain-embeddings`, same flags. **Update cron and deploy
+specs**; the old subcommand fails with a message naming the new one. The pass
+gained an orphan-row sweep and a health report (job backlog, orphan counts,
+ANN recall canary), and is serialized by a Postgres advisory lock — a run that
+finds the lock held prints a skip notice and exits `0`, so cron overlap is
+safe.
+
+**Startup catch-up is automatic.** When an embedding client is configured, the
+in-process worker runs one `missing-only` reconcile before its first drain, so
+Facts ingested while no client was configured, and jobs stuck in the `failed`
+dead-end, are re-enqueued on restart. There is still no recurring in-process
+scheduler; recurring maintenance stays external.
+
+**Retention is now enforceable — decide before you schedule it.**
+`owner_fact_retention.retention_seconds` was inert config, and `change_event`
+grew without bound. One new cron-safe pass handles both:
+
+```sh
+proxima-mcp maintain-retention --enforce-fact-retention \
+    --prune-change-events-older-than 90d
+```
+
+Review before scheduling:
+
+- **Configured windows become real.** Owners with a `retention_seconds` value
+  have Facts older than the window tombstoned — hidden from present-only
+  reads, rows and provenance kept; physical destruction stays exclusive to the
+  compliance-erase family. Audit Facts (`core/mcp-call-logged-v1`) are always
+  excluded. **If a window was set speculatively, clear it before scheduling.**
+- **Tombstoning emits `EntityDelete` change events** — the first producer of
+  that kind. The variant has been on the wire since v0.0.4, but consumers that
+  only ever matched `EntityAppend` should be checked.
+- **Pruned change events are gone for every consumer.** A forward poller whose
+  `since` cursor predates the prune horizon misses them with no gap signal.
+  Pick a horizon comfortably larger than the slowest consumer's lag, or
+  re-baseline lagging consumers via cold-start stitching (docs/14 §Change Log).
+- **Legal holds gate both halves.** Held owners are skipped and reported; the
+  pass never blocks on a hold.
+
+**Embedding jobs already marked terminal are not recovered.** A transient
+upstream failure that Ollama reports as HTTP 400 used to be filed as a
+permanently rejected input. That is fixed going forward, but rows already
+marked `failed` with the permanent marker stay terminal by design. To re-offer
+them:
+
+```sql
+UPDATE proxima_core.embedding_jobs
+   SET status = 'pending', attempts = 0, last_error = NULL,
+       next_attempt_at = now()
+ WHERE status = 'failed'
+   AND last_error LIKE '%: EOF%';
+```
+
+Widen the `last_error` filter only to messages you recognise as transport
+failures; a genuinely over-limit input should stay terminal.
+
+### The OAuth protected-resource identifier broadened to the public origin
+
+`/.well-known/oauth-protected-resource` advertised `{public_url}/mcp` as the
+RFC 9728 `resource`. It now advertises `{public_url}`.
+
+| | Was | Now |
+|---|---|---|
+| `resource` in the discovery document | `https://proxima.example.com/mcp` | `https://proxima.example.com` |
+| RFC 8707 `resource` parameter clients send | `https://proxima.example.com/mcp` | `https://proxima.example.com` |
+| Audience stamped into issued tokens | `…/mcp` | the origin |
+
+**Every already-issued token is invalid** against the new identifier, because
+that string *is* the audience an authorization server stamps in. Every client
+must re-request with the new `resource` value, and any audience literal
+configured out-of-band — `PROXIMA_OIDC_AUDIENCE`, an authorization-server
+resource/scope registration, a gateway's audience check — must be updated to
+match. Do the server and the authorization server together; a client holding
+an old token gets `401`.
+
+**Why now rather than later.** The old identifier was per-surface, and this
+tag adds a second surface: `/v1`, the REST rendering of the tool manifest
+([17](docs/17-rest-surface.md)). One identifier means one audience, one
+metadata document, and one token that reaches both surfaces. Two would mean
+two audiences and therefore non-interchangeable tokens — a feature only for
+deployments that want surface-scoped credentials, and a permanent tax for
+everyone else. The population holding tokens today is small and pre-1.0;
+once `/v1` ships under its own identifier the split is baked into every
+deployment and every issued credential, and consolidating later is a
+coordinated break across two client populations instead of one.
+
+Nothing else in the discovery document changed: `authorization_servers`,
+`bearer_methods_supported`, the `WWW-Authenticate` challenge and the
+`/.well-known` path are all as they were.
+
+### A tool palette names a flavor dispatcher's actions, not the tool
+
+**Only affects deployments running an out-of-tree flavor that registers a
+dispatcher tool** — one whose `Args` is an internally tagged enum. Substrate
+tools are unaffected: their `protocol_action::*` scope ids are string-identical
+to the derived `"{tool}:{action}"` form, so every existing substrate
+configuration keeps working unchanged.
+
+A flavor dispatcher is now gated and enumerated action by action, exactly as a
+substrate dispatcher always was:
+
+- **A palette entry naming the bare tool no longer authorizes a call.** The
+  scope gate wants `"tool:action"` leaves. Grant the leaves the caller needs.
+- **`PROXIMA_TOOL_ALLOW` / `PROXIMA_TOOL_DENY` reject the bare name** as an
+  unknown tool id, because `registered_tool_ids()` now emits the dispatcher's
+  leaves rather than one bare id. Name the leaves.
+
+Both fail closed — a stale configuration refuses calls rather than widening
+them — and the `not authorized` message now lists the caller's still-allowed
+actions on the tool, so an agent can retry instead of guessing.
+
+### The `/v1` REST surface is available, and off
+
+Optional and additive; no action is required to keep using MCP. It is a
+rendering of the same frozen tool manifest through the same dispatch seam and
+the same `ScopeGateBehavior`, so it grants no authority MCP does not already
+grant. Two gates turn it on, both required: build with the `rest` cargo
+feature, then set `PROXIMA_REST_ENABLED=true`. See
+[17](docs/17-rest-surface.md) for the routes and
+[10](docs/10-configuration.md#mcp-endpoint-and-authentication) for the flag.
+
+## Behaviour that changes with no action from you
+
+Nothing here needs configuration; all of it changes what a query returns or
+what a write does. Verify against your own corpus.
+
+**Over-limit memories are now embedded in chunks.** A memory whose text
+exceeds the provider's input limit is stored as several chunk rows under one
+embedding version, where it previously went un-embedded entirely.
+
+**A derived memory whose text the embedder refuses is now written anyway.**
+`core_derive` and every `Engine::author_derived_authorized` caller used to
+fail the whole write — deterministically, on every retry — when one
+`/embeddings` call refused or crashed on the text, taking every model call
+already paid for upstream with it. The memory now lands with no vector and a
+pending embedding job enqueued in the same transaction, so the drain (which
+bisects over-limit input) supplies the vector; the response carries
+`embedding_deferred: true` and the memory is lexically findable but not
+semantically findable until a drain runs. A provider that is simply *down*
+still fails the write, so an outage cannot quietly produce a corpus of
+unembedded memories. Hosts that run no drain should call
+`Engine::drain_embedding_jobs` or `maintain-embeddings --drain` — see
+[scheduled maintenance](#scheduled-maintenance-changes).
+
+**Lexical search stems and drops English stopwords** (`simple` → `english`),
+in core and in the code flavor alike. Result *sets* change, not just
+ordering: a query of only stopwords no longer matches, and `running` now
+matches `run`. Re-check any saved query or test that pins exact lexical hits.
+Exact identifier lookup moved to the substring arm, which carries a larger
+score bonus than any rank, so `embed_in_chunks` still matches verbatim.
+
+**Lexical ranking moves, and by a lot.** `LEAST(ts_rank_cd(v, q) * 10.0, 1.0)`
+returned 1.0 for every matching row — nothing in this schema assigns lexeme
+weights, so every document is weight D, where `ts_rank_cd` starts at exactly
+0.1. Measured on an indexed corpus, **3,170 of 3,170 matching rows
+saturated**: within a score band nothing was ranked at all. Cover density is
+now normalised, and the OR-rescue arm ranks by length-normalised `ts_rank`
+instead of cover density:
+
+| corpus | before | after |
+|---|---|---|
+| 17 real bug reports | 1 of 17 | **5 of 17** |
+| 7 real bug reports | 3 of 7 | **5 of 7** |
+| 24 plain-English questions | 12 of 24 | **17 of 24** |
+
+Same set, different and better order; no re-index required. Only the rescue
+arm changed — the strict arm keeps cover density. Score *bands* are unchanged,
+so anything comparing against the documented `[0.5, 1.0]` / `(0.25, 0.45]` /
+`0.25` ranges still holds. `semantic` and undegraded `hybrid` are untouched.
+
+**Search stopped resolving owners through the goals union.** Query-shape change
+inside `core_search_memories`; the returned `(memory_id, lexical_score)` set is
+unchanged. Every candidate branch reads `FROM proxima_core.memories m` but
+resolved the candidate's home owner by outer-joining a `memories UNION ALL
+goals` union — which for a memory row can only ever return `m` itself. The cost
+was not the join: the planner drove the whole query off that union, seq-scanning
+both tables per branch, which is also why no index could serve the lexical
+predicate. Measured on a 15,265-memory corpus with six search projections, six
+lexical queries, median of seven interleaved runs: **1,832.8 ms → 1,321.9 ms
+(1.39×)**, per-query 1.36×–1.42×, byte-identical results on every query. One
+note for anyone diffing search results: rows tied on `created_at` between the
+base branch and a projection branch can swap order, which changes which of two
+already-arbitrary snippets survives `merge_row`. Ranking and membership do not
+change; a projection declaring `SearchProjectionField::MEMORY_TEXT` removes the
+ambiguity by construction.
+
+### Fixed silently — nothing to do, but searches that returned nothing may now match
+
+**A tag filter matches the tag that was stored.** The write side folds a tag to
+`trim().to_ascii_lowercase()`; the search filter did not fold and matched the
+raw string. A caller using the same literal on both sides got nothing:
+
+```
+core_remember        tags: ["Rust"]  -> stored as ["rust"]
+core_search_memories tags: ["Rust"]  -> no matches
+```
+
+There was no error to read, and a filter that matches nothing is
+indistinguishable from a memory that was never written. Both sides now fold,
+and the filter sorts and dedups afterwards, so `["Rust", "rust"]` is one
+predicate — which matters under `tag_match: all`.
+
+**A viewer can see a flavor's read tools.** `tools/list` resolved
+read-vs-write from a table over *core* tool names and fell through to "demand
+write" for anything else, so a read-only principal saw no flavor tool at all —
+not refused, **absent**, which is the harder symptom to trace. The same filter
+drives `initialize`'s instructions and `proxima://how-to`, so a viewer's
+onboarding text omitted them too. Expect `..._search_chunks`, `..._list_repos`,
+`..._open_file_revision`, `..._search_commits` and `proxima-docs_search` to
+appear for viewer-role tokens. Write tools stay hidden.
+
+**`proxima-code_open_file_revision` reports the span it actually returned.**
+When `max_text_bytes` truncates the window, the reported `text_line_range` end
+is now the last line *sent* rather than the last line selected; a caller using
+the old value to place the snippet was wrong about every line after the cut. A
+truncated chunk also carries `text_truncated: true` (omitted when false), and
+`line_limit` above 500 now clamps instead of erroring.
+
+**A `repo_handle` naming no repository is rejected** by
+`proxima-code_search_chunks`, `_search_commits` and `_open_file_revision`,
+with `repo_handle not found for owner: <handle>`. They previously returned an
+empty result, which reads exactly like "this repository has nothing indexed".
+Only the *name* forms were checked; a handle or bare UUID short-circuited on
+parse, so a stale handle after `erase_repo`, a typo, or another owner's id all
+resolved silently. Another owner's repository reports exactly what a
+nonexistent one does.
+
+**One crashing input no longer blocks its embedding batch.** A provider that
+*dies because of* an input reports the same thing as an outage; Proxima
+released the whole claim without burning attempts, so the poisonous input came
+back with its batch on every drain and never went terminal. Observed while
+ingesting a scanned book: one page whose OCR hallucinated a 300-row CJK table
+killed the model runner, and the other **31 pages of its batch stayed
+unembedded at `attempts = 0`**. The drain now probes the provider with a
+trivial input after a transient batch failure — if it answers, the batch's
+contents are at fault and its jobs are embedded individually. Expect one extra
+small request per failed batch.
+
+## New surface, nothing to do
+
+| Added | What it gives you |
+|---|---|
+| `core_interpret` | a claim about existing memories, as an interpretation Perspective — the successor to `core_link` |
+| `proxima://goals{?state,limit,cursor}`, `proxima://goal/{id}` | owner-scoped goal listing and single read, including stored wake config |
+| `proxima://edges{?kind,source,target,limit,cursor}` | the connection index, traversable; `kind` is `origin` or `reference` |
+| `proxima://memories{?ids}` | batch read, at most 100 prefixed ids, in request order plus a `missing` list |
+| `core_upload` (`prepare`/`complete`/`abort`/`read_url`) | the S3 lane as an MCP tool; served automatically when `PROXIMA_S3_*` is configured |
+| `core_search_memories` `min_score`, `semantic_weight`, `cursor` | relevance floor, hybrid fusion weight, keyset resume |
+| `proxima://wake-candidates` `has_more` | truncation at the 200-candidate cap is signalled, never silent |
+| `core_fact` citation read-back `page_span` / `document` | a caller holding a cited Fact learned *that* it cited something, not *what* |
+| `proxima-code_erase_repo` | the first supported way to remove an indexed repository |
+| `proxima-code_register_repo` `include_globs` / `exclude_globs` | [scoping what gets indexed](#scoping-what-gets-indexed) |
+| the `/v1` REST surface | [off by default](#the-v1-rest-surface-is-available-and-off) |
+
+Three of these have contracts worth reading before you build on them.
+
+**`proxima-code_erase_repo`** is the first supported way to remove an indexed
+repository at all — the storage verb existed but was reachable only through
+`cfg(debug_assertions)` testkit, so in a release build a repository once
+indexed was permanent. It deletes every Fact, Abstraction, edge, embedding,
+receipt, citation mapping and cited object derived from that repository and
+returns a receipt counting each. Irreversible; `confirm_canonical_path` must
+match the stored path exactly.
+
+**Citing an uploaded document.** `core/uploaded-blob-v1` has been a registered
+`CitedObject` schema since the baseline and the upload lane has been writing
+rows for it — but no registered `CitationMapping` named it, and a mapping is
+the only path from a Fact to a cited object. Core shipped an upload lane whose
+artefacts nothing could cite. Two mappings now target it:
+`core/uploaded-blob-whole-v1` (pure link, pass `"mapping_payload": {}`) and
+`core/uploaded-blob-page-span-v1` (`page_from`, `page_to`, optional
+`char_range_start`/`char_range_end`). Pages are one-based and inclusive at
+both ends; char ranges are relative to the span's text, not the document's, so
+a mapping survives re-extraction as long as the pages did not move. Re-citing
+one document reuses its single `cited_objects` row.
+
+`core_remember`'s `citation` accepts either `cited_object_id` (optionally
+`C:`-prefixed, as returned by `core_upload` `complete`) or the three inline
+`object_*` fields — exactly one shape, `mapping_*` required either way:
+
+```json
+{
+  "title": "Mindestbreite einer Tür",
+  "body": "Die lichte Durchgangsbreite beträgt mindestens 90 cm.",
+  "citation": {
+    "cited_object_id": "C:0198…",
+    "mapping_schema_id": "core/uploaded-blob-page-span-v1",
+    "mapping_schema_version": 1,
+    "mapping_payload": { "page_from": 47, "page_to": 47 }
+  }
+}
+```
+
+Regions on a page are deliberately not included — a bounding box has to agree
+with whoever produced it about pixels, points, or fractions of the page, and
+core cannot make that agreement on a producer's behalf. Register a flavor
+mapping targeting `core/uploaded-blob-v1`; see
+[docs/11 §Core-registered schemas](docs/11-citations.md#core-registered-schemas).
+
+**Bytes never travel through MCP.** `core_upload` mints presigned URLs; the
+client `PUT`s raw bytes to `upload_url` with exactly the returned headers,
+then calls `complete`. `read_url` presigns only locators the upload lane
+itself wrote — the inline citation path stores a caller-asserted
+`bucket`/`object_key` verbatim and never verifies it, and asking `read_url`
+for such an object answers exactly like a missing one.
+
+### Scoping what gets indexed
+
+`proxima-code_register_repo` takes `include_globs` and `exclude_globs`,
+gitignore-shaped, both defaulting to empty — which is what every existing repo
+already has.
+
+```json
+{"path": "/src/knip", "exclude_globs": ["**/fixtures/**"]}
+```
+
+`*` stops at a `/` and `**` crosses directories. A path is indexed when it
+matches some include (or there are no includes) and matches no exclude.
+Measured over a three-repo dogfood index, 3,389 of knip's 4,935 chunks (68.7%)
+sit under a `fixtures/` or test path — 22% of the whole deployment's
+embeddings, with no way to say so.
+
+- **Scope belongs to the repo, not to a call.** The incremental poller applies
+  the same scope the snapshot does, or the indexed set would depend on which
+  verb ran last.
+- **Re-registering an existing path updates the scope** — deliberately unlike
+  `display_name`, which is ignored on replay. Sending either list replaces
+  both, so `{"exclude_globs": []}` clears a scope; omitting both leaves it
+  alone.
+- **Narrowing a scope tombstones what left it** on the next ingest.
+  `files_excluded` in the ingest report counts what scope removed, and
+  `list_repos` echoes both lists.
 
 ## Optional: change the lexical language
 
@@ -1422,7 +1392,6 @@ references the configuration.
 `german` is stemming plus stopwords, not compound splitting. Embeddings and
 hybrid fusion are untouched — the semantic arm is language-agnostic and
 remains what carries cross-language recall.
-
 ---
 
 # v0.0.5 → v0.0.6
