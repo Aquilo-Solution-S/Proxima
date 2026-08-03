@@ -1,6 +1,6 @@
 use super::{
     FlavorRegistry, FlavorRegistryError, McpCallFn, McpTool, McpToolDescriptor, McpToolError,
-    McpToolOrigin, Tool, mcp_tool_schema, validate_action_args,
+    McpToolOrigin, Tool, mcp_output_schema, mcp_tool_schema, validate_action_args,
 };
 use crate::mcp::prepare_flat_tool_args;
 use crate::mcp::schema::undescribed_property_names;
@@ -42,6 +42,7 @@ impl FlavorRegistry {
         let under = format!("{expected_prefix}_");
         validate_tool_name(T::NAME, expected_prefix, &slash, &under)?;
         let args_schema = mcp_tool_schema::<T::Args>();
+        let output_schema = mcp_output_schema::<T::Output>();
         warn_undescribed_properties(T::NAME, &args_schema);
         let properties = flat_tool_property_names(&args_schema);
         // Tool registrations live for the process lifetime; leaking the
@@ -66,6 +67,7 @@ impl FlavorRegistry {
             },
             produces_schema_ids: T::PRODUCES_SCHEMA_IDS,
             args_schema,
+            output_schema,
             action_arg_specs: &[],
             annotations: <T as Tool>::ANNOTATIONS,
             call,
@@ -89,6 +91,7 @@ impl FlavorRegistry {
         let under = format!("{expected_prefix}_");
         validate_tool_name(T::NAME, expected_prefix, &slash, &under)?;
         let args_schema = mcp_tool_schema::<T::Args>();
+        let output_schema = mcp_output_schema::<T::Output>();
         warn_undescribed_properties(T::NAME, &args_schema);
         let properties = flat_tool_property_names(&args_schema);
         // Tool registrations live for the process lifetime; leaking the
@@ -120,6 +123,7 @@ impl FlavorRegistry {
             },
             produces_schema_ids: T::PRODUCES_SCHEMA_IDS,
             args_schema,
+            output_schema,
             action_arg_specs: T::ACTION_ARG_SPECS,
             annotations: <T as McpTool>::ANNOTATIONS,
             call,

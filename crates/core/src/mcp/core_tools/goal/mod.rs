@@ -151,7 +151,7 @@ pub struct GoalWakeArgs {
     pub hard_memories: Option<Vec<String>>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, JsonSchema)]
 pub struct GoalWriteOutput {
     pub handle: String,
     pub lifecycle_memory: Option<String>,
@@ -173,7 +173,7 @@ pub enum CoreGoalArgs {
     Decompose(GoalDecomposeArgs),
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, JsonSchema)]
 #[serde(untagged)]
 pub enum CoreGoalOutput {
     Write(GoalWriteOutput),
@@ -507,7 +507,7 @@ pub struct ChildGoalInput {
     pub wake: Option<GoalWakeArgs>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, JsonSchema)]
 pub struct GoalDecomposeOutput {
     pub parent_goal: String,
     pub children: Vec<GoalWriteOutput>,

@@ -5,7 +5,7 @@
 //! See docs/08 §Registration mechanism.
 
 use crate::authz::{AuthorizationHook, OwnerResolver};
-use crate::mcp::schema::mcp_tool_schema;
+use crate::mcp::schema::{mcp_output_schema, mcp_tool_schema};
 use crate::mcp::validate_action_args;
 use crate::verbs::schema::{
     FlavorRegistryFrozen, MemorySearchProjection, MemorySearchProjectionField, PayloadKind,

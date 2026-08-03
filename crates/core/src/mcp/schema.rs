@@ -1,9 +1,12 @@
-//! MCP tool argument-schema generation.
+//! MCP tool argument- and output-schema generation.
 //!
 //! The single source of truth for a tool's argument schema is its Rust
-//! `Args` type. `mcp_tool_schema` produces a `$ref`-free / `$defs`-free
-//! JSON Schema draft 2020-12 document so that MCP clients which do not
-//! resolve `$ref` still render every field (see commit 37f209b).
+//! `Args` type, and for its output schema its `Output` type.
+//! `mcp_tool_schema` and `mcp_output_schema` both produce a `$ref`-free /
+//! `$defs`-free JSON Schema draft 2020-12 document so that MCP clients
+//! which do not resolve `$ref` still render every field (see commit
+//! 37f209b). They differ in the client-facing normalization applied
+//! afterwards; see `mcp_output_schema`.
 
 use schemars::JsonSchema;
 use schemars::generate::SchemaSettings;
@@ -25,6 +28,54 @@ pub(crate) fn mcp_tool_schema<T: JsonSchema>() -> serde_json::Value {
         !schema_contains_ref(&value),
         "MCP tool type `{}` is recursive: schemars emitted a $ref that \
          cannot be inlined. MCP tool argument types must be non-recursive.",
+        std::any::type_name::<T>(),
+    );
+    value
+}
+
+/// Generate a `$ref`-free draft-2020-12 *output* schema for `T`.
+///
+/// Deliberately a sibling of [`mcp_tool_schema`] rather than a reuse of it.
+/// The two share the generator settings and the recursion guard — the
+/// `$ref`-free promise is about clients, not about direction — but the two
+/// normalization passes `mcp_tool_schema` runs afterwards both encode
+/// argument-side assumptions that are wrong here:
+///
+/// - `flatten_root_tagged_enum` rewrites an internally tagged enum into a
+///   flat object with a merged property set, `additionalProperties: false`
+///   and an `x-proxima-actions` extension. That is the *dispatcher call
+///   surface* — a description of which fields a caller may send for which
+///   action. An output union is not a call surface: a client validating a
+///   reply needs to know which variant it got, and a merged object claims
+///   every variant's fields belong to every variant.
+/// - `ensure_client_safe_root` forces an object root and rejects root
+///   combinators, because a provider tool `inputSchema` must be an object.
+///   Nothing constrains an output that way, and the in-tree outputs prove
+///   it: the four action-dispatcher tools answer with `#[serde(untagged)]`
+///   enums whose schema root is `anyOf`, and a tool with nothing to say
+///   answers `()`, whose root is `type: "null"`.
+///
+/// A union root is therefore preserved as generated: it is the honest
+/// description of a reply that really is one of several shapes.
+pub(crate) fn mcp_output_schema<T: JsonSchema>() -> serde_json::Value {
+    let mut settings = SchemaSettings::draft2020_12();
+    settings.inline_subschemas = true;
+    let schema = settings.into_generator().into_root_schema_for::<T>();
+    let mut value = serde_json::to_value(schema).expect("JsonSchema must serialize");
+    // JSON Schema permits a bare boolean as a whole document (`true` accepts
+    // everything, `false` accepts nothing), and schemars emits `true` for an
+    // unconstrained type such as `serde_json::Value`. MCP's `outputSchema`
+    // is typed as an object, so spell the same two schemas as the object
+    // forms that mean exactly the same thing.
+    match value {
+        serde_json::Value::Bool(true) => value = serde_json::json!({}),
+        serde_json::Value::Bool(false) => value = serde_json::json!({ "not": {} }),
+        _ => {}
+    }
+    assert!(
+        !schema_contains_ref(&value),
+        "MCP tool output type `{}` is recursive: schemars emitted a $ref that \
+         cannot be inlined. MCP tool output types must be non-recursive.",
         std::any::type_name::<T>(),
     );
     value

@@ -25,14 +25,14 @@ pub struct CodeWorkItemBundleArgs {
     pub handle: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkItemBundleKind {
     Work,
     Test,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum WorkItemPayloadBundle {
     Work {
@@ -50,7 +50,7 @@ pub enum WorkItemPayloadBundle {
     },
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, JsonSchema)]
 pub struct RepoBundle {
     pub repo_id: Uuid,
     pub display_name: Option<String>,
@@ -58,13 +58,13 @@ pub struct RepoBundle {
     pub target_branch: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, JsonSchema)]
 pub struct CriteriaBundle {
     pub handle: String,
     pub criteria: Vec<AcceptanceCriterionV1>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, JsonSchema)]
 pub struct ResultBundle {
     pub handle: String,
     pub status: String,
@@ -73,7 +73,7 @@ pub struct ResultBundle {
     pub log_excerpt: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, JsonSchema)]
 pub struct AcceptanceVerificationBundle {
     pub handle: String,
     pub criterion_key: String,
@@ -83,13 +83,13 @@ pub struct AcceptanceVerificationBundle {
     pub verifier_handle: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, JsonSchema)]
 pub struct ActiveGoalProvenanceBundle {
     pub goal_activated_handle: String,
     pub goal_handle: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, JsonSchema)]
 pub struct CodeWorkItemBundleOutput {
     pub handle: String,
     pub kind: WorkItemBundleKind,

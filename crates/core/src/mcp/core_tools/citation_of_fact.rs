@@ -19,21 +19,21 @@ pub struct CitationOfEntityHeadArgs {
     pub fact_entity_id: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, JsonSchema)]
 pub struct CitationOfFactOutput {
     pub fact: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub citation: Option<FactCitationOutput>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, JsonSchema)]
 pub struct CitationOfEntityHeadOutput {
     pub fact_entity_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub citation: Option<FactCitationOutput>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, JsonSchema)]
 pub struct FactCitationOutput {
     pub citation_mapping_id: String,
     pub mapping_schema_id: String,
@@ -52,13 +52,14 @@ pub struct FactCitationOutput {
 
 /// What the cited document IS (name, type, size, content hash, upload
 /// time) — deliberately not where it lives.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, JsonSchema)]
 pub struct UploadedBlobDocumentOutput {
     pub filename: String,
     pub mime: String,
     pub byte_len: u64,
     pub sha256_hex: String,
     #[serde(with = "time::serde::rfc3339")]
+    #[schemars(with = "String")]
     pub uploaded_at: time::OffsetDateTime,
 }
 

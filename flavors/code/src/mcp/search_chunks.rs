@@ -184,7 +184,7 @@ fn effective_snippet_max_chars(requested: Option<usize>) -> usize {
     })
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, JsonSchema)]
 pub struct CodeSearchChunksOutput {
     pub matches: Vec<ChunkMatch>,
     pub calls_edges: Vec<CallEdge>,
@@ -204,7 +204,7 @@ pub struct CodeSearchChunksOutput {
     pub degraded_to_lexical: bool,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, JsonSchema)]
 pub struct ChunkMatch {
     pub handle: String,
     pub repo_handle: String,
@@ -244,7 +244,7 @@ pub struct ChunkMatch {
 /// call site anyway. The connection comes back from the index; the sites
 /// come back from the caller chunk's own payload, which is where they now
 /// live (docs/16 §Flavor Migration).
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, JsonSchema)]
 pub struct CallEdge {
     pub source: Option<String>,
     pub target: Option<String>,
@@ -254,7 +254,7 @@ pub struct CallEdge {
     pub sites: Vec<CallSite>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, JsonSchema)]
 pub struct CallSite {
     pub callee_name: String,
     pub is_dynamic: bool,

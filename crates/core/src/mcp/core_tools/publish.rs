@@ -35,7 +35,7 @@ pub struct PublishToWorldArgs {
     pub entity: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, JsonSchema)]
 pub struct PublishOutput {
     pub ok: bool,
 }

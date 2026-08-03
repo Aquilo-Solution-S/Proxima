@@ -116,13 +116,13 @@ pub enum CoreUploadArgs {
     ReadUrl(UploadReadUrlArgs),
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, JsonSchema)]
 pub struct UploadHeaderOutput {
     pub name: String,
     pub value: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, JsonSchema)]
 pub struct UploadPrepareOutput {
     pub upload_id: String,
     pub upload_url: String,
@@ -130,7 +130,7 @@ pub struct UploadPrepareOutput {
     pub headers: Vec<UploadHeaderOutput>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, JsonSchema)]
 pub struct UploadCompleteOutput {
     pub cited_object_id: String,
     pub schema: String,
@@ -149,18 +149,18 @@ pub struct UploadCompleteOutput {
     pub fact: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, JsonSchema)]
 pub struct UploadAbortOutput {
     pub aborted: bool,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, JsonSchema)]
 pub struct UploadReadUrlOutput {
     pub read_url: String,
     pub expires_at: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, JsonSchema)]
 #[serde(untagged)]
 pub enum CoreUploadOutput {
     Prepare(UploadPrepareOutput),

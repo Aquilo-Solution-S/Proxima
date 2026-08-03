@@ -60,7 +60,7 @@ impl CodeRegisterRepoArgs {
     }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, JsonSchema)]
 pub struct CodeRegisterRepoOutput {
     pub repo: RepoItem,
     pub created: bool,
@@ -81,7 +81,7 @@ pub struct CodeListReposArgs {
     pub cursor: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, JsonSchema)]
 pub struct CodeListReposOutput {
     pub repos: Vec<RepoItem>,
     pub next_cursor: Option<String>,
@@ -126,7 +126,7 @@ pub struct CodeIngestHeadSnapshotArgs {
     pub repo_handle: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, JsonSchema)]
 pub struct CodeIngestHeadSnapshotOutput {
     pub repo: RepoItem,
     pub head_commit_sha: String,
@@ -138,7 +138,7 @@ pub struct CodeIngestHeadSnapshotOutput {
     pub embeddings_enqueued: usize,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, JsonSchema)]
 pub struct RepoItem {
     pub repo_handle: String,
     pub repo_id: String,
@@ -156,7 +156,7 @@ pub struct RepoItem {
     pub exclude_globs: Vec<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, JsonSchema)]
 pub struct IndexReportItem {
     pub commits_emitted: usize,
     pub commits_replayed: usize,
@@ -487,7 +487,7 @@ pub struct CodeEraseRepoArgs {
     pub confirm_canonical_path: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, JsonSchema)]
 pub struct CodeEraseRepoOutput {
     pub repo_id: String,
     pub canonical_path: String,

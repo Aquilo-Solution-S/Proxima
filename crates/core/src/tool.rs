@@ -349,7 +349,11 @@ pub trait Tool: Send + Sync + 'static {
     const ANNOTATIONS: Option<crate::mcp::McpToolAnnotations> = None;
 
     type Args: serde::de::DeserializeOwned + schemars::JsonSchema + Send + 'static;
-    type Output: serde::Serialize + Send + 'static;
+    /// What the tool answers with. `JsonSchema` is required for the same
+    /// reason it is on `Args`: the manifest describes both ends of the call,
+    /// and the derived schema is what MCP clients validate
+    /// `structuredContent` against.
+    type Output: serde::Serialize + schemars::JsonSchema + Send + 'static;
 
     fn call(ctx: ToolCtx, args: Self::Args) -> BoxFuture<'static, Result<Self::Output, ToolError>>;
 }

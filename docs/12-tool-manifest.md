@@ -44,7 +44,7 @@ pub trait Tool: Send + Sync + 'static {
     const PRODUCES_SCHEMA_IDS: &'static [&'static str] = &[];
 
     type Args: serde::de::DeserializeOwned + schemars::JsonSchema + Send + 'static;
-    type Output: serde::Serialize + Send + 'static;
+    type Output: serde::Serialize + schemars::JsonSchema + Send + 'static;
 
     fn call(
         ctx: ToolCtx,
@@ -66,6 +66,7 @@ pub struct ToolDescriptor {
     pub description: &'static str,
     pub produces_schema_ids: &'static [&'static str],
     pub args_schema: serde_json::Value,
+    pub output_schema: serde_json::Value,
     pub call: McpCallFn,
 }
 ```
@@ -109,9 +110,17 @@ normalization of action-dispatch tools described below.
 - Field descriptions originate only from the Rust type: a `///`
   doc-comment or `#[schemars(description = "...")]`.
 - A recursive tool argument type is a registration error.
-- Tool outputs are advertised by registered-schema-id reference
+- A tool's `Output` type is its output schema, produced the same way by
+  `mcp_output_schema<T: JsonSchema>()` and carried on
+  `McpToolDescriptor.output_schema` / MCP `outputSchema`. It is a sibling
+  of `mcp_tool_schema`, not a caller of it: the action-dispatch
+  normalization below is an argument-side pass, and an output union stays a
+  union. Recursion is a registration error at this end too.
+- Tool outputs are *also* advertised by registered-schema-id reference
   (`McpToolDescriptor.produces_schema_ids`) and resolved against the
-  `FlavorRegistry`.
+  `FlavorRegistry`. The two answer different questions: `output_schema` is
+  the reply envelope, `produces_schema_ids` are the registry payloads the
+  call writes.
 
 ### Action-Dispatch Tools
 
@@ -183,7 +192,7 @@ MCP dispatch contract:
 | Owner | selected at session initialize, bound server-side, rechecked through `OwnerAccessPort` |
 | Tool scope | token capabilities intersected with deployment profile and bound-owner role |
 | Args | action-dispatch tools validate fields strictly (see Tool Schema Contract), then JSON decoded into typed args |
-| Output | serialized typed output |
+| Output | serialized typed output, mirrored into MCP `structuredContent` and validatable against the tool's `outputSchema` |
 | Ids | prefixed ids (`F:`/`A:`/`P:`/`G:` form) — the only wire reference grammar. There is no `E:`: an edge has no id to name. |
 
 ## Persistence

@@ -94,7 +94,7 @@ pub struct ListMembersArgs {
     pub cursor: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, JsonSchema)]
 #[serde(untagged)]
 pub enum CoreMembershipOutput {
     AddMember(MutationOutput),
@@ -102,19 +102,19 @@ pub enum CoreMembershipOutput {
     ListMembers(ListMembersOutput),
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, JsonSchema)]
 pub struct MutationOutput {
     pub ok: bool,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, JsonSchema)]
 pub struct ListMembersOutput {
     pub members: Vec<MemberOutput>,
     pub next_cursor: Option<String>,
     pub has_more: bool,
 }
 
-#[derive(Debug, Serialize, PartialEq, Eq)]
+#[derive(Debug, Serialize, PartialEq, Eq, JsonSchema)]
 pub struct MemberOutput {
     pub member: String,
     pub relation: String,

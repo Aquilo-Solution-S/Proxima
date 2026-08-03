@@ -45,7 +45,7 @@ pub struct RecordUtteranceArgs {
     pub language: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, JsonSchema)]
 pub struct RecordUtteranceOutput {
     pub handle: String,
     pub idempotent_replay: bool,

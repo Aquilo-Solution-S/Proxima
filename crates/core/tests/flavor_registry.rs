@@ -327,3 +327,79 @@ fn all_mcp_tool_arg_schemas_are_ref_and_defs_free() {
         );
     }
 }
+
+/// Every registered tool describes what it answers with, and describes it as
+/// itself. The `Output` schema goes through a plain generation pass, not the
+/// dispatcher normalization the `Args` schema gets: `x-proxima-actions` is a
+/// statement about which fields a *caller* may send per action, and stamping
+/// it onto a reply would merge variants that a client is trying to tell apart.
+#[test]
+fn every_mcp_tool_declares_an_output_schema_without_dispatcher_normalization() {
+    let frozen = FlavorRegistry::default().freeze_or_panic_for_tests();
+    for tool in frozen.list_mcp_tools() {
+        assert!(
+            tool.output_schema.is_object(),
+            "tool {} must declare an output schema document: {:#}",
+            tool.name,
+            tool.output_schema,
+        );
+        assert!(
+            tool.output_schema.get("x-proxima-actions").is_none(),
+            "tool {} output schema must not carry the dispatcher args extension: {:#}",
+            tool.name,
+            tool.output_schema,
+        );
+    }
+}
+
+/// A dispatcher answers with an untagged union, and the manifest says so. The
+/// argument-side flattener would have collapsed this into one merged object
+/// with `additionalProperties: false`, which describes no reply the tool ever
+/// sends.
+#[test]
+fn a_dispatcher_output_schema_keeps_its_union_root() {
+    let frozen = FlavorRegistry::default().freeze_or_panic_for_tests();
+    let goal = frozen
+        .list_mcp_tools()
+        .iter()
+        .find(|tool| tool.name == "core_goal")
+        .expect("core_goal is registered");
+    assert!(
+        goal.output_schema
+            .get("anyOf")
+            .is_some_and(serde_json::Value::is_array),
+        "core_goal answers with an untagged union and must advertise it: {:#}",
+        goal.output_schema,
+    );
+}
+
+/// Declaring an output schema is a promise a client may enforce. MCP carries
+/// a tool's typed reply in `structuredContent`, which is a JSON *object*, and
+/// `McpToolHost` already sets it from whatever the tool returned — so a
+/// registered tool whose output could serialize to a scalar, array, or null
+/// would advertise a shape its own replies violate. Every branch of a union
+/// root has to clear the same bar.
+#[test]
+fn every_registered_tool_answers_with_an_object() {
+    fn describes_an_object(schema: &serde_json::Value) -> bool {
+        if schema.get("type").and_then(serde_json::Value::as_str) == Some("object") {
+            return true;
+        }
+        for key in ["anyOf", "oneOf"] {
+            if let Some(branches) = schema.get(key).and_then(serde_json::Value::as_array) {
+                return !branches.is_empty() && branches.iter().all(describes_an_object);
+            }
+        }
+        false
+    }
+
+    let frozen = FlavorRegistry::default().freeze_or_panic_for_tests();
+    for tool in frozen.list_mcp_tools() {
+        assert!(
+            describes_an_object(&tool.output_schema),
+            "tool {} advertises an output that is not an object: {:#}",
+            tool.name,
+            tool.output_schema,
+        );
+    }
+}

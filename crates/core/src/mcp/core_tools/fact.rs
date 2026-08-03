@@ -51,7 +51,7 @@ pub enum CoreFactArgs {
     FactsCitingObject(FactsCitingObjectArgs),
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, JsonSchema)]
 #[serde(untagged)]
 pub enum CoreFactOutput {
     CitationOfFact(CitationOfFactOutput),
