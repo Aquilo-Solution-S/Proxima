@@ -31,7 +31,7 @@ use proxima::flavor::FlavorBundle;
 use proxima::run_core_and_flavor_migrations;
 use proxima_storage_pg::{
     PgStorage, RETIRED_PRE_V004_MIGRATION_VERSIONS as RETIRED_BASELINE_MIGRATION_VERSIONS,
-    core_migrator,
+    RETIRED_V007_LANE_MIGRATION_VERSIONS, core_migrator,
 };
 
 const DATABASE_URL_FLAG: &str = "--database-url";
@@ -158,6 +158,11 @@ async fn reset_local_dev_database_confirmed(
         );
     }
     versions.extend_from_slice(RETIRED_BASELINE_MIGRATION_VERSIONS);
+    // A dev database that applied the pre-squash v0.0.7 lane carries ledger
+    // rows for 12..15 that no file accounts for any more. Dropping the schemas
+    // without deleting them leaves a database that reports a core version of
+    // 15 and has none of the objects.
+    versions.extend_from_slice(RETIRED_V007_LANE_MIGRATION_VERSIONS);
     versions.sort_unstable();
     versions.dedup();
 

@@ -480,6 +480,58 @@ async fn pre_v004_database_fails_closed_before_checksum_migration() {
     result.expect("pre-v0.0.4 fail-closed test failed");
 }
 
+/// A dev database that applied the pre-squash v0.0.7 lane (versions 12..15)
+/// fails closed with the remedy in the message.
+///
+/// Without the preflight it still fails — version 11's checksum changed when
+/// the five files were folded into it — but with `SQLx`'s bare "previously
+/// applied but has been modified", which names neither the cause nor the
+/// reset. The fixture is a real migrated database plus the four orphaned
+/// ledger rows, because that is exactly the state such a database is in.
+#[tokio::test]
+async fn pre_squash_v007_lane_database_fails_closed_with_the_reset_remedy() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+
+    if let Err(e) = create_db(&db_name).await {
+        panic!("PG required for tests but admin connect failed: {e}");
+    }
+
+    let url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&url).await?;
+        pg.run_migrations().await?;
+
+        sqlx::query(
+            "INSERT INTO public._sqlx_migrations
+                 (version, description, success, checksum, execution_time)
+             SELECT v, 'v007 lane', true, decode('00', 'hex'), 0
+               FROM unnest(ARRAY[12, 13, 14, 15]::bigint[]) AS v",
+        )
+        .execute(pg.pool_for_tests())
+        .await?;
+
+        let err = pg
+            .run_migrations()
+            .await
+            .expect_err("a pre-squash v0.0.7 lane database must fail closed");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("0011_v007.sql") && msg.contains("--reset"),
+            "error must name the squashed file and the reset remedy, got: {msg}",
+        );
+        assert!(
+            msg.contains("[12, 13, 14, 15]"),
+            "error must name the orphaned versions it found, got: {msg}",
+        );
+
+        Ok(())
+    }
+    .await;
+
+    let _ = drop_db(&db_name).await;
+    result.expect("pre-squash v0.0.7 lane fail-closed test failed");
+}
+
 #[tokio::test]
 async fn pre_v004_database_with_only_old_version_one_checksum_fails_closed() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
