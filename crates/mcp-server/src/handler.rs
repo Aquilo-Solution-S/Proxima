@@ -10,10 +10,10 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use proxima_core::mcp::{
-    McpToolAnnotations, McpToolDescriptor, McpToolError, McpToolErrorKind, all_core_actions,
-    all_core_resources, provider_safe_tool_name, scope_permits_action, tool_name_matches,
+    McpToolAnnotations, McpToolDescriptor, McpToolError, McpToolErrorKind, all_core_resources,
+    provider_safe_tool_name, scope_permits_action, tool_name_matches,
 };
-use proxima_core::{AccessKind, McpAuthorContext, MemoryId};
+use proxima_core::{AccessKind, FlavorRegistryFrozen, McpAuthorContext, MemoryId};
 use rmcp::ServerHandler;
 use rmcp::model::{
     CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, ErrorData,
@@ -288,7 +288,9 @@ impl ServerHandler for DynamicHandler {
             let output = server
                 .call_tool(&canonical_name, args, author, auth)
                 .await
-                .map_err(|err| tool_invocation_error_to_error_data(err, scope.as_ref()))?;
+                .map_err(|err| {
+                    tool_invocation_error_to_error_data(server.registry(), err, scope.as_ref())
+                })?;
             let text = serde_json::to_string(&output).map_err(generic_internal_error)?;
             let mut result = CallToolResult::success(vec![ContentBlock::text(text)]);
             result.structured_content = Some(output);
@@ -355,12 +357,13 @@ fn reject_nul_in_args(args: &serde_json::Value) -> Result<(), ErrorData> {
 /// agents can tell bad input from a server fault, instead of every failure
 /// collapsing to `internal_error` (-32603).
 fn tool_invocation_error_to_error_data(
+    registry: &FlavorRegistryFrozen,
     err: ToolInvocationError,
     scope: Option<&ToolScope>,
 ) -> ErrorData {
     match err {
         ToolInvocationError::NotAuthorized(name) => {
-            ErrorData::invalid_request(not_authorized_message(&name, scope), None)
+            ErrorData::invalid_request(not_authorized_message(registry, &name, scope), None)
         }
         ToolInvocationError::ToolNotFound(name) => {
             ErrorData::invalid_params(format!("unknown tool: {name}"), None)
@@ -373,13 +376,26 @@ fn tool_invocation_error_to_error_data(
 /// actions on the denied dispatcher tool so an agent can immediately retry with
 /// a permitted action instead of guessing. `name` is either a tool id or a
 /// `tool:action` leaf.
-fn not_authorized_message(name: &str, scope: Option<&ToolScope>) -> String {
+///
+/// The candidate actions come off the descriptor's `action_arg_specs`, which
+/// is the enumeration every other seam reads. Sourced from the substrate
+/// `all_core_actions()` table, a denied *flavor* dispatcher listed nothing,
+/// so the one caller who most needs the hint — someone holding a partial
+/// palette on a tool the substrate has never heard of — got the bare message.
+fn not_authorized_message(
+    registry: &FlavorRegistryFrozen,
+    name: &str,
+    scope: Option<&ToolScope>,
+) -> String {
     let tool = name.split_once(':').map_or(name, |(tool, _)| tool);
     let allowed: Vec<&str> = scope.map_or_else(Vec::new, |scope| {
-        all_core_actions()
-            .filter(|meta| meta.tool == tool)
-            .filter(|meta| scope_permits_action(scope, tool, meta.action))
-            .map(|meta| meta.action)
+        registry
+            .mcp_tool(tool)
+            .map(|descriptor| descriptor.action_arg_specs)
+            .unwrap_or_default()
+            .iter()
+            .map(|spec| spec.action)
+            .filter(|action| scope_permits_action(scope, tool, action))
             .collect()
     });
     if allowed.is_empty() {
@@ -833,8 +849,10 @@ mod tests {
     fn not_authorized_message_lists_allowed_actions() {
         use proxima_core::ToolScope;
 
+        let registry = proxima_core::FlavorRegistry::new().freeze_or_panic_for_tests();
         let scope = ToolScope::Palette(vec![protocol_action::CORE_GOAL_SET.to_string()]);
         let err = tool_invocation_error_to_error_data(
+            &registry,
             McpToolError::NotAuthorized(protocol_action::CORE_GOAL_TRANSITION.into()).into(),
             Some(&scope),
         );
@@ -844,6 +862,78 @@ mod tests {
                 "allowed {} actions: set",
                 protocol_tool::CORE_GOAL
             )),
+            "message: {}",
+            err.message
+        );
+    }
+
+    /// The retry hint reaches a FLAVOR dispatcher too. Built from
+    /// `all_core_actions()` — a table over substrate names — this message
+    /// listed nothing for a flavor tool, so the caller holding a partial
+    /// palette on a tool the substrate never heard of got no hint at all.
+    #[test]
+    fn not_authorized_lists_a_flavor_dispatchers_allowed_actions() {
+        use futures_util::future::BoxFuture;
+        use proxima_core::ToolScope;
+        use proxima_core::mcp::{
+            McpActionArgSpec, McpTool, McpToolAnnotations, McpToolCtx, McpToolError,
+        };
+
+        #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+        #[serde(tag = "action", rename_all = "snake_case")]
+        #[expect(dead_code, reason = "the derived schema is the subject")]
+        enum StubArgs {
+            Look {
+                #[schemars(description = "Which thing to look at.")]
+                id: String,
+            },
+            Touch {
+                #[schemars(description = "Which thing to touch.")]
+                id: String,
+            },
+        }
+
+        #[derive(Debug)]
+        struct StubDispatchTool;
+
+        impl McpTool for StubDispatchTool {
+            const NAME: &'static str = "proxima-stub_dispatch";
+            const DESCRIPTION: &'static str = "A flavor dispatcher.";
+            const ANNOTATIONS: Option<McpToolAnnotations> =
+                Some(McpToolAnnotations::new().read_only(false).open_world(false));
+            const ACTION_ARG_SPECS: &'static [McpActionArgSpec] = &[
+                McpActionArgSpec {
+                    action: "look",
+                    allowed_fields: &["id"],
+                    required_fields: &["id"],
+                },
+                McpActionArgSpec {
+                    action: "touch",
+                    allowed_fields: &["id"],
+                    required_fields: &["id"],
+                },
+            ];
+            type Args = StubArgs;
+            type Output = ();
+            fn call(_: McpToolCtx, _: Self::Args) -> BoxFuture<'static, Result<(), McpToolError>> {
+                Box::pin(async { Ok(()) })
+            }
+        }
+
+        let mut registry = proxima_core::FlavorRegistry::new();
+        registry.add_mcp_tool_or_panic_for_tests::<StubDispatchTool>("proxima-stub");
+        let registry = registry.freeze_or_panic_for_tests();
+
+        let scope = ToolScope::Palette(vec!["proxima-stub_dispatch:look".to_string()]);
+        let err = tool_invocation_error_to_error_data(
+            &registry,
+            McpToolError::NotAuthorized("proxima-stub_dispatch:touch".into()).into(),
+            Some(&scope),
+        );
+        assert_eq!(err.code, rmcp::model::ErrorCode::INVALID_REQUEST);
+        assert!(
+            err.message
+                .contains("allowed proxima-stub_dispatch actions: look"),
             "message: {}",
             err.message
         );
@@ -928,7 +1018,9 @@ mod tests {
     fn tool_scope_denials_remain_invalid_request() {
         // No scope threaded (e.g. direct-handler path) → bare message, no
         // allowed-action enrichment.
+        let registry = proxima_core::FlavorRegistry::new().freeze_or_panic_for_tests();
         let err = tool_invocation_error_to_error_data(
+            &registry,
             McpToolError::NotAuthorized(protocol_action::CORE_GOAL_SET.into()).into(),
             None,
         );

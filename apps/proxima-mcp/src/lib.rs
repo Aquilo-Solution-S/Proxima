@@ -45,6 +45,14 @@ const PROXIMA_TOOL_DENY: &str = "PROXIMA_TOOL_DENY";
 /// Tool/action scope keys advertised by the `memory` profile. Flat entries
 /// reference the owning tool's `McpTool::NAME`; grouped tools contribute
 /// action leaf keys from their manifest.
+///
+/// This one keeps reading `all_core_actions()` on purpose. It is a curated
+/// allow-list — a deployment decision about which substrate actions the
+/// memory profile advertises — not an enumeration of what exists; that is
+/// [`registered_tool_ids`], which reads the descriptors. The two agreeing on
+/// the substrate actions they both name is pinned by
+/// `core_action_meta_decorates_only_declared_actions` in
+/// `crates/core/tests/flavor_registry.rs`.
 fn memory_keep_set() -> Vec<&'static str> {
     use proxima_core::mcp::McpTool;
     use proxima_core::mcp::core_tools::{
@@ -545,6 +553,7 @@ fn build_app(
     lookup: impl Fn(&str) -> Option<String>,
 ) -> Result<Proxima<ProximaMcpApp>, CliError> {
     let registered_ids = registered_tool_ids()?;
+    let registered_ids: Vec<&str> = registered_ids.iter().map(String::as_str).collect();
     let tool_scope = tool_scope_from_env(&lookup, &registered_ids)?;
     let owner_access: Arc<dyn OwnerAccessPort> = Arc::new(
         proxima_storage_pg::PgOwnerAccessResolver::connect_lazy(&config.database_url)
@@ -574,7 +583,16 @@ enum ToolProfile {
     Memory,
 }
 
-fn registered_tool_ids() -> Result<Vec<&'static str>, CliError> {
+/// Every scope key a token may name: one id per flat tool, one `tool:action`
+/// leaf per dispatcher action, plus the resource keys.
+///
+/// The descriptor's `action_arg_specs` are the enumeration. Reading the
+/// substrate `CoreActionMeta` tables here meant a flavor dispatcher
+/// contributed exactly one bare id, so `PROXIMA_TOOL_ALLOW` could not name
+/// one of its leaves (`reject_unknown_tool_ids` refused the leaf as unknown)
+/// and `PROXIMA_TOOL_PROFILE=full` granted the whole tool where every
+/// substrate dispatcher was granted leaf by leaf.
+fn registered_tool_ids() -> Result<Vec<String>, CliError> {
     let mut registry = FlavorRegistry::new();
     <ProximaMcpApp as FlavorBundle>::register(&mut registry)
         .map_err(|err| CliError::Runtime(ProximaError::Registry(err)))?;
@@ -583,16 +601,17 @@ fn registered_tool_ids() -> Result<Vec<&'static str>, CliError> {
         .map_err(|err| CliError::Runtime(ProximaError::Registry(err)))?;
     let mut ids = Vec::new();
     for tool in frozen.list_mcp_tools() {
-        let mut added_actions = false;
-        for action in all_core_actions().filter(|action| action.tool == tool.name) {
-            ids.push(action.scope_key);
-            added_actions = true;
-        }
-        if !added_actions {
-            ids.push(tool.name);
+        if tool.action_arg_specs.is_empty() {
+            ids.push(tool.name.to_string());
+        } else {
+            ids.extend(
+                tool.action_arg_specs
+                    .iter()
+                    .map(|spec| format!("{}:{}", tool.name, spec.action)),
+            );
         }
     }
-    ids.extend(all_core_resources().map(|resource| resource.scope_key));
+    ids.extend(all_core_resources().map(|resource| resource.scope_key.to_string()));
     Ok(ids)
 }
 
@@ -897,6 +916,77 @@ mod tests {
         assert_eq!(
             listed, expected,
             "USAGE Tools section drifted from the registry"
+        );
+    }
+
+    /// Every id `registered_tool_ids` produces resolves back against the
+    /// registry that produced it, and every registered tool contributes at
+    /// least one — so a dispatcher is named by its leaves and a flat tool by
+    /// its bare id, whoever registered it.
+    ///
+    /// The claim underneath is that the descriptor is the enumeration.
+    /// Reading the substrate `CoreActionMeta` tables here made a *flavor*
+    /// dispatcher exactly one bare id: `PROXIMA_TOOL_ALLOW=flavor:action`
+    /// was refused as an unknown id, and `PROXIMA_TOOL_PROFILE=full` handed
+    /// out the whole tool where every substrate dispatcher was granted leaf
+    /// by leaf.
+    #[test]
+    fn registered_ids_carry_a_flavor_dispatchers_leaves() {
+        use std::collections::BTreeSet;
+
+        let mut registry = FlavorRegistry::new();
+        <ProximaMcpApp as FlavorBundle>::register(&mut registry).expect("register");
+        let frozen = registry.try_freeze().expect("freeze");
+        let ids = registered_tool_ids().expect("ids derive from the same registry");
+
+        let resource_keys: BTreeSet<&str> = all_core_resources()
+            .map(|resource| resource.scope_key)
+            .collect();
+        for id in &ids {
+            if resource_keys.contains(id.as_str()) {
+                continue;
+            }
+            if let Some((tool, action)) = id.split_once(':') {
+                let descriptor = frozen
+                    .mcp_tool(tool)
+                    .unwrap_or_else(|| panic!("leaf {id} names an unregistered tool"));
+                assert!(
+                    descriptor
+                        .action_arg_specs
+                        .iter()
+                        .any(|spec| spec.action == action),
+                    "leaf {id} names an action {tool} does not declare",
+                );
+            } else {
+                let descriptor = frozen
+                    .mcp_tool(id)
+                    .unwrap_or_else(|| panic!("{id} is neither a registered tool nor a resource"));
+                assert!(
+                    descriptor.action_arg_specs.is_empty(),
+                    "{id} dispatches actions and must be named by its leaves, not bare",
+                );
+            }
+        }
+
+        for tool in frozen.list_mcp_tools() {
+            let leaf_prefix = format!("{}:", tool.name);
+            assert!(
+                ids.iter()
+                    .any(|id| id == tool.name || id.starts_with(&leaf_prefix)),
+                "{} is registered and contributes no scope id",
+                tool.name,
+            );
+        }
+
+        // The loop above only says something about flavors when a flavor is
+        // linked, so pin that this build has one.
+        #[cfg(feature = "code")]
+        assert!(
+            frozen
+                .list_mcp_tools()
+                .iter()
+                .any(|tool| tool.name.starts_with("proxima-code_")),
+            "the `code` feature must contribute flavor tools to this check",
         );
     }
 

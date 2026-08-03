@@ -363,6 +363,12 @@ fn gate_method(
 ///
 /// Silence still means write: an action that has not said what it does may
 /// well mutate, and guessing "read" would hand a caller a retryable write.
+///
+/// A flavor dispatcher has no per-action entry — `core_action_meta` is a
+/// substrate table, and per-action annotations for flavors are deferred — so
+/// its tool-level annotations decide POST vs QUERY for every one of its
+/// actions. That is a stated gap with a named hazard, not an oversight: see
+/// docs/12 §Known gaps for flavor dispatchers.
 fn action_is_read_only(descriptor: &McpToolDescriptor, action: &str) -> bool {
     core_action_meta(descriptor.name, action)
         .map(|meta| meta.annotations)

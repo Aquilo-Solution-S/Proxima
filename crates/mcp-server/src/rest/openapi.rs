@@ -219,11 +219,13 @@ fn collect_tool_paths(tool: &McpToolDescriptor, paths: &mut BTreeMap<String, Val
 
     // Action routes come from `action_arg_specs`, which is what the router
     // enumerates — not from the `x-proxima-actions` extension. The two are
-    // not interchangeable: the schema pass stamps the extension onto *any*
-    // internally tagged `Args`, while only `try_add_mcp_tool` fills the
-    // specs. A flavor tool registered through `try_add_tool` with a tagged
-    // `Args` therefore carries the extension and no specs, and a document
-    // built off the extension would advertise action routes that 404.
+    // not interchangeable even though both registration entry points now
+    // fill the specs and `try_freeze` refuses a registry where they
+    // disagree: the extension is the derived, client-facing *description*
+    // of a dispatcher (it carries per-field prose the specs do not), while
+    // the specs are the enumeration every seam dispatches on. Reading the
+    // enumeration off the enumeration is what keeps this document and the
+    // router describing one surface.
     let extension = tool
         .args_schema
         .get("x-proxima-actions")
@@ -673,45 +675,98 @@ mod tests {
         );
     }
 
-    /// The router enumerates dispatcher actions from
-    /// `McpToolDescriptor::action_arg_specs`, so the document must too. The
-    /// two sources are not interchangeable: `x-proxima-actions` is stamped
-    /// into `args_schema` by the schema pass for *any* internally tagged
-    /// `Args`, while `action_arg_specs` is populated only by
-    /// `try_add_mcp_tool`. A flavor tool registered through `try_add_tool`
-    /// with a tagged `Args` therefore carries the extension and no specs —
-    /// and a document built off the extension would advertise action routes
-    /// that 404.
+    /// The generator enumerates dispatcher actions from the same place the
+    /// router does — `McpToolDescriptor::action_arg_specs` — so a flavor
+    /// dispatcher is documented exactly as a substrate one, and a descriptor
+    /// the freeze guard would reject still cannot produce a 404-ing route.
+    ///
+    /// The two sources are not interchangeable. `x-proxima-actions` is
+    /// stamped into `args_schema` by the schema pass for *any* internally
+    /// tagged `Args`: it is the derived client-facing description, and it
+    /// carries per-field prose the specs do not. The specs are the
+    /// enumeration. Reading the enumeration off the description is what
+    /// produced the second case below.
     #[test]
     fn action_routes_follow_the_specs_the_router_reads() {
-        let descriptor = McpToolDescriptor {
-            name: "proxima-stub_dispatch",
-            description: "stub",
-            origin: proxima_core::mcp::McpToolOrigin::Flavor("proxima-stub".to_string()),
-            produces_schema_ids: &[],
-            args_schema: json!({
-                "type": "object",
-                "properties": {
-                    "action": { "type": "string", "enum": ["look"] },
-                    "id": { "type": "string" },
-                },
-                "required": ["action"],
-                "x-proxima-actions": {
-                    "look": {
-                        "allowed_fields": ["id"],
-                        "required_fields": ["id"],
-                        "field_descriptions": {},
+        const SPECS: &[proxima_core::mcp::McpActionArgSpec] =
+            &[proxima_core::mcp::McpActionArgSpec {
+                action: "look",
+                allowed_fields: &["id"],
+                required_fields: &["id"],
+            }];
+
+        fn stub(
+            action_arg_specs: &'static [proxima_core::mcp::McpActionArgSpec],
+        ) -> McpToolDescriptor {
+            McpToolDescriptor {
+                name: "proxima-stub_dispatch",
+                description: "stub",
+                origin: proxima_core::mcp::McpToolOrigin::Flavor("proxima-stub".to_string()),
+                produces_schema_ids: &[],
+                args_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "action": { "type": "string", "enum": ["look"] },
+                        "id": { "type": "string" },
                     },
-                },
-            }),
-            output_schema: json!({ "type": "object" }),
-            // What `try_add_tool` stores for every flavor tool.
-            action_arg_specs: &[],
-            annotations: None,
-            call: &|_, _| Box::pin(async { Ok(Value::Null) }),
-        };
-        let document = document(&[&descriptor], &[], None);
-        let paths = document
+                    "required": ["action"],
+                    "x-proxima-actions": {
+                        "look": {
+                            "allowed_fields": ["id"],
+                            "required_fields": ["id"],
+                            "field_descriptions": {},
+                        },
+                    },
+                }),
+                output_schema: json!({ "type": "object" }),
+                action_arg_specs,
+                annotations: None,
+                call: &|_, _| Box::pin(async { Ok(Value::Null) }),
+            }
+        }
+
+        // A flavor dispatcher that declared its actions: both forms are
+        // advertised, and the narrowed one is the more precise operation.
+        let declared = stub(SPECS);
+        let declared_document = document(&[&declared], &[], None);
+        let paths = declared_document
+            .get("paths")
+            .and_then(Value::as_object)
+            .expect("paths object");
+        assert!(
+            paths.contains_key("/v1/tools/proxima-stub_dispatch"),
+            "the whole-tool route is advertised: {paths:#?}",
+        );
+        assert!(
+            paths.contains_key("/v1/tools/proxima-stub_dispatch/look"),
+            "a flavor dispatcher's action route is advertised, exactly as a \
+             substrate one is: {paths:#?}",
+        );
+        let narrowed = path_item(&declared_document, "/v1/tools/proxima-stub_dispatch/look")
+            .pointer("/post/requestBody/content/application~1json/schema")
+            .expect("the narrowed operation carries a request schema");
+        assert!(
+            narrowed.pointer("/properties/id").is_some(),
+            "the narrowed schema keeps the action's own fields: {narrowed:#}",
+        );
+        assert!(
+            narrowed.pointer("/properties/action").is_none(),
+            "`action` is carried by the route, not the body: {narrowed:#}",
+        );
+        assert_eq!(
+            narrowed.get("required"),
+            Some(&json!(["id"])),
+            "the action's required_fields become the schema's required: {narrowed:#}",
+        );
+
+        // The extension without the specs. `try_freeze` refuses to seal a
+        // registry containing this, so it is unreachable through the
+        // registry — but the generator must not be the thing that depends on
+        // that, because advertising a route the router would 404 is worse
+        // than advertising one action fewer.
+        let undeclared = stub(&[]);
+        let undeclared_document = document(&[&undeclared], &[], None);
+        let paths = undeclared_document
             .get("paths")
             .and_then(Value::as_object)
             .expect("paths object");
