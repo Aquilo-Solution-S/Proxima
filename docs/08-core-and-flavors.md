@@ -86,7 +86,7 @@ Supported keys:
 | `opaque_cited_object_schemas` | Untyped cited-object schema ids. |
 | `opaque_citation_mapping_schemas` | Untyped citation-mapping schema ids. |
 | `schema_capability_tags` | Build-time capability tags on registered payload schemas. |
-| `mcp_tools` | Flavor tool descriptors projected to MCP; tool names must use the flavor prefix. |
+| `mcp_tools` | Flavor tool descriptors projected to MCP; tool names must use the flavor prefix. A tool that declares `ACTION_ARG_SPECS` is a dispatcher: its actions become `tool:action` scope leaves rather than one whole-tool grant, and its `Args` must be an internally tagged enum tagged on `action` (see [12 §Action-Dispatch Tools](12-tool-manifest.md#action-dispatch-tools)). |
 | `dependency_satisfaction_rules` | Build-time dependency rules for flavor schemas. |
 
 Unknown keys are compile errors. Macro-registered schemas, tools, and
@@ -175,9 +175,17 @@ dispatchers for goals and Facts. Schema,
 edge, tool, graph, memory-hydration, lineage, and event reads are MCP
 resources.
 
-Flavor MCP tools extend the MCP catalog. Goal WakeConfig validation checks
-registered trigger/tool shape; candidate reads apply actor and deployment
-tool-scope narrowing.
+Flavor MCP tools extend the MCP catalog, flat tools and action dispatchers
+alike. Goal WakeConfig validation checks registered trigger/tool shape;
+candidate reads apply actor and deployment tool-scope narrowing.
+
+**Resources are substrate-only, by design.** `CORE_RESOURCES` is the whole
+resource catalog, `FlavorRegistry` carries no resource vocabulary at all, and
+`proxima://` dispatch is a closed `match` in `mcp-server/src/server.rs`. This
+is not the gap that tools had: a flavor resource would need its own scope-key
+namespace, a URI-template parser for its parameters, and a pagination
+contract — a separate feature with its own design, not a missing forwarding
+line. Nothing in the tool work above changes it.
 
 Core exposes no edge-writing tool at all — not a generic one and not a
 specific one. An edge follows from what a node says, so the write that owns
@@ -208,6 +216,16 @@ writes use the same tool with the matching action key.
    dependency satisfaction rules.
 2. Capability tags for unregistered schemas.
 3. A registered MCP tool with no resolvable behaviour declaration.
+4. A tool whose `Args` is an internally tagged enum — so its schema carries
+   `x-proxima-actions` and clients see a dispatcher — that declares no
+   `ACTION_ARG_SPECS`. Nothing would then enumerate its actions: the scope
+   gate falls back to whole-tool grants, the catalog lists none, REST serves
+   no action route, and arguments are validated against every variant's
+   fields merged together.
+5. `ACTION_ARG_SPECS` that disagree with the derived schema: a discriminator
+   other than `action`, a different action set, or different
+   `allowed_fields`/`required_fields` for an action. Specs on a tool whose
+   `Args` is a plain struct fail here too.
 
 Prefix violations in macro-registered schemas, MCP tools, and dependency
 rules fail during registration before freeze — schema-id prefixes as `const`

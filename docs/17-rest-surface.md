@@ -160,10 +160,14 @@ known removal condition.
 
 ### Dispatcher actions
 
-Dispatcher tools (`core_goal`, `core_fact`, `core_membership`,
-`core_publish`, `core_upload`) advertise a flattened schema with an
-`action` discriminator and per-action field sets under
-`x-proxima-actions`. REST exposes both forms:
+A dispatcher is any tool declaring `ACTION_ARG_SPECS` — the five substrate
+ones (`core_goal`, `core_fact`, `core_membership`, `core_publish`,
+`core_upload`) and any flavor tool that declares its own. Its discriminator
+must be `action`: this surface injects `"action"` into the body on the
+narrowed route, and `try_freeze` refuses a dispatcher tagged on anything else
+(see [12 §Action-Dispatch Tools](12-tool-manifest.md#action-dispatch-tools)).
+Dispatchers advertise a flattened schema with an `action` discriminator and
+per-action field sets under `x-proxima-actions`. REST exposes both forms:
 
 - `POST /v1/tools/core_goal` — body carries `action`, as on MCP.
 - `POST /v1/tools/core_goal/set` — the adapter injects
@@ -184,6 +188,12 @@ Two failure modes must be explicit rather than silent:
 - An unknown `{action}` is rejected `404` at the route layer, before
   dispatch, so it reads as "no such route" rather than as an argument
   error.
+
+`POST` vs `QUERY` is resolved per action, from the per-action manifest entry
+first and the tool's own annotations only when there is no entry. A *flavor*
+dispatcher has no per-action entry today, so its tool-level annotations
+decide the method for all of its actions — a stated gap with a named hazard,
+see [12 §Known gaps for flavor dispatchers](12-tool-manifest.md#known-gaps-for-flavor-dispatchers).
 
 ## Call Context
 
@@ -318,7 +328,7 @@ dialect, so the newer floor costs nothing in schema fidelity.
 | Element | Source |
 |---|---|
 | path per tool | `McpToolDescriptor.name` |
-| path per dispatcher action | `x-proxima-actions` keys |
+| path per dispatcher action | `McpToolDescriptor.action_arg_specs` |
 | path per resource | `CoreResourceMeta.uri_template` |
 | `post` / `query` operations | `resolved_annotations().read_only` |
 | `operationId` | `{tool}` or `{tool}__{action}`, suffixed per method |
@@ -330,6 +340,10 @@ dialect, so the newer floor costs nothing in schema fidelity.
 The document is generated per caller and reflects that caller's
 `ToolScope`, exactly as `tools/list` does. It is therefore
 token-specific and served `Cache-Control: private, no-store`.
+
+`/v1/resources` is generated from `CoreResourceMeta` alone: flavors cannot
+declare resources, which is deliberate rather than a gap — see
+[08 §Substrate MCP Surface](08-core-and-flavors.md#substrate-mcp-surface).
 
 Idempotency stays an argument-level concern. Tools that support replay
 already take `idempotency_key`, `request_id`, or `receipt_id`; REST
