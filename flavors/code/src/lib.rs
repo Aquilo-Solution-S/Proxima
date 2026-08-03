@@ -48,11 +48,13 @@ pub mod testkit {
         append_code_slice, build_engine, build_engine_with, close_local_git_batch, ingest_commit,
         ingest_file_revision,
     };
+    pub use crate::repos::runs::{
+        advance_stage, begin_run, get_active_run, get_run, mark_failed, mark_succeeded, start_run,
+        start_run_with_created, sweep_orphaned_runs,
+    };
     pub use crate::repos::{
-        advance_stage, begin_run, delete_repo, erase_repo, get_active_run, get_repo, get_run,
-        infer_missing_target_branch, list_repos, mark_failed, mark_succeeded, register_repo,
-        set_repo_scope, set_repo_target_branch, start_run, start_run_with_created,
-        sweep_orphaned_runs, update_cursor,
+        erase_repo, get_repo, list_repos, register_repo, set_repo_scope, set_repo_target_branch,
+        update_cursor,
     };
 }
 

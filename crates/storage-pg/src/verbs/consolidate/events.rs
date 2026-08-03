@@ -65,6 +65,11 @@ fn now_unix_ms() -> u64 {
     .unwrap_or(u64::MAX)
 }
 
+/// Change events visible to `read_owners`, after `after`, oldest first.
+///
+/// # Errors
+///
+/// Returns [`StorageError`] when the change-event read fails.
 pub async fn list_change_events_after(
     pool: &PgPool,
     read_owners: &[OwnerRef],
@@ -137,6 +142,11 @@ fn read_owner_columns(read_owners: &[OwnerRef]) -> (Vec<OwnerRefKind>, Vec<Optio
     crate::access::owner_columns::owner_arrays(read_owners)
 }
 
+/// One owner's change events in `(after, until]` for replay, oldest first.
+///
+/// # Errors
+///
+/// Returns [`StorageError`] when the change-event read fails.
 pub async fn list_change_events_for_replay(
     pool: &PgPool,
     owner: &Owner,

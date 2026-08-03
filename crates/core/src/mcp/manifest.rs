@@ -182,11 +182,6 @@ pub fn core_action_meta(tool: &str, action: &str) -> Option<&'static CoreActionM
     all_core_actions().find(|meta| meta.tool == tool && meta.action == action)
 }
 
-#[must_use]
-pub fn core_tool_has_actions(tool: &str) -> bool {
-    all_core_actions().any(|meta| meta.tool == tool)
-}
-
 /// MCP behavior hints for substrate tools, keyed by registered tool name.
 #[must_use]
 pub fn core_tool_annotations(canonical_name: &str) -> Option<McpToolAnnotations> {

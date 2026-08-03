@@ -4,13 +4,14 @@ use std::sync::Arc;
 
 use proxima::flavor::{FlavorBundle, NamedMigrator, PgSidecarRegistry};
 use proxima::{
-    AppInfo, AuthzContext, CoreMcpError, CoreMcpErrorKind, CoreMcpTools, FlavorApp, Proxima,
-    StorageError, ToolScope, company_owner,
+    AppInfo, AuthzContext, CoreMcpError, CoreMcpErrorKind, CoreMcpTools, CoreToolInfo, FlavorApp,
+    Proxima, StorageError, ToolScope, company_owner,
 };
 use proxima_core::test_fixtures::ConstantEmbedding;
 use proxima_core::{
-    AuthPath, CitationMappingPayload, CitedObjectPayload, FlavorRegistry, GroupId, MemoryId, Owner,
-    OwnerRef, Relation, Role, SchemaId, UserId, all_core_resources,
+    AuthPath, CitationMappingPayload, CitedObjectPayload, FlavorRegistry, FlavorRegistryFrozen,
+    GroupId, MemoryId, Owner, OwnerRef, Relation, Role, SchemaId, UserId, all_core_resources,
+    provider_safe_tool_name,
 };
 use proxima_pg_testkit::{create_db, db_url, drop_db, unique_db_name};
 use proxima_storage_pg::PgStorage;
@@ -497,6 +498,25 @@ async fn cross_space_derive_succeeds_when_sources_readable() {
     result.expect("cross-space derive success test failed");
 }
 
+/// The facade projects the descriptor's output schema, like the MCP handler
+/// and the REST document already do. A host that bound a call's result off
+/// this listing had to guess its shape.
+fn assert_facade_projects_output_schema(registry: &FlavorRegistryFrozen, tool: &CoreToolInfo) {
+    let descriptor = registry
+        .list_mcp_tools()
+        .iter()
+        .find(|descriptor| provider_safe_tool_name(descriptor.name) == tool.name)
+        .expect("listed tool has a registered descriptor");
+    assert!(
+        tool.output_schema
+            .as_object()
+            .is_some_and(|object| !object.is_empty()),
+        "{}: a known core tool has a non-empty output schema",
+        tool.name
+    );
+    assert_eq!(tool.output_schema, descriptor.output_schema);
+}
+
 #[tokio::test]
 async fn facade_lists_and_dispatches_core_mcp_tools() {
     let db_name = unique_db_name("proxima_core_mcp");
@@ -534,6 +554,7 @@ async fn facade_lists_and_dispatches_core_mcp_tools() {
         );
         assert_eq!(search.read_only, Some(true));
         assert_eq!(search.open_world, Some(false));
+        assert_facade_projects_output_schema(built.registry(), search);
         let remember = listed
             .iter()
             .find(|tool| tool.name == "core_remember")

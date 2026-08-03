@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use super::records::{RepoEraseReceipt, RepoRecord, RepoRegistryError};
 use super::rows::RepoRow;
 use super::scope::RepoScope;
@@ -200,62 +198,6 @@ pub async fn set_repo_scope(
     .await?;
     row.map(Into::into)
         .ok_or(RepoRegistryError::NotFound { repo_id })
-}
-
-/// Fill a legacy `NULL` target branch from the worktree's current branch.
-///
-/// # Errors
-/// Returns `RepoRegistryError::NotFound` if the repo is not registered,
-/// `RepoRegistryError::InvalidTargetBranch` if the worktree is detached or
-/// the inferred branch cannot resolve, or `RepoRegistryError::Database` on
-/// database failures.
-pub async fn infer_missing_target_branch(
-    pool: &PgPool,
-    owner: &Owner,
-    repo_id: Uuid,
-) -> Result<RepoRecord, RepoRegistryError> {
-    let record = get_repo(pool, owner, repo_id)
-        .await?
-        .ok_or(RepoRegistryError::NotFound { repo_id })?;
-    if record.target_branch.is_some() {
-        return Ok(record);
-    }
-    let target_branch = detect_target_branch(&record.canonical_path).ok_or_else(|| {
-        RepoRegistryError::InvalidTargetBranch {
-            repo_id,
-            target_branch: "<current HEAD>".to_string(),
-            reason: "worktree has no symbolic branch".to_string(),
-        }
-    })?;
-    verify_target_branch(repo_id, &record.canonical_path, &target_branch)?;
-    update_target_branch(pool, owner, repo_id, Some(&target_branch)).await
-}
-
-/// Delete the repo record for `(owner, repo_id)`. Returns `true` if a row
-/// was deleted, `false` if no matching row existed.
-///
-/// # Errors
-/// Returns `RepoRegistryError::Database` on database failures.
-pub async fn delete_repo(
-    pool: &PgPool,
-    owner: &Owner,
-    repo_id: Uuid,
-) -> Result<bool, RepoRegistryError> {
-    let (kind, principal_id) = owner.columns();
-
-    let result = sqlx::query(
-        "DELETE FROM proxima_code.repos \
-         WHERE owner_kind = $1 \
-           AND owner_id = $2 \
-           AND repo_id = $3",
-    )
-    .bind(kind)
-    .bind(principal_id)
-    .bind(repo_id)
-    .execute(pool)
-    .await?;
-
-    Ok(result.rows_affected() > 0)
 }
 
 /// Erase one registered repo's code-flavor rows and owned substrate rows.
