@@ -1,0 +1,12 @@
+# SQLx per-crate configuration (read by `sqlx::migrate!` at compile time via
+# the `sqlx-toml` feature).
+#
+# `ignored-chars` strips carriage returns before checksumming migration
+# files, so a CRLF checkout (or an editor that flips line endings) cannot
+# change a migration's identity and strand every deployed ledger on
+# `VersionMismatch`. Set while all migration files were CR-free, so no
+# recorded checksum changed when it took effect. This is a one-way door: the
+# set must never change again without repairing every deployed ledger
+# (docs/how-to/migrations.md).
+[migrate]
+ignored-chars = ["\r"]
