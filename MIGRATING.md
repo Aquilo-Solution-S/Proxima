@@ -226,9 +226,11 @@ authoring policy behind all of it is
   `dev-migrate --stamp` records the squashed migration as applied without
   executing it (and refuses unless the schema already matches the lane's
   structural markers — a partial draft lane still needs `--reset`).
-- `db/schema.sql` is committed and CI-verified: replaying every embedded
-  migration from an empty database must reproduce it byte-for-byte.
-  Regenerate with `scripts/regen-schema-sql.sh` whenever a migration changes.
+- The schema artifacts `db/schema.core.sql` and `db/schema.code.sql` are
+  committed and CI-verified: replaying every embedded migration from an
+  empty database must reproduce them byte-for-byte. One file per source, so
+  the core/flavor composition boundary stays visible. Regenerate with
+  `scripts/regen-schema-sql.sh` whenever a migration changes.
 - Migration checksums ignore carriage returns (`sqlx.toml` `ignored-chars`),
   so a CRLF checkout cannot strand a ledger on `VersionMismatch`. No
   recorded checksum changed — every migration file was CR-free when this

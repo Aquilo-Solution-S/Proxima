@@ -27,7 +27,7 @@ mistake). Then add the release's structural markers to
 regenerate the schema artifact:
 
 ```sh
-scripts/regen-schema-sql.sh    # commit the db/schema.sql diff
+scripts/regen-schema-sql.sh    # commit the db/schema.*.sql diffs
 ```
 
 The boot floor needs no bump: it is derived from the embedded migration set
