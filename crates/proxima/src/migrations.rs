@@ -1,18 +1,21 @@
 //! Shared migration facade for embedded Proxima hosts.
 //!
-//! Core and flavor migrators share `SQLx`'s default `_sqlx_migrations`
-//! table in v0.0.1. The facade pins that global namespace to `public`:
-//! core runs first, flavors run in composition order, every migrator has
-//! `ignore_missing(true)`, and duplicate versions fail before the
-//! database is touched.
+//! Core records into `SQLx`'s default `public._sqlx_migrations`; since
+//! v0.0.7 each flavor records into its own tracking table
+//! (`public._sqlx_migrations_<flavor>` — in `public`, because destructive
+//! flavor baselines drop the flavor schema and the ledger must survive
+//! them), with a one-time cutover moving a pre-split database's flavor rows
+//! out of the shared table. The facade pins the migration `search_path` to
+//! `public`: core runs first, flavors run in composition order, and
+//! duplicate versions fail before the database is touched.
 
 use std::collections::BTreeMap;
 
 use proxima_core::StorageError;
 use proxima_storage_pg::{
-    PgStorage, core_migrator, ensure_core_schema_current, ensure_v004_baseline_compatible,
-    ensure_v007_lane_squash_compatible,
+    PgStorage, core_migrator, ensure_core_ledger_compatible, ensure_core_schema_current,
 };
+use sqlx::Connection;
 use sqlx::PgConnection;
 use sqlx::migrate::{MigrateError, Migrator};
 
@@ -81,6 +84,12 @@ pub enum MigrationError {
         #[source]
         err: MigrateError,
     },
+    #[error("flavor ledger cutover failed for {source}: {err}")]
+    FlavorLedgerCutover {
+        source: &'static str,
+        #[source]
+        err: sqlx::Error,
+    },
 }
 
 /// Run core migrations followed by the provided flavor/host migrators.
@@ -98,10 +107,7 @@ pub async fn run_core_and_flavor_migrations(
     let sources = prepare_sources(flavors)?;
     let report = MigrationRunReport::from_sources(&sources);
     let pool = pg.clone_pool_for_backend();
-    ensure_v004_baseline_compatible(&pool)
-        .await
-        .map_err(MigrationError::CorePreflight)?;
-    ensure_v007_lane_squash_compatible(&pool)
+    ensure_core_ledger_compatible(&pool)
         .await
         .map_err(MigrationError::CorePreflight)?;
     let mut conn = pool.acquire().await.map_err(MigrationError::Connection)?;
@@ -163,10 +169,7 @@ pub async fn preflight_without_migrations(
     let sources = prepare_sources(flavors)?;
     let report = MigrationRunReport::from_sources(&sources);
     let pool = pg.clone_pool_for_backend();
-    ensure_v004_baseline_compatible(&pool)
-        .await
-        .map_err(MigrationError::CorePreflight)?;
-    ensure_v007_lane_squash_compatible(&pool)
+    ensure_core_ledger_compatible(&pool)
         .await
         .map_err(MigrationError::CorePreflight)?;
     ensure_core_schema_current(&pool)
@@ -230,6 +233,7 @@ async fn run_sources_on_connection(
                 .await
                 .map_err(MigrationError::Core)?;
         } else {
+            cut_over_flavor_ledger(conn, &source).await?;
             source
                 .migrator
                 .run_direct(None, &mut *conn, false)
@@ -242,6 +246,103 @@ async fn run_sources_on_connection(
     }
 
     Ok(())
+}
+
+/// One-time per-database cutover of a flavor's ledger rows out of the shared
+/// `public._sqlx_migrations` table into the flavor's own tracking table.
+///
+/// Through v0.0.7, core and every flavor recorded into one table, which is
+/// why every migrator carried `ignore_missing = true` — each one saw versions
+/// it didn't author. Since v0.0.7 a flavor's migrator declares its own table
+/// (see `flavors/code/src/migrations.rs`); a database migrated before the
+/// split still carries the flavor's rows in `public`, and `SQLx` would re-run
+/// the flavor's DDL against the flavor's empty new table. This moves exactly
+/// the rows the flavor's embedded migrator recognizes, inside one
+/// transaction, before the flavor migrator first runs against the new table.
+/// Idempotent: a moved row is gone from `public`, and a database created
+/// after the split never has rows to move. Rows an old flavor lane recorded
+/// and later retired are recognized by no migrator and deliberately stay in
+/// `public` — orphan rows there are inert (core runs with `ignore_missing`).
+async fn cut_over_flavor_ledger(
+    conn: &mut PgConnection,
+    source: &NamedMigrator,
+) -> Result<(), MigrationError> {
+    let table_name = source.migrator().table_name.clone();
+    if table_name == "_sqlx_migrations" || table_name == "public._sqlx_migrations" {
+        return Ok(());
+    }
+    let map_err = |err: sqlx::Error| MigrationError::FlavorLedgerCutover {
+        source: source.source,
+        err,
+    };
+
+    let shared_table_exists: bool =
+        sqlx::query_scalar("SELECT to_regclass('public._sqlx_migrations') IS NOT NULL")
+            .fetch_one(&mut *conn)
+            .await
+            .map_err(map_err)?;
+    if !shared_table_exists {
+        return Ok(());
+    }
+
+    let versions: Vec<i64> = source
+        .migrator()
+        .iter()
+        .map(|migration| migration.version)
+        .collect();
+    let rows_to_move: bool = sqlx::query_scalar(
+        "SELECT EXISTS (
+             SELECT 1 FROM public._sqlx_migrations WHERE version = ANY($1::bigint[])
+         )",
+    )
+    .bind(&versions)
+    .fetch_one(&mut *conn)
+    .await
+    .map_err(map_err)?;
+    if !rows_to_move {
+        return Ok(());
+    }
+
+    let mut tx = conn.begin().await.map_err(map_err)?;
+    for schema in source.migrator().create_schemas.iter() {
+        // SQL-POLICY: fixed-fragment — `schema` is a compiled-in
+        // `create_schemas` entry from the flavor crate's migrator; no value
+        // reaches it from a caller. Interpolated as-is, like `SQLx` itself
+        // interpolates it in `create_schema_if_not_exists`.
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "CREATE SCHEMA IF NOT EXISTS {schema}"
+        )))
+        .execute(tx.as_mut())
+        .await
+        .map_err(map_err)?;
+    }
+    // SQL-POLICY: fixed-fragment — `table_name` is the flavor migrator's
+    // compiled-in tracking-table name; no value reaches it from a caller.
+    // Interpolated as-is, like `SQLx` itself interpolates the configured
+    // table name in `ensure_migrations_table`.
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "CREATE TABLE IF NOT EXISTS {table_name} \
+         (LIKE public._sqlx_migrations INCLUDING ALL)"
+    )))
+    .execute(tx.as_mut())
+    .await
+    .map_err(map_err)?;
+    // SQL-POLICY: fixed-fragment — same compiled-in `table_name` as above.
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "INSERT INTO {table_name}
+         SELECT * FROM public._sqlx_migrations WHERE version = ANY($1::bigint[])
+         ON CONFLICT (version) DO NOTHING"
+    )))
+    .bind(&versions)
+    .execute(tx.as_mut())
+    .await
+    .map_err(map_err)?;
+    sqlx::query("DELETE FROM public._sqlx_migrations WHERE version = ANY($1::bigint[])")
+        .bind(&versions)
+        .execute(tx.as_mut())
+        .await
+        .map_err(map_err)?;
+    tx.commit().await.map_err(map_err)
 }
 
 fn prepare_sources(

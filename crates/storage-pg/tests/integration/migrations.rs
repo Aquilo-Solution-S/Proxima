@@ -480,16 +480,16 @@ async fn pre_v004_database_fails_closed_before_checksum_migration() {
     result.expect("pre-v0.0.4 fail-closed test failed");
 }
 
-/// A dev database that applied the pre-squash v0.0.7 lane (versions 12..15)
-/// fails closed with the remedy in the message.
+/// A dev database that applied a since-squashed draft lane (orphaned core
+/// ledger rows, here 12..15) fails closed with both remedies in the message.
 ///
-/// Without the preflight it still fails — version 11's checksum changed when
-/// the five files were folded into it — but with `SQLx`'s bare "previously
-/// applied but has been modified", which names neither the cause nor the
-/// reset. The fixture is a real migrated database plus the four orphaned
-/// ledger rows, because that is exactly the state such a database is in.
+/// The detection is generic — no enumerated version list anywhere
+/// (docs/how-to/migrations.md): any successful core-namespace ledger row the
+/// embedded migrator cannot account for is a draft or retired migration.
+/// The fixture is a real migrated database plus four orphaned ledger rows,
+/// because that is exactly the state such a database is in.
 #[tokio::test]
-async fn pre_squash_v007_lane_database_fails_closed_with_the_reset_remedy() {
+async fn pre_squash_draft_lane_database_fails_closed_with_stamp_and_reset_remedies() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
 
     if let Err(e) = create_db(&db_name).await {
@@ -513,11 +513,11 @@ async fn pre_squash_v007_lane_database_fails_closed_with_the_reset_remedy() {
         let err = pg
             .run_migrations()
             .await
-            .expect_err("a pre-squash v0.0.7 lane database must fail closed");
+            .expect_err("a database with orphaned draft-lane rows must fail closed");
         let msg = err.to_string();
         assert!(
-            msg.contains("0011_v007.sql") && msg.contains("--reset"),
-            "error must name the squashed file and the reset remedy, got: {msg}",
+            msg.contains("--stamp") && msg.contains("--reset"),
+            "error must name both remedies, got: {msg}",
         );
         assert!(
             msg.contains("[12, 13, 14, 15]"),

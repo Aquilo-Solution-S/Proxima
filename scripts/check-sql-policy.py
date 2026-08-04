@@ -292,7 +292,12 @@ def run_fixture(path: Path) -> int:
 # registered payload specs) is gone, and the edge write, lineage walk and
 # compliance erase now assemble fixed fragments instead of per-request column
 # lists. Fewer places where SQL is built at all.
-EXPECTED_DYNAMIC_SQL_SITES = 51
+# 2026-08-04 analysis: +3 — the per-flavor ledger split. The migration facade's
+# one-time cutover interpolates the flavor migrator's compiled-in tracking
+# table name (and its create_schemas entries) into CREATE SCHEMA / CREATE
+# TABLE / INSERT..SELECT, exactly as SQLx itself interpolates the configured
+# table name; nothing reaches these strings from a caller.
+EXPECTED_DYNAMIC_SQL_SITES = 54
 
 
 def run_self_test() -> int:
