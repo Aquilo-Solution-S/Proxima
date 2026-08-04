@@ -23,10 +23,13 @@ file is for anyone writing a migration.
 
 3. **The migrations directory is history, not documentation.** The
    human-readable answer to "what does the schema look like" is the generated
-   `schema.sql` (regenerated whenever a migration changes, verified in CI by
-   replaying `migrations/` from empty). The answer to "what did vX.Y.Z change"
-   is that release's lane section in `MIGRATING.md`. Nobody should ever need
-   to read the migration files in sequence to understand the schema.
+   schema artifact — `db/schema.core.sql` for core alone, `db/schema.code.sql`
+   for what the code flavor adds — regenerated whenever a migration changes
+   and verified in CI by replaying `migrations/` from empty. One file per
+   source on purpose: a flavor is composed, not welded on, and the artifact
+   must show that boundary. The answer to "what did vX.Y.Z change" is that
+   release's lane section in `MIGRATING.md`. Nobody should ever need to read
+   the migration files in sequence to understand the schema.
 
 ## Why these rules — sqlx ledger semantics in five lines
 
@@ -77,7 +80,7 @@ it.
 **At release preparation.** Squash the cycle's drafts into one file under the
 next unused version — e.g. drafts 12–14 become `0015_v008.sql` — and delete
 the drafts. Verify the squash by replaying `migrations/` from an empty
-database and diffing against `schema.sql`. Write the lane section in
+database and diffing against the schema artifacts. Write the lane section in
 `MIGRATING.md`. Tag.
 
 **What each kind of database sees after the squash:**
@@ -106,9 +109,10 @@ database and diffing against `schema.sql`. Write the lane section in
 - **The boot floor is derived, not declared.** The `skip_migrations` preflight
   computes its minimum version as the highest version the embedded migrator
   contains. There is nothing to bump at release time and nothing to forget.
-- **`schema.sql` is CI-verified.** Replaying `migrations/` from empty must
-  reproduce it; drift fails the build. This is also what makes stamping safe —
-  a database is stampable exactly when its dumped schema matches.
+- **The schema artifacts are CI-verified.** Replaying `migrations/` from
+  empty must reproduce `db/schema.core.sql` and `db/schema.code.sql`; drift
+  fails the build. This is also what makes stamping safe — a database is
+  stampable exactly when its dumped schema matches.
 
 ## Squashing frozen history (rare, deliberate)
 
