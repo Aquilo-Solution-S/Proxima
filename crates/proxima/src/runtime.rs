@@ -13,7 +13,7 @@ use proxima_core::mcp::McpToolExtensions;
 use proxima_core::storage_ports::CitedBlobService;
 use proxima_core::{
     AnthropicClient, AuthPath, Authenticator, AuthzContext, EmbeddingClient, FlavorRegistryFrozen,
-    OwnerAccessPort, RevalidationConfig, ToolScope,
+    RevalidationConfig, ToolScope,
 };
 use proxima_core::{Engine, EngineHandle, Owner, OwnerRef, Role, UserId};
 use proxima_mcp_server::{
@@ -86,12 +86,6 @@ impl<A: FlavorApp + 'static> Proxima<A> {
     #[must_use]
     pub fn authenticator(mut self, authenticator: Arc<dyn Authenticator>) -> Self {
         self.overlay = self.overlay.authenticator(authenticator);
-        self
-    }
-
-    #[must_use]
-    pub fn owner_access(mut self, owner_access: Arc<dyn OwnerAccessPort>) -> Self {
-        self.overlay = self.overlay.owner_access(owner_access);
         self
     }
 
@@ -811,8 +805,8 @@ mod tests {
 
     use async_trait::async_trait;
     use proxima_core::{
-        AccessError, AuthError, AuthPath, Authenticator, AuthzContext, Credentials, FlavorRegistry,
-        FlavorRegistryError, Owner, OwnerAccessPort, OwnerRoles, UserId,
+        AuthError, AuthPath, Authenticator, AuthzContext, Credentials, FlavorRegistry,
+        FlavorRegistryError, Owner,
     };
     use uuid::Uuid;
 
@@ -907,23 +901,6 @@ mod tests {
         }
     }
 
-    #[derive(Debug)]
-    struct StubOwnerAccess;
-
-    #[async_trait]
-    impl OwnerAccessPort for StubOwnerAccess {
-        async fn resolve_roles_for_subject(
-            &self,
-            subject: UserId,
-        ) -> Result<OwnerRoles, AccessError> {
-            OwnerRoles::for_subject(subject, [])
-        }
-    }
-
-    fn owner_access() -> Arc<dyn OwnerAccessPort> {
-        Arc::new(StubOwnerAccess)
-    }
-
     fn owner() -> Owner {
         company_owner(Uuid::now_v7())
     }
@@ -942,7 +919,6 @@ mod tests {
             .owner(owner)
             .tool_scope(ToolScope::All)
             .with_mcp()
-            .owner_access(owner_access())
             .authenticator(Arc::new(StubAuth { owner }))
             .resolve()
             .unwrap();
@@ -963,7 +939,6 @@ mod tests {
             .owner(owner)
             .tool_scope(ToolScope::All)
             .with_mcp()
-            .owner_access(owner_access())
             .mcp_bind("0.0.0.0:8080".parse().unwrap())
             .expose_network(true)
             .allowed_origins(vec!["https://app.example.com".to_string()])
@@ -994,7 +969,6 @@ mod tests {
             .owner(owner)
             .tool_scope(ToolScope::All)
             .with_mcp()
-            .owner_access(owner_access())
             .mcp_bind("0.0.0.0:8080".parse().unwrap())
             .expose_network(true)
             .allowed_origins(vec!["https://app.example.com".to_string()])
@@ -1020,7 +994,6 @@ mod tests {
             .database_url("postgres://env/proxima")
             .allowed_origins(vec!["https://env.test".to_string()])
             .with_mcp()
-            .owner_access(owner_access())
             .authenticator(Arc::new(StubAuth { owner: owner() }));
         let overlay = RuntimeBuilder::default()
             .database_url("postgres://overlay/proxima")
@@ -1106,7 +1079,6 @@ mod tests {
             .owner(owner)
             .tool_scope(ToolScope::All)
             .with_mcp()
-            .owner_access(owner_access())
             .expose_network(true)
             .authenticator(Arc::new(StubAuth { owner }))
             .build()

@@ -80,14 +80,13 @@ async fn oidc_host_auth_serves_tools_list() -> Result<(), Box<dyn std::error::Er
         },
         Arc::new(resolver),
         subject_map,
-        owner_access.clone(),
+        owner_access,
     )?;
 
     let running = Proxima::<ProximaMcpApp>::app()
         .tool_scope(ToolScope::All)
         .database_url(database_url)
         .owner(OwnerRef::Personal(subject))
-        .owner_access(owner_access)
         .authenticator(Arc::new(authn))
         .resource_metadata(ResourceServerMetadata {
             public_url: "https://proxima.end-to-end.test".to_string(),

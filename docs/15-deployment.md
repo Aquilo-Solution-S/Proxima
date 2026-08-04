@@ -104,10 +104,12 @@ retries on the next pod rather than queueing behind readers.
 ## No standing bypass
 
 MCP serving has no Proxima-local static bearer fallback. Configure a host
-`Authenticator` and `OwnerAccessPort`; stale local-token bearer prefixes fail
-closed and are not forwarded to host auth. Break-glass during a Zitadel
-outage belongs in the external identity layer as a short-lived, audited host
-credential, never as a standing token on `/mcp`.
+`Authenticator` that returns server-resolved `OwnerRoles`; the shipped OIDC
+authenticator obtains them through its constructor-injected `OwnerAccessPort`.
+Stale local-token bearer prefixes fail closed and are not forwarded to host
+auth. Break-glass during a Zitadel outage belongs in the external identity
+layer as a short-lived, audited host credential, never as a standing token on
+`/mcp`.
 
 ## Security guarantee
 

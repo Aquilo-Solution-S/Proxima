@@ -17,7 +17,6 @@ use proxima_core::{
     AuthError, AuthPath, Authenticator, AuthzContext, Credentials, Owner, Role, UserId,
 };
 use proxima_pg_testkit::{create_db, db_url, drop_db, unique_db_name};
-use proxima_storage_pg::PgOwnerAccessResolver;
 use tokio::time::{Duration, Instant, sleep, timeout};
 use uuid::Uuid;
 
@@ -203,7 +202,6 @@ async fn run_that_fails_to_bind_spawns_no_flavor_workers() {
         let err = Proxima::<BindProbeApp>::app()
             .database_url(db_url.clone())
             .owner(owner)
-            .owner_access(Arc::new(PgOwnerAccessResolver::connect_lazy(&db_url)?))
             .authenticator(Arc::new(TestAuthenticator { subject, owner }))
             .tool_scope(ToolScope::All)
             .with_mcp()

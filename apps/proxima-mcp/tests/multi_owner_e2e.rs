@@ -65,13 +65,12 @@ async fn multi_owner_sessions_bind_owner_palette_and_revocation()
         },
         Arc::new(resolver),
         subject_map,
-        owner_access.clone(),
+        owner_access,
     )?;
 
     let running = Proxima::<ProximaMcpApp>::app()
         .tool_scope(ToolScope::All)
         .database_url(database_url.clone())
-        .owner_access(owner_access)
         .authenticator(Arc::new(authn))
         .resource_metadata(ResourceServerMetadata {
             public_url: "https://proxima.multi-owner.test".to_string(),

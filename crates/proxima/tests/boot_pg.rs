@@ -16,7 +16,7 @@ use proxima_core::{
     SourceBatchId, ToolScope, UserId,
 };
 use proxima_pg_testkit::{admin_url, create_db, db_url, drop_db, unique_db_name};
-use proxima_storage_pg::{PgOwnerAccessResolver, PgSidecarKey, PgStorage};
+use proxima_storage_pg::{PgSidecarKey, PgStorage};
 use sqlx::migrate::{Migration, MigrationType, Migrator};
 use sqlx::{Connection, SqlSafeStr};
 use tokio::time::{Duration, Instant};
@@ -427,7 +427,7 @@ async fn migration_facade_keeps_tracking_public_when_flavor_creates_current_user
 }
 
 #[tokio::test]
-async fn facade_run_binds_loopback_mcp_and_sets_engine_url() {
+async fn facade_run_with_custom_auth_needs_no_separate_owner_access() {
     let db_name = unique_db_name("proxima_test");
     create_db(&db_name).await.expect("PG required for tests");
     let db_url = db_url(&db_name);
@@ -438,7 +438,6 @@ async fn facade_run_binds_loopback_mcp_and_sets_engine_url() {
         let running = Proxima::<GoalTestApp>::app()
             .database_url(db_url.clone())
             .owner(owner)
-            .owner_access(Arc::new(PgOwnerAccessResolver::connect_lazy(&db_url)?))
             .authenticator(Arc::new(TestAuthenticator { subject, owner }))
             .tool_scope(ToolScope::All)
             .with_mcp()
