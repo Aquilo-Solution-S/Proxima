@@ -2,8 +2,9 @@
 
 The procedure that produced v0.0.4 through v0.0.6, written down. Before this
 file it lived only in the maintainer's head, which is why the v0.0.7 audit
-found `MIN_CORE_MIGRATION_VERSION` still pointing at the previous release —
-nothing prompted anyone to bump it.
+found the boot-floor constant still pointing at the previous release —
+nothing prompted anyone to bump it. (That constant is gone: the floor is now
+derived from the embedded migration set.)
 
 Releases are identified by **git tag**. Crate versions in `Cargo.toml` stay at
 `0.1.0`: every crate is `publish = false`, so those numbers carry no meaning
@@ -16,16 +17,24 @@ and bumping thirteen manifests each release only invites drift.
 `initialize.serverInfo.version` and the only in-code statement of which
 release a deployment is running.
 
-**2. Bump `MIN_CORE_MIGRATION_VERSION`** in `crates/storage-pg/src/lib.rs` if
-this release adds a core migration, and add the release's structural markers
-to `ensure_core_schema_current`. This is what stops a `PROXIMA_SKIP_MIGRATIONS`
-boot from starting green against a database one lane behind and then failing
-every query. Verify:
+**2. Squash the cycle's drafts and refresh the lane's markers.** Fold the
+release's draft migration files into one `NNNN_vX.Y.Z.sql` under a **fresh,
+never-used version number** — never by editing a file any shared database has
+already applied ([docs/how-to/migrations.md](docs/how-to/migrations.md) has
+the rules and the why; reusing a version number is the one unrecoverable
+mistake). Then add the release's structural markers to
+`ensure_core_schema_markers` in `crates/storage-pg/src/lib.rs`, and
+regenerate the schema artifact:
 
 ```sh
-rg -n 'MIN_CORE_MIGRATION_VERSION' crates/storage-pg/src/lib.rs
-ls crates/storage-pg/migrations/    # highest version must match
+scripts/regen-schema-sql.sh    # commit the db/schema.sql diff
 ```
+
+The boot floor needs no bump: it is derived from the embedded migration set
+(`min_core_migration_version()`), so shipping the squashed file is what
+raises it. The markers are what stop a `PROXIMA_SKIP_MIGRATIONS` boot from
+starting green against a database one lane behind and then failing every
+query.
 
 **3. Write the schema lane into `MIGRATING.md`.** One `## The vX.Y.Z schema
 lane` section per release that ships a migration, listing **every** file by

@@ -52,7 +52,8 @@ naming the lane, rather than failing at first query.
 | — | code flavor | `20260801000020_v007_baseline.sql` | **yes** — `DROP SCHEMA proxima_code CASCADE`, then a folded schema |
 | — | example flavor | none | — |
 
-`MIN_CORE_MIGRATION_VERSION` is **11**.
+The boot floor for this lane is core version **11** (derived from the
+embedded migration set — the newest core migration the binary ships).
 
 **The core file is the whole lane.** It was authored during the cycle as five
 files (versions 11 through 15) and folded into one before the tag, so what it
@@ -201,6 +202,37 @@ a version-11 database does **not** work: the v0.0.6 binary expects
 `ensure_core_schema_current` will not accept the new shape. Roll back by
 restoring the pre-upgrade dump. This is why the backup at the top of this
 section is not optional.
+
+## Per-flavor migration ledgers and a generic stale-ledger preflight
+
+**No action for operators upgrading from a tagged release.** How migrations
+are tracked and validated changed in v0.0.7; what they apply did not. The
+authoring policy behind all of it is
+[docs/how-to/migrations.md](docs/how-to/migrations.md).
+
+- Each flavor now records into its own tracking table
+  (`public._sqlx_migrations_proxima_code` for the code flavor) instead of
+  sharing `public._sqlx_migrations` with core. The first migrated boot moves
+  an earlier database's flavor rows over automatically, in one transaction;
+  the cutover is idempotent and needs no operator step.
+- The stale-database preflight is generic. There are no hardcoded
+  retired-version lists: any recorded core version the binary does not
+  embed, or any recorded checksum that no longer matches the embedded file,
+  fails closed before any DDL with an error naming the versions and both
+  remedies. The `PROXIMA_SKIP_MIGRATIONS` boot floor is likewise derived
+  from the embedded migration set instead of a hand-bumped constant.
+- **Dev/staging databases that applied a draft lane** later squashed under a
+  fresh version number are repaired non-destructively:
+  `dev-migrate --stamp` records the squashed migration as applied without
+  executing it (and refuses unless the schema already matches the lane's
+  structural markers — a partial draft lane still needs `--reset`).
+- `db/schema.sql` is committed and CI-verified: replaying every embedded
+  migration from an empty database must reproduce it byte-for-byte.
+  Regenerate with `scripts/regen-schema-sql.sh` whenever a migration changes.
+- Migration checksums ignore carriage returns (`sqlx.toml` `ignored-chars`),
+  so a CRLF checkout cannot strand a ledger on `VersionMismatch`. No
+  recorded checksum changed — every migration file was CR-free when this
+  took effect.
 
 ## Wire changes: MCP clients
 
@@ -1668,8 +1700,9 @@ PROXIMA_V004_RESET_CONFIRM=reset-my-dev-db \
 **Production promotion follows GitOps, not this tool.** Apply
 `crates/storage-pg/migrations/0008_v005.sql` — the only append-only v0.0.5
 migration; `0001_init.sql` is the immutable shipped baseline and versions 2–7
-are permanently retired (`RETIRED_PRE_V004_MIGRATION_VERSIONS`) — through your
-normal deploy pipeline against a real backup.
+are permanently retired (the boot preflight detects any retired core version
+generically; see [docs/how-to/migrations.md](docs/how-to/migrations.md)) —
+through your normal deploy pipeline against a real backup.
 
 ## Confirm the restart
 
@@ -1677,9 +1710,10 @@ normal deploy pipeline against a real backup.
 DATABASE_URL="$DATABASE_URL" ./your-host-binary   # or: docker restart <container>
 ```
 
-Boot succeeds once `ensure_v004_baseline_compatible` sees only the current
-baseline version. Tail logs for the `{source} migrations applied` lines,
-confirming both `proxima-core` and every flavor source ran.
+Boot succeeds once `ensure_core_ledger_compatible` reconciles every recorded
+core version and checksum with the embedded migration set. Tail logs for the
+`{source} migrations applied` lines, confirming both `proxima-core` and every
+flavor source ran.
 
 ---
 

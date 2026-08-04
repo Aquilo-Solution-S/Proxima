@@ -235,8 +235,8 @@ existence trigger; adds `superseded_by` to memories and goals,
 to goals; widens the citation constraint to Fact ∪ Abstraction; creates
 `proxima_core.interpretation_v1`; and reshapes `change_event` to carry
 the whole edge rather than a handle to it.
-`MIN_CORE_MIGRATION_VERSION` is **11**, so a database one lane
-behind the binary fails at boot rather than at first query. The edge reset
+The boot floor (derived from the embedded migration set) is **11**, so a
+database one lane behind the binary fails at boot rather than at first query. The edge reset
 shares that file with the rest of the v0.0.7 lane: it was authored as
 `0015_v008.sql` and folded into `0011_v007.sql` before the tag, so a v0.0.6
 database reaches the whole model in one transaction.
