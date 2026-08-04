@@ -196,6 +196,25 @@ jobs:
         uses: taiki-e/install-action@0c80bcf54d007ab0e714c95f3bcc43c387707535
       - name: build
         run: cargo build --workspace --all-targets --locked
+      - name: schema replay gate
+        # db/schema.core.sql and db/schema.code.sql are the authoritative,
+        # per-source renderings of what the embedded migrations produce
+        # (docs/how-to/migrations.md): replaying them from an empty database
+        # must reproduce both byte-for-byte. Two files on purpose — the
+        # core/flavor composition boundary stays visible in the artifact.
+        # pg_dump runs inside the service container so client and server
+        # versions always match; the URL resolves identically in there
+        # because the service maps 5432:5432.
+        run: |
+          PROXIMA_SCHEMA_PG_URL="postgres://proxima:proxima@localhost:5432/proxima" \
+          PROXIMA_PG_DUMP="docker exec -i ${{ job.services.postgres.id }} pg_dump" \
+            scripts/regen-schema-sql.sh /tmp/schema-replayed
+          for f in schema.core.sql schema.code.sql; do
+            diff -u "db/$f" "/tmp/schema-replayed/$f" || {
+              echo "::error::db/$f is stale — run scripts/regen-schema-sql.sh and commit the result"
+              exit 1
+            }
+          done
       - name: test
         run: cargo nextest run --workspace --locked
       - name: test (code flavor — MCP/OIDC e2e)
