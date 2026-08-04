@@ -20,22 +20,28 @@
 //!
 //! The target database URL always comes from `--database-url <URL>` when
 //! given, falling back to `DATABASE_URL`; the resolved host/database is
-//! printed before anything runs. `--reset` additionally performs a
-//! destructive drop-and-recreate of the `proxima_core`/`proxima_code`
-//! schemas (see [`reset_local_dev_database`]) — it still requires
-//! `PROXIMA_V004_RESET_CONFIRM` and refuses non-local hosts and protected
-//! database names as a second, independent guard against pointing this at
-//! anything but a scratch dev database.
+//! printed before anything runs. Two repair modes exist beyond the plain
+//! migration run:
+//!
+//! - `--reset`: destructive drop-and-recreate of the
+//!   `proxima_core`/`proxima_code` schemas (see [`reset_local_dev_database`])
+//!   — requires `PROXIMA_V004_RESET_CONFIRM` and refuses non-local hosts and
+//!   protected database names as a second, independent guard against pointing
+//!   this at anything but a scratch dev database.
+//! - `--stamp`: non-destructive ledger repair for a database that applied a
+//!   draft lane later squashed under a fresh version number (see
+//!   [`stamp_squashed_lane`] and docs/how-to/migrations.md). Refuses when the
+//!   schema does not already match the current lane.
 
 use proxima::flavor::FlavorBundle;
 use proxima::run_core_and_flavor_migrations;
 use proxima_storage_pg::{
-    PgStorage, RETIRED_PRE_V004_MIGRATION_VERSIONS as RETIRED_BASELINE_MIGRATION_VERSIONS,
-    RETIRED_V007_LANE_MIGRATION_VERSIONS, core_migrator,
+    CORE_MIGRATION_VERSION_CEILING, PgStorage, core_migrator, ensure_core_schema_markers,
 };
 
 const DATABASE_URL_FLAG: &str = "--database-url";
 const RESET_FLAG: &str = "--reset";
+const STAMP_FLAG: &str = "--stamp";
 // Keep the destructive-reset confirmation versioned so stale operator scripts
 // do not silently opt in to a future baseline reset.
 const RESET_CONFIRM_ENV: &str = "PROXIMA_V004_RESET_CONFIRM";
@@ -50,6 +56,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let pg = PgStorage::connect(&url).await?;
     if args.iter().any(|arg| arg == RESET_FLAG) {
         reset_local_dev_database(&pg, &url).await?;
+    }
+    if args.iter().any(|arg| arg == STAMP_FLAG) {
+        stamp_squashed_lane(&pg).await?;
     }
     let report = run_core_and_flavor_migrations(&pg, proxima_code::CodeFlavor::migrators()).await?;
     for source in report.sources {
@@ -145,47 +154,147 @@ async fn reset_local_dev_database_confirmed(
         .into());
     }
 
-    let mut versions = core_migrator()
-        .iter()
-        .map(|migration| migration.version)
-        .collect::<Vec<_>>();
+    // Everything attributable to Proxima goes: the whole core version
+    // namespace (which covers retired and draft rows without enumerating
+    // them — see docs/how-to/migrations.md), plus every flavor version the
+    // compiled flavors embed (covering rows a database from earlier in the v0.0.7 cycle still
+    // tracks in the shared table), plus each compiled flavor's own tracking
+    // table. A date-shaped row in the shared table that no compiled migrator
+    // recognizes cannot be attributed, so it is left behind and reported —
+    // it is inert under `ignore_missing`.
+    let mut flavor_versions = Vec::new();
+    let mut flavor_ledger_tables = Vec::new();
     for migrator in proxima_code::CodeFlavor::migrators() {
-        versions.extend(
+        flavor_versions.extend(
             migrator
                 .migrator()
                 .iter()
                 .map(|migration| migration.version),
         );
+        let table = migrator.migrator().table_name.clone();
+        if table != "_sqlx_migrations" && table != "public._sqlx_migrations" {
+            flavor_ledger_tables.push(table);
+        }
     }
-    versions.extend_from_slice(RETIRED_BASELINE_MIGRATION_VERSIONS);
-    // A dev database that applied the pre-squash v0.0.7 lane carries ledger
-    // rows for 12..15 that no file accounts for any more. Dropping the schemas
-    // without deleting them leaves a database that reports a core version of
-    // 15 and has none of the objects.
-    versions.extend_from_slice(RETIRED_V007_LANE_MIGRATION_VERSIONS);
-    versions.sort_unstable();
-    versions.dedup();
 
     eprintln!("resetting schemas: proxima_code, proxima_core");
-    eprintln!("deleting migration versions: {versions:?}");
     sqlx::query("DROP SCHEMA IF EXISTS proxima_code CASCADE")
         .execute(&pool)
         .await?;
     sqlx::query("DROP SCHEMA IF EXISTS proxima_core CASCADE")
         .execute(&pool)
         .await?;
+    for table in flavor_ledger_tables {
+        eprintln!("dropping flavor ledger table: {table}");
+        sqlx::query(sqlx::AssertSqlSafe(format!("DROP TABLE IF EXISTS {table}")))
+            .execute(&pool)
+            .await?;
+    }
     let migration_table_exists: bool =
         sqlx::query_scalar("SELECT to_regclass('public._sqlx_migrations') IS NOT NULL")
             .fetch_one(&pool)
             .await?;
     if migration_table_exists {
-        sqlx::query(
+        let deleted: Vec<i64> = sqlx::query_scalar(
             "DELETE FROM public._sqlx_migrations
-              WHERE version = ANY($1::bigint[])",
+              WHERE version <= $1
+                 OR version = ANY($2::bigint[])
+              RETURNING version",
         )
-        .bind(&versions)
-        .execute(&pool)
+        .bind(CORE_MIGRATION_VERSION_CEILING)
+        .bind(&flavor_versions)
+        .fetch_all(&pool)
         .await?;
+        eprintln!("deleted migration versions: {deleted:?}");
+        let leftover: Vec<i64> =
+            sqlx::query_scalar("SELECT version FROM public._sqlx_migrations ORDER BY version")
+                .fetch_all(&pool)
+                .await?;
+        if !leftover.is_empty() {
+            eprintln!(
+                "leaving {} ledger row(s) no compiled migrator accounts for (inert): {leftover:?}",
+                leftover.len()
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Repair a dev/staging database whose ledger recorded a draft lane that was
+/// later squashed under a fresh version number (docs/how-to/migrations.md).
+///
+/// Stamping records migrations as applied **without executing them**, so it
+/// is only honest when the schema already matches the current release lane;
+/// this refuses unless the structural schema markers check out, and the
+/// remedy for a partial draft lane is `--reset`. On success: deletes the
+/// core-namespace ledger rows the embedded migrator cannot account for (the
+/// orphaned drafts, or rows whose file was amended after application), then
+/// records every pending migration as applied via `SQLx`'s skip machinery —
+/// core against the shared table, each flavor against its own table when the
+/// flavor's schema already exists.
+async fn stamp_squashed_lane(pg: &PgStorage) -> Result<(), Box<dyn std::error::Error>> {
+    let pool = pg.clone_pool_for_backend();
+    if let Err(err) = ensure_core_schema_markers(&pool).await {
+        return Err(format!(
+            "refusing --stamp: {err}. Stamping records migrations as applied without running \
+             them, so the schema must already match the current lane; for a partial draft \
+             lane use --reset instead"
+        )
+        .into());
+    }
+
+    let migration_table_exists: bool =
+        sqlx::query_scalar("SELECT to_regclass('public._sqlx_migrations') IS NOT NULL")
+            .fetch_one(&pool)
+            .await?;
+    if migration_table_exists {
+        let recorded: Vec<(i64, Vec<u8>)> = sqlx::query_as(
+            "SELECT version, checksum
+               FROM public._sqlx_migrations
+              WHERE version <= $1
+              ORDER BY version",
+        )
+        .bind(CORE_MIGRATION_VERSION_CEILING)
+        .fetch_all(&pool)
+        .await?;
+        let orphaned: Vec<i64> = recorded
+            .iter()
+            .filter(|(version, checksum)| {
+                !core_migrator().iter().any(|migration| {
+                    migration.version == *version && migration.checksum.as_ref() == checksum
+                })
+            })
+            .map(|(version, _)| *version)
+            .collect();
+        if !orphaned.is_empty() {
+            eprintln!("deleting unaccounted core ledger rows: {orphaned:?}");
+            sqlx::query("DELETE FROM public._sqlx_migrations WHERE version = ANY($1::bigint[])")
+                .bind(&orphaned)
+                .execute(&pool)
+                .await?;
+        }
+    }
+
+    core_migrator().skip(&pool, None).await?;
+    println!("proxima-core ledger stamped to the embedded migration set");
+
+    for migrator in proxima_code::CodeFlavor::migrators() {
+        let ledger_exists: bool = sqlx::query_scalar("SELECT to_regclass($1) IS NOT NULL")
+            .bind(migrator.migrator().table_name.as_ref())
+            .fetch_one(&pool)
+            .await?;
+        // A flavor with no ledger table of its own either never ran here or
+        // last ran pre-split; stamping it would tell SQLx its DDL already
+        // ran and permanently skip it. Leave it pending — the normal
+        // migration run afterwards cuts over and applies what is missing.
+        if !ledger_exists {
+            continue;
+        }
+        migrator.migrator().skip(&pool, None).await?;
+        println!(
+            "{} ledger stamped to the embedded migration set",
+            migrator.source()
+        );
     }
     Ok(())
 }
@@ -195,12 +304,14 @@ mod tests {
     use super::*;
     use proxima_pg_testkit::{create_db, db_url, drop_db, unique_db_name};
 
-    // Representative retired timestamp-style SQLx migration version folded
-    // into the destructive baseline.
-    const LEGACY_TIMESTAMP_STYLE_MIGRATION_VERSION: i64 = 20_260_622_000_000;
+    // A date-shaped ledger row no compiled migrator recognizes — e.g. a
+    // flavor lane retired before the version-namespace rules existed. The
+    // reset cannot attribute it, so it must survive as an inert leftover
+    // rather than be deleted by guesswork.
+    const UNATTRIBUTABLE_TIMESTAMP_MIGRATION_VERSION: i64 = 20_260_622_000_000;
 
     #[tokio::test]
-    async fn reset_deletes_retired_baseline_migration_rows() {
+    async fn reset_deletes_core_namespace_rows_and_reports_leftovers() {
         let db_name = unique_db_name("proxima_dev_migrate_reset");
         create_db(&db_name).await.expect("PG required for tests");
         let url = db_url(&db_name);
@@ -233,7 +344,13 @@ mod tests {
                 5,
                 6,
                 7,
-                LEGACY_TIMESTAMP_STYLE_MIGRATION_VERSION,
+                // Orphaned draft rows from a squashed dev-cycle lane fall in
+                // the core namespace and must go without being enumerated.
+                12,
+                13,
+                14,
+                15,
+                UNATTRIBUTABLE_TIMESTAMP_MIGRATION_VERSION,
             ] {
                 sqlx::query(
                     "INSERT INTO public._sqlx_migrations
@@ -251,9 +368,11 @@ mod tests {
                 sqlx::query_scalar("SELECT version FROM public._sqlx_migrations ORDER BY version")
                     .fetch_all(pg.pool_for_tests())
                     .await?;
-            assert!(
-                remaining.is_empty(),
-                "retired rows survived reset: {remaining:?}"
+            assert_eq!(
+                remaining,
+                vec![UNATTRIBUTABLE_TIMESTAMP_MIGRATION_VERSION],
+                "reset must delete every core-namespace row and keep only the \
+                 unattributable leftover"
             );
 
             run_core_and_flavor_migrations(&pg, proxima_code::CodeFlavor::migrators()).await?;

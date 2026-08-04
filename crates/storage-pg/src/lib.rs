@@ -61,31 +61,24 @@ pub use sidecars::{
 /// dev DB created locally via `createdb proxima_dev`.
 pub const DEFAULT_DATABASE_URL: &str = "postgres://postgres@localhost/proxima_dev";
 
-/// Migration versions deleted from the v0.0.4 destructive baseline.
+/// Namespace boundary between core and flavor migration versions.
 ///
-/// `SQLx` stores core and flavor migrations in one `public._sqlx_migrations`
-/// table. Keep this explicit list in sync between stale-DB preflight and the
-/// guarded local reset path; do not delete broad version ranges.
-pub const RETIRED_PRE_V004_MIGRATION_VERSIONS: &[i64] = &[2, 3, 4, 5, 6, 7, 20_260_622_000_000];
-
-/// Core migration versions folded into `0011_v007.sql` before the v0.0.7 tag.
-///
-/// The v0.0.7 lane was authored as five files (11..15) and squashed into one
-/// at release preparation, so 12..15 no longer exist. No tagged release ever
-/// shipped them: only dev and staging databases can carry these rows.
-///
-/// Such a database fails CLOSED at boot — version 11's checksum changed with
-/// the squash, so `SQLx` raises `VersionMismatch(11)` before any DDL runs. The
-/// remedy is `tools/dev-migrate --reset`, which needs this list to clear the
-/// orphaned ledger rows; without it the reset drops the schemas but leaves
-/// 12..15 recorded as applied, and the boot floor below is then satisfied by
-/// versions no file can account for.
-pub const RETIRED_V007_LANE_MIGRATION_VERSIONS: &[i64] = &[12, 13, 14, 15];
+/// Core migrations use small sequential integer versions (`0001_init.sql`,
+/// `0011_v007.sql`, …); flavor migrations use date-shaped versions
+/// (`20260801000020_…`). Every ledger row at or below this ceiling belongs to
+/// the core lane and must be accounted for by the embedded core migrator —
+/// that invariant is what lets the preflight below detect draft and retired
+/// versions *generically*, with no enumerated version lists (see
+/// docs/how-to/migrations.md).
+pub const CORE_MIGRATION_VERSION_CEILING: i64 = 9999;
 
 /// Embedded core migration set under `crates/storage-pg/migrations/`.
 ///
-/// `ignore_missing = true` is load-bearing when the same database also
-/// records flavor migrations in `SQLx`'s default `_sqlx_migrations` table.
+/// `ignore_missing = true` is load-bearing twice over: a database migrated
+/// before the v0.0.7 per-flavor ledger split still carries flavor rows in
+/// the shared `public._sqlx_migrations` table, and the squash workflow
+/// (docs/how-to/migrations.md) leaves orphaned draft rows behind that are
+/// forgiven rather than enumerated.
 #[must_use]
 pub fn core_migrator() -> sqlx::migrate::Migrator {
     let mut migrator = sqlx::migrate!("./migrations");
@@ -93,18 +86,36 @@ pub fn core_migrator() -> sqlx::migrate::Migrator {
     migrator
 }
 
-/// Fail closed before `SQLx` checksum/missing-file behavior when a database
-/// contains pre-v0.0.4 Proxima storage artifacts.
+/// Fail closed, and legibly, before `SQLx` applies anything, when the
+/// database's core-lane ledger cannot be reconciled with the embedded
+/// migration set.
+///
+/// The check is generic — there is deliberately no list of known-bad versions
+/// (see docs/how-to/migrations.md: if writing a migration ever seems to
+/// require adding a version list here, the migration workflow is being
+/// violated). Two invariants are enforced over every successful
+/// core-namespace ledger row (`version <= CORE_MIGRATION_VERSION_CEILING`):
+///
+/// - **Every recorded version exists in the embedded set.** A version the
+///   binary does not ship is a draft or retired migration — a dev-cycle lane
+///   later squashed under a fresh number, or a pre-v0.0.4 artifact. Applying
+///   the squashed file over that schema would re-run its DDL, so this fails
+///   first with the remedy (stamp or reset) instead of a raw SQL error.
+/// - **Every recorded checksum matches the embedded file.** A mismatch means
+///   the file's bytes changed after this database applied it. `SQLx` itself
+///   rejects this state (`VersionMismatch`), but only after the point where
+///   its error can say nothing about why or what to do.
 ///
 /// # Errors
 ///
-/// Returns [`StorageError::V004ResetRequired`] for stale schema state and
-/// [`StorageError::Internal`] for catalog query failures.
-///
-/// # Panics
-///
-/// Panics if the embedded core migrator does not contain baseline version 1.
-pub async fn ensure_v004_baseline_compatible(pool: &PgPool) -> Result<(), StorageError> {
+/// Returns [`StorageError::V004ResetRequired`] for pre-v0.0.4 signals —
+/// Proxima schema objects with no baseline ledger marker, or a baseline
+/// (version 1) checksum that predates the v0.0.4 destructive reset; the only
+/// remedy there is export + reset, never a stamp. Returns
+/// [`StorageError::Internal`], naming the stamp-or-reset remedy, for draft or
+/// retired versions and post-baseline checksum drift, and for catalog query
+/// failures.
+pub async fn ensure_core_ledger_compatible(pool: &PgPool) -> Result<(), StorageError> {
     let migration_table_exists: bool =
         sqlx::query_scalar("SELECT to_regclass('public._sqlx_migrations') IS NOT NULL")
             .fetch_one(pool)
@@ -122,126 +133,115 @@ pub async fn ensure_v004_baseline_compatible(pool: &PgPool) -> Result<(), Storag
     .await
     .map_err(internal)?;
 
-    let mut old_versions = Vec::new();
-    let mut checksum_mismatch = false;
-    let mut current_v1_seen = false;
+    let mut recorded: Vec<(i64, Vec<u8>)> = Vec::new();
     if migration_table_exists {
-        let rows: Vec<(i64, Vec<u8>)> = sqlx::query_as(
+        recorded = sqlx::query_as(
             "SELECT version, checksum
                FROM public._sqlx_migrations
               WHERE success
-                AND version = ANY($1::bigint[])
+                AND version <= $1
               ORDER BY version",
         )
-        .bind(
-            std::iter::once(1_i64)
-                .chain(RETIRED_PRE_V004_MIGRATION_VERSIONS.iter().copied())
-                .collect::<Vec<_>>(),
-        )
+        .bind(CORE_MIGRATION_VERSION_CEILING)
         .fetch_all(pool)
         .await
         .map_err(internal)?;
+    }
 
-        let current_v1_checksum = core_migrator()
-            .iter()
-            .find(|migration| migration.version == 1)
-            .expect("core baseline migration version 1 exists")
-            .checksum
-            .as_ref()
-            .to_vec();
-        for (version, checksum) in rows {
-            if version == 1 {
-                current_v1_seen = true;
-                checksum_mismatch = checksum != current_v1_checksum;
-            } else {
-                old_versions.push(version);
+    let embedded: std::collections::BTreeMap<i64, Vec<u8>> = core_migrator()
+        .iter()
+        .map(|migration| (migration.version, migration.checksum.as_ref().to_vec()))
+        .collect();
+
+    let mut unknown_versions = Vec::new();
+    let mut amended_versions = Vec::new();
+    let mut baseline_seen = false;
+    let mut baseline_checksum_drift = false;
+    for (version, checksum) in &recorded {
+        match embedded.get(version) {
+            None => unknown_versions.push(*version),
+            Some(expected) if *version == 1 => {
+                baseline_seen = true;
+                baseline_checksum_drift = checksum != expected;
+            }
+            Some(expected) => {
+                if checksum != expected {
+                    amended_versions.push(*version);
+                }
             }
         }
     }
 
-    let untracked_proxima_schema =
-        !proxima_schema_objects.is_empty() && (!migration_table_exists || !current_v1_seen);
+    let untracked_proxima_schema = !proxima_schema_objects.is_empty() && !baseline_seen;
 
-    if !untracked_proxima_schema && old_versions.is_empty() && !checksum_mismatch {
+    if untracked_proxima_schema || baseline_checksum_drift {
+        let mut details = Vec::new();
+        if untracked_proxima_schema {
+            details.push(format!(
+                "pre-existing Proxima schema objects without v0.0.4 baseline marker: {}",
+                proxima_schema_objects.join(", ")
+            ));
+        }
+        if baseline_checksum_drift {
+            details.push("version 1 checksum differs from v0.0.4 baseline".to_string());
+        }
+        if !unknown_versions.is_empty() {
+            details.push(format!("old migration versions: {unknown_versions:?}"));
+        }
+        return Err(StorageError::V004ResetRequired {
+            details: details.join("; "),
+        });
+    }
+
+    if unknown_versions.is_empty() && amended_versions.is_empty() {
         return Ok(());
     }
 
     let mut details = Vec::new();
-    if untracked_proxima_schema {
+    if !unknown_versions.is_empty() {
         details.push(format!(
-            "pre-existing Proxima schema objects without v0.0.4 baseline marker: {}",
-            proxima_schema_objects.join(", ")
+            "core versions {unknown_versions:?} are recorded as applied but this binary does not \
+             embed them (draft or retired migrations, e.g. a dev-cycle lane squashed under a new \
+             version)"
         ));
     }
-    if !old_versions.is_empty() {
-        details.push(format!("old migration versions: {old_versions:?}"));
+    if !amended_versions.is_empty() {
+        details.push(format!(
+            "core versions {amended_versions:?} were amended after this database applied them \
+             (recorded checksum no longer matches the embedded file)"
+        ));
     }
-    if checksum_mismatch {
-        details.push("version 1 checksum differs from v0.0.4 baseline".to_string());
-    }
-    Err(StorageError::V004ResetRequired {
-        details: details.join("; "),
-    })
-}
-
-/// Fail closed, and legibly, on a database that applied the pre-squash v0.0.7
-/// lane (core versions 12..15).
-///
-/// Such a database also fails without this check — version 11's checksum
-/// changed when the five files were folded into it, so `SQLx` raises
-/// `VersionMismatch(11)`, which is fail-closed but says only "previously
-/// applied but has been modified" and names no remedy. This runs first and
-/// says what happened and what to do about it.
-///
-/// Only dev and staging databases can be in this state: no tagged release ever
-/// shipped versions 12..15.
-///
-/// # Errors
-///
-/// Returns [`StorageError::Internal`] when the ledger records any of
-/// [`RETIRED_V007_LANE_MIGRATION_VERSIONS`], or when the catalog query fails.
-pub async fn ensure_v007_lane_squash_compatible(pool: &PgPool) -> Result<(), StorageError> {
-    let migration_table_exists: bool =
-        sqlx::query_scalar("SELECT to_regclass('public._sqlx_migrations') IS NOT NULL")
-            .fetch_one(pool)
-            .await
-            .map_err(internal)?;
-    if !migration_table_exists {
-        return Ok(());
-    }
-
-    let folded: Vec<i64> = sqlx::query_scalar(
-        "SELECT version
-           FROM public._sqlx_migrations
-          WHERE version = ANY($1::bigint[])
-          ORDER BY version",
-    )
-    .bind(RETIRED_V007_LANE_MIGRATION_VERSIONS)
-    .fetch_all(pool)
-    .await
-    .map_err(internal)?;
-
-    if folded.is_empty() {
-        return Ok(());
-    }
-
     Err(StorageError::Internal(format!(
-        "database applied the pre-release v0.0.7 migration lane (core versions {folded:?}), which was folded into 0011_v007.sql before the tag. \
-         Version 11's checksum changed with the fold, so this database cannot be migrated forward. \
-         No tagged release shipped these versions, so only development and staging databases are affected: \
-         reset with `PROXIMA_V004_RESET_CONFIRM=reset-my-dev-db cargo run -p proxima-dev-migrate -- --reset --database-url <URL>`, \
-         then re-register and re-index (see MIGRATING.md)"
+        "database core-migration ledger does not reconcile with this binary: {}. \
+         If the schema already matches the current lane, stamp the ledger with \
+         `cargo run -p proxima-dev-migrate -- --stamp --database-url <URL>`; \
+         otherwise reset (dev/staging only) with \
+         `PROXIMA_V004_RESET_CONFIRM=reset-my-dev-db cargo run -p proxima-dev-migrate -- --reset --database-url <URL>`, \
+         then re-register and re-index. See docs/how-to/migrations.md and MIGRATING.md",
+        details.join("; ")
     )))
 }
 
-/// Minimum applied core migration version for the current release lane.
+/// Minimum applied core migration version for the current release lane,
+/// derived from the embedded migration set: the newest core migration this
+/// binary ships is, by definition, the lane a `skip_migrations` boot must
+/// find applied. Derived rather than declared so there is nothing to bump —
+/// or forget to bump — at release time (the v0.0.7 audit caught exactly that
+/// omission when this was a hand-maintained constant).
 ///
-/// Bump this with every release that adds a core migration. It is the only
-/// thing standing between a `skip_migrations` boot and a database one lane
-/// behind the binary: the readiness resource does not touch release-specific
-/// columns, so a stale database that boots reports healthy and then fails at
-/// first query.
-pub const MIN_CORE_MIGRATION_VERSION: i64 = 11;
+/// # Panics
+///
+/// Panics if the embedded core migration set is empty, which cannot happen in
+/// a correctly built binary.
+#[must_use]
+pub fn min_core_migration_version() -> i64 {
+    core_migrator()
+        .iter()
+        .map(|migration| migration.version)
+        .filter(|version| *version <= CORE_MIGRATION_VERSION_CEILING)
+        .max()
+        .expect("embedded core migration set is non-empty")
+}
 
 /// Fail closed when `skip_migrations` boot runs against a database that has
 /// not yet applied the current schema lane.
@@ -256,11 +256,6 @@ pub const MIN_CORE_MIGRATION_VERSION: i64 = 11;
 ///
 /// Returns [`StorageError::Internal`] when the recorded core migration version
 /// or the structural markers for the current lane are absent.
-#[expect(
-    clippy::too_many_lines,
-    reason = "one boot probe: every marker is a separate EXISTS arm of the same \
-              query, and the comment above each is what makes it auditable"
-)]
 pub async fn ensure_core_schema_current(pool: &PgPool) -> Result<(), StorageError> {
     let migration_table_exists: bool =
         sqlx::query_scalar("SELECT to_regclass('public._sqlx_migrations') IS NOT NULL")
@@ -269,20 +264,42 @@ pub async fn ensure_core_schema_current(pool: &PgPool) -> Result<(), StorageErro
             .map_err(internal)?;
 
     if migration_table_exists {
+        let min_required = min_core_migration_version();
         let max_version: Option<i64> = sqlx::query_scalar(
-            "SELECT MAX(version) FROM public._sqlx_migrations WHERE success AND version <= 9999",
+            "SELECT MAX(version) FROM public._sqlx_migrations WHERE success AND version <= $1",
         )
+        .bind(CORE_MIGRATION_VERSION_CEILING)
         .fetch_one(pool)
         .await
         .map_err(internal)?;
-        if max_version.unwrap_or(0) < MIN_CORE_MIGRATION_VERSION {
+        if max_version.unwrap_or(0) < min_required {
             return Err(StorageError::Internal(format!(
-                "database core migrations at version {}; version {MIN_CORE_MIGRATION_VERSION}+ required — apply the v0.0.7 lane (0011_v007.sql) before boot (see MIGRATING.md)",
+                "database core migrations at version {}; version {min_required}+ required — apply the current schema lane before boot (see MIGRATING.md)",
                 max_version.unwrap_or(0)
             )));
         }
     }
 
+    ensure_core_schema_markers(pool).await
+}
+
+/// The structural half of [`ensure_core_schema_current`]: probe the schema
+/// artifacts each release lane introduced, without consulting the migration
+/// ledger at all. `tools/dev-migrate --stamp` gates on exactly this — a
+/// database that ran a since-squashed draft lane has the *schema* of the
+/// current lane but a ledger that cannot yet say so, which is the one state
+/// where stamping is honest.
+///
+/// # Errors
+///
+/// Returns [`StorageError::Internal`] when any structural marker for the
+/// current lane is absent.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one boot probe: every marker is a separate EXISTS arm of the same \
+              query, and the comment above each is what makes it auditable"
+)]
+pub async fn ensure_core_schema_markers(pool: &PgPool) -> Result<(), StorageError> {
     let ready: bool = sqlx::query_scalar(
         "SELECT EXISTS (
              SELECT 1
@@ -815,13 +832,13 @@ impl PgStorage {
     /// applied migrations in `_sqlx_migrations`. Call once
     /// at process start before any verb dispatch.
     ///
-    /// `ignore_missing = true` matches the per-flavor migrator
-    /// (`flavors/*/migrations.rs`): core and every flavor share the
-    /// default `_sqlx_migrations` table, so on a second run the core
-    /// migrator sees flavor-authored versions it doesn't know about.
-    /// Without this relaxation the second run fails with
-    /// `VersionMissing(<flavor version>)`. The core version-set is
-    /// still validated; we only relax the cross-author check.
+    /// `ignore_missing = true` forgives ledger rows the embedded set no
+    /// longer accounts for: flavor rows still in the shared table on a
+    /// database migrated before the v0.0.7 per-flavor ledger split, and
+    /// orphaned draft rows left behind when a dev-cycle lane is squashed
+    /// under a fresh version number (docs/how-to/migrations.md). The core
+    /// version-set is still checksum-validated — both by `SQLx` and, more
+    /// legibly, by [`ensure_core_ledger_compatible`] first.
     ///
     /// # Errors
     ///
@@ -829,8 +846,7 @@ impl PgStorage {
     /// migration failure (broken file, conflict with the
     /// recorded checksum, etc.).
     pub async fn run_migrations(&self) -> Result<(), StorageError> {
-        ensure_v004_baseline_compatible(&self.pool).await?;
-        ensure_v007_lane_squash_compatible(&self.pool).await?;
+        ensure_core_ledger_compatible(&self.pool).await?;
         // The pool's default `statement_timeout`
         // bounds request-serving queries, but a schema migration (CREATE INDEX,
         // backfill) may legitimately run longer than that — aborting one
@@ -883,15 +899,24 @@ mod tests {
             versions.contains(&11),
             "core migrator must embed 0011_v007.sql"
         );
-        for retired in super::RETIRED_V007_LANE_MIGRATION_VERSIONS {
-            assert!(
-                !versions.contains(retired),
-                "version {retired} was folded into 0011_v007.sql and must not reappear as a file"
-            );
-        }
+    }
+
+    #[test]
+    fn boot_floor_is_the_newest_embedded_core_version() {
+        // The floor is derived, so it can never lag the migrator — this pins
+        // the two remaining assumptions: the namespace ceiling actually
+        // separates core files from flavor-style date versions, and the floor
+        // moves when a migration is added.
+        let floor = super::min_core_migration_version();
         assert!(
-            versions.iter().copied().max().unwrap_or(0) >= super::MIN_CORE_MIGRATION_VERSION,
-            "the boot floor must be a version the migrator can actually reach"
+            (11..=super::CORE_MIGRATION_VERSION_CEILING).contains(&floor),
+            "derived boot floor {floor} must be a core-namespace version at or past the v0.0.7 lane"
+        );
+        assert!(
+            super::core_migrator()
+                .iter()
+                .all(|m| m.version <= super::CORE_MIGRATION_VERSION_CEILING),
+            "core migrations must stay below the flavor version namespace"
         );
     }
 

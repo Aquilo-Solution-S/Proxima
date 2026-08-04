@@ -1,14 +1,22 @@
 //! Per-flavor migrations. The composite binary runs core migrations
 //! (`proxima_storage_pg::PgStorage::run_migrations`) first, then iterates
 //! linked flavors and applies each `migrator()` once. Idempotent — sqlx
-//! tracks applied versions in `_sqlx_migrations`.
+//! tracks applied versions per flavor in the flavor's own tracking table.
 //!
-//! `ignore_missing = true` is load-bearing: core and every flavor share
-//! the default `_sqlx_migrations` tracking table, so each `Migrator` sees
-//! versions it didn't author. Without `ignore_missing`, the flavor would
-//! reject the run with `VersionMissing(<core version>)`. The flavor's
-//! own version-set is still validated; we only relax the cross-author
-//! check.
+//! Since v0.0.7 this flavor records into its own tracking table,
+//! `public._sqlx_migrations_proxima_code`, instead of the shared
+//! `public._sqlx_migrations`; the migration facade
+//! (`proxima::run_core_and_flavor_migrations`) moves a pre-split database's
+//! rows over once before this migrator first runs. The table deliberately
+//! lives in `public`, NOT in `proxima_code`: this flavor's baselines are
+//! destructive (`DROP SCHEMA proxima_code` and rebuild), and a ledger inside
+//! the flavor schema would be destroyed by the very migration it is
+//! recording.
+//!
+//! `ignore_missing = true` stays on for a different reason than before the
+//! split: it is what forgives orphaned ledger rows after a dev-cycle lane is
+//! squashed under a fresh version number (docs/how-to/migrations.md). The
+//! flavor's own version-set is still checksum-validated.
 
 /// Embedded migration set. Compile-time `include_str!`s every file under
 /// `flavors/code/migrations/`.
@@ -32,6 +40,9 @@
 #[must_use]
 pub fn migrator() -> sqlx::migrate::Migrator {
     let mut m = sqlx::migrate!("./migrations");
+    // In `public`, not `proxima_code` — see the module docs: destructive
+    // baselines drop the flavor schema, and the ledger must survive them.
+    m.dangerous_set_table_name("public._sqlx_migrations_proxima_code");
     m.set_ignore_missing(true);
     m
 }
