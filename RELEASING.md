@@ -113,13 +113,22 @@ scripts/changelog.sh v0.0.7
 hand-edit it. Passing the tag matters: without it, this release's commits land
 under "unreleased" because no commit points at the tag yet.
 
-**8. Commit and tag.**
+**8. Land the changelog through a PR, then tag the merged commit.**
+Branch protection declines direct pushes to `main` — the v0.0.7 ceremony
+learned this the hard way: `git push origin main --follow-tags` pushed the
+tag but not the commit it pointed at, leaving a tag referencing a commit off
+`main` (and a phantom draft release) that had to be deleted and redone.
 
 ```sh
+git checkout -b docs/changelog-vX.Y.Z
 git add CHANGELOG.md
-git commit -m "docs(changelog): stamp v0.0.7"
-git tag -a v0.0.7 -m "v0.0.7"
-git push origin main --follow-tags
+git commit -m "docs(changelog): stamp vX.Y.Z"
+git push -u origin docs/changelog-vX.Y.Z
+gh pr create --base main --title "docs(changelog): stamp vX.Y.Z" --body "RELEASING.md step 7/8"
+# merge once checks are green, then tag the MERGED commit on main:
+git fetch origin
+git tag -a vX.Y.Z -m "vX.Y.Z" origin/main
+git push origin vX.Y.Z
 ```
 
 `.github/workflows/release.yml` generates the per-tag release notes
