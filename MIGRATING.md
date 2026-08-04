@@ -13,6 +13,7 @@ not a reference. Deployment and env vars live in
 
 | You are | Read |
 |---|---|
+| A **v0.0.7 Rust host** | [remove the inert runtime owner-access registration](#remove-the-inert-runtime-owner-access-registration) |
 | An **operator** promoting a deployment | [the v0.0.7 schema lane](#the-v007-schema-lane), then [operator changes](#operator-changes) |
 | Running the **code flavor** | the above, then [re-register and re-index](#re-register-and-re-index-every-code-repository) |
 | An **MCP client / agent** author | [wire changes](#wire-changes-mcp-clients) |
@@ -23,8 +24,42 @@ not a reference. Deployment and env vars live in
 Every upgrade also needs [the lock-step rules](#rules-for-every-upgrade) and
 [the closing checks](#checks-before-calling-an-upgrade-done).
 
-Older lanes are kept below: [v0.0.5 → v0.0.6](#v005--v006) and
-[the v0.0.4 reset](#the-v004-reset).
+Older lanes are kept below: [v0.0.6 → v0.0.7](#v006--v007),
+[v0.0.5 → v0.0.6](#v005--v006), and [the v0.0.4 reset](#the-v004-reset).
+
+---
+
+# v0.0.7 → v0.0.8
+
+## Remove the inert runtime owner-access registration
+
+`RuntimeBuilder::owner_access` and `Proxima::owner_access` are removed, along
+with `RuntimeParts::owner_access` and `RuntimeAuthState::has_owner_access`.
+Delete the separate runtime-builder call:
+
+```rust
+// v0.0.7
+Proxima::<MyApp>::app()
+    .owner_access(owner_access.clone())
+    .authenticator(Arc::new(authenticator))
+    .with_mcp();
+
+// v0.0.8
+Proxima::<MyApp>::app()
+    .authenticator(Arc::new(authenticator))
+    .with_mcp();
+```
+
+The port itself remains. `OidcAuthenticator::new` and each `OidcBinding`
+receive their own `Arc<dyn OwnerAccessPort>` and resolve current roles inside
+`Authenticator::authenticate`. A fully custom authenticator owns the
+equivalent server-side resolution and returns an
+`AuthzContext::server_resolved(..., AuthPath::HostBearer)`.
+
+The MCP edge still authenticates every request, narrows the returned role set
+to the selected or session-bound owner, and rejects an unauthorized owner.
+Serving still fails closed without a host `Authenticator`. There is no wire,
+storage, schema, or migration change in this slice.
 
 ---
 
@@ -1447,9 +1482,10 @@ bearer -> UserId -> OwnerAccessPort::resolve_roles_for_subject -> OwnerRoles
 | revocation | membership removal denies the next request |
 
 Loopback master-token auth is removed: MCP serving requires a host
-`Authenticator` plus `OwnerAccessPort`, and stale `Bearer pxm_*` credentials
-fail closed without reaching host auth. `McpToolHost` has no default owner —
-embedded direct calls pass the owner explicitly per call.
+`Authenticator`, and stale `Bearer pxm_*` credentials fail closed without
+reaching host auth. The shipped OIDC authenticator resolves roles through its
+own `OwnerAccessPort`. `McpToolHost` has no default owner — embedded direct
+calls pass the owner explicitly per call.
 
 ## The OIDC group-auth path changed
 
@@ -1494,7 +1530,6 @@ the result in as before:
 ```rust
 proxima::Proxima::<MyApp>::app()
     .database_url(database_url)
-    .owner_access(owner_access.clone())
     .authenticator(Arc::new(authenticator))
     .with_mcp()
     .run()
@@ -1502,9 +1537,10 @@ proxima::Proxima::<MyApp>::app()
 ```
 
 Embedded hosts that do not serve MCP may still configure a boot owner for
-host-owned direct calls; MCP serving ignores it and requires
-`OwnerAccessPort`. For multi-audience composition, register one `OidcBinding`
-per `(issuer, audience, subject-map, role-shape)` in an `OidcBindingSet` —
+host-owned direct calls; MCP serving ignores it and requires a host
+`Authenticator`. The shipped OIDC authenticator requires `OwnerAccessPort` at
+construction. For multi-audience composition, register one `OidcBinding` per
+`(issuer, audience, subject-map, role-shape)` in an `OidcBindingSet` —
 construction rejects duplicate `(issuer, audience)` routes and authentication
 rejects a token unless exactly one binding validates. The lower-level
 `OidcTokenValidator`/`ValidatedOidcClaims` surface remains for fully custom

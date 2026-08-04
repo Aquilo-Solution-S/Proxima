@@ -559,11 +559,10 @@ fn build_app(
         proxima_storage_pg::PgOwnerAccessResolver::connect_lazy(&config.database_url)
             .map_err(|err| CliError::Runtime(ProximaError::Storage(err.to_string())))?,
     );
-    let oidc = oidc_from_env(&lookup, owner_access.clone())?;
+    let oidc = oidc_from_env(&lookup, owner_access)?;
     let mut app = Proxima::<ProximaMcpApp>::app()
         .from_env()
         .database_url(config.database_url)
-        .owner_access(owner_access)
         .tool_scope(tool_scope);
     if let Some(bind) = config.bind {
         app = app.mcp_bind(bind);

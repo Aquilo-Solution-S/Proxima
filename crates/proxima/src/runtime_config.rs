@@ -4,8 +4,8 @@ use std::time::Duration;
 
 use proxima_blob_s3::S3RuntimeConfig;
 use proxima_core::{
-    AnthropicClient, Authenticator, EmbeddingClient, Owner, OwnerAccessPort, RevalidationConfig,
-    ToolScope, is_loopback_host,
+    AnthropicClient, Authenticator, EmbeddingClient, Owner, RevalidationConfig, ToolScope,
+    is_loopback_host,
 };
 use proxima_mcp_server::ResourceServerMetadata;
 
@@ -32,7 +32,6 @@ pub struct RuntimeBuilder {
     rest_enabled: Option<bool>,
     skip_migrations: Option<bool>,
     authenticator: Option<Arc<dyn Authenticator>>,
-    owner_access: Option<Arc<dyn OwnerAccessPort>>,
     resource_metadata: Option<ResourceServerMetadata>,
     embed_client: Option<Arc<dyn EmbeddingClient>>,
     anthropic: Option<Arc<dyn AnthropicClient>>,
@@ -56,7 +55,6 @@ impl std::fmt::Debug for RuntimeBuilder {
             .field("rest_enabled", &self.rest_enabled)
             .field("skip_migrations", &self.skip_migrations)
             .field("has_authenticator", &self.authenticator.is_some())
-            .field("has_owner_access", &self.owner_access.is_some())
             .field("has_resource_metadata", &self.resource_metadata.is_some())
             .field("has_embed_client", &self.embed_client.is_some())
             .field("has_anthropic", &self.anthropic.is_some())
@@ -83,7 +81,6 @@ impl RuntimeBuilder {
             rest_enabled: self.rest_enabled.or(base.rest_enabled),
             skip_migrations: self.skip_migrations.or(base.skip_migrations),
             authenticator: self.authenticator.or(base.authenticator),
-            owner_access: self.owner_access.or(base.owner_access),
             resource_metadata: self.resource_metadata.or(base.resource_metadata),
             embed_client: self.embed_client.or(base.embed_client),
             anthropic: self.anthropic.or(base.anthropic),
@@ -216,13 +213,6 @@ impl RuntimeBuilder {
         self
     }
 
-    /// Install the owner-role resolver used by MCP serving.
-    #[must_use]
-    pub fn owner_access(mut self, owner_access: Arc<dyn OwnerAccessPort>) -> Self {
-        self.owner_access = Some(owner_access);
-        self
-    }
-
     /// Advertise OAuth protected-resource metadata (enables the public
     /// discovery route + `WWW-Authenticate` on 401).
     #[must_use]
@@ -351,10 +341,8 @@ impl RuntimeBuilder {
             )
         })?;
         let owner = self.owner;
-        let owner_access = self.owner_access;
         let parts = RuntimeParts {
             authenticator: self.authenticator,
-            owner_access,
             embed_client: self.embed_client,
             anthropic: self.anthropic,
         };
@@ -373,7 +361,6 @@ impl RuntimeBuilder {
             skip_migrations: self.skip_migrations.unwrap_or(false),
             auth: RuntimeAuthState {
                 has_host_authenticator: parts.authenticator.is_some(),
-                has_owner_access: parts.owner_access.is_some(),
             },
             resource_metadata: self.resource_metadata,
         };
@@ -421,7 +408,6 @@ pub struct RuntimeConfig {
 #[derive(Debug, Clone, Copy)]
 pub struct RuntimeAuthState {
     pub has_host_authenticator: bool,
-    pub has_owner_access: bool,
 }
 
 impl std::fmt::Debug for RuntimeConfig {
@@ -458,7 +444,7 @@ impl RuntimeConfig {
 
         if self.insecure_single_owner {
             return Err(ProximaError::Security(
-                "insecure single-owner mode cannot serve MCP; configure owner_access plus host auth".into(),
+                "insecure single-owner mode cannot serve MCP; configure host auth".into(),
             ));
         }
         if self.expose_network && self.allowed_origins.is_empty() {
@@ -496,11 +482,6 @@ impl RuntimeConfig {
         if !self.expose_network && !mcp.bind.ip().is_loopback() {
             return Err(ProximaError::Security(
                 "non-exposed MCP bind must be loopback".into(),
-            ));
-        }
-        if !self.auth.has_owner_access {
-            return Err(ProximaError::Security(
-                "MCP serving requires an OwnerAccessPort resolver".into(),
             ));
         }
         if !self.auth.has_host_authenticator {
@@ -550,7 +531,6 @@ pub struct McpSettings {
 #[derive(Clone, Default)]
 pub struct RuntimeParts {
     pub authenticator: Option<Arc<dyn Authenticator>>,
-    pub owner_access: Option<Arc<dyn OwnerAccessPort>>,
     pub embed_client: Option<Arc<dyn EmbeddingClient>>,
     pub anthropic: Option<Arc<dyn AnthropicClient>>,
 }
@@ -559,7 +539,6 @@ impl std::fmt::Debug for RuntimeParts {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("RuntimeParts")
             .field("has_authenticator", &self.authenticator.is_some())
-            .field("has_owner_access", &self.owner_access.is_some())
             .field("has_embed_client", &self.embed_client.is_some())
             .field("has_anthropic", &self.anthropic.is_some())
             .finish()
@@ -684,10 +663,7 @@ mod tests {
     use std::net::{IpAddr, Ipv4Addr};
 
     use async_trait::async_trait;
-    use proxima_core::{
-        AccessError, AuthError, AuthzContext, Credentials, GroupId, OwnerAccessPort, OwnerRef,
-        OwnerRoles, UserId,
-    };
+    use proxima_core::{AuthError, AuthzContext, Credentials, GroupId, OwnerRef};
 
     use super::*;
     use crate::company_owner;
@@ -703,23 +679,6 @@ mod tests {
 
     fn owner(id: uuid::Uuid) -> Owner {
         OwnerRef::Group(GroupId::new(id))
-    }
-
-    #[derive(Debug)]
-    struct TestOwnerAccess;
-
-    #[async_trait]
-    impl OwnerAccessPort for TestOwnerAccess {
-        async fn resolve_roles_for_subject(
-            &self,
-            subject: UserId,
-        ) -> Result<OwnerRoles, AccessError> {
-            OwnerRoles::for_subject(subject, [])
-        }
-    }
-
-    fn owner_access() -> Arc<dyn OwnerAccessPort> {
-        Arc::new(TestOwnerAccess)
     }
 
     #[derive(Debug)]
@@ -751,7 +710,6 @@ mod tests {
             skip_migrations: false,
             auth: RuntimeAuthState {
                 has_host_authenticator: true,
-                has_owner_access: true,
             },
             resource_metadata: None,
         }
@@ -1098,13 +1056,12 @@ mod tests {
     }
 
     #[test]
-    fn default_mcp_bind_is_loopback_when_enabled_without_bind() {
+    fn runtime_config_accepts_custom_authenticator_without_separate_owner_access() {
         let (config, _) = RuntimeBuilder::default()
             .database_url("postgres://localhost/proxima")
             .owner(owner(uuid::Uuid::now_v7()))
             .tool_scope(ToolScope::All)
             .with_mcp()
-            .owner_access(owner_access())
             .authenticator(Arc::new(TestAuthenticator))
             .resolve()
             .unwrap();

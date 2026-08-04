@@ -92,12 +92,16 @@ are specified by `crates/proxima` rustdoc and source:
 
 The Streamable HTTP MCP listener turns on when `PROXIMA_MCP_BIND` (or
 `with_mcp()` / `mcp_bind(..)`) is set. A non-loopback bind requires
-`PROXIMA_EXPOSE_NETWORK`. Serving requires `OwnerAccessPort` plus a
-host authenticator:
+`PROXIMA_EXPOSE_NETWORK`. Serving requires a host authenticator:
 
 | Mode | How | Identity model |
 |---|---|---|
-| Host `Authenticator` | `.authenticator(Arc<dyn Authenticator>)` + `.owner_access(...)` | bearer subject resolves to current `OwnerRoles` |
+| Host `Authenticator` | `.authenticator(Arc<dyn Authenticator>)` | bearer resolves to an `AuthzContext` carrying current, server-resolved `OwnerRoles` |
+
+`OwnerAccessPort` is not a second runtime input. The shipped
+`OidcAuthenticator` and each `OidcBinding` receive the port at construction
+and use it inside `authenticate`; a custom authenticator owns the equivalent
+server-side role resolution.
 
 Origins are gated by `PROXIMA_ALLOWED_ORIGINS`. The inbound `Host`
 header is independently gated by rmcp's DNS-rebinding guard: loopback
@@ -355,8 +359,7 @@ Boot sequence:
 
 1. Build-time registries are linked into the binary.
 2. `RuntimeBuilder` resolves config (`configure < env < explicit`) and
-   `validate()` fails closed on MCP serving without `OwnerAccessPort` and
-   host auth.
+   `validate()` fails closed on MCP serving without host auth.
 3. Migrations create core tables.
 4. The embedding client, if injected, is wired; otherwise semantic search
    is disabled.
@@ -368,7 +371,7 @@ Boot sequence:
 | Shape | Config source |
 |---|---|
 | Embedded host app | host builds `Proxima<App>` programmatically over a local Engine/Postgres; injects its own authenticator + embedding client |
-| Headless MCP host | process env (`apps/proxima-mcp`) + `OwnerAccessPort` + host authenticator |
+| Headless MCP host | process env (`apps/proxima-mcp`) + host authenticator; shipped OIDC constructs it with `OwnerAccessPort` |
 | Hosted deployment | provisioned env/secrets + tenant authenticator |
 
 The same Engine contract applies in every shape: build-time types,

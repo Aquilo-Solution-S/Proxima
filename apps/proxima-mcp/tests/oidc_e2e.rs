@@ -96,13 +96,12 @@ async fn oidc_e2e_discovery_public_and_code_tools_behind_bearer()
         },
         Arc::new(resolver),
         subject_map,
-        owner_access.clone(),
+        owner_access,
     )?;
 
     let running = Proxima::<ProximaMcpApp>::app()
         .tool_scope(ToolScope::All)
         .database_url(database_url)
-        .owner_access(owner_access)
         .authenticator(Arc::new(authn))
         .resource_metadata(ResourceServerMetadata {
             public_url: "https://proxima.e2e.test".to_string(),
@@ -243,14 +242,13 @@ async fn oidc_e2e_group_auth_host_resolved_editor_role_permits_tool_call()
         },
         Arc::new(resolver),
         subject_map,
-        owner_access.clone(),
+        owner_access,
     )?;
 
     let running = Proxima::<ProximaMcpApp>::app()
         .tool_scope(ToolScope::All)
         .database_url(database_url.clone())
         .owner(group_owner)
-        .owner_access(owner_access)
         .authenticator(Arc::new(authn))
         .resource_metadata(ResourceServerMetadata {
             public_url: "https://proxima.e2e.test".to_string(),
