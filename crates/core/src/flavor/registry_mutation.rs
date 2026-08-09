@@ -1,7 +1,7 @@
 use super::{
-    Arc, AuthorizationHook, BTreeSet, CapabilityTag, DependencySatisfactionRule, FlavorDescriptor,
-    FlavorRegistry, FlavorRegistryError, OwnerResolver, PayloadKind, RequestBehavior,
-    SchemaCapabilityTags, SchemaId, SchemaVersion,
+    Arc, AuthorizationHook, BTreeSet, CapabilityTag, FlavorDescriptor, FlavorRegistry,
+    FlavorRegistryError, OwnerResolver, PayloadKind, RequestBehavior, SchemaCapabilityTags,
+    SchemaId, SchemaVersion,
 };
 
 impl FlavorRegistry {
@@ -53,30 +53,6 @@ impl FlavorRegistry {
     ) {
         self.try_add_schema_capability_tags(kind, schema_id, version, tags)
             .expect("schema capability tags must be valid");
-    }
-
-    /// # Errors
-    ///
-    /// Currently infallible; duplicate rule ids are checked by
-    /// [`Self::try_freeze`].
-    pub fn try_add_dependency_satisfaction_rule(
-        &mut self,
-        schema_id: impl Into<String>,
-        rule: Arc<dyn DependencySatisfactionRule>,
-    ) -> Result<(), FlavorRegistryError> {
-        self.dependency_satisfaction_rules
-            .push((schema_id.into(), rule));
-        Ok(())
-    }
-
-    #[doc(hidden)]
-    pub fn add_dependency_satisfaction_rule_or_panic_for_tests(
-        &mut self,
-        schema_id: impl Into<String>,
-        rule: Arc<dyn DependencySatisfactionRule>,
-    ) {
-        self.try_add_dependency_satisfaction_rule(schema_id, rule)
-            .expect("dependency satisfaction rule registration must be valid");
     }
 
     /// Register the composed app's owner resolver.

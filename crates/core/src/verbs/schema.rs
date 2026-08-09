@@ -7,8 +7,8 @@ use crate::authz::{AuthorizationHook, AuthzContext, AuthzInput, AuthzOutcome, Ow
 use crate::error::ProtocolError;
 use crate::mcp::RequestBehavior;
 use crate::{
-    CapabilityTag, DependencySatisfactionRule, FlavorDescriptor, McpToolDescriptor, Owner,
-    SchemaId, SchemaVersion, SearchProjectionColumnKind, SidecarPayload,
+    CapabilityTag, FlavorDescriptor, McpToolDescriptor, Owner, SchemaId, SchemaVersion,
+    SearchProjectionColumnKind, SidecarPayload,
 };
 use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
@@ -176,9 +176,8 @@ pub struct SchemaResponse {
 /// surface, so a stored index never goes stale.
 ///
 /// Only the collections that scale with *schema* count and sit on the
-/// `FactIngest` / `GoalWrite` paths are indexed. `flavors`
-/// and `dependency_satisfaction_rules` scale with *flavor* count (bounded
-/// by linked crates) and stay linear scans — indexing a handful of
+/// `FactIngest` / `GoalWrite` paths are indexed. `flavors` scales with
+/// linked crate count and stays a linear scan — indexing a handful of
 /// entries would not earn its keep.
 #[derive(Debug, Clone, Default)]
 struct FrozenIndex {
@@ -243,7 +242,6 @@ pub struct FlavorRegistryFrozen {
     mcp_tools: Vec<McpToolDescriptor>,
     request_behaviors: Vec<Arc<dyn RequestBehavior>>,
     flavors: Vec<FlavorDescriptor>,
-    dependency_satisfaction_rules: Vec<(String, Arc<dyn DependencySatisfactionRule>)>,
     owner_resolver: Option<Arc<dyn OwnerResolver>>,
     authorization_hooks: Vec<Arc<dyn AuthorizationHook>>,
     /// Lookup acceleration built during successful freeze. Not part of the
@@ -268,7 +266,6 @@ impl FlavorRegistryFrozen {
             mcp_tools,
             request_behaviors,
             flavors,
-            dependency_satisfaction_rules,
             owner_resolver,
             authorization_hooks,
         } = registry;
@@ -282,7 +279,6 @@ impl FlavorRegistryFrozen {
             mcp_tools,
             request_behaviors,
             flavors,
-            dependency_satisfaction_rules,
             owner_resolver,
             authorization_hooks,
             index,
@@ -383,17 +379,6 @@ impl FlavorRegistryFrozen {
             .iter()
             .map(|tool| tool.name.to_string())
             .collect()
-    }
-
-    #[must_use]
-    pub fn dependency_satisfaction_rule(
-        &self,
-        schema_id: &str,
-    ) -> Option<Arc<dyn DependencySatisfactionRule>> {
-        self.dependency_satisfaction_rules
-            .iter()
-            .find(|(id, _)| id == schema_id)
-            .map(|(_, rule)| rule.clone())
     }
 
     /// # Errors

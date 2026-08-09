@@ -1,6 +1,5 @@
 pub use super::proof::{OperatorWriteProof, OwnerWritePermit};
 
-use crate::dependency::MemoryDependency;
 use crate::edge::Edge;
 use crate::read_models::{MemorySnapshot, SidecarSpec};
 use crate::storage::{
@@ -113,12 +112,6 @@ pub trait MemoryInspectPort: Send + Sync {
         memory_ids: &[crate::MemoryId],
         sidecars: &[SidecarSpec],
     ) -> Result<Vec<MemorySnapshot>, StorageError>;
-
-    async fn list_memory_dependencies(
-        &self,
-        owner: &Owner,
-        source_memory_id: crate::MemoryId,
-    ) -> Result<Vec<MemoryDependency>, StorageError>;
 }
 
 /// Reads over the edge index. Every row is four fields — source,

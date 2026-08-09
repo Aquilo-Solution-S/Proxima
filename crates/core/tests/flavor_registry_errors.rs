@@ -5,8 +5,8 @@ use proxima_core::error::ProtocolError;
 use proxima_core::mcp::{McpActionArgSpec, McpTool, McpToolAnnotations, McpToolCtx, McpToolError};
 use proxima_core::verbs::schema::PayloadKind;
 use proxima_core::{
-    AuthzContext, DependencySatisfactionRule, FlavorDescriptor, FlavorProvenance, FlavorRegistry,
-    FlavorRegistryError, MemoryId, MemoryInspectPort, Owner, SchemaId, SchemaVersion, StorageError,
+    AuthzContext, FlavorDescriptor, FlavorProvenance, FlavorRegistry, FlavorRegistryError, Owner,
+    SchemaId, SchemaVersion,
 };
 
 #[derive(schemars::JsonSchema, serde::Deserialize)]
@@ -271,25 +271,6 @@ stub_tool!(
 );
 
 #[derive(Debug)]
-struct TestRule(&'static str);
-
-#[async_trait::async_trait]
-impl DependencySatisfactionRule for TestRule {
-    fn target_schema_id(&self) -> &'static str {
-        self.0
-    }
-
-    async fn is_satisfied(
-        &self,
-        _storage: &dyn MemoryInspectPort,
-        _owner: &Owner,
-        _dependency_memory_id: MemoryId,
-    ) -> Result<bool, StorageError> {
-        Ok(true)
-    }
-}
-
-#[derive(Debug)]
 struct TestResolver;
 
 impl OwnerResolver for TestResolver {
@@ -389,24 +370,6 @@ fn duplicate_flavor_is_typed_freeze_error() {
     assert!(matches!(
         err,
         FlavorRegistryError::DuplicateFlavor { flavor_id } if flavor_id == "proxima-test"
-    ));
-}
-
-#[test]
-fn duplicate_dependency_rule_is_typed_freeze_error() {
-    let mut registry = FlavorRegistry::new();
-    registry
-        .try_add_dependency_satisfaction_rule("proxima-test/fact", Arc::new(TestRule("x")))
-        .unwrap();
-    registry
-        .try_add_dependency_satisfaction_rule("proxima-test/fact", Arc::new(TestRule("x")))
-        .unwrap();
-
-    let err = registry.try_freeze().unwrap_err();
-    assert!(matches!(
-        err,
-        FlavorRegistryError::DuplicateDependencyRule { schema_id }
-            if schema_id == "proxima-test/fact"
     ));
 }
 

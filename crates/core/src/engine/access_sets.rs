@@ -331,14 +331,6 @@ pub(in crate::engine) mod tests {
         ) -> Result<Vec<MemorySnapshot>, StorageError> {
             Ok(Vec::new())
         }
-
-        async fn list_memory_dependencies(
-            &self,
-            _owner: &Owner,
-            _source_memory_id: MemoryId,
-        ) -> Result<Vec<MemoryDependency>, StorageError> {
-            Ok(Vec::new())
-        }
     }
 
     #[async_trait::async_trait]

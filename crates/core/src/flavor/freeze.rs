@@ -81,15 +81,6 @@ impl FlavorRegistry {
         }
         self.validate_tools_declare_behavior()?;
         self.validate_dispatcher_action_specs()?;
-        let mut seen_dependency_rules: std::collections::HashSet<&str> =
-            std::collections::HashSet::new();
-        for (schema_id, _) in &self.dependency_satisfaction_rules {
-            if !seen_dependency_rules.insert(schema_id.as_str()) {
-                return Err(FlavorRegistryError::DuplicateDependencyRule {
-                    schema_id: schema_id.clone(),
-                });
-            }
-        }
         Ok(FlavorRegistryFrozen::from_registry(self))
     }
 

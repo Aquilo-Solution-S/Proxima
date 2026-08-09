@@ -13,10 +13,10 @@ use crate::verbs::schema::{
     SchemaInfo,
 };
 use crate::{
-    AbstractionPayload, CapabilityTag, CitationMappingPayload, CitedObjectPayload,
-    DependencySatisfactionRule, FactPayload, GoalPayload, McpCallFn, McpTool, McpToolDescriptor,
-    McpToolError, McpToolOrigin, PerspectivePayload, RequestBehavior, SchemaId, SchemaVersion,
-    ScopeGateBehavior, SidecarPayload, Tool,
+    AbstractionPayload, CapabilityTag, CitationMappingPayload, CitedObjectPayload, FactPayload,
+    GoalPayload, McpCallFn, McpTool, McpToolDescriptor, McpToolError, McpToolOrigin,
+    PerspectivePayload, RequestBehavior, SchemaId, SchemaVersion, ScopeGateBehavior,
+    SidecarPayload, Tool,
 };
 
 use std::collections::BTreeSet;

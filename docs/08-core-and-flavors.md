@@ -89,11 +89,9 @@ Supported keys:
 | `opaque_citation_mapping_schemas` | Untyped citation-mapping schema ids. |
 | `schema_capability_tags` | Build-time capability tags on registered payload schemas. |
 | `mcp_tools` | Flavor tool descriptors projected to MCP; tool names must use the flavor prefix. A tool that declares `ACTION_ARG_SPECS` is a dispatcher: its actions become `tool:action` scope leaves rather than one whole-tool grant, and its `Args` must be an internally tagged enum tagged on `action` (see [12 §Action-Dispatch Tools](12-tool-manifest.md#action-dispatch-tools)). |
-| `dependency_satisfaction_rules` | Build-time dependency rules for flavor schemas. |
 
-Unknown keys are compile errors. Macro-registered schemas, tools, and
-dependency rules must start with `name + "/"`, except dependency rules may
-target `core/` schemas.
+Unknown keys are compile errors. Macro-registered schemas start with
+`name + "/"`; tool names start with `name + "/"` or `name + "_"`.
 
 There is no `relations` or `edge_schemas` key. A flavor that needs its nodes
 connected declares reference fields on the payload that owns the statement
@@ -157,9 +155,9 @@ WakeConfig.toolset subset-of actor ToolScope intersect deployment profile
 ```
 
 There is no flavor-owned runtime agent trait. A flavor may provide payload
-schemas, the reference fields on them, MCP tools, and dependency rules. External
-harnesses drive model and execution decisions; PR6 core exposes candidate
-reads only, not an executor.
+schemas, the reference fields on them, and MCP tools. External harnesses own
+model, execution, and dependency-satisfaction policy; core exposes candidate
+reads, not an executor.
 
 ## Substrate MCP Surface
 
@@ -214,8 +212,7 @@ writes use the same tool with the matching action key.
 
 `FlavorRegistry::try_freeze()` rejects with `FlavorRegistryError`:
 
-1. Duplicate schemas, tool names, `FlavorDescriptor::flavor_id`, and
-   dependency satisfaction rules.
+1. Duplicate schemas, tool names, and `FlavorDescriptor::flavor_id`.
 2. Capability tags for unregistered schemas.
 3. An opaque Fact, Abstraction, Perspective, or Goal descriptor. Only
    `CitedObject` and `CitationMapping` schemas may be opaque;
@@ -238,9 +235,8 @@ writes use the same tool with the matching action key.
    plain struct, and a schema whose `x-proxima-actions` is present but not an
    object, which is a malformed extension rather than an absent one.
 
-Prefix violations in macro-registered schemas, MCP tools, and dependency
-rules fail during registration before freeze — schema-id prefixes as `const`
-assertions, so a misprefixed id fails the build rather than the first boot.
+Prefixes in macro-registered schemas and MCP tools are `const` assertions, so
+a misprefixed id fails the build rather than the first boot.
 
 <a id="inclusion"></a>
 ## Inclusion
@@ -268,7 +264,7 @@ runtime feature-flag matrix.
 Composite binaries may combine flavors, but registry ownership remains
 per flavor id:
 
-1. Each schema, MCP tool, and dependency rule keeps its flavor prefix.
+1. Each schema and MCP tool keeps its flavor prefix.
 2. Cross-flavor reads obey Owner role resolution and authorized read-owner sets.
 3. Cross-flavor connections are ordinary references declared by whichever
    payload owns the statement; there is no vocabulary to agree on.
