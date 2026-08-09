@@ -28,6 +28,33 @@ fn host_api_imports_from_root() {
 }
 
 #[test]
+fn flavor_api_reuses_the_shared_endpoint_transport_policy() {
+    use proxima::flavor::{
+        EndpointUrlError, EndpointUrlPolicy, is_loopback_endpoint, is_loopback_host,
+        validate_endpoint_url,
+    };
+
+    validate_endpoint_url(
+        "http://[::1]:11434/v1",
+        EndpointUrlPolicy::AllowLoopbackHttp,
+    )
+    .expect("loopback plaintext is the one supported exception");
+    assert!(is_loopback_host("LOCALHOST"));
+    assert!(is_loopback_endpoint("http://127.0.0.1:9000"));
+
+    for deceptive in [
+        "http://localhost.evil.example/v1",
+        "http://localhost@evil.example/v1",
+    ] {
+        assert_eq!(
+            validate_endpoint_url(deceptive, EndpointUrlPolicy::AllowLoopbackHttp),
+            Err(EndpointUrlError::InsecureTransport),
+            "deceptive remote endpoint must not inherit loopback plaintext policy: {deceptive}",
+        );
+    }
+}
+
+#[test]
 fn host_api_can_construct_every_compliance_erase_target() {
     // `ComplianceEraseTarget` was already on the facade, but two of its
     // five variants take a `GroupId`/`SourceId` the facade did not name,

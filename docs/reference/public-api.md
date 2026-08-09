@@ -15,6 +15,7 @@ Post-PR9 supported Rust tiers:
 | Flavor SDK | `use proxima::flavor::{FlavorBundle, FlavorRegistry, FactPayload, pg_sidecar};` | build-time schemas, payload references, tools, sidecars |
 | Flavor SDK (MCP tools) | `use proxima::flavor::{McpTool, McpToolCtx, McpToolError, McpToolErrorKind, McpToolAnnotations, McpActionArgSpec, McpAuthorContext};` | author flavor MCP tools without reaching into `proxima_core::mcp` — see [add-first-mcp-tool](../tutorials/add-first-mcp-tool.md) |
 | Flavor SDK (authorized reads) | `use proxima::flavor::{authorized_memory_ids, authorized_fact_payloads, authorized_fact_payloads_include_tombstones, authorized_abstraction_payloads, authorized_code_chunk_head_candidates};` | typed, authz-filtered candidate/payload reads — see [Authorized Flavor-Read Facade](#authorized-flavor-read-facade) below |
+| Flavor SDK (outbound endpoints) | `use proxima::flavor::{validate_endpoint_url, EndpointUrlPolicy};` | enforce HTTPS with the shared, exact loopback-only plaintext exception; never reproduce it with string prefixes |
 
 Unsupported:
 

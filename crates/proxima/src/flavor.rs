@@ -79,13 +79,14 @@ pub use proxima_core::storage_ports::{
 /// for `PresentOnly` queries, so a deleted entity stays a live head
 /// forever.
 pub use proxima_core::{
-    AbstractionPayload, CapabilitySet, CitationMappingPayload, CitedObjectPayload, FactPayload,
-    FactReceiptId, FactTombstone, FlavorDescriptor, FlavorProvenance, FlavorRegistry,
-    FlavorRegistryError, FlavorRegistryFrozen, GoalId, GoalPayload, InputContractId, MemoryId,
-    ModelId, OperatorId, PayloadKeyBuilder, PerspectivePayload, PromptVersion, SchemaId,
-    SchemaVersion, SearchProjection, SearchProjectionColumnKind, SearchProjectionField,
-    SidecarPayload, Tool, ToolCall, ToolCallFn, ToolCtx, ToolDescriptor, ToolError, ToolOrigin,
-    ToolServices, proxima_flavor, proxima_schema_id,
+    AbstractionPayload, CapabilitySet, CitationMappingPayload, CitedObjectPayload,
+    EndpointUrlError, EndpointUrlPolicy, FactPayload, FactReceiptId, FactTombstone,
+    FlavorDescriptor, FlavorProvenance, FlavorRegistry, FlavorRegistryError, FlavorRegistryFrozen,
+    GoalId, GoalPayload, InputContractId, MemoryId, ModelId, OperatorId, PayloadKeyBuilder,
+    PerspectivePayload, PromptVersion, SchemaId, SchemaVersion, SearchProjection,
+    SearchProjectionColumnKind, SearchProjectionField, SidecarPayload, Tool, ToolCall, ToolCallFn,
+    ToolCtx, ToolDescriptor, ToolError, ToolOrigin, ToolServices, is_loopback_endpoint,
+    is_loopback_host, proxima_flavor, proxima_schema_id, validate_endpoint_url,
 };
 /// Derived-memory authoring: the request/outcome types of
 /// [`proxima_core::Engine::author_derived_authorized`], which is how a
