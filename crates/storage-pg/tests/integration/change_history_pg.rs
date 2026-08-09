@@ -1,6 +1,8 @@
 //! End-to-end `ChangeHistory` verb test against a transient PG database.
 
-use crate::common::{create_db, db_url, drop_db, fresh_pg, seed_memory, seed_memory_edge};
+use crate::common::{
+    create_db, db_url, drop_db, fact_blob_registry, fresh_pg, seed_memory, seed_memory_edge,
+};
 use std::sync::Arc;
 
 use proxima_core::engine::{Engine, ListChangeEventsReadRequest};
@@ -12,7 +14,6 @@ use proxima_core::verbs::fact_ingest::{
 use proxima_core::verbs::query::{
     EdgeFilter, EdgeReadRequest, QueryRequest, SupersessionStatus, TombstoneFilter,
 };
-use proxima_core::verbs::schema::{FlavorRegistryFrozen, PayloadKind, SchemaInfo};
 use proxima_core::{
     AuthPath, AuthzContext, ChangeEventKind, EdgeKind, EdgeTargetProjection, EntityKind, EntityRef,
     GroupId, MemoryId, Owner, OwnerRef, Role, SchemaId, SchemaVersion, SourceBatchId, SourceId,
@@ -22,47 +23,6 @@ use proxima_storage_pg::PgStorage;
 use uuid::Uuid;
 
 type ResolvedAuthz = AuthzContext;
-
-fn schemas_for_test() -> Vec<SchemaInfo> {
-    vec![
-        SchemaInfo {
-            schema_id: SchemaId::new("test/fact_blob".into()),
-            schema_version: SchemaVersion::new(1),
-            kind: PayloadKind::Fact,
-            filter_keys: vec![],
-            sidecar_table: None,
-            natural_key_columns: vec![],
-            tombstone: None,
-            has_typed_ingress: false,
-            cited_object_schema: None,
-            embeddable: true,
-        },
-        SchemaInfo {
-            schema_id: SchemaId::new("test/cited_blob".into()),
-            schema_version: SchemaVersion::new(1),
-            kind: PayloadKind::CitedObject,
-            filter_keys: vec![],
-            sidecar_table: None,
-            natural_key_columns: vec![],
-            tombstone: None,
-            has_typed_ingress: false,
-            cited_object_schema: None,
-            embeddable: true,
-        },
-        SchemaInfo {
-            schema_id: SchemaId::new("test/citation_blob".into()),
-            schema_version: SchemaVersion::new(1),
-            kind: PayloadKind::CitationMapping,
-            filter_keys: vec![],
-            sidecar_table: None,
-            natural_key_columns: vec![],
-            tombstone: None,
-            has_typed_ingress: false,
-            cited_object_schema: None,
-            embeddable: true,
-        },
-    ]
-}
 
 fn fresh_fact_draft(_owner: Owner, payload: Vec<u8>) -> FactWriteCommand {
     let now = time::OffsetDateTime::now_utc();
@@ -94,8 +54,7 @@ fn fresh_fact_draft(_owner: Owner, payload: Vec<u8>) -> FactWriteCommand {
 }
 
 fn build_engine(storage: StoragePorts, _owner: Owner, _principal: OwnerRef) -> Engine {
-    let registry = FlavorRegistryFrozen::with_schemas(schemas_for_test());
-    Engine::new(registry).with_storage_ports(storage)
+    Engine::new(fact_blob_registry()).with_storage_ports(storage)
 }
 
 fn read_set_authz(

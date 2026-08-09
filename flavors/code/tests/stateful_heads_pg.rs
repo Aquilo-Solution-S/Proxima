@@ -15,14 +15,14 @@ use std::time::Duration;
 
 mod common;
 
-use common::migrated_db;
+use common::{code_registry_with_test_citations, migrated_db};
 use proxima_code::{CodeChunkV1, CommitV1, FileRevisionV1, FileState};
 use proxima_core::engine::Engine;
 use proxima_core::verbs::fact_ingest::{
     Citation, CitationMappingHint, CitedObjectHint, FactReceiptDraft, FactWriteCommand,
 };
 use proxima_core::verbs::query::{QueryRequest, SupersessionStatus, TombstoneFilter};
-use proxima_core::verbs::schema::{FlavorRegistryFrozen, PayloadKind, SchemaInfo, SchemaTombstone};
+use proxima_core::verbs::schema::{FlavorRegistryFrozen, PayloadKind, SchemaTombstone};
 use proxima_core::{
     AbstractionPayload, EdgeKind, EntityKind, FactPayload, FlavorRegistry, MemoryId, Owner,
     OwnerRef, SchemaId, SchemaVersion, SourceBatchId, SourceId, UserId,
@@ -38,22 +38,7 @@ fn make_owner() -> (UserId, Owner) {
 }
 
 fn registry_for_test() -> FlavorRegistryFrozen {
-    // Register the proxima-code schemas plus stub CitedObject / CitationMapping
-    // schemas that FactIngest needs.
-    let mut flavor = FlavorRegistry::new();
-    proxima_code::register(&mut flavor).unwrap();
-    flavor.freeze_or_panic_for_tests().with_additional_schemas([
-        SchemaInfo::opaque(
-            SchemaId::new("test/cited_blob".into()),
-            SchemaVersion::new(1),
-            PayloadKind::CitedObject,
-        ),
-        SchemaInfo::opaque(
-            SchemaId::new("test/citation_blob".into()),
-            SchemaVersion::new(1),
-            PayloadKind::CitationMapping,
-        ),
-    ])
+    code_registry_with_test_citations()
 }
 
 fn fresh_draft(_owner: Owner, schema: &str, payload: &[u8]) -> FactWriteCommand {

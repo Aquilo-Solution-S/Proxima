@@ -20,7 +20,6 @@ use proxima_core::mcp::{McpAuthorContext, McpTool, McpToolCtx, McpToolError, Mcp
 use proxima_core::verbs::fact_ingest::{
     Citation, CitationMappingHint, CitedObjectHint, FactReceiptDraft, FactWriteCommand,
 };
-use proxima_core::verbs::schema::{PayloadKind, SchemaInfo};
 use proxima_core::{
     AbstractionPayload, AuthPath, AuthzContext, FactPayload, FlavorRegistry, FlavorRegistryFrozen,
     MemoryId, Owner, SchemaId, SchemaVersion, SourceBatchId, SourceId,
@@ -2151,20 +2150,7 @@ fn registry_for_mcp() -> Arc<FlavorRegistryFrozen> {
 }
 
 fn registry_for_engine() -> FlavorRegistryFrozen {
-    let mut flavor = FlavorRegistry::new();
-    proxima_code::register(&mut flavor).unwrap();
-    flavor.freeze_or_panic_for_tests().with_additional_schemas([
-        SchemaInfo::opaque(
-            SchemaId::new("test/cited_blob".into()),
-            SchemaVersion::new(1),
-            PayloadKind::CitedObject,
-        ),
-        SchemaInfo::opaque(
-            SchemaId::new("test/citation_blob".into()),
-            SchemaVersion::new(1),
-            PayloadKind::CitationMapping,
-        ),
-    ])
+    common::code_registry_with_test_citations()
 }
 
 /// The `file_path` of every match, in rank order.

@@ -13,8 +13,8 @@ use proxima_core::owner::{Owner, OwnerRef};
 use proxima_core::verbs::change_history::ChangeHistoryRequest;
 use proxima_core::verbs::mcp_call_history::McpCallHistoryRequest;
 use proxima_core::verbs::query::QueryRequest;
-use proxima_core::verbs::schema::{FlavorRegistryFrozen, SchemaRequest};
-use proxima_core::{AuthPath, AuthzContext, McpCallLogInput};
+use proxima_core::verbs::schema::SchemaRequest;
+use proxima_core::{AuthPath, AuthzContext, FlavorRegistry, McpCallLogInput};
 use test_fixtures::ConstantEmbedding;
 use uuid::Uuid;
 
@@ -29,7 +29,7 @@ fn fresh_owner() -> (OwnerRef, Owner) {
 
 fn boot_engine(principal: OwnerRef, owner: Owner) -> Engine {
     let _ = (principal, owner);
-    Engine::new(FlavorRegistryFrozen::new())
+    Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests())
 }
 
 fn fresh_caller() -> OwnerRef {

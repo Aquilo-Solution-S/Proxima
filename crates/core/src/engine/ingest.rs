@@ -1223,7 +1223,6 @@ mod tests {
     use crate::error::ErrorCode;
     use crate::ids::UserId;
     use crate::llm::{EMBEDDING_DIM, LlmError};
-    use crate::verbs::schema::FlavorRegistryFrozen;
     use crate::{AuthPath, FactPayload, FlavorRegistry, PayloadKeyBuilder, SchemaId};
     use serde::{Deserialize, Serialize};
 
@@ -1363,7 +1362,7 @@ mod tests {
 
     #[tokio::test]
     async fn embed_claimed_memory_without_text_returns_nothing_to_embed() {
-        let engine = Engine::new(FlavorRegistryFrozen::new());
+        let engine = Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests());
         let client: Arc<dyn EmbeddingClient> = Arc::new(TestEmbedding);
 
         let step = engine
@@ -1381,7 +1380,7 @@ mod tests {
 
     #[tokio::test]
     async fn ensure_memory_embedding_without_client_preserves_noop_result() {
-        let engine = Engine::new(FlavorRegistryFrozen::new());
+        let engine = Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests());
 
         let embedded = engine
             .ensure_memory_embedding(

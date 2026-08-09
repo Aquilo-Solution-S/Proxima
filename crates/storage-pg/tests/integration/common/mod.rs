@@ -8,6 +8,7 @@ use proxima_core::FactIngestPort;
 // `mod common;`. Items unused by a particular binary would otherwise trip
 // `dead_code` even though another binary uses them.
 
+mod registry;
 #[path = "../../../src/test_fixtures.rs"]
 mod storage_pg_test_fixtures;
 
@@ -26,6 +27,10 @@ pub use proxima_pg_testkit::{
     create_db, create_db_from_template, db_url, drop_db, ensure_template, unique_db_name,
 };
 use proxima_storage_pg::PgStorage;
+pub use registry::{
+    compliance_fact_registry, embedding_lifecycle_registry, fact_blob_only_registry,
+    fact_blob_registry, query_registry, receiptless_fact_registry, sidecar_fact_registry,
+};
 use uuid::Uuid;
 
 #[allow(unused_imports)]

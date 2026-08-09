@@ -1,6 +1,6 @@
 //! End-to-end `Query` against a transient PG database.
 
-use crate::common::{create_db, db_url, drop_db};
+use crate::common::{create_db, db_url, drop_db, query_registry};
 use std::sync::Arc;
 
 use proxima_core::engine::Engine;
@@ -9,7 +9,6 @@ use proxima_core::verbs::fact_ingest::{
 };
 use proxima_core::verbs::goal_write::{GoalAuthorshipKind, GoalState};
 use proxima_core::verbs::query::{EntityKind, QueryRequest, SupersessionStatus};
-use proxima_core::verbs::schema::{FlavorRegistryFrozen, PayloadKind, SchemaInfo};
 use proxima_core::{Owner, OwnerRef, SchemaId, SchemaVersion, SourceBatchId, SourceId, UserId};
 use proxima_storage_pg::PgStorage;
 use uuid::Uuid;
@@ -79,83 +78,6 @@ async fn insert_abstraction_memory(
     .execute(pg.pool_for_tests())
     .await?;
     Ok(memory_id)
-}
-
-fn schemas_for_test() -> Vec<SchemaInfo> {
-    vec![
-        SchemaInfo {
-            schema_id: SchemaId::new("test/fact_blob".into()),
-            schema_version: SchemaVersion::new(1),
-            kind: PayloadKind::Fact,
-            filter_keys: vec![],
-            sidecar_table: None,
-            natural_key_columns: vec![],
-            tombstone: None,
-            has_typed_ingress: false,
-            cited_object_schema: None,
-            embeddable: true,
-        },
-        SchemaInfo {
-            schema_id: SchemaId::new("test/fact_blob_v2".into()),
-            schema_version: SchemaVersion::new(2),
-            kind: PayloadKind::Fact,
-            filter_keys: vec![],
-            sidecar_table: None,
-            natural_key_columns: vec![],
-            tombstone: None,
-            has_typed_ingress: false,
-            cited_object_schema: None,
-            embeddable: true,
-        },
-        SchemaInfo {
-            schema_id: SchemaId::new("test/cited_blob".into()),
-            schema_version: SchemaVersion::new(1),
-            kind: PayloadKind::CitedObject,
-            filter_keys: vec![],
-            sidecar_table: None,
-            natural_key_columns: vec![],
-            tombstone: None,
-            has_typed_ingress: false,
-            cited_object_schema: None,
-            embeddable: true,
-        },
-        SchemaInfo {
-            schema_id: SchemaId::new("test/citation_blob".into()),
-            schema_version: SchemaVersion::new(1),
-            kind: PayloadKind::CitationMapping,
-            filter_keys: vec![],
-            sidecar_table: None,
-            natural_key_columns: vec![],
-            tombstone: None,
-            has_typed_ingress: false,
-            cited_object_schema: None,
-            embeddable: true,
-        },
-        SchemaInfo {
-            schema_id: SchemaId::new("test/goal_blob".into()),
-            schema_version: SchemaVersion::new(1),
-            kind: PayloadKind::Goal,
-            filter_keys: vec![],
-            sidecar_table: None,
-            natural_key_columns: vec![],
-            tombstone: None,
-            has_typed_ingress: false,
-            cited_object_schema: None,
-            embeddable: true,
-        },
-        SchemaInfo {
-            schema_id: SchemaId::new("test/goal_blob_v2".into()),
-            schema_version: SchemaVersion::new(2),
-            kind: PayloadKind::Goal,
-            filter_keys: vec![],
-            sidecar_table: None,
-            natural_key_columns: vec![],
-            tombstone: None,
-            has_typed_ingress: false,
-            cited_object_schema: None,
-            embeddable: true,
-        },
-    ]
 }
 
 fn fresh_draft(_owner: Owner) -> FactWriteCommand {
@@ -291,7 +213,7 @@ async fn query_returns_stored_schema_version() {
         let user = UserId::new(Uuid::now_v7());
         let owner = OwnerRef::Personal(user);
 
-        let registry = FlavorRegistryFrozen::with_schemas(schemas_for_test());
+        let registry = query_registry();
         let engine = Engine::new(registry).with_storage_ports(storage);
 
         let mut draft = fresh_draft(owner);
@@ -346,7 +268,7 @@ async fn query_returns_fact_rows() {
         let user = UserId::new(Uuid::now_v7());
         let owner = OwnerRef::Personal(user);
 
-        let registry = FlavorRegistryFrozen::with_schemas(schemas_for_test());
+        let registry = query_registry();
         let engine = Engine::new(registry).with_storage_ports(storage);
 
         // Ingest two distinct Facts.
@@ -423,7 +345,7 @@ async fn query_returns_all_edges_between_returned_nodes_even_when_edge_count_exc
 
         let user = UserId::new(Uuid::now_v7());
         let owner = OwnerRef::Personal(user);
-        let registry = FlavorRegistryFrozen::with_schemas(schemas_for_test());
+        let registry = query_registry();
         let engine = Engine::new(registry).with_storage_ports(storage);
 
         let first = engine
@@ -524,7 +446,7 @@ async fn query_excludes_edges_with_endpoint_outside_returned_node_window() {
 
         let user = UserId::new(Uuid::now_v7());
         let owner = OwnerRef::Personal(user);
-        let registry = FlavorRegistryFrozen::with_schemas(schemas_for_test());
+        let registry = query_registry();
         let engine = Engine::new(registry).with_storage_ports(storage);
 
         let outside = engine
@@ -634,7 +556,7 @@ async fn query_caps_snapshot_edges_at_max_snapshot_edges() {
 
         let user = UserId::new(Uuid::now_v7());
         let owner = OwnerRef::Personal(user);
-        let registry = FlavorRegistryFrozen::with_schemas(schemas_for_test());
+        let registry = query_registry();
         let engine = Engine::new(registry).with_storage_ports(storage);
 
         let nodes = 320;
@@ -684,7 +606,7 @@ async fn query_owner_scope_is_principal() {
         let stored_owner = OwnerRef::Personal(user);
         let requested_owner = stored_owner;
 
-        let registry = FlavorRegistryFrozen::with_schemas(schemas_for_test());
+        let registry = query_registry();
         let engine = Engine::new(registry).with_storage_ports(storage);
 
         let draft = fresh_draft(stored_owner);
@@ -734,7 +656,7 @@ async fn query_filter_abstraction_returns_empty() {
         let user = UserId::new(Uuid::now_v7());
         let owner = OwnerRef::Personal(user);
 
-        let registry = FlavorRegistryFrozen::with_schemas(schemas_for_test());
+        let registry = query_registry();
         let engine = Engine::new(registry).with_storage_ports(storage);
 
         // Ingest a Fact.
@@ -818,7 +740,7 @@ async fn query_heads_only_ignores_cross_owner_supersedes_successor() {
         )
         .await?;
 
-        let registry = FlavorRegistryFrozen::with_schemas(schemas_for_test());
+        let registry = query_registry();
         let engine = Engine::new(registry).with_storage_ports(storage);
         let req = QueryRequest {
             owner: victim,
@@ -889,7 +811,7 @@ async fn query_goals_filter_by_schema_id() {
         let user = UserId::new(Uuid::now_v7());
         let owner = OwnerRef::Personal(user);
 
-        let registry = FlavorRegistryFrozen::with_schemas(schemas_for_test());
+        let registry = query_registry();
         let engine = Engine::new(registry).with_storage_ports(storage);
         let authz =
             proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::HostBearer);
@@ -989,7 +911,7 @@ async fn query_returns_stored_goal_schema_version() {
         let user = UserId::new(Uuid::now_v7());
         let owner = OwnerRef::Personal(user);
 
-        let registry = FlavorRegistryFrozen::with_schemas(schemas_for_test());
+        let registry = query_registry();
         let engine = Engine::new(registry).with_storage_ports(storage);
 
         // Seed a goal under schema_version=2.
@@ -1042,7 +964,7 @@ async fn query_filter_nonexistent_schema_returns_empty() {
         let user = UserId::new(Uuid::now_v7());
         let owner = OwnerRef::Personal(user);
 
-        let registry = FlavorRegistryFrozen::with_schemas(schemas_for_test());
+        let registry = query_registry();
         let engine = Engine::new(registry).with_storage_ports(storage);
 
         // Ingest a Fact.

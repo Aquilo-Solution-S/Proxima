@@ -196,8 +196,7 @@ mod tests {
     use super::*;
     use crate::access::Role;
     use crate::error::ErrorCode;
-    use crate::verbs::schema::FlavorRegistryFrozen;
-    use crate::{AuthPath, AuthzContext, OwnerRef, UserId};
+    use crate::{AuthPath, AuthzContext, FlavorRegistry, OwnerRef, UserId};
     use uuid::Uuid;
 
     fn fresh_personal_owner() -> (UserId, Owner) {
@@ -206,7 +205,7 @@ mod tests {
     }
 
     fn boot_engine() -> Engine {
-        Engine::new(FlavorRegistryFrozen::new())
+        Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests())
     }
 
     #[tokio::test]

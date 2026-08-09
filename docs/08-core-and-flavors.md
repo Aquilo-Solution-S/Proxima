@@ -56,6 +56,8 @@ edge kinds are closed to core.
 Every composite binary creates `FlavorRegistry::new()`, calls each linked
 flavor's generated `register(&mut FlavorRegistry) -> Result<(), FlavorRegistryError>`,
 then calls `try_freeze()`. Registry failure is typed startup failure.
+`FlavorRegistryFrozen` is constructed only by successful `try_freeze()` and
+has no post-freeze schema mutation surface.
 
 Core registers substrate schemas, core GoalPayload schemas, Goal
 lifecycle Fact schemas, and substrate MCP memory/config/goal tools in the
@@ -215,14 +217,20 @@ writes use the same tool with the matching action key.
 1. Duplicate schemas, tool names, `FlavorDescriptor::flavor_id`, and
    dependency satisfaction rules.
 2. Capability tags for unregistered schemas.
-3. A registered MCP tool with no resolvable behaviour declaration.
-4. A tool whose `Args` is an internally tagged enum — so its schema carries
+3. An opaque Fact, Abstraction, Perspective, or Goal descriptor. Only
+   `CitedObject` and `CitationMapping` schemas may be opaque;
+   `try_add_opaque_schema` rejects the invalid kinds before freeze too.
+4. Any schema/ingress mismatch: each typed schema has exactly one protocol
+   ingress parser, each opaque citation schema has none, and every parser
+   resolves to a typed schema.
+5. A registered MCP tool with no resolvable behaviour declaration.
+6. A tool whose `Args` is an internally tagged enum — so its schema carries
    `x-proxima-actions` and clients see a dispatcher — that declares no
    `ACTION_ARG_SPECS`. Nothing would then enumerate its actions: the scope
    gate falls back to whole-tool grants, the catalog lists none, REST serves
    no action route, and arguments are validated against every variant's
    fields merged together.
-5. `ACTION_ARG_SPECS` that disagree with the derived schema: a discriminator
+7. `ACTION_ARG_SPECS` that disagree with the derived schema: a discriminator
    other than `action`, a different action set, or different
    `allowed_fields`/`required_fields` for an action. Two specs naming the same
    action fail here too — a set comparison cannot see the collapse, and the

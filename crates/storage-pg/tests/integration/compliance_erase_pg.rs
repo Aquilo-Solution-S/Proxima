@@ -3,7 +3,8 @@
 use std::sync::Arc;
 
 use crate::common::{
-    engine_with_registry, owner_write_permit, storage_ports_with_compliance_and_drop_proof,
+    compliance_fact_registry, engine_with_registry, owner_write_permit,
+    storage_ports_with_compliance_and_drop_proof,
 };
 use proxima_core::access::{AccessError, Role};
 use proxima_core::engine::Engine;
@@ -12,7 +13,6 @@ use proxima_core::storage_ports::{
     OwnerMembershipAdminPort, OwnerWritePermit,
 };
 use proxima_core::verbs::fact_ingest::{FactReceiptDraft, FactWriteCommand};
-use proxima_core::verbs::schema::{FlavorRegistryFrozen, PayloadKind, SchemaInfo};
 use proxima_core::{
     AccessKind, AuthPath, AuthzContext, ComplianceEraseOutcome, ComplianceEraseRefusal,
     ComplianceEraseTarget, FactIngestOutcome, GroupId, OwnerRef, Relation, SchemaId, SchemaVersion,
@@ -49,23 +49,8 @@ impl OwnerDropProofPort for AllowDropProof {
     }
 }
 
-fn schemas_for_test() -> Vec<SchemaInfo> {
-    vec![SchemaInfo {
-        schema_id: SchemaId::new("test/compliance_fact".into()),
-        schema_version: SchemaVersion::new(1),
-        kind: PayloadKind::Fact,
-        filter_keys: vec![],
-        sidecar_table: None,
-        natural_key_columns: vec![],
-        tombstone: None,
-        has_typed_ingress: false,
-        cited_object_schema: None,
-        embeddable: true,
-    }]
-}
-
 fn compliance_engine(pg: &PgStorage) -> Engine {
-    Engine::new(FlavorRegistryFrozen::with_schemas(schemas_for_test())).with_storage_ports(
+    Engine::new(compliance_fact_registry()).with_storage_ports(
         storage_ports_with_compliance_and_drop_proof(
             pg,
             Arc::new(AllowComplianceAdmin),
@@ -94,7 +79,7 @@ fn compliance_engine_with_failing_purge(pg: &PgStorage) -> Engine {
 }
 
 fn engine_without_compliance_admin(pg: &PgStorage) -> Engine {
-    engine_with_registry(pg, FlavorRegistryFrozen::with_schemas(schemas_for_test()))
+    engine_with_registry(pg, compliance_fact_registry())
 }
 
 fn receipt_draft(source_id: &str, batch: Uuid, payload: &[u8]) -> FactWriteCommand {

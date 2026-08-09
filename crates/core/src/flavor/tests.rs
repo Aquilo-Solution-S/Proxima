@@ -81,17 +81,154 @@ fn freeze_rejects_duplicate_schema_keys() {
     registry.add_opaque_schema_or_panic_for_tests(
         schema_id.clone(),
         SchemaVersion::new(1),
-        PayloadKind::Fact,
+        PayloadKind::CitedObject,
     );
     registry.add_opaque_schema_or_panic_for_tests(
         schema_id,
         SchemaVersion::new(1),
-        PayloadKind::Fact,
+        PayloadKind::CitedObject,
     );
     let err = registry
         .try_freeze()
         .expect_err("duplicate schema must fail");
     assert!(matches!(err, FlavorRegistryError::DuplicateSchema { .. }));
+}
+
+#[test]
+fn opaque_registration_rejects_memory_and_goal_kinds() {
+    for kind in [
+        PayloadKind::Fact,
+        PayloadKind::Abstraction,
+        PayloadKind::Perspective,
+        PayloadKind::Goal,
+    ] {
+        let mut registry = FlavorRegistry::new();
+        let schema_id = SchemaId::new(format!("proxima-test/opaque-{kind:?}"));
+        let err = registry
+            .try_add_opaque_schema(schema_id.clone(), SchemaVersion::new(1), kind)
+            .expect_err("memory and Goal schemas require typed ingress");
+        assert!(matches!(
+            err,
+            FlavorRegistryError::OpaqueSchemaKind {
+                schema_id: ref actual_id,
+                schema_version,
+                kind: actual_kind,
+            } if actual_id == &schema_id
+                && schema_version == SchemaVersion::new(1)
+                && actual_kind == kind
+        ));
+    }
+}
+
+#[test]
+fn freeze_defensively_rejects_an_internally_malformed_opaque_fact() {
+    let schema_id = SchemaId::new("proxima-test/internal-opaque-fact".to_string());
+    let mut registry = FlavorRegistry::new();
+    registry.schemas.push(SchemaInfo::opaque(
+        schema_id.clone(),
+        SchemaVersion::new(1),
+        PayloadKind::Fact,
+    ));
+
+    let err = registry
+        .try_freeze()
+        .expect_err("freeze must defend against internal descriptor drift");
+    assert!(matches!(
+        err,
+        FlavorRegistryError::OpaqueSchemaKind {
+            schema_id: ref actual_id,
+            schema_version,
+            kind: PayloadKind::Fact,
+        } if actual_id == &schema_id && schema_version == SchemaVersion::new(1)
+    ));
+}
+
+#[test]
+fn freeze_rejects_duplicate_ingress_for_a_typed_schema() {
+    let mut registry = FlavorRegistry::new();
+    let duplicate = registry
+        .protocol_ingress
+        .first()
+        .expect("default registry has typed ingress")
+        .clone();
+    let schema_id = duplicate.schema_id.clone();
+    let schema_version = duplicate.schema_version;
+    let kind = duplicate.kind;
+    registry.protocol_ingress.push(duplicate);
+
+    let err = registry
+        .try_freeze()
+        .expect_err("typed schema must resolve to exactly one ingress parser");
+    assert!(matches!(
+        err,
+        FlavorRegistryError::SchemaIngressMismatch {
+            schema_id: ref actual_id,
+            schema_version: actual_version,
+            kind: actual_kind,
+        } if actual_id == &schema_id
+            && actual_version == schema_version
+            && actual_kind == kind
+    ));
+}
+
+#[test]
+fn freeze_rejects_orphan_ingress_without_a_typed_schema() {
+    let mut registry = FlavorRegistry::new();
+    let mut orphan = registry
+        .protocol_ingress
+        .first()
+        .expect("default registry has typed ingress")
+        .clone();
+    let schema_id = SchemaId::new("proxima-test/orphan-ingress".to_string());
+    orphan.schema_id = schema_id.clone();
+    let schema_version = orphan.schema_version;
+    let kind = orphan.kind;
+    registry.protocol_ingress.push(orphan);
+
+    let err = registry
+        .try_freeze()
+        .expect_err("every ingress parser must resolve to a typed schema");
+    assert!(matches!(
+        err,
+        FlavorRegistryError::SchemaIngressMismatch {
+            schema_id: ref actual_id,
+            schema_version: actual_version,
+            kind: actual_kind,
+        } if actual_id == &schema_id
+            && actual_version == schema_version
+            && actual_kind == kind
+    ));
+}
+
+#[test]
+fn opaque_citation_kinds_freeze() {
+    let mut registry = FlavorRegistry::new();
+    for (schema_id, kind) in [
+        ("proxima-test/opaque-object", PayloadKind::CitedObject),
+        ("proxima-test/opaque-mapping", PayloadKind::CitationMapping),
+    ] {
+        registry
+            .try_add_opaque_schema(
+                SchemaId::new(schema_id.to_string()),
+                SchemaVersion::new(1),
+                kind,
+            )
+            .expect("citation schemas may be opaque");
+    }
+
+    let frozen = registry
+        .try_freeze()
+        .expect("valid opaque citation schemas freeze");
+    assert!(frozen.schemas().iter().any(|schema| {
+        schema.schema_id.as_str() == "proxima-test/opaque-object"
+            && schema.kind == PayloadKind::CitedObject
+            && !schema.has_typed_ingress
+    }));
+    assert!(frozen.schemas().iter().any(|schema| {
+        schema.schema_id.as_str() == "proxima-test/opaque-mapping"
+            && schema.kind == PayloadKind::CitationMapping
+            && !schema.has_typed_ingress
+    }));
 }
 
 #[test]

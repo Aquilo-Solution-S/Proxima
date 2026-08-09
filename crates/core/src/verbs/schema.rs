@@ -64,7 +64,9 @@ pub struct SchemaInfo {
     pub filter_keys: Vec<String>,
     /// Sidecar table identifier (qualified, e.g. `proxima_code.code_chunk_v1`)
     /// when the payload trait declares one, including typed `CitedObject` and
-    /// `CitationMapping` sidecars. `None` only for opaque schemas.
+    /// `CitationMapping` sidecars. `None` is valid for typed Fact and Goal
+    /// schemas whose payload needs no schema-owned columns, and for opaque
+    /// citation schemas.
     pub sidecar_table: Option<String>,
     /// Natural-key columns for stateful Fact schemas (docs/03 §Stateful
     /// Fact schemas). Empty for stateless / non-Fact schemas. Drives the
@@ -93,11 +95,16 @@ impl SchemaInfo {
     /// ingress parser, no JSON schema, and no sidecar table.
     ///
     /// `has_typed_ingress == false` is the typed/opaque discriminant the
-    /// registry enforces: `FlavorRegistry::freeze` asserts every schema
-    /// either has a protocol-ingress parser or is opaque.
+    /// registry enforces: `FlavorRegistry::try_freeze` asserts every schema
+    /// either has a protocol-ingress parser or is an opaque `CitedObject` /
+    /// `CitationMapping` schema.
     /// See docs/03 §Registry rules.
     #[must_use]
-    pub fn opaque(schema_id: SchemaId, schema_version: SchemaVersion, kind: PayloadKind) -> Self {
+    pub(crate) fn opaque(
+        schema_id: SchemaId,
+        schema_version: SchemaVersion,
+        kind: PayloadKind,
+    ) -> Self {
         Self {
             schema_id,
             schema_version,
@@ -165,9 +172,8 @@ pub struct SchemaResponse {
 /// Build-time lookup acceleration for `FlavorRegistryFrozen`. Each map
 /// stores the position of the *first* matching entry in the owning
 /// `Vec`, mirroring the `.iter().find()` first-wins semantics of the
-/// linear scans it replaces. The frozen `Vec`s are append-only, so a
-/// stored index never goes stale; `with_additional_schemas` rebuilds
-/// the whole index after extending `schemas`.
+/// linear scans it replaces. The frozen vocabulary has no mutation
+/// surface, so a stored index never goes stale.
 ///
 /// Only the collections that scale with *schema* count and sit on the
 /// `FactIngest` / `GoalWrite` paths are indexed. `flavors`
@@ -227,7 +233,7 @@ impl FrozenIndex {
     }
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct FlavorRegistryFrozen {
     schemas: Vec<SchemaInfo>,
     schema_capability_tags:
@@ -240,35 +246,15 @@ pub struct FlavorRegistryFrozen {
     dependency_satisfaction_rules: Vec<(String, Arc<dyn DependencySatisfactionRule>)>,
     owner_resolver: Option<Arc<dyn OwnerResolver>>,
     authorization_hooks: Vec<Arc<dyn AuthorizationHook>>,
-    /// Lookup acceleration, rebuilt by every constructor. Not part of
-    /// the logical registry — derived purely from the `Vec`s above.
+    /// Lookup acceleration built during successful freeze. Not part of the
+    /// logical registry — derived purely from the `Vec`s above.
     index: FrozenIndex,
 }
 
 impl FlavorRegistryFrozen {
-    #[must_use]
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Build-time / test-time constructor. The struct stays
-    /// immutable on the public surface (no `register` method)
-    /// per AGENTS.md invariant 7. `..Self::default()` leaves every
-    /// vocabulary field beyond `schemas` empty.
-    #[must_use]
-    pub fn with_schemas(schemas: Vec<SchemaInfo>) -> Self {
-        let index = FrozenIndex::build(&schemas, &[]);
-        Self {
-            schemas,
-            schema_capability_tags: HashMap::new(),
-            index,
-            ..Self::default()
-        }
-    }
-
     /// Freeze a `FlavorRegistry` into its immutable, index-accelerated
-    /// form — the production constructor, called by
-    /// `FlavorRegistry::freeze`. Consumes the builder whole and rehomes
+    /// form — called by `FlavorRegistry::try_freeze` after validation.
+    /// Consumes the builder whole and rehomes
     /// every vocabulary field. A new vocabulary kind is added in the
     /// two struct definitions plus the destructure below, which the
     /// compiler keeps exhaustive; the constructor signature never
@@ -301,39 +287,6 @@ impl FlavorRegistryFrozen {
             authorization_hooks,
             index,
         }
-    }
-
-    /// Append opaque schemas to an already-frozen registry.
-    ///
-    /// # Panics
-    ///
-    /// Panics if any added schema carries typed ingress — typed
-    /// schemas must be registered through `FlavorRegistry` before
-    /// `freeze()`.
-    #[must_use]
-    pub fn with_additional_schemas(
-        mut self,
-        schemas: impl IntoIterator<Item = SchemaInfo>,
-    ) -> Self {
-        // This post-freeze path provides no way to attach an ingress parser,
-        // so it accepts only opaque schemas — a typed schema added here
-        // would be silently unparsed. Typed schemas go through
-        // `FlavorRegistry` before `freeze()`.
-        let added: Vec<SchemaInfo> = schemas.into_iter().collect();
-        for schema in &added {
-            assert!(
-                !schema.has_typed_ingress,
-                "with_additional_schemas accepts only opaque schemas; \
-                 {:?} carries typed process-local functions — register typed schemas \
-                 through FlavorRegistry before freeze()",
-                schema.schema_id.as_str(),
-            );
-        }
-        self.schemas.extend(added);
-        // Rebuild the index over the extended schema list — a stale
-        // index would silently miss the appended schemas.
-        self.index = FrozenIndex::build(&self.schemas, &self.protocol_ingress);
-        self
     }
 
     #[must_use]
