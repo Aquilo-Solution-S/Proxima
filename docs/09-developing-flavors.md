@@ -770,6 +770,15 @@ service sets left-to-right; `(A,)` is the identity-preserving singleton form.
 Duplicate concrete types fail boot with `FlavorServiceError::DuplicateService`
 instead of silently overriding an earlier flavor or the substrate's service.
 
+When S3 is configured, the runtime appends two substrate-owned entries:
+`CitedBlobService` for upload/read and
+`CitedBlobOwnerReconcileService` for an authorized, report-only integrity
+check. A tool passes `&ctx.authz` and `ctx.owner` to `reconcile_owner`; the
+service re-checks Fact-read authority before Postgres or S3 access and returns
+counts plus missing cited-object ids. Bucket names, object keys, and
+orphan/foreign locator samples are absent. Global bucket reconciliation is
+not an extension service and requires the host-held `SystemAuthority`.
+
 ## Tests
 
 Minimum:

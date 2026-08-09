@@ -59,9 +59,10 @@ pub use proxima_core::mcp::{
 /// flavor batching its digests must be able to read the bound it is being
 /// held to rather than hardcode a copy that drifts from it.
 pub use proxima_core::storage_ports::{
-    CitedBlobHeld, CitedBlobPort, CitedBlobReadUrl, CitedBlobService, CitedBlobStaged,
-    CitedBlobUploadAborted, CitedBlobUploadCompleted, CitedBlobUploadHeader,
-    CitedBlobUploadPrepared, MAX_HELD_BLOB_DIGESTS,
+    CitedBlobHeld, CitedBlobOwnerMissingObject, CitedBlobOwnerReconcileOutcome,
+    CitedBlobOwnerReconcilePort, CitedBlobOwnerReconcileService, CitedBlobPort, CitedBlobReadUrl,
+    CitedBlobService, CitedBlobStaged, CitedBlobUploadAborted, CitedBlobUploadCompleted,
+    CitedBlobUploadHeader, CitedBlobUploadPrepared, MAX_HELD_BLOB_DIGESTS,
 };
 /// [`FactTombstone`] is the return type of [`FactPayload::tombstone`], so a
 /// flavor that declares a *stateful* Fact schema — one with a head per

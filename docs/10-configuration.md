@@ -288,6 +288,16 @@ that are three different problems:
 | `orphans` | objects no row claims | cost and retention only |
 | `foreign` | rows naming another bucket, or a key outside `objects/` | usually a legacy or hand-written locator |
 
+The command boots the normal headless Proxima composition and passes its
+runtime-issued `SystemAuthority` to the global reconcile verb. The store is
+bound to that boot identity before it is published; a witness issued by a
+different `Engine` is rejected before database or S3 access through the
+runtime-provided handles. Linked Rust runs inside the trusted host process;
+this API boundary is not a sandbox for code given raw backend credentials. An
+owner-facing tool instead resolves `CitedBlobOwnerReconcileService`; that
+lane is Fact-read-authorized, restricted to one Owner's rows and object
+prefix, and omits every raw storage locator from its result.
+
 `missing` cannot be repaired by re-ingesting: the upload lane skips artefacts
 the corpus already claims to hold, so only a bucket version, a backup, or a
 direct re-upload restores the bytes. This is why bucket versioning is listed

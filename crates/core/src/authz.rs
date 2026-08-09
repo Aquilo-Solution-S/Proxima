@@ -136,13 +136,39 @@ pub enum AuthPath {
 /// a caller-shaped `System` context is not enough without this witness.
 #[derive(Debug)]
 pub struct SystemAuthority {
-    _private: (),
+    binding: SystemAuthorityBinding,
 }
 
 impl SystemAuthority {
     #[must_use]
-    pub(crate) const fn new() -> Self {
-        Self { _private: () }
+    pub(crate) const fn new(binding: SystemAuthorityBinding) -> Self {
+        Self { binding }
+    }
+
+    /// Opaque boot-instance binding for backend services assembled with this
+    /// engine. The identifier is not authority on its own; only the
+    /// uncloneable `SystemAuthority` can validate it.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn binding(&self) -> SystemAuthorityBinding {
+        self.binding.clone()
+    }
+
+    #[doc(hidden)]
+    #[must_use]
+    pub fn authorizes(&self, binding: &SystemAuthorityBinding) -> bool {
+        self.binding == *binding
+    }
+}
+
+/// Opaque identity shared by one booted engine and its host-owned backends.
+#[doc(hidden)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SystemAuthorityBinding(uuid::Uuid);
+
+impl SystemAuthorityBinding {
+    pub(crate) fn fresh() -> Self {
+        Self(uuid::Uuid::now_v7())
     }
 }
 

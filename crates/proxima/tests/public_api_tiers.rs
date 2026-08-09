@@ -294,19 +294,37 @@ fn flavor_sdk_exposes_the_cited_blob_lane() {
     // A worker resolves this port from `FlavorServices`, so both the handle
     // and the trait behind it must be nameable from `proxima::flavor` alone.
     use proxima::flavor::{
-        CitedBlobHeld, CitedBlobPort, CitedBlobReadUrl, CitedBlobService, CitedBlobStaged,
-        CitedBlobUploadAborted, CitedBlobUploadCompleted, CitedBlobUploadHeader,
-        CitedBlobUploadPrepared, MAX_HELD_BLOB_DIGESTS, UploadedBlobPayload,
+        CitedBlobHeld, CitedBlobOwnerMissingObject, CitedBlobOwnerReconcileOutcome,
+        CitedBlobOwnerReconcilePort, CitedBlobOwnerReconcileService, CitedBlobPort,
+        CitedBlobReadUrl, CitedBlobService, CitedBlobStaged, CitedBlobUploadAborted,
+        CitedBlobUploadCompleted, CitedBlobUploadHeader, CitedBlobUploadPrepared,
+        MAX_HELD_BLOB_DIGESTS, UploadedBlobPayload,
     };
     fn _needs_port<T: CitedBlobPort>() {}
+    fn _needs_owner_reconcile_port<T: CitedBlobOwnerReconcilePort>() {}
     let _: Option<(
         &CitedBlobService,
+        &CitedBlobOwnerReconcileService,
         &CitedBlobReadUrl,
         &CitedBlobUploadPrepared,
         &CitedBlobUploadCompleted,
         &CitedBlobUploadAborted,
         &CitedBlobUploadHeader,
     )> = None;
+
+    let owner_report = CitedBlobOwnerReconcileOutcome {
+        rows_scanned: 1,
+        objects_scanned: 0,
+        missing_objects: 1,
+        missing_sample: vec![CitedBlobOwnerMissingObject {
+            cited_object_id: uuid::Uuid::nil(),
+            byte_len: 1,
+            filename: "handbuch.pdf".to_owned(),
+        }],
+        orphan_objects: 0,
+        foreign_locators: 0,
+    };
+    assert!(!owner_report.is_intact());
 
     // CONSTRUCTED, NOT NAMED. `stage_upload` must RETURN this, and the
     // naming form above passed for a release while the port was
@@ -600,15 +618,16 @@ fn host_api_can_configure_the_blob_lane_without_the_environment() {
 }
 
 #[test]
-fn host_api_names_the_reconcile_outcome_it_returns() {
-    // `CitedBlobStore::reconcile_cited_blobs` is a `pub async fn` reachable
+fn host_api_names_global_and_owner_reconcile_outcomes() {
+    // `CitedBlobStore::reconcile_all` is a `pub async fn` reachable
     // through `AppContext::blobs` / `BuiltProxima::blobs` /
-    // `RunningProxima::blobs` (all `Option<CitedBlobStore>`, pinned
-    // nameable above), and it returns `CitedBlobReconcileOutcome`. Before
-    // this export a host could call the method and bind its result only by
-    // inference — no signature could hold it, no struct field could carry
-    // it forward, and nothing beyond `is_intact()` could be matched on.
-    use proxima::{CitedBlobMissingObject, CitedBlobReconcileOutcome, MAX_RECONCILE_SAMPLE};
+    // `RunningProxima::blobs`. Calling it also requires the booted runtime's
+    // same-boot, non-Clone `SystemAuthority`. The owner service is a distinct,
+    // authorization-carrying lane with a locator-free result.
+    use proxima::{
+        CitedBlobMissingObject, CitedBlobOwnerMissingObject, CitedBlobOwnerReconcileOutcome,
+        CitedBlobOwnerReconcileService, CitedBlobReconcileOutcome, MAX_RECONCILE_SAMPLE,
+    };
 
     // Nameable in a signature, which is what "the return type can be held"
     // means.
@@ -643,6 +662,25 @@ fn host_api_names_the_reconcile_outcome_it_returns() {
     // size its own buffers against the sample bound.
     let buffer: Vec<CitedBlobMissingObject> = Vec::with_capacity(MAX_RECONCILE_SAMPLE);
     assert!(buffer.is_empty());
+
+    let owner_outcome = CitedBlobOwnerReconcileOutcome {
+        rows_scanned: 1,
+        objects_scanned: 0,
+        missing_objects: 1,
+        missing_sample: vec![CitedBlobOwnerMissingObject {
+            cited_object_id: uuid::Uuid::nil(),
+            byte_len: 1,
+            filename: "handbuch.pdf".to_owned(),
+        }],
+        orphan_objects: 0,
+        foreign_locators: 0,
+    };
+    let _: Option<CitedBlobOwnerReconcileService> = None;
+    assert!(!owner_outcome.is_intact());
+    assert_eq!(
+        owner_outcome.missing_sample[0].cited_object_id,
+        uuid::Uuid::nil()
+    );
 }
 
 #[test]

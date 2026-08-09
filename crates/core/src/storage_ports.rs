@@ -33,7 +33,9 @@ pub use cited_blob::{
     CitedBlobUploadPrepared, MAX_HELD_BLOB_DIGESTS,
 };
 pub use cited_blob_reconcile::{
-    CitedBlobMissingObject, CitedBlobReconcileOutcome, CitedBlobReconcilePort, MAX_RECONCILE_SAMPLE,
+    CitedBlobMissingObject, CitedBlobOwnerMissingObject, CitedBlobOwnerReconcileOutcome,
+    CitedBlobOwnerReconcilePort, CitedBlobOwnerReconcileService, CitedBlobReconcileOutcome,
+    CitedBlobReconcilePort, MAX_RECONCILE_SAMPLE,
 };
 pub use cited_object_erase::CitedObjectErasePort;
 pub use compliance::{

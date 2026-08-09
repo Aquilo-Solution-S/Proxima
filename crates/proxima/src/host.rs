@@ -64,20 +64,17 @@ pub use proxima_core::llm;
 /// inference server, any provider needing `matryoshka` to return
 /// [`llm::EMBEDDING_DIM`] rather than its native width.
 pub use proxima_core::models::EmbedCaps;
-/// The outcome [`CitedBlobStore::reconcile_cited_blobs`] hands back.
+/// Cited-blob reconciliation surfaces.
 ///
-/// The host reaches that method through the `.blobs` lane on
-/// [`AppContext`]/[`BuiltProxima`]/[`RunningProxima`]/`EmbeddedProxima` — all
-/// four expose `Option<CitedBlobStore>` — so the method itself was already
-/// callable. Its return type was not on the facade, which meant a host could
-/// only bind the result by inference: no signature could hold it, no struct
-/// field could carry it forward, and matching a divergence apart from
-/// `is_intact()` was unspellable. `CitedBlobMissingObject` rides along
-/// because it is the element type of `missing_sample`, and
-/// `MAX_RECONCILE_SAMPLE` because it is the bound a host sizes its own
-/// buffers against.
+/// Global [`CitedBlobStore::reconcile_all`] requires the booted runtime's
+/// [`crate::SystemAuthority`] and returns the operator DTO, including raw
+/// locator samples needed for restore work. Flavor tools use the separately
+/// authorized owner port/service; its DTO carries cited-object ids and counts
+/// but never bucket names or object keys.
 pub use proxima_core::storage_ports::{
-    CitedBlobMissingObject, CitedBlobReconcileOutcome, MAX_RECONCILE_SAMPLE,
+    CitedBlobMissingObject, CitedBlobOwnerMissingObject, CitedBlobOwnerReconcileOutcome,
+    CitedBlobOwnerReconcilePort, CitedBlobOwnerReconcileService, CitedBlobReconcileOutcome,
+    MAX_RECONCILE_SAMPLE,
 };
 pub use proxima_core::verbs::change_history::{ChangeHistoryRequest, ChangeHistoryResponse};
 pub use proxima_core::verbs::fact_ingest::{

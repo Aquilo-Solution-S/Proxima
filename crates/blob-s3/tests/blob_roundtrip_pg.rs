@@ -8,15 +8,18 @@ use proxima_blob_s3::{
 };
 use proxima_core::engine::{Engine, UploadCompleted};
 use proxima_core::error::ProtocolError;
-use proxima_core::storage_ports::{CitedBlobPort, CitedObjectErasePort, MAX_HELD_BLOB_DIGESTS};
+use proxima_core::storage_ports::{
+    CitedBlobPort, CitedBlobReconcileOutcome, CitedObjectErasePort, MAX_HELD_BLOB_DIGESTS,
+};
 use proxima_core::test_fixtures::owner_fixture;
-use proxima_core::{AuthPath, AuthzContext, FlavorRegistry, OwnerRef, UserId};
+use proxima_core::{AuthPath, AuthzContext, FlavorRegistry, OwnerRef, StorageError, UserId};
 
 // Contexts here are `AuthPath::HostBearer`, matching every production
 // caller. Completion writes a Fact through the engine, and an
 // `AuthPath::System` context needs the host-held `SystemAuthority` witness
-// to issue any owner-write permit — a witness a test cannot mint. Before
-// completion went through the engine the store alone never asked.
+// to issue any owner-write permit. Request fixtures use HostBearer; the
+// global maintenance test below obtains its witness by consuming a dedicated
+// Engine through the same host boundary as production boot.
 use proxima_pg_testkit::{create_db, db_url, drop_db, unique_db_name};
 use proxima_storage_pg::PgStorage;
 use uuid::Uuid;
@@ -572,9 +575,10 @@ async fn port_level_prepare_complete_read_roundtrip() {
 /// Insert a `cited_objects` + `cited_uploaded_blob_v1` pair directly, the
 /// way an inline `core/uploaded-blob-v1` citation lands one: the locator
 /// columns hold whatever the caller asserted, under the caller's own
-/// owner (`owner_fixture()` here, the nil personal owner).
+/// personal owner.
 async fn forge_uploaded_blob_row(
     pool: &sqlx::PgPool,
+    owner_id: Uuid,
     bucket: &str,
     object_key: &str,
     content_hash_seed: u8,
@@ -586,7 +590,7 @@ async fn forge_uploaded_blob_row(
          VALUES ($1, 'core/uploaded-blob-v1', 'personal', $2, $3)",
     )
     .bind(cited_object_id)
-    .bind(Uuid::nil())
+    .bind(owner_id)
     .bind(vec![content_hash_seed; 32])
     .execute(pool)
     .await
@@ -604,6 +608,17 @@ async fn forge_uploaded_blob_row(
     .await
     .expect("forged cited_uploaded_blob_v1 row");
     cited_object_id
+}
+
+async fn forge_foreign_locator(pool: &sqlx::PgPool, owner_id: Uuid) {
+    forge_uploaded_blob_row(
+        pool,
+        owner_id,
+        "some-other-bucket",
+        "elsewhere/object",
+        0xAB,
+    )
+    .await;
 }
 
 /// Drive a full prepare -> PUT -> complete for `owner`, returning the
@@ -694,10 +709,17 @@ async fn read_url_refuses_locators_the_store_did_not_write() {
     // either one fails a case: (a) another bucket under this owner's real
     // canonical key — the cross-environment read the bucket check exists
     // for; (b) this bucket, under another owner's prefix; (c) both wrong.
-    let foreign_bucket =
-        forge_uploaded_blob_row(&pool, "not-the-configured-bucket", &genuine_key, 1).await;
+    let foreign_bucket = forge_uploaded_blob_row(
+        &pool,
+        Uuid::nil(),
+        "not-the-configured-bucket",
+        &genuine_key,
+        1,
+    )
+    .await;
     let foreign_prefix = forge_uploaded_blob_row(
         &pool,
+        Uuid::nil(),
         &config.bucket,
         &format!(
             "objects/{}/core/uploaded-blob-v1/{}",
@@ -709,6 +731,7 @@ async fn read_url_refuses_locators_the_store_did_not_write() {
     .await;
     let both_foreign = forge_uploaded_blob_row(
         &pool,
+        Uuid::nil(),
         "not-the-configured-bucket",
         &format!(
             "objects/{}/core/uploaded-blob-v1/{}",
@@ -1179,6 +1202,89 @@ async fn find_held_blobs_reports_only_this_owners_artefacts() {
     drop_db(&db_name).await.expect("drop db");
 }
 
+async fn assert_owner_reconcile_isolated(
+    store: &CitedBlobStore,
+    healthy: (&AuthzContext, OwnerRef, Uuid),
+    lost: (&AuthzContext, OwnerRef, Uuid, &str),
+) {
+    let (owner_ctx, owner, healthy_id) = healthy;
+    let (other_ctx, other, lost_id, lost_key) = lost;
+    let owner_outcome = store
+        .reconcile_owner(owner_ctx, owner)
+        .await
+        .expect("owner reconcile runs");
+    assert_eq!(
+        owner_outcome.missing_objects, 0,
+        "the first owner must not inherit the second owner's missing object"
+    );
+    assert_eq!(
+        owner_outcome.objects_scanned, 1,
+        "the first owner scan must stay inside its exact object prefix"
+    );
+    assert_eq!(
+        owner_outcome.orphan_objects, 0,
+        "a bucket-global orphan must not appear in an owner report"
+    );
+    assert!(owner_outcome.foreign_locators >= 1);
+    assert!(
+        owner_outcome
+            .missing_sample
+            .iter()
+            .all(|missing| missing.cited_object_id != lost_id)
+    );
+
+    let other_outcome = store
+        .reconcile_owner(other_ctx, other)
+        .await
+        .expect("second owner reconcile runs");
+    assert_eq!(other_outcome.missing_objects, 1);
+    assert_eq!(
+        other_outcome.objects_scanned, 0,
+        "the second owner scan must not see the first owner's object"
+    );
+    assert_eq!(other_outcome.orphan_objects, 0);
+    assert!(
+        other_outcome
+            .missing_sample
+            .iter()
+            .any(|missing| missing.cited_object_id == lost_id)
+    );
+    assert!(
+        other_outcome
+            .missing_sample
+            .iter()
+            .all(|missing| missing.cited_object_id != healthy_id)
+    );
+    assert!(
+        !format!("{other_outcome:?}").contains(lost_key),
+        "owner report must not render raw object keys"
+    );
+}
+
+async fn reconcile_with_bound_authority(store: &CitedBlobStore) -> CitedBlobReconcileOutcome {
+    let (_, authority) =
+        Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests()).into_system_authority();
+    store
+        .bind_system_authority(&authority)
+        .expect("test store binds to its maintenance engine");
+
+    let (_, foreign_authority) =
+        Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests()).into_system_authority();
+    let foreign_error = store
+        .reconcile_all(&foreign_authority)
+        .await
+        .expect_err("an unrelated Engine witness must not authorize this store");
+    assert!(
+        matches!(foreign_error, StorageError::ConstraintViolation(ref message) if message.contains("different cited-blob store boot")),
+        "foreign authority must fail before reconciliation I/O: {foreign_error}"
+    );
+
+    store
+        .reconcile_all(&authority)
+        .await
+        .expect("global reconcile runs with host authority")
+}
+
 /// A row whose object is gone is the divergence `find_held_blobs` cannot
 /// see, and this is the sweep that sees it.
 ///
@@ -1205,11 +1311,12 @@ async fn reconcile_tells_a_lost_object_from_an_orphan_and_from_a_forged_locator(
     let pool = pg.pool_for_tests().clone();
     let config = s3_config_for_dev();
     let store = CitedBlobStore::new(pool.clone(), config.clone()).expect("valid S3 config");
-    let owner = owner_fixture();
+    let owner_id = Uuid::now_v7();
+    let owner = OwnerRef::Personal(UserId::new(owner_id));
     let ctx = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
 
     // 1. HEALTHY: a real upload, left alone.
-    let (_healthy_id, healthy_key) =
+    let (healthy_id, healthy_key) =
         complete_upload_fixture(&pg, &store, &config, &pool, &ctx, owner)
             .await
             .expect("healthy upload");
@@ -1217,7 +1324,7 @@ async fn reconcile_tells_a_lost_object_from_an_orphan_and_from_a_forged_locator(
     // 2. LOST: a real upload whose object is then deleted underneath it.
     let other = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
     let other_ctx = AuthzContext::single_owner(&other, AuthPath::HostBearer);
-    let (_lost_id, lost_key) =
+    let (lost_id, lost_key) =
         complete_upload_fixture(&pg, &store, &config, &pool, &other_ctx, other)
             .await
             .expect("second upload");
@@ -1239,9 +1346,20 @@ async fn reconcile_tells_a_lost_object_from_an_orphan_and_from_a_forged_locator(
     put_object_via_sdk(&config, &orphan_key, b"nobody claims me").await;
 
     // 4. FOREIGN: a row pointing outside anything this store wrote.
-    forge_uploaded_blob_row(&pool, "some-other-bucket", "elsewhere/object", 0xAB).await;
+    forge_foreign_locator(&pool, owner_id).await;
+    let healthy_id = Uuid::parse_str(&healthy_id).expect("healthy cited object id");
+    let lost_id = Uuid::parse_str(&lost_id).expect("lost cited object id");
 
-    let outcome = store.reconcile_cited_blobs().await.expect("reconcile runs");
+    // Owner reports are a separate authorization lane. They query only the
+    // selected owner's rows and S3 prefix, and their DTO carries no raw key.
+    assert_owner_reconcile_isolated(
+        &store,
+        (&ctx, owner, healthy_id),
+        (&other_ctx, other, lost_id, &lost_key),
+    )
+    .await;
+
+    let outcome = reconcile_with_bound_authority(&store).await;
     // Counts only. `{brief}` carries up to MAX_RECONCILE_SAMPLE keys per
     // direction, and a failure that prints three hundred hex strings is a
     // failure nobody reads.
