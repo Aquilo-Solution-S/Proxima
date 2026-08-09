@@ -142,20 +142,8 @@ async fn how_to(State(state): State<RestState>, RestAuth(auth): RestAuth) -> Res
 /// does, which is why it is token-specific and never shared-cacheable.
 #[allow(clippy::unused_async, reason = "axum handlers must be futures")]
 async fn openapi(State(state): State<RestState>, RestAuth(auth): RestAuth) -> Response {
-    let tools: Vec<&McpToolDescriptor> = state
-        .host
-        .registry()
-        .list_mcp_tools()
-        .iter()
-        .filter(|descriptor| tool_allowed_for_auth(Some(&auth), descriptor))
-        .collect();
-    let scope = Some(auth.authz.tool_scope());
-    let resources: Vec<&CoreResourceMeta> = all_core_resources()
-        .filter(|resource| resource_scope_allows(scope, resource.scope_key))
-        .collect();
-    json_ok(&openapi::document(
-        &tools,
-        &resources,
+    json_ok(&openapi::document_from_registry(
+        state.host.registry(),
         state.public_url.as_deref(),
         Some(&auth),
     ))

@@ -18,12 +18,16 @@
 
 use std::collections::BTreeMap;
 
-use proxima_core::mcp::{CoreResourceMeta, McpToolAnnotations, McpToolDescriptor};
+use proxima_core::FlavorRegistryFrozen;
+use proxima_core::mcp::{
+    CoreResourceMeta, McpToolAnnotations, McpToolDescriptor, all_core_resources,
+};
 use serde_json::{Map, Value, json};
 
 use crate::McpAuthContext;
 use crate::handler::{
     action_allowed_for_auth, annotations_for_auth, project_dispatcher_actions_for_auth,
+    resource_scope_allows, tool_allowed_for_auth,
 };
 
 /// The `query` Path Item fixed field arrives in 3.2; the 2020-12 dialect is
@@ -86,6 +90,29 @@ const PROBLEM_STATUSES: &[(u16, &str)] = &[
     ),
 ];
 
+/// Build the `OpenAPI` document directly from a frozen registry.
+///
+/// `auth = Some(_)` projects the same caller-scoped tool and resource set as
+/// the served `/v1/openapi.json` route. `auth = None` emits the complete
+/// registry and core-resource surface for offline conformance checks.
+#[must_use]
+pub fn document_from_registry(
+    registry: &FlavorRegistryFrozen,
+    public_url: Option<&str>,
+    auth: Option<&McpAuthContext>,
+) -> Value {
+    let tools: Vec<&McpToolDescriptor> = registry
+        .list_mcp_tools()
+        .iter()
+        .filter(|descriptor| auth.is_none() || tool_allowed_for_auth(auth, descriptor))
+        .collect();
+    let scope = auth.map(|context| context.authz.tool_scope());
+    let resources: Vec<&CoreResourceMeta> = all_core_resources()
+        .filter(|resource| auth.is_none() || resource_scope_allows(scope, resource.scope_key))
+        .collect();
+    document(&tools, &resources, public_url, auth)
+}
+
 /// Build the `OpenAPI` 3.2 document for one caller's scope-filtered surface.
 ///
 /// `tools` and `resources` are already filtered by the caller's `ToolScope`,
@@ -120,9 +147,9 @@ pub fn document(
             "description":
                 "Generated from the frozen tool manifest. Every operation \
                  terminates in the same dispatch seam MCP uses, so this \
-                 surface grants no authority MCP does not already grant. The \
-                 document reflects the presenting token's scope and is served \
-                 `Cache-Control: private, no-store`.",
+                 surface grants no authority MCP does not already grant. When \
+                 served, the document reflects the presenting token's scope \
+                 and uses `Cache-Control: private, no-store`.",
         }),
     );
     if let Some(url) = public_url {
@@ -141,7 +168,7 @@ pub fn document(
 /// once and rendered twice.
 #[derive(Debug)]
 struct Operation<'a> {
-    id: String,
+    target: OperationTarget<'a>,
     summary: String,
     description: &'a str,
     parameters: Vec<Value>,
@@ -153,15 +180,44 @@ struct Operation<'a> {
     annotations: McpToolAnnotations,
 }
 
+/// The structural identity of an operation before its HTTP method is added.
+///
+/// Tool and action names may themselves contain repeated underscores, so a
+/// delimiter-only encoding is ambiguous (`a__b` + `c` versus `a` + `b__c`).
+/// Distinct target tags plus byte-length-prefixed components keep every valid
+/// registry tuple injective without imposing a new naming restriction.
+#[derive(Debug, Clone, Copy)]
+enum OperationTarget<'a> {
+    Tool(&'a str),
+    Action { tool: &'a str, action: &'a str },
+    Resource(&'a str),
+}
+
+impl OperationTarget<'_> {
+    fn id(self, method: &str) -> String {
+        match self {
+            Self::Tool(tool) => {
+                format!("tool__{}_{tool}__method__{method}", tool.len())
+            }
+            Self::Action { tool, action } => format!(
+                "action__{}_{tool}__{}_{action}__method__{method}",
+                tool.len(),
+                action.len(),
+            ),
+            Self::Resource(resource) => {
+                format!("resource__{}_{resource}__method__{method}", resource.len())
+            }
+        }
+    }
+}
+
 impl Operation<'_> {
-    /// Render this operation under `method`, suffixing `operationId` so the
-    /// `post` and `query` operations of one read-only path stay distinct.
+    /// Render this operation under `method`. The target encoding distinguishes
+    /// whole tools, dispatcher actions, and resources; the method tag keeps the
+    /// `post` and `query` operations of one read-only path distinct.
     fn render(&self, method: &str) -> Value {
         let mut operation = Map::new();
-        operation.insert(
-            "operationId".to_string(),
-            json!(format!("{}__{method}", self.id)),
-        );
+        operation.insert("operationId".to_string(), json!(self.target.id(method)));
         operation.insert("summary".to_string(), json!(self.summary));
         if !self.description.is_empty() {
             operation.insert("description".to_string(), json!(self.description));
@@ -217,7 +273,7 @@ fn collect_tool_paths(
     let annotations = annotations_for_auth(auth, tool).unwrap_or_default();
     let projected_schema = project_dispatcher_actions_for_auth(tool, auth);
     let whole = Operation {
-        id: tool.name.to_string(),
+        target: OperationTarget::Tool(tool.name),
         summary: format!("Invoke {}", tool.name),
         description: tool.description,
         parameters: context_parameter_refs(),
@@ -268,7 +324,10 @@ fn collect_tool_paths(
             .resolved_action_description(action)
             .unwrap_or(tool.description);
         let narrowed = Operation {
-            id: format!("{}__{action}", tool.name),
+            target: OperationTarget::Action {
+                tool: tool.name,
+                action,
+            },
             summary: format!("Invoke {} action `{action}`", tool.name),
             description: action_description,
             parameters: context_parameter_refs(),
@@ -329,7 +388,7 @@ fn collect_resource_path(resource: &CoreResourceMeta, paths: &mut BTreeMap<Strin
         })
     }));
     let operation = Operation {
-        id: format!("resources__{}", resource.name),
+        target: OperationTarget::Resource(resource.name),
         summary: resource.title.to_string(),
         description: resource.description,
         parameters,
@@ -578,11 +637,72 @@ fn parameter_component_name(header: &str) -> String {
 mod tests {
     use std::collections::BTreeSet;
 
-    use proxima_core::mcp::CORE_RESOURCES;
+    use futures_util::future::BoxFuture;
+    use proxima_core::mcp::{
+        CORE_RESOURCES, McpActionArgSpec, McpTool, McpToolAnnotations, McpToolCtx, McpToolError,
+    };
     use proxima_core::protocol::tool as protocol_tool;
     use proxima_core::{FlavorRegistry, FlavorRegistryFrozen};
 
-    use super::{CoreResourceMeta, McpToolDescriptor, Value, document, json};
+    use super::{
+        CoreResourceMeta, McpToolDescriptor, Value, document, document_from_registry, json,
+    };
+
+    const COLLISION_DISPATCHER: &str = "proxima-stub_collision";
+    const COLLISION_FLAT: &str = "proxima-stub_collision__look";
+
+    #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+    struct CollisionFlatArgs {}
+
+    #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+    #[serde(tag = "action", rename_all = "snake_case")]
+    #[expect(dead_code, reason = "the derived schema is the subject")]
+    enum CollisionDispatcherArgs {
+        Look {
+            #[schemars(description = "Which thing to inspect.")]
+            id: String,
+        },
+    }
+
+    struct CollisionFlatTool;
+
+    impl McpTool for CollisionFlatTool {
+        const NAME: &'static str = COLLISION_FLAT;
+        const DESCRIPTION: &'static str = "Flat operation-id collision fixture.";
+        const ANNOTATIONS: Option<McpToolAnnotations> =
+            Some(McpToolAnnotations::new().read_only(false).open_world(false));
+        type Args = CollisionFlatArgs;
+        type Output = ();
+
+        fn call(
+            _ctx: McpToolCtx,
+            _args: Self::Args,
+        ) -> BoxFuture<'static, Result<(), McpToolError>> {
+            Box::pin(async { Ok(()) })
+        }
+    }
+
+    struct CollisionDispatcherTool;
+
+    impl McpTool for CollisionDispatcherTool {
+        const NAME: &'static str = COLLISION_DISPATCHER;
+        const DESCRIPTION: &'static str = "Dispatcher operation-id collision fixture.";
+        const ACTION_ARG_SPECS: &'static [McpActionArgSpec] = &[McpActionArgSpec {
+            action: "look",
+            allowed_fields: &["id"],
+            required_fields: &["id"],
+            annotations: Some(McpToolAnnotations::new().read_only(false).open_world(false)),
+        }];
+        type Args = CollisionDispatcherArgs;
+        type Output = ();
+
+        fn call(
+            _ctx: McpToolCtx,
+            _args: Self::Args,
+        ) -> BoxFuture<'static, Result<(), McpToolError>> {
+            Box::pin(async { Ok(()) })
+        }
+    }
 
     fn frozen_registry() -> FlavorRegistryFrozen {
         FlavorRegistry::default()
@@ -973,6 +1093,50 @@ mod tests {
             !ids.is_empty(),
             "the core registry must generate operations",
         );
+    }
+
+    /// A flat tool name may be the delimiter-only concatenation of a
+    /// dispatcher's name and action. Both registrations are valid, so the
+    /// `OpenAPI` generator — not the registry — must keep their ids distinct.
+    #[test]
+    fn operation_ids_distinguish_flat_tools_from_dispatcher_actions() {
+        let mut registry = FlavorRegistry::new();
+        registry
+            .try_add_mcp_tool::<CollisionFlatTool>("proxima-stub")
+            .expect("the colliding flat tool name is valid");
+        registry
+            .try_add_mcp_tool::<CollisionDispatcherTool>("proxima-stub")
+            .expect("the colliding dispatcher name and action are valid");
+        let registry = registry
+            .try_freeze()
+            .expect("the intentionally colliding registry freezes");
+        let document = document_from_registry(&registry, None, None);
+
+        let flat_id = path_item(&document, &format!("/v1/tools/{COLLISION_FLAT}"))
+            .pointer("/post/operationId")
+            .and_then(Value::as_str)
+            .expect("flat tool operation id");
+        let action_id = path_item(&document, &format!("/v1/tools/{COLLISION_DISPATCHER}/look"))
+            .pointer("/post/operationId")
+            .and_then(Value::as_str)
+            .expect("dispatcher action operation id");
+
+        assert_eq!(
+            flat_id,
+            format!(
+                "tool__{}_{COLLISION_FLAT}__method__post",
+                COLLISION_FLAT.len(),
+            ),
+        );
+        assert_eq!(
+            action_id,
+            format!(
+                "action__{}_{COLLISION_DISPATCHER}__{}_look__method__post",
+                COLLISION_DISPATCHER.len(),
+                "look".len(),
+            ),
+        );
+        assert_ne!(flat_id, action_id);
     }
 
     #[test]

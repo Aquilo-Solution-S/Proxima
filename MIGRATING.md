@@ -16,7 +16,7 @@ not a reference. Deployment and env vars live in
 | A **v0.0.7 Rust host** | [compose flavor services once](#compose-flavor-services-once), [move caller provenance into `ToolCtx`](#move-caller-provenance-into-toolctx), [remove the inert runtime owner-access registration](#remove-the-inert-runtime-owner-access-registration), [remove the dependency-satisfaction seam](#remove-the-dependency-satisfaction-seam), [pass the shared Host allowlist](#pass-the-shared-host-allowlist), [apply listener-wide CORS](#apply-listener-wide-cors), then [freeze registries once](#freeze-registries-once) |
 | An **operator** promoting a deployment | [the v0.0.7 schema lane](#the-v007-schema-lane), then [operator changes](#operator-changes) |
 | Running the **code flavor** | the above, then [re-register and re-index](#re-register-and-re-index-every-code-repository) |
-| An **MCP client / agent** author | [wire changes](#wire-changes-mcp-clients) |
+| An **MCP client / agent** author | [regenerate OpenAPI clients](#regenerate-openapi-clients), then [wire changes](#wire-changes-mcp-clients) |
 | An **embedding host** driving `Engine` in Rust | [Rust host changes](#rust-host-changes) |
 | A **flavor** author | [compose flavor services once](#compose-flavor-services-once), [move caller provenance into `ToolCtx`](#move-caller-provenance-into-toolctx), [remove the dependency-satisfaction seam](#remove-the-dependency-satisfaction-seam), [freeze registries once](#freeze-registries-once), then [flavor SDK changes](#flavor-sdk-changes) |
 | Booting against a **pre-v0.0.4 database** | [the v0.0.4 reset](#the-v004-reset) first — nothing else applies until it is done |
@@ -934,6 +934,20 @@ presigned URL. Errors are `AccessDenied`, `NotFound`, `TooLarge`, `Unavailable`,
 or `IntegrityMismatch`. Runtime composition publishes the read, transfer, and
 owner-reconcile service handles over one shared `CitedBlobStore`. No database
 migration or automatic MCP/REST route is added.
+
+### Regenerate OpenAPI clients
+
+OpenAPI `operationId` values now encode a tagged `tool`, `action`, or
+`resource` target with byte-length-prefixed name components and an explicit
+HTTP method. The old delimiter-only form could assign the same id to a flat
+tool such as `acme_ping__look` and action `acme_ping:look`, which are both
+valid registrations. Regenerate clients that key generated symbols or state
+by `operationId`. REST paths, methods, schemas, and tool ids are unchanged.
+
+Rust hosts can generate the complete offline document through
+`proxima::host::build_openapi_document(&registry, server_url)` with the
+`rest` feature. The facade no longer requires consumers to depend directly on
+`proxima-mcp-server` or construct transport authentication state.
 
 ### The host facade names its own types now
 
