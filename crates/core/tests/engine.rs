@@ -60,14 +60,27 @@ impl EmbeddingClientReloader for FixedEmbeddingReloader {
 }
 
 #[test]
-fn schema_verb_returns_empty_registry() {
+fn schema_verb_projects_the_validated_engine_registry() {
     let (principal, owner) = fresh_owner();
     let engine = boot_engine(principal, owner);
-    let resp = engine.schema(&SchemaRequest);
+    let expected = engine
+        .registry()
+        .schemas()
+        .iter()
+        .map(|schema| (schema.schema_id.clone(), schema.schema_version, schema.kind))
+        .collect::<Vec<_>>();
+    let actual = engine
+        .schema(&SchemaRequest)
+        .schemas
+        .into_iter()
+        .map(|schema| (schema.schema_id, schema.schema_version, schema.kind))
+        .collect::<Vec<_>>();
+
     assert!(
-        resp.schemas.is_empty(),
-        "empty registry must list no schemas"
+        !expected.is_empty(),
+        "the default registry has core schemas"
     );
+    assert_eq!(actual, expected);
 }
 
 #[tokio::test]
