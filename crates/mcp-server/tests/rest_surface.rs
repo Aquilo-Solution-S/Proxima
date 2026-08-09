@@ -14,7 +14,8 @@ use std::sync::Arc;
 use axum::Router;
 use axum::body::{Body, Bytes};
 use axum::http::{Method, Request, StatusCode, header};
-use proxima_core::mcp::{McpAuthorContext, McpToolExtensions};
+use proxima_core::FlavorServices;
+use proxima_core::mcp::McpAuthorContext;
 use proxima_core::protocol::{
     action as protocol_action, resource as protocol_resource, tool as protocol_tool,
 };
@@ -26,7 +27,7 @@ use tower::ServiceExt;
 fn host() -> McpToolHost {
     McpToolHost::from_parts(
         Arc::new(FlavorRegistry::new().freeze_or_panic_for_tests()),
-        McpToolExtensions::default(),
+        FlavorServices::default(),
     )
 }
 
@@ -105,7 +106,7 @@ fn flavor_host() -> McpToolHost {
     registry.add_mcp_tool_or_panic_for_tests::<StubDispatchTool>("proxima-stub");
     McpToolHost::from_parts(
         Arc::new(registry.freeze_or_panic_for_tests()),
-        McpToolExtensions::default(),
+        FlavorServices::default(),
     )
 }
 

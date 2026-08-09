@@ -343,11 +343,12 @@ fails typed at call time with the enabling configuration in the message
 (docs/10 §Large Artefact S3).
 
 MCP tools are not the only consumer of that service. The runtime also
-publishes it to flavor background workers as `FlavorWorkerContext.blobs`
-(docs/09 §Background Workers), so a flavor can process an uploaded
-artefact after the tool call that received it has returned. The
-presigned-only rule above applies identically to a worker caller: it
-reads through `read_url` and never learns the bucket or object key.
+publishes the same `CitedBlobService` instance through the composed
+`FlavorServices`; a background worker resolves it with
+`FlavorWorkerContext::service` (docs/09 §Background Workers), so a flavor can
+process an uploaded artefact after the tool call that received it has returned.
+The presigned-only rule above applies identically to a worker caller: it reads
+through `read_url` and never learns the bucket or object key.
 
 Citation read-back (`core_fact` `citation_of_fact` /
 `citation_of_entity_head`) returns the locator alongside the ids: the

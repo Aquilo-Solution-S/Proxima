@@ -291,10 +291,8 @@ fn flavor_sdk_exposes_the_stateful_fact_tombstone() {
 
 #[test]
 fn flavor_sdk_exposes_the_cited_blob_lane() {
-    // `FlavorWorkerContext::blobs` is a public field, so its type and the
-    // trait behind it must be nameable from `proxima::flavor` alone — a
-    // flavor depending only on `proxima` cannot reach into
-    // `proxima_core::storage_ports`.
+    // A worker resolves this port from `FlavorServices`, so both the handle
+    // and the trait behind it must be nameable from `proxima::flavor` alone.
     use proxima::flavor::{
         CitedBlobHeld, CitedBlobPort, CitedBlobReadUrl, CitedBlobService, CitedBlobStaged,
         CitedBlobUploadAborted, CitedBlobUploadCompleted, CitedBlobUploadHeader,
@@ -485,13 +483,13 @@ fn flavor_sdk_exposes_the_payload_reference_lane() {
 
 /// A flavor-owned service, standing in for the store a real flavor hands
 /// its tools (`proxima-code` puts a `CodeFlavorStore` here). Core cannot
-/// name this type, which is the entire point of the extension map.
+/// name this type, which is the entire point of the service map.
 struct TierFlavorStore {
     marker: &'static str,
 }
 
 /// The override a flavor host must be able to *write*. This is the load-
-/// bearing half: `mcp_tool_extensions` returns `McpToolExtensions`, so
+/// bearing half: `services` returns `FlavorServices`, so
 /// without that type on the flavor facade the signature is unspellable and
 /// a flavor depending only on `proxima` cannot supply its tools with a
 /// database handle or any other host-owned dependency.
@@ -518,33 +516,37 @@ impl proxima::FlavorApp for TierExtensionApp {
         }
     }
 
-    fn mcp_tool_extensions(ctx: &proxima::AppContext) -> proxima::flavor::McpToolExtensions {
+    fn services(
+        ctx: &proxima::AppContext,
+    ) -> Result<proxima::flavor::FlavorServices, proxima::flavor::FlavorServiceError> {
         // A real host composes its store from `ctx.clone_pool_for_host()`.
         // The pool stays off the supported tier deliberately (see
         // `raw_storage_surfaces_are_not_supported_tier_exports`), so this
         // test only pins that the override is writable at all.
         let _ = ctx;
-        let mut extensions = proxima::flavor::McpToolExtensions::default();
-        extensions.insert(TierFlavorStore { marker: "store" });
-        extensions
+        let mut services = proxima::flavor::FlavorServices::default();
+        services.try_insert(TierFlavorStore { marker: "store" })?;
+        Ok(services)
     }
 }
 
 #[test]
-fn flavor_sdk_exposes_the_mcp_tool_extension_seam() {
-    use proxima::flavor::McpToolExtensions;
+fn flavor_sdk_exposes_the_flavor_service_seam() {
+    use proxima::flavor::{FlavorServiceError, FlavorServices};
 
     // Both halves must be reachable: the host inserts a service core
     // cannot name, and the tool resolves it back by type.
-    let mut extensions = McpToolExtensions::default();
-    extensions.insert(TierFlavorStore { marker: "store" });
-    let resolved = extensions
+    let mut services = FlavorServices::default();
+    services
+        .try_insert(TierFlavorStore { marker: "store" })
+        .unwrap();
+    let resolved = services
         .get::<TierFlavorStore>()
         .expect("a tool must resolve the service its host inserted");
     assert_eq!(resolved.marker, "store");
 
     // The one-shot constructor is the common case for a single service.
-    let single = McpToolExtensions::with(TierFlavorStore { marker: "single" });
+    let single = FlavorServices::with(TierFlavorStore { marker: "single" });
     assert_eq!(
         single
             .get::<TierFlavorStore>()
@@ -553,15 +555,14 @@ fn flavor_sdk_exposes_the_mcp_tool_extension_seam() {
         "single"
     );
 
-    // An absent service resolves to None rather than panicking — the
-    // degraded mode every extension-resolving tool has to handle.
+    // An absent service resolves to None rather than panicking.
     assert!(single.get::<u64>().is_none());
 
     // And the override itself is nameable; calling it needs an AppContext
     // only a booted runtime can make, so this pins the signature.
     std::hint::black_box(
-        <TierExtensionApp as proxima::FlavorApp>::mcp_tool_extensions
-            as fn(&proxima::AppContext) -> McpToolExtensions,
+        <TierExtensionApp as proxima::FlavorApp>::services
+            as fn(&proxima::AppContext) -> Result<FlavorServices, FlavorServiceError>,
     );
 }
 

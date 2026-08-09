@@ -223,8 +223,8 @@ pub(crate) mod test_ctx {
     use std::sync::Arc;
 
     use crate::access::Role;
-    use crate::mcp::{McpAuthorContext, McpToolCtx, McpToolExtensions};
-    use crate::{AuthPath, AuthzContext, FlavorRegistry, OwnerRef, UserId};
+    use crate::mcp::{McpAuthorContext, McpToolCtx};
+    use crate::{AuthPath, AuthzContext, FlavorRegistry, FlavorServices, OwnerRef, UserId};
 
     /// Build a server-resolved caller context: personal role on `subject`'s own
     /// owner, World viewer, plus the given per-group roles.
@@ -247,7 +247,7 @@ pub(crate) mod test_ctx {
                 caller_self_perspective: None,
             },
             caller_self_perspective: None,
-            extensions: McpToolExtensions::default(),
+            services: FlavorServices::default(),
             engine: None,
         }
     }

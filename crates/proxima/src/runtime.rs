@@ -9,11 +9,10 @@ use axum::extract::Request;
 use axum::response::IntoResponse;
 use proxima_blob_s3::{CitedBlobStore, S3RuntimeConfig};
 use proxima_core::authz::SystemAuthority;
-use proxima_core::mcp::McpToolExtensions;
 use proxima_core::storage_ports::CitedBlobService;
 use proxima_core::{
     AnthropicClient, AuthPath, Authenticator, AuthzContext, EmbeddingClient, FlavorRegistryFrozen,
-    RevalidationConfig, ToolScope,
+    FlavorServices, RevalidationConfig, ToolScope,
 };
 use proxima_core::{Engine, EngineHandle, Owner, OwnerRef, Role, UserId};
 use proxima_mcp_server::{
@@ -190,12 +189,12 @@ impl<A: FlavorApp + 'static> Proxima<A> {
             blobs: booted.blobs.clone(),
             owner: booted.owner,
         };
-        let tool_extensions = assemble_tool_extensions::<A>(&app_ctx);
+        let services = assemble_services::<A>(&app_ctx)?;
 
         let service = if let Some(allowlist) = allowlist {
             Some(build_router::<A>(
                 app_ctx.clone(),
-                tool_extensions.clone(),
+                services.clone(),
                 parts.authenticator,
                 allowlist,
                 &cancel,
@@ -217,7 +216,7 @@ impl<A: FlavorApp + 'static> Proxima<A> {
             owner: booted.owner,
             cancel,
             insecure_single_owner: config.insecure_single_owner,
-            tool_extensions,
+            services,
         })
     }
 
@@ -241,7 +240,7 @@ impl<A: FlavorApp + 'static> Proxima<A> {
             blobs: booted.blobs.clone(),
             owner: booted.owner,
         };
-        let tool_extensions = assemble_tool_extensions::<A>(&app_ctx);
+        let services = assemble_services::<A>(&app_ctx)?;
 
         let (mcp_addr, server) = if let (Some(mcp), Some(allowlist)) = (config.mcp, allowlist) {
             if !config.expose_network {
@@ -250,7 +249,7 @@ impl<A: FlavorApp + 'static> Proxima<A> {
             }
             let app = build_router::<A>(
                 app_ctx,
-                tool_extensions.clone(),
+                services.clone(),
                 parts.authenticator,
                 allowlist,
                 &cancel,
@@ -289,9 +288,8 @@ impl<A: FlavorApp + 'static> Proxima<A> {
         // trigger it.
         let worker_ctx = FlavorWorkerContext {
             engine: booted.engine.clone(),
-            pool: booted.pool.clone(),
             cancel: cancel.child_token(),
-            blobs: cited_blob_service(booted.blobs.as_ref()),
+            services: services.clone(),
         };
         let workers = A::spawn_workers(&worker_ctx);
 
@@ -308,7 +306,7 @@ impl<A: FlavorApp + 'static> Proxima<A> {
             server,
             cancel,
             insecure_single_owner: config.insecure_single_owner,
-            tool_extensions,
+            services,
             workers,
         })
     }
@@ -338,7 +336,7 @@ pub struct BuiltProxima {
     pub owner: Option<Owner>,
     pub cancel: CancellationToken,
     pub insecure_single_owner: bool,
-    tool_extensions: McpToolExtensions,
+    services: FlavorServices,
 }
 
 impl BuiltProxima {
@@ -370,7 +368,7 @@ impl BuiltProxima {
         CoreMcpTools::new(
             self.registry.clone(),
             self.engine.clone(),
-            self.tool_extensions.clone(),
+            self.services.clone(),
         )
     }
 
@@ -417,7 +415,7 @@ pub struct RunningProxima {
     pub server: Option<JoinHandle<()>>,
     pub cancel: CancellationToken,
     pub insecure_single_owner: bool,
-    tool_extensions: McpToolExtensions,
+    services: FlavorServices,
     /// Flavor-contributed background workers spawned by [`Proxima::run`]
     /// via `FlavorBundle::spawn_workers`; joined by [`Self::shutdown`].
     workers: Vec<FlavorWorker>,
@@ -462,7 +460,7 @@ impl RunningProxima {
         CoreMcpTools::new(
             self.registry.clone(),
             self.engine.clone(),
-            self.tool_extensions.clone(),
+            self.services.clone(),
         )
     }
 
@@ -659,18 +657,17 @@ fn cited_blob_service(blobs: Option<&CitedBlobStore>) -> Option<CitedBlobService
     blobs.map(|store| CitedBlobService(Arc::new(store.clone())))
 }
 
-/// Host tool extensions plus the substrate-owned services every composed
+/// Flavor services plus the substrate-owned services every composed
 /// binary gets for free. Today that is one entry: when S3 is configured
 /// (`app_ctx.blobs`), the cited-blob store is published as
-/// [`CitedBlobService`] so `core_upload` can reach the upload lane
-/// without any host wiring. Flavor workers receive the same service
-/// through [`FlavorWorkerContext::blobs`], not through this map.
-fn assemble_tool_extensions<A: FlavorApp>(app_ctx: &AppContext) -> McpToolExtensions {
-    let mut tool_extensions = A::mcp_tool_extensions(app_ctx);
+/// [`CitedBlobService`] so tools and flavor workers reach one shared upload
+/// lane without duplicate host wiring.
+fn assemble_services<A: FlavorApp>(app_ctx: &AppContext) -> Result<FlavorServices, ProximaError> {
+    let mut services = A::services(app_ctx)?;
     if let Some(service) = cited_blob_service(app_ctx.blobs.as_ref()) {
-        tool_extensions.insert(service);
+        services.try_insert(service)?;
     }
-    tool_extensions
+    Ok(services)
 }
 
 async fn boot_app<A: FlavorApp + 'static>(
@@ -700,7 +697,7 @@ async fn boot_app<A: FlavorApp + 'static>(
 
 fn build_router<A: FlavorApp>(
     app_ctx: AppContext,
-    tool_extensions: McpToolExtensions,
+    services: FlavorServices,
     authenticator: Option<Arc<dyn Authenticator>>,
     allowlist: OriginAllowlist,
     cancel: &CancellationToken,
@@ -712,8 +709,8 @@ fn build_router<A: FlavorApp>(
         edge_auth = edge_auth.with_host(authenticator);
     }
     let edge_auth = Arc::new(edge_auth);
-    let mcp_host = McpToolHost::from_parts(Arc::new(engine.registry().clone()), tool_extensions)
-        .with_engine(engine);
+    let mcp_host =
+        McpToolHost::from_parts(Arc::new(engine.registry().clone()), services).with_engine(engine);
     let host_allowlist = resolve_host_allowlist(config);
     let rest_router = rest_router(&mcp_host, config);
     let mcp_service = streamable_http_service(mcp_host, &allowlist, &host_allowlist, cancel);

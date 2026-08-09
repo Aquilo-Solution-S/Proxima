@@ -5,7 +5,7 @@
 //! uploads the bytes directly, `complete` verifies and returns the
 //! canonical `cited_object_id`, and `read_url` mints a presigned `GET`
 //! later. The tool talks to the host-wired
-//! [`CitedBlobService`] extension; a host without S3 configured fails
+//! [`CitedBlobService`] service; a host without S3 configured fails
 //! typed at call time with a `PROXIMA_S3_*` hint.
 
 use std::sync::Arc;
@@ -338,7 +338,7 @@ fn narrowed_space(
 }
 
 fn blob_service(ctx: &McpToolCtx) -> Result<Arc<CitedBlobService>, McpToolError> {
-    ctx.extensions.get::<CitedBlobService>().ok_or_else(|| {
+    ctx.service::<CitedBlobService>().ok_or_else(|| {
         McpToolError::Unavailable(
             "blob storage is not configured for this host: set PROXIMA_S3_BUCKET / \
              PROXIMA_S3_REGION (see PROXIMA_S3_* in docs/10-configuration.md) to enable \
@@ -364,7 +364,7 @@ mod tests {
         CitedBlobHeld, CitedBlobPort, CitedBlobReadUrl, CitedBlobService, CitedBlobStaged,
         CitedBlobUploadAborted, CitedBlobUploadPrepared,
     };
-    use crate::{AuthzContext, GroupId, OwnerRef, StorageError, UserId};
+    use crate::{AuthzContext, FlavorServices, GroupId, OwnerRef, StorageError, UserId};
 
     use super::super::memory_spaces::test_ctx::ctx_for;
     use super::*;
@@ -486,8 +486,8 @@ mod tests {
     ) -> (McpToolCtx, Arc<RecordingBlobPort>) {
         let mut ctx = ctx_for(subject, group_roles);
         let port = Arc::new(RecordingBlobPort::default());
-        ctx.extensions
-            .insert(CitedBlobService(port.clone() as Arc<dyn CitedBlobPort>));
+        ctx.services =
+            FlavorServices::with(CitedBlobService(port.clone() as Arc<dyn CitedBlobPort>));
         (ctx, port)
     }
 

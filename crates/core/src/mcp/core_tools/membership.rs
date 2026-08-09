@@ -354,8 +354,8 @@ mod tests {
 
     use crate::access::Role;
     use crate::mcp::core_tools::memory_spaces::MemorySpaceKey;
-    use crate::mcp::{McpAuthorContext, McpToolExtensions, validate_action_args};
-    use crate::{AuthPath, AuthzContext, FlavorRegistry};
+    use crate::mcp::{McpAuthorContext, validate_action_args};
+    use crate::{AuthPath, AuthzContext, FlavorRegistry, FlavorServices};
 
     use super::*;
 
@@ -446,7 +446,7 @@ mod tests {
                 caller_self_perspective: None,
             },
             caller_self_perspective: None,
-            extensions: McpToolExtensions::default(),
+            services: FlavorServices::default(),
             engine: None,
         }
     }

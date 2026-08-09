@@ -37,4 +37,4 @@ pub use presentation::{McpPresentationExt, McpToolCaller, McpToolPresentation};
 pub use schema::schema_bound_mismatches;
 pub use tool::{McpActionArgSpec, McpCallFn, McpTool, McpToolDescriptor, McpToolOrigin};
 pub(crate) use tool::{prepare_flat_tool_args, validate_action_args};
-pub use types::{McpAuthorContext, McpToolCtx, McpToolExtensions};
+pub use types::{McpAuthorContext, McpToolCtx};

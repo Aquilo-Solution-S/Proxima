@@ -3,7 +3,8 @@ mod common;
 use std::sync::Arc;
 
 use common::{create_db, db_url, drop_db};
-use proxima_core::mcp::{McpAuthorContext, McpToolExtensions};
+use proxima_core::FlavorServices;
+use proxima_core::mcp::McpAuthorContext;
 use proxima_core::{AuthPath, AuthzContext, Engine, FlavorRegistry, Owner, OwnerRef, UserId};
 use proxima_mcp_server::{McpAuthContext, McpToolHost};
 use proxima_storage_pg::PgStorage;
@@ -25,7 +26,7 @@ async fn core_read_resources_return_prefixed_ids_and_author()
     let engine = Arc::new(
         Engine::new(registry.clone()).with_storage_ports(Arc::new(pg.clone()).storage_ports()),
     );
-    let server = McpToolHost::from_engine(engine, McpToolExtensions::default());
+    let server = McpToolHost::from_engine(engine, FlavorServices::default());
     // The host is now the authoritative scope chokepoint, so reads need an
     // authenticated full-scope context (production always passes Some(auth);
     // a None context is unauthenticated and correctly denied).
@@ -136,7 +137,7 @@ async fn batch_memories_resource_error_classes_and_lineage_paging()
     let engine = Arc::new(
         Engine::new(registry.clone()).with_storage_ports(Arc::new(pg.clone()).storage_ports()),
     );
-    let server = McpToolHost::from_engine(engine, McpToolExtensions::default());
+    let server = McpToolHost::from_engine(engine, FlavorServices::default());
     let auth = McpAuthContext {
         owner,
         authz: AuthzContext::single_owner(&owner, AuthPath::HostBearer)
@@ -341,7 +342,7 @@ async fn wake_candidates_resource_returns_armed_goal() -> Result<(), Box<dyn std
     let engine = Arc::new(
         Engine::new(registry.clone()).with_storage_ports(Arc::new(pg.clone()).storage_ports()),
     );
-    let server = McpToolHost::from_engine(engine, McpToolExtensions::default());
+    let server = McpToolHost::from_engine(engine, FlavorServices::default());
     let auth = McpAuthContext {
         owner,
         authz: AuthzContext::single_owner(&owner, AuthPath::HostBearer)
@@ -420,7 +421,7 @@ async fn goal_resources_list_read_back_wake_config_and_paginate()
     let engine = Arc::new(
         Engine::new(registry.clone()).with_storage_ports(Arc::new(pg.clone()).storage_ports()),
     );
-    let server = McpToolHost::from_engine(engine, McpToolExtensions::default());
+    let server = McpToolHost::from_engine(engine, FlavorServices::default());
     let auth = McpAuthContext {
         owner,
         authz: AuthzContext::single_owner(&owner, AuthPath::HostBearer)
@@ -520,7 +521,7 @@ async fn edge_resources_read_back_interpretation_references()
     let engine = Arc::new(
         Engine::new(registry.clone()).with_storage_ports(Arc::new(pg.clone()).storage_ports()),
     );
-    let server = McpToolHost::from_engine(engine, McpToolExtensions::default());
+    let server = McpToolHost::from_engine(engine, FlavorServices::default());
     let auth = McpAuthContext {
         owner,
         authz: AuthzContext::single_owner(&owner, AuthPath::HostBearer)

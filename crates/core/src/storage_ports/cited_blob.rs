@@ -4,9 +4,9 @@
 //! Core stays blob/storage-agnostic (docs/07): the S3-backed cited-blob
 //! lane (`proxima-blob-s3`) is reachable as a Rust library, but MCP tools
 //! live in core and cannot name the concrete store. This port is the
-//! seam: the host inserts a [`CitedBlobService`] into the MCP tool
-//! extensions when S3 is configured, and `core_upload` resolves it via
-//! `ctx.extensions.get::<CitedBlobService>()`. When absent, the tool
+//! seam: the host inserts a [`CitedBlobService`] into the composed flavor
+//! services when S3 is configured, and `core_upload` resolves it via
+//! `ctx.service::<CitedBlobService>()`. When absent, the tool
 //! fails typed with a configuration hint — exactly like the embedding
 //! client's degraded mode. The serving runtime publishes the same
 //! service to flavor workers, which need it for the half of artefact
@@ -270,10 +270,9 @@ pub trait CitedBlobPort: Send + Sync {
     ) -> Result<Vec<CitedBlobHeld>, StorageError>;
 }
 
-/// Shared handle MCP tools resolve from `McpToolCtx::extensions`, and
-/// that the serving runtime also hands flavor workers directly.
-/// A newtype (not a bare `Arc<dyn ...>`) so the `TypeId`-keyed extension
-/// map has a unique, intention-revealing key.
+/// Shared handle tools and workers resolve from the composed service set.
+/// A newtype (not a bare `Arc<dyn ...>`) gives the concrete-type-keyed map a
+/// unique, intention-revealing key.
 #[derive(Clone)]
 pub struct CitedBlobService(pub Arc<dyn CitedBlobPort>);
 

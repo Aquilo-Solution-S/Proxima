@@ -13,12 +13,12 @@ not a reference. Deployment and env vars live in
 
 | You are | Read |
 |---|---|
-| A **v0.0.7 Rust host** | [remove the inert runtime owner-access registration](#remove-the-inert-runtime-owner-access-registration), [remove the dependency-satisfaction seam](#remove-the-dependency-satisfaction-seam), [pass the shared Host allowlist](#pass-the-shared-host-allowlist), [apply listener-wide CORS](#apply-listener-wide-cors), then [freeze registries once](#freeze-registries-once) |
+| A **v0.0.7 Rust host** | [compose flavor services once](#compose-flavor-services-once), [remove the inert runtime owner-access registration](#remove-the-inert-runtime-owner-access-registration), [remove the dependency-satisfaction seam](#remove-the-dependency-satisfaction-seam), [pass the shared Host allowlist](#pass-the-shared-host-allowlist), [apply listener-wide CORS](#apply-listener-wide-cors), then [freeze registries once](#freeze-registries-once) |
 | An **operator** promoting a deployment | [the v0.0.7 schema lane](#the-v007-schema-lane), then [operator changes](#operator-changes) |
 | Running the **code flavor** | the above, then [re-register and re-index](#re-register-and-re-index-every-code-repository) |
 | An **MCP client / agent** author | [wire changes](#wire-changes-mcp-clients) |
 | An **embedding host** driving `Engine` in Rust | [Rust host changes](#rust-host-changes) |
-| A **flavor** author | [remove the dependency-satisfaction seam](#remove-the-dependency-satisfaction-seam), [freeze registries once](#freeze-registries-once), then [flavor SDK changes](#flavor-sdk-changes) |
+| A **flavor** author | [compose flavor services once](#compose-flavor-services-once), [remove the dependency-satisfaction seam](#remove-the-dependency-satisfaction-seam), [freeze registries once](#freeze-registries-once), then [flavor SDK changes](#flavor-sdk-changes) |
 | Booting against a **pre-v0.0.4 database** | [the v0.0.4 reset](#the-v004-reset) first — nothing else applies until it is done |
 
 Every upgrade also needs [the lock-step rules](#rules-for-every-upgrade) and
@@ -30,6 +30,42 @@ Older lanes are kept below: [v0.0.6 → v0.0.7](#v006--v007),
 ---
 
 # v0.0.7 → v0.0.8
+
+## Compose flavor services once
+
+The host service seam is now transport-neutral and collision-aware:
+
+| v0.0.7 | v0.0.8 |
+|---|---|
+| `McpToolExtensions` | `FlavorServices` |
+| `FlavorApp::mcp_tool_extensions(&AppContext) -> McpToolExtensions` | `FlavorApp::services(&AppContext) -> Result<FlavorServices, FlavorServiceError>` |
+| `ctx.extensions.get::<T>()` in an `McpTool` | `ctx.service::<T>()` in an `McpTool` or transport-neutral `Tool` |
+| `FlavorWorkerContext::blobs` | `FlavorWorkerContext::service::<CitedBlobService>()` |
+| test context `.with_blobs(service)` | `.with_services(FlavorServices::with(service))` |
+
+```rust
+fn services(ctx: &AppContext) -> Result<FlavorServices, FlavorServiceError> {
+    let mut services = FlavorServices::default();
+    services.try_insert(MyFlavorStore::from_backend_pool_for_host(
+        ctx.clone_pool_for_host(),
+    ))?;
+    Ok(services)
+}
+```
+
+The runtime calls this factory once per `build` or `run` assembly and supplies
+the resulting service instances to MCP, its REST projection, and flavor
+workers. Worker-specific blob and raw-pool bridges are removed; workers resolve
+typed capabilities with `ctx.service::<T>()`.
+
+Tuple apps now compose services left-to-right, including the singleton `(A,)`
+form. A concrete service type may occur only once across the full app and
+substrate set. Duplicate types fail boot with
+`FlavorServiceError::DuplicateService`; no later app silently overrides an
+earlier app or the substrate's `CitedBlobService`.
+
+This is a Rust host/flavor migration only. There is no wire, database, schema,
+or Lean change.
 
 ## Remove the inert runtime owner-access registration
 

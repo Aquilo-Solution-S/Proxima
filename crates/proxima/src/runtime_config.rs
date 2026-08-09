@@ -4,8 +4,8 @@ use std::time::Duration;
 
 use proxima_blob_s3::S3RuntimeConfig;
 use proxima_core::{
-    AnthropicClient, Authenticator, EmbeddingClient, Owner, RevalidationConfig, ToolScope,
-    is_loopback_host,
+    AnthropicClient, Authenticator, EmbeddingClient, FlavorServiceError, Owner, RevalidationConfig,
+    ToolScope, is_loopback_host,
 };
 use proxima_mcp_server::ResourceServerMetadata;
 
@@ -554,6 +554,8 @@ pub enum ProximaError {
     Config(String),
     #[error("registry: {0}")]
     Registry(#[from] proxima_core::FlavorRegistryError),
+    #[error("flavor services: {0}")]
+    FlavorServices(#[from] FlavorServiceError),
     #[error("storage: {0}")]
     Storage(String),
     #[error("engine: {0}")]

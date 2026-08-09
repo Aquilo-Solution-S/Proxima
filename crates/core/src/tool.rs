@@ -11,9 +11,128 @@ use crate::storage_ports::OwnerWritePermit;
 use crate::text_bounds::check_trimmed_len;
 use crate::{AuthzContext, Engine, FlavorRegistryFrozen, MemoryId, Owner};
 
+#[derive(Clone)]
+struct ServiceEntry {
+    type_name: &'static str,
+    value: Arc<dyn Any + Send + Sync>,
+}
+
+type ServiceValues = Arc<HashMap<TypeId, ServiceEntry>>;
+
+/// One immutable-at-runtime service set composed by the linked flavors.
+///
+/// Values are keyed by their concrete Rust type. Composition is fallible:
+/// two linked flavors cannot silently replace one another's service, and a
+/// flavor cannot replace a substrate service such as `CitedBlobService`.
+#[derive(Clone, Default)]
+pub struct FlavorServices {
+    values: ServiceValues,
+}
+
+impl std::fmt::Debug for FlavorServices {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FlavorServices")
+            .field("len", &self.values.len())
+            .finish_non_exhaustive()
+    }
+}
+
+/// Failure to compose the runtime services of linked flavors.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum FlavorServiceError {
+    #[error("duplicate flavor service type `{type_name}`")]
+    DuplicateService { type_name: &'static str },
+}
+
+impl FlavorServices {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    #[must_use]
+    pub fn with<T>(value: T) -> Self
+    where
+        T: Send + Sync + 'static,
+    {
+        Self {
+            values: Arc::new(HashMap::from([(
+                TypeId::of::<T>(),
+                ServiceEntry {
+                    type_name: std::any::type_name::<T>(),
+                    value: Arc::new(value),
+                },
+            )])),
+        }
+    }
+
+    /// Insert one service without replacing an existing service of the same
+    /// concrete type.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FlavorServiceError::DuplicateService`] when the type is
+    /// already present. The set is unchanged on failure.
+    pub fn try_insert<T>(&mut self, value: T) -> Result<(), FlavorServiceError>
+    where
+        T: Send + Sync + 'static,
+    {
+        let type_id = TypeId::of::<T>();
+        if self.values.contains_key(&type_id) {
+            return Err(FlavorServiceError::DuplicateService {
+                type_name: std::any::type_name::<T>(),
+            });
+        }
+        Arc::make_mut(&mut self.values).insert(
+            type_id,
+            ServiceEntry {
+                type_name: std::any::type_name::<T>(),
+                value: Arc::new(value),
+            },
+        );
+        Ok(())
+    }
+
+    /// Merge another composed set without overriding either side.
+    ///
+    /// # Errors
+    ///
+    /// Returns the lexically first duplicate concrete type. The receiver is
+    /// unchanged on failure.
+    pub fn try_extend(&mut self, other: Self) -> Result<(), FlavorServiceError> {
+        let duplicate = other
+            .values
+            .iter()
+            .filter(|(type_id, _)| self.values.contains_key(type_id))
+            .map(|(_, entry)| entry.type_name)
+            .min();
+        if let Some(type_name) = duplicate {
+            return Err(FlavorServiceError::DuplicateService { type_name });
+        }
+        let other_values = Arc::unwrap_or_clone(other.values);
+        Arc::make_mut(&mut self.values).extend(other_values);
+        Ok(())
+    }
+
+    #[must_use]
+    pub fn get<T>(&self) -> Option<Arc<T>>
+    where
+        T: Send + Sync + 'static,
+    {
+        service(&self.values)
+    }
+
+    #[must_use]
+    pub(crate) fn into_tool_services(self) -> ToolServices {
+        ToolServices {
+            values: self.values,
+        }
+    }
+}
+
 #[derive(Clone, Default)]
 pub struct ToolServices {
-    values: Arc<HashMap<TypeId, Arc<dyn Any + Send + Sync>>>,
+    values: ServiceValues,
 }
 
 impl std::fmt::Debug for ToolServices {
@@ -45,8 +164,14 @@ impl ToolServices {
         T: Send + Sync + 'static,
     {
         Arc::make_mut(&mut self.values)
-            .insert(TypeId::of::<T>(), Arc::new(value))
-            .and_then(|old| old.downcast::<T>().ok())
+            .insert(
+                TypeId::of::<T>(),
+                ServiceEntry {
+                    type_name: std::any::type_name::<T>(),
+                    value: Arc::new(value),
+                },
+            )
+            .and_then(|old| old.value.downcast::<T>().ok())
     }
 
     #[must_use]
@@ -54,16 +179,18 @@ impl ToolServices {
     where
         T: Send + Sync + 'static,
     {
-        self.values
-            .get(&TypeId::of::<T>())
-            .cloned()
-            .and_then(|value| value.downcast::<T>().ok())
+        service(&self.values)
     }
+}
 
-    #[must_use]
-    pub(crate) fn from_values(values: Arc<HashMap<TypeId, Arc<dyn Any + Send + Sync>>>) -> Self {
-        Self { values }
-    }
+fn service<T>(values: &ServiceValues) -> Option<Arc<T>>
+where
+    T: Send + Sync + 'static,
+{
+    values
+        .get(&TypeId::of::<T>())
+        .map(|entry| entry.value.clone())
+        .and_then(|value| value.downcast::<T>().ok())
 }
 
 #[derive(Clone)]
@@ -368,6 +495,72 @@ pub trait Tool: Send + Sync + 'static {
     type Output: serde::Serialize + schemars::JsonSchema + Send + 'static;
 
     fn call(ctx: ToolCtx, args: Self::Args) -> BoxFuture<'static, Result<Self::Output, ToolError>>;
+}
+
+#[cfg(test)]
+mod flavor_service_tests {
+    use std::sync::Arc;
+
+    use super::{FlavorServiceError, FlavorServices};
+
+    #[derive(Debug)]
+    struct Alpha(&'static str);
+
+    #[derive(Debug)]
+    struct Beta;
+
+    #[derive(Debug)]
+    struct Gamma;
+
+    #[test]
+    fn duplicate_insert_is_typed_and_keeps_the_original() {
+        let mut services = FlavorServices::with(Alpha("first"));
+        let original = services.get::<Alpha>().expect("alpha present");
+
+        let err = services.try_insert(Alpha("second")).unwrap_err();
+
+        assert_eq!(
+            err,
+            FlavorServiceError::DuplicateService {
+                type_name: std::any::type_name::<Alpha>(),
+            }
+        );
+        let retained = services.get::<Alpha>().expect("original retained");
+        assert!(Arc::ptr_eq(&original, &retained));
+        assert_eq!(retained.0, "first");
+    }
+
+    #[test]
+    fn duplicate_extend_is_atomic() {
+        let mut services = FlavorServices::with(Alpha("first"));
+        let mut incoming = FlavorServices::with(Beta);
+        incoming.try_insert(Alpha("second")).unwrap();
+        incoming.try_insert(Gamma).unwrap();
+
+        let err = services.try_extend(incoming).unwrap_err();
+
+        assert!(matches!(
+            err,
+            FlavorServiceError::DuplicateService { type_name }
+                if type_name == std::any::type_name::<Alpha>()
+        ));
+        assert!(services.get::<Beta>().is_none());
+        assert!(services.get::<Gamma>().is_none());
+        assert_eq!(services.get::<Alpha>().expect("alpha retained").0, "first");
+    }
+
+    #[test]
+    fn tool_services_share_the_composed_service_instances() {
+        let services = FlavorServices::with(Alpha("shared"));
+        let flavor_handle = services.get::<Alpha>().expect("alpha present");
+
+        let tool_handle = services
+            .into_tool_services()
+            .get::<Alpha>()
+            .expect("alpha reaches tool services");
+
+        assert!(Arc::ptr_eq(&flavor_handle, &tool_handle));
+    }
 }
 
 #[cfg(test)]

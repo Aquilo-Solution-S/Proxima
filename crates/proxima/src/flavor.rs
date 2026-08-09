@@ -30,15 +30,11 @@ pub use proxima_core::engine::UploadCompleted;
 /// `proxima_core::mcp`. Mirrors what `docs/tutorials/add-first-mcp-tool.md`
 /// imports.
 ///
-/// [`McpToolExtensions`] is the seam for anything core cannot name. A host
-/// composes its flavors' services into it by overriding
-/// `FlavorApp::mcp_tool_extensions`, and a tool resolves one back with
-/// `ctx.extensions.get::<MyService>()` — which is exactly how core's own
-/// `core_upload` finds the [`CitedBlobService`] below. It is re-exported
-/// here because it is the *return type* of that override: without it an
-/// out-of-tree flavor cannot write the signature at all, so its tools have
-/// no sanctioned route to a database handle or any other host-owned
-/// dependency. See `docs/09-developing-flavors.md` § MCP Tools.
+/// [`FlavorServices`] is the seam for dependencies core cannot name. Each
+/// linked [`FlavorApp`](crate::FlavorApp) contributes a typed set once; the
+/// runtime rejects duplicate concrete types and shares the result with MCP,
+/// REST, and flavor workers. Generic tools resolve one with
+/// `ctx.service::<MyService>()`.
 ///
 /// [`McpPresentationExt`] is how a flavor implementing the transport-neutral
 /// [`Tool`] trait mints and parses MCP wire references (`F:`/`A:`/`P:`/`G:`
@@ -51,13 +47,11 @@ pub use proxima_core::engine::UploadCompleted;
 /// over.
 pub use proxima_core::mcp::{
     McpActionArgSpec, McpAuthorContext, McpPresentationExt, McpTool, McpToolAnnotations,
-    McpToolCtx, McpToolError, McpToolErrorKind, McpToolExtensions, McpToolPresentation,
+    McpToolCtx, McpToolError, McpToolErrorKind, McpToolPresentation,
 };
-/// Host-wired cited-blob lane, handed to workers as
-/// [`FlavorWorkerContext::blobs`]. Present only when the host configured
-/// S3; the concrete backend (`proxima-blob-s3`) is never named across
-/// this seam, so a flavor codes against [`CitedBlobPort`] and can fake it
-/// wholesale in tests.
+/// Host-wired cited-blob lane, resolved by tools and workers from
+/// [`FlavorServices`]. Present only when the host configured S3; the concrete
+/// backend (`proxima-blob-s3`) is never named across this seam.
 ///
 /// [`CitedBlobHeld`] and [`MAX_HELD_BLOB_DIGESTS`] are the two halves of
 /// `find_held_blobs`, and both have to cross this seam for the same reason:
@@ -82,11 +76,12 @@ pub use proxima_core::{
     AbstractionPayload, CapabilitySet, CitationMappingPayload, CitedObjectPayload,
     EndpointUrlError, EndpointUrlPolicy, FactPayload, FactReceiptId, FactTombstone,
     FlavorDescriptor, FlavorProvenance, FlavorRegistry, FlavorRegistryError, FlavorRegistryFrozen,
-    GoalId, GoalPayload, InputContractId, MemoryId, ModelId, OperatorId, PayloadKeyBuilder,
-    PerspectivePayload, PromptVersion, SchemaId, SchemaVersion, SearchProjection,
-    SearchProjectionColumnKind, SearchProjectionField, SidecarPayload, Tool, ToolCall, ToolCallFn,
-    ToolCtx, ToolDescriptor, ToolError, ToolOrigin, ToolServices, is_loopback_endpoint,
-    is_loopback_host, proxima_flavor, proxima_schema_id, validate_endpoint_url,
+    FlavorServiceError, FlavorServices, GoalId, GoalPayload, InputContractId, MemoryId, ModelId,
+    OperatorId, PayloadKeyBuilder, PerspectivePayload, PromptVersion, SchemaId, SchemaVersion,
+    SearchProjection, SearchProjectionColumnKind, SearchProjectionField, SidecarPayload, Tool,
+    ToolCall, ToolCallFn, ToolCtx, ToolDescriptor, ToolError, ToolOrigin, ToolServices,
+    is_loopback_endpoint, is_loopback_host, proxima_flavor, proxima_schema_id,
+    validate_endpoint_url,
 };
 /// Derived-memory authoring: the request/outcome types of
 /// [`proxima_core::Engine::author_derived_authorized`], which is how a

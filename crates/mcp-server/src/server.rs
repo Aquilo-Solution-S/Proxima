@@ -17,13 +17,13 @@ use proxima_core::mcp::core_tools::{
     },
 };
 use proxima_core::mcp::{
-    McpAuthorContext, McpToolCtx, McpToolError, McpToolErrorKind, McpToolExtensions, Next,
-    TerminalDispatch, ToolCall, tool_name_matches,
+    McpAuthorContext, McpToolCtx, McpToolError, McpToolErrorKind, Next, TerminalDispatch, ToolCall,
+    tool_name_matches,
 };
 use proxima_core::protocol::{
     resource as protocol_resource, resource_path as protocol_resource_path,
 };
-use proxima_core::{Engine, FlavorRegistry, FlavorRegistryFrozen};
+use proxima_core::{Engine, FlavorRegistry, FlavorRegistryFrozen, FlavorServices};
 use serde::Serialize;
 
 use crate::auth::McpAuthContext;
@@ -31,7 +31,7 @@ use crate::auth::McpAuthContext;
 #[derive(Clone)]
 pub struct McpToolHost {
     registry: Arc<FlavorRegistryFrozen>,
-    extensions: McpToolExtensions,
+    services: FlavorServices,
     engine: Option<Arc<Engine>>,
 }
 
@@ -45,17 +45,17 @@ impl std::fmt::Debug for McpToolHost {
 
 impl McpToolHost {
     #[must_use]
-    pub fn from_parts(registry: Arc<FlavorRegistryFrozen>, extensions: McpToolExtensions) -> Self {
+    pub fn from_parts(registry: Arc<FlavorRegistryFrozen>, services: FlavorServices) -> Self {
         Self {
             registry,
-            extensions,
+            services,
             engine: None,
         }
     }
 
     #[must_use]
-    pub fn from_engine(engine: Arc<Engine>, extensions: McpToolExtensions) -> Self {
-        Self::from_parts(Arc::new(engine.registry().clone()), extensions).with_engine(engine)
+    pub fn from_engine(engine: Arc<Engine>, services: FlavorServices) -> Self {
+        Self::from_parts(Arc::new(engine.registry().clone()), services).with_engine(engine)
     }
 
     #[must_use]
@@ -82,7 +82,7 @@ impl McpToolHost {
         let engine = Arc::new(
             Engine::new(frozen.clone()).with_storage_ports(Arc::new(pg.clone()).storage_ports()),
         );
-        Ok(Self::from_engine(engine, McpToolExtensions::default()))
+        Ok(Self::from_engine(engine, FlavorServices::default()))
     }
 
     #[must_use]
@@ -103,7 +103,7 @@ impl McpToolHost {
             authz,
             registry: self.registry.clone(),
             caller_self_perspective: author.caller_self_perspective,
-            extensions: self.extensions.clone(),
+            services: self.services.clone(),
             author,
             engine: self.engine.clone(),
         }
@@ -501,7 +501,7 @@ mod tests {
     fn make_server() -> McpToolHost {
         McpToolHost {
             registry: Arc::new(FlavorRegistry::new().freeze_or_panic_for_tests()),
-            extensions: McpToolExtensions::default(),
+            services: FlavorServices::default(),
             engine: None,
         }
     }
