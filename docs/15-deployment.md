@@ -78,7 +78,7 @@ retries on the next pod rather than queueing behind readers.
 | `DATABASE_URL` | yes | `postgres://user:pass@host:5432/db` | Postgres connection string. |
 | `PROXIMA_MCP_BIND` | yes | `0.0.0.0:8080` | MCP listener address. |
 | `PROXIMA_EXPOSE_NETWORK=true` | yes | `true` | Required for non-loopback bind. |
-| `PROXIMA_ALLOWED_ORIGINS` | yes | `https://claude.example.com,https://codex.example.com` | Comma-separated origin allowlist; never `*`. |
+| `PROXIMA_ALLOWED_ORIGINS` | yes | `https://claude.example.com,https://codex.example.com` | Comma-separated listener-wide browser CORS allowlist; never `*`. |
 | `PROXIMA_ALLOWED_HOSTS` | no | `proxima.example.com` | Inbound `Host` allowlist (hostnames or `host:port`, no wildcards) for the listener-wide DNS-rebinding guard. Defaults to the host of `PROXIMA_PUBLIC_URL` + the allowed origins; loopback always permitted. Set only to override. |
 | `PROXIMA_PUBLIC_URL` | yes | `https://proxima.example.com` | Public HTTPS base for OIDC; its host is auto-allowed as an inbound `Host`. |
 | `PROXIMA_OIDC_ISSUER` | yes | `https://zitadel.example.com` | Zitadel issuer URL. |
@@ -150,6 +150,13 @@ forwards the real `Host` unchanged — no `Host`-rewrite-to-localhost workaround
 is needed. The allowlist is honored on loopback binds too, which supports a
 same-host reverse proxy preserving the public `Host`; `PROXIMA_EXPOSE_NETWORK`
 controls non-loopback socket binding, not Host-policy activation.
+
+Browser order is body limit → Host → CORS → bearer auth. An allowed CORS
+preflight (`OPTIONS` + `Origin` + `Access-Control-Request-Method`) returns
+`204` without a bearer; the actual `/mcp`, `/v1`, or mounted flavor request
+still requires its normal bearer. The response echoes the allowed Origin and
+requested method/header names, never `*`, and does not enable cookie
+credentials. Native clients that omit `Origin` retain the same auth path.
 
 ## Build & run
 
@@ -271,6 +278,9 @@ Ingress MUST:
 - Statelessly validate the Zitadel JWT on `/mcp`, and on `/v1` when that
   optional surface is routed (NOT a session login-proxy).
 - Forward the `Authorization` header.
+- Pass browser preflight `OPTIONS` without JWT validation, and forward
+  `Origin`, `Access-Control-Request-Method`, and
+  `Access-Control-Request-Headers`; Proxima owns the allowlist decision.
 - Restrict pod ingress to the gateway with a `NetworkPolicy`.
 - Cap request body size and apply a per-client rate/concurrency limit. The
   server rejects an oversized request body before parsing and caps individual

@@ -22,8 +22,9 @@ pub use oauth::{
     PROTECTED_RESOURCE_METADATA_PATH, ResourceServerMetadata, protected_resource_router,
 };
 pub use security::{
-    HostAllowlist, HostGuardLayer, McpAuthLayer, OriginAllowlist, assert_loopback,
-    default_allowlist, host_guard_layer, mcp_auth_layer_with_config, mcp_auth_layer_with_metadata,
+    CorsLayer, HostAllowlist, HostGuardLayer, McpAuthLayer, OriginAllowlist, assert_loopback,
+    cors_layer, default_allowlist, host_guard_layer, mcp_auth_layer_with_config,
+    mcp_auth_layer_with_metadata,
 };
 pub use server::{McpToolHost, ToolInvocationError};
 pub use session::{McpSessionBindings, owner_key, parse_owner_key};

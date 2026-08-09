@@ -384,10 +384,10 @@ envelope.
 
 The adapter is a feature-gated module inside the existing MCP server
 crate, not a new crate, binary, or service. It mounts as a nested
-router beside `/mcp` on the same listener, inside the same auth and
-body-limit layers — which is why it inherits bearer validation, origin
-allowlisting, owner resolution, and stream revalidation without
-restating any of them.
+router beside `/mcp` on the same listener, inside the same body-limit,
+Host, listener-wide CORS, and auth layers — which is why it inherits browser
+preflight handling, bearer validation, owner resolution, and stream
+revalidation without restating any of them.
 
 The surface is off by default. The `rest` Cargo feature compiles it;
 `PROXIMA_REST_ENABLED=true` mounts it. Both gates are required. Deployment

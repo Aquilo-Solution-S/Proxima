@@ -57,7 +57,7 @@ Proxima::<App>::app()
 | `DATABASE_URL` | Postgres connection for core tables (`proxima_core` schema). |
 | `PROXIMA_MCP_BIND` | MCP socket address; enables the listener when set. |
 | `PROXIMA_EXPOSE_NETWORK` | Network exposure gate for non-loopback binds. |
-| `PROXIMA_ALLOWED_ORIGINS` | Comma-separated MCP origin allowlist. |
+| `PROXIMA_ALLOWED_ORIGINS` | Comma-separated browser-origin allowlist for listener-wide CORS. |
 | `PROXIMA_ALLOWED_HOSTS` | Comma-separated inbound `Host` allowlist (hostnames or `host:port`, no wildcards) for the listener-wide DNS-rebinding guard; defaults to the host of `PROXIMA_PUBLIC_URL` + the allowed origins. Loopback always permitted. |
 | `PROXIMA_STREAM_MAX_LIFETIME` | Max lifetime (seconds) of an authenticated MCP (Streamable HTTP) response stream before re-validation. (The `Subscribe` push verb is retired — see docs/14; this governs response-stream revalidation, not a subscription.) |
 | `PROXIMA_STREAM_EPOCH_INTERVAL` | Auth-epoch re-check interval (seconds) for an open MCP response stream. |
@@ -103,13 +103,22 @@ The Streamable HTTP MCP listener turns on when `PROXIMA_MCP_BIND` (or
 and use it inside `authenticate`; a custom authenticator owns the equivalent
 server-side role resolution.
 
-Origins are gated by `PROXIMA_ALLOWED_ORIGINS`. One non-empty
-`HostAllowlist` gates the complete listener before auth and is passed to
-rmcp's inner `/mcp` DNS-rebinding guard unchanged. It covers `/mcp`, `/v1`,
-mounted flavor routes, OAuth metadata, and fallback responses. Loopback is
-always present; a network-exposed bind must resolve at least one public host
-(`PROXIMA_ALLOWED_HOSTS`, else the host of `PROXIMA_PUBLIC_URL` / the allowed
-origins) or `validate()` fails closed. Secrets are never streamed to clients.
+`PROXIMA_ALLOWED_ORIGINS` is the listener-wide browser CORS policy. It covers
+`/mcp`, `/v1`, mounted flavor routes, OAuth metadata, and fallback responses.
+An allowed preflight returns `204` before bearer auth; the subsequent actual
+request still needs its normal bearer. Missing `Origin` preserves native-client
+auth semantics. Origins are echoed exactly; wildcard origins and cookie
+credentials are never enabled. A repeated/malformed
+`Access-Control-Request-Method` or malformed
+`Access-Control-Request-Headers` list returns `400`; repeated valid header-list
+fields are all honored.
+
+One non-empty `HostAllowlist` gates the same complete listener before CORS and
+auth, and is passed to rmcp's inner `/mcp` DNS-rebinding guard unchanged.
+Loopback is always present; a network-exposed bind must resolve at least one
+public host (`PROXIMA_ALLOWED_HOSTS`, else the host of `PROXIMA_PUBLIC_URL` /
+the allowed origins) or `validate()` fails closed. Secrets are never streamed
+to clients.
 
 ### REST Surface
 
@@ -119,12 +128,12 @@ different kinds of decision: the `rest` cargo feature compiles the
 module (a build decision), `PROXIMA_REST_ENABLED=true` serves it (a
 deployment one). Default off at both.
 
-It mounts on the MCP listener inside the listener-wide Host/body-limit layers
-and the same protected auth layer, so it inherits Host validation, bearer
-validation, origin allowlisting, owner resolution and stream revalidation
-unchanged, and grants no authority MCP does not already grant. Setting
-`PROXIMA_REST_ENABLED` in a binary built without the feature logs a warning at
-boot and serves nothing.
+It mounts on the MCP listener inside the listener-wide body/Host/CORS layers
+and the same protected auth layer, so it inherits Host validation, browser
+preflight handling, bearer validation, owner resolution and stream
+revalidation unchanged, and grants no authority MCP does not already grant.
+Setting `PROXIMA_REST_ENABLED` in a binary built without the feature logs a
+warning at boot and serves nothing.
 
 ### Tool Surface Profile
 

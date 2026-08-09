@@ -4,12 +4,16 @@ use std::sync::Arc;
 
 use axum::body::Body;
 use axum::extract::{Request, State};
-use axum::http::StatusCode;
+use axum::http::{Method, StatusCode};
 use axum::middleware::{self, FromFnLayer, Next};
 use axum::response::{IntoResponse, Response};
 use futures_util::Stream;
-use http::HeaderMap;
-use http::header::{AUTHORIZATION, HOST, ORIGIN};
+use http::header::{
+    ACCESS_CONTROL_ALLOW_HEADERS, ACCESS_CONTROL_ALLOW_METHODS, ACCESS_CONTROL_ALLOW_ORIGIN,
+    ACCESS_CONTROL_EXPOSE_HEADERS, ACCESS_CONTROL_REQUEST_HEADERS, ACCESS_CONTROL_REQUEST_METHOD,
+    AUTHORIZATION, HOST, ORIGIN, VARY,
+};
+use http::{HeaderMap, HeaderName, HeaderValue};
 use http_body::{Body as HttpBody, Frame};
 use http_body_util::{BodyStream, StreamBody};
 use proxima_core::{
@@ -70,7 +74,18 @@ impl OriginAllowlist {
 
     #[must_use]
     pub fn allows(&self, headers: &HeaderMap) -> bool {
-        let Some(origin) = headers.get(ORIGIN).and_then(|v| v.to_str().ok()) else {
+        let mut origins = headers.get_all(ORIGIN).iter();
+        let Some(origin) = origins.next() else {
+            return false;
+        };
+        if origins.next().is_some() {
+            return false;
+        }
+        self.allows_origin(origin)
+    }
+
+    fn allows_origin(&self, origin: &HeaderValue) -> bool {
+        let Some(origin) = origin.to_str().ok() else {
             return false;
         };
         let Some(parsed) = parse_origin(origin) else {
@@ -293,6 +308,161 @@ async fn enforce_host(
     next.run(request).await
 }
 
+/// Concrete return type for [`cors_layer`].
+pub type CorsLayer = FromFnLayer<
+    fn(
+        State<OriginAllowlist>,
+        Request,
+        Next,
+    ) -> Pin<Box<dyn std::future::Future<Output = Response> + Send>>,
+    OriginAllowlist,
+    (State<OriginAllowlist>, Request),
+>;
+
+/// Listener-wide browser CORS and Origin guard.
+///
+/// Apply this after every route has been merged, outside bearer auth, and
+/// inside the body-size and Host guards. A native request without `Origin`
+/// keeps its normal route and authentication semantics. A browser preflight
+/// (`OPTIONS` + `Origin` + `Access-Control-Request-Method`) is answered before
+/// auth; malformed preflight fields fail with `400`, and the actual request
+/// still requires its normal bearer credentials.
+#[must_use = "apply the returned layer to the complete HTTP listener"]
+pub fn cors_layer(allowlist: OriginAllowlist) -> CorsLayer {
+    fn dispatch(
+        state: State<OriginAllowlist>,
+        request: Request,
+        next: Next,
+    ) -> Pin<Box<dyn std::future::Future<Output = Response> + Send>> {
+        Box::pin(enforce_cors(state, request, next))
+    }
+    middleware::from_fn_with_state(allowlist, dispatch as fn(_, _, _) -> _)
+}
+
+async fn enforce_cors(
+    State(allowlist): State<OriginAllowlist>,
+    request: Request,
+    next: Next,
+) -> Response {
+    let mut origins = request.headers().get_all(ORIGIN).iter();
+    let Some(origin) = origins.next().cloned() else {
+        let mut response = next.run(request).await;
+        append_vary(&mut response, "Origin");
+        return response;
+    };
+    if origins.next().is_some() || !allowlist.allows_origin(&origin) {
+        tracing::warn!("rejected request with disallowed or malformed Origin header");
+        let mut response = (StatusCode::FORBIDDEN, "origin not allowed").into_response();
+        append_vary(&mut response, "Origin");
+        return response;
+    }
+
+    if request.method() == Method::OPTIONS {
+        match parse_cors_preflight(request.headers()) {
+            Ok(Some(preflight)) => {
+                let mut response = StatusCode::NO_CONTENT.into_response();
+                response
+                    .headers_mut()
+                    .insert(ACCESS_CONTROL_ALLOW_ORIGIN, origin);
+                response
+                    .headers_mut()
+                    .insert(ACCESS_CONTROL_ALLOW_METHODS, preflight.method);
+                for request_headers in preflight.headers {
+                    response
+                        .headers_mut()
+                        .append(ACCESS_CONTROL_ALLOW_HEADERS, request_headers);
+                }
+                append_vary(&mut response, "Origin");
+                append_vary(&mut response, "Access-Control-Request-Method");
+                append_vary(&mut response, "Access-Control-Request-Headers");
+                return response;
+            }
+            Ok(None) => {}
+            Err(()) => {
+                tracing::warn!("rejected malformed CORS preflight headers");
+                let mut response =
+                    (StatusCode::BAD_REQUEST, "invalid CORS preflight").into_response();
+                append_vary(&mut response, "Origin");
+                append_vary(&mut response, "Access-Control-Request-Method");
+                append_vary(&mut response, "Access-Control-Request-Headers");
+                return response;
+            }
+        }
+    }
+
+    let mut response = next.run(request).await;
+    response
+        .headers_mut()
+        .insert(ACCESS_CONTROL_ALLOW_ORIGIN, origin);
+    response.headers_mut().insert(
+        ACCESS_CONTROL_EXPOSE_HEADERS,
+        HeaderValue::from_static("Mcp-Session-Id, WWW-Authenticate"),
+    );
+    append_vary(&mut response, "Origin");
+    response
+}
+
+struct CorsPreflight {
+    method: HeaderValue,
+    headers: Vec<HeaderValue>,
+}
+
+fn parse_cors_preflight(headers: &HeaderMap) -> Result<Option<CorsPreflight>, ()> {
+    let mut methods = headers.get_all(ACCESS_CONTROL_REQUEST_METHOD).iter();
+    let Some(method) = methods.next().cloned() else {
+        return Ok(None);
+    };
+    if methods.next().is_some() || Method::from_bytes(method.as_bytes()).is_err() {
+        return Err(());
+    }
+
+    let request_headers: Vec<_> = headers
+        .get_all(ACCESS_CONTROL_REQUEST_HEADERS)
+        .iter()
+        .cloned()
+        .collect();
+    if request_headers
+        .iter()
+        .any(|value| !valid_cors_header_name_list(value))
+    {
+        return Err(());
+    }
+
+    Ok(Some(CorsPreflight {
+        method,
+        headers: request_headers,
+    }))
+}
+
+fn valid_cors_header_name_list(value: &HeaderValue) -> bool {
+    value.as_bytes().split(|byte| *byte == b',').all(|name| {
+        let name = trim_http_ows(name);
+        !name.is_empty() && HeaderName::from_bytes(name).is_ok()
+    })
+}
+
+fn trim_http_ows(mut value: &[u8]) -> &[u8] {
+    while value
+        .first()
+        .is_some_and(|byte| matches!(*byte, b' ' | b'\t'))
+    {
+        value = &value[1..];
+    }
+    while value
+        .last()
+        .is_some_and(|byte| matches!(*byte, b' ' | b'\t'))
+    {
+        value = &value[..value.len() - 1];
+    }
+    value
+}
+
+fn append_vary(response: &mut Response, value: &'static str) {
+    response
+        .headers_mut()
+        .append(VARY, HeaderValue::from_static(value));
+}
+
 #[must_use]
 pub fn default_allowlist() -> OriginAllowlist {
     OriginAllowlist::new([
@@ -332,7 +502,6 @@ pub type McpAuthLayer = FromFnLayer<
 pub struct McpAuthLayerState {
     auth: Arc<McpEdgeAuth>,
     sessions: McpSessionBindings,
-    allowlist: OriginAllowlist,
     revalidation: RevalidationConfig,
     www_authenticate: Option<http::HeaderValue>,
 }
@@ -341,31 +510,27 @@ pub struct McpAuthLayerState {
 /// <wire-token>` via MCP edge auth and injects the resolved context into
 /// request extensions. Accepted bearer material is host-authenticated;
 /// reserved legacy local-token prefixes fail closed.
-/// Missing or unknown tokens short-circuit with HTTP 401. A present but
-/// disallowed `Origin` short-circuits with 403; missing `Origin` is
-/// allowed after bearer auth for native CLI clients.
+/// Missing or unknown tokens short-circuit with HTTP 401. Browser Origin and
+/// preflight handling belongs to the listener-wide [`cors_layer`].
 ///
 /// Returns a [`McpAuthLayer`] (alias of [`FromFnLayer`]) so callers
 /// apply it directly with [`axum::Router::layer`].
 pub fn mcp_auth_layer_with_config(
     auth: Arc<McpEdgeAuth>,
-    allowlist: OriginAllowlist,
     revalidation: RevalidationConfig,
 ) -> McpAuthLayer {
-    mcp_auth_layer_with_metadata(auth, allowlist, revalidation, None)
+    mcp_auth_layer_with_metadata(auth, revalidation, None)
 }
 
 #[must_use = "apply the returned layer to the MCP router"]
 pub fn mcp_auth_layer_with_metadata(
     auth: Arc<McpEdgeAuth>,
-    allowlist: OriginAllowlist,
     revalidation: RevalidationConfig,
     www_authenticate: Option<http::HeaderValue>,
 ) -> McpAuthLayer {
     mcp_auth_layer_with_sessions(
         auth,
         McpSessionBindings::new(),
-        allowlist,
         revalidation,
         www_authenticate,
     )
@@ -375,7 +540,6 @@ pub fn mcp_auth_layer_with_metadata(
 pub fn mcp_auth_layer_with_sessions(
     auth: Arc<McpEdgeAuth>,
     sessions: McpSessionBindings,
-    allowlist: OriginAllowlist,
     revalidation: RevalidationConfig,
     www_authenticate: Option<http::HeaderValue>,
 ) -> McpAuthLayer {
@@ -390,7 +554,6 @@ pub fn mcp_auth_layer_with_sessions(
         McpAuthLayerState {
             auth,
             sessions,
-            allowlist,
             revalidation,
             www_authenticate,
         },
@@ -406,9 +569,6 @@ async fn mcp_auth(
     let Some(token) = extract_bearer(&request) else {
         return unauthorized(&state);
     };
-    if request.headers().contains_key(ORIGIN) && !state.allowlist.allows(request.headers()) {
-        return (StatusCode::FORBIDDEN, "origin not allowed").into_response();
-    }
     // Validate the bearer BEFORE resolving owner/session so an invalid
     // token always yields 401 regardless of session/owner-header state.
     // This closes the 401/403 oracle: an unauthenticated caller learns
@@ -702,7 +862,8 @@ mod tests {
     use async_trait::async_trait;
     use axum::Router;
     use axum::body::{Body, Bytes, to_bytes};
-    use axum::http::{Request, StatusCode};
+    use axum::http::{Method, Request, StatusCode, header};
+    use axum::response::Response;
     use axum::routing::any;
     use futures_util::stream;
     use proxima_core::{
@@ -714,8 +875,8 @@ mod tests {
     use tower::ServiceExt;
 
     use super::{
-        HostAllowlist, OriginAllowlist, RevalidatedBody, default_allowlist, host_guard_layer,
-        mcp_auth_layer_with_sessions,
+        HostAllowlist, OriginAllowlist, RevalidatedBody, cors_layer, default_allowlist,
+        host_guard_layer, mcp_auth_layer_with_sessions,
     };
     use crate::McpServerError;
     use crate::auth::McpEdgeAuth;
@@ -776,7 +937,6 @@ mod tests {
             .layer(mcp_auth_layer_with_sessions(
                 Arc::new(auth),
                 sessions,
-                default_allowlist(),
                 RevalidationConfig::default(),
                 None,
             ))
@@ -791,6 +951,298 @@ mod tests {
 
     async fn status_of(app: Router, request: Request<Body>) -> StatusCode {
         app.oneshot(request).await.unwrap().status()
+    }
+
+    fn cors_app(calls: Arc<AtomicU64>) -> Router {
+        Router::new()
+            .route(
+                "/ok",
+                any(move || {
+                    let calls = Arc::clone(&calls);
+                    async move {
+                        calls.fetch_add(1, Ordering::SeqCst);
+                        StatusCode::OK
+                    }
+                }),
+            )
+            .layer(cors_layer(default_allowlist()))
+    }
+
+    #[tokio::test]
+    async fn allowed_preflight_is_no_content_and_skips_the_route() {
+        let calls = Arc::new(AtomicU64::new(0));
+        let response = cors_app(Arc::clone(&calls))
+            .oneshot(
+                Request::builder()
+                    .method(Method::OPTIONS)
+                    .uri("/ok")
+                    .header(header::ORIGIN, "http://localhost:5173")
+                    .header(header::ACCESS_CONTROL_REQUEST_METHOD, "POST")
+                    .header(
+                        header::ACCESS_CONTROL_REQUEST_HEADERS,
+                        "authorization,content-type,x-proxima-owner",
+                    )
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            response.headers().get(header::ACCESS_CONTROL_ALLOW_ORIGIN),
+            Some(&header::HeaderValue::from_static("http://localhost:5173"))
+        );
+        assert_eq!(
+            response.headers().get(header::ACCESS_CONTROL_ALLOW_METHODS),
+            Some(&header::HeaderValue::from_static("POST"))
+        );
+        assert_eq!(
+            response.headers().get(header::ACCESS_CONTROL_ALLOW_HEADERS),
+            Some(&header::HeaderValue::from_static(
+                "authorization,content-type,x-proxima-owner"
+            ))
+        );
+        assert!(
+            !response
+                .headers()
+                .contains_key(header::ACCESS_CONTROL_ALLOW_CREDENTIALS)
+        );
+        let vary: Vec<_> = response
+            .headers()
+            .get_all(header::VARY)
+            .iter()
+            .map(|value| value.to_str().unwrap())
+            .collect();
+        assert_eq!(
+            vary,
+            [
+                "Origin",
+                "Access-Control-Request-Method",
+                "Access-Control-Request-Headers"
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn repeated_request_header_lists_are_all_reflected() {
+        let calls = Arc::new(AtomicU64::new(0));
+        let mut request = Request::builder()
+            .method(Method::OPTIONS)
+            .uri("/ok")
+            .header(header::ORIGIN, "http://localhost")
+            .header(header::ACCESS_CONTROL_REQUEST_METHOD, "POST")
+            .header(header::ACCESS_CONTROL_REQUEST_HEADERS, "authorization")
+            .body(Body::empty())
+            .unwrap();
+        request.headers_mut().append(
+            header::ACCESS_CONTROL_REQUEST_HEADERS,
+            header::HeaderValue::from_static("content-type, x-proxima-owner"),
+        );
+
+        let response = cors_app(Arc::clone(&calls)).oneshot(request).await.unwrap();
+
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        let allowed_headers: Vec<_> = response
+            .headers()
+            .get_all(header::ACCESS_CONTROL_ALLOW_HEADERS)
+            .iter()
+            .map(|value| value.to_str().unwrap())
+            .collect();
+        assert_eq!(
+            allowed_headers,
+            ["authorization", "content-type, x-proxima-owner"]
+        );
+    }
+
+    #[tokio::test]
+    async fn malformed_or_repeated_preflight_fields_fail_closed() {
+        let calls = Arc::new(AtomicU64::new(0));
+        let app = cors_app(Arc::clone(&calls));
+
+        let mut repeated_method = Request::builder()
+            .method(Method::OPTIONS)
+            .uri("/ok")
+            .header(header::ORIGIN, "http://localhost")
+            .header(header::ACCESS_CONTROL_REQUEST_METHOD, "POST")
+            .body(Body::empty())
+            .unwrap();
+        repeated_method.headers_mut().append(
+            header::ACCESS_CONTROL_REQUEST_METHOD,
+            header::HeaderValue::from_static("DELETE"),
+        );
+        let malformed_method = Request::builder()
+            .method(Method::OPTIONS)
+            .uri("/ok")
+            .header(header::ORIGIN, "http://localhost")
+            .header(header::ACCESS_CONTROL_REQUEST_METHOD, "POST, DELETE")
+            .body(Body::empty())
+            .unwrap();
+        let malformed_headers = Request::builder()
+            .method(Method::OPTIONS)
+            .uri("/ok")
+            .header(header::ORIGIN, "http://localhost")
+            .header(header::ACCESS_CONTROL_REQUEST_METHOD, "POST")
+            .header(
+                header::ACCESS_CONTROL_REQUEST_HEADERS,
+                "authorization, not a header",
+            )
+            .body(Body::empty())
+            .unwrap();
+
+        for request in [repeated_method, malformed_method, malformed_headers] {
+            let response = app.clone().oneshot(request).await.unwrap();
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+            assert!(
+                !response
+                    .headers()
+                    .contains_key(header::ACCESS_CONTROL_ALLOW_ORIGIN)
+            );
+            assert_eq!(
+                to_bytes(response.into_body(), usize::MAX).await.unwrap(),
+                Bytes::from_static(b"invalid CORS preflight")
+            );
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn allowed_actual_response_echoes_origin_and_exposes_browser_headers() {
+        let calls = Arc::new(AtomicU64::new(0));
+        let response = cors_app(Arc::clone(&calls))
+            .oneshot(
+                Request::builder()
+                    .uri("/ok")
+                    .header(header::ORIGIN, "http://127.0.0.1:5173")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            response.headers().get(header::ACCESS_CONTROL_ALLOW_ORIGIN),
+            Some(&header::HeaderValue::from_static("http://127.0.0.1:5173"))
+        );
+        assert_eq!(
+            response
+                .headers()
+                .get(header::ACCESS_CONTROL_EXPOSE_HEADERS),
+            Some(&header::HeaderValue::from_static(
+                "Mcp-Session-Id, WWW-Authenticate"
+            ))
+        );
+        assert_eq!(
+            response.headers().get(header::VARY),
+            Some(&header::HeaderValue::from_static("Origin"))
+        );
+    }
+
+    #[tokio::test]
+    async fn cors_appends_vary_without_replacing_route_values() {
+        let app = Router::new()
+            .route(
+                "/ok",
+                any(|| async {
+                    Response::builder()
+                        .status(StatusCode::OK)
+                        .header(header::VARY, "Accept-Encoding")
+                        .body(Body::empty())
+                        .unwrap()
+                }),
+            )
+            .layer(cors_layer(default_allowlist()));
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/ok")
+                    .header(header::ORIGIN, "http://localhost")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        let vary: Vec<_> = response
+            .headers()
+            .get_all(header::VARY)
+            .iter()
+            .map(|value| value.to_str().unwrap())
+            .collect();
+        assert_eq!(vary, ["Accept-Encoding", "Origin"]);
+    }
+
+    #[tokio::test]
+    async fn disallowed_or_repeated_origin_is_rejected_before_the_route() {
+        let calls = Arc::new(AtomicU64::new(0));
+        let app = cors_app(Arc::clone(&calls));
+        let disallowed = Request::builder()
+            .uri("/ok")
+            .header(header::ORIGIN, "https://evil.test")
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(
+            app.clone().oneshot(disallowed).await.unwrap().status(),
+            StatusCode::FORBIDDEN
+        );
+
+        let mut repeated = Request::builder()
+            .uri("/ok")
+            .header(header::ORIGIN, "http://localhost")
+            .body(Body::empty())
+            .unwrap();
+        repeated.headers_mut().append(
+            header::ORIGIN,
+            header::HeaderValue::from_static("http://127.0.0.1"),
+        );
+        assert_eq!(
+            app.oneshot(repeated).await.unwrap().status(),
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn no_origin_and_non_preflight_options_keep_route_semantics() {
+        let calls = Arc::new(AtomicU64::new(0));
+        let app = cors_app(Arc::clone(&calls));
+        let native = app
+            .clone()
+            .oneshot(Request::builder().uri("/ok").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(native.status(), StatusCode::OK);
+        assert!(
+            !native
+                .headers()
+                .contains_key(header::ACCESS_CONTROL_ALLOW_ORIGIN)
+        );
+        assert_eq!(
+            native.headers().get(header::VARY),
+            Some(&header::HeaderValue::from_static("Origin"))
+        );
+
+        let options = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::OPTIONS)
+                    .uri("/ok")
+                    .header(header::ORIGIN, "http://localhost")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(options.status(), StatusCode::OK);
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        assert_eq!(
+            options.headers().get(header::ACCESS_CONTROL_ALLOW_ORIGIN),
+            Some(&header::HeaderValue::from_static("http://localhost"))
+        );
     }
 
     fn host_guard_app(additional_hosts: &[&str]) -> Router {

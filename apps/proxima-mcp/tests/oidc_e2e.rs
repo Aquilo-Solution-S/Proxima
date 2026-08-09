@@ -143,6 +143,40 @@ async fn oidc_e2e_discovery_public_and_code_tools_behind_bearer()
     );
     assert_eq!(disc_json["authorization_servers"][0], ISSUER);
 
+    // Browser CORS is listener-wide, including anonymous discovery and an
+    // unauthenticated preflight for the protected MCP route.
+    let discovery_cors = client
+        .get(format!("{base}/.well-known/oauth-protected-resource"))
+        .header("Origin", "http://localhost:5173")
+        .send()
+        .await?;
+    assert_eq!(discovery_cors.status(), reqwest::StatusCode::OK);
+    assert_eq!(
+        discovery_cors
+            .headers()
+            .get("Access-Control-Allow-Origin")
+            .and_then(|value| value.to_str().ok()),
+        Some("http://localhost:5173")
+    );
+    let preflight = client
+        .request(reqwest::Method::OPTIONS, &url)
+        .header("Origin", "http://localhost:5173")
+        .header("Access-Control-Request-Method", "POST")
+        .header(
+            "Access-Control-Request-Headers",
+            "authorization,content-type,x-proxima-owner",
+        )
+        .send()
+        .await?;
+    assert_eq!(preflight.status(), reqwest::StatusCode::NO_CONTENT);
+    assert_eq!(
+        preflight
+            .headers()
+            .get("Access-Control-Allow-Origin")
+            .and_then(|value| value.to_str().ok()),
+        Some("http://localhost:5173")
+    );
+
     // Public metadata bypasses bearer auth, not listener-wide Host validation.
     let foreign_discovery = client
         .get(format!("{base}/.well-known/oauth-protected-resource"))
@@ -197,6 +231,7 @@ async fn oidc_e2e_discovery_public_and_code_tools_behind_bearer()
     // 2. /mcp without a bearer → 401 carrying WWW-Authenticate.
     let no_auth = client
         .post(&url)
+        .header("Origin", "http://localhost:5173")
         .header("Content-Type", "application/json")
         .header("Accept", "application/json, text/event-stream")
         .json(&json!({
@@ -209,6 +244,13 @@ async fn oidc_e2e_discovery_public_and_code_tools_behind_bearer()
     assert!(
         no_auth.headers().contains_key("WWW-Authenticate"),
         "401 must advertise WWW-Authenticate"
+    );
+    assert_eq!(
+        no_auth
+            .headers()
+            .get("Access-Control-Allow-Origin")
+            .and_then(|value| value.to_str().ok()),
+        Some("http://localhost:5173")
     );
 
     // 3. A valid JWT initializes and lists the Code-flavor tools.
