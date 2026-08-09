@@ -107,9 +107,11 @@ pub use proxima_core::verbs::query::{
 };
 pub use proxima_core::verbs::schema::{PayloadKind, SchemaRequest, SchemaResponse};
 pub use proxima_core::{
-    AuthPath, Authenticator, AuthzContext, EmbeddingAnnObservability, EmbeddingJobBacklog,
-    EmbeddingOrphanCounts, EmbeddingOrphanSweepOutcome, EmbeddingRecallCanary, Engine,
-    EngineHandle, FlavorRegistryFrozen, FlavorServiceError, FlavorServices, GoalWakeCandidate,
+    AuthPath, Authenticator, AuthzContext, DelegatedAuthorityError, DelegatedAuthorityService,
+    DelegatedCommand, DelegatedPhase, DelegationId, DelegationIssued, DelegationRevocation,
+    EmbeddingAnnObservability, EmbeddingJobBacklog, EmbeddingOrphanCounts,
+    EmbeddingOrphanSweepOutcome, EmbeddingRecallCanary, Engine, EngineAuthority, EngineHandle,
+    FlavorRegistryFrozen, FlavorServiceError, FlavorServices, GoalWakeCandidate,
     GoalWakeHardMemory, GroupId, MemoryId, Owner, OwnerAccessPort, OwnerExternalKeyParseError,
     OwnerRef, OwnerRefKind, Relation, Role, SourceBatchId, SourceId, StorageError, ToolScope,
     UserId, canonical_json_bytes, parse_external_key, provider_safe_tool_name,

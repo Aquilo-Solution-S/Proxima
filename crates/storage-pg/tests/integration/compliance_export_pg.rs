@@ -115,6 +115,85 @@ async fn create_export_sidecar_table(pg: &PgStorage) -> Result<(), sqlx::Error> 
     Ok(())
 }
 
+async fn seed_delegation_grant(
+    pg: &PgStorage,
+    owner: OwnerRef,
+    subject: UserId,
+) -> Result<(), sqlx::Error> {
+    let delegation_id = Uuid::now_v7();
+    let (owner_kind, owner_id) = proxima_storage_pg::access::owner_columns::owner_binds(&owner);
+    sqlx::query(
+        "INSERT INTO proxima_core.delegated_authority_grants(
+             delegation_id, subject_user_id, owner_kind, owner_id,
+             tool_name, action_name, read_ceiling, write_ceiling,
+             expires_at, auth_epoch, issued_at)
+         VALUES ($1, $2, $3, $4, 'export_worker', 'run', 'goal', 'fact',
+                 now() + interval '1 hour', 7, now())",
+    )
+    .bind(delegation_id)
+    .bind(subject.into_inner())
+    .bind(owner_kind)
+    .bind(owner_id)
+    .execute(pg.pool_for_tests())
+    .await?;
+    Ok(())
+}
+
+async fn seed_export_delegations(
+    pg: &PgStorage,
+    owner: OwnerRef,
+    other_owner: OwnerRef,
+) -> Result<(), sqlx::Error> {
+    seed_delegation_grant(pg, owner, UserId::new(Uuid::now_v7())).await?;
+    seed_delegation_grant(pg, other_owner, UserId::new(Uuid::now_v7())).await
+}
+
+fn assert_safe_delegation_export(
+    first: &proxima_core::ComplianceExportBundle,
+    second: &proxima_core::ComplianceExportBundle,
+) {
+    assert_eq!(first.counts.delegated_authority_grants, 1);
+    let grant_row = first
+        .delegated_authority_grants
+        .first()
+        .expect("the exact-owner delegation is exported");
+    let grant_object = grant_row
+        .as_object()
+        .expect("delegation export row is a JSON object");
+    let allowlisted_fields = [
+        "subject_user_id",
+        "owner_kind",
+        "owner_id",
+        "tool_name",
+        "action_name",
+        "read_ceiling",
+        "write_ceiling",
+        "expires_at",
+        "auth_epoch",
+        "issued_at",
+        "revoked_at",
+        "revoked_by_user_id",
+    ];
+    assert_eq!(grant_object.len(), allowlisted_fields.len());
+    for field in allowlisted_fields {
+        assert!(
+            grant_object.contains_key(field),
+            "delegation export must include allowlisted field {field}"
+        );
+    }
+    assert!(!grant_object.contains_key("delegation_id"));
+    for field in grant_object.keys() {
+        assert!(
+            !field.contains("bearer") && !field.contains("token") && !field.contains("credential"),
+            "delegation export must not expose credential-shaped field {field}"
+        );
+    }
+    assert_eq!(
+        first.delegated_authority_grants,
+        second.delegated_authority_grants
+    );
+}
+
 async fn seed_fact_with_sidecar(
     pg: &PgStorage,
     owner: OwnerRef,
@@ -196,6 +275,7 @@ async fn owner_export_bundle_is_gated_deterministic_and_legal_hold_readable()
 
     let owner = OwnerRef::Group(GroupId::new(Uuid::now_v7()));
     let other_owner = OwnerRef::Group(GroupId::new(Uuid::now_v7()));
+    seed_export_delegations(&pg, owner, other_owner).await?;
     let outcome = seed_fact_with_sidecar(&pg, owner, "included-export-fact").await?;
     seed_fact_with_sidecar(&pg, other_owner, "excluded-export-fact").await?;
     attach_uploaded_blob_citation(&pg, owner, outcome.memory_id.into_inner()).await?;
@@ -277,6 +357,7 @@ async fn owner_export_bundle_is_gated_deterministic_and_legal_hold_readable()
             .iter()
             .any(|row| row["source"] == "test/compliance-export")
     );
+    assert_safe_delegation_export(&first, &second);
     assert_eq!(first.memories, second.memories);
     assert_eq!(first.source_cursors, second.source_cursors);
     assert_eq!(first.sidecars, second.sidecars);

@@ -251,6 +251,11 @@ impl AuthorizedFactWrite {
     pub fn fact_natural_key_columns(&self) -> &[String] {
         &self.fact_natural_key_columns
     }
+
+    #[cfg(test)]
+    pub(crate) fn expire_delegated_write_for_test(&mut self) {
+        self.permit.expire_delegated_write_for_test();
+    }
 }
 
 #[derive(Debug)]

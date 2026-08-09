@@ -107,6 +107,30 @@ async fn audit_count(pg: &PgStorage) -> Result<i64, sqlx::Error> {
         .await
 }
 
+async fn seed_delegation_grant(
+    pg: &PgStorage,
+    owner: OwnerRef,
+    subject: UserId,
+) -> Result<Uuid, sqlx::Error> {
+    let delegation_id = Uuid::now_v7();
+    let (owner_kind, owner_id) = proxima_storage_pg::access::owner_columns::owner_binds(&owner);
+    sqlx::query(
+        "INSERT INTO proxima_core.delegated_authority_grants(
+             delegation_id, subject_user_id, owner_kind, owner_id,
+             tool_name, action_name, read_ceiling, write_ceiling,
+             expires_at, auth_epoch, issued_at)
+         VALUES ($1, $2, $3, $4, 'test_worker', NULL, 'goal', 'fact',
+                 now() + interval '1 hour', 1, now())",
+    )
+    .bind(delegation_id)
+    .bind(subject.into_inner())
+    .bind(owner_kind)
+    .bind(owner_id)
+    .execute(pg.pool_for_tests())
+    .await?;
+    Ok(delegation_id)
+}
+
 fn admin_authz_for(owner: OwnerRef) -> AuthzContext {
     match owner {
         OwnerRef::Personal(user_id) => AuthzContext::for_subject(user_id, AuthPath::HostBearer),

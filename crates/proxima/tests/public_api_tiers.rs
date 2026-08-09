@@ -13,6 +13,11 @@ fn host_api_imports_from_root() {
     assert_send_sync::<proxima::RuntimeConfig>();
     assert_send_sync::<proxima::HostAllowlist>();
     assert_send_sync::<proxima::Engine>();
+    assert_send_sync::<proxima::DelegationId>();
+    assert_send_sync::<proxima::DelegatedCommand>();
+    assert_send_sync::<proxima::DelegationIssued>();
+    assert_send_sync::<proxima::DelegatedPhase>();
+    assert_send_sync::<proxima::DelegatedAuthorityService>();
     let owner: proxima::Owner = proxima::company_owner(uuid::Uuid::nil());
     let _authz: proxima::AuthzContext = proxima::AuthzContext::denied_for_owner(&owner);
     let _narrowed = proxima::AuthzContext::denied_for_owner(&owner).narrowed_to_owner(owner);
@@ -25,6 +30,31 @@ fn host_api_imports_from_root() {
         operation_id: uuid::Uuid::nil(),
         reason: proxima::ComplianceEraseRefusal::WorldOwner,
     };
+}
+
+#[test]
+fn delegated_worker_surface_is_available_from_both_supported_facades() {
+    fn needs_authority<T: proxima::EngineAuthority + ?Sized>() {}
+    fn needs_flavor_authority<T: proxima::flavor::EngineAuthority + ?Sized>() {}
+
+    needs_authority::<proxima::AuthzContext>();
+    needs_authority::<proxima::DelegatedPhase>();
+    needs_flavor_authority::<proxima::flavor::DelegatedPhase>();
+
+    let _: Option<(
+        proxima::DelegationId,
+        proxima::DelegatedCommand,
+        proxima::DelegationIssued,
+        proxima::DelegationRevocation,
+        proxima::DelegatedAuthorityError,
+    )> = None;
+    let _: Option<(
+        proxima::flavor::DelegationId,
+        proxima::flavor::DelegatedCommand,
+        proxima::flavor::DelegationIssued,
+        proxima::flavor::DelegationRevocation,
+        proxima::flavor::DelegatedAuthorityError,
+    )> = None;
 }
 
 #[test]
@@ -388,16 +418,16 @@ fn flavor_sdk_exposes_the_cited_blob_lane() {
 }
 
 #[test]
-fn host_api_exposes_role_for_worker_authorization() {
-    // A flavor worker mints its own `AuthzContext` per job, and
-    // `for_subject_with_role` is the only mint that works for a group
-    // owner — which `company_owner` produces. Without `Role` on the host
-    // facade its parameter type is unnameable.
+fn host_api_exposes_role_for_authenticated_adapters() {
+    // A host authenticator or trusted adapter can construct a server-resolved
+    // group context. Without `Role` on the host facade the constructor's
+    // parameter type is unnameable. Delegated workers use `DelegatedPhase`
+    // instead of constructing this context themselves.
     let owner: proxima::Owner = proxima::company_owner(uuid::Uuid::nil());
     let _authz: proxima::AuthzContext = proxima::AuthzContext::for_subject_with_role(
         proxima::UserId::new(uuid::Uuid::nil()),
         [(owner, proxima::Role::admin())],
-        proxima::AuthPath::System,
+        proxima::AuthPath::HostBearer,
     );
 }
 

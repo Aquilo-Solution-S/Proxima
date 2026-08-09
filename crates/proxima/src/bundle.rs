@@ -40,6 +40,13 @@ pub trait FlavorBundle {
     ///   backend tools receive, and are `None` unless S3 is configured. A
     ///   worker that needs one MUST fail its job typed when it is absent — a
     ///   no-op turns a misconfigured host into a silently idle one.
+    /// - `ctx.service::<DelegatedAuthorityService>()` resolves the exact
+    ///   runtime-composed authority service only when a host authenticator is
+    ///   configured. A durable worker queues `DelegationId`, redeems a fresh
+    ///   `DelegatedPhase` at claim and at each subsequent phase boundary, and
+    ///   supplies that phase only to the explicitly delegated-capable
+    ///   Engine/blob methods.
+    ///   It never reconstructs or serializes `AuthzContext`.
     ///
     /// To unit-test an implementation without booting the serving
     /// runtime, build the context with
@@ -366,9 +373,9 @@ mod tests {
             "a bare test context wires no S3"
         );
 
-        let ctx = ctx.with_services(FlavorServices::with(CitedBlobService(std::sync::Arc::new(
-            StubBlobPort,
-        ))));
+        let ctx = ctx.with_services(FlavorServices::with(CitedBlobService::new(
+            std::sync::Arc::new(StubBlobPort),
+        )));
         assert!(
             ctx.service::<CitedBlobService>().is_some(),
             "with_services attaches the service"

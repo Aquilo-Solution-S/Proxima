@@ -343,10 +343,9 @@ mod tests {
         let readable = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
         let denied = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
         let authz = AuthzContext::single_owner(&readable, AuthPath::HostBearer);
-        let service = CitedBlobOwnerReconcileService(Arc::new(store));
+        let service = CitedBlobOwnerReconcileService::new(Arc::new(store));
 
         let error = service
-            .0
             .reconcile_owner(&authz, denied)
             .await
             .expect_err("foreign owner must be denied before backing-store I/O");

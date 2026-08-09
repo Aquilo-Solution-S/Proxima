@@ -1,16 +1,39 @@
+use std::time::SystemTime;
+
 use crate::Owner;
 use crate::access::AccessKind;
+use crate::authz::DelegationRuntimeBinding;
+use crate::error::ProtocolError;
+
+struct DelegatedWriteGuard {
+    runtime_binding: DelegationRuntimeBinding,
+    expires_at: SystemTime,
+}
 
 /// Sealed owner-write carrier for storage-tier writes.
 ///
 /// Engine authorization is the only constructor. Storage backends use the
 /// stamped owner from this permit rather than accepting caller-supplied owner
 /// authority.
-#[derive(Debug)]
 pub struct OwnerWritePermit {
     owner: Owner,
     access_kind: AccessKind,
+    delegated: Option<DelegatedWriteGuard>,
     _private: (),
+}
+
+impl std::fmt::Debug for OwnerWritePermit {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut debug = formatter.debug_struct("OwnerWritePermit");
+        debug
+            .field("owner", &self.owner)
+            .field("access_kind", &self.access_kind)
+            .field("delegated", &self.delegated.is_some());
+        if let Some(delegated) = &self.delegated {
+            debug.field("expires_at", &delegated.expires_at);
+        }
+        debug.finish_non_exhaustive()
+    }
 }
 
 impl OwnerWritePermit {
@@ -19,7 +42,53 @@ impl OwnerWritePermit {
         Self {
             owner,
             access_kind,
+            delegated: None,
             _private: (),
+        }
+    }
+
+    #[must_use]
+    pub(crate) fn new_delegated(
+        owner: Owner,
+        access_kind: AccessKind,
+        runtime_binding: DelegationRuntimeBinding,
+        expires_at: SystemTime,
+    ) -> Self {
+        Self {
+            owner,
+            access_kind,
+            delegated: Some(DelegatedWriteGuard {
+                runtime_binding,
+                expires_at,
+            }),
+            _private: (),
+        }
+    }
+
+    pub(crate) fn validate_for_engine(
+        &self,
+        runtime_binding: &DelegationRuntimeBinding,
+    ) -> Result<(), ProtocolError> {
+        let Some(delegated) = &self.delegated else {
+            return Ok(());
+        };
+        if delegated.runtime_binding != *runtime_binding {
+            return Err(ProtocolError::forbidden(
+                "delegated write witness belongs to a different runtime",
+            ));
+        }
+        if delegated.expires_at <= SystemTime::now() {
+            return Err(ProtocolError::forbidden(
+                "delegated write witness has expired",
+            ));
+        }
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn expire_delegated_for_test(&mut self) {
+        if let Some(delegated) = &mut self.delegated {
+            delegated.expires_at = SystemTime::UNIX_EPOCH;
         }
     }
 

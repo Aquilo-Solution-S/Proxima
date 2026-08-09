@@ -171,6 +171,7 @@ impl std::fmt::Debug for ProximaBuilder {
 pub struct EmbeddedProxima {
     pub engine: Arc<Engine>,
     pub system_authority: SystemAuthority,
+    delegation_runtime_authority: proxima_core::DelegationRuntimeAuthority,
     pub handle: EngineHandle,
     pool: PgPool,
     pub registry: Arc<proxima_core::FlavorRegistryFrozen>,
@@ -407,7 +408,8 @@ impl ProximaBuilder {
             engine = engine.with_anthropic(client);
         }
 
-        let (engine, system_authority) = engine.into_system_authority();
+        let (engine, system_authority, delegation_runtime_authority) =
+            engine.into_runtime_authorities();
         if let Some(store) = &blobs {
             store
                 .bind_system_authority(&system_authority)
@@ -423,6 +425,7 @@ impl ProximaBuilder {
         Ok(EmbeddedProxima {
             engine,
             system_authority,
+            delegation_runtime_authority,
             handle,
             pool,
             registry,

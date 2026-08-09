@@ -21,7 +21,10 @@ use std::sync::Arc;
 use time::OffsetDateTime;
 
 use crate::OwnerRef;
-use crate::authz::AuthzContext;
+use crate::authz::DelegationRuntimeBinding;
+use crate::authz::{
+    AuthzContext, DelegationRuntimeAuthority, EngineAuthority, context_for_engine_operation,
+};
 use crate::storage::StorageError;
 
 /// Prepared presigned upload: `PUT` the raw bytes to `upload_url` with
@@ -274,12 +277,184 @@ pub trait CitedBlobPort: Send + Sync {
 /// A newtype (not a bare `Arc<dyn ...>`) gives the concrete-type-keyed map a
 /// unique, intention-revealing key.
 #[derive(Clone)]
-pub struct CitedBlobService(pub Arc<dyn CitedBlobPort>);
+pub struct CitedBlobService {
+    port: Arc<dyn CitedBlobPort>,
+    runtime_binding: Option<DelegationRuntimeBinding>,
+}
 
 impl std::fmt::Debug for CitedBlobService {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_tuple("CitedBlobService")
             .field(&"<dyn CitedBlobPort>")
             .finish()
+    }
+}
+
+impl CitedBlobService {
+    #[cfg(any(test, feature = "test-fixtures"))]
+    #[doc(hidden)]
+    #[must_use]
+    pub fn backend_identity_for_tests(&self) -> *const () {
+        Arc::as_ptr(&self.port).cast::<()>()
+    }
+
+    /// Build an unbound service for ordinary authenticated calls and test
+    /// fakes. Redeemed phases are rejected by an unbound service.
+    #[must_use]
+    pub fn new(port: Arc<dyn CitedBlobPort>) -> Self {
+        Self {
+            port,
+            runtime_binding: None,
+        }
+    }
+
+    /// Runtime composition seam binding this service to the same booted
+    /// Engine as delegated phases.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn new_runtime(
+        port: Arc<dyn CitedBlobPort>,
+        authority: &DelegationRuntimeAuthority,
+    ) -> Self {
+        Self {
+            port,
+            runtime_binding: Some(authority.binding()),
+        }
+    }
+
+    fn operation_context<'a, A>(&self, authority: &'a A) -> Result<&'a AuthzContext, StorageError>
+    where
+        A: EngineAuthority + ?Sized,
+    {
+        let operation = context_for_engine_operation(authority)
+            .map_err(|error| StorageError::ConstraintViolation(error.message))?;
+        operation
+            .validate_runtime_binding(self.runtime_binding.as_ref())
+            .map_err(|error| StorageError::ConstraintViolation(error.message))?;
+        Ok(operation.authz())
+    }
+
+    /// Delegated-capable service entrypoint; checks phase expiry before the
+    /// backend can create an upload row or presign a request.
+    ///
+    /// # Errors
+    ///
+    /// Rejects invalid/expired/foreign authority before forwarding backend
+    /// prepare errors.
+    pub async fn prepare_upload<A>(
+        &self,
+        authority: &A,
+        owner: OwnerRef,
+        filename: &str,
+        mime: &str,
+        byte_len: u64,
+    ) -> Result<CitedBlobUploadPrepared, StorageError>
+    where
+        A: EngineAuthority + ?Sized,
+    {
+        let authz = self.operation_context(authority)?;
+        self.port
+            .prepare_upload(authz, owner, filename, mime, byte_len)
+            .await
+    }
+
+    /// Delegated-capable verified staging entrypoint.
+    ///
+    /// # Errors
+    ///
+    /// Rejects invalid/expired/foreign authority before forwarding backend
+    /// staging errors.
+    pub async fn stage_upload<A>(
+        &self,
+        authority: &A,
+        owner: OwnerRef,
+        upload_id: &str,
+    ) -> Result<CitedBlobStaged, StorageError>
+    where
+        A: EngineAuthority + ?Sized,
+    {
+        let authz = self.operation_context(authority)?;
+        self.port.stage_upload(authz, owner, upload_id).await
+    }
+
+    /// Delegated-capable upload-finish entrypoint.
+    ///
+    /// # Errors
+    ///
+    /// Rejects invalid/expired/foreign authority before forwarding backend
+    /// finish errors.
+    pub async fn finish_upload<A>(
+        &self,
+        authority: &A,
+        owner: OwnerRef,
+        upload_id: &str,
+        cited_object_id: uuid::Uuid,
+    ) -> Result<(), StorageError>
+    where
+        A: EngineAuthority + ?Sized,
+    {
+        let authz = self.operation_context(authority)?;
+        self.port
+            .finish_upload(authz, owner, upload_id, cited_object_id)
+            .await
+    }
+
+    /// Delegated-capable abort entrypoint.
+    ///
+    /// # Errors
+    ///
+    /// Rejects invalid/expired/foreign authority before forwarding backend
+    /// abort errors.
+    pub async fn abort_upload<A>(
+        &self,
+        authority: &A,
+        owner: OwnerRef,
+        upload_id: &str,
+    ) -> Result<CitedBlobUploadAborted, StorageError>
+    where
+        A: EngineAuthority + ?Sized,
+    {
+        let authz = self.operation_context(authority)?;
+        self.port.abort_upload(authz, owner, upload_id).await
+    }
+
+    /// Delegated-capable presigned-read entrypoint.
+    ///
+    /// # Errors
+    ///
+    /// Rejects invalid/expired/foreign authority before forwarding backend
+    /// read errors.
+    pub async fn read_url<A>(
+        &self,
+        authority: &A,
+        owner: OwnerRef,
+        cited_object_id: uuid::Uuid,
+    ) -> Result<CitedBlobReadUrl, StorageError>
+    where
+        A: EngineAuthority + ?Sized,
+    {
+        let authz = self.operation_context(authority)?;
+        self.port.read_url(authz, owner, cited_object_id).await
+    }
+
+    /// Delegated-capable held-blob query entrypoint.
+    ///
+    /// # Errors
+    ///
+    /// Rejects invalid/expired/foreign authority before forwarding backend
+    /// query errors.
+    pub async fn find_held_blobs<A>(
+        &self,
+        authority: &A,
+        owner: OwnerRef,
+        content_hashes: &[[u8; 32]],
+    ) -> Result<Vec<CitedBlobHeld>, StorageError>
+    where
+        A: EngineAuthority + ?Sized,
+    {
+        let authz = self.operation_context(authority)?;
+        self.port
+            .find_held_blobs(authz, owner, content_hashes)
+            .await
     }
 }

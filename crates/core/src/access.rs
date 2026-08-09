@@ -169,6 +169,38 @@ impl Role {
     pub const fn write_ceiling(self) -> AccessCeiling {
         self.write
     }
+
+    /// Greatest role no more powerful than either input.
+    ///
+    /// Delegated authority uses this as a ceiling: later membership promotion
+    /// cannot widen a grant. Redemption separately requires current membership
+    /// still to dominate the recorded ceiling, so demotion fails closed.
+    #[must_use]
+    pub const fn meet(self, other: Self) -> Self {
+        let read = if self.read.rank() <= other.read.rank() {
+            self.read
+        } else {
+            other.read
+        };
+        let write = if self.write.rank() <= other.write.rank() {
+            self.write
+        } else {
+            other.write
+        };
+        Self {
+            read,
+            write,
+            manage: self.manage && other.manage,
+        }
+    }
+
+    /// Whether `self` contains every capability in `required`.
+    #[must_use]
+    pub const fn dominates(self, required: Self) -> bool {
+        self.meet(required).read.rank() == required.read.rank()
+            && self.meet(required).write.rank() == required.write.rank()
+            && (!required.manage || self.manage)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

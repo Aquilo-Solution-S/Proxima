@@ -55,10 +55,24 @@ impl Engine {
         &self,
         authz: &AuthzContext,
     ) -> Result<AccessSets, ProtocolError> {
+        self.resolve_access_inner(authz, false)
+    }
+
+    #[allow(clippy::unused_self)]
+    pub(in crate::engine) fn resolve_access_inner(
+        &self,
+        authz: &AuthzContext,
+        redeemed_phase: bool,
+    ) -> Result<AccessSets, ProtocolError> {
         let mut access = AccessSets {
             read: Vec::new(),
             write: Vec::new(),
         };
+        if authz.auth_path() == AuthPath::Delegated && !redeemed_phase {
+            return Err(ProtocolError::forbidden(
+                "raw delegated authorization contexts are not Engine authority",
+            ));
+        }
         // Production authorization is uniformly server-resolved: `OwnerRoles`
         // carry per-owner role ceilings already resolved by the host/OIDC layer
         // (which itself expands group membership at auth time). A Denied context

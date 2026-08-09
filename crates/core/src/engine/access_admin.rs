@@ -220,6 +220,7 @@ impl Engine {
         authz: &AuthzContext,
         entity: EntityId,
     ) -> Result<(), ProtocolError> {
+        self.operation_authority(authz)?;
         let current_owner = self
             .storage()
             .access_admin

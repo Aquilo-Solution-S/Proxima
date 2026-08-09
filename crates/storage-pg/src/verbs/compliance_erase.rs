@@ -311,6 +311,9 @@ async fn erase_selected(
     record_count(tx, "redacted_edge_targets", redactions).await?;
     record_count(tx, "suppressed_keys", suppressed).await?;
 
+    let delegated_authority_grants = delete_delegated_authority_grants(tx, owner, scope).await?;
+    record_count(tx, "delegated_authority_grants", delegated_authority_grants).await?;
+
     // No edge sidecars to sweep: an edge carries no content, so there is
     // nothing hanging off it to erase.
     let edges = delete_selected_edges(tx).await?;
@@ -953,10 +956,10 @@ async fn upsert_audit_outcome(
              receipts_count, source_batches_count, citations_count, cited_objects_count,
              source_cursors_count, embeddings_count, embedding_jobs_count, mcp_call_rows_count,
              change_events_count, redacted_edge_targets_count, suppressed_keys_count,
-             cited_object_purge_pending)
+             delegated_authority_grants_count, cited_object_purge_pending)
          VALUES ($1, $2, $3::proxima_core.compliance_erase_outcome,
                  $4::proxima_core.compliance_erase_refusal, $5, $6, $7, $8, $9,
-                 now(), $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25)
+                 now(), $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26)
          ON CONFLICT (operation_id) DO UPDATE SET
              outcome = EXCLUDED.outcome,
              refusal = EXCLUDED.refusal,
@@ -976,6 +979,7 @@ async fn upsert_audit_outcome(
              change_events_count = EXCLUDED.change_events_count,
              redacted_edge_targets_count = EXCLUDED.redacted_edge_targets_count,
              suppressed_keys_count = EXCLUDED.suppressed_keys_count,
+             delegated_authority_grants_count = EXCLUDED.delegated_authority_grants_count,
              cited_object_purge_pending = EXCLUDED.cited_object_purge_pending",
     )
     .bind(audit.operation_id())
@@ -1002,6 +1006,7 @@ async fn upsert_audit_outcome(
     .bind(i64::try_from(counts.change_events).unwrap_or(i64::MAX))
     .bind(i64::try_from(counts.redacted_edge_targets).unwrap_or(i64::MAX))
     .bind(i64::try_from(counts.suppressed_keys).unwrap_or(i64::MAX))
+    .bind(i64::try_from(counts.delegated_authority_grants).unwrap_or(i64::MAX))
     .bind(purge_pending)
     .execute(&mut **tx)
     .await
@@ -1129,6 +1134,7 @@ async fn final_counts(tx: &mut Tx<'_>) -> Result<ComplianceEraseCounts, StorageE
         change_events: count_named(tx, "change_events").await?,
         redacted_edge_targets: count_named(tx, "redacted_edge_targets").await?,
         suppressed_keys: count_named(tx, "suppressed_keys").await?,
+        delegated_authority_grants: count_named(tx, "delegated_authority_grants").await?,
     })
 }
 
@@ -1374,6 +1380,39 @@ async fn delete_change_events(tx: &mut Tx<'_>, owner: OwnerRef) -> Result<u64, S
     )
     .bind(owner_kind)
     .bind(owner_id)
+    .execute(&mut **tx)
+    .await
+    .map_err(map_err)?;
+    Ok(result.rows_affected())
+}
+
+/// Delegations are owner-level authority, never source-attributable data.
+/// Owner erasure removes grants for that exact owner. Dropping a personal
+/// owner additionally removes every grant issued under that subject's bearer,
+/// including grants targeting a group owner; otherwise the deleted identity
+/// would remain durable in another owner's authority table.
+async fn delete_delegated_authority_grants(
+    tx: &mut Tx<'_>,
+    owner: OwnerRef,
+    scope: SelectionScope<'_>,
+) -> Result<u64, StorageError> {
+    if matches!(scope, SelectionScope::Source(_)) {
+        return Ok(0);
+    }
+    let (owner_kind, owner_id) = owner_binds(&owner);
+    let erased_subject = match owner {
+        OwnerRef::Personal(user_id) => Some(user_id.into_inner()),
+        OwnerRef::World | OwnerRef::Group(_) => None,
+    };
+    let result = sqlx::query(
+        "DELETE FROM proxima_core.delegated_authority_grants dag
+          WHERE (dag.owner_kind = $1
+                 AND dag.owner_id IS NOT DISTINCT FROM $2)
+             OR ($3::uuid IS NOT NULL AND dag.subject_user_id = $3)",
+    )
+    .bind(owner_kind)
+    .bind(owner_id)
+    .bind(erased_subject)
     .execute(&mut **tx)
     .await
     .map_err(map_err)?;

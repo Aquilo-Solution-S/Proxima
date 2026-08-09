@@ -208,7 +208,6 @@ impl McpTool for CoreUploadTool {
                         narrowed_space(&ctx, args.space.as_deref(), SpaceAuthority::Write)?;
                     let service = blob_service(&ctx)?;
                     let outcome = service
-                        .0
                         .prepare_upload(
                             &authz,
                             owner,
@@ -241,7 +240,7 @@ impl McpTool for CoreUploadTool {
                     // Flavors reach the same verb in-process and pass theirs.
                     let completed = engine
                         .complete_upload_as_fact(
-                            service.0.as_ref(),
+                            service.as_ref(),
                             &authz,
                             owner,
                             args.upload_id.trim(),
@@ -266,7 +265,6 @@ impl McpTool for CoreUploadTool {
                         narrowed_space(&ctx, args.space.as_deref(), SpaceAuthority::Write)?;
                     let service = blob_service(&ctx)?;
                     let outcome = service
-                        .0
                         .abort_upload(&authz, owner, args.upload_id.trim())
                         .await?;
                     Ok(CoreUploadOutput::Abort(UploadAbortOutput {
@@ -278,7 +276,7 @@ impl McpTool for CoreUploadTool {
                     let (authz, owner) =
                         narrowed_space(&ctx, args.space.as_deref(), SpaceAuthority::Read)?;
                     let service = blob_service(&ctx)?;
-                    let outcome = service.0.read_url(&authz, owner, cited_object_id).await?;
+                    let outcome = service.read_url(&authz, owner, cited_object_id).await?;
                     Ok(CoreUploadOutput::ReadUrl(UploadReadUrlOutput {
                         read_url: outcome.read_url,
                         expires_at: format_expiry(outcome.expires_at)?,
@@ -487,7 +485,7 @@ mod tests {
         let mut ctx = ctx_for(subject, group_roles);
         let port = Arc::new(RecordingBlobPort::default());
         ctx.services =
-            FlavorServices::with(CitedBlobService(port.clone() as Arc<dyn CitedBlobPort>));
+            FlavorServices::with(CitedBlobService::new(port.clone() as Arc<dyn CitedBlobPort>));
         (ctx, port)
     }
 

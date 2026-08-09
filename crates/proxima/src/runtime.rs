@@ -11,10 +11,11 @@ use proxima_blob_s3::{CitedBlobStore, S3RuntimeConfig};
 use proxima_core::authz::SystemAuthority;
 use proxima_core::storage_ports::{
     CitedBlobOwnerReconcileService, CitedBlobReadService, CitedBlobService,
+    DelegatedAuthorityService,
 };
 use proxima_core::{
-    AnthropicClient, AuthPath, Authenticator, AuthzContext, EmbeddingClient, FlavorRegistryFrozen,
-    FlavorServices, RevalidationConfig, ToolScope,
+    AnthropicClient, AuthPath, Authenticator, AuthzContext, DelegationRuntimeAuthority,
+    EmbeddingClient, FlavorRegistryFrozen, FlavorServices, RevalidationConfig, ToolScope,
 };
 use proxima_core::{Engine, EngineHandle, Owner, OwnerRef, Role, UserId};
 use proxima_mcp_server::{
@@ -30,7 +31,7 @@ use crate::workers::{FlavorWorker, FlavorWorkerContext};
 use crate::{
     AppContext, CoreMcpTools, EmbedConfig, FlavorApp, ProximaBuilder, ProximaError, RuntimeBuilder,
 };
-use proxima_storage_pg::PgSidecarRegistryFrozen;
+use proxima_storage_pg::{PgDelegationStore, PgOwnerAccessResolver, PgSidecarRegistryFrozen};
 
 const EMBEDDING_WORKER_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
 
@@ -191,7 +192,13 @@ impl<A: FlavorApp + 'static> Proxima<A> {
             blobs: booted.blobs.clone(),
             owner: booted.owner,
         };
-        let services = assemble_services::<A>(&app_ctx)?;
+        let services = assemble_services::<A>(
+            &app_ctx,
+            &booted.registry,
+            &config.tool_scope,
+            parts.authenticator.as_ref(),
+            &booted.delegation_runtime_authority,
+        )?;
 
         let service = if let Some(allowlist) = allowlist {
             Some(build_router::<A>(
@@ -242,7 +249,13 @@ impl<A: FlavorApp + 'static> Proxima<A> {
             blobs: booted.blobs.clone(),
             owner: booted.owner,
         };
-        let services = assemble_services::<A>(&app_ctx)?;
+        let services = assemble_services::<A>(
+            &app_ctx,
+            &booted.registry,
+            &config.tool_scope,
+            parts.authenticator.as_ref(),
+            &booted.delegation_runtime_authority,
+        )?;
 
         let (mcp_addr, server) = if let (Some(mcp), Some(allowlist)) = (config.mcp, allowlist) {
             if !config.expose_network {
@@ -656,6 +669,7 @@ where
 /// immutable [`FlavorServices`] set; none can recover the concrete backend.
 fn cited_blob_services(
     blobs: Option<&CitedBlobStore>,
+    runtime_authority: &DelegationRuntimeAuthority,
 ) -> Option<(
     CitedBlobService,
     CitedBlobReadService,
@@ -664,9 +678,9 @@ fn cited_blob_services(
     blobs.map(|store| {
         let store = Arc::new(store.clone());
         (
-            CitedBlobService(store.clone()),
-            CitedBlobReadService(store.clone()),
-            CitedBlobOwnerReconcileService(store),
+            CitedBlobService::new_runtime(store.clone(), runtime_authority),
+            CitedBlobReadService::new_runtime(store.clone(), runtime_authority),
+            CitedBlobOwnerReconcileService::new(store),
         )
     })
 }
@@ -677,14 +691,32 @@ fn cited_blob_services(
 /// [`CitedBlobReadService`] for bounded verified bytes, and the separately
 /// authorized [`CitedBlobOwnerReconcileService`] for redacted owner reports.
 /// Tools, REST, and flavor workers receive the same immutable service set.
-fn assemble_services<A: FlavorApp>(app_ctx: &AppContext) -> Result<FlavorServices, ProximaError> {
+fn assemble_services<A: FlavorApp>(
+    app_ctx: &AppContext,
+    registry: &Arc<FlavorRegistryFrozen>,
+    deployment_tool_scope: &ToolScope,
+    authenticator: Option<&Arc<dyn Authenticator>>,
+    runtime_authority: &DelegationRuntimeAuthority,
+) -> Result<FlavorServices, ProximaError> {
     let mut services = A::services(app_ctx)?;
     if let Some((transfer, verified_read, owner_reconcile)) =
-        cited_blob_services(app_ctx.blobs.as_ref())
+        cited_blob_services(app_ctx.blobs.as_ref(), runtime_authority)
     {
         services.try_insert(transfer)?;
         services.try_insert(verified_read)?;
         services.try_insert(owner_reconcile)?;
+    }
+    if let Some(authenticator) = authenticator {
+        let store = Arc::new(PgDelegationStore::new(app_ctx.pool.clone()));
+        let owner_access = Arc::new(PgOwnerAccessResolver::new(app_ctx.pool.clone()));
+        services.try_insert(DelegatedAuthorityService::new(
+            store,
+            owner_access,
+            authenticator.clone(),
+            registry.clone(),
+            deployment_tool_scope.clone(),
+            runtime_authority,
+        ))?;
     }
     Ok(services)
 }
@@ -921,16 +953,25 @@ mod tests {
             },
         )
         .expect("test store config");
+        let (engine, _system, delegation_runtime) =
+            Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests())
+                .into_runtime_authorities();
+        let registry = Arc::new(engine.registry().clone());
         let app_ctx = AppContext {
-            engine: Arc::new(Engine::new(
-                FlavorRegistry::new().freeze_or_panic_for_tests(),
-            )),
+            engine: Arc::new(engine),
             pool,
             blobs: Some(store),
             owner: None,
         };
 
-        let services = assemble_services::<AlphaApp>(&app_ctx).expect("service assembly");
+        let services = assemble_services::<AlphaApp>(
+            &app_ctx,
+            &registry,
+            &ToolScope::All,
+            None,
+            &delegation_runtime,
+        )
+        .expect("service assembly");
 
         assert!(services.get::<CitedBlobService>().is_some());
         assert!(
@@ -945,6 +986,52 @@ mod tests {
             services.get::<SystemAuthority>().is_none(),
             "global operator authority must never enter the flavor service set"
         );
+        assert!(
+            services.get::<DelegatedAuthorityService>().is_none(),
+            "delegation service requires a real authenticator"
+        );
+    }
+
+    #[tokio::test]
+    async fn delegation_service_is_authenticator_gated_and_shared_by_identity() {
+        let pool = PgPool::connect_lazy_with(sqlx::postgres::PgConnectOptions::new());
+        let (engine, _system, delegation_runtime) =
+            Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests())
+                .into_runtime_authorities();
+        let engine = Arc::new(engine);
+        let registry = Arc::new(engine.registry().clone());
+        let app_ctx = AppContext {
+            engine: engine.clone(),
+            pool,
+            blobs: None,
+            owner: None,
+        };
+        let authenticator: Arc<dyn Authenticator> = Arc::new(StubAuth { owner: owner() });
+        let services = assemble_services::<AlphaApp>(
+            &app_ctx,
+            &registry,
+            &ToolScope::All,
+            Some(&authenticator),
+            &delegation_runtime,
+        )
+        .expect("service assembly");
+        let service = services
+            .get::<DelegatedAuthorityService>()
+            .expect("authenticated runtime publishes delegation service");
+        let cloned = services.clone();
+        let cloned_service = cloned
+            .get::<DelegatedAuthorityService>()
+            .expect("cloned services retain delegation service");
+        assert!(Arc::ptr_eq(&service, &cloned_service));
+
+        let worker = FlavorWorkerContext::new_for_tests(engine, CancellationToken::new())
+            .with_services(cloned);
+        let worker_service = worker
+            .service::<DelegatedAuthorityService>()
+            .expect("worker sees composed delegation service");
+        assert!(Arc::ptr_eq(&service, &worker_service));
+        assert!(services.get::<SystemAuthority>().is_none());
+        assert!(services.get::<DelegationRuntimeAuthority>().is_none());
     }
 
     #[tokio::test]
@@ -963,15 +1050,24 @@ mod tests {
             },
         )
         .expect("test store config");
+        let (engine, _system, delegation_runtime) =
+            Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests())
+                .into_runtime_authorities();
+        let registry = Arc::new(engine.registry().clone());
         let app_ctx = AppContext {
-            engine: Arc::new(Engine::new(
-                FlavorRegistry::new().freeze_or_panic_for_tests(),
-            )),
+            engine: Arc::new(engine),
             pool,
             blobs: Some(store),
             owner: None,
         };
-        let services = assemble_services::<AlphaApp>(&app_ctx).expect("service assembly");
+        let services = assemble_services::<AlphaApp>(
+            &app_ctx,
+            &registry,
+            &ToolScope::All,
+            None,
+            &delegation_runtime,
+        )
+        .expect("service assembly");
         let transfer = services
             .get::<CitedBlobService>()
             .expect("transfer service");
@@ -982,9 +1078,9 @@ mod tests {
             .get::<CitedBlobOwnerReconcileService>()
             .expect("owner reconcile service");
 
-        let transfer_ptr = Arc::as_ptr(&transfer.0).cast::<()>();
-        let verified_ptr = Arc::as_ptr(&verified.0).cast::<()>();
-        let reconcile_ptr = Arc::as_ptr(&reconcile.0).cast::<()>();
+        let transfer_ptr = transfer.backend_identity_for_tests();
+        let verified_ptr = verified.backend_identity_for_tests();
+        let reconcile_ptr = reconcile.backend_identity_for_tests();
         assert_eq!(transfer_ptr, verified_ptr);
         assert_eq!(transfer_ptr, reconcile_ptr);
 
@@ -994,7 +1090,7 @@ mod tests {
         let cloned_verified = cloned
             .get::<CitedBlobReadService>()
             .expect("cloned verified-read service");
-        assert!(Arc::ptr_eq(&verified.0, &cloned_verified.0));
+        assert!(Arc::ptr_eq(&verified, &cloned_verified));
     }
 
     struct StubAuth {

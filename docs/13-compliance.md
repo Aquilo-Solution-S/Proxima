@@ -23,11 +23,11 @@ bounded primitives and metadata vocabulary.
 
 | Operation | Status | Scope | Contract |
 |---|---|---|---|
-| `delete_owner` | current Host API for erase; transport RPC deferred | one abandoned group `Owner`, verified dropped personal `Owner`, or refused World owner | remove owner-scoped memories, goals, edges, sidecars, embeddings, source-batch payloads, and invocation caches only after abandonment/drop proof; live owners refuse; retain suppression and audit rows |
-| `delete_source_scope` | current Host API for erase; transport RPC deferred | one source object inside one abandoned/dropped `Owner` | erase rows attributable to the scope only under the same abandonment/drop proof as owner erase; live owners refuse; flavor resolves scope, substrate executes compliance deletion |
+| `delete_owner` | current Host API for erase; transport RPC deferred | one abandoned group `Owner`, verified dropped personal `Owner`, or refused World owner | remove owner-scoped memories, goals, edges, sidecars, embeddings, source-batch payloads, invocation caches, and delegated-authority grants only after abandonment/drop proof; group erase deletes grants for that exact owner; personal erase also deletes cross-owner grants issued by the dropped subject; live owners refuse; retain suppression and compliance-audit rows |
+| `delete_source_scope` | current Host API for erase; transport RPC deferred | one source object inside one abandoned/dropped `Owner` | erase rows attributable to the scope only under the same abandonment/drop proof as owner erase; delegated-authority grants are owner-level and remain; live owners refuse; flavor resolves scope, substrate executes compliance deletion |
 | `pause_owner` | v1 intent | one `Owner` | stop future operator dispatch and wake execution; reads and export remain available |
 | `resume_owner` | v1 intent | one `Owner` | clear pause state for future dispatch |
-| `export_owner` | current Host API for export; transport RPC deferred | one personal/group `Owner` | deterministic owner-scoped bundle: memories, goals, edges, fact entities, receipts, source batches, citations, cited objects/blob refs, source cursors, registered sidecars, and matching compliance audit rows |
+| `export_owner` | current Host API for export; transport RPC deferred | one personal/group `Owner` | deterministic owner-scoped bundle: memories, goals, edges, fact entities, receipts, source batches, citations, cited objects/blob refs, source cursors, delegated-authority grants, registered sidecars, and matching compliance audit rows |
 | per-memory cascade delete | deferred | one Memory and derived closure | requires partial-graph repair and invocation-cache invalidation |
 | tool-recipient export from calls | deferred | external-effect calls | waits for per-call recipient storage (see [12 §Compliance Metadata](12-tool-manifest.md#compliance-metadata)) |
 | legal-consequence runtime blocking | deferred | tool invocation | `legal_consequence` remains design intent; human approval remains required pattern (see [05 §Human approval](05-actions.md#human-approval), [12 §Compliance Metadata](12-tool-manifest.md#compliance-metadata)) |
@@ -39,6 +39,7 @@ Current export bundle:
 | Section | Rows |
 |---|---|
 | substrate | `memories`, `goals`, `edges`, `fact_entities`, `fact_receipts`, `source_batches`, `citation_mappings`, `cited_objects`, `source_cursors` |
+| delegated authority | exact-owner `delegated_authority_grants` only; explicit stable JSON field allowlist excludes redeemable `delegation_id` and credentials; a personal export does not pull group-owned grants merely because the same subject issued them |
 | sidecars | registered memory/goal/citation/cited-object sidecar rows for the target owner |
 | blob refs | `cited_uploaded_blob_v1` / other registered cited-object sidecars; object bytes remain external |
 | audit | matching `compliance_audit_log` rows by owner digest |
@@ -123,13 +124,16 @@ Hard deletion must not reopen ingest.
 | timing | requested/completed timestamps |
 | outcome | `completed`, `refused`, `not-found`, `unauthorized` |
 | owner roles | group membership/role administration and authorization denials are audit-worthy controller events; personal-memory MCP calls should be logged metadata-only or redacted by host/admin policy, not copied into a shared audit payload |
-| counts | affected-row counts only |
+| counts | affected-row counts only, including `delegated_authority_grants_count` for owner erasure |
 | refusal | structured reason and retention/legal citation |
 | forbidden content | deleted payloads, payload diffs, natural-person identifiers, decision trees |
 | visibility | admin protocol only; not queryable by operators |
 | retention | indefinite controller evidence |
 
 Audit survives `delete_owner` for the same Owner.
+
+Expired and revoked delegation grants remain durable audit evidence until an
+owner erase selects them. Source-scope erase never selects a grant.
 
 Owner remains the storage and graph isolation primitive. Access is server-resolved `OwnerRoles` over concrete `OwnerRef`s; Core enforces those roles at verb/tool entry and never adds org/share-set semantics. Edge rows are source-owned, admitted by one uniform rule (write authority on the source, read authority on the target). Compliance export/delete redacts or omits unreadable targets independently from source-readable edge rows; a redaction is keyed by the edge itself, which is its own key.
 

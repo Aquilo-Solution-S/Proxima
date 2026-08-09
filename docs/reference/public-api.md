@@ -56,6 +56,65 @@ Unsupported:
 | sidecar-less Fact ingest | supported host path is `Engine::fact_ingest`; backend-only `proxima-storage-pg` helpers such as `ingest_fact_for_owner_plain` are not stable Host API or Flavor SDK. |
 | guardrail | `scripts/check-architecture-guardrails.py` fails if listed storage write traits or `storage-pg` write verbs lose `OwnerWritePermit` |
 
+## Delegated Worker Authority
+
+Supported facade:
+
+| Type | Import | Contract |
+|---|---|---|
+| `DelegationId` | `proxima::*` / `proxima::flavor::*` | redeemable queue handle; persist it as a credential and do not log/export it |
+| `DelegatedCommand` | `proxima::*` / `proxima::flavor::*` | canonical registered flat tool or exact dispatcher action; parsing delegates to `GoalWakeToolId` |
+| `DelegationIssued` | `proxima::*` / `proxima::flavor::*` | `{ id, expires_at }` returned after HostBearer issuance |
+| `DelegatedAuthorityService` | `proxima::*` / `proxima::flavor::*` | shared runtime service: `issue`, `redeem_phase`, `revoke`; absent when no authenticator is configured |
+| `DelegatedPhase` | `proxima::*` / `proxima::flavor::*` | opaque, non-cloneable, non-serializable authority for one claimed phase |
+| `EngineAuthority` | `proxima::*` / `proxima::flavor::*` | sealed argument trait implemented only by `AuthzContext` and `DelegatedPhase` |
+
+Queue redemption checks exact owner/id/command, current registry and deployment
+tool profile, grant revocation/expiry, current owner membership and recorded role
+ceiling, and `current_auth_epoch` when the host authenticator implements epoch
+revocation. The built-in OIDC authenticators currently use epoch `0`; bearer
+expiry and current membership are their production revocation bounds.
+
+After redemption, each delegated-capable Engine/blob operation checks the
+same-runtime binding, exact owner/role ceiling, and finite expiry. A later
+revoke, epoch bump, or membership change denies the next redemption; it does
+not cancel an already-redeemed phase. Redeem at job claim and every phase
+boundary. The exact command binds issuance, queue routing, and redemption; the
+linked worker implementation remains trusted to choose among the allowed
+operations. This is not an in-process sandbox.
+
+Delegated-capable operations are closed and explicit:
+
+| Surface | Delegated-capable operation |
+|---|---|
+| Engine Fact | `fact_ingest` |
+| Engine Fact split write | `authorize_fact_ingest` → `ingest_fact_with_typed_sidecar`; the returned witness rechecks runtime binding and expiry at commit |
+| Engine inline citation Fact | `authorize_fact_with_citation` → `ingest_fact_with_citation_and_typed_sidecar`; commit rechecks the witness |
+| Engine cited-object-reference Fact | `authorize_fact_with_citation_by_ref` → `ingest_fact_with_citation_ref_and_typed_sidecar`; commit rechecks the witness |
+| Engine batch | `close_batch` |
+| Engine derived memory | `author_derived_authorized` |
+| Engine upload completion | `complete_upload_as_fact` |
+| `CitedBlobService` | `prepare_upload`, `stage_upload`, `finish_upload`, `abort_upload`, `read_url`, `find_held_blobs` |
+| `CitedBlobReadService` | `collect_verified` |
+
+Every other Engine/service API rejects a raw
+`AuthzContext { auth_path: Delegated, .. }`; notably query, compliance/admin,
+and owner reconciliation are not delegated-capable. `CitedBlobService`,
+`CitedBlobReadService`, and `CitedBlobOwnerReconcileService` keep their backend
+ports private. Direct `proxima-core` hosts are the trusted composition root and
+can extract runtime authorities; the standard `proxima` boot path extracts and
+withholds the delegation runtime authority from MCP tools, REST tools, and
+workers.
+
+Direct `CitedBlob*Port` or concrete-backend calls are trusted, unsupported
+adapter/composition seams. Delegated workers must use the runtime-bound
+`CitedBlobService` and `CitedBlobReadService` wrappers.
+
+`DelegationGrant`, `DelegationGrantStorage`, `DelegationMutationPermit`,
+`DelegationStorePort`, `DelegatedAuthorityService::new`, and
+`PgDelegationStore` are doc-hidden backend composition/persistence APIs, not
+supported Host API or Flavor SDK.
+
 Machine checks:
 
 | Check | Command |
@@ -167,7 +226,7 @@ Contract:
 | authorization | `AuthPath::System` or `ComplianceAdminPort::may_perform_compliance_export`; default export authorization delegates to erase-family controller approval |
 | legal hold | does not block export |
 | drop proof | not required; export is non-destructive |
-| rows | owner-scoped substrate rows, source cursors, registered sidecars, cited-object blob refs, and matching compliance audit rows |
+| rows | owner-scoped substrate rows, source cursors, registered sidecars, cited-object blob refs, delegated-grant non-secret metadata, and matching compliance audit rows; grant export omits redeemable `delegation_id` and credential material |
 | serialization | `ComplianceExportBundle::canonical_json_bytes()` emits recursively sorted-key JSON bytes |
 
 ## Embedding Ops Host API
@@ -213,8 +272,8 @@ Public facade status:
 | Lane | Authority | Scope | Samples |
 |---|---|---|---|
 | Global | same-boot `SystemAuthority`; foreign-engine witnesses fail before I/O | configured bucket + every locator row | bounded raw missing/orphan/foreign locators for restore operations |
-| Owner | `AuthzContext::may_read(owner, Fact)` | exact owner rows + `objects/<owner-hash>/` | missing cited-object id, byte length, filename; no bucket/object key or orphan/foreign locator samples |
-| Verified bytes | `AuthzContext::may_read(owner, Fact)` | exact owner row + canonical object | required `NonZeroU64` ceiling; length+BLAKE3+SHA-256; no partial bytes or locator |
+| Owner | ordinary `AuthzContext::may_read(owner, Fact)`; raw delegated contexts rejected | exact owner rows + `objects/<owner-hash>/` | missing cited-object id, byte length, filename; no bucket/object key or orphan/foreign locator samples |
+| Verified bytes | ordinary `AuthzContext` or same-runtime `DelegatedPhase`, then Fact-read | exact owner row + canonical object | required `NonZeroU64` ceiling; length+BLAKE3+SHA-256; no partial bytes or locator |
 
 The Global and Owner reconciliation lanes report `missing_objects`,
 `orphan_objects`, and `foreign_locators`. `is_intact()` is false exactly when

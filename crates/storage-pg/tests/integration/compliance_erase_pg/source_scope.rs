@@ -2,7 +2,7 @@
 
 use super::{
     assert_shared_fact_entity_survives_source_scope_erase, compliance_engine, fact_permit,
-    receipt_draft, seed_fact, seed_shared_fact_entity_fixture,
+    receipt_draft, seed_delegation_grant, seed_fact, seed_shared_fact_entity_fixture,
 };
 
 use crate::common::{create_db, db_url, drop_db, seed_memory_edge};
@@ -31,6 +31,7 @@ async fn group_source_scope_erases_only_requested_source_and_suppresses_new_batc
         let kept_draft = receipt_draft("test/source-b", Uuid::now_v7(), b"keep-source-b");
         let erased = seed_fact(&pg, &owner, &erased_draft).await?;
         let kept = seed_fact(&pg, &owner, &kept_draft).await?;
+        let delegation = seed_delegation_grant(&pg, owner, UserId::new(Uuid::now_v7())).await?;
         seed_memory_edge(
             &pg,
             &owner,
@@ -47,7 +48,13 @@ async fn group_source_scope_erases_only_requested_source_and_suppresses_new_batc
                 SourceId::new("test/source-a"),
             )
             .await?;
-        assert!(matches!(outcome, ComplianceEraseOutcome::Completed { .. }));
+        let ComplianceEraseOutcome::Completed { counts, .. } = outcome else {
+            panic!("expected completed source-scope erase");
+        };
+        assert_eq!(
+            counts.delegated_authority_grants, 0,
+            "owner-level grants are not attributable to a source"
+        );
 
         let erased_remaining: i64 = sqlx::query_scalar(
             "SELECT count(*)::bigint FROM proxima_core.memories WHERE memory_id = $1",
@@ -63,6 +70,15 @@ async fn group_source_scope_erases_only_requested_source_and_suppresses_new_batc
         .await?;
         assert_eq!(erased_remaining, 0);
         assert_eq!(kept_remaining, 1);
+        let delegation_remaining: i64 = sqlx::query_scalar(
+            "SELECT count(*)::bigint
+               FROM proxima_core.delegated_authority_grants
+              WHERE delegation_id = $1",
+        )
+        .bind(delegation)
+        .fetch_one(pg.pool_for_tests())
+        .await?;
+        assert_eq!(delegation_remaining, 1);
         let edge_rows = pg
             .read_edges(
                 &[owner],

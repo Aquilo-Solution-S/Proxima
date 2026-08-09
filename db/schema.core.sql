@@ -45,6 +45,19 @@ COMMENT ON EXTENSION vector IS 'vector data type and ivfflat and hnsw access met
 
 
 --
+-- Name: access_ceiling; Type: TYPE; Schema: proxima_core; Owner: -
+--
+
+CREATE TYPE proxima_core.access_ceiling AS ENUM (
+    'none',
+    'fact',
+    'abstraction',
+    'perspective',
+    'goal'
+);
+
+
+--
 -- Name: change_event_kind; Type: TYPE; Schema: proxima_core; Owner: -
 --
 
@@ -279,6 +292,56 @@ CREATE TYPE proxima_core.task_priority AS ENUM (
     'Medium',
     'High'
 );
+
+
+--
+-- Name: delegated_authority_grants_revoke_only(); Type: FUNCTION; Schema: proxima_core; Owner: -
+--
+
+CREATE FUNCTION proxima_core.delegated_authority_grants_revoke_only() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+    IF NEW IS NOT DISTINCT FROM OLD THEN
+        RETURN NEW;
+    END IF;
+
+    IF OLD.revoked_at IS NOT NULL
+       OR OLD.revoked_by_user_id IS NOT NULL
+       OR NEW.revoked_at IS NULL
+       OR NEW.revoked_by_user_id IS NULL
+       OR ROW(
+            NEW.delegation_id,
+            NEW.subject_user_id,
+            NEW.owner_kind,
+            NEW.owner_id,
+            NEW.tool_name,
+            NEW.action_name,
+            NEW.read_ceiling,
+            NEW.write_ceiling,
+            NEW.expires_at,
+            NEW.auth_epoch,
+            NEW.issued_at
+          ) IS DISTINCT FROM ROW(
+            OLD.delegation_id,
+            OLD.subject_user_id,
+            OLD.owner_kind,
+            OLD.owner_id,
+            OLD.tool_name,
+            OLD.action_name,
+            OLD.read_ceiling,
+            OLD.write_ceiling,
+            OLD.expires_at,
+            OLD.auth_epoch,
+            OLD.issued_at
+          ) THEN
+        RAISE EXCEPTION
+            'delegated authority grant is immutable except for first revocation';
+    END IF;
+
+    RETURN NEW;
+END;
+$$;
 
 
 --
@@ -1089,7 +1152,8 @@ CREATE TABLE proxima_core.compliance_audit_log (
     suppressed_keys_count bigint DEFAULT 0 NOT NULL,
     cited_object_purge_pending boolean DEFAULT false NOT NULL,
     source_cursors_count bigint DEFAULT 0 NOT NULL,
-    CONSTRAINT compliance_audit_log_no_negative_counts_chk CHECK (((memories_count >= 0) AND (goals_count >= 0) AND (edges_count >= 0) AND (fact_entities_count >= 0) AND (receipts_count >= 0) AND (source_batches_count >= 0) AND (citations_count >= 0) AND (cited_objects_count >= 0) AND (source_cursors_count >= 0) AND (embeddings_count >= 0) AND (embedding_jobs_count >= 0) AND (mcp_call_rows_count >= 0) AND (change_events_count >= 0) AND (redacted_edge_targets_count >= 0) AND (suppressed_keys_count >= 0)))
+    delegated_authority_grants_count bigint DEFAULT 0 NOT NULL,
+    CONSTRAINT compliance_audit_log_no_negative_counts_chk CHECK (((memories_count >= 0) AND (goals_count >= 0) AND (edges_count >= 0) AND (fact_entities_count >= 0) AND (receipts_count >= 0) AND (source_batches_count >= 0) AND (citations_count >= 0) AND (cited_objects_count >= 0) AND (source_cursors_count >= 0) AND (embeddings_count >= 0) AND (embedding_jobs_count >= 0) AND (mcp_call_rows_count >= 0) AND (change_events_count >= 0) AND (redacted_edge_targets_count >= 0) AND (suppressed_keys_count >= 0) AND (delegated_authority_grants_count >= 0)))
 );
 
 
@@ -1118,6 +1182,65 @@ CREATE TABLE proxima_core.compliance_suppression_keys (
     operation_id uuid NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL
 );
+
+
+--
+-- Name: delegated_authority_grants; Type: TABLE; Schema: proxima_core; Owner: -
+--
+
+CREATE TABLE proxima_core.delegated_authority_grants (
+    delegation_id uuid NOT NULL,
+    subject_user_id uuid NOT NULL,
+    owner_kind proxima_core.owner_ref_kind NOT NULL,
+    owner_id uuid,
+    tool_name text NOT NULL,
+    action_name text,
+    read_ceiling proxima_core.access_ceiling NOT NULL,
+    write_ceiling proxima_core.access_ceiling NOT NULL,
+    expires_at timestamp with time zone NOT NULL,
+    auth_epoch bigint NOT NULL,
+    issued_at timestamp with time zone NOT NULL,
+    revoked_at timestamp with time zone,
+    revoked_by_user_id uuid,
+    CONSTRAINT delegated_authority_action_name_chk CHECK (((action_name IS NULL) OR ((action_name = btrim(action_name)) AND (action_name <> ''::text) AND (action_name ~ '^[A-Za-z0-9_.-]+$'::text) AND (strpos(action_name, '..'::text) = 0)))),
+    CONSTRAINT delegated_authority_auth_epoch_chk CHECK ((auth_epoch >= 0)),
+    CONSTRAINT delegated_authority_command_length_chk CHECK (((char_length(tool_name) +
+CASE
+    WHEN (action_name IS NULL) THEN 0
+    ELSE (1 + char_length(action_name))
+END) <= 200)),
+    CONSTRAINT delegated_authority_delegation_id_not_nil_chk CHECK ((delegation_id <> '00000000-0000-0000-0000-000000000000'::uuid)),
+    CONSTRAINT delegated_authority_expiry_chk CHECK ((expires_at > issued_at)),
+    CONSTRAINT delegated_authority_owner_id_not_nil_chk CHECK (((owner_id IS NULL) OR (owner_id <> '00000000-0000-0000-0000-000000000000'::uuid))),
+    CONSTRAINT delegated_authority_owner_ref_shape_chk CHECK ((((owner_kind = 'world'::proxima_core.owner_ref_kind) AND (owner_id IS NULL)) OR ((owner_kind = ANY (ARRAY['personal'::proxima_core.owner_ref_kind, 'group'::proxima_core.owner_ref_kind])) AND (owner_id IS NOT NULL)))),
+    CONSTRAINT delegated_authority_revocation_shape_chk CHECK ((((revoked_at IS NULL) AND (revoked_by_user_id IS NULL)) OR ((revoked_at IS NOT NULL) AND (revoked_by_user_id IS NOT NULL) AND (revoked_at >= issued_at) AND (revoked_by_user_id <> '00000000-0000-0000-0000-000000000000'::uuid)))),
+    CONSTRAINT delegated_authority_role_ceiling_chk CHECK ((
+CASE write_ceiling
+    WHEN 'none'::proxima_core.access_ceiling THEN 0
+    WHEN 'fact'::proxima_core.access_ceiling THEN 1
+    WHEN 'abstraction'::proxima_core.access_ceiling THEN 2
+    WHEN 'perspective'::proxima_core.access_ceiling THEN 3
+    WHEN 'goal'::proxima_core.access_ceiling THEN 4
+    ELSE NULL::integer
+END <=
+CASE read_ceiling
+    WHEN 'none'::proxima_core.access_ceiling THEN 0
+    WHEN 'fact'::proxima_core.access_ceiling THEN 1
+    WHEN 'abstraction'::proxima_core.access_ceiling THEN 2
+    WHEN 'perspective'::proxima_core.access_ceiling THEN 3
+    WHEN 'goal'::proxima_core.access_ceiling THEN 4
+    ELSE NULL::integer
+END)),
+    CONSTRAINT delegated_authority_subject_not_nil_chk CHECK ((subject_user_id <> '00000000-0000-0000-0000-000000000000'::uuid)),
+    CONSTRAINT delegated_authority_tool_name_chk CHECK (((tool_name = btrim(tool_name)) AND (tool_name <> ''::text) AND (tool_name ~ '^[A-Za-z0-9_.-]+$'::text) AND (strpos(tool_name, '..'::text) = 0)))
+);
+
+
+--
+-- Name: TABLE delegated_authority_grants; Type: COMMENT; Schema: proxima_core; Owner: -
+--
+
+COMMENT ON TABLE proxima_core.delegated_authority_grants IS 'Bearer-bounded, exact-owner, one-command grants for durable workers. delegation_id is secret redeemable queue authority; no source host bearer or serialized AuthzContext is stored. Redeem re-resolves membership and auth epoch. Expired and revoked rows remain audit evidence until owner erasure; source-scope erasure never deletes them.';
 
 
 --
@@ -1878,6 +2001,14 @@ ALTER TABLE ONLY proxima_core.compliance_suppression_keys
 
 
 --
+-- Name: delegated_authority_grants delegated_authority_grants_pkey; Type: CONSTRAINT; Schema: proxima_core; Owner: -
+--
+
+ALTER TABLE ONLY proxima_core.delegated_authority_grants
+    ADD CONSTRAINT delegated_authority_grants_pkey PRIMARY KEY (delegation_id);
+
+
+--
 -- Name: edges edges_pkey; Type: CONSTRAINT; Schema: proxima_core; Owner: -
 --
 
@@ -2112,6 +2243,20 @@ CREATE INDEX cited_object_uploads_pending_expiry_idx ON proxima_core.cited_objec
 --
 
 CREATE INDEX cited_object_uploads_upload_id_idx ON proxima_core.cited_object_uploads USING btree (upload_id);
+
+
+--
+-- Name: delegated_authority_owner_idx; Type: INDEX; Schema: proxima_core; Owner: -
+--
+
+CREATE INDEX delegated_authority_owner_idx ON proxima_core.delegated_authority_grants USING btree (owner_kind, owner_id, issued_at, delegation_id);
+
+
+--
+-- Name: delegated_authority_subject_idx; Type: INDEX; Schema: proxima_core; Owner: -
+--
+
+CREATE INDEX delegated_authority_subject_idx ON proxima_core.delegated_authority_grants USING btree (subject_user_id, issued_at, delegation_id);
 
 
 --
@@ -2476,6 +2621,13 @@ CREATE TRIGGER cited_objects_append_only BEFORE UPDATE ON proxima_core.cited_obj
 --
 
 CREATE TRIGGER cited_uploaded_blob_v1_append_only BEFORE UPDATE ON proxima_core.cited_uploaded_blob_v1 FOR EACH ROW EXECUTE FUNCTION proxima_core.enforce_row_append_only();
+
+
+--
+-- Name: delegated_authority_grants delegated_authority_grants_revoke_only; Type: TRIGGER; Schema: proxima_core; Owner: -
+--
+
+CREATE TRIGGER delegated_authority_grants_revoke_only BEFORE UPDATE ON proxima_core.delegated_authority_grants FOR EACH ROW EXECUTE FUNCTION proxima_core.delegated_authority_grants_revoke_only();
 
 
 --

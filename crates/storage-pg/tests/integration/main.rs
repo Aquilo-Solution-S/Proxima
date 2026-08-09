@@ -8,6 +8,7 @@ mod compliance_erase_pg;
 mod compliance_export_pg;
 mod concurrent_idempotency_pg;
 mod connect;
+mod delegated_authority_pg;
 mod derive_append_pg;
 mod edge_index_pg;
 mod edge_invariants_pg;

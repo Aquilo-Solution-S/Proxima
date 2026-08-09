@@ -1,6 +1,6 @@
 use super::Engine;
 use crate::access::Relation;
-use crate::authz::AuthzContext;
+use crate::authz::{AuthzContext, EngineAuthority};
 use crate::edge::{EdgeEndpoint, validate_edge_layering, validate_not_self_loop};
 use crate::error::ProtocolError;
 use crate::storage::{AuthorDerivedOutcome, AuthorDerivedRequest, DerivedEmbedding, StorageError};
@@ -79,6 +79,7 @@ impl Engine {
         owner: crate::OwnerRef,
         source_memory_ids: &[MemoryId],
     ) -> Result<(), ProtocolError> {
+        self.operation_authority(authz)?;
         let rows = self
             .storage()
             .memory_authoring
@@ -106,13 +107,16 @@ impl Engine {
     /// source owner or read access to an edge target; `InvalidArgument` when
     /// referenced memories are absent or edge shape validation fails; and
     /// `Internal` for storage failures.
-    pub async fn author_derived_authorized(
+    pub async fn author_derived_authorized<A>(
         &self,
-        authz: &AuthzContext,
+        authority: &A,
         req: AuthorDerivedRequestInput<'_>,
-    ) -> Result<AuthorDerivedAuthorizedOutcome, ProtocolError> {
+    ) -> Result<AuthorDerivedAuthorizedOutcome, ProtocolError>
+    where
+        A: EngineAuthority + ?Sized,
+    {
         let write_permit = self
-            .authorize_write(authz, &req.owner, Relation::Editor)
+            .authorize_write(authority, &req.owner, Relation::Editor)
             .await?;
 
         let owner = *write_permit.owner();
@@ -144,16 +148,15 @@ impl Engine {
         // every target at write time.
         let source = EdgeEndpoint::memory(req.kind, req.memory_id);
         let origins = self
-            .authorized_index_targets(authz, source, req.derived_from, "derived_from")
+            .authorized_index_targets(authority, source, req.derived_from, "derived_from")
             .await?;
         let declared = req.sidecar_payload.references();
         let references = self
-            .authorized_payload_references(authz, source, &declared)
+            .authorized_payload_references(authority, source, &declared)
             .await?;
         let source_batch_id = self
             .effective_operator_source_batch_id(&owner, &req, &origins)
             .await?;
-
         let outcome = self
             .author_derived(
                 write_permit.owner_write_permit(),
@@ -327,18 +330,23 @@ impl Engine {
     /// consult and no owner-equality rule beyond it — a source-owned row
     /// pointing at a foreign readable target is exactly what makes
     /// cross-owner provenance expressible.
-    async fn authorized_index_targets(
+    async fn authorized_index_targets<A>(
         &self,
-        authz: &AuthzContext,
+        authority: &A,
         source: EdgeEndpoint,
         targets: &[EdgeEndpoint],
         field: &str,
-    ) -> Result<Vec<EdgeEndpoint>, ProtocolError> {
+    ) -> Result<Vec<EdgeEndpoint>, ProtocolError>
+    where
+        A: EngineAuthority + ?Sized,
+    {
         let mut out = Vec::with_capacity(targets.len());
         for target in targets {
             validate_not_self_loop(source, *target)
                 .map_err(|err| ProtocolError::invalid_argument(field, err))?;
-            let resolved = self.authorize_index_target(authz, *target, field).await?;
+            let resolved = self
+                .authorize_index_target(authority, *target, field)
+                .await?;
             validate_edge_layering(source, resolved)
                 .map_err(|err| ProtocolError::invalid_argument(field, err))?;
             if !out.contains(&resolved) {
@@ -355,12 +363,15 @@ impl Engine {
     /// it produced is refused rather than coerced: `FollowHead` and `Pin`
     /// are different statements about what the reference means when the
     /// target is re-observed.
-    async fn authorized_payload_references(
+    async fn authorized_payload_references<A>(
         &self,
-        authz: &AuthzContext,
+        authority: &A,
         source: EdgeEndpoint,
         declared: &[PayloadReference],
-    ) -> Result<Vec<EdgeEndpoint>, ProtocolError> {
+    ) -> Result<Vec<EdgeEndpoint>, ProtocolError>
+    where
+        A: EngineAuthority + ?Sized,
+    {
         let mut targets = Vec::with_capacity(declared.len());
         for reference in declared {
             reference
@@ -368,22 +379,25 @@ impl Engine {
                 .map_err(|err| ProtocolError::invalid_argument("references", err))?;
             targets.push(reference.target);
         }
-        self.authorized_index_targets(authz, source, &targets, "references")
+        self.authorized_index_targets(authority, source, &targets, "references")
             .await
     }
 
     /// Read-admit one index target and answer with its stored kind, so a
     /// caller-declared kind can never widen what the layering rule sees.
-    async fn authorize_index_target(
+    async fn authorize_index_target<A>(
         &self,
-        authz: &AuthzContext,
+        authority: &A,
         target: EdgeEndpoint,
         field: &str,
-    ) -> Result<EdgeEndpoint, ProtocolError> {
+    ) -> Result<EdgeEndpoint, ProtocolError>
+    where
+        A: EngineAuthority + ?Sized,
+    {
         match target.entity {
             crate::EntityRef::Memory(memory_id) => {
                 let read = self
-                    .authorize_entry_read(authz, EntityId::Memory(memory_id))
+                    .authorize_entry_read(authority, EntityId::Memory(memory_id))
                     .await?;
                 let kind = self
                     .load_required_memory_kind(read.owner(), memory_id)
@@ -391,7 +405,7 @@ impl Engine {
                 Ok(EdgeEndpoint::memory(kind, memory_id))
             }
             crate::EntityRef::Goal(goal_id) => {
-                self.authorize_entry_read(authz, EntityId::Goal(goal_id))
+                self.authorize_entry_read(authority, EntityId::Goal(goal_id))
                     .await?;
                 Ok(EdgeEndpoint::goal(goal_id))
             }
