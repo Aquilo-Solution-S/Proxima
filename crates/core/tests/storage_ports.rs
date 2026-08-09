@@ -191,14 +191,6 @@ impl MemoryInspectPort for MemoryInspectFake {
     ) -> Result<Vec<MemorySnapshot>, StorageError> {
         fake_error()
     }
-
-    async fn list_memory_dependencies(
-        &self,
-        _owner: &Owner,
-        _source_memory_id: proxima_core::MemoryId,
-    ) -> Result<Vec<MemoryDependency>, StorageError> {
-        fake_error()
-    }
 }
 
 #[derive(Debug)]

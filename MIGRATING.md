@@ -13,12 +13,12 @@ not a reference. Deployment and env vars live in
 
 | You are | Read |
 |---|---|
-| A **v0.0.7 Rust host** | [remove the inert runtime owner-access registration](#remove-the-inert-runtime-owner-access-registration), [pass the shared Host allowlist](#pass-the-shared-host-allowlist), then [freeze registries once](#freeze-registries-once) |
+| A **v0.0.7 Rust host** | [remove the inert runtime owner-access registration](#remove-the-inert-runtime-owner-access-registration), [remove the dependency-satisfaction seam](#remove-the-dependency-satisfaction-seam), [pass the shared Host allowlist](#pass-the-shared-host-allowlist), then [freeze registries once](#freeze-registries-once) |
 | An **operator** promoting a deployment | [the v0.0.7 schema lane](#the-v007-schema-lane), then [operator changes](#operator-changes) |
 | Running the **code flavor** | the above, then [re-register and re-index](#re-register-and-re-index-every-code-repository) |
 | An **MCP client / agent** author | [wire changes](#wire-changes-mcp-clients) |
 | An **embedding host** driving `Engine` in Rust | [Rust host changes](#rust-host-changes) |
-| A **flavor** author | [flavor SDK changes](#flavor-sdk-changes) |
+| A **flavor** author | [remove the dependency-satisfaction seam](#remove-the-dependency-satisfaction-seam), [freeze registries once](#freeze-registries-once), then [flavor SDK changes](#flavor-sdk-changes) |
 | Booting against a **pre-v0.0.4 database** | [the v0.0.4 reset](#the-v004-reset) first — nothing else applies until it is done |
 
 Every upgrade also needs [the lock-step rules](#rules-for-every-upgrade) and
@@ -60,6 +60,34 @@ The MCP edge still authenticates every request, narrows the returned role set
 to the selected or session-bound owner, and rejects an unauthorized owner.
 Serving still fails closed without a host `Authenticator`. There is no wire,
 storage, schema, or migration change in this slice.
+
+## Remove the dependency-satisfaction seam
+
+The following unused Rust APIs are removed:
+
+- `DependencySatisfactionRule` and `MemoryDependency`;
+- `proxima_flavor!`'s `dependency_satisfaction_rules` key;
+- `FlavorRegistry::{try_add_dependency_satisfaction_rule,
+  add_dependency_satisfaction_rule_or_panic_for_tests}`;
+- `FlavorRegistryFrozen::dependency_satisfaction_rule` and
+  `FlavorRegistryError::DuplicateDependencyRule`;
+- `MemoryInspectPort::list_memory_dependencies`; and
+- `proxima_storage_pg::verbs::consolidate::list_memory_dependencies`.
+
+Delete direct implementations and registrations. No runtime replacement is
+required: no dispatch path invoked this seam. External satisfaction policy
+belongs at the execution boundary. A generic `reference` edge read is not a
+dependency read: references also encode calls, assignment, and evidence. Graph
+traversal uses `Engine::read_edges` or `EdgeReadPort::read_edges`, filtered by
+`EdgeKind::Reference` and source. Domain gating inspects the owning typed field
+and reads each target through authorized APIs.
+
+`GoalDependencyRef` and `goals.dependency_goal_ids` remain. Code flavor
+`ExecutionRequestV1` and `TestRequestV1` retain `depends_on_memory_ids`. The
+retired PostgreSQL helper joined target memories without target authorization
+and could expose a redacted target's schema id; do not recreate it.
+
+There is no wire, database, schema, migration, or Lean change in this slice.
 
 ## Pass the shared Host allowlist
 

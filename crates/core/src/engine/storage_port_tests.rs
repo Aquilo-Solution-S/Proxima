@@ -318,14 +318,6 @@ mod storage_port_tests_support {
         ) -> Result<Vec<crate::read_models::MemorySnapshot>, StorageError> {
             Ok(Vec::new())
         }
-
-        async fn list_memory_dependencies(
-            &self,
-            _owner: &crate::Owner,
-            _source_memory_id: crate::MemoryId,
-        ) -> Result<Vec<crate::MemoryDependency>, StorageError> {
-            Ok(Vec::new())
-        }
     }
 
     #[derive(Debug)]

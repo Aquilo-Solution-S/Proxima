@@ -14,9 +14,6 @@ pub enum FlavorRegistryError {
     DuplicateFlavor {
         flavor_id: String,
     },
-    DuplicateDependencyRule {
-        schema_id: String,
-    },
     InvalidCapabilityTag {
         schema_id: SchemaId,
         schema_version: SchemaVersion,
@@ -86,12 +83,6 @@ impl std::fmt::Display for FlavorRegistryError {
             }
             Self::DuplicateFlavor { flavor_id } => {
                 write!(f, "duplicate flavor descriptor registered: {flavor_id}")
-            }
-            Self::DuplicateDependencyRule { schema_id } => {
-                write!(
-                    f,
-                    "duplicate dependency satisfaction rule for schema {schema_id}"
-                )
             }
             Self::InvalidCapabilityTag {
                 schema_id,

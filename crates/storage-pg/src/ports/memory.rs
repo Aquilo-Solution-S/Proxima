@@ -8,8 +8,8 @@ use proxima_core::verbs::query::{
 };
 use proxima_core::{
     AuthorDerivedOutcome, AuthorDerivedRequest, Edge, EdgeKind, EdgeTargetProjection,
-    FactSourceBatchRow, MemoryDependency, MemoryGraphPayloadRow, MemoryId, MemoryKindRow, Owner,
-    OwnerRef, SourceBatchId, StorageError,
+    FactSourceBatchRow, MemoryGraphPayloadRow, MemoryId, MemoryKindRow, Owner, OwnerRef,
+    SourceBatchId, StorageError,
 };
 
 use crate::error::{internal, with_bounded_retry};
@@ -400,13 +400,5 @@ impl MemoryInspectPort for PgStorage {
             sidecars,
         )
         .await
-    }
-
-    async fn list_memory_dependencies(
-        &self,
-        owner: &Owner,
-        source_memory_id: MemoryId,
-    ) -> Result<Vec<MemoryDependency>, StorageError> {
-        verbs::consolidate::list_memory_dependencies(&self.pool, owner, source_memory_id).await
     }
 }

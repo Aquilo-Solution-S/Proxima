@@ -5,11 +5,9 @@
 // list and the binding that mirrors it, which is where the drift would start.
 #![allow(clippy::type_complexity)]
 
-mod dependencies;
 mod events;
 mod memories;
 
-pub use dependencies::list_memory_dependencies;
 pub(crate) use events::edge_event_visibility_predicate;
 pub use events::{list_change_events_after, list_change_events_for_replay};
 pub use memories::{

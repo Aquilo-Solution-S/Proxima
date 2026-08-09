@@ -2,9 +2,8 @@
 
 use proxima_core::verbs::schema::PayloadKind;
 use proxima_core::{
-    CitationMappingPayload, CitedObjectPayload, DependencySatisfactionRule, FactPayload,
-    FlavorRegistry, GoalPayload, MemoryId, MemoryInspectPort, Owner, PayloadKeyBuilder, SchemaId,
-    StorageError, proxima_flavor, proxima_schema_id,
+    CitationMappingPayload, CitedObjectPayload, FactPayload, FlavorRegistry, GoalPayload,
+    PayloadKeyBuilder, SchemaId, proxima_flavor, proxima_schema_id,
 };
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -209,40 +208,4 @@ fn flavor_macro_accepts_empty_goal_schemas() {
             .all(|s| !s.schema_id.as_str().starts_with("proxima-core/test-")),
         "no test-flavor schemas should be registered when goal_schemas = []",
     );
-}
-
-#[derive(Debug, Default)]
-struct CoreSchemaDependencyRule;
-
-#[async_trait::async_trait]
-impl DependencySatisfactionRule for CoreSchemaDependencyRule {
-    fn target_schema_id(&self) -> &'static str {
-        "core/agent-note"
-    }
-
-    async fn is_satisfied(
-        &self,
-        _storage: &dyn MemoryInspectPort,
-        _owner: &Owner,
-        _dependency_memory_id: MemoryId,
-    ) -> Result<bool, StorageError> {
-        Ok(true)
-    }
-}
-
-mod core_dependency_rule_flavor {
-    use super::CoreSchemaDependencyRule;
-    use proxima_core::proxima_flavor;
-
-    proxima_flavor! {
-        name = "proxima-core",
-        dependency_satisfaction_rules = [ CoreSchemaDependencyRule ],
-    }
-}
-
-#[test]
-fn flavor_macro_accepts_core_schema_dependency_rule() {
-    let mut registry = FlavorRegistry::new();
-    core_dependency_rule_flavor::register(&mut registry).unwrap();
-    let _frozen = registry.freeze_or_panic_for_tests();
 }

@@ -195,7 +195,7 @@ expressed, only where it lives.
 | `proxima://edge-types`, `proxima://edge/{id}` | removed. `proxima://edges{?kind,source,target,limit,cursor}` remains, filtered by `kind` rather than relation |
 | edge reads (`proxima://edges`, `proxima://graph`, `?expand_neighbors`) | return `(source, target, kind, created_at)`; there is no edge handle to dereference and no payload to hydrate |
 | `core_derive`, `core_goal`, `core_interpret` | report an `edge_count` where they used to hand back edge handles |
-| memory lineage | traverses `origin`; dependency reads read `reference` |
+| memory lineage / reference reads | lineage traverses `origin`; reference-edge reads expose connection existence, while dependency meaning lives in the owning Goal/payload field |
 | the `E:` handle prefix | removed from the wire grammar — an edge has no id to name |
 | `core_derive` | unchanged argument shape; provenance lands as `origin` entries |
 | Fact ingest `derived_from` (#156) | unchanged shape; the API introduced there is the origin path |

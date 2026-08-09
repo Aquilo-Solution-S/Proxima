@@ -230,14 +230,6 @@ impl MemoryInspectPort for RejectingStorage {
     ) -> Result<Vec<MemorySnapshot>, StorageError> {
         Ok(Vec::new())
     }
-
-    async fn list_memory_dependencies(
-        &self,
-        _owner: &Owner,
-        _source_memory_id: crate::MemoryId,
-    ) -> Result<Vec<crate::MemoryDependency>, StorageError> {
-        Ok(Vec::new())
-    }
 }
 
 #[async_trait::async_trait]
