@@ -32,7 +32,6 @@ pub const CORE_UPLOAD_ACTIONS: &[CoreActionMeta] = &[
         scope_key: protocol_action::CORE_UPLOAD_PREPARE,
         description: "Mint a presigned S3 PUT for one artefact and record the pending upload.",
         produces_schema_ids: &[],
-        annotations: WRITE_NON_IDEMPOTENT,
     },
     CoreActionMeta {
         tool: CoreUploadTool::NAME,
@@ -40,7 +39,6 @@ pub const CORE_UPLOAD_ACTIONS: &[CoreActionMeta] = &[
         scope_key: protocol_action::CORE_UPLOAD_COMPLETE,
         description: "Verify an uploaded artefact, persist its canonical cited object, and record the upload as a core/upload-v1 Fact citing it.",
         produces_schema_ids: &[],
-        annotations: WRITE_NON_IDEMPOTENT,
     },
     CoreActionMeta {
         tool: CoreUploadTool::NAME,
@@ -48,7 +46,6 @@ pub const CORE_UPLOAD_ACTIONS: &[CoreActionMeta] = &[
         scope_key: protocol_action::CORE_UPLOAD_ABORT,
         description: "Abort a pending upload and discard its pending object.",
         produces_schema_ids: &[],
-        annotations: WRITE_NON_IDEMPOTENT,
     },
     CoreActionMeta {
         tool: CoreUploadTool::NAME,
@@ -56,7 +53,6 @@ pub const CORE_UPLOAD_ACTIONS: &[CoreActionMeta] = &[
         scope_key: protocol_action::CORE_UPLOAD_READ_URL,
         description: "Mint a presigned download URL for a completed cited blob.",
         produces_schema_ids: &[],
-        annotations: READ_ONLY,
     },
 ];
 
@@ -177,21 +173,25 @@ impl McpTool for CoreUploadTool {
             action: "prepare",
             allowed_fields: &["filename", "mime", "byte_len", "space"],
             required_fields: &["filename", "mime", "byte_len"],
+            annotations: Some(WRITE_NON_IDEMPOTENT),
         },
         McpActionArgSpec {
             action: "complete",
             allowed_fields: &["upload_id", "space"],
             required_fields: &["upload_id"],
+            annotations: Some(WRITE_NON_IDEMPOTENT),
         },
         McpActionArgSpec {
             action: "abort",
             allowed_fields: &["upload_id", "space"],
             required_fields: &["upload_id"],
+            annotations: Some(WRITE_NON_IDEMPOTENT),
         },
         McpActionArgSpec {
             action: "read_url",
             allowed_fields: &["cited_object_id", "space"],
             required_fields: &["cited_object_id"],
+            annotations: Some(READ_ONLY),
         },
     ];
     type Args = CoreUploadArgs;

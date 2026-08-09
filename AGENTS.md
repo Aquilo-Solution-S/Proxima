@@ -6,9 +6,8 @@ easy to break.
 
 ## State of the repo
 
-**Implementation phase.** The design lives in `docs/`; Rust crates have
-landed. Do not treat README's old
-"no code yet" wording as authoritative.
+**Implementation phase.** The design lives in `docs/`; Rust crates and the
+optional REST projection have landed.
 
 Code work is expected when the prompt asks for it. Keep edits scoped to
 the existing crates/packages; do not add new binaries, crates, services,
@@ -36,7 +35,7 @@ explicit request.
 | `docs/13-compliance.md` | Compliance primitives: owner deletion, source-scope deletion, pause/resume, export, suppression, audit |
 | `docs/14-protocol-surface.md` | Engine's contract to clients: five verbs (Query / ChangeHistory / GoalWrite / FactIngest / Schema), owner-scoped, transport-agnostic |
 | `docs/15-deployment.md` | Deploying the Code-flavor MCP server: Docker, OIDC bearer auth, network exposure, tool-surface profiles |
-| `docs/17-rest-surface.md` | REST projection of the tool manifest: derived routes, HTTP status map, OpenAPI; design intent only |
+| `docs/17-rest-surface.md` | Current build/runtime-opt-in REST projection of the tool manifest: derived routes, HTTP status map, OpenAPI |
 | `docs/dev-perf.md` | Perf reducer fixture format |
 
 ## Workspace layout

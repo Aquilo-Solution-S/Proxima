@@ -39,7 +39,6 @@ pub const CORE_GOAL_ACTIONS: &[CoreActionMeta] = &[
         scope_key: protocol_action::CORE_GOAL_SET,
         description: "Set an Active Goal assigned to a Perspective.",
         produces_schema_ids: GOAL_ACTIVATED_SCHEMA_IDS,
-        annotations: WRITE_NON_IDEMPOTENT,
     },
     CoreActionMeta {
         tool: CoreGoalTool::NAME,
@@ -47,7 +46,6 @@ pub const CORE_GOAL_ACTIONS: &[CoreActionMeta] = &[
         scope_key: protocol_action::CORE_GOAL_TRANSITION,
         description: "Pause, resume, or abandon a Goal head.",
         produces_schema_ids: &[],
-        annotations: WRITE_NON_IDEMPOTENT,
     },
     CoreActionMeta {
         tool: CoreGoalTool::NAME,
@@ -55,7 +53,6 @@ pub const CORE_GOAL_ACTIONS: &[CoreActionMeta] = &[
         scope_key: protocol_action::CORE_GOAL_MODIFY,
         description: "Replace an Active Goal head's content.",
         produces_schema_ids: GOAL_ACTIVATED_SCHEMA_IDS,
-        annotations: WRITE_NON_IDEMPOTENT,
     },
     CoreActionMeta {
         tool: CoreGoalTool::NAME,
@@ -63,7 +60,6 @@ pub const CORE_GOAL_ACTIONS: &[CoreActionMeta] = &[
         scope_key: protocol_action::CORE_GOAL_MARK_ACHIEVED,
         description: "Mark a Goal head Achieved with completion evidence.",
         produces_schema_ids: GOAL_ACHIEVED_SCHEMA_IDS,
-        annotations: WRITE_NON_IDEMPOTENT,
     },
     CoreActionMeta {
         tool: CoreGoalTool::NAME,
@@ -71,7 +67,6 @@ pub const CORE_GOAL_ACTIONS: &[CoreActionMeta] = &[
         scope_key: protocol_action::CORE_GOAL_DECOMPOSE,
         description: "Create Active child Goals under a parent Goal.",
         produces_schema_ids: GOAL_ACTIVATED_SCHEMA_IDS,
-        annotations: WRITE_IDEMPOTENT,
     },
 ];
 
@@ -200,11 +195,13 @@ impl McpTool for CoreGoalTool {
                 "idempotency_key",
             ],
             required_fields: &["schema_id", "title", "text", "evidence"],
+            annotations: Some(WRITE_NON_IDEMPOTENT),
         },
         McpActionArgSpec {
             action: "transition",
             allowed_fields: &["goal", "transition", "idempotency_key"],
             required_fields: &["goal", "transition"],
+            annotations: Some(WRITE_NON_IDEMPOTENT),
         },
         McpActionArgSpec {
             action: "modify",
@@ -221,11 +218,13 @@ impl McpTool for CoreGoalTool {
                 "idempotency_key",
             ],
             required_fields: &["goal", "schema_id", "title", "text"],
+            annotations: Some(WRITE_NON_IDEMPOTENT),
         },
         McpActionArgSpec {
             action: "mark_achieved",
             allowed_fields: &["goal", "evidence", "idempotency_key"],
             required_fields: &["goal", "evidence"],
+            annotations: Some(WRITE_NON_IDEMPOTENT),
         },
         McpActionArgSpec {
             action: "decompose",
@@ -236,6 +235,7 @@ impl McpTool for CoreGoalTool {
                 "idempotency_key",
             ],
             required_fields: &["parent_goal", "children", "idempotency_key"],
+            annotations: Some(WRITE_IDEMPOTENT),
         },
     ];
     type Args = CoreGoalArgs;

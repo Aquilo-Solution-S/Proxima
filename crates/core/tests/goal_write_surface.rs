@@ -267,6 +267,7 @@ impl McpTool for StubDispatchTool {
         action: "look",
         allowed_fields: &["id"],
         required_fields: &["id"],
+        annotations: None,
     }];
     type Args = StubDispatchArgs;
     type Output = ();

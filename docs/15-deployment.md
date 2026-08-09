@@ -2,10 +2,11 @@
 
 > **Status:** current + deferred sections. Deferred rows are design intent, not implementation claims.
 
-Containerized Code-flavor MCP server, authenticated exclusively via
-Zitadel bearer JWT, with a single unauthenticated route:
+Containerized Code-flavor server, authenticated exclusively via Zitadel
+bearer JWT, with a single unauthenticated route:
 `GET /.well-known/oauth-protected-resource` (RFC 9728). The binary is
-`apps/proxima-mcp` built with `--features code`.
+`apps/proxima-mcp` built with `--features code`; add the `rest` feature and
+set `PROXIMA_REST_ENABLED=true` to serve `/v1` beside `/mcp`.
 
 ## Runtime requirements
 
@@ -81,11 +82,12 @@ retries on the next pod rather than queueing behind readers.
 | `PROXIMA_ALLOWED_HOSTS` | no | `proxima.example.com` | Inbound `Host` allowlist (hostnames or `host:port`, no wildcards) for the DNS-rebinding guard. Defaults to the host of `PROXIMA_PUBLIC_URL` + the allowed origins; loopback always permitted. Set only to override. |
 | `PROXIMA_PUBLIC_URL` | yes | `https://proxima.example.com` | Public HTTPS base for OIDC; its host is auto-allowed as an inbound `Host`. |
 | `PROXIMA_OIDC_ISSUER` | yes | `https://zitadel.example.com` | Zitadel issuer URL. |
-| `PROXIMA_OIDC_AUDIENCE` | yes | `https://proxima.example.com/mcp` | Resource id expected in token `aud`. |
+| `PROXIMA_OIDC_AUDIENCE` | yes | `https://proxima.example.com` | Public-origin resource id expected in token `aud`; one token covers `/mcp` and an enabled `/v1`. |
 | `PROXIMA_OIDC_JWKS_URI` | no | `https://zitadel.example.com/oauth/v2/keys` | Overrides OIDC discovery. |
 | `PROXIMA_OIDC_SUBJECT_MAP_JSON` | yes* | `[{"iss":"https://zitadel.example.com","sub":"...","user_id":"550e8400-e29b-41d4-a716-446655440000"}]` | Issuer-aware `(iss, sub) -> user_id` identity map. Required whenever `PROXIMA_OIDC_ISSUER` is set, unless `PROXIMA_OIDC_SUBJECT_MAP` is given instead (the two are mutually exclusive). |
 | `PROXIMA_OIDC_SUBJECT_MAP` | yes* | `sub-1:550e8400-e29b-41d4-a716-446655440000` | Legacy single-issuer shorthand `sub:<uuid>,sub2:<uuid2>`; every entry binds to `PROXIMA_OIDC_ISSUER`. Valid only because exactly one issuer is ever accepted here. |
 | `PROXIMA_OIDC_ALLOWED_SUBJECTS` | no | `user1,user2` | Comma-separated `sub` allowlist layered on top of the subject map above; never an identity source by itself. |
+| `PROXIMA_REST_ENABLED` | no | `true` | Serve `/v1` on the MCP listener. Default `false`; has no effect unless the binary was built with the `rest` feature. |
 | `PROXIMA_TOOL_PROFILE` | no | `memory` | Tool profile. **Unset ⇒ fail-closed `memory`** (excludes `core_membership` + `core_publish`). Set `full` to advertise the whole surface incl. `core_publish` (irreversible World transfer) — logged at startup. |
 | `PROXIMA_TOOL_ALLOW` | no | `core_goal:set` | Comma-separated canonical scope keys added after profile resolution. |
 | `PROXIMA_TOOL_DENY` | no | `core_goal:decompose` | Comma-separated canonical scope keys removed after allow. Compliance erase is not exposed as an MCP action. |
@@ -103,18 +105,19 @@ retries on the next pod rather than queueing behind readers.
 
 ## No standing bypass
 
-MCP serving has no Proxima-local static bearer fallback. Configure a host
+The served transports have no Proxima-local static bearer fallback. Configure a host
 `Authenticator` that returns server-resolved `OwnerRoles`; the shipped OIDC
 authenticator obtains them through its constructor-injected `OwnerAccessPort`.
 Stale local-token bearer prefixes fail closed and are not forwarded to host
 auth. Break-glass during a Zitadel outage belongs in the external identity
 layer as a short-lived, audited host credential, never as a standing token on
-`/mcp`.
+`/mcp` or `/v1`.
 
 ## Security guarantee
 
 Only `/.well-known/oauth-protected-resource` is anonymous. All `/mcp`
-endpoints require an `aud`-bound Zitadel JWT, validated in-process.
+endpoints, and all `/v1` endpoints when enabled, require the same
+public-origin `aud`-bound Zitadel JWT validated in-process.
 401 responses carry `WWW-Authenticate: Bearer resource_metadata="…"`
 (RFC 9728). Defense in depth: the same JWT MUST be validated at the
 cluster edge (see [§Edge defense-in-depth](#edge-defense-in-depth)).
@@ -146,7 +149,8 @@ unchanged — no `Host`-rewrite-to-localhost workaround is needed.
 ## Build & run
 
 ```sh
-# The Dockerfile already builds with `--features code` and SQLX_OFFLINE=true.
+# The Dockerfile builds with `--features code` and SQLX_OFFLINE=true.
+# This default image serves MCP only; see below for the two REST gates.
 docker build -t proxima-mcp .
 
 docker run -p 8080:8080 \
@@ -156,7 +160,7 @@ docker run -p 8080:8080 \
   -e PROXIMA_ALLOWED_ORIGINS=https://claude.example.com \
   -e PROXIMA_PUBLIC_URL=https://proxima.example.com \
   -e PROXIMA_OIDC_ISSUER=https://zitadel.example.com \
-  -e PROXIMA_OIDC_AUDIENCE=https://proxima.example.com/mcp \
+  -e PROXIMA_OIDC_AUDIENCE=https://proxima.example.com \
   -e PROXIMA_OIDC_SUBJECT_MAP=zitadel-subject-id:550e8400-e29b-41d4-a716-446655440000 \
   proxima-mcp
 ```
@@ -171,13 +175,32 @@ docker run -p 8080:8080 \
   -e PROXIMA_ALLOWED_ORIGINS=https://claude.example.com \
   -e PROXIMA_PUBLIC_URL=https://proxima.example.com \
   -e PROXIMA_OIDC_ISSUER=https://zitadel.example.com \
-  -e PROXIMA_OIDC_AUDIENCE=https://proxima.example.com/mcp \
+  -e PROXIMA_OIDC_AUDIENCE=https://proxima.example.com \
   -e PROXIMA_OIDC_SUBJECT_MAP=zitadel-subject-id:550e8400-e29b-41d4-a716-446655440000 \
   -e PROXIMA_TOOL_PROFILE=memory \
   proxima-mcp
 ```
 
-The default `memory` profile keeps the advertised MCP surface small (better LLM
+Optional REST surface:
+
+```dockerfile
+# In the image build stage; the repository Dockerfile currently omits REST.
+RUN cargo build --release -p proxima-mcp --features code,rest
+```
+
+```sh
+# In that REST-capable image. Omitting this variable still serves MCP only.
+docker run ... \
+  -e PROXIMA_REST_ENABLED=true \
+  -e PROXIMA_OIDC_AUDIENCE=https://proxima.example.com \
+  proxima-mcp
+```
+
+The Cargo feature only compiles the adapter; `PROXIMA_REST_ENABLED=true` only
+mounts it. Both gates are required. Route `/v1` at the gateway only when both
+are set (see [10 §REST Surface](10-configuration.md#rest-surface)).
+
+The default `memory` profile keeps the advertised tool surface small (better LLM
 tool selection, lower blast radius) and fail-closed — `core_publish` and
 `core_membership` are opt-in via `PROXIMA_TOOL_PROFILE=full`. The profile is not
 itself a security boundary: every tool call remains gated by per-actor authz and
@@ -187,7 +210,7 @@ role checks.
 profile is one deployment-wide ceiling. A host that composes Proxima as a library
 resolves a per-subject `ToolScope` (e.g. derived from the subject's resolved
 role) and attaches it with
-`AuthzContext::server_resolved(roles, path).with_tool_scope(scope)`; the MCP edge
+`AuthzContext::server_resolved(roles, path).with_tool_scope(scope)`; the shared edge
 intersects it with the env ceiling (`ToolScope::intersect` only narrows, never
 widens), so a per-user scope can restrict but never exceed the deployment
 ceiling. Proxima ships the mechanism; which subject gets which scope is the
@@ -226,26 +249,31 @@ and the embedding signal→action runbook: [how-to/operate.md](how-to/operate.md
 ## Zitadel setup
 
 - Create a Zitadel project.
-- Create an API/resource whose identifier equals `PROXIMA_OIDC_AUDIENCE`.
+- Create an API/resource whose identifier equals `PROXIMA_OIDC_AUDIENCE`, the
+  public origin (`https://proxima.example.com`), not a surface path.
 - Register an MCP client app (auth-code + PKCE) with redirect URIs for
   Claude Code / Codex / Cursor.
-- The client must request the resource as audience.
+- The client must request that origin as its RFC 8707 resource/audience; the
+  resulting token covers `/mcp` and an enabled `/v1`.
 - Optionally enable Dynamic Client Registration (RFC 7591).
 
 ## Edge defense-in-depth
 
 Ingress MUST:
+
 - Terminate TLS.
 - Pass `/.well-known/oauth-protected-resource` through unauthenticated.
-- Statelessly validate the Zitadel JWT (NOT a session login-proxy).
+- Statelessly validate the Zitadel JWT on `/mcp`, and on `/v1` when that
+  optional surface is routed (NOT a session login-proxy).
 - Forward the `Authorization` header.
 - Restrict pod ingress to the gateway with a `NetworkPolicy`.
-- Cap request body size and apply a per-client rate/concurrency limit. The MCP
+- Cap request body size and apply a per-client rate/concurrency limit. The
   server rejects an oversized request body before parsing and caps individual
   tool-arg fields, but does no rate limiting of its own, so the proxy is the
   first bound on abusive request volume.
 
 Envoy `jwt_authn` filter snippet:
+
 ```yaml
 http_filters:
   - name: envoy.filters.http.jwt_authn
@@ -254,20 +282,30 @@ http_filters:
       providers:
         zitadel:
           issuer: https://zitadel.example.com
-          audiences: ["https://proxima.example.com/mcp"]
+          audiences: ["https://proxima.example.com"]
           jwks_uri: https://zitadel.example.com/oauth/v2/keys
       rules:
         - match:
             prefix: /mcp
           requires:
             providers: [zitadel]
+        # Include this rule only when the gateway exposes the enabled
+        # REST-capable deployment. The rule does not enable `/v1` itself.
+        - match:
+            prefix: /v1
+          requires:
+            providers: [zitadel]
 ```
 
 Ingress-nginx annotation:
+
 ```yaml
 nginx.ingress.kubernetes.io/auth-url: https://zitadel.example.com/oauth/v2/introspect
 nginx.ingress.kubernetes.io/auth-response-headers: X-Auth-Request-User, X-Auth-Request-Email
 ```
+
+Apply the same authenticated Ingress policy to `/v1` when routing it; never
+place the optional path on a separate unauthenticated Ingress.
 
 ## Blob storage lifecycle
 

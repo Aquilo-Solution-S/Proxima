@@ -20,7 +20,6 @@ pub const CORE_FACT_ACTIONS: &[CoreActionMeta] = &[
         scope_key: protocol_action::CORE_FACT_CITATION_OF_FACT,
         description: "Return the owner-scoped citation mapping and cited object for one Fact.",
         produces_schema_ids: &[],
-        annotations: READ_ONLY,
     },
     CoreActionMeta {
         tool: CoreFactTool::NAME,
@@ -28,7 +27,6 @@ pub const CORE_FACT_ACTIONS: &[CoreActionMeta] = &[
         scope_key: protocol_action::CORE_FACT_CITATION_OF_ENTITY_HEAD,
         description: "Return citation data for a stateful Fact entity's current head.",
         produces_schema_ids: &[],
-        annotations: READ_ONLY,
     },
     CoreActionMeta {
         tool: CoreFactTool::NAME,
@@ -36,7 +34,6 @@ pub const CORE_FACT_ACTIONS: &[CoreActionMeta] = &[
         scope_key: protocol_action::CORE_FACT_FACTS_CITING_OBJECT,
         description: "Return owner-scoped Facts whose citation mapping points at a cited object.",
         produces_schema_ids: &[],
-        annotations: READ_ONLY,
     },
 ];
 
@@ -68,16 +65,19 @@ impl McpTool for CoreFactTool {
             action: "citation_of_fact",
             allowed_fields: &["fact"],
             required_fields: &["fact"],
+            annotations: Some(READ_ONLY),
         },
         McpActionArgSpec {
             action: "citation_of_entity_head",
             allowed_fields: &["fact_entity_id"],
             required_fields: &["fact_entity_id"],
+            annotations: Some(READ_ONLY),
         },
         McpActionArgSpec {
             action: "facts_citing_object",
             allowed_fields: &["cited_object_id", "limit", "cursor"],
             required_fields: &["cited_object_id"],
+            annotations: Some(READ_ONLY),
         },
     ];
     type Args = CoreFactArgs;

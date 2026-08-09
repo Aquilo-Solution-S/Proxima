@@ -42,8 +42,9 @@ pub enum FlavorRegistryError {
     },
     /// A registered MCP tool has no resolvable behaviour declaration, so the
     /// owner-role gate cannot tell a read from a write and has to assume a
-    /// write. Substrate tools may answer through the core manifest; a flavor
-    /// tool has only `ANNOTATIONS`.
+    /// write. Substrate flat tools may answer through the core manifest; a
+    /// flavor flat tool has only `ANNOTATIONS`. Dispatchers resolve through
+    /// their action specs and are not subject to this error.
     UndeclaredToolBehavior {
         name: &'static str,
     },

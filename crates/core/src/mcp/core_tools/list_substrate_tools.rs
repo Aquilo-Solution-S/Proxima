@@ -3,6 +3,7 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use crate::AccessKind;
 use crate::mcp::{
     McpToolAnnotations, McpToolCtx, McpToolDescriptor, McpToolError, McpToolOrigin,
     core_action_meta,
@@ -53,7 +54,7 @@ pub async fn list_substrate_tools(
 ) -> Result<ListSubstrateToolsOutput, McpToolError> {
     let mut tools = Vec::new();
     for desc in ctx.registry.list_mcp_tools() {
-        if !ctx.authz.tool_scope().allows_group_advertisement(desc.name) {
+        if !tool_visible(&ctx, desc) {
             continue;
         }
         tools.push(SubstrateToolItem {
@@ -70,21 +71,19 @@ pub async fn list_substrate_tools(
 ///
 /// Driven by the descriptor's `action_arg_specs`, which is THE enumeration
 /// of a dispatcher's actions. `core_action_meta` is decoration a substrate
-/// action gets and a flavor action does not — scope key, prose, produced
-/// schema ids, per-action annotations — so it is looked up per already-known
-/// action rather than iterated. Driving the loop from `all_core_actions()`
+/// action gets and a flavor action does not — scope key, curated prose, and
+/// produced schema ids — so it is looked up per already-known action rather
+/// than iterated. Flavor prose comes from the enum-variant description derived
+/// into the tool schema. Driving the loop from `all_core_actions()`
 /// meant a flavor dispatcher listed no actions at all in `proxima://tools`:
 /// present in the catalog, described as if it were flat.
-///
-/// A flavor action's `description` is empty and its annotations come from
-/// the tool, both known gaps with a stated fix direction in docs/12.
 pub(super) fn substrate_tool_actions(
     ctx: &McpToolCtx,
     desc: &McpToolDescriptor,
 ) -> Vec<SubstrateToolActionItem> {
     desc.action_arg_specs
         .iter()
-        .filter(|spec| action_visible(ctx, desc.name, spec.action))
+        .filter(|spec| action_visible(ctx, desc, spec.action))
         .map(|spec| {
             let meta = core_action_meta(desc.name, spec.action);
             SubstrateToolActionItem {
@@ -93,8 +92,8 @@ pub(super) fn substrate_tool_actions(
                     || format!("{}:{}", desc.name, spec.action),
                     |meta| meta.scope_key.to_string(),
                 ),
-                description: meta
-                    .map(|meta| meta.description)
+                description: desc
+                    .resolved_action_description(spec.action)
                     .unwrap_or_default()
                     .to_string(),
                 produces_schema_ids: meta
@@ -103,13 +102,7 @@ pub(super) fn substrate_tool_actions(
                     .iter()
                     .map(|id| (*id).to_string())
                     .collect(),
-                // The same fallback REST and the OpenAPI generator apply: a
-                // flavor dispatcher has no per-action override, so the tool's
-                // own annotations decide.
-                annotations: meta.map_or_else(
-                    || desc.resolved_annotations().unwrap_or_default(),
-                    |meta| meta.annotations,
-                ),
+                annotations: spec.annotations.unwrap_or_default(),
                 allowed_fields: spec
                     .allowed_fields
                     .iter()
@@ -125,8 +118,30 @@ pub(super) fn substrate_tool_actions(
         .collect()
 }
 
-fn action_visible(ctx: &McpToolCtx, tool: &str, action: &str) -> bool {
-    scope_permits_action(ctx.authz.tool_scope(), tool, action)
+fn action_visible(ctx: &McpToolCtx, tool: &McpToolDescriptor, action: &str) -> bool {
+    scope_permits_action(ctx.authz.tool_scope(), tool.name, action)
+        && owner_role_permits(ctx, tool.action_is_read_only(action))
+}
+
+fn tool_visible(ctx: &McpToolCtx, tool: &McpToolDescriptor) -> bool {
+    if !ctx.authz.tool_scope().allows_group_advertisement(tool.name) {
+        return false;
+    }
+    if tool.action_arg_specs.is_empty() {
+        owner_role_permits(ctx, tool.is_read_only())
+    } else {
+        tool.action_arg_specs
+            .iter()
+            .any(|spec| action_visible(ctx, tool, spec.action))
+    }
+}
+
+fn owner_role_permits(ctx: &McpToolCtx, read_only: bool) -> bool {
+    if read_only {
+        ctx.authz.may_read(&ctx.owner, AccessKind::Fact)
+    } else {
+        ctx.authz.may_write(&ctx.owner, AccessKind::Fact)
+    }
 }
 
 /// Whether `scope` advertises `action` of dispatcher `tool`: either the whole

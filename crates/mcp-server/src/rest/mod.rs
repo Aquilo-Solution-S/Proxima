@@ -27,14 +27,12 @@ use axum::extract::{Path, RawPathParams, State};
 use axum::http::{HeaderValue, Method, StatusCode, Uri, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{any, get};
-use proxima_core::mcp::{
-    McpToolDescriptor, McpToolOrigin, all_core_resources, core_action_meta, tool_name_matches,
-};
-use proxima_core::{CoreResourceMeta, ToolScope};
+use proxima_core::CoreResourceMeta;
+use proxima_core::mcp::{McpToolDescriptor, McpToolOrigin, all_core_resources, tool_name_matches};
 
 use crate::handler::{
-    advertised_resource_scope_keys, project_dispatcher_actions, resource_scope_allows,
-    tool_allowed_for_auth,
+    action_allowed_for_auth, advertised_resource_scope_keys, annotations_for_auth,
+    project_dispatcher_actions_for_auth, resource_scope_allows, tool_allowed_for_auth,
 };
 use crate::rest::context::{RestAuth, author_from_headers, reject_reserved_arguments};
 use crate::rest::error::{Problem, problem_for};
@@ -92,14 +90,13 @@ pub fn router(host: McpToolHost, public_url: Option<String>) -> Router {
 /// the same function — so the two surfaces cannot drift by omission.
 #[allow(clippy::unused_async, reason = "axum handlers must be futures")]
 async fn list_tools(State(state): State<RestState>, RestAuth(auth): RestAuth) -> Response {
-    let scope = auth.authz.tool_scope();
     let tools: Vec<serde_json::Value> = state
         .host
         .registry()
         .list_mcp_tools()
         .iter()
         .filter(|descriptor| tool_allowed_for_auth(Some(&auth), descriptor))
-        .map(|descriptor| tool_json(descriptor, Some(scope)))
+        .map(|descriptor| tool_json(descriptor, Some(&auth)))
         .collect();
     json_ok(&serde_json::json!({ "tools": tools }))
 }
@@ -110,9 +107,8 @@ async fn list_tools(State(state): State<RestState>, RestAuth(auth): RestAuth) ->
 /// denial is `403` (see [`dispatch`]), because there the caller has asserted
 /// the tool exists and is owed the reason.
 fn tool_descriptor(state: &RestState, auth: &crate::McpAuthContext, tool: &str) -> Response {
-    let scope = auth.authz.tool_scope();
     match find_descriptor(state, tool).filter(|d| tool_allowed_for_auth(Some(auth), d)) {
-        Some(descriptor) => json_ok(&tool_json(descriptor, Some(scope))),
+        Some(descriptor) => json_ok(&tool_json(descriptor, Some(auth))),
         None => Problem::not_found(format!("tool {tool} not found"), &tool_instance(tool))
             .into_response(),
     }
@@ -161,6 +157,7 @@ async fn openapi(State(state): State<RestState>, RestAuth(auth): RestAuth) -> Re
         &tools,
         &resources,
         state.public_url.as_deref(),
+        Some(&auth),
     ))
 }
 
@@ -190,19 +187,57 @@ async fn tool_route(
     if method == Method::GET {
         return tool_descriptor(&state, &auth, &tool);
     }
-    let read_only = descriptor.is_read_only();
-    let allow = if read_only {
-        "GET, POST, QUERY"
-    } else {
-        "GET, POST"
-    };
-    if let Err(problem) = gate_method(&method, read_only, allow, &instance) {
-        return problem.into_response();
+    if method != Method::POST && method != Method::QUERY {
+        let admits_query = if descriptor.action_arg_specs.is_empty() {
+            descriptor.is_read_only()
+        } else {
+            descriptor.action_arg_specs.iter().any(|spec| {
+                descriptor.action_is_read_only(spec.action)
+                    && action_allowed_for_auth(Some(&auth), descriptor, spec.action)
+            })
+        };
+        let allow = if admits_query {
+            "GET, POST, QUERY"
+        } else {
+            "GET, POST"
+        };
+        return gate_method(&method, false, allow, &instance)
+            .expect_err("non-invocation method is rejected")
+            .into_response();
+    }
+    if descriptor.action_arg_specs.is_empty() {
+        let read_only = descriptor.is_read_only();
+        let allow = if read_only {
+            "GET, POST, QUERY"
+        } else {
+            "GET, POST"
+        };
+        if let Err(problem) = gate_method(&method, read_only, allow, &instance) {
+            return problem.into_response();
+        }
     }
     let args = match request_arguments(&body, &instance) {
         Ok(args) => args,
         Err(problem) => return problem.into_response(),
     };
+    // A whole-dispatcher invocation still names its action in the body, so
+    // method safety resolves from that action spec just like the narrowed
+    // route. Missing/unknown actions are writes here and are classified by
+    // the shared dispatch validator after POST reaches it.
+    if !descriptor.action_arg_specs.is_empty() {
+        let read_only = args
+            .get("action")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|action| descriptor.action_is_read_only(action));
+        let allow = if read_only {
+            "GET, POST, QUERY"
+        } else {
+            "GET, POST"
+        };
+        if let Err(problem) = gate_method(&method, read_only, allow, &instance) {
+            return problem.into_response();
+        }
+    }
     dispatch(&state, &auth, &headers, descriptor.name, args, &instance).await
 }
 
@@ -232,7 +267,7 @@ async fn action_route(
         return Problem::not_found(format!("tool {tool} has no action {action}"), &instance)
             .into_response();
     }
-    let read_only = action_is_read_only(descriptor, &action);
+    let read_only = descriptor.action_is_read_only(&action);
     let allow = if read_only { "POST, QUERY" } else { "POST" };
     if let Err(problem) = gate_method(&method, read_only, allow, &instance) {
         return problem.into_response();
@@ -343,41 +378,6 @@ fn gate_method(
     .with_allow(allow))
 }
 
-/// Per-action read/write for a dispatcher action route.
-///
-/// The resolution order is `ScopeGateBehavior::enforce_owner_role`'s,
-/// deliberately: per-action manifest entry first, the tool's own declaration
-/// only when there is no entry (a flavor dispatcher has none). A transport
-/// that gated on the tool level would disagree with the gate underneath it,
-/// in both directions —
-///
-/// - it would under-advertise real reads: `core_membership:list_members` and
-///   `core_upload:read_url` leaves sit under write/destructive parents and
-///   would lose `QUERY` entirely; and
-/// - it would eventually over-advertise a write. `core_fact` is `read_only`
-///   at tool level and all of its actions are reads today, so nothing is
-///   wrong yet — but tool-level gating means the day a write action is added
-///   to it, `QUERY` (safe, and auto-retryable by any proxy or client
-///   library) is advertised and accepted on a write path. Resolving per
-///   action closes that permanently rather than leaving it to be noticed.
-///
-/// Silence still means write: an action that has not said what it does may
-/// well mutate, and guessing "read" would hand a caller a retryable write.
-///
-/// A flavor dispatcher has no per-action entry — `core_action_meta` is a
-/// substrate table, and per-action annotations for flavors are deferred — so
-/// its tool-level annotations decide POST vs QUERY for every one of its
-/// actions. That is a stated gap with a named hazard, not an oversight: see
-/// docs/12 §Known gaps for flavor dispatchers.
-fn action_is_read_only(descriptor: &McpToolDescriptor, action: &str) -> bool {
-    core_action_meta(descriptor.name, action)
-        .map(|meta| meta.annotations)
-        .or_else(|| descriptor.resolved_annotations())
-        .unwrap_or_default()
-        .read_only
-        .unwrap_or(false)
-}
-
 /// Parse the request body into the tool's arguments object.
 fn request_arguments(body: &Bytes, instance: &str) -> Result<serde_json::Value, Problem> {
     let args = if body.is_empty() {
@@ -437,7 +437,10 @@ fn advertised_tool_ids(state: &RestState, auth: &crate::McpAuthContext) -> BTree
         .collect()
 }
 
-fn tool_json(descriptor: &McpToolDescriptor, scope: Option<&ToolScope>) -> serde_json::Value {
+fn tool_json(
+    descriptor: &McpToolDescriptor,
+    auth: Option<&crate::McpAuthContext>,
+) -> serde_json::Value {
     serde_json::json!({
         "id": descriptor.name,
         "description": descriptor.description,
@@ -445,11 +448,11 @@ fn tool_json(descriptor: &McpToolDescriptor, scope: Option<&ToolScope>) -> serde
             McpToolOrigin::Substrate => serde_json::json!("substrate"),
             McpToolOrigin::Flavor(flavor) => serde_json::json!({ "flavor": flavor }),
         },
-        "annotations": descriptor.resolved_annotations(),
+        "annotations": annotations_for_auth(auth, descriptor),
         // Narrowed per action by the same projection `tools/list` applies, so
         // a palette that permits one leaf of a dispatcher advertises one leaf
         // on both surfaces (R6).
-        "args_schema": project_dispatcher_actions(&descriptor.args_schema, scope, descriptor.name),
+        "args_schema": project_dispatcher_actions_for_auth(descriptor, auth),
     })
 }
 
@@ -559,16 +562,16 @@ mod tests {
         let membership = descriptor(protocol_tool::CORE_MEMBERSHIP);
         assert!(!membership.is_read_only(), "parent is a write tool");
         assert!(
-            action_is_read_only(membership, "list_members"),
+            membership.action_is_read_only("list_members"),
             "a read-only leaf must keep QUERY under a write parent"
         );
-        assert!(!action_is_read_only(membership, "add_member"));
-        assert!(!action_is_read_only(membership, "remove_member"));
+        assert!(!membership.action_is_read_only("add_member"));
+        assert!(!membership.action_is_read_only("remove_member"));
 
         let upload = descriptor(protocol_tool::CORE_UPLOAD);
         assert!(!upload.is_read_only(), "parent is a write tool");
-        assert!(action_is_read_only(upload, "read_url"));
-        assert!(!action_is_read_only(upload, "prepare"));
+        assert!(upload.action_is_read_only("read_url"));
+        assert!(!upload.action_is_read_only("prepare"));
 
         // The direction that matters for safety: every leaf of a read-only
         // parent is checked on its own, so adding a write action here cannot
@@ -577,11 +580,11 @@ mod tests {
         assert!(fact.is_read_only());
         for spec in fact.action_arg_specs {
             assert_eq!(
-                action_is_read_only(fact, spec.action),
-                core_action_meta(fact.name, spec.action)
-                    .and_then(|meta| meta.annotations.read_only)
+                fact.action_is_read_only(spec.action),
+                spec.annotations
+                    .and_then(|annotations| annotations.read_only)
                     .unwrap_or(false),
-                "{} must answer from its own manifest entry",
+                "{} must answer from its own descriptor spec",
                 spec.action
             );
         }

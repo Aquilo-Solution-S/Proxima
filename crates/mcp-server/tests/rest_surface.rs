@@ -1,4 +1,4 @@
-//! The `/v1` surface's obligations from docs/17 §Test Obligations.
+//! The `/v1` surface's obligations from docs/17 §Contract Tests.
 //!
 //! These are what make "REST is a rendering of the manifest, not a second
 //! API" checkable rather than aspirational. Everything here runs against a
@@ -19,6 +19,7 @@ use proxima_core::protocol::{
     action as protocol_action, resource as protocol_resource, tool as protocol_tool,
 };
 use proxima_core::{AuthPath, AuthzContext, FlavorRegistry, Owner, OwnerRef, ToolScope, UserId};
+use proxima_core::{GroupId, access::Role};
 use proxima_mcp_server::{McpAuthContext, McpToolHost};
 use tower::ServiceExt;
 
@@ -38,10 +39,12 @@ const FLAVOR_DISPATCH: &str = "proxima-stub_dispatch";
     reason = "the derived schema is the subject, not the values"
 )]
 enum StubDispatchArgs {
+    /// Inspect one thing without changing it.
     Look {
         #[schemars(description = "Which thing to look at.")]
         id: String,
     },
+    /// Change one thing.
     Touch {
         #[schemars(description = "Which thing to touch.")]
         id: String,
@@ -60,7 +63,7 @@ impl proxima_core::mcp::McpTool for StubDispatchTool {
     const DESCRIPTION: &'static str = "A flavor dispatcher.";
     const ANNOTATIONS: Option<proxima_core::mcp::McpToolAnnotations> = Some(
         proxima_core::mcp::McpToolAnnotations::new()
-            .read_only(false)
+            .read_only(true)
             .open_world(false),
     );
     const ACTION_ARG_SPECS: &'static [proxima_core::mcp::McpActionArgSpec] = &[
@@ -68,11 +71,21 @@ impl proxima_core::mcp::McpTool for StubDispatchTool {
             action: "look",
             allowed_fields: &["id"],
             required_fields: &["id"],
+            annotations: Some(
+                proxima_core::mcp::McpToolAnnotations::new()
+                    .read_only(true)
+                    .open_world(false),
+            ),
         },
         proxima_core::mcp::McpActionArgSpec {
             action: "touch",
             allowed_fields: &["id"],
             required_fields: &["id"],
+            annotations: Some(
+                proxima_core::mcp::McpToolAnnotations::new()
+                    .read_only(false)
+                    .open_world(false),
+            ),
         },
     ];
     type Args = StubDispatchArgs;
@@ -103,6 +116,20 @@ fn auth(scope: ToolScope) -> McpAuthContext {
     McpAuthContext {
         owner,
         authz: AuthzContext::single_owner(&owner, AuthPath::HostBearer).with_tool_scope(scope),
+        model_id: None,
+    }
+}
+
+fn viewer_auth(scope: ToolScope) -> McpAuthContext {
+    let owner = OwnerRef::Group(GroupId::new(uuid::Uuid::now_v7()));
+    McpAuthContext {
+        owner,
+        authz: AuthzContext::for_subject_with_role(
+            UserId::new(uuid::Uuid::now_v7()),
+            [(owner, Role::viewer())],
+            AuthPath::HostBearer,
+        )
+        .with_tool_scope(scope),
         model_id: None,
     }
 }
@@ -514,6 +541,12 @@ async fn the_openapi_document_advertises_a_flavor_dispatchers_actions() {
         schema.pointer("/properties/action").is_none(),
         "`action` is carried by the route, not the body: {schema:#}",
     );
+    assert_eq!(
+        item.pointer("/post/description")
+            .and_then(serde_json::Value::as_str),
+        Some("Inspect one thing without changing it."),
+        "the action operation uses enum-variant prose: {item:#}",
+    );
 }
 
 /// R6 for a flavor: a palette holding one leaf advertises one leaf. Keyed on
@@ -582,6 +615,30 @@ async fn a_denied_flavor_dispatcher_action_is_403() {
 }
 
 // ---------------------------------------------------------- method gating
+
+#[tokio::test]
+async fn unsupported_whole_dispatcher_method_is_405_before_body_parsing() {
+    let router = app(flavor_host());
+    let ctx = auth(ToolScope::All);
+    let mut request = Request::builder()
+        .method(Method::DELETE)
+        .uri(format!("/v1/tools/{FLAVOR_DISPATCH}"))
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from("{not-json"))
+        .expect("request builds");
+    request.extensions_mut().insert(ctx);
+
+    let response = router.oneshot(request).await.expect("router is infallible");
+
+    assert_eq!(response.status(), StatusCode::METHOD_NOT_ALLOWED);
+    assert_eq!(
+        response
+            .headers()
+            .get(header::ALLOW)
+            .and_then(|v| v.to_str().ok()),
+        Some("GET, POST, QUERY"),
+    );
+}
 
 #[tokio::test]
 async fn query_on_a_write_tool_is_405_with_allow() {
@@ -675,6 +732,113 @@ async fn a_read_only_action_under_a_write_parent_keeps_query() {
         );
         assert_eq!(write.header(header::ALLOW), Some("POST"));
     }
+}
+
+/// A flavor dispatcher may mix reads and writes. Every projection and gate
+/// reads the selected descriptor spec: a viewer sees and reaches `look`, never
+/// `touch`; a writer still gets `touch` as POST-only.
+#[tokio::test]
+async fn mixed_flavor_dispatcher_actions_keep_role_and_method_boundaries() {
+    let host = flavor_host();
+    let router = app(host.clone());
+    let viewer = viewer_auth(ToolScope::All);
+    let writer = auth(ToolScope::All);
+
+    let catalog = host
+        .read_resource("proxima://tools", author(), Some(viewer.clone()))
+        .await
+        .expect("viewer reads the tool catalog");
+    let dispatch = catalog["tools"]
+        .as_array()
+        .expect("tools")
+        .iter()
+        .find(|tool| tool["tool_id"] == FLAVOR_DISPATCH)
+        .expect("mixed dispatcher stays visible through its read action");
+    let actions = dispatch["actions"].as_array().expect("actions");
+    assert_eq!(actions.len(), 1, "viewer catalog: {dispatch:#}");
+    assert_eq!(actions[0]["action"], "look");
+    assert_eq!(
+        actions[0]["description"],
+        "Inspect one thing without changing it."
+    );
+    assert_eq!(actions[0]["annotations"]["read_only"], true);
+
+    let rest_catalog = get(&router, "/v1/tools", &viewer).await.json();
+    let rest_dispatch = rest_catalog["tools"]
+        .as_array()
+        .expect("tools")
+        .iter()
+        .find(|tool| tool["id"] == FLAVOR_DISPATCH)
+        .expect("REST advertises the mixed dispatcher");
+    let advertised = rest_dispatch["args_schema"]["x-proxima-actions"]
+        .as_object()
+        .expect("actions");
+    assert_eq!(advertised.keys().collect::<Vec<_>>(), ["look"]);
+    assert_eq!(
+        advertised["look"]["description"],
+        "Inspect one thing without changing it."
+    );
+    assert_eq!(rest_dispatch["annotations"]["read_only"], true);
+
+    for uri in [
+        format!("/v1/tools/{FLAVOR_DISPATCH}/look"),
+        format!("/v1/tools/{FLAVOR_DISPATCH}"),
+    ] {
+        let body = if uri.ends_with("/look") {
+            serde_json::json!({ "id": "x" })
+        } else {
+            serde_json::json!({ "action": "look", "id": "x" })
+        };
+        let answer = call(&router, Method::QUERY, &uri, &viewer, Some(body)).await;
+        assert_eq!(answer.status, StatusCode::OK, "viewer QUERY {uri}");
+    }
+
+    let touch = format!("/v1/tools/{FLAVOR_DISPATCH}/touch");
+    let retryable_write = call(
+        &router,
+        Method::QUERY,
+        &touch,
+        &viewer,
+        Some(serde_json::json!({ "id": "x" })),
+    )
+    .await;
+    assert_eq!(retryable_write.status, StatusCode::METHOD_NOT_ALLOWED);
+    assert_eq!(retryable_write.header(header::ALLOW), Some("POST"));
+
+    let viewer_write = call(
+        &router,
+        Method::POST,
+        &touch,
+        &viewer,
+        Some(serde_json::json!({ "id": "x" })),
+    )
+    .await;
+    assert_eq!(viewer_write.status, StatusCode::FORBIDDEN);
+
+    let writer_write = call(
+        &router,
+        Method::POST,
+        &touch,
+        &writer,
+        Some(serde_json::json!({ "id": "x" })),
+    )
+    .await;
+    assert_eq!(writer_write.status, StatusCode::OK);
+
+    let viewer_openapi = get(&router, "/v1/openapi.json", &viewer).await.json();
+    let look_path = format!("/v1/tools/{FLAVOR_DISPATCH}/look");
+    assert!(viewer_openapi["paths"][&look_path]["query"].is_object());
+    assert!(viewer_openapi["paths"].get(&touch).is_none());
+    assert!(viewer_openapi["paths"][&format!("/v1/tools/{FLAVOR_DISPATCH}")]["query"].is_object());
+
+    let writer_openapi = get(&router, "/v1/openapi.json", &writer).await.json();
+    assert!(writer_openapi["paths"][&touch]["post"].is_object());
+    assert!(writer_openapi["paths"][&touch].get("query").is_none());
+    assert!(
+        writer_openapi["paths"][&format!("/v1/tools/{FLAVOR_DISPATCH}")]
+            .get("query")
+            .is_none()
+    );
 }
 
 /// `QUERY` and `POST` are the same read, so they must answer identically —

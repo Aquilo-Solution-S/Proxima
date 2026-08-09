@@ -54,7 +54,6 @@ pub struct CoreActionMeta {
     pub scope_key: &'static str,
     pub description: &'static str,
     pub produces_schema_ids: &'static [&'static str],
-    pub annotations: McpToolAnnotations,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -197,16 +196,9 @@ pub fn core_tool_annotations(canonical_name: &str) -> Option<McpToolAnnotations>
             base.read_only(false).destructive(false).idempotent(true)
         }
 
-        protocol_tool::CORE_REMEMBER
-        | protocol_tool::CORE_RECORD_UTTERANCE
-        | protocol_tool::CORE_GOAL
-        | protocol_tool::CORE_UPLOAD => base.read_only(false).destructive(false).idempotent(false),
-
-        protocol_tool::CORE_MEMBERSHIP | protocol_tool::CORE_PUBLISH => {
-            base.read_only(false).destructive(true).idempotent(false)
+        protocol_tool::CORE_REMEMBER | protocol_tool::CORE_RECORD_UTTERANCE => {
+            base.read_only(false).destructive(false).idempotent(false)
         }
-
-        protocol_tool::CORE_FACT => base.read_only(true).destructive(false).idempotent(true),
 
         _ => return None,
     };
