@@ -34,11 +34,13 @@ Registry rules:
 | schema evolution moves sidecar bytes only | entity identity and provenance stay fixed |
 | `CitedObject` / `CitationMapping` schemas may be *opaque* — content-addressed blobs with no Rust payload type | F/A/P/Goal are never opaque |
 
-An opaque schema is registered through `FlavorRegistry::add_opaque_schema`
-and carries no validator, no CBOR encoder, and no sidecar table; its
-payload is a blob addressed by content hash. `FlavorRegistry::freeze`
-asserts every other schema is fully typed — a validator dropped from a
-typed schema fails the build rather than silently disabling validation.
+An opaque citation schema is registered through
+`FlavorRegistry::try_add_opaque_schema` and carries no protocol ingress
+parser, JSON schema, or sidecar table. Its payload enters only through the
+explicit citation APIs; protocol payload ingress rejects it.
+`FlavorRegistry::try_freeze` defensively rejects an opaque F/A/P/Goal
+descriptor, and `FlavorRegistryFrozen` has no public constructor or mutation
+surface outside successful freeze.
 
 Optional typed-sidecar exceptions:
 
@@ -220,9 +222,9 @@ Forbidden:
 | sidecar-less A/P | violates typed A/P invariant |
 | replacing A/P `text` with payload fields | loses authored narrative |
 
-Fact schemas may use JSON only for opaque external snapshots where the
-Fact's source contract is itself opaque. That does not relax the A/P
-escape-hatch rule.
+Typed Fact schemas may use JSON-valued fields for external snapshots whose
+source contract is itself opaque. The Fact schema and ingress remain typed;
+this does not relax the A/P escape-hatch rule.
 
 ## Special-category declaration
 

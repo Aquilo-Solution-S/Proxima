@@ -13,9 +13,9 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use proxima_core::FlavorRegistry;
 use proxima_core::engine::{Engine, EngineMcpListener, RunningMcpListener};
 use proxima_core::error::ProtocolError;
-use proxima_core::verbs::schema::FlavorRegistryFrozen;
 
 /// Test stub: bind a loopback TCP listener so the OS hands us a real
 /// ephemeral port, spawn an accept loop that ignores connections,
@@ -47,7 +47,8 @@ impl EngineMcpListener for StubListener {
 }
 
 fn make_test_engine() -> Engine {
-    Engine::new(FlavorRegistryFrozen::new()).with_mcp_listener(Arc::new(StubListener))
+    Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests())
+        .with_mcp_listener(Arc::new(StubListener))
 }
 
 #[tokio::test]
@@ -72,7 +73,9 @@ async fn engine_start_exposes_mcp_url_then_stop_cancels() {
 
 #[tokio::test]
 async fn engine_start_without_listener_leaves_url_none() {
-    let engine = Arc::new(Engine::new(FlavorRegistryFrozen::new()));
+    let engine = Arc::new(Engine::new(
+        FlavorRegistry::new().freeze_or_panic_for_tests(),
+    ));
 
     let handle = engine.clone().start().await.expect("start");
     assert!(engine.mcp_url().is_none(), "no listener -> no url");

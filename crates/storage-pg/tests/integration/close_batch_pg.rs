@@ -3,58 +3,16 @@
 //! Covers: open-then-close, idempotent re-close, cross-owner reject,
 //! `NotFound` for unknown batches.
 
-use crate::common::{create_db, db_url, drop_db};
+use crate::common::{create_db, db_url, drop_db, fact_blob_registry};
 use proxima_core::engine::Engine;
 use proxima_core::error::ErrorCode;
 use proxima_core::verbs::fact_ingest::{
     Citation, CitationMappingHint, CitedObjectHint, FactReceiptDraft, FactWriteCommand,
 };
-use proxima_core::verbs::schema::{FlavorRegistryFrozen, PayloadKind, SchemaInfo};
 use proxima_core::{Owner, OwnerRef, SchemaId, SchemaVersion, SourceBatchId, SourceId, UserId};
 use proxima_storage_pg::PgStorage;
 use std::sync::Arc;
 use uuid::Uuid;
-
-fn schemas_for_test() -> Vec<SchemaInfo> {
-    vec![
-        SchemaInfo {
-            schema_id: SchemaId::new("test/fact_blob".into()),
-            schema_version: SchemaVersion::new(1),
-            kind: PayloadKind::Fact,
-            filter_keys: vec![],
-            sidecar_table: None,
-            natural_key_columns: vec![],
-            tombstone: None,
-            has_typed_ingress: false,
-            cited_object_schema: None,
-            embeddable: true,
-        },
-        SchemaInfo {
-            schema_id: SchemaId::new("test/cited_blob".into()),
-            schema_version: SchemaVersion::new(1),
-            kind: PayloadKind::CitedObject,
-            filter_keys: vec![],
-            sidecar_table: None,
-            natural_key_columns: vec![],
-            tombstone: None,
-            has_typed_ingress: false,
-            cited_object_schema: None,
-            embeddable: true,
-        },
-        SchemaInfo {
-            schema_id: SchemaId::new("test/citation_blob".into()),
-            schema_version: SchemaVersion::new(1),
-            kind: PayloadKind::CitationMapping,
-            filter_keys: vec![],
-            sidecar_table: None,
-            natural_key_columns: vec![],
-            tombstone: None,
-            has_typed_ingress: false,
-            cited_object_schema: None,
-            embeddable: true,
-        },
-    ]
-}
 
 fn fresh_draft(_owner: Owner, source_batch_id: SourceBatchId) -> FactWriteCommand {
     let now = time::OffsetDateTime::now_utc();
@@ -101,10 +59,8 @@ async fn close_batch_idempotent_and_owner_scoped() {
         let user_b = UserId::new(Uuid::now_v7());
         let owner_b = OwnerRef::Personal(user_b);
 
-        let engine_a = Engine::new(FlavorRegistryFrozen::with_schemas(schemas_for_test()))
-            .with_storage_ports(storage.clone());
-        let engine_b = Engine::new(FlavorRegistryFrozen::with_schemas(schemas_for_test()))
-            .with_storage_ports(storage);
+        let engine_a = Engine::new(fact_blob_registry()).with_storage_ports(storage.clone());
+        let engine_b = Engine::new(fact_blob_registry()).with_storage_ports(storage);
         let authz_a =
             proxima_core::AuthzContext::single_owner(&owner_a, proxima_core::AuthPath::HostBearer);
         let authz_b =

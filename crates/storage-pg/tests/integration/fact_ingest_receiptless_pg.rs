@@ -1,30 +1,14 @@
 //! Receiptless Fact ingest behavior.
 
-use crate::common::{create_db, db_url, drop_db};
+use crate::common::{create_db, db_url, drop_db, receiptless_fact_registry};
 use std::sync::Arc;
 
 use proxima_core::engine::Engine;
 use proxima_core::verbs::fact_ingest::FactWriteCommand;
-use proxima_core::verbs::schema::{FlavorRegistryFrozen, PayloadKind, SchemaInfo};
 use proxima_core::{OwnerRef, SchemaId, SchemaVersion, UserId};
 use proxima_storage_pg::PgStorage;
 use proxima_storage_pg::verbs::fact_embeddings::{list_facts_missing_embedding, load_fact_text};
 use uuid::Uuid;
-
-fn schemas_for_test() -> Vec<SchemaInfo> {
-    vec![SchemaInfo {
-        schema_id: SchemaId::new("test/receiptless_fact".into()),
-        schema_version: SchemaVersion::new(1),
-        kind: PayloadKind::Fact,
-        filter_keys: vec![],
-        sidecar_table: None,
-        natural_key_columns: vec![],
-        tombstone: None,
-        has_typed_ingress: false,
-        cited_object_schema: None,
-        embeddable: true,
-    }]
-}
 
 fn receiptless_command() -> FactWriteCommand {
     FactWriteCommand {
@@ -51,7 +35,7 @@ async fn receiptless_fact_ingest_creates_fresh_queryable_facts() {
         let storage = Arc::new(pg.clone()).storage_ports();
 
         let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
-        let registry = FlavorRegistryFrozen::with_schemas(schemas_for_test());
+        let registry = receiptless_fact_registry();
         let engine = Engine::new(registry).with_storage_ports(storage);
         let authz =
             proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::HostBearer);

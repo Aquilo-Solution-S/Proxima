@@ -3,14 +3,13 @@
 use proxima_core::storage_ports::*;
 use std::sync::Arc;
 
-use crate::common::{drop_db, fresh_pg, owner_fixture, owner_write_permit};
+use crate::common::{drop_db, fresh_pg, owner_fixture, owner_write_permit, sidecar_fact_registry};
 use proxima_core::verbs::fact_ingest::{
     Citation, CitationMappingHint, CitedObjectHint, FactReceiptDraft, FactWriteCommand,
 };
-use proxima_core::verbs::schema::{PayloadKind, SchemaInfo};
 use proxima_core::{
-    AuthPath, AuthzContext, Engine, ErrorCode, FactPayload, FlavorRegistryFrozen, GroupId, Owner,
-    OwnerRef, PayloadKeyBuilder, Relation, Role, SchemaId, SchemaVersion, SourceBatchId, SourceId,
+    AuthPath, AuthzContext, Engine, ErrorCode, FactPayload, GroupId, Owner, OwnerRef,
+    PayloadKeyBuilder, Relation, Role, SchemaId, SchemaVersion, SourceBatchId, SourceId,
     StorageError, UserId,
 };
 use proxima_storage_pg::verbs::fact_ingest::{
@@ -42,31 +41,6 @@ impl FactPayload for UncitedFactPayload {
     fn sidecar_table() -> Option<&'static str> {
         Some("public.uncited_fact_sidecar")
     }
-}
-
-fn schemas_for_test() -> Vec<SchemaInfo> {
-    vec![
-        SchemaInfo::opaque(
-            SchemaId::new("test/sidecar_fact".into()),
-            SchemaVersion::new(1),
-            PayloadKind::Fact,
-        ),
-        SchemaInfo::opaque(
-            SchemaId::new(UncitedFactPayload::SCHEMA_ID.into()),
-            SchemaVersion::new(UncitedFactPayload::SCHEMA_VERSION),
-            PayloadKind::Fact,
-        ),
-        SchemaInfo::opaque(
-            SchemaId::new("test/sidecar_cited".into()),
-            SchemaVersion::new(1),
-            PayloadKind::CitedObject,
-        ),
-        SchemaInfo::opaque(
-            SchemaId::new("test/sidecar_citation".into()),
-            SchemaVersion::new(1),
-            PayloadKind::CitationMapping,
-        ),
-    ]
 }
 
 fn fresh_draft(_owner: &Owner) -> FactWriteCommand {
@@ -136,8 +110,7 @@ async fn seed_group_membership(
 }
 
 fn engine_for(pg: &proxima_storage_pg::PgStorage) -> Engine {
-    Engine::new(FlavorRegistryFrozen::with_schemas(schemas_for_test()))
-        .with_storage_ports(Arc::new(pg.clone()).storage_ports())
+    Engine::new(sidecar_fact_registry()).with_storage_ports(Arc::new(pg.clone()).storage_ports())
 }
 
 async fn event_row_counts(

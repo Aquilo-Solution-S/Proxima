@@ -303,10 +303,18 @@ fn duplicate_schema_is_typed_freeze_error() {
     let schema_id = SchemaId::new("proxima-test/duplicate".to_string());
     let mut registry = FlavorRegistry::new();
     registry
-        .try_add_opaque_schema(schema_id.clone(), SchemaVersion::new(1), PayloadKind::Fact)
+        .try_add_opaque_schema(
+            schema_id.clone(),
+            SchemaVersion::new(1),
+            PayloadKind::CitedObject,
+        )
         .unwrap();
     registry
-        .try_add_opaque_schema(schema_id.clone(), SchemaVersion::new(1), PayloadKind::Fact)
+        .try_add_opaque_schema(
+            schema_id.clone(),
+            SchemaVersion::new(1),
+            PayloadKind::CitedObject,
+        )
         .unwrap();
 
     let err = registry.try_freeze().unwrap_err();
@@ -315,9 +323,34 @@ fn duplicate_schema_is_typed_freeze_error() {
         FlavorRegistryError::DuplicateSchema {
             schema_id: ref id,
             schema_version,
-            kind: PayloadKind::Fact,
+            kind: PayloadKind::CitedObject,
         } if id == &schema_id && schema_version == SchemaVersion::new(1)
     ));
+}
+
+#[test]
+fn opaque_memory_and_goal_registration_is_a_typed_error() {
+    for kind in [
+        PayloadKind::Fact,
+        PayloadKind::Abstraction,
+        PayloadKind::Perspective,
+        PayloadKind::Goal,
+    ] {
+        let schema_id = SchemaId::new(format!("proxima-test/opaque-{kind:?}"));
+        let err = FlavorRegistry::new()
+            .try_add_opaque_schema(schema_id.clone(), SchemaVersion::new(1), kind)
+            .expect_err("only citation schemas may be opaque");
+        assert!(matches!(
+            err,
+            FlavorRegistryError::OpaqueSchemaKind {
+                schema_id: ref actual_id,
+                schema_version,
+                kind: actual_kind,
+            } if actual_id == &schema_id
+                && schema_version == SchemaVersion::new(1)
+                && actual_kind == kind
+        ));
+    }
 }
 
 #[test]

@@ -1,6 +1,6 @@
 //! End-to-end `FactIngest` against a transient PG database.
 
-use crate::common::{create_db, db_url, drop_db, owner_write_permit};
+use crate::common::{create_db, db_url, drop_db, fact_blob_registry, owner_write_permit};
 use std::sync::Arc;
 
 use proxima_core::engine::Engine;
@@ -9,54 +9,12 @@ use proxima_core::storage_ports::*;
 use proxima_core::verbs::fact_ingest::{
     Citation, CitationMappingHint, CitedObjectHint, FactReceiptDraft, FactWriteCommand,
 };
-use proxima_core::verbs::schema::{FlavorRegistryFrozen, PayloadKind, SchemaInfo};
 use proxima_core::{
     GroupId, Owner, OwnerRef, Relation, Role, SchemaId, SchemaVersion, SourceBatchId, SourceId,
     UserId,
 };
 use proxima_storage_pg::PgStorage;
 use uuid::Uuid;
-
-fn schemas_for_test() -> Vec<SchemaInfo> {
-    vec![
-        SchemaInfo {
-            schema_id: SchemaId::new("test/fact_blob".into()),
-            schema_version: SchemaVersion::new(1),
-            kind: PayloadKind::Fact,
-            filter_keys: vec![],
-            sidecar_table: None,
-            natural_key_columns: vec![],
-            tombstone: None,
-            has_typed_ingress: false,
-            cited_object_schema: None,
-            embeddable: true,
-        },
-        SchemaInfo {
-            schema_id: SchemaId::new("test/cited_blob".into()),
-            schema_version: SchemaVersion::new(1),
-            kind: PayloadKind::CitedObject,
-            filter_keys: vec![],
-            sidecar_table: None,
-            natural_key_columns: vec![],
-            tombstone: None,
-            has_typed_ingress: false,
-            cited_object_schema: None,
-            embeddable: true,
-        },
-        SchemaInfo {
-            schema_id: SchemaId::new("test/citation_blob".into()),
-            schema_version: SchemaVersion::new(1),
-            kind: PayloadKind::CitationMapping,
-            filter_keys: vec![],
-            sidecar_table: None,
-            natural_key_columns: vec![],
-            tombstone: None,
-            has_typed_ingress: false,
-            cited_object_schema: None,
-            embeddable: true,
-        },
-    ]
-}
 
 fn fresh_draft(_owner: Owner) -> FactWriteCommand {
     // Receipt identity is blake3(source_id, owner, payload) — distinct
@@ -103,7 +61,7 @@ async fn fact_ingest_writes_fact_and_change_event() {
         let user = UserId::new(Uuid::now_v7());
         let owner = OwnerRef::Personal(user);
 
-        let registry = FlavorRegistryFrozen::with_schemas(schemas_for_test());
+        let registry = fact_blob_registry();
         let engine = Engine::new(registry).with_storage_ports(storage);
 
         let draft = fresh_draft(owner);
@@ -181,7 +139,7 @@ async fn list_change_events_for_replay_respects_bounds_and_owner() {
         let owner = OwnerRef::Personal(user);
         let other_owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
 
-        let registry = FlavorRegistryFrozen::with_schemas(schemas_for_test());
+        let registry = fact_blob_registry();
         let engine = Engine::new(registry).with_storage_ports(storage);
 
         let first = engine
@@ -249,7 +207,7 @@ async fn list_change_events_after_scopes_by_principal() {
         let stored_owner = principal;
         let requested_owner = principal;
 
-        let registry = FlavorRegistryFrozen::with_schemas(schemas_for_test());
+        let registry = fact_blob_registry();
         let engine = Engine::new(registry).with_storage_ports(storage);
 
         let ingested = engine
@@ -288,7 +246,7 @@ async fn list_change_events_after_filters_by_read_owners() {
         let pg = PgStorage::connect(&url).await?;
         pg.run_migrations().await?;
         let storage = Arc::new(pg.clone()).storage_ports();
-        let registry = FlavorRegistryFrozen::with_schemas(schemas_for_test());
+        let registry = fact_blob_registry();
         let engine = Engine::new(registry).with_storage_ports(storage);
 
         let p = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
@@ -345,7 +303,7 @@ async fn list_change_events_after_preserves_ascending_seq_order() {
         let pg = PgStorage::connect(&url).await?;
         pg.run_migrations().await?;
         let storage = Arc::new(pg.clone()).storage_ports();
-        let registry = FlavorRegistryFrozen::with_schemas(schemas_for_test());
+        let registry = fact_blob_registry();
         let engine = Engine::new(registry).with_storage_ports(storage);
 
         let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));

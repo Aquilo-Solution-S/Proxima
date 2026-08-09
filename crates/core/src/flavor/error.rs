@@ -35,6 +35,11 @@ pub enum FlavorRegistryError {
         schema_version: SchemaVersion,
         kind: PayloadKind,
     },
+    OpaqueSchemaKind {
+        schema_id: SchemaId,
+        schema_version: SchemaVersion,
+        kind: PayloadKind,
+    },
     UnregisteredSchemaCapabilityTags {
         schema_id: SchemaId,
         schema_version: SchemaVersion,
@@ -114,6 +119,14 @@ impl std::fmt::Display for FlavorRegistryError {
             } => write!(
                 f,
                 "schema {schema_id} v{schema_version} {kind:?} has mismatched typed-ingress registration"
+            ),
+            Self::OpaqueSchemaKind {
+                schema_id,
+                schema_version,
+                kind,
+            } => write!(
+                f,
+                "schema {schema_id} v{schema_version} {kind:?} is opaque; only CitedObject and CitationMapping schemas may be opaque"
             ),
             Self::UnregisteredSchemaCapabilityTags {
                 schema_id,

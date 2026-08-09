@@ -1,11 +1,10 @@
-use crate::common::{drop_db, fresh_pg};
+use crate::common::{drop_db, fresh_pg, test_registry};
 
 use std::sync::Arc;
 
 use proxima_core::engine::Engine;
 use proxima_core::error::ErrorCode;
 use proxima_core::verbs::query::{EntityKind, QueryCursor, QueryPage, QueryRequest};
-use proxima_core::verbs::schema::FlavorRegistryFrozen;
 use proxima_core::{AuthPath, AuthzContext, GoalId, MemoryId, OwnerRef, OwnerRefKind, UserId};
 use proxima_storage_pg::PgStorage;
 use serde_json::Value;
@@ -67,8 +66,7 @@ fn personal_owner() -> OwnerRef {
 }
 
 fn engine_for(pg: &PgStorage) -> Engine {
-    Engine::new(FlavorRegistryFrozen::new())
-        .with_storage_ports(Arc::new(pg.clone()).storage_ports())
+    Engine::new(test_registry()).with_storage_ports(Arc::new(pg.clone()).storage_ports())
 }
 
 async fn seed_memory_rows(
@@ -513,7 +511,7 @@ async fn query_cursor_second_page_has_no_overlap() {
 #[tokio::test]
 async fn mixed_query_rejects_cursor() {
     let owner = personal_owner();
-    let engine = Engine::new(FlavorRegistryFrozen::new());
+    let engine = Engine::new(test_registry());
     let mut req = QueryRequest::for_owner(owner);
     req.page.after = Some(QueryCursor::Memory {
         created_at: time::OffsetDateTime::now_utc(),
@@ -534,7 +532,7 @@ async fn mixed_query_rejects_cursor() {
 #[tokio::test]
 async fn cursor_kind_mismatch_rejects() {
     let owner = personal_owner();
-    let engine = Engine::new(FlavorRegistryFrozen::new());
+    let engine = Engine::new(test_registry());
     let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
 
     let mut goal_req = QueryRequest::for_owner(owner);

@@ -12,24 +12,6 @@ impl FlavorRegistry {
     pub fn try_freeze(self) -> Result<FlavorRegistryFrozen, FlavorRegistryError> {
         self.validate_schema_capability_tags_resolve()?;
         self.validate_flavor_descriptors()?;
-        // Every schema is either typed (a protocol-ingress parser) or
-        // opaque. A typed schema whose ingress parser was dropped would
-        // make `ingest_protocol_payload` silently accept any payload —
-        // catch the drift here, not at first write.
-        for schema in &self.schemas {
-            let has_ingress = self.protocol_ingress.iter().any(|v| {
-                v.schema_id == schema.schema_id
-                    && v.schema_version == schema.schema_version
-                    && v.kind == schema.kind
-            });
-            if schema.has_typed_ingress != has_ingress {
-                return Err(FlavorRegistryError::SchemaIngressMismatch {
-                    schema_id: schema.schema_id.clone(),
-                    schema_version: schema.schema_version,
-                    kind: schema.kind,
-                });
-            }
-        }
         let mut seen_schemas = std::collections::HashSet::new();
         for schema in &self.schemas {
             if !seen_schemas.insert((schema.schema_id.clone(), schema.schema_version, schema.kind))
@@ -38,6 +20,56 @@ impl FlavorRegistry {
                     schema_id: schema.schema_id.clone(),
                     schema_version: schema.schema_version,
                     kind: schema.kind,
+                });
+            }
+        }
+        // Every Memory/Goal schema is typed; only citation schemas may be
+        // opaque. A typed descriptor whose ingress parser was dropped is
+        // unusable at the protocol boundary, so catch that internal drift
+        // at startup rather than at first write.
+        for schema in &self.schemas {
+            if !schema.has_typed_ingress
+                && !matches!(
+                    schema.kind,
+                    PayloadKind::CitedObject | PayloadKind::CitationMapping
+                )
+            {
+                return Err(FlavorRegistryError::OpaqueSchemaKind {
+                    schema_id: schema.schema_id.clone(),
+                    schema_version: schema.schema_version,
+                    kind: schema.kind,
+                });
+            }
+            let ingress_count = self
+                .protocol_ingress
+                .iter()
+                .filter(|entry| {
+                    entry.schema_id == schema.schema_id
+                        && entry.schema_version == schema.schema_version
+                        && entry.kind == schema.kind
+                })
+                .count();
+            let expected_ingress_count = usize::from(schema.has_typed_ingress);
+            if ingress_count != expected_ingress_count {
+                return Err(FlavorRegistryError::SchemaIngressMismatch {
+                    schema_id: schema.schema_id.clone(),
+                    schema_version: schema.schema_version,
+                    kind: schema.kind,
+                });
+            }
+        }
+        for entry in &self.protocol_ingress {
+            let resolves_to_typed_schema = self.schemas.iter().any(|schema| {
+                schema.schema_id == entry.schema_id
+                    && schema.schema_version == entry.schema_version
+                    && schema.kind == entry.kind
+                    && schema.has_typed_ingress
+            });
+            if !resolves_to_typed_schema {
+                return Err(FlavorRegistryError::SchemaIngressMismatch {
+                    schema_id: entry.schema_id.clone(),
+                    schema_version: entry.schema_version,
+                    kind: entry.kind,
                 });
             }
         }

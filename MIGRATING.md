@@ -13,7 +13,7 @@ not a reference. Deployment and env vars live in
 
 | You are | Read |
 |---|---|
-| A **v0.0.7 Rust host** | [remove the inert runtime owner-access registration](#remove-the-inert-runtime-owner-access-registration), then [pass the shared Host allowlist](#pass-the-shared-host-allowlist) |
+| A **v0.0.7 Rust host** | [remove the inert runtime owner-access registration](#remove-the-inert-runtime-owner-access-registration), [pass the shared Host allowlist](#pass-the-shared-host-allowlist), then [freeze registries once](#freeze-registries-once) |
 | An **operator** promoting a deployment | [the v0.0.7 schema lane](#the-v007-schema-lane), then [operator changes](#operator-changes) |
 | Running the **code flavor** | the above, then [re-register and re-index](#re-register-and-re-index-every-code-repository) |
 | An **MCP client / agent** author | [wire changes](#wire-changes-mcp-clients) |
@@ -100,6 +100,29 @@ MCP `-32603 internal_error` or REST `500 internal`, with a redacted client
 message. The adapter previously reported MCP `-32602 invalid_params` or REST
 `400 invalid-input` and exposed the serializer diagnostic. No host, flavor,
 storage, or schema migration is required.
+
+## Freeze registries once
+
+`FlavorRegistryFrozen::{new, with_schemas, with_additional_schemas}` and its
+`Default` implementation are removed. `SchemaInfo::opaque` is internal.
+Build the mutable registry, register every schema, then freeze once:
+
+```rust
+let mut registry = FlavorRegistry::new();
+MyFlavor::register(&mut registry)?;
+registry.try_add_opaque_schema(
+    SchemaId::new("my-flavor/cited-object-v1".into()),
+    SchemaVersion::new(1),
+    PayloadKind::CitedObject,
+)?;
+let registry = registry.try_freeze()?;
+```
+
+Opaque registration accepts only `CitedObject` and `CitationMapping`.
+Fact, Abstraction, Perspective, and Goal schemas must use their typed payload
+registration methods; invalid opaque registration returns
+`FlavorRegistryError::OpaqueSchemaKind`. A frozen registry cannot be extended.
+There is no wire, storage, Lean, or database migration change in this slice.
 
 ---
 

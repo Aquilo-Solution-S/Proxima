@@ -7,12 +7,11 @@
 //! measured to make a mixed-language corpus cost nothing over a
 //! single-language one.
 
-use crate::common::{drop_db, fresh_pg, owner_fixture};
+use crate::common::{drop_db, fact_blob_only_registry, fresh_pg, owner_fixture};
 use proxima_core::engine::Engine;
 use proxima_core::storage_ports::*;
 use proxima_core::verbs::fact_ingest::{FactReceiptDraft, FactWriteCommand};
 use proxima_core::verbs::query::EntityKind;
-use proxima_core::verbs::schema::{FlavorRegistryFrozen, PayloadKind, SchemaInfo};
 use proxima_core::{Owner, OwnerRef, SchemaId, SchemaVersion, SourceBatchId, SourceId, UserId};
 use std::sync::Arc;
 use uuid::Uuid;
@@ -150,21 +149,6 @@ async fn sidecar_rows_mirror_the_owning_memory_language() -> Result<(), Box<dyn 
     Ok(())
 }
 
-fn language_schemas_for_test() -> Vec<SchemaInfo> {
-    vec![SchemaInfo {
-        schema_id: SchemaId::new("test/fact_blob".into()),
-        schema_version: SchemaVersion::new(1),
-        kind: PayloadKind::Fact,
-        filter_keys: vec![],
-        sidecar_table: None,
-        natural_key_columns: vec![],
-        tombstone: None,
-        has_typed_ingress: false,
-        cited_object_schema: None,
-        embeddable: true,
-    }]
-}
-
 fn draft_in_language(language: Option<&str>) -> FactWriteCommand {
     let now = time::OffsetDateTime::now_utc();
     FactWriteCommand {
@@ -193,7 +177,7 @@ async fn an_explicit_language_stamps_the_row_and_registers_the_language()
     let (pg, db_name) = fresh_pg().await;
     pg.run_migrations().await?;
     let storage = Arc::new(pg.clone()).storage_ports();
-    let registry = FlavorRegistryFrozen::with_schemas(language_schemas_for_test());
+    let registry = fact_blob_only_registry();
     let engine = Engine::new(registry).with_storage_ports(storage);
 
     let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
@@ -241,7 +225,7 @@ async fn an_unknown_language_is_rejected_before_the_row_lands()
     let (pg, db_name) = fresh_pg().await;
     pg.run_migrations().await?;
     let storage = Arc::new(pg.clone()).storage_ports();
-    let registry = FlavorRegistryFrozen::with_schemas(language_schemas_for_test());
+    let registry = fact_blob_only_registry();
     let engine = Engine::new(registry).with_storage_ports(storage);
 
     let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));

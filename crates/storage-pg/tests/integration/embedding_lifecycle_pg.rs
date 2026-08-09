@@ -3,13 +3,13 @@
 use std::sync::Arc;
 
 use crate::common::{
-    drop_db, engine_with_registry, fresh_pg, owner_write_permit, storage_ports_with_compliance,
+    drop_db, embedding_lifecycle_registry, engine_with_registry, fresh_pg, owner_write_permit,
+    storage_ports_with_compliance,
 };
 use proxima_core::access::{AccessError, Role};
 use proxima_core::llm::EMBEDDING_DIM;
 use proxima_core::storage_ports::{ComplianceAdminPort, FactIngestPort};
 use proxima_core::verbs::fact_ingest::{FactReceiptDraft, FactWriteCommand};
-use proxima_core::verbs::schema::{FlavorRegistryFrozen, PayloadKind, SchemaInfo};
 use proxima_core::{
     AccessKind, AuthPath, AuthzContext, ComplianceEraseOutcome, ComplianceEraseRefusal,
     ComplianceEraseTarget, EntityKind, ErrorCode, GoalId, GroupId, MemoryId, OwnerRef, SchemaId,
@@ -70,33 +70,18 @@ struct EmbeddingInfraCounts {
     jobs: i64,
 }
 
-fn embedding_registry() -> FlavorRegistryFrozen {
-    FlavorRegistryFrozen::with_schemas(vec![SchemaInfo {
-        schema_id: SchemaId::new(SCHEMA_ID.into()),
-        schema_version: SchemaVersion::new(1),
-        kind: PayloadKind::Fact,
-        filter_keys: vec![],
-        sidecar_table: None,
-        natural_key_columns: vec![],
-        tombstone: None,
-        has_typed_ingress: false,
-        cited_object_schema: None,
-        embeddable: true,
-    }])
-}
-
 fn compliance_engine(pg: &PgStorage) -> proxima_core::Engine {
-    proxima_core::Engine::new(embedding_registry()).with_storage_ports(
+    proxima_core::Engine::new(embedding_lifecycle_registry()).with_storage_ports(
         storage_ports_with_compliance(pg, Arc::new(AllowComplianceAdmin)),
     )
 }
 
 fn engine_without_operator_maintenance(pg: &PgStorage) -> proxima_core::Engine {
-    engine_with_registry(pg, embedding_registry())
+    engine_with_registry(pg, embedding_lifecycle_registry())
 }
 
 fn compliance_without_operator_engine(pg: &PgStorage) -> proxima_core::Engine {
-    proxima_core::Engine::new(embedding_registry()).with_storage_ports(
+    proxima_core::Engine::new(embedding_lifecycle_registry()).with_storage_ports(
         storage_ports_with_compliance(pg, Arc::new(DenyOperatorMaintenanceAdmin)),
     )
 }

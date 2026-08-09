@@ -4,8 +4,10 @@ use std::path::Path;
 use std::process::Command;
 
 use proxima_core::storage_ports::OwnerWritePermit;
+use proxima_core::verbs::schema::PayloadKind;
 use proxima_core::{
-    AccessKind, AuthPath, AuthzContext, Engine, FlavorRegistry, Owner, OwnerRef, Role, UserId,
+    AccessKind, AuthPath, AuthzContext, Engine, FlavorRegistry, FlavorRegistryFrozen, Owner,
+    OwnerRef, Role, SchemaId, SchemaVersion, UserId,
 };
 use proxima_pg_testkit::{
     FNV_OFFSET_BASIS, create_db_from_template, db_url, drop_db, ensure_template, fnv1a64_extend,
@@ -42,6 +44,29 @@ pub async fn migrated_db() -> (String, PgStorage) {
     }
     .with_sidecars(code_pg_sidecars());
     (db_name, pg)
+}
+
+pub const TEST_CITED_BLOB_SCHEMA_ID: &str = "test/cited_blob";
+pub const TEST_CITATION_BLOB_SCHEMA_ID: &str = "test/citation_blob";
+
+pub fn code_registry_with_test_citations() -> FlavorRegistryFrozen {
+    let mut registry = FlavorRegistry::new();
+    proxima_code::register(&mut registry).expect("code schema registration");
+    registry
+        .try_add_opaque_schema(
+            SchemaId::new(TEST_CITED_BLOB_SCHEMA_ID.into()),
+            SchemaVersion::new(1),
+            PayloadKind::CitedObject,
+        )
+        .expect("opaque cited-object registration");
+    registry
+        .try_add_opaque_schema(
+            SchemaId::new(TEST_CITATION_BLOB_SCHEMA_ID.into()),
+            SchemaVersion::new(1),
+            PayloadKind::CitationMapping,
+        )
+        .expect("opaque citation-mapping registration");
+    registry.freeze_or_panic_for_tests()
 }
 
 #[must_use]

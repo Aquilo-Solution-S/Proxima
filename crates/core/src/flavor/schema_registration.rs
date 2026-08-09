@@ -245,23 +245,34 @@ impl FlavorRegistry {
     /// Register an *opaque* schema — one with no Rust payload type.
     /// The blessed path for content-addressed `CitedObject`s and
     /// structural `CitationMapping`s whose payload is an opaque blob;
-    /// it carries no typed ingress parser and no JSON schema, so
-    /// `ingest_protocol_payload` accepts any object payload for it.
+    /// it carries no typed ingress parser and no JSON schema. Opaque
+    /// content enters through the explicit citation APIs;
+    /// `ingest_protocol_payload` rejects it.
     ///
     /// This is the *only* sanctioned way to register an untyped schema.
-    /// `freeze()` asserts every other schema has a typed ingress parser,
+    /// `try_freeze()` asserts every other schema has a typed ingress parser,
     /// so a dropped parser fails the build rather than silently disabling
     /// validation and typed sidecar construction.
     /// # Errors
     ///
-    /// Currently infallible; returns a registry error if opaque schema
-    /// admission adds validation.
+    /// Returns [`FlavorRegistryError::OpaqueSchemaKind`] for an opaque
+    /// Fact, Abstraction, Perspective, or Goal schema.
     pub fn try_add_opaque_schema(
         &mut self,
         schema_id: SchemaId,
         schema_version: SchemaVersion,
         kind: PayloadKind,
     ) -> Result<(), FlavorRegistryError> {
+        if !matches!(
+            kind,
+            PayloadKind::CitedObject | PayloadKind::CitationMapping
+        ) {
+            return Err(FlavorRegistryError::OpaqueSchemaKind {
+                schema_id,
+                schema_version,
+                kind,
+            });
+        }
         self.schemas
             .push(SchemaInfo::opaque(schema_id, schema_version, kind));
         Ok(())
