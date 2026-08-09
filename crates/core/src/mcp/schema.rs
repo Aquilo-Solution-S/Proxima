@@ -392,14 +392,24 @@ fn merge_variant(
             );
         }
     }
-    action_metadata.insert(
-        action.to_string(),
-        serde_json::json!({
-            "allowed_fields": allowed_fields,
-            "required_fields": required,
-            "field_descriptions": field_descriptions,
-        }),
-    );
+    let mut metadata = serde_json::json!({
+        "allowed_fields": allowed_fields,
+        "required_fields": required,
+        "field_descriptions": field_descriptions,
+    });
+    if let Some(description) = variant
+        .get("description")
+        .and_then(serde_json::Value::as_str)
+    {
+        metadata
+            .as_object_mut()
+            .expect("action metadata is an object")
+            .insert(
+                "description".to_string(),
+                serde_json::Value::String(description.to_string()),
+            );
+    }
+    action_metadata.insert(action.to_string(), metadata);
     Some(())
 }
 
@@ -727,8 +737,10 @@ mod tests {
     #[allow(dead_code)]
     #[serde(tag = "kind")]
     enum Demo {
+        /// Inspect one value without changing it.
         #[serde(rename = "a")]
         A { x: Option<String> },
+        /// Apply the requested change.
         #[serde(rename = "b")]
         B {},
     }
@@ -851,6 +863,25 @@ mod tests {
         assert!(
             description.contains("- b: (no args)"),
             "a variant with no fields must render `(no args)`: {description}",
+        );
+    }
+
+    #[test]
+    fn dispatcher_metadata_carries_variant_descriptions() {
+        let schema = mcp_tool_schema::<Demo>();
+        assert_eq!(
+            schema
+                .pointer("/x-proxima-actions/a/description")
+                .and_then(serde_json::Value::as_str),
+            Some("Inspect one value without changing it."),
+            "the variant doc-comment must describe its derived action: {schema:#}",
+        );
+        assert_eq!(
+            schema
+                .pointer("/x-proxima-actions/b/description")
+                .and_then(serde_json::Value::as_str),
+            Some("Apply the requested change."),
+            "each action keeps its own variant description: {schema:#}",
         );
     }
 

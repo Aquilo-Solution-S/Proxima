@@ -29,7 +29,6 @@ pub const CORE_MEMBERSHIP_ACTIONS: &[CoreActionMeta] = &[
         scope_key: protocol_action::CORE_MEMBERSHIP_ADD_MEMBER,
         description: "Add one user membership relation to a Group space.",
         produces_schema_ids: &[],
-        annotations: WRITE_NON_IDEMPOTENT,
     },
     CoreActionMeta {
         tool: CoreMembershipTool::NAME,
@@ -37,7 +36,6 @@ pub const CORE_MEMBERSHIP_ACTIONS: &[CoreActionMeta] = &[
         scope_key: protocol_action::CORE_MEMBERSHIP_REMOVE_MEMBER,
         description: "Remove all membership relations for one user in a Group space.",
         produces_schema_ids: &[],
-        annotations: DESTRUCTIVE_NON_IDEMPOTENT,
     },
     CoreActionMeta {
         tool: CoreMembershipTool::NAME,
@@ -45,7 +43,6 @@ pub const CORE_MEMBERSHIP_ACTIONS: &[CoreActionMeta] = &[
         scope_key: protocol_action::CORE_MEMBERSHIP_LIST_MEMBERS,
         description: "List users and relations for one Group space.",
         produces_schema_ids: &[],
-        annotations: READ_ONLY,
     },
 ];
 
@@ -141,16 +138,19 @@ impl McpTool for CoreMembershipTool {
             action: "add_member",
             allowed_fields: &["group", "member", "relation"],
             required_fields: &["group", "member", "relation"],
+            annotations: Some(WRITE_NON_IDEMPOTENT),
         },
         McpActionArgSpec {
             action: "remove_member",
             allowed_fields: &["group", "member"],
             required_fields: &["group", "member"],
+            annotations: Some(DESTRUCTIVE_NON_IDEMPOTENT),
         },
         McpActionArgSpec {
             action: "list_members",
             allowed_fields: &["group", "limit", "cursor"],
             required_fields: &["group"],
+            annotations: Some(READ_ONLY),
         },
     ];
     type Args = CoreMembershipArgs;

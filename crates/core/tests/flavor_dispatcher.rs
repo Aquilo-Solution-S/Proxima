@@ -18,8 +18,8 @@ use proxima_core::mcp::{
     ToolCall, core_action_meta,
 };
 use proxima_core::{
-    AuthPath, AuthzContext, FlavorRegistry, FlavorRegistryFrozen, OwnerRef, Tool, ToolCtx,
-    ToolError, ToolScope, UserId, proxima_flavor,
+    AuthPath, AuthzContext, FlavorRegistry, FlavorRegistryFrozen, GroupId, OwnerRef, Tool, ToolCtx,
+    ToolError, ToolScope, UserId, access::Role, proxima_flavor,
 };
 
 /// `CARGO_PKG_NAME` is `proxima-core` inside core's own `tests/`, so the
@@ -34,10 +34,12 @@ const DISPATCH: &str = "proxima-core_dispatch";
     reason = "the derived schema is the subject, not the values"
 )]
 enum DispatchArgs {
+    /// Inspect one thing without changing it.
     Look {
         #[schemars(description = "Which thing to look at.")]
         id: String,
     },
+    /// Change one thing and optionally record a note.
     Touch {
         #[schemars(description = "Which thing to touch.")]
         id: String,
@@ -52,18 +54,22 @@ struct DispatchTool;
 impl Tool for DispatchTool {
     const NAME: &'static str = DISPATCH;
     const DESCRIPTION: &'static str = "A flavor dispatcher declared through proxima_flavor!.";
+    // Deliberately read-only at parent level: action specs remain authoritative
+    // and keep the mixed dispatcher conservative as a whole.
     const ANNOTATIONS: Option<McpToolAnnotations> =
-        Some(McpToolAnnotations::new().read_only(false).open_world(false));
+        Some(McpToolAnnotations::new().read_only(true).open_world(false));
     const ACTION_ARG_SPECS: &'static [McpActionArgSpec] = &[
         McpActionArgSpec {
             action: "look",
             allowed_fields: &["id"],
             required_fields: &["id"],
+            annotations: Some(McpToolAnnotations::new().read_only(true).open_world(false)),
         },
         McpActionArgSpec {
             action: "touch",
             allowed_fields: &["id", "note"],
             required_fields: &["id"],
+            annotations: Some(McpToolAnnotations::new().read_only(false).open_world(false)),
         },
     ];
     type Args = DispatchArgs;
@@ -103,11 +109,31 @@ fn ctx(registry: &Arc<FlavorRegistryFrozen>, scope: ToolScope) -> McpToolCtx {
     }
 }
 
-/// Run the argument through the real behavior chain, which is the only way
-/// `ScopeGateBehavior` is reached in production.
-async fn through_the_gate(
-    registry: &Arc<FlavorRegistryFrozen>,
-    scope: ToolScope,
+fn viewer_ctx(registry: &Arc<FlavorRegistryFrozen>, scope: ToolScope) -> McpToolCtx {
+    let owner = OwnerRef::Group(GroupId::new(uuid::Uuid::now_v7()));
+    McpToolCtx {
+        owner,
+        authz: AuthzContext::for_subject_with_role(
+            UserId::new(uuid::Uuid::now_v7()),
+            [(owner, Role::viewer())],
+            AuthPath::HostBearer,
+        )
+        .with_tool_scope(scope),
+        registry: registry.clone(),
+        author: McpAuthorContext {
+            model_id: "test".into(),
+            client_name: "test".into(),
+            client_version: "0".into(),
+            caller_self_perspective: None,
+        },
+        caller_self_perspective: None,
+        extensions: McpToolExtensions::default(),
+        engine: None,
+    }
+}
+
+async fn run_gate(
+    ctx: McpToolCtx,
     args: serde_json::Value,
 ) -> Result<serde_json::Value, McpToolError> {
     let behaviors: Vec<Arc<dyn RequestBehavior>> = vec![Arc::new(ScopeGateBehavior)];
@@ -117,9 +143,19 @@ async fn through_the_gate(
         .run(ToolCall {
             name: DISPATCH.to_string(),
             args,
-            ctx: ctx(registry, scope),
+            ctx,
         })
         .await
+}
+
+/// Run the argument through the real behavior chain, which is the only way
+/// `ScopeGateBehavior` is reached in production.
+async fn through_the_gate(
+    registry: &Arc<FlavorRegistryFrozen>,
+    scope: ToolScope,
+    args: serde_json::Value,
+) -> Result<serde_json::Value, McpToolError> {
+    run_gate(ctx(registry, scope), args).await
 }
 
 /// The macro path stores the specs, and the derived schema agrees with them
@@ -151,6 +187,44 @@ fn a_macro_registered_flavor_dispatcher_carries_its_action_specs() {
         .keys()
         .collect();
     assert_eq!(derived, ["look", "touch"]);
+    assert_eq!(
+        descriptor.resolved_action_description("look"),
+        Some("Inspect one thing without changing it."),
+    );
+    assert_eq!(
+        descriptor.resolved_action_description("touch"),
+        Some("Change one thing and optionally record a note."),
+    );
+}
+
+/// The schema-derived variant prose is also the flavor catalog prose; there
+/// is no second per-action description table for flavors.
+#[tokio::test]
+async fn a_flavor_dispatcher_catalog_uses_variant_descriptions() {
+    use proxima_core::mcp::core_tools::list_substrate_tools::{
+        ListSubstrateToolsArgs, list_substrate_tools,
+    };
+
+    let registry = frozen();
+    let output = list_substrate_tools(ctx(&registry, ToolScope::All), ListSubstrateToolsArgs {})
+        .await
+        .expect("catalog lists the flavor dispatcher");
+    let dispatch = output
+        .tools
+        .iter()
+        .find(|tool| tool.tool_id == DISPATCH)
+        .expect("flavor dispatcher catalog row");
+
+    assert_eq!(dispatch.actions[0].action, "look");
+    assert_eq!(
+        dispatch.actions[0].description,
+        "Inspect one thing without changing it."
+    );
+    assert_eq!(dispatch.actions[1].action, "touch");
+    assert_eq!(
+        dispatch.actions[1].description,
+        "Change one thing and optionally record a note."
+    );
 }
 
 /// A palette holding one leaf grants one leaf. Keyed on the substrate
@@ -180,6 +254,31 @@ async fn a_flavor_dispatcher_is_gated_per_action() {
     assert!(
         matches!(err, McpToolError::NotAuthorized(ref key) if key == &format!("{DISPATCH}:touch")),
         "the denial names the leaf, not the tool: {err:?}",
+    );
+}
+
+/// Owner-role classification follows the selected descriptor spec. The
+/// parent deliberately says read-only, but the write leaf stays a write.
+#[tokio::test]
+async fn a_viewer_reaches_only_the_read_action_of_a_mixed_flavor_dispatcher() {
+    let registry = frozen();
+
+    run_gate(
+        viewer_ctx(&registry, ToolScope::All),
+        serde_json::json!({ "action": "look", "id": "x" }),
+    )
+    .await
+    .expect("the read action admits a viewer");
+
+    let err = run_gate(
+        viewer_ctx(&registry, ToolScope::All),
+        serde_json::json!({ "action": "touch", "id": "x" }),
+    )
+    .await
+    .expect_err("the write action still requires a writer");
+    assert!(
+        matches!(err, McpToolError::NotAuthorized(ref key) if key == DISPATCH),
+        "got {err:?}",
     );
 }
 
@@ -234,11 +333,10 @@ async fn a_flavor_dispatcher_validates_arguments_per_action_before_decode() {
     );
 }
 
-/// The known gap, pinned rather than left to be discovered: per-action
-/// annotations are substrate-only decoration, so a flavor dispatcher's
-/// read/write answer comes from the tool. See docs/12 §Known gaps.
+/// Per-action annotations live beside the field contract, so flavor actions
+/// need no substrate metadata and never inherit their parent's behaviour.
 #[test]
-fn a_flavor_dispatcher_resolves_read_only_at_tool_level() {
+fn a_flavor_dispatcher_resolves_behavior_from_its_action_specs() {
     let registry = frozen();
     let descriptor = registry.mcp_tool(DISPATCH).expect("registered");
 
@@ -248,7 +346,10 @@ fn a_flavor_dispatcher_resolves_read_only_at_tool_level() {
     );
     assert!(
         !descriptor.is_read_only(),
-        "the tool's own ANNOTATIONS decide, and they say write",
+        "a mixed dispatcher is conservatively a write as a whole",
     );
+    assert!(descriptor.action_is_read_only("look"));
+    assert!(!descriptor.action_is_read_only("touch"));
+    assert!(!descriptor.action_is_read_only("unknown"));
     assert_eq!(<DispatchTool as McpTool>::ACTION_ARG_SPECS.len(), 2);
 }

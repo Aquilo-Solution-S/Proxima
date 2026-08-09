@@ -150,6 +150,7 @@ stub_tool!(
         action: "look",
         allowed_fields: &["id"],
         required_fields: &["id"],
+        annotations: None,
     }]
 );
 stub_tool!(
@@ -160,6 +161,7 @@ stub_tool!(
         action: "look",
         allowed_fields: &[],
         required_fields: &[],
+        annotations: None,
     }]
 );
 stub_tool!(
@@ -170,6 +172,7 @@ stub_tool!(
         action: "look",
         allowed_fields: &["id"],
         required_fields: &["id"],
+        annotations: None,
     }]
 );
 stub_tool!(
@@ -181,11 +184,13 @@ stub_tool!(
             action: "look",
             allowed_fields: &["id"],
             required_fields: &["id"],
+            annotations: None,
         },
         McpActionArgSpec {
             action: "touch",
             allowed_fields: &["id"],
             required_fields: &["id", "note"],
+            annotations: None,
         },
     ]
 );
@@ -197,6 +202,19 @@ stub_tool!(
         action: "look",
         allowed_fields: &["id"],
         required_fields: &["id"],
+        annotations: READ_ONLY_ANNOTATIONS,
+    }],
+    READ_ONLY_ANNOTATIONS
+);
+stub_tool!(
+    SilentActionDispatcherTool,
+    "proxima-test_silentaction",
+    TaggedArgs,
+    &[McpActionArgSpec {
+        action: "look",
+        allowed_fields: &["id"],
+        required_fields: &["id"],
+        annotations: None,
     }],
     READ_ONLY_ANNOTATIONS
 );
@@ -211,11 +229,13 @@ stub_tool!(
             action: "look",
             allowed_fields: &["id"],
             required_fields: &["id"],
+            annotations: None,
         },
         McpActionArgSpec {
             action: "look",
             allowed_fields: &["id"],
             required_fields: &["id"],
+            annotations: None,
         },
     ]
 );
@@ -575,40 +595,34 @@ fn a_dispatcher_whose_field_sets_drift_cannot_be_frozen() {
     assert!(rendered.contains("note"), "{rendered}");
 }
 
-/// Per-action annotations are a substrate table, so a flavor dispatcher's
-/// tool-level `read_only` answers for *every* action it dispatches. Declared
-/// `true`, it hands a viewer role the whole dispatcher — writes included, and
-/// including the write action added to the enum later — and tells REST that
-/// each of them is `QUERY`, which a proxy may safely retry. There is no
-/// per-action override to rescue it, so freeze refuses the declaration.
-///
-/// The write-annotated counterpart seals: `flavor_dispatcher.rs` freezes a
-/// two-action flavor dispatcher declaring `read_only(false)` in `frozen()`,
-/// which every test in that file depends on.
+/// Per-action annotations remove the reason for the old flavor-only freeze
+/// prohibition: the action spec, not the parent, answers read versus write.
 #[test]
-fn a_read_only_flavor_dispatcher_without_per_action_annotations_cannot_be_frozen() {
-    let err = freeze_error::<ReadOnlyDispatcherTool>();
-    assert!(
-        matches!(
-            err,
-            FlavorRegistryError::InvalidActionSpecs {
-                name: "proxima-test_readonlydispatch",
-                ..
-            }
-        ),
-        "got {err:?}",
-    );
-    let rendered = err.to_string();
-    assert!(rendered.contains("read-only at tool level"), "{rendered}");
-    assert!(rendered.contains("read_only(false)"), "{rendered}");
+fn a_read_only_flavor_dispatcher_with_per_action_annotations_freezes() {
+    let mut registry = FlavorRegistry::new();
+    registry.add_mcp_tool_or_panic_for_tests::<ReadOnlyDispatcherTool>("proxima-test");
+    let frozen = registry.try_freeze().expect("per-action behavior seals");
+    let descriptor = frozen
+        .mcp_tool("proxima-test_readonlydispatch")
+        .expect("dispatcher registered");
+    assert!(descriptor.action_is_read_only("look"));
 }
 
-/// The inverse shape, and why the guard above keys on origin rather than on
-/// the annotation value: `core_membership` is write/destructive at tool level
-/// and its `list_members` is read-only through `CoreActionMeta`, while
-/// `core_fact` is read-only at tool level with per-action meta behind it. Both
-/// are substrate dispatchers that have somewhere to put a per-action answer,
-/// and both must keep sealing.
+#[test]
+fn missing_action_annotations_freeze_as_write_without_inheriting_the_parent() {
+    let mut registry = FlavorRegistry::new();
+    registry.add_mcp_tool_or_panic_for_tests::<SilentActionDispatcherTool>("proxima-test");
+    let frozen = registry
+        .try_freeze()
+        .expect("missing behavior fails closed");
+    let descriptor = frozen
+        .mcp_tool("proxima-test_silentaction")
+        .expect("dispatcher registered");
+    assert!(!descriptor.action_is_read_only("look"));
+    assert!(!descriptor.is_read_only());
+}
+
+/// Substrate dispatchers use the same descriptor-owned action contract.
 #[test]
 fn a_substrate_dispatcher_with_a_read_only_action_still_freezes() {
     FlavorRegistry::default()

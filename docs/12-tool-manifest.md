@@ -48,10 +48,8 @@ pub trait Tool: Send + Sync + 'static {
     const NAME: &'static str;
     const DESCRIPTION: &'static str;
     const PRODUCES_SCHEMA_IDS: &'static [&'static str] = &[];
-    /// MCP behaviour hints. Not cosmetic: the owner-role gate asks whether a
-    /// tool is read-only and demands WRITE when it cannot tell, so a read
-    /// tool that declares nothing is refused to every read-only role.
-    /// `try_freeze` refuses a registry containing a tool that says nothing.
+    /// Whole-tool behaviour hints for a flat tool. Dispatcher actions declare
+    /// behaviour on `McpActionArgSpec`; the parent is not a fallback.
     const ANNOTATIONS: Option<McpToolAnnotations> = None;
     /// The actions this tool dispatches, or `&[]` for a flat tool. THE
     /// enumeration of a dispatcher's action set — the scope gate, the tool
@@ -87,7 +85,16 @@ pub struct ToolDescriptor {
     pub produces_schema_ids: &'static [&'static str],
     pub args_schema: serde_json::Value,
     pub output_schema: serde_json::Value,
+    pub action_arg_specs: &'static [McpActionArgSpec],
+    pub annotations: Option<McpToolAnnotations>,
     pub call: McpCallFn,
+}
+
+pub struct McpActionArgSpec {
+    pub action: &'static str,
+    pub allowed_fields: &'static [&'static str],
+    pub required_fields: &'static [&'static str],
+    pub annotations: Option<McpToolAnnotations>,
 }
 ```
 
@@ -156,10 +163,12 @@ is not `type: object` or that carries a root `oneOf`/`anyOf`/`allOf`:
 - The per-variant `oneOf` is flattened into one object: a unioned top-level
   `properties` map, an `action` string-enum discriminator, and
   `additionalProperties: false`.
-- Per-action field metadata is published under the `x-proxima-actions`
-  schema extension — `allowed_fields`, `required_fields`, and
-  `field_descriptions` keyed by action — and mirrored in the
-  `proxima://tools` catalog. Fields shared across actions carry a neutral
+- Per-action metadata is published under the `x-proxima-actions` schema
+  extension — variant-derived `description`, `allowed_fields`,
+  `required_fields`, and `field_descriptions` keyed by action. The
+  `proxima://tools` catalog mirrors those field sets and, for flavor actions,
+  the variant description; substrate action prose remains the curated
+  `CoreActionMeta` description. Fields shared across actions carry a neutral
   root description that points back to this metadata.
 - **Argument validation is strict and pre-decode**, for every dispatcher
   including a flavor's. Before an action's arguments are deserialized, any
@@ -175,41 +184,28 @@ tagged on anything else would be enumerated correctly and then gated,
 validated, and routed as if it had no actions at all, so `try_freeze` refuses
 to seal a registry containing one.
 
-Three descriptions, one authority:
+Three carriers, split authority:
 
 | Surface | What it is |
 |---|---|
-| `McpToolDescriptor.action_arg_specs` | THE enumeration. Every seam that asks "which actions does this tool have" reads this. |
-| `x-proxima-actions` | Derived from the `Args` type by the schema pass; the client-facing description, and the only one carrying per-field prose. |
-| `CoreActionMeta` | Substrate-only decoration: per-action scope key, description, produced schema ids, annotations. Never an existence claim. |
+| `McpToolDescriptor.action_arg_specs` | THE enumeration and per-action behavior authority. Every scope/role gate, catalog, REST method gate, and OpenAPI operation reads its `annotations`; missing annotations or missing `read_only` means write. |
+| `x-proxima-actions` | Derived from the `Args` type by the schema pass: variant description plus allowed/required fields and their prose. |
+| `CoreActionMeta` | Substrate-only decoration: per-action scope key, curated description, and produced schema ids. Never an existence or behavior claim. |
 
 `FlavorRegistry::try_freeze` refuses a registry where the first two disagree
 (see [08 §Freeze Guards](08-core-and-flavors.md#freeze-guards)).
 
-#### Known gaps for flavor dispatchers
+Per-action behavior does not inherit the parent tool's `ANNOTATIONS` and does
+not consult `CoreActionMeta`. `McpActionArgSpec.annotations` is the sole
+answer for substrate and flavor dispatchers. `None`, or an annotation without
+`read_only: Some(true)`, fails closed as write authorization and `POST`-only
+REST exposure. Mixed read/write dispatchers therefore admit a viewer and
+`QUERY` only on the explicitly read-only action.
 
-Two pieces of per-action decoration are substrate-only today. Both are
-stated here rather than left to be discovered:
-
-- **Per-action annotations.** `CoreActionMeta.annotations` is what gives
-  `core_membership:list_members` a read-only answer under a write-annotated
-  parent. A flavor dispatcher has no such table, so every one of its actions
-  resolves read/write at *tool* level — in the owner-role gate, in the
-  `proxima://tools` catalog, and in the REST `POST` vs `QUERY` choice. The
-  hazard is the same one per-action resolution exists to close: a flavor
-  dispatcher annotated `read_only` at tool level offers `QUERY` — safe, and
-  auto-retryable by any proxy or client library — on a write action added to
-  it later, and admits a viewer role to it besides. That hazard is
-  unreachable rather than merely documented: `try_freeze` refuses a
-  flavor-origin dispatcher that declares `read_only(true)` at tool level, so
-  the declaration cannot be made until per-action annotations exist to
-  qualify it. The fix direction is a per-action annotation slot on
-  `McpActionArgSpec`, which every reader already has in hand.
-- **Per-action description.** A flavor action's `description` in the catalog
-  is the empty string. The fix direction is to lift the enum variant's own
-  doc comment into `x-proxima-actions` in `merge_variant` (the schema pass
-  already reads per-field descriptions there), so it costs the flavor author
-  nothing beyond documenting the variant.
+A flavor action's enum-variant doc comment becomes
+`x-proxima-actions.<action>.description`; the tool catalog and OpenAPI action
+operation render that derived text. No second flavor description constant or
+runtime registry exists.
 
 ## Goal Wake Config
 

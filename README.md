@@ -201,10 +201,10 @@ Status labels used below:
 - [`docs/16-edges.md`](docs/16-edges.md) — **current + design rationale**. The
   edge model: two closed kinds, kind-follows-operation, the node-home test, and
   rebuildability as the master invariant.
-- [`docs/17-rest-surface.md`](docs/17-rest-surface.md) — **design intent**. A
-  REST projection of the frozen tool manifest: derived routes, header-borne
-  call context, HTTP status map, and a generated OpenAPI document. No routes
-  ship today.
+- [`docs/17-rest-surface.md`](docs/17-rest-surface.md) — **current**. Optional
+  `/v1` REST rendering of the frozen tool manifest: derived routes,
+  header-borne call context, HTTP status map, and OpenAPI 3.2 request/response
+  schemas derived from the registered Rust tool types.
 - [`docs/dev-perf.md`](docs/dev-perf.md) — **current developer fixture note**.
   Perf reducer fixture format.
 

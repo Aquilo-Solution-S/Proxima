@@ -312,10 +312,10 @@ fn action_arg_specs_match_schema_derived_action_fields() {
 /// `CoreActionMeta` is decoration, not enumeration.
 ///
 /// A substrate action is described in two places on purpose: the
-/// descriptor's `ACTION_ARG_SPECS` say which actions exist and what fields
-/// each takes, and the `CoreActionMeta` table adds what only a substrate
-/// action gets — a scope key, prose, produced schema ids, per-action
-/// annotations. The split is fine; the two silently disagreeing is not. A
+/// descriptor's `ACTION_ARG_SPECS` say which actions exist, what fields each
+/// takes, and how each is authorized. The `CoreActionMeta` table adds only
+/// substrate decoration — a scope key, prose, and produced schema ids. The
+/// split is fine; the two silently disagreeing is not. A
 /// meta entry for an action no spec declares describes a call nobody can
 /// make; a declared action with no meta entry is a substrate action that
 /// lists no description in `proxima://tools` and answers the owner-role gate
@@ -357,7 +357,7 @@ fn core_action_meta_decorates_only_declared_actions() {
             assert!(
                 proxima_core::mcp::core_action_meta(tool.name, spec.action).is_some(),
                 "substrate action {}:{} declares itself but has no CoreActionMeta, so it has no \
-                 scope key, no description, and resolves read/write at tool level",
+                 scope key or substrate description",
                 tool.name,
                 spec.action,
             );

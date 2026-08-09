@@ -21,6 +21,11 @@ use std::collections::BTreeMap;
 use proxima_core::mcp::{CoreResourceMeta, McpToolAnnotations, McpToolDescriptor};
 use serde_json::{Map, Value, json};
 
+use crate::McpAuthContext;
+use crate::handler::{
+    action_allowed_for_auth, annotations_for_auth, project_dispatcher_actions_for_auth,
+};
+
 /// The `query` Path Item fixed field arrives in 3.2; the 2020-12 dialect is
 /// unchanged from 3.1, so `args_schema` embeds verbatim.
 const OPENAPI_VERSION: &str = "3.2.0";
@@ -92,12 +97,13 @@ pub fn document(
     tools: &[&McpToolDescriptor],
     resources: &[&CoreResourceMeta],
     public_url: Option<&str>,
+    auth: Option<&McpAuthContext>,
 ) -> Value {
     // Sorted so two calls with the same surface produce byte-identical
     // documents; serde_json preserves insertion order in this workspace.
     let mut paths: BTreeMap<String, Value> = BTreeMap::new();
     for tool in tools {
-        collect_tool_paths(tool, &mut paths);
+        collect_tool_paths(tool, auth, &mut paths);
     }
     for resource in resources {
         collect_resource_path(resource, &mut paths);
@@ -203,14 +209,19 @@ impl Operation<'_> {
 }
 
 /// Whole-tool path plus one path per dispatcher action.
-fn collect_tool_paths(tool: &McpToolDescriptor, paths: &mut BTreeMap<String, Value>) {
-    let annotations = tool.resolved_annotations().unwrap_or_default();
+fn collect_tool_paths(
+    tool: &McpToolDescriptor,
+    auth: Option<&McpAuthContext>,
+    paths: &mut BTreeMap<String, Value>,
+) {
+    let annotations = annotations_for_auth(auth, tool).unwrap_or_default();
+    let projected_schema = project_dispatcher_actions_for_auth(tool, auth);
     let whole = Operation {
         id: tool.name.to_string(),
         summary: format!("Invoke {}", tool.name),
         description: tool.description,
         parameters: context_parameter_refs(),
-        request_schema: Some(embeddable_schema(&tool.args_schema)),
+        request_schema: Some(embeddable_schema(&projected_schema)),
         produces_schema_ids: tool.produces_schema_ids,
         output_schema: Some(&tool.output_schema),
         annotations,
@@ -231,7 +242,11 @@ fn collect_tool_paths(tool: &McpToolDescriptor, paths: &mut BTreeMap<String, Val
         .get("x-proxima-actions")
         .and_then(Value::as_object);
     let discriminator = discriminator_key(&tool.args_schema).unwrap_or("action");
-    for spec in tool.action_arg_specs {
+    for spec in tool
+        .action_arg_specs
+        .iter()
+        .filter(|spec| auth.is_none() || action_allowed_for_auth(auth, tool, spec.action))
+    {
         let action = spec.action;
         // The extension carries the same field sets plus per-field prose, so
         // prefer it; a tool that declared specs without it still narrows.
@@ -246,20 +261,16 @@ fn collect_tool_paths(tool: &McpToolDescriptor, paths: &mut BTreeMap<String, Val
             });
             &synthesized
         };
-        // Per-action, not tool-level. `ScopeGateBehavior::enforce_owner_role`
-        // already resolves read-only this way — per-action first, descriptor
-        // second — so anything coarser here would advertise a method the gate
-        // underneath disagrees with. It also decides a safety question: a
-        // dispatcher annotated read-only at tool level would otherwise offer
-        // QUERY, a safe and auto-retryable method, on any write action later
-        // added to it. `core_action_meta` knows only substrate tools, so
-        // flavor dispatchers fall back to the tool's own annotations.
-        let action_annotations = proxima_core::mcp::core_action_meta(tool.name, action)
-            .map_or(annotations, |meta| meta.annotations);
+        // Per-action, not tool-level. The spec is the same authority the
+        // owner-role gate and router read; missing annotations stay a write.
+        let action_annotations = spec.annotations.unwrap_or_default();
+        let action_description = tool
+            .resolved_action_description(action)
+            .unwrap_or(tool.description);
         let narrowed = Operation {
             id: format!("{}__{action}", tool.name),
             summary: format!("Invoke {} action `{action}`", tool.name),
-            description: tool.description,
+            description: action_description,
             parameters: context_parameter_refs(),
             request_schema: Some(narrowed_action_schema(
                 &tool.args_schema,
@@ -584,7 +595,7 @@ mod tests {
     fn core_document(registry: &FlavorRegistryFrozen) -> Value {
         let tools: Vec<&McpToolDescriptor> = registry.list_mcp_tools().iter().collect();
         let resources: Vec<&CoreResourceMeta> = CORE_RESOURCES.iter().collect();
-        document(&tools, &resources, Some("https://proxima.example"))
+        document(&tools, &resources, Some("https://proxima.example"), None)
     }
 
     fn path_item<'a>(document: &'a Value, path: &str) -> &'a Value {
@@ -640,7 +651,7 @@ mod tests {
     fn public_url_is_the_only_source_of_servers() {
         let registry = frozen_registry();
         let tools: Vec<&McpToolDescriptor> = registry.list_mcp_tools().iter().collect();
-        let document = document(&tools, &[], None);
+        let document = document(&tools, &[], None, None);
         assert!(
             document.get("servers").is_none(),
             "without a public url the document must declare no server: {document:#}",
@@ -693,6 +704,11 @@ mod tests {
                 action: "look",
                 allowed_fields: &["id"],
                 required_fields: &["id"],
+                annotations: Some(
+                    proxima_core::mcp::McpToolAnnotations::new()
+                        .read_only(true)
+                        .open_world(false),
+                ),
             }];
 
         fn stub(
@@ -728,7 +744,7 @@ mod tests {
         // A flavor dispatcher that declared its actions: both forms are
         // advertised, and the narrowed one is the more precise operation.
         let declared = stub(SPECS);
-        let declared_document = document(&[&declared], &[], None);
+        let declared_document = document(&[&declared], &[], None, None);
         let paths = declared_document
             .get("paths")
             .and_then(Value::as_object)
@@ -765,7 +781,7 @@ mod tests {
         // that, because advertising a route the router would 404 is worse
         // than advertising one action fewer.
         let undeclared = stub(&[]);
-        let undeclared_document = document(&[&undeclared], &[], None);
+        let undeclared_document = document(&[&undeclared], &[], None, None);
         let paths = undeclared_document
             .get("paths")
             .and_then(Value::as_object)

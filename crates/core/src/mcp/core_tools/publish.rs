@@ -14,7 +14,6 @@ pub const CORE_PUBLISH_ACTIONS: &[CoreActionMeta] = &[CoreActionMeta {
     scope_key: protocol_action::CORE_PUBLISH_TO_WORLD,
     description: "Transfer a memory or goal's owner to World — a deliberate, irreversible publish. World is universally readable and never writable; this is an owner transfer, not a share or ACL flag.",
     produces_schema_ids: &[],
-    annotations: DESTRUCTIVE_NON_IDEMPOTENT,
 }];
 
 #[derive(Debug, Default)]
@@ -47,6 +46,7 @@ impl McpTool for CorePublishTool {
         action: "publish_to_world",
         allowed_fields: &["entity"],
         required_fields: &["entity"],
+        annotations: Some(DESTRUCTIVE_NON_IDEMPOTENT),
     }];
     type Args = CorePublishArgs;
     type Output = PublishOutput;

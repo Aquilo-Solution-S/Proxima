@@ -3,6 +3,9 @@ from pathlib import Path
 import sys
 
 REQUIRED_SUBSTRINGS = {
+    Path("AGENTS.md"): [
+        "Current build/runtime-opt-in REST projection",
+    ],
     Path("README.md"): [
         "## Design and Kernel Authority",
         "The Lean kernel",
@@ -24,6 +27,9 @@ REQUIRED_SUBSTRINGS = {
     Path("docs/15-deployment.md"): [
         "> **Status:** current + deferred sections.",
         "Deferred rows are design intent, not implementation claims.",
+    ],
+    Path("docs/17-rest-surface.md"): [
+        "> **Status:** current.",
     ],
     Path("docs/reference/compliance-status.md"): [
         "# Compliance Status",

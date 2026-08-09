@@ -1,4 +1,4 @@
-//! OAuth 2.0 Protected Resource Metadata (RFC 9728) for the MCP surface.
+//! OAuth 2.0 Protected Resource Metadata (RFC 9728) for the deployment.
 
 use axum::{Router, http::header::CONTENT_TYPE, routing::get};
 
@@ -18,21 +18,10 @@ impl ResourceServerMetadata {
     /// The RFC 9728 protected-resource identifier: the deployment's public
     /// origin, covering every surface it serves.
     ///
-    /// It used to be `{public_url}/mcp`. That identifier is per-surface, and
-    /// a second surface (`/v1`, docs/17) makes it wrong. One identifier means
-    /// one audience, one metadata document, and one token that reaches both
-    /// surfaces; two would mean non-interchangeable tokens, which is a
-    /// feature only for deployments that want surface-scoped credentials and
-    /// a permanent tax for everyone else.
-    ///
-    /// The timing is the substance. This is the `resource` value clients
-    /// pass under RFC 8707 and the audience an authorization server stamps
-    /// into tokens, so broadening it invalidates issued tokens and requires
-    /// every client to re-request. That population is small and pre-1.0
-    /// today; once `/v1` ships under a separate identifier the two-audience
-    /// split is baked into every deployment and every issued credential, and
-    /// consolidating later is a coordinated break across two client
-    /// populations instead of one. See `MIGRATING.md`.
+    /// It used to be `{public_url}/mcp`. The public origin is now the one RFC
+    /// 8707 `resource` and token audience for both `/mcp` and an enabled
+    /// `/v1`; clients therefore do not need surface-specific credentials.
+    /// See `MIGRATING.md` for the completed audience migration.
     #[must_use]
     pub fn resource(&self) -> String {
         self.public_url.trim_end_matches('/').to_string()

@@ -1,7 +1,6 @@
 # 17 — REST Surface
 
-> **Status:** design intent. No REST routes ship today; this doc is the
-> contract a REST adapter must satisfy before implementation lands.
+> **Status:** current.
 
 Second transport projection of the same engine contract. 17 owns REST
 route derivation, HTTP status mapping, and the OpenAPI document. It owns
@@ -13,14 +12,15 @@ this doc and 14 disagree, 14 wins.
 
 REST is a **rendering of the frozen tool manifest**, not a second API.
 Every route is derived at startup from `FlavorRegistryFrozen`; no route
-is hand-written per tool; every route terminates in the same dispatch
-seam MCP uses. A tool added to a flavor crate appears on REST with no
-REST-side edit, and cannot appear on REST without appearing on MCP.
+is hand-written per tool. Tool invocations and resource reads terminate in
+the same dispatch seam MCP uses; catalogs and OpenAPI are pure projections of
+the frozen descriptors. A tool added to a flavor crate appears on REST with
+no REST-side edit, and cannot appear on REST without appearing on MCP.
 
 | Rule | Contract |
 |---|---|
 | Derivation | routes generated from `McpToolDescriptor` + `CORE_RESOURCES` |
-| Dispatch | `McpToolHost::call_tool` / `read_resource`; no other entry |
+| Dispatch | invocation/resource routes use `McpToolHost::call_tool` / `read_resource` |
 | Authorization | shared edge middleware + `ScopeGateBehavior`; not re-implemented |
 | Persistence | none of its own; whatever the invoked tool already does |
 | Advertisement | caller's scope-filtered surface, same filter as `tools/list` |
@@ -68,7 +68,7 @@ concern.
 | `GET /v1/resources` | scope-filtered resource catalog from `CORE_RESOURCES` |
 | `GET /v1/resources/{path}` | read a `proxima://` resource; query string passes through |
 | `GET /v1/how-to` | the generated self-documentation, `text/markdown` |
-| `GET /v1/openapi.json` | OpenAPI 3.1 document for the caller's scope |
+| `GET /v1/openapi.json` | OpenAPI 3.2 document for the caller's scope |
 
 ### Resource path mapping
 
@@ -109,9 +109,9 @@ and specified with a request body from the start. Read-only tools are
 therefore reachable by **both** `QUERY` and `POST`; write tools accept
 `POST` only.
 
-| Tool annotation | Methods |
+| Behavior declaration | Methods |
 |---|---|
-| `read_only: true` | `QUERY`, `POST` |
+| flat-tool or action `read_only: true` | `QUERY`, `POST` |
 | anything else | `POST` |
 
 `POST` is retained alongside `QUERY` rather than replaced. Middleboxes
@@ -189,11 +189,14 @@ Two failure modes must be explicit rather than silent:
   dispatch, so it reads as "no such route" rather than as an argument
   error.
 
-`POST` vs `QUERY` is resolved per action, from the per-action manifest entry
-first and the tool's own annotations only when there is no entry. A *flavor*
-dispatcher has no per-action entry today, so its tool-level annotations
-decide the method for all of its actions — a stated gap with a named hazard,
-see [12 §Known gaps for flavor dispatchers](12-tool-manifest.md#known-gaps-for-flavor-dispatchers).
+`POST` vs `QUERY` is resolved only from the action's
+`McpActionArgSpec.annotations`, for substrate and flavor dispatchers alike.
+There is no tool-level or `CoreActionMeta` fallback; missing annotations or
+missing `read_only` fails closed as write/`POST`. The same spec drives the
+owner-role gate, scope-filtered catalogs, REST method gate, and OpenAPI
+operation. A flavor enum variant's doc comment is derived into
+`x-proxima-actions.<action>.description` and rendered by the catalog and
+OpenAPI action operation.
 
 ## Call Context
 
@@ -269,7 +272,7 @@ extension 14 anticipates.
   "title": "Not authorized",
   "status": 403,
   "detail": "tool core_publish not authorized for this MCP token",
-  "instance": "/v1/tools/core_publish/to_world"
+  "instance": "/v1/tools/core_publish/publish_to_world"
 }
 ```
 
@@ -330,11 +333,12 @@ dialect, so the newer floor costs nothing in schema fidelity.
 | path per tool | `McpToolDescriptor.name` |
 | path per dispatcher action | `McpToolDescriptor.action_arg_specs` |
 | path per resource | `CoreResourceMeta.uri_template` |
-| `post` / `query` operations | `resolved_annotations().read_only` |
+| `post` / `query` operations | `is_read_only()` / `action_is_read_only()` |
 | `operationId` | `{tool}` or `{tool}__{action}`, suffixed per method |
-| `summary` / `description` | `McpToolDescriptor.description`, per-action `field_descriptions` |
+| `summary` / `description` | `McpToolDescriptor.description`; substrate action description from `CoreActionMeta`, flavor action description from `x-proxima-actions.<action>.description` |
 | request schema | `args_schema`, narrowed per action |
-| `x-proxima-read-only`, `-destructive`, `-idempotent` | `resolved_annotations()` |
+| success response schema | `output_schema`, derived from the tool's Rust `Output` type |
+| `x-proxima-read-only`, `-destructive`, `-idempotent` | flat tool `resolved_annotations()`; dispatcher `McpActionArgSpec.annotations` |
 | security scheme | HTTP bearer |
 
 The document is generated per caller and reflects that caller's
@@ -350,30 +354,18 @@ already take `idempotency_key`, `request_id`, or `receipt_id`; REST
 adds no `Idempotency-Key` header, because a second mechanism would need
 its own storage and its own conflict semantics.
 
-**Response schemas are the known gap.** `McpToolDescriptor` carries
-`args_schema` but no output schema — only `produces_schema_ids`. Until
-that changes, generated responses are `type: object` annotated with the
-produced schema ids.
-
-`output_schema`, derived from `T::Output` exactly as `args_schema` is
-derived from `T::Args`, is worth doing on its own merits rather than
-for REST: rmcp 3 carries `outputSchema` on `Tool`, so MCP clients gain
-structured-output validation from the same change, and a derived schema
-cannot drift from the type the way hand-written response documentation
-does.
-
-It is not free, and it is not a REST slice. `McpTool::Output` is bound
-`Serialize + Send + 'static` today; adding `JsonSchema` is a
-flavor-SDK-breaking trait-bound change that every flavor tool's output
-type must satisfy. That is acceptable pre-1.0 but belongs in its own
-reviewed slice ahead of this one, not smuggled in beside a transport
-adapter.
+Every `McpToolDescriptor` carries `output_schema`, derived by
+`mcp_output_schema::<T::Output>()` exactly as `args_schema` is derived from
+`T::Args`. MCP publishes it as `outputSchema`; OpenAPI uses the same value as
+the tool route's `200` response schema. `produces_schema_ids` remains a
+separate annotation naming registry payloads the tool writes, not the reply
+envelope.
 
 ## Invariants
 
-- **R1.** No REST route reaches `Engine` or storage directly. Every
-  route terminates in `McpToolHost::call_tool` or
-  `McpToolHost::read_resource`.
+- **R1.** No REST route reaches `Engine` or storage directly. Invocation and
+  resource routes terminate in `McpToolHost::call_tool` or
+  `McpToolHost::read_resource`; catalog routes read frozen descriptors only.
 - **R2.** No hand-written per-tool or per-resource route. Routes are
   derived from the frozen registry at startup.
 - **R3.** Authorization is not re-implemented. The shared edge
@@ -397,36 +389,19 @@ body-limit layers — which is why it inherits bearer validation, origin
 allowlisting, owner resolution, and stream revalidation without
 restating any of them.
 
-The surface is off by default and enabled by an environment flag whose
-spelling is owned by [10](10-configuration.md). Deployment guidance,
-including whether to expose `/v1` through the same gateway as `/mcp`,
-belongs to [15](15-deployment.md).
+The surface is off by default. The `rest` Cargo feature compiles it;
+`PROXIMA_REST_ENABLED=true` mounts it. Both gates are required. Deployment
+guidance, including whether to expose `/v1` through the same gateway as
+`/mcp`, belongs to [15](15-deployment.md).
 
 ### Protected-resource identifier
 
-`/.well-known/oauth-protected-resource` currently advertises
-`{public_url}/mcp` as the RFC 9728 protected-resource identifier. That
-identifier is per-surface, and a second surface makes it wrong.
-
-**Decision: broaden the identifier to `{public_url}`, covering both
-`/mcp` and `/v1`, and do it in the slice that introduces `/v1` — not
-after.** One identifier means one audience, one metadata document, and
-one token that reaches both surfaces. Two identifiers would mean two
-audiences and therefore non-interchangeable tokens, which is a feature
-only for deployments that want surface-scoped credentials, and a
-permanent tax for everyone else.
-
-The timing is the substance of the decision. The identifier is the
-`resource` value clients pass under RFC 8707 and the audience an
-authorization server stamps into tokens, so changing it invalidates
-issued tokens and requires every client to re-request. Today that
-population is small and pre-1.0; once `/v1` ships under a separate
-identifier, the two-audience split is baked into every deployment and
-every issued credential, and consolidating later is a coordinated
-break across two client populations instead of one.
-
-This is a deliberate MCP-auth-visible breaking change and needs a
-`MIGRATING.md` entry alongside the REST slice.
+`/.well-known/oauth-protected-resource` advertises `{public_url}` as the RFC
+9728 protected-resource identifier. Clients send that public origin as the
+RFC 8707 `resource`; `PROXIMA_OIDC_AUDIENCE` matches it. One audience covers
+both `/mcp` and an enabled `/v1`. The completed migration from
+`{public_url}/mcp` is recorded in
+[MIGRATING.md](https://github.com/Aquilo-Solution-S/Proxima/blob/main/MIGRATING.md#the-oauth-protected-resource-identifier-broadened-to-the-public-origin).
 
 ## Out of Scope
 
@@ -440,10 +415,9 @@ This is a deliberate MCP-auth-visible breaking change and needs a
 - Runtime registration of tools, schemas, sources, or flavors.
 - gRPC and any third transport.
 
-## Test Obligations
+## Contract Tests
 
-An implementation is not complete without these, because they are what
-make "no duplication" checkable rather than aspirational:
+`crates/mcp-server/tests/rest_surface.rs` keeps "no duplication" executable:
 
 - **Surface parity.** For a given `ToolScope`, the REST tool list
   equals the MCP `tools/list` projection, id for id and action for

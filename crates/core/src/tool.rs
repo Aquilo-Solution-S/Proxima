@@ -338,14 +338,13 @@ pub trait Tool: Send + Sync + 'static {
     const NAME: &'static str;
     const DESCRIPTION: &'static str;
     const PRODUCES_SCHEMA_IDS: &'static [&'static str] = &[];
-    /// MCP behaviour hints for this tool.
+    /// MCP behaviour hints for a flat tool.
     ///
     /// Not cosmetic. `ScopeGateBehavior::enforce_owner_role` asks whether
-    /// a tool is read-only and demands WRITE access when it cannot tell,
-    /// so a read tool that declares nothing is refused to every read-only
-    /// role. Defaulting to `None` keeps that conservative behaviour for a
-    /// tool that has not thought about it, which is the right default —
-    /// but a read tool should say so.
+    /// a flat tool is read-only and demands WRITE access when it cannot tell,
+    /// so a flat read that declares nothing is refused to every read-only
+    /// role. Dispatchers ignore this parent declaration and resolve each
+    /// action only from [`Self::ACTION_ARG_SPECS`].
     const ANNOTATIONS: Option<crate::mcp::McpToolAnnotations> = None;
     /// The actions this tool dispatches, or `&[]` for a flat tool.
     ///
@@ -357,7 +356,8 @@ pub trait Tool: Send + Sync + 'static {
     /// validated per action before decode, and its scope keys become
     /// `tool:action` leaves rather than the bare tool name.
     /// `FlavorRegistry::try_freeze` refuses a registry where these and the
-    /// schemars-derived `x-proxima-actions` disagree.
+    /// schemars-derived `x-proxima-actions` disagree. Each spec's annotations
+    /// are the sole read/write authority for that action; missing means write.
     const ACTION_ARG_SPECS: &'static [crate::mcp::McpActionArgSpec] = &[];
 
     type Args: serde::de::DeserializeOwned + schemars::JsonSchema + Send + 'static;

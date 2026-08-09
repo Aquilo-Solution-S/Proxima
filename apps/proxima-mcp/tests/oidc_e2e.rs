@@ -3,12 +3,15 @@
 //! discovery is public, `/mcp` is 401+WWW-Authenticate without a bearer, and a
 //! valid Zitadel-shaped JWT lists + calls the Code-flavor tools.
 //!
-//! Requires `PROXIMA_TEST_DATABASE_URL`; skips cleanly otherwise. Built only
-//! with `--features code` (asserts the Code flavor's tools are present).
+//! Requires `PROXIMA_TEST_DATABASE_URL`; skips cleanly otherwise. Built with
+//! `--features code` (asserts the Code flavor's tools are present); the mounted
+//! REST smoke additionally requires `rest` and `PROXIMA_REST_ENABLED=true`.
 #![cfg(feature = "code")]
 
 mod common;
 
+#[cfg(feature = "rest")]
+use std::collections::BTreeSet;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -203,6 +206,134 @@ async fn oidc_e2e_discovery_public_and_code_tools_behind_bearer()
         call.get("result").is_some(),
         "list_repos call should succeed, got {call:?}"
     );
+
+    running.shutdown().await;
+    Ok(())
+}
+
+/// Boots the production facade with both transport projections enabled, then
+/// proves the deployment palette is identical at the authenticated MCP and
+/// `OpenAPI` surfaces. `from_env()` is deliberate: CI must exercise the
+/// `PROXIMA_REST_ENABLED` deployment gate, not a test-only router.
+#[cfg(feature = "rest")]
+#[tokio::test]
+#[allow(clippy::too_many_lines)] // linear e2e: auth + two surfaces read best in one flow
+async fn oidc_e2e_rest_openapi_matches_the_mcp_scope_on_the_mounted_runtime()
+-> Result<(), Box<dyn std::error::Error>> {
+    let Some(database_url) = require_env_or_skip("PROXIMA_TEST_DATABASE_URL") else {
+        eprintln!("skipping REST OIDC e2e: PROXIMA_TEST_DATABASE_URL not set");
+        return Ok(());
+    };
+    let Some(rest_enabled) = require_env_or_skip("PROXIMA_REST_ENABLED") else {
+        eprintln!("skipping REST OIDC e2e: PROXIMA_REST_ENABLED not set");
+        return Ok(());
+    };
+    assert_eq!(
+        rest_enabled, "true",
+        "REST OIDC e2e requires PROXIMA_REST_ENABLED=true"
+    );
+
+    let subject = UserId::new(Uuid::now_v7());
+    let owner: Owner = OwnerRef::Personal(subject);
+    let owner_key = owner_header(owner);
+    let (enc, resolver) = keypair();
+    let mut subject_map = OidcSubjectMap::new();
+    subject_map.insert(ISSUER, "rest-operator-sub", subject)?;
+    let owner_access: Arc<dyn OwnerAccessPort> =
+        Arc::new(PgOwnerAccessResolver::connect_lazy(&database_url)?);
+    let authn = OidcAuthenticator::new(
+        OidcAuthConfig {
+            issuer: ISSUER.to_string(),
+            jwks_uri: None,
+            audience: AUDIENCE.to_string(),
+            allowed_subjects: None,
+            leeway_secs: 60,
+        },
+        Arc::new(resolver),
+        subject_map,
+        owner_access,
+    )?;
+
+    let allowed_tools = BTreeSet::from([
+        "core_search_memories".to_string(),
+        "proxima-code_list_repos".to_string(),
+    ]);
+    let running = Proxima::<ProximaMcpApp>::app()
+        .from_env()
+        .tool_scope(ToolScope::Palette(allowed_tools.iter().cloned().collect()))
+        .database_url(database_url)
+        .authenticator(Arc::new(authn))
+        .resource_metadata(ResourceServerMetadata {
+            public_url: "https://proxima.e2e.test".to_string(),
+            authorization_servers: vec![ISSUER.to_string()],
+        })
+        .mcp_bind("127.0.0.1:0".parse().unwrap())
+        .run()
+        .await?;
+    let addr = running.mcp_addr.ok_or("missing MCP listener address")?;
+    let base = format!("http://{addr}");
+    let mcp_url = format!("{base}/mcp");
+    let openapi_url = format!("{base}/v1/openapi.json");
+    let client = reqwest::Client::new();
+    let bearer = format!("Bearer {}", mint(&enc, "rest-operator-sub"));
+
+    // The same mounted listener still serves MCP, narrowed to the deployment
+    // palette rather than falling open when REST is enabled.
+    let session = initialize(&client, &mcp_url, &bearer, &owner_key).await?;
+    initialized(&client, &mcp_url, &session, &bearer).await?;
+    let catalog = post_rpc(
+        &client,
+        &mcp_url,
+        Some(&session),
+        &bearer,
+        json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}}),
+    )
+    .await?;
+    let mcp_tools: BTreeSet<String> = catalog["result"]["tools"]
+        .as_array()
+        .expect("tools")
+        .iter()
+        .map(|tool| tool["name"].as_str().expect("tool name").to_string())
+        .collect();
+    assert_eq!(mcp_tools, allowed_tools);
+
+    let no_auth = client
+        .get(&openapi_url)
+        .header("Origin", "http://localhost")
+        .send()
+        .await?;
+    assert_eq!(no_auth.status(), reqwest::StatusCode::UNAUTHORIZED);
+    assert!(no_auth.headers().contains_key("WWW-Authenticate"));
+
+    let response = client
+        .get(&openapi_url)
+        .header("Origin", "http://localhost")
+        .header("Authorization", bearer.as_str())
+        .header("X-Proxima-Owner", owner_key.as_str())
+        .send()
+        .await?;
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+    assert_eq!(
+        response
+            .headers()
+            .get("Cache-Control")
+            .and_then(|value| value.to_str().ok()),
+        Some("private, no-store")
+    );
+    let document: serde_json::Value = response.json().await?;
+    assert_eq!(document["openapi"], "3.2.0");
+    let rest_tool_paths: BTreeSet<String> = document["paths"]
+        .as_object()
+        .expect("OpenAPI paths")
+        .keys()
+        .filter(|path| path.starts_with("/v1/tools/"))
+        .cloned()
+        .collect();
+    let expected_paths: BTreeSet<String> = allowed_tools
+        .iter()
+        .map(|tool| format!("/v1/tools/{tool}"))
+        .collect();
+    assert_eq!(rest_tool_paths, expected_paths);
 
     running.shutdown().await;
     Ok(())

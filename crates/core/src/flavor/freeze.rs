@@ -1,6 +1,6 @@
 use super::{
     BTreeSet, CapabilityTag, FlavorRegistry, FlavorRegistryError, FlavorRegistryFrozen,
-    McpToolDescriptor, McpToolOrigin, PayloadKind, SchemaCapabilityTags, SchemaId, SchemaVersion,
+    McpToolDescriptor, PayloadKind, SchemaCapabilityTags, SchemaId, SchemaVersion,
 };
 
 impl FlavorRegistry {
@@ -49,7 +49,6 @@ impl FlavorRegistry {
         }
         self.validate_tools_declare_behavior()?;
         self.validate_dispatcher_action_specs()?;
-        self.validate_flavor_dispatcher_annotations()?;
         let mut seen_dependency_rules: std::collections::HashSet<&str> =
             std::collections::HashSet::new();
         for (schema_id, _) in &self.dependency_satisfaction_rules {
@@ -86,7 +85,8 @@ impl FlavorRegistry {
         Ok(())
     }
 
-    /// Cross-check: the owner-role gate can classify every registered tool.
+    /// Cross-check: the owner-role gate can classify every registered flat
+    /// tool.
     ///
     /// `ScopeGateBehavior::enforce_owner_role` asks whether a tool is
     /// read-only and demands WRITE when it cannot tell. It resolves that in
@@ -97,13 +97,19 @@ impl FlavorRegistry {
     /// cause. That is exactly what happened to every `proxima-code_*` tool
     /// before `ANNOTATIONS` existed.
     ///
-    /// Boot is the right place to say so. The alternative is a compile-time
-    /// requirement Rust cannot express (a trait const with a default is
-    /// always satisfiable) or a per-flavor test each flavor has to remember
-    /// to write.
+    /// Dispatcher actions are classified by their descriptor-owned specs;
+    /// missing per-action annotations deliberately classify as writes. They
+    /// therefore need no duplicate tool-level declaration to freeze.
+    ///
+    /// Boot is the right place to say so for flat tools. The alternative is a
+    /// compile-time requirement Rust cannot express (a trait const with a
+    /// default is always satisfiable) or a per-flavor test each flavor has to
+    /// remember to write.
     fn validate_tools_declare_behavior(&self) -> Result<(), FlavorRegistryError> {
         for tool in &self.mcp_tools {
-            if tool.annotations.is_none() && crate::mcp::core_tool_annotations(tool.name).is_none()
+            if tool.action_arg_specs.is_empty()
+                && tool.annotations.is_none()
+                && crate::mcp::core_tool_annotations(tool.name).is_none()
             {
                 return Err(FlavorRegistryError::UndeclaredToolBehavior { name: tool.name });
             }
@@ -223,55 +229,6 @@ impl FlavorRegistry {
                 });
             }
             validate_action_field_sets(tool, extension)?;
-        }
-        Ok(())
-    }
-
-    /// Cross-check: a flavor dispatcher does not declare itself read-only at
-    /// tool level.
-    ///
-    /// `CoreActionMeta` is the only per-action annotation table and it is
-    /// keyed by substrate tool name, so a flavor dispatcher has no per-action
-    /// answer to give: its own `ANNOTATIONS` decide read from write for
-    /// *every* action it dispatches. `read_only(true)` there is therefore not
-    /// a claim about one action but about all of them, including the write
-    /// action added to the enum next month — the owner-role gate would admit
-    /// a viewer role to it, and the REST surface would advertise it as
-    /// `QUERY`, which any proxy or client library may safely retry.
-    ///
-    /// The guard keys on *origin*, not on the annotation value, because the
-    /// substrate legitimately has both shapes and both must keep freezing:
-    /// `core_fact` is read-only at tool level, and `core_membership` is
-    /// write/destructive at tool level with a read-only `list_members`
-    /// rescued by `CoreActionMeta`. Until `McpActionArgSpec` carries an
-    /// annotation slot of its own (docs/12 §Known gaps), the only honest
-    /// tool-level answer for a flavor dispatcher is `read_only(false)`.
-    fn validate_flavor_dispatcher_annotations(&self) -> Result<(), FlavorRegistryError> {
-        for tool in &self.mcp_tools {
-            if tool.action_arg_specs.is_empty() || !matches!(tool.origin, McpToolOrigin::Flavor(_))
-            {
-                continue;
-            }
-            // The tool's OWN declaration, not `resolved_annotations()`: the
-            // only thing that fallback adds is the substrate manifest, a
-            // table over core names this tool is not in. The two coincide for
-            // a flavor tool; asking for the declaration names what is being
-            // refused.
-            if tool
-                .annotations
-                .and_then(|annotations| annotations.read_only)
-                == Some(true)
-            {
-                return Err(FlavorRegistryError::InvalidActionSpecs {
-                    name: tool.name,
-                    message: "a dispatcher without per-action annotations cannot declare itself \
-                              read-only at tool level: every action, including any write action \
-                              added later, would inherit read-only owner-role gating and REST \
-                              QUERY eligibility. Declare `read_only(false)`, or leave read_only \
-                              unset, until per-action annotations exist"
-                        .to_string(),
-                });
-            }
         }
         Ok(())
     }

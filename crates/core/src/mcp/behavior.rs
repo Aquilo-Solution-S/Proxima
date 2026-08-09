@@ -5,10 +5,7 @@ use futures::future::BoxFuture;
 
 use crate::AccessKind;
 
-use super::{
-    McpActionArgSpec, McpToolCtx, McpToolDescriptor, McpToolError, core_action_meta,
-    core_tool_annotations,
-};
+use super::{McpActionArgSpec, McpToolCtx, McpToolDescriptor, McpToolError, core_tool_annotations};
 
 #[derive(Debug)]
 pub struct ToolCall {
@@ -131,24 +128,27 @@ impl ScopeGateBehavior {
         // resource `resources/list` advertises to it and read none of them.
         let read_only = if tool.starts_with(crate::protocol::resource::SCOPE_PREFIX) {
             true
-        } else {
-            args.get("action")
+        } else if let Some(descriptor) =
+            descriptor.filter(|value| !value.action_arg_specs.is_empty())
+        {
+            // The action spec is the per-action behaviour authority for
+            // substrate and flavor dispatchers alike. It deliberately does
+            // not inherit the parent tool's declaration: silence is a write,
+            // not permission to turn a later mutation into a viewer-callable
+            // action.
+            let action = args
+                .get("action")
                 .and_then(serde_json::Value::as_str)
-                // Substrate per-action decoration, and decoration only: it
-                // answers "what does this substrate action do", never "does
-                // this action exist" — the descriptor's specs settled that
-                // above. A flavor action has no entry here and resolves at
-                // tool level (docs/12 §Known gaps).
-                .and_then(|action| core_action_meta(tool, action))
-                .map(|meta| meta.annotations)
-                // Failing a per-action answer, what the tool itself says.
-                // `McpToolDescriptor::resolved_annotations` is the one
-                // two-step every gate uses: the tool's own declaration,
-                // then the core manifest. Before the descriptor carried a
-                // declaration, only the manifest was consulted here — a
-                // table over core names — so a flavor's READ was billed as
-                // a write and refused to every read-only role.
-                .or_else(|| descriptor.and_then(McpToolDescriptor::resolved_annotations))
+                .expect("dispatcher action was validated before owner-role enforcement");
+            descriptor
+                .resolved_action_annotations(action)
+                .and_then(|annotations| annotations.read_only)
+                .unwrap_or(false)
+        } else {
+            // Flat tools still resolve their own declaration, then the
+            // substrate manifest.
+            descriptor
+                .and_then(McpToolDescriptor::resolved_annotations)
                 .or_else(|| core_tool_annotations(tool))
                 .and_then(|annotations| annotations.read_only)
                 .unwrap_or(false)
@@ -314,6 +314,13 @@ mod tests {
             &ctx,
         )
         .expect("viewer can call read-only search");
+
+        ScopeGateBehavior::enforce_scope(
+            protocol_tool::CORE_SEARCH_MEMORIES,
+            &serde_json::json!({ "action": "unexpected", "query": "x" }),
+            &ctx,
+        )
+        .expect("an unexpected field cannot reclassify a flat read as a dispatcher write");
 
         let err = ScopeGateBehavior::enforce_scope(
             protocol_tool::CORE_REMEMBER,

@@ -23,30 +23,101 @@ pub struct McpToolDescriptor {
     /// different thing and was previously undescribed.
     pub output_schema: serde_json::Value,
     pub action_arg_specs: &'static [McpActionArgSpec],
-    /// What the tool declared about its own behaviour, or `None` when it
-    /// declared nothing. Substrate tools may still resolve through
-    /// `core_tool_annotations`; a flavor tool has no other route.
+    /// What a flat tool declared about its own behaviour, or `None` when it
+    /// declared nothing. Substrate flat tools may still resolve through
+    /// `core_tool_annotations`. Dispatcher behavior lives on
+    /// `action_arg_specs`; this field is not an action fallback.
     pub annotations: Option<crate::mcp::McpToolAnnotations>,
     pub call: McpCallFn,
 }
 
 impl McpToolDescriptor {
-    /// What this tool does: its own declaration, then the core manifest.
+    /// What this tool does as a whole.
     ///
-    /// One resolution order for the whole substrate. Four places needed the
-    /// answer — the call gate (`ScopeGateBehavior::enforce_owner_role`), the
-    /// visibility gate and the `tools/list` projection in the MCP adapter,
-    /// and the embedded host's tool listing — and each had its own copy of
-    /// this two-step. They are supposed to agree, and one of them did not:
-    /// the visibility gate asked only `core_tool_annotations`, a table over
-    /// *core* names, so a read-only principal saw no flavor tool at all.
+    /// A dispatcher's action specs are the authority, so its whole-tool answer
+    /// is a conservative aggregate: read-only only when every action is an
+    /// explicit read, and other hints only when every action agrees. Flat
+    /// tools resolve their own declaration, then the core manifest.
     ///
     /// `FlavorRegistry::try_freeze` guarantees this returns `Some` for every
-    /// registered tool.
+    /// registered flat tool. A dispatcher always returns an aggregate.
     #[must_use]
     pub fn resolved_annotations(&self) -> Option<crate::mcp::McpToolAnnotations> {
+        if !self.action_arg_specs.is_empty() {
+            let first = self.action_arg_specs.first()?;
+            let common = |field: fn(crate::mcp::McpToolAnnotations) -> Option<bool>| {
+                let first = first.annotations.and_then(field);
+                self.action_arg_specs
+                    .iter()
+                    .all(|spec| spec.annotations.and_then(field) == first)
+                    .then_some(first)
+                    .flatten()
+            };
+            return Some(crate::mcp::McpToolAnnotations {
+                read_only: Some(
+                    self.action_arg_specs.iter().all(|spec| {
+                        spec.annotations.and_then(|value| value.read_only) == Some(true)
+                    }),
+                ),
+                destructive: common(|value| value.destructive),
+                idempotent: common(|value| value.idempotent),
+                open_world: common(|value| value.open_world),
+            });
+        }
         self.annotations
             .or_else(|| crate::mcp::core_tool_annotations(self.name))
+    }
+
+    /// The descriptor-owned contract for one dispatcher action.
+    #[must_use]
+    pub fn action_arg_spec(&self, action: &str) -> Option<&McpActionArgSpec> {
+        self.action_arg_specs
+            .iter()
+            .find(|spec| spec.action == action)
+    }
+
+    /// What one dispatcher action declares about its behaviour.
+    ///
+    /// There is deliberately no tool-level fallback. A dispatcher action is
+    /// a separately gated call surface, and inheriting the parent declaration
+    /// would make a later write action read-only under a read-only parent.
+    /// Silence therefore stays fail-closed and is interpreted as a write by
+    /// [`Self::action_is_read_only`].
+    #[must_use]
+    pub fn resolved_action_annotations(
+        &self,
+        action: &str,
+    ) -> Option<crate::mcp::McpToolAnnotations> {
+        self.action_arg_spec(action)
+            .and_then(|spec| spec.annotations)
+    }
+
+    /// Whether the owner-role gate should treat one dispatcher action as a
+    /// read. Missing specs and missing annotations are writes.
+    #[must_use]
+    pub fn action_is_read_only(&self, action: &str) -> bool {
+        self.resolved_action_annotations(action)
+            .and_then(|annotations| annotations.read_only)
+            .unwrap_or(false)
+    }
+
+    /// Client-facing prose for one dispatcher action.
+    ///
+    /// Substrate actions keep their curated manifest description. Flavor
+    /// actions have no substrate entry, so their enum-variant doc comment is
+    /// read from the schema-derived `x-proxima-actions` extension instead.
+    #[must_use]
+    pub fn resolved_action_description(&self, action: &str) -> Option<&str> {
+        crate::mcp::core_action_meta(self.name, action)
+            .map(|meta| meta.description)
+            .or_else(|| {
+                self.args_schema
+                    .get("x-proxima-actions")
+                    .and_then(serde_json::Value::as_object)
+                    .and_then(|actions| actions.get(action))
+                    .and_then(|metadata| metadata.get("description"))
+                    .and_then(serde_json::Value::as_str)
+            })
     }
 
     /// Whether the owner-role gate should treat this tool as a read.
@@ -83,6 +154,9 @@ pub struct McpActionArgSpec {
     pub action: &'static str,
     pub allowed_fields: &'static [&'static str],
     pub required_fields: &'static [&'static str],
+    /// Behaviour of this action. `None` is deliberately a write: callers
+    /// must opt into read authorization and retry-safe `QUERY` exposure.
+    pub annotations: Option<crate::mcp::McpToolAnnotations>,
 }
 
 pub(crate) fn validate_action_args(
@@ -245,9 +319,9 @@ pub trait McpTool: Send + Sync + 'static {
     /// a dispatcher's action set, and the blanket impl below forwards it
     /// from `Tool` so a flavor dispatcher declares it in exactly one place.
     const ACTION_ARG_SPECS: &'static [McpActionArgSpec] = &[];
-    /// MCP behaviour hints for this tool. See [`crate::Tool::ANNOTATIONS`]
-    /// — a tool that declares nothing is treated as a write. Forwarded from
-    /// `Tool` by the blanket impl below.
+    /// MCP behaviour hints for a flat tool. See [`crate::Tool::ANNOTATIONS`].
+    /// Dispatchers ignore this parent declaration and resolve only from their
+    /// action specs. Forwarded from `Tool` by the blanket impl below.
     const ANNOTATIONS: Option<crate::mcp::McpToolAnnotations> = None;
 
     type Args: serde::de::DeserializeOwned + schemars::JsonSchema + Send + 'static;

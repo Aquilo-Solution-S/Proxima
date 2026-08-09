@@ -198,7 +198,6 @@ impl ServerHandler for DynamicHandler {
         context: RequestContext<RoleServer>,
     ) -> impl Future<Output = Result<ListToolsResult, ErrorData>> + MaybeSendFuture + '_ {
         let auth = auth_context(&context);
-        let scope = auth.as_ref().map(|ctx| ctx.authz.tool_scope());
         let tools: Vec<Tool> = self
             .server
             .registry()
@@ -206,8 +205,7 @@ impl ServerHandler for DynamicHandler {
             .iter()
             .filter(|descriptor| tool_allowed_for_auth(auth.as_ref(), descriptor))
             .map(|descriptor| {
-                let schema =
-                    project_dispatcher_actions(&descriptor.args_schema, scope, descriptor.name);
+                let schema = project_dispatcher_actions_for_auth(descriptor, auth.as_ref());
                 let tool = Tool::new(
                     Cow::Owned(provider_safe_tool_name(descriptor.name)),
                     Cow::Borrowed(descriptor.description),
@@ -216,7 +214,7 @@ impl ServerHandler for DynamicHandler {
                 .with_raw_output_schema(Arc::new(rmcp::model::object(
                     descriptor.output_schema.clone(),
                 )));
-                match descriptor.resolved_annotations() {
+                match annotations_for_auth(auth.as_ref(), descriptor) {
                     Some(annotations) => tool.annotate(to_rmcp_annotations(annotations)),
                     None => tool,
                 }
@@ -243,7 +241,7 @@ impl ServerHandler for DynamicHandler {
                 .with_raw_output_schema(Arc::new(rmcp::model::object(
                     descriptor.output_schema.clone(),
                 )));
-                match descriptor.resolved_annotations() {
+                match annotations_for_auth(None, descriptor) {
                     Some(annotations) => tool.annotate(to_rmcp_annotations(annotations)),
                     None => tool,
                 }
@@ -284,12 +282,12 @@ impl ServerHandler for DynamicHandler {
             let author = author_from_args(&args, auth.as_ref(), &client_name, &client_version)?;
             strip_call_context_args(&mut args);
             reject_nul_in_args(&args)?;
-            let scope = auth.as_ref().map(|ctx| ctx.authz.tool_scope().clone());
+            let error_auth = auth.clone();
             let output = server
                 .call_tool(&canonical_name, args, author, auth)
                 .await
                 .map_err(|err| {
-                    tool_invocation_error_to_error_data(server.registry(), err, scope.as_ref())
+                    tool_invocation_error_to_error_data(server.registry(), err, error_auth.as_ref())
                 })?;
             let text = serde_json::to_string(&output).map_err(generic_internal_error)?;
             let mut result = CallToolResult::success(vec![ContentBlock::text(text)]);
@@ -359,11 +357,11 @@ fn reject_nul_in_args(args: &serde_json::Value) -> Result<(), ErrorData> {
 fn tool_invocation_error_to_error_data(
     registry: &FlavorRegistryFrozen,
     err: ToolInvocationError,
-    scope: Option<&ToolScope>,
+    auth: Option<&McpAuthContext>,
 ) -> ErrorData {
     match err {
         ToolInvocationError::NotAuthorized(name) => {
-            ErrorData::invalid_request(not_authorized_message(registry, &name, scope), None)
+            ErrorData::invalid_request(not_authorized_message(registry, &name, auth), None)
         }
         ToolInvocationError::ToolNotFound(name) => {
             ErrorData::invalid_params(format!("unknown tool: {name}"), None)
@@ -385,18 +383,18 @@ fn tool_invocation_error_to_error_data(
 fn not_authorized_message(
     registry: &FlavorRegistryFrozen,
     name: &str,
-    scope: Option<&ToolScope>,
+    auth: Option<&McpAuthContext>,
 ) -> String {
     let tool = name.split_once(':').map_or(name, |(tool, _)| tool);
-    let allowed: Vec<&str> = scope.map_or_else(Vec::new, |scope| {
-        registry
-            .mcp_tool(tool)
-            .map(|descriptor| descriptor.action_arg_specs)
-            .unwrap_or_default()
-            .iter()
-            .map(|spec| spec.action)
-            .filter(|action| scope_permits_action(scope, tool, action))
-            .collect()
+    let allowed: Vec<&str> = auth.map_or_else(Vec::new, |auth| {
+        registry.mcp_tool(tool).map_or_else(Vec::new, |descriptor| {
+            descriptor
+                .action_arg_specs
+                .iter()
+                .map(|spec| spec.action)
+                .filter(|action| action_allowed_for_auth(Some(auth), descriptor, action))
+                .collect()
+        })
     });
     if allowed.is_empty() {
         format!("tool {name} not authorized for this MCP token")
@@ -452,17 +450,33 @@ fn generic_internal_error(err: impl std::fmt::Display) -> ErrorData {
 /// to the actions a `Palette` scope permits, so `tools/list` never advertises
 /// an action the caller cannot invoke. `All` (or absent) scopes and flat tools
 /// are returned unchanged.
+#[cfg(test)]
 pub(crate) fn project_dispatcher_actions(
     schema: &serde_json::Value,
     scope: Option<&ToolScope>,
     tool: &str,
 ) -> serde_json::Value {
-    let Some(scope_ref) = scope else {
-        return schema.clone();
-    };
-    if !matches!(scope_ref, ToolScope::Palette(_)) {
-        return schema.clone();
-    }
+    project_dispatcher_actions_where(schema, |action| {
+        scope.is_none_or(|scope| scope_permits_action(scope, tool, action))
+    })
+}
+
+/// Narrow a descriptor's dispatcher schema to the actions this caller can
+/// both name and authorize. A viewer of a mixed dispatcher therefore sees
+/// its read leaves without being shown write leaves it cannot invoke.
+pub(crate) fn project_dispatcher_actions_for_auth(
+    descriptor: &McpToolDescriptor,
+    auth: Option<&McpAuthContext>,
+) -> serde_json::Value {
+    project_dispatcher_actions_where(&descriptor.args_schema, |action| {
+        auth.is_none() || action_allowed_for_auth(auth, descriptor, action)
+    })
+}
+
+fn project_dispatcher_actions_where(
+    schema: &serde_json::Value,
+    permitted: impl Fn(&str) -> bool,
+) -> serde_json::Value {
     let Some(actions) = schema
         .get("x-proxima-actions")
         .and_then(serde_json::Value::as_object)
@@ -471,7 +485,7 @@ pub(crate) fn project_dispatcher_actions(
     };
     let permitted: Vec<String> = actions
         .keys()
-        .filter(|action| scope_permits_action(scope_ref, tool, action))
+        .filter(|action| permitted(action))
         .cloned()
         .collect();
     // Whole-tool grant (or exactly the full action set) needs no narrowing.
@@ -632,29 +646,87 @@ fn scope_allows(scope: Option<&ToolScope>, name: &str) -> bool {
     }
 }
 
-/// Whether this caller may see and call `descriptor`.
+/// Whether this caller may see `descriptor` at all.
 ///
-/// Takes the descriptor rather than the name because the name alone
-/// cannot answer the read-vs-write question for a flavor tool: the only
-/// place a flavor's behaviour is recorded is its own `ANNOTATIONS`, which
-/// lives on the descriptor. Every call site already had one.
+/// A dispatcher is visible when at least one of its actions is both in scope
+/// and permitted by the caller's owner role. This keeps a mixed flavor
+/// dispatcher useful to a viewer without advertising its writes.
 pub(crate) fn tool_allowed_for_auth(
     auth: Option<&McpAuthContext>,
     descriptor: &McpToolDescriptor,
 ) -> bool {
     let scope = auth.map(|ctx| ctx.authz.tool_scope());
-    scope_allows(scope, descriptor.name) && owner_role_allows_tool(auth, descriptor)
+    if !scope_allows(scope, descriptor.name) {
+        return false;
+    }
+    if descriptor.action_arg_specs.is_empty() {
+        owner_role_allows(auth, descriptor.is_read_only())
+    } else {
+        descriptor
+            .action_arg_specs
+            .iter()
+            .any(|spec| action_allowed_for_auth(auth, descriptor, spec.action))
+    }
 }
 
-fn owner_role_allows_tool(auth: Option<&McpAuthContext>, descriptor: &McpToolDescriptor) -> bool {
+/// Whether one dispatcher action is both in scope and owner-role authorized.
+pub(crate) fn action_allowed_for_auth(
+    auth: Option<&McpAuthContext>,
+    descriptor: &McpToolDescriptor,
+    action: &str,
+) -> bool {
+    let scope_allowed = auth
+        .is_none_or(|ctx| scope_permits_action(ctx.authz.tool_scope(), descriptor.name, action));
+    scope_allowed && owner_role_allows(auth, descriptor.action_is_read_only(action))
+}
+
+fn owner_role_allows(auth: Option<&McpAuthContext>, read_only: bool) -> bool {
     let Some(ctx) = auth else {
         return UNAUTHENTICATED_SCOPE_ALLOWS;
     };
-    if descriptor.is_read_only() {
+    if read_only {
         ctx.authz.may_read(&ctx.owner, AccessKind::Fact)
     } else {
         ctx.authz.may_write(&ctx.owner, AccessKind::Fact)
     }
+}
+
+/// MCP/REST tool-level projection for the actions visible to one caller.
+///
+/// `read_only` is conservative: every visible action must explicitly be a
+/// read. The remaining hints are retained only when all visible actions agree;
+/// a mixed answer is left unspecified rather than mislabelled.
+pub(crate) fn annotations_for_auth(
+    auth: Option<&McpAuthContext>,
+    descriptor: &McpToolDescriptor,
+) -> Option<McpToolAnnotations> {
+    if descriptor.action_arg_specs.is_empty() {
+        return descriptor.resolved_annotations();
+    }
+    let visible = descriptor
+        .action_arg_specs
+        .iter()
+        .filter(|spec| auth.is_none() || action_allowed_for_auth(auth, descriptor, spec.action))
+        .collect::<Vec<_>>();
+    let first = *visible.first()?;
+    let common = |field: fn(McpToolAnnotations) -> Option<bool>| {
+        let first = first.annotations.and_then(field);
+        visible
+            .iter()
+            .all(|spec| spec.annotations.and_then(field) == first)
+            .then_some(first)
+            .flatten()
+    };
+    Some(McpToolAnnotations {
+        read_only: Some(
+            visible
+                .iter()
+                .all(|spec| spec.annotations.and_then(|value| value.read_only) == Some(true)),
+        ),
+        destructive: common(|value| value.destructive),
+        idempotent: common(|value| value.idempotent),
+        open_world: common(|value| value.open_world),
+    })
 }
 
 /// Whether a request that carries no bound auth context may see or call
@@ -734,6 +806,52 @@ mod tests {
     // still assert the manifest's own contents.
     use proxima_core::mcp::core_tool_annotations;
     use proxima_core::protocol::{action as protocol_action, tool as protocol_tool};
+
+    fn flavor_descriptor(
+        name: &'static str,
+        annotations: Option<McpToolAnnotations>,
+    ) -> McpToolDescriptor {
+        McpToolDescriptor {
+            name,
+            description: "stub",
+            origin: proxima_core::mcp::McpToolOrigin::Flavor("proxima-stub".to_string()),
+            produces_schema_ids: &[],
+            args_schema: serde_json::json!({"type": "object"}),
+            output_schema: serde_json::json!({"type": "object"}),
+            action_arg_specs: &[],
+            annotations,
+            call: &|_, _| Box::pin(async { Ok(serde_json::Value::Null) }),
+        }
+    }
+
+    const MIXED_ACTIONS: &[proxima_core::mcp::McpActionArgSpec] = &[
+        proxima_core::mcp::McpActionArgSpec {
+            action: "look",
+            allowed_fields: &["id"],
+            required_fields: &["id"],
+            annotations: Some(McpToolAnnotations::new().read_only(true).open_world(false)),
+        },
+        proxima_core::mcp::McpActionArgSpec {
+            action: "touch",
+            allowed_fields: &["id"],
+            required_fields: &["id"],
+            annotations: Some(McpToolAnnotations::new().read_only(false).open_world(false)),
+        },
+    ];
+
+    fn full_auth(scope: ToolScope) -> McpAuthContext {
+        let owner =
+            proxima_core::OwnerRef::Personal(proxima_core::UserId::new(uuid::Uuid::now_v7()));
+        McpAuthContext {
+            owner,
+            authz: proxima_core::AuthzContext::single_owner(
+                &owner,
+                proxima_core::AuthPath::HostBearer,
+            )
+            .with_tool_scope(scope),
+            model_id: None,
+        }
+    }
 
     #[test]
     fn author_from_args_extracts_caller_self_perspective() {
@@ -851,10 +969,11 @@ mod tests {
 
         let registry = proxima_core::FlavorRegistry::new().freeze_or_panic_for_tests();
         let scope = ToolScope::Palette(vec![protocol_action::CORE_GOAL_SET.to_string()]);
+        let auth = full_auth(scope);
         let err = tool_invocation_error_to_error_data(
             &registry,
             McpToolError::NotAuthorized(protocol_action::CORE_GOAL_TRANSITION.into()).into(),
-            Some(&scope),
+            Some(&auth),
         );
         assert_eq!(err.code, rmcp::model::ErrorCode::INVALID_REQUEST);
         assert!(
@@ -906,11 +1025,13 @@ mod tests {
                     action: "look",
                     allowed_fields: &["id"],
                     required_fields: &["id"],
+                    annotations: None,
                 },
                 McpActionArgSpec {
                     action: "touch",
                     allowed_fields: &["id"],
                     required_fields: &["id"],
+                    annotations: None,
                 },
             ];
             type Args = StubArgs;
@@ -925,10 +1046,11 @@ mod tests {
         let registry = registry.freeze_or_panic_for_tests();
 
         let scope = ToolScope::Palette(vec!["proxima-stub_dispatch:look".to_string()]);
+        let auth = full_auth(scope);
         let err = tool_invocation_error_to_error_data(
             &registry,
             McpToolError::NotAuthorized("proxima-stub_dispatch:touch".into()).into(),
-            Some(&scope),
+            Some(&auth),
         );
         assert_eq!(err.code, rmcp::model::ErrorCode::INVALID_REQUEST);
         assert!(
@@ -1016,7 +1138,7 @@ mod tests {
 
     #[test]
     fn tool_scope_denials_remain_invalid_request() {
-        // No scope threaded (e.g. direct-handler path) → bare message, no
+        // No auth threaded (e.g. direct-handler path) → bare message, no
         // allowed-action enrichment.
         let registry = proxima_core::FlavorRegistry::new().freeze_or_panic_for_tests();
         let err = tool_invocation_error_to_error_data(
@@ -1049,25 +1171,7 @@ mod tests {
     /// descriptor in hand and passed only its name.
     #[test]
     fn a_viewer_sees_a_flavor_read_tool_and_not_its_write_tool() {
-        use proxima_core::mcp::{McpToolAnnotations, McpToolOrigin};
         use proxima_core::{AuthPath, AuthzContext, GroupId, Owner, UserId, access::Role};
-
-        fn descriptor(
-            name: &'static str,
-            annotations: Option<McpToolAnnotations>,
-        ) -> McpToolDescriptor {
-            McpToolDescriptor {
-                name,
-                description: "stub",
-                origin: McpToolOrigin::Flavor("proxima-stub".to_string()),
-                produces_schema_ids: &[],
-                args_schema: serde_json::json!({"type": "object"}),
-                output_schema: serde_json::json!({"type": "object"}),
-                action_arg_specs: &[],
-                annotations,
-                call: &|_, _| Box::pin(async { Ok(serde_json::Value::Null) }),
-            }
-        }
 
         let owner = Owner::Group(GroupId::new(uuid::Uuid::now_v7()));
         let viewer = McpAuthContext {
@@ -1080,47 +1184,138 @@ mod tests {
             model_id: None,
         };
 
-        let read = descriptor(
+        let read = flavor_descriptor(
             "proxima-stub_search",
             Some(McpToolAnnotations::new().read_only(true).open_world(false)),
         );
-        let write = descriptor(
+        let write = flavor_descriptor(
             "proxima-stub_write",
             Some(McpToolAnnotations::new().read_only(false).open_world(false)),
         );
         // Core still answers through the manifest, with no descriptor
         // annotations of its own.
         let core_read = McpToolDescriptor {
-            origin: McpToolOrigin::Substrate,
-            ..descriptor(protocol_tool::CORE_SEARCH_MEMORIES, None)
+            origin: proxima_core::mcp::McpToolOrigin::Substrate,
+            ..flavor_descriptor(protocol_tool::CORE_SEARCH_MEMORIES, None)
         };
 
         assert!(
-            owner_role_allows_tool(Some(&viewer), &read),
+            tool_allowed_for_auth(Some(&viewer), &read),
             "a flavor tool that declares read_only must be visible to a viewer"
         );
         assert!(
-            !owner_role_allows_tool(Some(&viewer), &write),
+            !tool_allowed_for_auth(Some(&viewer), &write),
             "a flavor write tool must stay hidden from a viewer"
         );
         assert!(
-            owner_role_allows_tool(Some(&viewer), &core_read),
+            tool_allowed_for_auth(Some(&viewer), &core_read),
             "core still resolves through the manifest"
         );
     }
 
-    // Completeness gate: every `core_` tool the substrate registers must
-    // carry MCP annotations, so a newly-added core tool cannot silently ship
-    // with unset hints (client defaults: not-read-only, destructive,
-    // open-world — wrong for this closed substrate).
+    #[test]
+    fn a_viewer_sees_only_the_read_leaf_of_a_mixed_dispatcher() {
+        use proxima_core::{AuthPath, AuthzContext, GroupId, Owner, UserId, access::Role};
+
+        let owner = Owner::Group(GroupId::new(uuid::Uuid::now_v7()));
+        let viewer = McpAuthContext {
+            owner,
+            authz: AuthzContext::for_subject_with_role(
+                UserId::new(uuid::Uuid::now_v7()),
+                [(owner, Role::viewer())],
+                AuthPath::HostBearer,
+            ),
+            model_id: None,
+        };
+        let mixed = McpToolDescriptor {
+            args_schema: serde_json::json!({
+                "type": "object",
+                "properties": { "action": { "type": "string", "enum": ["look", "touch"] } },
+                "required": ["action"],
+                "x-proxima-actions": { "look": {}, "touch": {} },
+            }),
+            action_arg_specs: MIXED_ACTIONS,
+            // Parent says read; the write action must not inherit it.
+            ..flavor_descriptor(
+                "proxima-stub_dispatch",
+                Some(McpToolAnnotations::new().read_only(true).open_world(false)),
+            )
+        };
+        assert!(
+            tool_allowed_for_auth(Some(&viewer), &mixed),
+            "the read action keeps a mixed dispatcher visible"
+        );
+        let viewer_schema = project_dispatcher_actions_for_auth(&mixed, Some(&viewer));
+        assert_eq!(
+            viewer_schema["properties"]["action"]["enum"],
+            serde_json::json!(["look"]),
+        );
+        assert_eq!(
+            annotations_for_auth(Some(&viewer), &mixed).and_then(|value| value.read_only),
+            Some(true),
+        );
+
+        let writer = McpAuthContext {
+            owner,
+            authz: AuthzContext::for_subject_with_role(
+                UserId::new(uuid::Uuid::now_v7()),
+                [(owner, Role::editor())],
+                AuthPath::HostBearer,
+            )
+            .with_tool_scope(ToolScope::All),
+            model_id: None,
+        };
+        assert_eq!(
+            project_dispatcher_actions_for_auth(&mixed, Some(&writer))["properties"]["action"]["enum"],
+            serde_json::json!(["look", "touch"]),
+        );
+        assert_eq!(
+            annotations_for_auth(Some(&writer), &mixed).and_then(|value| value.read_only),
+            Some(false),
+            "a mixed dispatcher is conservatively a write when both actions are visible",
+        );
+    }
+
+    #[test]
+    fn denial_hints_exclude_actions_forbidden_by_the_owner_role() {
+        use proxima_core::{AuthPath, AuthzContext, GroupId, OwnerRef, UserId, access::Role};
+
+        let registry = proxima_core::FlavorRegistry::new().freeze_or_panic_for_tests();
+        let owner = OwnerRef::Group(GroupId::new(uuid::Uuid::now_v7()));
+        let viewer = McpAuthContext {
+            owner,
+            authz: AuthzContext::for_subject_with_role(
+                UserId::new(uuid::Uuid::now_v7()),
+                [(owner, Role::viewer())],
+                AuthPath::HostBearer,
+            )
+            .with_tool_scope(ToolScope::All),
+            model_id: None,
+        };
+        let err = tool_invocation_error_to_error_data(
+            &registry,
+            McpToolError::NotAuthorized(protocol_action::CORE_MEMBERSHIP_ADD_MEMBER.into()).into(),
+            Some(&viewer),
+        );
+
+        assert_eq!(
+            err.message,
+            "tool core_membership:add_member not authorized for this MCP token; allowed \
+             core_membership actions: list_members",
+        );
+    }
+
+    // Completeness gate: every substrate tool resolves annotations from its
+    // descriptor. Flat tools use `core_tool_annotations`; dispatchers derive
+    // their conservative whole-tool answer from their action specs.
     #[test]
     fn every_core_tool_is_annotated() {
         let registry = proxima_core::FlavorRegistry::new().freeze_or_panic_for_tests();
         for descriptor in registry.list_mcp_tools() {
             if descriptor.name.starts_with("core_") {
                 assert!(
-                    core_tool_annotations(descriptor.name).is_some(),
-                    "core tool {} has no MCP annotations — add it to core_tool_annotations",
+                    descriptor.resolved_annotations().is_some(),
+                    "core tool {} has no resolvable MCP annotations",
                     descriptor.name
                 );
             }
@@ -1148,11 +1343,15 @@ mod tests {
         assert_eq!(remember.destructive, Some(false));
         assert_eq!(remember.idempotent, Some(false));
 
-        // Grouped fact dispatcher now contains only citation reads.
-        let fact = core_tool_annotations(protocol_tool::CORE_FACT).expect("fact dispatcher");
+        let registry = proxima_core::FlavorRegistry::new().freeze_or_panic_for_tests();
+
+        // Grouped fact dispatcher now contains only citation reads; the
+        // answer is aggregated from its action specs, not duplicated here.
+        let fact = registry
+            .mcp_tool(protocol_tool::CORE_FACT)
+            .and_then(McpToolDescriptor::resolved_annotations)
+            .expect("fact dispatcher");
         assert_eq!(fact.read_only, Some(true));
-        assert_eq!(fact.destructive, Some(false));
-        assert_eq!(fact.idempotent, Some(true));
 
         // Idempotent by content: the interpretation's memory id folds the
         // claim, its confidence and its subjects, so re-asserting the same
@@ -1163,12 +1362,15 @@ mod tests {
         assert_eq!(interpret.destructive, Some(false));
         assert_eq!(interpret.idempotent, Some(true));
 
-        // Grouped goal dispatcher aggregates mixed write actions, so it is
-        // advertised as non-idempotent at tool level.
-        let goal = core_tool_annotations(protocol_tool::CORE_GOAL).expect("goal dispatcher");
+        // Grouped goal dispatcher aggregates write actions with mixed
+        // idempotence, so only the common behavior survives.
+        let goal = registry
+            .mcp_tool(protocol_tool::CORE_GOAL)
+            .and_then(McpToolDescriptor::resolved_annotations)
+            .expect("goal dispatcher");
         assert_eq!(goal.read_only, Some(false));
         assert_eq!(goal.destructive, Some(false));
-        assert_eq!(goal.idempotent, Some(false));
+        assert_eq!(goal.idempotent, None);
 
         // Flavor-shipped / unknown tools get no substrate hints here.
         assert!(core_tool_annotations("company/upsert").is_none());
