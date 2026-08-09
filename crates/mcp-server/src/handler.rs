@@ -634,9 +634,10 @@ fn auth_context(context: &RequestContext<RoleServer>) -> Option<McpAuthContext> 
     Some(ctx.clone())
 }
 
-fn scope_allows(scope: Option<&ToolScope>, name: &str) -> bool {
+fn scope_allows(scope: Option<&ToolScope>, descriptor: &McpToolDescriptor) -> bool {
     match scope {
-        Some(scope) => scope.allows_group_advertisement(name),
+        Some(scope) => scope
+            .allows_tool_advertisement(descriptor.name, !descriptor.action_arg_specs.is_empty()),
         // No auth context bound to the request. In release builds this
         // means the request bypassed `mcp_auth_layer` (which 401s before
         // dispatch) — fail closed rather than expose the full tool
@@ -656,7 +657,7 @@ pub(crate) fn tool_allowed_for_auth(
     descriptor: &McpToolDescriptor,
 ) -> bool {
     let scope = auth.map(|ctx| ctx.authz.tool_scope());
-    if !scope_allows(scope, descriptor.name) {
+    if !scope_allows(scope, descriptor) {
         return false;
     }
     if descriptor.action_arg_specs.is_empty() {
@@ -1214,6 +1215,31 @@ mod tests {
             tool_allowed_for_auth(Some(&viewer), &core_read),
             "core still resolves through the manifest"
         );
+    }
+
+    #[test]
+    fn a_bogus_action_scope_never_advertises_a_flat_tool() {
+        use proxima_core::{AuthPath, AuthzContext, Owner, ToolScope, UserId};
+
+        let owner = Owner::Personal(UserId::new(uuid::Uuid::now_v7()));
+        let descriptor = flavor_descriptor(
+            "proxima-stub_search",
+            Some(McpToolAnnotations::new().read_only(true).open_world(false)),
+        );
+        let auth = McpAuthContext {
+            owner,
+            authz: AuthzContext::for_subject(
+                UserId::new(uuid::Uuid::now_v7()),
+                AuthPath::HostBearer,
+            )
+            .with_tool_scope(ToolScope::Palette(vec![
+                "proxima-stub_search:bogus".to_owned(),
+            ])),
+            model_id: None,
+        };
+
+        assert!(descriptor.action_arg_specs.is_empty());
+        assert!(!tool_allowed_for_auth(Some(&auth), &descriptor));
     }
 
     #[test]

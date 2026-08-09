@@ -80,6 +80,21 @@ impl ToolScope {
         }
     }
 
+    /// Whether a descriptor may be advertised from this palette.
+    ///
+    /// Flat tools require their exact id. Dispatchers may also be visible
+    /// through one admitted `tool:action` leaf. Treating a flat tool as a
+    /// dispatcher would let a bogus `flat:unknown` entry advertise a tool
+    /// that the invocation gate correctly denies.
+    #[must_use]
+    pub fn allows_tool_advertisement(&self, tool: &str, has_actions: bool) -> bool {
+        if has_actions {
+            self.allows_group_advertisement(tool)
+        } else {
+            self.allows(tool)
+        }
+    }
+
     /// Narrow `self` by `other`, never widening it. Used to layer a
     /// deployment-wide surface over a caller's own scope: `All` is the
     /// identity element, and two palettes intersect to the ids both allow.
@@ -731,6 +746,20 @@ mod tests {
         assert!(leaf.allows_group_advertisement(protocol_tool::CORE_GOAL));
         assert!(flat.allows_group_advertisement(protocol_tool::CORE_GOAL));
         assert!(!unrelated.allows_group_advertisement(protocol_tool::CORE_GOAL));
+    }
+
+    #[test]
+    fn flat_tool_advertisement_requires_the_exact_tool_id() {
+        let exact = ToolScope::Palette(vec![protocol_tool::CORE_SEARCH_MEMORIES.to_string()]);
+        let bogus_leaf = ToolScope::Palette(vec![format!(
+            "{}:unknown",
+            protocol_tool::CORE_SEARCH_MEMORIES
+        )]);
+        let dispatcher_leaf = ToolScope::Palette(vec![protocol_action::CORE_GOAL_SET.to_string()]);
+
+        assert!(exact.allows_tool_advertisement(protocol_tool::CORE_SEARCH_MEMORIES, false));
+        assert!(!bogus_leaf.allows_tool_advertisement(protocol_tool::CORE_SEARCH_MEMORIES, false));
+        assert!(dispatcher_leaf.allows_tool_advertisement(protocol_tool::CORE_GOAL, true));
     }
 
     #[test]

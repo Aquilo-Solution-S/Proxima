@@ -403,6 +403,46 @@ async fn a_palette_narrows_the_advertised_dispatcher_actions() {
     assert_eq!(actions, vec!["set".to_string()]);
 }
 
+/// A `tool:action` palette entry admits a dispatcher leaf only. A flat tool
+/// has no leaves, so a made-up suffix must agree with the invocation gate and
+/// disappear from every derived catalog surface.
+#[tokio::test]
+async fn a_bogus_leaf_never_advertises_a_flat_tool() {
+    let router = app(host());
+    let flat = protocol_tool::CORE_SEARCH_MEMORIES;
+    let ctx = auth(ToolScope::Palette(vec![format!("{flat}:bogus")]));
+
+    let list = get(&router, "/v1/tools", &ctx).await;
+    assert_eq!(list.status, StatusCode::OK);
+    assert!(
+        list.json()["tools"]
+            .as_array()
+            .expect("tools")
+            .iter()
+            .all(|tool| tool["id"] != flat),
+        "the REST catalog must not advertise the denied flat tool",
+    );
+
+    let catalog = get(&router, &format!("/v1/tools/{flat}"), &ctx).await;
+    assert_eq!(catalog.status, StatusCode::NOT_FOUND);
+
+    let openapi = get(&router, "/v1/openapi.json", &ctx).await.json();
+    assert!(
+        openapi["paths"].get(format!("/v1/tools/{flat}")).is_none(),
+        "OpenAPI must not advertise the denied flat tool",
+    );
+
+    let invoked = call(
+        &router,
+        Method::POST,
+        &format!("/v1/tools/{flat}"),
+        &ctx,
+        Some(serde_json::json!({})),
+    )
+    .await;
+    assert_eq!(invoked.status, StatusCode::FORBIDDEN);
+}
+
 // ------------------------------------------------------------ gate parity
 
 /// A tool denied over MCP is denied over REST — `403`, from

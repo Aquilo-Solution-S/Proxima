@@ -124,7 +124,11 @@ fn action_visible(ctx: &McpToolCtx, tool: &McpToolDescriptor, action: &str) -> b
 }
 
 fn tool_visible(ctx: &McpToolCtx, tool: &McpToolDescriptor) -> bool {
-    if !ctx.authz.tool_scope().allows_group_advertisement(tool.name) {
+    if !ctx
+        .authz
+        .tool_scope()
+        .allows_tool_advertisement(tool.name, !tool.action_arg_specs.is_empty())
+    {
         return false;
     }
     if tool.action_arg_specs.is_empty() {
