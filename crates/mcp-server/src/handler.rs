@@ -1101,10 +1101,13 @@ mod tests {
     }
 
     #[test]
-    fn internal_tool_errors_are_redacted_for_clients() {
-        let err = mcp_tool_error_to_error_data(&McpToolError::Other("storage DSN leaked".into()));
+    fn tool_output_serialization_errors_are_internal_and_redacted() {
+        let err = mcp_tool_error_to_error_data(&McpToolError::Other(
+            "serialize tool output: fixture secret from output serializer".into(),
+        ));
         assert_eq!(err.code, rmcp::model::ErrorCode::INTERNAL_ERROR);
         assert_eq!(err.message, "internal server error");
+        assert!(!err.message.contains("fixture secret"));
     }
 
     /// A missing entity is a `resource_not_found` on the resource path but

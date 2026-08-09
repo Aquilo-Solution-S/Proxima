@@ -29,6 +29,13 @@ fn warn_undescribed_properties(tool_name: &str, args_schema: &serde_json::Value)
     }
 }
 
+fn serialize_tool_output<T: serde::Serialize>(
+    output: T,
+) -> Result<serde_json::Value, McpToolError> {
+    serde_json::to_value(output)
+        .map_err(|err| McpToolError::Other(format!("serialize tool output: {err}")))
+}
+
 impl FlavorRegistry {
     /// Register a flavor-shipped [`Tool`] under `expected_prefix`.
     ///
@@ -88,7 +95,7 @@ impl FlavorRegistry {
                 let typed: T::Args = serde_json::from_value(args)
                     .map_err(|e| McpToolError::InvalidInput(e.to_string()))?;
                 let output = T::call(ctx, typed).await?;
-                serde_json::to_value(output).map_err(|e| McpToolError::InvalidInput(e.to_string()))
+                serialize_tool_output(output)
             })
         }));
         self.mcp_tools.push(McpToolDescriptor {
@@ -140,4 +147,41 @@ fn validate_tool_name(
         });
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use serde::Serializer;
+
+    use super::serialize_tool_output;
+    use crate::mcp::{McpToolError, McpToolErrorKind};
+
+    struct FailingOutput;
+
+    impl serde::Serialize for FailingOutput {
+        fn serialize<S>(&self, _serializer: S) -> Result<S::Ok, S::Error>
+        where
+            S: Serializer,
+        {
+            Err(serde::ser::Error::custom(
+                "fixture secret from output serializer",
+            ))
+        }
+    }
+
+    #[test]
+    fn output_serialization_failure_is_internal_and_redacted() {
+        let err = serialize_tool_output(FailingOutput)
+            .expect_err("a failing output serializer must fail the tool call");
+        assert!(
+            matches!(
+                &err,
+                McpToolError::Other(message)
+                    if message == "serialize tool output: fixture secret from output serializer"
+            ),
+            "the internal diagnostic must retain enough context for server logs: {err:?}",
+        );
+        assert_eq!(err.kind(), McpToolErrorKind::Internal);
+        assert_eq!(err.client_message(), "internal server error");
+    }
 }
