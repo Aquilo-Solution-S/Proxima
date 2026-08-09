@@ -215,6 +215,10 @@ silently ignored duplicate.
 | `X-Proxima-Self-Perspective` | `caller_self_perspective` | optional; `P:` reference |
 | `User-Agent` | `client_name` / `client_version` | parsed; unattributed calls record the adapter's own name |
 
+For generic SDK tools, the shared adapter projects `model_id`, `client_name`,
+and `client_version` into `ToolCtx::caller()`. The caller Self Perspective
+remains available separately through `ToolCtx::caller_self_perspective()`.
+
 A request body containing `model_id`, `caller_self_perspective`,
 `_proxima_caller_self_perspective`, or
 `current_root_perspective_memory_id` is rejected `400`. These names

@@ -80,7 +80,7 @@ pub use proxima_core::{
     FlavorServiceError, FlavorServices, GoalId, GoalPayload, InputContractId, MemoryId, ModelId,
     OperatorId, PayloadKeyBuilder, PerspectivePayload, PromptVersion, SchemaId, SchemaVersion,
     SearchProjection, SearchProjectionColumnKind, SearchProjectionField, SidecarPayload, Tool,
-    ToolCall, ToolCallFn, ToolCtx, ToolDescriptor, ToolError, ToolOrigin, ToolServices,
+    ToolCall, ToolCallFn, ToolCaller, ToolCtx, ToolDescriptor, ToolError, ToolOrigin, ToolServices,
     is_loopback_endpoint, is_loopback_host, proxima_flavor, proxima_schema_id,
     validate_endpoint_url,
 };

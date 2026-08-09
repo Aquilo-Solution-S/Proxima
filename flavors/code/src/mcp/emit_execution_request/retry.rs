@@ -9,7 +9,7 @@ use proxima_core::{
 use crate::payloads::{CodeWorkAssignmentV1, ExecutionRequestV1};
 
 use super::super::sql::map_storage;
-use super::super::{CodeToolCtxExt, caller, code_store, engine};
+use super::super::{CodeToolCtxExt, code_store, engine};
 use super::context_validation::validate_evidence_in_owner;
 use super::ingest::{FactProvenance, ingest_execution_request};
 use super::input_validation::{normalize_text, resolve_evidence};
@@ -170,7 +170,9 @@ async fn author_assignment(
 ) -> Result<String, ToolError> {
     let engine = engine(ctx)?;
     let owner = ctx.owner();
-    let caller = caller(ctx)?;
+    let caller = ctx
+        .caller()
+        .ok_or_else(|| ToolError::Other("code flavor tools require caller metadata".into()))?;
     let payload = CodeWorkAssignmentV1 {
         repo_id,
         target_perspective_memory_id: target_perspective_memory_id.into_inner(),
@@ -199,7 +201,7 @@ async fn author_assignment(
                 operator_id: work_assignment_operator_id(),
                 input_contract_id: work_assignment_input_contract_id(),
                 source_batch_id: None,
-                model_id: caller.model_id(),
+                model_id: caller.model_id.as_str(),
                 prompt_version: "proxima-code/work-assignment-v1",
                 sidecar_payload: SidecarPayload::perspective(payload),
                 authoring_perspective_id: ctx.caller_self_perspective(),
