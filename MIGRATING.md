@@ -93,6 +93,14 @@ shared value is never empty. The outer guard runs before auth across `/mcp`,
 retains its inner `/mcp` guard with identical hosts. There is no wire, storage,
 schema, or migration change in this slice.
 
+## Tool-output serialization failures are server faults
+
+A registered tool whose typed `Output` fails JSON serialization now returns
+MCP `-32603 internal_error` or REST `500 internal`, with a redacted client
+message. The adapter previously reported MCP `-32602 invalid_params` or REST
+`400 invalid-input` and exposed the serializer diagnostic. No host, flavor,
+storage, or schema migration is required.
+
 ---
 
 # v0.0.6 → v0.0.7
