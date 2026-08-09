@@ -55,6 +55,18 @@ pub(super) struct BlobLocation {
     pub(super) object_key: String,
 }
 
+#[derive(Debug, Clone)]
+pub(super) struct BlobReadRecord {
+    pub(super) cited_object_id: Uuid,
+    pub(super) content_hash: [u8; 32],
+    pub(super) bucket: String,
+    pub(super) object_key: String,
+    pub(super) sha256: [u8; 32],
+    pub(super) byte_len: u64,
+    pub(super) mime: String,
+    pub(super) filename: String,
+}
+
 pub(super) async fn load_upload(
     pool: &sqlx::PgPool,
     owner: &Owner,
@@ -244,4 +256,50 @@ pub(super) async fn load_blob_location(
         bucket: row.get("bucket"),
         object_key: row.get("object_key"),
     })
+}
+
+/// Load the immutable verification record for one owner-scoped completed blob.
+///
+/// Missing and cross-owner ids both return `None`. The caller performs the
+/// authorization gate before calling this function, so no locator is read for
+/// a context that cannot read `owner`.
+pub(super) async fn load_blob_read_record(
+    pool: &sqlx::PgPool,
+    owner: &Owner,
+    cited_object_id: Uuid,
+) -> Result<Option<BlobReadRecord>, BlobError> {
+    let (owner_kind, owner_id) = db_owner_columns(owner);
+    let row = sqlx::query(
+        "SELECT co.cited_object_id, co.content_hash, b.bucket, b.object_key, \
+                b.sha256, b.byte_len, b.mime, b.filename \
+           FROM proxima_core.cited_objects co \
+           JOIN proxima_core.cited_uploaded_blob_v1 b USING (cited_object_id) \
+          WHERE co.cited_object_id = $1 \
+            AND co.owner_kind = $2 \
+            AND co.owner_id IS NOT DISTINCT FROM $3 \
+            AND co.schema_id = $4",
+    )
+    .bind(cited_object_id)
+    .bind(owner_kind)
+    .bind(owner_id)
+    .bind(UPLOADED_BLOB_SCHEMA_ID)
+    .fetch_optional(pool)
+    .await
+    .map_err(BlobError::Db)?;
+
+    row.map(|row| {
+        let byte_len: i64 = row.get("byte_len");
+        Ok(BlobReadRecord {
+            cited_object_id: row.get("cited_object_id"),
+            content_hash: hash32(&row.get::<Vec<u8>, _>("content_hash"), "content_hash")?,
+            bucket: row.get("bucket"),
+            object_key: row.get("object_key"),
+            sha256: hash32(&row.get::<Vec<u8>, _>("sha256"), "sha256")?,
+            byte_len: u64::try_from(byte_len)
+                .map_err(|_| BlobError::State("stored byte_len is negative".into()))?,
+            mime: row.get("mime"),
+            filename: row.get("filename"),
+        })
+    })
+    .transpose()
 }

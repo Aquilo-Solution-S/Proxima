@@ -194,7 +194,7 @@ Contract:
 | compliance erase | not dependent on sweep; erase deletes embedding infra synchronously at transaction commit |
 | graph authority | embeddings remain engine infrastructure; similarity never authors a connection |
 
-## Cited-Blob Reconciliation APIs
+## Cited-Blob Read and Reconciliation APIs
 
 Public facade status:
 
@@ -204,6 +204,8 @@ Public facade status:
 | `CitedBlobMissingObject` | `proxima::CitedBlobMissingObject` | Host API DTO |
 | `MAX_RECONCILE_SAMPLE` | `proxima::MAX_RECONCILE_SAMPLE` | Host API constant |
 | `CitedBlobStore::reconcile_all(&SystemAuthority)` | `proxima::CitedBlobStore` + booted runtime's `system_authority()` | Host/operator verb |
+| `CitedBlobReadService` / `Port` | `proxima::flavor::*` and `proxima::*` | Bounded verified-byte service |
+| `VerifiedCitedBlob` / `CitedBlobReadError` / `CitedBlobIntegrityMismatch` | `proxima::flavor::*` and `proxima::*` | Locator-free result + typed failure taxonomy |
 | `CitedBlobOwnerReconcileService` / `Port` | `proxima::flavor::*` and `proxima::*` | Typed flavor service |
 | `CitedBlobOwnerReconcileOutcome` / `CitedBlobOwnerMissingObject` | `proxima::flavor::*` and `proxima::*` | Redacted owner DTO |
 
@@ -211,10 +213,12 @@ Public facade status:
 |---|---|---|---|
 | Global | same-boot `SystemAuthority`; foreign-engine witnesses fail before I/O | configured bucket + every locator row | bounded raw missing/orphan/foreign locators for restore operations |
 | Owner | `AuthzContext::may_read(owner, Fact)` | exact owner rows + `objects/<owner-hash>/` | missing cited-object id, byte length, filename; no bucket/object key or orphan/foreign locator samples |
+| Verified bytes | `AuthzContext::may_read(owner, Fact)` | exact owner row + canonical object | required `NonZeroU64` ceiling; length+BLAKE3+SHA-256; no partial bytes or locator |
 
-Both lanes report `missing_objects`, `orphan_objects`, and
-`foreign_locators`. `is_intact()` is false exactly when `missing_objects` is
-non-zero. Both are report-only: no repair or deletion occurs.
+The Global and Owner reconciliation lanes report `missing_objects`,
+`orphan_objects`, and `foreign_locators`. `is_intact()` is false exactly when
+`missing_objects` is non-zero. Both are report-only: no repair or deletion
+occurs.
 
 ## Consumer Projector Guidance
 

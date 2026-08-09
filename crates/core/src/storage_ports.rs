@@ -7,6 +7,7 @@ mod access;
 mod bundle;
 mod change;
 mod cited_blob;
+mod cited_blob_read;
 mod cited_blob_reconcile;
 mod cited_object_erase;
 mod compliance;
@@ -31,6 +32,10 @@ pub use cited_blob::{
     CitedBlobHeld, CitedBlobPort, CitedBlobReadUrl, CitedBlobService, CitedBlobStaged,
     CitedBlobUploadAborted, CitedBlobUploadCompleted, CitedBlobUploadHeader,
     CitedBlobUploadPrepared, MAX_HELD_BLOB_DIGESTS,
+};
+pub use cited_blob_read::{
+    CitedBlobIntegrityMismatch, CitedBlobReadError, CitedBlobReadPort, CitedBlobReadService,
+    VerifiedCitedBlob,
 };
 pub use cited_blob_reconcile::{
     CitedBlobMissingObject, CitedBlobOwnerMissingObject, CitedBlobOwnerReconcileOutcome,

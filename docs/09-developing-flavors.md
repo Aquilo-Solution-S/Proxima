@@ -651,18 +651,21 @@ worker never takes the host down — its join error is logged at shutdown. The s
 `Proxima::build` variant spawns no workers; hosts driving a
 `BuiltProxima` own their own background tasks.
 
-`ctx.service::<CitedBlobService>()` resolves the same host-wired instance
-as `core_upload`. It is absent unless the host configured S3 (see
+`ctx.service::<CitedBlobService>()` and
+`ctx.service::<CitedBlobReadService>()` resolve disjoint capabilities over
+the same host-wired backend as `core_upload`. Both are absent unless the host configured S3 (see
 [10-configuration.md](10-configuration.md) §Large Artefact S3), so a worker
-that needs it should fail its job typed rather than no-op into a silently
+that needs one should fail its job typed rather than no-op into a silently
 idle loop. Unlike an MCP tool, a worker has no request to inherit authority
 from: every port method takes an `AuthzContext` and an `OwnerRef` that the
 worker supplies per job, normally from the job row that its tool wrote when
 the upload landed. `AuthzContext::single_owner` covers personal owners only —
 it returns a denied context for a group owner, where
-`AuthzContext::for_subject_with_role` is the right mint. `read_url`
-answers a presigned URL, never the bucket or object key, so a worker
-that needs the bytes fetches them itself over HTTP.
+`AuthzContext::for_subject_with_role` is the right mint. `read_url` answers a
+presigned URL. A worker that consumes trusted bytes uses
+`CitedBlobReadPort::collect_verified(authz, owner, id, max_bytes)` instead:
+`max_bytes` is a required `NonZeroU64`, and no bytes return until stored length,
+BLAKE3, and SHA-256 all match. Neither outcome exposes bucket/object key.
 
 To unit-test a `spawn_workers` implementation without booting the
 runtime, build the context with
@@ -782,8 +785,9 @@ service sets left-to-right; `(A,)` is the identity-preserving singleton form.
 Duplicate concrete types fail boot with `FlavorServiceError::DuplicateService`
 instead of silently overriding an earlier flavor or the substrate's service.
 
-When S3 is configured, the runtime appends two substrate-owned entries:
-`CitedBlobService` for upload/read and
+When S3 is configured, the runtime appends three substrate-owned entries over
+one shared backend: `CitedBlobService` for presigned upload/read,
+`CitedBlobReadService` for bounded verified bytes, and
 `CitedBlobOwnerReconcileService` for an authorized, report-only integrity
 check. A tool passes `&ctx.authz` and `ctx.owner` to `reconcile_owner`; the
 service re-checks Fact-read authority before Postgres or S3 access and returns

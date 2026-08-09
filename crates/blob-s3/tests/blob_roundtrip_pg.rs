@@ -9,10 +9,12 @@ use proxima_blob_s3::{
 use proxima_core::engine::{Engine, UploadCompleted};
 use proxima_core::error::ProtocolError;
 use proxima_core::storage_ports::{
-    CitedBlobPort, CitedBlobReconcileOutcome, CitedObjectErasePort, MAX_HELD_BLOB_DIGESTS,
+    CitedBlobIntegrityMismatch, CitedBlobPort, CitedBlobReadError, CitedBlobReadPort,
+    CitedBlobReconcileOutcome, CitedObjectErasePort, MAX_HELD_BLOB_DIGESTS,
 };
 use proxima_core::test_fixtures::owner_fixture;
 use proxima_core::{AuthPath, AuthzContext, FlavorRegistry, OwnerRef, StorageError, UserId};
+use std::num::NonZeroU64;
 
 // Contexts here are `AuthPath::HostBearer`, matching every production
 // caller. Completion writes a Fact through the engine, and an
@@ -179,6 +181,97 @@ async fn prepare_then_complete_then_read_roundtrip() {
         url.read_url
             .contains("response-content-disposition=attachment"),
         "presigned GET forces an attachment disposition (no inline stored-XSS)"
+    );
+
+    drop(pool);
+    drop_db(&db_name).await.expect("drop db");
+}
+
+#[tokio::test]
+async fn verified_read_is_owner_exact_bounded_and_integrity_checked() {
+    if !S3RuntimeConfig::present_in_env() {
+        eprintln!("skipped: PROXIMA_S3_* unset (run the s3 service to enable)");
+        return;
+    }
+
+    let (pg, db_name) = fresh_storage().await;
+    let pool = pg.pool_for_tests().clone();
+    let config = s3_config_for_dev();
+    let store = CitedBlobStore::new(pool.clone(), config.clone()).expect("valid S3 config");
+    let body = b"real";
+    let owner = owner_fixture();
+    let ctx = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
+    let (cited_object_id, canonical_key) =
+        complete_upload_fixture(&pg, &store, &config, &pool, &ctx, owner)
+            .await
+            .expect("complete fixture");
+    let cited_object_id = Uuid::parse_str(&cited_object_id).expect("cited object id");
+
+    let verified = store
+        .collect_verified(
+            &ctx,
+            owner,
+            cited_object_id,
+            NonZeroU64::new(u64::try_from(body.len()).unwrap()).unwrap(),
+        )
+        .await
+        .expect("exact-owner verified read");
+    assert_eq!(verified.bytes, body);
+    assert_eq!(verified.cited_object_id, cited_object_id);
+    assert_eq!(verified.filename, "genuine.pdf");
+
+    let error = store
+        .collect_verified(
+            &ctx,
+            owner,
+            cited_object_id,
+            NonZeroU64::new(u64::try_from(body.len() - 1).unwrap()).unwrap(),
+        )
+        .await
+        .expect_err("stored metadata over caller ceiling");
+    assert!(matches!(error, CitedBlobReadError::TooLarge { .. }));
+
+    let other = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+    let other_ctx = AuthzContext::single_owner(&other, AuthPath::HostBearer);
+    let error = store
+        .collect_verified(
+            &other_ctx,
+            other,
+            cited_object_id,
+            NonZeroU64::new(1024).unwrap(),
+        )
+        .await
+        .expect_err("foreign owner's row is not visible");
+    assert_eq!(error, CitedBlobReadError::NotFound);
+    let error = store
+        .collect_verified(
+            &other_ctx,
+            owner,
+            cited_object_id,
+            NonZeroU64::new(1024).unwrap(),
+        )
+        .await
+        .expect_err("foreign authz is denied before lookup");
+    assert_eq!(error, CitedBlobReadError::AccessDenied);
+
+    put_object_via_sdk(&config, &canonical_key, b"x").await;
+    let error = store
+        .collect_verified(&ctx, owner, cited_object_id, NonZeroU64::new(1024).unwrap())
+        .await
+        .expect_err("truncated canonical object rejected");
+    assert_eq!(
+        error,
+        CitedBlobReadError::IntegrityMismatch(CitedBlobIntegrityMismatch::ByteLength)
+    );
+
+    put_object_via_sdk(&config, &canonical_key, b"evil").await;
+    let error = store
+        .collect_verified(&ctx, owner, cited_object_id, NonZeroU64::new(1024).unwrap())
+        .await
+        .expect_err("same-length content tamper rejected");
+    assert_eq!(
+        error,
+        CitedBlobReadError::IntegrityMismatch(CitedBlobIntegrityMismatch::ContentHash)
     );
 
     drop(pool);

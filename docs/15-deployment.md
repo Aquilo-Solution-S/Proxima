@@ -331,6 +331,11 @@ bucket MUST carry an S3 lifecycle-expiration rule on the `pending/` prefix
 erasure removes the canonical objects as part of compliance erase (see
 [13 §External side effects](13-compliance.md#external-side-effects)).
 
+In-process byte consumers use `CitedBlobReadService::collect_verified` with a
+required non-zero ceiling. The service gates Fact-read before SQL/S3, buffers
+at most that ceiling, and releases bytes only after length+BLAKE3+SHA-256
+verification. Presigned `read_url` remains the unverified external-client lane.
+
 ## SSE stream revocation
 
 The OIDC path carries no out-of-band revocation signal, so a live SSE stream is

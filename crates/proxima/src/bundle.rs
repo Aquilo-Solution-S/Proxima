@@ -35,9 +35,10 @@ pub trait FlavorBundle {
     ///   core embedding worker.
     /// - A panicking worker never takes the host down: its join error is
     ///   logged at shutdown, not propagated.
-    /// - `ctx.service::<CitedBlobService>()` resolves the same host-wired
-    ///   service tools receive, and is `None` unless S3 is configured. A
-    ///   worker that needs it MUST fail its job typed when it is absent — a
+    /// - `ctx.service::<CitedBlobService>()` and
+    ///   `ctx.service::<CitedBlobReadService>()` resolve the same host-wired
+    ///   backend tools receive, and are `None` unless S3 is configured. A
+    ///   worker that needs one MUST fail its job typed when it is absent — a
     ///   no-op turns a misconfigured host into a silently idle one.
     ///
     /// To unit-test an implementation without booting the serving
