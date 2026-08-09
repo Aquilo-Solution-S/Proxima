@@ -11,11 +11,13 @@ fn host_api_imports_from_root() {
     assert_send_sync::<proxima::CancellationToken>();
     assert_send_sync::<proxima::RuntimeBuilder>();
     assert_send_sync::<proxima::RuntimeConfig>();
+    assert_send_sync::<proxima::HostAllowlist>();
     assert_send_sync::<proxima::Engine>();
     let owner: proxima::Owner = proxima::company_owner(uuid::Uuid::nil());
     let _authz: proxima::AuthzContext = proxima::AuthzContext::denied_for_owner(&owner);
     let _narrowed = proxima::AuthzContext::denied_for_owner(&owner).narrowed_to_owner(owner);
     let _cursor: proxima::Cursor = proxima::Cursor::empty();
+    let _host_allowlist = proxima::HostAllowlist::new(["proxima.example.com"]);
     let _cancel = proxima::CancellationToken::new();
     std::hint::black_box(proxima::load_source_cursor);
     std::hint::black_box(proxima::store_source_cursor);

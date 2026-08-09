@@ -143,6 +143,57 @@ async fn oidc_e2e_discovery_public_and_code_tools_behind_bearer()
     );
     assert_eq!(disc_json["authorization_servers"][0], ISSUER);
 
+    // Public metadata bypasses bearer auth, not listener-wide Host validation.
+    let foreign_discovery = client
+        .get(format!("{base}/.well-known/oauth-protected-resource"))
+        .header("Host", "foreign.e2e.test")
+        .send()
+        .await?;
+    assert_eq!(foreign_discovery.status(), reqwest::StatusCode::FORBIDDEN);
+    assert!(
+        !foreign_discovery.headers().contains_key("WWW-Authenticate"),
+        "Host rejection must not be rendered as an authentication challenge"
+    );
+    assert_eq!(
+        foreign_discovery.text().await?,
+        "Forbidden: Host header is not allowed"
+    );
+
+    // The listener guard also covers the router fallback, not only mounted
+    // protocol routes.
+    let foreign_fallback = client
+        .get(format!("{base}/not-a-real-route"))
+        .header("Host", "foreign.e2e.test")
+        .send()
+        .await?;
+    assert_eq!(foreign_fallback.status(), reqwest::StatusCode::FORBIDDEN);
+    assert!(
+        !foreign_fallback.headers().contains_key("WWW-Authenticate"),
+        "Host rejection must run before the authenticated fallback"
+    );
+    assert_eq!(
+        foreign_fallback.text().await?,
+        "Forbidden: Host header is not allowed"
+    );
+
+    // Protected production routes reject a foreign Host before bearer auth.
+    // If the layer order regresses, this no-bearer request becomes a 401.
+    let foreign_mcp = client
+        .post(&url)
+        .header("Host", "foreign.e2e.test")
+        .header("Origin", "http://localhost")
+        .send()
+        .await?;
+    assert_eq!(foreign_mcp.status(), reqwest::StatusCode::FORBIDDEN);
+    assert!(
+        !foreign_mcp.headers().contains_key("WWW-Authenticate"),
+        "Host rejection must run before bearer authentication"
+    );
+    assert_eq!(
+        foreign_mcp.text().await?,
+        "Forbidden: Host header is not allowed"
+    );
+
     // 2. /mcp without a bearer → 401 carrying WWW-Authenticate.
     let no_auth = client
         .post(&url)
@@ -334,6 +385,44 @@ async fn oidc_e2e_rest_openapi_matches_the_mcp_scope_on_the_mounted_runtime()
         .map(|tool| format!("/v1/tools/{tool}"))
         .collect();
     assert_eq!(rest_tool_paths, expected_paths);
+
+    let list_repos_url = format!("{base}/v1/tools/proxima-code_list_repos");
+    let foreign_rest = client
+        .post(&list_repos_url)
+        .header("Host", "foreign.e2e.test")
+        .header("Origin", "http://localhost")
+        .header("Authorization", bearer.as_str())
+        .header("X-Proxima-Owner", owner_key.as_str())
+        .json(&json!({}))
+        .send()
+        .await?;
+    assert_eq!(foreign_rest.status(), reqwest::StatusCode::FORBIDDEN);
+    assert_eq!(
+        foreign_rest.text().await?,
+        "Forbidden: Host header is not allowed"
+    );
+
+    // Invoke a real mounted REST tool, not only its generated OpenAPI route.
+    let list_repos = client
+        .post(&list_repos_url)
+        .header("Origin", "http://localhost")
+        .header("Authorization", bearer.as_str())
+        .header("X-Proxima-Owner", owner_key.as_str())
+        .json(&json!({}))
+        .send()
+        .await?;
+    assert_eq!(list_repos.status(), reqwest::StatusCode::OK);
+    assert_eq!(
+        list_repos
+            .headers()
+            .get("Cache-Control")
+            .and_then(|value| value.to_str().ok()),
+        Some("private, no-store")
+    );
+    let list_repos_body: serde_json::Value = list_repos.json().await?;
+    assert_eq!(list_repos_body["repos"], json!([]));
+    assert_eq!(list_repos_body["has_more"], false);
+    assert_eq!(list_repos_body["next_cursor"], serde_json::Value::Null);
 
     running.shutdown().await;
     Ok(())

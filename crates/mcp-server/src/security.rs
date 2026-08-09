@@ -9,7 +9,7 @@ use axum::middleware::{self, FromFnLayer, Next};
 use axum::response::{IntoResponse, Response};
 use futures_util::Stream;
 use http::HeaderMap;
-use http::header::{AUTHORIZATION, ORIGIN};
+use http::header::{AUTHORIZATION, HOST, ORIGIN};
 use http_body::{Body as HttpBody, Frame};
 use http_body_util::{BodyStream, StreamBody};
 use proxima_core::{
@@ -22,6 +22,7 @@ use crate::session::{McpSessionBindings, parse_owner_key};
 
 const MCP_SESSION_ID_HEADER: &str = "Mcp-Session-Id";
 const PROXIMA_OWNER_HEADER: &str = "X-Proxima-Owner";
+const LOOPBACK_HOSTS: [&str; 3] = ["localhost", "127.0.0.1", "::1"];
 
 #[derive(Clone, Debug)]
 pub struct OriginAllowlist {
@@ -99,6 +100,197 @@ impl OriginAllowlist {
             })
             .collect()
     }
+}
+
+/// Inbound `Host` / HTTP/2 `:authority` allowlist for the whole listener.
+///
+/// Loopback is always present. Additional entries are bare hostnames or
+/// `host:port`; an entry without a port accepts that host on any port. The
+/// matching rules deliberately mirror rmcp's private DNS-rebinding guard so
+/// one value can configure the outer listener and rmcp's inner `/mcp` guard.
+#[derive(Clone, Debug)]
+pub struct HostAllowlist {
+    hosts: Vec<String>,
+    authorities: Vec<NormalizedAuthority>,
+}
+
+impl HostAllowlist {
+    /// Build the listener allowlist from deployment-specific hosts.
+    ///
+    /// Loopback is added unconditionally and duplicate normalized authorities
+    /// are removed. Empty/blank additional entries add nothing; the resulting
+    /// allowlist is therefore never empty and can never enter rmcp's
+    /// allow-all-on-empty state.
+    #[must_use]
+    pub fn new<I, S>(additional_hosts: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let mut hosts = Vec::new();
+        let mut authorities = Vec::new();
+        for raw in LOOPBACK_HOSTS.into_iter().map(str::to_string).chain(
+            additional_hosts
+                .into_iter()
+                .map(|host| host.as_ref().trim().to_ascii_lowercase()),
+        ) {
+            let raw = raw.trim();
+            if raw.is_empty() {
+                continue;
+            }
+            let Some(authority) = parse_allowed_authority(raw) else {
+                continue;
+            };
+            if authorities.contains(&authority) {
+                continue;
+            }
+            hosts.push(raw.to_ascii_lowercase());
+            authorities.push(authority);
+        }
+        Self { hosts, authorities }
+    }
+
+    /// Raw authority entries passed to rmcp's inner `/mcp` guard.
+    ///
+    /// The slice always contains the loopback defaults and therefore never
+    /// activates rmcp's empty-list allow-all behavior.
+    #[must_use]
+    pub fn hosts(&self) -> &[String] {
+        &self.hosts
+    }
+
+    fn allows(&self, authority: &NormalizedAuthority) -> bool {
+        self.authorities.iter().any(|allowed| {
+            allowed.host == authority.host
+                && match allowed.port {
+                    Some(port) => authority.port == Some(port),
+                    None => true,
+                }
+        })
+    }
+}
+
+impl Default for HostAllowlist {
+    fn default() -> Self {
+        Self::new(std::iter::empty::<&str>())
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct NormalizedAuthority {
+    host: String,
+    port: Option<u16>,
+}
+
+fn normalize_host(host: &str) -> String {
+    host.trim_matches('[')
+        .trim_matches(']')
+        .to_ascii_lowercase()
+}
+
+fn normalize_authority(host: &str, port: Option<u16>) -> NormalizedAuthority {
+    NormalizedAuthority {
+        host: normalize_host(host),
+        port,
+    }
+}
+
+fn parse_allowed_authority(allowed: &str) -> Option<NormalizedAuthority> {
+    let allowed = allowed.trim();
+    if allowed.is_empty() {
+        return None;
+    }
+    if let Ok(authority) = http::uri::Authority::try_from(allowed) {
+        return Some(normalize_authority(authority.host(), authority.port_u16()));
+    }
+    Some(normalize_authority(allowed, None))
+}
+
+#[derive(Clone, Copy, Debug)]
+enum HostRequestError {
+    InvalidEncoding,
+    InvalidHeader,
+    MissingHeader,
+}
+
+impl IntoResponse for HostRequestError {
+    fn into_response(self) -> Response {
+        let message = match self {
+            Self::InvalidEncoding => "Bad Request: Invalid Host header encoding",
+            Self::InvalidHeader => "Bad Request: Invalid Host header",
+            Self::MissingHeader => "Bad Request: missing Host header",
+        };
+        (StatusCode::BAD_REQUEST, message).into_response()
+    }
+}
+
+fn request_authority(request: &Request) -> Result<NormalizedAuthority, HostRequestError> {
+    if let Some(host) = request.headers().get(HOST) {
+        let host = host.to_str().map_err(|_| {
+            tracing::warn!(host = ?host, "rejected request with non-UTF-8 Host header");
+            HostRequestError::InvalidEncoding
+        })?;
+        let authority = http::uri::Authority::try_from(host).map_err(|_| {
+            tracing::warn!(host, "rejected request with malformed Host header");
+            HostRequestError::InvalidHeader
+        })?;
+        return Ok(normalize_authority(authority.host(), authority.port_u16()));
+    }
+    let authority = request.uri().authority().ok_or_else(|| {
+        tracing::warn!("rejected request with missing Host header and no :authority");
+        HostRequestError::MissingHeader
+    })?;
+    Ok(normalize_authority(authority.host(), authority.port_u16()))
+}
+
+/// Concrete return type for [`host_guard_layer`].
+pub type HostGuardLayer = FromFnLayer<
+    fn(
+        State<HostAllowlist>,
+        Request,
+        Next,
+    ) -> Pin<Box<dyn std::future::Future<Output = Response> + Send>>,
+    HostAllowlist,
+    (State<HostAllowlist>, Request),
+>;
+
+/// Listener-wide DNS-rebinding guard.
+///
+/// Apply this after every route has been merged and outside bearer auth. It
+/// protects `/mcp`, `/v1`, host-mounted routes, and public OAuth metadata with
+/// one policy; rmcp keeps its own `/mcp` check as defense in depth.
+#[must_use = "apply the returned layer to the complete HTTP listener"]
+pub fn host_guard_layer(allowlist: HostAllowlist) -> HostGuardLayer {
+    fn dispatch(
+        state: State<HostAllowlist>,
+        request: Request,
+        next: Next,
+    ) -> Pin<Box<dyn std::future::Future<Output = Response> + Send>> {
+        Box::pin(enforce_host(state, request, next))
+    }
+    middleware::from_fn_with_state(allowlist, dispatch as fn(_, _, _) -> _)
+}
+
+async fn enforce_host(
+    State(allowlist): State<HostAllowlist>,
+    request: Request,
+    next: Next,
+) -> Response {
+    let authority = match request_authority(&request) {
+        Ok(authority) => authority,
+        Err(error) => return error.into_response(),
+    };
+    if !allowlist.allows(&authority) {
+        tracing::warn!(
+            host = ?authority,
+            "rejected request with disallowed Host header (possible DNS rebinding attempt)",
+        );
+        return Response::builder()
+            .status(StatusCode::FORBIDDEN)
+            .body(Body::from("Forbidden: Host header is not allowed"))
+            .expect("static Host rejection response is valid");
+    }
+    next.run(request).await
 }
 
 #[must_use]
@@ -522,7 +714,8 @@ mod tests {
     use tower::ServiceExt;
 
     use super::{
-        OriginAllowlist, RevalidatedBody, default_allowlist, mcp_auth_layer_with_sessions,
+        HostAllowlist, OriginAllowlist, RevalidatedBody, default_allowlist, host_guard_layer,
+        mcp_auth_layer_with_sessions,
     };
     use crate::McpServerError;
     use crate::auth::McpEdgeAuth;
@@ -598,6 +791,162 @@ mod tests {
 
     async fn status_of(app: Router, request: Request<Body>) -> StatusCode {
         app.oneshot(request).await.unwrap().status()
+    }
+
+    fn host_guard_app(additional_hosts: &[&str]) -> Router {
+        Router::new()
+            .route("/ok", any(|| async { StatusCode::OK }))
+            .layer(host_guard_layer(HostAllowlist::new(additional_hosts)))
+    }
+
+    fn request_with_host(uri: &str, host: &str) -> Request<Body> {
+        Request::builder()
+            .uri(uri)
+            .header(http::header::HOST, host)
+            .body(Body::empty())
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn host_guard_default_is_loopback_only_and_port_agnostic() {
+        let app = host_guard_app(&[]);
+        for host in [
+            "localhost",
+            "LOCALHOST:31415",
+            "127.0.0.1:31415",
+            "[::1]",
+            "[::1]:31415",
+        ] {
+            assert_eq!(
+                status_of(app.clone(), request_with_host("/ok", host)).await,
+                StatusCode::OK,
+                "loopback Host {host:?} must be accepted"
+            );
+        }
+        for host in ["localhost.evil", "evil.test"] {
+            assert_eq!(
+                status_of(app.clone(), request_with_host("/ok", host)).await,
+                StatusCode::FORBIDDEN,
+                "foreign Host {host:?} must be rejected"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn host_guard_matches_bare_hosts_and_explicit_ports_like_rmcp() {
+        let app = host_guard_app(&["example.test", "port.test:8443"]);
+        for host in ["example.test", "example.test:443", "port.test:8443"] {
+            assert_eq!(
+                status_of(app.clone(), request_with_host("/ok", host)).await,
+                StatusCode::OK,
+                "allowed Host {host:?} must be accepted"
+            );
+        }
+        for host in ["port.test", "port.test:443"] {
+            assert_eq!(
+                status_of(app.clone(), request_with_host("/ok", host)).await,
+                StatusCode::FORBIDDEN,
+                "wrong explicit port for {host:?} must be rejected"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn host_guard_normalizes_ipv6_and_preserves_explicit_ports() {
+        let app = host_guard_app(&["2001:db8::1", "[2001:db8::2]:8443"]);
+        for host in ["[2001:DB8::1]", "[2001:db8::1]:443", "[2001:db8::2]:8443"] {
+            assert_eq!(
+                status_of(app.clone(), request_with_host("/ok", host)).await,
+                StatusCode::OK,
+                "allowed IPv6 authority {host:?} must be accepted"
+            );
+        }
+        for host in ["[2001:db8::2]", "[2001:db8::2]:443"] {
+            assert_eq!(
+                status_of(app.clone(), request_with_host("/ok", host)).await,
+                StatusCode::FORBIDDEN,
+                "wrong IPv6 port for {host:?} must be rejected"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn host_header_wins_and_uri_authority_is_the_http2_fallback() {
+        let app = host_guard_app(&[]);
+        assert_eq!(
+            status_of(
+                app.clone(),
+                request_with_host("http://localhost/ok", "evil.test"),
+            )
+            .await,
+            StatusCode::FORBIDDEN
+        );
+        let authority_only = Request::builder()
+            .uri("http://LOCALHOST:31415/ok")
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(status_of(app.clone(), authority_only).await, StatusCode::OK);
+        let foreign_authority = Request::builder()
+            .uri("http://evil.test/ok")
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(
+            status_of(app, foreign_authority).await,
+            StatusCode::FORBIDDEN
+        );
+    }
+
+    #[tokio::test]
+    async fn missing_or_malformed_host_is_bad_request_with_rmcp_text() {
+        let app = host_guard_app(&[]);
+        let missing = Request::builder().uri("/ok").body(Body::empty()).unwrap();
+        let missing = app.clone().oneshot(missing).await.unwrap();
+        assert_eq!(missing.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            missing.headers().get(http::header::CONTENT_TYPE).unwrap(),
+            "text/plain; charset=utf-8"
+        );
+        assert_eq!(
+            to_bytes(missing.into_body(), usize::MAX).await.unwrap(),
+            Bytes::from_static(b"Bad Request: missing Host header")
+        );
+
+        let malformed = request_with_host("http://localhost/ok", "bad host");
+        let malformed = app.clone().oneshot(malformed).await.unwrap();
+        assert_eq!(malformed.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            to_bytes(malformed.into_body(), usize::MAX).await.unwrap(),
+            Bytes::from_static(b"Bad Request: Invalid Host header")
+        );
+
+        let mut non_utf8 = Request::builder()
+            .uri("http://localhost/ok")
+            .body(Body::empty())
+            .unwrap();
+        non_utf8.headers_mut().insert(
+            http::header::HOST,
+            http::HeaderValue::from_bytes(&[0xff]).unwrap(),
+        );
+        let non_utf8 = app.oneshot(non_utf8).await.unwrap();
+        assert_eq!(non_utf8.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            to_bytes(non_utf8.into_body(), usize::MAX).await.unwrap(),
+            Bytes::from_static(b"Bad Request: Invalid Host header encoding")
+        );
+    }
+
+    #[tokio::test]
+    async fn disallowed_host_uses_rmcp_forbidden_response_shape() {
+        let response = host_guard_app(&[])
+            .oneshot(request_with_host("/ok", "evil.test"))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        assert!(!response.headers().contains_key(http::header::CONTENT_TYPE));
+        assert_eq!(
+            to_bytes(response.into_body(), usize::MAX).await.unwrap(),
+            Bytes::from_static(b"Forbidden: Host header is not allowed")
+        );
     }
 
     // A bad token yields 401 even when a valid owner is selected.

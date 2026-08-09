@@ -13,7 +13,7 @@ not a reference. Deployment and env vars live in
 
 | You are | Read |
 |---|---|
-| A **v0.0.7 Rust host** | [remove the inert runtime owner-access registration](#remove-the-inert-runtime-owner-access-registration) |
+| A **v0.0.7 Rust host** | [remove the inert runtime owner-access registration](#remove-the-inert-runtime-owner-access-registration), then [pass the shared Host allowlist](#pass-the-shared-host-allowlist) |
 | An **operator** promoting a deployment | [the v0.0.7 schema lane](#the-v007-schema-lane), then [operator changes](#operator-changes) |
 | Running the **code flavor** | the above, then [re-register and re-index](#re-register-and-re-index-every-code-repository) |
 | An **MCP client / agent** author | [wire changes](#wire-changes-mcp-clients) |
@@ -60,6 +60,38 @@ The MCP edge still authenticates every request, narrows the returned role set
 to the selected or session-bound owner, and rejects an unauthorized owner.
 Serving still fails closed without a host `Authenticator`. There is no wire,
 storage, schema, or migration change in this slice.
+
+## Pass the shared Host allowlist
+
+`layered_router` gains a trailing `HostAllowlist` argument.
+`layered_router_with_revalidation` gains the same argument immediately before
+`RevalidationConfig`. `streamable_http_service` now takes
+`&HostAllowlist` instead of an allowed-host string slice. Construct one value,
+borrow it for rmcp's inner `/mcp` guard, then move it into the outer listener:
+
+```rust
+let host_allowlist = proxima::HostAllowlist::new(["proxima.example.com"]);
+let mcp_service = proxima_mcp_server::streamable_http_service(
+    mcp_host,
+    &origin_allowlist,
+    &host_allowlist,
+    &cancel,
+);
+
+let router = proxima::layered_router(
+    mcp_service,
+    app_router,
+    edge_auth,
+    origin_allowlist,
+    host_allowlist,
+);
+```
+
+`HostAllowlist` always includes `localhost`, `127.0.0.1`, and `::1`, so the
+shared value is never empty. The outer guard runs before auth across `/mcp`,
+`/v1`, mounted flavor routes, OAuth metadata, and fallback responses; rmcp
+retains its inner `/mcp` guard with identical hosts. There is no wire, storage,
+schema, or migration change in this slice.
 
 ---
 

@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use async_trait::async_trait;
 use axum::Router;
@@ -12,7 +13,7 @@ use proxima_core::{
     UserId,
 };
 use proxima_mcp_server::{
-    McpEdgeAuth, McpToolHost, default_allowlist, owner_key, streamable_http_service,
+    HostAllowlist, McpEdgeAuth, McpToolHost, default_allowlist, owner_key, streamable_http_service,
 };
 use tokio_util::sync::CancellationToken;
 use tower::util::ServiceExt;
@@ -43,6 +44,18 @@ impl Authenticator for StubHostAuth {
     }
 }
 
+struct CountingHostAuth {
+    calls: Arc<AtomicUsize>,
+}
+
+#[async_trait]
+impl Authenticator for CountingHostAuth {
+    async fn authenticate(&self, _creds: &Credentials) -> Result<AuthzContext, AuthError> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        Err(AuthError::InvalidCredentials)
+    }
+}
+
 fn edge_auth() -> McpEdgeAuth {
     McpEdgeAuth::headless()
 }
@@ -58,9 +71,10 @@ fn router_with_hosts(auth: Arc<McpEdgeAuth>, _owner: Owner, allowed_hosts: &[Str
     );
     let cancel = CancellationToken::new();
     let allowlist = default_allowlist();
-    let service = streamable_http_service(host, &allowlist, allowed_hosts, &cancel);
+    let host_allowlist = HostAllowlist::new(allowed_hosts);
+    let service = streamable_http_service(host, &allowlist, &host_allowlist, &cancel);
     let app_router = Router::new().route("/app/ping", get(ping));
-    layered_router(service, app_router, auth, allowlist)
+    layered_router(service, app_router, auth, allowlist, host_allowlist)
 }
 
 async fn status(
@@ -70,7 +84,10 @@ async fn status(
     selected_owner: Owner,
     bearer: Option<String>,
 ) -> StatusCode {
-    let mut builder = Request::builder().method(method).uri(uri);
+    let mut builder = Request::builder()
+        .method(method)
+        .uri(uri)
+        .header(header::HOST, "localhost");
     if let Some(bearer) = bearer {
         builder = builder
             .header(header::AUTHORIZATION, bearer)
@@ -84,18 +101,22 @@ async fn status(
 
 async fn status_with_host(
     app: Router,
-    bearer: &str,
+    method: Method,
+    uri: &str,
+    bearer: Option<&str>,
     host: &str,
     selected_owner: Owner,
 ) -> StatusCode {
-    let request = Request::builder()
-        .method(Method::POST)
-        .uri("/mcp")
-        .header(header::AUTHORIZATION, bearer)
-        .header(header::HOST, host)
-        .header("X-Proxima-Owner", owner_key(selected_owner))
-        .body(Body::empty())
-        .unwrap();
+    let mut request = Request::builder()
+        .method(method)
+        .uri(uri)
+        .header(header::HOST, host);
+    if let Some(bearer) = bearer {
+        request = request
+            .header(header::AUTHORIZATION, bearer)
+            .header("X-Proxima-Owner", owner_key(selected_owner));
+    }
+    let request = request.body(Body::empty()).unwrap();
     app.oneshot(request).await.unwrap().status()
 }
 
@@ -111,20 +132,64 @@ async fn host_guard_allows_configured_host_and_rejects_foreign() {
     let bearer = "Bearer host-token";
 
     // Configured public Host passes the guard (auth + handshake run).
-    let allowed = status_with_host(app.clone(), bearer, "proxima.test", owner).await;
+    let allowed = status_with_host(
+        app.clone(),
+        Method::POST,
+        "/mcp",
+        Some(bearer),
+        "proxima.test",
+        owner,
+    )
+    .await;
     assert_ne!(allowed, StatusCode::UNAUTHORIZED);
     assert_ne!(allowed, StatusCode::FORBIDDEN);
-
-    // A foreign Host is rejected by the rebinding guard.
     assert_eq!(
-        status_with_host(app, bearer, "evil.test", owner).await,
+        status_with_host(
+            app.clone(),
+            Method::GET,
+            "/app/ping",
+            Some(bearer),
+            "proxima.test",
+            owner,
+        )
+        .await,
+        StatusCode::OK
+    );
+
+    // A foreign Host is rejected before auth on every merged protected route.
+    assert_eq!(
+        status_with_host(
+            app.clone(),
+            Method::POST,
+            "/mcp",
+            Some(bearer),
+            "evil.test",
+            owner,
+        )
+        .await,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        status_with_host(
+            app.clone(),
+            Method::GET,
+            "/app/ping",
+            Some(bearer),
+            "evil.test",
+            owner,
+        )
+        .await,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        status_with_host(app, Method::GET, "/app/ping", None, "evil.test", owner,).await,
         StatusCode::FORBIDDEN
     );
 }
 
-// Exposure proof: an EMPTY host override must NOT become rmcp's allow-all
-// state — the transport leaves rmcp's loopback-only default in place, so
-// a foreign Host is still 403'd while loopback passes.
+// Exposure proof: an empty deployment override must NOT become rmcp's
+// allow-all state. HostAllowlist materializes loopback before either guard sees
+// the policy, so a foreign Host is still 403'd while loopback passes.
 #[tokio::test]
 async fn host_guard_empty_override_stays_loopback_only_not_allow_all() {
     let owner = owner();
@@ -133,11 +198,75 @@ async fn host_guard_empty_override_stays_loopback_only_not_allow_all() {
     let bearer = "Bearer host-token";
 
     assert_eq!(
-        status_with_host(app.clone(), bearer, "evil.test", owner).await,
+        status_with_host(
+            app.clone(),
+            Method::POST,
+            "/mcp",
+            Some(bearer),
+            "evil.test",
+            owner,
+        )
+        .await,
         StatusCode::FORBIDDEN
     );
-    let loopback = status_with_host(app, bearer, "127.0.0.1", owner).await;
+    assert_eq!(
+        status_with_host(
+            app.clone(),
+            Method::GET,
+            "/app/ping",
+            Some(bearer),
+            "evil.test",
+            owner,
+        )
+        .await,
+        StatusCode::FORBIDDEN
+    );
+    let loopback = status_with_host(
+        app.clone(),
+        Method::POST,
+        "/mcp",
+        Some(bearer),
+        "127.0.0.1",
+        owner,
+    )
+    .await;
     assert_ne!(loopback, StatusCode::FORBIDDEN);
+    assert_eq!(
+        status_with_host(
+            app,
+            Method::GET,
+            "/app/ping",
+            Some(bearer),
+            "localhost:31415",
+            owner,
+        )
+        .await,
+        StatusCode::OK
+    );
+}
+
+#[tokio::test]
+async fn host_guard_rejects_before_calling_the_authenticator() {
+    let owner = owner();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let auth = Arc::new(edge_auth().with_host(Arc::new(CountingHostAuth {
+        calls: Arc::clone(&calls),
+    })));
+    let app = router(auth, owner);
+
+    assert_eq!(
+        status_with_host(
+            app,
+            Method::GET,
+            "/app/ping",
+            Some("Bearer must-not-be-checked"),
+            "evil.test",
+            owner,
+        )
+        .await,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
 }
 
 // Regression: `layered_router`/`layered_router_with_revalidation` must
@@ -145,9 +274,8 @@ async fn host_guard_empty_override_stays_loopback_only_not_allow_all() {
 // streamable transport (crates/mcp-server/src/transport.rs). Before the
 // fix, this composition seam had no `enforce_body_limit` layer at all —
 // an embedding host serving `layered_router` network-facing had no body
-// cap. A declared oversized `Content-Length` must 413 before auth runs
-// (no Authorization header is sent; a 401 here would mean the limit
-// wasn't applied, or wasn't applied outermost).
+// cap. A declared oversized `Content-Length` must 413 before Host or auth runs
+// (the request deliberately has a foreign Host and no Authorization header).
 #[tokio::test]
 async fn layered_router_rejects_oversized_body_before_auth() {
     const OVER_CAP_BYTES: usize = 8 * 1024 * 1024;
@@ -159,6 +287,7 @@ async fn layered_router_rejects_oversized_body_before_auth() {
     let request = Request::builder()
         .method(Method::POST)
         .uri("/mcp")
+        .header(header::HOST, "evil.test")
         .header(header::CONTENT_LENGTH, OVER_CAP_BYTES.to_string())
         .body(Body::from("x"))
         .unwrap();

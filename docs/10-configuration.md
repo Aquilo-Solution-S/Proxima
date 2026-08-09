@@ -23,7 +23,7 @@ host injects for vector retrieval and an optional model-seat client.
 | Surface | Scope | Current contract |
 |---|---|---|
 | Postgres connection | binary-wide | `DATABASE_URL` |
-| MCP endpoint | binary-wide | bind addr, network exposure, origin allowlist |
+| MCP endpoint | binary-wide | bind addr, network exposure, origin + Host allowlists |
 | REST surface | binary-wide | `rest` cargo feature + `PROXIMA_REST_ENABLED`; same listener, same layers |
 | MCP authentication | per request | host `Authenticator` only; owner roles resolved server-side |
 | Embedding client | binary-wide | optional `Arc<dyn EmbeddingClient>` injected at boot |
@@ -58,7 +58,7 @@ Proxima::<App>::app()
 | `PROXIMA_MCP_BIND` | MCP socket address; enables the listener when set. |
 | `PROXIMA_EXPOSE_NETWORK` | Network exposure gate for non-loopback binds. |
 | `PROXIMA_ALLOWED_ORIGINS` | Comma-separated MCP origin allowlist. |
-| `PROXIMA_ALLOWED_HOSTS` | Comma-separated inbound `Host` allowlist (hostnames or `host:port`, no wildcards) for the DNS-rebinding guard; defaults to the host of `PROXIMA_PUBLIC_URL` + the allowed origins. Loopback always permitted. |
+| `PROXIMA_ALLOWED_HOSTS` | Comma-separated inbound `Host` allowlist (hostnames or `host:port`, no wildcards) for the listener-wide DNS-rebinding guard; defaults to the host of `PROXIMA_PUBLIC_URL` + the allowed origins. Loopback always permitted. |
 | `PROXIMA_STREAM_MAX_LIFETIME` | Max lifetime (seconds) of an authenticated MCP (Streamable HTTP) response stream before re-validation. (The `Subscribe` push verb is retired — see docs/14; this governs response-stream revalidation, not a subscription.) |
 | `PROXIMA_STREAM_EPOCH_INTERVAL` | Auth-epoch re-check interval (seconds) for an open MCP response stream. |
 | `PROXIMA_EMBED_BASE_URL` | OpenAI-compatible `/embeddings` base URL. Setting it alone enables embeddings — a loopback endpoint needs no key. |
@@ -103,12 +103,13 @@ The Streamable HTTP MCP listener turns on when `PROXIMA_MCP_BIND` (or
 and use it inside `authenticate`; a custom authenticator owns the equivalent
 server-side role resolution.
 
-Origins are gated by `PROXIMA_ALLOWED_ORIGINS`. The inbound `Host`
-header is independently gated by rmcp's DNS-rebinding guard: loopback
-binds accept loopback hosts only, and a network-exposed bind must
-resolve at least one public host (`PROXIMA_ALLOWED_HOSTS`, else the host
-of `PROXIMA_PUBLIC_URL` / the allowed origins) or `validate()` fails
-closed. Secrets are never streamed to clients.
+Origins are gated by `PROXIMA_ALLOWED_ORIGINS`. One non-empty
+`HostAllowlist` gates the complete listener before auth and is passed to
+rmcp's inner `/mcp` DNS-rebinding guard unchanged. It covers `/mcp`, `/v1`,
+mounted flavor routes, OAuth metadata, and fallback responses. Loopback is
+always present; a network-exposed bind must resolve at least one public host
+(`PROXIMA_ALLOWED_HOSTS`, else the host of `PROXIMA_PUBLIC_URL` / the allowed
+origins) or `validate()` fails closed. Secrets are never streamed to clients.
 
 ### REST Surface
 
@@ -118,11 +119,12 @@ different kinds of decision: the `rest` cargo feature compiles the
 module (a build decision), `PROXIMA_REST_ENABLED=true` serves it (a
 deployment one). Default off at both.
 
-It mounts on the MCP listener inside the same auth and body-limit
-layers, so it inherits bearer validation, origin allowlisting, owner
-resolution and stream revalidation unchanged, and grants no authority
-MCP does not already grant. Setting `PROXIMA_REST_ENABLED` in a binary
-built without the feature logs a warning at boot and serves nothing.
+It mounts on the MCP listener inside the listener-wide Host/body-limit layers
+and the same protected auth layer, so it inherits Host validation, bearer
+validation, origin allowlisting, owner resolution and stream revalidation
+unchanged, and grants no authority MCP does not already grant. Setting
+`PROXIMA_REST_ENABLED` in a binary built without the feature logs a warning at
+boot and serves nothing.
 
 ### Tool Surface Profile
 
