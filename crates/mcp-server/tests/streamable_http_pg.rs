@@ -101,6 +101,40 @@ async fn missing_auth_returns_401() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[tokio::test]
+async fn allowed_browser_preflight_skips_bearer_auth() -> Result<(), Box<dyn std::error::Error>> {
+    let (handle, addr, db_name) = common::start_server(Arc::new(McpEdgeAuth::headless())).await?;
+
+    let response = reqwest::Client::new()
+        .request(reqwest::Method::OPTIONS, format!("http://{addr}/mcp"))
+        .header("Origin", "http://localhost:5173")
+        .header("Access-Control-Request-Method", "POST")
+        .header(
+            "Access-Control-Request-Headers",
+            "authorization,content-type,x-proxima-owner",
+        )
+        .send()
+        .await?;
+    assert_eq!(response.status(), reqwest::StatusCode::NO_CONTENT);
+    assert_eq!(
+        response
+            .headers()
+            .get("Access-Control-Allow-Origin")
+            .and_then(|value| value.to_str().ok()),
+        Some("http://localhost:5173")
+    );
+    assert_eq!(
+        response
+            .headers()
+            .get("Access-Control-Allow-Headers")
+            .and_then(|value| value.to_str().ok()),
+        Some("authorization,content-type,x-proxima-owner")
+    );
+
+    common::stop_server(handle, &db_name).await?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn disallowed_origin_returns_403_with_valid_token() -> Result<(), Box<dyn std::error::Error>>
 {
     let auth_store = Arc::new(

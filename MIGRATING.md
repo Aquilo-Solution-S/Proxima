@@ -13,7 +13,7 @@ not a reference. Deployment and env vars live in
 
 | You are | Read |
 |---|---|
-| A **v0.0.7 Rust host** | [remove the inert runtime owner-access registration](#remove-the-inert-runtime-owner-access-registration), [remove the dependency-satisfaction seam](#remove-the-dependency-satisfaction-seam), [pass the shared Host allowlist](#pass-the-shared-host-allowlist), then [freeze registries once](#freeze-registries-once) |
+| A **v0.0.7 Rust host** | [remove the inert runtime owner-access registration](#remove-the-inert-runtime-owner-access-registration), [remove the dependency-satisfaction seam](#remove-the-dependency-satisfaction-seam), [pass the shared Host allowlist](#pass-the-shared-host-allowlist), [apply listener-wide CORS](#apply-listener-wide-cors), then [freeze registries once](#freeze-registries-once) |
 | An **operator** promoting a deployment | [the v0.0.7 schema lane](#the-v007-schema-lane), then [operator changes](#operator-changes) |
 | Running the **code flavor** | the above, then [re-register and re-index](#re-register-and-re-index-every-code-repository) |
 | An **MCP client / agent** author | [wire changes](#wire-changes-mcp-clients) |
@@ -116,10 +116,37 @@ let router = proxima::layered_router(
 ```
 
 `HostAllowlist` always includes `localhost`, `127.0.0.1`, and `::1`, so the
-shared value is never empty. The outer guard runs before auth across `/mcp`,
-`/v1`, mounted flavor routes, OAuth metadata, and fallback responses; rmcp
-retains its inner `/mcp` guard with identical hosts. There is no wire, storage,
-schema, or migration change in this slice.
+shared value is never empty. The outer guard runs before CORS and auth across
+`/mcp`, `/v1`, mounted flavor routes, OAuth metadata, and fallback responses;
+rmcp retains its inner `/mcp` guard with identical hosts. There is no wire,
+storage, schema, or migration change in this slice.
+
+## Apply listener-wide CORS
+
+`PROXIMA_ALLOWED_ORIGINS` now drives browser CORS for the complete listener,
+not only Origin rejection inside bearer auth. `layered_router` and the runtime
+builder apply it automatically. A host assembling Axum layers directly must
+add `cors_layer` between the Host guard and protected auth; the auth-layer
+constructors no longer take an `OriginAllowlist`:
+
+```rust
+let protected = Router::new()
+    .nest_service("/mcp", mcp_service)
+    .layer(mcp_auth_layer_with_config(edge_auth, revalidation));
+
+let listener = protected
+    .layer(cors_layer(origin_allowlist))
+    .layer(host_guard_layer(host_allowlist))
+    .layer(middleware::from_fn(enforce_body_limit));
+```
+
+The last layer is outermost: body limit → Host → CORS → bearer auth. Allowed
+browser preflights return `204` without a bearer; actual protected requests
+still require one. Native clients without `Origin` keep their existing auth
+path. Ingress JWT validation must exempt preflight `OPTIONS` and forward
+`Origin` plus both `Access-Control-Request-*` headers.
+
+There is no environment-name, wire, storage, or schema migration.
 
 ## Tool-output serialization failures are server faults
 

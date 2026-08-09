@@ -28,7 +28,8 @@ use crate::McpServerError;
 use crate::auth::McpEdgeAuth;
 use crate::handler::DynamicHandler;
 use crate::security::{
-    HostAllowlist, OriginAllowlist, assert_loopback, host_guard_layer, mcp_auth_layer_with_config,
+    HostAllowlist, OriginAllowlist, assert_loopback, cors_layer, host_guard_layer,
+    mcp_auth_layer_with_config,
 };
 use crate::server::McpToolHost;
 
@@ -99,14 +100,14 @@ pub async fn serve_streamable_http_with_revalidation(
     let service = streamable_http_service(server, &allowlist, &host_allowlist, &cancellation_token);
     // Layer order is bottom-up (the last `.layer` is outermost): the
     // body-size guard runs first and 413s oversized requests before auth
-    // or JSON parsing, then the shared Host guard, auth, perf recording, and
-    // finally rmcp's own Host guard. The auth guard also validates any present
-    // Origin; native CLI clients commonly omit Origin, which is allowed after
-    // a valid bearer token.
+    // or JSON parsing, then the shared Host guard, listener-wide CORS/Origin
+    // guard, auth, perf recording, and finally rmcp's own Host/Origin guard.
+    // Native CLI clients commonly omit Origin and keep the bearer path.
     let app = axum::Router::new()
         .nest_service("/mcp", service)
         .layer(middleware::from_fn(perf_recorder))
-        .layer(mcp_auth_layer_with_config(auth, allowlist, revalidation))
+        .layer(mcp_auth_layer_with_config(auth, revalidation))
+        .layer(cors_layer(allowlist))
         .layer(host_guard_layer(host_allowlist))
         .layer(middleware::from_fn(enforce_body_limit));
 
@@ -231,20 +232,21 @@ mod tests {
 
     use super::{MAX_REQUEST_BODY_BYTES, enforce_body_limit};
     use crate::auth::McpEdgeAuth;
-    use crate::security::{default_allowlist, mcp_auth_layer_with_config};
+    use crate::security::{cors_layer, default_allowlist, mcp_auth_layer_with_config};
 
-    /// Production stack order: body-limit outermost, then auth over an OK
-    /// `/mcp` stub. Auth is headless (rejects every bearer), so any request
-    /// that reaches auth returns 401 — letting us prove the body guard runs
-    /// first.
+    /// Relevant production stack order: body-limit outermost, then CORS and
+    /// auth over an OK `/mcp` stub. Auth is headless (rejects every bearer),
+    /// so any request that reaches auth returns 401 — letting us prove the
+    /// body guard runs first.
     fn guarded_app() -> Router {
+        let allowlist = default_allowlist();
         Router::new()
             .route("/mcp", any(|| async { StatusCode::OK }))
             .layer(mcp_auth_layer_with_config(
                 Arc::new(McpEdgeAuth::headless()),
-                default_allowlist(),
                 RevalidationConfig::default(),
             ))
+            .layer(cors_layer(allowlist))
             .layer(axum::middleware::from_fn(enforce_body_limit))
     }
 

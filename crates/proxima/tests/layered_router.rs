@@ -3,7 +3,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use async_trait::async_trait;
 use axum::Router;
-use axum::body::Body;
+use axum::body::{Body, to_bytes};
 use axum::http::{Method, Request, StatusCode, header};
 use axum::routing::get;
 use proxima::{Authz, layered_router};
@@ -267,6 +267,152 @@ async fn host_guard_rejects_before_calling_the_authenticator() {
         StatusCode::FORBIDDEN
     );
     assert_eq!(calls.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn allowed_preflight_covers_mcp_and_host_routes_without_authentication() {
+    let owner = owner();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let auth = Arc::new(edge_auth().with_host(Arc::new(CountingHostAuth {
+        calls: Arc::clone(&calls),
+    })));
+    let app = router(auth, owner);
+
+    for uri in ["/mcp", "/app/ping"] {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::OPTIONS)
+                    .uri(uri)
+                    .header(header::HOST, "localhost")
+                    .header(header::ORIGIN, "http://localhost:5173")
+                    .header(header::ACCESS_CONTROL_REQUEST_METHOD, "POST")
+                    .header(
+                        header::ACCESS_CONTROL_REQUEST_HEADERS,
+                        "authorization,content-type,x-proxima-owner",
+                    )
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NO_CONTENT, "{uri}");
+        assert_eq!(
+            response.headers().get(header::ACCESS_CONTROL_ALLOW_ORIGIN),
+            Some(&header::HeaderValue::from_static("http://localhost:5173")),
+            "{uri}"
+        );
+    }
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn origin_rejection_and_host_rejection_both_run_before_auth() {
+    let owner = owner();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let auth = Arc::new(edge_auth().with_host(Arc::new(CountingHostAuth {
+        calls: Arc::clone(&calls),
+    })));
+    let app = router(auth, owner);
+
+    let disallowed_origin = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/app/ping")
+                .header(header::HOST, "localhost")
+                .header(header::ORIGIN, "https://evil.test")
+                .header(header::AUTHORIZATION, "Bearer must-not-be-checked")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(disallowed_origin.status(), StatusCode::FORBIDDEN);
+    assert_eq!(
+        to_bytes(disallowed_origin.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+        "origin not allowed"
+    );
+
+    let foreign_host_preflight = app
+        .oneshot(
+            Request::builder()
+                .method(Method::OPTIONS)
+                .uri("/mcp")
+                .header(header::HOST, "evil.test")
+                .header(header::ORIGIN, "http://localhost")
+                .header(header::ACCESS_CONTROL_REQUEST_METHOD, "POST")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(foreign_host_preflight.status(), StatusCode::FORBIDDEN);
+    assert!(
+        !foreign_host_preflight
+            .headers()
+            .contains_key(header::ACCESS_CONTROL_ALLOW_ORIGIN)
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn allowed_actual_responses_carry_cors_headers_across_auth_results() {
+    let owner = owner();
+    let auth = Arc::new(edge_auth().with_host(Arc::new(StubHostAuth { owner })));
+    let app = router(auth, owner);
+
+    let unauthorized = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/app/ping")
+                .header(header::HOST, "localhost")
+                .header(header::ORIGIN, "http://localhost:5173")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(unauthorized.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        unauthorized
+            .headers()
+            .get(header::ACCESS_CONTROL_ALLOW_ORIGIN),
+        Some(&header::HeaderValue::from_static("http://localhost:5173"))
+    );
+    assert_eq!(
+        unauthorized
+            .headers()
+            .get(header::ACCESS_CONTROL_EXPOSE_HEADERS),
+        Some(&header::HeaderValue::from_static(
+            "Mcp-Session-Id, WWW-Authenticate"
+        ))
+    );
+
+    let authorized = app
+        .oneshot(
+            Request::builder()
+                .uri("/app/ping")
+                .header(header::HOST, "localhost")
+                .header(header::ORIGIN, "http://localhost:5173")
+                .header(header::AUTHORIZATION, "Bearer host-token")
+                .header("X-Proxima-Owner", owner_key(owner))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(authorized.status(), StatusCode::OK);
+    assert_eq!(
+        authorized
+            .headers()
+            .get(header::ACCESS_CONTROL_ALLOW_ORIGIN),
+        Some(&header::HeaderValue::from_static("http://localhost:5173"))
+    );
 }
 
 // Regression: `layered_router`/`layered_router_with_revalidation` must

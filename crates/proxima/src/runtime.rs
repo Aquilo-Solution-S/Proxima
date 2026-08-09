@@ -17,8 +17,8 @@ use proxima_core::{
 };
 use proxima_core::{Engine, EngineHandle, Owner, OwnerRef, Role, UserId};
 use proxima_mcp_server::{
-    HostAllowlist, McpEdgeAuth, McpToolHost, OriginAllowlist, assert_loopback, default_allowlist,
-    host_guard_layer, streamable_http_service,
+    HostAllowlist, McpEdgeAuth, McpToolHost, OriginAllowlist, assert_loopback, cors_layer,
+    default_allowlist, host_guard_layer, streamable_http_service,
 };
 use sqlx::PgPool;
 use tokio::task::JoinHandle;
@@ -622,7 +622,8 @@ where
 
 /// Compose rmcp and host-mounted routes with explicit stream revalidation.
 ///
-/// Layer order is body limit, listener-wide Host validation, then bearer auth.
+/// Layer order is body limit, listener-wide Host validation, browser CORS,
+/// then bearer auth.
 pub fn layered_router_with_revalidation<S>(
     mcp_service: S,
     app_router: Router,
@@ -641,9 +642,9 @@ where
         .merge(app_router)
         .layer(proxima_mcp_server::mcp_auth_layer_with_config(
             edge_auth,
-            allowlist,
             revalidation,
         ))
+        .layer(cors_layer(allowlist))
         .layer(host_guard_layer(host_allowlist))
         .layer(axum::middleware::from_fn(
             proxima_mcp_server::enforce_body_limit,
@@ -723,7 +724,6 @@ fn build_router<A: FlavorApp>(
         .and_then(|md| axum::http::HeaderValue::from_str(&md.www_authenticate_value()).ok());
     let auth_layer = proxima_mcp_server::mcp_auth_layer_with_metadata(
         edge_auth,
-        allowlist,
         config.stream_revalidation,
         www,
     );
@@ -738,8 +738,10 @@ fn build_router<A: FlavorApp>(
     }
     // Apply listener-wide layers only after anonymous OAuth metadata has been
     // merged. Body-size rejection remains outermost; Host validation then runs
-    // before bearer auth on protected routes and also guards public metadata.
+    // before CORS and bearer auth. CORS covers public metadata and preflights;
+    // bearer auth remains inside it on protected routes.
     router
+        .layer(cors_layer(allowlist))
         .layer(host_guard_layer(host_allowlist))
         .layer(axum::middleware::from_fn(
             proxima_mcp_server::enforce_body_limit,

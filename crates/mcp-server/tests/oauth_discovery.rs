@@ -4,8 +4,7 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
 use proxima_core::RevalidationConfig;
 use proxima_mcp_server::{
-    McpEdgeAuth, ResourceServerMetadata, default_allowlist, mcp_auth_layer_with_metadata,
-    protected_resource_router,
+    McpEdgeAuth, ResourceServerMetadata, mcp_auth_layer_with_metadata, protected_resource_router,
 };
 use tower::ServiceExt;
 
@@ -43,7 +42,6 @@ async fn missing_bearer_401_carries_www_authenticate() {
         .route("/mcp", any(|| async { StatusCode::OK }))
         .layer(mcp_auth_layer_with_metadata(
             edge,
-            default_allowlist(),
             RevalidationConfig::default(),
             Some(value),
         ));
