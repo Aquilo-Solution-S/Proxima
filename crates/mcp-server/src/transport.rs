@@ -3,8 +3,8 @@
 //!
 //! The service is a Tower service composed into
 //! `axum::Router::nest_service("/mcp", service)`. Proxima wraps it
-//! with stricter Origin validation because rmcp permits missing
-//! Origin headers when `allowed_origins` is set.
+//! with shared listener-level Host and Origin validation. rmcp retains its
+//! own `/mcp` DNS-rebinding guard as defense in depth.
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -27,29 +27,26 @@ use tokio_util::sync::CancellationToken;
 use crate::McpServerError;
 use crate::auth::McpEdgeAuth;
 use crate::handler::DynamicHandler;
-use crate::security::{OriginAllowlist, assert_loopback, mcp_auth_layer_with_config};
+use crate::security::{
+    HostAllowlist, OriginAllowlist, assert_loopback, host_guard_layer, mcp_auth_layer_with_config,
+};
 use crate::server::McpToolHost;
 
-/// `allowed_hosts` is the inbound `Host`/`:authority` allowlist for
-/// rmcp's DNS-rebinding guard (bare hostnames or `host:port`). An empty
-/// slice keeps rmcp's loopback-only default, which is correct for
-/// loopback binds; network-exposed deployments must pass their own
-/// public host(s) here or every non-loopback `Host` is rejected with
-/// 403 before auth runs. The facade resolves this from
-/// `PROXIMA_ALLOWED_HOSTS` / `PROXIMA_PUBLIC_URL` / allowed origins.
+/// `host_allowlist` is the same non-empty policy applied at the outer
+/// listener. Passing it into rmcp keeps `/mcp` independently guarded as
+/// defense in depth; [`HostAllowlist`] owns the loopback defaults so this
+/// function has no empty-list special case.
 #[must_use]
 pub fn streamable_http_service(
     server: McpToolHost,
     allowlist: &OriginAllowlist,
-    allowed_hosts: &[String],
+    host_allowlist: &HostAllowlist,
     cancel: &CancellationToken,
 ) -> StreamableHttpService<DynamicHandler, LocalSessionManager> {
-    let mut config = StreamableHttpServerConfig::default()
+    let config = StreamableHttpServerConfig::default()
         .with_allowed_origins(allowlist.origins())
+        .with_allowed_hosts(host_allowlist.hosts().iter().cloned())
         .with_cancellation_token(cancel.child_token());
-    if !allowed_hosts.is_empty() {
-        config = config.with_allowed_hosts(allowed_hosts.iter().cloned());
-    }
     StreamableHttpService::new(
         move || {
             Ok(DynamicHandler {
@@ -96,19 +93,21 @@ pub async fn serve_streamable_http_with_revalidation(
     assert_loopback(&addr)?;
 
     let cancellation_token = CancellationToken::new();
-    // These helpers bind loopback only (asserted above), so rmcp's
-    // loopback-only Host default is exactly right — no extra hosts.
-    let service = streamable_http_service(server, &allowlist, &[], &cancellation_token);
+    // These helpers bind loopback only (asserted above), so the shared policy
+    // contains exactly the three loopback authorities.
+    let host_allowlist = HostAllowlist::default();
+    let service = streamable_http_service(server, &allowlist, &host_allowlist, &cancellation_token);
     // Layer order is bottom-up (the last `.layer` is outermost): the
     // body-size guard runs first and 413s oversized requests before auth
-    // or JSON parsing, then auth, then perf recording, then the rmcp
-    // service. The auth guard also validates any present Origin; native
-    // CLI clients commonly omit Origin, which is allowed after a valid
-    // bearer token.
+    // or JSON parsing, then the shared Host guard, auth, perf recording, and
+    // finally rmcp's own Host guard. The auth guard also validates any present
+    // Origin; native CLI clients commonly omit Origin, which is allowed after
+    // a valid bearer token.
     let app = axum::Router::new()
         .nest_service("/mcp", service)
         .layer(middleware::from_fn(perf_recorder))
         .layer(mcp_auth_layer_with_config(auth, allowlist, revalidation))
+        .layer(host_guard_layer(host_allowlist))
         .layer(middleware::from_fn(enforce_body_limit));
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
@@ -132,12 +131,10 @@ pub async fn serve_streamable_http_with_revalidation(
 /// abuse and is refused before auth or JSON parsing runs.
 const MAX_REQUEST_BODY_BYTES: usize = 4 * 1024 * 1024;
 
-/// Outermost guard: reject oversized request bodies with 413 before auth
-/// or JSON parsing. A declared `Content-Length` over the cap is refused
-/// immediately; the body is otherwise wrapped in [`Limited`] so a chunked
-/// or length-lying stream errors past the cap instead of buffering
-/// unbounded memory.
 /// Outermost MCP guard: reject oversized bodies with 413 before auth or parsing.
+/// A declared `Content-Length` over the cap is refused immediately; the body
+/// is otherwise wrapped in [`Limited`] so a chunked or length-lying stream
+/// errors past the cap instead of buffering unbounded memory.
 pub async fn enforce_body_limit(request: Request<Body>, next: Next) -> Response {
     if let Some(len) = request
         .headers()

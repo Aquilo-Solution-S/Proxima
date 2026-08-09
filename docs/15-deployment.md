@@ -79,7 +79,7 @@ retries on the next pod rather than queueing behind readers.
 | `PROXIMA_MCP_BIND` | yes | `0.0.0.0:8080` | MCP listener address. |
 | `PROXIMA_EXPOSE_NETWORK=true` | yes | `true` | Required for non-loopback bind. |
 | `PROXIMA_ALLOWED_ORIGINS` | yes | `https://claude.example.com,https://codex.example.com` | Comma-separated origin allowlist; never `*`. |
-| `PROXIMA_ALLOWED_HOSTS` | no | `proxima.example.com` | Inbound `Host` allowlist (hostnames or `host:port`, no wildcards) for the DNS-rebinding guard. Defaults to the host of `PROXIMA_PUBLIC_URL` + the allowed origins; loopback always permitted. Set only to override. |
+| `PROXIMA_ALLOWED_HOSTS` | no | `proxima.example.com` | Inbound `Host` allowlist (hostnames or `host:port`, no wildcards) for the listener-wide DNS-rebinding guard. Defaults to the host of `PROXIMA_PUBLIC_URL` + the allowed origins; loopback always permitted. Set only to override. |
 | `PROXIMA_PUBLIC_URL` | yes | `https://proxima.example.com` | Public HTTPS base for OIDC; its host is auto-allowed as an inbound `Host`. |
 | `PROXIMA_OIDC_ISSUER` | yes | `https://zitadel.example.com` | Zitadel issuer URL. |
 | `PROXIMA_OIDC_AUDIENCE` | yes | `https://proxima.example.com` | Public-origin resource id expected in token `aud`; one token covers `/mcp` and an enabled `/v1`. |
@@ -115,9 +115,10 @@ layer as a short-lived, audited host credential, never as a standing token on
 
 ## Security guarantee
 
-Only `/.well-known/oauth-protected-resource` is anonymous. All `/mcp`
-endpoints, and all `/v1` endpoints when enabled, require the same
-public-origin `aud`-bound Zitadel JWT validated in-process.
+Only `/.well-known/oauth-protected-resource` is bearer-anonymous; it remains
+behind the listener-wide Host and body-limit gates. All `/mcp` endpoints, and
+all `/v1` endpoints when enabled, require the same public-origin `aud`-bound
+Zitadel JWT validated in-process.
 401 responses carry `WWW-Authenticate: Bearer resource_metadata="…"`
 (RFC 9728). Defense in depth: the same JWT MUST be validated at the
 cluster edge (see [§Edge defense-in-depth](#edge-defense-in-depth)).
@@ -139,12 +140,16 @@ cluster edge (see [§Edge defense-in-depth](#edge-defense-in-depth)).
 > role`: read-only tools require read access; write/unknown tools require
 > Fact write access. Compliance erase stays Host API/admin-only.
 
-The inbound `Host` header is gated by rmcp's DNS-rebinding guard
-*before* auth runs: only loopback plus the resolved public host(s) are
-accepted; any other `Host` is rejected with 403. The public host is
-taken from `PROXIMA_ALLOWED_HOSTS` (else the host of `PROXIMA_PUBLIC_URL`
-and the allowed origins), so the gateway forwards the real `Host`
-unchanged — no `Host`-rewrite-to-localhost workaround is needed.
+One non-empty `HostAllowlist` gates the complete listener *before* auth:
+`/mcp`, `/v1`, mounted flavor routes, OAuth metadata, and fallback responses.
+The same value configures rmcp's inner `/mcp` DNS-rebinding guard. Only
+loopback plus the resolved public host(s) are accepted; any other `Host` is
+rejected with 403. The public host is taken from `PROXIMA_ALLOWED_HOSTS`
+(else the host of `PROXIMA_PUBLIC_URL` and the allowed origins), so the gateway
+forwards the real `Host` unchanged — no `Host`-rewrite-to-localhost workaround
+is needed. The allowlist is honored on loopback binds too, which supports a
+same-host reverse proxy preserving the public `Host`; `PROXIMA_EXPOSE_NETWORK`
+controls non-loopback socket binding, not Host-policy activation.
 
 ## Build & run
 

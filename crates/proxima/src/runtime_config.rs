@@ -139,11 +139,12 @@ impl RuntimeBuilder {
         self
     }
 
-    /// Set the inbound `Host` allowlist for the exposed MCP transport
-    /// (rmcp's DNS-rebinding guard). Entries are bare hostnames or
-    /// `host:port`; loopback is always added on top. When unset, the
-    /// host(s) are derived from `PROXIMA_PUBLIC_URL` and the allowed
-    /// origins. Env equivalent (comma-separated): `PROXIMA_ALLOWED_HOSTS`.
+    /// Set the inbound `Host` allowlist for the shared HTTP listener.
+    /// Entries are bare hostnames or `host:port`; loopback is always added
+    /// on top. The same non-empty allowlist guards every listener route and
+    /// rmcp's inner `/mcp` service. When unset, public hosts are derived from
+    /// `PROXIMA_PUBLIC_URL` and the allowed origins. Env equivalent
+    /// (comma-separated): `PROXIMA_ALLOWED_HOSTS`.
     #[must_use]
     pub fn allowed_hosts(mut self, allowed_hosts: Vec<String>) -> Self {
         self.allowed_hosts = Some(allowed_hosts);
@@ -387,16 +388,17 @@ pub struct RuntimeConfig {
     pub allowed_origins: Vec<String>,
     /// Explicit inbound `Host` allowlist (`PROXIMA_ALLOWED_HOSTS`). Empty
     /// ⇒ derive from `resource_metadata.public_url` + `allowed_origins`.
-    /// Bare hostnames or `host:port`; the transport always adds loopback.
+    /// Bare hostnames or `host:port`; the listener always adds loopback and
+    /// shares the resulting non-empty allowlist with rmcp's inner guard.
     pub allowed_hosts: Vec<String>,
     pub tool_scope: ToolScope,
     pub stream_revalidation: RevalidationConfig,
     pub insecure_single_owner: bool,
-    /// Serve `/v1` beside `/mcp` on the same listener, inside the same auth
-    /// and body-limit layers (docs/17). Two gates, both required: the
-    /// `rest` cargo feature compiles the module, this flag serves it. A
-    /// second transport projection is opt-in twice on purpose — compiling
-    /// it is a build decision, exposing it is a deployment one.
+    /// Serve `/v1` beside `/mcp` on the same listener, inside the same Host,
+    /// auth, and body-limit layers (docs/17). Two gates, both required: the
+    /// `rest` cargo feature compiles the module, this flag serves it. A second
+    /// transport projection is opt-in twice on purpose — compiling it is a
+    /// build decision, exposing it is a deployment one.
     pub rest_enabled: bool,
     /// Boot without applying migrations (preflight only) — schema is migrated
     /// out-of-band under a DDL role in split-role `GitOps` deploys.
@@ -457,12 +459,12 @@ impl RuntimeConfig {
                 "network exposure forbids wildcard allowed origins".into(),
             ));
         }
-        if self.expose_network && self.allowed_hosts.iter().any(|host| host.contains('*')) {
-            // rmcp has no wildcard Host semantics — a `*` entry matches
-            // nothing and fails closed, locking the operator out silently.
+        if self.allowed_hosts.iter().any(|host| host.contains('*')) {
+            // The shared Host guard has no wildcard semantics — a `*` entry
+            // matches nothing and fails closed, locking the operator out silently.
             // Reject it loudly instead of letting it look like "allow all".
             return Err(ProximaError::Security(
-                "network exposure forbids wildcard allowed hosts; list each host explicitly \
+                "MCP Host allowlist forbids wildcard allowed hosts; list each host explicitly \
                  (PROXIMA_ALLOWED_HOSTS), or rely on PROXIMA_PUBLIC_URL"
                     .into(),
             ));
@@ -498,7 +500,7 @@ impl RuntimeConfig {
     /// Explicit `allowed_hosts` (`PROXIMA_ALLOWED_HOSTS`) win verbatim;
     /// otherwise hosts are derived from `resource_metadata.public_url`
     /// (i.e. `PROXIMA_PUBLIC_URL`) and `allowed_origins`, with loopback
-    /// dropped — loopback is added unconditionally by the transport, so
+    /// dropped — loopback is added unconditionally by `HostAllowlist`, so
     /// it never counts as a resolvable *public* host here. Empty ⇒ a
     /// network-exposed deployment would 403 every real request.
     #[must_use]
@@ -836,12 +838,10 @@ mod tests {
     }
 
     #[test]
-    fn validate_exposed_network_rejects_wildcard_allowed_host() {
+    fn validate_mcp_rejects_wildcard_allowed_host_on_loopback() {
         // `*` has no rmcp wildcard meaning; it must be rejected loudly,
-        // not silently fail closed as if it were "allow all".
+        // not silently lock out a loopback-bound reverse proxy.
         let mut config = base_config(Some(addr([127, 0, 0, 1])));
-        config.expose_network = true;
-        config.allowed_origins = vec!["https://app.test".to_string()];
         config.allowed_hosts = vec!["*".to_string()];
 
         let err = config.validate().unwrap_err();

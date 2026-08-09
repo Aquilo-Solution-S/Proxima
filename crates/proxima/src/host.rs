@@ -133,7 +133,7 @@ pub use proxima_llm_openai_compat::{
     MISTRAL_EMBED_BASE_URL, MISTRAL_EMBED_MODEL, OpenAiCompatConfig, OpenAiCompatEmbeddingClient,
 };
 pub use proxima_mcp_server::selfdoc::{build_instructions, how_to_markdown};
-pub use proxima_mcp_server::{McpAuthContext, ResourceServerMetadata};
+pub use proxima_mcp_server::{HostAllowlist, McpAuthContext, ResourceServerMetadata};
 #[cfg(feature = "testkit")]
 pub use proxima_pg_testkit as testkit;
 /// Stable exported Postgres `OwnerAccessPort` adapter for embedding hosts

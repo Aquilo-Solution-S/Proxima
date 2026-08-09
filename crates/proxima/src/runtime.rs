@@ -17,8 +17,8 @@ use proxima_core::{
 };
 use proxima_core::{Engine, EngineHandle, Owner, OwnerRef, Role, UserId};
 use proxima_mcp_server::{
-    McpEdgeAuth, McpToolHost, OriginAllowlist, assert_loopback, default_allowlist,
-    streamable_http_service,
+    HostAllowlist, McpEdgeAuth, McpToolHost, OriginAllowlist, assert_loopback, default_allowlist,
+    host_guard_layer, streamable_http_service,
 };
 use sqlx::PgPool;
 use tokio::task::JoinHandle;
@@ -594,11 +594,16 @@ pub async fn run<A: FlavorApp + 'static>() -> Result<RunningProxima, ProximaErro
     Proxima::<A>::app().from_env().run().await
 }
 
+/// Compose rmcp and host-mounted routes behind one body, Host, and auth policy.
+///
+/// `host_allowlist` must also be passed to [`streamable_http_service`] so the
+/// listener guard and rmcp's inner `/mcp` guard enforce the same authorities.
 pub fn layered_router<S>(
     mcp_service: S,
     app_router: Router,
     edge_auth: Arc<McpEdgeAuth>,
     allowlist: OriginAllowlist,
+    host_allowlist: HostAllowlist,
 ) -> Router
 where
     S: Service<Request<Body>, Error = Infallible> + Clone + Send + Sync + 'static,
@@ -610,15 +615,20 @@ where
         app_router,
         edge_auth,
         allowlist,
+        host_allowlist,
         RevalidationConfig::default(),
     )
 }
 
+/// Compose rmcp and host-mounted routes with explicit stream revalidation.
+///
+/// Layer order is body limit, listener-wide Host validation, then bearer auth.
 pub fn layered_router_with_revalidation<S>(
     mcp_service: S,
     app_router: Router,
     edge_auth: Arc<McpEdgeAuth>,
     allowlist: OriginAllowlist,
+    host_allowlist: HostAllowlist,
     revalidation: RevalidationConfig,
 ) -> Router
 where
@@ -634,6 +644,7 @@ where
             allowlist,
             revalidation,
         ))
+        .layer(host_guard_layer(host_allowlist))
         .layer(axum::middleware::from_fn(
             proxima_mcp_server::enforce_body_limit,
         ))
@@ -702,9 +713,9 @@ fn build_router<A: FlavorApp>(
     let edge_auth = Arc::new(edge_auth);
     let mcp_host = McpToolHost::from_parts(Arc::new(engine.registry().clone()), tool_extensions)
         .with_engine(engine);
-    let allowed_hosts = resolve_allowed_hosts(config);
+    let host_allowlist = resolve_host_allowlist(config);
     let rest_router = rest_router(&mcp_host, config);
-    let mcp_service = streamable_http_service(mcp_host, &allowlist, &allowed_hosts, cancel);
+    let mcp_service = streamable_http_service(mcp_host, &allowlist, &host_allowlist, cancel);
     let app_router = A::mount_http(Router::new(), app_ctx);
     let www = config
         .resource_metadata
@@ -716,26 +727,29 @@ fn build_router<A: FlavorApp>(
         config.stream_revalidation,
         www,
     );
-    let mut router = Router::new()
+    let protected_router = Router::new()
         .nest_service("/mcp", mcp_service)
         .merge(rest_router)
         .merge(app_router)
-        .layer(auth_layer)
-        .layer(axum::middleware::from_fn(
-            proxima_mcp_server::enforce_body_limit,
-        ));
+        .layer(auth_layer);
+    let mut router = protected_router;
     if let Some(md) = &config.resource_metadata {
         router = router.merge(proxima_mcp_server::protected_resource_router(md));
     }
+    // Apply listener-wide layers only after anonymous OAuth metadata has been
+    // merged. Body-size rejection remains outermost; Host validation then runs
+    // before bearer auth on protected routes and also guards public metadata.
     router
+        .layer(host_guard_layer(host_allowlist))
+        .layer(axum::middleware::from_fn(
+            proxima_mcp_server::enforce_body_limit,
+        ))
 }
 
-/// The `/v1` REST surface, merged *inside* the auth and body-limit layers
-/// above — which is the whole reason it inherits bearer validation, origin
-/// allowlisting, owner resolution and stream revalidation without restating
-/// any of them. Its routes already carry the `/v1` prefix, so this is a
-/// `merge`, not a `nest`: nesting would rewrite the inner request URI and
-/// strip the prefix off every problem document's `instance`.
+/// The `/v1` REST surface, merged inside the shared auth, Host, and body-limit
+/// layers. Its routes already carry the `/v1` prefix, so this is a `merge`, not
+/// a `nest`: nesting would rewrite the inner request URI and strip the prefix
+/// off every problem document's `instance`.
 #[cfg(feature = "rest")]
 fn rest_router(host: &McpToolHost, config: &crate::RuntimeConfig) -> Router {
     if !config.rest_enabled {
@@ -774,29 +788,15 @@ fn resolve_allowlist(config: &crate::RuntimeConfig) -> Result<OriginAllowlist, P
         .map_err(|err| ProximaError::Security(err.to_string()))
 }
 
-/// Inbound `Host` allowlist for rmcp's DNS-rebinding guard.
+/// Inbound `Host` allowlist shared by the whole listener and rmcp.
 ///
-/// Loopback binds return empty, keeping rmcp's loopback-only default.
-/// Network-exposed binds get loopback (so a gateway may still rewrite
-/// `Host` to localhost, and port-forwards work) plus the resolved
-/// public host(s) — without which every public request 403s before
-/// auth. `validate` has already guaranteed the public set is non-empty
-/// when exposed.
-fn resolve_allowed_hosts(config: &crate::RuntimeConfig) -> Vec<String> {
-    if !config.expose_network {
-        return Vec::new();
-    }
-    let mut hosts = vec![
-        "localhost".to_string(),
-        "127.0.0.1".to_string(),
-        "::1".to_string(),
-    ];
-    for host in config.public_allowed_hosts() {
-        if !hosts.contains(&host) {
-            hosts.push(host);
-        }
-    }
-    hosts
+/// [`HostAllowlist`] always adds loopback (gateway rewrites and port-forwards
+/// keep working). Configured or derived public hosts are honored independently
+/// of bind address so a loopback listener behind a reverse proxy can preserve
+/// its public `Host`. Network exposure separately requires that public set to
+/// be non-empty in `RuntimeConfig::validate`.
+fn resolve_host_allowlist(config: &crate::RuntimeConfig) -> HostAllowlist {
+    HostAllowlist::new(config.public_allowed_hosts())
 }
 
 #[cfg(test)]
@@ -905,14 +905,14 @@ mod tests {
         company_owner(Uuid::now_v7())
     }
 
-    // --- Host-allowlist exposure invariants (DNS-rebinding guard) ---
+    // --- Host-allowlist policy invariants (DNS-rebinding guard) ---
     //
-    // The hazard when configuring rmcp's guard is its allow-all state:
-    // an EMPTY `allowed_hosts` makes rmcp accept any inbound Host. These
-    // lock the two properties that keep that from happening accidentally.
+    // rmcp's raw empty-list state is allow-all. The shared HostAllowlist type
+    // makes that state unconstructible by adding loopback before either guard
+    // sees the policy.
 
     #[test]
-    fn resolve_allowed_hosts_is_empty_for_loopback_bind() {
+    fn resolve_host_allowlist_is_exactly_loopback_for_loopback_bind() {
         let owner = owner();
         let (config, _) = RuntimeBuilder::default()
             .database_url("postgres://unused/db")
@@ -923,16 +923,70 @@ mod tests {
             .resolve()
             .unwrap();
 
-        // Not exposed ⇒ no override; the transport keeps rmcp's
-        // loopback-only DEFAULT. Empty here means "don't override",
-        // never reaches `with_allowed_hosts`, so rmcp's allow-all
-        // (its own empty-list state) is unreachable from this path.
         assert!(!config.expose_network);
-        assert!(resolve_allowed_hosts(&config).is_empty());
+        assert_eq!(
+            resolve_host_allowlist(&config).hosts(),
+            ["localhost", "127.0.0.1", "::1"]
+        );
     }
 
     #[test]
-    fn resolve_allowed_hosts_exposed_is_loopback_plus_public_and_never_empty() {
+    fn resolve_host_allowlist_honors_explicit_host_on_loopback_bind() {
+        let owner = owner();
+        let (config, _) = RuntimeBuilder::default()
+            .database_url("postgres://unused/db")
+            .owner(owner)
+            .tool_scope(ToolScope::All)
+            .with_mcp()
+            .allowed_hosts(vec!["proxy.example.com:8443".to_string()])
+            .authenticator(Arc::new(StubAuth { owner }))
+            .resolve()
+            .unwrap();
+
+        assert!(!config.expose_network);
+        assert!(
+            resolve_host_allowlist(&config)
+                .hosts()
+                .iter()
+                .any(|host| host == "proxy.example.com:8443")
+        );
+    }
+
+    #[test]
+    fn resolve_host_allowlist_derives_public_hosts_on_loopback_bind() {
+        let owner = owner();
+        let (config, _) = RuntimeBuilder::default()
+            .database_url("postgres://unused/db")
+            .owner(owner)
+            .tool_scope(ToolScope::All)
+            .with_mcp()
+            .allowed_origins(vec!["https://app.example.com".to_string()])
+            .resource_metadata(proxima_mcp_server::ResourceServerMetadata {
+                public_url: "https://proxy.example.com".to_string(),
+                authorization_servers: vec!["https://idp.test".to_string()],
+            })
+            .authenticator(Arc::new(StubAuth { owner }))
+            .resolve()
+            .unwrap();
+
+        assert!(!config.expose_network);
+        let allowlist = resolve_host_allowlist(&config);
+        assert!(
+            allowlist
+                .hosts()
+                .iter()
+                .any(|host| host == "proxy.example.com")
+        );
+        assert!(
+            allowlist
+                .hosts()
+                .iter()
+                .any(|host| host == "app.example.com")
+        );
+    }
+
+    #[test]
+    fn resolve_host_allowlist_exposed_is_loopback_plus_public_and_never_empty() {
         let owner = owner();
         let (config, _) = RuntimeBuilder::default()
             .database_url("postgres://unused/db")
@@ -946,20 +1000,21 @@ mod tests {
             .resolve()
             .unwrap();
 
-        let hosts = resolve_allowed_hosts(&config);
+        let allowlist = resolve_host_allowlist(&config);
+        let hosts = allowlist.hosts();
         // Loopback stays (gateway Host-rewrite + port-forward keep working)…
-        assert!(hosts.contains(&"localhost".to_string()));
-        assert!(hosts.contains(&"127.0.0.1".to_string()));
-        assert!(hosts.contains(&"::1".to_string()));
+        assert!(hosts.iter().any(|host| host == "localhost"));
+        assert!(hosts.iter().any(|host| host == "127.0.0.1"));
+        assert!(hosts.iter().any(|host| host == "::1"));
         // …and the public host is present, but the list is NEVER empty —
         // so an exposed bind always hands rmcp a non-empty allowlist and
         // can never trip its allow-all state.
-        assert!(hosts.contains(&"app.example.com".to_string()));
+        assert!(hosts.iter().any(|host| host == "app.example.com"));
         assert!(!hosts.is_empty());
     }
 
     #[test]
-    fn resolve_allowed_hosts_includes_public_url_host_distinct_from_origins() {
+    fn resolve_host_allowlist_includes_public_url_host_distinct_from_origins() {
         // Split deployment: browser app origin differs from the MCP host.
         // Deriving from origins alone would miss the real Host; the
         // public_url host (the bug's `proxima.aqs-dev.cloud`) must be in.
@@ -980,9 +1035,10 @@ mod tests {
             .resolve()
             .unwrap();
 
-        let hosts = resolve_allowed_hosts(&config);
-        assert!(hosts.contains(&"proxima.aqs-dev.cloud".to_string()));
-        assert!(hosts.contains(&"app.example.com".to_string()));
+        let allowlist = resolve_host_allowlist(&config);
+        let hosts = allowlist.hosts();
+        assert!(hosts.iter().any(|host| host == "proxima.aqs-dev.cloud"));
+        assert!(hosts.iter().any(|host| host == "app.example.com"));
     }
 
     #[test]
