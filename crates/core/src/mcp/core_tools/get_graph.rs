@@ -98,7 +98,11 @@ fn scoped_substrate_tools(ctx: &McpToolCtx) -> Vec<SubstrateToolItem> {
     ctx.registry
         .list_mcp_tools()
         .iter()
-        .filter(|desc| ctx.authz.tool_scope().allows_group_advertisement(desc.name))
+        .filter(|desc| {
+            ctx.authz
+                .tool_scope()
+                .allows_tool_advertisement(desc.name, !desc.action_arg_specs.is_empty())
+        })
         .map(|desc| SubstrateToolItem {
             tool_id: desc.name.to_string(),
             source: substrate_tool_source(desc),
