@@ -5,7 +5,8 @@
 //! The behaviour lives next door:
 //!
 //! - [`dto`] — the wire types, the whole public surface
-//! - [`upload`] / [`read`] — the request-path verbs
+//! - [`upload`] / [`read`] — the presigned request-path verbs
+//! - [`verified_read`] — bounded in-process bytes, verified before release
 //! - [`port`] — the [`CitedBlobPort`](proxima_core::storage_ports::CitedBlobPort)
 //!   adapter, translation only
 //! - [`erase`] — Art. 17 purge of an owner's bytes
@@ -27,6 +28,7 @@ mod reconcile;
 mod rows;
 mod transitions;
 mod upload;
+mod verified_read;
 
 #[cfg(test)]
 mod testkit;
@@ -43,9 +45,9 @@ use crate::config::{
 use crate::error::BlobError;
 use proxima_core::authz::{SystemAuthority, SystemAuthorityBinding};
 
-/// Cited-blob upload/read service over one Postgres pool and one
-/// S3 target. Construct once at boot; methods are independently
-/// callable per request.
+/// Cited-blob transfer, verified-read, and reconcile backend over one
+/// Postgres pool and one S3 target. Construct once at boot; capabilities are
+/// exposed through separate ports over the same shared instance.
 #[derive(Debug, Clone)]
 pub struct CitedBlobStore {
     pool: sqlx::PgPool,

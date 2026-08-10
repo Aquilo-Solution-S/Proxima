@@ -37,7 +37,7 @@ This table is a human reference. Source code and deployment manifests remain aut
 | `PROXIMA_PG_IDLE_TIMEOUT_SECS` | Postgres pool | `600` | tuning connection reuse | seconds |
 | `PROXIMA_PG_MAX_LIFETIME_SECS` | Postgres pool | `1800` | tuning connection recycling | seconds |
 | `PROXIMA_CHANGE_EVENT_COMMIT_GRACE_MS` | change events | unset (`0`, disabled) | concurrent writers with slow commits | withholds events newer than `now - grace` so a forward cursor cannot skip a late commit |
-| `PROXIMA_S3_MAX_BLOB_BYTES` | cited blobs | unset (uncapped) | bounding cited-blob size | non-negative integer |
+| `PROXIMA_S3_MAX_BLOB_BYTES` | cited blobs | `104857600` | bounding cited-blob size | non-negative integer |
 | `PROXIMA_S3_BUCKET` | cited blobs | unset | enable S3 cited-blob storage | credentials use AWS SDK provider chain |
 | `PROXIMA_S3_REGION` | cited blobs | unset | S3 bucket configured | S3 region |
 | `PROXIMA_S3_ENDPOINT_URL` | cited blobs | AWS region endpoint | S3-compatible endpoint | optional |

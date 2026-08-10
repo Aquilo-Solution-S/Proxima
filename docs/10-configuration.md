@@ -356,10 +356,18 @@ configuration. Resolved by `EmbedConfig`/`S3RuntimeConfig` from env:
 | `PROXIMA_S3_FORCE_PATH_STYLE` | no | `false` |
 | `PROXIMA_S3_UPLOAD_TTL_SECONDS` | no | `900` |
 | `PROXIMA_S3_READ_TTL_SECONDS` | no | `300` |
+| `PROXIMA_S3_MAX_BLOB_BYTES` | no | `104857600` |
 
 Credentials use the standard AWS SDK provider chain. Missing S3 config
 does not fail boot; cited-blob commands fail typed at call time. Commands
 return presigned URLs only, never `bucket` or `object_key`.
+
+In-process consumers resolve `CitedBlobReadService` from `FlavorServices`.
+`collect_verified` requires a non-zero per-call byte ceiling in addition to
+the upload cap, authorizes Fact-read before locator/Postgres/S3 access, and
+returns no bytes until length, BLAKE3, and SHA-256 match stored metadata. Its
+DTO carries id, hashes, byte length, MIME, filename, and bytes; no storage
+locator.
 
 <a id="owner-scoping"></a>
 ## Owner Scoping

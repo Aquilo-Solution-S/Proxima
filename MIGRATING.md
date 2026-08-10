@@ -912,6 +912,29 @@ cited-object sample; it has no bucket, object key, orphan sample, or foreign
 locator sample. Both global and owner passes remain report-only. No database
 migration is required.
 
+### Verified cited-blob bytes use a separate capability
+
+`CitedBlobPort::read_url` remains the presigned external-client lane. Flavor
+tools and workers that need trusted bytes resolve `CitedBlobReadService`:
+
+```rust
+let service = ctx.service::<CitedBlobReadService>().ok_or(...)?;
+let blob = service.0.collect_verified(
+    &ctx.authz,
+    ctx.owner,
+    cited_object_id,
+    NonZeroU64::new(max_bytes).ok_or(...)?,
+).await?;
+```
+
+The required non-zero ceiling is per call. Fact-read authorization precedes
+locator/Postgres/S3 access; the result is withheld until byte length, BLAKE3,
+and SHA-256 match. `VerifiedCitedBlob` exposes no bucket, object key, or
+presigned URL. Errors are `AccessDenied`, `NotFound`, `TooLarge`, `Unavailable`,
+or `IntegrityMismatch`. Runtime composition publishes the read, transfer, and
+owner-reconcile service handles over one shared `CitedBlobStore`. No database
+migration or automatic MCP/REST route is added.
+
 ### The host facade names its own types now
 
 **No action required — pure re-exports.** Each of these types was already in a

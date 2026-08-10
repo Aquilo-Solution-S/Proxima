@@ -15,9 +15,9 @@ use tokio_util::sync::CancellationToken;
 /// context MUST observe it and terminate when it is cancelled.
 ///
 /// `service::<T>()` resolves from the same composed service set used by MCP
-/// and REST tools. `CitedBlobService` is absent unless the host configured
-/// S3, so a worker that needs it must fail its job typed rather than silently
-/// no-op. Every
+/// and REST tools. `CitedBlobService` and `CitedBlobReadService` are absent
+/// unless the host configured S3, so a worker that needs either must fail its
+/// job typed rather than silently no-op. Every
 /// [`CitedBlobPort`](proxima_core::storage_ports::CitedBlobPort) method
 /// takes an [`AuthzContext`](proxima_core::AuthzContext) and an
 /// `OwnerRef` that the worker supplies per job: a worker has no request
@@ -25,6 +25,9 @@ use tokio_util::sync::CancellationToken;
 /// depth, not the caller-facing gate an MCP tool provides.
 /// [`read_url`](proxima_core::storage_ports::CitedBlobPort::read_url)
 /// returns a presigned URL and never the bucket or object key.
+/// [`CitedBlobReadPort::collect_verified`](proxima_core::storage_ports::CitedBlobReadPort::collect_verified)
+/// instead requires a non-zero byte ceiling and returns bytes only after
+/// length, BLAKE3, and SHA-256 verification.
 ///
 /// [`FlavorBundle::spawn_workers`]: crate::flavor::FlavorBundle::spawn_workers
 #[derive(Clone)]

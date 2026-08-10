@@ -294,13 +294,15 @@ fn flavor_sdk_exposes_the_cited_blob_lane() {
     // A worker resolves this port from `FlavorServices`, so both the handle
     // and the trait behind it must be nameable from `proxima::flavor` alone.
     use proxima::flavor::{
-        CitedBlobHeld, CitedBlobOwnerMissingObject, CitedBlobOwnerReconcileOutcome,
-        CitedBlobOwnerReconcilePort, CitedBlobOwnerReconcileService, CitedBlobPort,
-        CitedBlobReadUrl, CitedBlobService, CitedBlobStaged, CitedBlobUploadAborted,
-        CitedBlobUploadCompleted, CitedBlobUploadHeader, CitedBlobUploadPrepared,
-        MAX_HELD_BLOB_DIGESTS, UploadedBlobPayload,
+        CitedBlobHeld, CitedBlobIntegrityMismatch, CitedBlobOwnerMissingObject,
+        CitedBlobOwnerReconcileOutcome, CitedBlobOwnerReconcilePort,
+        CitedBlobOwnerReconcileService, CitedBlobPort, CitedBlobReadError, CitedBlobReadPort,
+        CitedBlobReadService, CitedBlobReadUrl, CitedBlobService, CitedBlobStaged,
+        CitedBlobUploadAborted, CitedBlobUploadCompleted, CitedBlobUploadHeader,
+        CitedBlobUploadPrepared, MAX_HELD_BLOB_DIGESTS, UploadedBlobPayload, VerifiedCitedBlob,
     };
     fn _needs_port<T: CitedBlobPort>() {}
+    fn _needs_verified_read_port<T: CitedBlobReadPort>() {}
     fn _needs_owner_reconcile_port<T: CitedBlobOwnerReconcilePort>() {}
     let _: Option<(
         &CitedBlobService,
@@ -311,6 +313,7 @@ fn flavor_sdk_exposes_the_cited_blob_lane() {
         &CitedBlobUploadAborted,
         &CitedBlobUploadHeader,
     )> = None;
+    let _: Option<&CitedBlobReadService> = None;
 
     let owner_report = CitedBlobOwnerReconcileOutcome {
         rows_scanned: 1,
@@ -325,6 +328,22 @@ fn flavor_sdk_exposes_the_cited_blob_lane() {
         foreign_locators: 0,
     };
     assert!(!owner_report.is_intact());
+
+    let verified = VerifiedCitedBlob {
+        cited_object_id: uuid::Uuid::nil(),
+        content_hash: [1; 32],
+        sha256: [2; 32],
+        byte_len: 1,
+        mime: "application/octet-stream".to_owned(),
+        filename: "blob.bin".to_owned(),
+        bytes: vec![7],
+    };
+    assert_eq!(verified.bytes, [7]);
+    let mismatch = CitedBlobReadError::IntegrityMismatch(CitedBlobIntegrityMismatch::Sha256);
+    assert!(matches!(
+        mismatch,
+        CitedBlobReadError::IntegrityMismatch(CitedBlobIntegrityMismatch::Sha256)
+    ));
 
     // CONSTRUCTED, NOT NAMED. `stage_upload` must RETURN this, and the
     // naming form above passed for a release while the port was
@@ -626,7 +645,8 @@ fn host_api_names_global_and_owner_reconcile_outcomes() {
     // authorization-carrying lane with a locator-free result.
     use proxima::{
         CitedBlobMissingObject, CitedBlobOwnerMissingObject, CitedBlobOwnerReconcileOutcome,
-        CitedBlobOwnerReconcileService, CitedBlobReconcileOutcome, MAX_RECONCILE_SAMPLE,
+        CitedBlobOwnerReconcileService, CitedBlobReadError, CitedBlobReadService,
+        CitedBlobReconcileOutcome, MAX_RECONCILE_SAMPLE, VerifiedCitedBlob,
     };
 
     // Nameable in a signature, which is what "the return type can be held"
@@ -676,6 +696,7 @@ fn host_api_names_global_and_owner_reconcile_outcomes() {
         foreign_locators: 0,
     };
     let _: Option<CitedBlobOwnerReconcileService> = None;
+    let _: Option<(CitedBlobReadService, CitedBlobReadError, VerifiedCitedBlob)> = None;
     assert!(!owner_outcome.is_intact());
     assert_eq!(
         owner_outcome.missing_sample[0].cited_object_id,

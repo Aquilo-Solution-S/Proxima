@@ -64,17 +64,19 @@ pub use proxima_core::llm;
 /// inference server, any provider needing `matryoshka` to return
 /// [`llm::EMBEDDING_DIM`] rather than its native width.
 pub use proxima_core::models::EmbedCaps;
-/// Cited-blob reconciliation surfaces.
+/// Cited-blob verified-read and reconciliation surfaces.
 ///
 /// Global [`CitedBlobStore::reconcile_all`] requires the booted runtime's
 /// [`crate::SystemAuthority`] and returns the operator DTO, including raw
 /// locator samples needed for restore work. Flavor tools use the separately
 /// authorized owner port/service; its DTO carries cited-object ids and counts
-/// but never bucket names or object keys.
+/// but never bucket names or object keys. Verified reads are a separate
+/// owner-authorized service with a required byte ceiling and locator-free DTO.
 pub use proxima_core::storage_ports::{
-    CitedBlobMissingObject, CitedBlobOwnerMissingObject, CitedBlobOwnerReconcileOutcome,
-    CitedBlobOwnerReconcilePort, CitedBlobOwnerReconcileService, CitedBlobReconcileOutcome,
-    MAX_RECONCILE_SAMPLE,
+    CitedBlobIntegrityMismatch, CitedBlobMissingObject, CitedBlobOwnerMissingObject,
+    CitedBlobOwnerReconcileOutcome, CitedBlobOwnerReconcilePort, CitedBlobOwnerReconcileService,
+    CitedBlobReadError, CitedBlobReadPort, CitedBlobReadService, CitedBlobReconcileOutcome,
+    MAX_RECONCILE_SAMPLE, VerifiedCitedBlob,
 };
 pub use proxima_core::verbs::change_history::{ChangeHistoryRequest, ChangeHistoryResponse};
 pub use proxima_core::verbs::fact_ingest::{
