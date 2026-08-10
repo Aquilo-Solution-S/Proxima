@@ -1,8 +1,8 @@
 use futures::future::BoxFuture;
 
-use crate::ToolCtx;
+use crate::{ToolCaller, ToolCtx};
 
-use super::{McpToolCaller, McpToolCtx, McpToolError, McpToolPresentation};
+use super::{McpToolCtx, McpToolError, McpToolPresentation};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum McpToolOrigin {
@@ -353,14 +353,18 @@ where
         args: Self::Args,
     ) -> BoxFuture<'static, Result<Self::Output, McpToolError>> {
         let presentation = McpToolPresentation::from_ctx(&ctx);
-        let caller = McpToolCaller::from_ctx(&ctx);
+        let caller = ToolCaller::new(
+            ctx.author.model_id.clone(),
+            ctx.author.client_name.clone(),
+            ctx.author.client_version.clone(),
+        );
         let mut services = ctx.services.into_tool_services();
         services.insert(presentation);
-        services.insert(caller);
         let tool_ctx = ToolCtx::from_parts(
             ctx.owner,
             ctx.authz,
             ctx.registry,
+            Some(caller),
             ctx.caller_self_perspective,
             services,
             ctx.engine,
@@ -371,8 +375,90 @@ where
 
 #[cfg(test)]
 mod flat_tool_tests {
-    use super::prepare_flat_tool_args;
-    use crate::mcp::{McpToolError, McpToolErrorKind};
+    use std::sync::Arc;
+
+    use futures::future::BoxFuture;
+
+    use super::{McpTool, prepare_flat_tool_args};
+    use crate::mcp::{McpAuthorContext, McpToolCtx, McpToolError, McpToolErrorKind};
+    use crate::{
+        AuthPath, AuthzContext, FlavorRegistry, FlavorServices, MemoryId, OwnerRef, Tool, ToolCtx,
+        ToolError, UserId,
+    };
+
+    #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+    struct CallerArgs {}
+
+    #[derive(Debug, PartialEq, Eq, serde::Serialize, schemars::JsonSchema)]
+    struct CallerOutput {
+        model_id: String,
+        client_name: String,
+        client_version: String,
+        caller_self_perspective: Option<String>,
+    }
+
+    struct CallerTool;
+
+    impl Tool for CallerTool {
+        const NAME: &'static str = "proxima-test_caller";
+        const DESCRIPTION: &'static str = "Echo generic caller context.";
+
+        type Args = CallerArgs;
+        type Output = CallerOutput;
+
+        fn call(
+            ctx: ToolCtx,
+            _args: Self::Args,
+        ) -> BoxFuture<'static, Result<Self::Output, ToolError>> {
+            Box::pin(async move {
+                let caller = ctx
+                    .caller()
+                    .ok_or_else(|| ToolError::Other("caller metadata missing".into()))?;
+                Ok(CallerOutput {
+                    model_id: caller.model_id.clone(),
+                    client_name: caller.client_name.clone(),
+                    client_version: caller.client_version.clone(),
+                    caller_self_perspective: ctx
+                        .caller_self_perspective()
+                        .map(|id| id.into_inner().to_string()),
+                })
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn generic_adapter_maps_complete_caller_and_keeps_self_separate() {
+        let owner = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
+        let caller_self_perspective = MemoryId::new(uuid::Uuid::now_v7());
+        let ctx = McpToolCtx {
+            owner,
+            authz: AuthzContext::single_owner(&owner, AuthPath::HostBearer),
+            registry: Arc::new(FlavorRegistry::new().freeze_or_panic_for_tests()),
+            author: McpAuthorContext {
+                model_id: "planner/model".into(),
+                client_name: "planner-client".into(),
+                client_version: "2.4.1".into(),
+                caller_self_perspective: Some(caller_self_perspective),
+            },
+            caller_self_perspective: Some(caller_self_perspective),
+            services: FlavorServices::default(),
+            engine: None,
+        };
+
+        let output = <CallerTool as McpTool>::call(ctx, CallerArgs {})
+            .await
+            .expect("adapter supplies caller context");
+
+        assert_eq!(
+            output,
+            CallerOutput {
+                model_id: "planner/model".into(),
+                client_name: "planner-client".into(),
+                client_version: "2.4.1".into(),
+                caller_self_perspective: Some(caller_self_perspective.into_inner().to_string()),
+            }
+        );
+    }
 
     #[test]
     fn flat_tool_rejects_unknown_field() {

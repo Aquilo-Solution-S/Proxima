@@ -713,12 +713,24 @@ Tool contract:
 | Name | provider-safe `<flavor_id>_<verb>` |
 | Args | `Deserialize + JsonSchema` |
 | Output | `Serialize` |
-| Context | `ToolCtx`: Owner, AuthzContext, frozen registry, optional Engine, typed ToolServices |
+| Context | `ToolCtx`: Owner, AuthzContext, frozen registry, optional `ToolCaller`, optional caller Self Perspective, optional Engine, typed ToolServices |
 | Storage | use typed engine/storage APIs and flavor services; no public raw `PgPool` capability |
 | Writes | emit typed Facts / A/P / Goals through registered schemas; no tool writes an edge |
 
 MCP JSON is protocol boundary only. Flavor SDK tool code targets `Tool`;
 MCP is an adapter projection.
+
+Caller provenance is invocation context, not a service:
+
+```rust
+let caller = ctx.caller().ok_or_else(|| ToolError::Other("caller metadata required".into()))?;
+let model_id = caller.model_id.as_str();
+```
+
+`ToolCaller` carries `model_id`, `client_name`, and `client_version`. MCP and
+REST adapters populate it; direct `ToolCtx::new` calls leave it absent unless
+the host adds `.with_caller(Some(...))`. The optional
+`ctx.caller_self_perspective()` stays separate.
 
 Paged reads: call `proxima::flavor::reject_zero_limit(args.limit)?` before
 anything else, then clamp the upper bound however the tool likes. The two

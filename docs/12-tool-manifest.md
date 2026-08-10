@@ -74,9 +74,16 @@ pub struct ToolCtx {
     owner: Owner,
     authz: AuthzContext,
     registry: Arc<FlavorRegistryFrozen>,
+    caller: Option<ToolCaller>,
     caller_self_perspective: Option<MemoryId>,
     services: ToolServices,
     engine: Option<Arc<Engine>>,
+}
+
+pub struct ToolCaller {
+    pub model_id: String,
+    pub client_name: String,
+    pub client_version: String,
 }
 
 pub struct ToolDescriptor {
@@ -241,6 +248,7 @@ MCP request
   provider-safe name
     -> canonical id
     -> McpToolDescriptor.call(McpToolCtx, args)
+    -> adapter maps McpAuthorContext into ToolCaller
     -> Tool::call(ToolCtx, args) for generic SDK tools
 ```
 

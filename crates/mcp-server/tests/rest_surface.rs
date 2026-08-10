@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 use axum::Router;
 use axum::body::{Body, Bytes};
-use axum::http::{Method, Request, StatusCode, header};
+use axum::http::{HeaderName, HeaderValue, Method, Request, StatusCode, header};
 use proxima_core::FlavorServices;
 use proxima_core::mcp::McpAuthorContext;
 use proxima_core::protocol::{
@@ -32,6 +32,53 @@ fn host() -> McpToolHost {
 }
 
 const FLAVOR_DISPATCH: &str = "proxima-stub_dispatch";
+const CALLER_CONTEXT_TOOL: &str = "proxima-stub_caller_context";
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+struct CallerContextArgs {}
+
+#[derive(Debug, PartialEq, Eq, serde::Serialize, schemars::JsonSchema)]
+struct CallerContextOutput {
+    model_id: String,
+    client_name: String,
+    client_version: String,
+    caller_self_perspective: Option<String>,
+}
+
+struct CallerContextTool;
+
+impl proxima_core::Tool for CallerContextTool {
+    const NAME: &'static str = CALLER_CONTEXT_TOOL;
+    const DESCRIPTION: &'static str = "Echo transport-neutral caller context.";
+    const ANNOTATIONS: Option<proxima_core::mcp::McpToolAnnotations> = Some(
+        proxima_core::mcp::McpToolAnnotations::new()
+            .read_only(true)
+            .open_world(false),
+    );
+
+    type Args = CallerContextArgs;
+    type Output = CallerContextOutput;
+
+    fn call(
+        ctx: proxima_core::ToolCtx,
+        _args: Self::Args,
+    ) -> futures_util::future::BoxFuture<'static, Result<Self::Output, proxima_core::ToolError>>
+    {
+        Box::pin(async move {
+            let caller = ctx
+                .caller()
+                .ok_or_else(|| proxima_core::ToolError::Other("caller metadata missing".into()))?;
+            Ok(CallerContextOutput {
+                model_id: caller.model_id.clone(),
+                client_name: caller.client_name.clone(),
+                client_version: caller.client_version.clone(),
+                caller_self_perspective: ctx
+                    .caller_self_perspective()
+                    .map(|id| id.into_inner().to_string()),
+            })
+        })
+    }
+}
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 #[serde(tag = "action", rename_all = "snake_case")]
@@ -110,6 +157,15 @@ fn flavor_host() -> McpToolHost {
     )
 }
 
+fn caller_context_host() -> McpToolHost {
+    let mut registry = FlavorRegistry::new();
+    registry.add_tool_or_panic_for_tests::<CallerContextTool>("proxima-stub");
+    McpToolHost::from_parts(
+        Arc::new(registry.freeze_or_panic_for_tests()),
+        FlavorServices::default(),
+    )
+}
+
 /// A principal with full owner rights, so the owner-role gate never
 /// confounds a test about tool scope.
 fn auth(scope: ToolScope) -> McpAuthContext {
@@ -179,12 +235,29 @@ async fn call(
     ctx: &McpAuthContext,
     body: Option<serde_json::Value>,
 ) -> Answer {
+    call_with_headers(router, method, uri, ctx, body, &[]).await
+}
+
+async fn call_with_headers(
+    router: &Router,
+    method: Method,
+    uri: &str,
+    ctx: &McpAuthContext,
+    body: Option<serde_json::Value>,
+    headers: &[(&str, &str)],
+) -> Answer {
     let mut request = Request::builder()
         .method(method)
         .uri(uri)
         .header(header::CONTENT_TYPE, "application/json")
         .body(body.map_or_else(Body::empty, |value| Body::from(value.to_string())))
         .expect("request builds");
+    for &(name, value) in headers {
+        request.headers_mut().insert(
+            HeaderName::from_bytes(name.as_bytes()).expect("header name is valid"),
+            HeaderValue::from_str(value).expect("header value is valid"),
+        );
+    }
     request.extensions_mut().insert(ctx.clone());
     let response = router
         .clone()
@@ -201,6 +274,42 @@ async fn call(
         headers,
         body,
     }
+}
+
+#[tokio::test]
+async fn rest_projects_headers_into_generic_tool_caller_context() {
+    let router = app(caller_context_host());
+    let ctx = auth(ToolScope::All);
+    let caller_self_perspective = uuid::Uuid::now_v7();
+    let self_header = format!("P:{caller_self_perspective}");
+
+    let answer = call_with_headers(
+        &router,
+        Method::POST,
+        &format!("/v1/tools/{CALLER_CONTEXT_TOOL}"),
+        &ctx,
+        Some(serde_json::json!({})),
+        &[
+            ("X-Proxima-Model-Id", "planner/model"),
+            (
+                header::USER_AGENT.as_str(),
+                "planner-client/2.4.1 middleware/9",
+            ),
+            ("X-Proxima-Self-Perspective", &self_header),
+        ],
+    )
+    .await;
+
+    assert_eq!(answer.status, StatusCode::OK);
+    assert_eq!(
+        answer.json(),
+        serde_json::json!({
+            "model_id": "planner/model",
+            "client_name": "planner-client",
+            "client_version": "2.4.1",
+            "caller_self_perspective": caller_self_perspective.to_string(),
+        })
+    );
 }
 
 async fn get(router: &Router, uri: &str, ctx: &McpAuthContext) -> Answer {

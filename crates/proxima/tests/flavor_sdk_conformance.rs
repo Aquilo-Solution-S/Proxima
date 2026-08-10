@@ -160,7 +160,9 @@ fn the_zero_page_bound_rule_is_reachable_from_the_sdk() {
 /// [`Tool`]: proxima::flavor::Tool
 #[test]
 fn wire_references_round_trip_through_a_transport_neutral_tool_ctx() {
-    use proxima::flavor::{McpPresentationExt, McpToolPresentation, ToolCtx, ToolServices};
+    use proxima::flavor::{
+        McpPresentationExt, McpToolPresentation, ToolCaller, ToolCtx, ToolServices,
+    };
     use proxima::host::{AuthPath, AuthzContext, MemoryId, Owner, UserId};
 
     let registry = std::sync::Arc::new(FlavorRegistry::new().try_freeze().unwrap());
@@ -170,6 +172,12 @@ fn wire_references_round_trip_through_a_transport_neutral_tool_ctx() {
         AuthzContext::single_owner(&owner, AuthPath::System),
         registry,
         ToolServices::with(McpToolPresentation::new()),
+    )
+    .with_caller(Some(ToolCaller::new("test/model", "test-client", "1.0")));
+
+    assert_eq!(
+        ctx.caller(),
+        Some(&ToolCaller::new("test/model", "test-client", "1.0"))
     );
 
     let fact = MemoryId::new(Uuid::now_v7());

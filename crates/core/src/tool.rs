@@ -193,11 +193,38 @@ where
         .and_then(|value| value.downcast::<T>().ok())
 }
 
+/// Transport-neutral identity of the client invoking a generic tool.
+///
+/// Transport adapters populate this from their authenticated call context.
+/// Direct hosts may omit it when caller provenance is unavailable.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ToolCaller {
+    pub model_id: String,
+    pub client_name: String,
+    pub client_version: String,
+}
+
+impl ToolCaller {
+    #[must_use]
+    pub fn new(
+        model_id: impl Into<String>,
+        client_name: impl Into<String>,
+        client_version: impl Into<String>,
+    ) -> Self {
+        Self {
+            model_id: model_id.into(),
+            client_name: client_name.into(),
+            client_version: client_version.into(),
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct ToolCtx {
     owner: Owner,
     authz: AuthzContext,
     registry: Arc<FlavorRegistryFrozen>,
+    caller: Option<ToolCaller>,
     caller_self_perspective: Option<MemoryId>,
     services: ToolServices,
     engine: Option<Arc<Engine>>,
@@ -207,6 +234,7 @@ impl std::fmt::Debug for ToolCtx {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ToolCtx")
             .field("owner", &self.owner)
+            .field("caller", &self.caller)
             .field("caller_self_perspective", &self.caller_self_perspective)
             .field("services", &self.services)
             .field("has_engine", &self.engine.is_some())
@@ -226,10 +254,18 @@ impl ToolCtx {
             owner,
             authz,
             registry,
+            caller: None,
             caller_self_perspective: None,
             services,
             engine: None,
         }
+    }
+
+    /// Attach transport-neutral caller provenance.
+    #[must_use]
+    pub fn with_caller(mut self, caller: Option<ToolCaller>) -> Self {
+        self.caller = caller;
+        self
     }
 
     #[must_use]
@@ -249,6 +285,7 @@ impl ToolCtx {
         owner: Owner,
         authz: AuthzContext,
         registry: Arc<FlavorRegistryFrozen>,
+        caller: Option<ToolCaller>,
         caller_self_perspective: Option<MemoryId>,
         services: ToolServices,
         engine: Option<Arc<Engine>>,
@@ -257,6 +294,7 @@ impl ToolCtx {
             owner,
             authz,
             registry,
+            caller,
             caller_self_perspective,
             services,
             engine,
@@ -276,6 +314,11 @@ impl ToolCtx {
     #[must_use]
     pub fn registry(&self) -> &FlavorRegistryFrozen {
         &self.registry
+    }
+
+    #[must_use]
+    pub fn caller(&self) -> Option<&ToolCaller> {
+        self.caller.as_ref()
     }
 
     #[must_use]

@@ -1,11 +1,9 @@
 use std::sync::Arc;
 
-use proxima_core::mcp::{
-    McpToolCaller, McpToolPresentation, PrefixedUuidClass, format_prefixed_uuid,
-};
+use proxima_core::mcp::{McpToolPresentation, PrefixedUuidClass, format_prefixed_uuid};
 use proxima_core::{
-    AuthPath, AuthzContext, FlavorRegistry, GroupId, MemoryId, OwnerRef, ToolCtx, ToolServices,
-    UserId,
+    AuthPath, AuthzContext, FlavorRegistry, GroupId, MemoryId, OwnerRef, ToolCaller, ToolCtx,
+    ToolServices, UserId,
 };
 use uuid::Uuid;
 
@@ -39,13 +37,13 @@ fn test_ctx() -> ToolCtx {
     let owner = OwnerRef::Group(GroupId::new(Uuid::now_v7()));
     let mut services = ToolServices::new();
     services.insert(McpToolPresentation::new());
-    services.insert(McpToolCaller::new("test/model".into()));
     ToolCtx::new(
         owner,
         AuthzContext::single_owner(&owner, AuthPath::HostBearer),
         Arc::new(FlavorRegistry::new().freeze_or_panic_for_tests()),
         services,
     )
+    .with_caller(Some(ToolCaller::new("test/model", "test", "0")))
 }
 
 #[tokio::test]

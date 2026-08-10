@@ -218,28 +218,3 @@ impl McpPresentationExt for ToolCtx {
         self.mcp_presentation()?.resolve_flavor_object(raw, kind)
     }
 }
-
-/// MCP adapter caller metadata service for generic flavor tools.
-#[derive(Debug, Clone)]
-pub struct McpToolCaller {
-    model_id: String,
-}
-
-impl McpToolCaller {
-    #[must_use]
-    pub fn new(model_id: String) -> Self {
-        Self { model_id }
-    }
-
-    #[must_use]
-    pub fn from_ctx(ctx: &McpToolCtx) -> Self {
-        Self {
-            model_id: ctx.author.model_id.clone(),
-        }
-    }
-
-    #[must_use]
-    pub fn model_id(&self) -> &str {
-        &self.model_id
-    }
-}

@@ -13,12 +13,12 @@ not a reference. Deployment and env vars live in
 
 | You are | Read |
 |---|---|
-| A **v0.0.7 Rust host** | [compose flavor services once](#compose-flavor-services-once), [remove the inert runtime owner-access registration](#remove-the-inert-runtime-owner-access-registration), [remove the dependency-satisfaction seam](#remove-the-dependency-satisfaction-seam), [pass the shared Host allowlist](#pass-the-shared-host-allowlist), [apply listener-wide CORS](#apply-listener-wide-cors), then [freeze registries once](#freeze-registries-once) |
+| A **v0.0.7 Rust host** | [compose flavor services once](#compose-flavor-services-once), [move caller provenance into `ToolCtx`](#move-caller-provenance-into-toolctx), [remove the inert runtime owner-access registration](#remove-the-inert-runtime-owner-access-registration), [remove the dependency-satisfaction seam](#remove-the-dependency-satisfaction-seam), [pass the shared Host allowlist](#pass-the-shared-host-allowlist), [apply listener-wide CORS](#apply-listener-wide-cors), then [freeze registries once](#freeze-registries-once) |
 | An **operator** promoting a deployment | [the v0.0.7 schema lane](#the-v007-schema-lane), then [operator changes](#operator-changes) |
 | Running the **code flavor** | the above, then [re-register and re-index](#re-register-and-re-index-every-code-repository) |
 | An **MCP client / agent** author | [wire changes](#wire-changes-mcp-clients) |
 | An **embedding host** driving `Engine` in Rust | [Rust host changes](#rust-host-changes) |
-| A **flavor** author | [compose flavor services once](#compose-flavor-services-once), [remove the dependency-satisfaction seam](#remove-the-dependency-satisfaction-seam), [freeze registries once](#freeze-registries-once), then [flavor SDK changes](#flavor-sdk-changes) |
+| A **flavor** author | [compose flavor services once](#compose-flavor-services-once), [move caller provenance into `ToolCtx`](#move-caller-provenance-into-toolctx), [remove the dependency-satisfaction seam](#remove-the-dependency-satisfaction-seam), [freeze registries once](#freeze-registries-once), then [flavor SDK changes](#flavor-sdk-changes) |
 | Booting against a **pre-v0.0.4 database** | [the v0.0.4 reset](#the-v004-reset) first — nothing else applies until it is done |
 
 Every upgrade also needs [the lock-step rules](#rules-for-every-upgrade) and
@@ -66,6 +66,26 @@ earlier app or the substrate's `CitedBlobService`.
 
 This is a Rust host/flavor migration only. There is no wire, database, schema,
 or Lean change.
+
+## Move caller provenance into `ToolCtx`
+
+Generic `Tool` implementations now receive complete transport-neutral caller
+metadata directly:
+
+| v0.0.7 | v0.0.8 |
+|---|---|
+| `ctx.service::<McpToolCaller>()` | `ctx.caller() -> Option<&ToolCaller>` |
+| model id only | `model_id`, `client_name`, `client_version` |
+
+MCP and REST adapters populate `ToolCaller`. Directly constructed contexts
+remain source-compatible and default to no caller; tests or embedding hosts
+with provenance use
+`ctx.with_caller(Some(ToolCaller::new(model_id, client_name, client_version)))`.
+`ctx.caller_self_perspective()` remains a separate optional Perspective
+capability and is not part of `ToolCaller`.
+
+`McpToolCaller` is removed. Caller identity is invocation context, not a typed
+host service. There is no wire, database, schema, or Lean change.
 
 ## Remove the inert runtime owner-access registration
 

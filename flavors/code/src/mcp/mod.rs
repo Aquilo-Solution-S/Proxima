@@ -3,7 +3,7 @@ mod sql;
 use std::sync::Arc;
 
 use crate::CodeFlavorStore;
-use proxima_core::mcp::{McpToolAnnotations, McpToolCaller};
+use proxima_core::mcp::McpToolAnnotations;
 use proxima_core::{ToolCtx, ToolError};
 
 pub(crate) const REPO_HANDLE_KIND: &str = "proxima-code/repo";
@@ -48,11 +48,6 @@ pub(crate) fn code_store(ctx: &ToolCtx) -> Result<Arc<CodeFlavorStore>, ToolErro
 pub(crate) fn engine(ctx: &ToolCtx) -> Result<Arc<proxima_core::Engine>, ToolError> {
     ctx.engine()
         .ok_or_else(|| ToolError::Other("code flavor tools require Engine".into()))
-}
-
-pub(crate) fn caller(ctx: &ToolCtx) -> Result<Arc<McpToolCaller>, ToolError> {
-    ctx.service::<McpToolCaller>()
-        .ok_or_else(|| ToolError::Other("code flavor MCP tools require caller metadata".into()))
 }
 
 /// The wire-reference grammar reaches `ToolCtx` through core's extension

@@ -10,7 +10,6 @@ use uuid::Uuid;
 
 use crate::payloads::CodeExecutionPlanV1;
 
-use super::super::caller;
 use super::types::ExecutionPlanItemArgs;
 use super::{execution_plan_input_contract_id, execution_plan_operator_id};
 
@@ -83,7 +82,9 @@ pub(super) async fn append_execution_plan(
 ) -> Result<PlanAppendOutcome, ToolError> {
     let owner = ctx.owner();
     let permit = ctx.owner_write_permit(AccessKind::Perspective).await?;
-    let caller = caller(ctx)?;
+    let caller = ctx
+        .caller()
+        .ok_or_else(|| ToolError::Other("code flavor tools require caller metadata".into()))?;
     let memory_id = execution_plan_memory_id(
         &owner,
         payload.repo_id,
@@ -101,7 +102,7 @@ pub(super) async fn append_execution_plan(
         operator_id: execution_plan_operator_id(),
         input_contract_id: execution_plan_input_contract_id(),
         source_batch_id: None,
-        model_id: caller.model_id(),
+        model_id: caller.model_id.as_str(),
         prompt_version: "proxima-code/emit_execution_plan-v1",
         // "Emitted by the planner" is known at write time, so it is a
         // column on the row rather than a `core/authored` edge.
