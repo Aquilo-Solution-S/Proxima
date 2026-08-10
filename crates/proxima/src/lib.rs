@@ -408,6 +408,11 @@ impl ProximaBuilder {
         }
 
         let (engine, system_authority) = engine.into_system_authority();
+        if let Some(store) = &blobs {
+            store
+                .bind_system_authority(&system_authority)
+                .map_err(|error| EmbedError::Config(error.to_string()))?;
+        }
         let engine = Arc::new(engine);
         let handle = engine
             .clone()

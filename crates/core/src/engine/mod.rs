@@ -55,6 +55,7 @@ pub use upload::UploadCompleted;
 
 pub struct Engine {
     registry: FlavorRegistryFrozen,
+    system_authority_binding: crate::authz::SystemAuthorityBinding,
     storage: EngineStoragePorts,
     deployment_tool_scope: crate::authz::ToolScope,
     anthropic: Option<Arc<dyn AnthropicClient>>,

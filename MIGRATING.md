@@ -850,6 +850,48 @@ exceed the deployed tool surface even under an `AuthzContext` with
 `ToolScope::All`. Tool-scope palettes that should expose the new resource must
 include `resource:wake-candidates` (profile `memory` includes it).
 
+### Cited-blob reconciliation is authority-split
+
+The proofless global method is removed. Pass the uncloneable
+`SystemAuthority` issued by the same normal boot that constructed and bound
+the store. A witness from another `Engine` is rejected before database or S3
+access:
+
+```rust
+// before
+let outcome = built.blobs.as_ref().unwrap()
+    .reconcile_cited_blobs().await?;
+
+// after
+let outcome = built.blobs.as_ref().unwrap()
+    .reconcile_all(built.system_authority()).await?;
+```
+
+`proxima-mcp maintain-blobs` is unchanged at the command line. Internally it
+now boots a headless Proxima composition instead of constructing raw
+`PgStorage` and `CitedBlobStore` handles. The runtime-provided store accepts
+only its same-boot witness.
+
+Owner-facing flavor tools use the separately published
+`CitedBlobOwnerReconcileService` from `FlavorServices`:
+
+```rust
+let Some(service) = ctx.service::<CitedBlobOwnerReconcileService>() else {
+    return Err(McpToolError::new(
+        McpToolErrorKind::Internal,
+        "host did not configure owner blob reconciliation",
+    ));
+};
+let report = service.0.reconcile_owner(&ctx.authz, ctx.owner).await?;
+```
+
+The owner service authorizes Fact-read before any Postgres/S3 access, queries
+only that Owner's rows and `objects/<owner-hash>/` prefix, and returns
+`CitedBlobOwnerReconcileOutcome`. That DTO has counts and a bounded missing
+cited-object sample; it has no bucket, object key, orphan sample, or foreign
+locator sample. Both global and owner passes remain report-only. No database
+migration is required.
+
 ### The host facade names its own types now
 
 **No action required — pure re-exports.** Each of these types was already in a
@@ -864,7 +906,6 @@ missing feature, an unnameable type.
 | `EmbedCaps` | `OpenAiCompatEmbeddingClient::new` — `mistral()` supplies its own, which is why the gap was easy to miss; every other OpenAI-compatible endpoint (a local Ollama, any provider needing `matryoshka: true`) was unreachable |
 | `SearchReadRequest`/`Response`, `MemorySearchRequest`/`Result`/`Page`, `SearchMode`, `SearchOrder`, `TagMatch`, `SearchCursor`, `DEFAULT_HYBRID_SEMANTIC_WEIGHT`, `MAX_SEARCH_PAGE_LIMIT` | `Engine::search` — an out-of-tree flavor could write a corpus and had no sanctioned way to query it |
 | `CitedBlobStore`, `S3RuntimeConfig`, `BlobError` | `BuiltProxima::blobs` (a `pub` field) and `Proxima::s3` — with `S3RuntimeConfig` unnameable, `from_env()` was the only way to configure the blob lane, so a library API demanded process environment |
-| `CitedBlobReconcileOutcome`, `CitedBlobMissingObject`, `MAX_RECONCILE_SAMPLE` | `CitedBlobStore::reconcile_cited_blobs` — the method was reachable from every host tier and its result could only be bound by inference |
 | `OwnerRefKind` | half the return of `OwnerRef::columns()`, which every flavor with its own tables calls |
 | `TrimmedLenViolation`, `check_trimmed_len` | `GoalWriteBuildError`'s variant payloads |
 | `Role` | minting a group-owner `AuthzContext` |

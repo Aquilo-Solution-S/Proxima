@@ -193,7 +193,7 @@ Contract:
 | compliance erase | not dependent on sweep; erase deletes embedding infra synchronously at transaction commit |
 | graph authority | embeddings remain engine infrastructure; similarity never authors a connection |
 
-## Cited-Blob Reconcile Host API
+## Cited-Blob Reconciliation APIs
 
 Public facade status:
 
@@ -202,18 +202,18 @@ Public facade status:
 | `CitedBlobReconcileOutcome` | `proxima::CitedBlobReconcileOutcome` | Host API DTO |
 | `CitedBlobMissingObject` | `proxima::CitedBlobMissingObject` | Host API DTO |
 | `MAX_RECONCILE_SAMPLE` | `proxima::MAX_RECONCILE_SAMPLE` | Host API constant |
-| `CitedBlobStore::reconcile_cited_blobs()` | `proxima::CitedBlobStore` (via `AppContext`/`BuiltProxima`/`RunningProxima`/`EmbeddedProxima`'s `.blobs` field) | Host API verb |
+| `CitedBlobStore::reconcile_all(&SystemAuthority)` | `proxima::CitedBlobStore` + booted runtime's `system_authority()` | Host/operator verb |
+| `CitedBlobOwnerReconcileService` / `Port` | `proxima::flavor::*` and `proxima::*` | Typed flavor service |
+| `CitedBlobOwnerReconcileOutcome` / `CitedBlobOwnerMissingObject` | `proxima::flavor::*` and `proxima::*` | Redacted owner DTO |
 
-`reconcile_cited_blobs` lists the configured bucket, streams the
-`cited_uploaded_blob_v1` rows, and diffs them: rows with no object are
-`missing_objects` (a citation that cannot be resolved — `is_intact()` is
-false whenever this is non-zero), objects with no row are `orphan_objects`
-(cost and retention, not correctness), and rows naming another bucket or a
-key outside the canonical prefix are `foreign_locators`. Each count carries
-a bounded sample (`missing_sample`/`orphan_sample`/`foreign_sample`, capped
-at `MAX_RECONCILE_SAMPLE`) for an operator to recognise the cause without
-being handed an unbounded work queue. It reports; it does not repair or
-delete.
+| Lane | Authority | Scope | Samples |
+|---|---|---|---|
+| Global | same-boot `SystemAuthority`; foreign-engine witnesses fail before I/O | configured bucket + every locator row | bounded raw missing/orphan/foreign locators for restore operations |
+| Owner | `AuthzContext::may_read(owner, Fact)` | exact owner rows + `objects/<owner-hash>/` | missing cited-object id, byte length, filename; no bucket/object key or orphan/foreign locator samples |
+
+Both lanes report `missing_objects`, `orphan_objects`, and
+`foreign_locators`. `is_intact()` is false exactly when `missing_objects` is
+non-zero. Both are report-only: no repair or deletion occurs.
 
 ## Consumer Projector Guidance
 

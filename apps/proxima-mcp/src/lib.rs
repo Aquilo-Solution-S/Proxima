@@ -7,7 +7,7 @@ pub use args::{
     parse_retention_args,
 };
 
-use proxima_blob_s3::{CitedBlobStore, S3RuntimeConfig};
+use proxima_blob_s3::S3RuntimeConfig;
 
 use std::collections::{BTreeSet, HashSet};
 use std::num::NonZeroU32;
@@ -170,6 +170,37 @@ impl FlavorApp for ProximaMcpApp {
     }
 }
 
+/// Headless composition used by the global blob maintenance command.
+///
+/// It links the same compiled flavors and migrations as the serving app but
+/// deliberately contributes no MCP configuration. Booting through the facade
+/// binds the runtime-provided store and `SystemAuthority` to the same boot.
+struct BlobMaintenanceApp;
+
+impl FlavorBundle for BlobMaintenanceApp {
+    fn register(registry: &mut FlavorRegistry) -> Result<(), FlavorRegistryError> {
+        <ProximaMcpApp as FlavorBundle>::register(registry)
+    }
+
+    fn register_pg_sidecars(registry: &mut proxima::flavor::PgSidecarRegistry) {
+        <ProximaMcpApp as FlavorBundle>::register_pg_sidecars(registry);
+    }
+
+    fn migrators() -> Vec<proxima::NamedMigrator> {
+        <ProximaMcpApp as FlavorBundle>::migrators()
+    }
+}
+
+impl FlavorApp for BlobMaintenanceApp {
+    fn app_info() -> AppInfo {
+        AppInfo {
+            id: "proxima-mcp-maintain-blobs",
+            title: "Proxima MCP Blob Maintenance",
+            version: env!("CARGO_PKG_VERSION"),
+        }
+    }
+}
+
 /// # Errors
 ///
 /// Returns argument, facade boot, or MCP transport failures.
@@ -272,26 +303,27 @@ pub async fn run<I: IntoIterator<Item = String>>(args: I) -> Result<(), CliError
 /// failed", and the pass did not fail — it succeeded, and the news is bad.
 /// Alert on the `missing=` number.
 async fn run_maintain_blobs(config: MaintainBlobsConfig) -> Result<(), CliError> {
-    let storage = PgStorage::connect(&config.database_url)
-        .await
-        .map_err(|err| ProximaError::Storage(err.to_string()))?;
-    storage
-        .run_migrations()
-        .await
-        .map_err(|err| ProximaError::Storage(err.to_string()))?;
-
     let s3 = S3RuntimeConfig::from_env().map_err(|err| {
         ProximaError::Config(format!(
             "maintain-blobs needs the host's PROXIMA_S3_* block: {err}"
         ))
     })?;
-    let store = CitedBlobStore::new(storage.clone_pool_for_backend(), s3)
-        .map_err(|err| ProximaError::Config(err.to_string()))?;
-
-    let outcome = store
-        .reconcile_cited_blobs()
-        .await
-        .map_err(|err| ProximaError::Storage(err.to_string()))?;
+    let built = Proxima::<BlobMaintenanceApp>::app()
+        .database_url(config.database_url)
+        .s3(s3)
+        .build()
+        .await?;
+    let outcome = match built.blobs.as_ref() {
+        Some(store) => store
+            .reconcile_all(built.system_authority())
+            .await
+            .map_err(|err| ProximaError::Storage(err.to_string())),
+        None => Err(ProximaError::Config(
+            "maintain-blobs booted without its required S3 store".into(),
+        )),
+    };
+    built.shutdown();
+    let outcome = outcome?;
 
     println!(
         "reconcile-blobs: rows={} objects={} missing={} orphans={} foreign={}",

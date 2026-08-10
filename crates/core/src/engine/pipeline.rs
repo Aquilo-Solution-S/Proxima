@@ -169,7 +169,11 @@ impl Engine {
         kind: AccessKind,
         authority: &SystemAuthority,
     ) -> Result<OwnerWritePermit, ProtocolError> {
-        let _ = authority;
+        if !authority.authorizes(&self.system_authority_binding) {
+            return Err(ProtocolError::forbidden(
+                "SystemAuthority belongs to a different engine instance",
+            ));
+        }
         self.authorize_owner_write_inner(authz, owner, kind, Some(authority))
             .await
     }
@@ -685,6 +689,30 @@ mod tests {
 
         assert_eq!(permit.owner(), &owner);
         assert_eq!(permit.access_kind(), AccessKind::Perspective);
+    }
+
+    #[tokio::test]
+    async fn authorize_owner_write_rejects_another_engines_system_authority() {
+        let (target_engine, _) = engine().into_system_authority();
+        let (_, foreign_authority) = engine().into_system_authority();
+        let owner = owner();
+        let authz = AuthzContext::single_owner(&owner, AuthPath::System);
+
+        let error = target_engine
+            .authorize_owner_write_with_system_authority(
+                &authz,
+                &owner,
+                AccessKind::Perspective,
+                &foreign_authority,
+            )
+            .await
+            .expect_err("a witness from another Engine must remain powerless");
+
+        assert_eq!(error.code, ErrorCode::Forbidden);
+        assert_eq!(
+            error.message,
+            "SystemAuthority belongs to a different engine instance"
+        );
     }
 
     #[tokio::test]

@@ -9,7 +9,7 @@ use axum::extract::Request;
 use axum::response::IntoResponse;
 use proxima_blob_s3::{CitedBlobStore, S3RuntimeConfig};
 use proxima_core::authz::SystemAuthority;
-use proxima_core::storage_ports::CitedBlobService;
+use proxima_core::storage_ports::{CitedBlobOwnerReconcileService, CitedBlobService};
 use proxima_core::{
     AnthropicClient, AuthPath, Authenticator, AuthzContext, EmbeddingClient, FlavorRegistryFrozen,
     FlavorServices, RevalidationConfig, ToolScope,
@@ -657,14 +657,27 @@ fn cited_blob_service(blobs: Option<&CitedBlobStore>) -> Option<CitedBlobService
     blobs.map(|store| CitedBlobService(Arc::new(store.clone())))
 }
 
+/// Owner-scoped report lane for flavor tools. Separate from
+/// [`CitedBlobService`] because upload/read clients do not need bucket-wide
+/// reconciliation, and separate from global reconcile because no
+/// [`SystemAuthority`] is placed in the flavor service set.
+fn cited_blob_owner_reconcile_service(
+    blobs: Option<&CitedBlobStore>,
+) -> Option<CitedBlobOwnerReconcileService> {
+    blobs.map(|store| CitedBlobOwnerReconcileService(Arc::new(store.clone())))
+}
+
 /// Flavor services plus the substrate-owned services every composed
-/// binary gets for free. Today that is one entry: when S3 is configured
-/// (`app_ctx.blobs`), the cited-blob store is published as
-/// [`CitedBlobService`] so tools and flavor workers reach one shared upload
-/// lane without duplicate host wiring.
+/// binary gets for free. When S3 is configured (`app_ctx.blobs`), the store
+/// is published as [`CitedBlobService`] for upload/read and as the separately
+/// authorized [`CitedBlobOwnerReconcileService`] for redacted owner reports.
+/// Tools, REST, and flavor workers receive the same immutable service set.
 fn assemble_services<A: FlavorApp>(app_ctx: &AppContext) -> Result<FlavorServices, ProximaError> {
     let mut services = A::services(app_ctx)?;
     if let Some(service) = cited_blob_service(app_ctx.blobs.as_ref()) {
+        services.try_insert(service)?;
+    }
+    if let Some(service) = cited_blob_owner_reconcile_service(app_ctx.blobs.as_ref()) {
         services.try_insert(service)?;
     }
     Ok(services)
@@ -884,6 +897,44 @@ mod tests {
         fn configure(builder: RuntimeBuilder) -> RuntimeBuilder {
             builder.database_url("postgres://beta/proxima")
         }
+    }
+
+    #[tokio::test]
+    async fn extension_assembly_publishes_owner_blob_reconcile_separately() {
+        let pool = PgPool::connect_lazy_with(sqlx::postgres::PgConnectOptions::new());
+        let store = CitedBlobStore::new(
+            pool.clone(),
+            S3RuntimeConfig {
+                bucket: "test-bucket".to_string(),
+                region: "eu-central-1".to_string(),
+                endpoint_url: None,
+                force_path_style: false,
+                upload_ttl_seconds: 900,
+                read_ttl_seconds: 300,
+                max_blob_bytes: None,
+            },
+        )
+        .expect("test store config");
+        let app_ctx = AppContext {
+            engine: Arc::new(Engine::new(
+                FlavorRegistry::new().freeze_or_panic_for_tests(),
+            )),
+            pool,
+            blobs: Some(store),
+            owner: None,
+        };
+
+        let services = assemble_services::<AlphaApp>(&app_ctx).expect("service assembly");
+
+        assert!(services.get::<CitedBlobService>().is_some());
+        assert!(
+            services.get::<CitedBlobOwnerReconcileService>().is_some(),
+            "S3 assembly must publish the redacted owner reconcile lane"
+        );
+        assert!(
+            services.get::<SystemAuthority>().is_none(),
+            "global operator authority must never enter the flavor service set"
+        );
     }
 
     struct StubAuth {

@@ -5,7 +5,7 @@ use tokio::sync::RwLock;
 
 use super::{EmbeddingClientReloader, Engine, EngineMcpListener};
 use crate::FlavorRegistryError;
-use crate::authz::SystemAuthority;
+use crate::authz::{SystemAuthority, SystemAuthorityBinding};
 use crate::llm::{AnthropicClient, EmbeddingClient};
 use crate::storage_ports::{CitedObjectErasePort, EngineStoragePorts, StoragePorts};
 use crate::verbs::schema::FlavorRegistryFrozen;
@@ -17,6 +17,7 @@ impl Engine {
     pub fn new(registry: FlavorRegistryFrozen) -> Self {
         Self {
             registry,
+            system_authority_binding: SystemAuthorityBinding::fresh(),
             storage: EngineStoragePorts::from(StoragePorts::rejecting()),
             deployment_tool_scope: crate::authz::ToolScope::All,
             anthropic: None,
@@ -34,7 +35,8 @@ impl Engine {
     /// so they cannot extract this after boot.
     #[must_use]
     pub fn into_system_authority(self) -> (Self, SystemAuthority) {
-        (self, SystemAuthority::new())
+        let authority = SystemAuthority::new(self.system_authority_binding.clone());
+        (self, authority)
     }
 
     /// Test-only infallible composite assembly.

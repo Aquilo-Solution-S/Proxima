@@ -23,8 +23,11 @@
 //! sweep that deleted on sight would race every concurrent upload it
 //! passed. An operator acts on this report; the report does not act.
 
+use std::sync::Arc;
+
+use crate::OwnerRef;
+use crate::authz::{AuthzContext, SystemAuthority};
 use crate::storage::StorageError;
-use crate::storage_ports::proof::OperatorMaintenanceProof;
 
 /// How many examples of each divergence a reconcile carries back.
 ///
@@ -86,6 +89,42 @@ impl CitedBlobReconcileOutcome {
     }
 }
 
+/// An owner-visible artefact whose object is missing.
+///
+/// Unlike [`CitedBlobMissingObject`], this shape deliberately carries no
+/// bucket or object key. An authorized corpus reader needs the stable cited
+/// object id and human metadata to identify the broken citation; storage
+/// coordinates remain operator-only.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CitedBlobOwnerMissingObject {
+    pub cited_object_id: uuid::Uuid,
+    pub byte_len: u64,
+    pub filename: String,
+}
+
+/// Owner-scoped cited-blob reconciliation report.
+///
+/// Samples are limited to missing cited-object ids. Orphan and foreign
+/// locator examples would disclose raw object-store coordinates, so the
+/// owner lane reports only their counts.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CitedBlobOwnerReconcileOutcome {
+    pub rows_scanned: u64,
+    pub objects_scanned: u64,
+    pub missing_objects: u64,
+    pub missing_sample: Vec<CitedBlobOwnerMissingObject>,
+    pub orphan_objects: u64,
+    pub foreign_locators: u64,
+}
+
+impl CitedBlobOwnerReconcileOutcome {
+    /// True when every row this owner can inspect has its object.
+    #[must_use]
+    pub const fn is_intact(&self) -> bool {
+        self.missing_objects == 0
+    }
+}
+
 /// Reconcile the object store against the rows that name it.
 ///
 /// Owner-agnostic, like every other maintenance verb: it sweeps the whole
@@ -102,8 +141,40 @@ pub trait CitedBlobReconcilePort: Send + Sync {
     /// cannot be read. A partial answer is never returned: a reconcile that
     /// could not see one side of the comparison would report every row on
     /// the other side as diverged, which is worse than reporting nothing.
-    async fn reconcile_cited_blobs(
+    async fn reconcile_all(
         &self,
-        proof: OperatorMaintenanceProof,
+        authority: &SystemAuthority,
     ) -> Result<CitedBlobReconcileOutcome, StorageError>;
+}
+
+/// Reconcile only one authorized owner's cited-blob namespace.
+///
+/// Implementations must authorize Fact-read access before touching either
+/// Postgres or object storage, constrain both sides of the diff to `owner`,
+/// and return only the redacted owner DTO above.
+#[async_trait::async_trait]
+pub trait CitedBlobOwnerReconcilePort: Send + Sync {
+    /// One owner-scoped report-only pass.
+    ///
+    /// # Errors
+    ///
+    /// Returns a constraint violation for denied owner access and
+    /// [`StorageError::Unavailable`] when either backing store cannot be read.
+    async fn reconcile_owner(
+        &self,
+        authz: &AuthzContext,
+        owner: OwnerRef,
+    ) -> Result<CitedBlobOwnerReconcileOutcome, StorageError>;
+}
+
+/// Typed extension-map handle for owner-scoped blob reconciliation.
+#[derive(Clone)]
+pub struct CitedBlobOwnerReconcileService(pub Arc<dyn CitedBlobOwnerReconcilePort>);
+
+impl std::fmt::Debug for CitedBlobOwnerReconcileService {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("CitedBlobOwnerReconcileService")
+            .field(&"<dyn CitedBlobOwnerReconcilePort>")
+            .finish()
+    }
 }

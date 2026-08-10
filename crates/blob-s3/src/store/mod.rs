@@ -41,6 +41,7 @@ use crate::config::{
     DEFAULT_MAX_BLOB_BYTES, S3RuntimeConfig, validate_endpoint_url, validate_presign_ttl,
 };
 use crate::error::BlobError;
+use proxima_core::authz::{SystemAuthority, SystemAuthorityBinding};
 
 /// Cited-blob upload/read service over one Postgres pool and one
 /// S3 target. Construct once at boot; methods are independently
@@ -52,6 +53,10 @@ pub struct CitedBlobStore {
     /// Lazily-built S3 client, memoized so the full credential chain is
     /// resolved once per store rather than on every request.
     client: tokio::sync::OnceCell<aws_sdk_s3::Client>,
+    /// Set once by normal Proxima boot and shared by every store clone.
+    /// A witness minted by an unrelated disposable Engine cannot authorize
+    /// this store's global operations.
+    system_authority: std::sync::Arc<std::sync::OnceLock<SystemAuthorityBinding>>,
 }
 
 impl CitedBlobStore {
@@ -75,7 +80,37 @@ impl CitedBlobStore {
             pool,
             config,
             client: tokio::sync::OnceCell::new(),
+            system_authority: std::sync::Arc::new(std::sync::OnceLock::new()),
         })
+    }
+
+    /// Internal facade boot seam. Bind host-wide operations to the same boot
+    /// instance as the Engine. Binding is shared across clones and cannot be
+    /// replaced.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BlobError::State`] when a different authority already bound
+    /// this store.
+    #[doc(hidden)]
+    pub fn bind_system_authority(&self, authority: &SystemAuthority) -> Result<(), BlobError> {
+        let binding = authority.binding();
+        if let Some(existing) = self.system_authority.get() {
+            return if existing == &binding {
+                Ok(())
+            } else {
+                Err(BlobError::State(
+                    "cited-blob store is already bound to another system authority".into(),
+                ))
+            };
+        }
+        match self.system_authority.set(binding) {
+            Ok(()) => Ok(()),
+            Err(attempted) if self.system_authority.get() == Some(&attempted) => Ok(()),
+            Err(_) => Err(BlobError::State(
+                "cited-blob store authority binding raced another boot".into(),
+            )),
+        }
     }
 
     /// The memoized S3 client, built on first use from the runtime config.
@@ -89,6 +124,8 @@ impl CitedBlobStore {
 
 #[cfg(test)]
 mod tests {
+    use proxima_core::{Engine, FlavorRegistry};
+
     use super::guards::validate_prepare;
     use super::testkit::{lazy_test_pool, prepare_req, store_config};
     use super::*;
@@ -117,6 +154,26 @@ mod tests {
         )
         .expect_err("default cap rejects an oversized prepare request");
         assert!(error.to_string().contains("exceeds max blob size"));
+    }
+
+    #[tokio::test]
+    async fn store_authority_binding_is_same_boot_idempotent_and_foreign_boot_rejected() {
+        let store = CitedBlobStore::new(lazy_test_pool(), store_config(None, None))
+            .expect("test store builds");
+        let (_, authority) =
+            Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests()).into_system_authority();
+        let (_, foreign) =
+            Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests()).into_system_authority();
+
+        store.bind_system_authority(&authority).expect("first bind");
+        store
+            .bind_system_authority(&authority)
+            .expect("same-boot bind is idempotent");
+        let error = store
+            .bind_system_authority(&foreign)
+            .expect_err("a different boot cannot replace the binding");
+
+        assert!(matches!(error, BlobError::State(_)));
     }
 
     /// An out-of-range TTL is a startup error, not a request-path panic.

@@ -28,6 +28,9 @@ Proxima owns exactly two durable stores; back up both:
   hold, so re-ingesting the same document will NOT replace the missing bytes,
   and the citation stays unresolvable with no error anywhere. `missing=` is the
   number that matters; `orphans=` is only cost.
+  The command obtains global authority by booting the normal headless Proxima
+  composition; it remains report-only and never deletes or repairs either
+  store.
 - Embeddings are rebuildable rows, not source of truth: a lost embedding row
   re-enqueues (see the backlog signals below), so a PG-only restore is
   functionally complete for search once the drainer catches up.

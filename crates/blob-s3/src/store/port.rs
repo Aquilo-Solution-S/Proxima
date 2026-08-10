@@ -31,7 +31,7 @@ use crate::error::BlobError;
 /// class, so it lands in `ConstraintViolation` only as a defense-in-depth
 /// backstop — `core_upload` gates the same owner authority before the
 /// port and surfaces denials as `forbidden`, matching `core_remember`.
-fn blob_error_to_storage(err: BlobError) -> StorageError {
+pub(super) fn blob_error_to_storage(err: BlobError) -> StorageError {
     match err {
         BlobError::Config(message) => {
             StorageError::Unavailable(format!("S3 config error: {message}"))

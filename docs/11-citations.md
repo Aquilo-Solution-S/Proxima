@@ -359,6 +359,15 @@ a `document` block with `filename`/`mime`/`byte_len`/`sha256_hex`/
 `bucket`/`object_key` stay internal, and fetching bytes goes through
 `read_url`.
 
+Reconciliation keeps the same boundary. The global operator pass is
+`CitedBlobStore::reconcile_all(&SystemAuthority)` and may return bounded raw
+locator samples for restore work. The store and witness must share one boot
+binding; a token from another `Engine` is rejected before I/O. Flavor tools receive a separate
+`CitedBlobOwnerReconcileService`: it re-authorizes Fact-read for one Owner,
+lists only that Owner's object prefix, and returns a redacted report with no
+bucket or object key. Both passes only report missing objects, unclaimed
+objects, and foreign locators; neither repairs nor deletes.
+
 ## Owner scoping
 
 CitedObject carries Owner. A document ingested for `User(A)` is not
