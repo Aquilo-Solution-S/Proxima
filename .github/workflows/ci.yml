@@ -31,7 +31,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       # rust-toolchain.toml pins the channel (1.96.0) + components (rustfmt, clippy).
       # Swatinem/rust-cache@v2.9.1
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
       - name: rustfmt
         run: cargo fmt --all --check
       - name: clippy
@@ -174,7 +174,7 @@ jobs:
           # it, so fetch full history here (the test itself bounds depth).
           fetch-depth: 0
       # Swatinem/rust-cache@v2.9.1
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
       - name: create e2e database
         # Dedicated DB for the HTTP e2e tests, isolated from pg-testkit's
         # per-test clones (psql ships on the ubuntu-latest runner).
