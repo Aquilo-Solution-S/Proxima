@@ -13,8 +13,8 @@ not a reference. Deployment and env vars live in
 
 | You are | Read |
 |---|---|
-| A **v0.0.7 Rust host** | [compose flavor services once](#compose-flavor-services-once), [move caller provenance into `ToolCtx`](#move-caller-provenance-into-toolctx), [remove the inert runtime owner-access registration](#remove-the-inert-runtime-owner-access-registration), [remove the dependency-satisfaction seam](#remove-the-dependency-satisfaction-seam), [pass the shared Host allowlist](#pass-the-shared-host-allowlist), [apply listener-wide CORS](#apply-listener-wide-cors), then [freeze registries once](#freeze-registries-once) |
-| An **operator** promoting a deployment | [the v0.0.7 schema lane](#the-v007-schema-lane), then [operator changes](#operator-changes) |
+| A **v0.0.7 Rust host** | [apply the v0.0.8 schema lane](#the-v008-schema-lane), [compose flavor services once](#compose-flavor-services-once), [redeem durable worker authority](#redeem-durable-worker-authority), [use private blob-service wrappers](#use-private-blob-service-wrappers), [move caller provenance into `ToolCtx`](#move-caller-provenance-into-toolctx), [remove the inert runtime owner-access registration](#remove-the-inert-runtime-owner-access-registration), [remove the dependency-satisfaction seam](#remove-the-dependency-satisfaction-seam), [pass the shared Host allowlist](#pass-the-shared-host-allowlist), [apply listener-wide CORS](#apply-listener-wide-cors), then [freeze registries once](#freeze-registries-once) |
+| An **operator** promoting a deployment | [the v0.0.8 schema lane](#the-v008-schema-lane), then [operator changes](#operator-changes) |
 | Running the **code flavor** | the above, then [re-register and re-index](#re-register-and-re-index-every-code-repository) |
 | An **MCP client / agent** author | [regenerate OpenAPI clients](#regenerate-openapi-clients), then [wire changes](#wire-changes-mcp-clients) |
 | An **embedding host** driving `Engine` in Rust | [Rust host changes](#rust-host-changes) |
@@ -30,6 +30,22 @@ Older lanes are kept below: [v0.0.6 → v0.0.7](#v006--v007),
 ---
 
 # v0.0.7 → v0.0.8
+
+## The v0.0.8 schema lane
+
+Apply the core migrations through version 16 before promoting the v0.0.8
+binary:
+
+| Version | Ledger | File | Effect |
+|---:|---|---|---|
+| 16 | core | `0016_v008.sql` | adds durable delegated-authority grants, owner/subject audit indexes, immutable-revocation enforcement, and the delegated-grant compliance-audit count |
+
+Core migration versions 12–15 remain permanently retired by
+`0011_v007.sql`; do not rename or reuse them. `0016_v008.sql` is the next
+fresh version and runs after the shipped v0.0.7 squash. Run the DDL-capable
+migration job first when application roles use `PROXIMA_SKIP_MIGRATIONS=true`,
+then start the application role. Boot fails closed if either the grant table
+or its compliance-audit count column is absent.
 
 ## Compose flavor services once
 
@@ -66,6 +82,64 @@ earlier app or the substrate's `CitedBlobService`.
 
 This is a Rust host/flavor migration only. There is no wire, database, schema,
 or Lean change.
+
+## Redeem durable worker authority
+
+Background jobs no longer carry or reconstruct a reusable delegated
+`AuthzContext`. At the authenticated enqueue boundary, resolve the shared
+`DelegatedAuthorityService`, parse the registered `DelegatedCommand`, and call
+`issue` with the exact owner and non-management role ceiling. Persist only the
+returned `DelegationId` with the job; it is a redeemable credential and must
+not be logged or copied into compliance exports.
+
+At job claim and each later phase boundary, resolve the same service and call
+`redeem_phase(id, expected_owner, &expected_command)`. Pass the returned
+non-cloneable `DelegatedPhase` by reference only to the delegated-capable
+Engine/blob operations listed in
+[Public API — Delegated Worker Authority](docs/reference/public-api.md#delegated-worker-authority).
+Raw `AuthzContext` values with `AuthPath::Delegated` now fail closed.
+Update exhaustive `AuthPath` matches for the new `Delegated` variant; only a
+runtime-redeemed phase may carry that provenance into supported operations.
+
+The standard runtime publishes `DelegatedAuthorityService` only when an
+`Authenticator` is configured. It shares one PostgreSQL grant store, current
+frozen registry, deployment tool profile, owner-access resolver, and withheld
+runtime binding with the Engine and blob services. MCP, REST, and worker
+contexts receive the same service `Arc`; they do not receive the binding or
+`SystemAuthority`.
+
+Redemption rechecks the exact queued command, current registry/profile,
+revocation, bearer expiry, current membership and role ceiling, and auth epoch
+when the host authenticator implements it. The built-in OIDC authenticators
+currently report epoch `0`, so their production revocation bounds are bearer
+expiry and current membership. Revoke/membership/epoch changes deny the next
+redemption; they do not cancel an already-redeemed phase before its finite
+expiry. Registered linked workers remain trusted in-process to select among
+the phase's allowed operations; this is not a process sandbox.
+
+`DelegationGrant*`, `DelegationMutationPermit`, `DelegationStorePort`, the
+service constructor, and `PgDelegationStore` are doc-hidden backend
+composition APIs, not supported Host API or Flavor SDK.
+
+## Use private blob-service wrappers
+
+The public tuple fields on `CitedBlobService`, `CitedBlobReadService`, and
+`CitedBlobOwnerReconcileService` are private. Call their service methods
+directly:
+
+| v0.0.7 | v0.0.8 |
+|---|---|
+| call through the service tuple field | `service.collect_verified(&authz, owner, id, max_bytes).await?` |
+| construct a service tuple directly | `CitedBlobService::new(port)` / `CitedBlobReadService::new(port)` / `CitedBlobOwnerReconcileService::new(port)` |
+
+The transfer and verified-read wrappers accept the sealed `EngineAuthority`
+surface, so ordinary callers keep passing `&AuthzContext` and delegated
+workers pass `&DelegatedPhase`. Owner reconciliation remains ordinary-context
+only and rejects raw delegated contexts. `Engine::complete_upload_as_fact`
+now takes `&CitedBlobService`, not `&dyn CitedBlobPort`, so completion cannot
+bypass runtime/expiry checks. `CitedBlobService::new` and
+`CitedBlobReadService::new` create unbound ordinary-call/test services;
+runtime-bound construction is host composition internals.
 
 ## Move caller provenance into `ToolCtx`
 
@@ -902,7 +976,7 @@ let Some(service) = ctx.service::<CitedBlobOwnerReconcileService>() else {
         "host did not configure owner blob reconciliation",
     ));
 };
-let report = service.0.reconcile_owner(&ctx.authz, ctx.owner).await?;
+let report = service.reconcile_owner(&ctx.authz, ctx.owner).await?;
 ```
 
 The owner service authorizes Fact-read before any Postgres/S3 access, queries
@@ -919,7 +993,7 @@ tools and workers that need trusted bytes resolve `CitedBlobReadService`:
 
 ```rust
 let service = ctx.service::<CitedBlobReadService>().ok_or(...)?;
-let blob = service.0.collect_verified(
+let blob = service.collect_verified(
     &ctx.authz,
     ctx.owner,
     cited_object_id,
@@ -1214,10 +1288,11 @@ the same answer, for substrate and flavor tools alike.
 Contract details worth knowing before building on these:
 
 - **Workers** must terminate on the provided cancellation token; a panic is
-  logged at join and never takes the host down. A worker has no request to
-  inherit authority from — it supplies its own `AuthzContext` and `OwnerRef`
-  per job. Note `AuthzContext::single_owner` denies for a group owner; use
-  `for_subject_with_role`. `Proxima::build` (serverless) spawns no workers.
+  logged at join and never takes the host down. In v0.0.7 a worker supplied an
+  `AuthzContext` per job; v0.0.8 replaces that delegated pattern with
+  `DelegationId` + redeemed `DelegatedPhase` as described above. Ordinary
+  non-delegated jobs still supply their authenticated context and exact owner.
+  `Proxima::build` (serverless) spawns no workers.
 - **An Abstraction's `sidecar_table()` is required**, unlike a Fact's, so a
   flavor registering one always owns a migration for it. And a derived memory
   is embedded **synchronously**, inside the write, so a provider failure fails

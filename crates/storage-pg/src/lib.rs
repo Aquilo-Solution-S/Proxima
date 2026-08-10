@@ -33,6 +33,7 @@ use crate::pgvector::SET_HNSW_ITERATIVE_SCAN_SQL;
 pub mod access;
 mod authorship;
 mod change_event;
+mod delegated_authority;
 mod error;
 #[doc(hidden)]
 pub use error::map_err;
@@ -52,6 +53,7 @@ pub mod verbs;
 /// Stable, discoverable re-export of the exported `OwnerAccessPort` adapter
 /// (see [`access::PgOwnerAccessResolver`]) for embedding hosts.
 pub use access::PgOwnerAccessResolver;
+pub use delegated_authority::PgDelegationStore;
 pub use sidecars::{
     PgSidecarKey, PgSidecarRegistry, PgSidecarRegistryFrozen, core_pg_sidecars,
     register_core_pg_sidecars,
@@ -393,6 +395,28 @@ pub async fn ensure_core_schema_markers(pool: &PgPool) -> Result<(), StorageErro
                 AND column_name = 'assignment_perspective_id'
          )
          AND to_regclass('proxima_core.interpretation_v1') IS NOT NULL
+         -- v0.0.8 delegated-authority lane. The runtime always constructs the
+         -- PG store when authenticated hosting is enabled, compliance audit
+         -- always binds its count column, and the trigger is the storage-side
+         -- defense against widening an issued grant.
+         AND to_regtype('proxima_core.access_ceiling') IS NOT NULL
+         AND to_regclass('proxima_core.delegated_authority_grants') IS NOT NULL
+         AND EXISTS (
+             SELECT 1
+               FROM information_schema.columns
+              WHERE table_schema = 'proxima_core'
+                AND table_name = 'compliance_audit_log'
+                AND column_name = 'delegated_authority_grants_count'
+         )
+         AND EXISTS (
+             SELECT 1
+               FROM pg_trigger t
+               JOIN pg_class c ON c.oid = t.tgrelid
+               JOIN pg_namespace n ON n.oid = c.relnamespace
+              WHERE n.nspname = 'proxima_core'
+                AND c.relname = 'delegated_authority_grants'
+                AND t.tgname = 'delegated_authority_grants_revoke_only'
+         )
          -- Flavor lane skew: when the code flavor's tables exist, its
          -- language migration must have run too — the search builder emits
          -- s.lexical_language for the chunk projection (and reads its
@@ -425,7 +449,7 @@ pub async fn ensure_core_schema_markers(pool: &PgPool) -> Result<(), StorageErro
 
     if !ready {
         return Err(StorageError::Internal(
-            "database is missing schema markers for this release lane (v0.0.6: embedding_jobs.next_attempt_at, memories append-only trigger; v0.0.7 (0011_v007.sql): memories.search_tsv, embeddings.chunk_index, proxima_core.lexical_tsv, proxima_core.lexical_config, memories.lexical_language, proxima_core.lexical_languages, edges.source_id, memories.authoring_perspective_id, goals.assignment_perspective_id, proxima_core.interpretation_v1; code flavor, when present: code_chunk_v1.search_tsv and code_chunk_v1.lexical_language via flavor migration 20260801000020_v007_baseline.sql); apply migrations before boot (see MIGRATING.md)".into(),
+            "database is missing schema markers for this release lane (v0.0.6: embedding_jobs.next_attempt_at, memories append-only trigger; v0.0.7 (0011_v007.sql): memories.search_tsv, embeddings.chunk_index, proxima_core.lexical_tsv, proxima_core.lexical_config, memories.lexical_language, proxima_core.lexical_languages, edges.source_id, memories.authoring_perspective_id, goals.assignment_perspective_id, proxima_core.interpretation_v1; v0.0.8 (0016_v008.sql): proxima_core.access_ceiling, proxima_core.delegated_authority_grants, delegated_authority_grants_revoke_only, compliance_audit_log.delegated_authority_grants_count; code flavor, when present: code_chunk_v1.search_tsv and code_chunk_v1.lexical_language via flavor migration 20260801000020_v007_baseline.sql); apply migrations before boot (see MIGRATING.md)".into(),
         ));
     }
     Ok(())
@@ -889,6 +913,18 @@ mod pgvector_tests {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn core_migrator_contains_the_v008_delegated_authority_lane() {
+        let versions: Vec<i64> = super::core_migrator()
+            .iter()
+            .map(|migration| migration.version)
+            .collect();
+        assert!(
+            versions.contains(&16),
+            "core migrator must embed 0016_v008.sql"
+        );
+    }
+
     #[test]
     fn core_migrator_contains_the_squashed_v007_lane() {
         let versions: Vec<i64> = super::core_migrator()

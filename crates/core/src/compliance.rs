@@ -101,6 +101,8 @@ pub struct ComplianceExportCounts {
     pub citations: usize,
     pub cited_objects: usize,
     pub source_cursors: usize,
+    #[serde(default)]
+    pub delegated_authority_grants: usize,
     pub sidecar_rows: usize,
     pub compliance_audit_rows: usize,
 }
@@ -131,6 +133,8 @@ pub struct ComplianceExportBundle {
     pub citations: Vec<serde_json::Value>,
     pub cited_objects: Vec<serde_json::Value>,
     pub source_cursors: Vec<serde_json::Value>,
+    #[serde(default)]
+    pub delegated_authority_grants: Vec<serde_json::Value>,
     pub sidecars: Vec<ComplianceExportSidecarRows>,
     pub compliance_audit_rows: Vec<serde_json::Value>,
 }
@@ -165,6 +169,8 @@ pub struct ComplianceEraseCounts {
     pub change_events: u64,
     pub redacted_edge_targets: u64,
     pub suppressed_keys: u64,
+    #[serde(default)]
+    pub delegated_authority_grants: u64,
 }
 
 /// The outcome of a compliance erase operation.

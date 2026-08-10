@@ -20,6 +20,7 @@ use tokio::time::{Instant, Interval, Sleep};
 
 use crate::access::{AccessKind, OwnerRoles};
 use crate::auth::{AuthError, Credentials};
+use crate::error::ProtocolError;
 use crate::{Owner, OwnerRef, UserId};
 
 pub use hooks::{
@@ -136,6 +137,8 @@ impl CapabilitySet {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AuthPath {
     HostBearer,
+    /// A durable, narrowly scoped grant redeemed by a background worker.
+    Delegated,
     Wake,
     System,
     /// Fail-closed sentinel for a context that carries no real
@@ -187,12 +190,202 @@ impl SystemAuthorityBinding {
     }
 }
 
+/// Uncloneable boot witness used only while composing the one delegated
+/// authority service and the worker-facing backend services for an Engine.
+/// It is never published through `FlavorServices` or `FlavorWorkerContext`.
+#[doc(hidden)]
+pub struct DelegationRuntimeAuthority {
+    binding: DelegationRuntimeBinding,
+}
+
+impl std::fmt::Debug for DelegationRuntimeAuthority {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("DelegationRuntimeAuthority")
+            .finish_non_exhaustive()
+    }
+}
+
+impl DelegationRuntimeAuthority {
+    pub(crate) const fn new(binding: DelegationRuntimeBinding) -> Self {
+        Self { binding }
+    }
+
+    pub(crate) fn binding(&self) -> DelegationRuntimeBinding {
+        self.binding.clone()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct DelegationRuntimeBinding(uuid::Uuid);
+
+impl DelegationRuntimeBinding {
+    pub(crate) fn fresh() -> Self {
+        Self(uuid::Uuid::now_v7())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct AuthzContext {
     identity: Identity,
     capabilities: CapabilitySet,
     auth_path: AuthPath,
     owner_roles: Option<OwnerRoles>,
+}
+
+/// Opaque authority for one redeemed durable-worker phase.
+///
+/// The phase is intentionally neither cloneable nor convertible to
+/// [`AuthzContext`]. Linked worker implementations are trusted in-process,
+/// but every delegated-capable Engine operation rechecks the finite bearer
+/// deadline before extracting the exact-owner, role-ceiling context.
+///
+/// ```compile_fail
+/// # use proxima_core::DelegatedPhase;
+/// fn duplicate(phase: DelegatedPhase) {
+///     let _copy = phase.clone();
+/// }
+/// ```
+///
+/// ```compile_fail
+/// # use proxima_core::{AuthzContext, DelegatedPhase};
+/// fn extract(phase: &DelegatedPhase) -> &AuthzContext {
+///     phase.authz()
+/// }
+/// ```
+#[must_use]
+pub struct DelegatedPhase {
+    authz: AuthzContext,
+    expires_at: SystemTime,
+    runtime_binding: DelegationRuntimeBinding,
+}
+
+impl DelegatedPhase {
+    pub(crate) fn new(
+        authz: AuthzContext,
+        expires_at: SystemTime,
+        runtime_binding: DelegationRuntimeBinding,
+    ) -> Self {
+        debug_assert_eq!(authz.auth_path(), AuthPath::Delegated);
+        debug_assert_eq!(authz.expires_at(), Some(expires_at));
+        Self {
+            authz,
+            expires_at,
+            runtime_binding,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn expire_for_test(&mut self) {
+        self.expires_at = SystemTime::UNIX_EPOCH;
+    }
+}
+
+impl std::fmt::Debug for DelegatedPhase {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("DelegatedPhase")
+            .field("expires_at", &self.expires_at)
+            .finish_non_exhaustive()
+    }
+}
+
+mod engine_authority_seal {
+    use super::{
+        AuthPath, AuthzContext, DelegatedPhase, EngineOperationAuthority, ProtocolError, SystemTime,
+    };
+
+    pub(crate) trait Sealed {
+        fn context_for_engine_operation(
+            &self,
+        ) -> Result<EngineOperationAuthority<'_>, ProtocolError>;
+    }
+
+    impl Sealed for AuthzContext {
+        fn context_for_engine_operation(
+            &self,
+        ) -> Result<EngineOperationAuthority<'_>, ProtocolError> {
+            if self.auth_path() == AuthPath::Delegated {
+                return Err(ProtocolError::forbidden(
+                    "raw delegated authorization contexts are not Engine authority",
+                ));
+            }
+            Ok(EngineOperationAuthority {
+                authz: self,
+                redeemed_phase: false,
+                runtime_binding: None,
+            })
+        }
+    }
+
+    impl Sealed for DelegatedPhase {
+        fn context_for_engine_operation(
+            &self,
+        ) -> Result<EngineOperationAuthority<'_>, ProtocolError> {
+            if self.expires_at <= SystemTime::now() {
+                return Err(ProtocolError::forbidden(
+                    "delegated worker phase has expired",
+                ));
+            }
+            Ok(EngineOperationAuthority {
+                authz: &self.authz,
+                redeemed_phase: true,
+                runtime_binding: Some(&self.runtime_binding),
+            })
+        }
+    }
+}
+
+/// Sealed authority accepted by delegated-capable Engine operations.
+///
+/// Ordinary callers continue to pass [`AuthzContext`]. Durable workers pass
+/// an opaque [`DelegatedPhase`] returned by
+/// [`crate::DelegatedAuthorityService::redeem_phase`]. External crates cannot
+/// implement this trait or extract its context.
+#[allow(private_bounds)]
+pub trait EngineAuthority: engine_authority_seal::Sealed {}
+
+impl EngineAuthority for AuthzContext {}
+impl EngineAuthority for DelegatedPhase {}
+
+pub(crate) struct EngineOperationAuthority<'a> {
+    authz: &'a AuthzContext,
+    redeemed_phase: bool,
+    runtime_binding: Option<&'a DelegationRuntimeBinding>,
+}
+
+impl<'a> EngineOperationAuthority<'a> {
+    #[must_use]
+    pub(crate) const fn authz(&self) -> &'a AuthzContext {
+        self.authz
+    }
+
+    #[must_use]
+    pub(crate) const fn redeemed_phase(&self) -> bool {
+        self.redeemed_phase
+    }
+
+    pub(crate) fn validate_runtime_binding(
+        &self,
+        expected: Option<&DelegationRuntimeBinding>,
+    ) -> Result<(), ProtocolError> {
+        match (self.runtime_binding, expected) {
+            (None, _) => Ok(()),
+            (Some(actual), Some(expected)) if actual == expected => Ok(()),
+            (Some(_), Some(_) | None) => Err(ProtocolError::forbidden(
+                "delegated worker phase belongs to a different runtime",
+            )),
+        }
+    }
+}
+
+pub(crate) fn context_for_engine_operation<A>(
+    authority: &A,
+) -> Result<EngineOperationAuthority<'_>, ProtocolError>
+where
+    A: EngineAuthority + ?Sized,
+{
+    engine_authority_seal::Sealed::context_for_engine_operation(authority)
 }
 
 impl AuthzContext {
@@ -214,6 +407,11 @@ impl AuthzContext {
     #[must_use]
     pub fn expires_at(&self) -> Option<SystemTime> {
         self.identity.expires_at
+    }
+
+    #[must_use]
+    pub const fn auth_epoch(&self) -> u64 {
+        self.identity.auth_epoch
     }
 
     #[must_use]
@@ -264,6 +462,14 @@ impl AuthzContext {
         self.owner_roles
             .as_ref()
             .is_some_and(|roles| roles.may_manage(owner))
+    }
+
+    /// Server-resolved role for one owner, if the authenticated subject has
+    /// one. Durable delegation records this role only as an upper bound and
+    /// resolves it again at every redemption.
+    #[must_use]
+    pub fn role_for_owner(&self, owner: &OwnerRef) -> Option<crate::access::Role> {
+        self.owner_roles.as_ref()?.role_for(owner)
     }
 
     #[must_use]

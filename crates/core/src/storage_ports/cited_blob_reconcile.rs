@@ -26,7 +26,7 @@
 use std::sync::Arc;
 
 use crate::OwnerRef;
-use crate::authz::{AuthzContext, SystemAuthority};
+use crate::authz::{AuthPath, AuthzContext, SystemAuthority};
 use crate::storage::StorageError;
 
 /// How many examples of each divergence a reconcile carries back.
@@ -169,12 +169,96 @@ pub trait CitedBlobOwnerReconcilePort: Send + Sync {
 
 /// Typed extension-map handle for owner-scoped blob reconciliation.
 #[derive(Clone)]
-pub struct CitedBlobOwnerReconcileService(pub Arc<dyn CitedBlobOwnerReconcilePort>);
+pub struct CitedBlobOwnerReconcileService {
+    port: Arc<dyn CitedBlobOwnerReconcilePort>,
+}
 
 impl std::fmt::Debug for CitedBlobOwnerReconcileService {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_tuple("CitedBlobOwnerReconcileService")
             .field(&"<dyn CitedBlobOwnerReconcilePort>")
             .finish()
+    }
+}
+
+impl CitedBlobOwnerReconcileService {
+    #[must_use]
+    pub fn new(port: Arc<dyn CitedBlobOwnerReconcilePort>) -> Self {
+        Self { port }
+    }
+
+    #[cfg(any(test, feature = "test-fixtures"))]
+    #[doc(hidden)]
+    #[must_use]
+    pub fn backend_identity_for_tests(&self) -> *const () {
+        Arc::as_ptr(&self.port).cast::<()>()
+    }
+
+    /// Run one ordinary owner-authorized reconciliation pass.
+    ///
+    /// Owner reconciliation is not a delegated-capable operation. Workers
+    /// must not reconstruct a raw delegated context to reach it.
+    ///
+    /// # Errors
+    ///
+    /// Rejects raw delegated contexts before forwarding to the backend;
+    /// otherwise forwards the port's owner-access and storage failures.
+    pub async fn reconcile_owner(
+        &self,
+        authz: &AuthzContext,
+        owner: OwnerRef,
+    ) -> Result<CitedBlobOwnerReconcileOutcome, StorageError> {
+        if authz.auth_path() == AuthPath::Delegated {
+            return Err(StorageError::ConstraintViolation(
+                "raw delegated authorization contexts are not blob authority".into(),
+            ));
+        }
+        self.port.reconcile_owner(authz, owner).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use super::*;
+    use crate::{GroupId, Role, UserId};
+
+    #[derive(Debug, Default)]
+    struct RecordingReconcile {
+        calls: AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl CitedBlobOwnerReconcilePort for RecordingReconcile {
+        async fn reconcile_owner(
+            &self,
+            _authz: &AuthzContext,
+            _owner: OwnerRef,
+        ) -> Result<CitedBlobOwnerReconcileOutcome, StorageError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Ok(CitedBlobOwnerReconcileOutcome::default())
+        }
+    }
+
+    #[tokio::test]
+    async fn raw_delegated_context_is_denied_before_owner_reconcile_port() {
+        let port = Arc::new(RecordingReconcile::default());
+        let service = CitedBlobOwnerReconcileService::new(port.clone());
+        let subject = UserId::new(uuid::Uuid::now_v7());
+        let owner = OwnerRef::Group(GroupId::new(uuid::Uuid::now_v7()));
+        let raw = AuthzContext::for_subject_with_role(
+            subject,
+            [(owner, Role::viewer())],
+            AuthPath::Delegated,
+        );
+
+        let error = service
+            .reconcile_owner(&raw, owner)
+            .await
+            .expect_err("raw delegated context must not reach reconcile backend");
+
+        assert!(matches!(error, StorageError::ConstraintViolation(_)));
+        assert_eq!(port.calls.load(Ordering::SeqCst), 0);
     }
 }

@@ -3,7 +3,7 @@ use std::sync::Arc;
 use super::Engine;
 use crate::SchemaVersion;
 use crate::access::Relation;
-use crate::authz::AuthzContext;
+use crate::authz::{AuthzContext, EngineAuthority};
 use crate::edge::EdgeEndpoint;
 use crate::error::ProtocolError;
 use crate::llm::{EMBEDDING_BATCH_SIZE, EmbeddingClient, LlmError};
@@ -58,14 +58,18 @@ impl Engine {
     ///
     /// A schema that declared `EMBEDDABLE = false` is written without a
     /// vector even when the host has an embedder configured.
-    pub async fn fact_ingest(
+    pub async fn fact_ingest<A>(
         &self,
-        authz: &AuthzContext,
+        authority: &A,
         draft: FactWriteCommand,
-    ) -> Result<FactIngestOutcome, ProtocolError> {
+    ) -> Result<FactIngestOutcome, ProtocolError>
+    where
+        A: EngineAuthority + ?Sized,
+    {
         let authorized = self
-            .authorize_fact_ingest(authz, Relation::Ingest, draft, &[])
+            .authorize_fact_ingest(authority, Relation::Ingest, draft, &[])
             .await?;
+        self.validate_write_permit(authorized.owner_write_permit())?;
         let embedding_client = self.embed_client();
         let requested = embedding_client.as_ref().map(|client| client.model_id());
         // `embed_client().map(model_id)` asks "is there an embedder", which
@@ -102,15 +106,18 @@ impl Engine {
     /// Returns `Forbidden` when the context cannot resolve exactly one writable owner
     /// for `relation`; `UnknownSchema` when the Fact schema or provided citation schemas
     /// are not registered.
-    pub async fn authorize_fact_ingest(
+    pub async fn authorize_fact_ingest<A>(
         &self,
-        authz: &AuthzContext,
+        authority: &A,
         relation: Relation,
         draft: FactWriteCommand,
         sidecars: &[SidecarPayload],
-    ) -> Result<AuthorizedFactWrite, ProtocolError> {
-        let owner = self.single_write_owner_for(authz, relation).await?;
-        let permit = self.authorize_write(authz, &owner, relation).await?;
+    ) -> Result<AuthorizedFactWrite, ProtocolError>
+    where
+        A: EngineAuthority + ?Sized,
+    {
+        let owner = self.single_write_owner_for(authority, relation)?;
+        let permit = self.authorize_write(authority, &owner, relation).await?;
         let fact_info = self.fact_schema_info(&draft.schema_id, draft.schema_version)?;
         let fact_sidecar_table = fact_info.sidecar_table.clone();
         let fact_natural_key_columns = fact_info.natural_key_columns.clone();
@@ -125,7 +132,7 @@ impl Engine {
             )?;
         }
         let links = self
-            .authorize_fact_node_links(authz, &draft, sidecars)
+            .authorize_fact_node_links(authority, &draft, sidecars)
             .await?;
         Ok(AuthorizedFactWrite::new(
             permit.into(),
@@ -147,17 +154,20 @@ impl Engine {
     /// schema; `UnknownSchema` when any schema is absent for the required kind;
     /// `InvalidArgument` when JSON payload validation fails; or `Internal` when
     /// a registered citation schema has no sidecar inserter.
-    pub async fn authorize_fact_with_citation(
+    pub async fn authorize_fact_with_citation<A>(
         &self,
-        authz: &AuthzContext,
+        authority: &A,
         relation: Relation,
         draft: FactWriteCommand,
         cited_object: InlineCitedObjectDraft,
         mapping: InlineCitationMappingDraft,
         sidecars: &[SidecarPayload],
-    ) -> Result<AuthorizedFactWithCitation, ProtocolError> {
-        let owner = self.single_write_owner_for(authz, relation).await?;
-        let permit = self.authorize_write(authz, &owner, relation).await?;
+    ) -> Result<AuthorizedFactWithCitation, ProtocolError>
+    where
+        A: EngineAuthority + ?Sized,
+    {
+        let owner = self.single_write_owner_for(authority, relation)?;
+        let permit = self.authorize_write(authority, &owner, relation).await?;
 
         // Validate the Fact only by schema-existence, matching
         // `authorize_fact_ingest`. The Fact payload is built from a
@@ -168,7 +178,7 @@ impl Engine {
         let fact_natural_key_columns = fact_info.natural_key_columns.clone();
         let (cited_object, mapping) = self.authorize_inline_citation(cited_object, mapping)?;
         let links = self
-            .authorize_fact_node_links(authz, &draft, sidecars)
+            .authorize_fact_node_links(authority, &draft, sidecars)
             .await?;
 
         Ok(AuthorizedFactWithCitation::new(
@@ -196,23 +206,26 @@ impl Engine {
     /// `InvalidArgument` when the mapping payload fails validation; or
     /// `Internal` when the mapping schema declares no cited-object
     /// target.
-    pub async fn authorize_fact_with_citation_by_ref(
+    pub async fn authorize_fact_with_citation_by_ref<A>(
         &self,
-        authz: &AuthzContext,
+        authority: &A,
         relation: Relation,
         draft: FactWriteCommand,
         cited_object_id: uuid::Uuid,
         mapping: InlineCitationMappingDraft,
         sidecars: &[SidecarPayload],
-    ) -> Result<AuthorizedFactWithCitationRef, ProtocolError> {
-        let owner = self.single_write_owner_for(authz, relation).await?;
-        let permit = self.authorize_write(authz, &owner, relation).await?;
+    ) -> Result<AuthorizedFactWithCitationRef, ProtocolError>
+    where
+        A: EngineAuthority + ?Sized,
+    {
+        let owner = self.single_write_owner_for(authority, relation)?;
+        let permit = self.authorize_write(authority, &owner, relation).await?;
         let fact_info = self.fact_schema_info(&draft.schema_id, draft.schema_version)?;
         let fact_sidecar_table = fact_info.sidecar_table.clone();
         let fact_natural_key_columns = fact_info.natural_key_columns.clone();
         let (mapping, expected_object_schema) = self.authorize_citation_mapping_draft(mapping)?;
         let links = self
-            .authorize_fact_node_links(authz, &draft, sidecars)
+            .authorize_fact_node_links(authority, &draft, sidecars)
             .await?;
 
         Ok(AuthorizedFactWithCitationRef::new(
@@ -236,12 +249,15 @@ impl Engine {
     /// from the derivation declaration and the references from payload
     /// content, which is what keeps the edge set a function of node
     /// content.
-    async fn authorize_fact_node_links(
+    async fn authorize_fact_node_links<A>(
         &self,
-        authz: &AuthzContext,
+        authority: &A,
         draft: &FactWriteCommand,
         sidecars: &[SidecarPayload],
-    ) -> Result<AuthorizedNodeLinks, ProtocolError> {
+    ) -> Result<AuthorizedNodeLinks, ProtocolError>
+    where
+        A: EngineAuthority + ?Sized,
+    {
         let declared: Vec<_> = sidecars
             .iter()
             .flat_map(SidecarPayload::references)
@@ -256,20 +272,23 @@ impl Engine {
             .map(|reference| reference.target)
             .collect();
         let origins = self
-            .authorize_fact_link_targets(authz, &draft.derived_from, "derived_from")
+            .authorize_fact_link_targets(authority, &draft.derived_from, "derived_from")
             .await?;
         let references = self
-            .authorize_fact_link_targets(authz, &references, "references")
+            .authorize_fact_link_targets(authority, &references, "references")
             .await?;
         Ok(AuthorizedNodeLinks::new(origins, references))
     }
 
-    async fn authorize_fact_link_targets(
+    async fn authorize_fact_link_targets<A>(
         &self,
-        authz: &AuthzContext,
+        authority: &A,
         targets: &[EdgeEndpoint],
         field: &str,
-    ) -> Result<Vec<EdgeEndpoint>, ProtocolError> {
+    ) -> Result<Vec<EdgeEndpoint>, ProtocolError>
+    where
+        A: EngineAuthority + ?Sized,
+    {
         let mut out: Vec<EdgeEndpoint> = Vec::with_capacity(targets.len());
         for target in targets {
             match target.kind {
@@ -286,11 +305,11 @@ impl Engine {
             }
             match target.entity {
                 crate::EntityRef::Memory(memory_id) => {
-                    self.authorize_entry_read(authz, crate::EntityId::Memory(memory_id))
+                    self.authorize_entry_read(authority, crate::EntityId::Memory(memory_id))
                         .await?;
                 }
                 crate::EntityRef::Goal(goal_id) => {
-                    self.authorize_entry_read(authz, crate::EntityId::Goal(goal_id))
+                    self.authorize_entry_read(authority, crate::EntityId::Goal(goal_id))
                         .await?;
                 }
                 // A Fact-entity head is reached through the same owner
@@ -305,12 +324,16 @@ impl Engine {
         Ok(out)
     }
 
-    async fn single_write_owner_for(
+    fn single_write_owner_for<A>(
         &self,
-        authz: &AuthzContext,
+        authority: &A,
         relation: Relation,
-    ) -> Result<Owner, ProtocolError> {
-        let access = self.resolve_access(authz).await?;
+    ) -> Result<Owner, ProtocolError>
+    where
+        A: EngineAuthority + ?Sized,
+    {
+        let operation = self.operation_authority(authority)?;
+        let access = self.resolve_access_inner(operation.authz(), operation.redeemed_phase())?;
         let owners = access.write_owners_for(relation);
         match owners.as_slice() {
             [owner] => Ok(*owner),
@@ -359,6 +382,7 @@ impl Engine {
         sidecars: &[SidecarPayload],
         embedding_model_id: Option<&str>,
     ) -> Result<FactIngestOutcome, ProtocolError> {
+        self.validate_write_permit(authorized.owner_write_permit())?;
         let embedding_model_id =
             self.vector_model_for(authorized.draft().schema_id.as_str(), embedding_model_id);
         self.storage()
@@ -388,6 +412,7 @@ impl Engine {
         sidecars: &[SidecarPayload],
         embedding_model_id: Option<&str>,
     ) -> Result<FactIngestOutcome, ProtocolError> {
+        self.validate_write_permit(authorized.owner_write_permit())?;
         let embedding_model_id =
             self.vector_model_for(authorized.draft().schema_id.as_str(), embedding_model_id);
         self.storage()
@@ -418,6 +443,7 @@ impl Engine {
         sidecars: &[SidecarPayload],
         embedding_model_id: Option<&str>,
     ) -> Result<FactIngestOutcome, ProtocolError> {
+        self.validate_write_permit(authorized.owner_write_permit())?;
         let embedding_model_id =
             self.vector_model_for(authorized.draft().schema_id.as_str(), embedding_model_id);
         self.storage()
@@ -729,6 +755,7 @@ impl Engine {
         owner: &Owner,
         limit: usize,
     ) -> Result<usize, ProtocolError> {
+        self.operation_authority(authz)?;
         let Some(client) = self.embed_client() else {
             return Ok(0);
         };
@@ -1175,15 +1202,18 @@ impl Engine {
     /// Returns `NotFound` when the batch doesn't exist or belongs to a
     /// different owner; `Forbidden` when the context cannot access `owner` or
     /// lacks [`Relation::Ingest`] on the owner space.
-    pub async fn close_batch(
+    pub async fn close_batch<A>(
         &self,
-        authz: &AuthzContext,
+        authority: &A,
         requested_owner: OwnerRef,
         source_batch_id: SourceBatchId,
-    ) -> Result<CloseBatchOutcome, ProtocolError> {
+    ) -> Result<CloseBatchOutcome, ProtocolError>
+    where
+        A: EngineAuthority + ?Sized,
+    {
         let requested = requested_owner;
         let permit = self
-            .authorize_write(authz, &requested, Relation::Ingest)
+            .authorize_write(authority, &requested, Relation::Ingest)
             .await?;
         let outcome = self
             .storage

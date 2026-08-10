@@ -53,9 +53,11 @@ async fn complete_via_engine(
     owner: OwnerRef,
     upload_id: &str,
 ) -> Result<UploadCompleted, ProtocolError> {
+    let service =
+        proxima_core::storage_ports::CitedBlobService::new(std::sync::Arc::new(store.clone()));
     Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests())
         .with_storage_ports(std::sync::Arc::new(pg.clone()).storage_ports())
-        .complete_upload_as_fact(store, ctx, owner, upload_id, &[])
+        .complete_upload_as_fact(&service, ctx, owner, upload_id, &[])
         .await
 }
 

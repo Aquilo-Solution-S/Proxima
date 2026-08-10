@@ -17,17 +17,19 @@ use tokio_util::sync::CancellationToken;
 /// `service::<T>()` resolves from the same composed service set used by MCP
 /// and REST tools. `CitedBlobService` and `CitedBlobReadService` are absent
 /// unless the host configured S3, so a worker that needs either must fail its
-/// job typed rather than silently no-op. Every
-/// [`CitedBlobPort`](proxima_core::storage_ports::CitedBlobPort) method
-/// takes an [`AuthzContext`](proxima_core::AuthzContext) and an
-/// `OwnerRef` that the worker supplies per job: a worker has no request
-/// to inherit them from, and the port's own re-check is defense in
-/// depth, not the caller-facing gate an MCP tool provides.
-/// [`read_url`](proxima_core::storage_ports::CitedBlobPort::read_url)
-/// returns a presigned URL and never the bucket or object key.
-/// [`CitedBlobReadPort::collect_verified`](proxima_core::storage_ports::CitedBlobReadPort::collect_verified)
-/// instead requires a non-zero byte ceiling and returns bytes only after
-/// length, BLAKE3, and SHA-256 verification.
+/// job typed rather than silently no-op. A queued worker stores only a
+/// [`DelegationId`](proxima_core::DelegationId), resolves the shared
+/// [`DelegatedAuthorityService`](proxima_core::DelegatedAuthorityService),
+/// and redeems a non-cloneable
+/// [`DelegatedPhase`](proxima_core::DelegatedPhase) at job claim and at each
+/// subsequent phase boundary. The service is absent when the host has no
+/// authenticator.
+/// Delegated-capable Engine methods and the bound `CitedBlobService` /
+/// `CitedBlobReadService` accept that phase; raw delegated `AuthzContext`
+/// values are rejected. `read_url` returns a presigned URL and never the
+/// bucket or object key. `collect_verified` additionally requires a non-zero
+/// byte ceiling and returns bytes only after length, BLAKE3, and SHA-256
+/// verification. Owner reconciliation is not delegated-capable.
 ///
 /// [`FlavorBundle::spawn_workers`]: crate::flavor::FlavorBundle::spawn_workers
 #[derive(Clone)]

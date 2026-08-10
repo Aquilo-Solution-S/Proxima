@@ -367,13 +367,15 @@ macro_rules! proxima_flavor {
 }
 
 pub use storage_ports::{
-    ChangeEventPort, CitationPort, ComplianceAdminPort, ComplianceErasePort, EdgeReadPort,
-    EmbeddingAnnObservability, EmbeddingJobBacklog, EmbeddingJobPort, EmbeddingJobStatusCounts,
-    EmbeddingMaintenancePort, EmbeddingOrphanCounts, EmbeddingOrphanSweepOutcome,
-    EmbeddingRecallCanary, EmbeddingReconcileOptions, EmbeddingReconcileOutcome,
-    EmbeddingReconcileScope, EmbeddingTextPort, EmbeddingWriteOutcome, EmbeddingWritePort,
-    FactIngestPort, FactRetentionPort, GoalReadPort, GoalWritePort, McpCallReadPort,
-    McpCallWritePort, MemoryAuthoringPort, MemoryInspectPort, MemoryReadPort,
-    OperatorMaintenanceProof, OwnerAccessReadPort, OwnerDropProofPort, OwnerMembershipAdminPort,
-    OwnerTransferPort, RegistryProjectionPort, SourceBatchPort, SourceCursorPort, StoragePorts,
+    ChangeEventPort, CitationPort, ComplianceAdminPort, ComplianceErasePort,
+    DelegatedAuthorityError, DelegatedAuthorityService, DelegatedCommand, DelegationId,
+    DelegationIssued, DelegationRevocation, EdgeReadPort, EmbeddingAnnObservability,
+    EmbeddingJobBacklog, EmbeddingJobPort, EmbeddingJobStatusCounts, EmbeddingMaintenancePort,
+    EmbeddingOrphanCounts, EmbeddingOrphanSweepOutcome, EmbeddingRecallCanary,
+    EmbeddingReconcileOptions, EmbeddingReconcileOutcome, EmbeddingReconcileScope,
+    EmbeddingTextPort, EmbeddingWriteOutcome, EmbeddingWritePort, FactIngestPort,
+    FactRetentionPort, GoalReadPort, GoalWritePort, McpCallReadPort, McpCallWritePort,
+    MemoryAuthoringPort, MemoryInspectPort, MemoryReadPort, OperatorMaintenanceProof,
+    OwnerAccessReadPort, OwnerDropProofPort, OwnerMembershipAdminPort, OwnerTransferPort,
+    RegistryProjectionPort, SourceBatchPort, SourceCursorPort, StoragePorts,
 };

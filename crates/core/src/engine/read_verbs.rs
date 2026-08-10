@@ -331,6 +331,7 @@ impl Engine {
         authz: &AuthzContext,
         goal_ids: &[crate::GoalId],
     ) -> Result<Vec<crate::read_models::GoalWakeConfigRow>, ProtocolError> {
+        self.operation_authority(authz)?;
         if goal_ids.is_empty() {
             return Ok(Vec::new());
         }

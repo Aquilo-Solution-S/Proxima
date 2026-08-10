@@ -100,6 +100,9 @@ impl Engine {
         authz: &AuthzContext,
         target: &ComplianceEraseTarget,
     ) -> bool {
+        if authz.auth_path() == AuthPath::Delegated {
+            return false;
+        }
         if authz.auth_path() == AuthPath::System {
             return true;
         }
@@ -116,6 +119,9 @@ impl Engine {
         authz: &AuthzContext,
         target: &ComplianceExportTarget,
     ) -> bool {
+        if authz.auth_path() == AuthPath::Delegated {
+            return false;
+        }
         if authz.auth_path() == AuthPath::System {
             return true;
         }
@@ -128,6 +134,9 @@ impl Engine {
     }
 
     async fn operator_maintenance_authorized(&self, authz: &AuthzContext) -> bool {
+        if authz.auth_path() == AuthPath::Delegated {
+            return false;
+        }
         if authz.auth_path() == AuthPath::System {
             return true;
         }
@@ -591,6 +600,7 @@ impl Engine {
 
 #[cfg(test)]
 mod purge_tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
 
     use async_trait::async_trait;
@@ -604,9 +614,35 @@ mod purge_tests {
     };
     use crate::storage::StorageError;
     use crate::storage_ports::{
-        CitedObjectErasePort, ComplianceErasePort, OwnerDropProofPort, StoragePorts,
+        CitedObjectErasePort, ComplianceAdminPort, ComplianceErasePort, OwnerDropProofPort,
+        StoragePorts,
     };
     use crate::{GroupId, OwnerRef, SourceId, UserId};
+
+    #[derive(Debug, Default)]
+    struct PermissiveAdmin {
+        calls: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl ComplianceAdminPort for PermissiveAdmin {
+        async fn may_perform_compliance_erase(
+            &self,
+            _authz: &AuthzContext,
+            _target: &crate::compliance::ComplianceEraseTarget,
+        ) -> Result<bool, AccessError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Ok(true)
+        }
+
+        async fn may_perform_operator_maintenance(
+            &self,
+            _authz: &AuthzContext,
+        ) -> Result<bool, AccessError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Ok(true)
+        }
+    }
 
     /// `ComplianceErasePort` whose erase verbs return a fixed outcome and whose
     /// `record_compliance_outcome` succeeds (so the refused audit path can
@@ -778,6 +814,28 @@ mod purge_tests {
         let drop_proof = drop_proof.map(|d| d as Arc<dyn OwnerDropProofPort>);
         let storage = StoragePorts::rejecting_with_compliance_erase(erase, drop_proof);
         Engine::compose_or_panic_for_tests(storage, |_| {}).with_cited_object_erase(purge)
+    }
+
+    #[tokio::test]
+    async fn raw_delegated_maintenance_is_denied_before_admin_or_storage() {
+        let admin = Arc::new(PermissiveAdmin::default());
+        let storage = StoragePorts::rejecting_with_compliance_admin(admin.clone());
+        let engine = Engine::compose_or_panic_for_tests(storage, |_| {});
+        let subject = UserId::new(uuid::Uuid::now_v7());
+        let owner = OwnerRef::Group(GroupId::new(uuid::Uuid::now_v7()));
+        let raw = AuthzContext::for_subject_with_role(
+            subject,
+            [(owner, crate::Role::admin())],
+            AuthPath::Delegated,
+        );
+
+        let error = engine
+            .sweep_orphan_embedding_rows(&raw)
+            .await
+            .expect_err("raw delegated authority must not reach maintenance ports");
+
+        assert_eq!(error.code, crate::ErrorCode::Forbidden);
+        assert_eq!(admin.calls.load(Ordering::SeqCst), 0);
     }
 
     #[tokio::test]

@@ -270,7 +270,7 @@ impl FlavorBundle for BlobProbeApp {
                             [(owner, Role::admin())],
                             AuthPath::System,
                         );
-                        match service.0.read_url(&authz, owner, Uuid::now_v7()).await {
+                        match service.read_url(&authz, owner, Uuid::now_v7()).await {
                             Ok(_) => "unexpected presigned URL for a missing blob".to_string(),
                             Err(err) => err.to_string(),
                         }

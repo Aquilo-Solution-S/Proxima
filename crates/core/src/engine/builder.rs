@@ -5,7 +5,9 @@ use tokio::sync::RwLock;
 
 use super::{EmbeddingClientReloader, Engine, EngineMcpListener};
 use crate::FlavorRegistryError;
-use crate::authz::{SystemAuthority, SystemAuthorityBinding};
+use crate::authz::{
+    DelegationRuntimeAuthority, DelegationRuntimeBinding, SystemAuthority, SystemAuthorityBinding,
+};
 use crate::llm::{AnthropicClient, EmbeddingClient};
 use crate::storage_ports::{CitedObjectErasePort, EngineStoragePorts, StoragePorts};
 use crate::verbs::schema::FlavorRegistryFrozen;
@@ -18,6 +20,7 @@ impl Engine {
         Self {
             registry,
             system_authority_binding: SystemAuthorityBinding::fresh(),
+            delegation_runtime_binding: DelegationRuntimeBinding::fresh(),
             storage: EngineStoragePorts::from(StoragePorts::rejecting()),
             deployment_tool_scope: crate::authz::ToolScope::All,
             anthropic: None,
@@ -37,6 +40,17 @@ impl Engine {
     pub fn into_system_authority(self) -> (Self, SystemAuthority) {
         let authority = SystemAuthority::new(self.system_authority_binding.clone());
         (self, authority)
+    }
+
+    /// Split out both boot-only runtime witnesses while the caller still owns
+    /// the Engine. The delegation witness has no accessor and is withheld
+    /// from tool/worker contexts after composing the one bound service set.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn into_runtime_authorities(self) -> (Self, SystemAuthority, DelegationRuntimeAuthority) {
+        let system = SystemAuthority::new(self.system_authority_binding.clone());
+        let delegation = DelegationRuntimeAuthority::new(self.delegation_runtime_binding.clone());
+        (self, system, delegation)
     }
 
     /// Test-only infallible composite assembly.

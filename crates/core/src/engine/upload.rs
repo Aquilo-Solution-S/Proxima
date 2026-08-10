@@ -27,13 +27,13 @@ use uuid::Uuid;
 use super::Engine;
 use super::errors::map_write_storage_error;
 use crate::access::Relation;
-use crate::authz::AuthzContext;
+use crate::authz::EngineAuthority;
 use crate::citations::{
     UPLOADED_BLOB_SCHEMA_ID, UPLOADED_BLOB_WHOLE_SCHEMA_ID, UploadedBlobPayload,
     UploadedBlobWholeV1,
 };
 use crate::error::ProtocolError;
-use crate::storage_ports::{CitedBlobPort, CitedBlobUploadCompleted};
+use crate::storage_ports::{CitedBlobService, CitedBlobUploadCompleted};
 use crate::verbs::fact_ingest::{
     FactWriteCommand, InlineCitationMappingDraft, InlineCitedObjectDraft,
 };
@@ -98,19 +98,23 @@ impl Engine {
     /// `InvalidArgument` when the Fact write is rejected; and `Internal`
     /// when the resolved write owner is not the owner the artefact was
     /// stored under.
-    pub async fn complete_upload_as_fact(
+    pub async fn complete_upload_as_fact<A>(
         &self,
-        blobs: &dyn CitedBlobPort,
-        authz: &AuthzContext,
+        blobs: &CitedBlobService,
+        authority: &A,
         owner: OwnerRef,
         upload_id: &str,
         extensions: &[SidecarPayload],
-    ) -> Result<UploadCompleted, ProtocolError> {
+    ) -> Result<UploadCompleted, ProtocolError>
+    where
+        A: EngineAuthority + ?Sized,
+    {
+        let _operation = self.operation_authority(authority)?;
         // Staging does the object-store half and stops: bytes verified,
         // moved to their canonical content-addressed key, nothing
         // recorded. Everything below this line is one transaction.
         let staged = blobs
-            .stage_upload(authz, owner, upload_id)
+            .stage_upload(authority, owner, upload_id)
             .await
             .map_err(|err| map_write_storage_error(err, "upload_id", "upload not found"))?;
 
@@ -147,7 +151,7 @@ impl Engine {
         };
         let authorized = self
             .authorize_fact_with_citation(
-                authz,
+                authority,
                 Relation::Editor,
                 draft,
                 cited_object,
@@ -189,7 +193,7 @@ impl Engine {
         // Fact are committed — bookkeeping for the transfer protocol,
         // invisible in the corpus, and repaired by completing again.
         blobs
-            .finish_upload(authz, owner, upload_id, cited_object_id)
+            .finish_upload(authority, owner, upload_id, cited_object_id)
             .await
             .map_err(|err| map_write_storage_error(err, "upload_id", "upload not found"))?;
 

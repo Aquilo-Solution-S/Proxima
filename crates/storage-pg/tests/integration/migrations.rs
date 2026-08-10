@@ -85,6 +85,60 @@ async fn index_exists(pg: &PgStorage, index_name: &str) -> bool {
     .expect("index inventory query should succeed")
 }
 
+async fn trigger_exists(pg: &PgStorage, table: &str, trigger: &str) -> bool {
+    sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS (
+             SELECT 1
+               FROM pg_trigger t
+               JOIN pg_class c ON c.oid = t.tgrelid
+               JOIN pg_namespace n ON n.oid = c.relnamespace
+              WHERE n.nspname = 'proxima_core'
+                AND c.relname = $1
+                AND t.tgname = $2
+         )",
+    )
+    .bind(table)
+    .bind(trigger)
+    .fetch_one(pg.pool_for_tests())
+    .await
+    .expect("trigger inventory query should succeed")
+}
+
+async fn assert_delegated_authority_schema(pg: &PgStorage) {
+    assert!(
+        table_exists(pg, "delegated_authority_grants").await,
+        "v0.0.8 must create the durable delegation grant table"
+    );
+    assert!(enum_type_exists(pg, "access_ceiling").await);
+    assert!(column_exists(pg, "delegated_authority_grants_count").await);
+    for constraint in [
+        "delegated_authority_owner_ref_shape_chk",
+        "delegated_authority_command_length_chk",
+        "delegated_authority_role_ceiling_chk",
+        "delegated_authority_revocation_shape_chk",
+    ] {
+        assert!(
+            check_constraint_exists(pg, "delegated_authority_grants", constraint).await,
+            "delegated-authority migration must install {constraint}"
+        );
+    }
+    for index in [
+        "delegated_authority_owner_idx",
+        "delegated_authority_subject_idx",
+    ] {
+        assert!(index_exists(pg, index).await, "missing index {index}");
+    }
+    assert!(
+        trigger_exists(
+            pg,
+            "delegated_authority_grants",
+            "delegated_authority_grants_revoke_only"
+        )
+        .await,
+        "issued delegation grants must be immutable except for first revocation"
+    );
+}
+
 #[tokio::test]
 async fn migrations_apply_to_fresh_db() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
@@ -147,12 +201,99 @@ async fn migrations_apply_to_fresh_db() {
                 "{index_name} must be dropped by v0.0.6 as prefix-redundant"
             );
         }
+
+        assert_delegated_authority_schema(&pg).await;
         Ok(())
     }
     .await;
 
     let _ = drop_db(&db_name).await;
     result.expect("migrations integration test failed");
+}
+
+#[tokio::test]
+async fn delegated_authority_grants_allow_only_first_revocation_update() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    create_db(&db_name)
+        .await
+        .expect("PG required for delegated-authority migration test");
+    let url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&url).await?;
+        pg.run_migrations().await?;
+        let delegation_id = Uuid::now_v7();
+        let subject = Uuid::now_v7();
+        let owner = Uuid::now_v7();
+        sqlx::query(
+            "INSERT INTO proxima_core.delegated_authority_grants(
+                 delegation_id, subject_user_id, owner_kind, owner_id,
+                 tool_name, action_name, read_ceiling, write_ceiling,
+                 expires_at, auth_epoch, issued_at)
+             VALUES ($1, $2, 'group', $3, 'migration_worker', 'run', 'goal', 'fact',
+                     now() + interval '1 hour', 1, now())",
+        )
+        .bind(delegation_id)
+        .bind(subject)
+        .bind(owner)
+        .execute(pg.pool_for_tests())
+        .await?;
+
+        let mutation = sqlx::query(
+            "UPDATE proxima_core.delegated_authority_grants
+                SET read_ceiling = 'fact'
+              WHERE delegation_id = $1",
+        )
+        .bind(delegation_id)
+        .execute(pg.pool_for_tests())
+        .await
+        .expect_err("an issued role ceiling must be immutable");
+        assert!(mutation.to_string().contains("immutable"));
+
+        sqlx::query(
+            "UPDATE proxima_core.delegated_authority_grants
+                SET revoked_at = now(), revoked_by_user_id = $2
+              WHERE delegation_id = $1",
+        )
+        .bind(delegation_id)
+        .bind(Uuid::now_v7())
+        .execute(pg.pool_for_tests())
+        .await?;
+        let second_revocation = sqlx::query(
+            "UPDATE proxima_core.delegated_authority_grants
+                SET revoked_by_user_id = $2
+              WHERE delegation_id = $1",
+        )
+        .bind(delegation_id)
+        .bind(Uuid::now_v7())
+        .execute(pg.pool_for_tests())
+        .await
+        .expect_err("a revoked grant must stay immutable");
+        assert!(second_revocation.to_string().contains("immutable"));
+
+        let invalid_command = sqlx::query(
+            "INSERT INTO proxima_core.delegated_authority_grants(
+                 delegation_id, subject_user_id, owner_kind, owner_id,
+                 tool_name, action_name, read_ceiling, write_ceiling,
+                 expires_at, auth_epoch, issued_at)
+             VALUES ($1, $2, 'group', $3, 'not/provider-safe', NULL, 'goal', 'fact',
+                     now() + interval '1 hour', 1, now())",
+        )
+        .bind(Uuid::now_v7())
+        .bind(subject)
+        .bind(owner)
+        .execute(pg.pool_for_tests())
+        .await
+        .expect_err("stored command ids must use the canonical provider-safe shape");
+        assert!(
+            invalid_command
+                .to_string()
+                .contains("delegated_authority_tool_name_chk")
+        );
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("delegated-authority grant mutation test failed");
 }
 
 #[tokio::test]

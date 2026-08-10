@@ -63,13 +63,12 @@ attempts DDL.
 Migrations run automatically on first boot when that variable is unset. Check
 the release's schema lane in `MIGRATING.md` before relying on that: a lane
 that rewrites tables holds `ACCESS EXCLUSIVE` for the duration and is not
-online-safe. The v0.0.7 lane is one of those, and it is a single core file —
-`0011_v007.sql`, which sqlx runs in one transaction, so its lock window is the
-whole lane's rather than one step's. Measured 54.7s on a 149k-row corpus,
-taken on the pre-squash form of that file: the right order of magnitude for
-the table rewrites, not a measurement of the file end to end. Boot migrations
-set `lock_timeout = 5s`, so a migration that cannot take the lock fails and
-retries on the next pod rather than queueing behind readers.
+online-safe. The current v0.0.8 lane is core `0016_v008.sql`; versions 12–15
+remain retired. It creates the delegated-grant table and alters the compliance
+audit table. The preceding v0.0.7 lane, `0011_v007.sql`, rewrites three tables
+in one transaction; its measured pre-squash 149k-row lock window was 54.7s.
+Boot migrations set `lock_timeout = 5s`, so a migration that cannot take the
+lock fails and retries on the next pod rather than queueing behind readers.
 
 ## Environment contract
 
@@ -332,9 +331,13 @@ erasure removes the canonical objects as part of compliance erase (see
 [13 §External side effects](13-compliance.md#external-side-effects)).
 
 In-process byte consumers use `CitedBlobReadService::collect_verified` with a
-required non-zero ceiling. The service gates Fact-read before SQL/S3, buffers
-at most that ceiling, and releases bytes only after length+BLAKE3+SHA-256
-verification. Presigned `read_url` remains the unverified external-client lane.
+required non-zero ceiling. Ordinary callers pass `AuthzContext`; queued
+workers redeem `DelegatedPhase` from the runtime's shared
+`DelegatedAuthorityService`. The service gates phase/runtime/expiry and
+Fact-read before SQL/S3, buffers at most that ceiling, and releases bytes only
+after length+BLAKE3+SHA-256 verification. Presigned `read_url` remains the
+unverified external-client lane. Owner reconciliation rejects delegated
+authority.
 
 ## SSE stream revocation
 

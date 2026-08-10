@@ -12,6 +12,7 @@ mod cited_blob_reconcile;
 mod cited_object_erase;
 mod compliance;
 mod cursors;
+mod delegated_authority;
 mod embeddings;
 mod fact;
 mod goals;
@@ -47,6 +48,11 @@ pub use compliance::{
     ComplianceAdminPort, ComplianceErasePort, FactRetentionPort, OwnerDropProofPort,
 };
 pub use cursors::SourceCursorPort;
+pub use delegated_authority::{
+    DelegatedAuthorityError, DelegatedAuthorityService, DelegatedCommand, DelegationGrant,
+    DelegationGrantStorage, DelegationId, DelegationIssued, DelegationMutationPermit,
+    DelegationRevocation, DelegationStorePort,
+};
 pub use embeddings::{
     EmbeddingAnnObservability, EmbeddingJobBacklog, EmbeddingJobPort, EmbeddingJobStatusCounts,
     EmbeddingMaintenancePort, EmbeddingOrphanCounts, EmbeddingOrphanSweepOutcome,

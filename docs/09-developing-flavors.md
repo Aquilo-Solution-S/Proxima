@@ -653,26 +653,28 @@ worker never takes the host down — its join error is logged at shutdown. The s
 
 `ctx.service::<CitedBlobService>()` and
 `ctx.service::<CitedBlobReadService>()` resolve disjoint capabilities over
-the same host-wired backend as `core_upload`. Both are absent unless the host configured S3 (see
-[10-configuration.md](10-configuration.md) §Large Artefact S3), so a worker
-that needs one should fail its job typed rather than no-op into a silently
-idle loop. Unlike an MCP tool, a worker has no request to inherit authority
-from: every port method takes an `AuthzContext` and an `OwnerRef` that the
-worker supplies per job, normally from the job row that its tool wrote when
-the upload landed. `AuthzContext::single_owner` covers personal owners only —
-it returns a denied context for a group owner, where
-`AuthzContext::for_subject_with_role` is the right mint. `read_url` answers a
-presigned URL. A worker that consumes trusted bytes uses
-`CitedBlobReadPort::collect_verified(authz, owner, id, max_bytes)` instead:
-`max_bytes` is a required `NonZeroU64`, and no bytes return until stored length,
-BLAKE3, and SHA-256 all match. Neither outcome exposes bucket/object key.
+the same host-wired backend as `core_upload`. Both are absent unless the host
+configured S3 (see [10-configuration.md](10-configuration.md) §Large
+Artefact S3), so a worker that needs one should fail its job typed rather than
+no-op into a silently idle loop.
+
+A queued delegated worker persists only `DelegationId`, resolves
+`ctx.service::<DelegatedAuthorityService>()`, and redeems `DelegatedPhase` at
+job claim and at each subsequent phase boundary. It passes `&DelegatedPhase` and the exact
+`OwnerRef` to the explicitly delegated-capable Engine/blob service methods;
+it never reconstructs a raw delegated `AuthzContext`. Ordinary authenticated
+jobs continue to pass `&AuthzContext`. `CitedBlobService::read_url` answers a
+presigned URL. `CitedBlobReadService::collect_verified` additionally requires
+a `NonZeroU64` ceiling, and no bytes return until stored length, BLAKE3, and
+SHA-256 all match. Neither outcome exposes bucket/object key. Owner
+reconciliation is not delegated-capable.
 
 To unit-test a `spawn_workers` implementation without booting the
 runtime, build the context with
 `FlavorWorkerContext::new_for_tests(engine, cancel)` (available under
 `cfg(test)`, the `testkit` feature, or debug builds). Attach the exact
 test service set with
-`.with_services(FlavorServices::with(CitedBlobService(Arc::new(MyFake))))`.
+`.with_services(FlavorServices::with(CitedBlobService::new(Arc::new(MyFake))))`.
 
 ## Migrations
 

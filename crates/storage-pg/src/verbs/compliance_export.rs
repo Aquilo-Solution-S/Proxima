@@ -29,6 +29,8 @@ pub async fn export_owner_bundle(
     let citations = owner_rows(pool, owner, OwnerRowsTable::Citations).await?;
     let cited_objects = owner_rows(pool, owner, OwnerRowsTable::CitedObjects).await?;
     let source_cursors = owner_rows(pool, owner, OwnerRowsTable::SourceCursors).await?;
+    let delegated_authority_grants =
+        owner_rows(pool, owner, OwnerRowsTable::DelegatedAuthorityGrants).await?;
     let compliance_audit_rows = audit_rows(pool, owner).await?;
     let sidecars = export_sidecars(
         pool,
@@ -52,6 +54,7 @@ pub async fn export_owner_bundle(
         citations: citations.len(),
         cited_objects: cited_objects.len(),
         source_cursors: source_cursors.len(),
+        delegated_authority_grants: delegated_authority_grants.len(),
         sidecar_rows: sidecars.iter().map(|sidecar| sidecar.rows.len()).sum(),
         compliance_audit_rows: compliance_audit_rows.len(),
     };
@@ -73,6 +76,7 @@ pub async fn export_owner_bundle(
         citations,
         cited_objects,
         source_cursors,
+        delegated_authority_grants,
         sidecars,
         compliance_audit_rows,
     })
@@ -96,6 +100,7 @@ enum OwnerRowsTable {
     Citations,
     CitedObjects,
     SourceCursors,
+    DelegatedAuthorityGrants,
 }
 
 async fn export_sidecars(
@@ -217,6 +222,14 @@ async fn owner_rows(
             .fetch_all(pool)
             .await
             .map_err(map_err),
+        OwnerRowsTable::DelegatedAuthorityGrants => {
+            sqlx::query_scalar::<_, Value>(DELEGATED_AUTHORITY_GRANT_ROWS_SQL)
+                .bind(owner_kind)
+                .bind(owner_id)
+                .fetch_all(pool)
+                .await
+                .map_err(map_err)
+        }
     }
 }
 
@@ -356,3 +369,27 @@ SELECT to_jsonb(sc)
  WHERE sc.owner_kind = $1
    AND sc.owner_id IS NOT DISTINCT FROM $2
  ORDER BY sc.source";
+
+// Keep this an explicit field allowlist: the durable grant table is an
+// unsupported persistence detail, while the compliance bundle is a supported
+// serialized contract. A future storage-only column must not leak into export
+// merely because the table changed.
+const DELEGATED_AUTHORITY_GRANT_ROWS_SQL: &str = "
+SELECT jsonb_build_object(
+           'subject_user_id', dag.subject_user_id,
+           'owner_kind', dag.owner_kind,
+           'owner_id', dag.owner_id,
+           'tool_name', dag.tool_name,
+           'action_name', dag.action_name,
+           'read_ceiling', dag.read_ceiling,
+           'write_ceiling', dag.write_ceiling,
+           'expires_at', dag.expires_at,
+           'auth_epoch', dag.auth_epoch,
+           'issued_at', dag.issued_at,
+           'revoked_at', dag.revoked_at,
+           'revoked_by_user_id', dag.revoked_by_user_id
+       )
+  FROM proxima_core.delegated_authority_grants dag
+ WHERE dag.owner_kind = $1
+   AND dag.owner_id IS NOT DISTINCT FROM $2
+ ORDER BY dag.issued_at, dag.delegation_id";

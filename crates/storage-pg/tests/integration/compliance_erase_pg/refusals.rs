@@ -28,6 +28,7 @@ fn compliance_outcome_counts_are_content_free() {
         change_events: 12,
         redacted_edge_targets: 13,
         suppressed_keys: 14,
+        delegated_authority_grants: 16,
     };
     let outcome = ComplianceEraseOutcome::Completed {
         operation_id: Uuid::now_v7(),

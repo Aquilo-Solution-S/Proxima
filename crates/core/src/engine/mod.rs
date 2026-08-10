@@ -28,9 +28,10 @@ use tokio::sync::RwLock;
 use tokio::task::JoinHandle;
 
 use crate::Owner;
+use crate::authz::{EngineAuthority, EngineOperationAuthority, context_for_engine_operation};
 use crate::error::ProtocolError;
 use crate::llm::{AnthropicClient, EmbeddingClient};
-use crate::storage_ports::{CitedObjectErasePort, EngineStoragePorts};
+use crate::storage_ports::{CitedObjectErasePort, EngineStoragePorts, OwnerWritePermit};
 use crate::verbs::schema::FlavorRegistryFrozen;
 
 pub use access_admin::GroupMemberPage;
@@ -56,6 +57,7 @@ pub use upload::UploadCompleted;
 pub struct Engine {
     registry: FlavorRegistryFrozen,
     system_authority_binding: crate::authz::SystemAuthorityBinding,
+    delegation_runtime_binding: crate::authz::DelegationRuntimeBinding,
     storage: EngineStoragePorts,
     deployment_tool_scope: crate::authz::ToolScope,
     anthropic: Option<Arc<dyn AnthropicClient>>,
@@ -90,6 +92,25 @@ pub struct EngineHandle {
 }
 
 impl Engine {
+    pub(in crate::engine) fn operation_authority<'a, A>(
+        &self,
+        authority: &'a A,
+    ) -> Result<EngineOperationAuthority<'a>, ProtocolError>
+    where
+        A: EngineAuthority + ?Sized,
+    {
+        let operation = context_for_engine_operation(authority)?;
+        operation.validate_runtime_binding(Some(&self.delegation_runtime_binding))?;
+        Ok(operation)
+    }
+
+    pub(in crate::engine) fn validate_write_permit(
+        &self,
+        permit: &OwnerWritePermit,
+    ) -> Result<(), ProtocolError> {
+        permit.validate_for_engine(&self.delegation_runtime_binding)
+    }
+
     /// Storage handle, restricted to the engine module so the MCP tool layer
     /// cannot reach storage directly — every owner-scoped operation must go
     /// through an engine verb that runs the authz pipeline. Sealing this is what
