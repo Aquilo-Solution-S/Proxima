@@ -338,7 +338,7 @@ dialect, so the newer floor costs nothing in schema fidelity.
 | path per dispatcher action | `McpToolDescriptor.action_arg_specs` |
 | path per resource | `CoreResourceMeta.uri_template` |
 | `post` / `query` operations | `is_read_only()` / `action_is_read_only()` |
-| `operationId` | `{tool}` or `{tool}__{action}`, suffixed per method |
+| `operationId` | structurally tagged `tool` / `action` / `resource` target with byte-length-prefixed name components and an explicit method tag |
 | `summary` / `description` | `McpToolDescriptor.description`; substrate action description from `CoreActionMeta`, flavor action description from `x-proxima-actions.<action>.description` |
 | request schema | `args_schema`, narrowed per action |
 | success response schema | `output_schema`, derived from the tool's Rust `Output` type |
@@ -348,6 +348,13 @@ dialect, so the newer floor costs nothing in schema fidelity.
 The document is generated per caller and reflects that caller's
 `ToolScope`, exactly as `tools/list` does. It is therefore
 token-specific and served `Cache-Control: private, no-store`.
+
+Embedding hosts and offline conformance tests call
+`proxima::host::build_openapi_document(registry, public_url)`. It emits the
+complete frozen registry plus all core resources. The served route applies its
+caller-scoped authorization context to the same generator. The facade owns
+resource enumeration, so consumers never depend on `proxima-mcp-server`'s
+descriptor-level generator or transport auth types.
 
 `/v1/resources` is generated from `CoreResourceMeta` alone: flavors cannot
 declare resources, which is deliberate rather than a gap — see

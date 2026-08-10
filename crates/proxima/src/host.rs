@@ -142,6 +142,22 @@ pub use proxima_storage_pg::PgOwnerAccessResolver;
 /// [`RunningProxima::cancel`].
 pub use tokio_util::sync::CancellationToken;
 
+/// Build the complete REST `OpenAPI` document from a frozen registry.
+///
+/// This offline projection contains every registered tool and core resource.
+/// The served `/v1/openapi.json` route uses the same generator with its
+/// caller-scoped authorization context. Core resources are included
+/// automatically; callers never assemble transport-internal descriptor
+/// slices or depend on `proxima-mcp-server` directly.
+#[cfg(feature = "rest")]
+#[must_use]
+pub fn build_openapi_document(
+    registry: &FlavorRegistryFrozen,
+    public_url: Option<&str>,
+) -> serde_json::Value {
+    proxima_mcp_server::rest::openapi::document_from_registry(registry, public_url, None)
+}
+
 /// Derive an agent-safe MCP tool palette from the frozen registry, excluding
 /// every id in `exclude`. Action-scoped tools expand to `tool:action`
 /// granularity (Proxima's scope gate authorizes them at that granularity),
