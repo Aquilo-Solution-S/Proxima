@@ -741,8 +741,8 @@ fn format_goal_write_output(ctx: &McpToolCtx, outcome: &GoalWriteOutcome) -> Goa
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mcp::{McpAuthorContext, McpToolExtensions};
-    use crate::{AuthPath, AuthzContext, FlavorRegistry, OwnerRef, UserId};
+    use crate::mcp::McpAuthorContext;
+    use crate::{AuthPath, AuthzContext, FlavorRegistry, FlavorServices, OwnerRef, UserId};
     use std::sync::Arc;
 
     fn test_ctx() -> McpToolCtx {
@@ -758,7 +758,7 @@ mod tests {
                 caller_self_perspective: None,
             },
             caller_self_perspective: None,
-            extensions: McpToolExtensions::default(),
+            services: FlavorServices::default(),
             engine: None,
         }
     }

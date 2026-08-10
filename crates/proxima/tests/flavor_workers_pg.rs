@@ -8,8 +8,8 @@ use std::sync::{Arc, OnceLock};
 
 use async_trait::async_trait;
 use proxima::flavor::{
-    FlavorBundle, FlavorRegistry, FlavorRegistryError, FlavorWorker, FlavorWorkerContext,
-    NamedMigrator,
+    CitedBlobService, FlavorBundle, FlavorRegistry, FlavorRegistryError, FlavorWorker,
+    FlavorWorkerContext, NamedMigrator,
 };
 use proxima::{AppInfo, FlavorApp, Proxima, ProximaError, ToolScope, company_owner};
 use proxima_blob_s3::S3RuntimeConfig;
@@ -28,8 +28,7 @@ static TICKS: AtomicUsize = AtomicUsize::new(0);
 /// only a joined worker has set it by the time `shutdown()` returns.
 static TAIL_DONE: AtomicBool = AtomicBool::new(false);
 /// Whether the context carried a cited-blob service. This app boots
-/// without `.s3(..)`, so it must stay false — the field is `Option` for
-/// a reason and a host that configured no S3 must hand over nothing.
+/// without `.s3(..)`, so a host that configured no S3 must hand over nothing.
 static COUNTING_HAS_BLOBS: AtomicBool = AtomicBool::new(false);
 
 struct CountingWorkerApp;
@@ -44,7 +43,10 @@ impl FlavorBundle for CountingWorkerApp {
     }
 
     fn spawn_workers(ctx: &FlavorWorkerContext) -> Vec<FlavorWorker> {
-        COUNTING_HAS_BLOBS.store(ctx.blobs.is_some(), Ordering::SeqCst);
+        COUNTING_HAS_BLOBS.store(
+            ctx.service::<CitedBlobService>().is_some(),
+            Ordering::SeqCst,
+        );
         let cancel = ctx.cancel.clone();
         vec![FlavorWorker {
             name: "counting-worker",
@@ -252,7 +254,7 @@ impl FlavorBundle for BlobProbeApp {
 
     fn spawn_workers(ctx: &FlavorWorkerContext) -> Vec<FlavorWorker> {
         let cancel = ctx.cancel.clone();
-        let blobs = ctx.blobs.clone();
+        let blobs = ctx.service::<CitedBlobService>();
         vec![FlavorWorker {
             name: "blob-probe",
             handle: tokio::spawn(async move {

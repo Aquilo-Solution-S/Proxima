@@ -1,9 +1,9 @@
 use std::sync::Arc;
 
-use proxima_core::mcp::McpToolExtensions;
 use proxima_core::{
-    AuthzContext, Engine, FlavorRegistryFrozen, McpAuthorContext, McpToolDescriptor,
-    McpToolErrorKind, Owner, ToolScope, provider_safe_tool_name, tool_name_matches,
+    AuthzContext, Engine, FlavorRegistryFrozen, FlavorServices, McpAuthorContext,
+    McpToolDescriptor, McpToolErrorKind, Owner, ToolScope, provider_safe_tool_name,
+    tool_name_matches,
 };
 use proxima_mcp_server::{McpAuthContext, McpToolHost, ToolInvocationError};
 
@@ -90,10 +90,10 @@ impl CoreMcpTools {
     pub fn new(
         registry: Arc<FlavorRegistryFrozen>,
         engine: Arc<Engine>,
-        extensions: McpToolExtensions,
+        services: FlavorServices,
     ) -> Self {
         Self {
-            host: McpToolHost::from_parts(registry, extensions).with_engine(engine),
+            host: McpToolHost::from_parts(registry, services).with_engine(engine),
         }
     }
 

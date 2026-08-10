@@ -7,10 +7,9 @@ use axum::body::{Body, to_bytes};
 use axum::http::{Method, Request, StatusCode, header};
 use axum::routing::get;
 use proxima::{Authz, layered_router};
-use proxima_core::mcp::McpToolExtensions;
 use proxima_core::{
-    AuthError, AuthPath, Authenticator, AuthzContext, Credentials, FlavorRegistry, Owner, OwnerRef,
-    UserId,
+    AuthError, AuthPath, Authenticator, AuthzContext, Credentials, FlavorRegistry, FlavorServices,
+    Owner, OwnerRef, UserId,
 };
 use proxima_mcp_server::{
     HostAllowlist, McpEdgeAuth, McpToolHost, default_allowlist, owner_key, streamable_http_service,
@@ -67,7 +66,7 @@ fn router(auth: Arc<McpEdgeAuth>, owner: Owner) -> Router {
 fn router_with_hosts(auth: Arc<McpEdgeAuth>, _owner: Owner, allowed_hosts: &[String]) -> Router {
     let host = McpToolHost::from_parts(
         Arc::new(FlavorRegistry::new().freeze_or_panic_for_tests()),
-        McpToolExtensions::default(),
+        FlavorServices::default(),
     );
     let cancel = CancellationToken::new();
     let allowlist = default_allowlist();

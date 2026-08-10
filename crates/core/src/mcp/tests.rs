@@ -9,7 +9,9 @@ mod manifest_tests {
     use super::*;
     use crate::protocol::tool as protocol_tool;
     use crate::protocol::{action as protocol_action, resource as protocol_resource};
-    use crate::{AuthPath, AuthzContext, FlavorRegistry, GoalId, MemoryId, OwnerRef, UserId};
+    use crate::{
+        AuthPath, AuthzContext, FlavorRegistry, FlavorServices, GoalId, MemoryId, OwnerRef, UserId,
+    };
 
     #[test]
     fn provider_safe_tool_name_replaces_runner_invalid_separators() {
@@ -299,7 +301,7 @@ mod manifest_tests {
                 caller_self_perspective: None,
             },
             caller_self_perspective: None,
-            extensions: McpToolExtensions::default(),
+            services: FlavorServices::default(),
             engine: None,
         }
     }
@@ -315,7 +317,7 @@ mod manifest_tests {
 mod ctx_engine_tests {
     use super::*;
     use crate::{AuthPath, AuthzContext};
-    use crate::{Engine, FlavorRegistry, OwnerRef, UserId};
+    use crate::{Engine, FlavorRegistry, FlavorServices, OwnerRef, UserId};
     use std::sync::Arc;
 
     #[tokio::test]
@@ -332,7 +334,7 @@ mod ctx_engine_tests {
                 caller_self_perspective: None,
             },
             caller_self_perspective: None,
-            extensions: McpToolExtensions::default(),
+            services: FlavorServices::default(),
             engine: None,
         };
         assert!(ctx.engine().is_none());
@@ -355,7 +357,7 @@ mod ctx_engine_tests {
                 caller_self_perspective: None,
             },
             caller_self_perspective: None,
-            extensions: McpToolExtensions::default(),
+            services: FlavorServices::default(),
             engine: Some(engine.clone()),
         };
         assert!(ctx.engine().is_some());

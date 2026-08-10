@@ -160,9 +160,9 @@ pub fn scope_permits_action(scope: &crate::authz::ToolScope, tool: &str, action:
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mcp::{McpAuthorContext, McpToolExtensions};
+    use crate::mcp::McpAuthorContext;
     use crate::protocol::{action as protocol_action, tool as protocol_tool};
-    use crate::{AuthPath, AuthzContext, FlavorRegistry, OwnerRef, UserId};
+    use crate::{AuthPath, AuthzContext, FlavorRegistry, FlavorServices, OwnerRef, UserId};
     use std::sync::Arc;
 
     #[test]
@@ -193,7 +193,7 @@ mod tests {
                 caller_self_perspective: None,
             },
             caller_self_perspective: None,
-            extensions: McpToolExtensions::default(),
+            services: FlavorServices::default(),
             engine: None,
         };
 

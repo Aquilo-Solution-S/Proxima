@@ -14,12 +14,12 @@ use std::sync::Arc;
 use futures::future::BoxFuture;
 use proxima_core::mcp::{
     McpActionArgSpec, McpAuthorContext, McpTool, McpToolAnnotations, McpToolCtx, McpToolError,
-    McpToolExtensions, McpToolOrigin, Next, RequestBehavior, ScopeGateBehavior, TerminalDispatch,
-    ToolCall, core_action_meta,
+    McpToolOrigin, Next, RequestBehavior, ScopeGateBehavior, TerminalDispatch, ToolCall,
+    core_action_meta,
 };
 use proxima_core::{
-    AuthPath, AuthzContext, FlavorRegistry, FlavorRegistryFrozen, GroupId, OwnerRef, Tool, ToolCtx,
-    ToolError, ToolScope, UserId, access::Role, proxima_flavor,
+    AuthPath, AuthzContext, FlavorRegistry, FlavorRegistryFrozen, FlavorServices, GroupId,
+    OwnerRef, Tool, ToolCtx, ToolError, ToolScope, UserId, access::Role, proxima_flavor,
 };
 
 /// `CARGO_PKG_NAME` is `proxima-core` inside core's own `tests/`, so the
@@ -104,7 +104,7 @@ fn ctx(registry: &Arc<FlavorRegistryFrozen>, scope: ToolScope) -> McpToolCtx {
             caller_self_perspective: None,
         },
         caller_self_perspective: None,
-        extensions: McpToolExtensions::default(),
+        services: FlavorServices::default(),
         engine: None,
     }
 }
@@ -127,7 +127,7 @@ fn viewer_ctx(registry: &Arc<FlavorRegistryFrozen>, scope: ToolScope) -> McpTool
             caller_self_perspective: None,
         },
         caller_self_perspective: None,
-        extensions: McpToolExtensions::default(),
+        services: FlavorServices::default(),
         engine: None,
     }
 }

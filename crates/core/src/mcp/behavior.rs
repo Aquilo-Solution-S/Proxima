@@ -185,7 +185,7 @@ mod tests {
     use super::*;
     use crate::protocol::tool as protocol_tool;
     use crate::{
-        AuthPath, AuthzContext, FlavorRegistry, McpAuthorContext, McpToolExtensions, OwnerRef,
+        AuthPath, AuthzContext, FlavorRegistry, FlavorServices, McpAuthorContext, OwnerRef,
         ToolScope, UserId,
     };
 
@@ -413,7 +413,7 @@ mod tests {
                 caller_self_perspective: None,
             },
             caller_self_perspective: None,
-            extensions: McpToolExtensions::default(),
+            services: FlavorServices::default(),
             engine: None,
         }
     }
@@ -423,10 +423,10 @@ mod tests {
 mod owner_role_tests {
     use super::ScopeGateBehavior;
     use crate::access::Role;
-    use crate::mcp::{
-        McpAuthorContext, McpTool, McpToolAnnotations, McpToolCtx, McpToolError, McpToolExtensions,
+    use crate::mcp::{McpAuthorContext, McpTool, McpToolAnnotations, McpToolCtx, McpToolError};
+    use crate::{
+        AuthPath, AuthzContext, FlavorRegistry, FlavorServices, GroupId, OwnerRef, UserId,
     };
-    use crate::{AuthPath, AuthzContext, FlavorRegistry, GroupId, OwnerRef, UserId};
     use futures::future::BoxFuture;
     use std::sync::Arc;
 
@@ -488,7 +488,7 @@ mod owner_role_tests {
                 caller_self_perspective: None,
             },
             caller_self_perspective: None,
-            extensions: McpToolExtensions::default(),
+            services: FlavorServices::default(),
             engine: None,
         }
     }

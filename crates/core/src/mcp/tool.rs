@@ -354,7 +354,7 @@ where
     ) -> BoxFuture<'static, Result<Self::Output, McpToolError>> {
         let presentation = McpToolPresentation::from_ctx(&ctx);
         let caller = McpToolCaller::from_ctx(&ctx);
-        let mut services = ctx.extensions.into_tool_services();
+        let mut services = ctx.services.into_tool_services();
         services.insert(presentation);
         services.insert(caller);
         let tool_ctx = ToolCtx::from_parts(

@@ -16,13 +16,13 @@ use proxima_code::{
     CodeChunkV1, CodeFlavorStore, CommitV1, ExecutionRequestV1, FileRevisionV1, FileState,
 };
 use proxima_core::engine::Engine;
-use proxima_core::mcp::{McpAuthorContext, McpTool, McpToolCtx, McpToolError, McpToolExtensions};
+use proxima_core::mcp::{McpAuthorContext, McpTool, McpToolCtx, McpToolError};
 use proxima_core::verbs::fact_ingest::{
     Citation, CitationMappingHint, CitedObjectHint, FactReceiptDraft, FactWriteCommand,
 };
 use proxima_core::{
     AbstractionPayload, AuthPath, AuthzContext, FactPayload, FlavorRegistry, FlavorRegistryFrozen,
-    MemoryId, Owner, SchemaId, SchemaVersion, SourceBatchId, SourceId,
+    FlavorServices, MemoryId, Owner, SchemaId, SchemaVersion, SourceBatchId, SourceId,
 };
 use proxima_storage_pg::PgStorage;
 use serde_json::json;
@@ -1989,7 +1989,7 @@ fn ctx(pg: PgStorage, owner: Owner, registry: Arc<FlavorRegistryFrozen>) -> McpT
             caller_self_perspective: None,
         },
         caller_self_perspective: None,
-        extensions: McpToolExtensions::with(store),
+        services: FlavorServices::with(store),
         engine: Some(engine),
     }
 }
@@ -2016,7 +2016,7 @@ fn shell_ctx(
             caller_self_perspective: Some(caller_self_perspective),
         },
         caller_self_perspective: Some(caller_self_perspective),
-        extensions: McpToolExtensions::with(store),
+        services: FlavorServices::with(store),
         engine: Some(engine),
     }
 }
@@ -2273,7 +2273,7 @@ fn embedding_ctx(pg: PgStorage, owner: Owner, registry: Arc<FlavorRegistryFrozen
             caller_self_perspective: None,
         },
         caller_self_perspective: None,
-        extensions: McpToolExtensions::with(store),
+        services: FlavorServices::with(store),
         engine: Some(engine),
     }
 }

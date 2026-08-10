@@ -35,9 +35,9 @@ pub trait FlavorBundle {
     ///   core embedding worker.
     /// - A panicking worker never takes the host down: its join error is
     ///   logged at shutdown, not propagated.
-    /// - `ctx.blobs` is the host-wired cited-blob service, `Some` only
-    ///   when the host configured S3. A worker that needs it MUST fail
-    ///   its job typed when it is absent — a `let Some(..) else { return }`
+    /// - `ctx.service::<CitedBlobService>()` resolves the same host-wired
+    ///   service tools receive, and is `None` unless S3 is configured. A
+    ///   worker that needs it MUST fail its job typed when it is absent — a
     ///   no-op turns a misconfigured host into a silently idle one.
     ///
     /// To unit-test an implementation without booting the serving
@@ -142,7 +142,9 @@ mod tests {
         CitedBlobHeld, CitedBlobPort, CitedBlobReadUrl, CitedBlobService, CitedBlobStaged,
         CitedBlobUploadAborted, CitedBlobUploadPrepared,
     };
-    use proxima_core::{AuthzContext, FlavorRegistry, FlavorRegistryError, OwnerRef, StorageError};
+    use proxima_core::{
+        AuthzContext, FlavorRegistry, FlavorRegistryError, FlavorServices, OwnerRef, StorageError,
+    };
     use proxima_storage_pg::PgSidecarRegistry;
     use sqlx::SqlSafeStr;
     use sqlx::migrate::{Migration, MigrationType, Migrator};
@@ -347,22 +349,29 @@ mod tests {
         }
     }
 
-    /// The context defaults to no blob service, and `with_blobs` is the
-    /// only way to attach one. Doubles as the compile-check that a flavor
-    /// can implement the exported `CitedBlobPort` from `proxima::flavor`
-    /// alone.
-    #[tokio::test]
-    async fn test_context_has_no_blob_service_until_one_is_attached() {
+    /// The context defaults to no services. Attaching a composed set doubles
+    /// as the compile-check that a flavor can implement the exported
+    /// `CitedBlobPort` from `proxima::flavor` alone.
+    #[test]
+    fn test_context_has_no_blob_service_until_one_is_attached() {
         let ctx = FlavorWorkerContext::new_for_tests(
             std::sync::Arc::new(proxima_core::Engine::new(
                 FlavorRegistry::new().freeze_or_panic_for_tests(),
             )),
             tokio_util::sync::CancellationToken::new(),
         );
-        assert!(ctx.blobs.is_none(), "a bare test context wires no S3");
+        assert!(
+            ctx.service::<CitedBlobService>().is_none(),
+            "a bare test context wires no S3"
+        );
 
-        let ctx = ctx.with_blobs(CitedBlobService(std::sync::Arc::new(StubBlobPort)));
-        assert!(ctx.blobs.is_some(), "with_blobs attaches the service");
+        let ctx = ctx.with_services(FlavorServices::with(CitedBlobService(std::sync::Arc::new(
+            StubBlobPort,
+        ))));
+        assert!(
+            ctx.service::<CitedBlobService>().is_some(),
+            "with_services attaches the service"
+        );
     }
 
     #[tokio::test]

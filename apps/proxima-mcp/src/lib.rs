@@ -15,9 +15,9 @@ use std::sync::Arc;
 
 use proxima::flavor::FlavorBundle;
 use proxima::{
-    AppContext, AppInfo, FlavorApp, Proxima, ProximaError, RunningProxima, RuntimeBuilder,
+    AppContext, AppInfo, FlavorApp, FlavorServiceError, FlavorServices, Proxima, ProximaError,
+    RunningProxima, RuntimeBuilder,
 };
-use proxima_core::mcp::McpToolExtensions;
 use proxima_core::protocol::profile as protocol_profile;
 use proxima_core::{
     FlavorRegistry, FlavorRegistryError, OwnerAccessPort, ToolScope, all_core_actions,
@@ -153,19 +153,19 @@ impl FlavorApp for ProximaMcpApp {
         )
     }
 
-    fn mcp_tool_extensions(ctx: &AppContext) -> McpToolExtensions {
+    fn services(ctx: &AppContext) -> Result<FlavorServices, FlavorServiceError> {
         #[cfg(feature = "code")]
         {
-            let mut extensions = McpToolExtensions::default();
-            extensions.insert(proxima_code::CodeFlavorStore::from_backend_pool_for_host(
+            let mut services = FlavorServices::default();
+            services.try_insert(proxima_code::CodeFlavorStore::from_backend_pool_for_host(
                 ctx.clone_pool_for_host(),
-            ));
-            extensions
+            ))?;
+            Ok(services)
         }
         #[cfg(not(feature = "code"))]
         {
             let _ = ctx;
-            McpToolExtensions::default()
+            Ok(FlavorServices::default())
         }
     }
 }

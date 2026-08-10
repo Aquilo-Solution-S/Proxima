@@ -35,11 +35,11 @@ impl McpToolCtx {
     }
 
     #[must_use]
-    pub fn extension<T>(&self) -> Option<Arc<T>>
+    pub fn service<T>(&self) -> Option<Arc<T>>
     where
         T: Send + Sync + 'static,
     {
-        self.extensions.get::<T>()
+        self.services.get::<T>()
     }
 
     #[must_use]

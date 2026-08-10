@@ -276,8 +276,8 @@ mod tests {
         InterpretArgs, InterpretTool, MAX_SUBJECTS, default_confidence, interpretation_memory_id,
         reject_self_subject,
     };
-    use crate::mcp::{McpAuthorContext, McpTool, McpToolCtx, McpToolError, McpToolExtensions};
-    use crate::{AuthPath, AuthzContext, FlavorRegistry, OwnerRef, UserId};
+    use crate::mcp::{McpAuthorContext, McpTool, McpToolCtx, McpToolError};
+    use crate::{AuthPath, AuthzContext, FlavorRegistry, FlavorServices, OwnerRef, UserId};
     use std::sync::Arc;
 
     fn ctx(owner: OwnerRef) -> McpToolCtx {
@@ -292,7 +292,7 @@ mod tests {
                 caller_self_perspective: None,
             },
             caller_self_perspective: None,
-            extensions: McpToolExtensions::default(),
+            services: FlavorServices::default(),
             engine: None,
         }
     }
