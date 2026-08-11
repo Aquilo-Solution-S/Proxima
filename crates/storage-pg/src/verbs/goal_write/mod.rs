@@ -42,9 +42,7 @@ use evidence::{
     outgoing_motivated_by_evidence, validate_evidence_in_owner, validate_operator_goal_evidence,
 };
 use insert::insert_or_replay_goal;
-use lifecycle::{
-    emit_lifecycle_fact, lifecycle_memory_for_goal, lifecycle_outcome, replay_goal_outcome,
-};
+use lifecycle::{LifecycleWrite, lifecycle_memory_for_goal, lifecycle_outcome};
 use prior::{
     DraftFromPayload, child_draft, draft_from_payload, draft_from_stored, load_prior_goal,
     validate_active_head, validate_goal_achievement, validate_goal_transition,

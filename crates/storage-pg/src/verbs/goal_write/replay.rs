@@ -7,13 +7,15 @@ use super::{
 pub(super) struct CreateGoalReplayExpectation<'a> {
     pub(super) goal_id: GoalId,
     pub(super) target_self_perspective_id: MemoryId,
-    pub(super) evidence: &'a [EvidenceTarget],
     pub(super) author_self_perspective_id: Option<MemoryId>,
     pub(super) wake_write: WakeWrite<'a>,
     pub(super) expected_prior: Option<GoalId>,
     pub(super) request_id: &'a str,
 }
 
+/// The create-only half of replay verification: the rows a create writes that
+/// no other Goal verb does. Evidence equality is checked for every verb by
+/// the shared lifecycle tail, so it is deliberately not restated here.
 pub(super) async fn ensure_create_goal_replay_side_effects_match(
     tx: &mut Transaction<'_, Postgres>,
     expected: CreateGoalReplayExpectation<'_>,
@@ -21,9 +23,6 @@ pub(super) async fn ensure_create_goal_replay_side_effects_match(
     if !goal_self_assignment_matches(tx, expected.goal_id, expected.target_self_perspective_id)
         .await?
     {
-        return Err(idempotency_conflict(expected.request_id));
-    }
-    if !goal_evidence_matches(tx, expected.goal_id, expected.evidence).await? {
         return Err(idempotency_conflict(expected.request_id));
     }
     let Some(lifecycle_memory_id) =

@@ -13,10 +13,10 @@ not a reference. Deployment and env vars live in
 
 | You are | Read |
 |---|---|
-| A **v0.0.7 Rust host** | [apply the v0.0.8 schema lane](#the-v008-schema-lane), [compose flavor services once](#compose-flavor-services-once), [redeem durable worker authority](#redeem-durable-worker-authority), [use private blob-service wrappers](#use-private-blob-service-wrappers), [move caller provenance into `ToolCtx`](#move-caller-provenance-into-toolctx), [remove the inert runtime owner-access registration](#remove-the-inert-runtime-owner-access-registration), [remove the dependency-satisfaction seam](#remove-the-dependency-satisfaction-seam), [an empty environment value is an unset one](#an-empty-environment-value-is-an-unset-one), [pass `semantic_weight` only with `mode=hybrid`](#pass-semantic_weight-only-with-modehybrid), [pass the shared Host allowlist](#pass-the-shared-host-allowlist), [apply listener-wide CORS](#apply-listener-wide-cors), then [freeze registries once](#freeze-registries-once) |
+| A **v0.0.7 Rust host** | [apply the v0.0.8 schema lane](#the-v008-schema-lane), [compose flavor services once](#compose-flavor-services-once), [redeem durable worker authority](#redeem-durable-worker-authority), [use private blob-service wrappers](#use-private-blob-service-wrappers), [move caller provenance into `ToolCtx`](#move-caller-provenance-into-toolctx), [remove the inert runtime owner-access registration](#remove-the-inert-runtime-owner-access-registration), [remove the dependency-satisfaction seam](#remove-the-dependency-satisfaction-seam), [an empty environment value is an unset one](#an-empty-environment-value-is-an-unset-one), [pass `semantic_weight` only with `mode=hybrid`](#pass-semantic_weight-only-with-modehybrid), [give each Goal write its own idempotency key](#give-each-goal-write-its-own-idempotency-key), [pass the shared Host allowlist](#pass-the-shared-host-allowlist), [apply listener-wide CORS](#apply-listener-wide-cors), then [freeze registries once](#freeze-registries-once) |
 | An **operator** promoting a deployment | [the v0.0.8 schema lane](#the-v008-schema-lane), [an empty environment value is an unset one](#an-empty-environment-value-is-an-unset-one), then [operator changes](#operator-changes) |
 | Running the **code flavor** | the above, then [re-register and re-index](#re-register-and-re-index-every-code-repository) |
-| An **MCP client / agent** author | [regenerate OpenAPI clients](#regenerate-openapi-clients), then [wire changes](#wire-changes-mcp-clients) |
+| An **MCP client / agent** author | [give each Goal write its own idempotency key](#give-each-goal-write-its-own-idempotency-key), [regenerate OpenAPI clients](#regenerate-openapi-clients), then [wire changes](#wire-changes-mcp-clients) |
 | An **embedding host** driving `Engine` in Rust | [pass `semantic_weight` only with `mode=hybrid`](#pass-semantic_weight-only-with-modehybrid), then [Rust host changes](#rust-host-changes) |
 | A **flavor** author | [compose flavor services once](#compose-flavor-services-once), [move caller provenance into `ToolCtx`](#move-caller-provenance-into-toolctx), [remove the dependency-satisfaction seam](#remove-the-dependency-satisfaction-seam), [freeze registries once](#freeze-registries-once), then [flavor SDK changes](#flavor-sdk-changes) |
 | Booting against a **pre-v0.0.4 database** | [the v0.0.4 reset](#the-v004-reset) first — nothing else applies until it is done |
@@ -354,6 +354,26 @@ request on a deployment with no embedding client degrades to lexical ranking,
 and the weight is now dropped with the semantic component it was weighting
 instead of forwarded. Such a request keeps working and still reports
 `degraded_to_lexical: true`.
+
+## Give each Goal write its own idempotency key
+
+A Goal idempotency key is one namespace per owner: `core_goal` `set`,
+`transition`, `modify`, `mark_achieved` and `decompose` all resolve the same
+`md5(owner_kind:owner_id:request_id)`. A key reused across two of them can
+hand the second verb the first one's row.
+
+Four of the five already refused that — a stored row resting on evidence the
+request never claimed is a conflict, not a replay. `transition` did not check,
+so it could answer with `idempotent_replay: true` and an `edge_count` counted
+from its own empty evidence rather than from the rows the stored row actually
+asserted. It now answers like the rest:
+
+```text
+IdempotencyConflict: request_id already used with different body: <your key>
+```
+
+A key used with one verb is unaffected, which is the intended use. Give each
+call its own key, or omit `idempotency_key` and let the tool generate one.
 
 ## Freeze registries once
 

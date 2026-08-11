@@ -1,14 +1,16 @@
 use proxima_core::storage_ports::GoalWritePort;
 use proxima_core::verbs::goal_write::{
-    GoalAtomicContext, GoalAuthorship, GoalState, IdempotencyKey, TransitionGoalAtomicRequest,
+    GoalAtomicContext, GoalAuthorship, GoalEvidenceRef, GoalState, IdempotencyKey,
+    ModifyGoalAtomicRequest, TransitionGoalAtomicRequest,
 };
 use proxima_core::{FlavorRegistry, OwnerRef, UserId};
 use proxima_storage_pg::PgStorage;
 use uuid::Uuid;
 
 use super::{
-    create_db, create_goal, db_url, drop_db, fresh_draft, goal_context, goal_permit, insert_self,
-    operator_authorship, transition_goal,
+    create_db, create_goal, db_url, drop_db, fresh_draft, goal_context, goal_permit,
+    insert_evidence_abstraction, insert_self, operator_authorship, replacement_payload,
+    transition_goal,
 };
 
 #[tokio::test]
@@ -240,6 +242,84 @@ async fn goal_transition_atom_abandon_and_resume() {
 
     let _ = drop_db(&db_name).await;
     result.expect("goal abandon/resume transition test failed");
+}
+
+#[tokio::test]
+async fn goal_transition_replay_conflicts_on_a_row_resting_on_other_evidence() {
+    // The idempotency key is `md5(owner_kind:owner_id:request_id)` — one
+    // namespace for every goal write — and the body comparison behind a
+    // replay reads the content columns, not `evidence_memory_ids`. So a key
+    // reused across two verbs can hand a transition someone else's row: a
+    // content-preserving modify writes an Active successor resting on
+    // evidence, and a resume of the same prior head under the same key
+    // matches it on every column the body check reads.
+    //
+    // Evidence is part of what a write claimed, so that is a conflict, not a
+    // replay. This is the transition-side twin of
+    // `goal_modify_operator_replay_conflicts_on_changed_evidence`.
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    create_db(&db_name).await.expect("PG required for tests");
+    let url = db_url(&db_name);
+
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&url).await?;
+        pg.run_migrations().await?;
+        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let self_id = insert_self(&pg, &owner).await?;
+        let evidence_id = insert_evidence_abstraction(&pg, &owner).await?;
+        let registry = FlavorRegistry::new().freeze_or_panic_for_tests();
+        let prior = create_goal(
+            &pg,
+            &registry,
+            self_id,
+            fresh_draft(&owner, "req-shared-key-prior".to_string()),
+        )
+        .await?;
+        let permit = goal_permit(&owner).await?;
+
+        // Same title/text/payload as the prior head, so the successor is
+        // indistinguishable from a resume on every content column.
+        let modified = pg
+            .modify_goal_atomic(
+                &ModifyGoalAtomicRequest {
+                    owner,
+                    prior_goal_id: prior.goal_id,
+                    replacement: replacement_payload("Test goal", "Test goal text", b"{}"),
+                    authorship: GoalAuthorship::User,
+                    request_id: IdempotencyKey::new("req-shared-key")
+                        .expect("valid idempotency key"),
+                    context: goal_context(&registry, self_id),
+                    evidence: Some(vec![GoalEvidenceRef::new(evidence_id)]),
+                    wake: None,
+                },
+                &permit,
+            )
+            .await?;
+        assert!(!modified.idempotent_replay);
+
+        let err = transition_goal(
+            &pg,
+            &registry,
+            self_id,
+            owner,
+            prior.goal_id,
+            GoalState::Active,
+            "req-shared-key",
+        )
+        .await
+        .expect_err("a row resting on evidence the transition never claimed is a conflict");
+        assert!(
+            err.to_string()
+                .contains("idempotency_conflict:req-shared-key"),
+            "unexpected {err:?}"
+        );
+
+        Ok(())
+    }
+    .await;
+
+    let _ = drop_db(&db_name).await;
+    result.expect("transition replay evidence conflict test failed");
 }
 
 #[tokio::test]
