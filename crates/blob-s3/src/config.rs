@@ -1,7 +1,7 @@
 use aws_config::BehaviorVersion;
 use aws_sdk_s3::Client;
 use aws_sdk_s3::config::Region;
-use proxima_core::{EndpointUrlError, EndpointUrlPolicy};
+use proxima_core::{EndpointUrlError, EndpointUrlPolicy, env_value};
 
 use crate::BlobError;
 
@@ -50,40 +50,81 @@ pub struct S3RuntimeConfig {
 }
 
 impl S3RuntimeConfig {
-    /// Read S3 runtime configuration from `PROXIMA_S3_*`.
+    /// Read S3 runtime configuration from the process environment.
+    ///
+    /// Thin adapter over [`Self::from_lookup`]: this crate holds the single
+    /// `PROXIMA_S3_*` parser, so an embedding host that injects its own
+    /// environment cannot end up with different answers than a host that uses
+    /// the process environment.
     ///
     /// # Errors
     /// Returns `BlobError::Config` when a required variable is missing
     /// or a typed setting cannot be parsed.
     pub fn from_env() -> Result<Self, BlobError> {
-        let bucket = required_env("PROXIMA_S3_BUCKET")?;
-        let region = required_env("PROXIMA_S3_REGION")?;
-        let endpoint_url = optional_env("PROXIMA_S3_ENDPOINT_URL");
+        Self::from_lookup(&process_env)?
+            .ok_or_else(|| BlobError::Config("missing PROXIMA_S3_BUCKET".to_string()))
+    }
+
+    /// Read S3 runtime configuration from an injected environment.
+    ///
+    /// Returns `Ok(None)` when `PROXIMA_S3_BUCKET` is unset — the S3 lane is
+    /// optional, and a host that configures no bucket is not misconfigured.
+    /// [`Self::from_env`] turns that into an error because its caller has
+    /// already decided S3 is required.
+    ///
+    /// Every value is read through [`proxima_core::env_value`], so a variable
+    /// set to the empty string (or to whitespace) reads as unset rather than
+    /// as a value that fails to parse.
+    ///
+    /// # Errors
+    /// Returns `BlobError::Config` when a variable required alongside the
+    /// bucket is missing, or a typed setting cannot be parsed.
+    pub fn from_lookup(
+        lookup: &impl Fn(&str) -> Option<String>,
+    ) -> Result<Option<Self>, BlobError> {
+        let Some(bucket) = env_value(lookup, "PROXIMA_S3_BUCKET") else {
+            return Ok(None);
+        };
+        let region = env_value(lookup, "PROXIMA_S3_REGION").ok_or_else(|| {
+            BlobError::Config(
+                "missing PROXIMA_S3_REGION (required with PROXIMA_S3_BUCKET)".to_string(),
+            )
+        })?;
+        let endpoint_url = env_value(lookup, "PROXIMA_S3_ENDPOINT_URL");
         if let Some(endpoint_url) = &endpoint_url {
             validate_endpoint_url(endpoint_url)?;
         }
-        Ok(Self {
+        Ok(Some(Self {
             bucket,
             region,
             endpoint_url,
-            force_path_style: parse_bool_env("PROXIMA_S3_FORCE_PATH_STYLE")?,
+            force_path_style: parse_bool_env(lookup, "PROXIMA_S3_FORCE_PATH_STYLE")?,
             upload_ttl_seconds: parse_presign_ttl_env(
+                lookup,
                 "PROXIMA_S3_UPLOAD_TTL_SECONDS",
                 DEFAULT_UPLOAD_TTL_SECONDS,
             )?,
             read_ttl_seconds: parse_presign_ttl_env(
+                lookup,
                 "PROXIMA_S3_READ_TTL_SECONDS",
                 DEFAULT_READ_TTL_SECONDS,
             )?,
-            max_blob_bytes: parse_optional_u64_env("PROXIMA_S3_MAX_BLOB_BYTES")?
-                .or(Some(DEFAULT_MAX_BLOB_BYTES)),
-        })
+            // Left `None` when unset rather than defaulted here: the field's
+            // own contract is that `None` selects the default at store
+            // construction, and `CitedBlobStore::new` applies it for direct
+            // constructors too. Defaulting in the parser as well was the
+            // second of two application points for one value.
+            max_blob_bytes: parse_optional_u64_env(lookup, "PROXIMA_S3_MAX_BLOB_BYTES")?,
+        }))
     }
 
-    /// True when `PROXIMA_S3_BUCKET` is set.
+    /// True when `PROXIMA_S3_BUCKET` is configured.
+    ///
+    /// Uses the same empty-is-unset rule as the parser, so this cannot report
+    /// "configured" for a bucket [`Self::from_env`] then rejects as missing.
     #[must_use]
     pub fn present_in_env() -> bool {
-        std::env::var("PROXIMA_S3_BUCKET").is_ok()
+        env_value(&process_env, "PROXIMA_S3_BUCKET").is_some()
     }
 
     pub(crate) async fn client(&self) -> Result<Client, BlobError> {
@@ -101,23 +142,12 @@ impl S3RuntimeConfig {
     }
 }
 
-fn required_env(key: &str) -> Result<String, BlobError> {
-    std::env::var(key)
-        .map(|value| value.trim().to_string())
-        .ok()
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| BlobError::Config(format!("missing {key}")))
+fn process_env(key: &str) -> Option<String> {
+    std::env::var(key).ok()
 }
 
-fn optional_env(key: &str) -> Option<String> {
-    std::env::var(key)
-        .ok()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-}
-
-fn parse_bool_env(key: &str) -> Result<bool, BlobError> {
-    let Some(value) = optional_env(key) else {
+fn parse_bool_env(lookup: &impl Fn(&str) -> Option<String>, key: &str) -> Result<bool, BlobError> {
+    let Some(value) = env_value(lookup, key) else {
         return Ok(false);
     };
     match value.to_ascii_lowercase().as_str() {
@@ -127,8 +157,12 @@ fn parse_bool_env(key: &str) -> Result<bool, BlobError> {
     }
 }
 
-fn parse_u64_env(key: &str, default: u64) -> Result<u64, BlobError> {
-    let Some(value) = optional_env(key) else {
+fn parse_u64_env(
+    lookup: &impl Fn(&str) -> Option<String>,
+    key: &str,
+    default: u64,
+) -> Result<u64, BlobError> {
+    let Some(value) = env_value(lookup, key) else {
         return Ok(default);
     };
     value
@@ -136,14 +170,21 @@ fn parse_u64_env(key: &str, default: u64) -> Result<u64, BlobError> {
         .map_err(|_| BlobError::Config(format!("invalid integer {key}={value}")))
 }
 
-fn parse_presign_ttl_env(key: &str, default: u64) -> Result<u64, BlobError> {
-    let seconds = parse_u64_env(key, default)?;
+fn parse_presign_ttl_env(
+    lookup: &impl Fn(&str) -> Option<String>,
+    key: &str,
+    default: u64,
+) -> Result<u64, BlobError> {
+    let seconds = parse_u64_env(lookup, key, default)?;
     validate_presign_ttl(key, seconds)?;
     Ok(seconds)
 }
 
-fn parse_optional_u64_env(key: &str) -> Result<Option<u64>, BlobError> {
-    let Some(value) = optional_env(key) else {
+fn parse_optional_u64_env(
+    lookup: &impl Fn(&str) -> Option<String>,
+    key: &str,
+) -> Result<Option<u64>, BlobError> {
+    let Some(value) = env_value(lookup, key) else {
         return Ok(None);
     };
     value
@@ -173,50 +214,116 @@ pub(crate) fn validate_endpoint_url(raw: &str) -> Result<(), BlobError> {
 mod tests {
     use super::*;
 
+    fn env<'a>(pairs: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<String> + 'a {
+        move |key| {
+            pairs
+                .iter()
+                .find(|(k, _)| *k == key)
+                .map(|(_, v)| (*v).to_string())
+        }
+    }
+
+    fn bucketed<'a>(extra: &'a [(&'a str, &'a str)]) -> Vec<(&'a str, &'a str)> {
+        let mut pairs = vec![
+            ("PROXIMA_S3_BUCKET", "b"),
+            ("PROXIMA_S3_REGION", "eu-central-1"),
+        ];
+        pairs.extend_from_slice(extra);
+        pairs
+    }
+
     #[test]
     fn parse_bool_env_defaults_false_when_unset() {
-        assert!(!parse_bool_env("PROXIMA_BLOB_TEST_BOOL_UNSET").unwrap());
+        assert!(!parse_bool_env(&env(&[]), "PROXIMA_S3_FORCE_PATH_STYLE").unwrap());
     }
 
     #[test]
     fn parse_u64_env_uses_default_when_unset() {
         assert_eq!(
-            parse_u64_env("PROXIMA_BLOB_TEST_U64_UNSET", 900).unwrap(),
+            parse_u64_env(&env(&[]), "PROXIMA_S3_UPLOAD_TTL_SECONDS", 900).unwrap(),
             900
         );
     }
 
     #[test]
-    fn required_env_reports_key_name() {
-        let err = required_env("PROXIMA_BLOB_TEST_REQUIRED_UNSET").unwrap_err();
-        let BlobError::Config(msg) = err else {
-            panic!("wrong variant");
-        };
-        assert!(msg.contains("PROXIMA_BLOB_TEST_REQUIRED_UNSET"));
-    }
-
-    #[test]
     fn parse_optional_u64_env_is_none_when_unset() {
         assert_eq!(
-            parse_optional_u64_env("PROXIMA_BLOB_TEST_OPT_U64_UNSET").unwrap(),
+            parse_optional_u64_env(&env(&[]), "PROXIMA_S3_MAX_BLOB_BYTES").unwrap(),
             None
         );
     }
 
+    /// `max_blob_bytes` stays `None` here on purpose — the cap is applied
+    /// once, by `CitedBlobStore::new`, which is also the path a host taking
+    /// the direct constructor uses. The TTLs do default in the parser,
+    /// because nothing downstream can distinguish "unset" from "900".
     #[test]
-    fn from_env_applies_default_max_blob_bytes_when_unset() {
-        let cfg = S3RuntimeConfig {
-            bucket: "b".into(),
-            region: "eu-central-1".into(),
-            endpoint_url: None,
-            force_path_style: false,
-            upload_ttl_seconds: DEFAULT_UPLOAD_TTL_SECONDS,
-            read_ttl_seconds: DEFAULT_READ_TTL_SECONDS,
-            max_blob_bytes: parse_optional_u64_env("PROXIMA_BLOB_TEST_OPT_U64_UNSET")
-                .unwrap()
-                .or(Some(DEFAULT_MAX_BLOB_BYTES)),
+    fn from_lookup_leaves_the_blob_cap_to_the_store() {
+        let cfg = S3RuntimeConfig::from_lookup(&env(&bucketed(&[])))
+            .unwrap()
+            .expect("bucket is set");
+        assert_eq!(cfg.max_blob_bytes, None);
+        assert_eq!(cfg.upload_ttl_seconds, DEFAULT_UPLOAD_TTL_SECONDS);
+        assert_eq!(cfg.read_ttl_seconds, DEFAULT_READ_TTL_SECONDS);
+    }
+
+    #[test]
+    fn from_lookup_is_none_without_a_bucket() {
+        assert!(S3RuntimeConfig::from_lookup(&env(&[])).unwrap().is_none());
+    }
+
+    /// The S3 lane is optional, so an unset bucket is `Ok(None)` — but a
+    /// bucket without a region is a half-configured lane, not an absent one.
+    #[test]
+    fn from_lookup_requires_a_region_alongside_the_bucket() {
+        let err = S3RuntimeConfig::from_lookup(&env(&[("PROXIMA_S3_BUCKET", "b")])).unwrap_err();
+        let BlobError::Config(msg) = err else {
+            panic!("wrong variant");
         };
-        assert_eq!(cfg.max_blob_bytes, Some(DEFAULT_MAX_BLOB_BYTES));
+        assert!(msg.contains("PROXIMA_S3_REGION"), "{msg}");
+    }
+
+    /// Both halves of the old divergence, pinned. The facade used to read
+    /// these raw: a whitespace-only bucket was a real bucket name, and a
+    /// TTL with a trailing newline failed to parse.
+    #[test]
+    fn blank_bucket_reads_as_no_bucket() {
+        assert!(
+            S3RuntimeConfig::from_lookup(&env(&[("PROXIMA_S3_BUCKET", "   ")]))
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn surrounding_whitespace_is_trimmed_from_every_field() {
+        let cfg = S3RuntimeConfig::from_lookup(&env(&[
+            ("PROXIMA_S3_BUCKET", " b\n"),
+            ("PROXIMA_S3_REGION", " eu-central-1\n"),
+            ("PROXIMA_S3_UPLOAD_TTL_SECONDS", "900\n"),
+            ("PROXIMA_S3_FORCE_PATH_STYLE", " true "),
+        ]))
+        .unwrap()
+        .expect("bucket is set");
+        assert_eq!(cfg.bucket, "b");
+        assert_eq!(cfg.region, "eu-central-1");
+        assert_eq!(cfg.upload_ttl_seconds, 900);
+        assert!(cfg.force_path_style);
+    }
+
+    /// An out-of-range TTL is a startup error on every path into the config,
+    /// not only the process-environment one.
+    #[test]
+    fn from_lookup_rejects_a_ttl_no_presigned_url_could_carry() {
+        let err = S3RuntimeConfig::from_lookup(&env(&bucketed(&[(
+            "PROXIMA_S3_UPLOAD_TTL_SECONDS",
+            "0",
+        )])))
+        .unwrap_err();
+        let BlobError::Config(msg) = err else {
+            panic!("wrong variant");
+        };
+        assert!(msg.contains("greater than zero"), "{msg}");
     }
 
     #[test]

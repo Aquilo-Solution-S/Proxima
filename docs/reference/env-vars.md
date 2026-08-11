@@ -2,6 +2,17 @@
 
 This table is a human reference. Source code and deployment manifests remain authoritative.
 
+**Empty means unset.** Every variable below is trimmed before it is read, and a
+variable set to the empty string — or to nothing but whitespace — is treated
+exactly as if it were absent, taking the `Default` column. Exporting `FOO=` is
+therefore never a way to say something different from leaving `FOO` out. This
+also means a trailing newline picked up from a here-doc or a mounted secret
+file is harmless rather than a startup error naming a value nobody typed.
+
+The one deliberate exception is the `env:` secret scheme, where an empty
+variable resolves as a present-but-empty secret and the consumer decides
+whether that is legal.
+
 ## Runtime and Deployment Variables
 
 | Variable | Scope | Default | Required when | Notes |

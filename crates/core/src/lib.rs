@@ -24,6 +24,7 @@ pub mod compliance;
 pub mod cursor;
 pub mod edge;
 pub mod engine;
+pub mod env;
 pub mod error;
 pub mod flavor;
 pub mod goal;
@@ -64,6 +65,7 @@ pub use compliance::{
 pub use cursor::*;
 pub use edge::*;
 pub use engine::*;
+pub use env::env_value;
 pub use error::*;
 pub use flavor::*;
 pub use goal::{

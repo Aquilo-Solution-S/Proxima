@@ -3,6 +3,17 @@ use std::net::SocketAddr;
 pub const DEFAULT_BIND: &str = "127.0.0.1:31415";
 pub const DEFAULT_DATABASE_URL: &str = "postgres://postgres@localhost/proxima_dev";
 
+/// `DATABASE_URL`, or the dev default when it is not configured.
+///
+/// Written out once rather than at each of the four subcommand parsers that
+/// need it, and read through [`proxima_core::env_value`] so `DATABASE_URL=`
+/// falls back to the default instead of handing an empty connection string to
+/// the pool.
+fn database_url_from_env() -> String {
+    proxima_core::env_value(&|key| std::env::var(key).ok(), "DATABASE_URL")
+        .unwrap_or_else(|| DEFAULT_DATABASE_URL.to_string())
+}
+
 pub const USAGE: &str = "\
 Usage:
   proxima-mcp [serve] [OPTIONS]
@@ -274,9 +285,7 @@ pub fn parse_args<I: IntoIterator<Item = String>>(args: I) -> Result<McpConfig, 
         }
     }
 
-    let database_url = database_url.unwrap_or_else(|| {
-        std::env::var("DATABASE_URL").unwrap_or_else(|_| DEFAULT_DATABASE_URL.to_string())
-    });
+    let database_url = database_url.unwrap_or_else(database_url_from_env);
 
     Ok(McpConfig { database_url, bind })
 }
@@ -333,9 +342,7 @@ pub fn parse_maintain_args<I: IntoIterator<Item = String>>(
         }
     }
 
-    let database_url = database_url.unwrap_or_else(|| {
-        std::env::var("DATABASE_URL").unwrap_or_else(|_| DEFAULT_DATABASE_URL.to_string())
-    });
+    let database_url = database_url.unwrap_or_else(database_url_from_env);
 
     Ok(MaintainConfig {
         database_url,
@@ -386,9 +393,7 @@ pub fn parse_maintain_blobs_args<I: IntoIterator<Item = String>>(
             }
         }
     }
-    let database_url = database_url.unwrap_or_else(|| {
-        std::env::var("DATABASE_URL").unwrap_or_else(|_| DEFAULT_DATABASE_URL.to_string())
-    });
+    let database_url = database_url.unwrap_or_else(database_url_from_env);
     Ok(MaintainBlobsConfig { database_url })
 }
 
@@ -449,9 +454,7 @@ pub fn parse_retention_args<I: IntoIterator<Item = String>>(
         ));
     }
 
-    let database_url = database_url.unwrap_or_else(|| {
-        std::env::var("DATABASE_URL").unwrap_or_else(|_| DEFAULT_DATABASE_URL.to_string())
-    });
+    let database_url = database_url.unwrap_or_else(database_url_from_env);
 
     Ok(RetentionConfig {
         database_url,

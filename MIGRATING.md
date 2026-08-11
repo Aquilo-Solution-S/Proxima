@@ -13,8 +13,8 @@ not a reference. Deployment and env vars live in
 
 | You are | Read |
 |---|---|
-| A **v0.0.7 Rust host** | [apply the v0.0.8 schema lane](#the-v008-schema-lane), [compose flavor services once](#compose-flavor-services-once), [redeem durable worker authority](#redeem-durable-worker-authority), [use private blob-service wrappers](#use-private-blob-service-wrappers), [move caller provenance into `ToolCtx`](#move-caller-provenance-into-toolctx), [remove the inert runtime owner-access registration](#remove-the-inert-runtime-owner-access-registration), [remove the dependency-satisfaction seam](#remove-the-dependency-satisfaction-seam), [pass the shared Host allowlist](#pass-the-shared-host-allowlist), [apply listener-wide CORS](#apply-listener-wide-cors), then [freeze registries once](#freeze-registries-once) |
-| An **operator** promoting a deployment | [the v0.0.8 schema lane](#the-v008-schema-lane), then [operator changes](#operator-changes) |
+| A **v0.0.7 Rust host** | [apply the v0.0.8 schema lane](#the-v008-schema-lane), [compose flavor services once](#compose-flavor-services-once), [redeem durable worker authority](#redeem-durable-worker-authority), [use private blob-service wrappers](#use-private-blob-service-wrappers), [move caller provenance into `ToolCtx`](#move-caller-provenance-into-toolctx), [remove the inert runtime owner-access registration](#remove-the-inert-runtime-owner-access-registration), [remove the dependency-satisfaction seam](#remove-the-dependency-satisfaction-seam), [an empty environment value is an unset one](#an-empty-environment-value-is-an-unset-one), [pass the shared Host allowlist](#pass-the-shared-host-allowlist), [apply listener-wide CORS](#apply-listener-wide-cors), then [freeze registries once](#freeze-registries-once) |
+| An **operator** promoting a deployment | [the v0.0.8 schema lane](#the-v008-schema-lane), [an empty environment value is an unset one](#an-empty-environment-value-is-an-unset-one), then [operator changes](#operator-changes) |
 | Running the **code flavor** | the above, then [re-register and re-index](#re-register-and-re-index-every-code-repository) |
 | An **MCP client / agent** author | [regenerate OpenAPI clients](#regenerate-openapi-clients), then [wire changes](#wire-changes-mcp-clients) |
 | An **embedding host** driving `Engine` in Rust | [Rust host changes](#rust-host-changes) |
@@ -190,6 +190,52 @@ The MCP edge still authenticates every request, narrows the returned role set
 to the selected or session-bound owner, and rejects an unauthorized owner.
 Serving still fails closed without a host `Authenticator`. There is no wire,
 storage, schema, or migration change in this slice.
+
+## An empty environment value is an unset one
+
+One rule now, everywhere: a variable is trimmed before it is read, and a
+variable set to the empty string or to nothing but whitespace is treated as
+absent. Nothing to do unless a deployment relies on the old inconsistency.
+
+Before, one process answered two ways about the same input. `PROXIMA_EMBED_*`
+and the `PROXIMA_S3_*` block read an empty value as unset, while
+`RuntimeBuilder::apply_lookup` read nine variables raw — so
+`PROXIMA_EXPOSE_NETWORK=` aborted boot with `must be a boolean, got ""`,
+`DATABASE_URL=` reached the pool as an empty connection string, and
+`PROXIMA_S3_BUCKET=" "` was "missing" to `proxima-mcp maintain-blobs` and a
+real bucket name to `serve`.
+
+What changes for a host that was relying on the old behaviour:
+
+- an empty value that used to abort boot (`PROXIMA_EXPOSE_NETWORK`,
+  `PROXIMA_REST_ENABLED`, `PROXIMA_SKIP_MIGRATIONS`, `PROXIMA_MCP_BIND`, the
+  two `PROXIMA_STREAM_*` variables) now selects the default instead;
+- `DATABASE_URL=` now falls back to the binary default rather than handing an
+  empty string to the pool;
+- a value with surrounding whitespace now parses instead of failing — the same
+  `PROXIMA_S3_UPLOAD_TTL_SECONDS="900\n"` is accepted by every subcommand;
+- when layering configuration, an empty variable no longer overrides a value
+  set programmatically on a base builder. `PROXIMA_ALLOWED_ORIGINS=` used to
+  arrive as an empty allowlist and win the merge; it now leaves the field
+  untouched, which is what "apply environment to unset fields" says. Exposure
+  with a genuinely empty allowlist is still a hard error.
+
+The rule is `proxima::env_value` (also `proxima_core::env_value`), exported so
+an out-of-tree host reading its own variables can apply the same one:
+
+```rust
+let bucket = proxima::env_value(&|key| std::env::var(key).ok(), "MY_BUCKET");
+```
+
+The `env:` secret scheme is deliberately exempt: an empty variable resolves
+there as a present-but-empty secret, and the consumer decides whether that is
+legal.
+
+`S3RuntimeConfig` gains `from_lookup`, which returns `Ok(None)` when no bucket
+is configured; `from_env` is unchanged in signature and still errors. A config
+read through either now leaves `max_blob_bytes: None` when
+`PROXIMA_S3_MAX_BLOB_BYTES` is unset, and `CitedBlobStore::new` applies the
+100 MiB default as it always has — one declaration, one application point.
 
 ## Remove the dependency-satisfaction seam
 
