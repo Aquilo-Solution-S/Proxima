@@ -1,7 +1,7 @@
 use aws_config::BehaviorVersion;
 use aws_sdk_s3::Client;
 use aws_sdk_s3::config::Region;
-use proxima_core::{EndpointUrlError, EndpointUrlPolicy, env_value};
+use proxima_core::{EndpointUrlError, EndpointUrlPolicy, env_value, process_env};
 
 use crate::BlobError;
 
@@ -140,10 +140,6 @@ impl S3RuntimeConfig {
         }
         Ok(Client::from_conf(builder.build()))
     }
-}
-
-fn process_env(key: &str) -> Option<String> {
-    std::env::var(key).ok()
 }
 
 fn parse_bool_env(lookup: &impl Fn(&str) -> Option<String>, key: &str) -> Result<bool, BlobError> {

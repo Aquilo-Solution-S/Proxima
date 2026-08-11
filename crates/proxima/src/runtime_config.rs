@@ -242,7 +242,7 @@ impl RuntimeBuilder {
     ///
     /// Returns `ProximaError::Config` when an environment value is malformed.
     pub fn apply_env(self) -> Result<Self, ProximaError> {
-        self.apply_lookup(|key| std::env::var(key).ok())
+        self.apply_lookup(proxima_core::process_env)
     }
 
     /// Apply injected environment values to unset fields.

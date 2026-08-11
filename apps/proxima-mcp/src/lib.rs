@@ -356,7 +356,7 @@ async fn run_maintain_blobs(config: MaintainBlobsConfig) -> Result<(), CliError>
 async fn run_maintain(config: MaintainConfig) -> Result<(), CliError> {
     let model = config
         .model
-        .unwrap_or_else(|| active_embedding_model(|key| std::env::var(key).ok()));
+        .unwrap_or_else(|| active_embedding_model(proxima_core::process_env));
     let storage = PgStorage::connect(&config.database_url)
         .await
         .map_err(|err| ProximaError::Storage(err.to_string()))?;
@@ -412,15 +412,14 @@ async fn run_maintain(config: MaintainConfig) -> Result<(), CliError> {
     );
 
     if config.drain {
-        let client =
-            embedding_client_from_env(|key| std::env::var(key).ok())?.ok_or_else(|| {
-                CliError::Runtime(ProximaError::Config(
-                    "maintain-embeddings --drain requires an embedding endpoint: set \
+        let client = embedding_client_from_env(proxima_core::process_env)?.ok_or_else(|| {
+            CliError::Runtime(ProximaError::Config(
+                "maintain-embeddings --drain requires an embedding endpoint: set \
                  PROXIMA_EMBED_BASE_URL (local, e.g. http://127.0.0.1:11434/v1) \
                  or PROXIMA_EMBED_API_KEY / MISTRAL_API_KEY (hosted)"
-                        .into(),
-                ))
-            })?;
+                    .into(),
+            ))
+        })?;
         if client.model_id() != model {
             return Err(CliError::Runtime(ProximaError::Config(format!(
                 "maintain-embeddings --drain model mismatch: queued model {model:?}, Mistral client model {:?}",
@@ -576,7 +575,7 @@ fn reconcile_scope(scope: ReconcileScope) -> EmbeddingReconcileScope {
 ///
 /// Returns facade config, storage, migration, engine, bind, or transport failures.
 pub async fn run_with_handle(config: McpConfig) -> Result<RunningProxima, CliError> {
-    let app = build_app(config, |key| std::env::var(key).ok())?;
+    let app = build_app(config, proxima_core::process_env)?;
     app.run().await.map_err(Into::into)
 }
 

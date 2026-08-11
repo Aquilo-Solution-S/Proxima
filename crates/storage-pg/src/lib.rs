@@ -14,6 +14,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use proxima_core::StorageError;
+use proxima_core::env_value;
 use proxima_core::storage_ports::StoragePorts;
 use sqlx::PgPool;
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
@@ -559,23 +560,60 @@ impl std::fmt::Debug for RetentionMaintenanceLock {
     }
 }
 
-/// Parse a `u64` pool-tuning env var, falling back to `default` when unset or
-/// unparseable. `0` is a legal value (disables the corresponding bound).
-fn env_u64_or(key: &str, default: u64) -> u64 {
-    std::env::var(key)
-        .ok()
-        .and_then(|raw| raw.trim().parse().ok())
-        .unwrap_or(default)
+/// Parse a `u64` pool-tuning env var, falling back to `default` when unset.
+/// `0` is a legal value (disables the corresponding bound).
+///
+/// A malformed value is an error, not a silent fallback. Every other
+/// configuration reader in the workspace already answers this way —
+/// `RuntimeBuilder::apply_lookup` and `proxima-blob-s3`'s `parse_u64_env`
+/// both return a `Config` error — and a typo that silently reverts pool
+/// tuning to the default is the kind of thing an operator discovers from a
+/// latency graph weeks later rather than from the boot that caused it.
+///
+/// # Errors
+///
+/// Returns `StorageError::Unavailable` when the value is set but not a `u64`.
+fn env_u64_or(
+    lookup: &impl Fn(&str) -> Option<String>,
+    key: &str,
+    default: u64,
+) -> Result<u64, StorageError> {
+    let Some(value) = env_value(lookup, key) else {
+        return Ok(default);
+    };
+    value
+        .parse()
+        .map_err(|_| StorageError::Unavailable(format!("invalid integer {key}={value}")))
 }
 
-/// Parse a `u32` pool-tuning env var with a floor of 1 (a pool of zero
-/// connections is never valid), falling back to `default`.
-fn env_u32_min1(key: &str, default: u32) -> u32 {
-    std::env::var(key)
-        .ok()
-        .and_then(|raw| raw.trim().parse().ok())
-        .filter(|&n| n >= 1)
-        .unwrap_or(default)
+/// Parse a `u32` pool-tuning env var that must be at least 1, falling back to
+/// `default` when unset.
+///
+/// Unlike [`env_u64_or`], `0` is rejected rather than defaulted: a pool of
+/// zero connections is never what anyone meant, so it is an operator error
+/// worth naming rather than a value to quietly round up.
+///
+/// # Errors
+///
+/// Returns `StorageError::Unavailable` when the value is set but not a `u32`,
+/// or is `0`.
+fn env_u32_min1(
+    lookup: &impl Fn(&str) -> Option<String>,
+    key: &str,
+    default: u32,
+) -> Result<u32, StorageError> {
+    let Some(value) = env_value(lookup, key) else {
+        return Ok(default);
+    };
+    match value.parse::<u32>() {
+        Ok(0) => Err(StorageError::Unavailable(format!(
+            "{key}=0 is not a usable pool size; a connection pool needs at least one connection"
+        ))),
+        Ok(parsed) => Ok(parsed),
+        Err(_) => Err(StorageError::Unavailable(format!(
+            "invalid integer {key}={value}"
+        ))),
+    }
 }
 
 impl PgStorage {
@@ -598,24 +636,28 @@ impl PgStorage {
         // schema migrations and bulk compliance erase — explicitly opt out
         // (`run_migrations` runs on a detached timeout-free connection; the erase
         // transaction issues `SET LOCAL statement_timeout = 0`).
-        let statement_timeout_ms = env_u64_or("PROXIMA_PG_STATEMENT_TIMEOUT_MS", 300_000);
+        let env = proxima_core::process_env;
+        let statement_timeout_ms = env_u64_or(&env, "PROXIMA_PG_STATEMENT_TIMEOUT_MS", 300_000)?;
         if statement_timeout_ms > 0 {
             opts = opts.options([("statement_timeout", statement_timeout_ms.to_string())]);
         }
         let pool = PgPoolOptions::new()
-            .max_connections(env_u32_min1("PROXIMA_PG_MAX_CONNECTIONS", 10))
+            .max_connections(env_u32_min1(&env, "PROXIMA_PG_MAX_CONNECTIONS", 10)?)
             .acquire_timeout(Duration::from_secs(env_u64_or(
+                &env,
                 "PROXIMA_PG_ACQUIRE_TIMEOUT_SECS",
                 5,
-            )))
+            )?))
             .idle_timeout(Duration::from_secs(env_u64_or(
+                &env,
                 "PROXIMA_PG_IDLE_TIMEOUT_SECS",
                 600,
-            )))
+            )?))
             .max_lifetime(Duration::from_secs(env_u64_or(
+                &env,
                 "PROXIMA_PG_MAX_LIFETIME_SECS",
                 1_800,
-            )))
+            )?))
             .connect_with(opts)
             .await
             .map_err(|e| StorageError::Unavailable(e.to_string()))?;
@@ -972,17 +1014,124 @@ mod tests {
         );
     }
 
+    /// An injected lookup, so every branch is reachable. These helpers used
+    /// to read the process environment directly, which left the tests below
+    /// able to assert only the unset case — they named keys nothing sets, and
+    /// the malformed branch they were nominally covering was never executed.
+    fn env<'a>(pairs: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<String> + 'a {
+        move |key| {
+            pairs
+                .iter()
+                .find(|(k, _)| *k == key)
+                .map(|(_, v)| (*v).to_string())
+        }
+    }
+
     #[test]
     fn pool_env_helpers_default_when_unset() {
-        // Fixed-key helpers fall back to the default for an unset/garbage key
-        // (pool tuning). Use keys nothing else in the process sets.
         assert_eq!(
-            super::env_u32_min1("PROXIMA_PG_MAX_CONNECTIONS_TEST_UNSET", 10),
+            super::env_u32_min1(&env(&[]), "PROXIMA_PG_MAX_CONNECTIONS", 10).unwrap(),
             10
         );
         assert_eq!(
-            super::env_u64_or("PROXIMA_PG_STATEMENT_TIMEOUT_MS_TEST_UNSET", 300_000),
+            super::env_u64_or(&env(&[]), "PROXIMA_PG_STATEMENT_TIMEOUT_MS", 300_000).unwrap(),
             300_000
         );
+    }
+
+    /// Empty and whitespace-only are "unset", per `proxima_core::env_value` —
+    /// so `PROXIMA_PG_MAX_CONNECTIONS=` is not a parse error naming a value
+    /// the operator never typed.
+    #[test]
+    fn pool_env_helpers_treat_blank_as_unset() {
+        assert_eq!(
+            super::env_u32_min1(
+                &env(&[("PROXIMA_PG_MAX_CONNECTIONS", "")]),
+                "PROXIMA_PG_MAX_CONNECTIONS",
+                10
+            )
+            .unwrap(),
+            10
+        );
+        assert_eq!(
+            super::env_u64_or(
+                &env(&[("PROXIMA_PG_IDLE_TIMEOUT_SECS", "  \t ")]),
+                "PROXIMA_PG_IDLE_TIMEOUT_SECS",
+                600
+            )
+            .unwrap(),
+            600
+        );
+    }
+
+    #[test]
+    fn pool_env_helpers_parse_a_set_value_and_trim_it() {
+        assert_eq!(
+            super::env_u32_min1(
+                &env(&[("PROXIMA_PG_MAX_CONNECTIONS", "25")]),
+                "PROXIMA_PG_MAX_CONNECTIONS",
+                10
+            )
+            .unwrap(),
+            25
+        );
+        // A trailing newline survives a here-doc or a mounted secret.
+        assert_eq!(
+            super::env_u64_or(
+                &env(&[("PROXIMA_PG_IDLE_TIMEOUT_SECS", "900\n")]),
+                "PROXIMA_PG_IDLE_TIMEOUT_SECS",
+                600
+            )
+            .unwrap(),
+            900
+        );
+    }
+
+    /// The behaviour change: a typo stops the boot instead of silently
+    /// reverting pool tuning to the default.
+    #[test]
+    fn pool_env_helpers_reject_a_malformed_value() {
+        let err = super::env_u32_min1(
+            &env(&[("PROXIMA_PG_MAX_CONNECTIONS", "twenty")]),
+            "PROXIMA_PG_MAX_CONNECTIONS",
+            10,
+        )
+        .expect_err("a malformed pool size must not silently become the default");
+        assert!(
+            err.to_string()
+                .contains("invalid integer PROXIMA_PG_MAX_CONNECTIONS=twenty"),
+            "error must name the variable and the value: {err}"
+        );
+        assert!(
+            super::env_u64_or(
+                &env(&[("PROXIMA_PG_MAX_LIFETIME_SECS", "-1")]),
+                "PROXIMA_PG_MAX_LIFETIME_SECS",
+                1_800
+            )
+            .is_err()
+        );
+    }
+
+    /// `0` splits the two helpers: it disables the bound for the `u64` ones
+    /// and is meaningless for a pool size.
+    #[test]
+    fn zero_disables_a_u64_bound_but_is_never_a_pool_size() {
+        assert_eq!(
+            super::env_u64_or(
+                &env(&[("PROXIMA_PG_STATEMENT_TIMEOUT_MS", "0")]),
+                "PROXIMA_PG_STATEMENT_TIMEOUT_MS",
+                300_000
+            )
+            .unwrap(),
+            0,
+            "statement_timeout=0 is the documented way to disable the timeout"
+        );
+        let err = super::env_u32_min1(
+            &env(&[("PROXIMA_PG_MAX_CONNECTIONS", "0")]),
+            "PROXIMA_PG_MAX_CONNECTIONS",
+            10,
+        )
+        .expect_err("a zero pool size must be named, not rounded up to the default");
+        assert!(err.to_string().contains("at least one connection"), "{err}");
     }
 }

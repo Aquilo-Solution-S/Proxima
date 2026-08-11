@@ -49,9 +49,37 @@ pub fn env_value(lookup: &impl Fn(&str) -> Option<String>, key: &str) -> Option<
     })
 }
 
+/// The process environment as a lookup, for callers with no injected source.
+///
+/// [`env_value`] takes a lookup so that hosts and tests can supply their own;
+/// the overwhelmingly common argument is still the real environment, and it
+/// was written out as `|key| std::env::var(key).ok()` at eight call sites
+/// across five crates. The closure cannot drift — anything else fails to
+/// typecheck — so this is not a correctness fix. It is one grep-able name for
+/// "the process environment enters the program here", which is the question
+/// asked when auditing what a deployment can influence.
+///
+/// Pass it by name, not by call: it is an ordinary `fn` item and coerces
+/// wherever an `impl Fn(&str) -> Option<String>` is wanted.
+///
+/// ```
+/// use proxima_core::{env_value, process_env};
+///
+/// let _configured = env_value(&process_env, "PATH").is_some();
+/// ```
+///
+/// Note this is the *raw* reader: it does not trim and does not treat an
+/// empty value as unset. Those are [`env_value`]'s job, and every
+/// configuration read should go through it. The two are separate because
+/// [`crate::secrets::EnvResolver`] deliberately wants the raw rule.
+#[must_use]
+pub fn process_env(key: &str) -> Option<String> {
+    std::env::var(key).ok()
+}
+
 #[cfg(test)]
 mod tests {
-    use super::env_value;
+    use super::{env_value, process_env};
 
     fn env<'a>(pairs: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<String> + 'a {
         move |key| {
@@ -94,5 +122,25 @@ mod tests {
             env_value(&env(&[("FOO", " a b ")]), "FOO").as_deref(),
             Some("a b")
         );
+    }
+
+    /// `process_env` composes with `env_value` as a plain `fn` item — the
+    /// property every call site depends on, since all eight pass it by name
+    /// rather than calling it.
+    ///
+    /// Deliberately does not `set_var`: mutating the process environment
+    /// would race every other test in this binary that reads one (`setenv` is
+    /// not thread-safe against a concurrent `getenv`, which is why Rust 2024
+    /// made it `unsafe`), and the trimming rule already has exhaustive
+    /// coverage above against an injected lookup.
+    #[test]
+    fn process_env_composes_with_env_value_by_name() {
+        const UNSET: &str = "PROXIMA_ENV_RS_PROCESS_ENV_UNSET";
+        assert_eq!(
+            process_env(UNSET),
+            std::env::var(UNSET).ok(),
+            "process_env is exactly the process environment, nothing more"
+        );
+        assert_eq!(env_value(&process_env, UNSET), None);
     }
 }

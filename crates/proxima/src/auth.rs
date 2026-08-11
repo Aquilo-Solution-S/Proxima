@@ -68,7 +68,7 @@ pub type OidcBundle = (Arc<dyn Authenticator>, ResourceServerMetadata);
 pub fn oidc_from_env(
     owner_access: Arc<dyn OwnerAccessPort>,
 ) -> Result<Option<OidcBundle>, ProximaError> {
-    oidc_from_lookup(&|key| std::env::var(key).ok(), owner_access)
+    oidc_from_lookup(&proxima_core::process_env, owner_access)
 }
 
 /// [`oidc_from_env`] against an arbitrary lookup, so a host with its own

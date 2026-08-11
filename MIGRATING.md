@@ -221,10 +221,12 @@ What changes for a host that was relying on the old behaviour:
   with a genuinely empty allowlist is still a hard error.
 
 The rule is `proxima::env_value` (also `proxima_core::env_value`), exported so
-an out-of-tree host reading its own variables can apply the same one:
+an out-of-tree host reading its own variables can apply the same one.
+`proxima_core::process_env` is the process environment as a lookup, so the
+common case needs no closure — pass it by name, it is an ordinary `fn` item:
 
 ```rust
-let bucket = proxima::env_value(&|key| std::env::var(key).ok(), "MY_BUCKET");
+let bucket = proxima_core::env_value(&proxima_core::process_env, "MY_BUCKET");
 ```
 
 The `env:` secret scheme is deliberately exempt: an empty variable resolves
@@ -236,6 +238,39 @@ is configured; `from_env` is unchanged in signature and still errors. A config
 read through either now leaves `max_blob_bytes: None` when
 `PROXIMA_S3_MAX_BLOB_BYTES` is unset, and `CitedBlobStore::new` applies the
 100 MiB default as it always has — one declaration, one application point.
+
+### A malformed pool-tuning value now fails the boot
+
+**This is the one behaviour change an operator must check before promoting.**
+The five `PROXIMA_PG_*` pool variables were the last readers still bypassing
+the rule above, and they answered a malformed value by silently using the
+default. `PROXIMA_PG_MAX_CONNECTIONS=twenty` ran a ten-connection pool and said
+nothing; the misconfiguration surfaced weeks later as a latency graph rather
+than at the boot that caused it.
+
+`PgStorage::connect` now returns an error naming the variable and the value:
+
+| Value of `PROXIMA_PG_MAX_CONNECTIONS` | Before | Now |
+| --- | --- | --- |
+| unset, `` , `"  "` | pool of 10 | pool of 10 (unchanged) |
+| `"25\n"` | pool of 10 | pool of 25 |
+| `twenty` | pool of 10 | `invalid integer PROXIMA_PG_MAX_CONNECTIONS=twenty` |
+| `0` | pool of 10 | `PROXIMA_PG_MAX_CONNECTIONS=0 is not a usable pool size` |
+
+The same applies to `PROXIMA_PG_STATEMENT_TIMEOUT_MS`,
+`PROXIMA_PG_ACQUIRE_TIMEOUT_SECS`, `PROXIMA_PG_IDLE_TIMEOUT_SECS` and
+`PROXIMA_PG_MAX_LIFETIME_SECS`, except that `0` stays legal for those four —
+it is the documented way to disable the corresponding bound. Only a pool size
+of zero is rejected, because no pool can serve anything with zero connections.
+
+**Before promoting, check these five variables on every deployment that sets
+them.** A value that was quietly ignored will now stop the process at startup.
+This matches what `RuntimeBuilder::apply_lookup` and the `PROXIMA_S3_*` block
+have always done; the pool variables were the outlier.
+
+`proxima-pg-testkit`'s `admin_url()` also applies the trim-and-empty-is-unset
+rule now, so `PROXIMA_TEST_PG_URL=` selects the default instead of handing an
+empty connection string to every test in the run.
 
 ## Remove the dependency-satisfaction seam
 

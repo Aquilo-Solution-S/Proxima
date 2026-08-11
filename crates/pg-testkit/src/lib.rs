@@ -13,9 +13,25 @@ const SQLSTATE_UNDEFINED_DATABASE: &str = "3D000";
 pub const FNV_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
 pub const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
 
+/// The admin connection URL from `PROXIMA_TEST_PG_URL`, or the local default
+/// when unconfigured.
+///
+/// Trims, and treats an empty or whitespace-only value as unset — the rule
+/// `proxima_core::env_value` states for every configuration variable in the
+/// workspace. Applied by hand rather than by calling it, because this is a
+/// deliberately minimal test-support crate (sqlx/tokio/tracing/uuid) and one
+/// env var does not justify a dependency on `proxima-core`.
+///
+/// Without the empty check, `PROXIMA_TEST_PG_URL=` handed an empty string
+/// straight to the connector, and every test in the run failed against a
+/// connection error that named nothing an operator had typed.
 #[must_use]
 pub fn admin_url() -> String {
-    std::env::var("PROXIMA_TEST_PG_URL").unwrap_or_else(|_| DEFAULT_ADMIN_URL.into())
+    std::env::var("PROXIMA_TEST_PG_URL")
+        .ok()
+        .map(|raw| raw.trim().to_string())
+        .filter(|url| !url.is_empty())
+        .unwrap_or_else(|| DEFAULT_ADMIN_URL.into())
 }
 
 #[must_use]
