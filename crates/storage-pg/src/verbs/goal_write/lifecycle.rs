@@ -3,7 +3,8 @@ use super::{
     GoalAbandonedV1, GoalAchievedV1, GoalActivatedV1, GoalAtomicContext, GoalId, GoalLifecycleFact,
     GoalPausedV1, GoalWriteOutcome, InsertedGoal, MemoryId, Owner, OwnerWritePermit, Postgres,
     SchemaId, SchemaVersion, SourceBatchId, SourceId, StorageError, Transaction,
-    assert_goal_topology_references, goal_topology_edge_count, ingest_fact_command_in_tx, map_err,
+    assert_goal_topology_references, goal_evidence_matches, goal_topology_edge_count,
+    idempotency_conflict, ingest_fact_command_in_tx, map_err,
 };
 
 const LIFECYCLE_SOURCE_ID: &str = "core/goal-lifecycle";
@@ -71,7 +72,7 @@ impl GoalLifecyclePayload for GoalAbandonedV1 {
 /// rows that follow are `origin` rows. The Perspective that drove the
 /// transition is stamped on the Fact row as its author, which is where the
 /// old `core/authored` edge went.
-pub(super) async fn emit_lifecycle_fact(
+async fn emit_lifecycle_fact(
     tx: &mut Transaction<'_, Postgres>,
     permit: &OwnerWritePermit,
     context: GoalAtomicContext<'_>,
@@ -193,42 +194,84 @@ where
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)] // one parameter per lifecycle input
+/// What a Goal write states about itself once its row is in place, and the
+/// authority to record it: the same inputs for every verb, which is why the
+/// tail below is one function rather than five.
+pub(super) struct LifecycleWrite<'a> {
+    pub(super) permit: &'a OwnerWritePermit,
+    pub(super) owner: &'a Owner,
+    pub(super) context: GoalAtomicContext<'a>,
+    pub(super) inserted: InsertedGoal,
+    pub(super) lifecycle: GoalLifecycleFact,
+    pub(super) assignment: MemoryId,
+    pub(super) dependencies: &'a [GoalId],
+    /// What the write rests on, empty for the verbs that name nothing.
+    pub(super) evidence: &'a [EvidenceTarget],
+    /// The key this write was claimed under, for the replay conflict below.
+    pub(super) request_id: &'a str,
+}
+
+/// The tail every Goal write shares: record the lifecycle transition as a
+/// Fact, derive the reference rows the Goal's topology columns imply, and
+/// report what was written.
+///
+/// A replay skips both — the rows are already there — and reports the counts
+/// the declaration implies rather than re-reading them.
 pub(super) async fn lifecycle_outcome(
     tx: &mut Transaction<'_, Postgres>,
-    permit: &OwnerWritePermit,
-    owner: &Owner,
-    context: GoalAtomicContext<'_>,
-    inserted: InsertedGoal,
-    lifecycle: GoalLifecycleFact,
-    assignment: MemoryId,
-    dependencies: &[GoalId],
+    write: LifecycleWrite<'_>,
 ) -> Result<GoalWriteOutcome, StorageError> {
-    if inserted.idempotent_replay {
+    if write.inserted.idempotent_replay {
+        // The idempotency key is one namespace across every Goal verb, and
+        // the body comparison that admitted this replay reads the content
+        // columns — `evidence_memory_ids` is not one of them. Evidence is
+        // half of what a write claimed, so a key that returns a row resting
+        // on other evidence is a conflict, not a replay.
+        if !goal_evidence_matches(tx, write.inserted.goal_id, write.evidence).await? {
+            return Err(idempotency_conflict(write.request_id));
+        }
         return replay_goal_outcome(
             tx,
-            inserted,
-            lifecycle,
-            goal_topology_edge_count(dependencies, &[]),
+            write.inserted,
+            write.lifecycle,
+            goal_topology_edge_count(write.dependencies, write.evidence),
         )
         .await;
     }
+    // The lifecycle Fact declares the evidence it was made from, so its own
+    // origin rows land inside its ingest transaction — before the reference
+    // rows below, which are derived from the Goal's columns instead.
     let lifecycle_memory_id = Some(
-        emit_lifecycle_fact(tx, permit, context, owner, inserted.goal_id, lifecycle, &[]).await?,
+        emit_lifecycle_fact(
+            tx,
+            write.permit,
+            write.context,
+            write.owner,
+            write.inserted.goal_id,
+            write.lifecycle,
+            write.evidence,
+        )
+        .await?,
     );
-    let edge_count =
-        assert_goal_topology_references(tx, owner, inserted.goal_id, assignment, dependencies, &[])
-            .await?;
+    let edge_count = assert_goal_topology_references(
+        tx,
+        write.owner,
+        write.inserted.goal_id,
+        write.assignment,
+        write.dependencies,
+        write.evidence,
+    )
+    .await?;
     Ok(GoalWriteOutcome {
-        goal_id: inserted.goal_id,
-        change_event_seq: inserted.change_event_seq,
+        goal_id: write.inserted.goal_id,
+        change_event_seq: write.inserted.change_event_seq,
         lifecycle_memory_id,
         edge_count,
         idempotent_replay: false,
     })
 }
 
-pub(super) async fn replay_goal_outcome(
+async fn replay_goal_outcome(
     tx: &mut Transaction<'_, Postgres>,
     inserted: InsertedGoal,
     lifecycle: GoalLifecycleFact,
