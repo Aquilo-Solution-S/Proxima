@@ -165,6 +165,11 @@ pub struct IndexReportItem {
     pub chunks_emitted: usize,
     pub chunks_reused: usize,
     pub chunks_tombstoned: usize,
+    /// Distinct caller→callee pairs the indexed chunks declared. One per
+    /// callee, not one per call site. Zero after an ingest that emitted
+    /// chunks means the analyzer resolved no calls in them — a language
+    /// it does not parse, or a corpus with none.
+    pub call_references_emitted: usize,
     /// Tracked files this repo's `include_globs`/`exclude_globs` kept out
     /// of the ingest. Non-zero means the index deliberately does not hold
     /// them — check the repo's scope in proxima-code_list_repos before
@@ -590,6 +595,7 @@ impl From<IndexReport> for IndexReportItem {
             chunks_emitted: report.chunks_emitted,
             chunks_reused: report.chunks_reused,
             chunks_tombstoned: report.chunks_tombstoned,
+            call_references_emitted: report.call_references_emitted,
             files_excluded: report.files_excluded,
         }
     }
@@ -625,5 +631,51 @@ fn map_repo_registry(error: RepoRegistryError) -> ToolError {
         ),
         RepoRegistryError::Database(error) => map_storage(error),
         RepoRegistryError::Storage(error) => ToolError::Other(error.to_string()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{IndexReport, IndexReportItem};
+
+    /// Every counter the ingest computes has to reach the caller that asked
+    /// for the ingest. The conversion is written field by field, so a
+    /// counter added to `IndexReport` and forgotten here is not a compile
+    /// error — it is a number the wire silently never carries.
+    /// `call_references_emitted` was exactly that.
+    ///
+    /// Comparing the serialized form rather than field by field pins the
+    /// JSON key names an MCP client reads, and the distinct value per field
+    /// fails a mis-wire as loudly as an omission.
+    #[test]
+    fn the_wire_report_carries_every_counter_the_ingest_computed() {
+        let report = IndexReport {
+            commits_emitted: 1,
+            commits_replayed: 2,
+            files_present_emitted: 3,
+            files_tombstoned: 4,
+            chunks_emitted: 5,
+            chunks_reused: 6,
+            chunks_tombstoned: 7,
+            call_references_emitted: 8,
+            files_excluded: 9,
+        };
+
+        let wire = serde_json::to_value(IndexReportItem::from(report)).expect("report serializes");
+
+        assert_eq!(
+            wire,
+            serde_json::json!({
+                "commits_emitted": 1,
+                "commits_replayed": 2,
+                "files_present_emitted": 3,
+                "files_tombstoned": 4,
+                "chunks_emitted": 5,
+                "chunks_reused": 6,
+                "chunks_tombstoned": 7,
+                "call_references_emitted": 8,
+                "files_excluded": 9,
+            })
+        );
     }
 }

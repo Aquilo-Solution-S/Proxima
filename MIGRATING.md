@@ -13,11 +13,11 @@ not a reference. Deployment and env vars live in
 
 | You are | Read |
 |---|---|
-| A **v0.0.7 Rust host** | [apply the v0.0.8 schema lane](#the-v008-schema-lane), [compose flavor services once](#compose-flavor-services-once), [redeem durable worker authority](#redeem-durable-worker-authority), [use private blob-service wrappers](#use-private-blob-service-wrappers), [move caller provenance into `ToolCtx`](#move-caller-provenance-into-toolctx), [remove the inert runtime owner-access registration](#remove-the-inert-runtime-owner-access-registration), [remove the dependency-satisfaction seam](#remove-the-dependency-satisfaction-seam), [an empty environment value is an unset one](#an-empty-environment-value-is-an-unset-one), [pass the shared Host allowlist](#pass-the-shared-host-allowlist), [apply listener-wide CORS](#apply-listener-wide-cors), then [freeze registries once](#freeze-registries-once) |
+| A **v0.0.7 Rust host** | [apply the v0.0.8 schema lane](#the-v008-schema-lane), [compose flavor services once](#compose-flavor-services-once), [redeem durable worker authority](#redeem-durable-worker-authority), [use private blob-service wrappers](#use-private-blob-service-wrappers), [move caller provenance into `ToolCtx`](#move-caller-provenance-into-toolctx), [remove the inert runtime owner-access registration](#remove-the-inert-runtime-owner-access-registration), [remove the dependency-satisfaction seam](#remove-the-dependency-satisfaction-seam), [an empty environment value is an unset one](#an-empty-environment-value-is-an-unset-one), [pass `semantic_weight` only with `mode=hybrid`](#pass-semantic_weight-only-with-modehybrid), [pass the shared Host allowlist](#pass-the-shared-host-allowlist), [apply listener-wide CORS](#apply-listener-wide-cors), then [freeze registries once](#freeze-registries-once) |
 | An **operator** promoting a deployment | [the v0.0.8 schema lane](#the-v008-schema-lane), [an empty environment value is an unset one](#an-empty-environment-value-is-an-unset-one), then [operator changes](#operator-changes) |
 | Running the **code flavor** | the above, then [re-register and re-index](#re-register-and-re-index-every-code-repository) |
 | An **MCP client / agent** author | [regenerate OpenAPI clients](#regenerate-openapi-clients), then [wire changes](#wire-changes-mcp-clients) |
-| An **embedding host** driving `Engine` in Rust | [Rust host changes](#rust-host-changes) |
+| An **embedding host** driving `Engine` in Rust | [pass `semantic_weight` only with `mode=hybrid`](#pass-semantic_weight-only-with-modehybrid), then [Rust host changes](#rust-host-changes) |
 | A **flavor** author | [compose flavor services once](#compose-flavor-services-once), [move caller provenance into `ToolCtx`](#move-caller-provenance-into-toolctx), [remove the dependency-satisfaction seam](#remove-the-dependency-satisfaction-seam), [freeze registries once](#freeze-registries-once), then [flavor SDK changes](#flavor-sdk-changes) |
 | Booting against a **pre-v0.0.4 database** | [the v0.0.4 reset](#the-v004-reset) first — nothing else applies until it is done |
 
@@ -331,6 +331,29 @@ MCP `-32603 internal_error` or REST `500 internal`, with a redacted client
 message. The adapter previously reported MCP `-32602 invalid_params` or REST
 `400 invalid-input` and exposed the serializer diagnostic. No host, flavor,
 storage, or schema migration is required.
+
+## Pass `semantic_weight` only with `mode=hybrid`
+
+`Engine::search` now rejects a `semantic_weight` paired with
+`SearchMode::Lexical` or `SearchMode::Semantic`:
+
+```text
+InvalidArgument: invalid argument semantic_weight: semantic_weight applies only to mode=hybrid
+```
+
+Only hybrid ranking fuses a lexical and a semantic component, so only hybrid
+reads the weight between them. The other two modes discarded it, which made a
+request that set it look honored and rank as if it had not been. The value was
+never applied, so no ranking changes — drop the field, or set `mode` to
+`SearchMode::Hybrid` where you meant to fuse.
+
+`core_search_memories` already rejected this pairing and is unchanged for
+callers; the rule now also holds for the verb every embedding host and flavor
+enters through directly. One behaviour did change inside the tool: a hybrid
+request on a deployment with no embedding client degrades to lexical ranking,
+and the weight is now dropped with the semantic component it was weighting
+instead of forwarded. Such a request keeps working and still reports
+`degraded_to_lexical: true`.
 
 ## Freeze registries once
 

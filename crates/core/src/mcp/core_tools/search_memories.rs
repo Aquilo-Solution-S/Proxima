@@ -292,6 +292,7 @@ impl McpTool for SearchMemoriesTool {
             let prepared = PreparedSearch {
                 query: query.to_string(),
                 effective_mode,
+                semantic_weight: weight_for_effective_mode(args.semantic_weight, effective_mode),
                 since,
                 until,
                 query_embedding,
@@ -338,6 +339,11 @@ impl McpTool for SearchMemoriesTool {
 struct PreparedSearch {
     query: String,
     effective_mode: SearchMode,
+    /// The caller's weight, dropped when `effective_mode` degraded away
+    /// from hybrid. Degradation is an availability fact, not a caller
+    /// error, so the knob the run can no longer honor is discarded here
+    /// rather than carried into a verb that rejects it.
+    semantic_weight: Option<f32>,
     since: Option<time::OffsetDateTime>,
     until: Option<time::OffsetDateTime>,
     query_embedding: Option<Vec<f32>>,
@@ -439,7 +445,7 @@ async fn search_one_space(
         until: prepared.until,
         order: args.order,
         min_score: args.min_score,
-        semantic_weight: args.semantic_weight,
+        semantic_weight: prepared.semantic_weight,
         after: prepared.after,
         query_embedding: prepared.query_embedding.clone(),
         embedding_model_id: prepared.embedding_model_id.clone(),
@@ -719,6 +725,19 @@ fn semantic_search_degraded_to_lexical(
     )
 }
 
+/// The fusion weight to hand the search verb, given the mode the run can
+/// actually serve.
+///
+/// A caller who pairs a weight with a non-hybrid mode is rejected up front
+/// by [`validate_score_args`]. Degradation is the other case and not a
+/// caller error: a hybrid request on a deployment with no embeddings ranks
+/// lexically, and there is no semantic component left to weight. Dropping
+/// the knob here is what keeps that request servable, since the verb
+/// rejects a weight the mode cannot use.
+fn weight_for_effective_mode(requested: Option<f32>, effective: SearchMode) -> Option<f32> {
+    requested.filter(|_| matches!(effective, SearchMode::Hybrid))
+}
+
 fn resolve_effective_search_mode(
     requested: SearchMode,
     embeddings_available: bool,
@@ -809,6 +828,7 @@ mod tests {
         decode_cursor, degraded_to_lexical, effective_body_max_chars, encode_cursor,
         resolve_effective_search_mode, retain_surviving_neighbor_edges, truncate_body,
         validate_body_max_chars, validate_list_caps, validate_score_args,
+        weight_for_effective_mode,
     };
     use crate::MemoryId;
     use crate::mcp::McpToolError;
@@ -994,6 +1014,34 @@ mod tests {
         assert!(!degraded_to_lexical(SearchMode::Semantic, false, false));
         // Lexical is never degraded.
         assert!(!degraded_to_lexical(SearchMode::Lexical, false, false));
+    }
+
+    /// The verb rejects a fusion weight paired with a mode that would
+    /// discard it. A hybrid request that degrades to lexical because the
+    /// deployment has no embeddings must stay servable, so the weight is
+    /// dropped with the semantic component it was weighting — otherwise
+    /// every `semantic_weight` search on such a deployment would start
+    /// failing on a rule the caller did not break.
+    #[test]
+    fn a_degraded_run_drops_the_weight_it_can_no_longer_honor() {
+        assert_eq!(
+            weight_for_effective_mode(Some(0.7), SearchMode::Hybrid),
+            Some(0.7),
+            "a hybrid run still fuses, so it keeps the caller's weight"
+        );
+        assert_eq!(
+            weight_for_effective_mode(Some(0.7), SearchMode::Lexical),
+            None,
+            "degrading to lexical leaves no semantic component to weight"
+        );
+        // The same holds for the degradation `resolve_effective_search_mode`
+        // performs, which is the only way a non-hybrid effective mode can
+        // meet a weight that `validate_score_args` already admitted.
+        let (effective, degraded) =
+            resolve_effective_search_mode(SearchMode::Hybrid, false).expect("hybrid degrades");
+        assert!(degraded);
+        assert_eq!(weight_for_effective_mode(Some(0.25), effective), None);
+        assert_eq!(weight_for_effective_mode(None, SearchMode::Hybrid), None);
     }
 
     #[test]

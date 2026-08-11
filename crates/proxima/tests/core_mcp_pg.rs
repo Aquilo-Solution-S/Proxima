@@ -363,7 +363,7 @@ async fn shared_space_include_body_uses_shared_owner() {
 
         let search = call_test_model_tool(
             &tools,
-            authz,
+            authz.clone(),
             personal,
             "core_search_memories",
             serde_json::json!({
@@ -379,6 +379,36 @@ async fn shared_space_include_body_uses_shared_owner() {
         assert_eq!(search["memories"][0]["memory"], remembered_handle);
         assert_eq!(search["memories"][0]["space"], shared_space);
         assert!(search["memories"][0]["body"].as_str().unwrap().contains("shared body"));
+
+        // This deployment has no embedding client, so a hybrid request
+        // degrades to lexical ranking. The search verb rejects a fusion
+        // weight paired with a non-hybrid mode, and the caller broke no
+        // such rule — they asked for hybrid. The tool must therefore drop
+        // the weight along with the semantic component it was weighting,
+        // rather than forward a pairing the verb refuses.
+        let degraded = call_test_model_tool(
+            &tools,
+            authz,
+            personal,
+            "core_search_memories",
+            serde_json::json!({
+                "query": "unique needle",
+                "mode": "hybrid",
+                "semantic_weight": 0.7,
+                "kind": "Fact",
+                "spaces": [shared_space.clone()],
+                "limit": 5
+            }),
+        )
+        .await?;
+        assert_eq!(
+            degraded["degraded_to_lexical"], true,
+            "no embedding client means hybrid ranks lexically: {degraded}"
+        );
+        assert_eq!(
+            degraded["memories"][0]["memory"], remembered_handle,
+            "the degraded search still returns the hit: {degraded}"
+        );
 
         built.shutdown();
         Ok(())
