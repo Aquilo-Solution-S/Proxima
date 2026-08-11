@@ -224,7 +224,7 @@ pub(crate) fn edge_event_visibility_predicate(
                     OR (
                         EXISTS (
                             SELECT 1
-                              FROM (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) seo
+                              FROM {eo_union} seo
                               JOIN unnest(${read_kinds_param}::proxima_core.owner_ref_kind[], ${read_ids_param}::uuid[]) AS rs(kind, id)
                                 ON seo.owner_kind = rs.kind
                                AND seo.owner_id IS NOT DISTINCT FROM rs.id
@@ -233,14 +233,14 @@ pub(crate) fn edge_event_visibility_predicate(
                         AND NOT (
                             EXISTS (
                                 SELECT 1
-                                  FROM (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) weo
+                                  FROM {eo_union} weo
                                  WHERE weo.entity_id = {source_entity}
                                    AND weo.owner_kind = ${world_kind_param}
                                    AND weo.owner_id IS NOT DISTINCT FROM ${world_id_param}
                             )
                             AND NOT EXISTS (
                                 SELECT 1
-                                  FROM (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) teo
+                                  FROM {eo_union} teo
                                   JOIN unnest(${read_kinds_param}::proxima_core.owner_ref_kind[], ${read_ids_param}::uuid[]) AS rt(kind, id)
                                     ON teo.owner_kind = rt.kind
                                    AND teo.owner_id IS NOT DISTINCT FROM rt.id
@@ -248,7 +248,8 @@ pub(crate) fn edge_event_visibility_predicate(
                             )
                         )
                     )
-               )"
+               )",
+        eo_union = crate::verbs::query::entity_owner_union(),
     )
 }
 

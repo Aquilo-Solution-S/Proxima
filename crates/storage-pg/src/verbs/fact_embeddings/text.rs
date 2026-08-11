@@ -16,20 +16,23 @@ pub async fn load_fact_text(
     memory_id: MemoryId,
 ) -> Result<Option<String>, StorageError> {
     let (owner_kind, owner_id) = owner_parts(owner);
-    sqlx::query_scalar(
+    // SQL-POLICY: fixed-fragment — the only interpolation is the shared
+    // entity-owner-union constant; every value is bound.
+    sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
         "SELECT text
            FROM proxima_core.memories
           WHERE memory_id = $1
             AND EXISTS (
                 SELECT 1
-                  FROM (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) eo
+                  FROM {eo_union} eo
                  WHERE eo.entity_id = memory_id
                    AND eo.owner_kind = $2
                    AND eo.owner_id = $3
 )
             AND kind IS NULL
             AND tombstoned_at IS NULL",
-    )
+        eo_union = crate::verbs::query::entity_owner_union(),
+    )))
     .bind(memory_id.into_inner())
     .bind(owner_kind)
     .bind(owner_id)
@@ -54,13 +57,15 @@ pub async fn load_embedding_text(
     non_embeddable_schemas: &[String],
 ) -> Result<Option<String>, StorageError> {
     let (owner_kind, owner_id) = owner_parts(owner);
-    sqlx::query_scalar(
+    // SQL-POLICY: fixed-fragment — the only interpolation is the shared
+    // entity-owner-union constant; every value is bound.
+    sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
         "SELECT text
            FROM proxima_core.memories
           WHERE memory_id = $1
             AND EXISTS (
                 SELECT 1
-                  FROM (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) eo
+                  FROM {eo_union} eo
                  WHERE eo.entity_id = memory_id
                    AND eo.owner_kind = $2
                    AND eo.owner_id = $3
@@ -73,7 +78,8 @@ pub async fn load_embedding_text(
                  AND kind IS NULL)
                 OR kind = $4
             )",
-    )
+        eo_union = crate::verbs::query::entity_owner_union(),
+    )))
     .bind(memory_id.into_inner())
     .bind(owner_kind)
     .bind(owner_id)
@@ -95,20 +101,23 @@ pub async fn load_fact_text_in_tx(
     memory_id: MemoryId,
 ) -> Result<Option<String>, StorageError> {
     let (owner_kind, owner_id) = owner_parts(owner);
-    sqlx::query_scalar(
+    // SQL-POLICY: fixed-fragment — the only interpolation is the shared
+    // entity-owner-union constant; every value is bound.
+    sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
         "SELECT text
            FROM proxima_core.memories
           WHERE memory_id = $1
             AND EXISTS (
                 SELECT 1
-                  FROM (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) eo
+                  FROM {eo_union} eo
                  WHERE eo.entity_id = memory_id
                    AND eo.owner_kind = $2
                    AND eo.owner_id = $3
 )
             AND kind IS NULL
             AND tombstoned_at IS NULL",
-    )
+        eo_union = crate::verbs::query::entity_owner_union(),
+    )))
     .bind(memory_id.into_inner())
     .bind(owner_kind)
     .bind(owner_id)

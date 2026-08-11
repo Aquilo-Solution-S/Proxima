@@ -12,6 +12,19 @@ use sqlx::PgPool;
 use crate::error::map_err;
 use crate::sidecars::{PgSidecarKey, PgSidecarReadCtx, PgSidecarRegistryFrozen};
 
+/// `(kind, schema_id, schema_version, text, home owner kind, home owner id)`
+/// as [`load_memory_by_id`] selects it. Named so the annotation sits on one
+/// line and the query's `SQL-POLICY` proof stays adjacent to the call it
+/// proves.
+type MemoryHeadRow = (
+    Option<EntityKind>,
+    String,
+    i32,
+    Option<String>,
+    OwnerRefKind,
+    Option<uuid::Uuid>,
+);
+
 /// The Facts of one source batch, with their typed sidecar payloads.
 ///
 /// # Errors
@@ -52,24 +65,25 @@ async fn load_batch_facts_by_id(
     let mut rows_all = Vec::new();
     let mut ids_by_key = HashMap::<PgSidecarKey, Vec<MemoryId>>::new();
     for spec in sidecars {
-        let sql =
+        let sql = format!(
             "SELECT m.memory_id, e.schema_version
              FROM proxima_core.memories m
              JOIN proxima_core.fact_receipts e ON m.receipt_id = e.receipt_id
              WHERE e.source_batch_id = $1
                AND EXISTS (
                     SELECT 1
-                      FROM (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) eo
+                      FROM {eo_union} eo
                      WHERE eo.entity_id = m.memory_id
                        AND eo.owner_kind = $2
                        AND eo.owner_id = $3
 )
                AND m.schema_id = $4
                AND e.schema_version = $5
-               AND m.tombstoned_at IS NULL"
-        ;
-        // SQL-POLICY: fixed-fragment — `sql` is the literal above; all five
-        // parameters are bound.
+               AND m.tombstoned_at IS NULL",
+            eo_union = crate::verbs::query::entity_owner_union(),
+        );
+        // SQL-POLICY: fixed-fragment — the only interpolation is the shared
+        // entity-owner-union constant; all five parameters are bound.
         let rows: Vec<(uuid::Uuid, i32)> = sqlx::query_as(sqlx::AssertSqlSafe(sql))
             .bind(batch_id)
             .bind(owner_kind)
@@ -121,13 +135,13 @@ pub async fn load_abstraction_heads(
     let mut rows_all = Vec::new();
     let mut ids_by_key = HashMap::<PgSidecarKey, Vec<MemoryId>>::new();
     for spec in sidecars {
-        let sql =
+        let sql = format!(
             "SELECT m.memory_id, m.schema_version, m.text,
                     m.created_at
              FROM proxima_core.memories m
              WHERE EXISTS (
                     SELECT 1
-                      FROM (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) eo
+                      FROM {eo_union} eo
                      WHERE eo.entity_id = m.memory_id
                        AND eo.owner_kind = $1
                        AND eo.owner_id = $2
@@ -142,10 +156,11 @@ pub async fn load_abstraction_heads(
                       AND newer.tombstoned_at IS NULL
                )
              ORDER BY m.created_at DESC, m.memory_id DESC
-             LIMIT $5"
-        ;
-        // SQL-POLICY: fixed-fragment — `sql` is the literal above; all five
-        // parameters are bound.
+             LIMIT $5",
+            eo_union = crate::verbs::query::entity_owner_union(),
+        );
+        // SQL-POLICY: fixed-fragment — the only interpolation is the shared
+        // entity-owner-union constant; all five parameters are bound.
         let rows: Vec<(uuid::Uuid, i32, String, time::OffsetDateTime)> =
             sqlx::query_as(sqlx::AssertSqlSafe(sql))
                 .bind(owner_kind)
@@ -206,26 +221,23 @@ pub async fn load_memory_by_id(
     memory_id: MemoryId,
     sidecars: &[SidecarSpec],
 ) -> Result<Option<MemorySnapshot>, StorageError> {
-    let head: Option<(
-        Option<EntityKind>,
-        String,
-        i32,
-        Option<String>,
-        OwnerRefKind,
-        Option<uuid::Uuid>,
-    )> = sqlx::query_as(
+    let sql = format!(
         "SELECT m.kind, m.schema_id, m.schema_version, m.text,
                 home_owner.owner_kind, home_owner.owner_id
          FROM proxima_core.memories m
-         LEFT JOIN (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) home_owner
+         LEFT JOIN {eo_union} home_owner
            ON home_owner.entity_id = m.memory_id
 WHERE m.memory_id = $1
            AND m.tombstoned_at IS NULL",
-    )
-    .bind(memory_id.into_inner())
-    .fetch_optional(pool)
-    .await
-    .map_err(map_err)?;
+        eo_union = crate::verbs::query::entity_owner_union(),
+    );
+    // SQL-POLICY: fixed-fragment — the only interpolation is the shared
+    // entity-owner-union constant; the memory id is bound.
+    let head: Option<MemoryHeadRow> = sqlx::query_as(sqlx::AssertSqlSafe(sql))
+        .bind(memory_id.into_inner())
+        .fetch_optional(pool)
+        .await
+        .map_err(map_err)?;
     let Some((kind, schema_id, schema_version, text, _owner_kind, _owner_id)) = head else {
         return Ok(None);
     };

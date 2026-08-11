@@ -297,7 +297,17 @@ def run_fixture(path: Path) -> int:
 # table name (and its create_schemas entries) into CREATE SCHEMA / CREATE
 # TABLE / INSERT..SELECT, exactly as SQLx itself interpolates the configured
 # table name; nothing reaches these strings from a caller.
-EXPECTED_DYNAMIC_SQL_SITES = 54
+# 2026-08-11 analysis: +9 — the entity-owner union stopped being restated.
+# Twelve reads carried their own copy of the memories-∪-goals union that
+# `entity_owner_union()` exists to hold; nine of them were plain literals and
+# become counted sites by interpolating it (the other three already built
+# their SQL). This is the same trade already accepted on 2026-07-17 for
+# `load_memories_by_ids`, nine times over: the only interpolated text is a
+# crate-private `&'static str` with no path from any caller, and the
+# alternative is twelve independent spellings of the ownership model, which
+# `check_entity_owner_union` in check-architecture-guardrails.py now forbids.
+# The union text is byte-identical at every site, so no statement changed.
+EXPECTED_DYNAMIC_SQL_SITES = 63
 
 
 def run_self_test() -> int:
