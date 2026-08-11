@@ -9,7 +9,7 @@ use crate::storage::{MemoryGraphPayloadRow, StorageError};
 use crate::storage_ports::ReadVerbStoragePorts;
 use crate::verbs::query::{
     FactCitationReadback, MAX_RELEVANCE_SEARCH_DEPTH, MemorySearchRequest, MemorySearchResult,
-    SearchCursor,
+    SearchCursor, SearchMode,
 };
 use crate::verbs::schema::{MemorySearchProjection, PayloadKind};
 use crate::{EntityId, EntityKind, FactEntityId, MemoryId, OwnerRef, SchemaId, SchemaVersion};
@@ -124,10 +124,12 @@ impl Engine {
     /// # Errors
     ///
     /// Returns `InvalidArgument` when `min_score`/`semantic_weight` fall
-    /// outside `0.0..=1.0`, or when `after` disagrees with `order` or
-    /// exceeds the relevance pagination depth bound; `Forbidden` when the
-    /// context cannot access `req.search.owner` or lacks
-    /// [`Relation::Viewer`]; `Internal` when storage reads fail.
+    /// outside `0.0..=1.0`, when `semantic_weight` is set on a mode other
+    /// than [`crate::verbs::query::SearchMode::Hybrid`], or when `after`
+    /// disagrees with `order` or exceeds the relevance pagination depth
+    /// bound; `Forbidden` when the context cannot access
+    /// `req.search.owner` or lacks [`Relation::Viewer`]; `Internal` when
+    /// storage reads fail.
     pub async fn search(
         &self,
         authz: &AuthzContext,
@@ -415,9 +417,10 @@ impl Engine {
     }
 }
 
-/// Bounds check for caller-supplied search knobs, shared by every
-/// entry into the search verb. Storage re-validates the cursor/order
-/// pairing as defense in depth for direct port callers.
+/// Admission check for caller-supplied search knobs, shared by every
+/// entry into the search verb: bounds, the cursor/order pairing, and
+/// the modes each knob is meaningful in. Storage re-validates the
+/// cursor/order pairing as defense in depth for direct port callers.
 fn validate_search_request(search: &MemorySearchRequest) -> Result<(), ProtocolError> {
     if let Some(floor) = search.min_score
         && !(floor.is_finite() && (0.0..=1.0).contains(&floor))
@@ -427,13 +430,22 @@ fn validate_search_request(search: &MemorySearchRequest) -> Result<(), ProtocolE
             "min_score must be within 0.0..=1.0",
         ));
     }
-    if let Some(weight) = search.semantic_weight
-        && !(weight.is_finite() && (0.0..=1.0).contains(&weight))
-    {
-        return Err(ProtocolError::invalid_argument(
-            "semantic_weight",
-            "semantic_weight must be within 0.0..=1.0",
-        ));
+    if let Some(weight) = search.semantic_weight {
+        if !(weight.is_finite() && (0.0..=1.0).contains(&weight)) {
+            return Err(ProtocolError::invalid_argument(
+                "semantic_weight",
+                "semantic_weight must be within 0.0..=1.0",
+            ));
+        }
+        // Only hybrid fusion reads the weight; lexical and semantic ranking
+        // discard it. Saying so beats accepting a knob that does nothing,
+        // which reads as a ranking that ignored the caller.
+        if !matches!(search.mode, SearchMode::Hybrid) {
+            return Err(ProtocolError::invalid_argument(
+                "semantic_weight",
+                "semantic_weight applies only to mode=hybrid",
+            ));
+        }
     }
     match search.after {
         Some(after) if after.order() != search.order => Err(ProtocolError::invalid_argument(
@@ -692,6 +704,8 @@ mod tests {
         assert_eq!(err.code, ErrorCode::InvalidArgument);
 
         let mut nan_weight = search_req(&owner);
+        // Hybrid, so this isolates the bounds rule from the mode rule below.
+        nan_weight.search.mode = SearchMode::Hybrid;
         nan_weight.search.semantic_weight = Some(f32::NAN);
         let err = engine
             .search(&authz, &nan_weight)
@@ -722,6 +736,35 @@ mod tests {
             .await
             .expect_err("relevance depth beyond the bound must fail");
         assert_eq!(err.code, ErrorCode::InvalidArgument);
+    }
+
+    /// Only hybrid fuses a lexical and a semantic component, so only
+    /// hybrid reads the weight between them; storage discards it in the
+    /// other two modes. Accepting it there returns a ranking that ignored
+    /// an argument the caller set. `core_search_memories` has always
+    /// rejected the pairing — the verb it delegates to, which every
+    /// embedding host and flavor also enters through, did not.
+    #[tokio::test]
+    async fn search_rejects_a_fusion_weight_no_mode_would_use() {
+        let owner = owner();
+        let engine = engine();
+        let authz = granted_authz(&owner);
+
+        for mode in [SearchMode::Lexical, SearchMode::Semantic] {
+            let mut req = search_req(&owner);
+            req.search.mode = mode;
+            req.search.semantic_weight = Some(0.5);
+            let err = engine
+                .search(&authz, &req)
+                .await
+                .expect_err("a weight outside hybrid must fail");
+            assert_eq!(err.code, ErrorCode::InvalidArgument);
+            assert!(
+                err.message.contains("mode=hybrid"),
+                "the error must name the mode that would have used it, got {:?}",
+                err.message
+            );
+        }
     }
 
     #[tokio::test]

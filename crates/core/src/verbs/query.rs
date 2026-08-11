@@ -161,7 +161,9 @@ pub struct MemorySearchRequest {
     pub min_score: Option<f32>,
     /// Hybrid fusion weight on the semantic component (0..=1); the
     /// lexical component gets the complement. `None` uses
-    /// [`DEFAULT_HYBRID_SEMANTIC_WEIGHT`]. Unused outside `Hybrid`.
+    /// [`DEFAULT_HYBRID_SEMANTIC_WEIGHT`]. Only [`SearchMode::Hybrid`]
+    /// fuses two components, so the verb rejects a weight paired with
+    /// any other mode rather than accepting one it would discard.
     #[serde(default)]
     pub semantic_weight: Option<f32>,
     /// Resume point from a previous page. The variant must match

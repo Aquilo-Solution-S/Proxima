@@ -297,6 +297,11 @@ async fn local_ingestion_lands_facts_citations_edges_and_replays_idempotently() 
         .fetch_one(pg.pool_for_tests())
         .await?;
         assert!(call_pairs > 0, "expected call sites in chunk payloads");
+        assert!(
+            report.call_references_emitted > 0,
+            "the poll that produced those pairs must have counted them; \
+             the counter is what `ingest_head_snapshot` reports to its caller"
+        );
         assert_eq!(
             call_edges, call_pairs,
             "one index row per distinct callee, no more and no fewer"
