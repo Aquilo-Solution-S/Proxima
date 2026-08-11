@@ -1886,6 +1886,20 @@ It expands action-scoped tools to `tool:action` granularity itself, so
 excluding a tool name excludes every one of its actions — no partial-exclusion
 gap when a tool grows a new action.
 
+The palette also carries every core resource scope key. `read_resource` runs
+through the same flat scope gate as a tool call, with the resource's
+`resource:*` key standing in for a tool name, so a palette built from tools
+alone *denies* every `proxima://` read rather than merely leaving it
+unadvertised. Exclude a resource the same way you exclude a tool, by its exact
+scope key:
+
+```rust
+let scope = proxima::tool_palette_excluding(
+    &built.registry,
+    &["dangerous_tool_id", "resource:memory-lineage"],
+);
+```
+
 ## `RuntimeBuilder::tool_scope` is now required
 
 An unset tool scope no longer defaults to `ToolScope::All`. A host that never

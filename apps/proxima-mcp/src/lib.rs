@@ -630,20 +630,7 @@ fn registered_tool_ids() -> Result<Vec<String>, CliError> {
     let frozen = registry
         .try_freeze()
         .map_err(|err| CliError::Runtime(ProximaError::Registry(err)))?;
-    let mut ids = Vec::new();
-    for tool in frozen.list_mcp_tools() {
-        if tool.action_arg_specs.is_empty() {
-            ids.push(tool.name.to_string());
-        } else {
-            ids.extend(
-                tool.action_arg_specs
-                    .iter()
-                    .map(|spec| format!("{}:{}", tool.name, spec.action)),
-            );
-        }
-    }
-    ids.extend(all_core_resources().map(|resource| resource.scope_key.to_string()));
-    Ok(ids)
+    Ok(proxima_core::canonical_scope_keys(&frozen))
 }
 
 fn tool_scope_from_env(

@@ -181,6 +181,61 @@ pub fn core_action_meta(tool: &str, action: &str) -> Option<&'static CoreActionM
     all_core_actions().find(|meta| meta.tool == tool && meta.action == action)
 }
 
+/// Every scope key a `ToolScope::Palette` can be asked about, for a frozen
+/// registry.
+///
+/// The scope gate is flat string membership ([`crate::ToolScope::allows`]), and
+/// `read_resource` funnels through that same gate with the resource's scope key
+/// standing in for a tool name — so a palette assembled from tools alone denies
+/// every `proxima://` read rather than merely not advertising it. Resource keys
+/// are therefore part of the canonical enumeration, not an optional extra a
+/// caller remembers to append.
+///
+/// Flat tools contribute their id; dispatchers contribute one `tool:action`
+/// leaf per action, because the gate authorizes them at that granularity.
+#[must_use]
+pub fn canonical_scope_keys(registry: &crate::FlavorRegistryFrozen) -> Vec<String> {
+    canonical_scope_keys_excluding(registry, &[])
+}
+
+/// [`canonical_scope_keys`] minus every id in `exclude`.
+///
+/// Exclusion is applied to the *tool name* before its actions are expanded, so
+/// naming a dispatcher removes all of its leaves in one step and an action
+/// added to it later cannot silently re-enter the palette. Resource keys are
+/// excluded by their exact scope key.
+#[must_use]
+pub fn canonical_scope_keys_excluding(
+    registry: &crate::FlavorRegistryFrozen,
+    exclude: &[&str],
+) -> Vec<String> {
+    let excluded: std::collections::HashSet<&str> = exclude.iter().copied().collect();
+    let mut keys = Vec::new();
+    for tool in registry.list_mcp_tools() {
+        if excluded.contains(tool.name) {
+            continue;
+        }
+        if tool.action_arg_specs.is_empty() {
+            keys.push(tool.name.to_string());
+        } else {
+            keys.extend(
+                tool.action_arg_specs
+                    .iter()
+                    .map(|action| format!("{}:{}", tool.name, action.action)),
+            );
+        }
+    }
+    keys.extend(
+        all_core_resources()
+            .map(|resource| resource.scope_key)
+            .filter(|scope_key| !excluded.contains(scope_key))
+            .map(ToString::to_string),
+    );
+    keys.sort();
+    keys.dedup();
+    keys
+}
+
 /// MCP behavior hints for substrate tools, keyed by registered tool name.
 #[must_use]
 pub fn core_tool_annotations(canonical_name: &str) -> Option<McpToolAnnotations> {
