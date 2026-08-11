@@ -478,32 +478,17 @@ pub enum ToolError {
     Other(String),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ToolOrigin {
-    Substrate,
-    Flavor(String),
-}
-
-#[derive(Debug, Clone)]
-pub struct ToolDescriptor {
-    pub name: &'static str,
-    pub description: &'static str,
-    pub origin: ToolOrigin,
-    pub produces_schema_ids: &'static [&'static str],
-    pub args_schema: serde_json::Value,
-    pub call: ToolCallFn,
-}
-
-#[derive(Debug)]
-pub struct ToolCall {
-    pub name: String,
-    pub args: serde_json::Value,
-    pub ctx: ToolCtx,
-}
-
-pub type ToolCallFn =
-    fn(ToolCtx, serde_json::Value) -> BoxFuture<'static, Result<serde_json::Value, ToolError>>;
-
+/// A tool written against typed arguments and a typed answer, with no wire
+/// concepts in its signature.
+///
+/// There is deliberately no transport-neutral descriptor beside this trait.
+/// The blanket `impl<T: Tool> McpTool for T` adapts the context, and
+/// registration mints exactly one
+/// [`McpToolDescriptor`](crate::mcp::McpToolDescriptor) per tool — which is
+/// what the scope gate, the tool catalog, the REST action routes and the
+/// `OpenAPI` document all read. A second descriptor type would be a second
+/// answer to "what is registered", and the one no seam consults is the one
+/// that drifts.
 pub trait Tool: Send + Sync + 'static {
     const NAME: &'static str;
     const DESCRIPTION: &'static str;
