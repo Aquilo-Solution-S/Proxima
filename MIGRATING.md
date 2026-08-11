@@ -13,12 +13,12 @@ not a reference. Deployment and env vars live in
 
 | You are | Read |
 |---|---|
-| A **v0.0.7 Rust host** | [apply the v0.0.8 schema lane](#the-v008-schema-lane), [compose flavor services once](#compose-flavor-services-once), [redeem durable worker authority](#redeem-durable-worker-authority), [use private blob-service wrappers](#use-private-blob-service-wrappers), [move caller provenance into `ToolCtx`](#move-caller-provenance-into-toolctx), [remove the inert runtime owner-access registration](#remove-the-inert-runtime-owner-access-registration), [remove the dependency-satisfaction seam](#remove-the-dependency-satisfaction-seam), [an empty environment value is an unset one](#an-empty-environment-value-is-an-unset-one), [pass `semantic_weight` only with `mode=hybrid`](#pass-semantic_weight-only-with-modehybrid), [give each Goal write its own idempotency key](#give-each-goal-write-its-own-idempotency-key), [pass the shared Host allowlist](#pass-the-shared-host-allowlist), [apply listener-wide CORS](#apply-listener-wide-cors), then [freeze registries once](#freeze-registries-once) |
+| A **v0.0.7 Rust host** | [apply the v0.0.8 schema lane](#the-v008-schema-lane), [compose flavor services once](#compose-flavor-services-once), [redeem durable worker authority](#redeem-durable-worker-authority), [use private blob-service wrappers](#use-private-blob-service-wrappers), [move caller provenance into `ToolCtx`](#move-caller-provenance-into-toolctx), [remove the inert runtime owner-access registration](#remove-the-inert-runtime-owner-access-registration), [remove the dependency-satisfaction seam](#remove-the-dependency-satisfaction-seam), [remove the unused `ToolDescriptor` family](#remove-the-unused-tooldescriptor-family), [an empty environment value is an unset one](#an-empty-environment-value-is-an-unset-one), [pass `semantic_weight` only with `mode=hybrid`](#pass-semantic_weight-only-with-modehybrid), [give each Goal write its own idempotency key](#give-each-goal-write-its-own-idempotency-key), [pass the shared Host allowlist](#pass-the-shared-host-allowlist), [apply listener-wide CORS](#apply-listener-wide-cors), then [freeze registries once](#freeze-registries-once) |
 | An **operator** promoting a deployment | [the v0.0.8 schema lane](#the-v008-schema-lane), [an empty environment value is an unset one](#an-empty-environment-value-is-an-unset-one), then [operator changes](#operator-changes) |
 | Running the **code flavor** | the above, then [re-register and re-index](#re-register-and-re-index-every-code-repository) |
 | An **MCP client / agent** author | [give each Goal write its own idempotency key](#give-each-goal-write-its-own-idempotency-key), [regenerate OpenAPI clients](#regenerate-openapi-clients), then [wire changes](#wire-changes-mcp-clients) |
 | An **embedding host** driving `Engine` in Rust | [pass `semantic_weight` only with `mode=hybrid`](#pass-semantic_weight-only-with-modehybrid), then [Rust host changes](#rust-host-changes) |
-| A **flavor** author | [compose flavor services once](#compose-flavor-services-once), [move caller provenance into `ToolCtx`](#move-caller-provenance-into-toolctx), [remove the dependency-satisfaction seam](#remove-the-dependency-satisfaction-seam), [freeze registries once](#freeze-registries-once), then [flavor SDK changes](#flavor-sdk-changes) |
+| A **flavor** author | [compose flavor services once](#compose-flavor-services-once), [move caller provenance into `ToolCtx`](#move-caller-provenance-into-toolctx), [remove the dependency-satisfaction seam](#remove-the-dependency-satisfaction-seam), [remove the unused `ToolDescriptor` family](#remove-the-unused-tooldescriptor-family), [freeze registries once](#freeze-registries-once), then [flavor SDK changes](#flavor-sdk-changes) |
 | Booting against a **pre-v0.0.4 database** | [the v0.0.4 reset](#the-v004-reset) first — nothing else applies until it is done |
 
 Every upgrade also needs [the lock-step rules](#rules-for-every-upgrade) and
@@ -262,6 +262,46 @@ and reads each target through authorized APIs.
 `ExecutionRequestV1` and `TestRequestV1` retain `depends_on_memory_ids`. The
 retired PostgreSQL helper joined target memories without target authorization
 and could expose a redacted target's schema id; do not recreate it.
+
+There is no wire, database, schema, migration, or Lean change in this slice.
+
+## Remove the unused `ToolDescriptor` family
+
+The following unused Rust APIs are removed from `proxima_core` and from the
+`proxima` SDK re-export:
+
+- `ToolDescriptor` and `ToolOrigin`;
+- `ToolCallFn`; and
+- `ToolCall` — the crate-root one, not `proxima_core::mcp::ToolCall`, which
+  is unchanged.
+
+Nothing constructed any of them. Registering a tool has always minted an
+`McpToolDescriptor`, and that is the descriptor the scope gate, the tool
+catalog, the REST action routes and the `OpenAPI` document all read.
+`ToolDescriptor` was a narrower shape — no `output_schema`, no
+`action_arg_specs`, no `annotations` — that no registry ever held, so a host
+reading it to learn what was registered would have read an empty answer.
+
+**Check your imports for `ToolCall`.** `proxima_core::mcp::ToolCall` is a
+different type with the same three field names, carrying an `McpToolCtx`
+instead of a `ToolCtx`, and it is the live one: it is what a `RequestBehavior`
+receives and what a `TerminalDispatch` is handed. Because the dead twin sat at
+the crate root, an unqualified import resolved to it:
+
+```rust
+// before — resolves to the removed type
+use proxima_core::ToolCall;
+// after
+use proxima_core::mcp::ToolCall;
+```
+
+`ToolCtx`, `ToolCaller`, `ToolError`, `ToolServices` and the `Tool` trait are
+unchanged, and there is deliberately no transport-neutral descriptor beside
+`Tool`: the blanket `impl<T: Tool> McpTool for T` adapts the context, and
+registration produces one descriptor per tool.
+
+[12-tool-manifest.md](docs/12-tool-manifest.md) documented the MCP descriptor
+under the removed name and omitted its `origin` field; both are corrected.
 
 There is no wire, database, schema, migration, or Lean change in this slice.
 

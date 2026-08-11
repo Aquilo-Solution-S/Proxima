@@ -86,9 +86,10 @@ pub struct ToolCaller {
     pub client_version: String,
 }
 
-pub struct ToolDescriptor {
+pub struct McpToolDescriptor {
     pub name: &'static str,
     pub description: &'static str,
+    pub origin: McpToolOrigin,
     pub produces_schema_ids: &'static [&'static str],
     pub args_schema: serde_json::Value,
     pub output_schema: serde_json::Value,
