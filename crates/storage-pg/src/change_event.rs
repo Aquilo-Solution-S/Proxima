@@ -36,19 +36,21 @@ struct ChangeEventRow {
     edge_target_visible: bool,
 }
 
-/// Hydrate a single `change_event` row into a typed `ChangeEvent`.
+/// Build the column list and the three correlated subqueries that define what a
+/// reader may see of a `change_event` row, shared by the single and batch
+/// hydrators so the two cannot disagree about it.
 ///
-/// The migration guarantees exactly one of `(entity_memory_id,
-/// entity_goal_id)` is non-NULL for `EntityAppend`, and same for
-/// supersedes columns.
-pub(crate) async fn hydrate_change_event(
-    pool: &sqlx::PgPool,
-    read_owners: &[OwnerRef],
-    seq: Uuid,
-) -> Result<Option<ChangeEvent>, StorageError> {
-    let (read_owner_kinds, read_owner_ids) =
-        crate::access::owner_columns::owner_arrays(read_owners);
-    let row = sqlx::query_as::<_, ChangeEventRow>(
+/// `edge_target_visible` is the one that matters: it is what makes
+/// [`decode_edge_event`] return [`EdgeTargetProjection::Redacted`] instead
+/// of a real endpoint, so a second copy of it is a second place redaction
+/// can be weakened. Both hydrators feed [`ChangeEventRow`], which is what
+/// binds this list to the struct that reads it.
+///
+/// `$2`/`$3` are the read-owner kind/id arrays. `$1` is left to the caller:
+/// it is the only part that differs between the two queries, being a `seq`
+/// in one and a `seq` array in the other.
+fn change_event_projection() -> String {
+    format!(
         r"SELECT seq,
                   owner_kind,
                   owner_id,
@@ -78,7 +80,7 @@ pub(crate) async fn hydrate_change_event(
                   (
                       edge_kind IS NULL OR EXISTS (
                           SELECT 1
-                            FROM (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) teo
+                            FROM {eo_union} teo
                             JOIN unnest($2::proxima_core.owner_ref_kind[], $3::uuid[]) AS rs(kind, id)
                               ON teo.owner_kind = rs.kind
                              AND teo.owner_id IS NOT DISTINCT FROM rs.id
@@ -88,8 +90,30 @@ pub(crate) async fn hydrate_change_event(
                                edge_target_id)
                       )
                   ) AS edge_target_visible
-             FROM proxima_core.change_event WHERE seq = $1",
+             FROM proxima_core.change_event",
+        eo_union = crate::verbs::query::entity_owner_union(),
     )
+}
+
+/// Hydrate a single `change_event` row into a typed `ChangeEvent`.
+///
+/// The migration guarantees exactly one of `(entity_memory_id,
+/// entity_goal_id)` is non-NULL for `EntityAppend`, and same for
+/// supersedes columns.
+pub(crate) async fn hydrate_change_event(
+    pool: &sqlx::PgPool,
+    read_owners: &[OwnerRef],
+    seq: Uuid,
+) -> Result<Option<ChangeEvent>, StorageError> {
+    let (read_owner_kinds, read_owner_ids) =
+        crate::access::owner_columns::owner_arrays(read_owners);
+    // SQL-POLICY: fixed-fragment — the only interpolation is this module's
+    // own projection, itself built only from the shared entity-owner-union
+    // constant; `seq` and both owner arrays are bound.
+    let row = sqlx::query_as::<_, ChangeEventRow>(sqlx::AssertSqlSafe(format!(
+        "{projection} WHERE seq = $1",
+        projection = change_event_projection()
+    )))
     .bind(seq)
     .bind(&read_owner_kinds)
     .bind(&read_owner_ids)
@@ -112,49 +136,13 @@ pub(crate) async fn hydrate_change_events_batch(
     }
     let (read_owner_kinds, read_owner_ids) =
         crate::access::owner_columns::owner_arrays(read_owners);
-    let rows = sqlx::query_as::<_, ChangeEventRow>(
-        r"SELECT seq,
-                  owner_kind,
-                  owner_id,
-                  kind,
-                  entity_kind,
-                  entity_memory_id, entity_goal_id,
-                  entity_schema_id, entity_schema_version,
-                  supersedes_memory_id, supersedes_goal_id,
-                  edge_kind, edge_source_kind, edge_source_id,
-                  edge_target_kind, edge_target_id,
-                  (
-                      entity_memory_id IS NULL
-                      OR EXISTS (
-                          SELECT 1
-                            FROM proxima_core.memories m
-                           WHERE m.memory_id = change_event.entity_memory_id
-                             AND m.tombstoned_at IS NULL
-                      )
-                  ) AS entity_memory_present,
-                  (
-                      edge_kind IS NULL OR EXISTS (
-                          SELECT 1
-                            FROM (SELECT memory_id AS entity_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id FROM proxima_core.goals UNION ALL SELECT fact_entity_id AS entity_id FROM proxima_core.fact_entities) teo
-                           WHERE teo.entity_id = edge_target_id
-                      )
-                  ) AS edge_target_available,
-                  (
-                      edge_kind IS NULL OR EXISTS (
-                          SELECT 1
-                            FROM (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) teo
-                            JOIN unnest($2::proxima_core.owner_ref_kind[], $3::uuid[]) AS rs(kind, id)
-                              ON teo.owner_kind = rs.kind
-                             AND teo.owner_id IS NOT DISTINCT FROM rs.id
-                           WHERE teo.entity_id = COALESCE(
-                               (SELECT fe.current_memory_id FROM proxima_core.fact_entities fe
-                                 WHERE fe.fact_entity_id = edge_target_id),
-                               edge_target_id)
-                      )
-                  ) AS edge_target_visible
-             FROM proxima_core.change_event
-             WHERE seq = ANY($1::uuid[]) ORDER BY seq DESC",
-    )
+    // SQL-POLICY: fixed-fragment — the only interpolation is this module's
+    // own projection, itself built only from the shared entity-owner-union
+    // constant; `seqs` and both owner arrays are bound.
+    let rows = sqlx::query_as::<_, ChangeEventRow>(sqlx::AssertSqlSafe(format!(
+        "{projection} WHERE seq = ANY($1::uuid[]) ORDER BY seq DESC",
+        projection = change_event_projection()
+    )))
     .bind(seqs)
     .bind(&read_owner_kinds)
     .bind(&read_owner_ids)

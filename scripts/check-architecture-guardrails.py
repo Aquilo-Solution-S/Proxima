@@ -167,6 +167,39 @@ def check_runtime_registration(findings: list[Finding]) -> None:
     )
 
 
+# `entity_owner_union()` is the entity-ownership model written in SQL: the
+# set every read joins against to ask who owns a memory or a goal. It is
+# defined once, in the module below, and interpolated by every caller.
+ENTITY_OWNER_UNION_DEF = "crates/storage-pg/src/verbs/query/mod.rs"
+ENTITY_OWNER_UNION_TEXT = (
+    r"SELECT\s+memory_id\s+AS\s+entity_id,\s*owner_kind,\s*owner_id\s+"
+    r"FROM\s+proxima_core\.memories\s+UNION\s+ALL\s+"
+    r"SELECT\s+goal_id\s+AS\s+entity_id,\s*owner_kind,\s*owner_id\s+"
+    r"FROM\s+proxima_core\.goals"
+)
+
+
+def check_entity_owner_union(findings: list[Finding]) -> None:
+    """Restating the union is how the ownership model silently forks.
+
+    A copy is not wrong on the day it is written — it is wrong on the day
+    the union gains a third source and only some readers learn about it.
+    Interpolate `entity_owner_union()` instead; the SQL is byte-identical,
+    and a `SQL-POLICY: fixed-fragment` proof covers the interpolation.
+    """
+    paths = [
+        p
+        for p in production_src_files()
+        if p.relative_to(ROOT).as_posix() != ENTITY_OWNER_UNION_DEF
+    ]
+    add_regex_findings(
+        findings,
+        paths,
+        ENTITY_OWNER_UNION_TEXT,
+        "restated entity-owner union (interpolate entity_owner_union())",
+    )
+
+
 def iter_rust_string_literals(text: str):
     """Yield ``(start_line, start_offset, literal_text)`` for each Rust string /
     raw-string / byte-string literal in ``text``, in source order.
@@ -617,6 +650,7 @@ def main() -> int:
     check_personality_authz(findings)
     check_storage_resurrection(findings)
     check_runtime_registration(findings)
+    check_entity_owner_union(findings)
     check_flavor_core_sql(findings)
     check_event_source_vocabulary(findings)
     check_tombstone_tool(findings)

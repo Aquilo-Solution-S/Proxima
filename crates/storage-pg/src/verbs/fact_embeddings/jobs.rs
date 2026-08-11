@@ -54,12 +54,14 @@ pub async fn list_facts_missing_embedding(
     let (owner_kind, owner_id) = owner_parts(owner);
     let limit = i64::try_from(limit)
         .map_err(|_| StorageError::ConstraintViolation("limit too large".into()))?;
-    let rows = sqlx::query_scalar::<_, uuid::Uuid>(
+    // SQL-POLICY: fixed-fragment — the only interpolation is the shared
+    // entity-owner-union constant; every value is bound.
+    let rows = sqlx::query_scalar::<_, uuid::Uuid>(sqlx::AssertSqlSafe(format!(
         "SELECT m.memory_id
            FROM proxima_core.memories m
           WHERE EXISTS (
                     SELECT 1
-                      FROM (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) eo
+                      FROM {eo_union} eo
                      WHERE eo.entity_id = m.memory_id
                        AND eo.owner_kind = $1
                        AND eo.owner_id = $2
@@ -67,7 +69,7 @@ pub async fn list_facts_missing_embedding(
             AND m.kind IS NULL
             AND m.text IS NOT NULL
             -- Declined a vector rather than lacking one; see
-            -- `FactPayload::EMBEDDABLE`. `<> ALL('{}')` is TRUE, so an
+            -- `FactPayload::EMBEDDABLE`. `<> ALL('{{}}')` is TRUE, so an
             -- empty list leaves the query exactly as it was.
             AND m.schema_id <> ALL($5::text[])
             AND m.tombstoned_at IS NULL
@@ -80,7 +82,8 @@ pub async fn list_facts_missing_embedding(
             )
           ORDER BY m.created_at ASC, m.memory_id ASC
           LIMIT $4",
-    )
+        eo_union = crate::verbs::query::entity_owner_union(),
+    )))
     .bind(owner_kind)
     .bind(owner_id)
     .bind(model_id)
@@ -367,14 +370,16 @@ pub async fn enqueue_missing_embedding_jobs(
         return Ok(0);
     }
     let (owner_kind, owner_id) = owner_parts(permit.owner());
-    let result = sqlx::query(
+    // SQL-POLICY: fixed-fragment — the only interpolation is the shared
+    // entity-owner-union constant; every value is bound.
+    let result = sqlx::query(sqlx::AssertSqlSafe(format!(
         "WITH missing AS (
              SELECT m.memory_id,
                     COALESCE(m.kind, 'Fact'::proxima_core.entity_kind) AS entity_kind
                FROM proxima_core.memories m
               WHERE EXISTS (
                         SELECT 1
-                          FROM (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) eo
+                          FROM {eo_union} eo
                          WHERE eo.entity_id = m.memory_id
                            AND eo.owner_kind = $1
                            AND eo.owner_id = $2
@@ -418,7 +423,8 @@ pub async fn enqueue_missing_embedding_jobs(
          ON CONFLICT (owner_kind, owner_id,
                       entity_kind, entity_id, model_id, embedding_version)
          DO NOTHING",
-    )
+        eo_union = crate::verbs::query::entity_owner_union(),
+    )))
     .bind(owner_kind)
     .bind(owner_id)
     .bind(model_id)

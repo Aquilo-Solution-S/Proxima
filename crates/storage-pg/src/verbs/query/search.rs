@@ -380,12 +380,12 @@ fn lexical_branch_sql<'p>(
     write!(
         sql,
         " , scrubbed AS (
-               SELECT regexp_replace(
-                          regexp_replace(${query_param}, '[[:punct:]]+', ' ', 'g'),
-                          '\\m[[:alnum:]]{{255}}[[:alnum:]]+\\M',
-                          ' ',
-                          'g'
-                      ) AS q
+               -- The same scrub every stored `search_tsv` went through
+               -- (`lexical_tsv` = `to_tsvector(config, lexical_scrub(txt))`).
+               -- Called, not restated: a query token that keeps punctuation
+               -- the document side dropped can never match the stored
+               -- lexeme, and that failure is silent.
+               SELECT proxima_core.lexical_scrub(${query_param}) AS q
           )
           , q AS (
                -- One tsquery per active language, OR-combined: the match

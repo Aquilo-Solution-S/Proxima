@@ -178,27 +178,15 @@ impl<A: FlavorApp + 'static> Proxima<A> {
     ///
     /// Returns config, security, storage, engine, or MCP assembly errors.
     pub async fn build(self) -> Result<BuiltProxima, ProximaError> {
-        let (config, parts) = self.resolve()?;
-        let allowlist = if config.mcp.is_some() {
-            Some(resolve_allowlist(&config)?)
-        } else {
-            None
-        };
-        let booted = boot_app::<A>(&config, &parts).await?;
-        let cancel = CancellationToken::new();
-        let app_ctx = AppContext {
-            engine: booted.engine.clone(),
-            pool: booted.pool.clone(),
-            blobs: booted.blobs.clone(),
-            owner: booted.owner,
-        };
-        let services = assemble_services::<A>(
-            &app_ctx,
-            &booted.registry,
-            &config.tool_scope,
-            parts.authenticator.as_ref(),
-            &booted.delegation_runtime_authority,
-        )?;
+        let BootedRuntime {
+            config,
+            parts,
+            allowlist,
+            booted,
+            cancel,
+            app_ctx,
+            services,
+        } = self.boot_common().await?;
 
         let service = if let Some(allowlist) = allowlist {
             Some(build_router::<A>(
@@ -235,27 +223,15 @@ impl<A: FlavorApp + 'static> Proxima<A> {
     ///
     /// Returns config, security, storage, engine, bind, or MCP serving errors.
     pub async fn run(self) -> Result<RunningProxima, ProximaError> {
-        let (config, parts) = self.resolve()?;
-        let allowlist = if config.mcp.is_some() {
-            Some(resolve_allowlist(&config)?)
-        } else {
-            None
-        };
-        let booted = boot_app::<A>(&config, &parts).await?;
-        let cancel = CancellationToken::new();
-        let app_ctx = AppContext {
-            engine: booted.engine.clone(),
-            pool: booted.pool.clone(),
-            blobs: booted.blobs.clone(),
-            owner: booted.owner,
-        };
-        let services = assemble_services::<A>(
-            &app_ctx,
-            &booted.registry,
-            &config.tool_scope,
-            parts.authenticator.as_ref(),
-            &booted.delegation_runtime_authority,
-        )?;
+        let BootedRuntime {
+            config,
+            parts,
+            allowlist,
+            booted,
+            cancel,
+            app_ctx,
+            services,
+        } = self.boot_common().await?;
 
         let (mcp_addr, server) = if let (Some(mcp), Some(allowlist)) = (config.mcp, allowlist) {
             if !config.expose_network {
@@ -323,6 +299,50 @@ impl<A: FlavorApp + 'static> Proxima<A> {
             insecure_single_owner: config.insecure_single_owner,
             services,
             workers,
+        })
+    }
+
+    /// The boot prelude both entry points share, in the order boot has to
+    /// happen: resolve configuration, resolve the origin allowlist, then
+    /// touch storage.
+    ///
+    /// That order is the point of having one copy. `resolve_allowlist`
+    /// runs before `boot_app`, so a deployment naming an unparseable
+    /// origin is refused before a connection is opened. The
+    /// `build_refuses_*_before_storage` tests do not reach this: they pin
+    /// refusals `resolve` itself raises, which precede storage whatever
+    /// this function does. `run_refuses_an_unparseable_origin_before_storage`
+    /// is what pins the ordering here, for both entry points at once.
+    async fn boot_common(self) -> Result<BootedRuntime, ProximaError> {
+        let (config, parts) = self.resolve()?;
+        let allowlist = if config.mcp.is_some() {
+            Some(resolve_allowlist(&config)?)
+        } else {
+            None
+        };
+        let booted = boot_app::<A>(&config, &parts).await?;
+        let cancel = CancellationToken::new();
+        let app_ctx = AppContext {
+            engine: booted.engine.clone(),
+            pool: booted.pool.clone(),
+            blobs: booted.blobs.clone(),
+            owner: booted.owner,
+        };
+        let services = assemble_services::<A>(
+            &app_ctx,
+            &booted.registry,
+            &config.tool_scope,
+            parts.authenticator.as_ref(),
+            &booted.delegation_runtime_authority,
+        )?;
+        Ok(BootedRuntime {
+            config,
+            parts,
+            allowlist,
+            booted,
+            cancel,
+            app_ctx,
+            services,
         })
     }
 
@@ -691,6 +711,26 @@ fn cited_blob_services(
 /// [`CitedBlobReadService`] for bounded verified bytes, and the separately
 /// authorized [`CitedBlobOwnerReconcileService`] for redacted owner reports.
 /// Tools, REST, and flavor workers receive the same immutable service set.
+/// Everything [`Proxima::boot_common`] produced, for the two tails that
+/// diverge after it: `build` wraps the router in an `Option` and returns,
+/// `run` binds a listener, spawns the server and the flavor workers.
+///
+/// A named struct rather than a tuple because the tail reads seven fields
+/// of four visually similar types, and a 7-tuple is both unreadable at the
+/// destructuring site and `clippy::type_complexity` on the signature.
+#[derive(Debug)]
+struct BootedRuntime {
+    config: crate::RuntimeConfig,
+    parts: crate::RuntimeParts,
+    /// `Some` exactly when MCP is configured — the two are resolved
+    /// together so a tail can never serve MCP without an allowlist.
+    allowlist: Option<OriginAllowlist>,
+    booted: crate::EmbeddedProxima,
+    cancel: CancellationToken,
+    app_ctx: AppContext,
+    services: FlavorServices,
+}
+
 fn assemble_services<A: FlavorApp>(
     app_ctx: &AppContext,
     registry: &Arc<FlavorRegistryFrozen>,
@@ -1348,6 +1388,35 @@ mod tests {
             .unwrap_err();
 
         assert!(matches!(err, ProximaError::Security(_)));
+    }
+
+    /// Every refusal above enters through `build`. The same fail-closed
+    /// ordering — resolve the origin allowlist, and only then open a
+    /// connection — has to hold for `run`, which is the entry point a
+    /// deployment actually uses.
+    ///
+    /// Both now share `boot_common`, so the ordering is one statement
+    /// rather than two copies that have to stay identical. This pins the
+    /// claim from the other side: the database URL points nowhere, so a
+    /// storage error here would mean the allowlist was resolved too late.
+    #[tokio::test]
+    async fn run_refuses_an_unparseable_origin_before_storage() {
+        let owner = owner();
+        let err = Proxima::<AlphaApp>::app()
+            .database_url("postgres://unused:5432/unused")
+            .owner(owner)
+            .tool_scope(ToolScope::All)
+            .with_mcp()
+            .allowed_origins(vec!["*".to_string()])
+            .authenticator(Arc::new(StubAuth { owner }))
+            .run()
+            .await
+            .unwrap_err();
+
+        assert!(
+            matches!(err, ProximaError::Security(_)),
+            "a wildcard origin must be refused before storage is touched, got {err:?}"
+        );
     }
 
     #[tokio::test]

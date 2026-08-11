@@ -600,7 +600,7 @@ async fn validate_supersedes_in_owner(
     successor: uuid::Uuid,
 ) -> Result<(), StorageError> {
     let (owner_kind, owner_id) = owner.columns();
-    let head: Option<(Option<uuid::Uuid>,)> = sqlx::query_as(
+    let sql = format!(
         "SELECT m.superseded_by
                FROM proxima_core.memories m
               WHERE m.memory_id = $1
@@ -608,19 +608,23 @@ async fn validate_supersedes_in_owner(
                 AND m.kind = $4
                 AND EXISTS (
                     SELECT 1
-                      FROM (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) eo
+                      FROM {eo_union} eo
                      WHERE eo.entity_id = m.memory_id
                        AND eo.owner_kind = $2
                        AND eo.owner_id = $3
                 )",
-    )
-    .bind(prior.into_inner())
-    .bind(owner_kind)
-    .bind(owner_id)
-    .bind(kind)
-    .fetch_optional(&mut **tx)
-    .await
-    .map_err(map_err)?;
+        eo_union = crate::verbs::query::entity_owner_union(),
+    );
+    // SQL-POLICY: fixed-fragment — the only interpolation is the shared
+    // entity-owner-union constant; every value is bound.
+    let head: Option<(Option<uuid::Uuid>,)> = sqlx::query_as(sqlx::AssertSqlSafe(sql))
+        .bind(prior.into_inner())
+        .bind(owner_kind)
+        .bind(owner_id)
+        .bind(kind)
+        .fetch_optional(&mut **tx)
+        .await
+        .map_err(map_err)?;
     match head {
         None => Err(StorageError::ConstraintViolation(
             "supersedes crosses Owner boundary or does not exist".into(),
