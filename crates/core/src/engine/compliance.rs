@@ -14,6 +14,15 @@ use crate::verbs::schema::PayloadKind;
 use crate::{EmbeddingAnnObservability, EmbeddingOrphanSweepOutcome};
 use crate::{GroupId, OwnerRef, SourceId, UserId};
 
+/// The verdict of [`Engine::admit_erase`].
+enum EraseAdmission {
+    /// Authorized: the token storage requires before it will delete.
+    Admitted(EraseAuthorization),
+    /// Turned away, and already recorded against the operation id the caller
+    /// is handed back.
+    Refused(ComplianceEraseOutcome),
+}
+
 struct ComplianceSidecarTables {
     fact: Vec<String>,
     goal: Vec<String>,
@@ -292,6 +301,58 @@ impl Engine {
         }
     }
 
+    /// The front half of every compliance erase: open the audit row, check
+    /// compliance-controller authority, and — when the target names a drop
+    /// event — verify it before storage can receive a deletion token.
+    ///
+    /// Both refusals are recorded before storage, against the operation id
+    /// the caller is handed back, so an attempt that deleted nothing leaves
+    /// the same trail as one that deleted everything. Sharing this is what
+    /// makes that true of all four erasures rather than of whichever ones
+    /// remembered to do it.
+    ///
+    /// `drop_event` is `Some` exactly for the two personal targets. A group
+    /// owner declares no drop event; its abandonment is what storage rechecks
+    /// under lock instead.
+    async fn admit_erase(
+        &self,
+        authz: &AuthzContext,
+        target: ComplianceEraseTarget,
+        drop_event: Option<(UserId, &str)>,
+    ) -> Result<EraseAdmission, ProtocolError> {
+        let audit = Self::compliance_audit_context(authz, target.clone());
+        let operation_id = audit.operation_id();
+
+        if !self.compliance_controller_authorized(authz, &target).await {
+            return self
+                .pre_storage_outcome(
+                    &audit,
+                    ComplianceEraseOutcome::Unauthorized { operation_id },
+                )
+                .await
+                .map(EraseAdmission::Refused);
+        }
+
+        if let Some((user_id, drop_event_id)) = drop_event
+            && let Err(reason) = self
+                .verify_personal_owner_drop(user_id, drop_event_id)
+                .await
+        {
+            return self
+                .pre_storage_outcome(
+                    &audit,
+                    ComplianceEraseOutcome::Refused {
+                        operation_id,
+                        reason,
+                    },
+                )
+                .await
+                .map(EraseAdmission::Refused);
+        }
+
+        Ok(EraseAdmission::Admitted(EraseAuthorization::new(audit)))
+    }
+
     /// Refuse and audit an attempted world-owner erase.
     ///
     /// # Errors
@@ -368,20 +429,13 @@ impl Engine {
         authz: &AuthzContext,
         group_id: GroupId,
     ) -> Result<ComplianceEraseOutcome, ProtocolError> {
-        let target = ComplianceEraseTarget::GroupOwner { group_id };
-        let audit = Self::compliance_audit_context(authz, target.clone());
-        let operation_id = audit.operation_id();
-
-        if !self.compliance_controller_authorized(authz, &target).await {
-            return self
-                .pre_storage_outcome(
-                    &audit,
-                    ComplianceEraseOutcome::Unauthorized { operation_id },
-                )
-                .await;
-        }
-
-        let auth = EraseAuthorization::new(audit);
+        let auth = match self
+            .admit_erase(authz, ComplianceEraseTarget::GroupOwner { group_id }, None)
+            .await?
+        {
+            EraseAdmission::Admitted(auth) => auth,
+            EraseAdmission::Refused(outcome) => return Ok(outcome),
+        };
         let sidecars = self.compliance_sidecar_tables();
         let object_purge_planned = self.owner_object_purge_planned();
         let outcome = self
@@ -423,34 +477,13 @@ impl Engine {
             user_id,
             drop_event_id: drop_event_id.clone(),
         };
-        let audit = Self::compliance_audit_context(authz, target.clone());
-        let operation_id = audit.operation_id();
-
-        if !self.compliance_controller_authorized(authz, &target).await {
-            return self
-                .pre_storage_outcome(
-                    &audit,
-                    ComplianceEraseOutcome::Unauthorized { operation_id },
-                )
-                .await;
-        }
-
-        if let Err(reason) = self
-            .verify_personal_owner_drop(user_id, &drop_event_id)
-            .await
+        let auth = match self
+            .admit_erase(authz, target, Some((user_id, &drop_event_id)))
+            .await?
         {
-            return self
-                .pre_storage_outcome(
-                    &audit,
-                    ComplianceEraseOutcome::Refused {
-                        operation_id,
-                        reason,
-                    },
-                )
-                .await;
-        }
-
-        let auth = EraseAuthorization::new(audit);
+            EraseAdmission::Admitted(auth) => auth,
+            EraseAdmission::Refused(outcome) => return Ok(outcome),
+        };
         let sidecars = self.compliance_sidecar_tables();
         let object_purge_planned = self.owner_object_purge_planned();
         let outcome = self
@@ -491,19 +524,10 @@ impl Engine {
             group_id,
             source_id: source_id.clone(),
         };
-        let audit = Self::compliance_audit_context(authz, target.clone());
-        let operation_id = audit.operation_id();
-
-        if !self.compliance_controller_authorized(authz, &target).await {
-            return self
-                .pre_storage_outcome(
-                    &audit,
-                    ComplianceEraseOutcome::Unauthorized { operation_id },
-                )
-                .await;
-        }
-
-        let auth = EraseAuthorization::new(audit);
+        let auth = match self.admit_erase(authz, target, None).await? {
+            EraseAdmission::Admitted(auth) => auth,
+            EraseAdmission::Refused(outcome) => return Ok(outcome),
+        };
         let sidecars = self.compliance_sidecar_tables();
         // Source-scope blob purge is deferred: a source scope is a partial
         // owner, and the object store keys purely by owner, so a prefix-delete
@@ -545,34 +569,13 @@ impl Engine {
             source_id: source_id.clone(),
             drop_event_id: drop_event_id.clone(),
         };
-        let audit = Self::compliance_audit_context(authz, target.clone());
-        let operation_id = audit.operation_id();
-
-        if !self.compliance_controller_authorized(authz, &target).await {
-            return self
-                .pre_storage_outcome(
-                    &audit,
-                    ComplianceEraseOutcome::Unauthorized { operation_id },
-                )
-                .await;
-        }
-
-        if let Err(reason) = self
-            .verify_personal_owner_drop(user_id, &drop_event_id)
-            .await
+        let auth = match self
+            .admit_erase(authz, target, Some((user_id, &drop_event_id)))
+            .await?
         {
-            return self
-                .pre_storage_outcome(
-                    &audit,
-                    ComplianceEraseOutcome::Refused {
-                        operation_id,
-                        reason,
-                    },
-                )
-                .await;
-        }
-
-        let auth = EraseAuthorization::new(audit);
+            EraseAdmission::Admitted(auth) => auth,
+            EraseAdmission::Refused(outcome) => return Ok(outcome),
+        };
         let sidecars = self.compliance_sidecar_tables();
         // Source-scope blob purge is deferred (see
         // `erase_abandoned_group_source_scope`): prefix-delete keys by owner,
@@ -653,6 +656,12 @@ mod purge_tests {
         outcome: ComplianceEraseOutcome,
         clear_calls: Mutex<Vec<uuid::Uuid>>,
         fail_clear: bool,
+        /// Bumped by every erase verb, so a test can assert an attempt was
+        /// turned away before storage rather than merely reporting a refusal.
+        erase_calls: AtomicUsize,
+        /// Bumped by every audit write, so a test can assert the refusal it
+        /// was handed is also the one that got recorded.
+        recorded: AtomicUsize,
     }
 
     impl FixedOutcomeErase {
@@ -676,6 +685,8 @@ mod purge_tests {
                 },
                 clear_calls: Mutex::new(Vec::new()),
                 fail_clear: !clear_succeeds,
+                erase_calls: AtomicUsize::new(0),
+                recorded: AtomicUsize::new(0),
             }
         }
     }
@@ -687,6 +698,7 @@ mod purge_tests {
             _audit: &ComplianceAuditContext,
             _outcome: &ComplianceEraseOutcome,
         ) -> Result<(), StorageError> {
+            self.recorded.fetch_add(1, Ordering::SeqCst);
             Ok(())
         }
 
@@ -700,6 +712,7 @@ mod purge_tests {
             _citation_mapping: &[String],
             _cited_object: &[String],
         ) -> Result<ComplianceEraseOutcome, StorageError> {
+            self.erase_calls.fetch_add(1, Ordering::SeqCst);
             Ok(self.outcome.clone())
         }
 
@@ -713,6 +726,7 @@ mod purge_tests {
             _citation_mapping: &[String],
             _cited_object: &[String],
         ) -> Result<ComplianceEraseOutcome, StorageError> {
+            self.erase_calls.fetch_add(1, Ordering::SeqCst);
             Ok(self.outcome.clone())
         }
 
@@ -726,6 +740,7 @@ mod purge_tests {
             _citation_mapping: &[String],
             _cited_object: &[String],
         ) -> Result<ComplianceEraseOutcome, StorageError> {
+            self.erase_calls.fetch_add(1, Ordering::SeqCst);
             Ok(self.outcome.clone())
         }
 
@@ -739,6 +754,7 @@ mod purge_tests {
             _citation_mapping: &[String],
             _cited_object: &[String],
         ) -> Result<ComplianceEraseOutcome, StorageError> {
+            self.erase_calls.fetch_add(1, Ordering::SeqCst);
             Ok(self.outcome.clone())
         }
 
@@ -799,6 +815,21 @@ mod purge_tests {
             _drop_event_id: &str,
         ) -> Result<bool, AccessError> {
             Ok(true)
+        }
+    }
+
+    /// `OwnerDropProofPort` that answers "this owner was not dropped".
+    #[derive(Debug)]
+    struct DropUnverified;
+
+    #[async_trait]
+    impl OwnerDropProofPort for DropUnverified {
+        async fn verify_personal_owner_dropped(
+            &self,
+            _user_id: UserId,
+            _drop_event_id: &str,
+        ) -> Result<bool, AccessError> {
+            Ok(false)
         }
     }
 
@@ -1015,5 +1046,100 @@ mod purge_tests {
             1,
             "the clear must still be attempted exactly once"
         );
+    }
+
+    /// Drive all four erase entry points against one engine, so a gate that
+    /// only some of them apply cannot pass.
+    async fn attempt_every_scope(
+        engine: &Engine,
+        authz: &AuthzContext,
+    ) -> Vec<ComplianceEraseOutcome> {
+        let group = GroupId::new(uuid::Uuid::now_v7());
+        let user = UserId::new(uuid::Uuid::now_v7());
+        let source = SourceId::new("source/a");
+        vec![
+            engine
+                .erase_abandoned_group_owner(authz, group)
+                .await
+                .expect("group owner erase returns an outcome"),
+            engine
+                .erase_dropped_personal_owner(authz, user, "drop-1".into())
+                .await
+                .expect("personal owner erase returns an outcome"),
+            engine
+                .erase_abandoned_group_source_scope(authz, group, source.clone())
+                .await
+                .expect("group source scope erase returns an outcome"),
+            engine
+                .erase_dropped_personal_source_scope(authz, user, source, "drop-1".into())
+                .await
+                .expect("personal source scope erase returns an outcome"),
+        ]
+    }
+
+    #[tokio::test]
+    async fn every_scope_audits_an_unauthorized_attempt_before_storage() {
+        // No `ComplianceAdminPort` and a caller who is not `System`: nothing
+        // can vouch for this attempt, so none of the four may reach storage.
+        let erase = Arc::new(FixedOutcomeErase::completed());
+        let engine = engine_with(
+            erase.clone(),
+            Some(Arc::new(DropVerified)),
+            Arc::new(RecordingPurge::default()),
+        );
+        let authz =
+            AuthzContext::for_subject(UserId::new(uuid::Uuid::now_v7()), AuthPath::HostBearer);
+
+        let outcomes = attempt_every_scope(&engine, &authz).await;
+
+        for outcome in &outcomes {
+            assert!(
+                matches!(outcome, ComplianceEraseOutcome::Unauthorized { .. }),
+                "expected an unauthorized outcome, got {outcome:?}"
+            );
+        }
+        assert_eq!(
+            erase.erase_calls.load(Ordering::SeqCst),
+            0,
+            "an unauthorized attempt must be turned away before storage"
+        );
+        assert_eq!(
+            erase.recorded.load(Ordering::SeqCst),
+            outcomes.len(),
+            "every unauthorized attempt must leave an audit row"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_personal_scopes_refuse_before_storage_without_a_verified_drop() {
+        // Authorized, but the drop the request names is not one the host will
+        // confirm. Both personal scopes must stop; both group scopes, which
+        // name no drop event, must still reach storage.
+        for (drop_proof, expected) in [
+            (
+                Some(Arc::new(DropUnverified)),
+                ComplianceEraseRefusal::PersonalDropNotVerified,
+            ),
+            (None, ComplianceEraseRefusal::DropProofPortUnavailable),
+        ] {
+            let erase = Arc::new(FixedOutcomeErase::completed());
+            let drop_proof = drop_proof.map(|d| d as Arc<dyn OwnerDropProofPort>);
+            let storage = StoragePorts::rejecting_with_compliance_erase(erase.clone(), drop_proof);
+            let engine = Engine::compose_or_panic_for_tests(storage, |_| {});
+
+            let outcomes = attempt_every_scope(&engine, &system_authz()).await;
+
+            for outcome in [&outcomes[1], &outcomes[3]] {
+                let ComplianceEraseOutcome::Refused { reason, .. } = outcome else {
+                    panic!("expected a refusal for a personal scope, got {outcome:?}");
+                };
+                assert_eq!(*reason, expected);
+            }
+            assert_eq!(
+                erase.erase_calls.load(Ordering::SeqCst),
+                2,
+                "only the two group scopes may reach storage without a drop event"
+            );
+        }
     }
 }
