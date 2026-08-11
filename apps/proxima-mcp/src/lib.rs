@@ -846,10 +846,7 @@ fn active_embedding_model(lookup: impl Fn(&str) -> Option<String>) -> String {
 }
 
 fn lookup_non_empty(lookup: &impl Fn(&str) -> Option<String>, key: &str) -> Option<String> {
-    lookup(key).and_then(|value| {
-        let trimmed = value.trim();
-        (!trimmed.is_empty()).then(|| trimmed.to_string())
-    })
+    proxima_core::env_value(lookup, key)
 }
 
 #[derive(Debug, thiserror::Error)]

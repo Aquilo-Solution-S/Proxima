@@ -247,6 +247,18 @@ impl RuntimeBuilder {
 
     /// Apply injected environment values to unset fields.
     ///
+    /// A variable set to the empty string, or to nothing but whitespace, is
+    /// treated as unset — the same rule the binary's own argument parsing and
+    /// the `PROXIMA_S3_*` block already used, and which this function used to
+    /// bypass for all nine of the variables below. Values are trimmed, so a
+    /// trailing newline picked up from a here-doc or a mounted secret no
+    /// longer turns into a parse error naming a value nobody typed.
+    ///
+    /// Consequence worth knowing when layering configs: because empty now
+    /// means unset, `PROXIMA_ALLOWED_ORIGINS=` no longer overrides a value set
+    /// programmatically on a base builder. It leaves the field untouched
+    /// instead, which is what "apply to unset fields" says.
+    ///
     /// # Errors
     ///
     /// Returns `ProximaError::Config` when a supplied value is malformed.
@@ -254,6 +266,7 @@ impl RuntimeBuilder {
         mut self,
         lookup: impl Fn(&str) -> Option<String>,
     ) -> Result<Self, ProximaError> {
+        let lookup = |key: &str| proxima_core::env_value(&lookup, key);
         if self.database_url.is_none() {
             self.database_url = lookup("DATABASE_URL");
         }
@@ -1027,6 +1040,74 @@ mod tests {
             .unwrap_err();
 
         assert!(err.to_string().contains("PROXIMA_MCP_BIND"));
+    }
+
+    /// An operator who exports a variable without a value has not configured
+    /// it. This used to abort boot with `must be a boolean, got ""` for the
+    /// three flags, and hand the pool an empty connection string for
+    /// `DATABASE_URL`, while `PROXIMA_EMBED_*` in the same process read the
+    /// same input as unset.
+    #[test]
+    fn an_empty_value_is_an_unset_value() {
+        let builder = RuntimeBuilder::default()
+            .apply_lookup(lookup(&[
+                ("DATABASE_URL", ""),
+                ("PROXIMA_EXPOSE_NETWORK", ""),
+                ("PROXIMA_REST_ENABLED", "   "),
+                ("PROXIMA_SKIP_MIGRATIONS", ""),
+                ("PROXIMA_MCP_BIND", ""),
+                ("PROXIMA_STREAM_MAX_LIFETIME", ""),
+            ]))
+            .expect("an empty value must not be parsed as a malformed one");
+
+        assert!(builder.database_url.is_none());
+        assert!(builder.expose_network.is_none());
+        assert!(builder.rest_enabled.is_none());
+        assert!(builder.skip_migrations.is_none());
+        assert!(builder.mcp_bind.is_none());
+        assert!(builder.stream_max_lifetime.is_none());
+    }
+
+    /// Trailing newlines survive here-docs and mounted secrets. Trimming is
+    /// what lets the same value work here and in `PROXIMA_S3_*`, which has
+    /// trimmed since it was written.
+    #[test]
+    fn surrounding_whitespace_is_trimmed_before_parsing() {
+        let builder = RuntimeBuilder::default()
+            .apply_lookup(lookup(&[
+                ("DATABASE_URL", " postgres://localhost/proxima\n"),
+                ("PROXIMA_EXPOSE_NETWORK", " true\n"),
+                ("PROXIMA_MCP_BIND", " 127.0.0.1:31415\n"),
+            ]))
+            .expect("a trailing newline must not be a parse error");
+
+        assert_eq!(
+            builder.database_url.as_deref(),
+            Some("postgres://localhost/proxima")
+        );
+        assert_eq!(builder.expose_network, Some(true));
+        assert_eq!(
+            builder.mcp_bind.map(|bind| bind.to_string()).as_deref(),
+            Some("127.0.0.1:31415")
+        );
+    }
+
+    /// Empty means unset, so it no longer beats a programmatically set base.
+    /// `merge_over` layers on `Option`, and an empty variable used to arrive
+    /// as `Some(vec![])` and win.
+    #[test]
+    fn an_empty_allowlist_does_not_override_a_configured_one() {
+        let from_env = RuntimeBuilder::default()
+            .apply_lookup(lookup(&[("PROXIMA_ALLOWED_ORIGINS", "")]))
+            .expect("empty allowlist is unset");
+        let base = RuntimeBuilder::default().allowed_origins(vec!["https://app.test".to_string()]);
+
+        let merged = from_env.merge_over(base);
+
+        assert_eq!(
+            merged.allowed_origins.as_deref(),
+            Some(["https://app.test".to_string()].as_slice())
+        );
     }
 
     #[test]

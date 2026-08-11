@@ -2,9 +2,6 @@ use proxima_blob_s3::S3RuntimeConfig;
 
 use crate::EmbedError;
 
-const DEFAULT_UPLOAD_TTL_SECONDS: u64 = 900;
-const DEFAULT_READ_TTL_SECONDS: u64 = 300;
-
 /// Low-level configuration for an embedded Proxima engine.
 ///
 /// Plain data consumed by [`crate::ProximaBuilder::new`]. Environment
@@ -26,53 +23,18 @@ impl std::fmt::Debug for EmbedConfig {
     }
 }
 
+/// Read the `PROXIMA_S3_*` block through the blob crate's parser.
+///
+/// The facade used to re-read all six variables itself. Two parsers over one
+/// variable block meant one binary answered two ways: `maintain-blobs` reached
+/// `S3RuntimeConfig::from_env` while `serve` reached this function, so
+/// `PROXIMA_S3_UPLOAD_TTL_SECONDS="900\n"` was accepted by one subcommand and
+/// refused by the other, and a whitespace-only bucket was "missing" to one and
+/// a real bucket name to the other.
 pub(crate) fn s3_from_lookup(
     lookup: &impl Fn(&str) -> Option<String>,
 ) -> Result<Option<S3RuntimeConfig>, EmbedError> {
-    if lookup("PROXIMA_S3_BUCKET").is_none() {
-        return Ok(None);
-    }
-
-    Ok(Some(S3RuntimeConfig {
-        bucket: lookup("PROXIMA_S3_BUCKET")
-            .ok_or_else(|| EmbedError::Config("PROXIMA_S3_BUCKET is required".into()))?,
-        region: lookup("PROXIMA_S3_REGION").ok_or_else(|| {
-            EmbedError::Config("PROXIMA_S3_REGION is required with PROXIMA_S3_BUCKET".into())
-        })?,
-        // Raw carrier only: `CitedBlobStore::new` validates the endpoint at the
-        // consuming boundary so facade and direct construction cannot bypass it.
-        endpoint_url: lookup("PROXIMA_S3_ENDPOINT_URL"),
-        force_path_style: parse_bool(lookup, "PROXIMA_S3_FORCE_PATH_STYLE")?,
-        upload_ttl_seconds: parse_ttl(
-            lookup,
-            "PROXIMA_S3_UPLOAD_TTL_SECONDS",
-            DEFAULT_UPLOAD_TTL_SECONDS,
-        )?,
-        read_ttl_seconds: parse_ttl(
-            lookup,
-            "PROXIMA_S3_READ_TTL_SECONDS",
-            DEFAULT_READ_TTL_SECONDS,
-        )?,
-        max_blob_bytes: lookup("PROXIMA_S3_MAX_BLOB_BYTES")
-            .map(|raw| {
-                raw.trim().parse::<u64>().map_err(|e| {
-                    EmbedError::Config(format!(
-                        "PROXIMA_S3_MAX_BLOB_BYTES must be a non-negative integer: {e}"
-                    ))
-                })
-            })
-            .transpose()?,
-    }))
-}
-
-pub(crate) fn parse_bool(
-    lookup: &impl Fn(&str) -> Option<String>,
-    key: &str,
-) -> Result<bool, EmbedError> {
-    let Some(raw) = lookup(key) else {
-        return Ok(false);
-    };
-    parse_bool_value(key, &raw)
+    S3RuntimeConfig::from_lookup(lookup).map_err(|error| EmbedError::Config(error.to_string()))
 }
 
 pub(crate) fn parse_bool_value(key: &str, raw: &str) -> Result<bool, EmbedError> {
@@ -82,19 +44,6 @@ pub(crate) fn parse_bool_value(key: &str, raw: &str) -> Result<bool, EmbedError>
         _ => Err(EmbedError::Config(format!(
             "{key} must be a boolean, got {raw:?}"
         ))),
-    }
-}
-
-fn parse_ttl(
-    lookup: &impl Fn(&str) -> Option<String>,
-    key: &str,
-    default: u64,
-) -> Result<u64, EmbedError> {
-    match lookup(key) {
-        None => Ok(default),
-        Some(raw) => raw
-            .parse()
-            .map_err(|_| EmbedError::Config(format!("{key} must be a u64, got {raw:?}"))),
     }
 }
 
