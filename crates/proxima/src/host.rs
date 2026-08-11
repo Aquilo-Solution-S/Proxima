@@ -167,27 +167,16 @@ pub fn build_openapi_document(
 /// step — nothing is emitted for an excluded `tool.name` at all, so a newly
 /// added action on an already-excluded tool can never silently bypass the
 /// exclusion list.
+///
+/// The palette also carries every core resource scope key. `read_resource`
+/// runs through the same flat scope gate as a tool call, so a palette built
+/// from tools alone denies every `proxima://` read outright rather than
+/// merely leaving it unadvertised. Exclude a resource by its exact scope key.
 #[must_use]
 pub fn tool_palette_excluding(registry: &FlavorRegistryFrozen, exclude: &[&str]) -> ToolScope {
-    let excluded: std::collections::HashSet<&str> = exclude.iter().copied().collect();
-    let mut entries = Vec::new();
-    for tool in registry.list_mcp_tools() {
-        if excluded.contains(tool.name) {
-            continue;
-        }
-        if tool.action_arg_specs.is_empty() {
-            entries.push(tool.name.to_string());
-        } else {
-            entries.extend(
-                tool.action_arg_specs
-                    .iter()
-                    .map(|action| format!("{}:{}", tool.name, action.action)),
-            );
-        }
-    }
-    entries.sort();
-    entries.dedup();
-    ToolScope::Palette(entries)
+    ToolScope::Palette(proxima_core::canonical_scope_keys_excluding(
+        registry, exclude,
+    ))
 }
 
 #[cfg(test)]
@@ -196,6 +185,7 @@ mod tests {
     use proxima_core::FlavorRegistry;
     use proxima_core::mcp::McpTool;
     use proxima_core::mcp::core_tools::{CoreGoalTool, SearchMemoriesTool};
+    use proxima_core::protocol::resource as protocol_resource;
 
     // `FlavorRegistry::default()` already registers every substrate tool
     // (see `core_tools::register_all`), including the action-scoped
@@ -240,6 +230,40 @@ mod tests {
         assert!(
             !scope.allows(CoreGoalTool::NAME),
             "flat entry must not leak for an action-scoped tool"
+        );
+    }
+
+    /// `read_resource` runs through the same flat scope gate as a tool call,
+    /// with the resource's scope key standing in for a tool name. A palette
+    /// built from tools alone therefore *denies* every `proxima://` read
+    /// instead of merely leaving it unadvertised, so a host following
+    /// MIGRATING.md's `tool_palette_excluding` one-liner loses resource reads
+    /// entirely.
+    #[test]
+    fn palette_admits_every_core_resource() {
+        let registry = registry();
+
+        let scope = tool_palette_excluding(&registry, &[]);
+
+        for resource in proxima_core::all_core_resources() {
+            assert!(
+                scope.allows(resource.scope_key),
+                "palette must admit resource scope key {}",
+                resource.scope_key
+            );
+        }
+    }
+
+    #[test]
+    fn a_resource_can_be_excluded_by_its_scope_key() {
+        let registry = registry();
+
+        let scope = tool_palette_excluding(&registry, &[protocol_resource::MEMORY]);
+
+        assert!(!scope.allows(protocol_resource::MEMORY));
+        assert!(
+            scope.allows(protocol_resource::SCHEMAS),
+            "excluding one resource must not remove the others"
         );
     }
 
