@@ -10,7 +10,7 @@ pub const DEFAULT_DATABASE_URL: &str = "postgres://postgres@localhost/proxima_de
 /// falls back to the default instead of handing an empty connection string to
 /// the pool.
 fn database_url_from_env() -> String {
-    proxima_core::env_value(&|key| std::env::var(key).ok(), "DATABASE_URL")
+    proxima_core::env_value(&proxima_core::process_env, "DATABASE_URL")
         .unwrap_or_else(|| DEFAULT_DATABASE_URL.to_string())
 }
 

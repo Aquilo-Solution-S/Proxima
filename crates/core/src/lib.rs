@@ -65,7 +65,7 @@ pub use compliance::{
 pub use cursor::*;
 pub use edge::*;
 pub use engine::*;
-pub use env::env_value;
+pub use env::{env_value, process_env};
 pub use error::*;
 pub use flavor::*;
 pub use goal::{
