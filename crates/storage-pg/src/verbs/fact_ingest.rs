@@ -145,13 +145,13 @@ struct IngestCoreOptions<'a> {
 }
 
 #[derive(Debug, Clone, Copy, Default)]
-struct FactLinks<'a> {
+pub(crate) struct FactLinks<'a> {
     origins: &'a [EdgeEndpoint],
     references: &'a [EdgeEndpoint],
 }
 
 impl<'a> FactLinks<'a> {
-    const fn new(origins: &'a [EdgeEndpoint], references: &'a [EdgeEndpoint]) -> Self {
+    pub(crate) const fn new(origins: &'a [EdgeEndpoint], references: &'a [EdgeEndpoint]) -> Self {
         Self {
             origins,
             references,
@@ -926,6 +926,43 @@ async fn cited_object_id_for_mapping_in_tx(
     })
 }
 
+/// The `DraftHint` cited-object upsert, in the exact bytes the statement had
+/// while it was written inline in `ingest_core`.
+///
+/// The continuation indentation is inside the literal, so it is statement
+/// text rather than source layout: re-flowing it to this item's nesting
+/// would change what the server (and `pg_stat_statements`) records.
+const UPSERT_CITED_OBJECT_HINT_SQL: &str = "INSERT INTO proxima_core.cited_objects
+                        (cited_object_id, schema_id, owner_kind,
+                         owner_id, content_hash)
+                     VALUES ($1, $2, $3, $4, $5)
+                     ON CONFLICT (owner_kind, owner_id,
+                                  schema_id, content_hash)
+                     DO UPDATE SET schema_id = EXCLUDED.schema_id
+                     RETURNING cited_object_id";
+
+/// Upsert the content-addressed cited object a draft's citation hint names.
+///
+/// Shared by the per-unit and batched Fact paths: a cited object is
+/// deduplicated by `(owner, schema, content_hash)`, so it is upserted one
+/// row at a time even when the Facts citing it arrive as a batch.
+pub(crate) async fn upsert_cited_object_hint_in_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    owner: &Owner,
+    object: &proxima_core::verbs::fact_ingest::CitedObjectHint,
+) -> Result<uuid::Uuid, StorageError> {
+    let (owner_kind, owner_id) = owner_binds(owner);
+    sqlx::query_scalar::<_, uuid::Uuid>(UPSERT_CITED_OBJECT_HINT_SQL)
+        .bind(uuid::Uuid::now_v7())
+        .bind(object.schema_id.as_str())
+        .bind(owner_kind)
+        .bind(owner_id)
+        .bind(&object.content_hash[..])
+        .fetch_one(tx.as_mut())
+        .await
+        .map_err(map_err)
+}
+
 async fn upsert_cited_object_in_tx(
     tx: &mut Transaction<'_, Postgres>,
     sidecars: &PgSidecarRegistryFrozen,
@@ -994,6 +1031,74 @@ async fn insert_citation_mapping_in_tx(
             .await?;
     }
     Ok(())
+}
+
+/// Materialize one authorized Fact plus the typed sidecar payloads it
+/// carries, inside an already-open transaction.
+///
+/// The payloads are DATA, so the whole body is re-runnable: the pool-level
+/// [`ingest_fact_with_typed_sidecar_atomic`] rebuilds it on every retry
+/// attempt, and the batched path replays it per unit when batching is off.
+///
+/// # Errors
+///
+/// Returns storage errors from Fact materialization or sidecar insertion.
+/// The caller owns transaction rollback/commit.
+pub async fn ingest_fact_with_typed_sidecar_in_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    sidecars: &PgSidecarRegistryFrozen,
+    authorized: &AuthorizedFactWrite,
+    sidecar_payloads: &[proxima_core::SidecarPayload],
+    embedding_model_id: Option<&str>,
+) -> Result<FactIngestOutcome, StorageError> {
+    let fact_sidecars = sidecars.clone();
+    let payloads = sidecar_payloads.to_vec();
+    ingest_fact_with_sidecar_in_tx(tx, authorized, embedding_model_id, move |tx, outcome| {
+        Box::pin(async move {
+            for payload in &payloads {
+                fact_sidecars
+                    .insert_memory_sidecar(tx, outcome.memory_id, payload)
+                    .await?;
+            }
+
+            Ok(())
+        })
+    })
+    .await
+}
+
+/// Pool-scoped twin of [`ingest_fact_with_typed_sidecar_in_tx`]: opens its
+/// own transaction and commits once the Fact and every payload have landed.
+///
+/// # Errors
+///
+/// Returns storage errors from transaction setup, Fact materialization,
+/// sidecar insertion, or commit.
+pub async fn ingest_fact_with_typed_sidecar_atomic(
+    pool: &PgPool,
+    sidecars: &PgSidecarRegistryFrozen,
+    authorized: &AuthorizedFactWrite,
+    sidecar_payloads: &[proxima_core::SidecarPayload],
+    embedding_model_id: Option<&str>,
+) -> Result<FactIngestOutcome, StorageError> {
+    // Retry the whole begin→body→commit on transient deadlock/
+    // serialization. The typed sidecar is data (`SidecarPayload`), so each
+    // attempt re-clones it and rebuilds the insert closure — unlike an
+    // `FnOnce` closure, this is safely re-runnable.
+    with_bounded_retry(move || async move {
+        let mut tx = pool.begin().await.map_err(internal)?;
+        let outcome = ingest_fact_with_typed_sidecar_in_tx(
+            &mut tx,
+            sidecars,
+            authorized,
+            sidecar_payloads,
+            embedding_model_id,
+        )
+        .await?;
+        tx.commit().await.map_err(map_err)?;
+        Ok(outcome)
+    })
+    .await
 }
 
 /// Run gated `FactIngest` plus a typed sidecar insert inside an
@@ -1087,25 +1192,8 @@ where
         CitationPlan::DraftHint => {
             if let Some(citation) = &draft.citation {
                 let citation_mapping_id = uuid::Uuid::now_v7();
-                let cited_object_id_new = uuid::Uuid::now_v7();
-                let cited_object_id = sqlx::query_scalar::<_, uuid::Uuid>(
-                    "INSERT INTO proxima_core.cited_objects
-                        (cited_object_id, schema_id, owner_kind,
-                         owner_id, content_hash)
-                     VALUES ($1, $2, $3, $4, $5)
-                     ON CONFLICT (owner_kind, owner_id,
-                                  schema_id, content_hash)
-                     DO UPDATE SET schema_id = EXCLUDED.schema_id
-                     RETURNING cited_object_id",
-                )
-                .bind(cited_object_id_new)
-                .bind(citation.object.schema_id.as_str())
-                .bind(owner_kind)
-                .bind(owner_id)
-                .bind(&citation.object.content_hash[..])
-                .fetch_one(tx.as_mut())
-                .await
-                .map_err(map_err)?;
+                let cited_object_id =
+                    upsert_cited_object_hint_in_tx(tx, owner, &citation.object).await?;
                 Some(PendingCitation::DraftHint {
                     citation,
                     citation_mapping_id,
@@ -1381,7 +1469,7 @@ where
 /// primary key is the row, so re-asserting the same declaration inserts
 /// nothing and announces nothing, while a declaration the first ingest did
 /// not carry still lands. Idempotency here is structural, not conditional.
-async fn assert_fact_index_rows(
+pub(crate) async fn assert_fact_index_rows(
     tx: &mut Transaction<'_, Postgres>,
     owner: &Owner,
     memory_id: uuid::Uuid,
@@ -1596,4 +1684,28 @@ async fn fact_natural_key_after_sidecar(
                 sidecar_table.as_str(),
             ))
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::UPSERT_CITED_OBJECT_HINT_SQL;
+
+    /// The statement text is the contract: this upsert was lifted out of
+    /// `ingest_core` and must reach the server as the same bytes it did
+    /// inline, so a re-indent of the literal fails here rather than in a
+    /// text-level diff of the shipped SQL.
+    #[test]
+    fn the_cited_object_hint_upsert_is_byte_identical_to_the_inline_statement() {
+        assert_eq!(
+            UPSERT_CITED_OBJECT_HINT_SQL,
+            "INSERT INTO proxima_core.cited_objects
+                        (cited_object_id, schema_id, owner_kind,
+                         owner_id, content_hash)
+                     VALUES ($1, $2, $3, $4, $5)
+                     ON CONFLICT (owner_kind, owner_id,
+                                  schema_id, content_hash)
+                     DO UPDATE SET schema_id = EXCLUDED.schema_id
+                     RETURNING cited_object_id"
+        );
+    }
 }

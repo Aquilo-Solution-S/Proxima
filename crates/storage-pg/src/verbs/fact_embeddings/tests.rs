@@ -16,11 +16,15 @@ mod pg_tests {
     use proxima_core::EmbeddableEntityRef;
     use proxima_core::llm::EMBEDDING_DIM;
 
+    use proxima_core::storage_ports::MemoryEmbeddingWrite;
+
     use super::super::{
-        claim_pending_embedding_jobs, insert_embedding, insert_memory_embedding,
-        load_embedding_text,
+        HnswBuildSettings, claim_pending_embedding_jobs, complete_embedding_jobs,
+        count_pending_embedding_jobs, create_hnsw_index, drop_hnsw_index, insert_embedding,
+        insert_memory_embedding, insert_memory_embeddings, load_embedding_text,
     };
     use crate::test_fixtures::fresh_pg;
+    use crate::tuning::PgTuning;
 
     fn padded_embedding(prefix: [f32; 3]) -> Vec<f32> {
         let mut embedding = vec![0.0; EMBEDDING_DIM];
@@ -98,6 +102,60 @@ mod pg_tests {
         .bind(entity_kind)
         .bind(entity_id)
         .bind(model_id)
+        .fetch_optional(pool)
+        .await
+    }
+
+    /// The vector the head currently points at, which is what a semantic
+    /// search reads for the entity.
+    async fn load_head_vector(
+        pool: &sqlx::PgPool,
+        entity_kind: EntityKind,
+        entity_id: Uuid,
+        model_id: &str,
+    ) -> Result<Option<String>, sqlx::Error> {
+        sqlx::query_scalar(
+            "SELECT emb.vec::text
+               FROM proxima_core.embeddings emb
+               JOIN proxima_core.embedding_heads head
+                 ON head.entity_kind = emb.entity_kind
+                AND head.entity_id = emb.entity_id
+                AND head.model_id = emb.model_id
+                AND head.embedding_version = emb.embedding_version
+              WHERE emb.entity_kind = $1
+                AND emb.entity_id = $2
+                AND emb.model_id = $3",
+        )
+        .bind(entity_kind)
+        .bind(entity_id)
+        .bind(model_id)
+        .fetch_optional(pool)
+        .await
+    }
+
+    /// Everything a batched write has to reproduce: the versions on disk,
+    /// the head, and the vector the head points at.
+    async fn embedding_state(
+        pool: &sqlx::PgPool,
+        entity_id: Uuid,
+    ) -> Result<(Vec<i32>, Option<i32>, Option<String>), sqlx::Error> {
+        Ok((
+            load_embedding_versions(pool, EntityKind::Fact, entity_id, "stub-fact-embed").await?,
+            load_embedding_head_version(pool, EntityKind::Fact, entity_id, "stub-fact-embed")
+                .await?,
+            load_head_vector(pool, EntityKind::Fact, entity_id, "stub-fact-embed").await?,
+        ))
+    }
+
+    async fn load_hnsw_index_definition(
+        pool: &sqlx::PgPool,
+    ) -> Result<Option<String>, sqlx::Error> {
+        sqlx::query_scalar(
+            "SELECT indexdef
+               FROM pg_indexes
+              WHERE schemaname = 'proxima_core'
+                AND indexname = 'idx_embeddings_vec_hnsw'",
+        )
         .fetch_optional(pool)
         .await
     }
@@ -361,6 +419,304 @@ mod pg_tests {
             assert_eq!(
                 count_fact_embeddings(pg.pool_for_tests(), outcome.memory_id).await?,
                 0
+            );
+            Ok(())
+        }
+        .await;
+        drop(pg);
+        drop_db(&db_name).await?;
+        result
+    }
+
+    /// The batch must wait behind an in-flight single-row write of the same
+    /// entity and then version *after* it. Written against a held lock
+    /// rather than a race, so it fails deterministically: a batch that took
+    /// no lock would read the uncommitted writer's version as absent, claim
+    /// version 1 too, and end on a duplicate key.
+    #[tokio::test]
+    async fn a_batch_waits_for_an_in_flight_single_row_write()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (pg, db_name) = fresh_pg("proxima_spg_embed").await;
+        let result: Result<(), Box<dyn std::error::Error>> = async {
+            let owner = owner_fixture();
+            let permit = owner_fact_write_permit(&owner).await?;
+            let memory_id = pg
+                .ingest_fact_atomic(&permit, &fact_draft("contended embedding fact"), None)
+                .await?
+                .memory_id;
+            let batched_vec = padded_embedding([1.0, 0.0, 0.0]);
+            let single_vec = padded_embedding([0.0, 1.0, 0.0]);
+            let batch_pool = pg.pool_for_tests().clone();
+            let mut batch = Box::pin(async move {
+                let mut tx = batch_pool.begin().await.map_err(|err| {
+                    StorageError::Internal(format!("begin embedding batch tx: {err}"))
+                })?;
+                let outcomes = insert_memory_embeddings(
+                    &mut tx,
+                    "stub-fact-embed",
+                    EMBEDDING_DIM,
+                    &[MemoryEmbeddingWrite {
+                        owner,
+                        entity_kind: EntityKind::Fact,
+                        memory_id,
+                        vec: &batched_vec,
+                    }],
+                )
+                .await?;
+                tx.commit().await.map_err(|err| {
+                    StorageError::Internal(format!("commit embedding batch tx: {err}"))
+                })?;
+                Ok::<_, StorageError>(outcomes[0].embedding_version)
+            });
+
+            let mut holder = pg.pool_for_tests().begin().await?;
+            insert_memory_embedding(
+                &mut holder,
+                &owner,
+                EntityKind::Fact,
+                memory_id,
+                "stub-fact-embed",
+                EMBEDDING_DIM,
+                &single_vec,
+            )
+            .await?;
+            assert!(
+                tokio::time::timeout(std::time::Duration::from_millis(250), &mut batch)
+                    .await
+                    .is_err(),
+                "the batch must wait for the entity's lock"
+            );
+            holder.commit().await?;
+
+            assert_eq!(batch.await?, 2);
+            assert_eq!(
+                load_embedding_versions(
+                    pg.pool_for_tests(),
+                    EntityKind::Fact,
+                    memory_id.into_inner(),
+                    "stub-fact-embed",
+                )
+                .await?,
+                vec![1, 2]
+            );
+            Ok(())
+        }
+        .await;
+        drop(pg);
+        drop_db(&db_name).await?;
+        result
+    }
+
+    /// The one property a batched write-back cannot get wrong: the same
+    /// entity appearing several times in one batch must end where serial
+    /// application of those units would have ended it — contiguous
+    /// versions in unit order, and a head on the last of them. Proven
+    /// against serial application of the identical vectors rather than
+    /// against restated expectations.
+    #[tokio::test]
+    async fn a_repeated_unit_in_one_batch_lands_where_serial_writes_land()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (pg, db_name) = fresh_pg("proxima_spg_embed").await;
+        let result: Result<(), Box<dyn std::error::Error>> = async {
+            let owner = owner_fixture();
+            let permit = owner_fact_write_permit(&owner).await?;
+            let serial = pg
+                .ingest_fact_atomic(&permit, &fact_draft("serially embedded fact"), None)
+                .await?
+                .memory_id;
+            let batched = pg
+                .ingest_fact_atomic(&permit, &fact_draft("batch embedded fact"), None)
+                .await?
+                .memory_id;
+            let vectors = [
+                padded_embedding([1.0, 0.0, 0.0]),
+                padded_embedding([0.0, 1.0, 0.0]),
+                padded_embedding([0.0, 0.0, 1.0]),
+            ];
+
+            let mut serial_versions = Vec::new();
+            for vector in &vectors {
+                let mut tx = pg.pool_for_tests().begin().await?;
+                serial_versions.push(
+                    insert_memory_embedding(
+                        &mut tx,
+                        &owner,
+                        EntityKind::Fact,
+                        serial,
+                        "stub-fact-embed",
+                        EMBEDDING_DIM,
+                        vector,
+                    )
+                    .await?
+                    .embedding_version,
+                );
+                tx.commit().await?;
+            }
+
+            let writes: Vec<MemoryEmbeddingWrite<'_>> = vectors
+                .iter()
+                .map(|vector| MemoryEmbeddingWrite {
+                    owner,
+                    entity_kind: EntityKind::Fact,
+                    memory_id: batched,
+                    vec: vector,
+                })
+                .collect();
+            let mut tx = pg.pool_for_tests().begin().await?;
+            let batched_outcomes =
+                insert_memory_embeddings(&mut tx, "stub-fact-embed", EMBEDDING_DIM, &writes)
+                    .await?;
+            tx.commit().await?;
+
+            let batched_versions: Vec<i32> = batched_outcomes
+                .iter()
+                .map(|outcome| outcome.embedding_version)
+                .collect();
+            let batched_state = embedding_state(pg.pool_for_tests(), batched.into_inner()).await?;
+
+            assert_eq!(batched_versions, serial_versions);
+            assert_eq!(
+                batched_state,
+                embedding_state(pg.pool_for_tests(), serial.into_inner()).await?
+            );
+            let (_, _, head_vector) = batched_state;
+            assert_eq!(
+                head_vector,
+                Some(crate::pgvector::literal(&vectors[2])),
+                "the last unit of the batch must own the head"
+            );
+            Ok(())
+        }
+        .await;
+        drop(pg);
+        drop_db(&db_name).await?;
+        result
+    }
+
+    /// A batch is a bag of independent units: one whose entity is gone
+    /// no-ops with version `0`, exactly as the single-row path does, and
+    /// its batch-mates still land.
+    #[tokio::test]
+    async fn a_batch_skips_units_whose_entity_is_not_embeddable()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (pg, db_name) = fresh_pg("proxima_spg_embed").await;
+        let result: Result<(), Box<dyn std::error::Error>> = async {
+            let owner = owner_fixture();
+            let permit = owner_fact_write_permit(&owner).await?;
+            let live = pg
+                .ingest_fact_atomic(&permit, &fact_draft("live batch fact"), None)
+                .await?
+                .memory_id;
+            let absent = proxima_core::MemoryId::new(Uuid::now_v7());
+            let vector = padded_embedding([0.5, 0.5, 0.0]);
+            let writes = [
+                MemoryEmbeddingWrite {
+                    owner,
+                    entity_kind: EntityKind::Fact,
+                    memory_id: absent,
+                    vec: &vector,
+                },
+                MemoryEmbeddingWrite {
+                    owner,
+                    entity_kind: EntityKind::Fact,
+                    memory_id: live,
+                    vec: &vector,
+                },
+            ];
+
+            let mut tx = pg.pool_for_tests().begin().await?;
+            let outcomes =
+                insert_memory_embeddings(&mut tx, "stub-fact-embed", EMBEDDING_DIM, &writes)
+                    .await?;
+            tx.commit().await?;
+
+            assert_eq!(
+                outcomes
+                    .iter()
+                    .map(|outcome| outcome.embedding_version)
+                    .collect::<Vec<_>>(),
+                vec![0, 1]
+            );
+            assert_eq!(count_fact_embeddings(pg.pool_for_tests(), absent).await?, 0);
+            assert_eq!(count_fact_embeddings(pg.pool_for_tests(), live).await?, 1);
+            assert_eq!(
+                load_embedding_head_version(
+                    pg.pool_for_tests(),
+                    EntityKind::Fact,
+                    absent.into_inner(),
+                    "stub-fact-embed",
+                )
+                .await?,
+                None
+            );
+            Ok(())
+        }
+        .await;
+        drop(pg);
+        drop_db(&db_name).await?;
+        result
+    }
+
+    #[tokio::test]
+    async fn a_batch_completes_every_job_it_claimed() -> Result<(), Box<dyn std::error::Error>> {
+        let (pg, db_name) = fresh_pg("proxima_spg_embed").await;
+        let result: Result<(), Box<dyn std::error::Error>> = async {
+            let owner = owner_fixture();
+            let permit = owner_fact_write_permit(&owner).await?;
+            for label in ["first batched job", "second batched job"] {
+                pg.ingest_fact_atomic(&permit, &fact_draft(label), Some("stub-fact-embed"))
+                    .await?;
+            }
+            let claims =
+                claim_pending_embedding_jobs(pg.pool_for_tests(), "stub-fact-embed", 8).await?;
+            assert_eq!(claims.len(), 2);
+
+            complete_embedding_jobs(pg.pool_for_tests(), &claims).await?;
+
+            assert_eq!(
+                count_pending_embedding_jobs(pg.pool_for_tests(), &owner).await?,
+                0
+            );
+            Ok(())
+        }
+        .await;
+        drop(pg);
+        drop_db(&db_name).await?;
+        result
+    }
+
+    /// The rebuilt index must be the index production ships, or every
+    /// number measured against it describes something else.
+    #[tokio::test]
+    async fn a_rebuilt_hnsw_index_is_the_one_the_migration_creates()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (pg, db_name) = fresh_pg("proxima_spg_embed").await;
+        let result: Result<(), Box<dyn std::error::Error>> = async {
+            let tuning = PgTuning {
+                hnsw_bulk_build: true,
+                ..PgTuning::default()
+            };
+            let before = load_hnsw_index_definition(pg.pool_for_tests()).await?;
+            assert!(before.is_some());
+
+            let dropped_bytes = drop_hnsw_index(pg.pool_for_tests(), &tuning).await?;
+            assert!(dropped_bytes > 0);
+            assert_eq!(load_hnsw_index_definition(pg.pool_for_tests()).await?, None);
+
+            let report = create_hnsw_index(
+                pg.pool_for_tests(),
+                &tuning,
+                &HnswBuildSettings {
+                    maintenance_work_mem: Some("64MB".into()),
+                    max_parallel_maintenance_workers: Some(1),
+                },
+            )
+            .await?;
+
+            assert!(report.index_bytes > 0);
+            assert_eq!(
+                load_hnsw_index_definition(pg.pool_for_tests()).await?,
+                before
             );
             Ok(())
         }

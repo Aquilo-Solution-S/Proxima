@@ -77,6 +77,60 @@ impl PgSidecarRegistryFrozen {
         insert(tx, memory_id, payload).await
     }
 
+    /// Insert typed sidecar rows for already-created Memory rows, one
+    /// statement per destination table rather than one per row.
+    ///
+    /// Rows are grouped by the schema each payload routes to, in the order
+    /// each schema first appears, so the insert order of the tables a batch
+    /// touches is the caller's order and not a hash order.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ConstraintViolation` when a payload's schema is not
+    /// registered as a memory sidecar or the erased payload type does not
+    /// match the registered Rust type. Returns storage errors from the
+    /// concrete inserter.
+    pub async fn insert_memory_sidecar_batch(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        rows: &[(MemoryId, &SidecarPayload)],
+    ) -> Result<(), StorageError> {
+        let mut grouped: Vec<(PgSidecarKey, Vec<(MemoryId, &SidecarPayload)>)> = Vec::new();
+        for (memory_id, payload) in rows {
+            let key = PgSidecarKey::new(
+                payload.kind,
+                payload.schema_id.clone(),
+                payload.schema_version,
+            );
+            if let Some(group) = grouped.iter_mut().find(|(seen, _)| *seen == key) {
+                group.1.push((*memory_id, *payload));
+            } else {
+                grouped.push((key, vec![(*memory_id, *payload)]));
+            }
+        }
+
+        for (key, group) in grouped {
+            let entry = self.entries.get(&key).ok_or_else(|| {
+                StorageError::ConstraintViolation(format!(
+                    "no PG sidecar registered for {} v{} {:?}",
+                    key.schema_id.as_str(),
+                    key.schema_version.into_inner(),
+                    key.kind,
+                ))
+            })?;
+            let insert = entry.memory_insert_batch.ok_or_else(|| {
+                StorageError::ConstraintViolation(format!(
+                    "PG sidecar for {} v{} {:?} is not a memory sidecar",
+                    key.schema_id.as_str(),
+                    key.schema_version.into_inner(),
+                    key.kind,
+                ))
+            })?;
+            insert(&mut *tx, &group).await?;
+        }
+        Ok(())
+    }
+
     /// Load a typed sidecar payload projection for an already-created
     /// Memory row.
     ///

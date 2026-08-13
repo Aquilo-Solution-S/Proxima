@@ -26,6 +26,32 @@ where
     })
 }
 
+pub(super) fn insert_memory_sidecar_batch<'t, P>(
+    tx: &'t mut Transaction<'_, Postgres>,
+    rows: &'t [(MemoryId, &'t SidecarPayload)],
+) -> PgSidecarFuture<'t>
+where
+    P: PgMemorySidecar,
+{
+    Box::pin(async move {
+        let typed = rows
+            .iter()
+            .map(|(memory_id, payload)| {
+                let typed = payload.downcast_ref::<P>().ok_or_else(|| {
+                    StorageError::ConstraintViolation(format!(
+                        "sidecar payload type mismatch for {} v{} {:?}",
+                        payload.schema_id.as_str(),
+                        payload.schema_version.into_inner(),
+                        payload.kind,
+                    ))
+                })?;
+                Ok((*memory_id, typed))
+            })
+            .collect::<Result<Vec<_>, StorageError>>()?;
+        P::insert_memory_sidecar_batch(tx, &typed).await
+    })
+}
+
 pub(super) fn load_memory_payload<P>(
     ctx: PgSidecarReadCtx<'_>,
     memory_id: MemoryId,

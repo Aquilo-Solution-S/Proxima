@@ -1,9 +1,10 @@
 //! Semantic-branch search behaviour: vector ranking, owner isolation, chunk scoring, and pre-limit filtering.
 
 use super::{
-    brute_cosine, drop_db, fresh_pg, insert_embedded_memory, insert_embedded_memory_with_schema,
-    insert_embedded_memory_with_vec, insert_embedding_with_head, insert_search_abstraction,
-    owner_fixture, padded_embedding, semantic_request, vector_literal,
+    SHIPPED_ANN_WINDOW, WIDE_ANN_WINDOW, brute_cosine, drop_db, fresh_pg, insert_embedded_memory,
+    insert_embedded_memory_with_schema, insert_embedded_memory_with_vec,
+    insert_embedding_with_head, insert_search_abstraction, owner_fixture, padded_embedding,
+    pg_with_ann_window, semantic_request, vector_literal,
 };
 
 use proxima_core::llm::EMBEDDING_DIM;
@@ -12,6 +13,7 @@ use proxima_core::verbs::query::{
     EntityKind, MemorySearchRequest, SearchMode, SearchOrder, SupersessionStatus, TagMatch,
 };
 use proxima_core::{OwnerRef, SchemaId, UserId};
+use proxima_storage_pg::SemanticIndexFirst;
 use uuid::Uuid;
 
 #[tokio::test]
@@ -319,6 +321,27 @@ async fn semantic_search_uses_current_embedding_head() -> Result<(), Box<dyn std
     Ok(())
 }
 
+/// Owner scope and the embedding head decide which rows the candidate limit
+/// may cut — and which arm of `semantic_index_first` still guarantees it.
+///
+/// The fixture puts 600 rows at cosine similarity 1.0 in front of the one
+/// authorized, current target: 300 owned by somebody else, and 300 whose
+/// near vector is a superseded embedding version. Only 301 of them are
+/// owned by the searcher.
+///
+/// - `off` keeps both joins UNDER the nearest-neighbour window, so the
+///   window is a budget of eligible rows and the target always survives.
+/// - `pushdown` puts the owner arms on the scan itself, so the window is
+///   spent on the searcher's own rows and the target survives a window the
+///   full fixture would overflow. This is the one thing pushdown buys over
+///   overfetch, and it is exactly the owner/privacy predicate.
+/// - `overfetch` spends the window before either join is known, so the
+///   foreign rows can displace the target. That is the declared ANN-pool
+///   approximation, not a lost row: widen the window past the fixture and
+///   the target comes back.
+///
+/// No arm may return a row the joins exclude — the approximation costs
+/// recall, never scope.
 #[tokio::test]
 async fn semantic_search_filters_current_and_authorized_before_candidate_limit()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -363,19 +386,60 @@ async fn semantic_search_filters_current_and_authorized_before_candidate_limit()
 
     let mut req = semantic_request(&owner, query);
     req.limit = 1;
-    let rows = pg.search_memories(&req, &[]).await?.results;
 
-    assert_eq!(
-        rows.first().map(|row| row.memory_id.into_inner()),
-        Some(target),
-        "{rows:#?}"
-    );
+    for (arm, exact_at_shipped_window) in [
+        (SemanticIndexFirst::Off, true),
+        (SemanticIndexFirst::Overfetch, false),
+        (SemanticIndexFirst::Pushdown, true),
+    ] {
+        let shipped = pg_with_ann_window(&db_name, arm, SHIPPED_ANN_WINDOW).await?;
+        let rows = shipped.search_memories(&req, &[]).await?.results;
+        assert!(
+            rows.iter().all(|row| row.memory_id.into_inner() == target),
+            "{arm:?} returned a row outside the owner scope or off the head: {rows:#?}"
+        );
+        let found = rows.first().map(|row| row.memory_id.into_inner());
+        if exact_at_shipped_window {
+            assert_eq!(found, Some(target), "{arm:?} lost the target: {rows:#?}");
+        } else {
+            assert_eq!(
+                found, None,
+                "{arm:?} is declared to spend its window before the joins: {rows:#?}"
+            );
+        }
+
+        let wide = pg_with_ann_window(&db_name, arm, WIDE_ANN_WINDOW).await?;
+        let rows = wide.search_memories(&req, &[]).await?.results;
+        assert_eq!(
+            rows.first().map(|row| row.memory_id.into_inner()),
+            Some(target),
+            "{arm:?} lost the target under a window wider than the fixture: {rows:#?}"
+        );
+    }
 
     drop(pg);
     drop_db(&db_name).await?;
     Ok(())
 }
 
+/// The query predicates decide which rows the candidate limit may cut — on
+/// the `off` arm exactly, and on the index-first arms only as far as the
+/// nearest-neighbour window reaches.
+///
+/// 540 decoys sit at cosine similarity 1.0 under a DIFFERENT `schema_id`,
+/// in front of the one memory the request asks for. `off` joins the
+/// eligibility set under the window, so the window is a budget of rows that
+/// already passed `schema_id` and the target always survives. Neither
+/// index-first arm pushes `schema_id` (or `kind`, `tags`, `since`,
+/// `until`) onto the scan — only owner and model ride it, and only under
+/// `pushdown` — so both spend the window on rows the schema filter will
+/// discard. Over a window the fixture overflows, the target is displaced.
+///
+/// That is the declared ANN-pool approximation, and the widened-window pass
+/// is what tells it apart from a broken join: nothing is lost structurally,
+/// the rows are simply past the cut. What no arm may do is answer with a
+/// row of the wrong schema — the filter is inexact in recall, never in
+/// what it admits.
 #[tokio::test]
 async fn semantic_search_filters_query_predicates_before_candidate_limit()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -401,13 +465,36 @@ async fn semantic_search_filters_query_predicates_before_candidate_limit()
 
     let mut req = semantic_request(&owner, query);
     req.limit = 1;
-    let rows = pg.search_memories(&req, &[]).await?.results;
 
-    assert_eq!(
-        rows.first().map(|row| row.memory_id.into_inner()),
-        Some(target),
-        "{rows:#?}"
-    );
+    for arm in [
+        SemanticIndexFirst::Off,
+        SemanticIndexFirst::Overfetch,
+        SemanticIndexFirst::Pushdown,
+    ] {
+        let shipped = pg_with_ann_window(&db_name, arm, SHIPPED_ANN_WINDOW).await?;
+        let rows = shipped.search_memories(&req, &[]).await?.results;
+        assert!(
+            rows.iter().all(|row| row.memory_id.into_inner() == target),
+            "{arm:?} answered with a row of the filtered-out schema: {rows:#?}"
+        );
+        let found = rows.first().map(|row| row.memory_id.into_inner());
+        if matches!(arm, SemanticIndexFirst::Off) {
+            assert_eq!(found, Some(target), "{arm:?} lost the target: {rows:#?}");
+        } else {
+            assert_eq!(
+                found, None,
+                "{arm:?} is declared to spend its window before the query predicates: {rows:#?}"
+            );
+        }
+
+        let wide = pg_with_ann_window(&db_name, arm, WIDE_ANN_WINDOW).await?;
+        let rows = wide.search_memories(&req, &[]).await?.results;
+        assert_eq!(
+            rows.first().map(|row| row.memory_id.into_inner()),
+            Some(target),
+            "{arm:?} lost the target under a window wider than the fixture: {rows:#?}"
+        );
+    }
 
     drop(pg);
     drop_db(&db_name).await?;

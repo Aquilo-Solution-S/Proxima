@@ -9,6 +9,31 @@ pub trait PgMemorySidecar: Send + Sync + 'static {
         tx: &'t mut Transaction<'_, Postgres>,
         memory_id: MemoryId,
     ) -> PgSidecarFuture<'t>;
+
+    /// Write one sidecar row per `(memory_id, payload)` pair.
+    ///
+    /// The default fans out over [`Self::insert_memory_sidecar`], so a
+    /// sidecar that has not spelled a set-based insert still lands exactly
+    /// the rows it always did. Override it — `pg_sidecar!`'s
+    /// `batch_insert: unnest` clause generates the override — only where
+    /// every column has an array type `unnest` can carry, which excludes
+    /// array-valued columns: Postgres has no jagged arrays, so a `text[]`
+    /// column cannot travel as one element of a batch parameter.
+    #[must_use]
+    fn insert_memory_sidecar_batch<'t>(
+        tx: &'t mut Transaction<'_, Postgres>,
+        rows: &'t [(MemoryId, &'t Self)],
+    ) -> PgSidecarFuture<'t>
+    where
+        Self: Sized,
+    {
+        Box::pin(async move {
+            for (memory_id, payload) in rows {
+                payload.insert_memory_sidecar(&mut *tx, *memory_id).await?;
+            }
+            Ok(())
+        })
+    }
 }
 
 /// Read-back of a memory's typed sidecar payload.

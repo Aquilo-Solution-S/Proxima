@@ -7,6 +7,7 @@ use super::{
 
 use proxima_core::verbs::query::SearchMode;
 use proxima_core::{OwnerRef, UserId};
+use proxima_storage_pg::PgTuning;
 use uuid::Uuid;
 
 #[tokio::test]
@@ -19,7 +20,13 @@ async fn semantic_search_plan_uses_hnsw_index() -> Result<(), Box<dyn std::error
     let mut req = semantic_request(&owner, padded_embedding([1.0, 0.0, 0.0]));
     // No schema filter: keeps the bind list to owner arrays + vector + model.
     req.schema_id = None;
-    let sql = proxima_storage_pg::verbs::query::semantic_search_sql_for_tests(&req, &[], 40, 512)?;
+    let sql = proxima_storage_pg::verbs::query::semantic_search_sql_for_tests(
+        &req,
+        &[],
+        40,
+        512,
+        &PgTuning::default(),
+    )?;
     let explain_sql = format!("EXPLAIN (FORMAT JSON, COSTS OFF) {sql}");
 
     let (owner_kind, owner_id) = owner.columns();
@@ -107,13 +114,23 @@ async fn search_branches_enumerate_candidates_via_owner_index()
         .await?;
 
     let mut req = any_kind_lexical_request(&target, "target corpus");
-    let lexical_sql =
-        proxima_storage_pg::verbs::query::lexical_search_sql_for_tests(&req, &[], 40)?;
+    let lexical_sql = proxima_storage_pg::verbs::query::lexical_search_sql_for_tests(
+        &req,
+        &[],
+        40,
+        &PgTuning::default(),
+        proxima_storage_pg::verbs::query::TEXT_SEARCH_CONFIG_FOR_TESTS,
+    )?;
     req.mode = SearchMode::Semantic;
     req.query_embedding = Some(padded_embedding([1.0, 0.0, 0.0]));
     req.embedding_model_id = Some("test-embed".into());
-    let semantic_sql =
-        proxima_storage_pg::verbs::query::semantic_search_sql_for_tests(&req, &[], 40, 512)?;
+    let semantic_sql = proxima_storage_pg::verbs::query::semantic_search_sql_for_tests(
+        &req,
+        &[],
+        40,
+        512,
+        &PgTuning::default(),
+    )?;
 
     let (owner_kind, owner_id) = target.columns();
     // SQL-POLICY: fixed-fragment — EXPLAIN prefix over the audited

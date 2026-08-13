@@ -149,6 +149,7 @@ pub struct ProximaBuilder {
     embed_client: Option<Arc<dyn EmbeddingClient>>,
     anthropic: Option<Arc<dyn AnthropicClient>>,
     deployment_tool_scope: Option<proxima_core::ToolScope>,
+    pg_tuning: Option<proxima_storage_pg::PgTuning>,
 }
 
 impl std::fmt::Debug for ProximaBuilder {
@@ -163,6 +164,7 @@ impl std::fmt::Debug for ProximaBuilder {
             .field("has_embed_client", &self.embed_client.is_some())
             .field("has_anthropic", &self.anthropic.is_some())
             .field("deployment_tool_scope", &self.deployment_tool_scope)
+            .field("pg_tuning", &self.pg_tuning)
             .finish()
     }
 }
@@ -222,6 +224,7 @@ impl ProximaBuilder {
             embed_client: None,
             anthropic: None,
             deployment_tool_scope: None,
+            pg_tuning: None,
         }
     }
 
@@ -315,6 +318,14 @@ impl ProximaBuilder {
         self
     }
 
+    /// Storage tuning passthrough. Unset, the `PROXIMA_PG_*` environment
+    /// decides, and its defaults are the behaviour every release has had.
+    #[must_use]
+    pub fn pg_tuning(mut self, tuning: proxima_storage_pg::PgTuning) -> Self {
+        self.pg_tuning = Some(tuning);
+        self
+    }
+
     /// Connect, migrate, compose, and start the embedded engine.
     ///
     /// # Errors
@@ -334,9 +345,14 @@ impl ProximaBuilder {
             embed_client,
             anthropic,
             deployment_tool_scope,
+            pg_tuning,
         } = self;
 
-        let pg = PgStorage::connect(&config.database_url)
+        let pg_tuning = match pg_tuning {
+            Some(tuning) => tuning,
+            None => proxima_storage_pg::PgTuning::from_env().map_err(embed_storage_error)?,
+        };
+        let pg = PgStorage::connect_with_tuning(&config.database_url, pg_tuning)
             .await
             .map_err(embed_storage_error)?;
         if skip_migrations {

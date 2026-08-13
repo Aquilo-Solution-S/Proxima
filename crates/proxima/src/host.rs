@@ -88,6 +88,15 @@ pub use proxima_core::verbs::goal_write::{
     GoalWriteOutcome, IdempotencyKey, MAX_GOAL_TEXT_CHARS, MAX_GOAL_TITLE_CHARS,
     MAX_WAKE_TOOL_ID_CHARS, OperatorKind, SystemOrigin,
 };
+/// The Postgres tuning block.
+///
+/// [`RuntimeConfig::pg_tuning`] is a `pub` field and
+/// [`RuntimeBuilder::pg_tuning`] a `pub` builder method, so these types were
+/// already part of the public surface — just not nameable from `proxima`.
+/// A host could not write one in a signature or set a single knob
+/// programmatically, which would leave the `PROXIMA_PG_*` environment as the
+/// only route in.
+pub use proxima_storage_pg::{HnswIterativeScan, PgTuning, SemanticIndexFirst};
 // `GoalWriteBuildError`'s variants carry this, so a host that matches on
 // them cannot bind the payload without being able to name its type. An
 // unnameable type in a public signature is the usual shape of an

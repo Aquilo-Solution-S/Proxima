@@ -773,7 +773,8 @@ async fn boot_app<A: FlavorApp + 'static>(
         config.owner,
     )
     .bundle::<A>()
-    .deployment_tool_scope(config.tool_scope.clone());
+    .deployment_tool_scope(config.tool_scope.clone())
+    .pg_tuning(config.pg_tuning);
     if config.skip_migrations {
         builder = builder.skip_migrations();
     }

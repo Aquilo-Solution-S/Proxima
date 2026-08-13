@@ -1,0 +1,517 @@
+//! Storage-tier tuning knobs, read once per [`crate::PgStorage`].
+//!
+//! Every field defaults to the behaviour this crate had before the knob
+//! existed, so an unset environment is production. Values are resolved at
+//! construction and carried on the handle; no query path re-reads the
+//! environment.
+
+use std::ops::RangeInclusive;
+
+use proxima_core::{StorageError, env_value};
+
+/// One unit per batch: with `batched_writes` on and nothing else set, a
+/// batch is the same unit of work the per-unit path already writes.
+pub(crate) const DEFAULT_WRITE_BATCH_SIZE: u32 = 1;
+pub(crate) const DEFAULT_HNSW_EF_SEARCH: u32 = 100;
+pub(crate) const DEFAULT_HNSW_MAX_SCAN_TUPLES: u32 = 20_000;
+pub(crate) const DEFAULT_SEMANTIC_OVERFETCH_PER_RESULT: u64 = 64;
+pub(crate) const DEFAULT_SEMANTIC_OVERFETCH_MIN: u64 = 512;
+
+/// Accepted range for the two window knobs.
+///
+/// The window they compute is formatted into `LIMIT`, so an absurd value is
+/// not a slow query but a statement the server rejects at run time, far from
+/// the variable that caused it. Bounded here, the widest window the branch
+/// can emit is `u32::MAX * 4096`, which is a `bigint` Postgres accepts.
+const SEMANTIC_OVERFETCH_PER_RESULT_RANGE: RangeInclusive<u64> = 1..=4_096;
+const SEMANTIC_OVERFETCH_MIN_RANGE: RangeInclusive<u64> = 1..=100_000;
+
+/// Where the semantic branch's nearest-neighbour scan sits relative to the
+/// eligibility joins.
+///
+/// `Off` keeps every join UNDER the scan's `ORDER BY … LIMIT`, so the window
+/// is a budget of rows that already passed them and the branch is exact.
+///
+/// Both other arms cut first and filter after, which trades recall for the
+/// index scan. `Overfetch` keeps the joins above a materialized ANN CTE, so
+/// recall depends on the overfetch window exceeding the inverse of the
+/// filter's selectivity — pgvector's iterative scan cannot help there,
+/// because the CTE's own LIMIT is satisfied by unfiltered rows. `Pushdown`
+/// puts the owner and model predicates on the embeddings scan itself, which
+/// is what lets iterative scan satisfy THOSE: an eligible row can no longer
+/// be displaced from the window by another owner's. Every other query
+/// predicate — `schema_id`, `kind`, `tags`, `since`, `until` — still sits
+/// above the window on both arms and carries overfetch's recall bound
+/// (`semantic_search_filters_query_predicates_before_candidate_limit` runs
+/// the three arms against exactly that).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SemanticIndexFirst {
+    #[default]
+    Off,
+    Overfetch,
+    Pushdown,
+}
+
+impl SemanticIndexFirst {
+    fn from_lookup(
+        lookup: &impl Fn(&str) -> Option<String>,
+        key: &str,
+        default: Self,
+    ) -> Result<Self, StorageError> {
+        let Some(value) = env_value(lookup, key) else {
+            return Ok(default);
+        };
+        match value.to_ascii_lowercase().as_str() {
+            "off" => Ok(Self::Off),
+            "overfetch" => Ok(Self::Overfetch),
+            "pushdown" => Ok(Self::Pushdown),
+            _ => Err(StorageError::Unavailable(format!(
+                "invalid {key}={value}; expected off, overfetch, or pushdown"
+            ))),
+        }
+    }
+}
+
+/// pgvector's `hnsw.iterative_scan` mode for the semantic branch's session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum HnswIterativeScan {
+    Off,
+    StrictOrder,
+    #[default]
+    RelaxedOrder,
+}
+
+impl HnswIterativeScan {
+    /// The value as pgvector spells it in `SET LOCAL`.
+    pub(crate) const fn as_setting(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::StrictOrder => "strict_order",
+            Self::RelaxedOrder => "relaxed_order",
+        }
+    }
+
+    fn from_lookup(
+        lookup: &impl Fn(&str) -> Option<String>,
+        key: &str,
+        default: Self,
+    ) -> Result<Self, StorageError> {
+        let Some(value) = env_value(lookup, key) else {
+            return Ok(default);
+        };
+        match value.to_ascii_lowercase().as_str() {
+            "off" => Ok(Self::Off),
+            "strict_order" => Ok(Self::StrictOrder),
+            "relaxed_order" => Ok(Self::RelaxedOrder),
+            _ => Err(StorageError::Unavailable(format!(
+                "invalid {key}={value}; expected off, strict_order, or relaxed_order"
+            ))),
+        }
+    }
+}
+
+/// Postgres-tier tuning, resolved once and carried on the storage handle.
+///
+/// The booleans are independent switches over separate query and write
+/// paths, not the states of one machine: each has its own `PROXIMA_PG_*`
+/// variable and each is meant to be turned on alone, so folding them into
+/// an enum would invent relationships between them that do not exist.
+#[allow(clippy::struct_excessive_bools)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PgTuning {
+    pub semantic_index_first: SemanticIndexFirst,
+    pub hnsw_bulk_build: bool,
+    pub candidate_window_dedup: bool,
+    pub batched_writes: bool,
+    pub write_batch_size: u32,
+    pub windowed_total_count: bool,
+    pub static_lookup_cache: bool,
+    pub hnsw_ef_search: u32,
+    pub hnsw_iterative_scan: HnswIterativeScan,
+    /// Ceiling on tuples an iterative HNSW scan may visit. Only emitted
+    /// into the session settings when it differs from pgvector's own
+    /// default, so the shipped statement text stays what it was.
+    pub hnsw_max_scan_tuples: u32,
+    /// Nearest-neighbour candidates fetched per requested result, and the
+    /// floor that window never drops below.
+    pub semantic_overfetch_per_result: u64,
+    pub semantic_overfetch_min: u64,
+}
+
+impl Default for PgTuning {
+    fn default() -> Self {
+        Self {
+            semantic_index_first: SemanticIndexFirst::default(),
+            hnsw_bulk_build: false,
+            candidate_window_dedup: false,
+            batched_writes: false,
+            write_batch_size: DEFAULT_WRITE_BATCH_SIZE,
+            windowed_total_count: false,
+            static_lookup_cache: false,
+            hnsw_ef_search: DEFAULT_HNSW_EF_SEARCH,
+            hnsw_iterative_scan: HnswIterativeScan::default(),
+            hnsw_max_scan_tuples: DEFAULT_HNSW_MAX_SCAN_TUPLES,
+            semantic_overfetch_per_result: DEFAULT_SEMANTIC_OVERFETCH_PER_RESULT,
+            semantic_overfetch_min: DEFAULT_SEMANTIC_OVERFETCH_MIN,
+        }
+    }
+}
+
+impl PgTuning {
+    /// Read tuning from the process environment, defaulting what it leaves
+    /// unset.
+    ///
+    /// # Errors
+    ///
+    /// Returns `StorageError::Unavailable` when a `PROXIMA_PG_*` tuning
+    /// variable is set to a value this crate cannot parse.
+    pub fn from_env() -> Result<Self, StorageError> {
+        Ok(Self::from_lookup(&proxima_core::process_env)?.unwrap_or_default())
+    }
+
+    /// Read tuning from an injected environment, or `None` when that
+    /// environment asks for nothing the defaults do not already give.
+    ///
+    /// `None` rather than the defaults, so a caller layering configuration
+    /// can tell an environment that tunes something from one that is silent:
+    /// silence must not outrank tuning the host set programmatically.
+    ///
+    /// Every value goes through [`proxima_core::env_value`], so a variable
+    /// set to the empty string (or to whitespace) reads as unset rather
+    /// than as a value that fails to parse. A malformed value is an error
+    /// rather than a silent fallback, so a typo cannot quietly ship the
+    /// default arm of a measurement.
+    ///
+    /// # Errors
+    ///
+    /// Returns `StorageError::Unavailable` when a variable is set to a
+    /// value this crate cannot parse.
+    pub fn from_lookup(
+        lookup: &impl Fn(&str) -> Option<String>,
+    ) -> Result<Option<Self>, StorageError> {
+        let tuned = Self::resolve(lookup)?;
+        Ok((tuned != Self::default()).then_some(tuned))
+    }
+
+    fn resolve(lookup: &impl Fn(&str) -> Option<String>) -> Result<Self, StorageError> {
+        let defaults = Self::default();
+        Ok(Self {
+            semantic_index_first: SemanticIndexFirst::from_lookup(
+                lookup,
+                "PROXIMA_PG_SEMANTIC_INDEX_FIRST",
+                defaults.semantic_index_first,
+            )?,
+            hnsw_bulk_build: env_bool_or(
+                lookup,
+                "PROXIMA_PG_HNSW_BULK_BUILD",
+                defaults.hnsw_bulk_build,
+            )?,
+            candidate_window_dedup: env_bool_or(
+                lookup,
+                "PROXIMA_PG_CANDIDATE_WINDOW_DEDUP",
+                defaults.candidate_window_dedup,
+            )?,
+            batched_writes: env_bool_or(
+                lookup,
+                "PROXIMA_PG_BATCHED_WRITES",
+                defaults.batched_writes,
+            )?,
+            write_batch_size: env_u32_or(
+                lookup,
+                "PROXIMA_PG_WRITE_BATCH_SIZE",
+                defaults.write_batch_size,
+            )?,
+            windowed_total_count: env_bool_or(
+                lookup,
+                "PROXIMA_PG_WINDOWED_TOTAL_COUNT",
+                defaults.windowed_total_count,
+            )?,
+            static_lookup_cache: env_bool_or(
+                lookup,
+                "PROXIMA_PG_STATIC_LOOKUP_CACHE",
+                defaults.static_lookup_cache,
+            )?,
+            hnsw_ef_search: env_u32_or(
+                lookup,
+                "PROXIMA_PG_HNSW_EF_SEARCH",
+                defaults.hnsw_ef_search,
+            )?,
+            hnsw_iterative_scan: HnswIterativeScan::from_lookup(
+                lookup,
+                "PROXIMA_PG_HNSW_ITERATIVE_SCAN",
+                defaults.hnsw_iterative_scan,
+            )?,
+            hnsw_max_scan_tuples: env_u32_or(
+                lookup,
+                "PROXIMA_PG_HNSW_MAX_SCAN_TUPLES",
+                defaults.hnsw_max_scan_tuples,
+            )?,
+            semantic_overfetch_per_result: env_u64_in_range(
+                lookup,
+                "PROXIMA_PG_SEMANTIC_OVERFETCH_PER_RESULT",
+                defaults.semantic_overfetch_per_result,
+                &SEMANTIC_OVERFETCH_PER_RESULT_RANGE,
+            )?,
+            semantic_overfetch_min: env_u64_in_range(
+                lookup,
+                "PROXIMA_PG_SEMANTIC_OVERFETCH_MIN",
+                defaults.semantic_overfetch_min,
+                &SEMANTIC_OVERFETCH_MIN_RANGE,
+            )?,
+        })
+    }
+}
+
+/// Parse a boolean tuning variable, falling back to `default` when unset.
+/// The accepted spellings are the workspace's (`1/true/yes/on` and their
+/// negatives), so one flag cannot answer to a word its neighbours reject.
+fn env_bool_or(
+    lookup: &impl Fn(&str) -> Option<String>,
+    key: &str,
+    default: bool,
+) -> Result<bool, StorageError> {
+    let Some(value) = env_value(lookup, key) else {
+        return Ok(default);
+    };
+    match value.to_ascii_lowercase().as_str() {
+        "1" | "true" | "yes" | "on" => Ok(true),
+        "0" | "false" | "no" | "off" => Ok(false),
+        _ => Err(StorageError::Unavailable(format!(
+            "invalid boolean {key}={value}"
+        ))),
+    }
+}
+
+/// Parse a `u64` tuning variable that must land inside `range`, falling back
+/// to `default` when unset.
+///
+/// Out of range is an error rather than a clamp: a clamped value would run
+/// an arm the operator did not ask for and report it as the one they did.
+fn env_u64_in_range(
+    lookup: &impl Fn(&str) -> Option<String>,
+    key: &str,
+    default: u64,
+    range: &RangeInclusive<u64>,
+) -> Result<u64, StorageError> {
+    let value = crate::env_u64_or(lookup, key, default)?;
+    if range.contains(&value) {
+        return Ok(value);
+    }
+    Err(StorageError::Unavailable(format!(
+        "out-of-range {key}={value}; expected {}..={}",
+        range.start(),
+        range.end()
+    )))
+}
+
+/// Parse a `u32` tuning variable, falling back to `default` when unset.
+fn env_u32_or(
+    lookup: &impl Fn(&str) -> Option<String>,
+    key: &str,
+    default: u32,
+) -> Result<u32, StorageError> {
+    let Some(value) = env_value(lookup, key) else {
+        return Ok(default);
+    };
+    value
+        .parse()
+        .map_err(|_| StorageError::Unavailable(format!("invalid integer {key}={value}")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn env<'a>(pairs: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<String> + 'a {
+        move |key| {
+            pairs
+                .iter()
+                .find(|(candidate, _)| *candidate == key)
+                .map(|(_, value)| (*value).to_string())
+        }
+    }
+
+    /// The defaults are the contract: an unset environment must reproduce
+    /// the behaviour that shipped before any of these knobs existed.
+    #[test]
+    fn defaults_are_todays_behaviour() {
+        let tuning = PgTuning::default();
+
+        assert_eq!(tuning.semantic_index_first, SemanticIndexFirst::Off);
+        assert!(!tuning.hnsw_bulk_build);
+        assert!(!tuning.candidate_window_dedup);
+        assert!(!tuning.batched_writes);
+        assert_eq!(tuning.write_batch_size, 1);
+        assert!(!tuning.windowed_total_count);
+        assert!(!tuning.static_lookup_cache);
+        assert_eq!(tuning.hnsw_ef_search, 100);
+        assert_eq!(tuning.hnsw_iterative_scan, HnswIterativeScan::RelaxedOrder);
+        assert_eq!(tuning.hnsw_max_scan_tuples, 20_000);
+        assert_eq!(tuning.semantic_overfetch_per_result, 64);
+        assert_eq!(tuning.semantic_overfetch_min, 512);
+    }
+
+    /// A silent environment tunes nothing, which is not the same answer as
+    /// "the defaults": a caller layering configuration must be able to leave
+    /// a programmatically tuned value alone.
+    #[test]
+    fn an_environment_that_tunes_nothing_answers_none() {
+        assert_eq!(PgTuning::from_lookup(&env(&[])).unwrap(), None);
+    }
+
+    /// Empty and whitespace-only are "unset", per `proxima_core::env_value`.
+    #[test]
+    fn blank_values_read_as_unset() {
+        let tuning = PgTuning::from_lookup(&env(&[
+            ("PROXIMA_PG_SEMANTIC_INDEX_FIRST", ""),
+            ("PROXIMA_PG_BATCHED_WRITES", "   "),
+            ("PROXIMA_PG_HNSW_EF_SEARCH", " "),
+        ]))
+        .unwrap();
+
+        assert_eq!(tuning, None);
+    }
+
+    #[test]
+    fn every_variable_is_read_and_trimmed() {
+        let tuning = PgTuning::from_lookup(&env(&[
+            ("PROXIMA_PG_SEMANTIC_INDEX_FIRST", "Pushdown"),
+            ("PROXIMA_PG_HNSW_BULK_BUILD", "yes"),
+            ("PROXIMA_PG_CANDIDATE_WINDOW_DEDUP", "on"),
+            ("PROXIMA_PG_BATCHED_WRITES", "true"),
+            ("PROXIMA_PG_WRITE_BATCH_SIZE", " 250 "),
+            ("PROXIMA_PG_WINDOWED_TOTAL_COUNT", "1"),
+            ("PROXIMA_PG_STATIC_LOOKUP_CACHE", "TRUE"),
+            ("PROXIMA_PG_HNSW_EF_SEARCH", "200"),
+            ("PROXIMA_PG_HNSW_ITERATIVE_SCAN", "STRICT_ORDER"),
+            ("PROXIMA_PG_HNSW_MAX_SCAN_TUPLES", "40000"),
+            ("PROXIMA_PG_SEMANTIC_OVERFETCH_PER_RESULT", "128"),
+            ("PROXIMA_PG_SEMANTIC_OVERFETCH_MIN", "1024"),
+        ]))
+        .unwrap();
+
+        assert_eq!(
+            tuning,
+            Some(PgTuning {
+                semantic_index_first: SemanticIndexFirst::Pushdown,
+                hnsw_bulk_build: true,
+                candidate_window_dedup: true,
+                batched_writes: true,
+                write_batch_size: 250,
+                windowed_total_count: true,
+                static_lookup_cache: true,
+                hnsw_ef_search: 200,
+                hnsw_iterative_scan: HnswIterativeScan::StrictOrder,
+                hnsw_max_scan_tuples: 40_000,
+                semantic_overfetch_per_result: 128,
+                semantic_overfetch_min: 1024,
+            })
+        );
+    }
+
+    #[test]
+    fn the_index_first_modes_parse_by_name() {
+        for (raw, expected) in [
+            ("off", SemanticIndexFirst::Off),
+            ("overfetch", SemanticIndexFirst::Overfetch),
+            ("pushdown", SemanticIndexFirst::Pushdown),
+        ] {
+            let tuning = PgTuning::from_lookup(&env(&[("PROXIMA_PG_SEMANTIC_INDEX_FIRST", raw)]))
+                .unwrap()
+                .unwrap_or_default();
+            assert_eq!(tuning.semantic_index_first, expected);
+        }
+    }
+
+    #[test]
+    fn the_iterative_scan_modes_parse_by_name() {
+        for (raw, expected) in [
+            ("off", HnswIterativeScan::Off),
+            ("strict_order", HnswIterativeScan::StrictOrder),
+            ("relaxed_order", HnswIterativeScan::RelaxedOrder),
+        ] {
+            let tuning = PgTuning::from_lookup(&env(&[("PROXIMA_PG_HNSW_ITERATIVE_SCAN", raw)]))
+                .unwrap()
+                .unwrap_or_default();
+            assert_eq!(tuning.hnsw_iterative_scan, expected);
+        }
+    }
+
+    #[test]
+    fn a_malformed_value_names_the_variable_it_came_from() {
+        for (key, value, expected) in [
+            (
+                "PROXIMA_PG_SEMANTIC_INDEX_FIRST",
+                "index_first",
+                "invalid PROXIMA_PG_SEMANTIC_INDEX_FIRST=index_first",
+            ),
+            (
+                "PROXIMA_PG_HNSW_ITERATIVE_SCAN",
+                "relaxed",
+                "invalid PROXIMA_PG_HNSW_ITERATIVE_SCAN=relaxed",
+            ),
+            (
+                "PROXIMA_PG_BATCHED_WRITES",
+                "maybe",
+                "invalid boolean PROXIMA_PG_BATCHED_WRITES=maybe",
+            ),
+            (
+                "PROXIMA_PG_HNSW_EF_SEARCH",
+                "wide",
+                "invalid integer PROXIMA_PG_HNSW_EF_SEARCH=wide",
+            ),
+            (
+                "PROXIMA_PG_SEMANTIC_OVERFETCH_MIN",
+                "many",
+                "invalid integer PROXIMA_PG_SEMANTIC_OVERFETCH_MIN=many",
+            ),
+        ] {
+            let err = PgTuning::from_lookup(&env(&[(key, value)])).unwrap_err();
+            assert!(
+                err.to_string().contains(expected),
+                "{key}={value} reported {err}"
+            );
+        }
+    }
+
+    /// The window knobs reach `LIMIT` as an integer literal. A value the
+    /// server would reject there has to refuse at boot instead, where the
+    /// variable that caused it is still in hand.
+    #[test]
+    fn an_out_of_range_window_refuses_at_boot() {
+        for (key, value) in [
+            ("PROXIMA_PG_SEMANTIC_OVERFETCH_PER_RESULT", "0"),
+            ("PROXIMA_PG_SEMANTIC_OVERFETCH_PER_RESULT", "4097"),
+            (
+                "PROXIMA_PG_SEMANTIC_OVERFETCH_PER_RESULT",
+                "18446744073709551615",
+            ),
+            ("PROXIMA_PG_SEMANTIC_OVERFETCH_MIN", "0"),
+            ("PROXIMA_PG_SEMANTIC_OVERFETCH_MIN", "100001"),
+        ] {
+            let err = PgTuning::from_lookup(&env(&[(key, value)])).unwrap_err();
+            assert!(
+                err.to_string()
+                    .contains(&format!("out-of-range {key}={value}")),
+                "{key}={value} reported {err}"
+            );
+        }
+    }
+
+    /// The bounds still admit the widest window an operator may reasonably
+    /// ask for, and the emitted `LIMIT` stays inside `bigint`.
+    #[test]
+    fn the_widest_admitted_window_fits_a_bigint_limit() {
+        let tuning = PgTuning::from_lookup(&env(&[
+            ("PROXIMA_PG_SEMANTIC_OVERFETCH_PER_RESULT", "4096"),
+            ("PROXIMA_PG_SEMANTIC_OVERFETCH_MIN", "100000"),
+        ]))
+        .unwrap()
+        .unwrap_or_default();
+
+        let widest = u64::from(u32::MAX)
+            .saturating_mul(tuning.semantic_overfetch_per_result)
+            .max(tuning.semantic_overfetch_min);
+        assert!(i64::try_from(widest).is_ok(), "{widest} overflows bigint");
+    }
+}

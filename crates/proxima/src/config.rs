@@ -1,4 +1,5 @@
 use proxima_blob_s3::S3RuntimeConfig;
+use proxima_storage_pg::PgTuning;
 
 use crate::EmbedError;
 
@@ -35,6 +36,18 @@ pub(crate) fn s3_from_lookup(
     lookup: &impl Fn(&str) -> Option<String>,
 ) -> Result<Option<S3RuntimeConfig>, EmbedError> {
     S3RuntimeConfig::from_lookup(lookup).map_err(|error| EmbedError::Config(error.to_string()))
+}
+
+/// Read the `PROXIMA_PG_*` tuning block through the storage crate's parser.
+///
+/// Same single-parser rule as the S3 block above: the storage crate is where
+/// these knobs are consumed and where their defaults are defined, so a host
+/// injecting its own environment cannot get a different answer than one
+/// reading the process environment.
+pub(crate) fn pg_tuning_from_lookup(
+    lookup: &impl Fn(&str) -> Option<String>,
+) -> Result<Option<PgTuning>, EmbedError> {
+    PgTuning::from_lookup(lookup).map_err(|error| EmbedError::Config(error.to_string()))
 }
 
 pub(crate) fn parse_bool_value(key: &str, raw: &str) -> Result<bool, EmbedError> {

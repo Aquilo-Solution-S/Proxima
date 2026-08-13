@@ -31,6 +31,9 @@ crate::pg_sidecar! {
     },
 }
 
+// The chat-ingest sidecar, and the one the batched Fact path fans out over
+// most: every column travels as an array element, so it opts into the
+// set-based insert instead of the per-row default.
 crate::pg_sidecar! {
     payload: proxima_core::UtteranceV1,
     row: UtterancePayloadRow,
@@ -46,6 +49,7 @@ crate::pg_sidecar! {
         conversation_id => conversation_id: (text),
         text => text: (text),
     },
+    batch_insert: unnest,
 }
 
 crate::pg_sidecar! {

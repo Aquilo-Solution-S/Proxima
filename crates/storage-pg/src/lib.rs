@@ -20,8 +20,9 @@ use sqlx::PgPool;
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 pub use verbs::fact_embeddings::{
     EmbeddingInlineDrainOutcome, EmbeddingReconcileOptions, EmbeddingReconcileOutcome,
-    EmbeddingReconcileScope,
+    EmbeddingReconcileScope, HnswBuildReport, HnswBuildSettings,
 };
+pub use verbs::fact_ingest_batch::FactIngestBatchUnit;
 pub use verbs::retention_maintenance::{
     ChangeEventPruneOptions, ChangeEventPruneOutcome, PruneOwnerOutcome, RetentionEnforceOptions,
     RetentionEnforceOutcome, RetentionOwnerOutcome,
@@ -50,6 +51,7 @@ pub mod query {
 }
 #[cfg(any(test, feature = "test-fixtures"))]
 pub mod test_fixtures;
+mod tuning;
 pub mod verbs;
 /// Stable, discoverable re-export of the exported `OwnerAccessPort` adapter
 /// (see [`access::PgOwnerAccessResolver`]) for embedding hosts.
@@ -59,6 +61,7 @@ pub use sidecars::{
     PgSidecarKey, PgSidecarRegistry, PgSidecarRegistryFrozen, core_pg_sidecars,
     register_core_pg_sidecars,
 };
+pub use tuning::{HnswIterativeScan, PgTuning, SemanticIndexFirst};
 
 /// Default DB URL when `DATABASE_URL` is unset. Matches the
 /// dev DB created locally via `createdb proxima_dev`.
@@ -519,6 +522,13 @@ async fn ensure_pgvector_runtime_compatible(pool: &PgPool) -> Result<(), Storage
 pub struct PgStorage {
     pool: PgPool,
     sidecars: PgSidecarRegistryFrozen,
+    tuning: PgTuning,
+    /// The database's default text-search configuration, read at most once
+    /// per handle and only when [`PgTuning::static_lookup_cache`] asks the
+    /// lexical branch to inline it. Shared by every clone of this handle,
+    /// and scoped to it — a process holding handles on two databases must
+    /// not answer one from the other's catalog.
+    lexical_config: verbs::lexical_language::LexicalConfigCache,
 }
 
 /// Advisory-lock key serializing embedding maintenance passes across
@@ -620,11 +630,29 @@ impl PgStorage {
     /// Connect using `url`, build a tuned pool, and verify
     /// connectivity by acquiring one connection.
     ///
+    /// Query and write tuning is read from the environment
+    /// ([`PgTuning::from_env`]); [`Self::connect_with_tuning`] takes it as
+    /// an argument instead.
+    ///
+    /// # Errors
+    ///
+    /// Returns `StorageError::Unavailable` on connection or
+    /// query failure, or on a malformed tuning variable.
+    pub async fn connect(url: &str) -> Result<Self, StorageError> {
+        Self::connect_with_tuning(url, PgTuning::from_env()?).await
+    }
+
+    /// Connect using `url` with tuning supplied by the caller.
+    ///
+    /// A measurement harness sets the fields it is ablating directly, so an
+    /// arm never depends on mutating the process environment. The pool and
+    /// timeout settings are still read from the environment.
+    ///
     /// # Errors
     ///
     /// Returns `StorageError::Unavailable` on connection or
     /// query failure.
-    pub async fn connect(url: &str) -> Result<Self, StorageError> {
+    pub async fn connect_with_tuning(url: &str, tuning: PgTuning) -> Result<Self, StorageError> {
         let mut opts: PgConnectOptions = url.parse().map_err(|e: sqlx::Error| {
             StorageError::Unavailable(format!("invalid DATABASE_URL: {e}"))
         })?;
@@ -671,6 +699,8 @@ impl PgStorage {
         Ok(Self {
             pool,
             sidecars: core_pg_sidecars(),
+            tuning,
+            lexical_config: verbs::lexical_language::LexicalConfigCache::default(),
         })
     }
 
@@ -746,6 +776,33 @@ impl PgStorage {
             .build()
     }
 
+    /// Land a set of already-authorized Facts.
+    ///
+    /// The engine's Fact-ingest port is one unit per call, so this is the
+    /// seam for a caller that has already accumulated units — an importer,
+    /// a measurement harness — and can hand storage the whole set. Which
+    /// path it takes is [`PgTuning::batched_writes`]: off, each unit runs
+    /// the per-unit verb in its own transaction, exactly as the port does;
+    /// on, units land [`PgTuning::write_batch_size`] at a time through the
+    /// set-based statements.
+    ///
+    /// # Errors
+    ///
+    /// Returns storage errors from Fact materialization, sidecar insertion,
+    /// or commit.
+    pub async fn ingest_facts_batch(
+        &self,
+        units: &[verbs::fact_ingest_batch::FactIngestBatchUnit<'_>],
+    ) -> Result<Vec<proxima_core::verbs::fact_ingest::FactIngestOutcome>, StorageError> {
+        verbs::fact_ingest_batch::ingest_facts_batch(
+            &self.pool,
+            &self.tuning,
+            &self.sidecars,
+            units,
+        )
+        .await
+    }
+
     /// Global enqueue-only embedding reconciliation.
     ///
     /// # Errors
@@ -797,6 +854,35 @@ impl PgStorage {
         &self,
     ) -> Result<proxima_core::EmbeddingAnnObservability, StorageError> {
         verbs::fact_embeddings::embedding_ann_observability(&self.pool).await
+    }
+
+    /// Drop the embeddings HNSW index ahead of a bulk load, answering the
+    /// size it held.
+    ///
+    /// Semantic search finds nothing until [`Self::create_hnsw_index`] puts
+    /// the index back, so this belongs to backfill and measurement, never
+    /// to a serving deployment.
+    ///
+    /// # Errors
+    ///
+    /// Returns `StorageError::Unavailable` when `hnsw_bulk_build` is off,
+    /// otherwise storage errors from the drop transaction.
+    pub async fn drop_hnsw_index(&self) -> Result<u64, StorageError> {
+        verbs::fact_embeddings::drop_hnsw_index(&self.pool, &self.tuning).await
+    }
+
+    /// Rebuild the embeddings HNSW index over the rows already loaded,
+    /// reporting build wall clock and the index's size.
+    ///
+    /// # Errors
+    ///
+    /// Returns `StorageError::Unavailable` when `hnsw_bulk_build` is off,
+    /// otherwise storage errors from the build transaction.
+    pub async fn create_hnsw_index(
+        &self,
+        settings: &HnswBuildSettings,
+    ) -> Result<HnswBuildReport, StorageError> {
+        verbs::fact_embeddings::create_hnsw_index(&self.pool, &self.tuning, settings).await
     }
 
     /// Try to take the global embedding-maintenance advisory lock.

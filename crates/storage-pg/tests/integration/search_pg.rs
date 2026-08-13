@@ -5,7 +5,7 @@
 //! `ranking`, `pagination`, and `plans` (EXPLAIN-based plan-shape
 //! regressions). Everything below is fixture surface shared across them.
 
-use crate::common::{drop_db, fresh_pg, owner_fixture};
+use crate::common::{db_url, drop_db, fresh_pg, owner_fixture};
 use proxima_core::storage_ports::*;
 
 use proxima_core::llm::EMBEDDING_DIM;
@@ -19,6 +19,7 @@ use proxima_core::{
     FactReceiptDraft, MemoryId, Owner, SchemaId, SchemaVersion, SearchProjectionColumnKind,
     SourceBatchId, SourceId,
 };
+use proxima_storage_pg::{PgStorage, PgTuning, SemanticIndexFirst};
 use uuid::Uuid;
 
 fn hybrid_request(owner: &Owner, query: &str, query_embedding: Vec<f32>) -> MemorySearchRequest {
@@ -325,6 +326,50 @@ fn semantic_request(owner: &Owner, query_embedding: Vec<f32>) -> MemorySearchReq
         query_embedding: Some(query_embedding),
         embedding_model_id: Some("test-embed".into()),
     }
+}
+
+/// The nearest-neighbour window the shipped configuration gives a
+/// `limit = 1` semantic search, and a window wider than any fixture below.
+const SHIPPED_ANN_WINDOW: u64 = 512;
+const WIDE_ANN_WINDOW: u64 = 2_048;
+
+/// A second handle on the same database with one `semantic_index_first` arm
+/// and one nearest-neighbour window pinned.
+///
+/// Where the ANN window sits relative to the eligibility joins is exactly
+/// what the arms differ in, so the tests that pin recall drive all three
+/// themselves rather than testing whichever arm the ambient environment
+/// selected. The window is pinned for the same reason: `overfetch_min`
+/// alone decides it at `limit = 1`, and a fixture is only over-window or
+/// under-window relative to a known number.
+async fn pg_with_ann_window(
+    db_name: &str,
+    semantic_index_first: SemanticIndexFirst,
+    window: u64,
+) -> Result<PgStorage, Box<dyn std::error::Error>> {
+    let tuning = PgTuning {
+        semantic_index_first,
+        semantic_overfetch_per_result: 1,
+        semantic_overfetch_min: window,
+        ..PgTuning::from_env()?
+    };
+    Ok(PgStorage::connect_with_tuning(&db_url(db_name), tuning).await?)
+}
+
+/// A second handle on the same database with `static_lookup_cache` pinned.
+///
+/// The flag decides whether the lexical branch names
+/// `proxima_core.lexical_config()` or the configuration it resolves to, so
+/// a test comparing the two arms has to hold both at once.
+async fn pg_with_static_lookup_cache(
+    db_name: &str,
+    static_lookup_cache: bool,
+) -> Result<PgStorage, Box<dyn std::error::Error>> {
+    let tuning = PgTuning {
+        static_lookup_cache,
+        ..PgTuning::from_env()?
+    };
+    Ok(PgStorage::connect_with_tuning(&db_url(db_name), tuning).await?)
 }
 
 fn tagged_search_request(owner: &Owner, query: &str, mode: SearchMode) -> MemorySearchRequest {

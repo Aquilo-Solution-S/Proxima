@@ -1,21 +1,43 @@
 use std::fmt::Write as _;
 
+use crate::tuning::{DEFAULT_HNSW_MAX_SCAN_TUPLES, HnswIterativeScan, PgTuning};
+
 pub(crate) const REQUIRED_PGVECTOR_MAJOR: u32 = 0;
 pub(crate) const REQUIRED_PGVECTOR_MINOR: u32 = 8;
 pub(crate) const REQUIRED_PGVECTOR_PATCH: u32 = 0;
 pub(crate) const SET_HNSW_ITERATIVE_SCAN_SQL: &str =
     "SET LOCAL hnsw.iterative_scan = relaxed_order";
 
-/// Both HNSW search settings in one statement.
+/// The HNSW search settings for one semantic search, in one statement.
 ///
-/// `SET LOCAL` takes a single parameter, so these are inherently two
+/// `SET LOCAL` takes a single parameter, so these are inherently several
 /// statements — and sqlx's `query` uses the extended protocol, which sends
 /// one statement per round trip. Every semantic search therefore paid two
 /// round trips before its query even started. `raw_sql` uses the simple
-/// protocol, which accepts both in one message; there is nothing to bind
+/// protocol, which accepts them in one message; there is nothing to bind
 /// here, so the usual reason to prefer the extended protocol does not apply.
-pub(crate) const SET_HNSW_SEARCH_SQL: &str =
-    "SET LOCAL hnsw.ef_search = 100; SET LOCAL hnsw.iterative_scan = relaxed_order";
+///
+/// `hnsw.max_scan_tuples` is only reachable under an iterative scan, and
+/// setting it to pgvector's own default would be a no-op statement, so it
+/// is emitted only when it can change something.
+pub(crate) fn set_hnsw_search_sql(tuning: &PgTuning) -> String {
+    let mut sql = format!(
+        "SET LOCAL hnsw.ef_search = {}; SET LOCAL hnsw.iterative_scan = {}",
+        tuning.hnsw_ef_search,
+        tuning.hnsw_iterative_scan.as_setting()
+    );
+    if tuning.hnsw_iterative_scan != HnswIterativeScan::Off
+        && tuning.hnsw_max_scan_tuples != DEFAULT_HNSW_MAX_SCAN_TUPLES
+    {
+        write!(
+            &mut sql,
+            "; SET LOCAL hnsw.max_scan_tuples = {}",
+            tuning.hnsw_max_scan_tuples
+        )
+        .expect("write to String is infallible");
+    }
+    sql
+}
 
 #[must_use]
 pub(crate) fn literal(vec: &[f32]) -> String {
@@ -29,4 +51,50 @@ pub(crate) fn literal(vec: &[f32]) -> String {
     }
     out.push(']');
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Golden text: at default tuning the session settings must be the
+    /// statement that shipped before they were built from anything.
+    #[test]
+    fn default_tuning_sets_the_settings_it_always_set() {
+        assert_eq!(
+            set_hnsw_search_sql(&PgTuning::default()),
+            "SET LOCAL hnsw.ef_search = 100; SET LOCAL hnsw.iterative_scan = relaxed_order"
+        );
+    }
+
+    #[test]
+    fn a_raised_scan_ceiling_is_appended_under_an_iterative_scan() {
+        let tuning = PgTuning {
+            hnsw_ef_search: 200,
+            hnsw_max_scan_tuples: 60_000,
+            ..PgTuning::default()
+        };
+
+        assert_eq!(
+            set_hnsw_search_sql(&tuning),
+            "SET LOCAL hnsw.ef_search = 200; SET LOCAL hnsw.iterative_scan = relaxed_order; \
+             SET LOCAL hnsw.max_scan_tuples = 60000"
+        );
+    }
+
+    /// Without an iterative scan the ceiling has nothing to bound, so it is
+    /// not sent even when it is set.
+    #[test]
+    fn a_scan_ceiling_is_dropped_when_iterative_scan_is_off() {
+        let tuning = PgTuning {
+            hnsw_iterative_scan: HnswIterativeScan::Off,
+            hnsw_max_scan_tuples: 60_000,
+            ..PgTuning::default()
+        };
+
+        assert_eq!(
+            set_hnsw_search_sql(&tuning),
+            "SET LOCAL hnsw.ef_search = 100; SET LOCAL hnsw.iterative_scan = off"
+        );
+    }
 }
