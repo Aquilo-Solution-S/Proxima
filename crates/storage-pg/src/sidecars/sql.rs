@@ -72,6 +72,48 @@ pub fn memory_insert_sql(
     Ok(sql)
 }
 
+/// Build a set-based memory sidecar insert statement: one `unnest` column
+/// per payload column, so a batch of rows lands in one statement.
+///
+/// `columns` pairs each column with the base name of its Postgres type;
+/// the builder appends the array marker itself, so the type name stays a
+/// plain identifier this function can validate.
+///
+/// # Errors
+///
+/// Returns `StorageError::Internal` when the table, key column, payload
+/// column, or type identifiers are not valid Postgres identifiers.
+pub fn memory_insert_batch_sql(
+    table: &str,
+    key_column: &str,
+    columns: &[(&str, &str)],
+) -> Result<String, StorageError> {
+    let table = PgIdent::table(table)?.as_str();
+    let key_column = PgIdent::column(key_column)?.as_str();
+    let columns = columns
+        .iter()
+        .map(|(column, pg_type)| {
+            Ok((
+                PgIdent::column(column)?.as_str(),
+                PgIdent::table(pg_type)?.as_str(),
+            ))
+        })
+        .collect::<Result<Vec<_>, StorageError>>()?;
+    let mut sql = String::new();
+    write!(&mut sql, "INSERT INTO {table} ({key_column}")
+        .expect("writing SQL into String cannot fail");
+    for (column, _) in &columns {
+        write!(&mut sql, ", {column}").expect("writing SQL into String cannot fail");
+    }
+    sql.push_str(") SELECT * FROM unnest($1::uuid[]");
+    for (index, (_, pg_type)) in columns.iter().enumerate() {
+        write!(&mut sql, ", ${}::{pg_type}[]", index + 2)
+            .expect("writing SQL into String cannot fail");
+    }
+    sql.push(')');
+    Ok(sql)
+}
+
 /// Build a batched memory sidecar select statement.
 ///
 /// # Errors

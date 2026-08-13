@@ -42,7 +42,9 @@ pub(crate) use memories::query_memories;
 pub(crate) use rows::read_seq_high_water;
 pub(crate) use search::search_memories;
 #[cfg(any(test, feature = "test-fixtures", debug_assertions))]
-pub use search::{lexical_search_sql_for_tests, semantic_search_sql_for_tests};
+pub use search::{
+    TEXT_SEARCH_CONFIG_FOR_TESTS, lexical_search_sql_for_tests, semantic_search_sql_for_tests,
+};
 
 /// Append the same-owner successor predicate. Supersession is intra-Owner
 /// (`Causa/Edges.lean` `supersession_intra_owner`), so a cross-Owner

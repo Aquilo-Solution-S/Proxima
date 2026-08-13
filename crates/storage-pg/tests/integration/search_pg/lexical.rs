@@ -2,7 +2,7 @@
 
 use super::{
     code_chunk_projection, drop_db, fresh_pg, ingest_fact_memory, insert_search_abstraction,
-    lexical_request, owner_fixture,
+    lexical_request, owner_fixture, pg_with_static_lookup_cache,
 };
 
 use proxima_core::storage_ports::*;
@@ -233,6 +233,60 @@ async fn rescue_ranks_distinct_terms_above_one_word_repeated()
         precise_score > repetitive_score,
         "two distinct query words must outrank one word repeated sixty times: \
          {precise_score} vs {repetitive_score}"
+    );
+
+    drop(pg);
+    drop_db(&db_name).await?;
+    Ok(())
+}
+
+/// Flag 6's read half must be a spelling change and nothing else.
+///
+/// `static_lookup_cache` replaces `proxima_core.lexical_config()` in the
+/// lexical branch with the configuration that function returns, read once
+/// per handle. The two spellings appear only in the fallback tsqueries —
+/// the arm a database takes when `proxima_core.lexical_languages` is empty
+/// — so the fixture empties that table, which is the one state where the
+/// substituted expression decides the match.
+#[tokio::test]
+async fn both_static_lookup_arms_answer_the_same_lexical_query()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (pg, db_name) = fresh_pg().await;
+    pg.run_migrations().await?;
+
+    let owner = owner_fixture();
+    for text in [
+        "the committee adopted the revised drainage plan",
+        "unrelated note about bicycles",
+    ] {
+        insert_search_abstraction(&pg, &owner, text, None).await?;
+    }
+    // The fallback arm is only reachable with no active language registered;
+    // migration 0011 seeds the default one.
+    sqlx::query("DELETE FROM proxima_core.lexical_languages")
+        .execute(pg.pool_for_tests())
+        .await?;
+
+    let mut req = lexical_request(&owner, "adopting drainage plans");
+    req.kind = Some(EntityKind::Abstraction);
+    let mut answers = Vec::new();
+    for static_lookup_cache in [false, true] {
+        let arm = pg_with_static_lookup_cache(&db_name, static_lookup_cache).await?;
+        let rows = arm.search_memories(&req, &[]).await?.results;
+        answers.push(
+            rows.iter()
+                .map(|row| (row.memory_id.into_inner(), row.lexical_score))
+                .collect::<Vec<_>>(),
+        );
+    }
+
+    assert!(
+        !answers[0].is_empty(),
+        "the fixture must reach the fallback tsquery: {answers:#?}"
+    );
+    assert_eq!(
+        answers[0], answers[1],
+        "inlining the resolved configuration changed the answer"
     );
 
     drop(pg);

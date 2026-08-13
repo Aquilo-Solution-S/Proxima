@@ -35,7 +35,8 @@ use proxima_core::{Owner, SchemaId, StorageError};
 use sqlx::PgPool;
 
 use crate::error::map_err;
-use crate::pgvector::SET_HNSW_SEARCH_SQL;
+use crate::pgvector::set_hnsw_search_sql;
+use crate::tuning::PgTuning;
 
 /// One chunk memory and its cosine similarity to the query vector.
 #[derive(Debug, Clone, sqlx::FromRow)]
@@ -138,11 +139,16 @@ pub async fn nearest_code_chunk_candidates(
     .bind(limit);
 
     let mut tx = pool.begin().await.map_err(map_err)?;
+    // A flavor reaches this query with a pool and no storage handle, so
+    // there is no deployment tuning to read here: the session settings are
+    // the defaults, which is what this scan has always run under.
     // SQL-POLICY: fixed-fragment
-    sqlx::raw_sql(SET_HNSW_SEARCH_SQL)
-        .execute(&mut *tx)
-        .await
-        .map_err(map_err)?;
+    sqlx::raw_sql(sqlx::AssertSqlSafe(set_hnsw_search_sql(
+        &PgTuning::default(),
+    )))
+    .execute(&mut *tx)
+    .await
+    .map_err(map_err)?;
     let rows = query.fetch_all(&mut *tx).await.map_err(map_err)?;
     tx.commit().await.map_err(map_err)?;
     Ok(rows)

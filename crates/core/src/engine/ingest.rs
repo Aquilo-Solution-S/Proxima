@@ -8,6 +8,7 @@ use crate::edge::EdgeEndpoint;
 use crate::error::ProtocolError;
 use crate::llm::{EMBEDDING_BATCH_SIZE, EmbeddingClient, LlmError};
 use crate::storage::{EmbeddingJobClaim, StorageError};
+use crate::storage_ports::MemoryEmbeddingWrite;
 use crate::verbs::close_batch::CloseBatchOutcome;
 use crate::verbs::fact_ingest::{
     AuthorizedCitationAttachment, AuthorizedFactWithCitation, AuthorizedFactWithCitationRef,
@@ -798,6 +799,12 @@ impl Engine {
     ///   terminal instead of cycling reject-retry forever, and their
     ///   batch-mates still embed.
     ///
+    /// A backend advertising
+    /// [`crate::storage_ports::EmbeddingWritePort::batched_embedding_writes`]
+    /// writes and completes a whole embedded batch at once, so a storage
+    /// failure there leaves the entire batch claimed and retryable rather
+    /// than the prefix it had already completed.
+    ///
     /// # Errors
     ///
     /// Returns storage errors from claiming or final job-state writes.
@@ -863,6 +870,16 @@ impl Engine {
 
             let texts: Vec<String> = batch.iter().map(|(_, text)| text.clone()).collect();
             match client.embed_many(&texts).await {
+                Ok(vectors)
+                    if self
+                        .storage
+                        .ingest
+                        .embedding_write
+                        .batched_embedding_writes() =>
+                {
+                    self.store_claim_batch(&client, &batch, &vectors, &mut outcome)
+                        .await?;
+                }
                 Ok(vectors) => {
                     for ((claim, _), vector) in batch.iter().zip(vectors) {
                         outcome.processed += 1;
@@ -968,6 +985,71 @@ impl Engine {
             .complete_embedding_job(claim)
             .await?;
         Ok(true)
+    }
+
+    /// Store a whole claimed batch's vectors and complete its jobs in two
+    /// statements, for backends that advertise a batched write.
+    ///
+    /// Same per-claim decisions as [`Self::store_claim_embedding`] — a
+    /// vector whose width disagrees with the client records an ordinary
+    /// retryable failure and is left out of the batch — but the jobs that
+    /// did produce a usable vector are written once and completed once
+    /// instead of twice per job. The whole batch therefore lands or fails
+    /// together: a storage failure leaves every job in the batch claimed
+    /// and retryable, where the per-job path would have completed the jobs
+    /// it had already reached.
+    async fn store_claim_batch(
+        &self,
+        client: &Arc<dyn EmbeddingClient>,
+        batch: &[(EmbeddingJobClaim, String)],
+        vectors: &[Vec<f32>],
+        outcome: &mut EmbeddingDrainOutcome,
+    ) -> Result<(), StorageError> {
+        let mut writes = Vec::with_capacity(batch.len());
+        let mut written_claims = Vec::with_capacity(batch.len());
+        for ((claim, _), vector) in batch.iter().zip(vectors) {
+            outcome.processed += 1;
+            if vector.len() != client.dim() {
+                outcome.failed += 1;
+                let error = format!(
+                    "embedding dim mismatch: client dim {} but vector len {}",
+                    client.dim(),
+                    vector.len(),
+                );
+                self.storage
+                    .ingest
+                    .embedding_job
+                    .fail_embedding_job(claim, &error)
+                    .await?;
+                continue;
+            }
+            writes.push(MemoryEmbeddingWrite {
+                owner: claim.owner,
+                entity_kind: claim.entity_kind,
+                memory_id: claim.entity_id,
+                vec: vector,
+            });
+            written_claims.push(claim.clone());
+        }
+        if writes.is_empty() {
+            return Ok(());
+        }
+        self.storage
+            .ingest
+            .embedding_write
+            .insert_memory_embedding_batch(
+                client.model_id(),
+                client.dim(),
+                &writes,
+                crate::storage_ports::EmbeddingWriteProof::new(),
+            )
+            .await?;
+        self.storage
+            .ingest
+            .embedding_job
+            .complete_embedding_jobs(&written_claims)
+            .await?;
+        Ok(())
     }
 
     /// Per-item fallback after a permanent batch rejection: isolate which
