@@ -505,13 +505,12 @@ async fn run_lexical(
     let (sql, projections) = lexical_branch_sql(req, projections, limit, tuning)?;
 
     // SQL-POLICY: PgIdent
-    let mut q = bind_common(
+    let q = bind_branch_prefix(
         sqlx::query_as::<_, SearchRow>(sqlx::AssertSqlSafe(sql)),
         req,
         &projections,
-    );
-    q = bind_filter_params(q, req);
-    q = q.bind(req.query.clone());
+    )
+    .bind(req.query.clone());
     q.fetch_all(pool).await.map_err(map_err)
 }
 
@@ -907,14 +906,13 @@ async fn run_semantic(
         semantic_branch_sql(req, projections, limit, candidate_overfetch, tuning)?;
 
     // SQL-POLICY: PgIdent
-    let mut q = bind_common(
+    let q = bind_branch_prefix(
         sqlx::query_as::<_, SearchRow>(sqlx::AssertSqlSafe(sql)),
         req,
         &projections,
-    );
-    q = bind_filter_params(q, req);
-    q = q.bind(crate::pgvector::literal(query_embedding));
-    q = q.bind(model_id.clone());
+    )
+    .bind(crate::pgvector::literal(query_embedding))
+    .bind(model_id.clone());
 
     let mut tx = pool.begin().await.map_err(map_err)?;
     // SQL-POLICY: fixed-fragment — the settings statement interpolates
@@ -1467,8 +1465,16 @@ fn branch_order_by(req: &MemorySearchRequest, relevance_score_column: &str) -> S
 
 /// The bind prefix both branches share, in the order the builders assign
 /// parameters: the read-owner kind/id arrays, then each selected
-/// projection's `(schema_id, schema_version)` pair.
-fn bind_common<'q>(
+/// projection's `(schema_id, schema_version)` pair, then the optional
+/// filters in the order [`common_candidates_sql`] allocates their `$n`
+/// — schema filter, since, until, tags, recency cursor.
+///
+/// One function rather than two called back to back, because back to back in
+/// exactly this order is the only sequence the builders' parameter assignment
+/// admits; splitting it offered no caller a choice, only a way to get the
+/// order wrong. Each branch binds its own trailing parameters after this
+/// returns: the query text for lexical, the vector and model id for semantic.
+fn bind_branch_prefix<'q>(
     mut q: sqlx::query::QueryAs<'q, sqlx::Postgres, SearchRow, sqlx::postgres::PgArguments>,
     req: &'q MemorySearchRequest,
     projections: &[&MemorySearchProjection],
@@ -1480,13 +1486,6 @@ fn bind_common<'q>(
         q = q.bind(projection.schema_id.as_str().to_string());
         q = q.bind(projection.schema_version.into_inner().cast_signed());
     }
-    q
-}
-
-fn bind_filter_params<'q>(
-    mut q: sqlx::query::QueryAs<'q, sqlx::Postgres, SearchRow, sqlx::postgres::PgArguments>,
-    req: &'q MemorySearchRequest,
-) -> sqlx::query::QueryAs<'q, sqlx::Postgres, SearchRow, sqlx::postgres::PgArguments> {
     if let Some(schema_id) = &req.schema_id {
         q = q.bind(schema_id.as_str().to_string());
     }
