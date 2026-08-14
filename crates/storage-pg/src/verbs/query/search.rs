@@ -549,7 +549,7 @@ fn semantic_branch_sql<'p>(
             ChunkRows {
                 row: "c",
                 score: "ann",
-                from: INDEX_FIRST_ANN_FROM.to_string(),
+                from: index_first_ann_from(),
             }
         }
     };
@@ -664,6 +664,33 @@ fn similarity_score_sql(vec_param: usize, indent: usize) -> String {
     )
 }
 
+/// The head-liveness and eligibility joins both vector scans read, over
+/// whichever relation supplies the embedding row: `emb` when the scan is the
+/// subquery itself, `ann` when it is the `ann_scan` CTE above.
+///
+/// Membership is decided here on both arms — an index-first scan's pushed
+/// owner predicate can only narrow its input to rows these joins would admit
+/// anyway. `indent` reproduces each caller's layout, so the emitted
+/// statements — the ones the goldens pin — stay byte-identical to when this
+/// block was written out twice.
+fn head_and_eligibility_joins(source_alias: &str, indent: usize) -> String {
+    let pad = " ".repeat(indent);
+    format!(
+        "{pad}JOIN proxima_core.embedding_heads head\n\
+         {pad}  ON head.entity_kind = {source_alias}.entity_kind\n\
+         {pad} AND head.entity_id = {source_alias}.entity_id\n\
+         {pad} AND head.model_id = {source_alias}.model_id\n\
+         {pad} AND head.embedding_version = {source_alias}.embedding_version\n\
+         {pad} AND head.owner_kind = {source_alias}.owner_kind\n\
+         {pad} AND head.owner_id IS NOT DISTINCT FROM {source_alias}.owner_id\n\
+         {pad}JOIN eligible_entities c\n\
+         {pad}  ON c.kind = {source_alias}.entity_kind\n\
+         {pad} AND c.memory_id = {source_alias}.entity_id\n\
+         {pad} AND c.owner_kind = {source_alias}.owner_kind\n\
+         {pad} AND c.owner_id IS NOT DISTINCT FROM {source_alias}.owner_id"
+    )
+}
+
 /// The nearest-neighbour window with eligibility joined *under* it: the
 /// window is a budget of eligible rows, at the price of the two joins
 /// standing between the vector scan and the `ORDER BY … LIMIT` that would
@@ -675,42 +702,23 @@ fn joined_ann_from(vec_param: usize, model_param: usize, candidate_overfetch: u6
                          c.search_text,
 {similarity}
                     FROM proxima_core.embeddings emb
-                    JOIN proxima_core.embedding_heads head
-                      ON head.entity_kind = emb.entity_kind
-                     AND head.entity_id = emb.entity_id
-                     AND head.model_id = emb.model_id
-                     AND head.embedding_version = emb.embedding_version
-                     AND head.owner_kind = emb.owner_kind
-                     AND head.owner_id IS NOT DISTINCT FROM emb.owner_id
-                    JOIN eligible_entities c
-                      ON c.kind = emb.entity_kind
-                     AND c.memory_id = emb.entity_id
-                     AND c.owner_kind = emb.owner_kind
-                     AND c.owner_id IS NOT DISTINCT FROM emb.owner_id
+{joins}
                    WHERE emb.model_id = ${model_param}
                    ORDER BY emb.vec <=> ${vec_param}::vector
                    LIMIT {candidate_overfetch}
                 ) ann",
-        similarity = similarity_score_sql(vec_param, 25)
+        similarity = similarity_score_sql(vec_param, 25),
+        joins = head_and_eligibility_joins("emb", 20)
     )
 }
 
 /// The same head and eligibility joins, read above an index-first scan.
-/// Owner equality still decides membership here, so a predicate pushed onto
-/// the scan can only narrow it to rows that would join anyway.
-const INDEX_FIRST_ANN_FROM: &str = "                FROM ann_scan ann
-                JOIN proxima_core.embedding_heads head
-                  ON head.entity_kind = ann.entity_kind
-                 AND head.entity_id = ann.entity_id
-                 AND head.model_id = ann.model_id
-                 AND head.embedding_version = ann.embedding_version
-                 AND head.owner_kind = ann.owner_kind
-                 AND head.owner_id IS NOT DISTINCT FROM ann.owner_id
-                JOIN eligible_entities c
-                  ON c.kind = ann.entity_kind
-                 AND c.memory_id = ann.entity_id
-                 AND c.owner_kind = ann.owner_kind
-                 AND c.owner_id IS NOT DISTINCT FROM ann.owner_id";
+fn index_first_ann_from() -> String {
+    format!(
+        "                FROM ann_scan ann\n{joins}",
+        joins = head_and_eligibility_joins("ann", 16)
+    )
+}
 
 /// Owner scope for an index-first scan, in the split-arm equality shape the
 /// candidate branches use ([`push_read_owner_scope`]): the read set arrives
