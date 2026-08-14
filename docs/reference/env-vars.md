@@ -47,6 +47,13 @@ whether that is legal.
 | `PROXIMA_PG_ACQUIRE_TIMEOUT_SECS` | Postgres pool | `5` | tuning pool acquisition | seconds |
 | `PROXIMA_PG_IDLE_TIMEOUT_SECS` | Postgres pool | `600` | tuning connection reuse | seconds |
 | `PROXIMA_PG_MAX_LIFETIME_SECS` | Postgres pool | `1800` | tuning connection recycling | seconds |
+| `PROXIMA_PG_SEMANTIC_INDEX_FIRST` | Postgres search | `pushdown` | restoring legacy semantic membership | `off` \| `overfetch` \| `pushdown`. Where the semantic branch's nearest-neighbour scan sits relative to the eligibility joins. The index-first modes (`overfetch`, `pushdown`) change result membership: the eligibility and query filters apply to a bounded ANN candidate window, so a matching row past the window can be missed (an ANN-window approximation — recall, never scope: no mode ever returns a row the filters exclude). `pushdown` is the new default and additionally pushes the owner scope onto the index scan. `off` restores the exact legacy membership: every filter applies under the scan's limit and the branch is exact |
+| `PROXIMA_PG_CANDIDATE_WINDOW_DEDUP` | Postgres search | `true` | restoring legacy statement text | window-function candidate dedup and a unique-join supersedes anti-join instead of `DISTINCT ON` and a per-row `NOT EXISTS` probe. Result membership is identical either way; `off` restores the legacy SQL text |
+| `PROXIMA_PG_HNSW_EF_SEARCH` | Postgres search | `100` | tuning ANN recall/latency | pgvector `hnsw.ef_search` for the semantic branch's session |
+| `PROXIMA_PG_HNSW_ITERATIVE_SCAN` | Postgres search | `relaxed_order` | tuning filtered ANN scans | `off` \| `strict_order` \| `relaxed_order`; pgvector `hnsw.iterative_scan` |
+| `PROXIMA_PG_HNSW_MAX_SCAN_TUPLES` | Postgres search | `20000` | bounding iterative scans | only sent when it differs from pgvector's default and iterative scan is on |
+| `PROXIMA_PG_SEMANTIC_OVERFETCH_PER_RESULT` | Postgres search | `64` | widening the ANN candidate window | nearest-neighbour candidates fetched per requested result; range `1..=4096`; out-of-range refuses at boot |
+| `PROXIMA_PG_SEMANTIC_OVERFETCH_MIN` | Postgres search | `512` | flooring the ANN candidate window | the window never drops below this; range `1..=100000`; out-of-range refuses at boot |
 | `PROXIMA_CHANGE_EVENT_COMMIT_GRACE_MS` | change events | unset (`0`, disabled) | concurrent writers with slow commits | withholds events newer than `now - grace` so a forward cursor cannot skip a late commit |
 | `PROXIMA_S3_MAX_BLOB_BYTES` | cited blobs | `104857600` | bounding cited-blob size | non-negative integer |
 | `PROXIMA_S3_BUCKET` | cited blobs | unset | enable S3 cited-blob storage | credentials use AWS SDK provider chain |
@@ -80,6 +87,7 @@ whether that is legal.
 Inventory sources checked: `docs/10-configuration.md`, `docs/15-deployment.md`,
 `apps/proxima-mcp/src/lib.rs`, `crates/proxima/src/runtime_config.rs`,
 `crates/proxima/src/config.rs`, `crates/storage-pg/src/lib.rs`,
+`crates/storage-pg/src/tuning.rs`,
 `crates/storage-pg/src/verbs/consolidate/events.rs`,
 `crates/blob-s3/src/config.rs`, and `.github/workflows/ci.yml`. Runtime variables from that inventory are listed in
 the runtime table. Test-only and source-constant names are listed under
