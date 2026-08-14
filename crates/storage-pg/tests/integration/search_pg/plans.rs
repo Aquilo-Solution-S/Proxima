@@ -117,9 +117,18 @@ async fn semantic_search_plan_uses_hnsw_index() -> Result<(), Box<dyn std::error
 /// configuration the `candidate_window_dedup` successor anti-join currently
 /// makes the planner hash-build over all of `memories` on this corpus shape
 /// (`m` becomes the probe side of a hash right join instead of an
-/// owner-index scan), so the default arm asserts only the `goals` half; the
-/// `memories` half of the guard for the default arm is an open question
-/// tracked with the v0.0.8 release notes.
+/// owner-index scan), so the default arm asserts only the `goals` half.
+///
+/// That asymmetry is not a hole for the regression this test exists to
+/// catch. The owner join itself is written by `push_read_owner_scope`,
+/// which emits the same text on both arms — the `EXISTS (SELECT 1 FROM
+/// unnest(...))` block is character-for-character identical in the default
+/// and legacy candidate goldens — so a regression there would still fail
+/// the legacy assertion above. What the default arm does not guard is
+/// narrower and separate: which plan the dedup anti-join draws on a
+/// sliver-owner corpus. Guarding that means asserting a costed plan choice
+/// on a synthetic corpus, which breaks on an unrelated `ANALYZE`, so it
+/// waits for measurement rather than a stricter assertion here.
 #[tokio::test]
 async fn search_branches_enumerate_candidates_via_owner_index()
 -> Result<(), Box<dyn std::error::Error>> {
