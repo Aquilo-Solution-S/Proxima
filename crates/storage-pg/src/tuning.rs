@@ -63,6 +63,12 @@ const HNSW_MAX_SCAN_TUPLES_RANGE: RangeInclusive<u32> = 1..=2_147_483_647;
 /// still sits above the window on both arms and carries overfetch's recall
 /// bound (`semantic_search_filters_query_predicates_before_candidate_limit`
 /// runs the three arms against exactly that).
+///
+/// The `#[default]` attribute below is the single declaration of which arm
+/// ships: [`PgTuning::default`] reads it rather than naming `Pushdown` a
+/// second time, the way the `hnsw_iterative_scan` field beside it already
+/// does. Two spellings of the same fact can only ever diverge, and
+/// `defaults_are_the_shipped_search_path` pins the one that is left.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SemanticIndexFirst {
     Off,
@@ -153,7 +159,7 @@ pub struct PgTuning {
 impl Default for PgTuning {
     fn default() -> Self {
         Self {
-            semantic_index_first: SemanticIndexFirst::Pushdown,
+            semantic_index_first: SemanticIndexFirst::default(),
             candidate_window_dedup: true,
             hnsw_ef_search: DEFAULT_HNSW_EF_SEARCH,
             hnsw_iterative_scan: HnswIterativeScan::default(),
