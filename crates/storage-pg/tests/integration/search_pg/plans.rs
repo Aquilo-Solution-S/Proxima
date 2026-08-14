@@ -42,17 +42,24 @@ async fn semantic_search_plan_uses_hnsw_index() -> Result<(), Box<dyn std::error
 
     let (owner_kind, owner_id) = owner.columns();
     let mut tx = pg.pool_for_tests().begin().await?;
-    // The production session settings, plus seqscan/sort penalized so the
-    // assertion is about capability, not tiny-table costing: the only way
-    // to satisfy `ORDER BY emb.vec <=> $query` without an explicit sort is
-    // the HNSW scan, so if the shipped query shape can no longer be served
-    // by the index (e.g. the ORDER BY expression stops matching the
-    // operator class, or the pushdown owner predicate stops being a plain
-    // filter the scan can carry), no planner setting can save it and this
-    // fails.
+    // The production session settings — the same statement `run_semantic`
+    // sends, not a restated copy of the defaults — plus seqscan/sort
+    // penalized so the assertion is about capability, not tiny-table
+    // costing: the only way to satisfy `ORDER BY emb.vec <=> $query`
+    // without an explicit sort is the HNSW scan, so if the shipped query
+    // shape can no longer be served by the index (e.g. the ORDER BY
+    // expression stops matching the operator class, or the pushdown owner
+    // predicate stops being a plain filter the scan can carry), no planner
+    // setting can save it and this fails.
+    //
+    // SQL-POLICY: fixed-fragment — the audited production settings builder
+    // over this deployment's own tuning integers and enum spellings.
+    sqlx::raw_sql(sqlx::AssertSqlSafe(
+        proxima_storage_pg::verbs::query::set_hnsw_search_sql_for_tests(&PgTuning::default()),
+    ))
+    .execute(&mut *tx)
+    .await?;
     for setting in [
-        "SET LOCAL hnsw.ef_search = 100",
-        "SET LOCAL hnsw.iterative_scan = relaxed_order",
         "SET LOCAL enable_seqscan = off",
         "SET LOCAL enable_sort = off",
     ] {
