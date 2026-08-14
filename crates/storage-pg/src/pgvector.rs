@@ -5,8 +5,6 @@ use crate::tuning::{DEFAULT_HNSW_MAX_SCAN_TUPLES, HnswIterativeScan, PgTuning};
 pub(crate) const REQUIRED_PGVECTOR_MAJOR: u32 = 0;
 pub(crate) const REQUIRED_PGVECTOR_MINOR: u32 = 8;
 pub(crate) const REQUIRED_PGVECTOR_PATCH: u32 = 0;
-pub(crate) const SET_HNSW_ITERATIVE_SCAN_SQL: &str =
-    "SET LOCAL hnsw.iterative_scan = relaxed_order";
 
 /// The HNSW search settings for one semantic search, in one statement.
 ///

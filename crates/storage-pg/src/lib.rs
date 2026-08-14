@@ -28,7 +28,7 @@ pub use verbs::retention_maintenance::{
 };
 
 use crate::error::internal;
-use crate::pgvector::SET_HNSW_ITERATIVE_SCAN_SQL;
+use crate::pgvector::set_hnsw_search_sql;
 
 #[doc(hidden)]
 pub mod access;
@@ -480,7 +480,17 @@ fn pgvector_version_is_supported(version: &str) -> bool {
         )
 }
 
-async fn ensure_pgvector_runtime_compatible(pool: &PgPool) -> Result<(), StorageError> {
+/// Refuse at boot what would otherwise fail on every semantic search.
+///
+/// The probe runs `set_hnsw_search_sql(tuning)` — the production builder over
+/// this deployment's own tuning — rather than a restated literal. A restated
+/// one validates whichever mode was hard-coded, so a deployment running
+/// `PROXIMA_PG_HNSW_ITERATIVE_SCAN=strict_order` would boot on a preflight
+/// that proved `relaxed_order` and never proved the mode it actually sends.
+async fn ensure_pgvector_runtime_compatible(
+    pool: &PgPool,
+    tuning: &PgTuning,
+) -> Result<(), StorageError> {
     let Some(version) = sqlx::query_scalar::<_, String>(
         "SELECT extversion FROM pg_extension WHERE extname = 'vector'",
     )
@@ -505,11 +515,14 @@ async fn ensure_pgvector_runtime_compatible(pool: &PgPool) -> Result<(), Storage
         .begin()
         .await
         .map_err(|err| StorageError::Unavailable(format!("begin pgvector preflight: {err}")))?;
-    sqlx::query(SET_HNSW_ITERATIVE_SCAN_SQL)
+    // SQL-POLICY: fixed-fragment — the settings statement interpolates
+    // nothing but this deployment's own tuning integers and enum spellings,
+    // exactly as the semantic branch's own call site does.
+    sqlx::raw_sql(sqlx::AssertSqlSafe(set_hnsw_search_sql(tuning)))
         .execute(tx.as_mut())
         .await
         .map_err(|err| {
-            StorageError::Unavailable(format!("pgvector hnsw.iterative_scan unavailable: {err}"))
+            StorageError::Unavailable(format!("pgvector HNSW search settings unavailable: {err}"))
         })?;
     tx.commit()
         .await
@@ -957,7 +970,7 @@ impl PgStorage {
         let migrated = core_migrator().run(&mut *conn).await.map_err(internal);
         conn.detach();
         migrated?;
-        ensure_pgvector_runtime_compatible(&self.pool).await?;
+        ensure_pgvector_runtime_compatible(&self.pool, &self.tuning).await?;
         Ok(())
     }
 }
