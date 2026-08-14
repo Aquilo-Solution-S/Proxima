@@ -198,7 +198,7 @@ impl PgTuning {
                 "PROXIMA_PG_CANDIDATE_WINDOW_DEDUP",
                 defaults.candidate_window_dedup,
             )?,
-            hnsw_ef_search: env_u32_or(
+            hnsw_ef_search: crate::env_int_or(
                 lookup,
                 "PROXIMA_PG_HNSW_EF_SEARCH",
                 defaults.hnsw_ef_search,
@@ -208,18 +208,18 @@ impl PgTuning {
                 "PROXIMA_PG_HNSW_ITERATIVE_SCAN",
                 defaults.hnsw_iterative_scan,
             )?,
-            hnsw_max_scan_tuples: env_u32_or(
+            hnsw_max_scan_tuples: crate::env_int_or(
                 lookup,
                 "PROXIMA_PG_HNSW_MAX_SCAN_TUPLES",
                 defaults.hnsw_max_scan_tuples,
             )?,
-            semantic_overfetch_per_result: env_u64_in_range(
+            semantic_overfetch_per_result: env_int_in_range(
                 lookup,
                 "PROXIMA_PG_SEMANTIC_OVERFETCH_PER_RESULT",
                 defaults.semantic_overfetch_per_result,
                 &SEMANTIC_OVERFETCH_PER_RESULT_RANGE,
             )?,
-            semantic_overfetch_min: env_u64_in_range(
+            semantic_overfetch_min: env_int_in_range(
                 lookup,
                 "PROXIMA_PG_SEMANTIC_OVERFETCH_MIN",
                 defaults.semantic_overfetch_min,
@@ -249,18 +249,21 @@ fn env_bool_or(
     }
 }
 
-/// Parse a `u64` tuning variable that must land inside `range`, falling back
-/// to `default` when unset.
+/// Parse an integer tuning variable that must land inside `range`, falling
+/// back to `default` when unset.
 ///
 /// Out of range is an error rather than a clamp: a clamped value would run
 /// an arm the operator did not ask for and report it as the one they did.
-fn env_u64_in_range(
+fn env_int_in_range<T>(
     lookup: &impl Fn(&str) -> Option<String>,
     key: &str,
-    default: u64,
-    range: &RangeInclusive<u64>,
-) -> Result<u64, StorageError> {
-    let value = crate::env_u64_or(lookup, key, default)?;
+    default: T,
+    range: &RangeInclusive<T>,
+) -> Result<T, StorageError>
+where
+    T: std::str::FromStr + PartialOrd + std::fmt::Display,
+{
+    let value = crate::env_int_or(lookup, key, default)?;
     if range.contains(&value) {
         return Ok(value);
     }
@@ -269,20 +272,6 @@ fn env_u64_in_range(
         range.start(),
         range.end()
     )))
-}
-
-/// Parse a `u32` tuning variable, falling back to `default` when unset.
-fn env_u32_or(
-    lookup: &impl Fn(&str) -> Option<String>,
-    key: &str,
-    default: u32,
-) -> Result<u32, StorageError> {
-    let Some(value) = env_value(lookup, key) else {
-        return Ok(default);
-    };
-    value
-        .parse()
-        .map_err(|_| StorageError::Unavailable(format!("invalid integer {key}={value}")))
 }
 
 #[cfg(test)]
