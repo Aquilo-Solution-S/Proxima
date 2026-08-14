@@ -307,7 +307,18 @@ def run_fixture(path: Path) -> int:
 # alternative is twelve independent spellings of the ownership model, which
 # `check_entity_owner_union` in check-architecture-guardrails.py now forbids.
 # The union text is byte-identical at every site, so no statement changed.
-EXPECTED_DYNAMIC_SQL_SITES = 63
+# 2026-08-14 analysis: +8 — the v0.0.8 search-path work builds its SQL. The
+# index-first / window-dedup builders in verbs/query/search.rs compose the
+# candidate CTE and the vector scan from fixed fragments behind
+# `sql.push_str` (seven sites landed with that wave; the count was not
+# bumped then because one of them was also missing its proof comment, and
+# that failure exits before this ratchet is checked — both are fixed in the
+# same change as this entry). The eighth is the kind-specialized head
+# filter's fact-only fragment. Every added site pushes a plain string
+# literal with no caller-reachable interpolation and carries a
+# `SQL-POLICY: fixed-fragment` proof, and the emitted statements are pinned
+# byte-for-byte by the golden tests in the same file.
+EXPECTED_DYNAMIC_SQL_SITES = 71
 
 
 def run_self_test() -> int:

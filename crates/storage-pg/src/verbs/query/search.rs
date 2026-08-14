@@ -613,6 +613,7 @@ fn push_eligible_entities(sql: &mut String, tuning: &PgTuning) {
         );
         return;
     }
+    // SQL-POLICY: fixed-fragment
     sql.push_str(
         " , eligible_entities AS MATERIALIZED (
               SELECT DISTINCT ON (c.kind, c.memory_id)
