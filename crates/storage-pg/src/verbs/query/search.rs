@@ -756,6 +756,17 @@ fn push_ann_live(sql: &mut String) {
 /// could have filled. Among non-NULL rows the highest branch ordinal
 /// wins, which is the schema's own projection rather than the generic
 /// memory text.
+///
+/// The trailing `created_at DESC` is unreachable for every projection the
+/// registry ships: each `UNION ALL` arm carries its own `branch_rank`
+/// ordinal, and each shipped sidecar joins `memory_id` one-to-one, so a
+/// `(kind, memory_id)` group holds at most one row per ordinal and the
+/// ordinal alone already breaks the tie. It stays because it is the only
+/// thing standing between a future one-to-many projection and the
+/// plan-dependent snippet this function exists to eliminate: such a
+/// projection would put two rows in one group at the same ordinal, and
+/// without a further key `DISTINCT ON` would again be free to keep either.
+/// Dead today, load-bearing the day the registry grows a fan-out.
 fn push_rank_first_eligible(sql: &mut String) {
     // SQL-POLICY: fixed-fragment
     sql.push_str(

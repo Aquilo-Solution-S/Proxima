@@ -350,7 +350,18 @@ def run_fixture(path: Path) -> int:
 # byte-for-byte by the `*_GOLDEN` literals in the same file — including
 # SEMANTIC_BRANCH_LEGACY_GOLDEN and SEMANTIC_WINDOW_DEDUP_GOLDEN, the two
 # escape-hatch arms, which are unchanged from 0a12aa0f.
-EXPECTED_DYNAMIC_SQL_SITES = 73
+#
+# 2026-08-15 analysis (round 2): +1 — the rank-first plan guard
+# (search_pg/plans.rs `rank_first_probes_memories_for_the_window_instead_of_\
+# scanning_the_owner`). Test-only, and the same shape the two plan-test sites
+# above it already carry: an `EXPLAIN (FORMAT JSON, COSTS OFF)` prefix
+# concatenated onto the audited production builder's own return value, with
+# every caller value still arriving as a bind. Nothing in the interpolation is
+# reachable from a request. It exists because the redesign's 22x is a bet on
+# the planner probing `memories` for the ANN window rather than enumerating
+# the owner, and both plans return the same rows — so a planner that picks the
+# slow one is not a wrong answer and no assertion in the suite noticed it.
+EXPECTED_DYNAMIC_SQL_SITES = 74
 
 
 def run_self_test() -> int:
