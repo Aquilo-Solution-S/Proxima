@@ -481,40 +481,27 @@ pub(in crate::engine) async fn search_authorized(
     let memories = page.results;
 
     let memory_ids = memories.iter().map(|row| row.memory_id).collect::<Vec<_>>();
-    // Payload and neighbor-edge hydration read disjoint tables and depend only on the
-    // already-materialised `memory_ids`, so neither can observe the other's rows. They run
-    // concurrently. Each owner scope is still applied inside its own query; no owner is
-    // widened to cover both.
-    //
-    // `biased;` is load-bearing, not decoration: by default `try_join!` "rotates which
-    // contained future is polled first whenever it is woken", which would make the surfaced
-    // error nondeterministic when both reads fail. Biased mode polls "in the order they appear
-    // from top to bottom", so the payload error keeps winning exactly as it did when these ran
-    // sequentially. The fairness caveat attached to biased mode does not bite here: both
-    // branches are single awaited queries, so neither can starve the other.
-    let (payloads, neighbor_edges) = if memory_ids.is_empty() {
-        (Vec::new(), Vec::new())
+    let payloads = if memory_ids.is_empty() {
+        Vec::new()
     } else {
-        tokio::try_join!(
-            biased;
-            async {
-                ports
-                    .memory_read
-                    .load_memory_graph_payloads(hydration_owner, &memory_ids, req.include_body)
-                    .await
-                    .map_err(|err| storage_error("load_memory_graph_payloads", &err))
-            },
-            async {
-                if !req.include_neighbor_edges {
-                    return Ok(Vec::new());
-                }
-                ports
-                    .memory_read
-                    .load_neighbor_memory_edges(read_owners, &memory_ids, NEIGHBOR_EDGE_LIMIT)
-                    .await
-                    .map_err(|err| storage_error("load_neighbor_memory_edges", &err))
-            },
-        )?
+        ports
+            .memory_read
+            .load_memory_graph_payloads(hydration_owner, &memory_ids, req.include_body)
+            .await
+            .map_err(|err| storage_error("load_memory_graph_payloads", &err))?
+    };
+    let neighbor_edges = if req.include_neighbor_edges {
+        if memory_ids.is_empty() {
+            Vec::new()
+        } else {
+            ports
+                .memory_read
+                .load_neighbor_memory_edges(read_owners, &memory_ids, NEIGHBOR_EDGE_LIMIT)
+                .await
+                .map_err(|err| storage_error("load_neighbor_memory_edges", &err))?
+        }
+    } else {
+        Vec::new()
     };
 
     Ok(SearchReadResponse {
@@ -531,31 +518,20 @@ pub(in crate::engine) async fn get_memory_authorized(
     sidecars: &[SidecarSpec],
     req: &GetMemoryReadRequest,
 ) -> Result<GetMemoryReadResponse, ProtocolError> {
-    // The edge query keys off `req.memory_id` alone, never off the loaded row, so it does not
-    // wait on the memory load. Its result is dropped if the memory load fails, and it carries
-    // its own `read_owners` scope, so running it early cannot disclose anything the sequential
-    // spelling withheld. `biased;` keeps the memory-load error winning when both fail; see
-    // `search_authorized` for why the default rotating poll order would not.
-    let (memory, neighbor_edges) = tokio::try_join!(
-        biased;
-        async {
-            ports
-                .memory_inspect
-                .load_memory_by_id(req.memory_id, sidecars)
-                .await
-                .map_err(|err| storage_error("load_memory_by_id", &err))
-        },
-        async {
-            if !req.include_neighbor_edges {
-                return Ok(Vec::new());
-            }
-            ports
-                .memory_read
-                .load_neighbor_memory_edges(read_owners, &[req.memory_id], NEIGHBOR_EDGE_LIMIT)
-                .await
-                .map_err(|err| storage_error("load_neighbor_memory_edges", &err))
-        },
-    )?;
+    let memory = ports
+        .memory_inspect
+        .load_memory_by_id(req.memory_id, sidecars)
+        .await
+        .map_err(|err| storage_error("load_memory_by_id", &err))?;
+    let neighbor_edges = if req.include_neighbor_edges {
+        ports
+            .memory_read
+            .load_neighbor_memory_edges(read_owners, &[req.memory_id], NEIGHBOR_EDGE_LIMIT)
+            .await
+            .map_err(|err| storage_error("load_neighbor_memory_edges", &err))?
+    } else {
+        Vec::new()
+    };
     Ok(GetMemoryReadResponse {
         memory,
         neighbor_edges,
