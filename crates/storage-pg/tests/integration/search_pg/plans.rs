@@ -239,3 +239,89 @@ async fn search_branches_enumerate_candidates_via_owner_index()
     drop_db(&db_name).await?;
     Ok(())
 }
+
+/// The rank-first redesign is a *plan* bet, and nothing pinned it.
+///
+/// Inverting the semantic branch — ANN window first, eligibility second —
+/// only pays if the planner probes `memories` for the window's ids instead
+/// of enumerating the owner's rows and filtering. Both spellings return the
+/// same set, so a planner that picks the second is not wrong, just slow:
+/// it rebuilds exactly the full-owner intermediate the inversion exists to
+/// avoid, and every measured gain quietly evaporates with the suite still
+/// green.
+///
+/// The corpus is shaped so the two plans are not close. The owner holds
+/// enough rows that scanning them is real work, while the ANN window is a
+/// small fraction of them, so an index probe is the cheap plan by a wide
+/// margin and the assertion does not ride on a marginal cost estimate.
+#[tokio::test]
+async fn rank_first_probes_memories_for_the_window_instead_of_scanning_the_owner()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (pg, db_name) = fresh_pg().await;
+    pg.run_migrations().await?;
+
+    let owner = owner_fixture();
+    for idx in 0..400 {
+        insert_embedded_memory(
+            &pg,
+            &owner,
+            &format!("rank first corpus row {idx}"),
+            [1.0, 0.0, 0.0],
+        )
+        .await?;
+    }
+    sqlx::query("ANALYZE proxima_core.memories")
+        .execute(pg.pool_for_tests())
+        .await?;
+    sqlx::query("ANALYZE proxima_core.embeddings")
+        .execute(pg.pool_for_tests())
+        .await?;
+
+    // Built the way the sibling plan test builds its semantic probe: no kind
+    // or schema filter, so the statement carries exactly the four parameters
+    // bound below.
+    let mut req = any_kind_lexical_request(&owner, "rank first corpus");
+    req.mode = SearchMode::Semantic;
+    req.query_embedding = Some(padded_embedding([1.0, 0.0, 0.0]));
+    req.embedding_model_id = Some("test-embed".into());
+    let (owner_kind, owner_id) = owner.columns();
+
+    // A window far smaller than the owner's row count: this is the regime
+    // the redesign was measured in, and the one where the two plans differ.
+    let semantic_sql = proxima_storage_pg::verbs::query::semantic_search_sql_for_tests(
+        &req,
+        &[],
+        20,
+        40,
+        &PgTuning::default(),
+    )?;
+
+    // SQL-POLICY: fixed-fragment — EXPLAIN prefix over the audited
+    // production builder's parameterized SQL; only bound values vary.
+    let plan: serde_json::Value = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+        "EXPLAIN (FORMAT JSON, COSTS OFF) {semantic_sql}"
+    )))
+    .bind(vec![owner_kind])
+    .bind(vec![owner_id])
+    .bind(vector_literal(&padded_embedding([1.0, 0.0, 0.0])))
+    .bind("test-embed")
+    .fetch_one(pg.pool_for_tests())
+    .await?;
+    let root = plan
+        .as_array()
+        .and_then(|rows| rows.first())
+        .and_then(|row| row.get("Plan"))
+        .cloned()
+        .expect("EXPLAIN JSON has a root Plan");
+
+    assert!(
+        !plan_seq_scans_relation(&root, "memories"),
+        "rank-first must probe memories for the ANN window's ids; a seq scan means the \
+         planner rebuilt the full-owner intermediate the inversion removes, and the \
+         measured gain is gone:\n{plan:#}"
+    );
+
+    drop(pg);
+    drop_db(&db_name).await?;
+    Ok(())
+}
