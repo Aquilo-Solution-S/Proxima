@@ -1,9 +1,14 @@
 //! Storage-tier tuning knobs, read once per [`crate::PgStorage`].
 //!
-//! Every field defaults to the behaviour this crate had before the knob
-//! existed, so an unset environment is production. Values are resolved at
-//! construction and carried on the handle; no query path re-reads the
-//! environment.
+//! The defaults are the shipped search path: the semantic branch drives off
+//! the nearest-neighbour index with the owner scope pushed onto the scan
+//! ([`SemanticIndexFirst::Pushdown`]) and collapses candidates with the
+//! window-function spelling (`candidate_window_dedup`). Setting
+//! `PROXIMA_PG_SEMANTIC_INDEX_FIRST=off` and
+//! `PROXIMA_PG_CANDIDATE_WINDOW_DEDUP=off` restores the legacy path
+//! byte-for-byte. Every other field defaults to the behaviour this crate had
+//! before the knob existed. Values are resolved at construction and carried
+//! on the handle; no query path re-reads the environment.
 
 use std::ops::RangeInclusive;
 
@@ -26,27 +31,28 @@ const SEMANTIC_OVERFETCH_MIN_RANGE: RangeInclusive<u64> = 1..=100_000;
 /// Where the semantic branch's nearest-neighbour scan sits relative to the
 /// eligibility joins.
 ///
-/// `Off` keeps every join UNDER the scan's `ORDER BY … LIMIT`, so the window
-/// is a budget of rows that already passed them and the branch is exact.
+/// `Off` — the legacy path — keeps every join UNDER the scan's
+/// `ORDER BY … LIMIT`, so the window is a budget of rows that already passed
+/// them and the branch is exact.
 ///
 /// Both other arms cut first and filter after, which trades recall for the
 /// index scan: result membership becomes an ANN-window approximation.
 /// `Overfetch` keeps the joins above a materialized ANN CTE, so recall
 /// depends on the overfetch window exceeding the inverse of the filter's
 /// selectivity — pgvector's iterative scan cannot help there, because the
-/// CTE's own LIMIT is satisfied by unfiltered rows. `Pushdown` puts the
-/// owner and model predicates on the embeddings scan itself, which is what
-/// lets iterative scan satisfy THOSE: an eligible row can no longer be
-/// displaced from the window by another owner's. Every other query
-/// predicate — `schema_id`, `kind`, `tags`, `since`, `until` — still sits
-/// above the window on both arms and carries overfetch's recall bound
-/// (`semantic_search_filters_query_predicates_before_candidate_limit` runs
-/// the three arms against exactly that).
+/// CTE's own LIMIT is satisfied by unfiltered rows. `Pushdown` — the
+/// default — puts the owner and model predicates on the embeddings scan
+/// itself, which is what lets iterative scan satisfy THOSE: an eligible row
+/// can no longer be displaced from the window by another owner's. Every
+/// other query predicate — `schema_id`, `kind`, `tags`, `since`, `until` —
+/// still sits above the window on both arms and carries overfetch's recall
+/// bound (`semantic_search_filters_query_predicates_before_candidate_limit`
+/// runs the three arms against exactly that).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SemanticIndexFirst {
-    #[default]
     Off,
     Overfetch,
+    #[default]
     Pushdown,
 }
 
@@ -132,8 +138,8 @@ pub struct PgTuning {
 impl Default for PgTuning {
     fn default() -> Self {
         Self {
-            semantic_index_first: SemanticIndexFirst::Off,
-            candidate_window_dedup: false,
+            semantic_index_first: SemanticIndexFirst::Pushdown,
+            candidate_window_dedup: true,
             hnsw_ef_search: DEFAULT_HNSW_EF_SEARCH,
             hnsw_iterative_scan: HnswIterativeScan::default(),
             hnsw_max_scan_tuples: DEFAULT_HNSW_MAX_SCAN_TUPLES,
@@ -292,19 +298,44 @@ mod tests {
         }
     }
 
-    /// The defaults are the contract: an unset environment must reproduce
-    /// the behaviour that shipped before any of these knobs existed.
+    /// The defaults are the contract: an unset environment runs the shipped
+    /// search path — index-first pushdown with window-function dedup — and
+    /// leaves every other knob at the behaviour that predates it.
     #[test]
-    fn defaults_are_todays_behaviour() {
+    fn defaults_are_the_shipped_search_path() {
         let tuning = PgTuning::default();
 
-        assert_eq!(tuning.semantic_index_first, SemanticIndexFirst::Off);
-        assert!(!tuning.candidate_window_dedup);
+        assert_eq!(tuning.semantic_index_first, SemanticIndexFirst::Pushdown);
+        assert!(tuning.candidate_window_dedup);
         assert_eq!(tuning.hnsw_ef_search, 100);
         assert_eq!(tuning.hnsw_iterative_scan, HnswIterativeScan::RelaxedOrder);
         assert_eq!(tuning.hnsw_max_scan_tuples, 20_000);
         assert_eq!(tuning.semantic_overfetch_per_result, 64);
         assert_eq!(tuning.semantic_overfetch_min, 512);
+    }
+
+    /// The escape hatch: `off` on both search knobs is the legacy
+    /// configuration, reachable from the environment alone.
+    #[test]
+    fn the_env_escape_hatch_selects_the_legacy_path() {
+        let tuning = PgTuning::from_lookup(&env(&[
+            ("PROXIMA_PG_SEMANTIC_INDEX_FIRST", "off"),
+            ("PROXIMA_PG_CANDIDATE_WINDOW_DEDUP", "off"),
+        ]))
+        .unwrap()
+        .expect("the legacy configuration is not the default");
+
+        assert_eq!(tuning.semantic_index_first, SemanticIndexFirst::Off);
+        assert!(!tuning.candidate_window_dedup);
+        assert_eq!(
+            PgTuning {
+                semantic_index_first: SemanticIndexFirst::Pushdown,
+                candidate_window_dedup: true,
+                ..tuning
+            },
+            PgTuning::default(),
+            "the escape hatch must move nothing but the two search knobs"
+        );
     }
 
     /// A silent environment tunes nothing, which is not the same answer as

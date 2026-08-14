@@ -1433,10 +1433,15 @@ fn payload_kind_for_entity_kind(kind: EntityKind) -> PayloadKind {
     }
 }
 
-/// Golden SQL for the search branches: at default tuning the builders must
-/// emit byte-identical text forever, so every tuning flag is provably off
-/// by default. A diff here is a behaviour change, not a formatting one —
-/// regenerate only with the flag-off semantics reviewed.
+/// Golden SQL for the search branches. Two contracts are pinned here:
+///
+/// - **Default** tuning (index-first pushdown + window dedup) must emit the
+///   shipped statements byte-for-byte, so a flag added later is provably
+///   inert by default.
+/// - The **escape hatch** — `PROXIMA_PG_SEMANTIC_INDEX_FIRST=off` plus
+///   `PROXIMA_PG_CANDIDATE_WINDOW_DEDUP=off` — must emit the legacy
+///   statements UNCHANGED. Those goldens are the guarantee that the legacy
+///   result membership is still reachable; do not regenerate them.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1536,7 +1541,7 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(sql, SEMANTIC_BRANCH_LEGACY_GOLDEN);
+        assert_eq!(sql, SEMANTIC_BRANCH_DEFAULT_GOLDEN);
     }
 
     #[test]
@@ -1549,7 +1554,7 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(sql, LEXICAL_BRANCH_LEGACY_GOLDEN);
+        assert_eq!(sql, LEXICAL_BRANCH_DEFAULT_GOLDEN);
     }
 
     /// The escape-hatch guarantee: the explicit legacy configuration emits
@@ -1582,14 +1587,8 @@ mod tests {
         let projections = golden_projections();
         let selected: Vec<&MemorySearchProjection> = projections.iter().collect();
         for (tuning, golden) in [
-            (PgTuning::default(), COMMON_CANDIDATES_LEGACY_GOLDEN),
-            (
-                PgTuning {
-                    candidate_window_dedup: true,
-                    ..PgTuning::default()
-                },
-                COMMON_CANDIDATES_DEFAULT_GOLDEN,
-            ),
+            (PgTuning::default(), COMMON_CANDIDATES_DEFAULT_GOLDEN),
+            (legacy_tuning(), COMMON_CANDIDATES_LEGACY_GOLDEN),
         ] {
             let mut next_param = 3;
             let sql = common_candidates_sql(
@@ -1658,26 +1657,9 @@ mod tests {
         }
     }
 
-    /// The dedup arm's lexical branch, pinned byte-for-byte.
-    #[test]
-    fn the_window_dedup_lexical_branch_is_pinned() {
-        let (sql, _) = lexical_branch_sql(
-            &golden_request(SearchMode::Lexical),
-            &golden_projections(),
-            GOLDEN_LIMIT,
-            &PgTuning {
-                candidate_window_dedup: true,
-                ..PgTuning::default()
-            },
-        )
-        .unwrap();
-
-        assert_eq!(sql, LEXICAL_BRANCH_DEFAULT_GOLDEN);
-    }
-
-    /// The successor test both branches carry under the dedup arm: a join
-    /// over the successor set, in place of the probe the candidate CTE
-    /// runs per row.
+    /// The successor test both branches carry by default: a join over the
+    /// successor set, in place of the probe the legacy candidate CTE runs
+    /// per row.
     #[test]
     fn window_dedup_joins_the_successor_set_once_per_branch() {
         let projections = golden_projections();
@@ -1688,10 +1670,7 @@ mod tests {
             &selected,
             &mut next_param,
             true,
-            &PgTuning {
-                candidate_window_dedup: true,
-                ..PgTuning::default()
-            },
+            &PgTuning::default(),
         )
         .unwrap();
 
@@ -1735,7 +1714,7 @@ mod tests {
     /// lexical branch is the same query in every arm.
     #[test]
     fn index_first_leaves_the_lexical_branch_byte_identical() {
-        for index_first in [SemanticIndexFirst::Overfetch, SemanticIndexFirst::Pushdown] {
+        for index_first in [SemanticIndexFirst::Off, SemanticIndexFirst::Overfetch] {
             let (sql, _) = lexical_branch_sql(
                 &golden_request(SearchMode::Lexical),
                 &golden_projections(),
@@ -1747,7 +1726,7 @@ mod tests {
             )
             .unwrap();
 
-            assert_eq!(sql, LEXICAL_BRANCH_LEGACY_GOLDEN, "{index_first:?}");
+            assert_eq!(sql, LEXICAL_BRANCH_DEFAULT_GOLDEN, "{index_first:?}");
         }
     }
 

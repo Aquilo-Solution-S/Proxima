@@ -319,7 +319,7 @@ impl ProximaBuilder {
     }
 
     /// Storage tuning passthrough. Unset, the `PROXIMA_PG_*` environment
-    /// decides, and its defaults are the behaviour every release has had.
+    /// decides, and its defaults are this release's shipped behaviour.
     #[must_use]
     pub fn pg_tuning(mut self, tuning: proxima_storage_pg::PgTuning) -> Self {
         self.pg_tuning = Some(tuning);

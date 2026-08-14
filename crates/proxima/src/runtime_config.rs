@@ -212,9 +212,9 @@ impl RuntimeBuilder {
     }
 
     /// Set the Postgres query tuning, bypassing the `PROXIMA_PG_*` block a
-    /// deployment would otherwise be read from. Its defaults are the
-    /// behaviour every release has shipped, so a host that never calls this
-    /// and an environment that sets nothing are the same deployment.
+    /// deployment would otherwise be read from. Its defaults are this
+    /// release's shipped behaviour, so a host that never calls this and an
+    /// environment that sets nothing are the same deployment.
     #[must_use]
     pub fn pg_tuning(mut self, pg_tuning: PgTuning) -> Self {
         self.pg_tuning = Some(pg_tuning);
@@ -434,9 +434,10 @@ pub struct RuntimeConfig {
     /// Boot without applying migrations (preflight only) — schema is migrated
     /// out-of-band under a DDL role in split-role `GitOps` deploys.
     pub skip_migrations: bool,
-    /// Postgres query tuning (`PROXIMA_PG_*`). Every field defaults to the
-    /// behaviour that shipped before it existed, so an unset environment is
-    /// production.
+    /// Postgres query tuning (`PROXIMA_PG_*`). Defaults are this release's
+    /// shipped behaviour, so an unset environment is production;
+    /// `PROXIMA_PG_SEMANTIC_INDEX_FIRST=off` restores the legacy semantic
+    /// result membership.
     pub pg_tuning: PgTuning,
     pub auth: RuntimeAuthState,
     pub resource_metadata: Option<ResourceServerMetadata>,
