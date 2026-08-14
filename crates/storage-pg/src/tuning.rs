@@ -28,6 +28,21 @@ pub(crate) const DEFAULT_SEMANTIC_OVERFETCH_MIN: u64 = 512;
 const SEMANTIC_OVERFETCH_PER_RESULT_RANGE: RangeInclusive<u64> = 1..=4_096;
 const SEMANTIC_OVERFETCH_MIN_RANGE: RangeInclusive<u64> = 1..=100_000;
 
+/// Accepted range for the two HNSW session knobs, for the same reason: they
+/// are interpolated into `SET LOCAL` ([`crate::pgvector::set_hnsw_search_sql`]),
+/// so a value pgvector's GUC rejects is not a slow query but an error on
+/// *every semantic search*, far from the variable that caused it.
+///
+/// The bounds are pgvector's own, read off the server rather than guessed —
+/// `LOAD 'vector'; SELECT min_val, max_val FROM pg_settings WHERE name LIKE
+/// 'hnsw.%'` on pgvector 0.8.5 (the version this crate pins a floor of 0.8.0
+/// for, [`crate::pgvector::REQUIRED_PGVECTOR_MINOR`]) reports
+/// `hnsw.ef_search 1 .. 1000` and `hnsw.max_scan_tuples 1 .. 2147483647`.
+/// Both GUCs are declared `integer`, which is why the scan ceiling stops at
+/// `i32::MAX` rather than at `u32::MAX`.
+const HNSW_EF_SEARCH_RANGE: RangeInclusive<u32> = 1..=1_000;
+const HNSW_MAX_SCAN_TUPLES_RANGE: RangeInclusive<u32> = 1..=2_147_483_647;
+
 /// Where the semantic branch's nearest-neighbour scan sits relative to the
 /// eligibility joins.
 ///
@@ -198,20 +213,22 @@ impl PgTuning {
                 "PROXIMA_PG_CANDIDATE_WINDOW_DEDUP",
                 defaults.candidate_window_dedup,
             )?,
-            hnsw_ef_search: crate::env_int_or(
+            hnsw_ef_search: env_int_in_range(
                 lookup,
                 "PROXIMA_PG_HNSW_EF_SEARCH",
                 defaults.hnsw_ef_search,
+                &HNSW_EF_SEARCH_RANGE,
             )?,
             hnsw_iterative_scan: HnswIterativeScan::from_lookup(
                 lookup,
                 "PROXIMA_PG_HNSW_ITERATIVE_SCAN",
                 defaults.hnsw_iterative_scan,
             )?,
-            hnsw_max_scan_tuples: crate::env_int_or(
+            hnsw_max_scan_tuples: env_int_in_range(
                 lookup,
                 "PROXIMA_PG_HNSW_MAX_SCAN_TUPLES",
                 defaults.hnsw_max_scan_tuples,
+                &HNSW_MAX_SCAN_TUPLES_RANGE,
             )?,
             semantic_overfetch_per_result: env_int_in_range(
                 lookup,
@@ -440,9 +457,14 @@ mod tests {
         }
     }
 
-    /// The window knobs reach `LIMIT` as an integer literal. A value the
-    /// server would reject there has to refuse at boot instead, where the
-    /// variable that caused it is still in hand.
+    /// Every integer knob reaches the server as a literal — the window knobs
+    /// as `LIMIT`, the two HNSW knobs as `SET LOCAL`. A value the server
+    /// would reject there has to refuse at boot instead, where the variable
+    /// that caused it is still in hand; otherwise it surfaces as an error on
+    /// every search, naming a GUC rather than the variable an operator typed.
+    ///
+    /// The HNSW bounds are pgvector's own (see `HNSW_EF_SEARCH_RANGE`), so
+    /// `1001` and `2147483648` are the first values the GUC itself refuses.
     #[test]
     fn an_out_of_range_window_refuses_at_boot() {
         for (key, value) in [
@@ -454,6 +476,10 @@ mod tests {
             ),
             ("PROXIMA_PG_SEMANTIC_OVERFETCH_MIN", "0"),
             ("PROXIMA_PG_SEMANTIC_OVERFETCH_MIN", "100001"),
+            ("PROXIMA_PG_HNSW_EF_SEARCH", "0"),
+            ("PROXIMA_PG_HNSW_EF_SEARCH", "1001"),
+            ("PROXIMA_PG_HNSW_MAX_SCAN_TUPLES", "0"),
+            ("PROXIMA_PG_HNSW_MAX_SCAN_TUPLES", "2147483648"),
         ] {
             let err = PgTuning::from_lookup(&env(&[(key, value)])).unwrap_err();
             assert!(
