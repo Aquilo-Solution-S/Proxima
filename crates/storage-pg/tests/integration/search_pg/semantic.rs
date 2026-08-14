@@ -1,10 +1,12 @@
 //! Semantic-branch search behaviour: vector ranking, owner isolation, chunk scoring, and pre-limit filtering.
 
 use super::{
-    SHIPPED_ANN_WINDOW, WIDE_ANN_WINDOW, brute_cosine, drop_db, fresh_pg, insert_embedded_memory,
-    insert_embedded_memory_with_schema, insert_embedded_memory_with_vec,
-    insert_embedding_with_head, insert_search_abstraction, owner_fixture, padded_embedding,
-    pg_with_ann_window, semantic_request, vector_literal,
+    SHIPPED_ANN_WINDOW, TaggedAbstractionInsert, WIDE_ANN_WINDOW, brute_cosine, drop_db, fresh_pg,
+    insert_embedded_memory, insert_embedded_memory_with_schema, insert_embedded_memory_with_vec,
+    create_tagged_search_sidecars, insert_embedding_with_head, insert_search_abstraction,
+    insert_tagged_abstraction,
+    owner_fixture, padded_embedding, pg_with_ann_window, semantic_request,
+    tagged_abstraction_projection, tagged_search_request, vector_literal,
 };
 
 use proxima_core::llm::EMBEDDING_DIM;
@@ -577,6 +579,65 @@ async fn chunked_memories_do_not_starve_the_semantic_page() -> Result<(), Box<dy
     assert!(
         page.has_more,
         "15 matching memories against a limit of 5 must report has_more"
+    );
+
+    drop(pg);
+    drop_db(&db_name).await?;
+    Ok(())
+}
+
+/// A memory reachable through more than one candidate branch carries more
+/// than one candidate `search_text`, and the collapse has to pick one.
+///
+/// It used to pick by plan. The branches share a `created_at` — they
+/// project the same `memories` row — so the collapse's `ORDER BY
+/// created_at DESC` never discriminated between them, and which text
+/// survived was whatever order the executor happened to produce.
+/// Measured against a real corpus, changing the plan changed the snippet
+/// for roughly half of a page, in both directions.
+///
+/// So the rule is written down: the schema's own projection wins over the
+/// generic memory text, and a projection that yields NULL never displaces
+/// text the base branch could supply. This memory is admitted by both the
+/// base branch (as `memories.text`) and its schema's sidecar (as the
+/// projection's `concat_ws`), so the snippet names which one won.
+#[tokio::test]
+async fn semantic_snippet_prefers_the_schema_projection_over_memory_text()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (pg, db_name) = fresh_pg().await;
+    pg.run_migrations().await?;
+    create_tagged_search_sidecars(pg.pool_for_tests()).await?;
+    let owner = owner_fixture();
+
+    insert_tagged_abstraction(
+        &pg,
+        &owner,
+        TaggedAbstractionInsert {
+            memory_id: Uuid::from_u128(0x5171),
+            title: "Projected title",
+            body: "shared body prose",
+            tags: &["gamma"],
+            created_at: time::OffsetDateTime::now_utc(),
+            embedding: Some([1.0, 0.0, 0.0]),
+        },
+    )
+    .await?;
+
+    let mut req = tagged_search_request(&owner, "shared body prose", SearchMode::Semantic);
+    req.query_embedding = Some(padded_embedding([1.0, 0.0, 0.0]));
+    req.embedding_model_id = Some("test-embed".into());
+
+    let rows = pg
+        .search_memories(&req, &[tagged_abstraction_projection()])
+        .await?
+        .results;
+
+    assert_eq!(rows.len(), 1, "the seeded memory is the only candidate");
+    assert_eq!(
+        rows[0].snippet, "Projected title shared body prose gamma",
+        "the snippet must come from the schema's projection, not from \
+         memories.text ({:?})",
+        rows[0].snippet
     );
 
     drop(pg);

@@ -333,7 +333,24 @@ def run_fixture(path: Path) -> int:
 # `&'static str` with no path from any caller, exactly as they did as literals,
 # and the emitted statements are byte-identical — all ten `*_GOLDEN` literals
 # in search.rs are unchanged from 19f63010.
-EXPECTED_DYNAMIC_SQL_SITES = 69
+# 2026-08-15 analysis: +4 — the semantic branch now ranks before it decides
+# eligibility, which splits its assembly into named pieces. Three of the four
+# are `sql.push_str` with a next-line string literal and no caller-reachable
+# interpolation at all: `push_ann_live` (the head join and per-memory
+# collapse), `push_rank_first_eligible` (the collapse and its written tie
+# rule), and `push_ann_restriction`, whose argument is the module const
+# ANN_RESTRICTION_SQL reached only through `CandidateShape.ann_restriction`,
+# which no caller outside this module can set. The fourth pushes the audited
+# candidate builder's own return value: `common_candidates_sql` composes it
+# from the same fixed fragments and `$n` placeholders it always did, with the
+# only identifiers arriving through `PgIdent`, and it is written after the
+# scan CTE rather than at the head of the statement solely because the branches
+# are now restricted to that scan. All four carry inline
+# `SQL-POLICY: fixed-fragment` proofs and every emitted arm stays pinned
+# byte-for-byte by the `*_GOLDEN` literals in the same file — including
+# SEMANTIC_BRANCH_LEGACY_GOLDEN and SEMANTIC_WINDOW_DEDUP_GOLDEN, the two
+# escape-hatch arms, which are unchanged from 0a12aa0f.
+EXPECTED_DYNAMIC_SQL_SITES = 73
 
 
 def run_self_test() -> int:

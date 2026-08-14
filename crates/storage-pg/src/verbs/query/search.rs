@@ -361,7 +361,17 @@ fn lexical_branch_sql<'p>(
 ) -> Result<(String, Vec<&'p MemorySearchProjection>), StorageError> {
     let projections = memory_search_projections(req, projections);
     let mut next_param = 3;
-    let mut sql = common_candidates_sql(req, &projections, &mut next_param, true, tuning)?;
+    let mut sql = common_candidates_sql(
+        req,
+        &projections,
+        &mut next_param,
+        CandidateShape {
+            open: MATERIALIZED_CANDIDATES_OPEN,
+            include_tsv: true,
+            ann_restriction: None,
+        },
+        tuning,
+    )?;
     let query_param = next_param;
     let order_by = branch_order_by(req, "lexical_score");
     // The OR-rescue arm serves pure-lexical retrieval (including hybrid
@@ -528,22 +538,63 @@ fn semantic_branch_sql<'p>(
 ) -> Result<(String, Vec<&'p MemorySearchProjection>), StorageError> {
     let projections = memory_search_projections(req, projections);
     let mut next_param = 3;
-    let mut sql = common_candidates_sql(req, &projections, &mut next_param, false, tuning)?;
-    let vec_param = next_param;
-    let model_param = next_param + 1;
+    let sql = match tuning.semantic_index_first {
+        SemanticIndexFirst::Off => legacy_semantic_branch_sql(
+            req,
+            &projections,
+            limit,
+            candidate_overfetch,
+            tuning,
+            &mut next_param,
+        )?,
+        mode => rank_first_semantic_branch_sql(
+            req,
+            &projections,
+            limit,
+            candidate_overfetch,
+            tuning,
+            mode,
+            &mut next_param,
+        )?,
+    };
+    Ok((sql, projections))
+}
+
+/// The header an unrestricted candidate branch set is written into.
+const MATERIALIZED_CANDIDATES_OPEN: &str = "WITH candidates AS MATERIALIZED (";
+
+/// The escape hatch's statement: enumerate the whole read scope, then let
+/// the nearest-neighbour window run inside it.
+///
+/// Frozen. `PROXIMA_PG_SEMANTIC_INDEX_FIRST=off` is a shipped promise that
+/// the previous statement is still available byte-for-byte, and the unit
+/// goldens hold this text to that. Nothing here specializes.
+fn legacy_semantic_branch_sql(
+    req: &MemorySearchRequest,
+    projections: &[&MemorySearchProjection],
+    limit: u32,
+    candidate_overfetch: u64,
+    tuning: &PgTuning,
+    next_param: &mut usize,
+) -> Result<String, StorageError> {
+    let mut sql = common_candidates_sql(
+        req,
+        projections,
+        next_param,
+        CandidateShape {
+            open: MATERIALIZED_CANDIDATES_OPEN,
+            include_tsv: false,
+            ann_restriction: None,
+        },
+        tuning,
+    )?;
+    let vec_param = *next_param;
+    let model_param = *next_param + 1;
     let order_by = branch_order_by(req, "similarity_score");
 
     push_eligible_entities(&mut sql, tuning);
-    let chunk_from = match tuning.semantic_index_first {
-        SemanticIndexFirst::Off => {
-            push_joined_scan_note(&mut sql);
-            joined_ann_from(vec_param, model_param, candidate_overfetch)
-        }
-        mode => {
-            push_ann_scan(&mut sql, mode, vec_param, model_param, candidate_overfetch);
-            index_first_ann_from()
-        }
-    };
+    push_joined_scan_note(&mut sql);
+    let chunk_from = joined_ann_from(vec_param, model_param, candidate_overfetch);
     push_vector_candidates(&mut sql, tuning, &chunk_from);
 
     write!(
@@ -560,7 +611,165 @@ fn semantic_branch_sql<'p>(
         order_by = order_by
     )
     .expect("write to String is infallible");
-    Ok((sql, projections))
+    Ok(sql)
+}
+
+/// The nearest-neighbour restriction each candidate branch carries.
+const ANN_RESTRICTION_SQL: &str =
+    "\n             AND m.memory_id IN (SELECT a.entity_id FROM ann_live a)";
+
+/// Rank first, then decide eligibility — over the window, not over the
+/// read scope.
+///
+/// The statement this replaces built the whole eligible set before the
+/// scan ran, then inner-joined the scan's few thousand rows against it.
+/// Measured on a corpus of ~10^5 memories under one owner, that spent
+/// ~87% of the query materialising ~2x10^5 candidate rows and sorting
+/// them through a 311 MB external merge, to answer "is this eligible?"
+/// for the 1,344 rows the scan returned in 37 ms.
+///
+/// The join is an inner join, so the answer for every other row was
+/// discarded. Restricting each branch to the window's ids is a semi-join
+/// reduction of that inner join
+/// (<https://www.postgresql.org/docs/current/functions-subquery.html>):
+/// the branches' own predicates are untouched, so the same memories are
+/// eligible — they are simply not computed for memories the join could
+/// never keep.
+///
+/// It stays one statement. Splitting the scan and the eligibility check
+/// into two round trips would put them under two snapshots at Read
+/// Committed
+/// (<https://www.postgresql.org/docs/current/transaction-iso.html#XACT-READ-COMMITTED>),
+/// so a tombstone, supersession or new head version landing between them
+/// could change which rows come back.
+///
+/// Order within the statement is load-bearing: the scan keeps
+/// `ORDER BY <distance> LIMIT n` with nothing above it, which is the only
+/// shape the HNSW index can serve
+/// (<https://github.com/pgvector/pgvector#querying>), and the head join
+/// runs *before* the per-memory collapse, so a nearer stale chunk can
+/// never displace the live one that the collapse should have kept.
+fn rank_first_semantic_branch_sql(
+    req: &MemorySearchRequest,
+    projections: &[&MemorySearchProjection],
+    limit: u32,
+    candidate_overfetch: u64,
+    tuning: &PgTuning,
+    mode: SemanticIndexFirst,
+    next_param: &mut usize,
+) -> Result<String, StorageError> {
+    // Built first because it allocates the parameter numbers the scan's
+    // own binds follow, even though the scan is written above it.
+    let candidates = common_candidates_sql(
+        req,
+        projections,
+        next_param,
+        CandidateShape {
+            open: "\n          candidates AS (",
+            include_tsv: false,
+            ann_restriction: Some(ANN_RESTRICTION_SQL),
+        },
+        tuning,
+    )?;
+    let vec_param = *next_param;
+    let model_param = *next_param + 1;
+    let order_by = branch_order_by(req, "a.similarity_score");
+
+    let mut sql = String::from("WITH");
+    push_ann_scan(&mut sql, mode, vec_param, model_param, candidate_overfetch);
+    push_ann_live(&mut sql);
+    // SQL-POLICY: fixed-fragment — the audited candidate builder's own
+    // output, written here rather than at the head of the statement
+    // because the scan it is restricted to has to be declared first.
+    sql.push_str(&candidates);
+    sql.push(',');
+    push_rank_first_eligible(&mut sql);
+
+    write!(
+        sql,
+        "
+          SELECT c.memory_id, c.kind, c.schema_id, c.created_at,
+                 left(c.search_text, 480) AS snippet,
+                 0.0::real AS lexical_score,
+                 a.similarity_score
+          FROM eligible_entities c
+          JOIN ann_live a
+            ON a.entity_kind = c.kind
+           AND a.entity_id = c.memory_id
+           AND a.owner_kind = c.owner_kind
+           AND a.owner_id IS NOT DISTINCT FROM c.owner_id
+          ORDER BY {order_by}
+          LIMIT {}",
+        u64::from(limit),
+        order_by = order_by
+    )
+    .expect("write to String is infallible");
+    Ok(sql)
+}
+
+/// The window's live rows, one per memory, scored by its best chunk.
+///
+/// The head join is version liveness, so it runs before the collapse: a
+/// memory whose nearest chunk in the window is stale must still be
+/// reachable through whichever live chunk the window also holds, rather
+/// than being dropped because the stale one won.
+///
+/// `max()` rather than a ranked row: every column the page reads other
+/// than the score comes from the eligible set, and the score of the best
+/// chunk is exactly what the ranked spelling projected.
+fn push_ann_live(sql: &mut String) {
+    // SQL-POLICY: fixed-fragment
+    sql.push_str(
+        "
+          ann_live AS MATERIALIZED (
+              SELECT ann.entity_kind, ann.entity_id, ann.owner_kind, ann.owner_id,
+                     max(ann.similarity_score) AS similarity_score
+                FROM ann_scan ann
+                JOIN proxima_core.embedding_heads head
+                  ON head.entity_kind = ann.entity_kind
+                 AND head.entity_id = ann.entity_id
+                 AND head.model_id = ann.model_id
+                 AND head.embedding_version = ann.embedding_version
+                 AND head.owner_kind = ann.owner_kind
+                 AND head.owner_id IS NOT DISTINCT FROM ann.owner_id
+               GROUP BY ann.entity_kind, ann.entity_id, ann.owner_kind, ann.owner_id
+          ),",
+    );
+}
+
+/// One row per eligible memory, with the tie between its branches broken
+/// by a written rule.
+///
+/// A memory reaches this set once per candidate branch that admits it —
+/// the base branch and its schema's sidecar are both branches — and those
+/// rows differ only in `search_text`. They share a `created_at`, so the
+/// old `ORDER BY created_at DESC` never discriminated between them and
+/// which one survived was left to the plan
+/// (<https://www.postgresql.org/docs/current/sql-select.html>). Measured
+/// on a real corpus, changing the plan changed the surviving snippet for
+/// roughly half the page, in both directions.
+///
+/// So the rule is written down instead. A non-NULL `search_text` wins
+/// first — a sidecar projection whose fields are all empty yields NULL,
+/// and the base branch's text is non-empty by its own filter, so this
+/// also stops an empty projection from blanking a snippet the base branch
+/// could have filled. Among non-NULL rows the highest branch ordinal
+/// wins, which is the schema's own projection rather than the generic
+/// memory text.
+fn push_rank_first_eligible(sql: &mut String) {
+    // SQL-POLICY: fixed-fragment
+    sql.push_str(
+        "
+          eligible_entities AS (
+              SELECT DISTINCT ON (c.kind, c.memory_id)
+                     c.memory_id, c.owner_kind, c.owner_id, c.kind,
+                     c.schema_id, c.created_at, c.search_text
+                FROM candidates c
+               ORDER BY c.kind, c.memory_id,
+                        (c.search_text IS NULL), c.branch_rank DESC,
+                        c.created_at DESC
+          )",
+    );
 }
 
 /// Rows an `Overfetch` scan may hold. Behind its barrier the window is spent
@@ -691,14 +900,6 @@ fn joined_ann_from(vec_param: usize, model_param: usize, candidate_overfetch: u6
                 ) ann",
         similarity = similarity_score_sql(vec_param, 25),
         joins = head_and_eligibility_joins("emb", 20)
-    )
-}
-
-/// The same head and eligibility joins, read above an index-first scan.
-fn index_first_ann_from() -> String {
-    format!(
-        "                FROM ann_scan ann\n{joins}",
-        joins = head_and_eligibility_joins("ann", 16)
     )
 }
 
@@ -916,67 +1117,105 @@ async fn run_semantic(
     Ok(rows)
 }
 
-/// Builds the owner-scoped candidate CTE shared by both branches.
+/// How a candidate branch set is written, and what it is restricted to.
 ///
-/// `include_tsv` adds each candidate's lexical vector as a column. Only
-/// the lexical branch needs it, and `candidates` is MATERIALIZED, so
-/// emitting it unconditionally would make every semantic search
-/// materialise a few hundred tsvectors it never reads.
+/// The lexical branch and the legacy semantic branch enumerate the whole
+/// read scope behind a `MATERIALIZED` fence. The rank-first semantic
+/// assembly restricts every branch to the nearest-neighbour window it has
+/// already computed, so those branches are small by construction and the
+/// fence is neither needed nor wanted there.
+#[derive(Clone, Copy)]
+struct CandidateShape<'a> {
+    /// The CTE header the branch set is written into, up to and including
+    /// its opening parenthesis.
+    open: &'a str,
+    /// Adds each candidate's lexical vector as a column. Only the lexical
+    /// branch reads it, and an unrestricted `candidates` is MATERIALIZED,
+    /// so emitting it unconditionally would make every semantic search
+    /// materialise tsvectors nothing reads.
+    include_tsv: bool,
+    /// The nearest-neighbour restriction every branch carries, when the
+    /// caller has already computed that window. Its presence also emits
+    /// each branch's ordinal, which is what lets the collapse above break
+    /// its tie by a written rule rather than by whatever order the plan
+    /// happened to produce.
+    ann_restriction: Option<&'a str>,
+}
+
+impl CandidateShape<'_> {
+    /// The branch ordinal column, written only for a restricted branch
+    /// set. Unrestricted branches keep their historical column list, which
+    /// the goldens pin byte-for-byte.
+    fn ordinal(self, ordinal: usize) -> String {
+        if self.ann_restriction.is_some() {
+            format!(", {ordinal}::int AS branch_rank")
+        } else {
+            String::new()
+        }
+    }
+}
+
+/// Claims the `$n` every candidate branch shares, in the one order
+/// [`bind_branch_prefix`] can bind them: each projection's
+/// `(schema_id, schema_version)` pair, then the optional filters —
+/// schema, since, until, tags, recency cursor.
+///
+/// Returns the first sidecar parameter alongside the filter set, because
+/// each branch addresses its own projection pair relative to it.
+fn allocate_candidate_params(
+    req: &MemorySearchRequest,
+    projections: usize,
+    next_param: &mut usize,
+    tuning: &PgTuning,
+) -> (usize, CandidateFilterParams) {
+    let sidecar_first_param = *next_param;
+    *next_param += projections * 2;
+    let mut claim = |width: usize| {
+        let param = *next_param;
+        *next_param += width;
+        param
+    };
+    let filters = CandidateFilterParams {
+        schema_filter: req.schema_id.as_ref().map(|_| claim(1)),
+        since: req.since.map(|_| claim(1)),
+        until: req.until.map(|_| claim(1)),
+        tags: (!req.tags.is_empty()).then(|| claim(1)),
+        // A recency cursor binds a `(created_at, memory_id)` pair.
+        recency_cursor: matches!(req.after, Some(SearchCursor::Recency { .. }))
+            .then(|| claim(2)),
+        supersedes_anti_join: tuning.candidate_window_dedup,
+    };
+    (sidecar_first_param, filters)
+}
+
+/// Builds the owner-scoped candidate CTE shared by both branches.
 fn common_candidates_sql(
     req: &MemorySearchRequest,
     projections: &[&MemorySearchProjection],
     next_param: &mut usize,
-    include_tsv: bool,
+    shape: CandidateShape<'_>,
     tuning: &PgTuning,
 ) -> Result<String, StorageError> {
-    let sidecar_first_param = *next_param;
-    *next_param += projections.len() * 2;
-    let schema_filter_param = req.schema_id.as_ref().map(|_| {
-        let param = *next_param;
-        *next_param += 1;
-        param
-    });
-    let since_param = req.since.map(|_| {
-        let param = *next_param;
-        *next_param += 1;
-        param
-    });
-    let until_param = req.until.map(|_| {
-        let param = *next_param;
-        *next_param += 1;
-        param
-    });
-    let tags_param = (!req.tags.is_empty()).then(|| {
-        let param = *next_param;
-        *next_param += 1;
-        param
-    });
-    let recency_cursor_param = matches!(req.after, Some(SearchCursor::Recency { .. })).then(|| {
-        let param = *next_param;
-        *next_param += 2;
-        param
-    });
-    let filters = CandidateFilterParams {
-        schema_filter: schema_filter_param,
-        since: since_param,
-        until: until_param,
-        tags: tags_param,
-        recency_cursor: recency_cursor_param,
-        supersedes_anti_join: tuning.candidate_window_dedup,
-    };
+    let include_tsv = shape.include_tsv;
+    let (sidecar_first_param, filters) =
+        allocate_candidate_params(req, projections.len(), next_param, tuning);
 
-    // MATERIALIZED pins the plan to owner-first enumeration: candidates
-    // are resolved via the owner-prefix indexes before any text or vector
-    // predicate runs. Left inlinable, the planner pushed the lexical
-    // tsvector filter into the Abstraction sidecar branch and seq-scanned
-    // the whole table across every owner (measured: 3.1s of a 3.3s
-    // query on the 150k corpus). The per-owner candidate set is a few
-    // hundred rows, so the materialization itself is noise.
-    let mut sql = String::from("WITH candidates AS MATERIALIZED (");
+    // On an unrestricted branch set MATERIALIZED pins the plan to
+    // owner-first enumeration: candidates are resolved via the
+    // owner-prefix indexes before any text or vector predicate runs. Left
+    // inlinable, the planner pushed the lexical tsvector filter into the
+    // Abstraction sidecar branch and seq-scanned the whole table across
+    // every owner (measured: 3.1s of a 3.3s query on the 150k corpus).
+    //
+    // That fence is what a restricted branch set does not want: its rows
+    // are already bounded by the nearest-neighbour window, and the fence
+    // would stop the planner from driving each branch off that window's
+    // ids. The caller supplies the header for the shape it is building.
+    let mut sql = String::from(shape.open);
     push_candidate_branch_prefix(&mut sql);
     write!(
         sql,
-        "NULL::text[] AS tags, COALESCE(m.text, '') AS search_text{base_tsv} \
+        "NULL::text[] AS tags, COALESCE(m.text, '') AS search_text{base_tsv}{ordinal} \
          FROM proxima_core.memories m \
 ",
         // memories.search_tsv is generated from the same COALESCE(text, '')
@@ -988,11 +1227,13 @@ fn common_candidates_sql(
         } else {
             ""
         },
+        ordinal = shape.ordinal(0),
     )
     .expect("write to String is infallible");
     push_supersedes_anti_join(&mut sql, req, filters, base_branch_kinds(req));
     push_base_memory_filters(&mut sql, req, filters);
     sql.push_str(" AND NULLIF(m.text, '') IS NOT NULL");
+    push_ann_restriction(&mut sql, shape);
 
     for (idx, projection) in projections.iter().enumerate() {
         let table = PgIdent::table(&projection.sidecar_table)?;
@@ -1015,11 +1256,12 @@ fn common_candidates_sql(
         write!(
             sql,
             "{tag_expr} AS tags,
-             {search_text_expr} AS search_text{tsv_expr}
+             {search_text_expr} AS search_text{tsv_expr}{ordinal}
              FROM proxima_core.memories m
 JOIN {table} s ON s.memory_id = m.memory_id",
             tag_expr = tag_expr.as_str(),
-            table = table.as_str()
+            table = table.as_str(),
+            ordinal = shape.ordinal(idx + 1),
         )
         .expect("write to String is infallible");
         push_supersedes_anti_join(
@@ -1037,10 +1279,29 @@ JOIN {table} s ON s.memory_id = m.memory_id",
             filters,
             &tag_expr,
         );
+        push_ann_restriction(&mut sql, shape);
     }
 
     sql.push(')');
     Ok(sql)
+}
+
+/// The nearest-neighbour restriction, written onto every branch of a
+/// restricted branch set.
+///
+/// The join this feeds is an inner join, so a candidate row whose memory
+/// is not in the window can never reach the result. Restricting each
+/// branch by that window's ids is therefore a semi-join reduction: it
+/// removes rows the join would have removed anyway, and the branch's own
+/// predicates are untouched. Written as `IN (SELECT ...)` rather than
+/// against a bound array so the planner keeps the choice of join strategy
+/// — the window can be as wide as `candidate_overfetch` at full
+/// pagination depth.
+fn push_ann_restriction(sql: &mut String, shape: CandidateShape<'_>) {
+    if let Some(restriction) = shape.ann_restriction {
+        // SQL-POLICY: fixed-fragment
+        sql.push_str(restriction);
+    }
 }
 
 fn projection_search_expr(fields: &[MemorySearchProjectionField]) -> Result<String, StorageError> {
@@ -1703,7 +1964,11 @@ mod tests {
                 &golden_request(SearchMode::Lexical),
                 &selected,
                 &mut next_param,
-                true,
+                CandidateShape {
+                    open: MATERIALIZED_CANDIDATES_OPEN,
+                    include_tsv: true,
+                    ann_restriction: None,
+                },
                 &tuning,
             )
             .unwrap();
@@ -1782,7 +2047,11 @@ mod tests {
                     &req,
                     &selected,
                     &mut next_param,
-                    true,
+                    CandidateShape {
+                        open: MATERIALIZED_CANDIDATES_OPEN,
+                        include_tsv: true,
+                        ann_restriction: None,
+                    },
                     &PgTuning {
                         candidate_window_dedup,
                         ..PgTuning::default()
@@ -2161,35 +2430,7 @@ JOIN proxima_core.interpretation_v1 s ON s.memory_id = m.memory_id WHERE (EXISTS
            AND m.schema_id = $5
            AND m.schema_version = $6 AND m.kind = 'Abstraction' AND m.created_at >= $7 AND m.created_at <= $8 AND NULL::text[] @> $9::text[] AND ( (m.kind IS NULL AND ( m.fact_entity_id IS NULL OR EXISTS ( SELECT 1 FROM proxima_core.fact_entities fe WHERE fe.fact_entity_id = m.fact_entity_id AND fe.current_memory_id = m.memory_id ) )) OR (m.kind IS NOT NULL AND NOT EXISTS ( SELECT 1 FROM proxima_core.memories m2 WHERE m2.supersedes = m.memory_id AND m2.tombstoned_at IS NULL AND m2.owner_kind = m.owner_kind AND m2.owner_id IS NOT DISTINCT FROM m.owner_id )) ))";
 
-    const SEMANTIC_INDEX_FIRST_OVERFETCH_GOLDEN: &str = r"WITH candidates AS MATERIALIZED (SELECT m.memory_id, m.owner_kind, m.owner_id, COALESCE(m.kind, 'Fact'::proxima_core.entity_kind) AS kind, m.schema_id, m.created_at, NULL::text[] AS tags, COALESCE(m.text, '') AS search_text FROM proxima_core.memories m  WHERE (EXISTS (
-              SELECT 1
-                FROM unnest($1::proxima_core.owner_ref_kind[], $2::uuid[]) AS s(kind, id)
-               WHERE m.owner_kind = s.kind AND m.owner_id = s.id
-           ) OR (m.owner_kind = 'world' AND m.owner_id IS NULL)) AND m.tombstoned_at IS NULL AND m.created_at >= $7 AND m.created_at <= $8 AND NULL::text[] @> $9::text[] AND ( (m.kind IS NULL AND ( m.fact_entity_id IS NULL OR EXISTS ( SELECT 1 FROM proxima_core.fact_entities fe WHERE fe.fact_entity_id = m.fact_entity_id AND fe.current_memory_id = m.memory_id ) )) OR (m.kind IS NOT NULL AND NOT EXISTS ( SELECT 1 FROM proxima_core.memories m2 WHERE m2.supersedes = m.memory_id AND m2.tombstoned_at IS NULL AND m2.owner_kind = m.owner_kind AND m2.owner_id IS NOT DISTINCT FROM m.owner_id )) ) AND NULLIF(m.text, '') IS NOT NULL UNION ALL SELECT m.memory_id, m.owner_kind, m.owner_id, COALESCE(m.kind, 'Fact'::proxima_core.entity_kind) AS kind, m.schema_id, m.created_at, s.tags AS tags,
-             NULLIF(concat_ws(' ', NULLIF(s.title::text, ''), NULLIF(array_to_string(s.tags, ' '), '')), '') AS search_text
-             FROM proxima_core.memories m
-JOIN proxima_core.agent_note_v1 s ON s.memory_id = m.memory_id WHERE (EXISTS (
-              SELECT 1
-                FROM unnest($1::proxima_core.owner_ref_kind[], $2::uuid[]) AS s(kind, id)
-               WHERE m.owner_kind = s.kind AND m.owner_id = s.id
-           ) OR (m.owner_kind = 'world' AND m.owner_id IS NULL)) AND m.tombstoned_at IS NULL
-           AND m.schema_id = $3
-           AND m.schema_version = $4 AND m.kind IS NULL AND m.created_at >= $7 AND m.created_at <= $8 AND s.tags @> $9::text[] AND ( (m.kind IS NULL AND ( m.fact_entity_id IS NULL OR EXISTS ( SELECT 1 FROM proxima_core.fact_entities fe WHERE fe.fact_entity_id = m.fact_entity_id AND fe.current_memory_id = m.memory_id ) )) OR (m.kind IS NOT NULL AND NOT EXISTS ( SELECT 1 FROM proxima_core.memories m2 WHERE m2.supersedes = m.memory_id AND m2.tombstoned_at IS NULL AND m2.owner_kind = m.owner_kind AND m2.owner_id IS NOT DISTINCT FROM m.owner_id )) ) UNION ALL SELECT m.memory_id, m.owner_kind, m.owner_id, COALESCE(m.kind, 'Fact'::proxima_core.entity_kind) AS kind, m.schema_id, m.created_at, NULL::text[] AS tags,
-             NULLIF(concat_ws(' ', NULLIF(s.claim::text, '')), '') AS search_text
-             FROM proxima_core.memories m
-JOIN proxima_core.interpretation_v1 s ON s.memory_id = m.memory_id WHERE (EXISTS (
-              SELECT 1
-                FROM unnest($1::proxima_core.owner_ref_kind[], $2::uuid[]) AS s(kind, id)
-               WHERE m.owner_kind = s.kind AND m.owner_id = s.id
-           ) OR (m.owner_kind = 'world' AND m.owner_id IS NULL)) AND m.tombstoned_at IS NULL
-           AND m.schema_id = $5
-           AND m.schema_version = $6 AND m.kind = 'Abstraction' AND m.created_at >= $7 AND m.created_at <= $8 AND NULL::text[] @> $9::text[] AND ( (m.kind IS NULL AND ( m.fact_entity_id IS NULL OR EXISTS ( SELECT 1 FROM proxima_core.fact_entities fe WHERE fe.fact_entity_id = m.fact_entity_id AND fe.current_memory_id = m.memory_id ) )) OR (m.kind IS NOT NULL AND NOT EXISTS ( SELECT 1 FROM proxima_core.memories m2 WHERE m2.supersedes = m.memory_id AND m2.tombstoned_at IS NULL AND m2.owner_kind = m.owner_kind AND m2.owner_id IS NOT DISTINCT FROM m.owner_id )) )) , eligible_entities AS MATERIALIZED (
-              SELECT DISTINCT ON (c.kind, c.memory_id)
-                     c.memory_id, c.owner_kind, c.owner_id, c.kind,
-                     c.schema_id, c.created_at, c.search_text
-                FROM candidates c
-               ORDER BY c.kind, c.memory_id, c.created_at DESC
-          ),
+    const SEMANTIC_INDEX_FIRST_OVERFETCH_GOLDEN: &str = r"WITH
           -- Index-first (overfetch): the scan's window is spent before
           -- eligibility is known, so it is a work budget, not a result budget.
           ann_scan AS MATERIALIZED (
@@ -2204,10 +2445,9 @@ JOIN proxima_core.interpretation_v1 s ON s.memory_id = m.memory_id WHERE (EXISTS
                ORDER BY emb.vec <=> $10::vector
                LIMIT 704
           ),
-          vector_candidates AS MATERIALIZED (
-              SELECT DISTINCT ON (c.kind, c.memory_id)
-                     c.memory_id, c.kind, c.schema_id, c.created_at,
-                     c.search_text, ann.similarity_score
+          ann_live AS MATERIALIZED (
+              SELECT ann.entity_kind, ann.entity_id, ann.owner_kind, ann.owner_id,
+                     max(ann.similarity_score) AS similarity_score
                 FROM ann_scan ann
                 JOIN proxima_core.embedding_heads head
                   ON head.entity_kind = ann.entity_kind
@@ -2216,27 +2456,15 @@ JOIN proxima_core.interpretation_v1 s ON s.memory_id = m.memory_id WHERE (EXISTS
                  AND head.embedding_version = ann.embedding_version
                  AND head.owner_kind = ann.owner_kind
                  AND head.owner_id IS NOT DISTINCT FROM ann.owner_id
-                JOIN eligible_entities c
-                  ON c.kind = ann.entity_kind
-                 AND c.memory_id = ann.entity_id
-                 AND c.owner_kind = ann.owner_kind
-                 AND c.owner_id IS NOT DISTINCT FROM ann.owner_id
-               ORDER BY c.kind, c.memory_id, ann.similarity_score DESC
-          )
-          SELECT c.memory_id, c.kind, c.schema_id, c.created_at,
-                 left(c.search_text, 480) AS snippet,
-                 0.0::real AS lexical_score,
-                 c.similarity_score
-          FROM vector_candidates c
-          ORDER BY similarity_score DESC, c.memory_id DESC
-          LIMIT 44";
-
-    const SEMANTIC_INDEX_FIRST_PUSHDOWN_GOLDEN: &str = r"WITH candidates AS MATERIALIZED (SELECT m.memory_id, m.owner_kind, m.owner_id, COALESCE(m.kind, 'Fact'::proxima_core.entity_kind) AS kind, m.schema_id, m.created_at, NULL::text[] AS tags, COALESCE(m.text, '') AS search_text FROM proxima_core.memories m  WHERE (EXISTS (
+               GROUP BY ann.entity_kind, ann.entity_id, ann.owner_kind, ann.owner_id
+          ),
+          candidates AS (SELECT m.memory_id, m.owner_kind, m.owner_id, COALESCE(m.kind, 'Fact'::proxima_core.entity_kind) AS kind, m.schema_id, m.created_at, NULL::text[] AS tags, COALESCE(m.text, '') AS search_text, 0::int AS branch_rank FROM proxima_core.memories m  WHERE (EXISTS (
               SELECT 1
                 FROM unnest($1::proxima_core.owner_ref_kind[], $2::uuid[]) AS s(kind, id)
                WHERE m.owner_kind = s.kind AND m.owner_id = s.id
-           ) OR (m.owner_kind = 'world' AND m.owner_id IS NULL)) AND m.tombstoned_at IS NULL AND m.created_at >= $7 AND m.created_at <= $8 AND NULL::text[] @> $9::text[] AND ( (m.kind IS NULL AND ( m.fact_entity_id IS NULL OR EXISTS ( SELECT 1 FROM proxima_core.fact_entities fe WHERE fe.fact_entity_id = m.fact_entity_id AND fe.current_memory_id = m.memory_id ) )) OR (m.kind IS NOT NULL AND NOT EXISTS ( SELECT 1 FROM proxima_core.memories m2 WHERE m2.supersedes = m.memory_id AND m2.tombstoned_at IS NULL AND m2.owner_kind = m.owner_kind AND m2.owner_id IS NOT DISTINCT FROM m.owner_id )) ) AND NULLIF(m.text, '') IS NOT NULL UNION ALL SELECT m.memory_id, m.owner_kind, m.owner_id, COALESCE(m.kind, 'Fact'::proxima_core.entity_kind) AS kind, m.schema_id, m.created_at, s.tags AS tags,
-             NULLIF(concat_ws(' ', NULLIF(s.title::text, ''), NULLIF(array_to_string(s.tags, ' '), '')), '') AS search_text
+           ) OR (m.owner_kind = 'world' AND m.owner_id IS NULL)) AND m.tombstoned_at IS NULL AND m.created_at >= $7 AND m.created_at <= $8 AND NULL::text[] @> $9::text[] AND ( (m.kind IS NULL AND ( m.fact_entity_id IS NULL OR EXISTS ( SELECT 1 FROM proxima_core.fact_entities fe WHERE fe.fact_entity_id = m.fact_entity_id AND fe.current_memory_id = m.memory_id ) )) OR (m.kind IS NOT NULL AND NOT EXISTS ( SELECT 1 FROM proxima_core.memories m2 WHERE m2.supersedes = m.memory_id AND m2.tombstoned_at IS NULL AND m2.owner_kind = m.owner_kind AND m2.owner_id IS NOT DISTINCT FROM m.owner_id )) ) AND NULLIF(m.text, '') IS NOT NULL
+             AND m.memory_id IN (SELECT a.entity_id FROM ann_live a) UNION ALL SELECT m.memory_id, m.owner_kind, m.owner_id, COALESCE(m.kind, 'Fact'::proxima_core.entity_kind) AS kind, m.schema_id, m.created_at, s.tags AS tags,
+             NULLIF(concat_ws(' ', NULLIF(s.title::text, ''), NULLIF(array_to_string(s.tags, ' '), '')), '') AS search_text, 1::int AS branch_rank
              FROM proxima_core.memories m
 JOIN proxima_core.agent_note_v1 s ON s.memory_id = m.memory_id WHERE (EXISTS (
               SELECT 1
@@ -2244,8 +2472,9 @@ JOIN proxima_core.agent_note_v1 s ON s.memory_id = m.memory_id WHERE (EXISTS (
                WHERE m.owner_kind = s.kind AND m.owner_id = s.id
            ) OR (m.owner_kind = 'world' AND m.owner_id IS NULL)) AND m.tombstoned_at IS NULL
            AND m.schema_id = $3
-           AND m.schema_version = $4 AND m.kind IS NULL AND m.created_at >= $7 AND m.created_at <= $8 AND s.tags @> $9::text[] AND ( (m.kind IS NULL AND ( m.fact_entity_id IS NULL OR EXISTS ( SELECT 1 FROM proxima_core.fact_entities fe WHERE fe.fact_entity_id = m.fact_entity_id AND fe.current_memory_id = m.memory_id ) )) OR (m.kind IS NOT NULL AND NOT EXISTS ( SELECT 1 FROM proxima_core.memories m2 WHERE m2.supersedes = m.memory_id AND m2.tombstoned_at IS NULL AND m2.owner_kind = m.owner_kind AND m2.owner_id IS NOT DISTINCT FROM m.owner_id )) ) UNION ALL SELECT m.memory_id, m.owner_kind, m.owner_id, COALESCE(m.kind, 'Fact'::proxima_core.entity_kind) AS kind, m.schema_id, m.created_at, NULL::text[] AS tags,
-             NULLIF(concat_ws(' ', NULLIF(s.claim::text, '')), '') AS search_text
+           AND m.schema_version = $4 AND m.kind IS NULL AND m.created_at >= $7 AND m.created_at <= $8 AND s.tags @> $9::text[] AND ( (m.kind IS NULL AND ( m.fact_entity_id IS NULL OR EXISTS ( SELECT 1 FROM proxima_core.fact_entities fe WHERE fe.fact_entity_id = m.fact_entity_id AND fe.current_memory_id = m.memory_id ) )) OR (m.kind IS NOT NULL AND NOT EXISTS ( SELECT 1 FROM proxima_core.memories m2 WHERE m2.supersedes = m.memory_id AND m2.tombstoned_at IS NULL AND m2.owner_kind = m.owner_kind AND m2.owner_id IS NOT DISTINCT FROM m.owner_id )) )
+             AND m.memory_id IN (SELECT a.entity_id FROM ann_live a) UNION ALL SELECT m.memory_id, m.owner_kind, m.owner_id, COALESCE(m.kind, 'Fact'::proxima_core.entity_kind) AS kind, m.schema_id, m.created_at, NULL::text[] AS tags,
+             NULLIF(concat_ws(' ', NULLIF(s.claim::text, '')), '') AS search_text, 2::int AS branch_rank
              FROM proxima_core.memories m
 JOIN proxima_core.interpretation_v1 s ON s.memory_id = m.memory_id WHERE (EXISTS (
               SELECT 1
@@ -2253,13 +2482,31 @@ JOIN proxima_core.interpretation_v1 s ON s.memory_id = m.memory_id WHERE (EXISTS
                WHERE m.owner_kind = s.kind AND m.owner_id = s.id
            ) OR (m.owner_kind = 'world' AND m.owner_id IS NULL)) AND m.tombstoned_at IS NULL
            AND m.schema_id = $5
-           AND m.schema_version = $6 AND m.kind = 'Abstraction' AND m.created_at >= $7 AND m.created_at <= $8 AND NULL::text[] @> $9::text[] AND ( (m.kind IS NULL AND ( m.fact_entity_id IS NULL OR EXISTS ( SELECT 1 FROM proxima_core.fact_entities fe WHERE fe.fact_entity_id = m.fact_entity_id AND fe.current_memory_id = m.memory_id ) )) OR (m.kind IS NOT NULL AND NOT EXISTS ( SELECT 1 FROM proxima_core.memories m2 WHERE m2.supersedes = m.memory_id AND m2.tombstoned_at IS NULL AND m2.owner_kind = m.owner_kind AND m2.owner_id IS NOT DISTINCT FROM m.owner_id )) )) , eligible_entities AS MATERIALIZED (
+           AND m.schema_version = $6 AND m.kind = 'Abstraction' AND m.created_at >= $7 AND m.created_at <= $8 AND NULL::text[] @> $9::text[] AND ( (m.kind IS NULL AND ( m.fact_entity_id IS NULL OR EXISTS ( SELECT 1 FROM proxima_core.fact_entities fe WHERE fe.fact_entity_id = m.fact_entity_id AND fe.current_memory_id = m.memory_id ) )) OR (m.kind IS NOT NULL AND NOT EXISTS ( SELECT 1 FROM proxima_core.memories m2 WHERE m2.supersedes = m.memory_id AND m2.tombstoned_at IS NULL AND m2.owner_kind = m.owner_kind AND m2.owner_id IS NOT DISTINCT FROM m.owner_id )) )
+             AND m.memory_id IN (SELECT a.entity_id FROM ann_live a)),
+          eligible_entities AS (
               SELECT DISTINCT ON (c.kind, c.memory_id)
                      c.memory_id, c.owner_kind, c.owner_id, c.kind,
                      c.schema_id, c.created_at, c.search_text
                 FROM candidates c
-               ORDER BY c.kind, c.memory_id, c.created_at DESC
-          ),
+               ORDER BY c.kind, c.memory_id,
+                        (c.search_text IS NULL), c.branch_rank DESC,
+                        c.created_at DESC
+          )
+          SELECT c.memory_id, c.kind, c.schema_id, c.created_at,
+                 left(c.search_text, 480) AS snippet,
+                 0.0::real AS lexical_score,
+                 a.similarity_score
+          FROM eligible_entities c
+          JOIN ann_live a
+            ON a.entity_kind = c.kind
+           AND a.entity_id = c.memory_id
+           AND a.owner_kind = c.owner_kind
+           AND a.owner_id IS NOT DISTINCT FROM c.owner_id
+          ORDER BY a.similarity_score DESC, c.memory_id DESC
+          LIMIT 44";
+
+    const SEMANTIC_INDEX_FIRST_PUSHDOWN_GOLDEN: &str = r"WITH
           -- Index-first (pushdown): owner and model arms ride on the scan
           -- itself and nothing materializes above it.
           ann_scan AS (
@@ -2279,10 +2526,9 @@ JOIN proxima_core.interpretation_v1 s ON s.memory_id = m.memory_id WHERE (EXISTS
                ORDER BY emb.vec <=> $10::vector
                LIMIT 704
           ),
-          vector_candidates AS (
-              SELECT DISTINCT ON (c.kind, c.memory_id)
-                     c.memory_id, c.kind, c.schema_id, c.created_at,
-                     c.search_text, ann.similarity_score
+          ann_live AS MATERIALIZED (
+              SELECT ann.entity_kind, ann.entity_id, ann.owner_kind, ann.owner_id,
+                     max(ann.similarity_score) AS similarity_score
                 FROM ann_scan ann
                 JOIN proxima_core.embedding_heads head
                   ON head.entity_kind = ann.entity_kind
@@ -2291,19 +2537,54 @@ JOIN proxima_core.interpretation_v1 s ON s.memory_id = m.memory_id WHERE (EXISTS
                  AND head.embedding_version = ann.embedding_version
                  AND head.owner_kind = ann.owner_kind
                  AND head.owner_id IS NOT DISTINCT FROM ann.owner_id
-                JOIN eligible_entities c
-                  ON c.kind = ann.entity_kind
-                 AND c.memory_id = ann.entity_id
-                 AND c.owner_kind = ann.owner_kind
-                 AND c.owner_id IS NOT DISTINCT FROM ann.owner_id
-               ORDER BY c.kind, c.memory_id, ann.similarity_score DESC
+               GROUP BY ann.entity_kind, ann.entity_id, ann.owner_kind, ann.owner_id
+          ),
+          candidates AS (SELECT m.memory_id, m.owner_kind, m.owner_id, COALESCE(m.kind, 'Fact'::proxima_core.entity_kind) AS kind, m.schema_id, m.created_at, NULL::text[] AS tags, COALESCE(m.text, '') AS search_text, 0::int AS branch_rank FROM proxima_core.memories m  WHERE (EXISTS (
+              SELECT 1
+                FROM unnest($1::proxima_core.owner_ref_kind[], $2::uuid[]) AS s(kind, id)
+               WHERE m.owner_kind = s.kind AND m.owner_id = s.id
+           ) OR (m.owner_kind = 'world' AND m.owner_id IS NULL)) AND m.tombstoned_at IS NULL AND m.created_at >= $7 AND m.created_at <= $8 AND NULL::text[] @> $9::text[] AND ( (m.kind IS NULL AND ( m.fact_entity_id IS NULL OR EXISTS ( SELECT 1 FROM proxima_core.fact_entities fe WHERE fe.fact_entity_id = m.fact_entity_id AND fe.current_memory_id = m.memory_id ) )) OR (m.kind IS NOT NULL AND NOT EXISTS ( SELECT 1 FROM proxima_core.memories m2 WHERE m2.supersedes = m.memory_id AND m2.tombstoned_at IS NULL AND m2.owner_kind = m.owner_kind AND m2.owner_id IS NOT DISTINCT FROM m.owner_id )) ) AND NULLIF(m.text, '') IS NOT NULL
+             AND m.memory_id IN (SELECT a.entity_id FROM ann_live a) UNION ALL SELECT m.memory_id, m.owner_kind, m.owner_id, COALESCE(m.kind, 'Fact'::proxima_core.entity_kind) AS kind, m.schema_id, m.created_at, s.tags AS tags,
+             NULLIF(concat_ws(' ', NULLIF(s.title::text, ''), NULLIF(array_to_string(s.tags, ' '), '')), '') AS search_text, 1::int AS branch_rank
+             FROM proxima_core.memories m
+JOIN proxima_core.agent_note_v1 s ON s.memory_id = m.memory_id WHERE (EXISTS (
+              SELECT 1
+                FROM unnest($1::proxima_core.owner_ref_kind[], $2::uuid[]) AS s(kind, id)
+               WHERE m.owner_kind = s.kind AND m.owner_id = s.id
+           ) OR (m.owner_kind = 'world' AND m.owner_id IS NULL)) AND m.tombstoned_at IS NULL
+           AND m.schema_id = $3
+           AND m.schema_version = $4 AND m.kind IS NULL AND m.created_at >= $7 AND m.created_at <= $8 AND s.tags @> $9::text[] AND ( (m.kind IS NULL AND ( m.fact_entity_id IS NULL OR EXISTS ( SELECT 1 FROM proxima_core.fact_entities fe WHERE fe.fact_entity_id = m.fact_entity_id AND fe.current_memory_id = m.memory_id ) )) OR (m.kind IS NOT NULL AND NOT EXISTS ( SELECT 1 FROM proxima_core.memories m2 WHERE m2.supersedes = m.memory_id AND m2.tombstoned_at IS NULL AND m2.owner_kind = m.owner_kind AND m2.owner_id IS NOT DISTINCT FROM m.owner_id )) )
+             AND m.memory_id IN (SELECT a.entity_id FROM ann_live a) UNION ALL SELECT m.memory_id, m.owner_kind, m.owner_id, COALESCE(m.kind, 'Fact'::proxima_core.entity_kind) AS kind, m.schema_id, m.created_at, NULL::text[] AS tags,
+             NULLIF(concat_ws(' ', NULLIF(s.claim::text, '')), '') AS search_text, 2::int AS branch_rank
+             FROM proxima_core.memories m
+JOIN proxima_core.interpretation_v1 s ON s.memory_id = m.memory_id WHERE (EXISTS (
+              SELECT 1
+                FROM unnest($1::proxima_core.owner_ref_kind[], $2::uuid[]) AS s(kind, id)
+               WHERE m.owner_kind = s.kind AND m.owner_id = s.id
+           ) OR (m.owner_kind = 'world' AND m.owner_id IS NULL)) AND m.tombstoned_at IS NULL
+           AND m.schema_id = $5
+           AND m.schema_version = $6 AND m.kind = 'Abstraction' AND m.created_at >= $7 AND m.created_at <= $8 AND NULL::text[] @> $9::text[] AND ( (m.kind IS NULL AND ( m.fact_entity_id IS NULL OR EXISTS ( SELECT 1 FROM proxima_core.fact_entities fe WHERE fe.fact_entity_id = m.fact_entity_id AND fe.current_memory_id = m.memory_id ) )) OR (m.kind IS NOT NULL AND NOT EXISTS ( SELECT 1 FROM proxima_core.memories m2 WHERE m2.supersedes = m.memory_id AND m2.tombstoned_at IS NULL AND m2.owner_kind = m.owner_kind AND m2.owner_id IS NOT DISTINCT FROM m.owner_id )) )
+             AND m.memory_id IN (SELECT a.entity_id FROM ann_live a)),
+          eligible_entities AS (
+              SELECT DISTINCT ON (c.kind, c.memory_id)
+                     c.memory_id, c.owner_kind, c.owner_id, c.kind,
+                     c.schema_id, c.created_at, c.search_text
+                FROM candidates c
+               ORDER BY c.kind, c.memory_id,
+                        (c.search_text IS NULL), c.branch_rank DESC,
+                        c.created_at DESC
           )
           SELECT c.memory_id, c.kind, c.schema_id, c.created_at,
                  left(c.search_text, 480) AS snippet,
                  0.0::real AS lexical_score,
-                 c.similarity_score
-          FROM vector_candidates c
-          ORDER BY similarity_score DESC, c.memory_id DESC
+                 a.similarity_score
+          FROM eligible_entities c
+          JOIN ann_live a
+            ON a.entity_kind = c.kind
+           AND a.entity_id = c.memory_id
+           AND a.owner_kind = c.owner_kind
+           AND a.owner_id IS NOT DISTINCT FROM c.owner_id
+          ORDER BY a.similarity_score DESC, c.memory_id DESC
           LIMIT 44";
 
     const SEMANTIC_WINDOW_DEDUP_GOLDEN: &str = r"WITH candidates AS MATERIALIZED (SELECT m.memory_id, m.owner_kind, m.owner_id, COALESCE(m.kind, 'Fact'::proxima_core.entity_kind) AS kind, m.schema_id, m.created_at, NULL::text[] AS tags, COALESCE(m.text, '') AS search_text FROM proxima_core.memories m  LEFT JOIN proxima_core.memories m2 ON m2.supersedes = m.memory_id AND m2.tombstoned_at IS NULL AND m2.owner_kind = m.owner_kind AND m2.owner_id IS NOT DISTINCT FROM m.owner_id WHERE (EXISTS (
@@ -2399,40 +2680,7 @@ JOIN proxima_core.interpretation_v1 s ON s.memory_id = m.memory_id LEFT JOIN pro
           ORDER BY similarity_score DESC, c.memory_id DESC
           LIMIT 44";
 
-    const SEMANTIC_INDEX_FIRST_OVERFETCH_WINDOW_DEDUP_GOLDEN: &str = r"WITH candidates AS MATERIALIZED (SELECT m.memory_id, m.owner_kind, m.owner_id, COALESCE(m.kind, 'Fact'::proxima_core.entity_kind) AS kind, m.schema_id, m.created_at, NULL::text[] AS tags, COALESCE(m.text, '') AS search_text FROM proxima_core.memories m  LEFT JOIN proxima_core.memories m2 ON m2.supersedes = m.memory_id AND m2.tombstoned_at IS NULL AND m2.owner_kind = m.owner_kind AND m2.owner_id IS NOT DISTINCT FROM m.owner_id WHERE (EXISTS (
-              SELECT 1
-                FROM unnest($1::proxima_core.owner_ref_kind[], $2::uuid[]) AS s(kind, id)
-               WHERE m.owner_kind = s.kind AND m.owner_id = s.id
-           ) OR (m.owner_kind = 'world' AND m.owner_id IS NULL)) AND m.tombstoned_at IS NULL AND m.created_at >= $7 AND m.created_at <= $8 AND NULL::text[] @> $9::text[] AND ( (m.kind IS NULL AND ( m.fact_entity_id IS NULL OR EXISTS ( SELECT 1 FROM proxima_core.fact_entities fe WHERE fe.fact_entity_id = m.fact_entity_id AND fe.current_memory_id = m.memory_id ) )) OR (m.kind IS NOT NULL AND m2.memory_id IS NULL) ) AND NULLIF(m.text, '') IS NOT NULL UNION ALL SELECT m.memory_id, m.owner_kind, m.owner_id, COALESCE(m.kind, 'Fact'::proxima_core.entity_kind) AS kind, m.schema_id, m.created_at, s.tags AS tags,
-             NULLIF(concat_ws(' ', NULLIF(s.title::text, ''), NULLIF(array_to_string(s.tags, ' '), '')), '') AS search_text
-             FROM proxima_core.memories m
-JOIN proxima_core.agent_note_v1 s ON s.memory_id = m.memory_id WHERE (EXISTS (
-              SELECT 1
-                FROM unnest($1::proxima_core.owner_ref_kind[], $2::uuid[]) AS s(kind, id)
-               WHERE m.owner_kind = s.kind AND m.owner_id = s.id
-           ) OR (m.owner_kind = 'world' AND m.owner_id IS NULL)) AND m.tombstoned_at IS NULL
-           AND m.schema_id = $3
-           AND m.schema_version = $4 AND m.kind IS NULL AND m.created_at >= $7 AND m.created_at <= $8 AND s.tags @> $9::text[] AND ( m.fact_entity_id IS NULL OR EXISTS ( SELECT 1 FROM proxima_core.fact_entities fe WHERE fe.fact_entity_id = m.fact_entity_id AND fe.current_memory_id = m.memory_id ) ) UNION ALL SELECT m.memory_id, m.owner_kind, m.owner_id, COALESCE(m.kind, 'Fact'::proxima_core.entity_kind) AS kind, m.schema_id, m.created_at, NULL::text[] AS tags,
-             NULLIF(concat_ws(' ', NULLIF(s.claim::text, '')), '') AS search_text
-             FROM proxima_core.memories m
-JOIN proxima_core.interpretation_v1 s ON s.memory_id = m.memory_id LEFT JOIN proxima_core.memories m2 ON m2.supersedes = m.memory_id AND m2.tombstoned_at IS NULL AND m2.owner_kind = m.owner_kind AND m2.owner_id IS NOT DISTINCT FROM m.owner_id WHERE (EXISTS (
-              SELECT 1
-                FROM unnest($1::proxima_core.owner_ref_kind[], $2::uuid[]) AS s(kind, id)
-               WHERE m.owner_kind = s.kind AND m.owner_id = s.id
-           ) OR (m.owner_kind = 'world' AND m.owner_id IS NULL)) AND m.tombstoned_at IS NULL
-           AND m.schema_id = $5
-           AND m.schema_version = $6 AND m.kind = 'Abstraction' AND m.created_at >= $7 AND m.created_at <= $8 AND NULL::text[] @> $9::text[] AND m2.memory_id IS NULL) , eligible_entities AS MATERIALIZED (
-              SELECT e.memory_id, e.owner_kind, e.owner_id, e.kind,
-                     e.schema_id, e.created_at, e.search_text
-                FROM (
-                  SELECT c.memory_id, c.owner_kind, c.owner_id, c.kind,
-                         c.schema_id, c.created_at, c.search_text,
-                         row_number() OVER (PARTITION BY c.kind, c.memory_id
-                                            ORDER BY c.created_at DESC) AS rn
-                    FROM candidates c
-                ) e
-               WHERE e.rn = 1
-          ),
+    const SEMANTIC_INDEX_FIRST_OVERFETCH_WINDOW_DEDUP_GOLDEN: &str = r"WITH
           -- Index-first (overfetch): the scan's window is spent before
           -- eligibility is known, so it is a work budget, not a result budget.
           ann_scan AS MATERIALIZED (
@@ -2447,11 +2695,9 @@ JOIN proxima_core.interpretation_v1 s ON s.memory_id = m.memory_id LEFT JOIN pro
                ORDER BY emb.vec <=> $10::vector
                LIMIT 704
           ),
-          ann_ranked AS (
-              SELECT c.memory_id, c.kind, c.schema_id, c.created_at,
-                     c.search_text, ann.similarity_score,
-                     row_number() OVER (PARTITION BY c.kind, c.memory_id
-                                        ORDER BY ann.similarity_score DESC) AS rn
+          ann_live AS MATERIALIZED (
+              SELECT ann.entity_kind, ann.entity_id, ann.owner_kind, ann.owner_id,
+                     max(ann.similarity_score) AS similarity_score
                 FROM ann_scan ann
                 JOIN proxima_core.embedding_heads head
                   ON head.entity_kind = ann.entity_kind
@@ -2460,33 +2706,15 @@ JOIN proxima_core.interpretation_v1 s ON s.memory_id = m.memory_id LEFT JOIN pro
                  AND head.embedding_version = ann.embedding_version
                  AND head.owner_kind = ann.owner_kind
                  AND head.owner_id IS NOT DISTINCT FROM ann.owner_id
-                JOIN eligible_entities c
-                  ON c.kind = ann.entity_kind
-                 AND c.memory_id = ann.entity_id
-                 AND c.owner_kind = ann.owner_kind
-                 AND c.owner_id IS NOT DISTINCT FROM ann.owner_id
+               GROUP BY ann.entity_kind, ann.entity_id, ann.owner_kind, ann.owner_id
           ),
-          vector_candidates AS MATERIALIZED (
-              SELECT r.memory_id, r.kind, r.schema_id, r.created_at,
-                     r.search_text, r.similarity_score
-                FROM ann_ranked r
-               WHERE r.rn = 1
-          )
-          SELECT c.memory_id, c.kind, c.schema_id, c.created_at,
-                 left(c.search_text, 480) AS snippet,
-                 0.0::real AS lexical_score,
-                 c.similarity_score
-          FROM vector_candidates c
-          ORDER BY similarity_score DESC, c.memory_id DESC
-          LIMIT 44";
-
-    /// The DEFAULT semantic branch: index-first pushdown + window dedup.
-    const SEMANTIC_BRANCH_DEFAULT_GOLDEN: &str = r"WITH candidates AS MATERIALIZED (SELECT m.memory_id, m.owner_kind, m.owner_id, COALESCE(m.kind, 'Fact'::proxima_core.entity_kind) AS kind, m.schema_id, m.created_at, NULL::text[] AS tags, COALESCE(m.text, '') AS search_text FROM proxima_core.memories m  LEFT JOIN proxima_core.memories m2 ON m2.supersedes = m.memory_id AND m2.tombstoned_at IS NULL AND m2.owner_kind = m.owner_kind AND m2.owner_id IS NOT DISTINCT FROM m.owner_id WHERE (EXISTS (
+          candidates AS (SELECT m.memory_id, m.owner_kind, m.owner_id, COALESCE(m.kind, 'Fact'::proxima_core.entity_kind) AS kind, m.schema_id, m.created_at, NULL::text[] AS tags, COALESCE(m.text, '') AS search_text, 0::int AS branch_rank FROM proxima_core.memories m  LEFT JOIN proxima_core.memories m2 ON m2.supersedes = m.memory_id AND m2.tombstoned_at IS NULL AND m2.owner_kind = m.owner_kind AND m2.owner_id IS NOT DISTINCT FROM m.owner_id WHERE (EXISTS (
               SELECT 1
                 FROM unnest($1::proxima_core.owner_ref_kind[], $2::uuid[]) AS s(kind, id)
                WHERE m.owner_kind = s.kind AND m.owner_id = s.id
-           ) OR (m.owner_kind = 'world' AND m.owner_id IS NULL)) AND m.tombstoned_at IS NULL AND m.created_at >= $7 AND m.created_at <= $8 AND NULL::text[] @> $9::text[] AND ( (m.kind IS NULL AND ( m.fact_entity_id IS NULL OR EXISTS ( SELECT 1 FROM proxima_core.fact_entities fe WHERE fe.fact_entity_id = m.fact_entity_id AND fe.current_memory_id = m.memory_id ) )) OR (m.kind IS NOT NULL AND m2.memory_id IS NULL) ) AND NULLIF(m.text, '') IS NOT NULL UNION ALL SELECT m.memory_id, m.owner_kind, m.owner_id, COALESCE(m.kind, 'Fact'::proxima_core.entity_kind) AS kind, m.schema_id, m.created_at, s.tags AS tags,
-             NULLIF(concat_ws(' ', NULLIF(s.title::text, ''), NULLIF(array_to_string(s.tags, ' '), '')), '') AS search_text
+           ) OR (m.owner_kind = 'world' AND m.owner_id IS NULL)) AND m.tombstoned_at IS NULL AND m.created_at >= $7 AND m.created_at <= $8 AND NULL::text[] @> $9::text[] AND ( (m.kind IS NULL AND ( m.fact_entity_id IS NULL OR EXISTS ( SELECT 1 FROM proxima_core.fact_entities fe WHERE fe.fact_entity_id = m.fact_entity_id AND fe.current_memory_id = m.memory_id ) )) OR (m.kind IS NOT NULL AND m2.memory_id IS NULL) ) AND NULLIF(m.text, '') IS NOT NULL
+             AND m.memory_id IN (SELECT a.entity_id FROM ann_live a) UNION ALL SELECT m.memory_id, m.owner_kind, m.owner_id, COALESCE(m.kind, 'Fact'::proxima_core.entity_kind) AS kind, m.schema_id, m.created_at, s.tags AS tags,
+             NULLIF(concat_ws(' ', NULLIF(s.title::text, ''), NULLIF(array_to_string(s.tags, ' '), '')), '') AS search_text, 1::int AS branch_rank
              FROM proxima_core.memories m
 JOIN proxima_core.agent_note_v1 s ON s.memory_id = m.memory_id WHERE (EXISTS (
               SELECT 1
@@ -2494,8 +2722,9 @@ JOIN proxima_core.agent_note_v1 s ON s.memory_id = m.memory_id WHERE (EXISTS (
                WHERE m.owner_kind = s.kind AND m.owner_id = s.id
            ) OR (m.owner_kind = 'world' AND m.owner_id IS NULL)) AND m.tombstoned_at IS NULL
            AND m.schema_id = $3
-           AND m.schema_version = $4 AND m.kind IS NULL AND m.created_at >= $7 AND m.created_at <= $8 AND s.tags @> $9::text[] AND ( m.fact_entity_id IS NULL OR EXISTS ( SELECT 1 FROM proxima_core.fact_entities fe WHERE fe.fact_entity_id = m.fact_entity_id AND fe.current_memory_id = m.memory_id ) ) UNION ALL SELECT m.memory_id, m.owner_kind, m.owner_id, COALESCE(m.kind, 'Fact'::proxima_core.entity_kind) AS kind, m.schema_id, m.created_at, NULL::text[] AS tags,
-             NULLIF(concat_ws(' ', NULLIF(s.claim::text, '')), '') AS search_text
+           AND m.schema_version = $4 AND m.kind IS NULL AND m.created_at >= $7 AND m.created_at <= $8 AND s.tags @> $9::text[] AND ( m.fact_entity_id IS NULL OR EXISTS ( SELECT 1 FROM proxima_core.fact_entities fe WHERE fe.fact_entity_id = m.fact_entity_id AND fe.current_memory_id = m.memory_id ) )
+             AND m.memory_id IN (SELECT a.entity_id FROM ann_live a) UNION ALL SELECT m.memory_id, m.owner_kind, m.owner_id, COALESCE(m.kind, 'Fact'::proxima_core.entity_kind) AS kind, m.schema_id, m.created_at, NULL::text[] AS tags,
+             NULLIF(concat_ws(' ', NULLIF(s.claim::text, '')), '') AS search_text, 2::int AS branch_rank
              FROM proxima_core.memories m
 JOIN proxima_core.interpretation_v1 s ON s.memory_id = m.memory_id LEFT JOIN proxima_core.memories m2 ON m2.supersedes = m.memory_id AND m2.tombstoned_at IS NULL AND m2.owner_kind = m.owner_kind AND m2.owner_id IS NOT DISTINCT FROM m.owner_id WHERE (EXISTS (
               SELECT 1
@@ -2503,18 +2732,32 @@ JOIN proxima_core.interpretation_v1 s ON s.memory_id = m.memory_id LEFT JOIN pro
                WHERE m.owner_kind = s.kind AND m.owner_id = s.id
            ) OR (m.owner_kind = 'world' AND m.owner_id IS NULL)) AND m.tombstoned_at IS NULL
            AND m.schema_id = $5
-           AND m.schema_version = $6 AND m.kind = 'Abstraction' AND m.created_at >= $7 AND m.created_at <= $8 AND NULL::text[] @> $9::text[] AND m2.memory_id IS NULL) , eligible_entities AS MATERIALIZED (
-              SELECT e.memory_id, e.owner_kind, e.owner_id, e.kind,
-                     e.schema_id, e.created_at, e.search_text
-                FROM (
-                  SELECT c.memory_id, c.owner_kind, c.owner_id, c.kind,
-                         c.schema_id, c.created_at, c.search_text,
-                         row_number() OVER (PARTITION BY c.kind, c.memory_id
-                                            ORDER BY c.created_at DESC) AS rn
-                    FROM candidates c
-                ) e
-               WHERE e.rn = 1
-          ),
+           AND m.schema_version = $6 AND m.kind = 'Abstraction' AND m.created_at >= $7 AND m.created_at <= $8 AND NULL::text[] @> $9::text[] AND m2.memory_id IS NULL
+             AND m.memory_id IN (SELECT a.entity_id FROM ann_live a)),
+          eligible_entities AS (
+              SELECT DISTINCT ON (c.kind, c.memory_id)
+                     c.memory_id, c.owner_kind, c.owner_id, c.kind,
+                     c.schema_id, c.created_at, c.search_text
+                FROM candidates c
+               ORDER BY c.kind, c.memory_id,
+                        (c.search_text IS NULL), c.branch_rank DESC,
+                        c.created_at DESC
+          )
+          SELECT c.memory_id, c.kind, c.schema_id, c.created_at,
+                 left(c.search_text, 480) AS snippet,
+                 0.0::real AS lexical_score,
+                 a.similarity_score
+          FROM eligible_entities c
+          JOIN ann_live a
+            ON a.entity_kind = c.kind
+           AND a.entity_id = c.memory_id
+           AND a.owner_kind = c.owner_kind
+           AND a.owner_id IS NOT DISTINCT FROM c.owner_id
+          ORDER BY a.similarity_score DESC, c.memory_id DESC
+          LIMIT 44";
+
+    /// The DEFAULT semantic branch: index-first pushdown + window dedup.
+    const SEMANTIC_BRANCH_DEFAULT_GOLDEN: &str = r"WITH
           -- Index-first (pushdown): owner and model arms ride on the scan
           -- itself and nothing materializes above it.
           ann_scan AS (
@@ -2534,11 +2777,9 @@ JOIN proxima_core.interpretation_v1 s ON s.memory_id = m.memory_id LEFT JOIN pro
                ORDER BY emb.vec <=> $10::vector
                LIMIT 704
           ),
-          ann_ranked AS (
-              SELECT c.memory_id, c.kind, c.schema_id, c.created_at,
-                     c.search_text, ann.similarity_score,
-                     row_number() OVER (PARTITION BY c.kind, c.memory_id
-                                        ORDER BY ann.similarity_score DESC) AS rn
+          ann_live AS MATERIALIZED (
+              SELECT ann.entity_kind, ann.entity_id, ann.owner_kind, ann.owner_id,
+                     max(ann.similarity_score) AS similarity_score
                 FROM ann_scan ann
                 JOIN proxima_core.embedding_heads head
                   ON head.entity_kind = ann.entity_kind
@@ -2547,24 +2788,54 @@ JOIN proxima_core.interpretation_v1 s ON s.memory_id = m.memory_id LEFT JOIN pro
                  AND head.embedding_version = ann.embedding_version
                  AND head.owner_kind = ann.owner_kind
                  AND head.owner_id IS NOT DISTINCT FROM ann.owner_id
-                JOIN eligible_entities c
-                  ON c.kind = ann.entity_kind
-                 AND c.memory_id = ann.entity_id
-                 AND c.owner_kind = ann.owner_kind
-                 AND c.owner_id IS NOT DISTINCT FROM ann.owner_id
+               GROUP BY ann.entity_kind, ann.entity_id, ann.owner_kind, ann.owner_id
           ),
-          vector_candidates AS (
-              SELECT r.memory_id, r.kind, r.schema_id, r.created_at,
-                     r.search_text, r.similarity_score
-                FROM ann_ranked r
-               WHERE r.rn = 1
+          candidates AS (SELECT m.memory_id, m.owner_kind, m.owner_id, COALESCE(m.kind, 'Fact'::proxima_core.entity_kind) AS kind, m.schema_id, m.created_at, NULL::text[] AS tags, COALESCE(m.text, '') AS search_text, 0::int AS branch_rank FROM proxima_core.memories m  LEFT JOIN proxima_core.memories m2 ON m2.supersedes = m.memory_id AND m2.tombstoned_at IS NULL AND m2.owner_kind = m.owner_kind AND m2.owner_id IS NOT DISTINCT FROM m.owner_id WHERE (EXISTS (
+              SELECT 1
+                FROM unnest($1::proxima_core.owner_ref_kind[], $2::uuid[]) AS s(kind, id)
+               WHERE m.owner_kind = s.kind AND m.owner_id = s.id
+           ) OR (m.owner_kind = 'world' AND m.owner_id IS NULL)) AND m.tombstoned_at IS NULL AND m.created_at >= $7 AND m.created_at <= $8 AND NULL::text[] @> $9::text[] AND ( (m.kind IS NULL AND ( m.fact_entity_id IS NULL OR EXISTS ( SELECT 1 FROM proxima_core.fact_entities fe WHERE fe.fact_entity_id = m.fact_entity_id AND fe.current_memory_id = m.memory_id ) )) OR (m.kind IS NOT NULL AND m2.memory_id IS NULL) ) AND NULLIF(m.text, '') IS NOT NULL
+             AND m.memory_id IN (SELECT a.entity_id FROM ann_live a) UNION ALL SELECT m.memory_id, m.owner_kind, m.owner_id, COALESCE(m.kind, 'Fact'::proxima_core.entity_kind) AS kind, m.schema_id, m.created_at, s.tags AS tags,
+             NULLIF(concat_ws(' ', NULLIF(s.title::text, ''), NULLIF(array_to_string(s.tags, ' '), '')), '') AS search_text, 1::int AS branch_rank
+             FROM proxima_core.memories m
+JOIN proxima_core.agent_note_v1 s ON s.memory_id = m.memory_id WHERE (EXISTS (
+              SELECT 1
+                FROM unnest($1::proxima_core.owner_ref_kind[], $2::uuid[]) AS s(kind, id)
+               WHERE m.owner_kind = s.kind AND m.owner_id = s.id
+           ) OR (m.owner_kind = 'world' AND m.owner_id IS NULL)) AND m.tombstoned_at IS NULL
+           AND m.schema_id = $3
+           AND m.schema_version = $4 AND m.kind IS NULL AND m.created_at >= $7 AND m.created_at <= $8 AND s.tags @> $9::text[] AND ( m.fact_entity_id IS NULL OR EXISTS ( SELECT 1 FROM proxima_core.fact_entities fe WHERE fe.fact_entity_id = m.fact_entity_id AND fe.current_memory_id = m.memory_id ) )
+             AND m.memory_id IN (SELECT a.entity_id FROM ann_live a) UNION ALL SELECT m.memory_id, m.owner_kind, m.owner_id, COALESCE(m.kind, 'Fact'::proxima_core.entity_kind) AS kind, m.schema_id, m.created_at, NULL::text[] AS tags,
+             NULLIF(concat_ws(' ', NULLIF(s.claim::text, '')), '') AS search_text, 2::int AS branch_rank
+             FROM proxima_core.memories m
+JOIN proxima_core.interpretation_v1 s ON s.memory_id = m.memory_id LEFT JOIN proxima_core.memories m2 ON m2.supersedes = m.memory_id AND m2.tombstoned_at IS NULL AND m2.owner_kind = m.owner_kind AND m2.owner_id IS NOT DISTINCT FROM m.owner_id WHERE (EXISTS (
+              SELECT 1
+                FROM unnest($1::proxima_core.owner_ref_kind[], $2::uuid[]) AS s(kind, id)
+               WHERE m.owner_kind = s.kind AND m.owner_id = s.id
+           ) OR (m.owner_kind = 'world' AND m.owner_id IS NULL)) AND m.tombstoned_at IS NULL
+           AND m.schema_id = $5
+           AND m.schema_version = $6 AND m.kind = 'Abstraction' AND m.created_at >= $7 AND m.created_at <= $8 AND NULL::text[] @> $9::text[] AND m2.memory_id IS NULL
+             AND m.memory_id IN (SELECT a.entity_id FROM ann_live a)),
+          eligible_entities AS (
+              SELECT DISTINCT ON (c.kind, c.memory_id)
+                     c.memory_id, c.owner_kind, c.owner_id, c.kind,
+                     c.schema_id, c.created_at, c.search_text
+                FROM candidates c
+               ORDER BY c.kind, c.memory_id,
+                        (c.search_text IS NULL), c.branch_rank DESC,
+                        c.created_at DESC
           )
           SELECT c.memory_id, c.kind, c.schema_id, c.created_at,
                  left(c.search_text, 480) AS snippet,
                  0.0::real AS lexical_score,
-                 c.similarity_score
-          FROM vector_candidates c
-          ORDER BY similarity_score DESC, c.memory_id DESC
+                 a.similarity_score
+          FROM eligible_entities c
+          JOIN ann_live a
+            ON a.entity_kind = c.kind
+           AND a.entity_id = c.memory_id
+           AND a.owner_kind = c.owner_kind
+           AND a.owner_id IS NOT DISTINCT FROM c.owner_id
+          ORDER BY a.similarity_score DESC, c.memory_id DESC
           LIMIT 44";
 
     /// The DEFAULT candidate CTE: unique-join successor anti-join.
