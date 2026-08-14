@@ -563,8 +563,9 @@ impl std::fmt::Debug for RetentionMaintenanceLock {
     }
 }
 
-/// Parse a `u64` pool-tuning env var, falling back to `default` when unset.
-/// `0` is a legal value (disables the corresponding bound).
+/// Parse an integer configuration variable, falling back to `default` when
+/// unset. `0` is a legal value (it disables the corresponding bound wherever
+/// one is expressed that way).
 ///
 /// A malformed value is an error, not a silent fallback. Every other
 /// configuration reader in the workspace already answers this way —
@@ -573,14 +574,20 @@ impl std::fmt::Debug for RetentionMaintenanceLock {
 /// tuning to the default is the kind of thing an operator discovers from a
 /// latency graph weeks later rather than from the boot that caused it.
 ///
+/// Generic over the integer type because the `u32` and `u64` readers were
+/// otherwise the same function written twice, down to the error text; the
+/// only difference was which `FromStr` ran. `crate::tuning` reads its own
+/// knobs through this one.
+///
 /// # Errors
 ///
-/// Returns `StorageError::Unavailable` when the value is set but not a `u64`.
-fn env_u64_or(
+/// Returns `StorageError::Unavailable` when the value is set but does not
+/// parse as `T`.
+fn env_int_or<T: std::str::FromStr>(
     lookup: &impl Fn(&str) -> Option<String>,
     key: &str,
-    default: u64,
-) -> Result<u64, StorageError> {
+    default: T,
+) -> Result<T, StorageError> {
     let Some(value) = env_value(lookup, key) else {
         return Ok(default);
     };
@@ -592,7 +599,7 @@ fn env_u64_or(
 /// Parse a `u32` pool-tuning env var that must be at least 1, falling back to
 /// `default` when unset.
 ///
-/// Unlike [`env_u64_or`], `0` is rejected rather than defaulted: a pool of
+/// Unlike [`env_int_or`], `0` is rejected rather than defaulted: a pool of
 /// zero connections is never what anyone meant, so it is an operator error
 /// worth naming rather than a value to quietly round up.
 ///
@@ -658,23 +665,24 @@ impl PgStorage {
         // (`run_migrations` runs on a detached timeout-free connection; the erase
         // transaction issues `SET LOCAL statement_timeout = 0`).
         let env = proxima_core::process_env;
-        let statement_timeout_ms = env_u64_or(&env, "PROXIMA_PG_STATEMENT_TIMEOUT_MS", 300_000)?;
+        let statement_timeout_ms: u64 =
+            env_int_or(&env, "PROXIMA_PG_STATEMENT_TIMEOUT_MS", 300_000)?;
         if statement_timeout_ms > 0 {
             opts = opts.options([("statement_timeout", statement_timeout_ms.to_string())]);
         }
         let pool = PgPoolOptions::new()
             .max_connections(env_u32_min1(&env, "PROXIMA_PG_MAX_CONNECTIONS", 10)?)
-            .acquire_timeout(Duration::from_secs(env_u64_or(
+            .acquire_timeout(Duration::from_secs(env_int_or(
                 &env,
                 "PROXIMA_PG_ACQUIRE_TIMEOUT_SECS",
                 5,
             )?))
-            .idle_timeout(Duration::from_secs(env_u64_or(
+            .idle_timeout(Duration::from_secs(env_int_or(
                 &env,
                 "PROXIMA_PG_IDLE_TIMEOUT_SECS",
                 600,
             )?))
-            .max_lifetime(Duration::from_secs(env_u64_or(
+            .max_lifetime(Duration::from_secs(env_int_or(
                 &env,
                 "PROXIMA_PG_MAX_LIFETIME_SECS",
                 1_800,
@@ -1056,7 +1064,8 @@ mod tests {
             10
         );
         assert_eq!(
-            super::env_u64_or(&env(&[]), "PROXIMA_PG_STATEMENT_TIMEOUT_MS", 300_000).unwrap(),
+            super::env_int_or::<u64>(&env(&[]), "PROXIMA_PG_STATEMENT_TIMEOUT_MS", 300_000)
+                .unwrap(),
             300_000
         );
     }
@@ -1076,7 +1085,7 @@ mod tests {
             10
         );
         assert_eq!(
-            super::env_u64_or(
+            super::env_int_or::<u64>(
                 &env(&[("PROXIMA_PG_IDLE_TIMEOUT_SECS", "  \t ")]),
                 "PROXIMA_PG_IDLE_TIMEOUT_SECS",
                 600
@@ -1099,7 +1108,7 @@ mod tests {
         );
         // A trailing newline survives a here-doc or a mounted secret.
         assert_eq!(
-            super::env_u64_or(
+            super::env_int_or::<u64>(
                 &env(&[("PROXIMA_PG_IDLE_TIMEOUT_SECS", "900\n")]),
                 "PROXIMA_PG_IDLE_TIMEOUT_SECS",
                 600
@@ -1125,7 +1134,7 @@ mod tests {
             "error must name the variable and the value: {err}"
         );
         assert!(
-            super::env_u64_or(
+            super::env_int_or::<u64>(
                 &env(&[("PROXIMA_PG_MAX_LIFETIME_SECS", "-1")]),
                 "PROXIMA_PG_MAX_LIFETIME_SECS",
                 1_800
@@ -1139,7 +1148,7 @@ mod tests {
     #[test]
     fn zero_disables_a_u64_bound_but_is_never_a_pool_size() {
         assert_eq!(
-            super::env_u64_or(
+            super::env_int_or::<u64>(
                 &env(&[("PROXIMA_PG_STATEMENT_TIMEOUT_MS", "0")]),
                 "PROXIMA_PG_STATEMENT_TIMEOUT_MS",
                 300_000
