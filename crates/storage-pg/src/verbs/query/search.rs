@@ -508,11 +508,8 @@ async fn run_lexical(
     let mut q = bind_common(
         sqlx::query_as::<_, SearchRow>(sqlx::AssertSqlSafe(sql)),
         req,
+        &projections,
     );
-    for projection in &projections {
-        q = q.bind(projection.schema_id.as_str().to_string());
-        q = q.bind(projection.schema_version.into_inner().cast_signed());
-    }
     q = bind_filter_params(q, req);
     q = q.bind(req.query.clone());
     q.fetch_all(pool).await.map_err(map_err)
@@ -649,6 +646,23 @@ fn push_joined_scan_note(sql: &mut String) {
     );
 }
 
+/// The similarity projection both vector scans share: cosine similarity
+/// clamped to `[0, 1]`, with the `NaN` a zero-magnitude query produces
+/// mapped to 0. `indent` reproduces each caller's layout, so the emitted
+/// statements — the ones the goldens pin — stay byte-identical to when
+/// this fragment was written out twice. No `ORDER BY` alias and no
+/// LATERAL: the scan's `ORDER BY emb.vec <=> $n` must stay the raw
+/// operator expression for HNSW to serve it.
+fn similarity_score_sql(vec_param: usize, indent: usize) -> String {
+    let pad = " ".repeat(indent);
+    format!(
+        "{pad}CASE\n\
+         {pad}    WHEN (1 - (emb.vec <=> ${vec_param}::vector)) = 'NaN'::float8 THEN 0.0\n\
+         {pad}    ELSE GREATEST(0.0, (1 - (emb.vec <=> ${vec_param}::vector)))\n\
+         {pad}END::real AS similarity_score"
+    )
+}
+
 /// The nearest-neighbour window with eligibility joined *under* it: the
 /// window is a budget of eligible rows, at the price of the two joins
 /// standing between the vector scan and the `ORDER BY … LIMIT` that would
@@ -658,10 +672,7 @@ fn joined_ann_from(vec_param: usize, model_param: usize, candidate_overfetch: u6
         "                FROM (
                   SELECT c.memory_id, c.kind, c.schema_id, c.created_at,
                          c.search_text,
-                         CASE
-                             WHEN (1 - (emb.vec <=> ${vec_param}::vector)) = 'NaN'::float8 THEN 0.0
-                             ELSE GREATEST(0.0, (1 - (emb.vec <=> ${vec_param}::vector)))
-                         END::real AS similarity_score
+{similarity}
                     FROM proxima_core.embeddings emb
                     JOIN proxima_core.embedding_heads head
                       ON head.entity_kind = emb.entity_kind
@@ -678,7 +689,8 @@ fn joined_ann_from(vec_param: usize, model_param: usize, candidate_overfetch: u6
                    WHERE emb.model_id = ${model_param}
                    ORDER BY emb.vec <=> ${vec_param}::vector
                    LIMIT {candidate_overfetch}
-                ) ann"
+                ) ann",
+        similarity = similarity_score_sql(vec_param, 25)
     )
 }
 
@@ -762,12 +774,10 @@ fn push_ann_scan(
           ann_scan {barrier}
               SELECT emb.entity_kind, emb.entity_id, emb.model_id,
                      emb.embedding_version, emb.owner_kind, emb.owner_id,
-                     CASE
-                         WHEN (1 - (emb.vec <=> ${vec_param}::vector)) = 'NaN'::float8 THEN 0.0
-                         ELSE GREATEST(0.0, (1 - (emb.vec <=> ${vec_param}::vector)))
-                     END::real AS similarity_score
+{similarity}
                 FROM proxima_core.embeddings emb
-               WHERE emb.model_id = ${model_param}"
+               WHERE emb.model_id = ${model_param}",
+        similarity = similarity_score_sql(vec_param, 21)
     )
     .expect("write to String is infallible");
     if pushdown {
@@ -879,11 +889,8 @@ async fn run_semantic(
     let mut q = bind_common(
         sqlx::query_as::<_, SearchRow>(sqlx::AssertSqlSafe(sql)),
         req,
+        &projections,
     );
-    for projection in &projections {
-        q = q.bind(projection.schema_id.as_str().to_string());
-        q = q.bind(projection.schema_version.into_inner().cast_signed());
-    }
     q = bind_filter_params(q, req);
     q = q.bind(crate::pgvector::literal(query_embedding));
     q = q.bind(model_id.clone());
@@ -1441,13 +1448,21 @@ fn branch_order_by(req: &MemorySearchRequest, relevance_score_column: &str) -> S
     }
 }
 
+/// The bind prefix both branches share, in the order the builders assign
+/// parameters: the read-owner kind/id arrays, then each selected
+/// projection's `(schema_id, schema_version)` pair.
 fn bind_common<'q>(
     mut q: sqlx::query::QueryAs<'q, sqlx::Postgres, SearchRow, sqlx::postgres::PgArguments>,
     req: &'q MemorySearchRequest,
+    projections: &[&MemorySearchProjection],
 ) -> sqlx::query::QueryAs<'q, sqlx::Postgres, SearchRow, sqlx::postgres::PgArguments> {
     let (read_owner_kinds, read_owner_ids) = read_owner_columns(&req.read_owners);
     q = q.bind(read_owner_kinds);
     q = q.bind(read_owner_ids);
+    for projection in projections {
+        q = q.bind(projection.schema_id.as_str().to_string());
+        q = q.bind(projection.schema_version.into_inner().cast_signed());
+    }
     q
 }
 
