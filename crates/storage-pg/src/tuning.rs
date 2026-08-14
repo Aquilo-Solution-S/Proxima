@@ -190,8 +190,20 @@ impl PgTuning {
     /// environment asks for nothing the defaults do not already give.
     ///
     /// `None` rather than the defaults, so a caller layering configuration
-    /// can tell an environment that tunes something from one that is silent:
-    /// silence must not outrank tuning the host set programmatically.
+    /// can tell an environment that asks for something other than the
+    /// defaults from one that is silent: silence must not outrank tuning the
+    /// host set programmatically.
+    ///
+    /// "Asks for something other than the defaults" is the predicate, not
+    /// "tunes something": the test below is `resolved != Self::default()`, and
+    /// nothing finer is available without per-field `Option`s. So an
+    /// environment that sets a knob to its *shipped* value —
+    /// `PROXIMA_PG_SEMANTIC_INDEX_FIRST=pushdown`, `PROXIMA_PG_HNSW_EF_SEARCH=100`
+    /// — resolves to `PgTuning::default()` and reads here as silence, and a
+    /// caller layering it (`self.pg_tuning.or(base.pg_tuning)`) keeps the
+    /// programmatic tuning. The environment can therefore move a deployment
+    /// OFF the defaults but not back ONTO them; only non-default values are
+    /// expressible.
     ///
     /// Every value goes through [`proxima_core::env_value`], so a variable
     /// set to the empty string (or to whitespace) reads as unset rather
