@@ -21,6 +21,15 @@ fn legacy_tuning() -> PgTuning {
     }
 }
 
+/// Both semantic arms must still be servable by the HNSW index.
+///
+/// The default (pushdown) arm is the shipped path. The legacy arm is the
+/// escape hatch, and its entire purpose is to be a working fallback — the
+/// statement it emits carries a frozen comment claiming *this* test pins it
+/// ("the inner scan keeps `ORDER BY <vector distance> LIMIT n` intact, which
+/// is the only shape the HNSW index can serve"), a claim that stops being
+/// true the moment this test EXPLAINs only the default tuning. So run both,
+/// and name the arm in the assertion.
 #[tokio::test]
 async fn semantic_search_plan_uses_hnsw_index() -> Result<(), Box<dyn std::error::Error>> {
     let (pg, db_name) = fresh_pg().await;
@@ -31,57 +40,63 @@ async fn semantic_search_plan_uses_hnsw_index() -> Result<(), Box<dyn std::error
     let mut req = semantic_request(&owner, padded_embedding([1.0, 0.0, 0.0]));
     // No schema filter: keeps the bind list to owner arrays + vector + model.
     req.schema_id = None;
-    let sql = proxima_storage_pg::verbs::query::semantic_search_sql_for_tests(
-        &req,
-        &[],
-        40,
-        512,
-        &PgTuning::default(),
-    )?;
-    let explain_sql = format!("EXPLAIN (FORMAT JSON, COSTS OFF) {sql}");
 
     let (owner_kind, owner_id) = owner.columns();
-    let mut tx = pg.pool_for_tests().begin().await?;
-    // The production session settings — the same statement `run_semantic`
-    // sends, not a restated copy of the defaults — plus seqscan/sort
-    // penalized so the assertion is about capability, not tiny-table
-    // costing: the only way to satisfy `ORDER BY emb.vec <=> $query`
-    // without an explicit sort is the HNSW scan, so if the shipped query
-    // shape can no longer be served by the index (e.g. the ORDER BY
-    // expression stops matching the operator class, or the pushdown owner
-    // predicate stops being a plain filter the scan can carry), no planner
-    // setting can save it and this fails.
-    //
-    // SQL-POLICY: fixed-fragment — the audited production settings builder
-    // over this deployment's own tuning integers and enum spellings.
-    sqlx::raw_sql(sqlx::AssertSqlSafe(
-        proxima_storage_pg::verbs::query::set_hnsw_search_sql_for_tests(&PgTuning::default()),
-    ))
-    .execute(&mut *tx)
-    .await?;
-    for setting in [
-        "SET LOCAL enable_seqscan = off",
-        "SET LOCAL enable_sort = off",
+    for (arm, tuning) in [
+        ("default", PgTuning::default()),
+        ("legacy", legacy_tuning()),
     ] {
-        // SQL-POLICY: fixed-fragment
-        sqlx::query(setting).execute(&mut *tx).await?;
-    }
-    // SQL-POLICY: fixed-fragment — EXPLAIN prefix over the audited
-    // production builder's parameterized SQL; only bound values vary.
-    let plan: serde_json::Value = sqlx::query_scalar(sqlx::AssertSqlSafe(explain_sql.as_str()))
-        .bind(vec![owner_kind])
-        .bind(vec![owner_id])
-        .bind(vector_literal(&padded_embedding([1.0, 0.0, 0.0])))
-        .bind("test-embed")
-        .fetch_one(&mut *tx)
-        .await?;
-    tx.rollback().await?;
+        let sql = proxima_storage_pg::verbs::query::semantic_search_sql_for_tests(
+            &req,
+            &[],
+            40,
+            512,
+            &tuning,
+        )?;
+        let explain_sql = format!("EXPLAIN (FORMAT JSON, COSTS OFF) {sql}");
 
-    let rendered = plan.to_string();
-    assert!(
-        rendered.contains("idx_embeddings_vec_hnsw"),
-        "the semantic branch must scan the HNSW index; plan:\n{rendered}"
-    );
+        let mut tx = pg.pool_for_tests().begin().await?;
+        // The production session settings — the same statement `run_semantic`
+        // sends under this tuning, not a restated copy of the defaults — plus
+        // seqscan/sort penalized so the assertion is about capability, not
+        // tiny-table costing: the only way to satisfy
+        // `ORDER BY emb.vec <=> $query` without an explicit sort is the HNSW
+        // scan, so if the shipped query shape can no longer be served by the
+        // index (e.g. the ORDER BY expression stops matching the operator
+        // class, or the pushdown owner predicate stops being a plain filter
+        // the scan can carry), no planner setting can save it and this fails.
+        //
+        // SQL-POLICY: fixed-fragment — the audited production settings builder
+        // over this deployment's own tuning integers and enum spellings.
+        sqlx::raw_sql(sqlx::AssertSqlSafe(
+            proxima_storage_pg::verbs::query::set_hnsw_search_sql_for_tests(&tuning),
+        ))
+        .execute(&mut *tx)
+        .await?;
+        for setting in [
+            "SET LOCAL enable_seqscan = off",
+            "SET LOCAL enable_sort = off",
+        ] {
+            // SQL-POLICY: fixed-fragment
+            sqlx::query(setting).execute(&mut *tx).await?;
+        }
+        // SQL-POLICY: fixed-fragment — EXPLAIN prefix over the audited
+        // production builder's parameterized SQL; only bound values vary.
+        let plan: serde_json::Value = sqlx::query_scalar(sqlx::AssertSqlSafe(explain_sql.as_str()))
+            .bind(vec![owner_kind])
+            .bind(vec![owner_id])
+            .bind(vector_literal(&padded_embedding([1.0, 0.0, 0.0])))
+            .bind("test-embed")
+            .fetch_one(&mut *tx)
+            .await?;
+        tx.rollback().await?;
+
+        let rendered = plan.to_string();
+        assert!(
+            rendered.contains("idx_embeddings_vec_hnsw"),
+            "the {arm} semantic branch must scan the HNSW index; plan:\n{rendered}"
+        );
+    }
 
     drop(pg);
     drop_db(&db_name).await?;
