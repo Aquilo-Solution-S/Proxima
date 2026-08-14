@@ -9,23 +9,6 @@ use crate::error::map_err;
 
 use super::{ensure_nonnegative_limit, owner_parts};
 
-/// A whole claimed batch's completed jobs in one statement. The predicate
-/// is [`complete_embedding_job`]'s, column for column — including matching
-/// `owner_id` by equality rather than `IS NOT DISTINCT FROM`, so a batch
-/// deletes exactly the rows the per-job delete would have deleted.
-const COMPLETE_EMBEDDING_JOBS_SQL: &str = "DELETE FROM proxima_core.embedding_jobs j
-          USING unnest($1::proxima_core.owner_ref_kind[], $2::uuid[],
-                       $3::proxima_core.entity_kind[], $4::uuid[],
-                       $5::text[], $6::int[])
-                AS c(owner_kind, owner_id, entity_kind, entity_id,
-                     model_id, embedding_version)
-          WHERE j.owner_kind = c.owner_kind
-            AND j.owner_id = c.owner_id
-            AND j.entity_kind = c.entity_kind
-            AND j.entity_id = c.entity_id
-            AND j.model_id = c.model_id
-            AND j.embedding_version = c.embedding_version";
-
 #[derive(sqlx::FromRow)]
 struct EmbeddingJobClaimRow {
     owner_kind: OwnerRefKind,
@@ -224,52 +207,6 @@ pub async fn complete_embedding_job(
     .execute(pool)
     .await
     .map_err(map_err)?;
-    Ok(())
-}
-
-/// Delete every completed embedding job in a claimed batch, in one
-/// statement.
-///
-/// The batch counterpart of [`complete_embedding_job`], for the drain path
-/// that landed the batch's vectors in one write: completing them one round
-/// trip at a time would put the statement count back where the batched
-/// write took it from.
-///
-/// # Errors
-///
-/// Maps SQL failures through the shared mapper.
-pub async fn complete_embedding_jobs(
-    pool: &PgPool,
-    claims: &[EmbeddingJobClaim],
-) -> Result<(), StorageError> {
-    if claims.is_empty() {
-        return Ok(());
-    }
-    let mut owner_kinds = Vec::with_capacity(claims.len());
-    let mut owner_ids = Vec::with_capacity(claims.len());
-    let mut entity_kinds = Vec::with_capacity(claims.len());
-    let mut entity_ids = Vec::with_capacity(claims.len());
-    let mut model_ids = Vec::with_capacity(claims.len());
-    let mut embedding_versions = Vec::with_capacity(claims.len());
-    for claim in claims {
-        let (owner_kind, owner_id) = owner_parts(&claim.owner);
-        owner_kinds.push(owner_kind);
-        owner_ids.push(owner_id);
-        entity_kinds.push(claim.entity_kind);
-        entity_ids.push(claim.entity_id.into_inner());
-        model_ids.push(claim.model_id.clone());
-        embedding_versions.push(claim.embedding_version);
-    }
-    sqlx::query(COMPLETE_EMBEDDING_JOBS_SQL)
-        .bind(&owner_kinds)
-        .bind(&owner_ids)
-        .bind(&entity_kinds)
-        .bind(&entity_ids)
-        .bind(&model_ids)
-        .bind(&embedding_versions)
-        .execute(pool)
-        .await
-        .map_err(map_err)?;
     Ok(())
 }
 
@@ -627,76 +564,4 @@ pub(crate) async fn enqueue_embedding_job_in_tx(
     .await
     .map_err(map_err)?;
     Ok(())
-}
-
-/// Enqueue one embedding job per `(owner, entity, model)` row in one
-/// statement — the set-based twin of [`enqueue_embedding_job_in_tx`], with
-/// the same conflict target, so a job already queued for a row stays the
-/// one job it was.
-///
-/// # Errors
-///
-/// Maps SQL failures through the shared mapper.
-pub(crate) async fn enqueue_embedding_jobs_in_tx(
-    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-    owner_kinds: &[OwnerRefKind],
-    owner_ids: &[Option<uuid::Uuid>],
-    entity_kinds: &[EntityKind],
-    entity_ids: &[uuid::Uuid],
-    model_ids: &[&str],
-) -> Result<(), StorageError> {
-    if entity_ids.is_empty() {
-        return Ok(());
-    }
-    sqlx::query(
-        "INSERT INTO proxima_core.embedding_jobs
-            (owner_kind, owner_id,
-             entity_kind, entity_id, model_id)
-         SELECT * FROM unnest($1::proxima_core.owner_ref_kind[], $2::uuid[],
-                              $3::proxima_core.entity_kind[], $4::uuid[], $5::text[])
-         ON CONFLICT (owner_kind, owner_id,
-                      entity_kind, entity_id, model_id, embedding_version)
-         DO NOTHING",
-    )
-    .bind(owner_kinds)
-    .bind(owner_ids)
-    .bind(entity_kinds)
-    .bind(entity_ids)
-    .bind(model_ids)
-    .execute(&mut **tx)
-    .await
-    .map_err(map_err)?;
-    Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// One claimed batch, one completion statement: completing per job
-    /// would hand back the round trips the batched write just saved.
-    #[test]
-    fn completing_a_batch_is_a_single_statement() {
-        assert!(!COMPLETE_EMBEDDING_JOBS_SQL.contains(';'));
-    }
-
-    /// Golden text: the batch delete must keep matching the same six
-    /// columns the per-job delete matches.
-    #[test]
-    fn the_batch_completion_sql_is_byte_identical() {
-        assert_eq!(COMPLETE_EMBEDDING_JOBS_SQL, COMPLETE_JOBS_GOLDEN);
-    }
-
-    const COMPLETE_JOBS_GOLDEN: &str = r"DELETE FROM proxima_core.embedding_jobs j
-          USING unnest($1::proxima_core.owner_ref_kind[], $2::uuid[],
-                       $3::proxima_core.entity_kind[], $4::uuid[],
-                       $5::text[], $6::int[])
-                AS c(owner_kind, owner_id, entity_kind, entity_id,
-                     model_id, embedding_version)
-          WHERE j.owner_kind = c.owner_kind
-            AND j.owner_id = c.owner_id
-            AND j.entity_kind = c.entity_kind
-            AND j.entity_id = c.entity_id
-            AND j.model_id = c.model_id
-            AND j.embedding_version = c.embedding_version";
 }

@@ -111,136 +111,6 @@ macro_rules! pg_sidecar_cast {
     };
 }
 
-/// Base Postgres type name for a column carried as one `unnest` parameter of
-/// a batched insert (`memory_insert_batch_sql` appends the array marker).
-///
-/// Only kinds whose values travel as array ELEMENTS have an arm: an
-/// array-valued column would need an array of arrays, which Postgres does not
-/// have. A sidecar spelling such a column simply does not opt into
-/// `batch_insert: unnest` and keeps the per-row fallback.
-#[macro_export]
-macro_rules! pg_sidecar_array_ty {
-    (uuid) => {
-        "uuid"
-    };
-    (opt_uuid) => {
-        "uuid"
-    };
-    (text) => {
-        "text"
-    };
-    (opt_text) => {
-        "text"
-    };
-    (bool) => {
-        "boolean"
-    };
-    (timestamptz) => {
-        "timestamptz"
-    };
-    (enum { to_str: $to_str:path, pg_type: $pg_type:literal, from_str: $from_str:expr }) => {
-        $pg_type
-    };
-    (enum_copy { to_str: $to_str:path, pg_type: $pg_type:literal, from_str: $from_str:expr }) => {
-        $pg_type
-    };
-    ($kind:tt) => {
-        ::std::compile_error!(::std::concat!(
-            "pg_sidecar!: column kind ",
-            ::std::stringify!($kind),
-            " has no unnest array type; drop `batch_insert: unnest`",
-        ))
-    };
-}
-
-/// Per-column bind for a batched insert: the column's value from every row,
-/// collected into the array bound to that column's `unnest` parameter. Arms
-/// mirror [`pg_sidecar_array_ty`] one for one.
-#[macro_export]
-macro_rules! pg_sidecar_bind_array {
-    ((uuid), $rows:ident, $field:ident) => {
-        $rows
-            .iter()
-            .map(|(_, payload)| payload.$field)
-            .collect::<::std::vec::Vec<_>>()
-    };
-    ((opt_uuid), $rows:ident, $field:ident) => {
-        $rows
-            .iter()
-            .map(|(_, payload)| payload.$field)
-            .collect::<::std::vec::Vec<_>>()
-    };
-    ((text), $rows:ident, $field:ident) => {
-        $rows
-            .iter()
-            .map(|(_, payload)| payload.$field.as_str())
-            .collect::<::std::vec::Vec<_>>()
-    };
-    ((opt_text), $rows:ident, $field:ident) => {
-        $rows
-            .iter()
-            .map(|(_, payload)| payload.$field.as_deref())
-            .collect::<::std::vec::Vec<_>>()
-    };
-    ((bool), $rows:ident, $field:ident) => {
-        $rows
-            .iter()
-            .map(|(_, payload)| payload.$field)
-            .collect::<::std::vec::Vec<_>>()
-    };
-    ((timestamptz), $rows:ident, $field:ident) => {
-        $rows
-            .iter()
-            .map(|(_, payload)| payload.$field)
-            .collect::<::std::vec::Vec<_>>()
-    };
-    (
-        (
-            enum { to_str: $to_str:path, pg_type: $pg_type:literal, from_str: $from_str:expr }
-        ),
-        $rows:ident,
-        $field:ident
-    ) => {
-        $rows
-            .iter()
-            .map(|(_, payload)| $to_str(&payload.$field))
-            .collect::<::std::vec::Vec<_>>()
-    };
-    (
-        (
-            enum_copy { to_str: $to_str:path, pg_type: $pg_type:literal, from_str: $from_str:expr }
-        ),
-        $rows:ident,
-        $field:ident
-    ) => {
-        $rows
-            .iter()
-            .map(|(_, payload)| $to_str(payload.$field))
-            .collect::<::std::vec::Vec<_>>()
-    };
-    (($kind:tt), $rows:ident, $field:ident) => {
-        ::std::compile_error!(::std::concat!(
-            "pg_sidecar!: column kind ",
-            ::std::stringify!($kind),
-            " cannot be bound as an unnest array; drop `batch_insert: unnest`",
-        ))
-    };
-}
-
-/// Guard for `pg_sidecar!`'s `batch_insert:` clause: `unnest` is the only
-/// batched insert strategy this crate spells.
-#[macro_export]
-macro_rules! pg_sidecar_batch_strategy {
-    (unnest) => {};
-    ($other:ident) => {
-        ::std::compile_error!(::std::concat!(
-            "pg_sidecar!: unknown batch_insert strategy ",
-            ::std::stringify!($other),
-            "; the only strategy is `unnest`",
-        ));
-    };
-}
-
 /// Per-column SELECT expression for the batch read. Enum-typed columns are a
 /// PG enum on the read side, so they must be cast back to `text` (aliased to
 /// the field name) for the `String`-typed `FromRow` decode; all other kinds
@@ -562,93 +432,48 @@ macro_rules! pg_sidecar_payload {
 
 #[macro_export]
 macro_rules! pg_sidecar {
-    // The per-row memory-sidecar insert. Split out as an internal rule so the
-    // batched twin below can be emitted beside it or omitted, without the two
-    // public forms restating either body.
     (
-        @insert $table:literal, $key_column:ident,
-        { $($field:ident => $column:ident : $column_kind:tt),+ $(,)? }
-    ) => {
-        fn insert_memory_sidecar<'t>(
-            &'t self,
-            tx: &'t mut ::sqlx::Transaction<'_, ::sqlx::Postgres>,
-            memory_id: $crate::core::MemoryId,
-        ) -> $crate::sidecars::PgSidecarFuture<'t> {
-            ::std::boxed::Box::pin(async move {
-                let sql = $crate::sidecars::memory_insert_sql(
-                    $table,
-                    ::std::stringify!($key_column),
-                    &[$(
-                        (::std::stringify!($column), $crate::pg_sidecar_cast! $column_kind),
-                    )+],
-                )?;
-                // SQL-POLICY: PgIdent — `sql` is built by memory_insert_sql
-                // from macro-literal table/column names validated as PgIdent;
-                // every value below is bound.
-                ::sqlx::query(::sqlx::AssertSqlSafe(sql))
-                    .bind(memory_id.into_inner())
-                    $(
-                        .bind($crate::pg_sidecar_bind!($column_kind, self, $field))
-                    )+
-                    .execute(tx.as_mut())
-                    .await
-                    .map_err($crate::map_err)?;
-                ::std::result::Result::Ok(())
-            })
-        }
-    };
-
-    // The set-based twin: one statement per batch, one `unnest` parameter per
-    // column.
-    (
-        @insert_batch $table:literal, $key_column:ident,
-        { $($field:ident => $column:ident : $column_kind:tt),+ $(,)? }
-    ) => {
-        fn insert_memory_sidecar_batch<'t>(
-            tx: &'t mut ::sqlx::Transaction<'_, ::sqlx::Postgres>,
-            rows: &'t [($crate::core::MemoryId, &'t Self)],
-        ) -> $crate::sidecars::PgSidecarFuture<'t> {
-            ::std::boxed::Box::pin(async move {
-                if rows.is_empty() {
-                    return ::std::result::Result::Ok(());
-                }
-                let sql = $crate::sidecars::memory_insert_batch_sql(
-                    $table,
-                    ::std::stringify!($key_column),
-                    &[$(
-                        (::std::stringify!($column), $crate::pg_sidecar_array_ty! $column_kind),
-                    )+],
-                )?;
-                let keys = rows
-                    .iter()
-                    .map(|(memory_id, _)| memory_id.into_inner())
-                    .collect::<::std::vec::Vec<_>>();
-                // SQL-POLICY: PgIdent — `sql` is built by
-                // memory_insert_batch_sql from macro-literal table, column and
-                // type names validated as PgIdent; every value below is bound.
-                ::sqlx::query(::sqlx::AssertSqlSafe(sql))
-                    .bind(keys)
-                    $(
-                        .bind($crate::pg_sidecar_bind_array!($column_kind, rows, $field))
-                    )+
-                    .execute(tx.as_mut())
-                    .await
-                    .map_err($crate::map_err)?;
-                ::std::result::Result::Ok(())
-            })
-        }
-    };
-
-    // The read half: the row struct and the batched payload loader.
-    (
-        @read
         payload: $($payload_ty:ident)::+,
         row: $row_ty:ident,
         kinds: [$($payload_kind:ident),+ $(,)?],
         table: $table:literal,
         key: $key_column:ident,
-        fields: { $($field:ident => $column:ident : $column_kind:tt),+ $(,)? }
+        fields: {
+            $(
+                $field:ident => $column:ident : $column_kind:tt
+            ),+ $(,)?
+        } $(,)?
     ) => {
+        impl $crate::sidecars::PgMemorySidecar for $($payload_ty)::+ {
+            fn insert_memory_sidecar<'t>(
+                &'t self,
+                tx: &'t mut ::sqlx::Transaction<'_, ::sqlx::Postgres>,
+                memory_id: $crate::core::MemoryId,
+            ) -> $crate::sidecars::PgSidecarFuture<'t> {
+                ::std::boxed::Box::pin(async move {
+                    let sql = $crate::sidecars::memory_insert_sql(
+                        $table,
+                        ::std::stringify!($key_column),
+                        &[$(
+                            (::std::stringify!($column), $crate::pg_sidecar_cast! $column_kind),
+                        )+],
+                    )?;
+                    // SQL-POLICY: PgIdent — `sql` is built by memory_insert_sql
+                    // from macro-literal table/column names validated as PgIdent;
+                    // every value below is bound.
+                    ::sqlx::query(::sqlx::AssertSqlSafe(sql))
+                        .bind(memory_id.into_inner())
+                        $(
+                            .bind($crate::pg_sidecar_bind!($column_kind, self, $field))
+                        )+
+                        .execute(tx.as_mut())
+                        .await
+                        .map_err($crate::map_err)?;
+                    ::std::result::Result::Ok(())
+                })
+            }
+        }
+
         #[derive(Debug, ::sqlx::FromRow)]
         struct $row_ty {
             $key_column: ::uuid::Uuid,
@@ -695,73 +520,6 @@ macro_rules! pg_sidecar {
                 })
             }
         }
-    };
-
-    // A sidecar whose every column travels as an array element declares
-    // `batch_insert: unnest` and gets the set-based insert as well.
-    (
-        payload: $($payload_ty:ident)::+,
-        row: $row_ty:ident,
-        kinds: [$($payload_kind:ident),+ $(,)?],
-        table: $table:literal,
-        key: $key_column:ident,
-        fields: {
-            $(
-                $field:ident => $column:ident : $column_kind:tt
-            ),+ $(,)?
-        },
-        batch_insert: $batch_strategy:ident $(,)?
-    ) => {
-        $crate::pg_sidecar_batch_strategy!($batch_strategy);
-
-        impl $crate::sidecars::PgMemorySidecar for $($payload_ty)::+ {
-            $crate::pg_sidecar!(
-                @insert $table, $key_column, { $($field => $column : $column_kind),+ }
-            );
-            $crate::pg_sidecar!(
-                @insert_batch $table, $key_column, { $($field => $column : $column_kind),+ }
-            );
-        }
-
-        $crate::pg_sidecar!(
-            @read
-            payload: $($payload_ty)::+,
-            row: $row_ty,
-            kinds: [$($payload_kind),+],
-            table: $table,
-            key: $key_column,
-            fields: { $($field => $column : $column_kind),+ }
-        );
-    };
-
-    // The default: a per-row insert, and the trait's per-row batch fallback.
-    (
-        payload: $($payload_ty:ident)::+,
-        row: $row_ty:ident,
-        kinds: [$($payload_kind:ident),+ $(,)?],
-        table: $table:literal,
-        key: $key_column:ident,
-        fields: {
-            $(
-                $field:ident => $column:ident : $column_kind:tt
-            ),+ $(,)?
-        } $(,)?
-    ) => {
-        impl $crate::sidecars::PgMemorySidecar for $($payload_ty)::+ {
-            $crate::pg_sidecar!(
-                @insert $table, $key_column, { $($field => $column : $column_kind),+ }
-            );
-        }
-
-        $crate::pg_sidecar!(
-            @read
-            payload: $($payload_ty)::+,
-            row: $row_ty,
-            kinds: [$($payload_kind),+],
-            table: $table,
-            key: $key_column,
-            fields: { $($field => $column : $column_kind),+ }
-        );
     };
 }
 

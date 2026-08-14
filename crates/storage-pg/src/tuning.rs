@@ -9,9 +9,6 @@ use std::ops::RangeInclusive;
 
 use proxima_core::{StorageError, env_value};
 
-/// One unit per batch: with `batched_writes` on and nothing else set, a
-/// batch is the same unit of work the per-unit path already writes.
-pub(crate) const DEFAULT_WRITE_BATCH_SIZE: u32 = 1;
 pub(crate) const DEFAULT_HNSW_EF_SEARCH: u32 = 100;
 pub(crate) const DEFAULT_HNSW_MAX_SCAN_TUPLES: u32 = 20_000;
 pub(crate) const DEFAULT_SEMANTIC_OVERFETCH_PER_RESULT: u64 = 64;
@@ -33,13 +30,14 @@ const SEMANTIC_OVERFETCH_MIN_RANGE: RangeInclusive<u64> = 1..=100_000;
 /// is a budget of rows that already passed them and the branch is exact.
 ///
 /// Both other arms cut first and filter after, which trades recall for the
-/// index scan. `Overfetch` keeps the joins above a materialized ANN CTE, so
-/// recall depends on the overfetch window exceeding the inverse of the
-/// filter's selectivity — pgvector's iterative scan cannot help there,
-/// because the CTE's own LIMIT is satisfied by unfiltered rows. `Pushdown`
-/// puts the owner and model predicates on the embeddings scan itself, which
-/// is what lets iterative scan satisfy THOSE: an eligible row can no longer
-/// be displaced from the window by another owner's. Every other query
+/// index scan: result membership becomes an ANN-window approximation.
+/// `Overfetch` keeps the joins above a materialized ANN CTE, so recall
+/// depends on the overfetch window exceeding the inverse of the filter's
+/// selectivity — pgvector's iterative scan cannot help there, because the
+/// CTE's own LIMIT is satisfied by unfiltered rows. `Pushdown` puts the
+/// owner and model predicates on the embeddings scan itself, which is what
+/// lets iterative scan satisfy THOSE: an eligible row can no longer be
+/// displaced from the window by another owner's. Every other query
 /// predicate — `schema_id`, `kind`, `tags`, `since`, `until` — still sits
 /// above the window on both arms and carries overfetch's recall bound
 /// (`semantic_search_filters_query_predicates_before_candidate_limit` runs
@@ -111,21 +109,14 @@ impl HnswIterativeScan {
 }
 
 /// Postgres-tier tuning, resolved once and carried on the storage handle.
-///
-/// The booleans are independent switches over separate query and write
-/// paths, not the states of one machine: each has its own `PROXIMA_PG_*`
-/// variable and each is meant to be turned on alone, so folding them into
-/// an enum would invent relationships between them that do not exist.
-#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PgTuning {
     pub semantic_index_first: SemanticIndexFirst,
-    pub hnsw_bulk_build: bool,
+    /// Collapse candidate rows with a ranking window function instead of
+    /// `DISTINCT ON`, and spell the supersedes head filter as a unique-join
+    /// anti-join instead of a per-row `NOT EXISTS` probe. Result membership
+    /// is identical either way; `off` restores the legacy statement text.
     pub candidate_window_dedup: bool,
-    pub batched_writes: bool,
-    pub write_batch_size: u32,
-    pub windowed_total_count: bool,
-    pub static_lookup_cache: bool,
     pub hnsw_ef_search: u32,
     pub hnsw_iterative_scan: HnswIterativeScan,
     /// Ceiling on tuples an iterative HNSW scan may visit. Only emitted
@@ -141,13 +132,8 @@ pub struct PgTuning {
 impl Default for PgTuning {
     fn default() -> Self {
         Self {
-            semantic_index_first: SemanticIndexFirst::default(),
-            hnsw_bulk_build: false,
+            semantic_index_first: SemanticIndexFirst::Off,
             candidate_window_dedup: false,
-            batched_writes: false,
-            write_batch_size: DEFAULT_WRITE_BATCH_SIZE,
-            windowed_total_count: false,
-            static_lookup_cache: false,
             hnsw_ef_search: DEFAULT_HNSW_EF_SEARCH,
             hnsw_iterative_scan: HnswIterativeScan::default(),
             hnsw_max_scan_tuples: DEFAULT_HNSW_MAX_SCAN_TUPLES,
@@ -201,35 +187,10 @@ impl PgTuning {
                 "PROXIMA_PG_SEMANTIC_INDEX_FIRST",
                 defaults.semantic_index_first,
             )?,
-            hnsw_bulk_build: env_bool_or(
-                lookup,
-                "PROXIMA_PG_HNSW_BULK_BUILD",
-                defaults.hnsw_bulk_build,
-            )?,
             candidate_window_dedup: env_bool_or(
                 lookup,
                 "PROXIMA_PG_CANDIDATE_WINDOW_DEDUP",
                 defaults.candidate_window_dedup,
-            )?,
-            batched_writes: env_bool_or(
-                lookup,
-                "PROXIMA_PG_BATCHED_WRITES",
-                defaults.batched_writes,
-            )?,
-            write_batch_size: env_u32_or(
-                lookup,
-                "PROXIMA_PG_WRITE_BATCH_SIZE",
-                defaults.write_batch_size,
-            )?,
-            windowed_total_count: env_bool_or(
-                lookup,
-                "PROXIMA_PG_WINDOWED_TOTAL_COUNT",
-                defaults.windowed_total_count,
-            )?,
-            static_lookup_cache: env_bool_or(
-                lookup,
-                "PROXIMA_PG_STATIC_LOOKUP_CACHE",
-                defaults.static_lookup_cache,
             )?,
             hnsw_ef_search: env_u32_or(
                 lookup,
@@ -338,12 +299,7 @@ mod tests {
         let tuning = PgTuning::default();
 
         assert_eq!(tuning.semantic_index_first, SemanticIndexFirst::Off);
-        assert!(!tuning.hnsw_bulk_build);
         assert!(!tuning.candidate_window_dedup);
-        assert!(!tuning.batched_writes);
-        assert_eq!(tuning.write_batch_size, 1);
-        assert!(!tuning.windowed_total_count);
-        assert!(!tuning.static_lookup_cache);
         assert_eq!(tuning.hnsw_ef_search, 100);
         assert_eq!(tuning.hnsw_iterative_scan, HnswIterativeScan::RelaxedOrder);
         assert_eq!(tuning.hnsw_max_scan_tuples, 20_000);
@@ -364,7 +320,7 @@ mod tests {
     fn blank_values_read_as_unset() {
         let tuning = PgTuning::from_lookup(&env(&[
             ("PROXIMA_PG_SEMANTIC_INDEX_FIRST", ""),
-            ("PROXIMA_PG_BATCHED_WRITES", "   "),
+            ("PROXIMA_PG_CANDIDATE_WINDOW_DEDUP", "   "),
             ("PROXIMA_PG_HNSW_EF_SEARCH", " "),
         ]))
         .unwrap();
@@ -375,14 +331,9 @@ mod tests {
     #[test]
     fn every_variable_is_read_and_trimmed() {
         let tuning = PgTuning::from_lookup(&env(&[
-            ("PROXIMA_PG_SEMANTIC_INDEX_FIRST", "Pushdown"),
-            ("PROXIMA_PG_HNSW_BULK_BUILD", "yes"),
-            ("PROXIMA_PG_CANDIDATE_WINDOW_DEDUP", "on"),
-            ("PROXIMA_PG_BATCHED_WRITES", "true"),
-            ("PROXIMA_PG_WRITE_BATCH_SIZE", " 250 "),
-            ("PROXIMA_PG_WINDOWED_TOTAL_COUNT", "1"),
-            ("PROXIMA_PG_STATIC_LOOKUP_CACHE", "TRUE"),
-            ("PROXIMA_PG_HNSW_EF_SEARCH", "200"),
+            ("PROXIMA_PG_SEMANTIC_INDEX_FIRST", "Overfetch"),
+            ("PROXIMA_PG_CANDIDATE_WINDOW_DEDUP", "off"),
+            ("PROXIMA_PG_HNSW_EF_SEARCH", " 200 "),
             ("PROXIMA_PG_HNSW_ITERATIVE_SCAN", "STRICT_ORDER"),
             ("PROXIMA_PG_HNSW_MAX_SCAN_TUPLES", "40000"),
             ("PROXIMA_PG_SEMANTIC_OVERFETCH_PER_RESULT", "128"),
@@ -393,13 +344,8 @@ mod tests {
         assert_eq!(
             tuning,
             Some(PgTuning {
-                semantic_index_first: SemanticIndexFirst::Pushdown,
-                hnsw_bulk_build: true,
-                candidate_window_dedup: true,
-                batched_writes: true,
-                write_batch_size: 250,
-                windowed_total_count: true,
-                static_lookup_cache: true,
+                semantic_index_first: SemanticIndexFirst::Overfetch,
+                candidate_window_dedup: false,
                 hnsw_ef_search: 200,
                 hnsw_iterative_scan: HnswIterativeScan::StrictOrder,
                 hnsw_max_scan_tuples: 40_000,
@@ -451,9 +397,9 @@ mod tests {
                 "invalid PROXIMA_PG_HNSW_ITERATIVE_SCAN=relaxed",
             ),
             (
-                "PROXIMA_PG_BATCHED_WRITES",
+                "PROXIMA_PG_CANDIDATE_WINDOW_DEDUP",
                 "maybe",
-                "invalid boolean PROXIMA_PG_BATCHED_WRITES=maybe",
+                "invalid boolean PROXIMA_PG_CANDIDATE_WINDOW_DEDUP=maybe",
             ),
             (
                 "PROXIMA_PG_HNSW_EF_SEARCH",

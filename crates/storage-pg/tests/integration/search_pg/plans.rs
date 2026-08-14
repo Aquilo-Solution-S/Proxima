@@ -119,7 +119,6 @@ async fn search_branches_enumerate_candidates_via_owner_index()
         &[],
         40,
         &PgTuning::default(),
-        proxima_storage_pg::verbs::query::TEXT_SEARCH_CONFIG_FOR_TESTS,
     )?;
     req.mode = SearchMode::Semantic;
     req.query_embedding = Some(padded_embedding([1.0, 0.0, 0.0]));

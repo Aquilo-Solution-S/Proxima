@@ -364,14 +364,7 @@ impl MemoryReadPort for PgStorage {
         req: &MemorySearchRequest,
         projections: &[proxima_core::verbs::schema::MemorySearchProjection],
     ) -> Result<MemorySearchPage, StorageError> {
-        verbs::query::search_memories(
-            &self.pool,
-            req,
-            projections,
-            &self.tuning,
-            &self.lexical_config,
-        )
-        .await
+        verbs::query::search_memories(&self.pool, req, projections, &self.tuning).await
     }
 
     async fn walk_memory_lineage(

@@ -29,13 +29,36 @@ impl FactIngestPort for PgStorage {
         sidecar_payloads: &[SidecarPayload],
         embedding_model_id: Option<&str>,
     ) -> Result<FactIngestOutcome, StorageError> {
-        verbs::fact_ingest::ingest_fact_with_typed_sidecar_atomic(
-            &self.pool,
-            &self.sidecars,
-            authorized,
-            sidecar_payloads,
-            embedding_model_id,
-        )
+        // Retry the whole begin→body→commit on transient deadlock/
+        // serialization. The typed sidecar is data (`SidecarPayload`), so each
+        // attempt re-clones it and rebuilds the insert closure — unlike an
+        // `FnOnce` closure, this is safely re-runnable.
+        with_bounded_retry(move || {
+            let fact_sidecars = self.sidecars.clone();
+            let payloads = sidecar_payloads.to_vec();
+            async move {
+                let mut tx = self.pool.begin().await.map_err(internal)?;
+                let outcome = verbs::fact_ingest::ingest_fact_with_sidecar_in_tx(
+                    &mut tx,
+                    authorized,
+                    embedding_model_id,
+                    move |tx, outcome| {
+                        Box::pin(async move {
+                            for payload in &payloads {
+                                fact_sidecars
+                                    .insert_memory_sidecar(tx, outcome.memory_id, payload)
+                                    .await?;
+                            }
+
+                            Ok(())
+                        })
+                    },
+                )
+                .await?;
+                tx.commit().await.map_err(crate::error::map_err)?;
+                Ok(outcome)
+            }
+        })
         .await
     }
 

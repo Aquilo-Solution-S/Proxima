@@ -1,7 +1,6 @@
 use super::dispatch::{
     copy_goal_sidecar, insert_citation_mapping_sidecar, insert_cited_object_sidecar,
-    insert_goal_sidecar, insert_memory_sidecar, insert_memory_sidecar_batch, load_memory_payload,
-    load_memory_payload_batch,
+    insert_goal_sidecar, insert_memory_sidecar, load_memory_payload, load_memory_payload_batch,
 };
 use super::{
     AbstractionPayload, Arc, CitationMappingPayload, CitedObjectPayload, FactPayload, GoalPayload,
@@ -39,7 +38,6 @@ impl PgSidecarRegistry {
                     key,
                     sidecar_table: table.to_string(),
                     memory_insert: Some(insert_memory_sidecar::<P>),
-                    memory_insert_batch: Some(insert_memory_sidecar_batch::<P>),
                     memory_load: Some(load_memory_payload::<P>),
                     memory_load_batch: Some(load_memory_payload_batch::<P>),
                     cited_object_insert: None,
@@ -102,7 +100,6 @@ impl PgSidecarRegistry {
                     key,
                     sidecar_table: table.to_string(),
                     memory_insert: None,
-                    memory_insert_batch: None,
                     memory_load: None,
                     memory_load_batch: None,
                     cited_object_insert: None,
@@ -136,7 +133,6 @@ impl PgSidecarRegistry {
                 key,
                 sidecar_table: P::sidecar_table().to_string(),
                 memory_insert: None,
-                memory_insert_batch: None,
                 memory_load: None,
                 memory_load_batch: None,
                 cited_object_insert: Some(insert_cited_object_sidecar::<P>),
@@ -173,7 +169,6 @@ impl PgSidecarRegistry {
                     key,
                     sidecar_table: table.to_string(),
                     memory_insert: None,
-                    memory_insert_batch: None,
                     memory_load: None,
                     memory_load_batch: None,
                     cited_object_insert: None,
@@ -206,7 +201,6 @@ impl PgSidecarRegistry {
                 key,
                 sidecar_table: sidecar_table.into(),
                 memory_insert: Some(insert_memory_sidecar::<P>),
-                memory_insert_batch: Some(insert_memory_sidecar_batch::<P>),
                 memory_load: Some(load_memory_payload::<P>),
                 memory_load_batch: Some(load_memory_payload_batch::<P>),
                 cited_object_insert: None,

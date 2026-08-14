@@ -356,22 +356,6 @@ async fn pg_with_ann_window(
     Ok(PgStorage::connect_with_tuning(&db_url(db_name), tuning).await?)
 }
 
-/// A second handle on the same database with `static_lookup_cache` pinned.
-///
-/// The flag decides whether the lexical branch names
-/// `proxima_core.lexical_config()` or the configuration it resolves to, so
-/// a test comparing the two arms has to hold both at once.
-async fn pg_with_static_lookup_cache(
-    db_name: &str,
-    static_lookup_cache: bool,
-) -> Result<PgStorage, Box<dyn std::error::Error>> {
-    let tuning = PgTuning {
-        static_lookup_cache,
-        ..PgTuning::from_env()?
-    };
-    Ok(PgStorage::connect_with_tuning(&db_url(db_name), tuning).await?)
-}
-
 fn tagged_search_request(owner: &Owner, query: &str, mode: SearchMode) -> MemorySearchRequest {
     MemorySearchRequest {
         owner: *owner,
