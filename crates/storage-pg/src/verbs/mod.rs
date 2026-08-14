@@ -15,7 +15,6 @@ pub mod derive_append;
 pub(crate) mod edge_index;
 pub mod fact_embeddings;
 pub mod fact_ingest;
-pub mod fact_ingest_batch;
 pub mod fact_retention;
 pub(crate) mod goal_wake_candidates;
 pub(crate) mod goal_write;

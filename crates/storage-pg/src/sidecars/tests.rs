@@ -1,7 +1,4 @@
-use super::{
-    StorageError, memory_insert_batch_sql, memory_insert_sql, memory_select_batch_sql,
-    validate_sidecar_read_sql,
-};
+use super::{StorageError, memory_insert_sql, memory_select_batch_sql, validate_sidecar_read_sql};
 
 #[test]
 fn memory_insert_sql_validates_identifiers() {
@@ -26,58 +23,6 @@ fn memory_insert_sql_validates_identifiers() {
             "proxima_core.agent_note_v1",
             "memory_id",
             &[("x); DROP TABLE y", None)]
-        )
-        .is_err()
-    );
-}
-
-/// Golden text for the batched sidecar insert, spelled with the columns
-/// `pg_sidecar!` passes for the core utterance sidecar — the one payload
-/// that opts into `batch_insert: unnest`.
-#[test]
-fn memory_insert_batch_sql_unnests_one_array_per_column() {
-    let sql = memory_insert_batch_sql(
-        "proxima_core.utterance_v1",
-        "memory_id",
-        &[
-            ("speaker", "text"),
-            ("conversation_id", "text"),
-            ("text", "text"),
-        ],
-    )
-    .unwrap();
-
-    assert_eq!(
-        sql,
-        "INSERT INTO proxima_core.utterance_v1 (memory_id, speaker, conversation_id, text) \
-             SELECT * FROM unnest($1::uuid[], $2::text[], $3::text[], $4::text[])"
-    );
-    // A schema-qualified enum type is a legal array element type.
-    assert!(
-        memory_insert_batch_sql(
-            "proxima_core.task_goal_v1",
-            "goal_id",
-            &[("priority", "proxima_core.task_priority")],
-        )
-        .unwrap()
-        .ends_with("SELECT * FROM unnest($1::uuid[], $2::proxima_core.task_priority[])")
-    );
-    // Table, key column, payload column and type are all validated.
-    assert!(memory_insert_batch_sql("bad table;", "memory_id", &[]).is_err());
-    assert!(memory_insert_batch_sql("proxima_core.utterance_v1", "memory-id", &[]).is_err());
-    assert!(
-        memory_insert_batch_sql(
-            "proxima_core.utterance_v1",
-            "memory_id",
-            &[("x); DROP TABLE y", "text")],
-        )
-        .is_err()
-    );
-    assert!(
-        memory_insert_batch_sql(
-            "proxima_core.utterance_v1",
-            "memory_id",
-            &[("speaker", "text[]; DROP TABLE y")],
         )
         .is_err()
     );

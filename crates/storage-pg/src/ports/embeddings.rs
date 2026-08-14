@@ -1,6 +1,6 @@
 use proxima_core::storage_ports::{
     EmbeddingJobPort, EmbeddingJobStatusCounts, EmbeddingMaintenancePort, EmbeddingTextPort,
-    EmbeddingWritePort, MemoryEmbeddingWrite, OperatorMaintenanceProof, OwnerWritePermit,
+    EmbeddingWritePort, OperatorMaintenanceProof, OwnerWritePermit,
 };
 use proxima_core::{
     EmbeddableEntityRef, EmbeddingAnnObservability, EmbeddingJobClaim, EmbeddingOrphanSweepOutcome,
@@ -88,27 +88,6 @@ impl EmbeddingWritePort for PgStorage {
         Ok(outcome)
     }
 
-    fn batched_embedding_writes(&self) -> bool {
-        self.tuning.batched_writes
-    }
-
-    async fn insert_memory_embedding_batch(
-        &self,
-        model_id: &str,
-        dim: usize,
-        writes: &[MemoryEmbeddingWrite<'_>],
-        _proof: proxima_core::storage_ports::EmbeddingWriteProof,
-    ) -> Result<Vec<EmbeddingWriteOutcome>, StorageError> {
-        let mut tx = self.pool.begin().await.map_err(|err| {
-            StorageError::Internal(format!("begin embedding batch insert tx: {err}"))
-        })?;
-        let outcomes =
-            verbs::fact_embeddings::insert_memory_embeddings(&mut tx, model_id, dim, writes)
-                .await?;
-        tx.commit().await.map_err(crate::error::map_err)?;
-        Ok(outcomes)
-    }
-
     async fn upsert_fact_embedding(
         &self,
         owner: &Owner,
@@ -151,13 +130,6 @@ impl EmbeddingJobPort for PgStorage {
 
     async fn complete_embedding_job(&self, claim: &EmbeddingJobClaim) -> Result<(), StorageError> {
         verbs::fact_embeddings::complete_embedding_job(&self.pool, claim).await
-    }
-
-    async fn complete_embedding_jobs(
-        &self,
-        claims: &[EmbeddingJobClaim],
-    ) -> Result<(), StorageError> {
-        verbs::fact_embeddings::complete_embedding_jobs(&self.pool, claims).await
     }
 
     async fn fail_embedding_job(

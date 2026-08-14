@@ -20,9 +20,8 @@ use sqlx::PgPool;
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 pub use verbs::fact_embeddings::{
     EmbeddingInlineDrainOutcome, EmbeddingReconcileOptions, EmbeddingReconcileOutcome,
-    EmbeddingReconcileScope, HnswBuildReport, HnswBuildSettings,
+    EmbeddingReconcileScope,
 };
-pub use verbs::fact_ingest_batch::FactIngestBatchUnit;
 pub use verbs::retention_maintenance::{
     ChangeEventPruneOptions, ChangeEventPruneOutcome, PruneOwnerOutcome, RetentionEnforceOptions,
     RetentionEnforceOutcome, RetentionOwnerOutcome,
@@ -523,12 +522,6 @@ pub struct PgStorage {
     pool: PgPool,
     sidecars: PgSidecarRegistryFrozen,
     tuning: PgTuning,
-    /// The database's default text-search configuration, read at most once
-    /// per handle and only when [`PgTuning::static_lookup_cache`] asks the
-    /// lexical branch to inline it. Shared by every clone of this handle,
-    /// and scoped to it — a process holding handles on two databases must
-    /// not answer one from the other's catalog.
-    lexical_config: verbs::lexical_language::LexicalConfigCache,
 }
 
 /// Advisory-lock key serializing embedding maintenance passes across
@@ -700,7 +693,6 @@ impl PgStorage {
             pool,
             sidecars: core_pg_sidecars(),
             tuning,
-            lexical_config: verbs::lexical_language::LexicalConfigCache::default(),
         })
     }
 
@@ -776,33 +768,6 @@ impl PgStorage {
             .build()
     }
 
-    /// Land a set of already-authorized Facts.
-    ///
-    /// The engine's Fact-ingest port is one unit per call, so this is the
-    /// seam for a caller that has already accumulated units — an importer,
-    /// a measurement harness — and can hand storage the whole set. Which
-    /// path it takes is [`PgTuning::batched_writes`]: off, each unit runs
-    /// the per-unit verb in its own transaction, exactly as the port does;
-    /// on, units land [`PgTuning::write_batch_size`] at a time through the
-    /// set-based statements.
-    ///
-    /// # Errors
-    ///
-    /// Returns storage errors from Fact materialization, sidecar insertion,
-    /// or commit.
-    pub async fn ingest_facts_batch(
-        &self,
-        units: &[verbs::fact_ingest_batch::FactIngestBatchUnit<'_>],
-    ) -> Result<Vec<proxima_core::verbs::fact_ingest::FactIngestOutcome>, StorageError> {
-        verbs::fact_ingest_batch::ingest_facts_batch(
-            &self.pool,
-            &self.tuning,
-            &self.sidecars,
-            units,
-        )
-        .await
-    }
-
     /// Global enqueue-only embedding reconciliation.
     ///
     /// # Errors
@@ -854,35 +819,6 @@ impl PgStorage {
         &self,
     ) -> Result<proxima_core::EmbeddingAnnObservability, StorageError> {
         verbs::fact_embeddings::embedding_ann_observability(&self.pool).await
-    }
-
-    /// Drop the embeddings HNSW index ahead of a bulk load, answering the
-    /// size it held.
-    ///
-    /// Semantic search finds nothing until [`Self::create_hnsw_index`] puts
-    /// the index back, so this belongs to backfill and measurement, never
-    /// to a serving deployment.
-    ///
-    /// # Errors
-    ///
-    /// Returns `StorageError::Unavailable` when `hnsw_bulk_build` is off,
-    /// otherwise storage errors from the drop transaction.
-    pub async fn drop_hnsw_index(&self) -> Result<u64, StorageError> {
-        verbs::fact_embeddings::drop_hnsw_index(&self.pool, &self.tuning).await
-    }
-
-    /// Rebuild the embeddings HNSW index over the rows already loaded,
-    /// reporting build wall clock and the index's size.
-    ///
-    /// # Errors
-    ///
-    /// Returns `StorageError::Unavailable` when `hnsw_bulk_build` is off,
-    /// otherwise storage errors from the build transaction.
-    pub async fn create_hnsw_index(
-        &self,
-        settings: &HnswBuildSettings,
-    ) -> Result<HnswBuildReport, StorageError> {
-        verbs::fact_embeddings::create_hnsw_index(&self.pool, &self.tuning, settings).await
     }
 
     /// Try to take the global embedding-maintenance advisory lock.

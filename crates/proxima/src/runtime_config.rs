@@ -211,8 +211,8 @@ impl RuntimeBuilder {
         self
     }
 
-    /// Set the Postgres query and write tuning, bypassing the `PROXIMA_PG_*`
-    /// block a deployment would otherwise be read from. Its defaults are the
+    /// Set the Postgres query tuning, bypassing the `PROXIMA_PG_*` block a
+    /// deployment would otherwise be read from. Its defaults are the
     /// behaviour every release has shipped, so a host that never calls this
     /// and an environment that sets nothing are the same deployment.
     #[must_use]
@@ -434,9 +434,9 @@ pub struct RuntimeConfig {
     /// Boot without applying migrations (preflight only) — schema is migrated
     /// out-of-band under a DDL role in split-role `GitOps` deploys.
     pub skip_migrations: bool,
-    /// Postgres query and write tuning (`PROXIMA_PG_*`). Every field
-    /// defaults to the behaviour that shipped before it existed, so an
-    /// unset environment is production.
+    /// Postgres query tuning (`PROXIMA_PG_*`). Every field defaults to the
+    /// behaviour that shipped before it existed, so an unset environment is
+    /// production.
     pub pg_tuning: PgTuning,
     pub auth: RuntimeAuthState,
     pub resource_metadata: Option<ResourceServerMetadata>,
@@ -1097,7 +1097,7 @@ mod tests {
     #[test]
     fn an_untuned_env_does_not_override_configured_tuning() {
         let tuned = PgTuning {
-            batched_writes: true,
+            hnsw_ef_search: 200,
             ..PgTuning::default()
         };
         let from_env = RuntimeBuilder::default()

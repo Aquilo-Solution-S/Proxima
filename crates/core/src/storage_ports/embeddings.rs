@@ -78,49 +78,6 @@ pub trait EmbeddingWritePort: Send + Sync {
         proof: EmbeddingWriteProof,
     ) -> Result<EmbeddingWriteOutcome, StorageError>;
 
-    /// Whether this backend lands a whole claimed batch in one write.
-    ///
-    /// The drain loop asks before it batches, so a backend without a
-    /// batched path keeps the per-job write-and-complete sequence it
-    /// already had instead of taking a slower emulation of a faster one.
-    fn batched_embedding_writes(&self) -> bool {
-        false
-    }
-
-    /// Write one vector per unit, advancing each entity's head once.
-    ///
-    /// Returns one outcome per unit in input order. A unit whose entity is
-    /// no longer eligible answers version `0`, exactly as
-    /// [`Self::insert_embedding`] does; a unit repeated inside the batch is
-    /// versioned by its position, so the head ends where serial application
-    /// would have left it. The default applies the single-row path per
-    /// unit; backends advertising [`Self::batched_embedding_writes`]
-    /// override it with one statement.
-    async fn insert_memory_embedding_batch(
-        &self,
-        model_id: &str,
-        dim: usize,
-        writes: &[MemoryEmbeddingWrite<'_>],
-        proof: EmbeddingWriteProof,
-    ) -> Result<Vec<EmbeddingWriteOutcome>, StorageError> {
-        let mut outcomes = Vec::with_capacity(writes.len());
-        for write in writes {
-            outcomes.push(
-                self.insert_memory_embedding(
-                    &write.owner,
-                    write.entity_kind,
-                    write.memory_id,
-                    model_id,
-                    dim,
-                    write.vec,
-                    proof,
-                )
-                .await?,
-            );
-        }
-        Ok(outcomes)
-    }
-
     async fn insert_fact_embedding(
         &self,
         owner: &Owner,
@@ -205,16 +162,6 @@ pub struct EmbeddingWriteOutcome {
     pub embedding_version: i32,
 }
 
-/// One unit of a batched embedding write-back: the entity a vector belongs
-/// to, the owner the row is scoped to, and the vector itself.
-#[derive(Debug, Clone, Copy)]
-pub struct MemoryEmbeddingWrite<'a> {
-    pub owner: Owner,
-    pub entity_kind: EntityKind,
-    pub memory_id: crate::MemoryId,
-    pub vec: &'a [f32],
-}
-
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct EmbeddingJobBacklog {
     pub pending: u64,
@@ -269,20 +216,6 @@ pub trait EmbeddingJobPort: Send + Sync {
     ) -> Result<Vec<EmbeddingJobClaim>, StorageError>;
 
     async fn complete_embedding_job(&self, claim: &EmbeddingJobClaim) -> Result<(), StorageError>;
-
-    /// Delete every completed job of one claimed batch. The default
-    /// completes them one at a time, in order; the Postgres backend
-    /// overrides it with a single statement, which is what keeps a batched
-    /// write-back from paying back its saved round trips here.
-    async fn complete_embedding_jobs(
-        &self,
-        claims: &[EmbeddingJobClaim],
-    ) -> Result<(), StorageError> {
-        for claim in claims {
-            self.complete_embedding_job(claim).await?;
-        }
-        Ok(())
-    }
 
     async fn fail_embedding_job(
         &self,

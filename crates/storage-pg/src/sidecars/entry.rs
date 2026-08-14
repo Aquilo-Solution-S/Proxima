@@ -9,10 +9,6 @@ type PgMemorySidecarInserter = for<'t> fn(
     MemoryId,
     &'t SidecarPayload,
 ) -> PgSidecarFuture<'t>;
-type PgMemorySidecarBatchInserter = for<'t> fn(
-    &'t mut Transaction<'_, Postgres>,
-    &'t [(MemoryId, &'t SidecarPayload)],
-) -> PgSidecarFuture<'t>;
 type PgMemoryPayloadLoader =
     for<'t> fn(PgSidecarReadCtx<'t>, MemoryId) -> PgMemoryPayloadFuture<'t>;
 type PgMemoryPayloadBatchLoader =
@@ -53,7 +49,6 @@ pub struct PgSidecarEntry {
     pub key: PgSidecarKey,
     pub sidecar_table: String,
     pub(super) memory_insert: Option<PgMemorySidecarInserter>,
-    pub(super) memory_insert_batch: Option<PgMemorySidecarBatchInserter>,
     pub(super) memory_load: Option<PgMemoryPayloadLoader>,
     pub(super) memory_load_batch: Option<PgMemoryPayloadBatchLoader>,
     pub(super) cited_object_insert: Option<PgCitedObjectSidecarInserter>,
