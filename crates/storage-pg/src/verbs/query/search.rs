@@ -540,7 +540,6 @@ fn semantic_branch_sql<'p>(
             push_joined_scan_note(&mut sql);
             ChunkRows {
                 row: "ann",
-                score: "ann",
                 from: joined_ann_from(vec_param, model_param, candidate_overfetch),
             }
         }
@@ -548,7 +547,6 @@ fn semantic_branch_sql<'p>(
             push_ann_scan(&mut sql, mode, vec_param, model_param, candidate_overfetch);
             ChunkRows {
                 row: "c",
-                score: "ann",
                 from: index_first_ann_from(),
             }
         }
@@ -578,11 +576,15 @@ fn semantic_branch_sql<'p>(
 const MAX_ANN_SCAN_ROWS: u64 = 20_000;
 
 /// The chunk-level rows the memory collapse reads — one row per embedding
-/// that survived the nearest-neighbour window — with the aliases carrying a
-/// row's memory columns and its score.
+/// that survived the nearest-neighbour window.
+///
+/// `row` is the alias carrying a row's memory columns, which differs by arm:
+/// the joined scan projects them through its own subquery (`ann`), while an
+/// index-first scan leaves them on `eligible_entities` (`c`). The score is
+/// `ann` on every arm — it is the similarity the nearest-neighbour scan
+/// itself computed — so it is spelled literally in the templates below.
 struct ChunkRows {
     row: &'static str,
-    score: &'static str,
     from: String,
 }
 
@@ -812,7 +814,7 @@ fn push_ann_scan(
 /// read once, and a window function already blocks the outer filter from
 /// being pushed under it.
 fn push_vector_candidates(sql: &mut String, tuning: &PgTuning, chunk: &ChunkRows) {
-    let ChunkRows { row, score, from } = chunk;
+    let ChunkRows { row, from } = chunk;
     let barrier = if matches!(tuning.semantic_index_first, SemanticIndexFirst::Pushdown) {
         "AS ("
     } else {
@@ -825,9 +827,9 @@ fn push_vector_candidates(sql: &mut String, tuning: &PgTuning, chunk: &ChunkRows
             "
           ann_ranked AS (
               SELECT {row}.memory_id, {row}.kind, {row}.schema_id, {row}.created_at,
-                     {row}.search_text, {score}.similarity_score,
+                     {row}.search_text, ann.similarity_score,
                      row_number() OVER (PARTITION BY {row}.kind, {row}.memory_id
-                                        ORDER BY {score}.similarity_score DESC) AS rn
+                                        ORDER BY ann.similarity_score DESC) AS rn
 {from}
           ),
           vector_candidates {barrier}
@@ -846,9 +848,9 @@ fn push_vector_candidates(sql: &mut String, tuning: &PgTuning, chunk: &ChunkRows
           vector_candidates {barrier}
               SELECT DISTINCT ON ({row}.kind, {row}.memory_id)
                      {row}.memory_id, {row}.kind, {row}.schema_id, {row}.created_at,
-                     {row}.search_text, {score}.similarity_score
+                     {row}.search_text, ann.similarity_score
 {from}
-               ORDER BY {row}.kind, {row}.memory_id, {score}.similarity_score DESC
+               ORDER BY {row}.kind, {row}.memory_id, ann.similarity_score DESC
           )"
     )
     .expect("write to String is infallible");
