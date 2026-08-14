@@ -351,7 +351,11 @@ async fn pg_with_ann_window(
         semantic_index_first,
         semantic_overfetch_per_result: 1,
         semantic_overfetch_min: window,
-        ..PgTuning::from_env()?
+        // `default()`, not `from_env()`: the recall fixtures must assert the
+        // shipped configuration, not whatever `PROXIMA_PG_*` happens to be
+        // set in the test process's environment. Pool sizing still comes
+        // from the environment via `connect_with_tuning`.
+        ..PgTuning::default()
     };
     Ok(PgStorage::connect_with_tuning(&db_url(db_name), tuning).await?)
 }

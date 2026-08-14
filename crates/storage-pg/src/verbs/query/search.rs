@@ -845,6 +845,16 @@ fn push_vector_candidates(sql: &mut String, tuning: &PgTuning, chunk: &ChunkRows
     .expect("write to String is infallible");
 }
 
+/// The production HNSW session-settings statement, for EXPLAIN-based plan
+/// assertions that must run under exactly the settings `run_semantic`
+/// applies rather than a restated copy of them.
+#[cfg(any(test, feature = "test-fixtures", debug_assertions))]
+#[doc(hidden)]
+#[must_use]
+pub fn set_hnsw_search_sql_for_tests(tuning: &PgTuning) -> String {
+    set_hnsw_search_sql(tuning)
+}
+
 /// The semantic branch SQL for EXPLAIN-based plan assertions in tests.
 #[cfg(any(test, feature = "test-fixtures", debug_assertions))]
 #[doc(hidden)]
@@ -1757,28 +1767,6 @@ mod tests {
 
             assert_eq!(sql, golden, "{index_first:?}, window dedup {window_dedup}");
         }
-    }
-
-    /// The successor test both branches carry by default: a join over the
-    /// successor set, in place of the probe the legacy candidate CTE runs
-    /// per row.
-    #[test]
-    fn window_dedup_joins_the_successor_set_once_per_branch() {
-        let projections = golden_projections();
-        let selected: Vec<&MemorySearchProjection> = projections.iter().collect();
-        let mut next_param = 3;
-        let sql = common_candidates_sql(
-            &golden_request(SearchMode::Lexical),
-            &selected,
-            &mut next_param,
-            true,
-            &PgTuning::default(),
-        )
-        .unwrap();
-
-        assert_eq!(sql, COMMON_CANDIDATES_DEFAULT_GOLDEN);
-        assert_eq!(next_param, 10);
-        assert!(!sql.contains("NOT EXISTS"));
     }
 
     /// A request that asks for superseded rows runs no head filter, so the
