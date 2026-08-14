@@ -534,23 +534,17 @@ fn semantic_branch_sql<'p>(
     let order_by = branch_order_by(req, "similarity_score");
 
     push_eligible_entities(&mut sql, tuning);
-    let chunk_rows = match tuning.semantic_index_first {
+    let chunk_from = match tuning.semantic_index_first {
         SemanticIndexFirst::Off => {
             push_joined_scan_note(&mut sql);
-            ChunkRows {
-                row: "ann",
-                from: joined_ann_from(vec_param, model_param, candidate_overfetch),
-            }
+            joined_ann_from(vec_param, model_param, candidate_overfetch)
         }
         mode => {
             push_ann_scan(&mut sql, mode, vec_param, model_param, candidate_overfetch);
-            ChunkRows {
-                row: "c",
-                from: index_first_ann_from(),
-            }
+            index_first_ann_from()
         }
     };
-    push_vector_candidates(&mut sql, tuning, &chunk_rows);
+    push_vector_candidates(&mut sql, tuning, &chunk_from);
 
     write!(
         sql,
@@ -573,19 +567,6 @@ fn semantic_branch_sql<'p>(
 /// before eligibility is known, so it is a work budget rather than a result
 /// budget and needs a ceiling the request's own window does not give it.
 const MAX_ANN_SCAN_ROWS: u64 = 20_000;
-
-/// The chunk-level rows the memory collapse reads — one row per embedding
-/// that survived the nearest-neighbour window.
-///
-/// `row` is the alias carrying a row's memory columns, which differs by arm:
-/// the joined scan projects them through its own subquery (`ann`), while an
-/// index-first scan leaves them on `eligible_entities` (`c`). The score is
-/// `ann` on every arm — it is the similarity the nearest-neighbour scan
-/// itself computed — so it is spelled literally in the templates below.
-struct ChunkRows {
-    row: &'static str,
-    from: String,
-}
 
 /// The eligibility set the vector branch joins against: one row per memory,
 /// newest first. `semantic_index_first` never moves it; only
@@ -812,12 +793,21 @@ fn push_ann_scan(
 /// sorted set per group. `ann_ranked` carries no barrier of its own: it is
 /// read once, and a window function already blocks the outer filter from
 /// being pushed under it.
-fn push_vector_candidates(sql: &mut String, tuning: &PgTuning, chunk: &ChunkRows) {
-    let ChunkRows { row, from } = chunk;
-    let barrier = if matches!(tuning.semantic_index_first, SemanticIndexFirst::Pushdown) {
-        "AS ("
-    } else {
-        "AS MATERIALIZED ("
+///
+/// `from` is the chunk-level scan this reads — one row per embedding that
+/// survived the nearest-neighbour window — and `row` is the alias carrying
+/// that row's memory columns, which differs by arm: the joined scan projects
+/// them through its own subquery (`ann`), while an index-first scan leaves
+/// them on `eligible_entities` (`c`). Both fall out of the same discriminant
+/// the barrier does, so they are read off one match rather than carried
+/// alongside `from` where they could disagree with it. The score is `ann` on
+/// every arm — it is the similarity the nearest-neighbour scan itself
+/// computed — so it is spelled literally in the templates below.
+fn push_vector_candidates(sql: &mut String, tuning: &PgTuning, from: &str) {
+    let (row, barrier) = match tuning.semantic_index_first {
+        SemanticIndexFirst::Off => ("ann", "AS MATERIALIZED ("),
+        SemanticIndexFirst::Overfetch => ("c", "AS MATERIALIZED ("),
+        SemanticIndexFirst::Pushdown => ("c", "AS ("),
     };
 
     if tuning.candidate_window_dedup {
