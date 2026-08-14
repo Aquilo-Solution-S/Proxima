@@ -1192,8 +1192,7 @@ fn allocate_candidate_params(
         until: req.until.map(|_| claim(1)),
         tags: (!req.tags.is_empty()).then(|| claim(1)),
         // A recency cursor binds a `(created_at, memory_id)` pair.
-        recency_cursor: matches!(req.after, Some(SearchCursor::Recency { .. }))
-            .then(|| claim(2)),
+        recency_cursor: matches!(req.after, Some(SearchCursor::Recency { .. })).then(|| claim(2)),
         supersedes_anti_join: tuning.candidate_window_dedup,
     };
     (sidecar_first_param, filters)

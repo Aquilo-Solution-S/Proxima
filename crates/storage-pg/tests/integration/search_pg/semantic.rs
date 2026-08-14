@@ -1,10 +1,10 @@
 //! Semantic-branch search behaviour: vector ranking, owner isolation, chunk scoring, and pre-limit filtering.
 
 use super::{
-    SHIPPED_ANN_WINDOW, TaggedAbstractionInsert, WIDE_ANN_WINDOW, brute_cosine, drop_db, fresh_pg,
-    insert_embedded_memory, insert_embedded_memory_with_schema, insert_embedded_memory_with_vec,
-    create_tagged_search_sidecars, insert_embedding_with_head, insert_search_abstraction,
-    insert_tagged_abstraction,
+    SHIPPED_ANN_WINDOW, TaggedAbstractionInsert, WIDE_ANN_WINDOW, brute_cosine,
+    create_tagged_search_sidecars, drop_db, fresh_pg, insert_embedded_memory,
+    insert_embedded_memory_with_schema, insert_embedded_memory_with_vec,
+    insert_embedding_with_head, insert_search_abstraction, insert_tagged_abstraction,
     owner_fixture, padded_embedding, pg_with_ann_window, semantic_request,
     tagged_abstraction_projection, tagged_search_request, vector_literal,
 };
