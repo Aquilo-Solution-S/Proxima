@@ -15,9 +15,22 @@ pub(crate) const REQUIRED_PGVECTOR_PATCH: u32 = 0;
 /// protocol, which accepts them in one message; there is nothing to bind
 /// here, so the usual reason to prefer the extended protocol does not apply.
 ///
-/// `hnsw.max_scan_tuples` is only reachable under an iterative scan, and
-/// setting it to pgvector's own default would be a no-op statement, so it
-/// is emitted only when it can change something.
+/// `hnsw.max_scan_tuples` is only reachable under an iterative scan, so the
+/// `Off` arm genuinely has nothing to set. The second condition is not of
+/// that kind: at [`DEFAULT_HNSW_MAX_SCAN_TUPLES`] the clause is dropped
+/// because it matches *this crate's* constant, not because it matches the
+/// server's effective value — so at the default the session INHERITS
+/// whatever the server carries rather than pinning it. Measured on
+/// Postgres 18.4 / pgvector 0.8.5: with
+/// `ALTER DATABASE … SET hnsw.max_scan_tuples = 500000`, a session running
+/// the statement below verbatim reports an effective `hnsw.max_scan_tuples`
+/// of 500000 while [`PgTuning`] reports 20000. This is therefore the one
+/// tuning knob whose shipped default is not asserted; a server- or
+/// database-level override wins until an operator sets
+/// `PROXIMA_PG_HNSW_MAX_SCAN_TUPLES` explicitly. It matters more than it
+/// would for the other knobs because `hnsw.max_scan_tuples`, not the SQL
+/// `LIMIT`, is what actually bounds the shipped (pushdown) arm's index
+/// scan.
 pub(crate) fn set_hnsw_search_sql(tuning: &PgTuning) -> String {
     let mut sql = format!(
         "SET LOCAL hnsw.ef_search = {}; SET LOCAL hnsw.iterative_scan = {}",
