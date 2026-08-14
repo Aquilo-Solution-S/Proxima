@@ -1371,6 +1371,20 @@ fn push_supersedes_anti_join(
     super::push_same_home_owner_successor_predicate(sql, "m2", "m");
 }
 
+/// The fact-head liveness test, which both head-filter spellings carry
+/// verbatim: a row is live when it is not a fact projection at all, or when
+/// its fact entity still names it as the current memory.
+///
+/// Held once because the kind-specialized fact-only arm and the mixed arm's
+/// first disjunct are the same predicate — the specialization drops the kind
+/// dispatch around it, not the test itself.
+const FACT_HEAD_TEST: &str = "m.fact_entity_id IS NULL \
+     OR EXISTS ( \
+         SELECT 1 FROM proxima_core.fact_entities fe \
+          WHERE fe.fact_entity_id = m.fact_entity_id \
+            AND fe.current_memory_id = m.memory_id \
+     )";
+
 fn push_search_head_filter(
     sql: &mut String,
     req: &MemorySearchRequest,
@@ -1387,17 +1401,7 @@ fn push_search_head_filter(
     if filters.supersedes_anti_join {
         match kinds {
             BranchKinds::FactOnly => {
-                // SQL-POLICY: fixed-fragment
-                sql.push_str(
-                    " AND ( \
-                        m.fact_entity_id IS NULL \
-                        OR EXISTS ( \
-                            SELECT 1 FROM proxima_core.fact_entities fe \
-                             WHERE fe.fact_entity_id = m.fact_entity_id \
-                               AND fe.current_memory_id = m.memory_id \
-                        ) \
-                    )",
-                );
+                write!(sql, " AND ( {FACT_HEAD_TEST} )").expect("write to String is infallible");
                 return;
             }
             BranchKinds::DerivedOnly => {
@@ -1409,19 +1413,11 @@ fn push_search_head_filter(
             BranchKinds::Mixed => {}
         }
     }
-    // SQL-POLICY: fixed-fragment
-    sql.push_str(
-        " AND ( \
-            (m.kind IS NULL AND ( \
-                m.fact_entity_id IS NULL \
-                OR EXISTS ( \
-                    SELECT 1 FROM proxima_core.fact_entities fe \
-                     WHERE fe.fact_entity_id = m.fact_entity_id \
-                       AND fe.current_memory_id = m.memory_id \
-                ) \
-            )) \
-            OR (m.kind IS NOT NULL AND ",
-    );
+    write!(
+        sql,
+        " AND ( (m.kind IS NULL AND ( {FACT_HEAD_TEST} )) OR (m.kind IS NOT NULL AND "
+    )
+    .expect("write to String is infallible");
     if filters.supersedes_anti_join {
         // SQL-POLICY: fixed-fragment — the successor arrives as the join
         // `push_supersedes_anti_join` wrote onto this branch.

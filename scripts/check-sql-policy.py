@@ -318,7 +318,22 @@ def run_fixture(path: Path) -> int:
 # literal with no caller-reachable interpolation and carries a
 # `SQL-POLICY: fixed-fragment` proof, and the emitted statements are pinned
 # byte-for-byte by the golden tests in the same file.
-EXPECTED_DYNAMIC_SQL_SITES = 71
+# 2026-08-14 analysis (round 2): -2 — the search head filter stopped restating
+# the fact-head liveness test. `push_search_head_filter` (verbs/query/search.rs)
+# carried the same `m.fact_entity_id IS NULL OR EXISTS (…fact_entities…)`
+# predicate twice: once as the kind-specialized fact-only arm, once as the
+# mixed arm's first disjunct. It is now the module const FACT_HEAD_TEST,
+# interpolated by `write!` — which this detector does not count, while
+# `push_str` with a next-line literal does — so exactly those two `sql.push_str`
+# sites disappear and nothing is added (verified by diffing `--inventory`
+# against 19f63010: two removals, zero additions). The remaining push_str sites
+# in that function (the `m2.memory_id IS NULL` anti-join tail and the legacy
+# `NOT EXISTS` spelling) are untouched and keep their inline fixed-fragment
+# proofs; the two that moved to `write!` interpolate one crate-private
+# `&'static str` with no path from any caller, exactly as they did as literals,
+# and the emitted statements are byte-identical — all ten `*_GOLDEN` literals
+# in search.rs are unchanged from 19f63010.
+EXPECTED_DYNAMIC_SQL_SITES = 69
 
 
 def run_self_test() -> int:
