@@ -707,8 +707,8 @@ impl PgStorage {
             .map_err(|e| StorageError::Unavailable(e.to_string()))?;
 
         // Validate connectivity with a trivial query.
-        sqlx::query!("SELECT 1 AS one")
-            .fetch_one(&pool)
+        sqlx::query("SELECT 1")
+            .execute(&pool)
             .await
             .map_err(|e| StorageError::Unavailable(e.to_string()))?;
 

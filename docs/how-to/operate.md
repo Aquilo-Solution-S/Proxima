@@ -74,3 +74,18 @@ not an MCP tool (see [15 §Embedding Ops](../15-deployment.md#embedding-ops)):
 
 The orphan sweep's relationship to compliance erase is defined in
 [15 §Embedding Ops](../15-deployment.md#embedding-ops).
+
+Vacuum is physical-index maintenance; schedule from dead tuples, bytes,
+latency, and the recall canary.
+
+```sql
+SELECT relname, n_live_tup, n_dead_tup, vacuum_count, autovacuum_count
+  FROM pg_stat_all_tables
+ WHERE schemaname = 'proxima_core'
+   AND relname IN ('embeddings', 'embedding_heads', 'embedding_jobs');
+
+SELECT
+    pg_relation_size('proxima_core.embeddings'::regclass) AS embedding_table_bytes,
+    pg_total_relation_size('proxima_core.embeddings'::regclass) AS embedding_total_bytes,
+    pg_relation_size('proxima_core.idx_embeddings_vec_hnsw'::regclass) AS hnsw_index_bytes;
+```

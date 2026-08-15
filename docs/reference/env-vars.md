@@ -74,7 +74,6 @@ whether that is legal.
 
 | Variable | Scope | Notes |
 |---|---|---|
-| `SQLX_OFFLINE` | build/CI | CI sets `true` for offline sqlx query checking |
 | `PROXIMA_TEST_PG_URL` | tests | pg-testkit integration test source DB |
 | `PROXIMA_TEST_DATABASE_URL` | tests | HTTP/OIDC e2e dedicated DB |
 | `PROXIMA_PERF_SESSION_DIR` | dev diagnostics | optional per-request recorder in `crates/mcp-server`; not required for normal runtime |

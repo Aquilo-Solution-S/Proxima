@@ -36,7 +36,6 @@ explicit request.
 | `docs/14-protocol-surface.md` | Engine's contract to clients: five verbs (Query / ChangeHistory / GoalWrite / FactIngest / Schema), owner-scoped, transport-agnostic |
 | `docs/15-deployment.md` | Deploying the Code-flavor MCP server: Docker, OIDC bearer auth, network exposure, tool-surface profiles |
 | `docs/17-rest-surface.md` | Current build/runtime-opt-in REST projection of the tool manifest: derived routes, HTTP status map, OpenAPI |
-| `docs/dev-perf.md` | Perf reducer fixture format |
 
 ## Workspace layout
 

@@ -148,9 +148,6 @@ jobs:
         ports:
           - 9000:9000
     env:
-      # Force offline sqlx codegen (committed .sqlx cache) so DATABASE_URL below
-      # doesn't make sqlx::query! introspect the un-migrated service at BUILD time.
-      SQLX_OFFLINE: "true"
       # pg-testkit clones per-test DBs from this template (admin) URL.
       PROXIMA_TEST_PG_URL: postgres://proxima:proxima@localhost:5432/proxima
       # The HTTP e2e tests boot the facade against a DEDICATED database (created

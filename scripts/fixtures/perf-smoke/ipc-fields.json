@@ -1,3 +1,0 @@
-{"cmd":"query","field_path":"goals.[].id"}
-{"cmd":"query","field_path":"goals.[].title"}
-{"cmd":"query","field_path":"meta.count"}

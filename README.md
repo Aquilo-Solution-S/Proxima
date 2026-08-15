@@ -205,8 +205,6 @@ Status labels used below:
   `/v1` REST rendering of the frozen tool manifest: derived routes,
   header-borne call context, HTTP status map, and OpenAPI 3.2 request/response
   schemas derived from the registered Rust tool types.
-- [`docs/dev-perf.md`](docs/dev-perf.md) — **current developer fixture note**.
-  Perf reducer fixture format.
 
 ## Design Background
 

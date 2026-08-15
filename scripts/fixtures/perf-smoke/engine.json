@@ -1,1 +1,0 @@
-[{"name":"snapshot_assemble","cat":"engine","ph":"X","ts":1000,"dur":420000,"pid":1,"tid":1},{"name":"goal_query","cat":"engine","ph":"X","ts":2000,"dur":280000,"pid":1,"tid":1}]

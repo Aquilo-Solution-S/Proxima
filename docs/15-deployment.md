@@ -160,7 +160,7 @@ credentials. Native clients that omit `Origin` retain the same auth path.
 ## Build & run
 
 ```sh
-# The Dockerfile builds with `--features code` and SQLX_OFFLINE=true.
+# The Dockerfile builds with `--features code`.
 # This default image serves MCP only; see below for the two REST gates.
 docker build -t proxima-mcp .
 
