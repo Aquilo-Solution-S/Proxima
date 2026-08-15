@@ -1005,27 +1005,25 @@ mod pgvector_tests {
 #[cfg(test)]
 mod tests {
     #[test]
-    fn core_migrator_contains_the_v008_delegated_authority_lane() {
+    fn core_migrator_contains_the_v008_baseline() {
         let versions: Vec<i64> = super::core_migrator()
             .iter()
             .map(|migration| migration.version)
             .collect();
-        assert!(
-            versions.contains(&16),
-            "core migrator must embed 0016_v008.sql"
-        );
+        assert!(versions.contains(&1), "core migrator must embed 0001_v008.sql");
+        assert!(versions.contains(&2), "core migrator must embed 0002_blob_closed.sql");
+        assert!(versions.contains(&3), "core migrator must embed 0003_goal.sql");
     }
 
     #[test]
-    fn core_migrator_contains_the_squashed_v007_lane() {
+    fn core_migrator_v008_has_no_legacy_alter_versions() {
         let versions: Vec<i64> = super::core_migrator()
             .iter()
             .map(|migration| migration.version)
             .collect();
-        assert!(
-            versions.contains(&11),
-            "core migrator must embed 0011_v007.sql"
-        );
+        for dead in [8, 9, 10, 11, 16, 17, 18, 19, 20] {
+            assert!(!versions.contains(&dead), "legacy version {dead} must be gone");
+        }
     }
 
     #[test]
@@ -1036,8 +1034,8 @@ mod tests {
         // moves when a migration is added.
         let floor = super::min_core_migration_version();
         assert!(
-            (11..=super::CORE_MIGRATION_VERSION_CEILING).contains(&floor),
-            "derived boot floor {floor} must be a core-namespace version at or past the v0.0.7 lane"
+            (1..=super::CORE_MIGRATION_VERSION_CEILING).contains(&floor),
+            "derived boot floor {floor} must be a core-namespace version"
         );
         assert!(
             super::core_migrator()
@@ -1053,14 +1051,8 @@ mod tests {
             .iter()
             .map(|migration| migration.version)
             .collect();
-        assert!(
-            versions.contains(&9),
-            "core migrator must embed 0009_v006.sql"
-        );
-        assert!(
-            versions.contains(&10),
-            "core migrator must embed 0010_v006.sql"
-        );
+        assert!(versions.contains(&1));
+        assert!(versions.contains(&2));
     }
 
     /// An injected lookup, so every branch is reachable. These helpers used

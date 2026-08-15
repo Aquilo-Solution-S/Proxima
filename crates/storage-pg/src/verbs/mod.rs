@@ -17,6 +17,7 @@ pub mod fact_embeddings;
 pub mod fact_ingest;
 pub mod memory_timeseries;
 pub mod fact_retention;
+pub mod goal_timeseries;
 pub(crate) mod goal_wake_candidates;
 pub(crate) mod goal_write;
 pub(crate) mod lexical_language;
