@@ -26,5 +26,6 @@ pub(crate) mod mcp_call_history;
 pub mod persist_mcp_call;
 pub mod wake_timeseries;
 pub mod query;
+pub mod query_timeseries;
 pub mod retention_maintenance;
 pub mod source_cursors;

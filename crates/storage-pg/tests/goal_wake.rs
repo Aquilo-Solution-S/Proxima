@@ -1,4 +1,5 @@
 //! Slice 5: WakeConfig share / RESTRICT / match / fire.
+#![allow(clippy::doc_markdown, clippy::too_many_lines)]
 
 use proxima_core::storage_ports::OwnerWritePermit;
 use proxima_core::verbs::fact_ingest::FactWriteCommand;

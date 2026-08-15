@@ -1,4 +1,10 @@
 //! Slice 2: FactIngest timeseries write/read + ingest_keys replay.
+#![allow(
+    clippy::missing_errors_doc,
+    clippy::doc_markdown,
+    clippy::too_many_lines,
+    clippy::used_underscore_binding
+)]
 
 use proxima_core::storage_ports::OwnerWritePermit;
 use proxima_core::verbs::fact_ingest::FactWriteCommand;

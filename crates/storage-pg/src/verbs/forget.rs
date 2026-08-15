@@ -1,4 +1,5 @@
 //! Forget / hydrate / erase. UML §5c.
+#![allow(clippy::missing_errors_doc, clippy::doc_markdown)]
 
 use proxima_core::{Owner, StorageError};
 use sqlx::{Postgres, Transaction};

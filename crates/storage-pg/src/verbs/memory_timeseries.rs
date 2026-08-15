@@ -1,4 +1,9 @@
 //! Timeseries Fact write/read (v0.0.8). UML §8.
+#![allow(
+    clippy::missing_errors_doc,
+    clippy::doc_markdown,
+    clippy::too_many_lines
+)]
 
 use proxima_core::verbs::fact_ingest::{FactIngestOutcome, FactWriteCommand};
 use proxima_core::{MemoryId, Owner, OwnerRefKind, StorageError};
