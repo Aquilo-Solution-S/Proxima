@@ -354,3 +354,125 @@ async fn rank_first_probes_memories_for_the_window_instead_of_scanning_the_owner
     drop_db(&db_name).await?;
     Ok(())
 }
+
+/// Migration 0019's index only pays if the planner can pick it, and the
+/// only reason it can is that the `@@` predicate now sits on `memories`
+/// instead of on the candidate CTE above it.
+///
+/// This is the guard for a decision two earlier migrations made in the
+/// other direction. 0009 dropped the GIN indexes it inherited and 0011
+/// declined to add one, both because a predicate applied to a CTE result
+/// has no index path — true then, and it stays true the moment anyone
+/// moves the gate back above the branch set. Nothing else in the suite
+/// would notice: the rows returned are identical either way, so a
+/// regression here is silent and costs three orders of magnitude on the
+/// product's default mode.
+///
+/// The corpus is built so the two plans are not close, which is the lesson
+/// the sibling rank-first guard records: 20,000 rows under the owner, a
+/// term in five of them. Enumerating the owner to find five rows cannot
+/// win against an index probe on any costing, so the assertion is not
+/// riding a tie-break.
+///
+/// Hybrid mode, because that is the product default (`default_search_mode`)
+/// and its gate is the strict tsquery alone — the rescue arm lexical mode
+/// adds is an OR of a far less selective tsquery, which is a different and
+/// much weaker index case.
+#[tokio::test]
+async fn the_lexical_gate_is_served_by_the_search_tsv_index()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (pg, db_name) = fresh_pg().await;
+    pg.run_migrations().await?;
+
+    let owner = owner_fixture();
+    let (crowd_kind, crowd_id) = owner.columns();
+    sqlx::query(
+        "INSERT INTO proxima_core.memories
+            (memory_id, owner_kind, owner_id, schema_id, schema_version, kind, text,
+             operator_kind, operator_id, input_contract_id, model_id, prompt_version)
+         SELECT gen_random_uuid(), $1, $2, 'test/search-abstraction-v1', 1,
+                'Abstraction',
+                CASE WHEN g <= 5 THEN 'zarquon sighting ' || g
+                     ELSE 'ordinary filler row ' || g END,
+                'AtoA',
+                '00000000-0000-0000-0000-000000000327'::uuid,
+                '00000000-0000-0000-0000-000000000328'::uuid,
+                'test-model', 'test-v1'
+           FROM generate_series(1, 20000) g",
+    )
+    .bind(crowd_kind)
+    .bind(crowd_id)
+    .execute(pg.pool_for_tests())
+    .await?;
+    sqlx::query("ANALYZE proxima_core.memories")
+        .execute(pg.pool_for_tests())
+        .await?;
+
+    let mut req = any_kind_lexical_request(&owner, "zarquon");
+    req.mode = SearchMode::Hybrid;
+    let (owner_kind, owner_id) = owner.columns();
+
+    let lexical_sql = proxima_storage_pg::verbs::query::lexical_search_sql_for_tests(
+        &req,
+        &[],
+        44,
+        &PgTuning::default(),
+    )?;
+    // SQL-POLICY: fixed-fragment — EXPLAIN prefix over the audited
+    // production builder's parameterized SQL; only bound values vary.
+    let plan: serde_json::Value = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+        "EXPLAIN (FORMAT JSON, COSTS OFF) {lexical_sql}"
+    )))
+    .bind(vec![owner_kind])
+    .bind(vec![owner_id])
+    .bind("zarquon")
+    .fetch_one(pg.pool_for_tests())
+    .await?;
+    let root = plan
+        .as_array()
+        .and_then(|rows| rows.first())
+        .and_then(|row| row.get("Plan"))
+        .cloned()
+        .expect("EXPLAIN JSON has a root Plan");
+
+    assert!(
+        plan.to_string().contains("idx_memories_search_tsv"),
+        "the lexical gate must be served by the GIN index migration 0019 adds; without it \
+         the index is write amplification and nothing else:\n{plan:#}"
+    );
+    assert!(
+        !plan_seq_scans_relation(&root, "memories"),
+        "a seq scan means the gate is not being served by the index:\n{plan:#}"
+    );
+
+    // And the contrast that explains why the substring band is a separate
+    // statement rather than a third arm of that one: its predicate has no
+    // index to reach for, so leaving it in the same disjunction would have
+    // put the scan back and made the index unreachable again.
+    let substring_sql = proxima_storage_pg::verbs::query::substring_search_sql_for_tests(
+        &req,
+        &[],
+        44,
+        &PgTuning::default(),
+    )?;
+    // SQL-POLICY: fixed-fragment — EXPLAIN prefix over the audited builder.
+    let substring_plan: serde_json::Value = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+        "EXPLAIN (FORMAT JSON, COSTS OFF) {substring_sql}"
+    )))
+    .bind(vec![owner_kind])
+    .bind(vec![owner_id])
+    .bind("zarquon")
+    .fetch_one(pg.pool_for_tests())
+    .await?;
+    assert!(
+        !substring_plan
+            .to_string()
+            .contains("idx_memories_search_tsv"),
+        "the substring statement cannot use the tsvector index; if it ever does, the two \
+         predicates could share one statement again:\n{substring_plan:#}"
+    );
+
+    drop(pg);
+    drop_db(&db_name).await?;
+    Ok(())
+}

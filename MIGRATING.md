@@ -1509,6 +1509,32 @@ or view.
 
 ## Operator changes
 
+### Lexical search is index-served now
+
+**No action, but budget the disk and the upgrade window.** Lexical
+matching used to enumerate the owner's rows on every search — fine when an
+owner holds a slice of the table, the whole table when one owner holds it
+all, which is the default shape of a personal deployment. The schema lane
+adds a GIN index on the three stored `search_tsv` columns and the read
+path moves its match predicate onto the base tables so the planner can
+select them. Measured on a ~10^5-row single-owner corpus of conversational
+text, the index is 45 MB against a 140 MB table and took 1.1 s to build.
+
+Two consequences worth knowing before you promote:
+
+- The builds are not `CONCURRENTLY` — `CREATE INDEX CONCURRENTLY` cannot
+  run inside a transaction and each migration is one — so they hold a
+  write lock on their table while they run.
+- Writes now maintain three more GIN indexes. That is the cost side of the
+  trade; the read side is that a lexical or hybrid search stops reading
+  the owner's whole corpus.
+
+Result membership does not change. Substring (`LIKE '%…%'`) matching,
+including infix matches inside a word and queries made entirely of
+stopwords, still works exactly as before — it moved into a second
+statement that runs only when the tsquery arms cannot already fill the
+page, which is precisely when those queries need it.
+
 ### Re-register and re-index every code repository
 
 **Required if you run the code flavor.** Three separate reasons converge on

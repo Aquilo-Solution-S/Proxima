@@ -380,3 +380,137 @@ fragments. It is the one shape in this wave whose win depends on the
 corpus rather than on an argument. If a benchmark on a walk-heavy graph
 shows it losing, the revert is `query/lineage.rs` alone and the pinned
 row sets make the revert safe.
+
+## Lexical GIN-first — migration 0019 and the split lexical branch
+
+The largest single finding of the wave, and the last to land. It is
+recorded here rather than as an `S`-number because it is not a sweep
+item: it is a decision two earlier migrations made deliberately, on a
+premise that stopped being true.
+
+### What was wrong
+
+`memories`, `agent_note_v1` and `agent_derivation_v1` have carried a
+`STORED` generated `search_tsv` column since migration 0011, with no
+index on any of them. That was on purpose. `0009_v006.sql` had dropped
+the v0.0.6 GIN indexes because the read path matched `c.search_tsv`
+against an owner-scoped `candidates` CTE and no index on a base table
+can serve a predicate applied to a CTE result. `0011_v007.sql` repeated
+the reasoning and added a second argument:
+
+> owner-first enumeration already reduces a search to a few hundred rows
+> before any text predicate runs
+
+The first argument was correct and remains correct. The second is false
+for a single-owner deployment, where the owner scope *is* the table —
+and that is the default shape of a personal memory system. Measured
+there, every lexical search read the whole owner scope and spilled a
+tsvector per candidate row to disk.
+
+### Why the index alone is worthless, and the pushdown almost so
+
+Two measurements decided the design, both on a ~10^5-row single-owner
+corpus of conversational text, relative to the shipped statement:
+
+| | lexical mode | hybrid mode (product default) |
+|---|---|---|
+| GIN index added, statement unchanged | 1.00 | 1.00 |
+| predicate pushed to the base tables, all three arms in one gate | 0.88 | 0.82 |
+| predicate pushed down, tsquery arms only | 0.22 | **0.0004** |
+
+The first row is what 0009 and 0011 already said. The second is the one
+that decided the shape: `LIKE '%…%'` has no index in core, and a planner
+facing `search_tsv @@ q OR lower(text) LIKE '%…%'` must scan the owner
+scope for the second arm, so it never chooses the GIN path for the
+first. Splitting the substring arm into its own statement is not a
+tidiness preference — it is the entire difference between the index
+being live and being write amplification.
+
+Pushdown on its own is still worth something: the branch set stops
+materialising a tsvector per candidate row, and a 100+ MB tuplestore
+spill disappears. That is the 0.88/0.82 row, and it is all the index
+would have bought without the split.
+
+### What the substring arm is actually for
+
+Counted per query class on the same corpus — rows the substring
+predicate finds that neither tsquery does:
+
+| query class | rows only `LIKE` finds |
+|---|---|
+| natural multi-word ("thrift store clothing haul", …) | 0, in every case measured |
+| single word | 8 of 313 |
+| all-stopword ("what is the") | 1,145 — the only arm that fires |
+| partial word ("ustainab") | 4,551 — the only arm that fires |
+
+So it is not a general recall contributor; it is the fallback for
+queries the tsquery cannot express, exactly as the builder's own
+comment says. Both of the cases where it carries the whole search share
+a property: the tsquery arms return few or no rows. That is what makes
+the arm skippable without a recall trade — the skip condition is a
+faithful statement of what the arm is for, not a heuristic.
+
+### The rule
+
+A substring-only row scores a flat `0.25` and nothing else, so its final
+score is `SUBSTRING_BAND` in lexical mode and
+`(1 - semantic_weight) * SUBSTRING_BAND` in hybrid. If the candidates in
+hand already hold `fetch_target` rows scoring *strictly* above that, no
+row the substring statement could return can reach the page, and the
+statement is skippable with no row changing. Three conditions are
+checked rather than assumed, and each was a real hole in the first draft
+of this design:
+
+- **Recency order breaks it entirely.** The argument is about score
+  order; `SearchOrder::Recency` pages by `created_at`, so the newest
+  substring-only row outranks every tsquery hit. Never skipped there.
+- **Width is `fetch_target`,** the page plus its has-more probe plus a
+  relevance cursor's already-emitted rows — not `req.limit`.
+- **Hybrid counts fused scores,** which is what lets it skip at all: a
+  corpus with embeddings fills the page from the semantic leg well above
+  `0.4 × 0.25`. Hybrid's lexical leg has no rescue arm, so on its own it
+  usually cannot.
+
+The band also has to reach fusion for rows the semantic leg returned and
+the tsquery gate excluded. That is a column on the rank-first semantic
+statement, evaluated over rows it was reading anyway, OR-ed per branch
+with a window function because `eligible_entities` collapses a memory's
+branches to one row and would otherwise lose a base-text match to a
+sidecar projection that has none. The escape-hatch semantic statement is
+frozen and cannot carry it, so a hybrid search under
+`PROXIMA_PG_SEMANTIC_INDEX_FIRST=off` always reads the substring
+statement instead.
+
+### What it costs
+
+A second round trip under its own snapshot, whenever the fallback fires.
+Hybrid has read under two snapshots since its legs became concurrent and
+the anomaly has the same shape — every row returned existed during the
+search, and the page is re-ranked from the union in one place. It is not
+the same guarantee `rank_first_semantic_branch_sql` documents for
+keeping its scan and eligibility check in one statement; that one is
+about a scan and its own filter disagreeing about liveness, which two
+independent candidate sets merged by id cannot do.
+
+When the fallback does fire, the search costs roughly what it used to.
+The trade is that it fires on the queries that were always going to need
+a scan, and not on the rest.
+
+### What is not indexed, and why
+
+`interpretation_v1` declares no `tsv_column`, so the builder tokenises
+its projection inline and no index on the raw table could match that
+expression — the brittleness 0009 deleted. Its `UNION ALL` arm scans
+that one sidecar; the arms are planned separately, so it does not cost
+the `memories` and note arms their indexes. Giving it a stored column is
+a separate change with a table rewrite attached.
+
+### The one thing holding it in place
+
+`search_pg::plans::the_lexical_gate_is_served_by_the_search_tsv_index`.
+Both spellings of the gate return identical rows, so moving it back
+above the branch set is silent: the whole suite stays green and the
+default mode loses three orders of magnitude. The guard's corpus gives
+the owner 20,000 rows and the query term five of them, so the two plans
+are not close — the lesson the sibling rank-first guard records after a
+small fixture let a planner tie-break flap between CI runs.

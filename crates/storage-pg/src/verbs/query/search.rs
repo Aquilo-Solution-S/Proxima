@@ -109,6 +109,15 @@ fn like_literal(query_param: usize) -> String {
 // multi-sentence query almost never AND-matches at all and the arm does
 // not fire.
 
+/// The flat score a substring-only match earns.
+///
+/// Also the whole substring band: unlike the two tsquery bands it carries
+/// no rank term, so every substring-only row scores exactly this. That is
+/// what makes the band skippable — a page already holding its full width
+/// of rows scoring *strictly* above it cannot be changed by rows that can
+/// only ever equal it. See [`needs_substring_pass`].
+const SUBSTRING_BAND: f32 = 0.25;
+
 #[derive(Debug)]
 struct SearchRow {
     memory_id: uuid::Uuid,
@@ -202,6 +211,11 @@ pub(crate) async fn search_memories(
         .saturating_mul(tuning.semantic_overfetch_per_result)
         .max(tuning.semantic_overfetch_min);
 
+    let semantic_weight = req
+        .semantic_weight
+        .unwrap_or(DEFAULT_HYBRID_SEMANTIC_WEIGHT)
+        .clamp(0.0, 1.0);
+
     match req.mode {
         SearchMode::Lexical => {
             for row in run_lexical(pool, req, projections, overfetch, tuning).await? {
@@ -246,21 +260,30 @@ pub(crate) async fn search_memories(
         }
     }
 
-    let semantic_weight = req
-        .semantic_weight
-        .unwrap_or(DEFAULT_HYBRID_SEMANTIC_WEIGHT)
-        .clamp(0.0, 1.0);
+    // The substring band, read from the corpus only when the candidates in
+    // hand cannot already outrank everything it could produce.
+    //
+    // This is a second statement under its own snapshot, so a row written
+    // between the two is visible to one and not the other. Hybrid has read
+    // under two snapshots since its legs were made concurrent, and the
+    // anomaly has the same shape here: every row returned existed during
+    // the search, and the page is re-ranked from the union in one place.
+    // What it is not is a substitute for the single-statement guarantee
+    // `rank_first_semantic_branch_sql` documents — that one is about a
+    // scan and its eligibility check disagreeing about liveness, which two
+    // independent candidate sets merged by id cannot do.
+    if !matches!(req.mode, SearchMode::Semantic)
+        && needs_substring_pass(req, &candidates, fetch_target, semantic_weight, tuning)
+    {
+        for row in run_substring(pool, req, projections, overfetch, tuning).await? {
+            merge_row(&mut candidates, row);
+        }
+    }
+
     let mut results: Vec<MemorySearchResult> = candidates
         .into_values()
         .map(|candidate| {
-            let score = match req.mode {
-                SearchMode::Lexical => candidate.lexical_score,
-                SearchMode::Semantic => candidate.similarity_score,
-                SearchMode::Hybrid => {
-                    (semantic_weight * candidate.similarity_score)
-                        + ((1.0 - semantic_weight) * candidate.lexical_score)
-                }
-            };
+            let score = fused_score(req.mode, semantic_weight, &candidate);
             MemorySearchResult {
                 memory_id: MemoryId::new(candidate.memory_id),
                 kind: candidate.kind,
@@ -327,6 +350,22 @@ fn ranks_after_cursor(result: &MemorySearchResult, after: SearchCursor) -> bool 
     }
 }
 
+/// The score a candidate is ranked and paged by, for its mode.
+///
+/// Factored out because [`needs_substring_pass`] has to reason about the
+/// same number before the page is built, and a second spelling of it would
+/// be a second thing to keep in step.
+fn fused_score(mode: SearchMode, semantic_weight: f32, candidate: &Candidate) -> f32 {
+    match mode {
+        SearchMode::Lexical => candidate.lexical_score,
+        SearchMode::Semantic => candidate.similarity_score,
+        SearchMode::Hybrid => {
+            (semantic_weight * candidate.similarity_score)
+                + ((1.0 - semantic_weight) * candidate.lexical_score)
+        }
+    }
+}
+
 fn merge_row(candidates: &mut BTreeMap<uuid::Uuid, Candidate>, row: SearchRow) {
     let entry = candidates
         .entry(row.memory_id)
@@ -361,17 +400,8 @@ fn lexical_branch_sql<'p>(
 ) -> Result<(String, Vec<&'p MemorySearchProjection>), StorageError> {
     let projections = memory_search_projections(req, projections);
     let mut next_param = 3;
-    let mut sql = common_candidates_sql(
-        req,
-        &projections,
-        &mut next_param,
-        CandidateShape {
-            open: MATERIALIZED_CANDIDATES_OPEN,
-            include_tsv: true,
-            ann_restriction: None,
-        },
-        tuning,
-    )?;
+    let (sidecar_first_param, filters) =
+        allocate_candidate_params(req, projections.len(), &mut next_param, tuning);
     let query_param = next_param;
     let order_by = branch_order_by(req, "lexical_score");
     // The OR-rescue arm serves pure-lexical retrieval (including hybrid
@@ -382,6 +412,20 @@ fn lexical_branch_sql<'p>(
     // 0.99 → 0.82 when fused) — so hybrid keeps the strict+substring arms
     // only and lets the semantic leg carry recall.
     let rescue = matches!(req.mode, SearchMode::Lexical);
+    // The branch set is written after the query CTEs it reads, so it is
+    // built into its own buffer and appended below.
+    let candidates = common_candidates_sql(
+        req,
+        &projections,
+        sidecar_first_param,
+        filters,
+        CandidateShape {
+            open: "\n          , candidates AS (",
+            include_tsv: true,
+            ann_restriction: None,
+            match_gate: Some(MatchGate::Tsv { rescue }),
+        },
+    )?;
     // Match against the cross-language `q.any_tsq`; rank with the row's own
     // configuration (see TEXT_SEARCH_CONFIG). The row-config rescue tsquery
     // can be NULL where the query has no lexemes under that configuration —
@@ -399,20 +443,20 @@ fn lexical_branch_sql<'p>(
     } else {
         ""
     };
-    let rescue_where_arm = if rescue {
-        " OR c.search_tsv @@ q.any_tsq"
-    } else {
-        ""
-    };
 
     // `candidates` carries `search_tsv` per branch — read from the stored
-    // column where the table has one, computed once inside the MATERIALIZED
-    // CTE where it does not. Either way the vector is produced exactly once
-    // per candidate row, so the match arm, the rank arm and the WHERE gate
-    // share it rather than each re-tokenising the document.
-    write!(
-        sql,
-        " , scrubbed AS (
+    // column where the table has one, computed inside the branch where it
+    // does not. Either way the vector is produced exactly once per
+    // candidate row, so the gate that admitted the row and the rank arm
+    // that scores it share one vector rather than each re-tokenising the
+    // document.
+    //
+    // The branch set no longer needs the `MATERIALIZED` fence, and must
+    // not have it: the gate is inside each branch now, beside that
+    // branch's owner predicate, which is both what lets an index serve it
+    // and what the fence was protecting against losing.
+    let mut sql = format!(
+        "WITH scrubbed AS (
                -- The same scrub every stored `search_tsv` went through
                -- (`lexical_tsv` = `to_tsvector(config, lexical_scrub(txt))`).
                -- Called, not restated: a query token that keeps punctuation
@@ -436,7 +480,7 @@ fn lexical_branch_sql<'p>(
                                           proxima_core.lexical_query_text(l.config, s.q))
                                       ORDER BY l.config)
                              FROM proxima_core.lexical_languages l),
-                          websearch_to_tsquery({ts_config}, s.q)
+                          websearch_to_tsquery({TEXT_SEARCH_CONFIG}, s.q)
                       ) AS tsq,
                       -- OR-rescue arm: the same content lexemes any-matched.
                       -- plainto_tsquery emits only '&' between lexemes (no
@@ -454,40 +498,117 @@ fn lexical_branch_sql<'p>(
                                       ORDER BY l.config)
                              FROM proxima_core.lexical_languages l),
                           NULLIF(
-                              replace(plainto_tsquery({ts_config}, s.q)::text,
+                              replace(plainto_tsquery({TEXT_SEARCH_CONFIG}, s.q)::text,
                                       ' & ', ' | '),
                               '')::tsquery
                       ) AS any_tsq
                  FROM scrubbed s
-          )
-          SELECT c.memory_id, c.kind, c.schema_id, c.created_at,
-                 left(c.search_text, 480) AS snippet,
-                 GREATEST(
-                     CASE WHEN c.search_tsv @@ q.tsq
+          )"
+    );
+    // SQL-POLICY: fixed-fragment — the audited candidate builder's own
+    // output, written below the query CTEs because its gate reads them.
+    sql.push_str(&candidates);
+
+    // The substring band is absent here, and its absence is exact rather
+    // than a trade. Every row this statement returns matched a tsquery, so
+    // it already scores in the strict band [0.5, 1.0] or the rescue band
+    // [0.25, 0.45]; the substring band is a flat 0.25, which `GREATEST`
+    // can never prefer over either. Rows that match ONLY the substring
+    // predicate are the fallback statement's job — see
+    // [`substring_branch_sql`] and [`needs_substring_pass`].
+    let strict_score_arm = "CASE WHEN c.search_tsv @@ q.tsq
                           THEN 0.5 + LEAST(COALESCE(ts_rank_cd(c.search_tsv,
                                    websearch_to_tsquery(c.lexical_language,
                                        proxima_core.lexical_query_text(
                                            c.lexical_language, q.scrubbed)),
                                    32), 0.0), 1.0) * 0.5
-                          ELSE 0.0 END{rescue_score_arm},
-                     CASE WHEN lower(c.search_text) LIKE '%' || {like_literal} || '%' ESCAPE '\\'
-                          THEN 0.25 ELSE 0.0 END
-                 )::real AS lexical_score,
+                          ELSE 0.0 END";
+    let score_expr = if rescue {
+        format!("GREATEST({strict_score_arm}{rescue_score_arm})")
+    } else {
+        format!("({strict_score_arm})")
+    };
+
+    write!(
+        sql,
+        "
+          SELECT c.memory_id, c.kind, c.schema_id, c.created_at,
+                 left(c.search_text, 480) AS snippet,
+                 {score_expr}::real AS lexical_score,
                  0.0::real AS similarity_score
           FROM candidates c, q
           WHERE c.search_text <> ''
-            AND (
-                c.search_tsv @@ q.tsq{rescue_where_arm}
-                OR lower(c.search_text) LIKE '%' || {like_literal} || '%' ESCAPE '\\'
-            )
           ORDER BY {order_by}
           LIMIT {}",
         u64::from(limit),
         order_by = order_by,
-        ts_config = TEXT_SEARCH_CONFIG,
-        rescue_score_arm = rescue_score_arm,
-        rescue_where_arm = rescue_where_arm,
-        like_literal = like_literal(query_param)
+        score_expr = score_expr,
+    )
+    .expect("write to String is infallible");
+    Ok((sql, projections))
+}
+
+/// The substring band's own statement: the rows `LIKE '%…%'` finds that no
+/// tsquery does.
+///
+/// Split out of the lexical branch rather than left beside it, because in
+/// one disjunction the two predicates cannot both be served. `LIKE '%…%'`
+/// has no base-table index in core — `docs/15-deployment.md` records why
+/// `pg_trgm` does not answer this for a projection-built `search_text` —
+/// so a planner facing `tsv @@ q OR text LIKE '%…%'` must scan the owner
+/// scope for the second arm and the GIN path for the first is never worth
+/// choosing. Measured on a ~10^5-row single-owner corpus, splitting them is
+/// the whole difference between the index being live and being decoration:
+/// same statement, same index, 0.82 of the shipped runtime with the arms
+/// together and 0.0004 with them apart.
+///
+/// What the split costs is that this statement is a second round trip
+/// under its own snapshot. [`needs_substring_pass`] is what keeps it from
+/// being paid on every search.
+fn substring_branch_sql<'p>(
+    req: &MemorySearchRequest,
+    projections: &'p [MemorySearchProjection],
+    limit: u32,
+    tuning: &PgTuning,
+) -> Result<(String, Vec<&'p MemorySearchProjection>), StorageError> {
+    let projections = memory_search_projections(req, projections);
+    let mut next_param = 3;
+    let (sidecar_first_param, filters) =
+        allocate_candidate_params(req, projections.len(), &mut next_param, tuning);
+    let query_param = next_param;
+    let order_by = branch_order_by(req, "lexical_score");
+
+    let mut sql = common_candidates_sql(
+        req,
+        &projections,
+        sidecar_first_param,
+        filters,
+        CandidateShape {
+            // Owner-first enumeration is the right plan here and the only
+            // one available, so the fence the tsvector statement drops is
+            // kept: nothing about this predicate is index-servable, and
+            // the fence is what stopped the planner driving a sidecar
+            // branch across every owner.
+            open: MATERIALIZED_CANDIDATES_OPEN,
+            include_tsv: false,
+            ann_restriction: None,
+            match_gate: Some(MatchGate::Substring { query_param }),
+        },
+    )?;
+
+    write!(
+        sql,
+        "
+          SELECT c.memory_id, c.kind, c.schema_id, c.created_at,
+                 left(c.search_text, 480) AS snippet,
+                 {SUBSTRING_BAND}::real AS lexical_score,
+                 0.0::real AS similarity_score
+          FROM candidates c
+          WHERE c.search_text <> ''
+          ORDER BY {order_by}
+          LIMIT {}",
+        u64::from(limit),
+        order_by = order_by,
     )
     .expect("write to String is infallible");
     Ok((sql, projections))
@@ -503,6 +624,18 @@ pub fn lexical_search_sql_for_tests(
     tuning: &PgTuning,
 ) -> Result<String, StorageError> {
     lexical_branch_sql(req, projections, limit, tuning).map(|(sql, _)| sql)
+}
+
+/// The substring fallback SQL for EXPLAIN-based plan assertions in tests.
+#[cfg(any(test, feature = "test-fixtures", debug_assertions))]
+#[doc(hidden)]
+pub fn substring_search_sql_for_tests(
+    req: &MemorySearchRequest,
+    projections: &[MemorySearchProjection],
+    limit: u32,
+    tuning: &PgTuning,
+) -> Result<String, StorageError> {
+    substring_branch_sql(req, projections, limit, tuning).map(|(sql, _)| sql)
 }
 
 async fn run_lexical(
@@ -522,6 +655,83 @@ async fn run_lexical(
     )
     .bind(req.query.clone());
     q.fetch_all(pool).await.map_err(map_err)
+}
+
+async fn run_substring(
+    pool: &PgPool,
+    req: &MemorySearchRequest,
+    projections: &[MemorySearchProjection],
+    limit: u32,
+    tuning: &PgTuning,
+) -> Result<Vec<SearchRow>, StorageError> {
+    let (sql, projections) = substring_branch_sql(req, projections, limit, tuning)?;
+
+    // SQL-POLICY: PgIdent
+    let q = bind_branch_prefix(
+        sqlx::query_as::<_, SearchRow>(sqlx::AssertSqlSafe(sql)),
+        req,
+        &projections,
+    )
+    .bind(req.query.clone());
+    q.fetch_all(pool).await.map_err(map_err)
+}
+
+/// Whether the substring band still has to be read from the corpus.
+///
+/// A substring-only row scores exactly [`SUBSTRING_BAND`] on the lexical
+/// component and nothing on the semantic one, so its final score is
+/// `(1 - semantic_weight) * SUBSTRING_BAND` in hybrid and `SUBSTRING_BAND`
+/// in lexical mode. If the candidates already in hand hold a full
+/// `fetch_target` of rows scoring *strictly* above that, no row this
+/// statement could return would reach the page — not even through the
+/// `memory_id` tiebreak, which never runs between scores that differ. The
+/// scan is then skippable without changing a single returned row.
+///
+/// Three things make that argument conditional, and all three are checked
+/// here rather than assumed:
+///
+/// - **Order.** It is an argument about score ordering. Under
+///   [`SearchOrder::Recency`] the page is ordered by `created_at`, so the
+///   newest substring-only row outranks every tsquery hit and the band is
+///   not skippable at all.
+/// - **Width.** `fetch_target` — the page plus its has-more probe plus
+///   whatever a relevance cursor has already emitted — not `req.limit`.
+///   Counting against the page alone would drop rows that later pages
+///   have to surface.
+/// - **The other leg.** In hybrid the count is over fused scores, so the
+///   semantic leg's rows count toward it. That is the whole reason hybrid
+///   can skip: a corpus with embeddings fills `fetch_target` well above
+///   `0.4 * 0.25` from the semantic side alone.
+///
+/// The escape-hatch semantic statement is frozen and cannot carry the
+/// band, so a hybrid search running it has no in-hand substring scores to
+/// count and must always read them.
+fn needs_substring_pass(
+    req: &MemorySearchRequest,
+    candidates: &BTreeMap<uuid::Uuid, Candidate>,
+    fetch_target: u32,
+    semantic_weight: f32,
+    tuning: &PgTuning,
+) -> bool {
+    if matches!(req.order, SearchOrder::Recency) {
+        return true;
+    }
+    if matches!(req.mode, SearchMode::Hybrid)
+        && matches!(tuning.semantic_index_first, SemanticIndexFirst::Off)
+    {
+        return true;
+    }
+    let band = match req.mode {
+        SearchMode::Lexical => SUBSTRING_BAND,
+        SearchMode::Hybrid => (1.0 - semantic_weight) * SUBSTRING_BAND,
+        // No lexical component at all, so nothing to fall back to.
+        SearchMode::Semantic => return false,
+    };
+    let above = candidates
+        .values()
+        .filter(|candidate| fused_score(req.mode, semantic_weight, candidate) > band)
+        .count();
+    above < fetch_target as usize
 }
 
 /// Exact SQL of the semantic vector branch, factored out so
@@ -577,16 +787,19 @@ fn legacy_semantic_branch_sql(
     tuning: &PgTuning,
     next_param: &mut usize,
 ) -> Result<String, StorageError> {
+    let (sidecar_first_param, filters) =
+        allocate_candidate_params(req, projections.len(), next_param, tuning);
     let mut sql = common_candidates_sql(
         req,
         projections,
-        next_param,
+        sidecar_first_param,
+        filters,
         CandidateShape {
             open: MATERIALIZED_CANDIDATES_OPEN,
             include_tsv: false,
             ann_restriction: None,
+            match_gate: None,
         },
-        tuning,
     )?;
     let vec_param = *next_param;
     let model_param = *next_param + 1;
@@ -660,20 +873,41 @@ fn rank_first_semantic_branch_sql(
 ) -> Result<String, StorageError> {
     // Built first because it allocates the parameter numbers the scan's
     // own binds follow, even though the scan is written above it.
+    let (sidecar_first_param, filters) =
+        allocate_candidate_params(req, projections.len(), next_param, tuning);
     let candidates = common_candidates_sql(
         req,
         projections,
-        next_param,
+        sidecar_first_param,
+        filters,
         CandidateShape {
             open: "\n          candidates AS (",
             include_tsv: false,
             ann_restriction: Some(ANN_RESTRICTION_SQL),
+            match_gate: None,
         },
-        tuning,
     )?;
     let vec_param = *next_param;
     let model_param = *next_param + 1;
     let order_by = branch_order_by(req, "a.similarity_score");
+
+    // Hybrid fuses this leg with the lexical one, so the substring band a
+    // window row earns has to reach the fusion. Evaluating it here is
+    // free: these rows are being read anyway, and the alternative — a
+    // third statement probing the merged ids — would be a round trip to
+    // learn something the plan already had in hand.
+    //
+    // It has to be evaluated per branch and OR-ed back together, because
+    // `eligible_entities` collapses a memory's branches to one row and
+    // keeps only that row's `search_text`. A memory whose base text
+    // contains the query but whose sidecar projection does not would
+    // otherwise lose the band to the collapse.
+    let substring_band = matches!(req.mode, SearchMode::Hybrid).then(|| {
+        format!(
+            "bool_or(lower(c.search_text) LIKE '%' || {} || '%' ESCAPE '\\')\n                            OVER (PARTITION BY c.kind, c.memory_id)",
+            like_literal(*next_param + 2)
+        )
+    });
 
     let mut sql = String::from("WITH");
     push_ann_scan(&mut sql, mode, vec_param, model_param, candidate_overfetch);
@@ -683,14 +917,14 @@ fn rank_first_semantic_branch_sql(
     // because the scan it is restricted to has to be declared first.
     sql.push_str(&candidates);
     sql.push(',');
-    push_rank_first_eligible(&mut sql);
+    push_rank_first_eligible(&mut sql, substring_band.as_deref());
 
     write!(
         sql,
         "
           SELECT c.memory_id, c.kind, c.schema_id, c.created_at,
                  left(c.search_text, 480) AS snippet,
-                 0.0::real AS lexical_score,
+                 {lexical_score} AS lexical_score,
                  a.similarity_score
           FROM eligible_entities c
           JOIN ann_live a
@@ -701,7 +935,12 @@ fn rank_first_semantic_branch_sql(
           ORDER BY {order_by}
           LIMIT {}",
         u64::from(limit),
-        order_by = order_by
+        order_by = order_by,
+        lexical_score = if substring_band.is_some() {
+            format!("(CASE WHEN c.substring_match THEN {SUBSTRING_BAND} ELSE 0.0 END)::real")
+        } else {
+            "0.0::real".to_string()
+        },
     )
     .expect("write to String is infallible");
     Ok(sql)
@@ -767,14 +1006,25 @@ fn push_ann_live(sql: &mut String) {
 /// projection would put two rows in one group at the same ordinal, and
 /// without a further key `DISTINCT ON` would again be free to keep either.
 /// Dead today, load-bearing the day the registry grows a fan-out.
-fn push_rank_first_eligible(sql: &mut String) {
+fn push_rank_first_eligible(sql: &mut String, substring_band: Option<&str>) {
     // SQL-POLICY: fixed-fragment
     sql.push_str(
         "
           eligible_entities AS (
               SELECT DISTINCT ON (c.kind, c.memory_id)
                      c.memory_id, c.owner_kind, c.owner_id, c.kind,
-                     c.schema_id, c.created_at, c.search_text
+                     c.schema_id, c.created_at, c.search_text",
+    );
+    if let Some(band) = substring_band {
+        // A window function is computed before DISTINCT ON chooses which
+        // row of the partition survives, so this sees every branch of the
+        // memory and the surviving row carries the answer for all of them.
+        write!(sql, ",\n                     {band} AS substring_match")
+            .expect("write to String is infallible");
+    }
+    // SQL-POLICY: fixed-fragment
+    sql.push_str(
+        "
                 FROM candidates c
                ORDER BY c.kind, c.memory_id,
                         (c.search_text IS NULL), c.branch_rank DESC,
@@ -1115,6 +1365,16 @@ async fn run_semantic(
     )
     .bind(crate::pgvector::literal(query_embedding))
     .bind(model_id.clone());
+    // Hybrid's statement carries the substring band, which reads the query
+    // text; the other two modes never emit that predicate. See
+    // `rank_first_semantic_branch_sql`.
+    let q = if matches!(req.mode, SearchMode::Hybrid)
+        && !matches!(tuning.semantic_index_first, SemanticIndexFirst::Off)
+    {
+        q.bind(req.query.clone())
+    } else {
+        q
+    };
 
     let mut tx = pool.begin().await.map_err(map_err)?;
     // SQL-POLICY: fixed-fragment — the settings statement interpolates
@@ -1151,6 +1411,41 @@ struct CandidateShape<'a> {
     /// its tie by a written rule rather than by whatever order the plan
     /// happened to produce.
     ann_restriction: Option<&'a str>,
+    /// The text predicate written into each branch's own WHERE, on that
+    /// branch's own base table, rather than applied to the branch set from
+    /// above. See [`MatchGate`].
+    match_gate: Option<MatchGate>,
+}
+
+/// A branch's text predicate, written where an index can serve it.
+///
+/// Applied above the branch set — the shape every lexical search had
+/// through v0.0.7 — a text predicate is unservable by construction: it
+/// matches a CTE result, and no index exists on a CTE result. That is the
+/// reason migration 0009 dropped the GIN indexes it found and 0011
+/// declined to add one for the stored `search_tsv` columns. Written into
+/// the branch, beside the branch's own owner predicate, the same predicate
+/// becomes an ordinary base-table qualifier and the planner may pick
+/// `idx_memories_search_tsv` (migration 0019) for it.
+///
+/// The owner predicate has to stay in that same WHERE. The `MATERIALIZED`
+/// fence documented on [`common_candidates_sql`] exists because an
+/// inlinable branch set once let the planner push the text filter into a
+/// sidecar branch and scan it across every owner; a pushed-down gate
+/// without the owner scope beside it reintroduces exactly that.
+#[derive(Clone, Copy)]
+enum MatchGate {
+    /// The tsvector arms. `rescue` adds the OR-rescue tsquery, which only
+    /// [`SearchMode::Lexical`] fires — see the arm's own comment in
+    /// [`lexical_branch_sql`].
+    ///
+    /// Both tsqueries are read as `(SELECT … FROM q)`, so each folds to a
+    /// one-time `InitPlan` constant. A per-row-parsed tsquery in this
+    /// position has no index path at all (see [`TEXT_SEARCH_CONFIG`]).
+    Tsv { rescue: bool },
+    /// The substring band's own predicate, for the fallback statement that
+    /// runs only when the tsvector arms cannot already fill the page.
+    Substring { query_param: usize },
 }
 
 impl CandidateShape<'_> {
@@ -1198,17 +1493,21 @@ fn allocate_candidate_params(
     (sidecar_first_param, filters)
 }
 
-/// Builds the owner-scoped candidate CTE shared by both branches.
+/// Builds the owner-scoped candidate CTE shared by every branch.
+///
+/// Takes the parameter numbers rather than claiming them, because a
+/// statement whose gate reads a bound value — [`MatchGate::Substring`] —
+/// has to know that value's `$n` before the branch set it sits inside can
+/// be written. [`allocate_candidate_params`] stays the one place that
+/// assigns them.
 fn common_candidates_sql(
     req: &MemorySearchRequest,
     projections: &[&MemorySearchProjection],
-    next_param: &mut usize,
+    sidecar_first_param: usize,
+    filters: CandidateFilterParams,
     shape: CandidateShape<'_>,
-    tuning: &PgTuning,
 ) -> Result<String, StorageError> {
     let include_tsv = shape.include_tsv;
-    let (sidecar_first_param, filters) =
-        allocate_candidate_params(req, projections.len(), next_param, tuning);
 
     // On an unrestricted branch set MATERIALIZED pins the plan to
     // owner-first enumeration: candidates are resolved via the
@@ -1243,6 +1542,7 @@ fn common_candidates_sql(
     push_supersedes_anti_join(&mut sql, req, filters, base_branch_kinds(req));
     push_base_memory_filters(&mut sql, req, filters);
     sql.push_str(" AND NULLIF(m.text, '') IS NOT NULL");
+    push_match_gate(&mut sql, shape, "m.search_tsv", "COALESCE(m.text, '')");
     push_ann_restriction(&mut sql, shape);
 
     for (idx, projection) in projections.iter().enumerate() {
@@ -1252,10 +1552,10 @@ fn common_candidates_sql(
         let schema_param = sidecar_first_param + (idx * 2);
         let version_param = schema_param + 1;
         let search_text_expr = format!("NULLIF(concat_ws(' ', {projection_expr}), '')");
+        let branch_tsv = projection_tsv_expr(projection, &search_text_expr)?;
         let tsv_expr = if include_tsv {
             format!(
-                ", {} AS search_tsv, {} AS lexical_language",
-                projection_tsv_expr(projection, &search_text_expr)?,
+                ", {branch_tsv} AS search_tsv, {} AS lexical_language",
                 projection_language_expr(projection)?
             )
         } else {
@@ -1289,6 +1589,7 @@ JOIN {table} s ON s.memory_id = m.memory_id",
             filters,
             &tag_expr,
         );
+        push_match_gate(&mut sql, shape, &branch_tsv, &search_text_expr);
         push_ann_restriction(&mut sql, shape);
     }
 
@@ -1311,6 +1612,37 @@ fn push_ann_restriction(sql: &mut String, shape: CandidateShape<'_>) {
     if let Some(restriction) = shape.ann_restriction {
         // SQL-POLICY: fixed-fragment
         sql.push_str(restriction);
+    }
+}
+
+/// Writes one branch's [`MatchGate`] into that branch's own WHERE.
+///
+/// `tsv_expr` and `search_text_expr` are the branch's own spellings of the
+/// two columns the gate can read: the base branch reads `memories`
+/// directly, a sidecar branch reads its stored `search_tsv` where it
+/// declares one and an inline `lexical_tsv(…)` where it does not. Only the
+/// stored spellings can be served by an index — the inline one is the
+/// expression migration 0019 explains it will not chase.
+fn push_match_gate(sql: &mut String, shape: CandidateShape<'_>, tsv_expr: &str, text_expr: &str) {
+    match shape.match_gate {
+        None => {}
+        Some(MatchGate::Tsv { rescue }) => {
+            write!(sql, "\n             AND ({tsv_expr} @@ (SELECT tsq FROM q)")
+                .expect("write to String is infallible");
+            if rescue {
+                write!(sql, " OR {tsv_expr} @@ (SELECT any_tsq FROM q)")
+                    .expect("write to String is infallible");
+            }
+            sql.push(')');
+        }
+        Some(MatchGate::Substring { query_param }) => {
+            write!(
+                sql,
+                "\n             AND lower({text_expr}) LIKE '%' || {} || '%' ESCAPE '\\'",
+                like_literal(query_param)
+            )
+            .expect("write to String is infallible");
+        }
     }
 }
 
@@ -1923,6 +2255,225 @@ mod tests {
         assert_eq!(sql, SEMANTIC_BRANCH_DEFAULT_GOLDEN);
     }
 
+    /// The lexical branch in hybrid mode: the OR-rescue arm is absent, so
+    /// the gate is the strict tsquery alone and the score has no
+    /// `GREATEST` to take. This is the statement the product default
+    /// runs, and the one migration 0019's index exists for.
+    const LEXICAL_BRANCH_HYBRID_GOLDEN: &str = r"WITH scrubbed AS (
+               -- The same scrub every stored `search_tsv` went through
+               -- (`lexical_tsv` = `to_tsvector(config, lexical_scrub(txt))`).
+               -- Called, not restated: a query token that keeps punctuation
+               -- the document side dropped can never match the stored
+               -- lexeme, and that failure is silent.
+               SELECT proxima_core.lexical_scrub($10) AS q
+          )
+          , q AS (
+               -- One tsquery per active language, OR-combined: the match
+               -- side cannot know the query's language, and the OR is
+               -- GIN-indexable where a per-row-parsed tsquery is not.
+               -- lexical_query_text stop-filters the text for stop-list-free
+               -- configurations (simple), so one CJK row in the corpus
+               -- cannot turn every query's function words into match terms.
+               -- tsquery_or_agg over an empty lexical_languages is NULL;
+               -- the COALESCE falls back to the default configuration.
+               SELECT s.q AS scrubbed,
+                      COALESCE(
+                          (SELECT proxima_core.tsquery_or_agg(
+                                      websearch_to_tsquery(l.config,
+                                          proxima_core.lexical_query_text(l.config, s.q))
+                                      ORDER BY l.config)
+                             FROM proxima_core.lexical_languages l),
+                          websearch_to_tsquery(proxima_core.lexical_config(), s.q)
+                      ) AS tsq,
+                      -- OR-rescue arm: the same content lexemes any-matched.
+                      -- plainto_tsquery emits only '&' between lexemes (no
+                      -- phrase or negation operators), so the operator swap
+                      -- is safe. NULLIF folds a no-lexeme language out; the
+                      -- STRICT transition function skips those NULLs.
+                      COALESCE(
+                          (SELECT proxima_core.tsquery_or_agg(
+                                      NULLIF(
+                                          replace(plainto_tsquery(l.config,
+                                              proxima_core.lexical_query_text(
+                                                  l.config, s.q))::text,
+                                                  ' & ', ' | '),
+                                          '')::tsquery
+                                      ORDER BY l.config)
+                             FROM proxima_core.lexical_languages l),
+                          NULLIF(
+                              replace(plainto_tsquery(proxima_core.lexical_config(), s.q)::text,
+                                      ' & ', ' | '),
+                              '')::tsquery
+                      ) AS any_tsq
+                 FROM scrubbed s
+          )
+          , candidates AS (SELECT m.memory_id, m.owner_kind, m.owner_id, COALESCE(m.kind, 'Fact'::proxima_core.entity_kind) AS kind, m.schema_id, m.created_at, NULL::text[] AS tags, COALESCE(m.text, '') AS search_text, m.search_tsv AS search_tsv, m.lexical_language AS lexical_language FROM proxima_core.memories m  LEFT JOIN proxima_core.memories m2 ON m2.supersedes = m.memory_id AND m2.tombstoned_at IS NULL AND m2.owner_kind = m.owner_kind AND m2.owner_id IS NOT DISTINCT FROM m.owner_id WHERE (EXISTS (
+              SELECT 1
+                FROM unnest($1::proxima_core.owner_ref_kind[], $2::uuid[]) AS s(kind, id)
+               WHERE m.owner_kind = s.kind AND m.owner_id = s.id
+           ) OR (m.owner_kind = 'world' AND m.owner_id IS NULL)) AND m.tombstoned_at IS NULL AND m.created_at >= $7 AND m.created_at <= $8 AND NULL::text[] @> $9::text[] AND ( (m.kind IS NULL AND ( m.fact_entity_id IS NULL OR EXISTS ( SELECT 1 FROM proxima_core.fact_entities fe WHERE fe.fact_entity_id = m.fact_entity_id AND fe.current_memory_id = m.memory_id ) )) OR (m.kind IS NOT NULL AND m2.memory_id IS NULL) ) AND NULLIF(m.text, '') IS NOT NULL
+             AND (m.search_tsv @@ (SELECT tsq FROM q)) UNION ALL SELECT m.memory_id, m.owner_kind, m.owner_id, COALESCE(m.kind, 'Fact'::proxima_core.entity_kind) AS kind, m.schema_id, m.created_at, s.tags AS tags,
+             NULLIF(concat_ws(' ', NULLIF(s.title::text, ''), NULLIF(array_to_string(s.tags, ' '), '')), '') AS search_text, s.search_tsv AS search_tsv, s.lexical_language AS lexical_language
+             FROM proxima_core.memories m
+JOIN proxima_core.agent_note_v1 s ON s.memory_id = m.memory_id WHERE (EXISTS (
+              SELECT 1
+                FROM unnest($1::proxima_core.owner_ref_kind[], $2::uuid[]) AS s(kind, id)
+               WHERE m.owner_kind = s.kind AND m.owner_id = s.id
+           ) OR (m.owner_kind = 'world' AND m.owner_id IS NULL)) AND m.tombstoned_at IS NULL
+           AND m.schema_id = $3
+           AND m.schema_version = $4 AND m.kind IS NULL AND m.created_at >= $7 AND m.created_at <= $8 AND s.tags @> $9::text[] AND ( m.fact_entity_id IS NULL OR EXISTS ( SELECT 1 FROM proxima_core.fact_entities fe WHERE fe.fact_entity_id = m.fact_entity_id AND fe.current_memory_id = m.memory_id ) )
+             AND (s.search_tsv @@ (SELECT tsq FROM q)) UNION ALL SELECT m.memory_id, m.owner_kind, m.owner_id, COALESCE(m.kind, 'Fact'::proxima_core.entity_kind) AS kind, m.schema_id, m.created_at, NULL::text[] AS tags,
+             NULLIF(concat_ws(' ', NULLIF(s.claim::text, '')), '') AS search_text, proxima_core.lexical_tsv(m.lexical_language, NULLIF(concat_ws(' ', NULLIF(s.claim::text, '')), '')) AS search_tsv, m.lexical_language AS lexical_language
+             FROM proxima_core.memories m
+JOIN proxima_core.interpretation_v1 s ON s.memory_id = m.memory_id LEFT JOIN proxima_core.memories m2 ON m2.supersedes = m.memory_id AND m2.tombstoned_at IS NULL AND m2.owner_kind = m.owner_kind AND m2.owner_id IS NOT DISTINCT FROM m.owner_id WHERE (EXISTS (
+              SELECT 1
+                FROM unnest($1::proxima_core.owner_ref_kind[], $2::uuid[]) AS s(kind, id)
+               WHERE m.owner_kind = s.kind AND m.owner_id = s.id
+           ) OR (m.owner_kind = 'world' AND m.owner_id IS NULL)) AND m.tombstoned_at IS NULL
+           AND m.schema_id = $5
+           AND m.schema_version = $6 AND m.kind = 'Abstraction' AND m.created_at >= $7 AND m.created_at <= $8 AND NULL::text[] @> $9::text[] AND m2.memory_id IS NULL
+             AND (proxima_core.lexical_tsv(m.lexical_language, NULLIF(concat_ws(' ', NULLIF(s.claim::text, '')), '')) @@ (SELECT tsq FROM q)))
+          SELECT c.memory_id, c.kind, c.schema_id, c.created_at,
+                 left(c.search_text, 480) AS snippet,
+                 (CASE WHEN c.search_tsv @@ q.tsq
+                          THEN 0.5 + LEAST(COALESCE(ts_rank_cd(c.search_tsv,
+                                   websearch_to_tsquery(c.lexical_language,
+                                       proxima_core.lexical_query_text(
+                                           c.lexical_language, q.scrubbed)),
+                                   32), 0.0), 1.0) * 0.5
+                          ELSE 0.0 END)::real AS lexical_score,
+                 0.0::real AS similarity_score
+          FROM candidates c, q
+          WHERE c.search_text <> ''
+          ORDER BY lexical_score DESC, c.memory_id DESC
+          LIMIT 44";
+
+    /// The substring fallback. Its gate is per branch and unservable by
+    /// any core index, which is exactly why it is a separate statement
+    /// rather than a third arm of the one above.
+    const SUBSTRING_BRANCH_DEFAULT_GOLDEN: &str = r"WITH candidates AS MATERIALIZED (SELECT m.memory_id, m.owner_kind, m.owner_id, COALESCE(m.kind, 'Fact'::proxima_core.entity_kind) AS kind, m.schema_id, m.created_at, NULL::text[] AS tags, COALESCE(m.text, '') AS search_text FROM proxima_core.memories m  LEFT JOIN proxima_core.memories m2 ON m2.supersedes = m.memory_id AND m2.tombstoned_at IS NULL AND m2.owner_kind = m.owner_kind AND m2.owner_id IS NOT DISTINCT FROM m.owner_id WHERE (EXISTS (
+              SELECT 1
+                FROM unnest($1::proxima_core.owner_ref_kind[], $2::uuid[]) AS s(kind, id)
+               WHERE m.owner_kind = s.kind AND m.owner_id = s.id
+           ) OR (m.owner_kind = 'world' AND m.owner_id IS NULL)) AND m.tombstoned_at IS NULL AND m.created_at >= $7 AND m.created_at <= $8 AND NULL::text[] @> $9::text[] AND ( (m.kind IS NULL AND ( m.fact_entity_id IS NULL OR EXISTS ( SELECT 1 FROM proxima_core.fact_entities fe WHERE fe.fact_entity_id = m.fact_entity_id AND fe.current_memory_id = m.memory_id ) )) OR (m.kind IS NOT NULL AND m2.memory_id IS NULL) ) AND NULLIF(m.text, '') IS NOT NULL
+             AND lower(COALESCE(m.text, '')) LIKE '%' || replace(replace(replace(lower($10), '\\', '\\\\'), '%', '\\%'), '_', '\\_') || '%' ESCAPE '\' UNION ALL SELECT m.memory_id, m.owner_kind, m.owner_id, COALESCE(m.kind, 'Fact'::proxima_core.entity_kind) AS kind, m.schema_id, m.created_at, s.tags AS tags,
+             NULLIF(concat_ws(' ', NULLIF(s.title::text, ''), NULLIF(array_to_string(s.tags, ' '), '')), '') AS search_text
+             FROM proxima_core.memories m
+JOIN proxima_core.agent_note_v1 s ON s.memory_id = m.memory_id WHERE (EXISTS (
+              SELECT 1
+                FROM unnest($1::proxima_core.owner_ref_kind[], $2::uuid[]) AS s(kind, id)
+               WHERE m.owner_kind = s.kind AND m.owner_id = s.id
+           ) OR (m.owner_kind = 'world' AND m.owner_id IS NULL)) AND m.tombstoned_at IS NULL
+           AND m.schema_id = $3
+           AND m.schema_version = $4 AND m.kind IS NULL AND m.created_at >= $7 AND m.created_at <= $8 AND s.tags @> $9::text[] AND ( m.fact_entity_id IS NULL OR EXISTS ( SELECT 1 FROM proxima_core.fact_entities fe WHERE fe.fact_entity_id = m.fact_entity_id AND fe.current_memory_id = m.memory_id ) )
+             AND lower(NULLIF(concat_ws(' ', NULLIF(s.title::text, ''), NULLIF(array_to_string(s.tags, ' '), '')), '')) LIKE '%' || replace(replace(replace(lower($10), '\\', '\\\\'), '%', '\\%'), '_', '\\_') || '%' ESCAPE '\' UNION ALL SELECT m.memory_id, m.owner_kind, m.owner_id, COALESCE(m.kind, 'Fact'::proxima_core.entity_kind) AS kind, m.schema_id, m.created_at, NULL::text[] AS tags,
+             NULLIF(concat_ws(' ', NULLIF(s.claim::text, '')), '') AS search_text
+             FROM proxima_core.memories m
+JOIN proxima_core.interpretation_v1 s ON s.memory_id = m.memory_id LEFT JOIN proxima_core.memories m2 ON m2.supersedes = m.memory_id AND m2.tombstoned_at IS NULL AND m2.owner_kind = m.owner_kind AND m2.owner_id IS NOT DISTINCT FROM m.owner_id WHERE (EXISTS (
+              SELECT 1
+                FROM unnest($1::proxima_core.owner_ref_kind[], $2::uuid[]) AS s(kind, id)
+               WHERE m.owner_kind = s.kind AND m.owner_id = s.id
+           ) OR (m.owner_kind = 'world' AND m.owner_id IS NULL)) AND m.tombstoned_at IS NULL
+           AND m.schema_id = $5
+           AND m.schema_version = $6 AND m.kind = 'Abstraction' AND m.created_at >= $7 AND m.created_at <= $8 AND NULL::text[] @> $9::text[] AND m2.memory_id IS NULL
+             AND lower(NULLIF(concat_ws(' ', NULLIF(s.claim::text, '')), '')) LIKE '%' || replace(replace(replace(lower($10), '\\', '\\\\'), '%', '\\%'), '_', '\\_') || '%' ESCAPE '\')
+          SELECT c.memory_id, c.kind, c.schema_id, c.created_at,
+                 left(c.search_text, 480) AS snippet,
+                 0.25::real AS lexical_score,
+                 0.0::real AS similarity_score
+          FROM candidates c
+          WHERE c.search_text <> ''
+          ORDER BY lexical_score DESC, c.memory_id DESC
+          LIMIT 44";
+
+    /// The semantic branch in hybrid mode carries the substring band, so
+    /// a window row that the lexical statement's tsquery gate excluded
+    /// still reaches fusion with the 0.25 it earns. Semantic mode's
+    /// golden above pins that the same builder emits a constant zero
+    /// there — the band belongs to fusion, not to similarity.
+    const SEMANTIC_BRANCH_HYBRID_GOLDEN: &str = r"WITH
+          -- Index-first (pushdown): owner and model arms ride on the scan
+          -- itself and nothing materializes above it.
+          ann_scan AS (
+              SELECT emb.entity_kind, emb.entity_id, emb.model_id,
+                     emb.embedding_version, emb.owner_kind, emb.owner_id,
+                     CASE
+                         WHEN (1 - (emb.vec <=> $10::vector)) = 'NaN'::float8 THEN 0.0
+                         ELSE GREATEST(0.0, (1 - (emb.vec <=> $10::vector)))
+                     END::real AS similarity_score
+                FROM proxima_core.embeddings emb
+               WHERE emb.model_id = $11
+                 AND EXISTS (
+                       SELECT 1
+                         FROM unnest($1::proxima_core.owner_ref_kind[], $2::uuid[]) AS s(kind, id)
+                        WHERE emb.owner_kind = s.kind AND emb.owner_id = s.id
+                     )
+               ORDER BY emb.vec <=> $10::vector
+               LIMIT 704
+          ),
+          ann_live AS MATERIALIZED (
+              SELECT ann.entity_kind, ann.entity_id, ann.owner_kind, ann.owner_id,
+                     max(ann.similarity_score) AS similarity_score
+                FROM ann_scan ann
+                JOIN proxima_core.embedding_heads head
+                  ON head.entity_kind = ann.entity_kind
+                 AND head.entity_id = ann.entity_id
+                 AND head.model_id = ann.model_id
+                 AND head.embedding_version = ann.embedding_version
+                 AND head.owner_kind = ann.owner_kind
+                 AND head.owner_id IS NOT DISTINCT FROM ann.owner_id
+               GROUP BY ann.entity_kind, ann.entity_id, ann.owner_kind, ann.owner_id
+          ),
+          candidates AS (SELECT m.memory_id, m.owner_kind, m.owner_id, COALESCE(m.kind, 'Fact'::proxima_core.entity_kind) AS kind, m.schema_id, m.created_at, NULL::text[] AS tags, COALESCE(m.text, '') AS search_text, 0::int AS branch_rank FROM proxima_core.memories m  LEFT JOIN proxima_core.memories m2 ON m2.supersedes = m.memory_id AND m2.tombstoned_at IS NULL AND m2.owner_kind = m.owner_kind AND m2.owner_id IS NOT DISTINCT FROM m.owner_id WHERE (EXISTS (
+              SELECT 1
+                FROM unnest($1::proxima_core.owner_ref_kind[], $2::uuid[]) AS s(kind, id)
+               WHERE m.owner_kind = s.kind AND m.owner_id = s.id
+           ) OR (m.owner_kind = 'world' AND m.owner_id IS NULL)) AND m.tombstoned_at IS NULL AND m.created_at >= $7 AND m.created_at <= $8 AND NULL::text[] @> $9::text[] AND ( (m.kind IS NULL AND ( m.fact_entity_id IS NULL OR EXISTS ( SELECT 1 FROM proxima_core.fact_entities fe WHERE fe.fact_entity_id = m.fact_entity_id AND fe.current_memory_id = m.memory_id ) )) OR (m.kind IS NOT NULL AND m2.memory_id IS NULL) ) AND NULLIF(m.text, '') IS NOT NULL
+             AND m.memory_id IN (SELECT a.entity_id FROM ann_live a) UNION ALL SELECT m.memory_id, m.owner_kind, m.owner_id, COALESCE(m.kind, 'Fact'::proxima_core.entity_kind) AS kind, m.schema_id, m.created_at, s.tags AS tags,
+             NULLIF(concat_ws(' ', NULLIF(s.title::text, ''), NULLIF(array_to_string(s.tags, ' '), '')), '') AS search_text, 1::int AS branch_rank
+             FROM proxima_core.memories m
+JOIN proxima_core.agent_note_v1 s ON s.memory_id = m.memory_id WHERE (EXISTS (
+              SELECT 1
+                FROM unnest($1::proxima_core.owner_ref_kind[], $2::uuid[]) AS s(kind, id)
+               WHERE m.owner_kind = s.kind AND m.owner_id = s.id
+           ) OR (m.owner_kind = 'world' AND m.owner_id IS NULL)) AND m.tombstoned_at IS NULL
+           AND m.schema_id = $3
+           AND m.schema_version = $4 AND m.kind IS NULL AND m.created_at >= $7 AND m.created_at <= $8 AND s.tags @> $9::text[] AND ( m.fact_entity_id IS NULL OR EXISTS ( SELECT 1 FROM proxima_core.fact_entities fe WHERE fe.fact_entity_id = m.fact_entity_id AND fe.current_memory_id = m.memory_id ) )
+             AND m.memory_id IN (SELECT a.entity_id FROM ann_live a) UNION ALL SELECT m.memory_id, m.owner_kind, m.owner_id, COALESCE(m.kind, 'Fact'::proxima_core.entity_kind) AS kind, m.schema_id, m.created_at, NULL::text[] AS tags,
+             NULLIF(concat_ws(' ', NULLIF(s.claim::text, '')), '') AS search_text, 2::int AS branch_rank
+             FROM proxima_core.memories m
+JOIN proxima_core.interpretation_v1 s ON s.memory_id = m.memory_id LEFT JOIN proxima_core.memories m2 ON m2.supersedes = m.memory_id AND m2.tombstoned_at IS NULL AND m2.owner_kind = m.owner_kind AND m2.owner_id IS NOT DISTINCT FROM m.owner_id WHERE (EXISTS (
+              SELECT 1
+                FROM unnest($1::proxima_core.owner_ref_kind[], $2::uuid[]) AS s(kind, id)
+               WHERE m.owner_kind = s.kind AND m.owner_id = s.id
+           ) OR (m.owner_kind = 'world' AND m.owner_id IS NULL)) AND m.tombstoned_at IS NULL
+           AND m.schema_id = $5
+           AND m.schema_version = $6 AND m.kind = 'Abstraction' AND m.created_at >= $7 AND m.created_at <= $8 AND NULL::text[] @> $9::text[] AND m2.memory_id IS NULL
+             AND m.memory_id IN (SELECT a.entity_id FROM ann_live a)),
+          eligible_entities AS (
+              SELECT DISTINCT ON (c.kind, c.memory_id)
+                     c.memory_id, c.owner_kind, c.owner_id, c.kind,
+                     c.schema_id, c.created_at, c.search_text,
+                     bool_or(lower(c.search_text) LIKE '%' || replace(replace(replace(lower($12), '\\', '\\\\'), '%', '\\%'), '_', '\\_') || '%' ESCAPE '\')
+                            OVER (PARTITION BY c.kind, c.memory_id) AS substring_match
+                FROM candidates c
+               ORDER BY c.kind, c.memory_id,
+                        (c.search_text IS NULL), c.branch_rank DESC,
+                        c.created_at DESC
+          )
+          SELECT c.memory_id, c.kind, c.schema_id, c.created_at,
+                 left(c.search_text, 480) AS snippet,
+                 (CASE WHEN c.substring_match THEN 0.25 ELSE 0.0 END)::real AS lexical_score,
+                 a.similarity_score
+          FROM eligible_entities c
+          JOIN ann_live a
+            ON a.entity_kind = c.kind
+           AND a.entity_id = c.memory_id
+           AND a.owner_kind = c.owner_kind
+           AND a.owner_id IS NOT DISTINCT FROM c.owner_id
+          ORDER BY a.similarity_score DESC, c.memory_id DESC
+          LIMIT 44";
+
     #[test]
     fn lexical_branch_sql_at_default_tuning_is_byte_identical() {
         let (sql, _) = lexical_branch_sql(
@@ -1934,6 +2485,176 @@ mod tests {
         .unwrap();
 
         assert_eq!(sql, LEXICAL_BRANCH_DEFAULT_GOLDEN);
+    }
+
+    #[test]
+    fn hybrid_lexical_and_substring_statements_are_byte_identical() {
+        let (lexical, _) = lexical_branch_sql(
+            &golden_request(SearchMode::Hybrid),
+            &golden_projections(),
+            GOLDEN_LIMIT,
+            &PgTuning::default(),
+        )
+        .unwrap();
+        let (substring, _) = substring_branch_sql(
+            &golden_request(SearchMode::Lexical),
+            &golden_projections(),
+            GOLDEN_LIMIT,
+            &PgTuning::default(),
+        )
+        .unwrap();
+        let (semantic, _) = semantic_branch_sql(
+            &golden_request(SearchMode::Hybrid),
+            &golden_projections(),
+            GOLDEN_LIMIT,
+            GOLDEN_CANDIDATE_OVERFETCH,
+            &PgTuning::default(),
+        )
+        .unwrap();
+
+        assert_eq!(lexical, LEXICAL_BRANCH_HYBRID_GOLDEN);
+        assert_eq!(substring, SUBSTRING_BRANCH_DEFAULT_GOLDEN);
+        assert_eq!(semantic, SEMANTIC_BRANCH_HYBRID_GOLDEN);
+    }
+
+    /// The gate has to be inside each branch's own WHERE, not above the
+    /// branch set. Above it, no index applies — that is the whole finding
+    /// migrations 0009 and 0011 recorded and migration 0019 reverses.
+    #[test]
+    fn every_lexical_branch_gates_on_its_own_table() {
+        let (sql, _) = lexical_branch_sql(
+            &golden_request(SearchMode::Hybrid),
+            &golden_projections(),
+            GOLDEN_LIMIT,
+            &PgTuning::default(),
+        )
+        .unwrap();
+
+        // One gate per branch: base `memories`, the note sidecar's stored
+        // column, and the interpretation sidecar's inline tokenisation.
+        assert!(sql.contains("AND (m.search_tsv @@ (SELECT tsq FROM q))"));
+        assert!(sql.contains("AND (s.search_tsv @@ (SELECT tsq FROM q))"));
+        assert!(sql.contains(
+            "AND (proxima_core.lexical_tsv(m.lexical_language, \
+             NULLIF(concat_ws(' ', NULLIF(s.claim::text, '')), '')) \
+             @@ (SELECT tsq FROM q))"
+        ));
+        // And nothing left matching above the branch set.
+        let tail = sql.split("FROM candidates c, q").nth(1).expect("tail");
+        assert!(
+            !tail.contains("@@"),
+            "a match predicate survived above the branch set"
+        );
+        // The fence the tsvector statement must not carry.
+        assert!(!sql.contains("candidates AS MATERIALIZED"));
+    }
+
+    /// The substring band is absent from the tsvector statement, and the
+    /// rescue arm only from hybrid's.
+    #[test]
+    fn the_tsvector_statement_carries_no_substring_band() {
+        for mode in [SearchMode::Lexical, SearchMode::Hybrid] {
+            let (sql, _) = lexical_branch_sql(
+                &golden_request(mode),
+                &golden_projections(),
+                GOLDEN_LIMIT,
+                &PgTuning::default(),
+            )
+            .unwrap();
+            assert!(
+                !sql.contains("LIKE"),
+                "{mode:?} still carries the substring band"
+            );
+            assert_eq!(
+                sql.contains("any_tsq @@") || sql.contains("@@ q.any_tsq"),
+                matches!(mode, SearchMode::Lexical),
+                "{mode:?} rescue arm"
+            );
+        }
+    }
+
+    /// Every clause of the skip rule, because each is the difference
+    /// between a page that is right and a page that quietly lost a row.
+    #[test]
+    fn the_substring_pass_is_skipped_only_when_the_page_is_already_decided() {
+        fn holding(scores: &[(f32, f32)]) -> BTreeMap<uuid::Uuid, Candidate> {
+            scores
+                .iter()
+                .enumerate()
+                .map(|(idx, &(lexical_score, similarity_score))| {
+                    let memory_id = uuid::Uuid::from_u128(idx as u128 + 1);
+                    (
+                        memory_id,
+                        Candidate {
+                            memory_id,
+                            kind: EntityKind::Fact,
+                            schema_id: SchemaId::new("test/x".into()),
+                            created_at: time::OffsetDateTime::from_unix_timestamp(0).unwrap(),
+                            snippet: String::new(),
+                            lexical_score,
+                            similarity_score,
+                        },
+                    )
+                })
+                .collect()
+        }
+        let default = PgTuning::default();
+
+        // Lexical: three rows in the strict band decide a page of three.
+        let mut req = golden_request(SearchMode::Lexical);
+        req.after = None;
+        let strict = holding(&[(0.9, 0.0), (0.8, 0.0), (0.7, 0.0)]);
+        assert!(!needs_substring_pass(&req, &strict, 3, 0.6, &default));
+        // The same rows do not decide a page of four.
+        assert!(needs_substring_pass(&req, &strict, 4, 0.6, &default));
+
+        // A rescue row that scored no cover sits exactly ON the band, and a
+        // substring-only row would tie it — so it does not count.
+        let on_band = holding(&[(0.9, 0.0), (0.8, 0.0), (SUBSTRING_BAND, 0.0)]);
+        assert!(needs_substring_pass(&req, &on_band, 3, 0.6, &default));
+
+        // Recency orders by created_at, so no score argument applies at all.
+        let mut recency = golden_request(SearchMode::Lexical);
+        recency.order = SearchOrder::Recency;
+        recency.after = None;
+        assert!(needs_substring_pass(&recency, &strict, 1, 0.6, &default));
+
+        // Hybrid counts fused scores against the fused band, so the
+        // semantic leg alone can decide the page: 0.6 * 0.2 = 0.12 clears
+        // 0.4 * 0.25 = 0.10.
+        let mut hybrid = golden_request(SearchMode::Hybrid);
+        hybrid.after = None;
+        let semantic_only = holding(&[(0.0, 0.2), (0.0, 0.2), (0.0, 0.2)]);
+        assert!(!needs_substring_pass(
+            &hybrid,
+            &semantic_only,
+            3,
+            0.6,
+            &default
+        ));
+        // Just under it does not.
+        let weak = holding(&[(0.0, 0.16), (0.0, 0.16), (0.0, 0.16)]);
+        assert!(needs_substring_pass(&hybrid, &weak, 3, 0.6, &default));
+
+        // The escape-hatch semantic statement cannot carry the substring
+        // band, so a hybrid search running it has nothing to count.
+        assert!(needs_substring_pass(
+            &hybrid,
+            &semantic_only,
+            3,
+            0.6,
+            &legacy_tuning()
+        ));
+
+        // Semantic mode has no lexical component to fall back to.
+        let semantic = golden_request(SearchMode::Semantic);
+        assert!(!needs_substring_pass(
+            &semantic,
+            &holding(&[]),
+            50,
+            0.6,
+            &default
+        ));
     }
 
     /// The escape-hatch guarantee: the explicit legacy configuration emits
@@ -1970,16 +2691,20 @@ mod tests {
             (legacy_tuning(), COMMON_CANDIDATES_LEGACY_GOLDEN),
         ] {
             let mut next_param = 3;
+            let req = golden_request(SearchMode::Lexical);
+            let (sidecar_first_param, filters) =
+                allocate_candidate_params(&req, selected.len(), &mut next_param, &tuning);
             let sql = common_candidates_sql(
-                &golden_request(SearchMode::Lexical),
+                &req,
                 &selected,
-                &mut next_param,
+                sidecar_first_param,
+                filters,
                 CandidateShape {
                     open: MATERIALIZED_CANDIDATES_OPEN,
                     include_tsv: true,
                     ann_restriction: None,
+                    match_gate: None,
                 },
-                &tuning,
             )
             .unwrap();
 
@@ -2052,19 +2777,23 @@ mod tests {
         let mut sql = Vec::new();
         for candidate_window_dedup in [false, true] {
             let mut next_param = 3;
+            let tuning = PgTuning {
+                candidate_window_dedup,
+                ..PgTuning::default()
+            };
+            let (sidecar_first_param, filters) =
+                allocate_candidate_params(&req, selected.len(), &mut next_param, &tuning);
             sql.push(
                 common_candidates_sql(
                     &req,
                     &selected,
-                    &mut next_param,
+                    sidecar_first_param,
+                    filters,
                     CandidateShape {
                         open: MATERIALIZED_CANDIDATES_OPEN,
                         include_tsv: true,
                         ann_restriction: None,
-                    },
-                    &PgTuning {
-                        candidate_window_dedup,
-                        ..PgTuning::default()
+                        match_gate: None,
                     },
                 )
                 .unwrap(),
@@ -2212,11 +2941,60 @@ JOIN proxima_core.interpretation_v1 s ON s.memory_id = m.memory_id WHERE (EXISTS
 
     /// The DEFAULT lexical branch: same tail as the legacy branch over the
     /// window-dedup candidate CTE.
-    const LEXICAL_BRANCH_DEFAULT_GOLDEN: &str = r"WITH candidates AS MATERIALIZED (SELECT m.memory_id, m.owner_kind, m.owner_id, COALESCE(m.kind, 'Fact'::proxima_core.entity_kind) AS kind, m.schema_id, m.created_at, NULL::text[] AS tags, COALESCE(m.text, '') AS search_text, m.search_tsv AS search_tsv, m.lexical_language AS lexical_language FROM proxima_core.memories m  LEFT JOIN proxima_core.memories m2 ON m2.supersedes = m.memory_id AND m2.tombstoned_at IS NULL AND m2.owner_kind = m.owner_kind AND m2.owner_id IS NOT DISTINCT FROM m.owner_id WHERE (EXISTS (
+    const LEXICAL_BRANCH_DEFAULT_GOLDEN: &str = r"WITH scrubbed AS (
+               -- The same scrub every stored `search_tsv` went through
+               -- (`lexical_tsv` = `to_tsvector(config, lexical_scrub(txt))`).
+               -- Called, not restated: a query token that keeps punctuation
+               -- the document side dropped can never match the stored
+               -- lexeme, and that failure is silent.
+               SELECT proxima_core.lexical_scrub($10) AS q
+          )
+          , q AS (
+               -- One tsquery per active language, OR-combined: the match
+               -- side cannot know the query's language, and the OR is
+               -- GIN-indexable where a per-row-parsed tsquery is not.
+               -- lexical_query_text stop-filters the text for stop-list-free
+               -- configurations (simple), so one CJK row in the corpus
+               -- cannot turn every query's function words into match terms.
+               -- tsquery_or_agg over an empty lexical_languages is NULL;
+               -- the COALESCE falls back to the default configuration.
+               SELECT s.q AS scrubbed,
+                      COALESCE(
+                          (SELECT proxima_core.tsquery_or_agg(
+                                      websearch_to_tsquery(l.config,
+                                          proxima_core.lexical_query_text(l.config, s.q))
+                                      ORDER BY l.config)
+                             FROM proxima_core.lexical_languages l),
+                          websearch_to_tsquery(proxima_core.lexical_config(), s.q)
+                      ) AS tsq,
+                      -- OR-rescue arm: the same content lexemes any-matched.
+                      -- plainto_tsquery emits only '&' between lexemes (no
+                      -- phrase or negation operators), so the operator swap
+                      -- is safe. NULLIF folds a no-lexeme language out; the
+                      -- STRICT transition function skips those NULLs.
+                      COALESCE(
+                          (SELECT proxima_core.tsquery_or_agg(
+                                      NULLIF(
+                                          replace(plainto_tsquery(l.config,
+                                              proxima_core.lexical_query_text(
+                                                  l.config, s.q))::text,
+                                                  ' & ', ' | '),
+                                          '')::tsquery
+                                      ORDER BY l.config)
+                             FROM proxima_core.lexical_languages l),
+                          NULLIF(
+                              replace(plainto_tsquery(proxima_core.lexical_config(), s.q)::text,
+                                      ' & ', ' | '),
+                              '')::tsquery
+                      ) AS any_tsq
+                 FROM scrubbed s
+          )
+          , candidates AS (SELECT m.memory_id, m.owner_kind, m.owner_id, COALESCE(m.kind, 'Fact'::proxima_core.entity_kind) AS kind, m.schema_id, m.created_at, NULL::text[] AS tags, COALESCE(m.text, '') AS search_text, m.search_tsv AS search_tsv, m.lexical_language AS lexical_language FROM proxima_core.memories m  LEFT JOIN proxima_core.memories m2 ON m2.supersedes = m.memory_id AND m2.tombstoned_at IS NULL AND m2.owner_kind = m.owner_kind AND m2.owner_id IS NOT DISTINCT FROM m.owner_id WHERE (EXISTS (
               SELECT 1
                 FROM unnest($1::proxima_core.owner_ref_kind[], $2::uuid[]) AS s(kind, id)
                WHERE m.owner_kind = s.kind AND m.owner_id = s.id
-           ) OR (m.owner_kind = 'world' AND m.owner_id IS NULL)) AND m.tombstoned_at IS NULL AND m.created_at >= $7 AND m.created_at <= $8 AND NULL::text[] @> $9::text[] AND ( (m.kind IS NULL AND ( m.fact_entity_id IS NULL OR EXISTS ( SELECT 1 FROM proxima_core.fact_entities fe WHERE fe.fact_entity_id = m.fact_entity_id AND fe.current_memory_id = m.memory_id ) )) OR (m.kind IS NOT NULL AND m2.memory_id IS NULL) ) AND NULLIF(m.text, '') IS NOT NULL UNION ALL SELECT m.memory_id, m.owner_kind, m.owner_id, COALESCE(m.kind, 'Fact'::proxima_core.entity_kind) AS kind, m.schema_id, m.created_at, s.tags AS tags,
+           ) OR (m.owner_kind = 'world' AND m.owner_id IS NULL)) AND m.tombstoned_at IS NULL AND m.created_at >= $7 AND m.created_at <= $8 AND NULL::text[] @> $9::text[] AND ( (m.kind IS NULL AND ( m.fact_entity_id IS NULL OR EXISTS ( SELECT 1 FROM proxima_core.fact_entities fe WHERE fe.fact_entity_id = m.fact_entity_id AND fe.current_memory_id = m.memory_id ) )) OR (m.kind IS NOT NULL AND m2.memory_id IS NULL) ) AND NULLIF(m.text, '') IS NOT NULL
+             AND (m.search_tsv @@ (SELECT tsq FROM q) OR m.search_tsv @@ (SELECT any_tsq FROM q)) UNION ALL SELECT m.memory_id, m.owner_kind, m.owner_id, COALESCE(m.kind, 'Fact'::proxima_core.entity_kind) AS kind, m.schema_id, m.created_at, s.tags AS tags,
              NULLIF(concat_ws(' ', NULLIF(s.title::text, ''), NULLIF(array_to_string(s.tags, ' '), '')), '') AS search_text, s.search_tsv AS search_tsv, s.lexical_language AS lexical_language
              FROM proxima_core.memories m
 JOIN proxima_core.agent_note_v1 s ON s.memory_id = m.memory_id WHERE (EXISTS (
@@ -2225,7 +3003,8 @@ JOIN proxima_core.agent_note_v1 s ON s.memory_id = m.memory_id WHERE (EXISTS (
                WHERE m.owner_kind = s.kind AND m.owner_id = s.id
            ) OR (m.owner_kind = 'world' AND m.owner_id IS NULL)) AND m.tombstoned_at IS NULL
            AND m.schema_id = $3
-           AND m.schema_version = $4 AND m.kind IS NULL AND m.created_at >= $7 AND m.created_at <= $8 AND s.tags @> $9::text[] AND ( m.fact_entity_id IS NULL OR EXISTS ( SELECT 1 FROM proxima_core.fact_entities fe WHERE fe.fact_entity_id = m.fact_entity_id AND fe.current_memory_id = m.memory_id ) ) UNION ALL SELECT m.memory_id, m.owner_kind, m.owner_id, COALESCE(m.kind, 'Fact'::proxima_core.entity_kind) AS kind, m.schema_id, m.created_at, NULL::text[] AS tags,
+           AND m.schema_version = $4 AND m.kind IS NULL AND m.created_at >= $7 AND m.created_at <= $8 AND s.tags @> $9::text[] AND ( m.fact_entity_id IS NULL OR EXISTS ( SELECT 1 FROM proxima_core.fact_entities fe WHERE fe.fact_entity_id = m.fact_entity_id AND fe.current_memory_id = m.memory_id ) )
+             AND (s.search_tsv @@ (SELECT tsq FROM q) OR s.search_tsv @@ (SELECT any_tsq FROM q)) UNION ALL SELECT m.memory_id, m.owner_kind, m.owner_id, COALESCE(m.kind, 'Fact'::proxima_core.entity_kind) AS kind, m.schema_id, m.created_at, NULL::text[] AS tags,
              NULLIF(concat_ws(' ', NULLIF(s.claim::text, '')), '') AS search_text, proxima_core.lexical_tsv(m.lexical_language, NULLIF(concat_ws(' ', NULLIF(s.claim::text, '')), '')) AS search_tsv, m.lexical_language AS lexical_language
              FROM proxima_core.memories m
 JOIN proxima_core.interpretation_v1 s ON s.memory_id = m.memory_id LEFT JOIN proxima_core.memories m2 ON m2.supersedes = m.memory_id AND m2.tombstoned_at IS NULL AND m2.owner_kind = m.owner_kind AND m2.owner_id IS NOT DISTINCT FROM m.owner_id WHERE (EXISTS (
@@ -2234,7 +3013,33 @@ JOIN proxima_core.interpretation_v1 s ON s.memory_id = m.memory_id LEFT JOIN pro
                WHERE m.owner_kind = s.kind AND m.owner_id = s.id
            ) OR (m.owner_kind = 'world' AND m.owner_id IS NULL)) AND m.tombstoned_at IS NULL
            AND m.schema_id = $5
-           AND m.schema_version = $6 AND m.kind = 'Abstraction' AND m.created_at >= $7 AND m.created_at <= $8 AND NULL::text[] @> $9::text[] AND m2.memory_id IS NULL) , scrubbed AS (
+           AND m.schema_version = $6 AND m.kind = 'Abstraction' AND m.created_at >= $7 AND m.created_at <= $8 AND NULL::text[] @> $9::text[] AND m2.memory_id IS NULL
+             AND (proxima_core.lexical_tsv(m.lexical_language, NULLIF(concat_ws(' ', NULLIF(s.claim::text, '')), '')) @@ (SELECT tsq FROM q) OR proxima_core.lexical_tsv(m.lexical_language, NULLIF(concat_ws(' ', NULLIF(s.claim::text, '')), '')) @@ (SELECT any_tsq FROM q)))
+          SELECT c.memory_id, c.kind, c.schema_id, c.created_at,
+                 left(c.search_text, 480) AS snippet,
+                 GREATEST(CASE WHEN c.search_tsv @@ q.tsq
+                          THEN 0.5 + LEAST(COALESCE(ts_rank_cd(c.search_tsv,
+                                   websearch_to_tsquery(c.lexical_language,
+                                       proxima_core.lexical_query_text(
+                                           c.lexical_language, q.scrubbed)),
+                                   32), 0.0), 1.0) * 0.5
+                          ELSE 0.0 END, CASE WHEN c.search_tsv @@ q.any_tsq
+                THEN 0.25 + LEAST(COALESCE(ts_rank(c.search_tsv,
+                         NULLIF(replace(plainto_tsquery(c.lexical_language,
+                                            proxima_core.lexical_query_text(
+                                                c.lexical_language, q.scrubbed))::text,
+                                        ' & ', ' | '), '')::tsquery,
+                         1|32), 0.0) * 100.0, 1.0) * 0.2
+                ELSE 0.0 END)::real AS lexical_score,
+                 0.0::real AS similarity_score
+          FROM candidates c, q
+          WHERE c.search_text <> ''
+          ORDER BY lexical_score DESC, c.memory_id DESC
+          LIMIT 44";
+
+    /// The legacy lexical branch — the text the escape hatch restores.
+    /// Never regenerate.
+    const LEXICAL_BRANCH_LEGACY_GOLDEN: &str = r"WITH scrubbed AS (
                -- The same scrub every stored `search_tsv` went through
                -- (`lexical_tsv` = `to_tsvector(config, lexical_scrub(txt))`).
                -- Called, not restated: a query token that keeps punctuation
@@ -2282,43 +3087,12 @@ JOIN proxima_core.interpretation_v1 s ON s.memory_id = m.memory_id LEFT JOIN pro
                       ) AS any_tsq
                  FROM scrubbed s
           )
-          SELECT c.memory_id, c.kind, c.schema_id, c.created_at,
-                 left(c.search_text, 480) AS snippet,
-                 GREATEST(
-                     CASE WHEN c.search_tsv @@ q.tsq
-                          THEN 0.5 + LEAST(COALESCE(ts_rank_cd(c.search_tsv,
-                                   websearch_to_tsquery(c.lexical_language,
-                                       proxima_core.lexical_query_text(
-                                           c.lexical_language, q.scrubbed)),
-                                   32), 0.0), 1.0) * 0.5
-                          ELSE 0.0 END, CASE WHEN c.search_tsv @@ q.any_tsq
-                THEN 0.25 + LEAST(COALESCE(ts_rank(c.search_tsv,
-                         NULLIF(replace(plainto_tsquery(c.lexical_language,
-                                            proxima_core.lexical_query_text(
-                                                c.lexical_language, q.scrubbed))::text,
-                                        ' & ', ' | '), '')::tsquery,
-                         1|32), 0.0) * 100.0, 1.0) * 0.2
-                ELSE 0.0 END,
-                     CASE WHEN lower(c.search_text) LIKE '%' || replace(replace(replace(lower($10), '\\', '\\\\'), '%', '\\%'), '_', '\\_') || '%' ESCAPE '\'
-                          THEN 0.25 ELSE 0.0 END
-                 )::real AS lexical_score,
-                 0.0::real AS similarity_score
-          FROM candidates c, q
-          WHERE c.search_text <> ''
-            AND (
-                c.search_tsv @@ q.tsq OR c.search_tsv @@ q.any_tsq
-                OR lower(c.search_text) LIKE '%' || replace(replace(replace(lower($10), '\\', '\\\\'), '%', '\\%'), '_', '\\_') || '%' ESCAPE '\'
-            )
-          ORDER BY lexical_score DESC, c.memory_id DESC
-          LIMIT 44";
-
-    /// The legacy lexical branch — the text the escape hatch restores.
-    /// Never regenerate.
-    const LEXICAL_BRANCH_LEGACY_GOLDEN: &str = r"WITH candidates AS MATERIALIZED (SELECT m.memory_id, m.owner_kind, m.owner_id, COALESCE(m.kind, 'Fact'::proxima_core.entity_kind) AS kind, m.schema_id, m.created_at, NULL::text[] AS tags, COALESCE(m.text, '') AS search_text, m.search_tsv AS search_tsv, m.lexical_language AS lexical_language FROM proxima_core.memories m  WHERE (EXISTS (
+          , candidates AS (SELECT m.memory_id, m.owner_kind, m.owner_id, COALESCE(m.kind, 'Fact'::proxima_core.entity_kind) AS kind, m.schema_id, m.created_at, NULL::text[] AS tags, COALESCE(m.text, '') AS search_text, m.search_tsv AS search_tsv, m.lexical_language AS lexical_language FROM proxima_core.memories m  WHERE (EXISTS (
               SELECT 1
                 FROM unnest($1::proxima_core.owner_ref_kind[], $2::uuid[]) AS s(kind, id)
                WHERE m.owner_kind = s.kind AND m.owner_id = s.id
-           ) OR (m.owner_kind = 'world' AND m.owner_id IS NULL)) AND m.tombstoned_at IS NULL AND m.created_at >= $7 AND m.created_at <= $8 AND NULL::text[] @> $9::text[] AND ( (m.kind IS NULL AND ( m.fact_entity_id IS NULL OR EXISTS ( SELECT 1 FROM proxima_core.fact_entities fe WHERE fe.fact_entity_id = m.fact_entity_id AND fe.current_memory_id = m.memory_id ) )) OR (m.kind IS NOT NULL AND NOT EXISTS ( SELECT 1 FROM proxima_core.memories m2 WHERE m2.supersedes = m.memory_id AND m2.tombstoned_at IS NULL AND m2.owner_kind = m.owner_kind AND m2.owner_id IS NOT DISTINCT FROM m.owner_id )) ) AND NULLIF(m.text, '') IS NOT NULL UNION ALL SELECT m.memory_id, m.owner_kind, m.owner_id, COALESCE(m.kind, 'Fact'::proxima_core.entity_kind) AS kind, m.schema_id, m.created_at, s.tags AS tags,
+           ) OR (m.owner_kind = 'world' AND m.owner_id IS NULL)) AND m.tombstoned_at IS NULL AND m.created_at >= $7 AND m.created_at <= $8 AND NULL::text[] @> $9::text[] AND ( (m.kind IS NULL AND ( m.fact_entity_id IS NULL OR EXISTS ( SELECT 1 FROM proxima_core.fact_entities fe WHERE fe.fact_entity_id = m.fact_entity_id AND fe.current_memory_id = m.memory_id ) )) OR (m.kind IS NOT NULL AND NOT EXISTS ( SELECT 1 FROM proxima_core.memories m2 WHERE m2.supersedes = m.memory_id AND m2.tombstoned_at IS NULL AND m2.owner_kind = m.owner_kind AND m2.owner_id IS NOT DISTINCT FROM m.owner_id )) ) AND NULLIF(m.text, '') IS NOT NULL
+             AND (m.search_tsv @@ (SELECT tsq FROM q) OR m.search_tsv @@ (SELECT any_tsq FROM q)) UNION ALL SELECT m.memory_id, m.owner_kind, m.owner_id, COALESCE(m.kind, 'Fact'::proxima_core.entity_kind) AS kind, m.schema_id, m.created_at, s.tags AS tags,
              NULLIF(concat_ws(' ', NULLIF(s.title::text, ''), NULLIF(array_to_string(s.tags, ' '), '')), '') AS search_text, s.search_tsv AS search_tsv, s.lexical_language AS lexical_language
              FROM proxima_core.memories m
 JOIN proxima_core.agent_note_v1 s ON s.memory_id = m.memory_id WHERE (EXISTS (
@@ -2327,7 +3101,8 @@ JOIN proxima_core.agent_note_v1 s ON s.memory_id = m.memory_id WHERE (EXISTS (
                WHERE m.owner_kind = s.kind AND m.owner_id = s.id
            ) OR (m.owner_kind = 'world' AND m.owner_id IS NULL)) AND m.tombstoned_at IS NULL
            AND m.schema_id = $3
-           AND m.schema_version = $4 AND m.kind IS NULL AND m.created_at >= $7 AND m.created_at <= $8 AND s.tags @> $9::text[] AND ( (m.kind IS NULL AND ( m.fact_entity_id IS NULL OR EXISTS ( SELECT 1 FROM proxima_core.fact_entities fe WHERE fe.fact_entity_id = m.fact_entity_id AND fe.current_memory_id = m.memory_id ) )) OR (m.kind IS NOT NULL AND NOT EXISTS ( SELECT 1 FROM proxima_core.memories m2 WHERE m2.supersedes = m.memory_id AND m2.tombstoned_at IS NULL AND m2.owner_kind = m.owner_kind AND m2.owner_id IS NOT DISTINCT FROM m.owner_id )) ) UNION ALL SELECT m.memory_id, m.owner_kind, m.owner_id, COALESCE(m.kind, 'Fact'::proxima_core.entity_kind) AS kind, m.schema_id, m.created_at, NULL::text[] AS tags,
+           AND m.schema_version = $4 AND m.kind IS NULL AND m.created_at >= $7 AND m.created_at <= $8 AND s.tags @> $9::text[] AND ( (m.kind IS NULL AND ( m.fact_entity_id IS NULL OR EXISTS ( SELECT 1 FROM proxima_core.fact_entities fe WHERE fe.fact_entity_id = m.fact_entity_id AND fe.current_memory_id = m.memory_id ) )) OR (m.kind IS NOT NULL AND NOT EXISTS ( SELECT 1 FROM proxima_core.memories m2 WHERE m2.supersedes = m.memory_id AND m2.tombstoned_at IS NULL AND m2.owner_kind = m.owner_kind AND m2.owner_id IS NOT DISTINCT FROM m.owner_id )) )
+             AND (s.search_tsv @@ (SELECT tsq FROM q) OR s.search_tsv @@ (SELECT any_tsq FROM q)) UNION ALL SELECT m.memory_id, m.owner_kind, m.owner_id, COALESCE(m.kind, 'Fact'::proxima_core.entity_kind) AS kind, m.schema_id, m.created_at, NULL::text[] AS tags,
              NULLIF(concat_ws(' ', NULLIF(s.claim::text, '')), '') AS search_text, proxima_core.lexical_tsv(m.lexical_language, NULLIF(concat_ws(' ', NULLIF(s.claim::text, '')), '')) AS search_tsv, m.lexical_language AS lexical_language
              FROM proxima_core.memories m
 JOIN proxima_core.interpretation_v1 s ON s.memory_id = m.memory_id WHERE (EXISTS (
@@ -2336,58 +3111,11 @@ JOIN proxima_core.interpretation_v1 s ON s.memory_id = m.memory_id WHERE (EXISTS
                WHERE m.owner_kind = s.kind AND m.owner_id = s.id
            ) OR (m.owner_kind = 'world' AND m.owner_id IS NULL)) AND m.tombstoned_at IS NULL
            AND m.schema_id = $5
-           AND m.schema_version = $6 AND m.kind = 'Abstraction' AND m.created_at >= $7 AND m.created_at <= $8 AND NULL::text[] @> $9::text[] AND ( (m.kind IS NULL AND ( m.fact_entity_id IS NULL OR EXISTS ( SELECT 1 FROM proxima_core.fact_entities fe WHERE fe.fact_entity_id = m.fact_entity_id AND fe.current_memory_id = m.memory_id ) )) OR (m.kind IS NOT NULL AND NOT EXISTS ( SELECT 1 FROM proxima_core.memories m2 WHERE m2.supersedes = m.memory_id AND m2.tombstoned_at IS NULL AND m2.owner_kind = m.owner_kind AND m2.owner_id IS NOT DISTINCT FROM m.owner_id )) )) , scrubbed AS (
-               -- The same scrub every stored `search_tsv` went through
-               -- (`lexical_tsv` = `to_tsvector(config, lexical_scrub(txt))`).
-               -- Called, not restated: a query token that keeps punctuation
-               -- the document side dropped can never match the stored
-               -- lexeme, and that failure is silent.
-               SELECT proxima_core.lexical_scrub($10) AS q
-          )
-          , q AS (
-               -- One tsquery per active language, OR-combined: the match
-               -- side cannot know the query's language, and the OR is
-               -- GIN-indexable where a per-row-parsed tsquery is not.
-               -- lexical_query_text stop-filters the text for stop-list-free
-               -- configurations (simple), so one CJK row in the corpus
-               -- cannot turn every query's function words into match terms.
-               -- tsquery_or_agg over an empty lexical_languages is NULL;
-               -- the COALESCE falls back to the default configuration.
-               SELECT s.q AS scrubbed,
-                      COALESCE(
-                          (SELECT proxima_core.tsquery_or_agg(
-                                      websearch_to_tsquery(l.config,
-                                          proxima_core.lexical_query_text(l.config, s.q))
-                                      ORDER BY l.config)
-                             FROM proxima_core.lexical_languages l),
-                          websearch_to_tsquery(proxima_core.lexical_config(), s.q)
-                      ) AS tsq,
-                      -- OR-rescue arm: the same content lexemes any-matched.
-                      -- plainto_tsquery emits only '&' between lexemes (no
-                      -- phrase or negation operators), so the operator swap
-                      -- is safe. NULLIF folds a no-lexeme language out; the
-                      -- STRICT transition function skips those NULLs.
-                      COALESCE(
-                          (SELECT proxima_core.tsquery_or_agg(
-                                      NULLIF(
-                                          replace(plainto_tsquery(l.config,
-                                              proxima_core.lexical_query_text(
-                                                  l.config, s.q))::text,
-                                                  ' & ', ' | '),
-                                          '')::tsquery
-                                      ORDER BY l.config)
-                             FROM proxima_core.lexical_languages l),
-                          NULLIF(
-                              replace(plainto_tsquery(proxima_core.lexical_config(), s.q)::text,
-                                      ' & ', ' | '),
-                              '')::tsquery
-                      ) AS any_tsq
-                 FROM scrubbed s
-          )
+           AND m.schema_version = $6 AND m.kind = 'Abstraction' AND m.created_at >= $7 AND m.created_at <= $8 AND NULL::text[] @> $9::text[] AND ( (m.kind IS NULL AND ( m.fact_entity_id IS NULL OR EXISTS ( SELECT 1 FROM proxima_core.fact_entities fe WHERE fe.fact_entity_id = m.fact_entity_id AND fe.current_memory_id = m.memory_id ) )) OR (m.kind IS NOT NULL AND NOT EXISTS ( SELECT 1 FROM proxima_core.memories m2 WHERE m2.supersedes = m.memory_id AND m2.tombstoned_at IS NULL AND m2.owner_kind = m.owner_kind AND m2.owner_id IS NOT DISTINCT FROM m.owner_id )) )
+             AND (proxima_core.lexical_tsv(m.lexical_language, NULLIF(concat_ws(' ', NULLIF(s.claim::text, '')), '')) @@ (SELECT tsq FROM q) OR proxima_core.lexical_tsv(m.lexical_language, NULLIF(concat_ws(' ', NULLIF(s.claim::text, '')), '')) @@ (SELECT any_tsq FROM q)))
           SELECT c.memory_id, c.kind, c.schema_id, c.created_at,
                  left(c.search_text, 480) AS snippet,
-                 GREATEST(
-                     CASE WHEN c.search_tsv @@ q.tsq
+                 GREATEST(CASE WHEN c.search_tsv @@ q.tsq
                           THEN 0.5 + LEAST(COALESCE(ts_rank_cd(c.search_tsv,
                                    websearch_to_tsquery(c.lexical_language,
                                        proxima_core.lexical_query_text(
@@ -2400,17 +3128,10 @@ JOIN proxima_core.interpretation_v1 s ON s.memory_id = m.memory_id WHERE (EXISTS
                                                 c.lexical_language, q.scrubbed))::text,
                                         ' & ', ' | '), '')::tsquery,
                          1|32), 0.0) * 100.0, 1.0) * 0.2
-                ELSE 0.0 END,
-                     CASE WHEN lower(c.search_text) LIKE '%' || replace(replace(replace(lower($10), '\\', '\\\\'), '%', '\\%'), '_', '\\_') || '%' ESCAPE '\'
-                          THEN 0.25 ELSE 0.0 END
-                 )::real AS lexical_score,
+                ELSE 0.0 END)::real AS lexical_score,
                  0.0::real AS similarity_score
           FROM candidates c, q
           WHERE c.search_text <> ''
-            AND (
-                c.search_tsv @@ q.tsq OR c.search_tsv @@ q.any_tsq
-                OR lower(c.search_text) LIKE '%' || replace(replace(replace(lower($10), '\\', '\\\\'), '%', '\\%'), '_', '\\_') || '%' ESCAPE '\'
-            )
           ORDER BY lexical_score DESC, c.memory_id DESC
           LIMIT 44";
 

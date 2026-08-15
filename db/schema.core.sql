@@ -2267,10 +2267,24 @@ CREATE UNIQUE INDEX goals_supersedes_unique ON proxima_core.goals USING btree (s
 
 
 --
+-- Name: idx_agent_derivation_v1_search_tsv; Type: INDEX; Schema: proxima_core; Owner: -
+--
+
+CREATE INDEX idx_agent_derivation_v1_search_tsv ON proxima_core.agent_derivation_v1 USING gin (search_tsv);
+
+
+--
 -- Name: idx_agent_note_v1_note_id; Type: INDEX; Schema: proxima_core; Owner: -
 --
 
 CREATE INDEX idx_agent_note_v1_note_id ON proxima_core.agent_note_v1 USING btree (note_id);
+
+
+--
+-- Name: idx_agent_note_v1_search_tsv; Type: INDEX; Schema: proxima_core; Owner: -
+--
+
+CREATE INDEX idx_agent_note_v1_search_tsv ON proxima_core.agent_note_v1 USING gin (search_tsv);
 
 
 --
@@ -2579,6 +2593,13 @@ CREATE INDEX idx_memories_owner_kind_created_id_live ON proxima_core.memories US
 --
 
 CREATE INDEX idx_memories_owner_source_batch ON proxima_core.memories USING btree (owner_kind, owner_id, source_batch_id) WHERE (source_batch_id IS NOT NULL);
+
+
+--
+-- Name: idx_memories_search_tsv; Type: INDEX; Schema: proxima_core; Owner: -
+--
+
+CREATE INDEX idx_memories_search_tsv ON proxima_core.memories USING gin (search_tsv);
 
 
 --
