@@ -41,18 +41,8 @@ theorem pins_are_node_content (m : Memory) :
     derivePins m = (m.origins, m.refs) := rfl
 
 theorem derived_table_rebuildable (m : Memory) :
-    derivePins m = (memory_origins m, memory_refs m) := rfl
-
-theorem rebuild_deterministic (m : Memory) :
-    derivePins m = derivePins m := rfl
-
-/-- E4 — the two lists are the whole pin vocabulary; kind is which list. -/
-theorem derived_pin_kind_follows_operation (m : Memory) (id : MemoryId) :
-    (id ∈ memory_origins m →
-      (derivePins m).1 = memory_origins m) ∧
-    (id ∈ memory_refs m →
-      (derivePins m).2 = memory_refs m) :=
-  ⟨fun _ => rfl, fun _ => rfl⟩
+    derivePins m = (memory_origins m, memory_refs m) :=
+  pins_are_node_content m
 
 /-- E4z — a write with empty origins is legal (interpretation Perspective). -/
 theorem declaration_without_origins_writes_no_origin_pins (m : Memory)
@@ -67,13 +57,6 @@ theorem fact_source_reaches_only_facts (m : Memory)
     (hk : memory_kind m = .Fact) :
     memory_origins m = [] :=
   m.fact_origins_empty hk
-
-/-- Layer of a pin kind. -/
-def pinKindLayer
-    (memories : Set Memory) (cooled : Set Cooled)
-    (id : MemoryId) (k : MemoryKind) :
-    pinKindIs memories cooled id k → k.layer = k.layer :=
-  fun _ => rfl
 
 /-- Layer rule on origins: A origins are Facts; P origins are empty or A's.
     Targets may be hot or cooled. -/

@@ -102,7 +102,7 @@ that distinguishes a carrier from a decoy.
 | ME-16 | Memory id is identity | structure field `Memory.t` (`memory_t` / `memory_id`) + `MemoryIdUnique`. Series is `Memory.handle` |
 | ME-17 | Personality is emergent from Perspective/wake context, not a stored instance | structural absence in Memory.lean/Principles.lean; no Personality module; `selfPerspectives` queries existing Perspective rows by owner |
 | ME-18 | Cross-context supersession policy | excluded: wake/Perspective context semantics deferred after D4; no personality instance axis in kernel |
-| ME-19 | Relation registry: unregistered relations invalid | RETIRED. E4 is `derived_pin_kind_follows_operation` (kind = which list) |
+| ME-19 | Relation registry: unregistered relations invalid | RETIRED. E4 is structural (`origins`/`refs`) + `pins_are_node_content` |
 | ME-20 | Core relations table (derived-from/supersedes/inspires/authored) | RETIRED: `derived-from` → `Memory.origins`; `points-at` → `Memory.refs`; `inspires` → `Goal.assignment_t`; `depends-on` → `Goal.dependency_t`; `motivated-by` → `Goal.evidence_t`; authorship → write-act Fact (`Goal.write_act_t` / produced `refs`). No supersedes |
 | ME-K1 | Text-bearing Memory rows can be model-independent knowledge artifacts | REBASED: text is sidecar. `KnowledgeArtifact.text` + THEOREMs `knowledge_artifact_has_text`, `knowledge_artifact_model_independent`, `knowledge_artifact_recoverable_by_its_kind` |
 | ME-K2 | Long-term knowledge artifact = admitted text-bearing Memory row, not one model cache | def `KnowledgeArtifactIn memories artifact`; THEOREM `long_term_knowledge_artifact_has_text_memory`; no `Truth`/`Knows`/specific LLM or human instance in core |
@@ -118,7 +118,7 @@ headline pin theorems in `Causa/Edges.lean`.
 | E1 | Existence — every pinned `t` exists | def `pinExists` (hot `Memory.t` or `Cooled` stub) + `MemoryGraphValid.pinTargetsExist` |
 | E2 | Ownership — the pin is on the declaring row | structural (no edge owner column) + `pin_write_admitted` / `cross_owner_target_admitted` |
 | E3 | Layering — UML origin CHECKs | def `OriginKindValid` + THEOREM `origin_layer_rule`; THEOREM `fact_source_reaches_only_facts` |
-| E4 | Kind follows operation; no free-standing pin write | `origins` = made-from, `refs` = points-at; THEOREM `derived_pin_kind_follows_operation`. No verb writes a pin |
+| E4 | Kind follows operation; no free-standing pin write | STRUCTURAL: `origins` vs `refs` are the two fields. THEOREM `pins_are_node_content`. No verb writes a pin |
 | E4z | A write with ZERO origins is legal | THEOREM `declaration_without_origins_writes_no_origin_pins` + `interpretationOf`; THEOREM `invocation_without_inputs_is_complete` |
 | E5 | Structural idempotency — no pin row | STRUCTURAL ABSENCE of `Edge` / `EdgeId`. The pin set is the node's arrays |
 | E6 | No content — no pin payload | STRUCTURAL ABSENCE: arrays of `MemoryId` only |
@@ -164,7 +164,7 @@ headline pin theorems in `Causa/Edges.lean`.
 | GO-13 | Goal-scoped wake policy; planner-first | `Goal.wake_id : Option WakeId` + reusable `WakeConfig` row; `Wake.Firing.wake_config` binds `goal_wake_id = some config.wake_id`; `actor_member` is any server-resolved role in the Goal owner; `each_action_allowed` pins invoked Actions to `WakeConfig.toolset` |
 | GO-14 | Goal assignment/evidence scope | `Goal.assignment_t` / `evidence_t`. `GoalEvidenceValid` resolves each evidence `t` to a hot or cooled non-Perspective. THEOREM `goal_evidence_not_perspective`. Operator-must-have-evidence RETIRED with authorship |
 | GO-17 | Root Goal creation shape | `GoalRootValid` + THEOREM `goal_root_active`: least-tick version on a handle is Active only |
-| GO-18 | Terminal close Fact table validity | `GoalTerminalCloseFactValid` + projection THEOREMS: close Fact is a memory-table Fact with same Owner as terminal Goal |
+| GO-18 | Terminal close Fact table validity | `GoalTerminalCloseFactValid`: close Fact is a hot or cooled Fact with the same Owner |
 
 ## 03 — Schema Registry (SR) — in-kernel rows
 
