@@ -32,6 +32,9 @@ pub(crate) async fn change_history(
 
     // Uses the shared edge guard over ce.edge_source_memory_id /
     // ce.edge_target_memory_id; client `req.owner` is not an access vector.
+    // Plain `=` on ce.owner_id: the change_event CHECKs prove the column is
+    // never NULL, so `=` selects exactly what IS NOT DISTINCT FROM did while
+    // staying an index condition (sql-sweep S6).
     let edge_visibility = edge_event_visibility_predicate(1, 2, 5, 6);
     let sql = format!(
         r"SELECT ce.seq FROM proxima_core.change_event ce
@@ -39,7 +42,7 @@ pub(crate) async fn change_history(
                 SELECT 1
                   FROM unnest($1::proxima_core.owner_ref_kind[], $2::uuid[]) AS s(kind, id)
                  WHERE ce.owner_kind = s.kind
-                   AND ce.owner_id IS NOT DISTINCT FROM s.id
+                   AND ce.owner_id = s.id
              )
                AND ($3::uuid IS NULL OR ce.seq < $3)
                AND {edge_visibility}

@@ -14,8 +14,8 @@ use crate::sidecars::{PgSidecarKey, PgSidecarReadCtx, PgSidecarRegistryFrozen};
 
 use super::edges::query_edges;
 use super::goals::query_goals;
+use super::read_owner_columns;
 use super::rows::{MemoryRowDb, memory_row_from_db, read_seq_high_water, validate_stateful_filter};
-use super::{read_owner_columns, read_owner_predicate};
 
 #[derive(Debug, Clone)]
 struct StatefulSqlParams {
@@ -32,7 +32,6 @@ pub(crate) async fn query_memories(
     _schemas: &[SchemaInfo],
 ) -> Result<QueryResponse, StorageError> {
     let (read_owner_kinds, read_owner_ids) = read_owner_columns(&req.read_owners);
-    let id_hydration = !req.memory_ids.is_empty() || !req.goal_ids.is_empty();
     let schema_id_filter = req.schema_id.as_ref().map(|s| s.as_str().to_string());
     if matches!(req.entity_kind, Some(EntityKind::Goal)) {
         let (goals, next_cursor) = query_goals(
@@ -70,85 +69,15 @@ pub(crate) async fn query_memories(
         u64::from(req.limit)
     };
 
-    let mut sql = String::from(
-        "SELECT page.memory_id, page.created_at, page.owner_kind, page.owner_id, \
-                page.schema_id, page.schema_version, page.kind \
-         FROM unnest($1::proxima_core.owner_ref_kind[], $2::uuid[]) AS s(kind, id) \
-         JOIN LATERAL ( \
-             SELECT m.memory_id, m.created_at, m.owner_kind, m.owner_id, \
-                    m.schema_id, m.schema_version, m.kind \
-               FROM proxima_core.memories m",
-    );
-
-    // Bindings: $1=read_owner_kinds, $2=read_owner_ids.
-    let mut next_param = 3;
-    let schema = schema_id_filter.as_ref().map(|_| {
-        let param = next_param;
-        next_param += 1;
-        param
-    });
     let memory_ids: Vec<uuid::Uuid> = req.memory_ids.iter().map(|id| id.into_inner()).collect();
-    let memory_ids_param = (!memory_ids.is_empty()).then(|| {
-        let param = next_param;
-        next_param += 1;
-        param
-    });
-    let stateful_params = allocate_stateful_params(&stateful, &mut next_param);
-    let cursor_params = cursor.map(|_| {
-        let created_at = next_param;
-        next_param += 1;
-        let memory_id = next_param;
-        (created_at, memory_id)
-    });
-    // The stateful JOINs (for head-by-natural-key filtering) use
-    // explicit `ON sf_i.memory_id = m.memory_id` so generated aliases
-    // stay unambiguous.
-    for (idx, sf) in stateful.iter().enumerate() {
-        let alias = stateful_alias(idx);
-        write!(
-            sql,
-            " LEFT JOIN {sidecar} {alias} ON {alias}.memory_id = m.memory_id",
-            sidecar = sf.sidecar_table,
-            alias = alias,
-        )
-        .expect("write to String is infallible");
-    }
-
-    write!(
-        sql,
-        // `memories.owner_id` is NULL for a World-owned row (0008_v005
-        // dropped `memories_world_not_write_owner_chk`: World is a valid
-        // persisted owner via `Engine::publish_to_world`, not just a
-        // fresh-write guard target). `s.id` is NULL for the World member
-        // of the caller's read-owner set, so plain `=` would silently
-        // drop every World-owned row here (NULL = NULL is NULL, not
-        // true) even though the caller is authorized to read World.
-        " WHERE {read_owner_predicate} \
-            AND m.tombstoned_at IS NULL",
-        read_owner_predicate = read_owner_predicate("m", "s"),
-    )
-    .expect("write to String is infallible");
-
-    if let Some(param) = memory_ids_param {
-        write!(sql, " AND m.memory_id = ANY(${param})").expect("write to String is infallible");
-    } else if id_hydration {
-        sql.push_str(" AND false");
-    }
-
-    push_heads_predicate(&mut sql, req, schema, &stateful, &stateful_params);
-
-    if let Some((created_at_param, memory_id_param)) = cursor_params {
-        write!(
-            sql,
-            " AND (m.created_at, m.memory_id) < (${created_at_param}, ${memory_id_param})"
-        )
-        .expect("write to String is infallible");
-    }
-
-    sql.push_str(" ORDER BY m.created_at DESC, m.memory_id DESC LIMIT ");
-    sql.push_str(&fetch_limit.to_string());
-    sql.push_str(") page ON TRUE ORDER BY page.created_at DESC, page.memory_id DESC LIMIT ");
-    sql.push_str(&fetch_limit.to_string());
+    let sql = memory_page_sql(
+        req,
+        schema_id_filter.is_some(),
+        !memory_ids.is_empty(),
+        &stateful,
+        cursor.is_some(),
+        fetch_limit,
+    );
 
     // SQL-POLICY: fixed-fragment
     let mut q = sqlx::query_as::<_, MemoryRowDb>(sqlx::AssertSqlSafe(sql))
@@ -303,6 +232,167 @@ fn bind_stateful_filters<'q, O>(
         }
     }
     q
+}
+
+/// The keyset page statement for one tuning arm. `$1`/`$2` are the read
+/// owner arrays; the remaining parameter numbers are allocated here in the
+/// same order [`query_memories`] binds them.
+#[allow(clippy::fn_params_excessive_bools)]
+fn memory_page_sql(
+    req: &QueryRequest,
+    has_schema_filter: bool,
+    has_memory_ids: bool,
+    stateful: &[&proxima_core::verbs::query::StatefulHeadsFilter],
+    has_cursor: bool,
+    fetch_limit: u64,
+) -> String {
+    let id_hydration = !req.memory_ids.is_empty() || !req.goal_ids.is_empty();
+    // Bindings: $1=read_owner_kinds, $2=read_owner_ids.
+    let mut next_param = 3;
+    let schema = has_schema_filter.then(|| {
+        let param = next_param;
+        next_param += 1;
+        param
+    });
+    let memory_ids_param = has_memory_ids.then(|| {
+        let param = next_param;
+        next_param += 1;
+        param
+    });
+    let stateful_params = allocate_stateful_params(stateful, &mut next_param);
+    let cursor_params = has_cursor.then(|| {
+        let created_at = next_param;
+        next_param += 1;
+        let memory_id = next_param;
+        (created_at, memory_id)
+    });
+    // One owner-scoped page body, shared by every arm below.
+    let inner_page = |owner_predicate: &str| -> String {
+        let mut inner = String::from(
+            "SELECT m.memory_id, m.created_at, m.owner_kind, m.owner_id, \
+                    m.schema_id, m.schema_version, m.kind \
+               FROM proxima_core.memories m",
+        );
+        // The stateful JOINs (for head-by-natural-key filtering) use
+        // explicit `ON sf_i.memory_id = m.memory_id` so generated aliases
+        // stay unambiguous.
+        for (idx, sf) in stateful.iter().enumerate() {
+            let alias = stateful_alias(idx);
+            write!(
+                inner,
+                " LEFT JOIN {sidecar} {alias} ON {alias}.memory_id = m.memory_id",
+                sidecar = sf.sidecar_table,
+                alias = alias,
+            )
+            .expect("write to String is infallible");
+        }
+        write!(
+            inner,
+            " WHERE {owner_predicate} \
+                AND m.tombstoned_at IS NULL",
+        )
+        .expect("write to String is infallible");
+        if let Some(param) = memory_ids_param {
+            write!(inner, " AND m.memory_id = ANY(${param})")
+                .expect("write to String is infallible");
+        } else if id_hydration {
+            inner.push_str(" AND false");
+        }
+        push_heads_predicate(&mut inner, req, schema, stateful, &stateful_params);
+        if let Some((created_at_param, memory_id_param)) = cursor_params {
+            write!(
+                inner,
+                " AND (m.created_at, m.memory_id) < (${created_at_param}, ${memory_id_param})"
+            )
+            .expect("write to String is infallible");
+        }
+        write!(
+            inner,
+            " ORDER BY m.created_at DESC, m.memory_id DESC LIMIT {fetch_limit}"
+        )
+        .expect("write to String is infallible");
+        inner
+    };
+
+    // `memories.owner_id` is NULL for a World-owned row (0008_v005 dropped
+    // `memories_world_not_write_owner_chk`: World is a valid persisted
+    // owner via `Engine::publish_to_world`, not just a fresh-write guard
+    // target). `s.id` is NULL for the World member of the caller's read-
+    // owner set, so plain `=` would silently drop every World-owned row
+    // (NULL = NULL is NULL, not true) even though the caller is authorized
+    // to read World. What this replaced joined with IS NOT DISTINCT FROM,
+    // which is correct but not indexable. This joins with plain `=` —
+    // restoring the `(owner_kind, owner_id, created_at, memory_id)` index
+    // prefix — and appends the page body once more as a constant World arm,
+    // only when World is actually in the read set: the split
+    // `search.rs::push_read_owner_scope` already ships (sql-sweep S4). The
+    // arms are disjoint (an equality join never matches a NULL-id read-set
+    // row, and the World arm's rows carry a kind no non-World member has),
+    // and each arm keeps the per-arm ORDER/LIMIT, so the merged page is the
+    // same row set the IS NOT DISTINCT FROM join returned.
+    {
+        let member_arm = format!(
+            "SELECT lat.* \
+             FROM unnest($1::proxima_core.owner_ref_kind[], $2::uuid[]) AS s(kind, id) \
+             JOIN LATERAL ( {inner}) lat ON TRUE",
+            inner = inner_page(&super::read_owner_equality_predicate("m", "s")),
+        );
+        let world_in_read_set = req
+            .read_owners
+            .iter()
+            .any(|owner| matches!(owner, proxima_core::OwnerRef::World));
+        let body = if world_in_read_set {
+            // Each arm keeps its own ORDER/LIMIT, so both must be
+            // parenthesized: unparenthesized, the World arm's ORDER BY
+            // would bind to the whole union — where `m` is out of scope —
+            // instead of to its arm (PostgreSQL docs §7.4, "Combining
+            // Queries": ORDER BY/LIMIT apply to a set-operation branch
+            // only when the branch is enclosed in parentheses).
+            format!(
+                "({member_arm}) UNION ALL ({world_arm})",
+                world_arm = inner_page("m.owner_kind = 'world' AND m.owner_id IS NULL"),
+            )
+        } else {
+            member_arm
+        };
+        format!(
+            "SELECT page.memory_id, page.created_at, page.owner_kind, page.owner_id, \
+                    page.schema_id, page.schema_version, page.kind \
+             FROM ( {body}) page \
+             ORDER BY page.created_at DESC, page.memory_id DESC LIMIT {fetch_limit}"
+        )
+    }
+}
+
+/// [`memory_page_sql`] with the request-derived inputs recomputed exactly
+/// as [`query_memories`] derives them, for plan and equivalence assertions
+/// in tests. Same cfg gate as the search `*_sql_for_tests` exports.
+///
+/// # Errors
+///
+/// Returns the same validation error [`query_memories`] would for a
+/// malformed stateful-heads filter.
+#[cfg(any(test, feature = "test-fixtures", debug_assertions))]
+#[doc(hidden)]
+pub fn memory_page_sql_for_tests(req: &QueryRequest) -> Result<String, StorageError> {
+    let stateful = validated_stateful_filters(req)?;
+    let single_memory_stream = matches!(
+        req.entity_kind,
+        Some(EntityKind::Fact | EntityKind::Abstraction | EntityKind::Perspective)
+    );
+    let fetch_limit = if single_memory_stream {
+        u64::from(req.limit) + 1
+    } else {
+        u64::from(req.limit)
+    };
+    Ok(memory_page_sql(
+        req,
+        req.schema_id.is_some(),
+        !req.memory_ids.is_empty(),
+        &stateful,
+        matches!(&req.page.after, Some(QueryCursor::Memory { .. })),
+        fetch_limit,
+    ))
 }
 
 fn push_heads_predicate(

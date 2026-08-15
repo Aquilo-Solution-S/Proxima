@@ -306,6 +306,55 @@ async fn reconcile_embedding_drain_writes_fact_embeddings() -> Result<(), Box<dy
     result
 }
 
+/// The drain claims its whole batch in one statement instead of one claim
+/// per job; a claimed batch must land exactly the vectors and clear exactly
+/// the jobs the retired per-iteration drain did.
+#[tokio::test]
+async fn a_batched_drain_lands_the_same_embeddings_as_a_per_job_drain()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (pg, db_name) = fresh_pg().await;
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let owner = owner_fixture();
+        let engine = engine_for(pg.clone(), None);
+        let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
+        let mut memory_ids = Vec::new();
+        for text in [
+            "arm split drain a",
+            "arm split drain b",
+            "arm split drain c",
+        ] {
+            let outcome = engine.fact_ingest(&authz, fact_draft(&owner, text)).await?;
+            memory_ids.push(outcome.memory_id);
+        }
+        reconcile_stub_fact_embeddings(&pg, EmbeddingReconcileScope::MissingOnly).await?;
+
+        let client = ConstantEmbedding::prefixed("stub-fact-embed", &[0.25, 0.5, 0.75]);
+        let drain = proxima_storage_pg::verbs::fact_embeddings::drain_embedding_jobs_inline(
+            pg.pool_for_tests(),
+            &client,
+            10,
+        )
+        .await?;
+        assert_eq!(drain.embedded, 3);
+        assert_eq!(drain.failed, 0);
+        for memory_id in memory_ids {
+            assert_eq!(
+                count_fact_embeddings(pg.pool_for_tests(), memory_id).await?,
+                1
+            );
+            assert_eq!(
+                count_embedding_jobs(pg.pool_for_tests(), memory_id).await?,
+                0
+            );
+        }
+        Ok(())
+    }
+    .await;
+    drop(pg);
+    drop_db(&db_name).await?;
+    result
+}
+
 #[tokio::test]
 async fn reconcile_limit_skips_existing_heads_before_bounding()
 -> Result<(), Box<dyn std::error::Error>> {

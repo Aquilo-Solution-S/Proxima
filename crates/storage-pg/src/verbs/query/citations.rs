@@ -10,7 +10,7 @@ use crate::error::map_err;
 use crate::sidecars::PgSidecarRegistryFrozen;
 use crate::verbs::consolidate::load_memory_by_id;
 
-use super::{entity_owner_union, read_owner_columns, read_owner_predicate};
+use super::{read_owner_columns, read_owner_predicate};
 
 pub(crate) async fn facts_citing_object(
     pool: &PgPool,
@@ -39,10 +39,8 @@ pub(crate) async fn facts_citing_object(
           WHERE cm.cited_object_id = $1
             AND EXISTS (
                 SELECT 1
-                  FROM {entity_owner_union} eo
-                  JOIN unnest($2::proxima_core.owner_ref_kind[], $3::uuid[]) AS s(kind, id)
-                    ON {read_owner_predicate}
-                 WHERE eo.entity_id = m.memory_id
+                  FROM unnest($2::proxima_core.owner_ref_kind[], $3::uuid[]) AS s(kind, id)
+                 WHERE {read_owner_predicate}
             )
             AND m.kind IS NULL
             AND m.tombstoned_at IS NULL
@@ -50,8 +48,7 @@ pub(crate) async fn facts_citing_object(
                  OR (m.created_at, m.memory_id) < ($4::timestamptz, $5::uuid))
           ORDER BY m.created_at DESC, m.memory_id DESC
           LIMIT $6",
-        entity_owner_union = entity_owner_union(),
-        read_owner_predicate = read_owner_predicate("eo", "s"),
+        read_owner_predicate = read_owner_predicate("m", "s"),
     );
     let after_created_at = after.map(|cursor| cursor.created_at);
     let after_memory_id = after.map(|cursor| cursor.memory_id.into_inner());
@@ -199,13 +196,12 @@ pub(crate) async fn citation_of_entity_head(
           WHERE fe.fact_entity_id = $1
             AND EXISTS (
                 SELECT 1
-                  FROM {entity_owner_union} eo
+                  FROM proxima_core.memories hm
                   JOIN unnest($2::proxima_core.owner_ref_kind[], $3::uuid[]) AS s(kind, id)
                     ON {read_owner_predicate}
-                 WHERE eo.entity_id = fe.current_memory_id
+                 WHERE hm.memory_id = fe.current_memory_id
             )",
-        entity_owner_union = entity_owner_union(),
-        read_owner_predicate = read_owner_predicate("eo", "s"),
+        read_owner_predicate = read_owner_predicate("hm", "s"),
     );
     // SQL-POLICY: fixed-fragment
     let head = sqlx::query_scalar::<_, uuid::Uuid>(sqlx::AssertSqlSafe(sql))

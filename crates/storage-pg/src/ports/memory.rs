@@ -26,14 +26,27 @@ type NeighborMemoryEdgeTuple = (
     bool,
 );
 
-/// Edges touching any of the requested memories, in either direction.
+/// The neighbor window (sql-sweep S5). `touching` filters the edges scan on
+/// the RAW endpoint columns before the head resolution, so it rides
+/// `idx_edges_source`/`idx_edges_target` instead of resolving every edge.
 ///
-/// Fact-entity endpoints resolve through their current head so a neighbor
-/// window sees the observation that is live now, not the one the reference
-/// was first written against — that is what a follow-head address means.
+/// The prefilter is an exact superset of the resolved predicate it guards:
+/// a resolved endpoint id equals a requested id only when the raw column
+/// equals it (no `fact_entities` match) or when the raw column is a
+/// fact-entity id whose `current_memory_id` is requested — precisely the
+/// ids `head_probe` collects (via `idx_fact_entities_current_memory`,
+/// migration 0017). The original resolved-column filter is kept verbatim as
+/// the residual, so the row set cannot change. Prior art: `PostgreSQL` docs
+/// on `ScalarArrayOp` index quals — `= ANY(array)` over a base column is an
+/// index condition, `= ANY` over a `COALESCE` of joined columns is not.
 const NEIGHBOR_MEMORY_EDGES_SQL: &str = "
 WITH read_set(owner_kind, owner_id) AS (
     SELECT * FROM unnest($1::proxima_core.owner_ref_kind[], $2::uuid[])
+),
+head_probe AS (
+    SELECT COALESCE(array_agg(fact_entity_id), '{}') AS ids
+      FROM proxima_core.fact_entities
+     WHERE current_memory_id = ANY($5::uuid[])
 ),
 touching AS (
     SELECT e.source_id, e.target_id, e.kind, e.created_at,
@@ -52,6 +65,10 @@ touching AS (
       LEFT JOIN proxima_core.fact_entities tfe
         ON e.target_kind = 'FactEntityHead'::proxima_core.edge_endpoint_kind
        AND tfe.fact_entity_id = e.target_id
+     WHERE e.source_id = ANY($5::uuid[])
+        OR e.target_id = ANY($5::uuid[])
+        OR e.source_id = ANY((SELECT ids FROM head_probe)::uuid[])
+        OR e.target_id = ANY((SELECT ids FROM head_probe)::uuid[])
 )
 SELECT t.source_kind, t.source_entity_id, t.target_kind, t.target_entity_id,
        t.kind, t.created_at,
@@ -87,6 +104,16 @@ SELECT t.source_kind, t.source_entity_id, t.target_kind, t.target_entity_id,
           t.target_kind DESC, t.target_id DESC, t.kind DESC
  LIMIT $6
 ";
+
+/// The neighbor-window statement the given tuning selects, for plan and
+/// equivalence assertions in tests. Same cfg gate as the search and claim
+/// `*_sql_for_tests` exports.
+#[cfg(any(test, feature = "test-fixtures", debug_assertions))]
+#[doc(hidden)]
+#[must_use]
+pub fn neighbor_memory_edges_sql_for_tests() -> &'static str {
+    NEIGHBOR_MEMORY_EDGES_SQL
+}
 
 #[async_trait::async_trait]
 impl MemoryAuthoringPort for PgStorage {

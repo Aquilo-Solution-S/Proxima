@@ -459,6 +459,11 @@ async fn create_selected_sets(
     owner: OwnerRef,
     scope: SelectionScope<'_>,
 ) -> Result<(), StorageError> {
+    // Every erase entry point constructs `owner` as Group or Personal from a
+    // typed id — World is not representable on this path — so `owner_id`
+    // binds non-NULL here and in every erase statement below, and plain `=`
+    // is exactly `IS NOT DISTINCT FROM` while staying an index condition
+    // (sql-sweep S7; PostgreSQL has no index strategy for DistinctExpr).
     let (owner_kind, owner_id) = owner_binds(&owner);
     sqlx::query("CREATE TEMP TABLE selected_source_batches(id uuid PRIMARY KEY, source_id text NOT NULL) ON COMMIT DROP")
         .execute(&mut **tx)
@@ -469,7 +474,7 @@ async fn create_selected_sets(
             sqlx::query(
                 "INSERT INTO selected_source_batches(id, source_id)
                  SELECT id, source_id FROM proxima_core.source_batches
-                  WHERE owner_kind = $1 AND owner_id IS NOT DISTINCT FROM $2",
+                  WHERE owner_kind = $1 AND owner_id = $2",
             )
             .bind(owner_kind)
             .bind(owner_id)
@@ -481,7 +486,7 @@ async fn create_selected_sets(
             sqlx::query(
                 "INSERT INTO selected_source_batches(id, source_id)
                  SELECT id, source_id FROM proxima_core.source_batches
-                  WHERE owner_kind = $1 AND owner_id IS NOT DISTINCT FROM $2 AND source_id = $3",
+                  WHERE owner_kind = $1 AND owner_id = $2 AND source_id = $3",
             )
             .bind(owner_kind)
             .bind(owner_id)
@@ -504,7 +509,7 @@ async fn create_selected_sets(
                 "INSERT INTO selected_receipts(receipt_id, source_batch_id, source, payload_hash)
                  SELECT receipt_id, source_batch_id, source, payload_hash
                    FROM proxima_core.fact_receipts
-                  WHERE owner_kind = $1 AND owner_id IS NOT DISTINCT FROM $2",
+                  WHERE owner_kind = $1 AND owner_id = $2",
             )
             .bind(owner_kind)
             .bind(owner_id)
@@ -518,7 +523,7 @@ async fn create_selected_sets(
                  SELECT fr.receipt_id, fr.source_batch_id, fr.source, fr.payload_hash
                    FROM proxima_core.fact_receipts fr
                   WHERE fr.owner_kind = $1
-                    AND fr.owner_id IS NOT DISTINCT FROM $2
+                    AND fr.owner_id = $2
                     AND (fr.source = $3 OR EXISTS (
                         SELECT 1 FROM selected_source_batches sb WHERE sb.id = fr.source_batch_id
                     ))",
@@ -542,7 +547,7 @@ async fn create_selected_sets(
                 "INSERT INTO selected_memories(memory_id, kind, fact_entity_id, receipt_id, source_batch_id)
                  SELECT memory_id, COALESCE(kind, 'Fact'::proxima_core.entity_kind), fact_entity_id, receipt_id, source_batch_id
                    FROM proxima_core.memories
-                  WHERE owner_kind = $1 AND owner_id IS NOT DISTINCT FROM $2",
+                  WHERE owner_kind = $1 AND owner_id = $2",
             )
             .bind(owner_kind)
             .bind(owner_id)
@@ -556,7 +561,7 @@ async fn create_selected_sets(
                  SELECT m.memory_id, COALESCE(m.kind, 'Fact'::proxima_core.entity_kind), m.fact_entity_id, m.receipt_id, m.source_batch_id
                    FROM proxima_core.memories m
                   WHERE m.owner_kind = $1
-                    AND m.owner_id IS NOT DISTINCT FROM $2
+                    AND m.owner_id = $2
                     AND (
                         EXISTS (SELECT 1 FROM selected_receipts sr WHERE sr.receipt_id = m.receipt_id)
                         OR EXISTS (SELECT 1 FROM selected_source_batches sb WHERE sb.id = m.source_batch_id)
@@ -578,7 +583,7 @@ async fn create_selected_sets(
         sqlx::query(
             "INSERT INTO selected_goals(goal_id)
              SELECT goal_id FROM proxima_core.goals
-              WHERE owner_kind = $1 AND owner_id IS NOT DISTINCT FROM $2",
+              WHERE owner_kind = $1 AND owner_id = $2",
         )
         .bind(owner_kind)
         .bind(owner_id)
@@ -598,7 +603,7 @@ async fn create_selected_sets(
             sqlx::query(
                 "INSERT INTO selected_fact_entities(fact_entity_id)
                  SELECT fact_entity_id FROM proxima_core.fact_entities
-                  WHERE owner_kind = $1 AND owner_id IS NOT DISTINCT FROM $2",
+                  WHERE owner_kind = $1 AND owner_id = $2",
             )
             .bind(owner_kind)
             .bind(owner_id)
@@ -614,7 +619,7 @@ async fn create_selected_sets(
                    JOIN selected_memories sm
                      ON sm.memory_id = fe.current_memory_id OR sm.fact_entity_id = fe.fact_entity_id
                   WHERE fe.owner_kind = $1
-                    AND fe.owner_id IS NOT DISTINCT FROM $2
+                    AND fe.owner_id = $2
                     AND NOT EXISTS (
                         SELECT 1
                           FROM proxima_core.memories survivor
@@ -643,7 +648,7 @@ async fn create_selected_sets(
          SELECT cm.citation_mapping_id, cm.cited_object_id
            FROM proxima_core.citation_mappings cm
           WHERE cm.owner_kind = $1
-            AND cm.owner_id IS NOT DISTINCT FROM $2
+            AND cm.owner_id = $2
             AND (EXISTS (SELECT 1 FROM selected_memories sm WHERE sm.memory_id = cm.memory_id)
                  OR $3::boolean)",
     )
@@ -665,7 +670,7 @@ async fn create_selected_sets(
          SELECT co.cited_object_id
            FROM proxima_core.cited_objects co
           WHERE co.owner_kind = $1
-            AND co.owner_id IS NOT DISTINCT FROM $2
+            AND co.owner_id = $2
             AND (
                 $3::boolean
                 OR EXISTS (
@@ -711,7 +716,7 @@ async fn create_selected_sets(
         "INSERT INTO selected_edges(source_kind, source_id, target_kind, target_id, kind)
          SELECT e.source_kind, e.source_id, e.target_kind, e.target_id, e.kind
            FROM proxima_core.edges e
-          WHERE ($3::boolean AND e.owner_kind = $1 AND e.owner_id IS NOT DISTINCT FROM $2)
+          WHERE ($3::boolean AND e.owner_kind = $1 AND e.owner_id = $2)
              OR EXISTS (SELECT 1 FROM selected_memories sm WHERE sm.memory_id = e.source_id)
              OR EXISTS (SELECT 1 FROM selected_goals sg WHERE sg.goal_id = e.source_id)
              OR EXISTS (SELECT 1 FROM selected_fact_entities sfe
@@ -1363,7 +1368,7 @@ async fn delete_change_events(tx: &mut Tx<'_>, owner: OwnerRef) -> Result<u64, S
     let result = sqlx::query(
         "DELETE FROM proxima_core.change_event ce
           WHERE ce.owner_kind = $1
-            AND ce.owner_id IS NOT DISTINCT FROM $2
+            AND ce.owner_id = $2
             AND (
                 EXISTS (SELECT 1 FROM selected_memories sm WHERE sm.memory_id = ce.entity_memory_id)
                 OR EXISTS (SELECT 1 FROM selected_goals sg WHERE sg.goal_id = ce.entity_goal_id)
@@ -1407,7 +1412,7 @@ async fn delete_delegated_authority_grants(
     let result = sqlx::query(
         "DELETE FROM proxima_core.delegated_authority_grants dag
           WHERE (dag.owner_kind = $1
-                 AND dag.owner_id IS NOT DISTINCT FROM $2)
+                 AND dag.owner_id = $2)
              OR ($3::uuid IS NOT NULL AND dag.subject_user_id = $3)",
     )
     .bind(owner_kind)
@@ -1434,7 +1439,7 @@ async fn delete_source_cursors(
         SelectionScope::Owner => sqlx::query(
             "DELETE FROM proxima_core.source_cursors
               WHERE owner_kind = $1
-                AND owner_id IS NOT DISTINCT FROM $2",
+                AND owner_id = $2",
         )
         .bind(owner_kind)
         .bind(owner_id)
@@ -1444,7 +1449,7 @@ async fn delete_source_cursors(
         SelectionScope::Source(source_id) => sqlx::query(
             "DELETE FROM proxima_core.source_cursors
               WHERE owner_kind = $1
-                AND owner_id IS NOT DISTINCT FROM $2
+                AND owner_id = $2
                 AND source = $3",
         )
         .bind(owner_kind)

@@ -116,19 +116,19 @@ pub(crate) async fn embedding_ann_observability(
                  AS hnsw_index_bytes,
              (SELECT count(*)::bigint
                 FROM proxima_core.embedding_jobs
-               WHERE status = 'pending'::proxima_core.embedding_job_status)
+               WHERE status = 'pending')
                  AS pending_jobs,
              (SELECT count(*)::bigint
                 FROM proxima_core.embedding_jobs
-               WHERE status = 'processing'::proxima_core.embedding_job_status)
+               WHERE status = 'processing')
                  AS processing_jobs,
              (SELECT count(*)::bigint
                 FROM proxima_core.embedding_jobs
-               WHERE status = 'failed'::proxima_core.embedding_job_status)
+               WHERE status = 'failed')
                  AS failed_jobs,
              (SELECT count(*)::bigint
                 FROM proxima_core.embedding_jobs
-               WHERE status = 'processing'::proxima_core.embedding_job_status
+               WHERE status = 'processing'
                  AND updated_at < now() - interval '15 minutes')
                  AS stale_processing_jobs,
              (SELECT count FROM orphan_embeddings) AS orphan_embeddings,

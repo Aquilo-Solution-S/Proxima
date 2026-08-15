@@ -253,13 +253,24 @@ pub(super) async fn query_edges(
     query_edges_between_visible_nodes(pool, visible_memory_ids, visible_goal_ids).await
 }
 
-async fn query_edges_between_visible_nodes(
-    pool: &PgPool,
-    visible_memory_ids: &[uuid::Uuid],
-    visible_goal_ids: &[uuid::Uuid],
-) -> Result<Vec<Edge>, StorageError> {
-    let rows = sqlx::query_as::<_, EdgeRowDb>(
-        "WITH edge_heads AS (
+/// The snapshot closure (sql-sweep S5). `edge_heads` filters the edges scan
+/// on the RAW endpoint columns — the window's own ids plus the fact-entity
+/// ids currently heading a windowed memory (`head_probe`, riding
+/// `idx_fact_entities_current_memory`, migration 0017) — before resolving
+/// heads, so it rides `idx_edges_source`/`idx_edges_target` instead of
+/// resolving every edge in the table.
+///
+/// The prefilter is an exact superset of the resolved predicate it guards: a
+/// resolved id matches only via the raw id or via a collected head id. The
+/// original resolved-column filter is kept verbatim as the residual, so the
+/// row set cannot change.
+const EDGES_BETWEEN_VISIBLE_NODES_SQL: &str = "WITH head_probe AS (
+             SELECT COALESCE(array_agg(fact_entity_id), '{}') AS ids
+               FROM proxima_core.fact_entities
+              WHERE current_memory_id = ANY($1::uuid[])
+                 OR current_memory_id = ANY($2::uuid[])
+         ),
+         edge_heads AS (
              SELECT e.kind, e.created_at,
                     CASE WHEN e.source_kind = 'FactEntityHead'::proxima_core.edge_endpoint_kind
                          THEN 'Fact'::proxima_core.edge_endpoint_kind ELSE e.source_kind END
@@ -276,6 +287,12 @@ async fn query_edges_between_visible_nodes(
                LEFT JOIN proxima_core.fact_entities tfe
                  ON e.target_kind = 'FactEntityHead'::proxima_core.edge_endpoint_kind
                 AND tfe.fact_entity_id = e.target_id
+              WHERE (e.source_id = ANY($1::uuid[])
+                     OR e.source_id = ANY($2::uuid[])
+                     OR e.source_id = ANY((SELECT ids FROM head_probe)::uuid[]))
+                AND (e.target_id = ANY($1::uuid[])
+                     OR e.target_id = ANY($2::uuid[])
+                     OR e.target_id = ANY((SELECT ids FROM head_probe)::uuid[]))
          )
          SELECT source_kind, source_id, target_kind, target_id, kind, created_at,
                 true AS target_visible, false AS target_unavailable
@@ -284,13 +301,29 @@ async fn query_edges_between_visible_nodes(
             AND (target_id = ANY($1::uuid[]) OR target_id = ANY($2::uuid[]))
           ORDER BY created_at DESC, source_kind DESC, source_id DESC,
                    target_kind DESC, target_id DESC, kind DESC
-          LIMIT $3",
-    )
-    .bind(visible_memory_ids)
-    .bind(visible_goal_ids)
-    .bind(i64::try_from(MAX_SNAPSHOT_EDGES).expect("MAX_SNAPSHOT_EDGES fits in i64"))
-    .fetch_all(pool)
-    .await
-    .map_err(map_err)?;
+          LIMIT $3";
+
+/// The snapshot-closure statement the given tuning selects, for plan and
+/// equivalence assertions in tests. Same cfg gate as the search
+/// `*_sql_for_tests` exports.
+#[cfg(any(test, feature = "test-fixtures", debug_assertions))]
+#[doc(hidden)]
+#[must_use]
+pub fn edges_between_visible_nodes_sql_for_tests() -> &'static str {
+    EDGES_BETWEEN_VISIBLE_NODES_SQL
+}
+
+async fn query_edges_between_visible_nodes(
+    pool: &PgPool,
+    visible_memory_ids: &[uuid::Uuid],
+    visible_goal_ids: &[uuid::Uuid],
+) -> Result<Vec<Edge>, StorageError> {
+    let rows = sqlx::query_as::<_, EdgeRowDb>(EDGES_BETWEEN_VISIBLE_NODES_SQL)
+        .bind(visible_memory_ids)
+        .bind(visible_goal_ids)
+        .bind(i64::try_from(MAX_SNAPSHOT_EDGES).expect("MAX_SNAPSHOT_EDGES fits in i64"))
+        .fetch_all(pool)
+        .await
+        .map_err(map_err)?;
     Ok(rows.iter().map(edge_from_db).collect())
 }

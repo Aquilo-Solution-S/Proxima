@@ -36,10 +36,20 @@ pub use code_chunk_vectors::{
     CodeChunkVectorCandidate, CodeChunkVectorFilters, nearest_code_chunk_candidates,
 };
 pub use edges::MAX_SNAPSHOT_EDGES;
+#[cfg(any(test, feature = "test-fixtures", debug_assertions))]
+pub use edges::edges_between_visible_nodes_sql_for_tests;
 pub(crate) use edges::{edge_exists, read_edges};
+#[cfg(any(test, feature = "test-fixtures", debug_assertions))]
+pub use goals::goal_page_sql_for_tests;
+#[cfg(any(test, feature = "test-fixtures", debug_assertions))]
+pub use lineage::lineage_walk_sql_for_tests;
 pub(crate) use lineage::walk_memory_lineage;
+#[cfg(any(test, feature = "test-fixtures", debug_assertions))]
+pub use memories::memory_page_sql_for_tests;
 pub(crate) use memories::query_memories;
 pub(crate) use rows::read_seq_high_water;
+#[cfg(any(test, feature = "test-fixtures", debug_assertions))]
+pub use rows::read_seq_high_water_sql_for_tests;
 pub(crate) use search::search_memories;
 #[cfg(any(test, feature = "test-fixtures", debug_assertions))]
 pub use search::{
@@ -89,6 +99,34 @@ pub(crate) fn read_owner_predicate(owner_alias: &str, read_set_alias: &str) -> S
     format!(
         "{owner_alias}.owner_kind = {read_set_alias}.kind \
          AND {owner_alias}.owner_id IS NOT DISTINCT FROM {read_set_alias}.id"
+    )
+}
+
+/// [`read_owner_predicate`] with plain `=`, for tables whose
+/// `owner_ref_shape_chk`/`*_world_not_write_owner_chk` CHECKs prove
+/// `owner_id` is never NULL (e.g. `change_event`). On such a table the two
+/// spellings select identical rows for every read set — a NULL read-set id
+/// (the World member) matches nothing under either — but only `=` is an
+/// index condition (sql-sweep S6: `PostgreSQL` has no index strategy for
+/// `DistinctExpr`, so INDF collapses the `(owner_kind, owner_id, ...)`
+/// index prefix).
+///
+/// # World-tolerant tables are a footgun here
+///
+/// This helper is ONLY safe on tables whose CHECKs forbid a NULL
+/// `owner_id` (`change_event`, `source_cursors`), or when it is
+/// explicitly paired with a separate
+/// `owner_kind = 'world' AND owner_id IS NULL` arm. `memories` and
+/// `goals` dropped their `*_world_not_write_owner_chk` in `0008_v005`, so
+/// a World-owned row there carries `owner_id` NULL and a plain `=` join
+/// silently drops it (`NULL = NULL` is not TRUE). The
+/// read-owner scope builders in `memories.rs`/`goals.rs` use it only
+/// alongside that World arm; an unpaired future use on a World-tolerant
+/// table silently hides every published row.
+pub(crate) fn read_owner_equality_predicate(owner_alias: &str, read_set_alias: &str) -> String {
+    format!(
+        "{owner_alias}.owner_kind = {read_set_alias}.kind \
+         AND {owner_alias}.owner_id = {read_set_alias}.id"
     )
 }
 

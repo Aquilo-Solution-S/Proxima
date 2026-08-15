@@ -361,7 +361,29 @@ def run_fixture(path: Path) -> int:
 # the planner probing `memories` for the ANN window rather than enumerating
 # the owner, and both plans return the same rows — so a planner that picks the
 # slow one is not a wrong answer and no assertion in the suite noticed it.
-EXPECTED_DYNAMIC_SQL_SITES = 74
+#
+# 2026-08-15 analysis (sweep fixes): -8 net, and the direction is the finding.
+# Twelve sites go away because the sweep fixes replace runtime-composed SQL
+# with statements that have nothing left to compose. The de-union of the
+# memory-keyed owner readers accounts for five (`active_goals.rs` x1,
+# `consolidate/memories.rs` x3, `derive_append.rs` x1): those readers built a
+# polymorphic entity-owner union at run time to serve one key type, and a
+# direct probe of `memories` needs no builder. Spelling the owner predicate
+# with `=` where NULL-impossibility is provable from a CHECK removes three
+# more in `fact_embeddings/text.rs`; the read-owner scope arm removes the two
+# `sql.push_str` sites in `query/goals.rs`; and the claim rewrite retires two
+# `format!`-built statements in `fact_embeddings/jobs.rs` for one module
+# const.
+#
+# Nothing is added in production. Each rewrite ships as the only spelling of
+# its statement rather than as one arm of a flag, so the four new sites are
+# all test-only plan guards (`edge_prefilter_pg.rs` x2,
+# `fact_embeddings_pg/claims.rs`, `owner_scope_pg.rs`) — `EXPLAIN` prefixes
+# over the audited builders' own return values, the shape the plan-test sites
+# above already carry. Same reason as the rank-first guard: the rewrite and
+# what it replaced return the same rows, so only a plan assertion can catch
+# the statement silently losing the index the rewrite exists to reach.
+EXPECTED_DYNAMIC_SQL_SITES = 66
 
 
 def run_self_test() -> int:
