@@ -412,7 +412,7 @@ Transport-specific extensions may carry structured `details`; gRPC
 uses typed trailer details in the proto surface.
 
 Current code families include auth/scope, schema/input, idempotency,
-not-found/state, tool/inference config, and internal errors. Docs must
+not-found/state, tool, and internal errors. Docs must
 not require a code variant until it exists in `crates/core/src/error.rs`
 or the owning wire surface.
 

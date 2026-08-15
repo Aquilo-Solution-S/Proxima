@@ -5,8 +5,7 @@ schemas, prompts, tools, source types, and wake trigger vocabulary
 (see [08](08-core-and-flavors.md)). Runtime config
 selects the Postgres connection, the MCP endpoint and its authentication,
 deployment-level artefact storage, and an optional host-injected
-embedding client for retrieval plus an optional host-injected model-seat
-client.
+embedding client for retrieval.
 
 For a consolidated human inventory of environment variables, see
 [reference/env-vars.md](reference/env-vars.md). Source code and deployment
@@ -15,7 +14,7 @@ manifests remain authoritative.
 Proxima hosts no model loop. It does not register inference targets,
 tier registries, or LLM credentials — external harnesses own model
 selection. The only LLM-adjacent runtime knob is the embedding client a
-host injects for vector retrieval and an optional model-seat client.
+host injects for vector retrieval.
 
 <a id="scope"></a>
 ## Scope
@@ -27,7 +26,6 @@ host injects for vector retrieval and an optional model-seat client.
 | REST surface | binary-wide | `rest` cargo feature + `PROXIMA_REST_ENABLED`; same listener, same layers |
 | MCP authentication | per request | host `Authenticator` only; owner roles resolved server-side |
 | Embedding client | binary-wide | optional `Arc<dyn EmbeddingClient>` injected at boot |
-| Anthropic model client | binary-wide | optional `Arc<dyn AnthropicClient>` host-injected; programmatic only |
 | Large artefact S3 storage | binary-wide | process env + AWS SDK credential chain |
 | source credentials | per source instance | source-owned, not engine-owned |
 
@@ -338,9 +336,18 @@ enforcement](13-compliance.md#retention-enforcement--maintain-retention-pass)
 for the compliance contract, including the forward-poller cursor-gap
 caveat when choosing a prune horizon.
 
-`EmbedCaps { dim, matryoshka }` and `LlmCaps { tool_use, json_mode,
-long_context, vision }` remain core vocabulary types but are not a
-runtime-config surface here.
+<a id="capability-vocabulary"></a>
+## Capability vocabulary
+
+`EmbedCaps { dim, matryoshka, max_input_chars }` is the live embedding
+capability type: boot checks `dim` against the vector column;
+`matryoshka` / `max_input_chars` are host-injected client flags (see
+[Embedding Client](#embedding-client)).
+
+`LlmCaps { tool_use, json_mode, long_context, vision }` and `Dialect`
+remain named types in `proxima_core::models`. They are not a
+runtime-config surface, not an operator-`requires` registration key, and
+not a host-injected inference client.
 
 <a id="large-artefact-s3"></a>
 ## Large Artefact S3

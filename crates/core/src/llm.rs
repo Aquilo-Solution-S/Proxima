@@ -1,4 +1,4 @@
-//! Model-client contracts used by substrate provenance.
+//! Embedding-client contracts used by vector retrieval.
 
 use async_trait::async_trait;
 
@@ -17,10 +17,6 @@ pub enum LlmError {
     OutputValidation(String),
     #[error("internal: {0}")]
     Internal(String),
-}
-
-pub trait AnthropicClient: Send + Sync + std::fmt::Debug {
-    fn model_id(&self) -> &str;
 }
 
 pub const EMBEDDING_DIM: usize = 1024;

@@ -43,7 +43,7 @@ pub use proxima_core::authz::SystemAuthority;
 use std::sync::Arc;
 
 use crate::bundle::FlavorBundle;
-use proxima_core::llm::{AnthropicClient, EmbeddingClient};
+use proxima_core::llm::EmbeddingClient;
 // `CitedBlobStore` and `GroupId` are not imported here: both are
 // re-exported through `host::*`
 // above, and a private import of the same name would shadow that
@@ -147,7 +147,6 @@ pub struct ProximaBuilder {
     migrators: Vec<NamedMigrator>,
     skip_migrations: bool,
     embed_client: Option<Arc<dyn EmbeddingClient>>,
-    anthropic: Option<Arc<dyn AnthropicClient>>,
     deployment_tool_scope: Option<proxima_core::ToolScope>,
     pg_tuning: Option<proxima_storage_pg::PgTuning>,
 }
@@ -162,7 +161,6 @@ impl std::fmt::Debug for ProximaBuilder {
             .field("migrators", &self.migrators.len())
             .field("skip_migrations", &self.skip_migrations)
             .field("has_embed_client", &self.embed_client.is_some())
-            .field("has_anthropic", &self.anthropic.is_some())
             .field("deployment_tool_scope", &self.deployment_tool_scope)
             .field("pg_tuning", &self.pg_tuning)
             .finish()
@@ -222,7 +220,6 @@ impl ProximaBuilder {
             migrators: Vec::new(),
             skip_migrations: false,
             embed_client: None,
-            anthropic: None,
             deployment_tool_scope: None,
             pg_tuning: None,
         }
@@ -293,17 +290,10 @@ impl ProximaBuilder {
     /// Embedding client passthrough (`Engine::with_embed`).
     ///
     /// Proxima registers no inference targets or tiers; hosts inject the
-    /// embedding/model-seat client used by retrieval.
+    /// embedding client used by retrieval.
     #[must_use]
     pub fn embed_client(mut self, client: Arc<dyn EmbeddingClient>) -> Self {
         self.embed_client = Some(client);
-        self
-    }
-
-    /// Anthropic client passthrough (`Engine::with_anthropic`).
-    #[must_use]
-    pub fn anthropic(mut self, client: Arc<dyn AnthropicClient>) -> Self {
-        self.anthropic = Some(client);
         self
     }
 
@@ -343,7 +333,6 @@ impl ProximaBuilder {
             migrators,
             skip_migrations,
             embed_client,
-            anthropic,
             deployment_tool_scope,
             pg_tuning,
         } = self;
@@ -419,9 +408,6 @@ impl ProximaBuilder {
                 )));
             }
             engine = engine.with_embed(client);
-        }
-        if let Some(client) = anthropic {
-            engine = engine.with_anthropic(client);
         }
 
         let (engine, system_authority, delegation_runtime_authority) =

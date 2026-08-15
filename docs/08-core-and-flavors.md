@@ -5,8 +5,8 @@
 
 Core is the Rust runtime framework core. It owns graph contracts,
 build-time flavor registry, protocol verbs, Goal/Self/WakeConfig runtime,
-agent long-term memory substrate, substrate MCP tools, inference config
-vocabulary, and storage ports. Flavor crates contribute build-time
+agent long-term memory substrate, substrate MCP tools, embedding
+capability vocabulary, and storage ports. Flavor crates contribute build-time
 vocabulary. Composite binaries choose flavor crates at build time and
 freeze the registry at startup.
 
@@ -42,7 +42,7 @@ composite binary
   links selected flavor crates
   calls register(&mut FlavorRegistry)
   freezes registry
-  wires storage + model clients + transports
+  wires storage + embedding client + transports
 ```
 
 No runtime registration tier. Schemas, tools, sources, and prompts are

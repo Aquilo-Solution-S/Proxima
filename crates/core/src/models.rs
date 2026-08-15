@@ -1,29 +1,19 @@
-//! Build-time capability vocabulary for LLM + embedding clients.
+//! Capability types for embedding clients, plus named LLM vocabulary
+//! that is not a runtime-config surface.
 //!
-//! Build-time declares **what** capabilities exist and **which** an
-//! operator requires. It does **not** declare specific
-//! `(vendor, model_id)` pairs — those are host configuration, not
-//! flavor authorship. New models plug in by declaring their caps;
-//! validation gates mismatches against the operator-declared
-//! `requires`.
-//!
-//! The contract:
-//!
-//! - `LlmCaps` / `EmbedCaps` enumerate the capability axes a
-//!   substrate operator can demand.
-//! - `Dialect` enumerates the HTTP API shapes a runtime client
-//!   speaks; `vendor` (e.g. `"ollama"`, `"openai"`) lives only at
-//!   runtime config.
+//! - [`EmbedCaps`] is live: `dim` must match the vector column;
+//!   `matryoshka` / `max_input_chars` are host-injected client flags.
+//! - [`LlmCaps`] and [`Dialect`] remain named types. They are not an
+//!   operator-`requires` key, not a host-injected inference client, and
+//!   not env/boot config. Proxima hosts no model loop.
 //!
 //! See docs/10 §Capability vocabulary.
 
 use std::num::NonZeroU32;
 
-/// Which HTTP API shape a runtime model client speaks. Independent
-/// of vendor: most non-Anthropic vendors expose the `OpenAI` dialect,
-/// so a runtime entry like
-/// `{vendor: "openrouter", dialect: OpenAI, model_id: "anthropic/..."}`
-/// is normal.
+/// Named HTTP API shape. Not a host-injected client selector; the live
+/// model-adjacent client is [`crate::llm::EmbeddingClient`]
+/// (OpenAI-compatible embeddings).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Dialect {
@@ -32,9 +22,8 @@ pub enum Dialect {
     OpenAI,
 }
 
-/// LLM capability axes. Operators declare a `requires: LlmCaps` at
-/// registration; hosts validate that the selected model's claimed caps
-/// satisfy the union of operator `requires`.
+/// Named LLM capability axes. Not a runtime-config or operator-registration
+/// surface; hosts inject no inference client.
 #[derive(
     Debug, Clone, Copy, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
 )]
@@ -63,10 +52,7 @@ impl LlmCaps {
     }
 
     /// Does `self` satisfy `required`? — every cap that `required`
-    /// demands must be present in `self`. Used at runtime when a
-    /// model is bound to a tier; the model's claimed caps must
-    /// satisfy the union of `requires` over operators using that
-    /// tier.
+    /// demands must be present in `self`.
     #[must_use]
     pub const fn satisfies(&self, required: &Self) -> bool {
         (!required.tool_use || self.tool_use)

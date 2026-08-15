@@ -210,9 +210,9 @@ it — so that switch rides a `SCHEMA_VERSION` bump.
 One sidecar-backed payload schema maps to one sidecar table.
 
 ```sql
-CREATE SCHEMA IF NOT EXISTS embedded_minimal;
+CREATE SCHEMA IF NOT EXISTS my_flavor;
 
-CREATE TABLE embedded_minimal.document_filed_v1 (
+CREATE TABLE my_flavor.document_filed_v1 (
   memory_id uuid PRIMARY KEY
     REFERENCES proxima_core.memories(memory_id),
   source_path text NOT NULL,
@@ -243,7 +243,7 @@ proxima::flavor::pg_sidecar! {
     payload: DocumentFiledV1,
     row: DocumentFiledRow,
     kinds: [Fact],
-    table: "embedded_minimal.document_filed_v1",
+    table: "my_flavor.document_filed_v1",
     key: memory_id,
     fields: {
         source_path => source_path: (text),
@@ -296,7 +296,7 @@ impl PgMemorySidecar for DocumentFiledV1 {
     ) -> PgSidecarFuture<'t> {
         Box::pin(async move {
             sqlx::query(
-                "INSERT INTO embedded_minimal.document_filed_v1
+                "INSERT INTO my_flavor.document_filed_v1
                     (memory_id, source_path, title)
                  VALUES ($1, $2, $3)",
             )
@@ -320,7 +320,7 @@ impl PgMemoryPayload for DocumentFiledV1 {
             let row: Option<(String, String)> = ctx
                 .fetch_optional_by_memory_id(
                     "SELECT source_path, title
-                       FROM embedded_minimal.document_filed_v1
+                       FROM my_flavor.document_filed_v1
                       WHERE memory_id = $1",
                     memory_id,
                 )

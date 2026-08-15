@@ -8,7 +8,7 @@ use crate::FlavorRegistryError;
 use crate::authz::{
     DelegationRuntimeAuthority, DelegationRuntimeBinding, SystemAuthority, SystemAuthorityBinding,
 };
-use crate::llm::{AnthropicClient, EmbeddingClient};
+use crate::llm::EmbeddingClient;
 use crate::storage_ports::{CitedObjectErasePort, EngineStoragePorts, StoragePorts};
 use crate::verbs::schema::FlavorRegistryFrozen;
 
@@ -23,7 +23,6 @@ impl Engine {
             delegation_runtime_binding: DelegationRuntimeBinding::fresh(),
             storage: EngineStoragePorts::from(StoragePorts::rejecting()),
             deployment_tool_scope: crate::authz::ToolScope::All,
-            anthropic: None,
             embed: Arc::new(RwLock::new(None)),
             embedding_reloader: None,
             cited_object_erase: None,
@@ -145,12 +144,6 @@ impl Engine {
     #[must_use]
     pub fn with_cited_object_erase(mut self, port: Arc<dyn CitedObjectErasePort>) -> Self {
         self.cited_object_erase = Some(port);
-        self
-    }
-
-    #[must_use]
-    pub fn with_anthropic(mut self, anthropic: Arc<dyn AnthropicClient>) -> Self {
-        self.anthropic = Some(anthropic);
         self
     }
 

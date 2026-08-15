@@ -177,7 +177,7 @@ Status labels used below:
   independent vector-store lifecycle.
 - [`docs/08-core-and-flavors.md`](docs/08-core-and-flavors.md) — **current +
   design rationale**. Core/flavor layering, build-time registration, and
-  default-off code-flavor packaging.
+  default-on code-flavor packaging.
 - [`docs/09-developing-flavors.md`](docs/09-developing-flavors.md) — **current
   implementation guide**. Flavor author checklist for typed keys, sidecars,
   registration, migrations, and tools.
