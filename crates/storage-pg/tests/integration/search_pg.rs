@@ -640,3 +640,4 @@ mod plans;
 mod ranking;
 mod semantic;
 mod stored_tsv;
+mod substring_fallback;

@@ -54,6 +54,7 @@ pub(crate) use search::search_memories;
 #[cfg(any(test, feature = "test-fixtures", debug_assertions))]
 pub use search::{
     lexical_search_sql_for_tests, semantic_search_sql_for_tests, set_hnsw_search_sql_for_tests,
+    substring_search_sql_for_tests,
 };
 
 /// Append the same-owner successor predicate. Supersession is intra-Owner

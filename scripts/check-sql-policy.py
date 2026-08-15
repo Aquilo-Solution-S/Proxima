@@ -383,7 +383,21 @@ def run_fixture(path: Path) -> int:
 # above already carry. Same reason as the rank-first guard: the rewrite and
 # what it replaced return the same rows, so only a plan assertion can catch
 # the statement silently losing the index the rewrite exists to reach.
-EXPECTED_DYNAMIC_SQL_SITES = 66
+#
+# 66 -> 71 with the lexical GIN-first split (migration 0019). One production
+# site: `run_substring` in `verbs/query/search.rs`, which sends the substring
+# band's own statement — the same `AssertSqlSafe` over an audited builder's
+# return value that `run_lexical` beside it already is. The band moved into
+# its own statement because no core index can serve `LIKE '%...%'`, and one
+# unservable arm in a disjunction costs the whole statement its index path.
+#
+# The other four are test-only, all in `search_pg/plans.rs`: the corpus the
+# new plan guard needs (a bulk INSERT and its ANALYZE) and two `EXPLAIN`
+# prefixes over the two builders the guard compares. That guard is the only
+# thing standing between the gate and its old position above the candidate
+# CTE — both spellings return identical rows, so nothing else in the suite
+# would notice the index becoming unreachable again.
+EXPECTED_DYNAMIC_SQL_SITES = 71
 
 
 def run_self_test() -> int:
