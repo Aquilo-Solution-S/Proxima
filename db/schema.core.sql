@@ -2274,6 +2274,20 @@ CREATE INDEX idx_agent_note_v1_note_id ON proxima_core.agent_note_v1 USING btree
 
 
 --
+-- Name: idx_change_event_entity_goal_seq; Type: INDEX; Schema: proxima_core; Owner: -
+--
+
+CREATE INDEX idx_change_event_entity_goal_seq ON proxima_core.change_event USING btree (entity_goal_id, seq) WHERE (entity_goal_id IS NOT NULL);
+
+
+--
+-- Name: idx_change_event_entity_memory_seq; Type: INDEX; Schema: proxima_core; Owner: -
+--
+
+CREATE INDEX idx_change_event_entity_memory_seq ON proxima_core.change_event USING btree (entity_memory_id, seq) WHERE (entity_memory_id IS NOT NULL);
+
+
+--
 -- Name: idx_change_event_owner_created; Type: INDEX; Schema: proxima_core; Owner: -
 --
 
@@ -2365,6 +2379,20 @@ CREATE INDEX idx_embedding_heads_model_entity_version ON proxima_core.embedding_
 
 
 --
+-- Name: idx_embedding_jobs_pending_claim; Type: INDEX; Schema: proxima_core; Owner: -
+--
+
+CREATE INDEX idx_embedding_jobs_pending_claim ON proxima_core.embedding_jobs USING btree (model_id, enqueued_at, owner_kind, owner_id, entity_kind, entity_id, embedding_version) WHERE (status = 'pending'::proxima_core.embedding_job_status);
+
+
+--
+-- Name: idx_embedding_jobs_processing_reclaim; Type: INDEX; Schema: proxima_core; Owner: -
+--
+
+CREATE INDEX idx_embedding_jobs_processing_reclaim ON proxima_core.embedding_jobs USING btree (model_id, updated_at) WHERE (status = 'processing'::proxima_core.embedding_job_status);
+
+
+--
 -- Name: idx_embedding_jobs_status_enqueued; Type: INDEX; Schema: proxima_core; Owner: -
 --
 
@@ -2390,6 +2418,13 @@ CREATE INDEX idx_embeddings_owner ON proxima_core.embeddings USING btree (owner_
 --
 
 CREATE INDEX idx_embeddings_vec_hnsw ON proxima_core.embeddings USING hnsw (vec public.vector_cosine_ops);
+
+
+--
+-- Name: idx_fact_entities_current_memory; Type: INDEX; Schema: proxima_core; Owner: -
+--
+
+CREATE INDEX idx_fact_entities_current_memory ON proxima_core.fact_entities USING btree (current_memory_id) WHERE (current_memory_id IS NOT NULL);
 
 
 --
@@ -2456,6 +2491,13 @@ CREATE INDEX idx_goal_wake_config_fact_schema ON proxima_core.goal_wake_config U
 
 
 --
+-- Name: idx_goals_assignment_perspective; Type: INDEX; Schema: proxima_core; Owner: -
+--
+
+CREATE INDEX idx_goals_assignment_perspective ON proxima_core.goals USING btree (assignment_perspective_id) WHERE (assignment_perspective_id IS NOT NULL);
+
+
+--
 -- Name: idx_goals_owner_created_id; Type: INDEX; Schema: proxima_core; Owner: -
 --
 
@@ -2488,6 +2530,13 @@ CREATE INDEX idx_group_memberships_member ON proxima_core.group_memberships USIN
 --
 
 CREATE INDEX idx_memories_authoring_perspective ON proxima_core.memories USING btree (authoring_perspective_id) WHERE (authoring_perspective_id IS NOT NULL);
+
+
+--
+-- Name: idx_memories_citation_mapping; Type: INDEX; Schema: proxima_core; Owner: -
+--
+
+CREATE INDEX idx_memories_citation_mapping ON proxima_core.memories USING btree (citation_mapping_id) WHERE (citation_mapping_id IS NOT NULL);
 
 
 --
@@ -2530,6 +2579,13 @@ CREATE INDEX idx_memories_owner_kind_created_id_live ON proxima_core.memories US
 --
 
 CREATE INDEX idx_memories_owner_source_batch ON proxima_core.memories USING btree (owner_kind, owner_id, source_batch_id) WHERE (source_batch_id IS NOT NULL);
+
+
+--
+-- Name: idx_memories_source_batch; Type: INDEX; Schema: proxima_core; Owner: -
+--
+
+CREATE INDEX idx_memories_source_batch ON proxima_core.memories USING btree (source_batch_id) WHERE (source_batch_id IS NOT NULL);
 
 
 --

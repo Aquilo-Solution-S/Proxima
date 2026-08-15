@@ -203,6 +203,25 @@ async fn migrations_apply_to_fresh_db() {
         }
 
         assert_delegated_authority_schema(&pg).await;
+
+        // Wave-2 read-path indexes (sql-sweep S3 + S8): the five
+        // FK-referencing columns whose RI checks used to seq-scan the
+        // referencing table, plus the change_event entity-id replay probes.
+        for index_name in [
+            "idx_fact_entities_current_memory",
+            "idx_goals_assignment_perspective",
+            "idx_memories_citation_mapping",
+            "idx_memories_source_batch",
+            "idx_change_event_entity_memory_seq",
+            "idx_change_event_entity_goal_seq",
+            "idx_embedding_jobs_pending_claim",
+            "idx_embedding_jobs_processing_reclaim",
+        ] {
+            assert!(
+                index_exists(&pg, index_name).await,
+                "missing wave-2 index {index_name}"
+            );
+        }
         Ok(())
     }
     .await;
