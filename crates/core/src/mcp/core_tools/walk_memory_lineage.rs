@@ -169,12 +169,11 @@ pub async fn walk_memory_lineage(
         .nodes
         .into_iter()
         .map(|node| {
-            let kind = format!("{:?}", node.kind);
-            let class = memory_class(&kind)?;
+            let class = memory_class(node.kind)?;
             classes.insert(node.memory_id, class);
             Ok(LineageNodeOutput {
                 memory: ctx.format_memory_with_class(node.memory_id, class),
-                kind,
+                kind: node.kind.as_str().to_string(),
                 schema_id: node.schema_id.as_str().to_string(),
                 snippet: node.snippet,
                 distance: node.distance,
@@ -236,9 +235,10 @@ fn format_lineage_endpoint(
     let Some(memory_id) = endpoint.memory_id() else {
         return super::wire_ref::format_endpoint(ctx, endpoint);
     };
-    let class = classes.get(&memory_id).copied().unwrap_or_else(|| {
-        memory_class(&format!("{:?}", endpoint.kind)).unwrap_or(MemoryHandleClass::Fact)
-    });
+    let class = classes
+        .get(&memory_id)
+        .copied()
+        .unwrap_or_else(|| memory_class(endpoint.kind).unwrap_or(MemoryHandleClass::Fact));
     ctx.format_memory_with_class(memory_id, class)
 }
 

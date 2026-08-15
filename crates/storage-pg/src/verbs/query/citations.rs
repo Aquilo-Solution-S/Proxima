@@ -42,7 +42,7 @@ pub(crate) async fn facts_citing_object(
                   FROM unnest($2::proxima_core.owner_ref_kind[], $3::uuid[]) AS s(kind, id)
                  WHERE {read_owner_predicate}
             )
-            AND m.kind IS NULL
+            AND m.kind = 'Fact'
             AND m.tombstoned_at IS NULL
             AND ($4::timestamptz IS NULL
                  OR (m.created_at, m.memory_id) < ($4::timestamptz, $5::uuid))
@@ -116,7 +116,7 @@ pub(crate) async fn citation_of_fact(
            LEFT JOIN proxima_core.cited_uploaded_blob_v1 b
              ON b.cited_object_id = co.cited_object_id
           WHERE m.memory_id = $1
-            AND m.kind IS NULL
+            AND m.kind = 'Fact'
             AND m.tombstoned_at IS NULL",
     )
     .bind(fact_memory_id.into_inner())

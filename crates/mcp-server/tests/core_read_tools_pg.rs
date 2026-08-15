@@ -754,7 +754,7 @@ async fn insert_fact(
     sqlx::query(
         "INSERT INTO proxima_core.memories
             (memory_id, owner_kind, owner_id, schema_id, schema_version, kind, text)
-         VALUES ($1, $2, $3, 'test/wake-e2e-fact-v1', 1, NULL, $4)",
+         VALUES ($1, $2, $3, 'test/wake-e2e-fact-v1', 1, 'Fact', $4)",
     )
     .bind(memory_id)
     .bind(owner_kind)

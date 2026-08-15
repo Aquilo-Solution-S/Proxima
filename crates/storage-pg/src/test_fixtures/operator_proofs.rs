@@ -140,7 +140,7 @@ async fn ungrounded_derived_memory_ids(pool: &PgPool) -> Result<Vec<uuid::Uuid>,
     let rows: Vec<(uuid::Uuid,)> = sqlx::query_as(
         "SELECT m.memory_id
            FROM proxima_core.memories m
-          WHERE m.kind IS NOT NULL
+          WHERE m.kind <> 'Fact'
             AND m.tombstoned_at IS NULL
             AND NOT EXISTS (
                 SELECT 1 FROM proxima_core.edges e WHERE e.source_id = m.memory_id

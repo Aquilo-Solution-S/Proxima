@@ -65,7 +65,7 @@ pub(super) struct AuthorshipRow {
 
 #[derive(Debug, sqlx::FromRow)]
 pub(super) struct EvidenceRow {
-    pub(super) kind: Option<EntityKind>,
+    pub(super) kind: EntityKind,
 }
 
 #[derive(Debug, Clone, Copy)]

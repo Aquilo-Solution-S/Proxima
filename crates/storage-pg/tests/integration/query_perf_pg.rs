@@ -114,16 +114,16 @@ async fn seed_memory_rows(
                     ELSE NULL
                 END,
                 CASE
-                    WHEN $4::proxima_core.entity_kind IS NULL THEN NULL
+                    WHEN $4::proxima_core.entity_kind = 'Fact'::proxima_core.entity_kind THEN NULL
                     ELSE '00000000-0000-0000-0000-00000000a001'::uuid
                 END,
                 CASE
-                    WHEN $4::proxima_core.entity_kind IS NULL THEN NULL
+                    WHEN $4::proxima_core.entity_kind = 'Fact'::proxima_core.entity_kind THEN NULL
                     ELSE '00000000-0000-0000-0000-00000000a002'::uuid
                 END,
                 NULL,
-                CASE WHEN $4::proxima_core.entity_kind IS NULL THEN NULL ELSE 'perf-model' END,
-                CASE WHEN $4::proxima_core.entity_kind IS NULL THEN NULL ELSE 'perf-v1' END,
+                CASE WHEN $4::proxima_core.entity_kind = 'Fact'::proxima_core.entity_kind THEN NULL ELSE 'perf-model' END,
+                CASE WHEN $4::proxima_core.entity_kind = 'Fact'::proxima_core.entity_kind THEN NULL ELSE 'perf-v1' END,
                 r.created_at
            FROM unnest($5::uuid[], $6::timestamptz[], $7::text[])
              AS r(memory_id, created_at, text)",
@@ -131,7 +131,7 @@ async fn seed_memory_rows(
     .bind(owner_kind)
     .bind(owner_id)
     .bind(schema_id)
-    .bind(kind)
+    .bind(kind.unwrap_or(EntityKind::Fact))
     .bind(ids)
     .bind(created_at)
     .bind(text)
@@ -199,7 +199,7 @@ SELECT page.memory_id
        WHERE m.owner_kind = s.kind
          AND m.owner_id = s.id
          AND m.tombstoned_at IS NULL
-         AND m.kind IS NULL
+         AND m.kind = 'Fact'
          AND (m.created_at, m.memory_id) < ($3, $4)
        ORDER BY m.created_at DESC, m.memory_id DESC
        LIMIT 101

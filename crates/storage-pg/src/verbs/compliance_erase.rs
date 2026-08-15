@@ -558,7 +558,7 @@ async fn create_selected_sets(
         SelectionScope::Source(_) => {
             sqlx::query(
                 "INSERT INTO selected_memories(memory_id, kind, fact_entity_id, receipt_id, source_batch_id)
-                 SELECT m.memory_id, COALESCE(m.kind, 'Fact'::proxima_core.entity_kind), m.fact_entity_id, m.receipt_id, m.source_batch_id
+                 SELECT m.memory_id, m.kind, m.fact_entity_id, m.receipt_id, m.source_batch_id
                    FROM proxima_core.memories m
                   WHERE m.owner_kind = $1
                     AND m.owner_id = $2

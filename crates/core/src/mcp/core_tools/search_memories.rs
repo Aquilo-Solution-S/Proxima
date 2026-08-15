@@ -697,7 +697,7 @@ fn search_memory_output(
     body: Option<String>,
     body_truncated: Option<bool>,
 ) -> Result<SearchMemoryOutput, McpToolError> {
-    let class = super::get_memory::memory_class(row.kind.as_str())?;
+    let class = super::get_memory::memory_class(row.kind)?;
     Ok(SearchMemoryOutput {
         memory: ctx.format_memory_with_class(row.memory_id, class),
         space: space.to_string(),

@@ -23,7 +23,7 @@ pub struct EmbeddingInlineDrainOutcome {
 
 const RECONCILE_EMBEDDINGS_SQL: &str = "
 WITH scoped AS MATERIALIZED (
-     SELECT COALESCE(m.kind, 'Fact'::proxima_core.entity_kind) AS entity_kind,
+     SELECT m.kind AS entity_kind,
             m.memory_id,
             m.owner_kind,
             m.owner_id,
@@ -31,15 +31,12 @@ WITH scoped AS MATERIALIZED (
             h.embedding_version AS head_version
        FROM proxima_core.memories m
        LEFT JOIN proxima_core.embedding_heads h
-         ON h.entity_kind = COALESCE(m.kind, 'Fact'::proxima_core.entity_kind)
+         ON h.entity_kind = m.kind
         AND h.entity_id = m.memory_id
         AND h.model_id = $1
 WHERE NULLIF(btrim(m.text), '') IS NOT NULL
         AND m.tombstoned_at IS NULL
-        AND (
-            m.kind IS NULL
-            OR m.kind IN ('Abstraction', 'Perspective')
-        )
+        AND m.kind IN ('Fact', 'Abstraction', 'Perspective')
         AND ($3::text <> 'since' OR m.created_at >= $4)
         -- Declined a vector rather than lacking one; see
         -- FactPayload::EMBEDDABLE. This is the call that heals a missing

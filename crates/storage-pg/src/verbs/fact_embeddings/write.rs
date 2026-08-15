@@ -206,7 +206,7 @@ async fn embedding_entity_is_eligible(
                    AND NULLIF(btrim(m.text), '') IS NOT NULL
                    AND m.tombstoned_at IS NULL
                    AND (
-                       ($4 = 'Fact'::proxima_core.entity_kind AND m.kind IS NULL)
+                       ($4 = 'Fact'::proxima_core.entity_kind AND m.kind = 'Fact')
                        OR m.kind = $4
                    )
             )",

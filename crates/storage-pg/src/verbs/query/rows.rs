@@ -30,7 +30,7 @@ pub(super) fn memory_row_from_db(
 
     Ok(MemoryRow {
         id: MemoryId::new(r.memory_id),
-        kind: r.kind.unwrap_or(EntityKind::Fact),
+        kind: r.kind,
         schema_id,
         schema_version,
         owner: owner_from_parts(r.owner_kind, r.owner_id)?,
@@ -125,7 +125,7 @@ pub(super) struct MemoryRowDb {
     owner_id: Option<uuid::Uuid>,
     pub(super) schema_id: String,
     pub(super) schema_version: i32,
-    pub(super) kind: Option<EntityKind>,
+    pub(super) kind: EntityKind,
 }
 
 /// Cursor high-water over the requester's READ set — never a client-supplied

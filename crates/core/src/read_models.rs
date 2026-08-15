@@ -16,7 +16,7 @@ pub struct FactRow {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MemorySnapshot {
     pub memory_id: MemoryId,
-    pub kind: String,
+    pub kind: EntityKind,
     pub schema_id: SchemaId,
     pub schema_version: SchemaVersion,
     pub text: Option<String>,
