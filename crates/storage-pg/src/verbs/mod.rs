@@ -23,6 +23,7 @@ pub(crate) mod goal_write;
 pub(crate) mod lexical_language;
 pub(crate) mod mcp_call_history;
 pub mod persist_mcp_call;
+pub mod wake_timeseries;
 pub mod query;
 pub mod retention_maintenance;
 pub mod source_cursors;
