@@ -277,9 +277,9 @@ async fn seed_shared_fact_entity_fixture(
     .bind(kept.memory_id.into_inner())
     .execute(pg.pool_for_tests())
     .await?;
-    // A Fact-entity head as the SOURCE address: the edge follows the head, so
-    // it must survive an erase that takes the observation the head used to
-    // point at.
+    // A Fact-entity head as the SOURCE address: the edge follows the head,
+    // so it must survive an erase that takes the observation the head
+    // currently points at.
     sqlx::query(
         "INSERT INTO proxima_core.edges(
             source_kind, source_id, target_kind, target_id, kind, owner_kind, owner_id)

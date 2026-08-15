@@ -246,8 +246,7 @@ async fn an_interpretation_writes_references_derivable_from_its_payload()
         declared.sort_unstable();
         assert_eq!(stored, declared);
 
-        // The claim landed in its own sidecar, where the reason and the
-        // confidence that used to ride on an edge now live.
+        // Claim sidecar: reason and confidence live on the Perspective.
         let stored_claim: String = sqlx::query_scalar(
             "SELECT claim FROM proxima_core.interpretation_v1 WHERE memory_id = $1",
         )
@@ -265,13 +264,10 @@ async fn an_interpretation_writes_references_derivable_from_its_payload()
 /// A subject kind the payload type cannot represent is refused by the
 /// DATABASE, not merely by the Rust enum in front of it.
 ///
-/// `subject_kinds` was `text[]` until v0.0.7, so any string at all was a
-/// legal column value and only the loader's hand-rolled parser stood between
-/// a typo and a wrong endpoint kind. As
-/// `proxima_core.interpretation_subject_kind[]` the widening is unrepresentable
-/// — including `Goal`, which is a real `entity_kind` label and exactly the
-/// value reusing that enum would have admitted. Without this test the column
-/// type would be an assertion nothing checks.
+/// As `proxima_core.interpretation_subject_kind[]` a widening is
+/// unrepresentable — including `Goal`, which is a real `entity_kind`
+/// label. Without this test the column type would be an assertion nothing
+/// checks.
 #[tokio::test]
 async fn the_database_refuses_a_subject_kind_the_payload_cannot_represent()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -338,10 +334,9 @@ async fn the_database_refuses_a_subject_kind_the_payload_cannot_represent()
     result
 }
 
-/// A Fact declaring what it was read from lands its origin row inside its own
-/// ingest transaction — and a receipt replay re-asserts the same key rather
-/// than minting a second row. That is what #156's id scheme and its partial
-/// unique index were approximating.
+/// A Fact declaring what it was read from lands its origin row inside its
+/// own ingest transaction — and a receipt replay re-asserts the same key
+/// rather than minting a second row.
 #[tokio::test]
 async fn a_fact_declares_what_it_was_made_from() -> Result<(), Box<dyn std::error::Error>> {
     let (pg, db_name) = fresh_pg().await;

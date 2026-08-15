@@ -119,10 +119,8 @@ async fn status_with_host(
     app.oneshot(request).await.unwrap().status()
 }
 
-// Regression: rmcp's DNS-rebinding Host guard must honor a configured
-// public host. Before the fix, `streamable_http_service` only set
-// `allowed_origins`, so rmcp's loopback-only `allowed_hosts` default
-// 403'd every non-loopback `Host` — breaking the gateway deployment.
+// rmcp's Host guard must honor a configured public host; loopback-only
+// default 403s every non-loopback `Host`.
 #[tokio::test]
 async fn host_guard_allows_configured_host_and_rejects_foreign() {
     let owner = owner();
@@ -414,13 +412,10 @@ async fn allowed_actual_responses_carry_cors_headers_across_auth_results() {
     );
 }
 
-// Regression: `layered_router`/`layered_router_with_revalidation` must
-// carry the same body-size cap as `build_router` (runtime.rs) and the
-// streamable transport (crates/mcp-server/src/transport.rs). Before the
-// fix, this composition seam had no `enforce_body_limit` layer at all —
-// an embedding host serving `layered_router` network-facing had no body
-// cap. A declared oversized `Content-Length` must 413 before Host or auth runs
-// (the request deliberately has a foreign Host and no Authorization header).
+// `layered_router`/`layered_router_with_revalidation` carry the same
+// body-size cap as `build_router` and the streamable transport. A declared
+// oversized `Content-Length` must 413 before Host or auth runs (foreign
+// Host, no Authorization).
 #[tokio::test]
 async fn layered_router_rejects_oversized_body_before_auth() {
     const OVER_CAP_BYTES: usize = 8 * 1024 * 1024;

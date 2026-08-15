@@ -199,10 +199,6 @@ async fn ingest_head_snapshot_tool_indexes_current_tree() -> Result<(), Box<dyn 
 
 /// A repo's ingest scope decides what gets indexed, is reported rather
 /// than silent, and is re-appliable: narrowing it tombstones what left.
-///
-/// The motivating measurement is knip, where 3,389 of 4,935 chunks
-/// (68.7%) sit under a fixture path and account for 22% of the whole
-/// deployment's embeddings. This is that in miniature.
 #[tokio::test]
 async fn an_ingest_scope_excludes_fixtures_and_tombstones_what_leaves_it()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -427,10 +423,8 @@ async fn erase_repo_tool_clears_the_index_and_allows_a_fresh_one()
     Ok(())
 }
 
-/// A match has to carry enough of its chunk to answer with. Snippets were
-/// capped at 480 characters against a chunker that targets 1,500, so a search
-/// returned the right chunk with most of it missing and no way to ask for
-/// more — and nothing in the response said so.
+/// A match has to carry enough of its chunk to answer with, and
+/// truncation must be flagged in the response.
 #[tokio::test]
 async fn search_chunks_returns_whole_chunks_and_flags_truncation()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -439,15 +433,17 @@ async fn search_chunks_returns_whole_chunks_and_flags_truncation()
     let registry = registry_for_mcp();
     let temp = TempDir::new()?;
 
-    // One function well past the old 480-character cap but still inside
-    // MAX_CHUNK_CHARS, so it stays a single chunk, with the value that
-    // answers the query at the very end of it.
+    // One function long enough that a small snippet would hide the answer
+    // at the end, still inside MAX_CHUNK_CHARS so it stays a single chunk.
     let mut body = String::from("pub fn proxima_long_marker() -> u32 {\n");
     for i in 0..40 {
         writeln!(body, "    let filler_{i} = {i}; // padding line").expect("write to String");
     }
     body.push_str("    9_753\n}\n");
-    assert!(body.len() > 480, "fixture must exceed the old snippet cap");
+    assert!(
+        body.len() > 480,
+        "fixture must be longer than a small snippet"
+    );
     init_git_repo_with_commit(temp.path(), "src/long.rs", &body)?;
 
     let registered = run_tool::<CodeRegisterRepoTool>(
@@ -559,17 +555,10 @@ async fn search_chunks_answers_a_natural_language_question()
     Ok(())
 }
 
-/// A bug report is prose, and prose matches prose. Measured on the `knip`
-/// repository, `search_chunks` answered 5 of 17 real bug reports where plain
-/// ripgrep answered 8: every miss returned Markdown from the docs tree, and
-/// in every case the file the real fix touched *was* indexed and *did* match
-/// the query — it was outranked, because `ts_rank` has no IDF and a doc
-/// matching twenty ordinary English words beats the one source chunk holding
-/// the identifier the report names.
-///
-/// Two things fix it and this pins both: the identifier is ranked on its own
-/// (`distinctive_terms`), and a chunk a grammar parsed outranks a line window
-/// of a file no grammar could read.
+/// A bug report is prose, and prose matches prose. Two things keep the
+/// source chunk on top of a doc that shares more ordinary words: the
+/// identifier is ranked on its own (`distinctive_terms`), and a chunk a
+/// grammar parsed outranks a line window of a file no grammar could read.
 #[tokio::test]
 async fn search_chunks_ranks_parsed_code_over_prose_that_shares_more_words()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -647,14 +636,9 @@ async fn search_chunks_ranks_parsed_code_over_prose_that_shares_more_words()
 /// invalid byte sequence for encoding "UTF8": 0x00
 /// ```
 ///
-/// That aborts the entire `ingest_head_snapshot`, so a repository with one
-/// such file among thousands could not be indexed at all. It is not a
-/// contrived input: UTF-16 files git has not marked binary, `.po` files and
-/// test fixtures all carry NULs, and this was found when a stray one in a
-/// single source file of this repository failed `self_ingestion_pg`.
-///
-/// The file is skipped as binary — like any other binary file — and every
-/// other file in the tree still indexes.
+/// That aborts the entire `ingest_head_snapshot`. The file is skipped as
+/// binary — like any other binary file — and every other file in the tree
+/// still indexes.
 #[tokio::test]
 async fn a_file_containing_nul_is_skipped_not_fatal() -> Result<(), Box<dyn std::error::Error>> {
     let fixture = TestDb::fresh().await;
@@ -678,7 +662,7 @@ async fn a_file_containing_nul_is_skipped_not_fatal() -> Result<(), Box<dyn std:
     .await?;
     let repo_handle = registered["repo"]["repo_id"].as_str().expect("repo_id");
 
-    // The whole point: this call used to fail outright.
+    // Nul in the path must not fail the ingest.
     run_tool::<CodeIngestHeadSnapshotTool>(
         ctx(fixture.pg.clone(), owner, registry.clone()),
         json!({ "repo_handle": repo_handle }),
@@ -1860,16 +1844,7 @@ async fn retry_execution_request_rejects_unknown_target_perspective()
     Ok(())
 }
 
-/// Every paged read in this flavor rejects `limit: 0` with the same
-/// error.
-///
-/// They used to disagree three ways on the same nonsense input:
-/// `search_chunks` rejected it, `search_commits` returned `{"commits":
-/// []}` — a well-formed empty page no client can tell apart from "nothing
-/// matched" — and `list_repos` clamped to 1 and answered a question that
-/// was not asked. The engine has rejected `limit == 0` all along
-/// (`engine::query`, `engine::read_verbs`); the tool layer was the only
-/// place that hid it.
+/// Every paged read in this flavor rejects `limit: 0` with the same error.
 #[tokio::test]
 async fn every_paged_read_rejects_a_zero_limit_the_same_way()
 -> Result<(), Box<dyn std::error::Error>> {

@@ -463,7 +463,7 @@ async fn create_selected_sets(
     // typed id — World is not representable on this path — so `owner_id`
     // binds non-NULL here and in every erase statement below, and plain `=`
     // is exactly `IS NOT DISTINCT FROM` while staying an index condition
-    // (sql-sweep S7; PostgreSQL has no index strategy for DistinctExpr).
+    // (`PostgreSQL` has no index strategy for DistinctExpr).
     let (owner_kind, owner_id) = owner_binds(&owner);
     sqlx::query("CREATE TEMP TABLE selected_source_batches(id uuid PRIMARY KEY, source_id text NOT NULL) ON COMMIT DROP")
         .execute(&mut **tx)

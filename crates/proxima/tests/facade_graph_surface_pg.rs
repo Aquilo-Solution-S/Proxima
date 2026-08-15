@@ -511,9 +511,7 @@ async fn facade_engine_reads_lineage_edges_and_derives_without_embedding_client(
             EdgeEndpoint::memory(EntityKind::Abstraction, derived_id)
         );
         // The stored address is the head; the read resolves it through to
-        // whatever the head currently is. That is what follow-head means at
-        // read time, and it is the whole of what the retired `FollowHead`
-        // binding cell used to buy.
+        // whatever the head currently is. That is follow-head at read time.
         assert_eq!(
             read.edges[0].target,
             EdgeTargetProjection::visible(EdgeEndpoint::memory(

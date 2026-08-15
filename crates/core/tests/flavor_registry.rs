@@ -224,12 +224,9 @@ fn core_goal_action_metadata_preserves_required_fields() {
 /// `allowed_fields` entry, and `validate_action_args` starts rejecting valid
 /// calls; drop one and it starts accepting fields serde cannot deserialize.
 ///
-/// The same invariant is now also a boot guard —
 /// `FlavorRegistry::try_freeze` refuses a registry whose specs and derived
-/// schema disagree, for every registered tool including a flavor's. This
-/// stays as the backstop that says which field of which action drifted:
-/// freeze answers "this registry does not seal", and a per-action message
-/// is what makes the fix a one-line edit rather than a bisect.
+/// schema disagree. This stays as the backstop that names which field of
+/// which action drifted: freeze answers "this registry does not seal".
 #[test]
 fn action_arg_specs_match_schema_derived_action_fields() {
     use std::collections::BTreeSet;

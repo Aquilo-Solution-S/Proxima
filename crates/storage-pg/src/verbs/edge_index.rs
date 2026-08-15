@@ -22,9 +22,9 @@ use crate::error::map_err;
 /// One end of an edge as Postgres stores it: the entity kind and the address
 /// form in a single value.
 ///
-/// `FactEntityHead` is what the old descriptor's `FollowHead` binding became.
-/// A binding is not a policy consulted per write — it is what the address
-/// *is*, so it cannot disagree with the id beside it.
+/// `FactEntityHead` follows the current Fact-entity head. A binding is
+/// not a policy consulted per write — it is what the address *is*, so it
+/// cannot disagree with the id beside it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, sqlx::Type)]
 #[sqlx(type_name = "proxima_core.edge_endpoint_kind")]
 pub(crate) enum PgEndpointKind {

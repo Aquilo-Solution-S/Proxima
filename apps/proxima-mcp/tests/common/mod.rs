@@ -28,12 +28,8 @@ pub fn require_env_or_skip(name: &str) -> Option<String> {
 /// / `CI` concurrently, and cargo's default parallel test threads would
 /// otherwise race a mutation against them.
 fn require_env_or_skip_with(name: &str, lookup: impl Fn(&str) -> Option<String>) -> Option<String> {
-    // Both reads go through `env_value`, so a value that is only whitespace
-    // counts as unset on the way in and `CI=" true "` still means CI. The
-    // hand-rolled `!value.is_empty()` this replaces did not trim, so
-    // `DATABASE_URL="   "` passed the gate here and failed later inside the
-    // pool — the exact divergence `env_value` exists to remove, on the path
-    // built to fail loudly rather than late.
+    // Both reads go through `env_value` (whitespace is unset; `CI=" true "`
+    // still means CI).
     match proxima_core::env_value(&lookup, name) {
         Some(value) => Some(value),
         None if proxima_core::env_value(&lookup, "CI").as_deref() == Some("true") => {
@@ -73,8 +69,7 @@ mod tests {
         assert_eq!(require_env_or_skip_with("DATABASE_URL", lookup), None);
     }
 
-    /// The case the non-trimming check got wrong: whitespace-only used to
-    /// satisfy the gate and hand a blank connection string to the pool.
+    /// Whitespace-only is unset; under `CI=true` that panics.
     #[test]
     #[should_panic(expected = "DATABASE_URL required under CI=true")]
     fn panics_when_whitespace_only_and_ci_true() {

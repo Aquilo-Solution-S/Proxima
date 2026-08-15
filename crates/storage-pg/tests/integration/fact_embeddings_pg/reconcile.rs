@@ -400,16 +400,8 @@ async fn reconcile_limit_skips_existing_heads_before_bounding()
     result
 }
 
-/// A derived memory written straight to the sidecar tables — the shape a
-/// flavor produces when it materializes Abstractions through its own ingest
-/// path, with no embedding client in scope — must still be picked up by the
-/// owner-scoped backfill.
-///
-/// Before this, the backfill matched `kind IS NULL` only. `proxima-code`'s
-/// HEAD-snapshot ingest emits one `code-chunk-v1` Abstraction per parsed
-/// chunk that way, so an indexed repository stayed semantically invisible:
-/// lexical search worked, semantic search returned nothing, and nothing
-/// surfaced the gap until an operator happened to run a global reconcile.
+/// Owner-scoped backfill covers derived memories, not only Facts
+/// (`kind IS NULL`).
 #[tokio::test]
 async fn backfill_covers_derived_memories_not_just_facts() -> Result<(), Box<dyn std::error::Error>>
 {

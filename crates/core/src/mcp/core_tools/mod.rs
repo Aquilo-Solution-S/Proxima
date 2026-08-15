@@ -112,16 +112,8 @@ mod page_limit_tests {
         assert_eq!(resolve_page_limit(None).unwrap(), DEFAULT_PAGE_LIMIT);
     }
 
-    /// The MCP layer used to clamp `0` to `1`, which meant the engine's own
-    /// `limit == 0` guards (`engine::query`, `engine::read_verbs`) could
-    /// never fire through a tool call. Rejecting here keeps the two layers
-    /// saying the same thing rather than one hiding the other.
-    ///
-    /// Also pins the mechanism that lets ONE helper serve both tool traits:
-    /// `reject_zero_limit` returns [`crate::ToolError`], and an `McpTool`
-    /// body reaches it through `?`. If `From<ToolError> for McpToolError`
-    /// ever stopped mapping `InvalidInput` to `InvalidInput`, core's paged
-    /// reads would start reporting a client mistake as something else.
+    /// Zero limit is invalid input, and that mapping survives `From<ToolError>`
+    /// into [`crate::mcp::McpToolError`].
     #[test]
     fn the_rejection_survives_the_hop_to_mcp_tool_error() {
         let crate::ToolError::InvalidInput(message) = reject_zero_limit(Some(0)).unwrap_err()

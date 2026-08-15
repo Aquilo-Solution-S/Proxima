@@ -157,16 +157,8 @@ pub async fn reconcile_embeddings(
     })
 }
 
-/// Drain queued embedding jobs inline for one embedding client.
-///
-/// Claims the whole batch in one statement, the way the engine batch drain
-/// always has. This used to claim `limit = 1` per iteration while excluding
-/// the entities it had already processed, which is O(backlog sort × jobs)
-/// plus O(n²) exclusion-array compares (sql-sweep S2). Every processed job
-/// leaves a state (`deleted`, `failed`, or backoff-gated `pending`) the
-/// claim cannot re-claim, so the exclusion list's only remaining work —
-/// skipping a second queued version of an entity already embedded this
-/// drain — moves to the shared drain's duplicate release.
+/// Drain queued embedding jobs inline. Claims the whole batch in one
+/// statement; a processed job cannot be re-claimed.
 ///
 /// # Errors
 ///

@@ -360,21 +360,17 @@ fn walk_world_visible(id_expr: &str) -> String {
     )
 }
 
-/// The ancestors walk (sql-sweep S5). What this replaced materialized every
-/// readable memory and every origin edge before the recursion touched
-/// either; this one probes, per
-/// step, only the edge rows that can anchor at the step's memory — the
-/// memory id itself plus the fact-entity ids currently heading it
-/// (`idx_fact_entities_current_memory`, migration 0017) — through
-/// `idx_edges_source`, then resolves and visibility-checks just those.
+/// Ancestors walk. Per step, probe only the edge rows that can anchor at
+/// the step's memory — the memory id itself plus the fact-entity ids
+/// currently heading it (`idx_fact_entities_current_memory`, migration
+/// 0017) — through `idx_edges_source`, then resolve and visibility-check
+/// just those.
 ///
 /// The probe is an exact superset of the resolved-anchor predicate it
 /// guards (a resolved source equals the anchor only via the raw column or
 /// via a collected head id), and that predicate is kept verbatim as the
-/// residual, so the traversal cannot change. Prior art: `PostgreSQL` docs
-/// §7.8 (recursive queries) and the `LATERAL` subquery reference — the
-/// recursive self-reference appears exactly once, and the lateral probe
-/// references only its columns.
+/// residual, so the traversal cannot change. Recursive self-reference
+/// appears exactly once; the lateral probe references only its columns.
 fn ancestors_sql() -> String {
     let src = WALK_SOURCE_ID;
     let tgt = WALK_TARGET_ID;

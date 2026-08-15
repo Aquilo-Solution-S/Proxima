@@ -416,13 +416,10 @@ pub const MAX_TEXT_CAP_CHARS: usize = 8_000;
 /// broken.
 ///
 /// Blank and oversized are two different mistakes with two different
-/// fixes, and a caller can only act on the one they made. Every authoring
-/// surface carried this shape with a single message for both, so a
-/// two-space body and a 20,001-character body were both answered with
-/// `body must be 1..=20000 chars`. For the blank case that names a range
-/// the input satisfies — two characters *is* within 1..=20000 — which
-/// reads as a server fault rather than an instruction to send content, and
-/// the natural next move is to retry the same request unchanged.
+/// fixes, and a caller can only act on the one they made. A single
+/// `body must be 1..=20000 chars` names a range a blank value satisfies,
+/// which reads as a server fault rather than an instruction to send
+/// content.
 ///
 /// Counts characters, not bytes, for the reason
 /// [`validate_search_query`] does: a cap that bound bytes would reject a
@@ -610,8 +607,7 @@ mod shared_arg_rule_tests {
     }
 
     /// Whitespace-only is rejected AFTER trimming, not before: `"   "` is
-    /// an empty query, and the three tools this replaced all trimmed
-    /// first for exactly that reason.
+    /// an empty query.
     #[test]
     fn the_bound_applies_to_the_trimmed_query() {
         let padded = format!("  {}  ", "a".repeat(MAX_QUERY_CHARS));

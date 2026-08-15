@@ -34,7 +34,7 @@ pub(crate) async fn change_history(
     // ce.edge_target_memory_id; client `req.owner` is not an access vector.
     // Plain `=` on ce.owner_id: the change_event CHECKs prove the column is
     // never NULL, so `=` selects exactly what IS NOT DISTINCT FROM did while
-    // staying an index condition (sql-sweep S6).
+    // staying an index condition.
     let edge_visibility = edge_event_visibility_predicate(1, 2, 5, 6);
     let sql = format!(
         r"SELECT ce.seq FROM proxima_core.change_event ce

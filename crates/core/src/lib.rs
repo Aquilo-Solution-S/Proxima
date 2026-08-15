@@ -4,13 +4,9 @@ extern crate self as proxima_core;
 /// The Proxima release this build belongs to, as reported to MCP clients on
 /// `initialize` and to operators.
 ///
-/// Deliberately not `CARGO_PKG_VERSION`: every crate in the workspace is
-/// `publish = false` and pinned at `0.1.0`, so the manifest versions carry no
-/// release meaning and a client asking "which Proxima am I talking to?" would
-/// be told `0.1.0` — or, before this existed, `rmcp 2.2.0`. Releases are
-/// identified by git tag, and this is the one place that mirrors the tag.
-///
-/// **Bump this in the release commit.** `RELEASING.md` lists it as step one.
+/// Deliberately not `CARGO_PKG_VERSION`: workspace crates are `0.1.0` with
+/// `publish = false`. Releases are git tags; bump this in the release
+/// commit (`RELEASING.md` step one).
 pub const RELEASE_VERSION: &str = "0.0.7";
 
 pub mod access;

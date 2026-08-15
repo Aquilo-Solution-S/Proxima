@@ -68,9 +68,7 @@ pub(super) fn execution_plan_memory_id(
 /// The order is load-bearing. A plan's payload names the request Fact
 /// behind each item, and an index row cannot point at a node that is not
 /// there yet — so the items are emitted first and the plan is written last,
-/// referring back to them. Under the old model the plan came first and the
-/// plan→item edges were appended afterwards, which is exactly the
-/// free-standing edge write the model no longer has.
+/// referring back to them.
 pub(super) async fn append_execution_plan(
     tx: &mut Transaction<'_, Postgres>,
     ctx: &ToolCtx,

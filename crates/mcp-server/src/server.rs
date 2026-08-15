@@ -167,12 +167,7 @@ impl McpToolHost {
         .await
     }
 
-    /// Run a call through the shared `RequestBehavior` onion (currently just
-    /// `ScopeGateBehavior`, plus any flavor-registered behaviors) and the
-    /// given terminal dispatch. Both `call_tool` and `read_resource` funnel
-    /// through here so allow/deny/log behavior matches for tools and
-    /// resources alike — `read_resource` used to run its own hand-rolled
-    /// scope check outside this chain.
+    /// Shared `RequestBehavior` onion for `call_tool` and `read_resource`.
     async fn dispatch_through_behaviors<'a>(
         &'a self,
         name: String,

@@ -324,16 +324,9 @@ async fn staged_upload(
     prepared.upload_id
 }
 
-/// Two completions of the SAME bytes, running at once under different
-/// upload ids, converge on one artefact and one arrival — and neither
-/// caller sees an error.
-///
-/// The dedup conclusion was previously read off the SQL: nothing in this
-/// crate ever ran two completions concurrently, so whether the
-/// content-addressed upsert actually tolerates a contended
-/// `(owner, schema, content_hash)` was an argument rather than a result.
-/// The loser of that race must come back as an idempotent replay, not as a
-/// unique-violation surfaced to the client as an internal error.
+/// Concurrent completions of the same bytes under different upload ids
+/// converge on one artefact. The loser is an idempotent replay, not a
+/// unique-violation surfaced as Internal.
 #[tokio::test]
 async fn concurrent_completions_of_one_file_converge_on_one_artefact() {
     if !S3RuntimeConfig::present_in_env() {

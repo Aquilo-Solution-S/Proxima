@@ -155,7 +155,7 @@ impl PgGoalSidecar for proxima_core::TaskGoalV1 {
     }
 }
 
-/// The interpretation Perspective — what `core_link` used to put on an edge.
+/// The interpretation Perspective.
 ///
 /// Hand-written rather than `pg_sidecar!`-generated: the payload carries a
 /// `u8` confidence and a positionally aligned enum array, and neither is a

@@ -152,8 +152,8 @@ fn goal_page_sql(req: &QueryRequest, has_schema_filter: bool) -> String {
     // the caller's read-owner set. An unguarded `=` would silently hide
     // every published Goal (NULL = NULL is NULL) — the same trap memories.rs
     // describes. So this joins with `=` and carries an explicit World arm
-    // only when World is in the read set, exactly as memories.rs does
-    // (sql-sweep S4); see the disjointness argument there.
+    // only when World is in the read set, exactly as memories.rs does;
+    // see the disjointness argument there.
     {
         let member_arm = format!(
             "SELECT lat.* \

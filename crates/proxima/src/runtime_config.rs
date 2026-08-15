@@ -251,17 +251,9 @@ impl RuntimeBuilder {
 
     /// Apply injected environment values to unset fields.
     ///
-    /// A variable set to the empty string, or to nothing but whitespace, is
-    /// treated as unset — the same rule the binary's own argument parsing and
-    /// the `PROXIMA_S3_*` block already used, and which this function used to
-    /// bypass for all nine of the variables below. Values are trimmed, so a
-    /// trailing newline picked up from a here-doc or a mounted secret no
-    /// longer turns into a parse error naming a value nobody typed.
-    ///
-    /// Consequence worth knowing when layering configs: because empty now
-    /// means unset, `PROXIMA_ALLOWED_ORIGINS=` no longer overrides a value set
-    /// programmatically on a base builder. It leaves the field untouched
-    /// instead, which is what "apply to unset fields" says.
+    /// Empty or whitespace-only is unset; values are trimmed.
+    /// `PROXIMA_ALLOWED_ORIGINS=` therefore does not override a
+    /// programmatically set base — it leaves the field untouched.
     ///
     /// # Errors
     ///
@@ -1112,11 +1104,7 @@ mod tests {
         );
     }
 
-    /// An operator who exports a variable without a value has not configured
-    /// it. This used to abort boot with `must be a boolean, got ""` for the
-    /// three flags, and hand the pool an empty connection string for
-    /// `DATABASE_URL`, while `PROXIMA_EMBED_*` in the same process read the
-    /// same input as unset.
+    /// Empty or whitespace-only env is unset, not a parse error.
     #[test]
     fn an_empty_value_is_an_unset_value() {
         let builder = RuntimeBuilder::default()
@@ -1162,9 +1150,7 @@ mod tests {
         );
     }
 
-    /// Empty means unset, so it no longer beats a programmatically set base.
-    /// `merge_over` layers on `Option`, and an empty variable used to arrive
-    /// as `Some(vec![])` and win.
+    /// Empty means unset, so it does not override a programmatically set base.
     #[test]
     fn an_empty_allowlist_does_not_override_a_configured_one() {
         let from_env = RuntimeBuilder::default()

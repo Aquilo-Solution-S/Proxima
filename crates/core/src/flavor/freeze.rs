@@ -111,23 +111,10 @@ impl FlavorRegistry {
     /// Cross-check: the owner-role gate can classify every registered flat
     /// tool.
     ///
-    /// `ScopeGateBehavior::enforce_owner_role` asks whether a tool is
-    /// read-only and demands WRITE when it cannot tell. It resolves that in
-    /// two steps — the tool's own `ANNOTATIONS`, then the core manifest —
-    /// and this checks the same two, in the same order. A tool neither
-    /// answers is not merely undocumented: it is silently reclassified as a
-    /// write, and the symptom is a viewer refused a read with no stated
-    /// cause. That is exactly what happened to every `proxima-code_*` tool
-    /// before `ANNOTATIONS` existed.
-    ///
-    /// Dispatcher actions are classified by their descriptor-owned specs;
-    /// missing per-action annotations deliberately classify as writes. They
-    /// therefore need no duplicate tool-level declaration to freeze.
-    ///
-    /// Boot is the right place to say so for flat tools. The alternative is a
-    /// compile-time requirement Rust cannot express (a trait const with a
-    /// default is always satisfiable) or a per-flavor test each flavor has to
-    /// remember to write.
+    /// `ScopeGateBehavior::enforce_owner_role` demands WRITE when it cannot
+    /// tell. Same two steps, same order: the tool's `ANNOTATIONS`, then the
+    /// core manifest. Unclassified is silently a write. Dispatcher actions
+    /// missing per-action annotations classify as writes.
     fn validate_tools_declare_behavior(&self) -> Result<(), FlavorRegistryError> {
         for tool in &self.mcp_tools {
             if tool.action_arg_specs.is_empty()
@@ -143,23 +130,10 @@ impl FlavorRegistry {
     /// Cross-check: a dispatcher's declared actions and its derived schema
     /// describe the same dispatcher.
     ///
-    /// A dispatcher used to be described in three places that nothing tied
-    /// together: `ACTION_ARG_SPECS` (what the argument validator and the REST
-    /// router read), the schemars-derived `x-proxima-actions` extension (what
-    /// MCP clients read), and the substrate-only `CoreActionMeta` tables (what
-    /// the scope gate read). Substrate tools kept all three in step by hand;
-    /// a flavor tool could not write the third at all. `McpToolDescriptor::
-    /// action_arg_specs` is now the one enumeration, and this is what makes
-    /// declaring it non-optional for anything that *looks* like a dispatcher
-    /// to a client.
-    ///
-    /// The discriminator must literally be `action`. That is not cosmetic:
-    /// `ToolScope` keys are spelled `"{tool}:{action}"`, `validate_action_args`
-    /// and `ScopeGateBehavior::enforce_scope` both read `args["action"]`, and
-    /// the REST narrowed route injects `"action"` into the body before
-    /// dispatch. A dispatcher tagged on anything else would be enumerated
-    /// correctly and then gated, validated, and routed as if it had no
-    /// actions at all.
+    /// `McpToolDescriptor::action_arg_specs` is the one enumeration.
+    /// Discriminator must be `action`: `ToolScope` keys are `"{tool}:{action}"`,
+    /// validators and the scope gate read `args["action"]`, REST injects
+    /// `"action"` before dispatch.
     fn validate_dispatcher_action_specs(&self) -> Result<(), FlavorRegistryError> {
         for tool in &self.mcp_tools {
             // Absent and malformed are different answers. Reading them as one
@@ -221,11 +195,9 @@ impl FlavorRegistry {
                 .iter()
                 .map(|spec| spec.action)
                 .collect::<BTreeSet<_>>();
-            // Before the set comparison, because a set cannot report this:
-            // two specs for one action collapse into one member and compare
-            // equal to a correct derived key set. The second spec is dead —
-            // `validate_action_args` and the scope gate both take the first
-            // match — so its fields are silently never the contract.
+            // Length before set equality: a set collapses duplicate action
+            // names. The later spec is never read (`validate_action_args`
+            // and the scope gate take the first match).
             if tool.action_arg_specs.len() != declared.len() {
                 return Err(FlavorRegistryError::InvalidActionSpecs {
                     name: tool.name,

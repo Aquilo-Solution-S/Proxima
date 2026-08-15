@@ -111,16 +111,8 @@ mod mcp_tool_authoring {
     }
 }
 
-/// An out-of-tree flavor can reach the zero-page-bound rule through the
-/// SDK, in both of the error types the two tool traits use.
-///
-/// The rule was implemented twice before this — once in core for `McpTool`
-/// and once in the code flavor for `Tool` — because the helper was
-/// `pub(crate)` and the two traits carry different error enums. A flavor
-/// that depends on `proxima` alone had no route to either copy, so the
-/// third implementation would have been someone else's, spelled
-/// differently. One `ToolError`-returning function serves both: `?`
-/// promotes it through `From<ToolError> for McpToolError`.
+/// Zero-page-bound is reachable from the SDK: one `ToolError` helper, `?`
+/// into `McpToolError` via `From`.
 #[test]
 fn the_zero_page_bound_rule_is_reachable_from_the_sdk() {
     use proxima::flavor::{McpToolError, ToolError, reject_zero_limit};

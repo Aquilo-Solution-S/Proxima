@@ -171,20 +171,11 @@ const TRANSPORT_FAILURE_MARKERS: [&str; 7] = [
 /// 400/413/422 reject the request itself (over-limit input, malformed
 /// payload); 408/429/5xx are transient.
 ///
-/// A 400 only means "your input is bad" when the provider actually looked at
-/// the input. Ollama returns 400 when its *own* connection to the model
-/// runner fails, with a body like
-/// `do embedding request: Post "http://127.0.0.1:50103/v1/embeddings": EOF` —
-/// a transport failure wearing an input-rejection status.
-///
-/// Calling that permanent loses the memory's embedding for good, and does so
-/// silently. The caller rescues a genuinely over-limit input by re-offering
-/// ever shorter pieces; an outage rejects every one of those too, and
-/// "rejected at every length" is precisely the signal the job queue reads as
-/// a dead input — `fail_embedding_job_permanently`, which `reconcile_embeddings`
-/// then refuses to requeue. Observed on the documented local stack while a
-/// chat model was evicting the embedding model from memory: 16 code chunks
-/// went terminal and no longer existed for semantic search.
+/// A 400 only means "your input is bad" when the provider looked at the
+/// input. Ollama returns 400 on its own runner-connection EOF — a transport
+/// failure wearing an input-rejection status. Treating that as permanent
+/// sends the job to `fail_embedding_job_permanently`, which
+/// `reconcile_embeddings` will not requeue.
 fn permanent_embed_status(status: reqwest::StatusCode, body: &str) -> bool {
     if !matches!(status.as_u16(), 400 | 413 | 422) {
         return false;

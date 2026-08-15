@@ -503,16 +503,9 @@ async fn semantic_search_filters_query_predicates_before_candidate_limit()
     Ok(())
 }
 
-/// A page must be a budget of *memories*, not of embedding rows.
-///
-/// The semantic branch's outer `LIMIT` used to count rows straight out of the
-/// nearest-neighbour scan, and chunked embeddings put several rows in there
-/// for one memory. A handful of heavily-chunked memories therefore filled the
-/// page with their own chunks; the Rust-side merge then collapsed them, the
-/// page came back short, and `has_more` was computed from the collapsed count
-/// — so it read `false` while matching memories had never been returned. A
-/// caller paginating until `has_more` stopped would silently see a fraction
-/// of the matches, with no error anywhere.
+/// A page is a budget of memories, not embedding rows. Chunked embeddings
+/// put several rows in the ANN scan for one memory; collapse after LIMIT
+/// would starve the page and lie on `has_more`.
 #[tokio::test]
 async fn chunked_memories_do_not_starve_the_semantic_page() -> Result<(), Box<dyn std::error::Error>>
 {
@@ -586,21 +579,12 @@ async fn chunked_memories_do_not_starve_the_semantic_page() -> Result<(), Box<dy
     Ok(())
 }
 
-/// A memory reachable through more than one candidate branch carries more
-/// than one candidate `search_text`, and the collapse has to pick one.
-///
-/// It used to pick by plan. The branches share a `created_at` — they
-/// project the same `memories` row — so the collapse's `ORDER BY
-/// created_at DESC` never discriminated between them, and which text
-/// survived was whatever order the executor happened to produce.
-/// Measured against a real corpus, changing the plan changed the snippet
-/// for roughly half of a page, in both directions.
-///
-/// So the rule is written down: the schema's own projection wins over the
-/// generic memory text, and a projection that yields NULL never displaces
-/// text the base branch could supply. This memory is admitted by both the
-/// base branch (as `memories.text`) and its schema's sidecar (as the
-/// projection's `concat_ws`), so the snippet names which one won.
+/// Collapse of a memory reachable through more than one candidate branch
+/// picks one `search_text`: the schema's own projection wins (branches
+/// share `created_at`, so `ORDER BY created_at DESC` does not discriminate).
+/// A NULL projection never displaces text the base branch could supply.
+/// This memory is admitted by both the base branch (`memories.text`) and
+/// its schema sidecar (`concat_ws`), so the snippet names which one won.
 #[tokio::test]
 async fn semantic_snippet_prefers_the_schema_projection_over_memory_text()
 -> Result<(), Box<dyn std::error::Error>> {

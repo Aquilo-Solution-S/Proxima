@@ -1,19 +1,19 @@
-//! Golden, behaviour, and plan pins for the Query verb's read-owner scope
-//! (sql-sweep S4/S6).
+//! Golden, behaviour, and plan pins for the Query verb's read-owner scope.
 //!
 //! The scope is an equality join plus an explicit World arm carried only
 //! when World is in the read set — the split `search.rs` already ships —
 //! and the seq high-water is per-owner index probes merged by a top-1.
-//! What this replaced joined with `IS NOT DISTINCT FROM`, which is correct
-//! but reaches no `(owner_kind, owner_id, ...)` index prefix.
+//! `IS NOT DISTINCT FROM` is correct but reaches no `(owner_kind,
+//! owner_id, ...)` index prefix.
 //!
-//! `IS NOT DISTINCT FROM` was load-bearing, so these tests pin what the
-//! respelling could break: (a) both statements byte for byte, (b) that the
-//! World arm appears exactly when World is in the read set and never spells
-//! INDF against `s`, (c) that published rows still come back and a mixed
-//! page is still the GLOBAL top-N rather than both arms\' pages
-//! concatenated, and (d) that the page rides an owner index under DEFAULT
-//! planner costing with a crowd in the table (the S36 trap).
+//! These tests pin what the respelling could break: (a) both statements
+//! byte for byte, (b) that the World arm appears exactly when World is in
+//! the read set and never spells INDF against `s`, (c) that published rows
+//! still come back and a mixed page is still the GLOBAL top-N rather than
+//! both arms\' pages concatenated, and (d) that the page rides an owner
+//! index under DEFAULT planner costing with a crowd in the table (a
+//! one-row fixture with seqscan disabled proves capability, not the plan
+//! the corpus gets).
 
 use proxima_core::storage_ports::*;
 use proxima_core::verbs::change_history::ChangeHistoryRequest;
@@ -491,8 +491,7 @@ fn plan_seq_scans_relation(plan: &serde_json::Value, relation: &str) -> bool {
 
 /// Under default costing with a 20k-row crowd owned by someone else, the
 /// equality page probes an `(owner_kind, owner_id, ...)` memories index
-/// instead of scanning the table — the exact plan the INDF spelling makes
-/// unreachable (sql-sweep S4's measured 74-239x).
+/// instead of scanning the table.
 #[tokio::test]
 async fn the_equality_page_rides_the_owner_index() -> Result<(), Box<dyn std::error::Error>> {
     let (pg, db_name) = fresh_pg().await;

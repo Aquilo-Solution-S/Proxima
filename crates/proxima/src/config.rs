@@ -25,13 +25,7 @@ impl std::fmt::Debug for EmbedConfig {
 }
 
 /// Read the `PROXIMA_S3_*` block through the blob crate's parser.
-///
-/// The facade used to re-read all six variables itself. Two parsers over one
-/// variable block meant one binary answered two ways: `maintain-blobs` reached
-/// `S3RuntimeConfig::from_env` while `serve` reached this function, so
-/// `PROXIMA_S3_UPLOAD_TTL_SECONDS="900\n"` was accepted by one subcommand and
-/// refused by the other, and a whitespace-only bucket was "missing" to one and
-/// a real bucket name to the other.
+/// One parser for the block; the facade must not re-read it.
 pub(crate) fn s3_from_lookup(
     lookup: &impl Fn(&str) -> Option<String>,
 ) -> Result<Option<S3RuntimeConfig>, EmbedError> {

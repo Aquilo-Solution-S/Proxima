@@ -183,16 +183,9 @@ impl EmbeddingClient for PoisonTextEmbedding {
     }
 }
 
-/// A provider that *dies* on one input rather than rejecting it: the batch
-/// call fails **transiently**, and so does the per-item call for that one
-/// text, while everything else — including a trivial probe — succeeds.
-///
-/// This is a local model runner crashing on a pathological input, observed
-/// with a scanned page whose OCR hallucinated a 300-row CJK table: ollama
-/// answers `400 {"error": "… EOF"}`, which is correctly classified
-/// transient because nothing looked at the input. Indistinguishable from an
-/// outage by the response alone, and the difference is what decides whether
-/// the batch's other 31 jobs make progress.
+/// Provider that dies on one input: that item and the batch fail
+/// transiently; a trivial probe still succeeds. Indistinguishable from an
+/// outage by the response alone.
 #[derive(Debug)]
 struct CrashOnInputEmbedding;
 

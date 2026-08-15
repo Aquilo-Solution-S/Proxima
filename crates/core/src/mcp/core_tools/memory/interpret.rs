@@ -1,12 +1,8 @@
 //! `core_interpret` — author an interpretation Perspective.
 //!
-//! The tool `core_link` used to serve this need by storing a `reason`
-//! and a `confidence` on an edge. A claim with a reason and a confidence
-//! is a judgment, and judgments are Perspectives (docs/16 §Motivation),
-//! so what comes back is a memory handle rather than an edge handle. The
-//! connections to the subjects are index rows derived from the
-//! Perspective's own payload — nobody writes them, and nobody can write
-//! them without writing the node that owns the statement.
+//! A claim with a reason and a confidence is a judgment (docs/16
+//! §Motivation). Connections to the subjects are index rows derived from
+//! the Perspective payload — nobody writes them except by writing the node.
 
 use crate::mcp::{McpTool, McpToolCtx, McpToolError};
 use crate::protocol::tool as protocol_tool;

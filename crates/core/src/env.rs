@@ -105,9 +105,7 @@ mod tests {
         assert_eq!(env_value(&env(&[("FOO", " \t\n ")]), "FOO"), None);
     }
 
-    /// The concrete divergence this helper exists to remove: a trailing
-    /// newline survives a shell here-doc or a Kubernetes secret mount, and
-    /// used to make one parser accept a value the other rejected.
+    /// Trailing newline from a here-doc or secret mount is trimmed, not rejected.
     #[test]
     fn surrounding_whitespace_is_trimmed_not_rejected() {
         assert_eq!(

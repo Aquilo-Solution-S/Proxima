@@ -291,8 +291,7 @@ const ASCENDING_ORDER_EVENT_COUNT: usize = 6;
 
 /// `hydrate_change_events_batch` always returns rows ordered by `seq DESC`;
 /// `list_change_events_after` must restore ascending order for wake
-/// consumers regardless of that internal ordering (batch-hydrate
-/// migration off the old per-row `hydrate_change_event` loop).
+/// consumers regardless of that internal ordering.
 #[tokio::test]
 async fn list_change_events_after_preserves_ascending_seq_order() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());

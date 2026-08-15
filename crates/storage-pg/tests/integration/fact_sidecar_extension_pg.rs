@@ -154,16 +154,9 @@ impl PgMemoryPayload for FlavorExtensionV1 {
     }
 }
 
-/// Registered EVERYWHERE a healthy extension is -- schema registry and PG
-/// sidecar registry alike -- but its table is never created.
-///
-/// The first draft of this fixture tried to leave it out of the PG registry,
-/// to model "a flavor forgot `add_fact`". That turned out to be
-/// unconstructible: `freeze_against` already refuses a schema that declares a
-/// sidecar table with no PG sidecar registered, so the mistake is caught at
-/// boot and can never reach a transaction. A stronger guarantee than assumed,
-/// and it forced this test onto the failure that CAN reach one: a sidecar that
-/// is registered correctly and whose migration did not run.
+/// Schema + PG sidecar registered, table never created.
+/// `freeze_against` already refuses a schema with a sidecar table and no
+/// PG sidecar, so the reachable failure is migration-not-run.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct UnmigratedExtensionV1 {
     whatever: String,

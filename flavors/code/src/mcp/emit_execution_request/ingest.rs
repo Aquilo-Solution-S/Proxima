@@ -15,13 +15,8 @@ use crate::payloads::{AcceptanceCriteriaV1, ExecutionRequestV1, TestRequestV1};
 
 use super::{ACCEPTANCE_CRITERIA_SOURCE_ID, EXECUTION_REQUEST_SOURCE_ID, TEST_REQUEST_SOURCE_ID};
 
-/// What a dispatch-boundary Fact write declares about itself beyond its
-/// payload: what it was made from, and which Perspective emitted it.
-///
-/// Both used to be free-standing edge writes (`core/derived-from`,
-/// `core/authored`) that ran after the Fact landed. They are properties of
-/// the write, so they travel with it: the origins become index rows in the
-/// Fact's own transaction, and the author becomes a column on its row.
+/// Provenance on a dispatch-boundary Fact write: origins become index rows
+/// in the Fact's transaction; author is a column on its row.
 #[derive(Debug, Clone, Copy, Default)]
 pub(super) struct FactProvenance<'a> {
     pub(super) derived_from: &'a [EdgeEndpoint],

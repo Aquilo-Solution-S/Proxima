@@ -21,14 +21,12 @@ use crate::{
     EmbeddableEntityRef, EntityKind, MemoryId, Owner, OwnerRef, SidecarPayload, SourceBatchId,
 };
 
-/// Input used to ask a provider "are you up?" after it refused a batch.
+/// Liveness probe after a provider refuses a batch.
 ///
-/// Deliberately trivial and constant: the probe must be something no
-/// provider can reject on its merits, so that a failed probe means the
-/// provider is unavailable and a successful one means the refused batch's
-/// own contents are at fault. Shared with the derived-write path
-/// ([`crate::llm::embed_failure_blames_the_input`]) so the drain and the
-/// write ask the provider the same question.
+/// Trivial and constant: a failed probe means the provider is down; a
+/// successful one means the refused batch's contents are at fault. Shared
+/// with [`crate::llm::embed_failure_blames_the_input`] so drain and write
+/// ask the same question.
 const TRANSIENT_BATCH_PROBE: &str = crate::llm::EMBED_LIVENESS_PROBE;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]

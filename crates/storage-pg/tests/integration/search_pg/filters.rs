@@ -332,13 +332,7 @@ async fn world_published_memory_needs_world_in_read_set() -> Result<(), Box<dyn 
 
 /// `%` and `_` in a query are characters the user typed, not wildcards.
 ///
-/// The substring arm concatenated the bound parameter straight into a `LIKE`
-/// pattern, so `_` matched any character and `%` matched any run of them.
-/// Searching for `100%` matched every memory beginning `100` — 70 of 3,000
-/// rows on an indexed corpus where the literal matched none — and a query of
-/// a bare `%` matched the whole corpus at the substring band's score.
-///
-/// The decoy here is reachable *only* through the substring arm: its text
+/// The decoy is reachable *only* through the substring arm: its text
 /// shares no lexeme with the query, so a hit proves wildcard expansion.
 #[tokio::test]
 async fn like_metacharacters_in_a_query_are_literal() -> Result<(), Box<dyn std::error::Error>> {

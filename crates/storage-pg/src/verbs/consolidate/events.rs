@@ -86,7 +86,7 @@ pub async fn list_change_events_after(
     // Plain `=` on ce.owner_id here and in the replay read below: the
     // change_event CHECKs prove the column is never NULL, so `=` selects
     // exactly what IS NOT DISTINCT FROM did while staying an index
-    // condition (sql-sweep S6).
+    // condition.
     // Commit-safety horizon (opt-in via COMMIT_GRACE_ENV). When set, bind it
     // as $7 and only return events stamped before `now - grace`.
     let horizon = commit_horizon_seq(now_unix_ms(), configured_commit_grace());

@@ -403,9 +403,9 @@ impl Engine {
         Ok(EntryReadPermit { owner: home })
     }
 
-    /// The one Tier-2 owner/space-scoped gate. Async because relation resolution
-    /// reads persisted grants (skipped for Unrestricted). `denied` contexts are
-    /// rejected before any resolution (replaces the old `RoleSet::none` gate).
+    /// The one Tier-2 owner/space-scoped gate. Async because relation
+    /// resolution reads persisted grants (skipped for Unrestricted).
+    /// `denied` contexts are rejected before any resolution.
     pub(in crate::engine) async fn authorize_request<A>(
         &self,
         authority: &A,

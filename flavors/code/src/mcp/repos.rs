@@ -510,18 +510,10 @@ pub struct CodeEraseRepoOutput {
 
 /// Erase one registered repository and everything derived from it.
 ///
-/// The storage verb behind this has existed and been tested since the code
-/// flavor shipped, but was reachable only through `proxima_code::testkit`,
-/// which is `cfg(debug_assertions)`. In a release build there was no way to
-/// remove an indexed repository at all: `proxima-code_register_repo` upserts
-/// and keeps the cursor, so a repository, once indexed, was permanent.
-///
-/// It is also the supported re-index path. A HEAD snapshot re-derives only
-/// files whose content moved, and a derived Abstraction must carry the same
-/// `source_batch_id` as the Facts it came from — so when the *deriver*
-/// changes (a chunker or render upgrade), previously indexed files cannot be
-/// re-derived in place. Erasing and re-ingesting produces fresh Facts in
-/// fresh batches, which is the model working as intended rather than around.
+/// Supported re-index path: a HEAD snapshot re-derives only files whose
+/// content moved, and a derived Abstraction must share `source_batch_id`
+/// with its Facts — a deriver change cannot rewrite in place. Erase then
+/// re-ingest.
 #[derive(Debug)]
 pub struct CodeEraseRepoTool;
 

@@ -9,12 +9,9 @@ pub(crate) const DEFAULT_UPLOAD_TTL_SECONDS: u64 = 900;
 pub(crate) const DEFAULT_MAX_BLOB_BYTES: u64 = 100 * 1024 * 1024;
 pub(crate) const DEFAULT_READ_TTL_SECONDS: u64 = 300;
 
-/// `SigV4`'s own ceiling on a presigned URL's lifetime (7 days). Bounding
-/// here rather than at the presign call is what keeps an out-of-range value
-/// a startup error instead of a request-path fault: `read_url` and
-/// `prepare_upload` compute `now + Duration::seconds(ttl)` BEFORE reaching
-/// `PresigningConfig::expires_in`, and that addition panics on overflow, so
-/// the only validator used to sit downstream of the thing it had to guard.
+/// `SigV4` ceiling on a presigned URL (7 days). Bound here: `read_url` /
+/// `prepare_upload` compute `now + Duration::seconds(ttl)` before
+/// `PresigningConfig::expires_in`, and that add panics on overflow.
 pub(crate) const MAX_PRESIGN_TTL_SECONDS: u64 = 7 * 24 * 60 * 60;
 
 /// Reject a TTL no presigned URL could carry, naming the variable.
@@ -279,9 +276,7 @@ mod tests {
         assert!(msg.contains("PROXIMA_S3_REGION"), "{msg}");
     }
 
-    /// Both halves of the old divergence, pinned. The facade used to read
-    /// these raw: a whitespace-only bucket was a real bucket name, and a
-    /// TTL with a trailing newline failed to parse.
+    /// Whitespace-only bucket is unset; surrounding whitespace is trimmed.
     #[test]
     fn blank_bucket_reads_as_no_bucket() {
         assert!(

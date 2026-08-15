@@ -330,8 +330,7 @@ mod tests {
         dir
     }
 
-    /// The listing carries sizes, so the blob cap is applied without reading
-    /// — and without the `git cat-file -s` that used to be spawned per blob.
+    /// The listing carries sizes, so the blob cap is applied without reading.
     #[test]
     fn ls_tree_reports_sizes_so_the_cap_needs_no_blob_read() {
         let repo = fixture_repo();

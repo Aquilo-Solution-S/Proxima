@@ -23,45 +23,26 @@ use super::read_owner_columns;
 /// Default text-search configuration, read from the database rather than
 /// written here.
 ///
-/// The configuration stems both document and query tokens ("adopted" matches
-/// "adopt") and drops stopwords, so a natural-language question's content
-/// words drive the AND-semantics match instead of its function words ("what",
-/// "my", …). With `simple` (the pre-v0.0.7 config), every question word had
-/// to appear literally — on conversational corpora most queries matched
-/// nothing. A query that is *all* stopwords yields an empty tsquery and falls
-/// back to the substring `LIKE` arm below.
+/// Stems tokens and drops stopwords. An all-stopword query yields an empty
+/// tsquery and falls back to the substring `LIKE` arm.
 ///
-/// Since per-row languages (migration 0014) this is only the FALLBACK for a
-/// database whose `lexical_languages` table is empty. The real query side is
-/// two-part, shaped by measurement (130-question German goldset, this exact
-/// band SQL):
-///
-/// - **Match** with the OR of one `websearch_to_tsquery` per active language
-///   (`proxima_core.lexical_languages`). Constant-config tsqueries fold to
-///   one OR constant the GIN index serves; the per-row spelling
-///   `websearch_to_tsquery(c.lexical_language, …)` in a WHERE clause has no
-///   index path at all.
-/// - **Rank** each candidate with its own row's configuration. Ranked this
-///   way the multi-language OR is bit-identical to a single-language
-///   baseline (0/130 top-5 sets changed); ranked against the OR query it
-///   costs 6.2 points of recall@5, because wrong-config covers inflate
-///   non-gold rows. A cross-config strict match whose row-config rank finds
-///   no cover scores the bare band base — which is exactly the measured-free
-///   behavior, hence the COALESCE(…, 0) around the rank terms.
+/// Fallback only when `lexical_languages` is empty. Otherwise:
+/// - **Match** with the OR of one `websearch_to_tsquery` per active
+///   language. Constant-config tsqueries fold to one OR the GIN can serve;
+///   `websearch_to_tsquery(c.lexical_language, …)` in WHERE has no index.
+/// - **Rank** each candidate with its own row's configuration. Ranking
+///   against the OR query inflates wrong-config covers; a cross-config
+///   strict match with no row-config cover scores the bare band base
+///   (`COALESCE(…, 0)`).
 const TEXT_SEARCH_CONFIG: &str = "proxima_core.lexical_config()";
 
 /// SQL that lowercases a bound query parameter and neutralises the `LIKE`
 /// metacharacters inside it, for use between `'%' || … || '%'` with
 /// `ESCAPE '\'`.
 ///
-/// The substring arm used to concatenate the parameter in raw, so `%` and `_`
-/// in a user's query were wildcards rather than characters. Searching for
-/// `100%` matched every memory beginning `100` — 70 of 3,000 rows on an
-/// indexed corpus where the literal string matched none — and a query of a
-/// bare `%` matched the entire corpus at the substring band's score.
-///
-/// The backslash is escaped first, so an already-backslashed query cannot
-/// smuggle an escape through the later replacements.
+/// Escape LIKE metacharacters for `'%' || … || '%'` with `ESCAPE '\'`.
+/// `%` and `_` in the query are characters, not wildcards. Backslash first,
+/// so an already-backslashed query cannot smuggle an escape.
 fn like_literal(query_param: usize) -> String {
     format!(
         "replace(replace(replace(lower(${query_param}), '\\\\', '\\\\\\\\'), '%', '\\\\%'), '_', '\\\\_')"
@@ -69,45 +50,17 @@ fn like_literal(query_param: usize) -> String {
 }
 
 // Lexical score bands. Websearch AND semantics require every content word
-// to co-occur in one memory; on conversational corpora most multi-word
-// questions match nothing, so an OR-rescue arm re-runs the same lexemes
-// any-matched. Match *tier* must dominate cover-density rank — ts_rank_cd
-// penalizes wide multi-term covers, so an unbanded strict match can rank
-// below a saturated single-term rescue hit — hence disjoint bands:
+// in one memory, so an OR-rescue arm re-runs the same lexemes any-matched.
+// Match *tier* must dominate cover-density rank — hence disjoint bands:
 // strict [0.5, 1.0] > rescue (0.25, 0.45] > substring LIKE 0.25.
 //
-// `ts_rank_cd` is normalised with flag 32 (divide by itself + 1) rather than
-// multiplied by a constant. Nothing here assigns A/B/C/D lexeme weights, so
-// every document is weight D, and cover density for weight D starts at 0.1 —
-// which made the old `LEAST(ts_rank_cd(...) * 10.0, 1.0)` equal to 1.0 for
-// every row that matched at all. Measured against an indexed corpus: 3,170
-// of 3,170 matching rows saturated, in both arms. The rank term was a
-// constant, so *within* a band nothing was ranked and the order was whatever
-// the plan happened to emit — a lexical search over 5,142 matches returned
-// six unrelated files all scoring exactly 0.45. Flag 32 bounds the value in
-// [0, 1) and it varies (0.091..0.888 over those same rows), leaving `LEAST`
-// as a guard rather than the whole computation.
-//
-// The *rescue* arm ranks with `ts_rank(v, q, 1|32)` and not with cover
-// density, for the same reason the code flavor's rescue arm does. Cover
-// density rewards a short span containing several query terms, which is
-// exactly the shape of repetitive structured data. Measured over an
-// indexed corpus of 4,935 chunks with a real bug report as the query,
-// cover density returned a documentation page and eight chunks of one
-// `schema.json` — several scoring identically to six decimal places —
-// while the file the fix actually touched never appeared. Flag 1 adds
-// division by the log of document length, which is what separates a
-// precise short chunk from a long repetitive one:
-//
-//   corpus                    ts_rank_cd      ts_rank(1|32)
-//   17 knip bug reports       1 of 17         5 of 17
-//   7 prek bug reports        3 of 7          5 of 7
-//   24 prose questions        12 of 24        17 of 24
-//
-// The strict arm keeps cover density: measured on the same three corpora,
-// giving it length normalisation too changes nothing, because a
-// multi-sentence query almost never AND-matches at all and the arm does
-// not fire.
+// `ts_rank_cd` uses flag 32 (÷ self+1). Unlabelled docs are weight D;
+// cover density ≥ 0.1, so `* 10` saturates at 1.0 and in-band order is
+// whatever the plan emits. Flag 32 keeps the term in [0, 1).
+// Rescue ranks with `ts_rank(v, q, 1|32)`: cover density rewards
+// repetitive short spans; flag 1 divides by log document length.
+// Strict keeps cover density (AND-match almost never fires on
+// multi-sentence queries).
 
 /// The flat score a substring-only match earns.
 ///
@@ -551,39 +504,12 @@ fn lexical_branch_sql<'p>(
 /// The substring band's own statement: the rows `LIKE '%…%'` finds that no
 /// tsquery does.
 ///
-/// Split out of the lexical branch rather than left beside it, because in
-/// one disjunction the two predicates cannot both be served. `LIKE '%…%'`
-/// has no base-table index in core — `docs/15-deployment.md` records why
-/// `pg_trgm` does not answer this for a projection-built `search_text` —
-/// so a planner facing `tsv @@ q OR text LIKE '%…%'` must scan the owner
-/// scope for the second arm and the GIN path for the first is never worth
-/// choosing. Measured on a ~10^5-row single-owner corpus, splitting them is
-/// the whole difference between the index being live and being decoration:
-/// same statement, same index, 0.82 of the shipped runtime with the arms
-/// together and 0.0004 with them apart.
-///
-/// Splitting it is safe to *skip* — see [`needs_substring_pass`] — because
-/// of what the arm turns out to contribute. Counted on that corpus, rows
-/// this predicate finds that neither tsquery does:
-///
-/// | query class | rows only `LIKE` finds |
-/// |---|---|
-/// | natural multi-word ("thrift store clothing haul", …) | 0, in every case measured |
-/// | single word | 8 of 313 |
-/// | all-stopword ("what is the") | 1,145 — the only arm that fires |
-/// | partial word ("ustainab") | 4,551 — the only arm that fires |
-///
-/// It is not a general recall contributor; it is the fallback for queries
-/// the tsquery cannot express, which is what its own comment in
-/// [`TEXT_SEARCH_CONFIG`] has always said. Both classes where it carries
-/// the whole search share one property — the tsquery arms return few or no
-/// rows — and that is exactly the condition the skip rule tests. The rule
-/// is a restatement of what this statement is for, not a heuristic laid
-/// over it.
-///
-/// What the split costs is that this statement is a second round trip
-/// under its own snapshot. [`needs_substring_pass`] is what keeps it from
-/// being paid on every search.
+/// Split from the lexical branch: `LIKE '%…%'` has no core base-table
+/// index (`docs/15` / `pg_trgm` vs projection-built `search_text`), so
+/// `tsv @@ q OR text LIKE '%…%'` seq-scans the owner scope and the GIN
+/// path is never chosen. Skip via [`needs_substring_pass`] when the
+/// tsquery arms already cover the query (all-stopword / partial-word
+/// are the cases this arm carries). Second round trip, own snapshot.
 fn substring_branch_sql<'p>(
     req: &MemorySearchRequest,
     projections: &'p [MemorySearchProjection],
@@ -853,34 +779,12 @@ const ANN_RESTRICTION_SQL: &str =
 /// Rank first, then decide eligibility — over the window, not over the
 /// read scope.
 ///
-/// The statement this replaces built the whole eligible set before the
-/// scan ran, then inner-joined the scan's few thousand rows against it.
-/// Measured on a corpus of ~10^5 memories under one owner, that spent
-/// ~87% of the query materialising ~2x10^5 candidate rows and sorting
-/// them through a 311 MB external merge, to answer "is this eligible?"
-/// for the 1,344 rows the scan returned in 37 ms.
-///
-/// The join is an inner join, so the answer for every other row was
-/// discarded. Restricting each branch to the window's ids is a semi-join
-/// reduction of that inner join
-/// (<https://www.postgresql.org/docs/current/functions-subquery.html>):
-/// the branches' own predicates are untouched, so the same memories are
-/// eligible — they are simply not computed for memories the join could
-/// never keep.
-///
-/// It stays one statement. Splitting the scan and the eligibility check
-/// into two round trips would put them under two snapshots at Read
-/// Committed
-/// (<https://www.postgresql.org/docs/current/transaction-iso.html#XACT-READ-COMMITTED>),
-/// so a tombstone, supersession or new head version landing between them
-/// could change which rows come back.
-///
-/// Order within the statement is load-bearing: the scan keeps
-/// `ORDER BY <distance> LIMIT n` with nothing above it, which is the only
-/// shape the HNSW index can serve
-/// (<https://github.com/pgvector/pgvector#querying>), and the head join
-/// runs *before* the per-memory collapse, so a nearer stale chunk can
-/// never displace the live one that the collapse should have kept.
+/// Restrict each branch to the window's ids (semi-join). One statement:
+/// two round trips would be two Read Committed snapshots, so a
+/// tombstone/supersession between them can change membership.
+/// Scan keeps `ORDER BY <distance> LIMIT n` with nothing above it (the
+/// only HNSW-servable shape); the head join runs before per-memory
+/// collapse so a nearer stale chunk cannot displace the live one.
 fn rank_first_semantic_branch_sql(
     req: &MemorySearchRequest,
     projections: &[&MemorySearchProjection],
@@ -1438,11 +1342,8 @@ struct CandidateShape<'a> {
 
 /// A branch's text predicate, written where an index can serve it.
 ///
-/// Applied above the branch set — the shape every lexical search had
-/// through v0.0.7 — a text predicate is unservable by construction: it
-/// matches a CTE result, and no index exists on a CTE result. That is the
-/// reason migration 0009 dropped the GIN indexes it found and 0011
-/// declined to add one for the stored `search_tsv` columns. Written into
+/// Applied above the branch set, a text predicate is unservable: it
+/// matches a CTE result, and no index exists on a CTE result. Written into
 /// the branch, beside the branch's own owner predicate, the same predicate
 /// becomes an ordinary base-table qualifier and the planner may pick
 /// `idx_memories_search_tsv` (migration 0019) for it.
@@ -1764,15 +1665,10 @@ fn projection_tag_expr(projection: &MemorySearchProjection) -> Result<String, St
     Ok(format!("s.{}", column.as_str()))
 }
 
-/// Every candidate branch reads `FROM proxima_core.memories m`, so the
-/// candidate's home owner is `m`'s own owner columns. It used to be read
-/// back off an `entity_owner_union` (memories ∪ goals) outer-joined on
-/// `entity_id = m.memory_id` — for a memory row the union's memories arm
-/// *is* `m`, and its goals arm can only match on a uuid collision between
-/// a `goal_id` and a `memory_id`, which would corrupt the branch by
-/// duplicating the row rather than help it. `publish_to_world` transfers
-/// ownership with an UPDATE on `memories`, so `m.owner_kind`/`m.owner_id`
-/// is the live home owner, not a stale copy.
+/// Candidate home owner is `m`'s own columns (`FROM proxima_core.memories m`).
+/// `publish_to_world` UPDATEs those columns, so they are live. Do not look
+/// the owner up through `entity_owner_union`: the memories arm *is* `m`,
+/// and a `goal_id`/`memory_id` collision would duplicate the row.
 fn push_candidate_branch_prefix(sql: &mut String) {
     // SQL-POLICY: fixed-fragment
     sql.push_str(
@@ -1782,27 +1678,12 @@ fn push_candidate_branch_prefix(sql: &mut String) {
     );
 }
 
-/// Owner-scope gate for one candidate branch, split at SQL-build time so
-/// every arm is index-eligible. The generic `owner_id IS NOT DISTINCT
-/// FROM s.id` join defeats the `(owner_kind, owner_id)` b-tree prefixes
-/// (measured on a 150k-memory corpus: every branch seq-scanned all of
-/// `memories` per owner check). `owner_binds` emits a NULL id only for
-/// [`OwnerRef::World`], so the read set splits exactly into a plain
-/// equality join plus — only when World is actually in the read set — a
-/// constant World arm (`owner_id IS NULL` ⇔ World by the owner-shape
-/// checks, and NULL never survives the equality join).
-///
-/// The gate reads `m`'s own owner columns rather than looking the owner up
-/// through an `entity_owner_union` (memories ∪ goals) keyed on
-/// `entity_id = m.memory_id`. Every candidate branch selects
-/// `FROM proxima_core.memories m`, so that lookup could only ever return
-/// `m` itself, but it cost a scan of both `memories` and `goals` per
-/// branch to prove it — and the planner drove the whole query off that
-/// union, which put the text and vector predicates permanently out of
-/// reach of any index. Measured on a 15,265-memory corpus with the six
-/// projections a code-flavor deployment registers, six lexical queries:
-/// 1,799.9 ms → 1,297.3 ms total (1.4×), with identical
-/// `(memory_id, lexical_score)` result sets on every query.
+/// Owner-scope gate, split at SQL-build time so every arm is index-eligible.
+/// `owner_id IS NOT DISTINCT FROM s.id` defeats the `(owner_kind, owner_id)`
+/// b-tree prefixes. `owner_binds` emits a NULL id only for
+/// [`OwnerRef::World`], so the read set is an equality join plus — only
+/// when World is in the set — a constant World arm (`owner_id IS NULL`).
+/// Reads `m`'s own owner columns (see [`push_candidate_branch_prefix`]).
 fn push_read_owner_scope(sql: &mut String, req: &MemorySearchRequest) {
     // SQL-POLICY: fixed-fragment — the read set arrives as the two bound
     // arrays $1/$2; nothing here is interpolated.

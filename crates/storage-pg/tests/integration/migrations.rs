@@ -204,9 +204,9 @@ async fn migrations_apply_to_fresh_db() {
 
         assert_delegated_authority_schema(&pg).await;
 
-        // Wave-2 read-path indexes (sql-sweep S3 + S8): the five
-        // FK-referencing columns whose RI checks used to seq-scan the
-        // referencing table, plus the change_event entity-id replay probes.
+        // Wave-2 read-path indexes: FK-referencing columns whose RI checks
+        // otherwise seq-scan the referencing table, plus change_event
+        // entity-id replay probes.
         for index_name in [
             "idx_fact_entities_current_memory",
             "idx_goals_assignment_perspective",

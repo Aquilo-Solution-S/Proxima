@@ -5,13 +5,9 @@ use serde::{Deserialize, Serialize};
 
 /// An agent's claim about existing nodes.
 ///
-/// This is what `core_link` used to store on an edge. A claim with a
-/// reason and a confidence is a judgment, and judgments are Perspectives
-/// — the old edge was a Perspective hiding in a cheaper container
-/// (docs/16 §Motivation). The subjects live here as
-/// schema-declared reference fields, so the index rows that connect the
-/// interpretation to what it interprets are re-derivable from this
-/// payload alone.
+/// A claim with a reason and a confidence is a judgment — a Perspective
+/// (docs/16 §Motivation). Subjects are schema-declared reference fields;
+/// index rows are re-derivable from this payload.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct InterpretationV1 {
     /// The claim being made about the subjects.

@@ -1,9 +1,5 @@
-//! The lineage walk traverses `origin`, and nothing else.
-//!
-//! Lineage is the provenance chain — what a memory was made from — and that is
-//! exactly one kind now. Supersession used to be walked here too; it is a
-//! pointer on the row, and a walk that followed it would be answering a
-//! different question.
+//! The lineage walk traverses `origin` only. Supersession is a row pointer;
+//! following it would answer a different question.
 
 use proxima_core::storage_ports::*;
 use proxima_core::verbs::query::{MemoryLineageDirection, MemoryLineageRequest};

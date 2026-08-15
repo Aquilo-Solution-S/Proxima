@@ -47,10 +47,7 @@ pub async fn get_memory(
     args: GetMemoryArgs,
 ) -> Result<GetMemoryOutput, McpToolError> {
     let memory_id = ctx.resolve_memory(&args.memory)?;
-    // Report a key `core_memory_spaces` actually advertises. This used to
-    // default to the literal "entry", which no space is called: an agent
-    // following the documented "use a returned `space` key" loop fed it back
-    // to a write and got `unknown memory space: entry`.
+    // Space key `core_memory_spaces` advertises (`SpaceDefault::Current`).
     let output_space = super::memory_spaces::resolve_space_owner(
         &ctx,
         args.space.as_deref(),

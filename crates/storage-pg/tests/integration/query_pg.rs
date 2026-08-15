@@ -138,17 +138,8 @@ async fn insert_test_edge(
 }
 
 /// Fan `count` distinct targets out of one source.
-///
-/// Multiplicity collapsed with the redesign — ten pointers from A to B are one
-/// row — so a large edge set now needs a large node set, which is what this
-/// builds. The memory rows are raw inserts: the point is the edge cap, not the
-/// ingest path.
-/// Mint `nodes` Facts under one owner and wire `edges` distinct pairs between
-/// them.
-///
-/// The fan has to be spread over many nodes now: the key IS the row, so one
-/// pair of endpoints admits one row per kind and no more. A cap test therefore
-/// needs a wide graph rather than a deep pile on a single pair.
+/// Multiplicity collapsed: the key is the row, so a cap test needs a wide
+/// graph, not a pile on one pair. Raw inserts — the point is the edge cap.
 async fn insert_dense_edge_graph(
     pg: &PgStorage,
     owner: &Owner,

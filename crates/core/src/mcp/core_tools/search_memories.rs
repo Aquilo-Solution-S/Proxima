@@ -793,11 +793,10 @@ fn retain_surviving_neighbor_edges(memories: &[SearchMemoryOutput], edges: &mut 
 }
 
 /// A `Hybrid` search has silently fallen back to lexical-only ranking when it
-/// returned results but none carry a positive semantic similarity — the symptom
-/// of an empty or unavailable embedding store (Aquilo FJ#3674). Restricted to
-/// `Hybrid`: pure `Semantic` runs no lexical branch (storage gates the lexical
-/// query to `Lexical`/`Hybrid`), and an empty result set is a genuine no-match,
-/// not a degradation.
+/// returned results but none carry a positive semantic similarity — empty or
+/// unavailable embedding store. Restricted to `Hybrid`: pure `Semantic` runs
+/// no lexical branch (storage gates the lexical query to `Lexical`/`Hybrid`),
+/// and an empty result set is a genuine no-match, not a degradation.
 fn degraded_to_lexical(mode: SearchMode, no_rows: bool, any_semantic_score: bool) -> bool {
     matches!(mode, SearchMode::Hybrid) && !no_rows && !any_semantic_score
 }

@@ -8,9 +8,9 @@
 //! crate appears here with no edit in this module, and cannot appear here
 //! without appearing on MCP.
 //!
-//! The consequence worth stating: REST grants no authority MCP does not
-//! already grant. A token that cannot call `core_publish` over MCP cannot
-//! call it over REST, because the gate runs below the seam — not beside it.
+//! REST grants no authority MCP does not already grant. A token that
+//! cannot call `core_publish` over MCP cannot call it over REST, because
+//! the gate runs below the seam — not beside it.
 //!
 //! See `docs/17-rest-surface.md`.
 

@@ -650,11 +650,10 @@ fn resolve_tool_scope(
     deny_raw: Option<&str>,
     registered_ids: &[&str],
 ) -> Result<ToolScope, CliError> {
-    // Fail closed. With no PROXIMA_TOOL_PROFILE set,
-    // default to `memory` — which excludes core_publish (irreversible owner
-    // transfer to World) and core_membership — instead of the old `full`
-    // default that advertised those to every token. Operators opt into the
-    // dangerous surface with an explicit PROXIMA_TOOL_PROFILE=full.
+    // Fail closed. With no PROXIMA_TOOL_PROFILE set, default to `memory` —
+    // which excludes core_publish (irreversible owner transfer to World)
+    // and core_membership. Operators opt into the dangerous surface with
+    // an explicit PROXIMA_TOOL_PROFILE=full.
     let profile = match profile_name {
         Some(name) => parse_tool_profile(name)?,
         None => ToolProfile::Memory,
@@ -728,13 +727,10 @@ fn reject_unknown_tool_ids(
 
 /// The OIDC bundle for this process, from the shared facade contract.
 ///
-/// The env parsing itself lives in `proxima::auth` rather than here. It has
-/// to: MCP serving requires an `Authenticator`, the only one that ships is
-/// `proxima-auth-oidc`, and an out-of-tree flavor takes exactly one
-/// dependency on this repository — so a copy that lived only in this binary
-/// meant only in-tree binaries could serve MCP. Two copies of an
-/// access-control contract that could answer differently for the same
-/// variables is the failure mode worth avoiding; this one maps the error.
+/// The env parsing itself lives in `proxima::auth` rather than here. MCP
+/// serving requires an `Authenticator`; the only one that ships is
+/// `proxima-auth-oidc`; an out-of-tree flavor takes exactly one dependency
+/// on this repository. This maps the error.
 fn oidc_from_env(
     lookup: &impl Fn(&str) -> Option<String>,
     owner_access: Arc<dyn OwnerAccessPort>,
@@ -744,13 +740,8 @@ fn oidc_from_env(
 
 /// Build the embedding client from env, or `None` for degraded mode.
 ///
-/// The endpoint is any OpenAI-compatible `/embeddings` service. A hosted one
-/// needs a key; a locally-hosted one (Ollama, llama.cpp, LM Studio, vLLM)
-/// needs only a base URL, which is why the key is not what switches
-/// embeddings on — `PROXIMA_EMBED_BASE_URL` alone is enough. Requiring a key
-/// would mean inventing a fake one to run fully local, and the resulting
-/// `MISTRAL_API_KEY=unused` in a local config is a lie about what the
-/// deployment talks to.
+/// Any OpenAI-compatible `/embeddings` endpoint. Hosted needs a key; local
+/// needs only `PROXIMA_EMBED_BASE_URL`. The key is not the on-switch.
 ///
 /// `MISTRAL_API_KEY` / `MISTRAL_API_BASE` stay accepted as aliases so
 /// existing deployments keep working unchanged.

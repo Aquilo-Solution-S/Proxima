@@ -2,22 +2,16 @@
 //! words for breaking it.
 //!
 //! Blank and oversized are two different mistakes with two different fixes,
-//! and a caller can only act on the one they made. Every length check in the
-//! substrate was written with a single message for both — `title must be
-//! 1..=240 chars` answered a two-space title as readily as a 241-character
-//! one. For the blank case that names a range the input satisfies, which
-//! reads as a server fault rather than an instruction to send content, so the
-//! natural next move is to retry the same request unchanged.
+//! and a caller can only act on the one they made. A single
+//! `title must be 1..=240 chars` names a range a blank title satisfies.
 //!
-//! [`crate::tool::validate_trimmed_len`] fixed that for the tool SDK, but the
-//! SDK sits above `verbs` and cannot be called from it, so `IdempotencyKey`,
-//! `GoalWakeConfigWrite`, and `GoalWriteBuildError` kept the old shape. This
-//! module is deliberately the lowest thing in the crate that any of them can
-//! reach: it depends on nothing, decides only *which* half of the contract
-//! broke, and leaves it to each layer to wrap [`TrimmedLenViolation::reason`]
-//! in whichever error type that layer speaks. That is what lets three error
-//! types refuse the same input in the same words without any of them
-//! depending on the others.
+//! [`crate::tool::validate_trimmed_len`] cannot be called from `verbs`
+//! (SDK sits above). This module is the lowest thing `IdempotencyKey`,
+//! `GoalWakeConfigWrite`, and `GoalWriteBuildError` can reach: it depends
+//! on nothing, decides only *which* half of the contract broke, and leaves
+//! each layer to wrap [`TrimmedLenViolation::reason`] in its own error
+//! type. Three error types refuse the same input in the same words without
+//! depending on each other.
 
 /// Which half of a `1..=max` character contract a value broke.
 ///

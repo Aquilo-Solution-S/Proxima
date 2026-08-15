@@ -190,14 +190,9 @@ async fn lexical_or_rescue_matches_partial_content_words() -> Result<(), Box<dyn
 /// Inside the rescue band, a document that repeats one query word must not
 /// outrank one that contains more distinct query words.
 ///
-/// This is the shape that made lexical search useless on a code corpus.
 /// Cover density rewards a short span holding several query terms, and
-/// repetitive structured data wins that trivially: measured against 4,935
-/// indexed chunks with a real bug report as the query, `ts_rank_cd` put a
-/// documentation page and eight chunks of one `schema.json` on top —
-/// several scoring identically to six decimal places — and never returned
-/// the file the fix touched. Length normalisation is what separates the
-/// two, so the rescue arm ranks with `ts_rank(v, q, 1|32)`.
+/// repetitive structured data wins that trivially. Length normalisation
+/// separates the two, so the rescue arm ranks with `ts_rank(v, q, 1|32)`.
 #[tokio::test]
 async fn rescue_ranks_distinct_terms_above_one_word_repeated()
 -> Result<(), Box<dyn std::error::Error>> {

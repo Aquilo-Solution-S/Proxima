@@ -510,15 +510,11 @@ async fn head_snapshot_repeated_after_change_and_delete_is_idempotent() {
     result.expect("head_snapshot_repeated_after_change_and_delete_is_idempotent failed");
 }
 
-/// Regression: a heavily-churned file can hold
-/// more historical `Present`-state chunk rows than one authorized-read batch
-/// (`MAX_AUTHZ_CANDIDATES` = 2,000). `present_chunk_indexes` must evaluate
-/// EVERY candidate — the pre-fix facade silently truncated the candidate
-/// list at 2,000 in arbitrary scan order, so `derive_deleted_path` skipped
-/// tombstoning any index whose row fell outside the window, leaving stale
-/// Present heads behind after the file was deleted. Chunk memory ids are
-/// deterministic UUIDv5 content hashes (not time-ordered), so no ORDER BY
-/// on the candidate scan could have guaranteed head survival; exhaustive
+/// A heavily-churned file can hold more historical `Present`-state chunk
+/// rows than one authorized-read batch (`MAX_AUTHZ_CANDIDATES` = 2,000).
+/// `present_chunk_indexes` must evaluate every candidate. Chunk memory ids
+/// are deterministic UUIDv5 content hashes (not time-ordered), so no
+/// `ORDER BY` on the candidate scan can guarantee head survival; exhaustive
 /// batched evaluation is the behavior under test.
 #[tokio::test]
 async fn head_snapshot_delete_tombstones_all_indexes_beyond_one_authz_batch() {

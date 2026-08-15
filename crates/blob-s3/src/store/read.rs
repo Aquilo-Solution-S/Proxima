@@ -104,18 +104,6 @@ impl CitedBlobStore {
     }
 }
 
-// There is deliberately NO unit test in this module for the forced
-// attachment disposition. The one that used to exist built its own client,
-// re-issued `.response_content_disposition(...)` and
-// `.response_content_type(...)` itself, and asserted on the string it had
-// just supplied — so deleting both lines from `read_url` left it green, and
-// because every *_pg test skips without `PROXIMA_S3_*`, it was also the ONLY
-// disposition test a bare `cargo test --workspace` ran. It reported a
-// guarantee nothing was checking.
-//
-// A presign built outside `read_url` cannot observe `read_url`'s builder
-// chain, so this property is only assertable through the store. Its carriers
-// are `blob_roundtrip_pg::presigned_put_and_get_carry_the_bytes` (asserts the
-// headers on the actual HTTP response) and
-// `prepare_then_complete_then_read_roundtrip` (asserts the production URL).
-// Both fail if the overrides are removed; this one did not.
+// Forced attachment disposition is only assertable through the store:
+// `blob_roundtrip_pg::presigned_put_and_get_carry_the_bytes` (HTTP headers)
+// and `prepare_then_complete_then_read_roundtrip` (production URL).
