@@ -5,6 +5,8 @@
 Add one typed Fact schema, one sidecar table, one registration path, and one MCP
 tool surface in a host/flavor without violating Proxima invariants.
 
+The compiling host is [`apps/proxima-mcp`](https://github.com/Aquilo-Solution-S/Proxima/blob/main/apps/proxima-mcp); the compiling flavor is [`flavors/code`](https://github.com/Aquilo-Solution-S/Proxima/blob/main/flavors/code).
+
 ## Path
 
 1. [Add a Fact schema](add-first-fact-schema.md)

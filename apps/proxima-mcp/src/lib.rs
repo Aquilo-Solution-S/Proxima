@@ -900,8 +900,8 @@ mod tests {
     /// this test pins it to the registry: adding or removing a core tool
     /// without updating `USAGE` fails here instead of silently drifting.
     /// Flavor tools stay out of the comparison — the static text cannot
-    /// know which optional flavors (e.g. `--features code`) a build
-    /// carries, so it lists the always-present substrate surface only.
+    /// know which optional flavors (e.g. `--no-default-features`) a build
+    /// omits, so it lists the always-present substrate surface only.
     #[test]
     fn usage_tools_section_matches_registry() {
         use proxima_core::mcp::McpToolOrigin;

@@ -57,7 +57,6 @@ def markdown_files() -> list[Path]:
     files.extend(sorted((ROOT / "apps").glob("*/README.md")))
     files.extend(sorted((ROOT / "crates").glob("*/README.md")))
     files.extend(sorted((ROOT / "flavors").glob("*/README.md")))
-    files.extend(sorted((ROOT / "examples").glob("*/README.md")))
     return files
 
 

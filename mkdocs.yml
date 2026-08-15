@@ -29,7 +29,6 @@ nav:
       - Connect an Agent: getting-started/connect-agent.md
   - Tutorials:
       - Run MCP Server: tutorials/run-mcp-server.md
-      - Embedded Minimal: tutorials/embedded-minimal.md
       - Build First Flavor: tutorials/build-first-flavor.md
       - Add First Fact Schema: tutorials/add-first-fact-schema.md
       - Add First MCP Tool: tutorials/add-first-mcp-tool.md

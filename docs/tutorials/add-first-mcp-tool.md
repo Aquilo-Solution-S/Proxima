@@ -10,20 +10,12 @@ an edge.
 
 Do not add runtime registration endpoints.
 
+The compiling witness is `flavors/code/src/mcp/`, served by `apps/proxima-mcp`.
+
 ## Args and Output Types
 
-If you are adding this to `embedded-minimal`, first add the schema/future helper
-crates used by MCP tools:
-
-```toml
-# examples/embedded-minimal/Cargo.toml
-[dependencies]
-futures = { workspace = true }
-schemars = { workspace = true }
-```
-
-Then define an args type with `Deserialize` and `JsonSchema`, and an output type with
-`Serialize`:
+Flavor crates already depend on `futures` and `schemars`. Define an args type
+with `Deserialize` and `JsonSchema`, and an output type with `Serialize`:
 
 ```rust
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -52,8 +44,8 @@ use proxima::flavor::{McpTool, McpToolCtx, McpToolError};
 pub struct ExampleLookupTool;
 
 impl McpTool for ExampleLookupTool {
-    const NAME: &'static str = "embedded-minimal_lookup";
-    const DESCRIPTION: &'static str = "Look up an embedded-minimal example row.";
+    const NAME: &'static str = "my-flavor_lookup";
+    const DESCRIPTION: &'static str = "Look up a my-flavor example row.";
 
     type Args = ExampleLookupArgs;
     type Output = ExampleLookupOutput;
@@ -70,9 +62,9 @@ impl McpTool for ExampleLookupTool {
     }
 }
 
-proxima_core::proxima_flavor! {
-    name = "embedded-minimal",
-    display_name = "Embedded Minimal Example",
+proxima::flavor::proxima_flavor! {
+    name = "my-flavor",
+    display_name = "My Flavor",
     fact_schemas = [DocumentFiledV1],
     abstraction_schemas = [],
     perspective_schemas = [],
@@ -83,6 +75,9 @@ proxima_core::proxima_flavor! {
 
 Flavor MCP tool names use provider-safe `<flavor>_<tool>` names.
 
+In-repo, add the tool under `flavors/code/src/mcp/` and list it in
+`mcp_tools` in `flavors/code/src/lib.rs`.
+
 ## Use Strict Action Dispatch Only When Needed
 
 Most tools should use one plain args struct. Use an internally tagged action enum
@@ -92,18 +87,12 @@ are flattened for client compatibility and validate allowed fields strictly; see
 
 ## Verify With tools/list and proxima://tools
 
-First verify the flavor compiles:
-
 ```sh
-cargo check -p embedded-minimal
+cargo check -p proxima-code
+cargo run -p proxima-mcp
 ```
 
-`embedded-minimal` is an embedded host example, not an MCP listener. To verify a
-new flavor tool through `tools/list`, run a binary that actually composes the
-flavor with the MCP server transport; the stock `proxima-mcp` binary does not
-include `embedded-minimal`.
-
-From that composed MCP host:
+The stock host links the code flavor by default. From that MCP server:
 
 1. Call `tools/list`.
 2. Read `proxima://tools`.

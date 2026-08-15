@@ -41,14 +41,14 @@ flavors/<name>/
   tests/
 ```
 
-Out-of-tree flavor:
+Out-of-tree flavor (host-colocated; no in-repo crate):
 
 ```
 src/flavor.rs
 migrations/
 ```
 
-Reference: `examples/embedded-minimal/src/flavor.rs`.
+Compiling witnesses: `flavors/code` (flavor crate) and `apps/proxima-mcp` (host).
 
 ## Build Order
 
@@ -82,7 +82,7 @@ Facts:
 
 ```rust
 impl FactPayload for DocumentFiledV1 {
-    const SCHEMA_ID: &'static str = "embedded-minimal/document-filed-v1";
+    const SCHEMA_ID: &'static str = "my-flavor/document-filed-v1";
     const SCHEMA_VERSION: u32 = 1;
 
     fn receipt_key(&self) -> Vec<u8> {
@@ -96,7 +96,7 @@ impl FactPayload for DocumentFiledV1 {
     }
 
     fn sidecar_table() -> Option<&'static str> {
-        Some("embedded_minimal.document_filed_v1")
+        Some("my_flavor.document_filed_v1")
     }
 }
 ```
@@ -475,12 +475,12 @@ messages; use typed `InlineCitedObjectDraft` +
 
 ## Registry
 
-`src/lib.rs`:
+`src/lib.rs` (in-repo witness: `flavors/code/src/lib.rs`):
 
 ```rust
 proxima::flavor::proxima_flavor! {
-    name = "embedded-minimal",
-    display_name = "Embedded Minimal Example",
+    name = "my-flavor",
+    display_name = "My Flavor",
     fact_schemas = [DocumentFiledV1],
     abstraction_schemas = [],
     perspective_schemas = [],
@@ -496,12 +496,12 @@ Register every schema exactly once. There is no `relations` or
 
 ## FlavorBundle
 
-One public bundle type per flavor:
+One public bundle type per flavor (in-repo: `CodeFlavor` in `flavors/code/src/lib.rs`):
 
 ```rust
-pub struct EmbeddedMinimalFlavor;
+pub struct MyFlavor;
 
-impl FlavorBundle for EmbeddedMinimalFlavor {
+impl FlavorBundle for MyFlavor {
     fn register(registry: &mut FlavorRegistry) -> Result<(), FlavorRegistryError> {
         self::register(registry)
     }
@@ -511,7 +511,7 @@ impl FlavorBundle for EmbeddedMinimalFlavor {
     }
 
     fn migrators() -> Vec<NamedMigrator> {
-        vec![NamedMigrator::new("embedded-minimal", migrator())]
+        vec![NamedMigrator::new("my-flavor", migrator())]
     }
 }
 ```
@@ -812,8 +812,8 @@ Minimum:
 | References | `references()` yields one index row per declaration, and a replay re-asserts the same rows |
 | MCP tool | tool emits/reads typed payloads |
 
-Use `examples/embedded-minimal` for the smallest shape and
-`flavors/code` for full Fact/A/P/reference/MCP coverage.
+Use `flavors/code` for Fact/A/P/reference/MCP coverage and
+`apps/proxima-mcp` for the host that serves it.
 
 ## Verification
 

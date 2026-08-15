@@ -1,7 +1,8 @@
 //! End-to-end multi-owner MCP serving against real Postgres.
 //!
-//! Requires `PROXIMA_TEST_DATABASE_URL`; skips cleanly otherwise. Built with
-//! `--features code` so the production `ProximaMcpApp` bundle is exercised.
+//! Requires `PROXIMA_TEST_DATABASE_URL`; skips cleanly otherwise. Built when
+//! the `code` feature is on (the host default) so the production
+//! `ProximaMcpApp` bundle is exercised.
 #![cfg(feature = "code")]
 
 mod common;

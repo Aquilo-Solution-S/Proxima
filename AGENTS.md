@@ -27,7 +27,7 @@ explicit request.
 | `docs/05-actions.md` | Actions as ordinary Facts; wake/tool boundary |
 | `docs/06-goals-and-self.md` | Goal entity (DAG, supersession); Self as pure query |
 | `docs/07-storage.md` | IDs, identity rules, append-only, vector store independence |
-| `docs/08-core-and-flavors.md` | Bare core / flavor layering; `proxima-mcp` default-off `code` packaging feature |
+| `docs/08-core-and-flavors.md` | Bare core / flavor layering; `proxima-mcp` default-on `code` packaging feature |
 | `docs/09-developing-flavors.md` | Agent implementation checklist for flavor crates: typed keys, sidecars, registration, migrations, tools |
 | `docs/10-configuration.md` | Env config surface (Postgres/MCP/S3), MCP auth modes, host-injected embedding client; no inference targets/tiers |
 | `docs/11-citations.md` | `CitedObject` / `CitationMapping` traits; bibliographic provenance, the Fact ∪ Abstraction citation rule |
@@ -42,7 +42,7 @@ explicit request.
 ```
 proxima/
 ├── apps/
-│   └── proxima-mcp/         Rust headless MCP host binary (goal)
+│   └── proxima-mcp/         canonical MCP host (code flavor default-on)
 ├── crates/
 │   ├── auth-oidc/           Rust OIDC JWT authenticator crate
 │   ├── blob-s3/             Rust S3 cited-blob service crate
@@ -54,9 +54,8 @@ proxima/
 │   └── storage-pg/          Rust Postgres storage crate
 ├── flavors/
 │   └── code/                Rust code flavor crate
-├── examples/
-│   └── embedded-minimal/    canonical host-binary embedding example
 ├── tools/
+│   ├── dev-idp/             loopback OIDC issuer for local MCP
 │   └── dev-migrate/         headless substrate+flavor migration runner (dev DB bootstrap)
 ├── docs/                    design rationale + commentary
 │   └── lean/                **Lean kernel — THE source of truth** (see below)
@@ -131,11 +130,11 @@ Use the smallest relevant check:
 still works as fallback. PG tests clone a pre-migrated template DB.
 Single-test selection: `cargo nextest run -E 'test(<name>)'`.
 
-`--workspace` does **not** cover everything: `apps/proxima-mcp`'s OIDC e2e
-suite is `#![cfg(feature = "code")]` and needs
-`cargo test -p proxima-mcp --features code`. It is the only end-to-end
-assertion on the served Code-flavor tool list, so touching the flavor's
-`mcp_tools` without it passes locally and fails in CI.
+`cargo nextest run --workspace` covers `apps/proxima-mcp` OIDC e2e (code
+flavor is the host default). REST still needs
+`cargo nextest run -p proxima-mcp --features rest --test oidc_e2e`.
+Substrate-only: `--no-default-features`. Touching the flavor's `mcp_tools`
+without the host e2e passes the flavor crate and fails the served tool list.
 
 ## Delegated agents (Codex / Vibe execution runs)
 
