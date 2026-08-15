@@ -1,0 +1,15 @@
+{
+  "name": "Proxima",
+  "install": ".cursor/install.sh",
+  "start": ".cursor/start.sh",
+  "terminals": [
+    {
+      "name": "dev-idp",
+      "command": ".cursor/run-dev-idp.sh"
+    },
+    {
+      "name": "proxima-mcp",
+      "command": ".cursor/run-mcp.sh"
+    }
+  ]
+}
