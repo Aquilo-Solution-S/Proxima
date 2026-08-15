@@ -41,6 +41,8 @@ pub use error::map_err;
 mod pg_ident;
 mod pgvector;
 mod ports;
+#[cfg(any(test, feature = "test-fixtures", debug_assertions))]
+pub use ports::neighbor_memory_edges_sql_for_tests;
 pub mod sidecars;
 pub mod query {
     pub use crate::verbs::query::{

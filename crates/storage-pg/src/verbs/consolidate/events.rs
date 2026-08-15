@@ -83,6 +83,10 @@ pub async fn list_change_events_after(
     let (world_kind, world_id) =
         crate::access::owner_columns::owner_binds(&proxima_core::access::world());
     let edge_visibility = edge_event_visibility_predicate(1, 2, 5, 6);
+    // Plain `=` on ce.owner_id here and in the replay read below: the
+    // change_event CHECKs prove the column is never NULL, so `=` selects
+    // exactly what IS NOT DISTINCT FROM did while staying an index
+    // condition (sql-sweep S6).
     // Commit-safety horizon (opt-in via COMMIT_GRACE_ENV). When set, bind it
     // as $7 and only return events stamped before `now - grace`.
     let horizon = commit_horizon_seq(now_unix_ms(), configured_commit_grace());
@@ -98,7 +102,7 @@ pub async fn list_change_events_after(
                 SELECT 1
                   FROM unnest($1::proxima_core.owner_ref_kind[], $2::uuid[]) AS s(kind, id)
                  WHERE ce.owner_kind = s.kind
-                   AND ce.owner_id IS NOT DISTINCT FROM s.id
+                   AND ce.owner_id = s.id
              )
                AND ce.seq > $3
                {horizon_clause}
@@ -165,7 +169,7 @@ pub async fn list_change_events_for_replay(
                 SELECT 1
                   FROM unnest($1::proxima_core.owner_ref_kind[], $2::uuid[]) AS s(kind, id)
                  WHERE ce.owner_kind = s.kind
-                   AND ce.owner_id IS NOT DISTINCT FROM s.id
+                   AND ce.owner_id = s.id
              )
                AND ce.seq > $3
                AND ($4::uuid IS NULL OR ce.seq <= $4)

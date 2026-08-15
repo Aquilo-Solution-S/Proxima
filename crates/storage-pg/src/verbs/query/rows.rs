@@ -12,7 +12,7 @@ use crate::pg_ident::PgIdent;
 use crate::verbs::consolidate::edge_event_visibility_predicate;
 use crate::verbs::edge_index::{PgEndpointKind, endpoint_from_columns};
 
-use super::read_owner_predicate;
+use super::read_owner_equality_predicate;
 
 pub(super) fn memory_row_from_db(
     r: MemoryRowDb,
@@ -140,18 +140,7 @@ pub(crate) async fn read_seq_high_water(
 ) -> Result<Option<uuid::Uuid>, StorageError> {
     let (world_kind, world_id) =
         crate::access::owner_columns::owner_binds(&proxima_core::access::world());
-    let edge_visibility = edge_event_visibility_predicate(1, 2, 3, 4);
-    let sql = format!(
-        r"SELECT ce.seq FROM proxima_core.change_event ce
-         WHERE EXISTS (
-             SELECT 1
-               FROM unnest($1::proxima_core.owner_ref_kind[], $2::uuid[]) AS s(kind, id)
-              WHERE {read_owner_predicate}
-         )
-           AND {edge_visibility}
-         ORDER BY ce.seq DESC LIMIT 1",
-        read_owner_predicate = read_owner_predicate("ce", "s"),
-    );
+    let sql = read_seq_high_water_sql();
     // SQL-POLICY: fixed-fragment
     let row: Option<(uuid::Uuid,)> = sqlx::query_as(sqlx::AssertSqlSafe(sql))
         .bind(read_owner_kinds)
@@ -162,6 +151,43 @@ pub(crate) async fn read_seq_high_water(
         .await
         .map_err(map_err)?;
     Ok(row.map(|(v,)| v))
+}
+
+/// The high-water statement. `$1`/`$2` are the read owner arrays;
+/// `$3`/`$4` are the World owner columns the edge-event visibility probe
+/// binds.
+///
+/// One top-1 probe of `idx_change_event_owner_seq` per read owner, merged
+/// by a top-1 over the arms (sql-sweep S6). What this replaced filtered a
+/// whole-table `ORDER BY seq DESC` walk through an `EXISTS` over the read
+/// set, which no index prefix can serve. Same maximum: that filter admits
+/// exactly the rows some read owner matches (`change_event`'s CHECKs make
+/// `ce.owner_id` never NULL, so the World member matches nothing either
+/// way), and the max over a union is the max of the per-member maxima.
+fn read_seq_high_water_sql() -> String {
+    let edge_visibility = edge_event_visibility_predicate(1, 2, 3, 4);
+    format!(
+        r"SELECT hw.seq
+         FROM unnest($1::proxima_core.owner_ref_kind[], $2::uuid[]) AS s(kind, id)
+         JOIN LATERAL (
+             SELECT ce.seq FROM proxima_core.change_event ce
+              WHERE {read_owner_predicate}
+                AND {edge_visibility}
+              ORDER BY ce.seq DESC LIMIT 1
+         ) hw ON TRUE
+         ORDER BY hw.seq DESC LIMIT 1",
+        read_owner_predicate = read_owner_equality_predicate("ce", "s"),
+    )
+}
+
+/// Emit the exact high-water statement [`read_seq_high_water`] would run —
+/// the golden-pin surface, compiled only for tests.
+/// Same cfg gate as the search `*_sql_for_tests` exports.
+#[cfg(any(test, feature = "test-fixtures", debug_assertions))]
+#[doc(hidden)]
+#[must_use]
+pub fn read_seq_high_water_sql_for_tests() -> String {
+    read_seq_high_water_sql()
 }
 
 /// Validate identifiers from `StatefulHeadsFilter` before splicing them

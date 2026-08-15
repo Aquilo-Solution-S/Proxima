@@ -8,6 +8,8 @@ mod tests;
 mod text;
 mod write;
 
+#[cfg(any(test, feature = "test-fixtures", debug_assertions))]
+pub use jobs::claim_embedding_jobs_sql_for_tests;
 pub(crate) use jobs::enqueue_embedding_job_in_tx;
 pub use jobs::{
     claim_pending_embedding_jobs, complete_embedding_job, count_embedding_job_status,

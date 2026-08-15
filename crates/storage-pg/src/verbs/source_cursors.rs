@@ -17,11 +17,14 @@ pub(crate) async fn load_source_cursor(
     source: &str,
 ) -> Result<Option<Cursor>, StorageError> {
     let (owner_kind, owner_id) = owner.columns();
+    // `source_cursors.owner_id` is NOT NULL in the schema, so `=` is exactly
+    // `IS NOT DISTINCT FROM` here and below while keeping the pkey usable
+    // (sql-sweep S7; PostgreSQL has no index strategy for DistinctExpr).
     let row: Option<Vec<u8>> = sqlx::query_scalar(
         "SELECT cursor
            FROM proxima_core.source_cursors
           WHERE owner_kind = $1
-            AND owner_id IS NOT DISTINCT FROM $2
+            AND owner_id = $2
             AND source = $3",
     )
     .bind(owner_kind)
@@ -80,7 +83,7 @@ pub(crate) async fn source_cursor_age(
         "SELECT updated_at
            FROM proxima_core.source_cursors
           WHERE owner_kind = $1
-            AND owner_id IS NOT DISTINCT FROM $2
+            AND owner_id = $2
             AND source = $3",
     )
     .bind(owner_kind)

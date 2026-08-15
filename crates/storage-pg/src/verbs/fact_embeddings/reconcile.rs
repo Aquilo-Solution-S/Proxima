@@ -8,7 +8,7 @@ use super::jobs::claim_pending_embedding_jobs_excluding;
 use super::{
     complete_embedding_job, ensure_nonnegative_limit, fail_embedding_job,
     fail_embedding_job_permanently, insert_embedding_chunks, insert_memory_embedding,
-    load_embedding_text,
+    load_embedding_text, release_embedding_jobs,
 };
 
 pub use proxima_core::{
@@ -38,10 +38,7 @@ WHERE NULLIF(btrim(m.text), '') IS NOT NULL
         AND m.tombstoned_at IS NULL
         AND (
             m.kind IS NULL
-            OR m.kind IN (
-                'Abstraction'::proxima_core.entity_kind,
-                'Perspective'::proxima_core.entity_kind
-            )
+            OR m.kind IN ('Abstraction', 'Perspective')
         )
         AND ($3::text <> 'since' OR m.created_at >= $4)
         -- Declined a vector rather than lacking one; see
@@ -70,8 +67,7 @@ WHERE NULLIF(btrim(m.text), '') IS NOT NULL
                AND j.entity_id = s.memory_id
                AND j.model_id = $1
                AND j.embedding_version = COALESCE(s.head_version + 1, 1)
-               AND j.status IN ('pending'::proxima_core.embedding_job_status,
-                                'processing'::proxima_core.embedding_job_status)
+               AND j.status IN ('pending', 'processing')
         )
  ),
  limited AS MATERIALIZED (
@@ -89,12 +85,12 @@ WHERE NULLIF(btrim(m.text), '') IS NOT NULL
        FROM limited
      ON CONFLICT (owner_kind, owner_id,
                   entity_kind, entity_id, model_id, embedding_version)
-     DO UPDATE SET status = 'pending'::proxima_core.embedding_job_status,
+     DO UPDATE SET status = 'pending',
                    attempts = 0,
                    last_error = NULL,
                    next_attempt_at = now(),
                    updated_at = now()
-         WHERE embedding_jobs.status = 'failed'::proxima_core.embedding_job_status
+         WHERE embedding_jobs.status = 'failed'
            -- Permanently rejected inputs (PERMANENT_EMBED_FAILURE_MARKER)
            -- stay terminal: requeueing them would only re-poison the queue.
            AND (embedding_jobs.last_error IS NULL
@@ -163,6 +159,15 @@ pub async fn reconcile_embeddings(
 
 /// Drain queued embedding jobs inline for one embedding client.
 ///
+/// Claims the whole batch in one statement, the way the engine batch drain
+/// always has. This used to claim `limit = 1` per iteration while excluding
+/// the entities it had already processed, which is O(backlog sort × jobs)
+/// plus O(n²) exclusion-array compares (sql-sweep S2). Every processed job
+/// leaves a state (`deleted`, `failed`, or backoff-gated `pending`) the
+/// claim cannot re-claim, so the exclusion list's only remaining work —
+/// skipping a second queued version of an entity already embedded this
+/// drain — moves to the shared drain's duplicate release.
+///
 /// # Errors
 ///
 /// Returns storage errors from claiming, embedding row writes, or final
@@ -174,37 +179,68 @@ pub async fn drain_embedding_jobs_inline(
     limit: i64,
 ) -> Result<EmbeddingInlineDrainOutcome, StorageError> {
     let limit = ensure_nonnegative_limit(limit)?;
+    let claims =
+        claim_pending_embedding_jobs_excluding(pool, client.model_id(), limit, &[]).await?;
+    drain_claimed_jobs(pool, client, claims).await
+}
+
+/// Process one claimed batch: each entity's first claim embeds, and a
+/// second claimed job for an entity already handled this drain (two queued
+/// `embedding_version`s of one entity) is released back to `pending`
+/// unprocessed — the per-iteration path's exclusion list kept such a job
+/// unclaimed, and embedding it again would only mint an identical extra
+/// version.
+async fn drain_claimed_jobs(
+    pool: &PgPool,
+    client: &dyn EmbeddingClient,
+    claims: Vec<EmbeddingJobClaim>,
+) -> Result<EmbeddingInlineDrainOutcome, StorageError> {
     let mut outcome = EmbeddingInlineDrainOutcome::default();
     let mut processed_entity_ids = Vec::new();
-    for _ in 0..limit {
-        let Some(claim) = claim_pending_embedding_jobs_excluding(
+    let mut duplicates = Vec::new();
+    for claim in claims {
+        if processed_entity_ids.contains(&claim.entity_id) {
+            duplicates.push(claim);
+            continue;
+        }
+        processed_entity_ids.push(claim.entity_id);
+        outcome = drain_one_claim(pool, client, &claim, outcome).await?;
+    }
+    if !duplicates.is_empty() {
+        release_embedding_jobs(
             pool,
-            client.model_id(),
-            1,
-            &processed_entity_ids,
+            &duplicates,
+            "released unprocessed: entity already embedded by this drain batch",
         )
-        .await?
-        .into_iter()
-        .next() else {
-            break;
-        };
-        processed_entity_ids.push(claim.entity_id.into_inner());
-        match embed_claim(pool, client, &claim).await {
-            Ok(true) => {
-                complete_embedding_job(pool, &claim).await?;
-                outcome.embedded += 1;
-            }
-            Ok(false) => {
-                complete_embedding_job(pool, &claim).await?;
-            }
-            Err(EmbedClaimFailure::Permanent(message)) => {
-                outcome.failed += 1;
-                fail_embedding_job_permanently(pool, &claim, &message).await?;
-            }
-            Err(EmbedClaimFailure::Retryable(err)) => {
-                outcome.failed += 1;
-                fail_embedding_job(pool, &claim, &err.to_string()).await?;
-            }
+        .await?;
+    }
+    Ok(outcome)
+}
+
+/// Embed one claim and record its terminal job state, counting the result
+/// into `outcome`. Shared by both drain shapes so the flag can only change
+/// how jobs are claimed, never what happens to a claimed job.
+async fn drain_one_claim(
+    pool: &PgPool,
+    client: &dyn EmbeddingClient,
+    claim: &EmbeddingJobClaim,
+    mut outcome: EmbeddingInlineDrainOutcome,
+) -> Result<EmbeddingInlineDrainOutcome, StorageError> {
+    match embed_claim(pool, client, claim).await {
+        Ok(true) => {
+            complete_embedding_job(pool, claim).await?;
+            outcome.embedded += 1;
+        }
+        Ok(false) => {
+            complete_embedding_job(pool, claim).await?;
+        }
+        Err(EmbedClaimFailure::Permanent(message)) => {
+            outcome.failed += 1;
+            fail_embedding_job_permanently(pool, claim, &message).await?;
+        }
+        Err(EmbedClaimFailure::Retryable(err)) => {
+            outcome.failed += 1;
+            fail_embedding_job(pool, claim, &err.to_string()).await?;
         }
     }
     Ok(outcome)

@@ -9,6 +9,99 @@ use crate::error::map_err;
 
 use super::{ensure_nonnegative_limit, owner_parts};
 
+/// Claim jobs through one ordered, arm-matched scan per status arm —
+/// each riding its own partial index (`idx_embedding_jobs_pending_claim` /
+/// `idx_embedding_jobs_processing_reclaim`, migration 0018) — merged by
+/// UNION ALL and re-limited (sql-sweep S2).
+///
+/// What this replaced was a single scan whose `WHERE` was a two-arm status
+/// `OR` over the whole claimable backlog. No index carries `model_id` and
+/// the `OR` defeats ordered index use, so every claim sorted the entire
+/// backlog: 3,090 buffers / 37.6 ms to claim ONE job on a 200k-row queue,
+/// against 6 buffers / 0.040 ms here.
+///
+/// Row selection is unchanged. A status is exactly one of the two arm
+/// values, so the arms partition the `OR` and cannot overlap, and any row
+/// in the merged top-`$3` is necessarily in its own arm's top-`$3`. Each
+/// arm locks up to `$3` rows (`FOR UPDATE` sits in the arm sub-selects
+/// because `PostgreSQL` rejects a locking clause applied to a UNION
+/// itself); rows locked by the losing arm but not claimed are released with
+/// the statement's transaction. Prior art: `PostgreSQL` docs §11.8 (partial
+/// indexes), §13.3.3 (`FOR UPDATE SKIP LOCKED` queue claims), and the
+/// SELECT reference (locking clauses in sub-SELECTs).
+const CLAIM_EMBEDDING_JOBS_SQL: &str = "WITH claimed AS (
+             SELECT owner_kind, owner_id,
+                    entity_kind, entity_id, model_id, embedding_version
+               FROM (
+                    SELECT * FROM (
+                        SELECT owner_kind, owner_id,
+                               entity_kind, entity_id, model_id,
+                               embedding_version, enqueued_at
+                          FROM proxima_core.embedding_jobs
+                         WHERE model_id = $1
+                           AND status = 'pending'
+                           AND (next_attempt_at IS NULL OR next_attempt_at <= now())
+                           AND NOT (entity_id = ANY($2::uuid[]))
+                         ORDER BY enqueued_at ASC,
+                                  owner_kind ASC,
+                                  owner_id ASC,
+                                  entity_kind ASC,
+                                  entity_id ASC,
+                                  embedding_version ASC
+                         FOR UPDATE SKIP LOCKED
+                         LIMIT $3
+                    ) pending_arm
+                    UNION ALL
+                    SELECT * FROM (
+                        SELECT owner_kind, owner_id,
+                               entity_kind, entity_id, model_id,
+                               embedding_version, enqueued_at
+                          FROM proxima_core.embedding_jobs
+                         WHERE model_id = $1
+                           AND status = 'processing'
+                           AND updated_at < now() - interval '15 minutes'
+                           AND NOT (entity_id = ANY($2::uuid[]))
+                         ORDER BY enqueued_at ASC,
+                                  owner_kind ASC,
+                                  owner_id ASC,
+                                  entity_kind ASC,
+                                  entity_id ASC,
+                                  embedding_version ASC
+                         FOR UPDATE SKIP LOCKED
+                         LIMIT $3
+                    ) reclaim_arm
+               ) arms
+              ORDER BY enqueued_at ASC,
+                       owner_kind ASC,
+                       owner_id ASC,
+                       entity_kind ASC,
+                       entity_id ASC,
+                       embedding_version ASC
+              LIMIT $3
+         )
+         UPDATE proxima_core.embedding_jobs j
+            SET status = 'processing',
+                updated_at = now()
+           FROM claimed
+          WHERE j.owner_kind = claimed.owner_kind
+            AND j.owner_id = claimed.owner_id
+            AND j.entity_kind = claimed.entity_kind
+            AND j.entity_id = claimed.entity_id
+            AND j.model_id = claimed.model_id
+            AND j.embedding_version = claimed.embedding_version
+        RETURNING j.owner_kind, j.owner_id,
+                  j.entity_kind, j.entity_id, j.model_id, j.embedding_version,
+                  j.attempts";
+
+/// The claim statement, for EXPLAIN-based plan guards. Same cfg gate as
+/// `search.rs`'s `*_sql_for_tests` exports.
+#[cfg(any(test, feature = "test-fixtures", debug_assertions))]
+#[doc(hidden)]
+#[must_use]
+pub fn claim_embedding_jobs_sql_for_tests() -> &'static str {
+    CLAIM_EMBEDDING_JOBS_SQL
+}
+
 #[derive(sqlx::FromRow)]
 struct EmbeddingJobClaimRow {
     owner_kind: OwnerRefKind,
@@ -54,18 +147,11 @@ pub async fn list_facts_missing_embedding(
     let (owner_kind, owner_id) = owner_parts(owner);
     let limit = i64::try_from(limit)
         .map_err(|_| StorageError::ConstraintViolation("limit too large".into()))?;
-    // SQL-POLICY: fixed-fragment — the only interpolation is the shared
-    // entity-owner-union constant; every value is bound.
-    let rows = sqlx::query_scalar::<_, uuid::Uuid>(sqlx::AssertSqlSafe(format!(
+    let rows = sqlx::query_scalar::<_, uuid::Uuid>(
         "SELECT m.memory_id
            FROM proxima_core.memories m
-          WHERE EXISTS (
-                    SELECT 1
-                      FROM {eo_union} eo
-                     WHERE eo.entity_id = m.memory_id
-                       AND eo.owner_kind = $1
-                       AND eo.owner_id = $2
-)
+          WHERE m.owner_kind = $1
+            AND m.owner_id = $2
             AND m.kind IS NULL
             AND m.text IS NOT NULL
             -- Declined a vector rather than lacking one; see
@@ -82,8 +168,7 @@ pub async fn list_facts_missing_embedding(
             )
           ORDER BY m.created_at ASC, m.memory_id ASC
           LIMIT $4",
-        eo_union = crate::verbs::query::entity_owner_union(),
-    )))
+    )
     .bind(owner_kind)
     .bind(owner_id)
     .bind(model_id)
@@ -105,13 +190,12 @@ pub async fn list_facts_missing_embedding(
 /// reclaimed after fifteen minutes regardless of backoff. The window MUST
 /// exceed the embedding client's request timeout (the OpenAI-compat default,
 /// `crates/llm-openai-compat/src/openai_compat.rs` `DEFAULT_EMBED_TIMEOUT`).
-/// Inline drainers call
-/// this with `limit = 1` in a loop, so a claimed row is actively processed
-/// immediately and cannot age past the reclaim window behind earlier jobs in
-/// the same batch. The claim `UPDATE` resets `updated_at = now()`, so a
-/// reclaimed orphan restarts its clock. Reclaim does not increment attempts;
-/// crash-loop poison-pill bounding is out of scope, while embed-error retries
-/// still go through `fail_embedding_job`.
+/// Both drainers claim their whole batch in one statement, so the window
+/// must exceed the batch's worst-case wall time rather than one job's. The
+/// claim `UPDATE` resets `updated_at = now()`, so a reclaimed orphan
+/// restarts its clock. Reclaim does not increment attempts; crash-loop
+/// poison-pill bounding is out of scope, while embed-error retries still go
+/// through `fail_embedding_job`.
 ///
 /// # Errors
 ///
@@ -135,47 +219,15 @@ pub(super) async fn claim_pending_embedding_jobs_excluding(
     if limit == 0 {
         return Ok(Vec::new());
     }
-    let rows = sqlx::query_as::<_, EmbeddingJobClaimRow>(
-        "WITH claimed AS (
-             SELECT owner_kind, owner_id,
-                    entity_kind, entity_id, model_id, embedding_version
-               FROM proxima_core.embedding_jobs
-              WHERE model_id = $1
-                AND (
-                     (status = 'pending'
-                         AND (next_attempt_at IS NULL OR next_attempt_at <= now()))
-                     OR (status = 'processing'
-                         AND updated_at < now() - interval '15 minutes'))
-                AND NOT (entity_id = ANY($2::uuid[]))
-              ORDER BY enqueued_at ASC,
-                       owner_kind ASC,
-                       owner_id ASC,
-                       entity_kind ASC,
-                       entity_id ASC,
-                       embedding_version ASC
-              FOR UPDATE SKIP LOCKED
-              LIMIT $3
-         )
-         UPDATE proxima_core.embedding_jobs j
-            SET status = 'processing',
-                updated_at = now()
-           FROM claimed
-          WHERE j.owner_kind = claimed.owner_kind
-            AND j.owner_id = claimed.owner_id
-            AND j.entity_kind = claimed.entity_kind
-            AND j.entity_id = claimed.entity_id
-            AND j.model_id = claimed.model_id
-            AND j.embedding_version = claimed.embedding_version
-        RETURNING j.owner_kind, j.owner_id,
-                  j.entity_kind, j.entity_id, j.model_id, j.embedding_version,
-                  j.attempts",
-    )
-    .bind(model_id)
-    .bind(exclude_entity_ids)
-    .bind(limit)
-    .fetch_all(pool)
-    .await
-    .map_err(map_err)?;
+    // SQL-POLICY: fixed-fragment — the compile-time claim constant above;
+    // every value is bound.
+    let rows = sqlx::query_as::<_, EmbeddingJobClaimRow>(CLAIM_EMBEDDING_JOBS_SQL)
+        .bind(model_id)
+        .bind(exclude_entity_ids)
+        .bind(limit)
+        .fetch_all(pool)
+        .await
+        .map_err(map_err)?;
     Ok(rows.into_iter().map(EmbeddingJobClaim::from).collect())
 }
 
@@ -284,7 +336,7 @@ pub async fn fail_embedding_job_permanently(
             SET attempts = attempts + 1,
                 last_error = $7,
                 updated_at = now(),
-                status = 'failed'::proxima_core.embedding_job_status
+                status = 'failed'
           WHERE owner_kind = $1
             AND owner_id = $2
             AND entity_kind = $3
@@ -325,7 +377,7 @@ pub async fn release_embedding_jobs(
         let (owner_kind, owner_id) = owner_parts(&claim.owner);
         sqlx::query(
             "UPDATE proxima_core.embedding_jobs
-                SET status = 'pending'::proxima_core.embedding_job_status,
+                SET status = 'pending',
                     last_error = $7,
                     updated_at = now(),
                     next_attempt_at = now() + interval '30 seconds'
@@ -370,20 +422,13 @@ pub async fn enqueue_missing_embedding_jobs(
         return Ok(0);
     }
     let (owner_kind, owner_id) = owner_parts(permit.owner());
-    // SQL-POLICY: fixed-fragment — the only interpolation is the shared
-    // entity-owner-union constant; every value is bound.
-    let result = sqlx::query(sqlx::AssertSqlSafe(format!(
+    let result = sqlx::query(
         "WITH missing AS (
              SELECT m.memory_id,
                     COALESCE(m.kind, 'Fact'::proxima_core.entity_kind) AS entity_kind
                FROM proxima_core.memories m
-              WHERE EXISTS (
-                        SELECT 1
-                          FROM {eo_union} eo
-                         WHERE eo.entity_id = m.memory_id
-                           AND eo.owner_kind = $1
-                           AND eo.owner_id = $2
-)
+              WHERE m.owner_kind = $1
+                AND m.owner_id = $2
                 -- Facts (kind IS NULL) plus derived memories. Derived rows
                 -- belong here because a flavor can materialize Abstractions
                 -- through its own sidecar path without an embedding client in
@@ -393,10 +438,7 @@ pub async fn enqueue_missing_embedding_jobs(
                 -- scans, owner-scoped.
                 AND (
                     m.kind IS NULL
-                    OR m.kind IN (
-                        'Abstraction'::proxima_core.entity_kind,
-                        'Perspective'::proxima_core.entity_kind
-                    )
+                    OR m.kind IN ('Abstraction', 'Perspective')
                 )
                 AND m.text IS NOT NULL
                 -- See `FactPayload::EMBEDDABLE`. Gating only the inline
@@ -423,8 +465,7 @@ pub async fn enqueue_missing_embedding_jobs(
          ON CONFLICT (owner_kind, owner_id,
                       entity_kind, entity_id, model_id, embedding_version)
          DO NOTHING",
-        eo_union = crate::verbs::query::entity_owner_union(),
-    )))
+    )
     .bind(owner_kind)
     .bind(owner_id)
     .bind(model_id)
@@ -564,4 +605,106 @@ pub(crate) async fn enqueue_embedding_job_in_tx(
     .await
     .map_err(map_err)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The claim is one statement: it exists to hand a drainer work in a
+    /// single round trip.
+    #[test]
+    fn claiming_is_a_single_statement() {
+        assert!(!CLAIM_EMBEDDING_JOBS_SQL.contains(';'));
+    }
+
+    /// Golden text: the claim is pinned per arm, so an edit to either
+    /// ordered scan is a deliberate change to this test as well.
+    #[test]
+    fn the_claim_sql_is_pinned() {
+        assert_eq!(CLAIM_EMBEDDING_JOBS_SQL, CLAIM_GOLDEN);
+    }
+
+    /// The claim must partition, not re-join, the status OR: each arm names
+    /// exactly one status, so the two partial claim indexes each have an arm
+    /// shaped to reach them.
+    #[test]
+    fn the_claim_names_one_status_per_arm() {
+        assert_eq!(
+            CLAIM_EMBEDDING_JOBS_SQL
+                .matches("AND status = 'pending'")
+                .count(),
+            1
+        );
+        assert_eq!(
+            CLAIM_EMBEDDING_JOBS_SQL
+                .matches("AND status = 'processing'")
+                .count(),
+            1
+        );
+    }
+
+    const CLAIM_GOLDEN: &str = r"WITH claimed AS (
+             SELECT owner_kind, owner_id,
+                    entity_kind, entity_id, model_id, embedding_version
+               FROM (
+                    SELECT * FROM (
+                        SELECT owner_kind, owner_id,
+                               entity_kind, entity_id, model_id,
+                               embedding_version, enqueued_at
+                          FROM proxima_core.embedding_jobs
+                         WHERE model_id = $1
+                           AND status = 'pending'
+                           AND (next_attempt_at IS NULL OR next_attempt_at <= now())
+                           AND NOT (entity_id = ANY($2::uuid[]))
+                         ORDER BY enqueued_at ASC,
+                                  owner_kind ASC,
+                                  owner_id ASC,
+                                  entity_kind ASC,
+                                  entity_id ASC,
+                                  embedding_version ASC
+                         FOR UPDATE SKIP LOCKED
+                         LIMIT $3
+                    ) pending_arm
+                    UNION ALL
+                    SELECT * FROM (
+                        SELECT owner_kind, owner_id,
+                               entity_kind, entity_id, model_id,
+                               embedding_version, enqueued_at
+                          FROM proxima_core.embedding_jobs
+                         WHERE model_id = $1
+                           AND status = 'processing'
+                           AND updated_at < now() - interval '15 minutes'
+                           AND NOT (entity_id = ANY($2::uuid[]))
+                         ORDER BY enqueued_at ASC,
+                                  owner_kind ASC,
+                                  owner_id ASC,
+                                  entity_kind ASC,
+                                  entity_id ASC,
+                                  embedding_version ASC
+                         FOR UPDATE SKIP LOCKED
+                         LIMIT $3
+                    ) reclaim_arm
+               ) arms
+              ORDER BY enqueued_at ASC,
+                       owner_kind ASC,
+                       owner_id ASC,
+                       entity_kind ASC,
+                       entity_id ASC,
+                       embedding_version ASC
+              LIMIT $3
+         )
+         UPDATE proxima_core.embedding_jobs j
+            SET status = 'processing',
+                updated_at = now()
+           FROM claimed
+          WHERE j.owner_kind = claimed.owner_kind
+            AND j.owner_id = claimed.owner_id
+            AND j.entity_kind = claimed.entity_kind
+            AND j.entity_id = claimed.entity_id
+            AND j.model_id = claimed.model_id
+            AND j.embedding_version = claimed.embedding_version
+        RETURNING j.owner_kind, j.owner_id,
+                  j.entity_kind, j.entity_id, j.model_id, j.embedding_version,
+                  j.attempts";
 }
