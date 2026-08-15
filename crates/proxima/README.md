@@ -1,7 +1,8 @@
 # proxima
 
 Framework facade for host applications. Most hosts should start here rather than
-assembling `proxima-core` directly.
+assembling `proxima-core` directly. The compiling host template is
+[`apps/proxima-mcp`](../../apps/proxima-mcp).
 
 Public tiers:
 

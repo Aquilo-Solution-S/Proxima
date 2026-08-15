@@ -48,14 +48,6 @@ LANES = [
         max_version=9_999,
     ),
     VersionLane(
-        source="embedded-minimal",
-        path="examples/embedded-minimal/migrations",
-        description="example/host timestamp suffix lane 00-19",
-        min_version=20_000_000_000_000,
-        suffix_min=0,
-        suffix_max=19,
-    ),
-    VersionLane(
         source="proxima-code",
         path="flavors/code/migrations",
         description="first-party flavor timestamp suffix lane 20-39",
@@ -143,7 +135,6 @@ def self_test() -> int:
             "current lanes accept disjoint versions",
             {
                 "crates/storage-pg/migrations": ["0001_init.sql", "0008_v005.sql"],
-                "examples/embedded-minimal/migrations": ["20260612000010_baseline.sql"],
                 "flavors/code/migrations": ["20260801000020_v007_baseline.sql"],
             },
             False,
@@ -152,8 +143,10 @@ def self_test() -> int:
             "duplicate versions fail",
             {
                 "crates/storage-pg/migrations": ["0001_init.sql"],
-                "examples/embedded-minimal/migrations": ["20260612000010_baseline.sql"],
-                "flavors/code/migrations": ["20260612000010_baseline.sql"],
+                "flavors/code/migrations": [
+                    "20260801000020_a.sql",
+                    "20260801000020_b.sql",
+                ],
             },
             True,
         ),
@@ -161,8 +154,10 @@ def self_test() -> int:
             "wrong suffix lane fails",
             {
                 "crates/storage-pg/migrations": ["0001_init.sql"],
-                "examples/embedded-minimal/migrations": ["20260612000020_baseline.sql"],
-                "flavors/code/migrations": ["20260801000020_v007_baseline.sql"],
+                "flavors/code/migrations": [
+                    "20260612000010_baseline.sql",
+                    "20260801000020_v007_baseline.sql",
+                ],
             },
             True,
         ),

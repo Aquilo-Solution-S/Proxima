@@ -5,7 +5,7 @@
 Containerized Code-flavor server, authenticated exclusively via Zitadel
 bearer JWT, with a single unauthenticated route:
 `GET /.well-known/oauth-protected-resource` (RFC 9728). The binary is
-`apps/proxima-mcp` built with `--features code`; add the `rest` feature and
+`apps/proxima-mcp` (code flavor default-on); add the `rest` feature and
 set `PROXIMA_REST_ENABLED=true` to serve `/v1` beside `/mcp`.
 
 ## Runtime requirements
@@ -160,7 +160,7 @@ credentials. Native clients that omit `Origin` retain the same auth path.
 ## Build & run
 
 ```sh
-# The Dockerfile builds with `--features code`.
+# The Dockerfile builds the default Code-flavor host.
 # This default image serves MCP only; see below for the two REST gates.
 docker build -t proxima-mcp .
 
@@ -196,7 +196,7 @@ Optional REST surface:
 
 ```dockerfile
 # In the image build stage; the repository Dockerfile currently omits REST.
-RUN cargo build --release -p proxima-mcp --features code,rest
+RUN cargo build --release -p proxima-mcp --features rest
 ```
 
 ```sh

@@ -33,7 +33,7 @@ bound to and is rechecked on every request.
 
 ## Index A Repository
 
-With `--features code`, the server exposes code-as-memory tools. Register a
+The default host includes code-as-memory tools. Register a
 local checkout and ingest its current tree:
 
 1. `proxima-code_register_repo` with `path` — returns a `repo_handle`

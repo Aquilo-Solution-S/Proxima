@@ -18,7 +18,7 @@ product UX or model loop.
 |---|---|
 | Running the MCP memory server locally | [docs/getting-started/local-dev.md](docs/getting-started/local-dev.md) |
 | Connecting a coding agent | [docs/getting-started/connect-agent.md](docs/getting-started/connect-agent.md) |
-| Embedding Proxima in a Rust host | [examples/embedded-minimal](examples/embedded-minimal) |
+| Embedding Proxima in a Rust host | [apps/proxima-mcp](apps/proxima-mcp) |
 | Building a flavor | [docs/tutorials/build-first-flavor.md](docs/tutorials/build-first-flavor.md) |
 | Checking invariants/design | [docs/README.md](docs/README.md) |
 | Building the docs site | [docs/README.md](docs/README.md#docs-site) |
@@ -39,7 +39,8 @@ cargo run -p proxima-dev-idp
 
 # 3. In another shell, paste what step 2 printed, then:
 export DATABASE_URL=postgres://proxima:proxima@localhost:5434/proxima
-cargo run -p proxima-mcp --features code
+export PROXIMA_TOOL_PROFILE=full
+cargo run -p proxima-mcp
 ```
 
 Headless MCP server at `http://127.0.0.1:31415/mcp`.
@@ -129,9 +130,8 @@ Proxima::<App>::app()
     .await?;
 ```
 
-Use [`examples/embedded-minimal`](examples/embedded-minimal) as the wiring
-template. Runtime env/default semantics live in
-[`crates/proxima`](crates/proxima).
+Use [`apps/proxima-mcp`](apps/proxima-mcp) as the wiring template.
+Runtime env/default semantics live in [`crates/proxima`](crates/proxima).
 
 ## Design and Kernel Authority
 

@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/core", "crates/mcp-server", "apps/proxima-mcp", "flavors/code", "crates/llm-openai-compat", "crates/storage-pg", "crates/blob-s3", "crates/proxima", "crates/pg-testkit", "examples/embedded-minimal", "tools/dev-migrate", "tools/dev-idp", "crates/auth-oidc"]
+members = ["crates/core", "crates/mcp-server", "apps/proxima-mcp", "flavors/code", "crates/llm-openai-compat", "crates/storage-pg", "crates/blob-s3", "crates/proxima", "crates/pg-testkit", "tools/dev-migrate", "tools/dev-idp", "crates/auth-oidc"]
 
 [workspace.package]
 edition = "2024"
@@ -71,7 +71,7 @@ aws-sdk-s3 = { version = "1", default-features = false, features = [
 
 # tree-sitter deps for the code flavor (Rust + TypeScript). Core and grammar
 # crates version independently and must stay ABI-compatible, so bump them as a
-# set and let CI confirm they parse (workspace nextest + the code-feature e2e).
+# set and let CI confirm they parse (workspace nextest, code flavor default-on).
 tree-sitter = "0.26"
 tree-sitter-rust = "0.24"
 tree-sitter-typescript = "0.23"

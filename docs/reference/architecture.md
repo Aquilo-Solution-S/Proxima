@@ -24,10 +24,9 @@ core engine (`crates/core`)
 
 | Path | Role | Public audience |
 |---|---|---|
-| `apps/proxima-mcp` | headless MCP host binary | operators / agent users |
+| `apps/proxima-mcp` | canonical MCP host (code flavor default-on) | operators / agent users |
 | `crates/proxima` | facade for host apps | app developers |
 | `crates/core` | engine contracts/runtime | flavor authors / maintainers |
 | `crates/storage-pg` | Postgres storage | deployers / maintainers |
 | `crates/mcp-server` | MCP transport/self-doc | MCP integrators |
 | `flavors/code` | code-memory flavor | code-agent deployments |
-| `examples/embedded-minimal` | minimal host template | new app developers |

@@ -30,5 +30,5 @@ proxima facade -> proxima-core engine -> storage-pg -> Postgres + pgvector
 
 - Run locally: [local-dev.md](local-dev.md)
 - Connect an agent: [connect-agent.md](connect-agent.md)
-- Embed in Rust: [../tutorials/embedded-minimal.md](../tutorials/embedded-minimal.md)
+- Run the MCP host: [../tutorials/run-mcp-server.md](../tutorials/run-mcp-server.md)
 - Build a flavor: [../tutorials/build-first-flavor.md](../tutorials/build-first-flavor.md)

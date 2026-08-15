@@ -244,8 +244,8 @@ a misprefixed id fails the build rather than the first boot.
 Flavor crate = inclusion unit. Composite binary = build artifact.
 
 ```
-proxima-mcp                  = substrate
-proxima-mcp --features code  = substrate + code
+proxima-mcp                      = substrate + code
+proxima-mcp --no-default-features = substrate
 ```
 
 Composite binaries are framework apps, not plugin hosts.
@@ -254,9 +254,9 @@ Composite binaries are framework apps, not plugin hosts.
 ## No Feature Flags
 
 Flavor inclusion is by crate linkage and explicit `register()` call.
-`proxima-mcp` exposes one packaging feature, `code`, to include the
-`proxima-code` flavor in that host binary. There is no per-schema or
-runtime feature-flag matrix.
+`proxima-mcp` defaults the `code` packaging feature on so the shipped host
+is the Code-flavor MCP. `--no-default-features` is substrate-only. There
+is no per-schema or runtime feature-flag matrix.
 
 <a id="composite-discipline"></a>
 ## Composite Discipline

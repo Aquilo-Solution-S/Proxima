@@ -2,7 +2,7 @@
 //!
 //! Wraps the blessed `Engine::try_compose` embedding entry point
 //! (`proxima_core::engine`) for host binaries. Host wiring template:
-//! `examples/embedded-minimal`. Cohabitation contract: core, flavors,
+//! `apps/proxima-mcp`. Cohabitation contract: core, flavors,
 //! and the host's own sqlx migrations share one database and the
 //! default `_sqlx_migrations` table; every migrator in that database
 //! must set `ignore_missing(true)`, and host tables must stay out of

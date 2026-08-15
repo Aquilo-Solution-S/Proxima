@@ -315,7 +315,8 @@ fn print_instructions(config: &Config, issuer: &str, token: &str, key_file: Opti
          export PROXIMA_OIDC_AUDIENCE={audience}\n\
          export PROXIMA_OIDC_SUBJECT_MAP={subject}:{user_id}\n\
          export PROXIMA_PUBLIC_URL={server_url}\n\
-         cargo run -p proxima-mcp --features code\n"
+         export PROXIMA_TOOL_PROFILE=full\n\
+         cargo run -p proxima-mcp\n"
     );
     println!(
         "2. Connect your coding agent:\n\

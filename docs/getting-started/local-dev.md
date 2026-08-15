@@ -49,12 +49,14 @@ Paste the exports `dev-idp` printed, then:
 
 ```sh
 export DATABASE_URL=postgres://proxima:proxima@localhost:5434/proxima
-cargo run -p proxima-mcp --features code
+export PROXIMA_TOOL_PROFILE=full
+cargo run -p proxima-mcp
 ```
 
-Expected: server listens on `http://127.0.0.1:31415/mcp`.
+Expected: server listens on `http://127.0.0.1:31415/mcp` with the code
+flavor linked.
 
-Drop `--features code` if you only want the substrate memory tools without
+`--no-default-features` if you only want the substrate memory tools without
 the code-as-memory flavor.
 
 ## Local Embeddings

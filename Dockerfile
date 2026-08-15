@@ -8,7 +8,7 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY . .
-RUN cargo build --release -p proxima-mcp --features code \
+RUN cargo build --release -p proxima-mcp \
     && cp target/release/proxima-mcp /proxima-mcp
 
 # Distroless cc image: glibc + libstdc++ (for aws-lc) + ca-certificates

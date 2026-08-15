@@ -213,17 +213,15 @@ jobs:
             }
           done
       - name: test
+        # Code flavor is the proxima-mcp default, so workspace nextest is the
+        # Code-tool MCP/OIDC e2e. REST still needs an extra feature.
         run: cargo nextest run --workspace --locked
       - name: test (REST surface contract)
         # Feature-gated and storage-independent: the workspace-default lane
         # compiles this target to an empty test binary unless `rest` is on.
         run: cargo nextest run -p proxima-mcp-server --features rest --test rest_surface --locked
-      - name: test (code flavor — MCP/OIDC e2e)
-        # oidc_e2e.rs is #![cfg(feature = "code")]; this step compiles + runs the
-        # code-flavor surface (Code tools served over HTTP behind OIDC bearer auth).
-        run: cargo nextest run -p proxima-mcp --features code --locked
       - name: test (mounted REST/OIDC e2e)
         # Both opt-in gates mount /v1 beside /mcp on the same authenticated listener.
         env:
           PROXIMA_REST_ENABLED: "true"
-        run: cargo nextest run -p proxima-mcp --features code,rest --test oidc_e2e --locked
+        run: cargo nextest run -p proxima-mcp --features rest --test oidc_e2e --locked
