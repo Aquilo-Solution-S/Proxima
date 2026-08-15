@@ -47,7 +47,7 @@ proxima/
 │   ├── auth-oidc/           Rust OIDC JWT authenticator crate
 │   ├── blob-s3/             Rust S3 cited-blob service crate
 │   ├── core/                Rust lib crate `proxima-core`
-│   ├── llm-openai-compat/   Rust OpenAI-compatible model client crate
+│   ├── llm-openai-compat/   Rust OpenAI-compatible embedding client crate
 │   ├── mcp-server/          Rust MCP HTTP listener crate (`proxima_mcp_server`)
 │   ├── pg-testkit/          Rust Postgres test helper crate
 │   ├── proxima/             Rust framework facade crate
@@ -243,7 +243,7 @@ runtime checklist most likely to prevent regressions.
   `fix(<component>): <summary>` / `chore(<component>): <summary>`.
   Components include `core`, `proxima-mcp`, `storage-pg`, `mcp-server`,
   `llm-openai-compat`, `blob-s3`, `auth-oidc`, `proxima`,
-  `pg-testkit`, `flavors-code`, `examples`, `tools`.
+  `pg-testkit`, `flavors-code`, `tools`.
 - Body: bulleted list of concrete changes; preserve the *why* when
   the change is a decision, not a fix.
 - Co-authorship trailer for AI commits matches the parent CLAUDE.md

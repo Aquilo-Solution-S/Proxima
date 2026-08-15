@@ -4,8 +4,8 @@ use std::time::Duration;
 
 use proxima_blob_s3::S3RuntimeConfig;
 use proxima_core::{
-    AnthropicClient, Authenticator, EmbeddingClient, FlavorServiceError, Owner, RevalidationConfig,
-    ToolScope, is_loopback_host,
+    Authenticator, EmbeddingClient, FlavorServiceError, Owner, RevalidationConfig, ToolScope,
+    is_loopback_host,
 };
 use proxima_mcp_server::ResourceServerMetadata;
 use proxima_storage_pg::PgTuning;
@@ -36,7 +36,6 @@ pub struct RuntimeBuilder {
     authenticator: Option<Arc<dyn Authenticator>>,
     resource_metadata: Option<ResourceServerMetadata>,
     embed_client: Option<Arc<dyn EmbeddingClient>>,
-    anthropic: Option<Arc<dyn AnthropicClient>>,
 }
 
 impl std::fmt::Debug for RuntimeBuilder {
@@ -60,7 +59,6 @@ impl std::fmt::Debug for RuntimeBuilder {
             .field("has_authenticator", &self.authenticator.is_some())
             .field("has_resource_metadata", &self.resource_metadata.is_some())
             .field("has_embed_client", &self.embed_client.is_some())
-            .field("has_anthropic", &self.anthropic.is_some())
             .finish()
     }
 }
@@ -87,7 +85,6 @@ impl RuntimeBuilder {
             authenticator: self.authenticator.or(base.authenticator),
             resource_metadata: self.resource_metadata.or(base.resource_metadata),
             embed_client: self.embed_client.or(base.embed_client),
-            anthropic: self.anthropic.or(base.anthropic),
         }
     }
 
@@ -243,13 +240,6 @@ impl RuntimeBuilder {
         self
     }
 
-    /// Install the Anthropic model client (`Engine::with_anthropic`).
-    #[must_use]
-    pub fn anthropic(mut self, client: Arc<dyn AnthropicClient>) -> Self {
-        self.anthropic = Some(client);
-        self
-    }
-
     /// Apply process environment variables to unset fields.
     ///
     /// # Errors
@@ -375,7 +365,6 @@ impl RuntimeBuilder {
         let parts = RuntimeParts {
             authenticator: self.authenticator,
             embed_client: self.embed_client,
-            anthropic: self.anthropic,
         };
         let config = RuntimeConfig {
             database_url,
@@ -571,7 +560,6 @@ pub struct McpSettings {
 pub struct RuntimeParts {
     pub authenticator: Option<Arc<dyn Authenticator>>,
     pub embed_client: Option<Arc<dyn EmbeddingClient>>,
-    pub anthropic: Option<Arc<dyn AnthropicClient>>,
 }
 
 impl std::fmt::Debug for RuntimeParts {
@@ -579,7 +567,6 @@ impl std::fmt::Debug for RuntimeParts {
         f.debug_struct("RuntimeParts")
             .field("has_authenticator", &self.authenticator.is_some())
             .field("has_embed_client", &self.embed_client.is_some())
-            .field("has_anthropic", &self.anthropic.is_some())
             .finish()
     }
 }

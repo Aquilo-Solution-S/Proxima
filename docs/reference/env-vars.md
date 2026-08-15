@@ -76,7 +76,6 @@ whether that is legal.
 |---|---|---|
 | `PROXIMA_TEST_PG_URL` | tests | pg-testkit integration test source DB |
 | `PROXIMA_TEST_DATABASE_URL` | tests | HTTP/OIDC e2e dedicated DB |
-| `PROXIMA_PERF_SESSION_DIR` | dev diagnostics | optional per-request recorder in `crates/mcp-server`; not required for normal runtime |
 | `MISTRAL_EMBED_BASE_URL` | source constant | Rust constant for the default Mistral base URL, not an environment variable |
 | `MISTRAL_EMBED_MODEL` | source constant | Rust constant for the default Mistral model, not an environment variable |
 | `PROXIMA_S3_` | source prefix | configuration prefix constant used to resolve the S3 variables listed above |

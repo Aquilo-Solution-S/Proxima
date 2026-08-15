@@ -30,7 +30,7 @@ use tokio::task::JoinHandle;
 use crate::Owner;
 use crate::authz::{EngineAuthority, EngineOperationAuthority, context_for_engine_operation};
 use crate::error::ProtocolError;
-use crate::llm::{AnthropicClient, EmbeddingClient};
+use crate::llm::EmbeddingClient;
 use crate::storage_ports::{CitedObjectErasePort, EngineStoragePorts, OwnerWritePermit};
 use crate::verbs::schema::FlavorRegistryFrozen;
 
@@ -60,7 +60,6 @@ pub struct Engine {
     delegation_runtime_binding: crate::authz::DelegationRuntimeBinding,
     storage: EngineStoragePorts,
     deployment_tool_scope: crate::authz::ToolScope,
-    anthropic: Option<Arc<dyn AnthropicClient>>,
     embed: Arc<RwLock<Option<Arc<dyn EmbeddingClient>>>>,
     embedding_reloader: Option<Arc<dyn EmbeddingClientReloader>>,
     cited_object_erase: Option<Arc<dyn CitedObjectErasePort>>,

@@ -14,8 +14,8 @@ use proxima_core::storage_ports::{
     DelegatedAuthorityService,
 };
 use proxima_core::{
-    AnthropicClient, AuthPath, Authenticator, AuthzContext, DelegationRuntimeAuthority,
-    EmbeddingClient, FlavorRegistryFrozen, FlavorServices, RevalidationConfig, ToolScope,
+    AuthPath, Authenticator, AuthzContext, DelegationRuntimeAuthority, EmbeddingClient,
+    FlavorRegistryFrozen, FlavorServices, RevalidationConfig, ToolScope,
 };
 use proxima_core::{Engine, EngineHandle, Owner, OwnerRef, Role, UserId};
 use proxima_mcp_server::{
@@ -163,12 +163,6 @@ impl<A: FlavorApp + 'static> Proxima<A> {
     #[must_use]
     pub fn embed_client(mut self, client: Arc<dyn EmbeddingClient>) -> Self {
         self.overlay = self.overlay.embed_client(client);
-        self
-    }
-
-    #[must_use]
-    pub fn anthropic(mut self, client: Arc<dyn AnthropicClient>) -> Self {
-        self.overlay = self.overlay.anthropic(client);
         self
     }
 
@@ -780,9 +774,6 @@ async fn boot_app<A: FlavorApp + 'static>(
     }
     if let Some(client) = parts.embed_client.clone() {
         builder = builder.embed_client(client);
-    }
-    if let Some(client) = parts.anthropic.clone() {
-        builder = builder.anthropic(client);
     }
     builder.boot().await.map_err(Into::into)
 }

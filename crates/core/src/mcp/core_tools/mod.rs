@@ -67,12 +67,6 @@ const DESTRUCTIVE_NON_IDEMPOTENT: McpToolAnnotations = McpToolAnnotations::new()
     .destructive(true)
     .idempotent(false)
     .open_world(false);
-#[allow(dead_code)]
-const DESTRUCTIVE_IDEMPOTENT: McpToolAnnotations = McpToolAnnotations::new()
-    .read_only(false)
-    .destructive(true)
-    .idempotent(true)
-    .open_world(false);
 
 /// Register every substrate-shipped MCP tool into the `FlavorRegistry`.
 /// Called from `FlavorRegistry::default()`.

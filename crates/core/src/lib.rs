@@ -139,10 +139,9 @@ macro_rules! proxima_schema_id {
 /// literals, so they are checked by a `const` assertion — a misprefix
 /// fails the build.
 ///
-/// Build-time owns the *capability vocabulary* (`LlmCaps`,
-/// `EmbedCaps`) and operator `requires` declarations; specific
-/// `(vendor, model_id)` bindings are runtime configuration, not
-/// flavor authorship. New models plug in at runtime.
+/// Embedding capability types live in `crate::models` (`EmbedCaps`).
+/// Hosts inject [`crate::llm::EmbeddingClient`] at boot; this macro does
+/// not bind models, and there is no inference-target registry.
 ///
 /// Future verbs (sources, operators) land as the
 /// underlying systems materialize. Reject unknown keys at expansion
