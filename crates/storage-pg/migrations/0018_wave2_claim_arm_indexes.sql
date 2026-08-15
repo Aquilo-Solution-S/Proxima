@@ -24,7 +24,7 @@
 -- orders by enqueued_at, so its top-N sorts whatever stale-processing
 -- rows the index finds (normally few). Whether the reclaim index should
 -- instead carry the ORDER BY columns and leave updated_at residual is an
--- open design question journaled in docs/wave2-adjudications.md.
+-- open design question.
 --
 -- The pending arm's backoff gate (next_attempt_at IS NULL OR <= now()) and
 -- the reclaim arm's staleness gate (updated_at < now() - 15min) stay
