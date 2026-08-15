@@ -562,6 +562,25 @@ fn lexical_branch_sql<'p>(
 /// same statement, same index, 0.82 of the shipped runtime with the arms
 /// together and 0.0004 with them apart.
 ///
+/// Splitting it is safe to *skip* — see [`needs_substring_pass`] — because
+/// of what the arm turns out to contribute. Counted on that corpus, rows
+/// this predicate finds that neither tsquery does:
+///
+/// | query class | rows only `LIKE` finds |
+/// |---|---|
+/// | natural multi-word ("thrift store clothing haul", …) | 0, in every case measured |
+/// | single word | 8 of 313 |
+/// | all-stopword ("what is the") | 1,145 — the only arm that fires |
+/// | partial word ("ustainab") | 4,551 — the only arm that fires |
+///
+/// It is not a general recall contributor; it is the fallback for queries
+/// the tsquery cannot express, which is what its own comment in
+/// [`TEXT_SEARCH_CONFIG`] has always said. Both classes where it carries
+/// the whole search share one property — the tsquery arms return few or no
+/// rows — and that is exactly the condition the skip rule tests. The rule
+/// is a restatement of what this statement is for, not a heuristic laid
+/// over it.
+///
 /// What the split costs is that this statement is a second round trip
 /// under its own snapshot. [`needs_substring_pass`] is what keeps it from
 /// being paid on every search.

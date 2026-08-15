@@ -172,8 +172,7 @@ async fn the_goal_page_sql_is_pinned() -> Result<(), Box<dyn std::error::Error>>
 /// The high-water statement, byte for byte. `change_event`'s CHECKs prove
 /// `owner_id` is never NULL there, so `=` and `IS NOT DISTINCT FROM` admit
 /// identical rows — which is what lets this be a per-owner index probe
-/// rather than a whole-table ordered walk (adjudicated in
-/// docs/wave2-adjudications.md).
+/// rather than a whole-table ordered walk.
 #[tokio::test]
 async fn the_high_water_sql_is_pinned() -> Result<(), Box<dyn std::error::Error>> {
     let sql = proxima_storage_pg::verbs::query::read_seq_high_water_sql_for_tests();
