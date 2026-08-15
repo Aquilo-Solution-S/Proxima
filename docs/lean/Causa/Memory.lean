@@ -187,19 +187,27 @@ def pinExists (memories : Set Memory) (cooled : Set Cooled) (id : MemoryId) : Pr
   (∃ m : Memory, m ∈ memories ∧ memory_t m = id) ∨
   (∃ c : Cooled, c ∈ cooled ∧ cooled_t c = id)
 
+/-- Kind of a pinned `t`: hot row or cooled stub. Forget must not break layering. -/
+def pinKindIs
+    (memories : Set Memory) (cooled : Set Cooled)
+    (id : MemoryId) (k : MemoryKind) : Prop :=
+  (∃ tgt : Memory, tgt ∈ memories ∧ memory_t tgt = id ∧ memory_kind tgt = k) ∨
+  (∃ c : Cooled, c ∈ cooled ∧ cooled_t c = id ∧ cooled_kind c = k)
+
 -- ============================================================
 -- Origin kind CHECKs (UML §2) — Tesla valve, no extra if
 -- ============================================================
 
-structure OriginKindValid (memories : Set Memory) (m : Memory) : Prop where
+structure OriginKindValid
+    (memories : Set Memory) (cooled : Set Cooled) (m : Memory) : Prop where
   factEmpty : memory_kind m = .Fact → memory_origins m = []
   absFacts : memory_kind m = .Abstraction →
     ∀ id : MemoryId, id ∈ memory_origins m →
-      ∃ tgt : Memory, tgt ∈ memories ∧ memory_t tgt = id ∧ memory_kind tgt = .Fact
+      pinKindIs memories cooled id .Fact
   perspAbsOrEmpty : memory_kind m = .Perspective →
     memory_origins m = [] ∨
     ∀ id : MemoryId, id ∈ memory_origins m →
-      ∃ tgt : Memory, tgt ∈ memories ∧ memory_t tgt = id ∧ memory_kind tgt = .Abstraction
+      pinKindIs memories cooled id .Abstraction
 
 /-- A Fact never originates from anything. THEOREM from the row field. -/
 theorem facts_declare_no_origins (m : Memory) (hk : memory_kind m = .Fact) :

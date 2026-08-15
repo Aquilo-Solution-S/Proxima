@@ -64,11 +64,14 @@ def pin_render_cold (memories : Set Memory) (stubs : Set Cooled) (id : MemoryId)
 def pin_render_unavailable (memories : Set Memory) (stubs : Set Cooled) (id : MemoryId) : Prop :=
   ¬ pin_render_hot memories id ∧ ¬ cold stubs id
 
-/-- Target abandonment does not delete the pinning row. -/
-theorem target_abandoned_does_not_drop_pin
-    (source : Memory) (_htargetAbandoned : abandoned (memory_owner source) ∨ True) :
-    True :=
-  trivial
+/-- Forget of a pinned `t` does not delete the pinning row. -/
+theorem pin_survives_target_cool
+    (memories : Set Memory) (stubs : Set Cooled) (m : Memory) (id : MemoryId)
+    (hm : m ∈ memories)
+    (_hpin : id ∈ memory_origins m ∨ id ∈ memory_refs m)
+    (hc : cold stubs id) :
+    pinExists memories stubs id ∧ m ∈ memories :=
+  ⟨Or.inr hc, hm⟩
 
 theorem world_never_abandoned (u : User) : ¬ abandoned world := by
   intro h

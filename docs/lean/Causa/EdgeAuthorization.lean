@@ -55,4 +55,9 @@ def goal_pin_write_admitted (requester : User) (g : Goal) (target : Memory) : Pr
   may_write requester (goal_owner g) .goal ∧
   may_read requester (memory_owner target) (memory_kind target).accessKind
 
+/-- Write admission when the pin target is already cooled. -/
+def pin_write_admitted_cooled (requester : User) (source : Memory) (target : Cooled) : Prop :=
+  may_write requester (memory_owner source) (memory_kind source).accessKind ∧
+  may_read requester (cooled_owner target) (cooled_kind target).accessKind
+
 end Causa

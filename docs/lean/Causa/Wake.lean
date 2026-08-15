@@ -19,9 +19,9 @@ def MemoryKind.access : MemoryKind → AccessKind
   | .Abstraction => .abstraction
   | .Perspective => .perspective
 
-/-- W5: the Goal names the emission among `evidence_t`. -/
-def motivatedByGoal (m : Memory) (goal : Goal) : Prop :=
-  memory_t m ∈ goal_evidence goal
+/-- W5 rebase: produced rows `ref` the write-act `t` (UML §5b). No session ⇒ none. -/
+def refsWriteAct (m : Memory) (tr : MemoryId) : Prop :=
+  tr ∈ memory_refs m
 
 structure Firing where
   actor    : User
@@ -40,7 +40,10 @@ structure Firing where
   each_fact          : ∀ m ∈ emitted, memory_kind m = .Fact
   each_later         : ∀ m ∈ emitted, memory_tick trigger.memory < memory_tick m
   each_authzd        : ∀ m ∈ emitted, may_write actor (memory_owner m) .fact
-  each_motivated     : ∀ m ∈ emitted, motivatedByGoal m goal
+  /-- One write-act Fact per fire, or none (keyless / no session). -/
+  write_act_t        : Option MemoryId
+  each_refs_write_act :
+    ∀ m ∈ emitted, ∀ tr : MemoryId, write_act_t = some tr → tr ∈ memory_refs m
   each_action_allowed : ∀ a ∈ invoked, a ∈ config.toolset
 
 theorem wake_emits_facts (fr : Firing) :
@@ -67,12 +70,16 @@ theorem wake_context_readable (fr : Firing) :
     ∀ m ∈ fr.injected, may_read fr.actor (memory_owner m) (MemoryKind.access (memory_kind m)) :=
   fr.each_injected_read
 
-theorem wake_action_has_goal_context (fr : Firing) :
-    ∀ m ∈ fr.emitted, motivatedByGoal m fr.goal := fr.each_motivated
+theorem wake_emission_refs_write_act (fr : Firing) :
+    ∀ m ∈ fr.emitted, ∀ tr : MemoryId, fr.write_act_t = some tr → tr ∈ memory_refs m :=
+  fr.each_refs_write_act
 
-/-- W5 — motivation is a Goal-row declaration, never a Goal `t` in Memory.refs. -/
+/-- W5 — a Goal is never in Memory.refs; write-act is a Memory `t`. -/
 theorem wake_motivation_is_never_causal (fr : Firing) :
-    ∀ id : Id, id ∈ goalDeclaredTargetIds fr.goal → True :=
+    goalDeclaredTargetIds fr.goal =
+      (goal_assignment fr.goal).toList ++ goal_dependencies fr.goal ++
+        goal_evidence fr.goal ++ (goal_close_fact_t fr.goal).toList ++
+        (goal_write_act_t fr.goal).toList :=
   goal_declared_rows_are_references fr.goal
 
 def fires (f g : Memory) : Prop :=
@@ -112,7 +119,8 @@ def noopFiring (actor : User) (goal : Goal) (config : WakeConfig) (trig : Fact)
   each_fact := by intro m hm; simp at hm
   each_later := by intro m hm; simp at hm
   each_authzd := by intro m hm; simp at hm
-  each_motivated := by intro m hm; simp at hm
+  write_act_t := none
+  each_refs_write_act := by intro _m hm _tr _htr; cases hm
   each_action_allowed := by intro a ha; simp at ha
 
 /-- New Goal version on the same handle that records one evidence `t`. -/
@@ -127,10 +135,6 @@ theorem recordEvidence_state (goal : Goal) (i : MemoryId) (newId : GoalId) (newT
 
 theorem recordEvidence_owner (goal : Goal) (i : MemoryId) (newId : GoalId) (newTick : Instant) :
     goal_owner (recordEvidence goal i newId newTick) = goal_owner goal := rfl
-
-theorem motivation_holds (goal : Goal) (m : Memory) (newId : GoalId) (newTick : Instant) :
-    motivatedByGoal m (recordEvidence goal (memory_t m) newId newTick) :=
-  List.mem_singleton_self (memory_t m)
 
 def mkFact (handle : Handle) (id : MemoryId) (o : Owner) (tick : Instant) : Memory where
   handle := handle
@@ -154,8 +158,7 @@ def oneShotFiring
     (hread : may_read actor (memory_owner trig.memory) .fact)
     (o : Owner) (gh : Handle) (gid : MemoryId) (tick : Instant)
     (hw : may_write actor o .fact)
-    (hlate : memory_tick trig.memory < tick)
-    (hmot : gid ∈ goal_evidence goal) : Firing where
+    (hlate : memory_tick trig.memory < tick) : Firing where
   actor := actor
   goal := goal
   config := config
@@ -172,9 +175,10 @@ def oneShotFiring
   each_fact := by intro m hm; simp [mkFact] at hm; subst hm; rfl
   each_later := by intro m hm; simp [mkFact] at hm; subst hm; exact hlate
   each_authzd := by intro m hm; simp [mkFact] at hm; subst hm; exact hw
-  each_motivated := by
-    intro m hm; simp [mkFact] at hm; subst hm
-    exact hmot
+  write_act_t := none
+  each_refs_write_act := by
+    intro _m _hm _tr htr
+    cases htr
   each_action_allowed := by intro a ha; simp at ha
 
 theorem oneShot_fires
@@ -186,10 +190,9 @@ theorem oneShot_fires
     (hread : may_read actor (memory_owner trig.memory) .fact)
     (o : Owner) (gh : Handle) (gid : MemoryId) (tick : Instant)
     (hw : may_write actor o .fact)
-    (hlate : memory_tick trig.memory < tick)
-    (hmot : gid ∈ goal_evidence goal) :
+    (hlate : memory_tick trig.memory < tick) :
     fires trig.memory (mkFact gh gid o tick) :=
-  ⟨oneShotFiring actor goal config trig hcfg harm hactive hmem hread o gh gid tick hw hlate hmot,
+  ⟨oneShotFiring actor goal config trig hcfg harm hactive hmem hread o gh gid tick hw hlate,
     by rfl, by simp [oneShotFiring]⟩
 
 theorem firing_requires_active (fr : Firing) : goal_state fr.goal = GoalState.Active :=
@@ -251,10 +254,10 @@ theorem agent_can_act
     (hmem : goal_owner goal actor ≠ none)
     (hread : may_read actor (memory_owner trig.memory) .fact)
     (o : Owner) (hw : may_write actor o .fact)
-    (gh : Handle) (gid : MemoryId) (hmot : gid ∈ goal_evidence goal) :
+    (gh : Handle) (gid : MemoryId) :
     ∃ g : Memory, fires trig.memory g :=
   ⟨_, oneShot_fires actor goal config trig hcfg harm hactive hmem hread o gh gid
-        (memory_tick trig.memory + 1) hw (Nat.lt_succ_self _) hmot⟩
+        (memory_tick trig.memory + 1) hw (Nat.lt_succ_self _)⟩
 
 theorem act_iff_fact_write_authority
     (actor : User) (goal : Goal) (config : WakeConfig) (trig : Fact)
@@ -262,13 +265,13 @@ theorem act_iff_fact_write_authority
     (harm : goalArmed goal) (hactive : goal_state goal = GoalState.Active)
     (hmem : goal_owner goal actor ≠ none)
     (hread : may_read actor (memory_owner trig.memory) .fact)
-    (gh : Handle) (gid : MemoryId) (hmot : gid ∈ goal_evidence goal) :
+    (gh : Handle) (gid : MemoryId) :
     (∃ o : Owner, may_write actor o .fact)
       ↔ (∃ fr : Firing, fr.actor = actor ∧ fr.goal = goal ∧ fr.emitted ≠ []) := by
   constructor
   · rintro ⟨o, hw⟩
     exact ⟨oneShotFiring actor goal config trig hcfg harm hactive hmem hread o gh gid
-            (memory_tick trig.memory + 1) hw (Nat.lt_succ_self _) hmot,
+            (memory_tick trig.memory + 1) hw (Nat.lt_succ_self _),
            rfl, rfl, by simp [oneShotFiring]⟩
   · rintro ⟨fr, hact, _, hne⟩
     cases hl : fr.emitted with
@@ -316,19 +319,16 @@ theorem organism_autonomous
         simp [autonomousRun, mkFact, memory_owner]
       rw [hown]
       exact may_write_implies_read actor o .fact hw
-  exact oneShot_fires actor (recordEvidence goal (ids n) (ids n) (memory_tick seed.memory + n))
-    config
+  exact oneShot_fires actor goal config
     ⟨autonomousRun seed o gh ids n, autonomousRun_fact seed o gh ids n⟩
-    (by rw [recordEvidence_wake]; exact hcfg) harm
-    (by rw [recordEvidence_state]; exact hactive)
-    (by rw [recordEvidence_owner]; exact hmem)
+    hcfg harm hactive hmem
     hread_n o gh (ids n) (memory_tick seed.memory + (n+1))
-    hw hlate (List.mem_singleton_self (ids n))
+    hw hlate
 
 #print axioms organism_grounded
 #print axioms wake_cannot_escalate
 #print axioms powerless_actor_noops
-#print axioms wake_action_has_goal_context
+#print axioms wake_emission_refs_write_act
 #print axioms wake_invoked_actions_allowed
 #print axioms wake_motivation_is_never_causal
 #print axioms oneShot_fires

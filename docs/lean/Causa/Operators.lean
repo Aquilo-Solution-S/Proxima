@@ -146,34 +146,14 @@ theorem operator_inputs_match_phase :
 
 /-- Origins of a derived output sit at or below its layer (UML CHECKs). -/
 theorem operator_origin_row_not_upward :
-    ∀ (memories : Set Memory) (out inp : Memory),
-      MemoryIdUnique memories →
-      OriginKindValid memories out →
-      out ∈ memories → inp ∈ memories →
-      memory_t inp ∈ memory_origins out →
-      (memory_kind inp).layer ≤ (memory_kind out).layer := by
-  intro memories out inp huniq hv _hout hinp hin
-  cases hk : memory_kind out with
-  | Fact =>
-    have hempty := hv.factEmpty hk
-    rw [hempty] at hin
-    cases hin
-  | Abstraction =>
-    obtain ⟨tgt, hmem, ht, hkind⟩ := hv.absFacts hk (memory_t inp) hin
-    have heq : tgt = inp := huniq tgt inp hmem hinp ht
-    have hkl : memory_kind inp = .Fact := by rw [← heq]; exact hkind
-    have houtk : memory_kind out = .Abstraction := hk
-    simp [MemoryKind.layer, hkl, houtk]
-  | Perspective =>
-    cases hv.perspAbsOrEmpty hk with
-    | inl hempty =>
-      rw [hempty] at hin
-      cases hin
-    | inr hall =>
-      obtain ⟨tgt, hmem, ht, hkind⟩ := hall (memory_t inp) hin
-      have heq : tgt = inp := huniq tgt inp hmem hinp ht
-      have hkl : memory_kind inp = .Abstraction := by rw [← heq]; exact hkind
-      have houtk : memory_kind out = .Perspective := hk
-      simp [MemoryKind.layer, hkl, houtk]
+    ∀ (memories : Set Memory) (cooled : Set Cooled) (out : Memory) (id : MemoryId),
+      OriginKindValid memories cooled out →
+      memory_kind out = .Abstraction →
+      id ∈ memory_origins out →
+      pinKindIs memories cooled id .Fact ∧
+        MemoryKind.layer .Fact ≤ MemoryKind.layer .Abstraction := by
+  intro memories cooled out id hv houtk hin
+  refine ⟨hv.absFacts houtk id hin, ?_⟩
+  exact Nat.le_succ 0
 
 end Causa

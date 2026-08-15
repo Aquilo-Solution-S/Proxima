@@ -28,7 +28,10 @@ structure MemoryGraphValid
     ∀ m : Memory, m ∈ memories →
       (∀ id : MemoryId, id ∈ memory_origins m → pinExists memories cooled id) ∧
       (∀ id : MemoryId, id ∈ memory_refs m → pinExists memories cooled id)
-  originKind : ∀ m : Memory, m ∈ memories → OriginKindValid memories m
+  originKind : ∀ m : Memory, m ∈ memories → OriginKindValid memories cooled m
+  /-- Memory `t` and Goal `t` do not collide (both globally UNIQUE). -/
+  memoryGoalIdsDisjoint :
+    ∀ (m : Memory) (g : Goal), m ∈ memories → g ∈ goals → memory_t m ≠ goal_t g
   /-- UML: every Abstraction is made from at least one Fact `t`. -/
   abstractionHasOrigins :
     ∀ m : Memory, m ∈ memories → memory_kind m = .Abstraction →
@@ -45,7 +48,7 @@ structure MemoryGraphValid
 theorem memory_graph_origin_kind :
     ∀ memories goals heads cooled,
       MemoryGraphValid memories goals heads cooled →
-      ∀ m : Memory, m ∈ memories → OriginKindValid memories m := by
+      ∀ m : Memory, m ∈ memories → OriginKindValid memories cooled m := by
   intro _ _ _ _ hgraph
   exact hgraph.originKind
 

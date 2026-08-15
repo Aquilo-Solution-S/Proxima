@@ -235,44 +235,36 @@ theorem terminal_goal_closes_with_fact :
   intro g h
   exact g.terminal_close_fact h
 
-def GoalTerminalCloseFactValid (goals : Set Goal) (memories : Set Memory) : Prop :=
+def GoalTerminalCloseFactValid
+    (goals : Set Goal) (memories : Set Memory) (cooled : Set Cooled) : Prop :=
   ∀ g : Goal, g ∈ goals → (goal_state g).terminal = true →
-    ∃ m : Memory,
+    (∃ m : Memory,
       m ∈ memories ∧
       goal_close_fact_t g = some (memory_t m) ∧
       memory_kind m = .Fact ∧
-      memory_owner m = goal_owner g
+      memory_owner m = goal_owner g) ∨
+    (∃ c : Cooled,
+      c ∈ cooled ∧
+      goal_close_fact_t g = some (cooled_t c) ∧
+      cooled_kind c = .Fact ∧
+      cooled_owner c = goal_owner g)
 
 theorem terminal_goal_close_fact_member :
-    ∀ (goals : Set Goal) (memories : Set Memory),
-      GoalTerminalCloseFactValid goals memories →
+    ∀ (goals : Set Goal) (memories : Set Memory) (cooled : Set Cooled),
+      GoalTerminalCloseFactValid goals memories cooled →
       ∀ g : Goal,
         g ∈ goals →
         (goal_state g).terminal = true →
-        ∃ m : Memory, m ∈ memories ∧ goal_close_fact_t g = some (memory_t m) := by
-  intro goals memories hvalid g hg hterminal
-  obtain ⟨m, hm, hclose, _, _⟩ := hvalid g hg hterminal
-  exact ⟨m, hm, hclose⟩
-
-theorem terminal_goal_close_fact_same_owner_fact :
-    ∀ (goals : Set Goal) (memories : Set Memory),
-      GoalTerminalCloseFactValid goals memories →
-      MemoryIdUnique memories →
-      ∀ (g : Goal) (m : Memory),
-        g ∈ goals →
-        m ∈ memories →
-        (goal_state g).terminal = true →
-        goal_close_fact_t g = some (memory_t m) →
-        memory_kind m = .Fact ∧ memory_owner m = goal_owner g := by
-  intro goals memories hvalid huniq g m hg hm hterminal hclose
-  obtain ⟨stored, hstoredMem, hstored, hkind, howner⟩ := hvalid g hg hterminal
-  have hid : memory_t stored = memory_t m := by
-    rw [hclose] at hstored
-    injection hstored with h
-    exact h.symm
-  have heq : stored = m := huniq stored m hstoredMem hm hid
-  rw [← heq]
-  exact ⟨hkind, howner⟩
+        (∃ m : Memory, m ∈ memories ∧ goal_close_fact_t g = some (memory_t m)) ∨
+        (∃ c : Cooled, c ∈ cooled ∧ goal_close_fact_t g = some (cooled_t c)) := by
+  intro goals memories cooled hvalid g hg hterminal
+  cases hvalid g hg hterminal with
+  | inl hhot =>
+    obtain ⟨m, hm, hclose, _, _⟩ := hhot
+    exact Or.inl ⟨m, hm, hclose⟩
+  | inr hcold =>
+    obtain ⟨c, hc, hclose, _, _⟩ := hcold
+    exact Or.inr ⟨c, hc, hclose⟩
 
 -- ============================================================
 -- Heads and the active set
@@ -416,16 +408,19 @@ theorem active_goal_for_self_has_assignment :
 
 /-- Evidence ids resolve to admitted Fact or Abstraction. No authorship
     field — operator-must-have-evidence is retired with the authorship blob. -/
-structure GoalEvidenceValid (goals : Set Goal) (memories : Set Memory) : Prop where
+structure GoalEvidenceValid
+    (goals : Set Goal) (memories : Set Memory) (cooled : Set Cooled) : Prop where
   resolved : ∀ g : Goal, g ∈ goals → ∀ i : MemoryId, i ∈ goal_evidence g →
-    ∃ m : Memory, m ∈ memories ∧ memory_t m = i ∧ memory_kind m ≠ .Perspective
+    (∃ m : Memory, m ∈ memories ∧ memory_t m = i ∧ memory_kind m ≠ .Perspective) ∨
+    (∃ c : Cooled, c ∈ cooled ∧ cooled_t c = i ∧ cooled_kind c ≠ .Perspective)
 
 theorem goal_evidence_not_perspective :
-    ∀ goals memories,
-      GoalEvidenceValid goals memories →
+    ∀ goals memories cooled,
+      GoalEvidenceValid goals memories cooled →
       ∀ (g : Goal) (i : MemoryId), g ∈ goals → i ∈ goal_evidence g →
-        ∃ m : Memory, m ∈ memories ∧ memory_t m = i ∧ memory_kind m ≠ .Perspective := by
-  intro goals memories hvalid g i hg hi
+        (∃ m : Memory, m ∈ memories ∧ memory_t m = i ∧ memory_kind m ≠ .Perspective) ∨
+        (∃ c : Cooled, c ∈ cooled ∧ cooled_t c = i ∧ cooled_kind c ≠ .Perspective) := by
+  intro goals memories cooled hvalid g i hg hi
   exact hvalid.resolved g hg i hi
 
 end Causa

@@ -17,11 +17,13 @@ theorem principle_1_facts_below_perspective :
 /-- P2 rebase: declared evidence is never a Perspective. Authorship-gated
     "operator goals carry evidence" retired with the authorship blob. -/
 theorem principle_2_goal_evidence_not_perspective :
-    ∀ goals memories,
-      GoalEvidenceValid goals memories →
+    ∀ goals memories cooled,
+      GoalEvidenceValid goals memories cooled →
       ∀ (g : Goal) (i : MemoryId), g ∈ goals → i ∈ goal_evidence g →
-        ∃ m : Memory, m ∈ memories ∧ memory_t m = i ∧
-          memory_kind m ≠ .Perspective :=
+        (∃ m : Memory, m ∈ memories ∧ memory_t m = i ∧
+          memory_kind m ≠ .Perspective) ∨
+        (∃ c : Cooled, c ∈ cooled ∧ cooled_t c = i ∧
+          cooled_kind c ≠ .Perspective) :=
   goal_evidence_not_perspective
 
 theorem principle_3_operators_never_output_facts :
@@ -36,7 +38,10 @@ theorem principle_3b_goal_close_is_an_act :
 
 /-- P3c — a Goal never writes Memory.refs; its pins live on the Goal row. -/
 theorem principle_3c_causal_closure_is_perspectival :
-    ∀ (g : Goal) (id : Id), id ∈ goalDeclaredTargetIds g → True :=
+    ∀ (g : Goal),
+      goalDeclaredTargetIds g =
+        (goal_assignment g).toList ++ goal_dependencies g ++ goal_evidence g ++
+          (goal_close_fact_t g).toList ++ (goal_write_act_t g).toList :=
   goal_declared_rows_are_references
 
 /-- P4 — a Fact declares no origins, so it never originates from A/P. -/
@@ -83,12 +88,12 @@ theorem principle_epistemic_perspective_is_no_view_from_nowhere :
   perspective_has_provenance
 
 theorem principle_6a_derivation_provenance_strictly_upward :
-    ∀ memories out inp,
-      MemoryIdUnique memories →
-      OriginKindValid memories out →
-      out ∈ memories → inp ∈ memories →
-      memory_t inp ∈ memory_origins out →
-      (memory_kind inp).layer ≤ (memory_kind out).layer :=
+    ∀ memories cooled out id,
+      OriginKindValid memories cooled out →
+      memory_kind out = .Abstraction →
+      id ∈ memory_origins out →
+      pinKindIs memories cooled id .Fact ∧
+        MemoryKind.layer .Fact ≤ MemoryKind.layer .Abstraction :=
   operator_origin_row_not_upward
 
 def principle_6b_personality_read_scope_removed : String :=

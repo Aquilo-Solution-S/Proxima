@@ -94,7 +94,7 @@ that distinguishes a carrier from a decoy.
 | ME-8 | Materialized personality matrix removed | structural absence of `read_scope` and matrix-version state; wake context/read semantics are role-graded Owner checks in `Wake.Firing`, not a personality matrix |
 | ME-9 | Pins live on the declaring row (E2); no edge owner column | structural: `origins`/`refs` are Memory fields. Write admission `pin_write_admitted` (source write + target read). THEOREM `cross_owner_target_admitted` |
 | ME-10 | ℓ(source) ≥ ℓ(target) for origins | def `OriginKindValid` + THEOREM `origin_layer_rule`; Fact origins empty (`fact_source_reaches_only_facts`) |
-| ME-11 | Class-legality matrix (9 cells) | RETIRED with the class vocabulary. The nine cells said exactly ℓ(source) ≥ ℓ(target) once the kinds closed at two that neither widen nor narrow the matrix (doc 02 §The Directionality Rule: "`origin` and `reference` alike"), so ME-10's `EdgeLayeringValid` carries the whole of it. `legalClasses`, `masksTightenOnly`, `edge_class_legal*` deleted |
+| ME-11 | Class-legality matrix (9 cells) | RETIRED. Layering is `OriginKindValid` / `origin_layer_rule` |
 | ME-12 | Supersession same endpoint shape (incl. Goal→Goal) | RETIRED with supersedes. Later `t` on the same handle stays on that entity axis (`Handle` vs `MemoryId`/`GoalId`) |
 | ME-13 | Index rows immutable v1 | RETIRED: there is no Edge table. Pins are fields of an append-only Memory/Goal row |
 | ME-14 | Descriptor masks tighten, never relax | RETIRED: no descriptors. `OriginKindValid` is checked on the declaring node |
@@ -102,7 +102,7 @@ that distinguishes a carrier from a decoy.
 | ME-16 | Memory id is identity | structure field `Memory.t` (`memory_t` / `memory_id`) + `MemoryIdUnique`. Series is `Memory.handle` |
 | ME-17 | Personality is emergent from Perspective/wake context, not a stored instance | structural absence in Memory.lean/Principles.lean; no Personality module; `selfPerspectives` queries existing Perspective rows by owner |
 | ME-18 | Cross-context supersession policy | excluded: wake/Perspective context semantics deferred after D4; no personality instance axis in kernel |
-| ME-19 | Relation registry: unregistered relations invalid | RETIRED with the relation layer. There is no relation to register: the kind follows the operation, so `RelationRegistry`, `RelationDescriptor`, `RelationId` and the registry parameter threaded through every edge predicate are deleted. E4 (`derived_edge_kind_follows_operation`) is what now stands between a row and existence |
+| ME-19 | Relation registry: unregistered relations invalid | RETIRED. E4 is `derived_pin_kind_follows_operation` (kind = which list) |
 | ME-20 | Core relations table (derived-from/supersedes/inspires/authored) | RETIRED: `derived-from` → `Memory.origins`; `points-at` → `Memory.refs`; `inspires` → `Goal.assignment_t`; `depends-on` → `Goal.dependency_t`; `motivated-by` → `Goal.evidence_t`; authorship → write-act Fact (`Goal.write_act_t` / produced `refs`). No supersedes |
 | ME-K1 | Text-bearing Memory rows can be model-independent knowledge artifacts | REBASED: text is sidecar. `KnowledgeArtifact.text` + THEOREMs `knowledge_artifact_has_text`, `knowledge_artifact_model_independent`, `knowledge_artifact_recoverable_by_its_kind` |
 | ME-K2 | Long-term knowledge artifact = admitted text-bearing Memory row, not one model cache | def `KnowledgeArtifactIn memories artifact`; THEOREM `long_term_knowledge_artifact_has_text_memory`; no `Truth`/`Knows`/specific LLM or human instance in core |
@@ -151,18 +151,18 @@ headline pin theorems in `Causa/Edges.lean`.
 |---|---|---|
 | GO-1 | Later `t` on a handle keeps owner | table validity `GoalTransitionValid`; projection THEOREM `goal_transition_same_owner` |
 | GO-2 | Valid lifecycle transition | def `goalTransitionAdmitted` + `goalImmediatelySucceeds` + `GoalTransitionValid`; projection THEOREM `goal_transition_admitted` |
-| GO-3 | Goal DAG acyclic | no legacy parent table and no DAG primitive. Goal↔Goal topology is the `dependency_goal_ids` column (`Goal.dependencies`), from which `reference` index rows are derived; relation-specific acyclicity is engine validation, not a Goal-row invariant |
+| GO-3 | Goal DAG acyclic | `Goal.dependency_t` pins other Goal `t`. Acyclicity is engine validation, not a Goal-row invariant |
 | GO-4 | Parents same owner | retired with Goal-local parents; the derived rows are source-owned by the declaring Goal (E2) and layer-exempt (Goal endpoints carry no layer), with no descriptor mask left to consult |
 | GO-5 | Every transition new row; no in-place mutation | `AppendOnly Goal`; later `t` on the same handle is the new version; `GoalTerminalClosed` forbids later `t` after terminal |
 | GO-6 | Goal is not Memory | structural: distinct Types |
-| GO-7 | Self is a query, never an entity/cache | structural absence + `selfGoals` / `selfPerspectives` query defs and projection theorems in Goals.lean; head-aware Perspective projection is `perspectiveHeads`, now in Memory.lean because supersession is a row pointer |
+| GO-7 | Self is a query, never an entity/cache | structural absence + `selfGoals` / `selfPerspectives`; heads via `GoalHead` / `MemoryHead` |
 | GO-8 | Active set definition (heads, state=Active) | table-scoped defs `goalIsHead` (via `GoalHead`), `activeGoals`; series traversal `GoalSeriesReachable` + `activeGoalHeadFrom` |
 | GO-9 | Goal id is identity | table validity `GoalIdUnique` on `Goal.t`; projection THEOREM `goal_id_injective`. Series is `Goal.handle` |
 | GO-10 | Authorship vocabulary | RETIRED: no authorship blob. Write-act is `Goal.write_act_t` → a Fact `t` |
 | GO-11 | GoalWrite protocol (request_id idempotency, conflict detection, stream visibility) | excluded from Goal ontology: request-id/body replay is protocol/write-atom state (doc 14), not a Goal row invariant; item 10 resolved by keeping it out of `Goal`/Self |
-| GO-12 | Assignment is the Goal row's `assignment_perspective_id`; instance-scoped active_goals query | `goalAssignedToPerspective` reads `Goal.assignment` (no edge, no relation id, no Self row) + `activeGoalsForSelf` follows `GoalSupersessionReachable` and returns Active heads; projection THEOREMs `goal_assignment_target_perspective`, `active_goal_for_self_active/_head/_has_assignment` |
+| GO-12 | Assignment is `Goal.assignment_t`; instance-scoped active_goals query | `goalAssignedToPerspective` + `activeGoalsForSelf` follows `GoalSeriesReachable`; THEOREMs `goal_assignment_target_perspective`, `active_goal_for_self_*` |
 | GO-13 | Goal-scoped wake policy; planner-first | `Goal.wake_id : Option WakeId` + reusable `WakeConfig` row; `Wake.Firing.wake_config` binds `goal_wake_id = some config.wake_id`; `actor_member` is any server-resolved role in the Goal owner; `each_action_allowed` pins invoked Actions to `WakeConfig.toolset` |
-| GO-14 | Goal assignment/evidence scope | Goal rows carry Owner; assignment/evidence are Goal ROW COLUMNS. `GoalEvidenceValid` requires every declared `evidence_memory_ids` entry to resolve to an admitted non-Perspective memory and every `SystemOperator` Goal to declare at least one; THEOREMs `system_operator_goal_has_evidence`, `goal_evidence_not_perspective`. The evidence-shape half is table validity (asserted), mirroring `validate_evidence_in_owner` / `validate_operator_goal_evidence` |
+| GO-14 | Goal assignment/evidence scope | `Goal.assignment_t` / `evidence_t`. `GoalEvidenceValid` resolves each evidence `t` to a hot or cooled non-Perspective. THEOREM `goal_evidence_not_perspective`. Operator-must-have-evidence RETIRED with authorship |
 | GO-17 | Root Goal creation shape | `GoalRootValid` + THEOREM `goal_root_active`: least-tick version on a handle is Active only |
 | GO-18 | Terminal close Fact table validity | `GoalTerminalCloseFactValid` + projection THEOREMS: close Fact is a memory-table Fact with same Owner as terminal Goal |
 
@@ -246,7 +246,7 @@ headline pin theorems in `Causa/Edges.lean`.
 |---|---|---|
 | GO-2b | Stale prior cannot be lifecycle head / one successor per prior id | REBASED: head is `GoalHead.t`. `GoalTerminalClosed` forbids later `t` after terminal. `GoalRequestUnique` is replay |
 | GO-15 | Goal title/text core retrieval text | REBASED: `goal_title` stays on the row; body text is sidecar (no `goal_text`) |
-| GO-16 | Operator-authored Goals do not carry materialized authoring personality | structural absence: no `goal_authoring_personality`; evidence is the `Goal.evidence` column, and the `reference` index rows follow from it |
+| GO-16 | Operator-authored Goals do not carry materialized authoring personality | structural absence; authorship blob RETIRED; write-act is `Goal.write_act_t` |
 | CI-17 | Cited objects / mappings schema-registered | structure fields `cited_object_schema`/`citation_mapping_schema : SchemaRef` (schema-typed); registration is engine admission (D16) |
 | ST-EdgeId | source-ingest edges content-hash id vs UUIDv7 | RETIRED with the column it constrained. There is no edge id: `EdgeId`, `ContentHash`, `EdgeUuid`, `EdgeIdAuthorshipValid` and `edge_id_authorship_split` are all deleted, and E5 (`edge_key_determines_row`) gives structurally what the identity hash approximated. The row that carried this cell also carried the only reference to a numbered "AGENTS.md invariant 17" — no such numbered ledger exists there, so the anchor is dropped rather than repointed |
 
