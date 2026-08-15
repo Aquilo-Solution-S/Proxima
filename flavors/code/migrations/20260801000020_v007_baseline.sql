@@ -1120,7 +1120,7 @@ CREATE TRIGGER work_requested_v1_append_only BEFORE UPDATE ON proxima_code.work_
 --
 
 ALTER TABLE ONLY proxima_code.acceptance_criteria_v1
-    ADD CONSTRAINT acceptance_criteria_v1_memory_id_fkey FOREIGN KEY (memory_id) REFERENCES proxima_core.memories(memory_id);
+    ADD CONSTRAINT acceptance_criteria_v1_memory_id_fkey FOREIGN KEY (memory_id) REFERENCES proxima_core.memory(t);
 
 
 --
@@ -1128,7 +1128,7 @@ ALTER TABLE ONLY proxima_code.acceptance_criteria_v1
 --
 
 ALTER TABLE ONLY proxima_code.acceptance_criteria_v1
-    ADD CONSTRAINT acceptance_criteria_v1_work_item_memory_id_fkey FOREIGN KEY (work_item_memory_id) REFERENCES proxima_core.memories(memory_id);
+    ADD CONSTRAINT acceptance_criteria_v1_work_item_memory_id_fkey FOREIGN KEY (work_item_memory_id) REFERENCES proxima_core.memory(t);
 
 
 --
@@ -1144,7 +1144,7 @@ ALTER TABLE ONLY proxima_code.acceptance_criterion_v1
 --
 
 ALTER TABLE ONLY proxima_code.acceptance_summary_v1
-    ADD CONSTRAINT acceptance_summary_v1_memory_id_fkey FOREIGN KEY (memory_id) REFERENCES proxima_core.memories(memory_id);
+    ADD CONSTRAINT acceptance_summary_v1_memory_id_fkey FOREIGN KEY (memory_id) REFERENCES proxima_core.memory(t);
 
 
 --
@@ -1152,7 +1152,7 @@ ALTER TABLE ONLY proxima_code.acceptance_summary_v1
 --
 
 ALTER TABLE ONLY proxima_code.acceptance_summary_v1
-    ADD CONSTRAINT acceptance_summary_v1_work_item_memory_id_fkey FOREIGN KEY (work_item_memory_id) REFERENCES proxima_core.memories(memory_id);
+    ADD CONSTRAINT acceptance_summary_v1_work_item_memory_id_fkey FOREIGN KEY (work_item_memory_id) REFERENCES proxima_core.memory(t);
 
 
 --
@@ -1160,7 +1160,7 @@ ALTER TABLE ONLY proxima_code.acceptance_summary_v1
 --
 
 ALTER TABLE ONLY proxima_code.acceptance_verification_v1
-    ADD CONSTRAINT acceptance_verification_v1_memory_id_fkey FOREIGN KEY (memory_id) REFERENCES proxima_core.memories(memory_id);
+    ADD CONSTRAINT acceptance_verification_v1_memory_id_fkey FOREIGN KEY (memory_id) REFERENCES proxima_core.memory(t);
 
 
 --
@@ -1168,7 +1168,7 @@ ALTER TABLE ONLY proxima_code.acceptance_verification_v1
 --
 
 ALTER TABLE ONLY proxima_code.acceptance_verification_v1
-    ADD CONSTRAINT acceptance_verification_v1_verifier_memory_id_fkey FOREIGN KEY (verifier_memory_id) REFERENCES proxima_core.memories(memory_id);
+    ADD CONSTRAINT acceptance_verification_v1_verifier_memory_id_fkey FOREIGN KEY (verifier_memory_id) REFERENCES proxima_core.memory(t);
 
 
 --
@@ -1176,7 +1176,7 @@ ALTER TABLE ONLY proxima_code.acceptance_verification_v1
 --
 
 ALTER TABLE ONLY proxima_code.acceptance_verification_v1
-    ADD CONSTRAINT acceptance_verification_v1_work_item_memory_id_fkey FOREIGN KEY (work_item_memory_id) REFERENCES proxima_core.memories(memory_id);
+    ADD CONSTRAINT acceptance_verification_v1_work_item_memory_id_fkey FOREIGN KEY (work_item_memory_id) REFERENCES proxima_core.memory(t);
 
 
 --
@@ -1192,7 +1192,7 @@ ALTER TABLE ONLY proxima_code.code_chunk_call_v1
 --
 
 ALTER TABLE ONLY proxima_code.work_assignment_v1
-    ADD CONSTRAINT work_assignment_v1_memory_id_fkey FOREIGN KEY (memory_id) REFERENCES proxima_core.memories(memory_id);
+    ADD CONSTRAINT work_assignment_v1_memory_id_fkey FOREIGN KEY (memory_id) REFERENCES proxima_core.memory(t);
 
 
 --
@@ -1200,7 +1200,7 @@ ALTER TABLE ONLY proxima_code.work_assignment_v1
 --
 
 ALTER TABLE ONLY proxima_code.work_assignment_v1
-    ADD CONSTRAINT work_assignment_v1_target_perspective_memory_id_fkey FOREIGN KEY (target_perspective_memory_id) REFERENCES proxima_core.memories(memory_id);
+    ADD CONSTRAINT work_assignment_v1_target_perspective_memory_id_fkey FOREIGN KEY (target_perspective_memory_id) REFERENCES proxima_core.memory(t);
 
 
 --
@@ -1208,7 +1208,7 @@ ALTER TABLE ONLY proxima_code.work_assignment_v1
 --
 
 ALTER TABLE ONLY proxima_code.work_assignment_v1
-    ADD CONSTRAINT work_assignment_v1_work_item_memory_id_fkey FOREIGN KEY (work_item_memory_id) REFERENCES proxima_core.memories(memory_id);
+    ADD CONSTRAINT work_assignment_v1_work_item_memory_id_fkey FOREIGN KEY (work_item_memory_id) REFERENCES proxima_core.memory(t);
 
 
 --
@@ -1230,7 +1230,7 @@ CREATE INDEX idx_work_assignment_work_item ON proxima_code.work_assignment_v1 US
 --
 
 ALTER TABLE ONLY proxima_code.code_chunk_v1
-    ADD CONSTRAINT code_chunk_v1_memory_id_fkey FOREIGN KEY (memory_id) REFERENCES proxima_core.memories(memory_id);
+    ADD CONSTRAINT code_chunk_v1_memory_id_fkey FOREIGN KEY (memory_id) REFERENCES proxima_core.memory(t);
 
 
 --
@@ -1238,7 +1238,7 @@ ALTER TABLE ONLY proxima_code.code_chunk_v1
 --
 
 ALTER TABLE ONLY proxima_code.commit_summarizer_self_v1
-    ADD CONSTRAINT commit_summarizer_self_v1_memory_id_fkey FOREIGN KEY (memory_id) REFERENCES proxima_core.memories(memory_id);
+    ADD CONSTRAINT commit_summarizer_self_v1_memory_id_fkey FOREIGN KEY (memory_id) REFERENCES proxima_core.memory(t);
 
 
 --
@@ -1246,7 +1246,7 @@ ALTER TABLE ONLY proxima_code.commit_summarizer_self_v1
 --
 
 ALTER TABLE ONLY proxima_code.commit_summary_v1
-    ADD CONSTRAINT commit_summary_v1_memory_id_fkey FOREIGN KEY (memory_id) REFERENCES proxima_core.memories(memory_id);
+    ADD CONSTRAINT commit_summary_v1_memory_id_fkey FOREIGN KEY (memory_id) REFERENCES proxima_core.memory(t);
 
 
 --
@@ -1254,7 +1254,7 @@ ALTER TABLE ONLY proxima_code.commit_summary_v1
 --
 
 ALTER TABLE ONLY proxima_code.commit_v1
-    ADD CONSTRAINT commit_v1_memory_id_fkey FOREIGN KEY (memory_id) REFERENCES proxima_core.memories(memory_id);
+    ADD CONSTRAINT commit_v1_memory_id_fkey FOREIGN KEY (memory_id) REFERENCES proxima_core.memory(t);
 
 
 --
@@ -1262,7 +1262,7 @@ ALTER TABLE ONLY proxima_code.commit_v1
 --
 
 ALTER TABLE ONLY proxima_code.development_perspective_v1
-    ADD CONSTRAINT development_perspective_v1_memory_id_fkey FOREIGN KEY (memory_id) REFERENCES proxima_core.memories(memory_id);
+    ADD CONSTRAINT development_perspective_v1_memory_id_fkey FOREIGN KEY (memory_id) REFERENCES proxima_core.memory(t);
 
 
 --
@@ -1270,7 +1270,7 @@ ALTER TABLE ONLY proxima_code.development_perspective_v1
 --
 
 ALTER TABLE ONLY proxima_code.engineer_self_v1
-    ADD CONSTRAINT engineer_self_v1_memory_id_fkey FOREIGN KEY (memory_id) REFERENCES proxima_core.memories(memory_id);
+    ADD CONSTRAINT engineer_self_v1_memory_id_fkey FOREIGN KEY (memory_id) REFERENCES proxima_core.memory(t);
 
 
 --
@@ -1286,7 +1286,7 @@ ALTER TABLE ONLY proxima_code.execution_plan_item_v1
 --
 
 ALTER TABLE ONLY proxima_code.execution_plan_v1
-    ADD CONSTRAINT execution_plan_v1_goal_activated_memory_id_fkey FOREIGN KEY (goal_activated_memory_id) REFERENCES proxima_core.memories(memory_id);
+    ADD CONSTRAINT execution_plan_v1_goal_activated_memory_id_fkey FOREIGN KEY (goal_activated_memory_id) REFERENCES proxima_core.memory(t);
 
 
 --
@@ -1294,7 +1294,7 @@ ALTER TABLE ONLY proxima_code.execution_plan_v1
 --
 
 ALTER TABLE ONLY proxima_code.execution_plan_v1
-    ADD CONSTRAINT execution_plan_v1_memory_id_fkey FOREIGN KEY (memory_id) REFERENCES proxima_core.memories(memory_id);
+    ADD CONSTRAINT execution_plan_v1_memory_id_fkey FOREIGN KEY (memory_id) REFERENCES proxima_core.memory(t);
 
 
 --
@@ -1302,7 +1302,7 @@ ALTER TABLE ONLY proxima_code.execution_plan_v1
 --
 
 ALTER TABLE ONLY proxima_code.execution_result_v1
-    ADD CONSTRAINT execution_result_v1_memory_id_fkey FOREIGN KEY (memory_id) REFERENCES proxima_core.memories(memory_id);
+    ADD CONSTRAINT execution_result_v1_memory_id_fkey FOREIGN KEY (memory_id) REFERENCES proxima_core.memory(t);
 
 
 --
@@ -1310,7 +1310,7 @@ ALTER TABLE ONLY proxima_code.execution_result_v1
 --
 
 ALTER TABLE ONLY proxima_code.execution_result_v1
-    ADD CONSTRAINT execution_result_v1_work_requested_memory_id_fkey FOREIGN KEY (work_requested_memory_id) REFERENCES proxima_core.memories(memory_id);
+    ADD CONSTRAINT execution_result_v1_work_requested_memory_id_fkey FOREIGN KEY (work_requested_memory_id) REFERENCES proxima_core.memory(t);
 
 
 --
@@ -1318,7 +1318,7 @@ ALTER TABLE ONLY proxima_code.execution_result_v1
 --
 
 ALTER TABLE ONLY proxima_code.file_revision_v1
-    ADD CONSTRAINT file_revision_v1_memory_id_fkey FOREIGN KEY (memory_id) REFERENCES proxima_core.memories(memory_id);
+    ADD CONSTRAINT file_revision_v1_memory_id_fkey FOREIGN KEY (memory_id) REFERENCES proxima_core.memory(t);
 
 
 --
@@ -1342,7 +1342,7 @@ ALTER TABLE ONLY proxima_code.test_requested_criterion_v1
 --
 
 ALTER TABLE ONLY proxima_code.test_requested_v1
-    ADD CONSTRAINT test_requested_v1_memory_id_fkey FOREIGN KEY (memory_id) REFERENCES proxima_core.memories(memory_id);
+    ADD CONSTRAINT test_requested_v1_memory_id_fkey FOREIGN KEY (memory_id) REFERENCES proxima_core.memory(t);
 
 
 --
@@ -1350,7 +1350,7 @@ ALTER TABLE ONLY proxima_code.test_requested_v1
 --
 
 ALTER TABLE ONLY proxima_code.test_result_v1
-    ADD CONSTRAINT test_result_v1_memory_id_fkey FOREIGN KEY (memory_id) REFERENCES proxima_core.memories(memory_id);
+    ADD CONSTRAINT test_result_v1_memory_id_fkey FOREIGN KEY (memory_id) REFERENCES proxima_core.memory(t);
 
 
 --
@@ -1358,7 +1358,7 @@ ALTER TABLE ONLY proxima_code.test_result_v1
 --
 
 ALTER TABLE ONLY proxima_code.test_result_v1
-    ADD CONSTRAINT test_result_v1_test_requested_memory_id_fkey FOREIGN KEY (test_requested_memory_id) REFERENCES proxima_core.memories(memory_id);
+    ADD CONSTRAINT test_result_v1_test_requested_memory_id_fkey FOREIGN KEY (test_requested_memory_id) REFERENCES proxima_core.memory(t);
 
 
 --
@@ -1366,6 +1366,6 @@ ALTER TABLE ONLY proxima_code.test_result_v1
 --
 
 ALTER TABLE ONLY proxima_code.work_requested_v1
-    ADD CONSTRAINT work_requested_v1_memory_id_fkey FOREIGN KEY (memory_id) REFERENCES proxima_core.memories(memory_id);
+    ADD CONSTRAINT work_requested_v1_memory_id_fkey FOREIGN KEY (memory_id) REFERENCES proxima_core.memory(t);
 
 

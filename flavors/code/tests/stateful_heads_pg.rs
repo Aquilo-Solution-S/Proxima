@@ -46,6 +46,9 @@ fn fresh_draft(_owner: Owner, schema: &str, payload: &[u8]) -> FactWriteCommand 
     FactWriteCommand {
         schema_id: SchemaId::new(schema.into()),
         schema_version: SchemaVersion::new(1),
+        handle: None,
+        source_id: None,
+        ingest_key: None,
         payload: payload.to_vec(),
         rendered_text: None,
         lexical_language: None,
@@ -67,6 +70,9 @@ fn fresh_draft(_owner: Owner, schema: &str, payload: &[u8]) -> FactWriteCommand 
             },
         }),
         derived_from: Vec::new(),
+        refs: Vec::new(),
+        blob_id: None,
+        kind: "fact".into(),
     }
 }
 

@@ -2458,6 +2458,9 @@ fn fact_draft(_owner: Owner, schema_id: &str, payload: &[u8]) -> FactWriteComman
     FactWriteCommand {
         schema_id: SchemaId::new(schema_id.into()),
         schema_version: SchemaVersion::new(1),
+        handle: None,
+        source_id: None,
+        ingest_key: None,
         payload: payload.to_vec(),
         rendered_text: None,
         lexical_language: None,
@@ -2479,6 +2482,9 @@ fn fact_draft(_owner: Owner, schema_id: &str, payload: &[u8]) -> FactWriteComman
             },
         }),
         derived_from: Vec::new(),
+        refs: Vec::new(),
+        blob_id: None,
+        kind: "fact".into(),
     }
 }
 
