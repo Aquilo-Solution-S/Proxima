@@ -157,6 +157,15 @@ pub struct FactWriteCommand {
     /// the declaration, and a receipt replay must stay a replay.
     #[serde(default, skip)]
     pub derived_from: Vec<EdgeEndpoint>,
+    /// Observation-neutral pins (visit, write-act, parent).
+    #[serde(default, skip)]
+    pub refs: Vec<Uuid>,
+    /// F/A citation. Perspectives must leave this `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blob_id: Option<Uuid>,
+    /// `fact` | `abstraction` | `perspective`. Default fact.
+    #[serde(default)]
+    pub kind: String,
 }
 
 /// Proof that a Fact write passed authorization + schema validation
@@ -637,6 +646,9 @@ impl FactWriteCommand {
             }),
             citation: None,
             derived_from: Vec::new(),
+            refs: Vec::new(),
+            blob_id: None,
+            kind: "fact".into(),
         }
     }
 
@@ -750,6 +762,9 @@ mod tests {
             }),
             citation: None,
             derived_from: Vec::new(),
+            refs: Vec::new(),
+            blob_id: None,
+            kind: "fact".into(),
         }
     }
 
@@ -795,6 +810,9 @@ mod tests {
             }),
             citation: None,
             derived_from: Vec::new(),
+            refs: Vec::new(),
+            blob_id: None,
+            kind: "fact".into(),
         };
         assert_eq!(
             hex::encode(

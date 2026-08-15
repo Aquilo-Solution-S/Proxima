@@ -151,6 +151,9 @@ where
         }),
         citation: None,
         derived_from,
+        refs: Vec::new(),
+        blob_id: None,
+        kind: "fact".into(),
     };
     if permit.owner() != owner {
         return Err(StorageError::ConstraintViolation(

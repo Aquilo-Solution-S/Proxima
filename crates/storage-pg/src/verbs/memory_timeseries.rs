@@ -62,6 +62,29 @@ pub async fn ingest_fact_timeseries(
         ));
     }
 
+    let kind = if draft.kind.is_empty() {
+        "fact"
+    } else {
+        draft.kind.as_str()
+    };
+    if !matches!(kind, "fact" | "abstraction" | "perspective") {
+        return Err(StorageError::ConstraintViolation(
+            "kind must be fact, abstraction, or perspective".into(),
+        ));
+    }
+    if kind != "fact" && (source_id.is_some() || ingest_key.is_some()) {
+        return Err(StorageError::ConstraintViolation(
+            "A/P cannot carry source_id/ingest_key".into(),
+        ));
+    }
+
+    let origins: Vec<Uuid> = draft
+        .derived_from
+        .iter()
+        .filter_map(|ep| ep.memory_id().map(proxima_core::MemoryId::into_inner))
+        .collect();
+    let refs = draft.refs.clone();
+
     let handle = draft.handle.unwrap_or_else(Uuid::now_v7);
     let t: Uuid = sqlx::query_scalar("SELECT uuidv7()")
         .fetch_one(tx.as_mut())
@@ -112,14 +135,15 @@ pub async fn ingest_fact_timeseries(
 
     let head = sqlx::query(
         "INSERT INTO proxima_core.memory_head (handle, kind, schema_id, owner_id, t)
-         VALUES ($1, 'fact', $2, $3, $4)
+         VALUES ($1, $2::proxima_core.memory_kind, $3, $4, $5)
          ON CONFLICT (handle) DO UPDATE SET t = EXCLUDED.t
-         WHERE proxima_core.memory_head.kind = 'fact'
+         WHERE proxima_core.memory_head.kind = EXCLUDED.kind
            AND proxima_core.memory_head.schema_id = EXCLUDED.schema_id
            AND proxima_core.memory_head.owner_id = EXCLUDED.owner_id
          RETURNING handle",
     )
     .bind(handle)
+    .bind(kind)
     .bind(draft.schema_id.as_str())
     .bind(owner_id)
     .bind(t)
@@ -134,14 +158,18 @@ pub async fn ingest_fact_timeseries(
 
     sqlx::query(
         "INSERT INTO proxima_core.memory
-            (handle, t, kind, owner_id, source_id, ingest_key, origins, refs)
-         VALUES ($1, $2, 'fact', $3, $4, $5, '{}', '{}')",
+            (handle, t, kind, owner_id, source_id, ingest_key, blob_id, origins, refs)
+         VALUES ($1, $2, $3::proxima_core.memory_kind, $4, $5, $6, $7, $8, $9)",
     )
     .bind(handle)
     .bind(t)
+    .bind(kind)
     .bind(owner_id)
     .bind(source_id.as_deref())
     .bind(ingest_key.as_deref())
+    .bind(draft.blob_id)
+    .bind(&origins)
+    .bind(&refs)
     .execute(tx.as_mut())
     .await
     .map_err(map_err)?;

@@ -47,6 +47,9 @@ mod pg_tests {
             }),
             citation: None,
             derived_from: Vec::new(),
+            refs: Vec::new(),
+            blob_id: None,
+            kind: "fact".into(),
         }
     }
 
