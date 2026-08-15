@@ -229,12 +229,8 @@ pub async fn ensure_core_ledger_compatible(pool: &PgPool) -> Result<(), StorageE
     )))
 }
 
-/// Minimum applied core migration version for the current release lane,
-/// derived from the embedded migration set: the newest core migration this
-/// binary ships is, by definition, the lane a `skip_migrations` boot must
-/// find applied. Derived rather than declared so there is nothing to bump —
-/// or forget to bump — at release time (the v0.0.7 audit caught exactly that
-/// omission when this was a hand-maintained constant).
+/// Minimum applied core migration version for the current release lane:
+/// newest embedded core migration. Derived, not a hand-maintained constant.
 ///
 /// # Panics
 ///

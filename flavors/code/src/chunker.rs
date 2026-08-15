@@ -66,15 +66,9 @@ pub struct Chunk {
 /// invalid byte sequence for encoding "UTF8": 0x00
 /// ```
 ///
-/// That killed the **whole HEAD snapshot**, not just the offending file, so
-/// a repository with one such file among thousands could not be indexed at
-/// all. Observed exactly that way: a single stray `NUL` in one source file
-/// of this repository failed `self_ingestion_pg` outright.
-///
-/// Treating it as binary is not a workaround, it is the rule `git` itself
-/// uses to classify a file as binary — and it keeps a value Postgres cannot
-/// store from being constructed at all, rather than discovering that at the
-/// insert.
+/// That killed the **whole HEAD snapshot**, not just the offending file.
+/// Treating it as binary is the rule `git` itself uses, and it keeps a
+/// value Postgres cannot store from being constructed at all.
 #[must_use]
 pub fn chunk_blob(file_path: &str, content: &[u8]) -> Vec<Chunk> {
     if content.len() > MAX_BLOB_BYTES {
@@ -277,14 +271,9 @@ fn is_chunk_candidate(node: &Node) -> bool {
 ///
 /// Comments are *not* skipped. In tree-sitter-rust a doc comment is a
 /// sibling of the item it documents rather than part of it, so excluding
-/// comment nodes here dropped every `///` and `//!` block from the corpus
-/// — measured over this repository's 444 indexed Rust files, chunk spans
-/// covered 95.3% of source bytes overall but only 14.2% of
-/// `flavors/code/src/migrations.rs` and 65.9% of `crates/core/src/llm.rs`,
-/// because byte loss lands exactly on the files that carry their reasoning
-/// in prose. Letting comments merge normally puts a doc comment in the same
-/// greedy buffer as the item that follows it, which is also the grouping a
-/// reader would choose.
+/// comment nodes here drops every `///` and `//!` block. Letting comments
+/// merge normally puts a doc comment in the same greedy buffer as the
+/// item that follows it.
 ///
 /// `node.is_named()` already excludes the anonymous `//` / `/*` / `*/`
 /// tokens; the named `comment`, `line_comment` and `block_comment` kinds
@@ -582,9 +571,7 @@ mod tests {
     }
 
     /// A doc comment is a *sibling* of the item it documents in the Rust
-    /// grammar, so the merge loop is the only thing that can keep it. It
-    /// used to skip comment nodes outright, which silently dropped every
-    /// `///` and `//!` block in the corpus.
+    /// grammar, so the merge loop is the only thing that can keep it.
     #[test]
     fn rust_doc_comments_are_indexed() {
         let src = "\

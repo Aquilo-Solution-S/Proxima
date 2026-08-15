@@ -112,10 +112,8 @@ pub(crate) async fn bootstrap_group_admin(
     first_admin_user_id: UserId,
     _granted_by: uuid::Uuid,
 ) -> Result<(), StorageError> {
-    // Retry the whole transaction on a transient deadlock/serialization
-    // failure, like every other atomic writer (fact ingest, MCP call log,
-    // goal commands): this advisory-locked membership write previously had
-    // no retry at all, so a 40P01/40001 surfaced straight to the host.
+    // Retry the whole transaction on transient deadlock/serialization,
+    // like the other atomic writers.
     with_bounded_retry(move || async move {
         let mut tx = pool.begin().await.map_err(internal)?;
         lock_group_membership_tx(&mut tx, group_id).await?;

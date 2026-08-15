@@ -302,9 +302,8 @@ async fn an_unknown_action_on_a_flavor_dispatcher_is_refused_at_the_gate() {
     );
 }
 
-/// Strict pre-decode validation is a dispatcher property, not a substrate
-/// one. `try_add_tool` used to store empty specs, so `validate_action_args`
-/// short-circuited and every variant's fields were accepted on every action.
+/// Strict pre-decode validation is a dispatcher property: arguments are
+/// checked per action before decode.
 #[tokio::test]
 async fn a_flavor_dispatcher_validates_arguments_per_action_before_decode() {
     let registry = frozen();

@@ -2,18 +2,12 @@ use proxima_core::{EntityKind, MemoryId, PayloadReference, PerspectivePayload, p
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-/// "This worker should pick up that request" — the node that replaced the
-/// `proxima-code/targets-execution-request` relation.
+/// "This worker should pick up that request."
 ///
-/// The statement could not stay where the edge used to put it. Its
-/// endpoints are a worker Perspective and a request Fact, and a Fact
-/// asserts no judgment, so the request cannot be the source; the target
-/// Perspective already exists and rows are append-only, so it cannot be
-/// amended to say it either. Neither endpoint owns the claim, which by
-/// the node-home test (docs/16 §The Thesis) means the model was missing a
-/// node rather than an edge kind. This is that node: a Perspective whose
-/// payload references both subjects, so the two `reference` index rows
-/// are re-derivable from it and nothing writes an edge.
+/// Endpoints are a worker Perspective and a request Fact. A Fact asserts
+/// no judgment; the target Perspective is append-only. Neither endpoint
+/// owns the claim (docs/16 §The Thesis): this Perspective references both,
+/// so the two `reference` index rows are re-derivable.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct CodeWorkAssignmentV1 {
     #[schemars(description = "Repo the assigned work item belongs to.")]

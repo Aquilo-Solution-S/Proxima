@@ -105,9 +105,8 @@ mod tests {
                 .expect("pending transition wins"),
             FinishTransitionDecision::WonPending
         );
-        // The case that used to be reported as "aborted/expired": another
-        // caller finished this upload against the same artefact. The write
-        // the caller is being told about has already committed.
+        // Concurrent finish against the same artefact: the write has
+        // already committed.
         assert_eq!(
             finish_transition_decision(UploadStatus::Completed, Some(object), object, 0)
                 .expect("a concurrent finish against the same artefact is idempotent"),

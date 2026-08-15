@@ -59,10 +59,7 @@ async fn failed_embedding_jobs_retry_until_attempt_cap() -> Result<(), Box<dyn s
                 "last_error must preserve the embedding failure"
             );
 
-            // Backoff: a pending retry is NOT immediately re-claimable, so
-            // a second drain right away burns no attempt (the hot-loop that
-            // previously spent all attempts in seconds). Only after the backoff
-            // window elapses does the next attempt run.
+            // Backoff: a pending retry is not immediately re-claimable.
             if attempt < EMBEDDING_JOB_MAX_ATTEMPTS {
                 let immediate = engine.drain_embedding_jobs(10).await?;
                 assert_eq!(
@@ -103,10 +100,8 @@ async fn transient_failure_releases_claim_without_burning_attempts()
             )
             .await?;
 
-        // A transient provider failure (429/5xx/network) says nothing about
-        // this job; the claim is released instead of burning one of its five
-        // attempts. Before this rule, a provider outage lasting a few drain
-        // passes marched entire queues into the terminal `failed` state.
+        // Transient provider failure says nothing about this job; release
+        // the claim without burning an attempt.
         let drain = engine.drain_embedding_jobs(10).await?;
         assert_eq!(drain.processed, 0);
         assert_eq!(drain.failed, 0);
@@ -188,10 +183,8 @@ async fn permanently_rejected_input_goes_terminal_and_batch_mates_still_embed()
             "terminal cause must carry the permanent marker, got {last_error:?}"
         );
 
-        // Reconcile requeues retry-exhausted jobs but must NOT resurrect a
-        // permanently rejected input — the provider would reject it again,
-        // forever. (This is the startup-heal path that previously turned
-        // one oversized memory into an immortal retry loop.)
+        // Reconcile requeues retry-exhausted jobs but must not resurrect a
+        // permanently rejected input — the provider would reject it forever.
         let reconciled = pg
             .reconcile_embeddings(EmbeddingReconcileOptions {
                 non_embeddable_schemas: &[],
@@ -308,18 +301,11 @@ async fn long_input_rejected_at_every_length_still_goes_terminal()
 
 /// One input that kills the provider must not hold its batch-mates.
 ///
-/// A transient batch error is meant to say "the provider failed", not "an
-/// input is bad" — but a provider that dies *because of* an input reports
-/// the same thing. Releasing the whole claim then means the poisonous input
-/// comes back with its batch on every drain, forever: the release path does
-/// not burn attempts, so the job never reaches the cap and never goes
-/// terminal. Observed in practice on a book ingest — one scanned page whose
-/// OCR hallucinated a 300-row CJK table left the other 31 pages of its
-/// batch unembedded with `attempts = 0`.
-///
-/// The drain now probes the provider after a transient batch failure. It
-/// answers, so the batch's own contents are at fault and the jobs are
-/// isolated individually.
+/// A provider that dies *because of* an input reports the same transient
+/// as an outage. Releasing the whole claim then requeues the poison with
+/// its batch forever: the release path burns no attempts, so the job never
+/// reaches the cap. After a transient batch failure, probe the provider;
+/// if it answers, isolate the jobs individually.
 #[tokio::test]
 async fn one_crashing_input_does_not_block_its_batch() -> Result<(), Box<dyn std::error::Error>> {
     let (pg, db_name) = fresh_pg().await;

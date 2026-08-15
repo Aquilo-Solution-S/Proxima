@@ -20,9 +20,8 @@ pub trait EmbeddingTextPort: Send + Sync {
     /// [`crate::FactPayload::EMBEDDABLE`] `= false` has no text to embed,
     /// however it is reached. The exclusion lives here, not only at the
     /// enqueue sites, because a caller holding a `MemoryId` can ask to
-    /// embed one row directly and never passes through a job queue —
-    /// which is how the declaration used to be bypassed. Empty slice =
-    /// exclude nothing.
+    /// embed one row directly and never passes through a job queue.
+    /// Empty slice = exclude nothing.
     async fn load_embedding_text(
         &self,
         owner: &Owner,

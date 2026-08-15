@@ -6,19 +6,12 @@
 //! The only authenticator that ships lives in `proxima-auth-oidc`, and an
 //! out-of-tree flavor takes exactly ONE dependency on this repository (the
 //! facade) so its lockfile cannot drift between two revisions of the same
-//! tree. Between those two facts, `Proxima::app().authenticator(..)` was a
-//! builder method whose argument no out-of-tree caller could construct: the
-//! method was public, the type was unreachable, and the practical effect was
-//! that **only in-tree binaries could serve MCP at all**.
+//! tree. The env parse therefore lives here: `Proxima::app().authenticator(..)`
+//! would otherwise take an argument no out-of-tree caller can construct.
 //!
-//! That is the same shape as every other gap found at this boundary — not a
-//! missing capability, an unnameable type — and the fix is the same: name
-//! it here, once, with the env parsing that every host would otherwise copy.
-//!
-//! IT IS THE ENV CONTRACT, NOT A CONVENIENCE. `PROXIMA_OIDC_*` is what
-//! `apps/proxima-mcp` has always read, and this function is now the single
-//! implementation of it — that binary delegates here rather than keeping a
-//! second copy that could answer differently for the same variables.
+//! IT IS THE ENV CONTRACT, NOT A CONVENIENCE. Single implementation of
+//! `PROXIMA_OIDC_*`; `apps/proxima-mcp` delegates here rather than keeping
+//! a second copy that could answer differently for the same variables.
 
 use std::collections::HashSet;
 use std::sync::Arc;

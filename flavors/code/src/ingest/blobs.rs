@@ -33,8 +33,7 @@ const CODE_SLICE_OPERATOR_MODEL: &str = "proxima-code/local-git-source";
 ///
 /// Bump it whenever the bytes a chunk carries stop being a pure function of
 /// its position: chunker boundaries, `render_code_slice`, the payload's
-/// stored fields. v2 is v0.0.7 — comments joined the chunk text, and the
-/// render gained the chunk body.
+/// stored fields.
 ///
 /// Bumping it does **not** make an existing index re-derive itself. A HEAD
 /// snapshot skips files whose blob hash has not moved, and that skip cannot
@@ -43,9 +42,8 @@ const CODE_SLICE_OPERATOR_MODEL: &str = "proxima-code/local-git-source";
 /// so re-deriving an unchanged file would stamp new chunks with a batch its
 /// already-receipted Fact does not belong to. The supported path is
 /// `proxima-code_erase_repo` followed by a fresh register and ingest, which
-/// produces new Facts in new batches. What this constant guarantees is
-/// narrower and still worth having: the two derivations can never collide on
-/// an id, so a stale chunk cannot masquerade as a current one.
+/// produces new Facts in new batches. The two derivations can never collide
+/// on an id, so a stale chunk cannot masquerade as a current one.
 const CODE_SLICE_IDENTITY: &[u8] = b"proxima-code/code-slice:local-git-file-facts-v3";
 const CODE_SLICE_PROMPT_VERSION: &str = "code-slice-v3";
 
@@ -336,18 +334,9 @@ fn code_slice_memory_id(payload: &CodeChunkV1, source_file_revision: MemoryId) -
 ///
 /// The render is `memories.text`, and `memories.text` is what the embedding
 /// pipeline embeds (`fact_embeddings::text::load_embedding_text`) and what
-/// `memories.search_tsv` is generated from. While this returned the header
-/// alone, every code-chunk embedding in a corpus was a 1024-d encoding of a
-/// file path and two line numbers, and `core_search_memories` could only
-/// ever retrieve code whose *filename* resembled the question. Measured on
-/// this repository's own index, asking where an over-limit embedding input
-/// gets split returned five chunks of `flavors/code/src/chunker.rs` — the
-/// path contains "chunker" — with a lexical score of exactly 0.0 on every
-/// row, and never returned `crates/core/src/llm.rs`, which is the answer.
-///
-/// The header stays because it is what makes a retrieved chunk actionable:
-/// the agent needs to know which file and lines it is looking at, and the
-/// path also carries real lexical signal.
+/// `memories.search_tsv` is generated from. Header plus body: the header
+/// makes a retrieved chunk actionable (file and lines) and carries lexical
+/// signal from the path; the body is what a question about the code matches.
 fn render_code_slice(payload: &CodeChunkV1) -> String {
     match payload.state {
         crate::payloads::FileState::Present => format!(

@@ -17,10 +17,8 @@ pub struct McpToolDescriptor {
     pub origin: McpToolOrigin,
     pub produces_schema_ids: &'static [&'static str],
     pub args_schema: serde_json::Value,
-    /// JSON Schema for what the tool answers with, derived from its `Output`
-    /// type. `produces_schema_ids` names the *registry* payloads a tool
-    /// writes; this describes the tool's own reply envelope, which is a
-    /// different thing and was previously undescribed.
+    /// JSON Schema for the tool's reply envelope. `produces_schema_ids` names
+    /// the registry payloads it writes — a different thing.
     pub output_schema: serde_json::Value,
     pub action_arg_specs: &'static [McpActionArgSpec],
     /// What a flat tool declared about its own behaviour, or `None` when it
@@ -228,9 +226,8 @@ pub(crate) fn validate_action_args(
 /// Validate a *flat* (non-dispatcher) MCP tool's arguments: coerce the
 /// `space`/`spaces` arity aliases against the tool's schema, then reject any
 /// top-level key not declared as a schema property. Dispatcher tools run
-/// [`validate_action_args`] instead; flat tools previously short-circuited on
-/// empty specs and silently accepted (and dropped) unknown fields — a
-/// mistyped `space` on `core_search_memories` searched the wrong owner.
+/// [`validate_action_args`] instead. A mistyped `space` on
+/// `core_search_memories` would otherwise search the wrong owner.
 pub(crate) fn prepare_flat_tool_args(
     tool_name: &str,
     properties: &[String],

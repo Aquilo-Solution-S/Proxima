@@ -13,9 +13,7 @@ use crate::verbs::schema::SchemaTombstone;
 use crate::{GoalId, MemoryId, Owner, OwnerRef, SchemaId, SchemaVersion, SidecarPayload};
 
 /// Re-export the canonical `EntityKind` from `change_event` so query
-/// callers don't need a second import path. The duplicate
-/// definition that lived here previously produced two identical
-/// types.
+/// callers don't need a second import path.
 pub use crate::change_event::EntityKind;
 
 #[derive(

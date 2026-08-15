@@ -92,11 +92,9 @@ const CLAIMS_MIN_ONE: &[&str] = &[
 /// Phrases a description uses to introduce a ceiling, each followed
 /// immediately by the number.
 ///
-/// Deliberately a closed list rather than a general parser. The throwaway
-/// harness that first went looking for these used loose regexes and
-/// produced four false positives before it produced a true finding —
-/// bounds written as free prose cannot be matched reliably. A closed list
-/// under-reports rather than over-reports, and a missed bound costs one
+/// Deliberately a closed list rather than a general parser. Bounds
+/// written as free prose cannot be matched reliably. A closed list
+/// under-reports rather than over-reports: a missed bound costs one
 /// undeclared keyword while a false one costs a suite nobody trusts.
 const CEILING_PHRASES: &[&str] = &["1 to ", "at most ", "At most "];
 
@@ -767,11 +765,8 @@ mod tests {
         bare: String,
     }
 
-    /// The prose parser is the part of this check most likely to be wrong,
-    /// so it is pinned against the phrasings that actually ship rather than
-    /// against invented ones. The throwaway harness this replaced produced
-    /// four false positives from loose regexes before it produced one true
-    /// finding.
+    /// The prose parser is pinned against the phrasings that actually ship
+    /// rather than invented ones.
     #[test]
     fn the_ceiling_parser_reads_the_phrasings_that_ship() {
         for (prose, expected) in [

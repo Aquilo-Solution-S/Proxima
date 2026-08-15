@@ -453,10 +453,9 @@ async fn load_memory_edge_targets(
 
 /// Neighbours that are themselves work/test requests.
 ///
-/// The kind filter alone is not enough any more: a `reference` row reaching
-/// a request comes from whichever node declared it — the criteria Fact, the
-/// plan Abstraction, an assignment Perspective — so the schema does the
-/// narrowing the relation name used to do.
+/// Kind alone is not enough: a `reference` row reaching a request comes
+/// from whichever node declared it (criteria Fact, plan Abstraction,
+/// assignment Perspective). Filter by schema.
 async fn load_work_item_neighbours(
     ctx: &ToolCtx,
     memory_id: MemoryId,
@@ -518,12 +517,8 @@ async fn load_goal_activation(
         .map(|(_, payload)| payload.goal_id))
 }
 
-/// Workers this item is assigned to.
-///
-/// The assignment used to be a `targets-execution-request` edge from the
-/// worker Perspective. It is now a node: an assignment Perspective
-/// references both the worker and the item, so this reads the incoming
-/// assignment Perspectives and returns the worker each one names.
+/// Workers this item is assigned to: incoming assignment Perspectives,
+/// return the worker each names.
 async fn load_target_perspectives(
     ctx: &ToolCtx,
     memory_id: MemoryId,

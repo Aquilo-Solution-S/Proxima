@@ -1,5 +1,4 @@
-//! Behaviour and plan pins for the endpoint-prefiltered edge scans
-//! (sql-sweep S5).
+//! Behaviour and plan pins for the endpoint-prefiltered edge scans.
 //!
 //! Every prefiltered statement keeps the shipped resolved-endpoint predicate
 //! verbatim as its residual, so what can go wrong is the prefilter dropping
@@ -8,9 +7,8 @@
 //! only `head_probe` can reach it. These tests pin that case across all
 //! three readers, pin the World-source redaction the prefilter must not
 //! relax, and pin that the edges scan rides the endpoint indexes under
-//! DEFAULT planner costing with a crowd in the table (the S36 trap: a
-//! one-row fixture with seqscan disabled proves capability, not the plan
-//! the corpus gets).
+//! DEFAULT planner costing with a crowd in the table (a one-row fixture
+//! with seqscan disabled proves capability, not the plan the corpus gets).
 
 use proxima_core::storage_ports::*;
 use proxima_core::verbs::query::{

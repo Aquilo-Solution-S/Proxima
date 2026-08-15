@@ -138,8 +138,7 @@ pub async fn create_db() -> Result<String, Box<dyn std::error::Error>> {
 #[allow(dead_code)]
 pub type ServeHandle = tokio::task::JoinHandle<Result<(), proxima_mcp_server::McpServerError>>;
 
-/// Boot a streamable-HTTP server on a fresh database — the shared
-/// spin-up every integration test used to hand-roll. Returns the serve
+/// Boot a streamable-HTTP server on a fresh database. Returns the serve
 /// task, the bound loopback address, and the database name to pass to
 /// [`stop_server`].
 #[allow(dead_code)]

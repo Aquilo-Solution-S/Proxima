@@ -15,13 +15,8 @@ pub struct ResourceServerMetadata {
 }
 
 impl ResourceServerMetadata {
-    /// The RFC 9728 protected-resource identifier: the deployment's public
-    /// origin, covering every surface it serves.
-    ///
-    /// It used to be `{public_url}/mcp`. The public origin is now the one RFC
-    /// 8707 `resource` and token audience for both `/mcp` and an enabled
-    /// `/v1`; clients therefore do not need surface-specific credentials.
-    /// See `MIGRATING.md` for the completed audience migration.
+    /// RFC 9728 protected-resource identifier: the public origin (covers
+    /// `/mcp` and `/v1`). Same RFC 8707 `resource` / audience for both.
     #[must_use]
     pub fn resource(&self) -> String {
         self.public_url.trim_end_matches('/').to_string()

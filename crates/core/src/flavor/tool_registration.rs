@@ -38,16 +38,9 @@ fn serialize_tool_output<T: serde::Serialize>(
 
 impl FlavorRegistry {
     /// Register a flavor-shipped [`Tool`] under `expected_prefix`.
-    ///
-    /// Identical in every respect to [`Self::try_add_mcp_tool`], because it
-    /// *is* that function: the blanket `impl<T: Tool> McpTool for T` adapts
-    /// the context and forwards `ANNOTATIONS` and `ACTION_ARG_SPECS`, so a
-    /// flavor dispatcher is registered, validated, and gated exactly as a
-    /// substrate one. Keeping a second body here is what let the two drift —
-    /// a flavor tool with an internally tagged `Args` used to be stored with
-    /// empty `action_arg_specs` and validated as if it were flat, so nothing
-    /// enumerated its actions and every field of every variant was accepted
-    /// on every call.
+    /// Same path as [`Self::try_add_mcp_tool`] (blanket `impl<T: Tool> McpTool
+    /// for T`). A second body would let a flavor dispatcher land with empty
+    /// `action_arg_specs` and validate as flat.
     ///
     /// # Errors
     ///

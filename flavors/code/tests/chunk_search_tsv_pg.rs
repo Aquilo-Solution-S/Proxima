@@ -197,8 +197,7 @@ async fn code_chunk_search_tsv_shares_core_text_search_config() {
     result.expect("chunk search tsv config checks");
 }
 
-/// The column is `GENERATED ALWAYS AS ... STORED`, and the GIN index sits on
-/// the column rather than on the old expression.
+/// The GIN index sits on the generated column.
 #[tokio::test]
 async fn code_chunk_search_tsv_is_stored_and_indexed() {
     let db_name = unique_db_name("proxima_test");

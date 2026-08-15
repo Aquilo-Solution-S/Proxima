@@ -110,11 +110,9 @@ impl Engine {
         permit.validate_for_engine(&self.delegation_runtime_binding)
     }
 
-    /// Storage handle, restricted to the engine module so the MCP tool layer
-    /// cannot reach storage directly — every owner-scoped operation must go
-    /// through an engine verb that runs the authz pipeline. Sealing this is what
-    /// makes the old "tool authorizes itself then hits storage" pattern
-    /// structurally non-reintroducible (it stops compiling).
+    /// Storage handle, restricted to the engine module so the MCP tool
+    /// layer cannot reach storage directly. Owner-scoped operations go
+    /// through an engine verb that runs the authz pipeline.
     #[must_use]
     pub(in crate::engine) fn storage(&self) -> &EngineStoragePorts {
         &self.storage

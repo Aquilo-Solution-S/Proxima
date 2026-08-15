@@ -97,11 +97,6 @@ impl Tool for CodeOpenFileRevisionTool {
             if args.file_path.trim().is_empty() {
                 return Err(ToolError::InvalidInput("file_path required".into()));
             }
-            // A zero cap used to be accepted and answered with `text: ""` on
-            // every chunk — a well-formed response indistinguishable from an
-            // empty file, and it silently turned text ON (`want_text` below
-            // keys off `max_text_bytes.is_some()`) only to blank it. Both
-            // sibling tools already refuse zero here.
             if args.max_text_bytes == Some(0) {
                 return Err(ToolError::InvalidInput(
                     "max_text_bytes must be >= 1 when provided; use include_text=false to skip text"
@@ -273,9 +268,8 @@ impl Tool for CodeOpenFileRevisionTool {
 /// Default window height when only `line_start` is given.
 const DEFAULT_LINE_LIMIT: i64 = 120;
 /// Ceiling on `line_limit`. Reject at or below zero, clamp above — the
-/// substrate's rule for every other bound, and the one this used to break
-/// by refusing 501 outright. The response reports the span actually
-/// returned, so a clamped caller is told rather than quietly shortchanged.
+/// substrate's rule for every other bound. The response reports the span
+/// actually returned.
 const MAX_LINE_LIMIT: i64 = 500;
 
 fn requested_line_window(
@@ -406,10 +400,8 @@ mod tests {
         assert!(!projected.text_truncated);
     }
 
-    /// The reported span must describe what was sent. Before this, a
-    /// byte-truncated window still reported the span that was *asked* for, so
-    /// a caller placing the snippet in the file was wrong about every line
-    /// after the cut.
+    /// The reported span must describe what was sent. A byte-truncated
+    /// window reports the lines that landed, not the span that was asked.
     #[test]
     fn a_truncated_window_reports_only_the_lines_it_returned() {
         // Enough bytes for the first two lines and part of the third.
@@ -466,8 +458,7 @@ mod tests {
     }
 
     /// `line_limit` follows the substrate's rule for every other bound:
-    /// reject at zero, clamp above the ceiling. It used to refuse 501
-    /// outright, which is the one shape no other paged read uses.
+    /// reject at zero, clamp above the ceiling.
     #[test]
     fn the_line_limit_rejects_zero_and_clamps_high() {
         assert!(requested_line_window(Some(1), Some(0)).is_err());

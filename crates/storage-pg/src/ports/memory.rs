@@ -26,8 +26,8 @@ type NeighborMemoryEdgeTuple = (
     bool,
 );
 
-/// The neighbor window (sql-sweep S5). `touching` filters the edges scan on
-/// the RAW endpoint columns before the head resolution, so it rides
+/// Neighbor window. `touching` filters the edges scan on the RAW endpoint
+/// columns before the head resolution, so it rides
 /// `idx_edges_source`/`idx_edges_target` instead of resolving every edge.
 ///
 /// The prefilter is an exact superset of the resolved predicate it guards:
@@ -36,9 +36,9 @@ type NeighborMemoryEdgeTuple = (
 /// fact-entity id whose `current_memory_id` is requested — precisely the
 /// ids `head_probe` collects (via `idx_fact_entities_current_memory`,
 /// migration 0017). The original resolved-column filter is kept verbatim as
-/// the residual, so the row set cannot change. Prior art: `PostgreSQL` docs
-/// on `ScalarArrayOp` index quals — `= ANY(array)` over a base column is an
-/// index condition, `= ANY` over a `COALESCE` of joined columns is not.
+/// the residual, so the row set cannot change. `= ANY(array)` over a base
+/// column is an index condition; `= ANY` over a `COALESCE` of joined
+/// columns is not.
 const NEIGHBOR_MEMORY_EDGES_SQL: &str = "
 WITH read_set(owner_kind, owner_id) AS (
     SELECT * FROM unnest($1::proxima_core.owner_ref_kind[], $2::uuid[])

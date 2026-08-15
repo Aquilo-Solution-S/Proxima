@@ -12,26 +12,9 @@ pub fn owner_columns(owner: &Owner) -> (OwnerRefKind, Option<uuid::Uuid>) {
 /// Resolve a `repo_handle`, a bare repo UUID, or a display name / path to a
 /// repo id that **exists for this owner**.
 ///
-/// The existence check used to apply only to the name forms. A handle or a
-/// bare UUID short-circuited on parse, so an id that named no repo — a
-/// stale handle after `erase_repo`, a typo, another owner's repo — resolved
-/// happily and every read then returned nothing: `search_chunks` an empty
-/// `matches`, `search_commits` an empty `commits`, `open_file_revision` a
-/// null `revision`. An agent cannot tell that from "this code is not
-/// indexed", and the only tool that did say so was
-/// `ingest_head_snapshot`, which looks the repo record up for its own
-/// reasons. One tool family, two answers to the same bad input — and
-/// `search_chunks` disagreed with *itself*, since a bad name errored while
-/// a bad id did not.
-///
-/// Both shapes now go through one query, so all of them answer the same
-/// way. That costs a round trip on the id path, which previously did no I/O
-/// at all; it buys back a class of silent wrong answers, and the query is a
-/// primary-key lookup.
-///
+/// Handle, UUID, and name all go through one existence query (PK lookup).
 /// A repo belonging to a different owner is reported exactly like one that
-/// does not exist, so this cannot be used to probe for other owners' repo
-/// ids.
+/// does not exist — this cannot probe other owners' repo ids.
 pub async fn resolve_repo_identifier(
     ctx: &ToolCtx,
     identifier: &str,

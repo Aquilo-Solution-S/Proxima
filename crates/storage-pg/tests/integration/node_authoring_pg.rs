@@ -1,16 +1,8 @@
 //! End-to-end node authoring against live Postgres.
 //!
-//! This is where the engine-level pg coverage lives that used to sit in
-//! `crates/core/tests` (`engine_memory_authoring`, `agent_memory_tools_pg`,
-//! `change_events_pg`, `goal_tools_pg`, `upload_is_a_fact_pg`). Core can no
-//! longer dev-depend on storage-pg, and the dependency runs this way, so the
-//! tests moved rather than went.
-//!
-//! What they check: a derivation lands its origin rows, a revision lands a
-//! lineage pointer and no edge, authorship lands as a column, a goal's
-//! topology lands as columns plus reference rows, an upload's citation lands
-//! on the Fact — and every one of those emits the change events a consumer
-//! reads back.
+//! Derivation lands origin rows; a revision lands a lineage pointer and no
+//! edge; authorship is a column; goal topology is columns plus reference
+//! rows; an upload citation lands on the Fact — each emits change events.
 
 use std::sync::Arc;
 

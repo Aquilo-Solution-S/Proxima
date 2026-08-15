@@ -500,10 +500,9 @@ async fn goal_resources_list_read_back_wake_config_and_paginate()
     Ok(())
 }
 
-/// The whole loop the v0.0.7 edge reset leaves standing: an agent authors an
-/// interpretation Perspective, and the connections it implies show up in the
+/// An interpretation Perspective's implied connections show up in the
 /// index as `reference` rows nobody wrote. There is no edge handle to
-/// dereference, because an edge has no id.
+/// dereference: an edge has no id.
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
 async fn edge_resources_read_back_interpretation_references()

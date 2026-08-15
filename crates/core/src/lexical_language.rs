@@ -9,15 +9,10 @@
 //! 3. neither: `None`, and storage applies the database default
 //!    (`proxima_core.lexical_config()`).
 //!
-//! Detection is deliberately gated on the detector's own reliability
-//! signal. Measured on real corpora (2,350 German book pages, 130 short
-//! German questions, 300 English documentation paragraphs), gated
-//! detection is ≥98% accurate in every slice including 40-character
-//! truncations, while *ungated* detection under ~80 characters is
-//! 50–83% — worse than useless, since a wrongly stamped language makes
-//! the row unmatchable by its own content words. An unreliable
-//! detection therefore falls back to the database default rather than
-//! guessing.
+//! Detection is gated on the detector's own reliability signal. Ungated
+//! detection on short text is worse than the database default: a wrongly
+//! stamped language makes the row unmatchable by its own content words.
+//! An unreliable detection therefore falls back rather than guessing.
 //!
 //! A reliably detected language with no shipped stemmer configuration
 //! (CJK, most Slavic and Indic languages) maps to `simple`: exact-token

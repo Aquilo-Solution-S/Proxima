@@ -1129,8 +1129,7 @@ mod tests {
         assert_eq!(tool.message, "memory F:018f not found");
     }
 
-    /// An unmatched resource URI is a `resource_not_found`, not the
-    /// `invalid_params` it used to collapse into.
+    /// An unmatched resource URI is `resource_not_found`, not `invalid_params`.
     #[test]
     fn unknown_resource_uri_maps_to_resource_not_found() {
         let err = resource_invocation_error_to_error_data(
@@ -1162,17 +1161,8 @@ mod tests {
     }
 
     /// A viewer sees a flavor's read tool in `tools/list`.
-    ///
-    /// This gate resolved read-vs-write from `core_tool_annotations(name)`
-    /// alone — a table over *core* names — and fell through to
-    /// `may_write` for everything else. So every flavor tool, read or
-    /// not, was hidden from a read-only principal: not refused with a
-    /// reason, just absent, which is the harder symptom to trace.
-    ///
-    /// PR 130 fixed the sibling gate on the *call* path
-    /// (`ScopeGateBehavior::enforce_owner_role`). This is the
-    /// *visibility* path, and it kept the bug. The call sites all had the
-    /// descriptor in hand and passed only its name.
+    /// Read-vs-write comes from the tool descriptor's annotations, not
+    /// `core_tool_annotations(name)` (core names only).
     #[test]
     fn a_viewer_sees_a_flavor_read_tool_and_not_its_write_tool() {
         use proxima_core::{AuthPath, AuthzContext, GroupId, Owner, UserId, access::Role};
@@ -1452,13 +1442,8 @@ mod tests {
         assert!(reject_nul_in_args(&args).is_ok());
     }
 
-    /// The deepest argument tree that can actually arrive.
-    ///
-    /// `serde_json` rejects nesting at depth 128 with "recursion limit
-    /// exceeded", so 127 is the maximum an argument value can reach — this
-    /// walks it without touching the stack. (A hand-built `Value` far deeper
-    /// than that overflows on `Drop`, in `serde_json` itself, before this
-    /// function is ever called; such a value cannot come from a request.)
+    /// Deepest argument tree a request can carry: `serde_json` rejects
+    /// nesting at depth 128, so 127 is the maximum.
     #[test]
     fn the_deepest_reachable_argument_tree_is_walked() {
         let deep = format!("{}{}{}", "[".repeat(127), "\"leaf\"", "]".repeat(127));

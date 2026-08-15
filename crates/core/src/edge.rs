@@ -60,8 +60,7 @@ impl EdgeKind {
 /// entity kind stored there.
 ///
 /// The address form *is* the durable binding: a `FactEntity` address
-/// follows the head, a `Memory`/`Goal` address pins the row. That is
-/// where the old descriptor's `FollowHead`/`Pin` cell went.
+/// follows the head, a `Memory`/`Goal` address pins the row.
 ///
 /// The kind travels with the address because the F/A/P layering rule and
 /// every wire projection need it, and re-deriving it per read is what

@@ -1,15 +1,7 @@
 //! Which of a repository's paths ingest indexes.
 //!
-//! Every tracked blob under the size cap used to be indexed, which on a
-//! real tree is not the same set as "the code someone will search for".
-//! Measured over the three-repo dogfood index: 3,389 of knip's 4,935
-//! chunks (68.7%) sit under a `fixtures/` or test path, and those chunks
-//! account for 3,387 of the deployment's 15,244 embeddings.
-//!
-//! Scope belongs to the repo rather than to one ingest call. The
-//! incremental poller lists arbitrary commit SHAs and has to apply the
-//! same rule the snapshot did — otherwise a poll silently re-adds what a
-//! snapshot excluded, and the indexed set depends on which verb ran last.
+//! Scope belongs to the repo, not one ingest call: the incremental poller
+//! lists arbitrary SHAs and must apply the same rule as the snapshot.
 
 use globset::{GlobBuilder, GlobSet, GlobSetBuilder};
 
@@ -108,8 +100,7 @@ pub struct ScopeMatcher {
 }
 
 impl ScopeMatcher {
-    /// A matcher that admits everything — the default scope, and what a
-    /// repo registered before scoping existed has.
+    /// A matcher that admits everything — the default scope.
     #[must_use]
     pub fn allow_all() -> Self {
         Self {
@@ -185,8 +176,7 @@ mod tests {
         assert!(ScopeMatcher::allow_all().admits_everything());
     }
 
-    /// The measured case: two-thirds of knip's corpus is fixtures, and one
-    /// pattern removes it without touching the sources next to it.
+    /// Exclude `**/fixtures/**` without touching sources beside them.
     #[test]
     fn excluding_fixtures_keeps_the_sources_beside_them() {
         let matcher = scope(&[], &["**/fixtures/**"]);

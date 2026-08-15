@@ -60,10 +60,8 @@ async fn count_pending_embedding_jobs_counts_outstanding() -> Result<(), Box<dyn
     result
 }
 
-/// `get_graph_authorized` used to run `count_pending_embedding_jobs` and
-/// `count_failed_embedding_jobs` as two serial reads of the same table; the
-/// merged `count_embedding_job_status` query must agree with both
-/// independent counts and stay owner-scoped.
+/// Merged `count_embedding_job_status` agrees with independent pending
+/// and failed counts and stays owner-scoped.
 #[tokio::test]
 async fn count_embedding_job_status_merges_pending_and_failed_counts()
 -> Result<(), Box<dyn std::error::Error>> {

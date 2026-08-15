@@ -242,8 +242,8 @@ async fn change_history_surfaces_readable_non_world_source_edge_events()
             "high-water is computed over visible source-owned events"
         );
 
-        // The endpoint kinds arrive with the event now; the old two-step
-        // hydration keyed by edge id is gone with the id.
+        // Endpoint kinds arrive with the event; there is no edge id to
+        // hydrate in a second step.
         let listed = engine
             .list_change_events(
                 &authz,

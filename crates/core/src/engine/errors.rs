@@ -1,11 +1,7 @@
 //! Shared storage-error → protocol-error mapping for engine verbs.
 //!
-//! Every write verb funnels its storage failures through
-//! [`map_write_storage_error`] so one taxonomy decides which failures are
-//! caller-fixable. Before this module, three verbs carried their own
-//! full-taxonomy copies while `fact_ingest`/`close_batch`/edge-append used
-//! ad-hoc matches that collapsed caller errors (closed batch, concurrent
-//! citation) into `Internal`.
+//! Write verbs funnel storage failures through [`map_write_storage_error`]
+//! so one taxonomy decides which failures are caller-fixable.
 
 use crate::StorageError;
 use crate::error::ProtocolError;

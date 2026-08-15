@@ -9,15 +9,9 @@ use proxima_core::{ToolCtx, ToolError};
 pub(crate) const REPO_HANDLE_KIND: &str = "proxima-code/repo";
 pub(crate) const REPO_HANDLE_PREFIX: char = 'R';
 
-/// MCP behaviour hints, one set of constants so eleven tools cannot drift
-/// apart on the same four booleans. Mirrors core's `core_tools::READ_ONLY`
-/// and friends.
-///
-/// These are load-bearing, not decorative. `ScopeGateBehavior`'s owner-role
-/// check asks whether a tool is read-only and demands WRITE access when it
-/// cannot tell — so before this flavor declared anything, a viewer was
-/// refused `proxima-code_search_chunks`. `open_world(false)` on all of them
-/// is true by construction: every one of these tools reads or writes this
+/// MCP behaviour hints, one set so eleven tools cannot drift on the same
+/// four booleans. `ScopeGateBehavior` demands WRITE when it cannot tell
+/// read-only. `open_world(false)`: every tool here reads or writes this
 /// deployment's own Postgres and reaches nothing else.
 pub(crate) const READ_ONLY: McpToolAnnotations =
     McpToolAnnotations::new().read_only(true).open_world(false);
@@ -50,10 +44,7 @@ pub(crate) fn engine(ctx: &ToolCtx) -> Result<Arc<proxima_core::Engine>, ToolErr
         .ok_or_else(|| ToolError::Other("code flavor tools require Engine".into()))
 }
 
-/// The wire-reference grammar reaches `ToolCtx` through core's extension
-/// trait. This flavor used to carry its own twelve-method forwarding shim
-/// over the same presentation service; core owns the grammar, so core owns
-/// the shim.
+/// Wire-reference grammar on `ToolCtx` via core's extension trait.
 pub(crate) use proxima_core::mcp::McpPresentationExt as CodeToolCtxExt;
 
 pub mod emit_execution_request;

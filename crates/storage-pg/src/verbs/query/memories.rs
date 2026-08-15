@@ -320,12 +320,11 @@ fn memory_page_sql(
     // target). `s.id` is NULL for the World member of the caller's read-
     // owner set, so plain `=` would silently drop every World-owned row
     // (NULL = NULL is NULL, not true) even though the caller is authorized
-    // to read World. What this replaced joined with IS NOT DISTINCT FROM,
-    // which is correct but not indexable. This joins with plain `=` —
-    // restoring the `(owner_kind, owner_id, created_at, memory_id)` index
-    // prefix — and appends the page body once more as a constant World arm,
-    // only when World is actually in the read set: the split
-    // `search.rs::push_read_owner_scope` already ships (sql-sweep S4). The
+    // to read World. INDF is correct but not indexable. This joins with
+    // plain `=` — restoring the `(owner_kind, owner_id, created_at,
+    // memory_id)` index prefix — and appends the page body once more as a
+    // constant World arm, only when World is actually in the read set: the
+    // split `search.rs::push_read_owner_scope` already ships. The
     // arms are disjoint (an equality join never matches a NULL-id read-set
     // row, and the World arm's rows carry a kind no non-World member has),
     // and each arm keeps the per-arm ORDER/LIMIT, so the merged page is the

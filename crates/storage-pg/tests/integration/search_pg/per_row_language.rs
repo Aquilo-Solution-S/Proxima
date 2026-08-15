@@ -3,9 +3,7 @@
 //! The language a row's stored vector tokenises with is data on the row:
 //! stamped at write time, mirrored onto sidecars, immutable afterwards.
 //! The query side ORs one tsquery per active language for MATCHING and
-//! ranks each candidate with its own row's configuration — the shape
-//! measured to make a mixed-language corpus cost nothing over a
-//! single-language one.
+//! ranks each candidate with its own row's configuration.
 
 use crate::common::{drop_db, fact_blob_only_registry, fresh_pg, owner_fixture};
 use proxima_core::engine::Engine;

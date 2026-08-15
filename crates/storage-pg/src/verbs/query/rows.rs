@@ -158,12 +158,12 @@ pub(crate) async fn read_seq_high_water(
 /// binds.
 ///
 /// One top-1 probe of `idx_change_event_owner_seq` per read owner, merged
-/// by a top-1 over the arms (sql-sweep S6). What this replaced filtered a
-/// whole-table `ORDER BY seq DESC` walk through an `EXISTS` over the read
-/// set, which no index prefix can serve. Same maximum: that filter admits
-/// exactly the rows some read owner matches (`change_event`'s CHECKs make
-/// `ce.owner_id` never NULL, so the World member matches nothing either
-/// way), and the max over a union is the max of the per-member maxima.
+/// by a top-1 over the arms. A whole-table `ORDER BY seq DESC` walk through
+/// an `EXISTS` over the read set has no index prefix. Same maximum: that
+/// filter admits exactly the rows some read owner matches (`change_event`'s
+/// CHECKs make `ce.owner_id` never NULL, so the World member matches
+/// nothing either way), and the max over a union is the max of the
+/// per-member maxima.
 fn read_seq_high_water_sql() -> String {
     let edge_visibility = edge_event_visibility_predicate(1, 2, 3, 4);
     format!(

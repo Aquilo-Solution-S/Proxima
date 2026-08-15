@@ -11,13 +11,7 @@ use super::types::{ExecutionPlanItemArgs, ExecutionPlanItemKind};
 ///
 /// Delegates to [`proxima_core::validate_trimmed_len`] rather than
 /// repeating the check, so this flavor and the substrate refuse a blank
-/// value in the same words. The copy this replaced answered a blank value
-/// and an over-length one with one message, `{field} must be 1..=240
-/// chars` — a range a blank value satisfies, which reads as a server fault
-/// rather than an instruction to send content.
-///
-/// The `min` parameter went with it: all eighteen call sites passed 1,
-/// and a floor that is always the same number is not a parameter.
+/// value in the same words. Floor is 1 (no `min` parameter).
 ///
 /// # Errors
 ///
@@ -209,8 +203,7 @@ mod tests {
     }
 
     /// A blank value and an over-length one are different mistakes with
-    /// different fixes. The copy this replaced answered both with `{field}
-    /// must be 1..=240 chars` — a range a blank value satisfies.
+    /// different fixes.
     #[test]
     fn blank_and_oversized_do_not_share_one_message() {
         let blank = message(normalize_text("title", "   ", 240));

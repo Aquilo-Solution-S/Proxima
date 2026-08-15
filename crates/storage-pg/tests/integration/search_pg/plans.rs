@@ -240,33 +240,10 @@ async fn search_branches_enumerate_candidates_via_owner_index()
     Ok(())
 }
 
-/// The rank-first redesign is a *plan* bet, and nothing pinned it.
-///
-/// Inverting the semantic branch — ANN window first, eligibility second —
-/// only pays if the planner probes `memories` for the window's ids instead
-/// of enumerating the owner's rows and filtering. Both spellings return the
-/// same set, so a planner that picks the second is not wrong, just slow:
-/// it rebuilds exactly the full-owner intermediate the inversion exists to
-/// avoid, and every measured gain quietly evaporates with the suite still
-/// green.
-///
-/// The corpus is shaped so the two plans are not close. The owner holds
-/// enough rows that scanning them is real work, while the ANN window is a
-/// small fraction of them, so an index probe is the cheap plan by a wide
-/// margin and the assertion does not ride on a marginal cost estimate.
-///
-/// The bulk crowd below is what makes that claim true, and it is load-bearing
-/// rather than decorative. An earlier version of this fixture held only the
-/// 400 embedded rows, which put the choice on a cost cliff instead of a wide
-/// margin: the same assertion, on the same commit and the same `PostgreSQL`
-/// image, chose the index probe on one CI run and a `memories` seq scan on
-/// another. Widening the corpus did not settle it monotonically either —
-/// measured on CI, 400 rows chose the probe, 4,000 rows chose the seq scan,
-/// 12,000 rows chose the probe again. What settles it is giving the *owner*
-/// enough rows that enumerating them cannot win: with 20,000 same-owner rows
-/// beside the 400 embedded ones, the probe was chosen on every repeat, with
-/// and without a whole-database `ANALYZE`. That is also the regime the
-/// redesign was measured in, so the fixture now matches the claim.
+/// Rank-first only pays if the planner probes `memories` for the window's
+/// ids instead of enumerating the owner's rows. Both plans return the same
+/// set. Fixture: ≥20k same-owner rows beside the embedded set, or the
+/// plan choice is a coin flip.
 #[tokio::test]
 async fn rank_first_probes_memories_for_the_window_instead_of_scanning_the_owner()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -315,8 +292,8 @@ async fn rank_first_probes_memories_for_the_window_instead_of_scanning_the_owner
     req.embedding_model_id = Some("test-embed".into());
     let (owner_kind, owner_id) = owner.columns();
 
-    // A window far smaller than the owner's row count: this is the regime
-    // the redesign was measured in, and the one where the two plans differ.
+    // A window far smaller than the owner's row count: the regime where
+    // rank-first vs full-owner intermediate plans differ.
     let semantic_sql = proxima_storage_pg::verbs::query::semantic_search_sql_for_tests(
         &req,
         &[],
@@ -346,8 +323,7 @@ async fn rank_first_probes_memories_for_the_window_instead_of_scanning_the_owner
     assert!(
         !plan_seq_scans_relation(&root, "memories"),
         "rank-first must probe memories for the ANN window's ids; a seq scan means the \
-         planner rebuilt the full-owner intermediate the inversion removes, and the \
-         measured gain is gone:\n{plan:#}"
+         planner rebuilt the full-owner intermediate the inversion removes:\n{plan:#}"
     );
 
     drop(pg);
@@ -355,31 +331,13 @@ async fn rank_first_probes_memories_for_the_window_instead_of_scanning_the_owner
     Ok(())
 }
 
-/// Migration 0019's index only pays if the planner can pick it, and the
-/// only reason it can is that the `@@` predicate now sits on `memories`
-/// instead of on the candidate CTE above it.
+/// Migration 0019's GIN index only pays if the planner can pick it, which
+/// requires the `@@` predicate on `memories` rather than on a candidate CTE
+/// (a CTE result has no index path). Rows returned are identical either
+/// way, so a regression here is silent.
 ///
-/// This is the guard for a decision two earlier migrations made in the
-/// other direction. 0009 dropped the GIN indexes it inherited and 0011
-/// declined to add one, both because a predicate applied to a CTE result
-/// has no index path — true then, and it stays true the moment anyone
-/// moves the gate back above the branch set. Nothing else in the suite
-/// would notice: the rows returned are identical either way, so a
-/// regression here is silent and costs three orders of magnitude on the
-/// product's default mode.
-///
-/// The corpus is built so the two plans are not close, which is the lesson
-/// the sibling rank-first guard records: 20,000 rows under the owner, a
-/// term in five of them. On the CI image's costing that is 285 for the
-/// index probe against 824 for the owner enumeration, so the assertion is
-/// not riding a tie-break — but note where that margin comes from. The
-/// planner cannot estimate `@@` here at all: the tsquery arrives as an
-/// `InitPlan`, so it applies the 0.5% default and expects 99 rows rather
-/// than 5. The margin is the shape of the access path, not the
-/// selectivity, which is the same reason the gain does not depend on the
-/// query being rare.
-///
-/// Hybrid mode, because that is the product default (`default_search_mode`)
+/// Corpus: 20,000 rows under the owner, the term in five of them, so the
+/// two plans are not a costing tie-break. Hybrid is the product default
 /// and its gate is the strict tsquery alone — the rescue arm lexical mode
 /// adds is an OR of a far less selective tsquery, which is a different and
 /// much weaker index case.
@@ -409,23 +367,13 @@ async fn the_lexical_gate_is_served_by_the_search_tsv_index()
     .bind(crowd_id)
     .execute(pg.pool_for_tests())
     .await?;
-    // VACUUM, not just ANALYZE, and the difference decides this test.
-    //
-    // A GIN index accepts inserts into an unsorted pending list and only
-    // merges them into the entry tree when it is vacuumed, and
-    // `gincostestimate` charges a scan for every pending page because it
-    // has to read all of them. Here the migration creates the index while
-    // the table is empty and the fixture inserts afterwards, so all 20,000
-    // rows land in the pending list: 218 of the index's 220 pages, which
-    // prices the index scan above a seq scan of the whole table (935 vs
-    // 916) and makes the planner correctly refuse it. Vacuuming drains the
-    // list and the same scan costs 13.
-    //
-    // Production is the other way round — 0019 builds the index over a
-    // populated table, so it starts merged, and autovacuum drains what
-    // later writes add. Without this the test passes or fails on whether
-    // autovacuum happened to fire in the second the fixture was alive,
-    // which is how it passed locally and failed in CI.
+    // VACUUM, not just ANALYZE: a GIN index parks inserts in a pending
+    // list until vacuumed, and `gincostestimate` charges a scan for every
+    // pending page. The migration creates the index on an empty table;
+    // the fixture then inserts 20,000 rows into that list, which prices
+    // the index above a seq scan. Production builds 0019 over a populated
+    // table (starts merged); autovacuum drains later writes. Without
+    // VACUUM this test depends on whether autovacuum fired.
     sqlx::query("VACUUM (ANALYZE) proxima_core.memories")
         .execute(pg.pool_for_tests())
         .await?;

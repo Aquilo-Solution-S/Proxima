@@ -41,10 +41,9 @@ pub use proxima_core::engine::UploadCompleted;
 /// prefixed uuids — there is no edge prefix, because an edge has no id).
 /// [`McpToolCtx`] carries those as inherent methods,
 /// but [`Tool`] is handed a [`ToolCtx`], which deliberately knows nothing
-/// about the wire; importing this trait is the sanctioned bridge. Without it
-/// each flavor writes the same twelve-method forwarding shim over
-/// [`McpToolPresentation`] — `flavors/code` carried one until core took it
-/// over.
+/// about the wire; importing this trait is the sanctioned bridge. Without
+/// it a flavor would reimplement the same forwarding over
+/// [`McpToolPresentation`].
 pub use proxima_core::mcp::{
     McpActionArgSpec, McpAuthorContext, McpPresentationExt, McpTool, McpToolAnnotations,
     McpToolCtx, McpToolError, McpToolErrorKind, McpToolPresentation,

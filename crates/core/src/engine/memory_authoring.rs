@@ -472,15 +472,9 @@ impl Engine {
 /// Decide what a derived write should do about its vector, given a
 /// configured embedding client.
 ///
-/// The interesting arm is the middle one. A text this client will not
-/// embed used to fail the write outright, which made a derive phase die
-/// deterministically on its longest unit and discard every model call
-/// already spent on the ones before it — the memory is the expensive
-/// artifact, and the vector is recoverable later by a drain that knows how
-/// to bisect. So the refusal downgrades the write instead of failing it,
-/// but only once the provider has proved it is up: an outage says nothing
-/// about the text, and deferring on it would trade one loud failure for a
-/// corpus of silently unembedded memories.
+/// A text this client will not embed downgrades the write (vector is
+/// recoverable by a drain that bisects) only after a liveness probe: an
+/// outage says nothing about the text.
 ///
 /// # Errors
 ///

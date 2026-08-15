@@ -1,13 +1,8 @@
 //! Core cited-object schemas, and the mappings that point Facts at them.
 //!
-//! `core/uploaded-blob-v1` shipped without any registered
-//! `CitationMappingPayload` naming it as its `cited_object_schema()`. A
-//! mapping is the only way a Fact reaches a cited object
-//! (`Memory.citation_mapping_id`), and `authorize_fact_with_citation`
-//! rejects a mapping schema that does not target the object's schema — so
-//! core shipped an upload lane whose artefacts nothing could cite. The two
-//! mappings below close that, and give documents the locator docs/11 always
-//! described:
+//! A Fact reaches a cited object only through `Memory.citation_mapping_id`;
+//! `authorize_fact_with_citation` rejects a mapping whose
+//! `cited_object_schema()` does not target the object's schema.
 //!
 //! ```text
 //! Fact ──► core/uploaded-blob-whole-v1     ──► core/uploaded-blob-v1

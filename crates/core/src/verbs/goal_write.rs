@@ -100,15 +100,10 @@ pub const MAX_GOAL_TEXT_CHARS: usize = 20_000;
 
 /// Why a typed goal payload could not be built.
 ///
-/// Each variant carries the [`TrimmedLenViolation`] that produced it. The
-/// variants used to be unit-only, which left their `#[error]` strings fixed
-/// at `goal title must be 1..={MAX_GOAL_TITLE_CHARS} chars` — one sentence
-/// for both a blank title and an over-long one, quoting a range a blank
-/// title satisfies. A unit variant structurally cannot say which end broke
-/// or by how much, so the payload is the fix, not better wording.
-///
-/// Still [`Copy`] and still matchable by variant: hosts that match
-/// `InvalidTitle` need only add `(_)`.
+/// Each variant carries the [`TrimmedLenViolation`] that produced it, so
+/// blank and over-long get different `#[error]` strings. Still [`Copy`]
+/// and still matchable by variant: hosts that match `InvalidTitle` need
+/// only add `(_)`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum GoalWriteBuildError {
     #[error("{}", .0.reason("goal title"))]
@@ -203,10 +198,7 @@ impl IdempotencyKey {
     /// `field` rather than `idempotency_key`.
     ///
     /// `core_remember`'s `source_batch_key` is the same 1..=180 trimmed key
-    /// under another name, and the memory tools used to enforce it by
-    /// parsing through this type and then *discarding* its error to
-    /// substitute their own sentence. Two sentences for one rule is how they
-    /// drift; passing the field name in keeps one.
+    /// under another name; passing the field name keeps one sentence.
     ///
     /// # Errors
     ///

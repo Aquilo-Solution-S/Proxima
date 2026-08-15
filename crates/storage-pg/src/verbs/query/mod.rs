@@ -108,9 +108,8 @@ pub(crate) fn read_owner_predicate(owner_alias: &str, read_set_alias: &str) -> S
 /// `owner_id` is never NULL (e.g. `change_event`). On such a table the two
 /// spellings select identical rows for every read set — a NULL read-set id
 /// (the World member) matches nothing under either — but only `=` is an
-/// index condition (sql-sweep S6: `PostgreSQL` has no index strategy for
-/// `DistinctExpr`, so INDF collapses the `(owner_kind, owner_id, ...)`
-/// index prefix).
+/// index condition (`PostgreSQL` has no index strategy for `DistinctExpr`,
+/// so INDF collapses the `(owner_kind, owner_id, ...)` index prefix).
 ///
 /// # World-tolerant tables are a footgun here
 ///

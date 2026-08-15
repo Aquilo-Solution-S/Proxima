@@ -358,11 +358,10 @@ mod tests {
         test_ctx_with_authz(owner, authz)
     }
 
-    /// `read_resource` runs through this same gate with the resource's scope
-    /// key as the tool name. Nothing in the tool manifest is keyed by a
-    /// `resource:` name, so before this was special-cased every lookup missed
-    /// and the default demanded write access — a viewer could see every
-    /// `proxima://` resource advertised to it and read none of them.
+    /// `read_resource` runs through this same gate with the resource's
+    /// scope key as the tool name. Nothing in the tool manifest is keyed
+    /// by a `resource:` name; without a read exemption, lookup misses and
+    /// the default demands WRITE.
     #[tokio::test]
     async fn a_viewer_may_read_resources() {
         for scope_key in [
@@ -493,14 +492,9 @@ mod owner_role_tests {
         }
     }
 
-    /// A read-only role can call a read-only tool — including a FLAVOR's.
-    ///
-    /// `enforce_owner_role` asks whether a tool is read-only and demands
-    /// WRITE when it cannot tell. Its only source used to be
-    /// `core_tool_annotations`, a hardcoded match over core tool names
-    /// that returns `None` for every flavor tool — so a flavor's read was
-    /// billed as a write and refused to every read-only role. Reading the
-    /// tool's own declaration off the descriptor is the fix.
+    /// A read-only role can call a flavor tool that declares itself read-only.
+    /// `enforce_owner_role` reads the descriptor's annotations; a missing
+    /// declaration is treated as WRITE.
     #[test]
     fn a_viewer_may_call_a_flavor_tool_that_declares_itself_read_only() {
         let owner = OwnerRef::Group(GroupId::new(uuid::Uuid::now_v7()));
@@ -549,8 +543,8 @@ mod owner_role_tests {
             ),
             "got {err:?}",
         );
-        // The message has to name the fix; the symptom it prevents is a
-        // viewer refused a read with no stated cause.
+        // The message names `ANNOTATIONS`; a silent tool is otherwise
+        // billed as a write with no stated cause.
         let rendered = err.to_string();
         assert!(rendered.contains("ANNOTATIONS"), "{rendered}");
     }

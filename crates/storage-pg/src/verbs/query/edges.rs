@@ -253,9 +253,9 @@ pub(super) async fn query_edges(
     query_edges_between_visible_nodes(pool, visible_memory_ids, visible_goal_ids).await
 }
 
-/// The snapshot closure (sql-sweep S5). `edge_heads` filters the edges scan
-/// on the RAW endpoint columns — the window's own ids plus the fact-entity
-/// ids currently heading a windowed memory (`head_probe`, riding
+/// Snapshot closure. `edge_heads` filters the edges scan on the RAW
+/// endpoint columns — the window's own ids plus the fact-entity ids
+/// currently heading a windowed memory (`head_probe`, riding
 /// `idx_fact_entities_current_memory`, migration 0017) — before resolving
 /// heads, so it rides `idx_edges_source`/`idx_edges_target` instead of
 /// resolving every edge in the table.

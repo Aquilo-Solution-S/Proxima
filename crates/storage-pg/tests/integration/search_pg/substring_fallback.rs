@@ -1,23 +1,14 @@
-//! The substring band after the lexical branch was split in two.
+//! Substring band after the lexical split: tsquery on the base tables
+//! (GIN), `LIKE '%…%'` in its own statement (no core index; an unservable
+//! `OR` arm costs the whole statement its index path).
 //!
-//! v0.0.8 moved the tsquery gate onto the base tables so migration 0019's
-//! GIN indexes can serve it, which meant taking `LIKE '%…%'` out of the
-//! same disjunction — no core index can serve that arm, and one unservable
-//! arm in an `OR` costs the whole statement its index path. The band now
-//! has three homes, and this file is about the seam between them:
+//! - rows that also match a tsquery keep the band implicitly (`0.25` cannot
+//!   beat their tsquery band);
+//! - semantic-leg rows get it from that leg's statement;
+//! - substring-only rows need the fallback, which runs only when the
+//!   candidates in hand cannot fill the page above the band.
 //!
-//! - rows that also match a tsquery keep it implicitly, because the flat
-//!   `0.25` can never beat the band they already scored in;
-//! - rows the semantic leg returns get it from that leg's own statement,
-//!   evaluated over rows it was reading anyway;
-//! - rows that are *only* substring matches need the fallback statement,
-//!   which runs only when the candidates in hand cannot already fill the
-//!   page above the band.
-//!
-//! The risk the split introduces is silent: a page that is one row short
-//! of what it used to hold, on a query nobody runs in a test. So these
-//! tests are all about the third case, and each one is built so the skip
-//! decision actually fires rather than being trivially true on three rows.
+//! Tests target the third case so the skip decision actually fires.
 
 use super::{
     drop_db, fresh_pg, hybrid_request, insert_embedded_memory, insert_search_abstraction,
@@ -41,16 +32,12 @@ async fn seed_strict_matches(
     Ok(())
 }
 
-/// A substring-only row that cannot outrank the page is absent from it —
-/// which is what the skipped fallback has to reproduce, not merely what it
-/// happens to do.
+/// A substring-only row that cannot outrank the page is absent from it.
 ///
 /// The row matches `LIKE '%loorgrai%'` and no tsquery, so it scores the
-/// flat substring band. The corpus around it holds far more strict-band
-/// rows than the page is wide, so under relevance order the band cannot
-/// reach the page however the query is executed. Before the split the
-/// statement read it and the top-N sort dropped it; now the statement is
-/// never issued. Same page, and this pins that it is the same page.
+/// flat substring band. The corpus holds far more strict-band rows than
+/// the page is wide, so under relevance order the band cannot reach the
+/// page. The fallback statement must not be issued.
 #[tokio::test]
 async fn a_substring_only_row_that_cannot_rank_stays_off_the_page()
 -> Result<(), Box<dyn std::error::Error>> {

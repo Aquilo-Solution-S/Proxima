@@ -104,13 +104,12 @@ async fn stale_processing_embedding_job_is_reclaimed() -> Result<(), Box<dyn std
     result
 }
 
-/// The arm-split claim (sql-sweep S2) must
-/// select exactly the jobs the default claim selects — oldest claimable
-/// first across both status arms — while riding the two arm-matched
-/// partial indexes instead of sorting the whole backlog. The crowd of
-/// another model's jobs makes the plan assertion run under DEFAULT planner
-/// costing (the S36 trap: a one-row fixture with seqscan disabled proves
-/// capability, not the plan the corpus gets).
+/// The arm-split claim must select exactly the jobs the default claim
+/// selects — oldest claimable first across both status arms — while riding
+/// the two arm-matched partial indexes instead of sorting the whole
+/// backlog. The crowd of another model's jobs makes the plan assertion
+/// run under DEFAULT planner costing (a one-row fixture with seqscan
+/// disabled proves capability, not the plan the corpus gets).
 #[allow(clippy::too_many_lines)]
 #[tokio::test]
 async fn arm_split_claim_selects_default_order_via_the_claim_indexes()

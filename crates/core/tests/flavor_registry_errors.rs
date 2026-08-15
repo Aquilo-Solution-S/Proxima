@@ -260,9 +260,8 @@ impl schemars::JsonSchema for BogusExtensionArgs {
     }
 }
 
-// Empty specs on purpose: this is the shape that used to seal — the extension
-// was read with `as_object()`, so a non-object one was indistinguishable from
-// no extension at all and the tool passed as flat.
+// Empty specs on purpose: a non-object `x-proxima-actions` must not seal
+// as a flat tool.
 stub_tool!(
     BogusExtensionTool,
     "proxima-test_bogusext",
@@ -591,8 +590,8 @@ fn a_dispatcher_whose_field_sets_drift_cannot_be_frozen() {
     assert!(rendered.contains("note"), "{rendered}");
 }
 
-/// Per-action annotations remove the reason for the old flavor-only freeze
-/// prohibition: the action spec, not the parent, answers read versus write.
+/// Per-action annotations: the action spec, not the parent, answers
+/// read versus write.
 #[test]
 fn a_read_only_flavor_dispatcher_with_per_action_annotations_freezes() {
     let mut registry = FlavorRegistry::new();

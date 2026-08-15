@@ -12,23 +12,14 @@ use super::{ensure_nonnegative_limit, owner_parts};
 /// Claim jobs through one ordered, arm-matched scan per status arm —
 /// each riding its own partial index (`idx_embedding_jobs_pending_claim` /
 /// `idx_embedding_jobs_processing_reclaim`, migration 0018) — merged by
-/// UNION ALL and re-limited (sql-sweep S2).
+/// UNION ALL and re-limited.
 ///
-/// What this replaced was a single scan whose `WHERE` was a two-arm status
-/// `OR` over the whole claimable backlog. No index carries `model_id` and
-/// the `OR` defeats ordered index use, so every claim sorted the entire
-/// backlog: 3,090 buffers / 37.6 ms to claim ONE job on a 200k-row queue,
-/// against 6 buffers / 0.040 ms here.
-///
-/// Row selection is unchanged. A status is exactly one of the two arm
-/// values, so the arms partition the `OR` and cannot overlap, and any row
-/// in the merged top-`$3` is necessarily in its own arm's top-`$3`. Each
-/// arm locks up to `$3` rows (`FOR UPDATE` sits in the arm sub-selects
-/// because `PostgreSQL` rejects a locking clause applied to a UNION
-/// itself); rows locked by the losing arm but not claimed are released with
-/// the statement's transaction. Prior art: `PostgreSQL` docs §11.8 (partial
-/// indexes), §13.3.3 (`FOR UPDATE SKIP LOCKED` queue claims), and the
-/// SELECT reference (locking clauses in sub-SELECTs).
+/// A two-arm status `OR` over the whole backlog cannot use those indexes
+/// (`model_id` is not in a combined index; `OR` defeats ordered index use).
+/// Arms partition the `OR` and cannot overlap. Each arm locks up to `$3`
+/// rows (`FOR UPDATE` in the arm sub-selects: `PostgreSQL` rejects a
+/// locking clause on a UNION). Unclaimed locked rows release with the
+/// statement's transaction.
 const CLAIM_EMBEDDING_JOBS_SQL: &str = "WITH claimed AS (
              SELECT owner_kind, owner_id,
                     entity_kind, entity_id, model_id, embedding_version
@@ -529,11 +520,7 @@ pub async fn count_failed_embedding_jobs(
         .map_err(|_| StorageError::Internal("failed embedding job count is negative".into()))
 }
 
-/// Owner-scoped pending+failed embedding job counts in a single round trip.
-/// `get_graph_authorized` used to run [`count_pending_embedding_jobs`] and
-/// [`count_failed_embedding_jobs`] strictly in series even though both read
-/// `embedding_jobs` and differ only in the status predicate; this merges
-/// them into one `count(*) FILTER (WHERE …)` query.
+/// Owner-scoped pending+failed embedding job counts in one round trip.
 ///
 /// # Errors
 ///

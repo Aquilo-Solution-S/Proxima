@@ -12,8 +12,7 @@ use crate::edge::EdgeEndpoint;
 use crate::{EntityKind, FactEntityId, GoalId, MemoryId, SchemaId};
 
 /// How a schema-declared reference field addresses the node it points
-/// at. This is where the old relation descriptor's endpoint-binding cell
-/// went: a binding is a property of the *field*, decided by the schema
+/// at. A binding is a property of the *field*, decided by the schema
 /// author once, not a policy row consulted per write.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum ReferenceBinding {

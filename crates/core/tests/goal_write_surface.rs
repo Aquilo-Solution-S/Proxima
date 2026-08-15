@@ -280,10 +280,8 @@ impl McpTool for StubDispatchTool {
     }
 }
 
-/// A wake config may name a FLAVOR dispatcher's leaf. Both halves of this
-/// parse used to read the substrate `CoreActionMeta` tables, so a flavor
-/// dispatcher was a bare id that parsed — granting the whole tool to a wake
-/// — and its leaves did not exist.
+/// A wake config may name a flavor dispatcher's leaf, not a bare tool id
+/// that would grant the whole dispatcher.
 #[test]
 fn goal_wake_tool_id_accepts_a_flavor_dispatcher_leaf() {
     let mut registry = FlavorRegistry::new();

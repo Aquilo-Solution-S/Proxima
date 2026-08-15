@@ -45,11 +45,10 @@ pub use proxima_core::cursor::Cursor;
 /// re-implement search against raw SQL, which is exactly the coupling the
 /// tiered facade exists to prevent.
 ///
-/// [`MemorySearchRequest::tags`] is worth knowing about: it is the only
-/// predicate that narrows a search to a subset of a corpus. `schema_id` is
-/// exact-match and there is no per-column filter, so a flavor that wants
-/// "search inside this book" declares a `tag_column` on its projection and
-/// filters here.
+/// [`MemorySearchRequest::tags`] is the only predicate that narrows a
+/// search to a subset of a corpus. `schema_id` is exact-match and there is
+/// no per-column filter, so a flavor that wants "search inside this book"
+/// declares a `tag_column` on its projection and filters here.
 pub use proxima_core::engine::{
     ListWakeCandidatesReadRequest, ListWakeCandidatesReadResponse, SearchReadRequest,
     SearchReadResponse,
