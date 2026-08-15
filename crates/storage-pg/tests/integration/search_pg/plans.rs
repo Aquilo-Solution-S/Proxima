@@ -254,6 +254,19 @@ async fn search_branches_enumerate_candidates_via_owner_index()
 /// enough rows that scanning them is real work, while the ANN window is a
 /// small fraction of them, so an index probe is the cheap plan by a wide
 /// margin and the assertion does not ride on a marginal cost estimate.
+///
+/// The bulk crowd below is what makes that claim true, and it is load-bearing
+/// rather than decorative. An earlier version of this fixture held only the
+/// 400 embedded rows, which put the choice on a cost cliff instead of a wide
+/// margin: the same assertion, on the same commit and the same `PostgreSQL`
+/// image, chose the index probe on one CI run and a `memories` seq scan on
+/// another. Widening the corpus did not settle it monotonically either —
+/// measured on CI, 400 rows chose the probe, 4,000 rows chose the seq scan,
+/// 12,000 rows chose the probe again. What settles it is giving the *owner*
+/// enough rows that enumerating them cannot win: with 20,000 same-owner rows
+/// beside the 400 embedded ones, the probe was chosen on every repeat, with
+/// and without a whole-database `ANALYZE`. That is also the regime the
+/// redesign was measured in, so the fixture now matches the claim.
 #[tokio::test]
 async fn rank_first_probes_memories_for_the_window_instead_of_scanning_the_owner()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -261,6 +274,22 @@ async fn rank_first_probes_memories_for_the_window_instead_of_scanning_the_owner
     pg.run_migrations().await?;
 
     let owner = owner_fixture();
+    let (crowd_kind, crowd_id) = owner.columns();
+    sqlx::query(
+        "INSERT INTO proxima_core.memories
+            (memory_id, owner_kind, owner_id, schema_id, schema_version, kind, text,
+             operator_kind, operator_id, input_contract_id, model_id, prompt_version)
+         SELECT gen_random_uuid(), $1, $2, 'test/search-abstraction-v1', 1,
+                'Abstraction', 'rank first filler row ' || g, 'AtoA',
+                '00000000-0000-0000-0000-000000000327'::uuid,
+                '00000000-0000-0000-0000-000000000328'::uuid,
+                'test-model', 'test-v1'
+           FROM generate_series(1, 20000) g",
+    )
+    .bind(crowd_kind)
+    .bind(crowd_id)
+    .execute(pg.pool_for_tests())
+    .await?;
     for idx in 0..400 {
         insert_embedded_memory(
             &pg,
