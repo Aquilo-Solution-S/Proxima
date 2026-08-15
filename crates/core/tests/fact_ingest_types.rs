@@ -11,6 +11,9 @@ fn fresh_command() -> FactWriteCommand {
     FactWriteCommand {
         schema_id: SchemaId::new("test/fact_blob".to_string()),
         schema_version: SchemaVersion::new(1),
+        handle: None,
+        source_id: None,
+        ingest_key: None,
         payload: b"hello".to_vec(),
         rendered_text: None,
         lexical_language: None,
@@ -32,6 +35,9 @@ fn fresh_command() -> FactWriteCommand {
             },
         }),
         derived_from: Vec::new(),
+        refs: Vec::new(),
+        blob_id: None,
+        kind: "fact".into(),
     }
 }
 

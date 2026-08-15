@@ -68,7 +68,7 @@ async fn flavor_migrations_apply_to_fresh_db() {
         }
 
         // Verify the M5 core tables exist.
-        for table in ["edges", "embeddings"] {
+        for table in ["memory", "memory_head", "announce"] {
             let row = sqlx::query(
                 "SELECT 1 AS ok FROM information_schema.tables
                  WHERE table_schema = 'proxima_core' AND table_name = $1",
@@ -115,14 +115,31 @@ async fn flavor_migrations_apply_to_fresh_db() {
         // Idempotency — a second run must not error.
         proxima_code::migrator().run(pg.pool_for_tests()).await?;
 
+        let handle = uuid::Uuid::now_v7();
         let memory_id = uuid::Uuid::now_v7();
         let repo_id = uuid::Uuid::now_v7();
         let owner_id = uuid::Uuid::now_v7();
         sqlx::query(
-            "INSERT INTO proxima_core.memories
-                 (memory_id, owner_kind, owner_id, schema_id, schema_version, text)
-             VALUES ($1, 'personal', $2, 'code/chunk-v1', 1, 'fn main() {}')",
+            "INSERT INTO proxima_core.owners (owner_id, kind)
+             VALUES ($1, 'personal') ON CONFLICT DO NOTHING",
         )
+        .bind(owner_id)
+        .execute(pg.pool_for_tests())
+        .await?;
+        sqlx::query(
+            "INSERT INTO proxima_core.memory_head (handle, kind, schema_id, owner_id, t)
+             VALUES ($1, 'abstraction', 'proxima-code/code-chunk-v1', $2, $3)",
+        )
+        .bind(handle)
+        .bind(owner_id)
+        .bind(memory_id)
+        .execute(pg.pool_for_tests())
+        .await?;
+        sqlx::query(
+            "INSERT INTO proxima_core.memory (handle, t, kind, owner_id)
+             VALUES ($1, $2, 'abstraction', $3)",
+        )
+        .bind(handle)
         .bind(memory_id)
         .bind(owner_id)
         .execute(pg.pool_for_tests())

@@ -1,7 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
-use proxima_core::verbs::query::{EdgeFilter, EdgeReadRequest};
-use proxima_core::{EdgeEndpoint, EdgeKind, EntityRef, MemoryId};
+use proxima_core::MemoryId;
 use proxima_core::{Tool, ToolCtx, ToolError};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -81,9 +80,6 @@ const fn default_include_calls() -> bool {
 /// edges that survive belong to the best-ranked matches and the same search
 /// answers the same way twice.
 const MAX_CALL_EDGES: usize = 200;
-
-/// Neighbour edges read per chunk per direction before the global cut.
-const CALL_EDGES_PER_CHUNK: u32 = 200;
 
 /// Characters of chunk text returned per match when the caller says nothing.
 /// Covers a typical chunk whole; ceiling matches `core_search_memories`
@@ -741,71 +737,27 @@ async fn load_call_edges(
     ctx: &ToolCtx,
     chunk_ids: &[uuid::Uuid],
 ) -> Result<Vec<CallEdge>, ToolError> {
-    let engine = super::engine(ctx)?;
     let pool = code_store(ctx)?;
-
-    // One `read_edges` per (chunk, direction). Independent reads against
-    // disjoint filters, so they run concurrently. Filter is `reference`:
-    // a chunk's only schema-declared reference field is its callee list.
-    let requests = chunk_ids.iter().flat_map(|chunk_id| {
-        let entity = EntityRef::Memory(MemoryId::new(*chunk_id));
-        [
-            EdgeFilter {
-                kind: Some(EdgeKind::Reference),
-                source: Some(entity),
-                target: None,
-            },
-            EdgeFilter {
-                kind: Some(EdgeKind::Reference),
-                source: None,
-                target: Some(entity),
-            },
-        ]
-    });
-    let responses = futures::future::try_join_all(requests.map(|filter| {
-        let engine = engine.clone();
-        async move {
-            engine
-                .read_edges(
-                    ctx.authz(),
-                    &EdgeReadRequest {
-                        owner: ctx.owner(),
-                        filter,
-                        limit: CALL_EDGES_PER_CHUNK,
-                        cursor: None,
-                    },
-                )
-                .await
-        }
-    }))
-    .await?;
-
-    // Request order, not hash order. `responses` comes back in the order the
-    // filters were built — chunk by chunk, in search-rank order — and keeping
-    // that order is what makes the `MAX_CALL_EDGES` cut below deterministic
-    // and useful: the same search returns the same edges, and what survives
-    // truncation belongs to the highest-ranked chunks. Collecting into a
-    // `HashMap` and taking 200 of its values returned an arbitrary subset
-    // that varied from run to run.
-    //
-    // The dedup key is the row itself now: an edge has no id, so
-    // (source, target) IS its identity for this purpose.
+    let pair_rows: Vec<(uuid::Uuid, uuid::Uuid)> = sqlx::query_as(
+        "SELECT caller_memory_id, callee_memory_id
+           FROM proxima_code.code_chunk_call_v1
+          WHERE caller_memory_id = ANY($1::uuid[])
+             OR callee_memory_id = ANY($1::uuid[])
+          ORDER BY caller_memory_id, callee_memory_id
+          LIMIT $2",
+    )
+    .bind(chunk_ids)
+    .bind(i64::try_from(MAX_CALL_EDGES).unwrap_or(i64::MAX))
+    .fetch_all(pool.pool())
+    .await
+    .map_err(map_storage)?;
     let mut seen: HashSet<(uuid::Uuid, uuid::Uuid)> = HashSet::new();
     let mut pairs: Vec<(MemoryId, MemoryId)> = Vec::new();
-    for response in responses {
-        for edge in response.edges {
-            let (Some(source), Some(target)) = (
-                edge.source.memory_id(),
-                edge.target.endpoint().and_then(EdgeEndpoint::memory_id),
-            ) else {
-                continue;
-            };
-            if seen.insert((source.into_inner(), target.into_inner())) {
-                pairs.push((source, target));
-            }
+    for (caller, callee) in pair_rows {
+        if seen.insert((caller, callee)) {
+            pairs.push((MemoryId::new(caller), MemoryId::new(callee)));
         }
     }
-    pairs.truncate(MAX_CALL_EDGES);
 
     // Hydrate the sites from the caller chunks' payload rows. The index
     // answers "is there a connection"; this is the node answering "what is

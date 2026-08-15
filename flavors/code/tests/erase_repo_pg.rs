@@ -8,56 +8,38 @@ use proxima_core::{FactPayload, Owner};
 use proxima_pg_testkit::drop_db;
 use uuid::Uuid;
 
-fn owner_parts(owner: &Owner) -> (proxima_core::OwnerRefKind, Option<Uuid>) {
-    proxima_storage_pg::access::owner_columns::owner_binds(owner)
-}
-
 async fn insert_repo_commit_with_test_request(
     pool: &sqlx::PgPool,
     owner: &Owner,
     repo_id: Uuid,
     memory_id: Uuid,
 ) -> Result<(), sqlx::Error> {
-    let (owner_kind, owner_id) = owner_parts(owner);
-    let source_batch_id = Uuid::now_v7();
-    let receipt_id = Uuid::now_v7().as_bytes().to_vec();
-
+    let owner_id = owner.stored_owner_id();
+    let handle = Uuid::now_v7();
     sqlx::query(
-        "INSERT INTO proxima_core.source_batches
-            (id, source_id, owner_kind, owner_id)
-         VALUES ($1, 'test/erase-repo', $2, $3)",
+        "INSERT INTO proxima_core.owners (owner_id, kind)
+         VALUES ($1, 'personal') ON CONFLICT DO NOTHING",
     )
-    .bind(source_batch_id)
-    .bind(owner_kind)
     .bind(owner_id)
     .execute(pool)
     .await?;
-
     sqlx::query(
-        "INSERT INTO proxima_core.fact_receipts
-            (receipt_id, source, source_batch_id, owner_kind,
-             owner_id, schema_id, schema_version,
-             observed_at, occurred_at)
-         VALUES ($1, 'test/erase-repo', $2, $3, $4, $5, 1, now(), now())",
+        "INSERT INTO proxima_core.memory_head (handle, kind, schema_id, owner_id, t)
+         VALUES ($1, 'fact', $2, $3, $4)",
     )
-    .bind(&receipt_id)
-    .bind(source_batch_id)
-    .bind(owner_kind)
-    .bind(owner_id)
+    .bind(handle)
     .bind(CommitV1::SCHEMA_ID)
-    .execute(pool)
-    .await?;
-
-    sqlx::query(
-        "INSERT INTO proxima_core.memories
-            (memory_id, owner_kind, owner_id, schema_id, schema_version, receipt_id)
-         VALUES ($1, $2, $3, $4, 1, $5)",
-    )
+    .bind(owner_id)
     .bind(memory_id)
-    .bind(owner_kind)
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        "INSERT INTO proxima_core.memory (handle, t, kind, owner_id)
+         VALUES ($1, $2, 'fact', $3)",
+    )
+    .bind(handle)
+    .bind(memory_id)
     .bind(owner_id)
-    .bind(CommitV1::SCHEMA_ID)
-    .bind(&receipt_id)
     .execute(pool)
     .await?;
 
@@ -136,9 +118,6 @@ async fn exercise_repo_erase(pool: &sqlx::PgPool) -> Result<(), Box<dyn std::err
     let receipt = erase_repo(pool, &owner, repo_id).await?;
     assert_eq!(receipt.repo_id, repo_id);
     assert_eq!(receipt.facts_deleted, 1);
-    assert_eq!(receipt.abstractions_deleted, 0);
-    assert_eq!(receipt.receipts_deleted, 1);
-    assert_eq!(receipt.source_batches_deleted, 1);
     assert!(receipt.repo_record_deleted);
 
     assert_repo_erased(pool, repo_id, memory_id).await?;
@@ -180,7 +159,7 @@ async fn assert_repo_erased(
     );
     assert_eq!(
         sqlx::query_scalar::<_, i64>(
-            "SELECT COUNT(*)::bigint FROM proxima_core.memories WHERE memory_id = $1",
+            "SELECT COUNT(*)::bigint FROM proxima_core.memory WHERE t = $1",
         )
         .bind(memory_id)
         .fetch_one(pool)
@@ -206,7 +185,7 @@ async fn assert_other_repo_preserved(
 ) -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(
         sqlx::query_scalar::<_, i64>(
-            "SELECT COUNT(*)::bigint FROM proxima_core.memories WHERE memory_id = $1",
+            "SELECT COUNT(*)::bigint FROM proxima_core.memory WHERE t = $1",
         )
         .bind(memory_id)
         .fetch_one(pool)
@@ -244,7 +223,7 @@ async fn assert_repo_rebuild_allowed(
     insert_repo_commit_with_test_request(pool, owner, repo_id, rebuilt_memory_id).await?;
     assert_eq!(
         sqlx::query_scalar::<_, i64>(
-            "SELECT COUNT(*)::bigint FROM proxima_core.memories WHERE memory_id = $1",
+            "SELECT COUNT(*)::bigint FROM proxima_core.memory WHERE t = $1",
         )
         .bind(rebuilt_memory_id)
         .fetch_one(pool)

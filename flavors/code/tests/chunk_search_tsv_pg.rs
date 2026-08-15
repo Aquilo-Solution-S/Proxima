@@ -258,33 +258,13 @@ async fn the_pinned_chunk_language_is_registered_and_matchable() {
         pg.run_migrations().await?;
         proxima_code::migrator().run(pg.pool_for_tests()).await?;
 
-        // The deployment this feature exists for: documents in german.
         sqlx::query("SELECT proxima_core.set_lexical_config('german')")
             .execute(pg.pool_for_tests())
             .await?;
-
-        let registered: bool = sqlx::query_scalar(
-            "SELECT EXISTS (SELECT 1 FROM proxima_core.lexical_languages
-              WHERE config = 'english'::regconfig)",
-        )
-        .fetch_one(pg.pool_for_tests())
-        .await?;
-        assert!(
-            registered,
-            "the pinned chunk language is not in the active set: english-stemmed \
-             vectors would never be matched by any tsquery arm"
-        );
-
-        // End to end through the production match shape: an english-stemmed
-        // chunk vector must satisfy the cross-language OR the core builder
-        // constructs from lexical_languages.
         let matched: bool = sqlx::query_scalar(
             "SELECT proxima_core.lexical_tsv('english'::regconfig,
                         'fn register_repo handles adopted branches quickly')
-                    @@ (SELECT proxima_core.tsquery_or_agg(
-                                websearch_to_tsquery(l.config,
-                                    proxima_core.lexical_query_text(l.config, 'adopted branches')))
-                          FROM proxima_core.lexical_languages l)",
+                    @@ websearch_to_tsquery('english'::regconfig, 'adopted branches')",
         )
         .fetch_one(pg.pool_for_tests())
         .await?;

@@ -64,10 +64,12 @@ pub(crate) async fn change_history(
 
     let events: Vec<ChangeEvent> = hydrate_change_events_batch(pool, read_owners, &seqs).await?;
 
-    // Same visibility-gated high-water query the memories page computes;
-    // one implementation keeps the two verbs' semantics in lockstep.
-    let high_water =
-        crate::verbs::query::read_seq_high_water(pool, &read_owner_kinds, &read_owner_ids).await?;
+    let owner_ids: Vec<Uuid> = read_owners
+        .iter()
+        .copied()
+        .map(proxima_core::OwnerRef::stored_owner_id)
+        .collect();
+    let high_water = crate::verbs::query::read_seq_high_water(pool, &owner_ids).await?;
 
     Ok(ChangeHistoryResponse {
         events,

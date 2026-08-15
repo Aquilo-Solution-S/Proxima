@@ -84,7 +84,7 @@ pub async fn nearest_code_chunk_candidates(
             proxima_core::llm::EMBEDDING_DIM
         )));
     }
-    let (owner_kind, owner_id) = owner.columns();
+    let owner_id = owner.stored_owner_id();
 
     let query = sqlx::query_as::<_, CodeChunkVectorCandidate>(
         "SELECT best.memory_id, best.similarity_score
@@ -100,29 +100,24 @@ pub async fn nearest_code_chunk_candidates(
                             END::real AS similarity_score
                        FROM proxima_core.embeddings emb
                        JOIN proxima_core.embedding_heads head
-                         ON head.entity_kind = emb.entity_kind
-                        AND head.entity_id = emb.entity_id
+                         ON head.entity_id = emb.entity_id
                         AND head.model_id = emb.model_id
                         AND head.embedding_version = emb.embedding_version
-                        AND head.owner_kind = emb.owner_kind
-                        AND head.owner_id IS NOT DISTINCT FROM emb.owner_id
-                       JOIN proxima_core.memories m
-                         ON m.memory_id = emb.entity_id
-                        AND m.owner_kind = emb.owner_kind
-                        AND m.owner_id IS NOT DISTINCT FROM emb.owner_id
+                       JOIN proxima_core.memory m
+                         ON m.t = emb.entity_id
+                        AND m.owner_id = $3
+                       JOIN proxima_core.memory_head h
+                         ON h.handle = m.handle AND h.t = m.t
                        JOIN proxima_code.code_chunk_v1 c
-                         ON c.memory_id = m.memory_id
-                      WHERE emb.entity_kind = 'Abstraction'
-                        AND emb.model_id = $6
-                        AND m.schema_id = $1
-                        AND m.owner_kind = $3
-                        AND m.owner_id IS NOT DISTINCT FROM $4
+                         ON c.memory_id = m.t
+                      WHERE emb.model_id = $4
+                        AND h.schema_id = $1
                         AND c.state = 'Present'
                         AND ($2::uuid IS NULL OR c.repo_id = $2)
-                        AND ($7::text IS NULL OR c.language = $7)
-                        AND ($8::text IS NULL OR c.chunk_type = $8)
+                        AND ($6::text IS NULL OR c.language = $6)
+                        AND ($7::text IS NULL OR c.chunk_type = $7)
                       ORDER BY emb.vec <=> $5::vector
-                      LIMIT $9
+                      LIMIT $8
                  ) ann
                 ORDER BY ann.memory_id, ann.similarity_score DESC
            ) best
@@ -130,10 +125,9 @@ pub async fn nearest_code_chunk_candidates(
     )
     .bind(schema_id.as_str())
     .bind(filters.repo_id)
-    .bind(owner_kind)
     .bind(owner_id)
-    .bind(crate::pgvector::literal(query_embedding))
     .bind(model_id)
+    .bind(crate::pgvector::literal(query_embedding))
     .bind(filters.language)
     .bind(filters.chunk_type)
     .bind(limit);

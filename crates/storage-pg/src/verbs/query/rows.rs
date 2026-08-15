@@ -1,4 +1,3 @@
-use proxima_core::change_event::EntityKind;
 use proxima_core::verbs::goal_write::GoalState;
 use proxima_core::verbs::query::{GoalRow, MemoryRow, StatefulHeadsFilter};
 use proxima_core::{
@@ -9,10 +8,7 @@ use sqlx::PgPool;
 
 use crate::error::map_err;
 use crate::pg_ident::PgIdent;
-use crate::verbs::consolidate::edge_event_visibility_predicate;
 use crate::verbs::edge_index::{PgEndpointKind, endpoint_from_columns};
-
-use super::read_owner_equality_predicate;
 
 pub(super) fn memory_row_from_db(
     r: MemoryRowDb,
@@ -29,8 +25,9 @@ pub(super) fn memory_row_from_db(
     let schema_version = SchemaVersion::new(schema_version);
 
     Ok(MemoryRow {
+        handle: r.handle,
         id: MemoryId::new(r.memory_id),
-        kind: r.kind,
+        kind: parse_memory_kind(&r.kind)?,
         schema_id,
         schema_version,
         owner: owner_from_parts(r.owner_kind, r.owner_id)?,
@@ -47,6 +44,7 @@ pub(super) fn goal_row_from_db(r: GoalRowDb) -> Result<GoalRow, StorageError> {
         ))
     })?;
     Ok(GoalRow {
+        handle: r.handle,
         id: GoalId::new(r.goal_id),
         schema_id: SchemaId::new(r.schema_id),
         schema_version: SchemaVersion::new(schema_version),
@@ -81,16 +79,35 @@ pub(super) fn edge_from_db(r: &EdgeRowDb) -> Edge {
     }
 }
 
+fn parse_memory_kind(kind: &str) -> Result<proxima_core::change_event::EntityKind, StorageError> {
+    match kind {
+        "fact" | "Fact" => Ok(proxima_core::change_event::EntityKind::Fact),
+        "abstraction" | "Abstraction" => Ok(proxima_core::change_event::EntityKind::Abstraction),
+        "perspective" | "Perspective" => Ok(proxima_core::change_event::EntityKind::Perspective),
+        other => Err(StorageError::Internal(format!(
+            "invalid memory kind {other}"
+        ))),
+    }
+}
+
 fn owner_from_parts(
     kind: OwnerRefKind,
     owner_id: Option<uuid::Uuid>,
 ) -> Result<Owner, StorageError> {
-    kind.with_uuid(owner_id)
-        .ok_or_else(|| StorageError::Internal("invalid OwnerRef columns".into()))
+    match kind {
+        OwnerRefKind::World => Ok(proxima_core::OwnerRef::World),
+        OwnerRefKind::Personal => owner_id
+            .map(|id| proxima_core::OwnerRef::Personal(proxima_core::UserId::new(id)))
+            .ok_or_else(|| StorageError::Internal("personal owner_id missing".into())),
+        OwnerRefKind::Group => owner_id
+            .map(|id| proxima_core::OwnerRef::Group(proxima_core::GroupId::new(id)))
+            .ok_or_else(|| StorageError::Internal("group owner_id missing".into())),
+    }
 }
 
 #[derive(Debug, sqlx::FromRow)]
 pub(super) struct GoalRowDb {
+    pub(super) handle: uuid::Uuid,
     pub(super) goal_id: uuid::Uuid,
     pub(super) created_at: time::OffsetDateTime,
     schema_id: String,
@@ -120,12 +137,13 @@ pub(super) struct EdgeRowDb {
 #[derive(Debug, sqlx::FromRow)]
 pub(super) struct MemoryRowDb {
     pub(super) memory_id: uuid::Uuid,
+    pub(super) handle: uuid::Uuid,
     pub(super) created_at: time::OffsetDateTime,
     owner_kind: OwnerRefKind,
     owner_id: Option<uuid::Uuid>,
     pub(super) schema_id: String,
     pub(super) schema_version: i32,
-    pub(super) kind: EntityKind,
+    pub(super) kind: String,
 }
 
 /// Cursor high-water over the requester's READ set — never a client-supplied
@@ -135,54 +153,26 @@ pub(super) struct MemoryRowDb {
 /// owner has events.
 pub(crate) async fn read_seq_high_water(
     pool: &PgPool,
-    read_owner_kinds: &[OwnerRefKind],
-    read_owner_ids: &[Option<uuid::Uuid>],
+    owner_ids: &[uuid::Uuid],
 ) -> Result<Option<uuid::Uuid>, StorageError> {
-    let (world_kind, world_id) =
-        crate::access::owner_columns::owner_binds(&proxima_core::access::world());
     let sql = read_seq_high_water_sql();
     // SQL-POLICY: fixed-fragment
     let row: Option<(uuid::Uuid,)> = sqlx::query_as(sqlx::AssertSqlSafe(sql))
-        .bind(read_owner_kinds)
-        .bind(read_owner_ids)
-        .bind(world_kind)
-        .bind(world_id)
+        .bind(owner_ids)
         .fetch_optional(pool)
         .await
         .map_err(map_err)?;
     Ok(row.map(|(v,)| v))
 }
 
-/// The high-water statement. `$1`/`$2` are the read owner arrays;
-/// `$3`/`$4` are the World owner columns the edge-event visibility probe
-/// binds.
-///
-/// One top-1 probe of `idx_change_event_owner_seq` per read owner, merged
-/// by a top-1 over the arms. A whole-table `ORDER BY seq DESC` walk through
-/// an `EXISTS` over the read set has no index prefix. Same maximum: that
-/// filter admits exactly the rows some read owner matches (`change_event`'s
-/// CHECKs make `ce.owner_id` never NULL, so the World member matches
-/// nothing either way), and the max over a union is the max of the
-/// per-member maxima.
 fn read_seq_high_water_sql() -> String {
-    let edge_visibility = edge_event_visibility_predicate(1, 2, 3, 4);
-    format!(
-        r"SELECT hw.seq
-         FROM unnest($1::proxima_core.owner_ref_kind[], $2::uuid[]) AS s(kind, id)
-         JOIN LATERAL (
-             SELECT ce.seq FROM proxima_core.change_event ce
-              WHERE {read_owner_predicate}
-                AND {edge_visibility}
-              ORDER BY ce.seq DESC LIMIT 1
-         ) hw ON TRUE
-         ORDER BY hw.seq DESC LIMIT 1",
-        read_owner_predicate = read_owner_equality_predicate("ce", "s"),
-    )
+    "SELECT seq FROM proxima_core.announce \
+     WHERE owner_id = ANY($1::uuid[]) \
+     ORDER BY seq DESC LIMIT 1"
+        .into()
 }
 
-/// Emit the exact high-water statement [`read_seq_high_water`] would run —
-/// the golden-pin surface, compiled only for tests.
-/// Same cfg gate as the search `*_sql_for_tests` exports.
+/// Emit the exact high-water statement [`read_seq_high_water`] would run.
 #[cfg(any(test, feature = "test-fixtures", debug_assertions))]
 #[doc(hidden)]
 #[must_use]
@@ -197,6 +187,7 @@ pub fn read_seq_high_water_sql_for_tests() -> String {
 /// caller-controlled. This is a defense-in-depth check that catches
 /// typos and rejects anything that doesn't look like a postgres
 /// identifier.
+#[allow(dead_code)]
 pub(super) fn validate_stateful_filter(
     sf: &StatefulHeadsFilter,
 ) -> Result<&StatefulHeadsFilter, StorageError> {

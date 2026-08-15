@@ -56,33 +56,17 @@ fn fixture_repo() -> TempDir {
 }
 
 async fn count_present_chunks(pool: &sqlx::PgPool, owner: &Owner, repo_id: Uuid) -> i64 {
-    let (kind, principal_id) = owner.columns();
+    let owner_id = owner.stored_owner_id();
     let row = sqlx::query(
         "SELECT COUNT(*)::bigint AS c \
-         FROM proxima_core.memories m \
-         JOIN proxima_code.code_chunk_v1 s USING (memory_id) \
-         JOIN (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) eo \
-           ON eo.entity_id = m.memory_id \
-         WHERE eo.owner_kind = $1 \
-           AND eo.owner_id = $2 \
-           AND s.repo_id = $3 \
-           AND s.state = 'Present' \
-           AND NOT EXISTS ( \
-                 SELECT 1 FROM proxima_core.memories m2 \
-                 JOIN proxima_code.code_chunk_v1 s2 USING (memory_id) \
-                 JOIN (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) eo2 \
-                   ON eo2.entity_id = m2.memory_id \
-                 WHERE m2.schema_id = m.schema_id \
-                   AND eo2.owner_kind = eo.owner_kind \
-                   AND eo2.owner_id = eo.owner_id \
-                   AND s2.repo_id = s.repo_id \
-                   AND s2.file_path = s.file_path \
-                   AND s2.chunk_index = s.chunk_index \
-                   AND m2.created_at > m.created_at \
-           )",
+         FROM proxima_core.memory_head h \
+         JOIN proxima_core.memory m ON m.handle = h.handle AND m.t = h.t \
+         JOIN proxima_code.code_chunk_v1 s ON s.memory_id = m.t \
+         WHERE m.owner_id = $1 \
+           AND s.repo_id = $2 \
+           AND s.state = 'Present'",
     )
-    .bind(kind)
-    .bind(principal_id)
+    .bind(owner_id)
     .bind(repo_id)
     .fetch_one(pool)
     .await
@@ -96,34 +80,18 @@ async fn count_present_chunks_for_path(
     repo_id: Uuid,
     file_path: &str,
 ) -> i64 {
-    let (kind, principal_id) = owner.columns();
+    let owner_id = owner.stored_owner_id();
     let row = sqlx::query(
         "SELECT COUNT(*)::bigint AS c \
-         FROM proxima_core.memories m \
-         JOIN proxima_code.code_chunk_v1 s USING (memory_id) \
-         JOIN (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) eo \
-           ON eo.entity_id = m.memory_id \
-         WHERE eo.owner_kind = $1 \
-           AND eo.owner_id = $2 \
-           AND s.repo_id = $3 \
-           AND s.file_path = $4 \
-           AND s.state = 'Present' \
-           AND NOT EXISTS ( \
-                 SELECT 1 FROM proxima_core.memories m2 \
-                 JOIN proxima_code.code_chunk_v1 s2 USING (memory_id) \
-                 JOIN (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) eo2 \
-                   ON eo2.entity_id = m2.memory_id \
-                 WHERE m2.schema_id = m.schema_id \
-                   AND eo2.owner_kind = eo.owner_kind \
-                   AND eo2.owner_id = eo.owner_id \
-                   AND s2.repo_id = s.repo_id \
-                   AND s2.file_path = s.file_path \
-                   AND s2.chunk_index = s.chunk_index \
-                   AND m2.created_at > m.created_at \
-           )",
+         FROM proxima_core.memory_head h \
+         JOIN proxima_core.memory m ON m.handle = h.handle AND m.t = h.t \
+         JOIN proxima_code.code_chunk_v1 s ON s.memory_id = m.t \
+         WHERE m.owner_id = $1 \
+           AND s.repo_id = $2 \
+           AND s.file_path = $3 \
+           AND s.state = 'Present'",
     )
-    .bind(kind)
-    .bind(principal_id)
+    .bind(owner_id)
     .bind(repo_id)
     .bind(file_path)
     .fetch_one(pool)
@@ -138,32 +106,17 @@ async fn fetch_file_revision_state(
     repo_id: Uuid,
     file_path: &str,
 ) -> Option<FileState> {
-    let (kind, principal_id) = owner.columns();
+    let owner_id = owner.stored_owner_id();
     let row: Option<(FileState,)> = sqlx::query_as(
         "SELECT s.state \
-         FROM proxima_core.memories m \
-         JOIN proxima_code.file_revision_v1 s USING (memory_id) \
-         JOIN (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) eo \
-           ON eo.entity_id = m.memory_id \
-         WHERE eo.owner_kind = $1 \
-           AND eo.owner_id = $2 \
-           AND s.repo_id = $3 \
-           AND s.file_path = $4 \
-           AND NOT EXISTS ( \
-                 SELECT 1 FROM proxima_core.memories m2 \
-                 JOIN proxima_code.file_revision_v1 s2 USING (memory_id) \
-                 JOIN (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) eo2 \
-                   ON eo2.entity_id = m2.memory_id \
-                 WHERE m2.schema_id = m.schema_id \
-                   AND eo2.owner_kind = eo.owner_kind \
-                   AND eo2.owner_id = eo.owner_id \
-                   AND s2.repo_id = s.repo_id \
-                   AND s2.file_path = s.file_path \
-                   AND m2.created_at > m.created_at \
-           )",
+         FROM proxima_core.memory_head h \
+         JOIN proxima_core.memory m ON m.handle = h.handle AND m.t = h.t \
+         JOIN proxima_code.file_revision_v1 s ON s.memory_id = m.t \
+         WHERE m.owner_id = $1 \
+           AND s.repo_id = $2 \
+           AND s.file_path = $3",
     )
-    .bind(kind)
-    .bind(principal_id)
+    .bind(owner_id)
     .bind(repo_id)
     .bind(file_path)
     .fetch_optional(pool)
@@ -201,26 +154,21 @@ async fn local_git_source_full_cycle() {
         // `file-revision-v1` Facts.
         let linkage: (i64, i64) = sqlx::query_as(
             "WITH chunks AS ( \
-                 SELECT ch.memory_id \
+                 SELECT ch.memory_id, m.origins \
                  FROM proxima_code.code_chunk_v1 ch \
-                 JOIN proxima_core.memories cm USING (memory_id) \
+                 JOIN proxima_core.memory m ON m.t = ch.memory_id \
                  WHERE ch.repo_id = $1 AND ch.file_path = 'src/lib.rs' \
                    AND ch.state = 'Present' \
-                   AND cm.kind = 'Abstraction' \
+                   AND m.kind = 'abstraction' \
              ) \
              SELECT \
                  (SELECT COUNT(*)::bigint FROM chunks), \
                  (SELECT COUNT(*)::bigint FROM chunks c \
                   WHERE EXISTS ( \
-                      SELECT 1 FROM proxima_core.edges e \
-                      JOIN proxima_code.file_revision_v1 fr \
-                        ON fr.memory_id = e.target_id \
-                      WHERE e.kind = 'origin' \
-                        AND e.source_kind = 'Abstraction' \
-                        AND e.target_kind = 'Fact' \
-                        AND e.source_id = c.memory_id \
-                        AND fr.repo_id = $1 \
-                        AND fr.file_path = 'src/lib.rs'))",
+                      SELECT 1 FROM proxima_code.file_revision_v1 fr \
+                      WHERE fr.repo_id = $1 \
+                        AND fr.file_path = 'src/lib.rs' \
+                        AND fr.memory_id = ANY(c.origins)))",
         )
         .bind(repo_id)
         .fetch_one(pg.pool_for_tests())
@@ -287,15 +235,10 @@ async fn local_git_source_full_cycle() {
         // src/lib.rs head must now have new content.
         let row: (Vec<u8>,) = sqlx::query_as(
             "SELECT s.content_sha256 \
-             FROM proxima_core.memories m \
-             JOIN proxima_code.file_revision_v1 s USING (memory_id) \
-             WHERE s.repo_id = $1 AND s.file_path = 'src/lib.rs' \
-               AND NOT EXISTS ( \
-                     SELECT 1 FROM proxima_core.memories m2 \
-                     JOIN proxima_code.file_revision_v1 s2 USING (memory_id) \
-                     WHERE s2.repo_id = s.repo_id \
-                       AND s2.file_path = s.file_path \
-                       AND m2.created_at > m.created_at)",
+             FROM proxima_core.memory_head h \
+             JOIN proxima_core.memory m ON m.handle = h.handle AND m.t = h.t \
+             JOIN proxima_code.file_revision_v1 s ON s.memory_id = m.t \
+             WHERE s.repo_id = $1 AND s.file_path = 'src/lib.rs'",
         )
         .bind(repo_id)
         .fetch_one(pg.pool_for_tests())
@@ -405,8 +348,7 @@ async fn local_git_source_full_cycle() {
         // Phase 6 — markdown is polyglot: present revision, fallback chunks.
         // (The renamed docs/README.md proves this.)
         let md_chunk_count: (i64,) = sqlx::query_as(
-            "SELECT COUNT(*)::bigint FROM proxima_core.memories m \
-             JOIN proxima_code.code_chunk_v1 s USING (memory_id) \
+            "SELECT COUNT(*)::bigint FROM proxima_code.code_chunk_v1 s \
              WHERE s.repo_id = $1 AND s.file_path = 'docs/README.md' \
                AND s.state = 'Present'",
         )

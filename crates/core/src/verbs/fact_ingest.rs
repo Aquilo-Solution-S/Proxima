@@ -629,17 +629,18 @@ impl FactWriteCommand {
         payload: &P,
         observed_at: time::OffsetDateTime,
     ) -> Self {
+        let source_id = source_id.into();
         Self {
             schema_id: P::schema_id(),
             schema_version: SchemaVersion::new(P::SCHEMA_VERSION),
             handle: None,
-            source_id: None,
-            ingest_key: None,
+            source_id: Some(source_id.clone()),
+            ingest_key: Some(hex::encode(payload.receipt_key())),
             payload: payload.receipt_key(),
             rendered_text: Some(payload.render()),
             lexical_language: None,
             receipt: Some(FactReceiptDraft {
-                source_id: SourceId::new(source_id.into()),
+                source_id: SourceId::new(source_id),
                 source_batch_id,
                 observed_at,
                 occurred_at: observed_at,

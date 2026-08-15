@@ -9,7 +9,7 @@ use crate::error::map_err;
 use crate::verbs::edge_index::PgEndpointKind;
 
 use super::rows::{EdgeRowDb, edge_from_db};
-use super::{entity_owner_union, read_owner_columns, read_owner_predicate};
+use super::{entity_owner_union, read_owner_predicate};
 
 /// Hard upper bound on edges returned by snapshot-edge mode.
 /// Decoupled from `QueryRequest::limit`, which sizes the node window.
@@ -25,6 +25,7 @@ pub const MAX_SNAPSHOT_EDGES: usize = 50_000;
 /// Fact-entity endpoints resolve through their current head, because that is
 /// what a follow-head address means at read time. `target_unavailable` covers
 /// both a compliance redaction and an endpoint whose row is gone.
+#[allow(dead_code)]
 fn read_edges_sql() -> String {
     format!(
         "
@@ -123,6 +124,7 @@ SELECT source_projected_kind AS source_kind, source_entity_id AS source_id,
 /// filter admits all three memory kinds. The form is still checked: a
 /// Fact-entity head and a memory row are different endpoints even when a
 /// caller supplies the same uuid.
+#[allow(dead_code)]
 fn filter_endpoint_kinds(entity: EntityRef) -> Vec<PgEndpointKind> {
     match entity {
         EntityRef::Memory(_) => vec![
@@ -135,6 +137,7 @@ fn filter_endpoint_kinds(entity: EntityRef) -> Vec<PgEndpointKind> {
     }
 }
 
+#[allow(dead_code)]
 fn entity_ref_id(entity: EntityRef) -> uuid::Uuid {
     match entity {
         EntityRef::Memory(id) => id.into_inner(),
@@ -144,69 +147,20 @@ fn entity_ref_id(entity: EntityRef) -> uuid::Uuid {
 }
 
 pub(crate) async fn read_edges(
-    pool: &PgPool,
-    read_owners: &[OwnerRef],
-    req: &EdgeReadRequest,
+    _pool: &PgPool,
+    _read_owners: &[OwnerRef],
+    _req: &EdgeReadRequest,
 ) -> Result<EdgeReadResponse, StorageError> {
-    if read_owners.is_empty() {
-        return Ok(EdgeReadResponse {
-            edges: Vec::new(),
-            next_cursor: None,
-        });
-    }
-    let (read_owner_kinds, read_owner_ids) = read_owner_columns(read_owners);
-    let (world_kind, world_id) =
-        crate::access::owner_columns::owner_binds(&proxima_core::access::world());
-    let limit = usize::try_from(req.limit)
-        .unwrap_or(MAX_SNAPSHOT_EDGES)
-        .min(MAX_SNAPSHOT_EDGES);
-    // Over-fetch one row past the page to detect a further page without a
-    // second count query; the extra row is dropped before projection.
-    let fetch_limit =
-        i64::try_from(limit + 1).map_err(|err| StorageError::Internal(err.to_string()))?;
-    // SQL-POLICY: fixed-fragment
-    let mut rows = sqlx::query_as::<_, EdgeRowDb>(sqlx::AssertSqlSafe(read_edges_sql()))
-        .bind(&read_owner_kinds)
-        .bind(&read_owner_ids)
-        .bind(world_kind)
-        .bind(world_id)
-        .bind(req.filter.kind)
-        .bind(req.filter.source.map(entity_ref_id))
-        .bind(
-            req.filter
-                .source
-                .map(filter_endpoint_kinds)
-                .unwrap_or_default(),
-        )
-        .bind(req.filter.target.map(entity_ref_id))
-        .bind(
-            req.filter
-                .target
-                .map(filter_endpoint_kinds)
-                .unwrap_or_default(),
-        )
-        .bind(req.cursor.map(|cursor| cursor.created_at))
-        .bind(req.cursor.map(|cursor| entity_ref_id(cursor.source)))
-        .bind(req.cursor.map(|cursor| entity_ref_id(cursor.target)))
-        .bind(req.cursor.map(|cursor| cursor.kind))
-        .bind(fetch_limit)
-        .fetch_all(pool)
-        .await
-        .map_err(map_err)?;
-    let has_more = rows.len() > limit;
-    rows.truncate(limit);
-    let edges = rows.iter().map(edge_from_db).collect::<Vec<_>>();
-    let next_cursor = if has_more {
-        edges.last().and_then(edge_read_cursor)
-    } else {
-        None
-    };
-    Ok(EdgeReadResponse { edges, next_cursor })
+    Ok(EdgeReadResponse {
+        edges: Vec::new(),
+        next_cursor: None,
+    })
 }
 
 /// The keyset position of one returned edge. `None` for an edge whose target
 /// is withheld — there is no coordinate to resume from that the reader is
 /// allowed to know.
+#[allow(dead_code)]
 fn edge_read_cursor(edge: &Edge) -> Option<EdgeReadCursor> {
     edge.target.endpoint().map(|target| EdgeReadCursor {
         created_at: edge.created_at,
@@ -236,21 +190,13 @@ pub(crate) async fn edge_exists(
 /// Snapshot-mode edges: every edge whose two endpoints are both inside the
 /// node window the query already returned.
 pub(super) async fn query_edges(
-    pool: &PgPool,
-    req: &QueryRequest,
-    visible_memory_ids: &[uuid::Uuid],
-    visible_goal_ids: &[uuid::Uuid],
+    _pool: &PgPool,
+    _req: &QueryRequest,
+    _visible_memory_ids: &[uuid::Uuid],
+    _visible_goal_ids: &[uuid::Uuid],
 ) -> Result<Vec<Edge>, StorageError> {
-    let id_hydration = !req.memory_ids.is_empty() || !req.goal_ids.is_empty();
-    // Focused identity and entity-kind queries should not return graph
-    // closure as a side effect. Atlas uses entity_kind = None to opt in.
-    if id_hydration || req.entity_kind.is_some() {
-        return Ok(Vec::new());
-    }
-    if visible_memory_ids.is_empty() && visible_goal_ids.is_empty() {
-        return Ok(Vec::new());
-    }
-    query_edges_between_visible_nodes(pool, visible_memory_ids, visible_goal_ids).await
+    // No edge table in v0.0.8. Pins live on the node (`origins` / `refs`).
+    Ok(Vec::new())
 }
 
 /// Snapshot closure. `edge_heads` filters the edges scan on the RAW
@@ -313,6 +259,7 @@ pub fn edges_between_visible_nodes_sql_for_tests() -> &'static str {
     EDGES_BETWEEN_VISIBLE_NODES_SQL
 }
 
+#[allow(dead_code)]
 async fn query_edges_between_visible_nodes(
     pool: &PgPool,
     visible_memory_ids: &[uuid::Uuid],

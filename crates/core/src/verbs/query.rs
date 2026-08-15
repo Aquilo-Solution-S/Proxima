@@ -419,6 +419,9 @@ impl QueryRequest {
 /// (M2+); not modelled here.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MemoryRow {
+    /// Series handle.
+    pub handle: uuid::Uuid,
+    /// Version `t` (also [`MemoryId`]).
     pub id: MemoryId,
     pub kind: EntityKind,
     pub schema_id: SchemaId,
@@ -431,6 +434,7 @@ pub struct MemoryRow {
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct GoalRow {
+    pub handle: uuid::Uuid,
     pub id: GoalId,
     pub schema_id: SchemaId,
     pub schema_version: SchemaVersion,

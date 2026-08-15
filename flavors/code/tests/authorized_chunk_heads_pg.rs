@@ -27,33 +27,35 @@ async fn seed_chunk(
     batch: Uuid,
 ) -> Result<Uuid, sqlx::Error> {
     let memory_id = Uuid::now_v7();
-    let (owner_kind, owner_id) = owner.columns();
+    let handle = Uuid::now_v7();
+    let owner_id = owner.stored_owner_id();
+    let kind = proxima_core::OwnerRefKind::of(owner).as_str();
+    let _ = batch;
     sqlx::query(
-        "INSERT INTO proxima_core.source_batches
-            (id, source_id, owner_kind, owner_id, closed_at)
-         VALUES ($1, 'test/chunk-heads', $2, $3, now())
-         ON CONFLICT (id) DO NOTHING",
+        "INSERT INTO proxima_core.owners (owner_id, kind)
+         VALUES ($1, $2::proxima_core.owner_kind) ON CONFLICT DO NOTHING",
     )
-    .bind(batch)
-    .bind(owner_kind)
     .bind(owner_id)
+    .bind(kind)
     .execute(pool)
     .await?;
     sqlx::query(
-        "INSERT INTO proxima_core.memories
-            (memory_id, owner_kind, owner_id, schema_id, schema_version, kind, text,
-             operator_kind, operator_id, input_contract_id, source_batch_id, model_id,
-             prompt_version)
-         VALUES ($1, $2, $3, $4, 1, 'Abstraction', $5,
-                 'FtoA', '00000000-0000-0000-0000-000000000611'::uuid, $1, $6,
-                 'test/chunk-heads', 'v1')",
+        "INSERT INTO proxima_core.memory_head (handle, kind, schema_id, owner_id, t)
+         VALUES ($1, 'abstraction', $2, $3, $4)",
     )
-    .bind(memory_id)
-    .bind(owner_kind)
-    .bind(owner_id)
+    .bind(handle)
     .bind(<CodeChunkV1 as AbstractionPayload>::SCHEMA_ID)
-    .bind(format!("{file_path}#{chunk_index}"))
-    .bind(batch)
+    .bind(owner_id)
+    .bind(memory_id)
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        "INSERT INTO proxima_core.memory (handle, t, kind, owner_id)
+         VALUES ($1, $2, 'abstraction', $3)",
+    )
+    .bind(handle)
+    .bind(memory_id)
+    .bind(owner_id)
     .execute(pool)
     .await?;
     sqlx::query(
@@ -75,18 +77,6 @@ async fn seed_chunk(
 /// single-row owner transfer `transfer_to_world` performs after
 /// `Engine::publish_to_world` authorizes it (the batch row keeps its
 /// original write-attribution owner, exactly as in production).
-async fn publish_row_to_world(pool: &sqlx::PgPool, memory_id: Uuid) -> Result<(), sqlx::Error> {
-    sqlx::query(
-        "UPDATE proxima_core.memories
-            SET owner_kind = 'world', owner_id = NULL
-          WHERE memory_id = $1",
-    )
-    .bind(memory_id)
-    .execute(pool)
-    .await
-    .map(|_| ())
-}
-
 async fn heads(
     pool: &sqlx::PgPool,
     owner: Owner,
@@ -124,8 +114,15 @@ async fn owner_scoping_excludes_foreign_rows_and_world_surfaces_for_non_owner() 
         let a_row = seed_chunk(pool, &owner_a, repo_id, "a.rs", 0, Uuid::now_v7()).await?;
         let b_row = seed_chunk(pool, &owner_b, repo_id, "b.rs", 0, Uuid::now_v7()).await?;
         // Published row: authored by A, then owner-transferred to World.
-        let w_row = seed_chunk(pool, &owner_a, repo_id, "w.rs", 0, Uuid::now_v7()).await?;
-        publish_row_to_world(pool, w_row).await?;
+        let w_row = seed_chunk(
+            pool,
+            &proxima_core::OwnerRef::World,
+            repo_id,
+            "w.rs",
+            0,
+            Uuid::now_v7(),
+        )
+        .await?;
 
         let candidates = [a_row, b_row, w_row];
 
@@ -159,8 +156,15 @@ async fn same_natural_key_recency_dedup_is_scoped_per_owner() {
         let repo_id = Uuid::now_v7();
 
         // Oldest row at the NK, published to World.
-        let world_old = seed_chunk(pool, &owner, repo_id, "hot.rs", 0, Uuid::now_v7()).await?;
-        publish_row_to_world(pool, world_old).await?;
+        let world_old = seed_chunk(
+            pool,
+            &proxima_core::OwnerRef::World,
+            repo_id,
+            "hot.rs",
+            0,
+            Uuid::now_v7(),
+        )
+        .await?;
         // Then two generations of the same owner's row at the same NK.
         let own_old = seed_chunk(pool, &owner, repo_id, "hot.rs", 0, Uuid::now_v7()).await?;
         let own_new = seed_chunk(pool, &owner, repo_id, "hot.rs", 0, Uuid::now_v7()).await?;

@@ -159,6 +159,7 @@ impl MemoryAuthoringPort for PgStorage {
                 &mut tx,
                 permit,
                 &draft,
+                req.origins,
                 move |tx, outcome| {
                     Box::pin(async move {
                         sidecars

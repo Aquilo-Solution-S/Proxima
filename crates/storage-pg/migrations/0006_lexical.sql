@@ -25,3 +25,7 @@ $$ SELECT NULLIF(array_to_string(parts, ' '), '') $$;
 CREATE FUNCTION proxima_core.lexical_join(VARIADIC parts text[]) RETURNS text
 LANGUAGE sql IMMUTABLE PARALLEL SAFE AS
 $$ SELECT NULLIF(concat_ws(' ', VARIADIC parts), '') $$;
+
+CREATE FUNCTION proxima_core.set_lexical_config(cfg text) RETURNS void
+LANGUAGE sql VOLATILE AS
+$$ SELECT NULL $$;

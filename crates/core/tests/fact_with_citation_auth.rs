@@ -115,6 +115,9 @@ fn draft(_owner: &Owner) -> FactWriteCommand {
     FactWriteCommand {
         schema_id: TestFact::schema_id(),
         schema_version: SchemaVersion::new(TestFact::SCHEMA_VERSION),
+        handle: None,
+        source_id: None,
+        ingest_key: None,
         payload: json(&TestFact {
             value: "fact".to_string(),
         }),
@@ -128,6 +131,9 @@ fn draft(_owner: &Owner) -> FactWriteCommand {
         }),
         citation: None,
         derived_from: Vec::new(),
+        refs: Vec::new(),
+        blob_id: None,
+        kind: "fact".into(),
     }
 }
 

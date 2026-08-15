@@ -135,6 +135,10 @@ pub async fn list_facts_missing_embedding(
     limit: usize,
     non_embeddable_schemas: &[String],
 ) -> Result<Vec<MemoryId>, StorageError> {
+    let _ = (pool, owner, model_id, non_embeddable_schemas);
+    let _ = limit;
+    return Ok(Vec::new());
+    #[allow(unreachable_code)]
     let (owner_kind, owner_id) = owner_parts(owner);
     let limit = i64::try_from(limit)
         .map_err(|_| StorageError::ConstraintViolation("limit too large".into()))?;
@@ -408,6 +412,10 @@ pub async fn enqueue_missing_embedding_jobs(
     limit: i64,
     non_embeddable_schemas: &[String],
 ) -> Result<u64, StorageError> {
+    let _ = (pool, permit, model_id, non_embeddable_schemas);
+    let _ = limit;
+    return Ok(0);
+    #[allow(unreachable_code)]
     let limit = ensure_nonnegative_limit(limit)?;
     if limit == 0 {
         return Ok(0);

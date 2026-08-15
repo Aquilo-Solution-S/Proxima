@@ -80,6 +80,7 @@ pub(super) fn push_same_home_owner_successor_predicate(
 /// `supersedes` update to one owner), so the guard is a read-side
 /// fail-closed double-check, not a behavior change. Goals carry no
 /// tombstones, so no tombstone clause applies.
+#[allow(dead_code)]
 pub(super) fn push_goal_heads_only_predicate(sql: &mut String) {
     // SQL-POLICY: fixed-fragment
     sql.push_str(
@@ -123,6 +124,7 @@ pub(crate) fn read_owner_predicate(owner_alias: &str, read_set_alias: &str) -> S
 /// read-owner scope builders in `memories.rs`/`goals.rs` use it only
 /// alongside that World arm; an unpaired future use on a World-tolerant
 /// table silently hides every published row.
+#[allow(dead_code)]
 pub(crate) fn read_owner_equality_predicate(owner_alias: &str, read_set_alias: &str) -> String {
     format!(
         "{owner_alias}.owner_kind = {read_set_alias}.kind \
