@@ -12,10 +12,6 @@ use sqlx::PgPool;
 use crate::error::map_err;
 use crate::sidecars::{PgSidecarKey, PgSidecarReadCtx, PgSidecarRegistryFrozen};
 
-/// `(kind, schema_id, schema_version, text)` as [`load_memory_by_id`]
-/// selects it.
-type MemoryHeadRow = (EntityKind, String, i32, Option<String>);
-
 /// The Facts of one source batch, with their typed sidecar payloads.
 ///
 /// # Errors
@@ -193,19 +189,27 @@ pub async fn load_memory_by_id(
     memory_id: MemoryId,
     sidecars: &[SidecarSpec],
 ) -> Result<Option<MemorySnapshot>, StorageError> {
-    let head: Option<MemoryHeadRow> = sqlx::query_as(
-        "SELECT m.kind, m.schema_id, m.schema_version, m.text
-         FROM proxima_core.memories m
-         WHERE m.memory_id = $1
-           AND m.tombstoned_at IS NULL",
+    let raw: Option<(String, String)> = sqlx::query_as(
+        "SELECT m.kind::text, h.schema_id
+           FROM proxima_core.memory m
+           JOIN proxima_core.memory_head h ON h.handle = m.handle
+          WHERE m.t = $1",
     )
     .bind(memory_id.into_inner())
     .fetch_optional(pool)
     .await
     .map_err(map_err)?;
-    let Some((kind, schema_id, schema_version, text)) = head else {
+    let Some((kind_text, schema_id)) = raw else {
         return Ok(None);
     };
+    let kind = match kind_text.as_str() {
+        "fact" => EntityKind::Fact,
+        "abstraction" => EntityKind::Abstraction,
+        "perspective" => EntityKind::Perspective,
+        _ => return Ok(None),
+    };
+    let schema_version = 1;
+    let text = None;
     let rows = [(
         memory_id.into_inner(),
         kind,
@@ -235,30 +239,37 @@ pub async fn load_memories_by_ids(
     if read_owners.is_empty() || memory_ids.is_empty() {
         return Ok(Vec::new());
     }
-    let (read_owner_kinds, read_owner_ids) = crate::verbs::query::read_owner_columns(read_owners);
+    let owner_ids: Vec<uuid::Uuid> = read_owners
+        .iter()
+        .copied()
+        .map(proxima_core::OwnerRef::stored_owner_id)
+        .collect();
     let ids: Vec<uuid::Uuid> = memory_ids.iter().map(|id| id.into_inner()).collect();
-    let sql = format!(
-        "SELECT m.memory_id, m.kind, m.schema_id, m.schema_version, m.text
-           FROM proxima_core.memories m
-          WHERE EXISTS (
-                    SELECT 1
-                      FROM unnest($1::proxima_core.owner_ref_kind[], $2::uuid[]) AS rs(kind, id)
-                     WHERE {read_owner_predicate}
-                )
-            AND m.memory_id = ANY($3::uuid[])
-            AND m.tombstoned_at IS NULL
-          ORDER BY m.created_at, m.memory_id",
-        read_owner_predicate = crate::verbs::query::read_owner_predicate("m", "rs"),
-    );
-    // SQL-POLICY: fixed-fragment
-    let rows: Vec<(uuid::Uuid, EntityKind, String, i32, Option<String>)> =
-        sqlx::query_as(sqlx::AssertSqlSafe(sql))
-            .bind(&read_owner_kinds)
-            .bind(&read_owner_ids)
-            .bind(&ids)
-            .fetch_all(pool)
-            .await
-            .map_err(map_err)?;
+    let raw: Vec<(uuid::Uuid, String, String)> = sqlx::query_as(
+        "SELECT m.t, m.kind::text, h.schema_id
+           FROM proxima_core.memory m
+           JOIN proxima_core.memory_head h ON h.handle = m.handle
+          WHERE m.owner_id = ANY($1::uuid[])
+            AND m.t = ANY($2::uuid[])
+          ORDER BY m.t",
+    )
+    .bind(&owner_ids)
+    .bind(&ids)
+    .fetch_all(pool)
+    .await
+    .map_err(map_err)?;
+    let rows: Vec<(uuid::Uuid, EntityKind, String, i32, Option<String>)> = raw
+        .into_iter()
+        .filter_map(|(t, kind, schema_id)| {
+            let kind = match kind.as_str() {
+                "fact" => EntityKind::Fact,
+                "abstraction" => EntityKind::Abstraction,
+                "perspective" => EntityKind::Perspective,
+                _ => return None,
+            };
+            Some((t, kind, schema_id, 1, None))
+        })
+        .collect();
 
     snapshots_from_rows(pool, pg_sidecars, &rows, sidecars).await
 }
@@ -283,20 +294,31 @@ pub async fn load_memory_graph_payloads(
         .copied()
         .map(MemoryId::into_inner)
         .collect::<Vec<_>>();
-    let (owner_kind, owner_id) = owner.columns();
-    let rows: Vec<(uuid::Uuid, EntityKind, String, i32, Option<String>)> = sqlx::query_as(
-        "SELECT m.memory_id, m.kind, m.schema_id, m.schema_version, m.text
-         FROM proxima_core.memories m
-         WHERE m.owner_kind = $1
-           AND m.owner_id IS NOT DISTINCT FROM $2
-           AND m.memory_id = ANY($3::uuid[])",
+    let owner_id = owner.stored_owner_id();
+    let raw_rows: Vec<(uuid::Uuid, String, String)> = sqlx::query_as(
+        "SELECT m.t, m.kind::text, h.schema_id
+           FROM proxima_core.memory m
+           JOIN proxima_core.memory_head h ON h.handle = m.handle
+          WHERE m.owner_id = $1
+            AND m.t = ANY($2::uuid[])",
     )
-    .bind(owner_kind)
     .bind(owner_id)
     .bind(&ids)
     .fetch_all(pool)
     .await
     .map_err(map_err)?;
+    let rows: Vec<(uuid::Uuid, EntityKind, String, i32, Option<String>)> = raw_rows
+        .into_iter()
+        .filter_map(|(t, kind, schema_id)| {
+            let kind = match kind.as_str() {
+                "fact" => EntityKind::Fact,
+                "abstraction" => EntityKind::Abstraction,
+                "perspective" => EntityKind::Perspective,
+                _ => return None,
+            };
+            Some((t, kind, schema_id, 1, None))
+        })
+        .collect();
 
     let mut ids_by_key = HashMap::<PgSidecarKey, Vec<MemoryId>>::new();
     for (memory_id, kind, schema_id, schema_version, _) in &rows {

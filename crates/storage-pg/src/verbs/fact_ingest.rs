@@ -1073,6 +1073,19 @@ where
     crate::access::owner_columns::reject_world_write_owner(owner)?;
     let outcome = super::memory_timeseries::ingest_fact_timeseries(tx, owner, draft).await?;
     sidecar(tx, &outcome).await?;
+    if !outcome.idempotent_replay
+        && let Some(model_id) = options.embedding_model_id
+    {
+        crate::verbs::fact_embeddings::enqueue_embedding_job_in_tx(
+            tx,
+            crate::access::owner_columns::owner_binds(owner).0,
+            Some(owner.stored_owner_id()),
+            proxima_core::EntityKind::Fact,
+            outcome.memory_id.into_inner(),
+            model_id,
+        )
+        .await?;
+    }
     return Ok(outcome);
     #[allow(unreachable_code)]
     let receipt_id = draft.receipt_id_for_owner(*owner);

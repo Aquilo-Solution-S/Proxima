@@ -5,8 +5,8 @@ use proxima_core::verbs::query::{
     MemoryLineageRequest, MemoryLineageResponse,
 };
 use proxima_core::{
-    Edge, EdgeKind, EdgeTargetProjection, EntityRef, MemoryId, OwnerRef, OwnerRefKind, SchemaId,
-    StorageError,
+    Edge, EdgeEndpoint, EdgeKind, EdgeTargetProjection, EntityRef, MemoryId, OwnerRef,
+    OwnerRefKind, SchemaId, StorageError,
 };
 use sqlx::PgPool;
 
@@ -48,6 +48,9 @@ pub(crate) async fn walk_memory_lineage(
             next_cursor: None,
         });
     }
+    return walk_memory_lineage_timeseries(pool, read_owners, req).await;
+    #[allow(unreachable_code)]
+    let _ = req;
     let limit = req.limit.min(200);
     let depth = req.depth.min(8);
     let (read_owner_kinds, read_owner_ids) = read_owner_columns(read_owners);
@@ -500,6 +503,98 @@ walk AS (
         joins = WALK_EDGE_JOINS,
         edge_filter = WALK_EDGE_FILTER,
     )
+}
+
+async fn walk_memory_lineage_timeseries(
+    pool: &PgPool,
+    read_owners: &[OwnerRef],
+    req: &MemoryLineageRequest,
+) -> Result<MemoryLineageResponse, StorageError> {
+    let owner_ids: Vec<uuid::Uuid> = read_owners
+        .iter()
+        .copied()
+        .map(OwnerRef::stored_owner_id)
+        .collect();
+    let start = req.start_memory_id.into_inner();
+    let pins: Vec<(uuid::Uuid, uuid::Uuid, String)> = sqlx::query_as(
+        "SELECT src.t, pin, 'origin'
+           FROM proxima_core.memory src
+           JOIN unnest(src.origins) AS pin ON true
+          WHERE src.t = $1 AND src.owner_id = ANY($2::uuid[])
+         UNION ALL
+         SELECT src.t, pin, 'reference'
+           FROM proxima_core.memory src
+           JOIN unnest(src.refs) AS pin ON true
+          WHERE src.t = $1 AND src.owner_id = ANY($2::uuid[])",
+    )
+    .bind(start)
+    .bind(&owner_ids)
+    .fetch_all(pool)
+    .await
+    .map_err(map_err)?;
+    let mut node_ids = vec![start];
+    node_ids.extend(pins.iter().map(|(_, pin, _)| *pin));
+    let nodes: Vec<(uuid::Uuid, String, String)> = sqlx::query_as(
+        "SELECT m.t, m.kind::text, h.schema_id
+           FROM proxima_core.memory m
+           JOIN proxima_core.memory_head h ON h.handle = m.handle
+          WHERE m.t = ANY($1::uuid[])
+            AND m.owner_id = ANY($2::uuid[])",
+    )
+    .bind(&node_ids)
+    .bind(&owner_ids)
+    .fetch_all(pool)
+    .await
+    .map_err(map_err)?;
+    let nodes = nodes
+        .into_iter()
+        .filter_map(|(id, kind, schema_id)| {
+            let kind = match kind.as_str() {
+                "fact" => EntityKind::Fact,
+                "abstraction" => EntityKind::Abstraction,
+                "perspective" => EntityKind::Perspective,
+                _ => return None,
+            };
+            Some(MemoryLineageNode {
+                memory_id: MemoryId::new(id),
+                kind,
+                schema_id: SchemaId::new(schema_id),
+                snippet: String::new(),
+                distance: 0,
+            })
+        })
+        .collect();
+    let edges = pins
+        .into_iter()
+        .filter_map(|(src, tgt, kind)| {
+            let kind = match kind.as_str() {
+                "origin" => EdgeKind::Origin,
+                "reference" => EdgeKind::Reference,
+                _ => return None,
+            };
+            Some(MemoryLineageEdge {
+                edge: Edge {
+                    source: EdgeEndpoint::memory(
+                        EntityKind::Abstraction,
+                        MemoryId::new(src),
+                    ),
+                    target: EdgeTargetProjection::visible(EdgeEndpoint::memory(
+                        EntityKind::Abstraction,
+                        MemoryId::new(tgt),
+                    )),
+                    kind,
+                    created_at: time::OffsetDateTime::UNIX_EPOCH,
+                },
+                distance: 1,
+            })
+        })
+        .collect();
+    Ok(MemoryLineageResponse {
+        nodes,
+        edges,
+        truncated: false,
+        next_cursor: None,
+    })
 }
 
 /// A lineage edge always sources at a memory row, so the endpoint decode

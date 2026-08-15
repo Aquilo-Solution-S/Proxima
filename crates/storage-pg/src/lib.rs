@@ -297,158 +297,28 @@ pub async fn ensure_core_schema_current(pool: &PgPool) -> Result<(), StorageErro
 ///
 /// Returns [`StorageError::Internal`] when any structural marker for the
 /// current lane is absent.
-#[expect(
-    clippy::too_many_lines,
-    reason = "one boot probe: every marker is a separate EXISTS arm of the same \
-              query, and the comment above each is what makes it auditable"
-)]
 pub async fn ensure_core_schema_markers(pool: &PgPool) -> Result<(), StorageError> {
     let ready: bool = sqlx::query_scalar(
-        "SELECT EXISTS (
-             SELECT 1
-               FROM information_schema.columns
-              WHERE table_schema = 'proxima_core'
-                AND table_name = 'embedding_jobs'
-                AND column_name = 'next_attempt_at'
-         )
-         AND EXISTS (
-             SELECT 1
-               FROM pg_trigger t
-               JOIN pg_class c ON c.oid = t.tgrelid
-               JOIN pg_namespace n ON n.oid = c.relnamespace
-              WHERE n.nspname = 'proxima_core'
-                AND c.relname = 'memories'
-                AND t.tgname = 'memories_enforce_immutable'
-         )
+        "SELECT to_regclass('proxima_core.memory') IS NOT NULL
+         AND to_regclass('proxima_core.memory_head') IS NOT NULL
+         AND to_regclass('proxima_core.ingest_keys') IS NOT NULL
+         AND to_regclass('proxima_core.announce') IS NOT NULL
+         AND to_regclass('proxima_core.goal') IS NOT NULL
+         AND to_regclass('proxima_core.wake_config') IS NOT NULL
+         AND to_regclass('proxima_core.embeddings') IS NOT NULL
+         AND to_regclass('proxima_core.agent_note_v1') IS NOT NULL
+         AND to_regclass('proxima_core.group_memberships') IS NOT NULL
+         AND to_regclass('proxima_core.lexical_languages') IS NOT NULL
+         AND to_regprocedure('proxima_core.lexical_tsv(text)') IS NOT NULL
+         AND to_regprocedure('proxima_core.lexical_config()') IS NOT NULL
          AND (
              to_regclass('proxima_code.code_chunk_v1') IS NULL
              OR EXISTS (
                  SELECT 1
-                   FROM pg_trigger t
-                   JOIN pg_class c ON c.oid = t.tgrelid
-                   JOIN pg_namespace n ON n.oid = c.relnamespace
-                  WHERE n.nspname = 'proxima_code'
-                    AND c.relname = 'code_chunk_v1'
-                    AND t.tgname = 'code_chunk_v1_append_only'
-             )
-         )
-         -- v0.0.7 lane (0011_v007.sql), marker by marker. Every search emits
-         -- memories.search_tsv, every sidecar without a stored column calls
-         -- lexical_tsv(), and every embedding write binds chunk_index — none
-         -- of them have a fallback.
-         AND EXISTS (
-             SELECT 1
-               FROM information_schema.columns
-              WHERE table_schema = 'proxima_core'
-                AND table_name = 'memories'
-                AND column_name = 'search_tsv'
-         )
-         AND EXISTS (
-             SELECT 1
-               FROM information_schema.columns
-              WHERE table_schema = 'proxima_core'
-                AND table_name = 'embeddings'
-                AND column_name = 'chunk_index'
-         )
-         AND to_regprocedure('proxima_core.lexical_tsv(text)') IS NOT NULL
-         -- Every lexical search emits proxima_core.lexical_config() to build
-         -- its tsquery, and every stored search_tsv was generated through it.
-         -- A database without it answers no lexical query at all.
-         AND to_regprocedure('proxima_core.lexical_config()') IS NOT NULL
-         -- Per-row language: every memory INSERT binds
-         -- memories.lexical_language, every lexical query reads
-         -- lexical_languages and ranks with the row's configuration through
-         -- the two-argument lexical_tsv — none of them have a fallback.
-         AND EXISTS (
-             SELECT 1
-               FROM information_schema.columns
-              WHERE table_schema = 'proxima_core'
-                AND table_name = 'memories'
-                AND column_name = 'lexical_language'
-         )
-         AND to_regprocedure('proxima_core.lexical_tsv(regconfig, text)') IS NOT NULL
-         AND to_regclass('proxima_core.lexical_languages') IS NOT NULL
-         -- Edge reset. Every index write binds the new edge
-         -- columns, every derived write binds authoring_perspective_id, and
-         -- every goal write binds the topology columns — none of them have a
-         -- fallback, and a pre-lane database would fail at first write rather
-         -- than at boot. The lane REPLACED the edges table, so the marker is
-         -- the new column, not the table.
-         AND EXISTS (
-             SELECT 1
-               FROM information_schema.columns
-              WHERE table_schema = 'proxima_core'
-                AND table_name = 'edges'
-                AND column_name = 'source_id'
-         )
-         AND EXISTS (
-             SELECT 1
-               FROM information_schema.columns
-              WHERE table_schema = 'proxima_core'
-                AND table_name = 'memories'
-                AND column_name = 'authoring_perspective_id'
-         )
-         AND EXISTS (
-             SELECT 1
-               FROM information_schema.columns
-              WHERE table_schema = 'proxima_core'
-                AND table_name = 'goals'
-                AND column_name = 'assignment_perspective_id'
-         )
-         AND to_regclass('proxima_core.interpretation_v1') IS NOT NULL
-         AND EXISTS (
-             SELECT 1
-               FROM information_schema.columns
-              WHERE table_schema = 'proxima_core'
-                AND table_name = 'memories'
-                AND column_name = 'kind'
-                AND is_nullable = 'NO'
-         )
-         -- v0.0.8 delegated-authority lane. The runtime always constructs the
-         -- PG store when authenticated hosting is enabled, compliance audit
-         -- always binds its count column, and the trigger is the storage-side
-         -- defense against widening an issued grant.
-         AND to_regtype('proxima_core.access_ceiling') IS NOT NULL
-         AND to_regclass('proxima_core.delegated_authority_grants') IS NOT NULL
-         AND EXISTS (
-             SELECT 1
-               FROM information_schema.columns
-              WHERE table_schema = 'proxima_core'
-                AND table_name = 'compliance_audit_log'
-                AND column_name = 'delegated_authority_grants_count'
-         )
-         AND EXISTS (
-             SELECT 1
-               FROM pg_trigger t
-               JOIN pg_class c ON c.oid = t.tgrelid
-               JOIN pg_namespace n ON n.oid = c.relnamespace
-              WHERE n.nspname = 'proxima_core'
-                AND c.relname = 'delegated_authority_grants'
-                AND t.tgname = 'delegated_authority_grants_revoke_only'
-         )
-         -- Flavor lane skew: when the code flavor's tables exist, its
-         -- language migration must have run too — the search builder emits
-         -- s.lexical_language for the chunk projection (and reads its
-         -- stored search_tsv), so a core-migrated/flavor-stale database
-         -- would pass core markers at boot and then fail EVERY search with
-         -- an undefined column at runtime.
-         AND (
-             to_regclass('proxima_code.code_chunk_v1') IS NULL
-             OR (
-                 EXISTS (
-                     SELECT 1
-                       FROM information_schema.columns
-                      WHERE table_schema = 'proxima_code'
-                        AND table_name = 'code_chunk_v1'
-                        AND column_name = 'lexical_language'
-                 )
-                 AND EXISTS (
-                     SELECT 1
-                       FROM information_schema.columns
-                      WHERE table_schema = 'proxima_code'
-                        AND table_name = 'code_chunk_v1'
-                        AND column_name = 'search_tsv'
-                 )
+                   FROM information_schema.columns
+                  WHERE table_schema = 'proxima_code'
+                    AND table_name = 'code_chunk_v1'
+                    AND column_name = 'search_tsv'
              )
          )",
     )
@@ -458,7 +328,7 @@ pub async fn ensure_core_schema_markers(pool: &PgPool) -> Result<(), StorageErro
 
     if !ready {
         return Err(StorageError::Internal(
-            "database is missing schema markers for this release lane (v0.0.6: embedding_jobs.next_attempt_at, memories append-only trigger; v0.0.7 (0011_v007.sql): memories.search_tsv, embeddings.chunk_index, proxima_core.lexical_tsv, proxima_core.lexical_config, memories.lexical_language, proxima_core.lexical_languages, edges.source_id, memories.authoring_perspective_id, goals.assignment_perspective_id, proxima_core.interpretation_v1; v0.0.8 (0016_v008.sql): proxima_core.access_ceiling, proxima_core.delegated_authority_grants, delegated_authority_grants_revoke_only, compliance_audit_log.delegated_authority_grants_count; v0.0.8 (0020_memory_kind_fact.sql): memories.kind NOT NULL Fact; code flavor, when present: code_chunk_v1.search_tsv and code_chunk_v1.lexical_language via flavor migration 20260801000020_v007_baseline.sql); apply migrations before boot (see MIGRATING.md)".into(),
+            "database is missing v0.0.8 schema markers (memory/memory_head/ingest_keys/announce/goal/wake_config/embeddings/agent_note_v1/group_memberships/lexical_tsv); apply migrations before boot".into(),
         ));
     }
     Ok(())
@@ -1019,6 +889,10 @@ mod tests {
             versions.contains(&8),
             "core migrator must embed 0008_core_sidecars.sql"
         );
+        assert!(
+            versions.contains(&9),
+            "core migrator must embed 0009_core_surface.sql"
+        );
     }
 
     #[test]
@@ -1027,7 +901,7 @@ mod tests {
             .iter()
             .map(|migration| migration.version)
             .collect();
-        for dead in [8, 9, 10, 11, 16, 17, 18, 19, 20] {
+        for dead in [10, 11, 16, 17, 18, 19, 20] {
             assert!(!versions.contains(&dead), "legacy version {dead} must be gone");
         }
     }

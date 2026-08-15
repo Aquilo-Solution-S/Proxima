@@ -1111,16 +1111,26 @@ async fn facade_authorized_read_surfaces_world_published_fact_to_non_owner() {
             .engine
             .publish_to_world(&authz, proxima_core::EntityId::Memory(MemoryId::new(memory_id)))
             .await?;
+        let published_t: Uuid = sqlx::query_scalar(
+            "SELECT m.t
+               FROM proxima_core.memory m
+              WHERE m.owner_id = $1
+              ORDER BY m.t DESC
+              LIMIT 1",
+        )
+        .bind(proxima_core::OwnerRef::World.stored_owner_id())
+        .fetch_one(built.pool_for_tests())
+        .await?;
 
         // A caller with no relationship to `owner` — not a group co-member,
-        // no share, nothing — must still see the now-World-owned Fact
+        // no share, nothing — must still see the World copy
         // through the same authorized-read helper the Code flavor calls.
         let other_authz = host_authz(&other_owner, ToolScope::All);
         let visible = proxima::flavor::authorized_memory_ids(
             &built.engine,
             &other_authz,
             other_owner,
-            &[memory_id],
+            &[published_t],
             proxima_core::verbs::query::EntityKind::Fact,
             None,
             10,
@@ -1128,7 +1138,7 @@ async fn facade_authorized_read_surfaces_world_published_fact_to_non_owner() {
         .await?;
         assert_eq!(
             visible,
-            vec![MemoryId::new(memory_id)],
+            vec![MemoryId::new(published_t)],
             "a World-published Fact must surface through the authorized-read facade for a non-owner caller"
         );
 

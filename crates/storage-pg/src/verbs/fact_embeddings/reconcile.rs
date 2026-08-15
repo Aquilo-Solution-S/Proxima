@@ -23,31 +23,21 @@ pub struct EmbeddingInlineDrainOutcome {
 
 const RECONCILE_EMBEDDINGS_SQL: &str = "
 WITH scoped AS MATERIALIZED (
-     SELECT m.kind AS entity_kind,
-            m.memory_id,
-            m.owner_kind,
+     SELECT m.t AS memory_id,
             m.owner_id,
-            m.created_at,
-            h.embedding_version AS head_version
-       FROM proxima_core.memories m
-       LEFT JOIN proxima_core.embedding_heads h
-         ON h.entity_kind = m.kind
-        AND h.entity_id = m.memory_id
-        AND h.model_id = $1
-WHERE NULLIF(btrim(m.text), '') IS NOT NULL
-        AND m.tombstoned_at IS NULL
-        AND m.kind IN ('Fact', 'Abstraction', 'Perspective')
-        AND ($3::text <> 'since' OR m.created_at >= $4)
-        -- Declined a vector rather than lacking one; see
-        -- FactPayload::EMBEDDABLE. This is the call that heals a missing
-        -- job, which is exactly the state such a schema must stay in, so
-        -- the exclusion belongs here as much as on the write path.
-        -- <> ALL of an empty array is TRUE, so an empty list is a no-op.
-        AND m.schema_id <> ALL($5::text[])
+            h2.embedding_version AS head_version
+       FROM proxima_core.memory_head mh
+       JOIN proxima_core.memory m ON m.handle = mh.handle AND m.t = mh.t
+       JOIN proxima_core.agent_note_v1 n ON n.memory_id = m.t
+       LEFT JOIN proxima_core.embedding_heads h2
+         ON h2.entity_id = m.t
+        AND h2.model_id = $1
+      WHERE NULLIF(btrim(n.body), '') IS NOT NULL
+        AND ($3::text <> 'since' OR uuid_extract_timestamp(m.t) >= $4)
+        AND mh.schema_id <> ALL($5::text[])
  ),
  eligible AS MATERIALIZED (
-     SELECT s.*,
-            COALESCE(s.head_version + 1, 1) AS desired_embedding_version
+     SELECT s.*
        FROM scoped s
       WHERE (
             CASE WHEN $3::text = 'missing_only'
@@ -58,40 +48,26 @@ WHERE NULLIF(btrim(m.text), '') IS NOT NULL
         AND NOT EXISTS (
             SELECT 1
               FROM proxima_core.embedding_jobs j
-             WHERE j.owner_kind = s.owner_kind
-               AND j.owner_id = s.owner_id
-               AND j.entity_kind = s.entity_kind
+             WHERE j.owner_id = s.owner_id
                AND j.entity_id = s.memory_id
                AND j.model_id = $1
-               AND j.embedding_version = COALESCE(s.head_version + 1, 1)
                AND j.status IN ('pending', 'processing')
         )
  ),
  limited AS MATERIALIZED (
      SELECT *
        FROM eligible
-      ORDER BY created_at ASC, memory_id ASC
+      ORDER BY memory_id ASC
       LIMIT $2
  ),
  inserted AS (
      INSERT INTO proxima_core.embedding_jobs
-         (owner_kind, owner_id,
-          entity_kind, entity_id, model_id, embedding_version)
-     SELECT owner_kind, owner_id,
-            entity_kind, memory_id, $1, desired_embedding_version
+         (entity_id, model_id, owner_id)
+     SELECT memory_id, $1, owner_id
        FROM limited
-     ON CONFLICT (owner_kind, owner_id,
-                  entity_kind, entity_id, model_id, embedding_version)
-     DO UPDATE SET status = 'pending',
-                   attempts = 0,
-                   last_error = NULL,
-                   next_attempt_at = now(),
-                   updated_at = now()
+     ON CONFLICT (owner_id, entity_id, model_id)
+     DO UPDATE SET status = 'pending'
          WHERE embedding_jobs.status = 'failed'
-           -- Permanently rejected inputs (PERMANENT_EMBED_FAILURE_MARKER)
-           -- stay terminal: requeueing them would only re-poison the queue.
-           AND (embedding_jobs.last_error IS NULL
-                OR embedding_jobs.last_error NOT LIKE 'permanent: %')
      RETURNING 1
  )
  SELECT

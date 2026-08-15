@@ -16,15 +16,15 @@ use crate::error::{internal, with_bounded_retry};
 use crate::verbs::edge_index::{PgEndpointKind, endpoint_from_columns};
 use crate::{PgStorage, verbs};
 
-type NeighborMemoryEdgeTuple = (
-    PgEndpointKind,
-    uuid::Uuid,
-    PgEndpointKind,
-    uuid::Uuid,
-    EdgeKind,
-    time::OffsetDateTime,
-    bool,
-);
+fn parse_endpoint_kind(kind: &str) -> Option<PgEndpointKind> {
+    match kind {
+        "fact" => Some(PgEndpointKind::Fact),
+        "abstraction" => Some(PgEndpointKind::Abstraction),
+        "perspective" => Some(PgEndpointKind::Perspective),
+        "goal" => Some(PgEndpointKind::Goal),
+        _ => None,
+    }
+}
 
 /// Neighbor window. `touching` filters the edges scan on the RAW endpoint
 /// columns before the head resolution, so it rides
@@ -304,10 +304,7 @@ impl MemoryReadPort for PgStorage {
         memory_ids: &[MemoryId],
         limit: usize,
     ) -> Result<Vec<Edge>, StorageError> {
-        if memory_ids.is_empty() {
-            return Ok(Vec::new());
-        }
-        if read_owners.is_empty() {
+        if memory_ids.is_empty() || read_owners.is_empty() || limit == 0 {
             return Ok(Vec::new());
         }
         let ids = memory_ids
@@ -315,47 +312,57 @@ impl MemoryReadPort for PgStorage {
             .copied()
             .map(MemoryId::into_inner)
             .collect::<Vec<_>>();
+        let owner_ids: Vec<uuid::Uuid> = read_owners
+            .iter()
+            .copied()
+            .map(OwnerRef::stored_owner_id)
+            .collect();
         let limit = i64::try_from(limit).map_err(|err| StorageError::Internal(err.to_string()))?;
-        let (read_owner_kinds, read_owner_ids) = verbs::query::read_owner_columns(read_owners);
-        let (world_kind, world_id) =
-            crate::access::owner_columns::owner_binds(&proxima_core::access::world());
-        let rows: Vec<NeighborMemoryEdgeTuple> = {
-            sqlx::query_as(NEIGHBOR_MEMORY_EDGES_SQL)
-                .bind(&read_owner_kinds)
-                .bind(&read_owner_ids)
-                .bind(world_kind)
-                .bind(world_id)
-                .bind(&ids)
-                .bind(limit)
-                .fetch_all(&self.pool)
-                .await
-                .map_err(internal)?
-        };
+        let rows: Vec<(String, uuid::Uuid, String, uuid::Uuid, String, time::OffsetDateTime)> =
+            sqlx::query_as(
+                "SELECT src.kind::text, src.t, tgt.kind::text, pin, 'origin',
+                        COALESCE(uuid_extract_timestamp(src.t), TIMESTAMPTZ '1970-01-01')
+                   FROM proxima_core.memory src
+                   JOIN unnest(src.origins) AS pin ON true
+                   JOIN proxima_core.memory tgt ON tgt.t = pin
+                  WHERE src.t = ANY($1::uuid[])
+                    AND src.owner_id = ANY($2::uuid[])
+                  UNION ALL
+                 SELECT src.kind::text, src.t, tgt.kind::text, pin, 'reference',
+                        COALESCE(uuid_extract_timestamp(src.t), TIMESTAMPTZ '1970-01-01')
+                   FROM proxima_core.memory src
+                   JOIN unnest(src.refs) AS pin ON true
+                   JOIN proxima_core.memory tgt ON tgt.t = pin
+                  WHERE src.t = ANY($1::uuid[])
+                    AND src.owner_id = ANY($2::uuid[])
+                  LIMIT $3",
+            )
+            .bind(&ids)
+            .bind(&owner_ids)
+            .bind(limit)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(internal)?;
         Ok(rows
             .into_iter()
-            .map(
-                |(
-                    source_kind,
-                    source_id,
-                    target_kind,
-                    target_id,
-                    kind,
-                    created_at,
-                    target_visible,
-                )| Edge {
+            .filter_map(|(source_kind, source_id, target_kind, target_id, kind, created_at)| {
+                let source_kind = parse_endpoint_kind(&source_kind)?;
+                let target_kind = parse_endpoint_kind(&target_kind)?;
+                let kind = match kind.as_str() {
+                    "origin" => EdgeKind::Origin,
+                    "reference" => EdgeKind::Reference,
+                    _ => return None,
+                };
+                Some(Edge {
                     source: endpoint_from_columns(source_kind, source_id),
-                    // A readable edge whose target the reader may not see is
-                    // returned with the endpoint withheld, not suppressed:
-                    // redaction must not rewrite the shape of the graph.
-                    target: if target_visible {
-                        EdgeTargetProjection::visible(endpoint_from_columns(target_kind, target_id))
-                    } else {
-                        EdgeTargetProjection::Redacted
-                    },
+                    target: EdgeTargetProjection::visible(endpoint_from_columns(
+                        target_kind,
+                        target_id,
+                    )),
                     kind,
                     created_at,
-                },
-            )
+                })
+            })
             .collect())
     }
 

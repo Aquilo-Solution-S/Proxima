@@ -102,19 +102,25 @@ pub async fn list_facts_missing_embedding(
     let limit = i64::try_from(limit)
         .map_err(|_| StorageError::ConstraintViolation("limit too large".into()))?;
     let _ = non_embeddable_schemas;
-    let rows = sqlx::query_scalar::<_, uuid::Uuid>(
+    missing_embedding_ids(pool, owner_id, model_id, limit).await
+}
+
+async fn missing_embedding_ids(
+    pool: &PgPool,
+    owner_id: uuid::Uuid,
+    model_id: &str,
+    limit: i64,
+) -> Result<Vec<MemoryId>, StorageError> {
+    let mut rows = sqlx::query_scalar::<_, uuid::Uuid>(
         "SELECT m.t
            FROM proxima_core.memory_head h
            JOIN proxima_core.memory m ON m.handle = h.handle AND m.t = h.t
-           JOIN proxima_code.code_chunk_v1 c ON c.memory_id = m.t
+           JOIN proxima_core.agent_note_v1 n ON n.memory_id = m.t
           WHERE m.owner_id = $1
-            AND c.state = 'Present'
-            AND NULLIF(btrim(c.text), '') IS NOT NULL
+            AND NULLIF(btrim(n.body), '') IS NOT NULL
             AND NOT EXISTS (
-                SELECT 1
-                  FROM proxima_core.embedding_heads eh
-                 WHERE eh.entity_id = m.t
-                   AND eh.model_id = $2
+                SELECT 1 FROM proxima_core.embedding_heads eh
+                 WHERE eh.entity_id = m.t AND eh.model_id = $2
             )
           ORDER BY m.t ASC
           LIMIT $3",
@@ -125,6 +131,38 @@ pub async fn list_facts_missing_embedding(
     .fetch_all(pool)
     .await
     .map_err(map_err)?;
+    let chunk_table: bool = sqlx::query_scalar(
+        "SELECT to_regclass('proxima_code.code_chunk_v1') IS NOT NULL",
+    )
+    .fetch_one(pool)
+    .await
+    .map_err(map_err)?;
+    let have = i64::try_from(rows.len()).unwrap_or(i64::MAX);
+    if chunk_table && have < limit {
+        let remaining = limit.saturating_sub(have);
+        let chunks = sqlx::query_scalar::<_, uuid::Uuid>(
+            "SELECT m.t
+               FROM proxima_core.memory_head h
+               JOIN proxima_core.memory m ON m.handle = h.handle AND m.t = h.t
+               JOIN proxima_code.code_chunk_v1 c ON c.memory_id = m.t
+              WHERE m.owner_id = $1
+                AND c.state = 'Present'
+                AND NULLIF(btrim(c.text), '') IS NOT NULL
+                AND NOT EXISTS (
+                    SELECT 1 FROM proxima_core.embedding_heads eh
+                     WHERE eh.entity_id = m.t AND eh.model_id = $2
+                )
+              ORDER BY m.t ASC
+              LIMIT $3",
+        )
+        .bind(owner_id)
+        .bind(model_id)
+        .bind(remaining)
+        .fetch_all(pool)
+        .await
+        .map_err(map_err)?;
+        rows.extend(chunks);
+    }
     Ok(rows.into_iter().map(MemoryId::new).collect())
 }
 
@@ -327,34 +365,21 @@ pub async fn enqueue_missing_embedding_jobs(
     }
     let owner_id = permit.owner().stored_owner_id();
     let _ = non_embeddable_schemas;
+    let ids = missing_embedding_ids(pool, owner_id, model_id, limit).await?;
+    if ids.is_empty() {
+        return Ok(0);
+    }
+    let entity_ids: Vec<uuid::Uuid> = ids.into_iter().map(MemoryId::into_inner).collect();
     let result = sqlx::query(
-        "WITH missing AS (
-             SELECT m.t AS entity_id, m.owner_id
-               FROM proxima_core.memory_head h
-               JOIN proxima_core.memory m ON m.handle = h.handle AND m.t = h.t
-               JOIN proxima_code.code_chunk_v1 c ON c.memory_id = m.t
-              WHERE m.owner_id = $1
-                AND c.state = 'Present'
-                AND NULLIF(btrim(c.text), '') IS NOT NULL
-                AND NOT EXISTS (
-                    SELECT 1
-                      FROM proxima_core.embedding_heads eh
-                     WHERE eh.entity_id = m.t
-                       AND eh.model_id = $2
-                )
-              ORDER BY m.t ASC
-              LIMIT $3
-         )
-         INSERT INTO proxima_core.embedding_jobs
-             (entity_id, model_id, owner_id)
-         SELECT entity_id, $2, owner_id
-           FROM missing
+        "INSERT INTO proxima_core.embedding_jobs (entity_id, model_id, owner_id)
+         SELECT t, $2, $1
+           FROM unnest($3::uuid[]) AS t
          ON CONFLICT (owner_id, entity_id, model_id)
          DO NOTHING",
     )
     .bind(owner_id)
     .bind(model_id)
-    .bind(limit)
+    .bind(&entity_ids)
     .execute(pool)
     .await
     .map_err(map_err)?;

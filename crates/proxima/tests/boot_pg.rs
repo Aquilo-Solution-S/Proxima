@@ -77,8 +77,7 @@ async fn count_fact_embeddings(
     sqlx::query_scalar(
         "SELECT count(*)::bigint
            FROM proxima_core.embeddings
-          WHERE entity_kind = 'Fact'
-            AND entity_id = $1
+          WHERE entity_id = $1
             AND model_id = $2",
     )
     .bind(memory_id.into_inner())
@@ -95,8 +94,7 @@ async fn count_embedding_jobs(
     sqlx::query_scalar(
         "SELECT count(*)::bigint
            FROM proxima_core.embedding_jobs
-          WHERE entity_kind = 'Fact'
-            AND entity_id = $1
+          WHERE entity_id = $1
             AND model_id = $2",
     )
     .bind(memory_id.into_inner())
