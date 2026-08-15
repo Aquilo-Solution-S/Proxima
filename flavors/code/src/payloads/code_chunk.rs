@@ -1,6 +1,6 @@
 use proxima_core::{
-    AbstractionPayload, EntityKind, MemoryId, PayloadReference, SearchProjection,
-    SearchProjectionColumnKind, SearchProjectionField, proxima_schema_id,
+    AbstractionPayload, PayloadReference, SearchProjection, SearchProjectionColumnKind,
+    SearchProjectionField, proxima_schema_id,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -121,19 +121,10 @@ impl AbstractionPayload for CodeChunkV1 {
         )
     }
 
-    /// One reference per distinct callee, never one per call site. The
-    /// multiplicity lives in `sites`; the index carries the existence of
-    /// the connection and nothing else.
+    /// Call targets live on this sidecar (`calls`), not as kernel pins.
+    /// Intra-file callees are named by series handle before their `t`
+    /// exists, so they cannot be `memory.refs`.
     fn references(&self) -> Vec<PayloadReference> {
-        self.calls
-            .iter()
-            .map(|call| {
-                PayloadReference::memory(
-                    "calls.callee_memory_id",
-                    EntityKind::Abstraction,
-                    MemoryId::new(call.callee_memory_id),
-                )
-            })
-            .collect()
+        Vec::new()
     }
 }

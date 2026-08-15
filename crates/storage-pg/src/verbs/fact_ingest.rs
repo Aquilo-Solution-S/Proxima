@@ -557,6 +557,9 @@ where
         ctx.authoring_perspective_id,
         move |tx, outcome| {
             Box::pin(async move {
+                if outcome.idempotent_replay {
+                    return Ok(());
+                }
                 sidecar_payload
                     .insert_memory_sidecar(tx, outcome.memory_id)
                     .await

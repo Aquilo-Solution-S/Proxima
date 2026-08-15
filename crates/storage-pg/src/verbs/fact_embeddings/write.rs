@@ -6,8 +6,6 @@ use sqlx::{Postgres, Transaction};
 
 use crate::error::map_err;
 
-use super::owner_parts;
-
 /// Append one memory embedding row inside an existing tx.
 ///
 /// Crate-private: this is a raw-owner write below the proof gate. External
@@ -94,7 +92,7 @@ pub(crate) async fn insert_embedding_chunks(
     dim: usize,
     chunks: &[&[f32]],
 ) -> Result<EmbeddingWriteOutcome, StorageError> {
-    let (owner_kind, owner_id) = owner_parts(owner);
+    let owner_id = owner.stored_owner_id();
     if chunks.is_empty() {
         return Err(StorageError::ConstraintViolation(
             "embedding version needs at least one chunk".into(),
@@ -106,14 +104,8 @@ pub(crate) async fn insert_embedding_chunks(
         )));
     }
 
-    let entity_kind = entity.entity_kind();
     let entity_id = entity.entity_id();
-    let lock_key = format!(
-        "proxima-embedding:{}:{}:{}",
-        entity_kind.as_str(),
-        entity_id,
-        model_id
-    );
+    let lock_key = format!("proxima-embedding:{entity_id}:{model_id}");
     let _ = sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
         .bind(lock_key)
         .fetch_one(tx.as_mut())
@@ -129,58 +121,41 @@ pub(crate) async fn insert_embedding_chunks(
     let embedding_version: i32 = sqlx::query_scalar(
         "SELECT COALESCE(max(embedding_version), 0) + 1
            FROM proxima_core.embeddings
-          WHERE entity_kind = $1
-            AND entity_id = $2
-            AND model_id = $3",
+          WHERE entity_id = $1
+            AND model_id = $2",
     )
-    .bind(entity_kind)
     .bind(entity_id)
     .bind(model_id)
     .fetch_one(tx.as_mut())
     .await
     .map_err(map_err)?;
 
-    for (chunk_index, vec) in chunks.iter().enumerate() {
-        let chunk_index = i32::try_from(chunk_index).map_err(|_| {
-            StorageError::ConstraintViolation("chunk count does not fit i32".into())
-        })?;
-        let vec_literal = crate::pgvector::literal(vec);
-        sqlx::query(
-            "INSERT INTO proxima_core.embeddings
-                (entity_kind, entity_id, embedding_version, model_id, vec,
-                 owner_kind, owner_id, chunk_index)
-             VALUES ($1, $2, $3, $4, $5::vector, $6, $7, $8)",
-        )
-        .bind(entity_kind)
-        .bind(entity_id)
-        .bind(embedding_version)
-        .bind(model_id)
-        .bind(vec_literal)
-        .bind(owner_kind)
-        .bind(owner_id)
-        .bind(chunk_index)
-        .execute(tx.as_mut())
-        .await
-        .map_err(map_err)?;
-    }
-
+    // 0008 embeddings have no chunk_index: one vec per version.
+    let vec_literal = crate::pgvector::literal(chunks[0]);
     sqlx::query(
-        "INSERT INTO proxima_core.embedding_heads
-            (entity_kind, entity_id, model_id, embedding_version,
-             owner_kind, owner_id)
-         VALUES ($1, $2, $3, $4, $5, $6)
-         ON CONFLICT (entity_kind, entity_id, model_id)
-         DO UPDATE SET
-             embedding_version = EXCLUDED.embedding_version,
-             owner_kind = EXCLUDED.owner_kind,
-             owner_id = EXCLUDED.owner_id,
-             updated_at = now()",
+        "INSERT INTO proxima_core.embeddings
+            (entity_id, model_id, embedding_version, vec, owner_id)
+         VALUES ($1, $2, $3, $4::vector, $5)",
     )
-    .bind(entity_kind)
     .bind(entity_id)
     .bind(model_id)
     .bind(embedding_version)
-    .bind(owner_kind)
+    .bind(vec_literal)
+    .bind(owner_id)
+    .execute(tx.as_mut())
+    .await
+    .map_err(map_err)?;
+
+    sqlx::query(
+        "INSERT INTO proxima_core.embedding_heads
+            (entity_id, model_id, embedding_version, owner_id)
+         VALUES ($1, $2, $3, $4)
+         ON CONFLICT (entity_id, model_id)
+         DO UPDATE SET embedding_version = EXCLUDED.embedding_version",
+    )
+    .bind(entity_id)
+    .bind(model_id)
+    .bind(embedding_version)
     .bind(owner_id)
     .execute(tx.as_mut())
     .await
@@ -194,46 +169,21 @@ async fn embedding_entity_is_eligible(
     owner: &Owner,
     entity: EmbeddableEntityRef,
 ) -> Result<bool, StorageError> {
-    let (owner_kind, owner_id) = owner_parts(owner);
-    let exists = match entity {
-        EmbeddableEntityRef::Memory { kind, memory_id } => sqlx::query_scalar(
-            "SELECT EXISTS (
-                SELECT 1
-                  FROM proxima_core.memories m
-                 WHERE m.memory_id = $1
-                   AND m.owner_kind = $2
-                   AND m.owner_id IS NOT DISTINCT FROM $3
-                   AND NULLIF(btrim(m.text), '') IS NOT NULL
-                   AND m.tombstoned_at IS NULL
-                   AND (
-                       ($4 = 'Fact'::proxima_core.entity_kind AND m.kind = 'Fact')
-                       OR m.kind = $4
-                   )
-            )",
-        )
-        .bind(memory_id.into_inner())
-        .bind(owner_kind)
-        .bind(owner_id)
-        .bind(kind)
-        .fetch_one(tx.as_mut())
-        .await
-        .map_err(map_err)?,
-        EmbeddableEntityRef::Goal(goal_id) => sqlx::query_scalar(
-            "SELECT EXISTS (
-                SELECT 1
-                  FROM proxima_core.goals g
-                 WHERE g.goal_id = $1
-                   AND g.owner_kind = $2
-                   AND g.owner_id IS NOT DISTINCT FROM $3
-                   AND NULLIF(btrim(g.text), '') IS NOT NULL
-            )",
-        )
-        .bind(goal_id.into_inner())
-        .bind(owner_kind)
-        .bind(owner_id)
-        .fetch_one(tx.as_mut())
-        .await
-        .map_err(map_err)?,
+    let owner_id = owner.stored_owner_id();
+    let entity_id = match entity {
+        EmbeddableEntityRef::Memory { memory_id, .. } => memory_id.into_inner(),
+        EmbeddableEntityRef::Goal(goal_id) => goal_id.into_inner(),
     };
-    Ok(exists)
+    sqlx::query_scalar(
+        "SELECT EXISTS (
+            SELECT 1 FROM proxima_core.memory WHERE t = $1 AND owner_id = $2
+            UNION ALL
+            SELECT 1 FROM proxima_core.goal WHERE t = $1 AND owner_id = $2
+        )",
+    )
+    .bind(entity_id)
+    .bind(owner_id)
+    .fetch_one(tx.as_mut())
+    .await
+    .map_err(map_err)
 }

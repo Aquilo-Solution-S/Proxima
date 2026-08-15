@@ -9,6 +9,7 @@ use sqlx::PgPool;
 /// # Errors
 ///
 /// Never fails: there is no batch table to miss.
+#[allow(clippy::unused_async)]
 pub async fn close_batch(
     _pool: &PgPool,
     _permit: &OwnerWritePermit,

@@ -60,6 +60,7 @@ async fn append_derived_timeseries(
     tx: &mut Transaction<'_, Postgres>,
     draft: &DerivedDraft<'_>,
     origins: &[EdgeEndpoint],
+    references: &[EdgeEndpoint],
     sidecar: impl for<'t> FnOnce(
         &'t mut Transaction<'_, Postgres>,
         &'t DerivedOutcome,
@@ -75,24 +76,60 @@ async fn append_derived_timeseries(
             ));
         }
     };
-    let existing: Option<uuid::Uuid> = sqlx::query_scalar(
-        "SELECT t FROM proxima_core.memory_head WHERE handle = $1",
-    )
-    .bind(draft.memory_id)
-    .fetch_optional(&mut **tx)
-    .await
-    .map_err(map_err)?;
-    if let Some(t) = existing {
-        let outcome = DerivedOutcome {
-            memory_id: MemoryId::new(t),
-            idempotent_replay: true,
-        };
-        return Ok(outcome);
+    let handle = if let Some(prior) = draft.supersedes {
+        let prior_handle: Option<uuid::Uuid> = sqlx::query_scalar(
+            "SELECT handle FROM proxima_core.memory
+              WHERE t = $1 AND owner_id = $2",
+        )
+        .bind(prior.into_inner())
+        .bind(draft.owner.stored_owner_id())
+        .fetch_optional(&mut **tx)
+        .await
+        .map_err(map_err)?;
+        prior_handle.ok_or_else(|| {
+            StorageError::ConstraintViolation(
+                "supersedes target is not an owned entity of the same owner".into(),
+            )
+        })?
+    } else {
+        draft.memory_id
+    };
+    if draft.supersedes.is_none() {
+        let existing: Option<uuid::Uuid> = sqlx::query_scalar(
+            "SELECT t FROM proxima_core.memory_head WHERE handle = $1",
+        )
+        .bind(handle)
+        .fetch_optional(&mut **tx)
+        .await
+        .map_err(map_err)?;
+        if let Some(t) = existing {
+            let stored_origins: Vec<uuid::Uuid> = sqlx::query_scalar(
+                "SELECT unnest(origins) FROM proxima_core.memory WHERE t = $1",
+            )
+            .bind(t)
+            .fetch_all(&mut **tx)
+            .await
+            .map_err(map_err)?;
+            let incoming: Vec<uuid::Uuid> = origins
+                .iter()
+                .filter_map(|ep| ep.memory_id().map(MemoryId::into_inner))
+                .collect();
+            if stored_origins == incoming {
+                return Ok(DerivedOutcome {
+                    memory_id: MemoryId::new(t),
+                    idempotent_replay: true,
+                });
+            }
+        }
     }
+    let refs: Vec<uuid::Uuid> = references
+        .iter()
+        .filter_map(|ep| ep.memory_id().map(MemoryId::into_inner))
+        .collect();
     let cmd = proxima_core::verbs::fact_ingest::FactWriteCommand {
         schema_id: draft.schema_id.clone(),
         schema_version: draft.schema_version,
-        handle: Some(draft.memory_id),
+        handle: Some(handle),
         source_id: None,
         ingest_key: None,
         payload: Vec::new(),
@@ -101,7 +138,7 @@ async fn append_derived_timeseries(
         receipt: None,
         citation: None,
         derived_from: origins.to_vec(),
-        refs: Vec::new(),
+        refs,
         blob_id: None,
         kind: kind.into(),
     };
@@ -112,7 +149,44 @@ async fn append_derived_timeseries(
         idempotent_replay: ingested.idempotent_replay,
     };
     sidecar(tx, &outcome).await?;
+    if !outcome.idempotent_replay {
+        settle_derived_embedding(tx, draft, outcome.memory_id).await?;
+    }
     Ok(outcome)
+}
+
+async fn settle_derived_embedding(
+    tx: &mut Transaction<'_, Postgres>,
+    draft: &DerivedDraft<'_>,
+    memory_id: MemoryId,
+) -> Result<(), StorageError> {
+    match &draft.embedding {
+        DerivedEmbedding::None => Ok(()),
+        DerivedEmbedding::Ready { model_id, vector } => {
+            crate::verbs::fact_embeddings::insert_memory_embedding(
+                tx,
+                &draft.owner,
+                draft.kind,
+                memory_id,
+                model_id,
+                EMBEDDING_DIM,
+                vector,
+            )
+            .await
+            .map(|_| ())
+        }
+        DerivedEmbedding::Deferred { model_id } => {
+            crate::verbs::fact_embeddings::enqueue_embedding_job_in_tx(
+                tx,
+                OwnerRefKind::of(&draft.owner),
+                Some(draft.owner.stored_owner_id()),
+                draft.kind,
+                memory_id.into_inner(),
+                model_id,
+            )
+            .await
+        }
+    }
 }
 
 /// Append one Derived row, optional typed sidecar, and one change event.
@@ -125,6 +199,7 @@ pub(crate) async fn append_derived_in_tx(
     permit: &OwnerWritePermit,
     draft: &DerivedDraft<'_>,
     origins: &[EdgeEndpoint],
+    references: &[EdgeEndpoint],
     sidecar: impl for<'t> FnOnce(
         &'t mut Transaction<'_, Postgres>,
         &'t DerivedOutcome,
@@ -132,7 +207,7 @@ pub(crate) async fn append_derived_in_tx(
 ) -> Result<DerivedOutcome, StorageError> {
     validate_permit_owner(permit, &draft.owner)?;
     crate::access::owner_columns::reject_world_write_owner(&draft.owner)?;
-    return append_derived_timeseries(tx, draft, origins, sidecar).await;
+    return append_derived_timeseries(tx, draft, origins, references, sidecar).await;
     #[allow(unreachable_code)]
     let (owner_kind, owner_id) = crate::access::owner_columns::owner_binds(&draft.owner);
     if let Some(prior) = draft.supersedes {
@@ -271,7 +346,7 @@ pub async fn append_derived_with_edges_in_tx(
     validate_permit_owner(permit, &draft.owner)?;
     crate::access::owner_columns::reject_world_write_owner(&draft.owner)?;
     validate_derived_origins_in_tx(tx, draft, origins).await?;
-    let outcome = append_derived_in_tx(tx, permit, draft, origins, sidecar).await?;
+    let outcome = append_derived_in_tx(tx, permit, draft, origins, references, sidecar).await?;
     assert_derived_index_rows(tx, draft, &outcome, origins, references).await?;
     Ok(outcome)
 }
@@ -323,9 +398,14 @@ where
     for (index, entry) in entries.iter().enumerate() {
         let sidecar = &mut sidecar;
         outcomes.push(
-            append_derived_in_tx(tx, permit, entry.draft, entry.origins, move |tx, outcome| {
-                sidecar(index, tx, outcome)
-            })
+            append_derived_in_tx(
+                tx,
+                permit,
+                entry.draft,
+                entry.origins,
+                entry.references,
+                move |tx, outcome| sidecar(index, tx, outcome),
+            )
             .await?,
         );
     }

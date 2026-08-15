@@ -1015,6 +1015,10 @@ mod tests {
         assert!(versions.contains(&3), "core migrator must embed 0003_goal.sql");
         assert!(versions.contains(&6), "core migrator must embed 0006_lexical.sql");
         assert!(versions.contains(&7), "core migrator must embed 0007_compat_types.sql");
+        assert!(
+            versions.contains(&8),
+            "core migrator must embed 0008_core_sidecars.sql"
+        );
     }
 
     #[test]

@@ -83,12 +83,21 @@ pub async fn ingest_fact_timeseries(
         ));
     }
 
-    let origins: Vec<Uuid> = draft
+    let mut origins: Vec<Uuid> = draft
         .derived_from
         .iter()
         .filter_map(|ep| ep.memory_id().map(proxima_core::MemoryId::into_inner))
         .collect();
-    let refs = draft.refs.clone();
+    let mut refs = draft.refs.clone();
+    // CHECK memory_fact_origins_chk: Facts cannot carry origins. Pins
+    // a Fact declares (activation, evidence, prior request) live in refs.
+    if kind == "fact" {
+        for id in origins.drain(..) {
+            if !refs.contains(&id) {
+                refs.push(id);
+            }
+        }
+    }
 
     let handle = draft.handle.unwrap_or_else(Uuid::now_v7);
     let t: Uuid = sqlx::query_scalar("SELECT uuidv7()")

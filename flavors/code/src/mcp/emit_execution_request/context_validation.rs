@@ -1,9 +1,7 @@
-use std::collections::HashSet;
-
 use proxima_core::verbs::goal_write::GoalState;
-use proxima_core::verbs::query::{EdgeFilter, EdgeReadRequest, QueryRequest};
+use proxima_core::verbs::query::QueryRequest;
 use proxima_core::{
-    EdgeKind, EntityKind, EntityRef, GoalActivatedV1, GoalId, MemoryId, ToolCtx, ToolError,
+    EntityKind, GoalActivatedV1, GoalId, MemoryId, ToolCtx, ToolError,
 };
 use sqlx::{Postgres, Transaction};
 use uuid::Uuid;
@@ -100,53 +98,16 @@ async fn goal_lineage_assigned_to(
     start: GoalId,
     planner_root: MemoryId,
 ) -> Result<bool, ToolError> {
-    let engine = engine(ctx)?;
-    let mut current = Some(start);
-    let mut seen = HashSet::new();
-    for _ in 0..100 {
-        let Some(goal_id) = current else {
-            return Ok(false);
-        };
-        if !seen.insert(goal_id) {
-            return Ok(false);
-        }
-
-        let edges = engine
-            .read_edges(
-                ctx.authz(),
-                // The Goal knows the Perspective it inspires: the
-                // assignment is a column on the goal row, and this
-                // `reference` entry is the index derived from it.
-                &EdgeReadRequest {
-                    owner: ctx.owner(),
-                    filter: EdgeFilter {
-                        kind: Some(EdgeKind::Reference),
-                        source: Some(EntityRef::Goal(goal_id)),
-                        target: Some(EntityRef::Memory(planner_root)),
-                    },
-                    limit: 1,
-                    cursor: None,
-                },
-            )
-            .await?;
-        if !edges.edges.is_empty() {
-            return Ok(true);
-        }
-
-        let mut req = QueryRequest::for_owner(ctx.owner());
-        req.entity_kind = Some(EntityKind::Goal);
-        req.goal_ids = vec![goal_id];
-        req.limit = 1;
-        req.include_payloads = false;
-        current = engine
-            .query(ctx.authz(), &req)
-            .await?
-            .goals
-            .into_iter()
-            .next()
-            .and_then(|goal| goal.supersedes);
-    }
-    Ok(false)
+    let pool = code_store(ctx)?;
+    let assigned: Option<uuid::Uuid> = sqlx::query_scalar(
+        "SELECT assignment_t FROM proxima_core.goal WHERE t = $1",
+    )
+    .bind(start.into_inner())
+    .fetch_optional(pool.pool())
+    .await
+    .map_err(map_storage)?
+    .flatten();
+    Ok(assigned == Some(planner_root.into_inner()))
 }
 
 pub(super) async fn validate_plan_source_abstraction_in_owner(

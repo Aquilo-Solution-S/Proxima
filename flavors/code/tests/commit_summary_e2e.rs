@@ -8,7 +8,7 @@ mod common;
 use common::{migrated_db, owner_write_permit, test_owner};
 use proxima_code::RepoScope;
 use proxima_code::testkit::{ingest_commit, register_repo};
-use proxima_code::{CommitSummaryV1, CommitV1};
+use proxima_code::CommitV1;
 use proxima_core::{AccessKind, SourceBatchId};
 use proxima_pg_testkit::drop_db;
 use uuid::Uuid;
@@ -55,12 +55,8 @@ async fn commit_summary_e2e_produces_abstraction_with_correct_provenance() {
         let commit_memory_id = commit_outcome.memory_id;
 
         let summary_count: i64 = sqlx::query_scalar(
-            "SELECT count(*)
-             FROM proxima_core.memories m
-             JOIN proxima_code.commit_summary_v1 s ON s.memory_id = m.memory_id
-             WHERE m.schema_id = $1",
+            "SELECT count(*) FROM proxima_code.commit_summary_v1",
         )
-        .bind(<CommitSummaryV1 as proxima_core::AbstractionPayload>::SCHEMA_ID)
         .fetch_one(pg.pool_for_tests())
         .await?;
         assert_eq!(

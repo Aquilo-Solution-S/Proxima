@@ -82,15 +82,12 @@ fn code_slice_identity_key(payload: &CodeChunkV1, source_file_revision: MemoryId
     let mut key = Vec::with_capacity(128 + payload.file_path.len());
     key.extend_from_slice(CODE_SLICE_IDENTITY);
     key.push(0);
-    key.extend_from_slice(source_file_revision.into_inner().as_bytes());
-    key.push(0);
     key.extend_from_slice(payload.repo_id.as_bytes());
     key.push(0);
     key.extend_from_slice(payload.file_path.as_bytes());
     key.push(0);
     key.extend_from_slice(&payload.chunk_index.to_be_bytes());
-    key.push(0);
-    key.extend_from_slice(payload.state_marker().as_bytes());
+    let _ = source_file_revision;
     key
 }
 

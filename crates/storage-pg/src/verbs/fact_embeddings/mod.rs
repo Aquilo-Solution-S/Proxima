@@ -1,4 +1,4 @@
-use proxima_core::{Owner, OwnerRefKind, StorageError};
+use proxima_core::StorageError;
 
 mod jobs;
 mod ops;
@@ -24,10 +24,6 @@ pub use reconcile::{
 };
 pub use text::{load_embedding_text, load_fact_text, load_fact_text_in_tx};
 pub(crate) use write::{insert_embedding, insert_embedding_chunks, insert_memory_embedding};
-
-fn owner_parts(owner: &Owner) -> (OwnerRefKind, Option<uuid::Uuid>) {
-    owner.columns()
-}
 
 fn ensure_nonnegative_limit(limit: i64) -> Result<i64, StorageError> {
     if limit < 0 {

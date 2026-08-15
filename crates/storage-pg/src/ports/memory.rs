@@ -160,6 +160,7 @@ impl MemoryAuthoringPort for PgStorage {
                 permit,
                 &draft,
                 req.origins,
+                req.references,
                 move |tx, outcome| {
                     Box::pin(async move {
                         sidecars
@@ -204,27 +205,36 @@ impl MemoryAuthoringPort for PgStorage {
             .copied()
             .map(MemoryId::into_inner)
             .collect::<Vec<_>>();
-        let (owner_kind, owner_id) = owner.columns();
-        let rows: Vec<(uuid::Uuid, proxima_core::EntityKind)> = sqlx::query_as(
-            "SELECT m.memory_id, m.kind
-             FROM proxima_core.memories m
-             WHERE m.owner_kind = $1
-               AND m.owner_id IS NOT DISTINCT FROM $2
-               AND m.memory_id = ANY($3::uuid[])",
+        let owner_id = owner.stored_owner_id();
+        let rows: Vec<(uuid::Uuid, String)> = sqlx::query_as(
+            "SELECT m.t, m.kind::text
+             FROM proxima_core.memory m
+             WHERE m.owner_id = $1
+               AND m.t = ANY($2::uuid[])",
         )
-        .bind(owner_kind)
         .bind(owner_id)
         .bind(&ids)
         .fetch_all(&self.pool)
         .await
         .map_err(internal)?;
-        Ok(rows
-            .into_iter()
-            .map(|(memory_id, kind)| MemoryKindRow {
-                memory_id: MemoryId::new(memory_id),
-                kind,
+        rows.into_iter()
+            .map(|(memory_id, kind)| {
+                let kind = match kind.as_str() {
+                    "fact" | "Fact" => proxima_core::EntityKind::Fact,
+                    "abstraction" | "Abstraction" => proxima_core::EntityKind::Abstraction,
+                    "perspective" | "Perspective" => proxima_core::EntityKind::Perspective,
+                    other => {
+                        return Err(StorageError::Internal(format!(
+                            "invalid memory kind {other}"
+                        )));
+                    }
+                };
+                Ok(MemoryKindRow {
+                    memory_id: MemoryId::new(memory_id),
+                    kind,
+                })
             })
-            .collect())
+            .collect()
     }
 
     async fn load_fact_source_batches(

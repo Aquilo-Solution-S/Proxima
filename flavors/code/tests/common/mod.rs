@@ -125,8 +125,10 @@ pub async fn seed_memory(
     schema_id: &str,
     kind: &str,
     t: Option<Uuid>,
+    handle: Option<Uuid>,
+    origins: &[Uuid],
 ) -> Result<(Uuid, Uuid), sqlx::Error> {
-    let handle = Uuid::now_v7();
+    let handle = handle.unwrap_or_else(Uuid::now_v7);
     let t = t.unwrap_or_else(Uuid::now_v7);
     let owner_id = owner.stored_owner_id();
     sqlx::query(
@@ -137,25 +139,40 @@ pub async fn seed_memory(
     .bind(proxima_core::OwnerRefKind::of(owner).as_str())
     .execute(pool)
     .await?;
-    sqlx::query(
-        "INSERT INTO proxima_core.memory_head (handle, kind, schema_id, owner_id, t)
-         VALUES ($1, $2::proxima_core.memory_kind, $3, $4, $5)",
+    let head_exists: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM proxima_core.memory_head WHERE handle = $1)",
     )
     .bind(handle)
-    .bind(kind)
-    .bind(schema_id)
-    .bind(owner_id)
-    .bind(t)
-    .execute(pool)
+    .fetch_one(pool)
     .await?;
+    if head_exists {
+        sqlx::query("UPDATE proxima_core.memory_head SET t = $2 WHERE handle = $1")
+            .bind(handle)
+            .bind(t)
+            .execute(pool)
+            .await?;
+    } else {
+        sqlx::query(
+            "INSERT INTO proxima_core.memory_head (handle, kind, schema_id, owner_id, t)
+             VALUES ($1, $2::proxima_core.memory_kind, $3, $4, $5)",
+        )
+        .bind(handle)
+        .bind(kind)
+        .bind(schema_id)
+        .bind(owner_id)
+        .bind(t)
+        .execute(pool)
+        .await?;
+    }
     sqlx::query(
-        "INSERT INTO proxima_core.memory (handle, t, kind, owner_id)
-         VALUES ($1, $2, $3::proxima_core.memory_kind, $4)",
+        "INSERT INTO proxima_core.memory (handle, t, kind, owner_id, origins)
+         VALUES ($1, $2, $3::proxima_core.memory_kind, $4, $5)",
     )
     .bind(handle)
     .bind(t)
     .bind(kind)
     .bind(owner_id)
+    .bind(origins)
     .execute(pool)
     .await?;
     Ok((handle, t))

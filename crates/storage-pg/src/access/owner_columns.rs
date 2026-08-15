@@ -317,31 +317,23 @@ pub(crate) async fn visible_to_any(
         return Ok(false);
     }
 
-    let (kinds, ids) = owner_arrays(read_owners);
+    let owner_ids: Vec<uuid::Uuid> = read_owners
+        .iter()
+        .copied()
+        .map(OwnerRef::stored_owner_id)
+        .collect();
     let (ok,): (bool,) = sqlx::query_as(
-        "WITH allowed(owner_kind, owner_id) AS (
-             SELECT * FROM unnest($2::proxima_core.owner_ref_kind[], $3::uuid[])
-         )
-         SELECT EXISTS (
-             SELECT 1
-               FROM proxima_core.memories m
-               JOIN allowed a
-                 ON a.owner_kind = m.owner_kind
-                AND a.owner_id IS NOT DISTINCT FROM m.owner_id
-              WHERE m.memory_id = $1
+        "SELECT EXISTS (
+             SELECT 1 FROM proxima_core.memory m
+              WHERE m.t = $1 AND m.owner_id = ANY($2::uuid[])
          )
          OR EXISTS (
-             SELECT 1
-               FROM proxima_core.goals g
-               JOIN allowed a
-                 ON a.owner_kind = g.owner_kind
-                AND a.owner_id IS NOT DISTINCT FROM g.owner_id
-              WHERE g.goal_id = $1
+             SELECT 1 FROM proxima_core.goal g
+              WHERE g.t = $1 AND g.owner_id = ANY($2::uuid[])
          )",
     )
     .bind(entity.uuid())
-    .bind(&kinds)
-    .bind(&ids)
+    .bind(&owner_ids)
     .fetch_one(pool)
     .await
     .map_err(map_err)?;
@@ -416,14 +408,16 @@ pub(crate) async fn home_owner(
     pool: &PgPool,
     entity: EntityId,
 ) -> Result<Option<OwnerRef>, StorageError> {
-    let row: Option<(OwnerRefKind, Option<uuid::Uuid>)> = sqlx::query_as(
-        "SELECT owner_kind, owner_id
-           FROM proxima_core.memories
-          WHERE memory_id = $1
+    let row: Option<(OwnerRefKind, uuid::Uuid)> = sqlx::query_as(
+        "SELECT o.kind::text::proxima_core.owner_ref_kind, m.owner_id
+           FROM proxima_core.memory m
+           JOIN proxima_core.owners o ON o.owner_id = m.owner_id
+          WHERE m.t = $1
          UNION ALL
-         SELECT owner_kind, owner_id
-           FROM proxima_core.goals
-          WHERE goal_id = $1
+         SELECT o.kind::text::proxima_core.owner_ref_kind, g.owner_id
+           FROM proxima_core.goal g
+           JOIN proxima_core.owners o ON o.owner_id = g.owner_id
+          WHERE g.t = $1
          LIMIT 1",
     )
     .bind(entity.uuid())
@@ -431,5 +425,9 @@ pub(crate) async fn home_owner(
     .await
     .map_err(map_err)?;
 
-    Ok(row.and_then(|(kind, id)| kind.with_uuid(id)))
+    Ok(row.map(|(kind, id)| match kind {
+        OwnerRefKind::World => proxima_core::OwnerRef::World,
+        OwnerRefKind::Personal => proxima_core::OwnerRef::Personal(proxima_core::UserId::new(id)),
+        OwnerRefKind::Group => proxima_core::OwnerRef::Group(proxima_core::GroupId::new(id)),
+    }))
 }

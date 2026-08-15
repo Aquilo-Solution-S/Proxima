@@ -45,14 +45,17 @@ pub(super) fn canonical_object_key(owner_hash: &str, blake3_hex: &str) -> String
 }
 
 /// Forget/hydrate/erase: one object per Memory `t`.
+#[must_use]
 pub fn cold_owner_prefix(owner_hash: &str) -> String {
     format!("cold/{owner_hash}/")
 }
 
+#[must_use]
 pub fn cold_object_key(owner_hash: &str, handle: Uuid, t: Uuid) -> String {
     format!("{}{handle}/{t}", cold_owner_prefix(owner_hash))
 }
 
+#[must_use]
 pub fn owner_hash_hex_public(owner: &Owner) -> String {
     owner_hash_hex(owner)
 }

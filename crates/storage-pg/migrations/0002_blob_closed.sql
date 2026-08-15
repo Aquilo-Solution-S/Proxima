@@ -41,8 +41,8 @@ BEGIN
     IF NEW.kind = 'abstraction' THEN
         FOREACH pin IN ARRAY NEW.origins LOOP
             SELECT kind INTO pin_kind FROM proxima_core.memory WHERE t = pin;
-            IF pin_kind IS DISTINCT FROM 'fact' THEN
-                RAISE EXCEPTION 'abstraction origins must be fact t' USING ERRCODE = '23514';
+            IF pin_kind NOT IN ('fact', 'abstraction') THEN
+                RAISE EXCEPTION 'abstraction origins must be fact or abstraction t' USING ERRCODE = '23514';
             END IF;
         END LOOP;
     ELSIF NEW.kind = 'perspective' AND NEW.origins <> '{}' THEN

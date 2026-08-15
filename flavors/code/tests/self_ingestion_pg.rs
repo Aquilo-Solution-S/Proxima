@@ -110,19 +110,14 @@ fn count_branch_commits(repo: &Path, branch: &str) -> usize {
 }
 
 async fn count_commit_v1_facts(pool: &sqlx::PgPool, owner: &Owner, repo_id: Uuid) -> i64 {
-    let (kind, principal_id) = owner.columns();
     let row: (i64,) = sqlx::query_as(
         "SELECT COUNT(*)::bigint \
-         FROM proxima_core.memories m \
-         JOIN proxima_code.commit_v1 s USING (memory_id) \
-         JOIN (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) eo \
-           ON eo.entity_id = m.memory_id \
-         WHERE eo.owner_kind = $1 \
-           AND eo.owner_id = $2 \
-           AND s.repo_id = $3",
+         FROM proxima_code.commit_v1 s \
+         JOIN proxima_core.memory m ON m.t = s.memory_id \
+         WHERE m.owner_id = $1 \
+           AND s.repo_id = $2",
     )
-    .bind(kind)
-    .bind(principal_id)
+    .bind(owner.stored_owner_id())
     .bind(repo_id)
     .fetch_one(pool)
     .await

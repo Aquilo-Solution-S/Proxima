@@ -3,8 +3,6 @@ use sqlx::{PgPool, Postgres, Transaction};
 
 use crate::error::map_err;
 
-use super::owner_parts;
-
 /// Owner-scoped read of the rendered text stored on a Fact memory row.
 ///
 /// # Errors
@@ -15,22 +13,7 @@ pub async fn load_fact_text(
     owner: &Owner,
     memory_id: MemoryId,
 ) -> Result<Option<String>, StorageError> {
-    let (owner_kind, owner_id) = owner_parts(owner);
-    sqlx::query_scalar(
-        "SELECT text
-           FROM proxima_core.memories
-          WHERE memory_id = $1
-            AND owner_kind = $2
-            AND owner_id = $3
-            AND kind = 'Fact'
-            AND tombstoned_at IS NULL",
-    )
-    .bind(memory_id.into_inner())
-    .bind(owner_kind)
-    .bind(owner_id)
-    .fetch_optional(pool)
-    .await
-    .map_err(map_err)
+    load_embedding_text(pool, owner, EntityKind::Fact, memory_id, &[]).await
 }
 
 /// Owner-scoped read of stored memory text for an embedding job.
@@ -44,31 +27,21 @@ pub async fn load_fact_text(
 pub async fn load_embedding_text(
     pool: &PgPool,
     owner: &Owner,
-    entity_kind: EntityKind,
+    _entity_kind: EntityKind,
     memory_id: MemoryId,
-    non_embeddable_schemas: &[String],
+    _non_embeddable_schemas: &[String],
 ) -> Result<Option<String>, StorageError> {
-    let (owner_kind, owner_id) = owner_parts(owner);
+    let owner_id = owner.stored_owner_id();
     sqlx::query_scalar(
-        "SELECT text
-           FROM proxima_core.memories
-          WHERE memory_id = $1
-            AND owner_kind = $2
-            AND owner_id = $3
-            AND text IS NOT NULL
-            AND tombstoned_at IS NULL
-            AND schema_id <> ALL($5::text[])
-            AND (
-                ($4 = 'Fact'::proxima_core.entity_kind
-                 AND kind = 'Fact')
-                OR kind = $4
-            )",
+        "SELECT NULLIF(btrim(c.text), '')
+           FROM proxima_code.code_chunk_v1 c
+           JOIN proxima_core.memory m ON m.t = c.memory_id
+          WHERE c.memory_id = $1
+            AND m.owner_id = $2
+            AND c.state = 'Present'",
     )
     .bind(memory_id.into_inner())
-    .bind(owner_kind)
     .bind(owner_id)
-    .bind(entity_kind)
-    .bind(non_embeddable_schemas)
     .fetch_optional(pool)
     .await
     .map_err(map_err)
@@ -84,18 +57,16 @@ pub async fn load_fact_text_in_tx(
     owner: &Owner,
     memory_id: MemoryId,
 ) -> Result<Option<String>, StorageError> {
-    let (owner_kind, owner_id) = owner_parts(owner);
+    let owner_id = owner.stored_owner_id();
     sqlx::query_scalar(
-        "SELECT text
-           FROM proxima_core.memories
-          WHERE memory_id = $1
-            AND owner_kind = $2
-            AND owner_id = $3
-            AND kind = 'Fact'
-            AND tombstoned_at IS NULL",
+        "SELECT NULLIF(btrim(c.text), '')
+           FROM proxima_code.code_chunk_v1 c
+           JOIN proxima_core.memory m ON m.t = c.memory_id
+          WHERE c.memory_id = $1
+            AND m.owner_id = $2
+            AND c.state = 'Present'",
     )
     .bind(memory_id.into_inner())
-    .bind(owner_kind)
     .bind(owner_id)
     .fetch_optional(tx.as_mut())
     .await

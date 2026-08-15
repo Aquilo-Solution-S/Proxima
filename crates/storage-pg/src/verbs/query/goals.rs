@@ -1,3 +1,5 @@
+use std::fmt::Write as _;
+
 use proxima_core::verbs::goal_write::GoalState;
 use proxima_core::verbs::query::{
     EntityKind, GoalRow, QueryCursor, QueryRequest, SupersessionStatus,
@@ -75,7 +77,7 @@ fn goal_page_sql(req: &QueryRequest, has_schema_filter: bool) -> String {
     };
     let mut sql = format!(
         "SELECT g.handle, g.t AS goal_id, \
-                uuid_extract_timestamp(g.t) AS created_at, \
+                COALESCE(uuid_extract_timestamp(g.t), TIMESTAMPTZ '1970-01-01') AS created_at, \
                 h.schema_id, 1::int4 AS schema_version, \
                 o.kind::text::proxima_core.owner_ref_kind AS owner_kind, \
                 g.owner_id, g.title, ''::text AS text, g.state, \
@@ -87,7 +89,7 @@ fn goal_page_sql(req: &QueryRequest, has_schema_filter: bool) -> String {
     );
     let mut next = 2_u32;
     if has_schema_filter {
-        sql.push_str(&format!(" AND h.schema_id = ${next}"));
+        let _ = write!(sql, " AND h.schema_id = ${next}");
         next += 1;
     }
     if let Some(state) = req.goal_state {
@@ -99,13 +101,13 @@ fn goal_page_sql(req: &QueryRequest, has_schema_filter: bool) -> String {
         });
     }
     if has_goal_ids {
-        sql.push_str(&format!(" AND g.t = ANY(${next}::uuid[])"));
+        let _ = write!(sql, " AND g.t = ANY(${next}::uuid[])");
         next += 1;
     }
     if has_cursor {
-        sql.push_str(&format!(" AND g.t < ${next}"));
+        let _ = write!(sql, " AND g.t < ${next}");
     }
-    sql.push_str(&format!(" ORDER BY g.t DESC LIMIT {fetch_limit}"));
+    let _ = write!(sql, " ORDER BY g.t DESC LIMIT {fetch_limit}");
     sql
 }
 

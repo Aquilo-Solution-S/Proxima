@@ -1,7 +1,8 @@
-//! Query starts at `memory_head`. HeadsOnly = current `t` per handle.
-//! IncludeSuperseded = every hot `t` of those handles.
+//! Query starts at `memory_head`. `HeadsOnly` = current `t` per handle.
+//! `IncludeSuperseded` = every hot `t` of those handles.
 
 use std::collections::HashMap;
+use std::fmt::Write as _;
 
 use futures_util::future::try_join_all;
 use proxima_core::verbs::query::{
@@ -173,6 +174,7 @@ async fn load_row_payloads_batch(
     Ok(rows.into_iter().flatten().collect())
 }
 
+#[allow(clippy::fn_params_excessive_bools)]
 fn memory_page_sql(
     heads_only: bool,
     has_schema: bool,
@@ -190,7 +192,7 @@ fn memory_page_sql(
     };
     let mut sql = format!(
         "SELECT m.t AS memory_id, m.handle, \
-                uuid_extract_timestamp(m.t) AS created_at, \
+                COALESCE(uuid_extract_timestamp(m.t), TIMESTAMPTZ '1970-01-01') AS created_at, \
                 o.kind::text::proxima_core.owner_ref_kind AS owner_kind, \
                 m.owner_id, h.schema_id, 1::int4 AS schema_version, \
                 m.kind::text AS kind \
@@ -200,21 +202,21 @@ fn memory_page_sql(
     );
     let mut next = 2_u32;
     if has_schema {
-        sql.push_str(&format!(" AND h.schema_id = ${next}"));
+        let _ = write!(sql, " AND h.schema_id = ${next}");
         next += 1;
     }
     if has_kind {
-        sql.push_str(&format!(" AND m.kind::text = ${next}"));
+        let _ = write!(sql, " AND m.kind::text = ${next}");
         next += 1;
     }
     if has_ids {
-        sql.push_str(&format!(" AND m.t = ANY(${next}::uuid[])"));
+        let _ = write!(sql, " AND m.t = ANY(${next}::uuid[])");
         next += 1;
     }
     if has_cursor {
-        sql.push_str(&format!(" AND m.t < ${next}"));
+        let _ = write!(sql, " AND m.t < ${next}");
     }
-    sql.push_str(&format!(" ORDER BY m.t DESC LIMIT {fetch_limit}"));
+    let _ = write!(sql, " ORDER BY m.t DESC LIMIT {fetch_limit}");
     sql
 }
 
