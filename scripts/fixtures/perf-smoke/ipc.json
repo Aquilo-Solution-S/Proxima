@@ -1,3 +1,0 @@
-{"ts_ms":1,"cmd":"query","req_bytes":50,"resp_bytes":120000,"dur_ms":420,"ok":true}
-{"ts_ms":2,"cmd":"query","req_bytes":50,"resp_bytes":118000,"dur_ms":380,"ok":true}
-{"ts_ms":3,"cmd":"repos_list","req_bytes":10,"resp_bytes":2000,"dur_ms":15,"ok":true}

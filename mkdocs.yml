@@ -68,7 +68,6 @@ nav:
       - Deployment: 15-deployment.md
       - Edges: 16-edges.md
       - REST Surface: 17-rest-surface.md
-      - Dev Perf Fixture: dev-perf.md
   - Kernel:
       - Lean Kernel: lean/README.md
       - Coverage: lean/COVERAGE.md

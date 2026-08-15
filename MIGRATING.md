@@ -2263,12 +2263,10 @@ flavor migrators share one `_sqlx_migrations` table, which trips
 `VersionMissing` on the second source:
 
 ```sh
-SQLX_OFFLINE=true cargo build -p proxima-dev-migrate
-
 # target resolution: --database-url first, then DATABASE_URL; always
 # printed before anything runs
 PROXIMA_V004_RESET_CONFIRM=reset-my-dev-db \
-  ./target/debug/dev-migrate --database-url "$DATABASE_URL" --reset
+  cargo run -p proxima-dev-migrate -- --database-url "$DATABASE_URL" --reset
 ```
 
 `--reset` refuses non-local hosts and protected database names

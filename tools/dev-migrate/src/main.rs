@@ -7,16 +7,12 @@
 //! framework facade used by embedded hosts: core first, then flavors in
 //! composition order, with duplicate migration versions rejected up front.
 //!
-//! Usage (two steps — exporting `DATABASE_URL` at compile time would point
-//! the workspace's `sqlx::query!` validation at the still-blank target DB):
+//! Usage:
 //!
 //! ```text
-//! SQLX_OFFLINE=true cargo build -p proxima-dev-migrate
-//! ./target/debug/dev-migrate --database-url postgres://proxima:proxima@localhost/<db>
-//! # or: DATABASE_URL=postgres://proxima:proxima@localhost/<db> ./target/debug/dev-migrate
+//! cargo run -p proxima-dev-migrate -- --database-url postgres://proxima:proxima@localhost/<db>
+//! # or: DATABASE_URL=postgres://proxima:proxima@localhost/<db> cargo run -p proxima-dev-migrate
 //! ```
-//!
-//! Afterwards `cargo sqlx prepare --workspace` has every schema it needs.
 //!
 //! The target database URL always comes from `--database-url <URL>` when
 //! given, falling back to `DATABASE_URL`; the resolved host/database is
