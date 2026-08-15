@@ -32,6 +32,17 @@ impl MemoryHandleClass {
             _ => None,
         }
     }
+
+    /// Map a stored memory kind. `Goal` is not a memory row.
+    #[must_use]
+    pub const fn from_entity_kind(kind: crate::EntityKind) -> Option<Self> {
+        match kind {
+            crate::EntityKind::Fact => Some(Self::Fact),
+            crate::EntityKind::Abstraction => Some(Self::Abstraction),
+            crate::EntityKind::Perspective => Some(Self::Perspective),
+            crate::EntityKind::Goal => None,
+        }
+    }
 }
 
 impl std::fmt::Display for MemoryHandleClass {

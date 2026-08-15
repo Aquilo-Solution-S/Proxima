@@ -640,18 +640,14 @@ async fn author_test_abstraction_multi(
     Ok(outcome)
 }
 
-/// A Fact is the row whose `kind` column is NULL — it has no operator phase
-/// that produced it, so there is nothing to record there.
 async fn stored_entity_kind(
     pg: &proxima_storage_pg::PgStorage,
     memory_id: MemoryId,
 ) -> Result<EntityKind, sqlx::Error> {
-    let kind: Option<EntityKind> =
-        sqlx::query_scalar("SELECT kind FROM proxima_core.memories WHERE memory_id = $1")
-            .bind(memory_id.into_inner())
-            .fetch_one(pg.pool_for_tests())
-            .await?;
-    Ok(kind.unwrap_or(EntityKind::Fact))
+    sqlx::query_scalar("SELECT kind FROM proxima_core.memories WHERE memory_id = $1")
+        .bind(memory_id.into_inner())
+        .fetch_one(pg.pool_for_tests())
+        .await
 }
 
 async fn insert_source_abstraction(

@@ -83,7 +83,7 @@ that distinguishes a carrier from a decoy.
 
 | ID | Invariant | Carrier |
 |---|---|---|
-| ME-1 | Fact is Memory with kind `.Fact` | subtype `Fact := { m : Memory // memory_kind m = .Fact }` + theorem `fact_memory_kind`; runtime SQL currently encodes the Fact branch as `memories.kind IS NULL` while preserving the kernel distinction from derived kinds |
+| ME-1 | Fact is Memory with kind `.Fact` | subtype `Fact := { m : Memory // memory_kind m = .Fact }` + theorem `fact_memory_kind`; runtime SQL stores `memories.kind = 'Fact'` (0020) |
 | ME-2 | Fact owner is the memory row owner | structural: `Fact.memory` projects to `Memory.owner`; source/event owner inheritance moved out of core by D1 |
 | ME-3 | Optional free text is a Memory field for F/A/P; no kind-based text axiom | structure field `Memory.text : Option Text` + accessor `memory_text` |
 | ME-4 | Facts never supersede / never superseded | THEOREM `facts_never_supersede` (Memory.lean) — source half from the ROW field `Memory.fact_never_supersedes` (mirroring the row-local `memories_variant_chk` Fact branch), target half from `MemorySupersessionValid.sameKind`. Supersession is a lineage pointer, so no edge is involved |

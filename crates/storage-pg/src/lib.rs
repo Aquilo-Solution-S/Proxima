@@ -396,6 +396,14 @@ pub async fn ensure_core_schema_markers(pool: &PgPool) -> Result<(), StorageErro
                 AND column_name = 'assignment_perspective_id'
          )
          AND to_regclass('proxima_core.interpretation_v1') IS NOT NULL
+         AND EXISTS (
+             SELECT 1
+               FROM information_schema.columns
+              WHERE table_schema = 'proxima_core'
+                AND table_name = 'memories'
+                AND column_name = 'kind'
+                AND is_nullable = 'NO'
+         )
          -- v0.0.8 delegated-authority lane. The runtime always constructs the
          -- PG store when authenticated hosting is enabled, compliance audit
          -- always binds its count column, and the trigger is the storage-side
@@ -450,7 +458,7 @@ pub async fn ensure_core_schema_markers(pool: &PgPool) -> Result<(), StorageErro
 
     if !ready {
         return Err(StorageError::Internal(
-            "database is missing schema markers for this release lane (v0.0.6: embedding_jobs.next_attempt_at, memories append-only trigger; v0.0.7 (0011_v007.sql): memories.search_tsv, embeddings.chunk_index, proxima_core.lexical_tsv, proxima_core.lexical_config, memories.lexical_language, proxima_core.lexical_languages, edges.source_id, memories.authoring_perspective_id, goals.assignment_perspective_id, proxima_core.interpretation_v1; v0.0.8 (0016_v008.sql): proxima_core.access_ceiling, proxima_core.delegated_authority_grants, delegated_authority_grants_revoke_only, compliance_audit_log.delegated_authority_grants_count; code flavor, when present: code_chunk_v1.search_tsv and code_chunk_v1.lexical_language via flavor migration 20260801000020_v007_baseline.sql); apply migrations before boot (see MIGRATING.md)".into(),
+            "database is missing schema markers for this release lane (v0.0.6: embedding_jobs.next_attempt_at, memories append-only trigger; v0.0.7 (0011_v007.sql): memories.search_tsv, embeddings.chunk_index, proxima_core.lexical_tsv, proxima_core.lexical_config, memories.lexical_language, proxima_core.lexical_languages, edges.source_id, memories.authoring_perspective_id, goals.assignment_perspective_id, proxima_core.interpretation_v1; v0.0.8 (0016_v008.sql): proxima_core.access_ceiling, proxima_core.delegated_authority_grants, delegated_authority_grants_revoke_only, compliance_audit_log.delegated_authority_grants_count; v0.0.8 (0020_memory_kind_fact.sql): memories.kind NOT NULL Fact; code flavor, when present: code_chunk_v1.search_tsv and code_chunk_v1.lexical_language via flavor migration 20260801000020_v007_baseline.sql); apply migrations before boot (see MIGRATING.md)".into(),
         ));
     }
     Ok(())

@@ -143,7 +143,7 @@ pub async fn list_facts_missing_embedding(
            FROM proxima_core.memories m
           WHERE m.owner_kind = $1
             AND m.owner_id = $2
-            AND m.kind IS NULL
+            AND m.kind = 'Fact'
             AND m.text IS NOT NULL
             -- Declined a vector rather than lacking one; see
             -- `FactPayload::EMBEDDABLE`. `<> ALL('{{}}')` is TRUE, so an
@@ -416,21 +416,18 @@ pub async fn enqueue_missing_embedding_jobs(
     let result = sqlx::query(
         "WITH missing AS (
              SELECT m.memory_id,
-                    COALESCE(m.kind, 'Fact'::proxima_core.entity_kind) AS entity_kind
+                    m.kind AS entity_kind
                FROM proxima_core.memories m
               WHERE m.owner_kind = $1
                 AND m.owner_id = $2
-                -- Facts (kind IS NULL) plus derived memories. Derived rows
+                -- Facts plus derived memories. Derived rows
                 -- belong here because a flavor can materialize Abstractions
                 -- through its own sidecar path without an embedding client in
                 -- scope — code-chunk ingest does exactly that — and those rows
                 -- would otherwise stay unembedded until an operator ran a
                 -- global reconcile. Matches the kinds `reconcile_embeddings`
                 -- scans, owner-scoped.
-                AND (
-                    m.kind IS NULL
-                    OR m.kind IN ('Abstraction', 'Perspective')
-                )
+                AND m.kind IN ('Fact', 'Abstraction', 'Perspective')
                 AND m.text IS NOT NULL
                 -- See `FactPayload::EMBEDDABLE`. Gating only the inline
                 -- write path would leave this call to re-enqueue every
@@ -441,7 +438,7 @@ pub async fn enqueue_missing_embedding_jobs(
                     SELECT 1
                       FROM proxima_core.embedding_heads h
                      WHERE h.entity_kind
-                           = COALESCE(m.kind, 'Fact'::proxima_core.entity_kind)
+                           = m.kind
                        AND h.entity_id = m.memory_id
                        AND h.model_id = $3
                 )

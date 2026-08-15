@@ -17,13 +17,7 @@ use crate::verbs::edge_index::{
     assert_index_rows_in_tx, declared_index_rows, stored_index_rows_in_tx,
 };
 
-type InputProofRow = (
-    uuid::Uuid,
-    Option<EntityKind>,
-    Option<uuid::Uuid>,
-    bool,
-    bool,
-);
+type InputProofRow = (uuid::Uuid, EntityKind, Option<uuid::Uuid>, bool, bool);
 
 #[derive(Debug, Clone)]
 pub struct DerivedDraft<'a> {
@@ -428,7 +422,7 @@ fn validate_input_proof_rows(
     }
     let mut ftoa_batch = None;
     for (memory_id, actual_kind, source_batch_id, closed, derivation_time_strict) in rows {
-        let actual = actual_kind.unwrap_or(EntityKind::Fact);
+        let actual = actual_kind;
         if actual != expected_input_kind {
             return Err(StorageError::ConstraintViolation(format!(
                 "invalid input kind for {:?}: expected {expected_input_kind:?}, got {actual:?}",

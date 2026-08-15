@@ -134,7 +134,7 @@ async fn query_candidate_rows(
               WHERE m.memory_id = $3
                 AND m.owner_kind = $4
                 AND m.owner_id IS NOT DISTINCT FROM $5
-                AND m.kind IS NULL
+                AND m.kind = 'Fact'
                 AND m.tombstoned_at IS NULL
                 AND m.schema_id = $6
                 AND m.schema_version = $7

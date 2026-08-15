@@ -204,7 +204,7 @@ impl MemoryAuthoringPort for PgStorage {
             .map(MemoryId::into_inner)
             .collect::<Vec<_>>();
         let (owner_kind, owner_id) = owner.columns();
-        let rows: Vec<(uuid::Uuid, Option<proxima_core::EntityKind>)> = sqlx::query_as(
+        let rows: Vec<(uuid::Uuid, proxima_core::EntityKind)> = sqlx::query_as(
             "SELECT m.memory_id, m.kind
              FROM proxima_core.memories m
              WHERE m.owner_kind = $1
@@ -243,7 +243,7 @@ impl MemoryAuthoringPort for PgStorage {
             "SELECT m.memory_id, fr.source_batch_id
              FROM proxima_core.memories m
              JOIN proxima_core.fact_receipts fr ON fr.receipt_id = m.receipt_id
-             WHERE m.kind IS NULL
+             WHERE m.kind = 'Fact'
                AND m.tombstoned_at IS NULL
                AND m.memory_id = ANY($1::uuid[])",
         )
@@ -277,44 +277,14 @@ impl MemoryReadPort for PgStorage {
         memory_ids: &[MemoryId],
         include_body: bool,
     ) -> Result<Vec<MemoryGraphPayloadRow>, StorageError> {
-        if memory_ids.is_empty() {
-            return Ok(Vec::new());
-        }
-        let ids = memory_ids
-            .iter()
-            .copied()
-            .map(MemoryId::into_inner)
-            .collect::<Vec<_>>();
-        let (owner_kind, owner_id) = owner.columns();
-        let rows: Vec<(uuid::Uuid, Option<Vec<String>>, Option<String>)> = sqlx::query_as(
-            "SELECT m.memory_id,
-                    COALESCE(n.tags, d.tags) AS tags,
-                    CASE WHEN $4
-                         THEN COALESCE(n.body, d.body, m.text)
-                         ELSE NULL
-                    END AS body
-             FROM proxima_core.memories m
-             LEFT JOIN proxima_core.agent_note_v1 n USING (memory_id)
-             LEFT JOIN proxima_core.agent_derivation_v1 d USING (memory_id)
-             WHERE m.owner_kind = $1
-               AND m.owner_id IS NOT DISTINCT FROM $2
-               AND m.memory_id = ANY($3::uuid[])",
+        verbs::consolidate::load_memory_graph_payloads(
+            &self.pool,
+            &self.sidecars,
+            owner,
+            memory_ids,
+            include_body,
         )
-        .bind(owner_kind)
-        .bind(owner_id)
-        .bind(&ids)
-        .bind(include_body)
-        .fetch_all(&self.pool)
         .await
-        .map_err(internal)?;
-        Ok(rows
-            .into_iter()
-            .map(|(memory_id, tags, body)| MemoryGraphPayloadRow {
-                memory_id: MemoryId::new(memory_id),
-                tags,
-                body,
-            })
-            .collect())
     }
 
     async fn load_neighbor_memory_edges(

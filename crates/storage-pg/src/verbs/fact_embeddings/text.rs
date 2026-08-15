@@ -22,7 +22,7 @@ pub async fn load_fact_text(
           WHERE memory_id = $1
             AND owner_kind = $2
             AND owner_id = $3
-            AND kind IS NULL
+            AND kind = 'Fact'
             AND tombstoned_at IS NULL",
     )
     .bind(memory_id.into_inner())
@@ -35,7 +35,7 @@ pub async fn load_fact_text(
 
 /// Owner-scoped read of stored memory text for an embedding job.
 ///
-/// Facts are encoded as `kind IS NULL`; derived memories carry
+/// Facts are encoded as `kind = 'Fact'`; derived memories carry
 /// `Abstraction` / `Perspective` in `kind`.
 ///
 /// # Errors
@@ -60,7 +60,7 @@ pub async fn load_embedding_text(
             AND schema_id <> ALL($5::text[])
             AND (
                 ($4 = 'Fact'::proxima_core.entity_kind
-                 AND kind IS NULL)
+                 AND kind = 'Fact')
                 OR kind = $4
             )",
     )
@@ -91,7 +91,7 @@ pub async fn load_fact_text_in_tx(
           WHERE memory_id = $1
             AND owner_kind = $2
             AND owner_id = $3
-            AND kind IS NULL
+            AND kind = 'Fact'
             AND tombstoned_at IS NULL",
     )
     .bind(memory_id.into_inner())

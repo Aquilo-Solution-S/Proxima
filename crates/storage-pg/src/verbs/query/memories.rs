@@ -159,7 +159,7 @@ async fn load_row_payloads_batch(
                 row.schema_version, row.memory_id
             ))
         })?;
-        let kind = match row.kind.unwrap_or(EntityKind::Fact) {
+        let kind = match row.kind {
             EntityKind::Fact => PayloadKind::Fact,
             EntityKind::Abstraction => PayloadKind::Abstraction,
             EntityKind::Perspective => PayloadKind::Perspective,
@@ -404,7 +404,7 @@ fn push_heads_predicate(
     match req.entity_kind {
         None => {}
         Some(EntityKind::Fact) => {
-            sql.push_str(" AND m.kind IS NULL");
+            sql.push_str(" AND m.kind = 'Fact'");
         }
         Some(EntityKind::Abstraction) => sql.push_str(" AND m.kind = 'Abstraction'"),
         Some(EntityKind::Perspective) => sql.push_str(" AND m.kind = 'Perspective'"),

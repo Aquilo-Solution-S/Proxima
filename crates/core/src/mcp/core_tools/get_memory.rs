@@ -94,20 +94,25 @@ pub(super) fn project_memory_snapshot(
     space: String,
     neighbor_edges: Option<Vec<NeighborEdge>>,
 ) -> Result<GetMemoryOutput, McpToolError> {
-    let class = memory_class(&snapshot.kind)?;
+    let class = memory_class(snapshot.kind)?;
     let handle = ctx.format_memory_with_class(snapshot.memory_id, class);
     let payload = snapshot_payload_value(snapshot.payload.as_ref())?;
     let title =
         payload_string(&payload, "title").or_else(|| payload_string(&payload, "conversation_id"));
-    let body = payload_string(&payload, "body")
-        .or_else(|| payload_string(&payload, "text"))
+    let body = snapshot
+        .payload
+        .as_ref()
+        .and_then(crate::SidecarPayload::graph_body)
         .or_else(|| snapshot.text.clone());
-    let tags = payload_tags(&payload);
+    let tags = snapshot
+        .payload
+        .as_ref()
+        .map_or_else(Vec::new, crate::SidecarPayload::graph_tags);
     Ok(GetMemoryOutput {
         handle: handle.clone(),
         memory: handle,
         space,
-        kind: snapshot.kind,
+        kind: snapshot.kind.as_str().to_string(),
         schema_id: snapshot.schema_id.as_str().to_string(),
         schema_version: snapshot.schema_version.into_inner(),
         text: snapshot.text,
@@ -130,9 +135,9 @@ pub(super) fn snapshot_payload_value(
         .map_err(|err| McpToolError::Other(format!("serialize typed payload: {err}")))
 }
 
-pub(super) fn memory_class(kind: &str) -> Result<MemoryHandleClass, McpToolError> {
-    MemoryHandleClass::from_memory_kind(kind)
-        .ok_or_else(|| McpToolError::Other(format!("unknown memory kind: {kind}")))
+pub(super) fn memory_class(kind: crate::EntityKind) -> Result<MemoryHandleClass, McpToolError> {
+    MemoryHandleClass::from_entity_kind(kind)
+        .ok_or_else(|| McpToolError::Other(format!("unknown memory kind: {}", kind.as_str())))
 }
 
 pub(super) fn payload_string(payload: &serde_json::Value, key: &str) -> Option<String> {
@@ -140,14 +145,4 @@ pub(super) fn payload_string(payload: &serde_json::Value, key: &str) -> Option<S
         .get(key)
         .and_then(serde_json::Value::as_str)
         .map(ToOwned::to_owned)
-}
-
-pub(super) fn payload_tags(payload: &serde_json::Value) -> Vec<String> {
-    payload
-        .get("tags")
-        .and_then(serde_json::Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(|tag| tag.as_str().map(ToOwned::to_owned))
-        .collect()
 }

@@ -215,12 +215,10 @@ WHERE eo.owner_kind = $1
 async fn seed_fact(db: &TestDb, owner: proxima_core::Owner, text: &str) -> Uuid {
     let memory_id = Uuid::now_v7();
     let (owner_kind, owner_id) = proxima_storage_pg::access::owner_columns::owner_binds(&owner);
-    // A Fact row carries `kind = NULL`; the F/A/P discriminator only names
-    // the derived layers.
     sqlx::query(
         "INSERT INTO proxima_core.memories
             (memory_id, owner_kind, owner_id, schema_id, schema_version, kind, text)
-         VALUES ($1, $2, $3, 'test/plan-subject', 1, NULL, $4)",
+         VALUES ($1, $2, $3, 'test/plan-subject', 1, 'Fact', $4)",
     )
     .bind(memory_id)
     .bind(owner_kind)

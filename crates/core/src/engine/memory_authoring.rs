@@ -451,9 +451,7 @@ impl Engine {
             .map_err(|err| ProtocolError::internal(err.to_string()))?;
         let by_id = rows
             .into_iter()
-            // A `None` kind is a Fact: the memories table stores the
-            // A/P discriminator explicitly and leaves Facts implicit.
-            .map(|row| (row.memory_id, row.kind.unwrap_or(EntityKind::Fact)))
+            .map(|row| (row.memory_id, row.kind))
             .collect::<std::collections::HashMap<_, _>>();
         memory_ids
             .iter()

@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use futures_util::future::try_join_all;
 use proxima_core::read_models::{AbstractionRow, FactRow, MemorySnapshot, SidecarSpec};
+use proxima_core::storage::MemoryGraphPayloadRow;
 use proxima_core::verbs::schema::PayloadKind;
 use proxima_core::{
     EntityKind, MemoryId, Owner, SchemaId, SchemaVersion, SidecarPayload, StorageError,
@@ -13,7 +14,7 @@ use crate::sidecars::{PgSidecarKey, PgSidecarReadCtx, PgSidecarRegistryFrozen};
 
 /// `(kind, schema_id, schema_version, text)` as [`load_memory_by_id`]
 /// selects it.
-type MemoryHeadRow = (Option<EntityKind>, String, i32, Option<String>);
+type MemoryHeadRow = (EntityKind, String, i32, Option<String>);
 
 /// The Facts of one source batch, with their typed sidecar payloads.
 ///
@@ -205,56 +206,15 @@ pub async fn load_memory_by_id(
     let Some((kind, schema_id, schema_version, text)) = head else {
         return Ok(None);
     };
-    snapshot_with_payload(
-        pool,
-        pg_sidecars,
-        memory_id,
+    let rows = [(
+        memory_id.into_inner(),
         kind,
         schema_id,
         schema_version,
         text,
-        sidecars,
-    )
-    .await
-}
-
-/// Resolve a head row into a [`MemorySnapshot`], loading its typed sidecar
-/// payload when the schema has one registered. Goal rows project to `None`
-/// (goals are not memories-readable through this path).
-#[allow(clippy::too_many_arguments)]
-async fn snapshot_with_payload(
-    pool: &PgPool,
-    pg_sidecars: &PgSidecarRegistryFrozen,
-    memory_id: MemoryId,
-    kind: Option<EntityKind>,
-    schema_id: String,
-    schema_version: i32,
-    text: Option<String>,
-    sidecars: &[SidecarSpec],
-) -> Result<Option<MemorySnapshot>, StorageError> {
-    let kind_str = kind.unwrap_or(EntityKind::Fact).as_str().to_string();
-    let payload = if let Some(spec) = sidecars.iter().find(|s| {
-        s.schema_id.as_str() == schema_id
-            && s.schema_version.into_inner() == u32::try_from(schema_version).unwrap_or(0)
-    }) {
-        let payload_kind = match kind.unwrap_or(EntityKind::Fact) {
-            EntityKind::Fact => PayloadKind::Fact,
-            EntityKind::Abstraction => PayloadKind::Abstraction,
-            EntityKind::Perspective => PayloadKind::Perspective,
-            EntityKind::Goal => return Ok(None),
-        };
-        load_memory_sidecar_payload(pool, pg_sidecars, payload_kind, spec, memory_id).await?
-    } else {
-        None
-    };
-    Ok(Some(MemorySnapshot {
-        memory_id,
-        kind: kind_str,
-        schema_id: SchemaId::new(schema_id),
-        schema_version: SchemaVersion::new(u32::try_from(schema_version).unwrap_or(1)),
-        text,
-        payload,
-    }))
+    )];
+    let mut snapshots = snapshots_from_rows(pool, pg_sidecars, &rows, sidecars).await?;
+    Ok(snapshots.pop())
 }
 
 /// Batch counterpart of [`load_memory_by_id`], visibility-scoped: head rows
@@ -291,7 +251,7 @@ pub async fn load_memories_by_ids(
         read_owner_predicate = crate::verbs::query::read_owner_predicate("m", "rs"),
     );
     // SQL-POLICY: fixed-fragment
-    let rows: Vec<(uuid::Uuid, Option<EntityKind>, String, i32, Option<String>)> =
+    let rows: Vec<(uuid::Uuid, EntityKind, String, i32, Option<String>)> =
         sqlx::query_as(sqlx::AssertSqlSafe(sql))
             .bind(&read_owner_kinds)
             .bind(&read_owner_ids)
@@ -300,42 +260,130 @@ pub async fn load_memories_by_ids(
             .await
             .map_err(map_err)?;
 
-    let mut snapshots = Vec::with_capacity(rows.len());
-    for (memory_id, kind, schema_id, schema_version, text) in rows {
-        if let Some(snapshot) = snapshot_with_payload(
-            pool,
-            pg_sidecars,
-            MemoryId::new(memory_id),
-            kind,
-            schema_id,
-            schema_version,
-            text,
-            sidecars,
-        )
-        .await?
-        {
-            snapshots.push(snapshot);
-        }
-    }
-    Ok(snapshots)
+    snapshots_from_rows(pool, pg_sidecars, &rows, sidecars).await
 }
 
-async fn load_memory_sidecar_payload(
+/// Search-result tags/body via the same sidecar batch as snapshot reads.
+///
+/// # Errors
+///
+/// Returns [`StorageError`] when the head or sidecar read fails.
+pub async fn load_memory_graph_payloads(
     pool: &PgPool,
     pg_sidecars: &PgSidecarRegistryFrozen,
-    kind: PayloadKind,
-    spec: &SidecarSpec,
-    memory_id: MemoryId,
-) -> Result<Option<SidecarPayload>, StorageError> {
-    let key = PgSidecarKey::new(kind, spec.schema_id.clone(), spec.schema_version);
-    if !pg_sidecars.contains(&key) {
-        return Ok(None);
+    owner: &Owner,
+    memory_ids: &[MemoryId],
+    include_body: bool,
+) -> Result<Vec<MemoryGraphPayloadRow>, StorageError> {
+    if memory_ids.is_empty() {
+        return Ok(Vec::new());
     }
-    let memory_ids = [memory_id];
-    let mut payloads = pg_sidecars
-        .load_memory_payloads_batch(PgSidecarReadCtx::from(pool), &key, &memory_ids)
-        .await?;
-    Ok(payloads.pop().map(|(_memory_id, payload)| payload))
+    let ids = memory_ids
+        .iter()
+        .copied()
+        .map(MemoryId::into_inner)
+        .collect::<Vec<_>>();
+    let (owner_kind, owner_id) = owner.columns();
+    let rows: Vec<(uuid::Uuid, EntityKind, String, i32, Option<String>)> = sqlx::query_as(
+        "SELECT m.memory_id, m.kind, m.schema_id, m.schema_version, m.text
+         FROM proxima_core.memories m
+         WHERE m.owner_kind = $1
+           AND m.owner_id IS NOT DISTINCT FROM $2
+           AND m.memory_id = ANY($3::uuid[])",
+    )
+    .bind(owner_kind)
+    .bind(owner_id)
+    .bind(&ids)
+    .fetch_all(pool)
+    .await
+    .map_err(map_err)?;
+
+    let mut ids_by_key = HashMap::<PgSidecarKey, Vec<MemoryId>>::new();
+    for (memory_id, kind, schema_id, schema_version, _) in &rows {
+        let Some(payload_kind) = payload_kind_for(*kind) else {
+            continue;
+        };
+        let Ok(version) = u32::try_from(*schema_version) else {
+            continue;
+        };
+        queue_memory_sidecar_payload(
+            &mut ids_by_key,
+            pg_sidecars,
+            payload_kind,
+            SchemaId::new(schema_id.clone()),
+            SchemaVersion::new(version),
+            MemoryId::new(*memory_id),
+        );
+    }
+    let payloads = load_memory_sidecar_payloads_batch(pool, pg_sidecars, ids_by_key).await?;
+    Ok(rows
+        .into_iter()
+        .map(|(memory_id, _kind, _schema_id, _schema_version, text)| {
+            let id = MemoryId::new(memory_id);
+            let payload = payloads.get(&id);
+            MemoryGraphPayloadRow {
+                memory_id: id,
+                tags: payload.map(SidecarPayload::graph_tags),
+                body: include_body
+                    .then(|| payload.and_then(SidecarPayload::graph_body).or(text))
+                    .flatten(),
+            }
+        })
+        .collect())
+}
+
+fn payload_kind_for(kind: EntityKind) -> Option<PayloadKind> {
+    match kind {
+        EntityKind::Fact => Some(PayloadKind::Fact),
+        EntityKind::Abstraction => Some(PayloadKind::Abstraction),
+        EntityKind::Perspective => Some(PayloadKind::Perspective),
+        EntityKind::Goal => None,
+    }
+}
+
+async fn snapshots_from_rows(
+    pool: &PgPool,
+    pg_sidecars: &PgSidecarRegistryFrozen,
+    rows: &[(uuid::Uuid, EntityKind, String, i32, Option<String>)],
+    sidecars: &[SidecarSpec],
+) -> Result<Vec<MemorySnapshot>, StorageError> {
+    let mut ids_by_key = HashMap::<PgSidecarKey, Vec<MemoryId>>::new();
+    for (memory_id, kind, schema_id, schema_version, _) in rows {
+        let Some(payload_kind) = payload_kind_for(*kind) else {
+            continue;
+        };
+        let Some(spec) = sidecars.iter().find(|spec| {
+            spec.schema_id.as_str() == schema_id
+                && spec.schema_version.into_inner() == u32::try_from(*schema_version).unwrap_or(0)
+        }) else {
+            continue;
+        };
+        queue_memory_sidecar_payload(
+            &mut ids_by_key,
+            pg_sidecars,
+            payload_kind,
+            spec.schema_id.clone(),
+            spec.schema_version,
+            MemoryId::new(*memory_id),
+        );
+    }
+    let mut payloads = load_memory_sidecar_payloads_batch(pool, pg_sidecars, ids_by_key).await?;
+    let mut snapshots = Vec::with_capacity(rows.len());
+    for (memory_id, kind, schema_id, schema_version, text) in rows {
+        if *kind == EntityKind::Goal {
+            continue;
+        }
+        let id = MemoryId::new(*memory_id);
+        snapshots.push(MemorySnapshot {
+            memory_id: id,
+            kind: *kind,
+            schema_id: SchemaId::new(schema_id.clone()),
+            schema_version: SchemaVersion::new(u32::try_from(*schema_version).unwrap_or(1)),
+            text: text.clone(),
+            payload: payloads.remove(&id),
+        });
+    }
+    Ok(snapshots)
 }
 
 fn queue_memory_sidecar_payload(

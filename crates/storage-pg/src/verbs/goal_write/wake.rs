@@ -87,19 +87,18 @@ async fn validate_wake_memory_exists(
     memory_id: MemoryId,
     expected: Option<EntityKind>,
 ) -> Result<(), StorageError> {
-    let row: Option<(Option<EntityKind>,)> = sqlx::query_as(
+    let row: Option<(EntityKind,)> = sqlx::query_as(
         "SELECT kind FROM proxima_core.memories WHERE memory_id = $1 AND tombstoned_at IS NULL",
     )
     .bind(memory_id.into_inner())
     .fetch_optional(&mut **tx)
     .await
     .map_err(map_err)?;
-    let Some((stored_kind,)) = row else {
+    let Some((kind,)) = row else {
         return Err(StorageError::ConstraintViolation(
             "wake memory does not exist".into(),
         ));
     };
-    let kind = stored_kind.unwrap_or(EntityKind::Fact);
     if expected.is_some_and(|expected| expected != kind) {
         return Err(StorageError::ConstraintViolation(
             "wake trigger memory must be a Fact".into(),

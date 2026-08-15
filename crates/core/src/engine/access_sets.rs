@@ -244,7 +244,7 @@ pub(in crate::engine) mod tests {
                         .iter()
                         .map(|memory_id| MemoryKindRow {
                             memory_id: *memory_id,
-                            kind: Some(kind),
+                            kind,
                         })
                         .collect()
                 })

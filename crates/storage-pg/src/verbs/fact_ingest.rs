@@ -811,23 +811,21 @@ pub async fn attach_citation_in_tx(
     // declares it, already checked against `kind_may_cite_directly`; storage
     // reads the STORED kind and refuses when the two disagree — a declared
     // kind must never be able to widen what the row actually is.
-    let (stored_kind, existing_mapping_id) =
-        sqlx::query_as::<_, (Option<EntityKind>, Option<uuid::Uuid>)>(
-            "SELECT m.kind, m.citation_mapping_id
+    let (stored_kind, existing_mapping_id) = sqlx::query_as::<_, (EntityKind, Option<uuid::Uuid>)>(
+        "SELECT m.kind, m.citation_mapping_id
                 FROM proxima_core.memories m
                WHERE m.memory_id = $1
                  AND m.owner_kind = $2
                  AND m.owner_id IS NOT DISTINCT FROM $3
                  AND m.tombstoned_at IS NULL",
-        )
-        .bind(memory_uuid)
-        .bind(owner_kind)
-        .bind(owner_id)
-        .fetch_optional(tx.as_mut())
-        .await
-        .map_err(map_err)?
-        .ok_or(StorageError::NotFound)?;
-    let stored_kind = stored_kind.unwrap_or(EntityKind::Fact);
+    )
+    .bind(memory_uuid)
+    .bind(owner_kind)
+    .bind(owner_id)
+    .fetch_optional(tx.as_mut())
+    .await
+    .map_err(map_err)?
+    .ok_or(StorageError::NotFound)?;
     if stored_kind != authorized.memory_kind() {
         return Err(StorageError::ConstraintViolation(format!(
             "citation target {memory_uuid} is a {}, not a {}",
@@ -1256,9 +1254,9 @@ where
     sqlx::query(
         "INSERT INTO proxima_core.memories
             (memory_id, owner_kind, owner_id, schema_id, schema_version,
-             receipt_id, citation_mapping_id, text, authoring_perspective_id,
+             kind, receipt_id, citation_mapping_id, text, authoring_perspective_id,
              lexical_language)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9,
+         VALUES ($1, $2, $3, $4, $5, 'Fact', $6, $7, $8, $9,
                  COALESCE($10::regconfig, proxima_core.lexical_config()))",
     )
     .bind(memory_id)

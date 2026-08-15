@@ -57,7 +57,7 @@ pub(super) async fn validate_evidence_in_owner(
                 "evidence does not exist".into(),
             ));
         };
-        let kind = row.kind.unwrap_or(EntityKind::Fact);
+        let kind = row.kind;
         match kind {
             EntityKind::Fact | EntityKind::Abstraction => out.push(EvidenceTarget {
                 kind,
@@ -84,7 +84,7 @@ pub(super) async fn outgoing_motivated_by_evidence(
     goal_id: GoalId,
 ) -> Result<Vec<EvidenceTarget>, StorageError> {
     let (owner_kind, owner_id) = owner.columns();
-    let rows: Vec<(uuid::Uuid, Option<EntityKind>)> = sqlx::query_as(
+    let rows: Vec<(uuid::Uuid, EntityKind)> = sqlx::query_as(
         "SELECT m.memory_id, m.kind
            FROM proxima_core.goals g
            JOIN LATERAL unnest(g.evidence_memory_ids) WITH ORDINALITY AS ev(memory_id, ord)
@@ -104,7 +104,7 @@ pub(super) async fn outgoing_motivated_by_evidence(
     Ok(rows
         .into_iter()
         .map(|(memory_id, kind)| EvidenceTarget {
-            kind: kind.unwrap_or(EntityKind::Fact),
+            kind,
             memory_id: MemoryId::new(memory_id),
         })
         .collect())

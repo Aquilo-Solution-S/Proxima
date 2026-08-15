@@ -177,7 +177,7 @@ async fn enforce_owner(
     }
 }
 
-// The expired-Fact predicate — live Fact rows (`kind IS NULL`) of this
+// The expired-Fact predicate — live Fact rows (`kind = 'Fact'`) of this
 // owner, past the retention window, excluding the MCP-call audit schema
 // (indefinite controller evidence, docs/13) — appears verbatim in both
 // `count_expired_facts` and `tombstone_expired_batch`. Keep the two WHERE
@@ -195,7 +195,7 @@ async fn count_expired_facts(
            FROM proxima_core.memories
           WHERE owner_kind = $1
             AND owner_id IS NOT DISTINCT FROM $2
-            AND kind IS NULL
+            AND kind = 'Fact'
             AND tombstoned_at IS NULL
             AND schema_id <> $3
             AND created_at < now()
@@ -223,7 +223,7 @@ async fn tombstone_expired_batch(
            FROM proxima_core.memories
           WHERE owner_kind = $1
             AND owner_id IS NOT DISTINCT FROM $2
-            AND kind IS NULL
+            AND kind = 'Fact'
             AND tombstoned_at IS NULL
             AND schema_id <> $3
             AND created_at < now()

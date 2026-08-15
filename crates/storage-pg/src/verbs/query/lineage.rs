@@ -30,7 +30,7 @@ struct EdgeWalkRow {
 #[derive(Debug, sqlx::FromRow)]
 struct NodeRow {
     memory_id: uuid::Uuid,
-    kind: Option<EntityKind>,
+    kind: EntityKind,
     schema_id: String,
     snippet: Option<String>,
 }
@@ -99,7 +99,7 @@ pub(crate) async fn walk_memory_lineage(
         .into_iter()
         .map(|row| MemoryLineageNode {
             memory_id: MemoryId::new(row.memory_id),
-            kind: row.kind.unwrap_or(EntityKind::Fact),
+            kind: row.kind,
             schema_id: SchemaId::new(row.schema_id),
             snippet: row.snippet.unwrap_or_default(),
             distance: *distances.get(&row.memory_id).unwrap_or(&0),

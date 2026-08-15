@@ -506,7 +506,7 @@ async fn selected_fact_memory_count(tx: &mut Tx<'_>) -> Result<u64, sqlx::Error>
         "SELECT count(*)::bigint
            FROM erase_repo_memories selected
            JOIN proxima_core.memories m ON m.memory_id = selected.memory_id
-          WHERE m.kind IS NULL",
+          WHERE m.kind = 'Fact'",
     )
     .fetch_one(&mut **tx)
     .await?;
@@ -518,7 +518,7 @@ async fn selected_derived_memory_count(tx: &mut Tx<'_>) -> Result<u64, sqlx::Err
         "SELECT count(*)::bigint
            FROM erase_repo_memories selected
            JOIN proxima_core.memories m ON m.memory_id = selected.memory_id
-          WHERE m.kind IS NOT NULL",
+          WHERE m.kind <> 'Fact'",
     )
     .fetch_one(&mut **tx)
     .await?;

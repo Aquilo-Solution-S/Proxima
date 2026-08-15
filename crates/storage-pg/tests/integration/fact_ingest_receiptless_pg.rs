@@ -54,7 +54,7 @@ async fn receiptless_fact_ingest_creates_fresh_queryable_facts() {
              FROM proxima_core.memories
              WHERE owner_kind = 'personal'
                AND owner_id = $1
-               AND kind IS NULL
+               AND kind = 'Fact'
                AND receipt_id IS NULL",
         )
         .bind(owner.stable_key_uuid())

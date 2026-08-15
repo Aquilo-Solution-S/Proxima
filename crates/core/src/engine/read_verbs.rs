@@ -284,7 +284,7 @@ impl Engine {
             .ok_or_else(|| {
                 ProtocolError::invalid_argument("fact", "wake trigger fact not found")
             })?;
-        if snapshot.kind != EntityKind::Fact.as_str() {
+        if snapshot.kind != EntityKind::Fact {
             return Err(ProtocolError::invalid_argument(
                 "fact",
                 "wake trigger must be a Fact memory",
