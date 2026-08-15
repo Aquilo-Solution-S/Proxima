@@ -33,6 +33,7 @@ mod verified_read;
 #[cfg(test)]
 mod testkit;
 
+pub use keys::{cold_object_key, cold_owner_prefix, owner_hash_hex_public};
 pub use dto::{
     CitedBlobReadUrlOutcomeTs, CitedBlobReadUrlTs, CitedBlobUploadAbortOutcomeTs,
     CitedBlobUploadAbortTs, CitedBlobUploadCompleteTs, CitedBlobUploadPrepareOutcomeTs,

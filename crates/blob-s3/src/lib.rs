@@ -12,7 +12,8 @@ mod store;
 pub use config::S3RuntimeConfig;
 pub use error::BlobError;
 pub use store::{
-    CitedBlobReadUrlOutcomeTs, CitedBlobReadUrlTs, CitedBlobStore, CitedBlobUploadAbortOutcomeTs,
+    cold_object_key, cold_owner_prefix, owner_hash_hex_public, CitedBlobReadUrlOutcomeTs,
+    CitedBlobReadUrlTs, CitedBlobStore, CitedBlobUploadAbortOutcomeTs,
     CitedBlobUploadAbortTs, CitedBlobUploadCompleteTs, CitedBlobUploadPrepareOutcomeTs,
     CitedBlobUploadPrepareTs, PresignedHeaderTs,
 };

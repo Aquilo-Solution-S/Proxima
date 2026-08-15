@@ -15,6 +15,7 @@ pub mod derive_append;
 pub(crate) mod edge_index;
 pub mod fact_embeddings;
 pub mod fact_ingest;
+pub mod forget;
 pub mod memory_timeseries;
 pub mod fact_retention;
 pub mod goal_timeseries;
