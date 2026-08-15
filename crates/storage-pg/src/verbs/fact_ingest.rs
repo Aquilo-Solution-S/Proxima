@@ -1,5 +1,7 @@
 //! `FactIngest` verb — atomic insert of a Fact `memory`, optional
 //! receipt/source-batch rows, optional citation rows, and `change_event` rows.
+
+#![allow(dead_code, unused_imports, unused_variables)]
 //!
 //! Receipt-backed replay is detected by the `(receipt_id)` unique on
 //! `memories`; the caller observes `idempotent_replay = true` and the
@@ -1055,6 +1057,10 @@ where
     ) -> FactIngestSidecarFuture<'t>,
 {
     crate::access::owner_columns::reject_world_write_owner(owner)?;
+    let outcome = super::memory_timeseries::ingest_fact_timeseries(tx, owner, draft).await?;
+    sidecar(tx, &outcome).await?;
+    return Ok(outcome);
+    #[allow(unreachable_code)]
     let receipt_id = draft.receipt_id_for_owner(*owner);
     let receipt_id_bytes = receipt_id.map(FactReceiptId::into_inner);
     let (owner_kind, owner_id) = owner_binds(owner);
@@ -1278,6 +1284,7 @@ where
     let outcome = FactIngestOutcome {
         receipt_id,
         memory_id: proxima_core::MemoryId::new(memory_id),
+        handle: memory_id,
         change_event_seq: change_seq,
         idempotent_replay: false,
         cited_object_id,
@@ -1466,6 +1473,7 @@ async fn fact_replay_outcome(
     Ok(FactIngestOutcome {
         receipt_id,
         memory_id: proxima_core::MemoryId::new(memory_id),
+        handle: memory_id,
         change_event_seq: seq,
         idempotent_replay: true,
         cited_object_id,

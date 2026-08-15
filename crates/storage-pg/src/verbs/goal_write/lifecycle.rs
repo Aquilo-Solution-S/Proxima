@@ -137,6 +137,9 @@ where
     let draft = FactWriteCommand {
         schema_id: SchemaId::new(T::SCHEMA_ID.to_string()),
         schema_version: SchemaVersion::new(T::SCHEMA_VERSION),
+        handle: None,
+        source_id: None,
+        ingest_key: None,
         payload: payload.receipt_key(),
         rendered_text: Some(payload.render()),
         lexical_language: None,

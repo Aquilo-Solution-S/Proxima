@@ -33,6 +33,9 @@ mod pg_tests {
         FactWriteCommand {
             schema_id: SchemaId::new("proxima-test/fact-embedding-v1".into()),
             schema_version: SchemaVersion::new(1),
+            handle: None,
+            source_id: None,
+            ingest_key: None,
             payload: label.as_bytes().to_vec(),
             rendered_text: Some(label.to_string()),
             lexical_language: None,

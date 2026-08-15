@@ -120,6 +120,15 @@ pub struct FactReceiptDraft {
 pub struct FactWriteCommand {
     pub schema_id: SchemaId,
     pub schema_version: SchemaVersion,
+    /// Series id. `None` ⇒ storage mints `uuidv7()`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub handle: Option<Uuid>,
+    /// Source identity. Set iff `ingest_key` is set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_id: Option<String>,
+    /// Source-declared delivery id. Same `(owner, source, ingest_key)` replays.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ingest_key: Option<String>,
     /// Schema-owned receipt replay key material. The typed payload itself
     /// lives in the registered sidecar.
     pub payload: Vec<u8>,
@@ -614,6 +623,9 @@ impl FactWriteCommand {
         Self {
             schema_id: P::schema_id(),
             schema_version: SchemaVersion::new(P::SCHEMA_VERSION),
+            handle: None,
+            source_id: None,
+            ingest_key: None,
             payload: payload.receipt_key(),
             rendered_text: Some(payload.render()),
             lexical_language: None,
@@ -686,7 +698,10 @@ impl FactWriteCommand {
 pub struct FactIngestOutcome {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub receipt_id: Option<FactReceiptId>,
+    /// Version `t`. Alias of the row id.
     pub memory_id: MemoryId,
+    /// Series handle.
+    pub handle: Uuid,
     pub change_event_seq: Uuid,
     /// True iff the same receipt id was already ingested.
     /// Receiptless Facts are never receipt-replayed.
@@ -721,6 +736,9 @@ mod tests {
         FactWriteCommand {
             schema_id: SchemaId::new("test/fact".to_string()),
             schema_version: SchemaVersion::new(1),
+            handle: None,
+            source_id: None,
+            ingest_key: None,
             payload,
             rendered_text: None,
             lexical_language: None,
@@ -763,6 +781,9 @@ mod tests {
         let draft = FactWriteCommand {
             schema_id: SchemaId::new("golden/fact".to_string()),
             schema_version: SchemaVersion::new(1),
+            handle: None,
+            source_id: None,
+            ingest_key: None,
             payload: b"golden-payload".to_vec(),
             rendered_text: None,
             lexical_language: None,
