@@ -370,9 +370,14 @@ async fn rank_first_probes_memories_for_the_window_instead_of_scanning_the_owner
 ///
 /// The corpus is built so the two plans are not close, which is the lesson
 /// the sibling rank-first guard records: 20,000 rows under the owner, a
-/// term in five of them. Enumerating the owner to find five rows cannot
-/// win against an index probe on any costing, so the assertion is not
-/// riding a tie-break.
+/// term in five of them. On the CI image's costing that is 285 for the
+/// index probe against 824 for the owner enumeration, so the assertion is
+/// not riding a tie-break — but note where that margin comes from. The
+/// planner cannot estimate `@@` here at all: the tsquery arrives as an
+/// `InitPlan`, so it applies the 0.5% default and expects 99 rows rather
+/// than 5. The margin is the shape of the access path, not the
+/// selectivity, which is the same reason the gain does not depend on the
+/// query being rare.
 ///
 /// Hybrid mode, because that is the product default (`default_search_mode`)
 /// and its gate is the strict tsquery alone — the rescue arm lexical mode
@@ -404,7 +409,24 @@ async fn the_lexical_gate_is_served_by_the_search_tsv_index()
     .bind(crowd_id)
     .execute(pg.pool_for_tests())
     .await?;
-    sqlx::query("ANALYZE proxima_core.memories")
+    // VACUUM, not just ANALYZE, and the difference decides this test.
+    //
+    // A GIN index accepts inserts into an unsorted pending list and only
+    // merges them into the entry tree when it is vacuumed, and
+    // `gincostestimate` charges a scan for every pending page because it
+    // has to read all of them. Here the migration creates the index while
+    // the table is empty and the fixture inserts afterwards, so all 20,000
+    // rows land in the pending list: 218 of the index's 220 pages, which
+    // prices the index scan above a seq scan of the whole table (935 vs
+    // 916) and makes the planner correctly refuse it. Vacuuming drains the
+    // list and the same scan costs 13.
+    //
+    // Production is the other way round — 0019 builds the index over a
+    // populated table, so it starts merged, and autovacuum drains what
+    // later writes add. Without this the test passes or fails on whether
+    // autovacuum happened to fire in the second the fixture was alive,
+    // which is how it passed locally and failed in CI.
+    sqlx::query("VACUUM (ANALYZE) proxima_core.memories")
         .execute(pg.pool_for_tests())
         .await?;
 

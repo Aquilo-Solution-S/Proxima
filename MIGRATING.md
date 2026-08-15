@@ -1528,6 +1528,15 @@ Two consequences worth knowing before you promote:
 - Writes now maintain three more GIN indexes. That is the cost side of the
   trade; the read side is that a lexical or hybrid search stops reading
   the owner's whole corpus.
+- These indexes need autovacuum to stay worth having. GIN buffers inserts
+  in an unsorted pending list and only merges them on vacuum, and the
+  planner prices a scan over every pending page — so an index with a long
+  unmerged tail can cost more to scan than the table does, at which point
+  the planner correctly stops choosing it and searches quietly revert to
+  the old enumeration. The migration itself builds over existing rows and
+  starts merged; it is sustained write bursts that outrun autovacuum. If
+  you have tuned autovacuum off or far down on `proxima_core.memories`,
+  raise it back for these tables.
 
 Result membership does not change. Substring (`LIKE '%…%'`) matching,
 including infix matches inside a word and queries made entirely of
