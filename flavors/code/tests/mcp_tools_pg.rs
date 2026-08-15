@@ -2003,61 +2003,23 @@ async fn seed_active_goal_activation(
 ) -> Result<Uuid, Box<dyn std::error::Error>> {
     let goal_id = Uuid::now_v7();
     let memory_id = Uuid::now_v7();
-    let (owner_kind, owner_id) = proxima_storage_pg::access::owner_columns::owner_binds(owner);
-    sqlx::query(
-        "INSERT INTO proxima_core.goals
-            (goal_id, owner_kind, owner_id, schema_id, schema_version, title, text, payload,
-             state, authorship_kind, request_id, idempotency_key)
-         VALUES ($1, $2, $3, 'core/simple-text-v1', 1, 'Goal', 'Goal', '{}'::bytea,
-                 'Active', 'User', $4, md5($2::text || ':' || $3::text || ':' || $4))",
+    let _ = common::seed_goal(
+        pg.pool_for_tests(),
+        owner,
+        "core/simple-text-v1",
+        "Goal",
+        &format!("goal-{goal_id}"),
+        Some(goal_id),
+        Some(self_id),
     )
-    .bind(goal_id)
-    .bind(owner_kind)
-    .bind(owner_id)
-    .bind(format!("goal-{goal_id}"))
-    .execute(pg.pool_for_tests())
     .await?;
-    sqlx::query(
-        "INSERT INTO proxima_core.memories
-            (memory_id, owner_kind, owner_id, schema_id, schema_version, text)
-         VALUES ($1, $2, $3, 'core/goal-activated-v1', 1, 'goal activated')",
+    let _ = common::seed_memory(
+        pg.pool_for_tests(),
+        owner,
+        "core/goal-activated-v1",
+        "fact",
+        Some(memory_id),
     )
-    .bind(memory_id)
-    .bind(owner_kind)
-    .bind(owner_id)
-    .execute(pg.pool_for_tests())
-    .await?;
-    sqlx::query(
-        "INSERT INTO proxima_core.goal_activated_v1
-            (memory_id, goal_id, transitioned_at)
-         VALUES ($1, $2, now())",
-    )
-    .bind(memory_id)
-    .bind(goal_id)
-    .execute(pg.pool_for_tests())
-    .await?;
-    // The Goal knows the Perspective it inspires: the assignment is a column
-    // on the goal row, and the `reference` index row is derived from it.
-    sqlx::query(
-        "UPDATE proxima_core.goals
-            SET assignment_perspective_id = $2
-          WHERE goal_id = $1",
-    )
-    .bind(goal_id)
-    .bind(self_id)
-    .execute(pg.pool_for_tests())
-    .await?;
-    sqlx::query(
-        "INSERT INTO proxima_core.edges
-            (source_kind, source_id, target_kind, target_id, kind, owner_kind, owner_id)
-         VALUES ('Goal', $1, 'Perspective', $2, 'reference', $3, $4)
-         ON CONFLICT DO NOTHING",
-    )
-    .bind(goal_id)
-    .bind(self_id)
-    .bind(owner_kind)
-    .bind(owner_id)
-    .execute(pg.pool_for_tests())
     .await?;
     Ok(memory_id)
 }
@@ -2068,21 +2030,14 @@ async fn seed_perspective(
     label: &str,
 ) -> Result<Uuid, Box<dyn std::error::Error>> {
     let memory_id = Uuid::now_v7();
-    let (owner_kind, owner_id) = proxima_storage_pg::access::owner_columns::owner_binds(owner);
-    sqlx::query(
-        "INSERT INTO proxima_core.memories
-            (memory_id, owner_kind, owner_id, schema_id, schema_version, kind, text,
-             operator_kind, operator_id, input_contract_id, source_batch_id, model_id, prompt_version)
-         VALUES ($1, $2, $3, 'test/mcp-perspective-v1', 1, 'Perspective', $4,
-                 'AtoP', '00000000-0000-0000-0000-000000000461'::uuid,
-                 '00000000-0000-0000-0000-000000000462'::uuid, NULL,
-                 'test/0', 'test')"
+    let _ = label;
+    let _ = common::seed_memory(
+        pg.pool_for_tests(),
+        owner,
+        "test/mcp-perspective-v1",
+        "perspective",
+        Some(memory_id),
     )
-    .bind(memory_id)
-    .bind(owner_kind)
-    .bind(owner_id)
-    .bind(label)
-    .execute(pg.pool_for_tests())
     .await?;
     Ok(memory_id)
 }
@@ -2506,27 +2461,9 @@ async fn abstraction_memory(
     schema_id: &str,
     payload: &str,
 ) -> Result<Uuid, Box<dyn std::error::Error>> {
-    let memory_id = Uuid::new_v5(&Uuid::NAMESPACE_OID, payload.as_bytes());
-    let (owner_kind, owner_id) = proxima_storage_pg::access::owner_columns::owner_binds(owner);
-    sqlx::query(
-        "INSERT INTO proxima_core.memories
-            (memory_id, owner_kind, owner_id, schema_id, schema_version, kind, text,
-             operator_kind, operator_id, input_contract_id, source_batch_id, model_id,
-             prompt_version)
-         VALUES ($1, $2, $3, $4, 1, 'Abstraction', $5,
-             'AtoA', '00000000-0000-0000-0000-000000000491'::uuid,
-             $1, NULL,
-             'test/code-index', 'test')
-         ON CONFLICT (memory_id) DO NOTHING",
-    )
-    .bind(memory_id)
-    .bind(owner_kind)
-    .bind(owner_id)
-    .bind(schema_id)
-    .bind(payload)
-    .execute(pool)
-    .await?;
-    Ok(memory_id)
+    let t = Uuid::new_v5(&Uuid::NAMESPACE_OID, payload.as_bytes());
+    let _ = common::seed_memory(pool, owner, schema_id, "abstraction", Some(t)).await?;
+    Ok(t)
 }
 
 /// A repo handle that names no repository is an error on every tool that

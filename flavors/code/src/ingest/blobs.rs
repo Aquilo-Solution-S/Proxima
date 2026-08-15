@@ -135,6 +135,29 @@ where
     Ok(outcome)
 }
 
+async fn existing_file_revision_handle(
+    pool: &PgPool,
+    owner: &proxima_core::Owner,
+    repo_id: uuid::Uuid,
+    file_path: &str,
+) -> Result<Option<uuid::Uuid>, IngestError> {
+    let handle = sqlx::query_scalar(
+        "SELECT h.handle
+           FROM proxima_core.memory_head h
+           JOIN proxima_core.memory m ON m.handle = h.handle AND m.t = h.t
+           JOIN proxima_code.file_revision_v1 fr ON fr.memory_id = m.t
+          WHERE m.owner_id = $1
+            AND fr.repo_id = $2
+            AND fr.file_path = $3",
+    )
+    .bind(owner.stored_owner_id())
+    .bind(repo_id)
+    .bind(file_path)
+    .fetch_optional(pool)
+    .await?;
+    Ok(handle)
+}
+
 /// Atomic Fact + sidecar write for `commit-v1`. Cites the commit
 /// object (keyed by blake3 of the commit sha) with a "whole-commit"
 /// CitationMapping.
@@ -170,19 +193,28 @@ pub async fn ingest_file_revision(
     payload: &FileRevisionV1,
     observed_at: time::OffsetDateTime,
 ) -> Result<FactIngestOutcome, IngestError> {
-    ingest_local_git_fact(
+    let handle = existing_file_revision_handle(
         pool,
-        permit,
-        source_batch_id,
+        permit.owner(),
+        payload.repo_id,
+        &payload.file_path,
+    )
+    .await?;
+    let ctx = local_git_context(permit, source_batch_id, observed_at).handle(handle);
+    let mut tx = pool.begin().await?;
+    let outcome = ingest_fact_with_sidecar(
+        &mut tx,
+        &ctx,
         payload,
         CitationSpec::v1(
             CODE_BLOB_SCHEMA,
             payload.content_sha256,
             CODE_BLOB_WHOLE_SCHEMA,
         ),
-        observed_at,
     )
-    .await
+    .await?;
+    tx.commit().await?;
+    Ok(outcome)
 }
 
 /// Atomic derived code-slice Abstractions for one file revision, plus the

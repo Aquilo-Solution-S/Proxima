@@ -66,6 +66,8 @@ pub struct FactIngestContext<'a> {
     /// Perspective that emitted this Fact. A column on the row, because
     /// "emitted by P" is known at write time and belongs to the node.
     pub authoring_perspective_id: Option<MemoryId>,
+    /// Series handle. `None` mints a new series.
+    pub handle: Option<uuid::Uuid>,
 }
 
 impl<'a> FactIngestContext<'a> {
@@ -84,6 +86,7 @@ impl<'a> FactIngestContext<'a> {
             embedding_model_id: None,
             derived_from: &[],
             authoring_perspective_id: None,
+            handle: None,
         }
     }
 
@@ -114,6 +117,13 @@ impl<'a> FactIngestContext<'a> {
     #[must_use]
     pub const fn authoring_perspective_id(mut self, memory_id: Option<MemoryId>) -> Self {
         self.authoring_perspective_id = memory_id;
+        self
+    }
+
+    /// Reuse an existing series handle (new `t` on the same handle).
+    #[must_use]
+    pub const fn handle(mut self, handle: Option<uuid::Uuid>) -> Self {
+        self.handle = handle;
         self
     }
 }
@@ -525,7 +535,7 @@ pub async fn ingest_fact_with_sidecar<P>(
 where
     P: FactPayload + PgMemorySidecar + Clone,
 {
-    let draft = FactWriteCommand::from_payload(
+    let mut draft = FactWriteCommand::from_payload(
         ctx.source_id,
         ctx.source_batch_id,
         payload,
@@ -533,6 +543,7 @@ where
     )
     .with_citation(citation)
     .with_derived_from(ctx.derived_from.to_vec());
+    draft.handle = ctx.handle;
     let sidecar_payload = payload.clone();
     let references = payload_reference_targets(payload)?;
     ingest_fact_with_derived_sidecar_in_tx(
