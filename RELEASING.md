@@ -23,12 +23,7 @@ never-used version number** — never by editing a file any shared database has
 already applied ([docs/how-to/migrations.md](docs/how-to/migrations.md) has
 the rules and the why; reusing a version number is the one unrecoverable
 mistake). Then add the release's structural markers to
-`ensure_core_schema_markers` in `crates/storage-pg/src/lib.rs`, and
-regenerate the schema artifact:
-
-```sh
-scripts/regen-schema-sql.sh    # commit the db/schema.*.sql diffs
-```
+`ensure_core_schema_markers` in `crates/storage-pg/src/lib.rs`.
 
 The boot floor needs no bump: it is derived from the embedded migration set
 (`min_core_migration_version()`), so shipping the squashed file is what
