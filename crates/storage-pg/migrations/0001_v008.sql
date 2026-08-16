@@ -493,6 +493,90 @@ CREATE TABLE proxima_core.blob_uploads (
 CREATE INDEX blob_uploads_owner_status_idx
     ON proxima_core.blob_uploads (owner_id, status);
 
+CREATE TYPE proxima_core.access_ceiling AS ENUM (
+    'none',
+    'fact',
+    'abstraction',
+    'perspective',
+    'goal'
+);
+
+CREATE TYPE proxima_core.compliance_erase_outcome AS ENUM (
+    'Completed',
+    'Refused',
+    'NotFound',
+    'Unauthorized'
+);
+
+CREATE TYPE proxima_core.compliance_erase_refusal AS ENUM (
+    'OwnerNotAbandoned',
+    'WorldOwner',
+    'SourceScopeOwnerStillLive',
+    'PersonalDropNotVerified',
+    'DropProofPortUnavailable',
+    'LegalHoldActive'
+);
+
+CREATE TABLE proxima_core.owner_legal_holds (
+    owner_kind proxima_core.owner_kind NOT NULL,
+    owner_id uuid,
+    hold_active boolean NOT NULL,
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    UNIQUE NULLS NOT DISTINCT (owner_kind, owner_id)
+);
+
+CREATE TABLE proxima_core.compliance_audit_log (
+    operation_id uuid PRIMARY KEY,
+    target_kind text NOT NULL,
+    outcome proxima_core.compliance_erase_outcome NOT NULL,
+    refusal proxima_core.compliance_erase_refusal,
+    owner_ref_digest bytea NOT NULL,
+    requester_digest bytea,
+    source_scope_digest bytea,
+    derived_auth_path text NOT NULL,
+    requested_at timestamptz NOT NULL,
+    completed_at timestamptz,
+    memories_count bigint NOT NULL DEFAULT 0,
+    goals_count bigint NOT NULL DEFAULT 0,
+    edges_count bigint NOT NULL DEFAULT 0,
+    receipts_count bigint NOT NULL DEFAULT 0,
+    source_batches_count bigint NOT NULL DEFAULT 0,
+    source_cursors_count bigint NOT NULL DEFAULT 0,
+    embeddings_count bigint NOT NULL DEFAULT 0,
+    embedding_jobs_count bigint NOT NULL DEFAULT 0,
+    mcp_call_rows_count bigint NOT NULL DEFAULT 0,
+    change_events_count bigint NOT NULL DEFAULT 0,
+    redacted_edge_targets_count bigint NOT NULL DEFAULT 0,
+    suppressed_keys_count bigint NOT NULL DEFAULT 0,
+    delegated_authority_grants_count bigint NOT NULL DEFAULT 0,
+    cited_object_purge_pending boolean NOT NULL DEFAULT false
+);
+
+CREATE TABLE proxima_core.delegated_authority_grants (
+    delegation_id uuid PRIMARY KEY,
+    subject_user_id uuid NOT NULL,
+    owner_kind proxima_core.owner_kind NOT NULL,
+    owner_id uuid,
+    tool_name text NOT NULL,
+    action_name text,
+    read_ceiling proxima_core.access_ceiling NOT NULL,
+    write_ceiling proxima_core.access_ceiling NOT NULL,
+    expires_at timestamptz NOT NULL,
+    auth_epoch bigint NOT NULL,
+    issued_at timestamptz NOT NULL,
+    revoked_at timestamptz,
+    revoked_by_user_id uuid
+);
+
+CREATE TABLE proxima_core.source_cursors (
+    owner_kind proxima_core.owner_kind NOT NULL,
+    owner_id uuid NOT NULL,
+    source text NOT NULL,
+    cursor bytea NOT NULL,
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (owner_kind, owner_id, source)
+);
+
 CREATE FUNCTION proxima_core.enforce_row_append_only() RETURNS trigger
     LANGUAGE plpgsql
     AS $$

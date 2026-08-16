@@ -52,6 +52,7 @@ async fn index_exists(pg: &PgStorage, index_name: &str) -> bool {
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn migrations_apply_to_fresh_db() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
 
@@ -64,7 +65,17 @@ async fn migrations_apply_to_fresh_db() {
         let pg = PgStorage::connect(&url).await?;
         pg.run_migrations().await?;
 
-        for table in ["owners", "memory", "memory_head", "ingest_keys", "announce"] {
+        for table in [
+            "owners",
+            "memory",
+            "memory_head",
+            "ingest_keys",
+            "announce",
+            "owner_legal_holds",
+            "compliance_audit_log",
+            "delegated_authority_grants",
+            "source_cursors",
+        ] {
             assert!(
                 table_exists(&pg, table).await,
                 "empty apply must create proxima_core.{table}"
@@ -77,6 +88,7 @@ async fn migrations_apply_to_fresh_db() {
             "memories",
             "goals",
             "change_event",
+            "compliance_suppression_keys",
         ] {
             assert!(
                 !table_exists(&pg, dead).await,
@@ -87,6 +99,14 @@ async fn migrations_apply_to_fresh_db() {
         assert!(
             !column_exists(&pg, "memory", "owner_kind").await,
             "owner_kind must not live on memory"
+        );
+        assert!(
+            !column_exists(&pg, "embeddings", "owner_kind").await,
+            "embeddings carry owner_id only"
+        );
+        assert!(
+            !column_exists(&pg, "embeddings", "entity_kind").await,
+            "embeddings carry entity_id only"
         );
         assert!(
             !column_exists(&pg, "memory", "schema_id").await,

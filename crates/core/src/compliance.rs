@@ -370,6 +370,19 @@ impl EraseAuthorization {
             _private: private::Seal,
         }
     }
+
+    /// Test-only constructor. Engine remains the production mint.
+    #[cfg(any(test, feature = "test-fixtures"))]
+    #[must_use]
+    pub fn new_for_tests(target: ComplianceEraseTarget) -> Self {
+        Self::new(ComplianceAuditContext::new(
+            uuid::Uuid::now_v7(),
+            target,
+            None,
+            AuthPath::HostBearer,
+            time::OffsetDateTime::now_utc(),
+        ))
+    }
 }
 
 impl ExportAuthorization {

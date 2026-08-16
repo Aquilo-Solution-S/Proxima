@@ -18,8 +18,8 @@ mod pg_tests {
     use proxima_core::llm::EMBEDDING_DIM;
 
     use super::super::{
-        claim_pending_embedding_jobs, insert_embedding, insert_memory_embedding,
-        load_embedding_text,
+        claim_pending_embedding_jobs, embedding_ann_observability, insert_embedding,
+        insert_memory_embedding, load_embedding_text,
     };
     use crate::test_fixtures::fresh_pg;
 
@@ -499,6 +499,67 @@ mod pg_tests {
                 uttered.as_deref(),
                 Some("said this"),
                 "utterance must not require the note/chunk hardcode"
+            );
+            Ok(())
+        }
+        .await;
+        drop(pg);
+        drop_db(&db_name).await?;
+        result
+    }
+
+    #[tokio::test]
+    async fn embedding_ann_observability_empty_db_has_no_canary()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (pg, db_name) = fresh_pg("proxima_spg_embed").await;
+        let result: Result<(), Box<dyn std::error::Error>> = async {
+            let health = embedding_ann_observability(pg.pool_for_tests()).await?;
+            assert_eq!(health.embedding_rows, 0);
+            assert_eq!(health.stale_processing_jobs, 0);
+            assert!(health.recall_canary.is_none());
+            Ok(())
+        }
+        .await;
+        drop(pg);
+        drop_db(&db_name).await?;
+        result
+    }
+
+    #[tokio::test]
+    async fn embedding_ann_observability_canary_recalls_one_head()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (pg, db_name) = fresh_pg("proxima_spg_embed").await;
+        let result: Result<(), Box<dyn std::error::Error>> = async {
+            let owner = owner_fixture();
+            let permit = owner_fact_write_permit(&owner).await?;
+            let outcome = pg
+                .ingest_fact_atomic(&permit, &fact_draft("canary row"), Some("stub-fact-embed"))
+                .await?;
+            let mut tx = pg.pool_for_tests().begin().await?;
+            insert_memory_embedding(
+                &mut tx,
+                &owner,
+                EntityKind::Fact,
+                outcome.memory_id,
+                "stub-fact-embed",
+                EMBEDDING_DIM,
+                &padded_embedding([0.1, 0.2, 0.3]),
+            )
+            .await?;
+            tx.commit().await?;
+
+            let health = embedding_ann_observability(pg.pool_for_tests()).await?;
+            let canary = health
+                .recall_canary
+                .expect("one embedding head must produce a canary");
+            assert_eq!(canary.model_id, "stub-fact-embed");
+            assert_eq!(canary.exact_count, 1);
+            assert_eq!(canary.ann_count, 1);
+            assert_eq!(canary.overlap_count, 1);
+            assert!(
+                (canary.recall_at_k - 1.0).abs() < f64::EPSILON,
+                "recall_at_k={}",
+                canary.recall_at_k
             );
             Ok(())
         }

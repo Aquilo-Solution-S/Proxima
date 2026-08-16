@@ -298,13 +298,12 @@ async fn erase_selected(
     )
     .await?;
     let redactions = insert_redactions(tx, auth.audit().operation_id());
-    let suppressed = insert_suppression_keys(tx, auth.audit().operation_id(), owner).await?;
     sqlx::query("CREATE TEMP TABLE compliance_counts(name text PRIMARY KEY, count bigint NOT NULL) ON COMMIT DROP")
         .execute(&mut **tx)
         .await
         .map_err(map_err)?;
     record_count(tx, "redacted_edge_targets", redactions).await?;
-    record_count(tx, "suppressed_keys", suppressed).await?;
+    record_count(tx, "suppressed_keys", 0).await?;
 
     let delegated_authority_grants = delete_delegated_authority_grants(tx, owner, scope).await?;
     record_count(tx, "delegated_authority_grants", delegated_authority_grants).await?;
@@ -317,6 +316,7 @@ async fn erase_selected(
     let source_cursors = delete_source_cursors(tx, owner, scope).await?;
     record_count(tx, "source_cursors", source_cursors).await?;
 
+    delete_ingest_keys(tx).await?;
     delete_goal_refs(tx);
     delete_memory_refs(tx);
 
@@ -370,10 +370,6 @@ async fn erase_selected(
     Ok(())
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "one temp-table build: the selection sets are defined against each other and a split would let a caller build half of them"
-)]
 async fn create_selected_sets(
     tx: &mut Tx<'_>,
     owner: OwnerRef,
@@ -385,74 +381,6 @@ async fn create_selected_sets(
     // is exactly `IS NOT DISTINCT FROM` while staying an index condition
     // (`PostgreSQL` has no index strategy for DistinctExpr).
     let (owner_kind, owner_id) = owner_binds(&owner);
-    sqlx::query("CREATE TEMP TABLE selected_source_batches(id uuid PRIMARY KEY, source_id text NOT NULL) ON COMMIT DROP")
-        .execute(&mut **tx)
-        .await
-        .map_err(map_err)?;
-    match scope {
-        SelectionScope::Owner => {
-            sqlx::query(
-                "INSERT INTO selected_source_batches(id, source_id)
-                 SELECT t, COALESCE(source_id, '') FROM proxima_core.memory
-                  WHERE owner_id = $2 AND FALSE",
-            )
-            .bind(owner_kind)
-            .bind(owner_id)
-            .execute(&mut **tx)
-            .await
-            .map_err(map_err)?;
-        }
-        SelectionScope::Source(source_id) => {
-            sqlx::query(
-                "INSERT INTO selected_source_batches(id, source_id)
-                 SELECT t, COALESCE(source_id, '') FROM proxima_core.memory
-                  WHERE owner_id = $2 AND source_id = $3",
-            )
-            .bind(owner_kind)
-            .bind(owner_id)
-            .bind(source_id.as_str())
-            .execute(&mut **tx)
-            .await
-            .map_err(map_err)?;
-        }
-    }
-
-    sqlx::query(
-        "CREATE TEMP TABLE selected_receipts(receipt_id bytea PRIMARY KEY, source_batch_id uuid, source text NOT NULL, payload_hash bytea) ON COMMIT DROP",
-    )
-    .execute(&mut **tx)
-    .await
-    .map_err(map_err)?;
-    match scope {
-        SelectionScope::Owner => {
-            sqlx::query(
-                "INSERT INTO selected_receipts(receipt_id, source_batch_id, source, payload_hash)
-                 SELECT t, NULL::uuid, COALESCE(source_id, ''), '\\x'::bytea
-                   FROM proxima_core.memory
-                  WHERE owner_id = $2 AND FALSE",
-            )
-            .bind(owner_kind)
-            .bind(owner_id)
-            .execute(&mut **tx)
-            .await
-            .map_err(map_err)?;
-        }
-        SelectionScope::Source(source_id) => {
-            sqlx::query(
-                "INSERT INTO selected_receipts(receipt_id, source_batch_id, source, payload_hash)
-                 SELECT m.t, NULL::uuid, COALESCE(m.source_id, ''), '\\x'::bytea
-                   FROM proxima_core.memory m
-                  WHERE m.owner_id = $2
-                    AND m.source_id = $3",
-            )
-            .bind(owner_kind)
-            .bind(owner_id)
-            .bind(source_id.as_str())
-            .execute(&mut **tx)
-            .await
-            .map_err(map_err)?;
-        }
-    }
 
     sqlx::query("CREATE TEMP TABLE selected_memories(memory_id uuid PRIMARY KEY, kind text NOT NULL) ON COMMIT DROP")
         .execute(&mut **tx)
@@ -504,131 +432,31 @@ async fn create_selected_sets(
         .map_err(map_err)?;
     }
 
-    let _ = owner_kind;
+    Ok(())
+}
+
+async fn delete_ingest_keys(tx: &mut Tx<'_>) -> Result<(), StorageError> {
+    sqlx::query(
+        "DELETE FROM proxima_core.ingest_keys k
+          WHERE EXISTS (
+                SELECT 1
+                  FROM selected_memories sm
+                  JOIN proxima_core.memory m ON m.t = sm.memory_id
+                 WHERE k.owner_id = m.owner_id
+                   AND k.source_id = m.source_id
+                   AND k.ingest_key = m.ingest_key
+                   AND m.source_id IS NOT NULL
+                   AND m.ingest_key IS NOT NULL
+          )",
+    )
+    .execute(&mut **tx)
+    .await
+    .map_err(map_err)?;
     Ok(())
 }
 
 fn insert_redactions(_tx: &mut Tx<'_>, _operation_id: uuid::Uuid) -> u64 {
     0
-}
-
-async fn insert_suppression_keys(
-    tx: &mut Tx<'_>,
-    operation_id: uuid::Uuid,
-    owner: OwnerRef,
-) -> Result<u64, StorageError> {
-    let (owner_kind, owner_id) = suppression_owner_parts(owner);
-    let mut count = 0;
-
-    let source_scope = sqlx::query(
-        "INSERT INTO proxima_core.compliance_suppression_keys(
-             key_class, suppression_key, operation_id)
-         SELECT 'owner_source_scope'::proxima_core.compliance_suppression_key_class,
-                decode(md5($1 || chr(31) || 'owner_source_scope' || chr(31) || $2 || chr(31) || $3 || chr(31) || coalesce($4, '') || chr(31) || source_id), 'hex'),
-                $5
-           FROM (SELECT DISTINCT source_id FROM selected_source_batches) scopes
-         ON CONFLICT DO NOTHING",
-    )
-    .bind(SUPPRESSION_DOMAIN)
-    .bind(&owner_kind)
-    .bind(owner.stable_key_uuid().to_string())
-    .bind(&owner_id)
-    .bind(operation_id)
-    .execute(&mut **tx)
-    .await
-    .map_err(map_err)?;
-    count += source_scope.rows_affected();
-
-    let source_batch = sqlx::query(
-        "INSERT INTO proxima_core.compliance_suppression_keys(
-             key_class, suppression_key, operation_id)
-         SELECT 'source_batch'::proxima_core.compliance_suppression_key_class,
-                decode(md5($1 || chr(31) || 'source_batch' || chr(31) || $2 || chr(31) || $3 || chr(31) || coalesce($4, '') || chr(31) || id::text), 'hex'),
-                $5
-           FROM selected_source_batches
-         ON CONFLICT DO NOTHING",
-    )
-    .bind(SUPPRESSION_DOMAIN)
-    .bind(&owner_kind)
-    .bind(owner.stable_key_uuid().to_string())
-    .bind(&owner_id)
-    .bind(operation_id)
-    .execute(&mut **tx)
-    .await
-    .map_err(map_err)?;
-    count += source_batch.rows_affected();
-
-    let receipt_content = sqlx::query(
-        "INSERT INTO proxima_core.compliance_suppression_keys(
-             key_class, suppression_key, operation_id)
-         SELECT 'receipt_content'::proxima_core.compliance_suppression_key_class,
-                decode(md5($1 || chr(31) || 'receipt_content' || chr(31) || $2 || chr(31) || $3 || chr(31) || coalesce($4, '') || chr(31) || encode(receipt_id, 'hex')), 'hex'),
-                $5
-           FROM selected_receipts
-         ON CONFLICT DO NOTHING",
-    )
-    .bind(SUPPRESSION_DOMAIN)
-    .bind(&owner_kind)
-    .bind(owner.stable_key_uuid().to_string())
-    .bind(&owner_id)
-    .bind(operation_id)
-    .execute(&mut **tx)
-    .await
-    .map_err(map_err)?;
-    count += receipt_content.rows_affected();
-
-    Ok(count)
-}
-
-#[allow(dead_code)]
-pub async fn check_suppression_for_fact_tx(
-    tx: &mut Tx<'_>,
-    owner: OwnerRef,
-    source_id: &SourceId,
-    source_batch_id: uuid::Uuid,
-    receipt_id: &[u8],
-) -> Result<(), StorageError> {
-    let (owner_kind, owner_id) = suppression_owner_parts(owner);
-    let exists: Option<(i32,)> = sqlx::query_as(
-        "WITH candidate_keys(key_class, suppression_key) AS (
-             VALUES
-             ('owner_source_scope'::proxima_core.compliance_suppression_key_class,
-              decode(md5($1 || chr(31) || 'owner_source_scope' || chr(31) || $2 || chr(31) || $3 || chr(31) || coalesce($4, '') || chr(31) || $5), 'hex')),
-             ('source_batch'::proxima_core.compliance_suppression_key_class,
-              decode(md5($1 || chr(31) || 'source_batch' || chr(31) || $2 || chr(31) || $3 || chr(31) || coalesce($4, '') || chr(31) || $6::text), 'hex')),
-             ('receipt_content'::proxima_core.compliance_suppression_key_class,
-              decode(md5($1 || chr(31) || 'receipt_content' || chr(31) || $2 || chr(31) || $3 || chr(31) || coalesce($4, '') || chr(31) || encode($7::bytea, 'hex')), 'hex'))
-         )
-         SELECT 1
-           FROM proxima_core.compliance_suppression_keys s
-           JOIN candidate_keys k
-             ON k.key_class = s.key_class
-            AND k.suppression_key = s.suppression_key
-          LIMIT 1",
-    )
-    .bind(SUPPRESSION_DOMAIN)
-    .bind(&owner_kind)
-    .bind(owner.stable_key_uuid().to_string())
-    .bind(&owner_id)
-    .bind(source_id.as_str())
-    .bind(source_batch_id)
-    .bind(receipt_id)
-    .fetch_optional(&mut **tx)
-    .await
-    .map_err(map_err)?;
-    if exists.is_some() {
-        return Err(StorageError::Suppressed(
-            "fact ingest suppressed by compliance erase".into(),
-        ));
-    }
-    Ok(())
-}
-
-const SUPPRESSION_DOMAIN: &str = "proxima-compliance-suppression-v2";
-
-fn suppression_owner_parts(owner: OwnerRef) -> (String, Option<String>) {
-    let (kind, owner_id) = owner.columns();
-    (kind.as_str().to_string(), owner_id.map(|id| id.to_string()))
 }
 
 fn digest_bytes(domain: &str, parts: &[&[u8]]) -> Vec<u8> {
@@ -1053,4 +881,17 @@ async fn delete_source_cursors(
         .map_err(map_err)?,
     };
     Ok(result.rows_affected())
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn erase_sql_does_not_name_retired_suppression_table() {
+        let src = include_str!("compliance_erase.rs");
+        let needle = format!("{}.{}", "proxima_core", "compliance_suppression_keys");
+        assert!(
+            !src.contains(&needle),
+            "v008 has no suppression table; Lean retired SuppressionKey"
+        );
+    }
 }
