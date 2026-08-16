@@ -12,6 +12,7 @@ mod goal_write;
 mod ingest;
 pub mod mcp_listener;
 mod memory_authoring;
+mod pin_read;
 mod pipeline;
 mod query;
 mod read_verbs;

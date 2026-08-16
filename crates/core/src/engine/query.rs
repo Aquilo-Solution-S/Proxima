@@ -205,11 +205,7 @@ pub(in crate::engine) async fn read_edges_authorized(
     if req.limit == 0 {
         return Err(ProtocolError::invalid_argument("limit", "must be > 0"));
     }
-    ports
-        .edge_read
-        .read_edges(read_owners, req)
-        .await
-        .map_err(|e| ProtocolError::internal(e.to_string()))
+    super::pin_read::read_edges_from_nodes(&ports.memory_read, read_owners, req).await
 }
 
 pub(in crate::engine) async fn edge_exists_authorized(
@@ -217,11 +213,7 @@ pub(in crate::engine) async fn edge_exists_authorized(
     read_owners: &[OwnerRef],
     req: &EdgeExistsRequest,
 ) -> Result<EdgeExistsResponse, ProtocolError> {
-    ports
-        .edge_read
-        .edge_exists(read_owners, req)
-        .await
-        .map_err(|e| ProtocolError::internal(e.to_string()))
+    super::pin_read::edge_exists_from_nodes(&ports.memory_read, read_owners, req).await
 }
 
 pub(in crate::engine) async fn walk_memory_lineage_authorized(

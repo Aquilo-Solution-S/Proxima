@@ -327,12 +327,19 @@ pub(in crate::engine) mod tests {
             Ok(Vec::new())
         }
 
-        async fn load_neighbor_memory_edges(
+        async fn load_pin_nodes(
             &self,
             _read_owners: &[OwnerRef],
             _memory_ids: &[MemoryId],
-            _limit: usize,
-        ) -> Result<Vec<crate::Edge>, StorageError> {
+        ) -> Result<Vec<crate::PinNode>, StorageError> {
+            Ok(Vec::new())
+        }
+
+        async fn load_inbound_pin_nodes(
+            &self,
+            _read_owners: &[OwnerRef],
+            _memory_ids: &[MemoryId],
+        ) -> Result<Vec<crate::PinNode>, StorageError> {
             Ok(Vec::new())
         }
     }
@@ -617,28 +624,6 @@ pub(in crate::engine) mod tests {
             _limit: usize,
         ) -> Result<Vec<ChangeEventForWake>, StorageError> {
             Ok(Vec::new())
-        }
-    }
-
-    #[async_trait::async_trait]
-    impl EdgeReadPort for MembershipStorage {
-        async fn read_edges(
-            &self,
-            _read_owners: &[OwnerRef],
-            _req: &verbs::query::EdgeReadRequest,
-        ) -> Result<verbs::query::EdgeReadResponse, StorageError> {
-            Ok(verbs::query::EdgeReadResponse {
-                edges: Vec::new(),
-                next_cursor: None,
-            })
-        }
-
-        async fn edge_exists(
-            &self,
-            _read_owners: &[OwnerRef],
-            _req: &verbs::query::EdgeExistsRequest,
-        ) -> Result<verbs::query::EdgeExistsResponse, StorageError> {
-            Ok(verbs::query::EdgeExistsResponse { exists: false })
         }
     }
 
@@ -992,7 +977,6 @@ pub(in crate::engine) mod tests {
                 .goal_read(storage.clone())
                 .goal_wake_candidate(storage.clone())
                 .change_event(storage.clone())
-                .edge_read(storage.clone())
                 .citation(storage.clone())
                 .owner_access_read(storage.clone())
                 .owner_membership_admin(storage.clone())

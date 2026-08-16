@@ -19,7 +19,7 @@ pub use code_chunk_vectors::{
     CodeChunkVectorCandidate, CodeChunkVectorFilters, nearest_code_chunk_candidates,
 };
 pub use edges::MAX_SNAPSHOT_EDGES;
-pub(crate) use edges::{edge_exists, read_edges};
+pub(crate) use edges::{load_inbound_pin_nodes, load_pin_nodes};
 #[cfg(any(test, feature = "test-fixtures", debug_assertions))]
 pub use goals::goal_page_sql_for_tests;
 pub(crate) use lineage::walk_memory_lineage;

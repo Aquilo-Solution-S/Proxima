@@ -1,9 +1,7 @@
 use proxima_core::read_models::{ChangeEventForWake, SidecarSpec};
-use proxima_core::storage_ports::{ChangeEventPort, CitationPort, EdgeReadPort};
+use proxima_core::storage_ports::{ChangeEventPort, CitationPort};
 use proxima_core::verbs::change_history::{ChangeHistoryRequest, ChangeHistoryResponse};
-use proxima_core::verbs::query::{
-    EdgeExistsRequest, EdgeExistsResponse, EdgeReadRequest, EdgeReadResponse, FactCitationReadback,
-};
+use proxima_core::verbs::query::FactCitationReadback;
 use proxima_core::{MemoryId, Owner, OwnerRef, StorageError};
 
 use crate::{PgStorage, verbs};
@@ -36,25 +34,6 @@ impl ChangeEventPort for PgStorage {
     ) -> Result<Vec<ChangeEventForWake>, StorageError> {
         verbs::consolidate::list_change_events_for_replay(&self.pool, owner, after, until, limit)
             .await
-    }
-}
-
-#[async_trait::async_trait]
-impl EdgeReadPort for PgStorage {
-    async fn read_edges(
-        &self,
-        read_owners: &[OwnerRef],
-        req: &EdgeReadRequest,
-    ) -> Result<EdgeReadResponse, StorageError> {
-        verbs::query::read_edges(&self.pool, read_owners, req).await
-    }
-
-    async fn edge_exists(
-        &self,
-        read_owners: &[OwnerRef],
-        req: &EdgeExistsRequest,
-    ) -> Result<EdgeExistsResponse, StorageError> {
-        verbs::query::edge_exists(&self.pool, read_owners, req).await
     }
 }
 

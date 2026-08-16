@@ -664,7 +664,6 @@ impl PgStorage {
             .goal_read(self.clone())
             .goal_wake_candidate(self.clone())
             .change_event(self.clone())
-            .edge_read(self.clone())
             .citation(self.clone())
             .owner_access_read(self.clone())
             .owner_membership_admin(self.clone())

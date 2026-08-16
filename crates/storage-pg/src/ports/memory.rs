@@ -9,24 +9,12 @@ use proxima_core::verbs::query::{
     QueryRequest, QueryResponse,
 };
 use proxima_core::{
-    AuthorDerivedOutcome, AuthorDerivedRequest, Edge, EdgeKind, EdgeTargetProjection,
-    FactSourceBatchRow, MemoryGraphPayloadRow, MemoryId, MemoryKindRow, Owner, OwnerRef,
-    StorageError,
+    AuthorDerivedOutcome, AuthorDerivedRequest, FactSourceBatchRow, MemoryGraphPayloadRow,
+    MemoryId, MemoryKindRow, Owner, OwnerRef, StorageError,
 };
 
 use crate::error::{internal, with_bounded_retry};
-use crate::verbs::edge_index::{PgEndpointKind, endpoint_from_columns};
 use crate::{PgStorage, verbs};
-
-fn parse_endpoint_kind(kind: &str) -> Option<PgEndpointKind> {
-    match kind {
-        "fact" => Some(PgEndpointKind::Fact),
-        "abstraction" => Some(PgEndpointKind::Abstraction),
-        "perspective" => Some(PgEndpointKind::Perspective),
-        "goal" => Some(PgEndpointKind::Goal),
-        _ => None,
-    }
-}
 
 #[async_trait::async_trait]
 impl MemoryAuthoringPort for PgStorage {
@@ -222,80 +210,20 @@ impl MemoryReadPort for PgStorage {
         .await
     }
 
-    async fn load_neighbor_memory_edges(
+    async fn load_pin_nodes(
         &self,
         read_owners: &[OwnerRef],
         memory_ids: &[MemoryId],
-        limit: usize,
-    ) -> Result<Vec<Edge>, StorageError> {
-        if memory_ids.is_empty() || read_owners.is_empty() || limit == 0 {
-            return Ok(Vec::new());
-        }
-        let ids = memory_ids
-            .iter()
-            .copied()
-            .map(MemoryId::into_inner)
-            .collect::<Vec<_>>();
-        let owner_ids: Vec<uuid::Uuid> = read_owners
-            .iter()
-            .copied()
-            .map(OwnerRef::stored_owner_id)
-            .collect();
-        let limit = i64::try_from(limit).map_err(|err| StorageError::Internal(err.to_string()))?;
-        let rows: Vec<(
-            String,
-            uuid::Uuid,
-            String,
-            uuid::Uuid,
-            String,
-            time::OffsetDateTime,
-        )> = sqlx::query_as(
-            "SELECT src.kind::text, src.t, tgt.kind::text, pin, 'origin',
-                        COALESCE(uuid_extract_timestamp(src.t), TIMESTAMPTZ '1970-01-01')
-                   FROM proxima_core.memory src
-                   JOIN unnest(src.origins) AS pin ON true
-                   JOIN proxima_core.memory tgt ON tgt.t = pin
-                  WHERE src.t = ANY($1::uuid[])
-                    AND src.owner_id = ANY($2::uuid[])
-                  UNION ALL
-                 SELECT src.kind::text, src.t, tgt.kind::text, pin, 'reference',
-                        COALESCE(uuid_extract_timestamp(src.t), TIMESTAMPTZ '1970-01-01')
-                   FROM proxima_core.memory src
-                   JOIN unnest(src.refs) AS pin ON true
-                   JOIN proxima_core.memory tgt ON tgt.t = pin
-                  WHERE src.t = ANY($1::uuid[])
-                    AND src.owner_id = ANY($2::uuid[])
-                  LIMIT $3",
-        )
-        .bind(&ids)
-        .bind(&owner_ids)
-        .bind(limit)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(internal)?;
-        Ok(rows
-            .into_iter()
-            .filter_map(
-                |(source_kind, source_id, target_kind, target_id, kind, created_at)| {
-                    let source_kind = parse_endpoint_kind(&source_kind)?;
-                    let target_kind = parse_endpoint_kind(&target_kind)?;
-                    let kind = match kind.as_str() {
-                        "origin" => EdgeKind::Origin,
-                        "reference" => EdgeKind::Reference,
-                        _ => return None,
-                    };
-                    Some(Edge {
-                        source: endpoint_from_columns(source_kind, source_id),
-                        target: EdgeTargetProjection::visible(endpoint_from_columns(
-                            target_kind,
-                            target_id,
-                        )),
-                        kind,
-                        created_at,
-                    })
-                },
-            )
-            .collect())
+    ) -> Result<Vec<proxima_core::PinNode>, StorageError> {
+        verbs::query::load_pin_nodes(&self.pool, read_owners, memory_ids).await
+    }
+
+    async fn load_inbound_pin_nodes(
+        &self,
+        read_owners: &[OwnerRef],
+        memory_ids: &[MemoryId],
+    ) -> Result<Vec<proxima_core::PinNode>, StorageError> {
+        verbs::query::load_inbound_pin_nodes(&self.pool, read_owners, memory_ids).await
     }
 
     async fn query_memories(

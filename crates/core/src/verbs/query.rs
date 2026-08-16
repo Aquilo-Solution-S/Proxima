@@ -427,9 +427,24 @@ pub struct MemoryRow {
     pub schema_id: SchemaId,
     pub schema_version: SchemaVersion,
     pub owner: Owner,
+    /// Made-from pins (`memory.origins`). Empty on Facts.
+    pub origins: Vec<MemoryId>,
+    /// Points-at pins (`memory.refs`).
+    pub refs: Vec<MemoryId>,
     /// Typed sidecar projection populated by storage at read time. Protocol
     /// adapters serialize it at the transport boundary.
     pub payload: Option<SidecarPayload>,
+}
+
+impl From<&MemoryRow> for crate::PinNode {
+    fn from(row: &MemoryRow) -> Self {
+        Self {
+            id: row.id,
+            kind: row.kind,
+            origins: row.origins.clone(),
+            refs: row.refs.clone(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

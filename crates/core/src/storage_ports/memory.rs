@@ -1,6 +1,6 @@
 pub use super::proof::{OperatorWriteProof, OwnerWritePermit};
 
-use crate::edge::Edge;
+use crate::edge::PinNode;
 use crate::read_models::{MemorySnapshot, SidecarSpec};
 use crate::storage::{
     AuthorDerivedOutcome, AuthorDerivedRequest, FactSourceBatchRow, MemoryGraphPayloadRow,
@@ -70,17 +70,21 @@ pub trait MemoryReadPort: Send + Sync {
         include_body: bool,
     ) -> Result<Vec<MemoryGraphPayloadRow>, StorageError>;
 
-    /// Edges touching any of `memory_ids`, in either direction, capped at
-    /// `limit`. A row is returned when its source is readable; an
-    /// unreadable endpoint comes back as
-    /// [`crate::EdgeTargetProjection::Redacted`] rather than removing the
-    /// row, so redaction never rewrites the shape of the graph.
-    async fn load_neighbor_memory_edges(
+    /// Owner-scoped PK load of pin carriers (`t`, kind, `origins`, `refs`).
+    /// Missing and unreadable ids are absent.
+    async fn load_pin_nodes(
         &self,
         read_owners: &[OwnerRef],
         memory_ids: &[MemoryId],
-        limit: usize,
-    ) -> Result<Vec<Edge>, StorageError>;
+    ) -> Result<Vec<PinNode>, StorageError>;
+
+    /// Owner-scoped GIN load of rows that list any of `memory_ids` in
+    /// `origins` or `refs`.
+    async fn load_inbound_pin_nodes(
+        &self,
+        read_owners: &[OwnerRef],
+        memory_ids: &[MemoryId],
+    ) -> Result<Vec<PinNode>, StorageError>;
 
     async fn query_memories(
         &self,
@@ -119,30 +123,6 @@ pub trait MemoryInspectPort: Send + Sync {
         memory_ids: &[crate::MemoryId],
         sidecars: &[SidecarSpec],
     ) -> Result<Vec<MemorySnapshot>, StorageError>;
-}
-
-/// Reads over the edge index. Every row is four fields — source,
-/// target, kind, `created_at` — and there is nothing else to hydrate: no
-/// id to dereference, no payload to join, no status to project.
-#[async_trait::async_trait]
-pub trait EdgeReadPort: Send + Sync {
-    /// One page of edges matching `req.filter`, newest first, resuming
-    /// strictly after `req.cursor`. Ordering is
-    /// `created_at DESC, (source, target, kind) DESC` — the full primary
-    /// key, so the order is total and the keyset cannot skip or repeat.
-    async fn read_edges(
-        &self,
-        read_owners: &[OwnerRef],
-        req: &crate::verbs::query::EdgeReadRequest,
-    ) -> Result<crate::verbs::query::EdgeReadResponse, StorageError>;
-
-    /// Whether any edge matches `req.filter`. Existence is disclosed only
-    /// for edges whose source is readable by `read_owners`.
-    async fn edge_exists(
-        &self,
-        read_owners: &[OwnerRef],
-        req: &crate::verbs::query::EdgeExistsRequest,
-    ) -> Result<crate::verbs::query::EdgeExistsResponse, StorageError>;
 }
 
 #[async_trait::async_trait]

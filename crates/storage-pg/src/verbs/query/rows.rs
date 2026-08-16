@@ -29,6 +29,8 @@ pub(super) fn memory_row_from_db(
         schema_id,
         schema_version,
         owner: owner_from_parts(r.owner_kind, r.owner_id)?,
+        origins: r.origins.into_iter().map(MemoryId::new).collect(),
+        refs: r.refs.into_iter().map(MemoryId::new).collect(),
         payload,
     })
 }
@@ -109,6 +111,8 @@ pub(super) struct MemoryRowDb {
     pub(super) schema_id: String,
     pub(super) schema_version: i32,
     pub(super) kind: String,
+    pub(super) origins: Vec<uuid::Uuid>,
+    pub(super) refs: Vec<uuid::Uuid>,
 }
 
 /// Cursor high-water over the requester's READ set — never a client-supplied

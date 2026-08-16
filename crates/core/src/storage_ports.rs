@@ -64,17 +64,16 @@ pub use fact::{FactIngestPort, SourceBatchPort};
 pub use goals::{GoalReadPort, GoalWakeCandidatePort, GoalWritePort};
 pub use handles::{
     ChangeEventHandle, CitationHandle, ComplianceAdminHandle, ComplianceEraseHandle,
-    EdgeReadHandle, EmbeddingJobHandle, EmbeddingMaintenanceHandle, EmbeddingTextHandle,
-    EmbeddingWriteHandle, FactIngestHandle, FactRetentionHandle, GoalReadHandle,
-    GoalWakeCandidateHandle, GoalWriteHandle, McpCallReadHandle, McpCallWriteHandle,
-    MemoryAuthoringHandle, MemoryInspectHandle, MemoryReadHandle, OwnerAccessReadHandle,
-    OwnerDropProofHandle, OwnerMembershipAdminHandle, OwnerTransferHandle,
-    RegistryProjectionHandle, SourceBatchHandle, SourceCursorHandle,
+    EmbeddingJobHandle, EmbeddingMaintenanceHandle, EmbeddingTextHandle, EmbeddingWriteHandle,
+    FactIngestHandle, FactRetentionHandle, GoalReadHandle, GoalWakeCandidateHandle,
+    GoalWriteHandle, McpCallReadHandle, McpCallWriteHandle, MemoryAuthoringHandle,
+    MemoryInspectHandle, MemoryReadHandle, OwnerAccessReadHandle, OwnerDropProofHandle,
+    OwnerMembershipAdminHandle, OwnerTransferHandle, RegistryProjectionHandle, SourceBatchHandle,
+    SourceCursorHandle,
 };
 pub use mcp::{McpCallReadPort, McpCallWritePort};
 pub use memory::{
-    CitationPort, EdgeReadPort, MemoryAuthoringPort, MemoryInspectPort, MemoryReadPort,
-    OperatorWriteProof,
+    CitationPort, MemoryAuthoringPort, MemoryInspectPort, MemoryReadPort, OperatorWriteProof,
 };
 pub use proof::{OperatorMaintenanceProof, OwnerWritePermit};
 pub use registry::RegistryProjectionPort;

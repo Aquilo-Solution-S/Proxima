@@ -3,12 +3,12 @@ use std::sync::Arc;
 
 use super::handles::{
     ChangeEventHandle, CitationHandle, ComplianceAdminHandle, ComplianceEraseHandle,
-    EdgeReadHandle, EmbeddingJobHandle, EmbeddingMaintenanceHandle, EmbeddingTextHandle,
-    EmbeddingWriteHandle, FactIngestHandle, FactRetentionHandle, GoalReadHandle,
-    GoalWakeCandidateHandle, GoalWriteHandle, McpCallReadHandle, McpCallWriteHandle,
-    MemoryAuthoringHandle, MemoryInspectHandle, MemoryReadHandle, OwnerAccessReadHandle,
-    OwnerDropProofHandle, OwnerMembershipAdminHandle, OwnerTransferHandle,
-    RegistryProjectionHandle, SourceBatchHandle, SourceCursorHandle,
+    EmbeddingJobHandle, EmbeddingMaintenanceHandle, EmbeddingTextHandle, EmbeddingWriteHandle,
+    FactIngestHandle, FactRetentionHandle, GoalReadHandle, GoalWakeCandidateHandle,
+    GoalWriteHandle, McpCallReadHandle, McpCallWriteHandle, MemoryAuthoringHandle,
+    MemoryInspectHandle, MemoryReadHandle, OwnerAccessReadHandle, OwnerDropProofHandle,
+    OwnerMembershipAdminHandle, OwnerTransferHandle, RegistryProjectionHandle, SourceBatchHandle,
+    SourceCursorHandle,
 };
 use super::rejecting::RejectingStorage;
 
@@ -29,7 +29,6 @@ pub struct StoragePorts {
     goal_read: GoalReadHandle,
     goal_wake_candidate: GoalWakeCandidateHandle,
     change_event: ChangeEventHandle,
-    edge_read: EdgeReadHandle,
     citation: CitationHandle,
     owner_access_read: OwnerAccessReadHandle,
     owner_membership_admin: OwnerMembershipAdminHandle,
@@ -95,7 +94,6 @@ pub(crate) struct QueryStoragePorts {
     pub change_event: ChangeEventHandle,
     pub mcp_call_read: McpCallReadHandle,
     pub memory_read: MemoryReadHandle,
-    pub edge_read: EdgeReadHandle,
 }
 
 #[derive(Clone)]
@@ -149,7 +147,6 @@ pub struct StoragePortsBuilder {
     goal_read: Option<GoalReadHandle>,
     goal_wake_candidate: Option<GoalWakeCandidateHandle>,
     change_event: Option<ChangeEventHandle>,
-    edge_read: Option<EdgeReadHandle>,
     citation: Option<CitationHandle>,
     owner_access_read: Option<OwnerAccessReadHandle>,
     owner_membership_admin: Option<OwnerMembershipAdminHandle>,
@@ -200,7 +197,6 @@ impl StoragePorts {
             goal_read: rejecting.clone(),
             goal_wake_candidate: rejecting.clone(),
             change_event: rejecting.clone(),
-            edge_read: rejecting.clone(),
             citation: rejecting.clone(),
             owner_access_read: rejecting.clone(),
             owner_membership_admin: rejecting.clone(),
@@ -293,7 +289,6 @@ impl From<StoragePorts> for EngineStoragePorts {
                 change_event: ports.change_event.clone(),
                 mcp_call_read: ports.mcp_call_read.clone(),
                 memory_read: ports.memory_read.clone(),
-                edge_read: ports.edge_read.clone(),
             },
             read_verb: ReadVerbStoragePorts {
                 embedding_job: ports.embedding_job.clone(),
@@ -391,12 +386,6 @@ impl StoragePortsBuilder {
     #[must_use]
     pub fn change_event(mut self, handle: ChangeEventHandle) -> Self {
         self.change_event = Some(handle);
-        self
-    }
-
-    #[must_use]
-    pub fn edge_read(mut self, handle: EdgeReadHandle) -> Self {
-        self.edge_read = Some(handle);
         self
     }
 
@@ -512,7 +501,6 @@ impl StoragePortsBuilder {
             goal_read,
             goal_wake_candidate,
             change_event,
-            edge_read,
             citation,
             owner_access_read,
             owner_membership_admin,

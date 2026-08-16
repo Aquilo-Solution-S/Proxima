@@ -11,7 +11,6 @@ pub(crate) mod compliance_erase;
 pub(crate) mod compliance_export;
 pub mod consolidate;
 pub mod derive_append;
-pub(crate) mod edge_index;
 pub mod fact_embeddings;
 pub mod fact_ingest;
 pub mod fact_retention;

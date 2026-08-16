@@ -66,12 +66,19 @@ impl crate::MemoryReadPort for ReadOnlyFake {
         Ok(Vec::new())
     }
 
-    async fn load_neighbor_memory_edges(
+    async fn load_pin_nodes(
         &self,
         _read_owners: &[OwnerRef],
         _memory_ids: &[crate::MemoryId],
-        _limit: usize,
-    ) -> Result<Vec<crate::Edge>, StorageError> {
+    ) -> Result<Vec<crate::PinNode>, StorageError> {
+        Ok(Vec::new())
+    }
+
+    async fn load_inbound_pin_nodes(
+        &self,
+        _read_owners: &[OwnerRef],
+        _memory_ids: &[crate::MemoryId],
+    ) -> Result<Vec<crate::PinNode>, StorageError> {
         Ok(Vec::new())
     }
 }
@@ -151,7 +158,6 @@ async fn query_helper_accepts_only_query_read_handles() {
         change_event: Arc::new(storage_port_tests_support::ChangeEventFake),
         mcp_call_read: Arc::new(storage_port_tests_support::McpCallReadFake),
         memory_read: read,
-        edge_read: Arc::new(storage_port_tests_support::EdgeReadFake),
     };
     let owner = OwnerRef::Personal(crate::UserId::new(uuid::Uuid::now_v7()));
     let registry = crate::FlavorRegistry::new().freeze_or_panic_for_tests();
@@ -500,31 +506,6 @@ mod storage_port_tests_support {
             _permit: &crate::storage_ports::OwnerWritePermit,
         ) -> Result<bool, StorageError> {
             Ok(false)
-        }
-    }
-
-    #[derive(Debug)]
-    pub struct EdgeReadFake;
-
-    #[async_trait::async_trait]
-    impl crate::EdgeReadPort for EdgeReadFake {
-        async fn read_edges(
-            &self,
-            _read_owners: &[OwnerRef],
-            _req: &crate::verbs::query::EdgeReadRequest,
-        ) -> Result<crate::verbs::query::EdgeReadResponse, StorageError> {
-            Ok(crate::verbs::query::EdgeReadResponse {
-                edges: Vec::new(),
-                next_cursor: None,
-            })
-        }
-
-        async fn edge_exists(
-            &self,
-            _read_owners: &[OwnerRef],
-            _req: &crate::verbs::query::EdgeExistsRequest,
-        ) -> Result<crate::verbs::query::EdgeExistsResponse, StorageError> {
-            Ok(crate::verbs::query::EdgeExistsResponse { exists: false })
         }
     }
 }

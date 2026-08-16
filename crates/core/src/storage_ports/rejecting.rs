@@ -12,8 +12,7 @@ use super::fact::{FactIngestPort, SourceBatchPort};
 use super::goals::{GoalReadPort, GoalWakeCandidatePort, GoalWritePort};
 use super::mcp::{McpCallReadPort, McpCallWritePort};
 use super::memory::{
-    CitationPort, EdgeReadPort, MemoryAuthoringPort, MemoryInspectPort, MemoryReadPort,
-    OperatorWriteProof,
+    CitationPort, MemoryAuthoringPort, MemoryInspectPort, MemoryReadPort, OperatorWriteProof,
 };
 use super::proof::{OperatorMaintenanceProof, OwnerWritePermit};
 use super::registry::RegistryProjectionPort;
@@ -212,12 +211,19 @@ impl MemoryReadPort for RejectingStorage {
         Ok(Vec::new())
     }
 
-    async fn load_neighbor_memory_edges(
+    async fn load_pin_nodes(
         &self,
         _read_owners: &[OwnerRef],
         _memory_ids: &[crate::MemoryId],
-        _limit: usize,
-    ) -> Result<Vec<crate::Edge>, StorageError> {
+    ) -> Result<Vec<crate::PinNode>, StorageError> {
+        Ok(Vec::new())
+    }
+
+    async fn load_inbound_pin_nodes(
+        &self,
+        _read_owners: &[OwnerRef],
+        _memory_ids: &[crate::MemoryId],
+    ) -> Result<Vec<crate::PinNode>, StorageError> {
         Ok(Vec::new())
     }
 }
@@ -499,28 +505,6 @@ impl ChangeEventPort for RejectingStorage {
         _limit: usize,
     ) -> Result<Vec<ChangeEventForWake>, StorageError> {
         Ok(Vec::new())
-    }
-}
-
-#[async_trait::async_trait]
-impl EdgeReadPort for RejectingStorage {
-    async fn read_edges(
-        &self,
-        _read_owners: &[OwnerRef],
-        _req: &crate::verbs::query::EdgeReadRequest,
-    ) -> Result<crate::verbs::query::EdgeReadResponse, StorageError> {
-        Ok(crate::verbs::query::EdgeReadResponse {
-            edges: Vec::new(),
-            next_cursor: None,
-        })
-    }
-
-    async fn edge_exists(
-        &self,
-        _read_owners: &[OwnerRef],
-        _req: &crate::verbs::query::EdgeExistsRequest,
-    ) -> Result<crate::verbs::query::EdgeExistsResponse, StorageError> {
-        Ok(crate::verbs::query::EdgeExistsResponse { exists: false })
     }
 }
 

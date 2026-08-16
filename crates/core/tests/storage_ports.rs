@@ -144,12 +144,19 @@ impl MemoryReadPort for MemoryReadFake {
         fake_error()
     }
 
-    async fn load_neighbor_memory_edges(
+    async fn load_pin_nodes(
         &self,
         _read_owners: &[OwnerRef],
         _memory_ids: &[MemoryId],
-        _limit: usize,
-    ) -> Result<Vec<proxima_core::Edge>, StorageError> {
+    ) -> Result<Vec<proxima_core::PinNode>, StorageError> {
+        fake_error()
+    }
+
+    async fn load_inbound_pin_nodes(
+        &self,
+        _read_owners: &[OwnerRef],
+        _memory_ids: &[MemoryId],
+    ) -> Result<Vec<proxima_core::PinNode>, StorageError> {
         fake_error()
     }
 
@@ -452,28 +459,6 @@ impl ChangeEventPort for ChangeEventFake {
 }
 
 #[derive(Debug)]
-struct EdgeReadFake;
-
-#[async_trait::async_trait]
-impl EdgeReadPort for EdgeReadFake {
-    async fn read_edges(
-        &self,
-        read_owners: &[OwnerRef],
-        req: &proxima_core::verbs::query::EdgeReadRequest,
-    ) -> Result<proxima_core::verbs::query::EdgeReadResponse, StorageError> {
-        fake_error()
-    }
-
-    async fn edge_exists(
-        &self,
-        read_owners: &[OwnerRef],
-        req: &proxima_core::verbs::query::EdgeExistsRequest,
-    ) -> Result<proxima_core::verbs::query::EdgeExistsResponse, StorageError> {
-        fake_error()
-    }
-}
-
-#[derive(Debug)]
 struct CitationFake;
 
 #[async_trait::async_trait]
@@ -768,7 +753,6 @@ fn public_storage_ports_can_be_mocked_independently() {
     assert_port::<GoalWriteFake>();
     assert_port::<GoalReadFake>();
     assert_port::<ChangeEventFake>();
-    assert_port::<EdgeReadFake>();
     assert_port::<CitationFake>();
     assert_port::<OwnerAccessReadFake>();
     assert_port::<OwnerMembershipAdminFake>();

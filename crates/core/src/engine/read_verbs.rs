@@ -472,15 +472,13 @@ pub(in crate::engine) async fn search_authorized(
             .map_err(|err| storage_error("load_memory_graph_payloads", &err))?
     };
     let neighbor_edges = if req.include_neighbor_edges {
-        if memory_ids.is_empty() {
-            Vec::new()
-        } else {
-            ports
-                .memory_read
-                .load_neighbor_memory_edges(read_owners, &memory_ids, NEIGHBOR_EDGE_LIMIT)
-                .await
-                .map_err(|err| storage_error("load_neighbor_memory_edges", &err))?
-        }
+        super::pin_read::neighbor_edges_from_nodes(
+            &ports.memory_read,
+            read_owners,
+            &memory_ids,
+            NEIGHBOR_EDGE_LIMIT,
+        )
+        .await?
     } else {
         Vec::new()
     };
@@ -505,11 +503,13 @@ pub(in crate::engine) async fn get_memory_authorized(
         .await
         .map_err(|err| storage_error("load_memory_by_id", &err))?;
     let neighbor_edges = if req.include_neighbor_edges {
-        ports
-            .memory_read
-            .load_neighbor_memory_edges(read_owners, &[req.memory_id], NEIGHBOR_EDGE_LIMIT)
-            .await
-            .map_err(|err| storage_error("load_neighbor_memory_edges", &err))?
+        super::pin_read::neighbor_edges_from_nodes(
+            &ports.memory_read,
+            read_owners,
+            &[req.memory_id],
+            NEIGHBOR_EDGE_LIMIT,
+        )
+        .await?
     } else {
         Vec::new()
     };

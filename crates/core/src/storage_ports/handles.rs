@@ -12,9 +12,7 @@ use super::embeddings::{
 use super::fact::{FactIngestPort, SourceBatchPort};
 use super::goals::{GoalReadPort, GoalWakeCandidatePort, GoalWritePort};
 use super::mcp::{McpCallReadPort, McpCallWritePort};
-use super::memory::{
-    CitationPort, EdgeReadPort, MemoryAuthoringPort, MemoryInspectPort, MemoryReadPort,
-};
+use super::memory::{CitationPort, MemoryAuthoringPort, MemoryInspectPort, MemoryReadPort};
 use super::registry::RegistryProjectionPort;
 
 pub type FactIngestHandle = Arc<dyn FactIngestPort>;
@@ -31,7 +29,6 @@ pub type GoalWriteHandle = Arc<dyn GoalWritePort>;
 pub type GoalReadHandle = Arc<dyn GoalReadPort>;
 pub type GoalWakeCandidateHandle = Arc<dyn GoalWakeCandidatePort>;
 pub type ChangeEventHandle = Arc<dyn ChangeEventPort>;
-pub type EdgeReadHandle = Arc<dyn EdgeReadPort>;
 pub type CitationHandle = Arc<dyn CitationPort>;
 pub type OwnerAccessReadHandle = Arc<dyn OwnerAccessReadPort>;
 pub type OwnerMembershipAdminHandle = Arc<dyn OwnerMembershipAdminPort>;
