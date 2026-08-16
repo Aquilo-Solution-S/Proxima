@@ -136,7 +136,7 @@ async fn prepare_then_complete_then_read_roundtrip() {
     let upload_id = Uuid::parse_str(&prepared.upload_id).expect("upload id");
 
     let row: (String, String) = sqlx::query_as(
-        "SELECT bucket, object_key FROM proxima_core.cited_object_uploads WHERE upload_id = $1",
+        "SELECT bucket, object_key FROM proxima_core.blob_uploads WHERE upload_id = $1",
     )
     .bind(upload_id)
     .fetch_one(&pool)
@@ -165,7 +165,7 @@ async fn prepare_then_complete_then_read_roundtrip() {
     // pending upload's.
     let cited_object_id = Uuid::parse_str(&completed.cited_object_id).expect("cited object id");
     let final_key: (String,) = sqlx::query_as(
-        "SELECT object_key FROM proxima_core.cited_uploaded_blob_v1 WHERE cited_object_id = $1",
+        "SELECT object_key FROM proxima_core.blob_uploads WHERE blob_id = $1",
     )
     .bind(cited_object_id)
     .fetch_one(&pool)
@@ -314,7 +314,7 @@ async fn staged_upload(
         .expect("prepare");
     let upload_id = Uuid::parse_str(&prepared.upload_id).expect("upload id");
     let key: (String,) = sqlx::query_as(
-        "SELECT object_key FROM proxima_core.cited_object_uploads WHERE upload_id = $1",
+        "SELECT object_key FROM proxima_core.blob_uploads WHERE upload_id = $1",
     )
     .bind(upload_id)
     .fetch_one(pool)
@@ -366,7 +366,7 @@ async fn concurrent_completions_of_one_file_converge_on_one_artefact() {
     );
 
     let objects: i64 =
-        sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_core.cited_objects")
+        sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_core.blob")
             .fetch_one(&pool)
             .await
             .expect("count");
@@ -428,7 +428,7 @@ async fn a_completion_racing_an_abort_never_reports_a_committed_write_as_failed(
     .await
     .expect("count");
     let objects: i64 =
-        sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_core.cited_objects")
+        sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_core.blob")
             .fetch_one(&pool)
             .await
             .expect("count");
@@ -604,7 +604,7 @@ async fn port_level_prepare_complete_read_roundtrip() {
     // Upload the bytes to the pending key exactly as an MCP client would
     // PUT to the presigned URL (the SDK PUT targets the same object).
     let pending: (String,) = sqlx::query_as(
-        "SELECT object_key FROM proxima_core.cited_object_uploads WHERE upload_id = $1",
+        "SELECT object_key FROM proxima_core.blob_uploads WHERE upload_id = $1",
     )
     .bind(Uuid::parse_str(&prepared.upload_id).expect("upload id"))
     .fetch_one(&pool)
@@ -660,10 +660,7 @@ async fn port_level_prepare_complete_read_roundtrip() {
     drop_db(&db_name).await.expect("drop db");
 }
 
-/// Insert a `cited_objects` + `cited_uploaded_blob_v1` pair directly, the
-/// way an inline `core/uploaded-blob-v1` citation lands one: the locator
-/// columns hold whatever the caller asserted, under the caller's own
-/// personal owner.
+/// Insert a `blob` + completed `blob_uploads` pair.
 async fn forge_uploaded_blob_row(
     pool: &sqlx::PgPool,
     owner_id: Uuid,
@@ -671,31 +668,42 @@ async fn forge_uploaded_blob_row(
     object_key: &str,
     content_hash_seed: u8,
 ) -> Uuid {
-    let cited_object_id = Uuid::now_v7();
     sqlx::query(
-        "INSERT INTO proxima_core.cited_objects \
-            (cited_object_id, schema_id, owner_kind, owner_id, content_hash) \
-         VALUES ($1, 'core/uploaded-blob-v1', 'personal', $2, $3)",
+        "INSERT INTO proxima_core.owners (owner_id, kind)
+         VALUES ($1, 'personal')
+         ON CONFLICT (owner_id) DO NOTHING",
     )
-    .bind(cited_object_id)
+    .bind(owner_id)
+    .execute(pool)
+    .await
+    .expect("forged owner");
+    let blob_id: Uuid = sqlx::query_scalar(
+        "INSERT INTO proxima_core.blob
+            (schema_id, owner_id, content_hash)
+         VALUES ('core/uploaded-blob-v1', $1, $2)
+         RETURNING blob_id",
+    )
     .bind(owner_id)
     .bind(vec![content_hash_seed; 32])
-    .execute(pool)
+    .fetch_one(pool)
     .await
-    .expect("forged cited_objects row");
+    .expect("forged blob row");
     sqlx::query(
-        "INSERT INTO proxima_core.cited_uploaded_blob_v1 \
-            (cited_object_id, bucket, object_key, sha256, byte_len, mime, filename, etag) \
-         VALUES ($1, $2, $3, $4, 1, 'application/pdf', 'forged.pdf', NULL)",
+        "INSERT INTO proxima_core.blob_uploads
+            (owner_id, bucket, object_key, filename, mime, expected_byte_len,
+             status, blob_id, sha256, expires_at, completed_at)
+         VALUES ($1, $2, $3, 'forged.pdf', 'application/pdf', 1,
+                 'completed', $4, $5, now() + interval '1 hour', now())",
     )
-    .bind(cited_object_id)
+    .bind(owner_id)
     .bind(bucket)
     .bind(object_key)
+    .bind(blob_id)
     .bind(vec![content_hash_seed; 32])
     .execute(pool)
     .await
-    .expect("forged cited_uploaded_blob_v1 row");
-    cited_object_id
+    .expect("forged blob_uploads row");
+    blob_id
 }
 
 async fn forge_foreign_locator(pool: &sqlx::PgPool, owner_id: Uuid) {
@@ -732,7 +740,7 @@ async fn complete_upload_fixture(
         )
         .await?;
     let pending: (String,) = sqlx::query_as(
-        "SELECT object_key FROM proxima_core.cited_object_uploads WHERE upload_id = $1",
+        "SELECT object_key FROM proxima_core.blob_uploads WHERE upload_id = $1",
     )
     .bind(Uuid::parse_str(&prepared.upload_id).expect("upload id"))
     .fetch_one(pool)
@@ -744,7 +752,7 @@ async fn complete_upload_fixture(
         .map_err(|err| BlobError::State(err.to_string()))?
         .blob;
     let stored: (String,) = sqlx::query_as(
-        "SELECT object_key FROM proxima_core.cited_uploaded_blob_v1 WHERE cited_object_id = $1",
+        "SELECT object_key FROM proxima_core.blob_uploads WHERE blob_id = $1",
     )
     .bind(Uuid::parse_str(&completed.cited_object_id).expect("cited object id"))
     .fetch_one(pool)
@@ -903,7 +911,7 @@ async fn cross_owner_ids_are_refused_under_the_other_owners_authz() {
         .expect("prepare");
     let upload_id = Uuid::parse_str(&prepared.upload_id).expect("upload id");
     let pending: (String,) = sqlx::query_as(
-        "SELECT object_key FROM proxima_core.cited_object_uploads WHERE upload_id = $1",
+        "SELECT object_key FROM proxima_core.blob_uploads WHERE upload_id = $1",
     )
     .bind(upload_id)
     .fetch_one(&pool)
@@ -943,7 +951,7 @@ async fn cross_owner_ids_are_refused_under_the_other_owners_authz() {
     assert!(matches!(err, BlobError::State(_)), "got {err:?}");
     // B's attempts left A's upload row exactly as A completed it.
     let status: (String,) = sqlx::query_as(
-        "SELECT status::text FROM proxima_core.cited_object_uploads WHERE upload_id = $1",
+        "SELECT status::text FROM proxima_core.blob_uploads WHERE upload_id = $1",
     )
     .bind(upload_id)
     .fetch_one(&pool)
@@ -1012,7 +1020,7 @@ async fn purge_owner_objects_removes_completed_blob() {
         .expect("prepare");
     let upload_id = Uuid::parse_str(&prepared.upload_id).expect("upload id");
     let pending: (String, String) = sqlx::query_as(
-        "SELECT bucket, object_key FROM proxima_core.cited_object_uploads WHERE upload_id = $1",
+        "SELECT bucket, object_key FROM proxima_core.blob_uploads WHERE upload_id = $1",
     )
     .bind(upload_id)
     .fetch_one(&pool)
@@ -1025,7 +1033,7 @@ async fn purge_owner_objects_removes_completed_blob() {
         .blob;
     let cited_object_id = Uuid::parse_str(&completed.cited_object_id).expect("cited object id");
     let final_key: (String,) = sqlx::query_as(
-        "SELECT object_key FROM proxima_core.cited_uploaded_blob_v1 WHERE cited_object_id = $1",
+        "SELECT object_key FROM proxima_core.blob_uploads WHERE blob_id = $1",
     )
     .bind(cited_object_id)
     .fetch_one(&pool)
@@ -1118,7 +1126,7 @@ async fn versioned_bucket_purge_removes_all_object_versions() {
         .await
         .expect("prepare");
     let pending: (String, String) = sqlx::query_as(
-        "SELECT bucket, object_key FROM proxima_core.cited_object_uploads WHERE upload_id = $1",
+        "SELECT bucket, object_key FROM proxima_core.blob_uploads WHERE upload_id = $1",
     )
     .bind(Uuid::parse_str(&prepared.upload_id).expect("upload id"))
     .fetch_one(&pool)
@@ -1131,7 +1139,7 @@ async fn versioned_bucket_purge_removes_all_object_versions() {
         .blob;
     let cited_object_id = Uuid::parse_str(&completed.cited_object_id).expect("cited object id");
     let final_key: (String,) = sqlx::query_as(
-        "SELECT object_key FROM proxima_core.cited_uploaded_blob_v1 WHERE cited_object_id = $1",
+        "SELECT object_key FROM proxima_core.blob_uploads WHERE blob_id = $1",
     )
     .bind(cited_object_id)
     .fetch_one(&pool)
@@ -1211,7 +1219,7 @@ async fn find_held_blobs_reports_only_this_owners_artefacts() {
         .await
         .expect("prepare");
     let pending: (String,) = sqlx::query_as(
-        "SELECT object_key FROM proxima_core.cited_object_uploads WHERE upload_id = $1",
+        "SELECT object_key FROM proxima_core.blob_uploads WHERE upload_id = $1",
     )
     .bind(Uuid::parse_str(&prepared.upload_id).expect("upload id"))
     .fetch_one(&pool)

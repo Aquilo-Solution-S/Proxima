@@ -478,16 +478,6 @@ struct CitationFake;
 
 #[async_trait::async_trait]
 impl CitationPort for CitationFake {
-    async fn fact_entity_id_for(
-        &self,
-        owner: &Owner,
-        schema_id: &SchemaId,
-        schema_version: SchemaVersion,
-        natural_key: &[String],
-    ) -> Result<Option<FactEntityId>, StorageError> {
-        fake_error()
-    }
-
     async fn facts_citing_object(
         &self,
         read_owners: &[OwnerRef],
@@ -502,14 +492,6 @@ impl CitationPort for CitationFake {
     async fn citation_of_fact(
         &self,
         fact_memory_id: proxima_core::MemoryId,
-    ) -> Result<Option<proxima_core::verbs::query::FactCitationReadback>, StorageError> {
-        fake_error()
-    }
-
-    async fn citation_of_entity_head(
-        &self,
-        read_owners: &[OwnerRef],
-        fact_entity_id: FactEntityId,
     ) -> Result<Option<proxima_core::verbs::query::FactCitationReadback>, StorageError> {
         fake_error()
     }

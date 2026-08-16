@@ -82,11 +82,11 @@ pub(super) async fn find_execution_request_by_key(
     let pool = code_store(ctx)?;
     let engine = engine(ctx)?;
     let candidates: Vec<Uuid> = sqlx::query_scalar(
-        "SELECT memory_id
+        "SELECT t
            FROM proxima_code.work_requested_v1
           WHERE repo_id = $1
             AND request_key = $2
-          ORDER BY memory_id DESC
+          ORDER BY t DESC
           LIMIT 20",
     )
     .bind(repo_id)

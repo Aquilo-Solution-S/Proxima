@@ -3,7 +3,7 @@ use proxima_core::read_models::SidecarSpec;
 use proxima_core::verbs::query::{
     FactCitationCursor, FactCitationPage, FactCitationReadback, UploadedBlobRef,
 };
-use proxima_core::{FactEntityId, MemoryId, OwnerRef, SchemaId, StorageError};
+use proxima_core::{MemoryId, OwnerRef, SchemaId, StorageError};
 use sqlx::{PgPool, Row};
 
 use crate::error::map_err;
@@ -166,11 +166,4 @@ fn page_u32(value: i32) -> Result<u32, StorageError> {
         .map_err(|_| StorageError::Internal(format!("negative page-span column {value}")))
 }
 
-pub(crate) async fn citation_of_entity_head(
-    pool: &PgPool,
-    read_owners: &[OwnerRef],
-    fact_entity_id: FactEntityId,
-) -> Result<Option<FactCitationReadback>, StorageError> {
-    let _ = (pool, read_owners, fact_entity_id);
-    Ok(None)
-}
+

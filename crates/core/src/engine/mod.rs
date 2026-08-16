@@ -46,7 +46,7 @@ pub use mcp_listener::{EngineMcpListener, RunningMcpListener};
 pub use memory_authoring::{AuthorDerivedAuthorizedOutcome, AuthorDerivedRequestInput};
 pub use pipeline::{MemoryPermit, PermitMode};
 pub use read_verbs::{
-    EntityHeadCitationReadRequest, FactCitationReadRequest, FactsCitingObjectReadRequest,
+    FactCitationReadRequest, FactsCitingObjectReadRequest,
     GetGraphReadRequest, GetGraphReadResponse, GetMemoriesReadRequest, GetMemoriesReadResponse,
     GetMemoryReadRequest, GetMemoryReadResponse, ListChangeEventsReadRequest,
     ListChangeEventsReadResponse, ListWakeCandidatesReadRequest, ListWakeCandidatesReadResponse,

@@ -434,16 +434,6 @@ mod storage_port_tests_support {
 
     #[async_trait::async_trait]
     impl crate::CitationPort for CitationFake {
-        async fn fact_entity_id_for(
-            &self,
-            _owner: &crate::Owner,
-            _schema_id: &crate::SchemaId,
-            _schema_version: crate::SchemaVersion,
-            _natural_key: &[String],
-        ) -> Result<Option<crate::FactEntityId>, StorageError> {
-            Ok(None)
-        }
-
         async fn facts_citing_object(
             &self,
             _read_owners: &[OwnerRef],
@@ -462,14 +452,6 @@ mod storage_port_tests_support {
         async fn citation_of_fact(
             &self,
             _fact_memory_id: crate::MemoryId,
-        ) -> Result<Option<crate::verbs::query::FactCitationReadback>, StorageError> {
-            Ok(None)
-        }
-
-        async fn citation_of_entity_head(
-            &self,
-            _read_owners: &[OwnerRef],
-            _fact_entity_id: crate::FactEntityId,
         ) -> Result<Option<crate::verbs::query::FactCitationReadback>, StorageError> {
             Ok(None)
         }

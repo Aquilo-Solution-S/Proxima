@@ -353,7 +353,7 @@ impl Tool for CodeSearchChunksTool {
                                     ' & ', ' | '),
                                 '')::tsquery AS rare_any_tsq
                  )
-                 SELECT c.memory_id,
+                 SELECT c.t AS memory_id,
                         (
                             GREATEST(
                                 CASE WHEN c.search_tsv @@ q.tsq
@@ -402,7 +402,7 @@ impl Tool for CodeSearchChunksTool {
                         OR lower(c.file_path) LIKE $4 ESCAPE '\\'
                         OR lower(c.text) LIKE $4 ESCAPE '\\'
                     )
-                  ORDER BY score DESC, c.memory_id DESC
+                  ORDER BY score DESC, c.t DESC
                   LIMIT $6",
             )
             .bind(query)

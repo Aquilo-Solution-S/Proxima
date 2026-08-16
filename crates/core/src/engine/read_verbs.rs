@@ -12,7 +12,7 @@ use crate::verbs::query::{
     SearchCursor, SearchMode,
 };
 use crate::verbs::schema::{MemorySearchProjection, PayloadKind};
-use crate::{EntityId, EntityKind, FactEntityId, MemoryId, OwnerRef, SchemaId, SchemaVersion};
+use crate::{EntityId, EntityKind, MemoryId, OwnerRef, SchemaId, SchemaVersion};
 
 use super::Engine;
 
@@ -101,11 +101,6 @@ pub struct ListWakeCandidatesReadResponse {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FactCitationReadRequest {
     pub fact_memory_id: MemoryId,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct EntityHeadCitationReadRequest {
-    pub fact_entity_id: FactEntityId,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -368,20 +363,6 @@ impl Engine {
     ///
     /// Returns `Forbidden` when the context authorizes no read owners, and
     /// `Internal` when storage reads fail.
-    pub async fn read_entity_head_citation(
-        &self,
-        authz: &AuthzContext,
-        req: &EntityHeadCitationReadRequest,
-    ) -> Result<Option<FactCitationReadback>, ProtocolError> {
-        let read_owners = self.authorize_read(authz).await?;
-        read_entity_head_citation_authorized(
-            &self.storage.read_verb,
-            &read_owners,
-            req.fact_entity_id,
-        )
-        .await
-    }
-
     /// Read-set-scoped citation-to-Fact read-back.
     ///
     /// # Errors
@@ -589,18 +570,6 @@ pub(in crate::engine) async fn read_fact_citation_authorized(
         .map_err(|err| storage_error("citation_of_fact", &err))
 }
 
-pub(in crate::engine) async fn read_entity_head_citation_authorized(
-    ports: &ReadVerbStoragePorts,
-    read_owners: &[OwnerRef],
-    fact_entity_id: FactEntityId,
-) -> Result<Option<FactCitationReadback>, ProtocolError> {
-    ports
-        .citation
-        .citation_of_entity_head(read_owners, fact_entity_id)
-        .await
-        .map_err(|err| storage_error("citation_of_entity_head", &err))
-}
-
 pub(in crate::engine) async fn facts_citing_object_authorized(
     ports: &ReadVerbStoragePorts,
     read_owners: &[OwnerRef],
@@ -631,12 +600,12 @@ mod tests {
     use crate::verbs::query::{
         MemorySearchRequest, SearchMode, SearchOrder, SupersessionStatus, TagMatch,
     };
-    use crate::{Engine, FactEntityId, FlavorRegistry, GroupId, MemoryId, OwnerRef, UserId};
+    use crate::{Engine, FlavorRegistry, GroupId, MemoryId, OwnerRef, UserId};
 
     type ResolvedAuthz = AuthzContext;
 
     use super::{
-        EntityHeadCitationReadRequest, FactCitationReadRequest, FactsCitingObjectReadRequest,
+        FactCitationReadRequest, FactsCitingObjectReadRequest,
         GetGraphReadRequest, GetMemoryReadRequest, ListChangeEventsReadRequest, SearchReadRequest,
     };
 
@@ -865,19 +834,6 @@ mod tests {
         };
         let err = engine()
             .read_fact_citation(&AuthzContext::denied_for_owner(&owner), &req)
-            .await
-            .expect_err("denied context must fail");
-        assert_forbidden(&err);
-    }
-
-    #[tokio::test]
-    async fn read_entity_head_citation_denies_denied_context() {
-        let owner = owner();
-        let req = EntityHeadCitationReadRequest {
-            fact_entity_id: FactEntityId::new(uuid::Uuid::now_v7()),
-        };
-        let err = engine()
-            .read_entity_head_citation(&AuthzContext::denied_for_owner(&owner), &req)
             .await
             .expect_err("denied context must fail");
         assert_forbidden(&err);

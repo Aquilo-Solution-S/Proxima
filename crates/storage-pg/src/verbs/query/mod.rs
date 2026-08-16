@@ -18,7 +18,7 @@ use std::fmt::Write as _;
 use proxima_core::{
     FactEntityId, Owner, OwnerRef, OwnerRefKind, SchemaId, SchemaVersion, StorageError,
 };
-use sqlx::{Executor, PgConnection, PgPool, Postgres};
+use sqlx::{Executor, PgConnection, Postgres};
 
 mod abstraction_heads;
 mod citations;
@@ -31,7 +31,7 @@ mod rows;
 mod search;
 
 pub use abstraction_heads::authorized_code_chunk_head_candidates;
-pub(crate) use citations::{citation_of_entity_head, citation_of_fact, facts_citing_object};
+pub(crate) use citations::{citation_of_fact, facts_citing_object};
 pub use code_chunk_vectors::{
     CodeChunkVectorCandidate, CodeChunkVectorFilters, nearest_code_chunk_candidates,
 };
@@ -152,16 +152,6 @@ pub async fn fact_entity_id_for(
     natural_key: &[String],
 ) -> Result<Option<FactEntityId>, StorageError> {
     fact_entity_id_for_executor(tx, owner, schema_id, schema_version, natural_key).await
-}
-
-pub(crate) async fn fact_entity_id_for_pool(
-    pool: &PgPool,
-    owner: &Owner,
-    schema_id: &SchemaId,
-    schema_version: SchemaVersion,
-    natural_key: &[String],
-) -> Result<Option<FactEntityId>, StorageError> {
-    fact_entity_id_for_executor(pool, owner, schema_id, schema_version, natural_key).await
 }
 
 async fn fact_entity_id_for_executor<'e, E>(

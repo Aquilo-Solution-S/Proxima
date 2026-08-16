@@ -1955,14 +1955,6 @@ async fn seed_active_goal_activation(
         &[],
     )
     .await?;
-    sqlx::query(
-        "INSERT INTO proxima_core.goal_activated_v1 (memory_id, goal_id, transitioned_at)
-         VALUES ($1, $2, now())",
-    )
-    .bind(memory_id)
-    .bind(goal_id)
-    .execute(pg.pool_for_tests())
-    .await?;
     Ok(memory_id)
 }
 

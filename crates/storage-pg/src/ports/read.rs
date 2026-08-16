@@ -5,7 +5,7 @@ use proxima_core::verbs::query::{
     EdgeExistsRequest, EdgeExistsResponse, EdgeReadRequest, EdgeReadResponse, FactCitationReadback,
 };
 use proxima_core::{
-    FactEntityId, MemoryId, Owner, OwnerRef, SchemaId, SchemaVersion, StorageError,
+    MemoryId, Owner, OwnerRef, StorageError,
 };
 
 use crate::{PgStorage, verbs};
@@ -62,23 +62,6 @@ impl EdgeReadPort for PgStorage {
 
 #[async_trait::async_trait]
 impl CitationPort for PgStorage {
-    async fn fact_entity_id_for(
-        &self,
-        owner: &Owner,
-        schema_id: &SchemaId,
-        schema_version: SchemaVersion,
-        natural_key: &[String],
-    ) -> Result<Option<FactEntityId>, StorageError> {
-        verbs::query::fact_entity_id_for_pool(
-            &self.pool,
-            owner,
-            schema_id,
-            schema_version,
-            natural_key,
-        )
-        .await
-    }
-
     async fn facts_citing_object(
         &self,
         read_owners: &[OwnerRef],
@@ -104,13 +87,5 @@ impl CitationPort for PgStorage {
         fact_memory_id: MemoryId,
     ) -> Result<Option<FactCitationReadback>, StorageError> {
         verbs::query::citation_of_fact(&self.pool, fact_memory_id).await
-    }
-
-    async fn citation_of_entity_head(
-        &self,
-        read_owners: &[OwnerRef],
-        fact_entity_id: FactEntityId,
-    ) -> Result<Option<FactCitationReadback>, StorageError> {
-        verbs::query::citation_of_entity_head(&self.pool, read_owners, fact_entity_id).await
     }
 }

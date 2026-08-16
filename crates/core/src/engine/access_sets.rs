@@ -644,16 +644,6 @@ pub(in crate::engine) mod tests {
 
     #[async_trait::async_trait]
     impl CitationPort for MembershipStorage {
-        async fn fact_entity_id_for(
-            &self,
-            _owner: &Owner,
-            _schema_id: &SchemaId,
-            _schema_version: SchemaVersion,
-            _natural_key: &[String],
-        ) -> Result<Option<FactEntityId>, StorageError> {
-            Ok(None)
-        }
-
         async fn facts_citing_object(
             &self,
             _read_owners: &[OwnerRef],
@@ -672,14 +662,6 @@ pub(in crate::engine) mod tests {
         async fn citation_of_fact(
             &self,
             _fact_memory_id: MemoryId,
-        ) -> Result<Option<verbs::query::FactCitationReadback>, StorageError> {
-            Ok(None)
-        }
-
-        async fn citation_of_entity_head(
-            &self,
-            _read_owners: &[OwnerRef],
-            _fact_entity_id: FactEntityId,
         ) -> Result<Option<verbs::query::FactCitationReadback>, StorageError> {
             Ok(None)
         }

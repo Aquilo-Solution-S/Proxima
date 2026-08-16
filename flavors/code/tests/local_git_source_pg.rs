@@ -154,9 +154,9 @@ async fn local_git_source_full_cycle() {
         // `file-revision-v1` Facts.
         let linkage: (i64, i64) = sqlx::query_as(
             "WITH chunks AS ( \
-                 SELECT ch.memory_id, m.origins \
+                 SELECT ch.t, m.origins \
                  FROM proxima_code.code_chunk_v1 ch \
-                 JOIN proxima_core.memory m ON m.t = ch.memory_id \
+                 JOIN proxima_core.memory m ON m.t = ch.t \
                  WHERE ch.repo_id = $1 AND ch.file_path = 'src/lib.rs' \
                    AND ch.state = 'Present' \
                    AND m.kind = 'abstraction' \
@@ -168,7 +168,7 @@ async fn local_git_source_full_cycle() {
                       SELECT 1 FROM proxima_code.file_revision_v1 fr \
                       WHERE fr.repo_id = $1 \
                         AND fr.file_path = 'src/lib.rs' \
-                        AND fr.memory_id = ANY(c.origins)))",
+                        AND fr.t = ANY(c.origins)))",
         )
         .bind(repo_id)
         .fetch_one(pg.pool_for_tests())

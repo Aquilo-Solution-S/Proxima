@@ -182,7 +182,7 @@ impl Tool for CodeOpenFileRevisionTool {
                 .ok_or_else(|| ToolError::Other("authorized revision disappeared".into()))?;
 
             let chunk_ids: Vec<uuid::Uuid> = sqlx::query_scalar(
-                "SELECT c.memory_id
+                "SELECT c.t
                    FROM proxima_code.code_chunk_v1 c
                    JOIN proxima_core.memory m ON m.t = c.t
                   WHERE c.repo_id = $1

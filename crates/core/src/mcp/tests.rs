@@ -65,7 +65,6 @@ mod manifest_tests {
             protocol_resource::WAKE_CANDIDATES,
             protocol_resource::GOALS,
             protocol_resource::GOAL,
-            protocol_resource::EDGES,
         ]);
         let actual = all_core_resources()
             .map(|resource| resource.scope_key)

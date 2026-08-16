@@ -521,7 +521,7 @@ impl PgFactSidecar for AcceptanceCriteriaV1 {
         Box::pin(async move {
             sqlx::query(
                 "INSERT INTO proxima_code.acceptance_criteria_v1
-                    (t, work_item_memory_id), criteria_count)
+                    (t, work_item_memory_id, criteria_count)
                  VALUES ($1, $2, $3)",
             )
             .bind(memory_id.into_inner())

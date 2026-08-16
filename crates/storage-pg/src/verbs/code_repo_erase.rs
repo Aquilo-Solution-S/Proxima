@@ -60,15 +60,15 @@ async fn erase_code_repo_inner(
     }
 
     let ts: Vec<Uuid> = sqlx::query_scalar(
-        "SELECT memory_id FROM proxima_code.file_revision_v1 WHERE repo_id = $1
+        "SELECT t FROM proxima_code.file_revision_v1 WHERE repo_id = $1
          UNION
-         SELECT memory_id FROM proxima_code.code_chunk_v1 WHERE repo_id = $1
+         SELECT t FROM proxima_code.code_chunk_v1 WHERE repo_id = $1
          UNION
-         SELECT memory_id FROM proxima_code.commit_v1 WHERE repo_id = $1
+         SELECT t FROM proxima_code.commit_v1 WHERE repo_id = $1
          UNION
-         SELECT memory_id FROM proxima_code.commit_summary_v1 WHERE repo_id = $1
+         SELECT t FROM proxima_code.commit_summary_v1 WHERE repo_id = $1
          UNION
-         SELECT memory_id FROM proxima_code.test_requested_v1 WHERE repo_id = $1"
+         SELECT t FROM proxima_code.test_requested_v1 WHERE repo_id = $1"
     )
     .bind(repo_id)
     .fetch_all(&mut *tx)
@@ -165,21 +165,6 @@ async fn delete_memory_series(
     .bind(&handles)
     .fetch_all(&mut **tx)
     .await?;
-    sqlx::query(
-        "DELETE FROM proxima_core.citation_uploaded_blob_page_span_v1
-          WHERE citation_mapping_id IN (
-                SELECT citation_mapping_id
-                  FROM proxima_core.citation_mappings
-                 WHERE memory_id = ANY($1::uuid[])
-          )",
-    )
-    .bind(&all_t)
-    .execute(&mut **tx)
-    .await?;
-    sqlx::query("DELETE FROM proxima_core.citation_mappings WHERE memory_id = ANY($1::uuid[])")
-        .bind(&all_t)
-        .execute(&mut **tx)
-        .await?;
     sqlx::query("DELETE FROM proxima_core.embedding_jobs WHERE entity_id = ANY($1::uuid[])")
         .bind(&all_t)
         .execute(&mut **tx)

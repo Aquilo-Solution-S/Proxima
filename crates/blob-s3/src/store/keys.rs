@@ -6,10 +6,6 @@
 use proxima_core::{Owner, OwnerRefKind, UPLOADED_BLOB_SCHEMA_ID};
 use uuid::Uuid;
 
-pub(super) fn db_owner_columns(owner: &Owner) -> (OwnerRefKind, Option<Uuid>) {
-    owner.columns()
-}
-
 pub(super) fn owner_hash_hex(owner: &Owner) -> String {
     let kind = OwnerRefKind::of(owner);
     let owner_key_id = owner.stable_key_uuid();
@@ -110,14 +106,6 @@ mod tests {
         let other_hash = owner_hash_hex(&OwnerRef::Personal(UserId::new(Uuid::now_v7())));
         assert_ne!(objects, objects_owner_prefix(&other_hash));
         assert_ne!(pending, pending_owner_prefix(&other_hash));
-    }
-
-    #[test]
-    fn db_owner_columns_use_nullable_world_shape() {
-        assert_eq!(
-            db_owner_columns(&OwnerRef::World),
-            (OwnerRefKind::World, None)
-        );
     }
 
     #[test]

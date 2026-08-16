@@ -1,7 +1,7 @@
 use proxima_core::verbs::goal_write::GoalState;
 use proxima_core::verbs::query::QueryRequest;
 use proxima_core::{
-    EntityKind, GoalActivatedV1, GoalId, MemoryId, ToolCtx, ToolError,
+    EntityKind, GoalId, MemoryId, ToolCtx, ToolError,
 };
 use sqlx::{Postgres, Transaction};
 use uuid::Uuid;
@@ -42,24 +42,42 @@ pub(super) async fn validate_goal_activated_fact(
 ) -> Result<Uuid, ToolError> {
     let pool = code_store(ctx)?;
     let engine = engine(ctx)?;
-    let Some((_, payload)) = pool
-        .authorized_fact_payloads::<GoalActivatedV1>(
+    let visible = pool
+        .authorized_memory_ids(
             &engine,
             ctx.authz(),
             ctx.owner(),
             &[memory_id.into_inner()],
+            EntityKind::Fact,
+            None,
             1,
         )
-        .await?
-        .into_iter()
-        .next()
-    else {
+        .await?;
+    if visible.is_empty() {
         return Err(ToolError::InvalidInput(format!(
             "goal_activated_memory is not visible: {}",
             memory_id.into_inner()
         )));
-    };
-    Ok(payload.goal_id)
+    }
+    let planner = ctx.caller_self_perspective().ok_or_else(|| {
+        ToolError::InvalidInput("caller_self_perspective is required".into())
+    })?;
+    let goal_t: Option<Uuid> = sqlx::query_scalar(
+        "SELECT g.t
+           FROM proxima_core.goal_head h
+           JOIN proxima_core.goal g ON g.handle = h.handle AND g.t = h.t
+          WHERE g.owner_id = $1
+            AND g.state = 'Active'
+            AND g.assignment_t = $2
+          ORDER BY g.t DESC
+          LIMIT 1",
+    )
+    .bind(ctx.owner().stored_owner_id())
+    .bind(planner.into_inner())
+    .fetch_optional(pool.pool())
+    .await
+    .map_err(map_storage)?;
+    goal_t.ok_or_else(|| ToolError::InvalidInput("no Active Goal assigned to caller".into()))
 }
 
 pub(super) async fn validate_active_goal_context(

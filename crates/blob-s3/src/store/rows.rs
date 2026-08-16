@@ -1,18 +1,17 @@
 //! The Postgres side of the lane: the shapes it reads back, and the
 //! queries behind them.
 //!
-//! Every query here is owner-scoped in its `WHERE` clause, and every read
-//! reports a row that does not match the caller's `Owner` as *missing*
-//! rather than forbidden — so a probe cannot learn that it exists.
+//! Citation is `proxima_core.blob` + `memory.blob_id`. Upload staging
+//! lives in `proxima_core.blob_uploads`. Every query is owner-scoped.
 
 use proxima_core::citations::UploadedBlobPayload;
 use proxima_core::storage_ports::{CitedBlobHeld, CitedBlobStaged};
-use proxima_core::{Owner, UPLOADED_BLOB_SCHEMA_ID};
+use proxima_core::{Owner, OwnerRefKind, UPLOADED_BLOB_SCHEMA_ID};
 use sqlx::Row;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-use super::keys::db_owner_columns;
+use super::keys::{canonical_object_key, owner_hash_hex};
 use crate::error::BlobError;
 
 #[derive(Debug, Clone)]
@@ -23,23 +22,13 @@ pub(super) struct UploadRow {
     pub(super) mime: String,
     pub(super) expected_byte_len: i64,
     pub(super) status: UploadStatus,
-    pub(super) cited_object_id: Option<Uuid>,
+    pub(super) blob_id: Option<Uuid>,
     pub(super) expires_at: OffsetDateTime,
 }
 
-/// `proxima_core.cited_object_upload_status`, decoded as the enum Postgres
-/// declares it to be.
-///
-/// The column has been a database enum since `0001_init`. Reading it back
-/// through `::text` and matching strings threw that away: every match
-/// needed an arm for a value the database cannot hold, and a typo in a
-/// literal compiled fine and simply never matched. Decoding the enum makes
-/// these four the only four, so the matches over it are exhaustive by
-/// construction and a fifth state could not be added without breaking
-/// them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, sqlx::Type)]
 #[sqlx(
-    type_name = "proxima_core.cited_object_upload_status",
+    type_name = "proxima_core.blob_upload_status",
     rename_all = "lowercase"
 )]
 pub(super) enum UploadStatus {
@@ -67,16 +56,35 @@ pub(super) struct BlobReadRecord {
     pub(super) filename: String,
 }
 
+pub(super) async fn ensure_owner_row(
+    pool: &sqlx::PgPool,
+    owner: &Owner,
+) -> Result<Uuid, BlobError> {
+    let owner_id = owner.stored_owner_id();
+    let kind = OwnerRefKind::of(owner).as_str();
+    sqlx::query(
+        "INSERT INTO proxima_core.owners (owner_id, kind)
+         VALUES ($1, $2::proxima_core.owner_kind)
+         ON CONFLICT (owner_id) DO NOTHING",
+    )
+    .bind(owner_id)
+    .bind(kind)
+    .execute(pool)
+    .await
+    .map_err(BlobError::Db)?;
+    Ok(owner_id)
+}
+
 pub(super) async fn load_upload(
     pool: &sqlx::PgPool,
     owner: &Owner,
     upload_id: Uuid,
 ) -> Result<UploadRow, BlobError> {
-    let (_owner_kind, owner_id) = db_owner_columns(owner);
+    let owner_id = owner.stored_owner_id();
     let row = sqlx::query(
         "SELECT bucket, object_key, filename, mime, expected_byte_len, \
-                status, cited_object_id, expires_at \
-           FROM proxima_core.cited_object_uploads \
+                status, blob_id, expires_at \
+           FROM proxima_core.blob_uploads \
           WHERE owner_id = $1 \
             AND upload_id = $2",
     )
@@ -94,7 +102,7 @@ pub(super) async fn load_upload(
         mime: row.get("mime"),
         expected_byte_len: row.get("expected_byte_len"),
         status: row.get("status"),
-        cited_object_id: row.get("cited_object_id"),
+        blob_id: row.get("blob_id"),
         expires_at: row.get("expires_at"),
     })
 }
@@ -104,9 +112,9 @@ pub(super) async fn mark_upload_expired(
     owner: &Owner,
     upload_id: Uuid,
 ) -> Result<(), BlobError> {
-    let (_owner_kind, owner_id) = db_owner_columns(owner);
+    let owner_id = owner.stored_owner_id();
     sqlx::query(
-        "UPDATE proxima_core.cited_object_uploads \
+        "UPDATE proxima_core.blob_uploads \
             SET status = 'expired', error_message = 'upload expired' \
           WHERE owner_id = $1 \
             AND upload_id = $2 \
@@ -120,27 +128,26 @@ pub(super) async fn mark_upload_expired(
     Ok(())
 }
 
-/// Read back the typed description of an artefact already in the corpus.
-///
-/// Used when an upload is staged a second time: the pending object is
-/// gone, so the stored row is the only remaining truth about the bytes —
-/// and, being content-addressed, it is the right one.
 pub(super) async fn load_staged_payload(
     pool: &sqlx::PgPool,
     owner: &Owner,
-    cited_object_id: Uuid,
+    blob_id: Uuid,
 ) -> Result<CitedBlobStaged, BlobError> {
-    let (_owner_kind, owner_id) = db_owner_columns(owner);
+    let owner_id = owner.stored_owner_id();
     let row = sqlx::query(
-        "SELECT co.content_hash, b.bucket, b.object_key, b.sha256, b.byte_len, \
-                b.mime, b.filename, b.etag, b.uploaded_at \
-           FROM proxima_core.cited_objects co \
-           JOIN proxima_core.cited_uploaded_blob_v1 b USING (cited_object_id) \
-          WHERE co.cited_object_id = $1 \
-            AND co.owner_id = $2 \
-            AND co.schema_id = $3",
+        "SELECT b.content_hash, u.bucket, u.object_key, u.sha256, \
+                u.expected_byte_len AS byte_len, u.mime, u.filename, u.etag, \
+                u.completed_at AS uploaded_at \
+           FROM proxima_core.blob b \
+           JOIN proxima_core.blob_uploads u ON u.blob_id = b.blob_id \
+          WHERE b.blob_id = $1 \
+            AND b.owner_id = $2 \
+            AND b.schema_id = $3 \
+            AND u.status = 'completed' \
+          ORDER BY u.completed_at DESC NULLS LAST \
+          LIMIT 1",
     )
-    .bind(cited_object_id)
+    .bind(blob_id)
     .bind(owner_id)
     .bind(UPLOADED_BLOB_SCHEMA_ID)
     .fetch_optional(pool)
@@ -149,56 +156,59 @@ pub(super) async fn load_staged_payload(
     .ok_or_else(|| BlobError::State("cited object not found for Owner".into()))?;
 
     let byte_len: i64 = row.get("byte_len");
+    let sha256 = row
+        .get::<Option<Vec<u8>>, _>("sha256")
+        .map(|bytes| hash32(&bytes, "sha256"))
+        .transpose()?
+        .unwrap_or([0; 32]);
+    let uploaded_at = row
+        .get::<Option<OffsetDateTime>, _>("uploaded_at")
+        .unwrap_or_else(OffsetDateTime::now_utc);
     Ok(CitedBlobStaged {
         payload: UploadedBlobPayload {
             content_hash: hash32(&row.get::<Vec<u8>, _>("content_hash"), "content_hash")?,
             bucket: row.get("bucket"),
             object_key: row.get("object_key"),
-            sha256: hash32(&row.get::<Vec<u8>, _>("sha256"), "sha256")?,
+            sha256,
             byte_len: u64::try_from(byte_len).unwrap_or(u64::MAX),
             mime: row.get("mime"),
             filename: row.get("filename"),
             etag: row.get("etag"),
-            uploaded_at: row.get("uploaded_at"),
+            uploaded_at,
         },
-        already_completed: Some(cited_object_id),
+        already_completed: Some(blob_id),
     })
 }
 
-/// A stored 32-byte digest. A wrong width here means the row was written
-/// by something other than this lane, so it is a fault, not a truncation.
 fn hash32(bytes: &[u8], field: &str) -> Result<[u8; 32], BlobError> {
     <[u8; 32]>::try_from(bytes)
         .map_err(|_| BlobError::State(format!("stored {field} is not 32 bytes")))
 }
 
-/// Which of `content_hashes` this owner already holds, with the identity a
-/// caller needs in order to skip re-uploading them.
-///
-/// ONE ARRAY PARAMETER, NOT AN `IN` LIST BUILT PER CALL. `= ANY($4::bytea[])`
-/// keeps this a fixed string literal — so it is static SQL with no
-/// `SQL-POLICY:` obligation, and the bind count does not grow with the batch,
-/// which is what keeps Postgres' 65535-parameter ceiling out of the picture
-/// however many digests are asked about.
-///
-/// The predicate lists `owner_kind, owner_id, schema_id, content_hash` in
-/// that order on purpose: it is exactly `cited_objects_unique_per_owner`
-/// (`0001_init.sql`:1133), so this is an index scan and the batch costs one
-/// probe per digest rather than a sweep of the owner's artefacts.
 pub(super) async fn find_held_blobs(
     pool: &sqlx::PgPool,
     owner: &Owner,
     content_hashes: &[[u8; 32]],
 ) -> Result<Vec<CitedBlobHeld>, BlobError> {
-    let (_owner_kind, owner_id) = db_owner_columns(owner);
+    let owner_id = owner.stored_owner_id();
     let digests: Vec<Vec<u8>> = content_hashes.iter().map(|hash| hash.to_vec()).collect();
     let rows = sqlx::query(
-        "SELECT co.content_hash, co.cited_object_id, b.byte_len, b.mime, b.filename \
-           FROM proxima_core.cited_objects co \
-           JOIN proxima_core.cited_uploaded_blob_v1 b USING (cited_object_id) \
-          WHERE co.owner_id = $1 \
-            AND co.schema_id = $2 \
-            AND co.content_hash = ANY($3::bytea[])",
+        "SELECT b.content_hash, b.blob_id, \
+                COALESCE(u.expected_byte_len, 0) AS byte_len, \
+                COALESCE(u.mime, '') AS mime, \
+                COALESCE(u.filename, '') AS filename \
+           FROM proxima_core.blob b \
+           LEFT JOIN LATERAL (
+                SELECT expected_byte_len, mime, filename
+                  FROM proxima_core.blob_uploads u
+                 WHERE u.blob_id = b.blob_id
+                   AND u.status = 'completed'
+                 ORDER BY u.completed_at DESC NULLS LAST
+                 LIMIT 1
+           ) u ON true \
+          WHERE b.owner_id = $1 \
+            AND b.schema_id = $2 \
+            AND b.content_hash = ANY($3::bytea[])",
     )
     .bind(owner_id)
     .bind(UPLOADED_BLOB_SCHEMA_ID)
@@ -212,7 +222,7 @@ pub(super) async fn find_held_blobs(
             let byte_len: i64 = row.get("byte_len");
             Ok(CitedBlobHeld {
                 content_hash: hash32(&row.get::<Vec<u8>, _>("content_hash"), "content_hash")?,
-                cited_object_id: row.get("cited_object_id"),
+                cited_object_id: row.get("blob_id"),
                 byte_len: u64::try_from(byte_len).unwrap_or(u64::MAX),
                 mime: row.get("mime"),
                 filename: row.get("filename"),
@@ -224,51 +234,72 @@ pub(super) async fn find_held_blobs(
 pub(super) async fn load_blob_location(
     pool: &sqlx::PgPool,
     owner: &Owner,
-    cited_object_id: Uuid,
+    blob_id: Uuid,
 ) -> Result<BlobLocation, BlobError> {
-    let (_owner_kind, owner_id) = db_owner_columns(owner);
-    let row = sqlx::query(
-        "SELECT b.bucket, b.object_key \
-           FROM proxima_core.cited_objects co \
-           JOIN proxima_core.cited_uploaded_blob_v1 b USING (cited_object_id) \
-          WHERE co.cited_object_id = $1 \
-            AND co.owner_id = $2 \
-            AND co.schema_id = $3",
+    let owner_id = owner.stored_owner_id();
+    if let Some(row) = sqlx::query(
+        "SELECT u.bucket, u.object_key \
+           FROM proxima_core.blob b \
+           JOIN proxima_core.blob_uploads u ON u.blob_id = b.blob_id \
+          WHERE b.blob_id = $1 \
+            AND b.owner_id = $2 \
+            AND b.schema_id = $3 \
+            AND u.status = 'completed' \
+          ORDER BY u.completed_at DESC NULLS LAST \
+          LIMIT 1",
     )
-    .bind(cited_object_id)
+    .bind(blob_id)
     .bind(owner_id)
     .bind(UPLOADED_BLOB_SCHEMA_ID)
     .fetch_optional(pool)
     .await
     .map_err(BlobError::Db)?
-    .ok_or_else(|| BlobError::State("cited object not found for Owner".into()))?;
-    Ok(BlobLocation {
-        bucket: row.get("bucket"),
-        object_key: row.get("object_key"),
-    })
+    {
+        return Ok(BlobLocation {
+            bucket: row.get("bucket"),
+            object_key: row.get("object_key"),
+        });
+    }
+
+    let content_hash: Option<Vec<u8>> = sqlx::query_scalar(
+        "SELECT content_hash
+           FROM proxima_core.blob
+          WHERE blob_id = $1
+            AND owner_id = $2
+            AND schema_id = $3",
+    )
+    .bind(blob_id)
+    .bind(owner_id)
+    .bind(UPLOADED_BLOB_SCHEMA_ID)
+    .fetch_optional(pool)
+    .await
+    .map_err(BlobError::Db)?;
+    let Some(content_hash) = content_hash else {
+        return Err(BlobError::State("cited object not found for Owner".into()));
+    };
+    let _object_key = canonical_object_key(&owner_hash_hex(owner), &hex::encode(content_hash));
+    Err(BlobError::State("cited object not found for Owner".into()))
 }
 
-/// Load the immutable verification record for one owner-scoped completed blob.
-///
-/// Missing and cross-owner ids both return `None`. The caller performs the
-/// authorization gate before calling this function, so no locator is read for
-/// a context that cannot read `owner`.
 pub(super) async fn load_blob_read_record(
     pool: &sqlx::PgPool,
     owner: &Owner,
-    cited_object_id: Uuid,
+    blob_id: Uuid,
 ) -> Result<Option<BlobReadRecord>, BlobError> {
-    let (_owner_kind, owner_id) = db_owner_columns(owner);
+    let owner_id = owner.stored_owner_id();
     let row = sqlx::query(
-        "SELECT co.cited_object_id, co.content_hash, b.bucket, b.object_key, \
-                b.sha256, b.byte_len, b.mime, b.filename \
-           FROM proxima_core.cited_objects co \
-           JOIN proxima_core.cited_uploaded_blob_v1 b USING (cited_object_id) \
-          WHERE co.cited_object_id = $1 \
-            AND co.owner_id = $2 \
-            AND co.schema_id = $3",
+        "SELECT b.blob_id, b.content_hash, u.bucket, u.object_key, \
+                u.sha256, u.expected_byte_len AS byte_len, u.mime, u.filename \
+           FROM proxima_core.blob b \
+           JOIN proxima_core.blob_uploads u ON u.blob_id = b.blob_id \
+          WHERE b.blob_id = $1 \
+            AND b.owner_id = $2 \
+            AND b.schema_id = $3 \
+            AND u.status = 'completed' \
+          ORDER BY u.completed_at DESC NULLS LAST \
+          LIMIT 1",
     )
-    .bind(cited_object_id)
+    .bind(blob_id)
     .bind(owner_id)
     .bind(UPLOADED_BLOB_SCHEMA_ID)
     .fetch_optional(pool)
@@ -277,12 +308,17 @@ pub(super) async fn load_blob_read_record(
 
     row.map(|row| {
         let byte_len: i64 = row.get("byte_len");
+        let sha256 = row
+            .get::<Option<Vec<u8>>, _>("sha256")
+            .map(|bytes| hash32(&bytes, "sha256"))
+            .transpose()?
+            .unwrap_or([0; 32]);
         Ok(BlobReadRecord {
-            cited_object_id: row.get("cited_object_id"),
+            cited_object_id: row.get("blob_id"),
             content_hash: hash32(&row.get::<Vec<u8>, _>("content_hash"), "content_hash")?,
             bucket: row.get("bucket"),
             object_key: row.get("object_key"),
-            sha256: hash32(&row.get::<Vec<u8>, _>("sha256"), "sha256")?,
+            sha256,
             byte_len: u64::try_from(byte_len)
                 .map_err(|_| BlobError::State("stored byte_len is negative".into()))?,
             mime: row.get("mime"),

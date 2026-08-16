@@ -204,7 +204,7 @@ impl Tool for CodeSearchCommitsTool {
 
 const COMMIT_SEARCH_SQL: &str = "
 WITH q AS (SELECT websearch_to_tsquery('pg_catalog.simple'::regconfig, $1) AS tsq)
-SELECT c.memory_id,
+SELECT c.t AS memory_id,
        ts_rank_cd(to_tsvector('pg_catalog.simple'::regconfig, c.sha || ' ' || c.message), q.tsq) AS score
 FROM q, proxima_code.commit_v1 c
 WHERE ($2::uuid IS NULL OR c.repo_id = $2)

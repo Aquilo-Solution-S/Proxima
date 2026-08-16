@@ -21,7 +21,7 @@ use super::dto::{
 use super::guards::{
     ensure_owner_write_access, format_time, parse_uuid, presign_config, validate_prepare,
 };
-use super::keys::{canonical_object_key, db_owner_columns, owner_hash_hex, pending_object_key};
+use super::keys::{canonical_object_key, owner_hash_hex, pending_object_key};
 use super::rows::{UploadStatus, load_staged_payload, load_upload, mark_upload_expired};
 use super::transitions::{
     AbortTransitionDecision, FinishTransitionDecision, abort_transition_decision,
@@ -60,9 +60,9 @@ impl CitedBlobStore {
             .await
             .map_err(|e| BlobError::S3(format!("prepare upload URL failed: {e}")))?;
 
-        let (_owner_kind, owner_id) = db_owner_columns(&owner);
+        let owner_id = super::rows::ensure_owner_row(&self.pool, &owner).await?;
         sqlx::query(
-            "INSERT INTO proxima_core.cited_object_uploads \
+            "INSERT INTO proxima_core.blob_uploads \
                 (owner_id, upload_id, \
                  bucket, object_key, filename, mime, expected_byte_len, expires_at) \
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
@@ -128,16 +128,16 @@ impl CitedBlobStore {
         let row = load_upload(&self.pool, &owner, upload_id).await?;
         match row.status {
             UploadStatus::Completed => {
-                let Some(cited_object_id) = row.cited_object_id else {
+                let Some(blob_id) = row.blob_id else {
                     return Err(BlobError::State(
-                        "completed upload is missing cited_object_id".into(),
+                        "completed upload is missing blob_id".into(),
                     ));
                 };
                 // Already in the corpus. Read back what was stored rather
                 // than re-deriving it: the stored row is the truth about
                 // this artefact, and re-hashing would need a pending
                 // object that `finish_upload` has already deleted.
-                return load_staged_payload(&self.pool, &owner, cited_object_id).await;
+                return load_staged_payload(&self.pool, &owner, blob_id).await;
             }
             UploadStatus::Aborted => {
                 return Err(BlobError::State("upload is aborted".into()));
@@ -191,6 +191,20 @@ impl CitedBlobStore {
             .and_then(|r| r.e_tag())
             .map(ToString::to_string);
 
+        sqlx::query(
+            "UPDATE proxima_core.blob_uploads \
+                SET object_key = $1, sha256 = $2, etag = $3 \
+              WHERE owner_id = $4 AND upload_id = $5 AND status = 'pending'",
+        )
+        .bind(&canonical_key)
+        .bind(&streamed.sha256[..])
+        .bind(&etag)
+        .bind(owner.stored_owner_id())
+        .bind(upload_id)
+        .execute(&self.pool)
+        .await
+        .map_err(BlobError::Db)?;
+
         Ok(CitedBlobStaged {
             payload: UploadedBlobPayload {
                 content_hash: streamed.blake3,
@@ -208,7 +222,7 @@ impl CitedBlobStore {
     }
 
     /// Close out an upload whose artefact is now recorded: mark the row
-    /// completed against `cited_object_id`, then drop the pending object.
+    /// completed against `blob_id`, then drop the pending object.
     ///
     /// The order matters. The canonical blob is already referenced by a
     /// committed cited object, so the pending copy is redundant — but only
@@ -230,22 +244,22 @@ impl CitedBlobStore {
         ctx: &AuthzContext,
         owner: OwnerRef,
         upload_id: &str,
-        cited_object_id: Uuid,
+        blob_id: Uuid,
     ) -> Result<(), BlobError> {
         ensure_owner_write_access(ctx, &owner)?;
         let upload_id = parse_uuid(upload_id)?;
         let row = load_upload(&self.pool, &owner, upload_id).await?;
-        let (_owner_kind, owner_id) = db_owner_columns(&owner);
+        let owner_id = owner.stored_owner_id();
         let decision = match row.status {
             UploadStatus::Pending => {
                 let rows_affected = sqlx::query(
-                    "UPDATE proxima_core.cited_object_uploads \
-                        SET status = 'completed', cited_object_id = $1, completed_at = now() \
+                    "UPDATE proxima_core.blob_uploads \
+                        SET status = 'completed', blob_id = $1, completed_at = now() \
                       WHERE owner_id = $2 \
                         AND upload_id = $3 \
                         AND status = 'pending'",
                 )
-                .bind(cited_object_id)
+                .bind(blob_id)
                 .bind(owner_id)
                 .bind(upload_id)
                 .execute(&self.pool)
@@ -261,30 +275,30 @@ impl CitedBlobStore {
                     let observed = load_upload(&self.pool, &owner, upload_id).await?;
                     finish_transition_decision(
                         observed.status,
-                        observed.cited_object_id,
-                        cited_object_id,
+                        observed.blob_id,
+                        blob_id,
                         0,
                     )?
                 }
             }
-            status => finish_transition_decision(status, row.cited_object_id, cited_object_id, 0)?,
+            status => finish_transition_decision(status, row.blob_id, blob_id, 0)?,
         };
 
         if decision == FinishTransitionDecision::OvertookTerminal {
-            // The artefact and its Fact are committed — `cited_object_id`
+            // The artefact and its Fact are committed — `blob_id`
             // exists only because that transaction succeeded — so the
             // transfer's outcome is `completed` no matter what an abort or
             // an expiry sweep wrote while the transaction was in flight.
             // Failing here would report a committed write as failed and
             // leave an upload id the caller can never retry.
             sqlx::query(
-                "UPDATE proxima_core.cited_object_uploads \
-                    SET status = 'completed', cited_object_id = $1, completed_at = now() \
+                "UPDATE proxima_core.blob_uploads \
+                    SET status = 'completed', blob_id = $1, completed_at = now() \
                   WHERE owner_id = $2 \
                     AND upload_id = $3 \
                     AND status IN ('aborted', 'expired')",
             )
-            .bind(cited_object_id)
+            .bind(blob_id)
             .bind(owner_id)
             .bind(upload_id)
             .execute(&self.pool)
@@ -327,9 +341,9 @@ impl CitedBlobStore {
             UploadStatus::Pending => {}
         }
 
-        let (_owner_kind, owner_id) = db_owner_columns(&owner);
+        let owner_id = owner.stored_owner_id();
         let rows_affected = sqlx::query(
-            "UPDATE proxima_core.cited_object_uploads \
+            "UPDATE proxima_core.blob_uploads \
                 SET status = 'aborted', aborted_at = now() \
               WHERE owner_id = $1 \
                 AND upload_id = $2 \

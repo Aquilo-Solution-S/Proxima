@@ -6,7 +6,7 @@ use crate::storage::{
     AuthorDerivedOutcome, AuthorDerivedRequest, FactSourceBatchRow, MemoryGraphPayloadRow,
     MemoryKindRow, StorageError,
 };
-use crate::{FactEntityId, MemoryId, Owner, OwnerRef, SchemaId, SchemaVersion};
+use crate::{MemoryId, Owner, OwnerRef};
 
 /// Node writes that also assert index rows.
 ///
@@ -147,14 +147,6 @@ pub trait EdgeReadPort: Send + Sync {
 
 #[async_trait::async_trait]
 pub trait CitationPort: Send + Sync {
-    async fn fact_entity_id_for(
-        &self,
-        owner: &Owner,
-        schema_id: &SchemaId,
-        schema_version: SchemaVersion,
-        natural_key: &[String],
-    ) -> Result<Option<FactEntityId>, StorageError>;
-
     /// One page of citing Facts, newest first
     /// (`created_at DESC, memory_id DESC`), starting strictly after
     /// `after` when given. The page computes its own `has_more` and
@@ -171,11 +163,5 @@ pub trait CitationPort: Send + Sync {
     async fn citation_of_fact(
         &self,
         fact_memory_id: crate::MemoryId,
-    ) -> Result<Option<crate::verbs::query::FactCitationReadback>, StorageError>;
-
-    async fn citation_of_entity_head(
-        &self,
-        read_owners: &[OwnerRef],
-        fact_entity_id: FactEntityId,
     ) -> Result<Option<crate::verbs::query::FactCitationReadback>, StorageError>;
 }

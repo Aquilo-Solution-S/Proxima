@@ -140,9 +140,9 @@ async fn code_execution_plan_can_use_core_superseding_derived_authoring() {
         .expect("new plan authored");
     let _ = new_outcome;
     let current_plan_ids: Vec<Uuid> = sqlx::query_scalar(
-        "SELECT p.memory_id
+        "SELECT p.t
            FROM proxima_code.execution_plan_v1 p
-           JOIN proxima_core.memory_head h ON h.t = p.memory_id
+           JOIN proxima_core.memory_head h ON h.t = p.t
            JOIN proxima_core.memory m ON m.handle = h.handle AND m.t = h.t
           WHERE m.owner_id = $1
             AND p.plan_key = $2

@@ -132,7 +132,7 @@ async fn assert_repo_erased(
 ) -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(
         sqlx::query_scalar::<_, i64>(
-            "SELECT COUNT(*)::bigint FROM proxima_code.test_requested_v1 WHERE memory_id = $1",
+            "SELECT COUNT(*)::bigint FROM proxima_code.test_requested_v1 WHERE t = $1",
         )
         .bind(memory_id)
         .fetch_one(pool)
@@ -150,7 +150,7 @@ async fn assert_repo_erased(
     );
     assert_eq!(
         sqlx::query_scalar::<_, i64>(
-            "SELECT COUNT(*)::bigint FROM proxima_code.commit_v1 WHERE memory_id = $1",
+            "SELECT COUNT(*)::bigint FROM proxima_code.commit_v1 WHERE t = $1",
         )
         .bind(memory_id)
         .fetch_one(pool)

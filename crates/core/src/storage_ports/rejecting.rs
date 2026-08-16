@@ -38,8 +38,8 @@ use crate::verbs::goal_write::{
 use crate::verbs::mcp_call_history::{McpCallHistoryRequest, McpCallHistoryResponse};
 use crate::verbs::persist_mcp_call::{McpCallLogInput, McpCallLogOutcome};
 use crate::{
-    EmbeddableEntityRef, EntityId, EntityKind, FactEntityId, GroupId, MembershipRow, Owner,
-    OwnerRef, Relation, SchemaId, SchemaVersion, SidecarPayload, SourceId, UserId,
+    EmbeddableEntityRef, EntityId, EntityKind, GroupId, MembershipRow, Owner, OwnerRef, Relation,
+    SidecarPayload, SourceId, UserId,
 };
 
 #[derive(Debug)]
@@ -526,16 +526,6 @@ impl EdgeReadPort for RejectingStorage {
 
 #[async_trait::async_trait]
 impl CitationPort for RejectingStorage {
-    async fn fact_entity_id_for(
-        &self,
-        _owner: &Owner,
-        _schema_id: &SchemaId,
-        _schema_version: SchemaVersion,
-        _natural_key: &[String],
-    ) -> Result<Option<FactEntityId>, StorageError> {
-        Ok(None)
-    }
-
     async fn facts_citing_object(
         &self,
         _read_owners: &[OwnerRef],
@@ -554,14 +544,6 @@ impl CitationPort for RejectingStorage {
     async fn citation_of_fact(
         &self,
         _fact_memory_id: crate::MemoryId,
-    ) -> Result<Option<crate::verbs::query::FactCitationReadback>, StorageError> {
-        Ok(None)
-    }
-
-    async fn citation_of_entity_head(
-        &self,
-        _read_owners: &[OwnerRef],
-        _fact_entity_id: FactEntityId,
     ) -> Result<Option<crate::verbs::query::FactCitationReadback>, StorageError> {
         Ok(None)
     }

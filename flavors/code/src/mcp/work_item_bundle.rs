@@ -324,10 +324,10 @@ async fn load_criteria(
 ) -> Result<Vec<CriteriaBundle>, ToolError> {
     let pool = code_store(ctx)?;
     let rows: Vec<Uuid> = sqlx::query_scalar(
-        "SELECT memory_id
+        "SELECT t
            FROM proxima_code.acceptance_criteria_v1
           WHERE work_item_memory_id = $1
-          ORDER BY created_at ASC",
+          ORDER BY t ASC",
     )
     .bind(memory_id.into_inner())
     .fetch_all(pool.pool())
@@ -612,10 +612,10 @@ async fn load_results(
         WorkItemBundleKind::Test => ("proxima_code.test_result_v1", "test_requested_memory_id"),
     };
     let sql = format!(
-        "SELECT memory_id, status::text, summary, artifact_refs, log_excerpt
+        "SELECT t AS memory_id, status::text, summary, artifact_refs, log_excerpt
            FROM {table}
           WHERE {fk} = $1
-          ORDER BY created_at ASC"
+          ORDER BY t ASC"
     );
     let pool = code_store(ctx)?;
     // SQL-POLICY: fixed-fragment — the only interpolation is `fk`, chosen
@@ -652,10 +652,10 @@ async fn load_acceptance_verifications(
 ) -> Result<Vec<AcceptanceVerificationBundle>, ToolError> {
     let pool = code_store(ctx)?;
     let rows: Vec<AcceptanceVerificationSqlRow> = sqlx::query_as(
-        "SELECT memory_id, criterion_key, status::text, summary, artifact_refs, verifier_memory_id
+        "SELECT t AS memory_id, criterion_key, status::text, summary, artifact_refs, verifier_memory_id
            FROM proxima_code.acceptance_verification_v1
           WHERE work_item_memory_id = $1
-          ORDER BY created_at ASC",
+          ORDER BY t ASC",
     )
     .bind(memory_id.into_inner())
     .fetch_all(pool.pool())
@@ -692,10 +692,10 @@ async fn load_acceptance_summaries(
 ) -> Result<Vec<MemoryId>, ToolError> {
     let pool = code_store(ctx)?;
     let rows: Vec<Uuid> = sqlx::query_scalar(
-        "SELECT memory_id
+        "SELECT t
            FROM proxima_code.acceptance_summary_v1
           WHERE work_item_memory_id = $1
-          ORDER BY created_at ASC",
+          ORDER BY t ASC",
     )
     .bind(memory_id.into_inner())
     .fetch_all(pool.pool())
