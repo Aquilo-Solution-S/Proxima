@@ -19,7 +19,7 @@ mod pg_tests {
 
     use super::super::{
         claim_pending_embedding_jobs, embedding_ann_observability, insert_embedding,
-        insert_memory_embedding, load_embedding_text,
+        insert_memory_embedding, list_facts_missing_embedding, load_embedding_text,
     };
     use crate::test_fixtures::fresh_pg;
 
@@ -561,6 +561,59 @@ mod pg_tests {
                 "recall_at_k={}",
                 canary.recall_at_k
             );
+            Ok(())
+        }
+        .await;
+        drop(pg);
+        drop_db(&db_name).await?;
+        result
+    }
+
+    #[tokio::test]
+    async fn list_facts_missing_embedding_is_one_head_antijoin()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (pg, db_name) = fresh_pg("proxima_spg_embed").await;
+        let result: Result<(), Box<dyn std::error::Error>> = async {
+            let owner = owner_fixture();
+            let permit = owner_fact_write_permit(&owner).await?;
+            let missing = pg
+                .ingest_fact_atomic(&permit, &fact_draft("needs vec"), Some("stub-fact-embed"))
+                .await?;
+            let present = pg
+                .ingest_fact_atomic(&permit, &fact_draft("has vec"), Some("stub-fact-embed"))
+                .await?;
+            let mut tx = pg.pool_for_tests().begin().await?;
+            insert_memory_embedding(
+                &mut tx,
+                &owner,
+                EntityKind::Fact,
+                present.memory_id,
+                "stub-fact-embed",
+                EMBEDDING_DIM,
+                &padded_embedding([0.2, 0.3, 0.4]),
+            )
+            .await?;
+            tx.commit().await?;
+
+            let listed = list_facts_missing_embedding(
+                pg.pool_for_tests(),
+                &owner,
+                "stub-fact-embed",
+                20,
+                &[],
+            )
+            .await?;
+            assert_eq!(listed, vec![missing.memory_id]);
+
+            let skipped = list_facts_missing_embedding(
+                pg.pool_for_tests(),
+                &owner,
+                "stub-fact-embed",
+                20,
+                &["proxima-test/fact-embedding-v1".into()],
+            )
+            .await?;
+            assert!(skipped.is_empty(), "non_embeddable_schemas must be applied");
             Ok(())
         }
         .await;

@@ -274,6 +274,7 @@ pub async fn append_code_slices(
     payloads: &[CodeChunkV1],
     source_file_revision: MemoryId,
     source_commit: Option<MemoryId>,
+    embedding_model_id: Option<&str>,
 ) -> Result<Vec<DerivedOutcome>, IngestError> {
     if payloads.is_empty() {
         return Ok(Vec::new());
@@ -288,12 +289,14 @@ pub async fn append_code_slices(
         source_file_revision,
         source_commit,
         &handles,
+        embedding_model_id,
     )
     .await
 }
 
 /// [`append_code_slices`] when the caller already resolved series handles
 /// (intra-file call naming).
+#[allow(clippy::too_many_arguments)]
 pub async fn append_code_slices_with_handles(
     pool: &PgPool,
     permit: &OwnerWritePermit,
@@ -302,6 +305,7 @@ pub async fn append_code_slices_with_handles(
     source_file_revision: MemoryId,
     source_commit: Option<MemoryId>,
     handles: &[uuid::Uuid],
+    embedding_model_id: Option<&str>,
 ) -> Result<Vec<DerivedOutcome>, IngestError> {
     if payloads.len() != handles.len() {
         return Err(IngestError::Storage(
@@ -339,7 +343,10 @@ pub async fn append_code_slices_with_handles(
             // via its column default, and passing it here (not None) keeps
             // 'english' registered as an active language on every ingest.
             lexical_language: Some(crate::payloads::CODE_LEXICAL_LANGUAGE),
-            embedding: DerivedEmbedding::None,
+            embedding: match embedding_model_id {
+                Some(model_id) => DerivedEmbedding::Deferred { model_id },
+                None => DerivedEmbedding::None,
+            },
         })
         .collect::<Vec<_>>();
     let references = payloads
@@ -376,6 +383,7 @@ pub async fn append_code_slice(
     payload: &CodeChunkV1,
     source_file_revision: MemoryId,
     source_commit: Option<MemoryId>,
+    embedding_model_id: Option<&str>,
 ) -> Result<DerivedOutcome, IngestError> {
     let outcomes = append_code_slices(
         pool,
@@ -384,6 +392,7 @@ pub async fn append_code_slice(
         std::slice::from_ref(payload),
         source_file_revision,
         source_commit,
+        embedding_model_id,
     )
     .await?;
     outcomes

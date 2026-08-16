@@ -161,6 +161,12 @@ impl<'a> CodeIngestContext<'a> {
         self.store.pool()
     }
 
+    fn embedding_model_id(&self) -> Option<String> {
+        self.engine
+            .embed_client()
+            .map(|client| client.model_id().to_string())
+    }
+
     async fn owner_write_permit(&self, owner: &Owner) -> Result<OwnerWritePermit, IngestError> {
         self.engine
             .authorize_owner_write(self.authz, owner, AccessKind::Fact)
@@ -839,6 +845,7 @@ impl LocalGitSource {
                     &tomb,
                     pending.file_revision,
                     pending.source_commit,
+                    None,
                 )
                 .await?;
                 report.chunks_tombstoned += 1;
@@ -946,6 +953,7 @@ impl LocalGitSource {
             .iter()
             .map(|chunk| chunk.memory_id.into_inner())
             .collect();
+        let embedding_model_id = ctx.embedding_model_id();
         let outcomes = append_code_slices_with_handles(
             pool,
             permit,
@@ -954,6 +962,7 @@ impl LocalGitSource {
             pending.file_revision,
             pending.source_commit,
             &handles,
+            embedding_model_id.as_deref(),
         )
         .await?;
         for (chunk, outcome) in file_chunks.iter().zip(&outcomes) {
@@ -1020,6 +1029,7 @@ impl LocalGitSource {
                 &tomb,
                 pending.file_revision,
                 pending.source_commit,
+                None,
             )
             .await?;
             report.chunks_tombstoned += 1;

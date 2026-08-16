@@ -2178,10 +2178,9 @@ async fn ingest_topic_repo(
     )
     .await?;
 
-    // Chunks are not embedded by the write that creates them; a host drains
-    // the durable job queue afterwards. Doing it here is what a deployment
-    // does, and it is also the reason `degraded_to_lexical` matters: between
-    // ingest and this drain, a freshly indexed repository is lexical-only.
+    // Ingest enqueues embedding_jobs when the engine has a client. Drain
+    // claims those jobs; backfill is residue for heads written without a
+    // model. Between ingest and this drain the repo is lexical-only.
     let engine = engine_for_test(fixture.pg.clone()).with_embed(Arc::new(TopicEmbedding));
     let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
     let _ = engine

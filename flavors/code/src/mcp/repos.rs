@@ -308,13 +308,10 @@ impl Tool for CodeIngestHeadSnapshotTool {
             .await
             .map_err(map_repo_registry)?;
 
-            // Git ingest writes Facts and derived chunks directly through the
-            // flavor's own sidecar path, which carries no embedding client and
-            // so enqueues no embedding jobs. Without this, a freshly indexed
-            // repository is lexically searchable and semantically invisible —
-            // with nothing to indicate it, until someone happens to run
-            // `maintain-embeddings`. The backfill is owner-scoped and
-            // idempotent, so a re-poll that ingested nothing enqueues nothing.
+            // Present chunks enqueue embedding_jobs in the derive txn when
+            // the engine has a client. Backfill remains crash-residue for
+            // heads written without a model; it is one anti-join, not a
+            // second flavor-table scan.
             let embeddings_enqueued = engine
                 .backfill_missing_embeddings(ctx.authz(), &ctx.owner(), EMBEDDING_BACKFILL_LIMIT)
                 .await

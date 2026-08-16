@@ -101,8 +101,7 @@ pub async fn list_facts_missing_embedding(
     let owner_id = owner.stored_owner_id();
     let limit = i64::try_from(limit)
         .map_err(|_| StorageError::ConstraintViolation("limit too large".into()))?;
-    let _ = non_embeddable_schemas;
-    missing_embedding_ids(pool, owner_id, model_id, limit).await
+    missing_embedding_ids(pool, owner_id, model_id, limit, non_embeddable_schemas).await
 }
 
 async fn missing_embedding_ids(
@@ -110,12 +109,16 @@ async fn missing_embedding_ids(
     owner_id: uuid::Uuid,
     model_id: &str,
     limit: i64,
+    non_embeddable_schemas: &[String],
 ) -> Result<Vec<MemoryId>, StorageError> {
-    let mut rows = sqlx::query_scalar::<_, uuid::Uuid>(
+    // Chunks are memory rows. A second arm against code_chunk_v1 is a
+    // subset of this anti-join and used to duplicate t.
+    let rows = sqlx::query_scalar::<_, uuid::Uuid>(
         "SELECT m.t
            FROM proxima_core.memory_head h
            JOIN proxima_core.memory m ON m.handle = h.handle AND m.t = h.t
           WHERE m.owner_id = $1
+            AND NOT (h.schema_id = ANY($4::text[]))
             AND NOT EXISTS (
                 SELECT 1 FROM proxima_core.embedding_heads eh
                  WHERE eh.entity_id = m.t AND eh.model_id = $2
@@ -126,40 +129,10 @@ async fn missing_embedding_ids(
     .bind(owner_id)
     .bind(model_id)
     .bind(limit)
+    .bind(non_embeddable_schemas)
     .fetch_all(pool)
     .await
     .map_err(map_err)?;
-    let chunk_table: bool =
-        sqlx::query_scalar("SELECT to_regclass('proxima_code.code_chunk_v1') IS NOT NULL")
-            .fetch_one(pool)
-            .await
-            .map_err(map_err)?;
-    let have = i64::try_from(rows.len()).unwrap_or(i64::MAX);
-    if chunk_table && have < limit {
-        let remaining = limit.saturating_sub(have);
-        let chunks = sqlx::query_scalar::<_, uuid::Uuid>(
-            "SELECT m.t
-               FROM proxima_core.memory_head h
-               JOIN proxima_core.memory m ON m.handle = h.handle AND m.t = h.t
-               JOIN proxima_code.code_chunk_v1 c ON c.t = m.t
-              WHERE m.owner_id = $1
-                AND c.state = 'Present'
-                AND NULLIF(btrim(c.text), '') IS NOT NULL
-                AND NOT EXISTS (
-                    SELECT 1 FROM proxima_core.embedding_heads eh
-                     WHERE eh.entity_id = m.t AND eh.model_id = $2
-                )
-              ORDER BY m.t ASC
-              LIMIT $3",
-        )
-        .bind(owner_id)
-        .bind(model_id)
-        .bind(remaining)
-        .fetch_all(pool)
-        .await
-        .map_err(map_err)?;
-        rows.extend(chunks);
-    }
     Ok(rows.into_iter().map(MemoryId::new).collect())
 }
 
@@ -361,8 +334,8 @@ pub async fn enqueue_missing_embedding_jobs(
         return Ok(0);
     }
     let owner_id = permit.owner().stored_owner_id();
-    let _ = non_embeddable_schemas;
-    let ids = missing_embedding_ids(pool, owner_id, model_id, limit).await?;
+    let ids =
+        missing_embedding_ids(pool, owner_id, model_id, limit, non_embeddable_schemas).await?;
     if ids.is_empty() {
         return Ok(0);
     }
@@ -519,6 +492,16 @@ mod tests {
     #[test]
     fn the_claim_sql_is_pinned() {
         assert_eq!(CLAIM_EMBEDDING_JOBS_SQL, CLAIM_GOLDEN);
+    }
+
+    #[test]
+    fn missing_embedding_scan_does_not_probe_flavor_tables() {
+        let src = include_str!("jobs.rs");
+        let needle = format!("{}{}", "to_reg", "class(");
+        assert!(
+            !src.contains(&needle),
+            "chunks are memory rows; do not dual-scan proxima_code"
+        );
     }
 
     #[test]
