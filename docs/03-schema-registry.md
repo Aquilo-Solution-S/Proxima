@@ -6,22 +6,21 @@ Owned here:
 
 | Family | Entity row | Sidecar key | Text rule |
 |---|---|---|---|
-| `FactPayload` | `proxima_core.memories` | `memory_id` | no stored `text`; render on demand |
-| `AbstractionPayload` | `proxima_core.memories` | `memory_id` | operator-authored `text` required |
-| `PerspectivePayload` | `proxima_core.memories` | `memory_id` | operator-authored `text` required |
+| `FactPayload` | `proxima_core.memory` | `t` | no stored `text`; render on demand |
+| `AbstractionPayload` | `proxima_core.memory` | `t` | operator-authored `text` required |
+| `PerspectivePayload` | `proxima_core.memory` | `t` | operator-authored `text` required |
 
-There is no edge payload family. `proxima_core.edges` is an index with no
-payload, no sidecar and no id to key one by (see
-[16](16-edges.md#the-edge-table-is-an-index)); a payload's `references()`
-declaration is what puts rows in it.
+There is no edge payload family and no edge table. Pins are
+`memory.origins` / `memory.refs` (see [16](16-edges.md)); a payload's
+`references()` declaration is what writes `refs`.
 
 Same registry, separate owner docs:
 
 | Family | Entity row | Doc |
 |---|---|---|
-| `GoalPayload` | `proxima_core.goals` | [06](06-goals-and-self.md#goal-entity) |
-| `CitedObjectPayload` | `proxima_core.cited_objects` | [11](11-citations.md#trait-families) |
-| `CitationMappingPayload` | `proxima_core.citation_mappings` | [11](11-citations.md#trait-families) |
+| `GoalPayload` | `proxima_core.goal` | [06](06-goals-and-self.md#goal-entity) |
+| `CitedObjectPayload` | `proxima_core.blob` | [11](11-citations.md#trait-families) |
+| `CitationMappingPayload` | optional sidecar on `memory.blob_id` | [11](11-citations.md#trait-families) |
 
 Registry rules:
 
@@ -109,10 +108,9 @@ Connection metadata (every family):
 |---|---|
 | `references()` | the node references this payload's fields carry; ingest derives one `Reference` index entry per declaration, in the node write's own transaction. Default: none. |
 
-`references()` is the *only* way a schema puts rows in `proxima_core.edges`.
-There is no edge kind to choose and no relation to register: a
-Fact-entity-head reference follows the head, every other reference pins the
-row, and the address form is the whole binding.
+`references()` is the *only* way a schema writes `memory.refs`.
+There is no edge kind to choose and no relation to register. Every
+address is a pin (`ReferenceBinding::Pin`).
 
 ### `FactPayload`
 
@@ -184,9 +182,8 @@ Constructors and what they bind to:
 
 | Constructor | Address | Binding |
 |---|---|---|
-| `PayloadReference::memory` | a `memories` row | pins that observation |
-| `PayloadReference::goal` | a `goals` row | pins that Goal |
-| `PayloadReference::fact_entity_head` | a `fact_entities` head | follows the head as it is re-observed |
+| `PayloadReference::memory` | a `memory` row (`t`) | pins that observation |
+| `PayloadReference::goal` | a `goal` row (`t`) | pins that Goal |
 
 Rules:
 
@@ -255,12 +252,12 @@ Sidecar table contract, when a sidecar exists:
 
 | Payload family | Primary key | Required FK |
 |---|---|---|
-| Fact | `memory_id` | `proxima_core.memories(memory_id)` |
-| Abstraction | `memory_id` | `proxima_core.memories(memory_id)` |
-| Perspective | `memory_id` | `proxima_core.memories(memory_id)` |
-| Goal | `goal_id` | `proxima_core.goals(goal_id)` |
-| CitedObject | `cited_object_id` | `proxima_core.cited_objects(cited_object_id)` |
-| CitationMapping | `citation_mapping_id` | `proxima_core.citation_mappings(citation_mapping_id)` |
+| Fact | `t` | `proxima_core.memory(t)` |
+| Abstraction | `t` | `proxima_core.memory(t)` |
+| Perspective | `t` | `proxima_core.memory(t)` |
+| Goal | `t` | `proxima_core.goal(t)` |
+| CitedObject | `blob_id` | `proxima_core.blob(blob_id)` |
+| CitationMapping | optional sidecar | `memory.blob_id` is the link |
 
 Rules:
 
@@ -277,7 +274,7 @@ Example shape:
 
 ```sql
 CREATE TABLE proxima_code.commit_v1 (
-    memory_id uuid PRIMARY KEY REFERENCES proxima_core.memories(memory_id),
+    t uuid PRIMARY KEY REFERENCES proxima_core.memory(t),
     repo_id uuid NOT NULL,
     sha text NOT NULL,
     message text NOT NULL

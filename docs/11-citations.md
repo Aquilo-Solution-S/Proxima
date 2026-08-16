@@ -9,25 +9,20 @@ sessions, computation records, etc. that a Fact or an Abstraction points at.
 ## Three-layer model
 
 ```
-Fact        ──► CitationMapping ──► CitedObject
-Abstraction ──► CitationMapping ──► CitedObject
-                (annotation)          (artefact)
+Fact        ──► blob_id 0..1 ──► blob
+Abstraction ──► blob_id 0..1 ──► blob
 
-Perspective     no citation_mapping_id; citations accumulate transitively
-                through its references and origin entries (P → A → F).
+Perspective     no blob_id; citations accumulate transitively
+                through origins/refs (P → A → F).
 ```
 
-- **CitedObject** — the artefact. Uploaded blob with internal S3
-  `bucket + object_key`, Image with dimensions, ChatSession with
-  platform + session id, etc.
-  Typed-per-domain via `CitedObjectPayload`. Idempotent on
-  `content_hash` within Owner.
-- **CitationMapping** — the typed annotation pointing one Memory at one
-  CitedObject (page, paragraph, bbox, message id, time range, …).
-  Typed-per-domain via `CitationMappingPayload`.
-- **Memory.citation_mapping_id** — OPTIONAL for **Fact and Abstraction**,
-  forbidden on Perspective. A cited memory cites one artefact via one
-  mapping.
+- **blob** — the artefact (`proxima_core.blob`). Content-addressed per
+  owner (`owner_id, schema_id, content_hash`).
+- **CitationMapping** — optional sidecar when the citation carries
+  schema-specific metadata (page, bbox, …). A fieldless link needs no
+  sidecar.
+- **`memory.blob_id`** — OPTIONAL for **Fact and Abstraction**,
+  forbidden on Perspective.
 
 An Abstraction may cite because a **computed score is an Abstraction**
 (see [16 §Computed Scores Are Abstractions](16-edges.md#computed-scores-are-abstractions)):

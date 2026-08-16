@@ -146,12 +146,10 @@ impl PerspectivePayload for CodeWorkAssignmentV1 {
 
 | Constructor | Address | Binding |
 |---|---|---|
-| `PayloadReference::memory` | a `memories` row | pins that observation |
-| `PayloadReference::goal` | a `goals` row | pins that Goal |
-| `PayloadReference::fact_entity_head` | a `fact_entities` head | follows the head as it is re-observed |
+| `PayloadReference::memory` | a `memory` row (`t`) | pins that observation |
+| `PayloadReference::goal` | a `goal` row (`t`) | pins that Goal |
 
-The address form *is* the binding — there is no `FollowHead` / `Pin` cell to
-configure, and the two cannot disagree.
+The only binding is `ReferenceBinding::Pin`.
 
 Rules worth internalizing before designing a flavor's graph:
 
@@ -167,9 +165,8 @@ Rules worth internalizing before designing a flavor's graph:
   not an edge kind. (`proxima-code/work-assignment-v1` exists for exactly this
   reason: neither the plan Abstraction nor the worker Perspective owned the
   targeting claim.)
-- **Rebuildability.** Dropping `proxima_core.edges` and re-deriving it from
-  node content must reproduce the same set, which is why a reference is a
-  function of payload content and nothing else.
+- **Rebuildability.** `memory.origins` / `memory.refs` are a function of
+  node content. Re-deriving pins from payloads must reproduce the same set.
 
 ## Key Selection
 
@@ -188,7 +185,7 @@ Embedded hosts create product-authored Goals through
 `GoalPayload::goal_key()`, validates the registered Goal schema, applies
 the stable request id, and records the Self assignment on the Goal row
 (`assignment_perspective_id`), from which the index entry follows; host apps
-do not insert `proxima_core.goals` rows directly.
+do not insert `proxima_core.goal` rows directly.
 
 Include `SCHEMA_ID` and `SCHEMA_VERSION` through `PayloadKeyBuilder::new`.
 Never derive keys from arbitrary JSON serialization.
@@ -213,8 +210,8 @@ One sidecar-backed payload schema maps to one sidecar table.
 CREATE SCHEMA IF NOT EXISTS my_flavor;
 
 CREATE TABLE my_flavor.document_filed_v1 (
-  memory_id uuid PRIMARY KEY
-    REFERENCES proxima_core.memories(memory_id),
+  t uuid PRIMARY KEY
+    REFERENCES proxima_core.memory(t),
   source_path text NOT NULL,
   title text NOT NULL
 );
@@ -601,14 +598,13 @@ Four contract points that are easy to get wrong:
   is also what bisects an over-limit text into chunks). Only a provider
   that is genuinely unavailable fails the write. A flavor deriving many
   memories should still checkpoint per output, not per batch.
-- **`text` is the whole semantic surface.** It lands verbatim in
-  `memories.text`, which is the only string ever embedded;
-  `search_projection()` adds lexical reach over sidecar columns but never
-  affects the vector.
+- **`text` is the whole semantic surface.** `render()` / authored text
+  is the only string ever embedded; `search_projection()` adds lexical
+  reach over sidecar columns but never affects the vector.
 - **Scoping a search takes a projection, not a copy of the text.** A tag
   filter is the only predicate that narrows `core_search_memories` to
   part of a corpus — `schema_id` is exact-match and there is no
-  per-column filter — and the base `memories` branch carries no tags, so
+  per-column filter — and the unscoped branch carries no tags, so
   a tag-filtered query is served by projection branches alone. Declare a
   `tags text[]` column, name it as `tag_column`, and project the memory's
   own text with `SearchProjectionField::MEMORY_TEXT`:
@@ -624,15 +620,11 @@ Four contract points that are easy to get wrong:
   }
   ```
 
-  Do not copy `memories.text` into the sidecar to achieve this. The copy
+  Do not copy rendered text into the sidecar to achieve this. The copy
   is a second corpus that must stay byte-identical forever, and the day
   it drifts a scoped and an unscoped search return different text for
-  one memory. Exactly this projection — the single `MEMORY_TEXT` field,
-  no `language_column` — also reads the stored `memories.search_tsv`
-  rather than tokenising each candidate row, so the sidecar needs no
-  tsvector column and no GIN index on text, only on `tags`. Add sidecar
-  fields alongside it when the sidecar genuinely holds searchable
-  content the memory text does not.
+  one memory. Add sidecar fields alongside `MEMORY_TEXT` when the sidecar
+  genuinely holds searchable content the render does not.
 
 ## Background Workers
 

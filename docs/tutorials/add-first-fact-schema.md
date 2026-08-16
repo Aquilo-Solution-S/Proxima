@@ -71,8 +71,8 @@ Create or extend the flavor migration:
 CREATE SCHEMA IF NOT EXISTS my_flavor;
 
 CREATE TABLE my_flavor.document_filed_v1 (
-  memory_id uuid PRIMARY KEY
-    REFERENCES proxima_core.memories(memory_id),
+  t uuid PRIMARY KEY
+    REFERENCES proxima_core.memory(t),
   source_path text NOT NULL,
   title text NOT NULL
 );

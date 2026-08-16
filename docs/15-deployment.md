@@ -55,18 +55,15 @@ DATABASE_URL=postgres://USER:PASS@HOST:5432/DB?sslmode=verify-full&sslrootcert=/
 
 `sslmode=require` encrypts transport but does not verify hostname. At-rest
 TDE / volume encryption is transparent to Proxima. Do NOT use pgcrypto column
-encryption for searched columns: `embeddings.vec`, `memories.text`,
-`goals.text`, `tags`. Run migrations with a DDL-capable role; run the app with
-a narrower DML role, with `PROXIMA_SKIP_MIGRATIONS=true` so the app never
-attempts DDL.
+encryption for searched columns: `embeddings.vec`, sidecar text, `tags`.
+Run migrations with a DDL-capable role; run the app with a narrower DML
+role, with `PROXIMA_SKIP_MIGRATIONS=true` so the app never attempts DDL.
 
 Migrations run automatically on first boot when that variable is unset. Check
 the release's schema lane in `MIGRATING.md` before relying on that: a lane
 that rewrites tables holds `ACCESS EXCLUSIVE` for the duration and is not
-online-safe. The current v0.0.8 lane is core `0016_v008.sql`; versions 12–15
-remain retired. It creates the delegated-grant table and alters the compliance
-audit table. The preceding v0.0.7 lane, `0011_v007.sql`, rewrites three tables
-in one transaction; its measured pre-squash 149k-row lock window was 54.7s.
+online-safe. The current v0.0.8 lane is one file, `0001_v008.sql`. It is a
+reset, not an online ALTER.
 Boot migrations set `lock_timeout = 5s`, so a migration that cannot take the
 lock fails and retries on the next pod rather than queueing behind readers.
 

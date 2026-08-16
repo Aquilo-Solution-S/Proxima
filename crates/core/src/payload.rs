@@ -484,20 +484,15 @@ pub fn schema_only_key(schema_id: &str, schema_version: u32) -> Vec<u8> {
 pub enum SearchProjectionColumnKind {
     Text,
     TextArray,
-    /// Not a sidecar column at all: the owning `proxima_core.memory`
-    /// row's `text`, the same string the memory was embedded from.
+    /// Not a sidecar column: the owning memory's rendered text (the
+    /// string the memory was embedded from).
     ///
     /// A sidecar usually declares a projection to contribute *retrieval
     /// structure* rather than new content — above all a `tag_column`,
     /// which is the only predicate that can scope a search to a subset
-    /// of a corpus. The base `memories` branch has no tags to offer
+    /// of a corpus. The unscoped branch has no tags to offer
     /// (`push_tag_filter` gets the literal `NULL::text[]` there), so a
-    /// tag-filtered query is served by projection branches alone. Absent
-    /// this kind, staying reachable under a tag filter means copying
-    /// `memories.text` into the sidecar and keeping the two
-    /// byte-identical forever — a second copy of the corpus, a second
-    /// tsvector and a second GIN index, to project a string the branch
-    /// already has in scope: every candidate branch joins `memories`.
+    /// tag-filtered query is served by projection branches alone.
     ///
     /// Construct it as [`SearchProjectionField::MEMORY_TEXT`].
     MemoryText,
@@ -515,11 +510,10 @@ impl SearchProjectionField {
     ///
     /// A projection of exactly this one field, with no `language_column`,
     /// is the whole reason the kind exists: the branch then projects the
-    /// identical string, tsvector and snippet as the base `memories`
-    /// branch, so a tag-scoped search and an unscoped one cannot return
-    /// different text for the same memory. Combine it with sidecar
-    /// fields when the sidecar genuinely adds searchable content the
-    /// memory text does not carry.
+    /// same string as the unscoped search path, so a tag-scoped search
+    /// and an unscoped one cannot return different text for the same
+    /// memory. Combine it with sidecar fields when the sidecar genuinely
+    /// adds searchable content the render does not carry.
     pub const MEMORY_TEXT: Self = Self {
         column: "",
         kind: SearchProjectionColumnKind::MemoryText,
@@ -568,9 +562,9 @@ pub trait FactPayload:
     /// should override to `false`.
     ///
     /// GATES THE VECTOR ONLY — never the text, and never lexical search.
-    /// A non-embeddable Fact still writes [`Self::render`] to
-    /// `memories.text`, so it is still readable and still matched by
-    /// full-text search. That distinction is the whole point: a filename
+    /// A non-embeddable Fact still writes [`Self::render`], so it is
+    /// still readable and still matched by full-text search. That
+    /// distinction is the whole point: a filename
     /// is often the ONLY handle a person has on a file they are looking
     /// for, which is a lexical need, while `"uploaded page-00042.png\n
     /// image/png, 18332 bytes"` has no semantic neighbourhood worth

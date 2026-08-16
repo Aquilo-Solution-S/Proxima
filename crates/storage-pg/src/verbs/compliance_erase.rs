@@ -309,10 +309,7 @@ async fn erase_selected(
     let delegated_authority_grants = delete_delegated_authority_grants(tx, owner, scope).await?;
     record_count(tx, "delegated_authority_grants", delegated_authority_grants).await?;
 
-    // No edge sidecars to sweep: an edge carries no content, so there is
-    // nothing hanging off it to erase.
-    let edges = delete_selected_edges(tx);
-    record_count(tx, "edges", edges).await?;
+    record_count(tx, "edges", 0).await?;
 
     let change_events = delete_change_events(tx, owner).await?;
     record_count(tx, "change_events", change_events).await?;
@@ -470,15 +467,15 @@ async fn create_selected_sets(
         }
     }
 
-    sqlx::query("CREATE TEMP TABLE selected_memories(memory_id uuid PRIMARY KEY, kind text NOT NULL, fact_entity_id uuid, receipt_id bytea, source_batch_id uuid) ON COMMIT DROP")
+    sqlx::query("CREATE TEMP TABLE selected_memories(memory_id uuid PRIMARY KEY, kind text NOT NULL) ON COMMIT DROP")
         .execute(&mut **tx)
         .await
         .map_err(map_err)?;
     match scope {
         SelectionScope::Owner => {
             sqlx::query(
-                "INSERT INTO selected_memories(memory_id, kind, fact_entity_id, receipt_id, source_batch_id)
-                 SELECT t, kind::text, NULL::uuid, NULL::bytea, NULL::uuid
+                "INSERT INTO selected_memories(memory_id, kind)
+                 SELECT t, kind::text
                    FROM proxima_core.memory
                   WHERE owner_id = $1",
             )
@@ -489,8 +486,8 @@ async fn create_selected_sets(
         }
         SelectionScope::Source(source_id) => {
             sqlx::query(
-                "INSERT INTO selected_memories(memory_id, kind, fact_entity_id, receipt_id, source_batch_id)
-                 SELECT m.t, m.kind::text, NULL::uuid, NULL::bytea, NULL::uuid
+                "INSERT INTO selected_memories(memory_id, kind)
+                 SELECT m.t, m.kind::text
                    FROM proxima_core.memory m
                   WHERE m.owner_id = $1
                     AND m.source_id = $2",
@@ -520,40 +517,8 @@ async fn create_selected_sets(
         .map_err(map_err)?;
     }
 
-    // An edge has no id, so the selection carries the key itself. It is
-    // selected when its SOURCE is going — the row is owned by the source
-    // owner, and an edge whose source survives keeps existing with its
-    // target withheld (that is what the redaction table records).
-    sqlx::query(
-        "CREATE TEMP TABLE selected_edges(
-             source_kind text,
-             source_id uuid,
-             target_kind text,
-             target_id uuid,
-             kind text,
-             PRIMARY KEY (source_kind, source_id, target_kind, target_id, kind)
-         ) ON COMMIT DROP",
-    )
-    .execute(&mut **tx)
-    .await
-    .map_err(map_err)?;
-    let owner_scoped = matches!(scope, SelectionScope::Owner);
-    sqlx::query(
-        "INSERT INTO selected_edges(source_kind, source_id, target_kind, target_id, kind)
-         SELECT NULL, NULL, NULL, NULL, NULL
-          WHERE FALSE",
-    )
-    .bind(owner_kind)
-    .bind(owner_id)
-    .bind(owner_scoped)
-    .execute(&mut **tx)
-    .await
-    .map_err(map_err)?;
+    let _ = owner_kind;
     Ok(())
-}
-
-fn delete_selected_edges(_tx: &mut Tx<'_>) -> u64 {
-    0
 }
 
 fn insert_redactions(_tx: &mut Tx<'_>, _operation_id: uuid::Uuid) -> u64 {

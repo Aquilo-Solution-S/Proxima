@@ -77,16 +77,13 @@ thing persisting through revision. It becomes a lineage pointer
 memory ("emitted by Perspective P") is likewise node metadata — a
 column on the row, known at write time — not an edge.
 
-### The edge table is an index
+### Pins live on the node
 
 ```
-proxima_core.edges (
-    source_kind, source_id,        -- memory | goal | fact-entity head
-    target_kind, target_id,
-    kind,                          -- 'origin' | 'reference'
-    owner_kind, owner_id,          -- always the source owner
-    created_at,
-    PRIMARY KEY (source_kind, source_id, target_kind, target_id, kind)
+proxima_core.memory (
+    origins uuid[],   -- Origin pins: what this row was made from
+    refs    uuid[],   -- Reference pins: payload fields that point at other t
+    ...
 )
 ```
 
@@ -224,32 +221,12 @@ mechanically transforming rows would have been the more elaborate way to
 arrive at data the substrate can regenerate from what the nodes already
 say, which is exactly what rebuildability means.
 
-**Core lane — `0011_v007.sql`.** Drops `proxima_core.edges`, its
-`agent_link_v1` sidecar and the `relation_class` / `edge_authorship_kind`
-enums; creates the two-kind `edge_kind` enum, the five-label endpoint
-enum (including `FactEntityHead`), the new `edges` table with its
-structural primary key, the layering / owner / self-loop CHECKs and the
-existence trigger; adds `superseded_by` to memories and goals,
-`authoring_perspective_id` to memories, and
-`assignment_perspective_id` / `dependency_goal_ids` / `evidence_memory_ids`
-to goals; widens the citation constraint to Fact ∪ Abstraction; creates
-`proxima_core.interpretation_v1`; and reshapes `change_event` to carry
-the whole edge rather than a handle to it.
-The boot floor (derived from the embedded migration set) is **11**, so a
-database one lane behind the binary fails at boot rather than at first query. The edge reset
-shares that file with the rest of the v0.0.7 lane: it was authored as
-`0015_v008.sql` and folded into `0011_v007.sql` before the tag, so a v0.0.6
-database reaches the whole model in one transaction.
+**Core lane — `0001_v008.sql`.** One file. Timeseries `memory` / `goal`
+(`handle`, `t`); pins are `origins` / `refs`; no `edges` table; citation
+is `blob_id`. Existing databases reset.
 
 **Flavor lane — `20260801000020_v007_baseline.sql`.** `DROP SCHEMA
-proxima_code CASCADE` plus a folded schema; the five superseded lanes are
-deleted from the tree. This one is not a preference: the old baseline
-created `proxima_code.code_calls_v1` with a foreign key to
-`proxima_core.edges(edge_id)`, and the core lane removed that column along
-with the identity it stood for, so the old lane can no longer run at all —
-not on a fresh database and not on an old one. (The file's own header still
-says v0.0.8 and names `0015`: `SQLx` checksums content, not filenames, so
-the rename was free and an edit would not have been.)
+proxima_code CASCADE` plus a folded schema. Sidecar PK is `t`.
 
 The way back is **re-register and re-index**, which the code flavor
 already ships a runbook for (`proxima-code_erase_repo`, then

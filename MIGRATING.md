@@ -33,19 +33,16 @@ Older lanes are kept below: [v0.0.6 → v0.0.7](#v006--v007),
 
 ## The v0.0.8 schema lane
 
-Apply the core migrations through version 16 before promoting the v0.0.8
-binary:
+v0.0.8 is a **reset**, not an ALTER of v0.0.7. Core ships as one file:
 
 | Version | Ledger | File | Effect |
 |---:|---|---|---|
-| 16 | core | `0016_v008.sql` | adds durable delegated-authority grants, owner/subject audit indexes, immutable-revocation enforcement, and the delegated-grant compliance-audit count |
+| 1 | core | `0001_v008.sql` | timeseries `memory`/`goal` (`handle`, `t`); pins on `origins`/`refs`; `blob`+`blob_id`; `announce`; `wake_config`; `cooled`; core sidecars. No `edges`/`memories`/`fact_entities` |
 
-Core migration versions 12–15 remain permanently retired by
-`0011_v007.sql`; do not rename or reuse them. `0016_v008.sql` is the next
-fresh version and runs after the shipped v0.0.7 squash. Run the DDL-capable
-migration job first when application roles use `PROXIMA_SKIP_MIGRATIONS=true`,
-then start the application role. Boot fails closed if either the grant table
-or its compliance-audit count column is absent.
+Existing databases must reset (`--reset`). A ledger that still records
+draft versions 2–21, or a version-1 checksum from the 0001–0009 split,
+fails closed. Run the DDL-capable migration job first when application
+roles use `PROXIMA_SKIP_MIGRATIONS=true`.
 
 ## Compose flavor services once
 

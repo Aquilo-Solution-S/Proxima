@@ -6,9 +6,8 @@ use serde::{Deserialize, Serialize};
 /// Fact, its file-revision Facts, and derived code-slice/call
 /// intelligence for the closed source-batch.
 ///
-/// The Abstraction's `text` (operator-authored narrative) lives on
-/// the substrate `memories.text` column; this sidecar carries the
-/// typed structured fields.
+/// The Abstraction's `text` (operator-authored narrative) is the
+/// search/embed body; this sidecar carries the typed structured fields.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct CommitSummaryV1 {
     #[schemars(

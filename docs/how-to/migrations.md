@@ -5,6 +5,9 @@ are what they are. The operator-facing counterpart ("what do I apply to my
 database") is `MIGRATING.md`; the release checklist is `RELEASING.md`. This
 file is for anyone writing a migration.
 
+v0.0.8 core ships as one file: `crates/storage-pg/migrations/0001_v008.sql`.
+A database that applied the draft 0001–0009 split must reset.
+
 ## The three rules
 
 1. **A version number is never reused.** Once a file with version `N` has been

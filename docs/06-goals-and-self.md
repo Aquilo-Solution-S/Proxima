@@ -51,9 +51,8 @@ States:
 Goal-to-Goal decomposition, dependency, and inspiration are **Goal row
 fields**: `dependency_goal_ids`, `evidence_memory_ids`, and
 `assignment_perspective_id`. The Goal is the node that owns the statement, so
-the `reference` entries in `proxima_core.edges` are derived from those columns
-in the Goal's own transaction — which is what makes the goal side of the index
-rebuildable.
+those columns are the Goal's own pins — written in the Goal's own
+transaction — which is what makes the goal side rebuildable.
 
 Lifecycle:
 

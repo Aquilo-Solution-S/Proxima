@@ -358,9 +358,8 @@ fn code_slice_memory_id(payload: &CodeChunkV1, source_file_revision: MemoryId) -
 /// The chunk's rendered form: a `path:start-end` header line followed by
 /// the chunk body.
 ///
-/// The render is `memories.text`, and `memories.text` is what the embedding
-/// pipeline embeds (`fact_embeddings::text::load_embedding_text`) and what
-/// `memories.search_tsv` is generated from. Header plus body: the header
+/// The render is what the embedding pipeline embeds
+/// (`fact_embeddings::text::load_embedding_text`). Header plus body: the header
 /// makes a retrieved chunk actionable (file and lines) and carries lexical
 /// signal from the path; the body is what a question about the code matches.
 fn render_code_slice(payload: &CodeChunkV1) -> String {

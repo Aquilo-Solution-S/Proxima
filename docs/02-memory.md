@@ -146,13 +146,10 @@ is the part a reader of 02 needs.
 > meaning arises from the synthesis of the connected nodes.
 
 ```
-proxima_core.edges (
-    source_kind, source_id,        -- memory | goal | fact-entity head
-    target_kind, target_id,
-    kind,                          -- 'origin' | 'reference'
-    owner_kind, owner_id,          -- always the source owner
-    created_at,
-    PRIMARY KEY (source_kind, source_id, target_kind, target_id, kind)
+proxima_core.memory (
+    origins uuid[],   -- made-from pins (not allowed on Facts)
+    refs    uuid[],   -- points-at pins from payload references()
+    ...
 )
 ```
 

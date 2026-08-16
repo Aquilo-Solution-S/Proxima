@@ -208,7 +208,7 @@ headline pin theorems in `Causa/Edges.lean`.
 | ST-13 | Only compliance erasure deletes | REBASED: def `wipeable := abandoned ∨ (cold ∧ unreferenced ∧ policy)` + THEOREMs `wipeable_when_abandoned`, `wipeable_when_cold_unreferenced_policy`, `drop_personal_abandoned`, `world_never_abandoned`. Forget cools; erase is abandonment-only |
 | ST-14 | Stateful current-state = head query, never replacement | `MemoryHead.t` / `GoalHead.t` are display/search heads. Each `t` stays. No `FactEntity` |
 | ST-15..17 | Vector-store independence (targets F/A/P AND Goals) | structural ABSENCE: no kernel `Embedding` entity, no `Memory → Embedding` accessor — embeddings are engine-side (`EmbeddingTarget`/`Embedding`/`embedding_target` retired 2026-06-28; the invariant was always the absence, never the declared type) |
-| ST-22/23 | Content hash/dedup key not Fact identity; collision semantics | `Memory.id` remains Fact identity; `FactEntityId` is a fresh `Id` surrogate and natural key is only a uniqueness guard; source/flavor ingest dedup key excluded after D1 |
+| ST-22/23 | Content hash/dedup key not Fact identity; collision semantics | Fact identity is `Memory.t`; `ingest_keys` is the only sourced unique; no `FactEntity` |
 | ST-FE | FactEntity endpoint alignment | RETIRED: no `FactEntity`. Pins are Memory `t` or a cooled stub (`pinExists`). Follow-at-read is forbidden |
 | ST-26 | Current state = head query | defs `memoryIsHead` / `memoryHeads` / `perspectiveHeads` over `MemoryHead`; `goalIsHead` / `activeGoals` over `GoalHead` |
 

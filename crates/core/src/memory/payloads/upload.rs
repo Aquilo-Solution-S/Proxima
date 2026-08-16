@@ -46,7 +46,7 @@ impl FactPayload for UploadV1 {
     /// A filename is worth FINDING and not worth EMBEDDING, and this is
     /// the schema the distinction was written for.
     ///
-    /// [`Self::render`] still reaches `memories.text`, so an upload stays
+    /// [`Self::render`] still reaches search, so an upload stays
     /// readable and still matches full-text search on its filename —
     /// which is the only handle a person has on a file they are looking
     /// for, and the reason `render` carries it at all. What it does not

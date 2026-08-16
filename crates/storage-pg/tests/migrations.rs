@@ -117,6 +117,14 @@ async fn migrations_apply_to_fresh_db() {
             );
         }
 
+        let core_versions: i64 = sqlx::query_scalar(
+            "SELECT count(*)::bigint FROM public._sqlx_migrations
+              WHERE success AND version <= 9999",
+        )
+        .fetch_one(pg.pool_for_tests())
+        .await?;
+        assert_eq!(core_versions, 1, "v0.0.8 is one core migration");
+
         let world: (Uuid, String) = sqlx::query_as(
             "SELECT owner_id, kind::text FROM proxima_core.owners
               WHERE owner_id = '00000000-0000-0000-0000-000000000001'::uuid",

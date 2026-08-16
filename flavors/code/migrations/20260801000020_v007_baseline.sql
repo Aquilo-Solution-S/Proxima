@@ -7,11 +7,10 @@
 --
 -- The reason is structural rather than cosmetic. The pre-v0.0.8 baseline
 -- (20260516000020) created `proxima_code.code_calls_v1` with a foreign key to
--- `proxima_core.edges(edge_id)`, and core migration 0015 removed that column
--- along with the identity it stood for: an edge has no id any more, because
--- the row IS its identity. The old baseline can therefore no longer run at
+-- a now-deleted edge id. Pins live on `memory.origins` / `memory.refs`;
+-- there is no edge table. The old baseline can therefore no longer run at
 -- all — not on a fresh database and not on an old one — so the flavor lane is
--- replaced rather than extended, in the spirit of the v0.0.4 reset.
+-- replaced rather than extended.
 --
 -- The four superseded lanes (20260516000020, 20260709000020, 20260726000020,
 -- 20260728000020, 20260729000020) are folded in here and deleted from the
@@ -24,7 +23,7 @@
 --     per edge, which is why a second call to the same callee needed a second
 --     edge and a synthetic id to keep them apart. Call sites now live in the
 --     caller chunk's own payload (`code_chunk_call_v1`), and the connection is
---     one `reference` row in `proxima_core.edges` derived from it. Ten call
+--     one `memory.refs` pin derived from it. Ten call
 --     sites, one index row.
 --   * `work_assignment_v1` is NEW: the Perspective that replaced the
 --     `proxima-code/targets-execution-request` relation. Neither endpoint
@@ -237,7 +236,7 @@ CREATE TABLE proxima_code.code_chunk_call_v1 (
 -- Name: TABLE code_chunk_call_v1; Type: COMMENT; Schema: proxima_code; Owner: -
 --
 
-COMMENT ON TABLE proxima_code.code_chunk_call_v1 IS 'Call sites of proxima_code.code_chunk_v1, one row per site. The caller chunk''s payload owns them: ten calls into the same callee are ten rows here and exactly one row in proxima_core.edges. Successor to the code_calls_v1 edge sidecar, which stored one site per edge and could therefore never hold the second one. There is deliberately no foreign key on callee_memory_id: chunks of one file call each other in both directions, so the payload rows are written before any of the group''s index rows, and the index is what enforces that the callee exists.';
+COMMENT ON TABLE proxima_code.code_chunk_call_v1 IS 'Call sites of proxima_code.code_chunk_v1, one row per site. The caller chunk''s payload owns them: ten calls into the same callee are ten rows here and exactly one pin in memory.refs. Successor to the code_calls_v1 edge sidecar, which stored one site per edge and could therefore never hold the second one. There is deliberately no foreign key on callee_memory_id: chunks of one file call each other in both directions, so the payload rows are written before any of the group''s index rows, and the index is what enforces that the callee exists.';
 
 
 --
@@ -1116,11 +1115,11 @@ CREATE TRIGGER work_requested_v1_append_only BEFORE UPDATE ON proxima_code.work_
 
 
 --
--- Name: acceptance_criteria_v1 acceptance_criteria_v1_memory_id_fkey; Type: FK CONSTRAINT; Schema: proxima_code; Owner: -
+-- Name: acceptance_criteria_v1 acceptance_criteria_v1_t_fkey; Type: FK CONSTRAINT; Schema: proxima_code; Owner: -
 --
 
 ALTER TABLE ONLY proxima_code.acceptance_criteria_v1
-    ADD CONSTRAINT acceptance_criteria_v1_memory_id_fkey FOREIGN KEY (t) REFERENCES proxima_core.memory(t);
+    ADD CONSTRAINT acceptance_criteria_v1_t_fkey FOREIGN KEY (t) REFERENCES proxima_core.memory(t);
 
 
 --
@@ -1140,11 +1139,11 @@ ALTER TABLE ONLY proxima_code.acceptance_criterion_v1
 
 
 --
--- Name: acceptance_summary_v1 acceptance_summary_v1_memory_id_fkey; Type: FK CONSTRAINT; Schema: proxima_code; Owner: -
+-- Name: acceptance_summary_v1 acceptance_summary_v1_t_fkey; Type: FK CONSTRAINT; Schema: proxima_code; Owner: -
 --
 
 ALTER TABLE ONLY proxima_code.acceptance_summary_v1
-    ADD CONSTRAINT acceptance_summary_v1_memory_id_fkey FOREIGN KEY (t) REFERENCES proxima_core.memory(t);
+    ADD CONSTRAINT acceptance_summary_v1_t_fkey FOREIGN KEY (t) REFERENCES proxima_core.memory(t);
 
 
 --
@@ -1156,11 +1155,11 @@ ALTER TABLE ONLY proxima_code.acceptance_summary_v1
 
 
 --
--- Name: acceptance_verification_v1 acceptance_verification_v1_memory_id_fkey; Type: FK CONSTRAINT; Schema: proxima_code; Owner: -
+-- Name: acceptance_verification_v1 acceptance_verification_v1_t_fkey; Type: FK CONSTRAINT; Schema: proxima_code; Owner: -
 --
 
 ALTER TABLE ONLY proxima_code.acceptance_verification_v1
-    ADD CONSTRAINT acceptance_verification_v1_memory_id_fkey FOREIGN KEY (t) REFERENCES proxima_core.memory(t);
+    ADD CONSTRAINT acceptance_verification_v1_t_fkey FOREIGN KEY (t) REFERENCES proxima_core.memory(t);
 
 
 --
@@ -1188,11 +1187,11 @@ ALTER TABLE ONLY proxima_code.code_chunk_call_v1
 
 
 --
--- Name: work_assignment_v1 work_assignment_v1_memory_id_fkey; Type: FK CONSTRAINT; Schema: proxima_code; Owner: -
+-- Name: work_assignment_v1 work_assignment_v1_t_fkey; Type: FK CONSTRAINT; Schema: proxima_code; Owner: -
 --
 
 ALTER TABLE ONLY proxima_code.work_assignment_v1
-    ADD CONSTRAINT work_assignment_v1_memory_id_fkey FOREIGN KEY (t) REFERENCES proxima_core.memory(t);
+    ADD CONSTRAINT work_assignment_v1_t_fkey FOREIGN KEY (t) REFERENCES proxima_core.memory(t);
 
 
 --
@@ -1226,51 +1225,51 @@ CREATE INDEX idx_work_assignment_work_item ON proxima_code.work_assignment_v1 US
 
 
 --
--- Name: code_chunk_v1 code_chunk_v1_memory_id_fkey; Type: FK CONSTRAINT; Schema: proxima_code; Owner: -
+-- Name: code_chunk_v1 code_chunk_v1_t_fkey; Type: FK CONSTRAINT; Schema: proxima_code; Owner: -
 --
 
 ALTER TABLE ONLY proxima_code.code_chunk_v1
-    ADD CONSTRAINT code_chunk_v1_memory_id_fkey FOREIGN KEY (t) REFERENCES proxima_core.memory(t);
+    ADD CONSTRAINT code_chunk_v1_t_fkey FOREIGN KEY (t) REFERENCES proxima_core.memory(t);
 
 
 --
--- Name: commit_summarizer_self_v1 commit_summarizer_self_v1_memory_id_fkey; Type: FK CONSTRAINT; Schema: proxima_code; Owner: -
+-- Name: commit_summarizer_self_v1 commit_summarizer_self_v1_t_fkey; Type: FK CONSTRAINT; Schema: proxima_code; Owner: -
 --
 
 ALTER TABLE ONLY proxima_code.commit_summarizer_self_v1
-    ADD CONSTRAINT commit_summarizer_self_v1_memory_id_fkey FOREIGN KEY (t) REFERENCES proxima_core.memory(t);
+    ADD CONSTRAINT commit_summarizer_self_v1_t_fkey FOREIGN KEY (t) REFERENCES proxima_core.memory(t);
 
 
 --
--- Name: commit_summary_v1 commit_summary_v1_memory_id_fkey; Type: FK CONSTRAINT; Schema: proxima_code; Owner: -
+-- Name: commit_summary_v1 commit_summary_v1_t_fkey; Type: FK CONSTRAINT; Schema: proxima_code; Owner: -
 --
 
 ALTER TABLE ONLY proxima_code.commit_summary_v1
-    ADD CONSTRAINT commit_summary_v1_memory_id_fkey FOREIGN KEY (t) REFERENCES proxima_core.memory(t);
+    ADD CONSTRAINT commit_summary_v1_t_fkey FOREIGN KEY (t) REFERENCES proxima_core.memory(t);
 
 
 --
--- Name: commit_v1 commit_v1_memory_id_fkey; Type: FK CONSTRAINT; Schema: proxima_code; Owner: -
+-- Name: commit_v1 commit_v1_t_fkey; Type: FK CONSTRAINT; Schema: proxima_code; Owner: -
 --
 
 ALTER TABLE ONLY proxima_code.commit_v1
-    ADD CONSTRAINT commit_v1_memory_id_fkey FOREIGN KEY (t) REFERENCES proxima_core.memory(t);
+    ADD CONSTRAINT commit_v1_t_fkey FOREIGN KEY (t) REFERENCES proxima_core.memory(t);
 
 
 --
--- Name: development_perspective_v1 development_perspective_v1_memory_id_fkey; Type: FK CONSTRAINT; Schema: proxima_code; Owner: -
+-- Name: development_perspective_v1 development_perspective_v1_t_fkey; Type: FK CONSTRAINT; Schema: proxima_code; Owner: -
 --
 
 ALTER TABLE ONLY proxima_code.development_perspective_v1
-    ADD CONSTRAINT development_perspective_v1_memory_id_fkey FOREIGN KEY (t) REFERENCES proxima_core.memory(t);
+    ADD CONSTRAINT development_perspective_v1_t_fkey FOREIGN KEY (t) REFERENCES proxima_core.memory(t);
 
 
 --
--- Name: engineer_self_v1 engineer_self_v1_memory_id_fkey; Type: FK CONSTRAINT; Schema: proxima_code; Owner: -
+-- Name: engineer_self_v1 engineer_self_v1_t_fkey; Type: FK CONSTRAINT; Schema: proxima_code; Owner: -
 --
 
 ALTER TABLE ONLY proxima_code.engineer_self_v1
-    ADD CONSTRAINT engineer_self_v1_memory_id_fkey FOREIGN KEY (t) REFERENCES proxima_core.memory(t);
+    ADD CONSTRAINT engineer_self_v1_t_fkey FOREIGN KEY (t) REFERENCES proxima_core.memory(t);
 
 
 --
@@ -1290,19 +1289,19 @@ ALTER TABLE ONLY proxima_code.execution_plan_v1
 
 
 --
--- Name: execution_plan_v1 execution_plan_v1_memory_id_fkey; Type: FK CONSTRAINT; Schema: proxima_code; Owner: -
+-- Name: execution_plan_v1 execution_plan_v1_t_fkey; Type: FK CONSTRAINT; Schema: proxima_code; Owner: -
 --
 
 ALTER TABLE ONLY proxima_code.execution_plan_v1
-    ADD CONSTRAINT execution_plan_v1_memory_id_fkey FOREIGN KEY (t) REFERENCES proxima_core.memory(t);
+    ADD CONSTRAINT execution_plan_v1_t_fkey FOREIGN KEY (t) REFERENCES proxima_core.memory(t);
 
 
 --
--- Name: execution_result_v1 execution_result_v1_memory_id_fkey; Type: FK CONSTRAINT; Schema: proxima_code; Owner: -
+-- Name: execution_result_v1 execution_result_v1_t_fkey; Type: FK CONSTRAINT; Schema: proxima_code; Owner: -
 --
 
 ALTER TABLE ONLY proxima_code.execution_result_v1
-    ADD CONSTRAINT execution_result_v1_memory_id_fkey FOREIGN KEY (t) REFERENCES proxima_core.memory(t);
+    ADD CONSTRAINT execution_result_v1_t_fkey FOREIGN KEY (t) REFERENCES proxima_core.memory(t);
 
 
 --
@@ -1314,11 +1313,11 @@ ALTER TABLE ONLY proxima_code.execution_result_v1
 
 
 --
--- Name: file_revision_v1 file_revision_v1_memory_id_fkey; Type: FK CONSTRAINT; Schema: proxima_code; Owner: -
+-- Name: file_revision_v1 file_revision_v1_t_fkey; Type: FK CONSTRAINT; Schema: proxima_code; Owner: -
 --
 
 ALTER TABLE ONLY proxima_code.file_revision_v1
-    ADD CONSTRAINT file_revision_v1_memory_id_fkey FOREIGN KEY (t) REFERENCES proxima_core.memory(t);
+    ADD CONSTRAINT file_revision_v1_t_fkey FOREIGN KEY (t) REFERENCES proxima_core.memory(t);
 
 
 --
@@ -1338,19 +1337,19 @@ ALTER TABLE ONLY proxima_code.test_requested_criterion_v1
 
 
 --
--- Name: test_requested_v1 test_requested_v1_memory_id_fkey; Type: FK CONSTRAINT; Schema: proxima_code; Owner: -
+-- Name: test_requested_v1 test_requested_v1_t_fkey; Type: FK CONSTRAINT; Schema: proxima_code; Owner: -
 --
 
 ALTER TABLE ONLY proxima_code.test_requested_v1
-    ADD CONSTRAINT test_requested_v1_memory_id_fkey FOREIGN KEY (t) REFERENCES proxima_core.memory(t);
+    ADD CONSTRAINT test_requested_v1_t_fkey FOREIGN KEY (t) REFERENCES proxima_core.memory(t);
 
 
 --
--- Name: test_result_v1 test_result_v1_memory_id_fkey; Type: FK CONSTRAINT; Schema: proxima_code; Owner: -
+-- Name: test_result_v1 test_result_v1_t_fkey; Type: FK CONSTRAINT; Schema: proxima_code; Owner: -
 --
 
 ALTER TABLE ONLY proxima_code.test_result_v1
-    ADD CONSTRAINT test_result_v1_memory_id_fkey FOREIGN KEY (t) REFERENCES proxima_core.memory(t);
+    ADD CONSTRAINT test_result_v1_t_fkey FOREIGN KEY (t) REFERENCES proxima_core.memory(t);
 
 
 --
@@ -1362,10 +1361,10 @@ ALTER TABLE ONLY proxima_code.test_result_v1
 
 
 --
--- Name: work_requested_v1 work_requested_v1_memory_id_fkey; Type: FK CONSTRAINT; Schema: proxima_code; Owner: -
+-- Name: work_requested_v1 work_requested_v1_t_fkey; Type: FK CONSTRAINT; Schema: proxima_code; Owner: -
 --
 
 ALTER TABLE ONLY proxima_code.work_requested_v1
-    ADD CONSTRAINT work_requested_v1_memory_id_fkey FOREIGN KEY (t) REFERENCES proxima_core.memory(t);
+    ADD CONSTRAINT work_requested_v1_t_fkey FOREIGN KEY (t) REFERENCES proxima_core.memory(t);
 
 

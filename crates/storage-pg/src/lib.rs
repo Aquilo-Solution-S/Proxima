@@ -68,8 +68,8 @@ pub const DEFAULT_DATABASE_URL: &str = "postgres://postgres@localhost/proxima_de
 
 /// Namespace boundary between core and flavor migration versions.
 ///
-/// Core migrations use small sequential integer versions (`0001_init.sql`,
-/// `0011_v007.sql`, …); flavor migrations use date-shaped versions
+/// Core migrations use small sequential integer versions (`0001_v008.sql`);
+/// flavor migrations use date-shaped versions
 /// (`20260801000020_…`). Every ledger row at or below this ceiling belongs to
 /// the core lane and must be accounted for by the embedded core migrator —
 /// that invariant is what lets the preflight below detect draft and retired
@@ -893,18 +893,10 @@ mod tests {
             .iter()
             .map(|migration| migration.version)
             .collect();
-        assert!(versions.contains(&1), "core migrator must embed 0001_v008.sql");
-        assert!(versions.contains(&2), "core migrator must embed 0002_blob_closed.sql");
-        assert!(versions.contains(&3), "core migrator must embed 0003_goal.sql");
-        assert!(versions.contains(&6), "core migrator must embed 0006_lexical.sql");
-        assert!(!versions.contains(&7), "compat owner_ref_kind enum is gone");
-        assert!(
-            versions.contains(&8),
-            "core migrator must embed 0008_core_sidecars.sql"
-        );
-        assert!(
-            versions.contains(&9),
-            "core migrator must embed 0009_core_surface.sql"
+        assert_eq!(
+            versions,
+            vec![1],
+            "v0.0.8 is one file: 0001_v008.sql"
         );
     }
 
@@ -914,8 +906,11 @@ mod tests {
             .iter()
             .map(|migration| migration.version)
             .collect();
-        for dead in [10, 11, 16, 17, 18, 19, 20] {
-            assert!(!versions.contains(&dead), "legacy version {dead} must be gone");
+        for dead in 2..=21 {
+            assert!(
+                !versions.contains(&dead),
+                "legacy version {dead} must be gone"
+            );
         }
     }
 
@@ -944,8 +939,7 @@ mod tests {
             .iter()
             .map(|migration| migration.version)
             .collect();
-        assert!(versions.contains(&1));
-        assert!(versions.contains(&2));
+        assert_eq!(versions, vec![1]);
     }
 
     /// An injected lookup, so every branch is reachable. These helpers used
