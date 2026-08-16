@@ -251,16 +251,19 @@ async fn scan_one_sidecar(
         }
         _ => String::new(),
     };
+    let multilingual = projection.language_column.is_some();
+    let rank_tsq = rank_tsquery_expr(projection.language_column.as_deref())?;
     let rescue_score = if rescue && !like_only {
-        ", CASE WHEN q.any_tsq IS NOT NULL AND {tsv} @@ q.any_tsq
-                THEN 0.25 + LEAST(COALESCE(ts_rank({tsv}, q.any_tsq, 1|32), 0.0) * 100.0, 1.0) * 0.2
-                ELSE 0.0 END"
-            .replace("{tsv}", &tsv_expr)
+        format!(
+            ", CASE WHEN q.any_tsq IS NOT NULL AND {tsv_expr} @@ q.any_tsq
+                    THEN 0.25 + LEAST(COALESCE(ts_rank({tsv_expr}, q.any_tsq, 1|32), 0.0) * 100.0, 1.0) * 0.2
+                    ELSE 0.0 END"
+        )
     } else {
         String::new()
     };
     let rescue_where = if rescue && !like_only {
-        " OR (q.any_tsq IS NOT NULL AND {tsv} @@ q.any_tsq)".replace("{tsv}", &tsv_expr)
+        format!(" OR (q.any_tsq IS NOT NULL AND {tsv_expr} @@ q.any_tsq)")
     } else {
         String::new()
     };
@@ -283,7 +286,7 @@ async fn scan_one_sidecar(
         format!(
             "GREATEST(
                     CASE WHEN {tsv_expr} @@ q.tsq
-                         THEN 0.5 + LEAST(COALESCE(ts_rank_cd({tsv_expr}, q.tsq, 32), 0.0), 1.0) * 0.5
+                         THEN 0.5 + LEAST(COALESCE(ts_rank_cd({tsv_expr}, {rank_tsq}, 32), 0.0), 1.0) * 0.5
                          ELSE 0.0 END{rescue_score},
                     0.0
                 )::real"
@@ -291,16 +294,7 @@ async fn scan_one_sidecar(
     };
 
     let sql = format!(
-        "WITH q AS (
-             SELECT websearch_to_tsquery(proxima_core.lexical_config(),
-                        proxima_core.lexical_scrub($1)) AS tsq,
-                    NULLIF(
-                        replace(
-                            plainto_tsquery(proxima_core.lexical_config(),
-                                proxima_core.lexical_scrub($1))::text,
-                            ' & ', ' | '),
-                        '')::tsquery AS any_tsq
-         )
+        "{q_cte}
          SELECT c.t,
                 {score_expr} AS lexical_score,
                 left({search_text}, 480) AS snippet
@@ -315,6 +309,7 @@ async fn scan_one_sidecar(
             AND ($7::uuid IS NULL OR c.t < $7)
           ORDER BY {order_by}
           LIMIT $3",
+        q_cte = query_side_cte(multilingual),
         table = table.as_str(),
         search_text = search_text,
         tag_pred = tag_pred,
@@ -400,6 +395,66 @@ fn projection_tsv_expr(
     ))
 }
 
+/// Match-side tsquery. When the sidecar declares `language_column` (agent
+/// memory tables), OR one `websearch_to_tsquery` per `lexical_languages`
+/// row — the query cannot know its language. Flavor tables that pin one
+/// config omit `language_column` and stay on `lexical_config()`.
+fn query_side_cte(multilingual: bool) -> &'static str {
+    if multilingual {
+        "WITH q AS (
+             SELECT s.q AS scrubbed,
+                    COALESCE(
+                        (SELECT proxima_core.tsquery_or_agg(
+                                    websearch_to_tsquery(l.config,
+                                        proxima_core.lexical_query_text(l.config, s.q))
+                                    ORDER BY l.config)
+                           FROM proxima_core.lexical_languages l),
+                        websearch_to_tsquery(proxima_core.lexical_config(), s.q)
+                    ) AS tsq,
+                    COALESCE(
+                        (SELECT proxima_core.tsquery_or_agg(
+                                    NULLIF(
+                                        replace(
+                                            plainto_tsquery(l.config,
+                                                proxima_core.lexical_query_text(l.config, s.q))::text,
+                                            ' & ', ' | '),
+                                        '')::tsquery
+                                    ORDER BY l.config)
+                           FROM proxima_core.lexical_languages l),
+                        NULLIF(
+                            replace(
+                                plainto_tsquery(proxima_core.lexical_config(), s.q)::text,
+                                ' & ', ' | '),
+                            '')::tsquery
+                    ) AS any_tsq
+               FROM (SELECT proxima_core.lexical_scrub($1) AS q) s
+         )"
+    } else {
+        "WITH q AS (
+             SELECT proxima_core.lexical_scrub($1) AS scrubbed,
+                    websearch_to_tsquery(proxima_core.lexical_config(),
+                        proxima_core.lexical_scrub($1)) AS tsq,
+                    NULLIF(
+                        replace(
+                            plainto_tsquery(proxima_core.lexical_config(),
+                                proxima_core.lexical_scrub($1))::text,
+                            ' & ', ' | '),
+                        '')::tsquery AS any_tsq
+         )"
+    }
+}
+
+fn rank_tsquery_expr(language_column: Option<&str>) -> Result<String, StorageError> {
+    let Some(column) = language_column else {
+        return Ok("q.tsq".into());
+    };
+    let column = PgIdent::column(column)?;
+    Ok(format!(
+        "websearch_to_tsquery(c.{col}, proxima_core.lexical_query_text(c.{col}, q.scrubbed))",
+        col = column.as_str()
+    ))
+}
+
 fn like_pattern(query: &str) -> String {
     let mut out = String::with_capacity(query.len() + 2);
     out.push('%');
@@ -460,6 +515,10 @@ async fn scan_embeddings(
             AND head.embedding_version = emb.embedding_version
           WHERE emb.owner_id = ANY($1::uuid[])
             AND emb.model_id = $2
+            AND ($5::timestamptz IS NULL
+                 OR COALESCE(uuid_extract_timestamp(emb.entity_id), TIMESTAMPTZ '1970-01-01') >= $5)
+            AND ($6::timestamptz IS NULL
+                 OR COALESCE(uuid_extract_timestamp(emb.entity_id), TIMESTAMPTZ '1970-01-01') <= $6)
           ORDER BY emb.vec <=> $3::vector
           LIMIT $4",
     )
@@ -467,6 +526,8 @@ async fn scan_embeddings(
     .bind(model_id)
     .bind(crate::pgvector::literal(query_embedding))
     .bind(i64::from(overfetch))
+    .bind(req.since)
+    .bind(req.until)
     .fetch_all(&mut *tx)
     .await
     .map_err(map_err)?;
@@ -521,7 +582,11 @@ async fn admit_hits(
           WHERE m.t = ANY($1::uuid[])
             AND m.owner_id = ANY($2::uuid[])
             AND ($3::text IS NULL OR m.kind::text = $3)
-            AND ($4::text IS NULL OR h.schema_id = $4)"
+            AND ($4::text IS NULL OR h.schema_id = $4)
+            AND ($5::timestamptz IS NULL
+                 OR COALESCE(uuid_extract_timestamp(m.t), TIMESTAMPTZ '1970-01-01') >= $5)
+            AND ($6::timestamptz IS NULL
+                 OR COALESCE(uuid_extract_timestamp(m.t), TIMESTAMPTZ '1970-01-01') <= $6)"
     );
 
     // SQL-POLICY: fixed-fragment
@@ -530,6 +595,8 @@ async fn admit_hits(
         .bind(&owner_ids)
         .bind(kind_filter)
         .bind(schema_filter)
+        .bind(req.since)
+        .bind(req.until)
         .fetch_all(pool)
         .await
         .map_err(map_err)?;

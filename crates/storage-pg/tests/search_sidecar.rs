@@ -106,6 +106,67 @@ async fn seed_note(
     Ok(t)
 }
 
+async fn seed_note_lang(
+    pool: &sqlx::PgPool,
+    owner: OwnerRef,
+    title: &str,
+    body: &str,
+    language: &str,
+) -> Result<Uuid, sqlx::Error> {
+    let owner_id = owner.stored_owner_id();
+    sqlx::query(
+        "INSERT INTO proxima_core.owners (owner_id, kind)
+         VALUES ($1, 'personal')
+         ON CONFLICT DO NOTHING",
+    )
+    .bind(owner_id)
+    .execute(pool)
+    .await?;
+    let handle = Uuid::now_v7();
+    let t = Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO proxima_core.memory_head (handle, kind, schema_id, owner_id, t)
+         VALUES ($1, 'fact', 'core/agent-note-v1', $2, $3)",
+    )
+    .bind(handle)
+    .bind(owner_id)
+    .bind(t)
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        "INSERT INTO proxima_core.memory (handle, t, kind, owner_id)
+         VALUES ($1, $2, 'fact', $3)",
+    )
+    .bind(handle)
+    .bind(t)
+    .bind(owner_id)
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        "INSERT INTO proxima_core.agent_note_v1
+            (t, note_id, title, body, tags, lexical_language)
+         VALUES ($1, $2, $3, $4, '{}', $5::regconfig)",
+    )
+    .bind(t)
+    .bind(Uuid::now_v7())
+    .bind(title)
+    .bind(body)
+    .bind(language)
+    .execute(pool)
+    .await?;
+    Ok(t)
+}
+
+fn embed_literal() -> String {
+    format!(
+        "[{}]",
+        std::iter::once("1")
+            .chain(std::iter::repeat_n("0", 1023))
+            .collect::<Vec<_>>()
+            .join(",")
+    )
+}
+
 #[tokio::test]
 async fn lexical_search_is_sidecar_first_then_owner_admit() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
@@ -194,4 +255,106 @@ async fn lexical_search_is_sidecar_first_then_owner_admit() {
 
     let _ = drop_db(&db_name).await;
     result.expect("sidecar-first search test failed");
+}
+
+#[tokio::test]
+async fn lexical_search_matches_german_via_lexical_languages() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    if let Err(e) = create_db(&db_name).await {
+        panic!("PG required for tests but admin connect failed: {e}");
+    }
+    let url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&url).await?;
+        pg.run_migrations().await?;
+        let pool = pg.pool_for_tests();
+        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let t = seed_note_lang(
+            pool,
+            owner,
+            "Tiere",
+            "die Katzen schlafen auf dem Sofa",
+            "german",
+        )
+        .await?;
+        let registered: bool = sqlx::query_scalar(
+            "SELECT EXISTS (
+                 SELECT 1 FROM proxima_core.lexical_languages
+                  WHERE config = 'german'::regconfig
+             )",
+        )
+        .fetch_one(pool)
+        .await?;
+        assert!(registered, "insert must register the row language");
+
+        let page = pg
+            .search_memories(&search_req(owner, "Katze"), &[note_projection()])
+            .await?;
+        assert_eq!(
+            page.results.len(),
+            1,
+            "german stem must match via language OR"
+        );
+        assert_eq!(page.results[0].memory_id.into_inner(), t);
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("german lexical search failed");
+}
+
+#[tokio::test]
+async fn semantic_search_respects_until() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    if let Err(e) = create_db(&db_name).await {
+        panic!("PG required for tests but admin connect failed: {e}");
+    }
+    let url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&url).await?;
+        pg.run_migrations().await?;
+        let pool = pg.pool_for_tests();
+        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let t = seed_note(pool, owner, "Embedded", "semantic neighbour body").await?;
+        sqlx::query(
+            "INSERT INTO proxima_core.embeddings
+                (entity_id, model_id, embedding_version, vec, owner_id)
+             VALUES ($1, 'test-embed', 1, $2::vector, $3)",
+        )
+        .bind(t)
+        .bind(embed_literal())
+        .bind(owner.stored_owner_id())
+        .execute(pool)
+        .await?;
+        sqlx::query(
+            "INSERT INTO proxima_core.embedding_heads
+                (entity_id, model_id, embedding_version, owner_id)
+             VALUES ($1, 'test-embed', 1, $2)",
+        )
+        .bind(t)
+        .bind(owner.stored_owner_id())
+        .execute(pool)
+        .await?;
+
+        let mut inside = search_req(owner, "unused");
+        inside.mode = SearchMode::Semantic;
+        let mut query_vec = vec![0.0; 1024];
+        query_vec[0] = 1.0;
+        inside.query_embedding = Some(query_vec);
+        inside.embedding_model_id = Some("test-embed".into());
+        let hit = pg.search_memories(&inside, &[note_projection()]).await?;
+        assert_eq!(hit.results.len(), 1);
+
+        let mut too_old = inside.clone();
+        too_old.until = Some(time::OffsetDateTime::UNIX_EPOCH);
+        let missed = pg.search_memories(&too_old, &[note_projection()]).await?;
+        assert!(
+            missed.results.is_empty(),
+            "ANN hits older than until must not admit"
+        );
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("semantic until filter failed");
 }

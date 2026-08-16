@@ -157,10 +157,17 @@ async fn engine_forget_puts_held_store_hydrate_restores_same_t() {
         sqlx::query(
             "INSERT INTO proxima_core.embeddings
                 (entity_id, model_id, embedding_version, vec, owner_id)
-             VALUES ($1, 'test-embed', 1, '[1,0,0]'::vector, $2)",
+             VALUES ($1, 'test-embed', 1, $3::vector, $2)",
         )
         .bind(t)
         .bind(owner.stored_owner_id())
+        .bind(format!(
+            "[{}]",
+            std::iter::once("1")
+                .chain(std::iter::repeat_n("0", 1023))
+                .collect::<Vec<_>>()
+                .join(",")
+        ))
         .execute(pool)
         .await?;
 

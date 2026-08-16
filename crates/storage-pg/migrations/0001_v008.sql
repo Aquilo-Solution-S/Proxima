@@ -284,9 +284,40 @@ CREATE FUNCTION proxima_core.lexical_join(VARIADIC parts text[]) RETURNS text
 LANGUAGE sql IMMUTABLE PARALLEL SAFE AS
 $$ SELECT NULLIF(concat_ws(' ', VARIADIC parts), '') $$;
 
+CREATE FUNCTION proxima_core.lexical_query_text(config regconfig, query_text text)
+RETURNS text
+LANGUAGE sql STABLE PARALLEL SAFE AS
+$$ SELECT CASE
+       WHEN config = 'simple'::regconfig THEN
+           (SELECT COALESCE(string_agg(tok, ' '), '')
+              FROM regexp_split_to_table(query_text, '\s+') AS tok
+             WHERE tok <> ''
+               AND to_tsvector(proxima_core.lexical_config(), tok) <> '')
+       ELSE query_text
+   END $$;
+
+CREATE AGGREGATE proxima_core.tsquery_or_agg(tsquery) (
+    SFUNC = pg_catalog.tsquery_or,
+    STYPE = tsquery,
+    COMBINEFUNC = pg_catalog.tsquery_or,
+    PARALLEL = SAFE
+);
+
 CREATE FUNCTION proxima_core.set_lexical_config(cfg text) RETURNS void
 LANGUAGE sql VOLATILE AS
-$$ SELECT NULL $$;
+$$ INSERT INTO proxima_core.lexical_languages (config)
+   VALUES (cfg::regconfig)
+   ON CONFLICT DO NOTHING $$;
+
+CREATE FUNCTION proxima_core.remember_lexical_language() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+    INSERT INTO proxima_core.lexical_languages (config)
+    VALUES (NEW.lexical_language)
+    ON CONFLICT DO NOTHING;
+    RETURN NEW;
+END;
+$$;
 
 CREATE TABLE proxima_core.mcp_call_logged_v1 (
     t uuid PRIMARY KEY REFERENCES proxima_core.memory (t),
@@ -414,6 +445,26 @@ CREATE TABLE proxima_core.interpretation_v1 (
 
 CREATE INDEX interpretation_v1_search_tsv_gin
     ON proxima_core.interpretation_v1 USING gin (search_tsv);
+
+CREATE TRIGGER agent_note_v1_remember_lang
+    AFTER INSERT ON proxima_core.agent_note_v1
+    FOR EACH ROW
+    EXECUTE FUNCTION proxima_core.remember_lexical_language();
+
+CREATE TRIGGER utterance_v1_remember_lang
+    AFTER INSERT ON proxima_core.utterance_v1
+    FOR EACH ROW
+    EXECUTE FUNCTION proxima_core.remember_lexical_language();
+
+CREATE TRIGGER agent_derivation_v1_remember_lang
+    AFTER INSERT ON proxima_core.agent_derivation_v1
+    FOR EACH ROW
+    EXECUTE FUNCTION proxima_core.remember_lexical_language();
+
+CREATE TRIGGER interpretation_v1_remember_lang
+    AFTER INSERT ON proxima_core.interpretation_v1
+    FOR EACH ROW
+    EXECUTE FUNCTION proxima_core.remember_lexical_language();
 
 CREATE TABLE proxima_core.task_goal_v1 (
     t uuid PRIMARY KEY REFERENCES proxima_core.goal (t),
