@@ -2025,18 +2025,9 @@ fn push_supersedes_anti_join(
     super::push_same_home_owner_successor_predicate(sql, "m2", "m");
 }
 
-/// The fact-head liveness test, which both head-filter spellings carry
-/// verbatim: a row is live when it is not a fact projection at all, or when
-/// its fact entity still names it as the current memory.
-///
-/// Held once because the kind-specialized fact-only arm and the mixed arm's
-/// first disjunct are the same predicate — the specialization drops the kind
-/// dispatch around it, not the test itself.
-const FACT_HEAD_TEST: &str = "m.fact_entity_id IS NULL \
-     OR EXISTS ( \
-         SELECT 1 FROM proxima_core.fact_entities fe \
-          WHERE fe.fact_entity_id = m.fact_entity_id \
-            AND fe.current_memory_id = m.memory_id \
+/// Head liveness: Query starts at `memory_head`.
+const FACT_HEAD_TEST: &str = "EXISTS (\
+         SELECT 1 FROM proxima_core.memory_head h WHERE h.t = m.t\
      )";
 
 fn push_search_head_filter(
@@ -2374,7 +2365,7 @@ mod tests {
               SELECT 1
                 FROM unnest($1::proxima_core.owner_kind[], $2::uuid[]) AS s(kind, id)
                WHERE m.owner_kind = s.kind AND m.owner_id = s.id
-           ) OR (m.owner_kind = 'world' AND m.owner_id IS NULL)) AND m.tombstoned_at IS NULL AND m.created_at >= $7 AND m.created_at <= $8 AND NULL::text[] @> $9::text[] AND ( (m.kind = 'Fact' AND ( m.fact_entity_id IS NULL OR EXISTS ( SELECT 1 FROM proxima_core.fact_entities fe WHERE fe.fact_entity_id = m.fact_entity_id AND fe.current_memory_id = m.memory_id ) )) OR (m.kind <> 'Fact' AND m2.memory_id IS NULL) ) AND NULLIF(m.text, '') IS NOT NULL
+           ) OR (m.owner_kind = 'world' AND m.owner_id IS NULL)) AND m.tombstoned_at IS NULL AND m.created_at >= $7 AND m.created_at <= $8 AND NULL::text[] @> $9::text[] AND ( (m.kind = 'Fact' AND ( EXISTS (SELECT 1 FROM proxima_core.memory_head h WHERE h.t = m.t) )) OR (m.kind <> 'Fact' AND m2.memory_id IS NULL) ) AND NULLIF(m.text, '') IS NOT NULL
              AND (m.search_tsv @@ (SELECT tsq FROM q)) UNION ALL SELECT m.memory_id, m.owner_kind, m.owner_id, m.kind AS kind, m.schema_id, m.created_at, s.tags AS tags,
              NULLIF(concat_ws(' ', NULLIF(s.title::text, ''), NULLIF(array_to_string(s.tags, ' '), '')), '') AS search_text, s.search_tsv AS search_tsv, s.lexical_language AS lexical_language
              FROM proxima_core.memories m
@@ -2384,7 +2375,7 @@ JOIN proxima_core.agent_note_v1 s ON s.memory_id = m.memory_id WHERE (EXISTS (
                WHERE m.owner_kind = s.kind AND m.owner_id = s.id
            ) OR (m.owner_kind = 'world' AND m.owner_id IS NULL)) AND m.tombstoned_at IS NULL
            AND m.schema_id = $3
-           AND m.schema_version = $4 AND m.kind = 'Fact' AND m.created_at >= $7 AND m.created_at <= $8 AND s.tags @> $9::text[] AND ( m.fact_entity_id IS NULL OR EXISTS ( SELECT 1 FROM proxima_core.fact_entities fe WHERE fe.fact_entity_id = m.fact_entity_id AND fe.current_memory_id = m.memory_id ) )
+           AND m.schema_version = $4 AND m.kind = 'Fact' AND m.created_at >= $7 AND m.created_at <= $8 AND s.tags @> $9::text[] AND ( EXISTS (SELECT 1 FROM proxima_core.memory_head h WHERE h.t = m.t) )
              AND (s.search_tsv @@ (SELECT tsq FROM q)) UNION ALL SELECT m.memory_id, m.owner_kind, m.owner_id, m.kind AS kind, m.schema_id, m.created_at, NULL::text[] AS tags,
              NULLIF(concat_ws(' ', NULLIF(s.claim::text, '')), '') AS search_text, proxima_core.lexical_tsv(m.lexical_language, NULLIF(concat_ws(' ', NULLIF(s.claim::text, '')), '')) AS search_tsv, m.lexical_language AS lexical_language
              FROM proxima_core.memories m
@@ -2418,7 +2409,7 @@ JOIN proxima_core.interpretation_v1 s ON s.memory_id = m.memory_id LEFT JOIN pro
               SELECT 1
                 FROM unnest($1::proxima_core.owner_kind[], $2::uuid[]) AS s(kind, id)
                WHERE m.owner_kind = s.kind AND m.owner_id = s.id
-           ) OR (m.owner_kind = 'world' AND m.owner_id IS NULL)) AND m.tombstoned_at IS NULL AND m.created_at >= $7 AND m.created_at <= $8 AND NULL::text[] @> $9::text[] AND ( (m.kind = 'Fact' AND ( m.fact_entity_id IS NULL OR EXISTS ( SELECT 1 FROM proxima_core.fact_entities fe WHERE fe.fact_entity_id = m.fact_entity_id AND fe.current_memory_id = m.memory_id ) )) OR (m.kind <> 'Fact' AND m2.memory_id IS NULL) ) AND NULLIF(m.text, '') IS NOT NULL
+           ) OR (m.owner_kind = 'world' AND m.owner_id IS NULL)) AND m.tombstoned_at IS NULL AND m.created_at >= $7 AND m.created_at <= $8 AND NULL::text[] @> $9::text[] AND ( (m.kind = 'Fact' AND ( EXISTS (SELECT 1 FROM proxima_core.memory_head h WHERE h.t = m.t) )) OR (m.kind <> 'Fact' AND m2.memory_id IS NULL) ) AND NULLIF(m.text, '') IS NOT NULL
              AND lower(COALESCE(m.text, '')) LIKE '%' || replace(replace(replace(lower($10), '\\', '\\\\'), '%', '\\%'), '_', '\\_') || '%' ESCAPE '\' UNION ALL SELECT m.memory_id, m.owner_kind, m.owner_id, m.kind AS kind, m.schema_id, m.created_at, s.tags AS tags,
              NULLIF(concat_ws(' ', NULLIF(s.title::text, ''), NULLIF(array_to_string(s.tags, ' '), '')), '') AS search_text
              FROM proxima_core.memories m
@@ -2428,7 +2419,7 @@ JOIN proxima_core.agent_note_v1 s ON s.memory_id = m.memory_id WHERE (EXISTS (
                WHERE m.owner_kind = s.kind AND m.owner_id = s.id
            ) OR (m.owner_kind = 'world' AND m.owner_id IS NULL)) AND m.tombstoned_at IS NULL
            AND m.schema_id = $3
-           AND m.schema_version = $4 AND m.kind = 'Fact' AND m.created_at >= $7 AND m.created_at <= $8 AND s.tags @> $9::text[] AND ( m.fact_entity_id IS NULL OR EXISTS ( SELECT 1 FROM proxima_core.fact_entities fe WHERE fe.fact_entity_id = m.fact_entity_id AND fe.current_memory_id = m.memory_id ) )
+           AND m.schema_version = $4 AND m.kind = 'Fact' AND m.created_at >= $7 AND m.created_at <= $8 AND s.tags @> $9::text[] AND ( EXISTS (SELECT 1 FROM proxima_core.memory_head h WHERE h.t = m.t) )
              AND lower(NULLIF(concat_ws(' ', NULLIF(s.title::text, ''), NULLIF(array_to_string(s.tags, ' '), '')), '')) LIKE '%' || replace(replace(replace(lower($10), '\\', '\\\\'), '%', '\\%'), '_', '\\_') || '%' ESCAPE '\' UNION ALL SELECT m.memory_id, m.owner_kind, m.owner_id, m.kind AS kind, m.schema_id, m.created_at, NULL::text[] AS tags,
              NULLIF(concat_ws(' ', NULLIF(s.claim::text, '')), '') AS search_text
              FROM proxima_core.memories m
@@ -2491,7 +2482,7 @@ JOIN proxima_core.interpretation_v1 s ON s.memory_id = m.memory_id LEFT JOIN pro
               SELECT 1
                 FROM unnest($1::proxima_core.owner_kind[], $2::uuid[]) AS s(kind, id)
                WHERE m.owner_kind = s.kind AND m.owner_id = s.id
-           ) OR (m.owner_kind = 'world' AND m.owner_id IS NULL)) AND m.tombstoned_at IS NULL AND m.created_at >= $7 AND m.created_at <= $8 AND NULL::text[] @> $9::text[] AND ( (m.kind = 'Fact' AND ( m.fact_entity_id IS NULL OR EXISTS ( SELECT 1 FROM proxima_core.fact_entities fe WHERE fe.fact_entity_id = m.fact_entity_id AND fe.current_memory_id = m.memory_id ) )) OR (m.kind <> 'Fact' AND m2.memory_id IS NULL) ) AND NULLIF(m.text, '') IS NOT NULL
+           ) OR (m.owner_kind = 'world' AND m.owner_id IS NULL)) AND m.tombstoned_at IS NULL AND m.created_at >= $7 AND m.created_at <= $8 AND NULL::text[] @> $9::text[] AND ( (m.kind = 'Fact' AND ( EXISTS (SELECT 1 FROM proxima_core.memory_head h WHERE h.t = m.t) )) OR (m.kind <> 'Fact' AND m2.memory_id IS NULL) ) AND NULLIF(m.text, '') IS NOT NULL
              AND m.memory_id IN (SELECT a.entity_id FROM ann_live a) UNION ALL SELECT m.memory_id, m.owner_kind, m.owner_id, m.kind AS kind, m.schema_id, m.created_at, s.tags AS tags,
              NULLIF(concat_ws(' ', NULLIF(s.title::text, ''), NULLIF(array_to_string(s.tags, ' '), '')), '') AS search_text, 1::int AS branch_rank
              FROM proxima_core.memories m
@@ -2501,7 +2492,7 @@ JOIN proxima_core.agent_note_v1 s ON s.memory_id = m.memory_id WHERE (EXISTS (
                WHERE m.owner_kind = s.kind AND m.owner_id = s.id
            ) OR (m.owner_kind = 'world' AND m.owner_id IS NULL)) AND m.tombstoned_at IS NULL
            AND m.schema_id = $3
-           AND m.schema_version = $4 AND m.kind = 'Fact' AND m.created_at >= $7 AND m.created_at <= $8 AND s.tags @> $9::text[] AND ( m.fact_entity_id IS NULL OR EXISTS ( SELECT 1 FROM proxima_core.fact_entities fe WHERE fe.fact_entity_id = m.fact_entity_id AND fe.current_memory_id = m.memory_id ) )
+           AND m.schema_version = $4 AND m.kind = 'Fact' AND m.created_at >= $7 AND m.created_at <= $8 AND s.tags @> $9::text[] AND ( EXISTS (SELECT 1 FROM proxima_core.memory_head h WHERE h.t = m.t) )
              AND m.memory_id IN (SELECT a.entity_id FROM ann_live a) UNION ALL SELECT m.memory_id, m.owner_kind, m.owner_id, m.kind AS kind, m.schema_id, m.created_at, NULL::text[] AS tags,
              NULLIF(concat_ws(' ', NULLIF(s.claim::text, '')), '') AS search_text, 2::int AS branch_rank
              FROM proxima_core.memories m
@@ -2924,7 +2915,7 @@ JOIN proxima_core.interpretation_v1 s ON s.memory_id = m.memory_id LEFT JOIN pro
               SELECT 1
                 FROM unnest($1::proxima_core.owner_kind[], $2::uuid[]) AS s(kind, id)
                WHERE m.owner_kind = s.kind AND m.owner_id = s.id
-           ) OR (m.owner_kind = 'world' AND m.owner_id IS NULL)) AND m.tombstoned_at IS NULL AND m.created_at >= $7 AND m.created_at <= $8 AND NULL::text[] @> $9::text[] AND ( (m.kind = 'Fact' AND ( m.fact_entity_id IS NULL OR EXISTS ( SELECT 1 FROM proxima_core.fact_entities fe WHERE fe.fact_entity_id = m.fact_entity_id AND fe.current_memory_id = m.memory_id ) )) OR (m.kind <> 'Fact' AND NOT EXISTS ( SELECT 1 FROM proxima_core.memories m2 WHERE m2.supersedes = m.memory_id AND m2.tombstoned_at IS NULL AND m2.owner_kind = m.owner_kind AND m2.owner_id IS NOT DISTINCT FROM m.owner_id )) ) AND NULLIF(m.text, '') IS NOT NULL UNION ALL SELECT m.memory_id, m.owner_kind, m.owner_id, m.kind AS kind, m.schema_id, m.created_at, s.tags AS tags,
+           ) OR (m.owner_kind = 'world' AND m.owner_id IS NULL)) AND m.tombstoned_at IS NULL AND m.created_at >= $7 AND m.created_at <= $8 AND NULL::text[] @> $9::text[] AND ( (m.kind = 'Fact' AND ( EXISTS (SELECT 1 FROM proxima_core.memory_head h WHERE h.t = m.t) )) OR (m.kind <> 'Fact' AND NOT EXISTS ( SELECT 1 FROM proxima_core.memories m2 WHERE m2.supersedes = m.memory_id AND m2.tombstoned_at IS NULL AND m2.owner_kind = m.owner_kind AND m2.owner_id IS NOT DISTINCT FROM m.owner_id )) ) AND NULLIF(m.text, '') IS NOT NULL UNION ALL SELECT m.memory_id, m.owner_kind, m.owner_id, m.kind AS kind, m.schema_id, m.created_at, s.tags AS tags,
              NULLIF(concat_ws(' ', NULLIF(s.title::text, ''), NULLIF(array_to_string(s.tags, ' '), '')), '') AS search_text
              FROM proxima_core.memories m
 JOIN proxima_core.agent_note_v1 s ON s.memory_id = m.memory_id WHERE (EXISTS (
@@ -2933,7 +2924,7 @@ JOIN proxima_core.agent_note_v1 s ON s.memory_id = m.memory_id WHERE (EXISTS (
                WHERE m.owner_kind = s.kind AND m.owner_id = s.id
            ) OR (m.owner_kind = 'world' AND m.owner_id IS NULL)) AND m.tombstoned_at IS NULL
            AND m.schema_id = $3
-           AND m.schema_version = $4 AND m.kind = 'Fact' AND m.created_at >= $7 AND m.created_at <= $8 AND s.tags @> $9::text[] AND ( (m.kind = 'Fact' AND ( m.fact_entity_id IS NULL OR EXISTS ( SELECT 1 FROM proxima_core.fact_entities fe WHERE fe.fact_entity_id = m.fact_entity_id AND fe.current_memory_id = m.memory_id ) )) OR (m.kind <> 'Fact' AND NOT EXISTS ( SELECT 1 FROM proxima_core.memories m2 WHERE m2.supersedes = m.memory_id AND m2.tombstoned_at IS NULL AND m2.owner_kind = m.owner_kind AND m2.owner_id IS NOT DISTINCT FROM m.owner_id )) ) UNION ALL SELECT m.memory_id, m.owner_kind, m.owner_id, m.kind AS kind, m.schema_id, m.created_at, NULL::text[] AS tags,
+           AND m.schema_version = $4 AND m.kind = 'Fact' AND m.created_at >= $7 AND m.created_at <= $8 AND s.tags @> $9::text[] AND ( (m.kind = 'Fact' AND ( EXISTS (SELECT 1 FROM proxima_core.memory_head h WHERE h.t = m.t) )) OR (m.kind <> 'Fact' AND NOT EXISTS ( SELECT 1 FROM proxima_core.memories m2 WHERE m2.supersedes = m.memory_id AND m2.tombstoned_at IS NULL AND m2.owner_kind = m.owner_kind AND m2.owner_id IS NOT DISTINCT FROM m.owner_id )) ) UNION ALL SELECT m.memory_id, m.owner_kind, m.owner_id, m.kind AS kind, m.schema_id, m.created_at, NULL::text[] AS tags,
              NULLIF(concat_ws(' ', NULLIF(s.claim::text, '')), '') AS search_text
              FROM proxima_core.memories m
 JOIN proxima_core.interpretation_v1 s ON s.memory_id = m.memory_id WHERE (EXISTS (
@@ -2942,7 +2933,7 @@ JOIN proxima_core.interpretation_v1 s ON s.memory_id = m.memory_id WHERE (EXISTS
                WHERE m.owner_kind = s.kind AND m.owner_id = s.id
            ) OR (m.owner_kind = 'world' AND m.owner_id IS NULL)) AND m.tombstoned_at IS NULL
            AND m.schema_id = $5
-           AND m.schema_version = $6 AND m.kind = 'Abstraction' AND m.created_at >= $7 AND m.created_at <= $8 AND NULL::text[] @> $9::text[] AND ( (m.kind = 'Fact' AND ( m.fact_entity_id IS NULL OR EXISTS ( SELECT 1 FROM proxima_core.fact_entities fe WHERE fe.fact_entity_id = m.fact_entity_id AND fe.current_memory_id = m.memory_id ) )) OR (m.kind <> 'Fact' AND NOT EXISTS ( SELECT 1 FROM proxima_core.memories m2 WHERE m2.supersedes = m.memory_id AND m2.tombstoned_at IS NULL AND m2.owner_kind = m.owner_kind AND m2.owner_id IS NOT DISTINCT FROM m.owner_id )) )) , eligible_entities AS MATERIALIZED (
+           AND m.schema_version = $6 AND m.kind = 'Abstraction' AND m.created_at >= $7 AND m.created_at <= $8 AND NULL::text[] @> $9::text[] AND ( (m.kind = 'Fact' AND ( EXISTS (SELECT 1 FROM proxima_core.memory_head h WHERE h.t = m.t) )) OR (m.kind <> 'Fact' AND NOT EXISTS ( SELECT 1 FROM proxima_core.memories m2 WHERE m2.supersedes = m.memory_id AND m2.tombstoned_at IS NULL AND m2.owner_kind = m.owner_kind AND m2.owner_id IS NOT DISTINCT FROM m.owner_id )) )) , eligible_entities AS MATERIALIZED (
               SELECT DISTINCT ON (c.kind, c.memory_id)
                      c.memory_id, c.owner_kind, c.owner_id, c.kind,
                      c.schema_id, c.created_at, c.search_text
@@ -3056,7 +3047,7 @@ JOIN proxima_core.interpretation_v1 s ON s.memory_id = m.memory_id WHERE (EXISTS
               SELECT 1
                 FROM unnest($1::proxima_core.owner_kind[], $2::uuid[]) AS s(kind, id)
                WHERE m.owner_kind = s.kind AND m.owner_id = s.id
-           ) OR (m.owner_kind = 'world' AND m.owner_id IS NULL)) AND m.tombstoned_at IS NULL AND m.created_at >= $7 AND m.created_at <= $8 AND NULL::text[] @> $9::text[] AND ( (m.kind = 'Fact' AND ( m.fact_entity_id IS NULL OR EXISTS ( SELECT 1 FROM proxima_core.fact_entities fe WHERE fe.fact_entity_id = m.fact_entity_id AND fe.current_memory_id = m.memory_id ) )) OR (m.kind <> 'Fact' AND m2.memory_id IS NULL) ) AND NULLIF(m.text, '') IS NOT NULL
+           ) OR (m.owner_kind = 'world' AND m.owner_id IS NULL)) AND m.tombstoned_at IS NULL AND m.created_at >= $7 AND m.created_at <= $8 AND NULL::text[] @> $9::text[] AND ( (m.kind = 'Fact' AND ( EXISTS (SELECT 1 FROM proxima_core.memory_head h WHERE h.t = m.t) )) OR (m.kind <> 'Fact' AND m2.memory_id IS NULL) ) AND NULLIF(m.text, '') IS NOT NULL
              AND (m.search_tsv @@ (SELECT tsq FROM q) OR m.search_tsv @@ (SELECT any_tsq FROM q)) UNION ALL SELECT m.memory_id, m.owner_kind, m.owner_id, m.kind AS kind, m.schema_id, m.created_at, s.tags AS tags,
              NULLIF(concat_ws(' ', NULLIF(s.title::text, ''), NULLIF(array_to_string(s.tags, ' '), '')), '') AS search_text, s.search_tsv AS search_tsv, s.lexical_language AS lexical_language
              FROM proxima_core.memories m
@@ -3066,7 +3057,7 @@ JOIN proxima_core.agent_note_v1 s ON s.memory_id = m.memory_id WHERE (EXISTS (
                WHERE m.owner_kind = s.kind AND m.owner_id = s.id
            ) OR (m.owner_kind = 'world' AND m.owner_id IS NULL)) AND m.tombstoned_at IS NULL
            AND m.schema_id = $3
-           AND m.schema_version = $4 AND m.kind = 'Fact' AND m.created_at >= $7 AND m.created_at <= $8 AND s.tags @> $9::text[] AND ( m.fact_entity_id IS NULL OR EXISTS ( SELECT 1 FROM proxima_core.fact_entities fe WHERE fe.fact_entity_id = m.fact_entity_id AND fe.current_memory_id = m.memory_id ) )
+           AND m.schema_version = $4 AND m.kind = 'Fact' AND m.created_at >= $7 AND m.created_at <= $8 AND s.tags @> $9::text[] AND ( EXISTS (SELECT 1 FROM proxima_core.memory_head h WHERE h.t = m.t) )
              AND (s.search_tsv @@ (SELECT tsq FROM q) OR s.search_tsv @@ (SELECT any_tsq FROM q)) UNION ALL SELECT m.memory_id, m.owner_kind, m.owner_id, m.kind AS kind, m.schema_id, m.created_at, NULL::text[] AS tags,
              NULLIF(concat_ws(' ', NULLIF(s.claim::text, '')), '') AS search_text, proxima_core.lexical_tsv(m.lexical_language, NULLIF(concat_ws(' ', NULLIF(s.claim::text, '')), '')) AS search_tsv, m.lexical_language AS lexical_language
              FROM proxima_core.memories m
@@ -3154,7 +3145,7 @@ JOIN proxima_core.interpretation_v1 s ON s.memory_id = m.memory_id LEFT JOIN pro
               SELECT 1
                 FROM unnest($1::proxima_core.owner_kind[], $2::uuid[]) AS s(kind, id)
                WHERE m.owner_kind = s.kind AND m.owner_id = s.id
-           ) OR (m.owner_kind = 'world' AND m.owner_id IS NULL)) AND m.tombstoned_at IS NULL AND m.created_at >= $7 AND m.created_at <= $8 AND NULL::text[] @> $9::text[] AND ( (m.kind = 'Fact' AND ( m.fact_entity_id IS NULL OR EXISTS ( SELECT 1 FROM proxima_core.fact_entities fe WHERE fe.fact_entity_id = m.fact_entity_id AND fe.current_memory_id = m.memory_id ) )) OR (m.kind <> 'Fact' AND NOT EXISTS ( SELECT 1 FROM proxima_core.memories m2 WHERE m2.supersedes = m.memory_id AND m2.tombstoned_at IS NULL AND m2.owner_kind = m.owner_kind AND m2.owner_id IS NOT DISTINCT FROM m.owner_id )) ) AND NULLIF(m.text, '') IS NOT NULL
+           ) OR (m.owner_kind = 'world' AND m.owner_id IS NULL)) AND m.tombstoned_at IS NULL AND m.created_at >= $7 AND m.created_at <= $8 AND NULL::text[] @> $9::text[] AND ( (m.kind = 'Fact' AND ( EXISTS (SELECT 1 FROM proxima_core.memory_head h WHERE h.t = m.t) )) OR (m.kind <> 'Fact' AND NOT EXISTS ( SELECT 1 FROM proxima_core.memories m2 WHERE m2.supersedes = m.memory_id AND m2.tombstoned_at IS NULL AND m2.owner_kind = m.owner_kind AND m2.owner_id IS NOT DISTINCT FROM m.owner_id )) ) AND NULLIF(m.text, '') IS NOT NULL
              AND (m.search_tsv @@ (SELECT tsq FROM q) OR m.search_tsv @@ (SELECT any_tsq FROM q)) UNION ALL SELECT m.memory_id, m.owner_kind, m.owner_id, m.kind AS kind, m.schema_id, m.created_at, s.tags AS tags,
              NULLIF(concat_ws(' ', NULLIF(s.title::text, ''), NULLIF(array_to_string(s.tags, ' '), '')), '') AS search_text, s.search_tsv AS search_tsv, s.lexical_language AS lexical_language
              FROM proxima_core.memories m
@@ -3164,7 +3155,7 @@ JOIN proxima_core.agent_note_v1 s ON s.memory_id = m.memory_id WHERE (EXISTS (
                WHERE m.owner_kind = s.kind AND m.owner_id = s.id
            ) OR (m.owner_kind = 'world' AND m.owner_id IS NULL)) AND m.tombstoned_at IS NULL
            AND m.schema_id = $3
-           AND m.schema_version = $4 AND m.kind = 'Fact' AND m.created_at >= $7 AND m.created_at <= $8 AND s.tags @> $9::text[] AND ( (m.kind = 'Fact' AND ( m.fact_entity_id IS NULL OR EXISTS ( SELECT 1 FROM proxima_core.fact_entities fe WHERE fe.fact_entity_id = m.fact_entity_id AND fe.current_memory_id = m.memory_id ) )) OR (m.kind <> 'Fact' AND NOT EXISTS ( SELECT 1 FROM proxima_core.memories m2 WHERE m2.supersedes = m.memory_id AND m2.tombstoned_at IS NULL AND m2.owner_kind = m.owner_kind AND m2.owner_id IS NOT DISTINCT FROM m.owner_id )) )
+           AND m.schema_version = $4 AND m.kind = 'Fact' AND m.created_at >= $7 AND m.created_at <= $8 AND s.tags @> $9::text[] AND ( (m.kind = 'Fact' AND ( EXISTS (SELECT 1 FROM proxima_core.memory_head h WHERE h.t = m.t) )) OR (m.kind <> 'Fact' AND NOT EXISTS ( SELECT 1 FROM proxima_core.memories m2 WHERE m2.supersedes = m.memory_id AND m2.tombstoned_at IS NULL AND m2.owner_kind = m.owner_kind AND m2.owner_id IS NOT DISTINCT FROM m.owner_id )) )
              AND (s.search_tsv @@ (SELECT tsq FROM q) OR s.search_tsv @@ (SELECT any_tsq FROM q)) UNION ALL SELECT m.memory_id, m.owner_kind, m.owner_id, m.kind AS kind, m.schema_id, m.created_at, NULL::text[] AS tags,
              NULLIF(concat_ws(' ', NULLIF(s.claim::text, '')), '') AS search_text, proxima_core.lexical_tsv(m.lexical_language, NULLIF(concat_ws(' ', NULLIF(s.claim::text, '')), '')) AS search_tsv, m.lexical_language AS lexical_language
              FROM proxima_core.memories m
@@ -3174,7 +3165,7 @@ JOIN proxima_core.interpretation_v1 s ON s.memory_id = m.memory_id WHERE (EXISTS
                WHERE m.owner_kind = s.kind AND m.owner_id = s.id
            ) OR (m.owner_kind = 'world' AND m.owner_id IS NULL)) AND m.tombstoned_at IS NULL
            AND m.schema_id = $5
-           AND m.schema_version = $6 AND m.kind = 'Abstraction' AND m.created_at >= $7 AND m.created_at <= $8 AND NULL::text[] @> $9::text[] AND ( (m.kind = 'Fact' AND ( m.fact_entity_id IS NULL OR EXISTS ( SELECT 1 FROM proxima_core.fact_entities fe WHERE fe.fact_entity_id = m.fact_entity_id AND fe.current_memory_id = m.memory_id ) )) OR (m.kind <> 'Fact' AND NOT EXISTS ( SELECT 1 FROM proxima_core.memories m2 WHERE m2.supersedes = m.memory_id AND m2.tombstoned_at IS NULL AND m2.owner_kind = m.owner_kind AND m2.owner_id IS NOT DISTINCT FROM m.owner_id )) )
+           AND m.schema_version = $6 AND m.kind = 'Abstraction' AND m.created_at >= $7 AND m.created_at <= $8 AND NULL::text[] @> $9::text[] AND ( (m.kind = 'Fact' AND ( EXISTS (SELECT 1 FROM proxima_core.memory_head h WHERE h.t = m.t) )) OR (m.kind <> 'Fact' AND NOT EXISTS ( SELECT 1 FROM proxima_core.memories m2 WHERE m2.supersedes = m.memory_id AND m2.tombstoned_at IS NULL AND m2.owner_kind = m.owner_kind AND m2.owner_id IS NOT DISTINCT FROM m.owner_id )) )
              AND (proxima_core.lexical_tsv(m.lexical_language, NULLIF(concat_ws(' ', NULLIF(s.claim::text, '')), '')) @@ (SELECT tsq FROM q) OR proxima_core.lexical_tsv(m.lexical_language, NULLIF(concat_ws(' ', NULLIF(s.claim::text, '')), '')) @@ (SELECT any_tsq FROM q)))
           SELECT c.memory_id, c.kind, c.schema_id, c.created_at,
                  left(c.search_text, 480) AS snippet,
@@ -3204,7 +3195,7 @@ JOIN proxima_core.interpretation_v1 s ON s.memory_id = m.memory_id WHERE (EXISTS
               SELECT 1
                 FROM unnest($1::proxima_core.owner_kind[], $2::uuid[]) AS s(kind, id)
                WHERE m.owner_kind = s.kind AND m.owner_id = s.id
-           ) OR (m.owner_kind = 'world' AND m.owner_id IS NULL)) AND m.tombstoned_at IS NULL AND m.created_at >= $7 AND m.created_at <= $8 AND NULL::text[] @> $9::text[] AND ( (m.kind = 'Fact' AND ( m.fact_entity_id IS NULL OR EXISTS ( SELECT 1 FROM proxima_core.fact_entities fe WHERE fe.fact_entity_id = m.fact_entity_id AND fe.current_memory_id = m.memory_id ) )) OR (m.kind <> 'Fact' AND NOT EXISTS ( SELECT 1 FROM proxima_core.memories m2 WHERE m2.supersedes = m.memory_id AND m2.tombstoned_at IS NULL AND m2.owner_kind = m.owner_kind AND m2.owner_id IS NOT DISTINCT FROM m.owner_id )) ) AND NULLIF(m.text, '') IS NOT NULL UNION ALL SELECT m.memory_id, m.owner_kind, m.owner_id, m.kind AS kind, m.schema_id, m.created_at, s.tags AS tags,
+           ) OR (m.owner_kind = 'world' AND m.owner_id IS NULL)) AND m.tombstoned_at IS NULL AND m.created_at >= $7 AND m.created_at <= $8 AND NULL::text[] @> $9::text[] AND ( (m.kind = 'Fact' AND ( EXISTS (SELECT 1 FROM proxima_core.memory_head h WHERE h.t = m.t) )) OR (m.kind <> 'Fact' AND NOT EXISTS ( SELECT 1 FROM proxima_core.memories m2 WHERE m2.supersedes = m.memory_id AND m2.tombstoned_at IS NULL AND m2.owner_kind = m.owner_kind AND m2.owner_id IS NOT DISTINCT FROM m.owner_id )) ) AND NULLIF(m.text, '') IS NOT NULL UNION ALL SELECT m.memory_id, m.owner_kind, m.owner_id, m.kind AS kind, m.schema_id, m.created_at, s.tags AS tags,
              NULLIF(concat_ws(' ', NULLIF(s.title::text, ''), NULLIF(array_to_string(s.tags, ' '), '')), '') AS search_text, s.search_tsv AS search_tsv, s.lexical_language AS lexical_language
              FROM proxima_core.memories m
 JOIN proxima_core.agent_note_v1 s ON s.memory_id = m.memory_id WHERE (EXISTS (
@@ -3213,7 +3204,7 @@ JOIN proxima_core.agent_note_v1 s ON s.memory_id = m.memory_id WHERE (EXISTS (
                WHERE m.owner_kind = s.kind AND m.owner_id = s.id
            ) OR (m.owner_kind = 'world' AND m.owner_id IS NULL)) AND m.tombstoned_at IS NULL
            AND m.schema_id = $3
-           AND m.schema_version = $4 AND m.kind = 'Fact' AND m.created_at >= $7 AND m.created_at <= $8 AND s.tags @> $9::text[] AND ( (m.kind = 'Fact' AND ( m.fact_entity_id IS NULL OR EXISTS ( SELECT 1 FROM proxima_core.fact_entities fe WHERE fe.fact_entity_id = m.fact_entity_id AND fe.current_memory_id = m.memory_id ) )) OR (m.kind <> 'Fact' AND NOT EXISTS ( SELECT 1 FROM proxima_core.memories m2 WHERE m2.supersedes = m.memory_id AND m2.tombstoned_at IS NULL AND m2.owner_kind = m.owner_kind AND m2.owner_id IS NOT DISTINCT FROM m.owner_id )) ) UNION ALL SELECT m.memory_id, m.owner_kind, m.owner_id, m.kind AS kind, m.schema_id, m.created_at, NULL::text[] AS tags,
+           AND m.schema_version = $4 AND m.kind = 'Fact' AND m.created_at >= $7 AND m.created_at <= $8 AND s.tags @> $9::text[] AND ( (m.kind = 'Fact' AND ( EXISTS (SELECT 1 FROM proxima_core.memory_head h WHERE h.t = m.t) )) OR (m.kind <> 'Fact' AND NOT EXISTS ( SELECT 1 FROM proxima_core.memories m2 WHERE m2.supersedes = m.memory_id AND m2.tombstoned_at IS NULL AND m2.owner_kind = m.owner_kind AND m2.owner_id IS NOT DISTINCT FROM m.owner_id )) ) UNION ALL SELECT m.memory_id, m.owner_kind, m.owner_id, m.kind AS kind, m.schema_id, m.created_at, NULL::text[] AS tags,
              NULLIF(concat_ws(' ', NULLIF(s.claim::text, '')), '') AS search_text, proxima_core.lexical_tsv(m.lexical_language, NULLIF(concat_ws(' ', NULLIF(s.claim::text, '')), '')) AS search_tsv, m.lexical_language AS lexical_language
              FROM proxima_core.memories m
 JOIN proxima_core.interpretation_v1 s ON s.memory_id = m.memory_id WHERE (EXISTS (
@@ -3222,7 +3213,7 @@ JOIN proxima_core.interpretation_v1 s ON s.memory_id = m.memory_id WHERE (EXISTS
                WHERE m.owner_kind = s.kind AND m.owner_id = s.id
            ) OR (m.owner_kind = 'world' AND m.owner_id IS NULL)) AND m.tombstoned_at IS NULL
            AND m.schema_id = $5
-           AND m.schema_version = $6 AND m.kind = 'Abstraction' AND m.created_at >= $7 AND m.created_at <= $8 AND NULL::text[] @> $9::text[] AND ( (m.kind = 'Fact' AND ( m.fact_entity_id IS NULL OR EXISTS ( SELECT 1 FROM proxima_core.fact_entities fe WHERE fe.fact_entity_id = m.fact_entity_id AND fe.current_memory_id = m.memory_id ) )) OR (m.kind <> 'Fact' AND NOT EXISTS ( SELECT 1 FROM proxima_core.memories m2 WHERE m2.supersedes = m.memory_id AND m2.tombstoned_at IS NULL AND m2.owner_kind = m.owner_kind AND m2.owner_id IS NOT DISTINCT FROM m.owner_id )) ))";
+           AND m.schema_version = $6 AND m.kind = 'Abstraction' AND m.created_at >= $7 AND m.created_at <= $8 AND NULL::text[] @> $9::text[] AND ( (m.kind = 'Fact' AND ( EXISTS (SELECT 1 FROM proxima_core.memory_head h WHERE h.t = m.t) )) OR (m.kind <> 'Fact' AND NOT EXISTS ( SELECT 1 FROM proxima_core.memories m2 WHERE m2.supersedes = m.memory_id AND m2.tombstoned_at IS NULL AND m2.owner_kind = m.owner_kind AND m2.owner_id IS NOT DISTINCT FROM m.owner_id )) ))";
 
     const SEMANTIC_INDEX_FIRST_OVERFETCH_GOLDEN: &str = r"WITH
           -- Index-first (overfetch): the scan's window is spent before
@@ -3256,7 +3247,7 @@ JOIN proxima_core.interpretation_v1 s ON s.memory_id = m.memory_id WHERE (EXISTS
               SELECT 1
                 FROM unnest($1::proxima_core.owner_kind[], $2::uuid[]) AS s(kind, id)
                WHERE m.owner_kind = s.kind AND m.owner_id = s.id
-           ) OR (m.owner_kind = 'world' AND m.owner_id IS NULL)) AND m.tombstoned_at IS NULL AND m.created_at >= $7 AND m.created_at <= $8 AND NULL::text[] @> $9::text[] AND ( (m.kind = 'Fact' AND ( m.fact_entity_id IS NULL OR EXISTS ( SELECT 1 FROM proxima_core.fact_entities fe WHERE fe.fact_entity_id = m.fact_entity_id AND fe.current_memory_id = m.memory_id ) )) OR (m.kind <> 'Fact' AND NOT EXISTS ( SELECT 1 FROM proxima_core.memories m2 WHERE m2.supersedes = m.memory_id AND m2.tombstoned_at IS NULL AND m2.owner_kind = m.owner_kind AND m2.owner_id IS NOT DISTINCT FROM m.owner_id )) ) AND NULLIF(m.text, '') IS NOT NULL
+           ) OR (m.owner_kind = 'world' AND m.owner_id IS NULL)) AND m.tombstoned_at IS NULL AND m.created_at >= $7 AND m.created_at <= $8 AND NULL::text[] @> $9::text[] AND ( (m.kind = 'Fact' AND ( EXISTS (SELECT 1 FROM proxima_core.memory_head h WHERE h.t = m.t) )) OR (m.kind <> 'Fact' AND NOT EXISTS ( SELECT 1 FROM proxima_core.memories m2 WHERE m2.supersedes = m.memory_id AND m2.tombstoned_at IS NULL AND m2.owner_kind = m.owner_kind AND m2.owner_id IS NOT DISTINCT FROM m.owner_id )) ) AND NULLIF(m.text, '') IS NOT NULL
              AND m.memory_id IN (SELECT a.entity_id FROM ann_live a) UNION ALL SELECT m.memory_id, m.owner_kind, m.owner_id, m.kind AS kind, m.schema_id, m.created_at, s.tags AS tags,
              NULLIF(concat_ws(' ', NULLIF(s.title::text, ''), NULLIF(array_to_string(s.tags, ' '), '')), '') AS search_text, 1::int AS branch_rank
              FROM proxima_core.memories m
@@ -3266,7 +3257,7 @@ JOIN proxima_core.agent_note_v1 s ON s.memory_id = m.memory_id WHERE (EXISTS (
                WHERE m.owner_kind = s.kind AND m.owner_id = s.id
            ) OR (m.owner_kind = 'world' AND m.owner_id IS NULL)) AND m.tombstoned_at IS NULL
            AND m.schema_id = $3
-           AND m.schema_version = $4 AND m.kind = 'Fact' AND m.created_at >= $7 AND m.created_at <= $8 AND s.tags @> $9::text[] AND ( (m.kind = 'Fact' AND ( m.fact_entity_id IS NULL OR EXISTS ( SELECT 1 FROM proxima_core.fact_entities fe WHERE fe.fact_entity_id = m.fact_entity_id AND fe.current_memory_id = m.memory_id ) )) OR (m.kind <> 'Fact' AND NOT EXISTS ( SELECT 1 FROM proxima_core.memories m2 WHERE m2.supersedes = m.memory_id AND m2.tombstoned_at IS NULL AND m2.owner_kind = m.owner_kind AND m2.owner_id IS NOT DISTINCT FROM m.owner_id )) )
+           AND m.schema_version = $4 AND m.kind = 'Fact' AND m.created_at >= $7 AND m.created_at <= $8 AND s.tags @> $9::text[] AND ( (m.kind = 'Fact' AND ( EXISTS (SELECT 1 FROM proxima_core.memory_head h WHERE h.t = m.t) )) OR (m.kind <> 'Fact' AND NOT EXISTS ( SELECT 1 FROM proxima_core.memories m2 WHERE m2.supersedes = m.memory_id AND m2.tombstoned_at IS NULL AND m2.owner_kind = m.owner_kind AND m2.owner_id IS NOT DISTINCT FROM m.owner_id )) )
              AND m.memory_id IN (SELECT a.entity_id FROM ann_live a) UNION ALL SELECT m.memory_id, m.owner_kind, m.owner_id, m.kind AS kind, m.schema_id, m.created_at, NULL::text[] AS tags,
              NULLIF(concat_ws(' ', NULLIF(s.claim::text, '')), '') AS search_text, 2::int AS branch_rank
              FROM proxima_core.memories m
@@ -3276,7 +3267,7 @@ JOIN proxima_core.interpretation_v1 s ON s.memory_id = m.memory_id WHERE (EXISTS
                WHERE m.owner_kind = s.kind AND m.owner_id = s.id
            ) OR (m.owner_kind = 'world' AND m.owner_id IS NULL)) AND m.tombstoned_at IS NULL
            AND m.schema_id = $5
-           AND m.schema_version = $6 AND m.kind = 'Abstraction' AND m.created_at >= $7 AND m.created_at <= $8 AND NULL::text[] @> $9::text[] AND ( (m.kind = 'Fact' AND ( m.fact_entity_id IS NULL OR EXISTS ( SELECT 1 FROM proxima_core.fact_entities fe WHERE fe.fact_entity_id = m.fact_entity_id AND fe.current_memory_id = m.memory_id ) )) OR (m.kind <> 'Fact' AND NOT EXISTS ( SELECT 1 FROM proxima_core.memories m2 WHERE m2.supersedes = m.memory_id AND m2.tombstoned_at IS NULL AND m2.owner_kind = m.owner_kind AND m2.owner_id IS NOT DISTINCT FROM m.owner_id )) )
+           AND m.schema_version = $6 AND m.kind = 'Abstraction' AND m.created_at >= $7 AND m.created_at <= $8 AND NULL::text[] @> $9::text[] AND ( (m.kind = 'Fact' AND ( EXISTS (SELECT 1 FROM proxima_core.memory_head h WHERE h.t = m.t) )) OR (m.kind <> 'Fact' AND NOT EXISTS ( SELECT 1 FROM proxima_core.memories m2 WHERE m2.supersedes = m.memory_id AND m2.tombstoned_at IS NULL AND m2.owner_kind = m.owner_kind AND m2.owner_id IS NOT DISTINCT FROM m.owner_id )) )
              AND m.memory_id IN (SELECT a.entity_id FROM ann_live a)),
           eligible_entities AS (
               SELECT DISTINCT ON (c.kind, c.memory_id)
@@ -3337,7 +3328,7 @@ JOIN proxima_core.interpretation_v1 s ON s.memory_id = m.memory_id WHERE (EXISTS
               SELECT 1
                 FROM unnest($1::proxima_core.owner_kind[], $2::uuid[]) AS s(kind, id)
                WHERE m.owner_kind = s.kind AND m.owner_id = s.id
-           ) OR (m.owner_kind = 'world' AND m.owner_id IS NULL)) AND m.tombstoned_at IS NULL AND m.created_at >= $7 AND m.created_at <= $8 AND NULL::text[] @> $9::text[] AND ( (m.kind = 'Fact' AND ( m.fact_entity_id IS NULL OR EXISTS ( SELECT 1 FROM proxima_core.fact_entities fe WHERE fe.fact_entity_id = m.fact_entity_id AND fe.current_memory_id = m.memory_id ) )) OR (m.kind <> 'Fact' AND NOT EXISTS ( SELECT 1 FROM proxima_core.memories m2 WHERE m2.supersedes = m.memory_id AND m2.tombstoned_at IS NULL AND m2.owner_kind = m.owner_kind AND m2.owner_id IS NOT DISTINCT FROM m.owner_id )) ) AND NULLIF(m.text, '') IS NOT NULL
+           ) OR (m.owner_kind = 'world' AND m.owner_id IS NULL)) AND m.tombstoned_at IS NULL AND m.created_at >= $7 AND m.created_at <= $8 AND NULL::text[] @> $9::text[] AND ( (m.kind = 'Fact' AND ( EXISTS (SELECT 1 FROM proxima_core.memory_head h WHERE h.t = m.t) )) OR (m.kind <> 'Fact' AND NOT EXISTS ( SELECT 1 FROM proxima_core.memories m2 WHERE m2.supersedes = m.memory_id AND m2.tombstoned_at IS NULL AND m2.owner_kind = m.owner_kind AND m2.owner_id IS NOT DISTINCT FROM m.owner_id )) ) AND NULLIF(m.text, '') IS NOT NULL
              AND m.memory_id IN (SELECT a.entity_id FROM ann_live a) UNION ALL SELECT m.memory_id, m.owner_kind, m.owner_id, m.kind AS kind, m.schema_id, m.created_at, s.tags AS tags,
              NULLIF(concat_ws(' ', NULLIF(s.title::text, ''), NULLIF(array_to_string(s.tags, ' '), '')), '') AS search_text, 1::int AS branch_rank
              FROM proxima_core.memories m
@@ -3347,7 +3338,7 @@ JOIN proxima_core.agent_note_v1 s ON s.memory_id = m.memory_id WHERE (EXISTS (
                WHERE m.owner_kind = s.kind AND m.owner_id = s.id
            ) OR (m.owner_kind = 'world' AND m.owner_id IS NULL)) AND m.tombstoned_at IS NULL
            AND m.schema_id = $3
-           AND m.schema_version = $4 AND m.kind = 'Fact' AND m.created_at >= $7 AND m.created_at <= $8 AND s.tags @> $9::text[] AND ( (m.kind = 'Fact' AND ( m.fact_entity_id IS NULL OR EXISTS ( SELECT 1 FROM proxima_core.fact_entities fe WHERE fe.fact_entity_id = m.fact_entity_id AND fe.current_memory_id = m.memory_id ) )) OR (m.kind <> 'Fact' AND NOT EXISTS ( SELECT 1 FROM proxima_core.memories m2 WHERE m2.supersedes = m.memory_id AND m2.tombstoned_at IS NULL AND m2.owner_kind = m.owner_kind AND m2.owner_id IS NOT DISTINCT FROM m.owner_id )) )
+           AND m.schema_version = $4 AND m.kind = 'Fact' AND m.created_at >= $7 AND m.created_at <= $8 AND s.tags @> $9::text[] AND ( (m.kind = 'Fact' AND ( EXISTS (SELECT 1 FROM proxima_core.memory_head h WHERE h.t = m.t) )) OR (m.kind <> 'Fact' AND NOT EXISTS ( SELECT 1 FROM proxima_core.memories m2 WHERE m2.supersedes = m.memory_id AND m2.tombstoned_at IS NULL AND m2.owner_kind = m.owner_kind AND m2.owner_id IS NOT DISTINCT FROM m.owner_id )) )
              AND m.memory_id IN (SELECT a.entity_id FROM ann_live a) UNION ALL SELECT m.memory_id, m.owner_kind, m.owner_id, m.kind AS kind, m.schema_id, m.created_at, NULL::text[] AS tags,
              NULLIF(concat_ws(' ', NULLIF(s.claim::text, '')), '') AS search_text, 2::int AS branch_rank
              FROM proxima_core.memories m
@@ -3357,7 +3348,7 @@ JOIN proxima_core.interpretation_v1 s ON s.memory_id = m.memory_id WHERE (EXISTS
                WHERE m.owner_kind = s.kind AND m.owner_id = s.id
            ) OR (m.owner_kind = 'world' AND m.owner_id IS NULL)) AND m.tombstoned_at IS NULL
            AND m.schema_id = $5
-           AND m.schema_version = $6 AND m.kind = 'Abstraction' AND m.created_at >= $7 AND m.created_at <= $8 AND NULL::text[] @> $9::text[] AND ( (m.kind = 'Fact' AND ( m.fact_entity_id IS NULL OR EXISTS ( SELECT 1 FROM proxima_core.fact_entities fe WHERE fe.fact_entity_id = m.fact_entity_id AND fe.current_memory_id = m.memory_id ) )) OR (m.kind <> 'Fact' AND NOT EXISTS ( SELECT 1 FROM proxima_core.memories m2 WHERE m2.supersedes = m.memory_id AND m2.tombstoned_at IS NULL AND m2.owner_kind = m.owner_kind AND m2.owner_id IS NOT DISTINCT FROM m.owner_id )) )
+           AND m.schema_version = $6 AND m.kind = 'Abstraction' AND m.created_at >= $7 AND m.created_at <= $8 AND NULL::text[] @> $9::text[] AND ( (m.kind = 'Fact' AND ( EXISTS (SELECT 1 FROM proxima_core.memory_head h WHERE h.t = m.t) )) OR (m.kind <> 'Fact' AND NOT EXISTS ( SELECT 1 FROM proxima_core.memories m2 WHERE m2.supersedes = m.memory_id AND m2.tombstoned_at IS NULL AND m2.owner_kind = m.owner_kind AND m2.owner_id IS NOT DISTINCT FROM m.owner_id )) )
              AND m.memory_id IN (SELECT a.entity_id FROM ann_live a)),
           eligible_entities AS (
               SELECT DISTINCT ON (c.kind, c.memory_id)
@@ -3385,7 +3376,7 @@ JOIN proxima_core.interpretation_v1 s ON s.memory_id = m.memory_id WHERE (EXISTS
               SELECT 1
                 FROM unnest($1::proxima_core.owner_kind[], $2::uuid[]) AS s(kind, id)
                WHERE m.owner_kind = s.kind AND m.owner_id = s.id
-           ) OR (m.owner_kind = 'world' AND m.owner_id IS NULL)) AND m.tombstoned_at IS NULL AND m.created_at >= $7 AND m.created_at <= $8 AND NULL::text[] @> $9::text[] AND ( (m.kind = 'Fact' AND ( m.fact_entity_id IS NULL OR EXISTS ( SELECT 1 FROM proxima_core.fact_entities fe WHERE fe.fact_entity_id = m.fact_entity_id AND fe.current_memory_id = m.memory_id ) )) OR (m.kind <> 'Fact' AND m2.memory_id IS NULL) ) AND NULLIF(m.text, '') IS NOT NULL UNION ALL SELECT m.memory_id, m.owner_kind, m.owner_id, m.kind AS kind, m.schema_id, m.created_at, s.tags AS tags,
+           ) OR (m.owner_kind = 'world' AND m.owner_id IS NULL)) AND m.tombstoned_at IS NULL AND m.created_at >= $7 AND m.created_at <= $8 AND NULL::text[] @> $9::text[] AND ( (m.kind = 'Fact' AND ( EXISTS (SELECT 1 FROM proxima_core.memory_head h WHERE h.t = m.t) )) OR (m.kind <> 'Fact' AND m2.memory_id IS NULL) ) AND NULLIF(m.text, '') IS NOT NULL UNION ALL SELECT m.memory_id, m.owner_kind, m.owner_id, m.kind AS kind, m.schema_id, m.created_at, s.tags AS tags,
              NULLIF(concat_ws(' ', NULLIF(s.title::text, ''), NULLIF(array_to_string(s.tags, ' '), '')), '') AS search_text
              FROM proxima_core.memories m
 JOIN proxima_core.agent_note_v1 s ON s.memory_id = m.memory_id WHERE (EXISTS (
@@ -3394,7 +3385,7 @@ JOIN proxima_core.agent_note_v1 s ON s.memory_id = m.memory_id WHERE (EXISTS (
                WHERE m.owner_kind = s.kind AND m.owner_id = s.id
            ) OR (m.owner_kind = 'world' AND m.owner_id IS NULL)) AND m.tombstoned_at IS NULL
            AND m.schema_id = $3
-           AND m.schema_version = $4 AND m.kind = 'Fact' AND m.created_at >= $7 AND m.created_at <= $8 AND s.tags @> $9::text[] AND ( m.fact_entity_id IS NULL OR EXISTS ( SELECT 1 FROM proxima_core.fact_entities fe WHERE fe.fact_entity_id = m.fact_entity_id AND fe.current_memory_id = m.memory_id ) ) UNION ALL SELECT m.memory_id, m.owner_kind, m.owner_id, m.kind AS kind, m.schema_id, m.created_at, NULL::text[] AS tags,
+           AND m.schema_version = $4 AND m.kind = 'Fact' AND m.created_at >= $7 AND m.created_at <= $8 AND s.tags @> $9::text[] AND ( EXISTS (SELECT 1 FROM proxima_core.memory_head h WHERE h.t = m.t) ) UNION ALL SELECT m.memory_id, m.owner_kind, m.owner_id, m.kind AS kind, m.schema_id, m.created_at, NULL::text[] AS tags,
              NULLIF(concat_ws(' ', NULLIF(s.claim::text, '')), '') AS search_text
              FROM proxima_core.memories m
 JOIN proxima_core.interpretation_v1 s ON s.memory_id = m.memory_id LEFT JOIN proxima_core.memories m2 ON m2.supersedes = m.memory_id AND m2.tombstoned_at IS NULL AND m2.owner_kind = m.owner_kind AND m2.owner_id IS NOT DISTINCT FROM m.owner_id WHERE (EXISTS (
@@ -3506,7 +3497,7 @@ JOIN proxima_core.interpretation_v1 s ON s.memory_id = m.memory_id LEFT JOIN pro
               SELECT 1
                 FROM unnest($1::proxima_core.owner_kind[], $2::uuid[]) AS s(kind, id)
                WHERE m.owner_kind = s.kind AND m.owner_id = s.id
-           ) OR (m.owner_kind = 'world' AND m.owner_id IS NULL)) AND m.tombstoned_at IS NULL AND m.created_at >= $7 AND m.created_at <= $8 AND NULL::text[] @> $9::text[] AND ( (m.kind = 'Fact' AND ( m.fact_entity_id IS NULL OR EXISTS ( SELECT 1 FROM proxima_core.fact_entities fe WHERE fe.fact_entity_id = m.fact_entity_id AND fe.current_memory_id = m.memory_id ) )) OR (m.kind <> 'Fact' AND m2.memory_id IS NULL) ) AND NULLIF(m.text, '') IS NOT NULL
+           ) OR (m.owner_kind = 'world' AND m.owner_id IS NULL)) AND m.tombstoned_at IS NULL AND m.created_at >= $7 AND m.created_at <= $8 AND NULL::text[] @> $9::text[] AND ( (m.kind = 'Fact' AND ( EXISTS (SELECT 1 FROM proxima_core.memory_head h WHERE h.t = m.t) )) OR (m.kind <> 'Fact' AND m2.memory_id IS NULL) ) AND NULLIF(m.text, '') IS NOT NULL
              AND m.memory_id IN (SELECT a.entity_id FROM ann_live a) UNION ALL SELECT m.memory_id, m.owner_kind, m.owner_id, m.kind AS kind, m.schema_id, m.created_at, s.tags AS tags,
              NULLIF(concat_ws(' ', NULLIF(s.title::text, ''), NULLIF(array_to_string(s.tags, ' '), '')), '') AS search_text, 1::int AS branch_rank
              FROM proxima_core.memories m
@@ -3516,7 +3507,7 @@ JOIN proxima_core.agent_note_v1 s ON s.memory_id = m.memory_id WHERE (EXISTS (
                WHERE m.owner_kind = s.kind AND m.owner_id = s.id
            ) OR (m.owner_kind = 'world' AND m.owner_id IS NULL)) AND m.tombstoned_at IS NULL
            AND m.schema_id = $3
-           AND m.schema_version = $4 AND m.kind = 'Fact' AND m.created_at >= $7 AND m.created_at <= $8 AND s.tags @> $9::text[] AND ( m.fact_entity_id IS NULL OR EXISTS ( SELECT 1 FROM proxima_core.fact_entities fe WHERE fe.fact_entity_id = m.fact_entity_id AND fe.current_memory_id = m.memory_id ) )
+           AND m.schema_version = $4 AND m.kind = 'Fact' AND m.created_at >= $7 AND m.created_at <= $8 AND s.tags @> $9::text[] AND ( EXISTS (SELECT 1 FROM proxima_core.memory_head h WHERE h.t = m.t) )
              AND m.memory_id IN (SELECT a.entity_id FROM ann_live a) UNION ALL SELECT m.memory_id, m.owner_kind, m.owner_id, m.kind AS kind, m.schema_id, m.created_at, NULL::text[] AS tags,
              NULLIF(concat_ws(' ', NULLIF(s.claim::text, '')), '') AS search_text, 2::int AS branch_rank
              FROM proxima_core.memories m
@@ -3588,7 +3579,7 @@ JOIN proxima_core.interpretation_v1 s ON s.memory_id = m.memory_id LEFT JOIN pro
               SELECT 1
                 FROM unnest($1::proxima_core.owner_kind[], $2::uuid[]) AS s(kind, id)
                WHERE m.owner_kind = s.kind AND m.owner_id = s.id
-           ) OR (m.owner_kind = 'world' AND m.owner_id IS NULL)) AND m.tombstoned_at IS NULL AND m.created_at >= $7 AND m.created_at <= $8 AND NULL::text[] @> $9::text[] AND ( (m.kind = 'Fact' AND ( m.fact_entity_id IS NULL OR EXISTS ( SELECT 1 FROM proxima_core.fact_entities fe WHERE fe.fact_entity_id = m.fact_entity_id AND fe.current_memory_id = m.memory_id ) )) OR (m.kind <> 'Fact' AND m2.memory_id IS NULL) ) AND NULLIF(m.text, '') IS NOT NULL
+           ) OR (m.owner_kind = 'world' AND m.owner_id IS NULL)) AND m.tombstoned_at IS NULL AND m.created_at >= $7 AND m.created_at <= $8 AND NULL::text[] @> $9::text[] AND ( (m.kind = 'Fact' AND ( EXISTS (SELECT 1 FROM proxima_core.memory_head h WHERE h.t = m.t) )) OR (m.kind <> 'Fact' AND m2.memory_id IS NULL) ) AND NULLIF(m.text, '') IS NOT NULL
              AND m.memory_id IN (SELECT a.entity_id FROM ann_live a) UNION ALL SELECT m.memory_id, m.owner_kind, m.owner_id, m.kind AS kind, m.schema_id, m.created_at, s.tags AS tags,
              NULLIF(concat_ws(' ', NULLIF(s.title::text, ''), NULLIF(array_to_string(s.tags, ' '), '')), '') AS search_text, 1::int AS branch_rank
              FROM proxima_core.memories m
@@ -3598,7 +3589,7 @@ JOIN proxima_core.agent_note_v1 s ON s.memory_id = m.memory_id WHERE (EXISTS (
                WHERE m.owner_kind = s.kind AND m.owner_id = s.id
            ) OR (m.owner_kind = 'world' AND m.owner_id IS NULL)) AND m.tombstoned_at IS NULL
            AND m.schema_id = $3
-           AND m.schema_version = $4 AND m.kind = 'Fact' AND m.created_at >= $7 AND m.created_at <= $8 AND s.tags @> $9::text[] AND ( m.fact_entity_id IS NULL OR EXISTS ( SELECT 1 FROM proxima_core.fact_entities fe WHERE fe.fact_entity_id = m.fact_entity_id AND fe.current_memory_id = m.memory_id ) )
+           AND m.schema_version = $4 AND m.kind = 'Fact' AND m.created_at >= $7 AND m.created_at <= $8 AND s.tags @> $9::text[] AND ( EXISTS (SELECT 1 FROM proxima_core.memory_head h WHERE h.t = m.t) )
              AND m.memory_id IN (SELECT a.entity_id FROM ann_live a) UNION ALL SELECT m.memory_id, m.owner_kind, m.owner_id, m.kind AS kind, m.schema_id, m.created_at, NULL::text[] AS tags,
              NULLIF(concat_ws(' ', NULLIF(s.claim::text, '')), '') AS search_text, 2::int AS branch_rank
              FROM proxima_core.memories m
@@ -3637,7 +3628,7 @@ JOIN proxima_core.interpretation_v1 s ON s.memory_id = m.memory_id LEFT JOIN pro
               SELECT 1
                 FROM unnest($1::proxima_core.owner_kind[], $2::uuid[]) AS s(kind, id)
                WHERE m.owner_kind = s.kind AND m.owner_id = s.id
-           ) OR (m.owner_kind = 'world' AND m.owner_id IS NULL)) AND m.tombstoned_at IS NULL AND m.created_at >= $7 AND m.created_at <= $8 AND NULL::text[] @> $9::text[] AND ( (m.kind = 'Fact' AND ( m.fact_entity_id IS NULL OR EXISTS ( SELECT 1 FROM proxima_core.fact_entities fe WHERE fe.fact_entity_id = m.fact_entity_id AND fe.current_memory_id = m.memory_id ) )) OR (m.kind <> 'Fact' AND m2.memory_id IS NULL) ) AND NULLIF(m.text, '') IS NOT NULL UNION ALL SELECT m.memory_id, m.owner_kind, m.owner_id, m.kind AS kind, m.schema_id, m.created_at, s.tags AS tags,
+           ) OR (m.owner_kind = 'world' AND m.owner_id IS NULL)) AND m.tombstoned_at IS NULL AND m.created_at >= $7 AND m.created_at <= $8 AND NULL::text[] @> $9::text[] AND ( (m.kind = 'Fact' AND ( EXISTS (SELECT 1 FROM proxima_core.memory_head h WHERE h.t = m.t) )) OR (m.kind <> 'Fact' AND m2.memory_id IS NULL) ) AND NULLIF(m.text, '') IS NOT NULL UNION ALL SELECT m.memory_id, m.owner_kind, m.owner_id, m.kind AS kind, m.schema_id, m.created_at, s.tags AS tags,
              NULLIF(concat_ws(' ', NULLIF(s.title::text, ''), NULLIF(array_to_string(s.tags, ' '), '')), '') AS search_text, s.search_tsv AS search_tsv, s.lexical_language AS lexical_language
              FROM proxima_core.memories m
 JOIN proxima_core.agent_note_v1 s ON s.memory_id = m.memory_id WHERE (EXISTS (
@@ -3646,7 +3637,7 @@ JOIN proxima_core.agent_note_v1 s ON s.memory_id = m.memory_id WHERE (EXISTS (
                WHERE m.owner_kind = s.kind AND m.owner_id = s.id
            ) OR (m.owner_kind = 'world' AND m.owner_id IS NULL)) AND m.tombstoned_at IS NULL
            AND m.schema_id = $3
-           AND m.schema_version = $4 AND m.kind = 'Fact' AND m.created_at >= $7 AND m.created_at <= $8 AND s.tags @> $9::text[] AND ( m.fact_entity_id IS NULL OR EXISTS ( SELECT 1 FROM proxima_core.fact_entities fe WHERE fe.fact_entity_id = m.fact_entity_id AND fe.current_memory_id = m.memory_id ) ) UNION ALL SELECT m.memory_id, m.owner_kind, m.owner_id, m.kind AS kind, m.schema_id, m.created_at, NULL::text[] AS tags,
+           AND m.schema_version = $4 AND m.kind = 'Fact' AND m.created_at >= $7 AND m.created_at <= $8 AND s.tags @> $9::text[] AND ( EXISTS (SELECT 1 FROM proxima_core.memory_head h WHERE h.t = m.t) ) UNION ALL SELECT m.memory_id, m.owner_kind, m.owner_id, m.kind AS kind, m.schema_id, m.created_at, NULL::text[] AS tags,
              NULLIF(concat_ws(' ', NULLIF(s.claim::text, '')), '') AS search_text, proxima_core.lexical_tsv(m.lexical_language, NULLIF(concat_ws(' ', NULLIF(s.claim::text, '')), '')) AS search_tsv, m.lexical_language AS lexical_language
              FROM proxima_core.memories m
 JOIN proxima_core.interpretation_v1 s ON s.memory_id = m.memory_id LEFT JOIN proxima_core.memories m2 ON m2.supersedes = m.memory_id AND m2.tombstoned_at IS NULL AND m2.owner_kind = m.owner_kind AND m2.owner_id IS NOT DISTINCT FROM m.owner_id WHERE (EXISTS (

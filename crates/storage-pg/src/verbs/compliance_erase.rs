@@ -291,7 +291,6 @@ async fn erase_selected(
     cited_object_sidecar_tables: &[String],
 ) -> Result<(), StorageError> {
     create_selected_sets(tx, owner, scope).await?;
-    repoint_surviving_fact_entity_heads(tx).await?;
     upsert_audit_outcome(
         tx,
         auth.audit(),
@@ -354,19 +353,6 @@ async fn erase_selected(
     let embedding_heads = delete_embeddings(tx, "proxima_core.embedding_heads").await?;
     let embeddings = delete_embeddings(tx, "proxima_core.embeddings").await?;
     record_count(tx, "embeddings", embeddings.saturating_add(embedding_heads)).await?;
-
-    record_count(tx, "citations", 0).await?;
-    record_count(tx, "cited_objects", 0).await?;
-
-    let fact_entities = delete_selected_table(
-        tx,
-        "proxima_core.fact_entities",
-        "fact_entity_id",
-        "selected_fact_entities",
-        "fact_entity_id",
-    )
-    .await?;
-    record_count(tx, "fact_entities", fact_entities).await?;
 
     let mcp_rows = delete_fixed_by_selected(
         tx,
@@ -560,53 +546,6 @@ async fn create_selected_sets(
         .map_err(map_err)?;
     }
 
-    sqlx::query(
-        "CREATE TEMP TABLE selected_fact_entities(fact_entity_id uuid PRIMARY KEY) ON COMMIT DROP",
-    )
-    .execute(&mut **tx)
-    .await
-    .map_err(map_err)?;
-    match scope {
-        SelectionScope::Owner => {
-            sqlx::query(
-                "INSERT INTO selected_fact_entities(fact_entity_id)
-                 SELECT fact_entity_id FROM proxima_core.fact_entities
-                  WHERE owner_kind = $1 AND owner_id = $2",
-            )
-            .bind(owner_kind)
-            .bind(owner_id)
-            .execute(&mut **tx)
-            .await
-            .map_err(map_err)?;
-        }
-        SelectionScope::Source(_) => {
-            sqlx::query(
-                "INSERT INTO selected_fact_entities(fact_entity_id)
-                 SELECT DISTINCT fe.fact_entity_id
-                   FROM proxima_core.fact_entities fe
-                   JOIN selected_memories sm
-                     ON sm.memory_id = fe.current_memory_id OR sm.fact_entity_id = fe.fact_entity_id
-                  WHERE fe.owner_kind = $1
-                    AND fe.owner_id = $2
-                    AND NOT EXISTS (
-                        SELECT 1
-                          FROM proxima_core.memories survivor
-                         WHERE survivor.fact_entity_id = fe.fact_entity_id
-                           AND NOT EXISTS (
-                               SELECT 1
-                                 FROM selected_memories selected
-                                WHERE selected.memory_id = survivor.memory_id
-                           )
-                    )",
-            )
-            .bind(owner_kind)
-            .bind(owner_id)
-            .execute(&mut **tx)
-            .await
-            .map_err(map_err)?;
-        }
-    }
-
     // An edge has no id, so the selection carries the key itself. It is
     // selected when its SOURCE is going — the row is owned by the source
     // owner, and an edge whose source survives keeps existing with its
@@ -631,9 +570,7 @@ async fn create_selected_sets(
            FROM proxima_core.edges e
           WHERE ($3::boolean AND e.owner_kind = $1 AND e.owner_id = $2)
              OR EXISTS (SELECT 1 FROM selected_memories sm WHERE sm.memory_id = e.source_id)
-             OR EXISTS (SELECT 1 FROM selected_goals sg WHERE sg.goal_id = e.source_id)
-             OR EXISTS (SELECT 1 FROM selected_fact_entities sfe
-                         WHERE sfe.fact_entity_id = e.source_id)",
+             OR EXISTS (SELECT 1 FROM selected_goals sg WHERE sg.goal_id = e.source_id)",
     )
     .bind(owner_kind)
     .bind(owner_id)
@@ -658,35 +595,6 @@ async fn delete_selected_edges(tx: &mut Tx<'_>) -> Result<u64, StorageError> {
     Ok(result.rows_affected())
 }
 
-async fn repoint_surviving_fact_entity_heads(tx: &mut Tx<'_>) -> Result<(), StorageError> {
-    sqlx::query(
-        "WITH surviving_heads AS (
-             SELECT DISTINCT ON (fe.fact_entity_id)
-                    fe.fact_entity_id, survivor.memory_id, survivor.created_at
-               FROM proxima_core.fact_entities fe
-               JOIN selected_memories selected_current
-                 ON selected_current.memory_id = fe.current_memory_id
-               JOIN proxima_core.memories survivor
-                 ON survivor.fact_entity_id = fe.fact_entity_id
-              WHERE NOT EXISTS (
-                    SELECT 1
-                      FROM selected_memories selected
-                     WHERE selected.memory_id = survivor.memory_id
-                )
-              ORDER BY fe.fact_entity_id, survivor.created_at DESC, survivor.memory_id DESC
-         )
-         UPDATE proxima_core.fact_entities fe
-            SET current_memory_id = surviving_heads.memory_id,
-                current_created_at = surviving_heads.created_at
-           FROM surviving_heads
-          WHERE fe.fact_entity_id = surviving_heads.fact_entity_id",
-    )
-    .execute(&mut **tx)
-    .await
-    .map_err(map_err)?;
-    Ok(())
-}
-
 async fn insert_redactions(tx: &mut Tx<'_>, operation_id: uuid::Uuid) -> Result<u64, StorageError> {
     let result = sqlx::query(
         "INSERT INTO proxima_core.compliance_edge_target_redactions
@@ -702,8 +610,6 @@ async fn insert_redactions(tx: &mut Tx<'_>, operation_id: uuid::Uuid) -> Result<
             AND (
                 EXISTS (SELECT 1 FROM selected_memories sm WHERE sm.memory_id = e.target_id)
                 OR EXISTS (SELECT 1 FROM selected_goals sg WHERE sg.goal_id = e.target_id)
-                OR EXISTS (SELECT 1 FROM selected_fact_entities sfe
-                            WHERE sfe.fact_entity_id = e.target_id)
             )
          ON CONFLICT DO NOTHING",
     )
@@ -871,14 +777,14 @@ async fn upsert_audit_outcome(
         "INSERT INTO proxima_core.compliance_audit_log(
              operation_id, target_kind, outcome, refusal, owner_ref_digest,
              requester_digest, source_scope_digest, derived_auth_path, requested_at,
-             completed_at, memories_count, goals_count, edges_count, fact_entities_count,
-             receipts_count, source_batches_count, citations_count, cited_objects_count,
+             completed_at, memories_count, goals_count, edges_count,
+             receipts_count, source_batches_count,
              source_cursors_count, embeddings_count, embedding_jobs_count, mcp_call_rows_count,
              change_events_count, redacted_edge_targets_count, suppressed_keys_count,
              delegated_authority_grants_count, cited_object_purge_pending)
          VALUES ($1, $2, $3::proxima_core.compliance_erase_outcome,
                  $4::proxima_core.compliance_erase_refusal, $5, $6, $7, $8, $9,
-                 now(), $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26)
+                 now(), $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23)
          ON CONFLICT (operation_id) DO UPDATE SET
              outcome = EXCLUDED.outcome,
              refusal = EXCLUDED.refusal,
@@ -886,11 +792,8 @@ async fn upsert_audit_outcome(
              memories_count = EXCLUDED.memories_count,
              goals_count = EXCLUDED.goals_count,
              edges_count = EXCLUDED.edges_count,
-             fact_entities_count = EXCLUDED.fact_entities_count,
              receipts_count = EXCLUDED.receipts_count,
              source_batches_count = EXCLUDED.source_batches_count,
-             citations_count = EXCLUDED.citations_count,
-             cited_objects_count = EXCLUDED.cited_objects_count,
              source_cursors_count = EXCLUDED.source_cursors_count,
              embeddings_count = EXCLUDED.embeddings_count,
              embedding_jobs_count = EXCLUDED.embedding_jobs_count,
@@ -913,11 +816,8 @@ async fn upsert_audit_outcome(
     .bind(i64::try_from(counts.memories).unwrap_or(i64::MAX))
     .bind(i64::try_from(counts.goals).unwrap_or(i64::MAX))
     .bind(i64::try_from(counts.edges).unwrap_or(i64::MAX))
-    .bind(0_i64)
     .bind(i64::try_from(counts.receipts).unwrap_or(i64::MAX))
     .bind(i64::try_from(counts.source_batches).unwrap_or(i64::MAX))
-    .bind(0_i64)
-    .bind(0_i64)
     .bind(i64::try_from(counts.source_cursors).unwrap_or(i64::MAX))
     .bind(i64::try_from(counts.embeddings).unwrap_or(i64::MAX))
     .bind(i64::try_from(counts.embedding_jobs).unwrap_or(i64::MAX))
@@ -1247,7 +1147,6 @@ async fn delete_change_events(tx: &mut Tx<'_>, owner: OwnerRef) -> Result<u64, S
                 )
                 OR EXISTS (SELECT 1 FROM selected_memories sm WHERE sm.memory_id = ce.edge_source_id OR sm.memory_id = ce.edge_target_id)
                 OR EXISTS (SELECT 1 FROM selected_goals sg WHERE sg.goal_id = ce.edge_source_id OR sg.goal_id = ce.edge_target_id)
-                OR EXISTS (SELECT 1 FROM selected_fact_entities sfe WHERE sfe.fact_entity_id = ce.edge_source_id OR sfe.fact_entity_id = ce.edge_target_id)
             )",
     )
     .bind(owner_kind)
