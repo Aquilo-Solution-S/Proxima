@@ -298,19 +298,22 @@ impl Tool for CodeSearchChunksTool {
                 if effective_mode == ChunkSearchMode::Semantic {
                     Vec::new()
                 } else {
-                    scan_chunk_sidecar(
-                        pool.pool(),
-                        query,
-                        &ChunkSidecarScan {
+                    {
+                        let scan = ChunkSidecarScan {
                             repo_id,
                             language: args.language.as_deref(),
                             chunk_type: args.chunk_type.as_deref(),
                             exact_pattern: &exact_pattern,
                             candidate_limit,
                             distinctive: &distinctive_terms(query),
-                        },
-                    )
-                    .await?
+                        };
+                        let gin = scan_chunk_sidecar(pool.pool(), query, &scan).await?;
+                        if gin.is_empty() {
+                            scan_chunk_sidecar_like(pool.pool(), query, &scan).await?
+                        } else {
+                            gin
+                        }
+                    }
                 };
 
             // The semantic arm draws on the same candidate budget as the
@@ -719,7 +722,8 @@ struct ChunkSidecarScan<'a> {
 ///
 /// `'english'` is pinned (code is not the deployment's prose language).
 /// Bands: strict 4.x / rare-all 3.x / rare-any 2.x / rescue 1.x, plus
-/// path/text literal bonuses. GIN is on the generated column.
+/// path/text literal bonuses on the GIN hit set. `LIKE` is a separate
+/// scan, only when this GIN arm returns nothing.
 async fn scan_chunk_sidecar(
     pool: &sqlx::PgPool,
     query: &str,
@@ -779,6 +783,48 @@ async fn scan_chunk_sidecar(
                 c.search_tsv @@ q.tsq
                 OR (q.any_tsq IS NOT NULL AND c.search_tsv @@ q.any_tsq)
                 OR (q.rare_any_tsq IS NOT NULL AND c.search_tsv @@ q.rare_any_tsq)
+            )
+          ORDER BY score DESC, c.t DESC
+          LIMIT $6",
+    )
+    .bind(query)
+    .bind(scan.repo_id)
+    .bind(scan.language)
+    .bind(scan.exact_pattern)
+    .bind(scan.chunk_type)
+    .bind(scan.candidate_limit)
+    .bind(scan.distinctive)
+    .fetch_all(pool)
+    .await
+    .map_err(map_storage)
+}
+
+/// Substring fallback: only when GIN returned nothing. Same filters, no `@@`.
+async fn scan_chunk_sidecar_like(
+    pool: &sqlx::PgPool,
+    query: &str,
+    scan: &ChunkSidecarScan<'_>,
+) -> Result<Vec<ChunkCandidateRow>, ToolError> {
+    sqlx::query_as(
+        "SELECT c.t AS memory_id,
+                (
+                    CASE WHEN c.chunk_type <> 'file' THEN 0.3 ELSE 0.0 END
+                    + CASE WHEN lower(c.file_path) = lower($1) THEN 10.0 ELSE 0.0 END
+                    + CASE WHEN lower(c.file_path) LIKE $4 ESCAPE '\\' THEN 6.0 ELSE 0.0 END
+                    + CASE WHEN lower(c.text) LIKE $4 ESCAPE '\\' THEN 4.0 ELSE 0.0 END
+                )::real AS score,
+                (
+                    CASE WHEN lower(c.file_path) = lower($1) THEN 10.0 ELSE 0.0 END
+                    + CASE WHEN lower(c.file_path) LIKE $4 ESCAPE '\\' THEN 6.0 ELSE 0.0 END
+                    + CASE WHEN lower(c.text) LIKE $4 ESCAPE '\\' THEN 4.0 ELSE 0.0 END
+                )::real AS literal_bonus
+           FROM proxima_code.code_chunk_v1 c
+          WHERE c.state = 'Present'
+            AND ($2::uuid IS NULL OR c.repo_id = $2)
+            AND ($3::text IS NULL OR c.language = $3)
+            AND ($5::text IS NULL OR c.chunk_type = $5)
+            AND (
+                lower(c.file_path) = lower($1)
                 OR lower(c.file_path) LIKE $4 ESCAPE '\\'
                 OR lower(c.text) LIKE $4 ESCAPE '\\'
             )
@@ -791,7 +837,6 @@ async fn scan_chunk_sidecar(
     .bind(scan.exact_pattern)
     .bind(scan.chunk_type)
     .bind(scan.candidate_limit)
-    .bind(scan.distinctive)
     .fetch_all(pool)
     .await
     .map_err(map_storage)

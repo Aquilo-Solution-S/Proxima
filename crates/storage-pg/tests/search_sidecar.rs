@@ -153,6 +153,21 @@ async fn lexical_search_is_sidecar_first_then_owner_admit() {
             "snippet comes from the sidecar scan"
         );
 
+        let like_only = pg
+            .search_memories(&search_req(owner, "eedle"), &[note_projection()])
+            .await?;
+        assert_eq!(
+            like_only.results.len(),
+            1,
+            "substring with no tsvector lexeme must still hit via LIKE fallback"
+        );
+        assert_eq!(like_only.results[0].memory_id.into_inner(), ours);
+        assert!(
+            (like_only.results[0].lexical_score - 0.25).abs() < f32::EPSILON,
+            "LIKE fallback score is the 0.25 substring band, got {}",
+            like_only.results[0].lexical_score
+        );
+
         let miss = pg
             .search_memories(
                 &search_req(owner, "no-such-lexeme-xyzzy"),

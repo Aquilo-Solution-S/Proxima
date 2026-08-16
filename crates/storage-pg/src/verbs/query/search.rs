@@ -1,7 +1,8 @@
 //! `core_search_memories` — sidecar-first content search.
 //!
 //! Same split as `proxima-code_search_chunks` (the reference):
-//! 1. **content** — one GIN/HNSW query per *core* sidecar, no `memory` join
+//! 1. **content** — one GIN query per *core* sidecar (`@@` only); `LIKE`
+//!    runs only when that sidecar's GIN arm is empty
 //! 2. **admit** — `memory_head` (owner + head) on the hit `t`s
 //! 3. **pins** — engine neighbor load, only if the caller asked
 //!
@@ -193,18 +194,40 @@ async fn scan_sidecars(
         return Ok(Vec::new());
     }
     let like_pattern = like_pattern(&req.query);
-    let jobs =
-        projections.iter().copied().map(|projection| {
-            let like_pattern = like_pattern.clone();
-            async move {
-                scan_one_sidecar(pool, req, projection, &like_pattern, overfetch, rescue).await
+    let jobs = projections.iter().copied().map(|projection| {
+        let like_pattern = like_pattern.clone();
+        async move {
+            let gin = scan_one_sidecar(
+                pool,
+                req,
+                projection,
+                &like_pattern,
+                overfetch,
+                rescue,
+                false,
+            )
+            .await?;
+            if gin.is_empty() {
+                scan_one_sidecar(
+                    pool,
+                    req,
+                    projection,
+                    &like_pattern,
+                    overfetch,
+                    rescue,
+                    true,
+                )
+                .await
+            } else {
+                Ok(gin)
             }
-        });
+        }
+    });
     let batches = try_join_all(jobs).await?;
     Ok(batches.into_iter().flatten().collect())
 }
 
-#[allow(clippy::too_many_lines)]
+#[allow(clippy::too_many_lines, clippy::fn_params_excessive_bools)]
 async fn scan_one_sidecar(
     pool: &PgPool,
     req: &MemorySearchRequest,
@@ -212,6 +235,7 @@ async fn scan_one_sidecar(
     like_pattern: &str,
     overfetch: u32,
     rescue: bool,
+    like_only: bool,
 ) -> Result<Vec<Hit>, StorageError> {
     let table = PgIdent::table(&projection.sidecar_table)?;
     let search_text = projection_search_text(&projection.fields)?;
@@ -227,7 +251,7 @@ async fn scan_one_sidecar(
         }
         _ => String::new(),
     };
-    let rescue_score = if rescue {
+    let rescue_score = if rescue && !like_only {
         ", CASE WHEN q.any_tsq IS NOT NULL AND {tsv} @@ q.any_tsq
                 THEN 0.25 + LEAST(COALESCE(ts_rank({tsv}, q.any_tsq, 1|32), 0.0) * 100.0, 1.0) * 0.2
                 ELSE 0.0 END"
@@ -235,7 +259,7 @@ async fn scan_one_sidecar(
     } else {
         String::new()
     };
-    let rescue_where = if rescue {
+    let rescue_where = if rescue && !like_only {
         " OR (q.any_tsq IS NOT NULL AND {tsv} @@ q.any_tsq)".replace("{tsv}", &tsv_expr)
     } else {
         String::new()
@@ -247,6 +271,23 @@ async fn scan_one_sidecar(
     let recency_t = match req.after {
         Some(SearchCursor::Recency { memory_id, .. }) => Some(memory_id.into_inner()),
         _ => None,
+    };
+    let match_pred = if like_only {
+        format!("lower({search_text}) LIKE $2 ESCAPE '\\'")
+    } else {
+        format!("{tsv_expr} @@ q.tsq{rescue_where}")
+    };
+    let score_expr = if like_only {
+        "0.25::real".to_string()
+    } else {
+        format!(
+            "GREATEST(
+                    CASE WHEN {tsv_expr} @@ q.tsq
+                         THEN 0.5 + LEAST(COALESCE(ts_rank_cd({tsv_expr}, q.tsq, 32), 0.0), 1.0) * 0.5
+                         ELSE 0.0 END{rescue_score},
+                    0.0
+                )::real"
+        )
     };
 
     let sql = format!(
@@ -261,21 +302,12 @@ async fn scan_one_sidecar(
                         '')::tsquery AS any_tsq
          )
          SELECT c.t,
-                GREATEST(
-                    CASE WHEN {tsv} @@ q.tsq
-                         THEN 0.5 + LEAST(COALESCE(ts_rank_cd({tsv}, q.tsq, 32), 0.0), 1.0) * 0.5
-                         ELSE 0.0 END{rescue_score},
-                    CASE WHEN lower({search_text}) LIKE $2 ESCAPE '\\'
-                         THEN 0.25 ELSE 0.0 END
-                )::real AS lexical_score,
+                {score_expr} AS lexical_score,
                 left({search_text}, 480) AS snippet
            FROM {table} c, q
-          WHERE (
-                    {tsv} @@ q.tsq
-                    {rescue_where}
-                    OR lower({search_text}) LIKE $2 ESCAPE '\\'
-                )
+          WHERE ({match_pred})
             {tag_pred}
+            AND length($2::text) >= 0
             AND ($5::timestamptz IS NULL
                  OR COALESCE(uuid_extract_timestamp(c.t), TIMESTAMPTZ '1970-01-01') >= $5)
             AND ($6::timestamptz IS NULL
@@ -284,12 +316,11 @@ async fn scan_one_sidecar(
           ORDER BY {order_by}
           LIMIT $3",
         table = table.as_str(),
-        tsv = tsv_expr,
         search_text = search_text,
-        rescue_score = rescue_score,
-        rescue_where = rescue_where,
         tag_pred = tag_pred,
         order_by = order_by,
+        match_pred = match_pred,
+        score_expr = score_expr,
     );
 
     // SQL-POLICY: PgIdent
