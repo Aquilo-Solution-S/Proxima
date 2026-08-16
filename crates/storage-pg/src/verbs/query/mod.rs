@@ -1,19 +1,5 @@
-//! `Query` verb — paginated read of `memories` with optional
-//! head filtering. Two head modes (docs/02 §Re-derivation, docs/03
-//! §Stateful Fact schemas):
-//!
-//! - A/P: `NOT EXISTS (m2.supersedes = m.memory_id)` (lineage scan).
-//! - Stateful Fact: `NOT EXISTS` of a row under the same NK tuple
-//!   with a later `created_at` (head-by-natural-key).
-//!
-//! `stateful_heads` is set by the engine from the schema registry
-//! before dispatch when the request is heads-only and `schema_id`
-//! resolves to a stateful Fact schema.
-//!
-//! Payload projection: the selected memory rows are hydrated through
-//! typed PG sidecar loaders registered by the owning flavor.
-
-use std::fmt::Write as _;
+//! `Query` verb — paginated read starting at `memory_head` / `goal_head`.
+//! Payload projection: selected rows hydrate through typed PG sidecar loaders.
 
 use proxima_core::{OwnerRef, OwnerRefKind};
 
@@ -33,13 +19,9 @@ pub use code_chunk_vectors::{
     CodeChunkVectorCandidate, CodeChunkVectorFilters, nearest_code_chunk_candidates,
 };
 pub use edges::MAX_SNAPSHOT_EDGES;
-#[cfg(any(test, feature = "test-fixtures", debug_assertions))]
-pub use edges::edges_between_visible_nodes_sql_for_tests;
 pub(crate) use edges::{edge_exists, read_edges};
 #[cfg(any(test, feature = "test-fixtures", debug_assertions))]
 pub use goals::goal_page_sql_for_tests;
-#[cfg(any(test, feature = "test-fixtures", debug_assertions))]
-pub use lineage::lineage_walk_sql_for_tests;
 pub(crate) use lineage::walk_memory_lineage;
 #[cfg(any(test, feature = "test-fixtures", debug_assertions))]
 pub use memories::memory_page_sql_for_tests;
@@ -48,91 +30,11 @@ pub(crate) use rows::read_seq_high_water;
 #[cfg(any(test, feature = "test-fixtures", debug_assertions))]
 pub use rows::read_seq_high_water_sql_for_tests;
 pub(crate) use search::search_memories;
-#[cfg(any(test, feature = "test-fixtures", debug_assertions))]
-pub use search::{
-    lexical_search_sql_for_tests, semantic_search_sql_for_tests, set_hnsw_search_sql_for_tests,
-    substring_search_sql_for_tests,
-};
-
-/// Append the same-owner successor predicate. Supersession is intra-Owner
-/// (`Causa/Edges.lean` `supersession_intra_owner`), so a cross-Owner
-/// successor never hides another Owner's head.
-pub(super) fn push_same_home_owner_successor_predicate(
-    sql: &mut String,
-    successor_alias: &str,
-    head_alias: &str,
-) {
-    write!(
-        sql,
-        " AND {successor_alias}.owner_kind = {head_alias}.owner_kind \
-          AND {successor_alias}.owner_id IS NOT DISTINCT FROM {head_alias}.owner_id"
-    )
-    .expect("write to String is infallible");
-}
-
-/// Append the goals `HeadsOnly` filter on alias `g`: hide a goal whose
-/// successor row exists. The same-owner guard mirrors the memories head
-/// filter (`push_same_home_owner_successor_predicate`): goal supersession
-/// is already written intra-Owner (`goal_write/prior.rs` scopes the
-/// `supersedes` update to one owner), so the guard is a read-side
-/// fail-closed double-check, not a behavior change. Goals carry no
-/// tombstones, so no tombstone clause applies.
-#[allow(dead_code)]
-pub(super) fn push_goal_heads_only_predicate(sql: &mut String) {
-    // SQL-POLICY: fixed-fragment
-    sql.push_str(
-        " AND NOT EXISTS (SELECT 1 FROM proxima_core.goals g2 \
-                          WHERE g2.supersedes = g.goal_id \
-                            AND g2.owner_kind = g.owner_kind \
-                            AND g2.owner_id IS NOT DISTINCT FROM g.owner_id)",
-    );
-}
 
 pub(crate) fn read_owner_columns(
     read_owners: &[OwnerRef],
 ) -> (Vec<OwnerRefKind>, Vec<Option<uuid::Uuid>>) {
     crate::access::owner_columns::owner_arrays(read_owners)
-}
-
-pub(crate) fn read_owner_predicate(owner_alias: &str, read_set_alias: &str) -> String {
-    format!(
-        "{owner_alias}.owner_kind = {read_set_alias}.kind \
-         AND {owner_alias}.owner_id IS NOT DISTINCT FROM {read_set_alias}.id"
-    )
-}
-
-/// [`read_owner_predicate`] with plain `=`, for tables whose
-/// `owner_ref_shape_chk`/`*_world_not_write_owner_chk` CHECKs prove
-/// `owner_id` is never NULL (e.g. `change_event`). On such a table the two
-/// spellings select identical rows for every read set — a NULL read-set id
-/// (the World member) matches nothing under either — but only `=` is an
-/// index condition (`PostgreSQL` has no index strategy for `DistinctExpr`,
-/// so INDF collapses the `(owner_kind, owner_id, ...)` index prefix).
-///
-/// # World-tolerant tables are a footgun here
-///
-/// This helper is ONLY safe on tables whose CHECKs forbid a NULL
-/// `owner_id` (`change_event`, `source_cursors`), or when it is
-/// explicitly paired with a separate
-/// `owner_kind = 'world' AND owner_id IS NULL` arm. `memories` and
-/// `goals` dropped their `*_world_not_write_owner_chk` in `0008_v005`, so
-/// a World-owned row there carries `owner_id` NULL and a plain `=` join
-/// silently drops it (`NULL = NULL` is not TRUE). The
-/// read-owner scope builders in `memories.rs`/`goals.rs` use it only
-/// alongside that World arm; an unpaired future use on a World-tolerant
-/// table silently hides every published row.
-#[allow(dead_code)]
-pub(crate) fn read_owner_equality_predicate(owner_alias: &str, read_set_alias: &str) -> String {
-    format!(
-        "{owner_alias}.owner_kind = {read_set_alias}.kind \
-         AND {owner_alias}.owner_id = {read_set_alias}.id"
-    )
-}
-
-pub(crate) fn entity_owner_union() -> &'static str {
-    "(SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories \
-      UNION ALL \
-      SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals)"
 }
 
 

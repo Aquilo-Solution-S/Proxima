@@ -1,14 +1,12 @@
 use proxima_core::verbs::goal_write::GoalState;
 use proxima_core::verbs::query::{GoalRow, MemoryRow, StatefulHeadsFilter};
 use proxima_core::{
-    Edge, EdgeKind, EdgeTargetProjection, GoalId, MemoryId, Owner, OwnerRefKind, SchemaId,
-    SchemaVersion, SidecarPayload, StorageError,
+    GoalId, MemoryId, Owner, OwnerRefKind, SchemaId, SchemaVersion, SidecarPayload, StorageError,
 };
 use sqlx::PgPool;
 
 use crate::error::map_err;
 use crate::pg_ident::PgIdent;
-use crate::verbs::edge_index::{PgEndpointKind, endpoint_from_columns};
 
 pub(super) fn memory_row_from_db(
     r: MemoryRowDb,
@@ -58,27 +56,6 @@ pub(super) fn goal_row_from_db(r: GoalRowDb) -> Result<GoalRow, StorageError> {
     })
 }
 
-/// Project one stored edge for one reader.
-///
-/// Four fields is the whole model, so there is nothing to hydrate and nothing
-/// that can fail: no id to dereference, no payload to join, no status. The
-/// only decision is which of the three target projections the reader gets,
-/// and a withheld target discloses neither id nor kind.
-pub(super) fn edge_from_db(r: &EdgeRowDb) -> Edge {
-    Edge {
-        source: endpoint_from_columns(r.source_kind, r.source_id),
-        target: if r.target_unavailable {
-            EdgeTargetProjection::Unavailable
-        } else if r.target_visible {
-            EdgeTargetProjection::visible(endpoint_from_columns(r.target_kind, r.target_id))
-        } else {
-            EdgeTargetProjection::Redacted
-        },
-        kind: r.kind,
-        created_at: r.created_at,
-    }
-}
-
 fn parse_memory_kind(kind: &str) -> Result<proxima_core::change_event::EntityKind, StorageError> {
     match kind {
         "fact" | "Fact" => Ok(proxima_core::change_event::EntityKind::Fact),
@@ -120,18 +97,6 @@ pub(super) struct GoalRowDb {
     supersedes: Option<uuid::Uuid>,
     payload: Vec<u8>,
     dependency_goal_ids: Vec<uuid::Uuid>,
-}
-
-#[derive(Debug, sqlx::FromRow)]
-pub(super) struct EdgeRowDb {
-    pub(super) source_kind: PgEndpointKind,
-    pub(super) source_id: uuid::Uuid,
-    pub(super) target_kind: PgEndpointKind,
-    pub(super) target_id: uuid::Uuid,
-    pub(super) kind: EdgeKind,
-    pub(super) created_at: time::OffsetDateTime,
-    pub(super) target_visible: bool,
-    pub(super) target_unavailable: bool,
 }
 
 #[derive(Debug, sqlx::FromRow)]
