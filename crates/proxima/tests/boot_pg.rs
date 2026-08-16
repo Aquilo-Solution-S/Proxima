@@ -12,8 +12,8 @@ use proxima_core::test_fixtures::ConstantEmbedding;
 use proxima_core::verbs::fact_ingest::FactWriteCommand;
 use proxima_core::{
     AuthError, AuthPath, Authenticator, AuthzContext, Credentials, FactPayload, FlavorRegistry,
-    FlavorRegistryError, MemoryId, Owner, Role, SchemaId, SchemaVersion,
-    SourceBatchId, ToolScope, UserId,
+    FlavorRegistryError, MemoryId, Owner, Role, SchemaId, SchemaVersion, SourceBatchId, ToolScope,
+    UserId,
 };
 use proxima_pg_testkit::{admin_url, create_db, db_url, drop_db, unique_db_name};
 use proxima_storage_pg::{PgSidecarKey, PgStorage};

@@ -5,14 +5,10 @@
 //! inserts a fresh row per source file revision; see
 //! `flavors/code/src/ingest/blobs.rs::append_code_slice`).
 //!
-//! [`authorized_code_chunk_head_candidates`] deduplicates a bounded
-//! candidate id list to the most-recently-authored row
-//! (`source_batch_id`-max) per `(repo_id, file_path, chunk_index)`. Rows
-//! owned by [`proxima_core::OwnerRefKind::World`] are considered alongside
-//! the caller's own owner scope; this call only narrows candidates before
-//! visibility is decided by the caller's subsequent authorized read
-//! (docs/14 §"Query"). It exists so `flavors/code` never needs to embed a
-//! `proxima_core.*` join to get this narrowing itself.
+//! [`authorized_code_chunk_head_candidates`] is phase 2 of code search:
+//! admit a sidecar-only hit list to the current `memory_head` row per
+//! `(repo_id, file_path, chunk_index)` in the caller-or-World owner
+//! scope. Visibility is decided later by the authorized payload read.
 //!
 //! Deliberately not generalized to an arbitrary sidecar table / natural
 //! key: `proxima-code/code-chunk-v1` is the only schema that needs this

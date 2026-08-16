@@ -36,5 +36,3 @@ pub(crate) fn read_owner_columns(
 ) -> (Vec<OwnerRefKind>, Vec<Option<uuid::Uuid>>) {
     crate::access::owner_columns::owner_arrays(read_owners)
 }
-
-

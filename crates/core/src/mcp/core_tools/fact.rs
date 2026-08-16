@@ -5,9 +5,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use super::READ_ONLY;
-use super::citation_of_fact::{
-    CitationOfFactArgs, CitationOfFactOutput, citation_of_fact,
-};
+use super::citation_of_fact::{CitationOfFactArgs, CitationOfFactOutput, citation_of_fact};
 use super::facts_citing_object::{
     FactsCitingObjectArgs, FactsCitingObjectOutput, facts_citing_object,
 };

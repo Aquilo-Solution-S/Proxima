@@ -4,9 +4,7 @@ use proxima_core::verbs::change_history::{ChangeHistoryRequest, ChangeHistoryRes
 use proxima_core::verbs::query::{
     EdgeExistsRequest, EdgeExistsResponse, EdgeReadRequest, EdgeReadResponse, FactCitationReadback,
 };
-use proxima_core::{
-    MemoryId, Owner, OwnerRef, StorageError,
-};
+use proxima_core::{MemoryId, Owner, OwnerRef, StorageError};
 
 use crate::{PgStorage, verbs};
 

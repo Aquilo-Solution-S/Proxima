@@ -1,6 +1,6 @@
 use super::{
-    EntityKind, EvidenceTarget, GoalAuthorship, GoalEvidenceRef, GoalId, HashSet,
-    MemoryId, Owner, Postgres, StorageError, SystemOrigin, Transaction, map_err,
+    EntityKind, EvidenceTarget, GoalAuthorship, GoalEvidenceRef, GoalId, HashSet, MemoryId, Owner,
+    Postgres, StorageError, SystemOrigin, Transaction, map_err,
 };
 
 pub(super) fn validate_operator_goal_evidence(
@@ -42,13 +42,12 @@ pub(super) async fn validate_evidence_in_owner(
                 "duplicate goal evidence".into(),
             ));
         }
-        let kind_text: Option<String> = sqlx::query_scalar(
-            "SELECT kind::text FROM proxima_core.memory WHERE t = $1",
-        )
-        .bind(item.memory_id().into_inner())
-        .fetch_optional(&mut **tx)
-        .await
-        .map_err(map_err)?;
+        let kind_text: Option<String> =
+            sqlx::query_scalar("SELECT kind::text FROM proxima_core.memory WHERE t = $1")
+                .bind(item.memory_id().into_inner())
+                .fetch_optional(&mut **tx)
+                .await
+                .map_err(map_err)?;
         let Some(kind_text) = kind_text else {
             return Err(StorageError::ConstraintViolation(
                 "evidence does not exist".into(),

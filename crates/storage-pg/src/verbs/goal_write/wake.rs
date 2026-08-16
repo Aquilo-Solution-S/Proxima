@@ -1,6 +1,7 @@
 use super::{
     EntityKind, GoalAtomicContext, GoalId, GoalWakeConfigWrite, GoalWakeToolId, GoalWakeTrigger,
-    MemoryId, PayloadKind, Postgres, StorageError, Transaction, WakeConfigShape, WakeWrite, map_err,
+    MemoryId, PayloadKind, Postgres, StorageError, Transaction, WakeConfigShape, WakeWrite,
+    map_err,
 };
 use crate::verbs::wake_timeseries::{WakeConfigDraft, WakeTriggerKind, insert_wake_config};
 
@@ -26,16 +27,14 @@ pub(super) async fn write_goal_wake_config(
             Ok(Some(insert_wake_config(tx, owner, &draft).await?))
         }
         WakeWrite::Explicit(None) => Ok(None),
-        WakeWrite::CarryFrom(source_goal_id) => {
-            sqlx::query_scalar(
-                "SELECT wake_id FROM proxima_core.goal WHERE t = $1 AND owner_id = $2",
-            )
-            .bind(source_goal_id.into_inner())
-            .bind(owner.stored_owner_id())
-            .fetch_optional(&mut **tx)
-            .await
-            .map_err(map_err)
-        }
+        WakeWrite::CarryFrom(source_goal_id) => sqlx::query_scalar(
+            "SELECT wake_id FROM proxima_core.goal WHERE t = $1 AND owner_id = $2",
+        )
+        .bind(source_goal_id.into_inner())
+        .bind(owner.stored_owner_id())
+        .fetch_optional(&mut **tx)
+        .await
+        .map_err(map_err),
     }
 }
 
@@ -90,13 +89,12 @@ async fn validate_wake_memory_exists(
     memory_id: MemoryId,
     expected: Option<EntityKind>,
 ) -> Result<(), StorageError> {
-    let row: Option<(String,)> = sqlx::query_as(
-        "SELECT kind::text FROM proxima_core.memory WHERE t = $1",
-    )
-    .bind(memory_id.into_inner())
-    .fetch_optional(&mut **tx)
-    .await
-    .map_err(map_err)?;
+    let row: Option<(String,)> =
+        sqlx::query_as("SELECT kind::text FROM proxima_core.memory WHERE t = $1")
+            .bind(memory_id.into_inner())
+            .fetch_optional(&mut **tx)
+            .await
+            .map_err(map_err)?;
     let Some((kind,)) = row else {
         return Err(StorageError::ConstraintViolation(
             "wake memory does not exist".into(),
@@ -175,18 +173,17 @@ async fn load_wake_shape(
     tx: &mut Transaction<'_, Postgres>,
     goal_id: GoalId,
 ) -> Result<Option<WakeConfigShape>, StorageError> {
-    let row: Option<WakeShapeRow> =
-        sqlx::query_as(
-            "SELECT w.trigger_kind::text, w.trigger_schema_id, w.trigger_t,
+    let row: Option<WakeShapeRow> = sqlx::query_as(
+        "SELECT w.trigger_kind::text, w.trigger_schema_id, w.trigger_t,
                     w.tool_ids, w.prompt, w.hard_memory_t
                FROM proxima_core.goal g
                JOIN proxima_core.wake_config w ON w.wake_id = g.wake_id
               WHERE g.t = $1",
-        )
-        .bind(goal_id.into_inner())
-        .fetch_optional(&mut **tx)
-        .await
-        .map_err(map_err)?;
+    )
+    .bind(goal_id.into_inner())
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(map_err)?;
     Ok(row.map(
         |(trigger_kind, trigger_schema_id, trigger_t, tool_ids, prompt, hard_memory_t)| {
             WakeConfigShape {

@@ -6,9 +6,9 @@
 mod common;
 
 use common::{migrated_db, owner_write_permit, test_owner};
+use proxima_code::CommitV1;
 use proxima_code::RepoScope;
 use proxima_code::testkit::{ingest_commit, register_repo};
-use proxima_code::CommitV1;
 use proxima_core::{AccessKind, SourceBatchId};
 use proxima_pg_testkit::drop_db;
 use uuid::Uuid;
@@ -54,11 +54,10 @@ async fn commit_summary_e2e_produces_abstraction_with_correct_provenance() {
         .await?;
         let commit_memory_id = commit_outcome.memory_id;
 
-        let summary_count: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM proxima_code.commit_summary_v1",
-        )
-        .fetch_one(pg.pool_for_tests())
-        .await?;
+        let summary_count: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM proxima_code.commit_summary_v1")
+                .fetch_one(pg.pool_for_tests())
+                .await?;
         assert_eq!(
             summary_count, 0,
             "commit ingest must not run wake execution"

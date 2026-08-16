@@ -12,8 +12,7 @@ use proxima_core::verbs::goal_write::{
 };
 use proxima_core::verbs::schema::PayloadKind;
 use proxima_core::{
-    EdgeEndpoint, EntityKind, GoalId, MemoryId, Owner, SchemaId, SchemaVersion,
-    StorageError,
+    EdgeEndpoint, EntityKind, GoalId, MemoryId, Owner, SchemaId, SchemaVersion, StorageError,
 };
 use sqlx::{PgPool, Postgres, Transaction};
 
@@ -43,9 +42,7 @@ use replay::{
     CreateGoalReplayExpectation, ensure_create_goal_replay_side_effects_match,
     goal_evidence_matches, idempotency_conflict,
 };
-use types::{
-    EvidenceTarget, InsertedGoal, StoredGoal, WakeConfigShape, WakeWrite,
-};
+use types::{EvidenceTarget, InsertedGoal, StoredGoal, WakeConfigShape, WakeWrite};
 use wake::goal_wake_matches;
 
 pub(crate) use commands::{

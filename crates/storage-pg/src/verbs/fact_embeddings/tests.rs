@@ -286,12 +286,11 @@ mod pg_tests {
                 .await?,
                 Some(1)
             );
-            let memory_rows: i64 = sqlx::query_scalar(
-                "SELECT count(*)::bigint FROM proxima_core.memory WHERE t = $1",
-            )
-            .bind(goal_uuid)
-            .fetch_one(pg.pool_for_tests())
-            .await?;
+            let memory_rows: i64 =
+                sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_core.memory WHERE t = $1")
+                    .bind(goal_uuid)
+                    .fetch_one(pg.pool_for_tests())
+                    .await?;
             assert_eq!(
                 memory_rows, 0,
                 "goal embedding validation must not use memory"

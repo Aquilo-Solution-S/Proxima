@@ -437,12 +437,9 @@ mod tests {
     }
 
     fn full_resource_set() -> BTreeSet<&'static str> {
-        [
-            protocol_resource::MEMORY,
-            protocol_resource::MEMORY_LINEAGE,
-        ]
-        .into_iter()
-        .collect()
+        [protocol_resource::MEMORY, protocol_resource::MEMORY_LINEAGE]
+            .into_iter()
+            .collect()
     }
 
     /// A `memory`-style profile that keeps authoring + retrieval but, for the

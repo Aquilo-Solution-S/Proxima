@@ -320,14 +320,7 @@ async fn erase_selected(
     delete_goal_refs(tx);
     delete_memory_refs(tx);
 
-    delete_dynamic_sidecars(
-        tx,
-        goal_sidecar_tables,
-        "t",
-        "selected_goals",
-        "goal_id",
-    )
-    .await?;
+    delete_dynamic_sidecars(tx, goal_sidecar_tables, "t", "selected_goals", "goal_id").await?;
     delete_fixed_goal_sidecars(tx).await?;
     delete_dynamic_sidecars(
         tx,
@@ -367,14 +360,8 @@ async fn erase_selected(
     )
     .await?;
     record_count(tx, "memories", memories).await?;
-    let goals = delete_selected_table(
-        tx,
-        "proxima_core.goal",
-        "t",
-        "selected_goals",
-        "goal_id",
-    )
-    .await?;
+    let goals =
+        delete_selected_table(tx, "proxima_core.goal", "t", "selected_goals", "goal_id").await?;
     record_count(tx, "goals", goals).await?;
     let receipts = 0;
     record_count(tx, "receipts", receipts).await?;

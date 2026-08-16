@@ -1,13 +1,67 @@
+//! `core_search_memories` — sidecar-first content search.
+//!
+//! Same split as `proxima-code_search_chunks` (the reference):
+//! 1. **content** — one GIN/HNSW query per *core* sidecar, no `memory` join
+//! 2. **admit** — `memory_head` (owner + head) on the hit `t`s
+//! 3. **pins** — engine neighbor load, only if the caller asked
+//!
+//! Flavor corpora (`proxima_code.*`, …) are not scanned here. A code
+//! request uses the flavor tool; cross-flavor meaning is pins, not a
+//! mega-index.
+
+use std::collections::BTreeMap;
+use std::fmt::Write as _;
+
+use futures_util::future::try_join_all;
+use proxima_core::llm::EMBEDDING_DIM;
 use proxima_core::verbs::query::{
-    EntityKind, MAX_SEARCH_PAGE_LIMIT, MemorySearchPage, MemorySearchRequest, MemorySearchResult,
-    SearchMode,
+    DEFAULT_HYBRID_SEMANTIC_WEIGHT, EntityKind, MAX_SEARCH_PAGE_LIMIT, MemorySearchPage,
+    MemorySearchRequest, MemorySearchResult, SearchCursor, SearchMode, SearchOrder,
+    SupersessionStatus, TagMatch,
 };
-use proxima_core::verbs::schema::MemorySearchProjection;
-use proxima_core::{MemoryId, OwnerRef, SchemaId, StorageError};
+use proxima_core::verbs::schema::{
+    MemorySearchProjection, MemorySearchProjectionField, PayloadKind,
+};
+use proxima_core::{MemoryId, OwnerRef, SchemaId, SearchProjectionColumnKind, StorageError};
 use sqlx::PgPool;
 
 use crate::error::map_err;
+use crate::pg_ident::PgIdent;
+use crate::pgvector::set_hnsw_search_sql;
 use crate::tuning::PgTuning;
+
+const CORE_SIDECAR_PREFIX: &str = "proxima_core.";
+const SIDECAR_OVERFETCH_FACTOR: u32 = 20;
+const SIDECAR_OVERFETCH_CAP: u32 = 1_000;
+
+#[derive(Debug, Clone)]
+struct Hit {
+    t: uuid::Uuid,
+    lexical_score: f32,
+    similarity_score: f32,
+    snippet: String,
+}
+
+#[derive(Debug, sqlx::FromRow)]
+struct SidecarScanRow {
+    t: uuid::Uuid,
+    lexical_score: f32,
+    snippet: Option<String>,
+}
+
+#[derive(Debug, sqlx::FromRow)]
+struct AdmitRow {
+    t: uuid::Uuid,
+    kind: String,
+    schema_id: String,
+    created_at: time::OffsetDateTime,
+}
+
+#[derive(Debug, sqlx::FromRow)]
+struct EmbeddingScanRow {
+    t: uuid::Uuid,
+    similarity_score: f32,
+}
 
 pub(crate) async fn search_memories(
     pool: &PgPool,
@@ -21,166 +75,521 @@ pub(crate) async fn search_memories(
             has_more: false,
         });
     }
-    let _ = (projections, tuning);
-    search_memories_timeseries(pool, req).await
+    if let Some(after) = req.after
+        && after.order() != req.order
+    {
+        return Err(StorageError::ConstraintViolation(
+            "search cursor order does not match request order".into(),
+        ));
+    }
+
+    let limit = req.limit.min(MAX_SEARCH_PAGE_LIMIT);
+    let overfetch = sidecar_overfetch(limit);
+    let core_projections = core_search_projections(req, projections);
+
+    let mut hits: BTreeMap<uuid::Uuid, Hit> = BTreeMap::new();
+    match req.mode {
+        SearchMode::Lexical => {
+            merge_hits(
+                &mut hits,
+                scan_sidecars(pool, req, &core_projections, overfetch, true).await?,
+            );
+        }
+        SearchMode::Semantic => {
+            merge_hits(
+                &mut hits,
+                scan_embeddings(pool, req, tuning, overfetch).await?,
+            );
+        }
+        SearchMode::Hybrid => {
+            if req.query_embedding.is_some() && req.embedding_model_id.is_some() {
+                let (lexical, semantic) = tokio::try_join!(
+                    scan_sidecars(pool, req, &core_projections, overfetch, false),
+                    scan_embeddings(pool, req, tuning, overfetch),
+                )?;
+                merge_hits(&mut hits, lexical);
+                merge_hits(&mut hits, semantic);
+            } else {
+                merge_hits(
+                    &mut hits,
+                    scan_sidecars(pool, req, &core_projections, overfetch, true).await?,
+                );
+            }
+        }
+    }
+
+    let admitted = admit_hits(pool, req, &hits).await?;
+    Ok(page_hits(req, limit, admitted))
 }
 
-async fn search_memories_timeseries(
+fn sidecar_overfetch(limit: u32) -> u32 {
+    limit
+        .saturating_mul(SIDECAR_OVERFETCH_FACTOR)
+        .max(limit)
+        .min(SIDECAR_OVERFETCH_CAP)
+}
+
+fn core_search_projections<'a>(
+    req: &MemorySearchRequest,
+    projections: &'a [MemorySearchProjection],
+) -> Vec<&'a MemorySearchProjection> {
+    let mut by_table = BTreeMap::<&str, &MemorySearchProjection>::new();
+    for projection in projections {
+        if !projection.sidecar_table.starts_with(CORE_SIDECAR_PREFIX) {
+            continue;
+        }
+        if !payload_kind_matches(req.kind, projection.kind) {
+            continue;
+        }
+        if let Some(schema_id) = &req.schema_id
+            && projection.schema_id != *schema_id
+        {
+            continue;
+        }
+        if !req.tags.is_empty() && projection.tag_column.is_none() {
+            continue;
+        }
+        by_table
+            .entry(projection.sidecar_table.as_str())
+            .or_insert(projection);
+    }
+    by_table.into_values().collect()
+}
+
+fn payload_kind_matches(requested: Option<EntityKind>, kind: PayloadKind) -> bool {
+    matches!(
+        (requested, kind),
+        (
+            None,
+            PayloadKind::Fact | PayloadKind::Abstraction | PayloadKind::Perspective
+        ) | (Some(EntityKind::Fact), PayloadKind::Fact)
+            | (Some(EntityKind::Abstraction), PayloadKind::Abstraction)
+            | (Some(EntityKind::Perspective), PayloadKind::Perspective)
+    )
+}
+
+fn merge_hits(into: &mut BTreeMap<uuid::Uuid, Hit>, rows: Vec<Hit>) {
+    for hit in rows {
+        into.entry(hit.t)
+            .and_modify(|existing| {
+                existing.lexical_score = existing.lexical_score.max(hit.lexical_score);
+                existing.similarity_score = existing.similarity_score.max(hit.similarity_score);
+                if existing.snippet.is_empty() && !hit.snippet.is_empty() {
+                    existing.snippet.clone_from(&hit.snippet);
+                }
+            })
+            .or_insert(hit);
+    }
+}
+
+async fn scan_sidecars(
     pool: &PgPool,
     req: &MemorySearchRequest,
-) -> Result<MemorySearchPage, StorageError> {
+    projections: &[&MemorySearchProjection],
+    overfetch: u32,
+    rescue: bool,
+) -> Result<Vec<Hit>, StorageError> {
+    if projections.is_empty() {
+        return Ok(Vec::new());
+    }
+    let like_pattern = like_pattern(&req.query);
+    let jobs =
+        projections.iter().copied().map(|projection| {
+            let like_pattern = like_pattern.clone();
+            async move {
+                scan_one_sidecar(pool, req, projection, &like_pattern, overfetch, rescue).await
+            }
+        });
+    let batches = try_join_all(jobs).await?;
+    Ok(batches.into_iter().flatten().collect())
+}
+
+#[allow(clippy::too_many_lines)]
+async fn scan_one_sidecar(
+    pool: &PgPool,
+    req: &MemorySearchRequest,
+    projection: &MemorySearchProjection,
+    like_pattern: &str,
+    overfetch: u32,
+    rescue: bool,
+) -> Result<Vec<Hit>, StorageError> {
+    let table = PgIdent::table(&projection.sidecar_table)?;
+    let search_text = projection_search_text(&projection.fields)?;
+    let tsv_expr = projection_tsv_expr(projection, &search_text)?;
+    let tag_pred = match projection.tag_column.as_deref() {
+        Some(column) if !req.tags.is_empty() => {
+            let column = PgIdent::column(column)?;
+            let op = match req.tag_match {
+                TagMatch::Any => "&&",
+                TagMatch::All => "@>",
+            };
+            format!(" AND c.{} {op} $4::text[]", column.as_str())
+        }
+        _ => String::new(),
+    };
+    let rescue_score = if rescue {
+        ", CASE WHEN q.any_tsq IS NOT NULL AND {tsv} @@ q.any_tsq
+                THEN 0.25 + LEAST(COALESCE(ts_rank({tsv}, q.any_tsq, 1|32), 0.0) * 100.0, 1.0) * 0.2
+                ELSE 0.0 END"
+            .replace("{tsv}", &tsv_expr)
+    } else {
+        String::new()
+    };
+    let rescue_where = if rescue {
+        " OR (q.any_tsq IS NOT NULL AND {tsv} @@ q.any_tsq)".replace("{tsv}", &tsv_expr)
+    } else {
+        String::new()
+    };
+    let order_by = match req.order {
+        SearchOrder::Relevance => "lexical_score DESC, c.t DESC",
+        SearchOrder::Recency => "c.t DESC",
+    };
+    let recency_t = match req.after {
+        Some(SearchCursor::Recency { memory_id, .. }) => Some(memory_id.into_inner()),
+        _ => None,
+    };
+
+    let sql = format!(
+        "WITH q AS (
+             SELECT websearch_to_tsquery(proxima_core.lexical_config(),
+                        proxima_core.lexical_scrub($1)) AS tsq,
+                    NULLIF(
+                        replace(
+                            plainto_tsquery(proxima_core.lexical_config(),
+                                proxima_core.lexical_scrub($1))::text,
+                            ' & ', ' | '),
+                        '')::tsquery AS any_tsq
+         )
+         SELECT c.t,
+                GREATEST(
+                    CASE WHEN {tsv} @@ q.tsq
+                         THEN 0.5 + LEAST(COALESCE(ts_rank_cd({tsv}, q.tsq, 32), 0.0), 1.0) * 0.5
+                         ELSE 0.0 END{rescue_score},
+                    CASE WHEN lower({search_text}) LIKE $2 ESCAPE '\\'
+                         THEN 0.25 ELSE 0.0 END
+                )::real AS lexical_score,
+                left({search_text}, 480) AS snippet
+           FROM {table} c, q
+          WHERE (
+                    {tsv} @@ q.tsq
+                    {rescue_where}
+                    OR lower({search_text}) LIKE $2 ESCAPE '\\'
+                )
+            {tag_pred}
+            AND ($5::timestamptz IS NULL
+                 OR COALESCE(uuid_extract_timestamp(c.t), TIMESTAMPTZ '1970-01-01') >= $5)
+            AND ($6::timestamptz IS NULL
+                 OR COALESCE(uuid_extract_timestamp(c.t), TIMESTAMPTZ '1970-01-01') <= $6)
+            AND ($7::uuid IS NULL OR c.t < $7)
+          ORDER BY {order_by}
+          LIMIT $3",
+        table = table.as_str(),
+        tsv = tsv_expr,
+        search_text = search_text,
+        rescue_score = rescue_score,
+        rescue_where = rescue_where,
+        tag_pred = tag_pred,
+        order_by = order_by,
+    );
+
+    // SQL-POLICY: PgIdent
+    let rows: Vec<SidecarScanRow> = sqlx::query_as(sqlx::AssertSqlSafe(sql))
+        .bind(&req.query)
+        .bind(like_pattern)
+        .bind(i64::from(overfetch))
+        .bind((!req.tags.is_empty()).then_some(req.tags.as_slice()))
+        .bind(req.since)
+        .bind(req.until)
+        .bind(recency_t)
+        .fetch_all(pool)
+        .await
+        .map_err(map_err)?;
+
+    Ok(rows
+        .into_iter()
+        .map(|row| Hit {
+            t: row.t,
+            lexical_score: row.lexical_score.max(0.0),
+            similarity_score: 0.0,
+            snippet: row.snippet.unwrap_or_default(),
+        })
+        .collect())
+}
+
+fn projection_search_text(fields: &[MemorySearchProjectionField]) -> Result<String, StorageError> {
+    let mut expressions = Vec::with_capacity(fields.len());
+    for field in fields {
+        if matches!(field.kind, SearchProjectionColumnKind::MemoryText) {
+            return Err(StorageError::Internal(
+                "core sidecar search has no memory.text; declare sidecar columns".into(),
+            ));
+        }
+        let column = PgIdent::column(&field.column)?;
+        let expression = match field.kind {
+            SearchProjectionColumnKind::Text => {
+                format!("NULLIF(c.{}::text, '')", column.as_str())
+            }
+            SearchProjectionColumnKind::TextArray => {
+                format!("NULLIF(array_to_string(c.{}, ' '), '')", column.as_str())
+            }
+            SearchProjectionColumnKind::MemoryText => unreachable!("handled above"),
+        };
+        expressions.push(expression);
+    }
+    if expressions.is_empty() {
+        return Err(StorageError::Internal(
+            "search projection has no text fields".into(),
+        ));
+    }
+    let mut sql = String::from("NULLIF(concat_ws(' '");
+    for expression in expressions {
+        let _ = write!(sql, ", {expression}");
+    }
+    sql.push_str("), '')");
+    Ok(sql)
+}
+
+fn projection_tsv_expr(
+    projection: &MemorySearchProjection,
+    search_text: &str,
+) -> Result<String, StorageError> {
+    if let Some(column) = &projection.tsv_column {
+        let column = PgIdent::column(column)?;
+        return Ok(format!("c.{}", column.as_str()));
+    }
+    if let Some(language) = &projection.language_column {
+        let language = PgIdent::column(language)?;
+        return Ok(format!(
+            "proxima_core.lexical_tsv(c.{}, {search_text})",
+            language.as_str()
+        ));
+    }
+    Ok(format!(
+        "proxima_core.lexical_tsv(proxima_core.lexical_config(), {search_text})"
+    ))
+}
+
+fn like_pattern(query: &str) -> String {
+    let mut out = String::with_capacity(query.len() + 2);
+    out.push('%');
+    for ch in query.to_lowercase().chars() {
+        match ch {
+            '%' | '_' | '\\' => {
+                out.push('\\');
+                out.push(ch);
+            }
+            _ => out.push(ch),
+        }
+    }
+    out.push('%');
+    out
+}
+
+async fn scan_embeddings(
+    pool: &PgPool,
+    req: &MemorySearchRequest,
+    tuning: &PgTuning,
+    overfetch: u32,
+) -> Result<Vec<Hit>, StorageError> {
+    let Some(query_embedding) = req.query_embedding.as_ref() else {
+        return Err(StorageError::ConstraintViolation(
+            "semantic search requires query_embedding".into(),
+        ));
+    };
+    let Some(model_id) = req.embedding_model_id.as_ref() else {
+        return Err(StorageError::ConstraintViolation(
+            "semantic search requires embedding_model_id".into(),
+        ));
+    };
+    if query_embedding.len() != EMBEDDING_DIM {
+        return Err(StorageError::ConstraintViolation(format!(
+            "semantic search embedding length must be {EMBEDDING_DIM}"
+        )));
+    }
     let owner_ids: Vec<uuid::Uuid> = req
         .read_owners
         .iter()
         .copied()
         .map(OwnerRef::stored_owner_id)
         .collect();
-    let pattern = format!("%{}%", req.query.replace('%', "\\%").replace('_', "\\_"));
-    let limit = i64::from(req.limit.min(MAX_SEARCH_PAGE_LIMIT).saturating_add(1));
+
+    let mut tx = pool.begin().await.map_err(map_err)?;
+    // SQL-POLICY: fixed-fragment
+    sqlx::raw_sql(sqlx::AssertSqlSafe(set_hnsw_search_sql(tuning)))
+        .execute(&mut *tx)
+        .await
+        .map_err(map_err)?;
+    let rows: Vec<EmbeddingScanRow> = sqlx::query_as(
+        "SELECT emb.entity_id AS t,
+                GREATEST(0.0, (1 - (emb.vec <=> $3::vector)))::real AS similarity_score
+           FROM proxima_core.embeddings emb
+           JOIN proxima_core.embedding_heads head
+             ON head.entity_id = emb.entity_id
+            AND head.model_id = emb.model_id
+            AND head.embedding_version = emb.embedding_version
+          WHERE emb.owner_id = ANY($1::uuid[])
+            AND emb.model_id = $2
+          ORDER BY emb.vec <=> $3::vector
+          LIMIT $4",
+    )
+    .bind(&owner_ids)
+    .bind(model_id)
+    .bind(crate::pgvector::literal(query_embedding))
+    .bind(i64::from(overfetch))
+    .fetch_all(&mut *tx)
+    .await
+    .map_err(map_err)?;
+    tx.commit().await.map_err(map_err)?;
+
+    Ok(rows
+        .into_iter()
+        .map(|row| Hit {
+            t: row.t,
+            lexical_score: 0.0,
+            similarity_score: row.similarity_score.clamp(0.0, 1.0),
+            snippet: String::new(),
+        })
+        .collect())
+}
+
+async fn admit_hits(
+    pool: &PgPool,
+    req: &MemorySearchRequest,
+    hits: &BTreeMap<uuid::Uuid, Hit>,
+) -> Result<Vec<MemorySearchResult>, StorageError> {
+    if hits.is_empty() {
+        return Ok(Vec::new());
+    }
+    let owner_ids: Vec<uuid::Uuid> = req
+        .read_owners
+        .iter()
+        .copied()
+        .map(OwnerRef::stored_owner_id)
+        .collect();
+    let hit_ts: Vec<uuid::Uuid> = hits.keys().copied().collect();
     let kind_filter = match req.kind {
         Some(EntityKind::Fact) => Some("fact"),
         Some(EntityKind::Abstraction) => Some("abstraction"),
         Some(EntityKind::Perspective) => Some("perspective"),
         Some(EntityKind::Goal) | None => None,
     };
-    if matches!(req.mode, SearchMode::Semantic)
-        && let (Some(embedding), Some(model_id)) =
-            (req.query_embedding.as_deref(), req.embedding_model_id.as_deref())
-    {
-        return search_memories_timeseries_semantic(
-            pool,
-            &owner_ids,
-            kind_filter,
-            model_id,
-            embedding,
-            limit,
-            req.limit,
-        )
-        .await;
-    }
-    let rows: Vec<(
-        uuid::Uuid,
-        String,
-        String,
-        time::OffsetDateTime,
-        Option<String>,
-    )> = sqlx::query_as(
+    let schema_filter = req.schema_id.as_ref().map(SchemaId::as_str);
+    let from = if matches!(req.supersession, SupersessionStatus::HeadsOnly) {
+        "FROM proxima_core.memory_head h \
+         JOIN proxima_core.memory m ON m.handle = h.handle AND m.t = h.t"
+    } else {
+        "FROM proxima_core.memory m \
+         JOIN proxima_core.memory_head h ON h.handle = m.handle"
+    };
+    let sql = format!(
         "SELECT m.t,
                 m.kind::text,
                 h.schema_id,
-                COALESCE(uuid_extract_timestamp(m.t), TIMESTAMPTZ '1970-01-01'),
-                LEFT(COALESCE(n.body, u.text, d.body, i.claim, ''), 240)
-           FROM proxima_core.memory_head h
-           JOIN proxima_core.memory m ON m.handle = h.handle AND m.t = h.t
-           LEFT JOIN proxima_core.agent_note_v1 n ON n.t = m.t
-           LEFT JOIN proxima_core.utterance_v1 u ON u.t = m.t
-           LEFT JOIN proxima_core.agent_derivation_v1 d ON d.t = m.t
-           LEFT JOIN proxima_core.interpretation_v1 i ON i.t = m.t
-          WHERE m.owner_id = ANY($1::uuid[])
+                COALESCE(uuid_extract_timestamp(m.t), TIMESTAMPTZ '1970-01-01') AS created_at
+           {from}
+          WHERE m.t = ANY($1::uuid[])
+            AND m.owner_id = ANY($2::uuid[])
             AND ($3::text IS NULL OR m.kind::text = $3)
-            AND (
-                n.title ILIKE $2 ESCAPE '\\'
-                OR n.body ILIKE $2 ESCAPE '\\'
-                OR u.text ILIKE $2 ESCAPE '\\'
-                OR d.body ILIKE $2 ESCAPE '\\'
-                OR i.claim ILIKE $2 ESCAPE '\\'
-            )
-          ORDER BY m.t DESC
-          LIMIT $4",
-    )
-    .bind(&owner_ids)
-    .bind(&pattern)
-    .bind(kind_filter)
-    .bind(limit)
-    .fetch_all(pool)
-    .await
-    .map_err(map_err)?;
-    let page_len = usize::try_from(req.limit.min(MAX_SEARCH_PAGE_LIMIT)).unwrap_or(usize::MAX);
-    let has_more = rows.len() > page_len;
-    let results = rows
+            AND ($4::text IS NULL OR h.schema_id = $4)"
+    );
+
+    // SQL-POLICY: fixed-fragment
+    let rows: Vec<AdmitRow> = sqlx::query_as(sqlx::AssertSqlSafe(sql))
+        .bind(&hit_ts)
+        .bind(&owner_ids)
+        .bind(kind_filter)
+        .bind(schema_filter)
+        .fetch_all(pool)
+        .await
+        .map_err(map_err)?;
+
+    let semantic_weight = req
+        .semantic_weight
+        .unwrap_or(DEFAULT_HYBRID_SEMANTIC_WEIGHT)
+        .clamp(0.0, 1.0);
+    Ok(rows
         .into_iter()
-        .take(page_len)
-        .filter_map(|(t, kind, schema_id, created_at, snippet)| {
-            let kind = match kind.as_str() {
-                "fact" => EntityKind::Fact,
-                "abstraction" => EntityKind::Abstraction,
-                "perspective" => EntityKind::Perspective,
-                _ => return None,
+        .filter_map(|row| {
+            let hit = hits.get(&row.t)?;
+            let kind = parse_kind(&row.kind)?;
+            let score = match req.mode {
+                SearchMode::Lexical => hit.lexical_score,
+                SearchMode::Semantic => hit.similarity_score,
+                SearchMode::Hybrid => {
+                    (semantic_weight * hit.similarity_score)
+                        + ((1.0 - semantic_weight) * hit.lexical_score)
+                }
             };
             Some(MemorySearchResult {
-                memory_id: MemoryId::new(t),
+                memory_id: MemoryId::new(row.t),
                 kind,
-                schema_id: SchemaId::new(schema_id),
-                created_at,
-                snippet: snippet.unwrap_or_default(),
-                score: 1.0,
-                lexical_score: 1.0,
-                similarity_score: 0.0,
+                schema_id: SchemaId::new(row.schema_id),
+                created_at: row.created_at,
+                snippet: hit.snippet.clone(),
+                score,
+                lexical_score: hit.lexical_score,
+                similarity_score: hit.similarity_score,
             })
         })
-        .collect();
-    Ok(MemorySearchPage { results, has_more })
+        .collect())
 }
 
-async fn search_memories_timeseries_semantic(
-    pool: &PgPool,
-    owner_ids: &[uuid::Uuid],
-    kind_filter: Option<&str>,
-    model_id: &str,
-    embedding: &[f32],
-    fetch_limit: i64,
-    page_limit: u32,
-) -> Result<MemorySearchPage, StorageError> {
-    let rows: Vec<(uuid::Uuid, String, String, time::OffsetDateTime, f32)> = sqlx::query_as(
-        "SELECT m.t,
-                m.kind::text,
-                h.schema_id,
-                COALESCE(uuid_extract_timestamp(m.t), TIMESTAMPTZ '1970-01-01'),
-                GREATEST(0.0, (1 - (emb.vec <=> $4::vector)))::real
-           FROM proxima_core.embeddings emb
-           JOIN proxima_core.embedding_heads head
-             ON head.entity_id = emb.entity_id
-            AND head.model_id = emb.model_id
-            AND head.embedding_version = emb.embedding_version
-           JOIN proxima_core.memory m ON m.t = emb.entity_id
-           JOIN proxima_core.memory_head h ON h.handle = m.handle AND h.t = m.t
-          WHERE m.owner_id = ANY($1::uuid[])
-            AND emb.model_id = $2
-            AND ($3::text IS NULL OR m.kind::text = $3)
-          ORDER BY emb.vec <=> $4::vector
-          LIMIT $5",
-    )
-    .bind(owner_ids)
-    .bind(model_id)
-    .bind(kind_filter)
-    .bind(crate::pgvector::literal(embedding))
-    .bind(fetch_limit)
-    .fetch_all(pool)
-    .await
-    .map_err(map_err)?;
-    let page_len = usize::try_from(page_limit.min(MAX_SEARCH_PAGE_LIMIT)).unwrap_or(usize::MAX);
-    let has_more = rows.len() > page_len;
-    let results = rows
-        .into_iter()
-        .take(page_len)
-        .filter_map(|(t, kind, schema_id, created_at, score)| {
-            let kind = match kind.as_str() {
-                "fact" => EntityKind::Fact,
-                "abstraction" => EntityKind::Abstraction,
-                "perspective" => EntityKind::Perspective,
-                _ => return None,
-            };
-            Some(MemorySearchResult {
-                memory_id: MemoryId::new(t),
-                kind,
-                schema_id: SchemaId::new(schema_id),
-                created_at,
-                snippet: String::new(),
-                score,
-                lexical_score: 0.0,
-                similarity_score: score,
-            })
-        })
-        .collect();
-    Ok(MemorySearchPage { results, has_more })
+fn page_hits(
+    req: &MemorySearchRequest,
+    limit: u32,
+    mut results: Vec<MemorySearchResult>,
+) -> MemorySearchPage {
+    if let Some(floor) = req.min_score {
+        results.retain(|result| result.score >= floor);
+    }
+    if let Some(after) = req.after {
+        results.retain(|result| ranks_after_cursor(result, after));
+    }
+    match req.order {
+        SearchOrder::Relevance => results.sort_by(|a, b| {
+            b.score
+                .total_cmp(&a.score)
+                .then_with(|| b.memory_id.into_inner().cmp(&a.memory_id.into_inner()))
+        }),
+        SearchOrder::Recency => results.sort_by(|a, b| {
+            b.created_at
+                .cmp(&a.created_at)
+                .then_with(|| b.memory_id.into_inner().cmp(&a.memory_id.into_inner()))
+        }),
+    }
+    let page_len = usize::try_from(limit).unwrap_or(usize::MAX);
+    let has_more = results.len() > page_len;
+    results.truncate(page_len);
+    MemorySearchPage { results, has_more }
+}
+
+fn ranks_after_cursor(result: &MemorySearchResult, after: SearchCursor) -> bool {
+    match after {
+        SearchCursor::Relevance {
+            score_bits,
+            memory_id,
+            ..
+        } => match result.score.total_cmp(&f32::from_bits(score_bits)) {
+            std::cmp::Ordering::Less => true,
+            std::cmp::Ordering::Equal => result.memory_id.into_inner() < memory_id.into_inner(),
+            std::cmp::Ordering::Greater => false,
+        },
+        SearchCursor::Recency {
+            created_at,
+            memory_id,
+            ..
+        } => {
+            (result.created_at, result.memory_id.into_inner())
+                < (created_at, memory_id.into_inner())
+        }
+    }
+}
+
+fn parse_kind(kind: &str) -> Option<EntityKind> {
+    match kind {
+        "fact" => Some(EntityKind::Fact),
+        "abstraction" => Some(EntityKind::Abstraction),
+        "perspective" => Some(EntityKind::Perspective),
+        _ => None,
+    }
 }

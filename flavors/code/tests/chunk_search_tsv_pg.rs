@@ -8,8 +8,7 @@
 //! - the query in `flavors/code/src/mcp/search_chunks.rs` that matches a
 //!   tsquery against it,
 //! - `CodeChunkV1::search_projection()`, which names the column as its
-//!   `tsv_column` so `core_search_memories` substitutes it for the expression
-//!   it would otherwise compute inline.
+//!   `tsv_column` so the flavor search reads the stored vector.
 //!
 //! If any of them diverges, code search silently returns different results —
 //! no error, no signal. These pin all three against
@@ -39,9 +38,8 @@ fn adversarial_chunks() -> Vec<(&'static str, &'static str)> {
 }
 
 /// The generated column must equal `lexical_tsv(lexical_join(file_path,
-/// text))` for every input — the expression `core_search_memories` builds
-/// when a sidecar declares no `tsv_column`, and therefore the only expression
-/// the column is allowed to stand in for.
+/// text))` for every input — the only expression the generated column
+/// is allowed to stand in for.
 #[tokio::test]
 async fn code_chunk_search_tsv_matches_the_projection() {
     let db_name = unique_db_name("proxima_test");

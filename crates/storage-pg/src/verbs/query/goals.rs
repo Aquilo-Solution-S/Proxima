@@ -1,10 +1,10 @@
 use std::fmt::Write as _;
 
+use proxima_core::StorageError;
 use proxima_core::verbs::goal_write::GoalState;
 use proxima_core::verbs::query::{
     EntityKind, GoalRow, QueryCursor, QueryRequest, SupersessionStatus,
 };
-use proxima_core::StorageError;
 use sqlx::PgPool;
 
 use crate::error::map_err;

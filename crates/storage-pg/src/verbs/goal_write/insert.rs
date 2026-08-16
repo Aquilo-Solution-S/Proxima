@@ -1,7 +1,7 @@
 use super::wake::write_goal_wake_config;
 use super::{
-    GoalAtomicContext, GoalDraft, GoalId, GoalState, InsertedGoal, PayloadKind,
-    PgSidecarKey, PgSidecarRegistryFrozen, Postgres, StorageError, Transaction, WakeWrite,
+    GoalAtomicContext, GoalDraft, GoalId, GoalState, InsertedGoal, PayloadKind, PgSidecarKey,
+    PgSidecarRegistryFrozen, Postgres, StorageError, Transaction, WakeWrite,
 };
 use crate::verbs::goal_timeseries::{GoalWriteCommand, ingest_write_act, write_goal};
 

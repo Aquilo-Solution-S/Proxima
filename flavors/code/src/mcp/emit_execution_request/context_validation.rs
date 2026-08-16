@@ -1,8 +1,6 @@
 use proxima_core::verbs::goal_write::GoalState;
 use proxima_core::verbs::query::QueryRequest;
-use proxima_core::{
-    EntityKind, GoalId, MemoryId, ToolCtx, ToolError,
-};
+use proxima_core::{EntityKind, GoalId, MemoryId, ToolCtx, ToolError};
 use sqlx::{Postgres, Transaction};
 use uuid::Uuid;
 
@@ -59,9 +57,9 @@ pub(super) async fn validate_goal_activated_fact(
             memory_id.into_inner()
         )));
     }
-    let planner = ctx.caller_self_perspective().ok_or_else(|| {
-        ToolError::InvalidInput("caller_self_perspective is required".into())
-    })?;
+    let planner = ctx
+        .caller_self_perspective()
+        .ok_or_else(|| ToolError::InvalidInput("caller_self_perspective is required".into()))?;
     let goal_t: Option<Uuid> = sqlx::query_scalar(
         "SELECT g.t
            FROM proxima_core.goal_head h
@@ -117,14 +115,13 @@ async fn goal_lineage_assigned_to(
     planner_root: MemoryId,
 ) -> Result<bool, ToolError> {
     let pool = code_store(ctx)?;
-    let assigned: Option<uuid::Uuid> = sqlx::query_scalar(
-        "SELECT assignment_t FROM proxima_core.goal WHERE t = $1",
-    )
-    .bind(start.into_inner())
-    .fetch_optional(pool.pool())
-    .await
-    .map_err(map_storage)?
-    .flatten();
+    let assigned: Option<uuid::Uuid> =
+        sqlx::query_scalar("SELECT assignment_t FROM proxima_core.goal WHERE t = $1")
+            .bind(start.into_inner())
+            .fetch_optional(pool.pool())
+            .await
+            .map_err(map_storage)?
+            .flatten();
     Ok(assigned == Some(planner_root.into_inner()))
 }
 

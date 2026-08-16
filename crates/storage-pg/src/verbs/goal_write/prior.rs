@@ -4,7 +4,13 @@ use super::{
     map_err,
 };
 
-type PriorRow = (String, String, GoalState, Option<uuid::Uuid>, Vec<uuid::Uuid>);
+type PriorRow = (
+    String,
+    String,
+    GoalState,
+    Option<uuid::Uuid>,
+    Vec<uuid::Uuid>,
+);
 
 pub(super) async fn load_prior_goal(
     tx: &mut Transaction<'_, Postgres>,
@@ -12,18 +18,17 @@ pub(super) async fn load_prior_goal(
     goal_id: GoalId,
 ) -> Result<StoredGoal, StorageError> {
     let owner_id = owner.stored_owner_id();
-    let row: Option<PriorRow> =
-        sqlx::query_as(
-            "SELECT h.schema_id, g.title, g.state, g.assignment_t, g.dependency_t
+    let row: Option<PriorRow> = sqlx::query_as(
+        "SELECT h.schema_id, g.title, g.state, g.assignment_t, g.dependency_t
                FROM proxima_core.goal g
                JOIN proxima_core.goal_head h ON h.handle = g.handle
               WHERE g.t = $1 AND g.owner_id = $2",
-        )
-        .bind(goal_id.into_inner())
-        .bind(owner_id)
-        .fetch_optional(&mut **tx)
-        .await
-        .map_err(map_err)?;
+    )
+    .bind(goal_id.into_inner())
+    .bind(owner_id)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(map_err)?;
     let Some((schema_id, title, state, assignment, dependency_t)) = row else {
         return Err(StorageError::NotFound);
     };

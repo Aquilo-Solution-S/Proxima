@@ -455,7 +455,9 @@ pub enum EmbedError {
     Engine(String),
     /// The target database does not match this binary's schema
     /// (`0001_v008.sql`) and must be reset before boot.
-    #[error("database schema does not match this binary; reset required (see docs/how-to/migrations.md): {details}")]
+    #[error(
+        "database schema does not match this binary; reset required (see docs/how-to/migrations.md): {details}"
+    )]
     V004ResetRequired { details: String },
 }
 

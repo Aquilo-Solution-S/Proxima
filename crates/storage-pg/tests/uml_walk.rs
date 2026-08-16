@@ -33,7 +33,9 @@ fn fact(schema: &str, refs: Vec<Uuid>, origins: Vec<Uuid>, kind: &str) -> FactWr
         citation: None,
         derived_from: origins
             .into_iter()
-            .map(|t| proxima_core::EdgeEndpoint::memory(EntityKind::Fact, proxima_core::MemoryId::new(t)))
+            .map(|t| {
+                proxima_core::EdgeEndpoint::memory(EntityKind::Fact, proxima_core::MemoryId::new(t))
+            })
             .collect(),
         refs,
         blob_id: None,
@@ -55,8 +57,8 @@ async fn uml_section_10_walk_query_history_publish() {
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let pool = pg.pool_for_tests();
 
-        let visit = ingest_fact_atomic(pool, &permit, &fact("visit", vec![], vec![], "fact"), None)
-            .await?;
+        let visit =
+            ingest_fact_atomic(pool, &permit, &fact("visit", vec![], vec![], "fact"), None).await?;
         let file = ingest_fact_atomic(
             pool,
             &permit,
@@ -98,7 +100,12 @@ async fn uml_section_10_walk_query_history_publish() {
         let self_p = ingest_fact_atomic(
             pool,
             &permit,
-            &fact("self", vec![sum.memory_id.into_inner()], vec![], "perspective"),
+            &fact(
+                "self",
+                vec![sum.memory_id.into_inner()],
+                vec![],
+                "perspective",
+            ),
             None,
         )
         .await?;
@@ -141,7 +148,10 @@ async fn uml_section_10_walk_query_history_publish() {
         assert_eq!(chunks.len(), 2);
 
         let hist = change_history(pool, owner.stored_owner_id(), None, 50).await?;
-        assert!(hist.iter().any(|r| r.op == "append" && r.entity == "memory"));
+        assert!(
+            hist.iter()
+                .any(|r| r.op == "append" && r.entity == "memory")
+        );
         assert!(hist.iter().any(|r| r.entity == "goal"));
 
         let mut tx = pool.begin().await?;

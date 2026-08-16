@@ -285,12 +285,7 @@ impl CitedBlobStore {
                     // Re-read rather than assume: the row loaded above is
                     // stale, and the caller's write has already committed.
                     let observed = load_upload(&self.pool, &owner, upload_id).await?;
-                    finish_transition_decision(
-                        observed.status,
-                        observed.blob_id,
-                        blob_id,
-                        0,
-                    )?
+                    finish_transition_decision(observed.status, observed.blob_id, blob_id, 0)?
                 }
             }
             status => finish_transition_decision(status, row.blob_id, blob_id, 0)?,

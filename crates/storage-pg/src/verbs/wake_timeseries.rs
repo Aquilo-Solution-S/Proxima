@@ -6,11 +6,14 @@ use sqlx::{PgPool, Postgres, Transaction};
 use uuid::Uuid;
 
 use crate::error::map_err;
-use crate::verbs::goal_timeseries::{ingest_write_act, GoalWriteCommand, write_goal};
+use crate::verbs::goal_timeseries::{GoalWriteCommand, ingest_write_act, write_goal};
 use proxima_core::verbs::goal_write::GoalState;
 
 #[derive(Debug, Clone, Copy, sqlx::Type)]
-#[sqlx(type_name = "proxima_core.wake_trigger_kind", rename_all = "snake_case")]
+#[sqlx(
+    type_name = "proxima_core.wake_trigger_kind",
+    rename_all = "snake_case"
+)]
 pub enum WakeTriggerKind {
     FactSchema,
     FactMemory,

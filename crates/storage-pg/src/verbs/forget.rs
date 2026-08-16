@@ -1,5 +1,9 @@
 //! Forget / hydrate / erase. UML §5c.
-#![allow(clippy::missing_errors_doc, clippy::doc_markdown, clippy::too_many_lines)]
+#![allow(
+    clippy::missing_errors_doc,
+    clippy::doc_markdown,
+    clippy::too_many_lines
+)]
 
 use proxima_core::{ColdObjectStore, Owner, StorageError};
 use sqlx::{Postgres, Transaction};
@@ -109,7 +113,10 @@ fn encode_record(rec: &ColdRecord) -> Vec<u8> {
     write_uuid_list(&mut out, &rec.row.origins);
     write_uuid_list(&mut out, &rec.row.refs);
     write_str(&mut out, &rec.schema_id);
-    write_u16(&mut out, u16::try_from(rec.sidecar_dumps.len()).unwrap_or(0));
+    write_u16(
+        &mut out,
+        u16::try_from(rec.sidecar_dumps.len()).unwrap_or(0),
+    );
     for (table, json) in &rec.sidecar_dumps {
         write_str(&mut out, table);
         write_str(&mut out, json);
@@ -225,7 +232,9 @@ fn write_uuid_list(out: &mut Vec<u8>, values: &[Uuid]) {
 }
 
 fn read_u8(bytes: &[u8], i: &mut usize) -> Result<u8, StorageError> {
-    let b = *bytes.get(*i).ok_or_else(|| StorageError::Internal("cold eof".into()))?;
+    let b = *bytes
+        .get(*i)
+        .ok_or_else(|| StorageError::Internal("cold eof".into()))?;
     *i += 1;
     Ok(b)
 }
@@ -256,8 +265,7 @@ fn read_bytes(bytes: &[u8], i: &mut usize) -> Result<Vec<u8>, StorageError> {
 }
 
 fn read_str(bytes: &[u8], i: &mut usize) -> Result<String, StorageError> {
-    String::from_utf8(read_bytes(bytes, i)?)
-        .map_err(|err| StorageError::Internal(err.to_string()))
+    String::from_utf8(read_bytes(bytes, i)?).map_err(|err| StorageError::Internal(err.to_string()))
 }
 
 fn read_opt_str(bytes: &[u8], i: &mut usize) -> Result<Option<String>, StorageError> {
@@ -408,13 +416,12 @@ async fn enqueue_embed_jobs(
         "perspective" => proxima_core::EntityKind::Perspective,
         _ => proxima_core::EntityKind::Fact,
     };
-    let owner_kind: String = sqlx::query_scalar(
-        "SELECT kind::text FROM proxima_core.owners WHERE owner_id = $1",
-    )
-    .bind(rec.row.owner_id)
-    .fetch_one(tx.as_mut())
-    .await
-    .map_err(map_err)?;
+    let owner_kind: String =
+        sqlx::query_scalar("SELECT kind::text FROM proxima_core.owners WHERE owner_id = $1")
+            .bind(rec.row.owner_id)
+            .fetch_one(tx.as_mut())
+            .await
+            .map_err(map_err)?;
     let owner_kind = match owner_kind.as_str() {
         "world" => proxima_core::OwnerRefKind::World,
         "group" => proxima_core::OwnerRefKind::Group,
@@ -476,13 +483,12 @@ pub async fn forget_memory(
     .await
     .map_err(map_err)?
     .ok_or(StorageError::NotFound)?;
-    let schema_id: String = sqlx::query_scalar(
-        "SELECT schema_id FROM proxima_core.memory_head WHERE handle = $1",
-    )
-    .bind(row.handle)
-    .fetch_one(tx.as_mut())
-    .await
-    .map_err(map_err)?;
+    let schema_id: String =
+        sqlx::query_scalar("SELECT schema_id FROM proxima_core.memory_head WHERE handle = $1")
+            .bind(row.handle)
+            .fetch_one(tx.as_mut())
+            .await
+            .map_err(map_err)?;
     let sidecar_dumps = dump_registered_sidecars(tx, sidecars, t).await?;
     let embed_models: Vec<String> = sqlx::query_scalar(
         "SELECT DISTINCT model_id FROM proxima_core.embeddings WHERE entity_id = $1",
@@ -552,14 +558,13 @@ pub async fn hydrate_memory(
     cold: &dyn ColdObjectStore,
     t: Uuid,
 ) -> Result<(), StorageError> {
-    let object_key: String = sqlx::query_scalar(
-        "SELECT object_key FROM proxima_core.cooled WHERE t = $1",
-    )
-    .bind(t)
-    .fetch_optional(tx.as_mut())
-    .await
-    .map_err(map_err)?
-    .ok_or(StorageError::NotFound)?;
+    let object_key: String =
+        sqlx::query_scalar("SELECT object_key FROM proxima_core.cooled WHERE t = $1")
+            .bind(t)
+            .fetch_optional(tx.as_mut())
+            .await
+            .map_err(map_err)?
+            .ok_or(StorageError::NotFound)?;
 
     let rec = decode_record(&cold.get(&object_key).await?)?;
     sqlx::query(

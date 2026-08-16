@@ -582,7 +582,9 @@ pub enum ProximaError {
     Mcp(String),
     /// The target database does not match this binary's schema and must
     /// be reset. Distinct from [`Self::Storage`] so hosts can match on it.
-    #[error("database schema does not match this binary; reset required (see docs/how-to/migrations.md): {details}")]
+    #[error(
+        "database schema does not match this binary; reset required (see docs/how-to/migrations.md): {details}"
+    )]
     V004ResetRequired { details: String },
 }
 

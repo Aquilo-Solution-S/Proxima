@@ -2,7 +2,7 @@
 
 use proxima_core::{
     ChangeEvent, ChangeEventKind, EntityKind, EntityRef, GoalId, GroupId, MemoryId, OwnerRef,
-    SchemaId, SchemaVersion, UserId, StorageError,
+    SchemaId, SchemaVersion, StorageError, UserId,
 };
 use uuid::Uuid;
 
@@ -69,11 +69,11 @@ pub(crate) async fn hydrate_change_event(
         .map(OwnerRef::stored_owner_id)
         .collect();
     let row = sqlx::query_as::<_, AnnounceRow>(ANNOUNCE_BY_SEQ_SQL)
-    .bind(seq)
-    .bind(&owner_ids)
-    .fetch_optional(pool)
-    .await
-    .map_err(internal)?;
+        .bind(seq)
+        .bind(&owner_ids)
+        .fetch_optional(pool)
+        .await
+        .map_err(internal)?;
     row.map(decode_announce_row).transpose()
 }
 
@@ -91,11 +91,11 @@ pub(crate) async fn hydrate_change_events_batch(
         .map(OwnerRef::stored_owner_id)
         .collect();
     let rows = sqlx::query_as::<_, AnnounceRow>(ANNOUNCE_BY_SEQS_SQL)
-    .bind(seqs)
-    .bind(&owner_ids)
-    .fetch_all(pool)
-    .await
-    .map_err(internal)?;
+        .bind(seqs)
+        .bind(&owner_ids)
+        .fetch_all(pool)
+        .await
+        .map_err(internal)?;
     rows.into_iter().map(decode_announce_row).collect()
 }
 

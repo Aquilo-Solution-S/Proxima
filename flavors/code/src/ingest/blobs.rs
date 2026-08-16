@@ -187,13 +187,9 @@ pub async fn ingest_file_revision(
     payload: &FileRevisionV1,
     observed_at: time::OffsetDateTime,
 ) -> Result<FactIngestOutcome, IngestError> {
-    let handle = existing_file_revision_handle(
-        pool,
-        permit.owner(),
-        payload.repo_id,
-        &payload.file_path,
-    )
-    .await?;
+    let handle =
+        existing_file_revision_handle(pool, permit.owner(), payload.repo_id, &payload.file_path)
+            .await?;
     let ctx = local_git_context(permit, source_batch_id, observed_at).handle(handle);
     let mut tx = pool.begin().await?;
     let outcome = ingest_fact_with_sidecar(

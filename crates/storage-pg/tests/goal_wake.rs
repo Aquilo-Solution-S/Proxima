@@ -65,12 +65,11 @@ async fn goal_wake_share_restrict_match_fire() {
         tx.commit().await?;
         assert_ne!(g1, g2);
 
-        let n: i64 = sqlx::query_scalar(
-            "SELECT count(*)::bigint FROM proxima_core.goal WHERE wake_id = $1",
-        )
-        .bind(wake_id)
-        .fetch_one(pool)
-        .await?;
+        let n: i64 =
+            sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_core.goal WHERE wake_id = $1")
+                .bind(wake_id)
+                .fetch_one(pool)
+                .await?;
         assert_eq!(n, 2);
 
         let err = sqlx::query("DELETE FROM proxima_core.wake_config WHERE wake_id = $1")

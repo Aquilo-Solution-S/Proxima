@@ -45,13 +45,12 @@ pub async fn ingest_fact_timeseries(
     .await
     .map_err(map_err)?;
     if inserted.rows_affected() == 0 {
-        let existing: String = sqlx::query_scalar(
-            "SELECT kind::text FROM proxima_core.owners WHERE owner_id = $1",
-        )
-        .bind(owner_id)
-        .fetch_one(tx.as_mut())
-        .await
-        .map_err(map_err)?;
+        let existing: String =
+            sqlx::query_scalar("SELECT kind::text FROM proxima_core.owners WHERE owner_id = $1")
+                .bind(owner_id)
+                .fetch_one(tx.as_mut())
+                .await
+                .map_err(map_err)?;
         if existing != owner_kind {
             return Err(StorageError::ConstraintViolation(
                 "owners.kind conflict for owner_id".into(),
@@ -129,13 +128,12 @@ pub async fn ingest_fact_timeseries(
             .fetch_one(tx.as_mut())
             .await
             .map_err(map_err)?;
-            let replay_handle: Uuid = sqlx::query_scalar(
-                "SELECT handle FROM proxima_core.memory WHERE t = $1",
-            )
-            .bind(replay_t)
-            .fetch_one(tx.as_mut())
-            .await
-            .map_err(map_err)?;
+            let replay_handle: Uuid =
+                sqlx::query_scalar("SELECT handle FROM proxima_core.memory WHERE t = $1")
+                    .bind(replay_t)
+                    .fetch_one(tx.as_mut())
+                    .await
+                    .map_err(map_err)?;
             return Ok(FactIngestOutcome {
                 receipt_id: None,
                 memory_id: MemoryId::new(replay_t),

@@ -1470,12 +1470,11 @@ async fn emit_execution_request_grounds_and_attaches_acceptance_criteria()
     assert_eq!(work_item, request_id);
 
     // Facts pin via refs (origins stay empty).
-    let request_refs: Vec<Uuid> = sqlx::query_scalar(
-        "SELECT unnest(refs) FROM proxima_core.memory WHERE t = $1",
-    )
-    .bind(request_id)
-    .fetch_all(fixture.pg.pool_for_tests())
-    .await?;
+    let request_refs: Vec<Uuid> =
+        sqlx::query_scalar("SELECT unnest(refs) FROM proxima_core.memory WHERE t = $1")
+            .bind(request_id)
+            .fetch_all(fixture.pg.pool_for_tests())
+            .await?;
     assert!(
         request_refs.contains(&goal_activated),
         "request must pin the activation Fact; got {request_refs:?}"
@@ -1553,12 +1552,11 @@ async fn retry_execution_request_succeeds_with_target_perspective()
     .await?;
     assert_eq!(assigned_worker, target);
 
-    let assignment_refs: Vec<Uuid> = sqlx::query_scalar(
-        "SELECT unnest(refs) FROM proxima_core.memory WHERE t = $1",
-    )
-    .bind(assignment_id)
-    .fetch_all(fixture.pg.pool_for_tests())
-    .await?;
+    let assignment_refs: Vec<Uuid> =
+        sqlx::query_scalar("SELECT unnest(refs) FROM proxima_core.memory WHERE t = $1")
+            .bind(assignment_id)
+            .fetch_all(fixture.pg.pool_for_tests())
+            .await?;
     assert!(
         assignment_refs.contains(&target),
         "assignment must pin the worker; got {assignment_refs:?}"
@@ -1677,20 +1675,18 @@ async fn emit_execution_plan_uses_abstraction_proof_source()
             .strip_prefix("A:")
             .expect("prefixed Abstraction handle"),
     )?;
-    let origins: Vec<Uuid> = sqlx::query_scalar(
-        "SELECT unnest(origins) FROM proxima_core.memory WHERE t = $1",
-    )
-    .bind(plan_id)
-    .fetch_all(fixture.pg.pool_for_tests())
-    .await?;
+    let origins: Vec<Uuid> =
+        sqlx::query_scalar("SELECT unnest(origins) FROM proxima_core.memory WHERE t = $1")
+            .bind(plan_id)
+            .fetch_all(fixture.pg.pool_for_tests())
+            .await?;
     assert_eq!(origins, vec![plan_source]);
 
-    let references: Vec<Uuid> = sqlx::query_scalar(
-        "SELECT unnest(refs) FROM proxima_core.memory WHERE t = $1",
-    )
-    .bind(plan_id)
-    .fetch_all(fixture.pg.pool_for_tests())
-    .await?;
+    let references: Vec<Uuid> =
+        sqlx::query_scalar("SELECT unnest(refs) FROM proxima_core.memory WHERE t = $1")
+            .bind(plan_id)
+            .fetch_all(fixture.pg.pool_for_tests())
+            .await?;
     assert!(references.contains(&goal_activated), "{references:?}");
 
     // The plan names the request Fact each item became, and that is where
@@ -2616,7 +2612,11 @@ async fn ingest_code_chunk_with_type(
         ensure_present_file_revision(pool, engine, owner, chunk.repo_id, chunk.file_path).await?;
     let handle = Uuid::new_v5(
         &Uuid::NAMESPACE_OID,
-        format!("{}:{}:{}", chunk.repo_id, chunk.file_path, chunk.chunk_index).as_bytes(),
+        format!(
+            "{}:{}:{}",
+            chunk.repo_id, chunk.file_path, chunk.chunk_index
+        )
+        .as_bytes(),
     );
     let memory_id = code_chunk_memory(pool, &owner, handle, &[file_revision]).await?;
     let line_count = i64::try_from(chunk.text.lines().count().max(1))?;

@@ -110,6 +110,11 @@ async fn migrations_apply_to_fresh_db() {
             "memory_head_owner_kind_idx",
             "owners_kind_idx",
             "announce_owner_seq_idx",
+            "idx_embeddings_vec_hnsw",
+            "agent_note_v1_search_tsv_gin",
+            "utterance_v1_search_tsv_gin",
+            "agent_derivation_v1_search_tsv_gin",
+            "interpretation_v1_search_tsv_gin",
         ] {
             assert!(
                 index_exists(&pg, index).await,

@@ -413,10 +413,7 @@ impl PgMemoryPayload for CodeChunkV1 {
                         line_range_start: u32::try_from(row.line_range_start).unwrap_or(u32::MAX),
                         line_range_end: u32::try_from(row.line_range_end).unwrap_or(u32::MAX),
                         state: parse_file_state(&row.state)?,
-                        calls: calls_by_caller
-                            .get(&row.t)
-                            .cloned()
-                            .unwrap_or_default(),
+                        calls: calls_by_caller.get(&row.t).cloned().unwrap_or_default(),
                     };
                     Ok((memory_id, SidecarPayload::abstraction(payload)))
                 })

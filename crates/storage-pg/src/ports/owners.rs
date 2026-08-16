@@ -4,8 +4,7 @@ use proxima_core::storage_ports::{
 };
 
 use proxima_core::{
-    Cursor, EntityId, GroupId, MembershipRow, Owner, OwnerRef, Relation,
-    StorageError, UserId,
+    Cursor, EntityId, GroupId, MembershipRow, Owner, OwnerRef, Relation, StorageError, UserId,
 };
 
 use super::validate_permit_owner;

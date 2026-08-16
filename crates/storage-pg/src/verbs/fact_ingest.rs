@@ -614,16 +614,14 @@ async fn persist_citation_timeseries(
 ) -> Result<Option<uuid::Uuid>, StorageError> {
     match plan {
         CitationPlan::DraftHint => persist_draft_citation(tx, owner, draft).await,
-        CitationPlan::Inline { cited_object, .. } => {
-            upsert_blob(
-                tx,
-                owner,
-                cited_object.schema_id().as_str(),
-                cited_object.content_hash(),
-            )
-            .await
-            .map(Some)
-        }
+        CitationPlan::Inline { cited_object, .. } => upsert_blob(
+            tx,
+            owner,
+            cited_object.schema_id().as_str(),
+            cited_object.content_hash(),
+        )
+        .await
+        .map(Some),
         CitationPlan::ByRef {
             cited_object_id,
             expected_object_schema,
@@ -691,13 +689,12 @@ async fn citation_object_for_t(
     tx: &mut Transaction<'_, Postgres>,
     memory_id: MemoryId,
 ) -> Result<Option<uuid::Uuid>, StorageError> {
-    let blob_id: Option<Option<uuid::Uuid>> = sqlx::query_scalar(
-        "SELECT blob_id FROM proxima_core.memory WHERE t = $1",
-    )
-    .bind(memory_id.into_inner())
-    .fetch_optional(tx.as_mut())
-    .await
-    .map_err(map_err)?;
+    let blob_id: Option<Option<uuid::Uuid>> =
+        sqlx::query_scalar("SELECT blob_id FROM proxima_core.memory WHERE t = $1")
+            .bind(memory_id.into_inner())
+            .fetch_optional(tx.as_mut())
+            .await
+            .map_err(map_err)?;
     Ok(blob_id.flatten())
 }
 
@@ -790,7 +787,8 @@ where
     crate::access::owner_columns::reject_world_write_owner(owner)?;
     let mut write = draft.clone();
     if write.blob_id.is_none() {
-        write.blob_id = persist_citation_timeseries(tx, owner, draft, options.citation_plan).await?;
+        write.blob_id =
+            persist_citation_timeseries(tx, owner, draft, options.citation_plan).await?;
     }
     let mut outcome = super::memory_timeseries::ingest_fact_timeseries(tx, owner, &write).await?;
     sidecar(tx, &outcome).await?;
@@ -812,4 +810,3 @@ where
     }
     Ok(outcome)
 }
-

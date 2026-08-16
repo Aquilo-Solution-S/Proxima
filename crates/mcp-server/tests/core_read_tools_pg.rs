@@ -850,8 +850,14 @@ async fn insert_memory(
     text: &str,
     origins: &[uuid::Uuid],
 ) -> Result<uuid::Uuid, Box<dyn std::error::Error>> {
-    let t = insert_memory_row(pg, owner, "abstraction", "core/agent-derivation-v1", origins)
-        .await?;
+    let t = insert_memory_row(
+        pg,
+        owner,
+        "abstraction",
+        "core/agent-derivation-v1",
+        origins,
+    )
+    .await?;
     sqlx::query(
         "INSERT INTO proxima_core.agent_derivation_v1
             (t, title, body, tags, source_memory_ids,
@@ -876,18 +882,16 @@ async fn insert_origin_edge(
     target: uuid::Uuid,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let _ = owner;
-    let (handle, kind, owner_id): (Uuid, String, Uuid) = sqlx::query_as(
-        "SELECT handle, kind::text, owner_id FROM proxima_core.memory WHERE t = $1",
-    )
-    .bind(source)
-    .fetch_one(pg.pool_for_tests())
-    .await?;
-    let schema_id: String = sqlx::query_scalar(
-        "SELECT schema_id FROM proxima_core.memory_head WHERE handle = $1",
-    )
-    .bind(handle)
-    .fetch_one(pg.pool_for_tests())
-    .await?;
+    let (handle, kind, owner_id): (Uuid, String, Uuid) =
+        sqlx::query_as("SELECT handle, kind::text, owner_id FROM proxima_core.memory WHERE t = $1")
+            .bind(source)
+            .fetch_one(pg.pool_for_tests())
+            .await?;
+    let schema_id: String =
+        sqlx::query_scalar("SELECT schema_id FROM proxima_core.memory_head WHERE handle = $1")
+            .bind(handle)
+            .fetch_one(pg.pool_for_tests())
+            .await?;
     let t = uuid::Uuid::now_v7();
     sqlx::query("UPDATE proxima_core.memory_head SET t = $2 WHERE handle = $1")
         .bind(handle)

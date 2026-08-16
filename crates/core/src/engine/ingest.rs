@@ -17,9 +17,7 @@ use crate::verbs::fact_ingest::{
 };
 use crate::verbs::persist_mcp_call::{McpCallLogInput, McpCallLogOutcome};
 use crate::verbs::schema::{PayloadKind, ProtocolPayload, SchemaInfo};
-use crate::{
-    EmbeddableEntityRef, EntityKind, MemoryId, Owner, OwnerRef, SidecarPayload,
-};
+use crate::{EmbeddableEntityRef, EntityKind, MemoryId, Owner, OwnerRef, SidecarPayload};
 
 #[cfg(test)]
 use crate::SourceBatchId;
@@ -1181,7 +1179,6 @@ impl Engine {
                 )
             })
     }
-
 }
 
 struct SchemaIdDisplay<'a>(&'a crate::SchemaId);

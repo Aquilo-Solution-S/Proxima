@@ -1209,19 +1209,17 @@ async fn core_forget_cools_a_remembered_fact() {
         .await?;
         assert_eq!(forgotten["ok"], serde_json::json!(true));
 
-        let hot: i64 = sqlx::query_scalar(
-            "SELECT count(*)::bigint FROM proxima_core.memory WHERE t = $1",
-        )
-        .bind(t)
-        .fetch_one(built.pool_for_tests())
-        .await?;
+        let hot: i64 =
+            sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_core.memory WHERE t = $1")
+                .bind(t)
+                .fetch_one(built.pool_for_tests())
+                .await?;
         assert_eq!(hot, 0, "forget must delete the hot row");
-        let cooled: i64 = sqlx::query_scalar(
-            "SELECT count(*)::bigint FROM proxima_core.cooled WHERE t = $1",
-        )
-        .bind(t)
-        .fetch_one(built.pool_for_tests())
-        .await?;
+        let cooled: i64 =
+            sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_core.cooled WHERE t = $1")
+                .bind(t)
+                .fetch_one(built.pool_for_tests())
+                .await?;
         assert_eq!(cooled, 1, "forget must leave the cooled stub");
         let announce: String = sqlx::query_scalar(
             "SELECT op::text FROM proxima_core.announce WHERE t = $1 ORDER BY seq DESC LIMIT 1",

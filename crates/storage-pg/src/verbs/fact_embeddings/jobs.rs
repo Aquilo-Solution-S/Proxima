@@ -129,12 +129,11 @@ async fn missing_embedding_ids(
     .fetch_all(pool)
     .await
     .map_err(map_err)?;
-    let chunk_table: bool = sqlx::query_scalar(
-        "SELECT to_regclass('proxima_code.code_chunk_v1') IS NOT NULL",
-    )
-    .fetch_one(pool)
-    .await
-    .map_err(map_err)?;
+    let chunk_table: bool =
+        sqlx::query_scalar("SELECT to_regclass('proxima_code.code_chunk_v1') IS NOT NULL")
+            .fetch_one(pool)
+            .await
+            .map_err(map_err)?;
     let have = i64::try_from(rows.len()).unwrap_or(i64::MAX);
     if chunk_table && have < limit {
         let remaining = limit.saturating_sub(have);

@@ -34,13 +34,9 @@ pub(crate) async fn read_edges(
             next_cursor: None,
         });
     }
-    if matches!(
-        req.filter.source,
-        Some(EntityRef::Goal(_))
-    ) || matches!(
-        req.filter.target,
-        Some(EntityRef::Goal(_))
-    ) {
+    if matches!(req.filter.source, Some(EntityRef::Goal(_)))
+        || matches!(req.filter.target, Some(EntityRef::Goal(_)))
+    {
         return Ok(EdgeReadResponse {
             edges: Vec::new(),
             next_cursor: None,
@@ -71,9 +67,15 @@ pub(crate) async fn read_edges(
     });
     let after_kind = req.cursor.map(|cursor| cursor.kind.as_str().to_string());
     let fetch = i64::from(req.limit).saturating_add(1);
-    let rows: Vec<(String, uuid::Uuid, String, uuid::Uuid, String, time::OffsetDateTime)> =
-        sqlx::query_as(
-            "SELECT src.kind::text, src.t, tgt.kind::text, pins.pin, pins.pin_kind, pins.created_at
+    let rows: Vec<(
+        String,
+        uuid::Uuid,
+        String,
+        uuid::Uuid,
+        String,
+        time::OffsetDateTime,
+    )> = sqlx::query_as(
+        "SELECT src.kind::text, src.t, tgt.kind::text, pins.pin, pins.pin_kind, pins.created_at
                FROM (
                  SELECT src.t AS src_t, pin, 'origin'::text AS pin_kind,
                         COALESCE(uuid_extract_timestamp(src.t), TIMESTAMPTZ '1970-01-01')
@@ -99,26 +101,22 @@ pub(crate) async fn read_edges(
                         < ($5, $6::uuid, $7::uuid, $8::text))
               ORDER BY pins.created_at DESC, src.t DESC, tgt.t DESC, pins.pin_kind DESC
               LIMIT $9",
-        )
-        .bind(&owner_ids)
-        .bind(kind)
-        .bind(source_id)
-        .bind(target_id)
-        .bind(after_created)
-        .bind(after_source)
-        .bind(after_target)
-        .bind(after_kind)
-        .bind(fetch)
-        .fetch_all(pool)
-        .await
-        .map_err(map_err)?;
+    )
+    .bind(&owner_ids)
+    .bind(kind)
+    .bind(source_id)
+    .bind(target_id)
+    .bind(after_created)
+    .bind(after_source)
+    .bind(after_target)
+    .bind(after_kind)
+    .bind(fetch)
+    .fetch_all(pool)
+    .await
+    .map_err(map_err)?;
     let page_len = usize::try_from(req.limit).unwrap_or(usize::MAX);
     let truncated = rows.len() > page_len;
-    let page = if truncated {
-        &rows[..page_len]
-    } else {
-        &rows
-    };
+    let page = if truncated { &rows[..page_len] } else { &rows };
     let edges: Vec<Edge> = page
         .iter()
         .filter_map(|(src_kind, src, tgt_kind, tgt, kind, created_at)| {

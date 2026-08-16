@@ -5,9 +5,8 @@ use std::collections::BTreeSet;
 
 use proxima_core::storage_ports::OwnerWritePermit;
 use proxima_core::{
-    DerivedEmbedding, EdgeEndpoint, EntityKind, InputContractId, MemoryId,
-    MemoryOperatorKind, OperatorId, Owner, OwnerRefKind, SchemaId, SchemaVersion, SourceBatchId,
-    StorageError,
+    DerivedEmbedding, EdgeEndpoint, EntityKind, InputContractId, MemoryId, MemoryOperatorKind,
+    OperatorId, Owner, OwnerRefKind, SchemaId, SchemaVersion, SourceBatchId, StorageError,
 };
 use sqlx::{Postgres, Transaction};
 
@@ -92,21 +91,19 @@ async fn append_derived_timeseries(
         draft.memory_id
     };
     if draft.supersedes.is_none() {
-        let existing: Option<uuid::Uuid> = sqlx::query_scalar(
-            "SELECT t FROM proxima_core.memory_head WHERE handle = $1",
-        )
-        .bind(handle)
-        .fetch_optional(&mut **tx)
-        .await
-        .map_err(map_err)?;
+        let existing: Option<uuid::Uuid> =
+            sqlx::query_scalar("SELECT t FROM proxima_core.memory_head WHERE handle = $1")
+                .bind(handle)
+                .fetch_optional(&mut **tx)
+                .await
+                .map_err(map_err)?;
         if let Some(t) = existing {
-            let stored_origins: Vec<uuid::Uuid> = sqlx::query_scalar(
-                "SELECT unnest(origins) FROM proxima_core.memory WHERE t = $1",
-            )
-            .bind(t)
-            .fetch_all(&mut **tx)
-            .await
-            .map_err(map_err)?;
+            let stored_origins: Vec<uuid::Uuid> =
+                sqlx::query_scalar("SELECT unnest(origins) FROM proxima_core.memory WHERE t = $1")
+                    .bind(t)
+                    .fetch_all(&mut **tx)
+                    .await
+                    .map_err(map_err)?;
             let incoming: Vec<uuid::Uuid> = origins
                 .iter()
                 .filter_map(|ep| ep.memory_id().map(MemoryId::into_inner))
@@ -139,8 +136,7 @@ async fn append_derived_timeseries(
         blob_id: None,
         kind: kind.into(),
     };
-    let ingested =
-        super::memory_timeseries::ingest_fact_timeseries(tx, &draft.owner, &cmd).await?;
+    let ingested = super::memory_timeseries::ingest_fact_timeseries(tx, &draft.owner, &cmd).await?;
     let outcome = DerivedOutcome {
         memory_id: ingested.memory_id,
         idempotent_replay: ingested.idempotent_replay,

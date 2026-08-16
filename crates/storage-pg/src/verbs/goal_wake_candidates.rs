@@ -1,8 +1,6 @@
 //! Goal-owned wake candidate reads.
 
-use proxima_core::{
-    GoalId, GoalWakeCandidate, GoalWakeCandidateRequest, MemoryId, StorageError,
-};
+use proxima_core::{GoalId, GoalWakeCandidate, GoalWakeCandidateRequest, MemoryId, StorageError};
 use sqlx::PgPool;
 
 use crate::error::map_err;

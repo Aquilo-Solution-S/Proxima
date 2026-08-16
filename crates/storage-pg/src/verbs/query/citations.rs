@@ -165,5 +165,3 @@ fn page_u32(value: i32) -> Result<u32, StorageError> {
     u32::try_from(value)
         .map_err(|_| StorageError::Internal(format!("negative page-span column {value}")))
 }
-
-

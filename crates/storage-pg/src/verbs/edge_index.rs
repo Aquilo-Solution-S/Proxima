@@ -24,4 +24,3 @@ pub(crate) const fn endpoint_from_columns(kind: PgEndpointKind, id: uuid::Uuid) 
         }
     }
 }
-

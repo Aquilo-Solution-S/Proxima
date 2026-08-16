@@ -46,14 +46,15 @@ pub async fn persist_mcp_call_in_tx(
     let input = &stamped;
     crate::access::owner_columns::reject_world_write_owner(&input.owner)?;
     let receipt_id = input.receipt_id();
-    let ingest_key = receipt_id
-        .into_inner()
-        .iter()
-        .fold(String::with_capacity(64), |mut acc, byte| {
-            use std::fmt::Write as _;
-            let _ = write!(acc, "{byte:02x}");
-            acc
-        });
+    let ingest_key =
+        receipt_id
+            .into_inner()
+            .iter()
+            .fold(String::with_capacity(64), |mut acc, byte| {
+                use std::fmt::Write as _;
+                let _ = write!(acc, "{byte:02x}");
+                acc
+            });
     let draft = FactWriteCommand {
         schema_id: SchemaId::new(MCP_CALL_FACT_SCHEMA.to_string()),
         schema_version: SchemaVersion::new(1),

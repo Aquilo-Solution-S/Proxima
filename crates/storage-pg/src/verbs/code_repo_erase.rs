@@ -66,18 +66,20 @@ async fn erase_code_repo_inner(
          UNION
          SELECT t FROM proxima_code.commit_summary_v1 WHERE repo_id = $1
          UNION
-         SELECT t FROM proxima_code.test_requested_v1 WHERE repo_id = $1"
+         SELECT t FROM proxima_code.test_requested_v1 WHERE repo_id = $1",
     )
     .bind(repo_id)
     .fetch_all(&mut *tx)
     .await?;
 
-    sqlx::query("DELETE FROM proxima_code.code_chunk_call_v1
+    sqlx::query(
+        "DELETE FROM proxima_code.code_chunk_call_v1
                   WHERE caller_memory_id = ANY($1::uuid[])
-                     OR callee_memory_id = ANY($1::uuid[])")
-        .bind(&ts)
-        .execute(&mut *tx)
-        .await?;
+                     OR callee_memory_id = ANY($1::uuid[])",
+    )
+    .bind(&ts)
+    .execute(&mut *tx)
+    .await?;
     sqlx::query("DELETE FROM proxima_code.code_chunk_v1 WHERE repo_id = $1")
         .bind(repo_id)
         .execute(&mut *tx)
@@ -94,11 +96,13 @@ async fn erase_code_repo_inner(
         .bind(repo_id)
         .execute(&mut *tx)
         .await?;
-    sqlx::query("DELETE FROM proxima_code.test_requested_criterion_v1
-                  WHERE test_requested_memory_id = ANY($1::uuid[])")
-        .bind(&ts)
-        .execute(&mut *tx)
-        .await?;
+    sqlx::query(
+        "DELETE FROM proxima_code.test_requested_criterion_v1
+                  WHERE test_requested_memory_id = ANY($1::uuid[])",
+    )
+    .bind(&ts)
+    .execute(&mut *tx)
+    .await?;
     sqlx::query("DELETE FROM proxima_code.test_requested_v1 WHERE repo_id = $1")
         .bind(repo_id)
         .execute(&mut *tx)
@@ -109,15 +113,14 @@ async fn erase_code_repo_inner(
         .bind(repo_id)
         .execute(&mut *tx)
         .await?;
-    let repo_record_deleted = sqlx::query(
-        "DELETE FROM proxima_code.repos WHERE owner_id = $1 AND repo_id = $2",
-    )
-    .bind(owner_id)
-    .bind(repo_id)
-    .execute(&mut *tx)
-    .await?
-    .rows_affected()
-        > 0;
+    let repo_record_deleted =
+        sqlx::query("DELETE FROM proxima_code.repos WHERE owner_id = $1 AND repo_id = $2")
+            .bind(owner_id)
+            .bind(repo_id)
+            .execute(&mut *tx)
+            .await?
+            .rows_affected()
+            > 0;
     tx.commit().await?;
 
     Ok(Some(CodeRepoEraseOutcome {
@@ -155,12 +158,11 @@ async fn delete_memory_series(
     .bind(ts)
     .fetch_all(&mut **tx)
     .await?;
-    let all_t: Vec<Uuid> = sqlx::query_scalar(
-        "SELECT t FROM proxima_core.memory WHERE handle = ANY($1::uuid[])",
-    )
-    .bind(&handles)
-    .fetch_all(&mut **tx)
-    .await?;
+    let all_t: Vec<Uuid> =
+        sqlx::query_scalar("SELECT t FROM proxima_core.memory WHERE handle = ANY($1::uuid[])")
+            .bind(&handles)
+            .fetch_all(&mut **tx)
+            .await?;
     sqlx::query("DELETE FROM proxima_core.embedding_jobs WHERE entity_id = ANY($1::uuid[])")
         .bind(&all_t)
         .execute(&mut **tx)

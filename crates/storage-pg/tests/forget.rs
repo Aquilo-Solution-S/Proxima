@@ -8,8 +8,8 @@ use proxima_core::verbs::fact_ingest::FactWriteCommand;
 use proxima_core::{AccessKind, ColdObjectStore, OwnerRef, SchemaId, SchemaVersion, UserId};
 use proxima_pg_testkit::{create_db, db_url, drop_db};
 use proxima_storage_pg::PgStorage;
-use proxima_storage_pg::verbs::fact_ingest::ingest_fact_atomic;
 use proxima_storage_pg::core_pg_sidecars;
+use proxima_storage_pg::verbs::fact_ingest::ingest_fact_atomic;
 use proxima_storage_pg::verbs::forget::{
     MemoryColdStore, cold_object_key, erase_memory, forget_memory, hydrate_memory, owner_hash_hex,
 };
@@ -59,10 +59,11 @@ async fn forget_hydrate_erase_and_world_never() {
         forget_memory(&mut tx, &core_pg_sidecars(), &cold, &key, t).await?;
         tx.commit().await?;
 
-        let hot: i64 = sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_core.memory WHERE t = $1")
-            .bind(t)
-            .fetch_one(pool)
-            .await?;
+        let hot: i64 =
+            sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_core.memory WHERE t = $1")
+                .bind(t)
+                .fetch_one(pool)
+                .await?;
         assert_eq!(hot, 0);
         let stub: i64 =
             sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_core.cooled WHERE t = $1")
@@ -80,10 +81,11 @@ async fn forget_hydrate_erase_and_world_never() {
         let mut tx = pool.begin().await?;
         hydrate_memory(&mut tx, &core_pg_sidecars(), &cold, t).await?;
         tx.commit().await?;
-        let hot: i64 = sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_core.memory WHERE t = $1")
-            .bind(t)
-            .fetch_one(pool)
-            .await?;
+        let hot: i64 =
+            sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_core.memory WHERE t = $1")
+                .bind(t)
+                .fetch_one(pool)
+                .await?;
         assert_eq!(hot, 1);
         let restored: (Option<String>, Option<String>, Vec<Uuid>, Vec<Uuid>) = sqlx::query_as(
             "SELECT source_id, ingest_key, origins, refs FROM proxima_core.memory WHERE t = $1",
@@ -189,12 +191,11 @@ async fn engine_forget_puts_held_store_hydrate_restores_same_t() {
         hydrate_memory(&mut tx, pg.sidecars(), cold.as_ref(), t).await?;
         tx.commit().await?;
 
-        let restored: (Uuid, Vec<Uuid>, Vec<Uuid>) = sqlx::query_as(
-            "SELECT t, origins, refs FROM proxima_core.memory WHERE t = $1",
-        )
-        .bind(t)
-        .fetch_one(pool)
-        .await?;
+        let restored: (Uuid, Vec<Uuid>, Vec<Uuid>) =
+            sqlx::query_as("SELECT t, origins, refs FROM proxima_core.memory WHERE t = $1")
+                .bind(t)
+                .fetch_one(pool)
+                .await?;
         assert_eq!(restored.0, t, "hydrate restores the same t");
         assert_eq!(restored.2, vec![origin.memory_id.into_inner()]);
         let note: String =

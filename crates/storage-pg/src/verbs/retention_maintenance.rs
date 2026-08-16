@@ -162,8 +162,7 @@ async fn enforce_owner(
                 skipped_legal_hold: false,
             });
         }
-        let batch =
-            tombstone_expired_batch(&mut tx, &owner, retention_seconds, options.batch_size);
+        let batch = tombstone_expired_batch(&mut tx, &owner, retention_seconds, options.batch_size);
         tx.commit().await.map_err(map_err)?;
         facts_tombstoned += batch;
         if batch < options.batch_size.unsigned_abs() {

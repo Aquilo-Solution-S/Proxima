@@ -100,8 +100,8 @@ impl PerspectivePayload for InterpretationV1 {
                 kind: SearchProjectionColumnKind::Text,
             }],
             tag_column: None,
-            tsv_column: None,
-            language_column: None,
+            tsv_column: Some("search_tsv"),
+            language_column: Some("lexical_language"),
         })
     }
 

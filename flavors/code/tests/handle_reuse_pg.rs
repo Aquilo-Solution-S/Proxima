@@ -71,10 +71,7 @@ async fn code_stateful_ingest_reuses_handle() {
             now,
         )
         .await?;
-        assert_eq!(
-            first.handle, second.handle,
-            "same path is one series"
-        );
+        assert_eq!(first.handle, second.handle, "same path is one series");
         assert_ne!(
             first.memory_id, second.memory_id,
             "new observation is a new t"

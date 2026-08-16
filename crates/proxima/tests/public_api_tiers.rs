@@ -512,9 +512,7 @@ fn flavor_sdk_exposes_the_derived_memory_write_lane() {
 /// could only ever be islands.
 #[test]
 fn flavor_sdk_exposes_the_payload_reference_lane() {
-    use proxima::flavor::{
-        EdgeKind, EntityKind, MemoryId, PayloadReference, ReferenceBinding,
-    };
+    use proxima::flavor::{EdgeKind, EntityKind, MemoryId, PayloadReference, ReferenceBinding};
 
     struct TierReferrer {
         parent: MemoryId,

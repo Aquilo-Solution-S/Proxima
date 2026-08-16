@@ -258,6 +258,36 @@ INSERT INTO proxima_core.lexical_languages (config)
 VALUES ('english'::regconfig)
 ON CONFLICT DO NOTHING;
 
+CREATE FUNCTION proxima_core.lexical_scrub(txt text) RETURNS text
+LANGUAGE sql IMMUTABLE STRICT PARALLEL SAFE AS
+$$ SELECT regexp_replace(
+       regexp_replace(txt, '[[:punct:]]+', ' ', 'g'),
+       '\m[[:alnum:]]{255}[[:alnum:]]+\M', ' ', 'g') $$;
+
+CREATE FUNCTION proxima_core.lexical_config() RETURNS regconfig
+LANGUAGE sql IMMUTABLE PARALLEL SAFE AS
+$$ SELECT 'english'::regconfig $$;
+
+CREATE FUNCTION proxima_core.lexical_tsv(txt text) RETURNS tsvector
+LANGUAGE sql IMMUTABLE STRICT PARALLEL SAFE AS
+$$ SELECT to_tsvector(proxima_core.lexical_config(), proxima_core.lexical_scrub(txt)) $$;
+
+CREATE FUNCTION proxima_core.lexical_tsv(config regconfig, txt text) RETURNS tsvector
+LANGUAGE sql IMMUTABLE STRICT PARALLEL SAFE AS
+$$ SELECT to_tsvector(config, proxima_core.lexical_scrub(txt)) $$;
+
+CREATE FUNCTION proxima_core.lexical_text_array(parts text[]) RETURNS text
+LANGUAGE sql IMMUTABLE STRICT PARALLEL SAFE AS
+$$ SELECT NULLIF(array_to_string(parts, ' '), '') $$;
+
+CREATE FUNCTION proxima_core.lexical_join(VARIADIC parts text[]) RETURNS text
+LANGUAGE sql IMMUTABLE PARALLEL SAFE AS
+$$ SELECT NULLIF(concat_ws(' ', VARIADIC parts), '') $$;
+
+CREATE FUNCTION proxima_core.set_lexical_config(cfg text) RETURNS void
+LANGUAGE sql VOLATILE AS
+$$ SELECT NULL $$;
+
 CREATE TABLE proxima_core.mcp_call_logged_v1 (
     t uuid PRIMARY KEY REFERENCES proxima_core.memory (t),
     tool_name text NOT NULL,
@@ -275,10 +305,13 @@ CREATE TABLE proxima_core.embeddings (
     entity_id uuid NOT NULL,
     model_id text NOT NULL,
     embedding_version int NOT NULL DEFAULT 1,
-    vec vector NOT NULL,
+    vec vector(1024) NOT NULL,
     owner_id uuid NOT NULL REFERENCES proxima_core.owners (owner_id),
     PRIMARY KEY (entity_id, model_id, embedding_version)
 );
+
+CREATE INDEX idx_embeddings_vec_hnsw
+    ON proxima_core.embeddings USING hnsw (vec vector_cosine_ops);
 
 CREATE TABLE proxima_core.embedding_heads (
     entity_id uuid NOT NULL,
@@ -303,15 +336,38 @@ CREATE TABLE proxima_core.agent_note_v1 (
     title text NOT NULL,
     body text NOT NULL,
     tags text[] NOT NULL DEFAULT '{}',
-    idempotency_key text
+    idempotency_key text,
+    lexical_language regconfig NOT NULL DEFAULT proxima_core.lexical_config(),
+    search_tsv tsvector GENERATED ALWAYS AS (
+        proxima_core.lexical_tsv(
+            lexical_language,
+            proxima_core.lexical_join(
+                VARIADIC ARRAY[
+                    NULLIF(title, ''),
+                    NULLIF(body, ''),
+                    proxima_core.lexical_text_array(tags)
+                ]
+            )
+        )
+    ) STORED
 );
+
+CREATE INDEX agent_note_v1_search_tsv_gin
+    ON proxima_core.agent_note_v1 USING gin (search_tsv);
 
 CREATE TABLE proxima_core.utterance_v1 (
     t uuid PRIMARY KEY REFERENCES proxima_core.memory (t),
     speaker text NOT NULL,
     conversation_id text NOT NULL,
-    text text NOT NULL
+    text text NOT NULL,
+    lexical_language regconfig NOT NULL DEFAULT proxima_core.lexical_config(),
+    search_tsv tsvector GENERATED ALWAYS AS (
+        proxima_core.lexical_tsv(lexical_language, NULLIF(text, ''))
+    ) STORED
 );
+
+CREATE INDEX utterance_v1_search_tsv_gin
+    ON proxima_core.utterance_v1 USING gin (search_tsv);
 
 CREATE TABLE proxima_core.agent_derivation_v1 (
     t uuid PRIMARY KEY REFERENCES proxima_core.memory (t),
@@ -322,8 +378,24 @@ CREATE TABLE proxima_core.agent_derivation_v1 (
     source_memory_ids uuid[] NOT NULL DEFAULT '{}',
     model_id text NOT NULL,
     client_name text NOT NULL,
-    client_version text NOT NULL
+    client_version text NOT NULL,
+    lexical_language regconfig NOT NULL DEFAULT proxima_core.lexical_config(),
+    search_tsv tsvector GENERATED ALWAYS AS (
+        proxima_core.lexical_tsv(
+            lexical_language,
+            proxima_core.lexical_join(
+                VARIADIC ARRAY[
+                    NULLIF(title, ''),
+                    NULLIF(body, ''),
+                    proxima_core.lexical_text_array(tags)
+                ]
+            )
+        )
+    ) STORED
 );
+
+CREATE INDEX agent_derivation_v1_search_tsv_gin
+    ON proxima_core.agent_derivation_v1 USING gin (search_tsv);
 
 CREATE TABLE proxima_core.interpretation_v1 (
     t uuid PRIMARY KEY REFERENCES proxima_core.memory (t),
@@ -333,8 +405,15 @@ CREATE TABLE proxima_core.interpretation_v1 (
     subject_kinds proxima_core.interpretation_subject_kind[] NOT NULL DEFAULT '{}',
     model_id text NOT NULL,
     client_name text NOT NULL,
-    client_version text NOT NULL
+    client_version text NOT NULL,
+    lexical_language regconfig NOT NULL DEFAULT proxima_core.lexical_config(),
+    search_tsv tsvector GENERATED ALWAYS AS (
+        proxima_core.lexical_tsv(lexical_language, NULLIF(claim, ''))
+    ) STORED
 );
+
+CREATE INDEX interpretation_v1_search_tsv_gin
+    ON proxima_core.interpretation_v1 USING gin (search_tsv);
 
 CREATE TABLE proxima_core.task_goal_v1 (
     t uuid PRIMARY KEY REFERENCES proxima_core.goal (t),
@@ -472,36 +551,6 @@ BEGIN
     RETURN NEW;
 END;
 $$;
-
-CREATE FUNCTION proxima_core.lexical_scrub(txt text) RETURNS text
-LANGUAGE sql IMMUTABLE STRICT PARALLEL SAFE AS
-$$ SELECT regexp_replace(
-       regexp_replace(txt, '[[:punct:]]+', ' ', 'g'),
-       '\m[[:alnum:]]{255}[[:alnum:]]+\M', ' ', 'g') $$;
-
-CREATE FUNCTION proxima_core.lexical_config() RETURNS regconfig
-LANGUAGE sql IMMUTABLE PARALLEL SAFE AS
-$$ SELECT 'english'::regconfig $$;
-
-CREATE FUNCTION proxima_core.lexical_tsv(txt text) RETURNS tsvector
-LANGUAGE sql IMMUTABLE STRICT PARALLEL SAFE AS
-$$ SELECT to_tsvector(proxima_core.lexical_config(), proxima_core.lexical_scrub(txt)) $$;
-
-CREATE FUNCTION proxima_core.lexical_tsv(config regconfig, txt text) RETURNS tsvector
-LANGUAGE sql IMMUTABLE STRICT PARALLEL SAFE AS
-$$ SELECT to_tsvector(config, proxima_core.lexical_scrub(txt)) $$;
-
-CREATE FUNCTION proxima_core.lexical_text_array(parts text[]) RETURNS text
-LANGUAGE sql IMMUTABLE STRICT PARALLEL SAFE AS
-$$ SELECT NULLIF(array_to_string(parts, ' '), '') $$;
-
-CREATE FUNCTION proxima_core.lexical_join(VARIADIC parts text[]) RETURNS text
-LANGUAGE sql IMMUTABLE PARALLEL SAFE AS
-$$ SELECT NULLIF(concat_ws(' ', VARIADIC parts), '') $$;
-
-CREATE FUNCTION proxima_core.set_lexical_config(cfg text) RETURNS void
-LANGUAGE sql VOLATILE AS
-$$ SELECT NULL $$;
 
 CREATE TRIGGER memory_append_only
     BEFORE UPDATE ON proxima_core.memory

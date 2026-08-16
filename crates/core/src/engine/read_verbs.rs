@@ -605,8 +605,8 @@ mod tests {
     type ResolvedAuthz = AuthzContext;
 
     use super::{
-        FactCitationReadRequest, FactsCitingObjectReadRequest,
-        GetGraphReadRequest, GetMemoryReadRequest, ListChangeEventsReadRequest, SearchReadRequest,
+        FactCitationReadRequest, FactsCitingObjectReadRequest, GetGraphReadRequest,
+        GetMemoryReadRequest, ListChangeEventsReadRequest, SearchReadRequest,
     };
 
     fn engine() -> Engine {

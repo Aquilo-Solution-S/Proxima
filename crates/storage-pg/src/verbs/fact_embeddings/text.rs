@@ -55,12 +55,11 @@ async fn load_sidecar_text(
     if note.as_ref().is_some_and(|text| !text.is_empty()) {
         return Ok(note);
     }
-    let chunk_table: bool = sqlx::query_scalar(
-        "SELECT to_regclass('proxima_code.code_chunk_v1') IS NOT NULL",
-    )
-    .fetch_one(pool)
-    .await
-    .map_err(map_err)?;
+    let chunk_table: bool =
+        sqlx::query_scalar("SELECT to_regclass('proxima_code.code_chunk_v1') IS NOT NULL")
+            .fetch_one(pool)
+            .await
+            .map_err(map_err)?;
     if !chunk_table {
         if note.is_some() {
             return Ok(note);

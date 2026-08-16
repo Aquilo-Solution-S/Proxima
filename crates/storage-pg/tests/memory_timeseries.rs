@@ -76,13 +76,16 @@ async fn memory_timeseries_keyless_and_ingest_key_replay() {
         assert_eq!(by_t.handle, a.handle);
         assert_eq!(by_head.handle, a.handle);
 
-        let head_t: Uuid = sqlx::query_scalar(
-            "SELECT t FROM proxima_core.memory_head WHERE handle = $1",
-        )
-        .bind(a.handle)
-        .fetch_one(pg.pool_for_tests())
-        .await?;
-        assert_eq!(head_t, a.memory_id.into_inner(), "replay must not bump head");
+        let head_t: Uuid =
+            sqlx::query_scalar("SELECT t FROM proxima_core.memory_head WHERE handle = $1")
+                .bind(a.handle)
+                .fetch_one(pg.pool_for_tests())
+                .await?;
+        assert_eq!(
+            head_t,
+            a.memory_id.into_inner(),
+            "replay must not bump head"
+        );
 
         Ok(())
     }
@@ -187,12 +190,10 @@ async fn memory_timeseries_pins_blob_and_closed_handle() {
         )
         .execute(pool)
         .await?;
-        sqlx::query(
-            "INSERT INTO proxima_core.sidecar_sum (t, text) VALUES ($1, 'summary')",
-        )
-        .bind(abs_out.memory_id.into_inner())
-        .execute(pool)
-        .await?;
+        sqlx::query("INSERT INTO proxima_core.sidecar_sum (t, text) VALUES ($1, 'summary')")
+            .bind(abs_out.memory_id.into_inner())
+            .execute(pool)
+            .await?;
 
         let mut persp = draft(None);
         persp.kind = "perspective".into();

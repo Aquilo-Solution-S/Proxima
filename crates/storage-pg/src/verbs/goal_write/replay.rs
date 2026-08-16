@@ -45,13 +45,12 @@ async fn goal_self_assignment_matches(
     goal_id: GoalId,
     target_self_perspective_id: MemoryId,
 ) -> Result<bool, StorageError> {
-    let stored: Option<Option<uuid::Uuid>> = sqlx::query_scalar(
-        "SELECT assignment_t FROM proxima_core.goal WHERE t = $1",
-    )
-    .bind(goal_id.into_inner())
-    .fetch_optional(&mut **tx)
-    .await
-    .map_err(map_err)?;
+    let stored: Option<Option<uuid::Uuid>> =
+        sqlx::query_scalar("SELECT assignment_t FROM proxima_core.goal WHERE t = $1")
+            .bind(goal_id.into_inner())
+            .fetch_optional(&mut **tx)
+            .await
+            .map_err(map_err)?;
     Ok(stored.flatten() == Some(target_self_perspective_id.into_inner()))
 }
 

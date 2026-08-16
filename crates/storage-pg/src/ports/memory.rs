@@ -242,9 +242,15 @@ impl MemoryReadPort for PgStorage {
             .map(OwnerRef::stored_owner_id)
             .collect();
         let limit = i64::try_from(limit).map_err(|err| StorageError::Internal(err.to_string()))?;
-        let rows: Vec<(String, uuid::Uuid, String, uuid::Uuid, String, time::OffsetDateTime)> =
-            sqlx::query_as(
-                "SELECT src.kind::text, src.t, tgt.kind::text, pin, 'origin',
+        let rows: Vec<(
+            String,
+            uuid::Uuid,
+            String,
+            uuid::Uuid,
+            String,
+            time::OffsetDateTime,
+        )> = sqlx::query_as(
+            "SELECT src.kind::text, src.t, tgt.kind::text, pin, 'origin',
                         COALESCE(uuid_extract_timestamp(src.t), TIMESTAMPTZ '1970-01-01')
                    FROM proxima_core.memory src
                    JOIN unnest(src.origins) AS pin ON true
@@ -260,33 +266,35 @@ impl MemoryReadPort for PgStorage {
                   WHERE src.t = ANY($1::uuid[])
                     AND src.owner_id = ANY($2::uuid[])
                   LIMIT $3",
-            )
-            .bind(&ids)
-            .bind(&owner_ids)
-            .bind(limit)
-            .fetch_all(&self.pool)
-            .await
-            .map_err(internal)?;
+        )
+        .bind(&ids)
+        .bind(&owner_ids)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(internal)?;
         Ok(rows
             .into_iter()
-            .filter_map(|(source_kind, source_id, target_kind, target_id, kind, created_at)| {
-                let source_kind = parse_endpoint_kind(&source_kind)?;
-                let target_kind = parse_endpoint_kind(&target_kind)?;
-                let kind = match kind.as_str() {
-                    "origin" => EdgeKind::Origin,
-                    "reference" => EdgeKind::Reference,
-                    _ => return None,
-                };
-                Some(Edge {
-                    source: endpoint_from_columns(source_kind, source_id),
-                    target: EdgeTargetProjection::visible(endpoint_from_columns(
-                        target_kind,
-                        target_id,
-                    )),
-                    kind,
-                    created_at,
-                })
-            })
+            .filter_map(
+                |(source_kind, source_id, target_kind, target_id, kind, created_at)| {
+                    let source_kind = parse_endpoint_kind(&source_kind)?;
+                    let target_kind = parse_endpoint_kind(&target_kind)?;
+                    let kind = match kind.as_str() {
+                        "origin" => EdgeKind::Origin,
+                        "reference" => EdgeKind::Reference,
+                        _ => return None,
+                    };
+                    Some(Edge {
+                        source: endpoint_from_columns(source_kind, source_id),
+                        target: EdgeTargetProjection::visible(endpoint_from_columns(
+                            target_kind,
+                            target_id,
+                        )),
+                        kind,
+                        created_at,
+                    })
+                },
+            )
             .collect())
     }
 

@@ -892,11 +892,7 @@ mod tests {
             .iter()
             .map(|migration| migration.version)
             .collect();
-        assert_eq!(
-            versions,
-            vec![1],
-            "v0.0.8 is one file: 0001_v008.sql"
-        );
+        assert_eq!(versions, vec![1], "v0.0.8 is one file: 0001_v008.sql");
     }
 
     #[test]

@@ -1,10 +1,10 @@
 use std::collections::BTreeSet;
 
 use proxima::flavor::{
-    AbstractionPayload, EdgeEndpoint, EdgeKind, FactPayload, FlavorBundle,
-    FlavorRegistry, InputContractId, MemoryId, OperatorId, PayloadKeyBuilder, PayloadReference,
-    PgMemoryPayload, PgMemoryPayloadFuture, PgMemorySidecar, PgSidecarFuture, PgSidecarReadCtx,
-    PgSidecarRegistry, ReferenceBinding, SchemaId, SchemaVersion, SidecarPayload,
+    AbstractionPayload, EdgeEndpoint, EdgeKind, FactPayload, FlavorBundle, FlavorRegistry,
+    InputContractId, MemoryId, OperatorId, PayloadKeyBuilder, PayloadReference, PgMemoryPayload,
+    PgMemoryPayloadFuture, PgMemorySidecar, PgSidecarFuture, PgSidecarReadCtx, PgSidecarRegistry,
+    ReferenceBinding, SchemaId, SchemaVersion, SidecarPayload,
 };
 use proxima::{
     AppInfo, AuthPath, AuthzContext, EdgeExistsRequest, EdgeFilter, EdgeReadRequest, FlavorApp,
@@ -35,9 +35,8 @@ fn facade_does_not_export_raw_edge_append_surface() {
 #[allow(unused_imports)]
 mod facade_imports_compile {
     use proxima::flavor::{
-        Edge, EdgeEndpoint, EdgeKind, EdgeTargetProjection, EntityRef,
-        FlavorRegistryFrozen, PayloadKeyBuilder, PayloadReference, ReferenceBinding, Tool, ToolCtx,
-        ToolError,
+        Edge, EdgeEndpoint, EdgeKind, EdgeTargetProjection, EntityRef, FlavorRegistryFrozen,
+        PayloadKeyBuilder, PayloadReference, ReferenceBinding, Tool, ToolCtx, ToolError,
     };
     use proxima::{
         EdgeExistsRequest, EdgeExistsResponse, EdgeFilter, EdgeReadCursor, EdgeReadRequest,

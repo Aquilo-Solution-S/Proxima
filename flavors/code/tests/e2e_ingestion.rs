@@ -212,7 +212,15 @@ async fn local_ingestion_lands_facts_citations_edges_and_replays_idempotently() 
         let repo = make_tiny_repo();
         let repo_id = Uuid::now_v7();
         let path = repo.path().to_string_lossy().into_owned();
-        register_repo(pg.pool_for_tests(), &owner, repo_id, &path, "fixture", &RepoScope::default()).await?;
+        register_repo(
+            pg.pool_for_tests(),
+            &owner,
+            repo_id,
+            &path,
+            "fixture",
+            &RepoScope::default(),
+        )
+        .await?;
         let engine = build_engine(pg.clone());
         let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
         let store = CodeFlavorStore::from_backend_pool_for_tests(pg.pool_for_tests().clone());
