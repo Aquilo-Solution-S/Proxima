@@ -17,8 +17,6 @@ pub struct CodeRepoEraseOutcome {
     pub edges_deleted: u64,
     pub embeddings_deleted: u64,
     pub receipts_deleted: u64,
-    pub citation_mappings_deleted: u64,
-    pub cited_objects_deleted: u64,
     pub source_batches_deleted: u64,
     pub repo_record_deleted: bool,
 }
@@ -130,8 +128,6 @@ async fn erase_code_repo_inner(
         edges_deleted: 0,
         embeddings_deleted: 0,
         receipts_deleted: 0,
-        citation_mappings_deleted: 0,
-        cited_objects_deleted: 0,
         source_batches_deleted: 0,
         repo_record_deleted,
     }))

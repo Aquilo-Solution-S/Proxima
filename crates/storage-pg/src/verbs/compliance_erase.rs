@@ -346,23 +346,8 @@ async fn erase_selected(
     )
     .await?;
     delete_fixed_memory_sidecars(tx).await?;
-    delete_dynamic_sidecars(
-        tx,
-        citation_mapping_sidecar_tables,
-        "citation_mapping_id",
-        "selected_citation_mappings",
-        "citation_mapping_id",
-    )
-    .await?;
-    delete_dynamic_sidecars(
-        tx,
-        cited_object_sidecar_tables,
-        "cited_object_id",
-        "selected_cited_objects",
-        "cited_object_id",
-    )
-    .await?;
-    delete_fixed_cited_object_sidecars(tx).await?;
+    let _ = citation_mapping_sidecar_tables;
+    let _ = cited_object_sidecar_tables;
 
     let embedding_jobs = delete_embeddings(tx, "proxima_core.embedding_jobs").await?;
     record_count(tx, "embedding_jobs", embedding_jobs).await?;
@@ -370,25 +355,8 @@ async fn erase_selected(
     let embeddings = delete_embeddings(tx, "proxima_core.embeddings").await?;
     record_count(tx, "embeddings", embeddings.saturating_add(embedding_heads)).await?;
 
-    let citations = delete_selected_table(
-        tx,
-        "proxima_core.citation_mappings",
-        "citation_mapping_id",
-        "selected_citation_mappings",
-        "citation_mapping_id",
-    )
-    .await?;
-    record_count(tx, "citations", citations).await?;
-
-    let cited_objects = delete_selected_table(
-        tx,
-        "proxima_core.cited_objects",
-        "cited_object_id",
-        "selected_cited_objects",
-        "cited_object_id",
-    )
-    .await?;
-    record_count(tx, "cited_objects", cited_objects).await?;
+    record_count(tx, "citations", 0).await?;
+    record_count(tx, "cited_objects", 0).await?;
 
     let fact_entities = delete_selected_table(
         tx,
@@ -638,61 +606,6 @@ async fn create_selected_sets(
             .map_err(map_err)?;
         }
     }
-
-    sqlx::query("CREATE TEMP TABLE selected_citation_mappings(citation_mapping_id uuid PRIMARY KEY, cited_object_id uuid NOT NULL) ON COMMIT DROP")
-        .execute(&mut **tx)
-        .await
-        .map_err(map_err)?;
-    sqlx::query(
-        "INSERT INTO selected_citation_mappings(citation_mapping_id, cited_object_id)
-         SELECT cm.citation_mapping_id, cm.cited_object_id
-           FROM proxima_core.citation_mappings cm
-          WHERE cm.owner_kind = $1
-            AND cm.owner_id = $2
-            AND (EXISTS (SELECT 1 FROM selected_memories sm WHERE sm.memory_id = cm.memory_id)
-                 OR $3::boolean)",
-    )
-    .bind(owner_kind)
-    .bind(owner_id)
-    .bind(matches!(scope, SelectionScope::Owner))
-    .execute(&mut **tx)
-    .await
-    .map_err(map_err)?;
-
-    sqlx::query(
-        "CREATE TEMP TABLE selected_cited_objects(cited_object_id uuid PRIMARY KEY) ON COMMIT DROP",
-    )
-    .execute(&mut **tx)
-    .await
-    .map_err(map_err)?;
-    sqlx::query(
-        "INSERT INTO selected_cited_objects(cited_object_id)
-         SELECT co.cited_object_id
-           FROM proxima_core.cited_objects co
-          WHERE co.owner_kind = $1
-            AND co.owner_id = $2
-            AND (
-                $3::boolean
-                OR EXISTS (
-                    SELECT 1 FROM selected_citation_mappings scm
-                     WHERE scm.cited_object_id = co.cited_object_id
-                )
-            )
-            AND NOT EXISTS (
-                SELECT 1 FROM proxima_core.citation_mappings cm
-                 WHERE cm.cited_object_id = co.cited_object_id
-                   AND NOT EXISTS (
-                       SELECT 1 FROM selected_citation_mappings scm
-                        WHERE scm.citation_mapping_id = cm.citation_mapping_id
-                   )
-            )",
-    )
-    .bind(owner_kind)
-    .bind(owner_id)
-    .bind(matches!(scope, SelectionScope::Owner))
-    .execute(&mut **tx)
-    .await
-    .map_err(map_err)?;
 
     // An edge has no id, so the selection carries the key itself. It is
     // selected when its SOURCE is going — the row is owned by the source
@@ -1281,25 +1194,6 @@ async fn delete_fixed_memory_sidecars(tx: &mut Tx<'_>) -> Result<(), StorageErro
             "selected_memories",
             "memory_id",
             "memory_sidecar",
-        )
-        .await?;
-    }
-    Ok(())
-}
-
-async fn delete_fixed_cited_object_sidecars(tx: &mut Tx<'_>) -> Result<(), StorageError> {
-    for table in [
-        "proxima_core.cited_mcp_call_io_v1",
-        "proxima_core.cited_uploaded_blob_v1",
-        "proxima_core.cited_object_uploads",
-    ] {
-        delete_fixed_by_selected(
-            tx,
-            table,
-            "cited_object_id",
-            "selected_cited_objects",
-            "cited_object_id",
-            "cited_sidecar",
         )
         .await?;
     }

@@ -502,8 +502,6 @@ pub struct CodeEraseRepoOutput {
     pub edges_deleted: u64,
     pub embeddings_deleted: u64,
     pub receipts_deleted: u64,
-    pub citation_mappings_deleted: u64,
-    pub cited_objects_deleted: u64,
     pub source_batches_deleted: u64,
     pub repo_record_deleted: bool,
 }
@@ -562,8 +560,6 @@ impl Tool for CodeEraseRepoTool {
                 edges_deleted: receipt.edges_deleted,
                 embeddings_deleted: receipt.embeddings_deleted,
                 receipts_deleted: receipt.receipts_deleted,
-                citation_mappings_deleted: receipt.citation_mappings_deleted,
-                cited_objects_deleted: receipt.cited_objects_deleted,
                 source_batches_deleted: receipt.source_batches_deleted,
                 repo_record_deleted: receipt.repo_record_deleted,
             })

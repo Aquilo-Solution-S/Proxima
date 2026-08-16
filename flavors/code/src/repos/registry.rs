@@ -222,8 +222,6 @@ pub async fn erase_repo(
         edges_deleted: outcome.edges_deleted,
         embeddings_deleted: outcome.embeddings_deleted,
         receipts_deleted: outcome.receipts_deleted,
-        citation_mappings_deleted: outcome.citation_mappings_deleted,
-        cited_objects_deleted: outcome.cited_objects_deleted,
         source_batches_deleted: outcome.source_batches_deleted,
         repo_record_deleted: outcome.repo_record_deleted,
     })

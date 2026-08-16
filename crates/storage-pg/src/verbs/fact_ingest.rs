@@ -1,11 +1,5 @@
-//! `FactIngest` verb — atomic insert of a Fact `memory`, optional
-//! receipt/source-batch rows, optional citation rows, and `change_event` rows.
-
-#![allow(dead_code, unused_imports, unused_variables)]
-//!
-//! Receipt-backed replay is detected by the `(receipt_id)` unique on
-//! `memories`; the caller observes `idempotent_replay = true` and the
-//! original `change_event_seq`. Receiptless writes never replay.
+//! `FactIngest` verb — atomic insert of a Fact `memory` + optional
+//! `blob_id` citation. No `citation_mappings` / `cited_objects` tables.
 //!
 //! [`ingest_fact_in_tx`] exposes the same body inside an existing
 //! transaction so flavor crates can append a typed sidecar row
@@ -17,21 +11,16 @@ use std::pin::Pin;
 
 use proxima_core::storage_ports::OwnerWritePermit;
 use proxima_core::verbs::fact_ingest::{
-    AuthorizedCitationAttachment, AuthorizedInlineCitationMapping, AuthorizedInlineCitedObject,
-    Citation, CitationSpec, FactIngestOutcome, FactWriteCommand,
+    AuthorizedInlineCitedObject, CitationSpec, FactIngestOutcome, FactWriteCommand,
 };
 use proxima_core::{
     AuthorizedFactWithCitation, AuthorizedFactWithCitationRef, AuthorizedFactWrite, EdgeEndpoint,
-    EdgeKind, EntityKind, FactPayload, FactReceiptId, MemoryId, Owner, SchemaId, SourceBatchId,
-    StorageError,
+    FactPayload, MemoryId, Owner, SchemaId, SourceBatchId, StorageError,
 };
 use sqlx::{PgPool, Postgres, Transaction};
 
-use crate::access::owner_columns::owner_binds;
 use crate::error::{internal, map_err, with_bounded_retry};
-use crate::pg_ident::PgIdent;
 use crate::sidecars::{PgMemorySidecar, PgSidecarRegistryFrozen};
-use crate::verbs::edge_index::assert_index_rows_in_tx;
 
 pub type FactIngestSidecarFuture<'t> =
     Pin<Box<dyn Future<Output = Result<(), StorageError>> + Send + 't>>;
@@ -128,51 +117,10 @@ impl<'a> FactIngestContext<'a> {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct AttachCitationOutcome {
-    pub memory_id: MemoryId,
-    pub cited_object_id: uuid::Uuid,
-    pub attached: bool,
-    pub idempotent: bool,
-}
-
-#[derive(Debug, Clone, Copy)]
-struct FactEntityDeriveInputs<'a> {
-    sidecar_table: Option<&'a str>,
-    natural_key_columns: &'a [String],
-}
-
 #[derive(Debug, Clone, Copy)]
 struct IngestCoreOptions<'a> {
     embedding_model_id: Option<&'a str>,
-    derive_inputs: Option<FactEntityDeriveInputs<'a>>,
     citation_plan: CitationPlan<'a>,
-    /// What the Fact declares it was made from, and what its typed payload
-    /// points at. One `origin` row per entry of the first, one `reference`
-    /// row per entry of the second, written in this Fact's own transaction —
-    /// which is what makes them idempotent without an id scheme.
-    links: FactLinks<'a>,
-    /// Perspective that emitted this Fact, stamped on the row.
-    authoring_perspective_id: Option<MemoryId>,
-}
-
-#[derive(Debug, Clone, Copy, Default)]
-struct FactLinks<'a> {
-    origins: &'a [EdgeEndpoint],
-    references: &'a [EdgeEndpoint],
-}
-
-impl<'a> FactLinks<'a> {
-    const fn new(origins: &'a [EdgeEndpoint], references: &'a [EdgeEndpoint]) -> Self {
-        Self {
-            origins,
-            references,
-        }
-    }
-
-    const fn is_empty(&self) -> bool {
-        self.origins.is_empty() && self.references.is_empty()
-    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -180,60 +128,11 @@ enum CitationPlan<'a> {
     DraftHint,
     Inline {
         cited_object: &'a AuthorizedInlineCitedObject,
-        mapping: &'a AuthorizedInlineCitationMapping,
-        sidecars: &'a PgSidecarRegistryFrozen,
     },
-    /// Cite an EXISTING cited object by id: no cited-object insert, no
-    /// object sidecar — only the mapping row (+ mapping sidecar) against
-    /// the stored object, after verifying it exists for the Fact's owner
-    /// and carries the schema the mapping targets.
     ByRef {
         cited_object_id: uuid::Uuid,
         expected_object_schema: &'a SchemaId,
-        mapping: &'a AuthorizedInlineCitationMapping,
-        sidecars: &'a PgSidecarRegistryFrozen,
     },
-}
-
-#[derive(Debug, Clone, Copy)]
-enum PendingCitation<'a> {
-    DraftHint {
-        citation: &'a Citation,
-        citation_mapping_id: uuid::Uuid,
-        cited_object_id: uuid::Uuid,
-    },
-    Inline {
-        mapping: &'a AuthorizedInlineCitationMapping,
-        sidecars: &'a PgSidecarRegistryFrozen,
-        citation_mapping_id: uuid::Uuid,
-        cited_object_id: uuid::Uuid,
-    },
-}
-
-impl PendingCitation<'_> {
-    const fn cited_object_id(self) -> uuid::Uuid {
-        match self {
-            Self::DraftHint {
-                cited_object_id, ..
-            }
-            | Self::Inline {
-                cited_object_id, ..
-            } => cited_object_id,
-        }
-    }
-
-    const fn citation_mapping_id(self) -> uuid::Uuid {
-        match self {
-            Self::DraftHint {
-                citation_mapping_id,
-                ..
-            }
-            | Self::Inline {
-                citation_mapping_id,
-                ..
-            } => citation_mapping_id,
-        }
-    }
 }
 
 /// Pool-scoped `FactIngest`. Opens its own transaction; commits on
@@ -373,25 +272,9 @@ where
         payload,
         now,
     );
-    let natural_key_columns = P::natural_key_columns()
-        .iter()
-        .copied()
-        .map(str::to_owned)
-        .collect::<Vec<_>>();
-    let derive_inputs = FactEntityDeriveInputs {
-        sidecar_table: P::sidecar_table(),
-        natural_key_columns: &natural_key_columns,
-    };
-    // A payload's schema-declared reference fields are read here, not passed
-    // in: the payload IS the declaration, so a flavor ingest helper cannot
-    // forget to hand them over and cannot invent one either.
-    let references = payload_reference_targets(payload)?;
     let options = IngestCoreOptions {
         embedding_model_id,
-        derive_inputs: Some(derive_inputs),
         citation_plan: CitationPlan::DraftHint,
-        links: FactLinks::new(&draft.derived_from, &references),
-        authoring_perspective_id: None,
     };
     ingest_core(tx, permit.owner(), &draft, options, sidecar).await
 }
@@ -585,14 +468,11 @@ pub(crate) async fn ingest_fact_command_in_tx(
     permit: &OwnerWritePermit,
     draft: &FactWriteCommand,
     embedding_model_id: Option<&str>,
-    authoring_perspective_id: Option<MemoryId>,
+    _authoring_perspective_id: Option<MemoryId>,
 ) -> Result<FactIngestOutcome, StorageError> {
     let options = IngestCoreOptions {
         embedding_model_id,
-        derive_inputs: None,
         citation_plan: CitationPlan::DraftHint,
-        links: FactLinks::new(&draft.derived_from, &[]),
-        authoring_perspective_id,
     };
     ingest_core(tx, permit.owner(), draft, options, |_tx, _outcome| {
         Box::pin(async { Ok(()) })
@@ -619,10 +499,10 @@ pub(crate) async fn ingest_fact_with_derived_sidecar_in_tx<F>(
     permit: &OwnerWritePermit,
     draft: &FactWriteCommand,
     embedding_model_id: Option<&str>,
-    sidecar_table: Option<&str>,
-    natural_key_columns: &[&str],
-    references: &[EdgeEndpoint],
-    authoring_perspective_id: Option<MemoryId>,
+    _sidecar_table: Option<&str>,
+    _natural_key_columns: &[&str],
+    _references: &[EdgeEndpoint],
+    _authoring_perspective_id: Option<MemoryId>,
     sidecar: F,
 ) -> Result<FactIngestOutcome, StorageError>
 where
@@ -631,21 +511,9 @@ where
         &'t FactIngestOutcome,
     ) -> FactIngestSidecarFuture<'t>,
 {
-    let natural_key_columns = natural_key_columns
-        .iter()
-        .copied()
-        .map(str::to_owned)
-        .collect::<Vec<_>>();
-    let derive_inputs = FactEntityDeriveInputs {
-        sidecar_table,
-        natural_key_columns: &natural_key_columns,
-    };
     let options = IngestCoreOptions {
         embedding_model_id,
-        derive_inputs: Some(derive_inputs),
         citation_plan: CitationPlan::DraftHint,
-        links: FactLinks::new(&draft.derived_from, references),
-        authoring_perspective_id,
     };
     ingest_core(tx, permit.owner(), draft, options, sidecar).await
 }
@@ -661,7 +529,7 @@ where
 /// rollback/commit.
 pub async fn ingest_fact_with_citation_in_tx<F>(
     tx: &mut Transaction<'_, Postgres>,
-    sidecars: &PgSidecarRegistryFrozen,
+    _sidecars: &PgSidecarRegistryFrozen,
     authorized: &AuthorizedFactWithCitation,
     embedding_model_id: Option<&str>,
     fact_sidecar: F,
@@ -673,23 +541,11 @@ where
     ) -> FactIngestSidecarFuture<'t>,
 {
     let draft = authorized.draft();
-    let derive_inputs = FactEntityDeriveInputs {
-        sidecar_table: authorized.fact_sidecar_table(),
-        natural_key_columns: authorized.fact_natural_key_columns(),
-    };
     let options = IngestCoreOptions {
         embedding_model_id,
-        derive_inputs: Some(derive_inputs),
         citation_plan: CitationPlan::Inline {
             cited_object: authorized.cited_object(),
-            mapping: authorized.mapping(),
-            sidecars,
         },
-        links: FactLinks::new(
-            authorized.links().origins(),
-            authorized.links().references(),
-        ),
-        authoring_perspective_id: None,
     };
     ingest_core(
         tx,
@@ -719,7 +575,7 @@ where
 /// transaction rollback/commit.
 pub async fn ingest_fact_with_citation_ref_in_tx<F>(
     tx: &mut Transaction<'_, Postgres>,
-    sidecars: &PgSidecarRegistryFrozen,
+    _sidecars: &PgSidecarRegistryFrozen,
     authorized: &AuthorizedFactWithCitationRef,
     embedding_model_id: Option<&str>,
     fact_sidecar: F,
@@ -731,24 +587,12 @@ where
     ) -> FactIngestSidecarFuture<'t>,
 {
     let draft = authorized.draft();
-    let derive_inputs = FactEntityDeriveInputs {
-        sidecar_table: authorized.fact_sidecar_table(),
-        natural_key_columns: authorized.fact_natural_key_columns(),
-    };
     let options = IngestCoreOptions {
         embedding_model_id,
-        derive_inputs: Some(derive_inputs),
         citation_plan: CitationPlan::ByRef {
             cited_object_id: authorized.cited_object_id(),
             expected_object_schema: authorized.expected_object_schema(),
-            mapping: authorized.mapping(),
-            sidecars,
         },
-        links: FactLinks::new(
-            authorized.links().origins(),
-            authorized.links().references(),
-        ),
-        authoring_perspective_id: None,
     };
     ingest_core(
         tx,
@@ -895,178 +739,6 @@ async fn verify_cited_object_ref_in_tx(
     Ok(())
 }
 
-/// Attach a typed inline citation to an existing uncited Fact inside an
-/// already-open transaction.
-///
-/// # Errors
-///
-/// Returns `NotFound` when the memory is absent for the owner, tombstoned,
-/// already derived, or owner-mismatched. Returns storage errors from
-/// cited-object sidecar insertion, citation-mapping sidecar insertion, or
-/// core row updates. The caller owns transaction rollback/commit.
-pub async fn attach_citation_in_tx(
-    tx: &mut Transaction<'_, Postgres>,
-    sidecars: &PgSidecarRegistryFrozen,
-    authorized: &AuthorizedCitationAttachment,
-) -> Result<AttachCitationOutcome, StorageError> {
-    let memory_id = authorized.memory_id();
-    let memory_uuid = memory_id.into_inner();
-    let owner = authorized.owner_write_permit().owner();
-    let owner_id = owner.stored_owner_id();
-
-    let stored_kind_text: String = sqlx::query_scalar(
-        "SELECT m.kind::text
-           FROM proxima_core.memory m
-          WHERE m.t = $1
-            AND m.owner_id = $2",
-    )
-    .bind(memory_uuid)
-    .bind(owner_id)
-    .fetch_optional(tx.as_mut())
-    .await
-    .map_err(map_err)?
-    .ok_or(StorageError::NotFound)?;
-    let stored_kind = match stored_kind_text.as_str() {
-        "fact" => EntityKind::Fact,
-        "abstraction" => EntityKind::Abstraction,
-        "perspective" => EntityKind::Perspective,
-        other => {
-            return Err(StorageError::Internal(format!(
-                "invalid memory kind {other}"
-            )));
-        }
-    };
-    if stored_kind != authorized.memory_kind() {
-        return Err(StorageError::ConstraintViolation(format!(
-            "citation target {memory_uuid} is a {}, not a {}",
-            stored_kind.as_str(),
-            authorized.memory_kind().as_str(),
-        )));
-    }
-    if !proxima_core::citations::kind_may_cite_directly(stored_kind) {
-        return Err(StorageError::ConstraintViolation(format!(
-            "a {} does not cite directly",
-            stored_kind.as_str(),
-        )));
-    }
-
-    if let Some(cited_object_id) = citation_object_for_t(tx, memory_id).await? {
-        return Ok(AttachCitationOutcome {
-            memory_id,
-            cited_object_id,
-            attached: false,
-            idempotent: true,
-        });
-    }
-
-    let cited_object_id =
-        upsert_cited_object_in_tx(tx, sidecars, owner, authorized.cited_object()).await?;
-    let citation_mapping_id = uuid::Uuid::now_v7();
-    insert_citation_mapping_in_tx(
-        tx,
-        owner,
-        authorized.mapping(),
-        sidecars,
-        citation_mapping_id,
-        memory_uuid,
-        cited_object_id,
-    )
-    .await?;
-
-    Ok(AttachCitationOutcome {
-        memory_id,
-        cited_object_id,
-        attached: true,
-        idempotent: false,
-    })
-}
-
-async fn cited_object_id_for_mapping_in_tx(
-    tx: &mut Transaction<'_, Postgres>,
-    _owner: &Owner,
-    memory_id: uuid::Uuid,
-    citation_mapping_id: uuid::Uuid,
-) -> Result<uuid::Uuid, StorageError> {
-    sqlx::query_scalar::<_, uuid::Uuid>(
-        "SELECT cm.cited_object_id
-            FROM proxima_core.citation_mappings cm
-           WHERE cm.citation_mapping_id = $1
-             AND cm.memory_id = $2",
-    )
-    .bind(citation_mapping_id)
-    .bind(memory_id)
-    .fetch_optional(tx.as_mut())
-    .await
-    .map_err(map_err)?
-    .ok_or_else(|| {
-        StorageError::Internal(format!(
-            "Fact memory {memory_id} references missing citation mapping {citation_mapping_id}",
-        ))
-    })
-}
-
-async fn upsert_cited_object_in_tx(
-    tx: &mut Transaction<'_, Postgres>,
-    sidecars: &PgSidecarRegistryFrozen,
-    owner: &Owner,
-    cited_object: &AuthorizedInlineCitedObject,
-) -> Result<uuid::Uuid, StorageError> {
-    let owner_id = owner.stored_owner_id();
-    let cited_object_id = sqlx::query_scalar::<_, uuid::Uuid>(
-        "INSERT INTO proxima_core.cited_objects
-            (schema_id, owner_id, content_hash)
-         VALUES ($1, $2, $3)
-         ON CONFLICT (owner_id, schema_id, content_hash)
-         DO UPDATE SET schema_id = EXCLUDED.schema_id
-         RETURNING cited_object_id",
-    )
-    .bind(cited_object.schema_id().as_str())
-    .bind(owner_id)
-    .bind(&cited_object.content_hash()[..])
-    .fetch_one(tx.as_mut())
-    .await
-    .map_err(map_err)?;
-
-    sidecars
-        .insert_cited_object_sidecar(tx.as_mut(), cited_object_id, cited_object.sidecar_payload())
-        .await?;
-    Ok(cited_object_id)
-}
-
-async fn insert_citation_mapping_in_tx(
-    tx: &mut Transaction<'_, Postgres>,
-    owner: &Owner,
-    mapping: &AuthorizedInlineCitationMapping,
-    sidecars: &PgSidecarRegistryFrozen,
-    citation_mapping_id: uuid::Uuid,
-    memory_id: uuid::Uuid,
-    cited_object_id: uuid::Uuid,
-) -> Result<(), StorageError> {
-    let _ = owner;
-    sqlx::query(
-        "INSERT INTO proxima_core.citation_mappings
-            (citation_mapping_id, schema_id, memory_id,
-             cited_object_id)
-         VALUES ($1, $2, $3, $4)",
-    )
-    .bind(citation_mapping_id)
-    .bind(mapping.schema_id().as_str())
-    .bind(memory_id)
-    .bind(cited_object_id)
-    .execute(tx.as_mut())
-    .await
-    .map_err(map_err)?;
-
-    // A pure-link mapping has no sidecar — the link is fully captured by
-    // the citation_mappings row above, so there's nothing more to write.
-    if let Some(sidecar_payload) = mapping.sidecar_payload() {
-        sidecars
-            .insert_citation_mapping_sidecar(tx.as_mut(), citation_mapping_id, sidecar_payload)
-            .await?;
-    }
-    Ok(())
-}
-
 /// Run gated `FactIngest` plus a typed sidecar insert inside an
 /// already-open transaction. The witness proves the draft passed core
 /// authorization, owner stamping, and schema validation before storage
@@ -1089,19 +761,9 @@ where
     ) -> FactIngestSidecarFuture<'t>,
 {
     let draft = authorized.draft();
-    let derive_inputs = FactEntityDeriveInputs {
-        sidecar_table: authorized.fact_sidecar_table(),
-        natural_key_columns: authorized.fact_natural_key_columns(),
-    };
     let options = IngestCoreOptions {
         embedding_model_id,
-        derive_inputs: Some(derive_inputs),
         citation_plan: CitationPlan::DraftHint,
-        links: FactLinks::new(
-            authorized.links().origins(),
-            authorized.links().references(),
-        ),
-        authoring_perspective_id: None,
     };
     ingest_core(
         tx,
@@ -1153,227 +815,3 @@ where
     Ok(outcome)
 }
 
-/// Assert the index rows a Fact write declared, inside the Fact's own
-/// transaction.
-///
-/// Also called on the receipt-replay path. That is not a double write: the
-/// primary key is the row, so re-asserting the same declaration inserts
-/// nothing and announces nothing, while a declaration the first ingest did
-/// not carry still lands. Idempotency here is structural, not conditional.
-async fn assert_fact_index_rows(
-    tx: &mut Transaction<'_, Postgres>,
-    owner: &Owner,
-    memory_id: uuid::Uuid,
-    links: FactLinks<'_>,
-) -> Result<(), StorageError> {
-    if links.is_empty() {
-        return Ok(());
-    }
-    let source = EdgeEndpoint::memory(EntityKind::Fact, MemoryId::new(memory_id));
-    assert_index_rows_in_tx(tx.as_mut(), owner, source, EdgeKind::Origin, links.origins).await?;
-    assert_index_rows_in_tx(
-        tx.as_mut(),
-        owner,
-        source,
-        EdgeKind::Reference,
-        links.references,
-    )
-    .await?;
-    Ok(())
-}
-
-/// True when a `fact_receipts`/`memories` insert failed because another
-/// transaction already claimed the same receipt id (the idempotent race).
-/// Matched on the constraint name so it never mistakes an unrelated unique
-/// violation for a replay signal.
-fn is_receipt_race(err: &sqlx::Error) -> bool {
-    matches!(
-        err,
-        sqlx::Error::Database(db)
-            if db.is_unique_violation()
-                && matches!(
-                    db.constraint(),
-                    Some("fact_receipts_pkey" | "memories_one_fact_per_receipt")
-                )
-    )
-}
-
-/// The live (non-tombstoned) Fact memory id for a receipt, if any.
-async fn existing_fact_memory_by_receipt(
-    tx: &mut Transaction<'_, Postgres>,
-    receipt_id_bytes: &[u8],
-) -> Result<Option<uuid::Uuid>, StorageError> {
-    sqlx::query_scalar::<_, uuid::Uuid>(
-        "SELECT memory_id FROM proxima_core.memories
-           WHERE receipt_id = $1
-             AND tombstoned_at IS NULL",
-    )
-    .bind(receipt_id_bytes)
-    .fetch_optional(tx.as_mut())
-    .await
-    .map_err(map_err)
-}
-
-/// Build the `idempotent_replay = true` outcome for an already-materialized
-/// Fact, resolving its original `change_event` seq.
-async fn fact_replay_outcome(
-    tx: &mut Transaction<'_, Postgres>,
-    receipt_id: Option<FactReceiptId>,
-    memory_id: uuid::Uuid,
-) -> Result<FactIngestOutcome, StorageError> {
-    let seq = sqlx::query_scalar::<_, uuid::Uuid>(
-        "SELECT seq FROM proxima_core.change_event
-             WHERE entity_memory_id = $1 ORDER BY seq ASC LIMIT 1",
-    )
-    .bind(memory_id)
-    .fetch_one(tx.as_mut())
-    .await
-    .map_err(map_err)?;
-    // The citation the ORIGINAL write made. A replay writes no citation
-    // rows (this function returns before the citation plan runs), so
-    // without this read a replayed caller could not learn which object
-    // its Fact reaches — which for a content-addressed upload is the one
-    // answer it came for.
-    let cited_object_id = sqlx::query_scalar::<_, uuid::Uuid>(
-        "SELECT cm.cited_object_id
-           FROM proxima_core.memories m
-           JOIN proxima_core.citation_mappings cm USING (citation_mapping_id)
-          WHERE m.memory_id = $1",
-    )
-    .bind(memory_id)
-    .fetch_optional(tx.as_mut())
-    .await
-    .map_err(map_err)?;
-    Ok(FactIngestOutcome {
-        receipt_id,
-        memory_id: proxima_core::MemoryId::new(memory_id),
-        handle: memory_id,
-        change_event_seq: seq,
-        idempotent_replay: true,
-        cited_object_id,
-    })
-}
-
-async fn derive_fact_entity_after_sidecar(
-    tx: &mut Transaction<'_, Postgres>,
-    owner: &Owner,
-    draft: &FactWriteCommand,
-    memory_id: uuid::Uuid,
-    sidecar_table: Option<&str>,
-    natural_key_columns: &[String],
-) -> Result<(), StorageError> {
-    if natural_key_columns.is_empty() {
-        return Ok(());
-    }
-
-    let sidecar_table = sidecar_table.ok_or_else(|| {
-        StorageError::Internal(format!(
-            "stateful Fact schema {} v{} has no sidecar table",
-            draft.schema_id.as_str(),
-            draft.schema_version.into_inner(),
-        ))
-    })?;
-    let (natural_key, created_at) =
-        fact_natural_key_after_sidecar(tx, memory_id, sidecar_table, natural_key_columns).await?;
-
-    let (owner_kind, owner_id) = owner_binds(owner);
-    let fact_entity_id = sqlx::query_scalar::<_, uuid::Uuid>(
-        "INSERT INTO proxima_core.fact_entities
-            (fact_entity_id, owner_kind, owner_id,
-             schema_id, schema_version, natural_key, current_memory_id, current_created_at)
-         VALUES
-            ($1, $2, $3, $4, $5, $6::text[], $7, $8)
-         ON CONFLICT (owner_kind, owner_id,
-                      schema_id, schema_version, natural_key)
-         DO UPDATE
-             SET current_memory_id = EXCLUDED.current_memory_id,
-                 current_created_at = EXCLUDED.current_created_at
-             WHERE (EXCLUDED.current_created_at, EXCLUDED.current_memory_id)
-                 > (fact_entities.current_created_at, fact_entities.current_memory_id)
-         RETURNING fact_entity_id",
-    )
-    .bind(uuid::Uuid::now_v7())
-    .bind(owner_kind)
-    .bind(owner_id)
-    .bind(draft.schema_id.as_str())
-    .bind(draft.schema_version.into_inner().cast_signed())
-    .bind(&natural_key)
-    .bind(memory_id)
-    .bind(created_at)
-    .fetch_optional(tx.as_mut())
-    .await
-    .map_err(map_err)?;
-
-    let fact_entity_id = if let Some(fact_entity_id) = fact_entity_id {
-        fact_entity_id
-    } else {
-        crate::verbs::query::fact_entity_id_for(
-            tx.as_mut(),
-            owner,
-            &draft.schema_id,
-            draft.schema_version,
-            &natural_key,
-        )
-        .await?
-        .map(proxima_core::FactEntityId::into_inner)
-        .ok_or_else(|| {
-            StorageError::Internal(format!(
-                "fact_entities conflict race left no row for schema {} v{} natural key {:?}",
-                draft.schema_id.as_str(),
-                draft.schema_version.into_inner(),
-                natural_key,
-            ))
-        })?
-    };
-
-    let updated = sqlx::query(
-        "UPDATE proxima_core.memories
-            SET fact_entity_id = $1
-          WHERE memory_id = $2",
-    )
-    .bind(fact_entity_id)
-    .bind(memory_id)
-    .execute(tx.as_mut())
-    .await
-    .map_err(map_err)?;
-    if updated.rows_affected() != 1 {
-        return Err(StorageError::Internal(format!(
-            "failed to attach fact_entity_id to memory {memory_id}",
-        )));
-    }
-    Ok(())
-}
-
-async fn fact_natural_key_after_sidecar(
-    tx: &mut Transaction<'_, Postgres>,
-    memory_id: uuid::Uuid,
-    sidecar_table: &str,
-    natural_key_columns: &[String],
-) -> Result<(Vec<String>, time::OffsetDateTime), StorageError> {
-    let sidecar_table = PgIdent::table(sidecar_table)?;
-    let natural_key_exprs = natural_key_columns
-        .iter()
-        .map(|column| PgIdent::column(column).map(|ident| format!("s.{}::text", ident.as_str())))
-        .collect::<Result<Vec<_>, _>>()?;
-    let natural_key_sql = format!(
-        "SELECT ARRAY[{}]::text[] AS natural_key, m.created_at
-           FROM {} s
-           JOIN proxima_core.memories m ON m.memory_id = s.memory_id
-          WHERE s.memory_id = $1",
-        natural_key_exprs.join(", "),
-        sidecar_table.as_str(),
-    );
-    // SQL-POLICY: PgIdent — sidecar_table and every natural-key column are
-    // PgIdent-validated above; the only bound input is the $1 uuid.
-    sqlx::query_as::<_, (Vec<String>, time::OffsetDateTime)>(sqlx::AssertSqlSafe(natural_key_sql))
-        .bind(memory_id)
-        .fetch_optional(tx.as_mut())
-        .await
-        .map_err(map_err)?
-        .ok_or_else(|| {
-            StorageError::Internal(format!(
-                "missing sidecar row in {} for Fact memory {memory_id}",
-                sidecar_table.as_str(),
-            ))
-        })
-}

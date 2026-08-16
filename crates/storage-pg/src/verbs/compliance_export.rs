@@ -26,8 +26,8 @@ pub async fn export_owner_bundle(
     let fact_entities = owner_rows(pool, owner, OwnerRowsTable::FactEntities).await?;
     let receipts = owner_rows(pool, owner, OwnerRowsTable::Receipts).await?;
     let source_batches = owner_rows(pool, owner, OwnerRowsTable::SourceBatches).await?;
-    let citations = owner_rows(pool, owner, OwnerRowsTable::Citations).await?;
-    let cited_objects = owner_rows(pool, owner, OwnerRowsTable::CitedObjects).await?;
+    let citations = Vec::new();
+    let cited_objects = Vec::new();
     let source_cursors = owner_rows(pool, owner, OwnerRowsTable::SourceCursors).await?;
     let delegated_authority_grants =
         owner_rows(pool, owner, OwnerRowsTable::DelegatedAuthorityGrants).await?;
@@ -97,8 +97,6 @@ enum OwnerRowsTable {
     FactEntities,
     Receipts,
     SourceBatches,
-    Citations,
-    CitedObjects,
     SourceCursors,
     DelegatedAuthorityGrants,
 }
@@ -133,30 +131,8 @@ async fn export_sidecars(
         },
     )
     .await?;
-    extend_sidecars(
-        pool,
-        owner,
-        &mut sidecars,
-        tables.citation_mapping,
-        SidecarJoin {
-            sidecar_column: "citation_mapping_id",
-            base_table: "proxima_core.citation_mappings",
-            base_column: "citation_mapping_id",
-        },
-    )
-    .await?;
-    extend_sidecars(
-        pool,
-        owner,
-        &mut sidecars,
-        tables.cited_object,
-        SidecarJoin {
-            sidecar_column: "cited_object_id",
-            base_table: "proxima_core.cited_objects",
-            base_column: "cited_object_id",
-        },
-    )
-    .await?;
+    let _ = tables.citation_mapping;
+    let _ = tables.cited_object;
     sidecars.sort_by(|left, right| left.table.cmp(&right.table));
     Ok(sidecars)
 }
@@ -199,18 +175,6 @@ async fn owner_rows(
             .await
             .map_err(map_err),
         OwnerRowsTable::SourceBatches => sqlx::query_scalar::<_, Value>(SOURCE_BATCH_ROWS_SQL)
-            .bind(owner_kind)
-            .bind(owner_id)
-            .fetch_all(pool)
-            .await
-            .map_err(map_err),
-        OwnerRowsTable::Citations => sqlx::query_scalar::<_, Value>(CITATION_ROWS_SQL)
-            .bind(owner_kind)
-            .bind(owner_id)
-            .fetch_all(pool)
-            .await
-            .map_err(map_err),
-        OwnerRowsTable::CitedObjects => sqlx::query_scalar::<_, Value>(CITED_OBJECT_ROWS_SQL)
             .bind(owner_kind)
             .bind(owner_id)
             .fetch_all(pool)
@@ -348,20 +312,6 @@ SELECT to_jsonb(sb)
  WHERE sb.owner_kind = $1
    AND sb.owner_id IS NOT DISTINCT FROM $2
  ORDER BY sb.opened_at, sb.id";
-
-const CITATION_ROWS_SQL: &str = "
-SELECT to_jsonb(cm)
-  FROM proxima_core.citation_mappings cm
- WHERE cm.owner_kind = $1
-   AND cm.owner_id IS NOT DISTINCT FROM $2
- ORDER BY cm.created_at, cm.citation_mapping_id";
-
-const CITED_OBJECT_ROWS_SQL: &str = "
-SELECT to_jsonb(co)
-  FROM proxima_core.cited_objects co
- WHERE co.owner_kind = $1
-   AND co.owner_id IS NOT DISTINCT FROM $2
- ORDER BY co.created_at, co.cited_object_id";
 
 const SOURCE_CURSOR_ROWS_SQL: &str = "
 SELECT to_jsonb(sc)
