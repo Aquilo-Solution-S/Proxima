@@ -1,4 +1,5 @@
 use proxima_core::llm::{EmbeddingClient, LlmError};
+use proxima_core::verbs::schema::MemorySearchProjection;
 use proxima_core::{EmbeddableEntityRef, EmbeddingJobClaim, StorageError};
 use sqlx::PgPool;
 
@@ -141,11 +142,12 @@ pub async fn drain_embedding_jobs_inline(
     pool: &PgPool,
     client: &dyn EmbeddingClient,
     limit: i64,
+    projections: &[MemorySearchProjection],
 ) -> Result<EmbeddingInlineDrainOutcome, StorageError> {
     let limit = ensure_nonnegative_limit(limit)?;
     let claims =
         claim_pending_embedding_jobs_excluding(pool, client.model_id(), limit, &[]).await?;
-    drain_claimed_jobs(pool, client, claims).await
+    drain_claimed_jobs(pool, client, claims, projections).await
 }
 
 /// Process one claimed batch: each entity's first claim embeds, and a
@@ -158,6 +160,7 @@ async fn drain_claimed_jobs(
     pool: &PgPool,
     client: &dyn EmbeddingClient,
     claims: Vec<EmbeddingJobClaim>,
+    projections: &[MemorySearchProjection],
 ) -> Result<EmbeddingInlineDrainOutcome, StorageError> {
     let mut outcome = EmbeddingInlineDrainOutcome::default();
     let mut processed_entity_ids = Vec::new();
@@ -168,7 +171,7 @@ async fn drain_claimed_jobs(
             continue;
         }
         processed_entity_ids.push(claim.entity_id);
-        outcome = drain_one_claim(pool, client, &claim, outcome).await?;
+        outcome = drain_one_claim(pool, client, &claim, outcome, projections).await?;
     }
     if !duplicates.is_empty() {
         release_embedding_jobs(
@@ -189,8 +192,9 @@ async fn drain_one_claim(
     client: &dyn EmbeddingClient,
     claim: &EmbeddingJobClaim,
     mut outcome: EmbeddingInlineDrainOutcome,
+    projections: &[MemorySearchProjection],
 ) -> Result<EmbeddingInlineDrainOutcome, StorageError> {
-    match embed_claim(pool, client, claim).await {
+    match embed_claim(pool, client, claim, projections).await {
         Ok(true) => {
             complete_embedding_job(pool, claim).await?;
             outcome.embedded += 1;
@@ -265,14 +269,21 @@ async fn embed_claim(
     pool: &PgPool,
     client: &dyn EmbeddingClient,
     claim: &EmbeddingJobClaim,
+    projections: &[MemorySearchProjection],
 ) -> Result<bool, EmbedClaimFailure> {
     // Empty exclusion list: this drain only ever sees rows that a job was
     // enqueued for, and every enqueue site already filters the schemas that
-    // declined a vector. Storage does not hold the flavor registry, so the
-    // list is not reachable here — the gate for a caller that bypasses the
-    // queue lives on `EmbeddingTextPort::load_embedding_text`.
-    let Some(text) =
-        load_embedding_text(pool, &claim.owner, claim.entity_kind, claim.entity_id, &[]).await?
+    // declined a vector. The queue-bypass gate lives on
+    // `EmbeddingTextPort::load_embedding_text`.
+    let Some(text) = load_embedding_text(
+        pool,
+        &claim.owner,
+        claim.entity_kind,
+        claim.entity_id,
+        &[],
+        projections,
+    )
+    .await?
     else {
         return Ok(false);
     };

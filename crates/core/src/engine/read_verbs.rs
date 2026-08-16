@@ -157,25 +157,9 @@ impl Engine {
         authz: &AuthzContext,
         req: &GetMemoryReadRequest,
     ) -> Result<GetMemoryReadResponse, ProtocolError> {
-        let _permit = self
-            .authorize_entry_read(authz, EntityId::Memory(req.memory_id))
-            .await
-            .map_err(|err| {
-                // The entry gate answers uniformly for absent and invisible
-                // entities; on this read verb that uniform answer IS a
-                // not-found. Context-level denials keep their Forbidden.
-                if err.code == crate::error::ErrorCode::Forbidden
-                    && err.message == super::pipeline::ENTRY_NOT_FOUND_MESSAGE
-                {
-                    ProtocolError {
-                        code: crate::error::ErrorCode::NotFound,
-                        message: "memory not found".into(),
-                        request_id: err.request_id,
-                    }
-                } else {
-                    err
-                }
-            })?;
+        // Home, visibility, and the row are one owner-scoped inspect.
+        // Absent and invisible are both "not returned" — do not probe
+        // `home_owner` / `visible_to_any` first.
         let read_owners = self.authorize_read(authz).await?;
         let sidecars = self.sidecar_specs();
         get_memory_authorized(&self.storage.read_verb, &read_owners, &sidecars, req).await
@@ -497,11 +481,14 @@ pub(in crate::engine) async fn get_memory_authorized(
     sidecars: &[SidecarSpec],
     req: &GetMemoryReadRequest,
 ) -> Result<GetMemoryReadResponse, ProtocolError> {
-    let memory = ports
+    let mut found = ports
         .memory_inspect
-        .load_memory_by_id(req.memory_id, sidecars)
+        .load_memories_by_ids(read_owners, &[req.memory_id], sidecars)
         .await
-        .map_err(|err| storage_error("load_memory_by_id", &err))?;
+        .map_err(|err| storage_error("load_memories_by_ids", &err))?;
+    let Some(memory) = found.pop() else {
+        return Err(ProtocolError::not_found("memory not found"));
+    };
     let neighbor_edges = if req.include_neighbor_edges {
         super::pin_read::neighbor_edges_from_nodes(
             &ports.memory_read,
@@ -514,7 +501,7 @@ pub(in crate::engine) async fn get_memory_authorized(
         Vec::new()
     };
     Ok(GetMemoryReadResponse {
-        memory,
+        memory: Some(memory),
         neighbor_edges,
     })
 }
@@ -771,6 +758,21 @@ mod tests {
             .await
             .expect_err("denied context must fail");
         assert_forbidden(&err);
+    }
+
+    #[tokio::test]
+    async fn get_memory_absent_or_invisible_is_not_found() {
+        let owner = owner();
+        let req = GetMemoryReadRequest {
+            memory_id: MemoryId::new(uuid::Uuid::now_v7()),
+            include_neighbor_edges: false,
+        };
+        let err = engine()
+            .get_memory(&granted_authz(&owner), &req)
+            .await
+            .expect_err("missing inspect is not-found, not an entry Forbidden");
+        assert_eq!(err.code, ErrorCode::NotFound);
+        assert!(err.message.contains("memory not found"));
     }
 
     #[tokio::test]

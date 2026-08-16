@@ -6,9 +6,11 @@ use proxima_core::verbs::query::{
 use proxima_core::{MemoryId, OwnerRef, SchemaId, StorageError};
 use sqlx::{PgPool, Row};
 
+use std::collections::HashMap;
+
 use crate::error::map_err;
 use crate::sidecars::PgSidecarRegistryFrozen;
-use crate::verbs::consolidate::load_memory_by_id;
+use crate::verbs::consolidate::load_memories_by_ids;
 
 use super::read_owner_columns;
 
@@ -70,14 +72,19 @@ pub(crate) async fn facts_citing_object(
         }
     });
 
-    let mut snapshots = Vec::with_capacity(rows.len());
-    for (memory_id, _created_at) in rows {
-        if let Some(snapshot) =
-            load_memory_by_id(pool, pg_sidecars, MemoryId::new(memory_id), sidecars).await?
-        {
-            snapshots.push(snapshot);
-        }
-    }
+    let ids: Vec<MemoryId> = rows
+        .iter()
+        .map(|(memory_id, _)| MemoryId::new(*memory_id))
+        .collect();
+    let loaded = load_memories_by_ids(pool, pg_sidecars, read_owners, &ids, sidecars).await?;
+    let mut by_id: HashMap<MemoryId, _> = loaded
+        .into_iter()
+        .map(|snapshot| (snapshot.memory_id, snapshot))
+        .collect();
+    let snapshots = ids
+        .into_iter()
+        .filter_map(|id| by_id.remove(&id))
+        .collect();
     Ok(FactCitationPage {
         facts: snapshots,
         next_cursor,

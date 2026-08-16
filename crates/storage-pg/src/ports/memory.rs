@@ -191,7 +191,13 @@ impl MemoryReadPort for PgStorage {
         owner: &Owner,
         memory_id: MemoryId,
     ) -> Result<Option<String>, StorageError> {
-        verbs::fact_embeddings::load_fact_text(&self.pool, owner, memory_id).await
+        verbs::fact_embeddings::load_fact_text(
+            &self.pool,
+            owner,
+            memory_id,
+            &self.search_projections,
+        )
+        .await
     }
 
     async fn load_memory_graph_payloads(

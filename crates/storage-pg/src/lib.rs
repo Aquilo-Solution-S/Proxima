@@ -407,6 +407,7 @@ async fn ensure_pgvector_runtime_compatible(
 pub struct PgStorage {
     pool: PgPool,
     sidecars: PgSidecarRegistryFrozen,
+    search_projections: Vec<proxima_core::verbs::schema::MemorySearchProjection>,
     tuning: PgTuning,
     cold: Arc<dyn proxima_core::ColdObjectStore>,
 }
@@ -593,6 +594,7 @@ impl PgStorage {
         Ok(Self {
             pool,
             sidecars: core_pg_sidecars(),
+            search_projections: Vec::new(),
             tuning,
             cold: Arc::new(verbs::forget::MemoryColdStore::default()),
         })
@@ -647,6 +649,18 @@ impl PgStorage {
         self
     }
 
+    /// Frozen search projections used to load embed text from the
+    /// sidecar the row's schema names. Set at boot from
+    /// [`proxima_core::FlavorRegistryFrozen::search_projections`].
+    #[must_use]
+    pub fn with_search_projections(
+        mut self,
+        search_projections: Vec<proxima_core::verbs::schema::MemorySearchProjection>,
+    ) -> Self {
+        self.search_projections = search_projections;
+        self
+    }
+
     #[must_use]
     pub fn storage_ports(self: Arc<Self>) -> StoragePorts {
         StoragePorts::builder()
@@ -698,7 +712,13 @@ impl PgStorage {
         client: &dyn proxima_core::llm::EmbeddingClient,
         limit: i64,
     ) -> Result<EmbeddingInlineDrainOutcome, StorageError> {
-        verbs::fact_embeddings::drain_embedding_jobs_inline(&self.pool, client, limit).await
+        verbs::fact_embeddings::drain_embedding_jobs_inline(
+            &self.pool,
+            client,
+            limit,
+            &self.search_projections,
+        )
+        .await
     }
 
     /// Delete embedding infrastructure rows whose source entity no longer

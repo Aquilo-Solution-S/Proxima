@@ -42,7 +42,8 @@ pub async fn migrated_db() -> (String, PgStorage) {
             panic!("PG required for tests but unavailable: {err}");
         }
     }
-    .with_sidecars(code_pg_sidecars());
+    .with_sidecars(code_pg_sidecars())
+    .with_search_projections(proxima_code::schema_registry().search_projections().to_vec());
     (db_name, pg)
 }
 
