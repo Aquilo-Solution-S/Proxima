@@ -103,9 +103,9 @@ async fn export_sidecars(
         &mut sidecars,
         tables.fact,
         SidecarJoin {
-            sidecar_column: "memory_id",
-            base_table: "proxima_core.memories",
-            base_column: "memory_id",
+            sidecar_column: "t",
+            base_table: "proxima_core.memory",
+            base_column: "t",
         },
     )
     .await?;
@@ -115,9 +115,9 @@ async fn export_sidecars(
         &mut sidecars,
         tables.goal,
         SidecarJoin {
-            sidecar_column: "goal_id",
-            base_table: "proxima_core.goals",
-            base_column: "goal_id",
+            sidecar_column: "t",
+            base_table: "proxima_core.goal",
+            base_column: "t",
         },
     )
     .await?;
@@ -238,8 +238,7 @@ async fn sidecar_rows(
            FROM {table} t
            JOIN {base_table} base
              ON base.{base_column} = t.{sidecar_column}
-          WHERE base.owner_kind = $1
-            AND base.owner_id IS NOT DISTINCT FROM $2
+          WHERE base.owner_id IS NOT DISTINCT FROM $2
           ORDER BY t.{sidecar_column}",
         table = table.as_str(),
         base_table = base_table.as_str(),
@@ -257,38 +256,47 @@ async fn sidecar_rows(
 
 const MEMORY_ROWS_SQL: &str = "
 SELECT to_jsonb(m)
-  FROM proxima_core.memories m
- WHERE m.owner_kind = $1
-   AND m.owner_id IS NOT DISTINCT FROM $2
- ORDER BY m.created_at, m.memory_id";
+  FROM proxima_core.memory m
+ WHERE m.owner_id IS NOT DISTINCT FROM $2
+ ORDER BY m.t";
 
 const GOAL_ROWS_SQL: &str = "
 SELECT to_jsonb(g)
-  FROM proxima_core.goals g
- WHERE g.owner_kind = $1
-   AND g.owner_id IS NOT DISTINCT FROM $2
- ORDER BY g.created_at, g.goal_id";
+  FROM proxima_core.goal g
+ WHERE g.owner_id IS NOT DISTINCT FROM $2
+ ORDER BY g.t";
 
 const EDGE_ROWS_SQL: &str = "
-SELECT to_jsonb(e)
-  FROM proxima_core.edges e
- WHERE e.owner_kind = $1
-   AND e.owner_id IS NOT DISTINCT FROM $2
- ORDER BY e.created_at, e.source_kind, e.source_id, e.target_kind, e.target_id, e.kind";
+SELECT jsonb_build_object(
+         'source_t', src.t,
+         'target_t', pin,
+         'kind', pin_kind
+       )
+  FROM (
+        SELECT src.t, pin, 'origin' AS pin_kind
+          FROM proxima_core.memory src
+          JOIN unnest(src.origins) AS pin ON true
+         WHERE src.owner_id IS NOT DISTINCT FROM $2
+        UNION ALL
+        SELECT src.t, pin, 'reference'
+          FROM proxima_core.memory src
+          JOIN unnest(src.refs) AS pin ON true
+         WHERE src.owner_id IS NOT DISTINCT FROM $2
+       ) pins
+  JOIN proxima_core.memory src ON src.t = pins.t
+ ORDER BY src.t, pin, pin_kind";
 
 const RECEIPT_ROWS_SQL: &str = "
-SELECT to_jsonb(fr)
-  FROM proxima_core.fact_receipts fr
- WHERE fr.owner_kind = $1
-   AND fr.owner_id IS NOT DISTINCT FROM $2
- ORDER BY fr.observed_at, fr.receipt_id";
+SELECT to_jsonb(ik)
+  FROM proxima_core.ingest_keys ik
+ WHERE ik.owner_id IS NOT DISTINCT FROM $2
+ ORDER BY ik.t";
 
 const SOURCE_BATCH_ROWS_SQL: &str = "
-SELECT to_jsonb(sb)
-  FROM proxima_core.source_batches sb
- WHERE sb.owner_kind = $1
-   AND sb.owner_id IS NOT DISTINCT FROM $2
- ORDER BY sb.opened_at, sb.id";
+SELECT to_jsonb(a)
+  FROM proxima_core.announce a
+ WHERE FALSE
+ ORDER BY a.seq";
 
 const SOURCE_CURSOR_ROWS_SQL: &str = "
 SELECT to_jsonb(sc)

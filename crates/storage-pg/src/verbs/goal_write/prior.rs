@@ -1,51 +1,44 @@
 use super::{
     ChildGoalDraft, EvidenceTarget, GoalAuthorship, GoalDraft, GoalId, GoalPayloadWrite, GoalState,
-    MemoryId, Owner, Postgres, SchemaId, SchemaVersion, StorageError, StoredGoal, StoredGoalRow,
-    Transaction, map_err,
+    MemoryId, Owner, Postgres, SchemaId, SchemaVersion, StorageError, StoredGoal, Transaction,
+    map_err,
 };
+
+type PriorRow = (String, String, GoalState, Option<uuid::Uuid>, Vec<uuid::Uuid>);
 
 pub(super) async fn load_prior_goal(
     tx: &mut Transaction<'_, Postgres>,
     owner: &Owner,
     goal_id: GoalId,
 ) -> Result<StoredGoal, StorageError> {
-    let (owner_kind, owner_id) = owner.columns();
-    let row: Option<StoredGoalRow> = sqlx::query_as(
-        "SELECT schema_id, schema_version, title, text, payload, state,
-                assignment_perspective_id, dependency_goal_ids
-           FROM proxima_core.goals
-          WHERE goal_id = $1
-            AND owner_kind = $2
-            AND owner_id IS NOT DISTINCT FROM $3",
-    )
-    .bind(goal_id.into_inner())
-    .bind(owner_kind)
-    .bind(owner_id)
-    .fetch_optional(&mut **tx)
-    .await
-    .map_err(map_err)?;
-    let Some(row) = row else {
+    let owner_id = owner.stored_owner_id();
+    let row: Option<PriorRow> =
+        sqlx::query_as(
+            "SELECT h.schema_id, g.title, g.state, g.assignment_t, g.dependency_t
+               FROM proxima_core.goal g
+               JOIN proxima_core.goal_head h ON h.handle = g.handle
+              WHERE g.t = $1 AND g.owner_id = $2",
+        )
+        .bind(goal_id.into_inner())
+        .bind(owner_id)
+        .fetch_optional(&mut **tx)
+        .await
+        .map_err(map_err)?;
+    let Some((schema_id, title, state, assignment, dependency_t)) = row else {
         return Err(StorageError::NotFound);
     };
-    // The assignment is what the Goal row says it is. A row without one
-    // predates the topology columns — the v0.0.7 lane replaced the index, it
-    // did not back-fill it — and there is nothing left to infer it from.
-    let assignment = row.assignment_perspective_id.ok_or_else(|| {
+    let assignment = assignment.ok_or_else(|| {
         StorageError::ConstraintViolation("goal assignment perspective missing".into())
     })?;
     Ok(StoredGoal {
-        schema_id: SchemaId::new(row.schema_id),
-        schema_version: SchemaVersion::new(row.schema_version.cast_unsigned()),
-        title: row.title,
-        text: row.text,
-        payload: row.payload,
-        state: row.state,
+        schema_id: SchemaId::new(schema_id),
+        schema_version: SchemaVersion::new(1),
+        title,
+        text: String::new(),
+        payload: Vec::new(),
+        state,
         assignment: MemoryId::new(assignment),
-        dependencies: row
-            .dependency_goal_ids
-            .into_iter()
-            .map(GoalId::new)
-            .collect(),
+        dependencies: dependency_t.into_iter().map(GoalId::new).collect(),
     })
 }
 
@@ -60,28 +53,26 @@ pub(super) async fn validate_active_head(
             "parent_goal must be Active".into(),
         ));
     }
-    let (owner_kind, owner_id) = owner.columns();
-    let newer_exists: bool = sqlx::query_scalar(
+    let owner_id = owner.stored_owner_id();
+    let is_head: bool = sqlx::query_scalar(
         "SELECT EXISTS (
              SELECT 1
-               FROM proxima_core.goals
-              WHERE supersedes = $1
-                AND owner_kind = $2
-                AND owner_id IS NOT DISTINCT FROM $3
+               FROM proxima_core.goal g
+               JOIN proxima_core.goal_head h ON h.handle = g.handle AND h.t = g.t
+              WHERE g.t = $1 AND g.owner_id = $2
          )",
     )
     .bind(goal_id.into_inner())
-    .bind(owner_kind)
     .bind(owner_id)
     .fetch_one(&mut **tx)
     .await
     .map_err(map_err)?;
-    if newer_exists {
+    if is_head {
+        Ok(())
+    } else {
         Err(StorageError::Conflict(
             "parent_goal is not current head".into(),
         ))
-    } else {
-        Ok(())
     }
 }
 

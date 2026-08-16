@@ -3,27 +3,18 @@ use sqlx::PgPool;
 
 /// One way the stored graph can disagree with the kernel shape.
 ///
-/// An edge has no id, so a witness names the row by its key: the endpoints
-/// and the kind. That is not a loss of precision — the key IS the row.
+/// Pins live on `memory.origins` / `memory.refs`. A witness names the pin
+/// by source `t`, target `t`, and kind.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GraphValidityViolation {
-    /// E1: an endpoint the edge points at does not exist (or is tombstoned /
-    /// abandoned, which is how a live graph read sees "gone").
     MissingEndpoint { edge: EdgeKey },
-    /// A derived memory that declares nothing at all: no origin it was made
-    /// from and no reference it interprets. Every A/P row is one or the
-    /// other, and both leave index rows behind.
     UngroundedDerived { memory_id: uuid::Uuid },
-    /// Lean N1 `derivationTimeStrict`: an origin must be strictly older than
-    /// the row it grounds.
     NonStrictDerivationTime { edge: EdgeKey },
-    /// E3: `ℓ(source) ≥ ℓ(target)` for memory endpoints.
     LayeringViolation { edge: EdgeKey },
-    /// E2: the row is owned by the source owner, always.
     OwnerIsNotSourceOwner { edge: EdgeKey },
 }
 
-/// An edge's whole identity.
+/// A pin's identity: source t, target t, kind.
 #[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow)]
 pub struct EdgeKey {
     pub source_kind: String,
@@ -34,10 +25,6 @@ pub struct EdgeKey {
 }
 
 /// Collect runtime witnesses for Lean `MemoryGraphValid` / `EdgeValid` drift.
-///
-/// This is intentionally a test fixture, not a production verifier. Production
-/// paths validate before write; this scanner lets integration tests assert that
-/// fixtures/migrations did not admit graph rows that violate the kernel shape.
 ///
 /// # Errors
 ///
@@ -80,71 +67,85 @@ pub async fn collect_memory_graph_violations(
 }
 
 async fn edge_keys(pool: &PgPool, sql: &'static str) -> Result<Vec<EdgeKey>, sqlx::Error> {
-    // SQL-POLICY: fixed-fragment — `sql` is one of the module's own `&'static
-    // str` scan constants; no value reaches it from a caller.
     sqlx::query_as::<_, EdgeKey>(sqlx::AssertSqlSafe(sql))
         .fetch_all(pool)
         .await
 }
 
+const PINS: &str = "
+SELECT src.kind::text AS source_kind, src.t AS source_id,
+       tgt.kind::text AS target_kind, pin AS target_id, pins.kind
+  FROM (
+        SELECT t, unnest(origins) AS pin, 'origin'::text AS kind FROM proxima_core.memory
+        UNION ALL
+        SELECT t, unnest(refs), 'reference' FROM proxima_core.memory
+       ) pins
+  JOIN proxima_core.memory src ON src.t = pins.t
+  JOIN proxima_core.memory tgt ON tgt.t = pins.pin
+";
+
 const MISSING_ENDPOINT_SQL: &str = "
-SELECT e.source_kind::text AS source_kind, e.source_id,
-       e.target_kind::text AS target_kind, e.target_id, e.kind::text AS kind
-  FROM proxima_core.edges e
- WHERE NOT EXISTS (
-           SELECT 1 FROM (
-               SELECT memory_id AS entity_id FROM proxima_core.memories WHERE tombstoned_at IS NULL
-               UNION ALL SELECT goal_id FROM proxima_core.goals WHERE state <> 'Abandoned'
-               UNION ALL SELECT fact_entity_id FROM proxima_core.fact_entities
-           ) eo WHERE eo.entity_id = e.source_id
-       )
-    OR NOT EXISTS (
-           SELECT 1 FROM (
-               SELECT memory_id AS entity_id FROM proxima_core.memories WHERE tombstoned_at IS NULL
-               UNION ALL SELECT goal_id FROM proxima_core.goals WHERE state <> 'Abandoned'
-               UNION ALL SELECT fact_entity_id FROM proxima_core.fact_entities
-           ) eo WHERE eo.entity_id = e.target_id
-       )";
+SELECT src.kind::text AS source_kind, src.t AS source_id,
+       COALESCE(tgt.kind::text, '') AS target_kind, pin AS target_id, pins.kind
+  FROM (
+        SELECT t, unnest(origins) AS pin, 'origin'::text AS kind FROM proxima_core.memory
+        UNION ALL
+        SELECT t, unnest(refs), 'reference' FROM proxima_core.memory
+       ) pins
+  JOIN proxima_core.memory src ON src.t = pins.t
+  LEFT JOIN proxima_core.memory tgt ON tgt.t = pins.pin
+ WHERE tgt.t IS NULL";
 
 const NON_STRICT_DERIVATION_TIME_SQL: &str = "
-SELECT e.source_kind::text AS source_kind, e.source_id,
-       e.target_kind::text AS target_kind, e.target_id, e.kind::text AS kind
-  FROM proxima_core.edges e
-  JOIN proxima_core.memories source ON source.memory_id = e.source_id
-  JOIN proxima_core.memories target ON target.memory_id = e.target_id
- WHERE e.kind = 'origin'::proxima_core.edge_kind
-   AND target.created_at >= source.created_at";
+SELECT src.kind::text AS source_kind, src.t AS source_id,
+       tgt.kind::text AS target_kind, pin AS target_id, pins.kind
+  FROM (
+        SELECT t, unnest(origins) AS pin, 'origin'::text AS kind FROM proxima_core.memory
+       ) pins
+  JOIN proxima_core.memory src ON src.t = pins.t
+  JOIN proxima_core.memory tgt ON tgt.t = pins.pin
+ WHERE src.t <= tgt.t";
 
 const LAYERING_SQL: &str = "
-SELECT e.source_kind::text AS source_kind, e.source_id,
-       e.target_kind::text AS target_kind, e.target_id, e.kind::text AS kind
-  FROM proxima_core.edges e
- WHERE proxima_core.edge_endpoint_layer(e.source_kind) IS NOT NULL
-   AND proxima_core.edge_endpoint_layer(e.target_kind) IS NOT NULL
-   AND proxima_core.edge_endpoint_layer(e.source_kind)
-       < proxima_core.edge_endpoint_layer(e.target_kind)";
+SELECT src.kind::text AS source_kind, src.t AS source_id,
+       tgt.kind::text AS target_kind, pin AS target_id, pins.kind
+  FROM (
+        SELECT t, unnest(origins) AS pin, 'origin'::text AS kind FROM proxima_core.memory
+        UNION ALL
+        SELECT t, unnest(refs), 'reference' FROM proxima_core.memory
+       ) pins
+  JOIN proxima_core.memory src ON src.t = pins.t
+  JOIN proxima_core.memory tgt ON tgt.t = pins.pin
+ WHERE CASE src.kind::text
+           WHEN 'fact' THEN 0
+           WHEN 'abstraction' THEN 1
+           ELSE 2
+       END
+     < CASE tgt.kind::text
+           WHEN 'fact' THEN 0
+           WHEN 'abstraction' THEN 1
+           ELSE 2
+       END";
 
 const OWNER_SQL: &str = "
-SELECT e.source_kind::text AS source_kind, e.source_id,
-       e.target_kind::text AS target_kind, e.target_id, e.kind::text AS kind
-  FROM proxima_core.edges e
-  JOIN (
-      SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories
-      UNION ALL SELECT goal_id, owner_kind, owner_id FROM proxima_core.goals
-      UNION ALL SELECT fact_entity_id, owner_kind, owner_id FROM proxima_core.fact_entities
-  ) seo ON seo.entity_id = e.source_id
- WHERE seo.owner_kind <> e.owner_kind
-    OR seo.owner_id IS DISTINCT FROM e.owner_id";
+SELECT src.kind::text AS source_kind, src.t AS source_id,
+       tgt.kind::text AS target_kind, pin AS target_id, pins.kind
+  FROM (
+        SELECT t, unnest(origins) AS pin, 'origin'::text AS kind FROM proxima_core.memory
+        UNION ALL
+        SELECT t, unnest(refs), 'reference' FROM proxima_core.memory
+       ) pins
+  JOIN proxima_core.memory src ON src.t = pins.t
+  JOIN proxima_core.memory tgt ON tgt.t = pins.pin
+ WHERE src.owner_id IS DISTINCT FROM tgt.owner_id";
 
 async fn ungrounded_derived_memory_ids(pool: &PgPool) -> Result<Vec<uuid::Uuid>, sqlx::Error> {
     let rows: Vec<(uuid::Uuid,)> = sqlx::query_as(
-        "SELECT m.memory_id
-           FROM proxima_core.memories m
-          WHERE m.kind <> 'Fact'
-            AND m.tombstoned_at IS NULL
-            AND NOT EXISTS (
-                SELECT 1 FROM proxima_core.edges e WHERE e.source_id = m.memory_id
-            )",
+        "SELECT m.t
+           FROM proxima_core.memory m
+          WHERE m.kind <> 'fact'
+            AND COALESCE(array_length(m.origins, 1), 0) = 0
+            AND COALESCE(array_length(m.refs, 1), 0) = 0",
     )
     .fetch_all(pool)
     .await?;
@@ -156,4 +157,5 @@ fn _assert_public_types_are_send_sync() {
     fn assert_send_sync<T: Send + Sync>() {}
     assert_send_sync::<GraphValidityViolation>();
     let _ = EntityKind::Fact;
+    let _ = PINS;
 }

@@ -1,37 +1,40 @@
 use super::{
     EntityKind, GoalAtomicContext, GoalId, GoalWakeConfigWrite, GoalWakeToolId, GoalWakeTrigger,
-    MemoryId, PayloadKind, Postgres, StorageError, Transaction, WakeConfigRow, WakeConfigShape,
-    WakeWrite, map_err,
+    MemoryId, PayloadKind, Postgres, StorageError, Transaction, WakeConfigShape, WakeWrite, map_err,
 };
+use crate::verbs::wake_timeseries::{WakeConfigDraft, WakeTriggerKind, insert_wake_config};
+
+type WakeShapeRow = (
+    String,
+    Option<String>,
+    Option<uuid::Uuid>,
+    Vec<String>,
+    String,
+    Vec<uuid::Uuid>,
+);
 
 pub(super) async fn write_goal_wake_config(
     tx: &mut Transaction<'_, Postgres>,
     context: GoalAtomicContext<'_>,
-    goal_id: GoalId,
+    owner: &proxima_core::Owner,
     wake_write: WakeWrite<'_>,
-) -> Result<(), StorageError> {
+) -> Result<Option<uuid::Uuid>, StorageError> {
     match wake_write {
         WakeWrite::Explicit(Some(config)) => {
             validate_wake_config_storage(tx, context, config).await?;
-            insert_goal_wake_config(tx, goal_id, config).await
+            let draft = wake_draft_from_config(config);
+            Ok(Some(insert_wake_config(tx, owner, &draft).await?))
         }
-        WakeWrite::Explicit(None) => Ok(()),
+        WakeWrite::Explicit(None) => Ok(None),
         WakeWrite::CarryFrom(source_goal_id) => {
-            sqlx::query(
-                "INSERT INTO proxima_core.goal_wake_config
-                    (goal_id, trigger_kind, trigger_schema_id, trigger_schema_version,
-                     trigger_memory_id, tool_ids, prompt, hard_memory_ids)
-                 SELECT $1, trigger_kind, trigger_schema_id, trigger_schema_version,
-                        trigger_memory_id, tool_ids, prompt, hard_memory_ids
-                   FROM proxima_core.goal_wake_config
-                  WHERE goal_id = $2",
+            sqlx::query_scalar(
+                "SELECT wake_id FROM proxima_core.goal WHERE t = $1 AND owner_id = $2",
             )
-            .bind(goal_id.into_inner())
             .bind(source_goal_id.into_inner())
-            .execute(&mut **tx)
+            .bind(owner.stored_owner_id())
+            .fetch_optional(&mut **tx)
             .await
-            .map_err(map_err)?;
-            Ok(())
+            .map_err(map_err)
         }
     }
 }
@@ -87,8 +90,8 @@ async fn validate_wake_memory_exists(
     memory_id: MemoryId,
     expected: Option<EntityKind>,
 ) -> Result<(), StorageError> {
-    let row: Option<(EntityKind,)> = sqlx::query_as(
-        "SELECT kind FROM proxima_core.memories WHERE memory_id = $1 AND tombstoned_at IS NULL",
+    let row: Option<(String,)> = sqlx::query_as(
+        "SELECT kind::text FROM proxima_core.memory WHERE t = $1",
     )
     .bind(memory_id.into_inner())
     .fetch_optional(&mut **tx)
@@ -99,6 +102,16 @@ async fn validate_wake_memory_exists(
             "wake memory does not exist".into(),
         ));
     };
+    let kind = match kind.as_str() {
+        "fact" => EntityKind::Fact,
+        "abstraction" => EntityKind::Abstraction,
+        "perspective" => EntityKind::Perspective,
+        _ => {
+            return Err(StorageError::ConstraintViolation(
+                "wake memory does not exist".into(),
+            ));
+        }
+    };
     if expected.is_some_and(|expected| expected != kind) {
         return Err(StorageError::ConstraintViolation(
             "wake trigger memory must be a Fact".into(),
@@ -107,30 +120,41 @@ async fn validate_wake_memory_exists(
     Ok(())
 }
 
-async fn insert_goal_wake_config(
-    tx: &mut Transaction<'_, Postgres>,
-    goal_id: GoalId,
-    config: &GoalWakeConfigWrite,
-) -> Result<(), StorageError> {
-    let shape = wake_shape_from_config(config);
-    sqlx::query(
-        "INSERT INTO proxima_core.goal_wake_config
-            (goal_id, trigger_kind, trigger_schema_id, trigger_schema_version,
-             trigger_memory_id, tool_ids, prompt, hard_memory_ids)
-         VALUES ($1, $2::proxima_core.goal_wake_trigger_kind, $3, $4, $5, $6, $7, $8)",
-    )
-    .bind(goal_id.into_inner())
-    .bind(&shape.trigger_kind)
-    .bind(&shape.trigger_schema_id)
-    .bind(shape.trigger_schema_version)
-    .bind(shape.trigger_memory_id)
-    .bind(&shape.tool_ids)
-    .bind(&shape.prompt)
-    .bind(&shape.hard_memory_ids)
-    .execute(&mut **tx)
-    .await
-    .map_err(map_err)?;
-    Ok(())
+fn wake_draft_from_config(config: &GoalWakeConfigWrite) -> WakeConfigDraft {
+    match config.trigger() {
+        GoalWakeTrigger::FactSchema { schema_id, .. } => WakeConfigDraft {
+            trigger_kind: WakeTriggerKind::FactSchema,
+            trigger_schema_id: Some(schema_id.as_str().to_string()),
+            trigger_t: None,
+            tool_ids: config
+                .tool_ids()
+                .iter()
+                .map(|tool| tool.as_str().to_string())
+                .collect(),
+            prompt: config.prompt().to_string(),
+            hard_memory_t: config
+                .hard_memory_ids()
+                .iter()
+                .map(|id| id.into_inner())
+                .collect(),
+        },
+        GoalWakeTrigger::FactMemory { memory_id } => WakeConfigDraft {
+            trigger_kind: WakeTriggerKind::FactMemory,
+            trigger_schema_id: None,
+            trigger_t: Some(memory_id.into_inner()),
+            tool_ids: config
+                .tool_ids()
+                .iter()
+                .map(|tool| tool.as_str().to_string())
+                .collect(),
+            prompt: config.prompt().to_string(),
+            hard_memory_t: config
+                .hard_memory_ids()
+                .iter()
+                .map(|id| id.into_inner())
+                .collect(),
+        },
+    }
 }
 
 pub(super) async fn goal_wake_matches(
@@ -151,30 +175,31 @@ async fn load_wake_shape(
     tx: &mut Transaction<'_, Postgres>,
     goal_id: GoalId,
 ) -> Result<Option<WakeConfigShape>, StorageError> {
-    let row: Option<WakeConfigRow> = sqlx::query_as(
-        "SELECT trigger_kind::text AS trigger_kind,
+    let row: Option<WakeShapeRow> =
+        sqlx::query_as(
+            "SELECT w.trigger_kind::text, w.trigger_schema_id, w.trigger_t,
+                    w.tool_ids, w.prompt, w.hard_memory_t
+               FROM proxima_core.goal g
+               JOIN proxima_core.wake_config w ON w.wake_id = g.wake_id
+              WHERE g.t = $1",
+        )
+        .bind(goal_id.into_inner())
+        .fetch_optional(&mut **tx)
+        .await
+        .map_err(map_err)?;
+    Ok(row.map(
+        |(trigger_kind, trigger_schema_id, trigger_t, tool_ids, prompt, hard_memory_t)| {
+            WakeConfigShape {
+                trigger_kind,
                 trigger_schema_id,
-                trigger_schema_version,
-                trigger_memory_id,
+                trigger_schema_version: None,
+                trigger_memory_id: trigger_t,
                 tool_ids,
                 prompt,
-                hard_memory_ids
-           FROM proxima_core.goal_wake_config
-          WHERE goal_id = $1",
-    )
-    .bind(goal_id.into_inner())
-    .fetch_optional(&mut **tx)
-    .await
-    .map_err(map_err)?;
-    Ok(row.map(|row| WakeConfigShape {
-        trigger_kind: row.trigger_kind,
-        trigger_schema_id: row.trigger_schema_id,
-        trigger_schema_version: row.trigger_schema_version,
-        trigger_memory_id: row.trigger_memory_id,
-        tool_ids: row.tool_ids,
-        prompt: row.prompt,
-        hard_memory_ids: row.hard_memory_ids,
-    }))
+                hard_memory_ids: hard_memory_t,
+            }
+        },
+    ))
 }
 
 fn wake_shape_from_config(config: &GoalWakeConfigWrite) -> WakeConfigShape {
@@ -210,7 +235,7 @@ fn wake_shape_from_config(config: &GoalWakeConfigWrite) -> WakeConfigShape {
         hard_memory_ids: config
             .hard_memory_ids()
             .iter()
-            .map(|memory_id| memory_id.into_inner())
+            .map(|id| id.into_inner())
             .collect(),
     }
 }

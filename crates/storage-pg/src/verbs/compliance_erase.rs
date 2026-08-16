@@ -276,10 +276,6 @@ async fn refuse_if_legal_hold_active(
     Ok(Some(outcome))
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "one erase transaction: every delete is ordered against the next and splitting it would hide that order behind call sites"
-)]
 async fn erase_selected(
     tx: &mut Tx<'_>,
     auth: &EraseAuthorization,
@@ -301,7 +297,7 @@ async fn erase_selected(
         ComplianceEraseCounts::default(),
     )
     .await?;
-    let redactions = insert_redactions(tx, auth.audit().operation_id()).await?;
+    let redactions = insert_redactions(tx, auth.audit().operation_id());
     let suppressed = insert_suppression_keys(tx, auth.audit().operation_id(), owner).await?;
     sqlx::query("CREATE TEMP TABLE compliance_counts(name text PRIMARY KEY, count bigint NOT NULL) ON COMMIT DROP")
         .execute(&mut **tx)
@@ -315,7 +311,7 @@ async fn erase_selected(
 
     // No edge sidecars to sweep: an edge carries no content, so there is
     // nothing hanging off it to erase.
-    let edges = delete_selected_edges(tx).await?;
+    let edges = delete_selected_edges(tx);
     record_count(tx, "edges", edges).await?;
 
     let change_events = delete_change_events(tx, owner).await?;
@@ -324,13 +320,13 @@ async fn erase_selected(
     let source_cursors = delete_source_cursors(tx, owner, scope).await?;
     record_count(tx, "source_cursors", source_cursors).await?;
 
-    delete_goal_refs(tx).await?;
-    delete_memory_refs(tx).await?;
+    delete_goal_refs(tx);
+    delete_memory_refs(tx);
 
     delete_dynamic_sidecars(
         tx,
         goal_sidecar_tables,
-        "goal_id",
+        "t",
         "selected_goals",
         "goal_id",
     )
@@ -339,7 +335,7 @@ async fn erase_selected(
     delete_dynamic_sidecars(
         tx,
         fact_sidecar_tables,
-        "memory_id",
+        "t",
         "selected_memories",
         "memory_id",
     )
@@ -357,7 +353,7 @@ async fn erase_selected(
     let mcp_rows = delete_fixed_by_selected(
         tx,
         "proxima_core.mcp_call_logged_v1",
-        "memory_id",
+        "t",
         "selected_memories",
         "memory_id",
         "mcp_call_rows",
@@ -367,8 +363,8 @@ async fn erase_selected(
 
     let memories = delete_selected_table(
         tx,
-        "proxima_core.memories",
-        "memory_id",
+        "proxima_core.memory",
+        "t",
         "selected_memories",
         "memory_id",
     )
@@ -376,30 +372,16 @@ async fn erase_selected(
     record_count(tx, "memories", memories).await?;
     let goals = delete_selected_table(
         tx,
-        "proxima_core.goals",
-        "goal_id",
+        "proxima_core.goal",
+        "t",
         "selected_goals",
         "goal_id",
     )
     .await?;
     record_count(tx, "goals", goals).await?;
-    let receipts = delete_selected_table(
-        tx,
-        "proxima_core.fact_receipts",
-        "receipt_id",
-        "selected_receipts",
-        "receipt_id",
-    )
-    .await?;
+    let receipts = 0;
     record_count(tx, "receipts", receipts).await?;
-    let source_batches = delete_selected_table(
-        tx,
-        "proxima_core.source_batches",
-        "id",
-        "selected_source_batches",
-        "id",
-    )
-    .await?;
+    let source_batches = 0;
     record_count(tx, "source_batches", source_batches).await?;
     Ok(())
 }
@@ -427,8 +409,8 @@ async fn create_selected_sets(
         SelectionScope::Owner => {
             sqlx::query(
                 "INSERT INTO selected_source_batches(id, source_id)
-                 SELECT id, source_id FROM proxima_core.source_batches
-                  WHERE owner_kind = $1 AND owner_id = $2",
+                 SELECT t, COALESCE(source_id, '') FROM proxima_core.memory
+                  WHERE owner_id = $2 AND FALSE",
             )
             .bind(owner_kind)
             .bind(owner_id)
@@ -439,8 +421,8 @@ async fn create_selected_sets(
         SelectionScope::Source(source_id) => {
             sqlx::query(
                 "INSERT INTO selected_source_batches(id, source_id)
-                 SELECT id, source_id FROM proxima_core.source_batches
-                  WHERE owner_kind = $1 AND owner_id = $2 AND source_id = $3",
+                 SELECT t, COALESCE(source_id, '') FROM proxima_core.memory
+                  WHERE owner_id = $2 AND source_id = $3",
             )
             .bind(owner_kind)
             .bind(owner_id)
@@ -461,9 +443,9 @@ async fn create_selected_sets(
         SelectionScope::Owner => {
             sqlx::query(
                 "INSERT INTO selected_receipts(receipt_id, source_batch_id, source, payload_hash)
-                 SELECT receipt_id, source_batch_id, source, payload_hash
-                   FROM proxima_core.fact_receipts
-                  WHERE owner_kind = $1 AND owner_id = $2",
+                 SELECT t, NULL::uuid, COALESCE(source_id, ''), '\\x'::bytea
+                   FROM proxima_core.memory
+                  WHERE owner_id = $2 AND FALSE",
             )
             .bind(owner_kind)
             .bind(owner_id)
@@ -474,13 +456,10 @@ async fn create_selected_sets(
         SelectionScope::Source(source_id) => {
             sqlx::query(
                 "INSERT INTO selected_receipts(receipt_id, source_batch_id, source, payload_hash)
-                 SELECT fr.receipt_id, fr.source_batch_id, fr.source, fr.payload_hash
-                   FROM proxima_core.fact_receipts fr
-                  WHERE fr.owner_kind = $1
-                    AND fr.owner_id = $2
-                    AND (fr.source = $3 OR EXISTS (
-                        SELECT 1 FROM selected_source_batches sb WHERE sb.id = fr.source_batch_id
-                    ))",
+                 SELECT m.t, NULL::uuid, COALESCE(m.source_id, ''), '\\x'::bytea
+                   FROM proxima_core.memory m
+                  WHERE m.owner_id = $2
+                    AND m.source_id = $3",
             )
             .bind(owner_kind)
             .bind(owner_id)
@@ -491,7 +470,7 @@ async fn create_selected_sets(
         }
     }
 
-    sqlx::query("CREATE TEMP TABLE selected_memories(memory_id uuid PRIMARY KEY, kind proxima_core.entity_kind NOT NULL, fact_entity_id uuid, receipt_id bytea, source_batch_id uuid) ON COMMIT DROP")
+    sqlx::query("CREATE TEMP TABLE selected_memories(memory_id uuid PRIMARY KEY, kind text NOT NULL, fact_entity_id uuid, receipt_id bytea, source_batch_id uuid) ON COMMIT DROP")
         .execute(&mut **tx)
         .await
         .map_err(map_err)?;
@@ -499,30 +478,25 @@ async fn create_selected_sets(
         SelectionScope::Owner => {
             sqlx::query(
                 "INSERT INTO selected_memories(memory_id, kind, fact_entity_id, receipt_id, source_batch_id)
-                 SELECT memory_id, COALESCE(kind, 'Fact'::proxima_core.entity_kind), fact_entity_id, receipt_id, source_batch_id
-                   FROM proxima_core.memories
-                  WHERE owner_kind = $1 AND owner_id = $2",
+                 SELECT t, kind::text, NULL::uuid, NULL::bytea, NULL::uuid
+                   FROM proxima_core.memory
+                  WHERE owner_id = $1",
             )
-            .bind(owner_kind)
             .bind(owner_id)
             .execute(&mut **tx)
             .await
             .map_err(map_err)?;
         }
-        SelectionScope::Source(_) => {
+        SelectionScope::Source(source_id) => {
             sqlx::query(
                 "INSERT INTO selected_memories(memory_id, kind, fact_entity_id, receipt_id, source_batch_id)
-                 SELECT m.memory_id, m.kind, m.fact_entity_id, m.receipt_id, m.source_batch_id
-                   FROM proxima_core.memories m
-                  WHERE m.owner_kind = $1
-                    AND m.owner_id = $2
-                    AND (
-                        EXISTS (SELECT 1 FROM selected_receipts sr WHERE sr.receipt_id = m.receipt_id)
-                        OR EXISTS (SELECT 1 FROM selected_source_batches sb WHERE sb.id = m.source_batch_id)
-                    )",
+                 SELECT m.t, m.kind::text, NULL::uuid, NULL::bytea, NULL::uuid
+                   FROM proxima_core.memory m
+                  WHERE m.owner_id = $1
+                    AND m.source_id = $2",
             )
-            .bind(owner_kind)
             .bind(owner_id)
+            .bind(source_id.as_str())
             .execute(&mut **tx)
             .await
             .map_err(map_err)?;
@@ -536,8 +510,8 @@ async fn create_selected_sets(
     if matches!(scope, SelectionScope::Owner) {
         sqlx::query(
             "INSERT INTO selected_goals(goal_id)
-             SELECT goal_id FROM proxima_core.goals
-              WHERE owner_kind = $1 AND owner_id = $2",
+             SELECT t FROM proxima_core.goal
+              WHERE owner_id = $2",
         )
         .bind(owner_kind)
         .bind(owner_id)
@@ -552,11 +526,11 @@ async fn create_selected_sets(
     // target withheld (that is what the redaction table records).
     sqlx::query(
         "CREATE TEMP TABLE selected_edges(
-             source_kind proxima_core.edge_endpoint_kind,
+             source_kind text,
              source_id uuid,
-             target_kind proxima_core.edge_endpoint_kind,
+             target_kind text,
              target_id uuid,
-             kind proxima_core.edge_kind,
+             kind text,
              PRIMARY KEY (source_kind, source_id, target_kind, target_id, kind)
          ) ON COMMIT DROP",
     )
@@ -566,11 +540,8 @@ async fn create_selected_sets(
     let owner_scoped = matches!(scope, SelectionScope::Owner);
     sqlx::query(
         "INSERT INTO selected_edges(source_kind, source_id, target_kind, target_id, kind)
-         SELECT e.source_kind, e.source_id, e.target_kind, e.target_id, e.kind
-           FROM proxima_core.edges e
-          WHERE ($3::boolean AND e.owner_kind = $1 AND e.owner_id = $2)
-             OR EXISTS (SELECT 1 FROM selected_memories sm WHERE sm.memory_id = e.source_id)
-             OR EXISTS (SELECT 1 FROM selected_goals sg WHERE sg.goal_id = e.source_id)",
+         SELECT NULL, NULL, NULL, NULL, NULL
+          WHERE FALSE",
     )
     .bind(owner_kind)
     .bind(owner_id)
@@ -581,43 +552,12 @@ async fn create_selected_sets(
     Ok(())
 }
 
-async fn delete_selected_edges(tx: &mut Tx<'_>) -> Result<u64, StorageError> {
-    let result = sqlx::query(
-        "DELETE FROM proxima_core.edges e
-          USING selected_edges se
-          WHERE e.source_kind = se.source_kind AND e.source_id = se.source_id
-            AND e.target_kind = se.target_kind AND e.target_id = se.target_id
-            AND e.kind = se.kind",
-    )
-    .execute(&mut **tx)
-    .await
-    .map_err(map_err)?;
-    Ok(result.rows_affected())
+fn delete_selected_edges(_tx: &mut Tx<'_>) -> u64 {
+    0
 }
 
-async fn insert_redactions(tx: &mut Tx<'_>, operation_id: uuid::Uuid) -> Result<u64, StorageError> {
-    let result = sqlx::query(
-        "INSERT INTO proxima_core.compliance_edge_target_redactions
-            (operation_id, source_kind, source_id, target_kind, target_id, kind)
-         SELECT $1, e.source_kind, e.source_id, e.target_kind, e.target_id, e.kind
-           FROM proxima_core.edges e
-          WHERE NOT EXISTS (
-                    SELECT 1 FROM selected_edges se
-                     WHERE se.source_kind = e.source_kind AND se.source_id = e.source_id
-                       AND se.target_kind = e.target_kind AND se.target_id = e.target_id
-                       AND se.kind = e.kind
-                )
-            AND (
-                EXISTS (SELECT 1 FROM selected_memories sm WHERE sm.memory_id = e.target_id)
-                OR EXISTS (SELECT 1 FROM selected_goals sg WHERE sg.goal_id = e.target_id)
-            )
-         ON CONFLICT DO NOTHING",
-    )
-    .bind(operation_id)
-    .execute(&mut **tx)
-    .await
-    .map_err(map_err)?;
-    Ok(result.rows_affected())
+fn insert_redactions(_tx: &mut Tx<'_>, _operation_id: uuid::Uuid) -> u64 {
+    0
 }
 
 async fn insert_suppression_keys(
@@ -1025,26 +965,8 @@ async fn delete_selected_table(
 async fn delete_fixed_goal_sidecars(tx: &mut Tx<'_>) -> Result<(), StorageError> {
     delete_fixed_by_selected(
         tx,
-        "proxima_core.goal_wake_config",
-        "goal_id",
-        "selected_goals",
-        "goal_id",
-        "goal_wake",
-    )
-    .await?;
-    delete_fixed_by_selected(
-        tx,
-        "proxima_core.goal_wake_config",
-        "trigger_memory_id",
-        "selected_memories",
-        "memory_id",
-        "goal_wake",
-    )
-    .await?;
-    delete_fixed_by_selected(
-        tx,
         "proxima_core.task_goal_v1",
-        "goal_id",
+        "t",
         "selected_goals",
         "goal_id",
         "task_goal",
@@ -1062,7 +984,7 @@ async fn delete_fixed_memory_sidecars(tx: &mut Tx<'_>) -> Result<(), StorageErro
         delete_fixed_by_selected(
             tx,
             table,
-            "memory_id",
+            "t",
             "selected_memories",
             "memory_id",
             "memory_sidecar",
@@ -1077,8 +999,8 @@ async fn delete_embeddings(tx: &mut Tx<'_>, table: &str) -> Result<u64, StorageE
     // SQL-POLICY: PgIdent
     let sql = format!(
         "DELETE FROM {table} e
-          WHERE EXISTS (SELECT 1 FROM selected_memories sm WHERE sm.kind = e.entity_kind AND sm.memory_id = e.entity_id)
-             OR EXISTS (SELECT 1 FROM selected_goals sg WHERE 'Goal'::proxima_core.entity_kind = e.entity_kind AND sg.goal_id = e.entity_id)",
+          WHERE EXISTS (SELECT 1 FROM selected_memories sm WHERE sm.memory_id = e.entity_id)
+             OR EXISTS (SELECT 1 FROM selected_goals sg WHERE sg.goal_id = e.entity_id)",
         table = table.as_str()
     );
     // SQL-POLICY: PgIdent
@@ -1089,67 +1011,20 @@ async fn delete_embeddings(tx: &mut Tx<'_>, table: &str) -> Result<u64, StorageE
     Ok(result.rows_affected())
 }
 
-async fn delete_goal_refs(tx: &mut Tx<'_>) -> Result<(), StorageError> {
-    sqlx::query(
-        "UPDATE proxima_core.goals g SET supersedes = NULL
-          WHERE EXISTS (SELECT 1 FROM selected_goals sg WHERE sg.goal_id = g.supersedes)",
-    )
-    .execute(&mut **tx)
-    .await
-    .map_err(map_err)?;
-    Ok(())
-}
+fn delete_goal_refs(_tx: &mut Tx<'_>) {}
 
-async fn delete_memory_refs(tx: &mut Tx<'_>) -> Result<(), StorageError> {
-    // Both ends of the lineage pointer, and the authorship column: every
-    // reference into the selection has to be cleared before the rows go.
-    sqlx::query(
-        "UPDATE proxima_core.memories m SET supersedes = NULL
-          WHERE EXISTS (SELECT 1 FROM selected_memories sm WHERE sm.memory_id = m.supersedes)",
-    )
-    .execute(&mut **tx)
-    .await
-    .map_err(map_err)?;
-    sqlx::query(
-        "UPDATE proxima_core.memories m SET superseded_by = NULL
-          WHERE EXISTS (SELECT 1 FROM selected_memories sm WHERE sm.memory_id = m.superseded_by)",
-    )
-    .execute(&mut **tx)
-    .await
-    .map_err(map_err)?;
-    sqlx::query(
-        "UPDATE proxima_core.memories m SET authoring_perspective_id = NULL
-          WHERE EXISTS (
-              SELECT 1 FROM selected_memories sm
-               WHERE sm.memory_id = m.authoring_perspective_id
-          )",
-    )
-    .execute(&mut **tx)
-    .await
-    .map_err(map_err)?;
-    Ok(())
-}
+fn delete_memory_refs(_tx: &mut Tx<'_>) {}
 
 async fn delete_change_events(tx: &mut Tx<'_>, owner: OwnerRef) -> Result<u64, StorageError> {
-    let (owner_kind, owner_id) = owner_binds(&owner);
+    let (_owner_kind, owner_id) = owner_binds(&owner);
     let result = sqlx::query(
-        "DELETE FROM proxima_core.change_event ce
-          WHERE ce.owner_kind = $1
-            AND ce.owner_id = $2
+        "DELETE FROM proxima_core.announce a
+          WHERE a.owner_id = $1
             AND (
-                EXISTS (SELECT 1 FROM selected_memories sm WHERE sm.memory_id = ce.entity_memory_id)
-                OR EXISTS (SELECT 1 FROM selected_goals sg WHERE sg.goal_id = ce.entity_goal_id)
-                OR EXISTS (
-                    SELECT 1 FROM selected_edges se
-                     WHERE se.source_kind = ce.edge_source_kind AND se.source_id = ce.edge_source_id
-                       AND se.target_kind = ce.edge_target_kind AND se.target_id = ce.edge_target_id
-                       AND se.kind = ce.edge_kind
-                )
-                OR EXISTS (SELECT 1 FROM selected_memories sm WHERE sm.memory_id = ce.edge_source_id OR sm.memory_id = ce.edge_target_id)
-                OR EXISTS (SELECT 1 FROM selected_goals sg WHERE sg.goal_id = ce.edge_source_id OR sg.goal_id = ce.edge_target_id)
+                EXISTS (SELECT 1 FROM selected_memories sm WHERE sm.memory_id = a.t)
+                OR EXISTS (SELECT 1 FROM selected_goals sg WHERE sg.goal_id = a.t)
             )",
     )
-    .bind(owner_kind)
     .bind(owner_id)
     .execute(&mut **tx)
     .await

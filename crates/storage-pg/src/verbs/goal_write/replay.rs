@@ -1,6 +1,7 @@
+use std::collections::HashSet;
+
 use super::{
-    AuthorshipColumns, AuthorshipRow, EvidenceTarget, GoalAuthorship, GoalBodyRow, GoalDraft,
-    GoalId, HashSet, MemoryId, Postgres, StorageError, Transaction, WakeWrite, authorship_columns,
+    EvidenceTarget, GoalId, MemoryId, Postgres, StorageError, Transaction, WakeWrite,
     goal_wake_matches, map_err,
 };
 
@@ -45,7 +46,7 @@ async fn goal_self_assignment_matches(
     target_self_perspective_id: MemoryId,
 ) -> Result<bool, StorageError> {
     let stored: Option<Option<uuid::Uuid>> = sqlx::query_scalar(
-        "SELECT assignment_perspective_id FROM proxima_core.goals WHERE goal_id = $1",
+        "SELECT assignment_t FROM proxima_core.goal WHERE t = $1",
     )
     .bind(goal_id.into_inner())
     .fetch_optional(&mut **tx)
@@ -63,7 +64,7 @@ pub(super) async fn goal_evidence_matches(
     evidence: &[EvidenceTarget],
 ) -> Result<bool, StorageError> {
     let stored: Option<Vec<uuid::Uuid>> =
-        sqlx::query_scalar("SELECT evidence_memory_ids FROM proxima_core.goals WHERE goal_id = $1")
+        sqlx::query_scalar("SELECT evidence_t FROM proxima_core.goal WHERE t = $1")
             .bind(goal_id.into_inner())
             .fetch_optional(&mut **tx)
             .await
@@ -86,73 +87,4 @@ pub(super) fn idempotency_conflict(request_id: &str) -> StorageError {
     StorageError::IdempotencyConflict {
         request_id: request_id.to_string(),
     }
-}
-
-pub(super) async fn existing_goal_body_matches(
-    tx: &mut Transaction<'_, Postgres>,
-    existing_goal_id: uuid::Uuid,
-    draft: &GoalDraft,
-    expected_prior: Option<GoalId>,
-    wake_write: WakeWrite<'_>,
-) -> Result<bool, StorageError> {
-    let row: GoalBodyRow = sqlx::query_as(
-        "SELECT schema_id, schema_version, title, text, payload,
-                state, supersedes, dependency_goal_ids
-           FROM proxima_core.goals
-          WHERE goal_id = $1",
-    )
-    .bind(existing_goal_id)
-    .fetch_one(&mut **tx)
-    .await
-    .map_err(map_err)?;
-    let existing_dependencies: HashSet<uuid::Uuid> = row.dependency_goal_ids.into_iter().collect();
-    let draft_dependencies: HashSet<uuid::Uuid> = draft
-        .topology
-        .dependencies()
-        .iter()
-        .map(|dependency| dependency.goal_id().into_inner())
-        .collect();
-    Ok(row.schema_id == draft.schema_id.as_str()
-        && row.schema_version == draft.schema_version.into_inner().cast_signed()
-        && row.title == draft.title
-        && row.text == draft.text
-        && row.payload == draft.payload
-        && row.state == draft.state
-        && row.supersedes == expected_prior.map(GoalId::into_inner)
-        && existing_dependencies == draft_dependencies
-        && goal_wake_matches(
-            tx,
-            GoalId::new(existing_goal_id),
-            wake_write,
-            expected_prior,
-        )
-        .await?)
-}
-
-pub(super) async fn authorship_matches(
-    tx: &mut Transaction<'_, Postgres>,
-    existing_goal_id: uuid::Uuid,
-    authorship: &GoalAuthorship,
-) -> Result<bool, StorageError> {
-    let row: AuthorshipRow = sqlx::query_as(
-        "SELECT authorship_kind, authorship_origin, authorship_operator_id,
-                authorship_tool_id, operator_kind, input_contract_id, model_id, prompt_version
-           FROM proxima_core.goals
-          WHERE goal_id = $1",
-    )
-    .bind(existing_goal_id)
-    .fetch_one(&mut **tx)
-    .await
-    .map_err(map_err)?;
-    let existing = AuthorshipColumns {
-        authorship_kind: row.authorship_kind,
-        authorship_origin: row.authorship_origin,
-        authorship_operator_id: row.authorship_operator_id,
-        authorship_tool_id: row.authorship_tool_id,
-        operator_kind: row.operator_kind,
-        input_contract_id: row.input_contract_id,
-        model_id: row.model_id,
-        prompt_version: row.prompt_version,
-    };
-    Ok(existing == authorship_columns(authorship))
 }

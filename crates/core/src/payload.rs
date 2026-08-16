@@ -512,7 +512,7 @@ pub fn schema_only_key(schema_id: &str, schema_version: u32) -> Vec<u8> {
 pub enum SearchProjectionColumnKind {
     Text,
     TextArray,
-    /// Not a sidecar column at all: the owning `proxima_core.memories`
+    /// Not a sidecar column at all: the owning `proxima_core.memory`
     /// row's `text`, the same string the memory was embedded from.
     ///
     /// A sidecar usually declares a projection to contribute *retrieval
@@ -734,7 +734,7 @@ pub trait PerspectivePayload:
     }
 }
 
-/// Typed payload for a Goal row in `proxima_core.goals`.
+/// Typed payload for a Goal row in `proxima_core.goal`.
 /// Mirrors `FactPayload` / `AbstractionPayload` for the Goal layer.
 ///
 /// See docs/06 §Goal entity and docs/03 §Sidecar tables.
@@ -760,7 +760,7 @@ pub trait GoalPayload:
     }
     /// Per-schema typed Goal sidecar table, or `None` when the Goal's
     /// typed payload has no schema-specific storage beyond
-    /// `proxima_core.goals.payload`.
+    /// `proxima_core.goal` sidecar payload.
     #[must_use]
     fn sidecar_table() -> Option<&'static str> {
         None

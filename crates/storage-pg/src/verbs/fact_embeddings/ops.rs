@@ -63,13 +63,13 @@ pub(crate) async fn embedding_ann_observability(
 ) -> Result<EmbeddingAnnObservability, StorageError> {
     let row = sqlx::query_as::<_, EmbeddingAnnObservabilityRow>(
         "WITH source_entities AS MATERIALIZED (
-             SELECT 'Goal'::proxima_core.entity_kind AS entity_kind,
-                    goal_id AS entity_id
-               FROM proxima_core.goals
+             SELECT 'goal'::text AS entity_kind,
+                    t AS entity_id
+               FROM proxima_core.goal
              UNION ALL
-             SELECT proxima_core.memory_entity_kind(kind) AS entity_kind,
-                    memory_id AS entity_id
-               FROM proxima_core.memories
+             SELECT kind::text AS entity_kind,
+                    t AS entity_id
+               FROM proxima_core.memory
          ),
          orphan_embeddings AS (
              SELECT count(*)::bigint AS count
@@ -77,8 +77,7 @@ pub(crate) async fn embedding_ann_observability(
               WHERE NOT EXISTS (
                     SELECT 1
                       FROM source_entities src
-                     WHERE src.entity_kind = emb.entity_kind
-                       AND src.entity_id = emb.entity_id
+                     WHERE src.entity_id = emb.entity_id
               )
          ),
          orphan_heads AS (
@@ -87,8 +86,7 @@ pub(crate) async fn embedding_ann_observability(
               WHERE NOT EXISTS (
                     SELECT 1
                       FROM source_entities src
-                     WHERE src.entity_kind = head.entity_kind
-                       AND src.entity_id = head.entity_id
+                     WHERE src.entity_id = head.entity_id
               )
          ),
          orphan_jobs AS (
@@ -97,8 +95,7 @@ pub(crate) async fn embedding_ann_observability(
               WHERE NOT EXISTS (
                     SELECT 1
                       FROM source_entities src
-                     WHERE src.entity_kind = job.entity_kind
-                       AND src.entity_id = job.entity_id
+                     WHERE src.entity_id = job.entity_id
               )
          )
          SELECT
@@ -344,21 +341,20 @@ pub(crate) async fn sweep_orphan_embedding_rows(
 
     let row = sqlx::query_as::<_, EmbeddingOrphanSweepRow>(
         "WITH source_entities AS MATERIALIZED (
-             SELECT 'Goal'::proxima_core.entity_kind AS entity_kind,
-                    goal_id AS entity_id
-               FROM proxima_core.goals
+             SELECT 'goal'::text AS entity_kind,
+                    t AS entity_id
+               FROM proxima_core.goal
              UNION ALL
-             SELECT proxima_core.memory_entity_kind(kind) AS entity_kind,
-                    memory_id AS entity_id
-               FROM proxima_core.memories
+             SELECT kind::text AS entity_kind,
+                    t AS entity_id
+               FROM proxima_core.memory
          ),
          deleted_jobs AS (
              DELETE FROM proxima_core.embedding_jobs job
               WHERE NOT EXISTS (
                     SELECT 1
                       FROM source_entities src
-                     WHERE src.entity_kind = job.entity_kind
-                       AND src.entity_id = job.entity_id
+                     WHERE src.entity_id = job.entity_id
               )
               RETURNING 1
          ),
@@ -367,8 +363,7 @@ pub(crate) async fn sweep_orphan_embedding_rows(
               WHERE NOT EXISTS (
                     SELECT 1
                       FROM source_entities src
-                     WHERE src.entity_kind = head.entity_kind
-                       AND src.entity_id = head.entity_id
+                     WHERE src.entity_id = head.entity_id
               )
               RETURNING 1
          ),
@@ -377,8 +372,7 @@ pub(crate) async fn sweep_orphan_embedding_rows(
               WHERE NOT EXISTS (
                     SELECT 1
                       FROM source_entities src
-                     WHERE src.entity_kind = emb.entity_kind
-                       AND src.entity_id = emb.entity_id
+                     WHERE src.entity_id = emb.entity_id
               )
               RETURNING 1
          )

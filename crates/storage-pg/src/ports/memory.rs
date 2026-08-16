@@ -89,8 +89,7 @@ impl MemoryAuthoringPort for PgStorage {
                 &outcome,
                 req.origins,
                 req.references,
-            )
-            .await?;
+            );
             tx.commit().await.map_err(crate::error::map_err)?;
             Ok(AuthorDerivedOutcome {
                 memory_id: outcome.memory_id,

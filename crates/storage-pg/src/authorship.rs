@@ -9,7 +9,8 @@ use proxima_core::verbs::goal_write::{
     GoalAuthorship, GoalAuthorshipKind, GoalAuthorshipOrigin, OperatorKind, SystemOrigin,
 };
 
-/// Flat authorship columns stored on `proxima_core.goals`.
+/// Flat authorship columns formerly stored on a Goal row.
+#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct AuthorshipColumns {
     pub(crate) authorship_kind: GoalAuthorshipKind,
@@ -23,6 +24,7 @@ pub(crate) struct AuthorshipColumns {
 }
 
 /// Project a `GoalAuthorship` into the flat column tuple.
+#[allow(dead_code)]
 pub(crate) fn authorship_columns(authorship: &GoalAuthorship) -> AuthorshipColumns {
     match authorship {
         GoalAuthorship::User => AuthorshipColumns {

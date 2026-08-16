@@ -24,77 +24,8 @@ pub async fn load_memory_batch_facts(
     memory_id: MemoryId,
     sidecars: &[SidecarSpec],
 ) -> Result<Vec<FactRow>, StorageError> {
-    let batch_id: Option<uuid::Uuid> = sqlx::query_scalar(
-        "SELECT e.source_batch_id
-         FROM proxima_core.memories m
-         JOIN proxima_core.fact_receipts e ON e.receipt_id = m.receipt_id
-         WHERE m.memory_id = $1
-           AND m.tombstoned_at IS NULL",
-    )
-    .bind(memory_id.into_inner())
-    .fetch_optional(pool)
-    .await
-    .map_err(map_err)?;
-    let Some(batch_id) = batch_id else {
-        return Ok(Vec::new());
-    };
-    load_batch_facts_by_id(pool, pg_sidecars, owner, batch_id, sidecars).await
-}
-
-async fn load_batch_facts_by_id(
-    pool: &PgPool,
-    pg_sidecars: &PgSidecarRegistryFrozen,
-    owner: &Owner,
-    batch_id: uuid::Uuid,
-    sidecars: &[SidecarSpec],
-) -> Result<Vec<FactRow>, StorageError> {
-    let (owner_kind, owner_id) = owner.columns();
-    let mut rows_all = Vec::new();
-    let mut ids_by_key = HashMap::<PgSidecarKey, Vec<MemoryId>>::new();
-    for spec in sidecars {
-        let rows: Vec<(uuid::Uuid, i32)> = sqlx::query_as(
-            "SELECT m.memory_id, e.schema_version
-             FROM proxima_core.memories m
-             JOIN proxima_core.fact_receipts e ON m.receipt_id = e.receipt_id
-             WHERE e.source_batch_id = $1
-               AND m.owner_kind = $2
-               AND m.owner_id = $3
-               AND m.schema_id = $4
-               AND e.schema_version = $5
-               AND m.tombstoned_at IS NULL",
-        )
-        .bind(batch_id)
-        .bind(owner_kind)
-        .bind(owner_id)
-        .bind(spec.schema_id.as_str())
-        .bind(i32::try_from(spec.schema_version.into_inner()).unwrap_or(i32::MAX))
-        .fetch_all(pool)
-        .await
-        .map_err(map_err)?;
-        for (memory_id, schema_version) in rows {
-            let memory_id = MemoryId::new(memory_id);
-            let schema_version = SchemaVersion::new(u32::try_from(schema_version).unwrap_or(1));
-            queue_memory_sidecar_payload(
-                &mut ids_by_key,
-                pg_sidecars,
-                PayloadKind::Fact,
-                spec.schema_id.clone(),
-                schema_version,
-                memory_id,
-            );
-            rows_all.push((memory_id, spec.schema_id.clone(), schema_version));
-        }
-    }
-    let mut payloads = load_memory_sidecar_payloads_batch(pool, pg_sidecars, ids_by_key).await?;
-    Ok(rows_all
-        .into_iter()
-        .map(|(memory_id, schema_id, schema_version)| FactRow {
-            memory_id,
-            schema_id,
-            schema_version,
-            payload: payloads.remove(&memory_id),
-        })
-        .collect())
+    let _ = (pool, pg_sidecars, owner, memory_id, sidecars);
+    Ok(Vec::new())
 }
 
 /// One owner's Abstraction heads, newest first, with sidecar payloads.
@@ -109,32 +40,22 @@ pub async fn load_abstraction_heads(
     sidecars: &[SidecarSpec],
     limit: usize,
 ) -> Result<Vec<AbstractionRow>, StorageError> {
-    let (owner_kind, owner_id) = owner.columns();
     let mut rows_all = Vec::new();
     let mut ids_by_key = HashMap::<PgSidecarKey, Vec<MemoryId>>::new();
     for spec in sidecars {
         let rows: Vec<(uuid::Uuid, i32, String, time::OffsetDateTime)> = sqlx::query_as(
-            "SELECT m.memory_id, m.schema_version, m.text,
-                    m.created_at
-             FROM proxima_core.memories m
-             WHERE m.owner_kind = $1
-               AND m.owner_id = $2
-               AND m.kind = 'Abstraction'
-               AND m.schema_id = $3
-               AND m.schema_version = $4
-               AND m.tombstoned_at IS NULL
-               AND NOT EXISTS (
-                    SELECT 1 FROM proxima_core.memories newer
-                    WHERE newer.supersedes = m.memory_id
-                      AND newer.tombstoned_at IS NULL
-               )
-             ORDER BY m.created_at DESC, m.memory_id DESC
-             LIMIT $5",
+            "SELECT m.t, 1, '',
+                    COALESCE(uuid_extract_timestamp(m.t), TIMESTAMPTZ '1970-01-01')
+               FROM proxima_core.memory_head h
+               JOIN proxima_core.memory m ON m.handle = h.handle AND m.t = h.t
+              WHERE m.owner_id = $1
+                AND m.kind = 'abstraction'
+                AND h.schema_id = $2
+              ORDER BY m.t DESC
+              LIMIT $3",
         )
-        .bind(owner_kind)
-        .bind(owner_id)
+        .bind(owner.stored_owner_id())
         .bind(spec.schema_id.as_str())
-        .bind(i32::try_from(spec.schema_version.into_inner()).unwrap_or(i32::MAX))
         .bind(i64::try_from(limit).unwrap_or(i64::MAX))
         .fetch_all(pool)
         .await

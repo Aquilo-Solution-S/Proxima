@@ -21,6 +21,7 @@ use crate::error::map_err;
 ///
 /// `ConstraintViolation` when the configuration does not exist in this
 /// database's catalog.
+#[allow(dead_code)]
 pub(crate) async fn register_lexical_language_in_tx(
     tx: &mut Transaction<'_, Postgres>,
     language: &str,

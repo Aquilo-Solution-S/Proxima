@@ -1,5 +1,5 @@
 use super::{
-    EntityKind, EvidenceRow, EvidenceTarget, GoalAuthorship, GoalEvidenceRef, GoalId, HashSet,
+    EntityKind, EvidenceTarget, GoalAuthorship, GoalEvidenceRef, GoalId, HashSet,
     MemoryId, Owner, Postgres, StorageError, SystemOrigin, Transaction, map_err,
 };
 
@@ -42,22 +42,28 @@ pub(super) async fn validate_evidence_in_owner(
                 "duplicate goal evidence".into(),
             ));
         }
-        let row: Option<EvidenceRow> = sqlx::query_as(
-            "SELECT m.kind
-               FROM proxima_core.memories m
-              WHERE m.memory_id = $1
-                AND m.tombstoned_at IS NULL",
+        let kind_text: Option<String> = sqlx::query_scalar(
+            "SELECT kind::text FROM proxima_core.memory WHERE t = $1",
         )
         .bind(item.memory_id().into_inner())
         .fetch_optional(&mut **tx)
         .await
         .map_err(map_err)?;
-        let Some(row) = row else {
+        let Some(kind_text) = kind_text else {
             return Err(StorageError::ConstraintViolation(
                 "evidence does not exist".into(),
             ));
         };
-        let kind = row.kind;
+        let kind = match kind_text.as_str() {
+            "fact" => EntityKind::Fact,
+            "abstraction" => EntityKind::Abstraction,
+            "perspective" => EntityKind::Perspective,
+            _ => {
+                return Err(StorageError::ConstraintViolation(
+                    "evidence does not exist".into(),
+                ));
+            }
+        };
         match kind {
             EntityKind::Fact | EntityKind::Abstraction => out.push(EvidenceTarget {
                 kind,
@@ -83,29 +89,33 @@ pub(super) async fn outgoing_motivated_by_evidence(
     owner: &Owner,
     goal_id: GoalId,
 ) -> Result<Vec<EvidenceTarget>, StorageError> {
-    let (owner_kind, owner_id) = owner.columns();
-    let rows: Vec<(uuid::Uuid, EntityKind)> = sqlx::query_as(
-        "SELECT m.memory_id, m.kind
-           FROM proxima_core.goals g
-           JOIN LATERAL unnest(g.evidence_memory_ids) WITH ORDINALITY AS ev(memory_id, ord)
-             ON TRUE
-           JOIN proxima_core.memories m ON m.memory_id = ev.memory_id
-          WHERE g.goal_id = $1
-            AND g.owner_kind = $2
-            AND g.owner_id IS NOT DISTINCT FROM $3
+    let owner_id = owner.stored_owner_id();
+    let rows: Vec<(uuid::Uuid, String)> = sqlx::query_as(
+        "SELECT pin, m.kind::text
+           FROM proxima_core.goal g
+           JOIN unnest(g.evidence_t) WITH ORDINALITY AS ev(pin, ord) ON TRUE
+           JOIN proxima_core.memory m ON m.t = ev.pin
+          WHERE g.t = $1 AND g.owner_id = $2
           ORDER BY ev.ord",
     )
     .bind(goal_id.into_inner())
-    .bind(owner_kind)
     .bind(owner_id)
     .fetch_all(&mut **tx)
     .await
     .map_err(map_err)?;
     Ok(rows
         .into_iter()
-        .map(|(memory_id, kind)| EvidenceTarget {
-            kind,
-            memory_id: MemoryId::new(memory_id),
+        .filter_map(|(memory_id, kind)| {
+            let kind = match kind.as_str() {
+                "fact" => EntityKind::Fact,
+                "abstraction" => EntityKind::Abstraction,
+                "perspective" => EntityKind::Perspective,
+                _ => return None,
+            };
+            Some(EvidenceTarget {
+                kind,
+                memory_id: MemoryId::new(memory_id),
+            })
         })
         .collect())
 }

@@ -1,4 +1,4 @@
-//! Edges — the connection index over `proxima_core.edges`.
+//! Pins — `memory.origins` / `memory.refs`. There is no edge table.
 //!
 //! See docs/16-edges.md, which supersedes docs/02 §Edges, §Relation
 //! Registry and §The Directionality Rule.

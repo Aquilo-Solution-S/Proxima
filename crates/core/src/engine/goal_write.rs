@@ -70,7 +70,7 @@ pub struct GoalDecomposeRequest {
 
 impl Engine {
     /// Create an Active typed Goal for an embedded host or protocol
-    /// caller without exposing `proxima_core.goals` storage shape.
+    /// caller without exposing `proxima_core.goal` storage shape.
     ///
     /// The request must name the target Perspective explicitly;
     /// current Proxima Goal assignment is a Goal-declared reference to its
