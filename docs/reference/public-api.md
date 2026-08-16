@@ -17,7 +17,7 @@ Post-PR9 supported Rust tiers:
 | Flavor SDK (services) | `use proxima::flavor::{FlavorServices, FlavorServiceError};` | return typed services from `FlavorApp::services`; tuple composition rejects duplicate concrete types and shares one set with MCP, REST, and workers |
 | Flavor SDK (generic tools) | `use proxima::flavor::{Tool, ToolCtx, ToolCaller, ToolError};` | author transport-neutral tools; MCP and REST populate optional caller provenance directly on `ToolCtx` |
 | Flavor SDK (MCP tools) | `use proxima::flavor::{McpTool, McpToolCtx, McpToolError, McpToolErrorKind, McpToolAnnotations, McpActionArgSpec, McpAuthorContext};` | author flavor MCP tools without reaching into `proxima_core::mcp` — see [add-first-mcp-tool](../tutorials/add-first-mcp-tool.md) |
-| Flavor SDK (authorized reads) | `use proxima::flavor::{authorized_memory_ids, authorized_fact_payloads, authorized_fact_payloads_include_tombstones, authorized_abstraction_payloads, authorized_code_chunk_head_candidates};` | typed, authz-filtered candidate/payload reads — see [Authorized Flavor-Read Facade](#authorized-flavor-read-facade) below |
+| Flavor SDK (authorized reads) | `use proxima::flavor::{authorized_memory_ids, authorized_fact_payloads, authorized_fact_payloads_include_tombstones, authorized_abstraction_payloads};` | typed, authz-filtered candidate/payload reads — see [Authorized Flavor-Read Facade](#authorized-flavor-read-facade) below |
 | Flavor SDK (outbound endpoints) | `use proxima::flavor::{validate_endpoint_url, EndpointUrlPolicy};` | enforce HTTPS with the shared, exact loopback-only plaintext exception; never reproduce it with string prefixes |
 
 Unsupported:
@@ -140,19 +140,17 @@ embedded-consumer registration paths produce the same deterministic dump.
 ## Authorized Flavor-Read Facade
 
 `proxima::flavor::{authorized_memory_ids, authorized_fact_payloads,
-authorized_fact_payloads_include_tombstones, authorized_abstraction_payloads,
-authorized_code_chunk_head_candidates}` give flavor crates typed,
-owner/World-authorized candidate filtering and payload projection without
-ever holding a raw `sqlx::PgPool` or writing SQL against `proxima_core.*`
-themselves.
+authorized_fact_payloads_include_tombstones, authorized_abstraction_payloads}`
+give flavor crates typed, owner/World-authorized candidate filtering and
+payload projection without ever holding a raw `sqlx::PgPool` or writing SQL
+against `proxima_core.*` themselves.
 
 | Property | Contract |
 |---|---|
 | authorization path | every helper routes candidate filtering through `proxima_core::Engine::query` — the same owner/group-scoped-plus-World-readable authz path used by every other read |
 | shape | narrow a caller-supplied candidate id list down to the visible/typed subset; never a full unauthorized scan |
-| bound | the `Engine::query`-backed helpers (`authorized_memory_ids` and the payload fetchers) deduplicate and cap candidate lists at 2,000 ids before they ever reach a query, so a pathological caller cannot force an unbounded `IN (...)`/`ANY($1)` scan. `authorized_code_chunk_head_candidates` is deliberately different: it deduplicates the full input and evaluates EVERY candidate in 2,000-sized batches (bounding each SQL round-trip) without truncating — code-chunk memory ids are deterministic UUIDv5 content hashes, so no truncated window could guarantee the true head survives; silent truncation there would be a correctness bug, not a cap |
-| supersession/tombstones | heads-only by default; `authorized_fact_payloads_include_tombstones` also surfaces tombstoned heads (a caller-visible "this was deleted" state, distinct from entity-level compliance tombstoning) |
-| the one exception | `authorized_code_chunk_head_candidates` still touches `proxima_core.*` SQL, but from `proxima-storage-pg` (a backend-owned storage adapter, not flavor code) — `AbstractionPayload` has no natural-key/supersession concept to ride on `Engine::query`'s heads-only mode today. It only narrows a candidate id list before the caller's own `authorized_abstraction_payloads` call decides real visibility, so running it without an owner-exact-match restriction is safe by construction |
+| bound | helpers deduplicate and cap candidate lists at 2,000 ids before they ever reach a query, so a pathological caller cannot force an unbounded `IN (...)`/`ANY($1)` scan |
+| supersession/tombstones | heads-only by default (`memory_head`); `authorized_fact_payloads_include_tombstones` also surfaces tombstoned heads (a caller-visible "this was deleted" state, distinct from entity-level compliance tombstoning) |
 
 Source: `crates/proxima/src/flavor/authorized_read.rs`.
 

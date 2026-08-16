@@ -114,23 +114,6 @@ impl CodeFlavorStore {
         .await
     }
 
-    /// Narrow a sidecar-only `code-chunk-v1` candidate id list to the
-    /// current `memory_head` `t` of each series (owner-or-World). Ingest
-    /// owns one handle per `(owner, repo, path, index)`.
-    pub(crate) async fn authorized_code_chunk_head_candidates(
-        &self,
-        owner: Owner,
-        candidates: &[uuid::Uuid],
-    ) -> Result<Vec<uuid::Uuid>, ToolError> {
-        proxima::flavor::authorized_code_chunk_head_candidates(
-            &self.pool,
-            owner,
-            &crate::payloads::CodeChunkV1::schema_id(),
-            candidates,
-        )
-        .await
-    }
-
     /// Owner-only current file-revision heads of `repo_id`. Head is
     /// `memory_head`; ingest compares these shas against git.
     pub(crate) async fn owned_file_revision_heads(
@@ -200,12 +183,10 @@ impl CodeFlavorStore {
 
     /// Nearest `code-chunk-v1` chunks to a query embedding, best-first.
     ///
-    /// A candidate producer like
-    /// [`Self::authorized_code_chunk_head_candidates`]: what it returns is
-    /// still narrowed and authorized by that call and then by
-    /// [`Self::authorized_abstraction_payloads`]. The embeddings it ranks
-    /// against live in `proxima_core.embeddings`, which flavor SQL may not
-    /// join, so the query itself is backend-owned.
+    /// Candidate producer: merge with lexical hits, then
+    /// [`Self::authorized_abstraction_payloads`] (Query `HeadsOnly`).
+    /// Embeddings live in `proxima_core.embeddings`, which flavor SQL
+    /// may not join, so the query itself is backend-owned.
     pub(crate) async fn nearest_code_chunk_candidates(
         &self,
         owner: Owner,

@@ -1,8 +1,8 @@
 //! Current `memory_head` rows for code-flavor series listed by natural key.
 //!
-//! Sibling of [`super::authorized_code_chunk_head_candidates`]: that
-//! function *filters an id list*. These functions *list* heads of a
-//! `(repo[, path])`. Compile-time SQL; every value is `$`-bound.
+//! These functions *list* current heads of a `(repo[, path])`.
+//! Compile-time SQL; every value is `$`-bound. Search admits by
+//! `Engine::query` `HeadsOnly`, not by filtering an id list here.
 //!
 //! Ingest callers use the owner-only variants (same series
 //! `existing_*_handle` will advance). `open_file` uses the owner∪World

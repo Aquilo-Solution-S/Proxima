@@ -1,7 +1,7 @@
 //! Code-chunk search is the flavor-scoped reference:
 //!
 //! 1. **content** — GIN/`search_tsv` (and optional HNSW) on `code_chunk_v1` only
-//! 2. **admit** — `memory_head` + natural-key head via storage
+//! 2. **admit** — `Engine::query` `HeadsOnly` (`memory_head`)
 //! 3. **pins** — call-neighbour index, only if `include_calls`
 //!
 //! Core `memory` is not in the content SQL. `core_search_memories` never
@@ -340,7 +340,7 @@ impl Tool for CodeSearchChunksTool {
                 None => Vec::new(),
             };
 
-            // Phase 2: admit heads (owner + current t per handle/NK).
+            // Admit: Query HeadsOnly. Content hits on a superseded t drop.
             let fused = fuse_candidates(effective_mode, &lexical_rows, &semantic_rows);
             let candidate_ids = fused
                 .iter()
@@ -350,41 +350,20 @@ impl Tool for CodeSearchChunksTool {
                 .into_iter()
                 .map(|scores| (scores.memory_id, scores))
                 .collect::<HashMap<_, _>>();
-            let head_id_set = pool
-                .authorized_code_chunk_head_candidates(ctx.owner(), &candidate_ids)
-                .await?
-                .into_iter()
-                .collect::<HashSet<_>>();
-            // Preserve the score-descending order from the candidate scan;
-            // the head-candidate narrowing above returns an unordered set.
-            let head_ids = candidate_ids
-                .iter()
-                .copied()
-                .filter(|id| head_id_set.contains(id))
-                .collect::<Vec<_>>();
             let rows = pool
                 .authorized_abstraction_payloads::<CodeChunkV1>(
                     &engine,
                     ctx.authz(),
                     ctx.owner(),
-                    &head_ids,
-                    head_ids.len(),
+                    &candidate_ids,
+                    candidate_ids.len(),
                 )
                 .await?;
 
             let mut matches = Vec::new();
             let mut has_more = false;
             let mut chunk_ids = Vec::with_capacity(rows.len());
-            let mut seen_keys = HashSet::new();
             for (memory_id, payload) in rows {
-                let key = (
-                    payload.repo_id,
-                    payload.file_path.clone(),
-                    payload.chunk_index,
-                );
-                if !seen_keys.insert(key) {
-                    continue;
-                }
                 if payload.state != FileState::Present {
                     continue;
                 }

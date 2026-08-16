@@ -1,12 +1,9 @@
 //! Backend-owned nearest-neighbour candidate scan for
 //! `proxima-code/code-chunk-v1` chunks.
 //!
-//! The sibling this doc-comment promised. `abstraction_heads.rs` says a
-//! second consumer of a `proxima_code.*` join should get its own
-//! narrowly-scoped function rather than a generalized one, and this is it:
-//! a fixed, compile-time query that answers exactly one question —
-//! *which chunk memories are nearest this query vector, among the chunks
-//! matching these structural filters* — and nothing else.
+//! Fixed compile-time query: nearest `code-chunk-v1` memories to a
+//! query vector among rows matching the structural filters. Not a
+//! generalized sidecar/NK helper.
 //!
 //! It exists because `flavors/code` may not embed a `proxima_core.*` join
 //! (`scripts/check-architecture-guardrails.py`), and the embeddings a
@@ -15,11 +12,10 @@
 //! fuse the result with its lexical bands); the backend owns the vector
 //! join.
 //!
-//! **This returns candidates, not results.** Every id it emits still goes
-//! through the caller's existing
-//! [`super::authorized_code_chunk_head_candidates`] narrowing and then an
-//! authorized payload read, exactly like the lexical candidates it is
-//! merged with. Nothing here decides visibility.
+//! **This returns candidates, not results.** Every id it emits still
+//! goes through the caller's authorized payload read (Query `HeadsOnly`),
+//! exactly like the lexical candidates it is merged with. Nothing here
+//! decides visibility.
 //!
 //! ## World-owned chunks are not reachable this way
 //!

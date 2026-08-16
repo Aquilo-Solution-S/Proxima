@@ -3,7 +3,6 @@
 
 use proxima_core::{OwnerRef, OwnerRefKind};
 
-mod abstraction_heads;
 mod citations;
 mod code_chunk_vectors;
 mod code_series_heads;
@@ -14,7 +13,6 @@ mod memories;
 mod rows;
 mod search;
 
-pub use abstraction_heads::authorized_code_chunk_head_candidates;
 pub(crate) use citations::{citation_of_fact, facts_citing_object};
 pub use code_chunk_vectors::{
     CodeChunkVectorCandidate, CodeChunkVectorFilters, nearest_code_chunk_candidates,
