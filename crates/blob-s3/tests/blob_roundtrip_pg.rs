@@ -372,7 +372,10 @@ async fn concurrent_completions_of_one_file_converge_on_one_artefact() {
             .expect("count");
     assert_eq!(objects, 1, "one file, one row");
     let facts: i64 = sqlx::query_scalar(
-        "SELECT count(*)::bigint FROM proxima_core.memories WHERE schema_id = 'core/upload-v1'",
+        "SELECT count(*)::bigint
+           FROM proxima_core.memory m
+           JOIN proxima_core.memory_head h ON h.handle = m.handle AND h.t = m.t
+          WHERE h.schema_id = 'core/upload-v1'",
     )
     .fetch_one(&pool)
     .await
@@ -422,7 +425,10 @@ async fn a_completion_racing_an_abort_never_reports_a_committed_write_as_failed(
     aborted.expect("abort itself must not fault");
 
     let facts: i64 = sqlx::query_scalar(
-        "SELECT count(*)::bigint FROM proxima_core.memories WHERE schema_id = 'core/upload-v1'",
+        "SELECT count(*)::bigint
+           FROM proxima_core.memory m
+           JOIN proxima_core.memory_head h ON h.handle = m.handle AND h.t = m.t
+          WHERE h.schema_id = 'core/upload-v1'",
     )
     .fetch_one(&pool)
     .await

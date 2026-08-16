@@ -6,6 +6,7 @@
 //! `finish_upload` is what removes it, and only after the row says the
 //! artefact is recorded. Splitting them apart would hide that.
 
+use aws_sdk_s3::primitives::ByteStream;
 use proxima_core::citations::UploadedBlobPayload;
 use proxima_core::storage_ports::CitedBlobStaged;
 use proxima_core::{AuthzContext, OwnerRef};
@@ -177,19 +178,30 @@ impl CitedBlobStore {
         .await?;
         let owner_hash = owner_hash_hex(&owner);
         let canonical_key = canonical_object_key(&owner_hash, &streamed.blake3_hex);
-        let copy_source = format!("{}/{}", row.bucket, row.object_key);
-        let copy_result = client
-            .copy_object()
+        // GET+PUT, not CopyObject: RustFS (dev S3) acks CopyObject without
+        // writing the target, so a later presigned GET 404s.
+        let again = client
+            .get_object()
             .bucket(&row.bucket)
-            .key(&canonical_key)
-            .copy_source(copy_source)
+            .key(&row.object_key)
             .send()
             .await
-            .map_err(|e| BlobError::S3(format!("copy uploaded object failed: {e}")))?;
-        let etag = copy_result
-            .copy_object_result()
-            .and_then(|r| r.e_tag())
-            .map(ToString::to_string);
+            .map_err(|e| BlobError::S3(format!("reread pending upload failed: {e}")))?;
+        let bytes = again
+            .body
+            .collect()
+            .await
+            .map_err(|e| BlobError::S3(format!("buffer pending upload failed: {e}")))?
+            .into_bytes();
+        let put = client
+            .put_object()
+            .bucket(&row.bucket)
+            .key(&canonical_key)
+            .body(ByteStream::from(bytes.to_vec()))
+            .send()
+            .await
+            .map_err(|e| BlobError::S3(format!("put canonical object failed: {e}")))?;
+        let etag = put.e_tag().map(ToString::to_string);
 
         sqlx::query(
             "UPDATE proxima_core.blob_uploads \
@@ -306,11 +318,14 @@ impl CitedBlobStore {
             .map_err(BlobError::Db)?;
         }
 
+        // `stage_upload` rewrites `object_key` to the canonical objects/
+        // path. The pending object is always `pending/<hash>/<upload_id>`.
+        let pending_key = pending_object_key(&owner_hash_hex(&owner), upload_id);
         self.client()
             .await?
             .delete_object()
             .bucket(&row.bucket)
-            .key(&row.object_key)
+            .key(&pending_key)
             .send()
             .await
             .map_err(|e| BlobError::S3(format!("delete pending upload failed: {e}")))?;
