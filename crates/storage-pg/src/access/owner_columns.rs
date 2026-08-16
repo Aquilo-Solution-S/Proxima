@@ -305,16 +305,19 @@ pub(crate) async fn list_group_members_page(
         .collect())
 }
 
+/// Home owner when the row is in `read_owners`. Absent and foreign are
+/// both `None`.
+///
 /// # Errors
 ///
 /// Returns `Internal` on sqlx failure.
-pub(crate) async fn visible_to_any(
+pub(crate) async fn visible_home_owner(
     pool: &PgPool,
     entity: EntityId,
     read_owners: &[OwnerRef],
-) -> Result<bool, StorageError> {
+) -> Result<Option<OwnerRef>, StorageError> {
     if read_owners.is_empty() {
-        return Ok(false);
+        return Ok(None);
     }
 
     let owner_ids: Vec<uuid::Uuid> = read_owners
@@ -322,23 +325,29 @@ pub(crate) async fn visible_to_any(
         .copied()
         .map(OwnerRef::stored_owner_id)
         .collect();
-    let (ok,): (bool,) = sqlx::query_as(
-        "SELECT EXISTS (
-             SELECT 1 FROM proxima_core.memory m
-              WHERE m.t = $1 AND m.owner_id = ANY($2::uuid[])
-         )
-         OR EXISTS (
-             SELECT 1 FROM proxima_core.goal g
-              WHERE g.t = $1 AND g.owner_id = ANY($2::uuid[])
-         )",
+    let row: Option<(OwnerRefKind, uuid::Uuid)> = sqlx::query_as(
+        "SELECT o.kind::text::proxima_core.owner_kind, m.owner_id
+           FROM proxima_core.memory m
+           JOIN proxima_core.owners o ON o.owner_id = m.owner_id
+          WHERE m.t = $1 AND m.owner_id = ANY($2::uuid[])
+         UNION ALL
+         SELECT o.kind::text::proxima_core.owner_kind, g.owner_id
+           FROM proxima_core.goal g
+           JOIN proxima_core.owners o ON o.owner_id = g.owner_id
+          WHERE g.t = $1 AND g.owner_id = ANY($2::uuid[])
+         LIMIT 1",
     )
     .bind(entity.uuid())
     .bind(&owner_ids)
-    .fetch_one(pool)
+    .fetch_optional(pool)
     .await
     .map_err(map_err)?;
 
-    Ok(ok)
+    Ok(row.map(|(kind, id)| match kind {
+        OwnerRefKind::World => proxima_core::OwnerRef::World,
+        OwnerRefKind::Personal => proxima_core::OwnerRef::Personal(proxima_core::UserId::new(id)),
+        OwnerRefKind::Group => proxima_core::OwnerRef::Group(proxima_core::GroupId::new(id)),
+    }))
 }
 
 /// Transfer one memory or goal row's owner columns to `OwnerRef::World` in a
@@ -351,7 +360,7 @@ pub(crate) async fn visible_to_any(
 /// `embeddings`, `embedding_heads`, `fact_receipts`, ...) are left under
 /// the prior owner — they are write-tracking metadata, not independently
 /// readable/writable surfaces (`OwnerAccessReadPort::home_owner` and
-/// `visible_to_any` only ever consult `memories`/`goals`).
+/// `visible_home_owner` only ever consult `memories`/`goals`).
 ///
 /// # Errors
 ///

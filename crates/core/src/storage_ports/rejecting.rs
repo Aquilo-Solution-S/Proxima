@@ -527,6 +527,7 @@ impl CitationPort for RejectingStorage {
 
     async fn citation_of_fact(
         &self,
+        _read_owners: &[OwnerRef],
         _fact_memory_id: crate::MemoryId,
     ) -> Result<Option<crate::verbs::query::FactCitationReadback>, StorageError> {
         Ok(None)
@@ -542,12 +543,12 @@ impl OwnerAccessReadPort for RejectingStorage {
         Ok(Vec::new())
     }
 
-    async fn visible_to_any(
+    async fn visible_home_owner(
         &self,
         _entity: EntityId,
         _read_owners: &[OwnerRef],
-    ) -> Result<bool, StorageError> {
-        Ok(false)
+    ) -> Result<Option<OwnerRef>, StorageError> {
+        Ok(None)
     }
 
     async fn home_owner(&self, _entity: EntityId) -> Result<Option<OwnerRef>, StorageError> {

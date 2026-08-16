@@ -142,6 +142,7 @@ pub trait CitationPort: Send + Sync {
 
     async fn citation_of_fact(
         &self,
+        read_owners: &[OwnerRef],
         fact_memory_id: crate::MemoryId,
     ) -> Result<Option<crate::verbs::query::FactCitationReadback>, StorageError>;
 }

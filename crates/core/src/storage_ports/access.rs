@@ -9,11 +9,11 @@ pub trait OwnerAccessReadPort: Send + Sync {
         member: &OwnerRef,
     ) -> Result<Vec<MembershipRow>, StorageError>;
 
-    async fn visible_to_any(
+    async fn visible_home_owner(
         &self,
         entity: EntityId,
         read_owners: &[OwnerRef],
-    ) -> Result<bool, StorageError>;
+    ) -> Result<Option<OwnerRef>, StorageError>;
 
     async fn home_owner(&self, entity: EntityId) -> Result<Option<OwnerRef>, StorageError>;
 }

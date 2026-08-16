@@ -61,8 +61,9 @@ impl CitationPort for PgStorage {
 
     async fn citation_of_fact(
         &self,
+        read_owners: &[OwnerRef],
         fact_memory_id: MemoryId,
     ) -> Result<Option<FactCitationReadback>, StorageError> {
-        verbs::query::citation_of_fact(&self.pool, fact_memory_id).await
+        verbs::query::citation_of_fact(&self.pool, read_owners, fact_memory_id).await
     }
 }

@@ -646,6 +646,7 @@ pub(in crate::engine) mod tests {
 
         async fn citation_of_fact(
             &self,
+            _read_owners: &[OwnerRef],
             _fact_memory_id: MemoryId,
         ) -> Result<Option<verbs::query::FactCitationReadback>, StorageError> {
             Ok(None)
@@ -668,12 +669,16 @@ pub(in crate::engine) mod tests {
             }
         }
 
-        async fn visible_to_any(
+        async fn visible_home_owner(
             &self,
             _entity: EntityId,
             _read_owners: &[OwnerRef],
-        ) -> Result<bool, StorageError> {
-            Ok(self.entity_readable)
+        ) -> Result<Option<OwnerRef>, StorageError> {
+            if self.entity_readable {
+                Ok(self.home_owner)
+            } else {
+                Ok(None)
+            }
         }
 
         async fn home_owner(&self, _entity: EntityId) -> Result<Option<OwnerRef>, StorageError> {

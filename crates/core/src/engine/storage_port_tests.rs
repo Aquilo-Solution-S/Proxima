@@ -138,12 +138,12 @@ impl OwnerAccessReadPort for GoalFake {
         Ok(Vec::new())
     }
 
-    async fn visible_to_any(
+    async fn visible_home_owner(
         &self,
         _entity: crate::EntityId,
         _read_owners: &[OwnerRef],
-    ) -> Result<bool, StorageError> {
-        Ok(false)
+    ) -> Result<Option<OwnerRef>, StorageError> {
+        Ok(None)
     }
 
     async fn home_owner(&self, _entity: crate::EntityId) -> Result<Option<OwnerRef>, StorageError> {
@@ -457,6 +457,7 @@ mod storage_port_tests_support {
 
         async fn citation_of_fact(
             &self,
+            _read_owners: &[OwnerRef],
             _fact_memory_id: crate::MemoryId,
         ) -> Result<Option<crate::verbs::query::FactCitationReadback>, StorageError> {
             Ok(None)

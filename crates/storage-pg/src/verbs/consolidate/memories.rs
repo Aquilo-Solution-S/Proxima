@@ -5,7 +5,8 @@ use proxima_core::read_models::{AbstractionRow, FactRow, MemorySnapshot, Sidecar
 use proxima_core::storage::MemoryGraphPayloadRow;
 use proxima_core::verbs::schema::PayloadKind;
 use proxima_core::{
-    EntityKind, MemoryId, Owner, SchemaId, SchemaVersion, SidecarPayload, StorageError,
+    EntityKind, MemoryId, Owner, OwnerRef, OwnerRefKind, SchemaId, SchemaVersion, SidecarPayload,
+    StorageError,
 };
 use sqlx::PgPool;
 
@@ -110,17 +111,19 @@ pub async fn load_memory_by_id(
     memory_id: MemoryId,
     sidecars: &[SidecarSpec],
 ) -> Result<Option<MemorySnapshot>, StorageError> {
-    let raw: Option<(String, String)> = sqlx::query_as(
-        "SELECT m.kind::text, h.schema_id
+    let raw: Option<(String, String, OwnerRefKind, uuid::Uuid)> = sqlx::query_as(
+        "SELECT m.kind::text, h.schema_id,
+                o.kind::text::proxima_core.owner_kind, m.owner_id
            FROM proxima_core.memory m
            JOIN proxima_core.memory_head h ON h.handle = m.handle
+           JOIN proxima_core.owners o ON o.owner_id = m.owner_id
           WHERE m.t = $1",
     )
     .bind(memory_id.into_inner())
     .fetch_optional(pool)
     .await
     .map_err(map_err)?;
-    let Some((kind_text, schema_id)) = raw else {
+    let Some((kind_text, schema_id, owner_kind, owner_id)) = raw else {
         return Ok(None);
     };
     let kind = match kind_text.as_str() {
@@ -129,6 +132,7 @@ pub async fn load_memory_by_id(
         "perspective" => EntityKind::Perspective,
         _ => return Ok(None),
     };
+    let owner = owner_from_kind(owner_kind, owner_id);
     let schema_version = 1;
     let text = None;
     let rows = [(
@@ -137,6 +141,7 @@ pub async fn load_memory_by_id(
         schema_id,
         schema_version,
         text,
+        owner,
     )];
     let mut snapshots = snapshots_from_rows(pool, pg_sidecars, &rows, sidecars).await?;
     Ok(snapshots.pop())
@@ -166,10 +171,12 @@ pub async fn load_memories_by_ids(
         .map(proxima_core::OwnerRef::stored_owner_id)
         .collect();
     let ids: Vec<uuid::Uuid> = memory_ids.iter().map(|id| id.into_inner()).collect();
-    let raw: Vec<(uuid::Uuid, String, String)> = sqlx::query_as(
-        "SELECT m.t, m.kind::text, h.schema_id
+    let raw: Vec<(uuid::Uuid, String, String, OwnerRefKind, uuid::Uuid)> = sqlx::query_as(
+        "SELECT m.t, m.kind::text, h.schema_id,
+                o.kind::text::proxima_core.owner_kind, m.owner_id
            FROM proxima_core.memory m
            JOIN proxima_core.memory_head h ON h.handle = m.handle
+           JOIN proxima_core.owners o ON o.owner_id = m.owner_id
           WHERE m.owner_id = ANY($1::uuid[])
             AND m.t = ANY($2::uuid[])
           ORDER BY m.t",
@@ -179,16 +186,30 @@ pub async fn load_memories_by_ids(
     .fetch_all(pool)
     .await
     .map_err(map_err)?;
-    let rows: Vec<(uuid::Uuid, EntityKind, String, i32, Option<String>)> = raw
+    let rows: Vec<(
+        uuid::Uuid,
+        EntityKind,
+        String,
+        i32,
+        Option<String>,
+        OwnerRef,
+    )> = raw
         .into_iter()
-        .filter_map(|(t, kind, schema_id)| {
+        .filter_map(|(t, kind, schema_id, owner_kind, owner_id)| {
             let kind = match kind.as_str() {
                 "fact" => EntityKind::Fact,
                 "abstraction" => EntityKind::Abstraction,
                 "perspective" => EntityKind::Perspective,
                 _ => return None,
             };
-            Some((t, kind, schema_id, 1, None))
+            Some((
+                t,
+                kind,
+                schema_id,
+                1,
+                None,
+                owner_from_kind(owner_kind, owner_id),
+            ))
         })
         .collect();
 
@@ -284,14 +305,29 @@ fn payload_kind_for(kind: EntityKind) -> Option<PayloadKind> {
     }
 }
 
+fn owner_from_kind(kind: OwnerRefKind, owner_id: uuid::Uuid) -> OwnerRef {
+    match kind {
+        OwnerRefKind::World => OwnerRef::World,
+        OwnerRefKind::Personal => OwnerRef::Personal(proxima_core::UserId::new(owner_id)),
+        OwnerRefKind::Group => OwnerRef::Group(proxima_core::GroupId::new(owner_id)),
+    }
+}
+
 async fn snapshots_from_rows(
     pool: &PgPool,
     pg_sidecars: &PgSidecarRegistryFrozen,
-    rows: &[(uuid::Uuid, EntityKind, String, i32, Option<String>)],
+    rows: &[(
+        uuid::Uuid,
+        EntityKind,
+        String,
+        i32,
+        Option<String>,
+        OwnerRef,
+    )],
     sidecars: &[SidecarSpec],
 ) -> Result<Vec<MemorySnapshot>, StorageError> {
     let mut ids_by_key = HashMap::<PgSidecarKey, Vec<MemoryId>>::new();
-    for (memory_id, kind, schema_id, schema_version, _) in rows {
+    for (memory_id, kind, schema_id, schema_version, _, _) in rows {
         let Some(payload_kind) = payload_kind_for(*kind) else {
             continue;
         };
@@ -312,7 +348,7 @@ async fn snapshots_from_rows(
     }
     let mut payloads = load_memory_sidecar_payloads_batch(pool, pg_sidecars, ids_by_key).await?;
     let mut snapshots = Vec::with_capacity(rows.len());
-    for (memory_id, kind, schema_id, schema_version, text) in rows {
+    for (memory_id, kind, schema_id, schema_version, text, owner) in rows {
         if *kind == EntityKind::Goal {
             continue;
         }
@@ -322,6 +358,7 @@ async fn snapshots_from_rows(
             kind: *kind,
             schema_id: SchemaId::new(schema_id.clone()),
             schema_version: SchemaVersion::new(u32::try_from(*schema_version).unwrap_or(1)),
+            owner: *owner,
             text: text.clone(),
             payload: payloads.remove(&id),
         });

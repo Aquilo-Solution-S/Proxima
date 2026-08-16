@@ -91,8 +91,17 @@ pub(crate) async fn facts_citing_object(
 
 pub(crate) async fn citation_of_fact(
     pool: &PgPool,
+    read_owners: &[proxima_core::OwnerRef],
     fact_memory_id: MemoryId,
 ) -> Result<Option<FactCitationReadback>, StorageError> {
+    if read_owners.is_empty() {
+        return Ok(None);
+    }
+    let owner_ids: Vec<uuid::Uuid> = read_owners
+        .iter()
+        .copied()
+        .map(proxima_core::OwnerRef::stored_owner_id)
+        .collect();
     let row = sqlx::query(
         "SELECT m.blob_id AS citation_mapping_id,
                 b.schema_id AS mapping_schema_id,
@@ -107,9 +116,11 @@ pub(crate) async fn citation_of_fact(
            JOIN proxima_core.blob b ON b.blob_id = m.blob_id
           WHERE m.t = $1
             AND m.kind = 'fact'
-            AND m.blob_id IS NOT NULL",
+            AND m.blob_id IS NOT NULL
+            AND m.owner_id = ANY($2::uuid[])",
     )
     .bind(fact_memory_id.into_inner())
+    .bind(&owner_ids)
     .fetch_optional(pool)
     .await
     .map_err(map_err)?;

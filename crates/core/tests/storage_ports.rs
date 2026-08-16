@@ -476,6 +476,7 @@ impl CitationPort for CitationFake {
 
     async fn citation_of_fact(
         &self,
+        read_owners: &[proxima_core::OwnerRef],
         fact_memory_id: proxima_core::MemoryId,
     ) -> Result<Option<proxima_core::verbs::query::FactCitationReadback>, StorageError> {
         fake_error()
@@ -494,11 +495,11 @@ impl OwnerAccessReadPort for OwnerAccessReadFake {
         fake_error()
     }
 
-    async fn visible_to_any(
+    async fn visible_home_owner(
         &self,
         entity: EntityId,
         read_owners: &[OwnerRef],
-    ) -> Result<bool, StorageError> {
+    ) -> Result<Option<OwnerRef>, StorageError> {
         fake_error()
     }
 

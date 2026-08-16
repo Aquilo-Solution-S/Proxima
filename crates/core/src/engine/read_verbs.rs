@@ -12,9 +12,10 @@ use crate::verbs::query::{
     SearchCursor, SearchMode,
 };
 use crate::verbs::schema::{MemorySearchProjection, PayloadKind};
-use crate::{EntityId, EntityKind, MemoryId, OwnerRef, SchemaId, SchemaVersion};
+use crate::{EntityKind, MemoryId, OwnerRef, SchemaId, SchemaVersion};
 
 use super::Engine;
+use super::pipeline::ENTRY_NOT_FOUND_MESSAGE;
 
 const NEIGHBOR_EDGE_LIMIT: usize = 200;
 pub const MAX_WAKE_CANDIDATE_LIMIT: usize = 200;
@@ -248,21 +249,18 @@ impl Engine {
                 "limit must be at least 1",
             ));
         }
-        let permit = self
-            .authorize_entry_read(authz, EntityId::Memory(req.trigger_fact_id))
-            .await?;
-        let trigger_owner = *permit.owner();
+        let read_owners = self.authorize_read(authz).await?;
         let access = self.resolve_access(authz).await?;
-        let snapshot = self
+        let mut found = self
             .storage
             .read_verb
             .memory_inspect
-            .load_memory_by_id(req.trigger_fact_id, &[])
+            .load_memories_by_ids(&read_owners, &[req.trigger_fact_id], &[])
             .await
-            .map_err(|err| storage_error("load_memory_by_id", &err))?
-            .ok_or_else(|| {
-                ProtocolError::invalid_argument("fact", "wake trigger fact not found")
-            })?;
+            .map_err(|err| storage_error("load_memories_by_ids", &err))?;
+        let snapshot = found
+            .pop()
+            .ok_or_else(|| ProtocolError::forbidden(ENTRY_NOT_FOUND_MESSAGE))?;
         if snapshot.kind != EntityKind::Fact {
             return Err(ProtocolError::invalid_argument(
                 "fact",
@@ -277,7 +275,7 @@ impl Engine {
             .list_goal_wake_candidates(&GoalWakeCandidateRequest {
                 actor_read_owners: access.read_owners(),
                 actor_write_owners: &actor_write_owners,
-                trigger_owner,
+                trigger_owner: snapshot.owner,
                 trigger_fact_id: req.trigger_fact_id,
                 trigger_schema_id: &snapshot.schema_id,
                 trigger_schema_version: snapshot.schema_version,
@@ -336,9 +334,19 @@ impl Engine {
         authz: &AuthzContext,
         req: &FactCitationReadRequest,
     ) -> Result<Option<FactCitationReadback>, ProtocolError> {
-        self.authorize_entry_read(authz, EntityId::Memory(req.fact_memory_id))
-            .await?;
-        read_fact_citation_authorized(&self.storage.read_verb, req.fact_memory_id).await
+        let read_owners = self.authorize_read(authz).await?;
+        let found = self
+            .storage
+            .read_verb
+            .memory_inspect
+            .load_memories_by_ids(&read_owners, &[req.fact_memory_id], &[])
+            .await
+            .map_err(|err| storage_error("load_memories_by_ids", &err))?;
+        if found.is_empty() {
+            return Err(ProtocolError::forbidden(ENTRY_NOT_FOUND_MESSAGE));
+        }
+        read_fact_citation_authorized(&self.storage.read_verb, &read_owners, req.fact_memory_id)
+            .await
     }
 
     /// Read-set-scoped inverse citation read for a stateful Fact entity head.
@@ -548,11 +556,12 @@ pub(in crate::engine) async fn list_change_events_authorized(
 
 pub(in crate::engine) async fn read_fact_citation_authorized(
     ports: &ReadVerbStoragePorts,
+    read_owners: &[OwnerRef],
     fact_memory_id: MemoryId,
 ) -> Result<Option<FactCitationReadback>, ProtocolError> {
     ports
         .citation
-        .citation_of_fact(fact_memory_id)
+        .citation_of_fact(read_owners, fact_memory_id)
         .await
         .map_err(|err| storage_error("citation_of_fact", &err))
 }

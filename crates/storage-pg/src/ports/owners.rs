@@ -19,12 +19,12 @@ impl OwnerAccessReadPort for PgStorage {
         access::owner_columns::resolve_membership(&self.pool, member).await
     }
 
-    async fn visible_to_any(
+    async fn visible_home_owner(
         &self,
         entity: EntityId,
         read_owners: &[OwnerRef],
-    ) -> Result<bool, StorageError> {
-        access::owner_columns::visible_to_any(&self.pool, entity, read_owners).await
+    ) -> Result<Option<OwnerRef>, StorageError> {
+        access::owner_columns::visible_home_owner(&self.pool, entity, read_owners).await
     }
 
     async fn home_owner(&self, entity: EntityId) -> Result<Option<OwnerRef>, StorageError> {
