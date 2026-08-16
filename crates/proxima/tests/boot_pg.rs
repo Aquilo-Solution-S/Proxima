@@ -296,11 +296,11 @@ async fn pre_v004_database_fails_closed_in_migration_facade() {
 
         let err = run_core_and_flavor_migrations(&pg, Vec::<NamedMigrator>::new())
             .await
-            .expect_err("pre-v0.0.4 DB must fail closed through facade");
+            .expect_err("stale ledger must fail closed through facade");
         let msg = err.to_string();
         assert!(
-            msg.contains("v0.0.4") && msg.contains("reset"),
-            "error must explain v0.0.4 reset requirement, got: {msg}",
+            msg.contains("reset"),
+            "error must explain reset, got: {msg}",
         );
         Ok(())
     }
@@ -352,13 +352,13 @@ async fn pre_v004_database_surfaces_typed_reset_error_through_boot() {
         let err = ProximaBuilder::new(config, owner)
             .boot()
             .await
-            .expect_err("pre-v0.0.4 DB must fail closed through boot()");
+            .expect_err("stale ledger must fail closed through boot()");
 
         match err {
             EmbedError::V004ResetRequired { details } => {
                 assert!(
-                    details.contains("v0.0.4"),
-                    "reset details should explain the v0.0.4 baseline mismatch, got: {details}"
+                    details.contains("0001_v008") || details.contains("checksum"),
+                    "reset details should name the schema mismatch, got: {details}"
                 );
             }
             other => {

@@ -72,32 +72,18 @@ kernel, **the kernel wins** until renegotiated in writing. Check it with
 `cd docs/lean && lake build`; coverage of doc invariants is tracked in
 `docs/lean/COVERAGE.md`.
 
-## Pre-stable breaking refactor (v0.0.4 / v0.0.5 — released)
-
-`v0.0.4` and `v0.0.5` are tagged. Both shipped breaking Rust, storage, and
-MCP/API changes that removed obsolete ontology rather than preserve adapters.
-Keep the detailed roadmap/matrix in ignored `.local/` planning artifacts;
-tracked repo changes carry only durable, condensed rules and executable checks.
-
-Branch policy:
+## Branch policy
 
 1. `main` is PR-only (required CI checks + `enforce_admins`); no direct local pushes.
-2. Post-v0.0.5 work continues on short reviewed branches targeting `main`, one
-   slice per branch unless Heinrich explicitly stages several together.
-3. Tag a new `v*` from `main` only after all required slices merge and
+2. Work continues on short reviewed branches targeting `main`.
+3. Tag a new `v*` from `main` only after required slices merge and
    post-merge CI passes (release notes are git-cliff-generated on the tag).
 
-The v0.0.4 breaking-deletion target (now shipped) removed production
-compatibility for legacy principal/read-scope APIs,
-materialized Personality/Self authz, owner-reachability compatibility,
-core Event/EventSource identity, legacy Goal parent tables,
-public aggregate `Storage`, raw flavor `PgPool` / core-table SQL capability,
-and stale MCP/wire names. Do not weaken the Lean guardrails: server-resolved
-`OwnerRef`, source-owned index rows with target redaction,
-optional Memory/Goal sidecars and receipts, `MemoryGraphValid`,
-`OperatorInvocation` completeness for writes that declare a derivation,
-abandonment-only hard deletion, build-time flavor registries,
-set-based authorized reads, and atomic command-port writes.
+Do not weaken the Lean guardrails: server-resolved `OwnerRef`,
+source-owned pins with target redaction, optional Memory/Goal sidecars,
+`MemoryGraphValid`, `OperatorInvocation` for writes that declare a
+derivation, abandonment-only hard deletion, build-time flavor
+registries, set-based authorized reads, atomic command-port writes.
 
 ## Agent operating discipline
 

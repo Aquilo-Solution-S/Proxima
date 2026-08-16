@@ -113,10 +113,9 @@ pub fn core_migrator() -> sqlx::migrate::Migrator {
 ///
 /// # Errors
 ///
-/// Returns [`StorageError::V004ResetRequired`] for pre-v0.0.4 signals —
-/// Proxima schema objects with no baseline ledger marker, or a baseline
-/// (version 1) checksum that predates the v0.0.4 destructive reset; the only
-/// remedy there is export + reset, never a stamp. Returns
+/// Returns [`StorageError::V004ResetRequired`] when schema objects exist
+/// without a matching version-1 ledger, or version 1's checksum does not
+/// match `0001_v008.sql`. Remedy: reset. Returns
 /// [`StorageError::Internal`], naming the stamp-or-reset remedy, for draft or
 /// retired versions and post-baseline checksum drift, and for catalog query
 /// failures.
@@ -188,7 +187,7 @@ pub async fn ensure_core_ledger_compatible(pool: &PgPool) -> Result<(), StorageE
             ));
         }
         if baseline_checksum_drift {
-            details.push("version 1 checksum differs from v0.0.4 baseline".to_string());
+            details.push("version 1 checksum differs from 0001_v008.sql".to_string());
         }
         if !unknown_versions.is_empty() {
             details.push(format!("old migration versions: {unknown_versions:?}"));
@@ -222,7 +221,7 @@ pub async fn ensure_core_ledger_compatible(pool: &PgPool) -> Result<(), StorageE
          `cargo run -p proxima-dev-migrate -- --stamp --database-url <URL>`; \
          otherwise reset (dev/staging only) with \
          `PROXIMA_V004_RESET_CONFIRM=reset-my-dev-db cargo run -p proxima-dev-migrate -- --reset --database-url <URL>`, \
-         then re-register and re-index. See docs/how-to/migrations.md and MIGRATING.md",
+         then re-register and re-index. See docs/how-to/migrations.md",
         details.join("; ")
     )))
 }
@@ -275,7 +274,7 @@ pub async fn ensure_core_schema_current(pool: &PgPool) -> Result<(), StorageErro
         .map_err(internal)?;
         if max_version.unwrap_or(0) < min_required {
             return Err(StorageError::Internal(format!(
-                "database core migrations at version {}; version {min_required}+ required — apply the current schema lane before boot (see MIGRATING.md)",
+                "database core migrations at version {}; version {min_required}+ required — apply 0001_v008.sql on a fresh DB (see docs/how-to/migrations.md)",
                 max_version.unwrap_or(0)
             )));
         }

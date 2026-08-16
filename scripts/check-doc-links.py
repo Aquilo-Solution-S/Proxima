@@ -48,7 +48,6 @@ def markdown_files() -> list[Path]:
             "CONTRIBUTING.md",
             "SECURITY.md",
             "CHANGELOG.md",
-            "MIGRATING.md",
             "RELEASING.md",
         ]
         if (ROOT / name).exists()

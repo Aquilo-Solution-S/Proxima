@@ -580,11 +580,9 @@ pub enum ProximaError {
     Security(String),
     #[error("mcp: {0}")]
     Mcp(String),
-    /// The target database still carries pre-v0.0.4 Proxima schema
-    /// artifacts and must be exported and reset before this host can boot.
-    /// See `MIGRATING.md`. Kept distinct from [`Self::Storage`] so hosts
-    /// can match on it instead of parsing the storage error string.
-    #[error("database requires a v0.0.4 reset before boot (see MIGRATING.md): {details}")]
+    /// The target database does not match this binary's schema and must
+    /// be reset. Distinct from [`Self::Storage`] so hosts can match on it.
+    #[error("database schema does not match this binary; reset required (see docs/how-to/migrations.md): {details}")]
     V004ResetRequired { details: String },
 }
 

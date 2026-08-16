@@ -33,15 +33,8 @@ receipt — as a content-addressed CitedObject. Without that, the proof of an
 algorithmic verdict had nowhere to live but an edge property or a cache row,
 and neither is a claim anything can check.
 
-Perspectives never cite directly. "What grounds this Perspective?" is
-`chain(p)` over its references and `origin` entries → Facts and Abstractions
-→ their CitationMappings → CitedObjects. A citation on a Perspective would
-be redundant with that graph and would invite drift between the two.
-
-This matches the biological story: your interpretation does not cite
-the source — it cites the memory that holds the source. What changed in
-v0.0.7 is only that a *computation* is also a source, and the memory that
-holds it is an Abstraction.
+Perspectives never cite directly. Grounding is `chain(p)` over `refs`
+and `origins` → Facts and Abstractions → their `blob_id`.
 
 ## Trait families
 
@@ -78,63 +71,33 @@ trait CitationMappingPayload: Serialize + Deserialize + 'static {
 ## Tables
 
 ```
-cited_objects(
-    cited_object_id     pk UUIDv7,
-    schema_id           NOT NULL,
-    schema_version      NOT NULL,
-    owner_*,
-    content_hash        BLAKE3,            -- from CitedObjectPayload::idempotency_key
-    created_at,
-    UNIQUE (owner_kind, owner_id,
-            schema_id, content_hash)
+blob(
+    blob_id        pk uuidv7,
+    owner_id       FK owners,
+    schema_id      text,
+    content_hash   bytea,            -- BLAKE3-32
+    UNIQUE (owner_id, schema_id, content_hash)
 )
--- Per-schema sidecar (one per registered CitedObjectPayload):
-cited_uploaded_blob_v1(cited_object_id pk FK, bucket, object_key, sha256, byte_len, mime, filename, etag, uploaded_at)
-cited_media_image_v1(cited_object_id pk FK, bucket, object_key, sha256, dims, format, ...)
-cited_chat_telegram_session_v1(cited_object_id pk FK, session_external_id, started_at, ...)
 
-citation_mappings(
-    citation_mapping_id pk UUIDv7,
-    schema_id           NOT NULL,
-    schema_version      NOT NULL,
-    memory_id           FK memories,        -- the citing Fact
-    cited_object_id     FK cited_objects,
-    owner_*,
-    created_at,
-    UNIQUE (memory_id)                       -- one mapping per memory (multiplicity 0..1)
-)
--- Optional per-schema sidecar (only when CitationMappingPayload::sidecar_table() = Some):
-citation_doc_pdf_page_paragraph_v1(citation_mapping_id pk FK, page, paragraph, char_range, ...)
-citation_media_image_bbox_v1(citation_mapping_id pk FK, bbox, caption?, ...)
-citation_chat_telegram_message_v1(citation_mapping_id pk FK, message_external_id, char_range, ...)
+memory.blob_id     0..1 FK blob     -- F/A only
 ```
+
+Optional mapping sidecar keyed by `t` when the citation carries extra
+columns (page, bbox). A whole-artefact link needs no sidecar.
 
 ## Multiplicity
 
-- One CitedObject ↔ N CitationMappings ↔ N Facts. Re-ingesting the
-  same PDF reuses the CitedObject row; new chunks add new mappings
-  pointing at it.
-- One cited memory ↔ exactly one CitationMapping ↔ one CitedObject. A Fact
-  needing to reference multiple artefacts is a modelling smell — emit
-  multiple Facts, or model the relationship as Abstractions citing
-  several memories.
-- Fact → 0..1 citations. Abstraction → 0..1 citations. Perspective → zero;
-  it accumulates through its references and `origin` entries.
-- Bibliographic closure for A/P terminates at Fact citations **and** direct
-  Abstraction citations.
+- One `blob` ↔ N memories (`blob_id`). Same owner + schema + hash reuses
+  the blob.
+- One memory ↔ 0..1 `blob_id`. Multiple artefacts → multiple Facts, or
+  an Abstraction whose `refs` name those Facts.
+- Perspective → zero `blob_id`; closure walks `origins`/`refs`.
 
 ## Idempotency
 
 ```
-CitedObject:        UNIQUE (owner, schema_id, content_hash)
-CitationMapping:    UNIQUE (memory_id)
+blob: UNIQUE (owner_id, schema_id, content_hash)
 ```
-
-Re-receipt of the same observation produces the same source receipt id
-(public `receipt_id`, storage `receipt_id`; see 01) and the same
-`content_hash` for the cited artefact; both inserts become silent
-no-ops. Different chunks of the same artefact land distinct memories
-with distinct mappings, all pointing at one CitedObject.
 
 <a id="core-registered-schemas"></a>
 ## Core-registered schemas
@@ -179,9 +142,8 @@ Generic uploaded blob:
 
 | Field | Location | Contract |
 |---|---|---|
-| `content_hash` | `cited_objects` | BLAKE3-32 of original bytes; Owner-scoped idempotency key |
-| `sha256`, `byte_len`, `mime`, `filename`, `etag`, `uploaded_at` | `cited_uploaded_blob_v1` | typed sidecar metadata |
-| `bucket`, `object_key` | `cited_uploaded_blob_v1` | internal storage coordinates only |
+| `content_hash` | `blob` | BLAKE3-32; Owner-scoped unique with schema |
+| upload metadata | `blob_uploads` | pending → completed / aborted |
 
 Direct upload:
 
@@ -190,8 +152,8 @@ Direct upload:
 3. `complete` verifies the pending object, streams bytes to compute
    BLAKE3 + SHA-256, copies to
    `objects/<owner-hash>/core/uploaded-blob-v1/<blake3-hex>`,
-   deletes the pending object, inserts or reuses `cited_objects`,
-   inserts `cited_uploaded_blob_v1`, marks upload completed.
+   deletes the pending object, inserts or reuses `blob`,
+   marks upload completed.
 4. Same Owner + same bytes returns the existing CitedObject and marks
    the result as an idempotent replay.
 5. `abort` deletes the pending object when present and marks the

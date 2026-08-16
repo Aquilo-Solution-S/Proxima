@@ -694,7 +694,7 @@ Version lanes:
 
 | Source | Reserved versions |
 |---|---|
-| Proxima core | `1..=9999`; `2..=7` retired pre-v0.0.4 rows |
+| Proxima core | `0001_v008.sql` (version 1) |
 | example/host migrators | timestamp versions ending `00..=19` |
 | first-party flavors | timestamp versions ending `20..=39` |
 | downstream host composition | timestamp versions ending `60..=99`; external hosts own collision avoidance when they compose migrators outside Proxima's facade |

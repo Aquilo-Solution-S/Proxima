@@ -244,8 +244,8 @@ mod tests {
     /// `read_resource` runs through the same flat scope gate as a tool call,
     /// with the resource's scope key standing in for a tool name. A palette
     /// built from tools alone therefore *denies* every `proxima://` read
-    /// instead of merely leaving it unadvertised, so a host following
-    /// MIGRATING.md's `tool_palette_excluding` one-liner loses resource reads
+    /// instead of merely leaving it unadvertised, so a host using
+    /// `tool_palette_excluding` without resource keys loses resource reads
     /// entirely.
     #[test]
     fn palette_admits_every_core_resource() {

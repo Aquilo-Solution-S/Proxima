@@ -17,7 +17,7 @@ trusted sources talk to the binary through graph verbs and operational RPCs.
 | graph verbs | current | cognitive graph reads/writes/events |
 | operational/config RPCs | current | deployment profiles and auth surfaces |
 | compliance admin operations | current Host API; transport RPCs deferred | abandonment-only erase primitives in [13](13-compliance.md); non-erase admin primitives remain design intent |
-| operators / wake / tools / LLM calls | internal | clients read committed graph effects from the `change_event` pull log |
+| operators / wake / tools / LLM calls | internal | clients read committed graph effects from `announce` |
 
 No runtime schema/source/tool/flavor registration surface exists.
 
@@ -75,11 +75,11 @@ Canonical substrate resources:
 | `proxima://memory/{id}{?expand_neighbors}` | hydrate memory by id; optional neighbor edges |
 | `proxima://memories{?ids}` | batch memory read by comma-separated prefixed ids, at most 100 per call; returns found memories in request order plus a `missing` list (not-exists and not-visible are deliberately indistinguishable) |
 | `proxima://memory/{id}/lineage{?direction,depth,limit,cursor}` | traverse provenance / supersession lineage; keyset `cursor`/`next_cursor` + `has_more`, cursor bound to memory + direction + depth |
-| `proxima://change-events{?since,limit}` | forward `change_event` poll, ascending, with `next_since` and `has_more` |
+| `proxima://change-events{?since,limit}` | forward `announce` poll, ascending, with `next_since` and `has_more` |
 | `proxima://goals{?state,limit,cursor}` | owner-scoped goal listing: optional state filter (Active/Paused/Achieved/Abandoned), keyset `cursor`/`next_cursor` + `has_more`, wake-config read-back per goal |
 | `proxima://goal/{id}` | single-goal read by `G:<uuid>` reference, including stored wake configuration |
 | `proxima://wake-candidates{?fact,limit}` | armed Active Goal heads admitted for wake planning by one readable trigger Fact; read model only, no executor |
-| `proxima://edges{?kind,source,target,limit,cursor}` | owner-scoped edge listing by kind (`origin`/`reference`) and/or endpoint (at least one filter required), keyset `cursor`/`next_cursor` + `has_more`; each row is source, target, kind, `created_at` and nothing else; source-owned visibility with target redaction. There is no single-edge resource and no `E:` reference — an edge has no id |
+| neighbors / lineage | walk `memory.origins` / `memory.refs`. No `proxima://edges` |
 
 `proxima://how-to` is an instructional MCP resource outside the 11-resource
 protocol count.
@@ -108,13 +108,10 @@ truncation is always signaled via `has_more` + cursor.
 
 ## The verbs
 
-Semantic graph/client contract. Five current verbs. The live-push
-`Subscribe` stream has been **retired and removed from code** — there is
-no outbox, `LISTEN`/`NOTIFY`, or server-push transport. `change_event`
-is now a durable, owner-scoped, seq-ordered **pull log** (see
-[§Change Log](#change-log--pull-only)).
+Semantic graph/client contract. Five verbs. ChangeHistory is pull-only
+(`announce.seq`). There is no push Subscribe, outbox, or `LISTEN`/`NOTIFY`.
 
-> **Forward poll.** `change_event` is read in both directions. Backward,
+> **Forward poll.** `announce` is read in both directions. Backward,
 > bounded reads use the `ChangeHistory` engine verb. The forward seq-cursor
 > poll a harness wake loop needs ships as the
 > **`proxima://change-events{?since,limit}`** MCP resource — change records with
@@ -129,19 +126,15 @@ is now a durable, owner-scoped, seq-ordered **pull log** (see
 > transport-level graph verbs; storage still stays behind the Engine/port
 > boundary.
 
-| Verb | Direction | Idempotency | Scope | Current status |
-|---|---|---|---|---|
-| `Query` | client -> engine, sync | yes | Owner | current |
-| `ChangeHistory` | client -> engine, sync | yes | Owner | current |
-| `GoalWrite` | client -> engine, sync | `request_id` | Owner | current |
-| `FactIngest` | source/app -> engine, sync | optional public `receipt_id` / storage `receipt_id` | Owner | current |
-| `Schema` | client -> engine, sync | yes | binary | current |
-| `Subscribe` | (removed) | n/a | Owner | **retired** — `change_event` is a pull log |
+| Verb | Direction | Idempotency | Scope |
+|---|---|---|---|
+| `Query` | client -> engine, sync | yes | Owner |
+| `ChangeHistory` | client -> engine, sync | yes | Owner |
+| `GoalWrite` | client -> engine, sync | `request_id` | Owner |
+| `FactIngest` | client -> engine, sync | `ingest_keys` when sourced | Owner |
+| `Schema` | client -> engine, sync | yes | binary |
 
-These five current verbs are the cognitive graph surface. Operational/config
-RPCs below are not graph verbs. Receipt-backed FactIngest idempotency uses
-`fact_receipts.receipt_id` / `memories.receipt_id`; receiptless Fact writes
-have no receipt id and admit a fresh Fact per successful call.
+Sourced FactIngest replays on `(owner, source, ingest_key)`. Keyless Facts mint a new `t`.
 
 ## Owner-scoping — the primary axis
 
@@ -175,7 +168,7 @@ Snapshot read of memories, goals, and edges scoped to the server-resolved author
 | payloads | optional typed payload projections; identity hydration by memory/goal/edge ids |
 | stateful Facts | heads by registered natural key; tombstone heads suppress prior present rows |
 | flavor-typed filters | design intent; advertised/validated only when implemented by a linked flavor |
-| edge traversal / time range | deferred (single-hop edge reads by kind/endpoint ship via `EdgeRead` and `proxima://edges`; the multi-hop traversal *query axis* stays deferred) |
+| pin walk | `origins` / `refs`; lineage is the multi-hop walk |
 
 Cursor streams:
 
@@ -191,11 +184,11 @@ row only when another row exists. Edge hydration is bounded to the
 returned node window.
 
 Returns rows plus `seq_high_water`. Clients persist the watermark as the
-seq cursor for a subsequent forward poll of `change_event`.
+seq cursor for a subsequent forward poll of `announce`.
 
 ### ChangeHistory
 
-Bounded read of `change_event`, newest-first, scoped to the server-resolved authorized Owner set (`S_read`).
+Bounded read of `announce`, newest-first, scoped to the server-resolved authorized Owner set (`S_read`).
 
 | Field | Contract |
 |---|---|
@@ -223,7 +216,7 @@ Owner-scoped append or supersession of a Goal row (see
 | request id | `(Owner, request_id)` idempotency key |
 | replay | same body and side-effect inputs return prior `GoalId`; drift returns conflict |
 | supersession | prior goal must be same Owner and current head |
-| log | success commits the Goal row and its `change_event` row |
+| log | success commits the Goal row and its `announce` row |
 
 Embedded Rust hosts use the typed helper instead of table SQL:
 
@@ -259,7 +252,7 @@ witness.
 | receipt id | optional server-computed content hash of source, Owner, payload; public response field is `receipt_id` and omitted/null when receiptless |
 | replay | duplicate receipt id returns prior outcome / no new Fact; receiptless writes do not replay |
 | commit | returns after Fact, optional receipt row, optional sidecar/citation, and the `reference` entries its payload declares are committed |
-| log | success commits the corresponding `change_event` rows |
+| log | success commits the corresponding `announce` rows |
 | auth | user or source credential, resolved through server-built `AuthzContext` |
 
 ### Schema
@@ -276,7 +269,7 @@ auth or gate it like any other call.
 
 ## Change Log — Pull-Only
 
-`change_event` is a durable, append-only, owner-scoped log. Each row
+`announce` is a durable, append-only, owner-scoped log. Each row
 carries a server-generated UUIDv7 `seq` that doubles as the cursor.
 There is no push transport, no ack protocol, and no per-client server
 cursor state — clients poll.
@@ -314,7 +307,7 @@ Cold-start stitching — seed from a snapshot, then poll forward:
 ```
 1. snapshot, hwm = Query(owner, filters)
 2. apply snapshot
-3. read change_event where seq > hwm            # forward poll
+3. read announce where seq > hwm               # forward poll
 4. hydrate identities with Query
 ```
 
@@ -326,17 +319,17 @@ first forward poll.
 ## Consistency — Strong Write -> Log
 
 Graph writes commit entity/edge rows and corresponding
-`change_event` rows in one storage transaction.
+`announce` rows in one storage transaction.
 
 | Property | Contract |
 |---|---|
-| atomic write/event | no committed graph row without its `change_event` row |
+| atomic write/event | no committed graph row without its `announce` row |
 | write return | `GoalWrite` / `FactIngest` success means the graph change is committed and durably readable |
 | read | a committed event is visible to any subsequent forward poll / `ChangeHistory` read |
-| replay | `ChangeHistory` and the forward poll read the same `change_event` log |
-| broker | none; `change_event` is a pull log — no tailing broker or push delivery |
+| replay | `ChangeHistory` and the forward poll read the same `announce` log |
+| broker | none; `announce` is a pull log — no tailing broker or push delivery |
 
-`change_event` is the durable pull log (see
+`announce` is the durable pull log (see
 [07](07-storage.md#core-tables--abstract)). Compliance audit is
 separate (see [13](13-compliance.md#audit-log)).
 
@@ -450,7 +443,7 @@ Current contract:
 - Operators: [04](04-consolidation.md).
 - Actions and human approval: [05](05-actions.md).
 - Goal entity and GoalWrite: [06](06-goals-and-self.md).
-- Storage and `change_event`: [07](07-storage.md).
+- Storage and `announce`: [07](07-storage.md).
 - Flavor composition: [08](08-core-and-flavors.md).
 - Runtime configuration: [10](10-configuration.md).
 - Compliance primitives: [13](13-compliance.md).

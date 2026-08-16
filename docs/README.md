@@ -58,6 +58,5 @@ section instead of restating invariants.
 ## Current Implementation Status
 
 - Runtime framework, storage, MCP substrate, facade, and code flavor crates exist.
-- Some numbered docs contain explicit deferred sections; deferred rows are not
-  public implementation claims.
+- Schema is timeseries v0.0.8: one core file `0001_v008.sql`.
 - Crates are git/tag consumed unless package manifests and release notes say otherwise.

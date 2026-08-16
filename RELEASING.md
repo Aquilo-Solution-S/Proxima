@@ -1,14 +1,8 @@
 # Releasing Proxima
 
-The procedure that produced v0.0.4 through v0.0.6, written down. Before this
-file it lived only in the maintainer's head, which is why the v0.0.7 audit
-found the boot-floor constant still pointing at the previous release —
-nothing prompted anyone to bump it. (That constant is gone: the floor is now
-derived from the embedded migration set.)
-
 Releases are identified by **git tag**. Crate versions in `Cargo.toml` stay at
-`0.1.0`: every crate is `publish = false`, so those numbers carry no meaning
-and bumping thirteen manifests each release only invites drift.
+`0.1.0`: every crate is `publish = false`. The boot floor is derived from the
+embedded migration set (`min_core_migration_version()`).
 
 ## Before the tag
 
@@ -31,49 +25,19 @@ raises it. The markers are what stop a `PROXIMA_SKIP_MIGRATIONS` boot from
 starting green against a database one lane behind and then failing every
 query.
 
-**3. Write the schema lane into `MIGRATING.md`.** One `## The vX.Y.Z schema
-lane` section per release that ships a migration, listing **every** file by
-source (core and each flavor), and stating explicitly:
-
-- whether it is online-safe, and if not, the measured lock window;
-- any behaviour change that does not announce itself (a changed primary key,
-  a changed text-search config, a changed default);
-- the rollback position.
-
-An operator promoting through GitOps applies exactly what this section lists.
-If a migration is not named here, it does not get applied. Check the list
-against the directories, not against memory — the v0.0.7 lane named 2 of its
-7 files for most of the cycle, because each new migration was described in the
-prose of the section that introduced it and nobody went back to the table:
+**3. Confirm the schema file list.**
 
 ```sh
 ls crates/storage-pg/migrations/ flavors/*/migrations/
 ```
 
-**4. Document every breaking change**, one `MIGRATING.md` entry per `!`-marked
-commit as it lands:
+v0.0.8 core is `0001_v008.sql`. Flavor is one baseline file. Existing
+databases reset; there is no in-place ALTER lane.
 
-```sh
-git log --oneline "$(git describe --tags --abbrev=0)..HEAD" | grep '!'
-```
-
-Struct field additions to non-`#[non_exhaustive]` public types count — they
-break out-of-tree struct literals at compile time.
-
-**4b. Consolidate the release's entries before the tag.** Step 4 appends in
-commit order, which is right during a cycle and wrong at a tag: v0.0.7
-accumulated 43 sections in landing order, half of them "no action required",
-and a reader upgrading had to read all 2,167 lines to find the eight things
-that applied to them. Before tagging, fold the release into the shape the rest
-of the file uses — schema lane, then breaking changes grouped by **audience**
-(MCP client, Rust host, flavor author, operator), then behaviour changes that
-need verifying, then additive surface in a table.
-
-Keep headings descriptive and **never number them**. Numbered sections make
-every PR conflict with the next at the same append point, and a
-conflict resolved in the wrong order leaves §55 sitting before §54 — which is
-exactly what happened. Cross-reference by anchor link, so
-`scripts/check-doc-links.py MIGRATING.md` catches a reference that goes stale.
+**4. Document breaking changes in `CHANGELOG.md`** (git-cliff on the tag).
+`git log --oneline "$(git describe --tags --abbrev=0)..HEAD" | grep '!'`
+lists the `!` commits. Struct field additions to non-`#[non_exhaustive]`
+public types count.
 
 **5. Run the full gate.**
 

@@ -26,7 +26,7 @@ descending order of leverage. Only the first row is required.
 | Piece | Required | What it does for Proxima |
 |---|---|---|
 | `pgvector >= 0.8.0` | **yes** | The semantic arm: HNSW index + `hnsw.iterative_scan` for filtered vector search. Without it the server refuses to boot. |
-| Snowball configurations (built in) | shipped | The lexical arm's stemming. Per-row since v0.0.7 (`memories.lexical_language`); 30 configurations ship in `pg_catalog`, no install needed. |
+| Snowball configurations (built in) | shipped | Lexical stemming. 30 configurations in `pg_catalog`. |
 | hunspell dictionaries | no | Compound splitting for compounding languages: `german` alone never matches `Tür` in `Türbreite`. Requires the `.dict`/`.affix` files in the server's `$SHAREDIR/tsearch_data` and a `CREATE TEXT SEARCH CONFIGURATION` on top — a server-filesystem operation, not a migration. Stamp rows with the custom configuration via the `language` argument. |
 | `pg_trgm` | no | Trigram GIN indexes can serve `LIKE '%…%'` substring predicates. Since v0.0.8 core's substring arm is its own statement against the base tables (the tsquery arms moved there to reach the GIN indexes in migration 0019, and one unindexable arm in the same disjunction would have cost them their index path), but it still has no index of its own: for a sidecar the predicate is over the builder's `concat_ws` projection, and no migration can name that expression. So this still helps only flavor surfaces whose substring predicates hit a real column (e.g. code-chunk path/text bonuses) — measure before adding, every write pays for the index. Core's answer is instead to skip that statement whenever the tsquery arms already fill the page above the substring band. |
 | `pg_stat_statements` | no | The profiling loop: find the queries that actually cost, before tuning anything. |
@@ -39,10 +39,10 @@ Two operational notes that repeatedly matter:
   after `VACUUM (ANALYZE)` on a 40k-row bulk load). Autovacuum gets there
   eventually; after a large import, running it explicitly gets there now.
 - **Custom text search configurations** are referenced by per-row
-  `regconfig` values since v0.0.7. Before dropping one, run
+  `regconfig` values. Before dropping one, run
   `proxima_core.lexical_language_forget('cfg')` — `PostgreSQL` permits the
   drop while rows still reference it, leaving dangling OIDs that make those
-  rows fail on UPDATE (see MIGRATING.md, *Optional: change the lexical
+  rows fail on UPDATE (see [07](07-storage.md); lexical
   language*).
 
 ## Connecting to encrypted PostgreSQL
@@ -60,7 +60,7 @@ Run migrations with a DDL-capable role; run the app with a narrower DML
 role, with `PROXIMA_SKIP_MIGRATIONS=true` so the app never attempts DDL.
 
 Migrations run automatically on first boot when that variable is unset. Check
-the release's schema lane in `MIGRATING.md` before relying on that: a lane
+[07](07-storage.md) / [how-to/migrations.md](how-to/migrations.md) before relying on that: a lane
 that rewrites tables holds `ACCESS EXCLUSIVE` for the duration and is not
 online-safe. The current v0.0.8 lane is one file, `0001_v008.sql`. It is a
 reset, not an online ALTER.
@@ -235,7 +235,7 @@ Runtime search:
 
 | Item | Runtime value |
 |---|---|
-| vector type | `vector(1024)`; no halfvec migration as of v0.0.7. Any embedding model must return 1024 dimensions — see `PROXIMA_EMBED_MATRYOSHKA` for nested-prefix models wider than that |
+| vector type | `vector(1024)`. Any embedding model must return 1024 dimensions — see `PROXIMA_EMBED_MATRYOSHKA` for nested-prefix models wider than that |
 | ANN index | shared `idx_embeddings_vec_hnsw` |
 | semantic-search GUCs | `SET LOCAL hnsw.ef_search = 100`; `SET LOCAL hnsw.iterative_scan = relaxed_order` |
 | cold owner subsets | planner may prefer owner btree + exact sort |

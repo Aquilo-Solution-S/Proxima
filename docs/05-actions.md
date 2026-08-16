@@ -42,7 +42,7 @@ Automated action selection is wake execution.
 
 | Trigger | Selector | Output |
 |---|---|---|
-| `change_event` | matching armed Goal wake trigger | tool call, A/P/Goal write, or no output |
+| `announce` | matching armed Goal wake trigger | tool call, A/P/Goal write, or no output |
 | UI / chat / trusted source | user or source policy | action-attempt Fact |
 | external callback | source | effect Fact |
 

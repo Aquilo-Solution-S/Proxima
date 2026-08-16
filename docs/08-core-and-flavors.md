@@ -168,7 +168,7 @@ Default substrate memory surface:
 | `proxima://memory/{id}` resource | `core_derive` |
 | `core_search_memories` | `core_remember` |
 | `proxima://memory/{id}/lineage` resource | `core_record_utterance` |
-| `proxima://edges{?kind,source,target,limit,cursor}` resource | `core_interpret` |
+| neighbors / lineage | `core_interpret` |
 
 Substrate MCP config tools are core-registered flat tools plus action
 dispatchers for goals and Facts. Schema,

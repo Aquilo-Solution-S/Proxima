@@ -65,7 +65,7 @@ backlog above has drained — `hybrid` ranks lexically and reports
 `degraded_to_lexical: true` rather than quietly returning less; `semantic`
 fails outright, since it has no other arm to fall back on.
 
-To re-index a repository from scratch — which v0.0.7 requires of indexes
+To re-index a repository from scratch — which indexes
 built by an earlier version, since chunking and rendering both changed —
 erase it and ingest again:
 
