@@ -91,5 +91,55 @@ CREATE TABLE proxima_core.citation_mappings (
     citation_mapping_id uuid PRIMARY KEY DEFAULT uuidv7(),
     cited_object_id uuid NOT NULL REFERENCES proxima_core.cited_objects (cited_object_id),
     schema_id text NOT NULL,
-    memory_t uuid REFERENCES proxima_core.memory (t)
+    memory_id uuid REFERENCES proxima_core.memory (t)
+);
+
+CREATE TABLE proxima_core.cited_uploaded_blob_v1 (
+    cited_object_id uuid PRIMARY KEY REFERENCES proxima_core.cited_objects (cited_object_id),
+    bucket text NOT NULL,
+    object_key text NOT NULL,
+    sha256 bytea NOT NULL,
+    byte_len bigint NOT NULL,
+    mime text,
+    filename text,
+    etag text,
+    uploaded_at timestamptz
+);
+
+CREATE TABLE proxima_core.citation_uploaded_blob_page_span_v1 (
+    citation_mapping_id uuid PRIMARY KEY REFERENCES proxima_core.citation_mappings (citation_mapping_id),
+    page_from integer NOT NULL,
+    page_to integer NOT NULL,
+    char_range_start integer,
+    char_range_end integer
+);
+
+CREATE TABLE proxima_core.cited_mcp_call_io_v1 (
+    cited_object_id uuid PRIMARY KEY REFERENCES proxima_core.cited_objects (cited_object_id),
+    byte_len bigint NOT NULL,
+    truncated boolean NOT NULL,
+    body bytea
+);
+
+CREATE TYPE proxima_core.cited_object_upload_status AS ENUM (
+    'pending',
+    'completed',
+    'aborted',
+    'expired'
+);
+
+CREATE TABLE proxima_core.cited_object_uploads (
+    upload_id uuid PRIMARY KEY DEFAULT uuidv7(),
+    owner_id uuid NOT NULL REFERENCES proxima_core.owners (owner_id),
+    bucket text NOT NULL,
+    object_key text NOT NULL,
+    filename text NOT NULL,
+    mime text NOT NULL,
+    expected_byte_len bigint NOT NULL,
+    status proxima_core.cited_object_upload_status NOT NULL DEFAULT 'pending',
+    cited_object_id uuid REFERENCES proxima_core.cited_objects (cited_object_id),
+    expires_at timestamptz,
+    error_message text,
+    completed_at timestamptz,
+    aborted_at timestamptz
 );

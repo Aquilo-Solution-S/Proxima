@@ -154,9 +154,7 @@ impl Engine {
         let references = self
             .authorized_payload_references(authority, source, &declared)
             .await?;
-        let source_batch_id = self
-            .effective_operator_source_batch_id(&owner, &req, &origins)
-            .await?;
+        let source_batch_id = None;
         let outcome = self
             .author_derived(
                 write_permit.owner_write_permit(),
@@ -269,57 +267,6 @@ impl Engine {
                 crate::storage_ports::OperatorWriteProof::new(),
             )
             .await
-    }
-
-    async fn effective_operator_source_batch_id(
-        &self,
-        owner: &Owner,
-        req: &AuthorDerivedRequestInput<'_>,
-        origins: &[EdgeEndpoint],
-    ) -> Result<Option<SourceBatchId>, ProtocolError> {
-        match req.operator_kind {
-            MemoryOperatorKind::FtoA => {
-                let input_ids = origins
-                    .iter()
-                    .filter_map(|origin| origin.memory_id())
-                    .collect::<Vec<_>>();
-                let rows = self
-                    .storage()
-                    .memory_authoring
-                    .memory_authoring
-                    .load_fact_source_batches(owner, &input_ids)
-                    .await
-                    .map_err(|err| ProtocolError::internal(err.to_string()))?;
-                if rows.len() != input_ids.len() {
-                    return Err(ProtocolError::invalid_argument(
-                        "source_handles",
-                        "F→A operator inputs must be Fact memories with source receipts",
-                    ));
-                }
-                let first = rows.first().map(|row| row.source_batch_id).ok_or_else(|| {
-                    ProtocolError::invalid_argument(
-                        "source_handles",
-                        "F→A operator invocation requires source inputs",
-                    )
-                })?;
-                if rows.iter().any(|row| row.source_batch_id != first) {
-                    return Err(ProtocolError::invalid_argument(
-                        "source_handles",
-                        "F→A operator inputs must belong to one source batch",
-                    ));
-                }
-                if let Some(requested) = req.source_batch_id
-                    && requested != first
-                {
-                    return Err(ProtocolError::invalid_argument(
-                        "source_batch_id",
-                        "must match the F→A input Facts",
-                    ));
-                }
-                Ok(Some(first))
-            }
-            MemoryOperatorKind::AtoA | MemoryOperatorKind::AtoP => Ok(req.source_batch_id),
-        }
     }
 
     /// Resolve and admit every declared index target.
@@ -520,19 +467,7 @@ async fn resolve_derived_embedding<'client>(
 fn validate_operator_memory_invocation_request(
     req: &AuthorDerivedRequestInput<'_>,
 ) -> Result<(), StorageError> {
-    match req.operator_kind {
-        MemoryOperatorKind::FtoA if req.source_batch_id.is_none() => {
-            return Err(StorageError::ConstraintViolation(
-                "F→A operator invocation requires source_batch_id".into(),
-            ));
-        }
-        MemoryOperatorKind::AtoA | MemoryOperatorKind::AtoP if req.source_batch_id.is_some() => {
-            return Err(StorageError::ConstraintViolation(
-                "source_batch_id is only valid for F→A operator invocations".into(),
-            ));
-        }
-        MemoryOperatorKind::FtoA | MemoryOperatorKind::AtoA | MemoryOperatorKind::AtoP => {}
-    }
+    let _ = req.source_batch_id;
 
     // The operator manifest proves a *derivation*: output kind, input
     // kinds, and one origin row per declared input. A write that declares
@@ -642,13 +577,8 @@ mod tests {
         }
     }
 
-    /// `validate_operator_memory_invocation_request`'s F→A/`source_batch_id`
-    /// arm is unreachable through the public `author_derived_authorized`
-    /// path, whose `effective_operator_source_batch_id` always recomputes
-    /// the batch from the declared F→A origins first. This exercises the
-    /// private raw path directly to pin the defensive check itself.
     #[tokio::test]
-    async fn author_derived_rejects_operator_ftoa_missing_source_batch() {
+    async fn author_derived_allows_operator_ftoa_without_source_batch() {
         let engine = engine();
         let owner = owner();
         let permit = OwnerWritePermit::new(owner, crate::access::AccessKind::Perspective);
@@ -661,11 +591,13 @@ mod tests {
         let err = engine
             .author_derived(&permit, req, &[])
             .await
-            .expect_err("F→A invocation without source_batch_id is invalid before storage");
-
+            .expect_err("the fake storage port refuses every write");
         assert!(
-            matches!(&err, StorageError::ConstraintViolation(msg) if msg.contains("requires source_batch_id")),
-            "unexpected error: {err}"
+            !matches!(
+                &err,
+                StorageError::ConstraintViolation(msg) if msg.contains("source_batch_id")
+            ),
+            "F→A no longer requires a source batch: {err}"
         );
     }
 

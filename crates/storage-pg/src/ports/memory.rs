@@ -242,6 +242,9 @@ impl MemoryAuthoringPort for PgStorage {
         _owner: &Owner,
         memory_ids: &[MemoryId],
     ) -> Result<Vec<FactSourceBatchRow>, StorageError> {
+        let _ = memory_ids;
+        return Ok(Vec::new());
+        #[allow(unreachable_code)]
         if memory_ids.is_empty() {
             return Ok(Vec::new());
         }

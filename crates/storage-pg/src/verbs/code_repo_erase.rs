@@ -159,6 +159,39 @@ async fn delete_memory_series(
     .bind(ts)
     .fetch_all(&mut **tx)
     .await?;
+    let all_t: Vec<Uuid> = sqlx::query_scalar(
+        "SELECT t FROM proxima_core.memory WHERE handle = ANY($1::uuid[])",
+    )
+    .bind(&handles)
+    .fetch_all(&mut **tx)
+    .await?;
+    sqlx::query(
+        "DELETE FROM proxima_core.citation_uploaded_blob_page_span_v1
+          WHERE citation_mapping_id IN (
+                SELECT citation_mapping_id
+                  FROM proxima_core.citation_mappings
+                 WHERE memory_id = ANY($1::uuid[])
+          )",
+    )
+    .bind(&all_t)
+    .execute(&mut **tx)
+    .await?;
+    sqlx::query("DELETE FROM proxima_core.citation_mappings WHERE memory_id = ANY($1::uuid[])")
+        .bind(&all_t)
+        .execute(&mut **tx)
+        .await?;
+    sqlx::query("DELETE FROM proxima_core.embedding_jobs WHERE entity_id = ANY($1::uuid[])")
+        .bind(&all_t)
+        .execute(&mut **tx)
+        .await?;
+    sqlx::query("DELETE FROM proxima_core.embedding_heads WHERE entity_id = ANY($1::uuid[])")
+        .bind(&all_t)
+        .execute(&mut **tx)
+        .await?;
+    sqlx::query("DELETE FROM proxima_core.embeddings WHERE entity_id = ANY($1::uuid[])")
+        .bind(&all_t)
+        .execute(&mut **tx)
+        .await?;
     let result = sqlx::query("DELETE FROM proxima_core.memory WHERE handle = ANY($1::uuid[])")
         .bind(&handles)
         .execute(&mut **tx)

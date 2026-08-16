@@ -169,10 +169,8 @@ async fn batch_memories_resource_error_classes_and_lineage_paging()
 
     // Lineage: oversized depth clamps instead of erroring, pages follow
     // the opaque cursor to exhaustion, and a missing start is a not-found.
-    let d1 = insert_memory(&pg, &owner, "derived one", &[]).await?;
-    let d2 = insert_memory(&pg, &owner, "derived two", &[]).await?;
-    insert_origin_edge(&pg, &owner, d1, first).await?;
-    insert_origin_edge(&pg, &owner, d2, d1).await?;
+    let d1 = insert_memory(&pg, &owner, "derived one", &[first]).await?;
+    let d2 = insert_memory(&pg, &owner, "derived two", &[d1]).await?;
     assert_lineage_clamps_pages_and_reports_missing_start(&server, &auth, d2, absent).await?;
 
     drop(server);
@@ -924,6 +922,7 @@ async fn insert_memory(
 
 /// Assert one `origin` row directly. Five columns is the whole insert —
 /// there is no id to mint and no relation to name.
+#[allow(dead_code)]
 async fn insert_origin_edge(
     pg: &PgStorage,
     owner: &Owner,

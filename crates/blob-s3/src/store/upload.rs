@@ -60,14 +60,13 @@ impl CitedBlobStore {
             .await
             .map_err(|e| BlobError::S3(format!("prepare upload URL failed: {e}")))?;
 
-        let (owner_kind, owner_id) = db_owner_columns(&owner);
+        let (_owner_kind, owner_id) = db_owner_columns(&owner);
         sqlx::query(
             "INSERT INTO proxima_core.cited_object_uploads \
-                (owner_kind, owner_id, upload_id, \
+                (owner_id, upload_id, \
                  bucket, object_key, filename, mime, expected_byte_len, expires_at) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
         )
-        .bind(owner_kind)
         .bind(owner_id)
         .bind(upload_id)
         .bind(&self.config.bucket)
@@ -236,19 +235,17 @@ impl CitedBlobStore {
         ensure_owner_write_access(ctx, &owner)?;
         let upload_id = parse_uuid(upload_id)?;
         let row = load_upload(&self.pool, &owner, upload_id).await?;
-        let (owner_kind, owner_id) = db_owner_columns(&owner);
+        let (_owner_kind, owner_id) = db_owner_columns(&owner);
         let decision = match row.status {
             UploadStatus::Pending => {
                 let rows_affected = sqlx::query(
                     "UPDATE proxima_core.cited_object_uploads \
                         SET status = 'completed', cited_object_id = $1, completed_at = now() \
-                      WHERE owner_kind = $2 \
-                        AND owner_id IS NOT DISTINCT FROM $3 \
-                        AND upload_id = $4 \
+                      WHERE owner_id = $2 \
+                        AND upload_id = $3 \
                         AND status = 'pending'",
                 )
                 .bind(cited_object_id)
-                .bind(owner_kind)
                 .bind(owner_id)
                 .bind(upload_id)
                 .execute(&self.pool)
@@ -283,13 +280,11 @@ impl CitedBlobStore {
             sqlx::query(
                 "UPDATE proxima_core.cited_object_uploads \
                     SET status = 'completed', cited_object_id = $1, completed_at = now() \
-                  WHERE owner_kind = $2 \
-                    AND owner_id IS NOT DISTINCT FROM $3 \
-                    AND upload_id = $4 \
+                  WHERE owner_id = $2 \
+                    AND upload_id = $3 \
                     AND status IN ('aborted', 'expired')",
             )
             .bind(cited_object_id)
-            .bind(owner_kind)
             .bind(owner_id)
             .bind(upload_id)
             .execute(&self.pool)
@@ -332,16 +327,14 @@ impl CitedBlobStore {
             UploadStatus::Pending => {}
         }
 
-        let (owner_kind, owner_id) = db_owner_columns(&owner);
+        let (_owner_kind, owner_id) = db_owner_columns(&owner);
         let rows_affected = sqlx::query(
             "UPDATE proxima_core.cited_object_uploads \
                 SET status = 'aborted', aborted_at = now() \
-              WHERE owner_kind = $1 \
-                AND owner_id IS NOT DISTINCT FROM $2 \
-                AND upload_id = $3 \
+              WHERE owner_id = $1 \
+                AND upload_id = $2 \
                 AND status = 'pending'",
         )
-        .bind(owner_kind)
         .bind(owner_id)
         .bind(upload_id)
         .execute(&self.pool)

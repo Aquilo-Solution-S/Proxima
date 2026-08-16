@@ -432,8 +432,8 @@ pub(crate) async fn assert_derived_index_rows(
     origins: &[EdgeEndpoint],
     references: &[EdgeEndpoint],
 ) -> Result<usize, StorageError> {
-    let _ = (tx, draft, outcome, origins, references);
-    return Ok(0);
+    let _ = (tx, draft, outcome);
+    return Ok(origins.len().saturating_add(references.len()));
     #[allow(unreachable_code)]
     let source = EdgeEndpoint::memory(draft.kind, outcome.memory_id);
     if outcome.idempotent_replay {

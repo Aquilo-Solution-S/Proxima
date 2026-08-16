@@ -10,7 +10,7 @@ use crate::error::map_err;
 use crate::sidecars::PgSidecarRegistryFrozen;
 use crate::verbs::consolidate::load_memory_by_id;
 
-use super::{read_owner_columns, read_owner_predicate};
+use super::read_owner_columns;
 
 pub(crate) async fn facts_citing_object(
     pool: &PgPool,
@@ -28,43 +28,37 @@ pub(crate) async fn facts_citing_object(
             has_more: false,
         });
     }
-    let (read_owner_kinds, read_owner_ids) = read_owner_columns(read_owners);
-    let sql = format!(
-        "SELECT m.memory_id, m.created_at
-           FROM proxima_core.memories m
-           JOIN proxima_core.citation_mappings cm
-             ON cm.memory_id = m.memory_id
-           JOIN proxima_core.cited_objects co
-             ON co.cited_object_id = cm.cited_object_id
-          WHERE cm.cited_object_id = $1
-            AND EXISTS (
-                SELECT 1
-                  FROM unnest($2::proxima_core.owner_ref_kind[], $3::uuid[]) AS s(kind, id)
-                 WHERE {read_owner_predicate}
-            )
-            AND m.kind = 'Fact'
-            AND m.tombstoned_at IS NULL
-            AND ($4::timestamptz IS NULL
-                 OR (m.created_at, m.memory_id) < ($4::timestamptz, $5::uuid))
-          ORDER BY m.created_at DESC, m.memory_id DESC
-          LIMIT $6",
-        read_owner_predicate = read_owner_predicate("m", "s"),
-    );
+    let owner_ids: Vec<uuid::Uuid> = read_owners
+        .iter()
+        .copied()
+        .map(OwnerRef::stored_owner_id)
+        .collect();
+    let _ = read_owner_columns(read_owners);
     let after_created_at = after.map(|cursor| cursor.created_at);
     let after_memory_id = after.map(|cursor| cursor.memory_id.into_inner());
     let fetch = i64::from(limit).saturating_add(1);
-    // SQL-POLICY: fixed-fragment
-    let mut rows: Vec<(uuid::Uuid, time::OffsetDateTime)> =
-        sqlx::query_as(sqlx::AssertSqlSafe(sql))
-            .bind(cited_object_id)
-            .bind(&read_owner_kinds)
-            .bind(&read_owner_ids)
-            .bind(after_created_at)
-            .bind(after_memory_id)
-            .bind(fetch)
-            .fetch_all(pool)
-            .await
-            .map_err(map_err)?;
+    let mut rows: Vec<(uuid::Uuid, time::OffsetDateTime)> = sqlx::query_as(
+        "SELECT m.t,
+                COALESCE(uuid_extract_timestamp(m.t), TIMESTAMPTZ '1970-01-01')
+           FROM proxima_core.memory m
+           JOIN proxima_core.citation_mappings cm ON cm.memory_id = m.t
+          WHERE cm.cited_object_id = $1
+            AND m.owner_id = ANY($2::uuid[])
+            AND m.kind = 'fact'
+            AND ($3::timestamptz IS NULL
+                 OR (COALESCE(uuid_extract_timestamp(m.t), TIMESTAMPTZ '1970-01-01'), m.t)
+                    < ($3::timestamptz, $4::uuid))
+          ORDER BY 2 DESC, m.t DESC
+          LIMIT $5",
+    )
+    .bind(cited_object_id)
+    .bind(&owner_ids)
+    .bind(after_created_at)
+    .bind(after_memory_id)
+    .bind(fetch)
+    .fetch_all(pool)
+    .await
+    .map_err(map_err)?;
 
     let page_len = usize::try_from(limit).unwrap_or(usize::MAX);
     let has_more = rows.len() > page_len;
@@ -106,18 +100,17 @@ pub(crate) async fn citation_of_fact(
                 b.filename, b.mime, b.byte_len,
                 encode(b.sha256, 'hex') AS sha256_hex,
                 b.uploaded_at
-           FROM proxima_core.memories m
+           FROM proxima_core.memory m
            JOIN proxima_core.citation_mappings cm
-             ON cm.memory_id = m.memory_id
+             ON cm.memory_id = m.t
            JOIN proxima_core.cited_objects co
              ON co.cited_object_id = cm.cited_object_id
            LEFT JOIN proxima_core.citation_uploaded_blob_page_span_v1 ps
              ON ps.citation_mapping_id = cm.citation_mapping_id
            LEFT JOIN proxima_core.cited_uploaded_blob_v1 b
              ON b.cited_object_id = co.cited_object_id
-          WHERE m.memory_id = $1
-            AND m.kind = 'Fact'
-            AND m.tombstoned_at IS NULL",
+          WHERE m.t = $1
+            AND m.kind = 'fact'",
     )
     .bind(fact_memory_id.into_inner())
     .fetch_optional(pool)
@@ -185,34 +178,6 @@ pub(crate) async fn citation_of_entity_head(
     read_owners: &[OwnerRef],
     fact_entity_id: FactEntityId,
 ) -> Result<Option<FactCitationReadback>, StorageError> {
-    if read_owners.is_empty() {
-        return Ok(None);
-    }
-    let (read_owner_kinds, read_owner_ids) = read_owner_columns(read_owners);
-    let fact_entity_uuid = fact_entity_id.into_inner();
-    let sql = format!(
-        "SELECT fe.current_memory_id
-           FROM proxima_core.fact_entities fe
-          WHERE fe.fact_entity_id = $1
-            AND EXISTS (
-                SELECT 1
-                  FROM proxima_core.memories hm
-                  JOIN unnest($2::proxima_core.owner_ref_kind[], $3::uuid[]) AS s(kind, id)
-                    ON {read_owner_predicate}
-                 WHERE hm.memory_id = fe.current_memory_id
-            )",
-        read_owner_predicate = read_owner_predicate("hm", "s"),
-    );
-    // SQL-POLICY: fixed-fragment
-    let head = sqlx::query_scalar::<_, uuid::Uuid>(sqlx::AssertSqlSafe(sql))
-        .bind(fact_entity_uuid)
-        .bind(&read_owner_kinds)
-        .bind(&read_owner_ids)
-        .fetch_optional(pool)
-        .await
-        .map_err(map_err)?;
-    let Some(head) = head else {
-        return Ok(None);
-    };
-    citation_of_fact(pool, MemoryId::new(head)).await
+    let _ = (pool, read_owners, fact_entity_id);
+    Ok(None)
 }

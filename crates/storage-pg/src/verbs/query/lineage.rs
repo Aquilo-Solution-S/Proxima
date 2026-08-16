@@ -505,6 +505,7 @@ walk AS (
     )
 }
 
+#[allow(clippy::too_many_lines)]
 async fn walk_memory_lineage_timeseries(
     pool: &PgPool,
     read_owners: &[OwnerRef],
@@ -516,25 +517,116 @@ async fn walk_memory_lineage_timeseries(
         .map(OwnerRef::stored_owner_id)
         .collect();
     let start = req.start_memory_id.into_inner();
-    let pins: Vec<(uuid::Uuid, uuid::Uuid, String)> = sqlx::query_as(
-        "SELECT src.t, pin, 'origin'
-           FROM proxima_core.memory src
-           JOIN unnest(src.origins) AS pin ON true
-          WHERE src.t = $1 AND src.owner_id = ANY($2::uuid[])
-         UNION ALL
-         SELECT src.t, pin, 'reference'
-           FROM proxima_core.memory src
-           JOIN unnest(src.refs) AS pin ON true
-          WHERE src.t = $1 AND src.owner_id = ANY($2::uuid[])",
+    let depth = i32::from(req.depth.clamp(1, 8));
+    let limit = req.limit.min(200);
+    let hops: Vec<(uuid::Uuid, String, uuid::Uuid, String, i32)> = match req.direction {
+        MemoryLineageDirection::Ancestors => sqlx::query_as(
+            "WITH RECURSIVE walk AS (
+                 SELECT src.t AS src, src.kind::text AS src_kind,
+                        pin AS tgt, tgt.kind::text AS tgt_kind, 1 AS dist
+                   FROM proxima_core.memory src
+                   JOIN unnest(src.origins) AS pin ON true
+                   JOIN proxima_core.memory tgt ON tgt.t = pin
+                  WHERE src.t = $1
+                    AND src.owner_id = ANY($2::uuid[])
+                    AND tgt.owner_id = ANY($2::uuid[])
+                 UNION ALL
+                 SELECT n.t, n.kind::text, pin, nxt.kind::text, w.dist + 1
+                   FROM walk w
+                   JOIN proxima_core.memory n ON n.t = w.tgt
+                   JOIN unnest(n.origins) AS pin ON true
+                   JOIN proxima_core.memory nxt ON nxt.t = pin
+                  WHERE w.dist < $3
+                    AND n.owner_id = ANY($2::uuid[])
+                    AND nxt.owner_id = ANY($2::uuid[])
+             )
+             SELECT src, src_kind, tgt, tgt_kind, dist FROM walk",
+        )
+        .bind(start)
+        .bind(&owner_ids)
+        .bind(depth)
+        .fetch_all(pool)
+        .await
+        .map_err(map_err)?,
+        MemoryLineageDirection::Descendants => sqlx::query_as(
+            "WITH RECURSIVE walk AS (
+                 SELECT child.t AS src, child.kind::text AS src_kind,
+                        $1::uuid AS tgt, parent.kind::text AS tgt_kind, 1 AS dist
+                   FROM proxima_core.memory child
+                   JOIN proxima_core.memory parent ON parent.t = $1
+                  WHERE $1 = ANY(child.origins)
+                    AND child.owner_id = ANY($2::uuid[])
+                    AND parent.owner_id = ANY($2::uuid[])
+                 UNION ALL
+                 SELECT child.t, child.kind::text, w.src, w.src_kind, w.dist + 1
+                   FROM walk w
+                   JOIN proxima_core.memory child ON w.src = ANY(child.origins)
+                  WHERE w.dist < $3
+                    AND child.owner_id = ANY($2::uuid[])
+             )
+             SELECT src, src_kind, tgt, tgt_kind, dist FROM walk",
+        )
+        .bind(start)
+        .bind(&owner_ids)
+        .bind(depth)
+        .fetch_all(pool)
+        .await
+        .map_err(map_err)?,
+    };
+
+    let start_kind_schema: Option<(String, String)> = sqlx::query_as(
+        "SELECT m.kind::text, h.schema_id
+           FROM proxima_core.memory m
+           JOIN proxima_core.memory_head h ON h.handle = m.handle
+          WHERE m.t = $1 AND m.owner_id = ANY($2::uuid[])",
     )
     .bind(start)
     .bind(&owner_ids)
-    .fetch_all(pool)
+    .fetch_optional(pool)
     .await
     .map_err(map_err)?;
+    let Some((start_kind, start_schema)) = start_kind_schema else {
+        return Ok(MemoryLineageResponse {
+            nodes: Vec::new(),
+            edges: Vec::new(),
+            truncated: false,
+            next_cursor: None,
+        });
+    };
+
+    let mut hops = hops;
+    hops.sort_by(|a, b| {
+        a.4.cmp(&b.4)
+            .then_with(|| b.0.cmp(&a.0))
+            .then_with(|| b.2.cmp(&a.2))
+    });
+    if let Some(after) = req.after {
+        hops.retain(|hop| {
+            let dist = u8::try_from(hop.4).unwrap_or(u8::MAX);
+            match dist.cmp(&after.distance) {
+                std::cmp::Ordering::Greater => true,
+                std::cmp::Ordering::Less => false,
+                std::cmp::Ordering::Equal => {
+                    let after_src = match after.source {
+                        EntityRef::Memory(id) => id.into_inner(),
+                        _ => return true,
+                    };
+                    let after_tgt = match after.target {
+                        EntityRef::Memory(id) => id.into_inner(),
+                        _ => return true,
+                    };
+                    hop.0 < after_src || (hop.0 == after_src && hop.2 < after_tgt)
+                }
+            }
+        });
+    }
+    let page_len = usize::try_from(limit).unwrap_or(usize::MAX);
+    let truncated = hops.len() > page_len;
+    hops.truncate(page_len);
+
     let mut node_ids = vec![start];
-    node_ids.extend(pins.iter().map(|(_, pin, _)| *pin));
-    let nodes: Vec<(uuid::Uuid, String, String)> = sqlx::query_as(
+    node_ids.extend(hops.iter().flat_map(|hop| [hop.0, hop.2]));
+    let node_rows: Vec<(uuid::Uuid, String, String)> = sqlx::query_as(
         "SELECT m.t, m.kind::text, h.schema_id
            FROM proxima_core.memory m
            JOIN proxima_core.memory_head h ON h.handle = m.handle
@@ -546,55 +638,70 @@ async fn walk_memory_lineage_timeseries(
     .fetch_all(pool)
     .await
     .map_err(map_err)?;
-    let nodes = nodes
+    let mut nodes: Vec<MemoryLineageNode> = node_rows
         .into_iter()
         .filter_map(|(id, kind, schema_id)| {
-            let kind = match kind.as_str() {
-                "fact" => EntityKind::Fact,
-                "abstraction" => EntityKind::Abstraction,
-                "perspective" => EntityKind::Perspective,
-                _ => return None,
-            };
             Some(MemoryLineageNode {
                 memory_id: MemoryId::new(id),
-                kind,
+                kind: parse_kind(&kind)?,
                 schema_id: SchemaId::new(schema_id),
                 snippet: String::new(),
-                distance: 0,
+                distance: u8::from(id != start),
             })
         })
         .collect();
-    let edges = pins
-        .into_iter()
-        .filter_map(|(src, tgt, kind)| {
-            let kind = match kind.as_str() {
-                "origin" => EdgeKind::Origin,
-                "reference" => EdgeKind::Reference,
-                _ => return None,
-            };
+    if !nodes.iter().any(|n| n.memory_id.into_inner() == start)
+        && let Some(kind) = parse_kind(&start_kind)
+    {
+        nodes.push(MemoryLineageNode {
+            memory_id: MemoryId::new(start),
+            kind,
+            schema_id: SchemaId::new(start_schema),
+            snippet: String::new(),
+            distance: 0,
+        });
+    }
+
+    let edges: Vec<MemoryLineageEdge> = hops
+        .iter()
+        .filter_map(|(src, src_kind, tgt, tgt_kind, dist)| {
             Some(MemoryLineageEdge {
                 edge: Edge {
-                    source: EdgeEndpoint::memory(
-                        EntityKind::Abstraction,
-                        MemoryId::new(src),
-                    ),
+                    source: EdgeEndpoint::memory(parse_kind(src_kind)?, MemoryId::new(*src)),
                     target: EdgeTargetProjection::visible(EdgeEndpoint::memory(
-                        EntityKind::Abstraction,
-                        MemoryId::new(tgt),
+                        parse_kind(tgt_kind)?,
+                        MemoryId::new(*tgt),
                     )),
-                    kind,
+                    kind: EdgeKind::Origin,
                     created_at: time::OffsetDateTime::UNIX_EPOCH,
                 },
-                distance: 1,
+                distance: u8::try_from(*dist).unwrap_or(u8::MAX),
             })
         })
         .collect();
+    let next_cursor = truncated.then(|| {
+        let last = hops.last().expect("truncated page is non-empty");
+        MemoryLineageCursor {
+            distance: u8::try_from(last.4).unwrap_or(u8::MAX),
+            source: EntityRef::Memory(MemoryId::new(last.0)),
+            target: EntityRef::Memory(MemoryId::new(last.2)),
+        }
+    });
     Ok(MemoryLineageResponse {
         nodes,
         edges,
-        truncated: false,
-        next_cursor: None,
+        truncated,
+        next_cursor,
     })
+}
+
+fn parse_kind(kind: &str) -> Option<EntityKind> {
+    match kind {
+        "fact" => Some(EntityKind::Fact),
+        "abstraction" => Some(EntityKind::Abstraction),
+        "perspective" => Some(EntityKind::Perspective),
+        _ => None,
+    }
 }
 
 /// A lineage edge always sources at a memory row, so the endpoint decode

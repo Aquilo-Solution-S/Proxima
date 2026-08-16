@@ -115,9 +115,7 @@ async fn missing_embedding_ids(
         "SELECT m.t
            FROM proxima_core.memory_head h
            JOIN proxima_core.memory m ON m.handle = h.handle AND m.t = h.t
-           JOIN proxima_core.agent_note_v1 n ON n.memory_id = m.t
           WHERE m.owner_id = $1
-            AND NULLIF(btrim(n.body), '') IS NOT NULL
             AND NOT EXISTS (
                 SELECT 1 FROM proxima_core.embedding_heads eh
                  WHERE eh.entity_id = m.t AND eh.model_id = $2

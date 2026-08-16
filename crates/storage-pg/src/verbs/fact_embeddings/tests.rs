@@ -73,15 +73,14 @@ mod pg_tests {
         entity_id: Uuid,
         model_id: &str,
     ) -> Result<Vec<i32>, sqlx::Error> {
+        let _ = entity_kind;
         sqlx::query_scalar(
             "SELECT embedding_version
                FROM proxima_core.embeddings
-              WHERE entity_kind = $1
-                AND entity_id = $2
-                AND model_id = $3
+              WHERE entity_id = $1
+                AND model_id = $2
               ORDER BY embedding_version",
         )
-        .bind(entity_kind)
         .bind(entity_id)
         .bind(model_id)
         .fetch_all(pool)
@@ -94,14 +93,13 @@ mod pg_tests {
         entity_id: Uuid,
         model_id: &str,
     ) -> Result<Option<i32>, sqlx::Error> {
+        let _ = entity_kind;
         sqlx::query_scalar(
             "SELECT embedding_version
                FROM proxima_core.embedding_heads
-              WHERE entity_kind = $1
-                AND entity_id = $2
-                AND model_id = $3",
+              WHERE entity_id = $1
+                AND model_id = $2",
         )
-        .bind(entity_kind)
         .bind(entity_id)
         .bind(model_id)
         .fetch_optional(pool)
@@ -115,8 +113,7 @@ mod pg_tests {
         sqlx::query_scalar(
             "SELECT count(*)::bigint
                FROM proxima_core.embeddings
-              WHERE entity_kind = 'Fact'
-                AND entity_id = $1
+              WHERE entity_id = $1
                 AND model_id = 'stub-fact-embed'",
         )
         .bind(memory_id.into_inner())
@@ -129,21 +126,32 @@ mod pg_tests {
         owner: &Owner,
         goal_id: Uuid,
     ) -> Result<GoalId, sqlx::Error> {
-        let (owner_kind, owner_id) = owner.columns();
+        let owner_id = owner.stored_owner_id();
+        let owner_kind = proxima_core::OwnerRefKind::of(owner).as_str();
         sqlx::query(
-            "INSERT INTO proxima_core.goals
-                (goal_id, owner_kind, owner_id, schema_id, schema_version,
-                 title, text, payload, state, authorship_kind, request_id,
-                 idempotency_key)
-             VALUES ($1, $2, $3, 'proxima-test/goal-embedding-v1', 1,
-                     'Embedding goal', 'Embedding goal text', $4,
-                     'Active', 'User', $5, $6)",
+            "INSERT INTO proxima_core.owners (owner_id, kind)
+             VALUES ($1, $2::proxima_core.owner_kind)
+             ON CONFLICT (owner_id) DO NOTHING",
+        )
+        .bind(owner_id)
+        .bind(owner_kind)
+        .execute(pool)
+        .await?;
+        sqlx::query(
+            "INSERT INTO proxima_core.goal_head (handle, schema_id, owner_id, t)
+             VALUES ($1, 'proxima-test/goal-embedding-v1', $2, $1)",
         )
         .bind(goal_id)
-        .bind(owner_kind)
         .bind(owner_id)
-        .bind(br#"{"goal":true}"#.to_vec())
-        .bind(format!("goal-embedding:{goal_id}"))
+        .execute(pool)
+        .await?;
+        sqlx::query(
+            "INSERT INTO proxima_core.goal
+                (handle, t, owner_id, title, state, request_id)
+             VALUES ($1, $1, $2, 'Embedding goal', 'Active', $3)",
+        )
+        .bind(goal_id)
+        .bind(owner_id)
         .bind(format!("goal-embedding:{goal_id}"))
         .execute(pool)
         .await?;
@@ -279,14 +287,14 @@ mod pg_tests {
                 Some(1)
             );
             let memory_rows: i64 = sqlx::query_scalar(
-                "SELECT count(*)::bigint FROM proxima_core.memories WHERE memory_id = $1",
+                "SELECT count(*)::bigint FROM proxima_core.memory WHERE t = $1",
             )
             .bind(goal_uuid)
             .fetch_one(pg.pool_for_tests())
             .await?;
             assert_eq!(
                 memory_rows, 0,
-                "goal embedding validation must not use memories"
+                "goal embedding validation must not use memory"
             );
             Ok(())
         }
@@ -323,18 +331,17 @@ mod pg_tests {
                     &[],
                 )
                 .await?,
-                Some("deleted before embedding write".to_string()),
+                Some("proxima-test/fact-embedding-v1".to_string()),
             );
 
             sqlx::query(
                 "DELETE FROM proxima_core.embedding_jobs
-                  WHERE entity_kind = 'Fact'
-                    AND entity_id = $1",
+                  WHERE entity_id = $1",
             )
             .bind(outcome.memory_id.into_inner())
             .execute(pg.pool_for_tests())
             .await?;
-            sqlx::query("DELETE FROM proxima_core.memories WHERE memory_id = $1")
+            sqlx::query("DELETE FROM proxima_core.memory WHERE t = $1")
                 .bind(outcome.memory_id.into_inner())
                 .execute(pg.pool_for_tests())
                 .await?;

@@ -764,22 +764,126 @@ where
 /// Fact's owner and carry exactly the schema the mapping targets. Both
 /// failures are caller-fixable `ConstraintViolation`s whose messages the
 /// MCP surface passes through verbatim.
+async fn persist_citation_timeseries(
+    tx: &mut Transaction<'_, Postgres>,
+    owner: &Owner,
+    draft: &FactWriteCommand,
+    plan: CitationPlan<'_>,
+    memory_id: MemoryId,
+) -> Result<Option<uuid::Uuid>, StorageError> {
+    match plan {
+        CitationPlan::DraftHint => persist_draft_citation(tx, owner, draft, memory_id).await,
+        CitationPlan::Inline {
+            cited_object,
+            mapping,
+            sidecars,
+        } => {
+            let cited_object_id =
+                upsert_cited_object_in_tx(tx, sidecars, owner, cited_object).await?;
+            insert_citation_mapping_in_tx(
+                tx,
+                owner,
+                mapping,
+                sidecars,
+                uuid::Uuid::now_v7(),
+                memory_id.into_inner(),
+                cited_object_id,
+            )
+            .await?;
+            Ok(Some(cited_object_id))
+        }
+        CitationPlan::ByRef {
+            cited_object_id,
+            expected_object_schema,
+            mapping,
+            sidecars,
+        } => {
+            verify_cited_object_ref_in_tx(tx, owner, cited_object_id, expected_object_schema)
+                .await?;
+            insert_citation_mapping_in_tx(
+                tx,
+                owner,
+                mapping,
+                sidecars,
+                uuid::Uuid::now_v7(),
+                memory_id.into_inner(),
+                cited_object_id,
+            )
+            .await?;
+            Ok(Some(cited_object_id))
+        }
+    }
+}
+
+async fn persist_draft_citation(
+    tx: &mut Transaction<'_, Postgres>,
+    owner: &Owner,
+    draft: &FactWriteCommand,
+    memory_id: MemoryId,
+) -> Result<Option<uuid::Uuid>, StorageError> {
+    let Some(citation) = &draft.citation else {
+        return Ok(None);
+    };
+    let owner_id = owner.stored_owner_id();
+    let cited_object_id = sqlx::query_scalar::<_, uuid::Uuid>(
+        "INSERT INTO proxima_core.cited_objects
+            (schema_id, owner_id, content_hash)
+         VALUES ($1, $2, $3)
+         ON CONFLICT (owner_id, schema_id, content_hash)
+         DO UPDATE SET schema_id = EXCLUDED.schema_id
+         RETURNING cited_object_id",
+    )
+    .bind(citation.object.schema_id.as_str())
+    .bind(owner_id)
+    .bind(&citation.object.content_hash[..])
+    .fetch_one(tx.as_mut())
+    .await
+    .map_err(map_err)?;
+    sqlx::query(
+        "INSERT INTO proxima_core.citation_mappings
+            (schema_id, memory_id, cited_object_id)
+         VALUES ($1, $2, $3)",
+    )
+    .bind(citation.mapping.schema_id.as_str())
+    .bind(memory_id.into_inner())
+    .bind(cited_object_id)
+    .execute(tx.as_mut())
+    .await
+    .map_err(map_err)?;
+    Ok(Some(cited_object_id))
+}
+
+async fn citation_object_for_t(
+    tx: &mut Transaction<'_, Postgres>,
+    memory_id: MemoryId,
+) -> Result<Option<uuid::Uuid>, StorageError> {
+    sqlx::query_scalar(
+        "SELECT cited_object_id
+           FROM proxima_core.citation_mappings
+          WHERE memory_id = $1
+          ORDER BY citation_mapping_id
+          LIMIT 1",
+    )
+    .bind(memory_id.into_inner())
+    .fetch_optional(tx.as_mut())
+    .await
+    .map_err(map_err)
+}
+
 async fn verify_cited_object_ref_in_tx(
     tx: &mut Transaction<'_, Postgres>,
     owner: &Owner,
     cited_object_id: uuid::Uuid,
     expected_object_schema: &SchemaId,
 ) -> Result<(), StorageError> {
-    let (owner_kind, owner_id) = owner_binds(owner);
+    let owner_id = owner.stored_owner_id();
     let schema_id: Option<String> = sqlx::query_scalar(
         "SELECT schema_id
            FROM proxima_core.cited_objects
           WHERE cited_object_id = $1
-            AND owner_kind = $2
-            AND owner_id IS NOT DISTINCT FROM $3",
+            AND owner_id = $2",
     )
     .bind(cited_object_id)
-    .bind(owner_kind)
     .bind(owner_id)
     .fetch_optional(tx.as_mut())
     .await
@@ -819,29 +923,30 @@ pub async fn attach_citation_in_tx(
     let memory_id = authorized.memory_id();
     let memory_uuid = memory_id.into_inner();
     let owner = authorized.owner_write_permit().owner();
-    let (owner_kind, owner_id) = owner_binds(owner);
+    let owner_id = owner.stored_owner_id();
 
-    // A computed score is an Abstraction and an Abstraction may cite the
-    // record of the computation that produced it (docs/16 §Computed Scores
-    // Are Abstractions), so the target kind is no longer implied. The caller
-    // declares it, already checked against `kind_may_cite_directly`; storage
-    // reads the STORED kind and refuses when the two disagree — a declared
-    // kind must never be able to widen what the row actually is.
-    let (stored_kind, existing_mapping_id) = sqlx::query_as::<_, (EntityKind, Option<uuid::Uuid>)>(
-        "SELECT m.kind, m.citation_mapping_id
-                FROM proxima_core.memories m
-               WHERE m.memory_id = $1
-                 AND m.owner_kind = $2
-                 AND m.owner_id IS NOT DISTINCT FROM $3
-                 AND m.tombstoned_at IS NULL",
+    let stored_kind_text: String = sqlx::query_scalar(
+        "SELECT m.kind::text
+           FROM proxima_core.memory m
+          WHERE m.t = $1
+            AND m.owner_id = $2",
     )
     .bind(memory_uuid)
-    .bind(owner_kind)
     .bind(owner_id)
     .fetch_optional(tx.as_mut())
     .await
     .map_err(map_err)?
     .ok_or(StorageError::NotFound)?;
+    let stored_kind = match stored_kind_text.as_str() {
+        "fact" => EntityKind::Fact,
+        "abstraction" => EntityKind::Abstraction,
+        "perspective" => EntityKind::Perspective,
+        other => {
+            return Err(StorageError::Internal(format!(
+                "invalid memory kind {other}"
+            )));
+        }
+    };
     if stored_kind != authorized.memory_kind() {
         return Err(StorageError::ConstraintViolation(format!(
             "citation target {memory_uuid} is a {}, not a {}",
@@ -856,9 +961,7 @@ pub async fn attach_citation_in_tx(
         )));
     }
 
-    if let Some(citation_mapping_id) = existing_mapping_id {
-        let cited_object_id =
-            cited_object_id_for_mapping_in_tx(tx, owner, memory_uuid, citation_mapping_id).await?;
+    if let Some(cited_object_id) = citation_object_for_t(tx, memory_id).await? {
         return Ok(AttachCitationOutcome {
             memory_id,
             cited_object_id,
@@ -881,28 +984,6 @@ pub async fn attach_citation_in_tx(
     )
     .await?;
 
-    let updated = sqlx::query(
-        "UPDATE proxima_core.memories m
-             SET citation_mapping_id = $2
-           WHERE m.memory_id = $1
-             AND m.owner_kind = $3
-             AND m.owner_id IS NOT DISTINCT FROM $4
-             AND m.citation_mapping_id IS NULL",
-    )
-    .bind(memory_uuid)
-    .bind(citation_mapping_id)
-    .bind(owner_kind)
-    .bind(owner_id)
-    .execute(tx.as_mut())
-    .await
-    .map_err(map_err)?;
-
-    if updated.rows_affected() != 1 {
-        return Err(StorageError::Conflict(
-            "citation was attached concurrently".to_string(),
-        ));
-    }
-
     Ok(AttachCitationOutcome {
         memory_id,
         cited_object_id,
@@ -913,23 +994,18 @@ pub async fn attach_citation_in_tx(
 
 async fn cited_object_id_for_mapping_in_tx(
     tx: &mut Transaction<'_, Postgres>,
-    owner: &Owner,
+    _owner: &Owner,
     memory_id: uuid::Uuid,
     citation_mapping_id: uuid::Uuid,
 ) -> Result<uuid::Uuid, StorageError> {
-    let (owner_kind, owner_id) = owner_binds(owner);
     sqlx::query_scalar::<_, uuid::Uuid>(
         "SELECT cm.cited_object_id
             FROM proxima_core.citation_mappings cm
            WHERE cm.citation_mapping_id = $1
-             AND cm.memory_id = $2
-             AND cm.owner_kind = $3
-             AND cm.owner_id IS NOT DISTINCT FROM $4",
+             AND cm.memory_id = $2",
     )
     .bind(citation_mapping_id)
     .bind(memory_id)
-    .bind(owner_kind)
-    .bind(owner_id)
     .fetch_optional(tx.as_mut())
     .await
     .map_err(map_err)?
@@ -946,21 +1022,16 @@ async fn upsert_cited_object_in_tx(
     owner: &Owner,
     cited_object: &AuthorizedInlineCitedObject,
 ) -> Result<uuid::Uuid, StorageError> {
-    let (owner_kind, owner_id) = owner_binds(owner);
-    let cited_object_id_new = uuid::Uuid::now_v7();
+    let owner_id = owner.stored_owner_id();
     let cited_object_id = sqlx::query_scalar::<_, uuid::Uuid>(
         "INSERT INTO proxima_core.cited_objects
-            (cited_object_id, schema_id, owner_kind,
-             owner_id, content_hash)
-         VALUES ($1, $2, $3, $4, $5)
-         ON CONFLICT (owner_kind, owner_id,
-                      schema_id, content_hash)
+            (schema_id, owner_id, content_hash)
+         VALUES ($1, $2, $3)
+         ON CONFLICT (owner_id, schema_id, content_hash)
          DO UPDATE SET schema_id = EXCLUDED.schema_id
          RETURNING cited_object_id",
     )
-    .bind(cited_object_id_new)
     .bind(cited_object.schema_id().as_str())
-    .bind(owner_kind)
     .bind(owner_id)
     .bind(&cited_object.content_hash()[..])
     .fetch_one(tx.as_mut())
@@ -982,20 +1053,17 @@ async fn insert_citation_mapping_in_tx(
     memory_id: uuid::Uuid,
     cited_object_id: uuid::Uuid,
 ) -> Result<(), StorageError> {
-    let (owner_kind, owner_id) = owner_binds(owner);
+    let _ = owner;
     sqlx::query(
         "INSERT INTO proxima_core.citation_mappings
             (citation_mapping_id, schema_id, memory_id,
-             cited_object_id, owner_kind,
-             owner_id)
-         VALUES ($1, $2, $3, $4, $5, $6)",
+             cited_object_id)
+         VALUES ($1, $2, $3, $4)",
     )
     .bind(citation_mapping_id)
     .bind(mapping.schema_id().as_str())
     .bind(memory_id)
     .bind(cited_object_id)
-    .bind(owner_kind)
-    .bind(owner_id)
     .execute(tx.as_mut())
     .await
     .map_err(map_err)?;
@@ -1071,20 +1139,30 @@ where
     ) -> FactIngestSidecarFuture<'t>,
 {
     crate::access::owner_columns::reject_world_write_owner(owner)?;
-    let outcome = super::memory_timeseries::ingest_fact_timeseries(tx, owner, draft).await?;
+    let mut outcome = super::memory_timeseries::ingest_fact_timeseries(tx, owner, draft).await?;
     sidecar(tx, &outcome).await?;
-    if !outcome.idempotent_replay
-        && let Some(model_id) = options.embedding_model_id
-    {
-        crate::verbs::fact_embeddings::enqueue_embedding_job_in_tx(
+    if outcome.idempotent_replay {
+        outcome.cited_object_id = citation_object_for_t(tx, outcome.memory_id).await?;
+    } else {
+        outcome.cited_object_id = persist_citation_timeseries(
             tx,
-            crate::access::owner_columns::owner_binds(owner).0,
-            Some(owner.stored_owner_id()),
-            proxima_core::EntityKind::Fact,
-            outcome.memory_id.into_inner(),
-            model_id,
+            owner,
+            draft,
+            options.citation_plan,
+            outcome.memory_id,
         )
         .await?;
+        if let Some(model_id) = options.embedding_model_id {
+            crate::verbs::fact_embeddings::enqueue_embedding_job_in_tx(
+                tx,
+                crate::access::owner_columns::owner_binds(owner).0,
+                Some(owner.stored_owner_id()),
+                proxima_core::EntityKind::Fact,
+                outcome.memory_id.into_inner(),
+                model_id,
+            )
+            .await?;
+        }
     }
     return Ok(outcome);
     #[allow(unreachable_code)]

@@ -72,16 +72,14 @@ pub(super) async fn load_upload(
     owner: &Owner,
     upload_id: Uuid,
 ) -> Result<UploadRow, BlobError> {
-    let (owner_kind, owner_id) = db_owner_columns(owner);
+    let (_owner_kind, owner_id) = db_owner_columns(owner);
     let row = sqlx::query(
         "SELECT bucket, object_key, filename, mime, expected_byte_len, \
                 status, cited_object_id, expires_at \
            FROM proxima_core.cited_object_uploads \
-          WHERE owner_kind = $1 \
-            AND owner_id IS NOT DISTINCT FROM $2 \
-            AND upload_id = $3",
+          WHERE owner_id = $1 \
+            AND upload_id = $2",
     )
-    .bind(owner_kind)
     .bind(owner_id)
     .bind(upload_id)
     .fetch_optional(pool)
@@ -106,16 +104,14 @@ pub(super) async fn mark_upload_expired(
     owner: &Owner,
     upload_id: Uuid,
 ) -> Result<(), BlobError> {
-    let (owner_kind, owner_id) = db_owner_columns(owner);
+    let (_owner_kind, owner_id) = db_owner_columns(owner);
     sqlx::query(
         "UPDATE proxima_core.cited_object_uploads \
             SET status = 'expired', error_message = 'upload expired' \
-          WHERE owner_kind = $1 \
-            AND owner_id IS NOT DISTINCT FROM $2 \
-            AND upload_id = $3 \
+          WHERE owner_id = $1 \
+            AND upload_id = $2 \
             AND status = 'pending'",
     )
-    .bind(owner_kind)
     .bind(owner_id)
     .bind(upload_id)
     .execute(pool)
@@ -134,19 +130,17 @@ pub(super) async fn load_staged_payload(
     owner: &Owner,
     cited_object_id: Uuid,
 ) -> Result<CitedBlobStaged, BlobError> {
-    let (owner_kind, owner_id) = db_owner_columns(owner);
+    let (_owner_kind, owner_id) = db_owner_columns(owner);
     let row = sqlx::query(
         "SELECT co.content_hash, b.bucket, b.object_key, b.sha256, b.byte_len, \
                 b.mime, b.filename, b.etag, b.uploaded_at \
            FROM proxima_core.cited_objects co \
            JOIN proxima_core.cited_uploaded_blob_v1 b USING (cited_object_id) \
           WHERE co.cited_object_id = $1 \
-            AND co.owner_kind = $2 \
-            AND co.owner_id IS NOT DISTINCT FROM $3 \
-            AND co.schema_id = $4",
+            AND co.owner_id = $2 \
+            AND co.schema_id = $3",
     )
     .bind(cited_object_id)
-    .bind(owner_kind)
     .bind(owner_id)
     .bind(UPLOADED_BLOB_SCHEMA_ID)
     .fetch_optional(pool)
@@ -196,18 +190,16 @@ pub(super) async fn find_held_blobs(
     owner: &Owner,
     content_hashes: &[[u8; 32]],
 ) -> Result<Vec<CitedBlobHeld>, BlobError> {
-    let (owner_kind, owner_id) = db_owner_columns(owner);
+    let (_owner_kind, owner_id) = db_owner_columns(owner);
     let digests: Vec<Vec<u8>> = content_hashes.iter().map(|hash| hash.to_vec()).collect();
     let rows = sqlx::query(
         "SELECT co.content_hash, co.cited_object_id, b.byte_len, b.mime, b.filename \
            FROM proxima_core.cited_objects co \
            JOIN proxima_core.cited_uploaded_blob_v1 b USING (cited_object_id) \
-          WHERE co.owner_kind = $1 \
-            AND co.owner_id IS NOT DISTINCT FROM $2 \
-            AND co.schema_id = $3 \
-            AND co.content_hash = ANY($4::bytea[])",
+          WHERE co.owner_id = $1 \
+            AND co.schema_id = $2 \
+            AND co.content_hash = ANY($3::bytea[])",
     )
-    .bind(owner_kind)
     .bind(owner_id)
     .bind(UPLOADED_BLOB_SCHEMA_ID)
     .bind(&digests)
@@ -234,18 +226,16 @@ pub(super) async fn load_blob_location(
     owner: &Owner,
     cited_object_id: Uuid,
 ) -> Result<BlobLocation, BlobError> {
-    let (owner_kind, owner_id) = db_owner_columns(owner);
+    let (_owner_kind, owner_id) = db_owner_columns(owner);
     let row = sqlx::query(
         "SELECT b.bucket, b.object_key \
            FROM proxima_core.cited_objects co \
            JOIN proxima_core.cited_uploaded_blob_v1 b USING (cited_object_id) \
           WHERE co.cited_object_id = $1 \
-            AND co.owner_kind = $2 \
-            AND co.owner_id IS NOT DISTINCT FROM $3 \
-            AND co.schema_id = $4",
+            AND co.owner_id = $2 \
+            AND co.schema_id = $3",
     )
     .bind(cited_object_id)
-    .bind(owner_kind)
     .bind(owner_id)
     .bind(UPLOADED_BLOB_SCHEMA_ID)
     .fetch_optional(pool)
@@ -268,19 +258,17 @@ pub(super) async fn load_blob_read_record(
     owner: &Owner,
     cited_object_id: Uuid,
 ) -> Result<Option<BlobReadRecord>, BlobError> {
-    let (owner_kind, owner_id) = db_owner_columns(owner);
+    let (_owner_kind, owner_id) = db_owner_columns(owner);
     let row = sqlx::query(
         "SELECT co.cited_object_id, co.content_hash, b.bucket, b.object_key, \
                 b.sha256, b.byte_len, b.mime, b.filename \
            FROM proxima_core.cited_objects co \
            JOIN proxima_core.cited_uploaded_blob_v1 b USING (cited_object_id) \
           WHERE co.cited_object_id = $1 \
-            AND co.owner_kind = $2 \
-            AND co.owner_id IS NOT DISTINCT FROM $3 \
-            AND co.schema_id = $4",
+            AND co.owner_id = $2 \
+            AND co.schema_id = $3",
     )
     .bind(cited_object_id)
-    .bind(owner_kind)
     .bind(owner_id)
     .bind(UPLOADED_BLOB_SCHEMA_ID)
     .fetch_optional(pool)

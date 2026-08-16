@@ -28,12 +28,11 @@ WITH scoped AS MATERIALIZED (
             h2.embedding_version AS head_version
        FROM proxima_core.memory_head mh
        JOIN proxima_core.memory m ON m.handle = mh.handle AND m.t = mh.t
-       JOIN proxima_core.agent_note_v1 n ON n.memory_id = m.t
        LEFT JOIN proxima_core.embedding_heads h2
          ON h2.entity_id = m.t
         AND h2.model_id = $1
-      WHERE NULLIF(btrim(n.body), '') IS NOT NULL
-        AND ($3::text <> 'since' OR uuid_extract_timestamp(m.t) >= $4)
+      WHERE ($3::text <> 'since'
+             OR COALESCE(uuid_extract_timestamp(m.t), TIMESTAMPTZ '1970-01-01') >= $4)
         AND mh.schema_id <> ALL($5::text[])
  ),
  eligible AS MATERIALIZED (

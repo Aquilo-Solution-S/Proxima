@@ -106,6 +106,23 @@ pub async fn forget_memory(
     .await
     .map_err(map_err)?;
 
+    sqlx::query(
+        "DELETE FROM proxima_core.citation_uploaded_blob_page_span_v1
+          WHERE citation_mapping_id IN (
+                SELECT citation_mapping_id
+                  FROM proxima_core.citation_mappings
+                 WHERE memory_id = $1
+          )",
+    )
+    .bind(t)
+    .execute(tx.as_mut())
+    .await
+    .map_err(map_err)?;
+    sqlx::query("DELETE FROM proxima_core.citation_mappings WHERE memory_id = $1")
+        .bind(t)
+        .execute(tx.as_mut())
+        .await
+        .map_err(map_err)?;
     sqlx::query("DELETE FROM proxima_core.memory WHERE t = $1")
         .bind(t)
         .execute(tx.as_mut())
@@ -222,6 +239,23 @@ pub async fn erase_memory(
             .await
             .map_err(map_err)?;
     }
+    sqlx::query(
+        "DELETE FROM proxima_core.citation_uploaded_blob_page_span_v1
+          WHERE citation_mapping_id IN (
+                SELECT citation_mapping_id
+                  FROM proxima_core.citation_mappings
+                 WHERE memory_id = $1
+          )",
+    )
+    .bind(t)
+    .execute(tx.as_mut())
+    .await
+    .map_err(map_err)?;
+    sqlx::query("DELETE FROM proxima_core.citation_mappings WHERE memory_id = $1")
+        .bind(t)
+        .execute(tx.as_mut())
+        .await
+        .map_err(map_err)?;
     sqlx::query("DELETE FROM proxima_core.memory WHERE t = $1 AND owner_id = $2")
         .bind(t)
         .bind(owner.stored_owner_id())
