@@ -130,11 +130,11 @@ async fn walk_memory_lineage_timeseries(
                 std::cmp::Ordering::Equal => {
                     let after_src = match after.source {
                         EntityRef::Memory(id) => id.into_inner(),
-                        _ => return true,
+                        EntityRef::Goal(_) => return true,
                     };
                     let after_tgt = match after.target {
                         EntityRef::Memory(id) => id.into_inner(),
-                        _ => return true,
+                        EntityRef::Goal(_) => return true,
                     };
                     hop.0 < after_src || (hop.0 == after_src && hop.2 < after_tgt)
                 }

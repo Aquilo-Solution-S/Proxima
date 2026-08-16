@@ -121,17 +121,15 @@ pub use proxima_core::{
 /// it was read from, the binding, and the target — and the defaulted
 /// `references()` on every payload trait returns a `Vec` of them, so a
 /// schema that points at another node cannot be written without naming this
-/// type. [`ReferenceBinding`] is where the retired descriptor's
-/// `FollowHead`/`Pin` cell went: a property of the field, decided once by
-/// the schema author.
+/// type. [`ReferenceBinding`] is a property of the field, decided once by
+/// the schema author. The only binding is [`ReferenceBinding::Pin`].
 ///
 /// [`EdgeEndpoint`] is the address form the constructors below mint
-/// (`memory`, `goal`, `fact_entity`); [`EdgeKind`] is exported to be *read*
+/// (`memory`, `goal`); [`EdgeKind`] is exported to be *read*
 /// — off a listed [`Edge`], or when filtering — never passed to a writer,
-/// because the kind follows the operation. [`FactEntityId`] rides along
-/// because `PayloadReference::fact_entity_head` cannot be called without it.
+/// because the kind follows the operation.
 pub use proxima_core::{
-    Edge, EdgeEndpoint, EdgeKind, EdgeTargetProjection, EntityRef, FactEntityId, PayloadReference,
+    Edge, EdgeEndpoint, EdgeKind, EdgeTargetProjection, EntityRef, PayloadReference,
     ReferenceBinding,
 };
 /// Shared argument rules for search and paged reads, so a flavor does not

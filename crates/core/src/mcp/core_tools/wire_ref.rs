@@ -29,7 +29,7 @@ pub(crate) fn format_memory_by_kind(
 }
 
 /// Format any graph endpoint reference. `memory_kind` selects the prefix
-/// for memory refs; goals and fact entities carry their own shapes.
+/// for memory refs; goals carry their own shape.
 pub(crate) fn format_entity_ref(
     ctx: &McpToolCtx,
     entity: &EntityRef,
@@ -38,9 +38,6 @@ pub(crate) fn format_entity_ref(
     match entity {
         EntityRef::Memory(memory_id) => format_memory_by_kind(ctx, *memory_id, memory_kind),
         EntityRef::Goal(goal_id) => ctx.format_goal(*goal_id),
-        EntityRef::FactEntity(fact_entity_id) => {
-            format!("fact_entity:{}", fact_entity_id.into_inner())
-        }
     }
 }
 
@@ -62,9 +59,6 @@ pub(crate) fn format_target_projection_with(
         EdgeTargetProjection::Visible { target } => match target.entity {
             EntityRef::Memory(memory_id) => format_memory(memory_id),
             EntityRef::Goal(goal_id) => ctx.format_goal(goal_id),
-            EntityRef::FactEntity(fact_entity_id) => {
-                format!("fact_entity:{}", fact_entity_id.into_inner())
-            }
         },
         EdgeTargetProjection::Redacted => REDACTED_TARGET.into(),
         EdgeTargetProjection::Unavailable => UNAVAILABLE_TARGET.into(),

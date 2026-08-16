@@ -20,7 +20,7 @@
 //!   content hash.
 
 use crate::change_event::EntityRef;
-use crate::{EntityKind, FactEntityId, GoalId, MemoryId};
+use crate::{EntityKind, GoalId, MemoryId};
 
 /// Closed substrate vocabulary for what an edge *is*. Two variants, not
 /// extensible — not by flavors, not by core features. A feature that
@@ -55,12 +55,10 @@ impl EdgeKind {
     }
 }
 
-/// One end of an edge: where it points ([`EntityRef`] — a memory row, a
-/// Goal, or a Fact-entity head, the only three address forms) plus the
-/// entity kind stored there.
+/// One end of an edge: where it points ([`EntityRef`] — a memory row or
+/// a Goal) plus the entity kind stored there.
 ///
-/// The address form *is* the durable binding: a `FactEntity` address
-/// follows the head, a `Memory`/`Goal` address pins the row.
+/// A `Memory`/`Goal` address pins the row. There is no follow-head address.
 ///
 /// The kind travels with the address because the F/A/P layering rule and
 /// every wire projection need it, and re-deriving it per read is what
@@ -90,22 +88,12 @@ impl EdgeEndpoint {
         }
     }
 
-    /// A Fact-entity head — the address that follows the head pointer
-    /// instead of pinning one observation.
-    #[must_use]
-    pub const fn fact_entity(fact_entity_id: FactEntityId) -> Self {
-        Self {
-            kind: EntityKind::Fact,
-            entity: EntityRef::FactEntity(fact_entity_id),
-        }
-    }
-
     /// The memory row this endpoint pins, if it pins one.
     #[must_use]
     pub const fn memory_id(self) -> Option<MemoryId> {
         match self.entity {
             EntityRef::Memory(memory_id) => Some(memory_id),
-            EntityRef::Goal(_) | EntityRef::FactEntity(_) => None,
+            EntityRef::Goal(_) => None,
         }
     }
 

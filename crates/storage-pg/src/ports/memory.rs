@@ -170,13 +170,15 @@ impl MemoryAuthoringPort for PgStorage {
         let key = verbs::forget::cold_object_key(&verbs::forget::owner_hash_hex(owner), handle, t);
         let pool = self.pool.clone();
         let cold = Arc::clone(&self.cold);
+        let sidecars = self.sidecars.clone();
         with_bounded_retry(move || {
             let key = key.clone();
             let pool = pool.clone();
             let cold = Arc::clone(&cold);
+            let sidecars = sidecars.clone();
             async move {
                 let mut tx = pool.begin().await.map_err(internal)?;
-                verbs::forget::forget_memory(&mut tx, cold.as_ref(), &key, t).await?;
+                verbs::forget::forget_memory(&mut tx, &sidecars, cold.as_ref(), &key, t).await?;
                 tx.commit().await.map_err(crate::error::map_err)?;
                 Ok(())
             }

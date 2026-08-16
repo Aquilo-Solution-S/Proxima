@@ -320,10 +320,8 @@ impl Engine {
     /// Check the schema-declared reference fields of a payload, then admit
     /// their targets like any other index target.
     ///
-    /// A reference whose declared binding disagrees with the address form
-    /// it produced is refused rather than coerced: `FollowHead` and `Pin`
-    /// are different statements about what the reference means when the
-    /// target is re-observed.
+    /// Schema-declared reference fields become index targets. Every
+    /// address is a pin.
     async fn authorized_payload_references<A>(
         &self,
         authority: &A,
@@ -350,7 +348,7 @@ impl Engine {
         &self,
         authority: &A,
         target: EdgeEndpoint,
-        field: &str,
+        _field: &str,
     ) -> Result<EdgeEndpoint, ProtocolError>
     where
         A: EngineAuthority + ?Sized,
@@ -369,19 +367,6 @@ impl Engine {
                 self.authorize_entry_read(authority, EntityId::Goal(goal_id))
                     .await?;
                 Ok(EdgeEndpoint::goal(goal_id))
-            }
-            // A Fact-entity head is a projection of Fact rows the reader
-            // reaches through the same owner scope; there is no separate
-            // row to admit, and the head's kind is Fact by construction.
-            crate::EntityRef::FactEntity(_) => {
-                if target.kind == EntityKind::Fact {
-                    Ok(target)
-                } else {
-                    Err(ProtocolError::invalid_argument(
-                        field,
-                        "a Fact-entity head endpoint must declare kind Fact",
-                    ))
-                }
             }
         }
     }

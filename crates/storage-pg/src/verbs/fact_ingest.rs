@@ -282,9 +282,7 @@ where
 /// Read a typed Fact payload's schema-declared reference fields as index
 /// targets.
 ///
-/// A declaration whose binding disagrees with the address form it produced is
-/// refused rather than coerced: `FollowHead` and `Pin` are different
-/// statements about what the reference means when the target is re-observed.
+/// Schema-declared reference fields become index targets. Every address is a pin.
 fn payload_reference_targets<P: FactPayload>(
     payload: &P,
 ) -> Result<Vec<EdgeEndpoint>, StorageError> {

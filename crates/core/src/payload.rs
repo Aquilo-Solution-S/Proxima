@@ -9,7 +9,7 @@
 //! const-construction of `String`, which Rust does not allow.
 
 use crate::edge::EdgeEndpoint;
-use crate::{EntityKind, FactEntityId, GoalId, MemoryId, SchemaId};
+use crate::{EntityKind, GoalId, MemoryId, SchemaId};
 
 /// How a schema-declared reference field addresses the node it points
 /// at. A binding is a property of the *field*, decided by the schema
@@ -18,9 +18,6 @@ use crate::{EntityKind, FactEntityId, GoalId, MemoryId, SchemaId};
 pub enum ReferenceBinding {
     /// Point at the exact memory or goal row named by the field.
     Pin,
-    /// Point at a Fact-entity head, so the reference follows re-observation
-    /// instead of freezing one observation.
-    FollowHead,
 }
 
 impl ReferenceBinding {
@@ -28,7 +25,6 @@ impl ReferenceBinding {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Pin => "Pin",
-            Self::FollowHead => "FollowHead",
         }
     }
 }
@@ -72,38 +68,14 @@ impl PayloadReference {
         }
     }
 
-    /// Reference a Fact-entity head, following it as it is re-observed.
-    #[must_use]
-    pub const fn fact_entity_head(field: &'static str, fact_entity_id: FactEntityId) -> Self {
-        Self {
-            field,
-            binding: ReferenceBinding::FollowHead,
-            target: EdgeEndpoint::fact_entity(fact_entity_id),
-        }
-    }
-
-    /// Check that the declared binding agrees with the address form it
-    /// produced. The two cannot disagree through the constructors above;
-    /// the check exists for hand-built declarations and is what ingest
-    /// calls before writing an index entry.
+    /// Pins always address a memory or Goal row.
     ///
     /// # Errors
     ///
-    /// Returns a message when a `FollowHead` reference does not address a
-    /// Fact-entity head, or a `Pin` reference does.
+    /// Never fails: the only remaining binding is [`ReferenceBinding::Pin`].
     pub fn validate(&self) -> Result<(), String> {
-        let is_head = matches!(self.target.entity, crate::EntityRef::FactEntity(_));
-        match (self.binding, is_head) {
-            (ReferenceBinding::FollowHead, true) | (ReferenceBinding::Pin, false) => Ok(()),
-            (ReferenceBinding::FollowHead, false) => Err(format!(
-                "reference field {} declares FollowHead but does not address a Fact-entity head",
-                self.field
-            )),
-            (ReferenceBinding::Pin, true) => Err(format!(
-                "reference field {} declares Pin but addresses a Fact-entity head",
-                self.field
-            )),
-        }
+        let _ = self;
+        Ok(())
     }
 }
 

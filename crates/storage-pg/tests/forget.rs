@@ -9,6 +9,7 @@ use proxima_core::{AccessKind, ColdObjectStore, OwnerRef, SchemaId, SchemaVersio
 use proxima_pg_testkit::{create_db, db_url, drop_db};
 use proxima_storage_pg::PgStorage;
 use proxima_storage_pg::verbs::fact_ingest::ingest_fact_atomic;
+use proxima_storage_pg::core_pg_sidecars;
 use proxima_storage_pg::verbs::forget::{
     MemoryColdStore, cold_object_key, erase_memory, forget_memory, hydrate_memory, owner_hash_hex,
 };
@@ -55,7 +56,7 @@ async fn forget_hydrate_erase_and_world_never() {
 
         let cold = MemoryColdStore::default();
         let mut tx = pool.begin().await?;
-        forget_memory(&mut tx, &cold, &key, t).await?;
+        forget_memory(&mut tx, &core_pg_sidecars(), &cold, &key, t).await?;
         tx.commit().await?;
 
         let hot: i64 = sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_core.memory WHERE t = $1")
@@ -77,7 +78,7 @@ async fn forget_hydrate_erase_and_world_never() {
         assert_eq!(keys, 1, "forget does not touch ingest_keys");
 
         let mut tx = pool.begin().await?;
-        hydrate_memory(&mut tx, &cold, t).await?;
+        hydrate_memory(&mut tx, &core_pg_sidecars(), &cold, t).await?;
         tx.commit().await?;
         let hot: i64 = sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_core.memory WHERE t = $1")
             .bind(t)
@@ -101,8 +102,8 @@ async fn forget_hydrate_erase_and_world_never() {
         assert_eq!(op, "append");
 
         let mut tx = pool.begin().await?;
-        forget_memory(&mut tx, &cold, &key, t).await?;
-        erase_memory(&mut tx, &cold, &owner, t).await?;
+        forget_memory(&mut tx, &core_pg_sidecars(), &cold, &key, t).await?;
+        erase_memory(&mut tx, &core_pg_sidecars(), &cold, &owner, t).await?;
         tx.commit().await?;
         let stub: i64 =
             sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_core.cooled WHERE t = $1")
@@ -112,7 +113,7 @@ async fn forget_hydrate_erase_and_world_never() {
         assert_eq!(stub, 0);
 
         let mut tx = pool.begin().await?;
-        let err = erase_memory(&mut tx, &cold, &OwnerRef::World, t)
+        let err = erase_memory(&mut tx, &core_pg_sidecars(), &cold, &OwnerRef::World, t)
             .await
             .expect_err("World never");
         assert!(err.to_string().contains("World"), "got: {err}");
@@ -185,7 +186,7 @@ async fn engine_forget_puts_held_store_hydrate_restores_same_t() {
         assert_eq!(embed_hot, 0, "forget drops vectors");
 
         let mut tx = pool.begin().await?;
-        hydrate_memory(&mut tx, cold.as_ref(), t).await?;
+        hydrate_memory(&mut tx, pg.sidecars(), cold.as_ref(), t).await?;
         tx.commit().await?;
 
         let restored: (Uuid, Vec<Uuid>, Vec<Uuid>) = sqlx::query_as(

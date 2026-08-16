@@ -1,7 +1,7 @@
 use std::collections::BTreeSet;
 
 use proxima::flavor::{
-    AbstractionPayload, EdgeEndpoint, EdgeKind, FactEntityId, FactPayload, FlavorBundle,
+    AbstractionPayload, EdgeEndpoint, EdgeKind, FactPayload, FlavorBundle,
     FlavorRegistry, InputContractId, MemoryId, OperatorId, PayloadKeyBuilder, PayloadReference,
     PgMemoryPayload, PgMemoryPayloadFuture, PgMemorySidecar, PgSidecarFuture, PgSidecarReadCtx,
     PgSidecarRegistry, ReferenceBinding, SchemaId, SchemaVersion, SidecarPayload,
@@ -35,7 +35,7 @@ fn facade_does_not_export_raw_edge_append_surface() {
 #[allow(unused_imports)]
 mod facade_imports_compile {
     use proxima::flavor::{
-        Edge, EdgeEndpoint, EdgeKind, EdgeTargetProjection, EntityRef, FactEntityId,
+        Edge, EdgeEndpoint, EdgeKind, EdgeTargetProjection, EntityRef,
         FlavorRegistryFrozen, PayloadKeyBuilder, PayloadReference, ReferenceBinding, Tool, ToolCtx,
         ToolError,
     };
@@ -262,10 +262,6 @@ fn facade_flavor_authoring_symbols_are_reachable() {
     );
     assert_eq!(reference.binding, ReferenceBinding::Pin);
     reference.validate().expect("Pin addresses a memory row");
-    assert_eq!(
-        PayloadReference::fact_entity_head("symbol_entity", FactEntityId::new(Uuid::nil())).binding,
-        ReferenceBinding::FollowHead
-    );
     assert_eq!(EdgeKind::Origin.as_str(), "origin");
     assert_eq!(
         EdgeEndpoint::memory(EntityKind::Abstraction, MemoryId::new(Uuid::nil())).layer(),

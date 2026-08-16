@@ -313,10 +313,6 @@ impl Engine {
                     self.authorize_entry_read(authority, crate::EntityId::Goal(goal_id))
                         .await?;
                 }
-                // A Fact-entity head is reached through the same owner
-                // scope as its observations; there is no separate row to
-                // admit.
-                crate::EntityRef::FactEntity(_) => {}
             }
             if !out.contains(target) {
                 out.push(*target);

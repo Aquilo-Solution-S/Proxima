@@ -36,10 +36,10 @@ pub(crate) async fn read_edges(
     }
     if matches!(
         req.filter.source,
-        Some(EntityRef::FactEntity(_) | EntityRef::Goal(_))
+        Some(EntityRef::Goal(_))
     ) || matches!(
         req.filter.target,
-        Some(EntityRef::FactEntity(_) | EntityRef::Goal(_))
+        Some(EntityRef::Goal(_))
     ) {
         return Ok(EdgeReadResponse {
             edges: Vec::new(),
@@ -54,20 +54,20 @@ pub(crate) async fn read_edges(
     let kind = req.filter.kind.map(|kind| kind.as_str().to_string());
     let source_id = req.filter.source.and_then(|entity| match entity {
         EntityRef::Memory(id) => Some(id.into_inner()),
-        _ => None,
+        EntityRef::Goal(_) => None,
     });
     let target_id = req.filter.target.and_then(|entity| match entity {
         EntityRef::Memory(id) => Some(id.into_inner()),
-        _ => None,
+        EntityRef::Goal(_) => None,
     });
     let after_created = req.cursor.map(|cursor| cursor.created_at);
     let after_source = req.cursor.and_then(|cursor| match cursor.source {
         EntityRef::Memory(id) => Some(id.into_inner()),
-        _ => None,
+        EntityRef::Goal(_) => None,
     });
     let after_target = req.cursor.and_then(|cursor| match cursor.target {
         EntityRef::Memory(id) => Some(id.into_inner()),
-        _ => None,
+        EntityRef::Goal(_) => None,
     });
     let after_kind = req.cursor.map(|cursor| cursor.kind.as_str().to_string());
     let fetch = i64::from(req.limit).saturating_add(1);

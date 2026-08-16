@@ -513,31 +513,29 @@ fn flavor_sdk_exposes_the_derived_memory_write_lane() {
 #[test]
 fn flavor_sdk_exposes_the_payload_reference_lane() {
     use proxima::flavor::{
-        EdgeKind, EntityKind, FactEntityId, MemoryId, PayloadReference, ReferenceBinding,
+        EdgeKind, EntityKind, MemoryId, PayloadReference, ReferenceBinding,
     };
 
     struct TierReferrer {
         parent: MemoryId,
-        observed_entity: FactEntityId,
     }
 
     impl TierReferrer {
         fn references(&self) -> Vec<PayloadReference> {
-            vec![
-                PayloadReference::memory("parent", EntityKind::Fact, self.parent),
-                PayloadReference::fact_entity_head("observed_entity", self.observed_entity),
-            ]
+            vec![PayloadReference::memory(
+                "parent",
+                EntityKind::Fact,
+                self.parent,
+            )]
         }
     }
 
     let referrer = TierReferrer {
         parent: MemoryId::new(uuid::Uuid::nil()),
-        observed_entity: FactEntityId::new(uuid::Uuid::nil()),
     };
     let references = referrer.references();
-    assert_eq!(references.len(), 2);
+    assert_eq!(references.len(), 1);
     assert_eq!(references[0].binding, ReferenceBinding::Pin);
-    assert_eq!(references[1].binding, ReferenceBinding::FollowHead);
     for reference in &references {
         reference.validate().expect("binding matches address form");
     }

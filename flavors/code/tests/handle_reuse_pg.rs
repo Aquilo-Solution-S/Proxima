@@ -46,7 +46,7 @@ fn commit(repo_id: Uuid) -> CommitV1 {
 }
 
 #[tokio::test]
-async fn code_stateful_ingest_derives_fact_entity_heads() {
+async fn code_stateful_ingest_reuses_handle() {
     let (db_name, pg) = migrated_db().await;
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = test_owner();
@@ -92,5 +92,5 @@ async fn code_stateful_ingest_derives_fact_entity_heads() {
     }
     .await;
     let _ = drop_db(&db_name).await;
-    result.expect("code_stateful_ingest_derives_fact_entity_heads failed");
+    result.expect("code_stateful_ingest_reuses_handle failed");
 }

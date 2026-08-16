@@ -6,8 +6,10 @@ use sqlx::{Postgres, Transaction};
 use uuid::Uuid;
 
 use crate::error::map_err;
+use crate::pg_ident::PgIdent;
+use crate::sidecars::PgSidecarRegistryFrozen;
 
-pub const COLD_FORMAT_VERSION: u8 = 2;
+pub const COLD_FORMAT_VERSION: u8 = 3;
 
 #[must_use]
 pub fn cold_object_key(owner_hash: &str, handle: Uuid, t: Uuid) -> String {
@@ -89,8 +91,7 @@ struct HotRow {
 struct ColdRecord {
     row: HotRow,
     schema_id: String,
-    sidecar_kind: u8,
-    sidecar: Vec<u8>,
+    sidecar_dumps: Vec<(String, String)>,
     /// Model ids that had vectors. UML §5c: vectors stay out of the object;
     /// hydrate enqueues embed jobs for these ids.
     embed_models: Vec<String>,
@@ -108,8 +109,11 @@ fn encode_record(rec: &ColdRecord) -> Vec<u8> {
     write_uuid_list(&mut out, &rec.row.origins);
     write_uuid_list(&mut out, &rec.row.refs);
     write_str(&mut out, &rec.schema_id);
-    out.push(rec.sidecar_kind);
-    write_bytes(&mut out, &rec.sidecar);
+    write_u16(&mut out, u16::try_from(rec.sidecar_dumps.len()).unwrap_or(0));
+    for (table, json) in &rec.sidecar_dumps {
+        write_str(&mut out, table);
+        write_str(&mut out, json);
+    }
     write_str_list(&mut out, &rec.embed_models);
     out
 }
@@ -117,7 +121,7 @@ fn encode_record(rec: &ColdRecord) -> Vec<u8> {
 fn decode_record(bytes: &[u8]) -> Result<ColdRecord, StorageError> {
     let mut i = 0;
     let version = read_u8(bytes, &mut i)?;
-    if version != 1 && version != COLD_FORMAT_VERSION {
+    if version != 1 && version != 2 && version != COLD_FORMAT_VERSION {
         return Err(StorageError::Internal(format!(
             "unknown cold format {version}"
         )));
@@ -134,8 +138,18 @@ fn decode_record(bytes: &[u8]) -> Result<ColdRecord, StorageError> {
         refs: read_uuid_list(bytes, &mut i)?,
     };
     let schema_id = read_str(bytes, &mut i)?;
-    let sidecar_kind = read_u8(bytes, &mut i)?;
-    let sidecar = read_bytes(bytes, &mut i)?;
+    let sidecar_dumps = if version >= 3 {
+        let n = usize::from(read_u16(bytes, &mut i)?);
+        let mut dumps = Vec::with_capacity(n);
+        for _ in 0..n {
+            dumps.push((read_str(bytes, &mut i)?, read_str(bytes, &mut i)?));
+        }
+        dumps
+    } else {
+        let _kind = read_u8(bytes, &mut i)?;
+        let _sidecar = read_bytes(bytes, &mut i)?;
+        Vec::new()
+    };
     let embed_models = if version >= 2 {
         read_str_list(bytes, &mut i)?
     } else {
@@ -144,8 +158,7 @@ fn decode_record(bytes: &[u8]) -> Result<ColdRecord, StorageError> {
     Ok(ColdRecord {
         row,
         schema_id,
-        sidecar_kind,
-        sidecar,
+        sidecar_dumps,
         embed_models,
     })
 }
@@ -270,160 +283,117 @@ fn read_uuid_list(bytes: &[u8], i: &mut usize) -> Result<Vec<Uuid>, StorageError
     Ok(out)
 }
 
-const SIDECAR_NONE: u8 = 0;
-const SIDECAR_NOTE: u8 = 1;
-const SIDECAR_UTTERANCE: u8 = 2;
-const SIDECAR_DERIVATION: u8 = 3;
-const SIDECAR_INTERPRET: u8 = 4;
-
-async fn load_sidecar(
+async fn dump_registered_sidecars(
     tx: &mut Transaction<'_, Postgres>,
+    sidecars: &PgSidecarRegistryFrozen,
     t: Uuid,
-) -> Result<(u8, Vec<u8>), StorageError> {
-    if let Some((title, body, tags)) = sqlx::query_as::<_, (String, String, Vec<String>)>(
-        "SELECT title, body, tags FROM proxima_core.agent_note_v1 WHERE t = $1",
-    )
-    .bind(t)
-    .fetch_optional(tx.as_mut())
-    .await
-    .map_err(map_err)?
-    {
-        let mut buf = Vec::new();
-        write_str(&mut buf, &title);
-        write_str(&mut buf, &body);
-        write_u16(&mut buf, u16::try_from(tags.len()).unwrap_or(0));
-        for tag in tags {
-            write_str(&mut buf, &tag);
+) -> Result<Vec<(String, String)>, StorageError> {
+    let mut dumps = Vec::new();
+    for table in sidecars.memory_sidecar_tables() {
+        let ident = PgIdent::table(table)?;
+        let sql = format!(
+            "SELECT to_jsonb(s) - COALESCE((
+                 SELECT array_agg(a.attname::text)
+                   FROM pg_attribute a
+                   JOIN pg_class c ON c.oid = a.attrelid
+                   JOIN pg_namespace n ON n.oid = c.relnamespace
+                  WHERE n.nspname = split_part('{tbl}', '.', 1)
+                    AND c.relname = split_part('{tbl}', '.', 2)
+                    AND a.attgenerated <> ''
+              ), '{{}}'::text[])
+               FROM {tbl} s
+              WHERE s.t = $1",
+            tbl = ident.as_str()
+        );
+        let json: Option<serde_json::Value> = sqlx::query_scalar(sqlx::AssertSqlSafe(sql))
+            .bind(t)
+            .fetch_optional(tx.as_mut())
+            .await
+            .map_err(map_err)?;
+        if let Some(json) = json {
+            dumps.push((table.to_string(), json.to_string()));
         }
-        return Ok((SIDECAR_NOTE, buf));
     }
-    if let Some((speaker, conversation_id, text)) = sqlx::query_as::<_, (String, String, String)>(
-        "SELECT speaker, conversation_id, text FROM proxima_core.utterance_v1 WHERE t = $1",
-    )
-    .bind(t)
-    .fetch_optional(tx.as_mut())
-    .await
-    .map_err(map_err)?
-    {
-        let mut buf = Vec::new();
-        write_str(&mut buf, &speaker);
-        write_str(&mut buf, &conversation_id);
-        write_str(&mut buf, &text);
-        return Ok((SIDECAR_UTTERANCE, buf));
-    }
-    if let Some((title, body)) = sqlx::query_as::<_, (String, String)>(
-        "SELECT title, body FROM proxima_core.agent_derivation_v1 WHERE t = $1",
-    )
-    .bind(t)
-    .fetch_optional(tx.as_mut())
-    .await
-    .map_err(map_err)?
-    {
-        let mut buf = Vec::new();
-        write_str(&mut buf, &title);
-        write_str(&mut buf, &body);
-        return Ok((SIDECAR_DERIVATION, buf));
-    }
-    if let Some(claim) = sqlx::query_scalar::<_, String>(
-        "SELECT claim FROM proxima_core.interpretation_v1 WHERE t = $1",
-    )
-    .bind(t)
-    .fetch_optional(tx.as_mut())
-    .await
-    .map_err(map_err)?
-    {
-        let mut buf = Vec::new();
-        write_str(&mut buf, &claim);
-        return Ok((SIDECAR_INTERPRET, buf));
-    }
-    Ok((SIDECAR_NONE, Vec::new()))
+    Ok(dumps)
 }
 
-async fn restore_sidecar(
+async fn insertable_columns(
     tx: &mut Transaction<'_, Postgres>,
-    t: Uuid,
-    kind: u8,
-    bytes: &[u8],
-) -> Result<(), StorageError> {
-    let mut i = 0;
-    match kind {
-        SIDECAR_NONE => Ok(()),
-        SIDECAR_NOTE => {
-            let title = read_str(bytes, &mut i)?;
-            let body = read_str(bytes, &mut i)?;
-            let n = usize::from(read_u16(bytes, &mut i)?);
-            let mut tags = Vec::with_capacity(n);
-            for _ in 0..n {
-                tags.push(read_str(bytes, &mut i)?);
-            }
-            sqlx::query(
-                "INSERT INTO proxima_core.agent_note_v1 (t, note_id, title, body, tags)
-                 VALUES ($1, $1, $2, $3, $4)",
-            )
-            .bind(t)
-            .bind(title)
-            .bind(body)
-            .bind(&tags)
-            .execute(tx.as_mut())
-            .await
-            .map_err(map_err)?;
-            Ok(())
-        }
-        SIDECAR_UTTERANCE => {
-            let speaker = read_str(bytes, &mut i)?;
-            let conversation_id = read_str(bytes, &mut i)?;
-            let text = read_str(bytes, &mut i)?;
-            sqlx::query(
-                "INSERT INTO proxima_core.utterance_v1 (t, speaker, conversation_id, text)
-                 VALUES ($1, $2, $3, $4)",
-            )
-            .bind(t)
-            .bind(speaker)
-            .bind(conversation_id)
-            .bind(text)
-            .execute(tx.as_mut())
-            .await
-            .map_err(map_err)?;
-            Ok(())
-        }
-        SIDECAR_DERIVATION => {
-            let title = read_str(bytes, &mut i)?;
-            let body = read_str(bytes, &mut i)?;
-            sqlx::query(
-                "INSERT INTO proxima_core.agent_derivation_v1
-                    (t, title, body, tags, source_memory_ids,
-                     model_id, client_name, client_version)
-                 VALUES ($1, $2, $3, ARRAY[]::text[], ARRAY[]::uuid[],
-                         'hydrate', 'hydrate', 'v1')",
-            )
-            .bind(t)
-            .bind(title)
-            .bind(body)
-            .execute(tx.as_mut())
-            .await
-            .map_err(map_err)?;
-            Ok(())
-        }
-        SIDECAR_INTERPRET => {
-            let claim = read_str(bytes, &mut i)?;
-            sqlx::query(
-                "INSERT INTO proxima_core.interpretation_v1
-                    (t, claim, confidence, subject_memory_ids, subject_kinds,
-                     model_id, client_name, client_version)
-                 VALUES ($1, $2, 0, ARRAY[]::uuid[], ARRAY[]::proxima_core.interpretation_subject_kind[],
-                         'hydrate', 'hydrate', 'v1')",
-            )
-            .bind(t)
-            .bind(claim)
-            .execute(tx.as_mut())
-            .await
-            .map_err(map_err)?;
-            Ok(())
-        }
-        other => Err(StorageError::Internal(format!(
-            "unknown sidecar kind {other}"
-        ))),
+    table: &str,
+) -> Result<Vec<String>, StorageError> {
+    let names: Vec<String> = sqlx::query_scalar(
+        "SELECT a.attname::text
+           FROM pg_attribute a
+           JOIN pg_class c ON c.oid = a.attrelid
+           JOIN pg_namespace n ON n.oid = c.relnamespace
+          WHERE n.nspname = split_part($1, '.', 1)
+            AND c.relname = split_part($1, '.', 2)
+            AND a.attnum > 0
+            AND NOT a.attisdropped
+            AND a.attgenerated = ''
+          ORDER BY a.attnum",
+    )
+    .bind(table)
+    .fetch_all(tx.as_mut())
+    .await
+    .map_err(map_err)?;
+    let mut columns = Vec::with_capacity(names.len());
+    for name in names {
+        columns.push(PgIdent::column(&name)?.as_str().to_owned());
     }
+    Ok(columns)
+}
+
+async fn restore_registered_sidecars(
+    tx: &mut Transaction<'_, Postgres>,
+    sidecars: &PgSidecarRegistryFrozen,
+    dumps: &[(String, String)],
+) -> Result<(), StorageError> {
+    let allowed = sidecars.memory_sidecar_tables();
+    for (table, json) in dumps {
+        if !allowed.contains(&table.as_str()) {
+            return Err(StorageError::ConstraintViolation(format!(
+                "cold sidecar table {table} is not registered"
+            )));
+        }
+        let ident = PgIdent::table(table)?;
+        let columns = insertable_columns(tx, ident.as_str()).await?;
+        if columns.is_empty() {
+            return Err(StorageError::Internal(format!(
+                "no insertable columns for {table}"
+            )));
+        }
+        let col_list = columns.join(", ");
+        let sql = format!(
+            "INSERT INTO {tbl} ({cols})
+             SELECT {cols} FROM jsonb_populate_record(NULL::{tbl}, $1::jsonb) AS p",
+            tbl = ident.as_str(),
+            cols = col_list
+        );
+        sqlx::query(sqlx::AssertSqlSafe(sql))
+            .bind(json)
+            .execute(tx.as_mut())
+            .await
+            .map_err(map_err)?;
+    }
+    Ok(())
+}
+
+async fn delete_registered_sidecars(
+    tx: &mut Transaction<'_, Postgres>,
+    sidecars: &PgSidecarRegistryFrozen,
+    t: Uuid,
+) -> Result<(), StorageError> {
+    for table in sidecars.memory_sidecar_tables() {
+        let ident = PgIdent::table(table)?;
+        let sql = format!("DELETE FROM {tbl} WHERE t = $1", tbl = ident.as_str());
+        sqlx::query(sqlx::AssertSqlSafe(sql))
+            .bind(t)
+            .execute(tx.as_mut())
+            .await
+            .map_err(map_err)?;
+    }
+    Ok(())
 }
 
 async fn enqueue_embed_jobs(
@@ -466,33 +436,10 @@ async fn enqueue_embed_jobs(
 
 async fn delete_memory_dependents(
     tx: &mut Transaction<'_, Postgres>,
+    sidecars: &PgSidecarRegistryFrozen,
     t: Uuid,
 ) -> Result<(), StorageError> {
-    sqlx::query("DELETE FROM proxima_core.agent_note_v1 WHERE t = $1")
-        .bind(t)
-        .execute(tx.as_mut())
-        .await
-        .map_err(map_err)?;
-    sqlx::query("DELETE FROM proxima_core.utterance_v1 WHERE t = $1")
-        .bind(t)
-        .execute(tx.as_mut())
-        .await
-        .map_err(map_err)?;
-    sqlx::query("DELETE FROM proxima_core.agent_derivation_v1 WHERE t = $1")
-        .bind(t)
-        .execute(tx.as_mut())
-        .await
-        .map_err(map_err)?;
-    sqlx::query("DELETE FROM proxima_core.interpretation_v1 WHERE t = $1")
-        .bind(t)
-        .execute(tx.as_mut())
-        .await
-        .map_err(map_err)?;
-    sqlx::query("DELETE FROM proxima_core.mcp_call_logged_v1 WHERE t = $1")
-        .bind(t)
-        .execute(tx.as_mut())
-        .await
-        .map_err(map_err)?;
+    delete_registered_sidecars(tx, sidecars, t).await?;
     sqlx::query("DELETE FROM proxima_core.embedding_jobs WHERE entity_id = $1")
         .bind(t)
         .execute(tx.as_mut())
@@ -513,6 +460,7 @@ async fn delete_memory_dependents(
 
 pub async fn forget_memory(
     tx: &mut Transaction<'_, Postgres>,
+    sidecars: &PgSidecarRegistryFrozen,
     cold: &dyn ColdObjectStore,
     object_key: &str,
     t: Uuid,
@@ -535,7 +483,7 @@ pub async fn forget_memory(
     .fetch_one(tx.as_mut())
     .await
     .map_err(map_err)?;
-    let (sidecar_kind, sidecar) = load_sidecar(tx, t).await?;
+    let sidecar_dumps = dump_registered_sidecars(tx, sidecars, t).await?;
     let embed_models: Vec<String> = sqlx::query_scalar(
         "SELECT DISTINCT model_id FROM proxima_core.embeddings WHERE entity_id = $1",
     )
@@ -546,8 +494,7 @@ pub async fn forget_memory(
     let payload = encode_record(&ColdRecord {
         row: row.clone(),
         schema_id,
-        sidecar_kind,
-        sidecar,
+        sidecar_dumps,
         embed_models,
     });
     cold.put(object_key, &payload).await?;
@@ -565,7 +512,7 @@ pub async fn forget_memory(
     .await
     .map_err(map_err)?;
 
-    delete_memory_dependents(tx, t).await?;
+    delete_memory_dependents(tx, sidecars, t).await?;
     sqlx::query("DELETE FROM proxima_core.memory WHERE t = $1")
         .bind(t)
         .execute(tx.as_mut())
@@ -601,6 +548,7 @@ pub async fn forget_memory(
 
 pub async fn hydrate_memory(
     tx: &mut Transaction<'_, Postgres>,
+    sidecars: &PgSidecarRegistryFrozen,
     cold: &dyn ColdObjectStore,
     t: Uuid,
 ) -> Result<(), StorageError> {
@@ -631,7 +579,7 @@ pub async fn hydrate_memory(
     .execute(tx.as_mut())
     .await
     .map_err(map_err)?;
-    restore_sidecar(tx, t, rec.sidecar_kind, &rec.sidecar).await?;
+    restore_registered_sidecars(tx, sidecars, &rec.sidecar_dumps).await?;
     enqueue_embed_jobs(tx, &rec).await?;
 
     sqlx::query("DELETE FROM proxima_core.cooled WHERE t = $1")
@@ -662,6 +610,7 @@ pub async fn hydrate_memory(
 
 pub async fn erase_memory(
     tx: &mut Transaction<'_, Postgres>,
+    sidecars: &PgSidecarRegistryFrozen,
     cold: &dyn ColdObjectStore,
     owner: &Owner,
     t: Uuid,
@@ -686,7 +635,7 @@ pub async fn erase_memory(
             .await
             .map_err(map_err)?;
     }
-    delete_memory_dependents(tx, t).await?;
+    delete_memory_dependents(tx, sidecars, t).await?;
     sqlx::query("DELETE FROM proxima_core.memory WHERE t = $1 AND owner_id = $2")
         .bind(t)
         .bind(owner.stored_owner_id())
