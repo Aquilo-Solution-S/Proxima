@@ -7,7 +7,7 @@ use uuid::Uuid;
 
 use crate::error::map_err;
 
-pub const COLD_FORMAT_VERSION: u8 = 1;
+pub const COLD_FORMAT_VERSION: u8 = 2;
 
 #[must_use]
 pub fn cold_object_key(owner_hash: &str, handle: Uuid, t: Uuid) -> String {
@@ -91,6 +91,9 @@ struct ColdRecord {
     schema_id: String,
     sidecar_kind: u8,
     sidecar: Vec<u8>,
+    /// Model ids that had vectors. UML §5c: vectors stay out of the object;
+    /// hydrate enqueues embed jobs for these ids.
+    embed_models: Vec<String>,
 }
 
 fn encode_record(rec: &ColdRecord) -> Vec<u8> {
@@ -107,13 +110,14 @@ fn encode_record(rec: &ColdRecord) -> Vec<u8> {
     write_str(&mut out, &rec.schema_id);
     out.push(rec.sidecar_kind);
     write_bytes(&mut out, &rec.sidecar);
+    write_str_list(&mut out, &rec.embed_models);
     out
 }
 
 fn decode_record(bytes: &[u8]) -> Result<ColdRecord, StorageError> {
     let mut i = 0;
     let version = read_u8(bytes, &mut i)?;
-    if version != COLD_FORMAT_VERSION {
+    if version != 1 && version != COLD_FORMAT_VERSION {
         return Err(StorageError::Internal(format!(
             "unknown cold format {version}"
         )));
@@ -132,11 +136,17 @@ fn decode_record(bytes: &[u8]) -> Result<ColdRecord, StorageError> {
     let schema_id = read_str(bytes, &mut i)?;
     let sidecar_kind = read_u8(bytes, &mut i)?;
     let sidecar = read_bytes(bytes, &mut i)?;
+    let embed_models = if version >= 2 {
+        read_str_list(bytes, &mut i)?
+    } else {
+        Vec::new()
+    };
     Ok(ColdRecord {
         row,
         schema_id,
         sidecar_kind,
         sidecar,
+        embed_models,
     })
 }
 
@@ -150,6 +160,22 @@ fn write_uuid(out: &mut Vec<u8>, value: Uuid) {
 
 fn write_str(out: &mut Vec<u8>, value: &str) {
     write_bytes(out, value.as_bytes());
+}
+
+fn write_str_list(out: &mut Vec<u8>, values: &[String]) {
+    write_u16(out, u16::try_from(values.len()).unwrap_or(u16::MAX));
+    for value in values {
+        write_str(out, value);
+    }
+}
+
+fn read_str_list(bytes: &[u8], i: &mut usize) -> Result<Vec<String>, StorageError> {
+    let n = usize::from(read_u16(bytes, i)?);
+    let mut out = Vec::with_capacity(n);
+    for _ in 0..n {
+        out.push(read_str(bytes, i)?);
+    }
+    Ok(out)
 }
 
 fn write_bytes(out: &mut Vec<u8>, value: &[u8]) {
@@ -400,6 +426,44 @@ async fn restore_sidecar(
     }
 }
 
+async fn enqueue_embed_jobs(
+    tx: &mut Transaction<'_, Postgres>,
+    rec: &ColdRecord,
+) -> Result<(), StorageError> {
+    if rec.embed_models.is_empty() {
+        return Ok(());
+    }
+    let kind = match rec.row.kind.as_str() {
+        "abstraction" => proxima_core::EntityKind::Abstraction,
+        "perspective" => proxima_core::EntityKind::Perspective,
+        _ => proxima_core::EntityKind::Fact,
+    };
+    let owner_kind: String = sqlx::query_scalar(
+        "SELECT kind::text FROM proxima_core.owners WHERE owner_id = $1",
+    )
+    .bind(rec.row.owner_id)
+    .fetch_one(tx.as_mut())
+    .await
+    .map_err(map_err)?;
+    let owner_kind = match owner_kind.as_str() {
+        "world" => proxima_core::OwnerRefKind::World,
+        "group" => proxima_core::OwnerRefKind::Group,
+        _ => proxima_core::OwnerRefKind::Personal,
+    };
+    for model_id in &rec.embed_models {
+        crate::verbs::fact_embeddings::enqueue_embedding_job_in_tx(
+            tx,
+            owner_kind,
+            Some(rec.row.owner_id),
+            kind,
+            rec.row.t,
+            model_id,
+        )
+        .await?;
+    }
+    Ok(())
+}
+
 async fn delete_memory_dependents(
     tx: &mut Transaction<'_, Postgres>,
     t: Uuid,
@@ -472,11 +536,19 @@ pub async fn forget_memory(
     .await
     .map_err(map_err)?;
     let (sidecar_kind, sidecar) = load_sidecar(tx, t).await?;
+    let embed_models: Vec<String> = sqlx::query_scalar(
+        "SELECT DISTINCT model_id FROM proxima_core.embeddings WHERE entity_id = $1",
+    )
+    .bind(t)
+    .fetch_all(tx.as_mut())
+    .await
+    .map_err(map_err)?;
     let payload = encode_record(&ColdRecord {
         row: row.clone(),
         schema_id,
         sidecar_kind,
         sidecar,
+        embed_models,
     });
     cold.put(object_key, &payload).await?;
 
@@ -560,6 +632,7 @@ pub async fn hydrate_memory(
     .await
     .map_err(map_err)?;
     restore_sidecar(tx, t, rec.sidecar_kind, &rec.sidecar).await?;
+    enqueue_embed_jobs(tx, &rec).await?;
 
     sqlx::query("DELETE FROM proxima_core.cooled WHERE t = $1")
         .bind(t)
