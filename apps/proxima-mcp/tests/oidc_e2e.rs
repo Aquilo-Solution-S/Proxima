@@ -3,7 +3,7 @@
 //! discovery is public, `/mcp` is 401+WWW-Authenticate without a bearer, and a
 //! valid Zitadel-shaped JWT lists + calls the Code-flavor tools.
 //!
-//! Requires `PROXIMA_TEST_DATABASE_URL`; skips cleanly otherwise. Built when
+//! Uses `PROXIMA_TEST_DATABASE_URL` when set; otherwise `create_db`. Built when
 //! the `code` feature is on (the host default; asserts the Code flavor's
 //! tools are present); the mounted REST smoke additionally requires `rest`
 //! and `PROXIMA_REST_ENABLED=true`.
