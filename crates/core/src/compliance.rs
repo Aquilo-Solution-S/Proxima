@@ -399,4 +399,17 @@ impl ExportAuthorization {
             _private: private::Seal,
         }
     }
+
+    /// Test-only constructor. Engine remains the production mint.
+    #[cfg(any(test, feature = "test-fixtures"))]
+    #[must_use]
+    pub fn new_for_tests(target: ComplianceExportTarget) -> Self {
+        Self::new(ComplianceExportAuditContext::new(
+            uuid::Uuid::now_v7(),
+            target,
+            None,
+            AuthPath::HostBearer,
+            time::OffsetDateTime::now_utc(),
+        ))
+    }
 }

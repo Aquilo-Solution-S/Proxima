@@ -22,7 +22,7 @@ pub async fn export_owner_bundle(
     let owner = auth.audit().owner();
     let memories = owner_rows(pool, owner, OwnerRowsTable::Memories).await?;
     let goals = owner_rows(pool, owner, OwnerRowsTable::Goals).await?;
-    let edges = owner_rows(pool, owner, OwnerRowsTable::Edges).await?;
+    let edges = pins_from_memories(&memories);
     let receipts = owner_rows(pool, owner, OwnerRowsTable::Receipts).await?;
     let source_batches = owner_rows(pool, owner, OwnerRowsTable::SourceBatches).await?;
     let source_cursors = owner_rows(pool, owner, OwnerRowsTable::SourceCursors).await?;
@@ -84,7 +84,6 @@ struct SidecarTables<'a> {
 enum OwnerRowsTable {
     Memories,
     Goals,
-    Edges,
     Receipts,
     SourceBatches,
     SourceCursors,
@@ -141,12 +140,6 @@ async fn owner_rows(
             .await
             .map_err(map_err),
         OwnerRowsTable::Goals => sqlx::query_scalar::<_, Value>(GOAL_ROWS_SQL)
-            .bind(owner_kind)
-            .bind(owner_id)
-            .fetch_all(pool)
-            .await
-            .map_err(map_err),
-        OwnerRowsTable::Edges => sqlx::query_scalar::<_, Value>(EDGE_ROWS_SQL)
             .bind(owner_kind)
             .bind(owner_id)
             .fetch_all(pool)
@@ -266,25 +259,46 @@ SELECT to_jsonb(g)
  WHERE g.owner_id IS NOT DISTINCT FROM $2
  ORDER BY g.t";
 
-const EDGE_ROWS_SQL: &str = "
-SELECT jsonb_build_object(
-         'source_t', src.t,
-         'target_t', pin,
-         'kind', pin_kind
-       )
-  FROM (
-        SELECT src.t, pin, 'origin' AS pin_kind
-          FROM proxima_core.memory src
-          JOIN unnest(src.origins) AS pin ON true
-         WHERE src.owner_id IS NOT DISTINCT FROM $2
-        UNION ALL
-        SELECT src.t, pin, 'reference'
-          FROM proxima_core.memory src
-          JOIN unnest(src.refs) AS pin ON true
-         WHERE src.owner_id IS NOT DISTINCT FROM $2
-       ) pins
-  JOIN proxima_core.memory src ON src.t = pins.t
- ORDER BY src.t, pin, pin_kind";
+fn pins_from_memories(memories: &[Value]) -> Vec<Value> {
+    let mut edges = Vec::new();
+    for memory in memories {
+        let Some(source_t) = memory.get("t") else {
+            continue;
+        };
+        push_pins(&mut edges, source_t, memory.get("origins"), "origin");
+        push_pins(&mut edges, source_t, memory.get("refs"), "reference");
+    }
+    edges.sort_by_key(pin_sort_key);
+    edges
+}
+
+fn pin_sort_key(edge: &Value) -> (String, String, String) {
+    (
+        edge.get("source_t")
+            .map(ToString::to_string)
+            .unwrap_or_default(),
+        edge.get("target_t")
+            .map(ToString::to_string)
+            .unwrap_or_default(),
+        edge.get("kind")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+    )
+}
+
+fn push_pins(edges: &mut Vec<Value>, source_t: &Value, pins: Option<&Value>, kind: &'static str) {
+    let Some(Value::Array(pins)) = pins else {
+        return;
+    };
+    for pin in pins {
+        edges.push(serde_json::json!({
+            "source_t": source_t,
+            "target_t": pin,
+            "kind": kind,
+        }));
+    }
+}
 
 const RECEIPT_ROWS_SQL: &str = "
 SELECT to_jsonb(ik)
@@ -328,3 +342,39 @@ SELECT jsonb_build_object(
  WHERE dag.owner_kind = $1
    AND dag.owner_id IS NOT DISTINCT FROM $2
  ORDER BY dag.issued_at, dag.delegation_id";
+
+#[cfg(test)]
+mod tests {
+    use super::{pin_sort_key, pins_from_memories};
+    use serde_json::json;
+
+    #[test]
+    fn export_sql_does_not_rebuild_an_edge_table() {
+        let src = include_str!("compliance_export.rs");
+        let needle = format!("{}{}", "JOIN unnest", "(src.origins)");
+        assert!(
+            !src.contains(&needle),
+            "export must project pins from memory rows, not unnest a second Edge scan"
+        );
+    }
+
+    #[test]
+    fn pins_come_from_memory_origin_and_ref_arrays() {
+        let source = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
+        let origin = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb";
+        let reference = "cccccccc-cccc-cccc-cccc-cccccccccccc";
+        let edges = pins_from_memories(&[json!({
+            "t": source,
+            "origins": [origin],
+            "refs": [reference],
+        })]);
+        assert_eq!(
+            edges,
+            vec![
+                json!({"source_t": source, "target_t": origin, "kind": "origin"}),
+                json!({"source_t": source, "target_t": reference, "kind": "reference"}),
+            ]
+        );
+        assert!(pin_sort_key(&edges[0]) < pin_sort_key(&edges[1]));
+    }
+}
