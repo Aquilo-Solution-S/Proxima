@@ -5,7 +5,7 @@ use crate::error::ProtocolError;
 use crate::read_models::{
     ChangeEventForWake, GoalWakeCandidate, GoalWakeCandidateRequest, MemorySnapshot, SidecarSpec,
 };
-use crate::storage::{MemoryGraphPayloadRow, StorageError};
+use crate::storage::{MemoryGraphIdentity, MemoryGraphPayloadRow, StorageError};
 use crate::storage_ports::ReadVerbStoragePorts;
 use crate::verbs::query::{
     FactCitationReadback, MAX_RELEVANCE_SEARCH_DEPTH, MemorySearchRequest, MemorySearchResult,
@@ -139,7 +139,6 @@ impl Engine {
             &self.storage.read_verb,
             self.registry.search_projections(),
             std::slice::from_ref(read_permit.owner()),
-            read_permit.owner(),
             req,
         )
         .await
@@ -441,7 +440,6 @@ pub(in crate::engine) async fn search_authorized(
     ports: &ReadVerbStoragePorts,
     search_projections: &[MemorySearchProjection],
     read_owners: &[OwnerRef],
-    hydration_owner: &OwnerRef,
     req: &SearchReadRequest,
 ) -> Result<SearchReadResponse, ProtocolError> {
     let mut effective = req.search.clone();
@@ -453,13 +451,24 @@ pub(in crate::engine) async fn search_authorized(
         .map_err(|err| storage_error("search_memories", &err))?;
     let memories = page.results;
 
-    let memory_ids = memories.iter().map(|row| row.memory_id).collect::<Vec<_>>();
-    let payloads = if memory_ids.is_empty() {
+    let identities = memories
+        .iter()
+        .map(|row| MemoryGraphIdentity {
+            memory_id: row.memory_id,
+            kind: row.kind,
+            schema_id: row.schema_id.clone(),
+        })
+        .collect::<Vec<_>>();
+    let memory_ids = identities
+        .iter()
+        .map(|identity| identity.memory_id)
+        .collect::<Vec<_>>();
+    let payloads = if identities.is_empty() {
         Vec::new()
     } else {
         ports
             .memory_read
-            .load_memory_graph_payloads(hydration_owner, &memory_ids, req.include_body)
+            .load_memory_graph_payloads(&identities, req.include_body)
             .await
             .map_err(|err| storage_error("load_memory_graph_payloads", &err))?
     };

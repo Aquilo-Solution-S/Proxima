@@ -59,8 +59,7 @@ impl crate::MemoryReadPort for ReadOnlyFake {
 
     async fn load_memory_graph_payloads(
         &self,
-        _owner: &crate::Owner,
-        _memory_ids: &[crate::MemoryId],
+        _identities: &[crate::MemoryGraphIdentity],
         _include_body: bool,
     ) -> Result<Vec<crate::MemoryGraphPayloadRow>, StorageError> {
         Ok(Vec::new())

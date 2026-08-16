@@ -6,14 +6,39 @@ use proxima_core::verbs::fact_ingest::FactWriteCommand;
 use proxima_core::verbs::query::{
     EntityKind, MemoryLineageDirection, MemoryLineageRequest, QueryRequest,
 };
+use proxima_core::verbs::schema::{
+    MemorySearchProjection, MemorySearchProjectionField, PayloadKind,
+};
 use proxima_core::{
-    AccessKind, EdgeKind, EdgeTargetProjection, OwnerRef, SchemaId, SchemaVersion, UserId,
-    project_listed_edge, project_window_edges,
+    AccessKind, EdgeKind, EdgeTargetProjection, OwnerRef, SchemaId, SchemaVersion,
+    SearchProjectionColumnKind, UserId, project_listed_edge, project_window_edges,
 };
 use proxima_pg_testkit::{create_db, db_url, drop_db};
 use proxima_storage_pg::PgStorage;
 use proxima_storage_pg::verbs::fact_ingest::ingest_fact_atomic;
 use uuid::Uuid;
+
+fn note_projection() -> MemorySearchProjection {
+    MemorySearchProjection {
+        schema_id: SchemaId::new("core/agent-note-v1".to_string()),
+        schema_version: SchemaVersion::new(1),
+        kind: PayloadKind::Fact,
+        sidecar_table: "proxima_core.agent_note_v1".into(),
+        fields: vec![
+            MemorySearchProjectionField {
+                column: "title".into(),
+                kind: SearchProjectionColumnKind::Text,
+            },
+            MemorySearchProjectionField {
+                column: "body".into(),
+                kind: SearchProjectionColumnKind::Text,
+            },
+        ],
+        tag_column: Some("tags".into()),
+        tsv_column: Some("search_tsv".into()),
+        language_column: Some("lexical_language".into()),
+    }
+}
 
 fn draft(kind: &str, refs: Vec<Uuid>, origins: Vec<Uuid>) -> FactWriteCommand {
     FactWriteCommand {
@@ -47,20 +72,18 @@ async fn query_neighbors_edges_and_lineage_use_pins() {
     }
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&url).await?;
+        let pg = PgStorage::connect(&url)
+            .await?
+            .with_search_projections(vec![note_projection()]);
         pg.run_migrations().await?;
         let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let pool = pg.pool_for_tests();
 
         let leaf = ingest_fact_atomic(pool, &permit, &draft("fact", vec![], vec![]), None).await?;
-        let derived = ingest_fact_atomic(
-            pool,
-            &permit,
-            &draft("abstraction", vec![], vec![leaf.memory_id.into_inner()]),
-            None,
-        )
-        .await?;
+        let mut derived_cmd = draft("abstraction", vec![], vec![leaf.memory_id.into_inner()]);
+        derived_cmd.schema_id = SchemaId::new("core/agent-note-v1".into());
+        let derived = ingest_fact_atomic(pool, &permit, &derived_cmd, None).await?;
         sqlx::query(
             "INSERT INTO proxima_core.agent_note_v1 (t, note_id, title, body, tags)
              VALUES ($1, $2, 'derived title', 'made from leaf', '{}')",

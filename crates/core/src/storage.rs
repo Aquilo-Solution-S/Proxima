@@ -69,6 +69,15 @@ pub struct MemoryGraphPayloadRow {
     pub body: Option<String>,
 }
 
+/// Identity already admitted by a prior owner-scoped read (`t`, kind, schema).
+/// Sidecar hydrate takes this instead of re-joining `memory ⋈ memory_head`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MemoryGraphIdentity {
+    pub memory_id: MemoryId,
+    pub kind: EntityKind,
+    pub schema_id: SchemaId,
+}
+
 #[derive(Clone)]
 pub struct SidecarPayload {
     pub kind: crate::verbs::schema::PayloadKind,

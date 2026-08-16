@@ -11,7 +11,6 @@
 //! mega-index.
 
 use std::collections::BTreeMap;
-use std::fmt::Write as _;
 
 use futures_util::future::try_join_all;
 use proxima_core::llm::EMBEDDING_DIM;
@@ -20,16 +19,15 @@ use proxima_core::verbs::query::{
     MemorySearchRequest, MemorySearchResult, SearchCursor, SearchMode, SearchOrder,
     SupersessionStatus, TagMatch,
 };
-use proxima_core::verbs::schema::{
-    MemorySearchProjection, MemorySearchProjectionField, PayloadKind,
-};
-use proxima_core::{MemoryId, OwnerRef, SchemaId, SearchProjectionColumnKind, StorageError};
+use proxima_core::verbs::schema::{MemorySearchProjection, PayloadKind};
+use proxima_core::{MemoryId, OwnerRef, SchemaId, StorageError};
 use sqlx::PgPool;
 
 use crate::error::map_err;
 use crate::pg_ident::PgIdent;
 use crate::pgvector::set_hnsw_search_sql;
 use crate::tuning::PgTuning;
+use crate::verbs::query::projection_sql::projection_search_text;
 
 const CORE_SIDECAR_PREFIX: &str = "proxima_core.";
 const SIDECAR_OVERFETCH_FACTOR: u32 = 20;
@@ -340,39 +338,6 @@ async fn scan_one_sidecar(
             snippet: row.snippet.unwrap_or_default(),
         })
         .collect())
-}
-
-fn projection_search_text(fields: &[MemorySearchProjectionField]) -> Result<String, StorageError> {
-    let mut expressions = Vec::with_capacity(fields.len());
-    for field in fields {
-        if matches!(field.kind, SearchProjectionColumnKind::MemoryText) {
-            return Err(StorageError::Internal(
-                "core sidecar search has no memory.text; declare sidecar columns".into(),
-            ));
-        }
-        let column = PgIdent::column(&field.column)?;
-        let expression = match field.kind {
-            SearchProjectionColumnKind::Text => {
-                format!("NULLIF(c.{}::text, '')", column.as_str())
-            }
-            SearchProjectionColumnKind::TextArray => {
-                format!("NULLIF(array_to_string(c.{}, ' '), '')", column.as_str())
-            }
-            SearchProjectionColumnKind::MemoryText => unreachable!("handled above"),
-        };
-        expressions.push(expression);
-    }
-    if expressions.is_empty() {
-        return Err(StorageError::Internal(
-            "search projection has no text fields".into(),
-        ));
-    }
-    let mut sql = String::from("NULLIF(concat_ws(' '");
-    for expression in expressions {
-        let _ = write!(sql, ", {expression}");
-    }
-    sql.push_str("), '')");
-    Ok(sql)
 }
 
 fn projection_tsv_expr(

@@ -1,7 +1,11 @@
+use std::collections::{BTreeMap, HashMap};
+
+use futures_util::future::try_join_all;
 use proxima_core::verbs::query::{
     EntityKind, MemoryLineageCursor, MemoryLineageDirection, MemoryLineageEdge, MemoryLineageNode,
     MemoryLineageRequest, MemoryLineageResponse,
 };
+use proxima_core::verbs::schema::MemorySearchProjection;
 use proxima_core::{
     Edge, EdgeEndpoint, EdgeKind, EdgeTargetProjection, EntityRef, MemoryId, OwnerRef, SchemaId,
     StorageError,
@@ -9,11 +13,14 @@ use proxima_core::{
 use sqlx::PgPool;
 
 use crate::error::map_err;
+use crate::pg_ident::PgIdent;
+use crate::verbs::query::projection_sql::projection_search_text;
 
 pub(crate) async fn walk_memory_lineage(
     pool: &PgPool,
     read_owners: &[OwnerRef],
     req: &MemoryLineageRequest,
+    projections: &[MemorySearchProjection],
 ) -> Result<MemoryLineageResponse, StorageError> {
     if read_owners.is_empty() {
         return Ok(MemoryLineageResponse {
@@ -23,7 +30,7 @@ pub(crate) async fn walk_memory_lineage(
             next_cursor: None,
         });
     }
-    walk_memory_lineage_timeseries(pool, read_owners, req).await
+    walk_memory_lineage_timeseries(pool, read_owners, req, projections).await
 }
 
 #[allow(clippy::too_many_lines)]
@@ -31,6 +38,7 @@ async fn walk_memory_lineage_timeseries(
     pool: &PgPool,
     read_owners: &[OwnerRef],
     req: &MemoryLineageRequest,
+    projections: &[MemorySearchProjection],
 ) -> Result<MemoryLineageResponse, StorageError> {
     let owner_ids: Vec<uuid::Uuid> = read_owners
         .iter()
@@ -137,41 +145,16 @@ async fn walk_memory_lineage_timeseries(
         .map_err(map_err)?,
     };
 
-    let start_kind_schema: Option<(String, String)> = sqlx::query_as(
-        "SELECT m.kind::text, h.schema_id
-           FROM proxima_core.memory m
-           JOIN proxima_core.memory_head h ON h.handle = m.handle
-          WHERE m.t = $1 AND m.owner_id = ANY($2::uuid[])",
-    )
-    .bind(start)
-    .bind(&owner_ids)
-    .fetch_optional(pool)
-    .await
-    .map_err(map_err)?;
-    let Some((start_kind, start_schema)) = start_kind_schema else {
-        return Ok(MemoryLineageResponse {
-            nodes: Vec::new(),
-            edges: Vec::new(),
-            truncated: false,
-            next_cursor: None,
-        });
-    };
-
     let page_len = usize::try_from(limit).unwrap_or(usize::MAX);
     let truncated = hops.len() > page_len;
     hops.truncate(page_len);
 
     let mut node_ids = vec![start];
     node_ids.extend(hops.iter().flat_map(|hop| [hop.0, hop.2]));
-    let node_rows: Vec<(uuid::Uuid, String, String, Option<String>)> = sqlx::query_as(
-        "SELECT m.t, m.kind::text, h.schema_id,
-                left(COALESCE(n.title, n.body, u.text, d.body, i.claim, ''), 480)
+    let node_rows: Vec<(uuid::Uuid, String, String)> = sqlx::query_as(
+        "SELECT m.t, m.kind::text, h.schema_id
            FROM proxima_core.memory m
            JOIN proxima_core.memory_head h ON h.handle = m.handle
-           LEFT JOIN proxima_core.agent_note_v1 n ON n.t = m.t
-           LEFT JOIN proxima_core.utterance_v1 u ON u.t = m.t
-           LEFT JOIN proxima_core.agent_derivation_v1 d ON d.t = m.t
-           LEFT JOIN proxima_core.interpretation_v1 i ON i.t = m.t
           WHERE m.t = ANY($1::uuid[])
             AND m.owner_id = ANY($2::uuid[])",
     )
@@ -180,29 +163,31 @@ async fn walk_memory_lineage_timeseries(
     .fetch_all(pool)
     .await
     .map_err(map_err)?;
-    let mut nodes: Vec<MemoryLineageNode> = node_rows
+    if !node_rows.iter().any(|(id, _, _)| *id == start) {
+        return Ok(MemoryLineageResponse {
+            nodes: Vec::new(),
+            edges: Vec::new(),
+            truncated: false,
+            next_cursor: None,
+        });
+    }
+    let snippet_keys: Vec<(uuid::Uuid, String)> = node_rows
+        .iter()
+        .map(|(id, _, schema_id)| (*id, schema_id.clone()))
+        .collect();
+    let mut snippets = load_lineage_snippets(pool, projections, &snippet_keys).await?;
+    let nodes: Vec<MemoryLineageNode> = node_rows
         .into_iter()
-        .filter_map(|(id, kind, schema_id, snippet)| {
+        .filter_map(|(id, kind, schema_id)| {
             Some(MemoryLineageNode {
                 memory_id: MemoryId::new(id),
                 kind: parse_kind(&kind)?,
                 schema_id: SchemaId::new(schema_id),
-                snippet: snippet.unwrap_or_default(),
+                snippet: snippets.remove(&id).unwrap_or_default(),
                 distance: u8::from(id != start),
             })
         })
         .collect();
-    if !nodes.iter().any(|n| n.memory_id.into_inner() == start)
-        && let Some(kind) = parse_kind(&start_kind)
-    {
-        nodes.push(MemoryLineageNode {
-            memory_id: MemoryId::new(start),
-            kind,
-            schema_id: SchemaId::new(start_schema),
-            snippet: String::new(),
-            distance: 0,
-        });
-    }
 
     let edges: Vec<MemoryLineageEdge> = hops
         .iter()
@@ -235,6 +220,67 @@ async fn walk_memory_lineage_timeseries(
         truncated,
         next_cursor,
     })
+}
+
+#[derive(Debug, sqlx::FromRow)]
+struct SnippetRow {
+    t: uuid::Uuid,
+    snippet: Option<String>,
+}
+
+async fn load_lineage_snippets(
+    pool: &PgPool,
+    projections: &[MemorySearchProjection],
+    rows: &[(uuid::Uuid, String)],
+) -> Result<HashMap<uuid::Uuid, String>, StorageError> {
+    let mut by_schema = BTreeMap::<&str, Vec<uuid::Uuid>>::new();
+    for (t, schema_id) in rows {
+        by_schema.entry(schema_id.as_str()).or_default().push(*t);
+    }
+    let jobs: Vec<(&MemorySearchProjection, Vec<uuid::Uuid>)> = by_schema
+        .into_iter()
+        .filter_map(|(schema_id, ts)| {
+            let projection = projections
+                .iter()
+                .find(|projection| projection.schema_id.as_str() == schema_id)?;
+            Some((projection, ts))
+        })
+        .collect();
+    let batches = try_join_all(
+        jobs.into_iter()
+            .map(|(projection, ts)| load_one_schema_snippets(pool, projection, ts)),
+    )
+    .await?;
+    Ok(batches.into_iter().flatten().collect())
+}
+
+async fn load_one_schema_snippets(
+    pool: &PgPool,
+    projection: &MemorySearchProjection,
+    ts: Vec<uuid::Uuid>,
+) -> Result<Vec<(uuid::Uuid, String)>, StorageError> {
+    if ts.is_empty() {
+        return Ok(Vec::new());
+    }
+    let table = PgIdent::table(&projection.sidecar_table)?;
+    let search_text = projection_search_text(&projection.fields)?;
+    let sql = format!(
+        "SELECT c.t, left({search_text}, 480) AS snippet
+           FROM {table} c
+          WHERE c.t = ANY($1::uuid[])",
+        table = table.as_str(),
+        search_text = search_text,
+    );
+    // SQL-POLICY: PgIdent
+    let rows: Vec<SnippetRow> = sqlx::query_as(sqlx::AssertSqlSafe(sql))
+        .bind(&ts)
+        .fetch_all(pool)
+        .await
+        .map_err(map_err)?;
+    Ok(rows
+        .into_iter()
+        .map(|row| (row.t, row.snippet.unwrap_or_default()))
+        .collect())
 }
 
 fn parse_kind(kind: &str) -> Option<EntityKind> {

@@ -9,8 +9,8 @@ use proxima_core::verbs::query::{
     QueryRequest, QueryResponse,
 };
 use proxima_core::{
-    AuthorDerivedOutcome, AuthorDerivedRequest, FactSourceBatchRow, MemoryGraphPayloadRow,
-    MemoryId, MemoryKindRow, Owner, OwnerRef, StorageError,
+    AuthorDerivedOutcome, AuthorDerivedRequest, FactSourceBatchRow, MemoryGraphIdentity,
+    MemoryGraphPayloadRow, MemoryId, MemoryKindRow, Owner, OwnerRef, StorageError,
 };
 
 use crate::error::{internal, with_bounded_retry};
@@ -202,15 +202,13 @@ impl MemoryReadPort for PgStorage {
 
     async fn load_memory_graph_payloads(
         &self,
-        owner: &Owner,
-        memory_ids: &[MemoryId],
+        identities: &[MemoryGraphIdentity],
         include_body: bool,
     ) -> Result<Vec<MemoryGraphPayloadRow>, StorageError> {
         verbs::consolidate::load_memory_graph_payloads(
             &self.pool,
             &self.sidecars,
-            owner,
-            memory_ids,
+            identities,
             include_body,
         )
         .await
@@ -253,7 +251,8 @@ impl MemoryReadPort for PgStorage {
         read_owners: &[OwnerRef],
         req: &MemoryLineageRequest,
     ) -> Result<MemoryLineageResponse, StorageError> {
-        verbs::query::walk_memory_lineage(&self.pool, read_owners, req).await
+        verbs::query::walk_memory_lineage(&self.pool, read_owners, req, &self.search_projections)
+            .await
     }
 }
 

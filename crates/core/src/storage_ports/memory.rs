@@ -3,8 +3,8 @@ pub use super::proof::{OperatorWriteProof, OwnerWritePermit};
 use crate::edge::PinNode;
 use crate::read_models::{MemorySnapshot, SidecarSpec};
 use crate::storage::{
-    AuthorDerivedOutcome, AuthorDerivedRequest, FactSourceBatchRow, MemoryGraphPayloadRow,
-    MemoryKindRow, StorageError,
+    AuthorDerivedOutcome, AuthorDerivedRequest, FactSourceBatchRow, MemoryGraphIdentity,
+    MemoryGraphPayloadRow, MemoryKindRow, StorageError,
 };
 use crate::{MemoryId, Owner, OwnerRef};
 
@@ -65,8 +65,7 @@ pub trait MemoryReadPort: Send + Sync {
 
     async fn load_memory_graph_payloads(
         &self,
-        owner: &Owner,
-        memory_ids: &[MemoryId],
+        identities: &[MemoryGraphIdentity],
         include_body: bool,
     ) -> Result<Vec<MemoryGraphPayloadRow>, StorageError>;
 

@@ -204,8 +204,7 @@ impl MemoryReadPort for RejectingStorage {
 
     async fn load_memory_graph_payloads(
         &self,
-        _owner: &Owner,
-        _memory_ids: &[crate::MemoryId],
+        _identities: &[crate::MemoryGraphIdentity],
         _include_body: bool,
     ) -> Result<Vec<crate::MemoryGraphPayloadRow>, StorageError> {
         Ok(Vec::new())

@@ -137,8 +137,7 @@ impl MemoryReadPort for MemoryReadFake {
 
     async fn load_memory_graph_payloads(
         &self,
-        _owner: &Owner,
-        _memory_ids: &[MemoryId],
+        _identities: &[MemoryGraphIdentity],
         _include_body: bool,
     ) -> Result<Vec<MemoryGraphPayloadRow>, StorageError> {
         fake_error()

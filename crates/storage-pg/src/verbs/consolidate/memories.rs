@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use futures_util::future::try_join_all;
 use proxima_core::read_models::{AbstractionRow, FactRow, MemorySnapshot, SidecarSpec};
-use proxima_core::storage::MemoryGraphPayloadRow;
+use proxima_core::storage::{MemoryGraphIdentity, MemoryGraphPayloadRow};
 use proxima_core::verbs::schema::PayloadKind;
 use proxima_core::{
     EntityKind, MemoryId, Owner, OwnerRef, OwnerRefKind, SchemaId, SchemaVersion, SidecarPayload,
@@ -217,79 +217,44 @@ pub async fn load_memories_by_ids(
 }
 
 /// Search-result tags/body via the same sidecar batch as snapshot reads.
+/// Callers pass identities already admitted by an owner-scoped read.
 ///
 /// # Errors
 ///
-/// Returns [`StorageError`] when the head or sidecar read fails.
+/// Returns [`StorageError`] when the sidecar read fails.
 pub async fn load_memory_graph_payloads(
     pool: &PgPool,
     pg_sidecars: &PgSidecarRegistryFrozen,
-    owner: &Owner,
-    memory_ids: &[MemoryId],
+    identities: &[MemoryGraphIdentity],
     include_body: bool,
 ) -> Result<Vec<MemoryGraphPayloadRow>, StorageError> {
-    if memory_ids.is_empty() {
+    if identities.is_empty() {
         return Ok(Vec::new());
     }
-    let ids = memory_ids
-        .iter()
-        .copied()
-        .map(MemoryId::into_inner)
-        .collect::<Vec<_>>();
-    let owner_id = owner.stored_owner_id();
-    let raw_rows: Vec<(uuid::Uuid, String, String)> = sqlx::query_as(
-        "SELECT m.t, m.kind::text, h.schema_id
-           FROM proxima_core.memory m
-           JOIN proxima_core.memory_head h ON h.handle = m.handle
-          WHERE m.owner_id = $1
-            AND m.t = ANY($2::uuid[])",
-    )
-    .bind(owner_id)
-    .bind(&ids)
-    .fetch_all(pool)
-    .await
-    .map_err(map_err)?;
-    let rows: Vec<(uuid::Uuid, EntityKind, String, i32, Option<String>)> = raw_rows
-        .into_iter()
-        .filter_map(|(t, kind, schema_id)| {
-            let kind = match kind.as_str() {
-                "fact" => EntityKind::Fact,
-                "abstraction" => EntityKind::Abstraction,
-                "perspective" => EntityKind::Perspective,
-                _ => return None,
-            };
-            Some((t, kind, schema_id, 1, None))
-        })
-        .collect();
-
     let mut ids_by_key = HashMap::<PgSidecarKey, Vec<MemoryId>>::new();
-    for (memory_id, kind, schema_id, schema_version, _) in &rows {
-        let Some(payload_kind) = payload_kind_for(*kind) else {
-            continue;
-        };
-        let Ok(version) = u32::try_from(*schema_version) else {
+    for identity in identities {
+        let Some(payload_kind) = payload_kind_for(identity.kind) else {
             continue;
         };
         queue_memory_sidecar_payload(
             &mut ids_by_key,
             pg_sidecars,
             payload_kind,
-            SchemaId::new(schema_id.clone()),
-            SchemaVersion::new(version),
-            MemoryId::new(*memory_id),
+            identity.schema_id.clone(),
+            SchemaVersion::new(1),
+            identity.memory_id,
         );
     }
     let payloads = load_memory_sidecar_payloads_batch(pool, pg_sidecars, ids_by_key).await?;
-    Ok(rows
-        .into_iter()
-        .map(|(memory_id, _kind, _schema_id, _schema_version, text)| {
-            let id = MemoryId::new(memory_id);
-            let payload = payloads.get(&id);
+    Ok(identities
+        .iter()
+        .map(|identity| {
+            let payload = payloads.get(&identity.memory_id);
             MemoryGraphPayloadRow {
-                memory_id: id,
+                memory_id: identity.memory_id,
                 tags: payload.map(SidecarPayload::graph_tags),
                 body: include_body
-                    .then(|| payload.and_then(SidecarPayload::graph_body).or(text))
+                    .then(|| payload.and_then(SidecarPayload::graph_body))
                     .flatten(),
             }
         })
