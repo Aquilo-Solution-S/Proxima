@@ -10,9 +10,6 @@ mod owners;
 mod read;
 mod registry;
 
-#[cfg(any(test, feature = "test-fixtures", debug_assertions))]
-pub use memory::neighbor_memory_edges_sql_for_tests;
-
 fn validate_permit_owner(permit: &OwnerWritePermit, owner: &Owner) -> Result<(), StorageError> {
     if permit.owner() == owner {
         Ok(())

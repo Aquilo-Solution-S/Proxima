@@ -15,10 +15,7 @@
 
 use std::fmt::Write as _;
 
-use proxima_core::{
-    FactEntityId, Owner, OwnerRef, OwnerRefKind, SchemaId, SchemaVersion, StorageError,
-};
-use sqlx::{Executor, PgConnection, Postgres};
+use proxima_core::{OwnerRef, OwnerRefKind};
 
 mod abstraction_heads;
 mod citations;
@@ -138,52 +135,4 @@ pub(crate) fn entity_owner_union() -> &'static str {
       SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals)"
 }
 
-/// Resolve the aggregate `fact_entity_id` for an owner-scoped Fact
-/// natural key inside an existing transaction.
-///
-/// # Errors
-///
-/// Returns `Internal` on sqlx failures.
-pub async fn fact_entity_id_for(
-    tx: &mut PgConnection,
-    owner: &Owner,
-    schema_id: &SchemaId,
-    schema_version: SchemaVersion,
-    natural_key: &[String],
-) -> Result<Option<FactEntityId>, StorageError> {
-    fact_entity_id_for_executor(tx, owner, schema_id, schema_version, natural_key).await
-}
 
-async fn fact_entity_id_for_executor<'e, E>(
-    executor: E,
-    owner: &Owner,
-    schema_id: &SchemaId,
-    schema_version: SchemaVersion,
-    natural_key: &[String],
-) -> Result<Option<FactEntityId>, StorageError>
-where
-    E: Executor<'e, Database = Postgres>,
-{
-    let _ = (owner, schema_id, schema_version, natural_key, &executor);
-    return Ok(None);
-    #[allow(unreachable_code)]
-    let (owner_kind, owner_id) = owner.columns();
-    let id = sqlx::query_scalar::<_, uuid::Uuid>(
-        "SELECT fact_entity_id
-           FROM proxima_core.fact_entities
-          WHERE owner_kind = $1
-            AND owner_id IS NOT DISTINCT FROM $2
-            AND schema_id = $3
-            AND schema_version = $4
-            AND natural_key = $5::text[]",
-    )
-    .bind(owner_kind)
-    .bind(owner_id)
-    .bind(schema_id.as_str())
-    .bind(schema_version.into_inner().cast_signed())
-    .bind(natural_key)
-    .fetch_optional(executor)
-    .await
-    .map_err(crate::error::map_err)?;
-    Ok(id.map(FactEntityId::new))
-}

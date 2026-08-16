@@ -12,7 +12,7 @@ use crate::error::map_err;
 use crate::verbs::edge_index::PgEndpointKind;
 
 use super::rows::{EdgeRowDb, edge_from_db};
-use super::{entity_owner_union, read_owner_predicate};
+
 
 /// Hard upper bound on edges returned by snapshot-edge mode.
 /// Decoupled from `QueryRequest::limit`, which sizes the node window.
@@ -28,99 +28,6 @@ pub const MAX_SNAPSHOT_EDGES: usize = 50_000;
 /// Fact-entity endpoints resolve through their current head, because that is
 /// what a follow-head address means at read time. `target_unavailable` covers
 /// both a compliance redaction and an endpoint whose row is gone.
-#[allow(dead_code)]
-fn read_edges_sql() -> String {
-    format!(
-        "
-WITH edge_heads AS (
-    SELECT e.source_kind, e.source_id, e.target_kind, e.target_id, e.kind, e.created_at,
-           CASE WHEN e.source_kind = 'FactEntityHead'::proxima_core.edge_endpoint_kind
-                THEN 'Fact'::proxima_core.edge_endpoint_kind ELSE e.source_kind END
-                AS source_projected_kind,
-           CASE WHEN e.target_kind = 'FactEntityHead'::proxima_core.edge_endpoint_kind
-                THEN 'Fact'::proxima_core.edge_endpoint_kind ELSE e.target_kind END
-                AS target_projected_kind,
-           COALESCE(sfe.current_memory_id, e.source_id) AS source_entity_id,
-           COALESCE(tfe.current_memory_id, e.target_id) AS target_entity_id,
-           (etr.operation_id IS NOT NULL
-            OR (e.target_kind = 'FactEntityHead'::proxima_core.edge_endpoint_kind
-                AND tfe.fact_entity_id IS NULL)
-            OR (e.target_kind = 'Goal'::proxima_core.edge_endpoint_kind
-                AND tg.goal_id IS NULL)
-            OR (e.target_kind NOT IN ('Goal'::proxima_core.edge_endpoint_kind,
-                                      'FactEntityHead'::proxima_core.edge_endpoint_kind)
-                AND tm.memory_id IS NULL)) AS target_unavailable
-      FROM proxima_core.edges e
-      LEFT JOIN proxima_core.fact_entities sfe
-        ON e.source_kind = 'FactEntityHead'::proxima_core.edge_endpoint_kind
-       AND sfe.fact_entity_id = e.source_id
-      LEFT JOIN proxima_core.fact_entities tfe
-        ON e.target_kind = 'FactEntityHead'::proxima_core.edge_endpoint_kind
-       AND tfe.fact_entity_id = e.target_id
-      LEFT JOIN proxima_core.memories tm
-        ON e.target_kind NOT IN ('Goal'::proxima_core.edge_endpoint_kind,
-                                 'FactEntityHead'::proxima_core.edge_endpoint_kind)
-       AND tm.memory_id = e.target_id
-      LEFT JOIN proxima_core.goals tg
-        ON e.target_kind = 'Goal'::proxima_core.edge_endpoint_kind
-       AND tg.goal_id = e.target_id
-      LEFT JOIN proxima_core.compliance_edge_target_redactions etr
-        ON etr.source_kind = e.source_kind AND etr.source_id = e.source_id
-       AND etr.target_kind = e.target_kind AND etr.target_id = e.target_id
-       AND etr.kind = e.kind
-     WHERE ($5::proxima_core.edge_kind IS NULL OR e.kind = $5)
-       AND ($6::uuid IS NULL OR (e.source_id = $6 AND e.source_kind = ANY($7::proxima_core.edge_endpoint_kind[])))
-       AND ($8::uuid IS NULL OR (e.target_id = $8 AND e.target_kind = ANY($9::proxima_core.edge_endpoint_kind[])))
-),
-visible AS (
-    SELECT edge_heads.*,
-           EXISTS (
-               SELECT 1
-                 FROM {entity_owner_union} seo
-                 JOIN unnest($1::proxima_core.owner_kind[], $2::uuid[]) AS rs(kind, id)
-                   ON {source_read_owner_predicate}
-                WHERE seo.entity_id = edge_heads.source_entity_id
-           ) AS source_readable,
-           (NOT edge_heads.target_unavailable AND EXISTS (
-               SELECT 1
-                 FROM {entity_owner_union} teo
-                 JOIN unnest($1::proxima_core.owner_kind[], $2::uuid[]) AS rs(kind, id)
-                   ON {target_read_owner_predicate}
-                WHERE teo.entity_id = edge_heads.target_entity_id
-           )) AS target_visible,
-           EXISTS (
-               SELECT 1
-                 FROM {entity_owner_union} weo
-                WHERE weo.entity_id = edge_heads.source_entity_id
-                  AND weo.owner_kind = $3
-                  AND weo.owner_id IS NOT DISTINCT FROM $4
-           ) AS source_world_visible
-      FROM edge_heads
-)
-SELECT source_projected_kind AS source_kind, source_entity_id AS source_id,
-       target_projected_kind AS target_kind, target_entity_id AS target_id,
-       kind, created_at, target_visible, target_unavailable
-  FROM visible
- WHERE source_readable
-   AND NOT (source_world_visible AND NOT target_visible)
-   AND ($8::uuid IS NULL OR target_visible)
-   -- Keyset over the PROJECTED coordinates, which is what a cursor is
-   -- handed out in: an edge has no id, so the position after created_at is
-   -- the rest of the key. The endpoint kinds are omitted because the
-   -- endpoint ids already determine them — a uuid names at most one row in
-   -- one table — so the triple is total on its own.
-   AND ($10::timestamptz IS NULL
-        OR (created_at, source_entity_id, target_entity_id, kind)
-           < ($10, $11::uuid, $12::uuid, $13::proxima_core.edge_kind))
- ORDER BY created_at DESC, source_entity_id DESC, target_entity_id DESC, kind DESC
- LIMIT $14
-",
-        entity_owner_union = entity_owner_union(),
-        source_read_owner_predicate = read_owner_predicate("seo", "rs"),
-        target_read_owner_predicate = read_owner_predicate("teo", "rs"),
-    )
-}
-
 /// Endpoint kinds an `EntityRef` filter may address.
 ///
 /// An `EntityRef` names an id and an address form, not a layer, so a memory

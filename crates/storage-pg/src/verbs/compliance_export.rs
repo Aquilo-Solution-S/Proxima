@@ -23,11 +23,8 @@ pub async fn export_owner_bundle(
     let memories = owner_rows(pool, owner, OwnerRowsTable::Memories).await?;
     let goals = owner_rows(pool, owner, OwnerRowsTable::Goals).await?;
     let edges = owner_rows(pool, owner, OwnerRowsTable::Edges).await?;
-    let fact_entities = owner_rows(pool, owner, OwnerRowsTable::FactEntities).await?;
     let receipts = owner_rows(pool, owner, OwnerRowsTable::Receipts).await?;
     let source_batches = owner_rows(pool, owner, OwnerRowsTable::SourceBatches).await?;
-    let citations = Vec::new();
-    let cited_objects = Vec::new();
     let source_cursors = owner_rows(pool, owner, OwnerRowsTable::SourceCursors).await?;
     let delegated_authority_grants =
         owner_rows(pool, owner, OwnerRowsTable::DelegatedAuthorityGrants).await?;
@@ -48,11 +45,8 @@ pub async fn export_owner_bundle(
         memories: memories.len(),
         goals: goals.len(),
         edges: edges.len(),
-        fact_entities: fact_entities.len(),
         receipts: receipts.len(),
         source_batches: source_batches.len(),
-        citations: citations.len(),
-        cited_objects: cited_objects.len(),
         source_cursors: source_cursors.len(),
         delegated_authority_grants: delegated_authority_grants.len(),
         sidecar_rows: sidecars.iter().map(|sidecar| sidecar.rows.len()).sum(),
@@ -70,11 +64,8 @@ pub async fn export_owner_bundle(
         memories,
         goals,
         edges,
-        fact_entities,
         receipts,
         source_batches,
-        citations,
-        cited_objects,
         source_cursors,
         delegated_authority_grants,
         sidecars,
@@ -94,7 +85,6 @@ enum OwnerRowsTable {
     Memories,
     Goals,
     Edges,
-    FactEntities,
     Receipts,
     SourceBatches,
     SourceCursors,
@@ -157,12 +147,6 @@ async fn owner_rows(
             .await
             .map_err(map_err),
         OwnerRowsTable::Edges => sqlx::query_scalar::<_, Value>(EDGE_ROWS_SQL)
-            .bind(owner_kind)
-            .bind(owner_id)
-            .fetch_all(pool)
-            .await
-            .map_err(map_err),
-        OwnerRowsTable::FactEntities => sqlx::query_scalar::<_, Value>(FACT_ENTITY_ROWS_SQL)
             .bind(owner_kind)
             .bind(owner_id)
             .fetch_all(pool)
@@ -291,13 +275,6 @@ SELECT to_jsonb(e)
  WHERE e.owner_kind = $1
    AND e.owner_id IS NOT DISTINCT FROM $2
  ORDER BY e.created_at, e.source_kind, e.source_id, e.target_kind, e.target_id, e.kind";
-
-const FACT_ENTITY_ROWS_SQL: &str = "
-SELECT to_jsonb(fe)
-  FROM proxima_core.fact_entities fe
- WHERE fe.owner_kind = $1
-   AND fe.owner_id IS NOT DISTINCT FROM $2
- ORDER BY fe.created_at, fe.fact_entity_id";
 
 const RECEIPT_ROWS_SQL: &str = "
 SELECT to_jsonb(fr)

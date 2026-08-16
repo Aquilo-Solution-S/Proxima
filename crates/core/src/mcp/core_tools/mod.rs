@@ -18,7 +18,6 @@ pub mod membership;
 pub mod memory;
 pub mod memory_spaces;
 pub mod publish;
-pub mod read_edges;
 pub mod upload;
 pub mod walk_memory_lineage;
 pub(crate) mod wire_ref;

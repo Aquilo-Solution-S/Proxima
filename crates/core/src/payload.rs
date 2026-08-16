@@ -775,11 +775,10 @@ pub trait GoalPayload:
     }
 }
 
-/// Typed payload for a `cited_objects` row, keyed on
-/// `cited_object_id`. Cited objects do not participate in F/A/P
-/// queries; the sidecar stores the artifact body, while the core row
-/// stores ownership and a content-addressed hash. See docs/11
-/// §"Trait families".
+/// Typed payload for a cited blob, keyed on `blob_id`. Cited blobs
+/// do not participate in F/A/P queries; the artifact body is the
+/// blob bytes, while `blob` stores ownership and a content-addressed
+/// hash. See docs/11 §"Trait families".
 pub trait CitedObjectPayload:
     serde::Serialize + serde::de::DeserializeOwned + Send + Sync + 'static
 {
@@ -799,18 +798,15 @@ pub trait CitedObjectPayload:
 
     /// Stable BLAKE3-32 hash of the artifact content. Re-ingesting
     /// the same artifact for the same Owner deduplicates the
-    /// `cited_objects` row via `(owner, schema_id, content_hash)`.
+    /// `blob` row via `(owner_id, schema_id, content_hash)`.
     fn idempotency_key(&self) -> [u8; 32];
 }
 
-/// Typed payload for a `citation_mappings` row, keyed on
-/// `citation_mapping_id`. Citation mappings pin exactly one Memory
-/// to exactly one `CitedObject`. The link itself — memory, cited
-/// object, owner, schema — lives in the generic `citation_mappings`
-/// table; a sidecar is **optional**, needed only when the mapping
+/// Typed locator for a Fact→blob citation. The link is `memory.blob_id`
+/// (0..1). A sidecar is **optional**, needed only when the citation
 /// carries schema-specific metadata such as byte ranges. A fieldless
-/// mapping (a pure link, the common case) returns `None` and gets no
-/// sidecar table. See docs/11 §"Trait families".
+/// mapping (a pure link, the common case) returns `None`. See docs/11
+/// §"Trait families".
 pub trait CitationMappingPayload:
     serde::Serialize + serde::de::DeserializeOwned + Send + Sync + 'static
 {

@@ -41,13 +41,11 @@ pub use error::map_err;
 mod pg_ident;
 mod pgvector;
 mod ports;
-#[cfg(any(test, feature = "test-fixtures", debug_assertions))]
-pub use ports::neighbor_memory_edges_sql_for_tests;
 pub mod sidecars;
 pub mod query {
     pub use crate::verbs::query::{
         CodeChunkVectorCandidate, CodeChunkVectorFilters, MAX_SNAPSHOT_EDGES,
-        authorized_code_chunk_head_candidates, fact_entity_id_for, nearest_code_chunk_candidates,
+        authorized_code_chunk_head_candidates, nearest_code_chunk_candidates,
     };
 }
 #[cfg(any(test, feature = "test-fixtures"))]

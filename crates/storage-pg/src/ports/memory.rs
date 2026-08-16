@@ -11,7 +11,7 @@ use proxima_core::verbs::query::{
 use proxima_core::{
     AuthorDerivedOutcome, AuthorDerivedRequest, Edge, EdgeKind, EdgeTargetProjection,
     FactSourceBatchRow, MemoryGraphPayloadRow, MemoryId, MemoryKindRow, Owner, OwnerRef,
-    SourceBatchId, StorageError,
+    StorageError,
 };
 
 use crate::error::{internal, with_bounded_retry};
@@ -26,95 +26,6 @@ fn parse_endpoint_kind(kind: &str) -> Option<PgEndpointKind> {
         "goal" => Some(PgEndpointKind::Goal),
         _ => None,
     }
-}
-
-/// Neighbor window. `touching` filters the edges scan on the RAW endpoint
-/// columns before the head resolution, so it rides
-/// `idx_edges_source`/`idx_edges_target` instead of resolving every edge.
-///
-/// The prefilter is an exact superset of the resolved predicate it guards:
-/// a resolved endpoint id equals a requested id only when the raw column
-/// equals it (no `fact_entities` match) or when the raw column is a
-/// fact-entity id whose `current_memory_id` is requested — precisely the
-/// ids `head_probe` collects (via `idx_fact_entities_current_memory`,
-/// migration 0017). The original resolved-column filter is kept verbatim as
-/// the residual, so the row set cannot change. `= ANY(array)` over a base
-/// column is an index condition; `= ANY` over a `COALESCE` of joined
-/// columns is not.
-const NEIGHBOR_MEMORY_EDGES_SQL: &str = "
-WITH read_set(owner_kind, owner_id) AS (
-    SELECT * FROM unnest($1::proxima_core.owner_kind[], $2::uuid[])
-),
-head_probe AS (
-    SELECT COALESCE(array_agg(fact_entity_id), '{}') AS ids
-      FROM proxima_core.fact_entities
-     WHERE current_memory_id = ANY($5::uuid[])
-),
-touching AS (
-    SELECT e.source_id, e.target_id, e.kind, e.created_at,
-           CASE WHEN e.source_kind = 'FactEntityHead'::proxima_core.edge_endpoint_kind
-                THEN 'Fact'::proxima_core.edge_endpoint_kind ELSE e.source_kind END
-                AS source_kind,
-           CASE WHEN e.target_kind = 'FactEntityHead'::proxima_core.edge_endpoint_kind
-                THEN 'Fact'::proxima_core.edge_endpoint_kind ELSE e.target_kind END
-                AS target_kind,
-           COALESCE(sfe.current_memory_id, e.source_id) AS source_entity_id,
-           COALESCE(tfe.current_memory_id, e.target_id) AS target_entity_id
-      FROM proxima_core.edges e
-      LEFT JOIN proxima_core.fact_entities sfe
-        ON e.source_kind = 'FactEntityHead'::proxima_core.edge_endpoint_kind
-       AND sfe.fact_entity_id = e.source_id
-      LEFT JOIN proxima_core.fact_entities tfe
-        ON e.target_kind = 'FactEntityHead'::proxima_core.edge_endpoint_kind
-       AND tfe.fact_entity_id = e.target_id
-     WHERE e.source_id = ANY($5::uuid[])
-        OR e.target_id = ANY($5::uuid[])
-        OR e.source_id = ANY((SELECT ids FROM head_probe)::uuid[])
-        OR e.target_id = ANY((SELECT ids FROM head_probe)::uuid[])
-)
-SELECT t.source_kind, t.source_entity_id, t.target_kind, t.target_entity_id,
-       t.kind, t.created_at,
-       EXISTS (
-           SELECT 1
-             FROM read_set rs
-            WHERE rs.owner_kind = COALESCE(tm.owner_kind, tg.owner_kind)
-              AND rs.owner_id IS NOT DISTINCT FROM COALESCE(tm.owner_id, tg.owner_id)
-       ) AS target_visible
-  FROM touching t
-  LEFT JOIN proxima_core.memories sm ON sm.memory_id = t.source_entity_id
-  LEFT JOIN proxima_core.goals sg ON sg.goal_id = t.source_entity_id
-  LEFT JOIN proxima_core.memories tm ON tm.memory_id = t.target_entity_id
-  LEFT JOIN proxima_core.goals tg ON tg.goal_id = t.target_entity_id
- WHERE EXISTS (
-           SELECT 1
-             FROM read_set rs
-            WHERE rs.owner_kind = COALESCE(sm.owner_kind, sg.owner_kind)
-              AND rs.owner_id IS NOT DISTINCT FROM COALESCE(sm.owner_id, sg.owner_id)
-       )
-   AND (t.source_entity_id = ANY($5::uuid[]) OR t.target_entity_id = ANY($5::uuid[]))
-   AND NOT (
-        COALESCE(sm.owner_kind, sg.owner_kind) = $3
-        AND COALESCE(sm.owner_id, sg.owner_id) IS NOT DISTINCT FROM $4
-        AND NOT EXISTS (
-            SELECT 1
-              FROM read_set rs
-             WHERE rs.owner_kind = COALESCE(tm.owner_kind, tg.owner_kind)
-               AND rs.owner_id IS NOT DISTINCT FROM COALESCE(tm.owner_id, tg.owner_id)
-        )
-   )
- ORDER BY t.created_at DESC, t.source_kind DESC, t.source_id DESC,
-          t.target_kind DESC, t.target_id DESC, t.kind DESC
- LIMIT $6
-";
-
-/// The neighbor-window statement the given tuning selects, for plan and
-/// equivalence assertions in tests. Same cfg gate as the search and claim
-/// `*_sql_for_tests` exports.
-#[cfg(any(test, feature = "test-fixtures", debug_assertions))]
-#[doc(hidden)]
-#[must_use]
-pub fn neighbor_memory_edges_sql_for_tests() -> &'static str {
-    NEIGHBOR_MEMORY_EDGES_SQL
 }
 
 #[async_trait::async_trait]
@@ -280,35 +191,7 @@ impl MemoryAuthoringPort for PgStorage {
         memory_ids: &[MemoryId],
     ) -> Result<Vec<FactSourceBatchRow>, StorageError> {
         let _ = memory_ids;
-        return Ok(Vec::new());
-        #[allow(unreachable_code)]
-        if memory_ids.is_empty() {
-            return Ok(Vec::new());
-        }
-        let ids = memory_ids
-            .iter()
-            .copied()
-            .map(MemoryId::into_inner)
-            .collect::<Vec<_>>();
-        let rows: Vec<(uuid::Uuid, uuid::Uuid)> = sqlx::query_as(
-            "SELECT m.memory_id, fr.source_batch_id
-             FROM proxima_core.memories m
-             JOIN proxima_core.fact_receipts fr ON fr.receipt_id = m.receipt_id
-             WHERE m.kind = 'Fact'
-               AND m.tombstoned_at IS NULL
-               AND m.memory_id = ANY($1::uuid[])",
-        )
-        .bind(&ids)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(internal)?;
-        Ok(rows
-            .into_iter()
-            .map(|(memory_id, source_batch_id)| FactSourceBatchRow {
-                memory_id: MemoryId::new(memory_id),
-                source_batch_id: SourceBatchId::new(source_batch_id),
-            })
-            .collect())
+        Ok(Vec::new())
     }
 }
 

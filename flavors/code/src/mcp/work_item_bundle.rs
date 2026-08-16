@@ -1,6 +1,6 @@
 use proxima_core::verbs::query::{EdgeFilter, EdgeReadRequest, EntityKind};
 use proxima_core::{
-    AbstractionPayload, EdgeEndpoint, EdgeKind, EntityRef, FactPayload, GoalActivatedV1, MemoryId,
+    AbstractionPayload, EdgeEndpoint, EdgeKind, EntityRef, FactPayload, MemoryId,
     PerspectivePayload,
 };
 use proxima_core::{Tool, ToolCtx, ToolError};
@@ -502,19 +502,22 @@ async fn load_goal_activation(
     memory_id: MemoryId,
 ) -> Result<Option<Uuid>, ToolError> {
     let pool = code_store(ctx)?;
-    let engine = super::engine(ctx)?;
-    Ok(pool
-        .authorized_fact_payloads::<GoalActivatedV1>(
-            &engine,
-            ctx.authz(),
-            ctx.owner(),
-            &[memory_id.into_inner()],
-            1,
-        )
-        .await?
-        .into_iter()
-        .next()
-        .map(|(_, payload)| payload.goal_id))
+    let handle: Option<Uuid> = sqlx::query_scalar(
+        "SELECT g.handle
+           FROM proxima_core.goal_head h
+           JOIN proxima_core.goal g ON g.handle = h.handle AND g.t = h.t
+          WHERE g.owner_id = $1
+            AND g.state = 'Active'
+            AND ($2 = ANY(g.evidence_memory_ids) OR g.assignment_t = $2)
+          ORDER BY g.t DESC
+          LIMIT 1",
+    )
+    .bind(ctx.owner().stored_owner_id())
+    .bind(memory_id.into_inner())
+    .fetch_optional(pool.pool())
+    .await
+    .map_err(super::sql::map_storage)?;
+    Ok(handle)
 }
 
 /// Workers this item is assigned to: incoming assignment Perspectives,

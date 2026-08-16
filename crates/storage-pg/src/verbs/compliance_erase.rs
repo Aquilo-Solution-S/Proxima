@@ -913,11 +913,11 @@ async fn upsert_audit_outcome(
     .bind(i64::try_from(counts.memories).unwrap_or(i64::MAX))
     .bind(i64::try_from(counts.goals).unwrap_or(i64::MAX))
     .bind(i64::try_from(counts.edges).unwrap_or(i64::MAX))
-    .bind(i64::try_from(counts.fact_entities).unwrap_or(i64::MAX))
+    .bind(0_i64)
     .bind(i64::try_from(counts.receipts).unwrap_or(i64::MAX))
     .bind(i64::try_from(counts.source_batches).unwrap_or(i64::MAX))
-    .bind(i64::try_from(counts.citations).unwrap_or(i64::MAX))
-    .bind(i64::try_from(counts.cited_objects).unwrap_or(i64::MAX))
+    .bind(0_i64)
+    .bind(0_i64)
     .bind(i64::try_from(counts.source_cursors).unwrap_or(i64::MAX))
     .bind(i64::try_from(counts.embeddings).unwrap_or(i64::MAX))
     .bind(i64::try_from(counts.embedding_jobs).unwrap_or(i64::MAX))
@@ -1041,11 +1041,8 @@ async fn final_counts(tx: &mut Tx<'_>) -> Result<ComplianceEraseCounts, StorageE
         memories: count_named(tx, "memories").await?,
         goals: count_named(tx, "goals").await?,
         edges: count_named(tx, "edges").await?,
-        fact_entities: count_named(tx, "fact_entities").await?,
         receipts: count_named(tx, "receipts").await?,
         source_batches: count_named(tx, "source_batches").await?,
-        citations: count_named(tx, "citations").await?,
-        cited_objects: count_named(tx, "cited_objects").await?,
         source_cursors: count_named(tx, "source_cursors").await?,
         embeddings: count_named(tx, "embeddings").await?,
         embedding_jobs: count_named(tx, "embedding_jobs").await?,
@@ -1126,31 +1123,6 @@ async fn delete_selected_table(
 }
 
 async fn delete_fixed_goal_sidecars(tx: &mut Tx<'_>) -> Result<(), StorageError> {
-    for table in [
-        "proxima_core.goal_activated_v1",
-        "proxima_core.goal_paused_v1",
-        "proxima_core.goal_achieved_v1",
-        "proxima_core.goal_abandoned_v1",
-    ] {
-        delete_fixed_by_selected(
-            tx,
-            table,
-            "goal_id",
-            "selected_goals",
-            "goal_id",
-            "goal_sidecar",
-        )
-        .await?;
-        delete_fixed_by_selected(
-            tx,
-            table,
-            "memory_id",
-            "selected_memories",
-            "memory_id",
-            "goal_sidecar",
-        )
-        .await?;
-    }
     delete_fixed_by_selected(
         tx,
         "proxima_core.goal_wake_config",

@@ -24,21 +24,14 @@ const MCP_OPERATOR_NAMESPACE: uuid::Uuid = uuid::Uuid::from_bytes([
 const MCP_GOAL_INPUT_CONTRACT_NAMESPACE: uuid::Uuid = uuid::Uuid::from_bytes([
     0xb2, 0x3f, 0x07, 0xef, 0xeb, 0x6f, 0x4f, 0xe7, 0xa9, 0xd3, 0x67, 0xa9, 0x53, 0xf3, 0x4a, 0x6d,
 ]);
-const GOAL_ACTIVATED_SCHEMA_IDS: &[&str] =
-    &[<crate::GoalActivatedV1 as crate::FactPayload>::SCHEMA_ID];
-const GOAL_ACHIEVED_SCHEMA_IDS: &[&str] =
-    &[<crate::GoalAchievedV1 as crate::FactPayload>::SCHEMA_ID];
-const CORE_GOAL_PRODUCES_SCHEMA_IDS: &[&str] = &[
-    <crate::GoalActivatedV1 as crate::FactPayload>::SCHEMA_ID,
-    <crate::GoalAchievedV1 as crate::FactPayload>::SCHEMA_ID,
-];
+const CORE_GOAL_PRODUCES_SCHEMA_IDS: &[&str] = &[];
 pub const CORE_GOAL_ACTIONS: &[CoreActionMeta] = &[
     CoreActionMeta {
         tool: CoreGoalTool::NAME,
         action: "set",
         scope_key: protocol_action::CORE_GOAL_SET,
         description: "Set an Active Goal assigned to a Perspective.",
-        produces_schema_ids: GOAL_ACTIVATED_SCHEMA_IDS,
+        produces_schema_ids: &[],
     },
     CoreActionMeta {
         tool: CoreGoalTool::NAME,
@@ -52,21 +45,21 @@ pub const CORE_GOAL_ACTIONS: &[CoreActionMeta] = &[
         action: "modify",
         scope_key: protocol_action::CORE_GOAL_MODIFY,
         description: "Replace an Active Goal head's content.",
-        produces_schema_ids: GOAL_ACTIVATED_SCHEMA_IDS,
+        produces_schema_ids: &[],
     },
     CoreActionMeta {
         tool: CoreGoalTool::NAME,
         action: "mark_achieved",
         scope_key: protocol_action::CORE_GOAL_MARK_ACHIEVED,
         description: "Mark a Goal head Achieved with completion evidence.",
-        produces_schema_ids: GOAL_ACHIEVED_SCHEMA_IDS,
+        produces_schema_ids: &[],
     },
     CoreActionMeta {
         tool: CoreGoalTool::NAME,
         action: "decompose",
         scope_key: protocol_action::CORE_GOAL_DECOMPOSE,
         description: "Create Active child Goals under a parent Goal.",
-        produces_schema_ids: GOAL_ACTIVATED_SCHEMA_IDS,
+        produces_schema_ids: &[],
     },
 ];
 

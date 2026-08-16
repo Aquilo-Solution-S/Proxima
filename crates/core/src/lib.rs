@@ -66,10 +66,7 @@ pub use engine::*;
 pub use env::{env_value, process_env};
 pub use error::*;
 pub use flavor::*;
-pub use goal::{
-    GoalAbandonedV1, GoalAchievedV1, GoalActivatedV1, GoalPausedV1, SimpleTextGoalV1, TaskGoalV1,
-    TaskPriority,
-};
+pub use goal::{SimpleTextGoalV1, TaskGoalV1, TaskPriority};
 pub use ids::*;
 pub use llm::*;
 pub use mcp::{
