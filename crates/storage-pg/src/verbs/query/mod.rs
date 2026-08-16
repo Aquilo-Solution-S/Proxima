@@ -6,6 +6,7 @@ use proxima_core::{OwnerRef, OwnerRefKind};
 mod abstraction_heads;
 mod citations;
 mod code_chunk_vectors;
+mod code_series_heads;
 mod edges;
 mod goals;
 mod lineage;
@@ -17,6 +18,10 @@ pub use abstraction_heads::authorized_code_chunk_head_candidates;
 pub(crate) use citations::{citation_of_fact, facts_citing_object};
 pub use code_chunk_vectors::{
     CodeChunkVectorCandidate, CodeChunkVectorFilters, nearest_code_chunk_candidates,
+};
+pub use code_series_heads::{
+    FileRevisionHeadRow, owned_file_revision_heads, owned_present_chunk_indexes,
+    readable_chunk_head_ts_for_file, readable_file_revision_head_ts,
 };
 pub use edges::MAX_SNAPSHOT_EDGES;
 pub(crate) use edges::{load_inbound_pin_nodes, load_pin_nodes};

@@ -173,54 +173,15 @@ impl<'a> CodeIngestContext<'a> {
         owner: Owner,
         repo_id: Uuid,
     ) -> Result<Vec<FileRevisionHead>, IngestError> {
-        // Sidecar-only candidate scan: `memory_id` is a UUIDv7 for Fact rows
-        // (assigned at ingest, see `proxima-storage-pg` fact_ingest), so a
-        // self-join on it is a valid recency proxy without touching
-        // `proxima_core.*`; the authorized fetch below resolves the true
-        // owner-or-World head via `FileRevisionV1::natural_key_columns`
-        // heads-only supersession.
-        let candidate_ids: Vec<Uuid> = sqlx::query_scalar(
-            "SELECT fr.t
-               FROM proxima_code.file_revision_v1 fr
-              WHERE fr.repo_id = $1
-                AND NOT EXISTS (
-                    SELECT 1
-                      FROM proxima_code.file_revision_v1 fr2
-                     WHERE fr2.repo_id = fr.repo_id
-                       AND fr2.file_path = fr.file_path
-                       AND fr2.t > fr.t
-                )
-              ORDER BY fr.file_path ASC
-              LIMIT 100000",
-        )
-        .bind(repo_id)
-        .fetch_all(self.pool())
-        .await?;
-        let mut payloads = Vec::new();
-        for chunk in candidate_ids.chunks(2_000) {
-            payloads.extend(
-                self.store
-                    .authorized_fact_payloads_include_tombstones::<FileRevisionV1>(
-                        self.engine,
-                        self.authz,
-                        owner,
-                        chunk,
-                        chunk.len(),
-                    )
-                    .await
-                    .map_err(|err| read_error(&err))?,
-            );
-        }
-        Ok(payloads
+        // Owner-only `memory_head` of each `(repo, path)` series — the
+        // same series `existing_file_revision_handle` advances.
+        self.store
+            .owned_file_revision_heads(owner, repo_id)
+            .await
+            .map_err(|err| read_error(&err))?
             .into_iter()
-            .filter(|(_, payload)| payload.repo_id == repo_id)
-            .map(|(memory_id, payload)| FileRevisionHead {
-                memory_id,
-                file_path: payload.file_path,
-                content_sha256: payload.content_sha256,
-                state: payload.state,
-            })
-            .collect())
+            .map(file_revision_head_from_row)
+            .collect()
     }
 
     async fn present_chunk_indexes(
@@ -229,45 +190,19 @@ impl<'a> CodeIngestContext<'a> {
         repo_id: Uuid,
         file_path: &str,
     ) -> Result<Vec<u32>, IngestError> {
-        // Sidecar-only candidate scan of every `Present`-state chunk row
-        // ever ingested for this file. Head admit is `memory_head.t = m.t`
-        // (one handle per owner+NK). A later Tombstone at the same NK
-        // moves the head, so a removed index disappears even though this
-        // scan only listed Present rows.
-        let candidates: Vec<ChunkIndexCandidateRow> = sqlx::query_as(
-            "SELECT s.t AS memory_id, s.chunk_index
-               FROM proxima_code.code_chunk_v1 s
-              WHERE s.repo_id = $1
-                AND s.file_path = $2
-                AND s.state = 'Present'
-              LIMIT 100000",
-        )
-        .bind(repo_id)
-        .bind(file_path)
-        .fetch_all(self.pool())
-        .await?;
-        let index_by_memory_id: HashMap<Uuid, i32> = candidates
-            .iter()
-            .map(|row| (row.memory_id, row.chunk_index))
-            .collect();
-        let candidate_ids: Vec<Uuid> = candidates.iter().map(|row| row.memory_id).collect();
-        let heads = self
-            .store
-            .authorized_code_chunk_head_candidates(owner, &candidate_ids)
+        // Owner-only present indexes at `memory_head` of each
+        // `(repo, path, index)` series.
+        self.store
+            .owned_present_chunk_indexes(owner, repo_id, file_path)
             .await
-            .map_err(|err| read_error(&err))?;
-        let mut indexes = heads
+            .map_err(|err| read_error(&err))?
             .into_iter()
-            .filter_map(|id| index_by_memory_id.get(&id).copied())
             .map(|idx| {
                 u32::try_from(idx).map_err(|err| {
                     IngestError::Storage(format!("invalid code chunk index {idx}: {err}"))
                 })
             })
-            .collect::<Result<Vec<_>, _>>()?;
-        indexes.sort_unstable();
-        indexes.dedup();
-        Ok(indexes)
+            .collect()
     }
 }
 
@@ -275,10 +210,28 @@ fn read_error(err: &ToolError) -> IngestError {
     IngestError::Storage(format!("authorized code-flavor read: {err}"))
 }
 
-#[derive(Debug, Clone, Copy, sqlx::FromRow)]
-struct ChunkIndexCandidateRow {
-    memory_id: Uuid,
-    chunk_index: i32,
+fn file_revision_head_from_row(
+    row: proxima::flavor::FileRevisionHeadRow,
+) -> Result<FileRevisionHead, IngestError> {
+    let content_sha256: [u8; 32] = row.content_sha256.as_slice().try_into().map_err(|_| {
+        IngestError::Storage(format!(
+            "file revision sha256 length {}",
+            row.content_sha256.len()
+        ))
+    })?;
+    let state = match row.state.as_str() {
+        "Present" => FileState::Present,
+        "Tombstone" => FileState::Tombstone,
+        other => {
+            return Err(IngestError::Storage(format!("invalid file state {other}")));
+        }
+    };
+    Ok(FileRevisionHead {
+        memory_id: MemoryId::new(row.t),
+        file_path: row.file_path,
+        content_sha256,
+        state,
+    })
 }
 
 /// Pull-mode source. One instance per repo; `repo_id` is stable

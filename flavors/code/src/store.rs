@@ -131,6 +131,73 @@ impl CodeFlavorStore {
         .await
     }
 
+    /// Owner-only current file-revision heads of `repo_id`. Head is
+    /// `memory_head`; ingest compares these shas against git.
+    pub(crate) async fn owned_file_revision_heads(
+        &self,
+        owner: Owner,
+        repo_id: uuid::Uuid,
+    ) -> Result<Vec<proxima::flavor::FileRevisionHeadRow>, ToolError> {
+        proxima::flavor::owned_file_revision_heads(
+            &self.pool,
+            owner,
+            &crate::payloads::FileRevisionV1::schema_id(),
+            repo_id,
+        )
+        .await
+    }
+
+    /// Owner∪World current file-revision `t`s for one path.
+    pub(crate) async fn readable_file_revision_head_ts(
+        &self,
+        owner: Owner,
+        repo_id: uuid::Uuid,
+        file_path: &str,
+    ) -> Result<Vec<uuid::Uuid>, ToolError> {
+        proxima::flavor::readable_file_revision_head_ts(
+            &self.pool,
+            owner,
+            &crate::payloads::FileRevisionV1::schema_id(),
+            repo_id,
+            file_path,
+        )
+        .await
+    }
+
+    /// Owner-only present chunk indexes at current heads of one file.
+    pub(crate) async fn owned_present_chunk_indexes(
+        &self,
+        owner: Owner,
+        repo_id: uuid::Uuid,
+        file_path: &str,
+    ) -> Result<Vec<i32>, ToolError> {
+        proxima::flavor::owned_present_chunk_indexes(
+            &self.pool,
+            owner,
+            &crate::payloads::CodeChunkV1::schema_id(),
+            repo_id,
+            file_path,
+        )
+        .await
+    }
+
+    /// Owner∪World present chunk head `t`s for one file.
+    pub(crate) async fn readable_chunk_head_ts_for_file(
+        &self,
+        owner: Owner,
+        repo_id: uuid::Uuid,
+        file_path: &str,
+    ) -> Result<Vec<uuid::Uuid>, ToolError> {
+        proxima::flavor::readable_chunk_head_ts_for_file(
+            &self.pool,
+            owner,
+            &crate::payloads::CodeChunkV1::schema_id(),
+            repo_id,
+            file_path,
+        )
+        .await
+    }
+
     /// Nearest `code-chunk-v1` chunks to a query embedding, best-first.
     ///
     /// A candidate producer like

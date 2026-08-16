@@ -166,6 +166,9 @@ mod authorized_read;
 pub use authorized_read::{
     authorized_abstraction_payloads, authorized_code_chunk_head_candidates,
     authorized_fact_payloads, authorized_fact_payloads_include_tombstones, authorized_memory_ids,
-    nearest_code_chunk_candidates,
+    nearest_code_chunk_candidates, owned_file_revision_heads, owned_present_chunk_indexes,
+    readable_chunk_head_ts_for_file, readable_file_revision_head_ts,
 };
-pub use proxima_storage_pg::query::{CodeChunkVectorCandidate, CodeChunkVectorFilters};
+pub use proxima_storage_pg::query::{
+    CodeChunkVectorCandidate, CodeChunkVectorFilters, FileRevisionHeadRow,
+};

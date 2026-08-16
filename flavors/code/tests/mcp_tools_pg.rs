@@ -2377,10 +2377,22 @@ async fn fact_memory(
     schema_id: &str,
     payload: &[u8],
 ) -> Result<Uuid, Box<dyn std::error::Error>> {
+    fact_memory_on_handle(engine, owner, schema_id, payload, None).await
+}
+
+async fn fact_memory_on_handle(
+    engine: &Engine,
+    owner: Owner,
+    schema_id: &str,
+    payload: &[u8],
+    handle: Option<Uuid>,
+) -> Result<Uuid, Box<dyn std::error::Error>> {
+    let mut draft = fact_draft(owner, schema_id, payload);
+    draft.handle = handle;
     Ok(engine
         .fact_ingest(
             &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::HostBearer),
-            fact_draft(owner, schema_id, payload),
+            draft,
         )
         .await?
         .memory_id
@@ -2523,8 +2535,15 @@ async fn ingest_file_revision(
 ) -> Result<Uuid, Box<dyn std::error::Error>> {
     let payload = format!("{file_path}:{indexed_commit_sha}");
     register_repo_row(pool, owner, repo_id).await?;
-    let memory_id =
-        fact_memory(engine, owner, FileRevisionV1::SCHEMA_ID, payload.as_bytes()).await?;
+    let handle = existing_file_revision_handle(pool, &owner, repo_id, file_path).await?;
+    let memory_id = fact_memory_on_handle(
+        engine,
+        owner,
+        FileRevisionV1::SCHEMA_ID,
+        payload.as_bytes(),
+        handle,
+    )
+    .await?;
     sqlx::query(
         "INSERT INTO proxima_code.file_revision_v1
             (t, repo_id, file_path, language, content_sha256,
@@ -2551,8 +2570,15 @@ async fn ingest_file_revision_tombstone(
     indexed_commit_sha: &str,
 ) -> Result<Uuid, Box<dyn std::error::Error>> {
     let payload = format!("{file_path}:{indexed_commit_sha}:tombstone");
-    let memory_id =
-        fact_memory(engine, owner, FileRevisionV1::SCHEMA_ID, payload.as_bytes()).await?;
+    let handle = existing_file_revision_handle(pool, &owner, repo_id, file_path).await?;
+    let memory_id = fact_memory_on_handle(
+        engine,
+        owner,
+        FileRevisionV1::SCHEMA_ID,
+        payload.as_bytes(),
+        handle,
+    )
+    .await?;
     sqlx::query(
         "INSERT INTO proxima_code.file_revision_v1
             (t, repo_id, file_path, language, content_sha256,
@@ -2675,6 +2701,28 @@ async fn ingest_code_chunk_tombstone(
     Ok(memory_id)
 }
 
+async fn existing_file_revision_handle(
+    pool: &PgPool,
+    owner: &Owner,
+    repo_id: Uuid,
+    file_path: &str,
+) -> Result<Option<Uuid>, Box<dyn std::error::Error>> {
+    Ok(sqlx::query_scalar(
+        "SELECT h.handle
+           FROM proxima_core.memory_head h
+           JOIN proxima_core.memory m ON m.handle = h.handle AND m.t = h.t
+           JOIN proxima_code.file_revision_v1 fr ON fr.t = m.t
+          WHERE m.owner_id = $1
+            AND fr.repo_id = $2
+            AND fr.file_path = $3",
+    )
+    .bind(owner.stored_owner_id())
+    .bind(repo_id)
+    .bind(file_path)
+    .fetch_optional(pool)
+    .await?)
+}
+
 async fn latest_file_revision(
     pool: &PgPool,
     owner: &Owner,
@@ -2688,9 +2736,7 @@ async fn latest_file_revision(
            JOIN proxima_code.file_revision_v1 fr ON fr.t = m.t
           WHERE m.owner_id = $1
             AND fr.repo_id = $2
-            AND fr.file_path = $3
-          ORDER BY m.t DESC
-          LIMIT 1",
+            AND fr.file_path = $3",
     )
     .bind(owner.stored_owner_id())
     .bind(repo_id)

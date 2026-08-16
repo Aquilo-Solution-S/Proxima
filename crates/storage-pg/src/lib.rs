@@ -44,8 +44,10 @@ mod ports;
 pub mod sidecars;
 pub mod query {
     pub use crate::verbs::query::{
-        CodeChunkVectorCandidate, CodeChunkVectorFilters, MAX_SNAPSHOT_EDGES,
+        CodeChunkVectorCandidate, CodeChunkVectorFilters, FileRevisionHeadRow, MAX_SNAPSHOT_EDGES,
         authorized_code_chunk_head_candidates, nearest_code_chunk_candidates,
+        owned_file_revision_heads, owned_present_chunk_indexes, readable_chunk_head_ts_for_file,
+        readable_file_revision_head_ts,
     };
 }
 #[cfg(any(test, feature = "test-fixtures"))]

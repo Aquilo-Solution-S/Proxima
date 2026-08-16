@@ -452,12 +452,10 @@ async fn head_snapshot_repeated_after_change_and_delete_is_idempotent() {
     result.expect("head_snapshot_repeated_after_change_and_delete_is_idempotent failed");
 }
 
-/// A heavily-churned file can hold more historical `Present`-state chunk
-/// rows than one authorized-read batch (`MAX_AUTHZ_CANDIDATES` = 2,000).
-/// `present_chunk_indexes` must evaluate every candidate. Chunk memory ids
-/// are deterministic UUIDv5 content hashes (not time-ordered), so no
-/// `ORDER BY` on the candidate scan can guarantee head survival; exhaustive
-/// batched evaluation is the behavior under test.
+/// A heavily-churned file can hold more live series (distinct
+/// `(repo, path, index)` handles) than one authorized-read batch
+/// (`MAX_AUTHZ_CANDIDATES` = 2,000). `present_chunk_indexes` lists every
+/// owned head; it must not truncate.
 #[tokio::test]
 async fn head_snapshot_delete_tombstones_all_indexes_beyond_one_authz_batch() {
     const EXTRA_PRESENT_ROWS: i32 = 2_050; // > MAX_AUTHZ_CANDIDATES = 2_000

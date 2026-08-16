@@ -345,6 +345,79 @@ pub async fn nearest_code_chunk_candidates(
     .map_err(ToolError::Storage)
 }
 
+/// Owner-only current file-revision heads of one repo (ingest poll).
+///
+/// # Errors
+///
+/// Returns `ToolError::Storage` on query failure.
+pub async fn owned_file_revision_heads(
+    pool: &PgPool,
+    owner: Owner,
+    schema_id: &SchemaId,
+    repo_id: uuid::Uuid,
+) -> Result<Vec<proxima_storage_pg::query::FileRevisionHeadRow>, ToolError> {
+    proxima_storage_pg::query::owned_file_revision_heads(pool, owner, schema_id, repo_id)
+        .await
+        .map_err(ToolError::Storage)
+}
+
+/// Owner∪World current file-revision `t`s for one path (`open_file`).
+///
+/// # Errors
+///
+/// Returns `ToolError::Storage` on query failure.
+pub async fn readable_file_revision_head_ts(
+    pool: &PgPool,
+    owner: Owner,
+    schema_id: &SchemaId,
+    repo_id: uuid::Uuid,
+    file_path: &str,
+) -> Result<Vec<uuid::Uuid>, ToolError> {
+    proxima_storage_pg::query::readable_file_revision_head_ts(
+        pool, owner, schema_id, repo_id, file_path,
+    )
+    .await
+    .map_err(ToolError::Storage)
+}
+
+/// Owner-only present chunk indexes at current heads of one file (ingest).
+///
+/// # Errors
+///
+/// Returns `ToolError::Storage` on query failure.
+pub async fn owned_present_chunk_indexes(
+    pool: &PgPool,
+    owner: Owner,
+    schema_id: &SchemaId,
+    repo_id: uuid::Uuid,
+    file_path: &str,
+) -> Result<Vec<i32>, ToolError> {
+    proxima_storage_pg::query::owned_present_chunk_indexes(
+        pool, owner, schema_id, repo_id, file_path,
+    )
+    .await
+    .map_err(ToolError::Storage)
+}
+
+/// Owner∪World present chunk head `t`s for one file (`open_file`).
+///
+/// # Errors
+///
+/// Returns `ToolError::Storage` on query failure.
+pub async fn readable_chunk_head_ts_for_file(
+    pool: &PgPool,
+    owner: Owner,
+    schema_id: &SchemaId,
+    repo_id: uuid::Uuid,
+    file_path: &str,
+) -> Result<Vec<uuid::Uuid>, ToolError> {
+    proxima_storage_pg::query::readable_chunk_head_ts_for_file(
+        pool, owner, schema_id, repo_id, file_path,
+    )
+    .await
+    .map_err(ToolError::Storage)
+}
+
 fn deduped_candidates(candidates: &[uuid::Uuid]) -> Vec<uuid::Uuid> {
     let mut seen = HashSet::with_capacity(candidates.len());
     candidates

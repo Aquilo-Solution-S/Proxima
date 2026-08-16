@@ -11,12 +11,10 @@
 //! scope. Visibility is decided later by the authorized payload read.
 //!
 //! Deliberately not generalized to an arbitrary sidecar table / natural
-//! key: `proxima-code/code-chunk-v1` is the only schema that needs this
-//! today, and a compile-time query text keeps this call out of
-//! `scripts/check-sql-policy.py`'s dynamic-SQL inventory (every value,
-//! including `schema_id`, is still `$`-bound, never spliced). A second
-//! consumer should get its own narrowly-scoped sibling function (or, if a
-//! third shows up, it is worth generalizing and updating the ratchet).
+//! key: this is the id-list filter for `code-chunk-v1`. Listing heads by
+//! NK lives in [`super::code_series_heads`] as compile-time siblings
+//! (sql-policy stays off dynamic SQL). A third *id-list* consumer is the
+//! moment to generalize.
 
 use proxima_core::{Owner, SchemaId, StorageError};
 use sqlx::PgPool;
