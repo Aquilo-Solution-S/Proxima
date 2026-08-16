@@ -258,6 +258,16 @@ pub(in crate::engine) mod tests {
         ) -> Result<Vec<FactSourceBatchRow>, StorageError> {
             Ok(Vec::new())
         }
+
+        async fn forget_memory(
+            &self,
+            _permit: &crate::storage_ports::OwnerWritePermit,
+            _memory_id: MemoryId,
+        ) -> Result<(), StorageError> {
+            Err(StorageError::Internal(
+                "MembershipStorage rejects writes".into(),
+            ))
+        }
     }
 
     #[async_trait::async_trait]

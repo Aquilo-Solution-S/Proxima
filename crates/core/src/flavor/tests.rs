@@ -283,6 +283,7 @@ fn default_registry_includes_all_11_substrate_mcp_tools() {
         protocol_tool::CORE_SEARCH_MEMORIES,
         protocol_tool::CORE_MEMORY_SPACES,
         protocol_tool::CORE_REMEMBER,
+        protocol_tool::CORE_FORGET,
         protocol_tool::CORE_RECORD_UTTERANCE,
         protocol_tool::CORE_DERIVE,
         protocol_tool::CORE_INTERPRET,
@@ -299,7 +300,7 @@ fn default_registry_includes_all_11_substrate_mcp_tools() {
         !names.contains("core/emit_budget_decision"),
         "retired tool name must not remain registered"
     );
-    assert_eq!(names.len(), 11, "exactly 11 substrate tools registered");
+    assert_eq!(names.len(), 12, "exactly 12 substrate tools registered");
     for desc in frozen.list_mcp_tools() {
         assert!(
             matches!(desc.origin, McpToolOrigin::Substrate),

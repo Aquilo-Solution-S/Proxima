@@ -13,6 +13,7 @@ pub mod tool {
     pub const CORE_MEMBERSHIP: &str = "core_membership";
     pub const CORE_PUBLISH: &str = "core_publish";
     pub const CORE_UPLOAD: &str = "core_upload";
+    pub const CORE_FORGET: &str = "core_forget";
 }
 
 pub mod action {

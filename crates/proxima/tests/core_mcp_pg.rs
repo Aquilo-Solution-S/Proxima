@@ -1150,3 +1150,88 @@ async fn facade_authorized_read_surfaces_world_published_fact_to_non_owner() {
     let _ = drop_db(&db_name).await;
     result.expect("authorized-read World visibility test failed");
 }
+
+#[tokio::test]
+async fn core_forget_cools_a_remembered_fact() {
+    let db_name = unique_db_name("proxima_core_forget");
+    create_db(&db_name).await.expect("PG required for tests");
+    let db_url = db_url(&db_name);
+
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let built = Proxima::<AgentMemoryApp>::app()
+            .database_url(db_url)
+            .owner(owner)
+            .tool_scope(ToolScope::All)
+            .build()
+            .await?;
+        let tools = built.core_mcp_tools();
+        let listed = tools.list_core_tools();
+        assert!(
+            listed.iter().any(|tool| tool.name == "core_forget"),
+            "served catalog must include core_forget: {listed:?}"
+        );
+        assert!(
+            listed.iter().all(|tool| !tool.name.contains("open_batch")),
+            "open_batch must stay deleted"
+        );
+
+        let authz = host_authz(&owner, ToolScope::All);
+        let remembered = call_test_model_tool(
+            &tools,
+            authz.clone(),
+            owner,
+            "core_remember",
+            serde_json::json!({
+                "title": "forget me",
+                "body": "hot row that must cool",
+                "tags": []
+            }),
+        )
+        .await?;
+        let handle = remembered["handle"].as_str().expect("handle").to_string();
+        let t = handle
+            .strip_prefix("F:")
+            .expect("prefixed fact")
+            .parse::<Uuid>()?;
+
+        let forgotten = call_test_model_tool(
+            &tools,
+            authz,
+            owner,
+            "core_forget",
+            serde_json::json!({ "memory": handle }),
+        )
+        .await?;
+        assert_eq!(forgotten["ok"], serde_json::json!(true));
+
+        let hot: i64 = sqlx::query_scalar(
+            "SELECT count(*)::bigint FROM proxima_core.memory WHERE t = $1",
+        )
+        .bind(t)
+        .fetch_one(built.pool_for_tests())
+        .await?;
+        assert_eq!(hot, 0, "forget must delete the hot row");
+        let cooled: i64 = sqlx::query_scalar(
+            "SELECT count(*)::bigint FROM proxima_core.cooled WHERE t = $1",
+        )
+        .bind(t)
+        .fetch_one(built.pool_for_tests())
+        .await?;
+        assert_eq!(cooled, 1, "forget must leave the cooled stub");
+        let announce: String = sqlx::query_scalar(
+            "SELECT op::text FROM proxima_core.announce WHERE t = $1 ORDER BY seq DESC LIMIT 1",
+        )
+        .bind(t)
+        .fetch_one(built.pool_for_tests())
+        .await?;
+        assert_eq!(announce, "forget");
+
+        built.shutdown();
+        Ok(())
+    }
+    .await;
+
+    let _ = drop_db(&db_name).await;
+    result.expect("core_forget must drive shipped forget_memory");
+}

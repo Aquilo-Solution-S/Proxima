@@ -112,6 +112,14 @@ impl MemoryAuthoringPort for MemoryAuthoringFake {
     ) -> Result<Vec<FactSourceBatchRow>, StorageError> {
         fake_error()
     }
+
+    async fn forget_memory(
+        &self,
+        _permit: &OwnerWritePermit,
+        _memory_id: MemoryId,
+    ) -> Result<(), StorageError> {
+        fake_error()
+    }
 }
 
 #[derive(Debug)]

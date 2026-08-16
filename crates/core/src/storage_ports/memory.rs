@@ -46,6 +46,13 @@ pub trait MemoryAuthoringPort: Send + Sync {
         owner: &Owner,
         memory_ids: &[MemoryId],
     ) -> Result<Vec<FactSourceBatchRow>, StorageError>;
+
+    /// Cool one memory `t`: PUT cold object, stub + delete hot, `announce.forget`.
+    async fn forget_memory(
+        &self,
+        permit: &OwnerWritePermit,
+        memory_id: MemoryId,
+    ) -> Result<(), StorageError>;
 }
 
 #[async_trait::async_trait]

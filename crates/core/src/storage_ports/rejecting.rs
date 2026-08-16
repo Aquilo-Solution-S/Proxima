@@ -143,6 +143,16 @@ impl MemoryAuthoringPort for RejectingStorage {
     ) -> Result<Vec<crate::FactSourceBatchRow>, StorageError> {
         Ok(Vec::new())
     }
+
+    async fn forget_memory(
+        &self,
+        _permit: &OwnerWritePermit,
+        _memory_id: crate::MemoryId,
+    ) -> Result<(), StorageError> {
+        Err(StorageError::Internal(
+            "RejectingStorage rejects writes".into(),
+        ))
+    }
 }
 
 #[async_trait::async_trait]

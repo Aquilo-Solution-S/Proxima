@@ -99,6 +99,35 @@ impl Engine {
         self.close_batch(authz, owner, first).await.map(|_| ())
     }
 
+    /// Cool one owned memory `t`. PUT cold first, then stub+delete hot.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Forbidden` when the context lacks [`Relation::Editor`] on
+    /// the owner, `NotFound` when `t` is absent, and storage errors from
+    /// the forget transaction.
+    pub async fn forget_memory<A>(
+        &self,
+        authority: &A,
+        owner: Owner,
+        memory_id: MemoryId,
+    ) -> Result<(), ProtocolError>
+    where
+        A: EngineAuthority + ?Sized,
+    {
+        let write_permit = self
+            .authorize_write(authority, &owner, Relation::Editor)
+            .await?;
+        self.storage()
+            .memory_authoring
+            .memory_authoring
+            .forget_memory(write_permit.owner_write_permit(), memory_id)
+            .await
+            .map_err(|err| {
+                super::errors::map_write_storage_error(err, "memory", "memory not found")
+            })
+    }
+
     /// Authorized graph-write verb for agent-authored derived memory.
     ///
     /// # Errors
@@ -738,6 +767,14 @@ mod tests {
             _memory_ids: &[MemoryId],
         ) -> Result<Vec<crate::FactSourceBatchRow>, StorageError> {
             Ok(Vec::new())
+        }
+
+        async fn forget_memory(
+            &self,
+            _permit: &OwnerWritePermit,
+            _memory_id: MemoryId,
+        ) -> Result<(), StorageError> {
+            Ok(())
         }
     }
 }

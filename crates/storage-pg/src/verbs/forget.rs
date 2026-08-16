@@ -14,6 +14,28 @@ pub fn cold_object_key(owner_hash: &str, handle: Uuid, t: Uuid) -> String {
     format!("cold/{owner_hash}/{handle}/{t}")
 }
 
+/// Same owner hash as `proxima-blob-s3` (`proxima-owner-s3-key-v1`).
+#[must_use]
+pub fn owner_hash_hex(owner: &Owner) -> String {
+    let kind = proxima_core::OwnerRefKind::of(owner);
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"proxima-owner-s3-key-v1\0");
+    hasher.update(kind.as_str().as_bytes());
+    hasher.update(b"\0");
+    hasher.update(owner.stable_key_uuid().as_bytes());
+    hex_lower(hasher.finalize().as_bytes())
+}
+
+fn hex_lower(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(bytes.len().saturating_mul(2));
+    for byte in bytes {
+        out.push(char::from(HEX[usize::from(byte >> 4)]));
+        out.push(char::from(HEX[usize::from(byte & 0x0f)]));
+    }
+    out
+}
+
 pub trait ColdStore: Send + Sync {
     fn put(&self, key: &str, bytes: &[u8]) -> Result<(), StorageError>;
     fn get(&self, key: &str) -> Result<Vec<u8>, StorageError>;
@@ -68,6 +90,90 @@ struct HotRow {
     refs: Vec<Uuid>,
 }
 
+async fn delete_memory_dependents(
+    tx: &mut Transaction<'_, Postgres>,
+    t: Uuid,
+) -> Result<(), StorageError> {
+    sqlx::query(
+        "DELETE FROM proxima_core.citation_uploaded_blob_page_span_v1
+          WHERE citation_mapping_id IN (
+                SELECT citation_mapping_id
+                  FROM proxima_core.citation_mappings
+                 WHERE memory_id = $1
+          )",
+    )
+    .bind(t)
+    .execute(tx.as_mut())
+    .await
+    .map_err(map_err)?;
+    sqlx::query("DELETE FROM proxima_core.citation_mappings WHERE memory_id = $1")
+        .bind(t)
+        .execute(tx.as_mut())
+        .await
+        .map_err(map_err)?;
+    sqlx::query("DELETE FROM proxima_core.agent_note_v1 WHERE memory_id = $1")
+        .bind(t)
+        .execute(tx.as_mut())
+        .await
+        .map_err(map_err)?;
+    sqlx::query("DELETE FROM proxima_core.utterance_v1 WHERE memory_id = $1")
+        .bind(t)
+        .execute(tx.as_mut())
+        .await
+        .map_err(map_err)?;
+    sqlx::query("DELETE FROM proxima_core.agent_derivation_v1 WHERE memory_id = $1")
+        .bind(t)
+        .execute(tx.as_mut())
+        .await
+        .map_err(map_err)?;
+    sqlx::query("DELETE FROM proxima_core.interpretation_v1 WHERE memory_id = $1")
+        .bind(t)
+        .execute(tx.as_mut())
+        .await
+        .map_err(map_err)?;
+    sqlx::query("DELETE FROM proxima_core.mcp_call_logged_v1 WHERE memory_id = $1")
+        .bind(t)
+        .execute(tx.as_mut())
+        .await
+        .map_err(map_err)?;
+    sqlx::query("DELETE FROM proxima_core.goal_activated_v1 WHERE memory_id = $1")
+        .bind(t)
+        .execute(tx.as_mut())
+        .await
+        .map_err(map_err)?;
+    sqlx::query("DELETE FROM proxima_core.goal_paused_v1 WHERE memory_id = $1")
+        .bind(t)
+        .execute(tx.as_mut())
+        .await
+        .map_err(map_err)?;
+    sqlx::query("DELETE FROM proxima_core.goal_achieved_v1 WHERE memory_id = $1")
+        .bind(t)
+        .execute(tx.as_mut())
+        .await
+        .map_err(map_err)?;
+    sqlx::query("DELETE FROM proxima_core.goal_abandoned_v1 WHERE memory_id = $1")
+        .bind(t)
+        .execute(tx.as_mut())
+        .await
+        .map_err(map_err)?;
+    sqlx::query("DELETE FROM proxima_core.embedding_jobs WHERE entity_id = $1")
+        .bind(t)
+        .execute(tx.as_mut())
+        .await
+        .map_err(map_err)?;
+    sqlx::query("DELETE FROM proxima_core.embedding_heads WHERE entity_id = $1")
+        .bind(t)
+        .execute(tx.as_mut())
+        .await
+        .map_err(map_err)?;
+    sqlx::query("DELETE FROM proxima_core.embeddings WHERE entity_id = $1")
+        .bind(t)
+        .execute(tx.as_mut())
+        .await
+        .map_err(map_err)?;
+    Ok(())
+}
+
 pub async fn forget_memory(
     tx: &mut Transaction<'_, Postgres>,
     cold: &dyn ColdStore,
@@ -106,23 +212,7 @@ pub async fn forget_memory(
     .await
     .map_err(map_err)?;
 
-    sqlx::query(
-        "DELETE FROM proxima_core.citation_uploaded_blob_page_span_v1
-          WHERE citation_mapping_id IN (
-                SELECT citation_mapping_id
-                  FROM proxima_core.citation_mappings
-                 WHERE memory_id = $1
-          )",
-    )
-    .bind(t)
-    .execute(tx.as_mut())
-    .await
-    .map_err(map_err)?;
-    sqlx::query("DELETE FROM proxima_core.citation_mappings WHERE memory_id = $1")
-        .bind(t)
-        .execute(tx.as_mut())
-        .await
-        .map_err(map_err)?;
+    delete_memory_dependents(tx, t).await?;
     sqlx::query("DELETE FROM proxima_core.memory WHERE t = $1")
         .bind(t)
         .execute(tx.as_mut())
@@ -239,23 +329,7 @@ pub async fn erase_memory(
             .await
             .map_err(map_err)?;
     }
-    sqlx::query(
-        "DELETE FROM proxima_core.citation_uploaded_blob_page_span_v1
-          WHERE citation_mapping_id IN (
-                SELECT citation_mapping_id
-                  FROM proxima_core.citation_mappings
-                 WHERE memory_id = $1
-          )",
-    )
-    .bind(t)
-    .execute(tx.as_mut())
-    .await
-    .map_err(map_err)?;
-    sqlx::query("DELETE FROM proxima_core.citation_mappings WHERE memory_id = $1")
-        .bind(t)
-        .execute(tx.as_mut())
-        .await
-        .map_err(map_err)?;
+    delete_memory_dependents(tx, t).await?;
     sqlx::query("DELETE FROM proxima_core.memory WHERE t = $1 AND owner_id = $2")
         .bind(t)
         .bind(owner.stored_owner_id())

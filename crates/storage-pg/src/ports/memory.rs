@@ -237,6 +237,40 @@ impl MemoryAuthoringPort for PgStorage {
             .collect()
     }
 
+    async fn forget_memory(
+        &self,
+        permit: &OwnerWritePermit,
+        memory_id: MemoryId,
+    ) -> Result<(), StorageError> {
+        let owner = permit.owner();
+        crate::access::owner_columns::reject_world_write_owner(owner)?;
+        let owner_id = owner.stored_owner_id();
+        let t = memory_id.into_inner();
+        let handle: uuid::Uuid = sqlx::query_scalar(
+            "SELECT handle FROM proxima_core.memory WHERE t = $1 AND owner_id = $2",
+        )
+        .bind(t)
+        .bind(owner_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(internal)?
+        .ok_or(StorageError::NotFound)?;
+        let key = verbs::forget::cold_object_key(&verbs::forget::owner_hash_hex(owner), handle, t);
+        let pool = self.pool.clone();
+        with_bounded_retry(move || {
+            let key = key.clone();
+            let pool = pool.clone();
+            async move {
+                let cold = verbs::forget::MemoryColdStore::default();
+                let mut tx = pool.begin().await.map_err(internal)?;
+                verbs::forget::forget_memory(&mut tx, &cold, &key, t).await?;
+                tx.commit().await.map_err(crate::error::map_err)?;
+                Ok(())
+            }
+        })
+        .await
+    }
+
     async fn load_fact_source_batches(
         &self,
         _owner: &Owner,

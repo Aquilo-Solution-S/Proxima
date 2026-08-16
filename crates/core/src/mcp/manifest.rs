@@ -255,6 +255,8 @@ pub fn core_tool_annotations(canonical_name: &str) -> Option<McpToolAnnotations>
             base.read_only(false).destructive(false).idempotent(false)
         }
 
+        protocol_tool::CORE_FORGET => base.read_only(false).destructive(true).idempotent(false),
+
         _ => return None,
     };
     Some(annotations)

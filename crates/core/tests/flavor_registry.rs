@@ -76,6 +76,24 @@ const DISPATCHER_TOOL_ACTIONS: &[(&str, &[&str])] = &[
 ];
 
 #[test]
+fn served_catalog_includes_forget_and_drops_open_batch() {
+    let frozen = FlavorRegistry::default().freeze_or_panic_for_tests();
+    let names = frozen
+        .list_mcp_tools()
+        .iter()
+        .map(|tool| tool.name)
+        .collect::<Vec<_>>();
+    assert!(
+        names.contains(&"core_forget"),
+        "slice 9 catalog must serve forget: {names:?}"
+    );
+    assert!(
+        !names.iter().any(|name| name.contains("open_batch")),
+        "open_batch must stay deleted: {names:?}"
+    );
+}
+
+#[test]
 fn pr6_retired_wake_and_personality_dispatchers_are_absent() {
     let frozen = FlavorRegistry::default().freeze_or_panic_for_tests();
     let names = frozen

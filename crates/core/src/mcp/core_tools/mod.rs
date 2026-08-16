@@ -26,7 +26,7 @@ pub(crate) mod wire_ref;
 pub use fact::CoreFactTool;
 pub use goal::CoreGoalTool;
 pub use membership::CoreMembershipTool;
-pub use memory::{DeriveTool, InterpretTool, RecordUtteranceTool, RememberTool};
+pub use memory::{DeriveTool, ForgetTool, InterpretTool, RecordUtteranceTool, RememberTool};
 pub use memory_spaces::MemorySpacesTool;
 pub use publish::CorePublishTool;
 pub use search_memories::SearchMemoriesTool;
@@ -76,6 +76,7 @@ pub(crate) fn register_all(
     registry.try_add_mcp_tool::<SearchMemoriesTool>("core")?;
     registry.try_add_mcp_tool::<MemorySpacesTool>("core")?;
     registry.try_add_mcp_tool::<RememberTool>("core")?;
+    registry.try_add_mcp_tool::<ForgetTool>("core")?;
     registry.try_add_mcp_tool::<RecordUtteranceTool>("core")?;
     registry.try_add_mcp_tool::<DeriveTool>("core")?;
     registry.try_add_mcp_tool::<InterpretTool>("core")?;
