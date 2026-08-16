@@ -235,7 +235,12 @@ async fn host_bearer_lists_all_tools_without_origin() -> Result<(), Box<dyn std:
     assert!(
         template_uris.contains(&"proxima://memory/{id}/lineage{?direction,depth,limit,cursor}")
     );
-    assert!(template_uris.contains(&"proxima://edges{?kind,source,target,limit,cursor}"));
+    assert!(
+        !template_uris
+            .iter()
+            .any(|uri| uri.contains("proxima://edges")),
+        "proxima://edges was retired; catalog is expand_neighbors/lineage: {template_uris:?}"
+    );
 
     common::stop_server(handle, &db_name).await?;
     Ok(())

@@ -160,6 +160,13 @@ impl<A: FlavorApp + 'static> Proxima<A> {
         self
     }
 
+    /// Serve `/v1` beside `/mcp`. Env equivalent: `PROXIMA_REST_ENABLED`.
+    #[must_use]
+    pub fn rest_enabled(mut self, rest_enabled: bool) -> Self {
+        self.overlay = self.overlay.rest_enabled(rest_enabled);
+        self
+    }
+
     #[must_use]
     pub fn embed_client(mut self, client: Arc<dyn EmbeddingClient>) -> Self {
         self.overlay = self.overlay.embed_client(client);

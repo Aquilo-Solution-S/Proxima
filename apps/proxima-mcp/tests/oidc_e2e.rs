@@ -364,20 +364,14 @@ async fn oidc_e2e_discovery_public_and_code_tools_behind_bearer()
 
 /// Boots the production facade with both transport projections enabled, then
 /// proves the deployment palette is identical at the authenticated MCP and
-/// `OpenAPI` surfaces. `from_env()` is deliberate: CI must exercise the
-/// `PROXIMA_REST_ENABLED` deployment gate, not a test-only router.
+/// `OpenAPI` surfaces. `from_env()` still reads deployment config;
+/// `rest_enabled(true)` mounts `/v1` without mutating process env.
 #[cfg(feature = "rest")]
 #[tokio::test]
 #[allow(clippy::too_many_lines)] // linear e2e: auth + two surfaces read best in one flow
 async fn oidc_e2e_rest_openapi_matches_the_mcp_scope_on_the_mounted_runtime()
 -> Result<(), Box<dyn std::error::Error>> {
     let (database_url, created_db) = live_database_url().await?;
-    if require_env_or_skip("PROXIMA_REST_ENABLED").as_deref() != Some("true") {
-        // SAFETY: this integration binary is the only reader of the gate.
-        unsafe {
-            std::env::set_var("PROXIMA_REST_ENABLED", "true");
-        }
-    }
 
     let subject = UserId::new(Uuid::now_v7());
     let owner: Owner = OwnerRef::Personal(subject);
@@ -406,6 +400,7 @@ async fn oidc_e2e_rest_openapi_matches_the_mcp_scope_on_the_mounted_runtime()
     ]);
     let running = Proxima::<ProximaMcpApp>::app()
         .from_env()
+        .rest_enabled(true)
         .tool_scope(ToolScope::Palette(allowed_tools.iter().cloned().collect()))
         .database_url(database_url)
         .authenticator(Arc::new(authn))

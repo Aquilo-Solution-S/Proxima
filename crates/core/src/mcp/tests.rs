@@ -30,7 +30,7 @@ mod manifest_tests {
     fn core_resources_manifest_has_expected_shape() {
         let resources = all_core_resources().collect::<Vec<_>>();
 
-        assert_eq!(resources.len(), 11);
+        assert_eq!(resources.len(), 10);
         assert_eq!(
             resources
                 .iter()
@@ -43,7 +43,7 @@ mod manifest_tests {
                 .iter()
                 .filter(|resource| resource.is_template)
                 .count(),
-            8
+            7
         );
         assert!(
             resources

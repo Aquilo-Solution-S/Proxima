@@ -1462,7 +1462,7 @@ async fn emit_execution_request_grounds_and_attaches_acceptance_criteria()
     let work_item: Uuid = sqlx::query_scalar(
         "SELECT work_item_memory_id
            FROM proxima_code.acceptance_criteria_v1
-          WHERE memory_id = $1",
+          WHERE t = $1",
     )
     .bind(criteria_id)
     .fetch_one(fixture.pg.pool_for_tests())
@@ -1546,7 +1546,7 @@ async fn retry_execution_request_succeeds_with_target_perspective()
     let assigned_worker: Uuid = sqlx::query_scalar(
         "SELECT target_perspective_memory_id
            FROM proxima_code.work_assignment_v1
-          WHERE memory_id = $1",
+          WHERE t = $1",
     )
     .bind(assignment_id)
     .fetch_one(fixture.pg.pool_for_tests())

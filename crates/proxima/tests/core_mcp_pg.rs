@@ -1004,8 +1004,12 @@ async fn facade_core_citation_readback_is_owner_scoped() {
             cited_object_id.to_string()
         );
         assert_eq!(
+            citation["citation"]["cited_object_schema_id"],
+            TestCitedObject::SCHEMA_ID
+        );
+        assert_eq!(
             citation["citation"]["mapping_schema_id"],
-            TestCitationMapping::SCHEMA_ID
+            TestCitedObject::SCHEMA_ID
         );
 
         let cross_owner = call_test_model_tool(

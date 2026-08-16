@@ -496,9 +496,9 @@ async fn goal_resources_list_read_back_wake_config_and_paginate()
     Ok(())
 }
 
-/// An interpretation Perspective's implied connections show up in the
-/// index as `reference` rows nobody wrote. There is no edge handle to
-/// dereference: an edge has no id.
+/// An interpretation Perspective's implied connections show up as
+/// `reference` `neighbor_edges` on `proxima://memory`. `proxima://edges`
+/// is retired.
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
 async fn edge_resources_read_back_interpretation_references()
@@ -553,12 +553,14 @@ async fn edge_resources_read_back_interpretation_references()
 
     let listed = server
         .read_resource(
-            &format!("proxima://edges?kind=reference&source={handle}"),
+            &format!("proxima://memory/{handle}?expand_neighbors=true"),
             author_ctx(),
             Some(auth.clone()),
         )
         .await?;
-    let edges = listed["edges"].as_array().expect("edges array");
+    let edges = listed["neighbor_edges"]
+        .as_array()
+        .expect("neighbor_edges array");
     assert_eq!(edges.len(), 2);
     let targets: Vec<&str> = edges
         .iter()
@@ -580,26 +582,10 @@ async fn edge_resources_read_back_interpretation_references()
             "an edge carries no content: {edge}"
         );
         assert!(
-            edge["created_at"]
-                .as_str()
-                .is_some_and(|value| value.contains('T')),
-            "created_at is RFC3339: {:?}",
-            edge["created_at"]
+            edge.get("edge").is_none(),
+            "an edge has no id to hand back: {edge}"
         );
     }
-    assert_eq!(listed["has_more"], serde_json::json!(false));
-    assert_eq!(listed["next_cursor"], serde_json::Value::Null);
-
-    // The exact source+target probe an idempotent writer would run — the
-    // replacement for asking "does this edge id already exist".
-    let probe = server
-        .read_resource(
-            &format!("proxima://edges?source={handle}&target=A:{spoke}"),
-            author_ctx(),
-            Some(auth.clone()),
-        )
-        .await?;
-    assert_eq!(probe["edges"].as_array().expect("edges").len(), 1);
 
     // Re-asserting the same judgment is one memory and the same two rows:
     // structural idempotency, with no id scheme to keep honest.
@@ -618,66 +604,26 @@ async fn edge_resources_read_back_interpretation_references()
     assert_eq!(replay["handle"], serde_json::json!(handle));
     assert_eq!(replay["idempotent_replay"], serde_json::json!(true));
 
-    assert_edge_filter_rejections(&server, &auth, &handle).await;
-
-    drop(server);
-    drop(pg);
-    drop_db(&db_name).await?;
-    Ok(())
-}
-
-/// Unfiltered dumps, kinds outside the closed vocabulary, foreign cursors,
-/// and the retired single-edge path all fail closed.
-async fn assert_edge_filter_rejections(server: &McpToolHost, auth: &McpAuthContext, source: &str) {
-    let unfiltered = server
-        .read_resource("proxima://edges", author_ctx(), Some(auth.clone()))
-        .await
-        .expect_err("unfiltered edge dump must be rejected");
-    assert!(
-        unfiltered.to_string().contains("at least one filter"),
-        "{unfiltered}"
-    );
-    let unknown_kind = server
-        .read_resource(
-            "proxima://edges?kind=structural",
-            author_ctx(),
-            Some(auth.clone()),
-        )
-        .await
-        .expect_err("the kind vocabulary is closed at origin and reference");
-    assert!(
-        unknown_kind.to_string().contains("unknown edge kind"),
-        "{unknown_kind}"
-    );
-    let bad_cursor = server
-        .read_resource(
-            &format!("proxima://edges?source={source}&cursor=garbage"),
-            author_ctx(),
-            Some(auth.clone()),
-        )
-        .await
-        .expect_err("malformed cursor must be rejected");
-    assert!(
-        bad_cursor.to_string().contains("malformed cursor"),
-        "{bad_cursor}"
-    );
-    // `proxima://edge/{id}` is gone with the id it dereferenced: it is not a
-    // bad parameter on a known template, it is not a template.
     let retired = server
         .read_resource(
-            &format!("proxima://edge/{}", uuid::Uuid::now_v7()),
+            &format!("proxima://edges?kind=reference&source={handle}"),
             author_ctx(),
             Some(auth.clone()),
         )
         .await
-        .expect_err("the single-edge resource is retired");
+        .expect_err("proxima://edges is retired");
     assert!(
         matches!(
             &retired,
             proxima_mcp_server::ToolInvocationError::ToolNotFound(_)
         ),
-        "a retired template is resource-not-found: {retired}"
+        "retired edges catalog is resource-not-found: {retired}"
     );
+
+    drop(server);
+    drop(pg);
+    drop_db(&db_name).await?;
+    Ok(())
 }
 
 /// Class-checked reference and closed state vocabulary fail closed.
@@ -748,7 +694,7 @@ async fn insert_fact(
     let t = insert_memory_row(pg, owner, "fact", "test/wake-e2e-fact-v1", &[]).await?;
     sqlx::query(
         "INSERT INTO proxima_core.agent_note_v1
-            (memory_id, note_id, title, body, tags)
+            (t, note_id, title, body, tags)
          VALUES ($1, $1, $2, $2, ARRAY[]::text[])",
     )
     .bind(t)
@@ -908,7 +854,7 @@ async fn insert_memory(
         .await?;
     sqlx::query(
         "INSERT INTO proxima_core.agent_derivation_v1
-            (memory_id, title, body, tags, source_memory_ids,
+            (t, title, body, tags, source_memory_ids,
              model_id, client_name, client_version)
          VALUES ($1, $2, $2, ARRAY[]::text[], ARRAY[]::uuid[],
                  'test-model', 'test', 'test-v1')",
