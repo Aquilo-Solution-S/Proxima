@@ -1,10 +1,7 @@
-use proxima_core::UploadedBlobPageSpanV1;
 use proxima_core::read_models::SidecarSpec;
-use proxima_core::verbs::query::{
-    FactCitationCursor, FactCitationPage, FactCitationReadback, UploadedBlobRef,
-};
+use proxima_core::verbs::query::{FactCitationCursor, FactCitationPage, FactCitationReadback};
 use proxima_core::{MemoryId, OwnerRef, SchemaId, StorageError};
-use sqlx::{PgPool, Row};
+use sqlx::PgPool;
 
 use std::collections::HashMap;
 
@@ -102,16 +99,8 @@ pub(crate) async fn citation_of_fact(
         .copied()
         .map(proxima_core::OwnerRef::stored_owner_id)
         .collect();
-    let row = sqlx::query(
-        "SELECT m.blob_id AS citation_mapping_id,
-                b.schema_id AS mapping_schema_id,
-                m.blob_id AS cited_object_id,
-                b.schema_id AS cited_object_schema_id,
-                NULL::int AS page_from, NULL::int AS page_to,
-                NULL::int AS char_range_start, NULL::int AS char_range_end,
-                NULL::text AS filename, NULL::text AS mime, NULL::bigint AS byte_len,
-                NULL::text AS sha256_hex,
-                NULL::timestamptz AS uploaded_at
+    let row: Option<(uuid::Uuid, String)> = sqlx::query_as(
+        "SELECT m.blob_id, b.schema_id
            FROM proxima_core.memory m
            JOIN proxima_core.blob b ON b.blob_id = m.blob_id
           WHERE m.t = $1
@@ -125,58 +114,28 @@ pub(crate) async fn citation_of_fact(
     .await
     .map_err(map_err)?;
 
-    row.map(|row| {
-        let page_span = match (
-            row.get::<Option<i32>, _>("page_from"),
-            row.get::<Option<i32>, _>("page_to"),
-        ) {
-            (Some(page_from), Some(page_to)) => Some(UploadedBlobPageSpanV1 {
-                page_from: page_u32(page_from)?,
-                page_to: page_u32(page_to)?,
-                char_range_start: row
-                    .get::<Option<i32>, _>("char_range_start")
-                    .map(page_u32)
-                    .transpose()?,
-                char_range_end: row
-                    .get::<Option<i32>, _>("char_range_end")
-                    .map(page_u32)
-                    .transpose()?,
-            }),
-            _ => None,
-        };
-        // The blob sidecar row is keyed by cited_object_id with every
-        // column NOT NULL, so a present filename implies the whole row.
-        let uploaded_blob = row
-            .get::<Option<String>, _>("filename")
-            .map(|filename| -> Result<UploadedBlobRef, StorageError> {
-                let byte_len: i64 = row.get("byte_len");
-                Ok(UploadedBlobRef {
-                    filename,
-                    mime: row.get("mime"),
-                    byte_len: u64::try_from(byte_len).map_err(|_| {
-                        StorageError::Internal(format!("negative blob byte_len {byte_len}"))
-                    })?,
-                    sha256_hex: row.get("sha256_hex"),
-                    uploaded_at: row.get("uploaded_at"),
-                })
-            })
-            .transpose()?;
-        Ok(FactCitationReadback {
-            citation_mapping_id: row.get("citation_mapping_id"),
-            mapping_schema_id: SchemaId::new(row.get::<String, _>("mapping_schema_id")),
-            cited_object_id: row.get("cited_object_id"),
-            cited_object_schema_id: SchemaId::new(row.get::<String, _>("cited_object_schema_id")),
-            page_span,
-            uploaded_blob,
-        })
-    })
-    .transpose()
+    Ok(row.map(|(blob_id, schema_id)| {
+        let schema_id = SchemaId::new(schema_id);
+        FactCitationReadback {
+            citation_mapping_id: blob_id,
+            mapping_schema_id: schema_id.clone(),
+            cited_object_id: blob_id,
+            cited_object_schema_id: schema_id,
+            page_span: None,
+            uploaded_blob: None,
+        }
+    }))
 }
 
-/// Convert a page/char-range column to the wire's `u32`. The sidecar's
-/// `CHECK` constraints keep these non-negative; a violation here means
-/// the row bypassed them and is an internal fault, not caller input.
-fn page_u32(value: i32) -> Result<u32, StorageError> {
-    u32::try_from(value)
-        .map_err(|_| StorageError::Internal(format!("negative page-span column {value}")))
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn citation_sql_does_not_select_dropped_mapping_columns() {
+        let src = include_str!("citations.rs");
+        let needle = format!("{}{}", "NULL::int AS ", "page_from");
+        assert!(
+            !src.contains(&needle),
+            "v008 has no citation_mappings table; do not fabricate mapping columns"
+        );
+    }
 }
