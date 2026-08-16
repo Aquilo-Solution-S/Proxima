@@ -77,14 +77,14 @@ visible AS (
            EXISTS (
                SELECT 1
                  FROM {entity_owner_union} seo
-                 JOIN unnest($1::proxima_core.owner_ref_kind[], $2::uuid[]) AS rs(kind, id)
+                 JOIN unnest($1::proxima_core.owner_kind[], $2::uuid[]) AS rs(kind, id)
                    ON {source_read_owner_predicate}
                 WHERE seo.entity_id = edge_heads.source_entity_id
            ) AS source_readable,
            (NOT edge_heads.target_unavailable AND EXISTS (
                SELECT 1
                  FROM {entity_owner_union} teo
-                 JOIN unnest($1::proxima_core.owner_ref_kind[], $2::uuid[]) AS rs(kind, id)
+                 JOIN unnest($1::proxima_core.owner_kind[], $2::uuid[]) AS rs(kind, id)
                    ON {target_read_owner_predicate}
                 WHERE teo.entity_id = edge_heads.target_entity_id
            )) AS target_visible,

@@ -66,7 +66,7 @@ impl CitedObjectPayload for UploadedBlobPayload {
     const SCHEMA_VERSION: u32 = 1;
 
     fn sidecar_table() -> &'static str {
-        "proxima_core.cited_uploaded_blob_v1"
+        ""
     }
 
     fn idempotency_key(&self) -> [u8; 32] {
@@ -156,7 +156,7 @@ impl CitationMappingPayload for UploadedBlobPageSpanV1 {
     const SCHEMA_VERSION: u32 = 1;
 
     fn sidecar_table() -> Option<&'static str> {
-        Some("proxima_core.citation_uploaded_blob_page_span_v1")
+        None
     }
 
     fn cited_object_schema() -> SchemaId {

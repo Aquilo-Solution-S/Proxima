@@ -769,105 +769,94 @@ async fn persist_citation_timeseries(
     owner: &Owner,
     draft: &FactWriteCommand,
     plan: CitationPlan<'_>,
-    memory_id: MemoryId,
 ) -> Result<Option<uuid::Uuid>, StorageError> {
     match plan {
-        CitationPlan::DraftHint => persist_draft_citation(tx, owner, draft, memory_id).await,
-        CitationPlan::Inline {
-            cited_object,
-            mapping,
-            sidecars,
-        } => {
-            let cited_object_id =
-                upsert_cited_object_in_tx(tx, sidecars, owner, cited_object).await?;
-            insert_citation_mapping_in_tx(
+        CitationPlan::DraftHint => persist_draft_citation(tx, owner, draft).await,
+        CitationPlan::Inline { cited_object, .. } => {
+            upsert_blob(
                 tx,
                 owner,
-                mapping,
-                sidecars,
-                uuid::Uuid::now_v7(),
-                memory_id.into_inner(),
-                cited_object_id,
+                cited_object.schema_id().as_str(),
+                cited_object.content_hash(),
             )
-            .await?;
-            Ok(Some(cited_object_id))
+            .await
+            .map(Some)
         }
         CitationPlan::ByRef {
             cited_object_id,
             expected_object_schema,
-            mapping,
-            sidecars,
+            ..
         } => {
             verify_cited_object_ref_in_tx(tx, owner, cited_object_id, expected_object_schema)
                 .await?;
-            insert_citation_mapping_in_tx(
-                tx,
-                owner,
-                mapping,
-                sidecars,
-                uuid::Uuid::now_v7(),
-                memory_id.into_inner(),
-                cited_object_id,
-            )
-            .await?;
             Ok(Some(cited_object_id))
         }
     }
+}
+
+async fn upsert_blob(
+    tx: &mut Transaction<'_, Postgres>,
+    owner: &Owner,
+    schema_id: &str,
+    content_hash: &[u8; 32],
+) -> Result<uuid::Uuid, StorageError> {
+    let owner_id = owner.stored_owner_id();
+    let owner_kind = proxima_core::OwnerRefKind::of(owner).as_str();
+    sqlx::query(
+        "INSERT INTO proxima_core.owners (owner_id, kind)
+         VALUES ($1, $2::proxima_core.owner_kind)
+         ON CONFLICT (owner_id) DO NOTHING",
+    )
+    .bind(owner_id)
+    .bind(owner_kind)
+    .execute(tx.as_mut())
+    .await
+    .map_err(map_err)?;
+    sqlx::query_scalar(
+        "INSERT INTO proxima_core.blob (owner_id, schema_id, content_hash)
+         VALUES ($1, $2, $3)
+         ON CONFLICT (owner_id, schema_id, content_hash)
+         DO UPDATE SET schema_id = EXCLUDED.schema_id
+         RETURNING blob_id",
+    )
+    .bind(owner_id)
+    .bind(schema_id)
+    .bind(&content_hash[..])
+    .fetch_one(tx.as_mut())
+    .await
+    .map_err(map_err)
 }
 
 async fn persist_draft_citation(
     tx: &mut Transaction<'_, Postgres>,
     owner: &Owner,
     draft: &FactWriteCommand,
-    memory_id: MemoryId,
 ) -> Result<Option<uuid::Uuid>, StorageError> {
     let Some(citation) = &draft.citation else {
         return Ok(None);
     };
-    let owner_id = owner.stored_owner_id();
-    let cited_object_id = sqlx::query_scalar::<_, uuid::Uuid>(
-        "INSERT INTO proxima_core.cited_objects
-            (schema_id, owner_id, content_hash)
-         VALUES ($1, $2, $3)
-         ON CONFLICT (owner_id, schema_id, content_hash)
-         DO UPDATE SET schema_id = EXCLUDED.schema_id
-         RETURNING cited_object_id",
+    upsert_blob(
+        tx,
+        owner,
+        citation.object.schema_id.as_str(),
+        &citation.object.content_hash,
     )
-    .bind(citation.object.schema_id.as_str())
-    .bind(owner_id)
-    .bind(&citation.object.content_hash[..])
-    .fetch_one(tx.as_mut())
     .await
-    .map_err(map_err)?;
-    sqlx::query(
-        "INSERT INTO proxima_core.citation_mappings
-            (schema_id, memory_id, cited_object_id)
-         VALUES ($1, $2, $3)",
-    )
-    .bind(citation.mapping.schema_id.as_str())
-    .bind(memory_id.into_inner())
-    .bind(cited_object_id)
-    .execute(tx.as_mut())
-    .await
-    .map_err(map_err)?;
-    Ok(Some(cited_object_id))
+    .map(Some)
 }
 
 async fn citation_object_for_t(
     tx: &mut Transaction<'_, Postgres>,
     memory_id: MemoryId,
 ) -> Result<Option<uuid::Uuid>, StorageError> {
-    sqlx::query_scalar(
-        "SELECT cited_object_id
-           FROM proxima_core.citation_mappings
-          WHERE memory_id = $1
-          ORDER BY citation_mapping_id
-          LIMIT 1",
+    let blob_id: Option<Option<uuid::Uuid>> = sqlx::query_scalar(
+        "SELECT blob_id FROM proxima_core.memory WHERE t = $1",
     )
     .bind(memory_id.into_inner())
     .fetch_optional(tx.as_mut())
     .await
-    .map_err(map_err)
+    .map_err(map_err)?;
+    Ok(blob_id.flatten())
 }
 
 async fn verify_cited_object_ref_in_tx(
@@ -879,8 +868,8 @@ async fn verify_cited_object_ref_in_tx(
     let owner_id = owner.stored_owner_id();
     let schema_id: Option<String> = sqlx::query_scalar(
         "SELECT schema_id
-           FROM proxima_core.cited_objects
-          WHERE cited_object_id = $1
+           FROM proxima_core.blob
+          WHERE blob_id = $1
             AND owner_id = $2",
     )
     .bind(cited_object_id)
@@ -1139,19 +1128,16 @@ where
     ) -> FactIngestSidecarFuture<'t>,
 {
     crate::access::owner_columns::reject_world_write_owner(owner)?;
-    let mut outcome = super::memory_timeseries::ingest_fact_timeseries(tx, owner, draft).await?;
+    let mut write = draft.clone();
+    if write.blob_id.is_none() {
+        write.blob_id = persist_citation_timeseries(tx, owner, draft, options.citation_plan).await?;
+    }
+    let mut outcome = super::memory_timeseries::ingest_fact_timeseries(tx, owner, &write).await?;
     sidecar(tx, &outcome).await?;
     if outcome.idempotent_replay {
         outcome.cited_object_id = citation_object_for_t(tx, outcome.memory_id).await?;
     } else {
-        outcome.cited_object_id = persist_citation_timeseries(
-            tx,
-            owner,
-            draft,
-            options.citation_plan,
-            outcome.memory_id,
-        )
-        .await?;
+        outcome.cited_object_id = write.blob_id;
         if let Some(model_id) = options.embedding_model_id {
             crate::verbs::fact_embeddings::enqueue_embedding_job_in_tx(
                 tx,
@@ -1164,323 +1150,6 @@ where
             .await?;
         }
     }
-    return Ok(outcome);
-    #[allow(unreachable_code)]
-    let receipt_id = draft.receipt_id_for_owner(*owner);
-    let receipt_id_bytes = receipt_id.map(FactReceiptId::into_inner);
-    let (owner_kind, owner_id) = owner_binds(owner);
-
-    if let (Some(receipt), Some(receipt_id_bytes)) = (&draft.receipt, receipt_id_bytes.as_ref()) {
-        super::compliance_erase::check_suppression_for_fact_tx(
-            tx,
-            *owner,
-            &receipt.source_id,
-            receipt.source_batch_id.into_inner(),
-            receipt_id_bytes,
-        )
-        .await?;
-    }
-
-    if let Some(receipt_id_bytes) = receipt_id_bytes
-        && let Some(memory_id) = existing_fact_memory_by_receipt(tx, &receipt_id_bytes[..]).await?
-    {
-        let outcome = fact_replay_outcome(tx, receipt_id, memory_id).await?;
-        assert_fact_index_rows(tx, owner, memory_id, options.links).await?;
-        return Ok(outcome);
-    }
-
-    let memory_id = uuid::Uuid::now_v7();
-    let change_seq = uuid::Uuid::now_v7();
-
-    let citation_refs = match options.citation_plan {
-        CitationPlan::DraftHint => {
-            if let Some(citation) = &draft.citation {
-                let citation_mapping_id = uuid::Uuid::now_v7();
-                let cited_object_id_new = uuid::Uuid::now_v7();
-                let cited_object_id = sqlx::query_scalar::<_, uuid::Uuid>(
-                    "INSERT INTO proxima_core.cited_objects
-                        (cited_object_id, schema_id, owner_kind,
-                         owner_id, content_hash)
-                     VALUES ($1, $2, $3, $4, $5)
-                     ON CONFLICT (owner_kind, owner_id,
-                                  schema_id, content_hash)
-                     DO UPDATE SET schema_id = EXCLUDED.schema_id
-                     RETURNING cited_object_id",
-                )
-                .bind(cited_object_id_new)
-                .bind(citation.object.schema_id.as_str())
-                .bind(owner_kind)
-                .bind(owner_id)
-                .bind(&citation.object.content_hash[..])
-                .fetch_one(tx.as_mut())
-                .await
-                .map_err(map_err)?;
-                Some(PendingCitation::DraftHint {
-                    citation,
-                    citation_mapping_id,
-                    cited_object_id,
-                })
-            } else {
-                None
-            }
-        }
-        CitationPlan::Inline {
-            cited_object,
-            mapping,
-            sidecars,
-        } => {
-            let citation_mapping_id = uuid::Uuid::now_v7();
-            let cited_object_id =
-                upsert_cited_object_in_tx(tx, sidecars, owner, cited_object).await?;
-            Some(PendingCitation::Inline {
-                mapping,
-                sidecars,
-                citation_mapping_id,
-                cited_object_id,
-            })
-        }
-        CitationPlan::ByRef {
-            cited_object_id,
-            expected_object_schema,
-            mapping,
-            sidecars,
-        } => {
-            verify_cited_object_ref_in_tx(tx, owner, cited_object_id, expected_object_schema)
-                .await?;
-            Some(PendingCitation::Inline {
-                mapping,
-                sidecars,
-                citation_mapping_id: uuid::Uuid::now_v7(),
-                cited_object_id,
-            })
-        }
-    };
-    let citation_mapping_id = citation_refs
-        .as_ref()
-        .map(|pending| (*pending).citation_mapping_id());
-    let cited_object_id = citation_refs
-        .as_ref()
-        .map(|pending| (*pending).cited_object_id());
-
-    if let (Some(receipt), Some(receipt_id_bytes)) = (&draft.receipt, receipt_id_bytes) {
-        sqlx::query(
-            // Target-less ON CONFLICT tolerates conflicts on ANY unique
-            // index. Keyed batches (deterministic ids from
-            // `source_batch_key`) race concurrent ingests into identical
-            // rows; with `(id)` as the sole arbiter, the loser collided on
-            // `source_batches_unique_per_source` and surfaced a spurious
-            // unique violation instead of no-oping.
-            "INSERT INTO proxima_core.source_batches
-                (id, source_id, owner_kind,
-                 owner_id)
-             VALUES ($1, $2, $3, $4)
-             ON CONFLICT DO NOTHING",
-        )
-        .bind(receipt.source_batch_id.into_inner())
-        .bind(receipt.source_id.as_str())
-        .bind(owner_kind)
-        .bind(owner_id)
-        .execute(tx.as_mut())
-        .await
-        .map_err(map_err)?;
-
-        let batch_closed: bool = sqlx::query_scalar(
-            "SELECT closed_at IS NOT NULL
-               FROM proxima_core.source_batches
-              WHERE id = $1
-              FOR UPDATE",
-        )
-        .bind(receipt.source_batch_id.into_inner())
-        .fetch_one(tx.as_mut())
-        .await
-        .map_err(map_err)?;
-        if batch_closed {
-            return Err(StorageError::ConstraintViolation(
-                "cannot ingest Fact into closed source batch".into(),
-            ));
-        }
-
-        // Two concurrent same-receipt ingests both pass the existing
-        // check above; the loser collides on `fact_receipts_pkey` here (the
-        // receipt row is written before the memories row, so this is the
-        // race's first collision). Guard the insert with a SAVEPOINT so the
-        // mid-tx unique violation does not poison the whole transaction —
-        // then roll back and replay the winner's committed Fact instead of
-        // surfacing a spurious ConstraintViolation.
-        sqlx::query("SAVEPOINT proxima_fact_receipt")
-            .execute(tx.as_mut())
-            .await
-            .map_err(map_err)?;
-        let receipt_insert = sqlx::query(
-            "INSERT INTO proxima_core.fact_receipts
-                (receipt_id, source, source_batch_id,
-                 owner_kind, owner_id,
-                 schema_id, schema_version, observed_at, occurred_at)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
-        )
-        .bind(&receipt_id_bytes[..])
-        .bind(receipt.source_id.as_str())
-        .bind(receipt.source_batch_id.into_inner())
-        .bind(owner_kind)
-        .bind(owner_id)
-        .bind(draft.schema_id.as_str())
-        .bind(draft.schema_version.into_inner().cast_signed())
-        .bind(receipt.observed_at)
-        .bind(receipt.occurred_at)
-        .execute(tx.as_mut())
-        .await;
-        match receipt_insert {
-            Ok(_) => {
-                sqlx::query("RELEASE SAVEPOINT proxima_fact_receipt")
-                    .execute(tx.as_mut())
-                    .await
-                    .map_err(map_err)?;
-            }
-            Err(err) if is_receipt_race(&err) => {
-                sqlx::query("ROLLBACK TO SAVEPOINT proxima_fact_receipt")
-                    .execute(tx.as_mut())
-                    .await
-                    .map_err(map_err)?;
-                if let Some(memory_id) =
-                    existing_fact_memory_by_receipt(tx, &receipt_id_bytes[..]).await?
-                {
-                    let outcome = fact_replay_outcome(tx, receipt_id, memory_id).await?;
-                    assert_fact_index_rows(tx, owner, memory_id, options.links).await?;
-                    return Ok(outcome);
-                }
-                // Receipt occupied but no live memory row (e.g. tombstoned):
-                // a genuine conflict, not a concurrent-ingest replay.
-                return Err(map_err(err));
-            }
-            Err(err) => return Err(map_err(err)),
-        }
-    }
-
-    if let Some(language) = draft.lexical_language.as_deref() {
-        super::lexical_language::register_lexical_language_in_tx(tx, language).await?;
-    }
-
-    // NULL language means the column DEFAULT — the COALESCE spells that
-    // out rather than branching the statement text on the option.
-    sqlx::query(
-        "INSERT INTO proxima_core.memories
-            (memory_id, owner_kind, owner_id, schema_id, schema_version,
-             kind, receipt_id, citation_mapping_id, text, authoring_perspective_id,
-             lexical_language)
-         VALUES ($1, $2, $3, $4, $5, 'Fact', $6, $7, $8, $9,
-                 COALESCE($10::regconfig, proxima_core.lexical_config()))",
-    )
-    .bind(memory_id)
-    .bind(owner_kind)
-    .bind(owner_id)
-    .bind(draft.schema_id.as_str())
-    .bind(draft.schema_version.into_inner().cast_signed())
-    .bind(receipt_id_bytes.as_ref().map(|bytes| &bytes[..]))
-    .bind(citation_mapping_id)
-    .bind(draft.rendered_text.as_deref())
-    .bind(options.authoring_perspective_id.map(MemoryId::into_inner))
-    .bind(draft.lexical_language.as_deref())
-    .execute(tx.as_mut())
-    .await
-    .map_err(map_err)?;
-
-    assert_fact_index_rows(tx, owner, memory_id, options.links).await?;
-
-    let outcome = FactIngestOutcome {
-        receipt_id,
-        memory_id: proxima_core::MemoryId::new(memory_id),
-        handle: memory_id,
-        change_event_seq: change_seq,
-        idempotent_replay: false,
-        cited_object_id,
-    };
-
-    sidecar(tx, &outcome).await?;
-    if let Some(inputs) = options.derive_inputs {
-        derive_fact_entity_after_sidecar(
-            tx,
-            owner,
-            draft,
-            memory_id,
-            inputs.sidecar_table,
-            inputs.natural_key_columns,
-        )
-        .await?;
-    }
-    if let Some(embedding_model_id) = options.embedding_model_id {
-        crate::verbs::fact_embeddings::enqueue_embedding_job_in_tx(
-            tx,
-            owner_kind,
-            owner_id,
-            EntityKind::Fact,
-            memory_id,
-            embedding_model_id,
-        )
-        .await?;
-    }
-
-    if let Some(pending) = citation_refs {
-        match pending {
-            PendingCitation::DraftHint {
-                citation,
-                citation_mapping_id,
-                cited_object_id,
-            } => {
-                sqlx::query(
-                    "INSERT INTO proxima_core.citation_mappings
-                        (citation_mapping_id, schema_id, memory_id,
-                         cited_object_id, owner_kind,
-                         owner_id)
-                     VALUES ($1, $2, $3, $4, $5, $6)",
-                )
-                .bind(citation_mapping_id)
-                .bind(citation.mapping.schema_id.as_str())
-                .bind(memory_id)
-                .bind(cited_object_id)
-                .bind(owner_kind)
-                .bind(owner_id)
-                .execute(tx.as_mut())
-                .await
-                .map_err(map_err)?;
-            }
-            PendingCitation::Inline {
-                mapping,
-                sidecars,
-                citation_mapping_id,
-                cited_object_id,
-            } => {
-                insert_citation_mapping_in_tx(
-                    tx,
-                    owner,
-                    mapping,
-                    sidecars,
-                    citation_mapping_id,
-                    memory_id,
-                    cited_object_id,
-                )
-                .await?;
-            }
-        }
-    }
-
-    sqlx::query(
-        "INSERT INTO proxima_core.change_event
-            (seq, owner_kind, owner_id,
-             kind, entity_kind,
-             entity_memory_id, entity_schema_id,
-             entity_schema_version)
-         VALUES ($1, $2, $3, 'EntityAppend', 'Fact', $4, $5, $6)",
-    )
-    .bind(change_seq)
-    .bind(owner_kind)
-    .bind(owner_id)
-    .bind(memory_id)
-    .bind(draft.schema_id.as_str())
-    .bind(draft.schema_version.into_inner().cast_signed())
-    .execute(tx.as_mut())
-    .await
-    .map_err(map_err)?;
-
     Ok(outcome)
 }
 

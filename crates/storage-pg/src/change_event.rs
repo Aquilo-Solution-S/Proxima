@@ -81,7 +81,7 @@ fn change_event_projection() -> String {
                       edge_kind IS NULL OR EXISTS (
                           SELECT 1
                             FROM {eo_union} teo
-                            JOIN unnest($2::proxima_core.owner_ref_kind[], $3::uuid[]) AS rs(kind, id)
+                            JOIN unnest($2::proxima_core.owner_kind[], $3::uuid[]) AS rs(kind, id)
                               ON teo.owner_kind = rs.kind
                              AND teo.owner_id IS NOT DISTINCT FROM rs.id
                            WHERE teo.entity_id = COALESCE(

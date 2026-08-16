@@ -379,6 +379,10 @@ impl ProximaBuilder {
             .map(|s3| CitedBlobStore::new(pool.clone(), s3))
             .transpose()
             .map_err(|error| EmbedError::Config(error.to_string()))?;
+        let pg = match &blobs {
+            Some(store) => pg.with_cold(Arc::new(store.cold_store())),
+            None => pg,
+        };
 
         let mut engine =
             Engine::new(registry).with_storage_ports(Arc::new(pg.clone()).storage_ports());

@@ -129,7 +129,7 @@ pub(in crate::engine) mod tests {
     use std::sync::Arc;
 
     use crate::change_history::{ChangeHistoryRequest, ChangeHistoryResponse};
-    use crate::close_batch::CloseBatchOutcome;
+
     use crate::goal_write::{
         AchieveGoalAtomicRequest, CreateGoalAtomicRequest, DecomposeGoalAtomicRequest,
         DecomposeGoalOutcome, GoalWriteOutcome, ModifyGoalAtomicRequest,
@@ -787,18 +787,7 @@ pub(in crate::engine) mod tests {
         }
     }
 
-    #[async_trait::async_trait]
-    impl SourceBatchPort for MembershipStorage {
-        async fn close_batch(
-            &self,
-            _permit: &crate::storage_ports::OwnerWritePermit,
-            _source_batch_id: SourceBatchId,
-        ) -> Result<CloseBatchOutcome, StorageError> {
-            Err(StorageError::Internal(
-                "MembershipStorage rejects writes".into(),
-            ))
-        }
-    }
+    impl SourceBatchPort for MembershipStorage {}
 
     #[async_trait::async_trait]
     impl SourceCursorPort for MembershipStorage {

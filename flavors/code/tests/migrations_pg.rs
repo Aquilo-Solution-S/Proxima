@@ -146,7 +146,7 @@ async fn flavor_migrations_apply_to_fresh_db() {
         .await?;
         sqlx::query(
             "INSERT INTO proxima_code.code_chunk_v1
-                 (memory_id, repo_id, file_path, chunk_index, text, chunk_type,
+                 (t, repo_id, file_path, chunk_index, text, chunk_type,
                   byte_range_start, byte_range_end, line_range_start, line_range_end, state)
              VALUES ($1, $2, 'src/lib.rs', 0, 'fn main() {}', 'file',
                      0, 12, 1, 1, 'Present')",
@@ -156,7 +156,7 @@ async fn flavor_migrations_apply_to_fresh_db() {
         .execute(pg.pool_for_tests())
         .await?;
         let err = sqlx::query(
-            "UPDATE proxima_code.code_chunk_v1 SET text = 'rewritten' WHERE memory_id = $1",
+            "UPDATE proxima_code.code_chunk_v1 SET text = 'rewritten' WHERE t = $1",
         )
         .bind(memory_id)
         .execute(pg.pool_for_tests())

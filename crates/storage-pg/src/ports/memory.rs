@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use proxima_core::read_models::{MemorySnapshot, SidecarSpec};
 use proxima_core::storage_ports::{
     MemoryAuthoringPort, MemoryInspectPort, MemoryReadPort, OwnerWritePermit,
@@ -41,7 +43,7 @@ fn parse_endpoint_kind(kind: &str) -> Option<PgEndpointKind> {
 /// columns is not.
 const NEIGHBOR_MEMORY_EDGES_SQL: &str = "
 WITH read_set(owner_kind, owner_id) AS (
-    SELECT * FROM unnest($1::proxima_core.owner_ref_kind[], $2::uuid[])
+    SELECT * FROM unnest($1::proxima_core.owner_kind[], $2::uuid[])
 ),
 head_probe AS (
     SELECT COALESCE(array_agg(fact_entity_id), '{}') AS ids
@@ -257,13 +259,14 @@ impl MemoryAuthoringPort for PgStorage {
         .ok_or(StorageError::NotFound)?;
         let key = verbs::forget::cold_object_key(&verbs::forget::owner_hash_hex(owner), handle, t);
         let pool = self.pool.clone();
+        let cold = Arc::clone(&self.cold);
         with_bounded_retry(move || {
             let key = key.clone();
             let pool = pool.clone();
+            let cold = Arc::clone(&cold);
             async move {
-                let cold = verbs::forget::MemoryColdStore::default();
                 let mut tx = pool.begin().await.map_err(internal)?;
-                verbs::forget::forget_memory(&mut tx, &cold, &key, t).await?;
+                verbs::forget::forget_memory(&mut tx, cold.as_ref(), &key, t).await?;
                 tx.commit().await.map_err(crate::error::map_err)?;
                 Ok(())
             }

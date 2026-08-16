@@ -109,7 +109,7 @@ pub async fn nearest_code_chunk_candidates(
                        JOIN proxima_core.memory_head h
                          ON h.handle = m.handle AND h.t = m.t
                        JOIN proxima_code.code_chunk_v1 c
-                         ON c.memory_id = m.t
+                         ON c.t = m.t
                       WHERE emb.model_id = $4
                         AND h.schema_id = $1
                         AND c.state = 'Present'

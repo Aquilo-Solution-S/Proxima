@@ -82,6 +82,14 @@ async fn forget_hydrate_erase_and_world_never() {
             .fetch_one(pool)
             .await?;
         assert_eq!(hot, 1);
+        let restored: (Option<String>, Option<String>, Vec<Uuid>, Vec<Uuid>) = sqlx::query_as(
+            "SELECT source_id, ingest_key, origins, refs FROM proxima_core.memory WHERE t = $1",
+        )
+        .bind(t)
+        .fetch_one(pool)
+        .await?;
+        assert_eq!(restored.0.as_deref(), Some("src"));
+        assert_eq!(restored.1.as_deref(), Some("k1"));
         let op: String = sqlx::query_scalar(
             "SELECT op::text FROM proxima_core.announce WHERE t = $1 ORDER BY seq DESC LIMIT 1",
         )

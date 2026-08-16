@@ -551,8 +551,8 @@ async fn load_target_perspectives(
     let workers: Vec<Uuid> = sqlx::query_scalar(
         "SELECT target_perspective_memory_id
            FROM proxima_code.work_assignment_v1
-          WHERE memory_id = ANY($1::uuid[])
-          ORDER BY memory_id",
+          WHERE t = ANY($1::uuid[])
+          ORDER BY t",
     )
     .bind(
         assignments

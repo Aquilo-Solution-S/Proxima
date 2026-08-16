@@ -193,7 +193,7 @@ fn memory_page_sql(
     let mut sql = format!(
         "SELECT m.t AS memory_id, m.handle, \
                 COALESCE(uuid_extract_timestamp(m.t), TIMESTAMPTZ '1970-01-01') AS created_at, \
-                o.kind::text::proxima_core.owner_ref_kind AS owner_kind, \
+                o.kind::text::proxima_core.owner_kind AS owner_kind, \
                 m.owner_id, h.schema_id, 1::int4 AS schema_version, \
                 m.kind::text AS kind \
          {from} \

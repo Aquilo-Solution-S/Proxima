@@ -142,7 +142,7 @@ impl CitedObjectPayload for McpCallIoV1 {
     const SCHEMA_VERSION: u32 = 1;
 
     fn sidecar_table() -> &'static str {
-        "proxima_core.cited_mcp_call_io_v1"
+        ""
     }
 
     fn idempotency_key(&self) -> [u8; 32] {

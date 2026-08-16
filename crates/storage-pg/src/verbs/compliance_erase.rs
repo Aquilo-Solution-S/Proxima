@@ -869,6 +869,7 @@ async fn insert_suppression_keys(
     Ok(count)
 }
 
+#[allow(dead_code)]
 pub async fn check_suppression_for_fact_tx(
     tx: &mut Tx<'_>,
     owner: OwnerRef,

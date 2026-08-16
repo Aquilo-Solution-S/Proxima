@@ -61,11 +61,7 @@ fn all_mcp_tool_arg_schemas_avoid_root_combinators() {
 
 const CORE_GOAL_ACTION_NAMES: &[&str] =
     &["set", "transition", "modify", "mark_achieved", "decompose"];
-const CORE_FACT_ACTION_NAMES: &[&str] = &[
-    "citation_of_fact",
-    "citation_of_entity_head",
-    "facts_citing_object",
-];
+const CORE_FACT_ACTION_NAMES: &[&str] = &["citation_of_fact", "facts_citing_object"];
 const CORE_MEMBERSHIP_ACTION_NAMES: &[&str] = &["add_member", "remove_member", "list_members"];
 const CORE_PUBLISH_ACTION_NAMES: &[&str] = &["publish_to_world"];
 const DISPATCHER_TOOL_ACTIONS: &[(&str, &[&str])] = &[

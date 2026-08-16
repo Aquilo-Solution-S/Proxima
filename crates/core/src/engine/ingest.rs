@@ -8,7 +8,7 @@ use crate::edge::EdgeEndpoint;
 use crate::error::ProtocolError;
 use crate::llm::{EMBEDDING_BATCH_SIZE, EmbeddingClient, LlmError};
 use crate::storage::{EmbeddingJobClaim, StorageError};
-use crate::verbs::close_batch::CloseBatchOutcome;
+
 use crate::verbs::fact_ingest::{
     AuthorizedCitationAttachment, AuthorizedFactWithCitation, AuthorizedFactWithCitationRef,
     AuthorizedFactWrite, AuthorizedInlineCitationMapping, AuthorizedInlineCitedObject,
@@ -18,8 +18,11 @@ use crate::verbs::fact_ingest::{
 use crate::verbs::persist_mcp_call::{McpCallLogInput, McpCallLogOutcome};
 use crate::verbs::schema::{PayloadKind, ProtocolPayload, SchemaInfo};
 use crate::{
-    EmbeddableEntityRef, EntityKind, MemoryId, Owner, OwnerRef, SidecarPayload, SourceBatchId,
+    EmbeddableEntityRef, EntityKind, MemoryId, Owner, OwnerRef, SidecarPayload,
 };
+
+#[cfg(test)]
+use crate::SourceBatchId;
 
 /// Liveness probe after a provider refuses a batch.
 ///
@@ -519,7 +522,7 @@ impl Engine {
         cited_object: InlineCitedObjectDraft,
         mapping: InlineCitationMappingDraft,
     ) -> Result<(AuthorizedInlineCitedObject, AuthorizedInlineCitationMapping), ProtocolError> {
-        let (cited_object_info, cited_object_payload) = self.ingest_protocol_payload(
+        let (_cited_object_info, cited_object_payload) = self.ingest_protocol_payload(
             &cited_object.schema_id,
             cited_object.schema_version,
             PayloadKind::CitedObject,
@@ -547,13 +550,6 @@ impl Engine {
             )));
         }
 
-        if cited_object_info.sidecar_table.is_none() {
-            return Err(ProtocolError::internal(format!(
-                "cited object schema {} v{} has no sidecar table",
-                cited_object.schema_id.as_str(),
-                cited_object.schema_version.into_inner(),
-            )));
-        }
         let content_hash = cited_object_payload.content_hash.ok_or_else(|| {
             ProtocolError::internal(format!(
                 "cited object schema {} v{} did not produce a content hash",
@@ -1190,45 +1186,6 @@ impl Engine {
             })
     }
 
-    /// docs/01 §"The contract" — Owner-scoped, idempotent batch close.
-    /// Sources call this after a successful poll once they consider the
-    /// batch complete. F→A consolidation (M5+) gates on
-    /// `closed_at IS NOT NULL`.
-    ///
-    /// # Errors
-    ///
-    /// Returns `NotFound` when the batch doesn't exist or belongs to a
-    /// different owner; `Forbidden` when the context cannot access `owner` or
-    /// lacks [`Relation::Ingest`] on the owner space.
-    pub async fn close_batch<A>(
-        &self,
-        authority: &A,
-        requested_owner: OwnerRef,
-        source_batch_id: SourceBatchId,
-    ) -> Result<CloseBatchOutcome, ProtocolError>
-    where
-        A: EngineAuthority + ?Sized,
-    {
-        let requested = requested_owner;
-        let permit = self
-            .authorize_write(authority, &requested, Relation::Ingest)
-            .await?;
-        let outcome = self
-            .storage
-            .ingest
-            .source_batch
-            .close_batch(permit.owner_write_permit(), source_batch_id)
-            .await
-            .map_err(|err| {
-                super::errors::map_write_storage_error(
-                    err,
-                    "source_batch",
-                    "source batch not found",
-                )
-            })?;
-
-        Ok(outcome)
-    }
 }
 
 struct SchemaIdDisplay<'a>(&'a crate::SchemaId);

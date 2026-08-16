@@ -215,7 +215,7 @@ LIMIT $3
 
 const SUMMARY_SEARCH_SQL: &str = "
 WITH q AS (SELECT websearch_to_tsquery('pg_catalog.simple'::regconfig, $1) AS tsq)
-SELECT s.memory_id,
+SELECT s.t AS memory_id,
        ts_rank_cd(to_tsvector(
            'pg_catalog.simple'::regconfig,
            s.commit_sha || ' ' || s.summary || ' ' || proxima_code.text_array_search(s.key_files)
@@ -227,7 +227,7 @@ WHERE ($2::uuid IS NULL OR s.repo_id = $2)
       'pg_catalog.simple'::regconfig,
       s.commit_sha || ' ' || s.summary || ' ' || proxima_code.text_array_search(s.key_files)
   ) @@ q.tsq
-ORDER BY score DESC, s.memory_id DESC
+ORDER BY score DESC, s.t DESC
 LIMIT $4
 ";
 

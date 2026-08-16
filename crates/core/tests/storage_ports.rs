@@ -2,7 +2,7 @@
 
 use proxima_core::storage_ports::*;
 use proxima_core::verbs::change_history::{ChangeHistoryRequest, ChangeHistoryResponse};
-use proxima_core::verbs::close_batch::CloseBatchOutcome;
+
 use proxima_core::verbs::goal_write::{
     AchieveGoalAtomicRequest, CreateGoalAtomicRequest, DecomposeGoalAtomicRequest,
     DecomposeGoalOutcome, GoalWriteOutcome, ModifyGoalAtomicRequest, TransitionGoalAtomicRequest,
@@ -595,16 +595,7 @@ impl OwnerMembershipAdminPort for OwnerMembershipAdminFake {
 #[derive(Debug)]
 struct SourceBatchFake;
 
-#[async_trait::async_trait]
-impl SourceBatchPort for SourceBatchFake {
-    async fn close_batch(
-        &self,
-        _permit: &OwnerWritePermit,
-        source_batch_id: SourceBatchId,
-    ) -> Result<CloseBatchOutcome, StorageError> {
-        fake_error()
-    }
-}
+impl SourceBatchPort for SourceBatchFake {}
 
 #[derive(Debug)]
 struct SourceCursorFake;

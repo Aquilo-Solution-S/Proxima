@@ -149,7 +149,7 @@ proxima_storage_pg::pg_sidecar! {
     row: CommitPayloadRow,
     kinds: [Fact],
     table: "proxima_code.commit_v1",
-    key: memory_id,
+    key: t,
     fields: {
         repo_id => repo_id: (uuid),
         sha => sha: (text),
@@ -169,7 +169,7 @@ proxima_storage_pg::pg_sidecar! {
     row: FileRevisionPayloadRow,
     kinds: [Fact],
     table: "proxima_code.file_revision_v1",
-    key: memory_id,
+    key: t,
     fields: {
         repo_id => repo_id: (uuid),
         file_path => file_path: (text),
@@ -190,7 +190,7 @@ proxima_storage_pg::pg_sidecar! {
     row: ExecutionRequestPayloadRow,
     kinds: [Fact],
     table: "proxima_code.work_requested_v1",
-    key: memory_id,
+    key: t,
     fields: {
         repo_id => repo_id: (uuid),
         title => title: (text),
@@ -205,7 +205,7 @@ proxima_storage_pg::pg_sidecar! {
     row: ExecutionResultPayloadRow,
     kinds: [Fact],
     table: "proxima_code.execution_result_v1",
-    key: memory_id,
+    key: t,
     fields: {
         work_requested_memory_id => work_requested_memory_id: (uuid),
         repo_id => repo_id: (uuid),
@@ -225,7 +225,7 @@ proxima_storage_pg::pg_sidecar! {
     row: TestResultPayloadRow,
     kinds: [Fact],
     table: "proxima_code.test_result_v1",
-    key: memory_id,
+    key: t,
     fields: {
         test_requested_memory_id => test_requested_memory_id: (uuid),
         repo_id => repo_id: (uuid),
@@ -245,7 +245,7 @@ proxima_storage_pg::pg_sidecar! {
     row: AcceptanceVerificationPayloadRow,
     kinds: [Fact],
     table: "proxima_code.acceptance_verification_v1",
-    key: memory_id,
+    key: t,
     fields: {
         work_item_memory_id => work_item_memory_id: (uuid),
         criterion_key => criterion_key: (text),
@@ -274,7 +274,7 @@ impl PgMemorySidecar for CodeChunkV1 {
         Box::pin(async move {
             sqlx::query(
                 "INSERT INTO proxima_code.code_chunk_v1
-                    (memory_id, repo_id, file_path, chunk_index, text, language, chunk_type,
+                    (t, repo_id, file_path, chunk_index, text, language, chunk_type,
                      byte_range_start, byte_range_end, line_range_start, line_range_end, state)
                  VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
                          $12::proxima_code.file_state)",
@@ -321,7 +321,7 @@ impl PgMemorySidecar for CodeChunkV1 {
 
 #[derive(Debug, sqlx::FromRow)]
 struct CodeChunkPayloadRow {
-    memory_id: uuid::Uuid,
+    t: uuid::Uuid,
     repo_id: uuid::Uuid,
     file_path: String,
     chunk_index: i32,
@@ -357,11 +357,11 @@ impl PgMemoryPayload for CodeChunkV1 {
             }
             let rows: Vec<CodeChunkPayloadRow> = ctx
                 .fetch_all_by_memory_ids(
-                    "SELECT memory_id, repo_id, file_path, chunk_index, text, language,
+                    "SELECT t, repo_id, file_path, chunk_index, text, language,
                             chunk_type, byte_range_start, byte_range_end,
                             line_range_start, line_range_end, state::text AS state
                        FROM proxima_code.code_chunk_v1
-                      WHERE memory_id = ANY($1::uuid[])",
+                      WHERE t = ANY($1::uuid[])",
                     memory_ids,
                 )
                 .await?;
@@ -400,7 +400,7 @@ impl PgMemoryPayload for CodeChunkV1 {
             }
             rows.into_iter()
                 .map(|row| {
-                    let memory_id = MemoryId::new(row.memory_id);
+                    let memory_id = MemoryId::new(row.t);
                     let payload = CodeChunkV1 {
                         repo_id: row.repo_id,
                         file_path: row.file_path,
@@ -414,7 +414,7 @@ impl PgMemoryPayload for CodeChunkV1 {
                         line_range_end: u32::try_from(row.line_range_end).unwrap_or(u32::MAX),
                         state: parse_file_state(&row.state)?,
                         calls: calls_by_caller
-                            .get(&row.memory_id)
+                            .get(&row.t)
                             .cloned()
                             .unwrap_or_default(),
                     };
@@ -430,7 +430,7 @@ proxima_storage_pg::pg_sidecar! {
     row: CommitSummaryPayloadRow,
     kinds: [Abstraction],
     table: "proxima_code.commit_summary_v1",
-    key: memory_id,
+    key: t,
     fields: {
         repo_id => repo_id: (uuid),
         commit_sha => commit_sha: (text),
@@ -445,7 +445,7 @@ proxima_storage_pg::pg_sidecar! {
     row: AcceptanceSummaryPayloadRow,
     kinds: [Abstraction],
     table: "proxima_code.acceptance_summary_v1",
-    key: memory_id,
+    key: t,
     fields: {
         work_item_memory_id => work_item_memory_id: (uuid),
         repo_id => repo_id: (uuid),
@@ -460,7 +460,7 @@ proxima_storage_pg::pg_sidecar! {
     row: CodeDevelopmentPerspectivePayloadRow,
     kinds: [Perspective],
     table: "proxima_code.development_perspective_v1",
-    key: memory_id,
+    key: t,
     fields: {
         repo_id => repo_id: (opt_uuid),
         summary => summary: (text),
@@ -476,7 +476,7 @@ proxima_storage_pg::pg_sidecar! {
     row: CodeCommitSummarizerSelfPayloadRow,
     kinds: [Perspective],
     table: "proxima_code.commit_summarizer_self_v1",
-    key: memory_id,
+    key: t,
     fields: {
         display_name => display_name: (text),
         purpose => purpose: (text),
@@ -488,7 +488,7 @@ proxima_storage_pg::pg_sidecar! {
     row: CodeEngineerSelfPayloadRow,
     kinds: [Perspective],
     table: "proxima_code.engineer_self_v1",
-    key: memory_id,
+    key: t,
     fields: {
         display_name => display_name: (text),
         purpose => purpose: (text),
@@ -500,7 +500,7 @@ proxima_storage_pg::pg_sidecar! {
     row: CodeWorkAssignmentPayloadRow,
     kinds: [Perspective],
     table: "proxima_code.work_assignment_v1",
-    key: memory_id,
+    key: t,
     fields: {
         repo_id => repo_id: (uuid),
         target_perspective_memory_id => target_perspective_memory_id: (uuid),
@@ -521,7 +521,7 @@ impl PgFactSidecar for AcceptanceCriteriaV1 {
         Box::pin(async move {
             sqlx::query(
                 "INSERT INTO proxima_code.acceptance_criteria_v1
-                    (memory_id, work_item_memory_id, criteria_count)
+                    (t, work_item_memory_id), criteria_count)
                  VALUES ($1, $2, $3)",
             )
             .bind(memory_id.into_inner())
@@ -554,7 +554,7 @@ impl PgMemoryPayload for AcceptanceCriteriaV1 {
                 .fetch_optional_scalar_by_memory_id(
                     "SELECT work_item_memory_id
                        FROM proxima_code.acceptance_criteria_v1
-                      WHERE memory_id = $1",
+                      WHERE t = $1",
                     memory_id,
                 )
                 .await?;
@@ -588,7 +588,7 @@ impl PgFactSidecar for TestRequestV1 {
         Box::pin(async move {
             sqlx::query(
                 "INSERT INTO proxima_code.test_requested_v1
-                    (memory_id, repo_id, title, instructions, test_key, criteria_count,
+                    (t, repo_id, title, instructions, test_key, criteria_count,
                      depends_on_memory_ids)
                  VALUES ($1, $2, $3, $4, $5, $6, $7)",
             )
@@ -626,7 +626,7 @@ impl PgMemoryPayload for TestRequestV1 {
                 .fetch_optional_by_memory_id(
                     "SELECT repo_id, title, instructions, test_key, depends_on_memory_ids
                        FROM proxima_code.test_requested_v1
-                      WHERE memory_id = $1",
+                      WHERE t = $1",
                     memory_id,
                 )
                 .await?;
@@ -661,7 +661,7 @@ impl PgMemorySidecar for CodeExecutionPlanV1 {
         Box::pin(async move {
             sqlx::query(
                 "INSERT INTO proxima_code.execution_plan_v1
-                    (memory_id, repo_id, plan_key, goal_activated_memory_id,
+                    (t, repo_id, plan_key, goal_activated_memory_id,
                      summary, item_count, evidence_memory_ids)
                  VALUES ($1, $2, $3, $4, $5, $6, $7)",
             )
@@ -721,7 +721,7 @@ impl PgMemoryPayload for CodeExecutionPlanV1 {
                     "SELECT repo_id, plan_key, goal_activated_memory_id,
                             summary, evidence_memory_ids
                        FROM proxima_code.execution_plan_v1
-                      WHERE memory_id = $1",
+                      WHERE t = $1",
                     memory_id,
                 )
                 .await?;

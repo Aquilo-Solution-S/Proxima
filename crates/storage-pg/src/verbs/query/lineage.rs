@@ -185,7 +185,7 @@ async fn start_memory_visible(
              FROM proxima_core.memories m
              WHERE EXISTS (
                        SELECT 1
-                         FROM unnest($1::proxima_core.owner_ref_kind[], $2::uuid[]) AS rs(kind, id)
+                         FROM unnest($1::proxima_core.owner_kind[], $2::uuid[]) AS rs(kind, id)
                         WHERE {read_owner_predicate}
                    )
                AND m.memory_id = $3
@@ -273,7 +273,7 @@ async fn load_nodes(
              FROM proxima_core.memories m
              WHERE EXISTS (
                        SELECT 1
-                         FROM unnest($1::proxima_core.owner_ref_kind[], $2::uuid[]) AS rs(kind, id)
+                         FROM unnest($1::proxima_core.owner_kind[], $2::uuid[]) AS rs(kind, id)
                         WHERE {read_owner_predicate}
                    )
                AND m.memory_id = ANY($3::uuid[])
@@ -380,7 +380,7 @@ fn ancestors_sql() -> String {
     format!(
         "
 WITH RECURSIVE read_set(kind, id) AS (
-    SELECT * FROM unnest($1::proxima_core.owner_ref_kind[], $2::uuid[])
+    SELECT * FROM unnest($1::proxima_core.owner_kind[], $2::uuid[])
 ),
 walk AS (
     SELECT 1 AS distance,
@@ -447,7 +447,7 @@ fn descendants_sql() -> String {
     format!(
         "
 WITH RECURSIVE read_set(kind, id) AS (
-    SELECT * FROM unnest($1::proxima_core.owner_ref_kind[], $2::uuid[])
+    SELECT * FROM unnest($1::proxima_core.owner_kind[], $2::uuid[])
 ),
 walk AS (
     SELECT 1 AS distance,

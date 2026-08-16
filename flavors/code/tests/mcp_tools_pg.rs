@@ -2004,7 +2004,7 @@ async fn ingest_execution_request_fixture(
     .await?;
     sqlx::query(
         "INSERT INTO proxima_code.work_requested_v1
-            (memory_id, repo_id, title, instructions, request_key)
+            (t, repo_id, title, instructions, request_key)
          VALUES ($1, $2, $3, $4, $5)",
     )
     .bind(memory_id)
@@ -2539,7 +2539,7 @@ async fn ingest_file_revision(
         fact_memory(engine, owner, FileRevisionV1::SCHEMA_ID, payload.as_bytes()).await?;
     sqlx::query(
         "INSERT INTO proxima_code.file_revision_v1
-            (memory_id, repo_id, file_path, language, content_sha256,
+            (t, repo_id, file_path, language, content_sha256,
              size_bytes, indexed_commit_sha, state)
          VALUES ($1, $2, $3, 'rust', $4, $5, $6, 'Present')",
     )
@@ -2567,7 +2567,7 @@ async fn ingest_file_revision_tombstone(
         fact_memory(engine, owner, FileRevisionV1::SCHEMA_ID, payload.as_bytes()).await?;
     sqlx::query(
         "INSERT INTO proxima_code.file_revision_v1
-            (memory_id, repo_id, file_path, language, content_sha256,
+            (t, repo_id, file_path, language, content_sha256,
              size_bytes, indexed_commit_sha, state)
          VALUES ($1, $2, $3, NULL, $4, 0, $5, 'Tombstone')",
     )
@@ -2630,7 +2630,7 @@ async fn ingest_code_chunk_with_type(
     let line_count = i64::try_from(chunk.text.lines().count().max(1))?;
     sqlx::query(
         "INSERT INTO proxima_code.code_chunk_v1
-            (memory_id, repo_id, file_path, chunk_index, text, language,
+            (t, repo_id, file_path, chunk_index, text, language,
              chunk_type, byte_range_start, byte_range_end,
              line_range_start, line_range_end, state)
          VALUES ($1, $2, $3, $4, $5, 'rust',
@@ -2667,7 +2667,7 @@ async fn ingest_code_chunk_tombstone(
     let memory_id = code_chunk_memory(pool, &owner, handle, &[file_revision]).await?;
     sqlx::query(
         "INSERT INTO proxima_code.code_chunk_v1
-            (memory_id, repo_id, file_path, chunk_index, text, language,
+            (t, repo_id, file_path, chunk_index, text, language,
              chunk_type, byte_range_start, byte_range_end,
              line_range_start, line_range_end, state)
          VALUES ($1, $2, $3, $4, '', NULL,
@@ -2690,10 +2690,10 @@ async fn latest_file_revision(
     file_path: &str,
 ) -> Result<Option<(Uuid, FileState)>, Box<dyn std::error::Error>> {
     Ok(sqlx::query_as(
-        "SELECT fr.memory_id, fr.state
+        "SELECT fr.t, fr.state
            FROM proxima_core.memory_head h
            JOIN proxima_core.memory m ON m.handle = h.handle AND m.t = h.t
-           JOIN proxima_code.file_revision_v1 fr ON fr.memory_id = m.t
+           JOIN proxima_code.file_revision_v1 fr ON fr.t = m.t
           WHERE m.owner_id = $1
             AND fr.repo_id = $2
             AND fr.file_path = $3
@@ -2804,7 +2804,7 @@ async fn ingest_commit(
     let now = time::OffsetDateTime::now_utc();
     sqlx::query(
         "INSERT INTO proxima_code.commit_v1
-            (memory_id, repo_id, sha, parents, author_name, author_email,
+            (t, repo_id, sha, parents, author_name, author_email,
              author_time, committer_name, committer_email, committer_time, message)
          VALUES ($1, $2, $3, ARRAY[]::text[], 'Ada', 'ada@example.test',
              $4, 'Ada', 'ada@example.test', $4, $5)",
@@ -2842,7 +2842,7 @@ async fn ingest_commit_summary(
     let files: Vec<String> = key_files.iter().map(|file| (*file).to_string()).collect();
     sqlx::query(
         "INSERT INTO proxima_code.commit_summary_v1
-            (memory_id, repo_id, commit_sha, summary, key_files, change_kind)
+            (t, repo_id, commit_sha, summary, key_files, change_kind)
          VALUES ($1, $2, $3, $4, $5, $6)",
     )
     .bind(memory_id)

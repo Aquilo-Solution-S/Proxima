@@ -100,7 +100,7 @@ pub async fn list_change_events_after(
              FROM proxima_core.change_event ce
              WHERE EXISTS (
                 SELECT 1
-                  FROM unnest($1::proxima_core.owner_ref_kind[], $2::uuid[]) AS s(kind, id)
+                  FROM unnest($1::proxima_core.owner_kind[], $2::uuid[]) AS s(kind, id)
                  WHERE ce.owner_kind = s.kind
                    AND ce.owner_id = s.id
              )
@@ -167,7 +167,7 @@ pub async fn list_change_events_for_replay(
              FROM proxima_core.change_event ce
              WHERE EXISTS (
                 SELECT 1
-                  FROM unnest($1::proxima_core.owner_ref_kind[], $2::uuid[]) AS s(kind, id)
+                  FROM unnest($1::proxima_core.owner_kind[], $2::uuid[]) AS s(kind, id)
                  WHERE ce.owner_kind = s.kind
                    AND ce.owner_id = s.id
              )
@@ -229,7 +229,7 @@ pub(crate) fn edge_event_visibility_predicate(
                         EXISTS (
                             SELECT 1
                               FROM {eo_union} seo
-                              JOIN unnest(${read_kinds_param}::proxima_core.owner_ref_kind[], ${read_ids_param}::uuid[]) AS rs(kind, id)
+                              JOIN unnest(${read_kinds_param}::proxima_core.owner_kind[], ${read_ids_param}::uuid[]) AS rs(kind, id)
                                 ON seo.owner_kind = rs.kind
                                AND seo.owner_id IS NOT DISTINCT FROM rs.id
                              WHERE seo.entity_id = {source_entity}
@@ -245,7 +245,7 @@ pub(crate) fn edge_event_visibility_predicate(
                             AND NOT EXISTS (
                                 SELECT 1
                                   FROM {eo_union} teo
-                                  JOIN unnest(${read_kinds_param}::proxima_core.owner_ref_kind[], ${read_ids_param}::uuid[]) AS rt(kind, id)
+                                  JOIN unnest(${read_kinds_param}::proxima_core.owner_kind[], ${read_ids_param}::uuid[]) AS rt(kind, id)
                                     ON teo.owner_kind = rt.kind
                                    AND teo.owner_id IS NOT DISTINCT FROM rt.id
                                  WHERE teo.entity_id = {target_entity}

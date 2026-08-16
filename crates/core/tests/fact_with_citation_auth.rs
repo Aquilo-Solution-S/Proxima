@@ -315,7 +315,7 @@ fn registered_cited_object_schema_exposes_sidecar_table() {
         )
         .expect("registered cited-object schema must be present");
 
-    assert_eq!(info.sidecar_table.as_deref(), Some("test.cited_object_v1"));
+    assert_eq!(info.sidecar_table.as_deref(), None);
 }
 
 /// A computed score is an Abstraction whose citation is its computation

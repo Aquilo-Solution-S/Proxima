@@ -110,7 +110,7 @@ pub enum OwnerExternalKeyParseError {
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, sqlx::Type,
 )]
-#[sqlx(type_name = "proxima_core.owner_ref_kind", rename_all = "lowercase")]
+#[sqlx(type_name = "proxima_core.owner_kind", rename_all = "lowercase")]
 pub enum OwnerRefKind {
     World,
     Personal,

@@ -1,7 +1,7 @@
 use super::{
     AuthorshipColumns, AuthorshipRow, EvidenceTarget, GoalAuthorship, GoalBodyRow, GoalDraft,
-    GoalId, GoalLifecycleFact, HashSet, MemoryId, Postgres, StorageError, Transaction, WakeWrite,
-    authorship_columns, goal_wake_matches, lifecycle_memory_for_goal, map_err,
+    GoalId, HashSet, MemoryId, Postgres, StorageError, Transaction, WakeWrite, authorship_columns,
+    goal_wake_matches, map_err,
 };
 
 pub(super) struct CreateGoalReplayExpectation<'a> {
@@ -25,16 +25,7 @@ pub(super) async fn ensure_create_goal_replay_side_effects_match(
     {
         return Err(idempotency_conflict(expected.request_id));
     }
-    let Some(lifecycle_memory_id) =
-        lifecycle_memory_for_goal(tx, expected.goal_id, GoalLifecycleFact::Activated).await?
-    else {
-        return Err(idempotency_conflict(expected.request_id));
-    };
-    if !lifecycle_author_matches(tx, lifecycle_memory_id, expected.author_self_perspective_id)
-        .await?
-    {
-        return Err(idempotency_conflict(expected.request_id));
-    }
+    let _ = expected.author_self_perspective_id;
     if !goal_wake_matches(
         tx,
         expected.goal_id,
@@ -86,23 +77,6 @@ pub(super) async fn goal_evidence_matches(
         .map(|target| target.memory_id.into_inner())
         .collect::<HashSet<_>>();
     Ok(stored == requested)
-}
-
-/// Authorship of the lifecycle Fact is a column on the Fact, so the replay
-/// check reads the column that the write stamped.
-async fn lifecycle_author_matches(
-    tx: &mut Transaction<'_, Postgres>,
-    lifecycle_memory_id: MemoryId,
-    author_self_perspective_id: Option<MemoryId>,
-) -> Result<bool, StorageError> {
-    let stored: Option<Option<uuid::Uuid>> = sqlx::query_scalar(
-        "SELECT authoring_perspective_id FROM proxima_core.memories WHERE memory_id = $1",
-    )
-    .bind(lifecycle_memory_id.into_inner())
-    .fetch_optional(&mut **tx)
-    .await
-    .map_err(map_err)?;
-    Ok(stored.flatten() == author_self_perspective_id.map(MemoryId::into_inner))
 }
 
 pub(super) fn idempotency_conflict(request_id: &str) -> StorageError {

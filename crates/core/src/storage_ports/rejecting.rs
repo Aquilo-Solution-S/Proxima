@@ -17,7 +17,7 @@ use super::memory::{
 };
 use super::proof::{OperatorMaintenanceProof, OwnerWritePermit};
 use super::registry::RegistryProjectionPort;
-use crate::SourceBatchId;
+
 use crate::access::AccessError;
 use crate::compliance::ComplianceEraseTarget;
 use crate::read_models::{
@@ -26,7 +26,7 @@ use crate::read_models::{
 };
 use crate::storage::{AuthorDerivedOutcome, AuthorDerivedRequest, EmbeddingJobClaim, StorageError};
 use crate::verbs::change_history::{ChangeHistoryRequest, ChangeHistoryResponse};
-use crate::verbs::close_batch::CloseBatchOutcome;
+
 use crate::verbs::fact_ingest::{
     AuthorizedFactWithCitation, AuthorizedFactWithCitationRef, AuthorizedFactWrite,
     FactIngestOutcome, FactWriteCommand,
@@ -656,18 +656,7 @@ impl OwnerTransferPort for RejectingStorage {
     }
 }
 
-#[async_trait::async_trait]
-impl SourceBatchPort for RejectingStorage {
-    async fn close_batch(
-        &self,
-        _permit: &OwnerWritePermit,
-        _source_batch_id: SourceBatchId,
-    ) -> Result<CloseBatchOutcome, StorageError> {
-        Err(StorageError::Internal(
-            "RejectingStorage rejects writes".into(),
-        ))
-    }
-}
+impl SourceBatchPort for RejectingStorage {}
 
 #[async_trait::async_trait]
 impl SourceCursorPort for RejectingStorage {

@@ -192,7 +192,7 @@ async fn seed_goal_rows(
 
 const FACT_KEYSET_EXPLAIN_SQL: &str = "EXPLAIN (FORMAT JSON, COSTS OFF)
 SELECT page.memory_id
-  FROM unnest($1::proxima_core.owner_ref_kind[], $2::uuid[]) AS s(kind, id)
+  FROM unnest($1::proxima_core.owner_kind[], $2::uuid[]) AS s(kind, id)
   JOIN LATERAL (
       SELECT m.memory_id, m.created_at
         FROM proxima_core.memories m
@@ -209,7 +209,7 @@ SELECT page.memory_id
 
 const AP_KEYSET_EXPLAIN_SQL: &str = "EXPLAIN (FORMAT JSON, COSTS OFF)
 SELECT page.memory_id
-  FROM unnest($1::proxima_core.owner_ref_kind[], $2::uuid[]) AS s(kind, id)
+  FROM unnest($1::proxima_core.owner_kind[], $2::uuid[]) AS s(kind, id)
   JOIN LATERAL (
       SELECT m.memory_id, m.created_at
         FROM proxima_core.memories m
@@ -226,7 +226,7 @@ SELECT page.memory_id
 
 const GOAL_KEYSET_EXPLAIN_SQL: &str = "EXPLAIN (FORMAT JSON, COSTS OFF)
 SELECT page.goal_id
-  FROM unnest($1::proxima_core.owner_ref_kind[], $2::uuid[]) AS s(kind, id)
+  FROM unnest($1::proxima_core.owner_kind[], $2::uuid[]) AS s(kind, id)
   JOIN LATERAL (
       SELECT g.goal_id, g.created_at
         FROM proxima_core.goals g
@@ -436,7 +436,7 @@ fn query_memories_has_no_offset_clause() {
             || path.file_name().and_then(std::ffi::OsStr::to_str) == Some("goals.rs")
         {
             assert!(
-                source.contains("unnest($1::proxima_core.owner_ref_kind[], $2::uuid[])"),
+                source.contains("unnest($1::proxima_core.owner_kind[], $2::uuid[])"),
                 "query source must keep set-based owner authorization: {}",
                 path.display()
             );

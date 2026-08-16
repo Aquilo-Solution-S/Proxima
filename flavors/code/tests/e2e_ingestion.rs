@@ -241,11 +241,11 @@ async fn local_ingestion_lands_facts_citations_edges_and_replays_idempotently() 
             "SELECT \
                 (SELECT COUNT(DISTINCT (cc.caller_memory_id, cc.callee_memory_id))::bigint \
                    FROM proxima_code.code_chunk_call_v1 cc \
-                   JOIN proxima_code.code_chunk_v1 src ON src.memory_id = cc.caller_memory_id \
+                   JOIN proxima_code.code_chunk_v1 src ON src.t = cc.caller_memory_id \
                   WHERE src.repo_id = $1), \
                 (SELECT COUNT(*)::bigint \
                    FROM proxima_code.code_chunk_call_v1 cc \
-                   JOIN proxima_code.code_chunk_v1 src ON src.memory_id = cc.caller_memory_id \
+                   JOIN proxima_code.code_chunk_v1 src ON src.t = cc.caller_memory_id \
                   WHERE src.repo_id = $1)",
         )
         .bind(repo_id)
@@ -268,7 +268,7 @@ async fn local_ingestion_lands_facts_citations_edges_and_replays_idempotently() 
         let caller_id: Uuid = sqlx::query_scalar(
             "SELECT DISTINCT cc.caller_memory_id
                FROM proxima_code.code_chunk_call_v1 cc
-               JOIN proxima_code.code_chunk_v1 src ON src.memory_id = cc.caller_memory_id
+               JOIN proxima_code.code_chunk_v1 src ON src.t = cc.caller_memory_id
               WHERE src.repo_id = $1
               LIMIT 1",
         )

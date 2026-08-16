@@ -16,6 +16,7 @@ pub mod canonical_json;
 pub mod capability;
 pub mod change_event;
 pub mod citations;
+pub mod cold;
 pub mod compliance;
 pub mod cursor;
 pub mod edge;
@@ -53,6 +54,7 @@ pub use canonical_json::canonical_json_bytes;
 pub use capability::*;
 pub use change_event::*;
 pub use citations::*;
+pub use cold::ColdObjectStore;
 pub use compliance::{
     ComplianceEraseCounts, ComplianceEraseOutcome, ComplianceEraseRefusal, ComplianceEraseRequest,
     ComplianceEraseTarget, ComplianceExportBundle, ComplianceExportCounts, ComplianceExportRequest,

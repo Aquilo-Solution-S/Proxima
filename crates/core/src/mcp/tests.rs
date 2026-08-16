@@ -119,7 +119,7 @@ mod manifest_tests {
         ]);
         let expected_counts = BTreeMap::from([
             (protocol_tool::CORE_GOAL, 5_usize),
-            (protocol_tool::CORE_FACT, 3),
+            (protocol_tool::CORE_FACT, 2),
             (protocol_tool::CORE_MEMBERSHIP, 3),
             (protocol_tool::CORE_PUBLISH, 1),
             (protocol_tool::CORE_UPLOAD, 4),
@@ -153,7 +153,6 @@ mod manifest_tests {
     fn core_action_constants_match_registered_catalog() {
         let expected = BTreeSet::from([
             protocol_action::CORE_FACT_CITATION_OF_FACT,
-            protocol_action::CORE_FACT_CITATION_OF_ENTITY_HEAD,
             protocol_action::CORE_FACT_FACTS_CITING_OBJECT,
             protocol_action::CORE_GOAL_SET,
             protocol_action::CORE_GOAL_TRANSITION,

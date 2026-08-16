@@ -205,7 +205,7 @@ async fn move_home_row(pg: &proxima_storage_pg::PgStorage, memory_id: MemoryId, 
     let (owner_kind, owner_id) = proxima_storage_pg::access::owner_columns::owner_binds(owner);
     sqlx::query(
         "UPDATE proxima_core.memories
-            SET owner_kind = $2::proxima_core.owner_ref_kind,
+            SET owner_kind = $2::proxima_core.owner_kind,
                 owner_id = $3
           WHERE memory_id = $1",
     )

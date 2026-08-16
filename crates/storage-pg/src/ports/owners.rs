@@ -2,9 +2,9 @@ use proxima_core::storage_ports::{
     FactRetentionPort, OwnerAccessReadPort, OwnerMembershipAdminPort, OwnerTransferPort,
     OwnerWritePermit, SourceBatchPort, SourceCursorPort,
 };
-use proxima_core::verbs::close_batch::CloseBatchOutcome;
+
 use proxima_core::{
-    Cursor, EntityId, GroupId, MembershipRow, Owner, OwnerRef, Relation, SourceBatchId,
+    Cursor, EntityId, GroupId, MembershipRow, Owner, OwnerRef, Relation,
     StorageError, UserId,
 };
 
@@ -107,16 +107,7 @@ impl OwnerTransferPort for PgStorage {
     }
 }
 
-#[async_trait::async_trait]
-impl SourceBatchPort for PgStorage {
-    async fn close_batch(
-        &self,
-        permit: &OwnerWritePermit,
-        source_batch_id: SourceBatchId,
-    ) -> Result<CloseBatchOutcome, StorageError> {
-        verbs::close_batch::close_batch(&self.pool, permit, source_batch_id).await
-    }
-}
+impl SourceBatchPort for PgStorage {}
 
 #[async_trait::async_trait]
 impl SourceCursorPort for PgStorage {

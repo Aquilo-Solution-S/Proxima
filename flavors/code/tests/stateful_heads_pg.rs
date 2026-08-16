@@ -122,7 +122,7 @@ async fn seed_file_revision_state(
 
     sqlx::query(
         "INSERT INTO proxima_code.file_revision_v1 \
-            (memory_id, repo_id, file_path, language, content_sha256, \
+            (t, repo_id, file_path, language, content_sha256, \
              size_bytes, indexed_commit_sha, state) \
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
     )

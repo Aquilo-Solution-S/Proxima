@@ -18,7 +18,6 @@ pub mod tool {
 
 pub mod action {
     pub const CORE_FACT_CITATION_OF_FACT: &str = "core_fact:citation_of_fact";
-    pub const CORE_FACT_CITATION_OF_ENTITY_HEAD: &str = "core_fact:citation_of_entity_head";
     pub const CORE_FACT_FACTS_CITING_OBJECT: &str = "core_fact:facts_citing_object";
 
     pub const CORE_GOAL_SET: &str = "core_goal:set";

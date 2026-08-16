@@ -1,32 +1,7 @@
--- Core typed sidecars keyed by memory.t. Tables the registered
--- pg_sidecar macros still insert.
-
-CREATE TABLE proxima_core.goal_activated_v1 (
-    memory_id uuid PRIMARY KEY REFERENCES proxima_core.memory (t),
-    goal_id uuid NOT NULL,
-    transitioned_at timestamptz NOT NULL
-);
-
-CREATE TABLE proxima_core.goal_paused_v1 (
-    memory_id uuid PRIMARY KEY REFERENCES proxima_core.memory (t),
-    goal_id uuid NOT NULL,
-    transitioned_at timestamptz NOT NULL
-);
-
-CREATE TABLE proxima_core.goal_achieved_v1 (
-    memory_id uuid PRIMARY KEY REFERENCES proxima_core.memory (t),
-    goal_id uuid NOT NULL,
-    transitioned_at timestamptz NOT NULL
-);
-
-CREATE TABLE proxima_core.goal_abandoned_v1 (
-    memory_id uuid PRIMARY KEY REFERENCES proxima_core.memory (t),
-    goal_id uuid NOT NULL,
-    transitioned_at timestamptz NOT NULL
-);
+-- Core typed sidecars keyed by memory.t.
 
 CREATE TABLE proxima_core.mcp_call_logged_v1 (
-    memory_id uuid PRIMARY KEY REFERENCES proxima_core.memory (t),
+    t uuid PRIMARY KEY REFERENCES proxima_core.memory (t),
     tool_name text NOT NULL,
     actor_oid text NOT NULL,
     actor_upn text NOT NULL,

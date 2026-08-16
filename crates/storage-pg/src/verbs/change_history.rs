@@ -40,7 +40,7 @@ pub(crate) async fn change_history(
         r"SELECT ce.seq FROM proxima_core.change_event ce
              WHERE EXISTS (
                 SELECT 1
-                  FROM unnest($1::proxima_core.owner_ref_kind[], $2::uuid[]) AS s(kind, id)
+                  FROM unnest($1::proxima_core.owner_kind[], $2::uuid[]) AS s(kind, id)
                  WHERE ce.owner_kind = s.kind
                    AND ce.owner_id = s.id
              )

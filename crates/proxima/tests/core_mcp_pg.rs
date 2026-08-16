@@ -973,9 +973,9 @@ async fn facade_core_citation_readback_is_owner_scoped() {
             .expect("prefixed fact id")
             .parse::<Uuid>()?;
         let cited_object_id: Uuid = sqlx::query_scalar(
-            "SELECT cm.cited_object_id
-               FROM proxima_core.citation_mappings cm
-              WHERE cm.memory_id = $1",
+            "SELECT blob_id
+               FROM proxima_core.memory
+              WHERE t = $1",
         )
         .bind(fact_id)
         .fetch_one(built.pool_for_tests())

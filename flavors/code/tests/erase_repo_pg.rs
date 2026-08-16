@@ -45,7 +45,7 @@ async fn insert_repo_commit_with_test_request(
 
     sqlx::query(
         "INSERT INTO proxima_code.commit_v1
-            (memory_id, repo_id, sha, parents, author_name, author_email,
+            (t, repo_id, sha, parents, author_name, author_email,
              author_time, committer_name, committer_email, committer_time, message)
          VALUES ($1, $2, 'abc1234', ARRAY[]::text[], 'A', 'a@example.com',
              now(), 'A', 'a@example.com', now(), 'fixture')",
@@ -57,7 +57,7 @@ async fn insert_repo_commit_with_test_request(
 
     sqlx::query(
         "INSERT INTO proxima_code.test_requested_v1
-            (memory_id, repo_id, title, instructions, test_key, criteria_count)
+            (t, repo_id, title, instructions, test_key, criteria_count)
          VALUES ($1, $2, 'bug 2', 'delete sidecar', 'bug-2', 1)",
     )
     .bind(memory_id)

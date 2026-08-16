@@ -79,7 +79,7 @@ fn goal_page_sql(req: &QueryRequest, has_schema_filter: bool) -> String {
         "SELECT g.handle, g.t AS goal_id, \
                 COALESCE(uuid_extract_timestamp(g.t), TIMESTAMPTZ '1970-01-01') AS created_at, \
                 h.schema_id, 1::int4 AS schema_version, \
-                o.kind::text::proxima_core.owner_ref_kind AS owner_kind, \
+                o.kind::text::proxima_core.owner_kind AS owner_kind, \
                 g.owner_id, g.title, ''::text AS text, g.state, \
                 NULL::uuid AS supersedes, ''::bytea AS payload, \
                 g.dependency_t AS dependency_goal_ids \

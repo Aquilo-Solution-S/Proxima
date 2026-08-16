@@ -125,7 +125,7 @@ async fn the_memory_page_sql_is_pinned() -> Result<(), Box<dyn std::error::Error
         sql,
         "SELECT page.memory_id, page.created_at, page.owner_kind, page.owner_id, page.schema_id, \
          page.schema_version, page.kind FROM ( (SELECT lat.* FROM \
-         unnest($1::proxima_core.owner_ref_kind[], $2::uuid[]) AS s(kind, id) JOIN LATERAL ( SELECT \
+         unnest($1::proxima_core.owner_kind[], $2::uuid[]) AS s(kind, id) JOIN LATERAL ( SELECT \
          m.memory_id, m.created_at, m.owner_kind, m.owner_id, m.schema_id, m.schema_version, m.kind \
          FROM proxima_core.memories m WHERE m.owner_kind = s.kind AND m.owner_id = s.id AND \
          m.tombstoned_at IS NULL AND NOT EXISTS (SELECT 1 FROM proxima_core.memories m2 WHERE \
@@ -152,7 +152,7 @@ async fn the_goal_page_sql_is_pinned() -> Result<(), Box<dyn std::error::Error>>
         sql,
         "SELECT page.goal_id, page.created_at, page.schema_id, page.schema_version, page.owner_kind, \
          page.owner_id, page.title, page.text, page.state, page.supersedes, page.payload, \
-         page.dependency_goal_ids FROM ( (SELECT lat.* FROM unnest($1::proxima_core.owner_ref_kind[], \
+         page.dependency_goal_ids FROM ( (SELECT lat.* FROM unnest($1::proxima_core.owner_kind[], \
          $2::uuid[]) AS s(kind, id) JOIN LATERAL ( SELECT g.goal_id, g.created_at, g.schema_id, \
          g.schema_version, g.owner_kind, g.owner_id, g.title, g.text, g.state, g.supersedes, \
          ''::bytea AS payload, g.dependency_goal_ids FROM proxima_core.goals g WHERE g.owner_kind = \
@@ -179,7 +179,7 @@ async fn the_high_water_sql_is_pinned() -> Result<(), Box<dyn std::error::Error>
     assert_eq!(
         sql,
         r"SELECT hw.seq
-         FROM unnest($1::proxima_core.owner_ref_kind[], $2::uuid[]) AS s(kind, id)
+         FROM unnest($1::proxima_core.owner_kind[], $2::uuid[]) AS s(kind, id)
          JOIN LATERAL (
              SELECT ce.seq FROM proxima_core.change_event ce
               WHERE ce.owner_kind = s.kind AND ce.owner_id = s.id
@@ -189,7 +189,7 @@ async fn the_high_water_sql_is_pinned() -> Result<(), Box<dyn std::error::Error>
                         EXISTS (
                             SELECT 1
                               FROM (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) seo
-                              JOIN unnest($1::proxima_core.owner_ref_kind[], $2::uuid[]) AS rs(kind, id)
+                              JOIN unnest($1::proxima_core.owner_kind[], $2::uuid[]) AS rs(kind, id)
                                 ON seo.owner_kind = rs.kind
                                AND seo.owner_id IS NOT DISTINCT FROM rs.id
                              WHERE seo.entity_id = COALESCE(
@@ -211,7 +211,7 @@ async fn the_high_water_sql_is_pinned() -> Result<(), Box<dyn std::error::Error>
                             AND NOT EXISTS (
                                 SELECT 1
                                   FROM (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) teo
-                                  JOIN unnest($1::proxima_core.owner_ref_kind[], $2::uuid[]) AS rt(kind, id)
+                                  JOIN unnest($1::proxima_core.owner_kind[], $2::uuid[]) AS rt(kind, id)
                                     ON teo.owner_kind = rt.kind
                                    AND teo.owner_id IS NOT DISTINCT FROM rt.id
                                  WHERE teo.entity_id = COALESCE(

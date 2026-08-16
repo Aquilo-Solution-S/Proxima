@@ -1,7 +1,7 @@
 //! Forget / hydrate / erase. UML §5c.
-#![allow(clippy::missing_errors_doc, clippy::doc_markdown)]
+#![allow(clippy::missing_errors_doc, clippy::doc_markdown, clippy::too_many_lines)]
 
-use proxima_core::{Owner, StorageError};
+use proxima_core::{ColdObjectStore, Owner, StorageError};
 use sqlx::{Postgres, Transaction};
 use uuid::Uuid;
 
@@ -36,12 +36,6 @@ fn hex_lower(bytes: &[u8]) -> String {
     out
 }
 
-pub trait ColdStore: Send + Sync {
-    fn put(&self, key: &str, bytes: &[u8]) -> Result<(), StorageError>;
-    fn get(&self, key: &str) -> Result<Vec<u8>, StorageError>;
-    fn delete(&self, key: &str) -> Result<(), StorageError>;
-}
-
 #[derive(Default)]
 pub struct MemoryColdStore {
     inner: std::sync::Mutex<std::collections::BTreeMap<String, Vec<u8>>>,
@@ -53,8 +47,9 @@ impl std::fmt::Debug for MemoryColdStore {
     }
 }
 
-impl ColdStore for MemoryColdStore {
-    fn put(&self, key: &str, bytes: &[u8]) -> Result<(), StorageError> {
+#[async_trait::async_trait]
+impl ColdObjectStore for MemoryColdStore {
+    async fn put(&self, key: &str, bytes: &[u8]) -> Result<(), StorageError> {
         self.inner
             .lock()
             .expect("cold store")
@@ -62,7 +57,7 @@ impl ColdStore for MemoryColdStore {
         Ok(())
     }
 
-    fn get(&self, key: &str) -> Result<Vec<u8>, StorageError> {
+    async fn get(&self, key: &str) -> Result<Vec<u8>, StorageError> {
         self.inner
             .lock()
             .expect("cold store")
@@ -71,7 +66,7 @@ impl ColdStore for MemoryColdStore {
             .ok_or(StorageError::NotFound)
     }
 
-    fn delete(&self, key: &str) -> Result<(), StorageError> {
+    async fn delete(&self, key: &str) -> Result<(), StorageError> {
         self.inner.lock().expect("cold store").remove(key);
         Ok(())
     }
@@ -90,68 +85,346 @@ struct HotRow {
     refs: Vec<Uuid>,
 }
 
+#[derive(Debug, Clone)]
+struct ColdRecord {
+    row: HotRow,
+    schema_id: String,
+    sidecar_kind: u8,
+    sidecar: Vec<u8>,
+}
+
+fn encode_record(rec: &ColdRecord) -> Vec<u8> {
+    let mut out = vec![COLD_FORMAT_VERSION];
+    write_uuid(&mut out, rec.row.handle);
+    write_uuid(&mut out, rec.row.t);
+    write_str(&mut out, &rec.row.kind);
+    write_uuid(&mut out, rec.row.owner_id);
+    write_opt_str(&mut out, rec.row.source_id.as_deref());
+    write_opt_str(&mut out, rec.row.ingest_key.as_deref());
+    write_opt_uuid(&mut out, rec.row.blob_id);
+    write_uuid_list(&mut out, &rec.row.origins);
+    write_uuid_list(&mut out, &rec.row.refs);
+    write_str(&mut out, &rec.schema_id);
+    out.push(rec.sidecar_kind);
+    write_bytes(&mut out, &rec.sidecar);
+    out
+}
+
+fn decode_record(bytes: &[u8]) -> Result<ColdRecord, StorageError> {
+    let mut i = 0;
+    let version = read_u8(bytes, &mut i)?;
+    if version != COLD_FORMAT_VERSION {
+        return Err(StorageError::Internal(format!(
+            "unknown cold format {version}"
+        )));
+    }
+    let row = HotRow {
+        handle: read_uuid(bytes, &mut i)?,
+        t: read_uuid(bytes, &mut i)?,
+        kind: read_str(bytes, &mut i)?,
+        owner_id: read_uuid(bytes, &mut i)?,
+        source_id: read_opt_str(bytes, &mut i)?,
+        ingest_key: read_opt_str(bytes, &mut i)?,
+        blob_id: read_opt_uuid(bytes, &mut i)?,
+        origins: read_uuid_list(bytes, &mut i)?,
+        refs: read_uuid_list(bytes, &mut i)?,
+    };
+    let schema_id = read_str(bytes, &mut i)?;
+    let sidecar_kind = read_u8(bytes, &mut i)?;
+    let sidecar = read_bytes(bytes, &mut i)?;
+    Ok(ColdRecord {
+        row,
+        schema_id,
+        sidecar_kind,
+        sidecar,
+    })
+}
+
+fn write_u16(out: &mut Vec<u8>, value: u16) {
+    out.extend_from_slice(&value.to_be_bytes());
+}
+
+fn write_uuid(out: &mut Vec<u8>, value: Uuid) {
+    out.extend_from_slice(value.as_bytes());
+}
+
+fn write_str(out: &mut Vec<u8>, value: &str) {
+    write_bytes(out, value.as_bytes());
+}
+
+fn write_bytes(out: &mut Vec<u8>, value: &[u8]) {
+    let len = u16::try_from(value.len()).unwrap_or(u16::MAX);
+    write_u16(out, len);
+    out.extend_from_slice(&value[..usize::from(len)]);
+}
+
+fn write_opt_str(out: &mut Vec<u8>, value: Option<&str>) {
+    match value {
+        None => out.push(0),
+        Some(text) => {
+            out.push(1);
+            write_str(out, text);
+        }
+    }
+}
+
+fn write_opt_uuid(out: &mut Vec<u8>, value: Option<Uuid>) {
+    match value {
+        None => out.push(0),
+        Some(id) => {
+            out.push(1);
+            write_uuid(out, id);
+        }
+    }
+}
+
+fn write_uuid_list(out: &mut Vec<u8>, values: &[Uuid]) {
+    write_u16(out, u16::try_from(values.len()).unwrap_or(u16::MAX));
+    for id in values {
+        write_uuid(out, *id);
+    }
+}
+
+fn read_u8(bytes: &[u8], i: &mut usize) -> Result<u8, StorageError> {
+    let b = *bytes.get(*i).ok_or_else(|| StorageError::Internal("cold eof".into()))?;
+    *i += 1;
+    Ok(b)
+}
+
+fn read_u16(bytes: &[u8], i: &mut usize) -> Result<u16, StorageError> {
+    let hi = read_u8(bytes, i)?;
+    let lo = read_u8(bytes, i)?;
+    Ok(u16::from_be_bytes([hi, lo]))
+}
+
+fn read_uuid(bytes: &[u8], i: &mut usize) -> Result<Uuid, StorageError> {
+    let end = i.saturating_add(16);
+    let slice = bytes
+        .get(*i..end)
+        .ok_or_else(|| StorageError::Internal("cold eof uuid".into()))?;
+    *i = end;
+    Uuid::from_slice(slice).map_err(|err| StorageError::Internal(err.to_string()))
+}
+
+fn read_bytes(bytes: &[u8], i: &mut usize) -> Result<Vec<u8>, StorageError> {
+    let len = usize::from(read_u16(bytes, i)?);
+    let end = i.saturating_add(len);
+    let slice = bytes
+        .get(*i..end)
+        .ok_or_else(|| StorageError::Internal("cold eof bytes".into()))?;
+    *i = end;
+    Ok(slice.to_vec())
+}
+
+fn read_str(bytes: &[u8], i: &mut usize) -> Result<String, StorageError> {
+    String::from_utf8(read_bytes(bytes, i)?)
+        .map_err(|err| StorageError::Internal(err.to_string()))
+}
+
+fn read_opt_str(bytes: &[u8], i: &mut usize) -> Result<Option<String>, StorageError> {
+    match read_u8(bytes, i)? {
+        0 => Ok(None),
+        _ => Ok(Some(read_str(bytes, i)?)),
+    }
+}
+
+fn read_opt_uuid(bytes: &[u8], i: &mut usize) -> Result<Option<Uuid>, StorageError> {
+    match read_u8(bytes, i)? {
+        0 => Ok(None),
+        _ => Ok(Some(read_uuid(bytes, i)?)),
+    }
+}
+
+fn read_uuid_list(bytes: &[u8], i: &mut usize) -> Result<Vec<Uuid>, StorageError> {
+    let n = usize::from(read_u16(bytes, i)?);
+    let mut out = Vec::with_capacity(n);
+    for _ in 0..n {
+        out.push(read_uuid(bytes, i)?);
+    }
+    Ok(out)
+}
+
+const SIDECAR_NONE: u8 = 0;
+const SIDECAR_NOTE: u8 = 1;
+const SIDECAR_UTTERANCE: u8 = 2;
+const SIDECAR_DERIVATION: u8 = 3;
+const SIDECAR_INTERPRET: u8 = 4;
+
+async fn load_sidecar(
+    tx: &mut Transaction<'_, Postgres>,
+    t: Uuid,
+) -> Result<(u8, Vec<u8>), StorageError> {
+    if let Some((title, body, tags)) = sqlx::query_as::<_, (String, String, Vec<String>)>(
+        "SELECT title, body, tags FROM proxima_core.agent_note_v1 WHERE t = $1",
+    )
+    .bind(t)
+    .fetch_optional(tx.as_mut())
+    .await
+    .map_err(map_err)?
+    {
+        let mut buf = Vec::new();
+        write_str(&mut buf, &title);
+        write_str(&mut buf, &body);
+        write_u16(&mut buf, u16::try_from(tags.len()).unwrap_or(0));
+        for tag in tags {
+            write_str(&mut buf, &tag);
+        }
+        return Ok((SIDECAR_NOTE, buf));
+    }
+    if let Some((speaker, conversation_id, text)) = sqlx::query_as::<_, (String, String, String)>(
+        "SELECT speaker, conversation_id, text FROM proxima_core.utterance_v1 WHERE t = $1",
+    )
+    .bind(t)
+    .fetch_optional(tx.as_mut())
+    .await
+    .map_err(map_err)?
+    {
+        let mut buf = Vec::new();
+        write_str(&mut buf, &speaker);
+        write_str(&mut buf, &conversation_id);
+        write_str(&mut buf, &text);
+        return Ok((SIDECAR_UTTERANCE, buf));
+    }
+    if let Some((title, body)) = sqlx::query_as::<_, (String, String)>(
+        "SELECT title, body FROM proxima_core.agent_derivation_v1 WHERE t = $1",
+    )
+    .bind(t)
+    .fetch_optional(tx.as_mut())
+    .await
+    .map_err(map_err)?
+    {
+        let mut buf = Vec::new();
+        write_str(&mut buf, &title);
+        write_str(&mut buf, &body);
+        return Ok((SIDECAR_DERIVATION, buf));
+    }
+    if let Some(claim) = sqlx::query_scalar::<_, String>(
+        "SELECT claim FROM proxima_core.interpretation_v1 WHERE t = $1",
+    )
+    .bind(t)
+    .fetch_optional(tx.as_mut())
+    .await
+    .map_err(map_err)?
+    {
+        let mut buf = Vec::new();
+        write_str(&mut buf, &claim);
+        return Ok((SIDECAR_INTERPRET, buf));
+    }
+    Ok((SIDECAR_NONE, Vec::new()))
+}
+
+async fn restore_sidecar(
+    tx: &mut Transaction<'_, Postgres>,
+    t: Uuid,
+    kind: u8,
+    bytes: &[u8],
+) -> Result<(), StorageError> {
+    let mut i = 0;
+    match kind {
+        SIDECAR_NONE => Ok(()),
+        SIDECAR_NOTE => {
+            let title = read_str(bytes, &mut i)?;
+            let body = read_str(bytes, &mut i)?;
+            let n = usize::from(read_u16(bytes, &mut i)?);
+            let mut tags = Vec::with_capacity(n);
+            for _ in 0..n {
+                tags.push(read_str(bytes, &mut i)?);
+            }
+            sqlx::query(
+                "INSERT INTO proxima_core.agent_note_v1 (t, note_id, title, body, tags)
+                 VALUES ($1, $1, $2, $3, $4)",
+            )
+            .bind(t)
+            .bind(title)
+            .bind(body)
+            .bind(&tags)
+            .execute(tx.as_mut())
+            .await
+            .map_err(map_err)?;
+            Ok(())
+        }
+        SIDECAR_UTTERANCE => {
+            let speaker = read_str(bytes, &mut i)?;
+            let conversation_id = read_str(bytes, &mut i)?;
+            let text = read_str(bytes, &mut i)?;
+            sqlx::query(
+                "INSERT INTO proxima_core.utterance_v1 (t, speaker, conversation_id, text)
+                 VALUES ($1, $2, $3, $4)",
+            )
+            .bind(t)
+            .bind(speaker)
+            .bind(conversation_id)
+            .bind(text)
+            .execute(tx.as_mut())
+            .await
+            .map_err(map_err)?;
+            Ok(())
+        }
+        SIDECAR_DERIVATION => {
+            let title = read_str(bytes, &mut i)?;
+            let body = read_str(bytes, &mut i)?;
+            sqlx::query(
+                "INSERT INTO proxima_core.agent_derivation_v1
+                    (t, title, body, tags, source_memory_ids,
+                     model_id, client_name, client_version)
+                 VALUES ($1, $2, $3, ARRAY[]::text[], ARRAY[]::uuid[],
+                         'hydrate', 'hydrate', 'v1')",
+            )
+            .bind(t)
+            .bind(title)
+            .bind(body)
+            .execute(tx.as_mut())
+            .await
+            .map_err(map_err)?;
+            Ok(())
+        }
+        SIDECAR_INTERPRET => {
+            let claim = read_str(bytes, &mut i)?;
+            sqlx::query(
+                "INSERT INTO proxima_core.interpretation_v1
+                    (t, claim, confidence, subject_memory_ids, subject_kinds,
+                     model_id, client_name, client_version)
+                 VALUES ($1, $2, 0, ARRAY[]::uuid[], ARRAY[]::proxima_core.interpretation_subject_kind[],
+                         'hydrate', 'hydrate', 'v1')",
+            )
+            .bind(t)
+            .bind(claim)
+            .execute(tx.as_mut())
+            .await
+            .map_err(map_err)?;
+            Ok(())
+        }
+        other => Err(StorageError::Internal(format!(
+            "unknown sidecar kind {other}"
+        ))),
+    }
+}
+
 async fn delete_memory_dependents(
     tx: &mut Transaction<'_, Postgres>,
     t: Uuid,
 ) -> Result<(), StorageError> {
-    sqlx::query(
-        "DELETE FROM proxima_core.citation_uploaded_blob_page_span_v1
-          WHERE citation_mapping_id IN (
-                SELECT citation_mapping_id
-                  FROM proxima_core.citation_mappings
-                 WHERE memory_id = $1
-          )",
-    )
-    .bind(t)
-    .execute(tx.as_mut())
-    .await
-    .map_err(map_err)?;
-    sqlx::query("DELETE FROM proxima_core.citation_mappings WHERE memory_id = $1")
+    sqlx::query("DELETE FROM proxima_core.agent_note_v1 WHERE t = $1")
         .bind(t)
         .execute(tx.as_mut())
         .await
         .map_err(map_err)?;
-    sqlx::query("DELETE FROM proxima_core.agent_note_v1 WHERE memory_id = $1")
+    sqlx::query("DELETE FROM proxima_core.utterance_v1 WHERE t = $1")
         .bind(t)
         .execute(tx.as_mut())
         .await
         .map_err(map_err)?;
-    sqlx::query("DELETE FROM proxima_core.utterance_v1 WHERE memory_id = $1")
+    sqlx::query("DELETE FROM proxima_core.agent_derivation_v1 WHERE t = $1")
         .bind(t)
         .execute(tx.as_mut())
         .await
         .map_err(map_err)?;
-    sqlx::query("DELETE FROM proxima_core.agent_derivation_v1 WHERE memory_id = $1")
+    sqlx::query("DELETE FROM proxima_core.interpretation_v1 WHERE t = $1")
         .bind(t)
         .execute(tx.as_mut())
         .await
         .map_err(map_err)?;
-    sqlx::query("DELETE FROM proxima_core.interpretation_v1 WHERE memory_id = $1")
-        .bind(t)
-        .execute(tx.as_mut())
-        .await
-        .map_err(map_err)?;
-    sqlx::query("DELETE FROM proxima_core.mcp_call_logged_v1 WHERE memory_id = $1")
-        .bind(t)
-        .execute(tx.as_mut())
-        .await
-        .map_err(map_err)?;
-    sqlx::query("DELETE FROM proxima_core.goal_activated_v1 WHERE memory_id = $1")
-        .bind(t)
-        .execute(tx.as_mut())
-        .await
-        .map_err(map_err)?;
-    sqlx::query("DELETE FROM proxima_core.goal_paused_v1 WHERE memory_id = $1")
-        .bind(t)
-        .execute(tx.as_mut())
-        .await
-        .map_err(map_err)?;
-    sqlx::query("DELETE FROM proxima_core.goal_achieved_v1 WHERE memory_id = $1")
-        .bind(t)
-        .execute(tx.as_mut())
-        .await
-        .map_err(map_err)?;
-    sqlx::query("DELETE FROM proxima_core.goal_abandoned_v1 WHERE memory_id = $1")
+    sqlx::query("DELETE FROM proxima_core.mcp_call_logged_v1 WHERE t = $1")
         .bind(t)
         .execute(tx.as_mut())
         .await
@@ -176,7 +449,7 @@ async fn delete_memory_dependents(
 
 pub async fn forget_memory(
     tx: &mut Transaction<'_, Postgres>,
-    cold: &dyn ColdStore,
+    cold: &dyn ColdObjectStore,
     object_key: &str,
     t: Uuid,
 ) -> Result<(), StorageError> {
@@ -191,13 +464,21 @@ pub async fn forget_memory(
     .await
     .map_err(map_err)?
     .ok_or(StorageError::NotFound)?;
-
-    let mut payload = vec![COLD_FORMAT_VERSION];
-    payload.extend(row.handle.as_bytes());
-    payload.extend(row.t.as_bytes());
-    payload.extend(row.kind.as_bytes());
-    payload.push(0);
-    cold.put(object_key, &payload)?;
+    let schema_id: String = sqlx::query_scalar(
+        "SELECT schema_id FROM proxima_core.memory_head WHERE handle = $1",
+    )
+    .bind(row.handle)
+    .fetch_one(tx.as_mut())
+    .await
+    .map_err(map_err)?;
+    let (sidecar_kind, sidecar) = load_sidecar(tx, t).await?;
+    let payload = encode_record(&ColdRecord {
+        row: row.clone(),
+        schema_id,
+        sidecar_kind,
+        sidecar,
+    });
+    cold.put(object_key, &payload).await?;
 
     sqlx::query(
         "INSERT INTO proxima_core.cooled (t, handle, owner_id, kind, object_key)
@@ -243,19 +524,16 @@ pub async fn forget_memory(
     .execute(tx.as_mut())
     .await
     .map_err(map_err)?;
-
-    let _ = (row.source_id, row.ingest_key, row.blob_id, row.origins, row.refs);
     Ok(())
 }
 
 pub async fn hydrate_memory(
     tx: &mut Transaction<'_, Postgres>,
-    cold: &dyn ColdStore,
+    cold: &dyn ColdObjectStore,
     t: Uuid,
 ) -> Result<(), StorageError> {
-    let (handle, owner_id, kind, object_key): (Uuid, Uuid, String, String) = sqlx::query_as(
-        "SELECT handle, owner_id, kind::text, object_key
-           FROM proxima_core.cooled WHERE t = $1",
+    let object_key: String = sqlx::query_scalar(
+        "SELECT object_key FROM proxima_core.cooled WHERE t = $1",
     )
     .bind(t)
     .fetch_optional(tx.as_mut())
@@ -263,19 +541,25 @@ pub async fn hydrate_memory(
     .map_err(map_err)?
     .ok_or(StorageError::NotFound)?;
 
-    let _bytes = cold.get(&object_key)?;
-
+    let rec = decode_record(&cold.get(&object_key).await?)?;
     sqlx::query(
-        "INSERT INTO proxima_core.memory (handle, t, kind, owner_id, origins, refs)
-         VALUES ($1, $2, $3::proxima_core.memory_kind, $4, '{}', '{}')",
+        "INSERT INTO proxima_core.memory
+            (handle, t, kind, owner_id, source_id, ingest_key, blob_id, origins, refs)
+         VALUES ($1, $2, $3::proxima_core.memory_kind, $4, $5, $6, $7, $8, $9)",
     )
-    .bind(handle)
-    .bind(t)
-    .bind(&kind)
-    .bind(owner_id)
+    .bind(rec.row.handle)
+    .bind(rec.row.t)
+    .bind(&rec.row.kind)
+    .bind(rec.row.owner_id)
+    .bind(rec.row.source_id.as_deref())
+    .bind(rec.row.ingest_key.as_deref())
+    .bind(rec.row.blob_id)
+    .bind(&rec.row.origins)
+    .bind(&rec.row.refs)
     .execute(tx.as_mut())
     .await
     .map_err(map_err)?;
+    restore_sidecar(tx, t, rec.sidecar_kind, &rec.sidecar).await?;
 
     sqlx::query("DELETE FROM proxima_core.cooled WHERE t = $1")
         .bind(t)
@@ -284,7 +568,7 @@ pub async fn hydrate_memory(
         .map_err(map_err)?;
 
     sqlx::query("UPDATE proxima_core.memory_head SET t = $2 WHERE handle = $1")
-        .bind(handle)
+        .bind(rec.row.handle)
         .bind(t)
         .execute(tx.as_mut())
         .await
@@ -294,8 +578,8 @@ pub async fn hydrate_memory(
         "INSERT INTO proxima_core.announce (owner_id, op, entity, handle, t)
          VALUES ($1, 'append', 'memory', $2, $3)",
     )
-    .bind(owner_id)
-    .bind(handle)
+    .bind(rec.row.owner_id)
+    .bind(rec.row.handle)
     .bind(t)
     .execute(tx.as_mut())
     .await
@@ -305,7 +589,7 @@ pub async fn hydrate_memory(
 
 pub async fn erase_memory(
     tx: &mut Transaction<'_, Postgres>,
-    cold: &dyn ColdStore,
+    cold: &dyn ColdObjectStore,
     owner: &Owner,
     t: Uuid,
 ) -> Result<(), StorageError> {
@@ -322,7 +606,7 @@ pub async fn erase_memory(
     .fetch_one(tx.as_mut())
     .await
     {
-        let _ = cold.delete(&key);
+        let _ = cold.delete(&key).await;
         sqlx::query("DELETE FROM proxima_core.cooled WHERE t = $1")
             .bind(t)
             .execute(tx.as_mut())

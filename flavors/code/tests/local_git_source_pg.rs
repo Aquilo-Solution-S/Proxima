@@ -61,7 +61,7 @@ async fn count_present_chunks(pool: &sqlx::PgPool, owner: &Owner, repo_id: Uuid)
         "SELECT COUNT(*)::bigint AS c \
          FROM proxima_core.memory_head h \
          JOIN proxima_core.memory m ON m.handle = h.handle AND m.t = h.t \
-         JOIN proxima_code.code_chunk_v1 s ON s.memory_id = m.t \
+         JOIN proxima_code.code_chunk_v1 s ON s.t = m.t \
          WHERE m.owner_id = $1 \
            AND s.repo_id = $2 \
            AND s.state = 'Present'",
@@ -85,7 +85,7 @@ async fn count_present_chunks_for_path(
         "SELECT COUNT(*)::bigint AS c \
          FROM proxima_core.memory_head h \
          JOIN proxima_core.memory m ON m.handle = h.handle AND m.t = h.t \
-         JOIN proxima_code.code_chunk_v1 s ON s.memory_id = m.t \
+         JOIN proxima_code.code_chunk_v1 s ON s.t = m.t \
          WHERE m.owner_id = $1 \
            AND s.repo_id = $2 \
            AND s.file_path = $3 \
@@ -111,7 +111,7 @@ async fn fetch_file_revision_state(
         "SELECT s.state \
          FROM proxima_core.memory_head h \
          JOIN proxima_core.memory m ON m.handle = h.handle AND m.t = h.t \
-         JOIN proxima_code.file_revision_v1 s ON s.memory_id = m.t \
+         JOIN proxima_code.file_revision_v1 s ON s.t = m.t \
          WHERE m.owner_id = $1 \
            AND s.repo_id = $2 \
            AND s.file_path = $3",
@@ -237,7 +237,7 @@ async fn local_git_source_full_cycle() {
             "SELECT s.content_sha256 \
              FROM proxima_core.memory_head h \
              JOIN proxima_core.memory m ON m.handle = h.handle AND m.t = h.t \
-             JOIN proxima_code.file_revision_v1 s ON s.memory_id = m.t \
+             JOIN proxima_code.file_revision_v1 s ON s.t = m.t \
              WHERE s.repo_id = $1 AND s.file_path = 'src/lib.rs'",
         )
         .bind(repo_id)
@@ -528,7 +528,7 @@ async fn head_snapshot_delete_tombstones_all_indexes_beyond_one_authz_batch() {
         .await?;
         sqlx::query(
             "INSERT INTO proxima_code.code_chunk_v1
-                (memory_id, repo_id, file_path, chunk_index, text, language, chunk_type,
+                (t, repo_id, file_path, chunk_index, text, language, chunk_type,
                  byte_range_start, byte_range_end, line_range_start, line_range_end, state)
              SELECT ('7a5b0000-0000-4000-8000-' || lpad(to_hex(g.i), 12, '0'))::uuid,
                     $1, 'hot.rs', g.i, 'churn seed', 'rust', 'block', 0, 4, 1, 1, 'Present'

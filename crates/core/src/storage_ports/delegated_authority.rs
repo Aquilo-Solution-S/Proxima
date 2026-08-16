@@ -960,7 +960,6 @@ mod tests {
         assert_eq!(query_err.code, ErrorCode::Forbidden);
         let close_err = engine
             .close_ftoa_source_batch_if_open(&raw, owner, &[])
-            .await
             .expect_err("raw delegated context must be denied before batch lookup");
         assert_eq!(close_err.code, ErrorCode::Forbidden);
         let publish_err = engine

@@ -406,11 +406,18 @@ async fn ensure_pgvector_runtime_compatible(
     Ok(())
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct PgStorage {
     pool: PgPool,
     sidecars: PgSidecarRegistryFrozen,
     tuning: PgTuning,
+    cold: Arc<dyn proxima_core::ColdObjectStore>,
+}
+
+impl std::fmt::Debug for PgStorage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PgStorage").finish_non_exhaustive()
+    }
 }
 
 /// Advisory-lock key serializing embedding maintenance passes across
@@ -590,7 +597,15 @@ impl PgStorage {
             pool,
             sidecars: core_pg_sidecars(),
             tuning,
+            cold: Arc::new(verbs::forget::MemoryColdStore::default()),
         })
+    }
+
+    /// Replace the forget/hydrate object store (S3 in the host).
+    #[must_use]
+    pub fn with_cold(mut self, cold: Arc<dyn proxima_core::ColdObjectStore>) -> Self {
+        self.cold = cold;
+        self
     }
 
     /// Read `DATABASE_URL` from env, fallback to
@@ -884,7 +899,7 @@ mod tests {
         assert!(versions.contains(&2), "core migrator must embed 0002_blob_closed.sql");
         assert!(versions.contains(&3), "core migrator must embed 0003_goal.sql");
         assert!(versions.contains(&6), "core migrator must embed 0006_lexical.sql");
-        assert!(versions.contains(&7), "core migrator must embed 0007_compat_types.sql");
+        assert!(!versions.contains(&7), "compat owner_ref_kind enum is gone");
         assert!(
             versions.contains(&8),
             "core migrator must embed 0008_core_sidecars.sql"

@@ -180,7 +180,7 @@ impl<'a> CodeIngestContext<'a> {
         // owner-or-World head via `FileRevisionV1::natural_key_columns`
         // heads-only supersession.
         let candidate_ids: Vec<Uuid> = sqlx::query_scalar(
-            "SELECT fr.memory_id
+            "SELECT fr.t
                FROM proxima_code.file_revision_v1 fr
               WHERE fr.repo_id = $1
                 AND NOT EXISTS (
@@ -188,7 +188,7 @@ impl<'a> CodeIngestContext<'a> {
                       FROM proxima_code.file_revision_v1 fr2
                      WHERE fr2.repo_id = fr.repo_id
                        AND fr2.file_path = fr.file_path
-                       AND fr2.memory_id > fr.memory_id
+                       AND fr2.t > fr.t
                 )
               ORDER BY fr.file_path ASC
               LIMIT 100000",
@@ -242,7 +242,7 @@ impl<'a> CodeIngestContext<'a> {
         // substitute for that, because chunk memory ids are deterministic
         // UUIDv5 content hashes, not time-ordered.
         let candidates: Vec<ChunkIndexCandidateRow> = sqlx::query_as(
-            "SELECT s.memory_id, s.chunk_index
+            "SELECT s.t AS memory_id, s.chunk_index
                FROM proxima_code.code_chunk_v1 s
               WHERE s.repo_id = $1
                 AND s.file_path = $2

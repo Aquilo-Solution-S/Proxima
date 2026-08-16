@@ -113,7 +113,7 @@ async fn count_commit_v1_facts(pool: &sqlx::PgPool, owner: &Owner, repo_id: Uuid
     let row: (i64,) = sqlx::query_as(
         "SELECT COUNT(*)::bigint \
          FROM proxima_code.commit_v1 s \
-         JOIN proxima_core.memory m ON m.t = s.memory_id \
+         JOIN proxima_core.memory m ON m.t = s.t \
          WHERE m.owner_id = $1 \
            AND s.repo_id = $2",
     )

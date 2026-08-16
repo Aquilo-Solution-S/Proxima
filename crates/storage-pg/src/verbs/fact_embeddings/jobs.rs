@@ -142,7 +142,7 @@ async fn missing_embedding_ids(
             "SELECT m.t
                FROM proxima_core.memory_head h
                JOIN proxima_core.memory m ON m.handle = h.handle AND m.t = h.t
-               JOIN proxima_code.code_chunk_v1 c ON c.memory_id = m.t
+               JOIN proxima_code.code_chunk_v1 c ON c.t = m.t
               WHERE m.owner_id = $1
                 AND c.state = 'Present'
                 AND NULLIF(btrim(c.text), '') IS NOT NULL

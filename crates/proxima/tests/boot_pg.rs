@@ -12,7 +12,7 @@ use proxima_core::test_fixtures::ConstantEmbedding;
 use proxima_core::verbs::fact_ingest::FactWriteCommand;
 use proxima_core::{
     AuthError, AuthPath, Authenticator, AuthzContext, Credentials, FactPayload, FlavorRegistry,
-    FlavorRegistryError, GoalActivatedV1, MemoryId, Owner, Role, SchemaId, SchemaVersion,
+    FlavorRegistryError, MemoryId, Owner, Role, SchemaId, SchemaVersion,
     SourceBatchId, ToolScope, UserId,
 };
 use proxima_pg_testkit::{admin_url, create_db, db_url, drop_db, unique_db_name};
@@ -251,10 +251,10 @@ async fn migration_facade_runs_core_goal_schema_idempotently() {
         }
 
         let sidecar: Option<String> =
-            sqlx::query_scalar("SELECT to_regclass('proxima_core.goal_activated_v1')::text")
+            sqlx::query_scalar("SELECT to_regclass('proxima_core.task_goal_v1')::text")
                 .fetch_one(pg.pool_for_tests())
                 .await?;
-        assert_eq!(sidecar.as_deref(), Some("proxima_core.goal_activated_v1"));
+        assert_eq!(sidecar.as_deref(), Some("proxima_core.task_goal_v1"));
         Ok(())
     }
     .await;
@@ -479,13 +479,13 @@ async fn facade_boot_exposes_pg_sidecars_and_worker_drains_embedding_jobs() {
             )))
             .build()
             .await?;
-        let goal_fact_key = PgSidecarKey::new(
+        let note_key = PgSidecarKey::new(
             PayloadKind::Fact,
-            SchemaId::new(GoalActivatedV1::SCHEMA_ID.into()),
-            SchemaVersion::new(GoalActivatedV1::SCHEMA_VERSION),
+            SchemaId::new(proxima_core::AgentNoteV1::SCHEMA_ID.into()),
+            SchemaVersion::new(proxima_core::AgentNoteV1::SCHEMA_VERSION),
         );
         assert!(
-            built.pg_sidecars.contains(&goal_fact_key),
+            built.pg_sidecars.contains(&note_key),
             "boot result exposes the frozen core PG sidecar registry"
         );
 

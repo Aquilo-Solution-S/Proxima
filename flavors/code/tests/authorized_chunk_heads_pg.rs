@@ -60,7 +60,7 @@ async fn seed_chunk(
     .await?;
     sqlx::query(
         "INSERT INTO proxima_code.code_chunk_v1
-            (memory_id, repo_id, file_path, chunk_index, text, language, chunk_type,
+            (t, repo_id, file_path, chunk_index, text, language, chunk_type,
              byte_range_start, byte_range_end, line_range_start, line_range_end, state)
          VALUES ($1, $2, $3, $4, 'chunk body', 'rust', 'block', 0, 8, 1, 1, 'Present')",
     )

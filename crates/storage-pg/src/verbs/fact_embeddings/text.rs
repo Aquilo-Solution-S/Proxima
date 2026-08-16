@@ -43,8 +43,8 @@ async fn load_sidecar_text(
     let note: Option<String> = sqlx::query_scalar(
         "SELECT NULLIF(btrim(n.body), '')
            FROM proxima_core.agent_note_v1 n
-           JOIN proxima_core.memory m ON m.t = n.memory_id
-          WHERE n.memory_id = $1
+           JOIN proxima_core.memory m ON m.t = n.t
+          WHERE n.t = $1
             AND m.owner_id = $2",
     )
     .bind(memory_id.into_inner())
@@ -80,8 +80,8 @@ async fn load_sidecar_text(
     sqlx::query_scalar(
         "SELECT NULLIF(btrim(c.text), '')
            FROM proxima_code.code_chunk_v1 c
-           JOIN proxima_core.memory m ON m.t = c.memory_id
-          WHERE c.memory_id = $1
+           JOIN proxima_core.memory m ON m.t = c.t
+          WHERE c.t = $1
             AND m.owner_id = $2
             AND c.state = 'Present'",
     )
@@ -106,8 +106,8 @@ pub async fn load_fact_text_in_tx(
     sqlx::query_scalar(
         "SELECT NULLIF(btrim(c.text), '')
            FROM proxima_code.code_chunk_v1 c
-           JOIN proxima_core.memory m ON m.t = c.memory_id
-          WHERE c.memory_id = $1
+           JOIN proxima_core.memory m ON m.t = c.t
+          WHERE c.t = $1
             AND m.owner_id = $2
             AND c.state = 'Present'",
     )

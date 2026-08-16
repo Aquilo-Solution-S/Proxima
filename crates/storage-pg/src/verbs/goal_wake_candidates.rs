@@ -170,7 +170,7 @@ async fn query_candidate_rows(
 ) -> Result<Vec<CandidateRow>, StorageError> {
     sqlx::query_as(
         "WITH read_owners(owner_kind, owner_id) AS (
-             SELECT * FROM unnest($1::proxima_core.owner_ref_kind[], $2::uuid[])
+             SELECT * FROM unnest($1::proxima_core.owner_kind[], $2::uuid[])
          ),
          trigger_fact AS (
              SELECT m.memory_id
@@ -286,7 +286,7 @@ pub(crate) async fn load_goal_wake_configs(
     let ids: Vec<uuid::Uuid> = goal_ids.iter().map(|id| id.into_inner()).collect();
     let rows: Vec<WakeConfigDbRow> = sqlx::query_as(
         "WITH read_owners AS (
-             SELECT * FROM unnest($1::proxima_core.owner_ref_kind[], $2::uuid[])
+             SELECT * FROM unnest($1::proxima_core.owner_kind[], $2::uuid[])
                  AS s(owner_kind, owner_id)
          )
          SELECT w.goal_id,

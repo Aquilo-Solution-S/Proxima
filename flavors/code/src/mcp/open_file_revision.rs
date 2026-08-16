@@ -115,11 +115,11 @@ impl Tool for CodeOpenFileRevisionTool {
             // below resolves the true owner-or-World head via
             // `FileRevisionV1::natural_key_columns` heads-only supersession.
             let revision_candidates: Vec<MemoryCandidateRow> = sqlx::query_as(
-                "SELECT fr.memory_id
+                "SELECT fr.t AS memory_id
                    FROM proxima_code.file_revision_v1 fr
                   WHERE fr.repo_id = $1
                     AND fr.file_path = $2
-                  ORDER BY fr.memory_id DESC
+                  ORDER BY fr.t DESC
                   LIMIT 200",
             )
             .bind(repo_id)
@@ -184,7 +184,7 @@ impl Tool for CodeOpenFileRevisionTool {
             let chunk_ids: Vec<uuid::Uuid> = sqlx::query_scalar(
                 "SELECT c.memory_id
                    FROM proxima_code.code_chunk_v1 c
-                   JOIN proxima_core.memory m ON m.t = c.memory_id
+                   JOIN proxima_core.memory m ON m.t = c.t
                   WHERE c.repo_id = $1
                     AND c.file_path = $2
                     AND $3 = ANY(m.origins)",

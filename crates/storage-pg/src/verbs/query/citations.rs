@@ -41,8 +41,7 @@ pub(crate) async fn facts_citing_object(
         "SELECT m.t,
                 COALESCE(uuid_extract_timestamp(m.t), TIMESTAMPTZ '1970-01-01')
            FROM proxima_core.memory m
-           JOIN proxima_core.citation_mappings cm ON cm.memory_id = m.t
-          WHERE cm.cited_object_id = $1
+          WHERE m.blob_id = $1
             AND m.owner_id = ANY($2::uuid[])
             AND m.kind = 'fact'
             AND ($3::timestamptz IS NULL
@@ -91,26 +90,20 @@ pub(crate) async fn citation_of_fact(
     fact_memory_id: MemoryId,
 ) -> Result<Option<FactCitationReadback>, StorageError> {
     let row = sqlx::query(
-        "SELECT cm.citation_mapping_id,
-                cm.schema_id AS mapping_schema_id,
-                co.cited_object_id,
-                co.schema_id AS cited_object_schema_id,
-                ps.page_from, ps.page_to,
-                ps.char_range_start, ps.char_range_end,
-                b.filename, b.mime, b.byte_len,
-                encode(b.sha256, 'hex') AS sha256_hex,
-                b.uploaded_at
+        "SELECT m.blob_id AS citation_mapping_id,
+                b.schema_id AS mapping_schema_id,
+                m.blob_id AS cited_object_id,
+                b.schema_id AS cited_object_schema_id,
+                NULL::int AS page_from, NULL::int AS page_to,
+                NULL::int AS char_range_start, NULL::int AS char_range_end,
+                NULL::text AS filename, NULL::text AS mime, NULL::bigint AS byte_len,
+                NULL::text AS sha256_hex,
+                NULL::timestamptz AS uploaded_at
            FROM proxima_core.memory m
-           JOIN proxima_core.citation_mappings cm
-             ON cm.memory_id = m.t
-           JOIN proxima_core.cited_objects co
-             ON co.cited_object_id = cm.cited_object_id
-           LEFT JOIN proxima_core.citation_uploaded_blob_page_span_v1 ps
-             ON ps.citation_mapping_id = cm.citation_mapping_id
-           LEFT JOIN proxima_core.cited_uploaded_blob_v1 b
-             ON b.cited_object_id = co.cited_object_id
+           JOIN proxima_core.blob b ON b.blob_id = m.blob_id
           WHERE m.t = $1
-            AND m.kind = 'fact'",
+            AND m.kind = 'fact'
+            AND m.blob_id IS NOT NULL",
     )
     .bind(fact_memory_id.into_inner())
     .fetch_optional(pool)

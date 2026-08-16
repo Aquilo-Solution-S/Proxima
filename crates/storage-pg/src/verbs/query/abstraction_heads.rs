@@ -46,17 +46,17 @@ pub async fn authorized_code_chunk_head_candidates(
     let owner_id = owner.stored_owner_id();
     let world_id = proxima_core::OwnerRef::World.stored_owner_id();
     sqlx::query_scalar(
-        "SELECT c.memory_id
+        "SELECT c.t
            FROM proxima_code.code_chunk_v1 c
-           JOIN proxima_core.memory m ON m.t = c.memory_id
+           JOIN proxima_core.memory m ON m.t = c.t
            JOIN proxima_core.memory_head h ON h.handle = m.handle AND h.t = m.t
           WHERE h.schema_id = $1
-            AND c.memory_id = ANY($2::uuid[])
+            AND c.t = ANY($2::uuid[])
             AND m.owner_id IN ($3, $4)
             AND NOT EXISTS (
                 SELECT 1
                   FROM proxima_code.code_chunk_v1 c2
-                  JOIN proxima_core.memory m2 ON m2.t = c2.memory_id
+                  JOIN proxima_core.memory m2 ON m2.t = c2.t
                   JOIN proxima_core.memory_head h2
                     ON h2.handle = m2.handle AND h2.t = m2.t
                  WHERE h2.schema_id = h.schema_id

@@ -34,6 +34,7 @@ pub struct StoragePorts {
     owner_access_read: OwnerAccessReadHandle,
     owner_membership_admin: OwnerMembershipAdminHandle,
     owner_transfer: OwnerTransferHandle,
+    #[allow(dead_code)]
     source_batch: SourceBatchHandle,
     source_cursor: SourceCursorHandle,
     fact_retention: FactRetentionHandle,
@@ -74,6 +75,7 @@ pub(crate) struct IngestStoragePorts {
     pub embedding_text: EmbeddingTextHandle,
     pub embedding_write: EmbeddingWriteHandle,
     pub embedding_job: EmbeddingJobHandle,
+    #[allow(dead_code)]
     pub source_batch: SourceBatchHandle,
 }
 

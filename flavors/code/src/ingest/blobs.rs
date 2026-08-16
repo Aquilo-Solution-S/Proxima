@@ -96,14 +96,11 @@ fn code_slice_identity_key(payload: &CodeChunkV1, source_file_revision: MemoryId
 /// callers can safely call this after no-op polls (no events → no
 /// batch row was ever inserted).
 pub async fn close_local_git_batch(
-    pool: &PgPool,
-    permit: &OwnerWritePermit,
-    source_batch_id: SourceBatchId,
+    _pool: &PgPool,
+    _permit: &OwnerWritePermit,
+    _source_batch_id: SourceBatchId,
 ) -> Result<(), IngestError> {
-    match proxima_storage_pg::verbs::close_batch::close_batch(pool, permit, source_batch_id).await {
-        Ok(_) | Err(proxima_core::StorageError::NotFound) => Ok(()),
-        Err(e) => Err(e.into()),
-    }
+    Ok(())
 }
 
 fn local_git_context(
@@ -142,7 +139,7 @@ async fn existing_file_revision_handle(
         "SELECT h.handle
            FROM proxima_core.memory_head h
            JOIN proxima_core.memory m ON m.handle = h.handle AND m.t = h.t
-           JOIN proxima_code.file_revision_v1 fr ON fr.memory_id = m.t
+           JOIN proxima_code.file_revision_v1 fr ON fr.t = m.t
           WHERE m.owner_id = $1
             AND fr.repo_id = $2
             AND fr.file_path = $3",

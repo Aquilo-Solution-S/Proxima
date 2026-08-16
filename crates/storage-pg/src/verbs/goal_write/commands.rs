@@ -80,7 +80,7 @@ pub(crate) async fn create_goal_atomic_in_pool(
     pool: &PgPool,
     sidecars: &PgSidecarRegistryFrozen,
     req: &CreateGoalAtomicRequest<'_>,
-    permit: &OwnerWritePermit,
+    _permit: &OwnerWritePermit,
 ) -> Result<GoalWriteOutcome, StorageError> {
     let owner = req.draft.owner();
     let mut tx = pool.begin().await.map_err(internal)?;
@@ -116,9 +116,7 @@ pub(crate) async fn create_goal_atomic_in_pool(
     let outcome = lifecycle_outcome(
         &mut tx,
         LifecycleWrite {
-            permit,
             owner: &owner,
-            context: req.context,
             inserted,
             lifecycle: GoalLifecycleFact::Activated,
             assignment: req.draft.topology.assignment().perspective_id(),
@@ -136,7 +134,7 @@ pub(crate) async fn transition_goal_atomic_in_pool(
     pool: &PgPool,
     sidecars: &PgSidecarRegistryFrozen,
     req: &TransitionGoalAtomicRequest<'_>,
-    permit: &OwnerWritePermit,
+    _permit: &OwnerWritePermit,
 ) -> Result<GoalWriteOutcome, StorageError> {
     if matches!(req.next_state, GoalState::Achieved) {
         return Err(StorageError::ConstraintViolation(
@@ -177,9 +175,7 @@ pub(crate) async fn transition_goal_atomic_in_pool(
     let outcome = lifecycle_outcome(
         &mut tx,
         LifecycleWrite {
-            permit,
             owner: &req.owner,
-            context: req.context,
             inserted,
             lifecycle: GoalLifecycleFact::for_state(req.next_state),
             assignment: prior.assignment,
@@ -197,7 +193,7 @@ pub(crate) async fn achieve_goal_atomic_in_pool(
     pool: &PgPool,
     sidecars: &PgSidecarRegistryFrozen,
     req: &AchieveGoalAtomicRequest<'_>,
-    permit: &OwnerWritePermit,
+    _permit: &OwnerWritePermit,
 ) -> Result<GoalWriteOutcome, StorageError> {
     if req.evidence.is_empty() {
         return Err(StorageError::ConstraintViolation(
@@ -230,9 +226,7 @@ pub(crate) async fn achieve_goal_atomic_in_pool(
     let outcome = lifecycle_outcome(
         &mut tx,
         LifecycleWrite {
-            permit,
             owner: &req.owner,
-            context: req.context,
             inserted,
             lifecycle: GoalLifecycleFact::Achieved,
             assignment: prior.assignment,
@@ -260,7 +254,7 @@ pub(crate) async fn modify_goal_atomic_in_pool(
     pool: &PgPool,
     sidecars: &PgSidecarRegistryFrozen,
     req: &ModifyGoalAtomicRequest<'_>,
-    permit: &OwnerWritePermit,
+    _permit: &OwnerWritePermit,
 ) -> Result<GoalWriteOutcome, StorageError> {
     let mut tx = pool.begin().await.map_err(internal)?;
     let evidence = match &req.evidence {
@@ -302,9 +296,7 @@ pub(crate) async fn modify_goal_atomic_in_pool(
     let outcome = lifecycle_outcome(
         &mut tx,
         LifecycleWrite {
-            permit,
             owner: &req.owner,
-            context: req.context,
             inserted,
             lifecycle: GoalLifecycleFact::Activated,
             assignment: prior.assignment,
@@ -322,7 +314,7 @@ pub(crate) async fn decompose_goal_atomic_in_pool(
     pool: &PgPool,
     sidecars: &PgSidecarRegistryFrozen,
     req: &DecomposeGoalAtomicRequest<'_>,
-    permit: &OwnerWritePermit,
+    _permit: &OwnerWritePermit,
 ) -> Result<DecomposeGoalOutcome, StorageError> {
     let mut tx = pool.begin().await.map_err(internal)?;
     validate_active_head(&mut tx, &req.owner, req.parent_goal_id).await?;
@@ -351,9 +343,7 @@ pub(crate) async fn decompose_goal_atomic_in_pool(
         let outcome = lifecycle_outcome(
             &mut tx,
             LifecycleWrite {
-                permit,
                 owner: &req.owner,
-                context: req.context,
                 inserted,
                 lifecycle: GoalLifecycleFact::Activated,
                 assignment: req.topology.assignment().perspective_id(),

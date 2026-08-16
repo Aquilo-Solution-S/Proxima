@@ -393,12 +393,12 @@ pub(crate) async fn home_owner(
     entity: EntityId,
 ) -> Result<Option<OwnerRef>, StorageError> {
     let row: Option<(OwnerRefKind, uuid::Uuid)> = sqlx::query_as(
-        "SELECT o.kind::text::proxima_core.owner_ref_kind, m.owner_id
+        "SELECT o.kind::text::proxima_core.owner_kind, m.owner_id
            FROM proxima_core.memory m
            JOIN proxima_core.owners o ON o.owner_id = m.owner_id
           WHERE m.t = $1
          UNION ALL
-         SELECT o.kind::text::proxima_core.owner_ref_kind, g.owner_id
+         SELECT o.kind::text::proxima_core.owner_kind, g.owner_id
            FROM proxima_core.goal g
            JOIN proxima_core.owners o ON o.owner_id = g.owner_id
           WHERE g.t = $1

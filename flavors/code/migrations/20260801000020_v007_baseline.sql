@@ -150,7 +150,7 @@ SET default_table_access_method = heap;
 --
 
 CREATE TABLE proxima_code.acceptance_criteria_v1 (
-    memory_id uuid NOT NULL,
+    t uuid NOT NULL,
     work_item_memory_id uuid NOT NULL,
     criteria_count integer NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
@@ -185,7 +185,7 @@ CREATE TABLE proxima_code.acceptance_criterion_v1 (
 --
 
 CREATE TABLE proxima_code.acceptance_summary_v1 (
-    memory_id uuid NOT NULL,
+    t uuid NOT NULL,
     work_item_memory_id uuid NOT NULL,
     repo_id uuid NOT NULL,
     passed_required boolean NOT NULL,
@@ -201,7 +201,7 @@ CREATE TABLE proxima_code.acceptance_summary_v1 (
 --
 
 CREATE TABLE proxima_code.acceptance_verification_v1 (
-    memory_id uuid NOT NULL,
+    t uuid NOT NULL,
     work_item_memory_id uuid NOT NULL,
     criterion_key text NOT NULL,
     status proxima_code.acceptance_verification_status NOT NULL,
@@ -245,7 +245,7 @@ COMMENT ON TABLE proxima_code.code_chunk_call_v1 IS 'Call sites of proxima_code.
 --
 
 CREATE TABLE proxima_code.work_assignment_v1 (
-    memory_id uuid NOT NULL,
+    t uuid NOT NULL,
     repo_id uuid NOT NULL,
     target_perspective_memory_id uuid NOT NULL,
     work_item_memory_id uuid NOT NULL,
@@ -268,7 +268,7 @@ COMMENT ON TABLE proxima_code.work_assignment_v1 IS 'Perspective payload for pro
 --
 
 CREATE TABLE proxima_code.code_chunk_v1 (
-    memory_id uuid NOT NULL,
+    t uuid NOT NULL,
     repo_id uuid NOT NULL,
     file_path text NOT NULL,
     chunk_index integer NOT NULL,
@@ -305,7 +305,7 @@ COMMENT ON COLUMN proxima_code.code_chunk_v1.lexical_language IS 'Text-search co
 --
 
 CREATE TABLE proxima_code.commit_summarizer_self_v1 (
-    memory_id uuid NOT NULL,
+    t uuid NOT NULL,
     display_name text NOT NULL,
     purpose text NOT NULL
 );
@@ -316,7 +316,7 @@ CREATE TABLE proxima_code.commit_summarizer_self_v1 (
 --
 
 CREATE TABLE proxima_code.commit_summary_v1 (
-    memory_id uuid NOT NULL,
+    t uuid NOT NULL,
     repo_id uuid NOT NULL,
     commit_sha text NOT NULL,
     summary text NOT NULL,
@@ -330,7 +330,7 @@ CREATE TABLE proxima_code.commit_summary_v1 (
 --
 
 CREATE TABLE proxima_code.commit_v1 (
-    memory_id uuid NOT NULL,
+    t uuid NOT NULL,
     repo_id uuid NOT NULL,
     sha text NOT NULL,
     parents text[] NOT NULL,
@@ -349,7 +349,7 @@ CREATE TABLE proxima_code.commit_v1 (
 --
 
 CREATE TABLE proxima_code.development_perspective_v1 (
-    memory_id uuid NOT NULL,
+    t uuid NOT NULL,
     repo_id uuid,
     summary text NOT NULL,
     pattern text NOT NULL,
@@ -365,7 +365,7 @@ CREATE TABLE proxima_code.development_perspective_v1 (
 --
 
 CREATE TABLE proxima_code.engineer_self_v1 (
-    memory_id uuid NOT NULL,
+    t uuid NOT NULL,
     display_name text NOT NULL,
     purpose text NOT NULL
 );
@@ -397,7 +397,7 @@ CREATE TABLE proxima_code.execution_plan_item_v1 (
 --
 
 CREATE TABLE proxima_code.execution_plan_v1 (
-    memory_id uuid NOT NULL,
+    t uuid NOT NULL,
     repo_id uuid NOT NULL,
     plan_key text NOT NULL,
     goal_activated_memory_id uuid NOT NULL,
@@ -416,7 +416,7 @@ CREATE TABLE proxima_code.execution_plan_v1 (
 --
 
 CREATE TABLE proxima_code.execution_result_v1 (
-    memory_id uuid NOT NULL,
+    t uuid NOT NULL,
     work_requested_memory_id uuid NOT NULL,
     repo_id uuid NOT NULL,
     status proxima_code.work_result_status NOT NULL,
@@ -434,7 +434,7 @@ CREATE TABLE proxima_code.execution_result_v1 (
 --
 
 CREATE TABLE proxima_code.file_revision_v1 (
-    memory_id uuid NOT NULL,
+    t uuid NOT NULL,
     repo_id uuid NOT NULL,
     file_path text NOT NULL,
     language text,
@@ -451,7 +451,7 @@ CREATE TABLE proxima_code.file_revision_v1 (
 
 CREATE TABLE proxima_code.repo_ingestion_runs (
     run_id uuid NOT NULL,
-    owner_kind proxima_core.owner_ref_kind NOT NULL,
+    owner_kind proxima_core.owner_kind NOT NULL,
     owner_id uuid,
     repo_id uuid NOT NULL,
     status proxima_code.repo_ingestion_run_status NOT NULL,
@@ -469,8 +469,8 @@ CREATE TABLE proxima_code.repo_ingestion_runs (
     started_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
     finished_at timestamp with time zone,
-    CONSTRAINT repo_ingestion_runs_owner_ref_shape_chk CHECK ((((owner_kind = 'world'::proxima_core.owner_ref_kind) AND (owner_id IS NULL)) OR ((owner_kind = ANY (ARRAY['personal'::proxima_core.owner_ref_kind, 'group'::proxima_core.owner_ref_kind])) AND (owner_id IS NOT NULL)))),
-    CONSTRAINT repo_ingestion_runs_world_not_write_owner_chk CHECK ((owner_kind <> 'world'::proxima_core.owner_ref_kind)),
+    CONSTRAINT repo_ingestion_runs_owner_ref_shape_chk CHECK ((((owner_kind = 'world'::proxima_core.owner_kind) AND (owner_id IS NULL)) OR ((owner_kind = ANY (ARRAY['personal'::proxima_core.owner_kind, 'group'::proxima_core.owner_kind])) AND (owner_id IS NOT NULL)))),
+    CONSTRAINT repo_ingestion_runs_world_not_write_owner_chk CHECK ((owner_kind <> 'world'::proxima_core.owner_kind)),
     CONSTRAINT runs_finished_when_terminal_chk CHECK ((((status = ANY (ARRAY['succeeded'::proxima_code.repo_ingestion_run_status, 'failed'::proxima_code.repo_ingestion_run_status])) AND (finished_at IS NOT NULL)) OR ((status = ANY (ARRAY['queued'::proxima_code.repo_ingestion_run_status, 'running'::proxima_code.repo_ingestion_run_status])) AND (finished_at IS NULL))))
 );
 
@@ -480,7 +480,7 @@ CREATE TABLE proxima_code.repo_ingestion_runs (
 --
 
 CREATE TABLE proxima_code.repos (
-    owner_kind proxima_core.owner_ref_kind NOT NULL,
+    owner_kind proxima_core.owner_kind NOT NULL,
     owner_id uuid NOT NULL,
     repo_id uuid NOT NULL,
     canonical_path text NOT NULL,
@@ -491,8 +491,8 @@ CREATE TABLE proxima_code.repos (
     target_branch text,
     include_globs text[] DEFAULT '{}'::text[] NOT NULL,
     exclude_globs text[] DEFAULT '{}'::text[] NOT NULL,
-    CONSTRAINT repos_owner_ref_shape_chk CHECK ((((owner_kind = 'world'::proxima_core.owner_ref_kind) AND (owner_id IS NULL)) OR ((owner_kind = ANY (ARRAY['personal'::proxima_core.owner_ref_kind, 'group'::proxima_core.owner_ref_kind])) AND (owner_id IS NOT NULL)))),
-    CONSTRAINT repos_world_not_write_owner_chk CHECK ((owner_kind <> 'world'::proxima_core.owner_ref_kind))
+    CONSTRAINT repos_owner_ref_shape_chk CHECK ((((owner_kind = 'world'::proxima_core.owner_kind) AND (owner_id IS NULL)) OR ((owner_kind = ANY (ARRAY['personal'::proxima_core.owner_kind, 'group'::proxima_core.owner_kind])) AND (owner_id IS NOT NULL)))),
+    CONSTRAINT repos_world_not_write_owner_chk CHECK ((owner_kind <> 'world'::proxima_core.owner_kind))
 );
 
 
@@ -537,7 +537,7 @@ CREATE TABLE proxima_code.test_requested_criterion_v1 (
 --
 
 CREATE TABLE proxima_code.test_requested_v1 (
-    memory_id uuid NOT NULL,
+    t uuid NOT NULL,
     repo_id uuid NOT NULL,
     title text NOT NULL,
     instructions text NOT NULL,
@@ -559,7 +559,7 @@ CREATE TABLE proxima_code.test_requested_v1 (
 --
 
 CREATE TABLE proxima_code.test_result_v1 (
-    memory_id uuid NOT NULL,
+    t uuid NOT NULL,
     test_requested_memory_id uuid NOT NULL,
     repo_id uuid NOT NULL,
     status proxima_code.work_result_status NOT NULL,
@@ -577,7 +577,7 @@ CREATE TABLE proxima_code.test_result_v1 (
 --
 
 CREATE TABLE proxima_code.work_requested_v1 (
-    memory_id uuid NOT NULL,
+    t uuid NOT NULL,
     repo_id uuid NOT NULL,
     title text NOT NULL,
     instructions text NOT NULL,
@@ -597,7 +597,7 @@ CREATE TABLE proxima_code.work_requested_v1 (
 --
 
 ALTER TABLE ONLY proxima_code.acceptance_criteria_v1
-    ADD CONSTRAINT acceptance_criteria_v1_pkey PRIMARY KEY (memory_id);
+    ADD CONSTRAINT acceptance_criteria_v1_pkey PRIMARY KEY (t);
 
 
 --
@@ -621,7 +621,7 @@ ALTER TABLE ONLY proxima_code.acceptance_criterion_v1
 --
 
 ALTER TABLE ONLY proxima_code.acceptance_summary_v1
-    ADD CONSTRAINT acceptance_summary_v1_pkey PRIMARY KEY (memory_id);
+    ADD CONSTRAINT acceptance_summary_v1_pkey PRIMARY KEY (t);
 
 
 --
@@ -629,7 +629,7 @@ ALTER TABLE ONLY proxima_code.acceptance_summary_v1
 --
 
 ALTER TABLE ONLY proxima_code.acceptance_verification_v1
-    ADD CONSTRAINT acceptance_verification_v1_pkey PRIMARY KEY (memory_id);
+    ADD CONSTRAINT acceptance_verification_v1_pkey PRIMARY KEY (t);
 
 
 --
@@ -645,7 +645,7 @@ ALTER TABLE ONLY proxima_code.code_chunk_call_v1
 --
 
 ALTER TABLE ONLY proxima_code.work_assignment_v1
-    ADD CONSTRAINT work_assignment_v1_pkey PRIMARY KEY (memory_id);
+    ADD CONSTRAINT work_assignment_v1_pkey PRIMARY KEY (t);
 
 
 --
@@ -653,7 +653,7 @@ ALTER TABLE ONLY proxima_code.work_assignment_v1
 --
 
 ALTER TABLE ONLY proxima_code.code_chunk_v1
-    ADD CONSTRAINT code_chunk_v1_pkey PRIMARY KEY (memory_id);
+    ADD CONSTRAINT code_chunk_v1_pkey PRIMARY KEY (t);
 
 
 --
@@ -661,7 +661,7 @@ ALTER TABLE ONLY proxima_code.code_chunk_v1
 --
 
 ALTER TABLE ONLY proxima_code.commit_summarizer_self_v1
-    ADD CONSTRAINT commit_summarizer_self_v1_pkey PRIMARY KEY (memory_id);
+    ADD CONSTRAINT commit_summarizer_self_v1_pkey PRIMARY KEY (t);
 
 
 --
@@ -669,7 +669,7 @@ ALTER TABLE ONLY proxima_code.commit_summarizer_self_v1
 --
 
 ALTER TABLE ONLY proxima_code.commit_summary_v1
-    ADD CONSTRAINT commit_summary_v1_pkey PRIMARY KEY (memory_id);
+    ADD CONSTRAINT commit_summary_v1_pkey PRIMARY KEY (t);
 
 
 --
@@ -677,7 +677,7 @@ ALTER TABLE ONLY proxima_code.commit_summary_v1
 --
 
 ALTER TABLE ONLY proxima_code.commit_v1
-    ADD CONSTRAINT commit_v1_pkey PRIMARY KEY (memory_id);
+    ADD CONSTRAINT commit_v1_pkey PRIMARY KEY (t);
 
 
 --
@@ -685,7 +685,7 @@ ALTER TABLE ONLY proxima_code.commit_v1
 --
 
 ALTER TABLE ONLY proxima_code.development_perspective_v1
-    ADD CONSTRAINT development_perspective_v1_pkey PRIMARY KEY (memory_id);
+    ADD CONSTRAINT development_perspective_v1_pkey PRIMARY KEY (t);
 
 
 --
@@ -693,7 +693,7 @@ ALTER TABLE ONLY proxima_code.development_perspective_v1
 --
 
 ALTER TABLE ONLY proxima_code.engineer_self_v1
-    ADD CONSTRAINT engineer_self_v1_pkey PRIMARY KEY (memory_id);
+    ADD CONSTRAINT engineer_self_v1_pkey PRIMARY KEY (t);
 
 
 --
@@ -717,7 +717,7 @@ ALTER TABLE ONLY proxima_code.execution_plan_item_v1
 --
 
 ALTER TABLE ONLY proxima_code.execution_plan_v1
-    ADD CONSTRAINT execution_plan_v1_pkey PRIMARY KEY (memory_id);
+    ADD CONSTRAINT execution_plan_v1_pkey PRIMARY KEY (t);
 
 
 --
@@ -725,7 +725,7 @@ ALTER TABLE ONLY proxima_code.execution_plan_v1
 --
 
 ALTER TABLE ONLY proxima_code.execution_result_v1
-    ADD CONSTRAINT execution_result_v1_pkey PRIMARY KEY (memory_id);
+    ADD CONSTRAINT execution_result_v1_pkey PRIMARY KEY (t);
 
 
 --
@@ -733,7 +733,7 @@ ALTER TABLE ONLY proxima_code.execution_result_v1
 --
 
 ALTER TABLE ONLY proxima_code.file_revision_v1
-    ADD CONSTRAINT file_revision_v1_pkey PRIMARY KEY (memory_id);
+    ADD CONSTRAINT file_revision_v1_pkey PRIMARY KEY (t);
 
 
 --
@@ -781,7 +781,7 @@ ALTER TABLE ONLY proxima_code.test_requested_criterion_v1
 --
 
 ALTER TABLE ONLY proxima_code.test_requested_v1
-    ADD CONSTRAINT test_requested_v1_pkey PRIMARY KEY (memory_id);
+    ADD CONSTRAINT test_requested_v1_pkey PRIMARY KEY (t);
 
 
 --
@@ -789,7 +789,7 @@ ALTER TABLE ONLY proxima_code.test_requested_v1
 --
 
 ALTER TABLE ONLY proxima_code.test_result_v1
-    ADD CONSTRAINT test_result_v1_pkey PRIMARY KEY (memory_id);
+    ADD CONSTRAINT test_result_v1_pkey PRIMARY KEY (t);
 
 
 --
@@ -797,7 +797,7 @@ ALTER TABLE ONLY proxima_code.test_result_v1
 --
 
 ALTER TABLE ONLY proxima_code.work_requested_v1
-    ADD CONSTRAINT work_requested_v1_pkey PRIMARY KEY (memory_id);
+    ADD CONSTRAINT work_requested_v1_pkey PRIMARY KEY (t);
 
 
 --
@@ -1120,7 +1120,7 @@ CREATE TRIGGER work_requested_v1_append_only BEFORE UPDATE ON proxima_code.work_
 --
 
 ALTER TABLE ONLY proxima_code.acceptance_criteria_v1
-    ADD CONSTRAINT acceptance_criteria_v1_memory_id_fkey FOREIGN KEY (memory_id) REFERENCES proxima_core.memory(t);
+    ADD CONSTRAINT acceptance_criteria_v1_memory_id_fkey FOREIGN KEY (t) REFERENCES proxima_core.memory(t);
 
 
 --
@@ -1136,7 +1136,7 @@ ALTER TABLE ONLY proxima_code.acceptance_criteria_v1
 --
 
 ALTER TABLE ONLY proxima_code.acceptance_criterion_v1
-    ADD CONSTRAINT acceptance_criterion_v1_criteria_memory_id_fkey FOREIGN KEY (criteria_memory_id) REFERENCES proxima_code.acceptance_criteria_v1(memory_id) ON DELETE CASCADE;
+    ADD CONSTRAINT acceptance_criterion_v1_criteria_memory_id_fkey FOREIGN KEY (criteria_memory_id) REFERENCES proxima_code.acceptance_criteria_v1(t) ON DELETE CASCADE;
 
 
 --
@@ -1144,7 +1144,7 @@ ALTER TABLE ONLY proxima_code.acceptance_criterion_v1
 --
 
 ALTER TABLE ONLY proxima_code.acceptance_summary_v1
-    ADD CONSTRAINT acceptance_summary_v1_memory_id_fkey FOREIGN KEY (memory_id) REFERENCES proxima_core.memory(t);
+    ADD CONSTRAINT acceptance_summary_v1_memory_id_fkey FOREIGN KEY (t) REFERENCES proxima_core.memory(t);
 
 
 --
@@ -1160,7 +1160,7 @@ ALTER TABLE ONLY proxima_code.acceptance_summary_v1
 --
 
 ALTER TABLE ONLY proxima_code.acceptance_verification_v1
-    ADD CONSTRAINT acceptance_verification_v1_memory_id_fkey FOREIGN KEY (memory_id) REFERENCES proxima_core.memory(t);
+    ADD CONSTRAINT acceptance_verification_v1_memory_id_fkey FOREIGN KEY (t) REFERENCES proxima_core.memory(t);
 
 
 --
@@ -1184,7 +1184,7 @@ ALTER TABLE ONLY proxima_code.acceptance_verification_v1
 --
 
 ALTER TABLE ONLY proxima_code.code_chunk_call_v1
-    ADD CONSTRAINT code_chunk_call_v1_caller_memory_id_fkey FOREIGN KEY (caller_memory_id) REFERENCES proxima_code.code_chunk_v1(memory_id) ON DELETE CASCADE;
+    ADD CONSTRAINT code_chunk_call_v1_caller_memory_id_fkey FOREIGN KEY (caller_memory_id) REFERENCES proxima_code.code_chunk_v1(t) ON DELETE CASCADE;
 
 
 --
@@ -1192,7 +1192,7 @@ ALTER TABLE ONLY proxima_code.code_chunk_call_v1
 --
 
 ALTER TABLE ONLY proxima_code.work_assignment_v1
-    ADD CONSTRAINT work_assignment_v1_memory_id_fkey FOREIGN KEY (memory_id) REFERENCES proxima_core.memory(t);
+    ADD CONSTRAINT work_assignment_v1_memory_id_fkey FOREIGN KEY (t) REFERENCES proxima_core.memory(t);
 
 
 --
@@ -1230,7 +1230,7 @@ CREATE INDEX idx_work_assignment_work_item ON proxima_code.work_assignment_v1 US
 --
 
 ALTER TABLE ONLY proxima_code.code_chunk_v1
-    ADD CONSTRAINT code_chunk_v1_memory_id_fkey FOREIGN KEY (memory_id) REFERENCES proxima_core.memory(t);
+    ADD CONSTRAINT code_chunk_v1_memory_id_fkey FOREIGN KEY (t) REFERENCES proxima_core.memory(t);
 
 
 --
@@ -1238,7 +1238,7 @@ ALTER TABLE ONLY proxima_code.code_chunk_v1
 --
 
 ALTER TABLE ONLY proxima_code.commit_summarizer_self_v1
-    ADD CONSTRAINT commit_summarizer_self_v1_memory_id_fkey FOREIGN KEY (memory_id) REFERENCES proxima_core.memory(t);
+    ADD CONSTRAINT commit_summarizer_self_v1_memory_id_fkey FOREIGN KEY (t) REFERENCES proxima_core.memory(t);
 
 
 --
@@ -1246,7 +1246,7 @@ ALTER TABLE ONLY proxima_code.commit_summarizer_self_v1
 --
 
 ALTER TABLE ONLY proxima_code.commit_summary_v1
-    ADD CONSTRAINT commit_summary_v1_memory_id_fkey FOREIGN KEY (memory_id) REFERENCES proxima_core.memory(t);
+    ADD CONSTRAINT commit_summary_v1_memory_id_fkey FOREIGN KEY (t) REFERENCES proxima_core.memory(t);
 
 
 --
@@ -1254,7 +1254,7 @@ ALTER TABLE ONLY proxima_code.commit_summary_v1
 --
 
 ALTER TABLE ONLY proxima_code.commit_v1
-    ADD CONSTRAINT commit_v1_memory_id_fkey FOREIGN KEY (memory_id) REFERENCES proxima_core.memory(t);
+    ADD CONSTRAINT commit_v1_memory_id_fkey FOREIGN KEY (t) REFERENCES proxima_core.memory(t);
 
 
 --
@@ -1262,7 +1262,7 @@ ALTER TABLE ONLY proxima_code.commit_v1
 --
 
 ALTER TABLE ONLY proxima_code.development_perspective_v1
-    ADD CONSTRAINT development_perspective_v1_memory_id_fkey FOREIGN KEY (memory_id) REFERENCES proxima_core.memory(t);
+    ADD CONSTRAINT development_perspective_v1_memory_id_fkey FOREIGN KEY (t) REFERENCES proxima_core.memory(t);
 
 
 --
@@ -1270,7 +1270,7 @@ ALTER TABLE ONLY proxima_code.development_perspective_v1
 --
 
 ALTER TABLE ONLY proxima_code.engineer_self_v1
-    ADD CONSTRAINT engineer_self_v1_memory_id_fkey FOREIGN KEY (memory_id) REFERENCES proxima_core.memory(t);
+    ADD CONSTRAINT engineer_self_v1_memory_id_fkey FOREIGN KEY (t) REFERENCES proxima_core.memory(t);
 
 
 --
@@ -1278,7 +1278,7 @@ ALTER TABLE ONLY proxima_code.engineer_self_v1
 --
 
 ALTER TABLE ONLY proxima_code.execution_plan_item_v1
-    ADD CONSTRAINT execution_plan_item_v1_plan_memory_id_fkey FOREIGN KEY (plan_memory_id) REFERENCES proxima_code.execution_plan_v1(memory_id) ON DELETE CASCADE;
+    ADD CONSTRAINT execution_plan_item_v1_plan_memory_id_fkey FOREIGN KEY (plan_memory_id) REFERENCES proxima_code.execution_plan_v1(t) ON DELETE CASCADE;
 
 
 --
@@ -1294,7 +1294,7 @@ ALTER TABLE ONLY proxima_code.execution_plan_v1
 --
 
 ALTER TABLE ONLY proxima_code.execution_plan_v1
-    ADD CONSTRAINT execution_plan_v1_memory_id_fkey FOREIGN KEY (memory_id) REFERENCES proxima_core.memory(t);
+    ADD CONSTRAINT execution_plan_v1_memory_id_fkey FOREIGN KEY (t) REFERENCES proxima_core.memory(t);
 
 
 --
@@ -1302,7 +1302,7 @@ ALTER TABLE ONLY proxima_code.execution_plan_v1
 --
 
 ALTER TABLE ONLY proxima_code.execution_result_v1
-    ADD CONSTRAINT execution_result_v1_memory_id_fkey FOREIGN KEY (memory_id) REFERENCES proxima_core.memory(t);
+    ADD CONSTRAINT execution_result_v1_memory_id_fkey FOREIGN KEY (t) REFERENCES proxima_core.memory(t);
 
 
 --
@@ -1318,7 +1318,7 @@ ALTER TABLE ONLY proxima_code.execution_result_v1
 --
 
 ALTER TABLE ONLY proxima_code.file_revision_v1
-    ADD CONSTRAINT file_revision_v1_memory_id_fkey FOREIGN KEY (memory_id) REFERENCES proxima_core.memory(t);
+    ADD CONSTRAINT file_revision_v1_memory_id_fkey FOREIGN KEY (t) REFERENCES proxima_core.memory(t);
 
 
 --
@@ -1334,7 +1334,7 @@ ALTER TABLE ONLY proxima_code.repo_ingestion_runs
 --
 
 ALTER TABLE ONLY proxima_code.test_requested_criterion_v1
-    ADD CONSTRAINT test_requested_criterion_v1_test_requested_memory_id_fkey FOREIGN KEY (test_requested_memory_id) REFERENCES proxima_code.test_requested_v1(memory_id) ON DELETE CASCADE;
+    ADD CONSTRAINT test_requested_criterion_v1_test_requested_memory_id_fkey FOREIGN KEY (test_requested_memory_id) REFERENCES proxima_code.test_requested_v1(t) ON DELETE CASCADE;
 
 
 --
@@ -1342,7 +1342,7 @@ ALTER TABLE ONLY proxima_code.test_requested_criterion_v1
 --
 
 ALTER TABLE ONLY proxima_code.test_requested_v1
-    ADD CONSTRAINT test_requested_v1_memory_id_fkey FOREIGN KEY (memory_id) REFERENCES proxima_core.memory(t);
+    ADD CONSTRAINT test_requested_v1_memory_id_fkey FOREIGN KEY (t) REFERENCES proxima_core.memory(t);
 
 
 --
@@ -1350,7 +1350,7 @@ ALTER TABLE ONLY proxima_code.test_requested_v1
 --
 
 ALTER TABLE ONLY proxima_code.test_result_v1
-    ADD CONSTRAINT test_result_v1_memory_id_fkey FOREIGN KEY (memory_id) REFERENCES proxima_core.memory(t);
+    ADD CONSTRAINT test_result_v1_memory_id_fkey FOREIGN KEY (t) REFERENCES proxima_core.memory(t);
 
 
 --
@@ -1366,6 +1366,6 @@ ALTER TABLE ONLY proxima_code.test_result_v1
 --
 
 ALTER TABLE ONLY proxima_code.work_requested_v1
-    ADD CONSTRAINT work_requested_v1_memory_id_fkey FOREIGN KEY (memory_id) REFERENCES proxima_core.memory(t);
+    ADD CONSTRAINT work_requested_v1_memory_id_fkey FOREIGN KEY (t) REFERENCES proxima_core.memory(t);
 
 

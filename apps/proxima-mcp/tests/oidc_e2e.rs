@@ -77,10 +77,7 @@ fn mint(signing: &RsaKeyPair, sub: &str) -> String {
 #[allow(clippy::too_many_lines)] // linear e2e: boot + 4 assertion phases read best in one flow
 async fn oidc_e2e_discovery_public_and_code_tools_behind_bearer()
 -> Result<(), Box<dyn std::error::Error>> {
-    let Some(database_url) = require_env_or_skip("PROXIMA_TEST_DATABASE_URL") else {
-        eprintln!("skipping oidc_e2e: PROXIMA_TEST_DATABASE_URL not set");
-        return Ok(());
-    };
+    let (database_url, created_db) = live_database_url().await?;
 
     let subject = UserId::new(Uuid::now_v7());
     let owner: Owner = OwnerRef::Personal(subject);
@@ -301,7 +298,67 @@ async fn oidc_e2e_discovery_public_and_code_tools_behind_bearer()
         "list_repos call should succeed, got {call:?}"
     );
 
+    assert!(
+        names.iter().any(|name| name == "core_forget"),
+        "served catalog must include core_forget: {names:?}"
+    );
+    assert!(
+        names.iter().all(|name| !name.contains("open_batch")),
+        "open_batch must stay deleted: {names:?}"
+    );
+
+    let remembered = post_rpc(
+        &client,
+        &url,
+        Some(&session),
+        &bearer,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 4,
+            "method": "tools/call",
+            "params": {
+                "name": "core_remember",
+                "arguments": {
+                    "title": "e2e forget",
+                    "body": "cool this row",
+                    "tags": []
+                }
+            }
+        }),
+    )
+    .await?;
+    let remember_text = mcp_text(&remembered);
+    let remember_json: serde_json::Value = serde_json::from_str(&remember_text)?;
+    let handle = remember_json["handle"]
+        .as_str()
+        .or_else(|| remember_json["memory"].as_str())
+        .ok_or_else(|| format!("remember missing handle: {remembered}"))?
+        .to_string();
+    let forgotten = post_rpc(
+        &client,
+        &url,
+        Some(&session),
+        &bearer,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 5,
+            "method": "tools/call",
+            "params": {
+                "name": "core_forget",
+                "arguments": { "memory": handle }
+            }
+        }),
+    )
+    .await?;
+    assert!(
+        forgotten.get("result").is_some(),
+        "core_forget must run on the live listener: {forgotten:?}"
+    );
+
     running.shutdown().await;
+    if let Some(name) = created_db {
+        let _ = proxima_pg_testkit::drop_db(&name).await;
+    }
     Ok(())
 }
 
@@ -314,18 +371,13 @@ async fn oidc_e2e_discovery_public_and_code_tools_behind_bearer()
 #[allow(clippy::too_many_lines)] // linear e2e: auth + two surfaces read best in one flow
 async fn oidc_e2e_rest_openapi_matches_the_mcp_scope_on_the_mounted_runtime()
 -> Result<(), Box<dyn std::error::Error>> {
-    let Some(database_url) = require_env_or_skip("PROXIMA_TEST_DATABASE_URL") else {
-        eprintln!("skipping REST OIDC e2e: PROXIMA_TEST_DATABASE_URL not set");
-        return Ok(());
-    };
-    let Some(rest_enabled) = require_env_or_skip("PROXIMA_REST_ENABLED") else {
-        eprintln!("skipping REST OIDC e2e: PROXIMA_REST_ENABLED not set");
-        return Ok(());
-    };
-    assert_eq!(
-        rest_enabled, "true",
-        "REST OIDC e2e requires PROXIMA_REST_ENABLED=true"
-    );
+    let (database_url, created_db) = live_database_url().await?;
+    if require_env_or_skip("PROXIMA_REST_ENABLED").as_deref() != Some("true") {
+        // SAFETY: this integration binary is the only reader of the gate.
+        unsafe {
+            std::env::set_var("PROXIMA_REST_ENABLED", "true");
+        }
+    }
 
     let subject = UserId::new(Uuid::now_v7());
     let owner: Owner = OwnerRef::Personal(subject);
@@ -468,6 +520,9 @@ async fn oidc_e2e_rest_openapi_matches_the_mcp_scope_on_the_mounted_runtime()
     assert_eq!(list_repos_body["next_cursor"], serde_json::Value::Null);
 
     running.shutdown().await;
+    if let Some(name) = created_db {
+        let _ = proxima_pg_testkit::drop_db(&name).await;
+    }
     Ok(())
 }
 
@@ -481,10 +536,7 @@ async fn oidc_e2e_rest_openapi_matches_the_mcp_scope_on_the_mounted_runtime()
 #[tokio::test]
 async fn oidc_e2e_group_auth_host_resolved_editor_role_permits_tool_call()
 -> Result<(), Box<dyn std::error::Error>> {
-    let Some(database_url) = require_env_or_skip("PROXIMA_TEST_DATABASE_URL") else {
-        eprintln!("skipping oidc_e2e_group_auth: PROXIMA_TEST_DATABASE_URL not set");
-        return Ok(());
-    };
+    let (database_url, created_db) = live_database_url().await?;
 
     let group_owner: Owner = OwnerRef::Group(GroupId::new(Uuid::now_v7()));
     let subject = UserId::new(Uuid::now_v7());
@@ -566,7 +618,33 @@ async fn oidc_e2e_group_auth_host_resolved_editor_role_permits_tool_call()
     );
 
     running.shutdown().await;
+    if let Some(name) = created_db {
+        let _ = proxima_pg_testkit::drop_db(&name).await;
+    }
     Ok(())
+}
+
+async fn live_database_url() -> Result<(String, Option<String>), Box<dyn std::error::Error>> {
+    if let Some(url) = require_env_or_skip("PROXIMA_TEST_DATABASE_URL") {
+        return Ok((url, None));
+    }
+    let name = format!("proxima_oidc_e2e_{}", Uuid::now_v7().simple());
+    proxima_pg_testkit::create_db(&name)
+        .await
+        .map_err(|err| format!("PG required for honest OIDC e2e: {err}"))?;
+    Ok((proxima_pg_testkit::db_url(&name), Some(name)))
+}
+
+fn mcp_text(body: &serde_json::Value) -> String {
+    if let Some(text) = body["result"]["structuredContent"].as_object() {
+        return serde_json::to_string(text).unwrap_or_default();
+    }
+    body["result"]["content"]
+        .as_array()
+        .and_then(|items| items.first())
+        .and_then(|item| item["text"].as_str())
+        .unwrap_or_default()
+        .to_string()
 }
 
 async fn initialize(

@@ -6,7 +6,6 @@
 
 pub(crate) mod active_goals;
 pub(crate) mod change_history;
-pub mod close_batch;
 pub mod code_repo_erase;
 pub(crate) mod compliance_erase;
 pub(crate) mod compliance_export;
