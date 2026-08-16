@@ -1,7 +1,5 @@
 use proxima_core::verbs::schema::{MemorySearchProjection, MemorySearchProjectionField};
-use proxima_core::{
-    EntityKind, MemoryId, Owner, SearchProjectionColumnKind, StorageError,
-};
+use proxima_core::{EntityKind, MemoryId, Owner, SearchProjectionColumnKind, StorageError};
 use sqlx::{Executor, PgPool, Postgres, Transaction};
 
 use crate::error::map_err;
@@ -18,15 +16,7 @@ pub async fn load_fact_text(
     memory_id: MemoryId,
     projections: &[MemorySearchProjection],
 ) -> Result<Option<String>, StorageError> {
-    load_embedding_text(
-        pool,
-        owner,
-        EntityKind::Fact,
-        memory_id,
-        &[],
-        projections,
-    )
-    .await
+    load_embedding_text(pool, owner, EntityKind::Fact, memory_id, &[], projections).await
 }
 
 /// Owner-scoped embed text for one memory.
@@ -46,8 +36,16 @@ pub async fn load_embedding_text(
     non_embeddable_schemas: &[String],
     projections: &[MemorySearchProjection],
 ) -> Result<Option<String>, StorageError> {
-    load_embedding_text_on(pool, pool, owner, entity_kind, memory_id, non_embeddable_schemas, projections)
-        .await
+    load_embedding_text_on(
+        pool,
+        pool,
+        owner,
+        entity_kind,
+        memory_id,
+        non_embeddable_schemas,
+        projections,
+    )
+    .await
 }
 
 /// Transaction-scoped variant of [`load_fact_text`].
@@ -62,9 +60,7 @@ pub async fn load_fact_text_in_tx(
     projections: &[MemorySearchProjection],
 ) -> Result<Option<String>, StorageError> {
     let schema_id = fetch_schema_id(tx.as_mut(), owner, memory_id).await?;
-    let Some(projection) =
-        resolve_projection(schema_id.as_deref(), &[], projections)
-    else {
+    let Some(projection) = resolve_projection(schema_id.as_deref(), &[], projections) else {
         return Ok(None);
     };
     fetch_projection_text(tx.as_mut(), memory_id, projection).await

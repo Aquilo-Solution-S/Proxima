@@ -81,10 +81,7 @@ pub(crate) async fn facts_citing_object(
         .into_iter()
         .map(|snapshot| (snapshot.memory_id, snapshot))
         .collect();
-    let snapshots = ids
-        .into_iter()
-        .filter_map(|id| by_id.remove(&id))
-        .collect();
+    let snapshots = ids.into_iter().filter_map(|id| by_id.remove(&id)).collect();
     Ok(FactCitationPage {
         facts: snapshots,
         next_cursor,

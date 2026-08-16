@@ -262,19 +262,13 @@ fn bounded_candidates(candidates: &[uuid::Uuid], _limit: usize) -> Vec<uuid::Uui
 
 /// Narrow a sidecar-only candidate id list (already known to be
 /// `proxima-code/code-chunk-v1` rows via a flavor's own
-/// `proxima_code.*`-only query) to the subset not superseded, by
-/// `(repo_id, file_path, chunk_index)`, within the same schema/owner-or-World
-/// scope.
+/// `proxima_code.*`-only query) to the current `memory_head` `t` of each
+/// series, in the owner-or-World scope.
 ///
 /// Every candidate is evaluated: the input is deduplicated and processed in
 /// `MAX_AUTHZ_CANDIDATES`-sized batches (bounding each SQL round-trip), NOT
-/// truncated. Batching is exact because the underlying verb's head dedup is
-/// a `NOT EXISTS` against the full table — each candidate's head status is
-/// globally correct regardless of which batch it lands in. Silent truncation
-/// here would be a correctness bug, not a cap: `code-chunk-v1` memory ids
-/// are deterministic `UUIDv5` content hashes (see
-/// `flavors/code/src/ingest/blobs.rs::code_slice_memory_id`), so no ordering
-/// of a truncated candidate window could guarantee the true head survives.
+/// truncated. Head status is `h.t = m.t`; ingest keeps one handle per
+/// `(owner, repo, path, index)`.
 ///
 /// This is a thin, PG-backend wrapper: see
 /// [`proxima_storage_pg::verbs::query::authorized_code_chunk_head_candidates`]

@@ -54,8 +54,8 @@ const BLOB_BATCH_BYTES: u64 = 8 * 1024 * 1024;
 use crate::calls::{ExtractedCall, ExtractedDefinition, extract_blob_callgraph};
 use crate::chunker::{Chunk, chunk_blob};
 use crate::ingest::{
-    FileRevisionHead, IngestError, append_code_slice, append_code_slices, code_slice_memory_id_for,
-    ingest_commit, ingest_file_revision,
+    FileRevisionHead, IngestError, append_code_slice, append_code_slices_with_handles,
+    ingest_commit, ingest_file_revision, resolve_code_chunk_handles,
 };
 use crate::payloads::{
     CodeCallSiteV1, CodeCallV1, CodeChunkV1, CommitV1, FileRevisionV1, FileState,
@@ -230,17 +230,10 @@ impl<'a> CodeIngestContext<'a> {
         file_path: &str,
     ) -> Result<Vec<u32>, IngestError> {
         // Sidecar-only candidate scan of every `Present`-state chunk row
-        // ever ingested for this file (any owner, any commit). The
-        // authorized head-candidate narrowing below drops any row shadowed
-        // by a later row at the same (repo_id, file_path, chunk_index) —
-        // including a later *Tombstone* row, so a removed-then-untouched
-        // index correctly disappears even though this candidate scan only
-        // looked at `Present` rows. The facade evaluates EVERY candidate
-        // (deduped, batched round-trips — never truncated), so a heavily
-        // churned file whose Present-row history exceeds any batch size
-        // still gets exact head bookkeeping; ordering this scan could not
-        // substitute for that, because chunk memory ids are deterministic
-        // UUIDv5 content hashes, not time-ordered.
+        // ever ingested for this file. Head admit is `memory_head.t = m.t`
+        // (one handle per owner+NK). A later Tombstone at the same NK
+        // moves the head, so a removed index disappears even though this
+        // scan only listed Present rows.
         let candidates: Vec<ChunkIndexCandidateRow> = sqlx::query_as(
             "SELECT s.t AS memory_id, s.chunk_index
                FROM proxima_code.code_chunk_v1 s
@@ -899,15 +892,12 @@ impl LocalGitSource {
             }
         }
 
-        // Build every chunk of the file before writing any of them: a
-        // caller chunk's payload names its callee chunks, so the callee's
-        // id has to exist before the caller is written. It does — the id
-        // is a pure function of position (file revision, repo, path, chunk
-        // index, state), which is what makes naming it up front legal.
-        let mut file_chunks: Vec<ChunkInfo> = Vec::new();
+        // Resolve series handles first so intra-file calls can name
+        // callees before insert. Reuse the owned NK head; mint only on miss.
+        let mut bare_payloads: Vec<CodeChunkV1> = Vec::new();
         for (idx, chunk) in pending.analysis.chunks.iter().enumerate() {
             let chunk_index = u32::try_from(idx).unwrap_or(u32::MAX);
-            let payload = CodeChunkV1 {
+            bare_payloads.push(CodeChunkV1 {
                 repo_id: self.repo_id,
                 file_path: pending.path.clone(),
                 chunk_index,
@@ -920,14 +910,18 @@ impl LocalGitSource {
                 line_range_end: chunk.line_range_end,
                 state: FileState::Present,
                 calls: Vec::new(),
-            };
-            let memory_id = code_slice_memory_id_for(&payload, pending.file_revision);
+            });
+        }
+        let handles = resolve_code_chunk_handles(pool, &self.owner, &bare_payloads).await?;
+        let mut file_chunks: Vec<ChunkInfo> = Vec::new();
+        for (payload, handle) in bare_payloads.into_iter().zip(handles) {
+            let memory_id = MemoryId::new(handle);
             let item_names: Vec<String> = pending
                 .analysis
                 .definitions
                 .iter()
                 .filter(|d| {
-                    d.byte_start >= chunk.byte_range_start && d.byte_end <= chunk.byte_range_end
+                    d.byte_start >= payload.byte_range_start && d.byte_end <= payload.byte_range_end
                 })
                 .map(|d| d.name.clone())
                 .collect();
@@ -995,13 +989,18 @@ impl LocalGitSource {
             .iter()
             .map(|chunk| chunk.payload.clone())
             .collect::<Vec<_>>();
-        let outcomes = append_code_slices(
+        let handles: Vec<Uuid> = file_chunks
+            .iter()
+            .map(|chunk| chunk.memory_id.into_inner())
+            .collect();
+        let outcomes = append_code_slices_with_handles(
             pool,
             permit,
             batch_id,
             &payloads,
             pending.file_revision,
             pending.source_commit,
+            &handles,
         )
         .await?;
         for (chunk, outcome) in file_chunks.iter().zip(&outcomes) {

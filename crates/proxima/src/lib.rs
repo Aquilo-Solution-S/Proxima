@@ -324,6 +324,7 @@ impl ProximaBuilder {
     /// failures, `EmbedError::V004ResetRequired` when the target database
     /// does not match `0001_v008.sql` (see `docs/how-to/migrations.md`), and
     /// `EmbedError::Engine` when engine startup fails.
+    #[allow(clippy::too_many_lines)]
     pub async fn boot(self) -> Result<EmbeddedProxima, EmbedError> {
         let Self {
             config,
@@ -371,7 +372,9 @@ impl ProximaBuilder {
             .freeze_against(registry.schemas())
             .map_err(embed_storage_error)?;
         let pg_sidecars = Arc::new(pg_sidecars);
-        let pg = pg.with_sidecars(pg_sidecars.as_ref().clone()).with_search_projections(registry.search_projections().to_vec());
+        let pg = pg
+            .with_sidecars(pg_sidecars.as_ref().clone())
+            .with_search_projections(registry.search_projections().to_vec());
 
         let pool = pg.clone_pool_for_backend();
         let blobs = config

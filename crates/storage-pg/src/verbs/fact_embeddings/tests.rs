@@ -6,11 +6,11 @@ mod pg_tests {
     use proxima_core::storage_ports::OwnerWritePermit;
     use proxima_core::test_fixtures::owner_fixture;
     use proxima_core::verbs::fact_ingest::{FactReceiptDraft, FactWriteCommand};
+    use proxima_core::verbs::schema::MemorySearchProjection;
     use proxima_core::{
         AccessKind, AuthPath, AuthzContext, Engine, EntityKind, FactIngestPort, FlavorRegistry,
         GoalId, Owner, SchemaId, SchemaVersion, SourceBatchId, SourceId, StorageError,
     };
-    use proxima_core::verbs::schema::MemorySearchProjection;
     use proxima_pg_testkit::drop_db;
     use uuid::Uuid;
 

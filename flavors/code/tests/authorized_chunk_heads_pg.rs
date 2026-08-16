@@ -5,8 +5,8 @@
 //! instead of routing through `Engine::query`'s authz-resolved read set, so
 //! the World-visibility test on `authorized_memory_ids` never touched
 //! it. These tests exercise the verb directly against seeded
-//! `code-chunk-v1` rows: owner scoping, World visibility for a non-owner
-//! caller, and the per-owner scoping of the same-natural-key recency dedup.
+//! `code-chunk-v1` rows: owner scoping, World visibility, one handle per
+//! owner+NK, and publish-then-reingest as two series.
 
 mod common;
 
@@ -15,9 +15,8 @@ use proxima_code::CodeChunkV1;
 use proxima_core::{AbstractionPayload, Owner};
 use uuid::Uuid;
 
-/// Seed one `code-chunk-v1` head row (source batch + memories + sidecar) and
-/// return its memory id. `batch` orders recency: the verb's dedup compares
-/// `source_batch_id`, and `Uuid::now_v7()` batches minted later sort greater.
+/// Seed one `code-chunk-v1` revision. Same owner+NK reuses the series
+/// handle and advances `memory_head.t` — the production ingest contract.
 async fn seed_chunk(
     pool: &sqlx::PgPool,
     owner: &Owner,
@@ -27,7 +26,6 @@ async fn seed_chunk(
     batch: Uuid,
 ) -> Result<Uuid, sqlx::Error> {
     let memory_id = Uuid::now_v7();
-    let handle = Uuid::now_v7();
     let owner_id = owner.stored_owner_id();
     let kind = proxima_core::OwnerRefKind::of(owner).as_str();
     let _ = batch;
@@ -39,16 +37,41 @@ async fn seed_chunk(
     .bind(kind)
     .execute(pool)
     .await?;
-    sqlx::query(
-        "INSERT INTO proxima_core.memory_head (handle, kind, schema_id, owner_id, t)
-         VALUES ($1, 'abstraction', $2, $3, $4)",
+    let existing: Option<Uuid> = sqlx::query_scalar(
+        "SELECT h.handle
+           FROM proxima_core.memory_head h
+           JOIN proxima_core.memory m ON m.handle = h.handle AND m.t = h.t
+           JOIN proxima_code.code_chunk_v1 c ON c.t = m.t
+          WHERE m.owner_id = $1
+            AND c.repo_id = $2
+            AND c.file_path = $3
+            AND c.chunk_index = $4",
     )
-    .bind(handle)
-    .bind(<CodeChunkV1 as AbstractionPayload>::SCHEMA_ID)
     .bind(owner_id)
-    .bind(memory_id)
-    .execute(pool)
+    .bind(repo_id)
+    .bind(file_path)
+    .bind(chunk_index)
+    .fetch_optional(pool)
     .await?;
+    let handle = existing.unwrap_or_else(Uuid::now_v7);
+    if existing.is_some() {
+        sqlx::query("UPDATE proxima_core.memory_head SET t = $2 WHERE handle = $1")
+            .bind(handle)
+            .bind(memory_id)
+            .execute(pool)
+            .await?;
+    } else {
+        sqlx::query(
+            "INSERT INTO proxima_core.memory_head (handle, kind, schema_id, owner_id, t)
+             VALUES ($1, 'abstraction', $2, $3, $4)",
+        )
+        .bind(handle)
+        .bind(<CodeChunkV1 as AbstractionPayload>::SCHEMA_ID)
+        .bind(owner_id)
+        .bind(memory_id)
+        .execute(pool)
+        .await?;
+    }
     sqlx::query(
         "INSERT INTO proxima_core.memory (handle, t, kind, owner_id)
          VALUES ($1, $2, 'abstraction', $3)",
@@ -143,10 +166,8 @@ async fn owner_scoping_excludes_foreign_rows_and_world_surfaces_for_non_owner() 
     result.expect("owner scoping / World visibility test failed");
 }
 
-/// The same-natural-key recency dedup is scoped per owner: a newer row from
-/// one owner shadows only that owner's older rows at the same
-/// (`repo_id`, `file_path`, `chunk_index`) — it must never shadow a
-/// World-owned head at the same natural key, and vice versa.
+/// Same owner+NK reuses the handle: only the latest `t` is the head.
+/// A World-owned series at the same NK is a different handle.
 #[tokio::test]
 async fn same_natural_key_recency_dedup_is_scoped_per_owner() {
     let db = TestDb::fresh().await;
@@ -173,8 +194,8 @@ async fn same_natural_key_recency_dedup_is_scoped_per_owner() {
         assert_eq!(
             heads(pool, owner, &candidates).await?,
             sorted(vec![world_old, own_new]),
-            "the owner's newer row shadows only the owner's older row; the \
-             World head at the same natural key survives despite being oldest"
+            "the owner's newer t is the head; the World series at the same \
+             NK is a different handle and survives"
         );
 
         Ok(())

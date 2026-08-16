@@ -257,9 +257,6 @@ mod tests {
         let id = uuid::Uuid::now_v7();
         let endpoint = EdgeEndpoint::memory(EntityKind::Fact, MemoryId::new(id));
         assert_eq!(endpoint.kind, EntityKind::Fact);
-        assert_eq!(
-            endpoint.memory_id().map(MemoryId::into_inner),
-            Some(id)
-        );
+        assert_eq!(endpoint.memory_id().map(MemoryId::into_inner), Some(id));
     }
 }

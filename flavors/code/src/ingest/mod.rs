@@ -24,8 +24,9 @@ mod pg_sidecars;
 pub mod schemas;
 
 pub use blobs::{
-    append_code_slice, append_code_slices, close_local_git_batch, code_slice_memory_id_for,
-    ingest_commit, ingest_file_revision,
+    append_code_slice, append_code_slices, append_code_slices_with_handles, close_local_git_batch,
+    code_slice_memory_id_for, existing_code_chunk_handle, ingest_commit, ingest_file_revision,
+    resolve_code_chunk_handles,
 };
 pub use engine::{build_engine, build_engine_with};
 pub use heads::FileRevisionHead;

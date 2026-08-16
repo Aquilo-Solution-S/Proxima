@@ -114,12 +114,9 @@ impl CodeFlavorStore {
         .await
     }
 
-    /// Narrow a sidecar-only `code-chunk-v1` candidate id list (already
-    /// known to belong to that schema via a `proxima_code.*`-only query) to
-    /// the subset not superseded, by `(repo_id, file_path, chunk_index)`,
-    /// within the same schema/owner-or-World scope. `code-chunk-v1` never
-    /// sets `memories.supersedes`; see
-    /// `proxima::flavor::authorized_code_chunk_head_candidates`.
+    /// Narrow a sidecar-only `code-chunk-v1` candidate id list to the
+    /// current `memory_head` `t` of each series (owner-or-World). Ingest
+    /// owns one handle per `(owner, repo, path, index)`.
     pub(crate) async fn authorized_code_chunk_head_candidates(
         &self,
         owner: Owner,

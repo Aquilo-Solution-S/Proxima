@@ -22,10 +22,9 @@ use proxima_core::{Owner, SchemaId, StorageError};
 use sqlx::PgPool;
 
 /// Narrow `candidate_ids` (already known to be `schema_id`'s
-/// `proxima_code.code_chunk_v1` sidecar rows, from a flavor's own
-/// `proxima_code.*`-only query) to the subset not superseded, within the
-/// same schema/owner-or-World scope, by a later `source_batch_id` row
-/// sharing the same `(repo_id, file_path, chunk_index)`.
+/// `proxima_code.code_chunk_v1` sidecar rows) to the current
+/// `memory_head` row of each series. Ingest owns one handle per
+/// `(owner, repo, path, index)`; this is only `h.t = m.t`.
 ///
 /// # Errors
 ///
@@ -48,20 +47,7 @@ pub async fn authorized_code_chunk_head_candidates(
            JOIN proxima_core.memory_head h ON h.handle = m.handle AND h.t = m.t
           WHERE h.schema_id = $1
             AND c.t = ANY($2::uuid[])
-            AND m.owner_id IN ($3, $4)
-            AND NOT EXISTS (
-                SELECT 1
-                  FROM proxima_code.code_chunk_v1 c2
-                  JOIN proxima_core.memory m2 ON m2.t = c2.t
-                  JOIN proxima_core.memory_head h2
-                    ON h2.handle = m2.handle AND h2.t = m2.t
-                 WHERE h2.schema_id = h.schema_id
-                   AND m2.owner_id = m.owner_id
-                   AND c2.repo_id = c.repo_id
-                   AND c2.file_path = c.file_path
-                   AND c2.chunk_index = c.chunk_index
-                   AND m2.t > m.t
-            )",
+            AND m.owner_id IN ($3, $4)",
     )
     .bind(schema_id.as_str())
     .bind(candidate_ids)

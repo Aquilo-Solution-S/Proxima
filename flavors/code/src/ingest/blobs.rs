@@ -21,29 +21,15 @@ use super::schemas::{
 
 const CODE_SLICE_OPERATOR_MODEL: &str = "proxima-code/local-git-source";
 
-/// Version of the code-slice derivation, carried in chunk identity.
+/// Version of the code-slice derivation, carried in the input-contract id.
 ///
-/// A code chunk's `memory_id` is a v5 UUID over its position — source file
-/// revision, repo, path, chunk index, state — deliberately stable across
-/// re-ingests, because chunking the same blob twice must not mint a second
-/// memory. `append_derived_with_edges_in_tx` inserts `ON CONFLICT
-/// (memory_id) DO NOTHING`, so without this prefix a chunker or render change
-/// would derive every file to exactly the same ids and silently discard the
-/// new text.
-///
-/// Bump it whenever the bytes a chunk carries stop being a pure function of
-/// its position: chunker boundaries, `render_code_slice`, the payload's
-/// stored fields.
-///
-/// Bumping it does **not** make an existing index re-derive itself. A HEAD
-/// snapshot skips files whose blob hash has not moved, and that skip cannot
-/// simply be lifted: `validate_ftoa_input_batch` requires a derived
-/// Abstraction to carry the same `source_batch_id` as the Facts it came from,
-/// so re-deriving an unchanged file would stamp new chunks with a batch its
-/// already-receipted Fact does not belong to. The supported path is
-/// `proxima-code_erase_repo` followed by a fresh register and ingest, which
-/// produces new Facts in new batches. The two derivations can never collide
-/// on an id, so a stale chunk cannot masquerade as a current one.
+/// The series handle is looked up per `(owner, repo, path, index)` and
+/// reused; each revision is a new `t`. Bump this prefix when chunker
+/// boundaries, `render_code_slice`, or stored fields change — the
+/// contract id must not collide with a previous derivation of the same
+/// position. A HEAD snapshot still skips unchanged blobs; re-derive
+/// after a chunker change is `proxima-code_erase_repo` plus a fresh
+/// register.
 const CODE_SLICE_IDENTITY: &[u8] = b"proxima-code/code-slice:local-git-file-facts-v3";
 const CODE_SLICE_PROMPT_VERSION: &str = "code-slice-v3";
 
@@ -76,8 +62,8 @@ fn code_slice_input_contract_id(
     ))
 }
 
-/// The positional key both code-slice ids are derived from, prefixed with
-/// [`CODE_SLICE_IDENTITY`] so a derivation change reaches both of them.
+/// Positional key for the input-contract id. The series handle is not
+/// derived from this — it is looked up per owner + natural key.
 fn code_slice_identity_key(payload: &CodeChunkV1, source_file_revision: MemoryId) -> Vec<u8> {
     let mut key = Vec::with_capacity(128 + payload.file_path.len());
     key.extend_from_slice(CODE_SLICE_IDENTITY);
@@ -152,6 +138,61 @@ async fn existing_file_revision_handle(
     Ok(handle)
 }
 
+/// Current series handle for this owner's chunk at `(repo, path, index)`.
+///
+/// Miss after World transfer is expected: that series is no longer this
+/// owner's. The caller mints a new handle.
+pub async fn existing_code_chunk_handle(
+    pool: &PgPool,
+    owner: &proxima_core::Owner,
+    repo_id: uuid::Uuid,
+    file_path: &str,
+    chunk_index: u32,
+) -> Result<Option<uuid::Uuid>, IngestError> {
+    let handle = sqlx::query_scalar(
+        "SELECT h.handle
+           FROM proxima_core.memory_head h
+           JOIN proxima_core.memory m ON m.handle = h.handle AND m.t = h.t
+           JOIN proxima_code.code_chunk_v1 c ON c.t = m.t
+          WHERE m.owner_id = $1
+            AND c.repo_id = $2
+            AND c.file_path = $3
+            AND c.chunk_index = $4",
+    )
+    .bind(owner.stored_owner_id())
+    .bind(repo_id)
+    .bind(file_path)
+    .bind(i32::try_from(chunk_index).unwrap_or(i32::MAX))
+    .fetch_optional(pool)
+    .await?;
+    Ok(handle)
+}
+
+/// One handle per payload: reuse the owned NK head, or mint.
+///
+/// Call once per file before filling `calls` and writing, so intra-file
+/// callees share the same series ids the drafts will use.
+pub async fn resolve_code_chunk_handles(
+    pool: &PgPool,
+    owner: &proxima_core::Owner,
+    payloads: &[CodeChunkV1],
+) -> Result<Vec<uuid::Uuid>, IngestError> {
+    let mut handles = Vec::with_capacity(payloads.len());
+    for payload in payloads {
+        let handle = existing_code_chunk_handle(
+            pool,
+            owner,
+            payload.repo_id,
+            &payload.file_path,
+            payload.chunk_index,
+        )
+        .await?
+        .unwrap_or_else(uuid::Uuid::now_v7);
+        handles.push(handle);
+    }
+    Ok(handles)
+}
+
 /// Atomic Fact + sidecar write for `commit-v1`. Cites the commit
 /// object (keyed by blake3 of the commit sha) with a "whole-commit"
 /// CitationMapping.
@@ -213,10 +254,8 @@ pub async fn ingest_file_revision(
 /// `reference` entry per callee each chunk's payload names.
 ///
 /// The whole file lands as one group in one transaction, because the group
-/// refers to itself: chunk 2 calls chunk 7 and chunk 7 calls chunk 2, and an
-/// index row cannot point at a node that is not there yet. Every chunk id is
-/// a pure function of its position, so all of them can be named before any of
-/// them is written — see [`code_slice_memory_id_for`].
+/// refers to itself. Series handles are resolved first
+/// ([`resolve_code_chunk_handles`]) so callees can be named before insert.
 ///
 /// The flavor names endpoints and content; it never names a kind. Origins are
 /// what these writes say they were made from, references are read back off
@@ -240,14 +279,48 @@ pub async fn append_code_slices(
         return Ok(Vec::new());
     }
     let owner = permit.owner();
+    let handles = resolve_code_chunk_handles(pool, owner, payloads).await?;
+    append_code_slices_with_handles(
+        pool,
+        permit,
+        source_batch_id,
+        payloads,
+        source_file_revision,
+        source_commit,
+        &handles,
+    )
+    .await
+}
+
+/// [`append_code_slices`] when the caller already resolved series handles
+/// (intra-file call naming).
+pub async fn append_code_slices_with_handles(
+    pool: &PgPool,
+    permit: &OwnerWritePermit,
+    source_batch_id: SourceBatchId,
+    payloads: &[CodeChunkV1],
+    source_file_revision: MemoryId,
+    source_commit: Option<MemoryId>,
+    handles: &[uuid::Uuid],
+) -> Result<Vec<DerivedOutcome>, IngestError> {
+    if payloads.len() != handles.len() {
+        return Err(IngestError::Storage(
+            "code slice handle count must match payload count".into(),
+        ));
+    }
+    if payloads.is_empty() {
+        return Ok(Vec::new());
+    }
+    let owner = permit.owner();
     let mut origins = vec![EdgeEndpoint::memory(EntityKind::Fact, source_file_revision)];
     if let Some(commit) = source_commit {
         origins.push(EdgeEndpoint::memory(EntityKind::Fact, commit));
     }
     let drafts = payloads
         .iter()
-        .map(|payload| DerivedDraft {
-            memory_id: code_slice_memory_id(payload, source_file_revision),
+        .zip(handles)
+        .map(|(payload, handle)| DerivedDraft {
+            memory_id: *handle,
             owner: *owner,
             kind: EntityKind::Abstraction,
             schema_id: <CodeChunkV1 as AbstractionPayload>::schema_id(),
@@ -333,22 +406,14 @@ fn payload_reference_endpoints(payload: &CodeChunkV1) -> Result<Vec<EdgeEndpoint
         .collect()
 }
 
-/// Deterministic id of the code slice at this position in this file
-/// revision.
-///
-/// Public because call resolution needs it: a caller chunk's payload names
-/// its callee chunks, so every chunk of a file has to be addressable
-/// *before* any of them is written.
+/// Deterministic input-contract material for this position. Not the
+/// series handle — resolve that with [`resolve_code_chunk_handles`].
 #[must_use]
 pub fn code_slice_memory_id_for(payload: &CodeChunkV1, source_file_revision: MemoryId) -> MemoryId {
-    MemoryId::new(code_slice_memory_id(payload, source_file_revision))
-}
-
-fn code_slice_memory_id(payload: &CodeChunkV1, source_file_revision: MemoryId) -> uuid::Uuid {
-    uuid::Uuid::new_v5(
+    MemoryId::new(uuid::Uuid::new_v5(
         &CODE_SLICE_NAMESPACE,
         &code_slice_identity_key(payload, source_file_revision),
-    )
+    ))
 }
 
 /// The chunk's rendered form: a `path:start-end` header line followed by
