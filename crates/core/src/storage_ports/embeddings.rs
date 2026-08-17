@@ -30,6 +30,17 @@ pub trait EmbeddingTextPort: Send + Sync {
         non_embeddable_schemas: &[String],
     ) -> Result<Option<String>, StorageError>;
 
+    /// Batch counterpart of [`Self::load_embedding_text`].
+    ///
+    /// Output is aligned with `items`. `None` at an index is the same
+    /// “nothing to embed” as the single-row method (missing row, owner
+    /// mismatch, excluded schema, or no `embed_text` column).
+    async fn load_embedding_texts(
+        &self,
+        items: &[(Owner, EntityKind, crate::MemoryId)],
+        non_embeddable_schemas: &[String],
+    ) -> Result<Vec<Option<String>>, StorageError>;
+
     /// Facts with text but no vector under `model_id`.
     ///
     /// `non_embeddable_schemas` are excluded — they are not missing a

@@ -1,6 +1,9 @@
+use std::collections::HashMap;
+
 use proxima_core::verbs::schema::MemorySearchProjection;
 use proxima_core::{EntityKind, MemoryId, Owner, StorageError};
 use sqlx::{Executor, PgPool, Postgres, Transaction};
+use uuid::Uuid;
 
 use crate::error::map_err;
 use crate::pg_ident::PgIdent;
@@ -36,16 +39,104 @@ pub async fn load_embedding_text(
     non_embeddable_schemas: &[String],
     projections: &[MemorySearchProjection],
 ) -> Result<Option<String>, StorageError> {
-    load_embedding_text_on(
+    let texts = load_embedding_texts(
         pool,
-        pool,
-        owner,
-        entity_kind,
-        memory_id,
+        &[(*owner, entity_kind, memory_id)],
         non_embeddable_schemas,
         projections,
     )
+    .await?;
+    Ok(texts.into_iter().next().flatten())
+}
+
+/// Owner-scoped embed text for many memories, aligned with `items`.
+///
+/// One `memory` lookup for the id set, then one sidecar `embed_text`
+/// SELECT per distinct `(table, column)` in that set.
+///
+/// # Errors
+///
+/// Returns `StorageError::Internal` for SQL failures.
+pub async fn load_embedding_texts(
+    pool: &PgPool,
+    items: &[(Owner, EntityKind, MemoryId)],
+    non_embeddable_schemas: &[String],
+    projections: &[MemorySearchProjection],
+) -> Result<Vec<Option<String>>, StorageError> {
+    if items.is_empty() {
+        return Ok(Vec::new());
+    }
+    let ids: Vec<Uuid> = items
+        .iter()
+        .map(|(_, _, memory_id)| memory_id.into_inner())
+        .collect();
+    let rows: Vec<(Uuid, Uuid, String)> = sqlx::query_as(
+        "SELECT t, owner_id, schema_id
+           FROM proxima_core.memory
+          WHERE t = ANY($1::uuid[])",
+    )
+    .bind(&ids)
+    .fetch_all(pool)
     .await
+    .map_err(map_err)?;
+    let mut schema_by_key = HashMap::with_capacity(rows.len());
+    for (t, owner_id, schema_id) in rows {
+        schema_by_key.insert((t, owner_id), schema_id);
+    }
+
+    let mut out = vec![None; items.len()];
+    let mut buckets: HashMap<(String, String), Vec<(usize, Uuid)>> = HashMap::new();
+    for (index, (owner, _, memory_id)) in items.iter().enumerate() {
+        let t = memory_id.into_inner();
+        let Some(schema_id) = schema_by_key.get(&(t, owner.stored_owner_id())) else {
+            continue;
+        };
+        let Some(projection) = resolve_projection(
+            Some(schema_id.as_str()),
+            non_embeddable_schemas,
+            projections,
+        ) else {
+            continue;
+        };
+        let Some(column) = projection.embed_text_column.as_deref() else {
+            continue;
+        };
+        buckets
+            .entry((projection.sidecar_table.clone(), column.to_owned()))
+            .or_default()
+            .push((index, t));
+    }
+
+    for ((table, column), members) in buckets {
+        let table = PgIdent::table(&table)?;
+        let column = PgIdent::column(&column)?;
+        let member_ids: Vec<Uuid> = members.iter().map(|(_, t)| *t).collect();
+        let sql = format!(
+            "SELECT c.t, c.{column}
+               FROM {table} c
+              WHERE c.t = ANY($1::uuid[])",
+            table = table.as_str(),
+            column = column.as_str(),
+        );
+        // SQL-POLICY: PgIdent
+        let texts: Vec<(Uuid, Option<String>)> = sqlx::query_as(sqlx::AssertSqlSafe(sql))
+            .bind(&member_ids)
+            .fetch_all(pool)
+            .await
+            .map_err(map_err)?;
+        let mut text_by_t = HashMap::with_capacity(texts.len());
+        for (t, text) in texts {
+            if let Some(text) = text {
+                text_by_t.insert(t, text);
+            }
+        }
+        for (index, t) in members {
+            if let Some(text) = text_by_t.get(&t) {
+                out[index] = Some(text.clone());
+            }
+        }
+    }
+    Ok(out)
 }
 
 /// Transaction-scoped variant of [`load_fact_text`].
@@ -64,28 +155,6 @@ pub async fn load_fact_text_in_tx(
         return Ok(None);
     };
     fetch_projection_text(tx.as_mut(), memory_id, projection).await
-}
-
-async fn load_embedding_text_on<'s, 't, S, T>(
-    schema_exec: S,
-    text_exec: T,
-    owner: &Owner,
-    _entity_kind: EntityKind,
-    memory_id: MemoryId,
-    non_embeddable_schemas: &[String],
-    projections: &[MemorySearchProjection],
-) -> Result<Option<String>, StorageError>
-where
-    S: Executor<'s, Database = Postgres>,
-    T: Executor<'t, Database = Postgres>,
-{
-    let schema_id = fetch_schema_id(schema_exec, owner, memory_id).await?;
-    let Some(projection) =
-        resolve_projection(schema_id.as_deref(), non_embeddable_schemas, projections)
-    else {
-        return Ok(None);
-    };
-    fetch_projection_text(text_exec, memory_id, projection).await
 }
 
 fn resolve_projection<'a>(

@@ -232,6 +232,14 @@ impl EmbeddingTextPort for EmbeddingTextFake {
         fake_error()
     }
 
+    async fn load_embedding_texts(
+        &self,
+        _items: &[(Owner, EntityKind, proxima_core::MemoryId)],
+        _non_embeddable_schemas: &[String],
+    ) -> Result<Vec<Option<String>>, StorageError> {
+        fake_error()
+    }
+
     async fn list_facts_missing_embedding(
         &self,
         owner: &Owner,

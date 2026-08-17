@@ -20,6 +20,7 @@ mod pg_tests {
     use super::super::{
         claim_pending_embedding_jobs, embedding_ann_observability, insert_embedding,
         insert_memory_embedding, list_facts_missing_embedding, load_embedding_text,
+        load_embedding_texts,
     };
     use crate::test_fixtures::fresh_pg;
 
@@ -500,6 +501,130 @@ mod pg_tests {
                 Some("said this"),
                 "utterance must not require the note/chunk hardcode"
             );
+            Ok(())
+        }
+        .await;
+        drop(pg);
+        drop_db(&db_name).await?;
+        result
+    }
+
+    #[tokio::test]
+    #[allow(clippy::too_many_lines)]
+    async fn load_embedding_texts_aligns_mixed_schemas_and_misses()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (pg, db_name) = fresh_pg("proxima_spg_embed").await;
+        let result: Result<(), Box<dyn std::error::Error>> = async {
+            let owner = owner_fixture();
+            let other = proxima_core::OwnerRef::Personal(proxima_core::UserId::new(Uuid::now_v7()));
+            let owner_id = owner.stored_owner_id();
+            sqlx::query(
+                "INSERT INTO proxima_core.owners (owner_id, kind)
+                 VALUES ($1, 'personal') ON CONFLICT DO NOTHING",
+            )
+            .bind(owner_id)
+            .execute(pg.pool_for_tests())
+            .await?;
+            let note_handle = Uuid::now_v7();
+            let note_t = Uuid::now_v7();
+            sqlx::query(
+                "INSERT INTO proxima_core.memory_head (handle, kind, schema_id, owner_id, t)
+                 VALUES ($1, 'fact', 'core/agent-note-v1', $2, $3)",
+            )
+            .bind(note_handle)
+            .bind(owner_id)
+            .bind(note_t)
+            .execute(pg.pool_for_tests())
+            .await?;
+            sqlx::query(
+                "INSERT INTO proxima_core.memory (handle, t, kind, owner_id, schema_id)
+                 VALUES ($1, $2, 'fact', $3, 'core/agent-note-v1')",
+            )
+            .bind(note_handle)
+            .bind(note_t)
+            .bind(owner_id)
+            .execute(pg.pool_for_tests())
+            .await?;
+            sqlx::query(
+                "INSERT INTO proxima_core.agent_note_v1 (t, note_id, title, body, tags)
+                 VALUES ($1, $2, 'Hello', 'world', '{}')",
+            )
+            .bind(note_t)
+            .bind(Uuid::now_v7())
+            .execute(pg.pool_for_tests())
+            .await?;
+
+            let utter_handle = Uuid::now_v7();
+            let utter_t = Uuid::now_v7();
+            sqlx::query(
+                "INSERT INTO proxima_core.memory_head (handle, kind, schema_id, owner_id, t)
+                 VALUES ($1, 'fact', 'core/utterance-v1', $2, $3)",
+            )
+            .bind(utter_handle)
+            .bind(owner_id)
+            .bind(utter_t)
+            .execute(pg.pool_for_tests())
+            .await?;
+            sqlx::query(
+                "INSERT INTO proxima_core.memory (handle, t, kind, owner_id, schema_id)
+                 VALUES ($1, $2, 'fact', $3, 'core/utterance-v1')",
+            )
+            .bind(utter_handle)
+            .bind(utter_t)
+            .bind(owner_id)
+            .execute(pg.pool_for_tests())
+            .await?;
+            sqlx::query(
+                "INSERT INTO proxima_core.utterance_v1 (t, speaker, conversation_id, text)
+                 VALUES ($1, 'user', 'c1', 'said this')",
+            )
+            .bind(utter_t)
+            .execute(pg.pool_for_tests())
+            .await?;
+
+            let missing = proxima_core::MemoryId::new(Uuid::now_v7());
+            let projections = core_projections();
+            let texts = load_embedding_texts(
+                pg.pool_for_tests(),
+                &[
+                    (owner, EntityKind::Fact, proxima_core::MemoryId::new(note_t)),
+                    (
+                        owner,
+                        EntityKind::Fact,
+                        proxima_core::MemoryId::new(utter_t),
+                    ),
+                    (owner, EntityKind::Fact, missing),
+                    (other, EntityKind::Fact, proxima_core::MemoryId::new(note_t)),
+                ],
+                &[],
+                &projections,
+            )
+            .await?;
+            assert_eq!(
+                texts,
+                vec![
+                    Some("Hello world".into()),
+                    Some("said this".into()),
+                    None,
+                    None,
+                ]
+            );
+
+            let skipped = load_embedding_texts(
+                pg.pool_for_tests(),
+                &[
+                    (owner, EntityKind::Fact, proxima_core::MemoryId::new(note_t)),
+                    (
+                        owner,
+                        EntityKind::Fact,
+                        proxima_core::MemoryId::new(utter_t),
+                    ),
+                ],
+                &["core/agent-note-v1".into()],
+                &projections,
+            )
+            .await?;
+            assert_eq!(skipped, vec![None, Some("said this".into())]);
             Ok(())
         }
         .await;

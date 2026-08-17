@@ -846,23 +846,21 @@ impl Engine {
 
             // Jobs whose memory no longer yields embeddable text are
             // complete as-is; only texted jobs go to the provider.
+            // Also excluded here, not just at enqueue: a job queued
+            // before its schema declared `EMBEDDABLE = false` completes
+            // as a no-op instead of embedding what now declines a vector.
+            let items: Vec<(Owner, EntityKind, MemoryId)> = claims
+                .iter()
+                .map(|claim| (claim.owner, claim.entity_kind, claim.entity_id))
+                .collect();
+            let texts = self
+                .storage
+                .ingest
+                .embedding_text
+                .load_embedding_texts(&items, self.registry().non_embeddable_schema_ids())
+                .await?;
             let mut batch: Vec<(EmbeddingJobClaim, String)> = Vec::with_capacity(claims.len());
-            for claim in claims {
-                let text = self
-                    .storage
-                    .ingest
-                    .embedding_text
-                    .load_embedding_text(
-                        &claim.owner,
-                        claim.entity_kind,
-                        claim.entity_id,
-                        // Also excluded here, not just at enqueue: a job
-                        // queued before its schema declared
-                        // `EMBEDDABLE = false` completes as a no-op
-                        // instead of embedding what now declines a vector.
-                        self.registry().non_embeddable_schema_ids(),
-                    )
-                    .await?;
+            for (claim, text) in claims.into_iter().zip(texts) {
                 if let Some(text) = text {
                     batch.push((claim, text));
                 } else {

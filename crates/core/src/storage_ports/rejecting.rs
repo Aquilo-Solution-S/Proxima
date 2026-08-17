@@ -270,6 +270,14 @@ impl EmbeddingTextPort for RejectingStorage {
         Ok(None)
     }
 
+    async fn load_embedding_texts(
+        &self,
+        items: &[(Owner, EntityKind, crate::MemoryId)],
+        _non_embeddable_schemas: &[String],
+    ) -> Result<Vec<Option<String>>, StorageError> {
+        Ok(vec![None; items.len()])
+    }
+
     async fn list_facts_missing_embedding(
         &self,
         _owner: &Owner,
