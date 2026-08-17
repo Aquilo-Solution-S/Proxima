@@ -4,13 +4,17 @@ use std::collections::{HashMap, HashSet};
 
 use crate::edge::{PinNode, pin_created_at, project_listed_edge};
 use crate::error::ProtocolError;
-use crate::storage_ports::MemoryReadHandle;
+use crate::storage_ports::{InboundPinQuery, MemoryReadHandle};
 use crate::verbs::query::{
     EdgeExistsRequest, EdgeExistsResponse, EdgeReadCursor, EdgeReadRequest, EdgeReadResponse,
 };
 use crate::{Edge, EdgeKind, EntityKind, EntityRef, MemoryId, OwnerRef};
 
 use super::errors::internal_storage_error;
+
+/// Floor on incoming `read_edges` source pages so a small hop `limit`
+/// still amortizes GIN. `exists` (`limit == 1`, no cursor) uses SQL 1.
+const INBOUND_SOURCE_PAGE_MIN: u32 = 256;
 
 type HopKey = (time::OffsetDateTime, uuid::Uuid, uuid::Uuid, &'static str);
 
@@ -136,26 +140,22 @@ pub(in crate::engine) async fn read_edges_from_nodes(
         return Ok(empty_read());
     }
 
+    if req.limit == 0 {
+        return Ok(empty_read());
+    }
+
     let sources = if let Some(source) = source_id {
         memory_read
             .load_pin_nodes(read_owners, &[source])
             .await
             .map_err(|err| internal_storage_error("load_pin_nodes", &err))?
     } else if let Some(target) = target_id {
-        memory_read
-            .load_inbound_pin_nodes(read_owners, &[target])
-            .await
-            .map_err(|err| internal_storage_error("load_inbound_pin_nodes", &err))?
+        load_incoming_sources(memory_read, read_owners, target, req).await?
     } else {
         Vec::new()
     };
 
-    let hops: Vec<PinHop> = expand_hops(&sources)
-        .into_iter()
-        .filter(|hop| source_id.is_none_or(|src| hop.source_id == src))
-        .filter(|hop| target_id.is_none_or(|tgt| hop.target_id == tgt))
-        .filter(|hop| req.filter.kind.is_none_or(|kind| hop.kind == kind))
-        .collect();
+    let hops = matching_hops(&sources, source_id, target_id, req.filter.kind);
 
     let mut want: Vec<MemoryId> = hops.iter().map(|hop| hop.target_id).collect();
     want.sort_unstable();
@@ -181,7 +181,86 @@ pub(in crate::engine) async fn edge_exists_from_nodes(
     })
 }
 
-/// Requested rows + inbound rows + authorized pin targets, then project.
+fn inbound_source_page_limit(req: &EdgeReadRequest) -> u32 {
+    if req.limit == 1 && req.cursor.is_none() {
+        1
+    } else {
+        req.limit.max(INBOUND_SOURCE_PAGE_MIN)
+    }
+}
+
+fn hops_after_cursor(hops: &[PinHop], cursor: Option<EdgeReadCursor>) -> usize {
+    match cursor_key(cursor) {
+        None => hops.len(),
+        Some(cut) => hops.iter().filter(|hop| hop_key(hop) < cut).count(),
+    }
+}
+
+fn matching_hops(
+    sources: &[PinNode],
+    source_id: Option<MemoryId>,
+    target_id: Option<MemoryId>,
+    kind: Option<EdgeKind>,
+) -> Vec<PinHop> {
+    expand_hops(sources)
+        .into_iter()
+        .filter(|hop| source_id.is_none_or(|src| hop.source_id == src))
+        .filter(|hop| target_id.is_none_or(|tgt| hop.target_id == tgt))
+        .filter(|hop| kind.is_none_or(|want| hop.kind == want))
+        .collect()
+}
+
+async fn load_incoming_sources(
+    memory_read: &MemoryReadHandle,
+    read_owners: &[OwnerRef],
+    target: MemoryId,
+    req: &EdgeReadRequest,
+) -> Result<Vec<PinNode>, ProtocolError> {
+    let page_limit = inbound_source_page_limit(req);
+    let hop_limit = usize::try_from(req.limit).unwrap_or(usize::MAX);
+    let mut sources = Vec::new();
+    let mut after = None;
+    if let Some(cursor) = req.cursor
+        && let Some(src) = memory_ref(Some(cursor.source))
+    {
+        sources.extend(
+            memory_read
+                .load_pin_nodes(read_owners, &[src])
+                .await
+                .map_err(|err| internal_storage_error("load_pin_nodes", &err))?,
+        );
+        after = Some(src);
+    }
+    let targets = [target];
+    loop {
+        let page = memory_read
+            .load_inbound_pin_nodes(
+                read_owners,
+                InboundPinQuery {
+                    targets: &targets,
+                    kind: req.filter.kind,
+                    heads_only: false,
+                    after,
+                    limit: page_limit,
+                },
+            )
+            .await
+            .map_err(|err| internal_storage_error("load_inbound_pin_nodes", &err))?;
+        let short = page.len() < usize::try_from(page_limit).unwrap_or(usize::MAX);
+        if let Some(last) = page.last() {
+            after = Some(last.id);
+        }
+        sources.extend(page);
+        let hops = matching_hops(&sources, None, Some(target), req.filter.kind);
+        if hops_after_cursor(&hops, req.cursor) >= hop_limit || short {
+            break;
+        }
+    }
+    Ok(sources)
+}
+
+/// Requested rows plus a newest-first **current-head** inbound sample.
+/// Not a complete star — `read_edges` incoming is the complete path.
 pub(in crate::engine) async fn neighbor_edges_from_nodes(
     memory_read: &MemoryReadHandle,
     read_owners: &[OwnerRef],
@@ -195,8 +274,18 @@ pub(in crate::engine) async fn neighbor_edges_from_nodes(
         .load_pin_nodes(read_owners, memory_ids)
         .await
         .map_err(|err| internal_storage_error("load_pin_nodes", &err))?;
+    let inbound_limit = u32::try_from(limit).unwrap_or(u32::MAX);
     let inbound = memory_read
-        .load_inbound_pin_nodes(read_owners, memory_ids)
+        .load_inbound_pin_nodes(
+            read_owners,
+            InboundPinQuery {
+                targets: memory_ids,
+                kind: None,
+                heads_only: true,
+                after: None,
+                limit: inbound_limit,
+            },
+        )
         .await
         .map_err(|err| internal_storage_error("load_inbound_pin_nodes", &err))?;
 
@@ -245,9 +334,17 @@ pub(in crate::engine) async fn neighbor_edges_from_nodes(
 
 #[cfg(test)]
 mod tests {
-    use super::{PinHop, empty_read, page_hops};
-    use crate::{EdgeKind, EdgeTargetProjection, EntityKind, MemoryId};
+    use super::{
+        PinHop, empty_read, neighbor_edges_from_nodes, page_hops, read_edges_from_nodes,
+    };
+    use crate::edge::PinNode;
+    use crate::storage_ports::{InboundPinQuery, MemoryReadPort};
+    use crate::verbs::query::{EdgeFilter, EdgeReadRequest};
+    use crate::{
+        EdgeKind, EdgeTargetProjection, EntityKind, EntityRef, MemoryId, OwnerRef, StorageError,
+    };
     use std::collections::HashMap;
+    use std::sync::Arc;
 
     fn hop(source: MemoryId, target: MemoryId, kind: EdgeKind) -> PinHop {
         PinHop {
@@ -313,5 +410,181 @@ mod tests {
             page.edges[0].target,
             EdgeTargetProjection::Redacted
         ));
+    }
+
+    struct FakePins {
+        nodes: Vec<PinNode>,
+    }
+
+    impl FakePins {
+        fn inbound(&self, query: InboundPinQuery<'_>) -> Vec<PinNode> {
+            let mut rows: Vec<PinNode> = self
+                .nodes
+                .iter()
+                .filter(|node| {
+                    query.targets.iter().any(|t| match query.kind {
+                        Some(EdgeKind::Origin) => node.origins.contains(t),
+                        Some(EdgeKind::Reference) => node.refs.contains(t),
+                        None => node.origins.contains(t) || node.refs.contains(t),
+                    })
+                })
+                .cloned()
+                .collect();
+            rows.sort_by_key(|node| std::cmp::Reverse(node.id.into_inner()));
+            if let Some(after) = query.after {
+                rows.retain(|n| n.id.into_inner() < after.into_inner());
+            }
+            rows.truncate(usize::try_from(query.limit).unwrap_or(usize::MAX));
+            rows
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl MemoryReadPort for FakePins {
+        async fn load_fact_text(
+            &self,
+            _owner: &crate::Owner,
+            _memory_id: MemoryId,
+        ) -> Result<Option<String>, StorageError> {
+            Ok(None)
+        }
+
+        async fn load_memory_graph_payloads(
+            &self,
+            _identities: &[crate::storage::MemoryGraphIdentity],
+            _include_body: bool,
+        ) -> Result<Vec<crate::storage::MemoryGraphPayloadRow>, StorageError> {
+            Ok(Vec::new())
+        }
+
+        async fn load_pin_nodes(
+            &self,
+            _read_owners: &[OwnerRef],
+            memory_ids: &[MemoryId],
+        ) -> Result<Vec<PinNode>, StorageError> {
+            Ok(self
+                .nodes
+                .iter()
+                .filter(|n| memory_ids.contains(&n.id))
+                .cloned()
+                .collect())
+        }
+
+        async fn load_inbound_pin_nodes(
+            &self,
+            _read_owners: &[OwnerRef],
+            query: InboundPinQuery<'_>,
+        ) -> Result<Vec<PinNode>, StorageError> {
+            Ok(self.inbound(query))
+        }
+
+        async fn query_memories(
+            &self,
+            _req: &crate::verbs::query::QueryRequest,
+            _schemas: &[crate::verbs::schema::SchemaInfo],
+        ) -> Result<crate::verbs::query::QueryResponse, StorageError> {
+            Err(StorageError::Internal("unused".into()))
+        }
+
+        async fn search_memories(
+            &self,
+            _req: &crate::verbs::query::MemorySearchRequest,
+            _projections: &[crate::verbs::schema::MemorySearchProjection],
+        ) -> Result<crate::verbs::query::MemorySearchPage, StorageError> {
+            Err(StorageError::Internal("unused".into()))
+        }
+
+        async fn walk_memory_lineage(
+            &self,
+            _read_owners: &[OwnerRef],
+            _req: &crate::verbs::query::MemoryLineageRequest,
+        ) -> Result<crate::verbs::query::MemoryLineageResponse, StorageError> {
+            Err(StorageError::Internal("unused".into()))
+        }
+
+        async fn owned_series_handle(
+            &self,
+            _owner: crate::Owner,
+            _schema_id: &crate::SchemaId,
+            _sidecar_table: &str,
+            _columns: &[(&str, crate::verbs::query::SidecarAtom)],
+        ) -> Result<Option<uuid::Uuid>, StorageError> {
+            Ok(None)
+        }
+    }
+
+    fn hub_fixture(n: usize) -> (OwnerRef, MemoryId, Arc<FakePins>) {
+        let owner = OwnerRef::Personal(crate::UserId::new(uuid::Uuid::now_v7()));
+        let hub = MemoryId::new(uuid::Uuid::now_v7());
+        let mut nodes = vec![PinNode {
+            id: hub,
+            kind: EntityKind::Fact,
+            origins: Vec::new(),
+            refs: Vec::new(),
+        }];
+        for _ in 0..n {
+            nodes.push(PinNode {
+                id: MemoryId::new(uuid::Uuid::now_v7()),
+                kind: EntityKind::Abstraction,
+                origins: vec![hub],
+                refs: Vec::new(),
+            });
+        }
+        (owner, hub, Arc::new(FakePins { nodes }))
+    }
+
+    #[tokio::test]
+    async fn incoming_read_edges_pages_all_sources() {
+        let (owner, hub, fake) = hub_fixture(300);
+        let handle: crate::storage_ports::MemoryReadHandle = fake;
+        let mut cursor = None;
+        let mut seen = std::collections::HashSet::new();
+        loop {
+            let page = read_edges_from_nodes(
+                &handle,
+                &[owner],
+                &EdgeReadRequest {
+                    owner,
+                    filter: EdgeFilter {
+                        kind: Some(EdgeKind::Origin),
+                        source: None,
+                        target: Some(EntityRef::Memory(hub)),
+                    },
+                    limit: 50,
+                    cursor,
+                },
+            )
+            .await
+            .expect("page");
+            for edge in &page.edges {
+                assert!(seen.insert(edge.source.memory_id().expect("source")));
+            }
+            match page.next_cursor {
+                Some(next) => cursor = Some(next),
+                None => break,
+            }
+        }
+        assert_eq!(seen.len(), 300);
+    }
+
+    #[tokio::test]
+    async fn neighbor_sample_keeps_newest_heads() {
+        let (owner, hub, fake) = hub_fixture(300);
+        let handle: crate::storage_ports::MemoryReadHandle = fake.clone();
+        let edges = neighbor_edges_from_nodes(&handle, &[owner], &[hub], 200)
+            .await
+            .expect("neighbors");
+        assert_eq!(edges.len(), 200);
+        let newest: std::collections::HashSet<_> = fake
+            .nodes
+            .iter()
+            .rev()
+            .filter(|n| n.id != hub)
+            .take(200)
+            .map(|n| n.id)
+            .collect();
+        for edge in &edges {
+            assert!(newest.contains(&edge.source.memory_id().expect("src")));
+        }
     }
 }

@@ -1,7 +1,7 @@
 //! P1: pins on the node, PK outbound, GIN inbound, lineage by t.
 #![allow(clippy::doc_markdown, clippy::too_many_lines)]
 
-use proxima_core::storage_ports::{MemoryReadPort, OwnerWritePermit};
+use proxima_core::storage_ports::{InboundPinQuery, MemoryReadPort, OwnerWritePermit};
 use proxima_core::verbs::fact_ingest::FactWriteCommand;
 use proxima_core::verbs::query::{
     EntityKind, MemoryLineageDirection, MemoryLineageRequest, QueryRequest,
@@ -117,7 +117,16 @@ async fn query_neighbors_edges_and_lineage_use_pins() {
         );
 
         let inbound = pg
-            .load_inbound_pin_nodes(&[owner], &[leaf.memory_id])
+            .load_inbound_pin_nodes(
+                &[owner],
+                InboundPinQuery {
+                    targets: &[leaf.memory_id],
+                    kind: None,
+                    heads_only: true,
+                    after: None,
+                    limit: 50,
+                },
+            )
             .await?;
         assert!(
             inbound.iter().any(|node| {
@@ -341,4 +350,144 @@ async fn lineage_redacts_foreign_origin_instead_of_dropping() {
     .await;
     let _ = drop_db(&db_name).await;
     result.expect("D8 lineage redaction failed");
+}
+
+#[tokio::test]
+async fn inbound_pin_page_is_newest_heads_and_keyset() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    if let Err(e) = create_db(&db_name).await {
+        panic!("PG required for tests but admin connect failed: {e}");
+    }
+    let url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&url).await?;
+        pg.run_migrations().await?;
+        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
+        let pool = pg.pool_for_tests();
+        let hub = ingest_fact_atomic(pool, &permit, &draft("fact", vec![], vec![]), None).await?;
+        let mut ids = Vec::new();
+        for _ in 0..300 {
+            let child = ingest_fact_atomic(
+                pool,
+                &permit,
+                &draft("abstraction", vec![], vec![hub.memory_id.into_inner()]),
+                None,
+            )
+            .await?;
+            ids.push(child.memory_id);
+        }
+        let newest = &ids[ids.len() - 200..];
+        let oldest = &ids[..100];
+
+        let page = pg
+            .load_inbound_pin_nodes(
+                &[owner],
+                InboundPinQuery {
+                    targets: &[hub.memory_id],
+                    kind: Some(EdgeKind::Origin),
+                    heads_only: true,
+                    after: None,
+                    limit: 200,
+                },
+            )
+            .await?;
+        let got: Vec<_> = page.iter().map(|n| n.id).collect();
+        assert_eq!(got.len(), 200);
+        for id in newest {
+            assert!(got.contains(id), "newest head {id:?} missing from sample");
+        }
+        for id in oldest {
+            assert!(!got.contains(id), "oldest head {id:?} leaked into sample");
+        }
+
+        let rest = pg
+            .load_inbound_pin_nodes(
+                &[owner],
+                InboundPinQuery {
+                    targets: &[hub.memory_id],
+                    kind: Some(EdgeKind::Origin),
+                    heads_only: true,
+                    after: page.last().map(|n| n.id),
+                    limit: 200,
+                },
+            )
+            .await?;
+        let rest_ids: Vec<_> = rest.iter().map(|n| n.id).collect();
+        assert_eq!(rest_ids.len(), 100);
+        for id in &got {
+            assert!(!rest_ids.contains(id), "keyset overlapped {id:?}");
+        }
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("inbound pin page test failed");
+}
+
+#[tokio::test]
+async fn inbound_heads_only_drops_superseded_pin() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    if let Err(e) = create_db(&db_name).await {
+        panic!("PG required for tests but admin connect failed: {e}");
+    }
+    let url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&url).await?;
+        pg.run_migrations().await?;
+        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
+        let pool = pg.pool_for_tests();
+        let hub = ingest_fact_atomic(pool, &permit, &draft("fact", vec![], vec![]), None).await?;
+        let other = ingest_fact_atomic(pool, &permit, &draft("fact", vec![], vec![]), None).await?;
+        let old = ingest_fact_atomic(
+            pool,
+            &permit,
+            &draft("abstraction", vec![], vec![hub.memory_id.into_inner()]),
+            None,
+        )
+        .await?;
+        let mut next = draft("abstraction", vec![], vec![other.memory_id.into_inner()]);
+        next.handle = Some(old.handle);
+        let new = ingest_fact_atomic(pool, &permit, &next, None).await?;
+        assert_ne!(old.memory_id, new.memory_id);
+
+        let heads = pg
+            .load_inbound_pin_nodes(
+                &[owner],
+                InboundPinQuery {
+                    targets: &[hub.memory_id],
+                    kind: Some(EdgeKind::Origin),
+                    heads_only: true,
+                    after: None,
+                    limit: 50,
+                },
+            )
+            .await?;
+        assert!(
+            heads.iter().all(|n| n.id != old.memory_id && n.id != new.memory_id),
+            "rewritten series no longer pins hub at head"
+        );
+
+        let all_hot = pg
+            .load_inbound_pin_nodes(
+                &[owner],
+                InboundPinQuery {
+                    targets: &[hub.memory_id],
+                    kind: Some(EdgeKind::Origin),
+                    heads_only: false,
+                    after: None,
+                    limit: 50,
+                },
+            )
+            .await?;
+        assert!(
+            all_hot.iter().any(|n| n.id == old.memory_id),
+            "superseded t still pins hub on the complete path"
+        );
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("inbound heads-only rewrite test failed");
 }

@@ -228,9 +228,9 @@ impl MemoryReadPort for PgStorage {
     async fn load_inbound_pin_nodes(
         &self,
         read_owners: &[OwnerRef],
-        memory_ids: &[MemoryId],
+        query: proxima_core::InboundPinQuery<'_>,
     ) -> Result<Vec<proxima_core::PinNode>, StorageError> {
-        verbs::query::load_inbound_pin_nodes(&self.pool, read_owners, memory_ids).await
+        verbs::query::load_inbound_pin_nodes(&self.pool, read_owners, query).await
     }
 
     async fn query_memories(

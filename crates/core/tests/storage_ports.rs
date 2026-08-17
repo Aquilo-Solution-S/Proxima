@@ -154,7 +154,7 @@ impl MemoryReadPort for MemoryReadFake {
     async fn load_inbound_pin_nodes(
         &self,
         _read_owners: &[OwnerRef],
-        _memory_ids: &[MemoryId],
+        _query: proxima_core::InboundPinQuery<'_>,
     ) -> Result<Vec<proxima_core::PinNode>, StorageError> {
         fake_error()
     }

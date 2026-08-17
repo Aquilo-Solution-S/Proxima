@@ -74,7 +74,8 @@ pub use handles::{
 };
 pub use mcp::{McpCallReadPort, McpCallWritePort};
 pub use memory::{
-    CitationPort, MemoryAuthoringPort, MemoryInspectPort, MemoryReadPort, OperatorWriteProof,
+    CitationPort, InboundPinQuery, MemoryAuthoringPort, MemoryInspectPort, MemoryReadPort,
+    OperatorWriteProof,
 };
 pub use proof::{OperatorMaintenanceProof, OwnerWritePermit};
 pub use registry::RegistryProjectionPort;

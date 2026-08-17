@@ -1,6 +1,7 @@
+use proxima_core::storage_ports::InboundPinQuery;
 use proxima_core::verbs::query::QueryRequest;
 use proxima_core::{
-    Edge, EntityKind, MemoryId, OwnerRef, PinNode, StorageError, project_window_edges,
+    Edge, EdgeKind, EntityKind, MemoryId, OwnerRef, PinNode, StorageError, project_window_edges,
 };
 use sqlx::PgPool;
 
@@ -57,32 +58,105 @@ pub(crate) async fn load_pin_nodes(
         .collect())
 }
 
-/// Owner-scoped GIN load of rows that list any of `memory_ids`.
+/// Owner-scoped GIN page of rows that list any of `query.targets`.
 pub(crate) async fn load_inbound_pin_nodes(
     pool: &PgPool,
     read_owners: &[OwnerRef],
-    memory_ids: &[MemoryId],
+    query: InboundPinQuery<'_>,
 ) -> Result<Vec<PinNode>, StorageError> {
-    if memory_ids.is_empty() || read_owners.is_empty() {
+    if query.targets.is_empty() || read_owners.is_empty() {
         return Ok(Vec::new());
     }
-    let ids: Vec<uuid::Uuid> = memory_ids.iter().map(|id| id.into_inner()).collect();
+    if query.limit == 0 {
+        return Err(StorageError::ConstraintViolation(
+            "inbound pin page limit must be at least 1".into(),
+        ));
+    }
+    let ids: Vec<uuid::Uuid> = query.targets.iter().map(|id| id.into_inner()).collect();
     let owner_ids = owner_ids(read_owners);
-    let rows: Vec<PinNodeRow> = sqlx::query_as(
-        "SELECT t, kind::text, origins, refs
-           FROM proxima_core.memory
-          WHERE owner_id = ANY($2::uuid[])
-            AND (origins && $1::uuid[] OR refs && $1::uuid[])",
-    )
-    .bind(&ids)
-    .bind(&owner_ids)
-    .fetch_all(pool)
-    .await
-    .map_err(map_err)?;
+    let after = query.after.map(MemoryId::into_inner);
+    let limit = i64::from(query.limit);
+    let sql = inbound_pin_sql(query.heads_only, query.kind);
+    // SQL-POLICY: fixed-fragment — from/kind arms are compile-time literals.
+    let rows: Vec<PinNodeRow> = sqlx::query_as(sqlx::AssertSqlSafe(sql))
+        .bind(&ids)
+        .bind(&owner_ids)
+        .bind(after)
+        .bind(limit)
+        .fetch_all(pool)
+        .await
+        .map_err(map_err)?;
     Ok(rows
         .into_iter()
         .filter_map(PinNodeRow::into_pin_node)
         .collect())
+}
+
+fn inbound_pin_sql(heads_only: bool, kind: Option<EdgeKind>) -> &'static str {
+    if heads_only {
+        match kind {
+            Some(EdgeKind::Origin) => {
+                "SELECT m.t, m.kind::text, m.origins, m.refs
+                   FROM proxima_core.memory_head h
+                   JOIN proxima_core.memory m ON m.handle = h.handle AND m.t = h.t
+                  WHERE h.owner_id = ANY($2::uuid[])
+                    AND m.origins && $1::uuid[]
+                    AND ($3::uuid IS NULL OR m.t < $3)
+                  ORDER BY m.t DESC
+                  LIMIT $4"
+            }
+            Some(EdgeKind::Reference) => {
+                "SELECT m.t, m.kind::text, m.origins, m.refs
+                   FROM proxima_core.memory_head h
+                   JOIN proxima_core.memory m ON m.handle = h.handle AND m.t = h.t
+                  WHERE h.owner_id = ANY($2::uuid[])
+                    AND m.refs && $1::uuid[]
+                    AND ($3::uuid IS NULL OR m.t < $3)
+                  ORDER BY m.t DESC
+                  LIMIT $4"
+            }
+            None => {
+                "SELECT m.t, m.kind::text, m.origins, m.refs
+                   FROM proxima_core.memory_head h
+                   JOIN proxima_core.memory m ON m.handle = h.handle AND m.t = h.t
+                  WHERE h.owner_id = ANY($2::uuid[])
+                    AND (m.origins && $1::uuid[] OR m.refs && $1::uuid[])
+                    AND ($3::uuid IS NULL OR m.t < $3)
+                  ORDER BY m.t DESC
+                  LIMIT $4"
+            }
+        }
+    } else {
+        match kind {
+            Some(EdgeKind::Origin) => {
+                "SELECT m.t, m.kind::text, m.origins, m.refs
+                   FROM proxima_core.memory m
+                  WHERE m.owner_id = ANY($2::uuid[])
+                    AND m.origins && $1::uuid[]
+                    AND ($3::uuid IS NULL OR m.t < $3)
+                  ORDER BY m.t DESC
+                  LIMIT $4"
+            }
+            Some(EdgeKind::Reference) => {
+                "SELECT m.t, m.kind::text, m.origins, m.refs
+                   FROM proxima_core.memory m
+                  WHERE m.owner_id = ANY($2::uuid[])
+                    AND m.refs && $1::uuid[]
+                    AND ($3::uuid IS NULL OR m.t < $3)
+                  ORDER BY m.t DESC
+                  LIMIT $4"
+            }
+            None => {
+                "SELECT m.t, m.kind::text, m.origins, m.refs
+                   FROM proxima_core.memory m
+                  WHERE m.owner_id = ANY($2::uuid[])
+                    AND (m.origins && $1::uuid[] OR m.refs && $1::uuid[])
+                    AND ($3::uuid IS NULL OR m.t < $3)
+                  ORDER BY m.t DESC
+                  LIMIT $4"
+            }
+        }
+    }
 }
 
 /// Snapshot-mode edges: pins whose two endpoints are both in the Query window.

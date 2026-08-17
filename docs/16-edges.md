@@ -63,7 +63,7 @@ No edge verb. No `E:` wire prefix. No `proxima://edges`.
 | `core_interpret` | interpretation Perspective; subjects are `refs` |
 | `core_derive` | `origins` from `derived_from` |
 | lineage | walks `origins` |
-| neighbors | walks `origins` / `refs` |
+| neighbors | current-head inbound sample (cap 200) plus the hit's own `origins` / `refs` |
 
 In-tree code flavor: call sites live on `CodeChunkV1.calls`; work assignment
 is a Perspective whose payload names worker and request; request

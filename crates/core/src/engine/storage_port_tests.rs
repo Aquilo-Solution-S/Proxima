@@ -76,7 +76,7 @@ impl crate::MemoryReadPort for ReadOnlyFake {
     async fn load_inbound_pin_nodes(
         &self,
         _read_owners: &[OwnerRef],
-        _memory_ids: &[crate::MemoryId],
+        _query: crate::InboundPinQuery<'_>,
     ) -> Result<Vec<crate::PinNode>, StorageError> {
         Ok(Vec::new())
     }

@@ -337,7 +337,7 @@ pub(in crate::engine) mod tests {
         async fn load_inbound_pin_nodes(
             &self,
             _read_owners: &[OwnerRef],
-            _memory_ids: &[MemoryId],
+            _query: crate::InboundPinQuery<'_>,
         ) -> Result<Vec<crate::PinNode>, StorageError> {
             Ok(Vec::new())
         }

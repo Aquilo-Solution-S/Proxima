@@ -1,6 +1,16 @@
 pub use super::proof::{OperatorWriteProof, OwnerWritePermit};
 
-use crate::edge::PinNode;
+/// Newest-first inbound pin page. Kind selects which array; `None` is both.
+#[derive(Debug, Clone, Copy)]
+pub struct InboundPinQuery<'a> {
+    pub targets: &'a [MemoryId],
+    pub kind: Option<EdgeKind>,
+    pub heads_only: bool,
+    pub after: Option<MemoryId>,
+    pub limit: u32,
+}
+
+use crate::edge::{EdgeKind, PinNode};
 use crate::read_models::{MemorySnapshot, SidecarSpec};
 use crate::storage::{
     AuthorDerivedOutcome, AuthorDerivedRequest, FactSourceBatchRow, MemoryGraphIdentity,
@@ -77,12 +87,13 @@ pub trait MemoryReadPort: Send + Sync {
         memory_ids: &[MemoryId],
     ) -> Result<Vec<PinNode>, StorageError>;
 
-    /// Owner-scoped GIN load of rows that list any of `memory_ids` in
-    /// `origins` or `refs`.
+    /// Owner-scoped GIN page of rows that list any of `query.targets` in
+    /// `origins` and/or `refs`. Newest `t` first; `after` is exclusive.
+    /// `limit == 0` is a constraint violation.
     async fn load_inbound_pin_nodes(
         &self,
         read_owners: &[OwnerRef],
-        memory_ids: &[MemoryId],
+        query: InboundPinQuery<'_>,
     ) -> Result<Vec<PinNode>, StorageError>;
 
     async fn query_memories(
