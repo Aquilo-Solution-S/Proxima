@@ -128,6 +128,10 @@ async fn migrations_apply_to_fresh_db() {
             column_exists(&pg, "memory", "owner_id").await,
             "memory.owner_id is required"
         );
+        assert!(
+            !column_exists(&pg, "group_memberships", "created_at").await,
+            "group_memberships has no created_at; list_group_members must not ORDER BY it"
+        );
 
         for index in [
             "memory_owner_handle_t_idx",
