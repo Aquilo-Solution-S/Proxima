@@ -362,7 +362,7 @@ pub(crate) async fn validate_derived_origins_in_tx(
     origins: &[EdgeEndpoint],
 ) -> Result<(), StorageError> {
     let expected_input_kind = draft.operator_kind.phase().input_kind();
-    let input_ids = collect_operator_inputs(origins, expected_input_kind)?;
+    let input_ids = collect_operator_inputs(origins)?;
     if input_ids.is_empty() {
         return Ok(());
     }
@@ -374,7 +374,23 @@ pub(crate) async fn validate_derived_origins_in_tx(
     }
     let stored_kind: BTreeMap<uuid::Uuid, EntityKind> =
         rows.into_iter().map(|(id, kind, ..)| (id, kind)).collect();
-    assert_declared_kinds_match_stored(origins, &stored_kind, true)
+    assert_declared_kinds_match_stored(origins, &stored_kind, true)?;
+    // Phase contract is on the stored row. Declared kind == phase is the
+    // engine manifest; flavor-SDK has no manifest, so this is its gate.
+    for origin in origins {
+        let Some(memory_id) = origin.memory_id() else {
+            continue;
+        };
+        let Some(kind) = stored_kind.get(&memory_id.into_inner()).copied() else {
+            continue;
+        };
+        if kind != expected_input_kind {
+            return Err(StorageError::ConstraintViolation(
+                "operator origin kind does not match operator phase".into(),
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Stored kind for payload references. Missing targets are skipped:
@@ -422,10 +438,7 @@ fn assert_declared_kinds_match_stored(
     Ok(())
 }
 
-fn collect_operator_inputs(
-    origins: &[EdgeEndpoint],
-    expected_input_kind: EntityKind,
-) -> Result<Vec<uuid::Uuid>, StorageError> {
+fn collect_operator_inputs(origins: &[EdgeEndpoint]) -> Result<Vec<uuid::Uuid>, StorageError> {
     let mut input_ids = Vec::new();
     let mut seen = BTreeSet::new();
     for origin in origins {
@@ -434,11 +447,6 @@ fn collect_operator_inputs(
                 "an operator provenance origin must name a memory row".into(),
             ));
         };
-        if origin.kind != expected_input_kind {
-            return Err(StorageError::ConstraintViolation(
-                "operator origin kind does not match operator phase".into(),
-            ));
-        }
         if !seen.insert(memory_id) {
             return Err(StorageError::ConstraintViolation(
                 "operator invocation inputs must be unique".into(),
@@ -512,6 +520,18 @@ mod tests {
         assert!(
             src.contains(&refs),
             "references must use the same stored-kind compare as origins"
+        );
+        let start = src
+            .find("fn collect_operator_inputs")
+            .expect("collect_operator_inputs");
+        let rest = &src[start..];
+        let end = rest
+            .find("async fn load_live_input_proof_rows_in_tx")
+            .expect("next fn");
+        let declared_phase = format!("{}{}", "origin.kind != ", "expected_input_kind");
+        assert!(
+            !rest[..end].contains(&declared_phase),
+            "D6: phase contract is on stored kind, not the declared endpoint"
         );
     }
 }

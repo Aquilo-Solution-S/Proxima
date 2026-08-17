@@ -584,25 +584,17 @@ impl Engine {
         Ok(())
     }
 
+    /// Read-admit each evidence target. Kind ∈ {F, A} is the in-tx
+    /// TOCTOU (`validate_evidence_in_owner`); a second pre-tx kind
+    /// load here is the overlapping walk.
     async fn validate_goal_evidence_authorized(
         &self,
         authz: &AuthzContext,
         evidence: &[GoalEvidenceRef],
     ) -> Result<(), ProtocolError> {
         for item in evidence {
-            let memory_id = item.memory_id();
-            let permit = self
-                .authorize_entry_read(authz, EntityId::Memory(memory_id))
+            self.authorize_entry_read(authz, EntityId::Memory(item.memory_id()))
                 .await?;
-            let kind = self
-                .load_required_memory_kind(permit.owner(), memory_id)
-                .await?;
-            if !matches!(kind, EntityKind::Fact | EntityKind::Abstraction) {
-                return Err(ProtocolError::invalid_argument(
-                    "evidence",
-                    "target must be Fact or Abstraction",
-                ));
-            }
         }
         Ok(())
     }
@@ -701,6 +693,27 @@ mod tests {
 
     fn engine() -> Engine {
         Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests())
+    }
+
+    #[test]
+    fn evidence_admit_does_not_reload_kind() {
+        let src = include_str!("goal_write.rs");
+        let start = src
+            .find("async fn validate_goal_evidence_authorized")
+            .expect("validate_goal_evidence_authorized");
+        let rest = &src[start..];
+        let end = rest
+            .find("async fn require_readable_memory_kind")
+            .expect("next fn");
+        let reload = format!("{}{}", "load_required_memory_", "kind");
+        assert!(
+            !rest[..end].contains(&reload),
+            "D7: evidence kind is the in-tx TOCTOU, not a second pre-tx walk"
+        );
+        assert!(
+            rest[..end].contains("authorize_entry_read"),
+            "read-admit stays; only the kind walk is dropped"
+        );
     }
 
     fn owner() -> crate::OwnerRef {

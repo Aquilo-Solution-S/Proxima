@@ -153,6 +153,35 @@ async fn declared_fact_on_perspective_origin_is_rejected() {
         .expect_err("declared Fact on a Perspective reference must fail");
         assert_kind_mismatch(err);
 
+        let honest_wrong_phase = derived_draft(
+            owner,
+            Uuid::now_v7(),
+            MemoryOperatorKind::FtoA,
+            EntityKind::Abstraction,
+            "d2-model",
+        );
+        let err = append_ftoa(
+            pool,
+            &permit,
+            &honest_wrong_phase,
+            &[EdgeEndpoint::memory(
+                EntityKind::Perspective,
+                perspective.memory_id,
+            )],
+            &[],
+        )
+        .await
+        .expect_err("honest Perspective origin must fail F→A phase");
+        match err {
+            StorageError::ConstraintViolation(msg) => {
+                assert!(
+                    msg.contains("does not match operator phase"),
+                    "D6: phase is on stored kind, got {msg}"
+                );
+            }
+            other => panic!("expected ConstraintViolation, got {other:?}"),
+        }
+
         let honest = derived_draft(
             owner,
             Uuid::now_v7(),
