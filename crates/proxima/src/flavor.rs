@@ -6,6 +6,10 @@ pub use crate::migrations::NamedMigrator;
 /// runtime handles a spawning flavor receives and the named join handle
 /// it returns.
 pub use crate::workers::{FlavorWorker, FlavorWorkerContext};
+/// Query / ingest types a flavor names next to [`crate::Engine`]
+/// (Host API). `Engine` itself stays off this module (`docs/14`).
+/// `AuthorizedFactWrite` is Engine-internal (UoW-first).
+pub use proxima_core::AuthorizationHook;
 /// The typed artefact inside [`CitedBlobStaged`], and the outcome of
 /// [`proxima_core::Engine::complete_upload_as_fact`].
 ///
@@ -63,6 +67,10 @@ pub use proxima_core::storage_ports::{
     CitedBlobPort, CitedBlobReadError, CitedBlobReadPort, CitedBlobReadService, CitedBlobReadUrl,
     CitedBlobService, CitedBlobStaged, CitedBlobUploadAborted, CitedBlobUploadCompleted,
     CitedBlobUploadHeader, CitedBlobUploadPrepared, MAX_HELD_BLOB_DIGESTS, VerifiedCitedBlob,
+};
+pub use proxima_core::verbs::fact_ingest::{CitationSpec, FactIngestOutcome, FactWriteCommand};
+pub use proxima_core::verbs::query::{
+    GoalRow, QueryRequest, QueryResponse, SearchMode, SidecarAtom, hybrid_degraded_to_lexical,
 };
 /// [`FactTombstone`] is the return type of [`FactPayload::tombstone`], so a
 /// flavor that declares a *stateful* Fact schema — one with a head per
@@ -166,9 +174,4 @@ mod authorized_read;
 pub use authorized_read::{
     authorized_abstraction_payloads, authorized_fact_payloads,
     authorized_fact_payloads_include_tombstones, authorized_memory_ids,
-    nearest_code_chunk_candidates, owned_file_revision_heads, owned_present_chunk_indexes,
-    readable_chunk_head_ts_for_file, readable_file_revision_head_ts,
-};
-pub use proxima_storage_pg::query::{
-    CodeChunkVectorCandidate, CodeChunkVectorFilters, FileRevisionHeadRow,
 };

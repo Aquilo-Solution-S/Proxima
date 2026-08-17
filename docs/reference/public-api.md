@@ -17,7 +17,7 @@ Post-PR9 supported Rust tiers:
 | Flavor SDK (services) | `use proxima::flavor::{FlavorServices, FlavorServiceError};` | return typed services from `FlavorApp::services`; tuple composition rejects duplicate concrete types and shares one set with MCP, REST, and workers |
 | Flavor SDK (generic tools) | `use proxima::flavor::{Tool, ToolCtx, ToolCaller, ToolError};` | author transport-neutral tools; MCP and REST populate optional caller provenance directly on `ToolCtx` |
 | Flavor SDK (MCP tools) | `use proxima::flavor::{McpTool, McpToolCtx, McpToolError, McpToolErrorKind, McpToolAnnotations, McpActionArgSpec, McpAuthorContext};` | author flavor MCP tools without reaching into `proxima_core::mcp` — see [add-first-mcp-tool](../tutorials/add-first-mcp-tool.md) |
-| Flavor SDK (authorized reads) | `use proxima::flavor::{authorized_memory_ids, authorized_fact_payloads, authorized_fact_payloads_include_tombstones, authorized_abstraction_payloads};` | typed, authz-filtered candidate/payload reads — see [Authorized Flavor-Read Facade](#authorized-flavor-read-facade) below |
+| Flavor SDK (authorized reads) | `use proxima::flavor::{authorized_memory_ids, authorized_fact_payloads, authorized_fact_payloads_include_tombstones, authorized_abstraction_payloads, SidecarAtom, QueryRequest, hybrid_degraded_to_lexical};` | typed, authz-filtered candidate/payload reads — see [Authorized Flavor-Read Facade](#authorized-flavor-read-facade) below. `Engine` is Host API (`use proxima::Engine`). Code-series `&PgPool` helpers live in `flavors/code`, not this SDK. |
 | Flavor SDK (outbound endpoints) | `use proxima::flavor::{validate_endpoint_url, EndpointUrlPolicy};` | enforce HTTPS with the shared, exact loopback-only plaintext exception; never reproduce it with string prefixes |
 
 Unsupported:
@@ -140,9 +140,10 @@ embedded-consumer registration paths produce the same deterministic dump.
 
 `proxima::flavor::{authorized_memory_ids, authorized_fact_payloads,
 authorized_fact_payloads_include_tombstones, authorized_abstraction_payloads}`
-give flavor crates typed, owner/World-authorized candidate filtering and
-payload projection without ever holding a raw `sqlx::PgPool` or writing SQL
-against `proxima_core.*` themselves.
+take `&Engine`, not `&PgPool`. They give flavor crates typed,
+owner/World-authorized candidate filtering and payload projection without
+writing SQL against `proxima_core.*`. Code-chunk ANN / file-revision head
+helpers that need a pool stay in `flavors/code` (backend-owned).
 
 | Property | Contract |
 |---|---|

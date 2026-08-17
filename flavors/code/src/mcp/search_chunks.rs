@@ -15,6 +15,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::payloads::{CodeChunkV1, FileState};
+use proxima_storage_pg::query::{CodeChunkVectorCandidate, CodeChunkVectorFilters};
 
 use super::CodeToolCtxExt;
 use super::code_store;
@@ -328,7 +329,7 @@ impl Tool for CodeSearchChunksTool {
                         ctx.owner(),
                         model_id,
                         embedding,
-                        proxima::flavor::CodeChunkVectorFilters {
+                        CodeChunkVectorFilters {
                             repo_id,
                             language: args.language.as_deref(),
                             chunk_type: args.chunk_type.as_deref(),
@@ -510,7 +511,7 @@ fn reciprocal_rank(rank: usize) -> f32 {
 fn fuse_candidates(
     mode: ChunkSearchMode,
     lexical: &[ChunkCandidateRow],
-    semantic: &[proxima::flavor::CodeChunkVectorCandidate],
+    semantic: &[CodeChunkVectorCandidate],
 ) -> Vec<MatchScores> {
     let mut by_id: HashMap<uuid::Uuid, MatchScores> =
         HashMap::with_capacity(lexical.len() + semantic.len());
@@ -568,7 +569,11 @@ fn degraded_to_lexical(
         return false;
     }
     effective == ChunkSearchMode::Lexical
-        || (!matches.is_empty() && matches.iter().all(|m| m.similarity_score <= 0.0))
+        || proxima::flavor::hybrid_degraded_to_lexical(
+            proxima::flavor::SearchMode::Hybrid,
+            matches.is_empty(),
+            matches.iter().any(|m| m.similarity_score > 0.0),
+        )
 }
 
 const fn mode_label(mode: ChunkSearchMode) -> &'static str {
@@ -863,7 +868,7 @@ mod tests {
         ChunkCandidateRow, ChunkSearchMode, MAX_DISTINCTIVE_TERMS, MatchScores, distinctive_terms,
         fuse_candidates, like_pattern, reciprocal_rank,
     };
-    use proxima::flavor::CodeChunkVectorCandidate;
+    use proxima_storage_pg::query::CodeChunkVectorCandidate;
 
     fn id(byte: u8) -> uuid::Uuid {
         uuid::Uuid::from_bytes([byte; 16])

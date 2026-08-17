@@ -26,6 +26,19 @@ pub enum SearchMode {
     Hybrid,
 }
 
+/// A `Hybrid` search ranked lexically only: it returned rows but none
+/// carry a positive semantic similarity (empty or unavailable embedding
+/// store). An empty result is a genuine no-match, not degradation.
+/// Restricted to `Hybrid`: pure `Semantic` has no lexical branch.
+#[must_use]
+pub const fn hybrid_degraded_to_lexical(
+    mode: SearchMode,
+    no_rows: bool,
+    any_semantic_score: bool,
+) -> bool {
+    matches!(mode, SearchMode::Hybrid) && !no_rows && !any_semantic_score
+}
+
 fn default_search_mode() -> SearchMode {
     SearchMode::Hybrid
 }

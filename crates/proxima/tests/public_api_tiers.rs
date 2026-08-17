@@ -750,6 +750,7 @@ fn host_api_can_name_the_owner_ref_discriminant() {
 fn raw_storage_surfaces_are_not_supported_tier_exports() {
     let host_exports = include_str!("../src/host.rs");
     let flavor_exports = include_str!("../src/flavor.rs");
+    let authorized_read = include_str!("../src/flavor/authorized_read.rs");
 
     assert!(!host_exports.contains("PgPool"));
     assert!(!host_exports.contains("PgStorage"));
@@ -757,4 +758,36 @@ fn raw_storage_surfaces_are_not_supported_tier_exports() {
     assert!(!flavor_exports.contains("PgPool"));
     assert!(!flavor_exports.contains("PgStorage"));
     assert!(!flavor_exports.contains("StorageHandle"));
+    assert!(
+        !authorized_read.contains("use sqlx::PgPool") && !authorized_read.contains("&PgPool"),
+        "code-series pool helpers must not live on the Flavor SDK"
+    );
+}
+
+#[test]
+fn flavor_sdk_names_query_and_ingest_types() {
+    fn assert_hook<T: proxima::flavor::AuthorizationHook + ?Sized>() {}
+    assert_hook::<dyn proxima::flavor::AuthorizationHook>();
+
+    let _ = proxima::flavor::SidecarAtom::I32(0);
+    let _ = proxima::flavor::CitationSpec::v1("core/upload-v1", [0; 32], "core/upload-whole-v1");
+    assert!(proxima::flavor::hybrid_degraded_to_lexical(
+        proxima::flavor::SearchMode::Hybrid,
+        false,
+        false,
+    ));
+    assert!(!proxima::flavor::hybrid_degraded_to_lexical(
+        proxima::flavor::SearchMode::Lexical,
+        false,
+        false,
+    ));
+
+    let owner = proxima::OwnerRef::World;
+    let _: proxima::flavor::QueryRequest = proxima::flavor::QueryRequest::for_owner(owner);
+    let _: Option<(
+        proxima::flavor::QueryResponse,
+        proxima::flavor::GoalRow,
+        proxima::flavor::FactIngestOutcome,
+        proxima::flavor::FactWriteCommand,
+    )> = None;
 }

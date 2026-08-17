@@ -2,16 +2,19 @@ use proxima_core::verbs::query::EntityKind;
 use proxima_core::{
     AbstractionPayload, AuthzContext, FactPayload, MemoryId, Owner, SchemaId, ToolError,
 };
+use proxima_storage_pg::query::{
+    CodeChunkVectorCandidate, CodeChunkVectorFilters, FileRevisionHeadRow,
+    nearest_code_chunk_candidates, owned_file_revision_heads, owned_present_chunk_indexes,
+    readable_chunk_head_ts_for_file, readable_file_revision_head_ts,
+};
 use sqlx::PgPool;
 
 /// Private code-flavor storage service passed to tools by the host.
 ///
-/// All authorized-read logic lives in `proxima::flavor`;
-/// the methods here are thin delegating wrappers so call sites across this
-/// crate keep a stable `pool.authorized_*(...)` shape while `pool()` itself
-/// stays private — no `PgPool` and no `proxima_core.*` SQL ever leaves this
-/// crate's backend-owned boundary (`from_backend_pool_for_host`/`for_tests`,
-/// `pool()`).
+/// Authz-filtered payload reads delegate to `proxima::flavor` (`&Engine`).
+/// Code-series head / ANN helpers call `proxima_storage_pg::query` here —
+/// they need the flavor's private pool and must not sit on the Flavor SDK.
+/// `pool()` stays private (`from_backend_pool_for_host`/`for_tests`).
 #[derive(Clone)]
 pub struct CodeFlavorStore {
     pool: PgPool,
@@ -120,14 +123,15 @@ impl CodeFlavorStore {
         &self,
         owner: Owner,
         repo_id: uuid::Uuid,
-    ) -> Result<Vec<proxima::flavor::FileRevisionHeadRow>, ToolError> {
-        proxima::flavor::owned_file_revision_heads(
+    ) -> Result<Vec<FileRevisionHeadRow>, ToolError> {
+        owned_file_revision_heads(
             &self.pool,
             owner,
             &crate::payloads::FileRevisionV1::schema_id(),
             repo_id,
         )
         .await
+        .map_err(ToolError::Storage)
     }
 
     /// Owner∪World current file-revision `t`s for one path.
@@ -137,7 +141,7 @@ impl CodeFlavorStore {
         repo_id: uuid::Uuid,
         file_path: &str,
     ) -> Result<Vec<uuid::Uuid>, ToolError> {
-        proxima::flavor::readable_file_revision_head_ts(
+        readable_file_revision_head_ts(
             &self.pool,
             owner,
             &crate::payloads::FileRevisionV1::schema_id(),
@@ -145,6 +149,7 @@ impl CodeFlavorStore {
             file_path,
         )
         .await
+        .map_err(ToolError::Storage)
     }
 
     /// Owner-only present chunk indexes at current heads of one file.
@@ -154,7 +159,7 @@ impl CodeFlavorStore {
         repo_id: uuid::Uuid,
         file_path: &str,
     ) -> Result<Vec<i32>, ToolError> {
-        proxima::flavor::owned_present_chunk_indexes(
+        owned_present_chunk_indexes(
             &self.pool,
             owner,
             &crate::payloads::CodeChunkV1::schema_id(),
@@ -162,6 +167,7 @@ impl CodeFlavorStore {
             file_path,
         )
         .await
+        .map_err(ToolError::Storage)
     }
 
     /// Owner∪World present chunk head `t`s for one file.
@@ -171,7 +177,7 @@ impl CodeFlavorStore {
         repo_id: uuid::Uuid,
         file_path: &str,
     ) -> Result<Vec<uuid::Uuid>, ToolError> {
-        proxima::flavor::readable_chunk_head_ts_for_file(
+        readable_chunk_head_ts_for_file(
             &self.pool,
             owner,
             &crate::payloads::CodeChunkV1::schema_id(),
@@ -179,6 +185,7 @@ impl CodeFlavorStore {
             file_path,
         )
         .await
+        .map_err(ToolError::Storage)
     }
 
     /// Nearest `code-chunk-v1` chunks to a query embedding, best-first.
@@ -192,18 +199,19 @@ impl CodeFlavorStore {
         owner: Owner,
         model_id: &str,
         query_embedding: &[f32],
-        filters: proxima::flavor::CodeChunkVectorFilters<'_>,
+        filters: CodeChunkVectorFilters<'_>,
         limit: usize,
-    ) -> Result<Vec<proxima::flavor::CodeChunkVectorCandidate>, ToolError> {
-        proxima::flavor::nearest_code_chunk_candidates(
+    ) -> Result<Vec<CodeChunkVectorCandidate>, ToolError> {
+        nearest_code_chunk_candidates(
             &self.pool,
             owner,
             &crate::payloads::CodeChunkV1::schema_id(),
             model_id,
             query_embedding,
             filters,
-            limit,
+            i64::try_from(limit).unwrap_or(i64::MAX),
         )
         .await
+        .map_err(ToolError::Storage)
     }
 }

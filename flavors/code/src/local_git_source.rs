@@ -217,7 +217,7 @@ fn read_error(err: &ToolError) -> IngestError {
 }
 
 fn file_revision_head_from_row(
-    row: proxima::flavor::FileRevisionHeadRow,
+    row: proxima_storage_pg::query::FileRevisionHeadRow,
 ) -> Result<FileRevisionHead, IngestError> {
     let content_sha256: [u8; 32] = row.content_sha256.as_slice().try_into().map_err(|_| {
         IngestError::Storage(format!(
