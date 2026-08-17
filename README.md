@@ -7,10 +7,15 @@
 
 # Proxima
 
-Proxima is a typed, owner-scoped durable memory substrate for agentic systems.
-It gives host applications and coding agents persistent Facts, Abstractions,
-Perspectives, Goals, citations, retrieval, and provenance without owning the
-product UX or model loop.
+Typed, owner-scoped durable memory for agentic systems. Hosts and coding
+agents get persistent Facts, Abstractions, Perspectives, Goals, citations,
+retrieval, and provenance. Proxima does not own the product UX or the
+model loop.
+
+Identity is timeseries: `(handle, t)`. `handle` is the series. `t` is this
+version (uuidv7, the row id). There is no Edge table — pins live on the
+node (`origins[]` / `refs[]`). Schema is hard-cut
+`crates/storage-pg/migrations/0001_v008.sql`.
 
 ## Use Proxima When
 
@@ -18,23 +23,21 @@ product UX or model loop.
 |---|---|
 | Running the MCP memory server locally | [docs/getting-started/local-dev.md](docs/getting-started/local-dev.md) |
 | Connecting a coding agent | [docs/getting-started/connect-agent.md](docs/getting-started/connect-agent.md) |
-| Embedding Proxima in a Rust host | [apps/proxima-mcp](apps/proxima-mcp) |
+| Embedding Proxima in a Rust host | [crates/proxima](crates/proxima) |
 | Building a flavor | [docs/tutorials/build-first-flavor.md](docs/tutorials/build-first-flavor.md) |
-| Checking invariants/design | [docs/README.md](docs/README.md) |
+| Checking invariants / design | [docs/README.md](docs/README.md) |
 | Building the docs site | [docs/README.md](docs/README.md#docs-site) |
 
 ## Five-Minute Local Start
 
-Fully local: your machine, your Postgres, your embedding model. No hosted
-service and no account anywhere.
+Your machine, your Postgres, your embedding model. No hosted service.
 
 ```sh
 # 1. Postgres with pgvector
 docker compose -f docker-compose.dev.yml up -d --wait postgres
 
-# 2. A local OIDC issuer. Proxima has exactly one auth path — an RS256
-#    bearer verified against a JWKS — so local means a local *issuer*,
-#    not a bypass. This prints the env and client config to paste.
+# 2. A local OIDC issuer. One auth path: RS256 bearer vs JWKS.
+#    Local means a local issuer, not a bypass. Prints env + client config.
 cargo run -p proxima-dev-idp
 
 # 3. In another shell, paste what step 2 printed, then:
@@ -43,29 +46,27 @@ export PROXIMA_TOOL_PROFILE=full
 cargo run -p proxima-mcp
 ```
 
-Headless MCP server at `http://127.0.0.1:31415/mcp`.
+Headless MCP at `http://127.0.0.1:31415/mcp`. Code flavor is default-on;
+`--no-default-features` is substrate-only.
 
-Semantic search needs an embedding model. Any OpenAI-compatible
-`/embeddings` endpoint works, including a local one — no API key required:
+Semantic search needs an OpenAI-compatible `/embeddings` endpoint
+(1024-dim). Local, no API key:
 
 ```sh
-ollama pull qwen3-embedding:0.6b     # 1024-dim, matches the vector column
+ollama pull qwen3-embedding:0.6b
 export PROXIMA_EMBED_BASE_URL=http://127.0.0.1:11434/v1
 export PROXIMA_EMBED_MODEL=qwen3-embedding:0.6b
 ```
 
-Without an embedding endpoint the server starts in degraded mode: lexical
-search works, semantic and hybrid report the missing capability.
+Without an embedding client the server starts degraded: lexical search
+works; semantic and hybrid report the missing capability.
 
-See [`docs/getting-started/local-dev.md`](docs/getting-started/local-dev.md)
-for the full walkthrough, and
-[`docs/10-configuration.md`](docs/10-configuration.md) for hosted embedding
-providers.
+Full walkthrough: [docs/getting-started/local-dev.md](docs/getting-started/local-dev.md).
+Hosted embed providers: [docs/10-configuration.md](docs/10-configuration.md).
 
 ## Connecting Your Coding Agent To Proxima
 
-`cargo run -p proxima-dev-idp` prints a ready-to-paste command. For Claude
-Code it is:
+`cargo run -p proxima-dev-idp` prints a ready-to-paste command. Claude Code:
 
 ```sh
 claude mcp add --transport http proxima http://127.0.0.1:31415/mcp \
@@ -73,7 +74,7 @@ claude mcp add --transport http proxima http://127.0.0.1:31415/mcp \
   --header "X-Proxima-Owner: personal:<user-id-from-dev-idp>"
 ```
 
-Equivalent JSON, for clients that take a config file:
+JSON, for clients that take a config file:
 
 ```json
 {
@@ -89,36 +90,53 @@ Equivalent JSON, for clients that take a config file:
 }
 ```
 
-`X-Proxima-Owner` is required on MCP `initialize`; the server binds that
+`X-Proxima-Owner` is required on MCP `initialize`. The server binds that
 owner to the returned `Mcp-Session-Id` and rechecks authority on every
-request. `PROXIMA_MCP_BIND` overrides the listener address. Non-loopback binds
-require `PROXIMA_EXPOSE_NETWORK=true` plus the auth/origin/host gates in
-[`docs/10-configuration.md`](docs/10-configuration.md) and
-[`docs/15-deployment.md`](docs/15-deployment.md).
+request. `PROXIMA_MCP_BIND` overrides the listener. Non-loopback binds
+require `PROXIMA_EXPOSE_NETWORK=true` plus the gates in
+[docs/10-configuration.md](docs/10-configuration.md) and
+[docs/15-deployment.md](docs/15-deployment.md).
 
-In production, replace `dev-idp` with your real issuer — Entra, Zitadel,
-Auth0, anything serving standard JWKS discovery. Nothing else changes: the
-server verifies both the same way.
+In production, replace `dev-idp` with your issuer (Entra, Zitadel, Auth0,
+any standard JWKS). The server verifies both the same way.
 
-Agent-specific setup and copy/paste prompts live in
-[`docs/getting-started/connect-agent.md`](docs/getting-started/connect-agent.md),
-[`docs/agent/quickstart.md`](docs/agent/quickstart.md),
-[`llms.txt`](llms.txt), and [`llms-full.txt`](llms-full.txt).
+Agent setup and prompts: [docs/getting-started/connect-agent.md](docs/getting-started/connect-agent.md),
+[docs/agent/quickstart.md](docs/agent/quickstart.md),
+[llms.txt](llms.txt), [llms-full.txt](llms-full.txt).
 
-## What `proxima-core` Means
+## Graph
 
-proxima-core is the Rust runtime framework core: the domainless graph contracts,
-build-time flavor registry, protocol verbs, Goal/Self/WakeConfig runtime, MCP tool
-substrate, and storage ports. Applications normally embed it through the
-`proxima` crate and add domains via flavor crates.
+| Kind | What | Produced by |
+|---|---|---|
+| Fact | Admitted observation. Never revised. | FactIngest |
+| Abstraction | Re-derivable interpretation over Facts. | F→A |
+| Perspective | Re-derivable integration over Abstractions. | A→P |
+| Goal | Desired end-state. Lifecycle is supersession. | GoalWrite |
 
-The formal kernel is [`docs/lean/Causa`](docs/lean/Causa): the
-invariant spec and proof surface, not the Rust crate boundary.
+Self is a query, not a row. Citation is Fact ∪ Abstraction only.
 
-## Embedding Proxima
+Pins are node content. Two kinds, kind follows the operation, no verb
+writes a pin. See [docs/16-edges.md](docs/16-edges.md).
 
-Host apps use the `proxima` framework facade rather than assembling
-`proxima-core` directly:
+| Array | Statement |
+|---|---|
+| `origins[]` | made-from (`derived_from`) |
+| `refs[]` | points-at (`references()` on the payload) |
+
+Engine contract to clients: Query / ChangeHistory / GoalWrite /
+FactIngest / Schema. Owner-scoped, transport-agnostic
+([docs/14-protocol-surface.md](docs/14-protocol-surface.md)). MCP tools
+are thin callers of those verbs. Forget cools; erase is abandonment-only.
+
+Reads are Tesla-valve: sidecar / index → admit → project in Rust. No
+raw flavor SQL against `proxima_core.*`.
+
+## Host And Flavor Tiers
+
+| Tier | Import | Contract |
+|---|---|---|
+| Host API | `use proxima::{Proxima, RuntimeBuilder, Engine};` | compose/run a binary; call graph verbs; server-resolved `AuthzContext` |
+| Flavor SDK | `use proxima::flavor::{FlavorBundle, FlavorRegistry, FactPayload, pg_sidecar};` | build-time schemas/tools/sidecars; no `PgPool`, no core-table SQL |
 
 ```rust
 proxima::run::<App>().await?;
@@ -130,113 +148,30 @@ Proxima::<App>::app()
     .await?;
 ```
 
-Use [`apps/proxima-mcp`](apps/proxima-mcp) as the wiring template.
-Runtime env/default semantics live in [`crates/proxima`](crates/proxima).
+Wiring template: [apps/proxima-mcp](apps/proxima-mcp). Env/defaults:
+[crates/proxima](crates/proxima).
 
-## Design and Kernel Authority
+## Authority
 
-The Lean kernel in [`docs/lean/Causa`](docs/lean/Causa) is the
-source of truth for domainless invariants. The numbered Markdown docs are the
-human-readable design/reference layer. When prose, code, and Lean disagree on a
-domainless invariant, Lean wins until the decision is renegotiated in writing.
+The Lean kernel at [docs/lean/Causa](docs/lean/Causa) is the source of
+truth for domainless invariants (F/A/P layering, pins, operators, owner
+scoping, goals, citations, compliance). Numbered docs under `docs/` are
+rationale. When code or prose disagrees with the kernel, the kernel wins
+until renegotiated in writing.
 
-Status labels used below:
+Index: [docs/README.md](docs/README.md). Origin ontology:
+[docs/universe.md](docs/universe.md).
 
-| Label | Meaning |
-|---|---|
-| `current` | Describes implemented behavior or enforced contract. |
-| `current + deferred sections` | Mostly current, with explicit deferred rows/sections. |
-| `design intent` | Target contract; not a full implementation claim. |
-| `current + design rationale` | Current invariant or contract plus rationale/commentary. |
-| `current implementation guide` | Current contributor-facing build checklist. |
-| `current deployment guide` | Current deployment behavior and operator guidance. |
-| `current developer fixture note` | Current developer-only fixture documentation. |
+## Implementation
 
-- [`docs/universe.md`](docs/universe.md) — **design intent**. Origin doc:
-  ontology, the Spinning Wheel, philosophical commitments, and three concrete
-  worlds.
-- [`docs/01-event-source.md`](docs/01-event-source.md) — **current + design
-  rationale**. Event sources, owner scoping, and the membrane between Reality
-  and the agent.
-- [`docs/02-memory.md`](docs/02-memory.md) — **current + design rationale**.
-  Core memory entity, strict Facts → Abstraction → Perspective layering,
-  source-owned edges, operator provenance, and owner-role scoped reads. The
-  edge model itself is [`docs/16-edges.md`](docs/16-edges.md).
-- [`docs/03-schema-registry.md`](docs/03-schema-registry.md) — **current +
-  design rationale**. Compile-time payload traits, sidecars, registrations,
-  renderers, and migration discipline.
-- [`docs/04-consolidation.md`](docs/04-consolidation.md) — **current + deferred
-  sections**. F→A and A→P set transforms, prompt locality, source-batch
-  lifecycle, supersession, and deferred enforcement notes.
-- [`docs/05-actions.md`](docs/05-actions.md) — **current + design rationale**.
-  Actions as ordinary Facts emitted through trusted sources/tools.
-- [`docs/06-goals-and-self.md`](docs/06-goals-and-self.md) — **current + design
-  rationale**. Goal entity, supersession-only lifecycle, and Self as pure query.
-- [`docs/07-storage.md`](docs/07-storage.md) — **current + design rationale**.
-  Storage abstractions, ID types, identity rules, append-only discipline, and
-  independent vector-store lifecycle.
-- [`docs/08-core-and-flavors.md`](docs/08-core-and-flavors.md) — **current +
-  design rationale**. Core/flavor layering, build-time registration, and
-  default-on code-flavor packaging.
-- [`docs/09-developing-flavors.md`](docs/09-developing-flavors.md) — **current
-  implementation guide**. Flavor author checklist for typed keys, sidecars,
-  registration, migrations, and tools.
-- [`docs/10-configuration.md`](docs/10-configuration.md) — **current**. Runtime
-  config surface for Postgres, MCP, S3, auth, tool profiles, and embeddings.
-- [`docs/11-citations.md`](docs/11-citations.md) — **current + design
-  rationale**. CitedObject/CitationMapping traits, bibliographic provenance,
-  and the Fact ∪ Abstraction citation rule.
-- [`docs/12-tool-manifest.md`](docs/12-tool-manifest.md) — **current + deferred
-  sections**. Build-time tool vocabulary, MCP dispatch, Goal wake toolsets,
-  and deferred compliance enforcement.
-- [`docs/13-compliance.md`](docs/13-compliance.md) — **design intent + current
-  primitive inventory**. Owner deletion, source-scope deletion, pause/resume,
-  export, suppression, and audit primitives.
-- [`docs/14-protocol-surface.md`](docs/14-protocol-surface.md) — **current +
-  deferred sections**. Query, ChangeHistory, GoalWrite, FactIngest, and Schema
-  verbs; owner-scoped and transport-agnostic.
-- [`docs/15-deployment.md`](docs/15-deployment.md) — **current deployment
-  guide**. Code-flavor MCP deployment, Docker, OIDC bearer auth, network
-  exposure, and tool-surface profiles.
-- [`docs/16-edges.md`](docs/16-edges.md) — **current + design rationale**. The
-  edge model: two closed kinds, kind-follows-operation, the node-home test, and
-  rebuildability as the master invariant.
-- [`docs/17-rest-surface.md`](docs/17-rest-surface.md) — **current**. Optional
-  `/v1` REST rendering of the frozen tool manifest: derived routes,
-  header-borne call context, HTTP status map, and OpenAPI 3.2 request/response
-  schemas derived from the registered Rust tool types.
+Rust. One binary per deployment: Engine, storage, transports, and the
+flavor crates linked at build time. No runtime registry, no plugin
+tier, no in-process flavor catalog.
 
-## Design Background
-
-We unconsciously perceive reality as it is. The filter we call our perception
-stems from our intrinsic motivations as well as our conditioning based on past
-experiences. Here, we refer to reality as facts (F). To abstract facts, we need
-a perspective (or multiple perspectives) and relate them to goals (G). This
-gives rise to insights—here, abstractions (A).
-
-Actions that originate from us are indistinguishable from external factors—the
-only difference is that, in this case, the source can be traced directly back to
-us. Proxima is based on the idea that consequences can only contribute to the
-continuous learning and improvement of a system through traceability.
-
-The system is designed to be type-safe at compile time while maintaining
-flexibility through custom flavors. The word flavor is intentional: domains are
-mostly defined by paradigms and norms, while perspective is personal, like
-taste.
-
-See [`docs/universe.md`](docs/universe.md) for the full design background.
-
-## Implementation Commitment
-
-Rust.
-
-Each deployment is a single binary. The engine, event sources, actuator
-interface, memory store, and consolidation operators all live in one process per
-deployment. Different deployments build different binaries from different
-flavor combinations (08); within any one binary, no internal split, no feature
-flags, no plugin loading.
+Existing databases on a pre-v0.0.8 ledger reset. There is no in-place
+ALTER lane from the prior schema.
 
 ## License
 
-Apache License, Version 2.0. See [`LICENSE`](LICENSE) for full text and
-[`LICENSING.md`](LICENSING.md) for rationale and commercial offerings.
+Apache License, Version 2.0. See [LICENSE](LICENSE) and
+[LICENSING.md](LICENSING.md).
