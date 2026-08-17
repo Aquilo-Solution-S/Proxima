@@ -58,67 +58,58 @@ async fn walk_memory_lineage_timeseries(
         EntityRef::Goal(_) => None,
     });
     let page_limit = i64::from(limit).saturating_add(1);
-    let mut hops: Vec<(
-        uuid::Uuid,
-        String,
-        uuid::Uuid,
-        String,
-        i32,
-        time::OffsetDateTime,
-    )> = match req.direction {
-        MemoryLineageDirection::Ancestors => sqlx::query_as(
-            "WITH RECURSIVE walk AS (
+    // Pins live on the source. Target existence/owner is not a walk
+    // filter: a foreign or missing origin redacts, it does not drop.
+    // Recursion joins the next *source* only when that row is in S_read.
+    let mut hops: Vec<(uuid::Uuid, String, uuid::Uuid, i32, time::OffsetDateTime)> =
+        match req.direction {
+            MemoryLineageDirection::Ancestors => sqlx::query_as(
+                "WITH RECURSIVE walk AS (
                  SELECT src.t AS src, src.kind::text AS src_kind,
-                        pin AS tgt, tgt.kind::text AS tgt_kind, 1 AS dist,
+                        pin AS tgt, 1 AS dist,
                         COALESCE(uuid_extract_timestamp(src.t), TIMESTAMPTZ '1970-01-01')
                           AS created_at
                    FROM proxima_core.memory src
                    JOIN unnest(src.origins) AS pin ON true
-                   JOIN proxima_core.memory tgt ON tgt.t = pin
                   WHERE src.t = $1
                     AND src.owner_id = ANY($2::uuid[])
-                    AND tgt.owner_id = ANY($2::uuid[])
                  UNION ALL
-                 SELECT n.t, n.kind::text, pin, nxt.kind::text, w.dist + 1,
+                 SELECT n.t, n.kind::text, pin, w.dist + 1,
                         COALESCE(uuid_extract_timestamp(n.t), TIMESTAMPTZ '1970-01-01')
                    FROM walk w
                    JOIN proxima_core.memory n ON n.t = w.tgt
                    JOIN unnest(n.origins) AS pin ON true
-                   JOIN proxima_core.memory nxt ON nxt.t = pin
                   WHERE w.dist < $3
                     AND n.owner_id = ANY($2::uuid[])
-                    AND nxt.owner_id = ANY($2::uuid[])
              )
-             SELECT src, src_kind, tgt, tgt_kind, dist, created_at FROM walk
+             SELECT src, src_kind, tgt, dist, created_at FROM walk
               WHERE ($4::int IS NULL
                      OR dist > $4
                      OR (dist = $4 AND (src, tgt) < ($5::uuid, $6::uuid)))
               ORDER BY dist ASC, src DESC, tgt DESC
               LIMIT $7",
-        )
-        .bind(start)
-        .bind(&owner_ids)
-        .bind(depth)
-        .bind(after_dist)
-        .bind(after_src)
-        .bind(after_tgt)
-        .bind(page_limit)
-        .fetch_all(pool)
-        .await
-        .map_err(map_err)?,
-        MemoryLineageDirection::Descendants => sqlx::query_as(
-            "WITH RECURSIVE walk AS (
+            )
+            .bind(start)
+            .bind(&owner_ids)
+            .bind(depth)
+            .bind(after_dist)
+            .bind(after_src)
+            .bind(after_tgt)
+            .bind(page_limit)
+            .fetch_all(pool)
+            .await
+            .map_err(map_err)?,
+            MemoryLineageDirection::Descendants => sqlx::query_as(
+                "WITH RECURSIVE walk AS (
                  SELECT child.t AS src, child.kind::text AS src_kind,
-                        $1::uuid AS tgt, parent.kind::text AS tgt_kind, 1 AS dist,
+                        $1::uuid AS tgt, 1 AS dist,
                         COALESCE(uuid_extract_timestamp(child.t), TIMESTAMPTZ '1970-01-01')
                           AS created_at
                    FROM proxima_core.memory child
-                   JOIN proxima_core.memory parent ON parent.t = $1
                   WHERE child.origins @> ARRAY[$1::uuid]
                     AND child.owner_id = ANY($2::uuid[])
-                    AND parent.owner_id = ANY($2::uuid[])
                  UNION ALL
-                 SELECT child.t, child.kind::text, w.src, w.src_kind, w.dist + 1,
+                 SELECT child.t, child.kind::text, w.src, w.dist + 1,
                         COALESCE(uuid_extract_timestamp(child.t), TIMESTAMPTZ '1970-01-01')
                    FROM walk w
                    JOIN proxima_core.memory child
@@ -126,24 +117,24 @@ async fn walk_memory_lineage_timeseries(
                   WHERE w.dist < $3
                     AND child.owner_id = ANY($2::uuid[])
              )
-             SELECT src, src_kind, tgt, tgt_kind, dist, created_at FROM walk
+             SELECT src, src_kind, tgt, dist, created_at FROM walk
               WHERE ($4::int IS NULL
                      OR dist > $4
                      OR (dist = $4 AND (src, tgt) < ($5::uuid, $6::uuid)))
               ORDER BY dist ASC, src DESC, tgt DESC
               LIMIT $7",
-        )
-        .bind(start)
-        .bind(&owner_ids)
-        .bind(depth)
-        .bind(after_dist)
-        .bind(after_src)
-        .bind(after_tgt)
-        .bind(page_limit)
-        .fetch_all(pool)
-        .await
-        .map_err(map_err)?,
-    };
+            )
+            .bind(start)
+            .bind(&owner_ids)
+            .bind(depth)
+            .bind(after_dist)
+            .bind(after_src)
+            .bind(after_tgt)
+            .bind(page_limit)
+            .fetch_all(pool)
+            .await
+            .map_err(map_err)?,
+        };
 
     let page_len = usize::try_from(limit).unwrap_or(usize::MAX);
     let truncated = hops.len() > page_len;
@@ -176,6 +167,10 @@ async fn walk_memory_lineage_timeseries(
         .map(|(id, _, schema_id)| (*id, schema_id.clone()))
         .collect();
     let mut snippets = load_lineage_snippets(pool, projections, &snippet_keys).await?;
+    let visible_kind: HashMap<uuid::Uuid, EntityKind> = node_rows
+        .iter()
+        .filter_map(|(id, kind, _)| parse_kind(kind).map(|kind| (*id, kind)))
+        .collect();
     let nodes: Vec<MemoryLineageNode> = node_rows
         .into_iter()
         .filter_map(|(id, kind, schema_id)| {
@@ -191,14 +186,17 @@ async fn walk_memory_lineage_timeseries(
 
     let edges: Vec<MemoryLineageEdge> = hops
         .iter()
-        .filter_map(|(src, src_kind, tgt, tgt_kind, dist, created_at)| {
+        .filter_map(|(src, src_kind, tgt, dist, created_at)| {
+            let target = match visible_kind.get(tgt).copied() {
+                Some(kind) => {
+                    EdgeTargetProjection::visible(EdgeEndpoint::memory(kind, MemoryId::new(*tgt)))
+                }
+                None => EdgeTargetProjection::Redacted,
+            };
             Some(MemoryLineageEdge {
                 edge: Edge {
                     source: EdgeEndpoint::memory(parse_kind(src_kind)?, MemoryId::new(*src)),
-                    target: EdgeTargetProjection::visible(EdgeEndpoint::memory(
-                        parse_kind(tgt_kind)?,
-                        MemoryId::new(*tgt),
-                    )),
+                    target,
                     kind: EdgeKind::Origin,
                     created_at: *created_at,
                 },
@@ -209,7 +207,7 @@ async fn walk_memory_lineage_timeseries(
     let next_cursor = truncated.then(|| {
         let last = hops.last().expect("truncated page is non-empty");
         MemoryLineageCursor {
-            distance: u8::try_from(last.4).unwrap_or(u8::MAX),
+            distance: u8::try_from(last.3).unwrap_or(u8::MAX),
             source: EntityRef::Memory(MemoryId::new(last.0)),
             target: EntityRef::Memory(MemoryId::new(last.2)),
         }
@@ -304,5 +302,25 @@ mod tests {
         let endpoint = EdgeEndpoint::memory(EntityKind::Fact, MemoryId::new(id));
         assert_eq!(endpoint.kind, EntityKind::Fact);
         assert_eq!(endpoint.memory_id().map(MemoryId::into_inner), Some(id));
+    }
+
+    #[test]
+    fn lineage_sql_does_not_join_target_owner() {
+        let src = include_str!("lineage.rs");
+        let tgt_owner = format!("{}{}", "tgt.owner_id = ", "ANY");
+        let tgt_join = format!("{}{}", "JOIN proxima_core.memory tgt ON tgt.t", " = pin");
+        let parent_owner = format!("{}{}", "parent.owner_id = ", "ANY");
+        assert!(
+            !src.contains(&tgt_owner),
+            "D8: target owner is redaction, not a walk filter"
+        );
+        assert!(
+            !src.contains(&tgt_join),
+            "D8: pin UUID is on the source; do not join tgt for existence"
+        );
+        assert!(
+            !src.contains(&parent_owner),
+            "D8: descendants do not re-admit the start via parent owner"
+        );
     }
 }

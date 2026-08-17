@@ -249,3 +249,95 @@ async fn pin_node_loads_are_owner_scoped_and_redact_in_memory() {
     let _ = drop_db(&db_name).await;
     result.expect("owner-scoped pin loads failed");
 }
+
+/// Old SQL `JOIN tgt AND tgt.owner_id = ANY` dropped the hop. The pin
+/// is on the source; a foreign origin must redact.
+#[tokio::test]
+async fn lineage_redacts_foreign_origin_instead_of_dropping() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    if let Err(e) = create_db(&db_name).await {
+        panic!("PG required for tests but admin connect failed: {e}");
+    }
+    let url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&url).await?;
+        pg.run_migrations().await?;
+        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
+        let other = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let other_permit = OwnerWritePermit::new_for_tests(other, AccessKind::Fact);
+        let pool = pg.pool_for_tests();
+
+        let own = ingest_fact_atomic(pool, &permit, &draft("fact", vec![], vec![]), None).await?;
+        let foreign =
+            ingest_fact_atomic(pool, &other_permit, &draft("fact", vec![], vec![]), None).await?;
+        let derived = ingest_fact_atomic(
+            pool,
+            &permit,
+            &draft(
+                "abstraction",
+                vec![],
+                vec![own.memory_id.into_inner(), foreign.memory_id.into_inner()],
+            ),
+            None,
+        )
+        .await?;
+
+        let walked = pg
+            .walk_memory_lineage(
+                &[owner],
+                &MemoryLineageRequest {
+                    owner,
+                    start_memory_id: derived.memory_id,
+                    direction: MemoryLineageDirection::Ancestors,
+                    depth: 2,
+                    limit: 20,
+                    after: None,
+                },
+            )
+            .await?;
+        assert!(
+            walked
+                .nodes
+                .iter()
+                .any(|node| node.memory_id == derived.memory_id),
+            "start node is admitted"
+        );
+        assert!(
+            walked
+                .nodes
+                .iter()
+                .any(|node| node.memory_id == own.memory_id),
+            "same-owner origin is a node"
+        );
+        assert!(
+            walked
+                .nodes
+                .iter()
+                .all(|node| node.memory_id != foreign.memory_id),
+            "foreign origin must not appear as a node"
+        );
+        assert!(
+            walked.edges.iter().any(|hop| {
+                hop.edge.source.memory_id() == Some(derived.memory_id)
+                    && matches!(
+                        hop.edge.target,
+                        EdgeTargetProjection::Visible { target }
+                            if target.memory_id() == Some(own.memory_id)
+                    )
+            }),
+            "same-owner origin stays visible"
+        );
+        assert!(
+            walked.edges.iter().any(|hop| {
+                hop.edge.source.memory_id() == Some(derived.memory_id)
+                    && matches!(hop.edge.target, EdgeTargetProjection::Redacted)
+            }),
+            "foreign origin hop is redacted, not dropped"
+        );
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("D8 lineage redaction failed");
+}
