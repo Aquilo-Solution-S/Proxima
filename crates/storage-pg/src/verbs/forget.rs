@@ -6,7 +6,7 @@
 )]
 
 use proxima_core::{ColdObjectStore, Owner, StorageError};
-use sqlx::{Postgres, Transaction};
+use sqlx::{PgConnection, PgPool, Postgres, Transaction};
 use uuid::Uuid;
 
 use crate::error::map_err;
@@ -78,7 +78,7 @@ impl ColdObjectStore for MemoryColdStore {
     }
 }
 
-#[derive(Debug, Clone, sqlx::FromRow)]
+#[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow)]
 struct HotRow {
     handle: Uuid,
     t: Uuid,
@@ -92,8 +92,8 @@ struct HotRow {
     refs: Vec<Uuid>,
 }
 
-#[derive(Debug, Clone)]
-struct ColdRecord {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ColdRecord {
     row: HotRow,
     schema_id: String,
     sidecar_dumps: Vec<(String, String)>,
@@ -294,7 +294,7 @@ fn read_uuid_list(bytes: &[u8], i: &mut usize) -> Result<Vec<Uuid>, StorageError
 }
 
 async fn dump_registered_sidecars(
-    tx: &mut Transaction<'_, Postgres>,
+    conn: &mut PgConnection,
     sidecars: &PgSidecarRegistryFrozen,
     t: Uuid,
 ) -> Result<Vec<(String, String)>, StorageError> {
@@ -318,7 +318,7 @@ async fn dump_registered_sidecars(
         // SQL-POLICY: PgIdent
         let json: Option<serde_json::Value> = sqlx::query_scalar(sqlx::AssertSqlSafe(sql))
             .bind(t)
-            .fetch_optional(tx.as_mut())
+            .fetch_optional(&mut *conn)
             .await
             .map_err(map_err)?;
         if let Some(json) = json {
@@ -326,6 +326,113 @@ async fn dump_registered_sidecars(
         }
     }
     Ok(dumps)
+}
+
+async fn load_embed_models(conn: &mut PgConnection, t: Uuid) -> Result<Vec<String>, StorageError> {
+    let mut models: Vec<String> = sqlx::query_scalar(
+        "SELECT DISTINCT model_id FROM proxima_core.embeddings WHERE entity_id = $1",
+    )
+    .bind(t)
+    .fetch_all(&mut *conn)
+    .await
+    .map_err(map_err)?;
+    models.sort();
+    Ok(models)
+}
+
+const HOT_ROW_SQL: &str = "SELECT handle, t, kind::text, owner_id, schema_id, source_id, ingest_key, blob_id, origins, refs
+           FROM proxima_core.memory
+          WHERE t = $1";
+
+const HOT_ROW_FOR_UPDATE_SQL: &str = "SELECT handle, t, kind::text, owner_id, schema_id, source_id, ingest_key, blob_id, origins, refs
+           FROM proxima_core.memory
+          WHERE t = $1
+          FOR UPDATE";
+
+/// Hot row + registered sidecars + embed model ids. No row lock.
+pub async fn snapshot_hot(
+    conn: &mut PgConnection,
+    sidecars: &PgSidecarRegistryFrozen,
+    t: Uuid,
+) -> Result<ColdRecord, StorageError> {
+    let row: HotRow = sqlx::query_as(HOT_ROW_SQL)
+        .bind(t)
+        .fetch_optional(&mut *conn)
+        .await
+        .map_err(map_err)?
+        .ok_or(StorageError::NotFound)?;
+    let schema_id = row.schema_id.clone();
+    let sidecar_dumps = dump_registered_sidecars(conn, sidecars, t).await?;
+    let embed_models = load_embed_models(conn, t).await?;
+    Ok(ColdRecord {
+        row,
+        schema_id,
+        sidecar_dumps,
+        embed_models,
+    })
+}
+
+/// `FOR UPDATE` + cooled stub + hot delete. Re-PUTs only when the locked
+/// dump differs from `snapshot` (owner transfer or late sidecar).
+pub async fn commit_forget(
+    tx: &mut Transaction<'_, Postgres>,
+    sidecars: &PgSidecarRegistryFrozen,
+    cold: &dyn ColdObjectStore,
+    object_key: &str,
+    snapshot: &ColdRecord,
+) -> Result<(), StorageError> {
+    let t = snapshot.row.t;
+    let locked: HotRow = sqlx::query_as(HOT_ROW_FOR_UPDATE_SQL)
+        .bind(t)
+        .fetch_optional(tx.as_mut())
+        .await
+        .map_err(map_err)?
+        .ok_or(StorageError::NotFound)?;
+    let schema_id = locked.schema_id.clone();
+    let sidecar_dumps = dump_registered_sidecars(tx.as_mut(), sidecars, t).await?;
+    let embed_models = load_embed_models(tx.as_mut(), t).await?;
+    let current = ColdRecord {
+        row: locked,
+        schema_id,
+        sidecar_dumps,
+        embed_models,
+    };
+    if current != *snapshot {
+        cold.put(object_key, &encode_record(&current)).await?;
+    }
+
+    sqlx::query(
+        "INSERT INTO proxima_core.cooled (t, handle, owner_id, kind, object_key)
+         VALUES ($1, $2, $3, $4::proxima_core.memory_kind, $5)",
+    )
+    .bind(current.row.t)
+    .bind(current.row.handle)
+    .bind(current.row.owner_id)
+    .bind(&current.row.kind)
+    .bind(object_key)
+    .execute(tx.as_mut())
+    .await
+    .map_err(map_err)?;
+
+    delete_memory_dependents(tx, sidecars, t).await?;
+    sqlx::query("DELETE FROM proxima_core.memory WHERE t = $1")
+        .bind(t)
+        .execute(tx.as_mut())
+        .await
+        .map_err(map_err)?;
+    sync_memory_head(tx, current.row.handle).await?;
+
+    sqlx::query(
+        "INSERT INTO proxima_core.announce (owner_id, op, entity, handle, t)
+         VALUES ($1, 'forget', 'memory', $2, $3)",
+    )
+    .bind(current.row.owner_id)
+    .bind(current.row.handle)
+    .bind(current.row.t)
+    .execute(tx.as_mut())
+    .await
+    .map_err(map_err)?;
+    Ok(())
 }
 
 async fn insertable_columns(
@@ -574,65 +681,27 @@ pub async fn forget_memory(
     object_key: &str,
     t: Uuid,
 ) -> Result<(), StorageError> {
-    let row: HotRow = sqlx::query_as(
-        "SELECT handle, t, kind::text, owner_id, schema_id, source_id, ingest_key, blob_id, origins, refs
-           FROM proxima_core.memory
-          WHERE t = $1
-          FOR UPDATE",
-    )
-    .bind(t)
-    .fetch_optional(tx.as_mut())
-    .await
-    .map_err(map_err)?
-    .ok_or(StorageError::NotFound)?;
-    let schema_id = row.schema_id.clone();
-    let sidecar_dumps = dump_registered_sidecars(tx, sidecars, t).await?;
-    let embed_models: Vec<String> = sqlx::query_scalar(
-        "SELECT DISTINCT model_id FROM proxima_core.embeddings WHERE entity_id = $1",
-    )
-    .bind(t)
-    .fetch_all(tx.as_mut())
-    .await
-    .map_err(map_err)?;
-    let payload = encode_record(&ColdRecord {
-        row: row.clone(),
-        schema_id,
-        sidecar_dumps,
-        embed_models,
-    });
-    cold.put(object_key, &payload).await?;
+    let rec = snapshot_hot(tx.as_mut(), sidecars, t).await?;
+    cold.put(object_key, &encode_record(&rec)).await?;
+    commit_forget(tx, sidecars, cold, object_key, &rec).await
+}
 
-    sqlx::query(
-        "INSERT INTO proxima_core.cooled (t, handle, owner_id, kind, object_key)
-         VALUES ($1, $2, $3, $4::proxima_core.memory_kind, $5)",
-    )
-    .bind(row.t)
-    .bind(row.handle)
-    .bind(row.owner_id)
-    .bind(&row.kind)
-    .bind(object_key)
-    .execute(tx.as_mut())
-    .await
-    .map_err(map_err)?;
-
-    delete_memory_dependents(tx, sidecars, t).await?;
-    sqlx::query("DELETE FROM proxima_core.memory WHERE t = $1")
-        .bind(t)
-        .execute(tx.as_mut())
-        .await
-        .map_err(map_err)?;
-    sync_memory_head(tx, row.handle).await?;
-
-    sqlx::query(
-        "INSERT INTO proxima_core.announce (owner_id, op, entity, handle, t)
-         VALUES ($1, 'forget', 'memory', $2, $3)",
-    )
-    .bind(row.owner_id)
-    .bind(row.handle)
-    .bind(row.t)
-    .execute(tx.as_mut())
-    .await
-    .map_err(map_err)?;
+/// One-shot Engine path: `put` with no open transaction.
+pub async fn forget_memory_oneshot(
+    pool: &PgPool,
+    sidecars: &PgSidecarRegistryFrozen,
+    cold: &dyn ColdObjectStore,
+    object_key: &str,
+    t: Uuid,
+) -> Result<(), StorageError> {
+    let rec = {
+        let mut conn = pool.acquire().await.map_err(map_err)?;
+        snapshot_hot(&mut conn, sidecars, t).await?
+    };
+    cold.put(object_key, &encode_record(&rec)).await?;
+    let mut tx = pool.begin().await.map_err(map_err)?;
+    commit_forget(&mut tx, sidecars, cold, object_key, &rec).await?;
+    tx.commit().await.map_err(map_err)?;
     Ok(())
 }
 

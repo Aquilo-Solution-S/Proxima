@@ -2,16 +2,20 @@
 #![allow(clippy::doc_markdown, clippy::too_many_lines)]
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use proxima_core::storage_ports::{MemoryAuthoringPort, OwnerWritePermit};
 use proxima_core::verbs::fact_ingest::FactWriteCommand;
-use proxima_core::{AccessKind, ColdObjectStore, OwnerRef, SchemaId, SchemaVersion, UserId};
+use proxima_core::{
+    AccessKind, ColdObjectStore, OwnerRef, SchemaId, SchemaVersion, StorageError, UserId,
+};
 use proxima_pg_testkit::{create_db, db_url, drop_db};
 use proxima_storage_pg::PgStorage;
 use proxima_storage_pg::core_pg_sidecars;
 use proxima_storage_pg::verbs::fact_ingest::ingest_fact_atomic;
 use proxima_storage_pg::verbs::forget::{
-    MemoryColdStore, cold_object_key, erase_memory, forget_memory, hydrate_memory, owner_hash_hex,
+    MemoryColdStore, cold_object_key, commit_forget, erase_memory, forget_memory, hydrate_memory,
+    owner_hash_hex, snapshot_hot,
 };
 use uuid::Uuid;
 
@@ -283,4 +287,157 @@ async fn forget_non_last_t_rewinds_memory_head() {
     .await;
     let _ = drop_db(&db_name).await;
     result.expect("forget rewind failed");
+}
+
+struct UnlockOnPut {
+    pool: sqlx::PgPool,
+    t: Uuid,
+    puts: AtomicUsize,
+}
+
+#[async_trait::async_trait]
+impl ColdObjectStore for UnlockOnPut {
+    async fn put(&self, _key: &str, _bytes: &[u8]) -> Result<(), StorageError> {
+        self.puts.fetch_add(1, Ordering::SeqCst);
+        sqlx::query_scalar::<_, Uuid>(
+            "SELECT t FROM proxima_core.memory WHERE t = $1 FOR UPDATE NOWAIT",
+        )
+        .bind(self.t)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|err| StorageError::Internal(format!("row locked during put: {err}")))?;
+        Ok(())
+    }
+
+    async fn get(&self, _key: &str) -> Result<Vec<u8>, StorageError> {
+        Err(StorageError::NotFound)
+    }
+
+    async fn delete(&self, _key: &str) -> Result<(), StorageError> {
+        Ok(())
+    }
+}
+
+struct CountingCold {
+    inner: MemoryColdStore,
+    puts: AtomicUsize,
+}
+
+#[async_trait::async_trait]
+impl ColdObjectStore for CountingCold {
+    async fn put(&self, key: &str, bytes: &[u8]) -> Result<(), StorageError> {
+        self.puts.fetch_add(1, Ordering::SeqCst);
+        self.inner.put(key, bytes).await
+    }
+
+    async fn get(&self, key: &str) -> Result<Vec<u8>, StorageError> {
+        self.inner.get(key).await
+    }
+
+    async fn delete(&self, key: &str) -> Result<(), StorageError> {
+        self.inner.delete(key).await
+    }
+}
+
+#[tokio::test]
+async fn oneshot_forget_put_does_not_hold_row_lock() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    if let Err(e) = create_db(&db_name).await {
+        panic!("PG required for tests but admin connect failed: {e}");
+    }
+    let url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&url).await?;
+        pg.run_migrations().await?;
+        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
+        let pool = pg.pool_for_tests().clone();
+        let written = ingest_fact_atomic(&pool, &permit, &draft(None), None).await?;
+        let t = written.memory_id.into_inner();
+        let probe = Arc::new(UnlockOnPut {
+            pool,
+            t,
+            puts: AtomicUsize::new(0),
+        });
+        let pg = pg.with_cold(probe.clone());
+        MemoryAuthoringPort::forget_memory(&pg, &permit, written.memory_id).await?;
+        assert_eq!(probe.puts.load(Ordering::SeqCst), 1);
+        let hot: i64 =
+            sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_core.memory WHERE t = $1")
+                .bind(t)
+                .fetch_one(pg.pool_for_tests())
+                .await?;
+        assert_eq!(hot, 0);
+        let stub: i64 =
+            sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_core.cooled WHERE t = $1")
+                .bind(t)
+                .fetch_one(pg.pool_for_tests())
+                .await?;
+        assert_eq!(stub, 1);
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("oneshot forget lock probe failed");
+}
+
+#[tokio::test]
+async fn commit_forget_reputs_when_sidecar_changed() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    if let Err(e) = create_db(&db_name).await {
+        panic!("PG required for tests but admin connect failed: {e}");
+    }
+    let url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&url).await?;
+        pg.run_migrations().await?;
+        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
+        let pool = pg.pool_for_tests();
+        let written = ingest_fact_atomic(pool, &permit, &draft(None), None).await?;
+        let t = written.memory_id.into_inner();
+        sqlx::query(
+            "INSERT INTO proxima_core.agent_note_v1 (t, note_id, title, body, tags)
+             VALUES ($1, $1, 'n', 'sidecar body', ARRAY['tag'])",
+        )
+        .bind(t)
+        .execute(pool)
+        .await?;
+
+        let mut conn = pool.acquire().await?;
+        let snapshot = snapshot_hot(&mut conn, &core_pg_sidecars(), t).await?;
+        drop(conn);
+
+        sqlx::query("UPDATE proxima_core.agent_note_v1 SET body = 'updated' WHERE t = $1")
+            .bind(t)
+            .execute(pool)
+            .await?;
+
+        let cold = CountingCold {
+            inner: MemoryColdStore::default(),
+            puts: AtomicUsize::new(0),
+        };
+        let key = cold_object_key(&owner_hash_hex(&owner), written.handle, t);
+        let mut tx = pool.begin().await?;
+        commit_forget(&mut tx, &core_pg_sidecars(), &cold, &key, &snapshot).await?;
+        tx.commit().await?;
+        assert!(
+            cold.puts.load(Ordering::SeqCst) >= 1,
+            "locked dump must re-PUT after sidecar change"
+        );
+
+        let mut tx = pool.begin().await?;
+        hydrate_memory(&mut tx, &core_pg_sidecars(), &cold, t).await?;
+        tx.commit().await?;
+        let note: String =
+            sqlx::query_scalar("SELECT body FROM proxima_core.agent_note_v1 WHERE t = $1")
+                .bind(t)
+                .fetch_one(pool)
+                .await?;
+        assert_eq!(note, "updated");
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("commit_forget re-PUT test failed");
 }
