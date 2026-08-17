@@ -205,10 +205,10 @@ impl Tool for CodeSearchCommitsTool {
 const COMMIT_SEARCH_SQL: &str = "
 WITH q AS (SELECT websearch_to_tsquery('pg_catalog.simple'::regconfig, $1) AS tsq)
 SELECT c.t AS memory_id,
-       ts_rank_cd(to_tsvector('pg_catalog.simple'::regconfig, c.sha || ' ' || c.message), q.tsq) AS score
+       ts_rank_cd(c.search_tsv, q.tsq) AS score
 FROM q, proxima_code.commit_v1 c
 WHERE ($2::uuid IS NULL OR c.repo_id = $2)
-  AND to_tsvector('pg_catalog.simple'::regconfig, c.sha || ' ' || c.message) @@ q.tsq
+  AND c.search_tsv @@ q.tsq
 ORDER BY score DESC, c.committer_time DESC
 LIMIT $3
 ";
@@ -216,17 +216,11 @@ LIMIT $3
 const SUMMARY_SEARCH_SQL: &str = "
 WITH q AS (SELECT websearch_to_tsquery('pg_catalog.simple'::regconfig, $1) AS tsq)
 SELECT s.t AS memory_id,
-       ts_rank_cd(to_tsvector(
-           'pg_catalog.simple'::regconfig,
-           s.commit_sha || ' ' || s.summary || ' ' || proxima_code.text_array_search(s.key_files)
-       ), q.tsq) AS score
+       ts_rank_cd(s.search_tsv, q.tsq) AS score
 FROM q, proxima_code.commit_summary_v1 s
 WHERE ($2::uuid IS NULL OR s.repo_id = $2)
   AND ($3::text IS NULL OR s.change_kind = $3)
-  AND to_tsvector(
-      'pg_catalog.simple'::regconfig,
-      s.commit_sha || ' ' || s.summary || ' ' || proxima_code.text_array_search(s.key_files)
-  ) @@ q.tsq
+  AND s.search_tsv @@ q.tsq
 ORDER BY score DESC, s.t DESC
 LIMIT $4
 ";
@@ -235,4 +229,22 @@ LIMIT $4
 struct ScoredMemoryRow {
     memory_id: uuid::Uuid,
     score: f32,
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn commit_search_reads_stored_tsv() {
+        let needle = format!("{}{}", "to_ts", "vector(");
+        assert!(
+            !super::COMMIT_SEARCH_SQL.contains(&needle),
+            "commit search must @@ search_tsv, not recompute to_tsvector"
+        );
+        assert!(super::COMMIT_SEARCH_SQL.contains("c.search_tsv @@"));
+        assert!(
+            !super::SUMMARY_SEARCH_SQL.contains(&needle),
+            "summary search must @@ search_tsv, not recompute to_tsvector"
+        );
+        assert!(super::SUMMARY_SEARCH_SQL.contains("s.search_tsv @@"));
+    }
 }
