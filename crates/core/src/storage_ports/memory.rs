@@ -102,6 +102,16 @@ pub trait MemoryReadPort: Send + Sync {
         read_owners: &[OwnerRef],
         req: &crate::verbs::query::MemoryLineageRequest,
     ) -> Result<crate::verbs::query::MemoryLineageResponse, StorageError>;
+
+    /// Current owned series handle whose sidecar matches `columns`.
+    /// Owner-only (not World). Miss after transfer is expected.
+    async fn owned_series_handle(
+        &self,
+        owner: Owner,
+        schema_id: &crate::SchemaId,
+        sidecar_table: &str,
+        columns: &[(&str, crate::verbs::query::SidecarAtom)],
+    ) -> Result<Option<uuid::Uuid>, StorageError>;
 }
 
 #[async_trait::async_trait]

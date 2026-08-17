@@ -341,6 +341,16 @@ pub(in crate::engine) mod tests {
         ) -> Result<Vec<crate::PinNode>, StorageError> {
             Ok(Vec::new())
         }
+
+        async fn owned_series_handle(
+            &self,
+            _owner: Owner,
+            _schema_id: &crate::SchemaId,
+            _sidecar_table: &str,
+            _columns: &[(&str, crate::verbs::query::SidecarAtom)],
+        ) -> Result<Option<uuid::Uuid>, StorageError> {
+            Ok(None)
+        }
     }
 
     #[async_trait::async_trait]

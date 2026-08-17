@@ -1,7 +1,6 @@
 use proxima_core::verbs::goal_write::GoalState;
 use proxima_core::verbs::query::QueryRequest;
 use proxima_core::{EntityKind, GoalId, MemoryId, ToolCtx, ToolError};
-use sqlx::{Postgres, Transaction};
 use uuid::Uuid;
 
 use super::super::sql::{map_storage, owner_columns};
@@ -34,7 +33,6 @@ pub(super) async fn validate_repo(ctx: &ToolCtx, repo_id: Uuid) -> Result<(), To
 }
 
 pub(super) async fn validate_goal_activated_fact(
-    _tx: &mut Transaction<'_, Postgres>,
     ctx: &ToolCtx,
     memory_id: MemoryId,
 ) -> Result<Uuid, ToolError> {
@@ -60,26 +58,21 @@ pub(super) async fn validate_goal_activated_fact(
     let planner = ctx
         .caller_self_perspective()
         .ok_or_else(|| ToolError::InvalidInput("caller_self_perspective is required".into()))?;
-    let goal_t: Option<Uuid> = sqlx::query_scalar(
-        "SELECT g.t
-           FROM proxima_core.goal_head h
-           JOIN proxima_core.goal g ON g.handle = h.handle AND g.t = h.t
-          WHERE g.owner_id = $1
-            AND g.state = 'Active'
-            AND g.assignment_t = $2
-          ORDER BY g.t DESC
-          LIMIT 1",
-    )
-    .bind(ctx.owner().stored_owner_id())
-    .bind(planner.into_inner())
-    .fetch_optional(pool.pool())
-    .await
-    .map_err(map_storage)?;
-    goal_t.ok_or_else(|| ToolError::InvalidInput("no Active Goal assigned to caller".into()))
+    let mut req = QueryRequest::for_owner(ctx.owner());
+    req.entity_kind = Some(EntityKind::Goal);
+    req.goal_state = Some(GoalState::Active);
+    req.assignment = Some(planner);
+    req.limit = 1;
+    let response = engine.query(ctx.authz(), &req).await?;
+    response
+        .goals
+        .into_iter()
+        .next()
+        .map(|goal| goal.id.into_inner())
+        .ok_or_else(|| ToolError::InvalidInput("no Active Goal assigned to caller".into()))
 }
 
 pub(super) async fn validate_active_goal_context(
-    _tx: &mut Transaction<'_, Postgres>,
     ctx: &ToolCtx,
     goal_id: Uuid,
     planner_root: MemoryId,
@@ -114,19 +107,20 @@ async fn goal_lineage_assigned_to(
     start: GoalId,
     planner_root: MemoryId,
 ) -> Result<bool, ToolError> {
-    let pool = code_store(ctx)?;
-    let assigned: Option<uuid::Uuid> =
-        sqlx::query_scalar("SELECT assignment_t FROM proxima_core.goal WHERE t = $1")
-            .bind(start.into_inner())
-            .fetch_optional(pool.pool())
-            .await
-            .map_err(map_storage)?
-            .flatten();
-    Ok(assigned == Some(planner_root.into_inner()))
+    let engine = engine(ctx)?;
+    let mut req = QueryRequest::for_owner(ctx.owner());
+    req.entity_kind = Some(EntityKind::Goal);
+    req.goal_ids = vec![start];
+    req.limit = 1;
+    let response = engine.query(ctx.authz(), &req).await?;
+    Ok(response
+        .goals
+        .into_iter()
+        .next()
+        .is_some_and(|goal| goal.assignment == Some(planner_root)))
 }
 
 pub(super) async fn validate_plan_source_abstraction_in_owner(
-    _tx: &mut Transaction<'_, Postgres>,
     ctx: &ToolCtx,
     memory_id: MemoryId,
 ) -> Result<(), ToolError> {
@@ -153,7 +147,6 @@ pub(super) async fn validate_plan_source_abstraction_in_owner(
 }
 
 pub(super) async fn validate_evidence_in_owner(
-    _tx: &mut Transaction<'_, Postgres>,
     ctx: &ToolCtx,
     evidence: &[MemoryId],
 ) -> Result<(), ToolError> {

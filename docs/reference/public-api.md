@@ -91,7 +91,6 @@ Delegated-capable operations are closed and explicit:
 | Engine Fact split write | `authorize_fact_ingest` → `ingest_fact_with_typed_sidecar`; the returned witness rechecks runtime binding and expiry at commit |
 | Engine inline citation Fact | `authorize_fact_with_citation` → `ingest_fact_with_citation_and_typed_sidecar`; commit rechecks the witness |
 | Engine cited-object-reference Fact | `authorize_fact_with_citation_by_ref` → `ingest_fact_with_citation_ref_and_typed_sidecar`; commit rechecks the witness |
-| Engine batch | `close_batch` |
 | Engine derived memory | `author_derived_authorized` |
 | Engine upload completion | `complete_upload_as_fact` |
 | `CitedBlobService` | `prepare_upload`, `stage_upload`, `finish_upload`, `abort_upload`, `read_url`, `find_held_blobs` |
@@ -152,7 +151,15 @@ against `proxima_core.*` themselves.
 | bound | helpers deduplicate and cap candidate lists at 2,000 ids before they ever reach a query, so a pathological caller cannot force an unbounded `IN (...)`/`ANY($1)` scan |
 | supersession/tombstones | heads-only by default (`memory_head`); `authorized_fact_payloads_include_tombstones` also surfaces tombstoned heads (a caller-visible "this was deleted" state, distinct from entity-level compliance tombstoning) |
 
-Source: `crates/proxima/src/flavor/authorized_read.rs`.
+`Engine::owned_series_handle` looks up the current owned handle by
+sidecar columns. It takes `Engine` + `AuthzContext`, not `PgPool`. After
+`publish_to_world` the prior owner misses and mints.
+
+`GoalRow` projects `assignment` and `evidence`. `QueryRequest` can
+narrow Goals by `assignment` and `evidence_contains`.
+
+Source: `crates/proxima/src/flavor/authorized_read.rs`,
+`Engine::owned_series_handle`, `GoalRow`.
 
 ## Compliance Erase Host API
 

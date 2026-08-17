@@ -256,6 +256,16 @@ impl MemoryReadPort for PgStorage {
         verbs::query::walk_memory_lineage(&self.pool, read_owners, req, &self.search_projections)
             .await
     }
+
+    async fn owned_series_handle(
+        &self,
+        owner: Owner,
+        schema_id: &proxima_core::SchemaId,
+        sidecar_table: &str,
+        columns: &[(&str, proxima_core::verbs::query::SidecarAtom)],
+    ) -> Result<Option<uuid::Uuid>, StorageError> {
+        verbs::query::owned_head_handle(&self.pool, owner, schema_id, sidecar_table, columns).await
+    }
 }
 
 #[async_trait::async_trait]

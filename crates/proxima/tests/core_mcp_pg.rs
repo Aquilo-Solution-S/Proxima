@@ -1070,7 +1070,8 @@ async fn ensure_fact_embedding_for_handle(
 /// (`proxima::flavor::authorized_memory_ids` and friends) routes candidate
 /// filtering through `Engine::query`, which must treat a World-owned
 /// (published) memory as visible to any caller, not just its original
-/// owner. This is the read half of the raw-PgPool boundary breach fix —
+/// owner. Publish keeps the same `t` and moves `owner_id` to World.
+/// This is the read half of the raw-PgPool boundary breach fix —
 /// a flavor's own owner-equality-only candidate SQL would have hidden a
 /// published memory from a non-owner caller even though it is supposed to
 /// be universally readable.
@@ -1115,26 +1116,36 @@ async fn facade_authorized_read_surfaces_world_published_fact_to_non_owner() {
             .engine
             .publish_to_world(&authz, proxima_core::EntityId::Memory(MemoryId::new(memory_id)))
             .await?;
-        let published_t: Uuid = sqlx::query_scalar(
-            "SELECT m.t
-               FROM proxima_core.memory m
-              WHERE m.owner_id = $1
-              ORDER BY m.t DESC
-              LIMIT 1",
+        let published_owner: Uuid = sqlx::query_scalar(
+            "SELECT owner_id FROM proxima_core.memory WHERE t = $1",
         )
-        .bind(proxima_core::OwnerRef::World.stored_owner_id())
+        .bind(memory_id)
         .fetch_one(built.pool_for_tests())
         .await?;
+        assert_eq!(
+            published_owner,
+            proxima_core::OwnerRef::World.stored_owner_id(),
+            "publish keeps the same t and moves owner to World"
+        );
+        let still_private: i64 = sqlx::query_scalar(
+            "SELECT count(*)::bigint FROM proxima_core.memory
+              WHERE t = $1 AND owner_id = $2",
+        )
+        .bind(memory_id)
+        .bind(owner.stored_owner_id())
+        .fetch_one(built.pool_for_tests())
+        .await?;
+        assert_eq!(still_private, 0);
 
         // A caller with no relationship to `owner` — not a group co-member,
-        // no share, nothing — must still see the World copy
+        // no share, nothing — must still see the transferred t
         // through the same authorized-read helper the Code flavor calls.
         let other_authz = host_authz(&other_owner, ToolScope::All);
         let visible = proxima::flavor::authorized_memory_ids(
             &built.engine,
             &other_authz,
             other_owner,
-            &[published_t],
+            &[memory_id],
             proxima_core::verbs::query::EntityKind::Fact,
             None,
             10,
@@ -1142,7 +1153,7 @@ async fn facade_authorized_read_surfaces_world_published_fact_to_non_owner() {
         .await?;
         assert_eq!(
             visible,
-            vec![MemoryId::new(published_t)],
+            vec![MemoryId::new(memory_id)],
             "a World-published Fact must surface through the authorized-read facade for a non-owner caller"
         );
 

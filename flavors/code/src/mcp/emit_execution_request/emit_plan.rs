@@ -63,11 +63,10 @@ impl Tool for CodeEmitExecutionPlanTool {
 
             let pool = code_store(&ctx)?;
             let mut tx = pool.pool().begin().await.map_err(map_storage)?;
-            let goal_id =
-                validate_goal_activated_fact(&mut tx, &ctx, goal_activated_memory_id).await?;
-            validate_active_goal_context(&mut tx, &ctx, goal_id, planner_root).await?;
-            validate_plan_source_abstraction_in_owner(&mut tx, &ctx, plan_source_memory_id).await?;
-            validate_evidence_in_owner(&mut tx, &ctx, &evidence).await?;
+            let goal_id = validate_goal_activated_fact(&ctx, goal_activated_memory_id).await?;
+            validate_active_goal_context(&ctx, goal_id, planner_root).await?;
+            validate_plan_source_abstraction_in_owner(&ctx, plan_source_memory_id).await?;
+            validate_evidence_in_owner(&ctx, &evidence).await?;
 
             let plan_key = match args.plan_key {
                 Some(value) => normalize_text("plan_key", &value, 240)?,

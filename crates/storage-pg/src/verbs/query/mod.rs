@@ -13,6 +13,7 @@ mod memories;
 mod projection_sql;
 mod rows;
 mod search;
+mod series_handle;
 
 pub(crate) use citations::{citation_of_fact, facts_citing_object};
 pub use code_chunk_vectors::{
@@ -34,6 +35,7 @@ pub(crate) use rows::read_seq_high_water;
 #[cfg(any(test, feature = "test-fixtures", debug_assertions))]
 pub use rows::read_seq_high_water_sql_for_tests;
 pub(crate) use search::search_memories;
+pub(crate) use series_handle::{owned_head_handle, sidecar_atoms_from_payload};
 
 pub(crate) fn read_owner_columns(
     read_owners: &[OwnerRef],

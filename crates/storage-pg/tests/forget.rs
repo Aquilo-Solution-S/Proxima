@@ -71,6 +71,13 @@ async fn forget_hydrate_erase_and_world_never() {
                 .fetch_one(pool)
                 .await?;
         assert_eq!(stub, 1);
+        let heads: i64 = sqlx::query_scalar(
+            "SELECT count(*)::bigint FROM proxima_core.memory_head WHERE handle = $1",
+        )
+        .bind(written.handle)
+        .fetch_one(pool)
+        .await?;
+        assert_eq!(heads, 0, "P3: last-t forget deletes the head");
         let keys: i64 = sqlx::query_scalar(
             "SELECT count(*)::bigint FROM proxima_core.ingest_keys WHERE ingest_key = 'k1'",
         )
@@ -87,6 +94,12 @@ async fn forget_hydrate_erase_and_world_never() {
                 .fetch_one(pool)
                 .await?;
         assert_eq!(hot, 1);
+        let head_t: Uuid =
+            sqlx::query_scalar("SELECT t FROM proxima_core.memory_head WHERE handle = $1")
+                .bind(written.handle)
+                .fetch_one(pool)
+                .await?;
+        assert_eq!(head_t, t, "P3: hydrate recreates head at the same t");
         let restored: (Option<String>, Option<String>, Vec<Uuid>, Vec<Uuid>) = sqlx::query_as(
             "SELECT source_id, ingest_key, origins, refs FROM proxima_core.memory WHERE t = $1",
         )
@@ -224,4 +237,50 @@ async fn engine_forget_puts_held_store_hydrate_restores_same_t() {
     .await;
     let _ = drop_db(&db_name).await;
     result.expect("engine forget/hydrate test failed");
+}
+
+#[tokio::test]
+async fn forget_non_last_t_rewinds_memory_head() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    if let Err(e) = create_db(&db_name).await {
+        panic!("PG required for tests but admin connect failed: {e}");
+    }
+    let url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&url).await?;
+        pg.run_migrations().await?;
+        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
+        let pool = pg.pool_for_tests();
+        let first = ingest_fact_atomic(pool, &permit, &draft(None), None).await?;
+        let mut later = draft(None);
+        later.handle = Some(first.handle);
+        let second = ingest_fact_atomic(pool, &permit, &later, None).await?;
+        assert_eq!(second.handle, first.handle);
+        assert_ne!(second.memory_id, first.memory_id);
+
+        let cold = MemoryColdStore::default();
+        let key = cold_object_key("ownerhash", second.handle, second.memory_id.into_inner());
+        let mut tx = pool.begin().await?;
+        forget_memory(
+            &mut tx,
+            &core_pg_sidecars(),
+            &cold,
+            &key,
+            second.memory_id.into_inner(),
+        )
+        .await?;
+        tx.commit().await?;
+
+        let head_t: Uuid =
+            sqlx::query_scalar("SELECT t FROM proxima_core.memory_head WHERE handle = $1")
+                .bind(first.handle)
+                .fetch_one(pool)
+                .await?;
+        assert_eq!(head_t, first.memory_id.into_inner());
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("forget rewind failed");
 }

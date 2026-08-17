@@ -5,15 +5,15 @@
     clippy::used_underscore_binding
 )]
 
-use proxima_core::storage_ports::OwnerWritePermit;
+use proxima_core::storage_ports::{OwnerTransferPort, OwnerWritePermit};
 use proxima_core::verbs::fact_ingest::FactWriteCommand;
 use proxima_core::verbs::goal_write::GoalState;
-use proxima_core::{AccessKind, EntityKind, OwnerRef, SchemaId, SchemaVersion, UserId};
+use proxima_core::{AccessKind, EntityId, EntityKind, OwnerRef, SchemaId, SchemaVersion, UserId};
 use proxima_pg_testkit::{create_db, db_url, drop_db};
 use proxima_storage_pg::PgStorage;
 use proxima_storage_pg::verbs::fact_ingest::ingest_fact_atomic;
 use proxima_storage_pg::verbs::goal_timeseries::{GoalWriteCommand, write_goal};
-use proxima_storage_pg::verbs::query_timeseries::{change_history, publish_head, query_heads};
+use proxima_storage_pg::verbs::query_timeseries::{change_history, query_heads};
 use proxima_storage_pg::verbs::wake_timeseries::{
     WakeConfigDraft, WakeTriggerKind, insert_wake_config,
 };
@@ -154,22 +154,31 @@ async fn uml_section_10_walk_query_history_publish() {
         );
         assert!(hist.iter().any(|r| r.entity == "goal"));
 
-        let mut tx = pool.begin().await?;
-        let (world_h, world_t) = publish_head(&mut tx, file.handle).await?;
-        tx.commit().await?;
-        assert_ne!(world_h, file.handle);
+        let transferred = pg
+            .transfer_to_world(&permit, EntityId::Memory(file.memory_id))
+            .await?;
+        assert!(transferred, "publish transfers the existing series");
         let world_owner: Uuid =
-            sqlx::query_scalar("SELECT owner_id FROM proxima_core.memory WHERE t = $1")
-                .bind(world_t)
-                .fetch_one(pool)
-                .await?;
-        assert_eq!(world_owner, Uuid::from_u128(1));
-        let old_owner: Uuid =
             sqlx::query_scalar("SELECT owner_id FROM proxima_core.memory WHERE t = $1")
                 .bind(file.memory_id.into_inner())
                 .fetch_one(pool)
                 .await?;
-        assert_eq!(old_owner, owner.stored_owner_id());
+        assert_eq!(world_owner, Uuid::from_u128(1));
+        let handle_after: Uuid =
+            sqlx::query_scalar("SELECT handle FROM proxima_core.memory WHERE t = $1")
+                .bind(file.memory_id.into_inner())
+                .fetch_one(pool)
+                .await?;
+        assert_eq!(handle_after, file.handle);
+        let still_private: i64 = sqlx::query_scalar(
+            "SELECT count(*)::bigint FROM proxima_core.memory
+              WHERE t = $1 AND owner_id = $2",
+        )
+        .bind(file.memory_id.into_inner())
+        .bind(owner.stored_owner_id())
+        .fetch_one(pool)
+        .await?;
+        assert_eq!(still_private, 0);
 
         for dead in ["edges", "fact_entities", "change_event", "fact_receipts"] {
             let n: i64 = sqlx::query_scalar(

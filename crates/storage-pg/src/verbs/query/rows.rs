@@ -54,6 +54,8 @@ pub(super) fn goal_row_from_db(r: GoalRowDb) -> Result<GoalRow, StorageError> {
         state,
         dependency_goal_ids: r.dependency_goal_ids.into_iter().map(GoalId::new).collect(),
         supersedes: r.supersedes.map(GoalId::new),
+        assignment: r.assignment.map(MemoryId::new),
+        evidence: r.evidence.into_iter().map(MemoryId::new).collect(),
         payload: r.payload,
     })
 }
@@ -99,6 +101,8 @@ pub(super) struct GoalRowDb {
     supersedes: Option<uuid::Uuid>,
     payload: Vec<u8>,
     dependency_goal_ids: Vec<uuid::Uuid>,
+    assignment: Option<uuid::Uuid>,
+    evidence: Vec<uuid::Uuid>,
 }
 
 #[derive(Debug, sqlx::FromRow)]

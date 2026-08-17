@@ -315,6 +315,7 @@ async fn dump_registered_sidecars(
               WHERE s.t = $1",
             tbl = ident.as_str()
         );
+        // SQL-POLICY: PgIdent
         let json: Option<serde_json::Value> = sqlx::query_scalar(sqlx::AssertSqlSafe(sql))
             .bind(t)
             .fetch_optional(tx.as_mut())
@@ -380,6 +381,7 @@ async fn restore_registered_sidecars(
             tbl = ident.as_str(),
             cols = col_list
         );
+        // SQL-POLICY: PgIdent
         sqlx::query(sqlx::AssertSqlSafe(sql))
             .bind(json)
             .execute(tx.as_mut())
@@ -396,6 +398,7 @@ async fn delete_registered_sidecars(
 ) -> Result<(), StorageError> {
     for table in sidecars.memory_sidecar_tables() {
         let ident = PgIdent::table(table)?;
+        // SQL-POLICY: PgIdent
         let sql = format!("DELETE FROM {tbl} WHERE t = $1", tbl = ident.as_str());
         sqlx::query(sqlx::AssertSqlSafe(sql))
             .bind(t)
@@ -467,6 +470,103 @@ async fn delete_memory_dependents(
     Ok(())
 }
 
+/// Rewind `memory_head.t` to the latest remaining hot row, or delete the
+/// head when the series is empty. `memory.handle` FK requires the memory
+/// row to be gone first.
+pub(crate) async fn sync_memory_head(
+    tx: &mut Transaction<'_, Postgres>,
+    handle: Uuid,
+) -> Result<(), StorageError> {
+    let remaining: Option<Uuid> = sqlx::query_scalar(
+        "SELECT t FROM proxima_core.memory WHERE handle = $1 ORDER BY t DESC LIMIT 1",
+    )
+    .bind(handle)
+    .fetch_optional(tx.as_mut())
+    .await
+    .map_err(map_err)?;
+    match remaining {
+        Some(t) => {
+            sqlx::query("UPDATE proxima_core.memory_head SET t = $2 WHERE handle = $1")
+                .bind(handle)
+                .bind(t)
+                .execute(tx.as_mut())
+                .await
+                .map_err(map_err)?;
+        }
+        None => {
+            sqlx::query("DELETE FROM proxima_core.memory_head WHERE handle = $1")
+                .bind(handle)
+                .execute(tx.as_mut())
+                .await
+                .map_err(map_err)?;
+        }
+    }
+    Ok(())
+}
+
+/// Same as [`sync_memory_head`] for `goal` / `goal_head`.
+/// Owner-erase uses set SQL; this is the single-handle form.
+#[allow(dead_code)]
+pub(crate) async fn sync_goal_head(
+    tx: &mut Transaction<'_, Postgres>,
+    handle: Uuid,
+) -> Result<(), StorageError> {
+    let remaining: Option<Uuid> = sqlx::query_scalar(
+        "SELECT t FROM proxima_core.goal WHERE handle = $1 ORDER BY t DESC LIMIT 1",
+    )
+    .bind(handle)
+    .fetch_optional(tx.as_mut())
+    .await
+    .map_err(map_err)?;
+    match remaining {
+        Some(t) => {
+            sqlx::query("UPDATE proxima_core.goal_head SET t = $2 WHERE handle = $1")
+                .bind(handle)
+                .bind(t)
+                .execute(tx.as_mut())
+                .await
+                .map_err(map_err)?;
+        }
+        None => {
+            sqlx::query("DELETE FROM proxima_core.goal_head WHERE handle = $1")
+                .bind(handle)
+                .execute(tx.as_mut())
+                .await
+                .map_err(map_err)?;
+        }
+    }
+    Ok(())
+}
+
+async fn ensure_memory_head(
+    tx: &mut Transaction<'_, Postgres>,
+    rec: &ColdRecord,
+) -> Result<(), StorageError> {
+    let head = sqlx::query(
+        "INSERT INTO proxima_core.memory_head (handle, kind, schema_id, owner_id, t)
+         VALUES ($1, $2::proxima_core.memory_kind, $3, $4, $5)
+         ON CONFLICT (handle) DO UPDATE SET t = EXCLUDED.t
+         WHERE proxima_core.memory_head.kind = EXCLUDED.kind
+           AND proxima_core.memory_head.schema_id = EXCLUDED.schema_id
+           AND proxima_core.memory_head.owner_id = EXCLUDED.owner_id
+         RETURNING handle",
+    )
+    .bind(rec.row.handle)
+    .bind(&rec.row.kind)
+    .bind(&rec.schema_id)
+    .bind(rec.row.owner_id)
+    .bind(rec.row.t)
+    .fetch_optional(tx.as_mut())
+    .await
+    .map_err(map_err)?;
+    if head.is_none() {
+        return Err(StorageError::ConstraintViolation(
+            "memory_head kind/schema/owner mismatch".into(),
+        ));
+    }
+    Ok(())
+}
+
 pub async fn forget_memory(
     tx: &mut Transaction<'_, Postgres>,
     sidecars: &PgSidecarRegistryFrozen,
@@ -521,20 +621,7 @@ pub async fn forget_memory(
         .execute(tx.as_mut())
         .await
         .map_err(map_err)?;
-
-    let remaining: Option<Uuid> = sqlx::query_scalar(
-        "SELECT t FROM proxima_core.memory WHERE handle = $1 ORDER BY t DESC LIMIT 1",
-    )
-    .bind(row.handle)
-    .fetch_optional(tx.as_mut())
-    .await
-    .map_err(map_err)?;
-    sqlx::query("UPDATE proxima_core.memory_head SET t = $2 WHERE handle = $1")
-        .bind(row.handle)
-        .bind(remaining.unwrap_or(row.t))
-        .execute(tx.as_mut())
-        .await
-        .map_err(map_err)?;
+    sync_memory_head(tx, row.handle).await?;
 
     sqlx::query(
         "INSERT INTO proxima_core.announce (owner_id, op, entity, handle, t)
@@ -564,6 +651,7 @@ pub async fn hydrate_memory(
             .ok_or(StorageError::NotFound)?;
 
     let rec = decode_record(&cold.get(&object_key).await?)?;
+    ensure_memory_head(tx, &rec).await?;
     sqlx::query(
         "INSERT INTO proxima_core.memory
             (handle, t, kind, owner_id, schema_id, source_id, ingest_key, blob_id, origins, refs)
@@ -623,6 +711,24 @@ pub async fn erase_memory(
             "World is never abandoned".into(),
         ));
     }
+    let handle: Option<Uuid> =
+        sqlx::query_scalar("SELECT handle FROM proxima_core.memory WHERE t = $1 AND owner_id = $2")
+            .bind(t)
+            .bind(owner.stored_owner_id())
+            .fetch_optional(tx.as_mut())
+            .await
+            .map_err(map_err)?;
+    let handle = match handle {
+        Some(handle) => Some(handle),
+        None => sqlx::query_scalar(
+            "SELECT handle FROM proxima_core.cooled WHERE t = $1 AND owner_id = $2",
+        )
+        .bind(t)
+        .bind(owner.stored_owner_id())
+        .fetch_optional(tx.as_mut())
+        .await
+        .map_err(map_err)?,
+    };
     if let Ok(key) = sqlx::query_scalar::<_, String>(
         "SELECT object_key FROM proxima_core.cooled WHERE t = $1 AND owner_id = $2",
     )
@@ -645,6 +751,9 @@ pub async fn erase_memory(
         .execute(tx.as_mut())
         .await
         .map_err(map_err)?;
+    if let Some(handle) = handle {
+        sync_memory_head(tx, handle).await?;
+    }
     sqlx::query("DELETE FROM proxima_core.ingest_keys WHERE t = $1 AND owner_id = $2")
         .bind(t)
         .bind(owner.stored_owner_id())

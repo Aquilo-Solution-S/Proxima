@@ -131,10 +131,9 @@ already control observation grouping, so they own this id (Q6). F→A
 consolidation operates on a source batch (component 02): the chunks of one
 PDF, the files of one repo crawl, the messages of one chat session.
 
-Batch lifecycle (open / closed) is persisted in the core
-`source_batches` table — see [04 §Source-batch lifecycle](04-consolidation.md#source-batch-lifecycle). The source
-signals batch-complete via `engine.close_batch(source_batch_id)`; the
-engine gates F→A on `closed_at IS NOT NULL`.
+`source_batch_id` is an opaque episode id the source stamps on each
+write (see [07](07-storage.md)). There is no `source_batches` table and
+no `engine.close_batch` in v0.0.8.
 
 `source_batch_id` is the F→A consolidation episode, distinct from the
 artefact a Fact cites (`citation_mapping_id` → `cited_object_id`,

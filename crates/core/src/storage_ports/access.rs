@@ -20,13 +20,12 @@ pub trait OwnerAccessReadPort: Send + Sync {
 
 #[async_trait::async_trait]
 pub trait OwnerTransferPort: Send + Sync {
-    /// Transfer one memory or goal row's owner columns to
-    /// [`OwnerRef::World`] in a single statement, gated on the row
-    /// currently being owned by `from_owner`. Returns `true` when a row
-    /// existed under `from_owner` and was updated; `false` when no row
-    /// matched (already published, owner changed concurrently, tombstoned,
-    /// or absent) — the caller treats `false` as a clean, non-panicking
-    /// denial rather than a storage error.
+    /// Transfer one memory or goal **series** to [`OwnerRef::World`].
+    /// Same `(handle, t)`; head and every version move together. Returns
+    /// `true` when a row existed under `from_owner` and was updated;
+    /// `false` when no row matched (already published, owner changed
+    /// concurrently, or absent) — the caller treats `false` as a clean,
+    /// non-panicking denial rather than a storage error.
     async fn transfer_to_world(
         &self,
         permit: &OwnerWritePermit,

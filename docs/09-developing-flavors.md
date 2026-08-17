@@ -454,6 +454,13 @@ The SDK surface receives Engine admission witnesses and typed sidecar
 contexts. It never receives `sqlx::PgPool`; backend adapters keep the
 pool private.
 
+Stateful Fact ingest resolves the series handle from
+`FactPayload::natural_key_columns()` when `handle` is unset. A/P series
+continuity is `Engine::owned_series_handle` (sidecar columns, owner-only)
+or `supersedes`. Flavor `src/` does not JOIN `proxima_core.memory_head`.
+Goal assignment / evidence are `GoalRow` fields; filter with
+`QueryRequest::assignment` / `evidence_contains`.
+
 Typed path guarantees:
 
 | Check | Enforced by |

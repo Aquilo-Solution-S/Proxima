@@ -634,9 +634,30 @@ CREATE FUNCTION proxima_core.memory_head_t_only() RETURNS trigger
 BEGIN
     IF NEW.handle IS DISTINCT FROM OLD.handle
        OR NEW.kind IS DISTINCT FROM OLD.kind
+       OR NEW.schema_id IS DISTINCT FROM OLD.schema_id THEN
+        RAISE EXCEPTION 'memory_head is frozen except t and owner_id'
+            USING ERRCODE = '25006';
+    END IF;
+    RETURN NEW;
+END;
+$$;
+
+-- Content is append-only. `owner_id` may move: publish-to-World is a
+-- series transfer (MemoryHeadAligned), not a new (handle, t).
+CREATE FUNCTION proxima_core.memory_owner_or_append_only() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+    IF NEW.handle IS DISTINCT FROM OLD.handle
+       OR NEW.t IS DISTINCT FROM OLD.t
+       OR NEW.kind IS DISTINCT FROM OLD.kind
        OR NEW.schema_id IS DISTINCT FROM OLD.schema_id
-       OR NEW.owner_id IS DISTINCT FROM OLD.owner_id THEN
-        RAISE EXCEPTION 'memory_head is frozen except t'
+       OR NEW.source_id IS DISTINCT FROM OLD.source_id
+       OR NEW.ingest_key IS DISTINCT FROM OLD.ingest_key
+       OR NEW.blob_id IS DISTINCT FROM OLD.blob_id
+       OR NEW.origins IS DISTINCT FROM OLD.origins
+       OR NEW.refs IS DISTINCT FROM OLD.refs THEN
+        RAISE EXCEPTION 'append-only: % does not accept UPDATE', TG_TABLE_NAME
             USING ERRCODE = '25006';
     END IF;
     RETURN NEW;
@@ -687,9 +708,31 @@ CREATE FUNCTION proxima_core.goal_head_t_only() RETURNS trigger
     AS $$
 BEGIN
     IF NEW.handle IS DISTINCT FROM OLD.handle
-       OR NEW.schema_id IS DISTINCT FROM OLD.schema_id
-       OR NEW.owner_id IS DISTINCT FROM OLD.owner_id THEN
-        RAISE EXCEPTION 'goal_head is frozen except t' USING ERRCODE = '25006';
+       OR NEW.schema_id IS DISTINCT FROM OLD.schema_id THEN
+        RAISE EXCEPTION 'goal_head is frozen except t and owner_id'
+            USING ERRCODE = '25006';
+    END IF;
+    RETURN NEW;
+END;
+$$;
+
+CREATE FUNCTION proxima_core.goal_owner_or_append_only() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+    IF NEW.handle IS DISTINCT FROM OLD.handle
+       OR NEW.t IS DISTINCT FROM OLD.t
+       OR NEW.title IS DISTINCT FROM OLD.title
+       OR NEW.state IS DISTINCT FROM OLD.state
+       OR NEW.request_id IS DISTINCT FROM OLD.request_id
+       OR NEW.close_fact_t IS DISTINCT FROM OLD.close_fact_t
+       OR NEW.assignment_t IS DISTINCT FROM OLD.assignment_t
+       OR NEW.dependency_t IS DISTINCT FROM OLD.dependency_t
+       OR NEW.evidence_t IS DISTINCT FROM OLD.evidence_t
+       OR NEW.wake_id IS DISTINCT FROM OLD.wake_id
+       OR NEW.write_act_t IS DISTINCT FROM OLD.write_act_t THEN
+        RAISE EXCEPTION 'append-only: % does not accept UPDATE', TG_TABLE_NAME
+            USING ERRCODE = '25006';
     END IF;
     RETURN NEW;
 END;
@@ -714,7 +757,7 @@ $$;
 CREATE TRIGGER memory_append_only
     BEFORE UPDATE ON proxima_core.memory
     FOR EACH ROW
-    EXECUTE FUNCTION proxima_core.enforce_row_append_only();
+    EXECUTE FUNCTION proxima_core.memory_owner_or_append_only();
 
 CREATE TRIGGER ingest_keys_append_only
     BEFORE UPDATE ON proxima_core.ingest_keys
@@ -749,7 +792,7 @@ CREATE TRIGGER memory_pin_checks
 CREATE TRIGGER goal_append_only
     BEFORE UPDATE ON proxima_core.goal
     FOR EACH ROW
-    EXECUTE FUNCTION proxima_core.enforce_row_append_only();
+    EXECUTE FUNCTION proxima_core.goal_owner_or_append_only();
 
 CREATE TRIGGER goal_head_t_only
     BEFORE UPDATE ON proxima_core.goal_head

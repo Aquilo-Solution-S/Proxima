@@ -182,6 +182,16 @@ impl MemoryReadPort for MemoryReadFake {
     ) -> Result<proxima_core::verbs::query::MemoryLineageResponse, StorageError> {
         fake_error()
     }
+
+    async fn owned_series_handle(
+        &self,
+        _owner: Owner,
+        _schema_id: &proxima_core::SchemaId,
+        _sidecar_table: &str,
+        _columns: &[(&str, proxima_core::verbs::query::SidecarAtom)],
+    ) -> Result<Option<uuid::Uuid>, StorageError> {
+        fake_error()
+    }
 }
 
 #[derive(Debug)]

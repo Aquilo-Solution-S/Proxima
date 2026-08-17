@@ -36,6 +36,8 @@ Fact identity is `t`. `ingest_keys` is the only sourced unique.
 | Embedding | `(entity_id, model_id, embedding_version)` | re-embed writes a new row |
 
 Stateful Fact current-state is a head-by-natural-key query on the sidecar (03).
+Ingest of a stateful Fact with empty `handle` reuses the owned NK head; a
+miss mints. Flavor code does not JOIN `memory_head`.
 
 <a id="owner-columns"></a>
 
@@ -45,6 +47,10 @@ Stateful Fact current-state is a head-by-natural-key query on the sidecar (03).
 World is `00000000-0000-0000-0000-000000000001`. No `owner_kind` on memory/goal.
 
 Access uses server-resolved `OwnerRef` → roles. No org column.
+
+`publish_to_world` is an in-place series transfer: `UPDATE owner_id` on
+`memory_head`/`goal_head` and every `t` on that handle. Same `(handle, t)`.
+Triggers allow that column only; all other memory/goal fields stay append-only.
 
 <a id="storage-layout"></a>
 
@@ -143,8 +149,8 @@ Independent of entity tables.
 |---|---|
 | CDC | `announce.seq` |
 | writes are replayable | `ingest_keys` |
-| forget is cool | PUT `cold/` first, then delete hot |
-| hydrate | same `t` |
+| forget is cool | PUT `cold/` first, then delete hot; last-t forget deletes `memory_head` |
+| hydrate | same `t`; recreates `memory_head` when the series was empty |
 
 <a id="scaling-envelope"></a>
 

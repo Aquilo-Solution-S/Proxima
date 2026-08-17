@@ -77,7 +77,7 @@ impl Tool for CodeRetryExecutionRequestTool {
                 });
             }
             validate_target_perspective(&mut tx, &ctx, target_perspective_id).await?;
-            validate_evidence_in_owner(&mut tx, &ctx, &explicit_evidence).await?;
+            validate_evidence_in_owner(&ctx, &explicit_evidence).await?;
 
             let title = match args.title {
                 Some(value) => normalize_text("title", &value, 240)?,

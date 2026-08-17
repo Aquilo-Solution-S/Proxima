@@ -5,10 +5,11 @@
     clippy::too_many_lines
 )]
 
-use proxima_core::storage_ports::OwnerWritePermit;
+use proxima_core::storage_ports::{MemoryReadPort, OwnerWritePermit};
 use proxima_core::verbs::fact_ingest::FactWriteCommand;
 use proxima_core::verbs::goal_write::GoalState;
-use proxima_core::{AccessKind, OwnerRef, SchemaId, SchemaVersion, UserId};
+use proxima_core::verbs::query::{EntityKind, QueryRequest};
+use proxima_core::{AccessKind, MemoryId, OwnerRef, SchemaId, SchemaVersion, UserId};
 use proxima_pg_testkit::{create_db, db_url, drop_db};
 use proxima_storage_pg::PgStorage;
 use proxima_storage_pg::verbs::fact_ingest::ingest_fact_atomic;
@@ -168,4 +169,71 @@ async fn goal_write_replay_terminal_and_write_act() {
     .await;
     let _ = drop_db(&db_name).await;
     result.expect("goal timeseries test failed");
+}
+
+#[tokio::test]
+async fn goal_query_projects_assignment_and_evidence_filters() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    if let Err(e) = create_db(&db_name).await {
+        panic!("PG required for tests but admin connect failed: {e}");
+    }
+    let url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&url).await?;
+        pg.run_migrations().await?;
+        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Goal);
+        let pool = pg.pool_for_tests();
+
+        let assignment = ingest_fact_atomic(pool, &permit, &fact_draft(), None).await?;
+        let evidence = ingest_fact_atomic(pool, &permit, &fact_draft(), None).await?;
+
+        let mut tx = pool.begin().await?;
+        let created = write_goal(
+            &mut tx,
+            &owner,
+            &GoalWriteCommand {
+                handle: None,
+                schema_id: "core/task-v1".into(),
+                title: "assigned".into(),
+                state: GoalState::Active,
+                request_id: "req-assign".into(),
+                close_fact_t: None,
+                assignment_t: Some(assignment.memory_id.into_inner()),
+                dependency_t: vec![],
+                evidence_t: vec![evidence.memory_id.into_inner()],
+                wake_id: None,
+                mint_write_act: false,
+            },
+        )
+        .await?;
+        tx.commit().await?;
+
+        let mut by_assignment = QueryRequest::for_owner(owner);
+        by_assignment.entity_kind = Some(EntityKind::Goal);
+        by_assignment.goal_state = Some(GoalState::Active);
+        by_assignment.assignment = Some(assignment.memory_id);
+        let assigned = pg.query_memories(&by_assignment, &[]).await?;
+        assert_eq!(assigned.goals.len(), 1);
+        assert_eq!(assigned.goals[0].id.into_inner(), created.t);
+        assert_eq!(assigned.goals[0].assignment, Some(assignment.memory_id));
+        assert_eq!(assigned.goals[0].evidence, vec![evidence.memory_id]);
+
+        let mut by_evidence = QueryRequest::for_owner(owner);
+        by_evidence.entity_kind = Some(EntityKind::Goal);
+        by_evidence.evidence_contains = Some(evidence.memory_id);
+        let evidenced = pg.query_memories(&by_evidence, &[]).await?;
+        assert_eq!(evidenced.goals.len(), 1);
+        assert_eq!(evidenced.goals[0].id.into_inner(), created.t);
+
+        let mut miss = QueryRequest::for_owner(owner);
+        miss.entity_kind = Some(EntityKind::Goal);
+        miss.assignment = Some(MemoryId::new(Uuid::now_v7()));
+        let empty = pg.query_memories(&miss, &[]).await?;
+        assert!(empty.goals.is_empty());
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("goal query assignment/evidence failed");
 }

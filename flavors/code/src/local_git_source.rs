@@ -180,7 +180,7 @@ impl<'a> CodeIngestContext<'a> {
         repo_id: Uuid,
     ) -> Result<Vec<FileRevisionHead>, IngestError> {
         // Owner-only `memory_head` of each `(repo, path)` series — the
-        // same series `existing_file_revision_handle` advances.
+        // same series stateful-Fact NK ingest advances.
         self.store
             .owned_file_revision_heads(owner, repo_id)
             .await
@@ -839,6 +839,8 @@ impl LocalGitSource {
                 let tomb =
                     tombstone_chunk(self.repo_id, &pending.path, prior, pending.language.clone());
                 append_code_slice(
+                    ctx.engine,
+                    ctx.authz,
                     pool,
                     permit,
                     batch_id,
@@ -872,7 +874,8 @@ impl LocalGitSource {
                 calls: Vec::new(),
             });
         }
-        let handles = resolve_code_chunk_handles(pool, &self.owner, &bare_payloads).await?;
+        let handles =
+            resolve_code_chunk_handles(ctx.engine, ctx.authz, self.owner, &bare_payloads).await?;
         let mut file_chunks: Vec<ChunkInfo> = Vec::new();
         for (payload, handle) in bare_payloads.into_iter().zip(handles) {
             let memory_id = MemoryId::new(handle);
@@ -1023,6 +1026,8 @@ impl LocalGitSource {
         for prior in prior_indexes {
             let tomb = tombstone_chunk(self.repo_id, &pending.path, prior, None);
             append_code_slice(
+                ctx.engine,
+                ctx.authz,
                 pool,
                 permit,
                 batch_id,

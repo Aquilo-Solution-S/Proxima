@@ -99,6 +99,7 @@ pub async fn list_change_events_after(
           ORDER BY seq ASC
           LIMIT $3"
     );
+    // SQL-POLICY: fixed-fragment
     let mut query = sqlx::query(sqlx::AssertSqlSafe(sql))
         .bind(&owner_ids)
         .bind(after)

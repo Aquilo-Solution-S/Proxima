@@ -1,4 +1,5 @@
-use proxima_core::verbs::query::{EdgeFilter, EdgeReadRequest, EntityKind};
+use proxima_core::verbs::goal_write::GoalState;
+use proxima_core::verbs::query::{EdgeFilter, EdgeReadRequest, EntityKind, QueryRequest};
 use proxima_core::{
     AbstractionPayload, EdgeEndpoint, EdgeKind, EntityRef, FactPayload, MemoryId,
     PerspectivePayload,
@@ -168,7 +169,7 @@ impl Tool for CodeWorkItemBundleTool {
                 if let Some(goal_id) = load_goal_activation(&ctx, target).await? {
                     active_goal_provenance.push(ActiveGoalProvenanceBundle {
                         goal_activated_handle: ctx.format_fact_memory(target),
-                        goal_handle: ctx.format_goal(proxima_core::GoalId::new(goal_id)),
+                        goal_handle: ctx.format_goal(goal_id),
                     });
                 } else {
                     evidence_handles.push(ctx.format_fact_memory(target));
@@ -500,24 +501,31 @@ async fn load_work_item_neighbours(
 async fn load_goal_activation(
     ctx: &ToolCtx,
     memory_id: MemoryId,
-) -> Result<Option<Uuid>, ToolError> {
-    let pool = code_store(ctx)?;
-    let handle: Option<Uuid> = sqlx::query_scalar(
-        "SELECT g.handle
-           FROM proxima_core.goal_head h
-           JOIN proxima_core.goal g ON g.handle = h.handle AND g.t = h.t
-          WHERE g.owner_id = $1
-            AND g.state = 'Active'
-            AND ($2 = ANY(g.evidence_memory_ids) OR g.assignment_t = $2)
-          ORDER BY g.t DESC
-          LIMIT 1",
-    )
-    .bind(ctx.owner().stored_owner_id())
-    .bind(memory_id.into_inner())
-    .fetch_optional(pool.pool())
-    .await
-    .map_err(super::sql::map_storage)?;
-    Ok(handle)
+) -> Result<Option<proxima_core::GoalId>, ToolError> {
+    let engine = super::engine(ctx)?;
+    let assigned = query_active_goals(ctx, &engine, |req| {
+        req.assignment = Some(memory_id);
+    })
+    .await?;
+    let evidenced = query_active_goals(ctx, &engine, |req| {
+        req.evidence_contains = Some(memory_id);
+    })
+    .await?;
+    Ok([assigned, evidenced].into_iter().flatten().max())
+}
+
+async fn query_active_goals(
+    ctx: &ToolCtx,
+    engine: &proxima_core::Engine,
+    configure: impl FnOnce(&mut QueryRequest),
+) -> Result<Option<proxima_core::GoalId>, ToolError> {
+    let mut req = QueryRequest::for_owner(ctx.owner());
+    req.entity_kind = Some(EntityKind::Goal);
+    req.goal_state = Some(GoalState::Active);
+    req.limit = 1;
+    configure(&mut req);
+    let response = engine.query(ctx.authz(), &req).await?;
+    Ok(response.goals.into_iter().next().map(|goal| goal.id))
 }
 
 /// Workers this item is assigned to: incoming assignment Perspectives,

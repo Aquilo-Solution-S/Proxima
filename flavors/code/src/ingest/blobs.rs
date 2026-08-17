@@ -1,8 +1,10 @@
 use proxima_core::storage_ports::OwnerWritePermit;
 use proxima_core::verbs::fact_ingest::{CitationSpec, FactIngestOutcome};
+use proxima_core::verbs::query::SidecarAtom;
 use proxima_core::{
-    AbstractionPayload, DerivedEmbedding, EdgeEndpoint, EntityKind, FactPayload, InputContractId,
-    MemoryId, MemoryOperatorKind, OperatorId, PayloadReference, SchemaVersion, SourceBatchId,
+    AbstractionPayload, AuthzContext, DerivedEmbedding, EdgeEndpoint, Engine, EntityKind,
+    FactPayload, InputContractId, MemoryId, MemoryOperatorKind, OperatorId, PayloadReference,
+    SchemaVersion, SourceBatchId,
 };
 use proxima_storage_pg::sidecars::PgMemorySidecar;
 use proxima_storage_pg::verbs::derive_append::{
@@ -115,57 +117,32 @@ where
     Ok(outcome)
 }
 
-async fn existing_file_revision_handle(
-    pool: &PgPool,
-    owner: &proxima_core::Owner,
-    repo_id: uuid::Uuid,
-    file_path: &str,
-) -> Result<Option<uuid::Uuid>, IngestError> {
-    let handle = sqlx::query_scalar(
-        "SELECT h.handle
-           FROM proxima_core.memory_head h
-           JOIN proxima_core.memory m ON m.handle = h.handle AND m.t = h.t
-           JOIN proxima_code.file_revision_v1 fr ON fr.t = m.t
-          WHERE m.owner_id = $1
-            AND fr.repo_id = $2
-            AND fr.file_path = $3",
-    )
-    .bind(owner.stored_owner_id())
-    .bind(repo_id)
-    .bind(file_path)
-    .fetch_optional(pool)
-    .await?;
-    Ok(handle)
-}
-
 /// Current series handle for this owner's chunk at `(repo, path, index)`.
 ///
 /// Miss after World transfer is expected: that series is no longer this
 /// owner's. The caller mints a new handle.
 pub async fn existing_code_chunk_handle(
-    pool: &PgPool,
-    owner: &proxima_core::Owner,
+    engine: &Engine,
+    authz: &AuthzContext,
+    owner: proxima_core::Owner,
     repo_id: uuid::Uuid,
     file_path: &str,
     chunk_index: u32,
 ) -> Result<Option<uuid::Uuid>, IngestError> {
-    let handle = sqlx::query_scalar(
-        "SELECT h.handle
-           FROM proxima_core.memory_head h
-           JOIN proxima_core.memory m ON m.handle = h.handle AND m.t = h.t
-           JOIN proxima_code.code_chunk_v1 c ON c.t = m.t
-          WHERE m.owner_id = $1
-            AND c.repo_id = $2
-            AND c.file_path = $3
-            AND c.chunk_index = $4",
-    )
-    .bind(owner.stored_owner_id())
-    .bind(repo_id)
-    .bind(file_path)
-    .bind(i32::try_from(chunk_index).unwrap_or(i32::MAX))
-    .fetch_optional(pool)
-    .await?;
-    Ok(handle)
+    let chunk_index = i32::try_from(chunk_index).unwrap_or(i32::MAX);
+    Ok(engine
+        .owned_series_handle(
+            authz,
+            owner,
+            &<CodeChunkV1 as AbstractionPayload>::schema_id(),
+            <CodeChunkV1 as AbstractionPayload>::sidecar_table(),
+            &[
+                ("repo_id", SidecarAtom::Uuid(repo_id)),
+                ("file_path", SidecarAtom::Text(file_path.to_string())),
+                ("chunk_index", SidecarAtom::I32(chunk_index)),
+            ],
+        )
+        .await?)
 }
 
 /// One handle per payload: reuse the owned NK head, or mint.
@@ -173,14 +150,16 @@ pub async fn existing_code_chunk_handle(
 /// Call once per file before filling `calls` and writing, so intra-file
 /// callees share the same series ids the drafts will use.
 pub async fn resolve_code_chunk_handles(
-    pool: &PgPool,
-    owner: &proxima_core::Owner,
+    engine: &Engine,
+    authz: &AuthzContext,
+    owner: proxima_core::Owner,
     payloads: &[CodeChunkV1],
 ) -> Result<Vec<uuid::Uuid>, IngestError> {
     let mut handles = Vec::with_capacity(payloads.len());
     for payload in payloads {
         let handle = existing_code_chunk_handle(
-            pool,
+            engine,
+            authz,
             owner,
             payload.repo_id,
             &payload.file_path,
@@ -228,10 +207,7 @@ pub async fn ingest_file_revision(
     payload: &FileRevisionV1,
     observed_at: time::OffsetDateTime,
 ) -> Result<FactIngestOutcome, IngestError> {
-    let handle =
-        existing_file_revision_handle(pool, permit.owner(), payload.repo_id, &payload.file_path)
-            .await?;
-    let ctx = local_git_context(permit, source_batch_id, observed_at).handle(handle);
+    let ctx = local_git_context(permit, source_batch_id, observed_at);
     let mut tx = pool.begin().await?;
     let outcome = ingest_fact_with_sidecar(
         &mut tx,
@@ -267,7 +243,10 @@ pub async fn ingest_file_revision(
 /// callers must materialize all batch Facts and close `source_batch_id`
 /// before invoking this helper. This helper deliberately does not write
 /// an event, source batch, or Fact citation.
+#[allow(clippy::too_many_arguments)]
 pub async fn append_code_slices(
+    engine: &Engine,
+    authz: &AuthzContext,
     pool: &PgPool,
     permit: &OwnerWritePermit,
     source_batch_id: SourceBatchId,
@@ -279,8 +258,8 @@ pub async fn append_code_slices(
     if payloads.is_empty() {
         return Ok(Vec::new());
     }
-    let owner = permit.owner();
-    let handles = resolve_code_chunk_handles(pool, owner, payloads).await?;
+    let owner = *permit.owner();
+    let handles = resolve_code_chunk_handles(engine, authz, owner, payloads).await?;
     append_code_slices_with_handles(
         pool,
         permit,
@@ -376,7 +355,10 @@ pub async fn append_code_slices_with_handles(
 
 /// One code slice, on its own. The tombstone path writes a single chunk that
 /// declares no calls, so it needs no group.
+#[allow(clippy::too_many_arguments)]
 pub async fn append_code_slice(
+    engine: &Engine,
+    authz: &AuthzContext,
     pool: &PgPool,
     permit: &OwnerWritePermit,
     source_batch_id: SourceBatchId,
@@ -386,6 +368,8 @@ pub async fn append_code_slice(
     embedding_model_id: Option<&str>,
 ) -> Result<DerivedOutcome, IngestError> {
     let outcomes = append_code_slices(
+        engine,
+        authz,
         pool,
         permit,
         source_batch_id,

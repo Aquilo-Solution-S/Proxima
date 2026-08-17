@@ -34,6 +34,12 @@ pub(super) async fn query_goals(
     if let Some(sid) = schema_id_filter {
         q = q.bind(sid.to_string());
     }
+    if let Some(assignment) = req.assignment {
+        q = q.bind(assignment.into_inner());
+    }
+    if let Some(evidence) = req.evidence_contains {
+        q = q.bind(evidence.into_inner());
+    }
     if !goal_ids.is_empty() {
         q = q.bind(goal_ids);
     }
@@ -82,7 +88,9 @@ fn goal_page_sql(req: &QueryRequest, has_schema_filter: bool) -> String {
                 o.kind::text::proxima_core.owner_kind AS owner_kind, \
                 g.owner_id, g.title, ''::text AS text, g.state, \
                 NULL::uuid AS supersedes, ''::bytea AS payload, \
-                g.dependency_t AS dependency_goal_ids \
+                g.dependency_t AS dependency_goal_ids, \
+                g.assignment_t AS assignment, \
+                g.evidence_t AS evidence \
          {from} \
          JOIN proxima_core.owners o ON o.owner_id = g.owner_id \
          WHERE g.owner_id = ANY($1::uuid[])"
@@ -93,12 +101,21 @@ fn goal_page_sql(req: &QueryRequest, has_schema_filter: bool) -> String {
         next += 1;
     }
     if let Some(state) = req.goal_state {
+        // SQL-POLICY: fixed-fragment
         sql.push_str(match state {
             GoalState::Active => " AND g.state = 'Active'",
             GoalState::Paused => " AND g.state = 'Paused'",
             GoalState::Achieved => " AND g.state = 'Achieved'",
             GoalState::Abandoned => " AND g.state = 'Abandoned'",
         });
+    }
+    if req.assignment.is_some() {
+        let _ = write!(sql, " AND g.assignment_t = ${next}");
+        next += 1;
+    }
+    if req.evidence_contains.is_some() {
+        let _ = write!(sql, " AND ${next} = ANY(g.evidence_t)");
+        next += 1;
     }
     if has_goal_ids {
         let _ = write!(sql, " AND g.t = ANY(${next}::uuid[])");
@@ -119,4 +136,26 @@ fn goal_page_sql(req: &QueryRequest, has_schema_filter: bool) -> String {
 #[must_use]
 pub fn goal_page_sql_for_tests(req: &QueryRequest) -> String {
     goal_page_sql(req, req.schema_id.is_some())
+}
+
+#[cfg(test)]
+mod tests {
+    use proxima_core::verbs::goal_write::GoalState;
+    use proxima_core::verbs::query::QueryRequest;
+    use proxima_core::{MemoryId, OwnerRef};
+
+    #[test]
+    fn assignment_and_evidence_filters_are_bound() {
+        let mut req = QueryRequest::for_owner(OwnerRef::World);
+        req.entity_kind = Some(proxima_core::verbs::query::EntityKind::Goal);
+        req.goal_state = Some(GoalState::Active);
+        req.assignment = Some(MemoryId::new(uuid::Uuid::nil()));
+        req.evidence_contains = Some(MemoryId::new(uuid::Uuid::nil()));
+        let sql = super::goal_page_sql(&req, false);
+        assert!(sql.contains("g.assignment_t"));
+        assert!(sql.contains("ANY(g.evidence_t)"));
+        assert!(sql.contains("g.state = 'Active'"));
+        assert!(sql.contains("g.assignment_t AS assignment"));
+        assert!(sql.contains("g.evidence_t AS evidence"));
+    }
 }

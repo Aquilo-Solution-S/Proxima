@@ -254,7 +254,7 @@ pub async fn erase_personal_source_scope_if_drop_verified(
 
 async fn group_member_count(tx: &mut Tx<'_>, group_id: GroupId) -> Result<i64, StorageError> {
     sqlx::query_scalar(
-        "SELECT count(*)::bigint FROM proxima_core.resolved_group_memberships WHERE group_id = $1",
+        "SELECT count(*)::bigint FROM proxima_core.group_memberships WHERE group_id = $1",
     )
     .bind(group_id.into_inner())
     .fetch_one(&mut **tx)
@@ -287,6 +287,7 @@ async fn erase_selected(
     cited_object_sidecar_tables: &[String],
 ) -> Result<(), StorageError> {
     create_selected_sets(tx, owner, scope).await?;
+    capture_selected_handles(tx).await?;
     upsert_audit_outcome(
         tx,
         auth.audit(),
@@ -363,6 +364,7 @@ async fn erase_selected(
     let goals =
         delete_selected_table(tx, "proxima_core.goal", "t", "selected_goals", "goal_id").await?;
     record_count(tx, "goals", goals).await?;
+    sync_selected_heads(tx).await?;
     let receipts = 0;
     record_count(tx, "receipts", receipts).await?;
     let source_batches = 0;
@@ -432,6 +434,98 @@ async fn create_selected_sets(
         .map_err(map_err)?;
     }
 
+    Ok(())
+}
+
+async fn capture_selected_handles(tx: &mut Tx<'_>) -> Result<(), StorageError> {
+    sqlx::query(
+        "CREATE TEMP TABLE selected_memory_handles(handle uuid PRIMARY KEY) ON COMMIT DROP",
+    )
+    .execute(&mut **tx)
+    .await
+    .map_err(map_err)?;
+    sqlx::query(
+        "INSERT INTO selected_memory_handles(handle)
+         SELECT DISTINCT m.handle
+           FROM proxima_core.memory m
+           JOIN selected_memories sm ON sm.memory_id = m.t",
+    )
+    .execute(&mut **tx)
+    .await
+    .map_err(map_err)?;
+    sqlx::query("CREATE TEMP TABLE selected_goal_handles(handle uuid PRIMARY KEY) ON COMMIT DROP")
+        .execute(&mut **tx)
+        .await
+        .map_err(map_err)?;
+    sqlx::query(
+        "INSERT INTO selected_goal_handles(handle)
+         SELECT DISTINCT g.handle
+           FROM proxima_core.goal g
+           JOIN selected_goals sg ON sg.goal_id = g.t",
+    )
+    .execute(&mut **tx)
+    .await
+    .map_err(map_err)?;
+    Ok(())
+}
+
+async fn sync_selected_heads(tx: &mut Tx<'_>) -> Result<(), StorageError> {
+    sqlx::query(
+        "UPDATE proxima_core.memory_head h
+            SET t = r.t
+           FROM (
+                SELECT handle, t
+                  FROM (
+                    SELECT handle, t,
+                           row_number() OVER (PARTITION BY handle ORDER BY t DESC) AS n
+                      FROM proxima_core.memory
+                     WHERE handle IN (SELECT handle FROM selected_memory_handles)
+                  ) ranked
+                 WHERE n = 1
+           ) r
+          WHERE h.handle = r.handle",
+    )
+    .execute(&mut **tx)
+    .await
+    .map_err(map_err)?;
+    sqlx::query(
+        "DELETE FROM proxima_core.memory_head h
+          WHERE h.handle IN (SELECT handle FROM selected_memory_handles)
+            AND NOT EXISTS (
+                SELECT 1 FROM proxima_core.memory m WHERE m.handle = h.handle
+            )",
+    )
+    .execute(&mut **tx)
+    .await
+    .map_err(map_err)?;
+    sqlx::query(
+        "UPDATE proxima_core.goal_head h
+            SET t = r.t
+           FROM (
+                SELECT handle, t
+                  FROM (
+                    SELECT handle, t,
+                           row_number() OVER (PARTITION BY handle ORDER BY t DESC) AS n
+                      FROM proxima_core.goal
+                     WHERE handle IN (SELECT handle FROM selected_goal_handles)
+                  ) ranked
+                 WHERE n = 1
+           ) r
+          WHERE h.handle = r.handle",
+    )
+    .execute(&mut **tx)
+    .await
+    .map_err(map_err)?;
+    sqlx::query(
+        "DELETE FROM proxima_core.goal_head h
+          WHERE h.handle IN (SELECT handle FROM selected_goal_handles)
+            AND NOT EXISTS (
+                SELECT 1 FROM proxima_core.goal g WHERE g.handle = h.handle
+            )",
+    )
+    .execute(&mut **tx)
+    .await
+    .map_err(map_err)?;
     Ok(())
 }
 
@@ -892,6 +986,21 @@ mod tests {
         assert!(
             !src.contains(&needle),
             "v008 has no suppression table; Lean retired SuppressionKey"
+        );
+    }
+
+    #[test]
+    fn group_abandonment_counts_group_memberships() {
+        let src = include_str!("compliance_erase.rs");
+        let retired = format!("{}.{}", "proxima_core", "resolved_group_memberships");
+        let live = format!("{}.{}", "proxima_core", "group_memberships");
+        assert!(
+            !src.contains(&retired),
+            "P1: resolved_group_memberships is not in 0001_v008"
+        );
+        assert!(
+            src.contains(&live),
+            "P1: abandonment counts proxima_core.group_memberships"
         );
     }
 }

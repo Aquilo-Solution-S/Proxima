@@ -183,6 +183,7 @@ async fn migrations_apply_to_fresh_db() {
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn memory_is_append_only_and_head_t_only() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
     if let Err(e) = create_db(&db_name).await {
@@ -242,6 +243,37 @@ async fn memory_is_append_only_and_head_t_only() {
         .await
         .expect_err("memory_head kind is frozen");
         assert!(err.to_string().contains("frozen"), "got: {err}");
+
+        let err = sqlx::query(
+            "UPDATE proxima_core.memory_head SET schema_id = 'other' WHERE handle = $1",
+        )
+        .bind(handle)
+        .execute(pool)
+        .await
+        .expect_err("memory_head schema_id is frozen");
+        assert!(err.to_string().contains("frozen"), "got: {err}");
+
+        let world = Uuid::from_u128(1);
+        let mut tx = pool.begin().await?;
+        sqlx::query("UPDATE proxima_core.memory_head SET owner_id = $2 WHERE handle = $1")
+            .bind(handle)
+            .bind(world)
+            .execute(&mut *tx)
+            .await
+            .expect("memory_head.owner_id may move for publish");
+        sqlx::query("UPDATE proxima_core.memory SET owner_id = $2 WHERE t = $1")
+            .bind(t)
+            .bind(world)
+            .execute(&mut *tx)
+            .await
+            .expect("memory.owner_id may move for publish");
+        tx.commit().await?;
+        let moved: Uuid =
+            sqlx::query_scalar("SELECT owner_id FROM proxima_core.memory WHERE t = $1")
+                .bind(t)
+                .fetch_one(pool)
+                .await?;
+        assert_eq!(moved, world);
 
         let err = sqlx::query(
             "INSERT INTO proxima_core.memory (handle, kind, owner_id, schema_id)

@@ -425,6 +425,26 @@ where
     .with_citation(citation)
     .with_derived_from(ctx.derived_from.to_vec());
     draft.handle = ctx.handle;
+    if draft.handle.is_none()
+        && let Some(table) = P::sidecar_table()
+    {
+        let columns = P::natural_key_columns();
+        if !columns.is_empty() {
+            let atoms = super::query::sidecar_atoms_from_payload(payload, columns)?;
+            let binds = atoms
+                .iter()
+                .map(|(column, value)| (column.as_str(), value.clone()))
+                .collect::<Vec<_>>();
+            draft.handle = super::query::owned_head_handle(
+                &mut **tx,
+                *ctx.permit.owner(),
+                &P::schema_id(),
+                table,
+                &binds,
+            )
+            .await?;
+        }
+    }
     let sidecar_payload = payload.clone();
     let references = payload_reference_targets(payload)?;
     ingest_fact_with_derived_sidecar_in_tx(

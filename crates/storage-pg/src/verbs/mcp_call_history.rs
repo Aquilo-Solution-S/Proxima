@@ -50,6 +50,7 @@ pub(crate) async fn read_mcp_call_history(
             LIMIT $3",
     );
 
+    // SQL-POLICY: fixed-fragment
     let mut query = sqlx::query_as::<_, HistoryRowDb>(sqlx::AssertSqlSafe(sql))
         .bind(owner_id)
         .bind(req.actor_oid.as_deref())

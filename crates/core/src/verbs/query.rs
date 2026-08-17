@@ -373,6 +373,14 @@ pub struct QueryRequest {
     /// `entity_kind == Some(EntityKind::Goal)`; other streams ignore it.
     #[serde(default)]
     pub goal_state: Option<GoalState>,
+    /// Goal-stream assignment filter (`goal.assignment_t`). Only
+    /// meaningful with `entity_kind == Some(EntityKind::Goal)`.
+    #[serde(default)]
+    pub assignment: Option<MemoryId>,
+    /// Goal-stream evidence filter (`$id = ANY(goal.evidence_t)`). Only
+    /// meaningful with `entity_kind == Some(EntityKind::Goal)`.
+    #[serde(default)]
+    pub evidence_contains: Option<MemoryId>,
     pub limit: u32,
     #[serde(default)]
     pub page: QueryPage,
@@ -405,6 +413,8 @@ impl QueryRequest {
             supersession: SupersessionStatus::HeadsOnly,
             tombstones: TombstoneFilter::PresentOnly,
             goal_state: None,
+            assignment: None,
+            evidence_contains: None,
             limit: 100,
             page: QueryPage::default(),
             include_payloads: true,
@@ -459,7 +469,27 @@ pub struct GoalRow {
     pub state: GoalState,
     pub dependency_goal_ids: Vec<GoalId>,
     pub supersedes: Option<GoalId>,
+    /// Assigned Perspective (`goal.assignment_t`).
+    #[serde(default)]
+    pub assignment: Option<MemoryId>,
+    /// Evidence pins (`goal.evidence_t`).
+    #[serde(default)]
+    pub evidence: Vec<MemoryId>,
     pub payload: Vec<u8>,
+}
+
+/// Scalar bind for a sidecar-column series-handle lookup.
+///
+/// Flavor code names sidecar columns and values. Storage joins the
+/// registered sidecar to `memory_head`. No core table name crosses
+/// this type.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SidecarAtom {
+    Uuid(uuid::Uuid),
+    Text(String),
+    I32(i32),
+    I64(i64),
+    Bool(bool),
 }
 
 /// Edge listing filter. Every field is a narrowing predicate over the

@@ -50,10 +50,9 @@ impl Tool for CodeEmitExecutionRequestTool {
 
             let pool = code_store(&ctx)?;
             let mut tx = pool.pool().begin().await.map_err(map_storage)?;
-            let goal_id =
-                validate_goal_activated_fact(&mut tx, &ctx, goal_activated_memory_id).await?;
-            validate_active_goal_context(&mut tx, &ctx, goal_id, planner_root).await?;
-            validate_evidence_in_owner(&mut tx, &ctx, &evidence).await?;
+            let goal_id = validate_goal_activated_fact(&ctx, goal_activated_memory_id).await?;
+            validate_active_goal_context(&ctx, goal_id, planner_root).await?;
+            validate_evidence_in_owner(&ctx, &evidence).await?;
 
             // What the request was made from — the activation Fact and the
             // evidence — travels with the write instead of following it as

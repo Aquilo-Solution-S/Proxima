@@ -5,7 +5,8 @@ mod common;
 use common::{migrated_db, owner_write_permit, test_owner};
 use proxima_code::testkit::{ingest_commit, ingest_file_revision};
 use proxima_code::{CommitV1, FileRevisionV1, FileState};
-use proxima_core::{AccessKind, SourceBatchId};
+use proxima_core::storage_ports::OwnerTransferPort;
+use proxima_core::{AccessKind, EntityId, SourceBatchId};
 use proxima_pg_testkit::drop_db;
 use uuid::Uuid;
 
@@ -90,4 +91,44 @@ async fn code_stateful_ingest_reuses_handle() {
     .await;
     let _ = drop_db(&db_name).await;
     result.expect("code_stateful_ingest_reuses_handle failed");
+}
+
+#[tokio::test]
+async fn code_stateful_ingest_mints_after_world_transfer() {
+    let (db_name, pg) = migrated_db().await;
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let owner = test_owner();
+        let permit = owner_write_permit(&owner, AccessKind::Fact).await?;
+        let repo_id = Uuid::now_v7();
+        let file_path = "src/lib.rs";
+        let now = time::OffsetDateTime::now_utc();
+        let first = ingest_file_revision(
+            pg.pool_for_tests(),
+            &permit,
+            source_batch_id(),
+            &file_revision(repo_id, file_path, "v1"),
+            now,
+        )
+        .await?;
+        let transferred = pg
+            .transfer_to_world(&permit, EntityId::Memory(first.memory_id))
+            .await?;
+        assert!(transferred);
+        let after = ingest_file_revision(
+            pg.pool_for_tests(),
+            &permit,
+            source_batch_id(),
+            &file_revision(repo_id, file_path, "v2"),
+            now,
+        )
+        .await?;
+        assert_ne!(
+            first.handle, after.handle,
+            "World-transferred series is a miss for the prior owner"
+        );
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("code_stateful_ingest_mints_after_world_transfer failed");
 }

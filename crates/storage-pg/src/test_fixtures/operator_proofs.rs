@@ -67,6 +67,7 @@ pub async fn collect_memory_graph_violations(
 }
 
 async fn edge_keys(pool: &PgPool, sql: &'static str) -> Result<Vec<EdgeKey>, sqlx::Error> {
+    // SQL-POLICY: fixed-fragment
     sqlx::query_as::<_, EdgeKey>(sqlx::AssertSqlSafe(sql))
         .fetch_all(pool)
         .await

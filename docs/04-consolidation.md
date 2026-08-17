@@ -33,17 +33,10 @@ Phase split:
 
 ## Source-batch lifecycle
 
-`source_batches` is core source-ingest lifecycle, not a domain payload.
-
-| Column family | Rule |
-|---|---|
-| `id` | UUIDv7 declared by the source; unique within `(source_id, owner)` |
-| `source_id` | source identity |
-| owner | `owner_kind`, `owner_id` |
-| `opened_at`, `closed_at` | open vs closed lifecycle |
-
-Domain metadata belongs on `CitedObject` / `CitationMapping` sidecars, not on
-`source_batches`.
+The `source_batches` table and `engine.close_batch` were removed in
+v0.0.8. `source_batch_id` remains the F→A episode id stamped on the
+write. Domain metadata belongs on `CitedObject` / `CitationMapping`
+sidecars, not on a batch row.
 
 ## Phase 2 — Perspective-context embedding
 
