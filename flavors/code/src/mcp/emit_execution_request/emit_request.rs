@@ -98,9 +98,7 @@ impl Tool for CodeEmitExecutionRequestTool {
                     let criteria_outcome = ingest_acceptance_criteria(
                         &mut uow,
                         &criteria_payload,
-                        FactProvenance {
-                            derived_from: &[],
-                        },
+                        FactProvenance { derived_from: &[] },
                     )
                     .await?;
                     Some(criteria_outcome.memory_id)

@@ -423,7 +423,8 @@ impl Tool for CodeSearchChunksTool {
                     &ChunkCursorPos {
                         score_bits: scores.score.to_bits(),
                         memory_id: scores.memory_id,
-                        seen: seen.saturating_add(u32::try_from(eligible.len()).unwrap_or(u32::MAX)),
+                        seen: seen
+                            .saturating_add(u32::try_from(eligible.len()).unwrap_or(u32::MAX)),
                     },
                 )
             });

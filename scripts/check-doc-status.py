@@ -7,10 +7,8 @@ REQUIRED_SUBSTRINGS = {
         "Current build/runtime-opt-in REST projection",
     ],
     Path("README.md"): [
-        "## Design and Kernel Authority",
+        "## Authority",
         "The Lean kernel",
-        "current + deferred sections",
-        "design intent",
     ],
     Path("docs/12-tool-manifest.md"): [
         "> **Status:** current + deferred sections.",

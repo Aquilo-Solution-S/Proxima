@@ -144,9 +144,7 @@ impl Tool for CodeEmitExecutionPlanTool {
                             ingest_acceptance_criteria(
                                 &mut uow,
                                 &criteria_payload,
-                                FactProvenance {
-                                    derived_from: &[],
-                                },
+                                FactProvenance { derived_from: &[] },
                             )
                             .await?;
                         }

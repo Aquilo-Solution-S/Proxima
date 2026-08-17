@@ -1046,8 +1046,8 @@ async fn search_chunks_supports_exact_substring_and_chunk_type_filter()
 }
 
 #[tokio::test]
-async fn search_chunks_pages_with_cursor_not_raised_limit()
--> Result<(), Box<dyn std::error::Error>> {
+async fn search_chunks_pages_with_cursor_not_raised_limit() -> Result<(), Box<dyn std::error::Error>>
+{
     let fixture = TestDb::fresh().await;
     let owner = owner_fixture();
     let engine = engine_for_test(fixture.pg.clone());
@@ -1088,7 +1088,10 @@ async fn search_chunks_pages_with_cursor_not_raised_limit()
     let first_matches = first["matches"].as_array().expect("matches");
     assert_eq!(first_matches.len(), 2);
     assert_eq!(first["has_more"], json!(true));
-    let token = first["next_cursor"].as_str().expect("next_cursor").to_string();
+    let token = first["next_cursor"]
+        .as_str()
+        .expect("next_cursor")
+        .to_string();
 
     let second = run_tool::<CodeSearchChunksTool>(
         ctx(fixture.pg.clone(), owner, registry.clone()),

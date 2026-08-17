@@ -334,9 +334,7 @@ pub(in crate::engine) async fn neighbor_edges_from_nodes(
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        PinHop, empty_read, neighbor_edges_from_nodes, page_hops, read_edges_from_nodes,
-    };
+    use super::{PinHop, empty_read, neighbor_edges_from_nodes, page_hops, read_edges_from_nodes};
     use crate::edge::PinNode;
     use crate::storage_ports::{InboundPinQuery, MemoryReadPort};
     use crate::verbs::query::{EdgeFilter, EdgeReadRequest};

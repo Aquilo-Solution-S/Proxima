@@ -532,8 +532,10 @@ impl SidecarAtom {
     /// The value is not a UUID, text, bool, or integer.
     pub fn from_json(column: &str, value: &serde_json::Value) -> Result<Self, String> {
         match value {
-            serde_json::Value::String(text) => Ok(uuid::Uuid::parse_str(text)
-                .map_or_else(|_| Self::Text(text.clone()), Self::Uuid)),
+            serde_json::Value::String(text) => {
+                Ok(uuid::Uuid::parse_str(text)
+                    .map_or_else(|_| Self::Text(text.clone()), Self::Uuid))
+            }
             serde_json::Value::Bool(flag) => Ok(Self::Bool(*flag)),
             serde_json::Value::Number(number) => {
                 if let Some(n) = number.as_i64() {

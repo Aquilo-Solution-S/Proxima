@@ -465,7 +465,9 @@ async fn inbound_heads_only_drops_superseded_pin() {
             )
             .await?;
         assert!(
-            heads.iter().all(|n| n.id != old.memory_id && n.id != new.memory_id),
+            heads
+                .iter()
+                .all(|n| n.id != old.memory_id && n.id != new.memory_id),
             "rewritten series no longer pins hub at head"
         );
 
