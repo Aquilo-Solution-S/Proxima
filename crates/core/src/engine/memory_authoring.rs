@@ -86,6 +86,11 @@ impl Engine {
 
     /// Cool one owned memory `t`. PUT cold first, then stub+delete hot.
     ///
+    /// One-shot command-port: generic [`EngineAuthority`], including
+    /// delegated workers. Multi-write forget lives on
+    /// [`crate::UnitOfWork::forget`] (`AuthzContext` only). Both are
+    /// legal; this is not a second flavor `Transaction`.
+    ///
     /// # Errors
     ///
     /// Returns `Forbidden` when the context lacks [`Relation::Editor`] on

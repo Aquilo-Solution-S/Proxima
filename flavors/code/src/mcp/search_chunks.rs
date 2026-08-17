@@ -10,9 +10,11 @@
 use std::collections::{HashMap, HashSet};
 
 use proxima_core::MemoryId;
+use proxima_core::mcp::cursor as wire_cursor;
 use proxima_core::{Tool, ToolCtx, ToolError};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 use crate::payloads::{CodeChunkV1, FileState};
 use proxima_storage_pg::query::{CodeChunkVectorCandidate, CodeChunkVectorFilters};
@@ -57,6 +59,11 @@ pub struct CodeSearchChunksArgs {
         description = "Optional maximum number of chunk matches. Omit or null for 12; values above 50 are clamped, and 0 is rejected."
     )]
     pub limit: Option<u32>,
+    #[serde(default)]
+    #[schemars(
+        description = "Opaque pagination cursor from a previous response's `next_cursor`. Repeat the same query, mode, and filters; `limit` may vary between pages."
+    )]
+    pub cursor: Option<String>,
     #[schemars(
         description = "Optional repo handle filter, typically `R...`. Omit or null to search all visible repos."
     )]
@@ -104,6 +111,21 @@ const MAX_SNIPPET_MAX_CHARS: usize = proxima_core::MAX_TEXT_CAP_CHARS;
 /// the derived tsquery; a query naming more than this many distinct
 /// identifiers is already well served by the first twelve.
 const MAX_DISTINCTIVE_TERMS: usize = 12;
+
+/// Opaque cursor codec: `{v, fp, c}` like `list_repos` / `core_search_memories`.
+/// The resume point is fused-rank `(score_bits, memory_id)`, not Query SQL.
+const CHUNK_CURSOR: wire_cursor::FingerprintedCursor = wire_cursor::FingerprintedCursor {
+    version: 1,
+    source: "proxima-code_search_chunks response",
+    rebind_hint: "repeat the query, mode, and filters that produced it",
+};
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+struct ChunkCursorPos {
+    score_bits: u32,
+    memory_id: Uuid,
+    seen: u32,
+}
 
 /// Reciprocal-rank-fusion damping constant, at its conventional value.
 ///
@@ -178,10 +200,12 @@ fn effective_snippet_max_chars(requested: Option<usize>) -> usize {
 pub struct CodeSearchChunksOutput {
     pub matches: Vec<ChunkMatch>,
     pub calls_edges: Vec<CallEdge>,
-    /// At least one further eligible match exists past `limit` in the
-    /// scanned candidate window; retry with a higher limit (max 50) or
-    /// narrow the query. Truncation is a signal, never silent.
+    /// At least one further eligible match exists past this page in the
+    /// scanned candidate window. True iff `next_cursor` is `Some`.
     pub has_more: bool,
+    /// Opaque resume token for the next page. Pass back as `cursor` with
+    /// the same query, mode, and filters. `None` when `has_more` is false.
+    pub next_cursor: Option<String>,
     /// The mode that was requested, echoed so a caller reading a stored
     /// response knows what produced it.
     pub mode: String,
@@ -257,7 +281,7 @@ pub struct CodeSearchChunksTool;
 
 impl Tool for CodeSearchChunksTool {
     const NAME: &'static str = "proxima-code_search_chunks";
-    const DESCRIPTION: &'static str = "Search head code chunks by exact substring, path, or full-text content, including plain-English questions. Ranks by mode: hybrid (default) fuses full-text with embedding similarity, lexical is full-text only, semantic is embedding-only; a hybrid search with no embeddings available answers lexically and reports degraded_to_lexical. Each match carries its chunk text up to snippet_max_chars, flagged snippet_truncated when cut. Supports language/chunk_type filters and optional call-neighbour connections with their call sites.";
+    const DESCRIPTION: &'static str = "Search head code chunks by exact substring, path, or full-text content, including plain-English questions. Ranks by mode: hybrid (default) fuses full-text with embedding similarity, lexical is full-text only, semantic is embedding-only; a hybrid search with no embeddings available answers lexically and reports degraded_to_lexical. Pages of at most 50: has_more plus an opaque next_cursor passed back as cursor with the same query, mode, and filters. Each match carries its chunk text up to snippet_max_chars, flagged snippet_truncated when cut. Supports language/chunk_type filters and optional call-neighbour connections with their call sites.";
     const ANNOTATIONS: Option<proxima_core::mcp::McpToolAnnotations> = Some(super::READ_ONLY);
 
     type Args = CodeSearchChunksArgs;
@@ -283,6 +307,20 @@ impl Tool for CodeSearchChunksTool {
                 Some(handle) => Some(resolve_repo_identifier(&ctx, handle).await?),
                 None => None,
             };
+            let fingerprint = chunk_search_fingerprint(
+                &ctx.owner(),
+                query,
+                args.mode,
+                repo_id,
+                args.language.as_deref(),
+                args.chunk_type.as_deref(),
+            );
+            let after: Option<ChunkCursorPos> = args
+                .cursor
+                .as_deref()
+                .map(|raw| CHUNK_CURSOR.decode(&fingerprint, raw))
+                .transpose()?;
+            let seen = after.map_or(0_u32, |pos| pos.seen);
             let pool = code_store(&ctx)?;
             let engine = super::engine(&ctx)?;
             // Resolved before either arm runs, because the answer decides
@@ -294,7 +332,8 @@ impl Tool for CodeSearchChunksTool {
 
             // Phase 1: sidecar-only content scan. Overfetch so phase 2's
             // owner/head admit can drop other-owner and non-head ts.
-            let candidate_limit = i64::from(limit.saturating_mul(20).max(limit).min(1_000));
+            let needed = seen.saturating_add(limit);
+            let candidate_limit = i64::from(needed.saturating_mul(20).max(needed).min(1_000));
             let lexical_rows: Vec<ChunkCandidateRow> =
                 if effective_mode == ChunkSearchMode::Semantic {
                     Vec::new()
@@ -361,22 +400,36 @@ impl Tool for CodeSearchChunksTool {
                 )
                 .await?;
 
-            let mut matches = Vec::new();
-            let mut has_more = false;
-            let mut chunk_ids = Vec::with_capacity(rows.len());
+            let page_len = usize::try_from(limit).unwrap_or(usize::MAX);
+            let mut eligible = Vec::new();
             for (memory_id, payload) in rows {
                 if payload.state != FileState::Present {
                     continue;
                 }
-                if u32::try_from(matches.len()).unwrap_or(u32::MAX) >= limit {
-                    // One more eligible match past the page proves
-                    // truncation without emitting the row.
-                    has_more = true;
-                    break;
-                }
                 let raw_id = memory_id.into_inner();
-                chunk_ids.push(raw_id);
                 let scores = score_by_id.get(&raw_id).copied().unwrap_or_default();
+                if after.is_some_and(|pos| !ranks_after_chunk_cursor(scores, pos)) {
+                    continue;
+                }
+                eligible.push((memory_id, payload, scores));
+            }
+            let has_more = eligible.len() > page_len;
+            eligible.truncate(page_len);
+            let next_cursor = (has_more && !eligible.is_empty()).then(|| {
+                let (_, _, scores) = eligible.last().expect("non-empty page");
+                CHUNK_CURSOR.encode(
+                    &fingerprint,
+                    &ChunkCursorPos {
+                        score_bits: scores.score.to_bits(),
+                        memory_id: scores.memory_id,
+                        seen: seen.saturating_add(u32::try_from(eligible.len()).unwrap_or(u32::MAX)),
+                    },
+                )
+            });
+            let mut matches = Vec::with_capacity(eligible.len());
+            let mut chunk_ids = Vec::with_capacity(eligible.len());
+            for (memory_id, payload, scores) in eligible {
+                chunk_ids.push(memory_id.into_inner());
                 let (match_kind, matched_line, matched_excerpt) = match_metadata(
                     query,
                     &payload.file_path,
@@ -427,6 +480,7 @@ impl Tool for CodeSearchChunksTool {
                 matches,
                 calls_edges,
                 has_more,
+                next_cursor,
             })
         })
     }
@@ -551,6 +605,36 @@ fn fuse_candidates(
             .then_with(|| b.memory_id.cmp(&a.memory_id))
     });
     fused
+}
+
+fn chunk_search_fingerprint(
+    owner: &proxima_core::Owner,
+    query: &str,
+    mode: ChunkSearchMode,
+    repo_id: Option<Uuid>,
+    language: Option<&str>,
+    chunk_type: Option<&str>,
+) -> String {
+    let canon = serde_json::json!([
+        owner.external_key(),
+        query,
+        mode_label(mode),
+        repo_id,
+        language,
+        chunk_type,
+    ]);
+    wire_cursor::fingerprint(&canon.to_string())
+}
+
+/// True when `scores` sorts strictly after the last emitted row
+/// (`score DESC, memory_id DESC`).
+fn ranks_after_chunk_cursor(scores: MatchScores, pos: ChunkCursorPos) -> bool {
+    let score = f32::from_bits(pos.score_bits);
+    match scores.score.total_cmp(&score) {
+        std::cmp::Ordering::Less => true,
+        std::cmp::Ordering::Equal => scores.memory_id < pos.memory_id,
+        std::cmp::Ordering::Greater => false,
+    }
 }
 
 /// Whether a `hybrid` search ended up ranked lexically only.

@@ -1046,6 +1046,95 @@ async fn search_chunks_supports_exact_substring_and_chunk_type_filter()
 }
 
 #[tokio::test]
+async fn search_chunks_pages_with_cursor_not_raised_limit()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fixture = TestDb::fresh().await;
+    let owner = owner_fixture();
+    let engine = engine_for_test(fixture.pg.clone());
+    let registry = registry_for_mcp();
+    let repo_id = Uuid::now_v7();
+    for (index, (path, text)) in [
+        ("src/a.rs", "fn pageable_unique_token_0() {}"),
+        ("src/b.rs", "fn pageable_unique_token_1() {}"),
+        ("src/c.rs", "fn pageable_unique_token_2() {}"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        ingest_code_chunk_with_type(
+            fixture.pg.pool_for_tests(),
+            &engine,
+            owner,
+            ChunkFixture {
+                repo_id,
+                file_path: path,
+                chunk_index: i32::try_from(index)?,
+                text,
+                chunk_type: "function",
+            },
+        )
+        .await?;
+    }
+
+    let first = run_tool::<CodeSearchChunksTool>(
+        ctx(fixture.pg.clone(), owner, registry.clone()),
+        json!({
+            "query": "pageable_unique_token",
+            "limit": 2,
+            "include_calls": false,
+        }),
+    )
+    .await?;
+    let first_matches = first["matches"].as_array().expect("matches");
+    assert_eq!(first_matches.len(), 2);
+    assert_eq!(first["has_more"], json!(true));
+    let token = first["next_cursor"].as_str().expect("next_cursor").to_string();
+
+    let second = run_tool::<CodeSearchChunksTool>(
+        ctx(fixture.pg.clone(), owner, registry.clone()),
+        json!({
+            "query": "pageable_unique_token",
+            "limit": 2,
+            "cursor": token,
+            "include_calls": false,
+        }),
+    )
+    .await?;
+    let second_matches = second["matches"].as_array().expect("matches");
+    assert_eq!(second_matches.len(), 1);
+    assert_eq!(second["has_more"], json!(false));
+    assert_eq!(second["next_cursor"], serde_json::Value::Null);
+
+    let first_paths: Vec<&str> = first_matches
+        .iter()
+        .map(|row| row["file_path"].as_str().expect("path"))
+        .collect();
+    let second_path = second_matches[0]["file_path"].as_str().expect("path");
+    assert!(
+        !first_paths.contains(&second_path),
+        "pages must not overlap: {first_paths:?} vs {second_path}"
+    );
+
+    let rebound = run_tool::<CodeSearchChunksTool>(
+        ctx(fixture.pg.clone(), owner, registry),
+        json!({
+            "query": "a different query",
+            "limit": 2,
+            "cursor": token,
+            "include_calls": false,
+        }),
+    )
+    .await
+    .expect_err("cursor must fail closed on a different query");
+    let message = rebound.to_string();
+    assert!(
+        message.contains("cursor does not match"),
+        "mismatch must name the fingerprint bind: {message}"
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn open_file_revision_returns_head_with_chunks() -> Result<(), Box<dyn std::error::Error>> {
     let fixture = TestDb::fresh().await;
     let owner = owner_fixture();

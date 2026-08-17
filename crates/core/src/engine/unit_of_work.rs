@@ -394,6 +394,9 @@ impl UnitOfWork<'_> {
 
     /// Cool one owned memory `t` in this transaction.
     ///
+    /// Delegated one-shot forget is [`Engine::forget_memory`] (generic
+    /// [`crate::EngineAuthority`]). This path is `AuthzContext` only.
+    ///
     /// # Errors
     ///
     /// Authorization or storage faults.
