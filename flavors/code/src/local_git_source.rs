@@ -161,6 +161,14 @@ impl<'a> CodeIngestContext<'a> {
         self.store.pool()
     }
 
+    fn engine(&self) -> &Engine {
+        self.engine
+    }
+
+    fn authz(&self) -> &AuthzContext {
+        self.authz
+    }
+
     fn embedding_model_id(&self) -> Option<String> {
         self.engine
             .embed_client()
@@ -449,8 +457,7 @@ impl LocalGitSource {
         let mut pending_present = Vec::new();
         let mut pending_deleted = Vec::new();
         self.ingest_head_entries(
-            pool,
-            &permit,
+            ctx,
             &head_sha,
             batch_id,
             now,
@@ -466,8 +473,7 @@ impl LocalGitSource {
             if prior.state == FileState::Present && !present_paths.contains(&path) {
                 pending_deleted.push(
                     self.tombstone_deleted_path(
-                        pool,
-                        &permit,
+                        ctx,
                         &head_sha,
                         batch_id,
                         now,
@@ -562,7 +568,8 @@ impl LocalGitSource {
             committer_time: commit_info.committer_time,
             message: commit_info.message.clone(),
         };
-        let outcome = ingest_commit(pool, &permit, batch_id, &commit_payload, now).await?;
+        let outcome =
+            ingest_commit(ctx.engine(), ctx.authz(), batch_id, &commit_payload, now).await?;
         if outcome.idempotent_replay {
             report.commits_replayed += 1;
         } else {
@@ -578,8 +585,7 @@ impl LocalGitSource {
         for path in &changed {
             match self
                 .ingest_changed_path(
-                    pool,
-                    &permit,
+                    ctx,
                     commit_info,
                     batch_id,
                     now,
@@ -599,8 +605,7 @@ impl LocalGitSource {
         for path in &deleted {
             pending_deleted.push(
                 self.tombstone_deleted_path(
-                    pool,
-                    &permit,
+                    ctx,
                     &commit_info.sha,
                     batch_id,
                     now,
@@ -630,8 +635,7 @@ impl LocalGitSource {
     #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
     async fn ingest_changed_path(
         &self,
-        pool: &PgPool,
-        permit: &OwnerWritePermit,
+        ctx: &CodeIngestContext<'_>,
         commit_info: &CommitInfo,
         batch_id: SourceBatchId,
         now: time::OffsetDateTime,
@@ -643,8 +647,7 @@ impl LocalGitSource {
         let Some(blob) = git::cat_blob(&self.repo_path, &commit_info.sha, path)? else {
             return self
                 .tombstone_deleted_path(
-                    pool,
-                    permit,
+                    ctx,
                     &commit_info.sha,
                     batch_id,
                     now,
@@ -656,8 +659,7 @@ impl LocalGitSource {
                 .map(ChangedPathIngest::Tombstone);
         };
         self.ingest_present_blob(
-            pool,
-            permit,
+            ctx,
             &commit_info.sha,
             batch_id,
             now,
@@ -679,8 +681,7 @@ impl LocalGitSource {
     #[allow(clippy::too_many_arguments)]
     async fn ingest_head_entries(
         &self,
-        pool: &PgPool,
-        permit: &OwnerWritePermit,
+        ctx: &CodeIngestContext<'_>,
         head_sha: &str,
         batch_id: SourceBatchId,
         now: time::OffsetDateTime,
@@ -715,8 +716,7 @@ impl LocalGitSource {
                 }
                 pending_present.push(
                     self.ingest_present_blob(
-                        pool,
-                        permit,
+                        ctx,
                         head_sha,
                         batch_id,
                         now,
@@ -739,8 +739,7 @@ impl LocalGitSource {
     #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
     async fn ingest_present_blob(
         &self,
-        pool: &PgPool,
-        permit: &OwnerWritePermit,
+        ctx: &CodeIngestContext<'_>,
         indexed_commit_sha: &str,
         batch_id: SourceBatchId,
         now: time::OffsetDateTime,
@@ -764,7 +763,8 @@ impl LocalGitSource {
             indexed_commit_sha: indexed_commit_sha.to_string(),
             state: FileState::Present,
         };
-        let file_revision = ingest_file_revision(pool, permit, batch_id, &rev_payload, now).await?;
+        let file_revision =
+            ingest_file_revision(ctx.engine(), ctx.authz(), batch_id, &rev_payload, now).await?;
         if !file_revision.idempotent_replay {
             report.files_present_emitted += 1;
         }
@@ -982,8 +982,7 @@ impl LocalGitSource {
     #[allow(clippy::too_many_arguments)]
     async fn tombstone_deleted_path(
         &self,
-        pool: &PgPool,
-        permit: &OwnerWritePermit,
+        ctx: &CodeIngestContext<'_>,
         commit_sha: &str,
         batch_id: SourceBatchId,
         now: time::OffsetDateTime,
@@ -1000,7 +999,8 @@ impl LocalGitSource {
             indexed_commit_sha: commit_sha.to_string(),
             state: FileState::Tombstone,
         };
-        let file_revision = ingest_file_revision(pool, permit, batch_id, &rev_payload, now).await?;
+        let file_revision =
+            ingest_file_revision(ctx.engine(), ctx.authz(), batch_id, &rev_payload, now).await?;
         report.files_tombstoned += 1;
 
         Ok(PendingDeletedPath {

@@ -475,13 +475,29 @@ Typed path guarantees:
 | mapping schema exists and decodes | `authorize_fact_with_citation` |
 | mapping targets the cited-object schema | `CitationMappingPayload::cited_object_schema()` |
 | cited object has a typed sidecar | engine authorization |
-| Fact row, citation rows, and sidecars commit atomically | PG ingest helper |
+| Fact row, citation rows, and sidecars commit atomically | `Engine::ingest_typed_fact_with` / `UnitOfWork::ingest_typed` |
 
 Opaque `CitationSpec` is for content-addressed cited objects with no
 typed sidecar payload and pure-link mappings. Do not copy it for
 domain documents, byte ranges, page spans, media boxes, or chat
 messages; use typed `InlineCitedObjectDraft` +
 `InlineCitationMappingDraft`.
+
+```rust
+engine
+    .ingest_typed_fact_with(
+        &authz,
+        TypedFactIngest::new("acme/importer", &payload)
+            .citation(CitationSpec::v1(
+                "acme/blob-v1",
+                content_hash,
+                "acme/blob-whole-v1",
+            )),
+    )
+    .await?;
+```
+
+Do not call `proxima_storage_pg::ingest_fact_with_sidecar`.
 
 ## Registry
 

@@ -101,51 +101,12 @@ pub fn sidecar_atoms_from_payload<P: serde::Serialize>(
     payload: &P,
     columns: &[&str],
 ) -> Result<Vec<(String, SidecarAtom)>, StorageError> {
-    let value = serde_json::to_value(payload).map_err(|err| {
-        StorageError::ConstraintViolation(format!("sidecar payload is not JSON: {err}"))
-    })?;
-    let object = value.as_object().ok_or_else(|| {
-        StorageError::ConstraintViolation("sidecar payload must serialize as a JSON object".into())
-    })?;
-    columns
-        .iter()
-        .map(|column| {
-            let raw = object.get(*column).ok_or_else(|| {
-                StorageError::ConstraintViolation(format!(
-                    "sidecar payload missing natural-key column {column}"
-                ))
-            })?;
-            Ok(((*column).to_string(), sidecar_atom_from_json(column, raw)?))
-        })
-        .collect()
-}
-
-fn sidecar_atom_from_json(
-    column: &str,
-    value: &serde_json::Value,
-) -> Result<SidecarAtom, StorageError> {
-    match value {
-        serde_json::Value::String(text) => Ok(Uuid::parse_str(text)
-            .map_or_else(|_| SidecarAtom::Text(text.clone()), SidecarAtom::Uuid)),
-        serde_json::Value::Bool(flag) => Ok(SidecarAtom::Bool(*flag)),
-        serde_json::Value::Number(number) => {
-            if let Some(n) = number.as_i64() {
-                i32::try_from(n).map_or(Ok(SidecarAtom::I64(n)), |n| Ok(SidecarAtom::I32(n)))
-            } else {
-                Err(StorageError::ConstraintViolation(format!(
-                    "sidecar column {column} is not an integer atom"
-                )))
-            }
-        }
-        _ => Err(StorageError::ConstraintViolation(format!(
-            "sidecar column {column} is not a series-handle atom"
-        ))),
-    }
+    SidecarAtom::bind_columns(payload, columns).map_err(StorageError::ConstraintViolation)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{sidecar_atom_from_json, sidecar_atoms_from_payload};
+    use super::sidecar_atoms_from_payload;
     use proxima_core::verbs::query::SidecarAtom;
     use serde::Serialize;
     use uuid::Uuid;
@@ -188,7 +149,7 @@ mod tests {
         let id = Uuid::nil();
         let value = serde_json::Value::String(id.to_string());
         assert_eq!(
-            sidecar_atom_from_json("repo_id", &value).unwrap(),
+            SidecarAtom::from_json("repo_id", &value).unwrap(),
             SidecarAtom::Uuid(id)
         );
     }

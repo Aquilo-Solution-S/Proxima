@@ -669,6 +669,13 @@ impl FactWriteCommand {
         self
     }
 
+    /// Reuse an existing series handle, or leave `None` for storage to mint.
+    #[must_use]
+    pub const fn with_handle(mut self, handle: Option<Uuid>) -> Self {
+        self.handle = handle;
+        self
+    }
+
     /// Stamp an explicit lexical language (a resolved text-search
     /// configuration name); `None` keeps the database default.
     #[must_use]

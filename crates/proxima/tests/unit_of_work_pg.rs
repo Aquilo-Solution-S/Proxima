@@ -141,3 +141,93 @@ async fn unit_of_work_one_shot_and_rollback_and_lock() {
     let _ = drop_db(&db_name).await;
     result.expect("unit of work pg test failed");
 }
+
+#[tokio::test]
+async fn unit_of_work_citation_spec_lands_cited_object() {
+    let db_name = unique_db_name("proxima_uow_cite");
+    create_db(&db_name).await.expect("PG required");
+    let db_url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let owner = company_owner(Uuid::now_v7());
+        let built = Proxima::<EmptyApp>::app()
+            .database_url(db_url)
+            .owner(owner)
+            .allow_insecure_single_owner()
+            .tool_scope(ToolScope::All)
+            .build()
+            .await?;
+        let authz = built.single_owner_authz().expect("single owner");
+        let engine = built.engine();
+        let hash = [0x11u8; 32];
+        let outcome = engine
+            .ingest_typed_fact_with(
+                &authz,
+                proxima::TypedFactIngest::new("test/uow-cite", &note("cited")).citation(
+                    proxima::CitationSpec::v1(
+                        proxima::UPLOADED_BLOB_SCHEMA_ID,
+                        hash,
+                        proxima::UPLOADED_BLOB_WHOLE_SCHEMA_ID,
+                    ),
+                ),
+            )
+            .await?;
+        let cited = outcome
+            .cited_object_id
+            .expect("DraftHint citation must persist a blob");
+        let blob_hash: Vec<u8> =
+            sqlx::query_scalar("SELECT content_hash FROM proxima_core.blob WHERE blob_id = $1")
+                .bind(cited)
+                .fetch_one(built.pool_for_tests())
+                .await?;
+        assert_eq!(blob_hash, hash);
+        built.shutdown();
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("unit of work citation pg test failed");
+}
+
+#[tokio::test]
+async fn unit_of_work_later_write_may_cite_earlier_uncommitted_fact() {
+    let db_name = unique_db_name("proxima_uow_session");
+    create_db(&db_name).await.expect("PG required");
+    let db_url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let owner = company_owner(Uuid::now_v7());
+        let built = Proxima::<EmptyApp>::app()
+            .database_url(db_url)
+            .owner(owner)
+            .allow_insecure_single_owner()
+            .tool_scope(ToolScope::All)
+            .build()
+            .await?;
+        let authz = built.single_owner_authz().expect("single owner");
+        let engine = built.engine();
+        let mut uow = engine.unit_of_work(&authz).await?;
+        let first = uow.ingest_fact("test/uow-session", &note("first")).await?;
+        let origin = proxima_core::EdgeEndpoint::memory(EntityKind::Fact, first.memory_id);
+        let second = uow
+            .ingest_typed(
+                proxima::TypedFactIngest::new("test/uow-session", &note("second"))
+                    .derived_from([origin]),
+            )
+            .await?;
+        uow.commit().await?;
+        assert_ne!(first.memory_id, second.memory_id);
+        let refs: Vec<Uuid> =
+            sqlx::query_scalar("SELECT unnest(refs) FROM proxima_core.memory WHERE t = $1")
+                .bind(second.memory_id.into_inner())
+                .fetch_all(built.pool_for_tests())
+                .await?;
+        assert!(
+            refs.contains(&first.memory_id.into_inner()),
+            "second Fact must pin the uncommitted first; got {refs:?}"
+        );
+        built.shutdown();
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("unit of work session-visible cite failed");
+}

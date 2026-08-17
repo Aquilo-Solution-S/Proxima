@@ -301,12 +301,27 @@ impl Engine {
     where
         A: EngineAuthority + ?Sized,
     {
+        self.authorized_index_targets_visible(authority, source, targets, field, &[])
+            .await
+    }
+
+    pub(in crate::engine) async fn authorized_index_targets_visible<A>(
+        &self,
+        authority: &A,
+        source: EdgeEndpoint,
+        targets: &[EdgeEndpoint],
+        field: &str,
+        session_visible: &[MemoryId],
+    ) -> Result<Vec<EdgeEndpoint>, ProtocolError>
+    where
+        A: EngineAuthority + ?Sized,
+    {
         let mut out = Vec::with_capacity(targets.len());
         for target in targets {
             validate_not_self_loop(source, *target)
                 .map_err(|err| ProtocolError::invalid_argument(field, err))?;
             let resolved = self
-                .authorize_index_target(authority, *target, field)
+                .authorize_index_target(authority, *target, field, session_visible)
                 .await?;
             validate_edge_layering(source, resolved)
                 .map_err(|err| ProtocolError::invalid_argument(field, err))?;
@@ -338,8 +353,35 @@ impl Engine {
                 .map_err(|err| ProtocolError::invalid_argument("references", err))?;
             targets.push(reference.target);
         }
-        self.authorized_index_targets(authority, source, &targets, "references")
+        self.authorized_index_targets_visible(authority, source, &targets, "references", &[])
             .await
+    }
+
+    pub(in crate::engine) async fn authorized_payload_references_visible<A>(
+        &self,
+        authority: &A,
+        source: EdgeEndpoint,
+        declared: &[PayloadReference],
+        session_visible: &[MemoryId],
+    ) -> Result<Vec<EdgeEndpoint>, ProtocolError>
+    where
+        A: EngineAuthority + ?Sized,
+    {
+        let mut targets = Vec::with_capacity(declared.len());
+        for reference in declared {
+            reference
+                .validate()
+                .map_err(|err| ProtocolError::invalid_argument("references", err))?;
+            targets.push(reference.target);
+        }
+        self.authorized_index_targets_visible(
+            authority,
+            source,
+            &targets,
+            "references",
+            session_visible,
+        )
+        .await
     }
 
     /// Read-admit one index target. Stored kind is compared in-tx
@@ -350,11 +392,15 @@ impl Engine {
         authority: &A,
         target: EdgeEndpoint,
         _field: &str,
+        session_visible: &[MemoryId],
     ) -> Result<EdgeEndpoint, ProtocolError>
     where
         A: EngineAuthority + ?Sized,
     {
         match target.entity {
+            crate::EntityRef::Memory(memory_id) if session_visible.contains(&memory_id) => {
+                Ok(target)
+            }
             crate::EntityRef::Memory(memory_id) => {
                 self.authorize_entry_read(authority, EntityId::Memory(memory_id))
                     .await?;

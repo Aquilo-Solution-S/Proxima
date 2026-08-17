@@ -115,6 +115,23 @@ impl Engine {
     where
         A: EngineAuthority + ?Sized,
     {
+        self.authorize_fact_ingest_visible(authority, relation, draft, sidecars, &[])
+            .await
+    }
+
+    /// [`Self::authorize_fact_ingest`] treating `session_visible` memory
+    /// ids as already read-checked (written earlier in the same [`UnitOfWork`]).
+    pub(in crate::engine) async fn authorize_fact_ingest_visible<A>(
+        &self,
+        authority: &A,
+        relation: Relation,
+        draft: FactWriteCommand,
+        sidecars: &[SidecarPayload],
+        session_visible: &[MemoryId],
+    ) -> Result<AuthorizedFactWrite, ProtocolError>
+    where
+        A: EngineAuthority + ?Sized,
+    {
         let owner = self.single_write_owner_for(authority, relation)?;
         let permit = self.authorize_write(authority, &owner, relation).await?;
         let fact_info = self.fact_schema_info(&draft.schema_id, draft.schema_version)?;
@@ -131,7 +148,7 @@ impl Engine {
             )?;
         }
         let links = self
-            .authorize_fact_node_links(authority, &draft, sidecars)
+            .authorize_fact_node_links(authority, &draft, sidecars, session_visible)
             .await?;
         Ok(AuthorizedFactWrite::new(
             permit.into(),
@@ -177,7 +194,7 @@ impl Engine {
         let fact_natural_key_columns = fact_info.natural_key_columns.clone();
         let (cited_object, mapping) = self.authorize_inline_citation(cited_object, mapping)?;
         let links = self
-            .authorize_fact_node_links(authority, &draft, sidecars)
+            .authorize_fact_node_links(authority, &draft, sidecars, &[])
             .await?;
 
         Ok(AuthorizedFactWithCitation::new(
@@ -224,7 +241,7 @@ impl Engine {
         let fact_natural_key_columns = fact_info.natural_key_columns.clone();
         let (mapping, expected_object_schema) = self.authorize_citation_mapping_draft(mapping)?;
         let links = self
-            .authorize_fact_node_links(authority, &draft, sidecars)
+            .authorize_fact_node_links(authority, &draft, sidecars, &[])
             .await?;
 
         Ok(AuthorizedFactWithCitationRef::new(
@@ -253,6 +270,7 @@ impl Engine {
         authority: &A,
         draft: &FactWriteCommand,
         sidecars: &[SidecarPayload],
+        session_visible: &[MemoryId],
     ) -> Result<AuthorizedNodeLinks, ProtocolError>
     where
         A: EngineAuthority + ?Sized,
@@ -271,10 +289,15 @@ impl Engine {
             .map(|reference| reference.target)
             .collect();
         let origins = self
-            .authorize_fact_link_targets(authority, &draft.derived_from, "derived_from")
+            .authorize_fact_link_targets(
+                authority,
+                &draft.derived_from,
+                "derived_from",
+                session_visible,
+            )
             .await?;
         let references = self
-            .authorize_fact_link_targets(authority, &references, "references")
+            .authorize_fact_link_targets(authority, &references, "references", session_visible)
             .await?;
         Ok(AuthorizedNodeLinks::new(origins, references))
     }
@@ -284,6 +307,7 @@ impl Engine {
         authority: &A,
         targets: &[EdgeEndpoint],
         field: &str,
+        session_visible: &[MemoryId],
     ) -> Result<Vec<EdgeEndpoint>, ProtocolError>
     where
         A: EngineAuthority + ?Sized,
@@ -303,6 +327,7 @@ impl Engine {
                 }
             }
             match target.entity {
+                crate::EntityRef::Memory(memory_id) if session_visible.contains(&memory_id) => {}
                 crate::EntityRef::Memory(memory_id) => {
                     self.authorize_entry_read(authority, crate::EntityId::Memory(memory_id))
                         .await?;
@@ -319,7 +344,7 @@ impl Engine {
         Ok(out)
     }
 
-    fn single_write_owner_for<A>(
+    pub(in crate::engine) fn single_write_owner_for<A>(
         &self,
         authority: &A,
         relation: Relation,

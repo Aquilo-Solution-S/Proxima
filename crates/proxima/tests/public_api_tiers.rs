@@ -771,6 +771,14 @@ fn flavor_sdk_names_query_and_ingest_types() {
 
     let _ = proxima::flavor::SidecarAtom::I32(0);
     let _ = proxima::flavor::CitationSpec::v1("core/upload-v1", [0; 32], "core/upload-whole-v1");
+    let fact = TierStatefulFact {
+        slot: "a".into(),
+        state: "Present".into(),
+    };
+    let _cite = proxima::flavor::TypedFactIngest::new("test/src", &fact).citation(
+        proxima::flavor::CitationSpec::v1("core/upload-v1", [0; 32], "core/upload-whole-v1"),
+    );
+    let _: Option<proxima::flavor::UnitOfWork<'_>> = None;
     assert!(proxima::flavor::hybrid_degraded_to_lexical(
         proxima::flavor::SearchMode::Hybrid,
         false,

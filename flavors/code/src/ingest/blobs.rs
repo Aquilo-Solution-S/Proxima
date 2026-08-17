@@ -3,14 +3,13 @@ use proxima_core::verbs::fact_ingest::{CitationSpec, FactIngestOutcome};
 use proxima_core::verbs::query::SidecarAtom;
 use proxima_core::{
     AbstractionPayload, AuthzContext, DerivedEmbedding, EdgeEndpoint, Engine, EntityKind,
-    FactPayload, InputContractId, MemoryId, MemoryOperatorKind, OperatorId, PayloadReference,
-    SchemaVersion, SourceBatchId,
+    InputContractId, MemoryId, MemoryOperatorKind, OperatorId, PayloadReference, SchemaVersion,
+    SourceBatchId, TypedFactIngest,
 };
 use proxima_storage_pg::sidecars::PgMemorySidecar;
 use proxima_storage_pg::verbs::derive_append::{
     DerivedBatchEntry, DerivedDraft, DerivedOutcome, append_derived_batch_with_edges_in_tx,
 };
-use proxima_storage_pg::verbs::fact_ingest::{FactIngestContext, ingest_fact_with_sidecar};
 use sqlx::PgPool;
 
 use crate::payloads::{CodeChunkV1, CommitV1, FileRevisionV1};
@@ -91,30 +90,27 @@ pub async fn close_local_git_batch(
     Ok(())
 }
 
-fn local_git_context(
-    permit: &OwnerWritePermit,
-    source_batch_id: SourceBatchId,
-    observed_at: time::OffsetDateTime,
-) -> FactIngestContext<'_> {
-    FactIngestContext::new(permit, LOCAL_GIT_SOURCE_ID, source_batch_id).observed_at(observed_at)
-}
-
 async fn ingest_local_git_fact<P>(
-    pool: &PgPool,
-    permit: &OwnerWritePermit,
+    engine: &Engine,
+    authz: &AuthzContext,
     source_batch_id: SourceBatchId,
     payload: &P,
     citation: CitationSpec,
     observed_at: time::OffsetDateTime,
 ) -> Result<FactIngestOutcome, IngestError>
 where
-    P: FactPayload + PgMemorySidecar + Clone,
+    P: proxima_core::FactPayload + Clone,
 {
-    let ctx = local_git_context(permit, source_batch_id, observed_at);
-    let mut tx = pool.begin().await?;
-    let outcome = ingest_fact_with_sidecar(&mut tx, &ctx, payload, citation).await?;
-    tx.commit().await?;
-    Ok(outcome)
+    engine
+        .ingest_typed_fact_with(
+            authz,
+            TypedFactIngest::new(LOCAL_GIT_SOURCE_ID, payload)
+                .source_batch_id(source_batch_id)
+                .observed_at(observed_at)
+                .citation(citation),
+        )
+        .await
+        .map_err(IngestError::from)
 }
 
 /// Current series handle for this owner's chunk at `(repo, path, index)`.
@@ -176,15 +172,15 @@ pub async fn resolve_code_chunk_handles(
 /// object (keyed by blake3 of the commit sha) with a "whole-commit"
 /// CitationMapping.
 pub async fn ingest_commit(
-    pool: &PgPool,
-    permit: &OwnerWritePermit,
+    engine: &Engine,
+    authz: &AuthzContext,
     source_batch_id: SourceBatchId,
     payload: &CommitV1,
     observed_at: time::OffsetDateTime,
 ) -> Result<FactIngestOutcome, IngestError> {
     ingest_local_git_fact(
-        pool,
-        permit,
+        engine,
+        authz,
         source_batch_id,
         payload,
         CitationSpec::v1(
@@ -201,27 +197,25 @@ pub async fn ingest_commit(
 /// file blob (keyed by `content_sha256`) with a "whole-blob"
 /// CitationMapping. Tombstones cite the null blob (`[0u8; 32]`).
 pub async fn ingest_file_revision(
-    pool: &PgPool,
-    permit: &OwnerWritePermit,
+    engine: &Engine,
+    authz: &AuthzContext,
     source_batch_id: SourceBatchId,
     payload: &FileRevisionV1,
     observed_at: time::OffsetDateTime,
 ) -> Result<FactIngestOutcome, IngestError> {
-    let ctx = local_git_context(permit, source_batch_id, observed_at);
-    let mut tx = pool.begin().await?;
-    let outcome = ingest_fact_with_sidecar(
-        &mut tx,
-        &ctx,
+    ingest_local_git_fact(
+        engine,
+        authz,
+        source_batch_id,
         payload,
         CitationSpec::v1(
             CODE_BLOB_SCHEMA,
             payload.content_sha256,
             CODE_BLOB_WHOLE_SCHEMA,
         ),
+        observed_at,
     )
-    .await?;
-    tx.commit().await?;
-    Ok(outcome)
+    .await
 }
 
 /// Atomic derived code-slice Abstractions for one file revision, plus the

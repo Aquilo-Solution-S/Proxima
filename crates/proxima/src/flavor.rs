@@ -68,6 +68,7 @@ pub use proxima_core::storage_ports::{
     CitedBlobService, CitedBlobStaged, CitedBlobUploadAborted, CitedBlobUploadCompleted,
     CitedBlobUploadHeader, CitedBlobUploadPrepared, MAX_HELD_BLOB_DIGESTS, VerifiedCitedBlob,
 };
+pub use proxima_core::engine::{TypedFactIngest, UnitOfWork};
 pub use proxima_core::verbs::fact_ingest::{CitationSpec, FactIngestOutcome, FactWriteCommand};
 pub use proxima_core::verbs::query::{
     GoalRow, QueryRequest, QueryResponse, SearchMode, SidecarAtom, hybrid_degraded_to_lexical,

@@ -51,7 +51,7 @@ pub use proxima_core::cursor::Cursor;
 /// declares a `tag_column` on its projection and filters here.
 pub use proxima_core::engine::{
     ListWakeCandidatesReadRequest, ListWakeCandidatesReadResponse, SearchReadRequest,
-    SearchReadResponse,
+    SearchReadResponse, TypedFactIngest, UnitOfWork,
 };
 pub use proxima_core::error::ProtocolError;
 pub use proxima_core::llm;

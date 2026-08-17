@@ -9,8 +9,8 @@ use crate::payloads::{
     ExecutionRequestV1, TestRequestV1,
 };
 
-use super::super::sql::{map_storage, resolve_repo_identifier};
-use super::super::{CodeToolCtxExt, code_store};
+use super::super::sql::resolve_repo_identifier;
+use super::super::{CodeToolCtxExt, engine};
 use super::context_validation::{
     validate_active_goal_context, validate_evidence_in_owner, validate_goal_activated_fact,
     validate_plan_source_abstraction_in_owner, validate_repo,
@@ -61,12 +61,15 @@ impl Tool for CodeEmitExecutionPlanTool {
             let plan_source_memory_id = ctx.resolve_abstraction_memory(&args.plan_source_memory)?;
             let evidence = resolve_evidence(&ctx, &args.evidence)?;
 
-            let pool = code_store(&ctx)?;
-            let mut tx = pool.pool().begin().await.map_err(map_storage)?;
             let goal_id = validate_goal_activated_fact(&ctx, goal_activated_memory_id).await?;
             validate_active_goal_context(&ctx, goal_id, planner_root).await?;
             validate_plan_source_abstraction_in_owner(&ctx, plan_source_memory_id).await?;
             validate_evidence_in_owner(&ctx, &evidence).await?;
+            let engine = engine(&ctx)?;
+            let mut uow = engine
+                .unit_of_work(ctx.authz())
+                .await
+                .map_err(ToolError::Protocol)?;
 
             let plan_key = match args.plan_key {
                 Some(value) => normalize_text("plan_key", &value, 240)?,
@@ -121,7 +124,6 @@ impl Tool for CodeEmitExecutionPlanTool {
                 }
                 let provenance = FactProvenance {
                     derived_from: &item_origins,
-                    authoring_perspective_id: Some(planner_root),
                 };
                 let outcome = match kind {
                     ExecutionPlanItemKind::Implementation => {
@@ -133,19 +135,17 @@ impl Tool for CodeEmitExecutionPlanTool {
                             depends_on_memory_ids,
                         };
                         let outcome =
-                            ingest_execution_request(&mut tx, &ctx, &payload, provenance).await?;
+                            ingest_execution_request(&mut uow, &payload, provenance).await?;
                         if !outcome.idempotent_replay && !item.acceptance_criteria.is_empty() {
                             let criteria_payload = AcceptanceCriteriaV1 {
                                 work_item_memory_id: outcome.memory_id.into_inner(),
                                 criteria: item.acceptance_criteria,
                             };
                             ingest_acceptance_criteria(
-                                &mut tx,
-                                &ctx,
+                                &mut uow,
                                 &criteria_payload,
                                 FactProvenance {
                                     derived_from: &[],
-                                    authoring_perspective_id: Some(planner_root),
                                 },
                             )
                             .await?;
@@ -161,7 +161,7 @@ impl Tool for CodeEmitExecutionPlanTool {
                             criteria: item.test_criteria,
                             depends_on_memory_ids,
                         };
-                        ingest_test_request(&mut tx, &ctx, &payload, provenance).await?
+                        ingest_test_request(&mut uow, &payload, provenance).await?
                     }
                 };
                 emitted.insert(item.key.clone(), outcome.memory_id);
@@ -193,7 +193,7 @@ impl Tool for CodeEmitExecutionPlanTool {
                 evidence_memory_ids: evidence.iter().map(|id| id.into_inner()).collect(),
             };
             let plan_outcome = append_execution_plan(
-                &mut tx,
+                &mut uow,
                 &ctx,
                 planner_root,
                 plan_source_memory_id,
@@ -202,7 +202,7 @@ impl Tool for CodeEmitExecutionPlanTool {
                 &plan_payload,
             )
             .await?;
-            tx.commit().await.map_err(map_storage)?;
+            uow.commit().await.map_err(ToolError::Protocol)?;
             Ok(CodeEmitExecutionPlanOutput {
                 plan_handle: ctx.format_abstraction_memory(plan_outcome.memory_id),
                 plan_edge_count: plan_outcome.edge_count,

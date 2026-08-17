@@ -6,16 +6,10 @@
 )]
 //! Typed atomic Fact + sidecar writes for the proxima-code flavor.
 //!
-//! Each helper wraps `proxima_storage_pg::verbs::fact_ingest::ingest_fact_in_tx`
-//! and the matching sidecar `INSERT` in a single Postgres transaction. On
-//! idempotent replay (receipt collision) the sidecar insert is skipped —
-//! the prior transaction already wrote it, and the natural-key uniqueness
-//! is by construction (same payload -> same receipt).
-//!
-//! The flavor depends on `proxima-storage-pg` for these helpers; the
-//! flavor crate is no longer storage-agnostic. That coupling
-//! is the v1 trade-off — keeping Fact materialization and sidecar
-//! population in one tx is non-negotiable (AGENTS.md invariant 15).
+//! Fact ingest goes through `Engine::ingest_typed_fact_with` (UoW of one).
+//! Opaque `CitationSpec` and stateful NK handle reuse live on that lane.
+//! Derived code-slice batches still use the storage-pg group append until
+//! a later UoW `author_derived` residual.
 
 pub mod blobs;
 pub mod engine;
