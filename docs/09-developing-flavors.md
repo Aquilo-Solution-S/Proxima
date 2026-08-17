@@ -745,7 +745,7 @@ Tool contract:
 | Args | `Deserialize + JsonSchema` |
 | Output | `Serialize` |
 | Context | `ToolCtx`: Owner, AuthzContext, frozen registry, optional `ToolCaller`, optional caller Self Perspective, optional Engine, typed ToolServices |
-| Storage | use typed engine/storage APIs and flavor services; no public raw `PgPool` capability |
+| Storage | tools: Engine + `FlavorServices` store. Host extra-table: `AppContext::clone_pool_for_host`, wrap immediately. No `proxima_core.*` SQL |
 | Writes | emit typed Facts / A/P / Goals through registered schemas; no tool writes an edge |
 
 MCP JSON is protocol boundary only. Flavor SDK tool code targets `Tool`;
@@ -805,13 +805,14 @@ let Some(store) = ctx.service::<MyFlavorStore>() else {
 };
 ```
 
-Two things to note. `AppContext::clone_pool_for_host` is the only route
-to a `PgPool`, and it is deliberately kept off the supported export tier:
-wrap it in a store type that keeps `proxima_core.*` SQL private, exactly
-as `proxima-code` does, rather than passing the pool around. Tuple apps fold
-service sets left-to-right; `(A,)` is the identity-preserving singleton form.
-Duplicate concrete types fail boot with `FlavorServiceError::DuplicateService`
-instead of silently overriding an earlier flavor or the substrate's service.
+`AppContext::clone_pool_for_host` is the Host extra-table bridge
+(docs/08). It is not Flavor SDK: wrap the pool in a store that keeps
+`proxima_core.*` SQL private, as `proxima-code` does, then insert the
+store. Tools and workers resolve the store, never the pool. Sidecar-only
+flavors do not call it. Tuple apps fold service sets left-to-right;
+`(A,)` is the identity-preserving singleton form. Duplicate concrete
+types fail boot with `FlavorServiceError::DuplicateService` instead of
+silently overriding an earlier flavor or the substrate's service.
 
 When S3 is configured, the runtime appends three substrate-owned entries over
 one shared backend: `CitedBlobService` for presigned upload/read,

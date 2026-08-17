@@ -593,9 +593,8 @@ impl proxima::FlavorApp for TierExtensionApp {
         ctx: &proxima::AppContext,
     ) -> Result<proxima::flavor::FlavorServices, proxima::flavor::FlavorServiceError> {
         // A real host composes its store from `ctx.clone_pool_for_host()`.
-        // The pool stays off the supported tier deliberately (see
-        // `raw_storage_surfaces_are_not_supported_tier_exports`), so this
-        // test only pins that the override is writable at all.
+        // This test only pins that the override is writable; the bridge
+        // itself is named in `host_extra_table_bridge_is_on_app_context`.
         let _ = ctx;
         let mut services = proxima::flavor::FlavorServices::default();
         services.try_insert(TierFlavorStore { marker: "store" })?;
@@ -772,6 +771,31 @@ fn raw_storage_surfaces_are_not_supported_tier_exports() {
         !authorized_read.contains("use sqlx::PgPool") && !authorized_read.contains("&PgPool"),
         "code-series pool helpers must not live on the Flavor SDK"
     );
+}
+
+#[test]
+fn host_extra_table_bridge_is_on_app_context() {
+    // The one sanctioned PgPool leak is AppContext::clone_pool_for_host
+    // (docs/08). Flavor SDK still must not name the type. app.rs is
+    // scanned so this cannot hide in a submodule the host.rs scan misses.
+    let flavor_exports = include_str!("../src/flavor.rs");
+    let authorized_read = include_str!("../src/flavor/authorized_read.rs");
+    let app = include_str!("../src/app.rs");
+
+    assert!(!flavor_exports.contains("PgPool"));
+    assert!(
+        !authorized_read.contains("use sqlx::PgPool") && !authorized_read.contains("&PgPool"),
+        "code-series pool helpers must not live on the Flavor SDK"
+    );
+    assert!(
+        app.contains("pub fn clone_pool_for_host"),
+        "host extra-table bridge must stay on AppContext"
+    );
+    assert!(
+        !app.contains("pub pool"),
+        "the pool field stays crate-private"
+    );
+    let _: fn(&proxima::AppContext) -> sqlx::PgPool = proxima::AppContext::clone_pool_for_host;
 }
 
 #[test]

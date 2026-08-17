@@ -63,8 +63,18 @@ pub struct AppContext {
 }
 
 impl AppContext {
-    /// Host-only bridge for composing backend-owned services.
-    #[doc(hidden)]
+    /// Host-only extra-table bridge. Not Flavor SDK.
+    ///
+    /// Use this inside [`FlavorApp::services`] to construct a flavor-owned
+    /// store over tables the host migrates (as `proxima-mcp` does with
+    /// `CodeFlavorStore::from_backend_pool_for_host`). Wrap the pool in
+    /// that store immediately. Do not put `PgPool` on `FlavorServices`,
+    /// do not pass it into a [`proxima_core::tool::Tool`], and do not
+    /// run `proxima_core.*` SQL through it — flavor `src/` still has
+    /// zero core-table SQL.
+    ///
+    /// Sidecar-only flavors never call this: they write through
+    /// [`proxima_core::Engine`] / [`proxima_core::engine::UnitOfWork`].
     #[must_use]
     pub fn clone_pool_for_host(&self) -> PgPool {
         self.pool.clone()
