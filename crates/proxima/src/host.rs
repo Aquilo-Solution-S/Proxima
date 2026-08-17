@@ -87,6 +87,11 @@ pub use proxima_core::verbs::goal_write::{
     GoalWriteOutcome, IdempotencyKey, MAX_GOAL_TEXT_CHARS, MAX_GOAL_TITLE_CHARS,
     MAX_WAKE_TOOL_ID_CHARS, OperatorKind, SystemOrigin,
 };
+/// Frozen-registry catalog element. [`FlavorRegistryFrozen::list_mcp_tools`]
+/// already returns `&[McpToolDescriptor]`; without these names a host
+/// depending only on `proxima` cannot write a typed signature or match
+/// [`McpToolOrigin`]. `CoreToolInfo` stays the projected list DTO.
+pub use proxima_core::{McpToolDescriptor, McpToolOrigin};
 /// The Postgres tuning block.
 ///
 /// [`RuntimeConfig::pg_tuning`] is a `pub` field and
