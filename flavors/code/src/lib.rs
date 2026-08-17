@@ -235,8 +235,9 @@ mod tests {
         use proxima_core::{AbstractionPayload, FactPayload};
 
         let callee = uuid::Uuid::now_v7();
-        // proxima-code/calls: the callee moved into the caller's payload, and
-        // multiplicity collapsed — two sites, one reference.
+        // proxima-code/calls: the callee lives on the caller payload. Two
+        // sites collapse to one payload entry. Kernel refs stay empty —
+        // callees are named by series handle before their t exists.
         let chunk = CodeChunkV1 {
             repo_id: uuid::Uuid::now_v7(),
             file_path: "src/lib.rs".into(),
@@ -267,12 +268,13 @@ mod tests {
                 ],
             }],
         };
+        assert_eq!(chunk.calls.len(), 1, "two sites are one connection");
+        assert_eq!(chunk.calls[0].sites.len(), 2);
+        assert_eq!(chunk.calls[0].callee_memory_id, callee);
         let references = <CodeChunkV1 as AbstractionPayload>::references(&chunk);
-        assert_eq!(references.len(), 1, "two sites are one connection");
-        assert_eq!(references[0].field, "calls.callee_memory_id");
-        assert_eq!(
-            references[0].target,
-            proxima_core::EdgeEndpoint::memory(EntityKind::Abstraction, MemoryId::new(callee))
+        assert!(
+            references.is_empty(),
+            "call graph is sidecar-local, not a kernel pin"
         );
 
         // proxima-code/has-acceptance-criteria: the criteria Fact points at

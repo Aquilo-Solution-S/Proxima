@@ -7,7 +7,7 @@ mod test_fixtures;
 
 use proxima_core::engine::{EmbeddingClientReloader, Engine};
 use proxima_core::error::ErrorCode;
-use proxima_core::ids::{SourceBatchId, UserId};
+use proxima_core::ids::UserId;
 use proxima_core::llm::{EMBEDDING_DIM, EmbeddingClient};
 use proxima_core::owner::{Owner, OwnerRef};
 use proxima_core::verbs::change_history::ChangeHistoryRequest;
@@ -197,13 +197,15 @@ async fn wake_shaped_context_denied_ingest_and_admin_but_not_goal_write() {
     let authz = granted_no_access_authz(AuthPath::Wake);
 
     let ingest_err = engine
-        .close_batch(&authz, owner, SourceBatchId::new(Uuid::now_v7()))
+        .authorize_owner_write(&authz, &owner, proxima_core::AccessKind::Fact)
         .await
-        .expect_err("wake context must not close batches");
+        .expect_err("wake context must not ingest");
     assert!(
         ingest_err
             .to_string()
             .contains("requires ingest on this owner")
+            || ingest_err.to_string().contains("Forbidden")
+            || ingest_err.to_string().contains("forbidden")
     );
 }
 

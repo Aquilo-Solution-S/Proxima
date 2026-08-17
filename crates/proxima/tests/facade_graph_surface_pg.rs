@@ -1,10 +1,10 @@
 use std::collections::BTreeSet;
 
 use proxima::flavor::{
-    AbstractionPayload, EdgeEndpoint, EdgeKind, FactEntityId, FactPayload, FlavorBundle,
-    FlavorRegistry, InputContractId, MemoryId, OperatorId, PayloadKeyBuilder, PayloadReference,
-    PgMemoryPayload, PgMemoryPayloadFuture, PgMemorySidecar, PgSidecarFuture, PgSidecarReadCtx,
-    PgSidecarRegistry, ReferenceBinding, SchemaId, SchemaVersion, SidecarPayload,
+    AbstractionPayload, EdgeEndpoint, EdgeKind, FactPayload, FlavorBundle, FlavorRegistry,
+    InputContractId, MemoryId, OperatorId, PayloadKeyBuilder, PayloadReference, PgMemoryPayload,
+    PgMemoryPayloadFuture, PgMemorySidecar, PgSidecarFuture, PgSidecarReadCtx, PgSidecarRegistry,
+    ReferenceBinding, SchemaId, SchemaVersion, SidecarPayload,
 };
 use proxima::{
     AppInfo, AuthPath, AuthzContext, EdgeExistsRequest, EdgeFilter, EdgeReadRequest, FlavorApp,
@@ -15,7 +15,6 @@ use proxima_core::{
     Role, UserId,
 };
 use proxima_pg_testkit::{create_db, db_url, drop_db, unique_db_name};
-use proxima_storage_pg::query::fact_entity_id_for;
 use uuid::Uuid;
 
 #[test]
@@ -36,9 +35,8 @@ fn facade_does_not_export_raw_edge_append_surface() {
 #[allow(unused_imports)]
 mod facade_imports_compile {
     use proxima::flavor::{
-        Edge, EdgeEndpoint, EdgeKind, EdgeTargetProjection, EntityRef, FactEntityId,
-        FlavorRegistryFrozen, PayloadKeyBuilder, PayloadReference, ReferenceBinding, Tool, ToolCtx,
-        ToolError,
+        Edge, EdgeEndpoint, EdgeKind, EdgeTargetProjection, EntityRef, FlavorRegistryFrozen,
+        PayloadKeyBuilder, PayloadReference, ReferenceBinding, Tool, ToolCtx, ToolError,
     };
     use proxima::{
         EdgeExistsRequest, EdgeExistsResponse, EdgeFilter, EdgeReadCursor, EdgeReadRequest,
@@ -158,9 +156,10 @@ impl AbstractionPayload for FacadeAbstraction {
     }
 
     fn references(&self) -> Vec<PayloadReference> {
-        vec![PayloadReference::fact_entity_head(
+        vec![PayloadReference::memory(
             "observed_entity",
-            FactEntityId::new(self.observed_entity),
+            EntityKind::Fact,
+            MemoryId::new(self.observed_entity),
         )]
     }
 }
@@ -262,10 +261,6 @@ fn facade_flavor_authoring_symbols_are_reachable() {
     );
     assert_eq!(reference.binding, ReferenceBinding::Pin);
     reference.validate().expect("Pin addresses a memory row");
-    assert_eq!(
-        PayloadReference::fact_entity_head("symbol_entity", FactEntityId::new(Uuid::nil())).binding,
-        ReferenceBinding::FollowHead
-    );
     assert_eq!(EdgeKind::Origin.as_str(), "origin");
     assert_eq!(
         EdgeEndpoint::memory(EntityKind::Abstraction, MemoryId::new(Uuid::nil())).layer(),
@@ -339,37 +334,7 @@ async fn facade_engine_reads_lineage_edges_and_derives_without_embedding_client(
         )
         .await?;
 
-        let mut conn = built.pool_for_tests().acquire().await?;
-        let fact_entity_id = fact_entity_id_for(
-            conn.as_mut(),
-            &owner,
-            &SchemaId::new(FacadeFact::SCHEMA_ID.to_string()),
-            SchemaVersion::new(FacadeFact::SCHEMA_VERSION),
-            &[fact.note_id.to_string()],
-        )
-        .await?
-        .expect("stateful fact has an aggregate entity id");
-
-        let source_batch_id: Uuid = sqlx::query_scalar(
-            "SELECT fr.source_batch_id
-               FROM proxima_core.memories m
-               JOIN proxima_core.fact_receipts fr ON fr.receipt_id = m.receipt_id
-              WHERE m.memory_id = $1",
-        )
-        .bind(fact_outcome.memory_id.into_inner())
-        .fetch_one(built.pool_for_tests())
-        .await?;
-        proxima_storage_pg::verbs::close_batch::close_batch(
-            built.pool_for_tests(),
-            &fact_permit,
-            proxima_core::SourceBatchId::new(source_batch_id),
-        )
-        .await?;
-        let derived_id = MemoryId::new(Uuid::now_v7());
-        // Provenance is a list of endpoints on the request. No relation to
-        // resolve, no authorship kind to pick, no edge id to mint: the
-        // entries land as `origin` rows because of which field they arrived
-        // in (docs/16 §The Model).
+        let derived_handle = MemoryId::new(Uuid::now_v7());
         let derived_from = [EdgeEndpoint::memory(
             EntityKind::Fact,
             fact_outcome.memory_id,
@@ -379,7 +344,7 @@ async fn facade_engine_reads_lineage_edges_and_derives_without_embedding_client(
             .author_derived_authorized(
                 &authz,
                 AuthorDerivedRequestInput {
-                    memory_id: derived_id,
+                    memory_id: derived_handle,
                     owner,
                     kind: EntityKind::Abstraction,
                     text: "Single facade dependency is enough for flavor authors.".to_string(),
@@ -388,14 +353,14 @@ async fn facade_engine_reads_lineage_edges_and_derives_without_embedding_client(
                     operator_kind: MemoryOperatorKind::FtoA,
                     operator_id: OperatorId::new(Uuid::now_v7()),
                     input_contract_id: InputContractId::new(Uuid::now_v7()),
-                    source_batch_id: Some(proxima_core::SourceBatchId::new(source_batch_id)),
+                    source_batch_id: None,
                     model_id: "facade-test",
                     prompt_version: "v1",
                     sidecar_payload: SidecarPayload::abstraction(FacadeAbstraction {
                         title: "Facade surface".to_string(),
                         body: "Single facade dependency is enough for flavor authors.".to_string(),
                         source_count: 1,
-                        observed_entity: fact_entity_id.into_inner(),
+                        observed_entity: fact_outcome.memory_id.into_inner(),
                     }),
                     authoring_perspective_id: None,
                     derived_from: &derived_from,
@@ -404,18 +369,16 @@ async fn facade_engine_reads_lineage_edges_and_derives_without_embedding_client(
                 },
             )
             .await?;
-        assert_eq!(derived_outcome.memory_id, derived_id);
-        // One origin (the declared source Fact) and one reference (the
-        // payload's follow-head field). A count, never a list of handles.
+        let derived_t = derived_outcome.memory_id;
+        assert_ne!(derived_t, fact_outcome.memory_id);
         assert_eq!(derived_outcome.edge_count, 2);
 
         let embedding_rows: i64 = sqlx::query_scalar(
             "SELECT count(*)
                FROM proxima_core.embeddings
-              WHERE entity_kind = 'Abstraction'
-                AND entity_id = $1",
+              WHERE entity_id = $1",
         )
-        .bind(derived_id.into_inner())
+        .bind(derived_t.into_inner())
         .fetch_one(built.pool_for_tests())
         .await?;
         assert_eq!(
@@ -429,7 +392,7 @@ async fn facade_engine_reads_lineage_edges_and_derives_without_embedding_client(
                 &authz,
                 &MemoryLineageRequest {
                     owner,
-                    start_memory_id: derived_id,
+                    start_memory_id: derived_t,
                     direction: MemoryLineageDirection::Ancestors,
                     depth: 2,
                     limit: 10,
@@ -447,7 +410,7 @@ async fn facade_engine_reads_lineage_edges_and_derives_without_embedding_client(
         assert!(
             lineage.edges.iter().any(|edge| {
                 edge.edge.kind == EdgeKind::Origin
-                    && edge.edge.source.memory_id() == Some(derived_id)
+                    && edge.edge.source.memory_id() == Some(derived_t)
                     && matches!(
                         edge.edge.target,
                         EdgeTargetProjection::Visible { target }
@@ -457,13 +420,10 @@ async fn facade_engine_reads_lineage_edges_and_derives_without_embedding_client(
             "lineage traverses origin"
         );
 
-        // The reference the payload declared is in the index, addressed at
-        // the Fact-entity head — the binding is the address form, so there
-        // is nothing else to agree with it.
         let head_filter = EdgeFilter {
             kind: Some(EdgeKind::Reference),
-            source: Some(EntityRef::Memory(derived_id)),
-            target: Some(EntityRef::FactEntity(fact_entity_id)),
+            source: Some(EntityRef::Memory(derived_t)),
+            target: Some(EntityRef::Memory(fact_outcome.memory_id)),
         };
         let exists = built
             .engine
@@ -484,7 +444,7 @@ async fn facade_engine_reads_lineage_edges_and_derives_without_embedding_client(
                 &EdgeExistsRequest {
                     owner,
                     filter: EdgeFilter {
-                        target: Some(EntityRef::FactEntity(FactEntityId::new(Uuid::now_v7()))),
+                        target: Some(EntityRef::Memory(MemoryId::new(Uuid::now_v7()))),
                         ..head_filter.clone()
                     },
                 },
@@ -508,10 +468,8 @@ async fn facade_engine_reads_lineage_edges_and_derives_without_embedding_client(
         assert_eq!(read.edges[0].kind, EdgeKind::Reference);
         assert_eq!(
             read.edges[0].source,
-            EdgeEndpoint::memory(EntityKind::Abstraction, derived_id)
+            EdgeEndpoint::memory(EntityKind::Abstraction, derived_t)
         );
-        // The stored address is the head; the read resolves it through to
-        // whatever the head currently is. That is follow-head at read time.
         assert_eq!(
             read.edges[0].target,
             EdgeTargetProjection::visible(EdgeEndpoint::memory(
@@ -520,7 +478,6 @@ async fn facade_engine_reads_lineage_edges_and_derives_without_embedding_client(
             ))
         );
 
-        drop(conn);
         built.shutdown();
         Ok(())
     }

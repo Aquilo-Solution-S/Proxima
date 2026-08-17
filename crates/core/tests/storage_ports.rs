@@ -2,7 +2,7 @@
 
 use proxima_core::storage_ports::*;
 use proxima_core::verbs::change_history::{ChangeHistoryRequest, ChangeHistoryResponse};
-use proxima_core::verbs::close_batch::CloseBatchOutcome;
+
 use proxima_core::verbs::goal_write::{
     AchieveGoalAtomicRequest, CreateGoalAtomicRequest, DecomposeGoalAtomicRequest,
     DecomposeGoalOutcome, GoalWriteOutcome, ModifyGoalAtomicRequest, TransitionGoalAtomicRequest,
@@ -112,6 +112,14 @@ impl MemoryAuthoringPort for MemoryAuthoringFake {
     ) -> Result<Vec<FactSourceBatchRow>, StorageError> {
         fake_error()
     }
+
+    async fn forget_memory(
+        &self,
+        _permit: &OwnerWritePermit,
+        _memory_id: MemoryId,
+    ) -> Result<(), StorageError> {
+        fake_error()
+    }
 }
 
 #[derive(Debug)]
@@ -129,19 +137,25 @@ impl MemoryReadPort for MemoryReadFake {
 
     async fn load_memory_graph_payloads(
         &self,
-        _owner: &Owner,
-        _memory_ids: &[MemoryId],
+        _identities: &[MemoryGraphIdentity],
         _include_body: bool,
     ) -> Result<Vec<MemoryGraphPayloadRow>, StorageError> {
         fake_error()
     }
 
-    async fn load_neighbor_memory_edges(
+    async fn load_pin_nodes(
         &self,
         _read_owners: &[OwnerRef],
         _memory_ids: &[MemoryId],
-        _limit: usize,
-    ) -> Result<Vec<proxima_core::Edge>, StorageError> {
+    ) -> Result<Vec<proxima_core::PinNode>, StorageError> {
+        fake_error()
+    }
+
+    async fn load_inbound_pin_nodes(
+        &self,
+        _read_owners: &[OwnerRef],
+        _query: proxima_core::InboundPinQuery<'_>,
+    ) -> Result<Vec<proxima_core::PinNode>, StorageError> {
         fake_error()
     }
 
@@ -166,6 +180,16 @@ impl MemoryReadPort for MemoryReadFake {
         read_owners: &[OwnerRef],
         req: &proxima_core::verbs::query::MemoryLineageRequest,
     ) -> Result<proxima_core::verbs::query::MemoryLineageResponse, StorageError> {
+        fake_error()
+    }
+
+    async fn owned_series_handle(
+        &self,
+        _owner: Owner,
+        _schema_id: &proxima_core::SchemaId,
+        _sidecar_table: &str,
+        _columns: &[(&str, proxima_core::verbs::query::SidecarAtom)],
+    ) -> Result<Option<uuid::Uuid>, StorageError> {
         fake_error()
     }
 }
@@ -205,6 +229,14 @@ impl EmbeddingTextPort for EmbeddingTextFake {
         memory_id: proxima_core::MemoryId,
         non_embeddable_schemas: &[String],
     ) -> Result<Option<String>, StorageError> {
+        fake_error()
+    }
+
+    async fn load_embedding_texts(
+        &self,
+        _items: &[(Owner, EntityKind, proxima_core::MemoryId)],
+        _non_embeddable_schemas: &[String],
+    ) -> Result<Vec<Option<String>>, StorageError> {
         fake_error()
     }
 
@@ -444,42 +476,10 @@ impl ChangeEventPort for ChangeEventFake {
 }
 
 #[derive(Debug)]
-struct EdgeReadFake;
-
-#[async_trait::async_trait]
-impl EdgeReadPort for EdgeReadFake {
-    async fn read_edges(
-        &self,
-        read_owners: &[OwnerRef],
-        req: &proxima_core::verbs::query::EdgeReadRequest,
-    ) -> Result<proxima_core::verbs::query::EdgeReadResponse, StorageError> {
-        fake_error()
-    }
-
-    async fn edge_exists(
-        &self,
-        read_owners: &[OwnerRef],
-        req: &proxima_core::verbs::query::EdgeExistsRequest,
-    ) -> Result<proxima_core::verbs::query::EdgeExistsResponse, StorageError> {
-        fake_error()
-    }
-}
-
-#[derive(Debug)]
 struct CitationFake;
 
 #[async_trait::async_trait]
 impl CitationPort for CitationFake {
-    async fn fact_entity_id_for(
-        &self,
-        owner: &Owner,
-        schema_id: &SchemaId,
-        schema_version: SchemaVersion,
-        natural_key: &[String],
-    ) -> Result<Option<FactEntityId>, StorageError> {
-        fake_error()
-    }
-
     async fn facts_citing_object(
         &self,
         read_owners: &[OwnerRef],
@@ -493,15 +493,8 @@ impl CitationPort for CitationFake {
 
     async fn citation_of_fact(
         &self,
+        read_owners: &[proxima_core::OwnerRef],
         fact_memory_id: proxima_core::MemoryId,
-    ) -> Result<Option<proxima_core::verbs::query::FactCitationReadback>, StorageError> {
-        fake_error()
-    }
-
-    async fn citation_of_entity_head(
-        &self,
-        read_owners: &[OwnerRef],
-        fact_entity_id: FactEntityId,
     ) -> Result<Option<proxima_core::verbs::query::FactCitationReadback>, StorageError> {
         fake_error()
     }
@@ -519,11 +512,11 @@ impl OwnerAccessReadPort for OwnerAccessReadFake {
         fake_error()
     }
 
-    async fn visible_to_any(
+    async fn visible_home_owner(
         &self,
         entity: EntityId,
         read_owners: &[OwnerRef],
-    ) -> Result<bool, StorageError> {
+    ) -> Result<Option<OwnerRef>, StorageError> {
         fake_error()
     }
 
@@ -587,16 +580,7 @@ impl OwnerMembershipAdminPort for OwnerMembershipAdminFake {
 #[derive(Debug)]
 struct SourceBatchFake;
 
-#[async_trait::async_trait]
-impl SourceBatchPort for SourceBatchFake {
-    async fn close_batch(
-        &self,
-        _permit: &OwnerWritePermit,
-        source_batch_id: SourceBatchId,
-    ) -> Result<CloseBatchOutcome, StorageError> {
-        fake_error()
-    }
-}
+impl SourceBatchPort for SourceBatchFake {}
 
 #[derive(Debug)]
 struct SourceCursorFake;
@@ -787,7 +771,6 @@ fn public_storage_ports_can_be_mocked_independently() {
     assert_port::<GoalWriteFake>();
     assert_port::<GoalReadFake>();
     assert_port::<ChangeEventFake>();
-    assert_port::<EdgeReadFake>();
     assert_port::<CitationFake>();
     assert_port::<OwnerAccessReadFake>();
     assert_port::<OwnerMembershipAdminFake>();

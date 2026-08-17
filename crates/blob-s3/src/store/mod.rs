@@ -17,6 +17,7 @@
 //! can be read on its own, and the verbs that share an ordering contract
 //! stay together.
 
+mod cold;
 mod digest;
 mod dto;
 mod erase;
@@ -33,11 +34,13 @@ mod verified_read;
 #[cfg(test)]
 mod testkit;
 
+pub use cold::S3ColdStore;
 pub use dto::{
     CitedBlobReadUrlOutcomeTs, CitedBlobReadUrlTs, CitedBlobUploadAbortOutcomeTs,
     CitedBlobUploadAbortTs, CitedBlobUploadCompleteTs, CitedBlobUploadPrepareOutcomeTs,
     CitedBlobUploadPrepareTs, PresignedHeaderTs,
 };
+pub use keys::{cold_object_key, cold_owner_prefix, owner_hash_hex_public};
 
 use crate::config::{
     DEFAULT_MAX_BLOB_BYTES, S3RuntimeConfig, validate_endpoint_url, validate_presign_ttl,
@@ -119,8 +122,12 @@ impl CitedBlobStore {
     ///
     /// # Errors
     /// Returns `BlobError` when the AWS client cannot be constructed.
-    async fn client(&self) -> Result<&aws_sdk_s3::Client, BlobError> {
+    pub(super) async fn client(&self) -> Result<&aws_sdk_s3::Client, BlobError> {
         self.client.get_or_try_init(|| self.config.client()).await
+    }
+
+    pub(super) fn bucket(&self) -> &str {
+        &self.config.bucket
     }
 }
 

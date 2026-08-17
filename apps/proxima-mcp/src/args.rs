@@ -83,6 +83,7 @@ Tools:
   core_search_memories
   core_memory_spaces
   core_remember
+  core_forget
   core_record_utterance
   core_derive
   core_interpret

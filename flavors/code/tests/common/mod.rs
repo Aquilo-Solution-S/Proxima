@@ -42,7 +42,12 @@ pub async fn migrated_db() -> (String, PgStorage) {
             panic!("PG required for tests but unavailable: {err}");
         }
     }
-    .with_sidecars(code_pg_sidecars());
+    .with_sidecars(code_pg_sidecars())
+    .with_search_projections(
+        proxima_code::schema_registry()
+            .search_projections()
+            .to_vec(),
+    );
     (db_name, pg)
 }
 
@@ -110,18 +115,119 @@ pub async fn insert_home(
     entity_id: Uuid,
     owner: &Owner,
 ) -> Result<(), sqlx::Error> {
-    let (owner_kind, owner_id) = proxima_storage_pg::access::owner_columns::owner_binds(owner);
+    sqlx::query("UPDATE proxima_core.memory SET owner_id = $2 WHERE t = $1")
+        .bind(entity_id)
+        .bind(owner.stored_owner_id())
+        .execute(pool)
+        .await
+        .map(|_| ())
+}
+
+/// Insert one timeseries Memory row. Returns `(handle, t)`.
+pub async fn seed_memory(
+    pool: &sqlx::PgPool,
+    owner: &Owner,
+    schema_id: &str,
+    kind: &str,
+    t: Option<Uuid>,
+    handle: Option<Uuid>,
+    origins: &[Uuid],
+) -> Result<(Uuid, Uuid), sqlx::Error> {
+    let handle = handle.unwrap_or_else(Uuid::now_v7);
+    let t = t.unwrap_or_else(Uuid::now_v7);
+    let owner_id = owner.stored_owner_id();
     sqlx::query(
-        "UPDATE proxima_core.memories
-            SET owner_kind = $2, owner_id = $3
-          WHERE memory_id = $1",
+        "INSERT INTO proxima_core.owners (owner_id, kind)
+         VALUES ($1, $2::proxima_core.owner_kind) ON CONFLICT DO NOTHING",
     )
-    .bind(entity_id)
-    .bind(owner_kind)
     .bind(owner_id)
+    .bind(proxima_core::OwnerRefKind::of(owner).as_str())
     .execute(pool)
-    .await
-    .map(|_| ())
+    .await?;
+    let head_exists: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM proxima_core.memory_head WHERE handle = $1)",
+    )
+    .bind(handle)
+    .fetch_one(pool)
+    .await?;
+    if head_exists {
+        sqlx::query("UPDATE proxima_core.memory_head SET t = $2 WHERE handle = $1")
+            .bind(handle)
+            .bind(t)
+            .execute(pool)
+            .await?;
+    } else {
+        sqlx::query(
+            "INSERT INTO proxima_core.memory_head (handle, kind, schema_id, owner_id, t)
+             VALUES ($1, $2::proxima_core.memory_kind, $3, $4, $5)",
+        )
+        .bind(handle)
+        .bind(kind)
+        .bind(schema_id)
+        .bind(owner_id)
+        .bind(t)
+        .execute(pool)
+        .await?;
+    }
+    sqlx::query(
+        "INSERT INTO proxima_core.memory (handle, t, kind, owner_id, schema_id, origins)
+         VALUES ($1, $2, $3::proxima_core.memory_kind, $4, $5, $6)",
+    )
+    .bind(handle)
+    .bind(t)
+    .bind(kind)
+    .bind(owner_id)
+    .bind(schema_id)
+    .bind(origins)
+    .execute(pool)
+    .await?;
+    Ok((handle, t))
+}
+
+/// Insert one timeseries Goal row. Returns `(handle, t)`.
+pub async fn seed_goal(
+    pool: &sqlx::PgPool,
+    owner: &Owner,
+    schema_id: &str,
+    title: &str,
+    request_id: &str,
+    t: Option<Uuid>,
+    assignment_t: Option<Uuid>,
+) -> Result<(Uuid, Uuid), sqlx::Error> {
+    let handle = Uuid::now_v7();
+    let t = t.unwrap_or_else(Uuid::now_v7);
+    let owner_id = owner.stored_owner_id();
+    sqlx::query(
+        "INSERT INTO proxima_core.owners (owner_id, kind)
+         VALUES ($1, $2::proxima_core.owner_kind) ON CONFLICT DO NOTHING",
+    )
+    .bind(owner_id)
+    .bind(proxima_core::OwnerRefKind::of(owner).as_str())
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        "INSERT INTO proxima_core.goal_head (handle, schema_id, owner_id, t)
+         VALUES ($1, $2, $3, $4)",
+    )
+    .bind(handle)
+    .bind(schema_id)
+    .bind(owner_id)
+    .bind(t)
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        "INSERT INTO proxima_core.goal (handle, t, owner_id, title, state, request_id, assignment_t)
+         VALUES ($1, $2, $3, $4, 'Active', $5, $6)",
+    )
+    .bind(handle)
+    .bind(t)
+    .bind(owner_id)
+    .bind(title)
+    .bind(request_id)
+    .bind(assignment_t)
+    .execute(pool)
+    .await?;
+    Ok((handle, t))
 }
 
 pub fn write_file(repo: &Path, path: &str, contents: &str) {

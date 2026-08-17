@@ -61,11 +61,7 @@ fn all_mcp_tool_arg_schemas_avoid_root_combinators() {
 
 const CORE_GOAL_ACTION_NAMES: &[&str] =
     &["set", "transition", "modify", "mark_achieved", "decompose"];
-const CORE_FACT_ACTION_NAMES: &[&str] = &[
-    "citation_of_fact",
-    "citation_of_entity_head",
-    "facts_citing_object",
-];
+const CORE_FACT_ACTION_NAMES: &[&str] = &["citation_of_fact", "facts_citing_object"];
 const CORE_MEMBERSHIP_ACTION_NAMES: &[&str] = &["add_member", "remove_member", "list_members"];
 const CORE_PUBLISH_ACTION_NAMES: &[&str] = &["publish_to_world"];
 const DISPATCHER_TOOL_ACTIONS: &[(&str, &[&str])] = &[
@@ -74,6 +70,24 @@ const DISPATCHER_TOOL_ACTIONS: &[(&str, &[&str])] = &[
     ("core_membership", CORE_MEMBERSHIP_ACTION_NAMES),
     ("core_publish", CORE_PUBLISH_ACTION_NAMES),
 ];
+
+#[test]
+fn served_catalog_includes_forget_and_drops_open_batch() {
+    let frozen = FlavorRegistry::default().freeze_or_panic_for_tests();
+    let names = frozen
+        .list_mcp_tools()
+        .iter()
+        .map(|tool| tool.name)
+        .collect::<Vec<_>>();
+    assert!(
+        names.contains(&"core_forget"),
+        "slice 9 catalog must serve forget: {names:?}"
+    );
+    assert!(
+        !names.iter().any(|name| name.contains("open_batch")),
+        "open_batch must stay deleted: {names:?}"
+    );
+}
 
 #[test]
 fn pr6_retired_wake_and_personality_dispatchers_are_absent() {

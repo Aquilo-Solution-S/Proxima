@@ -129,14 +129,14 @@ pub(in crate::engine) mod tests {
     use std::sync::Arc;
 
     use crate::change_history::{ChangeHistoryRequest, ChangeHistoryResponse};
-    use crate::close_batch::CloseBatchOutcome;
+
     use crate::goal_write::{
         AchieveGoalAtomicRequest, CreateGoalAtomicRequest, DecomposeGoalAtomicRequest,
         DecomposeGoalOutcome, GoalWriteOutcome, ModifyGoalAtomicRequest,
         TransitionGoalAtomicRequest,
     };
     use crate::mcp_call_history::{McpCallHistoryRequest, McpCallHistoryResponse};
-    use crate::storage_ports::StoragePorts;
+    use crate::storage_ports::{StoragePorts, WriteSession, WriteSessionFactory};
     use crate::*;
 
     #[derive(Debug)]
@@ -258,6 +258,16 @@ pub(in crate::engine) mod tests {
         ) -> Result<Vec<FactSourceBatchRow>, StorageError> {
             Ok(Vec::new())
         }
+
+        async fn forget_memory(
+            &self,
+            _permit: &crate::storage_ports::OwnerWritePermit,
+            _memory_id: MemoryId,
+        ) -> Result<(), StorageError> {
+            Err(StorageError::Internal(
+                "MembershipStorage rejects writes".into(),
+            ))
+        }
     }
 
     #[async_trait::async_trait]
@@ -310,20 +320,36 @@ pub(in crate::engine) mod tests {
 
         async fn load_memory_graph_payloads(
             &self,
-            _owner: &Owner,
-            _memory_ids: &[MemoryId],
+            _identities: &[MemoryGraphIdentity],
             _include_body: bool,
         ) -> Result<Vec<MemoryGraphPayloadRow>, StorageError> {
             Ok(Vec::new())
         }
 
-        async fn load_neighbor_memory_edges(
+        async fn load_pin_nodes(
             &self,
             _read_owners: &[OwnerRef],
             _memory_ids: &[MemoryId],
-            _limit: usize,
-        ) -> Result<Vec<crate::Edge>, StorageError> {
+        ) -> Result<Vec<crate::PinNode>, StorageError> {
             Ok(Vec::new())
+        }
+
+        async fn load_inbound_pin_nodes(
+            &self,
+            _read_owners: &[OwnerRef],
+            _query: crate::InboundPinQuery<'_>,
+        ) -> Result<Vec<crate::PinNode>, StorageError> {
+            Ok(Vec::new())
+        }
+
+        async fn owned_series_handle(
+            &self,
+            _owner: Owner,
+            _schema_id: &crate::SchemaId,
+            _sidecar_table: &str,
+            _columns: &[(&str, crate::verbs::query::SidecarAtom)],
+        ) -> Result<Option<uuid::Uuid>, StorageError> {
+            Ok(None)
         }
     }
 
@@ -357,6 +383,14 @@ pub(in crate::engine) mod tests {
             _non_embeddable_schemas: &[String],
         ) -> Result<Option<String>, StorageError> {
             Ok(None)
+        }
+
+        async fn load_embedding_texts(
+            &self,
+            items: &[(Owner, EntityKind, MemoryId)],
+            _non_embeddable_schemas: &[String],
+        ) -> Result<Vec<Option<String>>, StorageError> {
+            Ok(vec![None; items.len()])
         }
 
         async fn list_facts_missing_embedding(
@@ -611,39 +645,7 @@ pub(in crate::engine) mod tests {
     }
 
     #[async_trait::async_trait]
-    impl EdgeReadPort for MembershipStorage {
-        async fn read_edges(
-            &self,
-            _read_owners: &[OwnerRef],
-            _req: &verbs::query::EdgeReadRequest,
-        ) -> Result<verbs::query::EdgeReadResponse, StorageError> {
-            Ok(verbs::query::EdgeReadResponse {
-                edges: Vec::new(),
-                next_cursor: None,
-            })
-        }
-
-        async fn edge_exists(
-            &self,
-            _read_owners: &[OwnerRef],
-            _req: &verbs::query::EdgeExistsRequest,
-        ) -> Result<verbs::query::EdgeExistsResponse, StorageError> {
-            Ok(verbs::query::EdgeExistsResponse { exists: false })
-        }
-    }
-
-    #[async_trait::async_trait]
     impl CitationPort for MembershipStorage {
-        async fn fact_entity_id_for(
-            &self,
-            _owner: &Owner,
-            _schema_id: &SchemaId,
-            _schema_version: SchemaVersion,
-            _natural_key: &[String],
-        ) -> Result<Option<FactEntityId>, StorageError> {
-            Ok(None)
-        }
-
         async fn facts_citing_object(
             &self,
             _read_owners: &[OwnerRef],
@@ -661,15 +663,8 @@ pub(in crate::engine) mod tests {
 
         async fn citation_of_fact(
             &self,
-            _fact_memory_id: MemoryId,
-        ) -> Result<Option<verbs::query::FactCitationReadback>, StorageError> {
-            Ok(None)
-        }
-
-        async fn citation_of_entity_head(
-            &self,
             _read_owners: &[OwnerRef],
-            _fact_entity_id: FactEntityId,
+            _fact_memory_id: MemoryId,
         ) -> Result<Option<verbs::query::FactCitationReadback>, StorageError> {
             Ok(None)
         }
@@ -691,12 +686,16 @@ pub(in crate::engine) mod tests {
             }
         }
 
-        async fn visible_to_any(
+        async fn visible_home_owner(
             &self,
             _entity: EntityId,
             _read_owners: &[OwnerRef],
-        ) -> Result<bool, StorageError> {
-            Ok(self.entity_readable)
+        ) -> Result<Option<OwnerRef>, StorageError> {
+            if self.entity_readable {
+                Ok(self.home_owner)
+            } else {
+                Ok(None)
+            }
         }
 
         async fn home_owner(&self, _entity: EntityId) -> Result<Option<OwnerRef>, StorageError> {
@@ -777,18 +776,7 @@ pub(in crate::engine) mod tests {
         }
     }
 
-    #[async_trait::async_trait]
-    impl SourceBatchPort for MembershipStorage {
-        async fn close_batch(
-            &self,
-            _permit: &crate::storage_ports::OwnerWritePermit,
-            _source_batch_id: SourceBatchId,
-        ) -> Result<CloseBatchOutcome, StorageError> {
-            Err(StorageError::Internal(
-                "MembershipStorage rejects writes".into(),
-            ))
-        }
-    }
+    impl SourceBatchPort for MembershipStorage {}
 
     #[async_trait::async_trait]
     impl SourceCursorPort for MembershipStorage {
@@ -992,6 +980,15 @@ pub(in crate::engine) mod tests {
         }
     }
 
+    #[async_trait::async_trait]
+    impl WriteSessionFactory for MembershipStorage {
+        async fn begin(&self) -> Result<Box<dyn WriteSession>, StorageError> {
+            Err(StorageError::Internal(
+                "MembershipStorage rejects writes".into(),
+            ))
+        }
+    }
+
     impl MembershipStorage {
         #[must_use]
         pub(in crate::engine) fn storage_ports(self) -> StoragePorts {
@@ -1011,7 +1008,6 @@ pub(in crate::engine) mod tests {
                 .goal_read(storage.clone())
                 .goal_wake_candidate(storage.clone())
                 .change_event(storage.clone())
-                .edge_read(storage.clone())
                 .citation(storage.clone())
                 .owner_access_read(storage.clone())
                 .owner_membership_admin(storage.clone())
@@ -1020,7 +1016,8 @@ pub(in crate::engine) mod tests {
                 .source_cursor(storage.clone())
                 .fact_retention(storage.clone())
                 .compliance_erase(storage.clone())
-                .registry_projection(storage)
+                .registry_projection(storage.clone())
+                .write_session(storage)
                 .build()
         }
     }

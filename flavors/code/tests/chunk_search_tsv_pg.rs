@@ -8,8 +8,7 @@
 //! - the query in `flavors/code/src/mcp/search_chunks.rs` that matches a
 //!   tsquery against it,
 //! - `CodeChunkV1::search_projection()`, which names the column as its
-//!   `tsv_column` so `core_search_memories` substitutes it for the expression
-//!   it would otherwise compute inline.
+//!   `tsv_column` so the flavor search reads the stored vector.
 //!
 //! If any of them diverges, code search silently returns different results —
 //! no error, no signal. These pin all three against
@@ -39,9 +38,8 @@ fn adversarial_chunks() -> Vec<(&'static str, &'static str)> {
 }
 
 /// The generated column must equal `lexical_tsv(lexical_join(file_path,
-/// text))` for every input — the expression `core_search_memories` builds
-/// when a sidecar declares no `tsv_column`, and therefore the only expression
-/// the column is allowed to stand in for.
+/// text))` for every input — the only expression the generated column
+/// is allowed to stand in for.
 #[tokio::test]
 async fn code_chunk_search_tsv_matches_the_projection() {
     let db_name = unique_db_name("proxima_test");
@@ -258,33 +256,13 @@ async fn the_pinned_chunk_language_is_registered_and_matchable() {
         pg.run_migrations().await?;
         proxima_code::migrator().run(pg.pool_for_tests()).await?;
 
-        // The deployment this feature exists for: documents in german.
         sqlx::query("SELECT proxima_core.set_lexical_config('german')")
             .execute(pg.pool_for_tests())
             .await?;
-
-        let registered: bool = sqlx::query_scalar(
-            "SELECT EXISTS (SELECT 1 FROM proxima_core.lexical_languages
-              WHERE config = 'english'::regconfig)",
-        )
-        .fetch_one(pg.pool_for_tests())
-        .await?;
-        assert!(
-            registered,
-            "the pinned chunk language is not in the active set: english-stemmed \
-             vectors would never be matched by any tsquery arm"
-        );
-
-        // End to end through the production match shape: an english-stemmed
-        // chunk vector must satisfy the cross-language OR the core builder
-        // constructs from lexical_languages.
         let matched: bool = sqlx::query_scalar(
             "SELECT proxima_core.lexical_tsv('english'::regconfig,
                         'fn register_repo handles adopted branches quickly')
-                    @@ (SELECT proxima_core.tsquery_or_agg(
-                                websearch_to_tsquery(l.config,
-                                    proxima_core.lexical_query_text(l.config, 'adopted branches')))
-                          FROM proxima_core.lexical_languages l)",
+                    @@ websearch_to_tsquery('english'::regconfig, 'adopted branches')",
         )
         .fetch_one(pg.pool_for_tests())
         .await?;

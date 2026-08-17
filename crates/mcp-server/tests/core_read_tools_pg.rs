@@ -8,6 +8,7 @@ use proxima_core::mcp::McpAuthorContext;
 use proxima_core::{AuthPath, AuthzContext, Engine, FlavorRegistry, Owner, OwnerRef, UserId};
 use proxima_mcp_server::{McpAuthContext, McpToolHost};
 use proxima_storage_pg::PgStorage;
+use uuid::Uuid;
 
 #[tokio::test]
 async fn core_read_resources_return_prefixed_ids_and_author()
@@ -18,9 +19,8 @@ async fn core_read_resources_return_prefixed_ids_and_author()
     pg.run_migrations().await?;
 
     let owner = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
-    let source = insert_memory(&pg, &owner, "source lineage memory").await?;
-    let derived = insert_memory(&pg, &owner, "derived lineage memory").await?;
-    insert_origin_edge(&pg, &owner, derived, source).await?;
+    let source = insert_memory(&pg, &owner, "source lineage memory", &[]).await?;
+    let derived = insert_memory(&pg, &owner, "derived lineage memory", &[source]).await?;
 
     let registry = FlavorRegistry::new().freeze_or_panic_for_tests();
     let engine = Arc::new(
@@ -128,9 +128,9 @@ async fn batch_memories_resource_error_classes_and_lineage_paging()
 
     let owner = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
     let stranger = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
-    let first = insert_memory(&pg, &owner, "batch first").await?;
-    let second = insert_memory(&pg, &owner, "batch second").await?;
-    let foreign = insert_memory(&pg, &stranger, "foreign memory").await?;
+    let first = insert_memory(&pg, &owner, "batch first", &[]).await?;
+    let second = insert_memory(&pg, &owner, "batch second", &[]).await?;
+    let foreign = insert_memory(&pg, &stranger, "foreign memory", &[]).await?;
     let absent = uuid::Uuid::now_v7();
 
     let registry = FlavorRegistry::new().freeze_or_panic_for_tests();
@@ -169,10 +169,8 @@ async fn batch_memories_resource_error_classes_and_lineage_paging()
 
     // Lineage: oversized depth clamps instead of erroring, pages follow
     // the opaque cursor to exhaustion, and a missing start is a not-found.
-    let d1 = insert_memory(&pg, &owner, "derived one").await?;
-    let d2 = insert_memory(&pg, &owner, "derived two").await?;
-    insert_origin_edge(&pg, &owner, d1, first).await?;
-    insert_origin_edge(&pg, &owner, d2, d1).await?;
+    let d1 = insert_memory(&pg, &owner, "derived one", &[first]).await?;
+    let d2 = insert_memory(&pg, &owner, "derived two", &[d1]).await?;
     assert_lineage_clamps_pages_and_reports_missing_start(&server, &auth, d2, absent).await?;
 
     drop(server);
@@ -335,8 +333,7 @@ async fn wake_candidates_resource_returns_armed_goal() -> Result<(), Box<dyn std
 
     let owner = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
     let trigger = insert_fact(&pg, &owner, "wake trigger fact").await?;
-    let goal_id = insert_active_goal(&pg, &owner).await?;
-    arm_goal_for_fact(&pg, goal_id, trigger).await?;
+    let goal_id = insert_active_goal(&pg, &owner, Some(trigger)).await?;
 
     let registry = FlavorRegistry::new().freeze_or_panic_for_tests();
     let engine = Arc::new(
@@ -366,7 +363,7 @@ async fn wake_candidates_resource_returns_armed_goal() -> Result<(), Box<dyn std
     assert_eq!(candidates[0]["actor_write_owners"][0], owner.external_key());
 
     // A non-Fact reference class is rejected at parse (F:<uuid> required)...
-    let abstraction = insert_memory(&pg, &owner, "not a fact").await?;
+    let abstraction = insert_memory(&pg, &owner, "not a fact", &[]).await?;
     let wrong_class = server
         .read_resource(
             &format!("proxima://wake-candidates?fact=A:{abstraction}"),
@@ -412,10 +409,9 @@ async fn goal_resources_list_read_back_wake_config_and_paginate()
     let owner = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
     let trigger = insert_fact(&pg, &owner, "goal read trigger fact").await?;
     let mut goal_ids = Vec::new();
-    for _ in 0..3 {
-        goal_ids.push(insert_active_goal(&pg, &owner).await?);
-    }
-    arm_goal_for_fact(&pg, goal_ids[0], trigger).await?;
+    goal_ids.push(insert_active_goal(&pg, &owner, Some(trigger)).await?);
+    goal_ids.push(insert_active_goal(&pg, &owner, None).await?);
+    goal_ids.push(insert_active_goal(&pg, &owner, None).await?);
 
     let registry = FlavorRegistry::new().freeze_or_panic_for_tests();
     let engine = Arc::new(
@@ -500,9 +496,9 @@ async fn goal_resources_list_read_back_wake_config_and_paginate()
     Ok(())
 }
 
-/// An interpretation Perspective's implied connections show up in the
-/// index as `reference` rows nobody wrote. There is no edge handle to
-/// dereference: an edge has no id.
+/// An interpretation Perspective's implied connections show up as
+/// `reference` `neighbor_edges` on `proxima://memory`. `proxima://edges`
+/// is retired.
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
 async fn edge_resources_read_back_interpretation_references()
@@ -513,8 +509,8 @@ async fn edge_resources_read_back_interpretation_references()
     pg.run_migrations().await?;
 
     let owner = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
-    let hub = insert_memory(&pg, &owner, "hub abstraction").await?;
-    let spoke = insert_memory(&pg, &owner, "spoke abstraction").await?;
+    let hub = insert_memory(&pg, &owner, "hub abstraction", &[]).await?;
+    let spoke = insert_memory(&pg, &owner, "spoke abstraction", &[]).await?;
 
     let registry = FlavorRegistry::new().freeze_or_panic_for_tests();
     let engine = Arc::new(
@@ -557,12 +553,14 @@ async fn edge_resources_read_back_interpretation_references()
 
     let listed = server
         .read_resource(
-            &format!("proxima://edges?kind=reference&source={handle}"),
+            &format!("proxima://memory/{handle}?expand_neighbors=true"),
             author_ctx(),
             Some(auth.clone()),
         )
         .await?;
-    let edges = listed["edges"].as_array().expect("edges array");
+    let edges = listed["neighbor_edges"]
+        .as_array()
+        .expect("neighbor_edges array");
     assert_eq!(edges.len(), 2);
     let targets: Vec<&str> = edges
         .iter()
@@ -584,26 +582,10 @@ async fn edge_resources_read_back_interpretation_references()
             "an edge carries no content: {edge}"
         );
         assert!(
-            edge["created_at"]
-                .as_str()
-                .is_some_and(|value| value.contains('T')),
-            "created_at is RFC3339: {:?}",
-            edge["created_at"]
+            edge.get("edge").is_none(),
+            "an edge has no id to hand back: {edge}"
         );
     }
-    assert_eq!(listed["has_more"], serde_json::json!(false));
-    assert_eq!(listed["next_cursor"], serde_json::Value::Null);
-
-    // The exact source+target probe an idempotent writer would run — the
-    // replacement for asking "does this edge id already exist".
-    let probe = server
-        .read_resource(
-            &format!("proxima://edges?source={handle}&target=A:{spoke}"),
-            author_ctx(),
-            Some(auth.clone()),
-        )
-        .await?;
-    assert_eq!(probe["edges"].as_array().expect("edges").len(), 1);
 
     // Re-asserting the same judgment is one memory and the same two rows:
     // structural idempotency, with no id scheme to keep honest.
@@ -622,66 +604,26 @@ async fn edge_resources_read_back_interpretation_references()
     assert_eq!(replay["handle"], serde_json::json!(handle));
     assert_eq!(replay["idempotent_replay"], serde_json::json!(true));
 
-    assert_edge_filter_rejections(&server, &auth, &handle).await;
-
-    drop(server);
-    drop(pg);
-    drop_db(&db_name).await?;
-    Ok(())
-}
-
-/// Unfiltered dumps, kinds outside the closed vocabulary, foreign cursors,
-/// and the retired single-edge path all fail closed.
-async fn assert_edge_filter_rejections(server: &McpToolHost, auth: &McpAuthContext, source: &str) {
-    let unfiltered = server
-        .read_resource("proxima://edges", author_ctx(), Some(auth.clone()))
-        .await
-        .expect_err("unfiltered edge dump must be rejected");
-    assert!(
-        unfiltered.to_string().contains("at least one filter"),
-        "{unfiltered}"
-    );
-    let unknown_kind = server
-        .read_resource(
-            "proxima://edges?kind=structural",
-            author_ctx(),
-            Some(auth.clone()),
-        )
-        .await
-        .expect_err("the kind vocabulary is closed at origin and reference");
-    assert!(
-        unknown_kind.to_string().contains("unknown edge kind"),
-        "{unknown_kind}"
-    );
-    let bad_cursor = server
-        .read_resource(
-            &format!("proxima://edges?source={source}&cursor=garbage"),
-            author_ctx(),
-            Some(auth.clone()),
-        )
-        .await
-        .expect_err("malformed cursor must be rejected");
-    assert!(
-        bad_cursor.to_string().contains("malformed cursor"),
-        "{bad_cursor}"
-    );
-    // `proxima://edge/{id}` is gone with the id it dereferenced: it is not a
-    // bad parameter on a known template, it is not a template.
     let retired = server
         .read_resource(
-            &format!("proxima://edge/{}", uuid::Uuid::now_v7()),
+            &format!("proxima://edges?kind=reference&source={handle}"),
             author_ctx(),
             Some(auth.clone()),
         )
         .await
-        .expect_err("the single-edge resource is retired");
+        .expect_err("proxima://edges is retired");
     assert!(
         matches!(
             &retired,
             proxima_mcp_server::ToolInvocationError::ToolNotFound(_)
         ),
-        "a retired template is resource-not-found: {retired}"
+        "retired edges catalog is resource-not-found: {retired}"
     );
+
+    drop(server);
+    drop(pg);
+    drop_db(&db_name).await?;
+    Ok(())
 }
 
 /// Class-checked reference and closed state vocabulary fail closed.
@@ -749,45 +691,71 @@ async fn insert_fact(
     owner: &Owner,
     text: &str,
 ) -> Result<uuid::Uuid, Box<dyn std::error::Error>> {
-    let memory_id = uuid::Uuid::now_v7();
-    let (owner_kind, owner_id) = owner.columns();
+    let t = insert_memory_row(pg, owner, "fact", "test/wake-e2e-fact-v1", &[]).await?;
     sqlx::query(
-        "INSERT INTO proxima_core.memories
-            (memory_id, owner_kind, owner_id, schema_id, schema_version, kind, text)
-         VALUES ($1, $2, $3, 'test/wake-e2e-fact-v1', 1, 'Fact', $4)",
+        "INSERT INTO proxima_core.agent_note_v1
+            (t, note_id, title, body, tags)
+         VALUES ($1, $1, $2, $2, ARRAY[]::text[])",
     )
-    .bind(memory_id)
-    .bind(owner_kind)
-    .bind(owner_id)
+    .bind(t)
     .bind(text)
     .execute(pg.pool_for_tests())
     .await?;
-    Ok(memory_id)
+    Ok(t)
 }
 
 async fn insert_active_goal(
     pg: &PgStorage,
     owner: &Owner,
+    trigger_t: Option<uuid::Uuid>,
 ) -> Result<uuid::Uuid, Box<dyn std::error::Error>> {
-    let goal_id = uuid::Uuid::now_v7();
-    let (owner_kind, owner_id) = owner.columns();
-    let request_id = format!("wake-e2e:{goal_id}");
+    let handle = uuid::Uuid::now_v7();
+    let t = uuid::Uuid::now_v7();
+    let owner_id = owner.stored_owner_id();
     sqlx::query(
-        "INSERT INTO proxima_core.goals
-            (goal_id, owner_kind, owner_id, schema_id, schema_version,
-             title, text, payload, state, supersedes, authorship_kind,
-             request_id, idempotency_key)
-         VALUES ($1, $2, $3, 'core/simple-text-v1', 1,
-                 'wake goal', 'wake goal', convert_to('{}', 'UTF8'), 'Active', NULL,
-                 'User', $4, md5($2::text || ':' || $3::text || ':' || $4))",
+        "INSERT INTO proxima_core.owners (owner_id, kind)
+         VALUES ($1, $2::proxima_core.owner_kind) ON CONFLICT DO NOTHING",
     )
-    .bind(goal_id)
-    .bind(owner_kind)
     .bind(owner_id)
-    .bind(request_id)
+    .bind(proxima_core::OwnerRefKind::of(owner).as_str())
     .execute(pg.pool_for_tests())
     .await?;
-    Ok(goal_id)
+    sqlx::query(
+        "INSERT INTO proxima_core.goal_head (handle, schema_id, owner_id, t)
+         VALUES ($1, 'core/simple-text-v1', $2, $3)",
+    )
+    .bind(handle)
+    .bind(owner_id)
+    .bind(t)
+    .execute(pg.pool_for_tests())
+    .await?;
+    let wake_id = if let Some(trigger) = trigger_t {
+        let wake_id: uuid::Uuid = sqlx::query_scalar(
+            "INSERT INTO proxima_core.wake_config
+                (owner_id, trigger_kind, trigger_t, tool_ids, prompt)
+             VALUES ($1, 'fact_memory', $2, ARRAY['core_search_memories'], 'plan only')
+             RETURNING wake_id",
+        )
+        .bind(owner_id)
+        .bind(trigger)
+        .fetch_one(pg.pool_for_tests())
+        .await?;
+        Some(wake_id)
+    } else {
+        None
+    };
+    sqlx::query(
+        "INSERT INTO proxima_core.goal (handle, t, owner_id, title, state, request_id, wake_id)
+         VALUES ($1, $2, $3, 'wake goal', 'Active', $4, $5)",
+    )
+    .bind(handle)
+    .bind(t)
+    .bind(owner_id)
+    .bind(format!("wake-e2e:{t}"))
+    .bind(wake_id)
+    .execute(pg.pool_for_tests())
+    .await?;
+    Ok(t)
 }
 
 async fn arm_goal_for_fact(
@@ -795,63 +763,152 @@ async fn arm_goal_for_fact(
     goal_id: uuid::Uuid,
     trigger_memory_id: uuid::Uuid,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    sqlx::query(
-        "INSERT INTO proxima_core.goal_wake_config
-            (goal_id, trigger_kind, trigger_schema_id, trigger_schema_version,
-             trigger_memory_id, tool_ids, prompt, hard_memory_ids)
-         VALUES ($1, 'fact_memory', NULL, NULL, $2,
-                 ARRAY['core_search_memories'], 'plan only', ARRAY[]::uuid[])",
+    let (handle, owner_id, title, request_id): (Uuid, Uuid, String, String) = sqlx::query_as(
+        "SELECT handle, owner_id, title, request_id FROM proxima_core.goal WHERE t = $1",
     )
     .bind(goal_id)
+    .fetch_one(pg.pool_for_tests())
+    .await?;
+    let wake_id: uuid::Uuid = sqlx::query_scalar(
+        "INSERT INTO proxima_core.wake_config
+            (owner_id, trigger_kind, trigger_t, tool_ids, prompt)
+         VALUES ($1, 'fact_memory', $2, ARRAY['core_search_memories'], 'plan only')
+         RETURNING wake_id",
+    )
+    .bind(owner_id)
     .bind(trigger_memory_id)
+    .fetch_one(pg.pool_for_tests())
+    .await?;
+    let t = uuid::Uuid::now_v7();
+    sqlx::query("UPDATE proxima_core.goal_head SET t = $2 WHERE handle = $1")
+        .bind(handle)
+        .bind(t)
+        .execute(pg.pool_for_tests())
+        .await?;
+    sqlx::query(
+        "INSERT INTO proxima_core.goal
+            (handle, t, owner_id, title, state, request_id, wake_id)
+         VALUES ($1, $2, $3, $4, 'Active', $5, $6)",
+    )
+    .bind(handle)
+    .bind(t)
+    .bind(owner_id)
+    .bind(title)
+    .bind(format!("{request_id}:armed"))
+    .bind(wake_id)
     .execute(pg.pool_for_tests())
     .await?;
     Ok(())
+}
+
+async fn insert_memory_row(
+    pg: &PgStorage,
+    owner: &Owner,
+    kind: &str,
+    schema_id: &str,
+    origins: &[uuid::Uuid],
+) -> Result<uuid::Uuid, Box<dyn std::error::Error>> {
+    let handle = uuid::Uuid::now_v7();
+    let t = uuid::Uuid::now_v7();
+    let owner_id = owner.stored_owner_id();
+    sqlx::query(
+        "INSERT INTO proxima_core.owners (owner_id, kind)
+         VALUES ($1, $2::proxima_core.owner_kind) ON CONFLICT DO NOTHING",
+    )
+    .bind(owner_id)
+    .bind(proxima_core::OwnerRefKind::of(owner).as_str())
+    .execute(pg.pool_for_tests())
+    .await?;
+    sqlx::query(
+        "INSERT INTO proxima_core.memory_head (handle, kind, schema_id, owner_id, t)
+         VALUES ($1, $2::proxima_core.memory_kind, $3, $4, $5)",
+    )
+    .bind(handle)
+    .bind(kind)
+    .bind(schema_id)
+    .bind(owner_id)
+    .bind(t)
+    .execute(pg.pool_for_tests())
+    .await?;
+    sqlx::query(
+        "INSERT INTO proxima_core.memory (handle, t, kind, owner_id, schema_id, origins)
+         VALUES ($1, $2, $3::proxima_core.memory_kind, $4, $5, $6)",
+    )
+    .bind(handle)
+    .bind(t)
+    .bind(kind)
+    .bind(owner_id)
+    .bind(schema_id)
+    .bind(origins)
+    .execute(pg.pool_for_tests())
+    .await?;
+    Ok(t)
 }
 
 async fn insert_memory(
     pg: &PgStorage,
     owner: &Owner,
     text: &str,
+    origins: &[uuid::Uuid],
 ) -> Result<uuid::Uuid, Box<dyn std::error::Error>> {
-    let memory_id = uuid::Uuid::now_v7();
-    let (owner_kind, owner_id) = owner.columns();
-    sqlx::query(
-        "INSERT INTO proxima_core.memories
-            (memory_id, owner_kind, owner_id, schema_id, schema_version, kind, text,
-             operator_kind, operator_id, input_contract_id, source_batch_id, model_id, prompt_version)
-         VALUES ($1, $2, $3, 'test/core-read-v1', 1, 'Abstraction',
-                 $4, 'AtoA', '00000000-0000-0000-0000-000000000431'::uuid,
-                 '00000000-0000-0000-0000-000000000432'::uuid, NULL,
-                 'test-model', 'test-v1')"
+    let t = insert_memory_row(
+        pg,
+        owner,
+        "abstraction",
+        "core/agent-derivation-v1",
+        origins,
     )
-    .bind(memory_id)
-    .bind(owner_kind)
-    .bind(owner_id)
+    .await?;
+    sqlx::query(
+        "INSERT INTO proxima_core.agent_derivation_v1
+            (t, title, body, tags, source_memory_ids,
+             model_id, client_name, client_version)
+         VALUES ($1, $2, $2, ARRAY[]::text[], ARRAY[]::uuid[],
+                 'test-model', 'test', 'test-v1')",
+    )
+    .bind(t)
     .bind(text)
     .execute(pg.pool_for_tests())
     .await?;
-    Ok(memory_id)
+    Ok(t)
 }
 
 /// Assert one `origin` row directly. Five columns is the whole insert —
 /// there is no id to mint and no relation to name.
+#[allow(dead_code)]
 async fn insert_origin_edge(
     pg: &PgStorage,
     owner: &Owner,
     source: uuid::Uuid,
     target: uuid::Uuid,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let (owner_kind, owner_id) = owner.columns();
+    let _ = owner;
+    let (handle, kind, owner_id): (Uuid, String, Uuid) =
+        sqlx::query_as("SELECT handle, kind::text, owner_id FROM proxima_core.memory WHERE t = $1")
+            .bind(source)
+            .fetch_one(pg.pool_for_tests())
+            .await?;
+    let schema_id: String =
+        sqlx::query_scalar("SELECT schema_id FROM proxima_core.memory WHERE t = $1")
+            .bind(source)
+            .fetch_one(pg.pool_for_tests())
+            .await?;
+    let t = uuid::Uuid::now_v7();
+    sqlx::query("UPDATE proxima_core.memory_head SET t = $2 WHERE handle = $1")
+        .bind(handle)
+        .bind(t)
+        .execute(pg.pool_for_tests())
+        .await?;
     sqlx::query(
-        "INSERT INTO proxima_core.edges
-            (source_kind, source_id, target_kind, target_id, kind, owner_kind, owner_id)
-         VALUES ('Abstraction', $1, 'Abstraction', $2, 'origin', $3, $4)",
+        "INSERT INTO proxima_core.memory (handle, t, kind, owner_id, schema_id, origins)
+         VALUES ($1, $2, $3::proxima_core.memory_kind, $4, $5, $6)",
     )
-    .bind(source)
-    .bind(target)
-    .bind(owner_kind)
+    .bind(handle)
+    .bind(t)
+    .bind(&kind)
     .bind(owner_id)
+    .bind(&schema_id)
+    .bind([target])
     .execute(pg.pool_for_tests())
     .await?;
     Ok(())

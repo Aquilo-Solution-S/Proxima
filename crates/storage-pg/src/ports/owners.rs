@@ -2,10 +2,9 @@ use proxima_core::storage_ports::{
     FactRetentionPort, OwnerAccessReadPort, OwnerMembershipAdminPort, OwnerTransferPort,
     OwnerWritePermit, SourceBatchPort, SourceCursorPort,
 };
-use proxima_core::verbs::close_batch::CloseBatchOutcome;
+
 use proxima_core::{
-    Cursor, EntityId, GroupId, MembershipRow, Owner, OwnerRef, Relation, SourceBatchId,
-    StorageError, UserId,
+    Cursor, EntityId, GroupId, MembershipRow, Owner, OwnerRef, Relation, StorageError, UserId,
 };
 
 use super::validate_permit_owner;
@@ -20,12 +19,12 @@ impl OwnerAccessReadPort for PgStorage {
         access::owner_columns::resolve_membership(&self.pool, member).await
     }
 
-    async fn visible_to_any(
+    async fn visible_home_owner(
         &self,
         entity: EntityId,
         read_owners: &[OwnerRef],
-    ) -> Result<bool, StorageError> {
-        access::owner_columns::visible_to_any(&self.pool, entity, read_owners).await
+    ) -> Result<Option<OwnerRef>, StorageError> {
+        access::owner_columns::visible_home_owner(&self.pool, entity, read_owners).await
     }
 
     async fn home_owner(&self, entity: EntityId) -> Result<Option<OwnerRef>, StorageError> {
@@ -107,16 +106,7 @@ impl OwnerTransferPort for PgStorage {
     }
 }
 
-#[async_trait::async_trait]
-impl SourceBatchPort for PgStorage {
-    async fn close_batch(
-        &self,
-        permit: &OwnerWritePermit,
-        source_batch_id: SourceBatchId,
-    ) -> Result<CloseBatchOutcome, StorageError> {
-        verbs::close_batch::close_batch(&self.pool, permit, source_batch_id).await
-    }
-}
+impl SourceBatchPort for PgStorage {}
 
 #[async_trait::async_trait]
 impl SourceCursorPort for PgStorage {

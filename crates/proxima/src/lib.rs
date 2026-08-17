@@ -322,8 +322,9 @@ impl ProximaBuilder {
     ///
     /// Returns `EmbedError::Storage` for connection or migration
     /// failures, `EmbedError::V004ResetRequired` when the target database
-    /// still carries pre-v0.0.4 schema artifacts (see `MIGRATING.md`), and
+    /// does not match `0001_v008.sql` (see `docs/how-to/migrations.md`), and
     /// `EmbedError::Engine` when engine startup fails.
+    #[allow(clippy::too_many_lines)]
     pub async fn boot(self) -> Result<EmbeddedProxima, EmbedError> {
         let Self {
             config,
@@ -371,7 +372,9 @@ impl ProximaBuilder {
             .freeze_against(registry.schemas())
             .map_err(embed_storage_error)?;
         let pg_sidecars = Arc::new(pg_sidecars);
-        let pg = pg.with_sidecars(pg_sidecars.as_ref().clone());
+        let pg = pg
+            .with_sidecars(pg_sidecars.as_ref().clone())
+            .with_search_projections(registry.search_projections().to_vec());
 
         let pool = pg.clone_pool_for_backend();
         let blobs = config
@@ -379,6 +382,10 @@ impl ProximaBuilder {
             .map(|s3| CitedBlobStore::new(pool.clone(), s3))
             .transpose()
             .map_err(|error| EmbedError::Config(error.to_string()))?;
+        let pg = match &blobs {
+            Some(store) => pg.with_cold(Arc::new(store.cold_store())),
+            None => pg,
+        };
 
         let mut engine =
             Engine::new(registry).with_storage_ports(Arc::new(pg.clone()).storage_ports());
@@ -449,13 +456,11 @@ pub enum EmbedError {
     Storage(String),
     #[error("engine: {0}")]
     Engine(String),
-    /// The target database still carries pre-v0.0.4 Proxima schema
-    /// artifacts (or a stale baseline checksum) and must be exported and
-    /// reset before this host can boot. Preserved as a typed variant
-    /// (distinct from the generic [`Self::Storage`] string) so upgrading
-    /// hosts can match on it and print `MIGRATING.md` guidance instead of
-    /// treating it as an opaque storage failure. See `MIGRATING.md`.
-    #[error("database requires a v0.0.4 reset before boot (see MIGRATING.md): {details}")]
+    /// The target database does not match this binary's schema
+    /// (`0001_v008.sql`) and must be reset before boot.
+    #[error(
+        "database schema does not match this binary; reset required (see docs/how-to/migrations.md): {details}"
+    )]
     V004ResetRequired { details: String },
 }
 

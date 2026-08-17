@@ -3,8 +3,7 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::FactEntityId;
-use crate::engine::{EntityHeadCitationReadRequest, FactCitationReadRequest};
+use crate::engine::FactCitationReadRequest;
 use crate::mcp::{McpToolCtx, McpToolError};
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -13,22 +12,9 @@ pub struct CitationOfFactArgs {
     pub fact: String,
 }
 
-#[derive(Debug, Deserialize, JsonSchema)]
-pub struct CitationOfEntityHeadArgs {
-    /// Stable `fact_entity_id` UUID.
-    pub fact_entity_id: String,
-}
-
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct CitationOfFactOutput {
     pub fact: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub citation: Option<FactCitationOutput>,
-}
-
-#[derive(Debug, Serialize, JsonSchema)]
-pub struct CitationOfEntityHeadOutput {
-    pub fact_entity_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub citation: Option<FactCitationOutput>,
 }
@@ -75,29 +61,6 @@ pub(super) async fn citation_of_fact(
         .map(|row| fact_citation_output(&row));
     Ok(CitationOfFactOutput {
         fact: ctx.format_fact_memory(fact_memory_id),
-        citation,
-    })
-}
-
-pub(super) async fn citation_of_entity_head(
-    ctx: McpToolCtx,
-    args: CitationOfEntityHeadArgs,
-) -> Result<CitationOfEntityHeadOutput, McpToolError> {
-    let fact_entity_uuid = args
-        .fact_entity_id
-        .parse::<uuid::Uuid>()
-        .map_err(|e| McpToolError::InvalidInput(format!("not a uuid: {e}")))?;
-    let fact_entity_id = FactEntityId::new(fact_entity_uuid);
-    let engine = ctx.require_engine()?;
-    let citation = engine
-        .read_entity_head_citation(
-            &ctx.authz,
-            &EntityHeadCitationReadRequest { fact_entity_id },
-        )
-        .await?
-        .map(|row| fact_citation_output(&row));
-    Ok(CitationOfEntityHeadOutput {
-        fact_entity_id: fact_entity_uuid.to_string(),
         citation,
     })
 }

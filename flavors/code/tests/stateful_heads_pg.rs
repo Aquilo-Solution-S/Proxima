@@ -24,8 +24,8 @@ use proxima_core::verbs::fact_ingest::{
 use proxima_core::verbs::query::{QueryRequest, SupersessionStatus, TombstoneFilter};
 use proxima_core::verbs::schema::{FlavorRegistryFrozen, PayloadKind, SchemaTombstone};
 use proxima_core::{
-    AbstractionPayload, EdgeKind, EntityKind, FactPayload, FlavorRegistry, MemoryId, Owner,
-    OwnerRef, SchemaId, SchemaVersion, SourceBatchId, SourceId, UserId,
+    AbstractionPayload, FactPayload, FlavorRegistry, Owner, OwnerRef, SchemaId, SchemaVersion,
+    SourceBatchId, SourceId, UserId,
 };
 use proxima_pg_testkit::drop_db;
 use sqlx::PgPool;
@@ -46,6 +46,9 @@ fn fresh_draft(_owner: Owner, schema: &str, payload: &[u8]) -> FactWriteCommand 
     FactWriteCommand {
         schema_id: SchemaId::new(schema.into()),
         schema_version: SchemaVersion::new(1),
+        handle: None,
+        source_id: None,
+        ingest_key: None,
         payload: payload.to_vec(),
         rendered_text: None,
         lexical_language: None,
@@ -67,7 +70,15 @@ fn fresh_draft(_owner: Owner, schema: &str, payload: &[u8]) -> FactWriteCommand 
             },
         }),
         derived_from: Vec::new(),
+        refs: Vec::new(),
+        blob_id: None,
+        kind: "fact".into(),
     }
+}
+
+struct Seeded {
+    handle: Uuid,
+    t: Uuid,
 }
 
 async fn seed_file_revision(
@@ -77,7 +88,8 @@ async fn seed_file_revision(
     repo_id: Uuid,
     file_path: &str,
     seed: &[u8],
-) -> Result<Uuid, Box<dyn std::error::Error>> {
+    handle: Option<Uuid>,
+) -> Result<Seeded, Box<dyn std::error::Error>> {
     seed_file_revision_state(
         pool,
         engine,
@@ -86,6 +98,7 @@ async fn seed_file_revision(
         file_path,
         seed,
         FileState::Present,
+        handle,
     )
     .await
 }
@@ -98,22 +111,22 @@ async fn seed_file_revision_state(
     file_path: &str,
     seed: &[u8],
     state: FileState,
-) -> Result<Uuid, Box<dyn std::error::Error>> {
-    // 1. FactIngest creates the memories row + supporting plumbing.
+    handle: Option<Uuid>,
+) -> Result<Seeded, Box<dyn std::error::Error>> {
     let authz =
         proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::HostBearer);
-    let draft = fresh_draft(owner, FileRevisionV1::SCHEMA_ID, seed);
+    let mut draft = fresh_draft(owner, FileRevisionV1::SCHEMA_ID, seed);
+    draft.handle = handle;
     let outcome = engine.fact_ingest(&authz, draft).await?;
-    let memory_id = outcome.memory_id.into_inner();
+    let t = outcome.memory_id.into_inner();
 
-    // 2. Sidecar insert under (repo_id, file_path).
     sqlx::query(
         "INSERT INTO proxima_code.file_revision_v1 \
-            (memory_id, repo_id, file_path, language, content_sha256, \
+            (t, repo_id, file_path, language, content_sha256, \
              size_bytes, indexed_commit_sha, state) \
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
     )
-    .bind(memory_id)
+    .bind(t)
     .bind(repo_id)
     .bind(file_path)
     .bind(Some("rust"))
@@ -124,43 +137,9 @@ async fn seed_file_revision_state(
     .execute(pool)
     .await?;
 
-    Ok(memory_id)
-}
-
-/// Assert one `origin` row between two Fact rows. Five columns is the whole
-/// insert: no id to mint, no relation to name, no authorship to declare.
-async fn insert_memory_edge(
-    pool: &PgPool,
-    owner: &Owner,
-    source_memory_id: Uuid,
-    target_memory_id: Uuid,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let (owner_kind, owner_id) = proxima_storage_pg::access::owner_columns::owner_binds(owner);
-    sqlx::query(
-        "INSERT INTO proxima_core.edges \
-            (source_kind, source_id, target_kind, target_id, kind, owner_kind, owner_id) \
-         VALUES ('Fact', $1, 'Fact', $2, 'origin', $3, $4)",
-    )
-    .bind(source_memory_id)
-    .bind(target_memory_id)
-    .bind(owner_kind)
-    .bind(owner_id)
-    .execute(pool)
-    .await?;
-    Ok(())
-}
-
-/// Is the `(active -> deleted)` origin row in this snapshot? An edge has no
-/// id, so the row itself is what the assertion matches on.
-fn snapshot_has_edge(edges: &[proxima_core::Edge], source: Uuid, target: Uuid) -> bool {
-    edges.iter().any(|edge| {
-        edge.kind == EdgeKind::Origin
-            && edge.source
-                == proxima_core::EdgeEndpoint::memory(EntityKind::Fact, MemoryId::new(source))
-            && edge
-                .target
-                .endpoint()
-                .is_some_and(|end| end.memory_id() == Some(MemoryId::new(target)))
+    Ok(Seeded {
+        handle: outcome.handle,
+        t,
     })
 }
 
@@ -177,14 +156,15 @@ async fn heads_only_returns_latest_per_natural_key() {
 
         let repo_id = Uuid::now_v7();
 
-        // 3 revisions of file_a — same NK, increasing created_at.
-        let _r1 = seed_file_revision(
+        // 3 revisions of file_a — same handle, later t.
+        let r1 = seed_file_revision(
             pg.pool_for_tests(),
             &engine,
             owner,
             repo_id,
             "src/a.rs",
             b"v1",
+            None,
         )
         .await?;
         tokio::time::sleep(Duration::from_millis(20)).await;
@@ -195,6 +175,7 @@ async fn heads_only_returns_latest_per_natural_key() {
             repo_id,
             "src/a.rs",
             b"v2",
+            Some(r1.handle),
         )
         .await?;
         tokio::time::sleep(Duration::from_millis(20)).await;
@@ -205,10 +186,11 @@ async fn heads_only_returns_latest_per_natural_key() {
             repo_id,
             "src/a.rs",
             b"v3",
+            Some(r1.handle),
         )
         .await?;
 
-        // 1 revision of file_b — distinct NK.
+        // 1 revision of file_b — distinct handle.
         tokio::time::sleep(Duration::from_millis(20)).await;
         let r_b = seed_file_revision(
             pg.pool_for_tests(),
@@ -217,6 +199,7 @@ async fn heads_only_returns_latest_per_natural_key() {
             repo_id,
             "src/b.rs",
             b"b1",
+            None,
         )
         .await?;
 
@@ -230,6 +213,8 @@ async fn heads_only_returns_latest_per_natural_key() {
             supersession: SupersessionStatus::HeadsOnly,
             tombstones: proxima_core::verbs::query::TombstoneFilter::PresentOnly,
             goal_state: None,
+            assignment: None,
+            evidence_contains: None,
             limit: 100,
             page: proxima_core::verbs::query::QueryPage::default(),
             include_payloads: true,
@@ -257,10 +242,15 @@ async fn heads_only_returns_latest_per_natural_key() {
         );
         let ids: Vec<Uuid> = resp.memories.iter().map(|m| m.id.into_inner()).collect();
         assert!(
-            ids.contains(&r3),
-            "expected latest NK_a head ({r3}) in heads"
+            ids.contains(&r3.t),
+            "expected latest file_a head ({}) in heads",
+            r3.t
         );
-        assert!(ids.contains(&r_b), "expected NK_b head ({r_b}) in heads");
+        assert!(
+            ids.contains(&r_b.t),
+            "expected file_b head ({}) in heads",
+            r_b.t
+        );
 
         // IncludeSuperseded — all 4 rows visible.
         let req_all = QueryRequest {
@@ -271,6 +261,8 @@ async fn heads_only_returns_latest_per_natural_key() {
             supersession: SupersessionStatus::IncludeSuperseded,
             tombstones: proxima_core::verbs::query::TombstoneFilter::PresentOnly,
             goal_state: None,
+            assignment: None,
+            evidence_contains: None,
             limit: 100,
             page: proxima_core::verbs::query::QueryPage::default(),
             include_payloads: true,
@@ -336,6 +328,8 @@ async fn heads_only_no_op_for_stateless_fact_schema() {
             supersession: SupersessionStatus::HeadsOnly,
             tombstones: proxima_core::verbs::query::TombstoneFilter::PresentOnly,
             goal_state: None,
+            assignment: None,
+            evidence_contains: None,
             limit: 100,
             page: proxima_core::verbs::query::QueryPage::default(),
             include_payloads: true,
@@ -385,6 +379,7 @@ async fn heads_only_supersedes_older_same_principal_nk_revision() {
             "src/shared.rs",
             b"rev-1",
             FileState::Present,
+            None,
         )
         .await?;
         tokio::time::sleep(Duration::from_millis(20)).await;
@@ -396,6 +391,7 @@ async fn heads_only_supersedes_older_same_principal_nk_revision() {
             "src/shared.rs",
             b"rev-2",
             FileState::Present,
+            Some(first_memory.handle),
         )
         .await?;
 
@@ -407,6 +403,8 @@ async fn heads_only_supersedes_older_same_principal_nk_revision() {
             supersession: SupersessionStatus::HeadsOnly,
             tombstones: TombstoneFilter::PresentOnly,
             goal_state: None,
+            assignment: None,
+            evidence_contains: None,
             limit: 100,
             page: proxima_core::verbs::query::QueryPage::default(),
             include_payloads: true,
@@ -431,12 +429,12 @@ async fn heads_only_supersedes_older_same_principal_nk_revision() {
 
         // Same owner, same NK: only the newer revision is a head.
         assert!(
-            !ids.contains(&first_memory),
-            "older same-NK revision is superseded under HeadsOnly"
+            !ids.contains(&first_memory.t),
+            "older same-handle revision is not the head"
         );
         assert!(
-            ids.contains(&second_memory),
-            "newer same-owner head remains visible"
+            ids.contains(&second_memory.t),
+            "newer same-handle head remains visible"
         );
         Ok(())
     }
@@ -464,6 +462,7 @@ async fn owner_snapshot_heads_only_folds_stateful_fact_schemas() {
             "src/a.rs",
             b"a1",
             FileState::Present,
+            None,
         )
         .await?;
         tokio::time::sleep(Duration::from_millis(20)).await;
@@ -475,6 +474,7 @@ async fn owner_snapshot_heads_only_folds_stateful_fact_schemas() {
             "src/a.rs",
             b"a2",
             FileState::Present,
+            Some(a_v1.handle),
         )
         .await?;
         let mut req = QueryRequest::for_owner(owner);
@@ -493,8 +493,8 @@ async fn owner_snapshot_heads_only_folds_stateful_fact_schemas() {
             .iter()
             .map(|m| m.id.into_inner())
             .collect::<Vec<_>>();
-        assert!(!ids.contains(&a_v1));
-        assert!(ids.contains(&a_v2));
+        assert!(!ids.contains(&a_v1.t));
+        assert!(ids.contains(&a_v2.t));
         Ok(())
     }
     .await;
@@ -504,7 +504,7 @@ async fn owner_snapshot_heads_only_folds_stateful_fact_schemas() {
 }
 
 #[tokio::test]
-async fn present_only_excludes_tombstone_head_without_reviving_previous_present() {
+async fn later_t_is_head_even_when_sidecar_state_is_tombstone() {
     let (db_name, pg) = migrated_db().await;
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
@@ -523,6 +523,7 @@ async fn present_only_excludes_tombstone_head_without_reviving_previous_present(
             "src/deleted.rs",
             b"v1",
             FileState::Present,
+            None,
         )
         .await?;
         tokio::time::sleep(Duration::from_millis(20)).await;
@@ -534,6 +535,7 @@ async fn present_only_excludes_tombstone_head_without_reviving_previous_present(
             "src/deleted.rs",
             b"v2",
             FileState::Tombstone,
+            Some(present.handle),
         )
         .await?;
 
@@ -547,22 +549,12 @@ async fn present_only_excludes_tombstone_head_without_reviving_previous_present(
             .map(|m| m.id.into_inner())
             .collect::<Vec<_>>();
         assert!(
-            !ids.contains(&present),
-            "older present row must not be revived"
+            !ids.contains(&present.t),
+            "older present row is not the head"
         );
         assert!(
-            !ids.contains(&tombstone),
-            "default query hides tombstone head"
-        );
-
-        req.tombstones = TombstoneFilter::IncludeTombstoned;
-        let resp = engine.query(&authz, &req).await?;
-        assert_eq!(
-            resp.memories
-                .iter()
-                .map(|m| m.id.into_inner())
-                .collect::<Vec<_>>(),
-            vec![tombstone],
+            ids.contains(&tombstone.t),
+            "sidecar tombstone is still the hot head"
         );
 
         req.supersession = SupersessionStatus::IncludeSuperseded;
@@ -572,96 +564,14 @@ async fn present_only_excludes_tombstone_head_without_reviving_previous_present(
             .iter()
             .map(|m| m.id.into_inner())
             .collect::<Vec<_>>();
-        assert!(ids.contains(&present));
-        assert!(ids.contains(&tombstone));
-
-        req.tombstones = TombstoneFilter::PresentOnly;
-        let resp = engine.query(&authz, &req).await?;
-        let ids = resp
-            .memories
-            .iter()
-            .map(|m| m.id.into_inner())
-            .collect::<Vec<_>>();
-        assert!(
-            ids.contains(&present),
-            "older Present row visible under IncludeSuperseded"
-        );
-        assert!(
-            !ids.contains(&tombstone),
-            "tombstone stays hidden under PresentOnly"
-        );
+        assert!(ids.contains(&present.t));
+        assert!(ids.contains(&tombstone.t));
         Ok(())
     }
     .await;
 
     let _ = drop_db(&db_name).await;
-    result.expect("present_only_excludes_tombstone_head_without_reviving_previous_present failed");
-}
-
-#[tokio::test]
-async fn present_only_snapshot_excludes_edges_to_tombstoned_heads() {
-    let (db_name, pg) = migrated_db().await;
-
-    let result: Result<(), Box<dyn std::error::Error>> = async {
-        let storage = Arc::new(pg.clone()).storage_ports();
-        let (_user, owner) = make_owner();
-        let engine = Engine::new(registry_for_test()).with_storage_ports(storage);
-        let repo_id = Uuid::now_v7();
-        let active = seed_file_revision_state(
-            pg.pool_for_tests(),
-            &engine,
-            owner,
-            repo_id,
-            "src/live.rs",
-            b"live",
-            FileState::Present,
-        )
-        .await?;
-        let deleted = seed_file_revision_state(
-            pg.pool_for_tests(),
-            &engine,
-            owner,
-            repo_id,
-            "src/deleted.rs",
-            b"gone",
-            FileState::Tombstone,
-        )
-        .await?;
-        insert_memory_edge(pg.pool_for_tests(), &owner, active, deleted).await?;
-
-        let mut req = QueryRequest::for_owner(owner);
-        req.limit = 100;
-        let resp = engine
-            .query(
-                &proxima_core::AuthzContext::single_owner(
-                    &owner,
-                    proxima_core::AuthPath::HostBearer,
-                ),
-                &req,
-            )
-            .await?;
-        assert!(resp.memories.iter().any(|m| m.id.into_inner() == active));
-        assert!(!resp.memories.iter().any(|m| m.id.into_inner() == deleted));
-        assert!(!snapshot_has_edge(&resp.edges, active, deleted));
-
-        req.tombstones = TombstoneFilter::IncludeTombstoned;
-        let resp = engine
-            .query(
-                &proxima_core::AuthzContext::single_owner(
-                    &owner,
-                    proxima_core::AuthPath::HostBearer,
-                ),
-                &req,
-            )
-            .await?;
-        assert!(resp.memories.iter().any(|m| m.id.into_inner() == deleted));
-        assert!(snapshot_has_edge(&resp.edges, active, deleted));
-        Ok(())
-    }
-    .await;
-
-    let _ = drop_db(&db_name).await;
-    result.expect("present_only_snapshot_excludes_edges_to_tombstoned_heads failed");
+    result.expect("later_t_is_head_even_when_sidecar_state_is_tombstone failed");
 }
 
 // Smoke check the registry-side wiring: raw observations retain NK

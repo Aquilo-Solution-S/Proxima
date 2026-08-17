@@ -37,6 +37,13 @@ impl std::fmt::Debug for OwnerWritePermit {
 }
 
 impl OwnerWritePermit {
+    /// Test-only constructor. Engine remains the production mint.
+    #[cfg(any(test, feature = "test-fixtures"))]
+    #[must_use]
+    pub const fn new_for_tests(owner: Owner, access_kind: AccessKind) -> Self {
+        Self::new(owner, access_kind)
+    }
+
     #[must_use]
     pub(crate) const fn new(owner: Owner, access_kind: AccessKind) -> Self {
         Self {

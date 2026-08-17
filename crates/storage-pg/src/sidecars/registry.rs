@@ -283,6 +283,12 @@ impl PgSidecarRegistry {
         }
 
         for entry in self.entries.values() {
+            if matches!(
+                entry.key.kind,
+                PayloadKind::CitedObject | PayloadKind::CitationMapping
+            ) {
+                continue;
+            }
             let Some(schema_table) = schema_keys.get(&entry.key) else {
                 return Err(StorageError::ConstraintViolation(format!(
                     "PG sidecar registration references unregistered schema {} v{} {:?}",

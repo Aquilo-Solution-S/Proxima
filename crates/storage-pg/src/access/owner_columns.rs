@@ -54,6 +54,47 @@ pub(crate) fn reject_world_write_owner(owner: &OwnerRef) -> Result<(), StorageEr
     Ok(())
 }
 
+/// Insert `proxima_core.owners` or confirm the stored kind matches `owner`.
+///
+/// The only production owners upsert. Memory / goal / wake / citation /
+/// cited-blob writes all go through this so an `owner_id` reused under a
+/// different kind cannot silently keep the first kind.
+///
+/// # Errors
+///
+/// [`StorageError::ConstraintViolation`] when `owner_id` already exists
+/// with a different kind. Other storage errors from the upsert.
+pub async fn ensure_owner_row<'e>(
+    executor: impl sqlx::Executor<'e, Database = Postgres>,
+    owner: &OwnerRef,
+) -> Result<uuid::Uuid, StorageError> {
+    let owner_id = owner.stored_owner_id();
+    let owner_kind = OwnerRefKind::of(owner).as_str();
+    let existing: String = sqlx::query_scalar(
+        "WITH ins AS (
+            INSERT INTO proxima_core.owners (owner_id, kind)
+            VALUES ($1, $2::proxima_core.owner_kind)
+            ON CONFLICT (owner_id) DO NOTHING
+            RETURNING kind::text AS kind
+         )
+         SELECT kind FROM ins
+         UNION ALL
+         SELECT kind::text FROM proxima_core.owners WHERE owner_id = $1
+         LIMIT 1",
+    )
+    .bind(owner_id)
+    .bind(owner_kind)
+    .fetch_one(executor)
+    .await
+    .map_err(map_err)?;
+    if existing != owner_kind {
+        return Err(StorageError::ConstraintViolation(
+            "owners.kind conflict for owner_id".into(),
+        ));
+    }
+    Ok(owner_id)
+}
+
 /// # Errors
 ///
 /// Returns `Internal` on sqlx failure.
@@ -305,108 +346,327 @@ pub(crate) async fn list_group_members_page(
         .collect())
 }
 
+/// Home owner when the row is in `read_owners`. Absent and foreign are
+/// both `None`.
+///
 /// # Errors
 ///
 /// Returns `Internal` on sqlx failure.
-pub(crate) async fn visible_to_any(
+pub(crate) async fn visible_home_owner(
     pool: &PgPool,
     entity: EntityId,
     read_owners: &[OwnerRef],
-) -> Result<bool, StorageError> {
+) -> Result<Option<OwnerRef>, StorageError> {
     if read_owners.is_empty() {
-        return Ok(false);
+        return Ok(None);
     }
 
-    let (kinds, ids) = owner_arrays(read_owners);
-    let (ok,): (bool,) = sqlx::query_as(
-        "WITH allowed(owner_kind, owner_id) AS (
-             SELECT * FROM unnest($2::proxima_core.owner_ref_kind[], $3::uuid[])
-         )
-         SELECT EXISTS (
-             SELECT 1
-               FROM proxima_core.memories m
-               JOIN allowed a
-                 ON a.owner_kind = m.owner_kind
-                AND a.owner_id IS NOT DISTINCT FROM m.owner_id
-              WHERE m.memory_id = $1
-         )
-         OR EXISTS (
-             SELECT 1
-               FROM proxima_core.goals g
-               JOIN allowed a
-                 ON a.owner_kind = g.owner_kind
-                AND a.owner_id IS NOT DISTINCT FROM g.owner_id
-              WHERE g.goal_id = $1
-         )",
+    let owner_ids: Vec<uuid::Uuid> = read_owners
+        .iter()
+        .copied()
+        .map(OwnerRef::stored_owner_id)
+        .collect();
+    let row: Option<(OwnerRefKind, uuid::Uuid)> = sqlx::query_as(
+        "SELECT o.kind::text::proxima_core.owner_kind, m.owner_id
+           FROM proxima_core.memory m
+           JOIN proxima_core.owners o ON o.owner_id = m.owner_id
+          WHERE m.t = $1 AND m.owner_id = ANY($2::uuid[])
+         UNION ALL
+         SELECT o.kind::text::proxima_core.owner_kind, g.owner_id
+           FROM proxima_core.goal g
+           JOIN proxima_core.owners o ON o.owner_id = g.owner_id
+          WHERE g.t = $1 AND g.owner_id = ANY($2::uuid[])
+         LIMIT 1",
     )
     .bind(entity.uuid())
-    .bind(&kinds)
-    .bind(&ids)
-    .fetch_one(pool)
+    .bind(&owner_ids)
+    .fetch_optional(pool)
     .await
     .map_err(map_err)?;
 
-    Ok(ok)
+    Ok(row.map(|(kind, id)| match kind {
+        OwnerRefKind::World => proxima_core::OwnerRef::World,
+        OwnerRefKind::Personal => proxima_core::OwnerRef::Personal(proxima_core::UserId::new(id)),
+        OwnerRefKind::Group => proxima_core::OwnerRef::Group(proxima_core::GroupId::new(id)),
+    }))
 }
 
-/// Transfer one memory or goal row's owner columns to `OwnerRef::World` in a
-/// single statement, gated on the row currently being owned by
-/// `from_owner`. Memory transfers additionally require the row to be
-/// untombstoned. Returns `true` iff a row matched and was updated.
+/// Transfer one memory or goal **series** to [`OwnerRef::World`].
 ///
-/// Scope is deliberately minimal: only the memory/goal row's own owner
-/// columns move. Owner-shadow rows on subordinate tables (`edges`,
-/// `embeddings`, `embedding_heads`, `fact_receipts`, ...) are left under
-/// the prior owner — they are write-tracking metadata, not independently
-/// readable/writable surfaces (`OwnerAccessReadPort::home_owner` and
-/// `visible_to_any` only ever consult `memories`/`goals`).
+/// Same `(handle, t)`: publish is an owner UPDATE, not a copy. Head and
+/// every version on the handle move together (`MemoryHeadAligned`).
+/// Returns `true` iff a row under `from_owner` matched and was updated.
+///
+/// Sidecar rows stay keyed by `t`. Cited `blob` rows move when no other
+/// live non-World series still cites them. Embeddings / jobs follow the
+/// transferred `t`s so ANN (`emb.owner_id`) stays Tesla-valve. `ingest_keys`
+/// for those `t`s are deleted so the prior owner can mint a new series.
 ///
 /// # Errors
 ///
-/// Returns `Internal` on sqlx failure.
+/// `Conflict` when a cited blob is still referenced by another live
+/// series, or a terminal Goal's `close_fact_t` is owned by someone else.
+/// Unique / check violations surface as `ConstraintViolation`.
 pub(crate) async fn transfer_to_world(
     pool: &PgPool,
     entity: EntityId,
     from_owner: OwnerRef,
 ) -> Result<bool, StorageError> {
-    let (from_kind, from_id) = owner_binds(&from_owner);
-    let (to_kind, to_id) = owner_binds(&OwnerRef::World);
-    let rows_affected = match entity {
-        EntityId::Memory(memory_id) => sqlx::query(
-            "UPDATE proxima_core.memories
-                    SET owner_kind = $4, owner_id = $5
-                  WHERE memory_id = $1
-                    AND owner_kind = $2
-                    AND owner_id IS NOT DISTINCT FROM $3
-                    AND tombstoned_at IS NULL",
-        )
-        .bind(memory_id.into_inner())
-        .bind(from_kind)
-        .bind(from_id)
-        .bind(to_kind)
-        .bind(to_id)
-        .execute(pool)
-        .await
-        .map_err(map_err)?
-        .rows_affected(),
-        EntityId::Goal(goal_id) => sqlx::query(
-            "UPDATE proxima_core.goals
-                    SET owner_kind = $4, owner_id = $5
-                  WHERE goal_id = $1
-                    AND owner_kind = $2
-                    AND owner_id IS NOT DISTINCT FROM $3",
-        )
-        .bind(goal_id.into_inner())
-        .bind(from_kind)
-        .bind(from_id)
-        .bind(to_kind)
-        .bind(to_id)
-        .execute(pool)
-        .await
-        .map_err(map_err)?
-        .rows_affected(),
+    let from_id = from_owner.stored_owner_id();
+    let world = OwnerRef::World.stored_owner_id();
+    with_bounded_retry(move || async move {
+        let mut tx = pool.begin().await.map_err(internal)?;
+        let transferred = match entity {
+            EntityId::Memory(memory_id) => {
+                transfer_memory_t(&mut tx, memory_id.into_inner(), from_id, world).await?
+            }
+            EntityId::Goal(goal_id) => {
+                transfer_goal_t(&mut tx, goal_id.into_inner(), from_id, world).await?
+            }
+        };
+        tx.commit().await.map_err(map_err)?;
+        Ok(transferred)
+    })
+    .await
+}
+
+async fn transfer_memory_t(
+    tx: &mut Transaction<'_, Postgres>,
+    t: uuid::Uuid,
+    from_id: uuid::Uuid,
+    world: uuid::Uuid,
+) -> Result<bool, StorageError> {
+    let handle: Option<uuid::Uuid> = sqlx::query_scalar(
+        "SELECT handle FROM proxima_core.memory
+          WHERE t = $1 AND owner_id = $2",
+    )
+    .bind(t)
+    .bind(from_id)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(map_err)?;
+    let Some(handle) = handle else {
+        return Ok(false);
     };
-    Ok(rows_affected == 1)
+    transfer_memory_handle(tx, handle, from_id, world).await
+}
+
+async fn transfer_memory_handle(
+    tx: &mut Transaction<'_, Postgres>,
+    handle: uuid::Uuid,
+    from_id: uuid::Uuid,
+    world: uuid::Uuid,
+) -> Result<bool, StorageError> {
+    let ts: Vec<uuid::Uuid> =
+        sqlx::query_scalar("SELECT t FROM proxima_core.memory WHERE handle = $1 AND owner_id = $2")
+            .bind(handle)
+            .bind(from_id)
+            .fetch_all(&mut **tx)
+            .await
+            .map_err(map_err)?;
+    if ts.is_empty() {
+        return Ok(false);
+    }
+    transfer_exclusive_blobs(tx, handle, from_id, world).await?;
+    let head = sqlx::query(
+        "UPDATE proxima_core.memory_head
+            SET owner_id = $3
+          WHERE handle = $1 AND owner_id = $2",
+    )
+    .bind(handle)
+    .bind(from_id)
+    .bind(world)
+    .execute(&mut **tx)
+    .await
+    .map_err(map_err)?;
+    if head.rows_affected() == 0 {
+        return Ok(false);
+    }
+    sqlx::query(
+        "UPDATE proxima_core.memory
+            SET owner_id = $3
+          WHERE handle = $1 AND owner_id = $2",
+    )
+    .bind(handle)
+    .bind(from_id)
+    .bind(world)
+    .execute(&mut **tx)
+    .await
+    .map_err(map_err)?;
+    follow_embedding_owners(tx, &ts, world).await?;
+    sqlx::query("DELETE FROM proxima_core.ingest_keys WHERE t = ANY($1::uuid[])")
+        .bind(&ts)
+        .execute(&mut **tx)
+        .await
+        .map_err(map_err)?;
+    Ok(true)
+}
+
+async fn transfer_exclusive_blobs(
+    tx: &mut Transaction<'_, Postgres>,
+    handle: uuid::Uuid,
+    from_id: uuid::Uuid,
+    world: uuid::Uuid,
+) -> Result<(), StorageError> {
+    let blob_ids: Vec<uuid::Uuid> = sqlx::query_scalar(
+        "SELECT DISTINCT blob_id
+           FROM proxima_core.memory
+          WHERE handle = $1 AND owner_id = $2 AND blob_id IS NOT NULL",
+    )
+    .bind(handle)
+    .bind(from_id)
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(map_err)?;
+    for blob_id in blob_ids {
+        let shared: bool = sqlx::query_scalar(
+            "SELECT EXISTS (
+                 SELECT 1
+                   FROM proxima_core.memory
+                  WHERE blob_id = $1
+                    AND handle <> $2
+                    AND owner_id <> $3
+             )",
+        )
+        .bind(blob_id)
+        .bind(handle)
+        .bind(world)
+        .fetch_one(&mut **tx)
+        .await
+        .map_err(map_err)?;
+        if shared {
+            return Err(StorageError::Conflict(
+                "cited blob is still referenced by another live non-World series".into(),
+            ));
+        }
+        sqlx::query("UPDATE proxima_core.blob SET owner_id = $2 WHERE blob_id = $1")
+            .bind(blob_id)
+            .bind(world)
+            .execute(&mut **tx)
+            .await
+            .map_err(map_err)?;
+    }
+    Ok(())
+}
+
+async fn follow_embedding_owners(
+    tx: &mut Transaction<'_, Postgres>,
+    ts: &[uuid::Uuid],
+    world: uuid::Uuid,
+) -> Result<(), StorageError> {
+    sqlx::query(
+        "UPDATE proxima_core.embeddings SET owner_id = $2 WHERE entity_id = ANY($1::uuid[])",
+    )
+    .bind(ts)
+    .bind(world)
+    .execute(&mut **tx)
+    .await
+    .map_err(map_err)?;
+    sqlx::query(
+        "UPDATE proxima_core.embedding_heads SET owner_id = $2 WHERE entity_id = ANY($1::uuid[])",
+    )
+    .bind(ts)
+    .bind(world)
+    .execute(&mut **tx)
+    .await
+    .map_err(map_err)?;
+    sqlx::query(
+        "UPDATE proxima_core.embedding_jobs SET owner_id = $2 WHERE entity_id = ANY($1::uuid[])",
+    )
+    .bind(ts)
+    .bind(world)
+    .execute(&mut **tx)
+    .await
+    .map_err(map_err)?;
+    Ok(())
+}
+
+async fn transfer_goal_t(
+    tx: &mut Transaction<'_, Postgres>,
+    t: uuid::Uuid,
+    from_id: uuid::Uuid,
+    world: uuid::Uuid,
+) -> Result<bool, StorageError> {
+    let handle: Option<uuid::Uuid> = sqlx::query_scalar(
+        "SELECT handle FROM proxima_core.goal
+          WHERE t = $1 AND owner_id = $2",
+    )
+    .bind(t)
+    .bind(from_id)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(map_err)?;
+    let Some(handle) = handle else {
+        return Ok(false);
+    };
+    let close_facts: Vec<uuid::Uuid> = sqlx::query_scalar(
+        "SELECT DISTINCT close_fact_t
+           FROM proxima_core.goal
+          WHERE handle = $1 AND owner_id = $2 AND close_fact_t IS NOT NULL",
+    )
+    .bind(handle)
+    .bind(from_id)
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(map_err)?;
+    let head = sqlx::query(
+        "UPDATE proxima_core.goal_head
+            SET owner_id = $3
+          WHERE handle = $1 AND owner_id = $2",
+    )
+    .bind(handle)
+    .bind(from_id)
+    .bind(world)
+    .execute(&mut **tx)
+    .await
+    .map_err(map_err)?;
+    if head.rows_affected() == 0 {
+        return Ok(false);
+    }
+    sqlx::query(
+        "UPDATE proxima_core.goal
+            SET owner_id = $3
+          WHERE handle = $1 AND owner_id = $2",
+    )
+    .bind(handle)
+    .bind(from_id)
+    .bind(world)
+    .execute(&mut **tx)
+    .await
+    .map_err(map_err)?;
+    let goal_ts: Vec<uuid::Uuid> =
+        sqlx::query_scalar("SELECT t FROM proxima_core.goal WHERE handle = $1 AND owner_id = $2")
+            .bind(handle)
+            .bind(world)
+            .fetch_all(&mut **tx)
+            .await
+            .map_err(map_err)?;
+    follow_embedding_owners(tx, &goal_ts, world).await?;
+    for close_t in close_facts {
+        let close_owner: Option<uuid::Uuid> =
+            sqlx::query_scalar("SELECT owner_id FROM proxima_core.memory WHERE t = $1")
+                .bind(close_t)
+                .fetch_optional(&mut **tx)
+                .await
+                .map_err(map_err)?;
+        match close_owner {
+            None => {}
+            Some(id) if id == world => {}
+            Some(id) if id == from_id => {
+                if !transfer_memory_t(tx, close_t, from_id, world).await? {
+                    return Err(StorageError::Conflict(
+                        "terminal goal close_fact_t could not be transferred with the goal".into(),
+                    ));
+                }
+            }
+            Some(_) => {
+                return Err(StorageError::Conflict(
+                    "terminal goal close_fact_t is owned by another live owner".into(),
+                ));
+            }
+        }
+    }
+    Ok(true)
 }
 
 /// # Errors
@@ -416,14 +676,16 @@ pub(crate) async fn home_owner(
     pool: &PgPool,
     entity: EntityId,
 ) -> Result<Option<OwnerRef>, StorageError> {
-    let row: Option<(OwnerRefKind, Option<uuid::Uuid>)> = sqlx::query_as(
-        "SELECT owner_kind, owner_id
-           FROM proxima_core.memories
-          WHERE memory_id = $1
+    let row: Option<(OwnerRefKind, uuid::Uuid)> = sqlx::query_as(
+        "SELECT o.kind::text::proxima_core.owner_kind, m.owner_id
+           FROM proxima_core.memory m
+           JOIN proxima_core.owners o ON o.owner_id = m.owner_id
+          WHERE m.t = $1
          UNION ALL
-         SELECT owner_kind, owner_id
-           FROM proxima_core.goals
-          WHERE goal_id = $1
+         SELECT o.kind::text::proxima_core.owner_kind, g.owner_id
+           FROM proxima_core.goal g
+           JOIN proxima_core.owners o ON o.owner_id = g.owner_id
+          WHERE g.t = $1
          LIMIT 1",
     )
     .bind(entity.uuid())
@@ -431,5 +693,9 @@ pub(crate) async fn home_owner(
     .await
     .map_err(map_err)?;
 
-    Ok(row.and_then(|(kind, id)| kind.with_uuid(id)))
+    Ok(row.map(|(kind, id)| match kind {
+        OwnerRefKind::World => proxima_core::OwnerRef::World,
+        OwnerRefKind::Personal => proxima_core::OwnerRef::Personal(proxima_core::UserId::new(id)),
+        OwnerRefKind::Group => proxima_core::OwnerRef::Group(proxima_core::GroupId::new(id)),
+    }))
 }

@@ -2,16 +2,19 @@ use proxima_core::verbs::query::EntityKind;
 use proxima_core::{
     AbstractionPayload, AuthzContext, FactPayload, MemoryId, Owner, SchemaId, ToolError,
 };
+use proxima_storage_pg::query::{
+    ChunkSeriesHead, CodeChunkVectorCandidate, CodeChunkVectorFilters, FileRevisionHeadRow,
+    nearest_code_chunk_candidates, owned_chunk_series_heads, owned_file_revision_heads,
+    readable_chunk_head_ts_for_file, readable_file_revision_head_ts,
+};
 use sqlx::PgPool;
 
 /// Private code-flavor storage service passed to tools by the host.
 ///
-/// All authorized-read logic lives in `proxima::flavor`;
-/// the methods here are thin delegating wrappers so call sites across this
-/// crate keep a stable `pool.authorized_*(...)` shape while `pool()` itself
-/// stays private — no `PgPool` and no `proxima_core.*` SQL ever leaves this
-/// crate's backend-owned boundary (`from_backend_pool_for_host`/`for_tests`,
-/// `pool()`).
+/// Authz-filtered payload reads delegate to `proxima::flavor` (`&Engine`).
+/// Code-series head / ANN helpers call `proxima_storage_pg::query` here —
+/// they need the flavor's private pool and must not sit on the Flavor SDK.
+/// `pool()` stays private (`from_backend_pool_for_host`/`for_tests`).
 #[derive(Clone)]
 pub struct CodeFlavorStore {
     pool: PgPool,
@@ -114,51 +117,101 @@ impl CodeFlavorStore {
         .await
     }
 
-    /// Narrow a sidecar-only `code-chunk-v1` candidate id list (already
-    /// known to belong to that schema via a `proxima_code.*`-only query) to
-    /// the subset not superseded, by `(repo_id, file_path, chunk_index)`,
-    /// within the same schema/owner-or-World scope. `code-chunk-v1` never
-    /// sets `memories.supersedes`; see
-    /// `proxima::flavor::authorized_code_chunk_head_candidates`.
-    pub(crate) async fn authorized_code_chunk_head_candidates(
+    /// Owner-only current file-revision heads of `repo_id`. Head is
+    /// `memory_head`; ingest compares these shas against git.
+    pub(crate) async fn owned_file_revision_heads(
         &self,
         owner: Owner,
-        candidates: &[uuid::Uuid],
+        repo_id: uuid::Uuid,
+    ) -> Result<Vec<FileRevisionHeadRow>, ToolError> {
+        owned_file_revision_heads(
+            &self.pool,
+            owner,
+            &crate::payloads::FileRevisionV1::schema_id(),
+            repo_id,
+        )
+        .await
+        .map_err(ToolError::Storage)
+    }
+
+    /// Owner∪World current file-revision `t`s for one path.
+    pub(crate) async fn readable_file_revision_head_ts(
+        &self,
+        owner: Owner,
+        repo_id: uuid::Uuid,
+        file_path: &str,
     ) -> Result<Vec<uuid::Uuid>, ToolError> {
-        proxima::flavor::authorized_code_chunk_head_candidates(
+        readable_file_revision_head_ts(
+            &self.pool,
+            owner,
+            &crate::payloads::FileRevisionV1::schema_id(),
+            repo_id,
+            file_path,
+        )
+        .await
+        .map_err(ToolError::Storage)
+    }
+
+    /// Owner-only current chunk series of one file (any state).
+    pub(crate) async fn owned_chunk_series_heads(
+        &self,
+        owner: Owner,
+        repo_id: uuid::Uuid,
+        file_path: &str,
+    ) -> Result<Vec<ChunkSeriesHead>, ToolError> {
+        owned_chunk_series_heads(
             &self.pool,
             owner,
             &crate::payloads::CodeChunkV1::schema_id(),
-            candidates,
+            repo_id,
+            file_path,
         )
         .await
+        .map_err(ToolError::Storage)
+    }
+
+    /// Owner∪World present chunk head `t`s for one file.
+    pub(crate) async fn readable_chunk_head_ts_for_file(
+        &self,
+        owner: Owner,
+        repo_id: uuid::Uuid,
+        file_path: &str,
+    ) -> Result<Vec<uuid::Uuid>, ToolError> {
+        readable_chunk_head_ts_for_file(
+            &self.pool,
+            owner,
+            &crate::payloads::CodeChunkV1::schema_id(),
+            repo_id,
+            file_path,
+        )
+        .await
+        .map_err(ToolError::Storage)
     }
 
     /// Nearest `code-chunk-v1` chunks to a query embedding, best-first.
     ///
-    /// A candidate producer like
-    /// [`Self::authorized_code_chunk_head_candidates`]: what it returns is
-    /// still narrowed and authorized by that call and then by
-    /// [`Self::authorized_abstraction_payloads`]. The embeddings it ranks
-    /// against live in `proxima_core.embeddings`, which flavor SQL may not
-    /// join, so the query itself is backend-owned.
+    /// Candidate producer: merge with lexical hits, then
+    /// [`Self::authorized_abstraction_payloads`] (Query `HeadsOnly`).
+    /// Embeddings live in `proxima_core.embeddings`, which flavor SQL
+    /// may not join, so the query itself is backend-owned.
     pub(crate) async fn nearest_code_chunk_candidates(
         &self,
         owner: Owner,
         model_id: &str,
         query_embedding: &[f32],
-        filters: proxima::flavor::CodeChunkVectorFilters<'_>,
+        filters: CodeChunkVectorFilters<'_>,
         limit: usize,
-    ) -> Result<Vec<proxima::flavor::CodeChunkVectorCandidate>, ToolError> {
-        proxima::flavor::nearest_code_chunk_candidates(
+    ) -> Result<Vec<CodeChunkVectorCandidate>, ToolError> {
+        nearest_code_chunk_candidates(
             &self.pool,
             owner,
             &crate::payloads::CodeChunkV1::schema_id(),
             model_id,
             query_embedding,
             filters,
-            limit,
+            i64::try_from(limit).unwrap_or(i64::MAX),
         )
         .await
+        .map_err(ToolError::Storage)
     }
 }

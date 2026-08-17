@@ -9,11 +9,10 @@ use proxima::{
 };
 use proxima_core::llm::{EmbeddingClient, LlmError};
 use proxima_core::test_fixtures::ConstantEmbedding;
-use proxima_core::verbs::fact_ingest::FactWriteCommand;
 use proxima_core::{
-    AuthError, AuthPath, Authenticator, AuthzContext, Credentials, FactPayload, FlavorRegistry,
-    FlavorRegistryError, GoalActivatedV1, MemoryId, Owner, Role, SchemaId, SchemaVersion,
-    SourceBatchId, ToolScope, UserId,
+    AgentNoteV1, AuthError, AuthPath, Authenticator, AuthzContext, Credentials, FactPayload,
+    FlavorRegistry, FlavorRegistryError, MemoryId, Owner, Role, SchemaId, SchemaVersion, ToolScope,
+    UserId,
 };
 use proxima_pg_testkit::{admin_url, create_db, db_url, drop_db, unique_db_name};
 use proxima_storage_pg::{PgSidecarKey, PgStorage};
@@ -41,27 +40,19 @@ impl Authenticator for TestAuthenticator {
     }
 }
 
-#[derive(Debug, serde::Deserialize, serde::Serialize)]
-struct TestFact {
-    label: String,
-}
-
-impl FactPayload for TestFact {
-    const SCHEMA_ID: &'static str = "test/facade-boot-fact-v1";
-    const SCHEMA_VERSION: u32 = 1;
-
-    fn receipt_key(&self) -> Vec<u8> {
-        self.label.as_bytes().to_vec()
-    }
-
-    fn render(&self) -> String {
-        self.label.clone()
+fn drain_note(title: &str) -> AgentNoteV1 {
+    AgentNoteV1 {
+        note_id: Uuid::now_v7(),
+        title: title.into(),
+        body: title.into(),
+        tags: Vec::new(),
+        idempotency_key: Some(title.into()),
     }
 }
 
 impl FlavorBundle for GoalTestApp {
-    fn register(registry: &mut FlavorRegistry) -> Result<(), FlavorRegistryError> {
-        registry.try_add_fact_schema::<TestFact>()
+    fn register(_registry: &mut FlavorRegistry) -> Result<(), FlavorRegistryError> {
+        Ok(())
     }
 
     fn migrators() -> Vec<NamedMigrator> {
@@ -77,8 +68,7 @@ async fn count_fact_embeddings(
     sqlx::query_scalar(
         "SELECT count(*)::bigint
            FROM proxima_core.embeddings
-          WHERE entity_kind = 'Fact'
-            AND entity_id = $1
+          WHERE entity_id = $1
             AND model_id = $2",
     )
     .bind(memory_id.into_inner())
@@ -95,8 +85,7 @@ async fn count_embedding_jobs(
     sqlx::query_scalar(
         "SELECT count(*)::bigint
            FROM proxima_core.embedding_jobs
-          WHERE entity_kind = 'Fact'
-            AND entity_id = $1
+          WHERE entity_id = $1
             AND model_id = $2",
     )
     .bind(memory_id.into_inner())
@@ -253,10 +242,10 @@ async fn migration_facade_runs_core_goal_schema_idempotently() {
         }
 
         let sidecar: Option<String> =
-            sqlx::query_scalar("SELECT to_regclass('proxima_core.goal_activated_v1')::text")
+            sqlx::query_scalar("SELECT to_regclass('proxima_core.task_goal_v1')::text")
                 .fetch_one(pg.pool_for_tests())
                 .await?;
-        assert_eq!(sidecar.as_deref(), Some("proxima_core.goal_activated_v1"));
+        assert_eq!(sidecar.as_deref(), Some("proxima_core.task_goal_v1"));
         Ok(())
     }
     .await;
@@ -298,11 +287,11 @@ async fn pre_v004_database_fails_closed_in_migration_facade() {
 
         let err = run_core_and_flavor_migrations(&pg, Vec::<NamedMigrator>::new())
             .await
-            .expect_err("pre-v0.0.4 DB must fail closed through facade");
+            .expect_err("stale ledger must fail closed through facade");
         let msg = err.to_string();
         assert!(
-            msg.contains("v0.0.4") && msg.contains("reset"),
-            "error must explain v0.0.4 reset requirement, got: {msg}",
+            msg.contains("reset"),
+            "error must explain reset, got: {msg}",
         );
         Ok(())
     }
@@ -354,13 +343,13 @@ async fn pre_v004_database_surfaces_typed_reset_error_through_boot() {
         let err = ProximaBuilder::new(config, owner)
             .boot()
             .await
-            .expect_err("pre-v0.0.4 DB must fail closed through boot()");
+            .expect_err("stale ledger must fail closed through boot()");
 
         match err {
             EmbedError::V004ResetRequired { details } => {
                 assert!(
-                    details.contains("v0.0.4"),
-                    "reset details should explain the v0.0.4 baseline mismatch, got: {details}"
+                    details.contains("0001_v008") || details.contains("checksum"),
+                    "reset details should name the schema mismatch, got: {details}"
                 );
             }
             other => {
@@ -481,27 +470,22 @@ async fn facade_boot_exposes_pg_sidecars_and_worker_drains_embedding_jobs() {
             )))
             .build()
             .await?;
-        let goal_fact_key = PgSidecarKey::new(
+        let note_key = PgSidecarKey::new(
             PayloadKind::Fact,
-            SchemaId::new(GoalActivatedV1::SCHEMA_ID.into()),
-            SchemaVersion::new(GoalActivatedV1::SCHEMA_VERSION),
+            SchemaId::new(proxima_core::AgentNoteV1::SCHEMA_ID.into()),
+            SchemaVersion::new(proxima_core::AgentNoteV1::SCHEMA_VERSION),
         );
         assert!(
-            built.pg_sidecars.contains(&goal_fact_key),
+            built.pg_sidecars.contains(&note_key),
             "boot result exposes the frozen core PG sidecar registry"
         );
 
-        let payload = TestFact {
-            label: "facade worker drain fact".to_string(),
-        };
-        let draft = FactWriteCommand::from_payload(
-            "test/facade-worker",
-            SourceBatchId::new(Uuid::now_v7()),
-            &payload,
-            time::OffsetDateTime::now_utc(),
-        );
+        let payload = drain_note("facade worker drain fact");
         let authz = built.single_owner_authz().expect("single owner authz");
-        let outcome = built.engine.fact_ingest(&authz, draft).await?;
+        let outcome = built
+            .engine
+            .ingest_typed_fact(&authz, "test/facade-worker", &payload)
+            .await?;
         assert_eq!(
             count_fact_embeddings(built.pool_for_tests(), outcome.memory_id, model_id).await?,
             0
@@ -545,17 +529,12 @@ async fn startup_reconcile_heals_facts_ingested_without_embed_client() {
             .tool_scope(ToolScope::All)
             .build()
             .await?;
-        let payload = TestFact {
-            label: "fact written while embeddings were down".to_string(),
-        };
-        let draft = FactWriteCommand::from_payload(
-            "test/startup-reconcile",
-            SourceBatchId::new(Uuid::now_v7()),
-            &payload,
-            time::OffsetDateTime::now_utc(),
-        );
+        let payload = drain_note("fact written while embeddings were down");
         let authz = degraded.single_owner_authz().expect("single owner authz");
-        let outcome = degraded.engine.fact_ingest(&authz, draft).await?;
+        let outcome = degraded
+            .engine
+            .ingest_typed_fact(&authz, "test/startup-reconcile", &payload)
+            .await?;
         assert_eq!(
             count_embedding_jobs(degraded.pool_for_tests(), outcome.memory_id, model_id).await?,
             0,

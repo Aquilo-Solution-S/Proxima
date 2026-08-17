@@ -1,11 +1,8 @@
-//! `core/list_change_events` - forward pull-log poll over `change_event`.
+//! `core/list_change_events` — forward pull-log poll over `announce`.
 //!
 //! This is the forward, opaque-seq-cursor mirror of backward
 //! `ChangeHistory`: clients pass the prior `next_since` as `since` and
-//! receive owner-scoped events in ascending `seq` order. Edge endpoint
-//! memory subkind is recovered from `proxima_core.edges` in one batched
-//! lookup; if the edge row is absent, memory endpoints fall back to the
-//! Fact prefix. The id still resolves regardless of the display prefix.
+//! receive owner-scoped events in ascending `seq` order.
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};

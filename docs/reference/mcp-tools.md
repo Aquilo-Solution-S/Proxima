@@ -18,7 +18,7 @@ binary/profile.
 | publish | `core_publish` | irreversible owner transfer via `publish_to_world`; not ACL/share |
 | memory reads | `proxima://memory/{id}{?expand_neighbors}`, `proxima://memories{?ids}`, `proxima://memory/{id}/lineage{?direction,depth,limit,cursor}` | batch read takes at most 100 ids; lineage paginates by cursor and reports `has_more` |
 | goal reads | `proxima://goals{?state,limit,cursor}`, `proxima://goal/{id}` | keyset pagination |
-| edge reads | `proxima://edges{?kind,source,target,limit,cursor}` | at least one filter required; a row is `(source, target, kind, created_at)` and nothing else — no edge id to dereference, no payload to hydrate |
+| pin walks | lineage / neighbor expansion | `origins` / `refs` on `memory` |
 | graph | `proxima://graph` | owner-scoped health: schema registry, embedding backlog, `embeddings_client_configured` |
 | introspection | `proxima://tools`, `proxima://how-to` | generated from runtime profile |
 | change-events | `proxima://change-events{?since,limit}` | poll-only change notification |

@@ -1,6 +1,5 @@
 use proxima_core::verbs::query::{EdgeFilter, EdgeReadRequest};
 use proxima_core::{EdgeEndpoint, EdgeKind, EntityKind, EntityRef, MemoryId, ToolCtx, ToolError};
-use sqlx::{Postgres, Transaction};
 use uuid::Uuid;
 
 use crate::payloads::ExecutionRequestV1;
@@ -44,7 +43,6 @@ pub(super) struct PriorExecutionRequest {
 }
 
 pub(super) async fn load_execution_request(
-    _tx: &mut Transaction<'_, Postgres>,
     ctx: &ToolCtx,
     memory_id: MemoryId,
 ) -> Result<PriorExecutionRequest, ToolError> {
@@ -74,7 +72,6 @@ pub(super) async fn load_execution_request(
 }
 
 pub(super) async fn find_execution_request_by_key(
-    _tx: &mut Transaction<'_, Postgres>,
     ctx: &ToolCtx,
     repo_id: Uuid,
     request_key: &str,
@@ -82,11 +79,11 @@ pub(super) async fn find_execution_request_by_key(
     let pool = code_store(ctx)?;
     let engine = engine(ctx)?;
     let candidates: Vec<Uuid> = sqlx::query_scalar(
-        "SELECT memory_id
+        "SELECT t
            FROM proxima_code.work_requested_v1
           WHERE repo_id = $1
             AND request_key = $2
-          ORDER BY memory_id DESC
+          ORDER BY t DESC
           LIMIT 20",
     )
     .bind(repo_id)
@@ -109,7 +106,6 @@ pub(super) async fn find_execution_request_by_key(
 }
 
 pub(super) async fn validate_target_perspective(
-    _tx: &mut Transaction<'_, Postgres>,
     ctx: &ToolCtx,
     target_perspective: MemoryId,
 ) -> Result<(), ToolError> {
@@ -139,7 +135,6 @@ pub(super) async fn validate_target_perspective(
 /// The retry carries the same grounding forward, which is what makes the
 /// retry a continuation rather than an unmoored second request.
 pub(super) async fn load_prior_origins(
-    _tx: &mut Transaction<'_, Postgres>,
     ctx: &ToolCtx,
     prior_memory_id: MemoryId,
 ) -> Result<Vec<MemoryId>, ToolError> {

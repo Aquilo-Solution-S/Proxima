@@ -19,6 +19,7 @@ pub struct MemorySnapshot {
     pub kind: EntityKind,
     pub schema_id: SchemaId,
     pub schema_version: SchemaVersion,
+    pub owner: OwnerRef,
     pub text: Option<String>,
     pub payload: Option<SidecarPayload>,
 }

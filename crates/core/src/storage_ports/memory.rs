@@ -1,12 +1,22 @@
 pub use super::proof::{OperatorWriteProof, OwnerWritePermit};
 
-use crate::edge::Edge;
+/// Newest-first inbound pin page. Kind selects which array; `None` is both.
+#[derive(Debug, Clone, Copy)]
+pub struct InboundPinQuery<'a> {
+    pub targets: &'a [MemoryId],
+    pub kind: Option<EdgeKind>,
+    pub heads_only: bool,
+    pub after: Option<MemoryId>,
+    pub limit: u32,
+}
+
+use crate::edge::{EdgeKind, PinNode};
 use crate::read_models::{MemorySnapshot, SidecarSpec};
 use crate::storage::{
-    AuthorDerivedOutcome, AuthorDerivedRequest, FactSourceBatchRow, MemoryGraphPayloadRow,
-    MemoryKindRow, StorageError,
+    AuthorDerivedOutcome, AuthorDerivedRequest, FactSourceBatchRow, MemoryGraphIdentity,
+    MemoryGraphPayloadRow, MemoryKindRow, StorageError,
 };
-use crate::{FactEntityId, MemoryId, Owner, OwnerRef, SchemaId, SchemaVersion};
+use crate::{MemoryId, Owner, OwnerRef};
 
 /// Node writes that also assert index rows.
 ///
@@ -46,6 +56,13 @@ pub trait MemoryAuthoringPort: Send + Sync {
         owner: &Owner,
         memory_ids: &[MemoryId],
     ) -> Result<Vec<FactSourceBatchRow>, StorageError>;
+
+    /// Cool one memory `t`: PUT cold object, stub + delete hot, `announce.forget`.
+    async fn forget_memory(
+        &self,
+        permit: &OwnerWritePermit,
+        memory_id: MemoryId,
+    ) -> Result<(), StorageError>;
 }
 
 #[async_trait::async_trait]
@@ -58,22 +75,26 @@ pub trait MemoryReadPort: Send + Sync {
 
     async fn load_memory_graph_payloads(
         &self,
-        owner: &Owner,
-        memory_ids: &[MemoryId],
+        identities: &[MemoryGraphIdentity],
         include_body: bool,
     ) -> Result<Vec<MemoryGraphPayloadRow>, StorageError>;
 
-    /// Edges touching any of `memory_ids`, in either direction, capped at
-    /// `limit`. A row is returned when its source is readable; an
-    /// unreadable endpoint comes back as
-    /// [`crate::EdgeTargetProjection::Redacted`] rather than removing the
-    /// row, so redaction never rewrites the shape of the graph.
-    async fn load_neighbor_memory_edges(
+    /// Owner-scoped PK load of pin carriers (`t`, kind, `origins`, `refs`).
+    /// Missing and unreadable ids are absent.
+    async fn load_pin_nodes(
         &self,
         read_owners: &[OwnerRef],
         memory_ids: &[MemoryId],
-        limit: usize,
-    ) -> Result<Vec<Edge>, StorageError>;
+    ) -> Result<Vec<PinNode>, StorageError>;
+
+    /// Owner-scoped GIN page of rows that list any of `query.targets` in
+    /// `origins` and/or `refs`. Newest `t` first; `after` is exclusive.
+    /// `limit == 0` is a constraint violation.
+    async fn load_inbound_pin_nodes(
+        &self,
+        read_owners: &[OwnerRef],
+        query: InboundPinQuery<'_>,
+    ) -> Result<Vec<PinNode>, StorageError>;
 
     async fn query_memories(
         &self,
@@ -92,6 +113,16 @@ pub trait MemoryReadPort: Send + Sync {
         read_owners: &[OwnerRef],
         req: &crate::verbs::query::MemoryLineageRequest,
     ) -> Result<crate::verbs::query::MemoryLineageResponse, StorageError>;
+
+    /// Current owned series handle whose sidecar matches `columns`.
+    /// Owner-only (not World). Miss after transfer is expected.
+    async fn owned_series_handle(
+        &self,
+        owner: Owner,
+        schema_id: &crate::SchemaId,
+        sidecar_table: &str,
+        columns: &[(&str, crate::verbs::query::SidecarAtom)],
+    ) -> Result<Option<uuid::Uuid>, StorageError>;
 }
 
 #[async_trait::async_trait]
@@ -114,40 +145,8 @@ pub trait MemoryInspectPort: Send + Sync {
     ) -> Result<Vec<MemorySnapshot>, StorageError>;
 }
 
-/// Reads over the edge index. Every row is four fields — source,
-/// target, kind, `created_at` — and there is nothing else to hydrate: no
-/// id to dereference, no payload to join, no status to project.
-#[async_trait::async_trait]
-pub trait EdgeReadPort: Send + Sync {
-    /// One page of edges matching `req.filter`, newest first, resuming
-    /// strictly after `req.cursor`. Ordering is
-    /// `created_at DESC, (source, target, kind) DESC` — the full primary
-    /// key, so the order is total and the keyset cannot skip or repeat.
-    async fn read_edges(
-        &self,
-        read_owners: &[OwnerRef],
-        req: &crate::verbs::query::EdgeReadRequest,
-    ) -> Result<crate::verbs::query::EdgeReadResponse, StorageError>;
-
-    /// Whether any edge matches `req.filter`. Existence is disclosed only
-    /// for edges whose source is readable by `read_owners`.
-    async fn edge_exists(
-        &self,
-        read_owners: &[OwnerRef],
-        req: &crate::verbs::query::EdgeExistsRequest,
-    ) -> Result<crate::verbs::query::EdgeExistsResponse, StorageError>;
-}
-
 #[async_trait::async_trait]
 pub trait CitationPort: Send + Sync {
-    async fn fact_entity_id_for(
-        &self,
-        owner: &Owner,
-        schema_id: &SchemaId,
-        schema_version: SchemaVersion,
-        natural_key: &[String],
-    ) -> Result<Option<FactEntityId>, StorageError>;
-
     /// One page of citing Facts, newest first
     /// (`created_at DESC, memory_id DESC`), starting strictly after
     /// `after` when given. The page computes its own `has_more` and
@@ -163,12 +162,7 @@ pub trait CitationPort: Send + Sync {
 
     async fn citation_of_fact(
         &self,
-        fact_memory_id: crate::MemoryId,
-    ) -> Result<Option<crate::verbs::query::FactCitationReadback>, StorageError>;
-
-    async fn citation_of_entity_head(
-        &self,
         read_owners: &[OwnerRef],
-        fact_entity_id: FactEntityId,
+        fact_memory_id: crate::MemoryId,
     ) -> Result<Option<crate::verbs::query::FactCitationReadback>, StorageError>;
 }

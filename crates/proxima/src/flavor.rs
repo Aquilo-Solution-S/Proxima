@@ -6,6 +6,10 @@ pub use crate::migrations::NamedMigrator;
 /// runtime handles a spawning flavor receives and the named join handle
 /// it returns.
 pub use crate::workers::{FlavorWorker, FlavorWorkerContext};
+/// Query / ingest types a flavor names next to [`crate::Engine`]
+/// (Host API). `Engine` itself stays off this module (`docs/14`).
+/// `AuthorizedFactWrite` is Engine-internal (UoW-first).
+pub use proxima_core::AuthorizationHook;
 /// The typed artefact inside [`CitedBlobStaged`], and the outcome of
 /// [`proxima_core::Engine::complete_upload_as_fact`].
 ///
@@ -25,6 +29,7 @@ pub use crate::workers::{FlavorWorker, FlavorWorkerContext};
 /// named local or returned from a flavor's own function.
 pub use proxima_core::citations::UploadedBlobPayload;
 pub use proxima_core::engine::UploadCompleted;
+pub use proxima_core::engine::{TypedFactIngest, UnitOfWork};
 /// MCP tool-authoring surface: implement [`McpTool`] with typed
 /// [`McpToolCtx`] / [`McpToolError`] instead of reaching into
 /// `proxima_core::mcp`. Mirrors what `docs/tutorials/add-first-mcp-tool.md`
@@ -63,6 +68,10 @@ pub use proxima_core::storage_ports::{
     CitedBlobPort, CitedBlobReadError, CitedBlobReadPort, CitedBlobReadService, CitedBlobReadUrl,
     CitedBlobService, CitedBlobStaged, CitedBlobUploadAborted, CitedBlobUploadCompleted,
     CitedBlobUploadHeader, CitedBlobUploadPrepared, MAX_HELD_BLOB_DIGESTS, VerifiedCitedBlob,
+};
+pub use proxima_core::verbs::fact_ingest::{CitationSpec, FactIngestOutcome, FactWriteCommand};
+pub use proxima_core::verbs::query::{
+    GoalRow, QueryRequest, QueryResponse, SearchMode, SidecarAtom, hybrid_degraded_to_lexical,
 };
 /// [`FactTombstone`] is the return type of [`FactPayload::tombstone`], so a
 /// flavor that declares a *stateful* Fact schema — one with a head per
@@ -121,17 +130,15 @@ pub use proxima_core::{
 /// it was read from, the binding, and the target — and the defaulted
 /// `references()` on every payload trait returns a `Vec` of them, so a
 /// schema that points at another node cannot be written without naming this
-/// type. [`ReferenceBinding`] is where the retired descriptor's
-/// `FollowHead`/`Pin` cell went: a property of the field, decided once by
-/// the schema author.
+/// type. [`ReferenceBinding`] is a property of the field, decided once by
+/// the schema author. The only binding is [`ReferenceBinding::Pin`].
 ///
 /// [`EdgeEndpoint`] is the address form the constructors below mint
-/// (`memory`, `goal`, `fact_entity`); [`EdgeKind`] is exported to be *read*
+/// (`memory`, `goal`); [`EdgeKind`] is exported to be *read*
 /// — off a listed [`Edge`], or when filtering — never passed to a writer,
-/// because the kind follows the operation. [`FactEntityId`] rides along
-/// because `PayloadReference::fact_entity_head` cannot be called without it.
+/// because the kind follows the operation.
 pub use proxima_core::{
-    Edge, EdgeEndpoint, EdgeKind, EdgeTargetProjection, EntityRef, FactEntityId, PayloadReference,
+    Edge, EdgeEndpoint, EdgeKind, EdgeTargetProjection, EntityRef, PayloadReference,
     ReferenceBinding,
 };
 /// Shared argument rules for search and paged reads, so a flavor does not
@@ -166,8 +173,6 @@ pub use proxima_storage_pg::{
 
 mod authorized_read;
 pub use authorized_read::{
-    authorized_abstraction_payloads, authorized_code_chunk_head_candidates,
-    authorized_fact_payloads, authorized_fact_payloads_include_tombstones, authorized_memory_ids,
-    nearest_code_chunk_candidates,
+    authorized_abstraction_payloads, authorized_fact_payloads,
+    authorized_fact_payloads_include_tombstones, authorized_memory_ids,
 };
-pub use proxima_storage_pg::query::{CodeChunkVectorCandidate, CodeChunkVectorFilters};

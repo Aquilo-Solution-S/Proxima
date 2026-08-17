@@ -6,10 +6,6 @@
 use proxima_core::{Owner, OwnerRefKind, UPLOADED_BLOB_SCHEMA_ID};
 use uuid::Uuid;
 
-pub(super) fn db_owner_columns(owner: &Owner) -> (OwnerRefKind, Option<Uuid>) {
-    owner.columns()
-}
-
 pub(super) fn owner_hash_hex(owner: &Owner) -> String {
     let kind = OwnerRefKind::of(owner);
     let owner_key_id = owner.stable_key_uuid();
@@ -42,6 +38,22 @@ pub(super) fn canonical_object_key(owner_hash: &str, blake3_hex: &str) -> String
         "{}{UPLOADED_BLOB_SCHEMA_ID}/{blake3_hex}",
         objects_owner_prefix(owner_hash)
     )
+}
+
+/// Forget/hydrate/erase: one object per Memory `t`.
+#[must_use]
+pub fn cold_owner_prefix(owner_hash: &str) -> String {
+    format!("cold/{owner_hash}/")
+}
+
+#[must_use]
+pub fn cold_object_key(owner_hash: &str, handle: Uuid, t: Uuid) -> String {
+    format!("{}{handle}/{t}", cold_owner_prefix(owner_hash))
+}
+
+#[must_use]
+pub fn owner_hash_hex_public(owner: &Owner) -> String {
+    owner_hash_hex(owner)
 }
 
 #[cfg(test)]
@@ -85,20 +97,15 @@ mod tests {
         // Every key the write path emits sits under the prefix the purge scans.
         assert!(canonical_object_key(&owner_hash, &"a".repeat(64)).starts_with(&objects));
         assert!(pending_object_key(&owner_hash, Uuid::now_v7()).starts_with(&pending));
+        let cold = cold_object_key(&owner_hash, Uuid::now_v7(), Uuid::now_v7());
+        assert!(cold.starts_with(&cold_owner_prefix(&owner_hash)));
+        assert!(!cold.contains(&owner.stable_key_uuid().to_string()));
 
         // A different owner yields disjoint prefixes, so a purge never reaches
         // another owner's objects.
         let other_hash = owner_hash_hex(&OwnerRef::Personal(UserId::new(Uuid::now_v7())));
         assert_ne!(objects, objects_owner_prefix(&other_hash));
         assert_ne!(pending, pending_owner_prefix(&other_hash));
-    }
-
-    #[test]
-    fn db_owner_columns_use_nullable_world_shape() {
-        assert_eq!(
-            db_owner_columns(&OwnerRef::World),
-            (OwnerRefKind::World, None)
-        );
     }
 
     #[test]

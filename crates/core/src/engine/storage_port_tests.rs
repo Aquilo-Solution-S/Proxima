@@ -59,20 +59,36 @@ impl crate::MemoryReadPort for ReadOnlyFake {
 
     async fn load_memory_graph_payloads(
         &self,
-        _owner: &crate::Owner,
-        _memory_ids: &[crate::MemoryId],
+        _identities: &[crate::MemoryGraphIdentity],
         _include_body: bool,
     ) -> Result<Vec<crate::MemoryGraphPayloadRow>, StorageError> {
         Ok(Vec::new())
     }
 
-    async fn load_neighbor_memory_edges(
+    async fn load_pin_nodes(
         &self,
         _read_owners: &[OwnerRef],
         _memory_ids: &[crate::MemoryId],
-        _limit: usize,
-    ) -> Result<Vec<crate::Edge>, StorageError> {
+    ) -> Result<Vec<crate::PinNode>, StorageError> {
         Ok(Vec::new())
+    }
+
+    async fn load_inbound_pin_nodes(
+        &self,
+        _read_owners: &[OwnerRef],
+        _query: crate::InboundPinQuery<'_>,
+    ) -> Result<Vec<crate::PinNode>, StorageError> {
+        Ok(Vec::new())
+    }
+
+    async fn owned_series_handle(
+        &self,
+        _owner: crate::Owner,
+        _schema_id: &crate::SchemaId,
+        _sidecar_table: &str,
+        _columns: &[(&str, crate::verbs::query::SidecarAtom)],
+    ) -> Result<Option<uuid::Uuid>, StorageError> {
+        Ok(None)
     }
 }
 
@@ -131,12 +147,12 @@ impl OwnerAccessReadPort for GoalFake {
         Ok(Vec::new())
     }
 
-    async fn visible_to_any(
+    async fn visible_home_owner(
         &self,
         _entity: crate::EntityId,
         _read_owners: &[OwnerRef],
-    ) -> Result<bool, StorageError> {
-        Ok(false)
+    ) -> Result<Option<OwnerRef>, StorageError> {
+        Ok(None)
     }
 
     async fn home_owner(&self, _entity: crate::EntityId) -> Result<Option<OwnerRef>, StorageError> {
@@ -151,7 +167,6 @@ async fn query_helper_accepts_only_query_read_handles() {
         change_event: Arc::new(storage_port_tests_support::ChangeEventFake),
         mcp_call_read: Arc::new(storage_port_tests_support::McpCallReadFake),
         memory_read: read,
-        edge_read: Arc::new(storage_port_tests_support::EdgeReadFake),
     };
     let owner = OwnerRef::Personal(crate::UserId::new(uuid::Uuid::now_v7()));
     let registry = crate::FlavorRegistry::new().freeze_or_panic_for_tests();
@@ -434,16 +449,6 @@ mod storage_port_tests_support {
 
     #[async_trait::async_trait]
     impl crate::CitationPort for CitationFake {
-        async fn fact_entity_id_for(
-            &self,
-            _owner: &crate::Owner,
-            _schema_id: &crate::SchemaId,
-            _schema_version: crate::SchemaVersion,
-            _natural_key: &[String],
-        ) -> Result<Option<crate::FactEntityId>, StorageError> {
-            Ok(None)
-        }
-
         async fn facts_citing_object(
             &self,
             _read_owners: &[OwnerRef],
@@ -461,15 +466,8 @@ mod storage_port_tests_support {
 
         async fn citation_of_fact(
             &self,
-            _fact_memory_id: crate::MemoryId,
-        ) -> Result<Option<crate::verbs::query::FactCitationReadback>, StorageError> {
-            Ok(None)
-        }
-
-        async fn citation_of_entity_head(
-            &self,
             _read_owners: &[OwnerRef],
-            _fact_entity_id: crate::FactEntityId,
+            _fact_memory_id: crate::MemoryId,
         ) -> Result<Option<crate::verbs::query::FactCitationReadback>, StorageError> {
             Ok(None)
         }
@@ -518,31 +516,6 @@ mod storage_port_tests_support {
             _permit: &crate::storage_ports::OwnerWritePermit,
         ) -> Result<bool, StorageError> {
             Ok(false)
-        }
-    }
-
-    #[derive(Debug)]
-    pub struct EdgeReadFake;
-
-    #[async_trait::async_trait]
-    impl crate::EdgeReadPort for EdgeReadFake {
-        async fn read_edges(
-            &self,
-            _read_owners: &[OwnerRef],
-            _req: &crate::verbs::query::EdgeReadRequest,
-        ) -> Result<crate::verbs::query::EdgeReadResponse, StorageError> {
-            Ok(crate::verbs::query::EdgeReadResponse {
-                edges: Vec::new(),
-                next_cursor: None,
-            })
-        }
-
-        async fn edge_exists(
-            &self,
-            _read_owners: &[OwnerRef],
-            _req: &crate::verbs::query::EdgeExistsRequest,
-        ) -> Result<crate::verbs::query::EdgeExistsResponse, StorageError> {
-            Ok(crate::verbs::query::EdgeExistsResponse { exists: false })
         }
     }
 }

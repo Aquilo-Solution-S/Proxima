@@ -131,10 +131,9 @@ already control observation grouping, so they own this id (Q6). F→A
 consolidation operates on a source batch (component 02): the chunks of one
 PDF, the files of one repo crawl, the messages of one chat session.
 
-Batch lifecycle (open / closed) is persisted in the core
-`source_batches` table — see [04 §Source-batch lifecycle](04-consolidation.md#source-batch-lifecycle). The source
-signals batch-complete via `engine.close_batch(source_batch_id)`; the
-engine gates F→A on `closed_at IS NOT NULL`.
+`source_batch_id` is an opaque episode id the source stamps on each
+write (see [07](07-storage.md)). There is no `source_batches` table and
+no `engine.close_batch` in v0.0.8.
 
 `source_batch_id` is the F→A consolidation episode, distinct from the
 artefact a Fact cites (`citation_mapping_id` → `cited_object_id`,
@@ -196,13 +195,13 @@ Every event carries:
 
 | Field | Meaning |
 |---|---|
-| `receipt_id` / storage `receipt_id` | Deterministic hash of `(source_id, owner, payload)`. Re-receipt produces the same id. PG stores it in `fact_receipts.receipt_id` and `memories.receipt_id`; there is no core `events` table. |
+| `ingest_key` | Sourced Fact replay. Same `(owner, source_id, ingest_key)` → same `(handle, t)`. |
 | `source_id` | Which source emitted this. |
 | `owner` | `Owner` — scope of this event (whose Reality slice). Source sets at emit time from its config or per-event observation context. |
 | `source_batch_id` | UUIDv7 declared by the source at emit time; engine validates uniqueness within `(source_id, owner)` and rejects collisions. Groups events from the same Reality observation. |
 | `schema_id` | Which registered schema this event conforms to (component 03). |
 | `schema_version` | Version of that schema. |
-| `observed_at` | When the agent observed the event. Defaults to ingest time; `core_remember`/`core_record_utterance` accept an optional RFC3339 backdate for historical import (provenance only — `memories.created_at` ordering is unaffected and has no write path). |
+| `observed_at` | When the agent observed the event. Defaults to ingest time. Ordering is `t` (uuidv7). |
 | `occurred_at` | When the underlying Reality change happened (may differ — a webhook arrives after the commit). |
 | `payload` | Typed, source-specific data conforming to `schema_id @ schema_version`. This includes source-specific fields like `source_uri` (e.g., `forgejo://AQS/aquilo/commit/<sha>`, `telegram://chat/<id>/<msg>`) and `source_locus` (e.g., line number, message index, file path, query offset). |
 

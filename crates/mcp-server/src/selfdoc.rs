@@ -56,7 +56,6 @@ struct Surface {
     memory_spaces: bool,
     get_memory: bool,
     lineage: bool,
-    edges: bool,
     goals: bool,
     code: bool,
 }
@@ -76,7 +75,6 @@ impl Surface {
             memory_spaces: has_tool(MemorySpacesTool::NAME),
             get_memory: has_resource(protocol_resource::MEMORY),
             lineage: has_resource(protocol_resource::MEMORY_LINEAGE),
-            edges: has_resource(protocol_resource::EDGES),
             goals: has_tool(CoreGoalTool::NAME),
             code: has_tool(CODE_SEARCH_CHUNKS) || has_tool(CODE_REGISTER_REPO),
         }
@@ -170,9 +168,6 @@ pub fn build_instructions(
                 "Walk lineage via `proxima://memory/{id}/lineage?direction=ancestors`; use it \
                  only when provenance is the question. ",
             );
-        }
-        if s.edges {
-            out.push_str("List connections at `proxima://edges?kind=origin|reference` filtered by source/target; each row is source, target, kind, created_at and carries nothing else. Redacted edge targets are normal source-owned graph behavior, not corruption. ");
         }
         out.push_str("Discover reads with `resources/list` and `resources/templates/list`. ");
         out.push_str(
@@ -362,14 +357,6 @@ fn push_edges(out: &mut String, s: Surface) {
              the interpretation Perspective, so they arrive as `reference` entries.\n",
         );
     }
-    if s.edges {
-        out.push_str(
-            "\nRead the live set at `proxima://edges{?kind,source,target,limit,cursor}`; at least \
-             one filter is required. Each row is source, target, kind and created_at — there is \
-             no edge id to dereference and no payload to fetch. Rows are source-owned; a target \
-             handle may come back `visible`, `redacted`, or `unavailable` independently.\n",
-        );
-    }
     out.push('\n');
 }
 
@@ -424,9 +411,6 @@ fn push_reading(out: &mut String, s: Surface) {
              lineage only when you specifically need it.\n",
         );
     }
-    if s.edges {
-        out.push_str("4. `proxima://edges?kind=…&source=…` — list connections directly when you know an endpoint and want its neighbours, not its lineage.\n");
-    }
     out.push_str(
         "\nDiscover available reads with `resources/list` and `resources/templates/list`. \
          Semantic ranking needs embeddings; if no embedding client is configured the server \
@@ -453,13 +437,9 @@ mod tests {
     }
 
     fn full_resource_set() -> BTreeSet<&'static str> {
-        [
-            protocol_resource::MEMORY,
-            protocol_resource::MEMORY_LINEAGE,
-            protocol_resource::EDGES,
-        ]
-        .into_iter()
-        .collect()
+        [protocol_resource::MEMORY, protocol_resource::MEMORY_LINEAGE]
+            .into_iter()
+            .collect()
     }
 
     /// A `memory`-style profile that keeps authoring + retrieval but, for the
@@ -581,7 +561,7 @@ mod tests {
     #[test]
     fn instructions_empty_when_no_memory_tools() {
         let tools = BTreeSet::new();
-        let resources: BTreeSet<&str> = [protocol_resource::EDGES].into_iter().collect();
+        let resources: BTreeSet<&str> = [protocol_resource::GRAPH].into_iter().collect();
         assert!(build_instructions(&tools, &resources).is_empty());
     }
 
@@ -598,7 +578,7 @@ mod tests {
         assert!(s.contains("## Edge kinds"));
         assert!(s.contains("## Worked example"));
         assert!(s.contains("## Reading: which surface first"));
-        assert!(s.contains("proxima://edges"));
+        assert!(!s.contains("proxima://edges"));
     }
 
     #[test]

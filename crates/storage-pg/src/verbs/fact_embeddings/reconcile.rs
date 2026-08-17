@@ -1,4 +1,5 @@
 use proxima_core::llm::{EmbeddingClient, LlmError};
+use proxima_core::verbs::schema::MemorySearchProjection;
 use proxima_core::{EmbeddableEntityRef, EmbeddingJobClaim, StorageError};
 use sqlx::PgPool;
 
@@ -8,7 +9,7 @@ use super::jobs::claim_pending_embedding_jobs_excluding;
 use super::{
     complete_embedding_job, ensure_nonnegative_limit, fail_embedding_job,
     fail_embedding_job_permanently, insert_embedding_chunks, insert_memory_embedding,
-    load_embedding_text, release_embedding_jobs,
+    load_embedding_texts, release_embedding_jobs,
 };
 
 pub use proxima_core::{
@@ -23,31 +24,20 @@ pub struct EmbeddingInlineDrainOutcome {
 
 const RECONCILE_EMBEDDINGS_SQL: &str = "
 WITH scoped AS MATERIALIZED (
-     SELECT m.kind AS entity_kind,
-            m.memory_id,
-            m.owner_kind,
+     SELECT m.t AS memory_id,
             m.owner_id,
-            m.created_at,
-            h.embedding_version AS head_version
-       FROM proxima_core.memories m
-       LEFT JOIN proxima_core.embedding_heads h
-         ON h.entity_kind = m.kind
-        AND h.entity_id = m.memory_id
-        AND h.model_id = $1
-WHERE NULLIF(btrim(m.text), '') IS NOT NULL
-        AND m.tombstoned_at IS NULL
-        AND m.kind IN ('Fact', 'Abstraction', 'Perspective')
-        AND ($3::text <> 'since' OR m.created_at >= $4)
-        -- Declined a vector rather than lacking one; see
-        -- FactPayload::EMBEDDABLE. This is the call that heals a missing
-        -- job, which is exactly the state such a schema must stay in, so
-        -- the exclusion belongs here as much as on the write path.
-        -- <> ALL of an empty array is TRUE, so an empty list is a no-op.
-        AND m.schema_id <> ALL($5::text[])
+            h2.embedding_version AS head_version
+       FROM proxima_core.memory_head mh
+       JOIN proxima_core.memory m ON m.handle = mh.handle AND m.t = mh.t
+       LEFT JOIN proxima_core.embedding_heads h2
+         ON h2.entity_id = m.t
+        AND h2.model_id = $1
+      WHERE ($3::text <> 'since'
+             OR COALESCE(uuid_extract_timestamp(m.t), TIMESTAMPTZ '1970-01-01') >= $4)
+        AND mh.schema_id <> ALL($5::text[])
  ),
  eligible AS MATERIALIZED (
-     SELECT s.*,
-            COALESCE(s.head_version + 1, 1) AS desired_embedding_version
+     SELECT s.*
        FROM scoped s
       WHERE (
             CASE WHEN $3::text = 'missing_only'
@@ -58,40 +48,26 @@ WHERE NULLIF(btrim(m.text), '') IS NOT NULL
         AND NOT EXISTS (
             SELECT 1
               FROM proxima_core.embedding_jobs j
-             WHERE j.owner_kind = s.owner_kind
-               AND j.owner_id = s.owner_id
-               AND j.entity_kind = s.entity_kind
+             WHERE j.owner_id = s.owner_id
                AND j.entity_id = s.memory_id
                AND j.model_id = $1
-               AND j.embedding_version = COALESCE(s.head_version + 1, 1)
                AND j.status IN ('pending', 'processing')
         )
  ),
  limited AS MATERIALIZED (
      SELECT *
        FROM eligible
-      ORDER BY created_at ASC, memory_id ASC
+      ORDER BY memory_id ASC
       LIMIT $2
  ),
  inserted AS (
      INSERT INTO proxima_core.embedding_jobs
-         (owner_kind, owner_id,
-          entity_kind, entity_id, model_id, embedding_version)
-     SELECT owner_kind, owner_id,
-            entity_kind, memory_id, $1, desired_embedding_version
+         (entity_id, model_id, owner_id)
+     SELECT memory_id, $1, owner_id
        FROM limited
-     ON CONFLICT (owner_kind, owner_id,
-                  entity_kind, entity_id, model_id, embedding_version)
-     DO UPDATE SET status = 'pending',
-                   attempts = 0,
-                   last_error = NULL,
-                   next_attempt_at = now(),
-                   updated_at = now()
+     ON CONFLICT (owner_id, entity_id, model_id)
+     DO UPDATE SET status = 'pending'
          WHERE embedding_jobs.status = 'failed'
-           -- Permanently rejected inputs (PERMANENT_EMBED_FAILURE_MARKER)
-           -- stay terminal: requeueing them would only re-poison the queue.
-           AND (embedding_jobs.last_error IS NULL
-                OR embedding_jobs.last_error NOT LIKE 'permanent: %')
      RETURNING 1
  )
  SELECT
@@ -166,11 +142,12 @@ pub async fn drain_embedding_jobs_inline(
     pool: &PgPool,
     client: &dyn EmbeddingClient,
     limit: i64,
+    projections: &[MemorySearchProjection],
 ) -> Result<EmbeddingInlineDrainOutcome, StorageError> {
     let limit = ensure_nonnegative_limit(limit)?;
     let claims =
         claim_pending_embedding_jobs_excluding(pool, client.model_id(), limit, &[]).await?;
-    drain_claimed_jobs(pool, client, claims).await
+    drain_claimed_jobs(pool, client, claims, projections).await
 }
 
 /// Process one claimed batch: each entity's first claim embeds, and a
@@ -183,17 +160,23 @@ async fn drain_claimed_jobs(
     pool: &PgPool,
     client: &dyn EmbeddingClient,
     claims: Vec<EmbeddingJobClaim>,
+    projections: &[MemorySearchProjection],
 ) -> Result<EmbeddingInlineDrainOutcome, StorageError> {
+    let items: Vec<_> = claims
+        .iter()
+        .map(|claim| (claim.owner, claim.entity_kind, claim.entity_id))
+        .collect();
+    let texts = load_embedding_texts(pool, &items, &[], projections).await?;
     let mut outcome = EmbeddingInlineDrainOutcome::default();
     let mut processed_entity_ids = Vec::new();
     let mut duplicates = Vec::new();
-    for claim in claims {
+    for (claim, text) in claims.into_iter().zip(texts) {
         if processed_entity_ids.contains(&claim.entity_id) {
             duplicates.push(claim);
             continue;
         }
         processed_entity_ids.push(claim.entity_id);
-        outcome = drain_one_claim(pool, client, &claim, outcome).await?;
+        outcome = drain_one_claim(pool, client, &claim, text.as_deref(), outcome).await?;
     }
     if !duplicates.is_empty() {
         release_embedding_jobs(
@@ -213,9 +196,10 @@ async fn drain_one_claim(
     pool: &PgPool,
     client: &dyn EmbeddingClient,
     claim: &EmbeddingJobClaim,
+    text: Option<&str>,
     mut outcome: EmbeddingInlineDrainOutcome,
 ) -> Result<EmbeddingInlineDrainOutcome, StorageError> {
-    match embed_claim(pool, client, claim).await {
+    match embed_claim(pool, client, claim, text).await {
         Ok(true) => {
             complete_embedding_job(pool, claim).await?;
             outcome.embedded += 1;
@@ -290,18 +274,15 @@ async fn embed_claim(
     pool: &PgPool,
     client: &dyn EmbeddingClient,
     claim: &EmbeddingJobClaim,
+    text: Option<&str>,
 ) -> Result<bool, EmbedClaimFailure> {
-    // Empty exclusion list: this drain only ever sees rows that a job was
-    // enqueued for, and every enqueue site already filters the schemas that
-    // declined a vector. Storage does not hold the flavor registry, so the
-    // list is not reachable here — the gate for a caller that bypasses the
-    // queue lives on `EmbeddingTextPort::load_embedding_text`.
-    let Some(text) =
-        load_embedding_text(pool, &claim.owner, claim.entity_kind, claim.entity_id, &[]).await?
-    else {
+    // Empty exclusion list at the batch load: this drain only ever sees
+    // rows that a job was enqueued for. The queue-bypass gate lives on
+    // `EmbeddingTextPort::load_embedding_text`.
+    let Some(text) = text else {
         return Ok(false);
     };
-    let embedding = match client.embed(&text).await {
+    let embedding = match client.embed(text).await {
         Ok(embedding) => embedding,
         // An over-limit input is not a dead memory. The engine's drain
         // rescues it as a chunked embedding version; this drain must do the
@@ -309,7 +290,7 @@ async fn embed_claim(
         // the memory is recoverable — and a job failed here is marked
         // terminal, which `reconcile_embeddings` then refuses to requeue.
         Err(LlmError::EmbedPermanent(message)) => {
-            return match proxima_core::llm::embed_in_chunks(client, &text).await {
+            return match proxima_core::llm::embed_in_chunks(client, text).await {
                 Ok(Some(vectors)) => {
                     tracing::warn!(
                         entity_id = ?claim.entity_id,

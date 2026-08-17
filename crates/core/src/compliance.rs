@@ -95,11 +95,8 @@ pub struct ComplianceExportCounts {
     pub memories: usize,
     pub goals: usize,
     pub edges: usize,
-    pub fact_entities: usize,
     pub receipts: usize,
     pub source_batches: usize,
-    pub citations: usize,
-    pub cited_objects: usize,
     pub source_cursors: usize,
     #[serde(default)]
     pub delegated_authority_grants: usize,
@@ -127,11 +124,8 @@ pub struct ComplianceExportBundle {
     pub memories: Vec<serde_json::Value>,
     pub goals: Vec<serde_json::Value>,
     pub edges: Vec<serde_json::Value>,
-    pub fact_entities: Vec<serde_json::Value>,
     pub receipts: Vec<serde_json::Value>,
     pub source_batches: Vec<serde_json::Value>,
-    pub citations: Vec<serde_json::Value>,
-    pub cited_objects: Vec<serde_json::Value>,
     pub source_cursors: Vec<serde_json::Value>,
     #[serde(default)]
     pub delegated_authority_grants: Vec<serde_json::Value>,
@@ -157,11 +151,8 @@ pub struct ComplianceEraseCounts {
     pub memories: u64,
     pub goals: u64,
     pub edges: u64,
-    pub fact_entities: u64,
     pub receipts: u64,
     pub source_batches: u64,
-    pub citations: u64,
-    pub cited_objects: u64,
     pub source_cursors: u64,
     pub embeddings: u64,
     pub embedding_jobs: u64,
@@ -379,6 +370,19 @@ impl EraseAuthorization {
             _private: private::Seal,
         }
     }
+
+    /// Test-only constructor. Engine remains the production mint.
+    #[cfg(any(test, feature = "test-fixtures"))]
+    #[must_use]
+    pub fn new_for_tests(target: ComplianceEraseTarget) -> Self {
+        Self::new(ComplianceAuditContext::new(
+            uuid::Uuid::now_v7(),
+            target,
+            None,
+            AuthPath::HostBearer,
+            time::OffsetDateTime::now_utc(),
+        ))
+    }
 }
 
 impl ExportAuthorization {
@@ -394,5 +398,18 @@ impl ExportAuthorization {
             audit,
             _private: private::Seal,
         }
+    }
+
+    /// Test-only constructor. Engine remains the production mint.
+    #[cfg(any(test, feature = "test-fixtures"))]
+    #[must_use]
+    pub fn new_for_tests(target: ComplianceExportTarget) -> Self {
+        Self::new(ComplianceExportAuditContext::new(
+            uuid::Uuid::now_v7(),
+            target,
+            None,
+            AuthPath::HostBearer,
+            time::OffsetDateTime::now_utc(),
+        ))
     }
 }

@@ -154,6 +154,9 @@ pub struct MemorySearchProjection {
     /// instead of tokenising the projected text on every candidate;
     /// absent, it falls back to computing the same vector inline.
     pub tsv_column: Option<String>,
+    /// Column holding the row's pre-computed embed string. Drain reads
+    /// this instead of concatenating `fields`.
+    pub embed_text_column: Option<String>,
     /// Column holding the row's lexical language, when the sidecar
     /// table carries one. Present, the search builder ranks the
     /// candidate with that language's tsquery; absent, it ranks with

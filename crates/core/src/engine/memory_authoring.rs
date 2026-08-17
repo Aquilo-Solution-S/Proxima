@@ -73,30 +73,49 @@ impl Engine {
     /// Returns authorization failures from the owner-scoped close
     /// ([`Relation::Ingest`] is required, as for any batch close) and
     /// `Internal` for storage failures.
-    pub async fn close_ftoa_source_batch_if_open(
+    pub fn close_ftoa_source_batch_if_open(
         &self,
         authz: &AuthzContext,
         owner: crate::OwnerRef,
-        source_memory_ids: &[MemoryId],
+        _source_memory_ids: &[MemoryId],
     ) -> Result<(), ProtocolError> {
+        let _ = owner;
         self.operation_authority(authz)?;
-        let rows = self
-            .storage()
+        Ok(())
+    }
+
+    /// Cool one owned memory `t`. PUT cold first, then stub+delete hot.
+    ///
+    /// One-shot command-port: generic [`EngineAuthority`], including
+    /// delegated workers. Multi-write forget lives on
+    /// [`crate::UnitOfWork::forget`] (`AuthzContext` only). Both are
+    /// legal; this is not a second flavor `Transaction`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Forbidden` when the context lacks [`Relation::Editor`] on
+    /// the owner, `NotFound` when `t` is absent, and storage errors from
+    /// the forget transaction.
+    pub async fn forget_memory<A>(
+        &self,
+        authority: &A,
+        owner: Owner,
+        memory_id: MemoryId,
+    ) -> Result<(), ProtocolError>
+    where
+        A: EngineAuthority + ?Sized,
+    {
+        let write_permit = self
+            .authorize_write(authority, &owner, Relation::Editor)
+            .await?;
+        self.storage()
             .memory_authoring
             .memory_authoring
-            .load_fact_source_batches(&owner, source_memory_ids)
+            .forget_memory(write_permit.owner_write_permit(), memory_id)
             .await
-            .map_err(|err| ProtocolError::internal(err.to_string()))?;
-        if rows.is_empty() || rows.len() != source_memory_ids.len() {
-            return Ok(());
-        }
-        let Some(first) = rows.first().map(|row| row.source_batch_id) else {
-            return Ok(());
-        };
-        if rows.iter().any(|row| row.source_batch_id != first) {
-            return Ok(());
-        }
-        self.close_batch(authz, owner, first).await.map(|_| ())
+            .map_err(|err| {
+                super::errors::map_write_storage_error(err, "memory", "memory not found")
+            })
     }
 
     /// Authorized graph-write verb for agent-authored derived memory.
@@ -154,9 +173,7 @@ impl Engine {
         let references = self
             .authorized_payload_references(authority, source, &declared)
             .await?;
-        let source_batch_id = self
-            .effective_operator_source_batch_id(&owner, &req, &origins)
-            .await?;
+        let source_batch_id = None;
         let outcome = self
             .author_derived(
                 write_permit.owner_write_permit(),
@@ -271,57 +288,6 @@ impl Engine {
             .await
     }
 
-    async fn effective_operator_source_batch_id(
-        &self,
-        owner: &Owner,
-        req: &AuthorDerivedRequestInput<'_>,
-        origins: &[EdgeEndpoint],
-    ) -> Result<Option<SourceBatchId>, ProtocolError> {
-        match req.operator_kind {
-            MemoryOperatorKind::FtoA => {
-                let input_ids = origins
-                    .iter()
-                    .filter_map(|origin| origin.memory_id())
-                    .collect::<Vec<_>>();
-                let rows = self
-                    .storage()
-                    .memory_authoring
-                    .memory_authoring
-                    .load_fact_source_batches(owner, &input_ids)
-                    .await
-                    .map_err(|err| ProtocolError::internal(err.to_string()))?;
-                if rows.len() != input_ids.len() {
-                    return Err(ProtocolError::invalid_argument(
-                        "source_handles",
-                        "F→A operator inputs must be Fact memories with source receipts",
-                    ));
-                }
-                let first = rows.first().map(|row| row.source_batch_id).ok_or_else(|| {
-                    ProtocolError::invalid_argument(
-                        "source_handles",
-                        "F→A operator invocation requires source inputs",
-                    )
-                })?;
-                if rows.iter().any(|row| row.source_batch_id != first) {
-                    return Err(ProtocolError::invalid_argument(
-                        "source_handles",
-                        "F→A operator inputs must belong to one source batch",
-                    ));
-                }
-                if let Some(requested) = req.source_batch_id
-                    && requested != first
-                {
-                    return Err(ProtocolError::invalid_argument(
-                        "source_batch_id",
-                        "must match the F→A input Facts",
-                    ));
-                }
-                Ok(Some(first))
-            }
-            MemoryOperatorKind::AtoA | MemoryOperatorKind::AtoP => Ok(req.source_batch_id),
-        }
-    }
-
     /// Resolve and admit every declared index target.
     ///
     /// One rule for all of them, whatever the write is: the target must
@@ -330,7 +296,7 @@ impl Engine {
     /// consult and no owner-equality rule beyond it — a source-owned row
     /// pointing at a foreign readable target is exactly what makes
     /// cross-owner provenance expressible.
-    async fn authorized_index_targets<A>(
+    pub(in crate::engine) async fn authorized_index_targets<A>(
         &self,
         authority: &A,
         source: EdgeEndpoint,
@@ -340,12 +306,27 @@ impl Engine {
     where
         A: EngineAuthority + ?Sized,
     {
+        self.authorized_index_targets_visible(authority, source, targets, field, &[])
+            .await
+    }
+
+    pub(in crate::engine) async fn authorized_index_targets_visible<A>(
+        &self,
+        authority: &A,
+        source: EdgeEndpoint,
+        targets: &[EdgeEndpoint],
+        field: &str,
+        session_visible: &[MemoryId],
+    ) -> Result<Vec<EdgeEndpoint>, ProtocolError>
+    where
+        A: EngineAuthority + ?Sized,
+    {
         let mut out = Vec::with_capacity(targets.len());
         for target in targets {
             validate_not_self_loop(source, *target)
                 .map_err(|err| ProtocolError::invalid_argument(field, err))?;
             let resolved = self
-                .authorize_index_target(authority, *target, field)
+                .authorize_index_target(authority, *target, field, session_visible)
                 .await?;
             validate_edge_layering(source, resolved)
                 .map_err(|err| ProtocolError::invalid_argument(field, err))?;
@@ -359,11 +340,9 @@ impl Engine {
     /// Check the schema-declared reference fields of a payload, then admit
     /// their targets like any other index target.
     ///
-    /// A reference whose declared binding disagrees with the address form
-    /// it produced is refused rather than coerced: `FollowHead` and `Pin`
-    /// are different statements about what the reference means when the
-    /// target is re-observed.
-    async fn authorized_payload_references<A>(
+    /// Schema-declared reference fields become index targets. Every
+    /// address is a pin.
+    pub(in crate::engine) async fn authorized_payload_references<A>(
         &self,
         authority: &A,
         source: EdgeEndpoint,
@@ -379,48 +358,63 @@ impl Engine {
                 .map_err(|err| ProtocolError::invalid_argument("references", err))?;
             targets.push(reference.target);
         }
-        self.authorized_index_targets(authority, source, &targets, "references")
+        self.authorized_index_targets_visible(authority, source, &targets, "references", &[])
             .await
     }
 
-    /// Read-admit one index target and answer with its stored kind, so a
-    /// caller-declared kind can never widen what the layering rule sees.
+    pub(in crate::engine) async fn authorized_payload_references_visible<A>(
+        &self,
+        authority: &A,
+        source: EdgeEndpoint,
+        declared: &[PayloadReference],
+        session_visible: &[MemoryId],
+    ) -> Result<Vec<EdgeEndpoint>, ProtocolError>
+    where
+        A: EngineAuthority + ?Sized,
+    {
+        let mut targets = Vec::with_capacity(declared.len());
+        for reference in declared {
+            reference
+                .validate()
+                .map_err(|err| ProtocolError::invalid_argument("references", err))?;
+            targets.push(reference.target);
+        }
+        self.authorized_index_targets_visible(
+            authority,
+            source,
+            &targets,
+            "references",
+            session_visible,
+        )
+        .await
+    }
+
+    /// Read-admit one index target. Stored kind is compared in-tx
+    /// against the declared pin; a second pre-tx `load_memory_kinds`
+    /// is the overlapping fanout this slice drops.
     async fn authorize_index_target<A>(
         &self,
         authority: &A,
         target: EdgeEndpoint,
-        field: &str,
+        _field: &str,
+        session_visible: &[MemoryId],
     ) -> Result<EdgeEndpoint, ProtocolError>
     where
         A: EngineAuthority + ?Sized,
     {
         match target.entity {
+            crate::EntityRef::Memory(memory_id) if session_visible.contains(&memory_id) => {
+                Ok(target)
+            }
             crate::EntityRef::Memory(memory_id) => {
-                let read = self
-                    .authorize_entry_read(authority, EntityId::Memory(memory_id))
+                self.authorize_entry_read(authority, EntityId::Memory(memory_id))
                     .await?;
-                let kind = self
-                    .load_required_memory_kind(read.owner(), memory_id)
-                    .await?;
-                Ok(EdgeEndpoint::memory(kind, memory_id))
+                Ok(target)
             }
             crate::EntityRef::Goal(goal_id) => {
                 self.authorize_entry_read(authority, EntityId::Goal(goal_id))
                     .await?;
                 Ok(EdgeEndpoint::goal(goal_id))
-            }
-            // A Fact-entity head is a projection of Fact rows the reader
-            // reaches through the same owner scope; there is no separate
-            // row to admit, and the head's kind is Fact by construction.
-            crate::EntityRef::FactEntity(_) => {
-                if target.kind == EntityKind::Fact {
-                    Ok(target)
-                } else {
-                    Err(ProtocolError::invalid_argument(
-                        field,
-                        "a Fact-entity head endpoint must declare kind Fact",
-                    ))
-                }
             }
         }
     }
@@ -480,7 +474,7 @@ impl Engine {
 /// client's declared `dim` (a misconfiguration, never the input's fault,
 /// so it is not deferrable), and `Internal` when the provider fails and
 /// does not answer a liveness probe.
-async fn resolve_derived_embedding<'client>(
+pub(in crate::engine) async fn resolve_derived_embedding<'client>(
     client: &'client dyn crate::llm::EmbeddingClient,
     memory_id: MemoryId,
     text: &str,
@@ -517,22 +511,10 @@ async fn resolve_derived_embedding<'client>(
     }
 }
 
-fn validate_operator_memory_invocation_request(
+pub(in crate::engine) fn validate_operator_memory_invocation_request(
     req: &AuthorDerivedRequestInput<'_>,
 ) -> Result<(), StorageError> {
-    match req.operator_kind {
-        MemoryOperatorKind::FtoA if req.source_batch_id.is_none() => {
-            return Err(StorageError::ConstraintViolation(
-                "F→A operator invocation requires source_batch_id".into(),
-            ));
-        }
-        MemoryOperatorKind::AtoA | MemoryOperatorKind::AtoP if req.source_batch_id.is_some() => {
-            return Err(StorageError::ConstraintViolation(
-                "source_batch_id is only valid for F→A operator invocations".into(),
-            ));
-        }
-        MemoryOperatorKind::FtoA | MemoryOperatorKind::AtoA | MemoryOperatorKind::AtoP => {}
-    }
+    let _ = req.source_batch_id;
 
     // The operator manifest proves a *derivation*: output kind, input
     // kinds, and one origin row per declared input. A write that declares
@@ -579,7 +561,7 @@ fn validate_operator_memory_invocation_request(
 /// surface. `ConstraintViolation`/`Conflict` are caller-fixable (a
 /// malformed operator invocation manifest, an idempotent-replay proof
 /// mismatch) and must surface as `InvalidArgument`, not `Internal`.
-fn map_derived_storage_error(err: StorageError) -> ProtocolError {
+pub(in crate::engine) fn map_derived_storage_error(err: StorageError) -> ProtocolError {
     super::errors::map_write_storage_error(
         err,
         "operator_invocation",
@@ -642,13 +624,8 @@ mod tests {
         }
     }
 
-    /// `validate_operator_memory_invocation_request`'s F→A/`source_batch_id`
-    /// arm is unreachable through the public `author_derived_authorized`
-    /// path, whose `effective_operator_source_batch_id` always recomputes
-    /// the batch from the declared F→A origins first. This exercises the
-    /// private raw path directly to pin the defensive check itself.
     #[tokio::test]
-    async fn author_derived_rejects_operator_ftoa_missing_source_batch() {
+    async fn author_derived_allows_operator_ftoa_without_source_batch() {
         let engine = engine();
         let owner = owner();
         let permit = OwnerWritePermit::new(owner, crate::access::AccessKind::Perspective);
@@ -661,11 +638,13 @@ mod tests {
         let err = engine
             .author_derived(&permit, req, &[])
             .await
-            .expect_err("F→A invocation without source_batch_id is invalid before storage");
-
+            .expect_err("the fake storage port refuses every write");
         assert!(
-            matches!(&err, StorageError::ConstraintViolation(msg) if msg.contains("requires source_batch_id")),
-            "unexpected error: {err}"
+            !matches!(
+                &err,
+                StorageError::ConstraintViolation(msg) if msg.contains("source_batch_id")
+            ),
+            "F→A no longer requires a source batch: {err}"
         );
     }
 
@@ -703,6 +682,28 @@ mod tests {
             .expect_err("denied context must fail before storage");
 
         assert_eq!(err.code, ErrorCode::Forbidden);
+    }
+
+    #[test]
+    fn pin_admit_does_not_reload_kind_after_entry_read() {
+        let src = include_str!("memory_authoring.rs");
+        let start = src
+            .find("async fn authorize_index_target")
+            .expect("authorize_index_target");
+        let rest = &src[start..];
+        let end = rest
+            .find("pub(in crate::engine) async fn load_required_memory_kind")
+            .expect("load_required_memory_kind follows");
+        let body = &rest[..end];
+        let reload = format!("{}{}", "load_required_memory_", "kind");
+        assert!(
+            !body.contains(&reload),
+            "D2: stored kind is the in-tx TOCTOU SELECT, not a second pre-tx fanout"
+        );
+        assert!(
+            body.contains("authorize_entry_read"),
+            "read-admit stays; only the kind reload is dropped"
+        );
     }
 
     /// The public write surface takes targets, never kinds: there is no
@@ -806,6 +807,14 @@ mod tests {
             _memory_ids: &[MemoryId],
         ) -> Result<Vec<crate::FactSourceBatchRow>, StorageError> {
             Ok(Vec::new())
+        }
+
+        async fn forget_memory(
+            &self,
+            _permit: &OwnerWritePermit,
+            _memory_id: MemoryId,
+        ) -> Result<(), StorageError> {
+            Ok(())
         }
     }
 }

@@ -8,7 +8,7 @@ use crate::edge::EdgeEndpoint;
 use crate::error::ProtocolError;
 use crate::llm::{EMBEDDING_BATCH_SIZE, EmbeddingClient, LlmError};
 use crate::storage::{EmbeddingJobClaim, StorageError};
-use crate::verbs::close_batch::CloseBatchOutcome;
+
 use crate::verbs::fact_ingest::{
     AuthorizedCitationAttachment, AuthorizedFactWithCitation, AuthorizedFactWithCitationRef,
     AuthorizedFactWrite, AuthorizedInlineCitationMapping, AuthorizedInlineCitedObject,
@@ -17,9 +17,10 @@ use crate::verbs::fact_ingest::{
 };
 use crate::verbs::persist_mcp_call::{McpCallLogInput, McpCallLogOutcome};
 use crate::verbs::schema::{PayloadKind, ProtocolPayload, SchemaInfo};
-use crate::{
-    EmbeddableEntityRef, EntityKind, MemoryId, Owner, OwnerRef, SidecarPayload, SourceBatchId,
-};
+use crate::{EmbeddableEntityRef, EntityKind, MemoryId, Owner, OwnerRef, SidecarPayload};
+
+#[cfg(test)]
+use crate::SourceBatchId;
 
 /// Liveness probe after a provider refuses a batch.
 ///
@@ -114,6 +115,23 @@ impl Engine {
     where
         A: EngineAuthority + ?Sized,
     {
+        self.authorize_fact_ingest_visible(authority, relation, draft, sidecars, &[])
+            .await
+    }
+
+    /// [`Self::authorize_fact_ingest`] treating `session_visible` memory
+    /// ids as already read-checked (written earlier in the same [`UnitOfWork`]).
+    pub(in crate::engine) async fn authorize_fact_ingest_visible<A>(
+        &self,
+        authority: &A,
+        relation: Relation,
+        draft: FactWriteCommand,
+        sidecars: &[SidecarPayload],
+        session_visible: &[MemoryId],
+    ) -> Result<AuthorizedFactWrite, ProtocolError>
+    where
+        A: EngineAuthority + ?Sized,
+    {
         let owner = self.single_write_owner_for(authority, relation)?;
         let permit = self.authorize_write(authority, &owner, relation).await?;
         let fact_info = self.fact_schema_info(&draft.schema_id, draft.schema_version)?;
@@ -130,7 +148,7 @@ impl Engine {
             )?;
         }
         let links = self
-            .authorize_fact_node_links(authority, &draft, sidecars)
+            .authorize_fact_node_links(authority, &draft, sidecars, session_visible)
             .await?;
         Ok(AuthorizedFactWrite::new(
             permit.into(),
@@ -176,7 +194,7 @@ impl Engine {
         let fact_natural_key_columns = fact_info.natural_key_columns.clone();
         let (cited_object, mapping) = self.authorize_inline_citation(cited_object, mapping)?;
         let links = self
-            .authorize_fact_node_links(authority, &draft, sidecars)
+            .authorize_fact_node_links(authority, &draft, sidecars, &[])
             .await?;
 
         Ok(AuthorizedFactWithCitation::new(
@@ -223,7 +241,7 @@ impl Engine {
         let fact_natural_key_columns = fact_info.natural_key_columns.clone();
         let (mapping, expected_object_schema) = self.authorize_citation_mapping_draft(mapping)?;
         let links = self
-            .authorize_fact_node_links(authority, &draft, sidecars)
+            .authorize_fact_node_links(authority, &draft, sidecars, &[])
             .await?;
 
         Ok(AuthorizedFactWithCitationRef::new(
@@ -252,6 +270,7 @@ impl Engine {
         authority: &A,
         draft: &FactWriteCommand,
         sidecars: &[SidecarPayload],
+        session_visible: &[MemoryId],
     ) -> Result<AuthorizedNodeLinks, ProtocolError>
     where
         A: EngineAuthority + ?Sized,
@@ -270,10 +289,15 @@ impl Engine {
             .map(|reference| reference.target)
             .collect();
         let origins = self
-            .authorize_fact_link_targets(authority, &draft.derived_from, "derived_from")
+            .authorize_fact_link_targets(
+                authority,
+                &draft.derived_from,
+                "derived_from",
+                session_visible,
+            )
             .await?;
         let references = self
-            .authorize_fact_link_targets(authority, &references, "references")
+            .authorize_fact_link_targets(authority, &references, "references", session_visible)
             .await?;
         Ok(AuthorizedNodeLinks::new(origins, references))
     }
@@ -283,6 +307,7 @@ impl Engine {
         authority: &A,
         targets: &[EdgeEndpoint],
         field: &str,
+        session_visible: &[MemoryId],
     ) -> Result<Vec<EdgeEndpoint>, ProtocolError>
     where
         A: EngineAuthority + ?Sized,
@@ -302,6 +327,7 @@ impl Engine {
                 }
             }
             match target.entity {
+                crate::EntityRef::Memory(memory_id) if session_visible.contains(&memory_id) => {}
                 crate::EntityRef::Memory(memory_id) => {
                     self.authorize_entry_read(authority, crate::EntityId::Memory(memory_id))
                         .await?;
@@ -310,10 +336,6 @@ impl Engine {
                     self.authorize_entry_read(authority, crate::EntityId::Goal(goal_id))
                         .await?;
                 }
-                // A Fact-entity head is reached through the same owner
-                // scope as its observations; there is no separate row to
-                // admit.
-                crate::EntityRef::FactEntity(_) => {}
             }
             if !out.contains(target) {
                 out.push(*target);
@@ -322,7 +344,7 @@ impl Engine {
         Ok(out)
     }
 
-    fn single_write_owner_for<A>(
+    pub(in crate::engine) fn single_write_owner_for<A>(
         &self,
         authority: &A,
         relation: Relation,
@@ -359,7 +381,11 @@ impl Engine {
     ///
     /// Storage would be the lower boundary, and cannot host this: the
     /// answer lives in the flavor registry, which storage does not hold.
-    fn vector_model_for<'a>(&self, schema_id: &str, requested: Option<&'a str>) -> Option<&'a str> {
+    pub(in crate::engine) fn vector_model_for<'a>(
+        &self,
+        schema_id: &str,
+        requested: Option<&'a str>,
+    ) -> Option<&'a str> {
         requested.filter(|_| self.registry().schema_is_embeddable(schema_id))
     }
 
@@ -519,7 +545,7 @@ impl Engine {
         cited_object: InlineCitedObjectDraft,
         mapping: InlineCitationMappingDraft,
     ) -> Result<(AuthorizedInlineCitedObject, AuthorizedInlineCitationMapping), ProtocolError> {
-        let (cited_object_info, cited_object_payload) = self.ingest_protocol_payload(
+        let (_cited_object_info, cited_object_payload) = self.ingest_protocol_payload(
             &cited_object.schema_id,
             cited_object.schema_version,
             PayloadKind::CitedObject,
@@ -547,13 +573,6 @@ impl Engine {
             )));
         }
 
-        if cited_object_info.sidecar_table.is_none() {
-            return Err(ProtocolError::internal(format!(
-                "cited object schema {} v{} has no sidecar table",
-                cited_object.schema_id.as_str(),
-                cited_object.schema_version.into_inner(),
-            )));
-        }
         let content_hash = cited_object_payload.content_hash.ok_or_else(|| {
             ProtocolError::internal(format!(
                 "cited object schema {} v{} did not produce a content hash",
@@ -827,23 +846,21 @@ impl Engine {
 
             // Jobs whose memory no longer yields embeddable text are
             // complete as-is; only texted jobs go to the provider.
+            // Also excluded here, not just at enqueue: a job queued
+            // before its schema declared `EMBEDDABLE = false` completes
+            // as a no-op instead of embedding what now declines a vector.
+            let items: Vec<(Owner, EntityKind, MemoryId)> = claims
+                .iter()
+                .map(|claim| (claim.owner, claim.entity_kind, claim.entity_id))
+                .collect();
+            let texts = self
+                .storage
+                .ingest
+                .embedding_text
+                .load_embedding_texts(&items, self.registry().non_embeddable_schema_ids())
+                .await?;
             let mut batch: Vec<(EmbeddingJobClaim, String)> = Vec::with_capacity(claims.len());
-            for claim in claims {
-                let text = self
-                    .storage
-                    .ingest
-                    .embedding_text
-                    .load_embedding_text(
-                        &claim.owner,
-                        claim.entity_kind,
-                        claim.entity_id,
-                        // Also excluded here, not just at enqueue: a job
-                        // queued before its schema declared
-                        // `EMBEDDABLE = false` completes as a no-op
-                        // instead of embedding what now declines a vector.
-                        self.registry().non_embeddable_schema_ids(),
-                    )
-                    .await?;
+            for (claim, text) in claims.into_iter().zip(texts) {
                 if let Some(text) = text {
                     batch.push((claim, text));
                 } else {
@@ -1188,46 +1205,6 @@ impl Engine {
                     "mcp call referenced row not found",
                 )
             })
-    }
-
-    /// docs/01 §"The contract" — Owner-scoped, idempotent batch close.
-    /// Sources call this after a successful poll once they consider the
-    /// batch complete. F→A consolidation (M5+) gates on
-    /// `closed_at IS NOT NULL`.
-    ///
-    /// # Errors
-    ///
-    /// Returns `NotFound` when the batch doesn't exist or belongs to a
-    /// different owner; `Forbidden` when the context cannot access `owner` or
-    /// lacks [`Relation::Ingest`] on the owner space.
-    pub async fn close_batch<A>(
-        &self,
-        authority: &A,
-        requested_owner: OwnerRef,
-        source_batch_id: SourceBatchId,
-    ) -> Result<CloseBatchOutcome, ProtocolError>
-    where
-        A: EngineAuthority + ?Sized,
-    {
-        let requested = requested_owner;
-        let permit = self
-            .authorize_write(authority, &requested, Relation::Ingest)
-            .await?;
-        let outcome = self
-            .storage
-            .ingest
-            .source_batch
-            .close_batch(permit.owner_write_permit(), source_batch_id)
-            .await
-            .map_err(|err| {
-                super::errors::map_write_storage_error(
-                    err,
-                    "source_batch",
-                    "source batch not found",
-                )
-            })?;
-
-        Ok(outcome)
     }
 }
 

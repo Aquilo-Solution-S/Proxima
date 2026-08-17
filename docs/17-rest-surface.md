@@ -90,7 +90,6 @@ parser.
 | `GET /v1/resources/wake-candidates?fact=F:{uuid}` | `proxima://wake-candidates?fact=F:{uuid}` |
 | `GET /v1/resources/goals?state=active&limit=50` | `proxima://goals?state=active&limit=50` |
 | `GET /v1/resources/goal/G:{uuid}` | `proxima://goal/G:{uuid}` |
-| `GET /v1/resources/edges?kind=origin&source=A:{uuid}` | `proxima://edges?kind=origin&source=A:{uuid}` |
 
 `proxima://how-to` is the one exception. It is synthesized per request
 from the caller's advertised surface rather than served through the
@@ -410,9 +409,7 @@ guidance, including whether to expose `/v1` through the same gateway as
 `/.well-known/oauth-protected-resource` advertises `{public_url}` as the RFC
 9728 protected-resource identifier. Clients send that public origin as the
 RFC 8707 `resource`; `PROXIMA_OIDC_AUDIENCE` matches it. One audience covers
-both `/mcp` and an enabled `/v1`. The completed migration from
-`{public_url}/mcp` is recorded in
-[MIGRATING.md](https://github.com/Aquilo-Solution-S/Proxima/blob/main/MIGRATING.md#the-oauth-protected-resource-identifier-broadened-to-the-public-origin).
+both `/mcp` and an enabled `/v1`.
 
 ## Out of Scope
 
@@ -421,8 +418,8 @@ both `/mcp` and an enabled `/v1`. The completed migration from
 - Compliance operations. Erase, export, and pause/resume are admin
   actions, not graph calls, and are not exposed on MCP either:
   [13](13-compliance.md).
-- Streaming, subscriptions, and server-sent events. `Subscribe` is
-  retired in [14](14-protocol-surface.md); REST responses are unary.
+- Streaming, subscriptions, and server-sent events. REST responses are unary
+  ([14](14-protocol-surface.md)).
 - Runtime registration of tools, schemas, sources, or flavors.
 - gRPC and any third transport.
 

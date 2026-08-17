@@ -72,32 +72,18 @@ kernel, **the kernel wins** until renegotiated in writing. Check it with
 `cd docs/lean && lake build`; coverage of doc invariants is tracked in
 `docs/lean/COVERAGE.md`.
 
-## Pre-stable breaking refactor (v0.0.4 / v0.0.5 — released)
-
-`v0.0.4` and `v0.0.5` are tagged. Both shipped breaking Rust, storage, and
-MCP/API changes that removed obsolete ontology rather than preserve adapters.
-Keep the detailed roadmap/matrix in ignored `.local/` planning artifacts;
-tracked repo changes carry only durable, condensed rules and executable checks.
-
-Branch policy:
+## Branch policy
 
 1. `main` is PR-only (required CI checks + `enforce_admins`); no direct local pushes.
-2. Post-v0.0.5 work continues on short reviewed branches targeting `main`, one
-   slice per branch unless Heinrich explicitly stages several together.
-3. Tag a new `v*` from `main` only after all required slices merge and
+2. Work continues on short reviewed branches targeting `main`.
+3. Tag a new `v*` from `main` only after required slices merge and
    post-merge CI passes (release notes are git-cliff-generated on the tag).
 
-The v0.0.4 breaking-deletion target (now shipped) removed production
-compatibility for legacy principal/read-scope APIs,
-materialized Personality/Self authz, owner-reachability compatibility,
-core Event/EventSource identity, legacy Goal parent tables,
-public aggregate `Storage`, raw flavor `PgPool` / core-table SQL capability,
-and stale MCP/wire names. Do not weaken the Lean guardrails: server-resolved
-`OwnerRef`, source-owned index rows with target redaction,
-optional Memory/Goal sidecars and receipts, `MemoryGraphValid`,
-`OperatorInvocation` completeness for writes that declare a derivation,
-abandonment-only hard deletion, build-time flavor registries,
-set-based authorized reads, and atomic command-port writes.
+Do not weaken the Lean guardrails: server-resolved `OwnerRef`,
+source-owned pins with target redaction, optional Memory/Goal sidecars,
+`MemoryGraphValid`, `OperatorInvocation` for writes that declare a
+derivation, abandonment-only hard deletion, build-time flavor
+registries, set-based authorized reads, atomic command-port writes.
 
 ## Agent operating discipline
 
@@ -193,15 +179,12 @@ runtime checklist most likely to prevent regressions.
   in `Causa.Flavor`. A schema/engine contract may require a typed sidecar; the
   kernel never requires a global sidecar nor permits untyped JSON escape
   hatches for typed payloads.
-- **Edges:** an edge carries no information beyond its existence — endpoints,
-  direction, creation time, kind. Two closed kinds (`origin`, `reference`), the
-  kind follows the operation, and no verb writes an edge. Rows are source-owned
-  with no id and no payload; the edge set is a function of node content
-  (rebuildability is the master invariant). Target rendering is separately
-  `Visible` / `Redacted` / `Unavailable`. Kernel carriers are E1–E7 in
-  `Causa.Edges` (`EdgeValid`, `deriveEdges`, `EdgeTableRebuildable`); there is
-  no relation registry, descriptor, mask, authorship column or edge id to
-  reintroduce. See `docs/16-edges.md`.
+- **Pins (no Edge table):** `origins[]` (made-from) and `refs[]` (points-at)
+  live on the Memory row and pin target `t`. Two closed kinds; the kind follows
+  the operation; no verb writes a pin. Rebuildability is identity
+  (`derivePins`). Target render is hot / Cold / Unavailable. There is no
+  `Edge` / `FactEntity` / relation registry / follow-at-read. See Lean
+  `Causa.Edges` and `.local/timeseries-core/03-signoff-uml.md`.
 - **Provenance/operators:** derived rows are valid only in an admitted table
   graph (`MemoryGraphValid`). Operator outputs carry an `OperatorInvocation`
   manifest/witness proving declared-input provenance/evidence completeness — a
@@ -215,10 +198,10 @@ runtime checklist most likely to prevent regressions.
   the index entries are derived. Memory supersession and authorship are row
   columns too (`Memory.supersedes`, `Memory.authoring_perspective`). Self is a
   query, never a row. Wake is armed Goal behavior, not a separate kernel entity.
-- **Citations/compliance/embeddings:** citations are Fact ∪ Abstraction (the
-  kernel's `Citable` subtype; a computed score is an Abstraction citing its
-  computation record, and a Perspective never cites); hard deletion is
-  abandonment-only; embeddings are independent rows and never graph authors.
+- **Citations/compliance/embeddings:** citations are `blob_id` 0..1 on
+  Fact ∪ Abstraction (a Perspective never cites). Hard deletion is
+  `wipeable := abandoned ∨ (cold ∧ unreferenced ∧ policy)`; World never
+  abandoned. Embeddings are independent rows and never graph authors.
 - **Flavor/API/storage:** flavor composition is build-time; no runtime registry
   or plugin tier. Flavor code must use authorized helpers/private permits, not
   raw core-table SQL. Writes are atomic command-port operations or explicit

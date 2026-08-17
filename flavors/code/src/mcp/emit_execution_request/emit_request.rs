@@ -2,8 +2,8 @@ use proxima_core::{EdgeEndpoint, EntityKind, FactPayload, Tool, ToolCtx, ToolErr
 
 use crate::payloads::{AcceptanceCriteriaV1, ExecutionRequestV1};
 
-use super::super::sql::{map_storage, resolve_repo_identifier};
-use super::super::{CodeToolCtxExt, code_store};
+use super::super::sql::resolve_repo_identifier;
+use super::super::{CodeToolCtxExt, engine};
 use super::context_validation::{
     validate_active_goal_context, validate_evidence_in_owner, validate_goal_activated_fact,
     validate_repo,
@@ -48,18 +48,14 @@ impl Tool for CodeEmitExecutionRequestTool {
             let goal_activated_memory_id = ctx.resolve_fact_memory(&args.goal_activated_memory)?;
             let evidence = resolve_evidence(&ctx, &args.evidence)?;
 
-            let pool = code_store(&ctx)?;
-            let mut tx = pool.pool().begin().await.map_err(map_storage)?;
-            let goal_id =
-                validate_goal_activated_fact(&mut tx, &ctx, goal_activated_memory_id).await?;
-            validate_active_goal_context(&mut tx, &ctx, goal_id, planner_root).await?;
-            validate_evidence_in_owner(&mut tx, &ctx, &evidence).await?;
+            let goal_id = validate_goal_activated_fact(&ctx, goal_activated_memory_id).await?;
+            validate_active_goal_context(&ctx, goal_id, planner_root).await?;
+            validate_evidence_in_owner(&ctx, &evidence).await?;
 
             // What the request was made from — the activation Fact and the
             // evidence — travels with the write instead of following it as
             // separate edge appends, so a replayed emit re-asserts the same
-            // rows rather than minting new ones. The planner Perspective is
-            // the author, which is a column, not a connection.
+            // rows rather than minting new ones.
             let mut origins = Vec::with_capacity(1 + evidence.len());
             origins.push(EdgeEndpoint::memory(
                 EntityKind::Fact,
@@ -72,7 +68,6 @@ impl Tool for CodeEmitExecutionRequestTool {
             );
             let provenance = FactProvenance {
                 derived_from: &origins,
-                authoring_perspective_id: Some(planner_root),
             };
 
             let payload = ExecutionRequestV1 {
@@ -82,7 +77,12 @@ impl Tool for CodeEmitExecutionRequestTool {
                 request_key,
                 depends_on_memory_ids: Vec::new(),
             };
-            let outcome = ingest_execution_request(&mut tx, &ctx, &payload, provenance).await?;
+            let engine = engine(&ctx)?;
+            let mut uow = engine
+                .unit_of_work(ctx.authz())
+                .await
+                .map_err(ToolError::Protocol)?;
+            let outcome = ingest_execution_request(&mut uow, &payload, provenance).await?;
             let acceptance_memory_id =
                 if outcome.idempotent_replay || acceptance_criteria.is_empty() {
                     None
@@ -96,18 +96,14 @@ impl Tool for CodeEmitExecutionRequestTool {
                         criteria: acceptance_criteria,
                     };
                     let criteria_outcome = ingest_acceptance_criteria(
-                        &mut tx,
-                        &ctx,
+                        &mut uow,
                         &criteria_payload,
-                        FactProvenance {
-                            derived_from: &[],
-                            authoring_perspective_id: Some(planner_root),
-                        },
+                        FactProvenance { derived_from: &[] },
                     )
                     .await?;
                     Some(criteria_outcome.memory_id)
                 };
-            tx.commit().await.map_err(map_storage)?;
+            uow.commit().await.map_err(ToolError::Protocol)?;
 
             Ok(CodeEmitExecutionRequestOutput {
                 handle: ctx.format_fact_memory(outcome.memory_id),

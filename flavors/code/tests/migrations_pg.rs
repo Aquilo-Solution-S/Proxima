@@ -68,7 +68,7 @@ async fn flavor_migrations_apply_to_fresh_db() {
         }
 
         // Verify the M5 core tables exist.
-        for table in ["edges", "embeddings"] {
+        for table in ["memory", "memory_head", "announce"] {
             let row = sqlx::query(
                 "SELECT 1 AS ok FROM information_schema.tables
                  WHERE table_schema = 'proxima_core' AND table_name = $1",
@@ -96,6 +96,26 @@ async fn flavor_migrations_apply_to_fresh_db() {
 
         assert_owner_ref_constraints(pg.pool_for_tests()).await?;
 
+        for table in [
+            "code_chunk_v1",
+            "file_revision_v1",
+            "commit_v1",
+            "commit_summary_v1",
+        ] {
+            let present: bool = sqlx::query_scalar(
+                "SELECT EXISTS (
+                     SELECT 1 FROM information_schema.columns
+                      WHERE table_schema = 'proxima_code'
+                        AND table_name = $1
+                        AND column_name = 'embed_text'
+                 )",
+            )
+            .bind(table)
+            .fetch_one(pg.pool_for_tests())
+            .await?;
+            assert!(present, "W6: {table}.embed_text must exist");
+        }
+
         // After the Owner = OwnerRef collapse, the full-collapse decision
         // removes the legacy owner org column from proxima_code too. Keystone gate for the
         // flavor DDL-drop migration — a missed column would silently keep org
@@ -115,21 +135,38 @@ async fn flavor_migrations_apply_to_fresh_db() {
         // Idempotency — a second run must not error.
         proxima_code::migrator().run(pg.pool_for_tests()).await?;
 
+        let handle = uuid::Uuid::now_v7();
         let memory_id = uuid::Uuid::now_v7();
         let repo_id = uuid::Uuid::now_v7();
         let owner_id = uuid::Uuid::now_v7();
         sqlx::query(
-            "INSERT INTO proxima_core.memories
-                 (memory_id, owner_kind, owner_id, schema_id, schema_version, text)
-             VALUES ($1, 'personal', $2, 'code/chunk-v1', 1, 'fn main() {}')",
+            "INSERT INTO proxima_core.owners (owner_id, kind)
+             VALUES ($1, 'personal') ON CONFLICT DO NOTHING",
         )
+        .bind(owner_id)
+        .execute(pg.pool_for_tests())
+        .await?;
+        sqlx::query(
+            "INSERT INTO proxima_core.memory_head (handle, kind, schema_id, owner_id, t)
+             VALUES ($1, 'abstraction', 'proxima-code/code-chunk-v1', $2, $3)",
+        )
+        .bind(handle)
+        .bind(owner_id)
+        .bind(memory_id)
+        .execute(pg.pool_for_tests())
+        .await?;
+        sqlx::query(
+            "INSERT INTO proxima_core.memory (handle, t, kind, owner_id, schema_id)
+             VALUES ($1, $2, 'abstraction', $3, 'proxima-code/code-chunk-v1')",
+        )
+        .bind(handle)
         .bind(memory_id)
         .bind(owner_id)
         .execute(pg.pool_for_tests())
         .await?;
         sqlx::query(
             "INSERT INTO proxima_code.code_chunk_v1
-                 (memory_id, repo_id, file_path, chunk_index, text, chunk_type,
+                 (t, repo_id, file_path, chunk_index, text, chunk_type,
                   byte_range_start, byte_range_end, line_range_start, line_range_end, state)
              VALUES ($1, $2, 'src/lib.rs', 0, 'fn main() {}', 'file',
                      0, 12, 1, 1, 'Present')",
@@ -139,7 +176,7 @@ async fn flavor_migrations_apply_to_fresh_db() {
         .execute(pg.pool_for_tests())
         .await?;
         let err = sqlx::query(
-            "UPDATE proxima_code.code_chunk_v1 SET text = 'rewritten' WHERE memory_id = $1",
+            "UPDATE proxima_code.code_chunk_v1 SET text = 'rewritten' WHERE t = $1",
         )
         .bind(memory_id)
         .execute(pg.pool_for_tests())

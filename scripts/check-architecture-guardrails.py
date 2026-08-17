@@ -512,7 +512,6 @@ def check_owner_write_permit_surfaces(findings: list[Finding]) -> None:
     storage_port_methods = {
         "crates/core/src/storage_ports/fact.rs": [
             "ingest_fact_atomic",
-            "close_batch",
         ],
         "crates/core/src/storage_ports/mcp.rs": ["persist_mcp_call_atomic"],
         # There is no edge-write surface to guard. An edge is not a thing a
@@ -552,7 +551,6 @@ def check_owner_write_permit_surfaces(findings: list[Finding]) -> None:
             "append_derived_in_tx",
             "append_derived_with_edges_in_tx",
         ],
-        "crates/storage-pg/src/verbs/close_batch.rs": ["close_batch"],
         "crates/storage-pg/src/verbs/persist_mcp_call.rs": [
             "persist_mcp_call_atomic",
             "persist_mcp_call_in_tx",

@@ -1,55 +1,8 @@
 /-
 Causa — Wake (the self-organizing organism)
 
-The wake loop is Fact → Wake → Action → Fact. Every node already exists:
-a Fact is a `Memory` with kind `.Fact`; a wake entry is an ARMED `Goal` (a
-Goal carrying `WakeConfig`, Goals.lean — "Goals are wake entries when
-configured to wake"); an Action's record is a Fact again. So wake adds NO new
-entity kind and — like `Causa.Flavor` — NO new axiom. The "self-organizing
-organism" is a THEOREM of the existing kernel, not a primitive.
-
-A `Firing` is one wake step: an armed Goal reacts to a trigger Fact and the
-execution actor (`actor`, modeled as `User`: human, configured Agent, service
-actor) uses its server-resolved role bundle and the Goal's `WakeConfig` to emit
-Facts. Every safety property is a STRUCTURAL FIELD of `Firing`, never an axiom —
-the same discipline as `Role.write_le_read` and `Causa.Flavor`:
-
-  - W1 closure        — emissions are Facts (`each_fact`); the loop never leaves
-                        the ontology (the ToolCall abstraction returns a Fact).
-  - W2 no-escalation  — emissions are bounded by the actor's GRANTED write
-                        authority (`each_authzd`, reusing `may_write`). The
-                        delegation keystone: a self-firing agent cannot widen
-                        what the human granted it. An actor with no write role
-                        is forced to no-op (`powerless_actor_noops`).
-  - W3 read-bounded   — the trigger and every injected memory are within the
-                        actor's read authority (`trigger_read`,
-                        `each_injected_read`, reusing `may_read`).
-  - W4 grounding      — every emitted Fact is created STRICTLY later than its
-                        trigger (`each_later`); so causation (`fires`) is
-                        well-founded backward, by the SAME clock as N1
-                        (Provenance). `organism_grounded`: trace any Fact's
-                        causal ancestry and it bottoms out, in finitely many
-                        firings, at an UNCAUSED external Fact (the Mail). The
-                        loop runs forward forever but is grounded in the world.
-  - W5 goal-context   — every emitted Fact is motivated by the firing Goal
-                        (`each_motivated`); the organism cannot emit a
-                        contextless action. Motivation is a Goal-row
-                        DECLARATION (`evidence_memory_ids`, where
-                        `core/wake-motivated-by` went), so the index row it
-                        implies is a `reference`
-                        (`wake_motivation_is_never_causal`). N4's commitment
-                        survives the two-kind vocabulary by having nowhere to
-                        put a causal claim: attributing an action to a goal as
-                        an observer-independent fact is not expressible, and
-                        the judgment form of it is an interpretation
-                        Perspective, a node.
-  - W6 tool-bounded   — every invoked Action is admitted by the Goal's
-                        `WakeConfig.toolset` (`each_action_allowed`). Concrete
-                        tool execution policy remains engine/flavor-side; the
-                        kernel pins the allow-list witness.
-
-`#print axioms` (below) is the guarantee: each theorem rests on no Causa axioms
-— never one named `wake`, because none exists.
+Wake rides on an armed Goal: `goal.wake_id = some wake_id`. The config
+row is reusable; the fire is a write-act Fact, not a pin to the Goal.
 -/
 
 import Causa.Goals
@@ -61,37 +14,15 @@ namespace Causa.Wake
 
 open Causa
 
--- ============================================================
--- Access-kind of a memory kind (for read-bounding injected context)
--- ============================================================
-
-/-- The access-ladder kind a memory is read under. Facts read as `.fact`,
-    Abstractions as `.abstraction`, Perspectives as `.perspective`. -/
 def MemoryKind.access : MemoryKind → AccessKind
   | .Fact        => .fact
   | .Abstraction => .abstraction
   | .Perspective => .perspective
 
--- ============================================================
--- Goal-context: an emitted Fact is causally tied to the firing Goal
--- ============================================================
+/-- W5 rebase: produced rows `ref` the write-act `t` (UML §5b). No session ⇒ none. -/
+def refsWriteAct (m : Memory) (tr : MemoryId) : Prop :=
+  tr ∈ memory_refs m
 
-/-- W5 relation: memory `m` is motivated by `goal` — the GOAL ROW says so, by
-    naming `m` among the memories it rests on (`evidence_memory_ids`, where
-    `core/wake-motivated-by` went in v0.0.8). The statement lives on the node
-    that owns it; the `reference` index row is derived from that column and
-    carries nothing else. -/
-def motivatedByGoal (m : Memory) (goal : Goal) : Prop :=
-  memory_id m ∈ goal_evidence goal
-
--- ============================================================
--- The firing — one wake step, all safety properties as fields
--- ============================================================
-
-/-- One wake step. The agent (`actor`) reacts to `trigger` on behalf of an
-    ARMED `goal` and emits `emitted` (possibly `[]` — "doing nothing is also an
-    action"), having injected `injected` as context. The proof fields ARE the
-    safety guarantees; none is an axiom. -/
 structure Firing where
   actor    : User
   goal     : Goal
@@ -100,48 +31,27 @@ structure Firing where
   emitted  : List Memory
   injected : List Memory
   invoked  : List Action
-  /-- the concrete Goal-owned wake config used for this firing -/
-  wake_config        : goal_wake goal = some config
-  /-- the Goal is configured to wake -/
+  wake_config        : goal_wake_id goal = some (wake_id config)
   armed              : goalArmed goal
-  /-- TARGET 3 — wakes for goals fire ONLY while the goal is ACTIVE. A Paused or
-      terminally-closed Goal does not react. This single gate is what makes the
-      loop both autonomous (it keeps firing while Active) and self-terminating
-      (closing the goal stops it — `terminal_cannot_fire`). -/
   goal_active        : goal_state goal = GoalState.Active
-  /-- "human authorized agent at setup" = the agent holds a role in the Goal's
-      owner group -/
   actor_member       : goal_owner goal actor ≠ none
-  /-- W3: the agent may read the actual trigger Fact's owner -/
   trigger_read       : may_read actor (memory_owner trigger.memory) .fact
-  /-- W3: every injected memory is within the agent's read authority -/
   each_injected_read : ∀ m ∈ injected, may_read actor (memory_owner m) (MemoryKind.access (memory_kind m))
-  /-- W1: every emission is a Fact -/
   each_fact          : ∀ m ∈ emitted, memory_kind m = .Fact
-  /-- W4: every emission is created strictly after the trigger -/
-  each_later         : ∀ m ∈ emitted, memory_created_at trigger.memory < memory_created_at m
-  /-- W2: every emission is within the agent's GRANTED write authority -/
+  each_later         : ∀ m ∈ emitted, memory_tick trigger.memory < memory_tick m
   each_authzd        : ∀ m ∈ emitted, may_write actor (memory_owner m) .fact
-  /-- W5: every emission is motivated by the firing Goal -/
-  each_motivated     : ∀ m ∈ emitted, motivatedByGoal m goal
-  /-- W6: every invoked Action is admitted by the Goal's WakeConfig.toolset -/
+  /-- One write-act Fact per fire, or none (keyless / no session). -/
+  write_act_t        : Option MemoryId
+  each_refs_write_act :
+    ∀ m ∈ emitted, ∀ tr : MemoryId, write_act_t = some tr → tr ∈ memory_refs m
   each_action_allowed : ∀ a ∈ invoked, a ∈ config.toolset
 
--- ============================================================
--- W1–W3, W5 — projections
--- ============================================================
-
-/-- W1 — the loop stays in the ontology: emissions are Facts. -/
 theorem wake_emits_facts (fr : Firing) :
     ∀ m ∈ fr.emitted, memory_kind m = .Fact := fr.each_fact
 
-/-- W2 (keystone) — no escalation: an emission is always within the authority
-    the human granted the agent. Reuses `may_write`; adds no rule. -/
 theorem wake_cannot_escalate (fr : Firing) :
     ∀ m ∈ fr.emitted, may_write fr.actor (memory_owner m) .fact := fr.each_authzd
 
-/-- W2 corollary — an agent granted no write role anywhere is forced to no-op.
-    Delegation is total: zero authority ⇒ zero effect. -/
 theorem powerless_actor_noops (fr : Firing)
     (h : ∀ o : Owner, ¬ may_write fr.actor o .fact) : fr.emitted = [] := by
   cases hl : fr.emitted with
@@ -150,78 +60,45 @@ theorem powerless_actor_noops (fr : Firing)
     exact absurd (fr.each_authzd m (by rw [hl]; exact List.mem_cons_self m ms))
       (h (memory_owner m))
 
-/-- W3 — the trigger Fact's actual owner is readable by the actor. -/
 theorem wake_trigger_readable (fr : Firing) :
     may_read fr.actor (memory_owner fr.trigger.memory) .fact := fr.trigger_read
 
-/-- W6 — every invoked Action is admitted by the Goal-owned wake config. -/
 theorem wake_invoked_actions_allowed (fr : Firing) :
     ∀ a ∈ fr.invoked, a ∈ fr.config.toolset := fr.each_action_allowed
 
-/-- W3 — injected context is read-authorized: the agent never injects a memory
-    it could not itself read. -/
 theorem wake_context_readable (fr : Firing) :
     ∀ m ∈ fr.injected, may_read fr.actor (memory_owner m) (MemoryKind.access (memory_kind m)) :=
   fr.each_injected_read
 
-/-- W5 — every action the organism takes carries goal-context; it cannot emit a
-    contextless Fact. This is the formal content of "action without a Goal is
-    useless". -/
-theorem wake_action_has_goal_context (fr : Firing) :
-    ∀ m ∈ fr.emitted, motivatedByGoal m fr.goal := fr.each_motivated
+theorem wake_emission_refs_write_act (fr : Firing) :
+    ∀ m ∈ fr.emitted, ∀ tr : MemoryId, fr.write_act_t = some tr → tr ∈ memory_refs m :=
+  fr.each_refs_write_act
 
-/-- W5 (N4, restated for the two-kind model) — the goal-context is a Goal-row
-    DECLARATION, so every index row the firing Goal implies is a `reference`.
-    There is no causal kind left for an attribution to ride on: "this action
-    was taken because of that goal" is a judgment, and a judgment is an
-    interpretation Perspective (`Causa.interpretationOf`), a node. You still
-    cannot attribute an action to a goal as an observer-independent fact —
-    now because the vocabulary has nowhere to put it. -/
-theorem wake_motivation_is_never_causal (fr : Firing) (d : NodeDeclaration)
-    (hd : GoalDeclarationValid fr.goal d) :
-    ∀ e : Edge, e ∈ d.edges → edge_kind e = .reference :=
-  goal_declared_rows_are_references fr.goal d hd
+/-- W5 — a Goal is never in Memory.refs; write-act is a Memory `t`. -/
+theorem wake_motivation_is_never_causal (fr : Firing) :
+    goalDeclaredTargetIds fr.goal =
+      (goal_assignment fr.goal).toList ++ goal_dependencies fr.goal ++
+        goal_evidence fr.goal ++ (goal_close_fact_t fr.goal).toList ++
+        (goal_write_act_t fr.goal).toList :=
+  goal_declared_rows_are_references fr.goal
 
--- ============================================================
--- W4 — the capstone: causation is well-founded (the arrow of time)
--- ============================================================
-
-/-- The causal firing relation between Facts: `fires f g` when some firing was
-    triggered by `f` and emitted `g`. Forward in time. -/
 def fires (f g : Memory) : Prop :=
   ∃ fr : Firing, fr.trigger.memory = f ∧ g ∈ fr.emitted
 
-/-- `fires` strictly advances `created_at` — a wake cannot emit into its own
-    past (`each_later`). -/
 theorem fires_advances_time {f g : Memory} (h : fires f g) :
-    memory_created_at f < memory_created_at g := by
+    memory_tick f < memory_tick g := by
   obtain ⟨fr, htrig, hmem⟩ := h
   have hlt := fr.each_later g hmem
   rw [htrig] at hlt
   exact hlt
 
-/-- W4 — THE ORGANISM IS GROUNDED. Causation is well-founded: trace any Fact's
-    causal ancestry back through firings and it terminates, in finitely many
-    steps, at an UNCAUSED Fact — an external input from the world (the Mail).
-    THEOREM, no axiom — `fires` strictly decreases the `created_at` instant and
-    `<` on `Nat` is well-founded, exactly as N1 grounds provenance. The loop
-    runs forward forever, but the arrow of time grounds it. Same clock, mirror
-    direction: provenance descends to grounding Facts, causation descends to
-    uncaused inputs. -/
 theorem organism_grounded : WellFounded fires :=
   Subrelation.wf
     (fun {_ _} h => fires_advances_time h)
-    (invImage memory_created_at Nat.lt_wfRel).wf
+    (invImage memory_tick Nat.lt_wfRel).wf
 
--- ============================================================
--- Inhabitation 1 — the no-op firing ("doing nothing is an action")
--- ============================================================
-
-/-- The no-op firing: the agent does nothing. Every ∀-over-emitted obligation
-    is vacuous, so a wake step exists with no writes and no edges — the
-    structure is consistent. This IS "doing nothing is also an Action". -/
 def noopFiring (actor : User) (goal : Goal) (config : WakeConfig) (trig : Fact)
-    (hcfg : goal_wake goal = some config)
+    (hcfg : goal_wake_id goal = some (wake_id config))
     (harm : goalArmed goal)
     (hactive : goal_state goal = GoalState.Active)
     (hmem : goal_owner goal actor ≠ none)
@@ -242,56 +119,51 @@ def noopFiring (actor : User) (goal : Goal) (config : WakeConfig) (trig : Fact)
   each_fact := by intro m hm; simp at hm
   each_later := by intro m hm; simp at hm
   each_authzd := by intro m hm; simp at hm
-  each_motivated := by intro m hm; simp at hm
+  write_act_t := none
+  each_refs_write_act := by intro _m hm _tr _htr; cases hm
   each_action_allowed := by intro a ha; simp at ha
 
--- ============================================================
--- Inhabitation 2 — a genuine emission with its motivation
--- (the loop closes non-vacuously: one Fact in, one Fact out)
--- ============================================================
+/-- New Goal version on the same handle that records one evidence `t`. -/
+def recordEvidence (goal : Goal) (i : MemoryId) (newId : GoalId) (newTick : Instant) : Goal :=
+  { goal with t := newId, tick := newTick, evidence_t := [i] }
 
-/-- The Goal head that records one emission among the memories it rests on.
-    Goal writes are append-only, so naming a new emission is a new row in the
-    same lineage; every wake-relevant field carries over unchanged, which the
-    `rfl` lemmas below make explicit. No edge is written: the column IS the
-    statement, and its `reference` index row is derived from it. -/
-def recordEvidence (goal : Goal) (i : MemoryId) : Goal :=
-  { goal with evidence := [i] }
+theorem recordEvidence_wake (goal : Goal) (i : MemoryId) (newId : GoalId) (newTick : Instant) :
+    goal_wake_id (recordEvidence goal i newId newTick) = goal_wake_id goal := rfl
 
-theorem recordEvidence_wake (goal : Goal) (i : MemoryId) :
-    goal_wake (recordEvidence goal i) = goal_wake goal := rfl
+theorem recordEvidence_state (goal : Goal) (i : MemoryId) (newId : GoalId) (newTick : Instant) :
+    goal_state (recordEvidence goal i newId newTick) = goal_state goal := rfl
 
-theorem recordEvidence_state (goal : Goal) (i : MemoryId) :
-    goal_state (recordEvidence goal i) = goal_state goal := rfl
+theorem recordEvidence_owner (goal : Goal) (i : MemoryId) (newId : GoalId) (newTick : Instant) :
+    goal_owner (recordEvidence goal i newId newTick) = goal_owner goal := rfl
 
-theorem recordEvidence_owner (goal : Goal) (i : MemoryId) :
-    goal_owner (recordEvidence goal i) = goal_owner goal := rfl
+def mkFact (handle : Handle) (id : MemoryId) (o : Owner) (tick : Instant) : Memory where
+  handle := handle
+  t := id
+  kind := .Fact
+  owner := o
+  origins := []
+  refs := []
+  blob_id := none
+  tick := tick
+  fact_origins_empty := fun _ => rfl
+  perspective_never_cites := fun h => nomatch h
+  blob_fa_only := fun h => (h rfl).elim
 
-/-- Hence the emission is motivated by that Goal head — W5 discharged by a
-    column read, with no edge to construct. -/
-theorem motivation_holds (goal : Goal) (m : Memory) :
-    motivatedByGoal m (recordEvidence goal (memory_id m)) :=
-  List.mem_singleton_self (memory_id m)
-
-/-- A genuine single-emission firing: the Mail-Fact arrives, the agent emits
-    one Fact `g` owned in a group it may write, created later than the trigger,
-    and motivated by the goal. The loop closes — `fires trig.memory g` holds. -/
 def oneShotFiring
     (actor : User) (goal : Goal) (config : WakeConfig) (trig : Fact)
-    (hcfg : goal_wake goal = some config)
+    (hcfg : goal_wake_id goal = some (wake_id config))
     (harm : goalArmed goal)
     (hactive : goal_state goal = GoalState.Active)
     (hmem : goal_owner goal actor ≠ none)
     (hread : may_read actor (memory_owner trig.memory) .fact)
-    (o : Owner) (gid : MemoryId) (schema : SchemaRef) (t : Instant)
+    (o : Owner) (gh : Handle) (gid : MemoryId) (tick : Instant)
     (hw : may_write actor o .fact)
-    (hlate : memory_created_at trig.memory < t)
-    (hmot : gid ∈ goal_evidence goal) : Firing where
+    (hlate : memory_tick trig.memory < tick) : Firing where
   actor := actor
   goal := goal
   config := config
   trigger := trig
-  emitted := [⟨gid, .Fact, o, schema, none, none, none, none, t, none, none, fun _ => rfl⟩]
+  emitted := [mkFact gh gid o tick]
   injected := []
   invoked := []
   wake_config := hcfg
@@ -300,41 +172,32 @@ def oneShotFiring
   actor_member := hmem
   trigger_read := hread
   each_injected_read := by intro m hm; simp at hm
-  each_fact := by intro m hm; simp at hm; subst hm; rfl
-  each_later := by intro m hm; simp at hm; subst hm; exact hlate
-  each_authzd := by intro m hm; simp at hm; subst hm; exact hw
-  each_motivated := by
-    intro m hm; simp at hm; subst hm
-    exact hmot
+  each_fact := by intro m hm; simp [mkFact] at hm; subst hm; rfl
+  each_later := by intro m hm; simp [mkFact] at hm; subst hm; exact hlate
+  each_authzd := by intro m hm; simp [mkFact] at hm; subst hm; exact hw
+  write_act_t := none
+  each_refs_write_act := by
+    intro _m _hm _tr htr
+    cases htr
   each_action_allowed := by intro a ha; simp at ha
 
-/-- The emitted Fact of a `oneShotFiring` is genuinely caused by its trigger:
-    the causal relation `fires` is non-vacuously inhabited. -/
 theorem oneShot_fires
     (actor : User) (goal : Goal) (config : WakeConfig) (trig : Fact)
-    (hcfg : goal_wake goal = some config)
+    (hcfg : goal_wake_id goal = some (wake_id config))
     (harm : goalArmed goal)
     (hactive : goal_state goal = GoalState.Active)
     (hmem : goal_owner goal actor ≠ none)
     (hread : may_read actor (memory_owner trig.memory) .fact)
-    (o : Owner) (gid : MemoryId) (schema : SchemaRef) (t : Instant)
+    (o : Owner) (gh : Handle) (gid : MemoryId) (tick : Instant)
     (hw : may_write actor o .fact)
-    (hlate : memory_created_at trig.memory < t)
-    (hmot : gid ∈ goal_evidence goal) :
-    fires trig.memory ⟨gid, .Fact, o, schema, none, none, none, none, t, none, none, fun _ => rfl⟩ :=
-  ⟨oneShotFiring actor goal config trig hcfg harm hactive hmem hread o gid schema t hw hlate hmot,
+    (hlate : memory_tick trig.memory < tick) :
+    fires trig.memory (mkFact gh gid o tick) :=
+  ⟨oneShotFiring actor goal config trig hcfg harm hactive hmem hread o gh gid tick hw hlate,
     by rfl, by simp [oneShotFiring]⟩
 
--- ============================================================
--- TARGET 3 — the Active-gate: wakes fire only on Active goals
--- ============================================================
-
-/-- The Active-gate as a projection: a firing's goal is necessarily Active. -/
 theorem firing_requires_active (fr : Firing) : goal_state fr.goal = GoalState.Active :=
   fr.goal_active
 
-/-- A terminally-closed goal can NEVER be the subject of a firing — the
-    Active-gate forbids it. Once a goal is closed, its wake loop is dead. -/
 theorem terminal_cannot_fire (g : Goal) (h : (goal_state g).terminal = true) :
     ¬ ∃ fr : Firing, fr.goal = g := by
   rintro ⟨fr, hfg⟩
@@ -343,103 +206,72 @@ theorem terminal_cannot_fire (g : Goal) (h : (goal_state g).terminal = true) :
   rw [ha] at h
   exact absurd h (by decide)
 
--- ============================================================
--- TARGET 2 — self-termination: the close tool bounds the loop
--- ============================================================
-
-/-- The agent closes its own goal: the terminal successor Goal (`Achieved`) that
-    supersedes the active one and carries the close-Fact its closing action
-    emitted (P3 — a world-touching close emits a Fact). Authoring it is a
-    `.goal`-write: "the tool of closing the goal". -/
-def closeGoal (goal : Goal) (closeFact : Memory) (hk : memory_kind closeFact = .Fact)
-    (newId : GoalId) : Goal where
-  id := newId
+def closeGoal (goal : Goal) (closeFact : Memory) (_hk : memory_kind closeFact = .Fact)
+    (newId : GoalId) (newTick : Instant) : Goal where
+  handle := goal_handle goal
+  t := newId
   owner := goal_owner goal
-  schema := goal_schema goal
   title := goal_title goal
-  text := goal_text goal
   state := .Achieved
-  supersedes := some (goal_id goal)
-  authorship := .SystemTool
-  close_fact := some closeFact
-  wake := none
-  assignment := goal_assignment goal
-  dependencies := goal_dependencies goal
-  -- The close-Fact is what the closed Goal rests on: closing is an act, the
-  -- act emits a Fact (P3), and the Goal row names it. One `reference` row
-  -- follows; no verb writes it.
-  evidence := [memory_id closeFact]
-  terminal_close_fact := fun _ => ⟨closeFact, rfl, hk⟩
+  request_id := goal_request_id goal
+  close_fact_t := some (memory_t closeFact)
+  assignment_t := goal_assignment goal
+  dependency_t := goal_dependencies goal
+  evidence_t := [memory_t closeFact]
+  wake_id := none
+  write_act_t := none
+  tick := newTick
+  terminal_close_fact := fun _ => rfl
 
-/-- The close successor is terminal. -/
 theorem closeGoal_terminal (goal : Goal) (closeFact : Memory)
-    (hk : memory_kind closeFact = .Fact) (newId : GoalId) :
-    (goal_state (closeGoal goal closeFact hk newId)).terminal = true := rfl
+    (hk : memory_kind closeFact = .Fact) (newId : GoalId) (newTick : Instant) :
+    (goal_state (closeGoal goal closeFact hk newId newTick)).terminal = true := rfl
 
-/-- The close successor supersedes the original goal (GO-5: a new row). -/
-theorem closeGoal_supersedes (goal : Goal) (closeFact : Memory)
-    (hk : memory_kind closeFact = .Fact) (newId : GoalId) :
-    goal_supersedes (closeGoal goal closeFact hk newId) = some (goal_id goal) := rfl
+theorem closeGoal_same_handle (goal : Goal) (closeFact : Memory)
+    (hk : memory_kind closeFact = .Fact) (newId : GoalId) (newTick : Instant) :
+    goal_handle (closeGoal goal closeFact hk newId newTick) = goal_handle goal := rfl
 
-/-- The close stays in the same owner (GO-1). -/
 theorem closeGoal_same_owner (goal : Goal) (closeFact : Memory)
-    (hk : memory_kind closeFact = .Fact) (newId : GoalId) :
-    goal_owner (closeGoal goal closeFact hk newId) = goal_owner goal := rfl
+    (hk : memory_kind closeFact = .Fact) (newId : GoalId) (newTick : Instant) :
+    goal_owner (closeGoal goal closeFact hk newId newTick) = goal_owner goal := rfl
 
-/-- Closing an ACTIVE goal is an ADMITTED lifecycle transition (Active →
-    Achieved): the off-switch is legitimate, not a forced state. -/
 theorem closeGoal_admitted (goal : Goal) (closeFact : Memory)
-    (hk : memory_kind closeFact = .Fact) (newId : GoalId)
+    (hk : memory_kind closeFact = .Fact) (newId : GoalId) (newTick : Instant)
     (hactive : goal_state goal = GoalState.Active) :
-    goalTransitionAdmitted (goal_state goal) (goal_state (closeGoal goal closeFact hk newId)) := by
+    goalTransitionAdmitted (goal_state goal)
+      (goal_state (closeGoal goal closeFact hk newId newTick)) := by
   rw [hactive]; exact trivial
 
-/-- TARGET 2 (headline) — the loop is theoretically BOUNDED. Once the agent uses
-    its close tool to author the terminal successor, that goal is `Achieved`, so
-    by the Active-gate (`terminal_cannot_fire`) NO firing can target it: the wake
-    loop halts. The self-organizing organism holds its own off-switch. -/
 theorem closeGoal_halts_wake (goal : Goal) (closeFact : Memory)
-    (hk : memory_kind closeFact = .Fact) (newId : GoalId) :
-    ¬ ∃ fr : Firing, fr.goal = closeGoal goal closeFact hk newId :=
-  terminal_cannot_fire _ (closeGoal_terminal goal closeFact hk newId)
+    (hk : memory_kind closeFact = .Fact) (newId : GoalId) (newTick : Instant) :
+    ¬ ∃ fr : Firing, fr.goal = closeGoal goal closeFact hk newId newTick :=
+  terminal_cannot_fire _ (closeGoal_terminal goal closeFact hk newId newTick)
 
--- ============================================================
--- TARGET 1 — autonomy: while equipped and Active, the loop is unbounded
--- ============================================================
-
-/-- TARGET 1 (sufficiency) — given proper config (armed, ACTIVE, member,
-    readable) and Fact-write authority, the actor CAN emit a Fact: a firing
-    exists whose emission is genuinely caused by the trigger. Concrete tool
-    invocation remains separately bounded by `wake_invoked_actions_allowed`. -/
 theorem agent_can_act
     (actor : User) (goal : Goal) (config : WakeConfig) (trig : Fact)
-    (hcfg : goal_wake goal = some config)
+    (hcfg : goal_wake_id goal = some (wake_id config))
     (harm : goalArmed goal) (hactive : goal_state goal = GoalState.Active)
     (hmem : goal_owner goal actor ≠ none)
     (hread : may_read actor (memory_owner trig.memory) .fact)
     (o : Owner) (hw : may_write actor o .fact)
-    (gid : MemoryId) (schema : SchemaRef) (hmot : gid ∈ goal_evidence goal) :
+    (gh : Handle) (gid : MemoryId) :
     ∃ g : Memory, fires trig.memory g :=
-  ⟨_, oneShot_fires actor goal config trig hcfg harm hactive hmem hread o gid schema
-        (memory_created_at trig.memory + 1) hw (Nat.lt_succ_self _) hmot⟩
+  ⟨_, oneShot_fires actor goal config trig hcfg harm hactive hmem hread o gh gid
+        (memory_tick trig.memory + 1) hw (Nat.lt_succ_self _)⟩
 
-/-- TARGET 1 (the IFF) — proper config fixed, the actor can emit a Fact IFF it
-    has Fact-write authority somewhere. Necessity is `powerless_actor_noops`;
-    sufficiency is `oneShotFiring`. This is not the external tool allow-list:
-    invoked Actions are bounded separately by `WakeConfig.toolset`. -/
 theorem act_iff_fact_write_authority
     (actor : User) (goal : Goal) (config : WakeConfig) (trig : Fact)
-    (hcfg : goal_wake goal = some config)
+    (hcfg : goal_wake_id goal = some (wake_id config))
     (harm : goalArmed goal) (hactive : goal_state goal = GoalState.Active)
     (hmem : goal_owner goal actor ≠ none)
     (hread : may_read actor (memory_owner trig.memory) .fact)
-    (gid : MemoryId) (schema : SchemaRef) (hmot : gid ∈ goal_evidence goal) :
+    (gh : Handle) (gid : MemoryId) :
     (∃ o : Owner, may_write actor o .fact)
       ↔ (∃ fr : Firing, fr.actor = actor ∧ fr.goal = goal ∧ fr.emitted ≠ []) := by
   constructor
   · rintro ⟨o, hw⟩
-    exact ⟨oneShotFiring actor goal config trig hcfg harm hactive hmem hread o gid schema
-            (memory_created_at trig.memory + 1) hw (Nat.lt_succ_self _) hmot,
+    exact ⟨oneShotFiring actor goal config trig hcfg harm hactive hmem hread o gh gid
+            (memory_tick trig.memory + 1) hw (Nat.lt_succ_self _),
            rfl, rfl, by simp [oneShotFiring]⟩
   · rintro ⟨fr, hact, _, hne⟩
     cases hl : fr.emitted with
@@ -450,69 +282,53 @@ theorem act_iff_fact_write_authority
       rw [hact] at hwm
       exact ⟨memory_owner m, hwm⟩
 
-/-- The forward run a configured organism produces from a seed and an id supply.
-    Step 0 is the seed; each later Fact lands one instant after the previous, so
-    times strictly increase and the run never stalls. -/
-def autonomousRun (seed : Fact) (o : Owner) (schema : SchemaRef) (ids : Nat → MemoryId) :
+def autonomousRun (seed : Fact) (o : Owner) (gh : Handle) (ids : Nat → MemoryId) :
     Nat → Memory
   | 0 => seed.memory
-  | (n+1) =>
-      ⟨ids n, .Fact, o, schema, none, none, none, none,
-       memory_created_at seed.memory + (n+1), none, none, fun _ => rfl⟩
+  | (n+1) => mkFact gh (ids n) o (memory_tick seed.memory + (n+1))
 
-theorem autonomousRun_fact (seed : Fact) (o : Owner) (schema : SchemaRef) (ids : Nat → MemoryId) :
-    ∀ n, memory_kind (autonomousRun seed o schema ids n) = .Fact
+theorem autonomousRun_fact (seed : Fact) (o : Owner) (gh : Handle) (ids : Nat → MemoryId) :
+    ∀ n, memory_kind (autonomousRun seed o gh ids n) = .Fact
   | 0 => fact_memory_kind seed
-  | (_+1) => rfl
+  | (_+1) => by simp [autonomousRun, mkFact, memory_kind]
 
-theorem autonomousRun_time (seed : Fact) (o : Owner) (schema : SchemaRef) (ids : Nat → MemoryId) :
-    ∀ n, memory_created_at (autonomousRun seed o schema ids n)
-        = memory_created_at seed.memory + n
-  | 0 => by simp [autonomousRun]
-  | (_+1) => rfl
+theorem autonomousRun_time (seed : Fact) (o : Owner) (gh : Handle) (ids : Nat → MemoryId) :
+    ∀ n, memory_tick (autonomousRun seed o gh ids n)
+        = memory_tick seed.memory + n
+  | 0 => by simp [autonomousRun, memory_tick]
+  | (_+1) => by simp [autonomousRun, mkFact, memory_tick]
 
-/-- TARGET 1 (headline) — THE ORGANISM IS AUTONOMOUS. Properly configured
-    (armed, ACTIVE, authorized member, readable) and equipped with Fact-write
-    authority plus an id supply, the actor produces an ENDLESS forward run of
-    Facts, each CAUSED by the previous, with NO external input after the seed.
-    External tool invocation is bounded separately by `WakeConfig.toolset`; this
-    theorem proves the Fact-emission loop. The loop runs forever — the dual of
-    `organism_grounded`: backward causation terminates, forward causation need
-    not. It runs "as long as wake entries are produced", i.e. as long as the
-    goal stays Active. -/
 theorem organism_autonomous
     (actor : User) (goal : Goal) (config : WakeConfig) (seed : Fact)
-    (hcfg : goal_wake goal = some config)
+    (hcfg : goal_wake_id goal = some (wake_id config))
     (harm : goalArmed goal) (hactive : goal_state goal = GoalState.Active)
     (hmem : goal_owner goal actor ≠ none)
     (hread : may_read actor (memory_owner seed.memory) .fact)
     (o : Owner) (hw : may_write actor o .fact)
-    (schema : SchemaRef) (ids : Nat → MemoryId) :
+    (gh : Handle) (ids : Nat → MemoryId) :
     ∃ run : Nat → Memory, ∀ n : Nat, fires (run n) (run (n+1)) := by
-  refine ⟨autonomousRun seed o schema ids, fun n => ?_⟩
-  have hlate : memory_created_at (autonomousRun seed o schema ids n)
-      < memory_created_at seed.memory + (n+1) := by
-    rw [autonomousRun_time seed o schema ids n]; exact Nat.lt_succ_self _
-  have hread_n : may_read actor (memory_owner (autonomousRun seed o schema ids n)) .fact := by
+  refine ⟨autonomousRun seed o gh ids, fun n => ?_⟩
+  have hlate : memory_tick (autonomousRun seed o gh ids n)
+      < memory_tick seed.memory + (n+1) := by
+    rw [autonomousRun_time seed o gh ids n]; exact Nat.lt_succ_self _
+  have hread_n : may_read actor (memory_owner (autonomousRun seed o gh ids n)) .fact := by
     cases n with
     | zero => exact hread
-    | succ _ => exact may_write_implies_read actor o .fact hw
-  -- Step n fires under the Goal head that records step n's emission: Goal
-  -- writes are append-only, so naming a new emission is a new row in the same
-  -- lineage, and every wake-relevant field is carried over definitionally.
-  exact oneShot_fires actor (recordEvidence goal (ids n)) config
-    ⟨autonomousRun seed o schema ids n, autonomousRun_fact seed o schema ids n⟩
-    hcfg harm hactive hmem hread_n o (ids n) schema (memory_created_at seed.memory + (n+1))
-    hw hlate (List.mem_singleton_self (ids n))
-
--- ============================================================
--- THE openness guarantee — no Causa axioms
--- ============================================================
+    | succ k =>
+      have hown : memory_owner (autonomousRun seed o gh ids k.succ) = o := by
+        simp [autonomousRun, mkFact, memory_owner]
+      rw [hown]
+      exact may_write_implies_read actor o .fact hw
+  exact oneShot_fires actor goal config
+    ⟨autonomousRun seed o gh ids n, autonomousRun_fact seed o gh ids n⟩
+    hcfg harm hactive hmem
+    hread_n o gh (ids n) (memory_tick seed.memory + (n+1))
+    hw hlate
 
 #print axioms organism_grounded
 #print axioms wake_cannot_escalate
 #print axioms powerless_actor_noops
-#print axioms wake_action_has_goal_context
+#print axioms wake_emission_refs_write_act
 #print axioms wake_invoked_actions_allowed
 #print axioms wake_motivation_is_never_causal
 #print axioms oneShot_fires

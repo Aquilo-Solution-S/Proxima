@@ -12,9 +12,10 @@ use crate::verbs::mcp_call_history::{
 };
 use crate::verbs::query::{
     EdgeExistsRequest, EdgeExistsResponse, EdgeReadRequest, EdgeReadResponse, MemoryLineageRequest,
-    MemoryLineageResponse, QueryCursor, QueryRequest, QueryResponse,
+    MemoryLineageResponse, QueryCursor, QueryRequest, QueryResponse, SidecarAtom,
 };
 use crate::verbs::schema::{FlavorRegistryFrozen, SchemaRequest, SchemaResponse};
+use crate::{Owner, SchemaId};
 
 impl Engine {
     /// docs/14 §"Schema" — binary-scoped, unauthenticated by
@@ -147,6 +148,40 @@ impl Engine {
             .await?;
         read_mcp_call_history_authorized(&self.storage.query, &permit, req).await
     }
+
+    /// Current owned series handle whose sidecar matches `columns`.
+    ///
+    /// Owner-only. A World-transferred series is a miss for the prior
+    /// owner. Flavor code must not JOIN `memory_head` to answer this.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Forbidden` when the context cannot view `owner`,
+    /// `InvalidArgument` when the column list is empty or an identifier
+    /// is invalid, and `Internal` on storage failure.
+    pub async fn owned_series_handle(
+        &self,
+        authz: &AuthzContext,
+        owner: Owner,
+        schema_id: &SchemaId,
+        sidecar_table: &str,
+        columns: &[(&str, SidecarAtom)],
+    ) -> Result<Option<uuid::Uuid>, ProtocolError> {
+        let _permit = self
+            .authorize_request(authz, &owner, Relation::Viewer)
+            .await?;
+        self.storage
+            .query
+            .memory_read
+            .owned_series_handle(owner, schema_id, sidecar_table, columns)
+            .await
+            .map_err(|err| match err {
+                crate::StorageError::ConstraintViolation(message) => {
+                    crate::error::ProtocolError::invalid_argument("columns", message)
+                }
+                other => super::errors::internal_storage_error("owned_series_handle", &other),
+            })
+    }
 }
 
 pub(in crate::engine) async fn query_authorized(
@@ -205,11 +240,7 @@ pub(in crate::engine) async fn read_edges_authorized(
     if req.limit == 0 {
         return Err(ProtocolError::invalid_argument("limit", "must be > 0"));
     }
-    ports
-        .edge_read
-        .read_edges(read_owners, req)
-        .await
-        .map_err(|e| ProtocolError::internal(e.to_string()))
+    super::pin_read::read_edges_from_nodes(&ports.memory_read, read_owners, req).await
 }
 
 pub(in crate::engine) async fn edge_exists_authorized(
@@ -217,11 +248,7 @@ pub(in crate::engine) async fn edge_exists_authorized(
     read_owners: &[OwnerRef],
     req: &EdgeExistsRequest,
 ) -> Result<EdgeExistsResponse, ProtocolError> {
-    ports
-        .edge_read
-        .edge_exists(read_owners, req)
-        .await
-        .map_err(|e| ProtocolError::internal(e.to_string()))
+    super::pin_read::edge_exists_from_nodes(&ports.memory_read, read_owners, req).await
 }
 
 pub(in crate::engine) async fn walk_memory_lineage_authorized(

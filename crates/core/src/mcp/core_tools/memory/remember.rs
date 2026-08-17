@@ -198,15 +198,6 @@ impl McpTool for RememberTool {
                     .await?
             };
 
-            // A keyed batch stays open so later calls with the same key can
-            // join it; consolidation (F→A core_derive) closes it. Keyless
-            // batches close per call as before.
-            if !outcome.idempotent_replay && source_batch_key.is_none() {
-                engine
-                    .close_batch(&authz, space.owner, source_batch_id)
-                    .await?;
-            }
-
             Ok(RememberOutput {
                 handle: ctx.format_fact_memory(outcome.memory_id),
                 idempotent_replay: outcome.idempotent_replay,

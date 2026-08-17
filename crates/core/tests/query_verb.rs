@@ -12,6 +12,8 @@ fn query_request_defaults_to_present_only() {
     assert_eq!(req.tombstones, TombstoneFilter::PresentOnly);
     assert_eq!(req.page, QueryPage::default());
     assert!(req.stateful_heads.is_empty());
+    assert_eq!(req.assignment, None);
+    assert_eq!(req.evidence_contains, None);
 }
 
 #[test]

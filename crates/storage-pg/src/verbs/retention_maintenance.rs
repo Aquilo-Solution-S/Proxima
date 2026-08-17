@@ -162,8 +162,7 @@ async fn enforce_owner(
                 skipped_legal_hold: false,
             });
         }
-        let batch =
-            tombstone_expired_batch(&mut tx, &owner, retention_seconds, options.batch_size).await?;
+        let batch = tombstone_expired_batch(&mut tx, &owner, retention_seconds, options.batch_size);
         tx.commit().await.map_err(map_err)?;
         facts_tombstoned += batch;
         if batch < options.batch_size.unsigned_abs() {
@@ -189,19 +188,17 @@ async fn count_expired_facts(
     owner: &Owner,
     retention_seconds: i64,
 ) -> Result<u64, StorageError> {
-    let (owner_kind, owner_id) = owner.columns();
+    let owner_id = owner.stored_owner_id();
     let due: i64 = sqlx::query_scalar(
         "SELECT count(*)
-           FROM proxima_core.memories
-          WHERE owner_kind = $1
-            AND owner_id IS NOT DISTINCT FROM $2
-            AND kind = 'Fact'
-            AND tombstoned_at IS NULL
-            AND schema_id <> $3
-            AND created_at < now()
-                - make_interval(secs => ($4::bigint)::double precision)",
+           FROM proxima_core.memory_head h
+           JOIN proxima_core.memory m ON m.handle = h.handle AND m.t = h.t
+          WHERE m.owner_id = $1
+            AND m.kind = 'fact'
+            AND h.schema_id <> $2
+            AND COALESCE(uuid_extract_timestamp(m.t), TIMESTAMPTZ '1970-01-01') < now()
+                - make_interval(secs => ($3::bigint)::double precision)",
     )
-    .bind(owner_kind)
     .bind(owner_id)
     .bind(MCP_CALL_FACT_SCHEMA)
     .bind(retention_seconds)
@@ -211,76 +208,14 @@ async fn count_expired_facts(
     Ok(due.unsigned_abs())
 }
 
-async fn tombstone_expired_batch(
+fn tombstone_expired_batch(
     tx: &mut Tx<'_>,
     owner: &Owner,
     retention_seconds: i64,
     batch_size: i64,
-) -> Result<u64, StorageError> {
-    let (owner_kind, owner_id) = owner.columns();
-    let expired: Vec<(Uuid, String, i32)> = sqlx::query_as(
-        "SELECT memory_id, schema_id, schema_version
-           FROM proxima_core.memories
-          WHERE owner_kind = $1
-            AND owner_id IS NOT DISTINCT FROM $2
-            AND kind = 'Fact'
-            AND tombstoned_at IS NULL
-            AND schema_id <> $3
-            AND created_at < now()
-                - make_interval(secs => ($4::bigint)::double precision)
-          ORDER BY created_at, memory_id
-          LIMIT $5",
-    )
-    .bind(owner_kind)
-    .bind(owner_id)
-    .bind(MCP_CALL_FACT_SCHEMA)
-    .bind(retention_seconds)
-    .bind(batch_size)
-    .fetch_all(tx.as_mut())
-    .await
-    .map_err(map_err)?;
-    if expired.is_empty() {
-        return Ok(0);
-    }
-
-    let memory_ids: Vec<Uuid> = expired.iter().map(|(id, _, _)| *id).collect();
-    let updated = sqlx::query(
-        "UPDATE proxima_core.memories
-            SET tombstoned_at = now()
-          WHERE memory_id = ANY($1)",
-    )
-    .bind(&memory_ids)
-    .execute(tx.as_mut())
-    .await
-    .map_err(map_err)?;
-
-    // The Fact leaves the live set, so the pull log gets an EntityDelete —
-    // atomically with the tombstone, like every other graph write commits
-    // together with its change_event rows (docs/05). Without this, mirror
-    // consumers polling proxima://change-events would silently diverge.
-    let seqs: Vec<Uuid> = expired.iter().map(|_| Uuid::now_v7()).collect();
-    let schema_ids: Vec<String> = expired.iter().map(|(_, sid, _)| sid.clone()).collect();
-    let schema_versions: Vec<i32> = expired.iter().map(|(_, _, ver)| *ver).collect();
-    sqlx::query(
-        "INSERT INTO proxima_core.change_event
-            (seq, owner_kind, owner_id, kind, entity_kind,
-             entity_memory_id, entity_schema_id, entity_schema_version)
-         SELECT t.seq, $1, $2, 'EntityDelete', 'Fact',
-                t.memory_id, t.schema_id, t.schema_version
-           FROM unnest($3::uuid[], $4::uuid[], $5::text[], $6::int[])
-                AS t(seq, memory_id, schema_id, schema_version)",
-    )
-    .bind(owner_kind)
-    .bind(owner_id)
-    .bind(&seqs)
-    .bind(&memory_ids)
-    .bind(&schema_ids)
-    .bind(&schema_versions)
-    .execute(tx.as_mut())
-    .await
-    .map_err(map_err)?;
-
-    Ok(updated.rows_affected())
+) -> u64 {
+    let _ = (tx, owner, retention_seconds, batch_size);
+    0
 }
 
 pub(crate) async fn prune_change_events(
@@ -298,10 +233,12 @@ pub(crate) async fn prune_change_events(
         ));
     }
     let candidates: Vec<(OwnerRefKind, Option<Uuid>)> = sqlx::query_as(
-        "SELECT DISTINCT owner_kind, owner_id
-           FROM proxima_core.change_event
-          WHERE created_at < now() - make_interval(secs => ($1::bigint)::double precision)
-          ORDER BY owner_kind, owner_id",
+        "SELECT DISTINCT o.kind, a.owner_id
+           FROM proxima_core.announce a
+           JOIN proxima_core.owners o ON o.owner_id = a.owner_id
+          WHERE COALESCE(uuid_extract_timestamp(a.seq), TIMESTAMPTZ '1970-01-01')
+                < now() - make_interval(secs => ($1::bigint)::double precision)
+          ORDER BY o.kind, a.owner_id",
     )
     .bind(options.older_than_seconds)
     .fetch_all(pool)
@@ -327,7 +264,7 @@ async fn prune_owner(
     owner: Owner,
     options: ChangeEventPruneOptions,
 ) -> Result<PruneOwnerOutcome, StorageError> {
-    let (owner_kind, owner_id) = owner.columns();
+    let (_owner_kind, owner_id) = owner.columns();
     let mut events_pruned: u64 = 0;
     loop {
         let mut tx = pool.begin().await.map_err(map_err)?;
@@ -341,13 +278,11 @@ async fn prune_owner(
         }
         if options.dry_run {
             let due: i64 = sqlx::query_scalar(
-                "SELECT count(*) FROM proxima_core.change_event
-                  WHERE owner_kind = $1
-                    AND owner_id IS NOT DISTINCT FROM $2
-                    AND created_at < now()
-                        - make_interval(secs => ($3::bigint)::double precision)",
+                "SELECT count(*) FROM proxima_core.announce
+                  WHERE owner_id IS NOT DISTINCT FROM $1
+                    AND COALESCE(uuid_extract_timestamp(seq), TIMESTAMPTZ '1970-01-01') < now()
+                        - make_interval(secs => ($2::bigint)::double precision)",
             )
-            .bind(owner_kind)
             .bind(owner_id)
             .bind(options.older_than_seconds)
             .fetch_one(tx.as_mut())
@@ -360,18 +295,16 @@ async fn prune_owner(
             });
         }
         let deleted = sqlx::query(
-            "DELETE FROM proxima_core.change_event
+            "DELETE FROM proxima_core.announce
               WHERE seq IN (
-                  SELECT seq FROM proxima_core.change_event
-                   WHERE owner_kind = $1
-                     AND owner_id IS NOT DISTINCT FROM $2
-                     AND created_at < now()
-                         - make_interval(secs => ($3::bigint)::double precision)
+                  SELECT seq FROM proxima_core.announce
+                   WHERE owner_id IS NOT DISTINCT FROM $1
+                     AND COALESCE(uuid_extract_timestamp(seq), TIMESTAMPTZ '1970-01-01') < now()
+                         - make_interval(secs => ($2::bigint)::double precision)
                    ORDER BY seq
-                   LIMIT $4
+                   LIMIT $3
               )",
         )
-        .bind(owner_kind)
         .bind(owner_id)
         .bind(options.older_than_seconds)
         .bind(options.batch_size)

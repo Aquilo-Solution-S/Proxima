@@ -2,8 +2,7 @@
 //!
 //! Usable by any composite binary (embedded hosts included) so it can
 //! ingest cited blobs directly, independent of any frontend.
-//! Tables: `proxima_core.cited_object_uploads` / `cited_objects` /
-//! `cited_uploaded_blob_v1` (see storage-pg baseline migration).
+//! Tables: `proxima_core.blob` / `proxima_core.blob_uploads`.
 
 mod config;
 mod error;
@@ -14,5 +13,6 @@ pub use error::BlobError;
 pub use store::{
     CitedBlobReadUrlOutcomeTs, CitedBlobReadUrlTs, CitedBlobStore, CitedBlobUploadAbortOutcomeTs,
     CitedBlobUploadAbortTs, CitedBlobUploadCompleteTs, CitedBlobUploadPrepareOutcomeTs,
-    CitedBlobUploadPrepareTs, PresignedHeaderTs,
+    CitedBlobUploadPrepareTs, PresignedHeaderTs, S3ColdStore, cold_object_key, cold_owner_prefix,
+    owner_hash_hex_public,
 };

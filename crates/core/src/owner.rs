@@ -36,11 +36,17 @@ impl OwnerRef {
         }
     }
 
+    /// Stored `owner_id` (v0.0.8): World is `WORLD_OWNER_UUID`, never NULL.
+    #[must_use]
+    pub const fn stored_owner_id(self) -> Uuid {
+        self.stable_key_uuid()
+    }
+
     /// Stable non-DB UUID component for deterministic hashes / object keys.
     ///
-    /// Database owner columns use [`Self::columns`], where `World` is
-    /// encoded as `owner_id = NULL`. This helper is intentionally not a DB
-    /// column adapter.
+    /// v0.0.8 stores this value in `owner_id` (NOT NULL). World is
+    /// `WORLD_OWNER_UUID`. [`Self::columns`] still exposes the pre-v0.0.8
+    /// nullable encoding until verb rewrites land.
     #[must_use]
     pub const fn stable_key_uuid(self) -> Uuid {
         match self {
@@ -104,7 +110,7 @@ pub enum OwnerExternalKeyParseError {
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, sqlx::Type,
 )]
-#[sqlx(type_name = "proxima_core.owner_ref_kind", rename_all = "lowercase")]
+#[sqlx(type_name = "proxima_core.owner_kind", rename_all = "lowercase")]
 pub enum OwnerRefKind {
     World,
     Personal,

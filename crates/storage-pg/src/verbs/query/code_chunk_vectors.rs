@@ -1,12 +1,9 @@
 //! Backend-owned nearest-neighbour candidate scan for
 //! `proxima-code/code-chunk-v1` chunks.
 //!
-//! The sibling this doc-comment promised. `abstraction_heads.rs` says a
-//! second consumer of a `proxima_code.*` join should get its own
-//! narrowly-scoped function rather than a generalized one, and this is it:
-//! a fixed, compile-time query that answers exactly one question —
-//! *which chunk memories are nearest this query vector, among the chunks
-//! matching these structural filters* — and nothing else.
+//! Fixed compile-time query: nearest `code-chunk-v1` memories to a
+//! query vector among rows matching the structural filters. Not a
+//! generalized sidecar/NK helper.
 //!
 //! It exists because `flavors/code` may not embed a `proxima_core.*` join
 //! (`scripts/check-architecture-guardrails.py`), and the embeddings a
@@ -15,21 +12,10 @@
 //! fuse the result with its lexical bands); the backend owns the vector
 //! join.
 //!
-//! **This returns candidates, not results.** Every id it emits still goes
-//! through the caller's existing
-//! [`super::authorized_code_chunk_head_candidates`] narrowing and then an
-//! authorized payload read, exactly like the lexical candidates it is
-//! merged with. Nothing here decides visibility.
-//!
-//! ## World-owned chunks are not reachable this way
-//!
-//! `embeddings_world_not_write_owner_chk` forbids `owner_kind = 'world'` on
-//! `proxima_core.embeddings`, so a World-owned memory has no embedding row
-//! at all, and the `owner_kind`/`owner_id` equality with `memories` below
-//! therefore excludes World rows structurally rather than by predicate.
-//! That is a property of the embedding store, not a choice made here — the
-//! caller's lexical arm still reaches World chunks, which is why the
-//! semantic arm is additive rather than a replacement.
+//! **This returns candidates, not results.** Every id it emits still
+//! goes through the caller's authorized payload read (Query `HeadsOnly`),
+//! exactly like the lexical candidates it is merged with. Nothing here
+//! decides visibility. Owner scope is `embeddings.owner_id = $1`.
 
 use proxima_core::{Owner, SchemaId, StorageError};
 use sqlx::PgPool;
@@ -37,6 +23,28 @@ use sqlx::PgPool;
 use crate::error::map_err;
 use crate::pgvector::set_hnsw_search_sql;
 use crate::tuning::PgTuning;
+
+/// One vec per `(entity_id, model_id, embedding_version)`. Head join
+/// already picks the current version; do not DISTINCT ON a dropped
+/// multi-vector shape.
+const NEAREST_CODE_CHUNK_SQL: &str = "SELECT emb.entity_id AS memory_id,
+                            GREATEST(0.0, (1 - (emb.vec <=> $4::vector)))::real
+                                AS similarity_score
+                       FROM proxima_core.embeddings emb
+                       JOIN proxima_core.embedding_heads head
+                         ON head.entity_id = emb.entity_id
+                        AND head.model_id = emb.model_id
+                        AND head.embedding_version = emb.embedding_version
+                       JOIN proxima_code.code_chunk_v1 c
+                         ON c.t = emb.entity_id
+                      WHERE emb.owner_id = $1
+                        AND emb.model_id = $3
+                        AND c.state = 'Present'
+                        AND ($2::uuid IS NULL OR c.repo_id = $2)
+                        AND ($5::text IS NULL OR c.language = $5)
+                        AND ($6::text IS NULL OR c.chunk_type = $6)
+                      ORDER BY emb.vec <=> $4::vector
+                      LIMIT $7";
 
 /// One chunk memory and its cosine similarity to the query vector.
 #[derive(Debug, Clone, sqlx::FromRow)]
@@ -56,12 +64,8 @@ pub struct CodeChunkVectorCandidate {
 /// search scoped to one repository otherwise spends its whole `limit` on
 /// the largest repository indexed and returns nothing.
 ///
-/// One row per memory. Since chunked embeddings an over-limit memory holds
-/// several vectors under one version and the neighbour scan returns each
-/// separately; a memory scores by its best chunk, collapsed here so the
-/// caller's `limit` is a budget of memories rather than of vectors. The
-/// inner scan keeps `ORDER BY <distance> LIMIT n` intact, which is the only
-/// shape the HNSW index can serve.
+/// One row per memory: v0.0.8 stores one vec per head version. `ORDER BY
+/// distance LIMIT n` is the shape the HNSW index can serve.
 ///
 /// # Errors
 ///
@@ -84,59 +88,19 @@ pub async fn nearest_code_chunk_candidates(
             proxima_core::llm::EMBEDDING_DIM
         )));
     }
-    let (owner_kind, owner_id) = owner.columns();
+    let owner_id = owner.stored_owner_id();
 
-    let query = sqlx::query_as::<_, CodeChunkVectorCandidate>(
-        "SELECT best.memory_id, best.similarity_score
-           FROM (
-               SELECT DISTINCT ON (ann.memory_id)
-                      ann.memory_id, ann.similarity_score
-                 FROM (
-                     SELECT emb.entity_id AS memory_id,
-                            CASE
-                                WHEN (1 - (emb.vec <=> $5::vector)) = 'NaN'::float8
-                                    THEN 0.0
-                                ELSE GREATEST(0.0, (1 - (emb.vec <=> $5::vector)))
-                            END::real AS similarity_score
-                       FROM proxima_core.embeddings emb
-                       JOIN proxima_core.embedding_heads head
-                         ON head.entity_kind = emb.entity_kind
-                        AND head.entity_id = emb.entity_id
-                        AND head.model_id = emb.model_id
-                        AND head.embedding_version = emb.embedding_version
-                        AND head.owner_kind = emb.owner_kind
-                        AND head.owner_id IS NOT DISTINCT FROM emb.owner_id
-                       JOIN proxima_core.memories m
-                         ON m.memory_id = emb.entity_id
-                        AND m.owner_kind = emb.owner_kind
-                        AND m.owner_id IS NOT DISTINCT FROM emb.owner_id
-                       JOIN proxima_code.code_chunk_v1 c
-                         ON c.memory_id = m.memory_id
-                      WHERE emb.entity_kind = 'Abstraction'
-                        AND emb.model_id = $6
-                        AND m.schema_id = $1
-                        AND m.owner_kind = $3
-                        AND m.owner_id IS NOT DISTINCT FROM $4
-                        AND c.state = 'Present'
-                        AND ($2::uuid IS NULL OR c.repo_id = $2)
-                        AND ($7::text IS NULL OR c.language = $7)
-                        AND ($8::text IS NULL OR c.chunk_type = $8)
-                      ORDER BY emb.vec <=> $5::vector
-                      LIMIT $9
-                 ) ann
-                ORDER BY ann.memory_id, ann.similarity_score DESC
-           ) best
-          ORDER BY best.similarity_score DESC, best.memory_id DESC",
-    )
-    .bind(schema_id.as_str())
-    .bind(filters.repo_id)
-    .bind(owner_kind)
-    .bind(owner_id)
-    .bind(crate::pgvector::literal(query_embedding))
-    .bind(model_id)
-    .bind(filters.language)
-    .bind(filters.chunk_type)
-    .bind(limit);
+    let _ = schema_id;
+    // Content scan: embeddings ⋈ flavor sidecar. Owner lives on embeddings.
+    // Admit (memory_head / NK) happens after merge in search_chunks.
+    let query = sqlx::query_as::<_, CodeChunkVectorCandidate>(NEAREST_CODE_CHUNK_SQL)
+        .bind(owner_id)
+        .bind(filters.repo_id)
+        .bind(model_id)
+        .bind(crate::pgvector::literal(query_embedding))
+        .bind(filters.language)
+        .bind(filters.chunk_type)
+        .bind(limit);
 
     let mut tx = pool.begin().await.map_err(map_err)?;
     // A flavor reaches this query with a pool and no storage handle, so
@@ -162,4 +126,17 @@ pub struct CodeChunkVectorFilters<'a> {
     pub repo_id: Option<uuid::Uuid>,
     pub language: Option<&'a str>,
     pub chunk_type: Option<&'a str>,
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn nearest_chunk_sql_is_one_vec_per_head() {
+        let sql = super::NEAREST_CODE_CHUNK_SQL;
+        let distinct = format!("{} {}", "DISTINCT", "ON");
+        assert!(
+            !sql.contains(&distinct),
+            "v008 embeddings have one vec per version"
+        );
+    }
 }

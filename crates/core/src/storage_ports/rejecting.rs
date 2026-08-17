@@ -12,12 +12,12 @@ use super::fact::{FactIngestPort, SourceBatchPort};
 use super::goals::{GoalReadPort, GoalWakeCandidatePort, GoalWritePort};
 use super::mcp::{McpCallReadPort, McpCallWritePort};
 use super::memory::{
-    CitationPort, EdgeReadPort, MemoryAuthoringPort, MemoryInspectPort, MemoryReadPort,
-    OperatorWriteProof,
+    CitationPort, MemoryAuthoringPort, MemoryInspectPort, MemoryReadPort, OperatorWriteProof,
 };
 use super::proof::{OperatorMaintenanceProof, OwnerWritePermit};
 use super::registry::RegistryProjectionPort;
-use crate::SourceBatchId;
+use super::write_session::{WriteSession, WriteSessionFactory};
+
 use crate::access::AccessError;
 use crate::compliance::ComplianceEraseTarget;
 use crate::read_models::{
@@ -26,7 +26,7 @@ use crate::read_models::{
 };
 use crate::storage::{AuthorDerivedOutcome, AuthorDerivedRequest, EmbeddingJobClaim, StorageError};
 use crate::verbs::change_history::{ChangeHistoryRequest, ChangeHistoryResponse};
-use crate::verbs::close_batch::CloseBatchOutcome;
+
 use crate::verbs::fact_ingest::{
     AuthorizedFactWithCitation, AuthorizedFactWithCitationRef, AuthorizedFactWrite,
     FactIngestOutcome, FactWriteCommand,
@@ -38,8 +38,8 @@ use crate::verbs::goal_write::{
 use crate::verbs::mcp_call_history::{McpCallHistoryRequest, McpCallHistoryResponse};
 use crate::verbs::persist_mcp_call::{McpCallLogInput, McpCallLogOutcome};
 use crate::{
-    EmbeddableEntityRef, EntityId, EntityKind, FactEntityId, GroupId, MembershipRow, Owner,
-    OwnerRef, Relation, SchemaId, SchemaVersion, SidecarPayload, SourceId, UserId,
+    EmbeddableEntityRef, EntityId, EntityKind, GroupId, MembershipRow, Owner, OwnerRef, Relation,
+    SidecarPayload, SourceId, UserId,
 };
 
 #[derive(Debug)]
@@ -143,6 +143,16 @@ impl MemoryAuthoringPort for RejectingStorage {
     ) -> Result<Vec<crate::FactSourceBatchRow>, StorageError> {
         Ok(Vec::new())
     }
+
+    async fn forget_memory(
+        &self,
+        _permit: &OwnerWritePermit,
+        _memory_id: crate::MemoryId,
+    ) -> Result<(), StorageError> {
+        Err(StorageError::Internal(
+            "RejectingStorage rejects writes".into(),
+        ))
+    }
 }
 
 #[async_trait::async_trait]
@@ -195,20 +205,36 @@ impl MemoryReadPort for RejectingStorage {
 
     async fn load_memory_graph_payloads(
         &self,
-        _owner: &Owner,
-        _memory_ids: &[crate::MemoryId],
+        _identities: &[crate::MemoryGraphIdentity],
         _include_body: bool,
     ) -> Result<Vec<crate::MemoryGraphPayloadRow>, StorageError> {
         Ok(Vec::new())
     }
 
-    async fn load_neighbor_memory_edges(
+    async fn load_pin_nodes(
         &self,
         _read_owners: &[OwnerRef],
         _memory_ids: &[crate::MemoryId],
-        _limit: usize,
-    ) -> Result<Vec<crate::Edge>, StorageError> {
+    ) -> Result<Vec<crate::PinNode>, StorageError> {
         Ok(Vec::new())
+    }
+
+    async fn load_inbound_pin_nodes(
+        &self,
+        _read_owners: &[OwnerRef],
+        _query: crate::InboundPinQuery<'_>,
+    ) -> Result<Vec<crate::PinNode>, StorageError> {
+        Ok(Vec::new())
+    }
+
+    async fn owned_series_handle(
+        &self,
+        _owner: crate::Owner,
+        _schema_id: &crate::SchemaId,
+        _sidecar_table: &str,
+        _columns: &[(&str, crate::verbs::query::SidecarAtom)],
+    ) -> Result<Option<uuid::Uuid>, StorageError> {
+        Ok(None)
     }
 }
 
@@ -242,6 +268,14 @@ impl EmbeddingTextPort for RejectingStorage {
         _non_embeddable_schemas: &[String],
     ) -> Result<Option<String>, StorageError> {
         Ok(None)
+    }
+
+    async fn load_embedding_texts(
+        &self,
+        items: &[(Owner, EntityKind, crate::MemoryId)],
+        _non_embeddable_schemas: &[String],
+    ) -> Result<Vec<Option<String>>, StorageError> {
+        Ok(vec![None; items.len()])
     }
 
     async fn list_facts_missing_embedding(
@@ -493,39 +527,7 @@ impl ChangeEventPort for RejectingStorage {
 }
 
 #[async_trait::async_trait]
-impl EdgeReadPort for RejectingStorage {
-    async fn read_edges(
-        &self,
-        _read_owners: &[OwnerRef],
-        _req: &crate::verbs::query::EdgeReadRequest,
-    ) -> Result<crate::verbs::query::EdgeReadResponse, StorageError> {
-        Ok(crate::verbs::query::EdgeReadResponse {
-            edges: Vec::new(),
-            next_cursor: None,
-        })
-    }
-
-    async fn edge_exists(
-        &self,
-        _read_owners: &[OwnerRef],
-        _req: &crate::verbs::query::EdgeExistsRequest,
-    ) -> Result<crate::verbs::query::EdgeExistsResponse, StorageError> {
-        Ok(crate::verbs::query::EdgeExistsResponse { exists: false })
-    }
-}
-
-#[async_trait::async_trait]
 impl CitationPort for RejectingStorage {
-    async fn fact_entity_id_for(
-        &self,
-        _owner: &Owner,
-        _schema_id: &SchemaId,
-        _schema_version: SchemaVersion,
-        _natural_key: &[String],
-    ) -> Result<Option<FactEntityId>, StorageError> {
-        Ok(None)
-    }
-
     async fn facts_citing_object(
         &self,
         _read_owners: &[OwnerRef],
@@ -543,15 +545,8 @@ impl CitationPort for RejectingStorage {
 
     async fn citation_of_fact(
         &self,
-        _fact_memory_id: crate::MemoryId,
-    ) -> Result<Option<crate::verbs::query::FactCitationReadback>, StorageError> {
-        Ok(None)
-    }
-
-    async fn citation_of_entity_head(
-        &self,
         _read_owners: &[OwnerRef],
-        _fact_entity_id: FactEntityId,
+        _fact_memory_id: crate::MemoryId,
     ) -> Result<Option<crate::verbs::query::FactCitationReadback>, StorageError> {
         Ok(None)
     }
@@ -566,12 +561,12 @@ impl OwnerAccessReadPort for RejectingStorage {
         Ok(Vec::new())
     }
 
-    async fn visible_to_any(
+    async fn visible_home_owner(
         &self,
         _entity: EntityId,
         _read_owners: &[OwnerRef],
-    ) -> Result<bool, StorageError> {
-        Ok(false)
+    ) -> Result<Option<OwnerRef>, StorageError> {
+        Ok(None)
     }
 
     async fn home_owner(&self, _entity: EntityId) -> Result<Option<OwnerRef>, StorageError> {
@@ -646,18 +641,7 @@ impl OwnerTransferPort for RejectingStorage {
     }
 }
 
-#[async_trait::async_trait]
-impl SourceBatchPort for RejectingStorage {
-    async fn close_batch(
-        &self,
-        _permit: &OwnerWritePermit,
-        _source_batch_id: SourceBatchId,
-    ) -> Result<CloseBatchOutcome, StorageError> {
-        Err(StorageError::Internal(
-            "RejectingStorage rejects writes".into(),
-        ))
-    }
-}
+impl SourceBatchPort for RejectingStorage {}
 
 #[async_trait::async_trait]
 impl SourceCursorPort for RejectingStorage {
@@ -875,5 +859,14 @@ impl RegistryProjectionPort for RejectingStorage {
         _limit: usize,
     ) -> Result<Vec<AbstractionRow>, StorageError> {
         Ok(Vec::new())
+    }
+}
+
+#[async_trait::async_trait]
+impl WriteSessionFactory for RejectingStorage {
+    async fn begin(&self) -> Result<Box<dyn WriteSession>, StorageError> {
+        Err(StorageError::Internal(
+            "RejectingStorage rejects writes".into(),
+        ))
     }
 }

@@ -1,4 +1,4 @@
-//! Edges — the connection index over `proxima_core.edges`.
+//! Pins — `memory.origins` / `memory.refs`. There is no edge table.
 //!
 //! See docs/16-edges.md, which supersedes docs/02 §Edges, §Relation
 //! Registry and §The Directionality Rule.
@@ -20,7 +20,7 @@
 //!   content hash.
 
 use crate::change_event::EntityRef;
-use crate::{EntityKind, FactEntityId, GoalId, MemoryId};
+use crate::{EntityKind, GoalId, MemoryId};
 
 /// Closed substrate vocabulary for what an edge *is*. Two variants, not
 /// extensible — not by flavors, not by core features. A feature that
@@ -55,12 +55,10 @@ impl EdgeKind {
     }
 }
 
-/// One end of an edge: where it points ([`EntityRef`] — a memory row, a
-/// Goal, or a Fact-entity head, the only three address forms) plus the
-/// entity kind stored there.
+/// One end of an edge: where it points ([`EntityRef`] — a memory row or
+/// a Goal) plus the entity kind stored there.
 ///
-/// The address form *is* the durable binding: a `FactEntity` address
-/// follows the head, a `Memory`/`Goal` address pins the row.
+/// A `Memory`/`Goal` address pins the row. There is no follow-head address.
 ///
 /// The kind travels with the address because the F/A/P layering rule and
 /// every wire projection need it, and re-deriving it per read is what
@@ -90,22 +88,12 @@ impl EdgeEndpoint {
         }
     }
 
-    /// A Fact-entity head — the address that follows the head pointer
-    /// instead of pinning one observation.
-    #[must_use]
-    pub const fn fact_entity(fact_entity_id: FactEntityId) -> Self {
-        Self {
-            kind: EntityKind::Fact,
-            entity: EntityRef::FactEntity(fact_entity_id),
-        }
-    }
-
     /// The memory row this endpoint pins, if it pins one.
     #[must_use]
     pub const fn memory_id(self) -> Option<MemoryId> {
         match self.entity {
             EntityRef::Memory(memory_id) => Some(memory_id),
-            EntityRef::Goal(_) | EntityRef::FactEntity(_) => None,
+            EntityRef::Goal(_) => None,
         }
     }
 
@@ -161,6 +149,98 @@ pub struct Edge {
     pub created_at: time::OffsetDateTime,
 }
 
+/// A memory row as a pin carrier. Storage returns these; [`Edge`] is a
+/// view of `origins` / `refs` built in the engine.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PinNode {
+    pub id: MemoryId,
+    pub kind: EntityKind,
+    pub origins: Vec<MemoryId>,
+    pub refs: Vec<MemoryId>,
+}
+
+impl PinNode {
+    /// Origin pins first, then reference pins.
+    pub fn pins(&self) -> impl Iterator<Item = (MemoryId, EdgeKind)> + '_ {
+        self.origins
+            .iter()
+            .copied()
+            .map(|id| (id, EdgeKind::Origin))
+            .chain(
+                self.refs
+                    .iter()
+                    .copied()
+                    .map(|id| (id, EdgeKind::Reference)),
+            )
+    }
+}
+
+/// `created_at` of a pin is the source row's uuidv7 timestamp.
+#[must_use]
+pub fn pin_created_at(source: MemoryId) -> time::OffsetDateTime {
+    source
+        .into_inner()
+        .get_timestamp()
+        .and_then(|ts| {
+            let (secs, nanos) = ts.to_unix();
+            time::OffsetDateTime::from_unix_timestamp(i64::try_from(secs).ok()?)
+                .ok()?
+                .replace_nanosecond(nanos)
+                .ok()
+        })
+        .unwrap_or(time::OffsetDateTime::UNIX_EPOCH)
+}
+
+/// Query-window edges: both endpoints must be in `nodes`. Other pins
+/// are omitted, not redacted.
+#[must_use]
+pub fn project_window_edges(nodes: &[PinNode], cap: usize) -> Vec<Edge> {
+    let visible: std::collections::HashMap<MemoryId, EntityKind> =
+        nodes.iter().map(|node| (node.id, node.kind)).collect();
+    let mut edges = Vec::new();
+    for source in nodes {
+        for (target, kind) in source.pins() {
+            let Some(target_kind) = visible.get(&target).copied() else {
+                continue;
+            };
+            edges.push(Edge {
+                source: EdgeEndpoint::memory(source.kind, source.id),
+                target: EdgeTargetProjection::visible(EdgeEndpoint::memory(target_kind, target)),
+                kind,
+                created_at: pin_created_at(source.id),
+            });
+            if edges.len() >= cap {
+                return edges;
+            }
+        }
+    }
+    edges
+}
+
+/// Listing projection: a pin whose target is not in `visible` is
+/// [`EdgeTargetProjection::Redacted`].
+#[must_use]
+pub fn project_listed_edge<S: std::hash::BuildHasher>(
+    source_kind: EntityKind,
+    source: MemoryId,
+    target: MemoryId,
+    kind: EdgeKind,
+    visible: &std::collections::HashMap<MemoryId, EntityKind, S>,
+) -> Edge {
+    let target = match visible.get(&target).copied() {
+        Some(target_kind) => {
+            EdgeTargetProjection::visible(EdgeEndpoint::memory(target_kind, target))
+        }
+        None => EdgeTargetProjection::Redacted,
+    };
+    Edge {
+        source: EdgeEndpoint::memory(source_kind, source),
+        target,
+        kind,
+        created_at: pin_created_at(source),
+    }
+}
+
 /// Enforce the layering rule for a proposed edge: `ℓ(source) ≥
 /// ℓ(target)` for memory endpoints, with Goal endpoints outside the
 /// comparison (docs/16 §Direction and layering).
@@ -203,8 +283,8 @@ pub fn validate_not_self_loop(source: EdgeEndpoint, target: EdgeEndpoint) -> Res
 #[cfg(test)]
 mod tests {
     use super::{
-        EdgeEndpoint, EdgeKind, EdgeTargetProjection, validate_edge_layering,
-        validate_not_self_loop,
+        EdgeEndpoint, EdgeKind, EdgeTargetProjection, PinNode, project_listed_edge,
+        project_window_edges, validate_edge_layering, validate_not_self_loop,
     };
     use crate::{EntityKind, GoalId, MemoryId};
 
@@ -283,5 +363,49 @@ mod tests {
         );
         assert_eq!(EdgeTargetProjection::Redacted.endpoint(), None);
         assert_eq!(EdgeTargetProjection::Unavailable.endpoint(), None);
+    }
+
+    #[test]
+    fn window_projection_keeps_only_pins_inside_the_node_set() {
+        let leaf = MemoryId::new(uuid::Uuid::now_v7());
+        let hub = MemoryId::new(uuid::Uuid::now_v7());
+        let outside = MemoryId::new(uuid::Uuid::now_v7());
+        let nodes = [
+            PinNode {
+                id: leaf,
+                kind: EntityKind::Fact,
+                origins: Vec::new(),
+                refs: Vec::new(),
+            },
+            PinNode {
+                id: hub,
+                kind: EntityKind::Abstraction,
+                origins: vec![leaf],
+                refs: vec![outside],
+            },
+        ];
+        let edges = project_window_edges(&nodes, 50);
+        assert_eq!(edges.len(), 1);
+        assert_eq!(edges[0].kind, EdgeKind::Origin);
+        assert_eq!(edges[0].source.memory_id(), Some(hub));
+        assert_eq!(
+            edges[0].target.endpoint().and_then(EdgeEndpoint::memory_id),
+            Some(leaf)
+        );
+    }
+
+    #[test]
+    fn listed_projection_redacts_targets_absent_from_the_node_set() {
+        let hub = MemoryId::new(uuid::Uuid::now_v7());
+        let missing = MemoryId::new(uuid::Uuid::now_v7());
+        let visible = std::collections::HashMap::new();
+        let edge = project_listed_edge(
+            EntityKind::Abstraction,
+            hub,
+            missing,
+            EdgeKind::Reference,
+            &visible,
+        );
+        assert!(matches!(edge.target, EdgeTargetProjection::Redacted));
     }
 }

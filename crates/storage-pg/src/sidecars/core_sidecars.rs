@@ -21,7 +21,7 @@ crate::pg_sidecar! {
     row: AgentNotePayloadRow,
     kinds: [Fact],
     table: "proxima_core.agent_note_v1",
-    key: memory_id,
+    key: t,
     fields: {
         note_id => note_id: (uuid),
         title => title: (text),
@@ -36,7 +36,7 @@ crate::pg_sidecar! {
     row: UtterancePayloadRow,
     kinds: [Fact],
     table: "proxima_core.utterance_v1",
-    key: memory_id,
+    key: t,
     fields: {
         speaker => speaker: (enum {
             to_str: proxima_core::Speaker::as_str,
@@ -53,7 +53,7 @@ crate::pg_sidecar! {
     row: AgentDerivationPayloadRow,
     kinds: [Abstraction, Perspective],
     table: "proxima_core.agent_derivation_v1",
-    key: memory_id,
+    key: t,
     fields: {
         title => title: (text),
         body => body: (text),
@@ -71,7 +71,7 @@ crate::pg_sidecar! {
     row: McpCallLoggedPayloadRow,
     kinds: [Fact],
     table: "proxima_core.mcp_call_logged_v1",
-    key: memory_id,
+    key: t,
     fields: {
         tool_name => tool_name: (text),
         actor_oid => actor_oid: (text),
@@ -85,27 +85,6 @@ crate::pg_sidecar! {
     },
 }
 
-crate::goal_lifecycle_fact!(
-    proxima_core::GoalActivatedV1,
-    GoalActivatedPayloadRow,
-    "proxima_core.goal_activated_v1"
-);
-crate::goal_lifecycle_fact!(
-    proxima_core::GoalPausedV1,
-    GoalPausedPayloadRow,
-    "proxima_core.goal_paused_v1"
-);
-crate::goal_lifecycle_fact!(
-    proxima_core::GoalAchievedV1,
-    GoalAchievedPayloadRow,
-    "proxima_core.goal_achieved_v1"
-);
-crate::goal_lifecycle_fact!(
-    proxima_core::GoalAbandonedV1,
-    GoalAbandonedPayloadRow,
-    "proxima_core.goal_abandoned_v1"
-);
-
 impl PgGoalSidecar for proxima_core::TaskGoalV1 {
     fn insert_goal_sidecar<'t>(
         &'t self,
@@ -114,7 +93,7 @@ impl PgGoalSidecar for proxima_core::TaskGoalV1 {
     ) -> PgSidecarFuture<'t> {
         Box::pin(async move {
             sqlx::query(
-                "INSERT INTO proxima_core.task_goal_v1 (goal_id, due_at, priority)
+                "INSERT INTO proxima_core.task_goal_v1 (t, due_at, priority)
                  VALUES ($1, $2, $3::proxima_core.task_priority)",
             )
             .bind(goal_id.into_inner())
@@ -134,10 +113,10 @@ impl PgGoalSidecar for proxima_core::TaskGoalV1 {
     ) -> PgSidecarFuture<'t> {
         Box::pin(async move {
             let result = sqlx::query(
-                "INSERT INTO proxima_core.task_goal_v1 (goal_id, due_at, priority)
+                "INSERT INTO proxima_core.task_goal_v1 (t, due_at, priority)
                  SELECT $1, due_at, priority
                    FROM proxima_core.task_goal_v1
-                  WHERE goal_id = $2",
+                  WHERE t = $2",
             )
             .bind(goal_id.into_inner())
             .bind(source_goal_id.into_inner())
@@ -164,7 +143,7 @@ impl PgGoalSidecar for proxima_core::TaskGoalV1 {
 /// re-derivable from this row alone.
 #[derive(Debug, sqlx::FromRow)]
 struct InterpretationPayloadRow {
-    memory_id: uuid::Uuid,
+    t: uuid::Uuid,
     claim: String,
     confidence: i16,
     subject_memory_ids: Vec<uuid::Uuid>,
@@ -183,7 +162,7 @@ impl PgMemorySidecar for proxima_core::InterpretationV1 {
         Box::pin(async move {
             sqlx::query(
                 "INSERT INTO proxima_core.interpretation_v1
-                    (memory_id, claim, confidence, subject_memory_ids, subject_kinds,
+                    (t, claim, confidence, subject_memory_ids, subject_kinds,
                      model_id, client_name, client_version)
                  VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
             )
@@ -212,10 +191,10 @@ impl PgMemoryPayload for proxima_core::InterpretationV1 {
         Box::pin(async move {
             let rows: Vec<InterpretationPayloadRow> = ctx
                 .fetch_all_by_memory_ids(
-                    "SELECT memory_id, claim, confidence, subject_memory_ids, subject_kinds,
+                    "SELECT t, claim, confidence, subject_memory_ids, subject_kinds,
                             model_id, client_name, client_version
                        FROM proxima_core.interpretation_v1
-                      WHERE memory_id = ANY($1::uuid[])",
+                      WHERE t = ANY($1::uuid[])",
                     memory_ids,
                 )
                 .await?;
@@ -224,11 +203,11 @@ impl PgMemoryPayload for proxima_core::InterpretationV1 {
                     let confidence = u8::try_from(row.confidence).map_err(|_| {
                         StorageError::Internal(format!(
                             "interpretation_v1 confidence {} out of range for memory {}",
-                            row.confidence, row.memory_id
+                            row.confidence, row.t
                         ))
                     })?;
                     Ok((
-                        MemoryId::new(row.memory_id),
+                        MemoryId::new(row.t),
                         SidecarPayload::perspective(proxima_core::InterpretationV1 {
                             claim: row.claim,
                             confidence,
@@ -377,17 +356,8 @@ pub fn register_core_pg_sidecars(registry: &mut PgSidecarRegistry) {
     registry.add_fact::<proxima_core::AgentNoteV1>();
     registry.add_fact::<proxima_core::UtteranceV1>();
     registry.add_fact::<proxima_core::verbs::persist_mcp_call::McpCallLoggedV1>();
-    registry.add_fact::<proxima_core::GoalActivatedV1>();
-    registry.add_fact::<proxima_core::GoalPausedV1>();
-    registry.add_fact::<proxima_core::GoalAchievedV1>();
-    registry.add_fact::<proxima_core::GoalAbandonedV1>();
     registry.add_abstraction::<proxima_core::AgentDerivationV1>();
     registry.add_perspective::<proxima_core::AgentDerivationV1>();
     registry.add_perspective::<proxima_core::InterpretationV1>();
     registry.add_goal::<proxima_core::TaskGoalV1>();
-    registry.add_cited_object::<proxima_core::UploadedBlobPayload>();
-    registry.add_cited_object::<proxima_core::verbs::persist_mcp_call::McpCallIoV1>();
-    // `UploadedBlobWholeV1` is a pure link with no sidecar table, so it needs
-    // no entry here — `citation_mappings` is the whole mapping.
-    registry.add_citation_mapping::<proxima_core::UploadedBlobPageSpanV1>();
 }

@@ -1,11 +1,7 @@
-use proxima_core::access::AccessKind;
 use proxima_core::{
-    AbstractionPayload, DerivedEmbedding, EdgeEndpoint, EntityKind, MemoryId, MemoryOperatorKind,
-    Owner, PayloadReference, SchemaVersion, ToolCtx, ToolError,
+    AbstractionPayload, AuthorDerivedRequestInput, EdgeEndpoint, EntityKind, MemoryId,
+    MemoryOperatorKind, Owner, SchemaVersion, SidecarPayload, ToolCtx, ToolError, UnitOfWork,
 };
-use proxima_storage_pg::sidecars::PgMemorySidecar;
-use proxima_storage_pg::verbs::derive_append::{DerivedDraft, append_derived_with_edges_in_tx};
-use sqlx::{Postgres, Transaction};
 use uuid::Uuid;
 
 use crate::payloads::CodeExecutionPlanV1;
@@ -70,7 +66,7 @@ pub(super) fn execution_plan_memory_id(
 /// there yet — so the items are emitted first and the plan is written last,
 /// referring back to them.
 pub(super) async fn append_execution_plan(
-    tx: &mut Transaction<'_, Postgres>,
+    uow: &mut UnitOfWork<'_>,
     ctx: &ToolCtx,
     planner_root: MemoryId,
     plan_source_memory_id: MemoryId,
@@ -79,7 +75,6 @@ pub(super) async fn append_execution_plan(
     payload: &CodeExecutionPlanV1,
 ) -> Result<PlanAppendOutcome, ToolError> {
     let owner = ctx.owner();
-    let permit = ctx.owner_write_permit(AccessKind::Perspective).await?;
     let caller = ctx
         .caller()
         .ok_or_else(|| ToolError::Other("code flavor tools require caller metadata".into()))?;
@@ -89,26 +84,6 @@ pub(super) async fn append_execution_plan(
         MemoryId::new(payload.goal_activated_memory_id),
         plan_key,
     );
-    let draft = DerivedDraft {
-        memory_id: memory_id.into_inner(),
-        owner,
-        kind: EntityKind::Abstraction,
-        schema_id: <CodeExecutionPlanV1 as AbstractionPayload>::schema_id(),
-        schema_version: SchemaVersion::new(CodeExecutionPlanV1::SCHEMA_VERSION),
-        text: plan_summary.to_string(),
-        operator_kind: MemoryOperatorKind::AtoA,
-        operator_id: execution_plan_operator_id(),
-        input_contract_id: execution_plan_input_contract_id(),
-        source_batch_id: None,
-        model_id: caller.model_id.as_str(),
-        prompt_version: "proxima-code/emit_execution_plan-v1",
-        // "Emitted by the planner" is known at write time, so it is a
-        // column on the row rather than a `core/authored` edge.
-        authoring_perspective_id: Some(planner_root),
-        supersedes: None,
-        lexical_language: None,
-        embedding: DerivedEmbedding::None,
-    };
     // The plan's Abstraction input is what it was made from; everything the
     // payload names — activation Fact, evidence, item requests — is what it
     // points at. Two lists, no kinds.
@@ -116,42 +91,31 @@ pub(super) async fn append_execution_plan(
         EntityKind::Abstraction,
         plan_source_memory_id,
     )];
-    let references = payload_reference_endpoints(payload)?;
-    let edge_count = origins.len() + references.len();
-    let sidecar_payload = payload.clone();
-    let outcome = append_derived_with_edges_in_tx(
-        tx,
-        &permit,
-        &draft,
-        &origins,
-        &references,
-        move |tx, outcome| {
-            Box::pin(async move {
-                sidecar_payload
-                    .insert_memory_sidecar(tx, outcome.memory_id)
-                    .await
-            })
-        },
-    )
-    .await
-    .map_err(ToolError::Storage)?;
+    let outcome = uow
+        .author_derived(AuthorDerivedRequestInput {
+            memory_id,
+            owner,
+            kind: EntityKind::Abstraction,
+            text: plan_summary.to_string(),
+            schema_id: <CodeExecutionPlanV1 as AbstractionPayload>::schema_id(),
+            schema_version: SchemaVersion::new(CodeExecutionPlanV1::SCHEMA_VERSION),
+            operator_kind: MemoryOperatorKind::AtoA,
+            operator_id: execution_plan_operator_id(),
+            input_contract_id: execution_plan_input_contract_id(),
+            source_batch_id: None,
+            model_id: caller.model_id.as_str(),
+            prompt_version: "proxima-code/emit_execution_plan-v1",
+            sidecar_payload: SidecarPayload::abstraction(payload.clone()),
+            authoring_perspective_id: Some(planner_root),
+            derived_from: &origins,
+            supersedes: None,
+            lexical_language: None,
+        })
+        .await
+        .map_err(ToolError::Protocol)?;
     Ok(PlanAppendOutcome {
         memory_id: outcome.memory_id,
-        edge_count,
+        edge_count: outcome.edge_count,
         idempotent_replay: outcome.idempotent_replay,
     })
-}
-
-/// Read the payload's schema-declared references, checking each binding
-/// against the address form it produced before storage sees the endpoints.
-fn payload_reference_endpoints(
-    payload: &CodeExecutionPlanV1,
-) -> Result<Vec<EdgeEndpoint>, ToolError> {
-    <CodeExecutionPlanV1 as AbstractionPayload>::references(payload)
-        .into_iter()
-        .map(|reference: PayloadReference| {
-            reference.validate().map_err(ToolError::Other)?;
-            Ok(reference.target)
-        })
-        .collect()
 }

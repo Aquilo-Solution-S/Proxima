@@ -96,10 +96,12 @@ impl From<ToolError> for McpToolError {
     fn from(err: ToolError) -> Self {
         match err {
             ToolError::InvalidInput(message) => Self::InvalidInput(message),
+            ToolError::NotFound(message) => Self::NotFound(message),
             ToolError::NotAuthorized(tool) => Self::NotAuthorized(tool),
             ToolError::Protocol(err) => Self::Protocol(err),
             ToolError::LayeringViolation(message) => Self::LayeringViolation(message),
             ToolError::Storage(err) => Self::Storage(err),
+            ToolError::Unavailable(message) => Self::Unavailable(message),
             ToolError::Other(message) => Self::Other(message),
         }
     }
@@ -143,5 +145,24 @@ mod tests {
             "semantic search unavailable: no embedding client is configured for this host"
         );
         assert_ne!(err.client_message(), "internal server error");
+    }
+
+    #[test]
+    fn tool_error_not_found_and_unavailable_map_losslessly() {
+        let not_found = McpToolError::from(crate::ToolError::NotFound("repo not found".into()));
+        assert!(matches!(not_found, McpToolError::NotFound(ref m) if m == "repo not found"));
+        assert_eq!(not_found.kind(), McpToolErrorKind::NotFound);
+        assert_eq!(not_found.client_message(), "repo not found");
+
+        let unavailable = McpToolError::from(crate::ToolError::Unavailable(
+            "semantic search unavailable".into(),
+        ));
+        assert!(matches!(
+            unavailable,
+            McpToolError::Unavailable(ref m) if m == "semantic search unavailable"
+        ));
+        assert_eq!(unavailable.kind(), McpToolErrorKind::InvalidRequest);
+        assert_eq!(unavailable.client_message(), "semantic search unavailable");
+        assert_ne!(unavailable.client_message(), "internal server error");
     }
 }

@@ -5,11 +5,11 @@
 
 mod common;
 
-use common::{migrated_db, owner_write_permit, test_owner};
+use common::{migrated_db, test_owner};
+use proxima_code::CommitV1;
 use proxima_code::RepoScope;
-use proxima_code::testkit::{ingest_commit, register_repo};
-use proxima_code::{CommitSummaryV1, CommitV1};
-use proxima_core::{AccessKind, SourceBatchId};
+use proxima_code::testkit::{build_engine, ingest_commit, register_repo};
+use proxima_core::{AuthPath, AuthzContext, SourceBatchId};
 use proxima_pg_testkit::drop_db;
 use uuid::Uuid;
 
@@ -29,7 +29,8 @@ async fn commit_summary_e2e_produces_abstraction_with_correct_provenance() {
             &RepoScope::default(),
         )
         .await?;
-        let permit = owner_write_permit(&owner, AccessKind::Fact).await?;
+        let engine = build_engine(pg.clone());
+        let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
 
         let now = time::OffsetDateTime::now_utc();
         let commit_payload = CommitV1 {
@@ -45,8 +46,8 @@ async fn commit_summary_e2e_produces_abstraction_with_correct_provenance() {
             message: "feat: add foo".into(),
         };
         let commit_outcome = ingest_commit(
-            pg.pool_for_tests(),
-            &permit,
+            &engine,
+            &authz,
             SourceBatchId::new(Uuid::now_v7()),
             &commit_payload,
             now,
@@ -54,15 +55,10 @@ async fn commit_summary_e2e_produces_abstraction_with_correct_provenance() {
         .await?;
         let commit_memory_id = commit_outcome.memory_id;
 
-        let summary_count: i64 = sqlx::query_scalar(
-            "SELECT count(*)
-             FROM proxima_core.memories m
-             JOIN proxima_code.commit_summary_v1 s ON s.memory_id = m.memory_id
-             WHERE m.schema_id = $1",
-        )
-        .bind(<CommitSummaryV1 as proxima_core::AbstractionPayload>::SCHEMA_ID)
-        .fetch_one(pg.pool_for_tests())
-        .await?;
+        let summary_count: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM proxima_code.commit_summary_v1")
+                .fetch_one(pg.pool_for_tests())
+                .await?;
         assert_eq!(
             summary_count, 0,
             "commit ingest must not run wake execution"

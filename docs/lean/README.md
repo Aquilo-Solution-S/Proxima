@@ -26,10 +26,10 @@ minimization discipline) — a failing build is drift.
 | `Causa/Prelude.lean` | minimal `Set`, `Instant`, `Text` |
 | `Causa/Owner.lean` | resolved Owner/group model and role ladder (doc 01) |
 | `Causa/Identity.lean` | ids, stable `OwnerRef`, source batches, append-only/immutable classes, vector-store independence (docs 01, 07) |
-| `Causa/Memory.lean` | F/A/P kinds, layer order, row fields, lineage/authorship pointers, supersession + head queries, Fact/FactEntity typing (docs 02, 16) |
+| `Causa/Memory.lean` | F/A/P kinds, `(handle, t)` row, origins/refs, MemoryHead, Cooled stub (docs 02, UML v0.0.8) |
 | `Causa/Knowledge.lean` | text-bearing knowledge artifacts and interpreter-class recoverability |
-| `Causa/Goals.lean` | Goal states, lifecycle, supersession heads, active set, row-declared topology/assignment/evidence, Self query projection (docs 06, 16) |
-| `Causa/Edges.lean` | the connection index: two closed kinds, E1–E7, node-content derivation, interpretation-as-node (doc 16) |
+| `Causa/Goals.lean` | Goal `(handle, t)`, wake_id, GoalHead, transitions, evidence/assignment pins, Self query (docs 06, UML v0.0.8) |
+| `Causa/Edges.lean` | pins on the node (no Edge table): two closed kinds, OriginKindValid, derivePins identity, interpretation-as-node |
 | `Causa/Authorization.lean` | owner-role read/write ceilings, owner-state resolution, world/personal/group access theorems |
 | `Causa/EdgeAuthorization.lean` | source-owned index reads and the uniform source-write + target-read admission rule |
 | `Causa/Operators.lean` | F→A / A→P / A→Goal phase contracts, no downward writes, invocation-ledger completeness, batch gate (docs 02, 04) |

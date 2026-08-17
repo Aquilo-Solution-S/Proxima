@@ -11,7 +11,6 @@ use proxima_core::mcp::core_tools::{
     list_schemas::{ListSchemasArgs, list_schemas},
     list_substrate_tools::{ListSubstrateToolsArgs, list_substrate_tools},
     list_wake_candidates::{ListWakeCandidatesArgs, list_wake_candidates},
-    read_edges::{ListEdgesArgs, list_edges},
     walk_memory_lineage::{
         WalkMemoryLineageArgs, WalkMemoryLineageDirectionArg, walk_memory_lineage,
     },
@@ -205,7 +204,6 @@ async fn dispatch_resource(
         }
         ParsedResource::Goals(args) => resource_output_value(list_goals(ctx, args).await?),
         ParsedResource::Goal(reference) => resource_output_value(get_goal(ctx, &reference).await?),
-        ParsedResource::Edges(args) => resource_output_value(list_edges(ctx, args).await?),
     }
 }
 
@@ -295,7 +293,6 @@ enum ParsedResource {
     WakeCandidates(ListWakeCandidatesArgs),
     Goals(ListGoalsArgs),
     Goal(String),
-    Edges(ListEdgesArgs),
 }
 
 impl ParsedResource {
@@ -311,7 +308,6 @@ impl ParsedResource {
             Self::WakeCandidates(_) => protocol_resource::WAKE_CANDIDATES,
             Self::Goals(_) => protocol_resource::GOALS,
             Self::Goal(_) => protocol_resource::GOAL,
-            Self::Edges(_) => protocol_resource::EDGES,
         }
     }
 }
@@ -356,13 +352,6 @@ fn parse_resource_uri(uri: &str) -> Result<ParsedResource, ResourceUriError> {
         }
         protocol_resource_path::GOALS => Ok(ParsedResource::Goals(ListGoalsArgs {
             state: query_value(&query, "state").map(ToOwned::to_owned),
-            limit: query_parse(&query, "limit", "a non-negative integer")?,
-            cursor: query_value(&query, "cursor").map(ToOwned::to_owned),
-        })),
-        protocol_resource_path::EDGES => Ok(ParsedResource::Edges(ListEdgesArgs {
-            kind: query_value(&query, "kind").map(ToOwned::to_owned),
-            source: query_value(&query, "source").map(ToOwned::to_owned),
-            target: query_value(&query, "target").map(ToOwned::to_owned),
             limit: query_parse(&query, "limit", "a non-negative integer")?,
             cursor: query_value(&query, "cursor").map(ToOwned::to_owned),
         })),
@@ -635,7 +624,6 @@ mod tests {
         let cases = [
             ("proxima://schemas", protocol_resource::SCHEMAS),
             ("proxima://tools", protocol_resource::TOOLS),
-            ("proxima://edges?kind=origin", protocol_resource::EDGES),
             ("proxima://graph", protocol_resource::GRAPH),
             (
                 "proxima://memory/F:018f0000-0000-7000-8000-000000000001",

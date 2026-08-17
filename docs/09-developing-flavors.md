@@ -50,6 +50,12 @@ migrations/
 
 Compiling witnesses: `flavors/code` (flavor crate) and `apps/proxima-mcp` (host).
 
+Out-of-tree `Cargo.toml` pins **one** `proxima` git selector, identical in
+form and value to every host that links the flavor (`tag = "v0.0.8"` or
+`rev = "<commit>"`, never both in one graph). Writes go through
+`proxima::Engine` (Host API). Do not depend on `proxima-core` or
+`proxima-storage-pg` for Fact ingest.
+
 ## Build Order
 
 1. Pick one stable `flavor_id`.
@@ -146,12 +152,10 @@ impl PerspectivePayload for CodeWorkAssignmentV1 {
 
 | Constructor | Address | Binding |
 |---|---|---|
-| `PayloadReference::memory` | a `memories` row | pins that observation |
-| `PayloadReference::goal` | a `goals` row | pins that Goal |
-| `PayloadReference::fact_entity_head` | a `fact_entities` head | follows the head as it is re-observed |
+| `PayloadReference::memory` | a `memory` row (`t`) | pins that observation |
+| `PayloadReference::goal` | a `goal` row (`t`) | pins that Goal |
 
-The address form *is* the binding — there is no `FollowHead` / `Pin` cell to
-configure, and the two cannot disagree.
+The only binding is `ReferenceBinding::Pin`.
 
 Rules worth internalizing before designing a flavor's graph:
 
@@ -167,9 +171,8 @@ Rules worth internalizing before designing a flavor's graph:
   not an edge kind. (`proxima-code/work-assignment-v1` exists for exactly this
   reason: neither the plan Abstraction nor the worker Perspective owned the
   targeting claim.)
-- **Rebuildability.** Dropping `proxima_core.edges` and re-deriving it from
-  node content must reproduce the same set, which is why a reference is a
-  function of payload content and nothing else.
+- **Rebuildability.** `memory.origins` / `memory.refs` are a function of
+  node content. Re-deriving pins from payloads must reproduce the same set.
 
 ## Key Selection
 
@@ -188,7 +191,7 @@ Embedded hosts create product-authored Goals through
 `GoalPayload::goal_key()`, validates the registered Goal schema, applies
 the stable request id, and records the Self assignment on the Goal row
 (`assignment_perspective_id`), from which the index entry follows; host apps
-do not insert `proxima_core.goals` rows directly.
+do not insert `proxima_core.goal` rows directly.
 
 Include `SCHEMA_ID` and `SCHEMA_VERSION` through `PayloadKeyBuilder::new`.
 Never derive keys from arbitrary JSON serialization.
@@ -213,8 +216,8 @@ One sidecar-backed payload schema maps to one sidecar table.
 CREATE SCHEMA IF NOT EXISTS my_flavor;
 
 CREATE TABLE my_flavor.document_filed_v1 (
-  memory_id uuid PRIMARY KEY
-    REFERENCES proxima_core.memories(memory_id),
+  t uuid PRIMARY KEY
+    REFERENCES proxima_core.memory(t),
   source_path text NOT NULL,
   title text NOT NULL
 );
@@ -457,6 +460,15 @@ The SDK surface receives Engine admission witnesses and typed sidecar
 contexts. It never receives `sqlx::PgPool`; backend adapters keep the
 pool private.
 
+Stateful Fact ingest resolves the series handle from
+`FactPayload::natural_key_columns()` when `handle` is unset. A/P series
+continuity is `Engine::owned_series_handle` (one NK, owner-only) or
+`supersedes`. A file's chunk series are listed together
+(`CodeFlavorStore::owned_chunk_series_heads` — same family as
+file-revision heads). Flavor `src/` does not JOIN `proxima_core.memory_head`.
+Goal assignment / evidence are `GoalRow` fields; filter with
+`QueryRequest::assignment` / `evidence_contains`.
+
 Typed path guarantees:
 
 | Check | Enforced by |
@@ -465,13 +477,29 @@ Typed path guarantees:
 | mapping schema exists and decodes | `authorize_fact_with_citation` |
 | mapping targets the cited-object schema | `CitationMappingPayload::cited_object_schema()` |
 | cited object has a typed sidecar | engine authorization |
-| Fact row, citation rows, and sidecars commit atomically | PG ingest helper |
+| Fact row, citation rows, and sidecars commit atomically | `Engine::ingest_typed_fact_with` / `UnitOfWork::ingest_typed` |
 
 Opaque `CitationSpec` is for content-addressed cited objects with no
 typed sidecar payload and pure-link mappings. Do not copy it for
 domain documents, byte ranges, page spans, media boxes, or chat
 messages; use typed `InlineCitedObjectDraft` +
 `InlineCitationMappingDraft`.
+
+```rust
+engine
+    .ingest_typed_fact_with(
+        &authz,
+        TypedFactIngest::new("acme/importer", &payload)
+            .citation(CitationSpec::v1(
+                "acme/blob-v1",
+                content_hash,
+                "acme/blob-whole-v1",
+            )),
+    )
+    .await?;
+```
+
+Do not call `proxima_storage_pg::ingest_fact_with_sidecar`.
 
 ## Registry
 
@@ -601,14 +629,13 @@ Four contract points that are easy to get wrong:
   is also what bisects an over-limit text into chunks). Only a provider
   that is genuinely unavailable fails the write. A flavor deriving many
   memories should still checkpoint per output, not per batch.
-- **`text` is the whole semantic surface.** It lands verbatim in
-  `memories.text`, which is the only string ever embedded;
-  `search_projection()` adds lexical reach over sidecar columns but never
-  affects the vector.
+- **`text` is the whole semantic surface.** `render()` / authored text
+  is the only string ever embedded; `search_projection()` adds lexical
+  reach over sidecar columns but never affects the vector.
 - **Scoping a search takes a projection, not a copy of the text.** A tag
   filter is the only predicate that narrows `core_search_memories` to
   part of a corpus — `schema_id` is exact-match and there is no
-  per-column filter — and the base `memories` branch carries no tags, so
+  per-column filter — and the unscoped branch carries no tags, so
   a tag-filtered query is served by projection branches alone. Declare a
   `tags text[]` column, name it as `tag_column`, and project the memory's
   own text with `SearchProjectionField::MEMORY_TEXT`:
@@ -624,15 +651,11 @@ Four contract points that are easy to get wrong:
   }
   ```
 
-  Do not copy `memories.text` into the sidecar to achieve this. The copy
+  Do not copy rendered text into the sidecar to achieve this. The copy
   is a second corpus that must stay byte-identical forever, and the day
   it drifts a scoped and an unscoped search return different text for
-  one memory. Exactly this projection — the single `MEMORY_TEXT` field,
-  no `language_column` — also reads the stored `memories.search_tsv`
-  rather than tokenising each candidate row, so the sidecar needs no
-  tsvector column and no GIN index on text, only on `tags`. Add sidecar
-  fields alongside it when the sidecar genuinely holds searchable
-  content the memory text does not.
+  one memory. Add sidecar fields alongside `MEMORY_TEXT` when the sidecar
+  genuinely holds searchable content the render does not.
 
 ## Background Workers
 
@@ -702,7 +725,7 @@ Version lanes:
 
 | Source | Reserved versions |
 |---|---|
-| Proxima core | `1..=9999`; `2..=7` retired pre-v0.0.4 rows |
+| Proxima core | `0001_v008.sql` (version 1) |
 | example/host migrators | timestamp versions ending `00..=19` |
 | first-party flavors | timestamp versions ending `20..=39` |
 | downstream host composition | timestamp versions ending `60..=99`; external hosts own collision avoidance when they compose migrators outside Proxima's facade |

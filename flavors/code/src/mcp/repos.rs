@@ -285,7 +285,7 @@ impl Tool for CodeIngestHeadSnapshotTool {
             let repo = crate::repos::get_repo(pool.pool(), &ctx.owner(), repo_id)
                 .await
                 .map_err(map_repo_registry)?
-                .ok_or_else(|| ToolError::InvalidInput(format!("repo not found: {repo_id}")))?;
+                .ok_or_else(|| ToolError::NotFound(format!("repo not found: {repo_id}")))?;
 
             let source = crate::LocalGitSource::new(
                 repo.repo_id,
@@ -308,13 +308,10 @@ impl Tool for CodeIngestHeadSnapshotTool {
             .await
             .map_err(map_repo_registry)?;
 
-            // Git ingest writes Facts and derived chunks directly through the
-            // flavor's own sidecar path, which carries no embedding client and
-            // so enqueues no embedding jobs. Without this, a freshly indexed
-            // repository is lexically searchable and semantically invisible —
-            // with nothing to indicate it, until someone happens to run
-            // `maintain-embeddings`. The backfill is owner-scoped and
-            // idempotent, so a re-poll that ingested nothing enqueues nothing.
+            // Present chunks enqueue embedding_jobs in the derive txn when
+            // the engine has a client. Backfill remains crash-residue for
+            // heads written without a model; it is one anti-join, not a
+            // second flavor-table scan.
             let embeddings_enqueued = engine
                 .backfill_missing_embeddings(ctx.authz(), &ctx.owner(), EMBEDDING_BACKFILL_LIMIT)
                 .await
@@ -323,7 +320,7 @@ impl Tool for CodeIngestHeadSnapshotTool {
             let repo = crate::repos::get_repo(pool.pool(), &ctx.owner(), repo.repo_id)
                 .await
                 .map_err(map_repo_registry)?
-                .ok_or_else(|| ToolError::InvalidInput(format!("repo not found: {repo_id}")))?;
+                .ok_or_else(|| ToolError::NotFound(format!("repo not found: {repo_id}")))?;
 
             Ok(CodeIngestHeadSnapshotOutput {
                 repo: repo_item(&ctx, repo)?,
@@ -502,8 +499,6 @@ pub struct CodeEraseRepoOutput {
     pub edges_deleted: u64,
     pub embeddings_deleted: u64,
     pub receipts_deleted: u64,
-    pub citation_mappings_deleted: u64,
-    pub cited_objects_deleted: u64,
     pub source_batches_deleted: u64,
     pub repo_record_deleted: bool,
 }
@@ -536,7 +531,7 @@ impl Tool for CodeEraseRepoTool {
             let repo = crate::repos::get_repo(pool.pool(), &ctx.owner(), repo_id)
                 .await
                 .map_err(map_repo_registry)?
-                .ok_or_else(|| ToolError::InvalidInput(format!("repo not found: {repo_id}")))?;
+                .ok_or_else(|| ToolError::NotFound(format!("repo not found: {repo_id}")))?;
 
             // Confirm against the stored path rather than the caller's, so a
             // handle typo cannot erase a different repository than the one
@@ -562,8 +557,6 @@ impl Tool for CodeEraseRepoTool {
                 edges_deleted: receipt.edges_deleted,
                 embeddings_deleted: receipt.embeddings_deleted,
                 receipts_deleted: receipt.receipts_deleted,
-                citation_mappings_deleted: receipt.citation_mappings_deleted,
-                cited_objects_deleted: receipt.cited_objects_deleted,
                 source_batches_deleted: receipt.source_batches_deleted,
                 repo_record_deleted: receipt.repo_record_deleted,
             })
@@ -603,7 +596,7 @@ fn map_repo_registry(error: RepoRegistryError) -> ToolError {
             "repo already registered for owner: {canonical_path}"
         )),
         RepoRegistryError::NotFound { repo_id } => {
-            ToolError::InvalidInput(format!("repo not found: {repo_id}"))
+            ToolError::NotFound(format!("repo not found: {repo_id}"))
         }
         RepoRegistryError::InvalidTargetBranch {
             repo_id,

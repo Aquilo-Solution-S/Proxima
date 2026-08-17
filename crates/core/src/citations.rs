@@ -1,6 +1,6 @@
 //! Core cited-object schemas, and the mappings that point Facts at them.
 //!
-//! A Fact reaches a cited object only through `Memory.citation_mapping_id`;
+//! A Fact reaches a cited object through `memory.blob_id` (0..1).
 //! `authorize_fact_with_citation` rejects a mapping whose
 //! `cited_object_schema()` does not target the object's schema.
 //!
@@ -24,7 +24,7 @@ use time::OffsetDateTime;
 use crate::{CitationMappingPayload, CitedObjectPayload, EntityKind, SchemaId};
 
 /// Which memory kinds may hold a direct citation
-/// (`Memory.citation_mapping_id`), at multiplicity 0..1 each.
+/// (`memory.blob_id`), at multiplicity 0..1 each.
 ///
 /// Fact and Abstraction, never Perspective. A Fact cites the artefact it
 /// was read from. An Abstraction cites its proof — a computed score is
@@ -66,7 +66,7 @@ impl CitedObjectPayload for UploadedBlobPayload {
     const SCHEMA_VERSION: u32 = 1;
 
     fn sidecar_table() -> &'static str {
-        "proxima_core.cited_uploaded_blob_v1"
+        ""
     }
 
     fn idempotency_key(&self) -> [u8; 32] {
@@ -76,8 +76,8 @@ impl CitedObjectPayload for UploadedBlobPayload {
 
 /// "This Fact came from that artefact", with no locator inside it.
 ///
-/// The common case, and a pure link: the whole mapping is the
-/// `citation_mappings` row, so there is no sidecar table (see
+/// The common case, and a pure link: the whole mapping is
+/// `memory.blob_id`, so there is no sidecar table (see
 /// `CitationMappingPayload::sidecar_table`, which defaults to `None` —
 /// do not mint an empty table to satisfy the trait).
 ///
@@ -156,7 +156,7 @@ impl CitationMappingPayload for UploadedBlobPageSpanV1 {
     const SCHEMA_VERSION: u32 = 1;
 
     fn sidecar_table() -> Option<&'static str> {
-        Some("proxima_core.citation_uploaded_blob_page_span_v1")
+        None
     }
 
     fn cited_object_schema() -> SchemaId {

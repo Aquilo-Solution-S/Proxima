@@ -3,12 +3,12 @@ use std::sync::Arc;
 
 use super::handles::{
     ChangeEventHandle, CitationHandle, ComplianceAdminHandle, ComplianceEraseHandle,
-    EdgeReadHandle, EmbeddingJobHandle, EmbeddingMaintenanceHandle, EmbeddingTextHandle,
-    EmbeddingWriteHandle, FactIngestHandle, FactRetentionHandle, GoalReadHandle,
-    GoalWakeCandidateHandle, GoalWriteHandle, McpCallReadHandle, McpCallWriteHandle,
-    MemoryAuthoringHandle, MemoryInspectHandle, MemoryReadHandle, OwnerAccessReadHandle,
-    OwnerDropProofHandle, OwnerMembershipAdminHandle, OwnerTransferHandle,
-    RegistryProjectionHandle, SourceBatchHandle, SourceCursorHandle,
+    EmbeddingJobHandle, EmbeddingMaintenanceHandle, EmbeddingTextHandle, EmbeddingWriteHandle,
+    FactIngestHandle, FactRetentionHandle, GoalReadHandle, GoalWakeCandidateHandle,
+    GoalWriteHandle, McpCallReadHandle, McpCallWriteHandle, MemoryAuthoringHandle,
+    MemoryInspectHandle, MemoryReadHandle, OwnerAccessReadHandle, OwnerDropProofHandle,
+    OwnerMembershipAdminHandle, OwnerTransferHandle, RegistryProjectionHandle, SourceBatchHandle,
+    SourceCursorHandle, WriteSessionFactoryHandle,
 };
 use super::rejecting::RejectingStorage;
 
@@ -29,11 +29,11 @@ pub struct StoragePorts {
     goal_read: GoalReadHandle,
     goal_wake_candidate: GoalWakeCandidateHandle,
     change_event: ChangeEventHandle,
-    edge_read: EdgeReadHandle,
     citation: CitationHandle,
     owner_access_read: OwnerAccessReadHandle,
     owner_membership_admin: OwnerMembershipAdminHandle,
     owner_transfer: OwnerTransferHandle,
+    #[allow(dead_code)]
     source_batch: SourceBatchHandle,
     source_cursor: SourceCursorHandle,
     fact_retention: FactRetentionHandle,
@@ -41,6 +41,7 @@ pub struct StoragePorts {
     compliance_admin: Option<ComplianceAdminHandle>,
     owner_drop_proof: Option<OwnerDropProofHandle>,
     registry_projection: RegistryProjectionHandle,
+    write_session: WriteSessionFactoryHandle,
 }
 
 #[derive(Clone)]
@@ -74,6 +75,7 @@ pub(crate) struct IngestStoragePorts {
     pub embedding_text: EmbeddingTextHandle,
     pub embedding_write: EmbeddingWriteHandle,
     pub embedding_job: EmbeddingJobHandle,
+    #[allow(dead_code)]
     pub source_batch: SourceBatchHandle,
 }
 
@@ -93,7 +95,6 @@ pub(crate) struct QueryStoragePorts {
     pub change_event: ChangeEventHandle,
     pub mcp_call_read: McpCallReadHandle,
     pub memory_read: MemoryReadHandle,
-    pub edge_read: EdgeReadHandle,
 }
 
 #[derive(Clone)]
@@ -129,6 +130,7 @@ pub(crate) struct EngineStoragePorts {
     pub pipeline: PipelineStoragePorts,
     pub query: QueryStoragePorts,
     pub read_verb: ReadVerbStoragePorts,
+    pub write_session: WriteSessionFactoryHandle,
 }
 
 #[derive(Default)]
@@ -147,7 +149,6 @@ pub struct StoragePortsBuilder {
     goal_read: Option<GoalReadHandle>,
     goal_wake_candidate: Option<GoalWakeCandidateHandle>,
     change_event: Option<ChangeEventHandle>,
-    edge_read: Option<EdgeReadHandle>,
     citation: Option<CitationHandle>,
     owner_access_read: Option<OwnerAccessReadHandle>,
     owner_membership_admin: Option<OwnerMembershipAdminHandle>,
@@ -159,6 +160,7 @@ pub struct StoragePortsBuilder {
     compliance_admin: Option<ComplianceAdminHandle>,
     owner_drop_proof: Option<OwnerDropProofHandle>,
     registry_projection: Option<RegistryProjectionHandle>,
+    write_session: Option<WriteSessionFactoryHandle>,
 }
 
 impl fmt::Debug for StoragePorts {
@@ -198,7 +200,6 @@ impl StoragePorts {
             goal_read: rejecting.clone(),
             goal_wake_candidate: rejecting.clone(),
             change_event: rejecting.clone(),
-            edge_read: rejecting.clone(),
             citation: rejecting.clone(),
             owner_access_read: rejecting.clone(),
             owner_membership_admin: rejecting.clone(),
@@ -210,6 +211,7 @@ impl StoragePorts {
             compliance_admin: None,
             owner_drop_proof: None,
             registry_projection: rejecting.clone(),
+            write_session: rejecting,
         }
     }
 
@@ -291,7 +293,6 @@ impl From<StoragePorts> for EngineStoragePorts {
                 change_event: ports.change_event.clone(),
                 mcp_call_read: ports.mcp_call_read.clone(),
                 memory_read: ports.memory_read.clone(),
-                edge_read: ports.edge_read.clone(),
             },
             read_verb: ReadVerbStoragePorts {
                 embedding_job: ports.embedding_job.clone(),
@@ -303,6 +304,7 @@ impl From<StoragePorts> for EngineStoragePorts {
                 goal_wake_candidate: ports.goal_wake_candidate.clone(),
                 goal_read: ports.goal_read.clone(),
             },
+            write_session: ports.write_session,
         }
     }
 }
@@ -393,12 +395,6 @@ impl StoragePortsBuilder {
     }
 
     #[must_use]
-    pub fn edge_read(mut self, handle: EdgeReadHandle) -> Self {
-        self.edge_read = Some(handle);
-        self
-    }
-
-    #[must_use]
     pub fn citation(mut self, handle: CitationHandle) -> Self {
         self.citation = Some(handle);
         self
@@ -464,6 +460,12 @@ impl StoragePortsBuilder {
         self
     }
 
+    #[must_use]
+    pub fn write_session(mut self, handle: WriteSessionFactoryHandle) -> Self {
+        self.write_session = Some(handle);
+        self
+    }
+
     /// Builds a complete storage port bundle, collecting every unconfigured
     /// required port into a typed error instead of panicking on the first one.
     ///
@@ -510,7 +512,6 @@ impl StoragePortsBuilder {
             goal_read,
             goal_wake_candidate,
             change_event,
-            edge_read,
             citation,
             owner_access_read,
             owner_membership_admin,
@@ -520,6 +521,7 @@ impl StoragePortsBuilder {
             fact_retention,
             compliance_erase,
             registry_projection,
+            write_session,
         ))
     }
 

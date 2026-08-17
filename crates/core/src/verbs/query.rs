@@ -26,6 +26,38 @@ pub enum SearchMode {
     Hybrid,
 }
 
+/// A `Hybrid` search ranked lexically only: it returned rows but none
+/// carry a positive semantic similarity (empty or unavailable embedding
+/// store). An empty result is a genuine no-match, not degradation.
+/// Restricted to `Hybrid`: pure `Semantic` has no lexical branch.
+#[must_use]
+pub const fn hybrid_degraded_to_lexical(
+    mode: SearchMode,
+    no_rows: bool,
+    any_semantic_score: bool,
+) -> bool {
+    matches!(mode, SearchMode::Hybrid) && !no_rows && !any_semantic_score
+}
+
+/// `%`-wrapped, `LIKE`-escaped, lowercased (`str::to_lowercase`, matching
+/// PG `lower`). Shared by every GIN-miss `LIKE … ESCAPE '\'` arm.
+#[must_use]
+pub fn like_pattern(query: &str) -> String {
+    let mut out = String::with_capacity(query.len() + 2);
+    out.push('%');
+    for ch in query.to_lowercase().chars() {
+        match ch {
+            '%' | '_' | '\\' => {
+                out.push('\\');
+                out.push(ch);
+            }
+            _ => out.push(ch),
+        }
+    }
+    out.push('%');
+    out
+}
+
 fn default_search_mode() -> SearchMode {
     SearchMode::Hybrid
 }
@@ -373,6 +405,14 @@ pub struct QueryRequest {
     /// `entity_kind == Some(EntityKind::Goal)`; other streams ignore it.
     #[serde(default)]
     pub goal_state: Option<GoalState>,
+    /// Goal-stream assignment filter (`goal.assignment_t`). Only
+    /// meaningful with `entity_kind == Some(EntityKind::Goal)`.
+    #[serde(default)]
+    pub assignment: Option<MemoryId>,
+    /// Goal-stream evidence filter (`$id = ANY(goal.evidence_t)`). Only
+    /// meaningful with `entity_kind == Some(EntityKind::Goal)`.
+    #[serde(default)]
+    pub evidence_contains: Option<MemoryId>,
     pub limit: u32,
     #[serde(default)]
     pub page: QueryPage,
@@ -405,6 +445,8 @@ impl QueryRequest {
             supersession: SupersessionStatus::HeadsOnly,
             tombstones: TombstoneFilter::PresentOnly,
             goal_state: None,
+            assignment: None,
+            evidence_contains: None,
             limit: 100,
             page: QueryPage::default(),
             include_payloads: true,
@@ -419,18 +461,37 @@ impl QueryRequest {
 /// (M2+); not modelled here.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MemoryRow {
+    /// Series handle.
+    pub handle: uuid::Uuid,
+    /// Version `t` (also [`MemoryId`]).
     pub id: MemoryId,
     pub kind: EntityKind,
     pub schema_id: SchemaId,
     pub schema_version: SchemaVersion,
     pub owner: Owner,
+    /// Made-from pins (`memory.origins`). Empty on Facts.
+    pub origins: Vec<MemoryId>,
+    /// Points-at pins (`memory.refs`).
+    pub refs: Vec<MemoryId>,
     /// Typed sidecar projection populated by storage at read time. Protocol
     /// adapters serialize it at the transport boundary.
     pub payload: Option<SidecarPayload>,
 }
 
+impl From<&MemoryRow> for crate::PinNode {
+    fn from(row: &MemoryRow) -> Self {
+        Self {
+            id: row.id,
+            kind: row.kind,
+            origins: row.origins.clone(),
+            refs: row.refs.clone(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct GoalRow {
+    pub handle: uuid::Uuid,
     pub id: GoalId,
     pub schema_id: SchemaId,
     pub schema_version: SchemaVersion,
@@ -440,7 +501,80 @@ pub struct GoalRow {
     pub state: GoalState,
     pub dependency_goal_ids: Vec<GoalId>,
     pub supersedes: Option<GoalId>,
+    /// Assigned Perspective (`goal.assignment_t`).
+    #[serde(default)]
+    pub assignment: Option<MemoryId>,
+    /// Evidence pins (`goal.evidence_t`).
+    #[serde(default)]
+    pub evidence: Vec<MemoryId>,
     pub payload: Vec<u8>,
+}
+
+/// Scalar bind for a sidecar-column series-handle lookup.
+///
+/// Flavor code names sidecar columns and values. Storage joins the
+/// registered sidecar to `memory_head`. No core table name crosses
+/// this type.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SidecarAtom {
+    Uuid(uuid::Uuid),
+    Text(String),
+    I32(i32),
+    I64(i64),
+    Bool(bool),
+}
+
+impl SidecarAtom {
+    /// Bind one JSON sidecar field as a series-handle atom.
+    ///
+    /// # Errors
+    ///
+    /// The value is not a UUID, text, bool, or integer.
+    pub fn from_json(column: &str, value: &serde_json::Value) -> Result<Self, String> {
+        match value {
+            serde_json::Value::String(text) => {
+                Ok(uuid::Uuid::parse_str(text)
+                    .map_or_else(|_| Self::Text(text.clone()), Self::Uuid))
+            }
+            serde_json::Value::Bool(flag) => Ok(Self::Bool(*flag)),
+            serde_json::Value::Number(number) => {
+                if let Some(n) = number.as_i64() {
+                    i32::try_from(n).map_or(Ok(Self::I64(n)), |n| Ok(Self::I32(n)))
+                } else {
+                    Err(format!("sidecar column {column} is not an integer atom"))
+                }
+            }
+            _ => Err(format!(
+                "sidecar column {column} is not a series-handle atom"
+            )),
+        }
+    }
+
+    /// Map a typed sidecar payload onto declared NK / series-key columns.
+    ///
+    /// # Errors
+    ///
+    /// The payload is not a JSON object, a declared column is missing, or a
+    /// value is not a sidecar atom.
+    pub fn bind_columns<P: serde::Serialize>(
+        payload: &P,
+        columns: &[&str],
+    ) -> Result<Vec<(String, Self)>, String> {
+        let value = serde_json::to_value(payload)
+            .map_err(|err| format!("sidecar payload is not JSON: {err}"))?;
+        let object = value
+            .as_object()
+            .ok_or_else(|| "sidecar payload must serialize as a JSON object".to_string())?;
+        columns
+            .iter()
+            .map(|column| {
+                let raw = object.get(*column).ok_or_else(|| {
+                    format!("sidecar payload missing natural-key column {column}")
+                })?;
+                Ok(((*column).to_string(), Self::from_json(column, raw)?))
+            })
+            .collect()
+    }
 }
 
 /// Edge listing filter. Every field is a narrowing predicate over the
@@ -508,7 +642,7 @@ pub struct QueryResponse {
 
 #[cfg(test)]
 mod tests {
-    use super::{SearchOrder, TagMatch};
+    use super::{SearchOrder, TagMatch, like_pattern};
 
     #[test]
     fn tag_match_and_order_accept_mixed_case() {
@@ -528,5 +662,17 @@ mod tests {
             serde_json::from_value::<SearchOrder>(serde_json::json!("RELEVANCE")).unwrap(),
             SearchOrder::Relevance
         );
+    }
+
+    #[test]
+    fn like_pattern_lowercases_the_way_postgres_does() {
+        assert_eq!(like_pattern("MÜNCHEN.RS"), "%münchen.rs%");
+        assert_eq!(like_pattern("Straße"), "%straße%");
+        assert_eq!(like_pattern("ÅNGSTRÖM"), "%ångström%");
+    }
+
+    #[test]
+    fn like_pattern_escapes_wildcards() {
+        assert_eq!(like_pattern("a_b%c\\d"), "%a\\_b\\%c\\\\d%");
     }
 }

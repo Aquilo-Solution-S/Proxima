@@ -1,4 +1,7 @@
-use proxima_core::{AbstractionPayload, proxima_schema_id};
+use proxima_core::{
+    AbstractionPayload, SearchProjection, SearchProjectionColumnKind, SearchProjectionField,
+    proxima_schema_id,
+};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -6,9 +9,8 @@ use serde::{Deserialize, Serialize};
 /// Fact, its file-revision Facts, and derived code-slice/call
 /// intelligence for the closed source-batch.
 ///
-/// The Abstraction's `text` (operator-authored narrative) lives on
-/// the substrate `memories.text` column; this sidecar carries the
-/// typed structured fields.
+/// The Abstraction's `text` (operator-authored narrative) is the
+/// search/embed body; this sidecar carries the typed structured fields.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct CommitSummaryV1 {
     #[schemars(
@@ -39,6 +41,29 @@ impl AbstractionPayload for CommitSummaryV1 {
     const SCHEMA_VERSION: u32 = 1;
     fn sidecar_table() -> &'static str {
         "proxima_code.commit_summary_v1"
+    }
+
+    fn search_projection() -> Option<SearchProjection> {
+        Some(SearchProjection {
+            fields: &[
+                SearchProjectionField {
+                    column: "commit_sha",
+                    kind: SearchProjectionColumnKind::Text,
+                },
+                SearchProjectionField {
+                    column: "summary",
+                    kind: SearchProjectionColumnKind::Text,
+                },
+                SearchProjectionField {
+                    column: "key_files",
+                    kind: SearchProjectionColumnKind::TextArray,
+                },
+            ],
+            tag_column: None,
+            tsv_column: Some("search_tsv"),
+            embed_text_column: Some("embed_text"),
+            language_column: None,
+        })
     }
 
     fn json_schema() -> Option<serde_json::Value> {

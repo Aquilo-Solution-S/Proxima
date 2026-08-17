@@ -120,6 +120,15 @@ pub struct FactReceiptDraft {
 pub struct FactWriteCommand {
     pub schema_id: SchemaId,
     pub schema_version: SchemaVersion,
+    /// Series id. `None` ⇒ storage mints `uuidv7()`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub handle: Option<Uuid>,
+    /// Source identity. Set iff `ingest_key` is set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_id: Option<String>,
+    /// Source-declared delivery id. Same `(owner, source, ingest_key)` replays.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ingest_key: Option<String>,
     /// Schema-owned receipt replay key material. The typed payload itself
     /// lives in the registered sidecar.
     pub payload: Vec<u8>,
@@ -148,6 +157,15 @@ pub struct FactWriteCommand {
     /// the declaration, and a receipt replay must stay a replay.
     #[serde(default, skip)]
     pub derived_from: Vec<EdgeEndpoint>,
+    /// Observation-neutral pins (visit, write-act, parent).
+    #[serde(default, skip)]
+    pub refs: Vec<Uuid>,
+    /// F/A citation. Perspectives must leave this `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blob_id: Option<Uuid>,
+    /// `fact` | `abstraction` | `perspective`. Default fact.
+    #[serde(default)]
+    pub kind: String,
 }
 
 /// Proof that a Fact write passed authorization + schema validation
@@ -611,20 +629,27 @@ impl FactWriteCommand {
         payload: &P,
         observed_at: time::OffsetDateTime,
     ) -> Self {
+        let source_id = source_id.into();
         Self {
             schema_id: P::schema_id(),
             schema_version: SchemaVersion::new(P::SCHEMA_VERSION),
+            handle: None,
+            source_id: Some(source_id.clone()),
+            ingest_key: Some(hex::encode(payload.receipt_key())),
             payload: payload.receipt_key(),
             rendered_text: Some(payload.render()),
             lexical_language: None,
             receipt: Some(FactReceiptDraft {
-                source_id: SourceId::new(source_id.into()),
+                source_id: SourceId::new(source_id),
                 source_batch_id,
                 observed_at,
                 occurred_at: observed_at,
             }),
             citation: None,
             derived_from: Vec::new(),
+            refs: Vec::new(),
+            blob_id: None,
+            kind: "fact".into(),
         }
     }
 
@@ -641,6 +666,13 @@ impl FactWriteCommand {
     #[must_use]
     pub fn with_citation(mut self, citation: impl Into<Citation>) -> Self {
         self.citation = Some(citation.into());
+        self
+    }
+
+    /// Reuse an existing series handle, or leave `None` for storage to mint.
+    #[must_use]
+    pub const fn with_handle(mut self, handle: Option<Uuid>) -> Self {
+        self.handle = handle;
         self
     }
 
@@ -686,7 +718,10 @@ impl FactWriteCommand {
 pub struct FactIngestOutcome {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub receipt_id: Option<FactReceiptId>,
+    /// Version `t`. Alias of the row id.
     pub memory_id: MemoryId,
+    /// Series handle.
+    pub handle: Uuid,
     pub change_event_seq: Uuid,
     /// True iff the same receipt id was already ingested.
     /// Receiptless Facts are never receipt-replayed.
@@ -721,6 +756,9 @@ mod tests {
         FactWriteCommand {
             schema_id: SchemaId::new("test/fact".to_string()),
             schema_version: SchemaVersion::new(1),
+            handle: None,
+            source_id: None,
+            ingest_key: None,
             payload,
             rendered_text: None,
             lexical_language: None,
@@ -732,6 +770,9 @@ mod tests {
             }),
             citation: None,
             derived_from: Vec::new(),
+            refs: Vec::new(),
+            blob_id: None,
+            kind: "fact".into(),
         }
     }
 
@@ -763,6 +804,9 @@ mod tests {
         let draft = FactWriteCommand {
             schema_id: SchemaId::new("golden/fact".to_string()),
             schema_version: SchemaVersion::new(1),
+            handle: None,
+            source_id: None,
+            ingest_key: None,
             payload: b"golden-payload".to_vec(),
             rendered_text: None,
             lexical_language: None,
@@ -774,6 +818,9 @@ mod tests {
             }),
             citation: None,
             derived_from: Vec::new(),
+            refs: Vec::new(),
+            blob_id: None,
+            kind: "fact".into(),
         };
         assert_eq!(
             hex::encode(

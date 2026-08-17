@@ -1,17 +1,19 @@
+use std::collections::HashMap;
+
 use proxima_core::storage_ports::OwnerWritePermit;
 use proxima_core::verbs::fact_ingest::{CitationSpec, FactIngestOutcome};
+use proxima_core::verbs::query::SidecarAtom;
 use proxima_core::{
-    AbstractionPayload, DerivedEmbedding, EdgeEndpoint, EntityKind, FactPayload, InputContractId,
-    MemoryId, MemoryOperatorKind, OperatorId, PayloadReference, SchemaVersion, SourceBatchId,
+    AbstractionPayload, AuthorDerivedAuthorizedOutcome, AuthorDerivedRequestInput, AuthzContext,
+    EdgeEndpoint, Engine, EntityKind, InputContractId, MemoryId, MemoryOperatorKind, OperatorId,
+    Owner, SchemaVersion, SidecarPayload, SourceBatchId, TypedFactIngest,
 };
-use proxima_storage_pg::sidecars::PgMemorySidecar;
-use proxima_storage_pg::verbs::derive_append::{
-    DerivedBatchEntry, DerivedDraft, DerivedOutcome, append_derived_batch_with_edges_in_tx,
-};
-use proxima_storage_pg::verbs::fact_ingest::{FactIngestContext, ingest_fact_with_sidecar};
+use proxima_storage_pg::query::ChunkSeriesHead;
 use sqlx::PgPool;
+use uuid::Uuid;
 
 use crate::payloads::{CodeChunkV1, CommitV1, FileRevisionV1};
+use crate::store::CodeFlavorStore;
 
 use super::IngestError;
 use super::schemas::{
@@ -21,29 +23,15 @@ use super::schemas::{
 
 const CODE_SLICE_OPERATOR_MODEL: &str = "proxima-code/local-git-source";
 
-/// Version of the code-slice derivation, carried in chunk identity.
+/// Version of the code-slice derivation, carried in the input-contract id.
 ///
-/// A code chunk's `memory_id` is a v5 UUID over its position — source file
-/// revision, repo, path, chunk index, state — deliberately stable across
-/// re-ingests, because chunking the same blob twice must not mint a second
-/// memory. `append_derived_with_edges_in_tx` inserts `ON CONFLICT
-/// (memory_id) DO NOTHING`, so without this prefix a chunker or render change
-/// would derive every file to exactly the same ids and silently discard the
-/// new text.
-///
-/// Bump it whenever the bytes a chunk carries stop being a pure function of
-/// its position: chunker boundaries, `render_code_slice`, the payload's
-/// stored fields.
-///
-/// Bumping it does **not** make an existing index re-derive itself. A HEAD
-/// snapshot skips files whose blob hash has not moved, and that skip cannot
-/// simply be lifted: `validate_ftoa_input_batch` requires a derived
-/// Abstraction to carry the same `source_batch_id` as the Facts it came from,
-/// so re-deriving an unchanged file would stamp new chunks with a batch its
-/// already-receipted Fact does not belong to. The supported path is
-/// `proxima-code_erase_repo` followed by a fresh register and ingest, which
-/// produces new Facts in new batches. The two derivations can never collide
-/// on an id, so a stale chunk cannot masquerade as a current one.
+/// The series handle is looked up per `(owner, repo, path, index)` and
+/// reused; each revision is a new `t`. Bump this prefix when chunker
+/// boundaries, `render_code_slice`, or stored fields change — the
+/// contract id must not collide with a previous derivation of the same
+/// position. A HEAD snapshot still skips unchanged blobs; re-derive
+/// after a chunker change is `proxima-code_erase_repo` plus a fresh
+/// register.
 const CODE_SLICE_IDENTITY: &[u8] = b"proxima-code/code-slice:local-git-file-facts-v3";
 const CODE_SLICE_PROMPT_VERSION: &str = "code-slice-v3";
 
@@ -76,21 +64,18 @@ fn code_slice_input_contract_id(
     ))
 }
 
-/// The positional key both code-slice ids are derived from, prefixed with
-/// [`CODE_SLICE_IDENTITY`] so a derivation change reaches both of them.
+/// Positional key for the input-contract id. The series handle is not
+/// derived from this — it is looked up per owner + natural key.
 fn code_slice_identity_key(payload: &CodeChunkV1, source_file_revision: MemoryId) -> Vec<u8> {
     let mut key = Vec::with_capacity(128 + payload.file_path.len());
     key.extend_from_slice(CODE_SLICE_IDENTITY);
-    key.push(0);
-    key.extend_from_slice(source_file_revision.into_inner().as_bytes());
     key.push(0);
     key.extend_from_slice(payload.repo_id.as_bytes());
     key.push(0);
     key.extend_from_slice(payload.file_path.as_bytes());
     key.push(0);
     key.extend_from_slice(&payload.chunk_index.to_be_bytes());
-    key.push(0);
-    key.extend_from_slice(payload.state_marker().as_bytes());
+    let _ = source_file_revision;
     key
 }
 
@@ -99,55 +84,148 @@ fn code_slice_identity_key(payload: &CodeChunkV1, source_file_revision: MemoryId
 /// callers can safely call this after no-op polls (no events → no
 /// batch row was ever inserted).
 pub async fn close_local_git_batch(
-    pool: &PgPool,
-    permit: &OwnerWritePermit,
-    source_batch_id: SourceBatchId,
+    _pool: &PgPool,
+    _permit: &OwnerWritePermit,
+    _source_batch_id: SourceBatchId,
 ) -> Result<(), IngestError> {
-    match proxima_storage_pg::verbs::close_batch::close_batch(pool, permit, source_batch_id).await {
-        Ok(_) | Err(proxima_core::StorageError::NotFound) => Ok(()),
-        Err(e) => Err(e.into()),
-    }
-}
-
-fn local_git_context(
-    permit: &OwnerWritePermit,
-    source_batch_id: SourceBatchId,
-    observed_at: time::OffsetDateTime,
-) -> FactIngestContext<'_> {
-    FactIngestContext::new(permit, LOCAL_GIT_SOURCE_ID, source_batch_id).observed_at(observed_at)
+    Ok(())
 }
 
 async fn ingest_local_git_fact<P>(
-    pool: &PgPool,
-    permit: &OwnerWritePermit,
+    engine: &Engine,
+    authz: &AuthzContext,
     source_batch_id: SourceBatchId,
     payload: &P,
     citation: CitationSpec,
     observed_at: time::OffsetDateTime,
 ) -> Result<FactIngestOutcome, IngestError>
 where
-    P: FactPayload + PgMemorySidecar + Clone,
+    P: proxima_core::FactPayload + Clone,
 {
-    let ctx = local_git_context(permit, source_batch_id, observed_at);
-    let mut tx = pool.begin().await?;
-    let outcome = ingest_fact_with_sidecar(&mut tx, &ctx, payload, citation).await?;
-    tx.commit().await?;
-    Ok(outcome)
+    engine
+        .ingest_typed_fact_with(
+            authz,
+            TypedFactIngest::new(LOCAL_GIT_SOURCE_ID, payload)
+                .source_batch_id(source_batch_id)
+                .observed_at(observed_at)
+                .citation(citation),
+        )
+        .await
+        .map_err(IngestError::from)
+}
+
+/// Current series handle for this owner's chunk at `(repo, path, index)`.
+///
+/// Miss after World transfer is expected: that series is no longer this
+/// owner's. The caller mints a new handle.
+pub async fn existing_code_chunk_handle(
+    engine: &Engine,
+    authz: &AuthzContext,
+    owner: proxima_core::Owner,
+    repo_id: uuid::Uuid,
+    file_path: &str,
+    chunk_index: u32,
+) -> Result<Option<uuid::Uuid>, IngestError> {
+    let chunk_index = i32::try_from(chunk_index).unwrap_or(i32::MAX);
+    Ok(engine
+        .owned_series_handle(
+            authz,
+            owner,
+            &<CodeChunkV1 as AbstractionPayload>::schema_id(),
+            <CodeChunkV1 as AbstractionPayload>::sidecar_table(),
+            &[
+                ("repo_id", SidecarAtom::Uuid(repo_id)),
+                ("file_path", SidecarAtom::Text(file_path.to_string())),
+                ("chunk_index", SidecarAtom::I32(chunk_index)),
+            ],
+        )
+        .await?)
+}
+
+/// Reuse listed series handles, or mint. One file per call.
+///
+/// # Errors
+///
+/// `Storage` when payloads mix `(repo_id, file_path)` or a listed
+/// `chunk_index` is not a `u32`.
+pub fn assign_code_chunk_handles(
+    heads: &[ChunkSeriesHead],
+    payloads: &[CodeChunkV1],
+) -> Result<Vec<Uuid>, IngestError> {
+    if let Some(first) = payloads.first() {
+        for payload in payloads {
+            if payload.repo_id != first.repo_id || payload.file_path != first.file_path {
+                return Err(IngestError::Storage(
+                    "code slice resolve requires one (repo_id, file_path)".into(),
+                ));
+            }
+        }
+    }
+    let mut by_index = HashMap::with_capacity(heads.len());
+    for head in heads {
+        let index = u32::try_from(head.chunk_index).map_err(|err| {
+            IngestError::Storage(format!(
+                "invalid code chunk index {}: {err}",
+                head.chunk_index
+            ))
+        })?;
+        if by_index.insert(index, head.handle).is_some() {
+            return Err(IngestError::Storage(format!(
+                "duplicate chunk_index {index} at current head"
+            )));
+        }
+    }
+    Ok(payloads
+        .iter()
+        .map(|payload| {
+            by_index
+                .get(&payload.chunk_index)
+                .copied()
+                .unwrap_or_else(Uuid::now_v7)
+        })
+        .collect())
+}
+
+/// One handle per payload: one file listing, then [`assign_code_chunk_handles`].
+///
+/// Call once per file before filling `calls` and writing, so intra-file
+/// callees share the same series ids the drafts will use.
+pub async fn resolve_code_chunk_handles(
+    store: &CodeFlavorStore,
+    owner: Owner,
+    payloads: &[CodeChunkV1],
+) -> Result<Vec<Uuid>, IngestError> {
+    if payloads.is_empty() {
+        return Ok(Vec::new());
+    }
+    let first = &payloads[0];
+    for payload in payloads {
+        if payload.repo_id != first.repo_id || payload.file_path != first.file_path {
+            return Err(IngestError::Storage(
+                "code slice resolve requires one (repo_id, file_path)".into(),
+            ));
+        }
+    }
+    let heads = store
+        .owned_chunk_series_heads(owner, first.repo_id, &first.file_path)
+        .await
+        .map_err(|err| IngestError::Storage(err.to_string()))?;
+    assign_code_chunk_handles(&heads, payloads)
 }
 
 /// Atomic Fact + sidecar write for `commit-v1`. Cites the commit
 /// object (keyed by blake3 of the commit sha) with a "whole-commit"
 /// CitationMapping.
 pub async fn ingest_commit(
-    pool: &PgPool,
-    permit: &OwnerWritePermit,
+    engine: &Engine,
+    authz: &AuthzContext,
     source_batch_id: SourceBatchId,
     payload: &CommitV1,
     observed_at: time::OffsetDateTime,
 ) -> Result<FactIngestOutcome, IngestError> {
     ingest_local_git_fact(
-        pool,
-        permit,
+        engine,
+        authz,
         source_batch_id,
         payload,
         CitationSpec::v1(
@@ -164,15 +242,15 @@ pub async fn ingest_commit(
 /// file blob (keyed by `content_sha256`) with a "whole-blob"
 /// CitationMapping. Tombstones cite the null blob (`[0u8; 32]`).
 pub async fn ingest_file_revision(
-    pool: &PgPool,
-    permit: &OwnerWritePermit,
+    engine: &Engine,
+    authz: &AuthzContext,
     source_batch_id: SourceBatchId,
     payload: &FileRevisionV1,
     observed_at: time::OffsetDateTime,
 ) -> Result<FactIngestOutcome, IngestError> {
     ingest_local_git_fact(
-        pool,
-        permit,
+        engine,
+        authz,
         source_batch_id,
         payload,
         CitationSpec::v1(
@@ -191,10 +269,8 @@ pub async fn ingest_file_revision(
 /// `reference` entry per callee each chunk's payload names.
 ///
 /// The whole file lands as one group in one transaction, because the group
-/// refers to itself: chunk 2 calls chunk 7 and chunk 7 calls chunk 2, and an
-/// index row cannot point at a node that is not there yet. Every chunk id is
-/// a pure function of its position, so all of them can be named before any of
-/// them is written — see [`code_slice_memory_id_for`].
+/// refers to itself. Series handles are resolved first
+/// ([`resolve_code_chunk_handles`]) so callees can be named before insert.
 ///
 /// The flavor names endpoints and content; it never names a kind. Origins are
 /// what these writes say they were made from, references are read back off
@@ -206,89 +282,118 @@ pub async fn ingest_file_revision(
 /// callers must materialize all batch Facts and close `source_batch_id`
 /// before invoking this helper. This helper deliberately does not write
 /// an event, source batch, or Fact citation.
+#[allow(clippy::too_many_arguments)]
 pub async fn append_code_slices(
-    pool: &PgPool,
-    permit: &OwnerWritePermit,
+    engine: &Engine,
+    authz: &AuthzContext,
+    owner: Owner,
+    source_batch_id: SourceBatchId,
+    store: &CodeFlavorStore,
+    payloads: &[CodeChunkV1],
+    source_file_revision: MemoryId,
+    source_commit: Option<MemoryId>,
+) -> Result<Vec<AuthorDerivedAuthorizedOutcome>, IngestError> {
+    let handles = resolve_code_chunk_handles(store, owner, payloads).await?;
+    append_code_slices_with_handles(
+        engine,
+        authz,
+        owner,
+        source_batch_id,
+        payloads,
+        source_file_revision,
+        source_commit,
+        &handles,
+    )
+    .await
+}
+
+/// [`append_code_slices`] when the caller already resolved series handles
+/// (intra-file call naming).
+#[allow(clippy::too_many_arguments)]
+pub async fn append_code_slices_with_handles(
+    engine: &Engine,
+    authz: &AuthzContext,
+    owner: Owner,
     source_batch_id: SourceBatchId,
     payloads: &[CodeChunkV1],
     source_file_revision: MemoryId,
     source_commit: Option<MemoryId>,
-) -> Result<Vec<DerivedOutcome>, IngestError> {
+    handles: &[uuid::Uuid],
+) -> Result<Vec<AuthorDerivedAuthorizedOutcome>, IngestError> {
+    if payloads.len() != handles.len() {
+        return Err(IngestError::Storage(
+            "code slice handle count must match payload count".into(),
+        ));
+    }
     if payloads.is_empty() {
         return Ok(Vec::new());
     }
-    let owner = permit.owner();
     let mut origins = vec![EdgeEndpoint::memory(EntityKind::Fact, source_file_revision)];
     if let Some(commit) = source_commit {
         origins.push(EdgeEndpoint::memory(EntityKind::Fact, commit));
     }
-    let drafts = payloads
-        .iter()
-        .map(|payload| DerivedDraft {
-            memory_id: code_slice_memory_id(payload, source_file_revision),
-            owner: *owner,
-            kind: EntityKind::Abstraction,
-            schema_id: <CodeChunkV1 as AbstractionPayload>::schema_id(),
-            schema_version: SchemaVersion::new(CodeChunkV1::SCHEMA_VERSION),
-            text: render_code_slice(payload),
-            operator_kind: MemoryOperatorKind::FtoA,
-            operator_id: code_slice_operator_id(),
-            input_contract_id: code_slice_input_contract_id(payload, source_file_revision),
-            source_batch_id: Some(source_batch_id),
-            model_id: CODE_SLICE_OPERATOR_MODEL,
-            prompt_version: CODE_SLICE_PROMPT_VERSION,
-            authoring_perspective_id: None,
-            supersedes: None,
-            // Chunks pin english on every surface (see CODE_LEXICAL_LANGUAGE):
-            // this stamps the owning memories row, the sidecar mirrors the pin
-            // via its column default, and passing it here (not None) keeps
-            // 'english' registered as an active language on every ingest.
-            lexical_language: Some(crate::payloads::CODE_LEXICAL_LANGUAGE),
-            embedding: DerivedEmbedding::None,
-        })
-        .collect::<Vec<_>>();
-    let references = payloads
-        .iter()
-        .map(payload_reference_endpoints)
-        .collect::<Result<Vec<_>, _>>()?;
-    let entries = drafts
-        .iter()
-        .zip(&references)
-        .map(|(draft, references)| DerivedBatchEntry {
-            draft,
-            origins: &origins,
-            references,
-        })
-        .collect::<Vec<_>>();
-
-    let mut tx = pool.begin().await?;
-    let outcomes =
-        append_derived_batch_with_edges_in_tx(&mut tx, permit, &entries, |index, tx, outcome| {
-            let payload = payloads[index].clone();
-            Box::pin(async move { payload.insert_memory_sidecar(tx, outcome.memory_id).await })
-        })
-        .await?;
-    tx.commit().await?;
+    let mut uow = engine.unit_of_work(authz).await?;
+    let mut outcomes = Vec::with_capacity(payloads.len());
+    for (payload, handle) in payloads.iter().zip(handles) {
+        // Chunks pin english on every surface (see CODE_LEXICAL_LANGUAGE).
+        let outcome = uow
+            .author_derived(AuthorDerivedRequestInput {
+                memory_id: MemoryId::new(*handle),
+                owner,
+                kind: EntityKind::Abstraction,
+                text: render_code_slice(payload),
+                schema_id: <CodeChunkV1 as AbstractionPayload>::schema_id(),
+                schema_version: SchemaVersion::new(CodeChunkV1::SCHEMA_VERSION),
+                operator_kind: MemoryOperatorKind::FtoA,
+                operator_id: code_slice_operator_id(),
+                input_contract_id: code_slice_input_contract_id(payload, source_file_revision),
+                source_batch_id: Some(source_batch_id),
+                model_id: CODE_SLICE_OPERATOR_MODEL,
+                prompt_version: CODE_SLICE_PROMPT_VERSION,
+                sidecar_payload: SidecarPayload::abstraction(payload.clone()),
+                authoring_perspective_id: None,
+                derived_from: &origins,
+                supersedes: None,
+                lexical_language: Some(crate::payloads::CODE_LEXICAL_LANGUAGE),
+            })
+            .await?;
+        outcomes.push(outcome);
+    }
+    uow.commit().await?;
     Ok(outcomes)
 }
 
 /// One code slice, on its own. The tombstone path writes a single chunk that
 /// declares no calls, so it needs no group.
+#[allow(clippy::too_many_arguments)]
 pub async fn append_code_slice(
-    pool: &PgPool,
-    permit: &OwnerWritePermit,
+    engine: &Engine,
+    authz: &AuthzContext,
+    owner: Owner,
     source_batch_id: SourceBatchId,
     payload: &CodeChunkV1,
     source_file_revision: MemoryId,
     source_commit: Option<MemoryId>,
-) -> Result<DerivedOutcome, IngestError> {
-    let outcomes = append_code_slices(
-        pool,
-        permit,
+) -> Result<AuthorDerivedAuthorizedOutcome, IngestError> {
+    let handle = existing_code_chunk_handle(
+        engine,
+        authz,
+        owner,
+        payload.repo_id,
+        &payload.file_path,
+        payload.chunk_index,
+    )
+    .await?
+    .unwrap_or_else(Uuid::now_v7);
+    let outcomes = append_code_slices_with_handles(
+        engine,
+        authz,
+        owner,
         source_batch_id,
         std::slice::from_ref(payload),
         source_file_revision,
         source_commit,
+        &[handle],
     )
     .await?;
     outcomes
@@ -297,44 +402,21 @@ pub async fn append_code_slice(
         .ok_or_else(|| IngestError::Storage("code slice batch returned no outcome".into()))
 }
 
-/// Read the payload's schema-declared references and check each binding
-/// against the address form it produced, before handing storage the
-/// endpoints. `validate` is what catches a hand-built declaration whose
-/// binding and address disagree; the constructors cannot produce one.
-fn payload_reference_endpoints(payload: &CodeChunkV1) -> Result<Vec<EdgeEndpoint>, IngestError> {
-    <CodeChunkV1 as AbstractionPayload>::references(payload)
-        .into_iter()
-        .map(|reference: PayloadReference| {
-            reference.validate().map_err(IngestError::Storage)?;
-            Ok(reference.target)
-        })
-        .collect()
-}
-
-/// Deterministic id of the code slice at this position in this file
-/// revision.
-///
-/// Public because call resolution needs it: a caller chunk's payload names
-/// its callee chunks, so every chunk of a file has to be addressable
-/// *before* any of them is written.
+/// Deterministic input-contract material for this position. Not the
+/// series handle — resolve that with [`resolve_code_chunk_handles`].
 #[must_use]
 pub fn code_slice_memory_id_for(payload: &CodeChunkV1, source_file_revision: MemoryId) -> MemoryId {
-    MemoryId::new(code_slice_memory_id(payload, source_file_revision))
-}
-
-fn code_slice_memory_id(payload: &CodeChunkV1, source_file_revision: MemoryId) -> uuid::Uuid {
-    uuid::Uuid::new_v5(
+    MemoryId::new(uuid::Uuid::new_v5(
         &CODE_SLICE_NAMESPACE,
         &code_slice_identity_key(payload, source_file_revision),
-    )
+    ))
 }
 
 /// The chunk's rendered form: a `path:start-end` header line followed by
 /// the chunk body.
 ///
-/// The render is `memories.text`, and `memories.text` is what the embedding
-/// pipeline embeds (`fact_embeddings::text::load_embedding_text`) and what
-/// `memories.search_tsv` is generated from. Header plus body: the header
+/// The render is what the embedding pipeline embeds
+/// (`fact_embeddings::text::load_embedding_text`). Header plus body: the header
 /// makes a retrieved chunk actionable (file and lines) and carries lexical
 /// signal from the path; the body is what a question about the code matches.
 fn render_code_slice(payload: &CodeChunkV1) -> String {
@@ -362,5 +444,53 @@ impl CodeSliceStateMarker for CodeChunkV1 {
             crate::payloads::FileState::Present => "Present",
             crate::payloads::FileState::Tombstone => "Tombstone",
         }
+    }
+}
+
+#[cfg(test)]
+mod assign_tests {
+    use super::{CodeChunkV1, assign_code_chunk_handles};
+    use crate::payloads::FileState;
+    use proxima_storage_pg::query::ChunkSeriesHead;
+    use uuid::Uuid;
+
+    fn chunk(repo: Uuid, path: &str, index: u32) -> CodeChunkV1 {
+        CodeChunkV1 {
+            repo_id: repo,
+            file_path: path.to_string(),
+            chunk_index: index,
+            text: String::new(),
+            language: None,
+            chunk_type: "block".into(),
+            byte_range_start: 0,
+            byte_range_end: 0,
+            line_range_start: 0,
+            line_range_end: 0,
+            state: FileState::Present,
+            calls: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn assign_reuses_listed_handle_and_mints_unknown_index() {
+        let repo = Uuid::now_v7();
+        let listed = Uuid::now_v7();
+        let heads = [ChunkSeriesHead {
+            chunk_index: 0,
+            handle: listed,
+            state: "Present".into(),
+        }];
+        let payloads = [chunk(repo, "a.rs", 0), chunk(repo, "a.rs", 1)];
+        let handles = assign_code_chunk_handles(&heads, &payloads).expect("assign");
+        assert_eq!(handles[0], listed);
+        assert_ne!(handles[1], listed);
+    }
+
+    #[test]
+    fn assign_rejects_mixed_file() {
+        let repo = Uuid::now_v7();
+        let payloads = [chunk(repo, "a.rs", 0), chunk(repo, "b.rs", 0)];
+        let err = assign_code_chunk_handles(&[], &payloads).expect_err("mixed");
+        assert!(err.to_string().contains("(repo_id, file_path)"), "{err}");
     }
 }

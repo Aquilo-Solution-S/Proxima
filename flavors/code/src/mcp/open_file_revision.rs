@@ -1,5 +1,4 @@
-use proxima_core::verbs::query::{EdgeFilter, EdgeReadRequest};
-use proxima_core::{EdgeKind, EntityRef, MemoryId, Tool, ToolCtx, ToolError};
+use proxima_core::{Tool, ToolCtx, ToolError};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -7,7 +6,7 @@ use crate::payloads::{CodeChunkV1, FileRevisionV1, FileState};
 
 use super::CodeToolCtxExt;
 use super::code_store;
-use super::sql::{map_storage, resolve_repo_identifier};
+use super::sql::resolve_repo_identifier;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct CodeOpenFileRevisionArgs {
@@ -110,28 +109,11 @@ impl Tool for CodeOpenFileRevisionTool {
             let pool = code_store(&ctx)?;
             let engine = super::engine(&ctx)?;
 
-            // Sidecar-only candidate scan (no owner filter — `memory_id` is a
-            // UUIDv7 for Fact rows, so ordering by it is a valid recency
-            // proxy without touching `proxima_core.*`). The authorized fetch
-            // below resolves the true owner-or-World head via
-            // `FileRevisionV1::natural_key_columns` heads-only supersession.
-            let revision_candidates: Vec<MemoryCandidateRow> = sqlx::query_as(
-                "SELECT fr.memory_id
-                   FROM proxima_code.file_revision_v1 fr
-                  WHERE fr.repo_id = $1
-                    AND fr.file_path = $2
-                  ORDER BY fr.memory_id DESC
-                  LIMIT 200",
-            )
-            .bind(repo_id)
-            .bind(&args.file_path)
-            .fetch_all(pool.pool())
-            .await
-            .map_err(map_storage)?;
-            let revision_ids = revision_candidates
-                .iter()
-                .map(|row| row.memory_id)
-                .collect::<Vec<_>>();
+            // Current `memory_head` of the (owner ∪ World) series for this
+            // path. Query decides visibility; owner `t` is listed first.
+            let revision_ids = pool
+                .readable_file_revision_head_ts(ctx.owner(), repo_id, &args.file_path)
+                .await?;
             let revision_with_id = pool
                 .authorized_fact_payloads_include_tombstones::<FileRevisionV1>(
                     &engine,
@@ -179,34 +161,13 @@ impl Tool for CodeOpenFileRevisionTool {
                 });
             }
 
-            let revision_memory_id = revision_memory_id
-                .ok_or_else(|| ToolError::Other("authorized revision disappeared".into()))?;
+            if revision_memory_id.is_none() {
+                return Err(ToolError::Other("authorized revision disappeared".into()));
+            }
 
-            // The current head file revision's own `origin` in-edges are
-            // exactly its current chunk set (each commit's F->A pass
-            // re-derives the full chunk set for every file it touches), so
-            // no separate core-table dedup is needed here — restricting to
-            // this one authorized revision id is precise on its own.
-            let derived_edges = engine
-                .read_edges(
-                    ctx.authz(),
-                    &EdgeReadRequest {
-                        owner: ctx.owner(),
-                        filter: EdgeFilter {
-                            kind: Some(EdgeKind::Origin),
-                            source: None,
-                            target: Some(EntityRef::Memory(revision_memory_id)),
-                        },
-                        limit: 2_000,
-                        cursor: None,
-                    },
-                )
+            let chunk_ids = pool
+                .readable_chunk_head_ts_for_file(ctx.owner(), repo_id, &args.file_path)
                 .await?;
-            let chunk_ids = derived_edges
-                .edges
-                .into_iter()
-                .filter_map(|edge| edge.source.memory_id().map(MemoryId::into_inner))
-                .collect::<Vec<_>>();
             let mut chunks = pool
                 .authorized_abstraction_payloads::<CodeChunkV1>(
                     &engine,
@@ -379,11 +340,6 @@ fn truncate_utf8_bytes(text: String, max_text_bytes: Option<usize>) -> (String, 
         end = end.saturating_sub(1);
     }
     (text[..end].to_string(), true)
-}
-
-#[derive(Debug, sqlx::FromRow)]
-struct MemoryCandidateRow {
-    memory_id: uuid::Uuid,
 }
 
 #[cfg(test)]

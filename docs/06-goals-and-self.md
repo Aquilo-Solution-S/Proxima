@@ -51,9 +51,8 @@ States:
 Goal-to-Goal decomposition, dependency, and inspiration are **Goal row
 fields**: `dependency_goal_ids`, `evidence_memory_ids`, and
 `assignment_perspective_id`. The Goal is the node that owns the statement, so
-the `reference` entries in `proxima_core.edges` are derived from those columns
-in the Goal's own transaction — which is what makes the goal side of the index
-rebuildable.
+those columns are the Goal's own pins — written in the Goal's own
+transaction — which is what makes the goal side rebuildable.
 
 Lifecycle:
 
@@ -92,7 +91,7 @@ Rules:
 | Append-only | create or supersede; never update |
 | Idempotent | same `(Owner, request_id, body)` returns same `GoalId` |
 | Conflict-detecting | reused request id with different body fails |
-| Stream-visible | successful write emits `change_event` |
+| Stream-visible | successful write emits `announce` |
 
 Supersession constraints:
 
@@ -279,6 +278,6 @@ Goal authorship:
 | `System(Operator)` | A->Goal operator output |
 
 Memory authorship remains separate. Perspective attribution is the
-`memories.authoring_perspective_id` column: "emitted by P" is known at write
+the declaring row: "emitted by P" is known at write
 time and belongs to the node. Operator-invocation proof carriers are deferred
 to PR7; PR6 does not preserve row-level authorship ids as substitutes.

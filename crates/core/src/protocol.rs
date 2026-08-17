@@ -13,11 +13,11 @@ pub mod tool {
     pub const CORE_MEMBERSHIP: &str = "core_membership";
     pub const CORE_PUBLISH: &str = "core_publish";
     pub const CORE_UPLOAD: &str = "core_upload";
+    pub const CORE_FORGET: &str = "core_forget";
 }
 
 pub mod action {
     pub const CORE_FACT_CITATION_OF_FACT: &str = "core_fact:citation_of_fact";
-    pub const CORE_FACT_CITATION_OF_ENTITY_HEAD: &str = "core_fact:citation_of_entity_head";
     pub const CORE_FACT_FACTS_CITING_OBJECT: &str = "core_fact:facts_citing_object";
 
     pub const CORE_GOAL_SET: &str = "core_goal:set";
@@ -54,7 +54,6 @@ pub mod resource {
     pub const SCHEMAS: &str = "resource:schemas";
     pub const GOALS: &str = "resource:goals";
     pub const GOAL: &str = "resource:goal";
-    pub const EDGES: &str = "resource:edges";
 }
 
 pub mod resource_path {
@@ -67,7 +66,6 @@ pub mod resource_path {
     pub const MEMORIES: &str = "memories";
     pub const GOALS: &str = "goals";
     pub const GOAL: &str = "goal";
-    pub const EDGES: &str = "edges";
 }
 
 pub mod resource_uri {
@@ -81,7 +79,6 @@ pub mod resource_uri {
     pub const WAKE_CANDIDATES: &str = "proxima://wake-candidates{?fact,limit}";
     pub const GOALS: &str = "proxima://goals{?state,limit,cursor}";
     pub const GOAL: &str = "proxima://goal/{id}";
-    pub const EDGES: &str = "proxima://edges{?kind,source,target,limit,cursor}";
 }
 
 pub mod profile {

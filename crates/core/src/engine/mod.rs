@@ -12,12 +12,14 @@ mod goal_write;
 mod ingest;
 pub mod mcp_listener;
 mod memory_authoring;
+mod pin_read;
 mod pipeline;
 mod query;
 mod read_verbs;
 mod source_cursors;
 #[cfg(test)]
 mod storage_port_tests;
+mod unit_of_work;
 mod upload;
 
 use std::net::SocketAddr;
@@ -46,12 +48,13 @@ pub use mcp_listener::{EngineMcpListener, RunningMcpListener};
 pub use memory_authoring::{AuthorDerivedAuthorizedOutcome, AuthorDerivedRequestInput};
 pub use pipeline::{MemoryPermit, PermitMode};
 pub use read_verbs::{
-    EntityHeadCitationReadRequest, FactCitationReadRequest, FactsCitingObjectReadRequest,
-    GetGraphReadRequest, GetGraphReadResponse, GetMemoriesReadRequest, GetMemoriesReadResponse,
-    GetMemoryReadRequest, GetMemoryReadResponse, ListChangeEventsReadRequest,
-    ListChangeEventsReadResponse, ListWakeCandidatesReadRequest, ListWakeCandidatesReadResponse,
-    MAX_WAKE_CANDIDATE_LIMIT, SearchReadRequest, SearchReadResponse,
+    FactCitationReadRequest, FactsCitingObjectReadRequest, GetGraphReadRequest,
+    GetGraphReadResponse, GetMemoriesReadRequest, GetMemoriesReadResponse, GetMemoryReadRequest,
+    GetMemoryReadResponse, ListChangeEventsReadRequest, ListChangeEventsReadResponse,
+    ListWakeCandidatesReadRequest, ListWakeCandidatesReadResponse, MAX_WAKE_CANDIDATE_LIMIT,
+    SearchReadRequest, SearchReadResponse,
 };
+pub use unit_of_work::{TypedFactIngest, UnitOfWork};
 pub use upload::UploadCompleted;
 
 pub struct Engine {

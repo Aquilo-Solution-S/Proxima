@@ -54,7 +54,7 @@ const BLOB_BATCH_BYTES: u64 = 8 * 1024 * 1024;
 use crate::calls::{ExtractedCall, ExtractedDefinition, extract_blob_callgraph};
 use crate::chunker::{Chunk, chunk_blob};
 use crate::ingest::{
-    FileRevisionHead, IngestError, append_code_slice, append_code_slices, code_slice_memory_id_for,
+    FileRevisionHead, IngestError, append_code_slices_with_handles, assign_code_chunk_handles,
     ingest_commit, ingest_file_revision,
 };
 use crate::payloads::{
@@ -161,6 +161,14 @@ impl<'a> CodeIngestContext<'a> {
         self.store.pool()
     }
 
+    fn engine(&self) -> &Engine {
+        self.engine
+    }
+
+    fn authz(&self) -> &AuthzContext {
+        self.authz
+    }
+
     async fn owner_write_permit(&self, owner: &Owner) -> Result<OwnerWritePermit, IngestError> {
         self.engine
             .authorize_owner_write(self.authz, owner, AccessKind::Fact)
@@ -173,108 +181,27 @@ impl<'a> CodeIngestContext<'a> {
         owner: Owner,
         repo_id: Uuid,
     ) -> Result<Vec<FileRevisionHead>, IngestError> {
-        // Sidecar-only candidate scan: `memory_id` is a UUIDv7 for Fact rows
-        // (assigned at ingest, see `proxima-storage-pg` fact_ingest), so a
-        // self-join on it is a valid recency proxy without touching
-        // `proxima_core.*`; the authorized fetch below resolves the true
-        // owner-or-World head via `FileRevisionV1::natural_key_columns`
-        // heads-only supersession.
-        let candidate_ids: Vec<Uuid> = sqlx::query_scalar(
-            "SELECT fr.memory_id
-               FROM proxima_code.file_revision_v1 fr
-              WHERE fr.repo_id = $1
-                AND NOT EXISTS (
-                    SELECT 1
-                      FROM proxima_code.file_revision_v1 fr2
-                     WHERE fr2.repo_id = fr.repo_id
-                       AND fr2.file_path = fr.file_path
-                       AND fr2.memory_id > fr.memory_id
-                )
-              ORDER BY fr.file_path ASC
-              LIMIT 100000",
-        )
-        .bind(repo_id)
-        .fetch_all(self.pool())
-        .await?;
-        let mut payloads = Vec::new();
-        for chunk in candidate_ids.chunks(2_000) {
-            payloads.extend(
-                self.store
-                    .authorized_fact_payloads_include_tombstones::<FileRevisionV1>(
-                        self.engine,
-                        self.authz,
-                        owner,
-                        chunk,
-                        chunk.len(),
-                    )
-                    .await
-                    .map_err(|err| read_error(&err))?,
-            );
-        }
-        Ok(payloads
+        // Owner-only `memory_head` of each `(repo, path)` series — the
+        // same series stateful-Fact NK ingest advances.
+        self.store
+            .owned_file_revision_heads(owner, repo_id)
+            .await
+            .map_err(|err| read_error(&err))?
             .into_iter()
-            .filter(|(_, payload)| payload.repo_id == repo_id)
-            .map(|(memory_id, payload)| FileRevisionHead {
-                memory_id,
-                file_path: payload.file_path,
-                content_sha256: payload.content_sha256,
-                state: payload.state,
-            })
-            .collect())
+            .map(file_revision_head_from_row)
+            .collect()
     }
 
-    async fn present_chunk_indexes(
+    async fn chunk_series_heads(
         &self,
         owner: Owner,
         repo_id: Uuid,
         file_path: &str,
-    ) -> Result<Vec<u32>, IngestError> {
-        // Sidecar-only candidate scan of every `Present`-state chunk row
-        // ever ingested for this file (any owner, any commit). The
-        // authorized head-candidate narrowing below drops any row shadowed
-        // by a later row at the same (repo_id, file_path, chunk_index) —
-        // including a later *Tombstone* row, so a removed-then-untouched
-        // index correctly disappears even though this candidate scan only
-        // looked at `Present` rows. The facade evaluates EVERY candidate
-        // (deduped, batched round-trips — never truncated), so a heavily
-        // churned file whose Present-row history exceeds any batch size
-        // still gets exact head bookkeeping; ordering this scan could not
-        // substitute for that, because chunk memory ids are deterministic
-        // UUIDv5 content hashes, not time-ordered.
-        let candidates: Vec<ChunkIndexCandidateRow> = sqlx::query_as(
-            "SELECT s.memory_id, s.chunk_index
-               FROM proxima_code.code_chunk_v1 s
-              WHERE s.repo_id = $1
-                AND s.file_path = $2
-                AND s.state = 'Present'
-              LIMIT 100000",
-        )
-        .bind(repo_id)
-        .bind(file_path)
-        .fetch_all(self.pool())
-        .await?;
-        let index_by_memory_id: HashMap<Uuid, i32> = candidates
-            .iter()
-            .map(|row| (row.memory_id, row.chunk_index))
-            .collect();
-        let candidate_ids: Vec<Uuid> = candidates.iter().map(|row| row.memory_id).collect();
-        let heads = self
-            .store
-            .authorized_code_chunk_head_candidates(owner, &candidate_ids)
+    ) -> Result<Vec<proxima_storage_pg::query::ChunkSeriesHead>, IngestError> {
+        self.store
+            .owned_chunk_series_heads(owner, repo_id, file_path)
             .await
-            .map_err(|err| read_error(&err))?;
-        let mut indexes = heads
-            .into_iter()
-            .filter_map(|id| index_by_memory_id.get(&id).copied())
-            .map(|idx| {
-                u32::try_from(idx).map_err(|err| {
-                    IngestError::Storage(format!("invalid code chunk index {idx}: {err}"))
-                })
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        indexes.sort_unstable();
-        indexes.dedup();
-        Ok(indexes)
+            .map_err(|err| read_error(&err))
     }
 }
 
@@ -282,10 +209,28 @@ fn read_error(err: &ToolError) -> IngestError {
     IngestError::Storage(format!("authorized code-flavor read: {err}"))
 }
 
-#[derive(Debug, Clone, Copy, sqlx::FromRow)]
-struct ChunkIndexCandidateRow {
-    memory_id: Uuid,
-    chunk_index: i32,
+fn file_revision_head_from_row(
+    row: proxima_storage_pg::query::FileRevisionHeadRow,
+) -> Result<FileRevisionHead, IngestError> {
+    let content_sha256: [u8; 32] = row.content_sha256.as_slice().try_into().map_err(|_| {
+        IngestError::Storage(format!(
+            "file revision sha256 length {}",
+            row.content_sha256.len()
+        ))
+    })?;
+    let state = match row.state.as_str() {
+        "Present" => FileState::Present,
+        "Tombstone" => FileState::Tombstone,
+        other => {
+            return Err(IngestError::Storage(format!("invalid file state {other}")));
+        }
+    };
+    Ok(FileRevisionHead {
+        memory_id: MemoryId::new(row.t),
+        file_path: row.file_path,
+        content_sha256,
+        state,
+    })
 }
 
 /// Pull-mode source. One instance per repo; `repo_id` is stable
@@ -497,8 +442,7 @@ impl LocalGitSource {
         let mut pending_present = Vec::new();
         let mut pending_deleted = Vec::new();
         self.ingest_head_entries(
-            pool,
-            &permit,
+            ctx,
             &head_sha,
             batch_id,
             now,
@@ -514,8 +458,7 @@ impl LocalGitSource {
             if prior.state == FileState::Present && !present_paths.contains(&path) {
                 pending_deleted.push(
                     self.tombstone_deleted_path(
-                        pool,
-                        &permit,
+                        ctx,
                         &head_sha,
                         batch_id,
                         now,
@@ -530,11 +473,11 @@ impl LocalGitSource {
 
         crate::ingest::close_local_git_batch(pool, &permit, batch_id).await?;
         for pending in pending_present {
-            self.derive_present_blob(ctx, &permit, batch_id, pending, &mut report)
+            self.derive_present_blob(ctx, batch_id, pending, &mut report)
                 .await?;
         }
         for pending in pending_deleted {
-            self.derive_deleted_path(ctx, &permit, batch_id, pending, &mut report)
+            self.derive_deleted_path(ctx, batch_id, pending, &mut report)
                 .await?;
         }
         let cursor = encode_cursor(&CodeCursor {
@@ -610,7 +553,8 @@ impl LocalGitSource {
             committer_time: commit_info.committer_time,
             message: commit_info.message.clone(),
         };
-        let outcome = ingest_commit(pool, &permit, batch_id, &commit_payload, now).await?;
+        let outcome =
+            ingest_commit(ctx.engine(), ctx.authz(), batch_id, &commit_payload, now).await?;
         if outcome.idempotent_replay {
             report.commits_replayed += 1;
         } else {
@@ -626,8 +570,7 @@ impl LocalGitSource {
         for path in &changed {
             match self
                 .ingest_changed_path(
-                    pool,
-                    &permit,
+                    ctx,
                     commit_info,
                     batch_id,
                     now,
@@ -647,8 +590,7 @@ impl LocalGitSource {
         for path in &deleted {
             pending_deleted.push(
                 self.tombstone_deleted_path(
-                    pool,
-                    &permit,
+                    ctx,
                     &commit_info.sha,
                     batch_id,
                     now,
@@ -663,11 +605,11 @@ impl LocalGitSource {
         // Close this commit's batch before any F→A derivation consumes it.
         crate::ingest::close_local_git_batch(pool, &permit, batch_id).await?;
         for pending in pending_present {
-            self.derive_present_blob(ctx, &permit, batch_id, pending, report)
+            self.derive_present_blob(ctx, batch_id, pending, report)
                 .await?;
         }
         for pending in pending_deleted {
-            self.derive_deleted_path(ctx, &permit, batch_id, pending, report)
+            self.derive_deleted_path(ctx, batch_id, pending, report)
                 .await?;
         }
         Ok(())
@@ -678,8 +620,7 @@ impl LocalGitSource {
     #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
     async fn ingest_changed_path(
         &self,
-        pool: &PgPool,
-        permit: &OwnerWritePermit,
+        ctx: &CodeIngestContext<'_>,
         commit_info: &CommitInfo,
         batch_id: SourceBatchId,
         now: time::OffsetDateTime,
@@ -691,8 +632,7 @@ impl LocalGitSource {
         let Some(blob) = git::cat_blob(&self.repo_path, &commit_info.sha, path)? else {
             return self
                 .tombstone_deleted_path(
-                    pool,
-                    permit,
+                    ctx,
                     &commit_info.sha,
                     batch_id,
                     now,
@@ -704,8 +644,7 @@ impl LocalGitSource {
                 .map(ChangedPathIngest::Tombstone);
         };
         self.ingest_present_blob(
-            pool,
-            permit,
+            ctx,
             &commit_info.sha,
             batch_id,
             now,
@@ -727,8 +666,7 @@ impl LocalGitSource {
     #[allow(clippy::too_many_arguments)]
     async fn ingest_head_entries(
         &self,
-        pool: &PgPool,
-        permit: &OwnerWritePermit,
+        ctx: &CodeIngestContext<'_>,
         head_sha: &str,
         batch_id: SourceBatchId,
         now: time::OffsetDateTime,
@@ -763,8 +701,7 @@ impl LocalGitSource {
                 }
                 pending_present.push(
                     self.ingest_present_blob(
-                        pool,
-                        permit,
+                        ctx,
                         head_sha,
                         batch_id,
                         now,
@@ -787,8 +724,7 @@ impl LocalGitSource {
     #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
     async fn ingest_present_blob(
         &self,
-        pool: &PgPool,
-        permit: &OwnerWritePermit,
+        ctx: &CodeIngestContext<'_>,
         indexed_commit_sha: &str,
         batch_id: SourceBatchId,
         now: time::OffsetDateTime,
@@ -812,7 +748,8 @@ impl LocalGitSource {
             indexed_commit_sha: indexed_commit_sha.to_string(),
             state: FileState::Present,
         };
-        let file_revision = ingest_file_revision(pool, permit, batch_id, &rev_payload, now).await?;
+        let file_revision =
+            ingest_file_revision(ctx.engine(), ctx.authz(), batch_id, &rev_payload, now).await?;
         if !file_revision.idempotent_replay {
             report.files_present_emitted += 1;
         }
@@ -850,12 +787,10 @@ impl LocalGitSource {
     async fn derive_present_blob(
         &self,
         ctx: &CodeIngestContext<'_>,
-        permit: &OwnerWritePermit,
         batch_id: SourceBatchId,
         pending: PendingPresentBlob,
         report: &mut IndexReport,
     ) -> Result<(), IndexError> {
-        let pool = ctx.pool();
         // A receipt-replayed Fact belongs to the batch that first observed
         // it, not to this one, and its chunks were derived under that batch.
         // Deriving again here would hand `validate_ftoa_input_batch` a slice
@@ -879,35 +814,52 @@ impl LocalGitSource {
         let new_indexes: HashSet<u32> = (0..pending.analysis.chunks.len())
             .map(|i| u32::try_from(i).unwrap_or(u32::MAX))
             .collect();
-        let prior_indexes = ctx
-            .present_chunk_indexes(self.owner, self.repo_id, &pending.path)
+        let heads = ctx
+            .chunk_series_heads(self.owner, self.repo_id, &pending.path)
             .await?;
-        for prior in prior_indexes {
+        let mut tomb_payloads = Vec::new();
+        let mut tomb_handles = Vec::new();
+        for head in &heads {
+            if head.state != FileState::Present.as_str() {
+                continue;
+            }
+            let prior = u32::try_from(head.chunk_index).map_err(|err| {
+                IngestError::Storage(format!(
+                    "invalid code chunk index {}: {err}",
+                    head.chunk_index
+                ))
+            })?;
             if !new_indexes.contains(&prior) {
-                let tomb =
-                    tombstone_chunk(self.repo_id, &pending.path, prior, pending.language.clone());
-                append_code_slice(
-                    pool,
-                    permit,
-                    batch_id,
-                    &tomb,
-                    pending.file_revision,
-                    pending.source_commit,
-                )
-                .await?;
-                report.chunks_tombstoned += 1;
+                tomb_payloads.push(tombstone_chunk(
+                    self.repo_id,
+                    &pending.path,
+                    prior,
+                    pending.language.clone(),
+                ));
+                tomb_handles.push(head.handle);
             }
         }
+        if !tomb_payloads.is_empty() {
+            append_code_slices_with_handles(
+                ctx.engine,
+                ctx.authz,
+                self.owner,
+                batch_id,
+                &tomb_payloads,
+                pending.file_revision,
+                pending.source_commit,
+                &tomb_handles,
+            )
+            .await?;
+            report.chunks_tombstoned += tomb_payloads.len();
+        }
 
-        // Build every chunk of the file before writing any of them: a
-        // caller chunk's payload names its callee chunks, so the callee's
-        // id has to exist before the caller is written. It does — the id
-        // is a pure function of position (file revision, repo, path, chunk
-        // index, state), which is what makes naming it up front legal.
-        let mut file_chunks: Vec<ChunkInfo> = Vec::new();
+        // Reuse listed series handles so intra-file calls can name
+        // callees before insert. Mint only on miss.
+        let mut bare_payloads: Vec<CodeChunkV1> = Vec::new();
         for (idx, chunk) in pending.analysis.chunks.iter().enumerate() {
             let chunk_index = u32::try_from(idx).unwrap_or(u32::MAX);
-            let payload = CodeChunkV1 {
+            bare_payloads.push(CodeChunkV1 {
                 repo_id: self.repo_id,
                 file_path: pending.path.clone(),
                 chunk_index,
@@ -920,14 +872,18 @@ impl LocalGitSource {
                 line_range_end: chunk.line_range_end,
                 state: FileState::Present,
                 calls: Vec::new(),
-            };
-            let memory_id = code_slice_memory_id_for(&payload, pending.file_revision);
+            });
+        }
+        let handles = assign_code_chunk_handles(&heads, &bare_payloads)?;
+        let mut file_chunks: Vec<ChunkInfo> = Vec::new();
+        for (payload, handle) in bare_payloads.into_iter().zip(handles) {
+            let memory_id = MemoryId::new(handle);
             let item_names: Vec<String> = pending
                 .analysis
                 .definitions
                 .iter()
                 .filter(|d| {
-                    d.byte_start >= chunk.byte_range_start && d.byte_end <= chunk.byte_range_end
+                    d.byte_start >= payload.byte_range_start && d.byte_end <= payload.byte_range_end
                 })
                 .map(|d| d.name.clone())
                 .collect();
@@ -995,13 +951,19 @@ impl LocalGitSource {
             .iter()
             .map(|chunk| chunk.payload.clone())
             .collect::<Vec<_>>();
-        let outcomes = append_code_slices(
-            pool,
-            permit,
+        let handles: Vec<Uuid> = file_chunks
+            .iter()
+            .map(|chunk| chunk.memory_id.into_inner())
+            .collect();
+        let outcomes = append_code_slices_with_handles(
+            ctx.engine,
+            ctx.authz,
+            self.owner,
             batch_id,
             &payloads,
             pending.file_revision,
             pending.source_commit,
+            &handles,
         )
         .await?;
         for (chunk, outcome) in file_chunks.iter().zip(&outcomes) {
@@ -1018,8 +980,7 @@ impl LocalGitSource {
     #[allow(clippy::too_many_arguments)]
     async fn tombstone_deleted_path(
         &self,
-        pool: &PgPool,
-        permit: &OwnerWritePermit,
+        ctx: &CodeIngestContext<'_>,
         commit_sha: &str,
         batch_id: SourceBatchId,
         now: time::OffsetDateTime,
@@ -1036,7 +997,8 @@ impl LocalGitSource {
             indexed_commit_sha: commit_sha.to_string(),
             state: FileState::Tombstone,
         };
-        let file_revision = ingest_file_revision(pool, permit, batch_id, &rev_payload, now).await?;
+        let file_revision =
+            ingest_file_revision(ctx.engine(), ctx.authz(), batch_id, &rev_payload, now).await?;
         report.files_tombstoned += 1;
 
         Ok(PendingDeletedPath {
@@ -1050,27 +1012,41 @@ impl LocalGitSource {
     async fn derive_deleted_path(
         &self,
         ctx: &CodeIngestContext<'_>,
-        permit: &OwnerWritePermit,
         batch_id: SourceBatchId,
         pending: PendingDeletedPath,
         report: &mut IndexReport,
     ) -> Result<(), IndexError> {
-        let pool = ctx.pool();
-        let prior_indexes = ctx
-            .present_chunk_indexes(self.owner, self.repo_id, &pending.path)
+        let heads = ctx
+            .chunk_series_heads(self.owner, self.repo_id, &pending.path)
             .await?;
-        for prior in prior_indexes {
-            let tomb = tombstone_chunk(self.repo_id, &pending.path, prior, None);
-            append_code_slice(
-                pool,
-                permit,
+        let mut tomb_payloads = Vec::new();
+        let mut tomb_handles = Vec::new();
+        for head in heads {
+            if head.state != FileState::Present.as_str() {
+                continue;
+            }
+            let prior = u32::try_from(head.chunk_index).map_err(|err| {
+                IngestError::Storage(format!(
+                    "invalid code chunk index {}: {err}",
+                    head.chunk_index
+                ))
+            })?;
+            tomb_payloads.push(tombstone_chunk(self.repo_id, &pending.path, prior, None));
+            tomb_handles.push(head.handle);
+        }
+        if !tomb_payloads.is_empty() {
+            append_code_slices_with_handles(
+                ctx.engine,
+                ctx.authz,
+                self.owner,
                 batch_id,
-                &tomb,
+                &tomb_payloads,
                 pending.file_revision,
                 pending.source_commit,
+                &tomb_handles,
             )
             .await?;
-            report.chunks_tombstoned += 1;
+            report.chunks_tombstoned += tomb_payloads.len();
         }
         Ok(())
     }

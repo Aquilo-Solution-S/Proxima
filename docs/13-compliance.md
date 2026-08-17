@@ -38,7 +38,7 @@ Current export bundle:
 
 | Section | Rows |
 |---|---|
-| substrate | `memories`, `goals`, `edges`, `fact_entities`, `fact_receipts`, `source_batches`, `citation_mappings`, `cited_objects`, `source_cursors` |
+| substrate | `memory`, `goal`, `blob`, `ingest_keys`, `announce`, `cooled` |
 | delegated authority | exact-owner `delegated_authority_grants` only; explicit stable JSON field allowlist excludes redeemable `delegation_id` and credentials; a personal export does not pull group-owned grants merely because the same subject issued them |
 | sidecars | registered memory/goal/citation/cited-object sidecar rows for the target owner |
 | blob refs | `cited_uploaded_blob_v1` / other registered cited-object sidecars; object bytes remain external |
@@ -64,7 +64,7 @@ Refusal is a valid compliance result, not a substrate failure.
 |---|---|
 | scope | one `OwnerRef` |
 | active state | present owner hold row; set/clear require compliance-erase operator approval plus owner `Admin` write authority; get requires owner `Admin` |
-| gated paths | substantive owner-memory physical destruction: the `erase_*` compliance family (`delete_owner`, `delete_source_scope`) and the `maintain-retention` pass (Fact tombstoning + `change_event` pruning) |
+| gated paths | substantive owner-memory physical destruction: the `erase_*` compliance family (`delete_owner`, `delete_source_scope`) and the `maintain-retention` pass (`announce` pruning) |
 | refusal | typed `ComplianceEraseRefusal::LegalHoldActive`; no destructive statement runs |
 | non-effects | no change to abandonment law, drop proof, reads, ordinary writes, embedding work-queue consumption, suppression checks, export, or audit retention |
 | race boundary | checked inside the storage compliance-erase transaction under the owner legal-hold lock before deletion |
@@ -73,7 +73,7 @@ Forward rule: any future physical-destruction path must inherit the
 same in-transaction owner hold gate before it can exist.
 The `maintain-retention` pass inherits it: every per-owner transaction
 takes the owner hold lock, re-checks the hold, and skips held owners —
-for `change_event` pruning (destruction) and, conservatively, for the
+for `announce` pruning (destruction) and, conservatively, for the
 Fact tombstone sweep as well (a hold means "freeze this owner's state").
 Exception: transient work-queue rows (`proxima_core.embedding_jobs`) are
 consumed by ordinary embedding-pipeline operation; legal holds do not
@@ -87,17 +87,17 @@ guarantees only the mechanical suspension of physical destruction.
 
 The owner Fact-retention window (`owner_fact_retention.retention_seconds`,
 surfaced as `fact_retention_seconds` on `proxima://graph`) and
-`change_event` growth are enforced by an operator-scheduled CLI pass
+`announce` growth are enforced by an operator-scheduled CLI pass
 (`proxima-mcp maintain-retention`), not by an in-process scheduler — the
 same external-clock doctrine as `maintain-embeddings`.
 
 | Rule | Contract |
 |---|---|
-| enforcement action | expired Facts are tombstoned (`memories.tombstoned_at`), never deleted; retention means "forget from recall", physical destruction stays exclusive to the `erase_*` family |
+| enforcement action | expired Facts are forgotten (cool), never hard-deleted except erase; physical destruction stays exclusive to the `erase_*` family |
 | scope | Fact rows of owners with a configured window; owners without a window are untouched; Abstractions/Perspectives derived from expired Facts persist |
 | audit exclusion | `core/mcp-call-logged-v1` Facts are never aged out — indefinite controller evidence (see Audit log) |
 | change feed | each tombstone batch commits its `EntityDelete` change events atomically with the sweep transaction |
-| `change_event` pruning | rows older than an explicit operator-supplied age horizon are deleted per owner; there is deliberately no default horizon — destruction requires an explicit flag |
+| `announce` pruning | rows older than an explicit operator-supplied age horizon are deleted per owner; there is deliberately no default horizon — destruction requires an explicit flag |
 | legal hold | both halves take the per-owner hold lock in every transaction and skip held owners (forward-rule inheritance above) |
 | serialization | one pass at a time via a process-global advisory lock; an overlapping cron fire prints a skip notice and exits 0 |
 | cursor safety | pruning creates an undetectable gap for forward pollers whose `since` cursor predates the horizon; choose a horizon comfortably larger than the slowest consumer's lag, or have lagging consumers re-baseline with a fresh full read |

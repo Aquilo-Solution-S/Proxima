@@ -24,6 +24,20 @@ impl PgSidecarRegistryFrozen {
         self.entries.contains_key(key)
     }
 
+    /// Distinct memory sidecar tables (core + flavor), for forget/hydrate.
+    #[must_use]
+    pub fn memory_sidecar_tables(&self) -> Vec<&str> {
+        let mut tables: Vec<&str> = self
+            .entries
+            .values()
+            .filter(|entry| entry.memory_insert.is_some() || entry.memory_load_batch.is_some())
+            .map(|entry| entry.sidecar_table.as_str())
+            .collect();
+        tables.sort_unstable();
+        tables.dedup();
+        tables
+    }
+
     #[must_use]
     pub fn missing_for(&self, schemas: &[SchemaInfo]) -> Vec<PgSidecarKey> {
         let mut missing = schemas

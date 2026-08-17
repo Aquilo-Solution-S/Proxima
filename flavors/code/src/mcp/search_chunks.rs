@@ -1,12 +1,24 @@
+//! Code-chunk search is the flavor-scoped reference:
+//!
+//! 1. **content** — GIN/`search_tsv` (and optional HNSW) on `code_chunk_v1` only
+//! 2. **admit** — `Engine::query` `HeadsOnly` (`memory_head`)
+//! 3. **pins** — call-neighbour index, only if `include_calls`
+//!
+//! Core `memory` is not in the content SQL. `core_search_memories` never
+//! scans this table.
+
 use std::collections::{HashMap, HashSet};
 
-use proxima_core::verbs::query::{EdgeFilter, EdgeReadRequest};
-use proxima_core::{EdgeEndpoint, EdgeKind, EntityRef, MemoryId};
+use proxima_core::MemoryId;
+use proxima_core::mcp::cursor as wire_cursor;
+use proxima_core::verbs::query::like_pattern;
 use proxima_core::{Tool, ToolCtx, ToolError};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 use crate::payloads::{CodeChunkV1, FileState};
+use proxima_storage_pg::query::{CodeChunkVectorCandidate, CodeChunkVectorFilters};
 
 use super::CodeToolCtxExt;
 use super::code_store;
@@ -48,6 +60,11 @@ pub struct CodeSearchChunksArgs {
         description = "Optional maximum number of chunk matches. Omit or null for 12; values above 50 are clamped, and 0 is rejected."
     )]
     pub limit: Option<u32>,
+    #[serde(default)]
+    #[schemars(
+        description = "Opaque pagination cursor from a previous response's `next_cursor`. Repeat the same query, mode, and filters; `limit` may vary between pages."
+    )]
+    pub cursor: Option<String>,
     #[schemars(
         description = "Optional repo handle filter, typically `R...`. Omit or null to search all visible repos."
     )]
@@ -82,9 +99,6 @@ const fn default_include_calls() -> bool {
 /// answers the same way twice.
 const MAX_CALL_EDGES: usize = 200;
 
-/// Neighbour edges read per chunk per direction before the global cut.
-const CALL_EDGES_PER_CHUNK: u32 = 200;
-
 /// Characters of chunk text returned per match when the caller says nothing.
 /// Covers a typical chunk whole; ceiling matches `core_search_memories`
 /// `body_max_chars`.
@@ -98,6 +112,21 @@ const MAX_SNIPPET_MAX_CHARS: usize = proxima_core::MAX_TEXT_CAP_CHARS;
 /// the derived tsquery; a query naming more than this many distinct
 /// identifiers is already well served by the first twelve.
 const MAX_DISTINCTIVE_TERMS: usize = 12;
+
+/// Opaque cursor codec: `{v, fp, c}` like `list_repos` / `core_search_memories`.
+/// The resume point is fused-rank `(score_bits, memory_id)`, not Query SQL.
+const CHUNK_CURSOR: wire_cursor::FingerprintedCursor = wire_cursor::FingerprintedCursor {
+    version: 1,
+    source: "proxima-code_search_chunks response",
+    rebind_hint: "repeat the query, mode, and filters that produced it",
+};
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+struct ChunkCursorPos {
+    score_bits: u32,
+    memory_id: Uuid,
+    seen: u32,
+}
 
 /// Reciprocal-rank-fusion damping constant, at its conventional value.
 ///
@@ -172,10 +201,12 @@ fn effective_snippet_max_chars(requested: Option<usize>) -> usize {
 pub struct CodeSearchChunksOutput {
     pub matches: Vec<ChunkMatch>,
     pub calls_edges: Vec<CallEdge>,
-    /// At least one further eligible match exists past `limit` in the
-    /// scanned candidate window; retry with a higher limit (max 50) or
-    /// narrow the query. Truncation is a signal, never silent.
+    /// At least one further eligible match exists past this page in the
+    /// scanned candidate window. True iff `next_cursor` is `Some`.
     pub has_more: bool,
+    /// Opaque resume token for the next page. Pass back as `cursor` with
+    /// the same query, mode, and filters. `None` when `has_more` is false.
+    pub next_cursor: Option<String>,
     /// The mode that was requested, echoed so a caller reading a stored
     /// response knows what produced it.
     pub mode: String,
@@ -251,7 +282,7 @@ pub struct CodeSearchChunksTool;
 
 impl Tool for CodeSearchChunksTool {
     const NAME: &'static str = "proxima-code_search_chunks";
-    const DESCRIPTION: &'static str = "Search head code chunks by exact substring, path, or full-text content, including plain-English questions. Ranks by mode: hybrid (default) fuses full-text with embedding similarity, lexical is full-text only, semantic is embedding-only; a hybrid search with no embeddings available answers lexically and reports degraded_to_lexical. Each match carries its chunk text up to snippet_max_chars, flagged snippet_truncated when cut. Supports language/chunk_type filters and optional call-neighbour connections with their call sites.";
+    const DESCRIPTION: &'static str = "Search head code chunks by exact substring, path, or full-text content, including plain-English questions. Ranks by mode: hybrid (default) fuses full-text with embedding similarity, lexical is full-text only, semantic is embedding-only; a hybrid search with no embeddings available answers lexically and reports degraded_to_lexical. Pages of at most 50: has_more plus an opaque next_cursor passed back as cursor with the same query, mode, and filters. Each match carries its chunk text up to snippet_max_chars, flagged snippet_truncated when cut. Supports language/chunk_type filters and optional call-neighbour connections with their call sites.";
     const ANNOTATIONS: Option<proxima_core::mcp::McpToolAnnotations> = Some(super::READ_ONLY);
 
     type Args = CodeSearchChunksArgs;
@@ -277,6 +308,20 @@ impl Tool for CodeSearchChunksTool {
                 Some(handle) => Some(resolve_repo_identifier(&ctx, handle).await?),
                 None => None,
             };
+            let fingerprint = chunk_search_fingerprint(
+                &ctx.owner(),
+                query,
+                args.mode,
+                repo_id,
+                args.language.as_deref(),
+                args.chunk_type.as_deref(),
+            );
+            let after: Option<ChunkCursorPos> = args
+                .cursor
+                .as_deref()
+                .map(|raw| CHUNK_CURSOR.decode(&fingerprint, raw))
+                .transpose()?;
+            let seen = after.map_or(0_u32, |pos| pos.seen);
             let pool = code_store(&ctx)?;
             let engine = super::engine(&ctx)?;
             // Resolved before either arm runs, because the answer decides
@@ -286,140 +331,31 @@ impl Tool for CodeSearchChunksTool {
             let (effective_mode, query_embedding) =
                 resolve_query_embedding(&engine, args.mode, query).await?;
 
-            // Sidecar-only candidate scan (no owner filter, no core-table
-            // supersession dedup): full-text/path rank over every `Present`
-            // chunk row matching the search predicates, across any owner,
-            // any historical revision. `authorized_abstraction_head_candidates`
-            // below narrows this to the owner-or-World head per
-            // (repo_id, file_path, chunk_index) via a `source_batch_id`
-            // recency comparison (`code-chunk-v1` never sets
-            // `memories.supersedes` — each derived chunk ties 1:1 to its
-            // exact source file revision rather than declaring a successor),
-            // so the raw candidate window is widened well past `limit` to
-            // leave headroom for historical duplicates collapsing away.
-            let candidate_limit = i64::from(limit.saturating_mul(20).max(limit).min(1_000));
-            // `c.search_tsv` is the STORED generated column added by the v0.0.7
-            // flavor migration, holding exactly
-            // `proxima_core.lexical_tsv(proxima_core.lexical_join(file_path,
-            // text))`. Reading it replaces two per-row `to_tsvector`
-            // evaluations — one for the predicate, one for the rank — with a
-            // column read, and the GIN index sits on the column rather than on
-            // an expression. `code_chunk_search_tsv_matches_the_projection`
-            // pins the column against that definition.
-            //
-            // Four disjoint score bands; match *tier* dominates rank:
-            //   strict [4.0, 4.9] / rare-all [3.0, 3.9] / rare-any [2.0, 2.9]
-            //   / rescue [1.0, 1.9] / neither 0.0 (substring arms only).
-            // In-band rank ≤ 0.6 and parsed-chunk preference 0.3, so 0.9 <
-            // the 1.0 band gap: a weaker tier cannot overtake a stronger one.
-            // Rare bands exist because `ts_rank` has no IDF; empty
-            // `distinctive_terms` leaves them NULL.
-            // Query config must match `search_tsv` (`lexical_tsv`); a
-            // literal here would drift from the generated column.
-            // Rescue: `websearch_to_tsquery` is AND-semantics; rewrite
-            // `plainto_tsquery` `&` to `|` (no phrase/negation operators).
-            // `ts_rank_cd` uses flag 32 (unlabelled docs are weight D;
-            // cover density ≥ 0.1, so `* 10` saturates at 1.0). Rescue
-            // ranks with `ts_rank(..., 1|32)`: cover density rewards
-            // repetitive short spans (DDL) over the precise file.
-            // Path/text substring bonuses outweigh a whole tier: exact
-            // identifier lookup after stemming/stopwords.
-            // A pure `semantic` search runs no lexical branch at all, the
-            // same way storage gates `core_search_memories`' lexical query
-            // to `Lexical`/`Hybrid`.
-            let lexical_rows: Vec<ChunkCandidateRow> = if effective_mode
-                == ChunkSearchMode::Semantic
-            {
-                Vec::new()
-            } else {
-                sqlx::query_as(
-                // 'english' literal, not lexical_config(): chunk vectors are
-                // pinned english per row (the flavor baseline — code is
-                // not prose in the deployment's language), so the query side
-                // pins the same constant. Following the database default
-                // here would stem the query german against english vectors
-                // the moment a deployment switches its documents.
-                "WITH q AS (
-                     SELECT websearch_to_tsquery('english'::regconfig,
-                                proxima_core.lexical_scrub($1)) AS tsq,
-                            NULLIF(
-                                replace(
-                                    plainto_tsquery('english'::regconfig,
-                                        proxima_core.lexical_scrub($1))::text,
-                                    ' & ', ' | '),
-                                '')::tsquery AS any_tsq,
-                            websearch_to_tsquery('english'::regconfig,
-                                proxima_core.lexical_scrub(NULLIF($7, ''))) AS rare_all_tsq,
-                            NULLIF(
-                                replace(
-                                    plainto_tsquery('english'::regconfig,
-                                        proxima_core.lexical_scrub(NULLIF($7, '')))::text,
-                                    ' & ', ' | '),
-                                '')::tsquery AS rare_any_tsq
-                 )
-                 SELECT c.memory_id,
-                        (
-                            GREATEST(
-                                CASE WHEN c.search_tsv @@ q.tsq
-                                     THEN 4.0 + LEAST(ts_rank_cd(c.search_tsv, q.tsq, 32), 1.0) * 0.6
-                                     ELSE 0.0 END,
-                                CASE WHEN q.rare_all_tsq IS NOT NULL AND c.search_tsv @@ q.rare_all_tsq
-                                     THEN 3.0 + LEAST(ts_rank(c.search_tsv, q.rare_all_tsq, 1|32) * 100.0, 1.0) * 0.6
-                                     ELSE 0.0 END,
-                                CASE WHEN q.rare_any_tsq IS NOT NULL AND c.search_tsv @@ q.rare_any_tsq
-                                     THEN 2.0 + LEAST(ts_rank(c.search_tsv, q.rare_any_tsq, 1|32) * 100.0, 1.0) * 0.6
-                                     ELSE 0.0 END,
-                                CASE WHEN q.any_tsq IS NOT NULL AND c.search_tsv @@ q.any_tsq
-                                     THEN 1.0 + LEAST(ts_rank(c.search_tsv, q.any_tsq, 1|32) * 100.0, 1.0) * 0.6
-                                     ELSE 0.0 END
-                            )
-                            + CASE WHEN c.chunk_type <> 'file' THEN 0.3 ELSE 0.0 END
-                            + CASE WHEN lower(c.file_path) = lower($1) THEN 10.0 ELSE 0.0 END
-                            + CASE WHEN lower(c.file_path) LIKE $4 ESCAPE '\\' THEN 6.0 ELSE 0.0 END
-                            + CASE WHEN lower(c.text) LIKE $4 ESCAPE '\\' THEN 4.0 ELSE 0.0 END
-                        )::real AS score,
-                        -- The three literal arms again, on their own. Hybrid
-                        -- ranking fuses *ranks*, which on its own would let a
-                        -- strong embedding neighbour outrank an exact path
-                        -- match — the one case where the caller has told us
-                        -- precisely what they want. Reporting the literal
-                        -- bonus separately lets the fusion keep those hits as
-                        -- an absolute prefix. Deliberately duplicated rather
-                        -- than factored out of `score` above: `score` is the
-                        -- shipped lexical ordering, pinned by the retrieval
-                        -- gate, and re-associating its additions could move a
-                        -- result by a float's last bit.
-                        (
-                            CASE WHEN lower(c.file_path) = lower($1) THEN 10.0 ELSE 0.0 END
-                            + CASE WHEN lower(c.file_path) LIKE $4 ESCAPE '\\' THEN 6.0 ELSE 0.0 END
-                            + CASE WHEN lower(c.text) LIKE $4 ESCAPE '\\' THEN 4.0 ELSE 0.0 END
-                        )::real AS literal_bonus
-                   FROM proxima_code.code_chunk_v1 c, q
-                  WHERE c.state = 'Present'
-                    AND ($2::uuid IS NULL OR c.repo_id = $2)
-                    AND ($3::text IS NULL OR c.language = $3)
-                    AND ($5::text IS NULL OR c.chunk_type = $5)
-                    AND (
-                        c.search_tsv @@ q.tsq
-                        OR (q.any_tsq IS NOT NULL AND c.search_tsv @@ q.any_tsq)
-                        OR (q.rare_any_tsq IS NOT NULL AND c.search_tsv @@ q.rare_any_tsq)
-                        OR lower(c.file_path) LIKE $4 ESCAPE '\\'
-                        OR lower(c.text) LIKE $4 ESCAPE '\\'
-                    )
-                  ORDER BY score DESC, c.memory_id DESC
-                  LIMIT $6",
-            )
-            .bind(query)
-            .bind(repo_id)
-            .bind(args.language.as_deref())
-            .bind(exact_pattern)
-            .bind(args.chunk_type.as_deref())
-            .bind(candidate_limit)
-            .bind(distinctive_terms(query))
-            .fetch_all(pool.pool())
-            .await
-            .map_err(map_storage)?
-            };
+            // Phase 1: sidecar-only content scan. Overfetch so phase 2's
+            // owner/head admit can drop other-owner and non-head ts.
+            let needed = seen.saturating_add(limit);
+            let candidate_limit = i64::from(needed.saturating_mul(20).max(needed).min(1_000));
+            let lexical_rows: Vec<ChunkCandidateRow> =
+                if effective_mode == ChunkSearchMode::Semantic {
+                    Vec::new()
+                } else {
+                    {
+                        let scan = ChunkSidecarScan {
+                            repo_id,
+                            language: args.language.as_deref(),
+                            chunk_type: args.chunk_type.as_deref(),
+                            exact_pattern: &exact_pattern,
+                            candidate_limit,
+                            distinctive: &distinctive_terms(query),
+                        };
+                        let gin = scan_chunk_sidecar(pool.pool(), query, &scan).await?;
+                        if gin.is_empty() {
+                            scan_chunk_sidecar_like(pool.pool(), query, &scan).await?
+                        } else {
+                            gin
+                        }
+                    }
+                };
 
             // The semantic arm draws on the same candidate budget as the
             // lexical one and applies the same structural filters — pushed
@@ -433,7 +369,7 @@ impl Tool for CodeSearchChunksTool {
                         ctx.owner(),
                         model_id,
                         embedding,
-                        proxima::flavor::CodeChunkVectorFilters {
+                        CodeChunkVectorFilters {
                             repo_id,
                             language: args.language.as_deref(),
                             chunk_type: args.chunk_type.as_deref(),
@@ -445,6 +381,7 @@ impl Tool for CodeSearchChunksTool {
                 None => Vec::new(),
             };
 
+            // Admit: Query HeadsOnly. Content hits on a superseded t drop.
             let fused = fuse_candidates(effective_mode, &lexical_rows, &semantic_rows);
             let candidate_ids = fused
                 .iter()
@@ -454,53 +391,47 @@ impl Tool for CodeSearchChunksTool {
                 .into_iter()
                 .map(|scores| (scores.memory_id, scores))
                 .collect::<HashMap<_, _>>();
-            let head_id_set = pool
-                .authorized_code_chunk_head_candidates(ctx.owner(), &candidate_ids)
-                .await?
-                .into_iter()
-                .collect::<HashSet<_>>();
-            // Preserve the score-descending order from the candidate scan;
-            // the head-candidate narrowing above returns an unordered set.
-            let head_ids = candidate_ids
-                .iter()
-                .copied()
-                .filter(|id| head_id_set.contains(id))
-                .collect::<Vec<_>>();
             let rows = pool
                 .authorized_abstraction_payloads::<CodeChunkV1>(
                     &engine,
                     ctx.authz(),
                     ctx.owner(),
-                    &head_ids,
-                    head_ids.len(),
+                    &candidate_ids,
+                    candidate_ids.len(),
                 )
                 .await?;
 
-            let mut matches = Vec::new();
-            let mut has_more = false;
-            let mut chunk_ids = Vec::with_capacity(rows.len());
-            let mut seen_keys = HashSet::new();
+            let page_len = usize::try_from(limit).unwrap_or(usize::MAX);
+            let mut eligible = Vec::new();
             for (memory_id, payload) in rows {
-                let key = (
-                    payload.repo_id,
-                    payload.file_path.clone(),
-                    payload.chunk_index,
-                );
-                if !seen_keys.insert(key) {
-                    continue;
-                }
                 if payload.state != FileState::Present {
                     continue;
                 }
-                if u32::try_from(matches.len()).unwrap_or(u32::MAX) >= limit {
-                    // One more eligible match past the page proves
-                    // truncation without emitting the row.
-                    has_more = true;
-                    break;
-                }
                 let raw_id = memory_id.into_inner();
-                chunk_ids.push(raw_id);
                 let scores = score_by_id.get(&raw_id).copied().unwrap_or_default();
+                if after.is_some_and(|pos| !ranks_after_chunk_cursor(scores, pos)) {
+                    continue;
+                }
+                eligible.push((memory_id, payload, scores));
+            }
+            let has_more = eligible.len() > page_len;
+            eligible.truncate(page_len);
+            let next_cursor = (has_more && !eligible.is_empty()).then(|| {
+                let (_, _, scores) = eligible.last().expect("non-empty page");
+                CHUNK_CURSOR.encode(
+                    &fingerprint,
+                    &ChunkCursorPos {
+                        score_bits: scores.score.to_bits(),
+                        memory_id: scores.memory_id,
+                        seen: seen
+                            .saturating_add(u32::try_from(eligible.len()).unwrap_or(u32::MAX)),
+                    },
+                )
+            });
+            let mut matches = Vec::with_capacity(eligible.len());
+            let mut chunk_ids = Vec::with_capacity(eligible.len());
+            for (memory_id, payload, scores) in eligible {
+                chunk_ids.push(memory_id.into_inner());
                 let (match_kind, matched_line, matched_excerpt) = match_metadata(
                     query,
                     &payload.file_path,
@@ -538,6 +469,7 @@ impl Tool for CodeSearchChunksTool {
                 });
             }
 
+            // Phase 3: pins only if requested.
             let calls_edges = if args.include_calls && !chunk_ids.is_empty() {
                 load_call_edges(&ctx, &chunk_ids).await?
             } else {
@@ -550,6 +482,7 @@ impl Tool for CodeSearchChunksTool {
                 matches,
                 calls_edges,
                 has_more,
+                next_cursor,
             })
         })
     }
@@ -584,7 +517,7 @@ async fn resolve_query_embedding(
     }
     let Some(embed) = engine.embed_client() else {
         if mode == ChunkSearchMode::Semantic {
-            return Err(ToolError::Other(
+            return Err(ToolError::Unavailable(
                 SEMANTIC_CHUNK_SEARCH_UNAVAILABLE.to_string(),
             ));
         }
@@ -594,7 +527,7 @@ async fn resolve_query_embedding(
     // here; both land in the same place.
     match embed.embed(query).await {
         Ok(embedding) => Ok((mode, Some((embedding, embed.model_id().to_string())))),
-        Err(err) if mode == ChunkSearchMode::Semantic => Err(ToolError::Other(format!(
+        Err(err) if mode == ChunkSearchMode::Semantic => Err(ToolError::Unavailable(format!(
             "semantic chunk search unavailable: embedding provider error: {err}"
         ))),
         Err(err) => {
@@ -634,7 +567,7 @@ fn reciprocal_rank(rank: usize) -> f32 {
 fn fuse_candidates(
     mode: ChunkSearchMode,
     lexical: &[ChunkCandidateRow],
-    semantic: &[proxima::flavor::CodeChunkVectorCandidate],
+    semantic: &[CodeChunkVectorCandidate],
 ) -> Vec<MatchScores> {
     let mut by_id: HashMap<uuid::Uuid, MatchScores> =
         HashMap::with_capacity(lexical.len() + semantic.len());
@@ -676,6 +609,36 @@ fn fuse_candidates(
     fused
 }
 
+fn chunk_search_fingerprint(
+    owner: &proxima_core::Owner,
+    query: &str,
+    mode: ChunkSearchMode,
+    repo_id: Option<Uuid>,
+    language: Option<&str>,
+    chunk_type: Option<&str>,
+) -> String {
+    let canon = serde_json::json!([
+        owner.external_key(),
+        query,
+        mode_label(mode),
+        repo_id,
+        language,
+        chunk_type,
+    ]);
+    wire_cursor::fingerprint(&canon.to_string())
+}
+
+/// True when `scores` sorts strictly after the last emitted row
+/// (`score DESC, memory_id DESC`).
+fn ranks_after_chunk_cursor(scores: MatchScores, pos: ChunkCursorPos) -> bool {
+    let score = f32::from_bits(pos.score_bits);
+    match scores.score.total_cmp(&score) {
+        std::cmp::Ordering::Less => true,
+        std::cmp::Ordering::Equal => scores.memory_id < pos.memory_id,
+        std::cmp::Ordering::Greater => false,
+    }
+}
+
 /// Whether a `hybrid` search ended up ranked lexically only.
 ///
 /// Two ways in: no embedding was available at all, or the semantic arm ran
@@ -692,7 +655,11 @@ fn degraded_to_lexical(
         return false;
     }
     effective == ChunkSearchMode::Lexical
-        || (!matches.is_empty() && matches.iter().all(|m| m.similarity_score <= 0.0))
+        || proxima::flavor::hybrid_degraded_to_lexical(
+            proxima::flavor::SearchMode::Hybrid,
+            matches.is_empty(),
+            matches.iter().any(|m| m.similarity_score > 0.0),
+        )
 }
 
 const fn mode_label(mode: ChunkSearchMode) -> &'static str {
@@ -741,71 +708,27 @@ async fn load_call_edges(
     ctx: &ToolCtx,
     chunk_ids: &[uuid::Uuid],
 ) -> Result<Vec<CallEdge>, ToolError> {
-    let engine = super::engine(ctx)?;
     let pool = code_store(ctx)?;
-
-    // One `read_edges` per (chunk, direction). Independent reads against
-    // disjoint filters, so they run concurrently. Filter is `reference`:
-    // a chunk's only schema-declared reference field is its callee list.
-    let requests = chunk_ids.iter().flat_map(|chunk_id| {
-        let entity = EntityRef::Memory(MemoryId::new(*chunk_id));
-        [
-            EdgeFilter {
-                kind: Some(EdgeKind::Reference),
-                source: Some(entity),
-                target: None,
-            },
-            EdgeFilter {
-                kind: Some(EdgeKind::Reference),
-                source: None,
-                target: Some(entity),
-            },
-        ]
-    });
-    let responses = futures::future::try_join_all(requests.map(|filter| {
-        let engine = engine.clone();
-        async move {
-            engine
-                .read_edges(
-                    ctx.authz(),
-                    &EdgeReadRequest {
-                        owner: ctx.owner(),
-                        filter,
-                        limit: CALL_EDGES_PER_CHUNK,
-                        cursor: None,
-                    },
-                )
-                .await
-        }
-    }))
-    .await?;
-
-    // Request order, not hash order. `responses` comes back in the order the
-    // filters were built — chunk by chunk, in search-rank order — and keeping
-    // that order is what makes the `MAX_CALL_EDGES` cut below deterministic
-    // and useful: the same search returns the same edges, and what survives
-    // truncation belongs to the highest-ranked chunks. Collecting into a
-    // `HashMap` and taking 200 of its values returned an arbitrary subset
-    // that varied from run to run.
-    //
-    // The dedup key is the row itself now: an edge has no id, so
-    // (source, target) IS its identity for this purpose.
+    let pair_rows: Vec<(uuid::Uuid, uuid::Uuid)> = sqlx::query_as(
+        "SELECT caller_memory_id, callee_memory_id
+           FROM proxima_code.code_chunk_call_v1
+          WHERE caller_memory_id = ANY($1::uuid[])
+             OR callee_memory_id = ANY($1::uuid[])
+          ORDER BY caller_memory_id, callee_memory_id
+          LIMIT $2",
+    )
+    .bind(chunk_ids)
+    .bind(i64::try_from(MAX_CALL_EDGES).unwrap_or(i64::MAX))
+    .fetch_all(pool.pool())
+    .await
+    .map_err(map_storage)?;
     let mut seen: HashSet<(uuid::Uuid, uuid::Uuid)> = HashSet::new();
     let mut pairs: Vec<(MemoryId, MemoryId)> = Vec::new();
-    for response in responses {
-        for edge in response.edges {
-            let (Some(source), Some(target)) = (
-                edge.source.memory_id(),
-                edge.target.endpoint().and_then(EdgeEndpoint::memory_id),
-            ) else {
-                continue;
-            };
-            if seen.insert((source.into_inner(), target.into_inner())) {
-                pairs.push((source, target));
-            }
+    for (caller, callee) in pair_rows {
+        if seen.insert((caller, callee)) {
+            pairs.push((MemoryId::new(caller), MemoryId::new(callee)));
         }
     }
-    pairs.truncate(MAX_CALL_EDGES);
 
     // Hydrate the sites from the caller chunks' payload rows. The index
     // answers "is there a connection"; this is the node answering "what is
@@ -856,29 +779,137 @@ async fn load_call_edges(
         .collect())
 }
 
-/// `%`-wrapped, escaped, lowercased pattern for the substring arms.
+struct ChunkSidecarScan<'a> {
+    repo_id: Option<uuid::Uuid>,
+    language: Option<&'a str>,
+    chunk_type: Option<&'a str>,
+    exact_pattern: &'a str,
+    candidate_limit: i64,
+    distinctive: &'a str,
+}
+
+/// Phase 1: GIN/`search_tsv` on `code_chunk_v1` only. No `proxima_core.*`.
 ///
-/// Lowercased the same way the SQL side is. The comparison is against
-/// `lower(c.file_path)` / `lower(c.text)`, and Postgres `lower()` folds
-/// non-ASCII: it maps `MÜNCHEN.RS` to `münchen.rs`, where
-/// `to_ascii_lowercase` left `mÜnchen.rs`. The pattern could then never
-/// match, so the substring arms — which is where exact identifier and path
-/// lookup lives now that the vector stems and drops stopwords — silently did
-/// nothing for any query carrying a non-ASCII capital.
-fn like_pattern(query: &str) -> String {
-    let mut out = String::with_capacity(query.len() + 2);
-    out.push('%');
-    for ch in query.to_lowercase().chars() {
-        match ch {
-            '%' | '_' | '\\' => {
-                out.push('\\');
-                out.push(ch);
-            }
-            _ => out.push(ch),
-        }
-    }
-    out.push('%');
-    out
+/// `'english'` is pinned (code is not the deployment's prose language).
+/// Bands: strict 4.x / rare-all 3.x / rare-any 2.x / rescue 1.x, plus
+/// path/text literal bonuses on the GIN hit set. `LIKE` is a separate
+/// scan, only when this GIN arm returns nothing.
+async fn scan_chunk_sidecar(
+    pool: &sqlx::PgPool,
+    query: &str,
+    scan: &ChunkSidecarScan<'_>,
+) -> Result<Vec<ChunkCandidateRow>, ToolError> {
+    sqlx::query_as(
+        "WITH q AS (
+             SELECT websearch_to_tsquery('english'::regconfig,
+                        proxima_core.lexical_scrub($1)) AS tsq,
+                    NULLIF(
+                        replace(
+                            plainto_tsquery('english'::regconfig,
+                                proxima_core.lexical_scrub($1))::text,
+                            ' & ', ' | '),
+                        '')::tsquery AS any_tsq,
+                    websearch_to_tsquery('english'::regconfig,
+                        proxima_core.lexical_scrub(NULLIF($7, ''))) AS rare_all_tsq,
+                    NULLIF(
+                        replace(
+                            plainto_tsquery('english'::regconfig,
+                                proxima_core.lexical_scrub(NULLIF($7, '')))::text,
+                            ' & ', ' | '),
+                        '')::tsquery AS rare_any_tsq
+         )
+         SELECT c.t AS memory_id,
+                (
+                    GREATEST(
+                        CASE WHEN c.search_tsv @@ q.tsq
+                             THEN 4.0 + LEAST(ts_rank_cd(c.search_tsv, q.tsq, 32), 1.0) * 0.6
+                             ELSE 0.0 END,
+                        CASE WHEN q.rare_all_tsq IS NOT NULL AND c.search_tsv @@ q.rare_all_tsq
+                             THEN 3.0 + LEAST(ts_rank(c.search_tsv, q.rare_all_tsq, 1|32) * 100.0, 1.0) * 0.6
+                             ELSE 0.0 END,
+                        CASE WHEN q.rare_any_tsq IS NOT NULL AND c.search_tsv @@ q.rare_any_tsq
+                             THEN 2.0 + LEAST(ts_rank(c.search_tsv, q.rare_any_tsq, 1|32) * 100.0, 1.0) * 0.6
+                             ELSE 0.0 END,
+                        CASE WHEN q.any_tsq IS NOT NULL AND c.search_tsv @@ q.any_tsq
+                             THEN 1.0 + LEAST(ts_rank(c.search_tsv, q.any_tsq, 1|32) * 100.0, 1.0) * 0.6
+                             ELSE 0.0 END
+                    )
+                    + CASE WHEN c.chunk_type <> 'file' THEN 0.3 ELSE 0.0 END
+                    + CASE WHEN lower(c.file_path) = lower($1) THEN 10.0 ELSE 0.0 END
+                    + CASE WHEN lower(c.file_path) LIKE $4 ESCAPE '\\' THEN 6.0 ELSE 0.0 END
+                    + CASE WHEN lower(c.text) LIKE $4 ESCAPE '\\' THEN 4.0 ELSE 0.0 END
+                )::real AS score,
+                (
+                    CASE WHEN lower(c.file_path) = lower($1) THEN 10.0 ELSE 0.0 END
+                    + CASE WHEN lower(c.file_path) LIKE $4 ESCAPE '\\' THEN 6.0 ELSE 0.0 END
+                    + CASE WHEN lower(c.text) LIKE $4 ESCAPE '\\' THEN 4.0 ELSE 0.0 END
+                )::real AS literal_bonus
+           FROM proxima_code.code_chunk_v1 c, q
+          WHERE c.state = 'Present'
+            AND ($2::uuid IS NULL OR c.repo_id = $2)
+            AND ($3::text IS NULL OR c.language = $3)
+            AND ($5::text IS NULL OR c.chunk_type = $5)
+            AND (
+                c.search_tsv @@ q.tsq
+                OR (q.any_tsq IS NOT NULL AND c.search_tsv @@ q.any_tsq)
+                OR (q.rare_any_tsq IS NOT NULL AND c.search_tsv @@ q.rare_any_tsq)
+            )
+          ORDER BY score DESC, c.t DESC
+          LIMIT $6",
+    )
+    .bind(query)
+    .bind(scan.repo_id)
+    .bind(scan.language)
+    .bind(scan.exact_pattern)
+    .bind(scan.chunk_type)
+    .bind(scan.candidate_limit)
+    .bind(scan.distinctive)
+    .fetch_all(pool)
+    .await
+    .map_err(map_storage)
+}
+
+/// Substring fallback: only when GIN returned nothing. Same filters, no `@@`.
+async fn scan_chunk_sidecar_like(
+    pool: &sqlx::PgPool,
+    query: &str,
+    scan: &ChunkSidecarScan<'_>,
+) -> Result<Vec<ChunkCandidateRow>, ToolError> {
+    sqlx::query_as(
+        "SELECT c.t AS memory_id,
+                (
+                    CASE WHEN c.chunk_type <> 'file' THEN 0.3 ELSE 0.0 END
+                    + CASE WHEN lower(c.file_path) = lower($1) THEN 10.0 ELSE 0.0 END
+                    + CASE WHEN lower(c.file_path) LIKE $4 ESCAPE '\\' THEN 6.0 ELSE 0.0 END
+                    + CASE WHEN lower(c.text) LIKE $4 ESCAPE '\\' THEN 4.0 ELSE 0.0 END
+                )::real AS score,
+                (
+                    CASE WHEN lower(c.file_path) = lower($1) THEN 10.0 ELSE 0.0 END
+                    + CASE WHEN lower(c.file_path) LIKE $4 ESCAPE '\\' THEN 6.0 ELSE 0.0 END
+                    + CASE WHEN lower(c.text) LIKE $4 ESCAPE '\\' THEN 4.0 ELSE 0.0 END
+                )::real AS literal_bonus
+           FROM proxima_code.code_chunk_v1 c
+          WHERE c.state = 'Present'
+            AND ($2::uuid IS NULL OR c.repo_id = $2)
+            AND ($3::text IS NULL OR c.language = $3)
+            AND ($5::text IS NULL OR c.chunk_type = $5)
+            AND (
+                lower(c.file_path) = lower($1)
+                OR lower(c.file_path) LIKE $4 ESCAPE '\\'
+                OR lower(c.text) LIKE $4 ESCAPE '\\'
+            )
+          ORDER BY score DESC, c.t DESC
+          LIMIT $6",
+    )
+    .bind(query)
+    .bind(scan.repo_id)
+    .bind(scan.language)
+    .bind(scan.exact_pattern)
+    .bind(scan.chunk_type)
+    .bind(scan.candidate_limit)
+    .fetch_all(pool)
+    .await
+    .map_err(map_storage)
 }
 
 #[derive(Debug, sqlx::FromRow)]
@@ -904,9 +935,9 @@ struct CallSiteRow {
 mod tests {
     use super::{
         ChunkCandidateRow, ChunkSearchMode, MAX_DISTINCTIVE_TERMS, MatchScores, distinctive_terms,
-        fuse_candidates, like_pattern, reciprocal_rank,
+        fuse_candidates, reciprocal_rank,
     };
-    use proxima::flavor::CodeChunkVectorCandidate;
+    use proxima_storage_pg::query::CodeChunkVectorCandidate;
 
     fn id(byte: u8) -> uuid::Uuid {
         uuid::Uuid::from_bytes([byte; 16])
@@ -1040,20 +1071,6 @@ mod tests {
         assert!(reciprocal_rank(0) > reciprocal_rank(1));
         assert!(reciprocal_rank(1) > reciprocal_rank(999));
         assert!(reciprocal_rank(999) > 0.0);
-    }
-
-    /// Postgres `lower()` folds non-ASCII; the pattern must too, or it can
-    /// never match the column it is compared against.
-    #[test]
-    fn like_pattern_lowercases_the_way_postgres_does() {
-        assert_eq!(like_pattern("MÜNCHEN.RS"), "%münchen.rs%");
-        assert_eq!(like_pattern("Straße"), "%straße%");
-        assert_eq!(like_pattern("ÅNGSTRÖM"), "%ångström%");
-    }
-
-    #[test]
-    fn like_pattern_escapes_wildcards() {
-        assert_eq!(like_pattern("a_b%c\\d"), "%a\\_b\\%c\\\\d%");
     }
 
     /// The property the rare bands depend on: a question with no identifiers

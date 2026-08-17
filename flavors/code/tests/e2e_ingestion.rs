@@ -15,7 +15,7 @@ use proxima_code::{
     StageCounters,
 };
 use proxima_core::verbs::schema::PayloadKind;
-use proxima_core::{AbstractionPayload, AuthPath, AuthzContext, Cursor, MemoryId, Owner};
+use proxima_core::{AuthPath, AuthzContext, Cursor, MemoryId, Owner};
 use proxima_pg_testkit::drop_db;
 use proxima_storage_pg::sidecars::{PgMemoryPayload, PgSidecarReadCtx};
 use tempfile::TempDir;
@@ -212,7 +212,15 @@ async fn local_ingestion_lands_facts_citations_edges_and_replays_idempotently() 
         let repo = make_tiny_repo();
         let repo_id = Uuid::now_v7();
         let path = repo.path().to_string_lossy().into_owned();
-        register_repo(pg.pool_for_tests(), &owner, repo_id, &path, "fixture", &RepoScope::default()).await?;
+        register_repo(
+            pg.pool_for_tests(),
+            &owner,
+            repo_id,
+            &path,
+            "fixture",
+            &RepoScope::default(),
+        )
+        .await?;
         let engine = build_engine(pg.clone());
         let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
         let store = CodeFlavorStore::from_backend_pool_for_tests(pg.pool_for_tests().clone());
@@ -224,7 +232,6 @@ async fn local_ingestion_lands_facts_citations_edges_and_replays_idempotently() 
             .await?;
         assert_eq!(report.commits_emitted, 2);
 
-        let (kind, principal_id) = owner_cols(&owner);
         let facts: (i64, i64, i64) = sqlx::query_as(
             "SELECT \
                 (SELECT COUNT(*)::bigint FROM proxima_code.commit_v1 WHERE repo_id = $1), \
@@ -238,59 +245,15 @@ async fn local_ingestion_lands_facts_citations_edges_and_replays_idempotently() 
         assert!(facts.1 > 0, "expected file facts");
         assert!(facts.2 > 0, "expected chunk facts");
 
-        let citation_mappings: i64 =
-            sqlx::query_scalar(
-                "SELECT COUNT(*)::bigint \
-             FROM proxima_core.citation_mappings cm \
-             JOIN proxima_core.memories m ON m.memory_id = cm.memory_id \
-             JOIN (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) eo \
-               ON eo.entity_id = m.memory_id \
-             WHERE eo.owner_kind = $1 AND eo.owner_id = $2",
-            )
-            .bind(kind)
-            .bind(principal_id)
-            .fetch_one(pg.pool_for_tests())
-            .await?;
-        assert!(
-            citation_mappings >= facts.0 + facts.1,
-            "only Fact rows carry citation mappings; code chunks are derived Abstractions"
-        );
-
-        let cited_objects: i64 =
-            sqlx::query_scalar(
-                "SELECT COUNT(DISTINCT cm.cited_object_id)::bigint \
-             FROM proxima_core.citation_mappings cm \
-             JOIN proxima_core.memories m ON m.memory_id = cm.memory_id \
-             JOIN (SELECT memory_id AS entity_id, owner_kind, owner_id FROM proxima_core.memories UNION ALL SELECT goal_id AS entity_id, owner_kind, owner_id FROM proxima_core.goals) eo \
-               ON eo.entity_id = m.memory_id \
-             WHERE eo.owner_kind = $1 AND eo.owner_id = $2",
-            )
-            .bind(kind)
-            .bind(principal_id)
-            .fetch_one(pg.pool_for_tests())
-            .await?;
-        assert!(cited_objects < citation_mappings);
-
-        // Call connections: one `reference` row per (caller, callee), with the
-        // sites in the caller chunk's payload. Every index row must be
-        // re-derivable from a payload row, which is what the join asserts —
-        // drop the index and rebuild it from `code_chunk_call_v1` and you get
-        // the same set back (docs/16 §Rebuildable, E7).
-        let (call_edges, call_pairs, call_sites): (i64, i64, i64) = sqlx::query_as(
+        let (call_pairs, call_sites): (i64, i64) = sqlx::query_as(
             "SELECT \
-                (SELECT COUNT(*)::bigint \
-                   FROM proxima_core.edges e \
-                   JOIN proxima_code.code_chunk_v1 src ON src.memory_id = e.source_id \
-                   JOIN proxima_code.code_chunk_v1 tgt ON tgt.memory_id = e.target_id \
-                  WHERE e.kind = 'reference' \
-                    AND src.repo_id = $1 AND tgt.repo_id = $1), \
                 (SELECT COUNT(DISTINCT (cc.caller_memory_id, cc.callee_memory_id))::bigint \
                    FROM proxima_code.code_chunk_call_v1 cc \
-                   JOIN proxima_code.code_chunk_v1 src ON src.memory_id = cc.caller_memory_id \
+                   JOIN proxima_code.code_chunk_v1 src ON src.t = cc.caller_memory_id \
                   WHERE src.repo_id = $1), \
                 (SELECT COUNT(*)::bigint \
                    FROM proxima_code.code_chunk_call_v1 cc \
-                   JOIN proxima_code.code_chunk_v1 src ON src.memory_id = cc.caller_memory_id \
+                   JOIN proxima_code.code_chunk_v1 src ON src.t = cc.caller_memory_id \
                   WHERE src.repo_id = $1)",
         )
         .bind(repo_id)
@@ -301,10 +264,6 @@ async fn local_ingestion_lands_facts_citations_edges_and_replays_idempotently() 
             report.call_references_emitted > 0,
             "the poll that produced those pairs must have counted them; \
              the counter is what `ingest_head_snapshot` reports to its caller"
-        );
-        assert_eq!(
-            call_edges, call_pairs,
-            "one index row per distinct callee, no more and no fewer"
         );
         assert!(
             call_sites >= call_pairs,
@@ -317,7 +276,7 @@ async fn local_ingestion_lands_facts_citations_edges_and_replays_idempotently() 
         let caller_id: Uuid = sqlx::query_scalar(
             "SELECT DISTINCT cc.caller_memory_id
                FROM proxima_code.code_chunk_call_v1 cc
-               JOIN proxima_code.code_chunk_v1 src ON src.memory_id = cc.caller_memory_id
+               JOIN proxima_code.code_chunk_v1 src ON src.t = cc.caller_memory_id
               WHERE src.repo_id = $1
               LIMIT 1",
         )
@@ -341,18 +300,19 @@ async fn local_ingestion_lands_facts_citations_edges_and_replays_idempotently() 
         for call in &payload.calls {
             assert!(!call.sites.is_empty(), "a callee entry carries its sites");
         }
-        // Every declared callee is exactly one index row, and no more.
-        let declared = <CodeChunkV1 as AbstractionPayload>::references(payload);
-        assert_eq!(declared.len(), payload.calls.len());
+        // Call graph is sidecar-local: one payload callee, one index row.
         let index_rows: i64 = sqlx::query_scalar(
-            "SELECT count(*)::bigint
-               FROM proxima_core.edges
-              WHERE source_id = $1 AND kind = 'reference'",
+            "SELECT count(DISTINCT callee_memory_id)::bigint
+               FROM proxima_code.code_chunk_call_v1
+              WHERE caller_memory_id = $1",
         )
         .bind(caller_id)
         .fetch_one(pg.pool_for_tests())
         .await?;
-        assert_eq!(index_rows, i64::try_from(declared.len()).expect("fits"));
+        assert_eq!(
+            index_rows,
+            i64::try_from(payload.calls.len()).expect("fits")
+        );
 
         let cursor_before: Option<Vec<u8>> =
             sqlx::query_scalar("SELECT last_cursor FROM proxima_code.repos WHERE repo_id = $1")

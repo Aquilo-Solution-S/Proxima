@@ -8,8 +8,7 @@ use proxima_core::{
 
 use crate::payloads::{CodeWorkAssignmentV1, ExecutionRequestV1};
 
-use super::super::sql::map_storage;
-use super::super::{CodeToolCtxExt, code_store, engine};
+use super::super::{CodeToolCtxExt, engine};
 use super::context_validation::validate_evidence_in_owner;
 use super::ingest::{FactProvenance, ingest_execution_request};
 use super::input_validation::{normalize_text, resolve_evidence};
@@ -51,7 +50,7 @@ impl Tool for CodeRetryExecutionRequestTool {
                         .into(),
                 ));
             }
-            let shell_author_root = ctx.caller_self_perspective().ok_or_else(|| {
+            let _shell_author_root = ctx.caller_self_perspective().ok_or_else(|| {
                 ToolError::InvalidInput(
                     "caller_self_perspective is required for shell-author retry provenance".into(),
                 )
@@ -62,13 +61,10 @@ impl Tool for CodeRetryExecutionRequestTool {
             let request_key = normalize_text("idempotency_key", &args.idempotency_key, 240)?;
             let explicit_evidence = resolve_evidence(&ctx, &args.evidence)?;
 
-            let pool = code_store(&ctx)?;
-            let mut tx = pool.pool().begin().await.map_err(map_storage)?;
-            let prior = load_execution_request(&mut tx, &ctx, prior_memory_id).await?;
+            let prior = load_execution_request(&ctx, prior_memory_id).await?;
             if let Some(existing) =
-                find_execution_request_by_key(&mut tx, &ctx, prior.repo_id, &request_key).await?
+                find_execution_request_by_key(&ctx, prior.repo_id, &request_key).await?
             {
-                tx.commit().await.map_err(map_storage)?;
                 return Ok(CodeRetryExecutionRequestOutput {
                     handle: ctx.format_fact_memory(existing),
                     assignment_handle: None,
@@ -76,8 +72,8 @@ impl Tool for CodeRetryExecutionRequestTool {
                     idempotent_replay: true,
                 });
             }
-            validate_target_perspective(&mut tx, &ctx, target_perspective_id).await?;
-            validate_evidence_in_owner(&mut tx, &ctx, &explicit_evidence).await?;
+            validate_target_perspective(&ctx, target_perspective_id).await?;
+            validate_evidence_in_owner(&ctx, &explicit_evidence).await?;
 
             let title = match args.title {
                 Some(value) => normalize_text("title", &value, 240)?,
@@ -101,7 +97,7 @@ impl Tool for CodeRetryExecutionRequestTool {
                 }
             };
             push(prior_memory_id);
-            for memory_id in load_prior_origins(&mut tx, &ctx, prior_memory_id).await? {
+            for memory_id in load_prior_origins(&ctx, prior_memory_id).await? {
                 push(memory_id);
             }
             for memory_id in explicit_evidence {
@@ -115,17 +111,20 @@ impl Tool for CodeRetryExecutionRequestTool {
                 request_key,
                 depends_on_memory_ids: Vec::new(),
             };
+            let engine = engine(&ctx)?;
+            let mut uow = engine
+                .unit_of_work(ctx.authz())
+                .await
+                .map_err(ToolError::Protocol)?;
             let outcome = ingest_execution_request(
-                &mut tx,
-                &ctx,
+                &mut uow,
                 &payload,
                 FactProvenance {
                     derived_from: &origins,
-                    authoring_perspective_id: Some(shell_author_root),
                 },
             )
             .await?;
-            tx.commit().await.map_err(map_storage)?;
+            uow.commit().await.map_err(ToolError::Protocol)?;
 
             // "This worker should pick up that request" is a claim about two
             // nodes that already exist, and neither of them owns it: a Fact

@@ -384,21 +384,10 @@ impl Engine {
             .storage()
             .pipeline
             .owner_access_read
-            .home_owner(entity)
+            .visible_home_owner(entity, &read)
             .await
-            .map_err(|err| storage_error("home_owner", &err))?
+            .map_err(|err| storage_error("visible_home_owner", &err))?
             .ok_or_else(|| ProtocolError::forbidden(ENTRY_NOT_FOUND_MESSAGE))?;
-
-        let readable = self
-            .storage()
-            .pipeline
-            .owner_access_read
-            .visible_to_any(entity, &read)
-            .await
-            .map_err(|err| storage_error("visible_to_any", &err))?;
-        if !readable {
-            return Err(ProtocolError::forbidden(ENTRY_NOT_FOUND_MESSAGE));
-        }
 
         Ok(EntryReadPermit { owner: home })
     }

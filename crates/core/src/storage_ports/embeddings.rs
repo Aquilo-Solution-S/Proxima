@@ -30,6 +30,17 @@ pub trait EmbeddingTextPort: Send + Sync {
         non_embeddable_schemas: &[String],
     ) -> Result<Option<String>, StorageError>;
 
+    /// Batch counterpart of [`Self::load_embedding_text`].
+    ///
+    /// Output is aligned with `items`. `None` at an index is the same
+    /// “nothing to embed” as the single-row method (missing row, owner
+    /// mismatch, excluded schema, or no `embed_text` column).
+    async fn load_embedding_texts(
+        &self,
+        items: &[(Owner, EntityKind, crate::MemoryId)],
+        non_embeddable_schemas: &[String],
+    ) -> Result<Vec<Option<String>>, StorageError>;
+
     /// Facts with text but no vector under `model_id`.
     ///
     /// `non_embeddable_schemas` are excluded — they are not missing a
@@ -234,12 +245,10 @@ pub trait EmbeddingJobPort: Send + Sync {
         error: &str,
     ) -> Result<(), StorageError>;
 
-    /// Return claimed-but-unattempted jobs to `pending` without burning a
-    /// retry attempt. Used when a *batch* embed call fails for a transient
-    /// provider-side cause (429/5xx/network): the failure says nothing about
-    /// any individual job, so none of them should march toward the attempt
-    /// cap. A short `next_attempt_at` delay keeps concurrent drainers from
-    /// hot-looping on the same jobs.
+    /// Return claimed-but-unattempted jobs to `pending`.
+    ///
+    /// Used when a batch embed call fails for a transient provider-side
+    /// cause. v0.0.8 has no attempt counter or `next_attempt_at`.
     async fn release_embedding_jobs(
         &self,
         claims: &[EmbeddingJobClaim],

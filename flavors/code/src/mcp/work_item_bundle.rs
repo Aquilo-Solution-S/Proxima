@@ -1,6 +1,7 @@
-use proxima_core::verbs::query::{EdgeFilter, EdgeReadRequest, EntityKind};
+use proxima_core::verbs::goal_write::GoalState;
+use proxima_core::verbs::query::{EdgeFilter, EdgeReadRequest, EntityKind, QueryRequest};
 use proxima_core::{
-    AbstractionPayload, EdgeEndpoint, EdgeKind, EntityRef, FactPayload, GoalActivatedV1, MemoryId,
+    AbstractionPayload, EdgeEndpoint, EdgeKind, EntityRef, FactPayload, MemoryId,
     PerspectivePayload,
 };
 use proxima_core::{Tool, ToolCtx, ToolError};
@@ -168,7 +169,7 @@ impl Tool for CodeWorkItemBundleTool {
                 if let Some(goal_id) = load_goal_activation(&ctx, target).await? {
                     active_goal_provenance.push(ActiveGoalProvenanceBundle {
                         goal_activated_handle: ctx.format_fact_memory(target),
-                        goal_handle: ctx.format_goal(proxima_core::GoalId::new(goal_id)),
+                        goal_handle: ctx.format_goal(goal_id),
                     });
                 } else {
                     evidence_handles.push(ctx.format_fact_memory(target));
@@ -324,10 +325,10 @@ async fn load_criteria(
 ) -> Result<Vec<CriteriaBundle>, ToolError> {
     let pool = code_store(ctx)?;
     let rows: Vec<Uuid> = sqlx::query_scalar(
-        "SELECT memory_id
+        "SELECT t
            FROM proxima_code.acceptance_criteria_v1
           WHERE work_item_memory_id = $1
-          ORDER BY created_at ASC",
+          ORDER BY t ASC",
     )
     .bind(memory_id.into_inner())
     .fetch_all(pool.pool())
@@ -500,21 +501,31 @@ async fn load_work_item_neighbours(
 async fn load_goal_activation(
     ctx: &ToolCtx,
     memory_id: MemoryId,
-) -> Result<Option<Uuid>, ToolError> {
-    let pool = code_store(ctx)?;
+) -> Result<Option<proxima_core::GoalId>, ToolError> {
     let engine = super::engine(ctx)?;
-    Ok(pool
-        .authorized_fact_payloads::<GoalActivatedV1>(
-            &engine,
-            ctx.authz(),
-            ctx.owner(),
-            &[memory_id.into_inner()],
-            1,
-        )
-        .await?
-        .into_iter()
-        .next()
-        .map(|(_, payload)| payload.goal_id))
+    let assigned = query_active_goals(ctx, &engine, |req| {
+        req.assignment = Some(memory_id);
+    })
+    .await?;
+    let evidenced = query_active_goals(ctx, &engine, |req| {
+        req.evidence_contains = Some(memory_id);
+    })
+    .await?;
+    Ok([assigned, evidenced].into_iter().flatten().max())
+}
+
+async fn query_active_goals(
+    ctx: &ToolCtx,
+    engine: &proxima_core::Engine,
+    configure: impl FnOnce(&mut QueryRequest),
+) -> Result<Option<proxima_core::GoalId>, ToolError> {
+    let mut req = QueryRequest::for_owner(ctx.owner());
+    req.entity_kind = Some(EntityKind::Goal);
+    req.goal_state = Some(GoalState::Active);
+    req.limit = 1;
+    configure(&mut req);
+    let response = engine.query(ctx.authz(), &req).await?;
+    Ok(response.goals.into_iter().next().map(|goal| goal.id))
 }
 
 /// Workers this item is assigned to: incoming assignment Perspectives,
@@ -551,8 +562,8 @@ async fn load_target_perspectives(
     let workers: Vec<Uuid> = sqlx::query_scalar(
         "SELECT target_perspective_memory_id
            FROM proxima_code.work_assignment_v1
-          WHERE memory_id = ANY($1::uuid[])
-          ORDER BY memory_id",
+          WHERE t = ANY($1::uuid[])
+          ORDER BY t",
     )
     .bind(
         assignments
@@ -612,10 +623,10 @@ async fn load_results(
         WorkItemBundleKind::Test => ("proxima_code.test_result_v1", "test_requested_memory_id"),
     };
     let sql = format!(
-        "SELECT memory_id, status::text, summary, artifact_refs, log_excerpt
+        "SELECT t AS memory_id, status::text, summary, artifact_refs, log_excerpt
            FROM {table}
           WHERE {fk} = $1
-          ORDER BY created_at ASC"
+          ORDER BY t ASC"
     );
     let pool = code_store(ctx)?;
     // SQL-POLICY: fixed-fragment — the only interpolation is `fk`, chosen
@@ -652,10 +663,10 @@ async fn load_acceptance_verifications(
 ) -> Result<Vec<AcceptanceVerificationBundle>, ToolError> {
     let pool = code_store(ctx)?;
     let rows: Vec<AcceptanceVerificationSqlRow> = sqlx::query_as(
-        "SELECT memory_id, criterion_key, status::text, summary, artifact_refs, verifier_memory_id
+        "SELECT t AS memory_id, criterion_key, status::text, summary, artifact_refs, verifier_memory_id
            FROM proxima_code.acceptance_verification_v1
           WHERE work_item_memory_id = $1
-          ORDER BY created_at ASC",
+          ORDER BY t ASC",
     )
     .bind(memory_id.into_inner())
     .fetch_all(pool.pool())
@@ -692,10 +703,10 @@ async fn load_acceptance_summaries(
 ) -> Result<Vec<MemoryId>, ToolError> {
     let pool = code_store(ctx)?;
     let rows: Vec<Uuid> = sqlx::query_scalar(
-        "SELECT memory_id
+        "SELECT t
            FROM proxima_code.acceptance_summary_v1
           WHERE work_item_memory_id = $1
-          ORDER BY created_at ASC",
+          ORDER BY t ASC",
     )
     .bind(memory_id.into_inner())
     .fetch_all(pool.pool())

@@ -22,12 +22,9 @@ pub async fn export_owner_bundle(
     let owner = auth.audit().owner();
     let memories = owner_rows(pool, owner, OwnerRowsTable::Memories).await?;
     let goals = owner_rows(pool, owner, OwnerRowsTable::Goals).await?;
-    let edges = owner_rows(pool, owner, OwnerRowsTable::Edges).await?;
-    let fact_entities = owner_rows(pool, owner, OwnerRowsTable::FactEntities).await?;
+    let edges = pins_from_memories(&memories);
     let receipts = owner_rows(pool, owner, OwnerRowsTable::Receipts).await?;
     let source_batches = owner_rows(pool, owner, OwnerRowsTable::SourceBatches).await?;
-    let citations = owner_rows(pool, owner, OwnerRowsTable::Citations).await?;
-    let cited_objects = owner_rows(pool, owner, OwnerRowsTable::CitedObjects).await?;
     let source_cursors = owner_rows(pool, owner, OwnerRowsTable::SourceCursors).await?;
     let delegated_authority_grants =
         owner_rows(pool, owner, OwnerRowsTable::DelegatedAuthorityGrants).await?;
@@ -48,11 +45,8 @@ pub async fn export_owner_bundle(
         memories: memories.len(),
         goals: goals.len(),
         edges: edges.len(),
-        fact_entities: fact_entities.len(),
         receipts: receipts.len(),
         source_batches: source_batches.len(),
-        citations: citations.len(),
-        cited_objects: cited_objects.len(),
         source_cursors: source_cursors.len(),
         delegated_authority_grants: delegated_authority_grants.len(),
         sidecar_rows: sidecars.iter().map(|sidecar| sidecar.rows.len()).sum(),
@@ -70,11 +64,8 @@ pub async fn export_owner_bundle(
         memories,
         goals,
         edges,
-        fact_entities,
         receipts,
         source_batches,
-        citations,
-        cited_objects,
         source_cursors,
         delegated_authority_grants,
         sidecars,
@@ -93,12 +84,8 @@ struct SidecarTables<'a> {
 enum OwnerRowsTable {
     Memories,
     Goals,
-    Edges,
-    FactEntities,
     Receipts,
     SourceBatches,
-    Citations,
-    CitedObjects,
     SourceCursors,
     DelegatedAuthorityGrants,
 }
@@ -115,9 +102,9 @@ async fn export_sidecars(
         &mut sidecars,
         tables.fact,
         SidecarJoin {
-            sidecar_column: "memory_id",
-            base_table: "proxima_core.memories",
-            base_column: "memory_id",
+            sidecar_column: "t",
+            base_table: "proxima_core.memory",
+            base_column: "t",
         },
     )
     .await?;
@@ -127,36 +114,14 @@ async fn export_sidecars(
         &mut sidecars,
         tables.goal,
         SidecarJoin {
-            sidecar_column: "goal_id",
-            base_table: "proxima_core.goals",
-            base_column: "goal_id",
+            sidecar_column: "t",
+            base_table: "proxima_core.goal",
+            base_column: "t",
         },
     )
     .await?;
-    extend_sidecars(
-        pool,
-        owner,
-        &mut sidecars,
-        tables.citation_mapping,
-        SidecarJoin {
-            sidecar_column: "citation_mapping_id",
-            base_table: "proxima_core.citation_mappings",
-            base_column: "citation_mapping_id",
-        },
-    )
-    .await?;
-    extend_sidecars(
-        pool,
-        owner,
-        &mut sidecars,
-        tables.cited_object,
-        SidecarJoin {
-            sidecar_column: "cited_object_id",
-            base_table: "proxima_core.cited_objects",
-            base_column: "cited_object_id",
-        },
-    )
-    .await?;
+    let _ = tables.citation_mapping;
+    let _ = tables.cited_object;
     sidecars.sort_by(|left, right| left.table.cmp(&right.table));
     Ok(sidecars)
 }
@@ -180,18 +145,6 @@ async fn owner_rows(
             .fetch_all(pool)
             .await
             .map_err(map_err),
-        OwnerRowsTable::Edges => sqlx::query_scalar::<_, Value>(EDGE_ROWS_SQL)
-            .bind(owner_kind)
-            .bind(owner_id)
-            .fetch_all(pool)
-            .await
-            .map_err(map_err),
-        OwnerRowsTable::FactEntities => sqlx::query_scalar::<_, Value>(FACT_ENTITY_ROWS_SQL)
-            .bind(owner_kind)
-            .bind(owner_id)
-            .fetch_all(pool)
-            .await
-            .map_err(map_err),
         OwnerRowsTable::Receipts => sqlx::query_scalar::<_, Value>(RECEIPT_ROWS_SQL)
             .bind(owner_kind)
             .bind(owner_id)
@@ -199,18 +152,6 @@ async fn owner_rows(
             .await
             .map_err(map_err),
         OwnerRowsTable::SourceBatches => sqlx::query_scalar::<_, Value>(SOURCE_BATCH_ROWS_SQL)
-            .bind(owner_kind)
-            .bind(owner_id)
-            .fetch_all(pool)
-            .await
-            .map_err(map_err),
-        OwnerRowsTable::Citations => sqlx::query_scalar::<_, Value>(CITATION_ROWS_SQL)
-            .bind(owner_kind)
-            .bind(owner_id)
-            .fetch_all(pool)
-            .await
-            .map_err(map_err),
-        OwnerRowsTable::CitedObjects => sqlx::query_scalar::<_, Value>(CITED_OBJECT_ROWS_SQL)
             .bind(owner_kind)
             .bind(owner_id)
             .fetch_all(pool)
@@ -290,8 +231,7 @@ async fn sidecar_rows(
            FROM {table} t
            JOIN {base_table} base
              ON base.{base_column} = t.{sidecar_column}
-          WHERE base.owner_kind = $1
-            AND base.owner_id IS NOT DISTINCT FROM $2
+          WHERE base.owner_id IS NOT DISTINCT FROM $2
           ORDER BY t.{sidecar_column}",
         table = table.as_str(),
         base_table = base_table.as_str(),
@@ -309,59 +249,68 @@ async fn sidecar_rows(
 
 const MEMORY_ROWS_SQL: &str = "
 SELECT to_jsonb(m)
-  FROM proxima_core.memories m
- WHERE m.owner_kind = $1
-   AND m.owner_id IS NOT DISTINCT FROM $2
- ORDER BY m.created_at, m.memory_id";
+  FROM proxima_core.memory m
+ WHERE m.owner_id IS NOT DISTINCT FROM $2
+ ORDER BY m.t";
 
 const GOAL_ROWS_SQL: &str = "
 SELECT to_jsonb(g)
-  FROM proxima_core.goals g
- WHERE g.owner_kind = $1
-   AND g.owner_id IS NOT DISTINCT FROM $2
- ORDER BY g.created_at, g.goal_id";
+  FROM proxima_core.goal g
+ WHERE g.owner_id IS NOT DISTINCT FROM $2
+ ORDER BY g.t";
 
-const EDGE_ROWS_SQL: &str = "
-SELECT to_jsonb(e)
-  FROM proxima_core.edges e
- WHERE e.owner_kind = $1
-   AND e.owner_id IS NOT DISTINCT FROM $2
- ORDER BY e.created_at, e.source_kind, e.source_id, e.target_kind, e.target_id, e.kind";
+fn pins_from_memories(memories: &[Value]) -> Vec<Value> {
+    let mut edges = Vec::new();
+    for memory in memories {
+        let Some(source_t) = memory.get("t") else {
+            continue;
+        };
+        push_pins(&mut edges, source_t, memory.get("origins"), "origin");
+        push_pins(&mut edges, source_t, memory.get("refs"), "reference");
+    }
+    edges.sort_by_key(pin_sort_key);
+    edges
+}
 
-const FACT_ENTITY_ROWS_SQL: &str = "
-SELECT to_jsonb(fe)
-  FROM proxima_core.fact_entities fe
- WHERE fe.owner_kind = $1
-   AND fe.owner_id IS NOT DISTINCT FROM $2
- ORDER BY fe.created_at, fe.fact_entity_id";
+fn pin_sort_key(edge: &Value) -> (String, String, String) {
+    (
+        edge.get("source_t")
+            .map(ToString::to_string)
+            .unwrap_or_default(),
+        edge.get("target_t")
+            .map(ToString::to_string)
+            .unwrap_or_default(),
+        edge.get("kind")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+    )
+}
+
+fn push_pins(edges: &mut Vec<Value>, source_t: &Value, pins: Option<&Value>, kind: &'static str) {
+    let Some(Value::Array(pins)) = pins else {
+        return;
+    };
+    for pin in pins {
+        edges.push(serde_json::json!({
+            "source_t": source_t,
+            "target_t": pin,
+            "kind": kind,
+        }));
+    }
+}
 
 const RECEIPT_ROWS_SQL: &str = "
-SELECT to_jsonb(fr)
-  FROM proxima_core.fact_receipts fr
- WHERE fr.owner_kind = $1
-   AND fr.owner_id IS NOT DISTINCT FROM $2
- ORDER BY fr.observed_at, fr.receipt_id";
+SELECT to_jsonb(ik)
+  FROM proxima_core.ingest_keys ik
+ WHERE ik.owner_id IS NOT DISTINCT FROM $2
+ ORDER BY ik.t";
 
 const SOURCE_BATCH_ROWS_SQL: &str = "
-SELECT to_jsonb(sb)
-  FROM proxima_core.source_batches sb
- WHERE sb.owner_kind = $1
-   AND sb.owner_id IS NOT DISTINCT FROM $2
- ORDER BY sb.opened_at, sb.id";
-
-const CITATION_ROWS_SQL: &str = "
-SELECT to_jsonb(cm)
-  FROM proxima_core.citation_mappings cm
- WHERE cm.owner_kind = $1
-   AND cm.owner_id IS NOT DISTINCT FROM $2
- ORDER BY cm.created_at, cm.citation_mapping_id";
-
-const CITED_OBJECT_ROWS_SQL: &str = "
-SELECT to_jsonb(co)
-  FROM proxima_core.cited_objects co
- WHERE co.owner_kind = $1
-   AND co.owner_id IS NOT DISTINCT FROM $2
- ORDER BY co.created_at, co.cited_object_id";
+SELECT to_jsonb(a)
+  FROM proxima_core.announce a
+ WHERE FALSE
+ ORDER BY a.seq";
 
 const SOURCE_CURSOR_ROWS_SQL: &str = "
 SELECT to_jsonb(sc)
@@ -393,3 +342,39 @@ SELECT jsonb_build_object(
  WHERE dag.owner_kind = $1
    AND dag.owner_id IS NOT DISTINCT FROM $2
  ORDER BY dag.issued_at, dag.delegation_id";
+
+#[cfg(test)]
+mod tests {
+    use super::{pin_sort_key, pins_from_memories};
+    use serde_json::json;
+
+    #[test]
+    fn export_sql_does_not_rebuild_an_edge_table() {
+        let src = include_str!("compliance_export.rs");
+        let needle = format!("{}{}", "JOIN unnest", "(src.origins)");
+        assert!(
+            !src.contains(&needle),
+            "export must project pins from memory rows, not unnest a second Edge scan"
+        );
+    }
+
+    #[test]
+    fn pins_come_from_memory_origin_and_ref_arrays() {
+        let source = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
+        let origin = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb";
+        let reference = "cccccccc-cccc-cccc-cccc-cccccccccccc";
+        let edges = pins_from_memories(&[json!({
+            "t": source,
+            "origins": [origin],
+            "refs": [reference],
+        })]);
+        assert_eq!(
+            edges,
+            vec![
+                json!({"source_t": source, "target_t": origin, "kind": "origin"}),
+                json!({"source_t": source, "target_t": reference, "kind": "reference"}),
+            ]
+        );
+        assert!(pin_sort_key(&edges[0]) < pin_sort_key(&edges[1]));
+    }
+}

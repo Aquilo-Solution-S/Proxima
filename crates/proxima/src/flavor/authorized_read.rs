@@ -8,14 +8,9 @@
 //! payload projection without ever holding a raw `PgPool` or writing SQL
 //! against `proxima_core.*` themselves.
 //!
-//! [`authorized_code_chunk_head_candidates`] is the one exception that
-//! still touches `proxima_core.*` SQL, and it does so from
-//! `proxima-storage-pg` (a backend-owned storage adapter, not flavor code)
-//! because `AbstractionPayload` has no natural-key/supersession concept to
-//! ride on `Engine::query`'s `SupersessionStatus::HeadsOnly` today (see
-//! that function's doc comment). It only narrows a candidate id list before
-//! the caller's own [`authorized_abstraction_payloads`] call decides real
-//! visibility, so it is safe to run without an owner-exact-match restriction.
+//! Chunk series heads ride `Engine::query` `HeadsOnly` (`memory_head`).
+//! Listing heads by NK (ingest / `open_file`) lives in storage-pg
+//! `code_series_heads`, not here.
 
 use std::collections::{HashMap, HashSet};
 
@@ -24,7 +19,6 @@ use proxima_core::{
     AbstractionPayload, AuthzContext, Engine, FactPayload, MemoryId, Owner, SchemaId,
     SidecarPayload, ToolError,
 };
-use sqlx::PgPool;
 
 /// Candidate id lists are bounded before they ever reach a query so a
 /// pathological caller cannot force an unbounded `IN (...)`/`ANY($1)` scan.
@@ -167,11 +161,9 @@ where
 /// Authorized, typed Abstraction payload fetch (present-only) for a
 /// candidate id list.
 ///
-/// `SupersessionStatus::HeadsOnly` is a no-op for Abstraction schemas that
-/// never set `memories.supersedes` (e.g. `code-chunk-v1`, whose ingest
-/// authors one row per source Fact rather than declaring a successor).
-/// Route candidates for those schemas through
-/// [`authorized_code_chunk_head_candidates`] first.
+/// `SupersessionStatus::HeadsOnly` is the chunk admit: ingest keeps one
+/// handle per `(owner, repo, path, index)`, so `memory_head.t` is the
+/// current revision. Do not pre-filter the candidate list.
 ///
 /// # Errors
 ///
@@ -257,105 +249,5 @@ fn bounded_candidates(candidates: &[uuid::Uuid], _limit: usize) -> Vec<uuid::Uui
         .copied()
         .filter(|id| seen.insert(*id))
         .take(MAX_AUTHZ_CANDIDATES)
-        .collect()
-}
-
-/// Narrow a sidecar-only candidate id list (already known to be
-/// `proxima-code/code-chunk-v1` rows via a flavor's own
-/// `proxima_code.*`-only query) to the subset not superseded, by
-/// `(repo_id, file_path, chunk_index)`, within the same schema/owner-or-World
-/// scope.
-///
-/// Every candidate is evaluated: the input is deduplicated and processed in
-/// `MAX_AUTHZ_CANDIDATES`-sized batches (bounding each SQL round-trip), NOT
-/// truncated. Batching is exact because the underlying verb's head dedup is
-/// a `NOT EXISTS` against the full table — each candidate's head status is
-/// globally correct regardless of which batch it lands in. Silent truncation
-/// here would be a correctness bug, not a cap: `code-chunk-v1` memory ids
-/// are deterministic `UUIDv5` content hashes (see
-/// `flavors/code/src/ingest/blobs.rs::code_slice_memory_id`), so no ordering
-/// of a truncated candidate window could guarantee the true head survives.
-///
-/// This is a thin, PG-backend wrapper: see
-/// [`proxima_storage_pg::verbs::query::authorized_code_chunk_head_candidates`]
-/// for the SQL this delegates to (a fixed, compile-time query — not
-/// generalized to an arbitrary sidecar table/natural key; see that
-/// function's doc comment for why). `pool` is the flavor's own backend
-/// pool (kept private on the flavor's store type; only the flavor crate
-/// itself ever holds one).
-///
-/// # Errors
-///
-/// Returns `ToolError::Storage` on query failure.
-pub async fn authorized_code_chunk_head_candidates(
-    pool: &PgPool,
-    owner: Owner,
-    schema_id: &SchemaId,
-    candidates: &[uuid::Uuid],
-) -> Result<Vec<uuid::Uuid>, ToolError> {
-    let candidates = deduped_candidates(candidates);
-    let mut heads = Vec::new();
-    for batch in candidates.chunks(MAX_AUTHZ_CANDIDATES) {
-        heads.extend(
-            proxima_storage_pg::query::authorized_code_chunk_head_candidates(
-                pool, owner, schema_id, batch,
-            )
-            .await
-            .map_err(ToolError::Storage)?,
-        );
-    }
-    Ok(heads)
-}
-
-/// Nearest `code-chunk-v1` chunk memories to a query embedding, best-first,
-/// restricted to `owner`'s scope and to the caller's structural filters.
-///
-/// The semantic sibling of [`authorized_code_chunk_head_candidates`], and
-/// like it a *candidate* producer: the ids it returns carry no visibility
-/// decision of their own. A flavor merges them with its own lexical
-/// candidates and runs the whole merged list through
-/// [`authorized_code_chunk_head_candidates`] and then
-/// [`authorized_abstraction_payloads`], which is where authorization
-/// actually happens.
-///
-/// Split out of the flavor because `proxima_core.embeddings` is a core
-/// table and flavor SQL may not join it
-/// (`scripts/check-architecture-guardrails.py`); see
-/// [`proxima_storage_pg::query::nearest_code_chunk_candidates`] for the
-/// query and for why World-owned chunks are unreachable through it.
-///
-/// # Errors
-///
-/// Returns `ToolError::Storage` on query failure, and
-/// `ToolError::InvalidInput` if `query_embedding` is not the active
-/// embedding dimension.
-pub async fn nearest_code_chunk_candidates(
-    pool: &PgPool,
-    owner: Owner,
-    schema_id: &SchemaId,
-    model_id: &str,
-    query_embedding: &[f32],
-    filters: proxima_storage_pg::query::CodeChunkVectorFilters<'_>,
-    limit: usize,
-) -> Result<Vec<proxima_storage_pg::query::CodeChunkVectorCandidate>, ToolError> {
-    proxima_storage_pg::query::nearest_code_chunk_candidates(
-        pool,
-        owner,
-        schema_id,
-        model_id,
-        query_embedding,
-        filters,
-        i64::try_from(limit).unwrap_or(i64::MAX),
-    )
-    .await
-    .map_err(ToolError::Storage)
-}
-
-fn deduped_candidates(candidates: &[uuid::Uuid]) -> Vec<uuid::Uuid> {
-    let mut seen = HashSet::with_capacity(candidates.len());
-    candidates
-        .iter()
-        .copied()
-        .filter(|id| seen.insert(*id))
         .collect()
 }

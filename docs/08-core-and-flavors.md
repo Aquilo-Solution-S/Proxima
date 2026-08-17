@@ -106,7 +106,11 @@ follow.
 | Flavor SDK | `use proxima::flavor::{FlavorBundle, FlavorRegistry, FactPayload, Tool};` | schemas, reference declarations, sidecars, tools |
 
 Root `proxima::*` is host-facing. Flavor authoring imports live under
-`proxima::flavor`.
+`proxima::flavor`. Flavor crates depend on the `proxima` crate only
+(same git selector — `tag` **or** `rev`, never mixed — as the host).
+Do not add `proxima-core` / `proxima-storage-pg` / `proxima-auth-oidc`
+unless you are a backend-owned adapter. Cargo treats `tag = "vX"` and
+`rev = "<that tag's commit>"` as two sources and duplicates `proxima-core`.
 
 <a id="schema-namespacing"></a>
 ## Schema Namespacing
@@ -168,7 +172,7 @@ Default substrate memory surface:
 | `proxima://memory/{id}` resource | `core_derive` |
 | `core_search_memories` | `core_remember` |
 | `proxima://memory/{id}/lineage` resource | `core_record_utterance` |
-| `proxima://edges{?kind,source,target,limit,cursor}` resource | `core_interpret` |
+| neighbors / lineage | `core_interpret` |
 
 Substrate MCP config tools are core-registered flat tools plus action
 dispatchers for goals and Facts. Schema,

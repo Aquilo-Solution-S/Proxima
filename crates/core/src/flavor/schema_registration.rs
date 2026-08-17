@@ -189,7 +189,7 @@ impl FlavorRegistry {
                 schema_version: SchemaVersion::new(C::SCHEMA_VERSION),
                 kind: PayloadKind::CitedObject,
                 filter_keys: vec![],
-                sidecar_table: Some(C::sidecar_table().to_string()),
+                sidecar_table: None,
                 natural_key_columns: vec![],
                 tombstone: None,
                 has_typed_ingress: true,
@@ -319,6 +319,7 @@ fn maybe_add_search_projection(
             .collect(),
         tag_column: projection.tag_column,
         tsv_column: projection.tsv_column.map(str::to_string),
+        embed_text_column: projection.embed_text_column.map(str::to_string),
         language_column: projection.language_column.map(str::to_string),
     });
 }

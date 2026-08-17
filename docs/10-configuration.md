@@ -57,7 +57,7 @@ Proxima::<App>::app()
 | `PROXIMA_EXPOSE_NETWORK` | Network exposure gate for non-loopback binds. |
 | `PROXIMA_ALLOWED_ORIGINS` | Comma-separated browser-origin allowlist for listener-wide CORS. |
 | `PROXIMA_ALLOWED_HOSTS` | Comma-separated inbound `Host` allowlist (hostnames or `host:port`, no wildcards) for the listener-wide DNS-rebinding guard; defaults to the host of `PROXIMA_PUBLIC_URL` + the allowed origins. Loopback always permitted. |
-| `PROXIMA_STREAM_MAX_LIFETIME` | Max lifetime (seconds) of an authenticated MCP (Streamable HTTP) response stream before re-validation. (The `Subscribe` push verb is retired — see docs/14; this governs response-stream revalidation, not a subscription.) |
+| `PROXIMA_STREAM_MAX_LIFETIME` | Max lifetime (seconds) of an authenticated MCP (Streamable HTTP) response stream before re-validation. |
 | `PROXIMA_STREAM_EPOCH_INTERVAL` | Auth-epoch re-check interval (seconds) for an open MCP response stream. |
 | `PROXIMA_EMBED_BASE_URL` | OpenAI-compatible `/embeddings` base URL. Setting it alone enables embeddings — a loopback endpoint needs no key. |
 | `PROXIMA_EMBED_API_KEY` | Optional bearer for a hosted embedding endpoint. |
@@ -325,7 +325,7 @@ proxima-mcp maintain-retention --enforce-fact-retention \
 `--enforce-fact-retention` tombstones Facts older than their owner's
 configured retention window (owners without a window are untouched;
 MCP-call audit Facts are never aged out).
-`--prune-change-events-older-than <DURATION>` deletes `change_event`
+`--prune-change-events-older-than <DURATION>` deletes `announce`
 rows older than the horizon (`3600s`, `45m`, `36h`, `90d`, `2w`). At
 least one action flag is required and there is deliberately no default
 horizon — destruction is always an explicit operator choice. Owners

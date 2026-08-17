@@ -3,7 +3,7 @@
 //! discovery is public, `/mcp` is 401+WWW-Authenticate without a bearer, and a
 //! valid Zitadel-shaped JWT lists + calls the Code-flavor tools.
 //!
-//! Requires `PROXIMA_TEST_DATABASE_URL`; skips cleanly otherwise. Built when
+//! Uses `PROXIMA_TEST_DATABASE_URL` when set; otherwise `create_db`. Built when
 //! the `code` feature is on (the host default; asserts the Code flavor's
 //! tools are present); the mounted REST smoke additionally requires `rest`
 //! and `PROXIMA_REST_ENABLED=true`.
@@ -77,10 +77,7 @@ fn mint(signing: &RsaKeyPair, sub: &str) -> String {
 #[allow(clippy::too_many_lines)] // linear e2e: boot + 4 assertion phases read best in one flow
 async fn oidc_e2e_discovery_public_and_code_tools_behind_bearer()
 -> Result<(), Box<dyn std::error::Error>> {
-    let Some(database_url) = require_env_or_skip("PROXIMA_TEST_DATABASE_URL") else {
-        eprintln!("skipping oidc_e2e: PROXIMA_TEST_DATABASE_URL not set");
-        return Ok(());
-    };
+    let (database_url, created_db) = live_database_url().await?;
 
     let subject = UserId::new(Uuid::now_v7());
     let owner: Owner = OwnerRef::Personal(subject);
@@ -301,31 +298,80 @@ async fn oidc_e2e_discovery_public_and_code_tools_behind_bearer()
         "list_repos call should succeed, got {call:?}"
     );
 
+    assert!(
+        names.iter().any(|name| name == "core_forget"),
+        "served catalog must include core_forget: {names:?}"
+    );
+    assert!(
+        names.iter().all(|name| !name.contains("open_batch")),
+        "open_batch must stay deleted: {names:?}"
+    );
+
+    let remembered = post_rpc(
+        &client,
+        &url,
+        Some(&session),
+        &bearer,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 4,
+            "method": "tools/call",
+            "params": {
+                "name": "core_remember",
+                "arguments": {
+                    "title": "e2e forget",
+                    "body": "cool this row",
+                    "tags": []
+                }
+            }
+        }),
+    )
+    .await?;
+    let remember_text = mcp_text(&remembered);
+    let remember_json: serde_json::Value = serde_json::from_str(&remember_text)?;
+    let handle = remember_json["handle"]
+        .as_str()
+        .or_else(|| remember_json["memory"].as_str())
+        .ok_or_else(|| format!("remember missing handle: {remembered}"))?
+        .to_string();
+    let forgotten = post_rpc(
+        &client,
+        &url,
+        Some(&session),
+        &bearer,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 5,
+            "method": "tools/call",
+            "params": {
+                "name": "core_forget",
+                "arguments": { "memory": handle }
+            }
+        }),
+    )
+    .await?;
+    assert!(
+        forgotten.get("result").is_some(),
+        "core_forget must run on the live listener: {forgotten:?}"
+    );
+
     running.shutdown().await;
+    if let Some(name) = created_db {
+        let _ = proxima_pg_testkit::drop_db(&name).await;
+    }
     Ok(())
 }
 
 /// Boots the production facade with both transport projections enabled, then
 /// proves the deployment palette is identical at the authenticated MCP and
-/// `OpenAPI` surfaces. `from_env()` is deliberate: CI must exercise the
-/// `PROXIMA_REST_ENABLED` deployment gate, not a test-only router.
+/// `OpenAPI` surfaces. `from_env()` still reads deployment config;
+/// `rest_enabled(true)` mounts `/v1` without mutating process env.
 #[cfg(feature = "rest")]
 #[tokio::test]
 #[allow(clippy::too_many_lines)] // linear e2e: auth + two surfaces read best in one flow
 async fn oidc_e2e_rest_openapi_matches_the_mcp_scope_on_the_mounted_runtime()
 -> Result<(), Box<dyn std::error::Error>> {
-    let Some(database_url) = require_env_or_skip("PROXIMA_TEST_DATABASE_URL") else {
-        eprintln!("skipping REST OIDC e2e: PROXIMA_TEST_DATABASE_URL not set");
-        return Ok(());
-    };
-    let Some(rest_enabled) = require_env_or_skip("PROXIMA_REST_ENABLED") else {
-        eprintln!("skipping REST OIDC e2e: PROXIMA_REST_ENABLED not set");
-        return Ok(());
-    };
-    assert_eq!(
-        rest_enabled, "true",
-        "REST OIDC e2e requires PROXIMA_REST_ENABLED=true"
-    );
+    let (database_url, created_db) = live_database_url().await?;
 
     let subject = UserId::new(Uuid::now_v7());
     let owner: Owner = OwnerRef::Personal(subject);
@@ -354,6 +400,7 @@ async fn oidc_e2e_rest_openapi_matches_the_mcp_scope_on_the_mounted_runtime()
     ]);
     let running = Proxima::<ProximaMcpApp>::app()
         .from_env()
+        .rest_enabled(true)
         .tool_scope(ToolScope::Palette(allowed_tools.iter().cloned().collect()))
         .database_url(database_url)
         .authenticator(Arc::new(authn))
@@ -468,6 +515,9 @@ async fn oidc_e2e_rest_openapi_matches_the_mcp_scope_on_the_mounted_runtime()
     assert_eq!(list_repos_body["next_cursor"], serde_json::Value::Null);
 
     running.shutdown().await;
+    if let Some(name) = created_db {
+        let _ = proxima_pg_testkit::drop_db(&name).await;
+    }
     Ok(())
 }
 
@@ -481,10 +531,7 @@ async fn oidc_e2e_rest_openapi_matches_the_mcp_scope_on_the_mounted_runtime()
 #[tokio::test]
 async fn oidc_e2e_group_auth_host_resolved_editor_role_permits_tool_call()
 -> Result<(), Box<dyn std::error::Error>> {
-    let Some(database_url) = require_env_or_skip("PROXIMA_TEST_DATABASE_URL") else {
-        eprintln!("skipping oidc_e2e_group_auth: PROXIMA_TEST_DATABASE_URL not set");
-        return Ok(());
-    };
+    let (database_url, created_db) = live_database_url().await?;
 
     let group_owner: Owner = OwnerRef::Group(GroupId::new(Uuid::now_v7()));
     let subject = UserId::new(Uuid::now_v7());
@@ -566,7 +613,33 @@ async fn oidc_e2e_group_auth_host_resolved_editor_role_permits_tool_call()
     );
 
     running.shutdown().await;
+    if let Some(name) = created_db {
+        let _ = proxima_pg_testkit::drop_db(&name).await;
+    }
     Ok(())
+}
+
+async fn live_database_url() -> Result<(String, Option<String>), Box<dyn std::error::Error>> {
+    if let Some(url) = require_env_or_skip("PROXIMA_TEST_DATABASE_URL") {
+        return Ok((url, None));
+    }
+    let name = format!("proxima_oidc_e2e_{}", Uuid::now_v7().simple());
+    proxima_pg_testkit::create_db(&name)
+        .await
+        .map_err(|err| format!("PG required for honest OIDC e2e: {err}"))?;
+    Ok((proxima_pg_testkit::db_url(&name), Some(name)))
+}
+
+fn mcp_text(body: &serde_json::Value) -> String {
+    if let Some(text) = body["result"]["structuredContent"].as_object() {
+        return serde_json::to_string(text).unwrap_or_default();
+    }
+    body["result"]["content"]
+        .as_array()
+        .and_then(|items| items.first())
+        .and_then(|item| item["text"].as_str())
+        .unwrap_or_default()
+        .to_string()
 }
 
 async fn initialize(

@@ -512,32 +512,28 @@ fn flavor_sdk_exposes_the_derived_memory_write_lane() {
 /// could only ever be islands.
 #[test]
 fn flavor_sdk_exposes_the_payload_reference_lane() {
-    use proxima::flavor::{
-        EdgeKind, EntityKind, FactEntityId, MemoryId, PayloadReference, ReferenceBinding,
-    };
+    use proxima::flavor::{EdgeKind, EntityKind, MemoryId, PayloadReference, ReferenceBinding};
 
     struct TierReferrer {
         parent: MemoryId,
-        observed_entity: FactEntityId,
     }
 
     impl TierReferrer {
         fn references(&self) -> Vec<PayloadReference> {
-            vec![
-                PayloadReference::memory("parent", EntityKind::Fact, self.parent),
-                PayloadReference::fact_entity_head("observed_entity", self.observed_entity),
-            ]
+            vec![PayloadReference::memory(
+                "parent",
+                EntityKind::Fact,
+                self.parent,
+            )]
         }
     }
 
     let referrer = TierReferrer {
         parent: MemoryId::new(uuid::Uuid::nil()),
-        observed_entity: FactEntityId::new(uuid::Uuid::nil()),
     };
     let references = referrer.references();
-    assert_eq!(references.len(), 2);
+    assert_eq!(references.len(), 1);
     assert_eq!(references[0].binding, ReferenceBinding::Pin);
-    assert_eq!(references[1].binding, ReferenceBinding::FollowHead);
     for reference in &references {
         reference.validate().expect("binding matches address form");
     }
@@ -754,6 +750,7 @@ fn host_api_can_name_the_owner_ref_discriminant() {
 fn raw_storage_surfaces_are_not_supported_tier_exports() {
     let host_exports = include_str!("../src/host.rs");
     let flavor_exports = include_str!("../src/flavor.rs");
+    let authorized_read = include_str!("../src/flavor/authorized_read.rs");
 
     assert!(!host_exports.contains("PgPool"));
     assert!(!host_exports.contains("PgStorage"));
@@ -761,4 +758,62 @@ fn raw_storage_surfaces_are_not_supported_tier_exports() {
     assert!(!flavor_exports.contains("PgPool"));
     assert!(!flavor_exports.contains("PgStorage"));
     assert!(!flavor_exports.contains("StorageHandle"));
+    assert!(
+        !authorized_read.contains("use sqlx::PgPool") && !authorized_read.contains("&PgPool"),
+        "code-series pool helpers must not live on the Flavor SDK"
+    );
+}
+
+#[test]
+fn flavor_sdk_names_query_and_ingest_types() {
+    fn assert_hook<T: proxima::flavor::AuthorizationHook + ?Sized>() {}
+    assert_hook::<dyn proxima::flavor::AuthorizationHook>();
+
+    let _ = proxima::flavor::SidecarAtom::I32(0);
+    let _ = proxima::flavor::CitationSpec::v1("core/upload-v1", [0; 32], "core/upload-whole-v1");
+    let fact = TierStatefulFact {
+        slot: "a".into(),
+        state: "Present".into(),
+    };
+    let _cite = proxima::flavor::TypedFactIngest::new("test/src", &fact).citation(
+        proxima::flavor::CitationSpec::v1("core/upload-v1", [0; 32], "core/upload-whole-v1"),
+    );
+    let _: Option<proxima::flavor::UnitOfWork<'_>> = None;
+    assert!(proxima::flavor::hybrid_degraded_to_lexical(
+        proxima::flavor::SearchMode::Hybrid,
+        false,
+        false,
+    ));
+    assert!(!proxima::flavor::hybrid_degraded_to_lexical(
+        proxima::flavor::SearchMode::Lexical,
+        false,
+        false,
+    ));
+
+    let owner = proxima::OwnerRef::World;
+    let _: proxima::flavor::QueryRequest = proxima::flavor::QueryRequest::for_owner(owner);
+    let _: Option<(
+        proxima::flavor::QueryResponse,
+        proxima::flavor::GoalRow,
+        proxima::flavor::FactIngestOutcome,
+        proxima::flavor::FactWriteCommand,
+    )> = None;
+}
+
+#[cfg(feature = "auth-oidc")]
+#[test]
+fn auth_module_names_oidc_primitives() {
+    let _: Option<(
+        proxima::auth::OidcAuthConfig,
+        proxima::auth::OidcTokenValidator,
+        proxima::auth::ValidatedOidcClaims,
+        proxima::auth::HttpJwksResolver,
+        proxima::auth::AccessError,
+        proxima::auth::OwnerRoles,
+    )> = None;
+    let _: fn(
+        &proxima::BuiltProxima,
+        proxima::flavor::FlavorServices,
+    ) -> Result<proxima::CoreMcpTools, proxima::flavor::FlavorServiceError> =
+        proxima::BuiltProxima::core_mcp_tools_with_request_services;
 }

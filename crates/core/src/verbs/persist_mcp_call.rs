@@ -142,7 +142,7 @@ impl CitedObjectPayload for McpCallIoV1 {
     const SCHEMA_VERSION: u32 = 1;
 
     fn sidecar_table() -> &'static str {
-        "proxima_core.cited_mcp_call_io_v1"
+        ""
     }
 
     fn idempotency_key(&self) -> [u8; 32] {
@@ -158,7 +158,7 @@ impl CitationMappingPayload for McpCallIoCitationV1 {
     const SCHEMA_VERSION: u32 = 1;
 
     // Pure link — no sidecar table (uses the trait default `None`). The
-    // citation_mappings row carries the whole mapping.
+    // memory.blob_id carries the whole mapping.
 
     fn cited_object_schema() -> SchemaId {
         SchemaId::new(MCP_CALL_IO_SCHEMA.to_string())

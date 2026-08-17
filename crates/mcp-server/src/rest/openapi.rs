@@ -143,7 +143,7 @@ pub fn document(
         "info".to_string(),
         json!({
             "title": "Proxima REST surface",
-            "version": env!("CARGO_PKG_VERSION"),
+            "version": proxima_core::RELEASE_VERSION,
             "description":
                 "Generated from the frozen tool manifest. Every operation \
                  terminates in the same dispatch seam MCP uses, so this \

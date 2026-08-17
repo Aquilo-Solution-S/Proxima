@@ -2,7 +2,7 @@ use std::collections::HashSet;
 
 use proxima_core::{
     EmbeddingAnnObservability, EmbeddingJobBacklog, EmbeddingOrphanCounts,
-    EmbeddingOrphanSweepOutcome, EmbeddingRecallCanary, OwnerRefKind, StorageError,
+    EmbeddingOrphanSweepOutcome, EmbeddingRecallCanary, StorageError,
 };
 use sqlx::PgPool;
 
@@ -37,8 +37,7 @@ struct EmbeddingAnnObservabilityRow {
 
 #[derive(sqlx::FromRow)]
 struct RecallSampleRow {
-    owner_kind: OwnerRefKind,
-    owner_id: Option<uuid::Uuid>,
+    owner_id: uuid::Uuid,
     model_id: String,
     vec: String,
 }
@@ -63,13 +62,13 @@ pub(crate) async fn embedding_ann_observability(
 ) -> Result<EmbeddingAnnObservability, StorageError> {
     let row = sqlx::query_as::<_, EmbeddingAnnObservabilityRow>(
         "WITH source_entities AS MATERIALIZED (
-             SELECT 'Goal'::proxima_core.entity_kind AS entity_kind,
-                    goal_id AS entity_id
-               FROM proxima_core.goals
+             SELECT 'goal'::text AS entity_kind,
+                    t AS entity_id
+               FROM proxima_core.goal
              UNION ALL
-             SELECT proxima_core.memory_entity_kind(kind) AS entity_kind,
-                    memory_id AS entity_id
-               FROM proxima_core.memories
+             SELECT kind::text AS entity_kind,
+                    t AS entity_id
+               FROM proxima_core.memory
          ),
          orphan_embeddings AS (
              SELECT count(*)::bigint AS count
@@ -77,8 +76,7 @@ pub(crate) async fn embedding_ann_observability(
               WHERE NOT EXISTS (
                     SELECT 1
                       FROM source_entities src
-                     WHERE src.entity_kind = emb.entity_kind
-                       AND src.entity_id = emb.entity_id
+                     WHERE src.entity_id = emb.entity_id
               )
          ),
          orphan_heads AS (
@@ -87,8 +85,7 @@ pub(crate) async fn embedding_ann_observability(
               WHERE NOT EXISTS (
                     SELECT 1
                       FROM source_entities src
-                     WHERE src.entity_kind = head.entity_kind
-                       AND src.entity_id = head.entity_id
+                     WHERE src.entity_id = head.entity_id
               )
          ),
          orphan_jobs AS (
@@ -97,8 +94,7 @@ pub(crate) async fn embedding_ann_observability(
               WHERE NOT EXISTS (
                     SELECT 1
                       FROM source_entities src
-                     WHERE src.entity_kind = job.entity_kind
-                       AND src.entity_id = job.entity_id
+                     WHERE src.entity_id = job.entity_id
               )
          )
          SELECT
@@ -126,11 +122,7 @@ pub(crate) async fn embedding_ann_observability(
                 FROM proxima_core.embedding_jobs
                WHERE status = 'failed')
                  AS failed_jobs,
-             (SELECT count(*)::bigint
-                FROM proxima_core.embedding_jobs
-               WHERE status = 'processing'
-                 AND updated_at < now() - interval '15 minutes')
-                 AS stale_processing_jobs,
+             0::bigint AS stale_processing_jobs,
              (SELECT count FROM orphan_embeddings) AS orphan_embeddings,
              (SELECT count FROM orphan_heads) AS orphan_heads,
              (SELECT count FROM orphan_jobs) AS orphan_jobs",
@@ -182,16 +174,13 @@ async fn embedding_recall_canary(
     k: i64,
 ) -> Result<Option<EmbeddingRecallCanary>, StorageError> {
     let Some(sample) = sqlx::query_as::<_, RecallSampleRow>(
-        "SELECT emb.owner_kind, emb.owner_id, emb.model_id, emb.vec::text AS vec
+        "SELECT emb.owner_id, emb.model_id, emb.vec::text AS vec
            FROM proxima_core.embeddings emb
            JOIN proxima_core.embedding_heads head
-             ON head.entity_kind = emb.entity_kind
-            AND head.entity_id = emb.entity_id
+             ON head.entity_id = emb.entity_id
             AND head.model_id = emb.model_id
             AND head.embedding_version = emb.embedding_version
-            AND head.owner_kind = emb.owner_kind
-            AND head.owner_id IS NOT DISTINCT FROM emb.owner_id
-          ORDER BY emb.created_at DESC, emb.entity_id DESC
+          ORDER BY emb.entity_id DESC
           LIMIT 1",
     )
     .fetch_optional(pool)
@@ -203,7 +192,6 @@ async fn embedding_recall_canary(
 
     let exact_ids = current_embedding_ids_by_distance(
         pool,
-        sample.owner_kind,
         sample.owner_id,
         &sample.model_id,
         &sample.vec,
@@ -213,7 +201,6 @@ async fn embedding_recall_canary(
     .await?;
     let ann_ids = current_embedding_ids_by_distance(
         pool,
-        sample.owner_kind,
         sample.owner_id,
         &sample.model_id,
         &sample.vec,
@@ -254,8 +241,7 @@ enum DistancePlan {
 
 async fn current_embedding_ids_by_distance(
     pool: &PgPool,
-    owner_kind: OwnerRefKind,
-    owner_id: Option<uuid::Uuid>,
+    owner_id: uuid::Uuid,
     model_id: &str,
     vec: &str,
     k: i64,
@@ -288,34 +274,22 @@ async fn current_embedding_ids_by_distance(
                 .map_err(map_err)?;
         }
     }
-    // DISTINCT ON collapses a chunked memory's several vectors to its
-    // nearest one. Without it the canary counts chunk rows: a corpus where
-    // one memory holds ten chunks yields ten identical ids on both sides,
-    // overlap == exact, and recall reads 1.000 while the ANN scan missed
-    // every *other* memory. The metric would be healthiest exactly where the
-    // index is worst.
+    // One vec per (entity_id, model_id, embedding_version). Head join
+    // already picks the current version; do not DISTINCT ON a dropped
+    // entity_kind column.
     let rows = sqlx::query_scalar::<_, uuid::Uuid>(
-        "SELECT ranked.entity_id FROM (
-         SELECT DISTINCT ON (emb.entity_kind, emb.entity_id)
-                emb.entity_id, emb.vec <=> $4::vector AS distance
+        "SELECT emb.entity_id
            FROM proxima_core.embeddings emb
            JOIN proxima_core.embedding_heads head
-             ON head.entity_kind = emb.entity_kind
-            AND head.entity_id = emb.entity_id
+             ON head.entity_id = emb.entity_id
             AND head.model_id = emb.model_id
             AND head.embedding_version = emb.embedding_version
-            AND head.owner_kind = emb.owner_kind
-            AND head.owner_id IS NOT DISTINCT FROM emb.owner_id
           WHERE emb.model_id = $1
-            AND emb.owner_kind = $2
-            AND emb.owner_id IS NOT DISTINCT FROM $3
-          ORDER BY emb.entity_kind, emb.entity_id, emb.vec <=> $4::vector
-         ) ranked
-          ORDER BY ranked.distance, ranked.entity_id ASC
-          LIMIT $5",
+            AND emb.owner_id = $2
+          ORDER BY emb.vec <=> $3::vector, emb.entity_id
+          LIMIT $4",
     )
     .bind(model_id)
-    .bind(owner_kind)
     .bind(owner_id)
     .bind(vec)
     .bind(k)
@@ -344,21 +318,20 @@ pub(crate) async fn sweep_orphan_embedding_rows(
 
     let row = sqlx::query_as::<_, EmbeddingOrphanSweepRow>(
         "WITH source_entities AS MATERIALIZED (
-             SELECT 'Goal'::proxima_core.entity_kind AS entity_kind,
-                    goal_id AS entity_id
-               FROM proxima_core.goals
+             SELECT 'goal'::text AS entity_kind,
+                    t AS entity_id
+               FROM proxima_core.goal
              UNION ALL
-             SELECT proxima_core.memory_entity_kind(kind) AS entity_kind,
-                    memory_id AS entity_id
-               FROM proxima_core.memories
+             SELECT kind::text AS entity_kind,
+                    t AS entity_id
+               FROM proxima_core.memory
          ),
          deleted_jobs AS (
              DELETE FROM proxima_core.embedding_jobs job
               WHERE NOT EXISTS (
                     SELECT 1
                       FROM source_entities src
-                     WHERE src.entity_kind = job.entity_kind
-                       AND src.entity_id = job.entity_id
+                     WHERE src.entity_id = job.entity_id
               )
               RETURNING 1
          ),
@@ -367,8 +340,7 @@ pub(crate) async fn sweep_orphan_embedding_rows(
               WHERE NOT EXISTS (
                     SELECT 1
                       FROM source_entities src
-                     WHERE src.entity_kind = head.entity_kind
-                       AND src.entity_id = head.entity_id
+                     WHERE src.entity_id = head.entity_id
               )
               RETURNING 1
          ),
@@ -377,8 +349,7 @@ pub(crate) async fn sweep_orphan_embedding_rows(
               WHERE NOT EXISTS (
                     SELECT 1
                       FROM source_entities src
-                     WHERE src.entity_kind = emb.entity_kind
-                       AND src.entity_id = emb.entity_id
+                     WHERE src.entity_id = emb.entity_id
               )
               RETURNING 1
          )

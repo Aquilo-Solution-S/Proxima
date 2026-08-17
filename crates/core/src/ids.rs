@@ -51,21 +51,6 @@ impl MemoryId {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
-pub struct FactEntityId(Uuid);
-
-impl FactEntityId {
-    #[must_use]
-    pub const fn new(inner: Uuid) -> Self {
-        Self(inner)
-    }
-
-    #[must_use]
-    pub const fn into_inner(self) -> Uuid {
-        self.0
-    }
-}
-
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
 )]

@@ -315,9 +315,7 @@ impl McpTool for DeriveTool {
                     .iter()
                     .map(|(memory_id, _class)| *memory_id)
                     .collect();
-                engine
-                    .close_ftoa_source_batch_if_open(&ctx.authz, space.owner, &source_ids)
-                    .await?;
+                engine.close_ftoa_source_batch_if_open(&ctx.authz, space.owner, &source_ids)?;
             }
             let outcome = engine
                 .author_derived_authorized(

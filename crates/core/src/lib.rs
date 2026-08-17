@@ -5,8 +5,7 @@ extern crate self as proxima_core;
 /// `initialize` and to operators.
 ///
 /// Deliberately not `CARGO_PKG_VERSION`: workspace crates are `0.1.0` with
-/// `publish = false`. Releases are git tags; bump this in the release
-/// commit (`RELEASING.md` step one).
+/// `publish = false`. Releases are git tags; bump this when cutting one.
 pub const RELEASE_VERSION: &str = "0.0.7";
 
 pub mod access;
@@ -16,6 +15,7 @@ pub mod canonical_json;
 pub mod capability;
 pub mod change_event;
 pub mod citations;
+pub mod cold;
 pub mod compliance;
 pub mod cursor;
 pub mod edge;
@@ -53,6 +53,7 @@ pub use canonical_json::canonical_json_bytes;
 pub use capability::*;
 pub use change_event::*;
 pub use citations::*;
+pub use cold::ColdObjectStore;
 pub use compliance::{
     ComplianceEraseCounts, ComplianceEraseOutcome, ComplianceEraseRefusal, ComplianceEraseRequest,
     ComplianceEraseTarget, ComplianceExportBundle, ComplianceExportCounts, ComplianceExportRequest,
@@ -64,10 +65,7 @@ pub use engine::*;
 pub use env::{env_value, process_env};
 pub use error::*;
 pub use flavor::*;
-pub use goal::{
-    GoalAbandonedV1, GoalAchievedV1, GoalActivatedV1, GoalPausedV1, SimpleTextGoalV1, TaskGoalV1,
-    TaskPriority,
-};
+pub use goal::{SimpleTextGoalV1, TaskGoalV1, TaskPriority};
 pub use ids::*;
 pub use llm::*;
 pub use mcp::{
@@ -366,13 +364,13 @@ macro_rules! proxima_flavor {
 pub use storage_ports::{
     ChangeEventPort, CitationPort, ComplianceAdminPort, ComplianceErasePort,
     DelegatedAuthorityError, DelegatedAuthorityService, DelegatedCommand, DelegationId,
-    DelegationIssued, DelegationRevocation, EdgeReadPort, EmbeddingAnnObservability,
-    EmbeddingJobBacklog, EmbeddingJobPort, EmbeddingJobStatusCounts, EmbeddingMaintenancePort,
-    EmbeddingOrphanCounts, EmbeddingOrphanSweepOutcome, EmbeddingRecallCanary,
-    EmbeddingReconcileOptions, EmbeddingReconcileOutcome, EmbeddingReconcileScope,
-    EmbeddingTextPort, EmbeddingWriteOutcome, EmbeddingWritePort, FactIngestPort,
-    FactRetentionPort, GoalReadPort, GoalWritePort, McpCallReadPort, McpCallWritePort,
-    MemoryAuthoringPort, MemoryInspectPort, MemoryReadPort, OperatorMaintenanceProof,
-    OwnerAccessReadPort, OwnerDropProofPort, OwnerMembershipAdminPort, OwnerTransferPort,
-    RegistryProjectionPort, SourceBatchPort, SourceCursorPort, StoragePorts,
+    DelegationIssued, DelegationRevocation, EmbeddingAnnObservability, EmbeddingJobBacklog,
+    EmbeddingJobPort, EmbeddingJobStatusCounts, EmbeddingMaintenancePort, EmbeddingOrphanCounts,
+    EmbeddingOrphanSweepOutcome, EmbeddingRecallCanary, EmbeddingReconcileOptions,
+    EmbeddingReconcileOutcome, EmbeddingReconcileScope, EmbeddingTextPort, EmbeddingWriteOutcome,
+    EmbeddingWritePort, FactIngestPort, FactRetentionPort, GoalReadPort, GoalWritePort,
+    InboundPinQuery, McpCallReadPort, McpCallWritePort, MemoryAuthoringPort, MemoryInspectPort,
+    MemoryReadPort, OperatorMaintenanceProof, OwnerAccessReadPort, OwnerDropProofPort,
+    OwnerMembershipAdminPort, OwnerTransferPort, RegistryProjectionPort, SourceBatchPort,
+    SourceCursorPort, StoragePorts,
 };

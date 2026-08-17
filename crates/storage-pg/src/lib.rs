@@ -41,13 +41,13 @@ pub use error::map_err;
 mod pg_ident;
 mod pgvector;
 mod ports;
-#[cfg(any(test, feature = "test-fixtures", debug_assertions))]
-pub use ports::neighbor_memory_edges_sql_for_tests;
 pub mod sidecars;
 pub mod query {
     pub use crate::verbs::query::{
-        CodeChunkVectorCandidate, CodeChunkVectorFilters, MAX_SNAPSHOT_EDGES,
-        authorized_code_chunk_head_candidates, fact_entity_id_for, nearest_code_chunk_candidates,
+        ChunkSeriesHead, CodeChunkVectorCandidate, CodeChunkVectorFilters, FileRevisionHeadRow,
+        MAX_SNAPSHOT_EDGES, nearest_code_chunk_candidates, owned_chunk_series_heads,
+        owned_file_revision_heads, owned_present_chunk_indexes, readable_chunk_head_ts_for_file,
+        readable_file_revision_head_ts,
     };
 }
 #[cfg(any(test, feature = "test-fixtures"))]
@@ -70,8 +70,8 @@ pub const DEFAULT_DATABASE_URL: &str = "postgres://postgres@localhost/proxima_de
 
 /// Namespace boundary between core and flavor migration versions.
 ///
-/// Core migrations use small sequential integer versions (`0001_init.sql`,
-/// `0011_v007.sql`, …); flavor migrations use date-shaped versions
+/// Core migrations use small sequential integer versions (`0001_v008.sql`);
+/// flavor migrations use date-shaped versions
 /// (`20260801000020_…`). Every ledger row at or below this ceiling belongs to
 /// the core lane and must be accounted for by the embedded core migrator —
 /// that invariant is what lets the preflight below detect draft and retired
@@ -115,10 +115,9 @@ pub fn core_migrator() -> sqlx::migrate::Migrator {
 ///
 /// # Errors
 ///
-/// Returns [`StorageError::V004ResetRequired`] for pre-v0.0.4 signals —
-/// Proxima schema objects with no baseline ledger marker, or a baseline
-/// (version 1) checksum that predates the v0.0.4 destructive reset; the only
-/// remedy there is export + reset, never a stamp. Returns
+/// Returns [`StorageError::V004ResetRequired`] when schema objects exist
+/// without a matching version-1 ledger, or version 1's checksum does not
+/// match `0001_v008.sql`. Remedy: reset. Returns
 /// [`StorageError::Internal`], naming the stamp-or-reset remedy, for draft or
 /// retired versions and post-baseline checksum drift, and for catalog query
 /// failures.
@@ -190,7 +189,7 @@ pub async fn ensure_core_ledger_compatible(pool: &PgPool) -> Result<(), StorageE
             ));
         }
         if baseline_checksum_drift {
-            details.push("version 1 checksum differs from v0.0.4 baseline".to_string());
+            details.push("version 1 checksum differs from 0001_v008.sql".to_string());
         }
         if !unknown_versions.is_empty() {
             details.push(format!("old migration versions: {unknown_versions:?}"));
@@ -224,7 +223,7 @@ pub async fn ensure_core_ledger_compatible(pool: &PgPool) -> Result<(), StorageE
          `cargo run -p proxima-dev-migrate -- --stamp --database-url <URL>`; \
          otherwise reset (dev/staging only) with \
          `PROXIMA_V004_RESET_CONFIRM=reset-my-dev-db cargo run -p proxima-dev-migrate -- --reset --database-url <URL>`, \
-         then re-register and re-index. See docs/how-to/migrations.md and MIGRATING.md",
+         then re-register and re-index. See docs/how-to/migrations.md",
         details.join("; ")
     )))
 }
@@ -277,7 +276,7 @@ pub async fn ensure_core_schema_current(pool: &PgPool) -> Result<(), StorageErro
         .map_err(internal)?;
         if max_version.unwrap_or(0) < min_required {
             return Err(StorageError::Internal(format!(
-                "database core migrations at version {}; version {min_required}+ required — apply the current schema lane before boot (see MIGRATING.md)",
+                "database core migrations at version {}; version {min_required}+ required — apply 0001_v008.sql on a fresh DB (see docs/how-to/migrations.md)",
                 max_version.unwrap_or(0)
             )));
         }
@@ -297,158 +296,28 @@ pub async fn ensure_core_schema_current(pool: &PgPool) -> Result<(), StorageErro
 ///
 /// Returns [`StorageError::Internal`] when any structural marker for the
 /// current lane is absent.
-#[expect(
-    clippy::too_many_lines,
-    reason = "one boot probe: every marker is a separate EXISTS arm of the same \
-              query, and the comment above each is what makes it auditable"
-)]
 pub async fn ensure_core_schema_markers(pool: &PgPool) -> Result<(), StorageError> {
     let ready: bool = sqlx::query_scalar(
-        "SELECT EXISTS (
-             SELECT 1
-               FROM information_schema.columns
-              WHERE table_schema = 'proxima_core'
-                AND table_name = 'embedding_jobs'
-                AND column_name = 'next_attempt_at'
-         )
-         AND EXISTS (
-             SELECT 1
-               FROM pg_trigger t
-               JOIN pg_class c ON c.oid = t.tgrelid
-               JOIN pg_namespace n ON n.oid = c.relnamespace
-              WHERE n.nspname = 'proxima_core'
-                AND c.relname = 'memories'
-                AND t.tgname = 'memories_enforce_immutable'
-         )
+        "SELECT to_regclass('proxima_core.memory') IS NOT NULL
+         AND to_regclass('proxima_core.memory_head') IS NOT NULL
+         AND to_regclass('proxima_core.ingest_keys') IS NOT NULL
+         AND to_regclass('proxima_core.announce') IS NOT NULL
+         AND to_regclass('proxima_core.goal') IS NOT NULL
+         AND to_regclass('proxima_core.wake_config') IS NOT NULL
+         AND to_regclass('proxima_core.embeddings') IS NOT NULL
+         AND to_regclass('proxima_core.agent_note_v1') IS NOT NULL
+         AND to_regclass('proxima_core.group_memberships') IS NOT NULL
+         AND to_regclass('proxima_core.lexical_languages') IS NOT NULL
+         AND to_regprocedure('proxima_core.lexical_tsv(text)') IS NOT NULL
+         AND to_regprocedure('proxima_core.lexical_config()') IS NOT NULL
          AND (
              to_regclass('proxima_code.code_chunk_v1') IS NULL
              OR EXISTS (
                  SELECT 1
-                   FROM pg_trigger t
-                   JOIN pg_class c ON c.oid = t.tgrelid
-                   JOIN pg_namespace n ON n.oid = c.relnamespace
-                  WHERE n.nspname = 'proxima_code'
-                    AND c.relname = 'code_chunk_v1'
-                    AND t.tgname = 'code_chunk_v1_append_only'
-             )
-         )
-         -- v0.0.7 lane (0011_v007.sql), marker by marker. Every search emits
-         -- memories.search_tsv, every sidecar without a stored column calls
-         -- lexical_tsv(), and every embedding write binds chunk_index — none
-         -- of them have a fallback.
-         AND EXISTS (
-             SELECT 1
-               FROM information_schema.columns
-              WHERE table_schema = 'proxima_core'
-                AND table_name = 'memories'
-                AND column_name = 'search_tsv'
-         )
-         AND EXISTS (
-             SELECT 1
-               FROM information_schema.columns
-              WHERE table_schema = 'proxima_core'
-                AND table_name = 'embeddings'
-                AND column_name = 'chunk_index'
-         )
-         AND to_regprocedure('proxima_core.lexical_tsv(text)') IS NOT NULL
-         -- Every lexical search emits proxima_core.lexical_config() to build
-         -- its tsquery, and every stored search_tsv was generated through it.
-         -- A database without it answers no lexical query at all.
-         AND to_regprocedure('proxima_core.lexical_config()') IS NOT NULL
-         -- Per-row language: every memory INSERT binds
-         -- memories.lexical_language, every lexical query reads
-         -- lexical_languages and ranks with the row's configuration through
-         -- the two-argument lexical_tsv — none of them have a fallback.
-         AND EXISTS (
-             SELECT 1
-               FROM information_schema.columns
-              WHERE table_schema = 'proxima_core'
-                AND table_name = 'memories'
-                AND column_name = 'lexical_language'
-         )
-         AND to_regprocedure('proxima_core.lexical_tsv(regconfig, text)') IS NOT NULL
-         AND to_regclass('proxima_core.lexical_languages') IS NOT NULL
-         -- Edge reset. Every index write binds the new edge
-         -- columns, every derived write binds authoring_perspective_id, and
-         -- every goal write binds the topology columns — none of them have a
-         -- fallback, and a pre-lane database would fail at first write rather
-         -- than at boot. The lane REPLACED the edges table, so the marker is
-         -- the new column, not the table.
-         AND EXISTS (
-             SELECT 1
-               FROM information_schema.columns
-              WHERE table_schema = 'proxima_core'
-                AND table_name = 'edges'
-                AND column_name = 'source_id'
-         )
-         AND EXISTS (
-             SELECT 1
-               FROM information_schema.columns
-              WHERE table_schema = 'proxima_core'
-                AND table_name = 'memories'
-                AND column_name = 'authoring_perspective_id'
-         )
-         AND EXISTS (
-             SELECT 1
-               FROM information_schema.columns
-              WHERE table_schema = 'proxima_core'
-                AND table_name = 'goals'
-                AND column_name = 'assignment_perspective_id'
-         )
-         AND to_regclass('proxima_core.interpretation_v1') IS NOT NULL
-         AND EXISTS (
-             SELECT 1
-               FROM information_schema.columns
-              WHERE table_schema = 'proxima_core'
-                AND table_name = 'memories'
-                AND column_name = 'kind'
-                AND is_nullable = 'NO'
-         )
-         -- v0.0.8 delegated-authority lane. The runtime always constructs the
-         -- PG store when authenticated hosting is enabled, compliance audit
-         -- always binds its count column, and the trigger is the storage-side
-         -- defense against widening an issued grant.
-         AND to_regtype('proxima_core.access_ceiling') IS NOT NULL
-         AND to_regclass('proxima_core.delegated_authority_grants') IS NOT NULL
-         AND EXISTS (
-             SELECT 1
-               FROM information_schema.columns
-              WHERE table_schema = 'proxima_core'
-                AND table_name = 'compliance_audit_log'
-                AND column_name = 'delegated_authority_grants_count'
-         )
-         AND EXISTS (
-             SELECT 1
-               FROM pg_trigger t
-               JOIN pg_class c ON c.oid = t.tgrelid
-               JOIN pg_namespace n ON n.oid = c.relnamespace
-              WHERE n.nspname = 'proxima_core'
-                AND c.relname = 'delegated_authority_grants'
-                AND t.tgname = 'delegated_authority_grants_revoke_only'
-         )
-         -- Flavor lane skew: when the code flavor's tables exist, its
-         -- language migration must have run too — the search builder emits
-         -- s.lexical_language for the chunk projection (and reads its
-         -- stored search_tsv), so a core-migrated/flavor-stale database
-         -- would pass core markers at boot and then fail EVERY search with
-         -- an undefined column at runtime.
-         AND (
-             to_regclass('proxima_code.code_chunk_v1') IS NULL
-             OR (
-                 EXISTS (
-                     SELECT 1
-                       FROM information_schema.columns
-                      WHERE table_schema = 'proxima_code'
-                        AND table_name = 'code_chunk_v1'
-                        AND column_name = 'lexical_language'
-                 )
-                 AND EXISTS (
-                     SELECT 1
-                       FROM information_schema.columns
-                      WHERE table_schema = 'proxima_code'
-                        AND table_name = 'code_chunk_v1'
-                        AND column_name = 'search_tsv'
-                 )
+                   FROM information_schema.columns
+                  WHERE table_schema = 'proxima_code'
+                    AND table_name = 'code_chunk_v1'
+                    AND column_name = 'search_tsv'
              )
          )",
     )
@@ -458,7 +327,7 @@ pub async fn ensure_core_schema_markers(pool: &PgPool) -> Result<(), StorageErro
 
     if !ready {
         return Err(StorageError::Internal(
-            "database is missing schema markers for this release lane (v0.0.6: embedding_jobs.next_attempt_at, memories append-only trigger; v0.0.7 (0011_v007.sql): memories.search_tsv, embeddings.chunk_index, proxima_core.lexical_tsv, proxima_core.lexical_config, memories.lexical_language, proxima_core.lexical_languages, edges.source_id, memories.authoring_perspective_id, goals.assignment_perspective_id, proxima_core.interpretation_v1; v0.0.8 (0016_v008.sql): proxima_core.access_ceiling, proxima_core.delegated_authority_grants, delegated_authority_grants_revoke_only, compliance_audit_log.delegated_authority_grants_count; v0.0.8 (0020_memory_kind_fact.sql): memories.kind NOT NULL Fact; code flavor, when present: code_chunk_v1.search_tsv and code_chunk_v1.lexical_language via flavor migration 20260801000020_v007_baseline.sql); apply migrations before boot (see MIGRATING.md)".into(),
+            "database is missing v0.0.8 schema markers (memory/memory_head/ingest_keys/announce/goal/wake_config/embeddings/agent_note_v1/group_memberships/lexical_tsv); apply migrations before boot".into(),
         ));
     }
     Ok(())
@@ -536,11 +405,19 @@ async fn ensure_pgvector_runtime_compatible(
     Ok(())
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct PgStorage {
     pool: PgPool,
     sidecars: PgSidecarRegistryFrozen,
+    search_projections: Vec<proxima_core::verbs::schema::MemorySearchProjection>,
     tuning: PgTuning,
+    cold: Arc<dyn proxima_core::ColdObjectStore>,
+}
+
+impl std::fmt::Debug for PgStorage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PgStorage").finish_non_exhaustive()
+    }
 }
 
 /// Advisory-lock key serializing embedding maintenance passes across
@@ -719,8 +596,17 @@ impl PgStorage {
         Ok(Self {
             pool,
             sidecars: core_pg_sidecars(),
+            search_projections: Vec::new(),
             tuning,
+            cold: Arc::new(verbs::forget::MemoryColdStore::default()),
         })
+    }
+
+    /// Replace the forget/hydrate object store (S3 in the host).
+    #[must_use]
+    pub fn with_cold(mut self, cold: Arc<dyn proxima_core::ColdObjectStore>) -> Self {
+        self.cold = cold;
+        self
     }
 
     /// Read `DATABASE_URL` from env, fallback to
@@ -765,6 +651,18 @@ impl PgStorage {
         self
     }
 
+    /// Frozen search projections used to load embed text from the
+    /// sidecar the row's schema names. Set at boot from
+    /// [`proxima_core::FlavorRegistryFrozen::search_projections`].
+    #[must_use]
+    pub fn with_search_projections(
+        mut self,
+        search_projections: Vec<proxima_core::verbs::schema::MemorySearchProjection>,
+    ) -> Self {
+        self.search_projections = search_projections;
+        self
+    }
+
     #[must_use]
     pub fn storage_ports(self: Arc<Self>) -> StoragePorts {
         StoragePorts::builder()
@@ -782,7 +680,6 @@ impl PgStorage {
             .goal_read(self.clone())
             .goal_wake_candidate(self.clone())
             .change_event(self.clone())
-            .edge_read(self.clone())
             .citation(self.clone())
             .owner_access_read(self.clone())
             .owner_membership_admin(self.clone())
@@ -791,7 +688,8 @@ impl PgStorage {
             .source_cursor(self.clone())
             .fact_retention(self.clone())
             .compliance_erase(self.clone())
-            .registry_projection(self)
+            .registry_projection(self.clone())
+            .write_session(self)
             .build()
     }
 
@@ -817,7 +715,13 @@ impl PgStorage {
         client: &dyn proxima_core::llm::EmbeddingClient,
         limit: i64,
     ) -> Result<EmbeddingInlineDrainOutcome, StorageError> {
-        verbs::fact_embeddings::drain_embedding_jobs_inline(&self.pool, client, limit).await
+        verbs::fact_embeddings::drain_embedding_jobs_inline(
+            &self.pool,
+            client,
+            limit,
+            &self.search_projections,
+        )
+        .await
     }
 
     /// Delete embedding infrastructure rows whose source entity no longer
@@ -1005,27 +909,26 @@ mod pgvector_tests {
 #[cfg(test)]
 mod tests {
     #[test]
-    fn core_migrator_contains_the_v008_delegated_authority_lane() {
+    fn core_migrator_contains_the_v008_baseline() {
         let versions: Vec<i64> = super::core_migrator()
             .iter()
             .map(|migration| migration.version)
             .collect();
-        assert!(
-            versions.contains(&16),
-            "core migrator must embed 0016_v008.sql"
-        );
+        assert_eq!(versions, vec![1], "v0.0.8 is one file: 0001_v008.sql");
     }
 
     #[test]
-    fn core_migrator_contains_the_squashed_v007_lane() {
+    fn core_migrator_v008_has_no_legacy_alter_versions() {
         let versions: Vec<i64> = super::core_migrator()
             .iter()
             .map(|migration| migration.version)
             .collect();
-        assert!(
-            versions.contains(&11),
-            "core migrator must embed 0011_v007.sql"
-        );
+        for dead in 2..=21 {
+            assert!(
+                !versions.contains(&dead),
+                "legacy version {dead} must be gone"
+            );
+        }
     }
 
     #[test]
@@ -1036,8 +939,8 @@ mod tests {
         // moves when a migration is added.
         let floor = super::min_core_migration_version();
         assert!(
-            (11..=super::CORE_MIGRATION_VERSION_CEILING).contains(&floor),
-            "derived boot floor {floor} must be a core-namespace version at or past the v0.0.7 lane"
+            (1..=super::CORE_MIGRATION_VERSION_CEILING).contains(&floor),
+            "derived boot floor {floor} must be a core-namespace version"
         );
         assert!(
             super::core_migrator()
@@ -1053,14 +956,7 @@ mod tests {
             .iter()
             .map(|migration| migration.version)
             .collect();
-        assert!(
-            versions.contains(&9),
-            "core migrator must embed 0009_v006.sql"
-        );
-        assert!(
-            versions.contains(&10),
-            "core migrator must embed 0010_v006.sql"
-        );
+        assert_eq!(versions, vec![1]);
     }
 
     /// An injected lookup, so every branch is reachable. These helpers used

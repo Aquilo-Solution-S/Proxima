@@ -9,7 +9,7 @@
 //! const-construction of `String`, which Rust does not allow.
 
 use crate::edge::EdgeEndpoint;
-use crate::{EntityKind, FactEntityId, GoalId, MemoryId, SchemaId};
+use crate::{EntityKind, GoalId, MemoryId, SchemaId};
 
 /// How a schema-declared reference field addresses the node it points
 /// at. A binding is a property of the *field*, decided by the schema
@@ -18,9 +18,6 @@ use crate::{EntityKind, FactEntityId, GoalId, MemoryId, SchemaId};
 pub enum ReferenceBinding {
     /// Point at the exact memory or goal row named by the field.
     Pin,
-    /// Point at a Fact-entity head, so the reference follows re-observation
-    /// instead of freezing one observation.
-    FollowHead,
 }
 
 impl ReferenceBinding {
@@ -28,7 +25,6 @@ impl ReferenceBinding {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Pin => "Pin",
-            Self::FollowHead => "FollowHead",
         }
     }
 }
@@ -72,38 +68,14 @@ impl PayloadReference {
         }
     }
 
-    /// Reference a Fact-entity head, following it as it is re-observed.
-    #[must_use]
-    pub const fn fact_entity_head(field: &'static str, fact_entity_id: FactEntityId) -> Self {
-        Self {
-            field,
-            binding: ReferenceBinding::FollowHead,
-            target: EdgeEndpoint::fact_entity(fact_entity_id),
-        }
-    }
-
-    /// Check that the declared binding agrees with the address form it
-    /// produced. The two cannot disagree through the constructors above;
-    /// the check exists for hand-built declarations and is what ingest
-    /// calls before writing an index entry.
+    /// Pins always address a memory or Goal row.
     ///
     /// # Errors
     ///
-    /// Returns a message when a `FollowHead` reference does not address a
-    /// Fact-entity head, or a `Pin` reference does.
+    /// Never fails: the only remaining binding is [`ReferenceBinding::Pin`].
     pub fn validate(&self) -> Result<(), String> {
-        let is_head = matches!(self.target.entity, crate::EntityRef::FactEntity(_));
-        match (self.binding, is_head) {
-            (ReferenceBinding::FollowHead, true) | (ReferenceBinding::Pin, false) => Ok(()),
-            (ReferenceBinding::FollowHead, false) => Err(format!(
-                "reference field {} declares FollowHead but does not address a Fact-entity head",
-                self.field
-            )),
-            (ReferenceBinding::Pin, true) => Err(format!(
-                "reference field {} declares Pin but addresses a Fact-entity head",
-                self.field
-            )),
-        }
+        let _ = self;
+        Ok(())
     }
 }
 
@@ -512,20 +484,15 @@ pub fn schema_only_key(schema_id: &str, schema_version: u32) -> Vec<u8> {
 pub enum SearchProjectionColumnKind {
     Text,
     TextArray,
-    /// Not a sidecar column at all: the owning `proxima_core.memories`
-    /// row's `text`, the same string the memory was embedded from.
+    /// Not a sidecar column: the owning memory's rendered text (the
+    /// string the memory was embedded from).
     ///
     /// A sidecar usually declares a projection to contribute *retrieval
     /// structure* rather than new content — above all a `tag_column`,
     /// which is the only predicate that can scope a search to a subset
-    /// of a corpus. The base `memories` branch has no tags to offer
+    /// of a corpus. The unscoped branch has no tags to offer
     /// (`push_tag_filter` gets the literal `NULL::text[]` there), so a
-    /// tag-filtered query is served by projection branches alone. Absent
-    /// this kind, staying reachable under a tag filter means copying
-    /// `memories.text` into the sidecar and keeping the two
-    /// byte-identical forever — a second copy of the corpus, a second
-    /// tsvector and a second GIN index, to project a string the branch
-    /// already has in scope: every candidate branch joins `memories`.
+    /// tag-filtered query is served by projection branches alone.
     ///
     /// Construct it as [`SearchProjectionField::MEMORY_TEXT`].
     MemoryText,
@@ -543,11 +510,10 @@ impl SearchProjectionField {
     ///
     /// A projection of exactly this one field, with no `language_column`,
     /// is the whole reason the kind exists: the branch then projects the
-    /// identical string, tsvector and snippet as the base `memories`
-    /// branch, so a tag-scoped search and an unscoped one cannot return
-    /// different text for the same memory. Combine it with sidecar
-    /// fields when the sidecar genuinely adds searchable content the
-    /// memory text does not carry.
+    /// same string as the unscoped search path, so a tag-scoped search
+    /// and an unscoped one cannot return different text for the same
+    /// memory. Combine it with sidecar fields when the sidecar genuinely
+    /// adds searchable content the render does not carry.
     pub const MEMORY_TEXT: Self = Self {
         column: "",
         kind: SearchProjectionColumnKind::MemoryText,
@@ -563,6 +529,9 @@ pub struct SearchProjection {
     /// Declaring it lets search read the stored vector instead of
     /// tokenising the projected text on every candidate row.
     pub tsv_column: Option<&'static str>,
+    /// Column holding the row's pre-computed embed string. Drain reads
+    /// this instead of re-concatenating projection columns.
+    pub embed_text_column: Option<&'static str>,
     /// Column holding the row's lexical language (`regconfig`), for
     /// sidecar tables whose migration adds one. Search ranks each
     /// candidate with its own language's tsquery; declared, it reads the
@@ -596,9 +565,9 @@ pub trait FactPayload:
     /// should override to `false`.
     ///
     /// GATES THE VECTOR ONLY — never the text, and never lexical search.
-    /// A non-embeddable Fact still writes [`Self::render`] to
-    /// `memories.text`, so it is still readable and still matched by
-    /// full-text search. That distinction is the whole point: a filename
+    /// A non-embeddable Fact still writes [`Self::render`], so it is
+    /// still readable and still matched by full-text search. That
+    /// distinction is the whole point: a filename
     /// is often the ONLY handle a person has on a file they are looking
     /// for, which is a lexical need, while `"uploaded page-00042.png\n
     /// image/png, 18332 bytes"` has no semantic neighbourhood worth
@@ -734,7 +703,7 @@ pub trait PerspectivePayload:
     }
 }
 
-/// Typed payload for a Goal row in `proxima_core.goals`.
+/// Typed payload for a Goal row in `proxima_core.goal`.
 /// Mirrors `FactPayload` / `AbstractionPayload` for the Goal layer.
 ///
 /// See docs/06 §Goal entity and docs/03 §Sidecar tables.
@@ -760,7 +729,7 @@ pub trait GoalPayload:
     }
     /// Per-schema typed Goal sidecar table, or `None` when the Goal's
     /// typed payload has no schema-specific storage beyond
-    /// `proxima_core.goals.payload`.
+    /// `proxima_core.goal` sidecar payload.
     #[must_use]
     fn sidecar_table() -> Option<&'static str> {
         None
@@ -775,11 +744,10 @@ pub trait GoalPayload:
     }
 }
 
-/// Typed payload for a `cited_objects` row, keyed on
-/// `cited_object_id`. Cited objects do not participate in F/A/P
-/// queries; the sidecar stores the artifact body, while the core row
-/// stores ownership and a content-addressed hash. See docs/11
-/// §"Trait families".
+/// Typed payload for a cited blob, keyed on `blob_id`. Cited blobs
+/// do not participate in F/A/P queries; the artifact body is the
+/// blob bytes, while `blob` stores ownership and a content-addressed
+/// hash. See docs/11 §"Trait families".
 pub trait CitedObjectPayload:
     serde::Serialize + serde::de::DeserializeOwned + Send + Sync + 'static
 {
@@ -799,18 +767,15 @@ pub trait CitedObjectPayload:
 
     /// Stable BLAKE3-32 hash of the artifact content. Re-ingesting
     /// the same artifact for the same Owner deduplicates the
-    /// `cited_objects` row via `(owner, schema_id, content_hash)`.
+    /// `blob` row via `(owner_id, schema_id, content_hash)`.
     fn idempotency_key(&self) -> [u8; 32];
 }
 
-/// Typed payload for a `citation_mappings` row, keyed on
-/// `citation_mapping_id`. Citation mappings pin exactly one Memory
-/// to exactly one `CitedObject`. The link itself — memory, cited
-/// object, owner, schema — lives in the generic `citation_mappings`
-/// table; a sidecar is **optional**, needed only when the mapping
+/// Typed locator for a Fact→blob citation. The link is `memory.blob_id`
+/// (0..1). A sidecar is **optional**, needed only when the citation
 /// carries schema-specific metadata such as byte ranges. A fieldless
-/// mapping (a pure link, the common case) returns `None` and gets no
-/// sidecar table. See docs/11 §"Trait families".
+/// mapping (a pure link, the common case) returns `None`. See docs/11
+/// §"Trait families".
 pub trait CitationMappingPayload:
     serde::Serialize + serde::de::DeserializeOwned + Send + Sync + 'static
 {

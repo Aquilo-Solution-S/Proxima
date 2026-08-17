@@ -14,12 +14,12 @@ source receipt metadata
   -> closed source batch
   -> Abstraction + origin entries
 
-change_event(F/A/P/Goal/Edge)
+announce(F/A/P/Goal/Edge)
   -> external harness pull
   -> armed Active Goal wake match
   -> harness decision
   -> typed A/P/Goal writes (edges follow from what they declare)
-  -> change_event(...)
+  -> announce(...)
 ```
 
 Phase split:
@@ -33,17 +33,10 @@ Phase split:
 
 ## Source-batch lifecycle
 
-`source_batches` is core source-ingest lifecycle, not a domain payload.
-
-| Column family | Rule |
-|---|---|
-| `id` | UUIDv7 declared by the source; unique within `(source_id, owner)` |
-| `source_id` | source identity |
-| owner | `owner_kind`, `owner_id` |
-| `opened_at`, `closed_at` | open vs closed lifecycle |
-
-Domain metadata belongs on `CitedObject` / `CitationMapping` sidecars, not on
-`source_batches`.
+The `source_batches` table and `engine.close_batch` were removed in
+v0.0.8. `source_batch_id` remains the F→A episode id stamped on the
+write. Domain metadata belongs on `CitedObject` / `CitationMapping`
+sidecars, not on a batch row.
 
 ## Phase 2 — Perspective-context embedding
 
@@ -108,7 +101,7 @@ Goal-owned wake config:
 
 Harness wake loop (driven externally, served by core pull verbs):
 
-1. Pull owner `change_event` rows after the harness-held cursor
+1. Pull owner `announce` rows after the harness-held cursor
    (`list_change_events_after`; MCP: `proxima://change-events{?since,limit}`).
 2. Match only armed Active Goal heads; Paused/Achieved/Abandoned Goals do not fire.
 3. Check trigger readability against the trigger Fact's actual owner.
@@ -119,7 +112,7 @@ Harness wake loop (driven externally, served by core pull verbs):
    (MCP: `proxima://wake-candidates{?fact,limit}`).
 6. Execute externally; core does not run a scheduler, plugin host, or tool executor.
 7. Validate every write through the schema registry.
-8. Commit output rows and emitted `change_event` rows atomically; the Goal
+8. Commit output rows and emitted `announce` rows atomically; the Goal
    records its wake evidence in `goals.evidence_memory_ids`, from which the
    `reference` entries are derived in that same transaction.
 9. Advance the harness cursor after consideration, independent of output count.

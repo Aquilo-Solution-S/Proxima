@@ -5,7 +5,7 @@ use std::sync::Arc;
 use proxima::flavor::{FlavorBundle, NamedMigrator, PgSidecarRegistry};
 use proxima::{
     AppInfo, AuthzContext, CoreMcpError, CoreMcpErrorKind, CoreMcpTools, CoreToolInfo, FlavorApp,
-    Proxima, StorageError, ToolScope, company_owner,
+    FlavorServiceError, FlavorServices, Proxima, StorageError, ToolScope, company_owner,
 };
 use proxima_core::test_fixtures::ConstantEmbedding;
 use proxima_core::{
@@ -129,6 +129,37 @@ impl FlavorApp for EmptyApp {
             title: "Core MCP Test",
             version: "1",
         }
+    }
+}
+
+#[derive(Debug)]
+struct BootMark;
+
+struct MarkApp;
+
+impl FlavorBundle for MarkApp {
+    fn register(_: &mut FlavorRegistry) -> Result<(), proxima_core::FlavorRegistryError> {
+        Ok(())
+    }
+
+    fn migrators() -> Vec<NamedMigrator> {
+        Vec::new()
+    }
+}
+
+impl FlavorApp for MarkApp {
+    fn app_info() -> AppInfo {
+        AppInfo {
+            id: "mark-app",
+            title: "Mark App",
+            version: "1",
+        }
+    }
+
+    fn services(_: &proxima::AppContext) -> Result<FlavorServices, FlavorServiceError> {
+        let mut services = FlavorServices::new();
+        services.try_insert(BootMark)?;
+        Ok(services)
     }
 }
 
@@ -548,6 +579,7 @@ fn assert_facade_projects_output_schema(registry: &FlavorRegistryFrozen, tool: &
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn facade_lists_and_dispatches_core_mcp_tools() {
     let db_name = unique_db_name("proxima_core_mcp");
     create_db(&db_name).await.expect("PG required for tests");
@@ -614,6 +646,37 @@ async fn facade_lists_and_dispatches_core_mcp_tools() {
         )
         .await?;
         assert!(output.get("memories").is_some(), "read tool returns JSON");
+
+        let palette_denied = tools
+            .call_core_tool(
+                host_authz(
+                    &owner,
+                    ToolScope::Palette(vec!["core_search_memories".to_string()]),
+                ),
+                owner,
+                None,
+                "core_remember",
+                serde_json::json!({
+                    "title": "denied",
+                    "body": "palette must be a call gate",
+                    "idempotency_key": "palette-denied-remember"
+                }),
+            )
+            .await;
+        assert!(
+            matches!(palette_denied, Err(CoreMcpError::NotAuthorized(ref tool)) if tool == "core_remember"),
+            "palette must deny the call, not only hide the tool: {palette_denied:?}"
+        );
+
+        let empty_request = built
+            .core_mcp_tools_with_request_services(FlavorServices::default())
+            .expect("empty request bag merges");
+        let listed_after_merge = empty_request.list_core_tools();
+        assert!(
+            listed_after_merge
+                .iter()
+                .any(|tool| tool.name == "core_search_memories")
+        );
 
         let retired = tools
             .call_core_tool(
@@ -973,9 +1036,9 @@ async fn facade_core_citation_readback_is_owner_scoped() {
             .expect("prefixed fact id")
             .parse::<Uuid>()?;
         let cited_object_id: Uuid = sqlx::query_scalar(
-            "SELECT cm.cited_object_id
-               FROM proxima_core.citation_mappings cm
-              WHERE cm.memory_id = $1",
+            "SELECT blob_id
+               FROM proxima_core.memory
+              WHERE t = $1",
         )
         .bind(fact_id)
         .fetch_one(built.pool_for_tests())
@@ -1004,8 +1067,12 @@ async fn facade_core_citation_readback_is_owner_scoped() {
             cited_object_id.to_string()
         );
         assert_eq!(
+            citation["citation"]["cited_object_schema_id"],
+            TestCitedObject::SCHEMA_ID
+        );
+        assert_eq!(
             citation["citation"]["mapping_schema_id"],
-            TestCitationMapping::SCHEMA_ID
+            TestCitedObject::SCHEMA_ID
         );
 
         let cross_owner = call_test_model_tool(
@@ -1066,7 +1133,8 @@ async fn ensure_fact_embedding_for_handle(
 /// (`proxima::flavor::authorized_memory_ids` and friends) routes candidate
 /// filtering through `Engine::query`, which must treat a World-owned
 /// (published) memory as visible to any caller, not just its original
-/// owner. This is the read half of the raw-PgPool boundary breach fix —
+/// owner. Publish keeps the same `t` and moves `owner_id` to World.
+/// This is the read half of the raw-PgPool boundary breach fix —
 /// a flavor's own owner-equality-only candidate SQL would have hidden a
 /// published memory from a non-owner caller even though it is supposed to
 /// be universally readable.
@@ -1111,9 +1179,29 @@ async fn facade_authorized_read_surfaces_world_published_fact_to_non_owner() {
             .engine
             .publish_to_world(&authz, proxima_core::EntityId::Memory(MemoryId::new(memory_id)))
             .await?;
+        let published_owner: Uuid = sqlx::query_scalar(
+            "SELECT owner_id FROM proxima_core.memory WHERE t = $1",
+        )
+        .bind(memory_id)
+        .fetch_one(built.pool_for_tests())
+        .await?;
+        assert_eq!(
+            published_owner,
+            proxima_core::OwnerRef::World.stored_owner_id(),
+            "publish keeps the same t and moves owner to World"
+        );
+        let still_private: i64 = sqlx::query_scalar(
+            "SELECT count(*)::bigint FROM proxima_core.memory
+              WHERE t = $1 AND owner_id = $2",
+        )
+        .bind(memory_id)
+        .bind(owner.stored_owner_id())
+        .fetch_one(built.pool_for_tests())
+        .await?;
+        assert_eq!(still_private, 0);
 
         // A caller with no relationship to `owner` — not a group co-member,
-        // no share, nothing — must still see the now-World-owned Fact
+        // no share, nothing — must still see the transferred t
         // through the same authorized-read helper the Code flavor calls.
         let other_authz = host_authz(&other_owner, ToolScope::All);
         let visible = proxima::flavor::authorized_memory_ids(
@@ -1139,4 +1227,118 @@ async fn facade_authorized_read_surfaces_world_published_fact_to_non_owner() {
 
     let _ = drop_db(&db_name).await;
     result.expect("authorized-read World visibility test failed");
+}
+
+#[tokio::test]
+async fn core_forget_cools_a_remembered_fact() {
+    let db_name = unique_db_name("proxima_core_forget");
+    create_db(&db_name).await.expect("PG required for tests");
+    let db_url = db_url(&db_name);
+
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let built = Proxima::<AgentMemoryApp>::app()
+            .database_url(db_url)
+            .owner(owner)
+            .tool_scope(ToolScope::All)
+            .build()
+            .await?;
+        let tools = built.core_mcp_tools();
+        let listed = tools.list_core_tools();
+        assert!(
+            listed.iter().any(|tool| tool.name == "core_forget"),
+            "served catalog must include core_forget: {listed:?}"
+        );
+        assert!(
+            listed.iter().all(|tool| !tool.name.contains("open_batch")),
+            "open_batch must stay deleted"
+        );
+
+        let authz = host_authz(&owner, ToolScope::All);
+        let remembered = call_test_model_tool(
+            &tools,
+            authz.clone(),
+            owner,
+            "core_remember",
+            serde_json::json!({
+                "title": "forget me",
+                "body": "hot row that must cool",
+                "tags": []
+            }),
+        )
+        .await?;
+        let handle = remembered["handle"].as_str().expect("handle").to_string();
+        let t = handle
+            .strip_prefix("F:")
+            .expect("prefixed fact")
+            .parse::<Uuid>()?;
+
+        let forgotten = call_test_model_tool(
+            &tools,
+            authz,
+            owner,
+            "core_forget",
+            serde_json::json!({ "memory": handle }),
+        )
+        .await?;
+        assert_eq!(forgotten["ok"], serde_json::json!(true));
+
+        let hot: i64 =
+            sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_core.memory WHERE t = $1")
+                .bind(t)
+                .fetch_one(built.pool_for_tests())
+                .await?;
+        assert_eq!(hot, 0, "forget must delete the hot row");
+        let cooled: i64 =
+            sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_core.cooled WHERE t = $1")
+                .bind(t)
+                .fetch_one(built.pool_for_tests())
+                .await?;
+        assert_eq!(cooled, 1, "forget must leave the cooled stub");
+        let announce: String = sqlx::query_scalar(
+            "SELECT op::text FROM proxima_core.announce WHERE t = $1 ORDER BY seq DESC LIMIT 1",
+        )
+        .bind(t)
+        .fetch_one(built.pool_for_tests())
+        .await?;
+        assert_eq!(announce, "forget");
+
+        built.shutdown();
+        Ok(())
+    }
+    .await;
+
+    let _ = drop_db(&db_name).await;
+    result.expect("core_forget must drive shipped forget_memory");
+}
+
+#[tokio::test]
+async fn request_services_reject_duplicate_boot_type() {
+    let db_name = unique_db_name("proxima_request_services");
+    create_db(&db_name).await.expect("PG required for tests");
+    let db_url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let owner = company_owner(Uuid::now_v7());
+        let built = Proxima::<MarkApp>::app()
+            .database_url(db_url)
+            .owner(owner)
+            .allow_insecure_single_owner()
+            .tool_scope(ToolScope::All)
+            .build()
+            .await?;
+        let mut request = FlavorServices::new();
+        request.try_insert(BootMark)?;
+        let err = built
+            .core_mcp_tools_with_request_services(request)
+            .expect_err("boot Marker + request Marker");
+        assert!(
+            matches!(err, FlavorServiceError::DuplicateService { .. }),
+            "{err:?}"
+        );
+        built.shutdown();
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("duplicate request service must fail");
 }

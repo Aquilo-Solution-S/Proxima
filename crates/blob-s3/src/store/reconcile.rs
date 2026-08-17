@@ -13,7 +13,7 @@ use sqlx::Row as _;
 
 use super::CitedBlobStore;
 use super::guards::ensure_owner_access;
-use super::keys::{db_owner_columns, objects_owner_prefix, owner_hash_hex};
+use super::keys::{objects_owner_prefix, owner_hash_hex};
 use super::port::blob_error_to_storage;
 
 /// Rows read per round trip.
@@ -29,7 +29,7 @@ const ROW_PAGE: i64 = 1000;
 /// Every canonical object lives under this prefix; `pending/` deliberately
 /// does not, and must not be swept.
 ///
-/// A pending object has NO `cited_uploaded_blob_v1` row by design — the row
+/// A pending object has NO completed `blob_uploads` row by design — the row
 /// is written by the completion, not the transfer — so including `pending/`
 /// would report every upload currently in flight as an orphan. That is not
 /// a hypothetical race: on a 632-page book at concurrency 4 there are
@@ -104,10 +104,13 @@ impl CitedBlobStore {
         let mut after = uuid::Uuid::nil();
         loop {
             let page = sqlx::query(
-                "SELECT cited_object_id, bucket, object_key, byte_len, filename \
-                   FROM proxima_core.cited_uploaded_blob_v1 \
-                  WHERE cited_object_id > $1 \
-                  ORDER BY cited_object_id \
+                "SELECT blob_id AS cited_object_id, bucket, object_key, \
+                        expected_byte_len AS byte_len, filename \
+                   FROM proxima_core.blob_uploads \
+                  WHERE status = 'completed' \
+                    AND blob_id IS NOT NULL \
+                    AND blob_id > $1 \
+                  ORDER BY blob_id \
                   LIMIT $2",
             )
             .bind(after)
@@ -185,7 +188,6 @@ impl CitedBlobStore {
         let owner_prefix = objects_owner_prefix(&owner_hash_hex(&owner));
         let mut objects = self.list_keys(&owner_prefix).await?;
         let objects_scanned = objects.len() as u64;
-        let (owner_kind, owner_id) = db_owner_columns(&owner);
         let mut outcome = CitedBlobOwnerReconcileOutcome {
             objects_scanned,
             ..CitedBlobOwnerReconcileOutcome::default()
@@ -194,17 +196,17 @@ impl CitedBlobStore {
         let mut after = uuid::Uuid::nil();
         loop {
             let page = sqlx::query(
-                "SELECT b.cited_object_id, b.bucket, b.object_key, b.byte_len, b.filename \
-                   FROM proxima_core.cited_uploaded_blob_v1 b \
-                   JOIN proxima_core.cited_objects co USING (cited_object_id) \
-                  WHERE co.owner_kind = $1 \
-                    AND co.owner_id IS NOT DISTINCT FROM $2 \
-                    AND b.cited_object_id > $3 \
-                  ORDER BY b.cited_object_id \
-                  LIMIT $4",
+                "SELECT u.blob_id AS cited_object_id, u.bucket, u.object_key, \
+                        u.expected_byte_len AS byte_len, u.filename \
+                   FROM proxima_core.blob_uploads u \
+                  WHERE u.owner_id = $1 \
+                    AND u.status = 'completed' \
+                    AND u.blob_id IS NOT NULL \
+                    AND u.blob_id > $2 \
+                  ORDER BY u.blob_id \
+                  LIMIT $3",
             )
-            .bind(owner_kind)
-            .bind(owner_id)
+            .bind(owner.stored_owner_id())
             .bind(after)
             .bind(ROW_PAGE)
             .fetch_all(&self.pool)

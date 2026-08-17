@@ -56,14 +56,15 @@ const PROXIMA_TOOL_DENY: &str = "PROXIMA_TOOL_DENY";
 fn memory_keep_set() -> Vec<&'static str> {
     use proxima_core::mcp::McpTool;
     use proxima_core::mcp::core_tools::{
-        CoreFactTool, CoreGoalTool, CoreUploadTool, DeriveTool, InterpretTool, MemorySpacesTool,
-        RecordUtteranceTool, RememberTool, SearchMemoriesTool,
+        CoreFactTool, CoreGoalTool, CoreUploadTool, DeriveTool, ForgetTool, InterpretTool,
+        MemorySpacesTool, RecordUtteranceTool, RememberTool, SearchMemoriesTool,
     };
 
     #[allow(unused_mut)]
     let mut ids = vec![
         // authoring
         RememberTool::NAME,
+        ForgetTool::NAME,
         DeriveTool::NAME,
         InterpretTool::NAME,
         RecordUtteranceTool::NAME,
@@ -1112,8 +1113,8 @@ mod tests {
             protocol_action::CORE_MEMBERSHIP_LIST_MEMBERS,
             protocol_action::CORE_PUBLISH_TO_WORLD,
             protocol_action::CORE_FACT_CITATION_OF_FACT,
-            protocol_action::CORE_FACT_CITATION_OF_ENTITY_HEAD,
             protocol_action::CORE_FACT_FACTS_CITING_OBJECT,
+            protocol_tool::CORE_FORGET,
             protocol_action::CORE_GOAL_SET,
             "proxima-code_register_repo",
             "proxima-code_emit_execution_request",
@@ -1140,8 +1141,8 @@ mod tests {
         assert!(memory.allows(protocol_resource::MEMORY));
         assert!(memory.allows(protocol_resource::SCHEMAS));
         assert!(memory.allows(protocol_action::CORE_FACT_CITATION_OF_FACT));
-        assert!(memory.allows(protocol_action::CORE_FACT_CITATION_OF_ENTITY_HEAD));
         assert!(memory.allows(protocol_action::CORE_FACT_FACTS_CITING_OBJECT));
+        assert!(memory.allows(protocol_tool::CORE_FORGET));
         assert!(!memory.allows(protocol_tool::CORE_MEMBERSHIP));
         assert!(!memory.allows(protocol_tool::CORE_PUBLISH));
         assert!(!memory.allows(protocol_action::CORE_MEMBERSHIP_ADD_MEMBER));

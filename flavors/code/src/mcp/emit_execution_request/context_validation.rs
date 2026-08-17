@@ -1,11 +1,6 @@
-use std::collections::HashSet;
-
 use proxima_core::verbs::goal_write::GoalState;
-use proxima_core::verbs::query::{EdgeFilter, EdgeReadRequest, QueryRequest};
-use proxima_core::{
-    EdgeKind, EntityKind, EntityRef, GoalActivatedV1, GoalId, MemoryId, ToolCtx, ToolError,
-};
-use sqlx::{Postgres, Transaction};
+use proxima_core::verbs::query::QueryRequest;
+use proxima_core::{EntityKind, GoalId, MemoryId, ToolCtx, ToolError};
 use uuid::Uuid;
 
 use super::super::sql::{map_storage, owner_columns};
@@ -38,34 +33,46 @@ pub(super) async fn validate_repo(ctx: &ToolCtx, repo_id: Uuid) -> Result<(), To
 }
 
 pub(super) async fn validate_goal_activated_fact(
-    _tx: &mut Transaction<'_, Postgres>,
     ctx: &ToolCtx,
     memory_id: MemoryId,
 ) -> Result<Uuid, ToolError> {
     let pool = code_store(ctx)?;
     let engine = engine(ctx)?;
-    let Some((_, payload)) = pool
-        .authorized_fact_payloads::<GoalActivatedV1>(
+    let visible = pool
+        .authorized_memory_ids(
             &engine,
             ctx.authz(),
             ctx.owner(),
             &[memory_id.into_inner()],
+            EntityKind::Fact,
+            None,
             1,
         )
-        .await?
-        .into_iter()
-        .next()
-    else {
+        .await?;
+    if visible.is_empty() {
         return Err(ToolError::InvalidInput(format!(
             "goal_activated_memory is not visible: {}",
             memory_id.into_inner()
         )));
-    };
-    Ok(payload.goal_id)
+    }
+    let planner = ctx
+        .caller_self_perspective()
+        .ok_or_else(|| ToolError::InvalidInput("caller_self_perspective is required".into()))?;
+    let mut req = QueryRequest::for_owner(ctx.owner());
+    req.entity_kind = Some(EntityKind::Goal);
+    req.goal_state = Some(GoalState::Active);
+    req.assignment = Some(planner);
+    req.limit = 1;
+    let response = engine.query(ctx.authz(), &req).await?;
+    response
+        .goals
+        .into_iter()
+        .next()
+        .map(|goal| goal.id.into_inner())
+        .ok_or_else(|| ToolError::InvalidInput("no Active Goal assigned to caller".into()))
 }
 
 pub(super) async fn validate_active_goal_context(
-    _tx: &mut Transaction<'_, Postgres>,
     ctx: &ToolCtx,
     goal_id: Uuid,
     planner_root: MemoryId,
@@ -101,56 +108,19 @@ async fn goal_lineage_assigned_to(
     planner_root: MemoryId,
 ) -> Result<bool, ToolError> {
     let engine = engine(ctx)?;
-    let mut current = Some(start);
-    let mut seen = HashSet::new();
-    for _ in 0..100 {
-        let Some(goal_id) = current else {
-            return Ok(false);
-        };
-        if !seen.insert(goal_id) {
-            return Ok(false);
-        }
-
-        let edges = engine
-            .read_edges(
-                ctx.authz(),
-                // The Goal knows the Perspective it inspires: the
-                // assignment is a column on the goal row, and this
-                // `reference` entry is the index derived from it.
-                &EdgeReadRequest {
-                    owner: ctx.owner(),
-                    filter: EdgeFilter {
-                        kind: Some(EdgeKind::Reference),
-                        source: Some(EntityRef::Goal(goal_id)),
-                        target: Some(EntityRef::Memory(planner_root)),
-                    },
-                    limit: 1,
-                    cursor: None,
-                },
-            )
-            .await?;
-        if !edges.edges.is_empty() {
-            return Ok(true);
-        }
-
-        let mut req = QueryRequest::for_owner(ctx.owner());
-        req.entity_kind = Some(EntityKind::Goal);
-        req.goal_ids = vec![goal_id];
-        req.limit = 1;
-        req.include_payloads = false;
-        current = engine
-            .query(ctx.authz(), &req)
-            .await?
-            .goals
-            .into_iter()
-            .next()
-            .and_then(|goal| goal.supersedes);
-    }
-    Ok(false)
+    let mut req = QueryRequest::for_owner(ctx.owner());
+    req.entity_kind = Some(EntityKind::Goal);
+    req.goal_ids = vec![start];
+    req.limit = 1;
+    let response = engine.query(ctx.authz(), &req).await?;
+    Ok(response
+        .goals
+        .into_iter()
+        .next()
+        .is_some_and(|goal| goal.assignment == Some(planner_root)))
 }
 
 pub(super) async fn validate_plan_source_abstraction_in_owner(
-    _tx: &mut Transaction<'_, Postgres>,
     ctx: &ToolCtx,
     memory_id: MemoryId,
 ) -> Result<(), ToolError> {
@@ -177,7 +147,6 @@ pub(super) async fn validate_plan_source_abstraction_in_owner(
 }
 
 pub(super) async fn validate_evidence_in_owner(
-    _tx: &mut Transaction<'_, Postgres>,
     ctx: &ToolCtx,
     evidence: &[MemoryId],
 ) -> Result<(), ToolError> {

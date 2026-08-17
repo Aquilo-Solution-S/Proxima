@@ -1,191 +1,142 @@
 /-
 Causa — Provenance grounding
 
-N1: persisted memories are grounded by a well-founded descent inside an
-admitted memory graph. Acyclicity is NOT a global axiom over raw values: it
-follows from the graph's table-scoped strict arrow of time.
-
-Descent runs along the index, in either kind. A derived memory declares what
-it was made from (`origin`); an interpretation Perspective declares what it is
-about (`reference`) and consumes nothing (doc 16 §Kernel Invariants, E4). Both
-are statements the memory makes about rows that already existed when it was
-written, so both descend — and the strict-time field is what makes that
-descent well-founded.
-
-Supersession does NOT appear here. It is a lineage pointer, not a derivation:
-the successor is the same thing persisting through revision, and it carries
-its own origins (Causa.Memory).
+N1: persisted memories are grounded by well-founded descent inside an
+admitted memory graph. Descent runs along `origins[]` and `refs[]` (no
+Edge table). `tick` (uuidv7 order) makes the descent well-founded.
 -/
 
 import Causa.Operators
 
 namespace Causa
 
-/-- Descent through a persisted index row. `m'` sits below `m`: `m` declared
-    something about `m'`, in a row present in the admitted table. -/
-def derivesFrom (edges : Set Edge) (m m' : Memory) : Prop :=
-  ∃ e : Edge, e ∈ edges ∧ edge_source e = .memory m ∧ edge_target e = .memory m'
+def pinFrom (m tgt : Memory) : Prop :=
+  memory_t tgt ∈ memory_origins m ∨ memory_t tgt ∈ memory_refs m
 
-/-- The same descent relation, restricted to memories present in the admitted
-    Memory table. -/
-def derivesFromInTable (memories : Set Memory) (edges : Set Edge) (m m' : Memory) : Prop :=
-  m ∈ memories ∧ m' ∈ memories ∧ derivesFrom edges m m'
+def pinFromInTable (memories : Set Memory) (m tgt : Memory) : Prop :=
+  m ∈ memories ∧ tgt ∈ memories ∧ pinFrom m tgt
 
-/-- P5 / CN-6 — one admitted memory graph. Provenance is a table/store
-    invariant: raw Lean `Memory` values do not have to carry provenance unless
-    admitted by this bundle. -/
+/-- P5 — one admitted memory graph. No FactEntity. No Edge table. -/
 structure MemoryGraphValid
     (memories : Set Memory) (goals : Set Goal)
-    (factEntities : Set FactEntity) (edges : Set Edge) : Prop where
+    (heads : Set MemoryHead) (cooled : Set Cooled) : Prop where
   memoryIdUnique : MemoryIdUnique memories
-  ftoaBatchExclusive : FtoaBatchExclusive memories
   goalIdUnique : GoalIdUnique goals
-  factEntityIdUnique : FactEntityIdUnique factEntities
-  factEntityNaturalKeyUnique : FactEntityNaturalKeyUnique factEntities
-  memorySupersessionResolved : MemorySupersessionResolved memories
-  memorySupersessionValid : MemorySupersessionValid memories
-  memorySuccessorUnique : MemorySuccessorUnique memories
-  factEntityHeadsPresent :
-    ∀ e : FactEntity, e ∈ factEntities → e.current.memory ∈ memories
-  /-- E2 + E3 + no self-loop, for every admitted row. -/
-  edgeTableValid : EdgeTableValid edges
-  /-- E1 — both endpoints of every admitted row resolve in the node tables. -/
-  edgeEndpointsPresent : EdgeEndpointsExist memories goals factEntities edges
-  /-- CN-6 — every admitted derived row declares at least one memory it rests
-      on. An Abstraction declares its origins; an interpretation Perspective
-      declares its subjects. A derived row that anchors to nothing in the
-      memory table is not admitted, which is what keeps P5 total. -/
+  cooledIdUnique : CooledIdUnique cooled
+  headAligned : MemoryHeadAligned memories heads
+  pinTargetsExist :
+    ∀ m : Memory, m ∈ memories →
+      (∀ id : MemoryId, id ∈ memory_origins m → pinExists memories cooled id) ∧
+      (∀ id : MemoryId, id ∈ memory_refs m → pinExists memories cooled id)
+  originKind : ∀ m : Memory, m ∈ memories → OriginKindValid memories cooled m
+  /-- Memory `t` and Goal `t` do not collide (both globally UNIQUE). -/
+  memoryGoalIdsDisjoint :
+    ∀ (m : Memory) (g : Goal), m ∈ memories → g ∈ goals → memory_t m ≠ goal_t g
+  /-- UML: every Abstraction is made from at least one Fact `t`. -/
+  abstractionHasOrigins :
+    ∀ m : Memory, m ∈ memories → memory_kind m = .Abstraction →
+      memory_origins m ≠ []
+  /-- CN-6 — every non-Fact names at least one pin (origins or refs). -/
   derivedProvenance :
     ∀ m : Memory, m ∈ memories → memory_kind m ≠ .Fact →
-      ∃ e : Edge, e ∈ edges ∧
-        edge_source e = .memory m ∧
-        (∃ mt : Memory, mt ∈ memories ∧ edge_target e = .memory mt)
-  /-- A declared target must have existed when the declaring row was written
-      (E1 at write time), so every descent step strictly decreases row time.
-      This is the arrow of time N1 and W4 share. -/
-  derivationTimeStrict :
-    ∀ m m' : Memory, m ∈ memories → m' ∈ memories →
-      derivesFrom edges m m' → memory_created_at m' < memory_created_at m
+      memory_origins m ≠ [] ∨ memory_refs m ≠ []
+  /-- Every hot pin target is strictly earlier. -/
+  pinTimeStrict :
+    ∀ m tgt : Memory, m ∈ memories → tgt ∈ memories →
+      pinFrom m tgt → memory_tick tgt < memory_tick m
 
-/-- Index validity is a projection from graph validity. -/
-theorem memory_graph_edge_valid :
-    ∀ memories goals factEntities edges,
-      MemoryGraphValid memories goals factEntities edges →
-      EdgeTableValid edges := by
+theorem memory_graph_origin_kind :
+    ∀ memories goals heads cooled,
+      MemoryGraphValid memories goals heads cooled →
+      ∀ m : Memory, m ∈ memories → OriginKindValid memories cooled m := by
   intro _ _ _ _ hgraph
-  exact hgraph.edgeTableValid
+  exact hgraph.originKind
 
-/-- E1 is a projection from graph validity. -/
-theorem memory_graph_edge_endpoints_exist :
-    ∀ memories goals factEntities edges,
-      MemoryGraphValid memories goals factEntities edges →
-      EdgeEndpointsExist memories goals factEntities edges := by
-  intro _ _ _ _ hgraph
-  exact hgraph.edgeEndpointsPresent
-
-/-- F→A batch exclusivity is part of admitted memory-graph validity. -/
-theorem memory_graph_ftoa_batch_exclusive :
-    ∀ memories goals factEntities edges,
-      MemoryGraphValid memories goals factEntities edges →
-      FtoaBatchExclusive memories := by
-  intro _ _ _ _ hgraph
-  exact hgraph.ftoaBatchExclusive
-
-/-- Memory supersession validity is part of admitted memory-graph validity. -/
-theorem memory_graph_supersession_valid :
-    ∀ memories goals factEntities edges,
-      MemoryGraphValid memories goals factEntities edges →
-      MemorySupersessionValid memories := by
-  intro _ _ _ _ hgraph
-  exact hgraph.memorySupersessionValid
-
-/-- N1 structural grounding: the admitted-table descent relation is well-founded
-    because it strictly decreases `created_at`. -/
 theorem grounding_wf
     (memories : Set Memory) (goals : Set Goal)
-    (factEntities : Set FactEntity) (edges : Set Edge)
-    (hgraph : MemoryGraphValid memories goals factEntities edges) :
-    WellFounded (fun lo hi => derivesFromInTable memories edges hi lo) :=
+    (heads : Set MemoryHead) (cooled : Set Cooled)
+    (hgraph : MemoryGraphValid memories goals heads cooled) :
+    WellFounded (fun lo hi => pinFromInTable memories hi lo) :=
   Subrelation.wf
-    (fun {a b} h => hgraph.derivationTimeStrict b a h.1 h.2.1 h.2.2)
-    (invImage memory_created_at Nat.lt_wfRel).wf
+    (fun {a b} h => hgraph.pinTimeStrict b a h.1 h.2.1 h.2.2)
+    (invImage memory_tick Nat.lt_wfRel).wf
 
-/-- A memory is grounded when repeated admitted descent reaches Facts. -/
-inductive GroundsInFact (edges : Set Edge) : Memory → Prop where
-  | fact {m} : memory_kind m = .Fact → GroundsInFact edges m
-  | step {m m'} : derivesFrom edges m m' →
-      GroundsInFact edges m' → GroundsInFact edges m
+inductive GroundsInFact (memories : Set Memory) (cooled : Set Cooled) : Memory → Prop where
+  | fact {m} : memory_kind m = .Fact → GroundsInFact memories cooled m
+  | cooled {m id} :
+      (id ∈ memory_origins m ∨ id ∈ memory_refs m) →
+      (∃ c : Cooled, c ∈ cooled ∧ cooled_t c = id) →
+      GroundsInFact memories cooled m
+  | step {m tgt} : pinFrom m tgt →
+      GroundsInFact memories cooled tgt → GroundsInFact memories cooled m
 
-/-- N1 bottoms-out theorem: table-scoped well-founded descent plus
-    per-derived-row persisted provenance entails Fact grounding for every
-    admitted memory. -/
+/-- A nonempty list has a head element. -/
+theorem list_ne_nil_mem {α : Type} (xs : List α) (h : xs ≠ []) :
+    ∃ x : α, x ∈ xs := by
+  cases xs with
+  | nil => exact absurd rfl h
+  | cons a rest => exact ⟨a, List.mem_cons_self a rest⟩
+
 theorem memory_grounds_in_facts
     (memories : Set Memory) (goals : Set Goal)
-    (factEntities : Set FactEntity) (edges : Set Edge)
-    (hgraph : MemoryGraphValid memories goals factEntities edges) :
-    ∀ m : Memory, m ∈ memories → GroundsInFact edges m := by
+    (heads : Set MemoryHead) (cooled : Set Cooled)
+    (hgraph : MemoryGraphValid memories goals heads cooled) :
+    ∀ m : Memory, m ∈ memories → GroundsInFact memories cooled m := by
   intro m
-  refine (grounding_wf memories goals factEntities edges hgraph).induction
-    (C := fun m => m ∈ memories → GroundsInFact edges m) m ?_
+  refine (grounding_wf memories goals heads cooled hgraph).induction
+    (C := fun m => m ∈ memories → GroundsInFact memories cooled m) m ?_
   intro m ih hm
   by_cases hfact : memory_kind m = .Fact
   · exact GroundsInFact.fact hfact
-  · obtain ⟨e, he, hs, ⟨mt, hmt, ht⟩⟩ := hgraph.derivedProvenance m hm hfact
-    have hder : derivesFrom edges m mt := ⟨e, he, hs, ht⟩
-    have htable : derivesFromInTable memories edges m mt := ⟨hm, hmt, hder⟩
-    exact GroundsInFact.step hder (ih mt htable hmt)
+  · have hpin := hgraph.derivedProvenance m hm hfact
+    have hexists := hgraph.pinTargetsExist m hm
+    cases hpin with
+    | inl horig =>
+      obtain ⟨id, hid⟩ := list_ne_nil_mem (memory_origins m) horig
+      have htarget := hexists.1 id hid
+      cases htarget with
+      | inl hhot =>
+        obtain ⟨tgt, htgt, ht⟩ := hhot
+        have hfrom : pinFrom m tgt := Or.inl (by rw [ht]; exact hid)
+        have htable : pinFromInTable memories m tgt := ⟨hm, htgt, hfrom⟩
+        exact GroundsInFact.step hfrom (ih tgt htable htgt)
+      | inr hcold =>
+        exact GroundsInFact.cooled (Or.inl hid) hcold
+    | inr hrefs =>
+      obtain ⟨id, hid⟩ := list_ne_nil_mem (memory_refs m) hrefs
+      have htarget := hexists.2 id hid
+      cases htarget with
+      | inl hhot =>
+        obtain ⟨tgt, htgt, ht⟩ := hhot
+        have hfrom : pinFrom m tgt := Or.inr (by rw [ht]; exact hid)
+        have htable : pinFromInTable memories m tgt := ⟨hm, htgt, hfrom⟩
+        exact GroundsInFact.step hfrom (ih tgt htable htgt)
+      | inr hcold =>
+        exact GroundsInFact.cooled (Or.inr hid) hcold
 
-/-- CN-6a — every admitted Abstraction rests on an admitted Fact or
-    Abstraction. THEOREM: the target kind is pinned by E3, since an
-    Abstraction source may not reach a Perspective. -/
 theorem abstraction_has_provenance :
-    ∀ memories goals factEntities edges,
-      MemoryGraphValid memories goals factEntities edges →
+    ∀ memories goals heads cooled,
+      MemoryGraphValid memories goals heads cooled →
       ∀ m : Memory, m ∈ memories → memory_kind m = .Abstraction →
-        ∃ e : Edge, e ∈ edges ∧
-          edge_source e = .memory m ∧
-          (∃ mt : Memory, mt ∈ memories ∧ edge_target e = .memory mt ∧
-            (memory_kind mt = .Fact ∨ memory_kind mt = .Abstraction)) := by
-  intro memories goals factEntities edges hgraph m hm hk
-  have hne : memory_kind m ≠ .Fact := by rw [hk]; intro h; exact (nomatch h)
-  obtain ⟨e, he, hs, ⟨mt, hmt, ht⟩⟩ := hgraph.derivedProvenance m hm hne
-  have hlayer := edge_layer_rule e (hgraph.edgeTableValid e he) m mt hs ht
-  rw [hk] at hlayer
-  refine ⟨e, he, hs, ⟨mt, hmt, ht, ?_⟩⟩
-  cases hkt : memory_kind mt with
-  | Fact => exact Or.inl rfl
-  | Abstraction => exact Or.inr rfl
-  | Perspective =>
-    rw [hkt] at hlayer
-    exact absurd hlayer (by simp [MemoryKind.layer])
+        memory_origins m ≠ [] := by
+  intro memories goals heads cooled hgraph m hm hk
+  exact hgraph.abstractionHasOrigins m hm hk
 
-/-- CN-6b — every admitted Perspective rests on an admitted memory row; no
-    Perspective is a view from nowhere.
-
-    WEAKENED from the pre-v0.0.8 "…on an Abstraction": with the class matrix
-    gone, P→F and P→P are ordinary legal rows, and an interpretation
-    Perspective references its subjects directly whatever kind they are. What
-    survives is the part that carries P5: a Perspective always names something
-    in the memory table, so grounding descends from it. -/
 theorem perspective_has_provenance :
-    ∀ memories goals factEntities edges,
-      MemoryGraphValid memories goals factEntities edges →
+    ∀ memories goals heads cooled,
+      MemoryGraphValid memories goals heads cooled →
       ∀ m : Memory, m ∈ memories → memory_kind m = .Perspective →
-        ∃ e : Edge, e ∈ edges ∧
-          edge_source e = .memory m ∧
-          (∃ mt : Memory, mt ∈ memories ∧ edge_target e = .memory mt) := by
-  intro memories goals factEntities edges hgraph m hm hk
+        memory_origins m ≠ [] ∨ memory_refs m ≠ [] := by
+  intro memories goals heads cooled hgraph m hm hk
   have hne : memory_kind m ≠ .Fact := by rw [hk]; intro h; exact (nomatch h)
   exact hgraph.derivedProvenance m hm hne
 
-/-- A3 recovery: admitted Abstractions inherit the table-scoped Fact-grounding
-    theorem. -/
 theorem abstraction_grounds_in_facts :
-    ∀ memories goals factEntities edges,
-      MemoryGraphValid memories goals factEntities edges →
+    ∀ memories goals heads cooled,
+      MemoryGraphValid memories goals heads cooled →
       ∀ m : Memory, m ∈ memories → memory_kind m = .Abstraction →
-        GroundsInFact edges m := by
-  intro memories goals factEntities edges hgraph m hm _
-  exact memory_grounds_in_facts memories goals factEntities edges hgraph m hm
+        GroundsInFact memories cooled m := by
+  intro memories goals heads cooled hgraph m hm _
+  exact memory_grounds_in_facts memories goals heads cooled hgraph m hm
 
 end Causa

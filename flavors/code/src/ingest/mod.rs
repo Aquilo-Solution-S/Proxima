@@ -6,16 +6,9 @@
 )]
 //! Typed atomic Fact + sidecar writes for the proxima-code flavor.
 //!
-//! Each helper wraps `proxima_storage_pg::verbs::fact_ingest::ingest_fact_in_tx`
-//! and the matching sidecar `INSERT` in a single Postgres transaction. On
-//! idempotent replay (receipt collision) the sidecar insert is skipped —
-//! the prior transaction already wrote it, and the natural-key uniqueness
-//! is by construction (same payload -> same receipt).
-//!
-//! The flavor depends on `proxima-storage-pg` for these helpers; the
-//! flavor crate is no longer storage-agnostic. That coupling
-//! is the v1 trade-off — keeping Fact materialization and sidecar
-//! population in one tx is non-negotiable (AGENTS.md invariant 15).
+//! Fact ingest goes through `Engine::ingest_typed_fact_with` (UoW of one).
+//! Opaque `CitationSpec` and stateful NK handle reuse live on that lane.
+//! Code-slice Abstractions are N `UnitOfWork::author_derived` in one UoW.
 
 pub mod blobs;
 pub mod engine;
@@ -24,8 +17,9 @@ mod pg_sidecars;
 pub mod schemas;
 
 pub use blobs::{
-    append_code_slice, append_code_slices, close_local_git_batch, code_slice_memory_id_for,
-    ingest_commit, ingest_file_revision,
+    append_code_slice, append_code_slices, append_code_slices_with_handles,
+    assign_code_chunk_handles, close_local_git_batch, code_slice_memory_id_for,
+    existing_code_chunk_handle, ingest_commit, ingest_file_revision, resolve_code_chunk_handles,
 };
 pub use engine::{build_engine, build_engine_with};
 pub use heads::FileRevisionHead;
