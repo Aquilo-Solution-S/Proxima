@@ -128,6 +128,45 @@ fn goal_page_sql(req: &QueryRequest, has_schema_filter: bool) -> String {
     sql
 }
 
+/// One Active head per matching Goal for the given memory `t`s.
+///
+/// A row matches when `assignment_t` is in `targets` or `evidence_t`
+/// overlaps `targets`. Empty `targets` returns no rows and does not query.
+///
+/// # Errors
+///
+/// Returns `StorageError::Internal` on query failure.
+pub async fn active_goals_for_memory_targets(
+    pool: &PgPool,
+    owner_id: uuid::Uuid,
+    targets: &[uuid::Uuid],
+) -> Result<Vec<ActiveGoalTargetRow>, StorageError> {
+    if targets.is_empty() {
+        return Ok(Vec::new());
+    }
+    sqlx::query_as(
+        "SELECT g.t AS goal_id, g.assignment_t, g.evidence_t
+           FROM proxima_core.goal_head h
+           JOIN proxima_core.goal g ON g.handle = h.handle AND g.t = h.t
+          WHERE h.owner_id = $1
+            AND g.state = 'Active'
+            AND (g.assignment_t = ANY($2::uuid[]) OR g.evidence_t && $2::uuid[])",
+    )
+    .bind(owner_id)
+    .bind(targets)
+    .fetch_all(pool)
+    .await
+    .map_err(map_err)
+}
+
+/// One Active Goal head that names a work-item neighbour.
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct ActiveGoalTargetRow {
+    pub goal_id: uuid::Uuid,
+    pub assignment_t: Option<uuid::Uuid>,
+    pub evidence_t: Vec<uuid::Uuid>,
+}
+
 /// Emit the exact page statement [`query_goals`] would run for `req` — the
 /// golden-pin surface for the tuning arms, compiled only for tests. Same
 /// cfg gate as the search `*_sql_for_tests` exports.
@@ -157,5 +196,22 @@ mod tests {
         assert!(sql.contains("g.state = 'Active'"));
         assert!(sql.contains("g.assignment_t AS assignment"));
         assert!(sql.contains("g.evidence_t AS evidence"));
+    }
+
+    #[test]
+    fn batch_activation_sql_is_one_shot() {
+        let src = include_str!("goals.rs");
+        assert!(
+            src.contains("g.assignment_t = ANY($2::uuid[])"),
+            "assignment must be batched"
+        );
+        assert!(
+            src.contains("g.evidence_t && $2::uuid[]"),
+            "evidence must be batched"
+        );
+        assert!(
+            src.contains("if targets.is_empty()"),
+            "empty target set must not query"
+        );
     }
 }

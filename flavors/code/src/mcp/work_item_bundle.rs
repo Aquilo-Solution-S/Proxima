@@ -1,5 +1,4 @@
-use proxima_core::verbs::goal_write::GoalState;
-use proxima_core::verbs::query::{EdgeFilter, EdgeReadRequest, EntityKind, QueryRequest};
+use proxima_core::verbs::query::{EdgeFilter, EdgeReadRequest, EntityKind};
 use proxima_core::{
     AbstractionPayload, EdgeEndpoint, EdgeKind, EntityRef, FactPayload, MemoryId,
     PerspectivePayload,
@@ -10,8 +9,8 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::payloads::{
-    AcceptanceCriterionV1, AcceptanceVerifierKind, AcceptanceVerifierSpecV1, CodeExecutionPlanV1,
-    CodeWorkAssignmentV1, ExecutionRequestV1, TestRequestV1,
+    AcceptanceCriteriaV1, AcceptanceCriterionV1, CodeExecutionPlanV1, CodeWorkAssignmentV1,
+    ExecutionRequestV1, TestRequestV1,
 };
 
 use super::CodeToolCtxExt;
@@ -163,18 +162,23 @@ impl Tool for CodeWorkItemBundleTool {
                 EdgeDirection::Outgoing,
             )
             .await?;
-            let mut evidence_handles = Vec::new();
-            let mut active_goal_provenance = Vec::new();
-            for target in derived_targets {
-                if let Some(goal_id) = load_goal_activation(&ctx, target).await? {
-                    active_goal_provenance.push(ActiveGoalProvenanceBundle {
-                        goal_activated_handle: ctx.format_fact_memory(target),
-                        goal_handle: ctx.format_goal(goal_id),
-                    });
-                } else {
-                    evidence_handles.push(ctx.format_fact_memory(target));
-                }
-            }
+            let activations = code_store(&ctx)?
+                .active_goal_activations(ctx.owner(), &derived_targets)
+                .await?;
+            let activated: std::collections::HashSet<MemoryId> =
+                activations.iter().map(|(target, _)| *target).collect();
+            let active_goal_provenance = activations
+                .into_iter()
+                .map(|(target, goal_id)| ActiveGoalProvenanceBundle {
+                    goal_activated_handle: ctx.format_fact_memory(target),
+                    goal_handle: ctx.format_goal(goal_id),
+                })
+                .collect();
+            let evidence_handles = derived_targets
+                .into_iter()
+                .filter(|target| !activated.contains(target))
+                .map(|id| ctx.format_fact_memory(id))
+                .collect();
             let target_perspective_handles = load_target_perspectives(&ctx, memory_id)
                 .await?
                 .into_iter()
@@ -261,13 +265,7 @@ async fn load_work_item(ctx: &ToolCtx, memory_id: MemoryId) -> Result<WorkItemRo
         .next()
     {
         let repo_id = row.repo_id;
-        let criteria = load_criterion_rows(
-            ctx,
-            "proxima_code.test_requested_criterion_v1",
-            "test_requested_memory_id",
-            memory_id,
-        )
-        .await?;
+        let criteria = pool.test_requested_criteria(memory_id.into_inner()).await?;
         return Ok(WorkItemRow {
             kind: WorkItemBundleKind::Test,
             repo_id,
@@ -324,80 +322,34 @@ async fn load_criteria(
     memory_id: MemoryId,
 ) -> Result<Vec<CriteriaBundle>, ToolError> {
     let pool = code_store(ctx)?;
-    let rows: Vec<Uuid> = sqlx::query_scalar(
-        "SELECT t
-           FROM proxima_code.acceptance_criteria_v1
-          WHERE work_item_memory_id = $1
-          ORDER BY t ASC",
-    )
-    .bind(memory_id.into_inner())
-    .fetch_all(pool.pool())
-    .await
-    .map_err(map_storage)?;
-    let mut bundles = Vec::with_capacity(rows.len());
-    for id in rows {
-        let memory_id = MemoryId::new(id);
-        let criteria = load_criterion_rows(
-            ctx,
-            "proxima_code.acceptance_criterion_v1",
-            "criteria_memory_id",
-            memory_id,
+    let engine = super::engine(ctx)?;
+    let groups = pool
+        .acceptance_criteria_for_work_item(memory_id.into_inner())
+        .await?;
+    if groups.is_empty() {
+        return Ok(Vec::new());
+    }
+    let candidate_ts: Vec<Uuid> = groups
+        .iter()
+        .map(|group| group.memory_id.into_inner())
+        .collect();
+    let visible = pool
+        .authorized_memory_ids(
+            &engine,
+            ctx.authz(),
+            ctx.owner(),
+            &candidate_ts,
+            EntityKind::Fact,
+            Some(AcceptanceCriteriaV1::schema_id()),
+            candidate_ts.len(),
         )
         .await?;
-        bundles.push(CriteriaBundle {
-            handle: ctx.format_fact_memory(memory_id),
-            criteria,
-        });
-    }
-    Ok(bundles)
-}
-
-#[derive(Debug, sqlx::FromRow)]
-struct CriterionSqlRow {
-    criterion_key: String,
-    description: String,
-    required: bool,
-    verifier_kind: AcceptanceVerifierKind,
-    verifier_path: Option<String>,
-    verifier_command: Option<Vec<String>>,
-    verifier_pattern: Option<String>,
-    verifier_note: Option<String>,
-}
-
-async fn load_criterion_rows(
-    ctx: &ToolCtx,
-    table: &'static str,
-    parent_column: &'static str,
-    parent_id: MemoryId,
-) -> Result<Vec<AcceptanceCriterionV1>, ToolError> {
-    let sql = format!(
-        "SELECT criterion_key, description, required, verifier_kind,
-                verifier_path, verifier_command, verifier_pattern, verifier_note
-           FROM {table}
-          WHERE {parent_column} = $1
-          ORDER BY criterion_index ASC"
-    );
-    let pool = code_store(ctx)?;
-    // SQL-POLICY: fixed-fragment — the only interpolation is `parent_column`,
-    // chosen from a closed match above; `parent_id` is bound.
-    let rows: Vec<CriterionSqlRow> = sqlx::query_as(sqlx::AssertSqlSafe(sql))
-        .bind(parent_id.into_inner())
-        .fetch_all(pool.pool())
-        .await
-        .map_err(map_storage)?;
-    Ok(rows
+    Ok(groups
         .into_iter()
-        .map(|row| AcceptanceCriterionV1 {
-            key: row.criterion_key,
-            description: row.description,
-            required: row.required,
-            verifier_kind: row.verifier_kind,
-            verifier_spec: AcceptanceVerifierSpecV1 {
-                path: row.verifier_path,
-                command: row.verifier_command,
-                pattern: row.verifier_pattern,
-                note: row.verifier_note,
-            },
+        .filter(|group| visible.contains(&group.memory_id))
+        .map(|group| CriteriaBundle {
+            handle: ctx.format_fact_memory(group.memory_id),
+            criteria: group.criteria,
         })
         .collect())
 }
@@ -496,36 +448,6 @@ async fn load_work_item_neighbours(
         .into_iter()
         .filter(|id| out.contains(id))
         .collect())
-}
-
-async fn load_goal_activation(
-    ctx: &ToolCtx,
-    memory_id: MemoryId,
-) -> Result<Option<proxima_core::GoalId>, ToolError> {
-    let engine = super::engine(ctx)?;
-    let assigned = query_active_goals(ctx, &engine, |req| {
-        req.assignment = Some(memory_id);
-    })
-    .await?;
-    let evidenced = query_active_goals(ctx, &engine, |req| {
-        req.evidence_contains = Some(memory_id);
-    })
-    .await?;
-    Ok([assigned, evidenced].into_iter().flatten().max())
-}
-
-async fn query_active_goals(
-    ctx: &ToolCtx,
-    engine: &proxima_core::Engine,
-    configure: impl FnOnce(&mut QueryRequest),
-) -> Result<Option<proxima_core::GoalId>, ToolError> {
-    let mut req = QueryRequest::for_owner(ctx.owner());
-    req.entity_kind = Some(EntityKind::Goal);
-    req.goal_state = Some(GoalState::Active);
-    req.limit = 1;
-    configure(&mut req);
-    let response = engine.query(ctx.authz(), &req).await?;
-    Ok(response.goals.into_iter().next().map(|goal| goal.id))
 }
 
 /// Workers this item is assigned to: incoming assignment Perspectives,
@@ -713,4 +635,33 @@ async fn load_acceptance_summaries(
     .await
     .map_err(map_storage)?;
     Ok(rows.into_iter().map(MemoryId::new).collect())
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn criteria_and_goals_are_not_per_row_queries() {
+        let src = include_str!("work_item_bundle.rs");
+        let production = src.split("mod tests").next().expect("tests module");
+        assert!(
+            !production.contains("load_criterion_rows"),
+            "per-parent criterion loader is gone"
+        );
+        assert!(
+            !production.contains("query_active_goals"),
+            "goal activation is one store call"
+        );
+        assert!(
+            production.contains("acceptance_criteria_for_work_item"),
+            "work criteria go through the store JOIN"
+        );
+        assert!(
+            production.contains("test_requested_criteria"),
+            "test criteria go through the store"
+        );
+        assert!(
+            production.contains("active_goal_activations"),
+            "goal activation is batched"
+        );
+    }
 }
