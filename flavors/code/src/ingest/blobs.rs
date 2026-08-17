@@ -2,13 +2,9 @@ use proxima_core::storage_ports::OwnerWritePermit;
 use proxima_core::verbs::fact_ingest::{CitationSpec, FactIngestOutcome};
 use proxima_core::verbs::query::SidecarAtom;
 use proxima_core::{
-    AbstractionPayload, AuthzContext, DerivedEmbedding, EdgeEndpoint, Engine, EntityKind,
-    InputContractId, MemoryId, MemoryOperatorKind, OperatorId, PayloadReference, SchemaVersion,
-    SourceBatchId, TypedFactIngest,
-};
-use proxima_storage_pg::sidecars::PgMemorySidecar;
-use proxima_storage_pg::verbs::derive_append::{
-    DerivedBatchEntry, DerivedDraft, DerivedOutcome, append_derived_batch_with_edges_in_tx,
+    AbstractionPayload, AuthzContext, AuthorDerivedAuthorizedOutcome, AuthorDerivedRequestInput,
+    EdgeEndpoint, Engine, EntityKind, InputContractId, MemoryId, MemoryOperatorKind, OperatorId,
+    Owner, SchemaVersion, SidecarPayload, SourceBatchId, TypedFactIngest,
 };
 use sqlx::PgPool;
 
@@ -241,28 +237,25 @@ pub async fn ingest_file_revision(
 pub async fn append_code_slices(
     engine: &Engine,
     authz: &AuthzContext,
-    pool: &PgPool,
-    permit: &OwnerWritePermit,
+    owner: Owner,
     source_batch_id: SourceBatchId,
     payloads: &[CodeChunkV1],
     source_file_revision: MemoryId,
     source_commit: Option<MemoryId>,
-    embedding_model_id: Option<&str>,
-) -> Result<Vec<DerivedOutcome>, IngestError> {
+) -> Result<Vec<AuthorDerivedAuthorizedOutcome>, IngestError> {
     if payloads.is_empty() {
         return Ok(Vec::new());
     }
-    let owner = *permit.owner();
     let handles = resolve_code_chunk_handles(engine, authz, owner, payloads).await?;
     append_code_slices_with_handles(
-        pool,
-        permit,
+        engine,
+        authz,
+        owner,
         source_batch_id,
         payloads,
         source_file_revision,
         source_commit,
         &handles,
-        embedding_model_id,
     )
     .await
 }
@@ -271,15 +264,15 @@ pub async fn append_code_slices(
 /// (intra-file call naming).
 #[allow(clippy::too_many_arguments)]
 pub async fn append_code_slices_with_handles(
-    pool: &PgPool,
-    permit: &OwnerWritePermit,
+    engine: &Engine,
+    authz: &AuthzContext,
+    owner: Owner,
     source_batch_id: SourceBatchId,
     payloads: &[CodeChunkV1],
     source_file_revision: MemoryId,
     source_commit: Option<MemoryId>,
     handles: &[uuid::Uuid],
-    embedding_model_id: Option<&str>,
-) -> Result<Vec<DerivedOutcome>, IngestError> {
+) -> Result<Vec<AuthorDerivedAuthorizedOutcome>, IngestError> {
     if payloads.len() != handles.len() {
         return Err(IngestError::Storage(
             "code slice handle count must match payload count".into(),
@@ -288,62 +281,38 @@ pub async fn append_code_slices_with_handles(
     if payloads.is_empty() {
         return Ok(Vec::new());
     }
-    let owner = permit.owner();
     let mut origins = vec![EdgeEndpoint::memory(EntityKind::Fact, source_file_revision)];
     if let Some(commit) = source_commit {
         origins.push(EdgeEndpoint::memory(EntityKind::Fact, commit));
     }
-    let drafts = payloads
-        .iter()
-        .zip(handles)
-        .map(|(payload, handle)| DerivedDraft {
-            memory_id: *handle,
-            owner: *owner,
-            kind: EntityKind::Abstraction,
-            schema_id: <CodeChunkV1 as AbstractionPayload>::schema_id(),
-            schema_version: SchemaVersion::new(CodeChunkV1::SCHEMA_VERSION),
-            text: render_code_slice(payload),
-            operator_kind: MemoryOperatorKind::FtoA,
-            operator_id: code_slice_operator_id(),
-            input_contract_id: code_slice_input_contract_id(payload, source_file_revision),
-            source_batch_id: Some(source_batch_id),
-            model_id: CODE_SLICE_OPERATOR_MODEL,
-            prompt_version: CODE_SLICE_PROMPT_VERSION,
-            authoring_perspective_id: None,
-            supersedes: None,
-            // Chunks pin english on every surface (see CODE_LEXICAL_LANGUAGE):
-            // this stamps the owning memories row, the sidecar mirrors the pin
-            // via its column default, and passing it here (not None) keeps
-            // 'english' registered as an active language on every ingest.
-            lexical_language: Some(crate::payloads::CODE_LEXICAL_LANGUAGE),
-            embedding: match embedding_model_id {
-                Some(model_id) => DerivedEmbedding::Deferred { model_id },
-                None => DerivedEmbedding::None,
-            },
-        })
-        .collect::<Vec<_>>();
-    let references = payloads
-        .iter()
-        .map(payload_reference_endpoints)
-        .collect::<Result<Vec<_>, _>>()?;
-    let entries = drafts
-        .iter()
-        .zip(&references)
-        .map(|(draft, references)| DerivedBatchEntry {
-            draft,
-            origins: &origins,
-            references,
-        })
-        .collect::<Vec<_>>();
-
-    let mut tx = pool.begin().await?;
-    let outcomes =
-        append_derived_batch_with_edges_in_tx(&mut tx, permit, &entries, |index, tx, outcome| {
-            let payload = payloads[index].clone();
-            Box::pin(async move { payload.insert_memory_sidecar(tx, outcome.memory_id).await })
-        })
-        .await?;
-    tx.commit().await?;
+    let mut uow = engine.unit_of_work(authz).await?;
+    let mut outcomes = Vec::with_capacity(payloads.len());
+    for (payload, handle) in payloads.iter().zip(handles) {
+        // Chunks pin english on every surface (see CODE_LEXICAL_LANGUAGE).
+        let outcome = uow
+            .author_derived(AuthorDerivedRequestInput {
+                memory_id: MemoryId::new(*handle),
+                owner,
+                kind: EntityKind::Abstraction,
+                text: render_code_slice(payload),
+                schema_id: <CodeChunkV1 as AbstractionPayload>::schema_id(),
+                schema_version: SchemaVersion::new(CodeChunkV1::SCHEMA_VERSION),
+                operator_kind: MemoryOperatorKind::FtoA,
+                operator_id: code_slice_operator_id(),
+                input_contract_id: code_slice_input_contract_id(payload, source_file_revision),
+                source_batch_id: Some(source_batch_id),
+                model_id: CODE_SLICE_OPERATOR_MODEL,
+                prompt_version: CODE_SLICE_PROMPT_VERSION,
+                sidecar_payload: SidecarPayload::abstraction(payload.clone()),
+                authoring_perspective_id: None,
+                derived_from: &origins,
+                supersedes: None,
+                lexical_language: Some(crate::payloads::CODE_LEXICAL_LANGUAGE),
+            })
+            .await?;
+        outcomes.push(outcome);
+    }
+    uow.commit().await?;
     Ok(outcomes)
 }
 
@@ -353,44 +322,26 @@ pub async fn append_code_slices_with_handles(
 pub async fn append_code_slice(
     engine: &Engine,
     authz: &AuthzContext,
-    pool: &PgPool,
-    permit: &OwnerWritePermit,
+    owner: Owner,
     source_batch_id: SourceBatchId,
     payload: &CodeChunkV1,
     source_file_revision: MemoryId,
     source_commit: Option<MemoryId>,
-    embedding_model_id: Option<&str>,
-) -> Result<DerivedOutcome, IngestError> {
+) -> Result<AuthorDerivedAuthorizedOutcome, IngestError> {
     let outcomes = append_code_slices(
         engine,
         authz,
-        pool,
-        permit,
+        owner,
         source_batch_id,
         std::slice::from_ref(payload),
         source_file_revision,
         source_commit,
-        embedding_model_id,
     )
     .await?;
     outcomes
         .into_iter()
         .next()
         .ok_or_else(|| IngestError::Storage("code slice batch returned no outcome".into()))
-}
-
-/// Read the payload's schema-declared references and check each binding
-/// against the address form it produced, before handing storage the
-/// endpoints. `validate` is what catches a hand-built declaration whose
-/// binding and address disagree; the constructors cannot produce one.
-fn payload_reference_endpoints(payload: &CodeChunkV1) -> Result<Vec<EdgeEndpoint>, IngestError> {
-    <CodeChunkV1 as AbstractionPayload>::references(payload)
-        .into_iter()
-        .map(|reference: PayloadReference| {
-            reference.validate().map_err(IngestError::Storage)?;
-            Ok(reference.target)
-        })
-        .collect()
 }
 
 /// Deterministic input-contract material for this position. Not the

@@ -365,7 +365,7 @@ impl UnitOfWork<'_> {
             operator_kind: req.operator_kind,
             operator_id: req.operator_id,
             input_contract_id: req.input_contract_id,
-            source_batch_id: None,
+            source_batch_id: req.source_batch_id,
             model_id: req.model_id,
             prompt_version: req.prompt_version,
             sidecar_payload: req.sidecar_payload,

@@ -8,8 +8,7 @@
 //!
 //! Fact ingest goes through `Engine::ingest_typed_fact_with` (UoW of one).
 //! Opaque `CitationSpec` and stateful NK handle reuse live on that lane.
-//! Derived code-slice batches still use the storage-pg group append until
-//! a later UoW `author_derived` residual.
+//! Code-slice Abstractions are N `UnitOfWork::author_derived` in one UoW.
 
 pub mod blobs;
 pub mod engine;

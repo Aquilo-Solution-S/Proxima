@@ -169,12 +169,6 @@ impl<'a> CodeIngestContext<'a> {
         self.authz
     }
 
-    fn embedding_model_id(&self) -> Option<String> {
-        self.engine
-            .embed_client()
-            .map(|client| client.model_id().to_string())
-    }
-
     async fn owner_write_permit(&self, owner: &Owner) -> Result<OwnerWritePermit, IngestError> {
         self.engine
             .authorize_owner_write(self.authz, owner, AccessKind::Fact)
@@ -488,11 +482,11 @@ impl LocalGitSource {
 
         crate::ingest::close_local_git_batch(pool, &permit, batch_id).await?;
         for pending in pending_present {
-            self.derive_present_blob(ctx, &permit, batch_id, pending, &mut report)
+            self.derive_present_blob(ctx, batch_id, pending, &mut report)
                 .await?;
         }
         for pending in pending_deleted {
-            self.derive_deleted_path(ctx, &permit, batch_id, pending, &mut report)
+            self.derive_deleted_path(ctx, batch_id, pending, &mut report)
                 .await?;
         }
         let cursor = encode_cursor(&CodeCursor {
@@ -620,11 +614,11 @@ impl LocalGitSource {
         // Close this commit's batch before any F→A derivation consumes it.
         crate::ingest::close_local_git_batch(pool, &permit, batch_id).await?;
         for pending in pending_present {
-            self.derive_present_blob(ctx, &permit, batch_id, pending, report)
+            self.derive_present_blob(ctx, batch_id, pending, report)
                 .await?;
         }
         for pending in pending_deleted {
-            self.derive_deleted_path(ctx, &permit, batch_id, pending, report)
+            self.derive_deleted_path(ctx, batch_id, pending, report)
                 .await?;
         }
         Ok(())
@@ -802,12 +796,10 @@ impl LocalGitSource {
     async fn derive_present_blob(
         &self,
         ctx: &CodeIngestContext<'_>,
-        permit: &OwnerWritePermit,
         batch_id: SourceBatchId,
         pending: PendingPresentBlob,
         report: &mut IndexReport,
     ) -> Result<(), IndexError> {
-        let pool = ctx.pool();
         // A receipt-replayed Fact belongs to the batch that first observed
         // it, not to this one, and its chunks were derived under that batch.
         // Deriving again here would hand `validate_ftoa_input_batch` a slice
@@ -841,13 +833,11 @@ impl LocalGitSource {
                 append_code_slice(
                     ctx.engine,
                     ctx.authz,
-                    pool,
-                    permit,
+                    self.owner,
                     batch_id,
                     &tomb,
                     pending.file_revision,
                     pending.source_commit,
-                    None,
                 )
                 .await?;
                 report.chunks_tombstoned += 1;
@@ -956,16 +946,15 @@ impl LocalGitSource {
             .iter()
             .map(|chunk| chunk.memory_id.into_inner())
             .collect();
-        let embedding_model_id = ctx.embedding_model_id();
         let outcomes = append_code_slices_with_handles(
-            pool,
-            permit,
+            ctx.engine,
+            ctx.authz,
+            self.owner,
             batch_id,
             &payloads,
             pending.file_revision,
             pending.source_commit,
             &handles,
-            embedding_model_id.as_deref(),
         )
         .await?;
         for (chunk, outcome) in file_chunks.iter().zip(&outcomes) {
@@ -1014,12 +1003,10 @@ impl LocalGitSource {
     async fn derive_deleted_path(
         &self,
         ctx: &CodeIngestContext<'_>,
-        permit: &OwnerWritePermit,
         batch_id: SourceBatchId,
         pending: PendingDeletedPath,
         report: &mut IndexReport,
     ) -> Result<(), IndexError> {
-        let pool = ctx.pool();
         let prior_indexes = ctx
             .present_chunk_indexes(self.owner, self.repo_id, &pending.path)
             .await?;
@@ -1028,13 +1015,11 @@ impl LocalGitSource {
             append_code_slice(
                 ctx.engine,
                 ctx.authz,
-                pool,
-                permit,
+                self.owner,
                 batch_id,
                 &tomb,
                 pending.file_revision,
                 pending.source_commit,
-                None,
             )
             .await?;
             report.chunks_tombstoned += 1;
