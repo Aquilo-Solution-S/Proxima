@@ -153,7 +153,7 @@ impl<'a, P: FactPayload> TypedFactIngest<'a, P> {
 ///
 /// The transaction is not opened by [`Engine::unit_of_work`]. Authorization,
 /// natural-key lookup, and embedding run against the pool (or the embed
-/// client) first; [`WriteSessionFactory::begin`] happens on the first
+/// client) first; [`crate::storage_ports::WriteSessionFactory::begin`] happens on the first
 /// write, advisory lock, or forget. A multi-derived batch
 /// ([`Self::author_derived_all`]) embeds every text before that begin, so
 /// a file of N chunks does not hold a pool slot across N provider RTTs.
@@ -383,7 +383,7 @@ impl UnitOfWork<'_> {
     /// Authorize and persist many derived memories in one transaction.
     ///
     /// Every text is embedded (or deferred for a refused input) **before**
-    /// [`WriteSessionFactory::begin`]. Use this for a self-referential
+    /// [`crate::storage_ports::WriteSessionFactory::begin`]. Use this for a self-referential
     /// group (code slices of one file) so the pool slot is held only for
     /// the writes.
     ///
