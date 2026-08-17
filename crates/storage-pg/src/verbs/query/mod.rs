@@ -21,7 +21,8 @@ pub use code_chunk_vectors::{
 };
 pub use code_series_heads::{
     ChunkSeriesHead, FileRevisionHeadRow, owned_chunk_series_heads, owned_file_revision_heads,
-    owned_present_chunk_indexes, readable_chunk_head_ts_for_file, readable_file_revision_head_ts,
+    owned_present_chunk_indexes, owned_present_file_revision_heads_except,
+    readable_chunk_head_ts_for_file, readable_file_revision_head_ts,
 };
 pub use edges::MAX_SNAPSHOT_EDGES;
 pub(crate) use edges::{load_inbound_pin_nodes, load_pin_nodes};

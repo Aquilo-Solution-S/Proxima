@@ -25,7 +25,10 @@ pub struct FileRevisionHeadRow {
     pub state: String,
 }
 
-/// Current file-revision heads of `repo_id` owned by `owner`.
+/// Current file-revision heads of `repo_id` owned by `owner` for `file_paths`.
+///
+/// The path set is required. An empty slice returns no rows and does
+/// not query — there is no unfiltered form.
 ///
 /// # Errors
 ///
@@ -35,6 +38,43 @@ pub async fn owned_file_revision_heads(
     owner: Owner,
     schema_id: &SchemaId,
     repo_id: Uuid,
+    file_paths: &[String],
+) -> Result<Vec<FileRevisionHeadRow>, StorageError> {
+    if file_paths.is_empty() {
+        return Ok(Vec::new());
+    }
+    sqlx::query_as(
+        "SELECT fr.t, fr.file_path, fr.content_sha256, fr.state::text AS state
+           FROM proxima_code.file_revision_v1 fr
+           JOIN proxima_core.memory m ON m.t = fr.t
+           JOIN proxima_core.memory_head h ON h.handle = m.handle AND h.t = m.t
+          WHERE h.owner_id = $1
+            AND fr.repo_id = $2
+            AND h.schema_id = $3
+            AND fr.file_path = ANY($4)
+          ORDER BY fr.file_path ASC",
+    )
+    .bind(owner.stored_owner_id())
+    .bind(repo_id)
+    .bind(schema_id.as_str())
+    .bind(file_paths)
+    .fetch_all(pool)
+    .await
+    .map_err(map_err)
+}
+
+/// Current `Present` file-revision heads of `repo_id` whose path is
+/// not in `keep_paths`. Empty `keep_paths` returns every Present head.
+///
+/// # Errors
+///
+/// Returns `StorageError::Internal` on query failure.
+pub async fn owned_present_file_revision_heads_except(
+    pool: &PgPool,
+    owner: Owner,
+    schema_id: &SchemaId,
+    repo_id: Uuid,
+    keep_paths: &[String],
 ) -> Result<Vec<FileRevisionHeadRow>, StorageError> {
     sqlx::query_as(
         "SELECT fr.t, fr.file_path, fr.content_sha256, fr.state::text AS state
@@ -44,11 +84,14 @@ pub async fn owned_file_revision_heads(
           WHERE h.owner_id = $1
             AND fr.repo_id = $2
             AND h.schema_id = $3
+            AND fr.state = 'Present'
+            AND NOT (fr.file_path = ANY($4))
           ORDER BY fr.file_path ASC",
     )
     .bind(owner.stored_owner_id())
     .bind(repo_id)
     .bind(schema_id.as_str())
+    .bind(keep_paths)
     .fetch_all(pool)
     .await
     .map_err(map_err)
@@ -254,6 +297,23 @@ mod tests {
         assert!(
             !src.contains(&schema),
             "code series heads must not predicate memory schema"
+        );
+    }
+
+    #[test]
+    fn file_revision_heads_require_a_path_set() {
+        let src = include_str!("code_series_heads.rs");
+        assert!(
+            src.contains("if file_paths.is_empty()"),
+            "empty path set must not query"
+        );
+        assert!(
+            src.contains("fr.file_path = ANY($4)"),
+            "heads must be path-filtered"
+        );
+        assert!(
+            src.contains("NOT (fr.file_path = ANY($4))"),
+            "tombstone candidates are Present ∉ keep_paths"
         );
     }
 }

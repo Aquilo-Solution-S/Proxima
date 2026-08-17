@@ -23,7 +23,7 @@ use proxima_code::{
 };
 use proxima_core::verbs::query::{QueryRequest, SupersessionStatus};
 use proxima_core::{
-    AbstractionPayload, AuthPath, AuthzContext, FactPayload, Owner, SchemaId, SchemaVersion,
+    AbstractionPayload, AuthPath, AuthzContext, Cursor, FactPayload, Owner, SchemaId, SchemaVersion,
 };
 use proxima_pg_testkit::drop_db;
 use sqlx::Row;
@@ -410,7 +410,9 @@ async fn head_snapshot_repeated_after_change_and_delete_is_idempotent() {
         let repo_id = Uuid::now_v7();
         let source = LocalGitSource::new(repo_id, repo.path().to_path_buf(), owner);
 
-        let initial = source.run_head_snapshot(&ingest_ctx).await?;
+        let initial = source
+            .run_head_snapshot(&ingest_ctx, &Cursor::empty())
+            .await?;
         assert!(
             initial.report.files_present_emitted >= 3,
             "initial snapshot should index present files"
@@ -424,11 +426,15 @@ async fn head_snapshot_repeated_after_change_and_delete_is_idempotent() {
         git(repo.path(), &["add", "src/lib.rs"]);
         git(repo.path(), &["commit", "-q", "-m", "snapshot lib v2"]);
 
-        let changed = source.run_head_snapshot(&ingest_ctx).await?;
+        let changed = source
+            .run_head_snapshot(&ingest_ctx, &initial.cursor)
+            .await?;
         assert_eq!(changed.report.files_present_emitted, 1);
         assert!(changed.report.chunks_emitted >= 1);
 
-        let unchanged = source.run_head_snapshot(&ingest_ctx).await?;
+        let unchanged = source
+            .run_head_snapshot(&ingest_ctx, &changed.cursor)
+            .await?;
         assert_eq!(unchanged.report.files_present_emitted, 0);
         assert_eq!(unchanged.report.files_tombstoned, 0);
         assert_eq!(unchanged.report.chunks_emitted, 0);
@@ -438,11 +444,15 @@ async fn head_snapshot_repeated_after_change_and_delete_is_idempotent() {
         git(repo.path(), &["add", "-A"]);
         git(repo.path(), &["commit", "-q", "-m", "snapshot delete main"]);
 
-        let deleted = source.run_head_snapshot(&ingest_ctx).await?;
+        let deleted = source
+            .run_head_snapshot(&ingest_ctx, &unchanged.cursor)
+            .await?;
         assert_eq!(deleted.report.files_tombstoned, 1);
         assert!(deleted.report.chunks_tombstoned >= 1);
 
-        let unchanged_after_delete = source.run_head_snapshot(&ingest_ctx).await?;
+        let unchanged_after_delete = source
+            .run_head_snapshot(&ingest_ctx, &deleted.cursor)
+            .await?;
         assert_eq!(unchanged_after_delete.report.files_present_emitted, 0);
         assert_eq!(unchanged_after_delete.report.files_tombstoned, 0);
         assert_eq!(unchanged_after_delete.report.chunks_emitted, 0);
@@ -485,7 +495,9 @@ async fn head_snapshot_delete_tombstones_all_indexes_beyond_one_authz_batch() {
 
         let repo_id = Uuid::now_v7();
         let source = LocalGitSource::new(repo_id, dir.path().to_path_buf(), owner);
-        let initial = source.run_head_snapshot(&ingest_ctx).await?;
+        let initial = source
+            .run_head_snapshot(&ingest_ctx, &Cursor::empty())
+            .await?;
         assert_eq!(initial.report.files_present_emitted, 1);
         let real_chunks = initial.report.chunks_emitted;
         assert!(real_chunks >= 1, "fixture file must produce chunks");
@@ -547,7 +559,9 @@ async fn head_snapshot_delete_tombstones_all_indexes_beyond_one_authz_batch() {
         git(dir.path(), &["add", "-A"]);
         git(dir.path(), &["commit", "-q", "-m", "delete hot.rs"]);
 
-        let deleted = source.run_head_snapshot(&ingest_ctx).await?;
+        let deleted = source
+            .run_head_snapshot(&ingest_ctx, &initial.cursor)
+            .await?;
         assert_eq!(deleted.report.files_tombstoned, 1);
         assert_eq!(
             deleted.report.chunks_tombstoned,

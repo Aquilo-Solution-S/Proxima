@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use proxima_core::mcp::cursor as wire_cursor;
-use proxima_core::{Tool, ToolCtx, ToolError};
+use proxima_core::{Cursor, Tool, ToolCtx, ToolError};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -294,8 +294,9 @@ impl Tool for CodeIngestHeadSnapshotTool {
             );
             let engine = super::engine(&ctx)?;
             let ingest_ctx = crate::CodeIngestContext::new(&engine, ctx.authz(), pool.as_ref());
+            let prior = Cursor::from_bytes(repo.last_cursor.clone().unwrap_or_default());
             let outcome = source
-                .run_head_snapshot(&ingest_ctx)
+                .run_head_snapshot(&ingest_ctx, &prior)
                 .await
                 .map_err(|err| map_index_error(&err))?;
             crate::repos::update_cursor(

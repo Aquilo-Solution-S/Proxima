@@ -46,7 +46,8 @@ pub mod query {
     pub use crate::verbs::query::{
         ChunkSeriesHead, CodeChunkVectorCandidate, CodeChunkVectorFilters, FileRevisionHeadRow,
         MAX_SNAPSHOT_EDGES, nearest_code_chunk_candidates, owned_chunk_series_heads,
-        owned_file_revision_heads, owned_present_chunk_indexes, readable_chunk_head_ts_for_file,
+        owned_file_revision_heads, owned_present_chunk_indexes,
+        owned_present_file_revision_heads_except, readable_chunk_head_ts_for_file,
         readable_file_revision_head_ts,
     };
 }

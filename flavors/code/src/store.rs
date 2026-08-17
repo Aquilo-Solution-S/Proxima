@@ -5,7 +5,8 @@ use proxima_core::{
 use proxima_storage_pg::query::{
     ChunkSeriesHead, CodeChunkVectorCandidate, CodeChunkVectorFilters, FileRevisionHeadRow,
     nearest_code_chunk_candidates, owned_chunk_series_heads, owned_file_revision_heads,
-    readable_chunk_head_ts_for_file, readable_file_revision_head_ts,
+    owned_present_file_revision_heads_except, readable_chunk_head_ts_for_file,
+    readable_file_revision_head_ts,
 };
 use sqlx::PgPool;
 
@@ -117,18 +118,39 @@ impl CodeFlavorStore {
         .await
     }
 
-    /// Owner-only current file-revision heads of `repo_id`. Head is
-    /// `memory_head`; ingest compares these shas against git.
+    /// Owner-only current file-revision heads of `repo_id` for `file_paths`.
+    /// Head is `memory_head`; ingest compares these shas against git.
+    /// Empty `file_paths` returns no rows.
     pub(crate) async fn owned_file_revision_heads(
         &self,
         owner: Owner,
         repo_id: uuid::Uuid,
+        file_paths: &[String],
     ) -> Result<Vec<FileRevisionHeadRow>, ToolError> {
         owned_file_revision_heads(
             &self.pool,
             owner,
             &crate::payloads::FileRevisionV1::schema_id(),
             repo_id,
+            file_paths,
+        )
+        .await
+        .map_err(ToolError::Storage)
+    }
+
+    /// Owner-only `Present` heads whose path is not in `keep_paths`.
+    pub(crate) async fn owned_present_file_revision_heads_except(
+        &self,
+        owner: Owner,
+        repo_id: uuid::Uuid,
+        keep_paths: &[String],
+    ) -> Result<Vec<FileRevisionHeadRow>, ToolError> {
+        owned_present_file_revision_heads_except(
+            &self.pool,
+            owner,
+            &crate::payloads::FileRevisionV1::schema_id(),
+            repo_id,
+            keep_paths,
         )
         .await
         .map_err(ToolError::Storage)

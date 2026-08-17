@@ -141,8 +141,43 @@ pub(super) struct TreeEntry {
 /// `git cat-file blob` that followed — meant two process spawns for every
 /// file in the tree.
 pub(super) fn ls_tree(repo: &Path, rev: &str) -> Result<Vec<TreeEntry>, IndexError> {
-    let listing = run_git(repo, &["ls-tree", "-r", "-l", "-z", rev])?;
-    let listing_str = String::from_utf8(listing).map_err(|_| IndexError::Utf8)?;
+    parse_ls_tree(&run_git(repo, &["ls-tree", "-r", "-l", "-z", rev])?)
+}
+
+/// `ls-tree` of `rev` restricted to `paths`. Empty `paths` returns no rows.
+pub(super) fn ls_tree_paths(
+    repo: &Path,
+    rev: &str,
+    paths: &[String],
+) -> Result<Vec<TreeEntry>, IndexError> {
+    if paths.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut args: Vec<String> = vec![
+        "ls-tree".into(),
+        "-r".into(),
+        "-l".into(),
+        "-z".into(),
+        rev.to_owned(),
+        "--".into(),
+    ];
+    args.extend(paths.iter().cloned());
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(&args)
+        .output()?;
+    if !out.status.success() {
+        return Err(IndexError::Git(format!(
+            "git ls-tree paths: {}",
+            String::from_utf8_lossy(&out.stderr)
+        )));
+    }
+    parse_ls_tree(&out.stdout)
+}
+
+fn parse_ls_tree(listing: &[u8]) -> Result<Vec<TreeEntry>, IndexError> {
+    let listing_str = String::from_utf8(listing.to_vec()).map_err(|_| IndexError::Utf8)?;
 
     let mut out = Vec::new();
     for entry in listing_str.split('\0') {
