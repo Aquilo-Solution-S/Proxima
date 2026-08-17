@@ -96,6 +96,26 @@ async fn flavor_migrations_apply_to_fresh_db() {
 
         assert_owner_ref_constraints(pg.pool_for_tests()).await?;
 
+        for table in [
+            "code_chunk_v1",
+            "file_revision_v1",
+            "commit_v1",
+            "commit_summary_v1",
+        ] {
+            let present: bool = sqlx::query_scalar(
+                "SELECT EXISTS (
+                     SELECT 1 FROM information_schema.columns
+                      WHERE table_schema = 'proxima_code'
+                        AND table_name = $1
+                        AND column_name = 'embed_text'
+                 )",
+            )
+            .bind(table)
+            .fetch_one(pg.pool_for_tests())
+            .await?;
+            assert!(present, "W6: {table}.embed_text must exist");
+        }
+
         // After the Owner = OwnerRef collapse, the full-collapse decision
         // removes the legacy owner org column from proxima_code too. Keystone gate for the
         // flavor DDL-drop migration — a missed column would silently keep org

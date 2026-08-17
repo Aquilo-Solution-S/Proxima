@@ -110,6 +110,7 @@ impl AbstractionPayload for CodeChunkV1 {
             ],
             tag_column: None,
             tsv_column: Some("search_tsv"),
+            embed_text_column: Some("embed_text"),
             language_column: Some("lexical_language"),
         })
     }
@@ -126,5 +127,16 @@ impl AbstractionPayload for CodeChunkV1 {
     /// exists, so they cannot be `memory.refs`.
     fn references(&self) -> Vec<PayloadReference> {
         Vec::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn chunk_projection_names_stored_embed_text() {
+        let projection = CodeChunkV1::search_projection().expect("chunk projection");
+        assert_eq!(projection.embed_text_column, Some("embed_text"));
     }
 }

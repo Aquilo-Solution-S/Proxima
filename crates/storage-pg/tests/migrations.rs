@@ -113,6 +113,10 @@ async fn migrations_apply_to_fresh_db() {
             "schema_id is on each memory row (same value as the handle)"
         );
         assert!(
+            column_exists(&pg, "agent_note_v1", "embed_text").await,
+            "W6: drain reads stored sidecar embed_text"
+        );
+        assert!(
             !column_exists(&pg, "memory", "schema_version").await,
             "no schema_version"
         );

@@ -529,6 +529,9 @@ pub struct SearchProjection {
     /// Declaring it lets search read the stored vector instead of
     /// tokenising the projected text on every candidate row.
     pub tsv_column: Option<&'static str>,
+    /// Column holding the row's pre-computed embed string. Drain reads
+    /// this instead of re-concatenating projection columns.
+    pub embed_text_column: Option<&'static str>,
     /// Column holding the row's lexical language (`regconfig`), for
     /// sidecar tables whose migration adds one. Search ranks each
     /// candidate with its own language's tsquery; declared, it reads the

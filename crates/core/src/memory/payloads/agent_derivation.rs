@@ -75,6 +75,7 @@ fn agent_derivation_search_projection() -> SearchProjection {
         ],
         tag_column: Some("tags".to_string()),
         tsv_column: Some("search_tsv"),
+        embed_text_column: Some("embed_text"),
         language_column: Some("lexical_language"),
     }
 }

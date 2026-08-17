@@ -1,5 +1,5 @@
-use proxima_core::verbs::schema::{MemorySearchProjection, MemorySearchProjectionField};
-use proxima_core::{EntityKind, MemoryId, Owner, SearchProjectionColumnKind, StorageError};
+use proxima_core::verbs::schema::MemorySearchProjection;
+use proxima_core::{EntityKind, MemoryId, Owner, StorageError};
 use sqlx::{Executor, PgPool, Postgres, Transaction};
 
 use crate::error::map_err;
@@ -134,15 +134,17 @@ async fn fetch_projection_text<'e, E>(
 where
     E: Executor<'e, Database = Postgres>,
 {
-    let Some(text_expr) = projection_embed_text(&projection.fields)? else {
+    let Some(column) = projection.embed_text_column.as_deref() else {
         return Ok(None);
     };
     let table = PgIdent::table(&projection.sidecar_table)?;
+    let column = PgIdent::column(column)?;
     let sql = format!(
-        "SELECT {text_expr}
+        "SELECT c.{column}
            FROM {table} c
           WHERE c.t = $1",
         table = table.as_str(),
+        column = column.as_str(),
     );
     // SQL-POLICY: PgIdent
     sqlx::query_scalar(sqlx::AssertSqlSafe(sql))
@@ -150,35 +152,6 @@ where
         .fetch_optional(exec)
         .await
         .map_err(map_err)
-}
-
-fn projection_embed_text(
-    fields: &[MemorySearchProjectionField],
-) -> Result<Option<String>, StorageError> {
-    let mut expressions = Vec::new();
-    for field in fields {
-        if matches!(field.kind, SearchProjectionColumnKind::MemoryText) {
-            continue;
-        }
-        let column = PgIdent::column(&field.column)?;
-        let expression = match field.kind {
-            SearchProjectionColumnKind::Text => {
-                format!("NULLIF(c.{}::text, '')", column.as_str())
-            }
-            SearchProjectionColumnKind::TextArray => {
-                format!("NULLIF(array_to_string(c.{}, ' '), '')", column.as_str())
-            }
-            SearchProjectionColumnKind::MemoryText => unreachable!("skipped above"),
-        };
-        expressions.push(expression);
-    }
-    if expressions.is_empty() {
-        return Ok(None);
-    }
-    Ok(Some(format!(
-        "NULLIF(concat_ws(' ', {}), '')",
-        expressions.join(", ")
-    )))
 }
 
 #[cfg(test)]
@@ -193,6 +166,20 @@ mod tests {
         assert!(
             !src.contains(&join),
             "W5: embed text reads schema_id from memory"
+        );
+    }
+
+    #[test]
+    fn drain_reads_stored_embed_text() {
+        let src = include_str!("text.rs");
+        let concat = format!("{}{}", "concat_ws", "(' ',");
+        assert!(
+            !src.contains(&concat),
+            "W6: drain does not re-concat projection columns"
+        );
+        assert!(
+            src.contains("embed_text_column"),
+            "W6: drain selects the stored sidecar column"
         );
     }
 }

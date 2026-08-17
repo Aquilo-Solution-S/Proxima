@@ -381,6 +381,15 @@ CREATE TABLE proxima_core.agent_note_v1 (
                 ]
             )
         )
+    ) STORED,
+    embed_text text GENERATED ALWAYS AS (
+        proxima_core.lexical_join(
+            VARIADIC ARRAY[
+                NULLIF(title, ''),
+                NULLIF(body, ''),
+                proxima_core.lexical_text_array(tags)
+            ]
+        )
     ) STORED
 );
 
@@ -395,7 +404,8 @@ CREATE TABLE proxima_core.utterance_v1 (
     lexical_language regconfig NOT NULL DEFAULT proxima_core.lexical_config(),
     search_tsv tsvector GENERATED ALWAYS AS (
         proxima_core.lexical_tsv(lexical_language, NULLIF(text, ''))
-    ) STORED
+    ) STORED,
+    embed_text text GENERATED ALWAYS AS (NULLIF(text, '')) STORED
 );
 
 CREATE INDEX utterance_v1_search_tsv_gin
@@ -423,6 +433,15 @@ CREATE TABLE proxima_core.agent_derivation_v1 (
                 ]
             )
         )
+    ) STORED,
+    embed_text text GENERATED ALWAYS AS (
+        proxima_core.lexical_join(
+            VARIADIC ARRAY[
+                NULLIF(title, ''),
+                NULLIF(body, ''),
+                proxima_core.lexical_text_array(tags)
+            ]
+        )
     ) STORED
 );
 
@@ -441,7 +460,8 @@ CREATE TABLE proxima_core.interpretation_v1 (
     lexical_language regconfig NOT NULL DEFAULT proxima_core.lexical_config(),
     search_tsv tsvector GENERATED ALWAYS AS (
         proxima_core.lexical_tsv(lexical_language, NULLIF(claim, ''))
-    ) STORED
+    ) STORED,
+    embed_text text GENERATED ALWAYS AS (NULLIF(claim, '')) STORED
 );
 
 CREATE INDEX interpretation_v1_search_tsv_gin

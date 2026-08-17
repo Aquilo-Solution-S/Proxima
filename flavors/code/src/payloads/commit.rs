@@ -55,6 +55,7 @@ impl FactPayload for CommitV1 {
             ],
             tag_column: None,
             tsv_column: Some("search_tsv"),
+            embed_text_column: Some("embed_text"),
             language_column: None,
         })
     }

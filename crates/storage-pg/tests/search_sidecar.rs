@@ -31,6 +31,7 @@ fn note_projection() -> MemorySearchProjection {
         ],
         tag_column: Some("tags".into()),
         tsv_column: Some("search_tsv".into()),
+        embed_text_column: Some("embed_text".into()),
         language_column: Some("lexical_language".into()),
     }
 }
