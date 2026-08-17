@@ -1,6 +1,9 @@
+use proxima_core::verbs::query::like_pattern;
 use proxima_core::{Tool, ToolCtx, ToolError};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use sqlx::PgPool;
+use uuid::Uuid;
 
 use crate::payloads::{CommitSummaryV1, CommitV1};
 
@@ -97,13 +100,8 @@ impl Tool for CodeSearchCommitsTool {
             let engine = super::engine(&ctx)?;
             let candidate_limit = i64::from(limit.saturating_mul(4).max(limit).min(200));
 
-            let commit_rows: Vec<ScoredMemoryRow> = sqlx::query_as(COMMIT_SEARCH_SQL)
-                .bind(query)
-                .bind(repo_id)
-                .bind(candidate_limit)
-                .fetch_all(pool.pool())
-                .await
-                .map_err(map_storage)?;
+            let commit_rows =
+                search_commit_rows(pool.pool(), query, repo_id, candidate_limit).await?;
             let commit_ids = commit_rows
                 .iter()
                 .map(|row| row.memory_id)
@@ -144,14 +142,14 @@ impl Tool for CodeSearchCommitsTool {
                 })
                 .collect();
 
-            let summary_rows: Vec<ScoredMemoryRow> = sqlx::query_as(SUMMARY_SEARCH_SQL)
-                .bind(query)
-                .bind(repo_id)
-                .bind(args.change_kind.as_deref())
-                .bind(candidate_limit)
-                .fetch_all(pool.pool())
-                .await
-                .map_err(map_storage)?;
+            let summary_rows = search_summary_rows(
+                pool.pool(),
+                query,
+                repo_id,
+                args.change_kind.as_deref(),
+                candidate_limit,
+            )
+            .await?;
             let summary_ids = summary_rows
                 .iter()
                 .map(|row| row.memory_id)
@@ -203,27 +201,149 @@ impl Tool for CodeSearchCommitsTool {
 }
 
 const COMMIT_SEARCH_SQL: &str = "
-WITH q AS (SELECT websearch_to_tsquery('pg_catalog.simple'::regconfig, $1) AS tsq)
+WITH q AS (
+     SELECT websearch_to_tsquery('english'::regconfig,
+                proxima_core.lexical_scrub($1)) AS tsq,
+            NULLIF(
+                replace(
+                    plainto_tsquery('english'::regconfig,
+                        proxima_core.lexical_scrub($1))::text,
+                    ' & ', ' | '),
+                '')::tsquery AS any_tsq
+)
 SELECT c.t AS memory_id,
-       ts_rank_cd(c.search_tsv, q.tsq) AS score
+       GREATEST(
+           CASE WHEN c.search_tsv @@ q.tsq
+                THEN ts_rank_cd(c.search_tsv, q.tsq)
+                ELSE 0.0 END,
+           CASE WHEN q.any_tsq IS NOT NULL AND c.search_tsv @@ q.any_tsq
+                THEN 0.25 + LEAST(ts_rank(c.search_tsv, q.any_tsq, 1|32) * 100.0, 1.0) * 0.2
+                ELSE 0.0 END
+       )::real AS score
 FROM q, proxima_code.commit_v1 c
 WHERE ($2::uuid IS NULL OR c.repo_id = $2)
-  AND c.search_tsv @@ q.tsq
+  AND (c.search_tsv @@ q.tsq
+       OR (q.any_tsq IS NOT NULL AND c.search_tsv @@ q.any_tsq))
 ORDER BY score DESC, c.committer_time DESC
 LIMIT $3
 ";
 
 const SUMMARY_SEARCH_SQL: &str = "
-WITH q AS (SELECT websearch_to_tsquery('pg_catalog.simple'::regconfig, $1) AS tsq)
+WITH q AS (
+     SELECT websearch_to_tsquery('english'::regconfig,
+                proxima_core.lexical_scrub($1)) AS tsq,
+            NULLIF(
+                replace(
+                    plainto_tsquery('english'::regconfig,
+                        proxima_core.lexical_scrub($1))::text,
+                    ' & ', ' | '),
+                '')::tsquery AS any_tsq
+)
 SELECT s.t AS memory_id,
-       ts_rank_cd(s.search_tsv, q.tsq) AS score
+       GREATEST(
+           CASE WHEN s.search_tsv @@ q.tsq
+                THEN ts_rank_cd(s.search_tsv, q.tsq)
+                ELSE 0.0 END,
+           CASE WHEN q.any_tsq IS NOT NULL AND s.search_tsv @@ q.any_tsq
+                THEN 0.25 + LEAST(ts_rank(s.search_tsv, q.any_tsq, 1|32) * 100.0, 1.0) * 0.2
+                ELSE 0.0 END
+       )::real AS score
 FROM q, proxima_code.commit_summary_v1 s
 WHERE ($2::uuid IS NULL OR s.repo_id = $2)
   AND ($3::text IS NULL OR s.change_kind = $3)
-  AND s.search_tsv @@ q.tsq
+  AND (s.search_tsv @@ q.tsq
+       OR (q.any_tsq IS NOT NULL AND s.search_tsv @@ q.any_tsq))
 ORDER BY score DESC, s.t DESC
 LIMIT $4
 ";
+
+const COMMIT_LIKE_SQL: &str = "
+SELECT c.t AS memory_id,
+       0.25::real AS score
+FROM proxima_code.commit_v1 c
+WHERE ($2::uuid IS NULL OR c.repo_id = $2)
+  AND (
+        lower(c.sha) LIKE $1 ESCAPE '\\'
+     OR lower(c.message) LIKE $1 ESCAPE '\\'
+     OR lower(c.author_name) LIKE $1 ESCAPE '\\'
+     OR lower(c.author_email) LIKE $1 ESCAPE '\\'
+  )
+ORDER BY score DESC, c.committer_time DESC
+LIMIT $3
+";
+
+const SUMMARY_LIKE_SQL: &str = "
+SELECT s.t AS memory_id,
+       0.25::real AS score
+FROM proxima_code.commit_summary_v1 s
+WHERE ($2::uuid IS NULL OR s.repo_id = $2)
+  AND ($3::text IS NULL OR s.change_kind = $3)
+  AND (
+        lower(s.commit_sha) LIKE $1 ESCAPE '\\'
+     OR lower(s.summary) LIKE $1 ESCAPE '\\'
+     OR EXISTS (
+            SELECT 1 FROM unnest(s.key_files) AS f
+             WHERE lower(f) LIKE $1 ESCAPE '\\'
+        )
+  )
+ORDER BY score DESC, s.t DESC
+LIMIT $4
+";
+
+async fn search_commit_rows(
+    pool: &PgPool,
+    query: &str,
+    repo_id: Option<Uuid>,
+    limit: i64,
+) -> Result<Vec<ScoredMemoryRow>, ToolError> {
+    let gin: Vec<ScoredMemoryRow> = sqlx::query_as(COMMIT_SEARCH_SQL)
+        .bind(query)
+        .bind(repo_id)
+        .bind(limit)
+        .fetch_all(pool)
+        .await
+        .map_err(map_storage)?;
+    if gin.is_empty() {
+        sqlx::query_as(COMMIT_LIKE_SQL)
+            .bind(like_pattern(query))
+            .bind(repo_id)
+            .bind(limit)
+            .fetch_all(pool)
+            .await
+            .map_err(map_storage)
+    } else {
+        Ok(gin)
+    }
+}
+
+async fn search_summary_rows(
+    pool: &PgPool,
+    query: &str,
+    repo_id: Option<Uuid>,
+    change_kind: Option<&str>,
+    limit: i64,
+) -> Result<Vec<ScoredMemoryRow>, ToolError> {
+    let gin: Vec<ScoredMemoryRow> = sqlx::query_as(SUMMARY_SEARCH_SQL)
+        .bind(query)
+        .bind(repo_id)
+        .bind(change_kind)
+        .bind(limit)
+        .fetch_all(pool)
+        .await
+        .map_err(map_storage)?;
+    if gin.is_empty() {
+        sqlx::query_as(SUMMARY_LIKE_SQL)
+            .bind(like_pattern(query))
+            .bind(repo_id)
+            .bind(change_kind)
+            .bind(limit)
+            .fetch_all(pool)
+            .await
+            .map_err(map_storage)
+    } else {
+        Ok(gin)
+    }
+}
 
 #[derive(Debug, sqlx::FromRow)]
 struct ScoredMemoryRow {
@@ -246,5 +366,24 @@ mod tests {
             "summary search must @@ search_tsv, not recompute to_tsvector"
         );
         assert!(super::SUMMARY_SEARCH_SQL.contains("s.search_tsv @@"));
+    }
+
+    #[test]
+    fn commit_search_matches_english_tsv_and_like_on_gin_miss() {
+        let src = include_str!("search_commits.rs");
+        let prod = src.split("mod tests").next().expect("production");
+        let simple = format!("{}{}", "pg_catalog.", "simple");
+        assert!(
+            !prod.contains(&simple),
+            "query config must match stored english tsv"
+        );
+        assert!(
+            prod.contains("'english'") && prod.contains("lexical_scrub"),
+            "query side must be english + scrub"
+        );
+        assert!(
+            super::COMMIT_LIKE_SQL.contains("LIKE") && super::SUMMARY_LIKE_SQL.contains("LIKE"),
+            "GIN miss must have a LIKE arm"
+        );
     }
 }
