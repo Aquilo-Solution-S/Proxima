@@ -39,6 +39,40 @@ pub struct GoalWriteOutcome {
     pub replay: bool,
 }
 
+/// Existing Goal row for `(owner, request_id)`, if any.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct GoalRequestRow {
+    pub handle: Uuid,
+    pub t: Uuid,
+    pub write_act_t: Option<Uuid>,
+}
+
+/// Replay lookup: same `(owner, request_id)` is one Goal version.
+///
+/// # Errors
+///
+/// `Internal` on query failure.
+pub(crate) async fn load_goal_by_request_id(
+    tx: &mut Transaction<'_, Postgres>,
+    owner: &Owner,
+    request_id: &str,
+) -> Result<Option<GoalRequestRow>, StorageError> {
+    let row = sqlx::query_as::<_, (Uuid, Uuid, Option<Uuid>)>(
+        "SELECT handle, t, write_act_t FROM proxima_core.goal
+          WHERE owner_id = $1 AND request_id = $2",
+    )
+    .bind(owner.stored_owner_id())
+    .bind(request_id)
+    .fetch_optional(tx.as_mut())
+    .await
+    .map_err(map_err)?;
+    Ok(row.map(|(handle, t, write_act_t)| GoalRequestRow {
+        handle,
+        t,
+        write_act_t,
+    }))
+}
+
 pub async fn ingest_write_act(
     tx: &mut Transaction<'_, Postgres>,
     owner: &Owner,
@@ -81,20 +115,11 @@ pub async fn write_goal(
     .await
     .map_err(map_err)?;
 
-    if let Some((handle, t, write_act_t)) = sqlx::query_as::<_, (Uuid, Uuid, Option<Uuid>)>(
-        "SELECT handle, t, write_act_t FROM proxima_core.goal
-          WHERE owner_id = $1 AND request_id = $2",
-    )
-    .bind(owner_id)
-    .bind(&draft.request_id)
-    .fetch_optional(tx.as_mut())
-    .await
-    .map_err(map_err)?
-    {
+    if let Some(existing) = load_goal_by_request_id(tx, owner, &draft.request_id).await? {
         return Ok(GoalWriteOutcome {
-            handle,
-            t,
-            write_act_t,
+            handle: existing.handle,
+            t: existing.t,
+            write_act_t: existing.write_act_t,
             replay: true,
         });
     }

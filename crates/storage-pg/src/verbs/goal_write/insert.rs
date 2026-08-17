@@ -3,7 +3,9 @@ use super::{
     GoalAtomicContext, GoalDraft, GoalId, GoalState, InsertedGoal, PayloadKind, PgSidecarKey,
     PgSidecarRegistryFrozen, Postgres, StorageError, Transaction, WakeWrite,
 };
-use crate::verbs::goal_timeseries::{GoalWriteCommand, ingest_write_act, write_goal};
+use crate::verbs::goal_timeseries::{
+    GoalWriteCommand, ingest_write_act, load_goal_by_request_id, write_goal,
+};
 
 pub(super) async fn insert_or_replay_goal(
     tx: &mut Transaction<'_, Postgres>,
@@ -30,6 +32,14 @@ pub(super) async fn insert_or_replay_goal(
     } else {
         None
     };
+
+    if let Some(existing) = load_goal_by_request_id(tx, &owner, &draft.request_id).await? {
+        return Ok(InsertedGoal {
+            goal_id: GoalId::new(existing.t),
+            change_event_seq: existing.t,
+            idempotent_replay: true,
+        });
+    }
 
     let wake_id = write_goal_wake_config(tx, context, &owner, wake_write).await?;
     let terminal = matches!(draft.state, GoalState::Achieved | GoalState::Abandoned);

@@ -27,14 +27,17 @@ pub(super) async fn write_goal_wake_config(
             Ok(Some(insert_wake_config(tx, owner, &draft).await?))
         }
         WakeWrite::Explicit(None) => Ok(None),
-        WakeWrite::CarryFrom(source_goal_id) => sqlx::query_scalar(
-            "SELECT wake_id FROM proxima_core.goal WHERE t = $1 AND owner_id = $2",
-        )
-        .bind(source_goal_id.into_inner())
-        .bind(owner.stored_owner_id())
-        .fetch_optional(&mut **tx)
-        .await
-        .map_err(map_err),
+        WakeWrite::CarryFrom(source_goal_id) => {
+            let wake_id: Option<Option<uuid::Uuid>> = sqlx::query_scalar(
+                "SELECT wake_id FROM proxima_core.goal WHERE t = $1 AND owner_id = $2",
+            )
+            .bind(source_goal_id.into_inner())
+            .bind(owner.stored_owner_id())
+            .fetch_optional(&mut **tx)
+            .await
+            .map_err(map_err)?;
+            Ok(wake_id.flatten())
+        }
     }
 }
 

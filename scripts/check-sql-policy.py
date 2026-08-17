@@ -397,7 +397,7 @@ def run_fixture(path: Path) -> int:
 # thing standing between the gate and its old position above the candidate
 # CTE — both spellings return identical rows, so nothing else in the suite
 # would notice the index becoming unreachable again.
-EXPECTED_DYNAMIC_SQL_SITES = 39
+EXPECTED_DYNAMIC_SQL_SITES = 40
 
 
 def run_self_test() -> int:

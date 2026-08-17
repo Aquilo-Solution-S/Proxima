@@ -98,17 +98,15 @@ async fn append_derived_timeseries(
                 .await
                 .map_err(map_err)?;
         if let Some(t) = existing {
-            let stored_origins: Vec<uuid::Uuid> =
-                sqlx::query_scalar("SELECT unnest(origins) FROM proxima_core.memory WHERE t = $1")
-                    .bind(t)
-                    .fetch_all(&mut **tx)
-                    .await
-                    .map_err(map_err)?;
-            let incoming: Vec<uuid::Uuid> = origins
-                .iter()
-                .filter_map(|ep| ep.memory_id().map(MemoryId::into_inner))
-                .collect();
-            if stored_origins == incoming {
+            let stored_origins = load_pin_ids(tx, t, PinColumn::Origins).await?;
+            let incoming_origins = pin_memory_ids(origins);
+            if stored_origins == incoming_origins {
+                let stored_refs = load_pin_ids(tx, t, PinColumn::Refs).await?;
+                if stored_refs != pin_memory_ids(references) {
+                    return Err(StorageError::Conflict(
+                        "derived replay changed declared refs".into(),
+                    ));
+                }
                 return Ok(DerivedOutcome {
                     memory_id: MemoryId::new(t),
                     idempotent_replay: true,
@@ -239,7 +237,7 @@ pub async fn append_derived_with_edges_in_tx(
     validate_derived_origins_in_tx(tx, draft, origins).await?;
     validate_derived_reference_kinds_in_tx(tx, references).await?;
     let outcome = append_derived_in_tx(tx, permit, draft, origins, references, sidecar).await?;
-    assert_derived_index_rows(tx, draft, &outcome, origins, references);
+    assert_derived_index_rows(tx, draft, &outcome, origins, references).await?;
     Ok(outcome)
 }
 
@@ -305,29 +303,71 @@ where
         // After every node exists: sibling refs that were unresolvable
         // at the origin-proof step can now be kind-checked.
         validate_derived_reference_kinds_in_tx(tx, entry.references).await?;
-        assert_derived_index_rows(tx, entry.draft, outcome, entry.origins, entry.references);
+        assert_derived_index_rows(tx, entry.draft, outcome, entry.origins, entry.references)
+            .await?;
     }
     Ok(outcomes)
 }
 
-/// Write (or, on replay, re-verify) the index rows a derived write declares.
+/// Count declared pins; on replay, re-read stored `origins`/`refs` and
+/// refuse a different set.
 ///
-/// Shared by the flavor-SDK tier above and the engine port, so the two
-/// cannot drift apart on what a replay is allowed to change.
+/// Shared by the flavor-SDK tier and the engine port. The replay
+/// decision (same handle, same origins) lives in
+/// [`append_derived_timeseries`]; this re-checks so a caller that got
+/// `idempotent_replay` cannot report a pin set the row does not have.
 ///
 /// # Errors
 ///
-/// Returns `Conflict` when a replay declares a different set of rows than the
-/// write that minted the memory, and storage errors from Postgres.
-pub(crate) fn assert_derived_index_rows(
+/// `Conflict` when a replay's stored pins differ from the declaration.
+/// Storage errors from Postgres.
+pub(crate) async fn assert_derived_index_rows(
     tx: &mut Transaction<'_, Postgres>,
     draft: &DerivedDraft<'_>,
     outcome: &DerivedOutcome,
     origins: &[EdgeEndpoint],
     references: &[EdgeEndpoint],
-) -> usize {
-    let _ = (tx, draft, outcome);
-    origins.len().saturating_add(references.len())
+) -> Result<usize, StorageError> {
+    let _ = draft;
+    if outcome.idempotent_replay {
+        let t = outcome.memory_id.into_inner();
+        let stored_origins = load_pin_ids(tx, t, PinColumn::Origins).await?;
+        let stored_refs = load_pin_ids(tx, t, PinColumn::Refs).await?;
+        if stored_origins != pin_memory_ids(origins) || stored_refs != pin_memory_ids(references) {
+            return Err(StorageError::Conflict(
+                "derived replay changed declared index rows".into(),
+            ));
+        }
+    }
+    Ok(origins.len().saturating_add(references.len()))
+}
+
+enum PinColumn {
+    Origins,
+    Refs,
+}
+
+fn pin_memory_ids(pins: &[EdgeEndpoint]) -> Vec<uuid::Uuid> {
+    pins.iter()
+        .filter_map(|ep| ep.memory_id().map(MemoryId::into_inner))
+        .collect()
+}
+
+async fn load_pin_ids(
+    tx: &mut Transaction<'_, Postgres>,
+    t: uuid::Uuid,
+    column: PinColumn,
+) -> Result<Vec<uuid::Uuid>, StorageError> {
+    let sql = match column {
+        PinColumn::Origins => "SELECT unnest(origins) FROM proxima_core.memory WHERE t = $1",
+        PinColumn::Refs => "SELECT unnest(refs) FROM proxima_core.memory WHERE t = $1",
+    };
+    // SQL-POLICY: fixed-fragment
+    sqlx::query_scalar(sql)
+        .bind(t)
+        .fetch_all(&mut **tx)
+        .await
+        .map_err(map_err)
 }
 
 fn validate_permit_owner(permit: &OwnerWritePermit, owner: &Owner) -> Result<(), StorageError> {
