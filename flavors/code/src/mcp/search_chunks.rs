@@ -799,8 +799,20 @@ async fn scan_chunk_sidecar(
     query: &str,
     scan: &ChunkSidecarScan<'_>,
 ) -> Result<Vec<ChunkCandidateRow>, ToolError> {
-    sqlx::query_as(
-        "WITH q AS (
+    sqlx::query_as(CHUNK_GIN_SQL)
+        .bind(query)
+        .bind(scan.repo_id)
+        .bind(scan.language)
+        .bind(scan.exact_pattern)
+        .bind(scan.chunk_type)
+        .bind(scan.candidate_limit)
+        .bind(scan.distinctive)
+        .fetch_all(pool)
+        .await
+        .map_err(map_storage)
+}
+
+const CHUNK_GIN_SQL: &str = "WITH q AS (
              SELECT websearch_to_tsquery('english'::regconfig,
                         proxima_core.lexical_scrub($1)) AS tsq,
                     NULLIF(
@@ -855,18 +867,13 @@ async fn scan_chunk_sidecar(
                 OR (q.rare_any_tsq IS NOT NULL AND c.search_tsv @@ q.rare_any_tsq)
             )
           ORDER BY score DESC, c.t DESC
-          LIMIT $6",
-    )
-    .bind(query)
-    .bind(scan.repo_id)
-    .bind(scan.language)
-    .bind(scan.exact_pattern)
-    .bind(scan.chunk_type)
-    .bind(scan.candidate_limit)
-    .bind(scan.distinctive)
-    .fetch_all(pool)
-    .await
-    .map_err(map_storage)
+          LIMIT $6";
+
+#[cfg(any(test, debug_assertions))]
+#[doc(hidden)]
+#[must_use]
+pub fn chunk_gin_sql_for_tests() -> &'static str {
+    CHUNK_GIN_SQL
 }
 
 /// Substring fallback: only when GIN returned nothing. Same filters, no `@@`.

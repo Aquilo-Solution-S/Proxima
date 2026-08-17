@@ -43,6 +43,8 @@ mod pgvector;
 mod ports;
 pub mod sidecars;
 pub mod query {
+    #[cfg(any(test, feature = "test-fixtures", debug_assertions))]
+    pub use crate::verbs::query::file_revision_heads_sql_for_tests;
     pub use crate::verbs::query::{
         ActiveGoalTargetRow, ChunkSeriesHead, CodeChunkVectorCandidate, CodeChunkVectorFilters,
         FileRevisionHeadRow, MAX_SNAPSHOT_EDGES, active_goals_for_memory_targets,

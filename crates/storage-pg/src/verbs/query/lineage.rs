@@ -54,6 +54,20 @@ const DESCENDANT_FRONTIER_SQL: &str = "SELECT DISTINCT child.t
  WHERE child.owner_id = ANY($2::uuid[])
    AND child.origins && $1::uuid[]";
 
+#[cfg(any(test, feature = "test-fixtures", debug_assertions))]
+#[doc(hidden)]
+#[must_use]
+pub fn ancestor_hop_sql_for_tests() -> &'static str {
+    ANCESTOR_HOP_SQL
+}
+
+#[cfg(any(test, feature = "test-fixtures", debug_assertions))]
+#[doc(hidden)]
+#[must_use]
+pub fn descendant_hop_sql_for_tests() -> &'static str {
+    DESCENDANT_HOP_SQL
+}
+
 pub(crate) async fn walk_memory_lineage(
     pool: &PgPool,
     read_owners: &[OwnerRef],

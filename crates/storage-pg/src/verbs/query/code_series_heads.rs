@@ -16,6 +16,24 @@ use uuid::Uuid;
 
 use crate::error::map_err;
 
+const FILE_REVISION_HEADS_SQL: &str =
+    "SELECT fr.t, fr.file_path, fr.content_sha256, fr.state::text AS state
+           FROM proxima_code.file_revision_v1 fr
+           JOIN proxima_core.memory m ON m.t = fr.t
+           JOIN proxima_core.memory_head h ON h.handle = m.handle AND h.t = m.t
+          WHERE h.owner_id = $1
+            AND fr.repo_id = $2
+            AND h.schema_id = $3
+            AND fr.file_path = ANY($4)
+          ORDER BY fr.file_path ASC";
+
+#[cfg(any(test, feature = "test-fixtures", debug_assertions))]
+#[doc(hidden)]
+#[must_use]
+pub fn file_revision_heads_sql_for_tests() -> &'static str {
+    FILE_REVISION_HEADS_SQL
+}
+
 /// One current file-revision head for an owned series.
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct FileRevisionHeadRow {
@@ -43,24 +61,14 @@ pub async fn owned_file_revision_heads(
     if file_paths.is_empty() {
         return Ok(Vec::new());
     }
-    sqlx::query_as(
-        "SELECT fr.t, fr.file_path, fr.content_sha256, fr.state::text AS state
-           FROM proxima_code.file_revision_v1 fr
-           JOIN proxima_core.memory m ON m.t = fr.t
-           JOIN proxima_core.memory_head h ON h.handle = m.handle AND h.t = m.t
-          WHERE h.owner_id = $1
-            AND fr.repo_id = $2
-            AND h.schema_id = $3
-            AND fr.file_path = ANY($4)
-          ORDER BY fr.file_path ASC",
-    )
-    .bind(owner.stored_owner_id())
-    .bind(repo_id)
-    .bind(schema_id.as_str())
-    .bind(file_paths)
-    .fetch_all(pool)
-    .await
-    .map_err(map_err)
+    sqlx::query_as(FILE_REVISION_HEADS_SQL)
+        .bind(owner.stored_owner_id())
+        .bind(repo_id)
+        .bind(schema_id.as_str())
+        .bind(file_paths)
+        .fetch_all(pool)
+        .await
+        .map_err(map_err)
 }
 
 /// Current `Present` file-revision heads of `repo_id` whose path is
