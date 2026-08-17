@@ -688,35 +688,50 @@ CREATE FUNCTION proxima_core.memory_pin_checks() RETURNS trigger
     AS $$
 DECLARE
     pin uuid;
-    pin_kind proxima_core.memory_kind;
     pin_handle uuid;
 BEGIN
-    FOREACH pin IN ARRAY NEW.origins || NEW.refs LOOP
-        SELECT kind, handle INTO pin_kind, pin_handle
-          FROM proxima_core.memory
-         WHERE t = pin;
-        IF NOT FOUND THEN
-            RAISE EXCEPTION 'pin % does not exist', pin USING ERRCODE = '23503';
-        END IF;
-        IF EXISTS (SELECT 1 FROM proxima_core.closed_handle WHERE handle = pin_handle) THEN
-            RAISE EXCEPTION 'closed_handle: no new pin to %', pin_handle USING ERRCODE = '23514';
-        END IF;
-    END LOOP;
+    IF NEW.origins = '{}' AND NEW.refs = '{}' THEN
+        RETURN NEW;
+    END IF;
 
-    IF NEW.kind = 'abstraction' THEN
-        FOREACH pin IN ARRAY NEW.origins LOOP
-            SELECT kind INTO pin_kind FROM proxima_core.memory WHERE t = pin;
-            IF pin_kind NOT IN ('fact', 'abstraction') THEN
-                RAISE EXCEPTION 'abstraction origins must be fact or abstraction t' USING ERRCODE = '23514';
-            END IF;
-        END LOOP;
+    SELECT p.pin INTO pin
+      FROM unnest(NEW.origins || NEW.refs) AS p(pin)
+      LEFT JOIN proxima_core.memory m ON m.t = p.pin
+     WHERE m.t IS NULL
+     LIMIT 1;
+    IF FOUND THEN
+        RAISE EXCEPTION 'pin % does not exist', pin USING ERRCODE = '23503';
+    END IF;
+
+    SELECT m.handle INTO pin_handle
+      FROM proxima_core.memory m
+      JOIN proxima_core.closed_handle c ON c.handle = m.handle
+     WHERE m.t = ANY (NEW.origins || NEW.refs)
+     LIMIT 1;
+    IF FOUND THEN
+        RAISE EXCEPTION 'closed_handle: no new pin to %', pin_handle USING ERRCODE = '23514';
+    END IF;
+
+    IF NEW.kind = 'abstraction' AND NEW.origins <> '{}' THEN
+        IF EXISTS (
+            SELECT 1
+              FROM proxima_core.memory m
+             WHERE m.t = ANY (NEW.origins)
+               AND m.kind NOT IN ('fact', 'abstraction')
+        ) THEN
+            RAISE EXCEPTION 'abstraction origins must be fact or abstraction t'
+                USING ERRCODE = '23514';
+        END IF;
     ELSIF NEW.kind = 'perspective' AND NEW.origins <> '{}' THEN
-        FOREACH pin IN ARRAY NEW.origins LOOP
-            SELECT kind INTO pin_kind FROM proxima_core.memory WHERE t = pin;
-            IF pin_kind IS DISTINCT FROM 'abstraction' THEN
-                RAISE EXCEPTION 'perspective origins must be abstraction t' USING ERRCODE = '23514';
-            END IF;
-        END LOOP;
+        IF EXISTS (
+            SELECT 1
+              FROM proxima_core.memory m
+             WHERE m.t = ANY (NEW.origins)
+               AND m.kind IS DISTINCT FROM 'abstraction'
+        ) THEN
+            RAISE EXCEPTION 'perspective origins must be abstraction t'
+                USING ERRCODE = '23514';
+        END IF;
     END IF;
     RETURN NEW;
 END;

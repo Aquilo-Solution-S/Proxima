@@ -138,6 +138,23 @@ async fn memory_timeseries_pins_blob_and_closed_handle() {
         tx.commit().await?;
         assert_eq!(row.refs, vec![file.memory_id.into_inner()]);
 
+        let other = ingest_fact_atomic(pool, &permit, &draft(None), None).await?;
+        let mut many = draft(None);
+        many.refs = vec![
+            file.memory_id.into_inner(),
+            chunk_out.memory_id.into_inner(),
+            other.memory_id.into_inner(),
+        ];
+        let many_out = ingest_fact_atomic(pool, &permit, &many, None)
+            .await
+            .expect("multi-pin refs");
+        let mut tx = pool.begin().await?;
+        let many_row = read_memory_by_t(&mut tx, many_out.memory_id.into_inner())
+            .await?
+            .expect("many");
+        tx.commit().await?;
+        assert_eq!(many_row.refs.len(), 3);
+
         let missing = Uuid::now_v7();
         let mut bad = draft(None);
         bad.refs = vec![missing];
@@ -200,6 +217,55 @@ async fn memory_timeseries_pins_blob_and_closed_handle() {
         let abs_out = ingest_fact_atomic(pool, &permit, &abs, None)
             .await
             .expect("A origins Fact t");
+
+        let mut abs_many = draft(None);
+        abs_many.kind = "abstraction".into();
+        abs_many.derived_from = vec![
+            proxima_core::EdgeEndpoint::memory(proxima_core::EntityKind::Fact, chunk_out.memory_id),
+            proxima_core::EdgeEndpoint::memory(proxima_core::EntityKind::Fact, other.memory_id),
+        ];
+        ingest_fact_atomic(pool, &permit, &abs_many, None)
+            .await
+            .expect("A origins many Facts");
+
+        let mut persp_from_fact = draft(None);
+        persp_from_fact.kind = "perspective".into();
+        persp_from_fact.derived_from = vec![proxima_core::EdgeEndpoint::memory(
+            proxima_core::EntityKind::Fact,
+            chunk_out.memory_id,
+        )];
+        let err = ingest_fact_atomic(pool, &permit, &persp_from_fact, None)
+            .await
+            .expect_err("P origins Fact");
+        assert!(
+            err.to_string().contains("perspective origins") || err.to_string().contains("23514"),
+            "got: {err}"
+        );
+
+        let mut persp_ok = draft(None);
+        persp_ok.kind = "perspective".into();
+        persp_ok.derived_from = vec![proxima_core::EdgeEndpoint::memory(
+            proxima_core::EntityKind::Abstraction,
+            abs_out.memory_id,
+        )];
+        let persp_out = ingest_fact_atomic(pool, &permit, &persp_ok, None)
+            .await
+            .expect("P origins A");
+
+        let mut abs_from_p = draft(None);
+        abs_from_p.kind = "abstraction".into();
+        abs_from_p.derived_from = vec![proxima_core::EdgeEndpoint::memory(
+            proxima_core::EntityKind::Perspective,
+            persp_out.memory_id,
+        )];
+        let err = ingest_fact_atomic(pool, &permit, &abs_from_p, None)
+            .await
+            .expect_err("A origins P");
+        assert!(
+            err.to_string().contains("abstraction origins") || err.to_string().contains("23514"),
+            "got: {err}"
+        );
+
         sqlx::query(
             "CREATE TABLE proxima_core.sidecar_sum (
                  t uuid PRIMARY KEY REFERENCES proxima_core.memory (t),
@@ -317,4 +383,24 @@ async fn owners_upsert_rejects_kind_conflict_on_every_write_path() {
     .await;
     let _ = drop_db(&db_name).await;
     result.expect("owners kind-conflict test failed");
+}
+
+#[test]
+fn memory_pin_checks_is_set_based() {
+    let src = include_str!("../migrations/0001_v008.sql");
+    let start = src
+        .find("CREATE FUNCTION proxima_core.memory_pin_checks")
+        .expect("memory_pin_checks");
+    let next = src[start + 1..]
+        .find("CREATE FUNCTION")
+        .expect("next function");
+    let body = &src[start..start + 1 + next];
+    assert!(
+        !body.contains("FOREACH"),
+        "pin checks must not walk pins in plpgsql"
+    );
+    assert!(
+        body.contains("unnest") && body.contains("= ANY"),
+        "pin checks must be set predicates"
+    );
 }
