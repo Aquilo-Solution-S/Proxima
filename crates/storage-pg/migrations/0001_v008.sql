@@ -258,6 +258,11 @@ CREATE TABLE proxima_core.group_memberships (
     PRIMARY KEY (group_id, member_user_id, relation)
 );
 
+-- Personal authorize_read is WHERE member_user_id = $1 ORDER BY group_id, relation.
+-- The PK leads with group_id and cannot serve that lookup.
+CREATE INDEX group_memberships_member_user_id_idx
+    ON proxima_core.group_memberships (member_user_id, group_id, relation);
+
 CREATE TABLE proxima_core.lexical_languages (
     config regconfig PRIMARY KEY
 );

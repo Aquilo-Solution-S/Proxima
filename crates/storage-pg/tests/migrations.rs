@@ -134,6 +134,7 @@ async fn migrations_apply_to_fresh_db() {
             "memory_refs_gin",
             "memory_head_owner_schema_idx",
             "memory_head_owner_kind_idx",
+            "group_memberships_member_user_id_idx",
             "embedding_jobs_pending_claim_idx",
             "owners_kind_idx",
             "announce_owner_seq_idx",
