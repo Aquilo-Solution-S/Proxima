@@ -17,7 +17,36 @@ use proxima_storage_pg::verbs::forget::{
     MemoryColdStore, cold_object_key, commit_forget, erase_memory, forget_memory, hydrate_memory,
     owner_hash_hex, snapshot_hot,
 };
+use proxima_storage_pg::verbs::memory_timeseries::ingest_fact_timeseries;
 use uuid::Uuid;
+
+const AGENT_NOTE: &str = "proxima_core.agent_note_v1";
+const UTTERANCE: &str = "proxima_core.utterance_v1";
+const GHOST_TABLE: &str = "proxima_core.w4_does_not_exist_v1";
+
+async fn ingest_stamped(
+    pool: &sqlx::PgPool,
+    permit: &OwnerWritePermit,
+    draft: &FactWriteCommand,
+    tables: &[String],
+) -> Result<proxima_core::verbs::fact_ingest::FactIngestOutcome, StorageError> {
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|err| StorageError::Internal(err.to_string()))?;
+    let outcome = ingest_fact_timeseries(&mut tx, permit.owner(), draft, tables).await?;
+    tx.commit()
+        .await
+        .map_err(|err| StorageError::Internal(err.to_string()))?;
+    Ok(outcome)
+}
+
+async fn sidecar_tables_for(pool: &sqlx::PgPool, t: Uuid) -> Result<Vec<String>, sqlx::Error> {
+    sqlx::query_scalar("SELECT sidecar_tables FROM proxima_core.memory WHERE t = $1")
+        .bind(t)
+        .fetch_one(pool)
+        .await
+}
 
 fn draft(source: Option<(&str, &str)>) -> FactWriteCommand {
     FactWriteCommand {
@@ -54,6 +83,11 @@ async fn forget_hydrate_erase_and_world_never() {
         let sourced = draft(Some(("src", "k1")));
         let written = ingest_fact_atomic(pool, &permit, &sourced, None).await?;
         let t = written.memory_id.into_inner();
+        let stamped = sidecar_tables_for(pool, t).await?;
+        assert!(
+            stamped.is_empty(),
+            "sidecar-less ingest stamps '{{}}'; forget still cools: {stamped:?}"
+        );
         let key = cold_object_key("ownerhash", written.handle, t);
         assert!(key.starts_with("cold/"));
         assert!(!key.contains(&owner.stored_owner_id().to_string()));
@@ -162,8 +196,9 @@ async fn engine_forget_puts_held_store_hydrate_restores_same_t() {
         let origin = ingest_fact_atomic(pool, &permit, &draft(None), None).await?;
         let mut sourced = draft(Some(("src", "k-held")));
         sourced.refs = vec![origin.memory_id.into_inner()];
-        let written = ingest_fact_atomic(pool, &permit, &sourced, None).await?;
+        let written = ingest_stamped(pool, &permit, &sourced, &[AGENT_NOTE.to_owned()]).await?;
         let t = written.memory_id.into_inner();
+        assert_eq!(sidecar_tables_for(pool, t).await?, vec![AGENT_NOTE]);
         sqlx::query(
             "INSERT INTO proxima_core.agent_note_v1 (t, note_id, title, body, tags)
              VALUES ($1, $1, 'n', 'sidecar body', ARRAY['tag'])",
@@ -394,7 +429,7 @@ async fn commit_forget_reputs_when_sidecar_changed() {
         let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let pool = pg.pool_for_tests();
-        let written = ingest_fact_atomic(pool, &permit, &draft(None), None).await?;
+        let written = ingest_stamped(pool, &permit, &draft(None), &[AGENT_NOTE.to_owned()]).await?;
         let t = written.memory_id.into_inner();
         sqlx::query(
             "INSERT INTO proxima_core.agent_note_v1 (t, note_id, title, body, tags)
@@ -440,4 +475,136 @@ async fn commit_forget_reputs_when_sidecar_changed() {
     .await;
     let _ = drop_db(&db_name).await;
     result.expect("commit_forget re-PUT test failed");
+}
+
+#[tokio::test]
+async fn forget_dumps_only_stamped_tables_and_skips_unregistered_scan() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    if let Err(e) = create_db(&db_name).await {
+        panic!("PG required for tests but admin connect failed: {e}");
+    }
+    let url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&url).await?;
+        pg.run_migrations().await?;
+        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
+        let pool = pg.pool_for_tests();
+        let sidecars = core_pg_sidecars().with_unusable_memory_table("w4/ghost-v1", GHOST_TABLE);
+
+        let written = ingest_stamped(pool, &permit, &draft(None), &[AGENT_NOTE.to_owned()]).await?;
+        let t = written.memory_id.into_inner();
+        sqlx::query(
+            "INSERT INTO proxima_core.agent_note_v1 (t, note_id, title, body, tags)
+             VALUES ($1, $1, 'n', 'stamped', ARRAY['tag'])",
+        )
+        .bind(t)
+        .execute(pool)
+        .await?;
+
+        let cold = MemoryColdStore::default();
+        let key = cold_object_key("ownerhash", written.handle, t);
+        let mut tx = pool.begin().await?;
+        forget_memory(&mut tx, &sidecars, &cold, &key, t).await?;
+        tx.commit().await?;
+
+        let notes: i64 = sqlx::query_scalar(
+            "SELECT count(*)::bigint FROM proxima_core.agent_note_v1 WHERE t = $1",
+        )
+        .bind(t)
+        .fetch_one(pool)
+        .await?;
+        assert_eq!(notes, 0, "stamped sidecar is dumped and deleted");
+
+        let mut tx = pool.begin().await?;
+        hydrate_memory(&mut tx, &sidecars, &cold, t).await?;
+        tx.commit().await?;
+        let note: String =
+            sqlx::query_scalar("SELECT body FROM proxima_core.agent_note_v1 WHERE t = $1")
+                .bind(t)
+                .fetch_one(pool)
+                .await?;
+        assert_eq!(note, "stamped");
+        let restored = sidecar_tables_for(pool, t).await?;
+        assert_eq!(restored, vec![AGENT_NOTE]);
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("stamped-only forget failed");
+}
+
+#[tokio::test]
+async fn forget_dumps_every_stamped_extra() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    if let Err(e) = create_db(&db_name).await {
+        panic!("PG required for tests but admin connect failed: {e}");
+    }
+    let url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&url).await?;
+        pg.run_migrations().await?;
+        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
+        let pool = pg.pool_for_tests();
+        let tables = [AGENT_NOTE.to_owned(), UTTERANCE.to_owned()];
+        let written = ingest_stamped(pool, &permit, &draft(None), &tables).await?;
+        let t = written.memory_id.into_inner();
+        assert_eq!(sidecar_tables_for(pool, t).await?, tables);
+        sqlx::query(
+            "INSERT INTO proxima_core.agent_note_v1 (t, note_id, title, body, tags)
+             VALUES ($1, $1, 'n', 'note', ARRAY['tag'])",
+        )
+        .bind(t)
+        .execute(pool)
+        .await?;
+        sqlx::query(
+            "INSERT INTO proxima_core.utterance_v1 (t, speaker, conversation_id, text)
+             VALUES ($1, 'user', 'c1', 'said')",
+        )
+        .bind(t)
+        .execute(pool)
+        .await?;
+
+        let cold = MemoryColdStore::default();
+        let key = cold_object_key("ownerhash", written.handle, t);
+        let mut tx = pool.begin().await?;
+        forget_memory(&mut tx, &core_pg_sidecars(), &cold, &key, t).await?;
+        tx.commit().await?;
+        let leftover: i64 = sqlx::query_scalar(
+            "SELECT count(*)::bigint FROM proxima_core.agent_note_v1 WHERE t = $1",
+        )
+        .bind(t)
+        .fetch_one(pool)
+        .await?;
+        assert_eq!(leftover, 0);
+        let leftover_u: i64 = sqlx::query_scalar(
+            "SELECT count(*)::bigint FROM proxima_core.utterance_v1 WHERE t = $1",
+        )
+        .bind(t)
+        .fetch_one(pool)
+        .await?;
+        assert_eq!(leftover_u, 0);
+
+        let mut tx = pool.begin().await?;
+        hydrate_memory(&mut tx, &core_pg_sidecars(), &cold, t).await?;
+        tx.commit().await?;
+        assert_eq!(sidecar_tables_for(pool, t).await?, tables);
+        let note: String =
+            sqlx::query_scalar("SELECT body FROM proxima_core.agent_note_v1 WHERE t = $1")
+                .bind(t)
+                .fetch_one(pool)
+                .await?;
+        let said: String =
+            sqlx::query_scalar("SELECT text FROM proxima_core.utterance_v1 WHERE t = $1")
+                .bind(t)
+                .fetch_one(pool)
+                .await?;
+        assert_eq!(note, "note");
+        assert_eq!(said, "said");
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("extras forget failed");
 }

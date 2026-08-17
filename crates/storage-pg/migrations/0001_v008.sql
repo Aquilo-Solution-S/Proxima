@@ -119,6 +119,7 @@ CREATE TABLE proxima_core.memory (
     blob_id uuid REFERENCES proxima_core.blob (blob_id),
     origins uuid[] NOT NULL DEFAULT '{}',
     refs uuid[] NOT NULL DEFAULT '{}',
+    sidecar_tables text[] NOT NULL DEFAULT '{}',
     PRIMARY KEY (handle, t),
     UNIQUE (t),
     CONSTRAINT memory_fact_source_chk CHECK (
@@ -132,7 +133,8 @@ CREATE TABLE proxima_core.memory (
         blob_id IS NULL OR kind IN ('fact', 'abstraction')
     ),
     CONSTRAINT memory_origins_no_null_chk CHECK (array_position(origins, NULL) IS NULL),
-    CONSTRAINT memory_refs_no_null_chk CHECK (array_position(refs, NULL) IS NULL)
+    CONSTRAINT memory_refs_no_null_chk CHECK (array_position(refs, NULL) IS NULL),
+    CONSTRAINT memory_sidecar_tables_no_null_chk CHECK (array_position(sidecar_tables, NULL) IS NULL)
 );
 
 CREATE INDEX memory_owner_handle_t_idx
@@ -672,7 +674,8 @@ BEGIN
        OR NEW.ingest_key IS DISTINCT FROM OLD.ingest_key
        OR NEW.blob_id IS DISTINCT FROM OLD.blob_id
        OR NEW.origins IS DISTINCT FROM OLD.origins
-       OR NEW.refs IS DISTINCT FROM OLD.refs THEN
+       OR NEW.refs IS DISTINCT FROM OLD.refs
+       OR NEW.sidecar_tables IS DISTINCT FROM OLD.sidecar_tables THEN
         RAISE EXCEPTION 'append-only: % does not accept UPDATE', TG_TABLE_NAME
             USING ERRCODE = '25006';
     END IF;

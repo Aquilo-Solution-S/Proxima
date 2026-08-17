@@ -171,6 +171,7 @@ pub async fn fact_ingest_with_sidecar_atomic<F>(
     pool: &PgPool,
     authorized: &AuthorizedFactWrite,
     embedding_model_id: Option<&str>,
+    sidecar_tables: &[String],
     sidecar: F,
 ) -> Result<FactIngestOutcome, StorageError>
 where
@@ -180,8 +181,14 @@ where
     ) -> FactIngestSidecarFuture<'t>,
 {
     let mut tx = pool.begin().await.map_err(internal)?;
-    let outcome =
-        ingest_fact_with_sidecar_in_tx(&mut tx, authorized, embedding_model_id, sidecar).await?;
+    let outcome = ingest_fact_with_sidecar_in_tx(
+        &mut tx,
+        authorized,
+        embedding_model_id,
+        sidecar_tables,
+        sidecar,
+    )
+    .await?;
     tx.commit().await.map_err(map_err)?;
     Ok(outcome)
 }
@@ -200,6 +207,7 @@ pub async fn ingest_fact_with_citation_atomic<F>(
     sidecars: &PgSidecarRegistryFrozen,
     authorized: &AuthorizedFactWithCitation,
     embedding_model_id: Option<&str>,
+    sidecar_tables: &[String],
     fact_sidecar: F,
 ) -> Result<FactIngestOutcome, StorageError>
 where
@@ -214,6 +222,7 @@ where
         sidecars,
         authorized,
         embedding_model_id,
+        sidecar_tables,
         fact_sidecar,
     )
     .await?;
@@ -272,11 +281,15 @@ where
         payload,
         now,
     );
-    let options = IngestCoreOptions {
+    ingest_typed_payload(
+        tx,
+        permit.owner(),
+        &draft,
         embedding_model_id,
-        citation_plan: CitationPlan::DraftHint,
-    };
-    ingest_core(tx, permit.owner(), &draft, options, sidecar).await
+        P::sidecar_table(),
+        sidecar,
+    )
+    .await
 }
 
 /// Read a typed Fact payload's schema-declared reference fields as index
@@ -313,7 +326,47 @@ pub async fn ingest_fact_for_owner_plain_in_tx<P>(
 where
     P: FactPayload,
 {
-    ingest_fact_for_owner_in_tx(tx, permit, payload, embedding_model_id, noop_fact_sidecar).await
+    let now = time::OffsetDateTime::now_utc();
+    let draft = FactWriteCommand::from_payload(
+        "proxima/fact",
+        SourceBatchId::new(uuid::Uuid::now_v7()),
+        payload,
+        now,
+    );
+    ingest_typed_payload(
+        tx,
+        permit.owner(),
+        &draft,
+        embedding_model_id,
+        None,
+        noop_fact_sidecar,
+    )
+    .await
+}
+
+async fn ingest_typed_payload<F>(
+    tx: &mut Transaction<'_, Postgres>,
+    owner: &Owner,
+    draft: &FactWriteCommand,
+    embedding_model_id: Option<&str>,
+    sidecar_table: Option<&str>,
+    sidecar: F,
+) -> Result<FactIngestOutcome, StorageError>
+where
+    F: for<'t> FnOnce(
+        &'t mut Transaction<'_, Postgres>,
+        &'t FactIngestOutcome,
+    ) -> FactIngestSidecarFuture<'t>,
+{
+    let options = IngestCoreOptions {
+        embedding_model_id,
+        citation_plan: CitationPlan::DraftHint,
+    };
+    let tables = sidecar_table
+        .map(str::to_owned)
+        .into_iter()
+        .collect::<Vec<_>>();
+    ingest_core(tx, owner, draft, options, &tables, sidecar).await
 }
 
 /// Pool-scoped uncited Fact ingest helper. Opens its own transaction;
@@ -492,7 +545,7 @@ pub(crate) async fn ingest_fact_command_in_tx(
         embedding_model_id,
         citation_plan: CitationPlan::DraftHint,
     };
-    ingest_core(tx, permit.owner(), draft, options, |_tx, _outcome| {
+    ingest_core(tx, permit.owner(), draft, options, &[], |_tx, _outcome| {
         Box::pin(async { Ok(()) })
     })
     .await
@@ -517,7 +570,7 @@ pub(crate) async fn ingest_fact_with_derived_sidecar_in_tx<F>(
     permit: &OwnerWritePermit,
     draft: &FactWriteCommand,
     embedding_model_id: Option<&str>,
-    _sidecar_table: Option<&str>,
+    sidecar_table: Option<&str>,
     _natural_key_columns: &[&str],
     _references: &[EdgeEndpoint],
     _authoring_perspective_id: Option<MemoryId>,
@@ -533,7 +586,11 @@ where
         embedding_model_id,
         citation_plan: CitationPlan::DraftHint,
     };
-    ingest_core(tx, permit.owner(), draft, options, sidecar).await
+    let tables = sidecar_table
+        .map(str::to_owned)
+        .into_iter()
+        .collect::<Vec<_>>();
+    ingest_core(tx, permit.owner(), draft, options, &tables, sidecar).await
 }
 
 /// Run gated Fact ingest plus typed inline citation sidecars inside an
@@ -547,9 +604,10 @@ where
 /// rollback/commit.
 pub async fn ingest_fact_with_citation_in_tx<F>(
     tx: &mut Transaction<'_, Postgres>,
-    _sidecars: &PgSidecarRegistryFrozen,
+    sidecars: &PgSidecarRegistryFrozen,
     authorized: &AuthorizedFactWithCitation,
     embedding_model_id: Option<&str>,
+    sidecar_tables: &[String],
     fact_sidecar: F,
 ) -> Result<FactIngestOutcome, StorageError>
 where
@@ -558,6 +616,7 @@ where
         &'t FactIngestOutcome,
     ) -> FactIngestSidecarFuture<'t>,
 {
+    reject_unstamped_memory_tables(sidecars, sidecar_tables)?;
     let draft = authorized.draft();
     let options = IngestCoreOptions {
         embedding_model_id,
@@ -570,6 +629,7 @@ where
         authorized.owner_write_permit().owner(),
         draft,
         options,
+        sidecar_tables,
         fact_sidecar,
     )
     .await
@@ -593,9 +653,10 @@ where
 /// transaction rollback/commit.
 pub async fn ingest_fact_with_citation_ref_in_tx<F>(
     tx: &mut Transaction<'_, Postgres>,
-    _sidecars: &PgSidecarRegistryFrozen,
+    sidecars: &PgSidecarRegistryFrozen,
     authorized: &AuthorizedFactWithCitationRef,
     embedding_model_id: Option<&str>,
+    sidecar_tables: &[String],
     fact_sidecar: F,
 ) -> Result<FactIngestOutcome, StorageError>
 where
@@ -604,6 +665,7 @@ where
         &'t FactIngestOutcome,
     ) -> FactIngestSidecarFuture<'t>,
 {
+    reject_unstamped_memory_tables(sidecars, sidecar_tables)?;
     let draft = authorized.draft();
     let options = IngestCoreOptions {
         embedding_model_id,
@@ -617,9 +679,24 @@ where
         authorized.owner_write_permit().owner(),
         draft,
         options,
+        sidecar_tables,
         fact_sidecar,
     )
     .await
+}
+
+fn reject_unstamped_memory_tables(
+    sidecars: &PgSidecarRegistryFrozen,
+    tables: &[String],
+) -> Result<(), StorageError> {
+    for table in tables {
+        if !sidecars.is_memory_sidecar_table(table) {
+            return Err(StorageError::ConstraintViolation(format!(
+                "stamped sidecar table {table} is not registered"
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// Verify a by-ref citation target: the cited object must exist for the
@@ -756,6 +833,7 @@ pub async fn ingest_fact_with_sidecar_in_tx<F>(
     tx: &mut Transaction<'_, Postgres>,
     authorized: &AuthorizedFactWrite,
     embedding_model_id: Option<&str>,
+    sidecar_tables: &[String],
     sidecar: F,
 ) -> Result<FactIngestOutcome, StorageError>
 where
@@ -774,6 +852,7 @@ where
         authorized.owner_write_permit().owner(),
         draft,
         options,
+        sidecar_tables,
         sidecar,
     )
     .await
@@ -785,6 +864,7 @@ async fn ingest_core<F>(
     owner: &Owner,
     draft: &FactWriteCommand,
     options: IngestCoreOptions<'_>,
+    sidecar_tables: &[String],
     sidecar: F,
 ) -> Result<FactIngestOutcome, StorageError>
 where
@@ -799,7 +879,8 @@ where
         write.blob_id =
             persist_citation_timeseries(tx, owner, draft, options.citation_plan).await?;
     }
-    let mut outcome = super::memory_timeseries::ingest_fact_timeseries(tx, owner, &write).await?;
+    let mut outcome =
+        super::memory_timeseries::ingest_fact_timeseries(tx, owner, &write, sidecar_tables).await?;
     // Replay reuses the original `(handle, t)`. The sidecar row is already
     // there; inserting again trips `<table>_pkey` on `t`.
     if !outcome.idempotent_replay {

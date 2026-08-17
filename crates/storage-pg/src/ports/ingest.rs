@@ -38,10 +38,12 @@ impl FactIngestPort for PgStorage {
             let payloads = sidecar_payloads.to_vec();
             async move {
                 let mut tx = self.pool.begin().await.map_err(internal)?;
+                let tables = fact_sidecars.tables_for_payloads(&payloads)?;
                 let outcome = verbs::fact_ingest::ingest_fact_with_sidecar_in_tx(
                     &mut tx,
                     authorized,
                     embedding_model_id,
+                    &tables,
                     move |tx, outcome| {
                         Box::pin(async move {
                             for payload in &payloads {
@@ -76,11 +78,13 @@ impl FactIngestPort for PgStorage {
             let payloads = sidecar_payloads.to_vec();
             async move {
                 let mut tx = self.pool.begin().await.map_err(internal)?;
+                let tables = fact_sidecars.tables_for_payloads(&payloads)?;
                 let outcome = verbs::fact_ingest::ingest_fact_with_citation_in_tx(
                     &mut tx,
                     &sidecars,
                     authorized,
                     embedding_model_id,
+                    &tables,
                     move |tx, outcome| {
                         Box::pin(async move {
                             for payload in &payloads {
@@ -116,11 +120,13 @@ impl FactIngestPort for PgStorage {
             let payloads = sidecar_payloads.to_vec();
             async move {
                 let mut tx = self.pool.begin().await.map_err(internal)?;
+                let tables = fact_sidecars.tables_for_payloads(&payloads)?;
                 let outcome = verbs::fact_ingest::ingest_fact_with_citation_ref_in_tx(
                     &mut tx,
                     &sidecars,
                     authorized,
                     embedding_model_id,
+                    &tables,
                     move |tx, outcome| {
                         Box::pin(async move {
                             for payload in &payloads {

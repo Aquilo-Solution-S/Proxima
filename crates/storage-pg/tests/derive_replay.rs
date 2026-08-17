@@ -64,11 +64,16 @@ async fn append(
         .begin()
         .await
         .map_err(|err| StorageError::Internal(err.to_string()))?;
-    let outcome =
-        append_derived_with_edges_in_tx(&mut tx, permit, draft, origins, references, |_, _| {
-            Box::pin(async { Ok(()) })
-        })
-        .await?;
+    let outcome = append_derived_with_edges_in_tx(
+        &mut tx,
+        permit,
+        draft,
+        origins,
+        references,
+        &[],
+        |_, _| Box::pin(async { Ok(()) }),
+    )
+    .await?;
     tx.commit()
         .await
         .map_err(|err| StorageError::Internal(err.to_string()))?;
