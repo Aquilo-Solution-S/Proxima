@@ -70,13 +70,12 @@ async fn code_hot_path_plans_use_expected_indexes() {
         .await?;
 
         let mut tx = pool.begin().await?;
-        for setting in [
-            "SET LOCAL enable_seqscan = off",
-            "SET LOCAL enable_sort = off",
-        ] {
-            // SQL-POLICY: fixed-fragment
-            sqlx::query(setting).execute(&mut *tx).await?;
-        }
+        sqlx::query("SET LOCAL enable_seqscan = off")
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("SET LOCAL enable_sort = off")
+            .execute(&mut *tx)
+            .await?;
 
         let chunk = chunk_gin_sql_for_tests();
         let chunk_explain = format!("EXPLAIN (FORMAT JSON, COSTS OFF) {chunk}");

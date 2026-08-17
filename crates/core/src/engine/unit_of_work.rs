@@ -503,7 +503,8 @@ impl UnitOfWork<'_> {
             });
         }
         Ok(
-            match super::memory_authoring::resolve_derived_embedding(client, memory_id, text).await?
+            match super::memory_authoring::resolve_derived_embedding(client, memory_id, text)
+                .await?
             {
                 DerivedEmbedding::None => PreparedEmbedding::None,
                 DerivedEmbedding::Ready { model_id, vector } => PreparedEmbedding::Ready {

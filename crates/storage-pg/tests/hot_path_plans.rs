@@ -235,13 +235,12 @@ async fn hot_path_plans_use_expected_indexes() {
         let like = proxima_core::verbs::query::like_pattern(&req.query);
 
         let mut tx = pool.begin().await?;
-        for setting in [
-            "SET LOCAL enable_seqscan = off",
-            "SET LOCAL enable_sort = off",
-        ] {
-            // SQL-POLICY: fixed-fragment
-            sqlx::query(setting).execute(&mut *tx).await?;
-        }
+        sqlx::query("SET LOCAL enable_seqscan = off")
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("SET LOCAL enable_sort = off")
+            .execute(&mut *tx)
+            .await?;
 
         let lexical = lexical_sidecar_sql_for_tests(&note_projection(), &req, true, false)?;
         let lexical_explain = format!("EXPLAIN (FORMAT JSON, COSTS OFF) {lexical}");

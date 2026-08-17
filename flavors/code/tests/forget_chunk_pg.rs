@@ -2,7 +2,7 @@
 
 mod common;
 
-use common::{migrated_db, owner_write_permit, seed_memory, test_owner};
+use common::{migrated_db, owner_write_permit, seed_memory_with_sidecars, test_owner};
 use proxima_code::CodeChunkV1;
 use proxima_core::storage_ports::{MemoryAuthoringPort, OwnerWritePermit};
 use proxima_core::{AbstractionPayload, AccessKind, MemoryId};
@@ -20,7 +20,7 @@ async fn forget_hydrate_restores_code_chunk_sidecar() {
         let owner = test_owner();
         let permit: OwnerWritePermit = owner_write_permit(&owner, AccessKind::Fact).await?;
         let pool = pg.pool_for_tests();
-        let (_handle, memory_id) = seed_memory(
+        let (_handle, memory_id) = seed_memory_with_sidecars(
             pool,
             &owner,
             <CodeChunkV1 as AbstractionPayload>::SCHEMA_ID,
@@ -28,6 +28,7 @@ async fn forget_hydrate_restores_code_chunk_sidecar() {
             None,
             None,
             &[],
+            &[<CodeChunkV1 as AbstractionPayload>::sidecar_table()],
         )
         .await?;
         sqlx::query(

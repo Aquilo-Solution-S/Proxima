@@ -305,15 +305,15 @@ async fn hop_edges(
     if frontier.is_empty() || limit <= 0 {
         return Ok(Vec::new());
     }
-    let sql = match direction {
-        MemoryLineageDirection::Ancestors => ANCESTOR_HOP_SQL,
-        MemoryLineageDirection::Descendants => DESCENDANT_HOP_SQL,
-    };
     let (after_src, after_tgt) = match after {
         Some((src, tgt)) => (Some(src), Some(tgt)),
         None => (None, None),
     };
-    sqlx::query_as(sql)
+    let query = match direction {
+        MemoryLineageDirection::Ancestors => sqlx::query_as(ANCESTOR_HOP_SQL),
+        MemoryLineageDirection::Descendants => sqlx::query_as(DESCENDANT_HOP_SQL),
+    };
+    query
         .bind(frontier)
         .bind(owner_ids)
         .bind(after_src)
@@ -333,11 +333,11 @@ async fn next_frontier(
     if frontier.is_empty() {
         return Ok(Vec::new());
     }
-    let sql = match direction {
-        MemoryLineageDirection::Ancestors => ANCESTOR_FRONTIER_SQL,
-        MemoryLineageDirection::Descendants => DESCENDANT_FRONTIER_SQL,
+    let query = match direction {
+        MemoryLineageDirection::Ancestors => sqlx::query_scalar(ANCESTOR_FRONTIER_SQL),
+        MemoryLineageDirection::Descendants => sqlx::query_scalar(DESCENDANT_FRONTIER_SQL),
     };
-    sqlx::query_scalar(sql)
+    query
         .bind(frontier)
         .bind(owner_ids)
         .fetch_all(pool)
