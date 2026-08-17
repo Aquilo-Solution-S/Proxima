@@ -48,7 +48,7 @@ pub struct FactIngestContext<'a> {
     pub observed_at: time::OffsetDateTime,
     pub embedding_model_id: Option<&'a str>,
     /// What this Fact declares it was made from. One
-    /// [`EdgeKind::Origin`] row per entry, in the Fact's own transaction.
+    /// [`proxima_core::EdgeKind::Origin`] row per entry, in the Fact's own transaction.
     /// Endpoints only — the kind follows from the field, never from a
     /// caller.
     pub derived_from: &'a [EdgeEndpoint],
@@ -800,7 +800,11 @@ where
             persist_citation_timeseries(tx, owner, draft, options.citation_plan).await?;
     }
     let mut outcome = super::memory_timeseries::ingest_fact_timeseries(tx, owner, &write).await?;
-    sidecar(tx, &outcome).await?;
+    // Replay reuses the original `(handle, t)`. The sidecar row is already
+    // there; inserting again trips `<table>_pkey` on `t`.
+    if !outcome.idempotent_replay {
+        sidecar(tx, &outcome).await?;
+    }
     if outcome.idempotent_replay {
         outcome.cited_object_id = citation_object_for_t(tx, outcome.memory_id).await?;
     } else {
