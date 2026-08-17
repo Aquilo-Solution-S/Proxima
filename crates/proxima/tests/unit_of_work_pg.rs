@@ -67,9 +67,11 @@ fn derived_abstraction<'a>(
             body: title.into(),
             tags: Vec::new(),
             idempotency_key: None,
-            source_memory_ids: vec![origin[0]
-                .memory_id()
-                .map_or_else(Uuid::nil, MemoryId::into_inner)],
+            source_memory_ids: vec![
+                origin[0]
+                    .memory_id()
+                    .map_or_else(Uuid::nil, MemoryId::into_inner),
+            ],
             model_id: "test".into(),
             client_name: "test".into(),
             client_version: "1".into(),
@@ -300,12 +302,11 @@ async fn unit_of_work_author_derived_all_is_atomic() {
                 .await?;
             assert_eq!(written.len(), 2);
         }
-        let rolled: i64 = sqlx::query_scalar(
-            "SELECT count(*)::bigint FROM proxima_core.memory WHERE t <> $1",
-        )
-        .bind(source.memory_id.into_inner())
-        .fetch_one(built.pool_for_tests())
-        .await?;
+        let rolled: i64 =
+            sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_core.memory WHERE t <> $1")
+                .bind(source.memory_id.into_inner())
+                .fetch_one(built.pool_for_tests())
+                .await?;
         assert_eq!(rolled, 0, "drop without commit must roll the whole batch");
 
         let mut uow = engine.unit_of_work(&authz).await?;

@@ -69,7 +69,14 @@ pub use proxima_core::storage_ports::{
     CitedBlobService, CitedBlobStaged, CitedBlobUploadAborted, CitedBlobUploadCompleted,
     CitedBlobUploadHeader, CitedBlobUploadPrepared, MAX_HELD_BLOB_DIGESTS, VerifiedCitedBlob,
 };
-pub use proxima_core::verbs::fact_ingest::{CitationSpec, FactIngestOutcome, FactWriteCommand};
+/// Typed inline citation drafts and the Engine admission witnesses they
+/// produce. `authorize_fact_with_citation` takes the drafts plus a sidecar
+/// slice; without these names an out-of-tree flavor can only spell
+/// `CitationSpec` (opaque hash) or take `proxima-core`.
+pub use proxima_core::verbs::fact_ingest::{
+    AuthorizedFactWithCitation, AuthorizedFactWithCitationRef, CitationSpec, FactIngestOutcome,
+    FactWriteCommand, InlineCitationMappingDraft, InlineCitedObjectDraft,
+};
 pub use proxima_core::verbs::query::{
     GoalRow, QueryRequest, QueryResponse, SearchMode, SidecarAtom, hybrid_degraded_to_lexical,
 };

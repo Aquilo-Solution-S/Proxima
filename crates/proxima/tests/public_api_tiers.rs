@@ -429,6 +429,16 @@ fn host_api_exposes_role_for_authenticated_adapters() {
         [(owner, proxima::Role::admin())],
         proxima::AuthPath::HostBearer,
     );
+
+    // `Role::new` / `Role::may_write` / `OwnerRoles::for_subject` name these.
+    // Hosts that only imported `Role` had to take `proxima-core` to spell them.
+    let ceiling = proxima::AccessCeiling::Fact;
+    let role = proxima::Role::new(ceiling, ceiling, false).expect("write <= read");
+    assert!(role.may_write(proxima::AccessKind::Fact));
+    let user = proxima::UserId::new(uuid::Uuid::nil());
+    let group = proxima::OwnerRef::Group(proxima::GroupId::new(uuid::Uuid::nil()));
+    let _roles = proxima::OwnerRoles::for_subject(user, [(group, role)]).expect("group roles");
+    let _: Option<proxima::AccessError> = None;
 }
 
 /// A flavor-owned Abstraction, defined through the SDK alone. Note
@@ -797,7 +807,19 @@ fn flavor_sdk_names_query_and_ingest_types() {
         proxima::flavor::GoalRow,
         proxima::flavor::FactIngestOutcome,
         proxima::flavor::FactWriteCommand,
+        proxima::flavor::AuthorizedFactWithCitation,
+        proxima::flavor::AuthorizedFactWithCitationRef,
     )> = None;
+    let _cited = proxima::flavor::InlineCitedObjectDraft {
+        schema_id: proxima::flavor::SchemaId::new("core/upload-v1".into()),
+        schema_version: proxima::flavor::SchemaVersion::new(1),
+        payload_bytes: Vec::new(),
+    };
+    let _mapping = proxima::flavor::InlineCitationMappingDraft {
+        schema_id: proxima::flavor::SchemaId::new("core/upload-whole-v1".into()),
+        schema_version: proxima::flavor::SchemaVersion::new(1),
+        payload_bytes: Vec::new(),
+    };
 }
 
 #[cfg(feature = "auth-oidc")]

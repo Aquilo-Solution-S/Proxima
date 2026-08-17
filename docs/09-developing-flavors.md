@@ -444,15 +444,19 @@ let mapping = InlineCitationMappingDraft {
     payload_bytes: canonical_json_bytes(&serde_json::to_value(&mapping_payload)?),
 };
 
+let sidecars = [SidecarPayload::fact(fact_payload.clone())];
 let authorized = engine
-    .authorize_fact_with_citation(&authz, Relation::Ingest, draft, cited_object, mapping)
+    .authorize_fact_with_citation(
+        &authz,
+        Relation::Ingest,
+        draft,
+        cited_object,
+        mapping,
+        &sidecars,
+    )
     .await?;
 engine
-    .ingest_fact_with_citation_and_typed_sidecar(
-        &authorized,
-        &SidecarPayload::fact(fact_payload.clone()),
-        embedding_model_id,
-    )
+    .ingest_fact_with_citation_and_typed_sidecar(&authorized, &sidecars, embedding_model_id)
     .await?;
 ```
 
@@ -619,16 +623,14 @@ Four contract points that are easy to get wrong:
   (`supersedes` on the new row, `superseded_by` on the old one) in the same
   transaction. Supersession is never an edge — it is the same thing
   persisting through revision.
-- **Embedding is synchronous here, but a refused text is not a lost
-  write.** The engine embeds `text` inside the write. When the provider
-  refuses that text — or dies on it — and still answers a liveness probe,
-  the memory lands with no vector and a durable `embedding_jobs` row
-  enqueued in the same transaction, exactly the path a Fact always takes,
-  and the outcome's `embedding_deferred` says so. The memory is lexically
-  findable immediately and semantically findable once a drain runs (which
-  is also what bisects an over-limit text into chunks). Only a provider
-  that is genuinely unavailable fails the write. A flavor deriving many
-  memories should still checkpoint per output, not per batch.
+- **Embedding runs before the write transaction begins.** A refused text
+  is not a lost write: the memory lands with no vector and a durable
+  `embedding_jobs` row enqueued in the same transaction, and the
+  outcome's `embedding_deferred` says so. Several derived rows that must
+  commit together use `UnitOfWork::author_derived_all` (embed the batch,
+  then one `BEGIN`). A derived write after the transaction is already
+  open defers the vector rather than hold the pool slot across HTTP.
+  Only a provider that is genuinely unavailable fails the write.
 - **`text` is the whole semantic surface.** `render()` / authored text
   is the only string ever embedded; `search_projection()` adds lexical
   reach over sidecar columns but never affects the vector.
@@ -646,6 +648,7 @@ Four contract points that are easy to get wrong:
           fields: &[SearchProjectionField::MEMORY_TEXT],
           tag_column: Some("tags".to_owned()),
           tsv_column: None,
+          embed_text_column: None,
           language_column: None,
       })
   }
