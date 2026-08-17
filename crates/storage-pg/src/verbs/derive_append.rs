@@ -1,7 +1,7 @@
 //! Operator-derived memory append verb.
 
 use proxima_core::llm::EMBEDDING_DIM;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use proxima_core::storage_ports::OwnerWritePermit;
 use proxima_core::{
@@ -237,6 +237,7 @@ pub async fn append_derived_with_edges_in_tx(
     validate_permit_owner(permit, &draft.owner)?;
     crate::access::owner_columns::reject_world_write_owner(&draft.owner)?;
     validate_derived_origins_in_tx(tx, draft, origins).await?;
+    validate_derived_reference_kinds_in_tx(tx, references).await?;
     let outcome = append_derived_in_tx(tx, permit, draft, origins, references, sidecar).await?;
     assert_derived_index_rows(tx, draft, &outcome, origins, references);
     Ok(outcome)
@@ -301,6 +302,9 @@ where
         );
     }
     for (entry, outcome) in entries.iter().zip(&outcomes) {
+        // After every node exists: sibling refs that were unresolvable
+        // at the origin-proof step can now be kind-checked.
+        validate_derived_reference_kinds_in_tx(tx, entry.references).await?;
         assert_derived_index_rows(tx, entry.draft, outcome, entry.origins, entry.references);
     }
     Ok(outcomes)
@@ -368,7 +372,53 @@ pub(crate) async fn validate_derived_origins_in_tx(
             "operator invocation inputs must exist and be live".into(),
         ));
     }
-    let _ = (draft, rows, expected_input_kind);
+    let stored_kind: BTreeMap<uuid::Uuid, EntityKind> =
+        rows.into_iter().map(|(id, kind, ..)| (id, kind)).collect();
+    assert_declared_kinds_match_stored(origins, &stored_kind, true)
+}
+
+/// Stored kind for payload references. Missing targets are skipped:
+/// batch writes name sibling rows that land later in the same
+/// transaction. After those inserts, the batch path calls this again.
+pub(crate) async fn validate_derived_reference_kinds_in_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    references: &[EdgeEndpoint],
+) -> Result<(), StorageError> {
+    let ids: Vec<uuid::Uuid> = references
+        .iter()
+        .filter_map(|endpoint| endpoint.memory_id().map(MemoryId::into_inner))
+        .collect();
+    if ids.is_empty() {
+        return Ok(());
+    }
+    let stored = load_stored_memory_kinds_in_tx(tx, &ids).await?;
+    assert_declared_kinds_match_stored(references, &stored, false)
+}
+
+fn assert_declared_kinds_match_stored(
+    pins: &[EdgeEndpoint],
+    stored: &BTreeMap<uuid::Uuid, EntityKind>,
+    require_present: bool,
+) -> Result<(), StorageError> {
+    for pin in pins {
+        let Some(memory_id) = pin.memory_id() else {
+            continue;
+        };
+        match stored.get(&memory_id.into_inner()).copied() {
+            Some(kind) if kind == pin.kind => {}
+            Some(_) => {
+                return Err(StorageError::ConstraintViolation(
+                    "declared pin kind must match the stored row".into(),
+                ));
+            }
+            None if require_present => {
+                return Err(StorageError::ConstraintViolation(
+                    "operator invocation inputs must exist and be live".into(),
+                ));
+            }
+            None => {}
+        }
+    }
     Ok(())
 }
 
@@ -403,19 +453,26 @@ async fn load_live_input_proof_rows_in_tx(
     tx: &mut Transaction<'_, Postgres>,
     input_ids: &[uuid::Uuid],
 ) -> Result<Vec<InputProofRow>, StorageError> {
-    // `now()` is stable for the lifetime of this transaction (Postgres
-    // resolves it once, at transaction start) — the same value this SELECT
-    // compares against is the value the derived output row's own
-    // `created_at DEFAULT now()` will take when `append_derived_in_tx`
-    // inserts it later in this same transaction. Comparing here therefore
-    // proves Lean N1's `derivationTimeStrict` (Causa/Provenance.lean):
-    // every input must be strictly older than the output it grounds.
+    let stored = load_stored_memory_kinds_in_tx(tx, input_ids).await?;
+    Ok(stored
+        .into_iter()
+        .map(|(id, kind)| (id, kind, None, true, true))
+        .collect())
+}
+
+async fn load_stored_memory_kinds_in_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    ids: &[uuid::Uuid],
+) -> Result<BTreeMap<uuid::Uuid, EntityKind>, StorageError> {
+    if ids.is_empty() {
+        return Ok(BTreeMap::new());
+    }
     let rows: Vec<(uuid::Uuid, String)> = sqlx::query_as(
         "SELECT m.t, m.kind::text
            FROM proxima_core.memory m
           WHERE m.t = ANY($1::uuid[])",
     )
-    .bind(input_ids)
+    .bind(ids)
     .fetch_all(&mut **tx)
     .await
     .map_err(map_err)?;
@@ -431,7 +488,30 @@ async fn load_live_input_proof_rows_in_tx(
                     )));
                 }
             };
-            Ok((id, kind, None, true, true))
+            Ok((id, kind))
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn in_tx_origin_proof_uses_stored_kind() {
+        let src = include_str!("derive_append.rs");
+        let discarded = format!("{}{}", "let _ = (draft, rows, ", "expected_input_kind)");
+        assert!(
+            !src.contains(&discarded),
+            "D2: in-tx SELECT of kind must be compared to the declared origin"
+        );
+        let needle = format!("{}{}", "must match the stored ", "row");
+        assert!(
+            src.contains(&needle),
+            "declared pin kind cannot widen past the stored row"
+        );
+        let refs = format!("{}{}", "validate_derived_reference_kinds", "_in_tx");
+        assert!(
+            src.contains(&refs),
+            "references must use the same stored-kind compare as origins"
+        );
+    }
 }

@@ -342,8 +342,9 @@ impl Engine {
             .await
     }
 
-    /// Read-admit one index target and answer with its stored kind, so a
-    /// caller-declared kind can never widen what the layering rule sees.
+    /// Read-admit one index target. Stored kind is compared in-tx
+    /// against the declared pin; a second pre-tx `load_memory_kinds`
+    /// is the overlapping fanout this slice drops.
     async fn authorize_index_target<A>(
         &self,
         authority: &A,
@@ -355,13 +356,9 @@ impl Engine {
     {
         match target.entity {
             crate::EntityRef::Memory(memory_id) => {
-                let read = self
-                    .authorize_entry_read(authority, EntityId::Memory(memory_id))
+                self.authorize_entry_read(authority, EntityId::Memory(memory_id))
                     .await?;
-                let kind = self
-                    .load_required_memory_kind(read.owner(), memory_id)
-                    .await?;
-                Ok(EdgeEndpoint::memory(kind, memory_id))
+                Ok(target)
             }
             crate::EntityRef::Goal(goal_id) => {
                 self.authorize_entry_read(authority, EntityId::Goal(goal_id))
@@ -634,6 +631,28 @@ mod tests {
             .expect_err("denied context must fail before storage");
 
         assert_eq!(err.code, ErrorCode::Forbidden);
+    }
+
+    #[test]
+    fn pin_admit_does_not_reload_kind_after_entry_read() {
+        let src = include_str!("memory_authoring.rs");
+        let start = src
+            .find("async fn authorize_index_target")
+            .expect("authorize_index_target");
+        let rest = &src[start..];
+        let end = rest
+            .find("pub(in crate::engine) async fn load_required_memory_kind")
+            .expect("load_required_memory_kind follows");
+        let body = &rest[..end];
+        let reload = format!("{}{}", "load_required_memory_", "kind");
+        assert!(
+            !body.contains(&reload),
+            "D2: stored kind is the in-tx TOCTOU SELECT, not a second pre-tx fanout"
+        );
+        assert!(
+            body.contains("authorize_entry_read"),
+            "read-admit stays; only the kind reload is dropped"
+        );
     }
 
     /// The public write surface takes targets, never kinds: there is no

@@ -54,6 +54,8 @@ impl MemoryAuthoringPort for PgStorage {
             // silently missed the created_at strict-time gate.
             verbs::derive_append::validate_derived_origins_in_tx(&mut tx, &draft, req.origins)
                 .await?;
+            verbs::derive_append::validate_derived_reference_kinds_in_tx(&mut tx, req.references)
+                .await?;
             let sidecars = self.sidecars.clone();
             let sidecar_payload = req.sidecar_payload.clone();
             let outcome = verbs::derive_append::append_derived_in_tx(
