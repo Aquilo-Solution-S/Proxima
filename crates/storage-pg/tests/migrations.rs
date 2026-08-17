@@ -109,8 +109,8 @@ async fn migrations_apply_to_fresh_db() {
             "embeddings carry entity_id only"
         );
         assert!(
-            !column_exists(&pg, "memory", "schema_id").await,
-            "schema_id lives on memory_head only"
+            column_exists(&pg, "memory", "schema_id").await,
+            "schema_id is on each memory row (same value as the handle)"
         );
         assert!(
             !column_exists(&pg, "memory", "schema_version").await,
@@ -206,8 +206,8 @@ async fn memory_is_append_only_and_head_t_only() {
         .execute(pool)
         .await?;
         sqlx::query(
-            "INSERT INTO proxima_core.memory (handle, t, kind, owner_id, origins, refs)
-             VALUES ($1, $2, 'fact', $3, '{}', '{}')",
+            "INSERT INTO proxima_core.memory (handle, t, kind, owner_id, schema_id, origins, refs)
+             VALUES ($1, $2, 'fact', $3, 'core/test-v1', '{}', '{}')",
         )
         .bind(handle)
         .bind(t)
@@ -240,8 +240,8 @@ async fn memory_is_append_only_and_head_t_only() {
         assert!(err.to_string().contains("frozen"), "got: {err}");
 
         let err = sqlx::query(
-            "INSERT INTO proxima_core.memory (handle, kind, owner_id)
-             VALUES ($1, 'abstraction', $2)",
+            "INSERT INTO proxima_core.memory (handle, kind, owner_id, schema_id)
+             VALUES ($1, 'abstraction', $2, 'core/test-v1')",
         )
         .bind(handle)
         .bind(owner)

@@ -170,13 +170,14 @@ pub async fn seed_memory(
         .await?;
     }
     sqlx::query(
-        "INSERT INTO proxima_core.memory (handle, t, kind, owner_id, origins)
-         VALUES ($1, $2, $3::proxima_core.memory_kind, $4, $5)",
+        "INSERT INTO proxima_core.memory (handle, t, kind, owner_id, schema_id, origins)
+         VALUES ($1, $2, $3::proxima_core.memory_kind, $4, $5, $6)",
     )
     .bind(handle)
     .bind(t)
     .bind(kind)
     .bind(owner_id)
+    .bind(schema_id)
     .bind(origins)
     .execute(pool)
     .await?;

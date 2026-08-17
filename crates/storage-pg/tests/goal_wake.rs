@@ -103,8 +103,7 @@ async fn goal_wake_share_restrict_match_fire() {
         let tr = fire_wake(&mut tx, &owner).await?;
         tx.commit().await?;
         let schema: String = sqlx::query_scalar(
-            "SELECT h.schema_id FROM proxima_core.memory m
-              JOIN proxima_core.memory_head h ON h.handle = m.handle
+            "SELECT m.schema_id FROM proxima_core.memory m
              WHERE m.t = $1",
         )
         .bind(tr)

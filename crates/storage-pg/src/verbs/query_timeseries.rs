@@ -19,7 +19,7 @@ pub async fn query_heads(
                 m.origins, m.refs
            FROM proxima_core.memory_head h
            JOIN proxima_core.memory m ON m.handle = h.handle AND m.t = h.t
-          WHERE h.owner_id = $1 AND h.schema_id = $2
+          WHERE h.owner_id = $1 AND m.schema_id = $2
           ORDER BY h.handle",
     )
     .bind(owner_id)
@@ -67,7 +67,7 @@ pub async fn publish_head(
     source_handle: Uuid,
 ) -> Result<(Uuid, Uuid), StorageError> {
     let row = sqlx::query_as::<_, (Uuid, String, Uuid, String)>(
-        "SELECT m.t, m.kind::text, m.owner_id, h.schema_id
+        "SELECT m.t, m.kind::text, m.owner_id, m.schema_id
            FROM proxima_core.memory_head h
            JOIN proxima_core.memory m ON m.handle = h.handle AND m.t = h.t
           WHERE h.handle = $1",
@@ -99,8 +99,8 @@ pub async fn publish_head(
     .map_err(map_err)?;
 
     sqlx::query(
-        "INSERT INTO proxima_core.memory (handle, t, kind, owner_id, origins, refs)
-         SELECT $1, $2, kind, $3, origins, refs
+        "INSERT INTO proxima_core.memory (handle, t, kind, owner_id, schema_id, origins, refs)
+         SELECT $1, $2, kind, $3, schema_id, origins, refs
            FROM proxima_core.memory
           WHERE handle = $4
             AND t = (SELECT t FROM proxima_core.memory_head WHERE handle = $4)",

@@ -143,9 +143,8 @@ async fn walk_memory_lineage_timeseries(
     let mut node_ids = vec![start];
     node_ids.extend(hops.iter().flat_map(|hop| [hop.0, hop.2]));
     let node_rows: Vec<(uuid::Uuid, String, String)> = sqlx::query_as(
-        "SELECT m.t, m.kind::text, h.schema_id
+        "SELECT m.t, m.kind::text, m.schema_id
            FROM proxima_core.memory m
-           JOIN proxima_core.memory_head h ON h.handle = m.handle
           WHERE m.t = ANY($1::uuid[])
             AND m.owner_id = ANY($2::uuid[])",
     )
@@ -321,6 +320,11 @@ mod tests {
         assert!(
             !src.contains(&parent_owner),
             "D8: descendants do not re-admit the start via parent owner"
+        );
+        let head_schema = format!("{}{}", "h.schema", "_id");
+        assert!(
+            !src.contains(&head_schema),
+            "W5: lineage reads schema_id from memory, not memory_head"
         );
     }
 }

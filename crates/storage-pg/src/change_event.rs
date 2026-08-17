@@ -30,11 +30,10 @@ SELECT a.seq,
        a.handle,
        a.t,
        m.kind::text AS memory_kind,
-       COALESCE(mh.schema_id, gh.schema_id) AS schema_id
+       COALESCE(m.schema_id, gh.schema_id) AS schema_id
   FROM proxima_core.announce a
   JOIN proxima_core.owners o ON o.owner_id = a.owner_id
   LEFT JOIN proxima_core.memory m ON m.t = a.t
-  LEFT JOIN proxima_core.memory_head mh ON mh.handle = a.handle AND a.entity = 'memory'
   LEFT JOIN proxima_core.goal_head gh ON gh.handle = a.handle AND a.entity = 'goal'
  WHERE a.seq = $1 AND a.owner_id = ANY($2::uuid[])
 ";
@@ -48,11 +47,10 @@ SELECT a.seq,
        a.handle,
        a.t,
        m.kind::text AS memory_kind,
-       COALESCE(mh.schema_id, gh.schema_id) AS schema_id
+       COALESCE(m.schema_id, gh.schema_id) AS schema_id
   FROM proxima_core.announce a
   JOIN proxima_core.owners o ON o.owner_id = a.owner_id
   LEFT JOIN proxima_core.memory m ON m.t = a.t
-  LEFT JOIN proxima_core.memory_head mh ON mh.handle = a.handle AND a.entity = 'memory'
   LEFT JOIN proxima_core.goal_head gh ON gh.handle = a.handle AND a.entity = 'goal'
  WHERE a.seq = ANY($1::uuid[]) AND a.owner_id = ANY($2::uuid[])
  ORDER BY a.seq DESC

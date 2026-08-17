@@ -85,8 +85,8 @@ async fn seed_note(
     .execute(pool)
     .await?;
     sqlx::query(
-        "INSERT INTO proxima_core.memory (handle, t, kind, owner_id)
-         VALUES ($1, $2, 'fact', $3)",
+        "INSERT INTO proxima_core.memory (handle, t, kind, owner_id, schema_id)
+         VALUES ($1, $2, 'fact', $3, 'core/agent-note-v1')",
     )
     .bind(handle)
     .bind(t)
@@ -134,8 +134,8 @@ async fn seed_note_lang(
     .execute(pool)
     .await?;
     sqlx::query(
-        "INSERT INTO proxima_core.memory (handle, t, kind, owner_id)
-         VALUES ($1, $2, 'fact', $3)",
+        "INSERT INTO proxima_core.memory (handle, t, kind, owner_id, schema_id)
+         VALUES ($1, $2, 'fact', $3, 'core/agent-note-v1')",
     )
     .bind(handle)
     .bind(t)

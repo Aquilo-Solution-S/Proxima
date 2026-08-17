@@ -113,6 +113,7 @@ CREATE TABLE proxima_core.memory (
     t uuid NOT NULL DEFAULT uuidv7(),
     kind proxima_core.memory_kind NOT NULL,
     owner_id uuid NOT NULL REFERENCES proxima_core.owners (owner_id),
+    schema_id text NOT NULL,
     source_id text,
     ingest_key text,
     blob_id uuid REFERENCES proxima_core.blob (blob_id),
@@ -592,12 +593,15 @@ CREATE FUNCTION proxima_core.memory_align_head() RETURNS trigger
 DECLARE
     head_kind proxima_core.memory_kind;
     head_owner uuid;
+    head_schema text;
 BEGIN
-    SELECT kind, owner_id INTO head_kind, head_owner
+    SELECT kind, owner_id, schema_id INTO head_kind, head_owner, head_schema
       FROM proxima_core.memory_head
      WHERE handle = NEW.handle;
-    IF head_kind IS DISTINCT FROM NEW.kind OR head_owner IS DISTINCT FROM NEW.owner_id THEN
-        RAISE EXCEPTION 'memory kind/owner must equal memory_head'
+    IF head_kind IS DISTINCT FROM NEW.kind
+       OR head_owner IS DISTINCT FROM NEW.owner_id
+       OR head_schema IS DISTINCT FROM NEW.schema_id THEN
+        RAISE EXCEPTION 'memory kind/owner/schema must equal memory_head'
             USING ERRCODE = '23514';
     END IF;
     RETURN NEW;

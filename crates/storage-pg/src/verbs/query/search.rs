@@ -3,7 +3,8 @@
 //! Same split as `proxima-code_search_chunks` (the reference):
 //! 1. **content** — one GIN query per *core* sidecar (`@@` only); `LIKE`
 //!    runs only when that sidecar's GIN arm is empty
-//! 2. **admit** — `memory_head` (owner + head) on the hit `t`s
+//! 2. **admit** — owner + optional current-head on the hit `t`s;
+//!    `schema_id` is on `memory`
 //! 3. **pins** — engine neighbor load, only if the caller asked
 //!
 //! Flavor corpora (`proxima_code.*`, …) are not scanned here. A code
@@ -535,19 +536,18 @@ async fn admit_hits(
         "FROM proxima_core.memory_head h \
          JOIN proxima_core.memory m ON m.handle = h.handle AND m.t = h.t"
     } else {
-        "FROM proxima_core.memory m \
-         JOIN proxima_core.memory_head h ON h.handle = m.handle"
+        "FROM proxima_core.memory m"
     };
     let sql = format!(
         "SELECT m.t,
                 m.kind::text,
-                h.schema_id,
+                m.schema_id,
                 COALESCE(uuid_extract_timestamp(m.t), TIMESTAMPTZ '1970-01-01') AS created_at
            {from}
           WHERE m.t = ANY($1::uuid[])
             AND m.owner_id = ANY($2::uuid[])
             AND ($3::text IS NULL OR m.kind::text = $3)
-            AND ($4::text IS NULL OR h.schema_id = $4)
+            AND ($4::text IS NULL OR m.schema_id = $4)
             AND ($5::timestamptz IS NULL
                  OR COALESCE(uuid_extract_timestamp(m.t), TIMESTAMPTZ '1970-01-01') >= $5)
             AND ($6::timestamptz IS NULL
@@ -654,5 +654,25 @@ fn parse_kind(kind: &str) -> Option<EntityKind> {
         "abstraction" => Some(EntityKind::Abstraction),
         "perspective" => Some(EntityKind::Perspective),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn admit_reads_schema_from_memory() {
+        let src = include_str!("search.rs");
+        let join = format!(
+            "{}{}",
+            "JOIN proxima_core.memory_head h ON h.handle = ", "m.handle\""
+        );
+        assert!(
+            !src.contains(&join),
+            "W5: non-HeadsOnly admit does not join head for schema_id"
+        );
+        assert!(
+            src.contains("m.schema_id"),
+            "admit selects memory.schema_id"
+        );
     }
 }

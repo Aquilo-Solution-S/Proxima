@@ -419,8 +419,8 @@ mod pg_tests {
             .execute(pg.pool_for_tests())
             .await?;
             sqlx::query(
-                "INSERT INTO proxima_core.memory (handle, t, kind, owner_id)
-                 VALUES ($1, $2, 'fact', $3)",
+                "INSERT INTO proxima_core.memory (handle, t, kind, owner_id, schema_id)
+                 VALUES ($1, $2, 'fact', $3, 'core/agent-note-v1')",
             )
             .bind(note_handle)
             .bind(note_t)
@@ -471,8 +471,8 @@ mod pg_tests {
             .execute(pg.pool_for_tests())
             .await?;
             sqlx::query(
-                "INSERT INTO proxima_core.memory (handle, t, kind, owner_id)
-                 VALUES ($1, $2, 'fact', $3)",
+                "INSERT INTO proxima_core.memory (handle, t, kind, owner_id, schema_id)
+                 VALUES ($1, $2, 'fact', $3, 'core/utterance-v1')",
             )
             .bind(utter_handle)
             .bind(utter_t)

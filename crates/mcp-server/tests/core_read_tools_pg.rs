@@ -831,13 +831,14 @@ async fn insert_memory_row(
     .execute(pg.pool_for_tests())
     .await?;
     sqlx::query(
-        "INSERT INTO proxima_core.memory (handle, t, kind, owner_id, origins)
-         VALUES ($1, $2, $3::proxima_core.memory_kind, $4, $5)",
+        "INSERT INTO proxima_core.memory (handle, t, kind, owner_id, schema_id, origins)
+         VALUES ($1, $2, $3::proxima_core.memory_kind, $4, $5, $6)",
     )
     .bind(handle)
     .bind(t)
     .bind(kind)
     .bind(owner_id)
+    .bind(schema_id)
     .bind(origins)
     .execute(pg.pool_for_tests())
     .await?;
@@ -888,8 +889,8 @@ async fn insert_origin_edge(
             .fetch_one(pg.pool_for_tests())
             .await?;
     let schema_id: String =
-        sqlx::query_scalar("SELECT schema_id FROM proxima_core.memory_head WHERE handle = $1")
-            .bind(handle)
+        sqlx::query_scalar("SELECT schema_id FROM proxima_core.memory WHERE t = $1")
+            .bind(source)
             .fetch_one(pg.pool_for_tests())
             .await?;
     let t = uuid::Uuid::now_v7();
@@ -899,17 +900,17 @@ async fn insert_origin_edge(
         .execute(pg.pool_for_tests())
         .await?;
     sqlx::query(
-        "INSERT INTO proxima_core.memory (handle, t, kind, owner_id, origins)
-         VALUES ($1, $2, $3::proxima_core.memory_kind, $4, $5)",
+        "INSERT INTO proxima_core.memory (handle, t, kind, owner_id, schema_id, origins)
+         VALUES ($1, $2, $3::proxima_core.memory_kind, $4, $5, $6)",
     )
     .bind(handle)
     .bind(t)
     .bind(&kind)
     .bind(owner_id)
+    .bind(&schema_id)
     .bind([target])
     .execute(pg.pool_for_tests())
     .await?;
-    let _ = schema_id;
     Ok(())
 }
 

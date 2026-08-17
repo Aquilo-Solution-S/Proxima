@@ -51,7 +51,7 @@ pub async fn load_abstraction_heads(
                JOIN proxima_core.memory m ON m.handle = h.handle AND m.t = h.t
               WHERE m.owner_id = $1
                 AND m.kind = 'abstraction'
-                AND h.schema_id = $2
+                AND m.schema_id = $2
               ORDER BY m.t DESC
               LIMIT $3",
         )
@@ -112,10 +112,9 @@ pub async fn load_memory_by_id(
     sidecars: &[SidecarSpec],
 ) -> Result<Option<MemorySnapshot>, StorageError> {
     let raw: Option<(String, String, OwnerRefKind, uuid::Uuid)> = sqlx::query_as(
-        "SELECT m.kind::text, h.schema_id,
+        "SELECT m.kind::text, m.schema_id,
                 o.kind::text::proxima_core.owner_kind, m.owner_id
            FROM proxima_core.memory m
-           JOIN proxima_core.memory_head h ON h.handle = m.handle
            JOIN proxima_core.owners o ON o.owner_id = m.owner_id
           WHERE m.t = $1",
     )
@@ -172,10 +171,9 @@ pub async fn load_memories_by_ids(
         .collect();
     let ids: Vec<uuid::Uuid> = memory_ids.iter().map(|id| id.into_inner()).collect();
     let raw: Vec<(uuid::Uuid, String, String, OwnerRefKind, uuid::Uuid)> = sqlx::query_as(
-        "SELECT m.t, m.kind::text, h.schema_id,
+        "SELECT m.t, m.kind::text, m.schema_id,
                 o.kind::text::proxima_core.owner_kind, m.owner_id
            FROM proxima_core.memory m
-           JOIN proxima_core.memory_head h ON h.handle = m.handle
            JOIN proxima_core.owners o ON o.owner_id = m.owner_id
           WHERE m.owner_id = ANY($1::uuid[])
             AND m.t = ANY($2::uuid[])

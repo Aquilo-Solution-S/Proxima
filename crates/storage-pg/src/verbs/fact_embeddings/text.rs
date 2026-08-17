@@ -114,9 +114,8 @@ where
     E: Executor<'e, Database = Postgres>,
 {
     sqlx::query_scalar(
-        "SELECT h.schema_id
+        "SELECT m.schema_id
            FROM proxima_core.memory m
-           JOIN proxima_core.memory_head h ON h.handle = m.handle
           WHERE m.t = $1
             AND m.owner_id = $2",
     )
@@ -180,4 +179,20 @@ fn projection_embed_text(
         "NULLIF(concat_ws(' ', {}), '')",
         expressions.join(", ")
     )))
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn embed_text_schema_is_on_memory() {
+        let src = include_str!("text.rs");
+        let join = format!(
+            "{}{}",
+            "JOIN proxima_core.memory_head h ON h.handle", " = m.handle"
+        );
+        assert!(
+            !src.contains(&join),
+            "W5: embed text reads schema_id from memory"
+        );
+    }
 }

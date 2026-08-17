@@ -186,14 +186,13 @@ fn memory_page_sql(
         "FROM proxima_core.memory_head h \
          JOIN proxima_core.memory m ON m.handle = h.handle AND m.t = h.t"
     } else {
-        "FROM proxima_core.memory m \
-         JOIN proxima_core.memory_head h ON h.handle = m.handle"
+        "FROM proxima_core.memory m"
     };
     let mut sql = format!(
         "SELECT m.t AS memory_id, m.handle, \
                 COALESCE(uuid_extract_timestamp(m.t), TIMESTAMPTZ '1970-01-01') AS created_at, \
                 o.kind::text::proxima_core.owner_kind AS owner_kind, \
-                m.owner_id, h.schema_id, 1::int4 AS schema_version, \
+                m.owner_id, m.schema_id, 1::int4 AS schema_version, \
                 m.kind::text AS kind, m.origins, m.refs \
          {from} \
          JOIN proxima_core.owners o ON o.owner_id = m.owner_id \
@@ -201,7 +200,7 @@ fn memory_page_sql(
     );
     let mut next = 2_u32;
     if has_schema {
-        let _ = write!(sql, " AND h.schema_id = ${next}");
+        let _ = write!(sql, " AND m.schema_id = ${next}");
         next += 1;
     }
     if has_kind {
@@ -245,4 +244,24 @@ pub fn memory_page_sql_for_tests(req: &QueryRequest) -> Result<String, StorageEr
         matches!(&req.page.after, Some(QueryCursor::Memory { .. })),
         fetch_limit,
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn non_head_query_does_not_join_head_for_schema() {
+        let src = include_str!("memories.rs");
+        let join = format!(
+            "{}{}",
+            "JOIN proxima_core.memory_head h ON h.handle = ", "m.handle\""
+        );
+        assert!(
+            !src.contains(&join),
+            "W5: IncludeSuperseded reads m.schema_id; head join is HeadsOnly only"
+        );
+        assert!(
+            src.contains("m.schema_id"),
+            "W5: query page selects memory.schema_id"
+        );
+    }
 }

@@ -84,6 +84,7 @@ struct HotRow {
     t: Uuid,
     kind: String,
     owner_id: Uuid,
+    schema_id: String,
     source_id: Option<String>,
     ingest_key: Option<String>,
     blob_id: Option<Uuid>,
@@ -138,6 +139,7 @@ fn decode_record(bytes: &[u8]) -> Result<ColdRecord, StorageError> {
         t: read_uuid(bytes, &mut i)?,
         kind: read_str(bytes, &mut i)?,
         owner_id: read_uuid(bytes, &mut i)?,
+        schema_id: String::new(),
         source_id: read_opt_str(bytes, &mut i)?,
         ingest_key: read_opt_str(bytes, &mut i)?,
         blob_id: read_opt_uuid(bytes, &mut i)?,
@@ -473,7 +475,7 @@ pub async fn forget_memory(
     t: Uuid,
 ) -> Result<(), StorageError> {
     let row: HotRow = sqlx::query_as(
-        "SELECT handle, t, kind::text, owner_id, source_id, ingest_key, blob_id, origins, refs
+        "SELECT handle, t, kind::text, owner_id, schema_id, source_id, ingest_key, blob_id, origins, refs
            FROM proxima_core.memory
           WHERE t = $1
           FOR UPDATE",
@@ -483,12 +485,7 @@ pub async fn forget_memory(
     .await
     .map_err(map_err)?
     .ok_or(StorageError::NotFound)?;
-    let schema_id: String =
-        sqlx::query_scalar("SELECT schema_id FROM proxima_core.memory_head WHERE handle = $1")
-            .bind(row.handle)
-            .fetch_one(tx.as_mut())
-            .await
-            .map_err(map_err)?;
+    let schema_id = row.schema_id.clone();
     let sidecar_dumps = dump_registered_sidecars(tx, sidecars, t).await?;
     let embed_models: Vec<String> = sqlx::query_scalar(
         "SELECT DISTINCT model_id FROM proxima_core.embeddings WHERE entity_id = $1",
@@ -569,13 +566,14 @@ pub async fn hydrate_memory(
     let rec = decode_record(&cold.get(&object_key).await?)?;
     sqlx::query(
         "INSERT INTO proxima_core.memory
-            (handle, t, kind, owner_id, source_id, ingest_key, blob_id, origins, refs)
-         VALUES ($1, $2, $3::proxima_core.memory_kind, $4, $5, $6, $7, $8, $9)",
+            (handle, t, kind, owner_id, schema_id, source_id, ingest_key, blob_id, origins, refs)
+         VALUES ($1, $2, $3::proxima_core.memory_kind, $4, $5, $6, $7, $8, $9, $10)",
     )
     .bind(rec.row.handle)
     .bind(rec.row.t)
     .bind(&rec.row.kind)
     .bind(rec.row.owner_id)
+    .bind(&rec.schema_id)
     .bind(rec.row.source_id.as_deref())
     .bind(rec.row.ingest_key.as_deref())
     .bind(rec.row.blob_id)

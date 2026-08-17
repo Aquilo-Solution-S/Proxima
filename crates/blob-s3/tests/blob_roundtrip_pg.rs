@@ -372,7 +372,7 @@ async fn concurrent_completions_of_one_file_converge_on_one_artefact() {
         "SELECT count(*)::bigint
            FROM proxima_core.memory m
            JOIN proxima_core.memory_head h ON h.handle = m.handle AND h.t = m.t
-          WHERE h.schema_id = 'core/upload-v1'",
+          WHERE m.schema_id = 'core/upload-v1'",
     )
     .fetch_one(&pool)
     .await
@@ -425,7 +425,7 @@ async fn a_completion_racing_an_abort_never_reports_a_committed_write_as_failed(
         "SELECT count(*)::bigint
            FROM proxima_core.memory m
            JOIN proxima_core.memory_head h ON h.handle = m.handle AND h.t = m.t
-          WHERE h.schema_id = 'core/upload-v1'",
+          WHERE m.schema_id = 'core/upload-v1'",
     )
     .fetch_one(&pool)
     .await

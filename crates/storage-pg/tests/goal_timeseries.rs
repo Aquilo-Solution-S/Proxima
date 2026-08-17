@@ -72,8 +72,7 @@ async fn goal_write_replay_terminal_and_write_act() {
         assert!(created.write_act_t.is_some());
 
         let schema: String = sqlx::query_scalar(
-            "SELECT h.schema_id FROM proxima_core.memory m
-              JOIN proxima_core.memory_head h ON h.handle = m.handle
+            "SELECT m.schema_id FROM proxima_core.memory m
              WHERE m.t = $1",
         )
         .bind(created.write_act_t)

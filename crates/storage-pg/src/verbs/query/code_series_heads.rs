@@ -41,7 +41,7 @@ pub async fn owned_file_revision_heads(
            JOIN proxima_core.memory_head h ON h.handle = m.handle AND h.t = m.t
           WHERE m.owner_id = $1
             AND fr.repo_id = $2
-            AND h.schema_id = $3
+            AND m.schema_id = $3
           ORDER BY fr.file_path ASC",
     )
     .bind(owner.stored_owner_id())
@@ -74,7 +74,7 @@ pub async fn readable_file_revision_head_ts(
           WHERE m.owner_id IN ($1, $2)
             AND fr.repo_id = $3
             AND fr.file_path = $4
-            AND h.schema_id = $5
+            AND m.schema_id = $5
           ORDER BY (m.owner_id = $1) DESC, fr.t DESC",
     )
     .bind(owner_id)
@@ -108,7 +108,7 @@ pub async fn owned_present_chunk_indexes(
             AND c.repo_id = $2
             AND c.file_path = $3
             AND c.state = 'Present'
-            AND h.schema_id = $4
+            AND m.schema_id = $4
           ORDER BY c.chunk_index ASC",
     )
     .bind(owner.stored_owner_id())
@@ -143,7 +143,7 @@ pub async fn readable_chunk_head_ts_for_file(
             AND c.repo_id = $3
             AND c.file_path = $4
             AND c.state = 'Present'
-            AND h.schema_id = $5
+            AND m.schema_id = $5
           ORDER BY c.chunk_index ASC",
     )
     .bind(owner_id)

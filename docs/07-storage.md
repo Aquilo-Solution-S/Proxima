@@ -11,7 +11,7 @@ sidecars. Exact DDL is `crates/storage-pg/migrations/0001_v008.sql`.
 |---|---|---|
 | `UserId`, `GroupId` | UUIDv7 | external identity |
 | `SourceId` | text | stable source-declared id |
-| `SchemaId` | text | flavor-qualified; stored on the head |
+| `SchemaId` | text | flavor-qualified; on `memory_head` and each `memory` row (same value) |
 | `ToolId` | text | build-time tool id (05 / 12) |
 | `MemoryId` | UUIDv7 | `memory.t` |
 | `GoalId` | UUIDv7 | `goal.t` |
@@ -73,7 +73,7 @@ Closed vocabularies are SQL enums.
 |---|---|
 | `owners` | `owner_id`, `kind`; World seeded |
 | `memory_head` | `handle` PK, `kind`, `schema_id`, `owner_id`, head `t` |
-| `memory` | `(handle, t)` PK, `UNIQUE(t)`, `origins[]`, `refs[]`, `blob_id` |
+| `memory` | `(handle, t)` PK, `UNIQUE(t)`, `schema_id`, `origins[]`, `refs[]`, `blob_id` |
 | `ingest_keys` | `(owner_id, source_id, ingest_key)` → `t` |
 | `announce` | `seq`, `op` append\|forget\|erase, `entity` memory\|goal |
 | `blob` | cited artefact |

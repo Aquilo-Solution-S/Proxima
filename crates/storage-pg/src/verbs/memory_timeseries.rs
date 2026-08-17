@@ -170,13 +170,14 @@ pub async fn ingest_fact_timeseries(
 
     sqlx::query(
         "INSERT INTO proxima_core.memory
-            (handle, t, kind, owner_id, source_id, ingest_key, blob_id, origins, refs)
-         VALUES ($1, $2, $3::proxima_core.memory_kind, $4, $5, $6, $7, $8, $9)",
+            (handle, t, kind, owner_id, schema_id, source_id, ingest_key, blob_id, origins, refs)
+         VALUES ($1, $2, $3::proxima_core.memory_kind, $4, $5, $6, $7, $8, $9, $10)",
     )
     .bind(handle)
     .bind(t)
     .bind(kind)
     .bind(owner_id)
+    .bind(draft.schema_id.as_str())
     .bind(source_id.as_deref())
     .bind(ingest_key.as_deref())
     .bind(draft.blob_id)

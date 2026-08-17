@@ -87,6 +87,19 @@ async fn memory_timeseries_keyless_and_ingest_key_replay() {
             "replay must not bump head"
         );
 
+        let row_schema: String =
+            sqlx::query_scalar("SELECT schema_id FROM proxima_core.memory WHERE t = $1")
+                .bind(a.memory_id.into_inner())
+                .fetch_one(pg.pool_for_tests())
+                .await?;
+        let head_schema: String =
+            sqlx::query_scalar("SELECT schema_id FROM proxima_core.memory_head WHERE handle = $1")
+                .bind(a.handle)
+                .fetch_one(pg.pool_for_tests())
+                .await?;
+        assert_eq!(row_schema, "core/test-fact-v1");
+        assert_eq!(row_schema, head_schema);
+
         Ok(())
     }
     .await;

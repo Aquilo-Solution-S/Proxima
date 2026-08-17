@@ -34,12 +34,13 @@ async fn insert_repo_commit_with_test_request(
     .execute(pool)
     .await?;
     sqlx::query(
-        "INSERT INTO proxima_core.memory (handle, t, kind, owner_id)
-         VALUES ($1, $2, 'fact', $3)",
+        "INSERT INTO proxima_core.memory (handle, t, kind, owner_id, schema_id)
+         VALUES ($1, $2, 'fact', $3, $4)",
     )
     .bind(handle)
     .bind(memory_id)
     .bind(owner_id)
+    .bind(CommitV1::SCHEMA_ID)
     .execute(pool)
     .await?;
 
