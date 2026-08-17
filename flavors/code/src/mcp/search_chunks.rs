@@ -461,7 +461,7 @@ async fn resolve_query_embedding(
     }
     let Some(embed) = engine.embed_client() else {
         if mode == ChunkSearchMode::Semantic {
-            return Err(ToolError::Other(
+            return Err(ToolError::Unavailable(
                 SEMANTIC_CHUNK_SEARCH_UNAVAILABLE.to_string(),
             ));
         }
@@ -471,7 +471,7 @@ async fn resolve_query_embedding(
     // here; both land in the same place.
     match embed.embed(query).await {
         Ok(embedding) => Ok((mode, Some((embedding, embed.model_id().to_string())))),
-        Err(err) if mode == ChunkSearchMode::Semantic => Err(ToolError::Other(format!(
+        Err(err) if mode == ChunkSearchMode::Semantic => Err(ToolError::Unavailable(format!(
             "semantic chunk search unavailable: embedding provider error: {err}"
         ))),
         Err(err) => {

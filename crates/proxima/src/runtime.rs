@@ -15,7 +15,7 @@ use proxima_core::storage_ports::{
 };
 use proxima_core::{
     AuthPath, Authenticator, AuthzContext, DelegationRuntimeAuthority, EmbeddingClient,
-    FlavorRegistryFrozen, FlavorServices, RevalidationConfig, ToolScope,
+    FlavorRegistryFrozen, FlavorServiceError, FlavorServices, RevalidationConfig, ToolScope,
 };
 use proxima_core::{Engine, EngineHandle, Owner, OwnerRef, Role, UserId};
 use proxima_mcp_server::{
@@ -408,6 +408,26 @@ impl BuiltProxima {
         )
     }
 
+    /// Same as [`Self::core_mcp_tools`], with a per-request
+    /// [`FlavorServices`] bag merged onto the boot set (`try_extend`).
+    ///
+    /// # Errors
+    ///
+    /// [`FlavorServiceError::DuplicateService`] when `request` repeats a
+    /// type already in the boot bag.
+    pub fn core_mcp_tools_with_request_services(
+        &self,
+        request: FlavorServices,
+    ) -> Result<CoreMcpTools, FlavorServiceError> {
+        let mut services = self.services.clone();
+        services.try_extend(request)?;
+        Ok(CoreMcpTools::new(
+            self.registry.clone(),
+            self.engine.clone(),
+            services,
+        ))
+    }
+
     #[must_use]
     pub fn engine(&self) -> Arc<Engine> {
         self.engine.clone()
@@ -498,6 +518,26 @@ impl RunningProxima {
             self.engine.clone(),
             self.services.clone(),
         )
+    }
+
+    /// Same as [`Self::core_mcp_tools`], with a per-request
+    /// [`FlavorServices`] bag merged onto the boot set (`try_extend`).
+    ///
+    /// # Errors
+    ///
+    /// [`FlavorServiceError::DuplicateService`] when `request` repeats a
+    /// type already in the boot bag.
+    pub fn core_mcp_tools_with_request_services(
+        &self,
+        request: FlavorServices,
+    ) -> Result<CoreMcpTools, FlavorServiceError> {
+        let mut services = self.services.clone();
+        services.try_extend(request)?;
+        Ok(CoreMcpTools::new(
+            self.registry.clone(),
+            self.engine.clone(),
+            services,
+        ))
     }
 
     #[must_use]

@@ -8,7 +8,7 @@ use super::handles::{
     GoalWriteHandle, McpCallReadHandle, McpCallWriteHandle, MemoryAuthoringHandle,
     MemoryInspectHandle, MemoryReadHandle, OwnerAccessReadHandle, OwnerDropProofHandle,
     OwnerMembershipAdminHandle, OwnerTransferHandle, RegistryProjectionHandle, SourceBatchHandle,
-    SourceCursorHandle,
+    SourceCursorHandle, WriteSessionFactoryHandle,
 };
 use super::rejecting::RejectingStorage;
 
@@ -41,6 +41,7 @@ pub struct StoragePorts {
     compliance_admin: Option<ComplianceAdminHandle>,
     owner_drop_proof: Option<OwnerDropProofHandle>,
     registry_projection: RegistryProjectionHandle,
+    write_session: WriteSessionFactoryHandle,
 }
 
 #[derive(Clone)]
@@ -129,6 +130,7 @@ pub(crate) struct EngineStoragePorts {
     pub pipeline: PipelineStoragePorts,
     pub query: QueryStoragePorts,
     pub read_verb: ReadVerbStoragePorts,
+    pub write_session: WriteSessionFactoryHandle,
 }
 
 #[derive(Default)]
@@ -158,6 +160,7 @@ pub struct StoragePortsBuilder {
     compliance_admin: Option<ComplianceAdminHandle>,
     owner_drop_proof: Option<OwnerDropProofHandle>,
     registry_projection: Option<RegistryProjectionHandle>,
+    write_session: Option<WriteSessionFactoryHandle>,
 }
 
 impl fmt::Debug for StoragePorts {
@@ -208,6 +211,7 @@ impl StoragePorts {
             compliance_admin: None,
             owner_drop_proof: None,
             registry_projection: rejecting.clone(),
+            write_session: rejecting,
         }
     }
 
@@ -300,6 +304,7 @@ impl From<StoragePorts> for EngineStoragePorts {
                 goal_wake_candidate: ports.goal_wake_candidate.clone(),
                 goal_read: ports.goal_read.clone(),
             },
+            write_session: ports.write_session,
         }
     }
 }
@@ -455,6 +460,12 @@ impl StoragePortsBuilder {
         self
     }
 
+    #[must_use]
+    pub fn write_session(mut self, handle: WriteSessionFactoryHandle) -> Self {
+        self.write_session = Some(handle);
+        self
+    }
+
     /// Builds a complete storage port bundle, collecting every unconfigured
     /// required port into a typed error instead of panicking on the first one.
     ///
@@ -510,6 +521,7 @@ impl StoragePortsBuilder {
             fact_retention,
             compliance_erase,
             registry_projection,
+            write_session,
         ))
     }
 

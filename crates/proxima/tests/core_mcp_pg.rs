@@ -5,7 +5,7 @@ use std::sync::Arc;
 use proxima::flavor::{FlavorBundle, NamedMigrator, PgSidecarRegistry};
 use proxima::{
     AppInfo, AuthzContext, CoreMcpError, CoreMcpErrorKind, CoreMcpTools, CoreToolInfo, FlavorApp,
-    Proxima, StorageError, ToolScope, company_owner,
+    FlavorServiceError, FlavorServices, Proxima, StorageError, ToolScope, company_owner,
 };
 use proxima_core::test_fixtures::ConstantEmbedding;
 use proxima_core::{
@@ -129,6 +129,37 @@ impl FlavorApp for EmptyApp {
             title: "Core MCP Test",
             version: "1",
         }
+    }
+}
+
+#[derive(Debug)]
+struct BootMark;
+
+struct MarkApp;
+
+impl FlavorBundle for MarkApp {
+    fn register(_: &mut FlavorRegistry) -> Result<(), proxima_core::FlavorRegistryError> {
+        Ok(())
+    }
+
+    fn migrators() -> Vec<NamedMigrator> {
+        Vec::new()
+    }
+}
+
+impl FlavorApp for MarkApp {
+    fn app_info() -> AppInfo {
+        AppInfo {
+            id: "mark-app",
+            title: "Mark App",
+            version: "1",
+        }
+    }
+
+    fn services(_: &proxima::AppContext) -> Result<FlavorServices, FlavorServiceError> {
+        let mut services = FlavorServices::new();
+        services.try_insert(BootMark)?;
+        Ok(services)
     }
 }
 
@@ -548,6 +579,7 @@ fn assert_facade_projects_output_schema(registry: &FlavorRegistryFrozen, tool: &
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn facade_lists_and_dispatches_core_mcp_tools() {
     let db_name = unique_db_name("proxima_core_mcp");
     create_db(&db_name).await.expect("PG required for tests");
@@ -614,6 +646,37 @@ async fn facade_lists_and_dispatches_core_mcp_tools() {
         )
         .await?;
         assert!(output.get("memories").is_some(), "read tool returns JSON");
+
+        let palette_denied = tools
+            .call_core_tool(
+                host_authz(
+                    &owner,
+                    ToolScope::Palette(vec!["core_search_memories".to_string()]),
+                ),
+                owner,
+                None,
+                "core_remember",
+                serde_json::json!({
+                    "title": "denied",
+                    "body": "palette must be a call gate",
+                    "idempotency_key": "palette-denied-remember"
+                }),
+            )
+            .await;
+        assert!(
+            matches!(palette_denied, Err(CoreMcpError::NotAuthorized(ref tool)) if tool == "core_remember"),
+            "palette must deny the call, not only hide the tool: {palette_denied:?}"
+        );
+
+        let empty_request = built
+            .core_mcp_tools_with_request_services(FlavorServices::default())
+            .expect("empty request bag merges");
+        let listed_after_merge = empty_request.list_core_tools();
+        assert!(
+            listed_after_merge
+                .iter()
+                .any(|tool| tool.name == "core_search_memories")
+        );
 
         let retired = tools
             .call_core_tool(
@@ -1247,4 +1310,35 @@ async fn core_forget_cools_a_remembered_fact() {
 
     let _ = drop_db(&db_name).await;
     result.expect("core_forget must drive shipped forget_memory");
+}
+
+#[tokio::test]
+async fn request_services_reject_duplicate_boot_type() {
+    let db_name = unique_db_name("proxima_request_services");
+    create_db(&db_name).await.expect("PG required for tests");
+    let db_url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let owner = company_owner(Uuid::now_v7());
+        let built = Proxima::<MarkApp>::app()
+            .database_url(db_url)
+            .owner(owner)
+            .allow_insecure_single_owner()
+            .tool_scope(ToolScope::All)
+            .build()
+            .await?;
+        let mut request = FlavorServices::new();
+        request.try_insert(BootMark)?;
+        let err = built
+            .core_mcp_tools_with_request_services(request)
+            .expect_err("boot Marker + request Marker");
+        assert!(
+            matches!(err, FlavorServiceError::DuplicateService { .. }),
+            "{err:?}"
+        );
+        built.shutdown();
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("duplicate request service must fail");
 }

@@ -14,6 +14,7 @@ use super::goals::{GoalReadPort, GoalWakeCandidatePort, GoalWritePort};
 use super::mcp::{McpCallReadPort, McpCallWritePort};
 use super::memory::{CitationPort, MemoryAuthoringPort, MemoryInspectPort, MemoryReadPort};
 use super::registry::RegistryProjectionPort;
+use super::write_session::WriteSessionFactory;
 
 pub type FactIngestHandle = Arc<dyn FactIngestPort>;
 pub type McpCallWriteHandle = Arc<dyn McpCallWritePort>;
@@ -40,3 +41,4 @@ pub type ComplianceEraseHandle = Arc<dyn ComplianceErasePort>;
 pub type RegistryProjectionHandle = Arc<dyn RegistryProjectionPort>;
 pub type ComplianceAdminHandle = Arc<dyn ComplianceAdminPort>;
 pub type OwnerDropProofHandle = Arc<dyn OwnerDropProofPort>;
+pub type WriteSessionFactoryHandle = Arc<dyn WriteSessionFactory>;

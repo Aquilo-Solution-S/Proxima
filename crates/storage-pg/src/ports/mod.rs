@@ -9,6 +9,7 @@ mod memory;
 mod owners;
 mod read;
 mod registry;
+mod write_session;
 
 fn validate_permit_owner(permit: &OwnerWritePermit, owner: &Owner) -> Result<(), StorageError> {
     if permit.owner() == owner {

@@ -22,6 +22,7 @@ mod memory;
 mod proof;
 mod registry;
 mod rejecting;
+mod write_session;
 
 pub use access::{OwnerAccessReadPort, OwnerMembershipAdminPort, OwnerTransferPort};
 pub(crate) use bundle::{
@@ -69,7 +70,7 @@ pub use handles::{
     GoalWriteHandle, McpCallReadHandle, McpCallWriteHandle, MemoryAuthoringHandle,
     MemoryInspectHandle, MemoryReadHandle, OwnerAccessReadHandle, OwnerDropProofHandle,
     OwnerMembershipAdminHandle, OwnerTransferHandle, RegistryProjectionHandle, SourceBatchHandle,
-    SourceCursorHandle,
+    SourceCursorHandle, WriteSessionFactoryHandle,
 };
 pub use mcp::{McpCallReadPort, McpCallWritePort};
 pub use memory::{
@@ -77,3 +78,4 @@ pub use memory::{
 };
 pub use proof::{OperatorMaintenanceProof, OwnerWritePermit};
 pub use registry::RegistryProjectionPort;
+pub use write_session::{WriteSession, WriteSessionFactory};

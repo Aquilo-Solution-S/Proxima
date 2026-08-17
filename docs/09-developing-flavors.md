@@ -50,6 +50,12 @@ migrations/
 
 Compiling witnesses: `flavors/code` (flavor crate) and `apps/proxima-mcp` (host).
 
+Out-of-tree `Cargo.toml` pins **one** `proxima` git selector, identical in
+form and value to every host that links the flavor (`tag = "v0.0.8"` or
+`rev = "<commit>"`, never both in one graph). Writes go through
+`proxima::Engine` (Host API). Do not depend on `proxima-core` or
+`proxima-storage-pg` for Fact ingest.
+
 ## Build Order
 
 1. Pick one stable `flavor_id`.

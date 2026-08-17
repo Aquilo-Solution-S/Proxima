@@ -315,6 +315,14 @@ mod tests {
                 StatusCode::SERVICE_UNAVAILABLE,
             ),
             (
+                McpToolError::from(proxima_core::ToolError::NotFound("x".into())),
+                StatusCode::NOT_FOUND,
+            ),
+            (
+                McpToolError::from(proxima_core::ToolError::Unavailable("x".into())),
+                StatusCode::SERVICE_UNAVAILABLE,
+            ),
+            (
                 McpToolError::Other("x".into()),
                 StatusCode::INTERNAL_SERVER_ERROR,
             ),

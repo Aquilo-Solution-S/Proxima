@@ -16,6 +16,7 @@ use super::memory::{
 };
 use super::proof::{OperatorMaintenanceProof, OwnerWritePermit};
 use super::registry::RegistryProjectionPort;
+use super::write_session::{WriteSession, WriteSessionFactory};
 
 use crate::access::AccessError;
 use crate::compliance::ComplianceEraseTarget;
@@ -850,5 +851,14 @@ impl RegistryProjectionPort for RejectingStorage {
         _limit: usize,
     ) -> Result<Vec<AbstractionRow>, StorageError> {
         Ok(Vec::new())
+    }
+}
+
+#[async_trait::async_trait]
+impl WriteSessionFactory for RejectingStorage {
+    async fn begin(&self) -> Result<Box<dyn WriteSession>, StorageError> {
+        Err(StorageError::Internal(
+            "RejectingStorage rejects writes".into(),
+        ))
     }
 }

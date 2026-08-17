@@ -34,6 +34,14 @@ const LEEWAY_SECS: u64 = 60;
 /// token, and what to advertise at the protected-resource metadata endpoint.
 pub type OidcBundle = (Arc<dyn Authenticator>, ResourceServerMetadata);
 
+/// Low-level OIDC primitives a host authenticator composes. Not a second
+/// authenticator: `oidc_from_env` stays the one-audience env path.
+pub use proxima_auth_oidc::{
+    HttpJwksResolver, KeyError, KeyResolver, OidcAuthConfig, OidcConfigError, OidcTokenValidator,
+    ValidatedOidcClaims,
+};
+pub use proxima_core::{AccessError, OwnerRoles};
+
 /// Build the OIDC authenticator and resource metadata from the process
 /// environment.
 ///

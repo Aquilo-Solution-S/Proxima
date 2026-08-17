@@ -285,7 +285,7 @@ impl Tool for CodeIngestHeadSnapshotTool {
             let repo = crate::repos::get_repo(pool.pool(), &ctx.owner(), repo_id)
                 .await
                 .map_err(map_repo_registry)?
-                .ok_or_else(|| ToolError::InvalidInput(format!("repo not found: {repo_id}")))?;
+                .ok_or_else(|| ToolError::NotFound(format!("repo not found: {repo_id}")))?;
 
             let source = crate::LocalGitSource::new(
                 repo.repo_id,
@@ -320,7 +320,7 @@ impl Tool for CodeIngestHeadSnapshotTool {
             let repo = crate::repos::get_repo(pool.pool(), &ctx.owner(), repo.repo_id)
                 .await
                 .map_err(map_repo_registry)?
-                .ok_or_else(|| ToolError::InvalidInput(format!("repo not found: {repo_id}")))?;
+                .ok_or_else(|| ToolError::NotFound(format!("repo not found: {repo_id}")))?;
 
             Ok(CodeIngestHeadSnapshotOutput {
                 repo: repo_item(&ctx, repo)?,
@@ -531,7 +531,7 @@ impl Tool for CodeEraseRepoTool {
             let repo = crate::repos::get_repo(pool.pool(), &ctx.owner(), repo_id)
                 .await
                 .map_err(map_repo_registry)?
-                .ok_or_else(|| ToolError::InvalidInput(format!("repo not found: {repo_id}")))?;
+                .ok_or_else(|| ToolError::NotFound(format!("repo not found: {repo_id}")))?;
 
             // Confirm against the stored path rather than the caller's, so a
             // handle typo cannot erase a different repository than the one
@@ -596,7 +596,7 @@ fn map_repo_registry(error: RepoRegistryError) -> ToolError {
             "repo already registered for owner: {canonical_path}"
         )),
         RepoRegistryError::NotFound { repo_id } => {
-            ToolError::InvalidInput(format!("repo not found: {repo_id}"))
+            ToolError::NotFound(format!("repo not found: {repo_id}"))
         }
         RepoRegistryError::InvalidTargetBranch {
             repo_id,

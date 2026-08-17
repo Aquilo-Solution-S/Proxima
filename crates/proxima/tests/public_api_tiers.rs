@@ -791,3 +791,21 @@ fn flavor_sdk_names_query_and_ingest_types() {
         proxima::flavor::FactWriteCommand,
     )> = None;
 }
+
+#[cfg(feature = "auth-oidc")]
+#[test]
+fn auth_module_names_oidc_primitives() {
+    let _: Option<(
+        proxima::auth::OidcAuthConfig,
+        proxima::auth::OidcTokenValidator,
+        proxima::auth::ValidatedOidcClaims,
+        proxima::auth::HttpJwksResolver,
+        proxima::auth::AccessError,
+        proxima::auth::OwnerRoles,
+    )> = None;
+    let _: fn(
+        &proxima::BuiltProxima,
+        proxima::flavor::FlavorServices,
+    ) -> Result<proxima::CoreMcpTools, proxima::flavor::FlavorServiceError> =
+        proxima::BuiltProxima::core_mcp_tools_with_request_services;
+}

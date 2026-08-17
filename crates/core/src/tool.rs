@@ -463,6 +463,10 @@ pub fn validate_search_query(query: &str) -> Result<&str, ToolError> {
 pub enum ToolError {
     #[error("invalid input: {0}")]
     InvalidInput(String),
+    /// Well-formed reference to an entity that does not exist or is not
+    /// visible. Maps to [`crate::mcp::McpToolError::NotFound`] (REST 404).
+    #[error("{0}")]
+    NotFound(String),
     #[error("tool not authorized: {0}")]
     NotAuthorized(String),
     #[error("{0}")]
@@ -471,6 +475,11 @@ pub enum ToolError {
     LayeringViolation(String),
     #[error("storage: {0}")]
     Storage(#[from] crate::StorageError),
+    /// A required capability is not configured (embedding client, blob
+    /// lane, engine). Maps to [`crate::mcp::McpToolError::Unavailable`]
+    /// (REST 503), not a redacted 500.
+    #[error("{0}")]
+    Unavailable(String),
     #[error("{0}")]
     Other(String),
 }

@@ -136,7 +136,7 @@ pub(in crate::engine) mod tests {
         TransitionGoalAtomicRequest,
     };
     use crate::mcp_call_history::{McpCallHistoryRequest, McpCallHistoryResponse};
-    use crate::storage_ports::StoragePorts;
+    use crate::storage_ports::{StoragePorts, WriteSession, WriteSessionFactory};
     use crate::*;
 
     #[derive(Debug)]
@@ -972,6 +972,15 @@ pub(in crate::engine) mod tests {
         }
     }
 
+    #[async_trait::async_trait]
+    impl WriteSessionFactory for MembershipStorage {
+        async fn begin(&self) -> Result<Box<dyn WriteSession>, StorageError> {
+            Err(StorageError::Internal(
+                "MembershipStorage rejects writes".into(),
+            ))
+        }
+    }
+
     impl MembershipStorage {
         #[must_use]
         pub(in crate::engine) fn storage_ports(self) -> StoragePorts {
@@ -999,7 +1008,8 @@ pub(in crate::engine) mod tests {
                 .source_cursor(storage.clone())
                 .fact_retention(storage.clone())
                 .compliance_erase(storage.clone())
-                .registry_projection(storage)
+                .registry_projection(storage.clone())
+                .write_session(storage)
                 .build()
         }
     }

@@ -687,7 +687,8 @@ impl PgStorage {
             .source_cursor(self.clone())
             .fact_retention(self.clone())
             .compliance_erase(self.clone())
-            .registry_projection(self)
+            .registry_projection(self.clone())
+            .write_session(self)
             .build()
     }
 

@@ -356,7 +356,11 @@ impl Engine {
     ///
     /// Storage would be the lower boundary, and cannot host this: the
     /// answer lives in the flavor registry, which storage does not hold.
-    fn vector_model_for<'a>(&self, schema_id: &str, requested: Option<&'a str>) -> Option<&'a str> {
+    pub(in crate::engine) fn vector_model_for<'a>(
+        &self,
+        schema_id: &str,
+        requested: Option<&'a str>,
+    ) -> Option<&'a str> {
         requested.filter(|_| self.registry().schema_is_embeddable(schema_id))
     }
 

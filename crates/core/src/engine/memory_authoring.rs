@@ -291,7 +291,7 @@ impl Engine {
     /// consult and no owner-equality rule beyond it — a source-owned row
     /// pointing at a foreign readable target is exactly what makes
     /// cross-owner provenance expressible.
-    async fn authorized_index_targets<A>(
+    pub(in crate::engine) async fn authorized_index_targets<A>(
         &self,
         authority: &A,
         source: EdgeEndpoint,
@@ -322,7 +322,7 @@ impl Engine {
     ///
     /// Schema-declared reference fields become index targets. Every
     /// address is a pin.
-    async fn authorized_payload_references<A>(
+    pub(in crate::engine) async fn authorized_payload_references<A>(
         &self,
         authority: &A,
         source: EdgeEndpoint,
@@ -423,7 +423,7 @@ impl Engine {
 /// client's declared `dim` (a misconfiguration, never the input's fault,
 /// so it is not deferrable), and `Internal` when the provider fails and
 /// does not answer a liveness probe.
-async fn resolve_derived_embedding<'client>(
+pub(in crate::engine) async fn resolve_derived_embedding<'client>(
     client: &'client dyn crate::llm::EmbeddingClient,
     memory_id: MemoryId,
     text: &str,
@@ -460,7 +460,7 @@ async fn resolve_derived_embedding<'client>(
     }
 }
 
-fn validate_operator_memory_invocation_request(
+pub(in crate::engine) fn validate_operator_memory_invocation_request(
     req: &AuthorDerivedRequestInput<'_>,
 ) -> Result<(), StorageError> {
     let _ = req.source_batch_id;
@@ -510,7 +510,7 @@ fn validate_operator_memory_invocation_request(
 /// surface. `ConstraintViolation`/`Conflict` are caller-fixable (a
 /// malformed operator invocation manifest, an idempotent-replay proof
 /// mismatch) and must surface as `InvalidArgument`, not `Internal`.
-fn map_derived_storage_error(err: StorageError) -> ProtocolError {
+pub(in crate::engine) fn map_derived_storage_error(err: StorageError) -> ProtocolError {
     super::errors::map_write_storage_error(
         err,
         "operator_invocation",

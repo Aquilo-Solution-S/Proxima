@@ -19,6 +19,7 @@ mod read_verbs;
 mod source_cursors;
 #[cfg(test)]
 mod storage_port_tests;
+mod unit_of_work;
 mod upload;
 
 use std::net::SocketAddr;
@@ -53,6 +54,7 @@ pub use read_verbs::{
     ListWakeCandidatesReadRequest, ListWakeCandidatesReadResponse, MAX_WAKE_CANDIDATE_LIMIT,
     SearchReadRequest, SearchReadResponse,
 };
+pub use unit_of_work::UnitOfWork;
 pub use upload::UploadCompleted;
 
 pub struct Engine {
