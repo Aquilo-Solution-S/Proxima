@@ -19,7 +19,7 @@ pub async fn query_heads(
                 m.origins, m.refs
            FROM proxima_core.memory_head h
            JOIN proxima_core.memory m ON m.handle = h.handle AND m.t = h.t
-          WHERE h.owner_id = $1 AND m.schema_id = $2
+          WHERE h.owner_id = $1 AND h.schema_id = $2
           ORDER BY h.handle",
     )
     .bind(owner_id)

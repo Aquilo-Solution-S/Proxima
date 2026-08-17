@@ -128,10 +128,13 @@ async fn migrations_apply_to_fresh_db() {
         for index in [
             "memory_owner_handle_t_idx",
             "memory_owner_t_handle_idx",
+            "memory_owner_schema_t_idx",
+            "memory_blob_id_idx",
             "memory_origins_gin",
             "memory_refs_gin",
             "memory_head_owner_schema_idx",
             "memory_head_owner_kind_idx",
+            "embedding_jobs_pending_claim_idx",
             "owners_kind_idx",
             "announce_owner_seq_idx",
             "idx_embeddings_vec_hnsw",

@@ -6,17 +6,13 @@ use crate::error::map_err;
 
 use super::ensure_nonnegative_limit;
 
-/// Claim jobs through one ordered, arm-matched scan per status arm —
-/// each riding its own partial index (`idx_embedding_jobs_pending_claim` /
-/// `idx_embedding_jobs_processing_reclaim`, migration 0018) — merged by
-/// UNION ALL and re-limited.
+/// Claim pending jobs for one model, ordered by `job_id`.
 ///
-/// A two-arm status `OR` over the whole backlog cannot use those indexes
-/// (`model_id` is not in a combined index; `OR` defeats ordered index use).
-/// Arms partition the `OR` and cannot overlap. Each arm locks up to `$3`
-/// rows (`FOR UPDATE` in the arm sub-selects: `PostgreSQL` rejects a
-/// locking clause on a UNION). Unclaimed locked rows release with the
-/// statement's transaction.
+/// One arm: `status = 'pending'`. Rides
+/// `embedding_jobs_pending_claim_idx (model_id, job_id) WHERE status =
+/// 'pending'`. Locked unclaimed rows release with the statement's
+/// transaction. There is no processing-reclaim arm and no
+/// `next_attempt_at` column.
 const CLAIM_EMBEDDING_JOBS_SQL: &str = "WITH claimed AS (
              SELECT job_id
                FROM proxima_core.embedding_jobs
@@ -136,22 +132,11 @@ async fn missing_embedding_ids(
     Ok(rows.into_iter().map(MemoryId::new).collect())
 }
 
-/// Atomically claim pending Fact embedding jobs for one model.
+/// Atomically claim pending embedding jobs for one model.
 ///
-/// A `pending` job is claimable only once `next_attempt_at` has elapsed
-/// (`fail_embedding_job` stamps exponential backoff there), so a transient
-/// provider outage no longer burns all attempts in a tight re-claim loop.
-///
-/// Stale `processing` jobs orphaned by a crashed or restarted drainer are
-/// reclaimed after fifteen minutes regardless of backoff. The window MUST
-/// exceed the embedding client's request timeout (the OpenAI-compat default,
-/// `crates/llm-openai-compat/src/openai_compat.rs` `DEFAULT_EMBED_TIMEOUT`).
-/// Both drainers claim their whole batch in one statement, so the window
-/// must exceed the batch's worst-case wall time rather than one job's. The
-/// claim `UPDATE` resets `updated_at = now()`, so a reclaimed orphan
-/// restarts its clock. Reclaim does not increment attempts; crash-loop
-/// poison-pill bounding is out of scope, while embed-error retries still go
-/// through `fail_embedding_job`.
+/// Selects `status = 'pending'` rows for `$1`, skips the exclude list,
+/// `FOR UPDATE SKIP LOCKED`, then sets `processing`. v0.0.8 has no
+/// `next_attempt_at` and no processing-reclaim arm.
 ///
 /// # Errors
 ///
@@ -212,12 +197,11 @@ pub async fn complete_embedding_job(
     Ok(())
 }
 
-/// Record a failed embedding attempt and retry until the cap.
+/// Return a processing job to `pending`.
 ///
-/// Below the cap the job returns to `pending` with `next_attempt_at` set to an
-/// exponential backoff (`30s * 2^attempts`), so the drainer stops re-claiming
-/// it immediately; at the cap it settles to `failed` (see `reconcile_embeddings`
-/// for the requeue path out of that terminal state).
+/// v0.0.8 has no attempt counter or `next_attempt_at`; the row is
+/// immediately claimable again. Permanent rejection uses
+/// [`fail_embedding_job_permanently`].
 ///
 /// # Errors
 ///
@@ -279,12 +263,11 @@ pub async fn fail_embedding_job_permanently(
     Ok(())
 }
 
-/// Return claimed-but-unattempted jobs to `pending` without incrementing
-/// `attempts`. Batch-drain uses this when one provider call covering many
-/// jobs fails for a transient cause: the failure is not evidence against
-/// any individual job, so none should march toward the attempt cap. The
-/// flat 30s `next_attempt_at` keeps concurrent drainers from immediately
-/// re-claiming the same set.
+/// Return claimed-but-unattempted jobs to `pending`.
+///
+/// Batch-drain uses this when one provider call covering many jobs
+/// fails for a transient cause. v0.0.8 has no `next_attempt_at`; rows
+/// are immediately claimable.
 ///
 /// # Errors
 ///

@@ -188,6 +188,11 @@ fn memory_page_sql(
     } else {
         "FROM proxima_core.memory m"
     };
+    let owner_pred = if heads_only {
+        "h.owner_id = ANY($1::uuid[])"
+    } else {
+        "m.owner_id = ANY($1::uuid[])"
+    };
     let mut sql = format!(
         "SELECT m.t AS memory_id, m.handle, \
                 COALESCE(uuid_extract_timestamp(m.t), TIMESTAMPTZ '1970-01-01') AS created_at, \
@@ -196,11 +201,16 @@ fn memory_page_sql(
                 m.kind::text AS kind, m.origins, m.refs \
          {from} \
          JOIN proxima_core.owners o ON o.owner_id = m.owner_id \
-         WHERE m.owner_id = ANY($1::uuid[])"
+         WHERE {owner_pred}"
     );
     let mut next = 2_u32;
     if has_schema {
-        let _ = write!(sql, " AND m.schema_id = ${next}");
+        let schema_col = if heads_only {
+            "h.schema_id"
+        } else {
+            "m.schema_id"
+        };
+        let _ = write!(sql, " AND {schema_col} = ${next}");
         next += 1;
     }
     if has_kind {
@@ -262,6 +272,48 @@ mod tests {
         assert!(
             src.contains("m.schema_id"),
             "W5: query page selects memory.schema_id"
+        );
+    }
+
+    #[test]
+    fn heads_only_schema_predicates_use_head_columns() {
+        let sql = super::memory_page_sql(true, true, false, false, false, 10);
+        assert!(
+            sql.contains("h.owner_id = ANY($1::uuid[])"),
+            "HeadsOnly owner filter must hit memory_head_owner_schema_idx: {sql}"
+        );
+        assert!(
+            sql.contains("h.schema_id = $2"),
+            "HeadsOnly schema filter must hit memory_head_owner_schema_idx: {sql}"
+        );
+        assert!(
+            !sql.contains("m.owner_id = ANY"),
+            "HeadsOnly must not predicate m.owner_id: {sql}"
+        );
+        assert!(
+            !sql.contains("AND m.schema_id"),
+            "HeadsOnly must not predicate m.schema_id: {sql}"
+        );
+    }
+
+    #[test]
+    fn include_superseded_schema_predicates_use_memory_columns() {
+        let sql = super::memory_page_sql(false, true, false, false, false, 10);
+        assert!(
+            sql.contains("m.owner_id = ANY($1::uuid[])"),
+            "IncludeSuperseded owner filter stays on memory: {sql}"
+        );
+        assert!(
+            sql.contains("AND m.schema_id = $2"),
+            "IncludeSuperseded schema filter stays on memory: {sql}"
+        );
+        assert!(
+            !sql.contains("h.owner_id"),
+            "IncludeSuperseded has no head join: {sql}"
+        );
+        assert!(
+            !sql.contains("h.schema_id"),
+            "IncludeSuperseded has no head schema pred: {sql}"
         );
     }
 }

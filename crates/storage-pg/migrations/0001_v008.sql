@@ -141,6 +141,13 @@ CREATE INDEX memory_owner_handle_t_idx
 CREATE INDEX memory_owner_t_handle_idx
     ON proxima_core.memory (owner_id, t, handle);
 
+CREATE INDEX memory_owner_schema_t_idx
+    ON proxima_core.memory (owner_id, schema_id, t DESC);
+
+CREATE INDEX memory_blob_id_idx
+    ON proxima_core.memory (blob_id)
+    WHERE blob_id IS NOT NULL;
+
 CREATE INDEX memory_origins_gin
     ON proxima_core.memory USING gin (origins);
 
@@ -361,6 +368,10 @@ CREATE TABLE proxima_core.embedding_jobs (
     status text NOT NULL DEFAULT 'pending',
     UNIQUE (owner_id, entity_id, model_id)
 );
+
+CREATE INDEX embedding_jobs_pending_claim_idx
+    ON proxima_core.embedding_jobs (model_id, job_id)
+    WHERE status = 'pending';
 
 CREATE TABLE proxima_core.agent_note_v1 (
     t uuid PRIMARY KEY REFERENCES proxima_core.memory (t),

@@ -49,9 +49,9 @@ pub async fn load_abstraction_heads(
                     COALESCE(uuid_extract_timestamp(m.t), TIMESTAMPTZ '1970-01-01')
                FROM proxima_core.memory_head h
                JOIN proxima_core.memory m ON m.handle = h.handle AND m.t = h.t
-              WHERE m.owner_id = $1
+              WHERE h.owner_id = $1
                 AND m.kind = 'abstraction'
-                AND m.schema_id = $2
+                AND h.schema_id = $2
               ORDER BY m.t DESC
               LIMIT $3",
         )

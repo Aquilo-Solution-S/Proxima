@@ -39,9 +39,9 @@ pub async fn owned_file_revision_heads(
            FROM proxima_code.file_revision_v1 fr
            JOIN proxima_core.memory m ON m.t = fr.t
            JOIN proxima_core.memory_head h ON h.handle = m.handle AND h.t = m.t
-          WHERE m.owner_id = $1
+          WHERE h.owner_id = $1
             AND fr.repo_id = $2
-            AND m.schema_id = $3
+            AND h.schema_id = $3
           ORDER BY fr.file_path ASC",
     )
     .bind(owner.stored_owner_id())
@@ -71,11 +71,11 @@ pub async fn readable_file_revision_head_ts(
            FROM proxima_code.file_revision_v1 fr
            JOIN proxima_core.memory m ON m.t = fr.t
            JOIN proxima_core.memory_head h ON h.handle = m.handle AND h.t = m.t
-          WHERE m.owner_id IN ($1, $2)
+          WHERE h.owner_id IN ($1, $2)
             AND fr.repo_id = $3
             AND fr.file_path = $4
-            AND m.schema_id = $5
-          ORDER BY (m.owner_id = $1) DESC, fr.t DESC",
+            AND h.schema_id = $5
+          ORDER BY (h.owner_id = $1) DESC, fr.t DESC",
     )
     .bind(owner_id)
     .bind(world_id)
@@ -104,11 +104,11 @@ pub async fn owned_present_chunk_indexes(
            FROM proxima_code.code_chunk_v1 c
            JOIN proxima_core.memory m ON m.t = c.t
            JOIN proxima_core.memory_head h ON h.handle = m.handle AND h.t = m.t
-          WHERE m.owner_id = $1
+          WHERE h.owner_id = $1
             AND c.repo_id = $2
             AND c.file_path = $3
             AND c.state = 'Present'
-            AND m.schema_id = $4
+            AND h.schema_id = $4
           ORDER BY c.chunk_index ASC",
     )
     .bind(owner.stored_owner_id())
@@ -139,11 +139,11 @@ pub async fn readable_chunk_head_ts_for_file(
            FROM proxima_code.code_chunk_v1 c
            JOIN proxima_core.memory m ON m.t = c.t
            JOIN proxima_core.memory_head h ON h.handle = m.handle AND h.t = m.t
-          WHERE m.owner_id IN ($1, $2)
+          WHERE h.owner_id IN ($1, $2)
             AND c.repo_id = $3
             AND c.file_path = $4
             AND c.state = 'Present'
-            AND m.schema_id = $5
+            AND h.schema_id = $5
           ORDER BY c.chunk_index ASC",
     )
     .bind(owner_id)
@@ -154,4 +154,30 @@ pub async fn readable_chunk_head_ts_for_file(
     .fetch_all(pool)
     .await
     .map_err(map_err)
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn head_joined_series_sql_predicates_head_owner_and_schema() {
+        let src = include_str!("code_series_heads.rs");
+        assert!(
+            src.contains("h.owner_id"),
+            "HeadsOnly owner filter must hit memory_head"
+        );
+        assert!(
+            src.contains("h.schema_id"),
+            "HeadsOnly schema filter must hit memory_head"
+        );
+        let owner = format!("{}{}", "m.owner", "_id");
+        let schema = format!("{}{}", "m.schema", "_id");
+        assert!(
+            !src.contains(&owner),
+            "code series heads must not predicate memory owner"
+        );
+        assert!(
+            !src.contains(&schema),
+            "code series heads must not predicate memory schema"
+        );
+    }
 }

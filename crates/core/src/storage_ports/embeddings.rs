@@ -234,12 +234,10 @@ pub trait EmbeddingJobPort: Send + Sync {
         error: &str,
     ) -> Result<(), StorageError>;
 
-    /// Return claimed-but-unattempted jobs to `pending` without burning a
-    /// retry attempt. Used when a *batch* embed call fails for a transient
-    /// provider-side cause (429/5xx/network): the failure says nothing about
-    /// any individual job, so none of them should march toward the attempt
-    /// cap. A short `next_attempt_at` delay keeps concurrent drainers from
-    /// hot-looping on the same jobs.
+    /// Return claimed-but-unattempted jobs to `pending`.
+    ///
+    /// Used when a batch embed call fails for a transient provider-side
+    /// cause. v0.0.8 has no attempt counter or `next_attempt_at`.
     async fn release_embedding_jobs(
         &self,
         claims: &[EmbeddingJobClaim],
