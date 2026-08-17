@@ -3,8 +3,8 @@ use proxima_core::{
     AbstractionPayload, AuthzContext, FactPayload, MemoryId, Owner, SchemaId, ToolError,
 };
 use proxima_storage_pg::query::{
-    CodeChunkVectorCandidate, CodeChunkVectorFilters, FileRevisionHeadRow,
-    nearest_code_chunk_candidates, owned_file_revision_heads, owned_present_chunk_indexes,
+    ChunkSeriesHead, CodeChunkVectorCandidate, CodeChunkVectorFilters, FileRevisionHeadRow,
+    nearest_code_chunk_candidates, owned_chunk_series_heads, owned_file_revision_heads,
     readable_chunk_head_ts_for_file, readable_file_revision_head_ts,
 };
 use sqlx::PgPool;
@@ -152,14 +152,14 @@ impl CodeFlavorStore {
         .map_err(ToolError::Storage)
     }
 
-    /// Owner-only present chunk indexes at current heads of one file.
-    pub(crate) async fn owned_present_chunk_indexes(
+    /// Owner-only current chunk series of one file (any state).
+    pub(crate) async fn owned_chunk_series_heads(
         &self,
         owner: Owner,
         repo_id: uuid::Uuid,
         file_path: &str,
-    ) -> Result<Vec<i32>, ToolError> {
-        owned_present_chunk_indexes(
+    ) -> Result<Vec<ChunkSeriesHead>, ToolError> {
+        owned_chunk_series_heads(
             &self.pool,
             owner,
             &crate::payloads::CodeChunkV1::schema_id(),

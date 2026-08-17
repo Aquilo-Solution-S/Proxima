@@ -462,8 +462,10 @@ pool private.
 
 Stateful Fact ingest resolves the series handle from
 `FactPayload::natural_key_columns()` when `handle` is unset. A/P series
-continuity is `Engine::owned_series_handle` (sidecar columns, owner-only)
-or `supersedes`. Flavor `src/` does not JOIN `proxima_core.memory_head`.
+continuity is `Engine::owned_series_handle` (one NK, owner-only) or
+`supersedes`. A file's chunk series are listed together
+(`CodeFlavorStore::owned_chunk_series_heads` — same family as
+file-revision heads). Flavor `src/` does not JOIN `proxima_core.memory_head`.
 Goal assignment / evidence are `GoalRow` fields; filter with
 `QueryRequest::assignment` / `evidence_contains`.
 

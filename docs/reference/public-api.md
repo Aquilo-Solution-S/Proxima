@@ -154,7 +154,9 @@ helpers that need a pool stay in `flavors/code` (backend-owned).
 
 `Engine::owned_series_handle` looks up the current owned handle by
 sidecar columns. It takes `Engine` + `AuthzContext`, not `PgPool`. After
-`publish_to_world` the prior owner misses and mints.
+`publish_to_world` the prior owner misses and mints. Code-chunk ingest
+lists one file's series via `owned_chunk_series_heads` (store /
+`code_series_heads`), not N Engine NK lookups.
 
 `GoalRow` projects `assignment` and `evidence`. `QueryRequest` can
 narrow Goals by `assignment` and `evidence_contains`.

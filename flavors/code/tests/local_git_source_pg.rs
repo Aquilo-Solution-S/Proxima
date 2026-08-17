@@ -458,7 +458,7 @@ async fn head_snapshot_repeated_after_change_and_delete_is_idempotent() {
 
 /// A heavily-churned file can hold more live series (distinct
 /// `(repo, path, index)` handles) than one authorized-read batch
-/// (`MAX_AUTHZ_CANDIDATES` = 2,000). `present_chunk_indexes` lists every
+/// (`MAX_AUTHZ_CANDIDATES` = 2,000). `owned_chunk_series_heads` lists every
 /// owned head; it must not truncate.
 #[tokio::test]
 async fn head_snapshot_delete_tombstones_all_indexes_beyond_one_authz_batch() {

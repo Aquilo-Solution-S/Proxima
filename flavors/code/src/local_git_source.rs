@@ -54,8 +54,8 @@ const BLOB_BATCH_BYTES: u64 = 8 * 1024 * 1024;
 use crate::calls::{ExtractedCall, ExtractedDefinition, extract_blob_callgraph};
 use crate::chunker::{Chunk, chunk_blob};
 use crate::ingest::{
-    FileRevisionHead, IngestError, append_code_slice, append_code_slices_with_handles,
-    ingest_commit, ingest_file_revision, resolve_code_chunk_handles,
+    FileRevisionHead, IngestError, append_code_slices_with_handles, assign_code_chunk_handles,
+    ingest_commit, ingest_file_revision,
 };
 use crate::payloads::{
     CodeCallSiteV1, CodeCallV1, CodeChunkV1, CommitV1, FileRevisionV1, FileState,
@@ -192,25 +192,16 @@ impl<'a> CodeIngestContext<'a> {
             .collect()
     }
 
-    async fn present_chunk_indexes(
+    async fn chunk_series_heads(
         &self,
         owner: Owner,
         repo_id: Uuid,
         file_path: &str,
-    ) -> Result<Vec<u32>, IngestError> {
-        // Owner-only present indexes at `memory_head` of each
-        // `(repo, path, index)` series.
+    ) -> Result<Vec<proxima_storage_pg::query::ChunkSeriesHead>, IngestError> {
         self.store
-            .owned_present_chunk_indexes(owner, repo_id, file_path)
+            .owned_chunk_series_heads(owner, repo_id, file_path)
             .await
-            .map_err(|err| read_error(&err))?
-            .into_iter()
-            .map(|idx| {
-                u32::try_from(idx).map_err(|err| {
-                    IngestError::Storage(format!("invalid code chunk index {idx}: {err}"))
-                })
-            })
-            .collect()
+            .map_err(|err| read_error(&err))
     }
 }
 
@@ -823,29 +814,48 @@ impl LocalGitSource {
         let new_indexes: HashSet<u32> = (0..pending.analysis.chunks.len())
             .map(|i| u32::try_from(i).unwrap_or(u32::MAX))
             .collect();
-        let prior_indexes = ctx
-            .present_chunk_indexes(self.owner, self.repo_id, &pending.path)
+        let heads = ctx
+            .chunk_series_heads(self.owner, self.repo_id, &pending.path)
             .await?;
-        for prior in prior_indexes {
+        let mut tomb_payloads = Vec::new();
+        let mut tomb_handles = Vec::new();
+        for head in &heads {
+            if head.state != FileState::Present.as_str() {
+                continue;
+            }
+            let prior = u32::try_from(head.chunk_index).map_err(|err| {
+                IngestError::Storage(format!(
+                    "invalid code chunk index {}: {err}",
+                    head.chunk_index
+                ))
+            })?;
             if !new_indexes.contains(&prior) {
-                let tomb =
-                    tombstone_chunk(self.repo_id, &pending.path, prior, pending.language.clone());
-                append_code_slice(
-                    ctx.engine,
-                    ctx.authz,
-                    self.owner,
-                    batch_id,
-                    &tomb,
-                    pending.file_revision,
-                    pending.source_commit,
-                )
-                .await?;
-                report.chunks_tombstoned += 1;
+                tomb_payloads.push(tombstone_chunk(
+                    self.repo_id,
+                    &pending.path,
+                    prior,
+                    pending.language.clone(),
+                ));
+                tomb_handles.push(head.handle);
             }
         }
+        if !tomb_payloads.is_empty() {
+            append_code_slices_with_handles(
+                ctx.engine,
+                ctx.authz,
+                self.owner,
+                batch_id,
+                &tomb_payloads,
+                pending.file_revision,
+                pending.source_commit,
+                &tomb_handles,
+            )
+            .await?;
+            report.chunks_tombstoned += tomb_payloads.len();
+        }
 
-        // Resolve series handles first so intra-file calls can name
-        // callees before insert. Reuse the owned NK head; mint only on miss.
+        // Reuse listed series handles so intra-file calls can name
+        // callees before insert. Mint only on miss.
         let mut bare_payloads: Vec<CodeChunkV1> = Vec::new();
         for (idx, chunk) in pending.analysis.chunks.iter().enumerate() {
             let chunk_index = u32::try_from(idx).unwrap_or(u32::MAX);
@@ -864,8 +874,7 @@ impl LocalGitSource {
                 calls: Vec::new(),
             });
         }
-        let handles =
-            resolve_code_chunk_handles(ctx.engine, ctx.authz, self.owner, &bare_payloads).await?;
+        let handles = assign_code_chunk_handles(&heads, &bare_payloads)?;
         let mut file_chunks: Vec<ChunkInfo> = Vec::new();
         for (payload, handle) in bare_payloads.into_iter().zip(handles) {
             let memory_id = MemoryId::new(handle);
@@ -1007,22 +1016,37 @@ impl LocalGitSource {
         pending: PendingDeletedPath,
         report: &mut IndexReport,
     ) -> Result<(), IndexError> {
-        let prior_indexes = ctx
-            .present_chunk_indexes(self.owner, self.repo_id, &pending.path)
+        let heads = ctx
+            .chunk_series_heads(self.owner, self.repo_id, &pending.path)
             .await?;
-        for prior in prior_indexes {
-            let tomb = tombstone_chunk(self.repo_id, &pending.path, prior, None);
-            append_code_slice(
+        let mut tomb_payloads = Vec::new();
+        let mut tomb_handles = Vec::new();
+        for head in heads {
+            if head.state != FileState::Present.as_str() {
+                continue;
+            }
+            let prior = u32::try_from(head.chunk_index).map_err(|err| {
+                IngestError::Storage(format!(
+                    "invalid code chunk index {}: {err}",
+                    head.chunk_index
+                ))
+            })?;
+            tomb_payloads.push(tombstone_chunk(self.repo_id, &pending.path, prior, None));
+            tomb_handles.push(head.handle);
+        }
+        if !tomb_payloads.is_empty() {
+            append_code_slices_with_handles(
                 ctx.engine,
                 ctx.authz,
                 self.owner,
                 batch_id,
-                &tomb,
+                &tomb_payloads,
                 pending.file_revision,
                 pending.source_commit,
+                &tomb_handles,
             )
             .await?;
-            report.chunks_tombstoned += 1;
+            report.chunks_tombstoned += tomb_payloads.len();
         }
         Ok(())
     }

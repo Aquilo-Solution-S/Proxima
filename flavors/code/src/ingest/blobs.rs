@@ -1,14 +1,19 @@
+use std::collections::HashMap;
+
 use proxima_core::storage_ports::OwnerWritePermit;
 use proxima_core::verbs::fact_ingest::{CitationSpec, FactIngestOutcome};
 use proxima_core::verbs::query::SidecarAtom;
 use proxima_core::{
-    AbstractionPayload, AuthzContext, AuthorDerivedAuthorizedOutcome, AuthorDerivedRequestInput,
+    AbstractionPayload, AuthorDerivedAuthorizedOutcome, AuthorDerivedRequestInput, AuthzContext,
     EdgeEndpoint, Engine, EntityKind, InputContractId, MemoryId, MemoryOperatorKind, OperatorId,
     Owner, SchemaVersion, SidecarPayload, SourceBatchId, TypedFactIngest,
 };
+use proxima_storage_pg::query::ChunkSeriesHead;
 use sqlx::PgPool;
+use uuid::Uuid;
 
 use crate::payloads::{CodeChunkV1, CommitV1, FileRevisionV1};
+use crate::store::CodeFlavorStore;
 
 use super::IngestError;
 use super::schemas::{
@@ -137,31 +142,75 @@ pub async fn existing_code_chunk_handle(
         .await?)
 }
 
-/// One handle per payload: reuse the owned NK head, or mint.
+/// Reuse listed series handles, or mint. One file per call.
+///
+/// # Errors
+///
+/// `Storage` when payloads mix `(repo_id, file_path)` or a listed
+/// `chunk_index` is not a `u32`.
+pub fn assign_code_chunk_handles(
+    heads: &[ChunkSeriesHead],
+    payloads: &[CodeChunkV1],
+) -> Result<Vec<Uuid>, IngestError> {
+    if let Some(first) = payloads.first() {
+        for payload in payloads {
+            if payload.repo_id != first.repo_id || payload.file_path != first.file_path {
+                return Err(IngestError::Storage(
+                    "code slice resolve requires one (repo_id, file_path)".into(),
+                ));
+            }
+        }
+    }
+    let mut by_index = HashMap::with_capacity(heads.len());
+    for head in heads {
+        let index = u32::try_from(head.chunk_index).map_err(|err| {
+            IngestError::Storage(format!(
+                "invalid code chunk index {}: {err}",
+                head.chunk_index
+            ))
+        })?;
+        if by_index.insert(index, head.handle).is_some() {
+            return Err(IngestError::Storage(format!(
+                "duplicate chunk_index {index} at current head"
+            )));
+        }
+    }
+    Ok(payloads
+        .iter()
+        .map(|payload| {
+            by_index
+                .get(&payload.chunk_index)
+                .copied()
+                .unwrap_or_else(Uuid::now_v7)
+        })
+        .collect())
+}
+
+/// One handle per payload: one file listing, then [`assign_code_chunk_handles`].
 ///
 /// Call once per file before filling `calls` and writing, so intra-file
 /// callees share the same series ids the drafts will use.
 pub async fn resolve_code_chunk_handles(
-    engine: &Engine,
-    authz: &AuthzContext,
-    owner: proxima_core::Owner,
+    store: &CodeFlavorStore,
+    owner: Owner,
     payloads: &[CodeChunkV1],
-) -> Result<Vec<uuid::Uuid>, IngestError> {
-    let mut handles = Vec::with_capacity(payloads.len());
-    for payload in payloads {
-        let handle = existing_code_chunk_handle(
-            engine,
-            authz,
-            owner,
-            payload.repo_id,
-            &payload.file_path,
-            payload.chunk_index,
-        )
-        .await?
-        .unwrap_or_else(uuid::Uuid::now_v7);
-        handles.push(handle);
+) -> Result<Vec<Uuid>, IngestError> {
+    if payloads.is_empty() {
+        return Ok(Vec::new());
     }
-    Ok(handles)
+    let first = &payloads[0];
+    for payload in payloads {
+        if payload.repo_id != first.repo_id || payload.file_path != first.file_path {
+            return Err(IngestError::Storage(
+                "code slice resolve requires one (repo_id, file_path)".into(),
+            ));
+        }
+    }
+    let heads = store
+        .owned_chunk_series_heads(owner, first.repo_id, &first.file_path)
+        .await
+        .map_err(|err| IngestError::Storage(err.to_string()))?;
+    assign_code_chunk_handles(&heads, payloads)
 }
 
 /// Atomic Fact + sidecar write for `commit-v1`. Cites the commit
@@ -239,14 +288,12 @@ pub async fn append_code_slices(
     authz: &AuthzContext,
     owner: Owner,
     source_batch_id: SourceBatchId,
+    store: &CodeFlavorStore,
     payloads: &[CodeChunkV1],
     source_file_revision: MemoryId,
     source_commit: Option<MemoryId>,
 ) -> Result<Vec<AuthorDerivedAuthorizedOutcome>, IngestError> {
-    if payloads.is_empty() {
-        return Ok(Vec::new());
-    }
-    let handles = resolve_code_chunk_handles(engine, authz, owner, payloads).await?;
+    let handles = resolve_code_chunk_handles(store, owner, payloads).await?;
     append_code_slices_with_handles(
         engine,
         authz,
@@ -328,7 +375,17 @@ pub async fn append_code_slice(
     source_file_revision: MemoryId,
     source_commit: Option<MemoryId>,
 ) -> Result<AuthorDerivedAuthorizedOutcome, IngestError> {
-    let outcomes = append_code_slices(
+    let handle = existing_code_chunk_handle(
+        engine,
+        authz,
+        owner,
+        payload.repo_id,
+        &payload.file_path,
+        payload.chunk_index,
+    )
+    .await?
+    .unwrap_or_else(Uuid::now_v7);
+    let outcomes = append_code_slices_with_handles(
         engine,
         authz,
         owner,
@@ -336,6 +393,7 @@ pub async fn append_code_slice(
         std::slice::from_ref(payload),
         source_file_revision,
         source_commit,
+        &[handle],
     )
     .await?;
     outcomes
@@ -386,5 +444,53 @@ impl CodeSliceStateMarker for CodeChunkV1 {
             crate::payloads::FileState::Present => "Present",
             crate::payloads::FileState::Tombstone => "Tombstone",
         }
+    }
+}
+
+#[cfg(test)]
+mod assign_tests {
+    use super::{CodeChunkV1, assign_code_chunk_handles};
+    use crate::payloads::FileState;
+    use proxima_storage_pg::query::ChunkSeriesHead;
+    use uuid::Uuid;
+
+    fn chunk(repo: Uuid, path: &str, index: u32) -> CodeChunkV1 {
+        CodeChunkV1 {
+            repo_id: repo,
+            file_path: path.to_string(),
+            chunk_index: index,
+            text: String::new(),
+            language: None,
+            chunk_type: "block".into(),
+            byte_range_start: 0,
+            byte_range_end: 0,
+            line_range_start: 0,
+            line_range_end: 0,
+            state: FileState::Present,
+            calls: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn assign_reuses_listed_handle_and_mints_unknown_index() {
+        let repo = Uuid::now_v7();
+        let listed = Uuid::now_v7();
+        let heads = [ChunkSeriesHead {
+            chunk_index: 0,
+            handle: listed,
+            state: "Present".into(),
+        }];
+        let payloads = [chunk(repo, "a.rs", 0), chunk(repo, "a.rs", 1)];
+        let handles = assign_code_chunk_handles(&heads, &payloads).expect("assign");
+        assert_eq!(handles[0], listed);
+        assert_ne!(handles[1], listed);
+    }
+
+    #[test]
+    fn assign_rejects_mixed_file() {
+        let repo = Uuid::now_v7();
+        let payloads = [chunk(repo, "a.rs", 0), chunk(repo, "b.rs", 0)];
+        let err = assign_code_chunk_handles(&[], &payloads).expect_err("mixed");
+        assert!(err.to_string().contains("(repo_id, file_path)"), "{err}");
     }
 }
