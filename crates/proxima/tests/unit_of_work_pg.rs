@@ -44,6 +44,43 @@ fn note(title: &str) -> AgentNoteV1 {
     }
 }
 
+fn derived_abstraction<'a>(
+    owner: proxima_core::Owner,
+    origin: &'a [proxima_core::EdgeEndpoint],
+    title: &str,
+) -> AuthorDerivedRequestInput<'a> {
+    AuthorDerivedRequestInput {
+        memory_id: MemoryId::new(Uuid::now_v7()),
+        owner,
+        kind: EntityKind::Abstraction,
+        text: title.into(),
+        schema_id: SchemaId::new(AgentDerivationV1::SCHEMA_ID.into()),
+        schema_version: SchemaVersion::new(AgentDerivationV1::SCHEMA_VERSION),
+        operator_kind: MemoryOperatorKind::FtoA,
+        operator_id: OperatorId::new(Uuid::now_v7()),
+        input_contract_id: InputContractId::new(Uuid::now_v7()),
+        source_batch_id: None,
+        model_id: "test",
+        prompt_version: "1",
+        sidecar_payload: SidecarPayload::abstraction(AgentDerivationV1 {
+            title: title.into(),
+            body: title.into(),
+            tags: Vec::new(),
+            idempotency_key: None,
+            source_memory_ids: vec![origin[0]
+                .memory_id()
+                .map_or_else(Uuid::nil, MemoryId::into_inner)],
+            model_id: "test".into(),
+            client_name: "test".into(),
+            client_version: "1".into(),
+        }),
+        authoring_perspective_id: None,
+        derived_from: origin,
+        supersedes: None,
+        lexical_language: None,
+    }
+}
+
 #[tokio::test]
 async fn unit_of_work_one_shot_and_rollback_and_lock() {
     let db_name = unique_db_name("proxima_uow");
@@ -230,4 +267,73 @@ async fn unit_of_work_later_write_may_cite_earlier_uncommitted_fact() {
     .await;
     let _ = drop_db(&db_name).await;
     result.expect("unit of work session-visible cite failed");
+}
+
+#[tokio::test]
+async fn unit_of_work_author_derived_all_is_atomic() {
+    let db_name = unique_db_name("proxima_uow_derived_all");
+    create_db(&db_name).await.expect("PG required");
+    let db_url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let owner = company_owner(Uuid::now_v7());
+        let built = Proxima::<EmptyApp>::app()
+            .database_url(db_url)
+            .owner(owner)
+            .allow_insecure_single_owner()
+            .tool_scope(ToolScope::All)
+            .build()
+            .await?;
+        let authz = built.single_owner_authz().expect("single owner");
+        let engine = built.engine();
+        let source = engine
+            .ingest_typed_fact(&authz, "test/uow-derived-all", &note("source"))
+            .await?;
+        let origin = proxima_core::EdgeEndpoint::memory(EntityKind::Fact, source.memory_id);
+        let origins = [origin];
+        {
+            let mut uow = engine.unit_of_work(&authz).await?;
+            let written = uow
+                .author_derived_all([
+                    derived_abstraction(owner, &origins, "batch-a"),
+                    derived_abstraction(owner, &origins, "batch-b"),
+                ])
+                .await?;
+            assert_eq!(written.len(), 2);
+        }
+        let rolled: i64 = sqlx::query_scalar(
+            "SELECT count(*)::bigint FROM proxima_core.memory WHERE t <> $1",
+        )
+        .bind(source.memory_id.into_inner())
+        .fetch_one(built.pool_for_tests())
+        .await?;
+        assert_eq!(rolled, 0, "drop without commit must roll the whole batch");
+
+        let mut uow = engine.unit_of_work(&authz).await?;
+        let written = uow
+            .author_derived_all([
+                derived_abstraction(owner, &origins, "commit-a"),
+                derived_abstraction(owner, &origins, "commit-b"),
+            ])
+            .await?;
+        uow.commit().await?;
+        assert_eq!(written.len(), 2);
+        let landed: i64 = sqlx::query_scalar(
+            "SELECT count(*)::bigint FROM proxima_core.memory WHERE t = ANY($1)",
+        )
+        .bind(
+            written
+                .iter()
+                .map(|row| row.memory_id.into_inner())
+                .collect::<Vec<_>>(),
+        )
+        .fetch_one(built.pool_for_tests())
+        .await?;
+        assert_eq!(landed, 2);
+
+        built.shutdown();
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("unit of work author_derived_all pg test failed");
 }

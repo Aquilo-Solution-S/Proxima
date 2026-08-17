@@ -332,33 +332,33 @@ pub async fn append_code_slices_with_handles(
     if let Some(commit) = source_commit {
         origins.push(EdgeEndpoint::memory(EntityKind::Fact, commit));
     }
+    // Embed every slice before BEGIN. Intra-file calls are sidecar data,
+    // not kernel pins (`CodeChunkV1::references` is empty); the one
+    // transaction is atomicity of the file group, not sibling visibility.
+    let reqs = payloads
+        .iter()
+        .zip(handles)
+        .map(|(payload, handle)| AuthorDerivedRequestInput {
+            memory_id: MemoryId::new(*handle),
+            owner,
+            kind: EntityKind::Abstraction,
+            text: render_code_slice(payload),
+            schema_id: <CodeChunkV1 as AbstractionPayload>::schema_id(),
+            schema_version: SchemaVersion::new(CodeChunkV1::SCHEMA_VERSION),
+            operator_kind: MemoryOperatorKind::FtoA,
+            operator_id: code_slice_operator_id(),
+            input_contract_id: code_slice_input_contract_id(payload, source_file_revision),
+            source_batch_id: Some(source_batch_id),
+            model_id: CODE_SLICE_OPERATOR_MODEL,
+            prompt_version: CODE_SLICE_PROMPT_VERSION,
+            sidecar_payload: SidecarPayload::abstraction(payload.clone()),
+            authoring_perspective_id: None,
+            derived_from: &origins,
+            supersedes: None,
+            lexical_language: Some(crate::payloads::CODE_LEXICAL_LANGUAGE),
+        });
     let mut uow = engine.unit_of_work(authz).await?;
-    let mut outcomes = Vec::with_capacity(payloads.len());
-    for (payload, handle) in payloads.iter().zip(handles) {
-        // Chunks pin english on every surface (see CODE_LEXICAL_LANGUAGE).
-        let outcome = uow
-            .author_derived(AuthorDerivedRequestInput {
-                memory_id: MemoryId::new(*handle),
-                owner,
-                kind: EntityKind::Abstraction,
-                text: render_code_slice(payload),
-                schema_id: <CodeChunkV1 as AbstractionPayload>::schema_id(),
-                schema_version: SchemaVersion::new(CodeChunkV1::SCHEMA_VERSION),
-                operator_kind: MemoryOperatorKind::FtoA,
-                operator_id: code_slice_operator_id(),
-                input_contract_id: code_slice_input_contract_id(payload, source_file_revision),
-                source_batch_id: Some(source_batch_id),
-                model_id: CODE_SLICE_OPERATOR_MODEL,
-                prompt_version: CODE_SLICE_PROMPT_VERSION,
-                sidecar_payload: SidecarPayload::abstraction(payload.clone()),
-                authoring_perspective_id: None,
-                derived_from: &origins,
-                supersedes: None,
-                lexical_language: Some(crate::payloads::CODE_LEXICAL_LANGUAGE),
-            })
-            .await?;
-        outcomes.push(outcome);
-    }
+    let outcomes = uow.author_derived_all(reqs).await?;
     uow.commit().await?;
     Ok(outcomes)
 }
