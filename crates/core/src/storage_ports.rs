@@ -55,11 +55,11 @@ pub use delegated_authority::{
     DelegationRevocation, DelegationStorePort,
 };
 pub use embeddings::{
-    EmbeddingAnnObservability, EmbeddingJobBacklog, EmbeddingJobPort, EmbeddingJobStatusCounts,
-    EmbeddingMaintenancePort, EmbeddingOrphanCounts, EmbeddingOrphanSweepOutcome,
-    EmbeddingRecallCanary, EmbeddingReconcileOptions, EmbeddingReconcileOutcome,
-    EmbeddingReconcileScope, EmbeddingTextPort, EmbeddingWriteOutcome, EmbeddingWritePort,
-    EmbeddingWriteProof, PERMANENT_EMBED_FAILURE_MARKER,
+    EMBEDDING_RECONCILE_DEFAULT_LIMIT, EmbeddingAnnObservability, EmbeddingJobBacklog,
+    EmbeddingJobPort, EmbeddingJobStatusCounts, EmbeddingMaintenancePort, EmbeddingOrphanCounts,
+    EmbeddingOrphanSweepOutcome, EmbeddingRecallCanary, EmbeddingReconcileOptions,
+    EmbeddingReconcileOutcome, EmbeddingReconcileScope, EmbeddingTextPort, EmbeddingWriteOutcome,
+    EmbeddingWritePort, EmbeddingWriteProof, PERMANENT_EMBED_FAILURE_MARKER,
 };
 pub use fact::{FactIngestPort, SourceBatchPort};
 pub use goals::{GoalReadPort, GoalWakeCandidatePort, GoalWritePort};

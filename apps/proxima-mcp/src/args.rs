@@ -109,7 +109,7 @@ Optional:
   --missing-only           Enqueue memories with no embedding at all (default)
   --include-stale          Also re-enqueue memories embedded only under another model
   --since <RFC3339>        Only scan memories created at/after the timestamp
-  --limit <N>              Maximum memories to scan
+  --limit <N>              Maximum memories to scan (omit for the full graph)
   --drain                  Process queued jobs inline with the Mistral embedding client
   -h, --help               Print this message
 ";

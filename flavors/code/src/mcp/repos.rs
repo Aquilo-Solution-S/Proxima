@@ -91,7 +91,7 @@ pub struct CodeListReposOutput {
 /// Upper bound on embedding jobs enqueued by one ingest call. A HEAD
 /// snapshot of a large repository can emit tens of thousands of memories;
 /// this bounds the post-ingest enqueue to one generous pass, and the
-/// startup reconcile plus `maintain-embeddings` pick up any remainder.
+/// startup reconcile (capped) plus `maintain-embeddings` pick up any remainder.
 const EMBEDDING_BACKFILL_LIMIT: usize = 50_000;
 
 const MAX_REPO_PAGE_LIMIT: u32 = 200;

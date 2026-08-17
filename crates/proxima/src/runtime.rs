@@ -608,7 +608,10 @@ fn spawn_embedding_worker(engine: Arc<Engine>, cancel: CancellationToken) -> Joi
         // Recurring maintenance stays outside the process
         // (`proxima-mcp maintain-embeddings`).
         match engine
-            .reconcile_embeddings(proxima_core::EmbeddingReconcileScope::MissingOnly, None)
+            .reconcile_embeddings(
+                proxima_core::EmbeddingReconcileScope::MissingOnly,
+                Some(proxima_core::EMBEDDING_RECONCILE_DEFAULT_LIMIT),
+            )
             .await
         {
             Ok(outcome) if outcome.enqueued > 0 => {
