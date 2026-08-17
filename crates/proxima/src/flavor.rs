@@ -6,10 +6,6 @@ pub use crate::migrations::NamedMigrator;
 /// runtime handles a spawning flavor receives and the named join handle
 /// it returns.
 pub use crate::workers::{FlavorWorker, FlavorWorkerContext};
-/// Query / ingest types a flavor names next to [`crate::Engine`]
-/// (Host API). `Engine` itself stays off this module (`docs/14`).
-/// `AuthorizedFactWrite` is Engine-internal (UoW-first).
-pub use proxima_core::AuthorizationHook;
 /// The typed artefact inside [`CitedBlobStaged`], and the outcome of
 /// [`proxima_core::Engine::complete_upload_as_fact`].
 ///
@@ -128,6 +124,18 @@ pub use proxima_core::{
 /// the vector rather than hold the pool slot across HTTP.
 pub use proxima_core::{
     AuthorDerivedAuthorizedOutcome, AuthorDerivedRequestInput, EntityKind, MemoryOperatorKind,
+};
+/// Query / ingest types a flavor names next to [`crate::Engine`]
+/// (Host API). `Engine` itself stays off this module (`docs/14`).
+/// `AuthorizedFactWrite` is Engine-internal (UoW-first).
+///
+/// [`AuthorizationHook`] is the advertised extension. Implementing `veto`
+/// or `observe` requires the input/outcome types; [`OwnerResolver`] is the
+/// sibling remap trait the registry already accepts. Naming the trait
+/// alone is not enough (see the `UploadedBlobPayload` note below).
+pub use proxima_core::{
+    AuthorizationHook, AuthzInput, AuthzOperation, AuthzOutcome, AuthzVeto, EntityId,
+    MembershipChange, OwnerResolver,
 };
 /// The connection vocabulary a flavor is allowed to speak (docs/16-edges.md).
 ///

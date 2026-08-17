@@ -740,6 +740,34 @@ fn host_api_names_global_and_owner_reconcile_outcomes() {
 }
 
 #[test]
+fn host_names_mcp_catalog_descriptor_types() {
+    // `FlavorRegistryFrozen::list_mcp_tools` already returns this slice.
+    // The element type and origin enum must be nameable on the Host API.
+    use proxima::host::{FlavorRegistryFrozen, McpToolDescriptor, McpToolOrigin};
+
+    fn bind(frozen: &FlavorRegistryFrozen) -> &[McpToolDescriptor] {
+        frozen.list_mcp_tools()
+    }
+
+    let frozen = proxima::flavor::FlavorRegistry::new()
+        .try_freeze()
+        .expect("empty registry freezes");
+    let named = bind(&frozen)
+        .iter()
+        .filter(|tool| {
+            matches!(
+                tool.origin,
+                McpToolOrigin::Substrate | McpToolOrigin::Flavor(_)
+            )
+        })
+        .count();
+    assert!(
+        named >= 1,
+        "substrate tools register on FlavorRegistry::new"
+    );
+}
+
+#[test]
 fn host_api_can_name_the_owner_ref_discriminant() {
     // `OwnerRef::columns()` is public and returns `(OwnerRefKind, Option<Uuid>)`.
     // Every flavor with its own tables calls it to bind owner columns, and
@@ -798,10 +826,95 @@ fn host_extra_table_bridge_is_on_app_context() {
     let _: fn(&proxima::AppContext) -> sqlx::PgPool = proxima::AppContext::clone_pool_for_host;
 }
 
+/// Naming [`proxima::flavor::AuthorizationHook`] is not enough: `veto`
+/// takes [`proxima::flavor::AuthzInput`] and returns [`proxima::flavor::AuthzVeto`].
+#[derive(Debug)]
+struct TierAuthzHook;
+
+impl proxima::flavor::AuthorizationHook for TierAuthzHook {
+    fn veto(
+        &self,
+        input: &proxima::flavor::AuthzInput<'_>,
+    ) -> Result<(), proxima::flavor::AuthzVeto> {
+        match &input.operation {
+            proxima::flavor::AuthzOperation::Relation { .. }
+            | proxima::flavor::AuthzOperation::Membership {
+                change: proxima::flavor::MembershipChange::Add,
+                ..
+            }
+            | proxima::flavor::AuthzOperation::EntityShare { .. } => Ok(()),
+            proxima::flavor::AuthzOperation::Membership {
+                change: proxima::flavor::MembershipChange::Remove,
+                ..
+            } => Err(proxima::flavor::AuthzVeto("denied".into())),
+        }
+    }
+
+    fn observe(
+        &self,
+        _input: &proxima::flavor::AuthzInput<'_>,
+        outcome: proxima::flavor::AuthzOutcome,
+    ) {
+        let _ = matches!(outcome, proxima::flavor::AuthzOutcome::Allowed);
+    }
+}
+
+#[derive(Debug)]
+struct TierOwnerResolver;
+
+impl proxima::flavor::OwnerResolver for TierOwnerResolver {
+    fn resolve(
+        &self,
+        _authz: &proxima::AuthzContext,
+        requested: &proxima::Owner,
+    ) -> Result<proxima::Owner, proxima::ProtocolError> {
+        Ok(*requested)
+    }
+}
+
 #[test]
 fn flavor_sdk_names_query_and_ingest_types() {
-    fn assert_hook<T: proxima::flavor::AuthorizationHook + ?Sized>() {}
-    assert_hook::<dyn proxima::flavor::AuthorizationHook>();
+    use proxima::flavor::{AuthorizationHook, OwnerResolver};
+
+    fn assert_hook<T: AuthorizationHook + ?Sized>() {}
+    fn assert_resolver<T: OwnerResolver + ?Sized>() {}
+    assert_hook::<dyn AuthorizationHook>();
+    assert_resolver::<dyn OwnerResolver>();
+
+    let owner = proxima::Owner::World;
+    let authz = proxima::AuthzContext::single_owner(&owner, proxima::AuthPath::System);
+    let input = proxima::flavor::AuthzInput {
+        authz: &authz,
+        requested: &owner,
+        resolved: &owner,
+        relation: proxima::Relation::Viewer,
+        operation: proxima::flavor::AuthzOperation::Relation {
+            relation: proxima::Relation::Viewer,
+        },
+    };
+    TierAuthzHook.veto(&input).expect("relation allow");
+    TierAuthzHook.observe(&input, proxima::flavor::AuthzOutcome::Allowed);
+    let share = proxima::flavor::AuthzInput {
+        authz: &authz,
+        requested: &owner,
+        resolved: &owner,
+        relation: proxima::Relation::Admin,
+        operation: proxima::flavor::AuthzOperation::EntityShare {
+            entity: proxima::flavor::EntityId::Memory(proxima::MemoryId::new(uuid::Uuid::nil())),
+            owner,
+        },
+    };
+    TierAuthzHook.veto(&share).expect("share allow");
+    assert_eq!(
+        TierOwnerResolver.resolve(&authz, &owner).expect("resolve"),
+        owner
+    );
+
+    let mut registry = proxima::flavor::FlavorRegistry::new();
+    registry.add_authorization_hook(std::sync::Arc::new(TierAuthzHook));
+    registry
+        .try_set_owner_resolver(std::sync::Arc::new(TierOwnerResolver))
+        .expect("one resolver");
 
     let _ = proxima::flavor::SidecarAtom::I32(0);
     let _ = proxima::flavor::CitationSpec::v1("core/upload-v1", [0; 32], "core/upload-whole-v1");
