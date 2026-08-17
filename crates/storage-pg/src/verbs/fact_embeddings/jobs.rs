@@ -232,7 +232,8 @@ pub async fn fail_embedding_job(
 
 /// Terminally fail a job whose input the provider rejects for a permanent
 /// cause (e.g. over the embedding model's token limit). Goes straight to
-/// `failed` with a [`PERMANENT_EMBED_FAILURE_MARKER`]-prefixed
+/// `failed` with a
+/// [`proxima_core::storage_ports::PERMANENT_EMBED_FAILURE_MARKER`]-prefixed
 /// `last_error`; `reconcile_embeddings` skips marker-prefixed rows so the
 /// job stays terminal instead of cycling reject-retry forever.
 ///

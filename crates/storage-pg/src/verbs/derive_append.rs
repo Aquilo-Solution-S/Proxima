@@ -214,7 +214,8 @@ pub(crate) async fn append_derived_in_tx(
 ///
 /// `origins` and `references` are endpoints, never kinds: the first list is
 /// what the write says it was made from, the second is what its payload
-/// points at, and each list's [`EdgeKind`] follows from which list it is.
+/// points at, and each list's [`proxima_core::EdgeKind`] follows from
+/// which list it is.
 ///
 /// # Errors
 ///
