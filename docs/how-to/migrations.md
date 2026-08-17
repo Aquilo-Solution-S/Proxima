@@ -1,6 +1,6 @@
 # Migration policy
 
-How schema migrations are authored. Release checklist: `RELEASING.md`.
+How schema migrations are authored.
 
 Core is one file: `crates/storage-pg/migrations/0001_v008.sql`.
 Flavor: `flavors/code/migrations/20260801000020_v007_baseline.sql`.
