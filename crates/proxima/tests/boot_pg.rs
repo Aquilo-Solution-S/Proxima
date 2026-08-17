@@ -9,11 +9,10 @@ use proxima::{
 };
 use proxima_core::llm::{EmbeddingClient, LlmError};
 use proxima_core::test_fixtures::ConstantEmbedding;
-use proxima_core::verbs::fact_ingest::FactWriteCommand;
 use proxima_core::{
-    AuthError, AuthPath, Authenticator, AuthzContext, Credentials, FactPayload, FlavorRegistry,
-    FlavorRegistryError, MemoryId, Owner, Role, SchemaId, SchemaVersion, SourceBatchId, ToolScope,
-    UserId,
+    AgentNoteV1, AuthError, AuthPath, Authenticator, AuthzContext, Credentials, FactPayload,
+    FlavorRegistry, FlavorRegistryError, MemoryId, Owner, Role, SchemaId, SchemaVersion,
+    ToolScope, UserId,
 };
 use proxima_pg_testkit::{admin_url, create_db, db_url, drop_db, unique_db_name};
 use proxima_storage_pg::{PgSidecarKey, PgStorage};
@@ -41,27 +40,19 @@ impl Authenticator for TestAuthenticator {
     }
 }
 
-#[derive(Debug, serde::Deserialize, serde::Serialize)]
-struct TestFact {
-    label: String,
-}
-
-impl FactPayload for TestFact {
-    const SCHEMA_ID: &'static str = "test/facade-boot-fact-v1";
-    const SCHEMA_VERSION: u32 = 1;
-
-    fn receipt_key(&self) -> Vec<u8> {
-        self.label.as_bytes().to_vec()
-    }
-
-    fn render(&self) -> String {
-        self.label.clone()
+fn drain_note(title: &str) -> AgentNoteV1 {
+    AgentNoteV1 {
+        note_id: Uuid::now_v7(),
+        title: title.into(),
+        body: title.into(),
+        tags: Vec::new(),
+        idempotency_key: Some(title.into()),
     }
 }
 
 impl FlavorBundle for GoalTestApp {
-    fn register(registry: &mut FlavorRegistry) -> Result<(), FlavorRegistryError> {
-        registry.try_add_fact_schema::<TestFact>()
+    fn register(_registry: &mut FlavorRegistry) -> Result<(), FlavorRegistryError> {
+        Ok(())
     }
 
     fn migrators() -> Vec<NamedMigrator> {
@@ -489,17 +480,12 @@ async fn facade_boot_exposes_pg_sidecars_and_worker_drains_embedding_jobs() {
             "boot result exposes the frozen core PG sidecar registry"
         );
 
-        let payload = TestFact {
-            label: "facade worker drain fact".to_string(),
-        };
-        let draft = FactWriteCommand::from_payload(
-            "test/facade-worker",
-            SourceBatchId::new(Uuid::now_v7()),
-            &payload,
-            time::OffsetDateTime::now_utc(),
-        );
+        let payload = drain_note("facade worker drain fact");
         let authz = built.single_owner_authz().expect("single owner authz");
-        let outcome = built.engine.fact_ingest(&authz, draft).await?;
+        let outcome = built
+            .engine
+            .ingest_typed_fact(&authz, "test/facade-worker", &payload)
+            .await?;
         assert_eq!(
             count_fact_embeddings(built.pool_for_tests(), outcome.memory_id, model_id).await?,
             0
@@ -543,17 +529,12 @@ async fn startup_reconcile_heals_facts_ingested_without_embed_client() {
             .tool_scope(ToolScope::All)
             .build()
             .await?;
-        let payload = TestFact {
-            label: "fact written while embeddings were down".to_string(),
-        };
-        let draft = FactWriteCommand::from_payload(
-            "test/startup-reconcile",
-            SourceBatchId::new(Uuid::now_v7()),
-            &payload,
-            time::OffsetDateTime::now_utc(),
-        );
+        let payload = drain_note("fact written while embeddings were down");
         let authz = degraded.single_owner_authz().expect("single owner authz");
-        let outcome = degraded.engine.fact_ingest(&authz, draft).await?;
+        let outcome = degraded
+            .engine
+            .ingest_typed_fact(&authz, "test/startup-reconcile", &payload)
+            .await?;
         assert_eq!(
             count_embedding_jobs(degraded.pool_for_tests(), outcome.memory_id, model_id).await?,
             0,
