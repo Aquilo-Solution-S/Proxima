@@ -8,11 +8,17 @@
 
 use proxima_core::storage_ports::OwnerWritePermit;
 use proxima_core::verbs::fact_ingest::FactWriteCommand;
-use proxima_core::{AccessKind, OwnerRef, SchemaId, SchemaVersion, UserId};
+use proxima_core::verbs::goal_write::GoalState;
+use proxima_core::{AccessKind, GroupId, OwnerRef, SchemaId, SchemaVersion, StorageError, UserId};
 use proxima_pg_testkit::{create_db, db_url, drop_db};
 use proxima_storage_pg::PgStorage;
+use proxima_storage_pg::access::owner_columns::ensure_owner_row;
 use proxima_storage_pg::verbs::fact_ingest::ingest_fact_atomic;
+use proxima_storage_pg::verbs::goal_timeseries::{GoalWriteCommand, write_goal};
 use proxima_storage_pg::verbs::memory_timeseries::{read_memory_by_t, read_memory_head};
+use proxima_storage_pg::verbs::wake_timeseries::{
+    WakeConfigDraft, WakeTriggerKind, insert_wake_config,
+};
 use uuid::Uuid;
 
 fn draft(source: Option<(&str, &str)>) -> FactWriteCommand {
@@ -224,4 +230,91 @@ async fn memory_timeseries_pins_blob_and_closed_handle() {
     .await;
     let _ = drop_db(&db_name).await;
     result.expect("pin/blob test failed");
+}
+
+fn assert_kind_conflict(err: StorageError) {
+    match err {
+        StorageError::ConstraintViolation(msg) => {
+            assert!(
+                msg.contains("owners.kind conflict"),
+                "got ConstraintViolation {msg}"
+            );
+        }
+        other => panic!("expected kind conflict, got {other}"),
+    }
+}
+
+#[tokio::test]
+async fn owners_upsert_rejects_kind_conflict_on_every_write_path() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    if let Err(e) = create_db(&db_name).await {
+        panic!("PG required for tests but admin connect failed: {e}");
+    }
+    let url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&url).await?;
+        pg.run_migrations().await?;
+        let id = Uuid::now_v7();
+        let personal = OwnerRef::Personal(UserId::new(id));
+        let group = OwnerRef::Group(GroupId::new(id));
+        let permit = OwnerWritePermit::new_for_tests(personal, AccessKind::Fact);
+        let pool = pg.pool_for_tests();
+
+        ingest_fact_atomic(pool, &permit, &draft(None), None).await?;
+        ensure_owner_row(pool, &personal).await?;
+
+        assert_kind_conflict(ensure_owner_row(pool, &group).await.expect_err("helper"));
+
+        let mut tx = pool.begin().await?;
+        assert_kind_conflict(
+            write_goal(
+                &mut tx,
+                &group,
+                &GoalWriteCommand {
+                    handle: None,
+                    schema_id: "core/task-v1".into(),
+                    title: "kind conflict".into(),
+                    state: GoalState::Active,
+                    request_id: "kind-conflict".into(),
+                    close_fact_t: None,
+                    assignment_t: None,
+                    dependency_t: vec![],
+                    evidence_t: vec![],
+                    wake_id: None,
+                    mint_write_act: false,
+                },
+            )
+            .await
+            .expect_err("goal"),
+        );
+        assert_kind_conflict(
+            insert_wake_config(
+                &mut tx,
+                &group,
+                &WakeConfigDraft {
+                    trigger_kind: WakeTriggerKind::FactSchema,
+                    trigger_schema_id: Some("core/visit-v1".into()),
+                    trigger_t: None,
+                    tool_ids: vec!["core.remember".into()],
+                    prompt: "on visit".into(),
+                    hard_memory_t: vec![],
+                },
+            )
+            .await
+            .expect_err("wake"),
+        );
+        tx.rollback().await?;
+
+        let group_permit = OwnerWritePermit::new_for_tests(group, AccessKind::Fact);
+        assert_kind_conflict(
+            ingest_fact_atomic(pool, &group_permit, &draft(None), None)
+                .await
+                .expect_err("fact"),
+        );
+
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("owners kind-conflict test failed");
 }

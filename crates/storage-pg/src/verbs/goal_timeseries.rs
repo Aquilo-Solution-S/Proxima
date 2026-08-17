@@ -7,7 +7,7 @@
 
 use proxima_core::verbs::fact_ingest::{FactIngestOutcome, FactWriteCommand};
 use proxima_core::verbs::goal_write::GoalState;
-use proxima_core::{MemoryId, Owner, OwnerRefKind, StorageError};
+use proxima_core::{MemoryId, Owner, StorageError};
 use sqlx::{Postgres, Transaction};
 use uuid::Uuid;
 
@@ -102,18 +102,7 @@ pub async fn write_goal(
     draft: &GoalWriteCommand,
 ) -> Result<GoalWriteOutcome, StorageError> {
     crate::access::owner_columns::reject_world_write_owner(owner)?;
-    let owner_id = owner.stored_owner_id();
-    let owner_kind = OwnerRefKind::of(owner).as_str();
-    sqlx::query(
-        "INSERT INTO proxima_core.owners (owner_id, kind)
-         VALUES ($1, $2::proxima_core.owner_kind)
-         ON CONFLICT (owner_id) DO NOTHING",
-    )
-    .bind(owner_id)
-    .bind(owner_kind)
-    .execute(tx.as_mut())
-    .await
-    .map_err(map_err)?;
+    let owner_id = crate::access::owner_columns::ensure_owner_row(tx.as_mut(), owner).await?;
 
     if let Some(existing) = load_goal_by_request_id(tx, owner, &draft.request_id).await? {
         return Ok(GoalWriteOutcome {

@@ -1,7 +1,7 @@
 //! WakeConfig + fire (one write-act per match). UML §3b / §5b.
 #![allow(clippy::missing_errors_doc, clippy::doc_markdown)]
 
-use proxima_core::{Owner, OwnerRefKind, StorageError};
+use proxima_core::{Owner, StorageError};
 use sqlx::{PgPool, Postgres, Transaction};
 use uuid::Uuid;
 
@@ -35,17 +35,7 @@ pub async fn insert_wake_config(
     draft: &WakeConfigDraft,
 ) -> Result<Uuid, StorageError> {
     crate::access::owner_columns::reject_world_write_owner(owner)?;
-    let owner_id = owner.stored_owner_id();
-    sqlx::query(
-        "INSERT INTO proxima_core.owners (owner_id, kind)
-         VALUES ($1, $2::proxima_core.owner_kind)
-         ON CONFLICT (owner_id) DO NOTHING",
-    )
-    .bind(owner_id)
-    .bind(OwnerRefKind::of(owner).as_str())
-    .execute(tx.as_mut())
-    .await
-    .map_err(map_err)?;
+    let owner_id = crate::access::owner_columns::ensure_owner_row(tx.as_mut(), owner).await?;
 
     sqlx::query_scalar(
         "INSERT INTO proxima_core.wake_config

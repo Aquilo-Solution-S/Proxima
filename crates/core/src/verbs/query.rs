@@ -39,6 +39,25 @@ pub const fn hybrid_degraded_to_lexical(
     matches!(mode, SearchMode::Hybrid) && !no_rows && !any_semantic_score
 }
 
+/// `%`-wrapped, `LIKE`-escaped, lowercased (`str::to_lowercase`, matching
+/// PG `lower`). Shared by every GIN-miss `LIKE … ESCAPE '\'` arm.
+#[must_use]
+pub fn like_pattern(query: &str) -> String {
+    let mut out = String::with_capacity(query.len() + 2);
+    out.push('%');
+    for ch in query.to_lowercase().chars() {
+        match ch {
+            '%' | '_' | '\\' => {
+                out.push('\\');
+                out.push(ch);
+            }
+            _ => out.push(ch),
+        }
+    }
+    out.push('%');
+    out
+}
+
 fn default_search_mode() -> SearchMode {
     SearchMode::Hybrid
 }
@@ -621,7 +640,7 @@ pub struct QueryResponse {
 
 #[cfg(test)]
 mod tests {
-    use super::{SearchOrder, TagMatch};
+    use super::{SearchOrder, TagMatch, like_pattern};
 
     #[test]
     fn tag_match_and_order_accept_mixed_case() {
@@ -641,5 +660,17 @@ mod tests {
             serde_json::from_value::<SearchOrder>(serde_json::json!("RELEVANCE")).unwrap(),
             SearchOrder::Relevance
         );
+    }
+
+    #[test]
+    fn like_pattern_lowercases_the_way_postgres_does() {
+        assert_eq!(like_pattern("MÜNCHEN.RS"), "%münchen.rs%");
+        assert_eq!(like_pattern("Straße"), "%straße%");
+        assert_eq!(like_pattern("ÅNGSTRÖM"), "%ångström%");
+    }
+
+    #[test]
+    fn like_pattern_escapes_wildcards() {
+        assert_eq!(like_pattern("a_b%c\\d"), "%a\\_b\\%c\\\\d%");
     }
 }

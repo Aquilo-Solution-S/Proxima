@@ -6,7 +6,7 @@
 
 use proxima_core::citations::UploadedBlobPayload;
 use proxima_core::storage_ports::{CitedBlobHeld, CitedBlobStaged};
-use proxima_core::{Owner, OwnerRefKind, UPLOADED_BLOB_SCHEMA_ID};
+use proxima_core::{Owner, StorageError, UPLOADED_BLOB_SCHEMA_ID};
 use sqlx::Row;
 use time::OffsetDateTime;
 use uuid::Uuid;
@@ -60,19 +60,16 @@ pub(super) async fn ensure_owner_row(
     pool: &sqlx::PgPool,
     owner: &Owner,
 ) -> Result<Uuid, BlobError> {
-    let owner_id = owner.stored_owner_id();
-    let kind = OwnerRefKind::of(owner).as_str();
-    sqlx::query(
-        "INSERT INTO proxima_core.owners (owner_id, kind)
-         VALUES ($1, $2::proxima_core.owner_kind)
-         ON CONFLICT (owner_id) DO NOTHING",
-    )
-    .bind(owner_id)
-    .bind(kind)
-    .execute(pool)
-    .await
-    .map_err(BlobError::Db)?;
-    Ok(owner_id)
+    proxima_storage_pg::access::owner_columns::ensure_owner_row(pool, owner)
+        .await
+        .map_err(map_owner_row)
+}
+
+fn map_owner_row(err: StorageError) -> BlobError {
+    match err {
+        StorageError::ConstraintViolation(msg) => BlobError::State(msg),
+        other => BlobError::State(format!("db error: {other}")),
+    }
 }
 
 pub(super) async fn load_upload(

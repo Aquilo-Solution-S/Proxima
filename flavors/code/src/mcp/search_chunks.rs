@@ -11,6 +11,7 @@ use std::collections::{HashMap, HashSet};
 
 use proxima_core::MemoryId;
 use proxima_core::mcp::cursor as wire_cursor;
+use proxima_core::verbs::query::like_pattern;
 use proxima_core::{Tool, ToolCtx, ToolError};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -910,23 +911,6 @@ async fn scan_chunk_sidecar_like(
     .map_err(map_storage)
 }
 
-/// `%`-wrapped, escaped, lowercased (`str::to_lowercase`, matching PG `lower`).
-fn like_pattern(query: &str) -> String {
-    let mut out = String::with_capacity(query.len() + 2);
-    out.push('%');
-    for ch in query.to_lowercase().chars() {
-        match ch {
-            '%' | '_' | '\\' => {
-                out.push('\\');
-                out.push(ch);
-            }
-            _ => out.push(ch),
-        }
-    }
-    out.push('%');
-    out
-}
-
 #[derive(Debug, sqlx::FromRow)]
 struct ChunkCandidateRow {
     memory_id: uuid::Uuid,
@@ -950,7 +934,7 @@ struct CallSiteRow {
 mod tests {
     use super::{
         ChunkCandidateRow, ChunkSearchMode, MAX_DISTINCTIVE_TERMS, MatchScores, distinctive_terms,
-        fuse_candidates, like_pattern, reciprocal_rank,
+        fuse_candidates, reciprocal_rank,
     };
     use proxima_storage_pg::query::CodeChunkVectorCandidate;
 
@@ -1086,20 +1070,6 @@ mod tests {
         assert!(reciprocal_rank(0) > reciprocal_rank(1));
         assert!(reciprocal_rank(1) > reciprocal_rank(999));
         assert!(reciprocal_rank(999) > 0.0);
-    }
-
-    /// Postgres `lower()` folds non-ASCII; the pattern must too, or it can
-    /// never match the column it is compared against.
-    #[test]
-    fn like_pattern_lowercases_the_way_postgres_does() {
-        assert_eq!(like_pattern("MÜNCHEN.RS"), "%münchen.rs%");
-        assert_eq!(like_pattern("Straße"), "%straße%");
-        assert_eq!(like_pattern("ÅNGSTRÖM"), "%ångström%");
-    }
-
-    #[test]
-    fn like_pattern_escapes_wildcards() {
-        assert_eq!(like_pattern("a_b%c\\d"), "%a\\_b\\%c\\\\d%");
     }
 
     /// The property the rare bands depend on: a question with no identifiers

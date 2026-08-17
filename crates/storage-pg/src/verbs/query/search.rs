@@ -18,7 +18,7 @@ use proxima_core::llm::EMBEDDING_DIM;
 use proxima_core::verbs::query::{
     DEFAULT_HYBRID_SEMANTIC_WEIGHT, EntityKind, MAX_SEARCH_PAGE_LIMIT, MemorySearchPage,
     MemorySearchRequest, MemorySearchResult, SearchCursor, SearchMode, SearchOrder,
-    SupersessionStatus, TagMatch,
+    SupersessionStatus, TagMatch, like_pattern,
 };
 use proxima_core::verbs::schema::{MemorySearchProjection, PayloadKind};
 use proxima_core::{MemoryId, OwnerRef, SchemaId, StorageError};
@@ -419,22 +419,6 @@ fn rank_tsquery_expr(language_column: Option<&str>) -> Result<String, StorageErr
         "websearch_to_tsquery(c.{col}, proxima_core.lexical_query_text(c.{col}, q.scrubbed))",
         col = column.as_str()
     ))
-}
-
-fn like_pattern(query: &str) -> String {
-    let mut out = String::with_capacity(query.len() + 2);
-    out.push('%');
-    for ch in query.to_lowercase().chars() {
-        match ch {
-            '%' | '_' | '\\' => {
-                out.push('\\');
-                out.push(ch);
-            }
-            _ => out.push(ch),
-        }
-    }
-    out.push('%');
-    out
 }
 
 async fn scan_embeddings(

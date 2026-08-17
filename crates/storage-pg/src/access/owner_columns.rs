@@ -54,6 +54,47 @@ pub(crate) fn reject_world_write_owner(owner: &OwnerRef) -> Result<(), StorageEr
     Ok(())
 }
 
+/// Insert `proxima_core.owners` or confirm the stored kind matches `owner`.
+///
+/// The only production owners upsert. Memory / goal / wake / citation /
+/// cited-blob writes all go through this so an `owner_id` reused under a
+/// different kind cannot silently keep the first kind.
+///
+/// # Errors
+///
+/// [`StorageError::ConstraintViolation`] when `owner_id` already exists
+/// with a different kind. Other storage errors from the upsert.
+pub async fn ensure_owner_row<'e>(
+    executor: impl sqlx::Executor<'e, Database = Postgres>,
+    owner: &OwnerRef,
+) -> Result<uuid::Uuid, StorageError> {
+    let owner_id = owner.stored_owner_id();
+    let owner_kind = OwnerRefKind::of(owner).as_str();
+    let existing: String = sqlx::query_scalar(
+        "WITH ins AS (
+            INSERT INTO proxima_core.owners (owner_id, kind)
+            VALUES ($1, $2::proxima_core.owner_kind)
+            ON CONFLICT (owner_id) DO NOTHING
+            RETURNING kind::text AS kind
+         )
+         SELECT kind FROM ins
+         UNION ALL
+         SELECT kind::text FROM proxima_core.owners WHERE owner_id = $1
+         LIMIT 1",
+    )
+    .bind(owner_id)
+    .bind(owner_kind)
+    .fetch_one(executor)
+    .await
+    .map_err(map_err)?;
+    if existing != owner_kind {
+        return Err(StorageError::ConstraintViolation(
+            "owners.kind conflict for owner_id".into(),
+        ));
+    }
+    Ok(owner_id)
+}
+
 /// # Errors
 ///
 /// Returns `Internal` on sqlx failure.

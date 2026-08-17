@@ -6,7 +6,7 @@
 )]
 
 use proxima_core::verbs::fact_ingest::{FactIngestOutcome, FactWriteCommand};
-use proxima_core::{MemoryId, Owner, OwnerRefKind, StorageError};
+use proxima_core::{MemoryId, Owner, StorageError};
 use sqlx::{Postgres, Transaction};
 use uuid::Uuid;
 
@@ -31,32 +31,7 @@ pub async fn ingest_fact_timeseries(
     draft: &FactWriteCommand,
 ) -> Result<FactIngestOutcome, StorageError> {
     crate::access::owner_columns::reject_world_write_owner(owner)?;
-    let owner_id = owner.stored_owner_id();
-    let owner_kind = OwnerRefKind::of(owner).as_str();
-
-    let inserted = sqlx::query(
-        "INSERT INTO proxima_core.owners (owner_id, kind)
-         VALUES ($1, $2::proxima_core.owner_kind)
-         ON CONFLICT (owner_id) DO NOTHING",
-    )
-    .bind(owner_id)
-    .bind(owner_kind)
-    .execute(tx.as_mut())
-    .await
-    .map_err(map_err)?;
-    if inserted.rows_affected() == 0 {
-        let existing: String =
-            sqlx::query_scalar("SELECT kind::text FROM proxima_core.owners WHERE owner_id = $1")
-                .bind(owner_id)
-                .fetch_one(tx.as_mut())
-                .await
-                .map_err(map_err)?;
-        if existing != owner_kind {
-            return Err(StorageError::ConstraintViolation(
-                "owners.kind conflict for owner_id".into(),
-            ));
-        }
-    }
+    let owner_id = crate::access::owner_columns::ensure_owner_row(tx.as_mut(), owner).await?;
 
     let source_id = draft.source_id.clone();
     let ingest_key = draft.ingest_key.clone();

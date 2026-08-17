@@ -660,18 +660,7 @@ async fn upsert_blob(
     schema_id: &str,
     content_hash: &[u8; 32],
 ) -> Result<uuid::Uuid, StorageError> {
-    let owner_id = owner.stored_owner_id();
-    let owner_kind = proxima_core::OwnerRefKind::of(owner).as_str();
-    sqlx::query(
-        "INSERT INTO proxima_core.owners (owner_id, kind)
-         VALUES ($1, $2::proxima_core.owner_kind)
-         ON CONFLICT (owner_id) DO NOTHING",
-    )
-    .bind(owner_id)
-    .bind(owner_kind)
-    .execute(tx.as_mut())
-    .await
-    .map_err(map_err)?;
+    let owner_id = crate::access::owner_columns::ensure_owner_row(tx.as_mut(), owner).await?;
     sqlx::query_scalar(
         "INSERT INTO proxima_core.blob (owner_id, schema_id, content_hash)
          VALUES ($1, $2, $3)
