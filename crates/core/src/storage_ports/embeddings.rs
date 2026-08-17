@@ -311,10 +311,19 @@ pub enum EmbeddingReconcileScope {
     Since(time::OffsetDateTime),
 }
 
+/// Boot / Engine catch-up cap when the caller does not name a limit.
+///
+/// Process startup uses this. `maintain-embeddings` without `--limit`
+/// is the operator full pass (`i64::MAX` at that CLI boundary only).
+/// Storage refuses `limit: None`.
+pub const EMBEDDING_RECONCILE_DEFAULT_LIMIT: i64 = 50_000;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EmbeddingReconcileOptions<'a> {
     pub model_id: &'a str,
     pub scope: EmbeddingReconcileScope,
+    /// Required at the storage boundary. `None` is a constraint error.
+    /// Engine `None` becomes [`EMBEDDING_RECONCILE_DEFAULT_LIMIT`].
     pub limit: Option<i64>,
     /// Fact schema ids that declined a vector
     /// ([`crate::FactPayload::EMBEDDABLE`]), excluded from the scan.

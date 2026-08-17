@@ -19,9 +19,11 @@
 //! Cursor format (tagged binary bytes inside the opaque `Cursor` newtype):
 //! ```ignore
 //! b"PXC1" || opt_string(last_commit_sha) || opt_string(last_tree_sha)
+//!         || opt_string(last_scope_hash)   // optional trailing; old cursors omit it
 //! ```
-//! `None` for both means "from the beginning"; subsequent polls walk
-//! only commits between `last_commit_sha` and `HEAD`.
+//! `None` for both shas means "from the beginning"; subsequent polls walk
+//! only commits between `last_commit_sha` and `HEAD`. Missing
+//! `last_scope_hash` means the snapshot cannot take the same-tree no-op.
 //!
 //! Typed sidecar inserts must run alongside Fact materialization
 //! (AGENTS.md invariant 15), so this surface is intentionally
@@ -180,11 +182,27 @@ impl<'a> CodeIngestContext<'a> {
         &self,
         owner: Owner,
         repo_id: Uuid,
+        file_paths: &[String],
     ) -> Result<Vec<FileRevisionHead>, IngestError> {
-        // Owner-only `memory_head` of each `(repo, path)` series — the
-        // same series stateful-Fact NK ingest advances.
+        // Owner-only `memory_head` of each named `(repo, path)` series —
+        // the same series stateful-Fact NK ingest advances.
         self.store
-            .owned_file_revision_heads(owner, repo_id)
+            .owned_file_revision_heads(owner, repo_id, file_paths)
+            .await
+            .map_err(|err| read_error(&err))?
+            .into_iter()
+            .map(file_revision_head_from_row)
+            .collect()
+    }
+
+    async fn present_file_revision_heads_except(
+        &self,
+        owner: Owner,
+        repo_id: Uuid,
+        keep_paths: &[String],
+    ) -> Result<Vec<FileRevisionHead>, IngestError> {
+        self.store
+            .owned_present_file_revision_heads_except(owner, repo_id, keep_paths)
             .await
             .map_err(|err| read_error(&err))?
             .into_iter()
@@ -263,13 +281,19 @@ impl LocalGitSource {
     /// A repo row that has vanished admits everything — the ingest verbs
     /// resolve the repo themselves and report a missing one better than a
     /// scope lookup can.
-    async fn load_scope(&self, pool: &sqlx::PgPool) -> Result<ScopeMatcher, IndexError> {
+    async fn load_scope(&self, pool: &sqlx::PgPool) -> Result<(ScopeMatcher, String), IndexError> {
         let record = crate::repos::get_repo(pool, &self.owner, self.repo_id)
             .await
             .map_err(|err| IndexError::Git(err.to_string()))?;
         match record {
-            Some(record) => Ok(record.scope.compile()?),
-            None => Ok(ScopeMatcher::allow_all()),
+            Some(record) => {
+                let fingerprint = record.scope.fingerprint();
+                Ok((record.scope.compile()?, fingerprint))
+            }
+            None => Ok((
+                ScopeMatcher::allow_all(),
+                crate::repos::RepoScope::default().fingerprint(),
+            )),
         }
     }
 
@@ -331,7 +355,7 @@ impl LocalGitSource {
         // Same scope the snapshot applies. A poll that skipped it would
         // re-add exactly what a snapshot had just excluded, making the
         // indexed set depend on which verb ran most recently.
-        let scope = self.load_scope(ctx.pool()).await?;
+        let (scope, scope_hash) = self.load_scope(ctx.pool()).await?;
         let mut report = IndexReport::default();
         let commit_limit = max_commits.unwrap_or(usize::MAX);
         let selected_total = plan.commits.len().min(commit_limit);
@@ -378,6 +402,7 @@ impl LocalGitSource {
         let next = CodeCursor {
             last_commit_sha,
             last_tree_sha,
+            last_scope_hash: Some(scope_hash),
         };
         Ok((report, encode_cursor(&next)?))
     }
@@ -388,6 +413,12 @@ impl LocalGitSource {
     /// HEAD, and returns a cursor advanced to HEAD. It intentionally
     /// emits no commit Facts and does not walk history.
     ///
+    /// `cursor` is the previous snapshot/poll cursor (empty on first run).
+    /// Same HEAD tree and same scope hash is a no-op. Same scope and a
+    /// new tree uses `git diff` and does not load file-revision heads.
+    /// Missing tree, missing scope hash, or a scope change reconciles
+    /// against admitted HEAD paths only — never every head of the repo.
+    ///
     /// # Errors
     ///
     /// Returns [`IndexError`] when HEAD cannot be read, when a batch fails to
@@ -395,45 +426,143 @@ impl LocalGitSource {
     pub async fn run_head_snapshot(
         &self,
         ctx: &CodeIngestContext<'_>,
+        cursor: &Cursor,
     ) -> Result<HeadSnapshotOutcome, IndexError> {
         let pool = ctx.pool();
         let head_sha = git::head_sha(&self.repo_path)?;
         let head_tree_sha = git::tree_sha(&self.repo_path, "HEAD")?;
-        let now = time::OffsetDateTime::now_utc();
-        let batch_id = SourceBatchId::new(Uuid::now_v7());
-        let permit = ctx.owner_write_permit(&self.owner).await?;
+        let (scope, scope_hash) = self.load_scope(pool).await?;
+        let parsed = decode_cursor(cursor)?;
+        let same_tree = parsed.last_tree_sha.as_deref() == Some(head_tree_sha.as_str());
+        let same_scope = parsed.last_scope_hash.as_deref() == Some(scope_hash.as_str());
+
+        let report = if same_tree && same_scope {
+            IndexReport::default()
+        } else if same_scope {
+            if let Some(last_tree) = parsed.last_tree_sha.as_deref() {
+                match git::diff_paths(&self.repo_path, last_tree, &head_tree_sha) {
+                    Ok((changed, deleted)) => {
+                        self.snapshot_git_delta(ctx, &scope, &head_sha, changed, deleted)
+                            .await?
+                    }
+                    Err(_) => self.snapshot_reconcile(ctx, &scope, &head_sha).await?,
+                }
+            } else {
+                self.snapshot_reconcile(ctx, &scope, &head_sha).await?
+            }
+        } else {
+            self.snapshot_reconcile(ctx, &scope, &head_sha).await?
+        };
+
+        let cursor = encode_cursor(&CodeCursor {
+            last_commit_sha: Some(head_sha.clone()),
+            last_tree_sha: Some(head_tree_sha.clone()),
+            last_scope_hash: Some(scope_hash),
+        })?;
+        Ok(HeadSnapshotOutcome {
+            report,
+            cursor,
+            head_sha,
+            head_tree_sha,
+        })
+    }
+
+    async fn snapshot_git_delta(
+        &self,
+        ctx: &CodeIngestContext<'_>,
+        scope: &ScopeMatcher,
+        head_sha: &str,
+        changed: Vec<String>,
+        deleted: Vec<String>,
+    ) -> Result<IndexReport, IndexError> {
+        let (changed, deleted, files_excluded) = if scope.admits_everything() {
+            (changed, deleted, 0)
+        } else {
+            let before = changed.len();
+            let changed: Vec<String> = changed.into_iter().filter(|p| scope.admits(p)).collect();
+            let files_excluded = before.saturating_sub(changed.len());
+            let deleted: Vec<String> = deleted.into_iter().filter(|p| scope.admits(p)).collect();
+            (changed, deleted, files_excluded)
+        };
+        let entries = git::ls_tree_paths(&self.repo_path, "HEAD", &changed)?;
+        self.snapshot_apply(ctx, head_sha, &entries, &deleted, files_excluded, None)
+            .await
+    }
+
+    async fn snapshot_reconcile(
+        &self,
+        ctx: &CodeIngestContext<'_>,
+        scope: &ScopeMatcher,
+        head_sha: &str,
+    ) -> Result<IndexReport, IndexError> {
         // Listing first, contents in bounded batches. Reading the whole tree
         // up front held every tracked file of the repository in memory at once
         // before a single row was written.
-        let scope = self.load_scope(pool).await?;
         let within_cap: Vec<git::TreeEntry> = git::ls_tree(&self.repo_path, "HEAD")?
             .into_iter()
             .filter(|entry| entry.size <= crate::chunker::MAX_BLOB_BYTES as u64)
             .collect();
         let within_cap_count = within_cap.len();
-        // Everything the scope removes stays out of `present_paths` below,
-        // so a path that has just left scope is tombstoned by exactly the
-        // branch that handles a deleted file. Changing a scope is therefore
-        // one re-ingest away, and it never leaves orphans behind.
+        // Everything the scope removes stays out of `admitted` below, so a
+        // path that has just left scope is tombstoned by the Present-except
+        // query. Changing a scope is therefore one re-ingest away.
         let head_entries: Vec<git::TreeEntry> = within_cap
             .into_iter()
             .filter(|entry| scope.admits(&entry.path))
             .collect();
-        // Counted against the size cap, not against the raw listing: an
-        // oversized blob was never a candidate, and folding it in here
-        // would report scope for a decision scope did not make.
         let files_excluded = within_cap_count.saturating_sub(head_entries.len());
-        let present_paths: HashSet<String> = head_entries
+        let admitted: Vec<String> = head_entries
             .iter()
             .map(|entry| entry.path.clone())
             .collect();
         let prior_heads: HashMap<_, _> = ctx
-            .file_revision_heads(self.owner, self.repo_id)
+            .file_revision_heads(self.owner, self.repo_id, &admitted)
             .await?
             .into_iter()
             .map(|head| (head.file_path.clone(), head))
             .collect();
+        let gone: Vec<String> = ctx
+            .present_file_revision_heads_except(self.owner, self.repo_id, &admitted)
+            .await?
+            .into_iter()
+            .map(|head| head.file_path)
+            .collect();
+        self.snapshot_apply(
+            ctx,
+            head_sha,
+            &head_entries,
+            &gone,
+            files_excluded,
+            Some(&prior_heads),
+        )
+        .await
+    }
 
+    async fn snapshot_apply(
+        &self,
+        ctx: &CodeIngestContext<'_>,
+        head_sha: &str,
+        head_entries: &[git::TreeEntry],
+        deleted_paths: &[String],
+        files_excluded: usize,
+        prior_heads: Option<&HashMap<String, FileRevisionHead>>,
+    ) -> Result<IndexReport, IndexError> {
+        let empty_heads = HashMap::new();
+        let skip_heads = prior_heads.unwrap_or(&empty_heads);
+        let (indexable, oversized): (Vec<_>, Vec<_>) = head_entries
+            .iter()
+            .cloned()
+            .partition(|entry| entry.size <= crate::chunker::MAX_BLOB_BYTES as u64);
+        if indexable.is_empty() && deleted_paths.is_empty() && oversized.is_empty() {
+            return Ok(IndexReport {
+                files_excluded,
+                ..IndexReport::default()
+            });
+        }
+        let pool = ctx.pool();
+        let now = time::OffsetDateTime::now_utc();
+        let batch_id = SourceBatchId::new(Uuid::now_v7());
+        let permit = ctx.owner_write_permit(&self.owner).await?;
         let mut report = IndexReport {
             files_excluded,
             ..IndexReport::default()
@@ -443,34 +572,26 @@ impl LocalGitSource {
         let mut pending_deleted = Vec::new();
         self.ingest_head_entries(
             ctx,
-            &head_sha,
+            head_sha,
             batch_id,
             now,
-            &head_entries,
-            &prior_heads,
+            &indexable,
+            skip_heads,
             &mut pending_present,
             &mut report,
             &mut blob_analysis_cache,
         )
         .await?;
-
-        for (path, prior) in prior_heads {
-            if prior.state == FileState::Present && !present_paths.contains(&path) {
-                pending_deleted.push(
-                    self.tombstone_deleted_path(
-                        ctx,
-                        &head_sha,
-                        batch_id,
-                        now,
-                        &path,
-                        None,
-                        &mut report,
-                    )
+        for path in oversized
+            .into_iter()
+            .map(|entry| entry.path)
+            .chain(deleted_paths.iter().cloned())
+        {
+            pending_deleted.push(
+                self.tombstone_deleted_path(ctx, head_sha, batch_id, now, &path, None, &mut report)
                     .await?,
-                );
-            }
+            );
         }
-
         crate::ingest::close_local_git_batch(pool, &permit, batch_id).await?;
         for pending in pending_present {
             self.derive_present_blob(ctx, batch_id, pending, &mut report)
@@ -480,17 +601,7 @@ impl LocalGitSource {
             self.derive_deleted_path(ctx, batch_id, pending, &mut report)
                 .await?;
         }
-        let cursor = encode_cursor(&CodeCursor {
-            last_commit_sha: Some(head_sha.clone()),
-            last_tree_sha: Some(head_tree_sha.clone()),
-        })?;
-
-        Ok(HeadSnapshotOutcome {
-            report,
-            cursor,
-            head_sha,
-            head_tree_sha,
-        })
+        Ok(report)
     }
 
     /// Single-commit ingest: one `source_batch_id`, one commit Fact,
@@ -1086,9 +1197,11 @@ fn tombstone_chunk(
 // ---------------------------------------------------------------------
 
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[allow(clippy::struct_field_names)]
 struct CodeCursor {
     last_commit_sha: Option<String>,
     last_tree_sha: Option<String>,
+    last_scope_hash: Option<String>,
 }
 
 const CODE_CURSOR_MAGIC: &[u8; 4] = b"PXC1";
@@ -1105,20 +1218,27 @@ fn decode_cursor(c: &Cursor) -> Result<CodeCursor, IndexError> {
     let mut offset = 0;
     let last_commit_sha = decode_cursor_string(rest, &mut offset)?;
     let last_tree_sha = decode_cursor_string(rest, &mut offset)?;
+    let last_scope_hash = if offset == rest.len() {
+        None
+    } else {
+        decode_cursor_string(rest, &mut offset)?
+    };
     if offset != rest.len() {
         return Err(IndexError::Cursor("trailing cursor bytes".into()));
     }
     Ok(CodeCursor {
         last_commit_sha,
         last_tree_sha,
+        last_scope_hash,
     })
 }
 
 fn encode_cursor(c: &CodeCursor) -> Result<Cursor, IndexError> {
-    let mut bytes = Vec::with_capacity(4 + 4 + 40 + 4 + 40);
+    let mut bytes = Vec::with_capacity(4 + 4 + 40 + 4 + 40 + 4 + 64);
     bytes.extend_from_slice(CODE_CURSOR_MAGIC);
     encode_cursor_string(&mut bytes, c.last_commit_sha.as_deref())?;
     encode_cursor_string(&mut bytes, c.last_tree_sha.as_deref())?;
+    encode_cursor_string(&mut bytes, c.last_scope_hash.as_deref())?;
     Ok(Cursor::from_bytes(bytes))
 }
 
@@ -1161,6 +1281,36 @@ fn decode_cursor_string(bytes: &[u8], offset: &mut usize) -> Result<Option<Strin
     String::from_utf8(value_bytes.to_vec())
         .map(Some)
         .map_err(|err| IndexError::Cursor(format!("invalid cursor utf8: {err}")))
+}
+
+#[cfg(test)]
+mod cursor_tests {
+    use super::{CodeCursor, decode_cursor, encode_cursor};
+
+    #[test]
+    fn new_cursor_round_trips_scope_hash() {
+        let encoded = encode_cursor(&CodeCursor {
+            last_commit_sha: Some("c".into()),
+            last_tree_sha: Some("t".into()),
+            last_scope_hash: Some("s".into()),
+        })
+        .expect("encode");
+        let decoded = decode_cursor(&encoded).expect("decode");
+        assert_eq!(decoded.last_commit_sha.as_deref(), Some("c"));
+        assert_eq!(decoded.last_tree_sha.as_deref(), Some("t"));
+        assert_eq!(decoded.last_scope_hash.as_deref(), Some("s"));
+    }
+
+    #[test]
+    fn old_cursor_without_scope_hash_still_decodes() {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(super::CODE_CURSOR_MAGIC);
+        super::encode_cursor_string(&mut bytes, Some("c")).expect("commit");
+        super::encode_cursor_string(&mut bytes, Some("t")).expect("tree");
+        let decoded = decode_cursor(&proxima_core::Cursor::from_bytes(bytes)).expect("decode");
+        assert_eq!(decoded.last_tree_sha.as_deref(), Some("t"));
+        assert_eq!(decoded.last_scope_hash, None);
+    }
 }
 
 type BlobAnalysisKey = ([u8; 32], Option<String>);

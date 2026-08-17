@@ -4,13 +4,13 @@
 use proxima_core::storage_ports::{InboundPinQuery, MemoryReadPort, OwnerWritePermit};
 use proxima_core::verbs::fact_ingest::FactWriteCommand;
 use proxima_core::verbs::query::{
-    EntityKind, MemoryLineageDirection, MemoryLineageRequest, QueryRequest,
+    EntityKind, MemoryLineageCursor, MemoryLineageDirection, MemoryLineageRequest, QueryRequest,
 };
 use proxima_core::verbs::schema::{
     MemorySearchProjection, MemorySearchProjectionField, PayloadKind,
 };
 use proxima_core::{
-    AccessKind, EdgeKind, EdgeTargetProjection, OwnerRef, SchemaId, SchemaVersion,
+    AccessKind, EdgeKind, EdgeTargetProjection, EntityRef, OwnerRef, SchemaId, SchemaVersion,
     SearchProjectionColumnKind, UserId, project_listed_edge, project_window_edges,
 };
 use proxima_pg_testkit::{create_db, db_url, drop_db};
@@ -492,4 +492,232 @@ async fn inbound_heads_only_drops_superseded_pin() {
     .await;
     let _ = drop_db(&db_name).await;
     result.expect("inbound heads-only rewrite test failed");
+}
+
+/// A←{B,C}←D←{E1,E2}←F. D must be expanded once (two origin edges, not four).
+#[tokio::test]
+async fn lineage_diamond_visits_shared_node_once() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    if let Err(e) = create_db(&db_name).await {
+        panic!("PG required for tests but admin connect failed: {e}");
+    }
+    let url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&url).await?;
+        pg.run_migrations().await?;
+        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
+        let pool = pg.pool_for_tests();
+
+        let leaf = ingest_fact_atomic(pool, &permit, &draft("fact", vec![], vec![]), None).await?;
+        let e1 = ingest_fact_atomic(
+            pool,
+            &permit,
+            &draft("abstraction", vec![], vec![leaf.memory_id.into_inner()]),
+            None,
+        )
+        .await?;
+        let e2 = ingest_fact_atomic(
+            pool,
+            &permit,
+            &draft("abstraction", vec![], vec![leaf.memory_id.into_inner()]),
+            None,
+        )
+        .await?;
+        let meet = ingest_fact_atomic(
+            pool,
+            &permit,
+            &draft(
+                "abstraction",
+                vec![],
+                vec![e1.memory_id.into_inner(), e2.memory_id.into_inner()],
+            ),
+            None,
+        )
+        .await?;
+        let left = ingest_fact_atomic(
+            pool,
+            &permit,
+            &draft("abstraction", vec![], vec![meet.memory_id.into_inner()]),
+            None,
+        )
+        .await?;
+        let right = ingest_fact_atomic(
+            pool,
+            &permit,
+            &draft("abstraction", vec![], vec![meet.memory_id.into_inner()]),
+            None,
+        )
+        .await?;
+        let tip = ingest_fact_atomic(
+            pool,
+            &permit,
+            &draft(
+                "abstraction",
+                vec![],
+                vec![left.memory_id.into_inner(), right.memory_id.into_inner()],
+            ),
+            None,
+        )
+        .await?;
+
+        let up = pg
+            .walk_memory_lineage(
+                &[owner],
+                &MemoryLineageRequest {
+                    owner,
+                    start_memory_id: tip.memory_id,
+                    direction: MemoryLineageDirection::Ancestors,
+                    depth: 8,
+                    limit: 50,
+                    after: None,
+                },
+            )
+            .await?;
+        let meet_origins: Vec<_> = up
+            .edges
+            .iter()
+            .filter(|hop| hop.edge.source.memory_id() == Some(meet.memory_id))
+            .collect();
+        assert_eq!(
+            meet_origins.len(),
+            2,
+            "meet origin edges must not duplicate: {meet_origins:?}"
+        );
+        assert_eq!(
+            up.edges.len(),
+            8,
+            "diamond is 8 origin edges, got {}",
+            up.edges.len()
+        );
+
+        let down = pg
+            .walk_memory_lineage(
+                &[owner],
+                &MemoryLineageRequest {
+                    owner,
+                    start_memory_id: leaf.memory_id,
+                    direction: MemoryLineageDirection::Descendants,
+                    depth: 8,
+                    limit: 50,
+                    after: None,
+                },
+            )
+            .await?;
+        let tip_hops: Vec<_> = down
+            .edges
+            .iter()
+            .filter(|hop| hop.edge.source.memory_id() == Some(tip.memory_id))
+            .collect();
+        assert_eq!(
+            tip_hops.len(),
+            2,
+            "tip must enter the descendant frontier once"
+        );
+        assert_eq!(down.edges.len(), 8, "descendants match the same 8 edges");
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("diamond lineage test failed");
+}
+
+#[tokio::test]
+async fn lineage_pages_finish_a_distance_before_the_next() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    if let Err(e) = create_db(&db_name).await {
+        panic!("PG required for tests but admin connect failed: {e}");
+    }
+    let url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&url).await?;
+        pg.run_migrations().await?;
+        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
+        let pool = pg.pool_for_tests();
+
+        let leaf = ingest_fact_atomic(pool, &permit, &draft("fact", vec![], vec![]), None).await?;
+        let mut mids = Vec::new();
+        for _ in 0..5 {
+            let mid = ingest_fact_atomic(
+                pool,
+                &permit,
+                &draft("abstraction", vec![], vec![leaf.memory_id.into_inner()]),
+                None,
+            )
+            .await?;
+            mids.push(mid.memory_id);
+        }
+        let root = ingest_fact_atomic(
+            pool,
+            &permit,
+            &draft(
+                "abstraction",
+                vec![],
+                mids.iter().map(|id| id.into_inner()).collect(),
+            ),
+            None,
+        )
+        .await?;
+
+        let req = |limit: u32, after: Option<MemoryLineageCursor>| MemoryLineageRequest {
+            owner,
+            start_memory_id: root.memory_id,
+            direction: MemoryLineageDirection::Ancestors,
+            depth: 3,
+            limit,
+            after,
+        };
+        let page1 = pg.walk_memory_lineage(&[owner], &req(2, None)).await?;
+        assert_eq!(page1.edges.len(), 2);
+        assert!(page1.truncated);
+        assert!(page1.edges.iter().all(|hop| hop.distance == 1));
+        assert_eq!(
+            page1.edges[0]
+                .edge
+                .target
+                .endpoint()
+                .and_then(proxima_core::EdgeEndpoint::memory_id),
+            Some(mids[4])
+        );
+        assert_eq!(
+            page1.edges[1]
+                .edge
+                .target
+                .endpoint()
+                .and_then(proxima_core::EdgeEndpoint::memory_id),
+            Some(mids[3])
+        );
+
+        let page2 = pg
+            .walk_memory_lineage(&[owner], &req(2, page1.next_cursor))
+            .await?;
+        assert_eq!(page2.edges.len(), 2);
+        assert!(page2.truncated);
+        assert!(page2.edges.iter().all(|hop| hop.distance == 1));
+
+        let page3 = pg
+            .walk_memory_lineage(&[owner], &req(2, page2.next_cursor))
+            .await?;
+        assert_eq!(page3.edges.len(), 2);
+        assert_eq!(page3.edges[0].distance, 1);
+        assert_eq!(page3.edges[1].distance, 2);
+        assert!(page3.truncated);
+
+        let from_last_dist1 = MemoryLineageCursor {
+            distance: 1,
+            source: EntityRef::Memory(root.memory_id),
+            target: EntityRef::Memory(mids[0]),
+        };
+        let dist2 = pg
+            .walk_memory_lineage(&[owner], &req(10, Some(from_last_dist1)))
+            .await?;
+        assert!(dist2.edges.iter().all(|hop| hop.distance == 2));
+        assert_eq!(dist2.edges.len(), 5);
+        assert!(!dist2.truncated);
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("lineage keyset test failed");
 }

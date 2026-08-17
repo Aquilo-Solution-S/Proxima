@@ -57,6 +57,7 @@ async fn append_derived_timeseries(
     draft: &DerivedDraft<'_>,
     origins: &[EdgeEndpoint],
     references: &[EdgeEndpoint],
+    sidecar_tables: &[String],
     sidecar: impl for<'t> FnOnce(
         &'t mut Transaction<'_, Postgres>,
         &'t DerivedOutcome,
@@ -134,7 +135,9 @@ async fn append_derived_timeseries(
         blob_id: None,
         kind: kind.into(),
     };
-    let ingested = super::memory_timeseries::ingest_fact_timeseries(tx, &draft.owner, &cmd).await?;
+    let ingested =
+        super::memory_timeseries::ingest_fact_timeseries(tx, &draft.owner, &cmd, sidecar_tables)
+            .await?;
     let outcome = DerivedOutcome {
         memory_id: ingested.memory_id,
         idempotent_replay: ingested.idempotent_replay,
@@ -191,6 +194,7 @@ pub(crate) async fn append_derived_in_tx(
     draft: &DerivedDraft<'_>,
     origins: &[EdgeEndpoint],
     references: &[EdgeEndpoint],
+    sidecar_tables: &[String],
     sidecar: impl for<'t> FnOnce(
         &'t mut Transaction<'_, Postgres>,
         &'t DerivedOutcome,
@@ -198,7 +202,7 @@ pub(crate) async fn append_derived_in_tx(
 ) -> Result<DerivedOutcome, StorageError> {
     validate_permit_owner(permit, &draft.owner)?;
     crate::access::owner_columns::reject_world_write_owner(&draft.owner)?;
-    append_derived_timeseries(tx, draft, origins, references, sidecar).await
+    append_derived_timeseries(tx, draft, origins, references, sidecar_tables, sidecar).await
 }
 
 /// Append one operator-derived memory together with the index rows its own
@@ -228,6 +232,7 @@ pub async fn append_derived_with_edges_in_tx(
     draft: &DerivedDraft<'_>,
     origins: &[EdgeEndpoint],
     references: &[EdgeEndpoint],
+    sidecar_tables: &[String],
     sidecar: impl for<'t> FnOnce(
         &'t mut Transaction<'_, Postgres>,
         &'t DerivedOutcome,
@@ -237,7 +242,16 @@ pub async fn append_derived_with_edges_in_tx(
     crate::access::owner_columns::reject_world_write_owner(&draft.owner)?;
     validate_derived_origins_in_tx(tx, draft, origins).await?;
     validate_derived_reference_kinds_in_tx(tx, references).await?;
-    let outcome = append_derived_in_tx(tx, permit, draft, origins, references, sidecar).await?;
+    let outcome = append_derived_in_tx(
+        tx,
+        permit,
+        draft,
+        origins,
+        references,
+        sidecar_tables,
+        sidecar,
+    )
+    .await?;
     assert_derived_index_rows(tx, draft, &outcome, origins, references).await?;
     Ok(outcome)
 }
@@ -248,6 +262,7 @@ pub struct DerivedBatchEntry<'a> {
     pub draft: &'a DerivedDraft<'a>,
     pub origins: &'a [EdgeEndpoint],
     pub references: &'a [EdgeEndpoint],
+    pub sidecar_tables: &'a [String],
 }
 
 /// Append a set of derived memories whose references point at each other.
@@ -295,6 +310,7 @@ where
                 entry.draft,
                 entry.origins,
                 entry.references,
+                entry.sidecar_tables,
                 move |tx, outcome| sidecar(index, tx, outcome),
             )
             .await?,

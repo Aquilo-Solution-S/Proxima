@@ -48,6 +48,10 @@ impl FactPayload for DocumentFiledV1 {
             // `proxima_core.lexical_tsv(lexical_language, ...)` once your
             // sidecar migration adds one; see [03](../03-schema-registry.md).
             tsv_column: None,
+            // Drain reads this instead of re-concatenating projection
+            // columns. Name a STORED generated `embed_text` column when
+            // the sidecar has one.
+            embed_text_column: None,
             // With a stored vector, also add a `lexical_language regconfig`
             // column mirrored from the owning memories row (attach
             // `proxima_core.sidecar_lexical_language_from_memory` BEFORE

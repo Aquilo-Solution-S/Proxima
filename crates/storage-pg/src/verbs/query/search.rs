@@ -34,6 +34,22 @@ const CORE_SIDECAR_PREFIX: &str = "proxima_core.";
 const SIDECAR_OVERFETCH_FACTOR: u32 = 20;
 const SIDECAR_OVERFETCH_CAP: u32 = 1_000;
 
+const SEMANTIC_SEARCH_SQL: &str = "SELECT emb.entity_id AS t,
+                GREATEST(0.0, (1 - (emb.vec <=> $3::vector)))::real AS similarity_score
+           FROM proxima_core.embeddings emb
+           JOIN proxima_core.embedding_heads head
+             ON head.entity_id = emb.entity_id
+            AND head.model_id = emb.model_id
+            AND head.embedding_version = emb.embedding_version
+          WHERE emb.owner_id = ANY($1::uuid[])
+            AND emb.model_id = $2
+            AND ($5::timestamptz IS NULL
+                 OR COALESCE(uuid_extract_timestamp(emb.entity_id), TIMESTAMPTZ '1970-01-01') >= $5)
+            AND ($6::timestamptz IS NULL
+                 OR COALESCE(uuid_extract_timestamp(emb.entity_id), TIMESTAMPTZ '1970-01-01') <= $6)
+          ORDER BY emb.vec <=> $3::vector
+          LIMIT $4";
+
 #[derive(Debug, Clone)]
 struct Hit {
     t: uuid::Uuid,
@@ -236,6 +252,42 @@ async fn scan_one_sidecar(
     rescue: bool,
     like_only: bool,
 ) -> Result<Vec<Hit>, StorageError> {
+    let recency_t = match req.after {
+        Some(SearchCursor::Recency { memory_id, .. }) => Some(memory_id.into_inner()),
+        _ => None,
+    };
+    let sql = lexical_sidecar_sql(projection, req, rescue, like_only)?;
+
+    // SQL-POLICY: PgIdent
+    let rows: Vec<SidecarScanRow> = sqlx::query_as(sqlx::AssertSqlSafe(sql))
+        .bind(&req.query)
+        .bind(like_pattern)
+        .bind(i64::from(overfetch))
+        .bind((!req.tags.is_empty()).then_some(req.tags.as_slice()))
+        .bind(req.since)
+        .bind(req.until)
+        .bind(recency_t)
+        .fetch_all(pool)
+        .await
+        .map_err(map_err)?;
+
+    Ok(rows
+        .into_iter()
+        .map(|row| Hit {
+            t: row.t,
+            lexical_score: row.lexical_score.max(0.0),
+            similarity_score: 0.0,
+            snippet: row.snippet.unwrap_or_default(),
+        })
+        .collect())
+}
+
+fn lexical_sidecar_sql(
+    projection: &MemorySearchProjection,
+    req: &MemorySearchRequest,
+    rescue: bool,
+    like_only: bool,
+) -> Result<String, StorageError> {
     let table = PgIdent::table(&projection.sidecar_table)?;
     let search_text = projection_search_text(&projection.fields)?;
     let tsv_expr = projection_tsv_expr(projection, &search_text)?;
@@ -270,10 +322,6 @@ async fn scan_one_sidecar(
         SearchOrder::Relevance => "lexical_score DESC, c.t DESC",
         SearchOrder::Recency => "c.t DESC",
     };
-    let recency_t = match req.after {
-        Some(SearchCursor::Recency { memory_id, .. }) => Some(memory_id.into_inner()),
-        _ => None,
-    };
     let match_pred = if like_only {
         format!("lower({search_text}) LIKE $2 ESCAPE '\\'")
     } else {
@@ -291,8 +339,7 @@ async fn scan_one_sidecar(
                 )::real"
         )
     };
-
-    let sql = format!(
+    Ok(format!(
         "{q_cte}
          SELECT c.t,
                 {score_expr} AS lexical_score,
@@ -315,30 +362,31 @@ async fn scan_one_sidecar(
         order_by = order_by,
         match_pred = match_pred,
         score_expr = score_expr,
-    );
+    ))
+}
 
-    // SQL-POLICY: PgIdent
-    let rows: Vec<SidecarScanRow> = sqlx::query_as(sqlx::AssertSqlSafe(sql))
-        .bind(&req.query)
-        .bind(like_pattern)
-        .bind(i64::from(overfetch))
-        .bind((!req.tags.is_empty()).then_some(req.tags.as_slice()))
-        .bind(req.since)
-        .bind(req.until)
-        .bind(recency_t)
-        .fetch_all(pool)
-        .await
-        .map_err(map_err)?;
-
-    Ok(rows
-        .into_iter()
-        .map(|row| Hit {
-            t: row.t,
-            lexical_score: row.lexical_score.max(0.0),
-            similarity_score: 0.0,
-            snippet: row.snippet.unwrap_or_default(),
-        })
-        .collect())
+fn search_admit_sql(heads_only: bool) -> String {
+    let from = if heads_only {
+        "FROM proxima_core.memory_head h \
+         JOIN proxima_core.memory m ON m.handle = h.handle AND m.t = h.t"
+    } else {
+        "FROM proxima_core.memory m"
+    };
+    format!(
+        "SELECT m.t,
+                m.kind::text,
+                m.schema_id,
+                COALESCE(uuid_extract_timestamp(m.t), TIMESTAMPTZ '1970-01-01') AS created_at
+           {from}
+          WHERE m.t = ANY($1::uuid[])
+            AND m.owner_id = ANY($2::uuid[])
+            AND ($3::text IS NULL OR m.kind::text = $3)
+            AND ($4::text IS NULL OR m.schema_id = $4)
+            AND ($5::timestamptz IS NULL
+                 OR COALESCE(uuid_extract_timestamp(m.t), TIMESTAMPTZ '1970-01-01') >= $5)
+            AND ($6::timestamptz IS NULL
+                 OR COALESCE(uuid_extract_timestamp(m.t), TIMESTAMPTZ '1970-01-01') <= $6)"
+    )
 }
 
 fn projection_tsv_expr(
@@ -455,32 +503,16 @@ async fn scan_embeddings(
         .execute(&mut *tx)
         .await
         .map_err(map_err)?;
-    let rows: Vec<EmbeddingScanRow> = sqlx::query_as(
-        "SELECT emb.entity_id AS t,
-                GREATEST(0.0, (1 - (emb.vec <=> $3::vector)))::real AS similarity_score
-           FROM proxima_core.embeddings emb
-           JOIN proxima_core.embedding_heads head
-             ON head.entity_id = emb.entity_id
-            AND head.model_id = emb.model_id
-            AND head.embedding_version = emb.embedding_version
-          WHERE emb.owner_id = ANY($1::uuid[])
-            AND emb.model_id = $2
-            AND ($5::timestamptz IS NULL
-                 OR COALESCE(uuid_extract_timestamp(emb.entity_id), TIMESTAMPTZ '1970-01-01') >= $5)
-            AND ($6::timestamptz IS NULL
-                 OR COALESCE(uuid_extract_timestamp(emb.entity_id), TIMESTAMPTZ '1970-01-01') <= $6)
-          ORDER BY emb.vec <=> $3::vector
-          LIMIT $4",
-    )
-    .bind(&owner_ids)
-    .bind(model_id)
-    .bind(crate::pgvector::literal(query_embedding))
-    .bind(i64::from(overfetch))
-    .bind(req.since)
-    .bind(req.until)
-    .fetch_all(&mut *tx)
-    .await
-    .map_err(map_err)?;
+    let rows: Vec<EmbeddingScanRow> = sqlx::query_as(SEMANTIC_SEARCH_SQL)
+        .bind(&owner_ids)
+        .bind(model_id)
+        .bind(crate::pgvector::literal(query_embedding))
+        .bind(i64::from(overfetch))
+        .bind(req.since)
+        .bind(req.until)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(map_err)?;
     tx.commit().await.map_err(map_err)?;
 
     Ok(rows
@@ -516,27 +548,7 @@ async fn admit_hits(
         Some(EntityKind::Goal) | None => None,
     };
     let schema_filter = req.schema_id.as_ref().map(SchemaId::as_str);
-    let from = if matches!(req.supersession, SupersessionStatus::HeadsOnly) {
-        "FROM proxima_core.memory_head h \
-         JOIN proxima_core.memory m ON m.handle = h.handle AND m.t = h.t"
-    } else {
-        "FROM proxima_core.memory m"
-    };
-    let sql = format!(
-        "SELECT m.t,
-                m.kind::text,
-                m.schema_id,
-                COALESCE(uuid_extract_timestamp(m.t), TIMESTAMPTZ '1970-01-01') AS created_at
-           {from}
-          WHERE m.t = ANY($1::uuid[])
-            AND m.owner_id = ANY($2::uuid[])
-            AND ($3::text IS NULL OR m.kind::text = $3)
-            AND ($4::text IS NULL OR m.schema_id = $4)
-            AND ($5::timestamptz IS NULL
-                 OR COALESCE(uuid_extract_timestamp(m.t), TIMESTAMPTZ '1970-01-01') >= $5)
-            AND ($6::timestamptz IS NULL
-                 OR COALESCE(uuid_extract_timestamp(m.t), TIMESTAMPTZ '1970-01-01') <= $6)"
-    );
+    let sql = search_admit_sql(matches!(req.supersession, SupersessionStatus::HeadsOnly));
 
     // SQL-POLICY: fixed-fragment
     let rows: Vec<AdmitRow> = sqlx::query_as(sqlx::AssertSqlSafe(sql))
@@ -632,6 +644,31 @@ fn ranks_after_cursor(result: &MemorySearchResult, after: SearchCursor) -> bool 
     }
 }
 
+#[cfg(any(test, feature = "test-fixtures", debug_assertions))]
+#[doc(hidden)]
+pub fn lexical_sidecar_sql_for_tests(
+    projection: &MemorySearchProjection,
+    req: &MemorySearchRequest,
+    rescue: bool,
+    like_only: bool,
+) -> Result<String, StorageError> {
+    lexical_sidecar_sql(projection, req, rescue, like_only)
+}
+
+#[cfg(any(test, feature = "test-fixtures", debug_assertions))]
+#[doc(hidden)]
+#[must_use]
+pub fn semantic_search_sql_for_tests() -> &'static str {
+    SEMANTIC_SEARCH_SQL
+}
+
+#[cfg(any(test, feature = "test-fixtures", debug_assertions))]
+#[doc(hidden)]
+#[must_use]
+pub fn search_admit_sql_for_tests(heads_only: bool) -> String {
+    search_admit_sql(heads_only)
+}
+
 fn parse_kind(kind: &str) -> Option<EntityKind> {
     match kind {
         "fact" => Some(EntityKind::Fact),
@@ -658,5 +695,21 @@ mod tests {
             src.contains("m.schema_id"),
             "admit selects memory.schema_id"
         );
+    }
+
+    #[test]
+    fn production_search_uses_exported_builders() {
+        let src = include_str!("search.rs");
+        let prod = src.split("mod tests").next().expect("production");
+        assert!(
+            prod.contains("lexical_sidecar_sql(projection, req, rescue, like_only)"),
+            "GIN/LIKE scan must run the exported builder"
+        );
+        assert!(
+            prod.contains("query_as(SEMANTIC_SEARCH_SQL)"),
+            "semantic scan must run SEMANTIC_SEARCH_SQL"
+        );
+        let admit = format!("{}{}", "search_admit_sql(matches!(", "");
+        assert!(prod.contains(&admit), "admit must run search_admit_sql");
     }
 }

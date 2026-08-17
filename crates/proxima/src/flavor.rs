@@ -69,7 +69,14 @@ pub use proxima_core::storage_ports::{
     CitedBlobService, CitedBlobStaged, CitedBlobUploadAborted, CitedBlobUploadCompleted,
     CitedBlobUploadHeader, CitedBlobUploadPrepared, MAX_HELD_BLOB_DIGESTS, VerifiedCitedBlob,
 };
-pub use proxima_core::verbs::fact_ingest::{CitationSpec, FactIngestOutcome, FactWriteCommand};
+/// Typed inline citation drafts and the Engine admission witnesses they
+/// produce. `authorize_fact_with_citation` takes the drafts plus a sidecar
+/// slice; without these names an out-of-tree flavor can only spell
+/// `CitationSpec` (opaque hash) or take `proxima-core`.
+pub use proxima_core::verbs::fact_ingest::{
+    AuthorizedFactWithCitation, AuthorizedFactWithCitationRef, CitationSpec, FactIngestOutcome,
+    FactWriteCommand, InlineCitationMappingDraft, InlineCitedObjectDraft,
+};
 pub use proxima_core::verbs::query::{
     GoalRow, QueryRequest, QueryResponse, SearchMode, SidecarAtom, hybrid_degraded_to_lexical,
 };
@@ -110,16 +117,15 @@ pub use proxima_core::{
 /// re-derivation that replaces an earlier output sets `supersedes`, which
 /// is a lineage pointer on the two rows and writes no edge at all.
 ///
-/// A derived memory is embedded *synchronously*, inside the write, where a
-/// Fact enqueues a durable job — but the two now agree about failure. A
-/// text the provider refuses (or dies on) leaves the memory written with
-/// no vector and an embedding job enqueued in the same transaction, and
-/// [`AuthorDerivedAuthorizedOutcome::embedding_deferred`] says so; the
-/// memory is lexically findable and not semantically findable until a
-/// drain runs. Only a provider that fails a liveness probe — one that is
-/// genuinely unavailable — still fails the write. A flavor deriving many
-/// memories in a worker should checkpoint per output rather than per
-/// batch.
+/// A derived memory is embedded *synchronously*, **before** the write
+/// transaction begins. A text the provider refuses leaves the memory
+/// written with no vector and an embedding job enqueued in the same
+/// transaction, and [`AuthorDerivedAuthorizedOutcome::embedding_deferred`]
+/// says so. Only a provider that fails a liveness probe still fails the
+/// write. Several derived rows that must commit together use
+/// [`UnitOfWork::author_derived_all`] (embed the batch, then one
+/// begin). A derived write after the transaction is already open defers
+/// the vector rather than hold the pool slot across HTTP.
 pub use proxima_core::{
     AuthorDerivedAuthorizedOutcome, AuthorDerivedRequestInput, EntityKind, MemoryOperatorKind,
 };

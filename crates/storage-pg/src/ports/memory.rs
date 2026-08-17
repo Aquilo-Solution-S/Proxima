@@ -58,12 +58,14 @@ impl MemoryAuthoringPort for PgStorage {
                 .await?;
             let sidecars = self.sidecars.clone();
             let sidecar_payload = req.sidecar_payload.clone();
+            let tables = sidecars.tables_for_payloads(std::slice::from_ref(&sidecar_payload))?;
             let outcome = verbs::derive_append::append_derived_in_tx(
                 &mut tx,
                 permit,
                 &draft,
                 req.origins,
                 req.references,
+                &tables,
                 move |tx, outcome| {
                     Box::pin(async move {
                         sidecars

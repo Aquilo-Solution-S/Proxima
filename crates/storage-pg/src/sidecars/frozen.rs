@@ -24,6 +24,95 @@ impl PgSidecarRegistryFrozen {
         self.entries.contains_key(key)
     }
 
+    /// Tables actually inserted for these payloads, in name order.
+    ///
+    /// # Errors
+    ///
+    /// `ConstraintViolation` when a payload has no PG memory sidecar.
+    pub fn tables_for_payloads(
+        &self,
+        payloads: &[SidecarPayload],
+    ) -> Result<Vec<String>, StorageError> {
+        let mut tables = Vec::new();
+        for payload in payloads {
+            let key = PgSidecarKey::new(
+                payload.kind,
+                payload.schema_id.clone(),
+                payload.schema_version,
+            );
+            let table = self
+                .entries
+                .get(&key)
+                .ok_or_else(|| {
+                    StorageError::ConstraintViolation(format!(
+                        "no PG sidecar registered for {} v{} {:?}",
+                        key.schema_id.as_str(),
+                        key.schema_version.into_inner(),
+                        key.kind
+                    ))
+                })?
+                .sidecar_table
+                .clone();
+            if !tables.contains(&table) {
+                tables.push(table);
+            }
+        }
+        tables.sort();
+        Ok(tables)
+    }
+
+    #[must_use]
+    pub fn table_for_schema(
+        &self,
+        kind: proxima_core::verbs::schema::PayloadKind,
+        schema_id: &proxima_core::SchemaId,
+        schema_version: proxima_core::SchemaVersion,
+    ) -> Option<&str> {
+        let key = PgSidecarKey::new(kind, schema_id.clone(), schema_version);
+        self.entries
+            .get(&key)
+            .map(|entry| entry.sidecar_table.as_str())
+    }
+
+    #[must_use]
+    pub fn is_memory_sidecar_table(&self, table: &str) -> bool {
+        self.entries.values().any(|entry| {
+            (entry.memory_insert.is_some() || entry.memory_load_batch.is_some())
+                && entry.sidecar_table == table
+        })
+    }
+
+    /// Test-only: a registered memory table that does not exist in PG.
+    /// Forget must not SELECT it unless the row stamped it.
+    #[must_use]
+    pub fn with_unusable_memory_table(&self, schema_id: &str, table: &str) -> Self {
+        use proxima_core::verbs::schema::PayloadKind;
+        use proxima_core::{SchemaId, SchemaVersion};
+        let mut entries = (*self.entries).clone();
+        let key = PgSidecarKey::new(
+            PayloadKind::Fact,
+            SchemaId::new(schema_id.to_owned()),
+            SchemaVersion::new(1),
+        );
+        entries.insert(
+            key.clone(),
+            PgSidecarEntry {
+                key,
+                sidecar_table: table.to_owned(),
+                memory_insert: Some(|_, _, _| Box::pin(async { Ok(()) })),
+                memory_load: None,
+                memory_load_batch: Some(|_, _, _| Box::pin(async { Ok(Vec::new()) })),
+                cited_object_insert: None,
+                citation_mapping_insert: None,
+                goal_insert: None,
+                goal_copy: None,
+            },
+        );
+        Self {
+            entries: Arc::new(entries),
+        }
+    }
+
     /// Distinct memory sidecar tables (core + flavor), for forget/hydrate.
     #[must_use]
     pub fn memory_sidecar_tables(&self) -> Vec<&str> {

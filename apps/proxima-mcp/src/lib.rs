@@ -399,7 +399,9 @@ async fn run_maintain(config: MaintainConfig) -> Result<(), CliError> {
         .reconcile_embeddings(EmbeddingReconcileOptions {
             model_id: &model,
             scope: reconcile_scope(config.scope),
-            limit: config.limit,
+            // Omitted `--limit` is the operator full pass. Process boot
+            // never takes this path; it uses EMBEDDING_RECONCILE_DEFAULT_LIMIT.
+            limit: Some(config.limit.unwrap_or(i64::MAX)),
             non_embeddable_schemas: non_embeddable,
         })
         .await

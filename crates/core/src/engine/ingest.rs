@@ -1123,6 +1123,7 @@ impl Engine {
     /// # Errors
     ///
     /// Returns storage errors from the reconciliation scan/enqueue.
+    /// `limit: None` uses [`crate::EMBEDDING_RECONCILE_DEFAULT_LIMIT`].
     pub async fn reconcile_embeddings(
         &self,
         scope: crate::EmbeddingReconcileScope,
@@ -1138,7 +1139,7 @@ impl Engine {
                 crate::EmbeddingReconcileOptions {
                     model_id: client.model_id(),
                     scope,
-                    limit,
+                    limit: Some(limit.unwrap_or(crate::EMBEDDING_RECONCILE_DEFAULT_LIMIT)),
                     non_embeddable_schemas: self.registry().non_embeddable_schema_ids(),
                 },
                 crate::storage_ports::OperatorMaintenanceProof::new(),

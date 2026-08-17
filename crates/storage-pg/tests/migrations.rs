@@ -113,6 +113,10 @@ async fn migrations_apply_to_fresh_db() {
             "schema_id is on each memory row (same value as the handle)"
         );
         assert!(
+            column_exists(&pg, "memory", "sidecar_tables").await,
+            "W4: forget dumps the per-t stamp, not the registry"
+        );
+        assert!(
             column_exists(&pg, "agent_note_v1", "embed_text").await,
             "W6: drain reads stored sidecar embed_text"
         );
@@ -134,6 +138,7 @@ async fn migrations_apply_to_fresh_db() {
             "memory_refs_gin",
             "memory_head_owner_schema_idx",
             "memory_head_owner_kind_idx",
+            "group_memberships_member_user_id_idx",
             "embedding_jobs_pending_claim_idx",
             "owners_kind_idx",
             "announce_owner_seq_idx",

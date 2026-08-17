@@ -49,10 +49,12 @@ impl WriteSession for PgWriteSession {
     ) -> Result<FactIngestOutcome, StorageError> {
         let fact_sidecars = self.sidecars.clone();
         let payloads = sidecar_payloads.to_vec();
+        let tables = self.sidecars.tables_for_payloads(sidecar_payloads)?;
         verbs::fact_ingest::ingest_fact_with_sidecar_in_tx(
             &mut self.tx,
             authorized,
             embedding_model_id,
+            &tables,
             move |tx, outcome| {
                 Box::pin(async move {
                     for payload in &payloads {
@@ -96,12 +98,16 @@ impl WriteSession for PgWriteSession {
             .await?;
         let sidecars = self.sidecars.clone();
         let sidecar_payload = req.sidecar_payload.clone();
+        let tables = self
+            .sidecars
+            .tables_for_payloads(std::slice::from_ref(&sidecar_payload))?;
         let outcome = verbs::derive_append::append_derived_in_tx(
             &mut self.tx,
             permit,
             &draft,
             req.origins,
             req.references,
+            &tables,
             move |tx, outcome| {
                 Box::pin(async move {
                     sidecars

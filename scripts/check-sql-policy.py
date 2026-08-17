@@ -271,6 +271,10 @@ def run_fixture(path: Path) -> int:
 # lexical/semantic_search_sql_for_tests; both sites are parameter-bound
 # EXPLAIN prefixes over the audited builders with inline fixed-fragment
 # proofs.
+# 2026-08-17 analysis: +9 — C2 hot-path EXPLAIN guards
+# (storage-pg/tests/hot_path_plans.rs, flavors/code/tests/hot_path_plans_pg.rs)
+# prefix EXPLAIN (FORMAT JSON, COSTS OFF) onto production builders; each site
+# is parameter-bound with an inline fixed-fragment proof.
 # 2026-07-26 refactor: +-0 — search_pg.rs was split into search_pg/ submodules;
 # all four EXPLAIN sites named above now live in search_pg/plans.rs, unchanged.
 # 2026-07-26 analysis: +1 — the stored-tsvector drift test (search_pg/
@@ -397,7 +401,7 @@ def run_fixture(path: Path) -> int:
 # thing standing between the gate and its old position above the candidate
 # CTE — both spellings return identical rows, so nothing else in the suite
 # would notice the index becoming unreachable again.
-EXPECTED_DYNAMIC_SQL_SITES = 42
+EXPECTED_DYNAMIC_SQL_SITES = 51
 
 
 def run_self_test() -> int:

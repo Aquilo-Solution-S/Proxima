@@ -133,6 +133,22 @@ pub async fn seed_memory(
     handle: Option<Uuid>,
     origins: &[Uuid],
 ) -> Result<(Uuid, Uuid), sqlx::Error> {
+    seed_memory_with_sidecars(pool, owner, schema_id, kind, t, handle, origins, &[]).await
+}
+
+/// Same as [`seed_memory`], with `memory.sidecar_tables` set at insert
+/// (the row is append-only).
+#[allow(clippy::too_many_arguments)]
+pub async fn seed_memory_with_sidecars(
+    pool: &sqlx::PgPool,
+    owner: &Owner,
+    schema_id: &str,
+    kind: &str,
+    t: Option<Uuid>,
+    handle: Option<Uuid>,
+    origins: &[Uuid],
+    sidecar_tables: &[&str],
+) -> Result<(Uuid, Uuid), sqlx::Error> {
     let handle = handle.unwrap_or_else(Uuid::now_v7);
     let t = t.unwrap_or_else(Uuid::now_v7);
     let owner_id = owner.stored_owner_id();
@@ -169,9 +185,11 @@ pub async fn seed_memory(
         .execute(pool)
         .await?;
     }
+    let tables: Vec<String> = sidecar_tables.iter().map(|s| (*s).to_string()).collect();
     sqlx::query(
-        "INSERT INTO proxima_core.memory (handle, t, kind, owner_id, schema_id, origins)
-         VALUES ($1, $2, $3::proxima_core.memory_kind, $4, $5, $6)",
+        "INSERT INTO proxima_core.memory
+            (handle, t, kind, owner_id, schema_id, origins, sidecar_tables)
+         VALUES ($1, $2, $3::proxima_core.memory_kind, $4, $5, $6, $7)",
     )
     .bind(handle)
     .bind(t)
@@ -179,6 +197,7 @@ pub async fn seed_memory(
     .bind(owner_id)
     .bind(schema_id)
     .bind(origins)
+    .bind(&tables)
     .execute(pool)
     .await?;
     Ok((handle, t))

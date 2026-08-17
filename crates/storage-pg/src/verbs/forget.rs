@@ -90,6 +90,7 @@ struct HotRow {
     blob_id: Option<Uuid>,
     origins: Vec<Uuid>,
     refs: Vec<Uuid>,
+    sidecar_tables: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -145,6 +146,7 @@ fn decode_record(bytes: &[u8]) -> Result<ColdRecord, StorageError> {
         blob_id: read_opt_uuid(bytes, &mut i)?,
         origins: read_uuid_list(bytes, &mut i)?,
         refs: read_uuid_list(bytes, &mut i)?,
+        sidecar_tables: Vec::new(),
     };
     let schema_id = read_str(bytes, &mut i)?;
     let sidecar_dumps = if version >= 3 {
@@ -293,13 +295,19 @@ fn read_uuid_list(bytes: &[u8], i: &mut usize) -> Result<Vec<Uuid>, StorageError
     Ok(out)
 }
 
-async fn dump_registered_sidecars(
+async fn dump_stamped_sidecars(
     conn: &mut PgConnection,
     sidecars: &PgSidecarRegistryFrozen,
+    tables: &[String],
     t: Uuid,
 ) -> Result<Vec<(String, String)>, StorageError> {
     let mut dumps = Vec::new();
-    for table in sidecars.memory_sidecar_tables() {
+    for table in tables {
+        if !sidecars.is_memory_sidecar_table(table) {
+            return Err(StorageError::ConstraintViolation(format!(
+                "stamped sidecar table {table} is not registered"
+            )));
+        }
         let ident = PgIdent::table(table)?;
         let sql = format!(
             "SELECT to_jsonb(s) - COALESCE((
@@ -322,7 +330,7 @@ async fn dump_registered_sidecars(
             .await
             .map_err(map_err)?;
         if let Some(json) = json {
-            dumps.push((table.to_string(), json.to_string()));
+            dumps.push((table.clone(), json.to_string()));
         }
     }
     Ok(dumps)
@@ -340,11 +348,11 @@ async fn load_embed_models(conn: &mut PgConnection, t: Uuid) -> Result<Vec<Strin
     Ok(models)
 }
 
-const HOT_ROW_SQL: &str = "SELECT handle, t, kind::text, owner_id, schema_id, source_id, ingest_key, blob_id, origins, refs
+const HOT_ROW_SQL: &str = "SELECT handle, t, kind::text, owner_id, schema_id, source_id, ingest_key, blob_id, origins, refs, sidecar_tables
            FROM proxima_core.memory
           WHERE t = $1";
 
-const HOT_ROW_FOR_UPDATE_SQL: &str = "SELECT handle, t, kind::text, owner_id, schema_id, source_id, ingest_key, blob_id, origins, refs
+const HOT_ROW_FOR_UPDATE_SQL: &str = "SELECT handle, t, kind::text, owner_id, schema_id, source_id, ingest_key, blob_id, origins, refs, sidecar_tables
            FROM proxima_core.memory
           WHERE t = $1
           FOR UPDATE";
@@ -362,7 +370,7 @@ pub async fn snapshot_hot(
         .map_err(map_err)?
         .ok_or(StorageError::NotFound)?;
     let schema_id = row.schema_id.clone();
-    let sidecar_dumps = dump_registered_sidecars(conn, sidecars, t).await?;
+    let sidecar_dumps = dump_stamped_sidecars(conn, sidecars, &row.sidecar_tables, t).await?;
     let embed_models = load_embed_models(conn, t).await?;
     Ok(ColdRecord {
         row,
@@ -389,7 +397,8 @@ pub async fn commit_forget(
         .map_err(map_err)?
         .ok_or(StorageError::NotFound)?;
     let schema_id = locked.schema_id.clone();
-    let sidecar_dumps = dump_registered_sidecars(tx.as_mut(), sidecars, t).await?;
+    let sidecar_dumps =
+        dump_stamped_sidecars(tx.as_mut(), sidecars, &locked.sidecar_tables, t).await?;
     let embed_models = load_embed_models(tx.as_mut(), t).await?;
     let current = ColdRecord {
         row: locked,
@@ -414,7 +423,7 @@ pub async fn commit_forget(
     .await
     .map_err(map_err)?;
 
-    delete_memory_dependents(tx, sidecars, t).await?;
+    delete_memory_dependents(tx, sidecars, &current.row.sidecar_tables, t).await?;
     sqlx::query("DELETE FROM proxima_core.memory WHERE t = $1")
         .bind(t)
         .execute(tx.as_mut())
@@ -498,12 +507,18 @@ async fn restore_registered_sidecars(
     Ok(())
 }
 
-async fn delete_registered_sidecars(
+async fn delete_stamped_sidecars(
     tx: &mut Transaction<'_, Postgres>,
     sidecars: &PgSidecarRegistryFrozen,
+    tables: &[String],
     t: Uuid,
 ) -> Result<(), StorageError> {
-    for table in sidecars.memory_sidecar_tables() {
+    for table in tables {
+        if !sidecars.is_memory_sidecar_table(table) {
+            return Err(StorageError::ConstraintViolation(format!(
+                "stamped sidecar table {table} is not registered"
+            )));
+        }
         let ident = PgIdent::table(table)?;
         // SQL-POLICY: PgIdent
         let sql = format!("DELETE FROM {tbl} WHERE t = $1", tbl = ident.as_str());
@@ -556,9 +571,10 @@ async fn enqueue_embed_jobs(
 async fn delete_memory_dependents(
     tx: &mut Transaction<'_, Postgres>,
     sidecars: &PgSidecarRegistryFrozen,
+    sidecar_tables: &[String],
     t: Uuid,
 ) -> Result<(), StorageError> {
-    delete_registered_sidecars(tx, sidecars, t).await?;
+    delete_stamped_sidecars(tx, sidecars, sidecar_tables, t).await?;
     sqlx::query("DELETE FROM proxima_core.embedding_jobs WHERE entity_id = $1")
         .bind(t)
         .execute(tx.as_mut())
@@ -723,8 +739,9 @@ pub async fn hydrate_memory(
     ensure_memory_head(tx, &rec).await?;
     sqlx::query(
         "INSERT INTO proxima_core.memory
-            (handle, t, kind, owner_id, schema_id, source_id, ingest_key, blob_id, origins, refs)
-         VALUES ($1, $2, $3::proxima_core.memory_kind, $4, $5, $6, $7, $8, $9, $10)",
+            (handle, t, kind, owner_id, schema_id, source_id, ingest_key, blob_id,
+             origins, refs, sidecar_tables)
+         VALUES ($1, $2, $3::proxima_core.memory_kind, $4, $5, $6, $7, $8, $9, $10, $11)",
     )
     .bind(rec.row.handle)
     .bind(rec.row.t)
@@ -736,6 +753,12 @@ pub async fn hydrate_memory(
     .bind(rec.row.blob_id)
     .bind(&rec.row.origins)
     .bind(&rec.row.refs)
+    .bind(
+        rec.sidecar_dumps
+            .iter()
+            .map(|(table, _)| table.clone())
+            .collect::<Vec<_>>(),
+    )
     .execute(tx.as_mut())
     .await
     .map_err(map_err)?;
@@ -813,7 +836,15 @@ pub async fn erase_memory(
             .await
             .map_err(map_err)?;
     }
-    delete_memory_dependents(tx, sidecars, t).await?;
+    let stamped: Vec<String> = sqlx::query_scalar(
+        "SELECT unnest(sidecar_tables) FROM proxima_core.memory WHERE t = $1 AND owner_id = $2",
+    )
+    .bind(t)
+    .bind(owner.stored_owner_id())
+    .fetch_all(tx.as_mut())
+    .await
+    .map_err(map_err)?;
+    delete_memory_dependents(tx, sidecars, &stamped, t).await?;
     sqlx::query("DELETE FROM proxima_core.memory WHERE t = $1 AND owner_id = $2")
         .bind(t)
         .bind(owner.stored_owner_id())

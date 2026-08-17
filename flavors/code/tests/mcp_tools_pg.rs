@@ -1490,6 +1490,71 @@ async fn search_commits_unions_commit_and_summary_legs() -> Result<(), Box<dyn s
     Ok(())
 }
 
+#[tokio::test]
+async fn search_commits_stems_english_and_likes_sha_prefix()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fixture = TestDb::fresh().await;
+    let owner = owner_fixture();
+    let engine = engine_for_test(fixture.pg.clone());
+    let registry = registry_for_mcp();
+    let repo_id = Uuid::now_v7();
+
+    ingest_commit(
+        fixture.pg.pool_for_tests(),
+        &engine,
+        owner,
+        repo_id,
+        "deadbeef",
+        "fix atlas edges",
+    )
+    .await?;
+    ingest_commit_summary(
+        fixture.pg.pool_for_tests(),
+        &owner,
+        repo_id,
+        "deadbeef",
+        "Hardens the atlas edge cap.",
+        &["src/atlas.rs"],
+        "Refactor",
+    )
+    .await?;
+
+    let stemmed = run_tool::<CodeSearchCommitsTool>(
+        ctx(fixture.pg.clone(), owner, registry.clone()),
+        json!({ "query": "edges", "limit": 10 }),
+    )
+    .await?;
+    assert!(
+        !stemmed["commits"].as_array().expect("commits").is_empty(),
+        "english stem of edges must hit the commit message"
+    );
+    assert!(
+        !stemmed["summaries"]
+            .as_array()
+            .expect("summaries")
+            .is_empty(),
+        "english stem of edges must hit the summary"
+    );
+
+    let prefix = run_tool::<CodeSearchCommitsTool>(
+        ctx(fixture.pg.clone(), owner, registry),
+        json!({ "query": "deadbe", "limit": 10 }),
+    )
+    .await?;
+    assert!(
+        !prefix["commits"].as_array().expect("commits").is_empty(),
+        "SHA prefix is a GIN miss and must LIKE"
+    );
+    assert!(
+        !prefix["summaries"]
+            .as_array()
+            .expect("summaries")
+            .is_empty(),
+        "commit_sha prefix must LIKE on the summary leg"
+    );
+    Ok(())
+}
+
 /// The whole of what `proxima-code/has-acceptance-criteria` became: the
 /// criteria Fact names the request it is the bar for, and the `reference`
 /// index row falls out of that field. Nobody writes an edge, and the

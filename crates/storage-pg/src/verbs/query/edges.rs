@@ -92,6 +92,13 @@ pub(crate) async fn load_inbound_pin_nodes(
         .collect())
 }
 
+#[cfg(any(test, feature = "test-fixtures", debug_assertions))]
+#[doc(hidden)]
+#[must_use]
+pub fn inbound_pin_sql_for_tests(heads_only: bool, kind: Option<EdgeKind>) -> &'static str {
+    inbound_pin_sql(heads_only, kind)
+}
+
 fn inbound_pin_sql(heads_only: bool, kind: Option<EdgeKind>) -> &'static str {
     if heads_only {
         match kind {

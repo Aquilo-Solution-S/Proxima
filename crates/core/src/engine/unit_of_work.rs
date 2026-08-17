@@ -10,9 +10,54 @@ use crate::storage_ports::WriteSession;
 use crate::verbs::fact_ingest::{CitationSpec, FactIngestOutcome, FactWriteCommand};
 use crate::verbs::query::SidecarAtom;
 use crate::{
-    AuthorDerivedAuthorizedOutcome, AuthorDerivedRequestInput, FactPayload, MemoryId, Owner,
+    AuthorDerivedAuthorizedOutcome, AuthorDerivedRequestInput, EntityKind, FactPayload,
+    InputContractId, MemoryId, MemoryOperatorKind, OperatorId, Owner, SchemaId, SchemaVersion,
     SidecarPayload, SourceBatchId,
 };
+
+/// Owned embedding so a prepared batch can outlive the client borrow
+/// used by [`DerivedEmbedding`].
+enum PreparedEmbedding {
+    None,
+    Ready { model_id: String, vector: Vec<f32> },
+    Deferred { model_id: String },
+}
+
+impl PreparedEmbedding {
+    fn as_derived(&self) -> DerivedEmbedding<'_> {
+        match self {
+            Self::None => DerivedEmbedding::None,
+            Self::Ready { model_id, vector } => DerivedEmbedding::Ready {
+                model_id,
+                vector: vector.clone(),
+            },
+            Self::Deferred { model_id } => DerivedEmbedding::Deferred { model_id },
+        }
+    }
+}
+
+struct PreparedDerived {
+    write_permit: super::pipeline::WritePermit,
+    owner: Owner,
+    memory_id: MemoryId,
+    kind: EntityKind,
+    text: String,
+    schema_id: SchemaId,
+    schema_version: SchemaVersion,
+    operator_kind: MemoryOperatorKind,
+    operator_id: OperatorId,
+    input_contract_id: InputContractId,
+    source_batch_id: Option<SourceBatchId>,
+    model_id: String,
+    prompt_version: String,
+    sidecar_payload: SidecarPayload,
+    authoring_perspective_id: Option<MemoryId>,
+    supersedes: Option<MemoryId>,
+    lexical_language: Option<String>,
+    embedding: PreparedEmbedding,
+    origins: Vec<EdgeEndpoint>,
+    references: Vec<EdgeEndpoint>,
+}
 
 /// One typed Fact write: payload plus optional citation, batch, origins.
 ///
@@ -105,10 +150,18 @@ impl<'a, P: FactPayload> TypedFactIngest<'a, P> {
 
 /// One transaction the Engine can attach several authorized writes to.
 /// Drop without [`Self::commit`] rolls the transaction back.
+///
+/// The transaction is not opened by [`Engine::unit_of_work`]. Authorization,
+/// natural-key lookup, and embedding run against the pool (or the embed
+/// client) first; [`crate::storage_ports::WriteSessionFactory::begin`] happens on the first
+/// write, advisory lock, or forget. A multi-derived batch
+/// ([`Self::author_derived_all`]) embeds every text before that begin, so
+/// a file of N chunks does not hold a pool slot across N provider RTTs.
 pub struct UnitOfWork<'a> {
     engine: &'a Engine,
     authz: &'a AuthzContext,
     session: Option<Box<dyn WriteSession>>,
+    committed: bool,
     /// Memory `t`s written in this transaction. Later writes may cite them
     /// before commit; `authorize_entry_read` only sees committed rows.
     written: Vec<MemoryId>,
@@ -117,31 +170,30 @@ pub struct UnitOfWork<'a> {
 impl std::fmt::Debug for UnitOfWork<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("UnitOfWork")
-            .field("committed", &self.session.is_none())
+            .field("committed", &self.committed)
+            .field("open", &self.session.is_some())
             .finish_non_exhaustive()
     }
 }
 
 impl Engine {
-    /// Open a backend-owned write transaction.
+    /// Open a backend-owned write unit. The Postgres transaction starts on
+    /// the first write (see [`UnitOfWork`]).
     ///
     /// # Errors
     ///
-    /// Storage faults from beginning the transaction.
+    /// Storage faults from beginning the transaction (deferred to the first
+    /// write).
+    #[allow(clippy::unused_async)] // signature stays async so callers do not change
     pub async fn unit_of_work<'a>(
         &'a self,
         authz: &'a AuthzContext,
     ) -> Result<UnitOfWork<'a>, ProtocolError> {
-        let session = self
-            .storage()
-            .write_session
-            .begin()
-            .await
-            .map_err(|err| ProtocolError::internal(err.to_string()))?;
         Ok(UnitOfWork {
             engine: self,
             authz,
-            session: Some(session),
+            session: None,
+            committed: false,
             written: Vec::new(),
         })
     }
@@ -185,10 +237,23 @@ impl Engine {
 }
 
 impl UnitOfWork<'_> {
-    fn session_mut(&mut self) -> Result<&mut Box<dyn WriteSession>, ProtocolError> {
+    async fn ensure_session(&mut self) -> Result<&mut Box<dyn WriteSession>, ProtocolError> {
+        if self.committed {
+            return Err(ProtocolError::internal("unit of work already committed"));
+        }
+        if self.session.is_none() {
+            let session = self
+                .engine
+                .storage()
+                .write_session
+                .begin()
+                .await
+                .map_err(|err| ProtocolError::internal(err.to_string()))?;
+            self.session = Some(session);
+        }
         self.session
             .as_mut()
-            .ok_or_else(|| ProtocolError::internal("unit of work already committed"))
+            .ok_or_else(|| ProtocolError::internal("unit of work session missing after begin"))
     }
 
     /// Serialize this transaction against `key` (`pg_advisory_xact_lock`).
@@ -197,7 +262,8 @@ impl UnitOfWork<'_> {
     ///
     /// Storage faults from the lock.
     pub async fn advisory_xact_lock(&mut self, key: i64) -> Result<(), ProtocolError> {
-        self.session_mut()?
+        self.ensure_session()
+            .await?
             .advisory_xact_lock(key)
             .await
             .map_err(|err| ProtocolError::internal(err.to_string()))
@@ -276,7 +342,8 @@ impl UnitOfWork<'_> {
             .engine
             .vector_model_for(authorized.draft().schema_id.as_str(), requested);
         let outcome = self
-            .session_mut()?
+            .ensure_session()
+            .await?
             .ingest_fact_with_typed_sidecar(&authorized, &sidecars, embedding_model_id)
             .await
             .map_err(|err| {
@@ -294,6 +361,12 @@ impl UnitOfWork<'_> {
 
     /// Authorize and persist one derived memory in this transaction.
     ///
+    /// Embedding runs before the transaction starts when this is the first
+    /// write. If the transaction is already open, the vector is deferred
+    /// (job enqueued, no provider call) so an open pool slot is not held
+    /// across HTTP. Prefer [`Self::author_derived_all`] when several
+    /// derived rows must share one transaction *and* land with vectors.
+    ///
     /// # Errors
     ///
     /// Authorization or storage faults.
@@ -301,6 +374,46 @@ impl UnitOfWork<'_> {
         &mut self,
         req: AuthorDerivedRequestInput<'_>,
     ) -> Result<AuthorDerivedAuthorizedOutcome, ProtocolError> {
+        let mut outcomes = self.author_derived_all(std::iter::once(req)).await?;
+        outcomes.pop().ok_or_else(|| {
+            ProtocolError::internal("author_derived_all returned no outcome for one request")
+        })
+    }
+
+    /// Authorize and persist many derived memories in one transaction.
+    ///
+    /// Every text is embedded (or deferred for a refused input) **before**
+    /// [`crate::storage_ports::WriteSessionFactory::begin`]. Use this for a self-referential
+    /// group (code slices of one file) so the pool slot is held only for
+    /// the writes.
+    ///
+    /// # Errors
+    ///
+    /// Authorization or storage faults from any member. No row is
+    /// committed unless the caller [`Self::commit`]s.
+    pub async fn author_derived_all(
+        &mut self,
+        reqs: impl IntoIterator<Item = AuthorDerivedRequestInput<'_>>,
+    ) -> Result<Vec<AuthorDerivedAuthorizedOutcome>, ProtocolError> {
+        let reqs: Vec<AuthorDerivedRequestInput<'_>> = reqs.into_iter().collect();
+        if reqs.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut prepared = Vec::with_capacity(reqs.len());
+        for req in reqs {
+            prepared.push(self.prepare_derived(req).await?);
+        }
+        let mut outcomes = Vec::with_capacity(prepared.len());
+        for item in prepared {
+            outcomes.push(self.write_prepared_derived(item).await?);
+        }
+        Ok(outcomes)
+    }
+
+    async fn prepare_derived(
+        &mut self,
+        req: AuthorDerivedRequestInput<'_>,
+    ) -> Result<PreparedDerived, ProtocolError> {
         let write_permit = self
             .engine
             .authorize_write(self.authz, &req.owner, Relation::Editor)
@@ -346,18 +459,14 @@ impl UnitOfWork<'_> {
             .await?;
         super::memory_authoring::validate_operator_memory_invocation_request(&req)
             .map_err(super::memory_authoring::map_derived_storage_error)?;
-        let client = self.engine.embed_client();
-        let embedding = match client.as_deref() {
-            None => DerivedEmbedding::None,
-            Some(client) => {
-                super::memory_authoring::resolve_derived_embedding(client, req.memory_id, &req.text)
-                    .await
-                    .map_err(super::memory_authoring::map_derived_storage_error)?
-            }
-        };
-        let storage_req = AuthorDerivedRequest {
-            memory_id: req.memory_id,
+        let embedding = self
+            .prepare_embedding(req.memory_id, &req.text)
+            .await
+            .map_err(super::memory_authoring::map_derived_storage_error)?;
+        Ok(PreparedDerived {
+            write_permit,
             owner,
+            memory_id: req.memory_id,
             kind: req.kind,
             text: req.text,
             schema_id: req.schema_id,
@@ -366,19 +475,79 @@ impl UnitOfWork<'_> {
             operator_id: req.operator_id,
             input_contract_id: req.input_contract_id,
             source_batch_id: req.source_batch_id,
-            model_id: req.model_id,
-            prompt_version: req.prompt_version,
+            model_id: req.model_id.to_owned(),
+            prompt_version: req.prompt_version.to_owned(),
             sidecar_payload: req.sidecar_payload,
             authoring_perspective_id: req.authoring_perspective_id,
             supersedes: req.supersedes,
-            lexical_language: req.lexical_language,
+            lexical_language: req.lexical_language.map(ToOwned::to_owned),
             embedding,
-            origins: &origins,
-            references: &references,
+            origins,
+            references,
+        })
+    }
+
+    async fn prepare_embedding(
+        &mut self,
+        memory_id: MemoryId,
+        text: &str,
+    ) -> Result<PreparedEmbedding, crate::storage::StorageError> {
+        let client = self.engine.embed_client();
+        let Some(client) = client.as_deref() else {
+            return Ok(PreparedEmbedding::None);
+        };
+        // Transaction already open: do not hold the pool slot across HTTP.
+        if self.session.is_some() {
+            return Ok(PreparedEmbedding::Deferred {
+                model_id: client.model_id().to_owned(),
+            });
+        }
+        Ok(
+            match super::memory_authoring::resolve_derived_embedding(client, memory_id, text)
+                .await?
+            {
+                DerivedEmbedding::None => PreparedEmbedding::None,
+                DerivedEmbedding::Ready { model_id, vector } => PreparedEmbedding::Ready {
+                    model_id: model_id.to_owned(),
+                    vector,
+                },
+                DerivedEmbedding::Deferred { model_id } => PreparedEmbedding::Deferred {
+                    model_id: model_id.to_owned(),
+                },
+            },
+        )
+    }
+
+    async fn write_prepared_derived(
+        &mut self,
+        item: PreparedDerived,
+    ) -> Result<AuthorDerivedAuthorizedOutcome, ProtocolError> {
+        let embedding = item.embedding.as_derived();
+        let storage_req = AuthorDerivedRequest {
+            memory_id: item.memory_id,
+            owner: item.owner,
+            kind: item.kind,
+            text: item.text,
+            schema_id: item.schema_id,
+            schema_version: item.schema_version,
+            operator_kind: item.operator_kind,
+            operator_id: item.operator_id,
+            input_contract_id: item.input_contract_id,
+            source_batch_id: item.source_batch_id,
+            model_id: &item.model_id,
+            prompt_version: &item.prompt_version,
+            sidecar_payload: item.sidecar_payload,
+            authoring_perspective_id: item.authoring_perspective_id,
+            supersedes: item.supersedes,
+            lexical_language: item.lexical_language.as_deref(),
+            embedding,
+            origins: &item.origins,
+            references: &item.references,
         };
         let outcome = self
-            .session_mut()?
-            .author_derived(&storage_req, write_permit.owner_write_permit())
+            .ensure_session()
+            .await?
+            .author_derived(&storage_req, item.write_permit.owner_write_permit())
             .await
             .map_err(|err| ProtocolError::internal(err.to_string()))?;
         if !outcome.idempotent_replay {
@@ -405,7 +574,8 @@ impl UnitOfWork<'_> {
             .engine
             .authorize_write(self.authz, &owner, Relation::Editor)
             .await?;
-        self.session_mut()?
+        self.ensure_session()
+            .await?
             .forget_memory(write_permit.owner_write_permit(), memory_id)
             .await
             .map_err(|err| {
@@ -419,10 +589,13 @@ impl UnitOfWork<'_> {
     ///
     /// Storage commit faults.
     pub async fn commit(mut self) -> Result<(), ProtocolError> {
-        let session = self
-            .session
-            .take()
-            .ok_or_else(|| ProtocolError::internal("unit of work already committed"))?;
+        if self.committed {
+            return Err(ProtocolError::internal("unit of work already committed"));
+        }
+        self.committed = true;
+        let Some(session) = self.session.take() else {
+            return Ok(());
+        };
         session
             .commit()
             .await

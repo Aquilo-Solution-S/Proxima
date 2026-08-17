@@ -429,6 +429,16 @@ fn host_api_exposes_role_for_authenticated_adapters() {
         [(owner, proxima::Role::admin())],
         proxima::AuthPath::HostBearer,
     );
+
+    // `Role::new` / `Role::may_write` / `OwnerRoles::for_subject` name these.
+    // Hosts that only imported `Role` had to take `proxima-core` to spell them.
+    let ceiling = proxima::AccessCeiling::Fact;
+    let role = proxima::Role::new(ceiling, ceiling, false).expect("write <= read");
+    assert!(role.may_write(proxima::AccessKind::Fact));
+    let user = proxima::UserId::new(uuid::Uuid::nil());
+    let group = proxima::OwnerRef::Group(proxima::GroupId::new(uuid::Uuid::nil()));
+    let _roles = proxima::OwnerRoles::for_subject(user, [(group, role)]).expect("group roles");
+    let _: Option<proxima::AccessError> = None;
 }
 
 /// A flavor-owned Abstraction, defined through the SDK alone. Note
@@ -583,9 +593,8 @@ impl proxima::FlavorApp for TierExtensionApp {
         ctx: &proxima::AppContext,
     ) -> Result<proxima::flavor::FlavorServices, proxima::flavor::FlavorServiceError> {
         // A real host composes its store from `ctx.clone_pool_for_host()`.
-        // The pool stays off the supported tier deliberately (see
-        // `raw_storage_surfaces_are_not_supported_tier_exports`), so this
-        // test only pins that the override is writable at all.
+        // This test only pins that the override is writable; the bridge
+        // itself is named in `host_extra_table_bridge_is_on_app_context`.
         let _ = ctx;
         let mut services = proxima::flavor::FlavorServices::default();
         services.try_insert(TierFlavorStore { marker: "store" })?;
@@ -765,6 +774,31 @@ fn raw_storage_surfaces_are_not_supported_tier_exports() {
 }
 
 #[test]
+fn host_extra_table_bridge_is_on_app_context() {
+    // The one sanctioned PgPool leak is AppContext::clone_pool_for_host
+    // (docs/08). Flavor SDK still must not name the type. app.rs is
+    // scanned so this cannot hide in a submodule the host.rs scan misses.
+    let flavor_exports = include_str!("../src/flavor.rs");
+    let authorized_read = include_str!("../src/flavor/authorized_read.rs");
+    let app = include_str!("../src/app.rs");
+
+    assert!(!flavor_exports.contains("PgPool"));
+    assert!(
+        !authorized_read.contains("use sqlx::PgPool") && !authorized_read.contains("&PgPool"),
+        "code-series pool helpers must not live on the Flavor SDK"
+    );
+    assert!(
+        app.contains("pub fn clone_pool_for_host"),
+        "host extra-table bridge must stay on AppContext"
+    );
+    assert!(
+        !app.contains("pub pool"),
+        "the pool field stays crate-private"
+    );
+    let _: fn(&proxima::AppContext) -> sqlx::PgPool = proxima::AppContext::clone_pool_for_host;
+}
+
+#[test]
 fn flavor_sdk_names_query_and_ingest_types() {
     fn assert_hook<T: proxima::flavor::AuthorizationHook + ?Sized>() {}
     assert_hook::<dyn proxima::flavor::AuthorizationHook>();
@@ -797,7 +831,19 @@ fn flavor_sdk_names_query_and_ingest_types() {
         proxima::flavor::GoalRow,
         proxima::flavor::FactIngestOutcome,
         proxima::flavor::FactWriteCommand,
+        proxima::flavor::AuthorizedFactWithCitation,
+        proxima::flavor::AuthorizedFactWithCitationRef,
     )> = None;
+    let _cited = proxima::flavor::InlineCitedObjectDraft {
+        schema_id: proxima::flavor::SchemaId::new("core/upload-v1".into()),
+        schema_version: proxima::flavor::SchemaVersion::new(1),
+        payload_bytes: Vec::new(),
+    };
+    let _mapping = proxima::flavor::InlineCitationMappingDraft {
+        schema_id: proxima::flavor::SchemaId::new("core/upload-whole-v1".into()),
+        schema_version: proxima::flavor::SchemaVersion::new(1),
+        payload_bytes: Vec::new(),
+    };
 }
 
 #[cfg(feature = "auth-oidc")]

@@ -43,11 +43,14 @@ mod pgvector;
 mod ports;
 pub mod sidecars;
 pub mod query {
+    #[cfg(any(test, feature = "test-fixtures", debug_assertions))]
+    pub use crate::verbs::query::file_revision_heads_sql_for_tests;
     pub use crate::verbs::query::{
-        ChunkSeriesHead, CodeChunkVectorCandidate, CodeChunkVectorFilters, FileRevisionHeadRow,
-        MAX_SNAPSHOT_EDGES, nearest_code_chunk_candidates, owned_chunk_series_heads,
-        owned_file_revision_heads, owned_present_chunk_indexes, readable_chunk_head_ts_for_file,
-        readable_file_revision_head_ts,
+        ActiveGoalTargetRow, ChunkSeriesHead, CodeChunkVectorCandidate, CodeChunkVectorFilters,
+        FileRevisionHeadRow, MAX_SNAPSHOT_EDGES, active_goals_for_memory_targets,
+        nearest_code_chunk_candidates, owned_chunk_series_heads, owned_file_revision_heads,
+        owned_present_chunk_indexes, owned_present_file_revision_heads_except,
+        readable_chunk_head_ts_for_file, readable_file_revision_head_ts,
     };
 }
 #[cfg(any(test, feature = "test-fixtures"))]

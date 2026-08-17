@@ -444,15 +444,19 @@ let mapping = InlineCitationMappingDraft {
     payload_bytes: canonical_json_bytes(&serde_json::to_value(&mapping_payload)?),
 };
 
+let sidecars = [SidecarPayload::fact(fact_payload.clone())];
 let authorized = engine
-    .authorize_fact_with_citation(&authz, Relation::Ingest, draft, cited_object, mapping)
+    .authorize_fact_with_citation(
+        &authz,
+        Relation::Ingest,
+        draft,
+        cited_object,
+        mapping,
+        &sidecars,
+    )
     .await?;
 engine
-    .ingest_fact_with_citation_and_typed_sidecar(
-        &authorized,
-        &SidecarPayload::fact(fact_payload.clone()),
-        embedding_model_id,
-    )
+    .ingest_fact_with_citation_and_typed_sidecar(&authorized, &sidecars, embedding_model_id)
     .await?;
 ```
 
@@ -619,16 +623,14 @@ Four contract points that are easy to get wrong:
   (`supersedes` on the new row, `superseded_by` on the old one) in the same
   transaction. Supersession is never an edge — it is the same thing
   persisting through revision.
-- **Embedding is synchronous here, but a refused text is not a lost
-  write.** The engine embeds `text` inside the write. When the provider
-  refuses that text — or dies on it — and still answers a liveness probe,
-  the memory lands with no vector and a durable `embedding_jobs` row
-  enqueued in the same transaction, exactly the path a Fact always takes,
-  and the outcome's `embedding_deferred` says so. The memory is lexically
-  findable immediately and semantically findable once a drain runs (which
-  is also what bisects an over-limit text into chunks). Only a provider
-  that is genuinely unavailable fails the write. A flavor deriving many
-  memories should still checkpoint per output, not per batch.
+- **Embedding runs before the write transaction begins.** A refused text
+  is not a lost write: the memory lands with no vector and a durable
+  `embedding_jobs` row enqueued in the same transaction, and the
+  outcome's `embedding_deferred` says so. Several derived rows that must
+  commit together use `UnitOfWork::author_derived_all` (embed the batch,
+  then one `BEGIN`). A derived write after the transaction is already
+  open defers the vector rather than hold the pool slot across HTTP.
+  Only a provider that is genuinely unavailable fails the write.
 - **`text` is the whole semantic surface.** `render()` / authored text
   is the only string ever embedded; `search_projection()` adds lexical
   reach over sidecar columns but never affects the vector.
@@ -646,6 +648,7 @@ Four contract points that are easy to get wrong:
           fields: &[SearchProjectionField::MEMORY_TEXT],
           tag_column: Some("tags".to_owned()),
           tsv_column: None,
+          embed_text_column: None,
           language_column: None,
       })
   }
@@ -742,7 +745,7 @@ Tool contract:
 | Args | `Deserialize + JsonSchema` |
 | Output | `Serialize` |
 | Context | `ToolCtx`: Owner, AuthzContext, frozen registry, optional `ToolCaller`, optional caller Self Perspective, optional Engine, typed ToolServices |
-| Storage | use typed engine/storage APIs and flavor services; no public raw `PgPool` capability |
+| Storage | tools: Engine + `FlavorServices` store. Host extra-table: `AppContext::clone_pool_for_host`, wrap immediately. No `proxima_core.*` SQL |
 | Writes | emit typed Facts / A/P / Goals through registered schemas; no tool writes an edge |
 
 MCP JSON is protocol boundary only. Flavor SDK tool code targets `Tool`;
@@ -802,13 +805,14 @@ let Some(store) = ctx.service::<MyFlavorStore>() else {
 };
 ```
 
-Two things to note. `AppContext::clone_pool_for_host` is the only route
-to a `PgPool`, and it is deliberately kept off the supported export tier:
-wrap it in a store type that keeps `proxima_core.*` SQL private, exactly
-as `proxima-code` does, rather than passing the pool around. Tuple apps fold
-service sets left-to-right; `(A,)` is the identity-preserving singleton form.
-Duplicate concrete types fail boot with `FlavorServiceError::DuplicateService`
-instead of silently overriding an earlier flavor or the substrate's service.
+`AppContext::clone_pool_for_host` is the Host extra-table bridge
+(docs/08). It is not Flavor SDK: wrap the pool in a store that keeps
+`proxima_core.*` SQL private, as `proxima-code` does, then insert the
+store. Tools and workers resolve the store, never the pool. Sidecar-only
+flavors do not call it. Tuple apps fold service sets left-to-right;
+`(A,)` is the identity-preserving singleton form. Duplicate concrete
+types fail boot with `FlavorServiceError::DuplicateService` instead of
+silently overriding an earlier flavor or the substrate's service.
 
 When S3 is configured, the runtime appends three substrate-owned entries over
 one shared backend: `CitedBlobService` for presigned upload/read,

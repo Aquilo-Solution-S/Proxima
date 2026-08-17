@@ -25,10 +25,14 @@ pub struct MemoryRow {
 }
 
 /// One txn: owners upsert + ingest_keys + memory_head + memory + announce(append).
+///
+/// `sidecar_tables` is the declared set forget will dump/delete — tables
+/// actually inserted for this `t`, never the global registry.
 pub async fn ingest_fact_timeseries(
     tx: &mut Transaction<'_, Postgres>,
     owner: &Owner,
     draft: &FactWriteCommand,
+    sidecar_tables: &[String],
 ) -> Result<FactIngestOutcome, StorageError> {
     crate::access::owner_columns::reject_world_write_owner(owner)?;
     let owner_id = crate::access::owner_columns::ensure_owner_row(tx.as_mut(), owner).await?;
@@ -145,8 +149,9 @@ pub async fn ingest_fact_timeseries(
 
     sqlx::query(
         "INSERT INTO proxima_core.memory
-            (handle, t, kind, owner_id, schema_id, source_id, ingest_key, blob_id, origins, refs)
-         VALUES ($1, $2, $3::proxima_core.memory_kind, $4, $5, $6, $7, $8, $9, $10)",
+            (handle, t, kind, owner_id, schema_id, source_id, ingest_key, blob_id,
+             origins, refs, sidecar_tables)
+         VALUES ($1, $2, $3::proxima_core.memory_kind, $4, $5, $6, $7, $8, $9, $10, $11)",
     )
     .bind(handle)
     .bind(t)
@@ -158,6 +163,7 @@ pub async fn ingest_fact_timeseries(
     .bind(draft.blob_id)
     .bind(&origins)
     .bind(&refs)
+    .bind(sidecar_tables)
     .execute(tx.as_mut())
     .await
     .map_err(map_err)?;

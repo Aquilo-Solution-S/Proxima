@@ -34,6 +34,26 @@ impl RepoScope {
         self.include.is_empty() && self.exclude.is_empty()
     }
 
+    /// Stable digest of the stored glob lists, in stored order.
+    ///
+    /// Snapshot cursors carry this so a same-tree re-run can no-op only
+    /// when the scope has not changed.
+    #[must_use]
+    pub fn fingerprint(&self) -> String {
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(b"proxima-code-scope-v1\0");
+        for pattern in &self.include {
+            hasher.update(pattern.as_bytes());
+            hasher.update(b"\0");
+        }
+        hasher.update(b"\x1e");
+        for pattern in &self.exclude {
+            hasher.update(pattern.as_bytes());
+            hasher.update(b"\0");
+        }
+        hasher.finalize().to_hex().to_string()
+    }
+
     /// Compile for matching.
     ///
     /// # Errors
@@ -165,6 +185,18 @@ mod tests {
         }
         .compile()
         .expect("valid scope")
+    }
+
+    #[test]
+    fn fingerprint_changes_when_globs_change() {
+        let empty = RepoScope::default().fingerprint();
+        let excluded = RepoScope {
+            include: Vec::new(),
+            exclude: vec!["**/fixtures/**".into()],
+        }
+        .fingerprint();
+        assert_ne!(empty, excluded);
+        assert_eq!(empty, RepoScope::default().fingerprint());
     }
 
     #[test]

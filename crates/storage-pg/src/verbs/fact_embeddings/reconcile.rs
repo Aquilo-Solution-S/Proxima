@@ -95,10 +95,7 @@ pub async fn reconcile_embeddings(
     pool: &PgPool,
     options: EmbeddingReconcileOptions<'_>,
 ) -> Result<EmbeddingReconcileOutcome, StorageError> {
-    let limit = match options.limit {
-        Some(limit) => ensure_nonnegative_limit(limit)?,
-        None => i64::MAX,
-    };
+    let limit = resolve_reconcile_limit(options.limit)?;
     if limit == 0 {
         return Ok(EmbeddingReconcileOutcome::default());
     }
@@ -128,6 +125,15 @@ pub async fn reconcile_embeddings(
         enqueued,
         skipped: scanned.saturating_sub(enqueued),
     })
+}
+
+fn resolve_reconcile_limit(limit: Option<i64>) -> Result<i64, StorageError> {
+    match limit {
+        Some(limit) => ensure_nonnegative_limit(limit),
+        None => Err(StorageError::ConstraintViolation(
+            "reconcile limit is required".into(),
+        )),
+    }
 }
 
 /// Drain queued embedding jobs inline. Claims the whole batch in one
@@ -341,4 +347,26 @@ async fn embed_claim(
     .await?;
     tx.commit().await.map_err(map_err)?;
     Ok(true)
+}
+
+#[cfg(test)]
+mod limit_tests {
+    use proxima_core::StorageError;
+
+    #[test]
+    fn missing_limit_is_constraint() {
+        let err = super::resolve_reconcile_limit(None).expect_err("None");
+        assert!(
+            matches!(err, StorageError::ConstraintViolation(ref msg) if msg.contains("required")),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn some_limit_is_kept() {
+        assert_eq!(
+            super::resolve_reconcile_limit(Some(50_000)).expect("ok"),
+            50_000
+        );
+    }
 }

@@ -8,7 +8,8 @@
 //!
 //! Fact ingest goes through `Engine::ingest_typed_fact_with` (UoW of one).
 //! Opaque `CitationSpec` and stateful NK handle reuse live on that lane.
-//! Code-slice Abstractions are N `UnitOfWork::author_derived` in one UoW.
+//! Code-slice Abstractions are one `UnitOfWork::author_derived_all`
+//! (embed the batch, then one transaction).
 
 pub mod blobs;
 pub mod engine;
