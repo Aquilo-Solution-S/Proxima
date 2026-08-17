@@ -288,11 +288,13 @@ pub(crate) async fn list_group_members(
     pool: &PgPool,
     group_id: GroupId,
 ) -> Result<Vec<(UserId, Relation)>, StorageError> {
+    // Same total order as `list_group_members_page`. The table has no
+    // `created_at` (0001_v008 PK is `(group_id, member_user_id, relation)`).
     let rows: Vec<(uuid::Uuid, Relation)> = sqlx::query_as(
         "SELECT member_user_id, relation
            FROM proxima_core.group_memberships
           WHERE group_id = $1
-          ORDER BY created_at, member_user_id, relation",
+          ORDER BY member_user_id, relation",
     )
     .bind(group_id.into_inner())
     .fetch_all(pool)
