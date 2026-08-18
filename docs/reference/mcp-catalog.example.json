@@ -48,6 +48,6 @@
     "proxima://change-events{?since,limit}",
     "proxima://wake-candidates{?fact,limit}",
     "proxima://memory/{id}",
-    "proxima://edges{?kind,source,target,limit,cursor}"
+    "proxima://graph"
   ]
 }

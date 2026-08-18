@@ -188,9 +188,15 @@ async fn erase_personal_owner_destroys_cooled_and_gcs_content() {
         let user = UserId::new(Uuid::now_v7());
         let owner = OwnerRef::Personal(user);
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
-        let written = ingest_fact_atomic(pool, &permit, &draft(None), None).await?;
+        let written = ingest_fact_atomic(pool, &permit, &draft(Some(("src", "k-cooled"))), None).await?;
         let t = written.memory_id.into_inner();
         MemoryAuthoringPort::forget_memory(&pg, &permit, written.memory_id).await?;
+        let keys_after_forget: i64 = sqlx::query_scalar(
+            "SELECT count(*)::bigint FROM proxima_core.ingest_keys WHERE ingest_key = 'k-cooled'",
+        )
+        .fetch_one(pool)
+        .await?;
+        assert_eq!(keys_after_forget, 1, "forget leaves ingest_keys");
         let cooled_before: i64 =
             sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_core.cooled WHERE t = $1")
                 .bind(t)
@@ -223,6 +229,15 @@ async fn erase_personal_owner_destroys_cooled_and_gcs_content() {
         .fetch_one(pool)
         .await?;
         assert_eq!(content, 0, "unreferenced Content must be GC'd");
+        let keys_after_erase: i64 = sqlx::query_scalar(
+            "SELECT count(*)::bigint FROM proxima_core.ingest_keys WHERE ingest_key = 'k-cooled'",
+        )
+        .fetch_one(pool)
+        .await?;
+        assert_eq!(
+            keys_after_erase, 0,
+            "owner erase must delete ingest_keys of cooled facts"
+        );
         Ok(())
     }
     .await;
@@ -419,4 +434,72 @@ async fn erase_source_scope_rewinds_head_to_remaining_t() {
     .await;
     let _ = drop_db(&db_name).await;
     result.expect("source-scope rewind failed");
+}
+
+#[tokio::test]
+async fn erase_source_scope_destroys_cooled_from_that_source() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    if let Err(e) = create_db(&db_name).await {
+        panic!("PG required for tests but admin connect failed: {e}");
+    }
+    let url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&url).await?;
+        pg.run_migrations().await?;
+        let pool = pg.pool_for_tests();
+        let user = UserId::new(Uuid::now_v7());
+        let owner = OwnerRef::Personal(user);
+        let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
+        let target =
+            ingest_fact_atomic(pool, &permit, &draft(Some(("src-cool", "k-cool"))), None).await?;
+        let other =
+            ingest_fact_atomic(pool, &permit, &draft(Some(("src-keep", "k-keep"))), None).await?;
+        MemoryAuthoringPort::forget_memory(&pg, &permit, target.memory_id).await?;
+
+        let auth = EraseAuthorization::new_for_tests(ComplianceEraseTarget::PersonalSourceScope {
+            user_id: user,
+            source_id: SourceId::new("src-cool"),
+            drop_event_id: "test-drop-cooled-src".into(),
+        });
+        let outcome = pg
+            .erase_personal_source_scope_if_drop_verified(
+                &auth,
+                user,
+                &SourceId::new("src-cool"),
+                &[],
+                &[],
+                &[],
+                &[],
+            )
+            .await?;
+        assert!(
+            matches!(outcome, ComplianceEraseOutcome::Completed { .. }),
+            "got {outcome:?}"
+        );
+        let cooled: i64 =
+            sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_core.cooled WHERE t = $1")
+                .bind(target.memory_id.into_inner())
+                .fetch_one(pool)
+                .await?;
+        assert_eq!(
+            cooled, 0,
+            "source-scope erase must select cooled by source_id"
+        );
+        let kept: i64 =
+            sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_core.memory WHERE t = $1")
+                .bind(other.memory_id.into_inner())
+                .fetch_one(pool)
+                .await?;
+        assert_eq!(kept, 1, "other source must remain hot");
+        let keys: i64 = sqlx::query_scalar(
+            "SELECT count(*)::bigint FROM proxima_core.ingest_keys WHERE ingest_key = 'k-cool'",
+        )
+        .fetch_one(pool)
+        .await?;
+        assert_eq!(keys, 0);
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("source-scope cooled erase failed");
 }

@@ -109,6 +109,14 @@ async fn migrations_apply_to_fresh_db() {
             "embeddings carry entity_id only"
         );
         assert!(
+            column_exists(&pg, "cooled", "source_id").await,
+            "cooled carries source_id so source-scope erase can select"
+        );
+        assert!(
+            column_exists(&pg, "cooled", "ingest_key").await,
+            "cooled carries ingest_key next to source_id"
+        );
+        assert!(
             column_exists(&pg, "memory", "schema_id").await,
             "schema_id is on each memory row (same value as the handle)"
         );

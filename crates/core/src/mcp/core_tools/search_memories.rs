@@ -184,7 +184,7 @@ pub struct SearchMemoriesArgs {
     pub spaces: Vec<String>,
     #[serde(default)]
     #[schemars(
-        description = "Opaque pagination cursor from a previous response's next_cursor. Returns the page after it; every argument except limit must stay unchanged."
+        description = "Opaque pagination cursor from a previous response's next_cursor. Returns the page after it. Query, mode, filters, order, spaces, and score knobs must stay unchanged; limit, include_body, and include_neighbor_edges may vary."
     )]
     pub cursor: Option<String>,
 }
@@ -851,6 +851,20 @@ mod tests {
             target: target.to_string(),
             kind: "origin".into(),
         }
+    }
+
+    #[test]
+    fn search_cursor_schema_allows_presentation_to_vary() {
+        let schema = serde_json::to_string(&schemars::schema_for!(SearchMemoriesArgs))
+            .expect("search args schema");
+        assert!(
+            schema.contains("include_body") && schema.contains("include_neighbor_edges"),
+            "cursor contract must name the presentation flags that may vary"
+        );
+        assert!(
+            !schema.contains("every argument except limit"),
+            "schema must not contradict the fingerprint (limit/body/neighbors may vary)"
+        );
     }
 
     #[test]

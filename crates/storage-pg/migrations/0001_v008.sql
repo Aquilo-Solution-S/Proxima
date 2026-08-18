@@ -274,12 +274,21 @@ CREATE TABLE proxima_core.cooled (
     kind proxima_core.memory_kind NOT NULL,
     object_key text NOT NULL,
     content_id uuid REFERENCES proxima_core.content (content_id),
+    source_id text,
+    ingest_key text,
     cooled_at timestamptz NOT NULL DEFAULT now()
 );
 
 CREATE INDEX cooled_content_id_idx
     ON proxima_core.cooled (content_id)
     WHERE content_id IS NOT NULL;
+
+CREATE INDEX cooled_owner_id_idx
+    ON proxima_core.cooled (owner_id);
+
+CREATE INDEX cooled_owner_source_idx
+    ON proxima_core.cooled (owner_id, source_id)
+    WHERE source_id IS NOT NULL;
 
 CREATE TABLE proxima_core.group_memberships (
     group_id uuid NOT NULL,
