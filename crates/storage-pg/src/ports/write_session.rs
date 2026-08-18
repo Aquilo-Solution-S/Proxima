@@ -62,7 +62,7 @@ impl WriteSession for PgWriteSession {
             sidecar_payloads,
         )
         .await?;
-        verbs::fact_ingest::ingest_fact_with_sidecar_in_tx(
+        let outcome = verbs::fact_ingest::ingest_fact_with_sidecar_in_tx(
             &mut self.tx,
             authorized,
             embedding_model_id,
@@ -79,7 +79,22 @@ impl WriteSession for PgWriteSession {
                 })
             },
         )
-        .await
+        .await?;
+        if !outcome.idempotent_replay {
+            verbs::sketch::upsert_sketch(
+                &mut self.tx,
+                authorized.owner_write_permit().owner().stored_owner_id(),
+                outcome.memory_id.into_inner(),
+                authorized.draft().kind.as_str(),
+                &verbs::sketch::sketch_line(
+                    authorized.draft().kind.as_str(),
+                    authorized.draft().rendered_text.as_deref(),
+                    sidecar_payloads,
+                ),
+            )
+            .await?;
+        }
+        Ok(outcome)
     }
 
     async fn author_derived(
@@ -142,6 +157,26 @@ impl WriteSession for PgWriteSession {
             },
         )
         .await?;
+        if !outcome.idempotent_replay {
+            let kind = match req.kind {
+                proxima_core::EntityKind::Fact => "fact",
+                proxima_core::EntityKind::Abstraction => "abstraction",
+                proxima_core::EntityKind::Perspective => "perspective",
+                proxima_core::EntityKind::Goal => "goal",
+            };
+            verbs::sketch::upsert_sketch(
+                &mut self.tx,
+                owner_id,
+                outcome.memory_id.into_inner(),
+                kind,
+                &verbs::sketch::sketch_line(
+                    kind,
+                    Some(req.text.as_str()),
+                    std::slice::from_ref(&req.sidecar_payload),
+                ),
+            )
+            .await?;
+        }
         let edge_count = verbs::derive_append::assert_derived_index_rows(
             &mut self.tx,
             &draft,

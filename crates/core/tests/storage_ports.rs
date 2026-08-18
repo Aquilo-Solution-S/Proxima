@@ -143,6 +143,14 @@ impl MemoryReadPort for MemoryReadFake {
         fake_error()
     }
 
+    async fn load_sketches(
+        &self,
+        _read_owners: &[OwnerRef],
+        _memory_ids: &[MemoryId],
+    ) -> Result<Vec<proxima_core::read_models::MemorySketch>, StorageError> {
+        fake_error()
+    }
+
     async fn load_pin_nodes(
         &self,
         _read_owners: &[OwnerRef],

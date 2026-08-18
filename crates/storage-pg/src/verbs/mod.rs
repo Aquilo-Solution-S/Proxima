@@ -26,5 +26,6 @@ pub mod persist_mcp_call;
 pub mod query;
 pub mod query_timeseries;
 pub mod retention_maintenance;
+pub(crate) mod sketch;
 pub mod source_cursors;
 pub mod wake_timeseries;

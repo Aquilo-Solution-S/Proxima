@@ -170,6 +170,8 @@ pub async fn write_goal(
     .await
     .map_err(map_err)?;
 
+    crate::verbs::sketch::upsert_sketch(tx, owner_id, t, "goal", &draft.title).await?;
+
     sqlx::query(
         "INSERT INTO proxima_core.announce (owner_id, op, entity, handle, t)
          VALUES ($1, 'append', 'goal', $2, $3)",

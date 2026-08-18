@@ -80,7 +80,8 @@ async fn forget_hydrate_erase_and_world_never() {
         let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let pool = pg.pool_for_tests();
-        let sourced = draft(Some(("src", "k1")));
+        let mut sourced = draft(Some(("src", "k1")));
+        sourced.rendered_text = Some("Actual title\nbody".into());
         let written = ingest_fact_atomic(pool, &permit, &sourced, None).await?;
         let t = written.memory_id.into_inner();
         let stamped = sidecar_tables_for(pool, t).await?;
@@ -88,6 +89,13 @@ async fn forget_hydrate_erase_and_world_never() {
             stamped.is_empty(),
             "sidecar-less ingest stamps '{{}}'; forget still cools: {stamped:?}"
         );
+        let sketch_before: String =
+            sqlx::query_scalar("SELECT text FROM proxima_core.sketch WHERE t = $1")
+                .bind(t)
+                .fetch_one(pool)
+                .await?;
+        assert_eq!(sketch_before, "Actual title");
+
         let key = cold_object_key("ownerhash", written.handle, t);
         assert!(key.starts_with("cold/"));
         assert!(!key.contains(&owner.stored_owner_id().to_string()));
@@ -96,6 +104,13 @@ async fn forget_hydrate_erase_and_world_never() {
         let mut tx = pool.begin().await?;
         forget_memory(&mut tx, &core_pg_sidecars(), &cold, &key, t).await?;
         tx.commit().await?;
+
+        let sketches: i64 =
+            sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_core.sketch WHERE t = $1")
+                .bind(t)
+                .fetch_one(pool)
+                .await?;
+        assert_eq!(sketches, 0, "forget must delete the hot sketch");
 
         let hot: i64 =
             sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_core.memory WHERE t = $1")
@@ -138,6 +153,12 @@ async fn forget_hydrate_erase_and_world_never() {
                 .fetch_one(pool)
                 .await?;
         assert_eq!(head_t, t, "P3: hydrate recreates head at the same t");
+        let sketch_after: String =
+            sqlx::query_scalar("SELECT text FROM proxima_core.sketch WHERE t = $1")
+                .bind(t)
+                .fetch_one(pool)
+                .await?;
+        assert_eq!(sketch_after, "Actual title");
         let restored: (Option<String>, Option<String>, Vec<Uuid>, Vec<Uuid>) = sqlx::query_as(
             "SELECT source_id, ingest_key, origins, refs FROM proxima_core.memory WHERE t = $1",
         )

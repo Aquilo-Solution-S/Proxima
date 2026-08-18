@@ -6,7 +6,7 @@ use futures::future::BoxFuture;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::engine::{GetMemoriesReadRequest, SearchReadRequest};
+use crate::engine::SearchReadRequest;
 use crate::mcp::{McpTool, McpToolCtx, McpToolError};
 use crate::protocol::tool as protocol_tool;
 use crate::verbs::goal_write::GoalState;
@@ -175,26 +175,19 @@ async fn collect_subjects(
     if subjects.is_empty() {
         return Ok(());
     }
-    let response = engine
-        .get_memories(
-            &ctx.authz,
-            &GetMemoriesReadRequest {
-                memory_ids: subjects.to_vec(),
-            },
-        )
-        .await?;
-    for snap in response.memories {
+    let sketches = engine.load_sketches(&ctx.authz, subjects).await?;
+    for sketch in sketches {
         packet.insert(
             ctx,
-            snap.memory_id,
-            snap.kind,
-            &snapshot_sketch(&snap, snap.kind),
+            sketch.id,
+            sketch.kind,
+            &sketch.text,
             RecallReason::Subject,
         );
         packet.set_meta(
-            snap.memory_id,
-            Some(snap.owner),
-            snap.kind != EntityKind::Perspective,
+            sketch.id,
+            Some(sketch.owner),
+            sketch.kind != EntityKind::Perspective,
         );
     }
     Ok(())
@@ -230,26 +223,19 @@ async fn collect_cue_touch(
     if touch_ids.is_empty() {
         return Ok(());
     }
-    let hydrated = engine
-        .get_memories(
-            &ctx.authz,
-            &GetMemoriesReadRequest {
-                memory_ids: touch_ids,
-            },
-        )
-        .await?;
-    for snap in hydrated.memories {
-        if snap.owner != owner {
+    let sketches = engine.load_sketches(&ctx.authz, &touch_ids).await?;
+    for sketch in sketches {
+        if sketch.owner != owner {
             continue;
         }
         packet.insert(
             ctx,
-            snap.memory_id,
-            snap.kind,
-            &snapshot_sketch(&snap, snap.kind),
+            sketch.id,
+            sketch.kind,
+            &sketch.text,
             RecallReason::CueTouch,
         );
-        packet.set_meta(snap.memory_id, Some(snap.owner), true);
+        packet.set_meta(sketch.id, Some(sketch.owner), true);
     }
     Ok(())
 }
@@ -313,15 +299,17 @@ async fn collect_question(
             },
         )
         .await?;
-    for row in page.memories {
+    let ids: Vec<MemoryId> = page.memories.iter().map(|row| row.memory_id).collect();
+    let sketches = engine.load_sketches(&ctx.authz, &ids).await?;
+    for sketch in sketches {
         packet.insert(
             ctx,
-            row.memory_id,
-            row.kind,
-            &row.snippet,
+            sketch.id,
+            sketch.kind,
+            &sketch.text,
             RecallReason::Question,
         );
-        packet.set_meta(row.memory_id, Some(owner), true);
+        packet.set_meta(sketch.id, Some(owner), true);
     }
     Ok(())
 }
@@ -367,8 +355,18 @@ async fn collect_assigned_goals(
         req.include_payloads = false;
         req.limit = limit;
         let page = engine.query(&ctx.authz, &req).await?;
-        for goal in page.goals {
-            packet.insert_goal(ctx, goal.id, &goal.title);
+        let goal_ids: Vec<MemoryId> = page
+            .goals
+            .iter()
+            .map(|goal| MemoryId::new(goal.id.into_inner()))
+            .collect();
+        let sketches = engine.load_sketches(&ctx.authz, &goal_ids).await?;
+        for sketch in sketches {
+            packet.insert_goal(
+                ctx,
+                crate::GoalId::new(sketch.id.into_inner()),
+                &sketch.text,
+            );
         }
     }
     Ok(())
@@ -510,40 +508,6 @@ fn kind_matches(filter: RecallKind, kind: &str, is_head: bool) -> bool {
         }
         RecallKind::Goal => kind == EntityKind::Goal.as_str(),
     }
-}
-
-pub(super) fn snapshot_sketch(
-    snap: &crate::read_models::MemorySnapshot,
-    kind: EntityKind,
-) -> String {
-    if let Some(text) = snap
-        .text
-        .as_deref()
-        .map(str::trim)
-        .filter(|text| !text.is_empty())
-    {
-        return truncate_sketch(text);
-    }
-    let raw = snap
-        .payload
-        .as_ref()
-        .and_then(payload_sketch)
-        .unwrap_or_else(|| kind.as_str().to_string());
-    truncate_sketch(&raw)
-}
-
-fn payload_sketch(payload: &crate::SidecarPayload) -> Option<String> {
-    let value = payload.to_protocol_json().ok()?;
-    ["title", "claim", "body", "text"]
-        .iter()
-        .find_map(|key| {
-            value
-                .get(*key)
-                .and_then(serde_json::Value::as_str)
-                .map(str::trim)
-                .filter(|text| !text.is_empty())
-        })
-        .map(ToOwned::to_owned)
 }
 
 fn includes_assigned_goals(kind: Option<RecallKind>) -> bool {

@@ -175,6 +175,10 @@ async fn delete_memory_series(
         .bind(&all_t)
         .execute(&mut **tx)
         .await?;
+    sqlx::query("DELETE FROM proxima_core.sketch WHERE t = ANY($1::uuid[])")
+        .bind(&all_t)
+        .execute(&mut **tx)
+        .await?;
     let result = sqlx::query("DELETE FROM proxima_core.memory WHERE handle = ANY($1::uuid[])")
         .bind(&handles)
         .execute(&mut **tx)

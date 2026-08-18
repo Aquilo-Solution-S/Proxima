@@ -951,6 +951,16 @@ async fn facade_core_recall_returns_cue_packet_and_rejects_empty_cue() {
         )
         .await?;
         let fact = remembered["handle"].as_str().expect("fact handle");
+        let fact_t = fact
+            .strip_prefix("F:")
+            .expect("fact prefix")
+            .parse::<Uuid>()?;
+        let stored_sketch: String =
+            sqlx::query_scalar("SELECT text FROM proxima_core.sketch WHERE t = $1")
+                .bind(fact_t)
+                .fetch_one(built.pool_for_tests())
+                .await?;
+        assert_eq!(stored_sketch, "Cue fact");
 
         let derived = call_test_model_tool(
             &tools,
@@ -1049,6 +1059,35 @@ async fn facade_core_recall_returns_cue_packet_and_rejects_empty_cue() {
                     && kind == "Goal"
                     && reason == "assigned_goal"),
             "assigned Active Goal missing from Self packet: {packet}"
+        );
+
+        let goal_t = goal_handle
+            .strip_prefix("G:")
+            .expect("goal prefix")
+            .parse::<Uuid>()?;
+        sqlx::query("DELETE FROM proxima_core.sketch WHERE t = $1")
+            .bind(goal_t)
+            .execute(built.pool_for_tests())
+            .await?;
+        let without_goal = call_test_model_tool(
+            &tools,
+            authz.clone(),
+            owner,
+            "core_recall",
+            serde_json::json!({
+                "subjects": [fact],
+                "kind": "Perspective",
+                "limit": 8
+            }),
+        )
+        .await?;
+        assert!(
+            without_goal["sketches"]
+                .as_array()
+                .expect("sketches")
+                .iter()
+                .all(|row| row["handle"].as_str() != Some(goal_handle)),
+            "assigned Goal without a persisted sketch must be omitted: {without_goal}"
         );
 
         let by_question = call_test_model_tool(

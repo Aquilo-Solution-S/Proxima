@@ -89,6 +89,7 @@ Closed vocabularies are SQL enums.
 | `goal_head` / `goal` | Goal timeseries; `wake_id`, `write_act_t`, `dependency_t`, `evidence_t` |
 | `wake_config` | the one UPDATE table; N Goals share `wake_id`; DELETE RESTRICT |
 | `cooled` | forget stub; object key `cold/<owner_hash>/<handle>/<t>` |
+| `sketch` | hot one-liner for recall/think (`t` PK = Memory.t or Goal.t); forget deletes |
 | embeddings / jobs / heads | independent of graph authorship |
 | core sidecars | `agent_note_v1`, `utterance_v1`, `agent_derivation_v1`, `interpretation_v1`, `mcp_call_logged_v1`, `task_goal_v1` |
 

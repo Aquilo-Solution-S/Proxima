@@ -81,6 +81,13 @@ pub trait MemoryReadPort: Send + Sync {
 
     /// Owner-scoped PK load of pin carriers (`t`, kind, `origins`, `refs`).
     /// Missing and unreadable ids are absent.
+    /// Owner-scoped persisted one-liners. Missing/unreadable ids are absent.
+    async fn load_sketches(
+        &self,
+        read_owners: &[OwnerRef],
+        memory_ids: &[MemoryId],
+    ) -> Result<Vec<crate::read_models::MemorySketch>, StorageError>;
+
     async fn load_pin_nodes(
         &self,
         read_owners: &[OwnerRef],

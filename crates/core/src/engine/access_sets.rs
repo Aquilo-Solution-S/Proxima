@@ -326,6 +326,14 @@ pub(in crate::engine) mod tests {
             Ok(Vec::new())
         }
 
+        async fn load_sketches(
+            &self,
+            _read_owners: &[OwnerRef],
+            _memory_ids: &[MemoryId],
+        ) -> Result<Vec<crate::read_models::MemorySketch>, StorageError> {
+            Ok(Vec::new())
+        }
+
         async fn load_pin_nodes(
             &self,
             _read_owners: &[OwnerRef],

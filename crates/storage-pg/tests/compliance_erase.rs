@@ -122,6 +122,24 @@ async fn erase_personal_owner_drops_memory_keys_and_embeddings() {
         .fetch_one(pool)
         .await?;
         assert_eq!(embeddings, 0);
+        let erased_sketches: i64 =
+            sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_core.sketch WHERE t = $1")
+                .bind(t)
+                .fetch_one(pool)
+                .await?;
+        assert_eq!(
+            erased_sketches, 0,
+            "owner erase must delete target sketches"
+        );
+        let other_sketches: i64 =
+            sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_core.sketch WHERE t = $1")
+                .bind(other_written.memory_id.into_inner())
+                .fetch_one(pool)
+                .await?;
+        assert_eq!(
+            other_sketches, 1,
+            "owner erase must keep other-owner sketches"
+        );
 
         let other_remaining: i64 =
             sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_core.memory WHERE t = $1")

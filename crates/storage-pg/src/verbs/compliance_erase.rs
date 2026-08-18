@@ -335,6 +335,17 @@ async fn erase_selected(
     let _ = citation_mapping_sidecar_tables;
     let _ = cited_object_sidecar_tables;
 
+    let sketches = sqlx::query(
+        "DELETE FROM proxima_core.sketch s
+          WHERE EXISTS (SELECT 1 FROM selected_memories sm WHERE sm.memory_id = s.t)
+             OR EXISTS (SELECT 1 FROM selected_goals sg WHERE sg.goal_id = s.t)",
+    )
+    .execute(&mut **tx)
+    .await
+    .map_err(map_err)?
+    .rows_affected();
+    record_count(tx, "sketches", sketches).await?;
+
     let embedding_jobs = delete_embeddings(tx, "proxima_core.embedding_jobs").await?;
     record_count(tx, "embedding_jobs", embedding_jobs).await?;
     let embedding_heads = delete_embeddings(tx, "proxima_core.embedding_heads").await?;

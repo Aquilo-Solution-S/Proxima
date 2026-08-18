@@ -4,7 +4,6 @@ use futures::future::BoxFuture;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::engine::GetMemoriesReadRequest;
 use crate::mcp::cursor as wire_cursor;
 use crate::mcp::{McpTool, McpToolCtx, McpToolError};
 use crate::protocol::tool as protocol_tool;
@@ -216,11 +215,8 @@ async fn pin_bfs(
             let class = super::get_memory::memory_class(*kind).unwrap_or(MemoryHandleClass::Fact);
             let sketch = sketches
                 .iter()
-                .find(|snap| snap.memory_id == *id)
-                .map_or_else(
-                    || kind.as_str().to_string(),
-                    |snap| super::recall::snapshot_sketch(snap, *kind),
-                );
+                .find(|row| row.id == *id)
+                .map_or_else(|| kind.as_str().to_string(), |row| row.text.clone());
             ThinkVisit {
                 handle: ctx.format_memory_with_class(*id, class),
                 kind: kind.as_str().to_string(),
@@ -271,19 +267,11 @@ async fn hydrate_sketches(
     engine: &crate::Engine,
     ctx: &McpToolCtx,
     ids: &[MemoryId],
-) -> Result<Vec<crate::read_models::MemorySnapshot>, McpToolError> {
+) -> Result<Vec<crate::read_models::MemorySketch>, McpToolError> {
     if ids.is_empty() {
         return Ok(Vec::new());
     }
-    Ok(engine
-        .get_memories(
-            &ctx.authz,
-            &GetMemoriesReadRequest {
-                memory_ids: ids.to_vec(),
-            },
-        )
-        .await?
-        .memories)
+    Ok(engine.load_sketches(&ctx.authz, ids).await?)
 }
 
 async fn episode_siblings(
@@ -345,11 +333,8 @@ async fn episode_siblings(
                 super::get_memory::memory_class(node.kind).unwrap_or(MemoryHandleClass::Fact);
             let sketch = sketches
                 .iter()
-                .find(|snap| snap.memory_id == node.id)
-                .map_or_else(
-                    || node.kind.as_str().to_string(),
-                    |snap| super::recall::snapshot_sketch(snap, node.kind),
-                );
+                .find(|row| row.id == node.id)
+                .map_or_else(|| node.kind.as_str().to_string(), |row| row.text.clone());
             ThinkVisit {
                 handle: ctx.format_memory_with_class(node.id, class),
                 kind: node.kind.as_str().to_string(),

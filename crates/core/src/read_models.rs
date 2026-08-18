@@ -13,6 +13,15 @@ pub struct FactRow {
     pub payload: Option<SidecarPayload>,
 }
 
+/// Persisted recall/think one-liner. Plumbing; not a kernel sort.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MemorySketch {
+    pub id: MemoryId,
+    pub owner: OwnerRef,
+    pub kind: EntityKind,
+    pub text: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MemorySnapshot {
     pub memory_id: MemoryId,

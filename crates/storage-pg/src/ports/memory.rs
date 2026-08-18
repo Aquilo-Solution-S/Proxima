@@ -86,6 +86,26 @@ impl MemoryAuthoringPort for PgStorage {
                 },
             )
             .await?;
+            if !outcome.idempotent_replay {
+                let kind = match req.kind {
+                    proxima_core::EntityKind::Fact => "fact",
+                    proxima_core::EntityKind::Abstraction => "abstraction",
+                    proxima_core::EntityKind::Perspective => "perspective",
+                    proxima_core::EntityKind::Goal => "goal",
+                };
+                verbs::sketch::upsert_sketch(
+                    &mut tx,
+                    owner_id,
+                    outcome.memory_id.into_inner(),
+                    kind,
+                    &verbs::sketch::sketch_line(
+                        kind,
+                        Some(req.text.as_str()),
+                        std::slice::from_ref(&req.sidecar_payload),
+                    ),
+                )
+                .await?;
+            }
             let edge_count = verbs::derive_append::assert_derived_index_rows(
                 &mut tx,
                 &draft,
@@ -225,6 +245,23 @@ impl MemoryReadPort for PgStorage {
             include_body,
         )
         .await
+    }
+
+    async fn load_sketches(
+        &self,
+        read_owners: &[OwnerRef],
+        memory_ids: &[MemoryId],
+    ) -> Result<Vec<proxima_core::read_models::MemorySketch>, StorageError> {
+        let rows = verbs::sketch::load_sketches(&self.pool, read_owners, memory_ids).await?;
+        Ok(rows
+            .into_iter()
+            .map(|row| proxima_core::read_models::MemorySketch {
+                id: row.id,
+                owner: row.owner,
+                kind: row.kind,
+                text: row.text,
+            })
+            .collect())
     }
 
     async fn load_pin_nodes(

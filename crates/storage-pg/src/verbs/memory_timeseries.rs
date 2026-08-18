@@ -198,6 +198,15 @@ pub async fn ingest_fact_timeseries(
     .await
     .map_err(map_err)?;
 
+    super::sketch::upsert_sketch(
+        tx,
+        owner_id,
+        t,
+        kind,
+        &super::sketch::sketch_line(kind, draft.rendered_text.as_deref(), &[]),
+    )
+    .await?;
+
     Ok(FactIngestOutcome {
         receipt_id: None,
         memory_id: MemoryId::new(t),

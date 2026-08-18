@@ -372,6 +372,32 @@ CREATE TABLE proxima_core.mcp_call_logged_v1 (
     io_content_hash bytea NOT NULL
 );
 
+-- Hot one-liners for recall/think. Plumbing, not a kernel sort.
+-- `t` is Memory.t or Goal.t; no FK (two home tables). Forget deletes the row.
+CREATE TYPE proxima_core.sketch_kind AS ENUM (
+    'fact',
+    'abstraction',
+    'perspective',
+    'goal'
+);
+
+CREATE TABLE proxima_core.sketch (
+    t uuid PRIMARY KEY,
+    owner_id uuid NOT NULL REFERENCES proxima_core.owners (owner_id),
+    kind proxima_core.sketch_kind NOT NULL,
+    text text NOT NULL,
+    search_tsv tsvector GENERATED ALWAYS AS (
+        proxima_core.lexical_tsv(proxima_core.lexical_config(), NULLIF(btrim(text), ''))
+    ) STORED,
+    CONSTRAINT sketch_text_nonblank_chk CHECK (length(btrim(text)) > 0)
+);
+
+CREATE INDEX sketch_owner_t_idx
+    ON proxima_core.sketch (owner_id, t DESC);
+
+CREATE INDEX sketch_search_tsv_gin
+    ON proxima_core.sketch USING gin (search_tsv);
+
 CREATE TABLE proxima_core.embeddings (
     entity_id uuid NOT NULL,
     model_id text NOT NULL,
