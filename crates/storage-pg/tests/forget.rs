@@ -634,7 +634,10 @@ async fn forget_dumps_every_stamped_extra() {
 fn derived_abstraction(origin_kind: EntityKind, origin: Uuid) -> FactWriteCommand {
     let mut cmd = draft(None);
     cmd.kind = "abstraction".into();
-    cmd.derived_from = vec![EdgeEndpoint::memory(origin_kind, proxima_core::MemoryId::new(origin))];
+    cmd.derived_from = vec![EdgeEndpoint::memory(
+        origin_kind,
+        proxima_core::MemoryId::new(origin),
+    )];
     cmd
 }
 
@@ -954,7 +957,10 @@ async fn concurrent_forget_keeps_one_grounding_support() {
         let r1 = f1.await.expect("join a1").expect("tx a1");
         let r2 = f2.await.expect("join a2").expect("tx a2");
         let ok_count = usize::from(r1.is_ok()) + usize::from(r2.is_ok());
-        assert_eq!(ok_count, 1, "exactly one of A1/A2 forgets may commit; {r1:?} {r2:?}");
+        assert_eq!(
+            ok_count, 1,
+            "exactly one of A1/A2 forgets may commit; {r1:?} {r2:?}"
+        );
         let remaining: i64 = sqlx::query_scalar(
             "SELECT count(*)::bigint
                FROM unnest(
@@ -969,7 +975,10 @@ async fn concurrent_forget_keeps_one_grounding_support() {
         .bind(dep.memory_id.into_inner())
         .fetch_one(&pool)
         .await?;
-        assert!(remaining > 0, "dependent must keep a hot pin or cooled Fact");
+        assert!(
+            remaining > 0,
+            "dependent must keep a hot pin or cooled Fact"
+        );
         Ok(())
     }
     .await;
