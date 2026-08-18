@@ -1,0 +1,30 @@
+# Gitleaks config for Proxima.
+#
+# Rationale: `gitleaks detect --no-git` walks the filesystem and does NOT honour
+# .gitignore. Without these excludes it descends into target/ (64 GB of Rust
+# build artifacts, ~194k files, 99.5% of all files on disk) and entropy-scans
+# LLVM bitcode for hours at full thread fan-out. Git-mode scans are unaffected,
+# but the excludes are harmless there too.
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Build artifacts, vendored deps, and local scratch — never source"
+paths = [
+  '''^target/''',
+  '''^node_modules/''',
+  '''(^|/)dist/''',
+  '''(^|/)coverage/''',
+  '''(^|/)\.turbo/''',
+  '''(^|/)\.vite/''',
+  '''(^|/)\.pnpm-store/''',
+  '''^\.local/''',
+  '''^site/''',
+  '''(^|/)\.git/''',
+]
+
+[[allowlists]]
+description = "Cargo.lock holds crate names and registry checksums, not credentials"
+targetRules = ["generic-api-key"]
+paths = ['''^Cargo\.lock$''']
