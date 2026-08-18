@@ -1013,7 +1013,10 @@ pub async fn erase_memory(
          SELECT $1, 'erase', 'memory', $2, $3",
     )
     .bind(owner.stored_owner_id())
-    .bind(t)
+    // The series handle, not t: a ChangeHistory reader pages by handle, and a
+    // t-shaped handle matches no series. Keyless rows (no hot or cooled row
+    // left to read it from) fall back to t.
+    .bind(handle.unwrap_or(t))
     .bind(t)
     .execute(tx.as_mut())
     .await

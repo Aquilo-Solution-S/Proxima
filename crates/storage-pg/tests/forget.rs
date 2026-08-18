@@ -216,6 +216,66 @@ async fn forget_hydrate_erase_and_world_never() {
     result.expect("forget test failed");
 }
 
+/// An erase announce is a ChangeHistory event, and a reader pages events by
+/// series handle. Binding `t` into the handle column made every erase event
+/// name a series that does not exist.
+#[tokio::test]
+async fn erase_announce_carries_the_series_handle() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    if let Err(e) = create_db(&db_name).await {
+        panic!("PG required for tests but admin connect failed: {e}");
+    }
+    let url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&url).await?;
+        pg.run_migrations().await?;
+        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
+        let pool = pg.pool_for_tests();
+        let cold = MemoryColdStore::default();
+
+        // Two t on one handle, so a handle-shaped and a t-shaped value differ.
+        let first = ingest_fact_atomic(pool, &permit, &draft(Some(("src", "e1"))), None).await?;
+        let mut second_draft = draft(Some(("src", "e2")));
+        second_draft.handle = Some(first.handle);
+        let second = ingest_fact_atomic(pool, &permit, &second_draft, None).await?;
+        assert_eq!(second.handle, first.handle);
+        let t = second.memory_id.into_inner();
+        assert_ne!(t, second.handle, "the erased t is not its own handle");
+
+        let mut tx = pool.begin().await?;
+        erase_memory(&mut tx, &core_pg_sidecars(), &cold, &owner, t).await?;
+        tx.commit().await?;
+
+        let announced: Uuid = sqlx::query_scalar(
+            "SELECT handle FROM proxima_core.announce
+              WHERE t = $1 AND op = 'erase'
+              ORDER BY seq DESC LIMIT 1",
+        )
+        .bind(t)
+        .fetch_one(pool)
+        .await?;
+        assert_eq!(
+            announced, first.handle,
+            "the erase announce must name the series, not the erased t"
+        );
+        let series_heads: i64 = sqlx::query_scalar(
+            "SELECT count(*)::bigint FROM proxima_core.memory_head WHERE handle = $1",
+        )
+        .bind(announced)
+        .fetch_one(pool)
+        .await?;
+        assert_eq!(
+            series_heads, 1,
+            "the announced handle resolves to a live series"
+        );
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("erase announce handle test failed");
+}
+
 #[tokio::test]
 async fn engine_forget_puts_held_store_hydrate_restores_same_t() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
