@@ -271,7 +271,7 @@ async fn assert_lineage_clamps_pages_and_reports_missing_start(
         .await?;
     assert_eq!(
         clamped["edges"].as_array().expect("edges").len(),
-        2,
+        3,
         "depth=300 clamps to the documented maximum instead of erroring"
     );
 
@@ -301,11 +301,11 @@ async fn assert_lineage_clamps_pages_and_reports_missing_start(
             Some(token) => cursor = Some(token.to_string()),
             None => break,
         }
-        assert!(edges_seen.len() <= 2, "lineage paging must terminate");
+        assert!(edges_seen.len() <= 3, "lineage paging must terminate");
     }
     edges_seen.sort_unstable();
     edges_seen.dedup();
-    assert_eq!(edges_seen.len(), 2, "pages disjoint and exhaustive");
+    assert_eq!(edges_seen.len(), 3, "pages disjoint and exhaustive");
 
     let lineage_missing = server
         .read_resource(
@@ -810,6 +810,30 @@ async fn insert_memory_row(
 ) -> Result<uuid::Uuid, Box<dyn std::error::Error>> {
     let handle = uuid::Uuid::now_v7();
     let t = uuid::Uuid::now_v7();
+    let mut origins = origins.to_vec();
+    if kind != "fact" && origins.is_empty() {
+        let fact_t = Box::pin(insert_memory_row(
+            pg,
+            owner,
+            "fact",
+            "core/test-fact-v1",
+            &[],
+        ))
+        .await?;
+        if kind == "perspective" {
+            let abs_t = Box::pin(insert_memory_row(
+                pg,
+                owner,
+                "abstraction",
+                "core/test-abs-v1",
+                &[fact_t],
+            ))
+            .await?;
+            origins.push(abs_t);
+        } else {
+            origins.push(fact_t);
+        }
+    }
     let owner_id = owner.stored_owner_id();
     sqlx::query(
         "INSERT INTO proxima_core.owners (owner_id, kind)

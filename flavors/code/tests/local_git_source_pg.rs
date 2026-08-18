@@ -540,11 +540,32 @@ async fn head_snapshot_delete_tombstones_all_indexes_beyond_one_authz_batch() {
         .bind(<CodeChunkV1 as AbstractionPayload>::SCHEMA_ID)
         .execute(pg.pool_for_tests())
         .await?;
+        let fact_handle = Uuid::now_v7();
+        let fact_t = Uuid::now_v7();
         sqlx::query(
-            "INSERT INTO proxima_core.memory (handle, t, kind, owner_id, schema_id, content_id)
+            "INSERT INTO proxima_core.memory_head (handle, kind, schema_id, owner_id, t)
+             VALUES ($1, 'fact', 'core/test-fact-v1', $2, $3)",
+        )
+        .bind(fact_handle)
+        .bind(owner_id)
+        .bind(fact_t)
+        .execute(pg.pool_for_tests())
+        .await?;
+        sqlx::query(
+            "INSERT INTO proxima_core.memory (handle, t, kind, owner_id, schema_id)
+             VALUES ($1, $2, 'fact', $3, 'core/test-fact-v1')",
+        )
+        .bind(fact_handle)
+        .bind(fact_t)
+        .bind(owner_id)
+        .execute(pg.pool_for_tests())
+        .await?;
+        sqlx::query(
+            "INSERT INTO proxima_core.memory
+                (handle, t, kind, owner_id, schema_id, origins, content_id)
              SELECT ('7a5b0000-0000-4000-8000-' || lpad(to_hex(g.i), 12, '0'))::uuid,
                     ('7a5b0000-0000-4000-8000-' || lpad(to_hex(g.i), 12, '0'))::uuid,
-                    'abstraction', $1, $4, c.content_id
+                    'abstraction', $1, $4, ARRAY[$5]::uuid[], c.content_id
                FROM generate_series($2::int, $3::int) AS g(i)
                JOIN proxima_core.content c
                  ON c.owner_id = $1
@@ -555,6 +576,7 @@ async fn head_snapshot_delete_tombstones_all_indexes_beyond_one_authz_batch() {
         .bind(SEED_INDEX_BASE)
         .bind(SEED_INDEX_BASE + EXTRA_PRESENT_ROWS - 1)
         .bind(<CodeChunkV1 as AbstractionPayload>::SCHEMA_ID)
+        .bind(fact_t)
         .execute(pg.pool_for_tests())
         .await?;
         sqlx::query(

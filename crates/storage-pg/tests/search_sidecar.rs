@@ -354,13 +354,35 @@ async fn tagged_search_scans_flavor_sidecars() {
         .bind(hash.as_slice())
         .fetch_one(pool)
         .await?;
+        let fact_handle = Uuid::now_v7();
+        let fact_t = Uuid::now_v7();
         sqlx::query(
-            "INSERT INTO proxima_core.memory (handle, t, kind, owner_id, schema_id, content_id)
-             VALUES ($1, $2, 'abstraction', $3, 'proxima-docs/section-text-v1', $4)",
+            "INSERT INTO proxima_core.memory_head (handle, kind, schema_id, owner_id, t)
+             VALUES ($1, 'fact', 'core/test-fact-v1', $2, $3)",
+        )
+        .bind(fact_handle)
+        .bind(owner_id)
+        .bind(fact_t)
+        .execute(pool)
+        .await?;
+        sqlx::query(
+            "INSERT INTO proxima_core.memory (handle, t, kind, owner_id, schema_id)
+             VALUES ($1, $2, 'fact', $3, 'core/test-fact-v1')",
+        )
+        .bind(fact_handle)
+        .bind(fact_t)
+        .bind(owner_id)
+        .execute(pool)
+        .await?;
+        sqlx::query(
+            "INSERT INTO proxima_core.memory
+                (handle, t, kind, owner_id, schema_id, origins, content_id)
+             VALUES ($1, $2, 'abstraction', $3, 'proxima-docs/section-text-v1', ARRAY[$4]::uuid[], $5)",
         )
         .bind(handle)
         .bind(t)
         .bind(owner_id)
+        .bind(fact_t)
         .bind(content_id)
         .execute(pool)
         .await?;

@@ -64,11 +64,12 @@ async fn code_execution_plan_can_use_core_superseding_derived_authoring() {
     let new_memory_id = MemoryId::new(Uuid::now_v7());
     let plan_key = "goal:repo:plan";
 
-    // What the plan was made from is a list of endpoints on the request; the
-    // two Facts its payload names arrive as references, derived from the
-    // payload rather than passed beside it.
-    let derived_from: [EdgeEndpoint; 0] = [];
-    let _ = plan_source_memory_id;
+    // A→A must originate from an Abstraction. The two Facts the payload
+    // names arrive as references.
+    let derived_from = [EdgeEndpoint::memory(
+        EntityKind::Abstraction,
+        MemoryId::new(plan_source_memory_id),
+    )];
     let old_payload = plan_payload(
         repo_id,
         goal_activated_memory_id,

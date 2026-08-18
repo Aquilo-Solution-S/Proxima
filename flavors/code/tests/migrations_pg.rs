@@ -167,13 +167,35 @@ async fn flavor_migrations_apply_to_fresh_db() {
         .bind(hash.as_slice())
         .fetch_one(pg.pool_for_tests())
         .await?;
+        let fact_handle = uuid::Uuid::now_v7();
+        let fact_t = uuid::Uuid::now_v7();
         sqlx::query(
-            "INSERT INTO proxima_core.memory (handle, t, kind, owner_id, schema_id, content_id)
-             VALUES ($1, $2, 'abstraction', $3, 'proxima-code/code-chunk-v1', $4)",
+            "INSERT INTO proxima_core.memory_head (handle, kind, schema_id, owner_id, t)
+             VALUES ($1, 'fact', 'core/test-fact-v1', $2, $3)",
+        )
+        .bind(fact_handle)
+        .bind(owner_id)
+        .bind(fact_t)
+        .execute(pg.pool_for_tests())
+        .await?;
+        sqlx::query(
+            "INSERT INTO proxima_core.memory (handle, t, kind, owner_id, schema_id)
+             VALUES ($1, $2, 'fact', $3, 'core/test-fact-v1')",
+        )
+        .bind(fact_handle)
+        .bind(fact_t)
+        .bind(owner_id)
+        .execute(pg.pool_for_tests())
+        .await?;
+        sqlx::query(
+            "INSERT INTO proxima_core.memory
+                (handle, t, kind, owner_id, schema_id, origins, content_id)
+             VALUES ($1, $2, 'abstraction', $3, 'proxima-code/code-chunk-v1', ARRAY[$4]::uuid[], $5)",
         )
         .bind(handle)
         .bind(memory_id)
         .bind(owner_id)
+        .bind(fact_t)
         .bind(content_id)
         .execute(pg.pool_for_tests())
         .await?;

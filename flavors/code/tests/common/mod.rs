@@ -138,7 +138,7 @@ pub async fn seed_memory(
 
 /// Same as [`seed_memory`], with `memory.sidecar_tables` set at insert
 /// (the row is append-only).
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 pub async fn seed_memory_with_sidecars(
     pool: &sqlx::PgPool,
     owner: &Owner,
@@ -151,6 +151,36 @@ pub async fn seed_memory_with_sidecars(
 ) -> Result<(Uuid, Uuid), sqlx::Error> {
     let handle = handle.unwrap_or_else(Uuid::now_v7);
     let t = t.unwrap_or_else(Uuid::now_v7);
+    let mut origins = origins.to_vec();
+    if kind != "fact" && origins.is_empty() {
+        let (_, fact_t) = Box::pin(seed_memory_with_sidecars(
+            pool,
+            owner,
+            "core/test-fact-v1",
+            "fact",
+            None,
+            None,
+            &[],
+            &[],
+        ))
+        .await?;
+        if kind == "perspective" {
+            let (_, abs_t) = Box::pin(seed_memory_with_sidecars(
+                pool,
+                owner,
+                "core/test-abs-v1",
+                "abstraction",
+                None,
+                None,
+                &[fact_t],
+                &[],
+            ))
+            .await?;
+            origins.push(abs_t);
+        } else {
+            origins.push(fact_t);
+        }
+    }
     let owner_id = owner.stored_owner_id();
     sqlx::query(
         "INSERT INTO proxima_core.owners (owner_id, kind)
