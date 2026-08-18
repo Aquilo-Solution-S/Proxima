@@ -7,9 +7,10 @@ use crate::error::map_err;
 
 use super::jobs::claim_pending_embedding_jobs_excluding;
 use super::{
-    complete_embedding_job, ensure_nonnegative_limit, fail_embedding_job,
-    fail_embedding_job_permanently, insert_embedding_chunks, insert_memory_embedding,
-    load_embedding_texts, release_embedding_jobs,
+    STALE_PROCESSING_RECLAIM_SECONDS, complete_embedding_job, ensure_nonnegative_limit,
+    fail_embedding_job, fail_embedding_job_permanently, insert_embedding_chunks,
+    insert_memory_embedding, load_embedding_texts, reclaim_stale_embedding_jobs,
+    release_embedding_jobs,
 };
 
 pub use proxima_core::{
@@ -66,7 +67,9 @@ WITH scoped AS MATERIALIZED (
      SELECT memory_id, $1, owner_id
        FROM limited
      ON CONFLICT (owner_id, entity_id, model_id)
-     DO UPDATE SET status = 'pending'
+     DO UPDATE SET status = 'pending',
+                   claimed_at = NULL,
+                   last_error = NULL
          WHERE embedding_jobs.status = 'failed'
      RETURNING 1
  )
@@ -79,13 +82,16 @@ WITH scoped AS MATERIALIZED (
 /// Scans Facts plus derived memories with stored text, skips rows by
 /// scope-specific embedding coverage and target-model durable jobs, and
 /// enqueues via `proxima_core.embedding_jobs`. A row that already holds a
-/// `failed` job (retries exhausted per `fail_embedding_job`) is requeued —
-/// status back to `pending`, attempts reset, backoff cleared — so reconcile is
-/// the operator/startup reset that lifts a Fact out of the retry dead-end.
-/// Jobs terminally failed for a permanent input rejection
-/// (`fail_embedding_job_permanently`, marker-prefixed `last_error`) are NOT
+/// `failed` job (retryable cause, per `fail_embedding_job`) is requeued —
+/// status back to `pending`, `last_error` cleared — so reconcile is the
+/// operator/startup reset that lifts a Fact out of the retry dead-end.
+/// `failed_permanent` jobs (`fail_embedding_job_permanently`) are NOT
 /// requeued: the provider will always reject the same input again.
-/// `pending`/`processing` jobs are left untouched.
+/// Live `pending`/`processing` jobs are left untouched, except that the pass
+/// first reclaims claims older than
+/// [`STALE_PROCESSING_RECLAIM_SECONDS`](super::STALE_PROCESSING_RECLAIM_SECONDS)
+/// — a `processing` row whose drainer died is the one backlog no enqueue can
+/// reach, because the job's unique key is already taken.
 ///
 /// # Errors
 ///
@@ -98,6 +104,15 @@ pub async fn reconcile_embeddings(
     let limit = resolve_reconcile_limit(options.limit)?;
     if limit == 0 {
         return Ok(EmbeddingReconcileOutcome::default());
+    }
+
+    let reclaimed = reclaim_stale_embedding_jobs(pool, STALE_PROCESSING_RECLAIM_SECONDS).await?;
+    if reclaimed > 0 {
+        tracing::warn!(
+            reclaimed,
+            stale_after_seconds = STALE_PROCESSING_RECLAIM_SECONDS,
+            "reclaimed abandoned processing embedding jobs"
+        );
     }
 
     let (scope, since) = match options.scope {
@@ -293,8 +308,8 @@ async fn embed_claim(
         // An over-limit input is not a dead memory. The engine's drain
         // rescues it as a chunked embedding version; this drain must do the
         // same, or which drain happens to reach a job first decides whether
-        // the memory is recoverable — and a job failed here is marked
-        // terminal, which `reconcile_embeddings` then refuses to requeue.
+        // the memory is recoverable — and a job failed here goes
+        // `failed_permanent`, which `reconcile_embeddings` never requeues.
         Err(LlmError::EmbedPermanent(message)) => {
             return match proxima_core::llm::embed_in_chunks(client, text).await {
                 Ok(Some(vectors)) => {

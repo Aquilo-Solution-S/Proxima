@@ -433,12 +433,23 @@ CREATE TABLE proxima_core.embedding_heads (
     PRIMARY KEY (entity_id, model_id)
 );
 
+-- `failed` is retryable-terminal (reconcile requeues it); `failed_permanent`
+-- is an input the provider will always reject, so nothing requeues it.
+CREATE TYPE proxima_core.embedding_job_status AS ENUM (
+    'pending',
+    'processing',
+    'failed',
+    'failed_permanent'
+);
+
 CREATE TABLE proxima_core.embedding_jobs (
     job_id uuid PRIMARY KEY DEFAULT uuidv7(),
     entity_id uuid NOT NULL,
     model_id text NOT NULL,
     owner_id uuid NOT NULL REFERENCES proxima_core.owners (owner_id),
-    status text NOT NULL DEFAULT 'pending',
+    status proxima_core.embedding_job_status NOT NULL DEFAULT 'pending',
+    claimed_at timestamptz,
+    last_error text,
     UNIQUE (owner_id, entity_id, model_id)
 );
 
