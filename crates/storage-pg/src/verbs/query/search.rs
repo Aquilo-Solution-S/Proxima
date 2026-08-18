@@ -4,7 +4,9 @@
 //! 1. **content** — one GIN query per sidecar (`@@` only); `LIKE`
 //!    runs only when that sidecar's GIN arm is empty
 //! 2. **admit** — owner + optional current-head on the hit `t`s;
-//!    `schema_id` is on `memory`
+//!    `schema_id` is on `memory`. Sidecar GIN is ownerless; the scan
+//!    joins `memory` and filters `owner_id` so another tenant cannot
+//!    fill the overfetch window.
 //! 3. **pins** — engine neighbor load, only if the caller asked
 //!
 //! Unscoped search (no tags) scans only `proxima_core.*` sidecars.
@@ -262,6 +264,12 @@ async fn scan_one_sidecar(
         Some(SearchCursor::Recency { memory_id, .. }) => Some(memory_id.into_inner()),
         _ => None,
     };
+    let owner_ids: Vec<uuid::Uuid> = req
+        .read_owners
+        .iter()
+        .copied()
+        .map(OwnerRef::stored_owner_id)
+        .collect();
     let sql = lexical_sidecar_sql(projection, req, rescue, like_only)?;
 
     // SQL-POLICY: PgIdent
@@ -273,6 +281,7 @@ async fn scan_one_sidecar(
         .bind(req.since)
         .bind(req.until)
         .bind(recency_t)
+        .bind(&owner_ids)
         .fetch_all(pool)
         .await
         .map_err(map_err)?;
@@ -350,8 +359,10 @@ fn lexical_sidecar_sql(
          SELECT c.t,
                 {score_expr} AS lexical_score,
                 left({search_text}, 480) AS snippet
-           FROM {table} c, q
-          WHERE ({match_pred})
+           FROM {table} c
+           JOIN proxima_core.memory m ON m.t = c.t, q
+          WHERE m.owner_id = ANY($8::uuid[])
+            AND ({match_pred})
             {tag_pred}
             AND length($2::text) >= 0
             AND ($5::timestamptz IS NULL
@@ -717,5 +728,18 @@ mod tests {
         );
         let admit = format!("{}{}", "search_admit_sql(matches!(", "");
         assert!(prod.contains(&admit), "admit must run search_admit_sql");
+    }
+
+    #[test]
+    fn sidecar_scan_filters_owner_before_limit() {
+        let src = include_str!("search.rs");
+        assert!(
+            src.contains("JOIN proxima_core.memory m ON m.t = c.t"),
+            "sidecar GIN is ownerless; scan must join memory"
+        );
+        assert!(
+            src.contains("m.owner_id = ANY($8::uuid[])"),
+            "owner filter must sit on the sidecar scan, not only admit"
+        );
     }
 }

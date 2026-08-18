@@ -147,6 +147,8 @@ async fn migrations_apply_to_fresh_db() {
             "owners_kind_idx",
             "announce_owner_seq_idx",
             "idx_embeddings_vec_hnsw",
+            "embeddings_owner_model_idx",
+            "goal_owner_state_t_idx",
             "agent_note_v1_search_tsv_gin",
             "utterance_v1_search_tsv_gin",
             "agent_derivation_v1_search_tsv_gin",

@@ -259,6 +259,45 @@ async fn lexical_search_is_sidecar_first_then_owner_admit() {
 }
 
 #[tokio::test]
+async fn lexical_search_does_not_let_other_owner_fill_overfetch() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    if let Err(e) = create_db(&db_name).await {
+        panic!("PG required for tests but admin connect failed: {e}");
+    }
+    let url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&url).await?;
+        pg.run_migrations().await?;
+        let pool = pg.pool_for_tests();
+        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let other = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let ours = seed_note(pool, owner, "zebra", "owner-local zebra needle").await?;
+        for i in 0..25 {
+            seed_note(
+                pool,
+                other,
+                &format!("zebra {i}"),
+                "other-owner zebra flood",
+            )
+            .await?;
+        }
+        let mut req = search_req(owner, "zebra");
+        req.limit = 1;
+        let page = pg.search_memories(&req, &[note_projection()]).await?;
+        assert_eq!(
+            page.results.len(),
+            1,
+            "other-owner GIN hits must not occupy the overfetch window"
+        );
+        assert_eq!(page.results[0].memory_id.into_inner(), ours);
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("owner-at-scan search test failed");
+}
+
+#[tokio::test]
 async fn tagged_search_scans_flavor_sidecars() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
     if let Err(e) = create_db(&db_name).await {

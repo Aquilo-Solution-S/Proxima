@@ -255,6 +255,9 @@ CREATE TABLE proxima_core.goal (
 CREATE INDEX goal_owner_handle_t_idx
     ON proxima_core.goal (owner_id, handle, t DESC);
 
+CREATE INDEX goal_owner_state_t_idx
+    ON proxima_core.goal (owner_id, state, t DESC);
+
 CREATE INDEX goal_wake_idx
     ON proxima_core.goal (wake_id) WHERE wake_id IS NOT NULL;
 
@@ -409,6 +412,9 @@ CREATE TABLE proxima_core.embeddings (
 
 CREATE INDEX idx_embeddings_vec_hnsw
     ON proxima_core.embeddings USING hnsw (vec vector_cosine_ops);
+
+CREATE INDEX embeddings_owner_model_idx
+    ON proxima_core.embeddings (owner_id, model_id);
 
 CREATE TABLE proxima_core.embedding_heads (
     entity_id uuid NOT NULL,
