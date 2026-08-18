@@ -327,9 +327,15 @@ async fn owners_upsert_rejects_kind_conflict_on_every_write_path() {
         let pool = pg.pool_for_tests();
 
         ingest_fact_atomic(pool, &permit, &draft(None), None).await?;
-        ensure_owner_row(pool, &personal).await?;
-
-        assert_kind_conflict(ensure_owner_row(pool, &group).await.expect_err("helper"));
+        {
+            let mut conn = pool.acquire().await?;
+            ensure_owner_row(&mut conn, &personal).await?;
+            assert_kind_conflict(
+                ensure_owner_row(&mut conn, &group)
+                    .await
+                    .expect_err("helper"),
+            );
+        }
 
         let mut tx = pool.begin().await?;
         assert_kind_conflict(
@@ -383,6 +389,40 @@ async fn owners_upsert_rejects_kind_conflict_on_every_write_path() {
     .await;
     let _ = drop_db(&db_name).await;
     result.expect("owners kind-conflict test failed");
+}
+
+#[tokio::test]
+async fn ensure_owner_row_returns_under_concurrent_first_insert() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    if let Err(e) = create_db(&db_name).await {
+        panic!("PG required for tests but admin connect failed: {e}");
+    }
+    let url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&url).await?;
+        pg.run_migrations().await?;
+        let pool = pg.pool_for_tests();
+        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+
+        let mut joins = Vec::new();
+        for _ in 0..8 {
+            let pool = pool.clone();
+            joins.push(tokio::spawn(async move {
+                let mut conn = pool
+                    .acquire()
+                    .await
+                    .map_err(|err| StorageError::Unavailable(format!("acquire: {err}")))?;
+                ensure_owner_row(&mut conn, &owner).await
+            }));
+        }
+        for join in joins {
+            join.await??;
+        }
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("concurrent ensure_owner_row must not RowNotFound");
 }
 
 #[test]

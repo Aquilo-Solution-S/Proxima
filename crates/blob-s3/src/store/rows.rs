@@ -60,7 +60,8 @@ pub(super) async fn ensure_owner_row(
     pool: &sqlx::PgPool,
     owner: &Owner,
 ) -> Result<Uuid, BlobError> {
-    proxima_storage_pg::access::owner_columns::ensure_owner_row(pool, owner)
+    let mut conn = pool.acquire().await?;
+    proxima_storage_pg::access::owner_columns::ensure_owner_row(&mut conn, owner)
         .await
         .map_err(map_owner_row)
 }

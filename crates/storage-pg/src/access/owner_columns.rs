@@ -64,29 +64,38 @@ pub(crate) fn reject_world_write_owner(owner: &OwnerRef) -> Result<(), StorageEr
 ///
 /// [`StorageError::ConstraintViolation`] when `owner_id` already exists
 /// with a different kind. Other storage errors from the upsert.
-pub async fn ensure_owner_row<'e>(
-    executor: impl sqlx::Executor<'e, Database = Postgres>,
+pub async fn ensure_owner_row(
+    conn: &mut sqlx::PgConnection,
     owner: &OwnerRef,
 ) -> Result<uuid::Uuid, StorageError> {
     let owner_id = owner.stored_owner_id();
     let owner_kind = OwnerRefKind::of(owner).as_str();
-    let existing: String = sqlx::query_scalar(
-        "WITH ins AS (
-            INSERT INTO proxima_core.owners (owner_id, kind)
-            VALUES ($1, $2::proxima_core.owner_kind)
-            ON CONFLICT (owner_id) DO NOTHING
-            RETURNING kind::text AS kind
-         )
-         SELECT kind FROM ins
-         UNION ALL
-         SELECT kind::text FROM proxima_core.owners WHERE owner_id = $1
-         LIMIT 1",
+    // Two statements: `owners` is append-only (no UPDATE), and a CTE that
+    // `DO NOTHING` then SELECTs shares one snapshot — a concurrent first
+    // insert waits, then neither arm sees the committed row (`RowNotFound`
+    // on complete_upload under concurrency). The SELECT is a new statement
+    // so it sees the row the waiter just conflicted with.
+    let inserted: Option<String> = sqlx::query_scalar(
+        "INSERT INTO proxima_core.owners (owner_id, kind)
+         VALUES ($1, $2::proxima_core.owner_kind)
+         ON CONFLICT (owner_id) DO NOTHING
+         RETURNING kind::text",
     )
     .bind(owner_id)
     .bind(owner_kind)
-    .fetch_one(executor)
+    .fetch_optional(&mut *conn)
     .await
     .map_err(map_err)?;
+    let existing = match inserted {
+        Some(kind) => kind,
+        None => {
+            sqlx::query_scalar("SELECT kind::text FROM proxima_core.owners WHERE owner_id = $1")
+                .bind(owner_id)
+                .fetch_one(&mut *conn)
+                .await
+                .map_err(map_err)?
+        }
+    };
     if existing != owner_kind {
         return Err(StorageError::ConstraintViolation(
             "owners.kind conflict for owner_id".into(),
