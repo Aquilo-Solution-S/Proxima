@@ -266,9 +266,16 @@ async fn hot_path_plans_use_expected_indexes() {
             .bind(None::<time::OffsetDateTime>)
             .bind(None::<time::OffsetDateTime>)
             .bind(None::<Uuid>)
+            .bind(&owner_ids)
             .fetch_one(&mut *tx)
             .await?;
-        assert_plan_names(&plan, "agent_note_v1_search_tsv_gin");
+        let lexical_plan = plan.to_string();
+        assert!(
+            lexical_plan.contains("agent_note_v1_search_tsv_gin")
+                || (lexical_plan.contains("agent_note_v1_pkey")
+                    && lexical_plan.contains("memory_t_key")),
+            "owner-scoped sidecar scan must use GIN or PK join through memory.t; plan:\n{lexical_plan}"
+        );
 
         // SQL-POLICY: fixed-fragment
         sqlx::raw_sql(sqlx::AssertSqlSafe(set_hnsw_search_sql_for_tests(

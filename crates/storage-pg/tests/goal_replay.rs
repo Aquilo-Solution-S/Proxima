@@ -9,8 +9,8 @@ use proxima_core::verbs::goal_write::{
     GoalWakeToolId, GoalWakeTrigger, IdempotencyKey,
 };
 use proxima_core::{
-    AccessKind, FlavorRegistry, GoalPayload, OwnerRef, SchemaId, SchemaVersion, SimpleTextGoalV1,
-    UserId,
+    AccessKind, EdgeEndpoint, EntityKind, FlavorRegistry, GoalPayload, OwnerRef, SchemaId,
+    SchemaVersion, SimpleTextGoalV1, UserId,
 };
 use proxima_pg_testkit::{create_db, db_url, drop_db};
 use proxima_storage_pg::PgStorage;
@@ -37,6 +37,19 @@ fn memory_draft(kind: &str) -> FactWriteCommand {
     }
 }
 
+async fn ingest_grounded_perspective(
+    pool: &sqlx::PgPool,
+    permit: &OwnerWritePermit,
+) -> Result<proxima_core::verbs::fact_ingest::FactIngestOutcome, proxima_core::StorageError> {
+    let fact = ingest_fact_atomic(pool, permit, &memory_draft("fact"), None).await?;
+    let mut abs = memory_draft("abstraction");
+    abs.derived_from = vec![EdgeEndpoint::memory(EntityKind::Fact, fact.memory_id)];
+    let abs = ingest_fact_atomic(pool, permit, &abs, None).await?;
+    let mut perspective = memory_draft("perspective");
+    perspective.derived_from = vec![EdgeEndpoint::memory(EntityKind::Abstraction, abs.memory_id)];
+    ingest_fact_atomic(pool, permit, &perspective, None).await
+}
+
 async fn fresh_pg() -> (String, PgStorage) {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
     if let Err(e) = create_db(&db_name).await {
@@ -56,7 +69,7 @@ async fn create_wake_replay_does_not_insert_second_wake_config() {
         let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Goal);
         let pool = pg.pool_for_tests();
-        let planner = ingest_fact_atomic(pool, &permit, &memory_draft("perspective"), None).await?;
+        let planner = ingest_grounded_perspective(pool, &permit).await?;
         let registry = FlavorRegistry::new().freeze_or_panic_for_tests();
         let trigger = ingest_fact_atomic(pool, &permit, &memory_draft("fact"), None).await?;
         let wake = GoalWakeConfigWrite::new(
@@ -154,7 +167,7 @@ async fn achieve_replay_does_not_insert_second_close_fact() {
         let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Goal);
         let pool = pg.pool_for_tests();
-        let planner = ingest_fact_atomic(pool, &permit, &memory_draft("perspective"), None).await?;
+        let planner = ingest_grounded_perspective(pool, &permit).await?;
         let evidence = ingest_fact_atomic(pool, &permit, &memory_draft("fact"), None).await?;
         let registry = FlavorRegistry::new().freeze_or_panic_for_tests();
         let created = pg

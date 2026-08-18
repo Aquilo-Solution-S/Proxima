@@ -113,8 +113,14 @@ async fn declared_fact_on_perspective_origin_is_rejected() {
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Perspective);
         let pool = pg.pool_for_tests();
 
-        let perspective = ingest_fact_atomic(pool, &permit, &draft("perspective"), None).await?;
         let fact = ingest_fact_atomic(pool, &permit, &draft("fact"), None).await?;
+        let mut abs = draft("abstraction");
+        abs.derived_from = vec![EdgeEndpoint::memory(EntityKind::Fact, fact.memory_id)];
+        let abs = ingest_fact_atomic(pool, &permit, &abs, None).await?;
+        let mut perspective = draft("perspective");
+        perspective.derived_from =
+            vec![EdgeEndpoint::memory(EntityKind::Abstraction, abs.memory_id)];
+        let perspective = ingest_fact_atomic(pool, &permit, &perspective, None).await?;
 
         let spoof = derived_draft(
             owner,

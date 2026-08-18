@@ -292,6 +292,10 @@ async fn memory_timeseries_pins_blob_and_closed_handle() {
 
         let mut persp = draft(None);
         persp.kind = "perspective".into();
+        persp.derived_from = vec![proxima_core::EdgeEndpoint::memory(
+            proxima_core::EntityKind::Abstraction,
+            abs_out.memory_id,
+        )];
         persp.blob_id = Some(blob_id);
         let err = ingest_fact_atomic(pool, &permit, &persp, None)
             .await
