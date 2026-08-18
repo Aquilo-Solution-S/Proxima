@@ -93,8 +93,7 @@ theorem principle_6a_derivation_provenance_strictly_upward :
       OriginKindValid memories cooled out →
       memory_kind out = .Abstraction →
       id ∈ memory_origins out →
-      pinKindIs memories cooled id .Fact ∧
-        MemoryKind.layer .Fact ≤ MemoryKind.layer .Abstraction :=
+      pinKindFactOrAbstraction memories cooled id :=
   operator_origin_row_not_upward
 
 def principle_6b_personality_read_scope_removed : String :=

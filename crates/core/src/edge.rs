@@ -318,6 +318,7 @@ mod tests {
             (EntityKind::Perspective, EntityKind::Abstraction),
             (EntityKind::Perspective, EntityKind::Fact),
             (EntityKind::Abstraction, EntityKind::Fact),
+            (EntityKind::Abstraction, EntityKind::Abstraction),
             (EntityKind::Fact, EntityKind::Fact),
             (EntityKind::Perspective, EntityKind::Perspective),
         ] {

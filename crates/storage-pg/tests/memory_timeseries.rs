@@ -228,6 +228,16 @@ async fn memory_timeseries_pins_blob_and_closed_handle() {
             .await
             .expect("A origins many Facts");
 
+        let mut abs_from_abs = draft(None);
+        abs_from_abs.kind = "abstraction".into();
+        abs_from_abs.derived_from = vec![proxima_core::EdgeEndpoint::memory(
+            proxima_core::EntityKind::Abstraction,
+            abs_out.memory_id,
+        )];
+        ingest_fact_atomic(pool, &permit, &abs_from_abs, None)
+            .await
+            .expect("A origins Abstraction t");
+
         let mut persp_from_fact = draft(None);
         persp_from_fact.kind = "perspective".into();
         persp_from_fact.derived_from = vec![proxima_core::EdgeEndpoint::memory(

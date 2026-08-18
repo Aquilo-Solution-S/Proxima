@@ -32,7 +32,7 @@ structure MemoryGraphValid
   /-- Memory `t` and Goal `t` do not collide (both globally UNIQUE). -/
   memoryGoalIdsDisjoint :
     ∀ (m : Memory) (g : Goal), m ∈ memories → g ∈ goals → memory_t m ≠ goal_t g
-  /-- UML: every Abstraction is made from at least one Fact `t`. -/
+  /-- Every Abstraction has nonempty origins (F→A or A→A). -/
   abstractionHasOrigins :
     ∀ m : Memory, m ∈ memories → memory_kind m = .Abstraction →
       memory_origins m ≠ []
@@ -40,6 +40,13 @@ structure MemoryGraphValid
   derivedProvenance :
     ∀ m : Memory, m ∈ memories → memory_kind m ≠ .Fact →
       memory_origins m ≠ [] ∨ memory_refs m ≠ []
+  /-- B2 — a cooled non-Fact stub is not a Fact-grounding leaf. -/
+  groundingSupport :
+    ∀ m : Memory, m ∈ memories → memory_kind m ≠ .Fact →
+      ∃ id : MemoryId,
+        (id ∈ memory_origins m ∨ id ∈ memory_refs m) ∧
+        ((∃ tgt : Memory, tgt ∈ memories ∧ memory_t tgt = id) ∨
+         (∃ c : Cooled, c ∈ cooled ∧ cooled_t c = id ∧ cooled_kind c = .Fact))
   /-- Every hot pin target is strictly earlier. -/
   pinTimeStrict :
     ∀ m tgt : Memory, m ∈ memories → tgt ∈ memories →
@@ -65,17 +72,10 @@ inductive GroundsInFact (memories : Set Memory) (cooled : Set Cooled) : Memory �
   | fact {m} : memory_kind m = .Fact → GroundsInFact memories cooled m
   | cooled {m id} :
       (id ∈ memory_origins m ∨ id ∈ memory_refs m) →
-      (∃ c : Cooled, c ∈ cooled ∧ cooled_t c = id) →
+      (∃ c : Cooled, c ∈ cooled ∧ cooled_t c = id ∧ cooled_kind c = .Fact) →
       GroundsInFact memories cooled m
   | step {m tgt} : pinFrom m tgt →
       GroundsInFact memories cooled tgt → GroundsInFact memories cooled m
-
-/-- A nonempty list has a head element. -/
-theorem list_ne_nil_mem {α : Type} (xs : List α) (h : xs ≠ []) :
-    ∃ x : α, x ∈ xs := by
-  cases xs with
-  | nil => exact absurd rfl h
-  | cons a rest => exact ⟨a, List.mem_cons_self a rest⟩
 
 theorem memory_grounds_in_facts
     (memories : Set Memory) (goals : Set Goal)
@@ -88,31 +88,19 @@ theorem memory_grounds_in_facts
   intro m ih hm
   by_cases hfact : memory_kind m = .Fact
   · exact GroundsInFact.fact hfact
-  · have hpin := hgraph.derivedProvenance m hm hfact
-    have hexists := hgraph.pinTargetsExist m hm
-    cases hpin with
-    | inl horig =>
-      obtain ⟨id, hid⟩ := list_ne_nil_mem (memory_origins m) horig
-      have htarget := hexists.1 id hid
-      cases htarget with
-      | inl hhot =>
-        obtain ⟨tgt, htgt, ht⟩ := hhot
-        have hfrom : pinFrom m tgt := Or.inl (by rw [ht]; exact hid)
-        have htable : pinFromInTable memories m tgt := ⟨hm, htgt, hfrom⟩
-        exact GroundsInFact.step hfrom (ih tgt htable htgt)
-      | inr hcold =>
-        exact GroundsInFact.cooled (Or.inl hid) hcold
-    | inr hrefs =>
-      obtain ⟨id, hid⟩ := list_ne_nil_mem (memory_refs m) hrefs
-      have htarget := hexists.2 id hid
-      cases htarget with
-      | inl hhot =>
-        obtain ⟨tgt, htgt, ht⟩ := hhot
-        have hfrom : pinFrom m tgt := Or.inr (by rw [ht]; exact hid)
-        have htable : pinFromInTable memories m tgt := ⟨hm, htgt, hfrom⟩
-        exact GroundsInFact.step hfrom (ih tgt htable htgt)
-      | inr hcold =>
-        exact GroundsInFact.cooled (Or.inr hid) hcold
+  · obtain ⟨id, hpin⟩ := hgraph.groundingSupport m hm hfact
+    obtain ⟨hid, hsupport⟩ := hpin
+    cases hsupport with
+    | inl hhot =>
+      obtain ⟨tgt, htgt, ht⟩ := hhot
+      have hfrom : pinFrom m tgt := by
+        cases hid with
+        | inl ho => exact Or.inl (by rw [ht]; exact ho)
+        | inr hr => exact Or.inr (by rw [ht]; exact hr)
+      have htable : pinFromInTable memories m tgt := ⟨hm, htgt, hfrom⟩
+      exact GroundsInFact.step hfrom (ih tgt htable htgt)
+    | inr hcold =>
+      exact GroundsInFact.cooled hid hcold
 
 theorem abstraction_has_provenance :
     ∀ memories goals heads cooled,

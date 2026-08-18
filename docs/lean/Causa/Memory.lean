@@ -272,6 +272,11 @@ def pinKindIs
   (∃ tgt : Memory, tgt ∈ memories ∧ memory_t tgt = id ∧ memory_kind tgt = k) ∨
   (∃ c : Cooled, c ∈ cooled ∧ cooled_t c = id ∧ cooled_kind c = k)
 
+/-- B1 — A origins are Fact or Abstraction (F→A and A→A). -/
+def pinKindFactOrAbstraction
+    (memories : Set Memory) (cooled : Set Cooled) (id : MemoryId) : Prop :=
+  pinKindIs memories cooled id .Fact ∨ pinKindIs memories cooled id .Abstraction
+
 -- ============================================================
 -- Origin kind CHECKs (UML §2) — Tesla valve, no extra if
 -- ============================================================
@@ -279,9 +284,9 @@ def pinKindIs
 structure OriginKindValid
     (memories : Set Memory) (cooled : Set Cooled) (m : Memory) : Prop where
   factEmpty : memory_kind m = .Fact → memory_origins m = []
-  absFacts : memory_kind m = .Abstraction →
+  absFactOrAbs : memory_kind m = .Abstraction →
     ∀ id : MemoryId, id ∈ memory_origins m →
-      pinKindIs memories cooled id .Fact
+      pinKindFactOrAbstraction memories cooled id
   perspAbsOrEmpty : memory_kind m = .Perspective →
     memory_origins m = [] ∨
     ∀ id : MemoryId, id ∈ memory_origins m →

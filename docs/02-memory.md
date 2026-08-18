@@ -14,7 +14,7 @@ Four node kinds. Citation is provenance, not a node.
 | Term | What it is | Schema | Produced by |
 |---|---|---|---|
 | **Fact** | An admitted observation. Never revised. | `memory` (`kind = fact`) + optional sidecar | FactIngest |
-| **Abstraction** | A re-derivable interpretation over Facts. | `memory` (`kind = abstraction`) + required sidecar | F→A |
+| **Abstraction** | A re-derivable interpretation over Facts (transitively). | `memory` (`kind = abstraction`) + required sidecar | F→A / A→A |
 | **Perspective** | A re-derivable integration over Abstractions. Self is a query, not a row. | `memory` (`kind = perspective`) + required sidecar | A→P |
 | **Goal** | A desired end-state with a lifecycle. | `goal` | GoalWrite / A→Goal |
 | **Citation** | Bibliographic proof. Not a node. | `memory.blob_id` 0..1 → `blob` | attached at write |
@@ -32,6 +32,7 @@ Typed payload is `Content` (owner-scoped). `memory.content_id` may be shared acr
 | Operator | Signature |
 |---|---|
 | F→A | `2^F × Π → A` |
+| A→A | `2^A × Π → A` |
 | A→P | `2^A × Π → P` |
 | frame | `P × A_cross → P` (payload references; no standalone pin kind) |
 | A→Goal | `2^A × Π → Goal` |

@@ -28,6 +28,7 @@ Phase split:
 |---|---|---|---|
 | FactIngest | external observation + receipt metadata | receipt-backed Fact + its payload's `reference` entries | 01 / 03 / 05 |
 | F->A | Fact set, source batch | Abstraction + `origin` entries | flavor-operator discipline |
+| A->A | Abstraction set | Abstraction + `origin` entries | operator / harness |
 | A->P | Abstraction set, active Perspective context | Perspective + `origin` entries | operator / harness |
 | A->Goal | Abstraction set, active Perspective context | Goal + `reference` entries from its evidence column | operator / harness |
 
@@ -45,6 +46,7 @@ Operator rules:
 | Operator | Signature | Rule |
 |---|---|---|
 | F->A | `2^F x Pi -> A` | Facts become one typed Abstraction. |
+| A->A | `2^A x Pi -> A` | Abstractions become one typed Abstraction. |
 | A->P | `2^A x Pi -> P` | Abstractions become one typed Perspective. |
 | A->Goal | `2^A x Pi -> Goal` | Abstractions may propose or supersede Goals. |
 
