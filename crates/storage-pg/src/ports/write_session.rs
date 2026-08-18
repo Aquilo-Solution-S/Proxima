@@ -50,11 +50,23 @@ impl WriteSession for PgWriteSession {
         let fact_sidecars = self.sidecars.clone();
         let payloads = sidecar_payloads.to_vec();
         let tables = self.sidecars.tables_for_payloads(sidecar_payloads)?;
+        let owner = authorized.owner_write_permit().owner();
+        crate::access::owner_columns::reject_world_write_owner(owner)?;
+        let owner_id =
+            crate::access::owner_columns::ensure_owner_row(self.tx.as_mut(), owner).await?;
+        let content_id = verbs::content::ensure_content_from_payloads(
+            &mut self.tx,
+            owner_id,
+            authorized.draft().schema_id.as_str(),
+            sidecar_payloads,
+        )
+        .await?;
         verbs::fact_ingest::ingest_fact_with_sidecar_in_tx(
             &mut self.tx,
             authorized,
             embedding_model_id,
             &tables,
+            content_id,
             move |tx, outcome| {
                 Box::pin(async move {
                     for payload in &payloads {
@@ -101,6 +113,17 @@ impl WriteSession for PgWriteSession {
         let tables = self
             .sidecars
             .tables_for_payloads(std::slice::from_ref(&sidecar_payload))?;
+        crate::access::owner_columns::reject_world_write_owner(permit.owner())?;
+        let owner_id =
+            crate::access::owner_columns::ensure_owner_row(self.tx.as_mut(), permit.owner())
+                .await?;
+        let content_id = verbs::content::ensure_content_from_payloads(
+            &mut self.tx,
+            owner_id,
+            req.schema_id.as_str(),
+            std::slice::from_ref(&sidecar_payload),
+        )
+        .await?;
         let outcome = verbs::derive_append::append_derived_in_tx(
             &mut self.tx,
             permit,
@@ -108,6 +131,7 @@ impl WriteSession for PgWriteSession {
             req.origins,
             req.references,
             &tables,
+            content_id,
             move |tx, outcome| {
                 Box::pin(async move {
                     sidecars

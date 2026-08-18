@@ -39,11 +39,23 @@ impl FactIngestPort for PgStorage {
             async move {
                 let mut tx = self.pool.begin().await.map_err(internal)?;
                 let tables = fact_sidecars.tables_for_payloads(&payloads)?;
+                let owner = authorized.owner_write_permit().owner();
+                crate::access::owner_columns::reject_world_write_owner(owner)?;
+                let owner_id =
+                    crate::access::owner_columns::ensure_owner_row(tx.as_mut(), owner).await?;
+                let content_id = verbs::content::ensure_content_from_payloads(
+                    &mut tx,
+                    owner_id,
+                    authorized.draft().schema_id.as_str(),
+                    &payloads,
+                )
+                .await?;
                 let outcome = verbs::fact_ingest::ingest_fact_with_sidecar_in_tx(
                     &mut tx,
                     authorized,
                     embedding_model_id,
                     &tables,
+                    content_id,
                     move |tx, outcome| {
                         Box::pin(async move {
                             for payload in &payloads {

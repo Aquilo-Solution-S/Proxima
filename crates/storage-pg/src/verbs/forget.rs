@@ -91,6 +91,7 @@ struct HotRow {
     origins: Vec<Uuid>,
     refs: Vec<Uuid>,
     sidecar_tables: Vec<String>,
+    content_id: Option<Uuid>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -147,6 +148,7 @@ fn decode_record(bytes: &[u8]) -> Result<ColdRecord, StorageError> {
         origins: read_uuid_list(bytes, &mut i)?,
         refs: read_uuid_list(bytes, &mut i)?,
         sidecar_tables: Vec::new(),
+        content_id: None,
     };
     let schema_id = read_str(bytes, &mut i)?;
     let sidecar_dumps = if version >= 3 {
@@ -348,11 +350,11 @@ async fn load_embed_models(conn: &mut PgConnection, t: Uuid) -> Result<Vec<Strin
     Ok(models)
 }
 
-const HOT_ROW_SQL: &str = "SELECT handle, t, kind::text, owner_id, schema_id, source_id, ingest_key, blob_id, origins, refs, sidecar_tables
+const HOT_ROW_SQL: &str = "SELECT handle, t, kind::text, owner_id, schema_id, source_id, ingest_key, blob_id, origins, refs, sidecar_tables, content_id
            FROM proxima_core.memory
           WHERE t = $1";
 
-const HOT_ROW_FOR_UPDATE_SQL: &str = "SELECT handle, t, kind::text, owner_id, schema_id, source_id, ingest_key, blob_id, origins, refs, sidecar_tables
+const HOT_ROW_FOR_UPDATE_SQL: &str = "SELECT handle, t, kind::text, owner_id, schema_id, source_id, ingest_key, blob_id, origins, refs, sidecar_tables, content_id
            FROM proxima_core.memory
           WHERE t = $1
           FOR UPDATE";
@@ -411,14 +413,15 @@ pub async fn commit_forget(
     }
 
     sqlx::query(
-        "INSERT INTO proxima_core.cooled (t, handle, owner_id, kind, object_key)
-         VALUES ($1, $2, $3, $4::proxima_core.memory_kind, $5)",
+        "INSERT INTO proxima_core.cooled (t, handle, owner_id, kind, object_key, content_id)
+         VALUES ($1, $2, $3, $4::proxima_core.memory_kind, $5, $6)",
     )
     .bind(current.row.t)
     .bind(current.row.handle)
     .bind(current.row.owner_id)
     .bind(&current.row.kind)
     .bind(object_key)
+    .bind(current.row.content_id)
     .execute(tx.as_mut())
     .await
     .map_err(map_err)?;
@@ -430,6 +433,7 @@ pub async fn commit_forget(
         .await
         .map_err(map_err)?;
     sync_memory_head(tx, current.row.handle).await?;
+    // Content stays while the cooled stub names it.
 
     sqlx::query(
         "INSERT INTO proxima_core.announce (owner_id, op, entity, handle, t)
@@ -737,11 +741,17 @@ pub async fn hydrate_memory(
 
     let rec = decode_record(&cold.get(&object_key).await?)?;
     ensure_memory_head(tx, &rec).await?;
+    let cooled_content: Option<Uuid> =
+        sqlx::query_scalar::<_, Option<Uuid>>("SELECT content_id FROM proxima_core.cooled WHERE t = $1")
+            .bind(t)
+            .fetch_one(tx.as_mut())
+            .await
+            .map_err(map_err)?;
     sqlx::query(
         "INSERT INTO proxima_core.memory
             (handle, t, kind, owner_id, schema_id, source_id, ingest_key, blob_id,
-             origins, refs, sidecar_tables)
-         VALUES ($1, $2, $3::proxima_core.memory_kind, $4, $5, $6, $7, $8, $9, $10, $11)",
+             content_id, origins, refs, sidecar_tables)
+         VALUES ($1, $2, $3::proxima_core.memory_kind, $4, $5, $6, $7, $8, $9, $10, $11, $12)",
     )
     .bind(rec.row.handle)
     .bind(rec.row.t)
@@ -751,6 +761,7 @@ pub async fn hydrate_memory(
     .bind(rec.row.source_id.as_deref())
     .bind(rec.row.ingest_key.as_deref())
     .bind(rec.row.blob_id)
+    .bind(cooled_content)
     .bind(&rec.row.origins)
     .bind(&rec.row.refs)
     .bind(
@@ -821,6 +832,18 @@ pub async fn erase_memory(
         .await
         .map_err(map_err)?,
     };
+    let content_id = sqlx::query_scalar::<_, Option<Uuid>>(
+        "SELECT content_id FROM proxima_core.memory WHERE t = $1 AND owner_id = $2
+         UNION ALL
+         SELECT content_id FROM proxima_core.cooled WHERE t = $1 AND owner_id = $2
+         LIMIT 1",
+    )
+    .bind(t)
+    .bind(owner.stored_owner_id())
+    .fetch_optional(tx.as_mut())
+    .await
+    .map_err(map_err)?
+    .flatten();
     if let Ok(key) = sqlx::query_scalar::<_, String>(
         "SELECT object_key FROM proxima_core.cooled WHERE t = $1 AND owner_id = $2",
     )
@@ -851,6 +874,9 @@ pub async fn erase_memory(
         .execute(tx.as_mut())
         .await
         .map_err(map_err)?;
+    if let Some(id) = content_id {
+        super::content::gc_unreferenced_content(tx, id).await?;
+    }
     if let Some(handle) = handle {
         sync_memory_head(tx, handle).await?;
     }

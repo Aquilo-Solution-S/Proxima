@@ -89,6 +89,18 @@ CREATE TABLE proxima_core.blob (
     CONSTRAINT blob_hash_len_chk CHECK (octet_length(content_hash) = 32)
 );
 
+CREATE TABLE proxima_core.content (
+    content_id uuid PRIMARY KEY DEFAULT uuidv7(),
+    owner_id uuid NOT NULL REFERENCES proxima_core.owners (owner_id),
+    schema_id text NOT NULL,
+    content_hash bytea NOT NULL,
+    UNIQUE (owner_id, schema_id, content_hash),
+    CONSTRAINT content_hash_len_chk CHECK (octet_length(content_hash) = 32)
+);
+
+CREATE INDEX content_owner_schema_idx
+    ON proxima_core.content (owner_id, schema_id);
+
 CREATE TABLE proxima_core.closed_handle (
     handle uuid PRIMARY KEY,
     closed_at timestamptz NOT NULL DEFAULT now()
@@ -117,6 +129,7 @@ CREATE TABLE proxima_core.memory (
     source_id text,
     ingest_key text,
     blob_id uuid REFERENCES proxima_core.blob (blob_id),
+    content_id uuid REFERENCES proxima_core.content (content_id),
     origins uuid[] NOT NULL DEFAULT '{}',
     refs uuid[] NOT NULL DEFAULT '{}',
     sidecar_tables text[] NOT NULL DEFAULT '{}',
@@ -131,6 +144,9 @@ CREATE TABLE proxima_core.memory (
     ),
     CONSTRAINT memory_blob_fa_chk CHECK (
         blob_id IS NULL OR kind IN ('fact', 'abstraction')
+    ),
+    CONSTRAINT memory_ap_content_chk CHECK (
+        kind = 'fact' OR content_id IS NOT NULL
     ),
     CONSTRAINT memory_origins_no_null_chk CHECK (array_position(origins, NULL) IS NULL),
     CONSTRAINT memory_refs_no_null_chk CHECK (array_position(refs, NULL) IS NULL),
@@ -149,6 +165,10 @@ CREATE INDEX memory_owner_schema_t_idx
 CREATE INDEX memory_blob_id_idx
     ON proxima_core.memory (blob_id)
     WHERE blob_id IS NOT NULL;
+
+CREATE INDEX memory_content_id_idx
+    ON proxima_core.memory (content_id)
+    WHERE content_id IS NOT NULL;
 
 CREATE INDEX memory_origins_gin
     ON proxima_core.memory USING gin (origins);
@@ -250,8 +270,13 @@ CREATE TABLE proxima_core.cooled (
     owner_id uuid NOT NULL REFERENCES proxima_core.owners (owner_id),
     kind proxima_core.memory_kind NOT NULL,
     object_key text NOT NULL,
+    content_id uuid REFERENCES proxima_core.content (content_id),
     cooled_at timestamptz NOT NULL DEFAULT now()
 );
+
+CREATE INDEX cooled_content_id_idx
+    ON proxima_core.cooled (content_id)
+    WHERE content_id IS NOT NULL;
 
 CREATE TABLE proxima_core.group_memberships (
     group_id uuid NOT NULL,
@@ -697,7 +722,8 @@ BEGIN
     SELECT p.pin INTO pin
       FROM unnest(NEW.origins || NEW.refs) AS p(pin)
       LEFT JOIN proxima_core.memory m ON m.t = p.pin
-     WHERE m.t IS NULL
+      LEFT JOIN proxima_core.cooled c ON c.t = p.pin
+     WHERE m.t IS NULL AND c.t IS NULL
      LIMIT 1;
     IF FOUND THEN
         RAISE EXCEPTION 'pin % does not exist', pin USING ERRCODE = '23503';
@@ -715,9 +741,15 @@ BEGIN
     IF NEW.kind = 'abstraction' AND NEW.origins <> '{}' THEN
         IF EXISTS (
             SELECT 1
-              FROM proxima_core.memory m
-             WHERE m.t = ANY (NEW.origins)
-               AND m.kind NOT IN ('fact', 'abstraction')
+              FROM unnest(NEW.origins) AS o(id)
+             WHERE NOT EXISTS (
+                       SELECT 1 FROM proxima_core.memory m
+                        WHERE m.t = o.id AND m.kind IN ('fact', 'abstraction')
+                   )
+               AND NOT EXISTS (
+                       SELECT 1 FROM proxima_core.cooled c
+                        WHERE c.t = o.id AND c.kind IN ('fact', 'abstraction')
+                   )
         ) THEN
             RAISE EXCEPTION 'abstraction origins must be fact or abstraction t'
                 USING ERRCODE = '23514';
@@ -725,9 +757,15 @@ BEGIN
     ELSIF NEW.kind = 'perspective' AND NEW.origins <> '{}' THEN
         IF EXISTS (
             SELECT 1
-              FROM proxima_core.memory m
-             WHERE m.t = ANY (NEW.origins)
-               AND m.kind IS DISTINCT FROM 'abstraction'
+              FROM unnest(NEW.origins) AS o(id)
+             WHERE NOT EXISTS (
+                       SELECT 1 FROM proxima_core.memory m
+                        WHERE m.t = o.id AND m.kind = 'abstraction'
+                   )
+               AND NOT EXISTS (
+                       SELECT 1 FROM proxima_core.cooled c
+                        WHERE c.t = o.id AND c.kind = 'abstraction'
+                   )
         ) THEN
             RAISE EXCEPTION 'perspective origins must be abstraction t'
                 USING ERRCODE = '23514';

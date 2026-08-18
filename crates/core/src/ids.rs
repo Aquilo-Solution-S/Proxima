@@ -39,6 +39,24 @@ impl GroupId {
 )]
 pub struct MemoryId(Uuid);
 
+/// Owner-scoped typed payload. Not an admission. Many `MemoryId`s may share one.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
+pub struct ContentId(Uuid);
+
+impl ContentId {
+    #[must_use]
+    pub const fn new(inner: Uuid) -> Self {
+        Self(inner)
+    }
+
+    #[must_use]
+    pub const fn into_inner(self) -> Uuid {
+        self.0
+    }
+}
+
 impl MemoryId {
     #[must_use]
     pub const fn new(inner: Uuid) -> Self {

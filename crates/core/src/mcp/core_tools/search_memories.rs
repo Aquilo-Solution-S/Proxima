@@ -60,7 +60,7 @@ fn default_limit() -> u32 {
 }
 
 fn default_include_neighbor_edges() -> bool {
-    true
+    false
 }
 
 fn default_supersession() -> SearchMemoriesSupersession {

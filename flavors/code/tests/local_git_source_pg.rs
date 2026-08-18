@@ -529,11 +529,27 @@ async fn head_snapshot_delete_tombstones_all_indexes_beyond_one_authz_batch() {
         .execute(pg.pool_for_tests())
         .await?;
         sqlx::query(
-            "INSERT INTO proxima_core.memory (handle, t, kind, owner_id, schema_id)
+            "INSERT INTO proxima_core.content (owner_id, schema_id, content_hash)
+             SELECT $1, $4,
+                    decode(lpad(to_hex(g.i), 64, '0'), 'hex')
+               FROM generate_series($2::int, $3::int) AS g(i)",
+        )
+        .bind(owner_id)
+        .bind(SEED_INDEX_BASE)
+        .bind(SEED_INDEX_BASE + EXTRA_PRESENT_ROWS - 1)
+        .bind(<CodeChunkV1 as AbstractionPayload>::SCHEMA_ID)
+        .execute(pg.pool_for_tests())
+        .await?;
+        sqlx::query(
+            "INSERT INTO proxima_core.memory (handle, t, kind, owner_id, schema_id, content_id)
              SELECT ('7a5b0000-0000-4000-8000-' || lpad(to_hex(g.i), 12, '0'))::uuid,
                     ('7a5b0000-0000-4000-8000-' || lpad(to_hex(g.i), 12, '0'))::uuid,
-                    'abstraction', $1, $4
-               FROM generate_series($2::int, $3::int) AS g(i)",
+                    'abstraction', $1, $4, c.content_id
+               FROM generate_series($2::int, $3::int) AS g(i)
+               JOIN proxima_core.content c
+                 ON c.owner_id = $1
+                AND c.schema_id = $4
+                AND c.content_hash = decode(lpad(to_hex(g.i), 64, '0'), 'hex')",
         )
         .bind(owner_id)
         .bind(SEED_INDEX_BASE)

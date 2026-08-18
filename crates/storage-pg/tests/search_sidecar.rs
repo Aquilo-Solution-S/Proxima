@@ -303,13 +303,26 @@ async fn tagged_search_scans_flavor_sidecars() {
         .bind(t)
         .execute(pool)
         .await?;
+        let mut hash = [0_u8; 32];
+        hash[..16].copy_from_slice(t.as_bytes());
+        hash[16..].copy_from_slice(t.as_bytes());
+        let content_id: Uuid = sqlx::query_scalar(
+            "INSERT INTO proxima_core.content (owner_id, schema_id, content_hash)
+             VALUES ($1, 'proxima-docs/section-text-v1', $2)
+             RETURNING content_id",
+        )
+        .bind(owner_id)
+        .bind(hash.as_slice())
+        .fetch_one(pool)
+        .await?;
         sqlx::query(
-            "INSERT INTO proxima_core.memory (handle, t, kind, owner_id, schema_id)
-             VALUES ($1, $2, 'abstraction', $3, 'proxima-docs/section-text-v1')",
+            "INSERT INTO proxima_core.memory (handle, t, kind, owner_id, schema_id, content_id)
+             VALUES ($1, $2, 'abstraction', $3, 'proxima-docs/section-text-v1', $4)",
         )
         .bind(handle)
         .bind(t)
         .bind(owner_id)
+        .bind(content_id)
         .execute(pool)
         .await?;
         sqlx::query(

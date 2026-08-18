@@ -8,6 +8,7 @@ pub(crate) mod active_goals;
 pub(crate) mod change_history;
 pub mod code_repo_erase;
 pub(crate) mod compliance_erase;
+pub(crate) mod content;
 pub(crate) mod compliance_export;
 pub mod consolidate;
 pub mod derive_append;

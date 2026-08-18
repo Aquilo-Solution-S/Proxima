@@ -155,13 +155,26 @@ async fn flavor_migrations_apply_to_fresh_db() {
         .bind(memory_id)
         .execute(pg.pool_for_tests())
         .await?;
+        let mut hash = [0_u8; 32];
+        hash[..16].copy_from_slice(memory_id.as_bytes());
+        hash[16..].copy_from_slice(memory_id.as_bytes());
+        let content_id: uuid::Uuid = sqlx::query_scalar(
+            "INSERT INTO proxima_core.content (owner_id, schema_id, content_hash)
+             VALUES ($1, 'proxima-code/code-chunk-v1', $2)
+             RETURNING content_id",
+        )
+        .bind(owner_id)
+        .bind(hash.as_slice())
+        .fetch_one(pg.pool_for_tests())
+        .await?;
         sqlx::query(
-            "INSERT INTO proxima_core.memory (handle, t, kind, owner_id, schema_id)
-             VALUES ($1, $2, 'abstraction', $3, 'proxima-code/code-chunk-v1')",
+            "INSERT INTO proxima_core.memory (handle, t, kind, owner_id, schema_id, content_id)
+             VALUES ($1, $2, 'abstraction', $3, 'proxima-code/code-chunk-v1', $4)",
         )
         .bind(handle)
         .bind(memory_id)
         .bind(owner_id)
+        .bind(content_id)
         .execute(pg.pool_for_tests())
         .await?;
         sqlx::query(

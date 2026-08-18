@@ -34,7 +34,7 @@ async fn ingest_stamped(
         .begin()
         .await
         .map_err(|err| StorageError::Internal(err.to_string()))?;
-    let outcome = ingest_fact_timeseries(&mut tx, permit.owner(), draft, tables).await?;
+    let outcome = ingest_fact_timeseries(&mut tx, permit.owner(), draft, tables, None).await?;
     tx.commit()
         .await
         .map_err(|err| StorageError::Internal(err.to_string()))?;

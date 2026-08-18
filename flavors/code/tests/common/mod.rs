@@ -186,10 +186,29 @@ pub async fn seed_memory_with_sidecars(
         .await?;
     }
     let tables: Vec<String> = sidecar_tables.iter().map(|s| (*s).to_string()).collect();
+    let content_id: Option<Uuid> = if kind == "fact" {
+        None
+    } else {
+        let mut hash = [0_u8; 32];
+        hash[..16].copy_from_slice(t.as_bytes());
+        hash[16..].copy_from_slice(t.as_bytes());
+        Some(
+            sqlx::query_scalar(
+                "INSERT INTO proxima_core.content (owner_id, schema_id, content_hash)
+                 VALUES ($1, $2, $3)
+                 RETURNING content_id",
+            )
+            .bind(owner_id)
+            .bind(schema_id)
+            .bind(hash.as_slice())
+            .fetch_one(pool)
+            .await?,
+        )
+    };
     sqlx::query(
         "INSERT INTO proxima_core.memory
-            (handle, t, kind, owner_id, schema_id, origins, sidecar_tables)
-         VALUES ($1, $2, $3::proxima_core.memory_kind, $4, $5, $6, $7)",
+            (handle, t, kind, owner_id, schema_id, origins, sidecar_tables, content_id)
+         VALUES ($1, $2, $3::proxima_core.memory_kind, $4, $5, $6, $7, $8)",
     )
     .bind(handle)
     .bind(t)
@@ -198,6 +217,7 @@ pub async fn seed_memory_with_sidecars(
     .bind(schema_id)
     .bind(origins)
     .bind(&tables)
+    .bind(content_id)
     .execute(pool)
     .await?;
     Ok((handle, t))

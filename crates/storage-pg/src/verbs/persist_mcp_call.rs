@@ -71,7 +71,7 @@ pub async fn persist_mcp_call_in_tx(
         blob_id: None,
         kind: "fact".into(),
     };
-    let outcome = ingest_fact_timeseries(tx, &input.owner, &draft, &[]).await?;
+    let outcome = ingest_fact_timeseries(tx, &input.owner, &draft, &[], None).await?;
     Ok(McpCallLogOutcome {
         receipt_id,
         fact_memory_id: outcome.memory_id,

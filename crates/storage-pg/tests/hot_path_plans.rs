@@ -146,15 +146,28 @@ async fn seed_derived(
     .bind(t)
     .execute(pool)
     .await?;
+    let mut hash = [0_u8; 32];
+    hash[..16].copy_from_slice(t.as_bytes());
+    hash[16..].copy_from_slice(t.as_bytes());
+    let content_id: Uuid = sqlx::query_scalar(
+        "INSERT INTO proxima_core.content (owner_id, schema_id, content_hash)
+         VALUES ($1, 'core/agent-note-v1', $2)
+         RETURNING content_id",
+    )
+    .bind(owner_id)
+    .bind(hash.as_slice())
+    .fetch_one(pool)
+    .await?;
     sqlx::query(
         "INSERT INTO proxima_core.memory
-            (handle, t, kind, owner_id, schema_id, origins)
-         VALUES ($1, $2, 'abstraction', $3, 'core/agent-note-v1', ARRAY[$4]::uuid[])",
+            (handle, t, kind, owner_id, schema_id, origins, content_id)
+         VALUES ($1, $2, 'abstraction', $3, 'core/agent-note-v1', ARRAY[$4]::uuid[], $5)",
     )
     .bind(handle)
     .bind(t)
     .bind(owner_id)
     .bind(origin)
+    .bind(content_id)
     .execute(pool)
     .await?;
     Ok(t)
