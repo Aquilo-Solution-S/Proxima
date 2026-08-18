@@ -585,7 +585,7 @@ pub enum ProximaError {
     #[error(
         "database schema does not match this binary; reset required (see docs/how-to/migrations.md): {details}"
     )]
-    V004ResetRequired { details: String },
+    SchemaResetRequired { details: String },
 }
 
 impl From<EmbedError> for ProximaError {
@@ -595,7 +595,7 @@ impl From<EmbedError> for ProximaError {
             EmbedError::Registry(err) => Self::Registry(err),
             EmbedError::Storage(err) => Self::Storage(err),
             EmbedError::Engine(err) => Self::Engine(err),
-            EmbedError::V004ResetRequired { details } => Self::V004ResetRequired { details },
+            EmbedError::SchemaResetRequired { details } => Self::SchemaResetRequired { details },
         }
     }
 }

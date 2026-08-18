@@ -106,29 +106,26 @@ pub struct ColdRecord {
     sketch: Option<String>,
 }
 
-fn encode_record(rec: &ColdRecord) -> Vec<u8> {
+fn encode_record(rec: &ColdRecord) -> Result<Vec<u8>, StorageError> {
     let mut out = vec![COLD_FORMAT_VERSION];
     write_uuid(&mut out, rec.row.handle);
     write_uuid(&mut out, rec.row.t);
-    write_str(&mut out, &rec.row.kind);
+    write_str(&mut out, &rec.row.kind)?;
     write_uuid(&mut out, rec.row.owner_id);
-    write_opt_str(&mut out, rec.row.source_id.as_deref());
-    write_opt_str(&mut out, rec.row.ingest_key.as_deref());
+    write_opt_str(&mut out, rec.row.source_id.as_deref())?;
+    write_opt_str(&mut out, rec.row.ingest_key.as_deref())?;
     write_opt_uuid(&mut out, rec.row.blob_id);
-    write_uuid_list(&mut out, &rec.row.origins);
-    write_uuid_list(&mut out, &rec.row.refs);
-    write_str(&mut out, &rec.schema_id);
-    write_u16(
-        &mut out,
-        u16::try_from(rec.sidecar_dumps.len()).unwrap_or(0),
-    );
+    write_uuid_list(&mut out, &rec.row.origins)?;
+    write_uuid_list(&mut out, &rec.row.refs)?;
+    write_str(&mut out, &rec.schema_id)?;
+    write_count(&mut out, rec.sidecar_dumps.len())?;
     for (table, json) in &rec.sidecar_dumps {
-        write_str(&mut out, table);
-        write_str(&mut out, json);
+        write_str(&mut out, table)?;
+        write_str(&mut out, json)?;
     }
-    write_str_list(&mut out, &rec.embed_models);
-    write_opt_str(&mut out, rec.sketch.as_deref());
-    out
+    write_str_list(&mut out, &rec.embed_models)?;
+    write_opt_str(&mut out, rec.sketch.as_deref())?;
+    Ok(out)
 }
 
 fn decode_record(bytes: &[u8]) -> Result<ColdRecord, StorageError> {
@@ -193,15 +190,23 @@ fn write_uuid(out: &mut Vec<u8>, value: Uuid) {
     out.extend_from_slice(value.as_bytes());
 }
 
-fn write_str(out: &mut Vec<u8>, value: &str) {
-    write_bytes(out, value.as_bytes());
+fn write_count(out: &mut Vec<u8>, n: usize) -> Result<(), StorageError> {
+    let len = u16::try_from(n)
+        .map_err(|_| StorageError::ConstraintViolation("cold field count exceeds 65535".into()))?;
+    write_u16(out, len);
+    Ok(())
 }
 
-fn write_str_list(out: &mut Vec<u8>, values: &[String]) {
-    write_u16(out, u16::try_from(values.len()).unwrap_or(u16::MAX));
+fn write_str(out: &mut Vec<u8>, value: &str) -> Result<(), StorageError> {
+    write_bytes(out, value.as_bytes())
+}
+
+fn write_str_list(out: &mut Vec<u8>, values: &[String]) -> Result<(), StorageError> {
+    write_count(out, values.len())?;
     for value in values {
-        write_str(out, value);
+        write_str(out, value)?;
     }
+    Ok(())
 }
 
 fn read_str_list(bytes: &[u8], i: &mut usize) -> Result<Vec<String>, StorageError> {
@@ -213,20 +218,23 @@ fn read_str_list(bytes: &[u8], i: &mut usize) -> Result<Vec<String>, StorageErro
     Ok(out)
 }
 
-fn write_bytes(out: &mut Vec<u8>, value: &[u8]) {
-    let len = u16::try_from(value.len()).unwrap_or(u16::MAX);
+fn write_bytes(out: &mut Vec<u8>, value: &[u8]) -> Result<(), StorageError> {
+    let len = u16::try_from(value.len())
+        .map_err(|_| StorageError::ConstraintViolation("cold field exceeds 65535 bytes".into()))?;
     write_u16(out, len);
-    out.extend_from_slice(&value[..usize::from(len)]);
+    out.extend_from_slice(value);
+    Ok(())
 }
 
-fn write_opt_str(out: &mut Vec<u8>, value: Option<&str>) {
+fn write_opt_str(out: &mut Vec<u8>, value: Option<&str>) -> Result<(), StorageError> {
     match value {
         None => out.push(0),
         Some(text) => {
             out.push(1);
-            write_str(out, text);
+            write_str(out, text)?;
         }
     }
+    Ok(())
 }
 
 fn write_opt_uuid(out: &mut Vec<u8>, value: Option<Uuid>) {
@@ -239,11 +247,12 @@ fn write_opt_uuid(out: &mut Vec<u8>, value: Option<Uuid>) {
     }
 }
 
-fn write_uuid_list(out: &mut Vec<u8>, values: &[Uuid]) {
-    write_u16(out, u16::try_from(values.len()).unwrap_or(u16::MAX));
+fn write_uuid_list(out: &mut Vec<u8>, values: &[Uuid]) -> Result<(), StorageError> {
+    write_count(out, values.len())?;
     for id in values {
         write_uuid(out, *id);
     }
+    Ok(())
 }
 
 fn read_u8(bytes: &[u8], i: &mut usize) -> Result<u8, StorageError> {
@@ -374,9 +383,9 @@ const HOT_ROW_SQL: &str = "SELECT handle, t, kind::text, owner_id, schema_id, so
            FROM proxima_core.memory
           WHERE t = $1";
 
-const HOT_ROW_FOR_UPDATE_SQL: &str = "SELECT handle, t, kind::text, owner_id, schema_id, source_id, ingest_key, blob_id, origins, refs, sidecar_tables, content_id
+const HOT_ROW_FOR_UPDATE_OWNED_SQL: &str = "SELECT handle, t, kind::text, owner_id, schema_id, source_id, ingest_key, blob_id, origins, refs, sidecar_tables, content_id
            FROM proxima_core.memory
-          WHERE t = $1
+          WHERE t = $1 AND owner_id = $2
           FOR UPDATE";
 
 /// Hot row + registered sidecars + embed model ids. No row lock.
@@ -405,17 +414,20 @@ pub async fn snapshot_hot(
 }
 
 /// `FOR UPDATE` + cooled stub + hot delete. Re-PUTs only when the locked
-/// dump differs from `snapshot` (owner transfer or late sidecar).
+/// dump differs from `snapshot` (late sidecar). Owner is the permit owner;
+/// a concurrent publish that rewrote `owner_id` is `NotFound`.
 pub async fn commit_forget(
     tx: &mut Transaction<'_, Postgres>,
     sidecars: &PgSidecarRegistryFrozen,
     cold: &dyn ColdObjectStore,
     object_key: &str,
     snapshot: &ColdRecord,
+    expected_owner_id: Uuid,
 ) -> Result<(), StorageError> {
     let t = snapshot.row.t;
-    let locked: HotRow = sqlx::query_as(HOT_ROW_FOR_UPDATE_SQL)
+    let locked: HotRow = sqlx::query_as(HOT_ROW_FOR_UPDATE_OWNED_SQL)
         .bind(t)
+        .bind(expected_owner_id)
         .fetch_optional(tx.as_mut())
         .await
         .map_err(map_err)?
@@ -433,7 +445,7 @@ pub async fn commit_forget(
         sketch,
     };
     if current != *snapshot {
-        cold.put(object_key, &encode_record(&current)).await?;
+        cold.put(object_key, &encode_record(&current)?).await?;
     }
 
     sqlx::query(
@@ -451,8 +463,9 @@ pub async fn commit_forget(
     .map_err(map_err)?;
 
     delete_memory_dependents(tx, sidecars, &current.row.sidecar_tables, t).await?;
-    sqlx::query("DELETE FROM proxima_core.memory WHERE t = $1")
+    sqlx::query("DELETE FROM proxima_core.memory WHERE t = $1 AND owner_id = $2")
         .bind(t)
+        .bind(expected_owner_id)
         .execute(tx.as_mut())
         .await
         .map_err(map_err)?;
@@ -725,10 +738,14 @@ pub async fn forget_memory(
     cold: &dyn ColdObjectStore,
     object_key: &str,
     t: Uuid,
+    expected_owner_id: Uuid,
 ) -> Result<(), StorageError> {
     let rec = snapshot_hot(tx.as_mut(), sidecars, t).await?;
-    cold.put(object_key, &encode_record(&rec)).await?;
-    commit_forget(tx, sidecars, cold, object_key, &rec).await
+    if rec.row.owner_id != expected_owner_id {
+        return Err(StorageError::NotFound);
+    }
+    cold.put(object_key, &encode_record(&rec)?).await?;
+    commit_forget(tx, sidecars, cold, object_key, &rec, expected_owner_id).await
 }
 
 /// One-shot Engine path: `put` with no open transaction.
@@ -738,14 +755,18 @@ pub async fn forget_memory_oneshot(
     cold: &dyn ColdObjectStore,
     object_key: &str,
     t: Uuid,
+    expected_owner_id: Uuid,
 ) -> Result<(), StorageError> {
     let rec = {
         let mut conn = pool.acquire().await.map_err(map_err)?;
         snapshot_hot(&mut conn, sidecars, t).await?
     };
-    cold.put(object_key, &encode_record(&rec)).await?;
+    if rec.row.owner_id != expected_owner_id {
+        return Err(StorageError::NotFound);
+    }
+    cold.put(object_key, &encode_record(&rec)?).await?;
     let mut tx = pool.begin().await.map_err(map_err)?;
-    commit_forget(&mut tx, sidecars, cold, object_key, &rec).await?;
+    commit_forget(&mut tx, sidecars, cold, object_key, &rec, expected_owner_id).await?;
     tx.commit().await.map_err(map_err)?;
     Ok(())
 }
@@ -902,7 +923,10 @@ pub async fn erase_memory(
     .fetch_one(tx.as_mut())
     .await
     {
-        let _ = cold.delete(&key).await;
+        match cold.delete(&key).await {
+            Ok(()) | Err(StorageError::NotFound) => {}
+            Err(err) => return Err(err),
+        }
         sqlx::query("DELETE FROM proxima_core.cooled WHERE t = $1")
             .bind(t)
             .execute(tx.as_mut())
@@ -947,4 +971,20 @@ pub async fn erase_memory(
     .await
     .map_err(map_err)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{StorageError, write_bytes};
+
+    #[test]
+    fn cold_field_over_u16_fails_closed() {
+        let mut out = Vec::new();
+        let err = write_bytes(&mut out, &vec![0; 65_536]).expect_err("overflow");
+        assert!(
+            matches!(err, StorageError::ConstraintViolation(ref msg) if msg.contains("65535")),
+            "got {err:?}"
+        );
+        assert!(out.is_empty());
+    }
 }

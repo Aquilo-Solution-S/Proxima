@@ -98,6 +98,7 @@ lock fails and retries on the next pod rather than queueing behind readers.
 | `PROXIMA_S3_BUCKET` | no | `proxima-cited-blobs` | Cited-blob bucket. |
 | `PROXIMA_S3_REGION` | no | `us-east-1` | S3 region. |
 | `PROXIMA_S3_ENDPOINT_URL` | no | `https://s3.example.com` | S3-compatible endpoint. |
+| `PROXIMA_PG_*` | no | see [env-vars](reference/env-vars.md) | Pool and search tuning (`MAX_CONNECTIONS`, `HNSW_*`, `SEMANTIC_*`). Defaults are the shipped path. |
 
 ## No standing bypass
 
@@ -237,7 +238,7 @@ Runtime search:
 |---|---|
 | vector type | `vector(1024)`. Any embedding model must return 1024 dimensions — see `PROXIMA_EMBED_MATRYOSHKA` for nested-prefix models wider than that |
 | ANN index | shared `idx_embeddings_vec_hnsw` |
-| semantic-search GUCs | `SET LOCAL hnsw.ef_search = 100`; `SET LOCAL hnsw.iterative_scan = relaxed_order` |
+| semantic-search GUCs | `SET LOCAL hnsw.ef_search = 100`; `SET LOCAL hnsw.iterative_scan = relaxed_order`; `SET LOCAL hnsw.max_scan_tuples = 20000` |
 | cold owner subsets | planner may prefer owner btree + exact sort |
 
 Host-only operator methods:

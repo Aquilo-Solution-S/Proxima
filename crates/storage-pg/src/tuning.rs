@@ -146,12 +146,8 @@ pub struct PgTuning {
     pub candidate_window_dedup: bool,
     pub hnsw_ef_search: u32,
     pub hnsw_iterative_scan: HnswIterativeScan,
-    /// Ceiling on tuples an iterative HNSW scan may visit. Only emitted
-    /// into the session settings when it differs from this crate's
-    /// `DEFAULT_HNSW_MAX_SCAN_TUPLES`, so the shipped statement text stays
-    /// what it was — which means that at the default this field reports a
-    /// ceiling the session inherits rather than one it pins, and a server-
-    /// or database-level `hnsw.max_scan_tuples` wins over it. See
+    /// Ceiling on tuples an iterative HNSW scan may visit. Always emitted
+    /// as `SET LOCAL` when iterative scan is on. See
     /// `crate::pgvector::set_hnsw_search_sql`.
     pub hnsw_max_scan_tuples: u32,
     /// Nearest-neighbour candidates fetched per requested result, and the

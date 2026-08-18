@@ -539,10 +539,10 @@ async fn embed_query(engine: &crate::Engine, query: &str) -> Result<(Vec<f32>, S
     let embed = engine
         .embed_client()
         .ok_or_else(|| "no embedding client".to_string())?;
-    let embedding = embed
-        .embed(query)
-        .await
-        .map_err(|err| format!("embedding provider error: {err}"))?;
+    let embedding = embed.embed(query).await.map_err(|err| {
+        tracing::warn!(error = %err, "embedding provider failed");
+        "embedding provider error".to_string()
+    })?;
     Ok((embedding, embed.model_id().to_string()))
 }
 

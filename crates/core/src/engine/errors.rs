@@ -30,7 +30,7 @@ pub(in crate::engine) fn map_write_storage_error(
         StorageError::Retryable(message)
         | StorageError::Unavailable(message)
         | StorageError::Internal(message) => ProtocolError::internal(message),
-        StorageError::V004ResetRequired { details } => ProtocolError::internal(details),
+        StorageError::SchemaResetRequired { details } => ProtocolError::internal(details),
     }
 }
 

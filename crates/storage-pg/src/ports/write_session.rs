@@ -220,8 +220,15 @@ impl WriteSession for PgWriteSession {
         .map_err(internal)?
         .ok_or(StorageError::NotFound)?;
         let key = verbs::forget::cold_object_key(&verbs::forget::owner_hash_hex(owner), handle, t);
-        verbs::forget::forget_memory(&mut self.tx, &self.sidecars, self.cold.as_ref(), &key, t)
-            .await
+        verbs::forget::forget_memory(
+            &mut self.tx,
+            &self.sidecars,
+            self.cold.as_ref(),
+            &key,
+            t,
+            owner_id,
+        )
+        .await
     }
 
     async fn commit(self: Box<Self>) -> Result<(), StorageError> {

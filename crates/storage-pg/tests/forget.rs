@@ -4,11 +4,11 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use proxima_core::storage_ports::{MemoryAuthoringPort, OwnerWritePermit};
+use proxima_core::storage_ports::{MemoryAuthoringPort, OwnerTransferPort, OwnerWritePermit};
 use proxima_core::verbs::fact_ingest::FactWriteCommand;
 use proxima_core::{
-    AccessKind, ColdObjectStore, EdgeEndpoint, EntityKind, OwnerRef, SchemaId, SchemaVersion,
-    StorageError, UserId,
+    AccessKind, ColdObjectStore, EdgeEndpoint, EntityId, EntityKind, OwnerRef, SchemaId,
+    SchemaVersion, StorageError, UserId,
 };
 use proxima_pg_testkit::{create_db, db_url, drop_db};
 use proxima_storage_pg::PgStorage;
@@ -103,7 +103,15 @@ async fn forget_hydrate_erase_and_world_never() {
 
         let cold = MemoryColdStore::default();
         let mut tx = pool.begin().await?;
-        forget_memory(&mut tx, &core_pg_sidecars(), &cold, &key, t).await?;
+        forget_memory(
+            &mut tx,
+            &core_pg_sidecars(),
+            &cold,
+            &key,
+            t,
+            owner.stored_owner_id(),
+        )
+        .await?;
         tx.commit().await?;
 
         let sketches: i64 =
@@ -177,7 +185,15 @@ async fn forget_hydrate_erase_and_world_never() {
         assert_eq!(op, "append");
 
         let mut tx = pool.begin().await?;
-        forget_memory(&mut tx, &core_pg_sidecars(), &cold, &key, t).await?;
+        forget_memory(
+            &mut tx,
+            &core_pg_sidecars(),
+            &cold,
+            &key,
+            t,
+            owner.stored_owner_id(),
+        )
+        .await?;
         erase_memory(&mut tx, &core_pg_sidecars(), &cold, &owner, t).await?;
         tx.commit().await?;
         let stub: i64 =
@@ -329,6 +345,7 @@ async fn forget_non_last_t_rewinds_memory_head() {
             &cold,
             &key,
             second.memory_id.into_inner(),
+            owner.stored_owner_id(),
         )
         .await?;
         tx.commit().await?;
@@ -476,7 +493,15 @@ async fn commit_forget_reputs_when_sidecar_changed() {
         };
         let key = cold_object_key(&owner_hash_hex(&owner), written.handle, t);
         let mut tx = pool.begin().await?;
-        commit_forget(&mut tx, &core_pg_sidecars(), &cold, &key, &snapshot).await?;
+        commit_forget(
+            &mut tx,
+            &core_pg_sidecars(),
+            &cold,
+            &key,
+            &snapshot,
+            owner.stored_owner_id(),
+        )
+        .await?;
         tx.commit().await?;
         assert!(
             cold.puts.load(Ordering::SeqCst) >= 1,
@@ -527,7 +552,7 @@ async fn forget_dumps_only_stamped_tables_and_skips_unregistered_scan() {
         let cold = MemoryColdStore::default();
         let key = cold_object_key("ownerhash", written.handle, t);
         let mut tx = pool.begin().await?;
-        forget_memory(&mut tx, &sidecars, &cold, &key, t).await?;
+        forget_memory(&mut tx, &sidecars, &cold, &key, t, owner.stored_owner_id()).await?;
         tx.commit().await?;
 
         let notes: i64 = sqlx::query_scalar(
@@ -591,7 +616,15 @@ async fn forget_dumps_every_stamped_extra() {
         let cold = MemoryColdStore::default();
         let key = cold_object_key("ownerhash", written.handle, t);
         let mut tx = pool.begin().await?;
-        forget_memory(&mut tx, &core_pg_sidecars(), &cold, &key, t).await?;
+        forget_memory(
+            &mut tx,
+            &core_pg_sidecars(),
+            &cold,
+            &key,
+            t,
+            owner.stored_owner_id(),
+        )
+        .await?;
         tx.commit().await?;
         let leftover: i64 = sqlx::query_scalar(
             "SELECT count(*)::bigint FROM proxima_core.agent_note_v1 WHERE t = $1",
@@ -681,6 +714,7 @@ async fn forget_and_admit_preserve_grounding_support() {
             &cold,
             "cold/refuse-a",
             abs.memory_id.into_inner(),
+            owner.stored_owner_id(),
         )
         .await
         .expect_err("forget A while A2 pins only A");
@@ -703,6 +737,7 @@ async fn forget_and_admit_preserve_grounding_support() {
             &cold,
             "cold/fact",
             fact.memory_id.into_inner(),
+            owner.stored_owner_id(),
         )
         .await
         .expect("forget Fact under A is a cooled-Fact leaf");
@@ -725,6 +760,7 @@ async fn forget_and_admit_preserve_grounding_support() {
             &cold,
             "cold/mixed-src",
             abs.memory_id.into_inner(),
+            owner.stored_owner_id(),
         )
         .await
         .expect_err("A2 still pins only A");
@@ -737,6 +773,7 @@ async fn forget_and_admit_preserve_grounding_support() {
             &cold,
             "cold/a2",
             abs2.memory_id.into_inner(),
+            owner.stored_owner_id(),
         )
         .await
         .expect("forget A2 (no dependers)");
@@ -749,6 +786,7 @@ async fn forget_and_admit_preserve_grounding_support() {
             &cold,
             "cold/a-after-a2",
             abs.memory_id.into_inner(),
+            owner.stored_owner_id(),
         )
         .await
         .expect("forget A after A2 gone; mixed_abs still has cooled Fact");
@@ -902,6 +940,8 @@ async fn concurrent_forget_keeps_one_grounding_support() {
 
         let pool_a = pool.clone();
         let pool_b = pool.clone();
+        let a1_owner = p1.owner().stored_owner_id();
+        let a2_owner = p2.owner().stored_owner_id();
         let f1 = tokio::spawn(async move {
             let mut tx = pool_a.begin().await.map_err(|err| err.to_string())?;
             let r = forget_memory(
@@ -910,6 +950,7 @@ async fn concurrent_forget_keeps_one_grounding_support() {
                 &MemoryColdStore::default(),
                 "cold/conc-a1",
                 a1_t,
+                a1_owner,
             )
             .await;
             match &r {
@@ -926,6 +967,7 @@ async fn concurrent_forget_keeps_one_grounding_support() {
                 &MemoryColdStore::default(),
                 "cold/conc-a2",
                 a2_t,
+                a2_owner,
             )
             .await;
             match &r {
@@ -1074,6 +1116,7 @@ async fn forget_blocks_admit_until_grounding_rechecked() {
             &MemoryColdStore::default(),
             "cold/admit-race",
             a_t,
+            owner_id,
         )
         .await?;
         tx_f.commit().await?;
@@ -1088,4 +1131,130 @@ async fn forget_blocks_admit_until_grounding_rechecked() {
     .await;
     let _ = drop_db(&db_name).await;
     result.expect("admit-vs-forget overlap test failed");
+}
+
+struct FailDeleteCold;
+
+#[async_trait::async_trait]
+impl ColdObjectStore for FailDeleteCold {
+    async fn put(&self, _key: &str, _bytes: &[u8]) -> Result<(), StorageError> {
+        Ok(())
+    }
+
+    async fn get(&self, _key: &str) -> Result<Vec<u8>, StorageError> {
+        Err(StorageError::NotFound)
+    }
+
+    async fn delete(&self, _key: &str) -> Result<(), StorageError> {
+        Err(StorageError::Internal("cold delete refused".into()))
+    }
+}
+
+#[tokio::test]
+async fn commit_forget_aborts_when_owner_transferred() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    if let Err(e) = create_db(&db_name).await {
+        panic!("PG required for tests but admin connect failed: {e}");
+    }
+    let url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&url).await?;
+        pg.run_migrations().await?;
+        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
+        let pool = pg.pool_for_tests();
+        let written = ingest_fact_atomic(pool, &permit, &draft(None), None).await?;
+        let t = written.memory_id.into_inner();
+        let mut conn = pool.acquire().await?;
+        let snapshot = snapshot_hot(&mut conn, &core_pg_sidecars(), t).await?;
+        drop(conn);
+        assert!(
+            pg.transfer_to_world(&permit, EntityId::Memory(written.memory_id))
+                .await?
+        );
+
+        let cold = MemoryColdStore::default();
+        let key = cold_object_key(&owner_hash_hex(&owner), written.handle, t);
+        let mut tx = pool.begin().await?;
+        let err = commit_forget(
+            &mut tx,
+            &core_pg_sidecars(),
+            &cold,
+            &key,
+            &snapshot,
+            owner.stored_owner_id(),
+        )
+        .await
+        .expect_err("forget after publish must not cool World");
+        assert!(matches!(err, StorageError::NotFound), "got {err:?}");
+        tx.rollback().await?;
+
+        let world: Uuid =
+            sqlx::query_scalar("SELECT owner_id FROM proxima_core.memory WHERE t = $1")
+                .bind(t)
+                .fetch_one(pool)
+                .await?;
+        assert_eq!(world, OwnerRef::World.stored_owner_id());
+        let cooled: i64 =
+            sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_core.cooled WHERE t = $1")
+                .bind(t)
+                .fetch_one(pool)
+                .await?;
+        assert_eq!(cooled, 0);
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("forget-after-publish must abort");
+}
+
+#[tokio::test]
+async fn erase_memory_fails_closed_when_cold_delete_fails() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    if let Err(e) = create_db(&db_name).await {
+        panic!("PG required for tests but admin connect failed: {e}");
+    }
+    let url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&url).await?;
+        pg.run_migrations().await?;
+        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
+        let pool = pg.pool_for_tests();
+        let written = ingest_fact_atomic(pool, &permit, &draft(None), None).await?;
+        let t = written.memory_id.into_inner();
+        let key = cold_object_key(&owner_hash_hex(&owner), written.handle, t);
+        let ok_cold = MemoryColdStore::default();
+        let mut tx = pool.begin().await?;
+        forget_memory(
+            &mut tx,
+            &core_pg_sidecars(),
+            &ok_cold,
+            &key,
+            t,
+            owner.stored_owner_id(),
+        )
+        .await?;
+        tx.commit().await?;
+
+        let mut tx = pool.begin().await?;
+        let err = erase_memory(&mut tx, &core_pg_sidecars(), &FailDeleteCold, &owner, t)
+            .await
+            .expect_err("erase must not drop cooled locator if cold delete fails");
+        assert!(
+            matches!(err, StorageError::Internal(ref msg) if msg.contains("cold delete refused")),
+            "got {err:?}"
+        );
+        tx.rollback().await?;
+        let stub: i64 =
+            sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_core.cooled WHERE t = $1")
+                .bind(t)
+                .fetch_one(pool)
+                .await?;
+        assert_eq!(stub, 1, "cooled locator must survive a failed cold delete");
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("erase fail-closed test failed");
 }

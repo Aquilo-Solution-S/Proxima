@@ -201,7 +201,15 @@ impl MemoryAuthoringPort for PgStorage {
             let cold = Arc::clone(&cold);
             let sidecars = sidecars.clone();
             async move {
-                verbs::forget::forget_memory_oneshot(&pool, &sidecars, cold.as_ref(), &key, t).await
+                verbs::forget::forget_memory_oneshot(
+                    &pool,
+                    &sidecars,
+                    cold.as_ref(),
+                    &key,
+                    t,
+                    owner_id,
+                )
+                .await
             }
         })
         .await

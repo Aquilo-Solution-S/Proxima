@@ -172,6 +172,9 @@ async fn pin_bfs(
         if frontier.is_empty() {
             break;
         }
+        if should_stop_walk(&ordered, after.as_ref(), walk.limit) {
+            break;
+        }
         let next = next_hop(engine, ctx, walk.direction, &frontier).await?;
         let mut next: Vec<MemoryId> = next.into_iter().filter(|id| seen.insert(*id)).collect();
         next.sort_by_key(|id| std::cmp::Reverse(*id));
@@ -188,12 +191,7 @@ async fn pin_bfs(
         }
         frontier = next;
     }
-    let start = after.as_ref().map_or(0, |cursor| {
-        ordered
-            .iter()
-            .position(|(id, _, hop)| *hop == cursor.depth && *id == cursor.t)
-            .map_or(0, |idx| idx + 1)
-    });
+    let start = walk_start(&ordered, after.as_ref())?;
     let rest = &ordered[start.min(ordered.len())..];
     let has_more = rest.len() > walk.limit as usize;
     let page = &rest[..rest.len().min(walk.limit as usize)];
@@ -231,6 +229,48 @@ async fn pin_bfs(
         has_more,
         next_cursor,
     })
+}
+
+fn cursor_index(
+    ordered: &[(MemoryId, crate::EntityKind, u8)],
+    cursor: &ThinkPageCursor,
+) -> Option<usize> {
+    ordered
+        .iter()
+        .position(|(id, _, hop)| *hop == cursor.depth && *id == cursor.t)
+}
+
+fn walk_start(
+    ordered: &[(MemoryId, crate::EntityKind, u8)],
+    after: Option<&ThinkPageCursor>,
+) -> Result<usize, McpToolError> {
+    match after {
+        None => Ok(0),
+        Some(cursor) => cursor_index(ordered, cursor)
+            .map(|idx| idx + 1)
+            .ok_or_else(|| {
+                McpToolError::from(crate::mcp::cursor::cursor_query_mismatch(
+                    THINK_CURSOR.rebind_hint,
+                ))
+            }),
+    }
+}
+
+fn should_stop_walk(
+    ordered: &[(MemoryId, crate::EntityKind, u8)],
+    after: Option<&ThinkPageCursor>,
+    limit: u32,
+) -> bool {
+    match after {
+        None => page_complete(ordered.len(), 0, limit),
+        Some(cursor) => cursor_index(ordered, cursor)
+            .is_some_and(|idx| page_complete(ordered.len(), idx + 1, limit)),
+    }
+}
+
+/// True when `ordered` already has the page plus one extra visit for `has_more`.
+fn page_complete(ordered_len: usize, start: usize, limit: u32) -> bool {
+    ordered_len > start.saturating_add(usize::try_from(limit).unwrap_or(usize::MAX))
 }
 
 async fn next_hop(
@@ -397,5 +437,26 @@ mod tests {
             direction_name(ThinkDirection::EpisodeSiblings),
             "episode_siblings"
         );
+    }
+
+    #[test]
+    fn page_complete_stops_after_limit_plus_one() {
+        assert!(!page_complete(1, 0, 1));
+        assert!(page_complete(2, 0, 1));
+        assert!(!page_complete(8, 0, 8));
+        assert!(page_complete(9, 0, 8));
+        assert!(!page_complete(5, 4, 1));
+        assert!(page_complete(6, 4, 1));
+    }
+
+    #[test]
+    fn missing_think_cursor_fails_closed() {
+        let missing = ThinkPageCursor {
+            depth: 1,
+            t: MemoryId::new(uuid::Uuid::nil()),
+        };
+        let err = walk_start(&[], Some(&missing)).expect_err("vanished cursor");
+        assert!(err.to_string().contains("does not match"));
+        assert!(!should_stop_walk(&[], Some(&missing), 1));
     }
 }

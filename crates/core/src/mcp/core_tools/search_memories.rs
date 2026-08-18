@@ -164,7 +164,7 @@ pub struct SearchMemoriesArgs {
     pub semantic_weight: Option<f32>,
     #[serde(default = "default_include_neighbor_edges")]
     #[schemars(
-        description = "Include neighbor edges touching matched memories. Defaults to true; set false for lean results."
+        description = "Include neighbor edges touching matched memories. Defaults to false."
     )]
     pub include_neighbor_edges: bool,
     #[serde(default)]
@@ -762,10 +762,10 @@ async fn embed_query_for_search(
     let embed = engine
         .embed_client()
         .ok_or_else(|| SEMANTIC_SEARCH_UNAVAILABLE.to_string())?;
-    let embedding = embed
-        .embed(query)
-        .await
-        .map_err(|err| format!("semantic search unavailable: embedding provider error: {err}"))?;
+    let embedding = embed.embed(query).await.map_err(|err| {
+        tracing::warn!(error = %err, "embedding provider failed");
+        "semantic search unavailable: embedding provider error".to_string()
+    })?;
     Ok((embedding, embed.model_id().to_string()))
 }
 
@@ -851,6 +851,17 @@ mod tests {
             target: target.to_string(),
             kind: "origin".into(),
         }
+    }
+
+    #[test]
+    fn omitted_include_neighbor_edges_deserializes_false() {
+        let args: SearchMemoriesArgs =
+            serde_json::from_value(serde_json::json!({ "query": "needle" }))
+                .expect("minimal search args");
+        assert!(
+            !args.include_neighbor_edges,
+            "neighbors default off; omitted field must be false"
+        );
     }
 
     fn args(mode: SearchMemoriesMode) -> SearchMemoriesArgs {

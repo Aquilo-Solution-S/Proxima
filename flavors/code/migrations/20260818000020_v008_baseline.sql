@@ -1,4 +1,6 @@
--- Proxima code-flavor schema — destructive v0.0.8 baseline (the edge lane).
+-- Proxima code-flavor schema — destructive v0.0.8 baseline (tag squash).
+-- Folds 20260801000020_v007_baseline + 20260817000020_commit_search_tsv
+-- + 20260817000021_embed_text. `ignore_missing` forgives those version rows.
 --
 -- THIS MIGRATION DROPS proxima_code AND REBUILDS IT. Re-register the
 -- repositories and re-index; that is the supported path back, and the flavor
@@ -281,6 +283,17 @@ CREATE TABLE proxima_code.code_chunk_v1 (
     state proxima_code.file_state NOT NULL,
     search_tsv tsvector GENERATED ALWAYS AS (proxima_core.lexical_tsv(lexical_language, proxima_core.lexical_join(VARIADIC ARRAY[NULLIF(file_path, ''::text), NULLIF(text, ''::text)]))) STORED,
     lexical_language regconfig DEFAULT 'english'::regconfig NOT NULL,
+    embed_text text GENERATED ALWAYS AS (
+        NULLIF(
+            CASE state
+                WHEN 'Present' THEN
+                    file_path || ':' || line_range_start::text || '-' || line_range_end::text || E'\n' || text
+                ELSE
+                    '(deleted slice) ' || file_path || '#' || chunk_index::text
+            END,
+            ''
+        )
+    ) STORED,
     CONSTRAINT code_chunk_v1_chunk_index_chk CHECK ((chunk_index >= 0))
 );
 
@@ -320,7 +333,28 @@ CREATE TABLE proxima_code.commit_summary_v1 (
     commit_sha text NOT NULL,
     summary text NOT NULL,
     key_files text[] NOT NULL,
-    change_kind text NOT NULL
+    change_kind text NOT NULL,
+    search_tsv tsvector GENERATED ALWAYS AS (
+        proxima_core.lexical_tsv(
+            'english'::regconfig,
+            proxima_core.lexical_join(
+                VARIADIC ARRAY[
+                    NULLIF(commit_sha, ''),
+                    NULLIF(summary, ''),
+                    proxima_core.lexical_text_array(key_files)
+                ]
+            )
+        )
+    ) STORED,
+    embed_text text GENERATED ALWAYS AS (
+        proxima_core.lexical_join(
+            VARIADIC ARRAY[
+                NULLIF(commit_sha, ''),
+                NULLIF(summary, ''),
+                proxima_core.lexical_text_array(key_files)
+            ]
+        )
+    ) STORED
 );
 
 
@@ -339,7 +373,30 @@ CREATE TABLE proxima_code.commit_v1 (
     committer_name text NOT NULL,
     committer_email text NOT NULL,
     committer_time timestamp with time zone NOT NULL,
-    message text NOT NULL
+    message text NOT NULL,
+    search_tsv tsvector GENERATED ALWAYS AS (
+        proxima_core.lexical_tsv(
+            'english'::regconfig,
+            proxima_core.lexical_join(
+                VARIADIC ARRAY[
+                    NULLIF(sha, ''),
+                    NULLIF(message, ''),
+                    NULLIF(author_name, ''),
+                    NULLIF(author_email, '')
+                ]
+            )
+        )
+    ) STORED,
+    embed_text text GENERATED ALWAYS AS (
+        proxima_core.lexical_join(
+            VARIADIC ARRAY[
+                NULLIF(sha, ''),
+                NULLIF(message, ''),
+                NULLIF(author_name, ''),
+                NULLIF(author_email, '')
+            ]
+        )
+    ) STORED
 );
 
 
@@ -440,7 +497,16 @@ CREATE TABLE proxima_code.file_revision_v1 (
     content_sha256 bytea NOT NULL,
     size_bytes bigint NOT NULL,
     indexed_commit_sha text NOT NULL,
-    state proxima_code.file_state NOT NULL
+    state proxima_code.file_state NOT NULL,
+    embed_text text GENERATED ALWAYS AS (
+        proxima_core.lexical_join(
+            VARIADIC ARRAY[
+                NULLIF(file_path, ''),
+                NULLIF(language, ''),
+                NULLIF(indexed_commit_sha, '')
+            ]
+        )
+    ) STORED
 );
 
 
@@ -866,14 +932,14 @@ CREATE INDEX idx_commit_summary_v1_repo_sha ON proxima_code.commit_summary_v1 US
 -- Name: idx_commit_summary_v1_search; Type: INDEX; Schema: proxima_code; Owner: -
 --
 
-CREATE INDEX idx_commit_summary_v1_search ON proxima_code.commit_summary_v1 USING gin (to_tsvector('simple'::regconfig, ((((commit_sha || ' '::text) || summary) || ' '::text) || proxima_code.text_array_search(key_files))));
+CREATE INDEX idx_commit_summary_v1_search_tsv ON proxima_code.commit_summary_v1 USING gin (search_tsv);
 
 
 --
 -- Name: idx_commit_v1_message_search; Type: INDEX; Schema: proxima_code; Owner: -
 --
 
-CREATE INDEX idx_commit_v1_message_search ON proxima_code.commit_v1 USING gin (to_tsvector('simple'::regconfig, ((sha || ' '::text) || message)));
+CREATE INDEX idx_commit_v1_search_tsv ON proxima_code.commit_v1 USING gin (search_tsv);
 
 
 --

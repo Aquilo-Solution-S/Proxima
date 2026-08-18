@@ -118,7 +118,7 @@ pub fn core_migrator() -> sqlx::migrate::Migrator {
 ///
 /// # Errors
 ///
-/// Returns [`StorageError::V004ResetRequired`] when schema objects exist
+/// Returns [`StorageError::SchemaResetRequired`] when schema objects exist
 /// without a matching version-1 ledger, or version 1's checksum does not
 /// match `0001_v008.sql`. Remedy: reset. Returns
 /// [`StorageError::Internal`], naming the stamp-or-reset remedy, for draft or
@@ -197,7 +197,7 @@ pub async fn ensure_core_ledger_compatible(pool: &PgPool) -> Result<(), StorageE
         if !unknown_versions.is_empty() {
             details.push(format!("old migration versions: {unknown_versions:?}"));
         }
-        return Err(StorageError::V004ResetRequired {
+        return Err(StorageError::SchemaResetRequired {
             details: details.join("; "),
         });
     }
@@ -225,7 +225,7 @@ pub async fn ensure_core_ledger_compatible(pool: &PgPool) -> Result<(), StorageE
          If the schema already matches the current lane, stamp the ledger with \
          `cargo run -p proxima-dev-migrate -- --stamp --database-url <URL>`; \
          otherwise reset (dev/staging only) with \
-         `PROXIMA_V004_RESET_CONFIRM=reset-my-dev-db cargo run -p proxima-dev-migrate -- --reset --database-url <URL>`, \
+         `PROXIMA_RESET_CONFIRM=reset-my-dev-db cargo run -p proxima-dev-migrate -- --reset --database-url <URL>`, \
          then re-register and re-index. See docs/how-to/migrations.md",
         details.join("; ")
     )))

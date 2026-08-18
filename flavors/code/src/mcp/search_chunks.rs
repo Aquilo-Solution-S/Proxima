@@ -527,9 +527,12 @@ async fn resolve_query_embedding(
     // here; both land in the same place.
     match embed.embed(query).await {
         Ok(embedding) => Ok((mode, Some((embedding, embed.model_id().to_string())))),
-        Err(err) if mode == ChunkSearchMode::Semantic => Err(ToolError::Unavailable(format!(
-            "semantic chunk search unavailable: embedding provider error: {err}"
-        ))),
+        Err(err) if mode == ChunkSearchMode::Semantic => {
+            tracing::warn!(error = %err, "embedding provider failed");
+            Err(ToolError::Unavailable(
+                "semantic chunk search unavailable: embedding provider error".into(),
+            ))
+        }
         Err(err) => {
             // `degraded_to_lexical` tells the caller *that* this happened;
             // only the log can tell an operator *why*.

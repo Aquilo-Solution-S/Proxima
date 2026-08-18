@@ -261,7 +261,7 @@ const fn storage_status(err: &StorageError) -> (StatusCode, &'static str, &'stat
         StorageError::Retryable(_)
         | StorageError::Unavailable(_)
         | StorageError::Internal(_)
-        | StorageError::V004ResetRequired { .. } => (
+        | StorageError::SchemaResetRequired { .. } => (
             StatusCode::INTERNAL_SERVER_ERROR,
             "internal",
             "Internal error",
@@ -378,7 +378,7 @@ mod tests {
                 StatusCode::INTERNAL_SERVER_ERROR,
             ),
             (
-                StorageError::V004ResetRequired {
+                StorageError::SchemaResetRequired {
                     details: "x".into(),
                 },
                 StatusCode::INTERNAL_SERVER_ERROR,

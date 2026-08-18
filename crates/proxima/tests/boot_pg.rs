@@ -346,14 +346,16 @@ async fn pre_v004_database_surfaces_typed_reset_error_through_boot() {
             .expect_err("stale ledger must fail closed through boot()");
 
         match err {
-            EmbedError::V004ResetRequired { details } => {
+            EmbedError::SchemaResetRequired { details } => {
                 assert!(
                     details.contains("0001_v008") || details.contains("checksum"),
                     "reset details should name the schema mismatch, got: {details}"
                 );
             }
             other => {
-                panic!("expected EmbedError::V004ResetRequired, boot() collapsed it to: {other:?}")
+                panic!(
+                    "expected EmbedError::SchemaResetRequired, boot() collapsed it to: {other:?}"
+                )
             }
         }
         Ok(())

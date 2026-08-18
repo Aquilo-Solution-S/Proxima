@@ -41,7 +41,7 @@ resources; `proxima://tools` returns the live tool catalog only, and
 resources are discovered through MCP `resources/list` and
 `resources/templates/list`.
 
-Owner remains the storage and graph isolation primitive. Access is server-resolved `OwnerRoles` over concrete `OwnerRef`s; Core enforces those roles at verb/tool entry and never adds org/share-set semantics. Edge rows are source-owned, and one uniform rule admits them: the writer needs write authority on the source and read authority on the target at write time. Read projection is source-local for the edge row with independent target `Visible` / `Redacted` / `Unavailable` rendering.
+Owner remains the storage and graph isolation primitive. Access is server-resolved `OwnerRoles` over concrete `OwnerRef`s; Core enforces those roles at verb/tool entry and never adds org/share-set semantics. Pins live on the Memory admission (`origins[]` / `refs[]`). A pin is admitted when the writer has write authority on the source and the target exists; target render is independent (`Visible` / `Redacted` / `Unavailable`). There is no Edge table.
 
 Canonical substrate tools:
 
@@ -55,12 +55,12 @@ Canonical substrate tools:
 | `core_interpret` | author an interpretation Perspective: a claim about existing memories (`claim`, `confidence` 0..=100 defaulting to 80, `subjects`). Returns a `P:` handle and an `edge_count`; it writes no edge of its own — the subjects are payload references |
 | `core_recall` | cue-driven packet of persisted sketches (question ∪ subject handles). Atomic, no sidecar, hard cap 32. This is how Self is retrieved; empty cue is rejected. `kind=Perspective` includes assigned Active Goals |
 | `core_think` | cursor pages over pin incidence from seeds. Directions: `ancestors`, `descendants`, `episode_siblings`. No ANN. Hydrate via `proxima://memory/{id}` |
-| `core_search_memories` | precision search; may include neighbor edges, per-result tags, lexical-degradation status, and selected memory-space labels. Optional `min_score` relevance floor and hybrid `semantic_weight` (default 0.6 semantic / 0.4 lexical). Pages of at most 50: `has_more` plus an opaque `next_cursor` that is passed back as `cursor` with the identical query shape (the cursor is fingerprint-bound and fails closed on any other query, order, filter, or space set). Neighbors default off |
+| `core_search_memories` | precision search; may include neighbor edges, per-result tags, lexical-degradation status, and selected memory-space labels. Optional `min_score` relevance floor and hybrid `semantic_weight` (default 0.6 semantic / 0.4 lexical). Pages of at most 50: `has_more` plus an opaque `next_cursor`. The cursor is fingerprint-bound to query / mode / filters / order / spaces / score knobs and fails closed if those change. `limit`, `include_body`, and `include_neighbor_edges` may vary between pages. Neighbors default off |
 | `core_memory_spaces` | list server-issued memory-space keys with labels and coarse unrestricted-access flags |
 | `core_membership` | group roster dispatcher: `add_member`, `remove_member`, `list_members`; host/controller scoped. `list_members` pages (default 50, max 200) with keyset `cursor`/`next_cursor` + `has_more`, cursor bound to the group |
 | `core_publish` | owner-transfer dispatcher: `publish_to_world`; irreversible transfer to `OwnerRef::World`, not membership or ACL |
 | `core_goal` | goal action dispatcher: `set`, `transition`, `modify`, `mark_achieved`, `decompose` |
-| `core_fact` | Fact action dispatcher: `citation_of_fact`, `citation_of_entity_head`, `facts_citing_object`. `facts_citing_object` pages newest-first (default 50, max 200) with keyset `cursor`/`next_cursor` + `has_more`, cursor bound to the cited object |
+| `core_fact` | Fact action dispatcher: `citation_of_fact`, `facts_citing_object`. `facts_citing_object` pages newest-first (default 50, max 200) with keyset `cursor`/`next_cursor` + `has_more`, cursor bound to the cited object |
 | `core_upload` | cited-blob upload dispatcher: `prepare`, `complete`, `abort`, `read_url`; artefact bytes travel by presigned URL only, and the tool never emits `bucket`/`object_key` |
 
 Compatibility: `core_membership:publish_to_world` is removed. Clients and
@@ -159,7 +159,7 @@ Public MCP inputs may name server-issued space keys from `core_memory_spaces`; t
 
 ### Query
 
-Snapshot read of memories, goals, and edges scoped to the server-resolved authorized Owner set (`S_read`).
+Snapshot read of memories and goals scoped to the server-resolved authorized Owner set (`S_read`).
 
 | Axis | Current contract |
 |---|---|
@@ -170,7 +170,7 @@ Snapshot read of memories, goals, and edges scoped to the server-resolved author
 | tombstones | present-only or include tombstoned |
 | Goal/Perspective selectors | explicit ids; selectors never authorize by themselves |
 | pagination | single-kind keyset: `limit` + `page.after` over `(created_at, id) DESC` |
-| payloads | optional typed payload projections; identity hydration by memory/goal/edge ids |
+| payloads | optional typed payload projections; identity hydration by memory/goal ids |
 | stateful Facts | heads by registered natural key; tombstone heads suppress prior present rows |
 | flavor-typed filters | design intent; advertised/validated only when implemented by a linked flavor |
 | pin walk | `origins` / `refs`; lineage is the multi-hop walk |
@@ -323,7 +323,7 @@ first forward poll.
 
 ## Consistency — Strong Write -> Log
 
-Graph writes commit entity/edge rows and corresponding
+Graph writes commit Memory/Goal rows and corresponding
 `announce` rows in one storage transaction.
 
 | Property | Contract |

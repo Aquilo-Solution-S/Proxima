@@ -29,6 +29,7 @@ impl ComplianceErasePort for PgStorage {
     ) -> Result<ComplianceEraseOutcome, StorageError> {
         verbs::compliance_erase::erase_group_owner_if_abandoned(
             &self.pool,
+            self.cold.as_ref(),
             auth,
             group_id,
             object_purge_planned,
@@ -52,6 +53,7 @@ impl ComplianceErasePort for PgStorage {
     ) -> Result<ComplianceEraseOutcome, StorageError> {
         verbs::compliance_erase::erase_personal_owner_if_drop_verified(
             &self.pool,
+            self.cold.as_ref(),
             auth,
             user_id,
             object_purge_planned,
@@ -75,6 +77,7 @@ impl ComplianceErasePort for PgStorage {
     ) -> Result<ComplianceEraseOutcome, StorageError> {
         verbs::compliance_erase::erase_group_source_scope_if_owner_abandoned(
             &self.pool,
+            self.cold.as_ref(),
             auth,
             group_id,
             source_id,
@@ -98,6 +101,7 @@ impl ComplianceErasePort for PgStorage {
     ) -> Result<ComplianceEraseOutcome, StorageError> {
         verbs::compliance_erase::erase_personal_source_scope_if_drop_verified(
             &self.pool,
+            self.cold.as_ref(),
             auth,
             user_id,
             source_id,
