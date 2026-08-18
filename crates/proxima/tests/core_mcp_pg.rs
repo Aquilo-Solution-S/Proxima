@@ -1270,6 +1270,359 @@ async fn facade_core_episode_commit_binds_only_listed_members() {
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn facade_core_episode_commit_binds_derive_stance_and_goal() {
+    let db_name = unique_db_name("proxima_core_episode_dsg");
+    create_db(&db_name).await.expect("PG required for tests");
+    let db_url = db_url(&db_name);
+
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let owner = company_owner(Uuid::now_v7());
+        let built = Proxima::<EmptyApp>::app()
+            .database_url(db_url)
+            .owner(owner)
+            .tool_scope(ToolScope::All)
+            .build()
+            .await?;
+        let tools = built.core_mcp_tools();
+        let authz = host_authz(&owner, ToolScope::All);
+
+        let committed = call_test_model_tool(
+            &tools,
+            authz.clone(),
+            owner,
+            "core_episode_commit",
+            serde_json::json!({
+                "remember": [
+                    {"title": "Bound fact", "body": "first observation", "tags": ["ep"]},
+                    {"title": "Unbound fact", "body": "second observation", "tags": ["ep"]}
+                ],
+                "derive": {
+                    "title": "Episode pattern",
+                    "body": "the two observations form a pattern",
+                    "source_handles": ["remember:0", "remember:1"],
+                    "model_id": "test-model",
+                    "idempotency_key": "episode-derive-1"
+                },
+                "stance": [{
+                    "claim": "the pattern is the stance I hold in this episode",
+                    "confidence": 80,
+                    "subjects": ["remember:0", "derive"]
+                }],
+                "goal": [{
+                    "schema_id": "core/simple-text-v1",
+                    "title": "Pursue the episode stance",
+                    "text": "Act on the derived pattern",
+                    "body": {},
+                    "evidence": ["derive"],
+                    "target_perspective": "stance:0",
+                    "idempotency_key": "episode-goal-1"
+                }],
+                "bind": ["remember:0", "derive", "stance:0", "goal:0"]
+            }),
+        )
+        .await?;
+        let write_act = committed["write_act"].as_str().expect("write_act");
+        let bound_fact = committed["remembered"][0].as_str().expect("remembered 0");
+        let unbound_fact = committed["remembered"][1].as_str().expect("remembered 1");
+        let derived = committed["derived"].as_str().expect("derived");
+        let stance = committed["stances"][0].as_str().expect("stance");
+        let goal = committed["goals"][0].as_str().expect("goal");
+        let bound = committed["bound"]
+            .as_array()
+            .expect("bound")
+            .iter()
+            .filter_map(|value| value.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(bound, vec![bound_fact, derived, stance, goal]);
+        assert!(!bound.contains(&unbound_fact));
+
+        let act_t = write_act
+            .strip_prefix("F:")
+            .expect("write-act prefix")
+            .parse::<Uuid>()?;
+        let derived_t = derived
+            .strip_prefix("A:")
+            .expect("derive prefix")
+            .parse::<Uuid>()?;
+        let stance_t = stance
+            .strip_prefix("P:")
+            .expect("stance prefix")
+            .parse::<Uuid>()?;
+        let goal_t = goal
+            .strip_prefix("G:")
+            .expect("goal prefix")
+            .parse::<Uuid>()?;
+        let unbound_t = unbound_fact
+            .strip_prefix("F:")
+            .expect("unbound prefix")
+            .parse::<Uuid>()?;
+
+        let derived_refs: Vec<Uuid> =
+            sqlx::query_scalar("SELECT refs FROM proxima_core.memory WHERE t = $1")
+                .bind(derived_t)
+                .fetch_one(built.pool_for_tests())
+                .await?;
+        let stance_refs: Vec<Uuid> =
+            sqlx::query_scalar("SELECT refs FROM proxima_core.memory WHERE t = $1")
+                .bind(stance_t)
+                .fetch_one(built.pool_for_tests())
+                .await?;
+        let unbound_refs: Vec<Uuid> =
+            sqlx::query_scalar("SELECT refs FROM proxima_core.memory WHERE t = $1")
+                .bind(unbound_t)
+                .fetch_one(built.pool_for_tests())
+                .await?;
+        let goal_act: Option<Uuid> =
+            sqlx::query_scalar("SELECT write_act_t FROM proxima_core.goal WHERE t = $1")
+                .bind(goal_t)
+                .fetch_one(built.pool_for_tests())
+                .await?;
+        assert!(
+            derived_refs.contains(&act_t),
+            "bound derive must ref this write-act: {derived_refs:?}"
+        );
+        assert!(
+            stance_refs.contains(&act_t),
+            "bound stance must ref this write-act: {stance_refs:?}"
+        );
+        assert!(
+            !unbound_refs.contains(&act_t),
+            "unbound remember must not ref this write-act: {unbound_refs:?}"
+        );
+        assert_eq!(goal_act, Some(act_t), "bound goal write_act_t");
+
+        let siblings = call_test_model_tool(
+            &tools,
+            authz,
+            owner,
+            "core_think",
+            serde_json::json!({
+                "seeds": [bound_fact],
+                "direction": "episode_siblings",
+                "limit": 16
+            }),
+        )
+        .await?;
+        let handles = siblings["visits"]
+            .as_array()
+            .expect("visits")
+            .iter()
+            .filter_map(|visit| visit["handle"].as_str())
+            .collect::<Vec<_>>();
+        assert!(
+            handles.contains(&derived),
+            "bound derive sibling: {siblings}"
+        );
+        assert!(
+            handles.contains(&stance),
+            "bound stance sibling: {siblings}"
+        );
+        assert!(
+            !handles.contains(&unbound_fact),
+            "unbound remember is not a sibling: {siblings}"
+        );
+
+        built.shutdown();
+        Ok(())
+    }
+    .await;
+
+    let _ = drop_db(&db_name).await;
+    result.expect("episode derive/stance/goal bind test failed");
+}
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn facade_core_episode_commit_bound_replay_fails() {
+    let db_name = unique_db_name("proxima_core_episode_replay");
+    create_db(&db_name).await.expect("PG required for tests");
+    let db_url = db_url(&db_name);
+
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let owner = company_owner(Uuid::now_v7());
+        let built = Proxima::<EmptyApp>::app()
+            .database_url(db_url)
+            .owner(owner)
+            .tool_scope(ToolScope::All)
+            .build()
+            .await?;
+        let tools = built.core_mcp_tools();
+        let authz = host_authz(&owner, ToolScope::All);
+
+        call_test_model_tool(
+            &tools,
+            authz.clone(),
+            owner,
+            "core_episode_commit",
+            serde_json::json!({
+                "remember": [{
+                    "title": "Replay seed",
+                    "body": "seed observation",
+                    "tags": ["ep"],
+                    "idempotency_key": "episode-replay-seed"
+                }]
+            }),
+        )
+        .await?;
+        let remember_err = call_test_model_tool(
+            &tools,
+            authz.clone(),
+            owner,
+            "core_episode_commit",
+            serde_json::json!({
+                "remember": [{
+                    "title": "Replay seed",
+                    "body": "seed observation",
+                    "tags": ["ep"],
+                    "idempotency_key": "episode-replay-seed"
+                }],
+                "bind": ["remember:0"]
+            }),
+        )
+        .await
+        .expect_err("bound remember replay must fail");
+        assert!(
+            remember_err.to_string().contains("replayed"),
+            "remember H9: {remember_err}"
+        );
+
+        let derive_unbound = serde_json::json!({
+            "remember": [{
+                "title": "Derive source",
+                "body": "fresh fact for derive replay",
+                "tags": ["ep"],
+                "idempotency_key": "episode-replay-derive-src"
+            }],
+            "derive": {
+                "title": "Replay pattern",
+                "body": "same pattern body",
+                "source_handles": ["remember:0"],
+                "model_id": "test-model",
+                "idempotency_key": "episode-replay-derive"
+            }
+        });
+        call_test_model_tool(
+            &tools,
+            authz.clone(),
+            owner,
+            "core_episode_commit",
+            derive_unbound.clone(),
+        )
+        .await?;
+        let mut derive_bound = derive_unbound;
+        derive_bound["bind"] = serde_json::json!(["derive"]);
+        let derive_err = call_test_model_tool(
+            &tools,
+            authz.clone(),
+            owner,
+            "core_episode_commit",
+            derive_bound,
+        )
+        .await
+        .expect_err("bound derive replay must fail");
+        assert!(
+            derive_err.to_string().contains("replayed")
+                || derive_err.to_string().contains("changed declared refs"),
+            "derive H9: {derive_err}"
+        );
+
+        let stance_unbound = serde_json::json!({
+            "remember": [{
+                "title": "Stance source",
+                "body": "fresh fact for stance replay",
+                "tags": ["ep"],
+                "idempotency_key": "episode-replay-stance-src"
+            }],
+            "stance": [{
+                "claim": "same stance claim about the replay fact",
+                "confidence": 80,
+                "subjects": ["remember:0"]
+            }]
+        });
+        call_test_model_tool(
+            &tools,
+            authz.clone(),
+            owner,
+            "core_episode_commit",
+            stance_unbound.clone(),
+        )
+        .await?;
+        let mut stance_bound = stance_unbound;
+        stance_bound["bind"] = serde_json::json!(["stance:0"]);
+        let stance_err = call_test_model_tool(
+            &tools,
+            authz.clone(),
+            owner,
+            "core_episode_commit",
+            stance_bound,
+        )
+        .await
+        .expect_err("bound stance replay must fail");
+        assert!(
+            stance_err.to_string().contains("replayed")
+                || stance_err.to_string().contains("changed declared refs"),
+            "stance H9: {stance_err}"
+        );
+
+        let goal_unbound = serde_json::json!({
+            "remember": [{
+                "title": "Goal source fact",
+                "body": "fresh fact for goal replay",
+                "tags": ["ep"],
+                "idempotency_key": "episode-replay-goal-src"
+            }],
+            "derive": {
+                "title": "Goal evidence",
+                "body": "abstraction for the replayed goal",
+                "source_handles": ["remember:0"],
+                "model_id": "test-model",
+                "idempotency_key": "episode-replay-goal-abs"
+            },
+            "stance": [{
+                "claim": "assignment stance for the replayed goal",
+                "confidence": 80,
+                "subjects": ["derive"]
+            }],
+            "goal": [{
+                "schema_id": "core/simple-text-v1",
+                "title": "Replay goal",
+                "text": "same goal text",
+                "body": {},
+                "evidence": ["derive"],
+                "target_perspective": "stance:0",
+                "idempotency_key": "episode-replay-goal"
+            }]
+        });
+        call_test_model_tool(
+            &tools,
+            authz.clone(),
+            owner,
+            "core_episode_commit",
+            goal_unbound.clone(),
+        )
+        .await?;
+        let mut goal_bound = goal_unbound;
+        goal_bound["bind"] = serde_json::json!(["goal:0"]);
+        let goal_err =
+            call_test_model_tool(&tools, authz, owner, "core_episode_commit", goal_bound)
+                .await
+                .expect_err("bound goal replay must fail");
+        assert!(
+            goal_err.to_string().contains("replayed"),
+            "goal H9: {goal_err}"
+        );
+
+        built.shutdown();
+        Ok(())
+    }
+    .await;
+
+    let _ = drop_db(&db_name).await;
+    result.expect("episode bound replay test failed");
+}
+
+#[tokio::test]
 async fn facade_core_search_memories_degrades_to_lexical_without_embed_client() {
     // Finding A: a deployment with NO embedding client must not hard-fail on the
     // DEFAULT (Hybrid) search — it degrades to lexical (selfdoc's promise). Only

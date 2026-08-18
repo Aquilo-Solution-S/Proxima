@@ -903,13 +903,12 @@ async fn insert_origin_edge(
     target: uuid::Uuid,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let _ = owner;
-    let (handle, kind, owner_id, content_id): (Uuid, String, Uuid, Option<Uuid>) =
-        sqlx::query_as(
-            "SELECT handle, kind::text, owner_id, content_id FROM proxima_core.memory WHERE t = $1",
-        )
-        .bind(source)
-        .fetch_one(pg.pool_for_tests())
-        .await?;
+    let (handle, kind, owner_id, content_id): (Uuid, String, Uuid, Option<Uuid>) = sqlx::query_as(
+        "SELECT handle, kind::text, owner_id, content_id FROM proxima_core.memory WHERE t = $1",
+    )
+    .bind(source)
+    .fetch_one(pg.pool_for_tests())
+    .await?;
     let schema_id: String =
         sqlx::query_scalar("SELECT schema_id FROM proxima_core.memory WHERE t = $1")
             .bind(source)

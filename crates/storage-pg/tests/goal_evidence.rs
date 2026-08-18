@@ -77,6 +77,7 @@ async fn perspective_evidence_is_rejected_in_tx() {
                         embedding_model_id: None,
                         author_self_perspective_id: None,
                     },
+                    write_act_t: None,
                 },
                 &permit,
             )

@@ -741,12 +741,13 @@ pub async fn hydrate_memory(
 
     let rec = decode_record(&cold.get(&object_key).await?)?;
     ensure_memory_head(tx, &rec).await?;
-    let cooled_content: Option<Uuid> =
-        sqlx::query_scalar::<_, Option<Uuid>>("SELECT content_id FROM proxima_core.cooled WHERE t = $1")
-            .bind(t)
-            .fetch_one(tx.as_mut())
-            .await
-            .map_err(map_err)?;
+    let cooled_content: Option<Uuid> = sqlx::query_scalar::<_, Option<Uuid>>(
+        "SELECT content_id FROM proxima_core.cooled WHERE t = $1",
+    )
+    .bind(t)
+    .fetch_one(tx.as_mut())
+    .await
+    .map_err(map_err)?;
     sqlx::query(
         "INSERT INTO proxima_core.memory
             (handle, t, kind, owner_id, schema_id, source_id, ingest_key, blob_id,

@@ -61,8 +61,7 @@ impl MemoryAuthoringPort for PgStorage {
             let tables = sidecars.tables_for_payloads(std::slice::from_ref(&sidecar_payload))?;
             crate::access::owner_columns::reject_world_write_owner(permit.owner())?;
             let owner_id =
-                crate::access::owner_columns::ensure_owner_row(tx.as_mut(), permit.owner())
-                    .await?;
+                crate::access::owner_columns::ensure_owner_row(tx.as_mut(), permit.owner()).await?;
             let content_id = verbs::content::ensure_content_from_payloads(
                 &mut tx,
                 owner_id,

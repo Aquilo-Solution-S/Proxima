@@ -12,7 +12,7 @@ use crate::AgentDerivationV1;
 
 use super::util::{normalize_idempotency_key, normalize_tags};
 
-const MAX_SOURCE_HANDLES: usize = 256;
+pub(crate) const MAX_SOURCE_HANDLES: usize = 256;
 const DERIVED_NAMESPACE: uuid::Uuid = uuid::Uuid::from_bytes([
     0x9d, 0xc1, 0x37, 0x10, 0x4f, 0xa6, 0x4c, 0x4e, 0x95, 0x73, 0xc8, 0x18, 0x9d, 0xfb, 0xa7, 0x40,
 ]);
@@ -23,14 +23,14 @@ const CORE_DERIVE_INPUT_CONTRACT_NAMESPACE: uuid::Uuid = uuid::Uuid::from_bytes(
     0x3d, 0x1a, 0x60, 0x6d, 0x1c, 0xb9, 0x47, 0x0d, 0x9a, 0x49, 0x17, 0xb9, 0xe3, 0xef, 0xde, 0xaa,
 ]);
 
-fn core_derive_operator_id(kind: DerivedKind) -> OperatorId {
+pub(crate) fn core_derive_operator_id(kind: DerivedKind) -> OperatorId {
     OperatorId::new(uuid::Uuid::new_v5(
         &CORE_DERIVE_OPERATOR_NAMESPACE,
         format!("{}:{}", protocol_tool::CORE_DERIVE, kind.as_str()).as_bytes(),
     ))
 }
 
-fn core_derive_input_contract_id(kind: DerivedKind) -> InputContractId {
+pub(crate) fn core_derive_input_contract_id(kind: DerivedKind) -> InputContractId {
     InputContractId::new(uuid::Uuid::new_v5(
         &CORE_DERIVE_INPUT_CONTRACT_NAMESPACE,
         format!(
@@ -42,7 +42,7 @@ fn core_derive_input_contract_id(kind: DerivedKind) -> InputContractId {
     ))
 }
 
-fn resolve_source_memory(
+pub(crate) fn resolve_source_memory(
     ctx: &McpToolCtx,
     handle: &str,
 ) -> Result<(MemoryId, MemoryHandleClass), McpToolError> {
@@ -59,7 +59,7 @@ fn resolve_source_memory(
         .map(|memory_id| (memory_id, MemoryHandleClass::Fact))
 }
 
-fn operator_shape(
+pub(crate) fn operator_shape(
     kind: DerivedKind,
     sources: &[(MemoryId, MemoryHandleClass)],
 ) -> Result<(crate::MemoryOperatorKind, crate::EntityKind), McpToolError> {
@@ -149,14 +149,14 @@ pub enum DerivedKind {
 }
 
 impl DerivedKind {
-    fn as_str(self) -> &'static str {
+    pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::Abstraction => "Abstraction",
             Self::Perspective => "Perspective",
         }
     }
 
-    fn to_entity_kind(self) -> crate::EntityKind {
+    pub(crate) fn to_entity_kind(self) -> crate::EntityKind {
         match self {
             Self::Abstraction => crate::EntityKind::Abstraction,
             Self::Perspective => crate::EntityKind::Perspective,
@@ -360,7 +360,7 @@ impl McpTool for DeriveTool {
     }
 }
 
-fn map_derive_authoring_error(err: crate::error::ProtocolError) -> McpToolError {
+pub(crate) fn map_derive_authoring_error(err: crate::error::ProtocolError) -> McpToolError {
     if err.code == crate::error::ErrorCode::InvalidArgument
         && err.message.contains("layering violation")
     {
@@ -374,7 +374,7 @@ fn map_derive_authoring_error(err: crate::error::ProtocolError) -> McpToolError 
     err.into()
 }
 
-fn derived_memory_id(owner: &crate::Owner, kind: &str, key: &str) -> uuid::Uuid {
+pub(crate) fn derived_memory_id(owner: &crate::Owner, kind: &str, key: &str) -> uuid::Uuid {
     let principal_kind = crate::OwnerRefKind::of(owner);
     let principal_id = owner.stable_key_uuid();
     let mut buf = Vec::with_capacity(96 + key.len());

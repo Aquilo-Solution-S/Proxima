@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use proxima_core::storage_ports::{OwnerWritePermit, WriteSession, WriteSessionFactory};
 use proxima_core::verbs::fact_ingest::{AuthorizedFactWrite, FactIngestOutcome};
+use proxima_core::verbs::goal_write::{CreateGoalAtomicRequest, GoalWriteOutcome};
 use proxima_core::{
     AuthorDerivedOutcome, AuthorDerivedRequest, ColdObjectStore, MemoryId, SidecarPayload,
     StorageError,
@@ -155,6 +156,14 @@ impl WriteSession for PgWriteSession {
             edge_count,
             embedding_deferred: req.embedding.is_deferred() && !outcome.idempotent_replay,
         })
+    }
+
+    async fn create_goal(
+        &mut self,
+        req: &CreateGoalAtomicRequest<'_>,
+        permit: &OwnerWritePermit,
+    ) -> Result<GoalWriteOutcome, StorageError> {
+        verbs::goal_write::create_goal_in_tx(&mut self.tx, &self.sidecars, req, permit).await
     }
 
     async fn forget_memory(

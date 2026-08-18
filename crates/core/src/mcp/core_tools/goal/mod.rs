@@ -63,7 +63,7 @@ pub const CORE_GOAL_ACTIONS: &[CoreActionMeta] = &[
     },
 ];
 
-#[derive(Debug, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub struct GoalPayloadArgs {
     #[schemars(
         description = "Registered Goal-payload schema id (PayloadKind::Goal). Discover valid ids with the `proxima://schemas{?kind}` resource (kind=Goal)."
@@ -115,7 +115,7 @@ pub struct GoalSetArgs {
     pub idempotency_key: Option<String>,
 }
 
-#[derive(Debug, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub struct GoalWakeArgs {
     #[schemars(
         description = "Fact memory handle (`F...`) whose exact row is the wake trigger. Exactly one of `trigger_fact` / `trigger_schema_id` is required."
@@ -568,7 +568,7 @@ async fn goal_decompose(
     })
 }
 
-fn encode_goal_payload(
+pub(crate) fn encode_goal_payload(
     ctx: &McpToolCtx,
     args: GoalPayloadArgs,
 ) -> Result<GoalPayloadWrite, McpToolError> {
@@ -618,7 +618,7 @@ fn encode_goal_payload(
     })
 }
 
-fn encode_wake_config(
+pub(crate) fn encode_wake_config(
     ctx: &McpToolCtx,
     args: GoalWakeArgs,
 ) -> Result<GoalWakeConfigWrite, McpToolError> {
@@ -697,7 +697,7 @@ fn target_perspective(
     }
 }
 
-fn system_operator_authorship(ctx: &McpToolCtx, prompt_version: &str) -> GoalAuthorship {
+pub(crate) fn system_operator_authorship(ctx: &McpToolCtx, prompt_version: &str) -> GoalAuthorship {
     let operator_key = format!(
         "{}\0{}\0{}\0{}",
         ctx.author.client_name, ctx.author.client_version, ctx.author.model_id, prompt_version

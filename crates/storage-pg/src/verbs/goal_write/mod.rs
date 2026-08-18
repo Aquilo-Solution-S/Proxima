@@ -46,6 +46,6 @@ use types::{EvidenceTarget, InsertedGoal, StoredGoal, WakeConfigShape, WakeWrite
 use wake::goal_wake_matches;
 
 pub(crate) use commands::{
-    achieve_goal_atomic, create_goal_atomic, decompose_goal_atomic, modify_goal_atomic,
-    transition_goal_atomic,
+    achieve_goal_atomic, create_goal_atomic, create_goal_in_tx, decompose_goal_atomic,
+    modify_goal_atomic, transition_goal_atomic,
 };

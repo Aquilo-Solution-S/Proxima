@@ -139,6 +139,7 @@ async fn uml_section_10_walk_query_history_publish() {
                 evidence_t: vec![sum.memory_id.into_inner()],
                 wake_id: Some(wake),
                 mint_write_act: true,
+                write_act_t: None,
             },
         )
         .await?;

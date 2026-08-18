@@ -97,6 +97,7 @@ async fn create_wake_replay_does_not_insert_second_wake_config() {
                 &CreateGoalAtomicRequest {
                     draft: draft.clone(),
                     context,
+                    write_act_t: None,
                 },
                 &permit,
             )
@@ -125,6 +126,7 @@ async fn create_wake_replay_does_not_insert_second_wake_config() {
                         embedding_model_id: None,
                         author_self_perspective_id: None,
                     },
+                    write_act_t: None,
                 },
                 &permit,
             )
@@ -182,6 +184,7 @@ async fn achieve_replay_does_not_insert_second_close_fact() {
                         embedding_model_id: None,
                         author_self_perspective_id: None,
                     },
+                    write_act_t: None,
                 },
                 &permit,
             )

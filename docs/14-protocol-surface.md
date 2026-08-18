@@ -48,7 +48,7 @@ Canonical substrate tools:
 | Tool | Contract |
 |---|---|
 | `core_remember` | write agent-authored Fact |
-| `core_episode_commit` | one txn: `remember[]` + write-act Fact; only `bind[]` (`remember:N`) members `refs += write-act t` |
+| `core_episode_commit` | one txn: `remember[]`, `derive?`, `stance[]`, `goal[]` + write-act Fact; only `bind[]` (`remember:N`, `derive`, `stance:N`, `goal:N`) members pin that act (Memory `refs += write-act t`; Goal `write_act_t`) |
 | `core_forget` | cool one memory admission (content GC when unreferenced) |
 | `core_record_utterance` | write utterance Fact |
 | `core_derive` | write agent-authored Abstraction |

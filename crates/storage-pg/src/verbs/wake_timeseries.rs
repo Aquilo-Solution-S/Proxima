@@ -127,6 +127,7 @@ pub async fn write_armed_goal(
             evidence_t: vec![],
             wake_id: Some(wake_id),
             mint_write_act: false,
+            write_act_t: None,
         },
     )
     .await?;

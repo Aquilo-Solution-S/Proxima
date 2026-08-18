@@ -8,6 +8,7 @@ use crate::error::ProtocolError;
 use crate::storage::{AuthorDerivedRequest, DerivedEmbedding};
 use crate::storage_ports::WriteSession;
 use crate::verbs::fact_ingest::{CitationSpec, FactIngestOutcome, FactWriteCommand};
+use crate::verbs::goal_write::{CreateGoalAtomicRequest, GoalDraft, GoalWriteOutcome};
 use crate::verbs::query::SidecarAtom;
 use crate::{
     AuthorDerivedAuthorizedOutcome, AuthorDerivedRequestInput, EntityKind, FactPayload,
@@ -580,7 +581,13 @@ impl UnitOfWork<'_> {
             .await?
             .author_derived(&storage_req, item.write_permit.owner_write_permit())
             .await
-            .map_err(|err| ProtocolError::internal(err.to_string()))?;
+            .map_err(|err| {
+                super::errors::map_write_storage_error(
+                    err,
+                    "derived",
+                    "derived write referenced row not found",
+                )
+            })?;
         if !outcome.idempotent_replay {
             self.written.push(outcome.memory_id);
         }
@@ -590,6 +597,73 @@ impl UnitOfWork<'_> {
             edge_count: outcome.edge_count,
             embedding_deferred: outcome.embedding_deferred,
         })
+    }
+
+    /// Authorize and persist one Goal create in this transaction.
+    ///
+    /// `write_act_t` attaches this episode's write-act (`Goal.write_act_t`).
+    /// Replay of a bound Goal is rejected by the episode protocol, not here.
+    ///
+    /// # Errors
+    ///
+    /// Authorization or storage faults.
+    pub async fn create_goal(
+        &mut self,
+        req: super::GoalCreatePayloadWriteRequest,
+        write_act_t: Option<MemoryId>,
+    ) -> Result<GoalWriteOutcome, ProtocolError> {
+        let permit = self
+            .engine
+            .authorize_write(self.authz, &req.owner, Relation::Editor)
+            .await?;
+        let payload = self.engine.normalize_payload_write(req.payload.clone())?;
+        self.engine
+            .validate_goal_topology_authorized_visible(
+                self.authz,
+                permit.owner(),
+                &req.topology,
+                &self.written,
+            )
+            .await?;
+        let author_self_perspective_id = self
+            .engine
+            .author_self_perspective_authorized(self.authz, req.author_self_perspective_id)
+            .await?;
+        self.engine
+            .validate_wake_config_for_write(self.authz, req.wake.as_ref())
+            .await?;
+        let draft = GoalDraft::active_from_payload_write(
+            *permit.owner(),
+            payload,
+            req.topology.clone(),
+            req.wake.clone(),
+            req.authorship.clone(),
+            req.request_id.clone(),
+        );
+        let embedding_client = self.engine.embed_client();
+        let context = self
+            .engine
+            .goal_atomic_context(embedding_client.as_ref(), author_self_perspective_id);
+        let outcome = self
+            .ensure_session()
+            .await?
+            .create_goal(
+                &CreateGoalAtomicRequest {
+                    draft,
+                    context,
+                    write_act_t,
+                },
+                permit.owner_write_permit(),
+            )
+            .await
+            .map_err(|err| {
+                super::errors::map_write_storage_error(
+                    err,
+                    "goal",
+                    "goal write referenced row not found",
+                )
+            })?;
+        Ok(outcome)
     }
 
     /// Cool one owned memory `t` in this transaction.

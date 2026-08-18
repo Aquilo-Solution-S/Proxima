@@ -116,6 +116,7 @@ async fn publish_transfers_goal_same_t() {
                 evidence_t: vec![],
                 wake_id: None,
                 mint_write_act: false,
+                write_act_t: None,
             },
         )
         .await?;

@@ -15,8 +15,13 @@ pub fn hash_sidecar_payloads(payloads: &[SidecarPayload]) -> Result<[u8; 32], St
     }
     let mut parts = Vec::with_capacity(payloads.len());
     for payload in payloads {
-        let json = payload.to_protocol_json().map_err(StorageError::ConstraintViolation)?;
-        parts.push((payload.schema_id.as_str().to_owned(), canonical_json_bytes(&json)));
+        let json = payload
+            .to_protocol_json()
+            .map_err(StorageError::ConstraintViolation)?;
+        parts.push((
+            payload.schema_id.as_str().to_owned(),
+            canonical_json_bytes(&json),
+        ));
     }
     parts.sort_by(|a, b| a.0.cmp(&b.0));
     let mut hasher = blake3::Hasher::new();

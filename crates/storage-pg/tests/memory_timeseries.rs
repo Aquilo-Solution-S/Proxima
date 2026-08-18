@@ -354,6 +354,7 @@ async fn owners_upsert_rejects_kind_conflict_on_every_write_path() {
                     evidence_t: vec![],
                     wake_id: None,
                     mint_write_act: false,
+                    write_act_t: None,
                 },
             )
             .await

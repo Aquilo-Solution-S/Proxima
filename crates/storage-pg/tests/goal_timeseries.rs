@@ -65,6 +65,7 @@ async fn goal_write_replay_terminal_and_write_act() {
                 evidence_t: vec![],
                 wake_id: None,
                 mint_write_act: true,
+                write_act_t: None,
             },
         )
         .await?;
@@ -107,6 +108,7 @@ async fn goal_write_replay_terminal_and_write_act() {
                 evidence_t: vec![],
                 wake_id: None,
                 mint_write_act: true,
+                write_act_t: None,
             },
         )
         .await?;
@@ -132,6 +134,7 @@ async fn goal_write_replay_terminal_and_write_act() {
                 evidence_t: vec![],
                 wake_id: None,
                 mint_write_act: false,
+                write_act_t: None,
             },
         )
         .await?;
@@ -155,6 +158,7 @@ async fn goal_write_replay_terminal_and_write_act() {
                 evidence_t: vec![],
                 wake_id: None,
                 mint_write_act: false,
+                write_act_t: None,
             },
         )
         .await
@@ -204,6 +208,7 @@ async fn goal_query_projects_assignment_and_evidence_filters() {
                 evidence_t: vec![evidence.memory_id.into_inner()],
                 wake_id: None,
                 mint_write_act: false,
+                write_act_t: None,
             },
         )
         .await?;

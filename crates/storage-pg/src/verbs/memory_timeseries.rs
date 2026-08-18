@@ -72,13 +72,8 @@ pub async fn ingest_fact_timeseries(
             .as_deref()
             .map_or(draft.payload.as_slice(), str::as_bytes);
         Some(
-            super::content::ensure_text_content(
-                tx,
-                owner_id,
-                draft.schema_id.as_str(),
-                text,
-            )
-            .await?,
+            super::content::ensure_text_content(tx, owner_id, draft.schema_id.as_str(), text)
+                .await?,
         )
     };
 

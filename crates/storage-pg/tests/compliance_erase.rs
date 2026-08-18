@@ -236,6 +236,7 @@ async fn erase_group_owner_completes_when_abandoned() {
                 evidence_t: vec![],
                 wake_id: None,
                 mint_write_act: false,
+                write_act_t: None,
             },
         )
         .await?;
