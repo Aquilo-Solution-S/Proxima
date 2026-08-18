@@ -323,7 +323,7 @@ impl ProximaBuilder {
     /// # Errors
     ///
     /// Returns `EmbedError::Storage` for connection or migration
-    /// failures, `EmbedError::V004ResetRequired` when the target database
+    /// failures, `EmbedError::SchemaResetRequired` when the target database
     /// does not match `0001_v008.sql` (see `docs/how-to/migrations.md`), and
     /// `EmbedError::Engine` when engine startup fails.
     #[allow(clippy::too_many_lines)]
@@ -463,24 +463,24 @@ pub enum EmbedError {
     #[error(
         "database schema does not match this binary; reset required (see docs/how-to/migrations.md): {details}"
     )]
-    V004ResetRequired { details: String },
+    SchemaResetRequired { details: String },
 }
 
 /// Map a storage error onto [`EmbedError`], preserving the typed
-/// [`proxima_core::StorageError::V004ResetRequired`] signal instead of
+/// [`proxima_core::StorageError::SchemaResetRequired`] signal instead of
 /// collapsing it into the generic [`EmbedError::Storage`] string.
 fn embed_storage_error(err: proxima_core::StorageError) -> EmbedError {
     match err {
-        proxima_core::StorageError::V004ResetRequired { details } => {
-            EmbedError::V004ResetRequired { details }
+        proxima_core::StorageError::SchemaResetRequired { details } => {
+            EmbedError::SchemaResetRequired { details }
         }
         other => EmbedError::Storage(other.to_string()),
     }
 }
 
 /// Map a migration-facade error onto [`EmbedError`], unwrapping the core
-/// preflight check so a stale pre-v0.0.4 database still surfaces as
-/// [`EmbedError::V004ResetRequired`] through `boot()` rather than a generic
+/// preflight check so a stale pre-lane database still surfaces as
+/// [`EmbedError::SchemaResetRequired`] through `boot()` rather than a generic
 /// storage string.
 fn embed_migration_error(err: MigrationError) -> EmbedError {
     match err {

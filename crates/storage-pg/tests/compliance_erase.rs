@@ -5,7 +5,7 @@ use proxima_core::compliance::{
     ComplianceEraseOutcome, ComplianceEraseRefusal, ComplianceEraseTarget, EraseAuthorization,
 };
 use proxima_core::storage_ports::{
-    ComplianceErasePort, OwnerMembershipAdminPort, OwnerWritePermit,
+    ComplianceErasePort, MemoryAuthoringPort, OwnerMembershipAdminPort, OwnerWritePermit,
 };
 use proxima_core::verbs::fact_ingest::FactWriteCommand;
 use proxima_core::verbs::goal_write::GoalState;
@@ -172,6 +172,62 @@ async fn erase_personal_owner_drops_memory_keys_and_embeddings() {
     .await;
     let _ = drop_db(&db_name).await;
     result.expect("compliance erase failed");
+}
+
+#[tokio::test]
+async fn erase_personal_owner_destroys_cooled_and_gcs_content() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    if let Err(e) = create_db(&db_name).await {
+        panic!("PG required for tests but admin connect failed: {e}");
+    }
+    let url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&url).await?;
+        pg.run_migrations().await?;
+        let pool = pg.pool_for_tests();
+        let user = UserId::new(Uuid::now_v7());
+        let owner = OwnerRef::Personal(user);
+        let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
+        let written = ingest_fact_atomic(pool, &permit, &draft(None), None).await?;
+        let t = written.memory_id.into_inner();
+        MemoryAuthoringPort::forget_memory(&pg, &permit, written.memory_id).await?;
+        let cooled_before: i64 =
+            sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_core.cooled WHERE t = $1")
+                .bind(t)
+                .fetch_one(pool)
+                .await?;
+        assert_eq!(cooled_before, 1);
+
+        let auth = EraseAuthorization::new_for_tests(ComplianceEraseTarget::PersonalOwner {
+            user_id: user,
+            drop_event_id: "test-drop-cooled".into(),
+        });
+        let outcome = pg
+            .erase_personal_owner_if_drop_verified(&auth, user, false, &[], &[], &[], &[])
+            .await?;
+        assert!(
+            matches!(outcome, ComplianceEraseOutcome::Completed { .. }),
+            "got {outcome:?}"
+        );
+        let cooled_after: i64 =
+            sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_core.cooled WHERE t = $1")
+                .bind(t)
+                .fetch_one(pool)
+                .await?;
+        assert_eq!(cooled_after, 0, "owner erase must delete cooled stubs");
+        let content: i64 = sqlx::query_scalar(
+            "SELECT count(*)::bigint FROM proxima_core.content c
+              WHERE NOT EXISTS (SELECT 1 FROM proxima_core.memory m WHERE m.content_id = c.content_id)
+                AND NOT EXISTS (SELECT 1 FROM proxima_core.cooled k WHERE k.content_id = c.content_id)",
+        )
+        .fetch_one(pool)
+        .await?;
+        assert_eq!(content, 0, "unreferenced Content must be GC'd");
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("owner erase of cooled failed");
 }
 
 #[tokio::test]

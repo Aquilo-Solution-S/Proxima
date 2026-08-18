@@ -21,7 +21,7 @@
 //!
 //! - `--reset`: destructive drop-and-recreate of the
 //!   `proxima_core`/`proxima_code` schemas (see [`reset_local_dev_database`])
-//!   — requires `PROXIMA_V004_RESET_CONFIRM` and refuses non-local hosts and
+//!   — requires `PROXIMA_RESET_CONFIRM` and refuses non-local hosts and
 //!   protected database names as a second, independent guard against pointing
 //!   this at anything but a scratch dev database.
 //! - `--stamp`: non-destructive ledger repair for a database that applied a
@@ -40,7 +40,8 @@ const RESET_FLAG: &str = "--reset";
 const STAMP_FLAG: &str = "--stamp";
 // Keep the destructive-reset confirmation versioned so stale operator scripts
 // do not silently opt in to a future baseline reset.
-const RESET_CONFIRM_ENV: &str = "PROXIMA_V004_RESET_CONFIRM";
+const RESET_CONFIRM_ENV: &str = "PROXIMA_RESET_CONFIRM";
+const RESET_CONFIRM_ENV_LEGACY: &str = "PROXIMA_V004_RESET_CONFIRM";
 const RESET_CONFIRM_VALUE: &str = "reset-my-dev-db";
 
 #[tokio::main]
@@ -102,7 +103,10 @@ async fn reset_local_dev_database(
     pg: &PgStorage,
     url: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    if std::env::var(RESET_CONFIRM_ENV).as_deref() != Ok(RESET_CONFIRM_VALUE) {
+    let confirmed = [RESET_CONFIRM_ENV, RESET_CONFIRM_ENV_LEGACY]
+        .iter()
+        .any(|name| std::env::var(name).as_deref() == Ok(RESET_CONFIRM_VALUE));
+    if !confirmed {
         return Err(format!(
             "set {RESET_CONFIRM_ENV}={RESET_CONFIRM_VALUE} to reset a local development database"
         )

@@ -135,7 +135,7 @@ Audit survives `delete_owner` for the same Owner.
 Expired and revoked delegation grants remain durable audit evidence until an
 owner erase selects them. Source-scope erase never selects a grant.
 
-Owner remains the storage and graph isolation primitive. Access is server-resolved `OwnerRoles` over concrete `OwnerRef`s; Core enforces those roles at verb/tool entry and never adds org/share-set semantics. Edge rows are source-owned, admitted by one uniform rule (write authority on the source, read authority on the target). Compliance export/delete redacts or omits unreadable targets independently from source-readable edge rows; a redaction is keyed by the edge itself, which is its own key.
+Owner remains the storage and graph isolation primitive. Access is server-resolved `OwnerRoles` over concrete `OwnerRef`s; Core enforces those roles at verb/tool entry and never adds org/share-set semantics. Pins live on the Memory admission (`origins[]` / `refs[]`). Compliance export/delete redacts unreadable pin targets independently of the source admission.
 
 ## External side effects
 

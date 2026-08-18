@@ -168,6 +168,20 @@ async fn migrations_apply_to_fresh_db() {
         .await?;
         assert_eq!(core_versions, 1, "v0.0.8 is one core migration");
 
+        let grounding_vol: String = sqlx::query_scalar(
+            "SELECT provolatile::text
+               FROM pg_proc p
+               JOIN pg_namespace n ON n.oid = p.pronamespace
+              WHERE n.nspname = 'proxima_core'
+                AND p.proname = 'pins_have_grounding_support'",
+        )
+        .fetch_one(pg.pool_for_tests())
+        .await?;
+        assert_eq!(
+            grounding_vol, "v",
+            "pins_have_grounding_support must be VOLATILE so B2 sees post-lock rows"
+        );
+
         let world: (Uuid, String) = sqlx::query_as(
             "SELECT owner_id, kind::text FROM proxima_core.owners
               WHERE owner_id = '00000000-0000-0000-0000-000000000001'::uuid",

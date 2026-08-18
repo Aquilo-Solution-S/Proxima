@@ -479,6 +479,7 @@ async fn transfer_memory_handle(
         return Ok(false);
     }
     transfer_exclusive_blobs(tx, handle, from_id, world).await?;
+    transfer_content_for_handle(tx, handle, from_id, world).await?;
     let head = sqlx::query(
         "UPDATE proxima_core.memory_head
             SET owner_id = $3
@@ -556,6 +557,68 @@ async fn transfer_exclusive_blobs(
             .execute(&mut **tx)
             .await
             .map_err(map_err)?;
+    }
+    Ok(())
+}
+
+/// Re-home Content under World so `Memory.owner = Content.owner` after publish.
+/// Shared payloads stay on the origin owner; only this series is remapped.
+async fn transfer_content_for_handle(
+    tx: &mut Transaction<'_, Postgres>,
+    handle: uuid::Uuid,
+    from_id: uuid::Uuid,
+    world: uuid::Uuid,
+) -> Result<(), StorageError> {
+    let rows: Vec<(uuid::Uuid, String, Vec<u8>)> = sqlx::query_as(
+        "SELECT DISTINCT c.content_id, c.schema_id, c.content_hash
+           FROM proxima_core.content c
+           JOIN proxima_core.memory m ON m.content_id = c.content_id
+          WHERE m.handle = $1 AND m.owner_id = $2 AND m.content_id IS NOT NULL",
+    )
+    .bind(handle)
+    .bind(from_id)
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(map_err)?;
+    for (old_id, schema_id, hash) in rows {
+        let hash: [u8; 32] = hash
+            .try_into()
+            .map_err(|_| StorageError::Internal("content hash is not 32 bytes".into()))?;
+        let new_id = crate::verbs::content::ensure_content(tx, world, &schema_id, &hash).await?;
+        if new_id == old_id {
+            sqlx::query("UPDATE proxima_core.content SET owner_id = $2 WHERE content_id = $1")
+                .bind(old_id)
+                .bind(world)
+                .execute(&mut **tx)
+                .await
+                .map_err(map_err)?;
+        } else {
+            sqlx::query(
+                "UPDATE proxima_core.memory
+                    SET content_id = $3
+                  WHERE handle = $1 AND owner_id = $2 AND content_id = $4",
+            )
+            .bind(handle)
+            .bind(from_id)
+            .bind(new_id)
+            .bind(old_id)
+            .execute(&mut **tx)
+            .await
+            .map_err(map_err)?;
+            sqlx::query(
+                "UPDATE proxima_core.cooled
+                    SET content_id = $3
+                  WHERE handle = $1 AND owner_id = $2 AND content_id = $4",
+            )
+            .bind(handle)
+            .bind(from_id)
+            .bind(new_id)
+            .bind(old_id)
+            .execute(&mut **tx)
+            .await
+            .map_err(map_err)?;
+            crate::verbs::content::gc_unreferenced_content(tx, old_id).await?;
+        }
     }
     Ok(())
 }

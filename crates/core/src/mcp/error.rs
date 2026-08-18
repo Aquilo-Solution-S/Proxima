@@ -72,7 +72,7 @@ impl McpToolError {
                 crate::StorageError::Retryable(_)
                 | crate::StorageError::Unavailable(_)
                 | crate::StorageError::Internal(_)
-                | crate::StorageError::V004ResetRequired { .. } => McpToolErrorKind::Internal,
+                | crate::StorageError::SchemaResetRequired { .. } => McpToolErrorKind::Internal,
             },
             Self::Other(_) => McpToolErrorKind::Internal,
         }

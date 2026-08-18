@@ -307,8 +307,7 @@ process an uploaded artefact after the tool call that received it has returned.
 The presigned-only rule above applies identically to a worker caller: it reads
 through `read_url` and never learns the bucket or object key.
 
-Citation read-back (`core_fact` `citation_of_fact` /
-`citation_of_entity_head`) returns the locator alongside the ids: the
+Citation read-back (`core_fact` `citation_of_fact`) returns the locator alongside the ids: the
 `core/uploaded-blob-page-span-v1` payload as `page_span` when the
 mapping carries one, and — when the cited object is an uploaded blob —
 a `document` block with `filename`/`mime`/`byte_len`/`sha256_hex`/

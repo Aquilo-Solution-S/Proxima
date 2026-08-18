@@ -1,6 +1,6 @@
 use std::fmt::Write as _;
 
-use crate::tuning::{DEFAULT_HNSW_MAX_SCAN_TUPLES, HnswIterativeScan, PgTuning};
+use crate::tuning::{HnswIterativeScan, PgTuning};
 
 pub(crate) const REQUIRED_PGVECTOR_MAJOR: u32 = 0;
 pub(crate) const REQUIRED_PGVECTOR_MINOR: u32 = 8;
@@ -16,23 +16,15 @@ pub(crate) const REQUIRED_PGVECTOR_PATCH: u32 = 0;
 /// here, so the usual reason to prefer the extended protocol does not apply.
 ///
 /// `hnsw.max_scan_tuples` is only reachable under an iterative scan, so the
-/// `Off` arm genuinely has nothing to set. At [`DEFAULT_HNSW_MAX_SCAN_TUPLES`]
-/// the clause is dropped because it matches *this crate's* constant, not
-/// the server's effective value — so at the default the session inherits
-/// whatever the server carries rather than pinning it. A server- or
-/// database-level override wins until an operator sets
-/// `PROXIMA_PG_HNSW_MAX_SCAN_TUPLES` explicitly. `hnsw.max_scan_tuples`,
-/// not the SQL `LIMIT`, is what bounds the shipped (pushdown) arm's index
-/// scan.
+/// `Off` arm sends nothing. When iterative scan is on, the session always
+/// pins the crate/env value so a server GUC cannot raise the ceiling.
 pub(crate) fn set_hnsw_search_sql(tuning: &PgTuning) -> String {
     let mut sql = format!(
         "SET LOCAL hnsw.ef_search = {}; SET LOCAL hnsw.iterative_scan = {}",
         tuning.hnsw_ef_search,
         tuning.hnsw_iterative_scan.as_setting()
     );
-    if tuning.hnsw_iterative_scan != HnswIterativeScan::Off
-        && tuning.hnsw_max_scan_tuples != DEFAULT_HNSW_MAX_SCAN_TUPLES
-    {
+    if tuning.hnsw_iterative_scan != HnswIterativeScan::Off {
         write!(
             &mut sql,
             "; SET LOCAL hnsw.max_scan_tuples = {}",
@@ -67,7 +59,8 @@ mod tests {
     fn default_tuning_sets_the_settings_it_always_set() {
         assert_eq!(
             set_hnsw_search_sql(&PgTuning::default()),
-            "SET LOCAL hnsw.ef_search = 100; SET LOCAL hnsw.iterative_scan = relaxed_order"
+            "SET LOCAL hnsw.ef_search = 100; SET LOCAL hnsw.iterative_scan = relaxed_order; \
+             SET LOCAL hnsw.max_scan_tuples = 20000"
         );
     }
 

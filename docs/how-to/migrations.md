@@ -3,7 +3,7 @@
 How schema migrations are authored.
 
 Core is one file: `crates/storage-pg/migrations/0001_v008.sql`.
-Flavor: `flavors/code/migrations/20260801000020_v007_baseline.sql`.
+Flavor: `flavors/code/migrations/20260818000020_v008_baseline.sql`.
 A database whose ledger does not match those files must reset.
 
 ## Rules

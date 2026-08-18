@@ -39,9 +39,9 @@ pub enum StorageError {
     #[error("idempotency_conflict:{request_id}")]
     IdempotencyConflict { request_id: String },
     #[error(
-        "database contains pre-v0.0.4 Proxima schema artifacts; export/reset is required before running the v0.0.4 baseline: {details}"
+        "database schema does not match this release lane; export/reset is required: {details}"
     )]
-    V004ResetRequired { details: String },
+    SchemaResetRequired { details: String },
     #[error("not found")]
     NotFound,
     #[error("suppressed: {0}")]

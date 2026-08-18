@@ -9,7 +9,7 @@ use proxima_core::compliance::{
     ComplianceAuditContext, ComplianceEraseCounts, ComplianceEraseOutcome, ComplianceEraseRefusal,
     ComplianceEraseTarget, EraseAuthorization,
 };
-use proxima_core::{GroupId, OwnerRef, SourceId, StorageError, UserId};
+use proxima_core::{ColdObjectStore, GroupId, OwnerRef, SourceId, StorageError, UserId};
 use sqlx::{PgPool, Postgres, Transaction};
 
 use crate::access::owner_columns::{lock_group_membership_tx, owner_binds};
@@ -76,6 +76,7 @@ pub async fn clear_cited_object_purge_pending(
 
 pub async fn erase_group_owner_if_abandoned(
     pool: &PgPool,
+    cold: &dyn ColdObjectStore,
     auth: &EraseAuthorization,
     group_id: GroupId,
     object_purge_planned: bool,
@@ -105,6 +106,7 @@ pub async fn erase_group_owner_if_abandoned(
     }
     erase_selected(
         &mut tx,
+        cold,
         auth,
         owner,
         SelectionScope::Owner,
@@ -127,6 +129,7 @@ pub async fn erase_group_owner_if_abandoned(
 
 pub async fn erase_personal_owner_if_drop_verified(
     pool: &PgPool,
+    cold: &dyn ColdObjectStore,
     auth: &EraseAuthorization,
     user_id: UserId,
     object_purge_planned: bool,
@@ -143,6 +146,7 @@ pub async fn erase_personal_owner_if_drop_verified(
     }
     erase_selected(
         &mut tx,
+        cold,
         auth,
         owner,
         SelectionScope::Owner,
@@ -165,6 +169,7 @@ pub async fn erase_personal_owner_if_drop_verified(
 
 pub async fn erase_group_source_scope_if_owner_abandoned(
     pool: &PgPool,
+    cold: &dyn ColdObjectStore,
     auth: &EraseAuthorization,
     group_id: GroupId,
     source_id: &SourceId,
@@ -194,6 +199,7 @@ pub async fn erase_group_source_scope_if_owner_abandoned(
     }
     erase_selected(
         &mut tx,
+        cold,
         auth,
         owner,
         SelectionScope::Source(source_id),
@@ -216,6 +222,7 @@ pub async fn erase_group_source_scope_if_owner_abandoned(
 
 pub async fn erase_personal_source_scope_if_drop_verified(
     pool: &PgPool,
+    cold: &dyn ColdObjectStore,
     auth: &EraseAuthorization,
     user_id: UserId,
     source_id: &SourceId,
@@ -232,6 +239,7 @@ pub async fn erase_personal_source_scope_if_drop_verified(
     }
     erase_selected(
         &mut tx,
+        cold,
         auth,
         owner,
         SelectionScope::Source(source_id),
@@ -278,6 +286,7 @@ async fn refuse_if_legal_hold_active(
 
 async fn erase_selected(
     tx: &mut Tx<'_>,
+    cold: &dyn ColdObjectStore,
     auth: &EraseAuthorization,
     owner: OwnerRef,
     scope: SelectionScope<'_>,
@@ -363,6 +372,7 @@ async fn erase_selected(
     .await?;
     record_count(tx, "mcp_call_rows", mcp_rows).await?;
 
+    let content_ids = selected_content_ids(tx).await?;
     let memories = delete_selected_table(
         tx,
         "proxima_core.memory",
@@ -371,7 +381,11 @@ async fn erase_selected(
         "memory_id",
     )
     .await?;
-    record_count(tx, "memories", memories).await?;
+    let cooled = delete_selected_cooled(tx, cold).await?;
+    for id in content_ids {
+        super::content::gc_unreferenced_content(tx, id).await?;
+    }
+    record_count(tx, "memories", memories.saturating_add(cooled)).await?;
     let goals =
         delete_selected_table(tx, "proxima_core.goal", "t", "selected_goals", "goal_id").await?;
     record_count(tx, "goals", goals).await?;
@@ -405,6 +419,10 @@ async fn create_selected_sets(
                 "INSERT INTO selected_memories(memory_id, kind)
                  SELECT t, kind::text
                    FROM proxima_core.memory
+                  WHERE owner_id = $1
+                 UNION ALL
+                 SELECT t, kind::text
+                   FROM proxima_core.cooled
                   WHERE owner_id = $1",
             )
             .bind(owner_id)
@@ -457,9 +475,15 @@ async fn capture_selected_handles(tx: &mut Tx<'_>) -> Result<(), StorageError> {
     .map_err(map_err)?;
     sqlx::query(
         "INSERT INTO selected_memory_handles(handle)
-         SELECT DISTINCT m.handle
-           FROM proxima_core.memory m
-           JOIN selected_memories sm ON sm.memory_id = m.t",
+         SELECT DISTINCT handle FROM (
+             SELECT m.handle
+               FROM proxima_core.memory m
+               JOIN selected_memories sm ON sm.memory_id = m.t
+             UNION
+             SELECT c.handle
+               FROM proxima_core.cooled c
+               JOIN selected_memories sm ON sm.memory_id = c.t
+         ) h",
     )
     .execute(&mut **tx)
     .await
@@ -847,6 +871,57 @@ async fn delete_selected_table(
     .await
 }
 
+/// Delete cooled stubs for selected admissions, their cold objects, then GC Content.
+async fn delete_selected_cooled(
+    tx: &mut Tx<'_>,
+    cold: &dyn ColdObjectStore,
+) -> Result<u64, StorageError> {
+    let keys: Vec<String> = sqlx::query_scalar(
+        "SELECT c.object_key
+           FROM proxima_core.cooled c
+           JOIN selected_memories sm ON sm.memory_id = c.t",
+    )
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(map_err)?;
+    for key in &keys {
+        match cold.delete(key).await {
+            Ok(()) | Err(StorageError::NotFound) => {}
+            Err(err) => return Err(err),
+        }
+    }
+    let deleted = sqlx::query(
+        "DELETE FROM proxima_core.cooled c
+          WHERE EXISTS (
+                SELECT 1 FROM selected_memories sm WHERE sm.memory_id = c.t
+          )",
+    )
+    .execute(&mut **tx)
+    .await
+    .map_err(map_err)?
+    .rows_affected();
+    Ok(deleted)
+}
+
+async fn selected_content_ids(tx: &mut Tx<'_>) -> Result<Vec<uuid::Uuid>, StorageError> {
+    sqlx::query_scalar(
+        "SELECT DISTINCT content_id FROM (
+             SELECT m.content_id
+               FROM proxima_core.memory m
+               JOIN selected_memories sm ON sm.memory_id = m.t
+              WHERE m.content_id IS NOT NULL
+             UNION
+             SELECT c.content_id
+               FROM proxima_core.cooled c
+               JOIN selected_memories sm ON sm.memory_id = c.t
+              WHERE c.content_id IS NOT NULL
+         ) x",
+    )
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(map_err)
+}
+
 async fn delete_fixed_goal_sidecars(tx: &mut Tx<'_>) -> Result<(), StorageError> {
     delete_fixed_by_selected(
         tx,
@@ -997,6 +1072,19 @@ mod tests {
         assert!(
             !src.contains(&needle),
             "v008 has no suppression table; Lean retired SuppressionKey"
+        );
+    }
+
+    #[test]
+    fn owner_erase_names_cooled() {
+        let src = include_str!("compliance_erase.rs");
+        assert!(
+            src.contains("proxima_core.cooled"),
+            "owner erase must select and delete cooled"
+        );
+        assert!(
+            src.contains("gc_unreferenced_content"),
+            "owner erase must GC Content"
         );
     }
 

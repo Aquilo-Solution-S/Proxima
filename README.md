@@ -167,7 +167,9 @@ Index: [docs/README.md](docs/README.md). Origin ontology:
 
 Rust. One binary per deployment: Engine, storage, transports, and the
 flavor crates linked at build time. No runtime registry, no plugin
-tier, no in-process flavor catalog.
+tier, no in-process flavor catalog. Workspace crates stay
+`publish = false`; the git tag is the version. In-tree / pin-by-git
+consumers must move with the tag.
 
 Existing databases on a pre-v0.0.8 ledger reset. There is no in-place
 ALTER lane from the prior schema.

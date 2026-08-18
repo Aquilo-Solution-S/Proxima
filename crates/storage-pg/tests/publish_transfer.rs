@@ -58,11 +58,49 @@ async fn publish_transfers_same_memory_t_and_sidecar() {
         .bind(t)
         .execute(pool)
         .await?;
+        let content_id: Uuid = sqlx::query_scalar(
+            "INSERT INTO proxima_core.content (owner_id, schema_id, content_hash)
+             VALUES ($1, 'core/test-fact-v1', $2)
+             RETURNING content_id",
+        )
+        .bind(owner.stored_owner_id())
+        .bind(vec![7_u8; 32])
+        .fetch_one(pool)
+        .await?;
+        sqlx::query("UPDATE proxima_core.memory SET content_id = $2 WHERE t = $1")
+            .bind(t)
+            .bind(content_id)
+            .execute(pool)
+            .await?;
 
         let first = pg
             .transfer_to_world(&permit, EntityId::Memory(written.memory_id))
             .await?;
         assert!(first);
+        let content_owner: Uuid = sqlx::query_scalar(
+            "SELECT c.owner_id
+               FROM proxima_core.content c
+               JOIN proxima_core.memory m ON m.content_id = c.content_id
+              WHERE m.t = $1",
+        )
+        .bind(t)
+        .fetch_one(pool)
+        .await?;
+        assert_eq!(
+            content_owner,
+            OwnerRef::World.stored_owner_id(),
+            "publish must re-home Content with the Memory"
+        );
+        let old_left: i64 = sqlx::query_scalar(
+            "SELECT count(*)::bigint FROM proxima_core.content WHERE content_id = $1",
+        )
+        .bind(content_id)
+        .fetch_one(pool)
+        .await?;
+        assert_eq!(
+            old_left, 0,
+            "origin Content is GC'd after exclusive publish"
+        );
         let owner_id: Uuid =
             sqlx::query_scalar("SELECT owner_id FROM proxima_core.memory WHERE t = $1")
                 .bind(t)
