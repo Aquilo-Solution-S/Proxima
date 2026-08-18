@@ -279,7 +279,9 @@ async fn tagged_search_scans_flavor_sidecars() {
         .bind(owner_id)
         .execute(pool)
         .await?;
-        sqlx::query("CREATE SCHEMA proxima_docs").execute(pool).await?;
+        sqlx::query("CREATE SCHEMA proxima_docs")
+            .execute(pool)
+            .await?;
         sqlx::query(
             "CREATE TABLE proxima_docs.section_text_v1 (
                 t uuid PRIMARY KEY,
