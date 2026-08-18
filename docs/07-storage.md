@@ -152,7 +152,7 @@ Independent of entity tables.
 |---|---|
 | CDC | `announce.seq` |
 | writes are replayable | `ingest_keys` |
-| forget is cool | PUT `cold/` first, then delete hot; last-t forget deletes `memory_head` |
+| forget is cool | PUT `cold/` first, then delete hot; last-t forget deletes `memory_head`. Refuse if a remaining hot non-Fact would lose `groundingSupport` (no hot pin and no cooled Fact). |
 | hydrate | same `t`; recreates `memory_head` when the series was empty |
 
 <a id="scaling-envelope"></a>

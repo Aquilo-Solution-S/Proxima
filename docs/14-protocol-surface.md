@@ -49,7 +49,7 @@ Canonical substrate tools:
 |---|---|
 | `core_remember` | write agent-authored Fact |
 | `core_episode_commit` | one txn: `remember[]`, `derive?`, `stance[]`, `goal[]` + write-act Fact; only `bind[]` (`remember:N`, `derive`, `stance:N`, `goal:N`) members pin that act (Memory `refs += write-act t`; Goal `write_act_t`) |
-| `core_forget` | cool one memory admission (content GC when unreferenced) |
+| `core_forget` | cool one memory admission; refuse if a remaining hot non-Fact would be ungrounded (content GC when unreferenced) |
 | `core_record_utterance` | write utterance Fact |
 | `core_derive` | write agent-authored Abstraction |
 | `core_interpret` | author an interpretation Perspective: a claim about existing memories (`claim`, `confidence` 0..=100 defaulting to 80, `subjects`). Returns a `P:` handle and an `edge_count`; it writes no edge of its own — the subjects are payload references |

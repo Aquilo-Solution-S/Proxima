@@ -739,6 +739,32 @@ BEGIN
 END;
 $$;
 
+-- B2 — a pin is grounding support iff it is a hot row, or a cooled Fact.
+-- `cooling` is the t about to leave the hot set (forget); NULL at admit.
+CREATE FUNCTION proxima_core.pins_have_grounding_support(
+    pins uuid[],
+    cooling uuid,
+    cooling_kind proxima_core.memory_kind
+) RETURNS boolean
+    LANGUAGE sql
+    VOLATILE
+    AS $$
+    SELECT EXISTS (
+        SELECT 1
+          FROM unnest(pins) AS p(id)
+         WHERE CASE
+                 WHEN cooling IS NOT NULL AND p.id = cooling THEN
+                   cooling_kind = 'fact'
+                 ELSE
+                   EXISTS (SELECT 1 FROM proxima_core.memory h WHERE h.t = p.id)
+                   OR EXISTS (
+                        SELECT 1 FROM proxima_core.cooled c
+                         WHERE c.t = p.id AND c.kind = 'fact'
+                   )
+               END
+    );
+$$;
+
 CREATE FUNCTION proxima_core.memory_pin_checks() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -746,6 +772,27 @@ DECLARE
     pin uuid;
     pin_handle uuid;
 BEGIN
+    IF NEW.kind = 'fact' AND NEW.origins = '{}' AND NEW.refs = '{}' THEN
+        RETURN NEW;
+    END IF;
+
+    IF NEW.origins <> '{}' OR NEW.refs <> '{}' THEN
+        -- Wait out an in-flight forget *before* B2 (FOR UPDATE in commit_forget).
+        PERFORM 1
+          FROM proxima_core.memory
+         WHERE t = ANY (NEW.origins || NEW.refs)
+         FOR SHARE;
+    END IF;
+
+    IF NEW.kind <> 'fact'
+       AND NOT proxima_core.pins_have_grounding_support(
+             NEW.origins || NEW.refs, NULL, NULL
+           )
+    THEN
+        RAISE EXCEPTION 'non-fact must pin a hot memory or a cooled fact'
+            USING ERRCODE = '23514';
+    END IF;
+
     IF NEW.origins = '{}' AND NEW.refs = '{}' THEN
         RETURN NEW;
     END IF;
@@ -801,6 +848,39 @@ BEGIN
             RAISE EXCEPTION 'perspective origins must be abstraction t'
                 USING ERRCODE = '23514';
         END IF;
+    END IF;
+    RETURN NEW;
+END;
+$$;
+
+CREATE FUNCTION proxima_core.cooled_forget_grounding() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+    IF NEW.kind = 'fact' THEN
+        RETURN NEW;
+    END IF;
+    -- Lock dependers (any owner) so two forgets cannot each treat the
+    -- other target as still-hot support. ORDER BY t for a stable wait graph.
+    PERFORM 1
+      FROM proxima_core.memory m
+     WHERE m.kind <> 'fact'
+       AND m.t <> NEW.t
+       AND (m.origins @> ARRAY[NEW.t] OR m.refs @> ARRAY[NEW.t])
+     ORDER BY m.t
+     FOR UPDATE;
+    IF EXISTS (
+        SELECT 1
+          FROM proxima_core.memory m
+         WHERE m.kind <> 'fact'
+           AND m.t <> NEW.t
+           AND (m.origins @> ARRAY[NEW.t] OR m.refs @> ARRAY[NEW.t])
+           AND NOT proxima_core.pins_have_grounding_support(
+                 m.origins || m.refs, NEW.t, NEW.kind
+               )
+    ) THEN
+        RAISE EXCEPTION 'forget would leave an ungrounded memory'
+            USING ERRCODE = '23514';
     END IF;
     RETURN NEW;
 END;
@@ -891,6 +971,11 @@ CREATE TRIGGER memory_pin_checks
     BEFORE INSERT ON proxima_core.memory
     FOR EACH ROW
     EXECUTE FUNCTION proxima_core.memory_pin_checks();
+
+CREATE TRIGGER cooled_forget_grounding
+    BEFORE INSERT ON proxima_core.cooled
+    FOR EACH ROW
+    EXECUTE FUNCTION proxima_core.cooled_forget_grounding();
 
 CREATE TRIGGER goal_append_only
     BEFORE UPDATE ON proxima_core.goal
