@@ -26,7 +26,7 @@ minimization discipline) — a failing build is drift.
 | `Causa/Prelude.lean` | minimal `Set`, `Instant`, `Text` |
 | `Causa/Owner.lean` | resolved Owner/group model and role ladder (doc 01) |
 | `Causa/Identity.lean` | ids, stable `OwnerRef`, source batches, append-only/immutable classes, vector-store independence (docs 01, 07) |
-| `Causa/Memory.lean` | F/A/P kinds, `(handle, t)` row, origins/refs, `Content` (owner-scoped payload), MemoryHead, Cooled stub (docs 02, UML v0.0.8 / v0.0.9) |
+| `Causa/Memory.lean` | F/A/P kinds, `(handle, t)` row, origins/refs, `Content` (owner-scoped payload), MemoryHead, Cooled stub (docs 02, UML v0.0.8) |
 | `Causa/Knowledge.lean` | text-bearing knowledge artifacts and interpreter-class recoverability |
 | `Causa/Goals.lean` | Goal `(handle, t)`, wake_id, GoalHead, transitions, evidence/assignment pins, `situatedSelf` cue-indexed query (docs 06) |
 | `Causa/Edges.lean` | pins on the node (no Edge table): two closed kinds, OriginKindValid, derivePins identity, interpretation-as-node |

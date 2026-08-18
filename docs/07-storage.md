@@ -81,7 +81,7 @@ Closed vocabularies are SQL enums.
 | `owners` | `owner_id`, `kind`; World seeded |
 | `memory_head` | `handle` PK, `kind`, `schema_id`, `owner_id`, head `t` |
 | `memory` | `(handle, t)` PK, `UNIQUE(t)`, `schema_id`, `origins[]`, `refs[]`, `blob_id` |
-| `content` | kernel `Content` / `memory.content_id` — SQL `0002` not landed |
+| `content` | kernel `Content` / `memory.content_id` — same v0.0.8 file `0001_v008.sql` (not landed yet) |
 | `ingest_keys` | `(owner_id, source_id, ingest_key)` → `t` |
 | `announce` | `seq`, `op` append\|forget\|erase, `entity` memory\|goal |
 | `blob` | cited artefact |
