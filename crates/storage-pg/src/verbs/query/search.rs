@@ -1,15 +1,18 @@
 //! `core_search_memories` — sidecar-first content search.
 //!
 //! Same split as `proxima-code_search_chunks` (the reference):
-//! 1. **content** — one GIN query per *core* sidecar (`@@` only); `LIKE`
+//! 1. **content** — one GIN query per sidecar (`@@` only); `LIKE`
 //!    runs only when that sidecar's GIN arm is empty
 //! 2. **admit** — owner + optional current-head on the hit `t`s;
 //!    `schema_id` is on `memory`
 //! 3. **pins** — engine neighbor load, only if the caller asked
 //!
-//! Flavor corpora (`proxima_code.*`, …) are not scanned here. A code
-//! request uses the flavor tool; cross-flavor meaning is pins, not a
-//! mega-index.
+//! Unscoped search (no tags) scans only `proxima_core.*` sidecars.
+//! A tag filter is the documented flavor scope
+//! (`docs/09-developing-flavors.md`): those queries also scan flavor
+//! sidecars that declare a `tag_column`. A specialized flavor tool
+//! (e.g. `proxima-code_search_chunks`) still owns extra filters;
+//! unscoped core search is not a mega-index.
 
 use std::collections::BTreeMap;
 
@@ -151,7 +154,10 @@ fn core_search_projections<'a>(
 ) -> Vec<&'a MemorySearchProjection> {
     let mut by_table = BTreeMap::<&str, &MemorySearchProjection>::new();
     for projection in projections {
-        if !projection.sidecar_table.starts_with(CORE_SIDECAR_PREFIX) {
+        // Unscoped search stays on core sidecars. A tag filter is how a
+        // flavor scopes `core_search_memories` (docs/09); those queries
+        // must reach the flavor sidecar that declared `tag_column`.
+        if !projection.sidecar_table.starts_with(CORE_SIDECAR_PREFIX) && req.tags.is_empty() {
             continue;
         }
         if !payload_kind_matches(req.kind, projection.kind) {

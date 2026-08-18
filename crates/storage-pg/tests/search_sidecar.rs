@@ -247,7 +247,7 @@ async fn lexical_search_is_sidecar_first_then_owner_admit() {
             .await?;
         assert!(
             skipped.results.is_empty(),
-            "flavor sidecars are not in core_search_memories"
+            "unscoped core_search_memories does not scan flavor sidecars"
         );
 
         Ok(())
@@ -256,6 +256,105 @@ async fn lexical_search_is_sidecar_first_then_owner_admit() {
 
     let _ = drop_db(&db_name).await;
     result.expect("sidecar-first search test failed");
+}
+
+#[tokio::test]
+async fn tagged_search_scans_flavor_sidecars() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    if let Err(e) = create_db(&db_name).await {
+        panic!("PG required for tests but admin connect failed: {e}");
+    }
+    let url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&url).await?;
+        pg.run_migrations().await?;
+        let pool = pg.pool_for_tests();
+        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let owner_id = owner.stored_owner_id();
+        sqlx::query(
+            "INSERT INTO proxima_core.owners (owner_id, kind)
+             VALUES ($1, 'personal')
+             ON CONFLICT DO NOTHING",
+        )
+        .bind(owner_id)
+        .execute(pool)
+        .await?;
+        sqlx::query("CREATE SCHEMA proxima_docs").execute(pool).await?;
+        sqlx::query(
+            "CREATE TABLE proxima_docs.section_text_v1 (
+                t uuid PRIMARY KEY,
+                text text NOT NULL,
+                tags text[] NOT NULL
+             )",
+        )
+        .execute(pool)
+        .await?;
+
+        let handle = Uuid::now_v7();
+        let t = Uuid::now_v7();
+        sqlx::query(
+            "INSERT INTO proxima_core.memory_head (handle, kind, schema_id, owner_id, t)
+             VALUES ($1, 'abstraction', 'proxima-docs/section-text-v1', $2, $3)",
+        )
+        .bind(handle)
+        .bind(owner_id)
+        .bind(t)
+        .execute(pool)
+        .await?;
+        sqlx::query(
+            "INSERT INTO proxima_core.memory (handle, t, kind, owner_id, schema_id)
+             VALUES ($1, $2, 'abstraction', $3, 'proxima-docs/section-text-v1')",
+        )
+        .bind(handle)
+        .bind(t)
+        .bind(owner_id)
+        .execute(pool)
+        .await?;
+        sqlx::query(
+            "INSERT INTO proxima_docs.section_text_v1 (t, text, tags)
+             VALUES ($1, 'Antriebswelle im Getriebe', ARRAY['proxima-docs'])",
+        )
+        .bind(t)
+        .execute(pool)
+        .await?;
+
+        let projection = MemorySearchProjection {
+            schema_id: SchemaId::new("proxima-docs/section-text-v1".to_string()),
+            schema_version: SchemaVersion::new(1),
+            kind: PayloadKind::Abstraction,
+            sidecar_table: "proxima_docs.section_text_v1".into(),
+            fields: vec![MemorySearchProjectionField {
+                column: "text".into(),
+                kind: SearchProjectionColumnKind::Text,
+            }],
+            tag_column: Some("tags".into()),
+            tsv_column: None,
+            embed_text_column: Some("text".into()),
+            language_column: None,
+        };
+
+        let unscoped = pg
+            .search_memories(
+                &search_req(owner, "Antriebswelle"),
+                std::slice::from_ref(&projection),
+            )
+            .await?;
+        assert!(
+            unscoped.results.is_empty(),
+            "unscoped search must not open a flavor table"
+        );
+
+        let mut tagged = search_req(owner, "Antriebswelle");
+        tagged.kind = Some(EntityKind::Abstraction);
+        tagged.tags = vec!["proxima-docs".into()];
+        let page = pg.search_memories(&tagged, &[projection]).await?;
+        assert_eq!(page.results.len(), 1, "tagged search must hit flavor text");
+        assert_eq!(page.results[0].memory_id.into_inner(), t);
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("tagged flavor sidecar search failed");
 }
 
 #[tokio::test]
