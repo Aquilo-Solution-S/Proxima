@@ -78,6 +78,7 @@ fn derived_abstraction<'a>(
         }),
         authoring_perspective_id: None,
         derived_from: origin,
+        extra_refs: &[],
         supersedes: None,
         lexical_language: None,
     }
@@ -135,6 +136,7 @@ async fn unit_of_work_one_shot_and_rollback_and_lock() {
                 }),
                 authoring_perspective_id: None,
                 derived_from: std::slice::from_ref(&origin),
+                extra_refs: &[],
                 supersedes: None,
                 lexical_language: None,
             };

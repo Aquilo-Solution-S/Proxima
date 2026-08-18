@@ -405,6 +405,11 @@ CREATE INDEX embedding_jobs_pending_claim_idx
     ON proxima_core.embedding_jobs (model_id, job_id)
     WHERE status = 'pending';
 
+CREATE TABLE proxima_core.write_act_v1 (
+    t uuid PRIMARY KEY REFERENCES proxima_core.memory (t),
+    episode_id uuid NOT NULL
+);
+
 CREATE TABLE proxima_core.agent_note_v1 (
     t uuid PRIMARY KEY REFERENCES proxima_core.memory (t),
     note_id uuid NOT NULL,

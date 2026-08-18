@@ -108,6 +108,7 @@ pub(super) async fn append_execution_plan(
             sidecar_payload: SidecarPayload::abstraction(payload.clone()),
             authoring_perspective_id: Some(planner_root),
             derived_from: &origins,
+            extra_refs: &[],
             supersedes: None,
             lexical_language: None,
         })

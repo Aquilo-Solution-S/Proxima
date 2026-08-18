@@ -173,6 +173,7 @@ impl McpTool for InterpretTool {
                         // it declares no derivation and writes no
                         // `origin` rows.
                         derived_from: &[],
+                        extra_refs: &[],
                         supersedes: None,
                         lexical_language: None,
                     },

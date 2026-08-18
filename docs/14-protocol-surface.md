@@ -36,7 +36,7 @@ the Flavor SDK and typed services only.
 
 Agent long-term memory is core substrate. MCP tools are thin callers of
 Engine verbs; MCP resources expose read-only graph and registry views.
-Storage stays behind the Engine. The substrate surface is 10 tools + 10
+Storage stays behind the Engine. The substrate surface is 15 tools + 10
 resources; `proxima://tools` returns the live tool catalog only, and
 resources are discovered through MCP `resources/list` and
 `resources/templates/list`.
@@ -48,10 +48,14 @@ Canonical substrate tools:
 | Tool | Contract |
 |---|---|
 | `core_remember` | write agent-authored Fact |
+| `core_episode_commit` | one txn: `remember[]` + write-act Fact; only `bind[]` (`remember:N`) members `refs += write-act t` |
+| `core_forget` | cool one memory admission (content GC when unreferenced) |
 | `core_record_utterance` | write utterance Fact |
 | `core_derive` | write agent-authored Abstraction |
 | `core_interpret` | author an interpretation Perspective: a claim about existing memories (`claim`, `confidence` 0..=100 defaulting to 80, `subjects`). Returns a `P:` handle and an `edge_count`; it writes no edge of its own — the subjects are payload references |
-| `core_search_memories` | search memories; may include neighbor edges, per-result tags, lexical-degradation status, and selected memory-space labels. Optional `min_score` relevance floor and hybrid `semantic_weight` (default 0.6 semantic / 0.4 lexical). Pages of at most 50: `has_more` plus an opaque `next_cursor` that is passed back as `cursor` with the identical query shape (the cursor is fingerprint-bound and fails closed on any other query, order, filter, or space set) |
+| `core_recall` | cue-driven sketch packet (question ∪ subject handles). Atomic, no sidecar, hard cap 32. This is how Self is retrieved; empty cue is rejected. `kind=Perspective` includes assigned Active Goals |
+| `core_think` | cursor pages over pin incidence from seeds. Directions: `ancestors`, `descendants`, `episode_siblings`. No ANN. Hydrate via `proxima://memory/{id}` |
+| `core_search_memories` | precision search; may include neighbor edges, per-result tags, lexical-degradation status, and selected memory-space labels. Optional `min_score` relevance floor and hybrid `semantic_weight` (default 0.6 semantic / 0.4 lexical). Pages of at most 50: `has_more` plus an opaque `next_cursor` that is passed back as `cursor` with the identical query shape (the cursor is fingerprint-bound and fails closed on any other query, order, filter, or space set). Neighbors default off |
 | `core_memory_spaces` | list server-issued memory-space keys with labels and coarse unrestricted-access flags |
 | `core_membership` | group roster dispatcher: `add_member`, `remove_member`, `list_members`; host/controller scoped. `list_members` pages (default 50, max 200) with keyset `cursor`/`next_cursor` + `has_more`, cursor bound to the group |
 | `core_publish` | owner-transfer dispatcher: `publish_to_world`; irreversible transfer to `OwnerRef::World`, not membership or ACL |

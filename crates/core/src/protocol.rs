@@ -3,8 +3,11 @@
 
 pub mod tool {
     pub const CORE_SEARCH_MEMORIES: &str = "core_search_memories";
+    pub const CORE_RECALL: &str = "core_recall";
+    pub const CORE_THINK: &str = "core_think";
     pub const CORE_MEMORY_SPACES: &str = "core_memory_spaces";
     pub const CORE_REMEMBER: &str = "core_remember";
+    pub const CORE_EPISODE_COMMIT: &str = "core_episode_commit";
     pub const CORE_RECORD_UTTERANCE: &str = "core_record_utterance";
     pub const CORE_DERIVE: &str = "core_derive";
     pub const CORE_INTERPRET: &str = "core_interpret";

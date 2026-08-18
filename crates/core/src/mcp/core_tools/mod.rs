@@ -1,9 +1,12 @@
 //! Substrate-shipped MCP tools registered into every composite binary.
 
 pub mod citation_of_fact;
+pub mod episode;
 pub mod fact;
 pub mod facts_citing_object;
+pub mod recall;
 pub mod search_memories;
+pub mod think;
 
 pub mod get_graph;
 pub mod get_memories;
@@ -22,13 +25,16 @@ pub mod upload;
 pub mod walk_memory_lineage;
 pub(crate) mod wire_ref;
 
+pub use episode::EpisodeCommitTool;
 pub use fact::CoreFactTool;
 pub use goal::CoreGoalTool;
 pub use membership::CoreMembershipTool;
 pub use memory::{DeriveTool, ForgetTool, InterpretTool, RecordUtteranceTool, RememberTool};
 pub use memory_spaces::MemorySpacesTool;
 pub use publish::CorePublishTool;
+pub use recall::RecallTool;
 pub use search_memories::SearchMemoriesTool;
+pub use think::ThinkTool;
 pub use upload::CoreUploadTool;
 
 use crate::mcp::McpToolAnnotations;
@@ -73,8 +79,11 @@ pub(crate) fn register_all(
     registry: &mut crate::FlavorRegistry,
 ) -> Result<(), crate::FlavorRegistryError> {
     registry.try_add_mcp_tool::<SearchMemoriesTool>("core")?;
+    registry.try_add_mcp_tool::<RecallTool>("core")?;
+    registry.try_add_mcp_tool::<ThinkTool>("core")?;
     registry.try_add_mcp_tool::<MemorySpacesTool>("core")?;
     registry.try_add_mcp_tool::<RememberTool>("core")?;
+    registry.try_add_mcp_tool::<EpisodeCommitTool>("core")?;
     registry.try_add_mcp_tool::<ForgetTool>("core")?;
     registry.try_add_mcp_tool::<RecordUtteranceTool>("core")?;
     registry.try_add_mcp_tool::<DeriveTool>("core")?;

@@ -339,6 +339,7 @@ impl McpTool for DeriveTool {
                         },
                         authoring_perspective_id: ctx.caller_self_perspective,
                         derived_from: &derived_from,
+                        extra_refs: &[],
                         supersedes: None,
                         lexical_language: lexical_language.as_deref(),
                     },

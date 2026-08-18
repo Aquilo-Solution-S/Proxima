@@ -504,6 +504,7 @@ fn flavor_sdk_exposes_the_derived_memory_write_lane() {
         }),
         authoring_perspective_id: None,
         derived_from: &derived_from,
+        extra_refs: &[],
         supersedes: None,
         lexical_language: None,
     };

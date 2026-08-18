@@ -18,7 +18,8 @@ use std::fmt::Write as _;
 
 use proxima_core::mcp::McpTool;
 use proxima_core::mcp::core_tools::{
-    CoreGoalTool, DeriveTool, InterpretTool, MemorySpacesTool, RememberTool, SearchMemoriesTool,
+    CoreGoalTool, DeriveTool, InterpretTool, MemorySpacesTool, RecallTool, RememberTool,
+    SearchMemoriesTool, ThinkTool,
 };
 use proxima_core::protocol::resource as protocol_resource;
 
@@ -52,6 +53,8 @@ struct Surface {
     remember: bool,
     derive: bool,
     interpret: bool,
+    recall: bool,
+    think: bool,
     search: bool,
     memory_spaces: bool,
     get_memory: bool,
@@ -71,6 +74,8 @@ impl Surface {
             remember: has_tool(RememberTool::NAME),
             derive: has_tool(DeriveTool::NAME),
             interpret: has_tool(InterpretTool::NAME),
+            recall: has_tool(RecallTool::NAME),
+            think: has_tool(ThinkTool::NAME),
             search: has_tool(SearchMemoriesTool::NAME),
             memory_spaces: has_tool(MemorySpacesTool::NAME),
             get_memory: has_resource(protocol_resource::MEMORY),
@@ -91,7 +96,7 @@ pub fn build_instructions(
     advertised_resources: &BTreeSet<&str>,
 ) -> String {
     let s = Surface::from_advertised(advertised_tools, advertised_resources);
-    if !s.remember && !s.derive && !s.search {
+    if !s.remember && !s.derive && !s.search && !s.recall && !s.think {
         return String::new();
     }
 
@@ -154,27 +159,7 @@ pub fn build_instructions(
         );
     }
 
-    if s.search {
-        out.push_str("`core_search_memories` (hybrid) is the primary recall path");
-        if s.get_memory {
-            out.push_str(
-                ", then fetch one entity from `proxima://memory/{id}` (add \
-                 `?expand_neighbors=true` for edges)",
-            );
-        }
-        out.push_str(". ");
-        if s.lineage {
-            out.push_str(
-                "Walk lineage via `proxima://memory/{id}/lineage?direction=ancestors`; use it \
-                 only when provenance is the question. ",
-            );
-        }
-        out.push_str("Discover reads with `resources/list` and `resources/templates/list`. ");
-        out.push_str(
-            "Semantic search needs embeddings, which drain in-process when an embedding client \
-             is configured. ",
-        );
-    }
+    push_retrieval_instructions(&mut out, s);
 
     if s.code {
         out.push_str(
@@ -190,6 +175,43 @@ pub fn build_instructions(
     );
 
     out
+}
+
+fn push_retrieval_instructions(out: &mut String, s: Surface) {
+    if s.recall {
+        out.push_str(
+            "`core_recall` is the cue packet (question and/or subject handles). Self is this \
+             query, not a dump of Perspective heads. ",
+        );
+    }
+    if s.think {
+        out.push_str(
+            "`core_think` pages a pin walk from seeds (ancestors, descendants, \
+             episode_siblings); hydrate bodies separately. ",
+        );
+    }
+    if !s.search {
+        return;
+    }
+    out.push_str("`core_search_memories` is precision search (tags/schema/words)");
+    if s.get_memory {
+        out.push_str(
+            "; hydrate one entity from `proxima://memory/{id}` (add \
+             `?expand_neighbors=true` for edges)",
+        );
+    }
+    out.push_str(". ");
+    if s.lineage {
+        out.push_str(
+            "Walk lineage via `proxima://memory/{id}/lineage?direction=ancestors`; use it \
+             only when provenance is the question. ",
+        );
+    }
+    out.push_str("Discover reads with `resources/list` and `resources/templates/list`. ");
+    out.push_str(
+        "Semantic search needs embeddings, which drain in-process when an embedding client \
+         is configured. ",
+    );
 }
 
 /// Build the fuller How-To playbook (the `proxima://how-to` resource body),
@@ -313,8 +335,19 @@ fn push_capture_table(out: &mut String, s: Surface) {
             "| Set an intent / objective to pursue | `core_goal` action=set (+ action=decompose) |\n",
         );
     }
+    if s.recall {
+        out.push_str(
+            "| Retrieve Self / situation-conditioned sketches | `core_recall` (question ∪ \
+             subjects; no sidecar) |\n",
+        );
+    }
+    if s.think {
+        out.push_str(
+            "| Walk provenance / episode siblings | `core_think` (cursor pages, not a stream) |\n",
+        );
+    }
     if s.search {
-        out.push_str("| Find prior knowledge | `core_search_memories` (hybrid default)");
+        out.push_str("| Precision search (tags/schema/words) | `core_search_memories`");
         if s.get_memory {
             out.push_str(" → `proxima://memory/{id}` (`?expand_neighbors=true`)");
         }
@@ -392,23 +425,47 @@ fn push_worked_example(out: &mut String, s: Surface) {
 }
 
 fn push_reading(out: &mut String, s: Surface) {
-    if !s.search {
+    if !s.search && !s.recall {
         return;
     }
     out.push_str("## Reading: which surface first\n\n");
-    out.push_str(
-        "1. `core_search_memories` (hybrid) — the default first reach for prior knowledge.\n",
-    );
+    let mut n = 1u8;
+    if s.recall {
+        let _ = writeln!(
+            out,
+            "{n}. `core_recall` — cue packet (question ∪ subjects). This is how Self is retrieved."
+        );
+        n += 1;
+    }
+    if s.search {
+        let _ = writeln!(
+            out,
+            "{n}. `core_search_memories` — precision search (tags/schema/words); neighbors default off."
+        );
+        n += 1;
+    }
     if s.get_memory {
-        out.push_str(
-            "2. `proxima://memory/{id}` — fetch one entity after search locates it; add \
-             `?expand_neighbors=true` for immediate edges.\n",
+        let _ = writeln!(
+            out,
+            "{n}. `proxima://memory/{{id}}` — fetch one entity after search locates it; add \
+             `?expand_neighbors=true` for immediate edges."
+        );
+        n += 1;
+    }
+    if s.think {
+        let _ = writeln!(
+            out,
+            "{n}. `core_think` — paged pin walk (ancestors/descendants/episode_siblings)."
         );
     }
     if s.lineage {
-        out.push_str(
-            "3. `proxima://memory/{id}/lineage?direction=ancestors` — walk provenance/deep \
-             lineage only when you specifically need it.\n",
+        if s.think {
+            n += 1;
+        }
+        let _ = writeln!(
+            out,
+            "{n}. `proxima://memory/{{id}}/lineage?direction=ancestors` — walk provenance/deep \
+             lineage only when you specifically need it."
         );
     }
     out.push_str(
@@ -428,6 +485,8 @@ mod tests {
             DeriveTool::NAME,
             InterpretTool::NAME,
             SearchMemoriesTool::NAME,
+            RecallTool::NAME,
+            ThinkTool::NAME,
             CoreGoalTool::NAME,
             CODE_SEARCH_CHUNKS,
             CODE_REGISTER_REPO,
@@ -450,6 +509,8 @@ mod tests {
             DeriveTool::NAME,
             InterpretTool::NAME,
             SearchMemoriesTool::NAME,
+            RecallTool::NAME,
+            ThinkTool::NAME,
         ]
         .into_iter()
         .collect()

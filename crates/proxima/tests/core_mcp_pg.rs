@@ -603,6 +603,12 @@ async fn facade_lists_and_dispatches_core_mcp_tools() {
                 .iter()
                 .any(|tool| tool.name == retired_personality.as_str())
         );
+        let recall = listed
+            .iter()
+            .find(|tool| tool.name == "core_recall")
+            .expect("core_recall registered");
+        assert_eq!(recall.read_only, Some(true));
+        assert_facade_projects_output_schema(built.registry(), recall);
         let search = listed
             .iter()
             .find(|tool| tool.name == "core_search_memories")
@@ -897,6 +903,370 @@ async fn facade_core_search_memories_finds_remembered_fact_lexical_and_semantic(
 
     let _ = drop_db(&db_name).await;
     result.expect("core search MCP facade integration test failed");
+}
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn facade_core_recall_returns_cue_packet_and_rejects_empty_cue() {
+    let db_name = unique_db_name("proxima_core_recall_mcp");
+    create_db(&db_name).await.expect("PG required for tests");
+    let db_url = db_url(&db_name);
+
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let owner = company_owner(Uuid::now_v7());
+        let built = Proxima::<EmptyApp>::app()
+            .database_url(db_url)
+            .owner(owner)
+            .tool_scope(ToolScope::All)
+            .build()
+            .await?;
+        let tools = built.core_mcp_tools();
+        let authz = host_authz(&owner, ToolScope::All);
+
+        let empty = tools
+            .call_core_tool(
+                authz.clone(),
+                owner,
+                Some("test-model".to_string()),
+                "core_recall",
+                serde_json::json!({}),
+            )
+            .await;
+        assert!(
+            empty.is_err(),
+            "empty cue must fail: Self is not parameterless"
+        );
+
+        let remembered = call_test_model_tool(
+            &tools,
+            authz.clone(),
+            owner,
+            "core_remember",
+            serde_json::json!({
+                "title": "Cue fact",
+                "body": "recall-subject-needle unique observation",
+                "tags": ["recall"],
+                "idempotency_key": "facade-core-recall-fact"
+            }),
+        )
+        .await?;
+        let fact = remembered["handle"].as_str().expect("fact handle");
+
+        let derived = call_test_model_tool(
+            &tools,
+            authz.clone(),
+            owner,
+            "core_derive",
+            serde_json::json!({
+                "kind": "Abstraction",
+                "title": "Recall pattern",
+                "body": "recall-subject-needle repeats as a pattern",
+                "tags": ["recall"],
+                "source_handles": [fact],
+                "model_id": "test-model",
+                "idempotency_key": "facade-core-recall-abstraction"
+            }),
+        )
+        .await?;
+        let abstraction = derived["handle"].as_str().expect("abstraction handle");
+
+        let interpreted = call_test_model_tool(
+            &tools,
+            authz.clone(),
+            owner,
+            "core_interpret",
+            serde_json::json!({
+                "claim": "the recall-subject-needle observation is a stance I hold",
+                "confidence": 80,
+                "subjects": [fact]
+            }),
+        )
+        .await?;
+        let perspective = interpreted["handle"].as_str().expect("perspective handle");
+
+        let goal = call_test_model_tool(
+            &tools,
+            authz.clone(),
+            owner,
+            "core_goal",
+            serde_json::json!({
+                "action": "set",
+                "schema_id": "core/simple-text-v1",
+                "title": "Act on the cue stance",
+                "text": "Pursue the interpretation",
+                "body": {},
+                "evidence": [abstraction],
+                "target_perspective": perspective,
+                "idempotency_key": "facade-core-recall-goal"
+            }),
+        )
+        .await?;
+        let goal_handle = goal["handle"].as_str().expect("goal handle");
+
+        let packet = call_test_model_tool(
+            &tools,
+            authz.clone(),
+            owner,
+            "core_recall",
+            serde_json::json!({
+                "subjects": [fact],
+                "kind": "Perspective",
+                "limit": 2
+            }),
+        )
+        .await?;
+        let sketches = packet["sketches"]
+            .as_array()
+            .expect("sketches")
+            .iter()
+            .map(|row| {
+                (
+                    row["handle"].as_str().unwrap_or_default().to_string(),
+                    row["kind"].as_str().unwrap_or_default().to_string(),
+                    row["reason"].as_str().unwrap_or_default().to_string(),
+                )
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            packet["sketches"]
+                .as_array()
+                .expect("sketches")
+                .iter()
+                .any(|row| {
+                    row["handle"].as_str() == Some(perspective)
+                        && row["kind"].as_str() == Some("Perspective")
+                        && row["reason"].as_str() == Some("cue_touch")
+                        && row["sketch"]
+                            .as_str()
+                            .is_some_and(|sketch| sketch.contains("stance I hold"))
+                }),
+            "cue-touch Perspective missing or sketch empty: {packet}"
+        );
+        assert!(
+            sketches
+                .iter()
+                .any(|(handle, kind, reason)| handle == goal_handle
+                    && kind == "Goal"
+                    && reason == "assigned_goal"),
+            "assigned Active Goal missing from Self packet: {packet}"
+        );
+
+        let by_question = call_test_model_tool(
+            &tools,
+            authz,
+            owner,
+            "core_recall",
+            serde_json::json!({
+                "question": "recall-subject-needle",
+                "limit": 16
+            }),
+        )
+        .await?;
+        let question_hits = by_question["sketches"]
+            .as_array()
+            .expect("sketches")
+            .iter()
+            .filter_map(|row| row["handle"].as_str())
+            .collect::<Vec<_>>();
+        assert!(
+            question_hits.contains(&fact),
+            "question cue must find the Fact: {by_question}"
+        );
+
+        built.shutdown();
+        Ok(())
+    }
+    .await;
+
+    let _ = drop_db(&db_name).await;
+    result.expect("core recall MCP facade integration test failed");
+}
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn facade_core_think_pages_ancestors_from_a_derivation() {
+    let db_name = unique_db_name("proxima_core_think_mcp");
+    create_db(&db_name).await.expect("PG required for tests");
+    let db_url = db_url(&db_name);
+
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let owner = company_owner(Uuid::now_v7());
+        let built = Proxima::<EmptyApp>::app()
+            .database_url(db_url)
+            .owner(owner)
+            .tool_scope(ToolScope::All)
+            .build()
+            .await?;
+        let tools = built.core_mcp_tools();
+        let authz = host_authz(&owner, ToolScope::All);
+
+        let empty = tools
+            .call_core_tool(
+                authz.clone(),
+                owner,
+                Some("test-model".to_string()),
+                "core_think",
+                serde_json::json!({ "seeds": [] }),
+            )
+            .await;
+        assert!(empty.is_err(), "think requires a seed");
+
+        let fact = call_test_model_tool(
+            &tools,
+            authz.clone(),
+            owner,
+            "core_remember",
+            serde_json::json!({
+                "title": "Think source",
+                "body": "think-ancestor-needle observation",
+                "tags": ["think"],
+                "idempotency_key": "facade-core-think-fact"
+            }),
+        )
+        .await?;
+        let fact_handle = fact["handle"].as_str().expect("fact");
+
+        let derived = call_test_model_tool(
+            &tools,
+            authz.clone(),
+            owner,
+            "core_derive",
+            serde_json::json!({
+                "kind": "Abstraction",
+                "title": "Think pattern",
+                "body": "think-ancestor-needle is a pattern",
+                "tags": ["think"],
+                "source_handles": [fact_handle],
+                "model_id": "test-model",
+                "idempotency_key": "facade-core-think-abstraction"
+            }),
+        )
+        .await?;
+        let abstraction = derived["handle"].as_str().expect("abstraction");
+
+        let page = call_test_model_tool(
+            &tools,
+            authz.clone(),
+            owner,
+            "core_think",
+            serde_json::json!({
+                "seeds": [abstraction],
+                "direction": "ancestors",
+                "depth": 3,
+                "limit": 16
+            }),
+        )
+        .await?;
+        assert_eq!(page["direction"], "ancestors");
+        let handles = page["visits"]
+            .as_array()
+            .expect("visits")
+            .iter()
+            .filter_map(|visit| visit["handle"].as_str())
+            .collect::<Vec<_>>();
+        assert!(
+            handles.contains(&fact_handle),
+            "ancestor page must include the source Fact: {page}"
+        );
+
+        let down = call_test_model_tool(
+            &tools,
+            authz.clone(),
+            owner,
+            "core_think",
+            serde_json::json!({
+                "seeds": [fact_handle],
+                "direction": "descendants",
+                "depth": 3,
+                "limit": 16
+            }),
+        )
+        .await?;
+        let down_handles = down["visits"]
+            .as_array()
+            .expect("visits")
+            .iter()
+            .filter_map(|visit| visit["handle"].as_str())
+            .collect::<Vec<_>>();
+        assert!(
+            down_handles.contains(&abstraction),
+            "descendant page must include the Abstraction: {down}"
+        );
+
+        built.shutdown();
+        Ok(())
+    }
+    .await;
+
+    let _ = drop_db(&db_name).await;
+    result.expect("core think MCP facade integration test failed");
+}
+
+#[tokio::test]
+async fn facade_core_episode_commit_binds_only_listed_members() {
+    let db_name = unique_db_name("proxima_core_episode_mcp");
+    create_db(&db_name).await.expect("PG required for tests");
+    let db_url = db_url(&db_name);
+
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let owner = company_owner(Uuid::now_v7());
+        let built = Proxima::<EmptyApp>::app()
+            .database_url(db_url)
+            .owner(owner)
+            .tool_scope(ToolScope::All)
+            .build()
+            .await?;
+        let tools = built.core_mcp_tools();
+        let authz = host_authz(&owner, ToolScope::All);
+
+        let committed = call_test_model_tool(
+            &tools,
+            authz.clone(),
+            owner,
+            "core_episode_commit",
+            serde_json::json!({
+                "remember": [
+                    {"title": "Episode a", "body": "first bound observation", "tags": ["ep"]},
+                    {"title": "Episode b", "body": "second bound observation", "tags": ["ep"]}
+                ],
+                "bind": ["remember:0", "remember:1"]
+            }),
+        )
+        .await?;
+        let a = committed["remembered"][0].as_str().expect("a");
+        let b = committed["remembered"][1].as_str().expect("b");
+        assert_eq!(committed["bound"].as_array().map(Vec::len), Some(2));
+
+        let siblings = call_test_model_tool(
+            &tools,
+            authz,
+            owner,
+            "core_think",
+            serde_json::json!({
+                "seeds": [a],
+                "direction": "episode_siblings",
+                "limit": 8
+            }),
+        )
+        .await?;
+        let handles = siblings["visits"]
+            .as_array()
+            .expect("visits")
+            .iter()
+            .filter_map(|visit| visit["handle"].as_str())
+            .collect::<Vec<_>>();
+        assert!(
+            handles.contains(&b),
+            "bound sibling must appear: {siblings}"
+        );
+
+        built.shutdown();
+        Ok(())
+    }
+    .await;
+
+    let _ = drop_db(&db_name).await;
+    result.expect("core episode commit MCP facade integration test failed");
 }
 
 #[tokio::test]

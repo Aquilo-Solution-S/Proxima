@@ -231,9 +231,10 @@ pub fn canonical_scope_keys_excluding(
 pub fn core_tool_annotations(canonical_name: &str) -> Option<McpToolAnnotations> {
     let base = McpToolAnnotations::new().open_world(false);
     let annotations = match canonical_name {
-        protocol_tool::CORE_SEARCH_MEMORIES | protocol_tool::CORE_MEMORY_SPACES => {
-            base.read_only(true)
-        }
+        protocol_tool::CORE_SEARCH_MEMORIES
+        | protocol_tool::CORE_RECALL
+        | protocol_tool::CORE_THINK
+        | protocol_tool::CORE_MEMORY_SPACES => base.read_only(true),
 
         // Idempotent by content: the interpretation's memory id is
         // folded from the claim, so re-asserting it lands on one memory.
@@ -241,7 +242,9 @@ pub fn core_tool_annotations(canonical_name: &str) -> Option<McpToolAnnotations>
             base.read_only(false).destructive(false).idempotent(true)
         }
 
-        protocol_tool::CORE_REMEMBER | protocol_tool::CORE_RECORD_UTTERANCE => {
+        protocol_tool::CORE_REMEMBER
+        | protocol_tool::CORE_RECORD_UTTERANCE
+        | protocol_tool::CORE_EPISODE_COMMIT => {
             base.read_only(false).destructive(false).idempotent(false)
         }
 

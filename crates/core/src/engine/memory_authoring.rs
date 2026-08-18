@@ -34,6 +34,9 @@ pub struct AuthorDerivedRequestInput<'a> {
     /// index row sourced at this memory, written in the same transaction.
     /// The writer names targets; it never names a kind.
     pub derived_from: &'a [EdgeEndpoint],
+    /// Extra reference pins (write-act, visit). Merged with payload
+    /// `references()`; empty for ordinary derives.
+    pub extra_refs: &'a [MemoryId],
     /// Prior A/P memory this one revises. The engine records it as a
     /// lineage pointer on the rows — no supersession edge exists to write.
     pub supersedes: Option<MemoryId>,
@@ -193,6 +196,7 @@ impl Engine {
                     sidecar_payload: req.sidecar_payload,
                     authoring_perspective_id: req.authoring_perspective_id,
                     derived_from: &origins,
+                    extra_refs: &[],
                     supersedes: req.supersedes,
                     lexical_language: req.lexical_language,
                 },
@@ -619,6 +623,7 @@ mod tests {
             sidecar_payload: derivation_sidecar(),
             authoring_perspective_id: None,
             derived_from,
+            extra_refs: &[],
             supersedes: None,
             lexical_language: None,
         }

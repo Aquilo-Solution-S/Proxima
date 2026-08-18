@@ -56,20 +56,24 @@ const PROXIMA_TOOL_DENY: &str = "PROXIMA_TOOL_DENY";
 fn memory_keep_set() -> Vec<&'static str> {
     use proxima_core::mcp::McpTool;
     use proxima_core::mcp::core_tools::{
-        CoreFactTool, CoreGoalTool, CoreUploadTool, DeriveTool, ForgetTool, InterpretTool,
-        MemorySpacesTool, RecordUtteranceTool, RememberTool, SearchMemoriesTool,
+        CoreFactTool, CoreGoalTool, CoreUploadTool, DeriveTool, EpisodeCommitTool, ForgetTool,
+        InterpretTool, MemorySpacesTool, RecallTool, RecordUtteranceTool, RememberTool,
+        SearchMemoriesTool, ThinkTool,
     };
 
     #[allow(unused_mut)]
     let mut ids = vec![
         // authoring
         RememberTool::NAME,
+        EpisodeCommitTool::NAME,
         ForgetTool::NAME,
         DeriveTool::NAME,
         InterpretTool::NAME,
         RecordUtteranceTool::NAME,
         // retrieval
         SearchMemoriesTool::NAME,
+        RecallTool::NAME,
+        ThinkTool::NAME,
         MemorySpacesTool::NAME,
     ];
     // The memory profile carries the full goal lifecycle, non-destructive

@@ -207,6 +207,7 @@ async fn author_assignment(
                 // An assignment consumes nothing. It grounds through the
                 // references its payload carries.
                 derived_from: &[],
+                extra_refs: &[],
                 supersedes: None,
                 lexical_language: None,
             },

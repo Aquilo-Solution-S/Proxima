@@ -75,6 +75,7 @@ pub struct TypedFactIngest<'a, P: FactPayload> {
     derived_from: Vec<EdgeEndpoint>,
     handle: Option<uuid::Uuid>,
     lexical_language: Option<String>,
+    refs: Vec<uuid::Uuid>,
 }
 
 impl<P: FactPayload> std::fmt::Debug for TypedFactIngest<'_, P> {
@@ -102,6 +103,7 @@ impl<'a, P: FactPayload> TypedFactIngest<'a, P> {
             derived_from: Vec::new(),
             handle: None,
             lexical_language: None,
+            refs: Vec::new(),
         }
     }
 
@@ -144,6 +146,13 @@ impl<'a, P: FactPayload> TypedFactIngest<'a, P> {
     #[must_use]
     pub fn lexical_language(mut self, lexical_language: impl Into<String>) -> Self {
         self.lexical_language = Some(lexical_language.into());
+        self
+    }
+
+    /// Observation-neutral reference pins (write-act, visit).
+    #[must_use]
+    pub fn refs(mut self, refs: impl IntoIterator<Item = uuid::Uuid>) -> Self {
+        self.refs = refs.into_iter().collect();
         self
     }
 }
@@ -318,6 +327,9 @@ impl UnitOfWork<'_> {
         if let Some(lexical_language) = spec.lexical_language {
             draft = draft.with_lexical_language(Some(lexical_language));
         }
+        if !spec.refs.is_empty() {
+            draft = draft.with_refs(spec.refs);
+        }
         if draft.handle.is_none() {
             let engine = self.engine;
             let authz = self.authz;
@@ -453,10 +465,29 @@ impl UnitOfWork<'_> {
             )
             .await?;
         let declared = req.sidecar_payload.references();
-        let references = self
+        let mut references = self
             .engine
             .authorized_payload_references_visible(self.authz, source, &declared, &self.written)
             .await?;
+        if !req.extra_refs.is_empty() {
+            let extras: Vec<EdgeEndpoint> = req
+                .extra_refs
+                .iter()
+                .copied()
+                .map(|id| EdgeEndpoint::memory(EntityKind::Fact, id))
+                .collect();
+            let extra = self
+                .engine
+                .authorized_index_targets_visible(
+                    self.authz,
+                    source,
+                    &extras,
+                    "refs",
+                    &self.written,
+                )
+                .await?;
+            references.extend(extra);
+        }
         super::memory_authoring::validate_operator_memory_invocation_request(&req)
             .map_err(super::memory_authoring::map_derived_storage_error)?;
         let embedding = self
