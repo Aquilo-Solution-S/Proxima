@@ -635,6 +635,19 @@ CREATE TABLE proxima_core.owner_legal_holds (
     UNIQUE NULLS NOT DISTINCT (owner_kind, owner_id)
 );
 
+-- Per-owner Fact-retention window, read by `proxima://graph` and enforced by
+-- the `maintain-retention` sweep. `NULLS NOT DISTINCT` is the ON CONFLICT
+-- arbiter `upsert_fact_retention` names.
+CREATE TABLE proxima_core.owner_fact_retention (
+    owner_kind proxima_core.owner_kind NOT NULL,
+    owner_id uuid,
+    retention_seconds bigint NOT NULL,
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT owner_fact_retention_retention_seconds_check
+        CHECK (retention_seconds > 0),
+    UNIQUE NULLS NOT DISTINCT (owner_kind, owner_id)
+);
+
 CREATE TABLE proxima_core.compliance_audit_log (
     operation_id uuid PRIMARY KEY,
     target_kind text NOT NULL,

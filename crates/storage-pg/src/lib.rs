@@ -310,6 +310,7 @@ pub async fn ensure_core_schema_markers(pool: &PgPool) -> Result<(), StorageErro
          AND to_regclass('proxima_core.embeddings') IS NOT NULL
          AND to_regclass('proxima_core.agent_note_v1') IS NOT NULL
          AND to_regclass('proxima_core.group_memberships') IS NOT NULL
+         AND to_regclass('proxima_core.owner_fact_retention') IS NOT NULL
          AND to_regclass('proxima_core.lexical_languages') IS NOT NULL
          AND to_regprocedure('proxima_core.lexical_tsv(text)') IS NOT NULL
          AND to_regprocedure('proxima_core.lexical_config()') IS NOT NULL
@@ -330,7 +331,7 @@ pub async fn ensure_core_schema_markers(pool: &PgPool) -> Result<(), StorageErro
 
     if !ready {
         return Err(StorageError::Internal(
-            "database is missing v0.0.8 schema markers (memory/memory_head/ingest_keys/announce/goal/wake_config/embeddings/agent_note_v1/group_memberships/lexical_tsv); apply migrations before boot".into(),
+            "database is missing v0.0.8 schema markers (memory/memory_head/ingest_keys/announce/goal/wake_config/embeddings/agent_note_v1/group_memberships/owner_fact_retention/lexical_tsv); apply migrations before boot".into(),
         ));
     }
     Ok(())
