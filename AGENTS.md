@@ -185,6 +185,9 @@ runtime checklist most likely to prevent regressions.
   (`derivePins`). Target render is hot / Cold / Unavailable. There is no
   `Edge` / `FactEntity` / relation registry / follow-at-read. See Lean
   `Causa.Edges` and `.local/timeseries-core/03-signoff-uml.md`.
+- **Content:** owner-scoped typed payload (`Content`); many admissions may
+  share one `ContentId`. Admission identity stays `t`. Cross-owner hash
+  equality is not identity.
 - **Provenance/operators:** derived rows are valid only in an admitted table
   graph (`MemoryGraphValid`). Operator outputs carry an `OperatorInvocation`
   manifest/witness proving declared-input provenance/evidence completeness — a
@@ -197,7 +200,8 @@ runtime checklist most likely to prevent regressions.
   `Goal.dependencies` / `.assignment` / `.evidence` in the kernel) from which
   the index entries are derived. Memory supersession and authorship are row
   columns too (`Memory.supersedes`, `Memory.authoring_perspective`). Self is a
-  query, never a row. Wake is armed Goal behavior, not a separate kernel entity.
+  cue-indexed query (`situatedSelf`), never a row and never parameterless.
+  Wake is armed Goal behavior, not a separate kernel entity.
 - **Citations/compliance/embeddings:** citations are `blob_id` 0..1 on
   Fact ∪ Abstraction (a Perspective never cites). Hard deletion is
   `wipeable := abandoned ∨ (cold ∧ unreferenced ∧ policy)`; World never

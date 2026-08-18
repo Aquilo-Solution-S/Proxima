@@ -306,14 +306,34 @@ def activeGoals (goals : Set Goal) (heads : Set GoalHead) (o : Owner) : Set Goal
   fun g => goal_owner g = o ∧ goal_state g = .Active ∧ goalIsHead goals heads g
 
 -- ============================================================
--- Self as query, not entity
+-- Self as query, not entity (S3: cue-indexed, not parameterless)
 -- ============================================================
+
+/-- Candidate pool — owner's Perspectives. Not Self. -/
+def ownerPerspectives (memories : Set Memory) (o : Owner) : Set Memory :=
+  fun m => m ∈ memories ∧ memory_owner m = o ∧ memory_kind m = .Perspective
+
+/-- Compatibility name. Not the Self query. -/
+def selfPerspectives (memories : Set Memory) (o : Owner) : Set Memory :=
+  ownerPerspectives memories o
 
 def selfGoals (goals : Set Goal) (heads : Set GoalHead) (o : Owner) : Set Goal :=
   activeGoals goals heads o
 
-def selfPerspectives (memories : Set Memory) (o : Owner) : Set Memory :=
-  fun m => m ∈ memories ∧ memory_owner m = o ∧ memory_kind m = .Perspective
+/-- Situation touches this admission: the `t` is in the cue, or a pin is. -/
+def cueTouches (m : Memory) (cue : Cue) : Prop :=
+  memory_t m ∈ cue ∨
+  (∃ id : MemoryId, id ∈ cue ∧ (id ∈ memory_origins m ∨ id ∈ memory_refs m))
+
+/-- Self for a situation. Different cues, different Self. Question text is
+    protocol; the kernel face of situation is `Cue`. -/
+def situatedSelf
+    (memories : Set Memory) (heads : Set MemoryHead)
+    (o : Owner) (cue : Cue) : Set Memory :=
+  fun m =>
+    m ∈ ownerPerspectives memories o ∧
+    memoryIsHead memories heads m ∧
+    cueTouches m cue
 
 theorem self_goals_are_active_goals :
     ∀ (goals : Set Goal) (heads : Set GoalHead) (o : Owner),
@@ -356,6 +376,38 @@ theorem self_perspective_kind :
       m ∈ selfPerspectives memories o → memory_kind m = .Perspective := by
   intro _ _ _ h
   exact h.2.2
+
+theorem situated_self_is_perspective :
+    ∀ memories heads o cue m,
+      m ∈ situatedSelf memories heads o cue → memory_kind m = .Perspective := by
+  intro _ _ _ _ _ h
+  exact h.1.2.2
+
+theorem situated_self_owner :
+    ∀ memories heads o cue m,
+      m ∈ situatedSelf memories heads o cue → memory_owner m = o := by
+  intro _ _ _ _ _ h
+  exact h.1.2.1
+
+theorem situated_self_is_head :
+    ∀ memories heads o cue m,
+      m ∈ situatedSelf memories heads o cue → memoryIsHead memories heads m := by
+  intro _ _ _ _ _ h
+  exact h.2.1
+
+theorem situated_self_touches_cue :
+    ∀ memories heads o cue m,
+      m ∈ situatedSelf memories heads o cue → cueTouches m cue := by
+  intro _ _ _ _ _ h
+  exact h.2.2
+
+/-- S3 — Self is cue-indexed. The candidate pool is not Self. -/
+theorem situated_self_subset_owner_perspectives :
+    ∀ memories heads o cue m,
+      m ∈ situatedSelf memories heads o cue →
+        m ∈ ownerPerspectives memories o := by
+  intro _ _ _ _ _ h
+  exact h.1
 
 -- ============================================================
 -- Goal assignment and evidence

@@ -6,6 +6,7 @@ Load order is a DAG: Prelude < Owner < Identity < Memory < Knowledge
 < Operators < Provenance < Wake < Citations < Compliance < Principles < Flavor.
 
 v0.0.8: Memory/Goal are (handle, t); origins/refs pin t; no FactEntity.
+v0.0.9: Content is an owner-scoped payload sort; Self is a cue-indexed query.
 -/
 
 import Causa.Prelude

@@ -21,6 +21,8 @@ Four node kinds. Citation is provenance, not a node.
 
 Identity is timeseries: `(handle, t)`. `handle` is the series. `t` is this version (uuidv7, `UNIQUE`, the row id). Schema lives on `memory_head` / `goal_head` only. Head `t` is display/search, not identity.
 
+Typed payload is `Content` (owner-scoped). `memory.content_id` may be shared across admissions of the same owner and schema. Shared Content does not collapse `t`. Citation `blob_id` stays on the admission.
+
 ## The Layering Principle
 
 ```
@@ -51,6 +53,7 @@ Facts are accepted, not revised. A/P are re-derivable. Perspective changes affec
 | `origins[]` | made-from pins (`t`). Empty on Facts. |
 | `refs[]` | points-at pins from `references()` |
 | `blob_id` | 0..1 citation. F/A only. |
+| `content_id` | 0..1 typed payload. Required on A/P. Fact iff the schema has a sidecar. Shareable within owner. |
 | `source_id` / `ingest_key` | Facts only, both or neither. Replay key is `ingest_keys`. |
 
 | Kind | Sidecar | Citation | Text |
@@ -146,9 +149,10 @@ Perspective is a typed memory row, not an authz carrier. Server-resolved Owner r
 ## Settled
 
 - Strict F/A/P layering.
+- Typed payload is owner-scoped `Content`; shared ContentId does not collapse `t`.
 - Facts immutable; A/P/Goals append later `t` on the same handle.
 - Cross-domain synthesis is a typed Abstraction.
 - Citations are Fact ∪ Abstraction via `blob_id` (11).
 - Two pin kinds; no verb writes a pin; rebuildable from node content.
-- Causal chains and Self are queries (06).
+- Causal chains and Self are queries (06). Self is cue-indexed, not parameterless.
 - Dreaming is wake/write, not a substrate component.

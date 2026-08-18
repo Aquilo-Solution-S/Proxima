@@ -144,6 +144,7 @@ def mkFact (handle : Handle) (id : MemoryId) (o : Owner) (tick : Instant) : Memo
   origins := []
   refs := []
   blob_id := none
+  content_id := none
   tick := tick
   fact_origins_empty := fun _ => rfl
   perspective_never_cites := fun h => nomatch h

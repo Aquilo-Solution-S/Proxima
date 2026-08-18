@@ -125,19 +125,22 @@ Perspective selector. Simple owner-scoped, unassigned Goal creation remains out-
 
 ## Self -- Query Projection
 
-There is no Self row.
-
-Runtime Self for a Perspective selector:
+There is no Self row. Self is not parameterless.
 
 ```
-Self(perspective_id, read_owners) =
-  Perspective row if readable
-  + active_goals(perspective_id, read_owners)
+situatedSelf(owner, cue) =
+  head Perspectives of owner that touch cue
+  (t ∈ cue ∨ a pin of that P is in cue)
+
+recall(owner, situation ∪ question) is how an agent retrieves this.
+The owner-wide Perspective set is a candidate pool, not Self.
 ```
 
-The self anchor is a readable Perspective memory row. Self evolution is
-ordinary Perspective supersession and Goal topology changes; no current-root
-pointer is a runtime authority source.
+Kernel: `situatedSelf` / `cueTouches` (`Causa.Goals`). Question text is
+the recall cue (protocol). Different cues ⇒ different Self.
+
+Once a Perspective `t` is in hand, `active_goals` for that assignment
+is unchanged.
 
 Self is never cached as:
 

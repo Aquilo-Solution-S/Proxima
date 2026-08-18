@@ -19,6 +19,7 @@ def fact (handle : Handle) (owner : Owner) (id : MemoryId) (tick : Instant) : Me
   origins := []
   refs := []
   blob_id := none
+  content_id := none
   tick := tick
   fact_origins_empty := fun _ => rfl
   perspective_never_cites := fun h => nomatch h
@@ -32,6 +33,7 @@ def abstraction (handle : Handle) (owner : Owner) (id : MemoryId) (tick : Instan
   origins := []
   refs := []
   blob_id := none
+  content_id := none
   tick := tick
   fact_origins_empty := fun h => nomatch h
   perspective_never_cites := fun h => nomatch h
@@ -45,6 +47,7 @@ def perspective (handle : Handle) (owner : Owner) (id : MemoryId) (tick : Instan
   origins := []
   refs := []
   blob_id := none
+  content_id := none
   tick := tick
   fact_origins_empty := fun h => nomatch h
   perspective_never_cites := fun _ => rfl

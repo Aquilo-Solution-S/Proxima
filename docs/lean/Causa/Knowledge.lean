@@ -1,8 +1,9 @@
 /-
 Causa — Knowledge artifacts
 
-Model-independent semantic uptake. Text lives on the sidecar, not on Memory
-(UML §4). The artifact still names an admitted Memory carrier.
+Model-independent semantic uptake. Text lives on the sidecar / Content, not
+on Memory (UML §4). The artifact still names an admitted Memory carrier.
+Many carriers may share one ContentId (owner-scoped).
 -/
 
 import Causa.Memory

@@ -7,6 +7,7 @@ Named principle surface over the timeseries kernel. No trusted assumptions.
 import Causa.Operators
 import Causa.Provenance
 import Causa.Knowledge
+import Causa.Goals
 
 namespace Causa
 
@@ -118,5 +119,17 @@ theorem principle_8b_long_term_knowledge_artifact_has_text_memory :
 theorem principle_9_index_is_a_function_of_node_content :
     ∀ m : Memory, derivePins m = (memory_origins m, memory_refs m) :=
   derived_table_rebuildable
+
+/-- H2 — shared payload does not collapse admission identity. -/
+theorem principle_content_share_preserves_t
+    (m1 m2 : Memory) (h : contentShared m1 m2) :
+    memory_t m1 ≠ memory_t m2 :=
+  shared_content_preserves_distinct_admissions m1 m2 h
+
+/-- H8 — Self is cue-indexed; the owner-wide P set is not Self. -/
+theorem principle_situated_self_touches_cue :
+    ∀ memories heads o cue m,
+      m ∈ situatedSelf memories heads o cue → cueTouches m cue :=
+  situated_self_touches_cue
 
 end Causa
