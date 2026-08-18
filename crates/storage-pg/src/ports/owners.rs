@@ -102,7 +102,13 @@ impl OwnerTransferPort for PgStorage {
         permit: &OwnerWritePermit,
         entity: EntityId,
     ) -> Result<bool, StorageError> {
-        access::owner_columns::transfer_to_world(&self.pool, entity, *permit.owner()).await
+        access::owner_columns::transfer_to_world(
+            &self.pool,
+            self.cold.as_ref(),
+            entity,
+            *permit.owner(),
+        )
+        .await
     }
 }
 

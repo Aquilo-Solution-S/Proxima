@@ -416,6 +416,8 @@ pub async fn snapshot_hot(
 /// `FOR UPDATE` + cooled stub + hot delete. Re-PUTs only when the locked
 /// dump differs from `snapshot` (late sidecar). Owner is the permit owner;
 /// a concurrent publish that rewrote `owner_id` is `NotFound`.
+/// The caller PUTs before this so the row lock is not held across cold I/O;
+/// this function compensates that object if the locator write fails.
 pub async fn commit_forget(
     tx: &mut Transaction<'_, Postgres>,
     sidecars: &PgSidecarRegistryFrozen,
@@ -447,10 +449,26 @@ pub async fn commit_forget(
     if current != *snapshot {
         cold.put(object_key, &encode_record(&current)?).await?;
     }
+    let persist =
+        persist_cooled_after_put(tx, sidecars, object_key, &current, expected_owner_id).await;
+    if persist.is_err() {
+        delete_cold_object(cold, object_key).await;
+    }
+    persist
+}
 
+async fn persist_cooled_after_put(
+    tx: &mut Transaction<'_, Postgres>,
+    sidecars: &PgSidecarRegistryFrozen,
+    object_key: &str,
+    current: &ColdRecord,
+    expected_owner_id: Uuid,
+) -> Result<(), StorageError> {
+    let t = current.row.t;
     sqlx::query(
-        "INSERT INTO proxima_core.cooled (t, handle, owner_id, kind, object_key, content_id)
-         VALUES ($1, $2, $3, $4::proxima_core.memory_kind, $5, $6)",
+        "INSERT INTO proxima_core.cooled
+            (t, handle, owner_id, kind, object_key, content_id, source_id, ingest_key)
+         VALUES ($1, $2, $3, $4::proxima_core.memory_kind, $5, $6, $7, $8)",
     )
     .bind(current.row.t)
     .bind(current.row.handle)
@@ -458,6 +476,8 @@ pub async fn commit_forget(
     .bind(&current.row.kind)
     .bind(object_key)
     .bind(current.row.content_id)
+    .bind(current.row.source_id.as_deref())
+    .bind(current.row.ingest_key.as_deref())
     .execute(tx.as_mut())
     .await
     .map_err(map_err)?;
@@ -483,6 +503,19 @@ pub async fn commit_forget(
     .await
     .map_err(map_err)?;
     Ok(())
+}
+
+pub(crate) async fn delete_cold_object(cold: &dyn ColdObjectStore, object_key: &str) {
+    match cold.delete(object_key).await {
+        Ok(()) | Err(StorageError::NotFound) => {}
+        Err(err) => {
+            tracing::warn!(
+                error = %err,
+                key = object_key,
+                "failed to compensate an untracked cold object"
+            );
+        }
+    }
 }
 
 async fn insertable_columns(
@@ -745,7 +778,13 @@ pub async fn forget_memory(
         return Err(StorageError::NotFound);
     }
     cold.put(object_key, &encode_record(&rec)?).await?;
-    commit_forget(tx, sidecars, cold, object_key, &rec, expected_owner_id).await
+    match commit_forget(tx, sidecars, cold, object_key, &rec, expected_owner_id).await {
+        Ok(()) => Ok(()),
+        Err(err) => {
+            delete_cold_object(cold, object_key).await;
+            Err(err)
+        }
+    }
 }
 
 /// One-shot Engine path: `put` with no open transaction.
@@ -766,8 +805,17 @@ pub async fn forget_memory_oneshot(
     }
     cold.put(object_key, &encode_record(&rec)?).await?;
     let mut tx = pool.begin().await.map_err(map_err)?;
-    commit_forget(&mut tx, sidecars, cold, object_key, &rec, expected_owner_id).await?;
-    tx.commit().await.map_err(map_err)?;
+    if let Err(err) =
+        commit_forget(&mut tx, sidecars, cold, object_key, &rec, expected_owner_id).await
+    {
+        let _ = tx.rollback().await;
+        delete_cold_object(cold, object_key).await;
+        return Err(err);
+    }
+    if let Err(err) = tx.commit().await.map_err(map_err) {
+        delete_cold_object(cold, object_key).await;
+        return Err(err);
+    }
     Ok(())
 }
 

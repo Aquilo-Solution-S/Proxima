@@ -436,7 +436,12 @@ async fn create_selected_sets(
                  SELECT m.t, m.kind::text
                    FROM proxima_core.memory m
                   WHERE m.owner_id = $1
-                    AND m.source_id = $2",
+                    AND m.source_id = $2
+                 UNION ALL
+                 SELECT c.t, c.kind::text
+                   FROM proxima_core.cooled c
+                  WHERE c.owner_id = $1
+                    AND c.source_id = $2",
             )
             .bind(owner_id)
             .bind(source_id.as_str())
@@ -570,12 +575,7 @@ async fn delete_ingest_keys(tx: &mut Tx<'_>) -> Result<(), StorageError> {
           WHERE EXISTS (
                 SELECT 1
                   FROM selected_memories sm
-                  JOIN proxima_core.memory m ON m.t = sm.memory_id
-                 WHERE k.owner_id = m.owner_id
-                   AND k.source_id = m.source_id
-                   AND k.ingest_key = m.ingest_key
-                   AND m.source_id IS NOT NULL
-                   AND m.ingest_key IS NOT NULL
+                 WHERE sm.memory_id = k.t
           )",
     )
     .execute(&mut **tx)

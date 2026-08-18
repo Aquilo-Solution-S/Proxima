@@ -1,7 +1,8 @@
 //! Direct `OwnerRef` column helpers.
 
 use proxima_core::{
-    EntityId, GroupId, MembershipRow, OwnerRef, OwnerRefKind, Relation, StorageError, UserId,
+    ColdObjectStore, EntityId, GroupId, MembershipRow, OwnerRef, OwnerRefKind, Relation,
+    StorageError, UserId,
 };
 use sqlx::{PgPool, Postgres, Transaction};
 
@@ -405,7 +406,8 @@ pub(crate) async fn visible_home_owner(
 /// Transfer one memory or goal **series** to [`OwnerRef::World`].
 ///
 /// Same `(handle, t)`: publish is an owner UPDATE, not a copy. Head and
-/// every version on the handle move together (`MemoryHeadAligned`).
+/// every version on the handle move together (`MemoryHeadAligned`), including
+/// cooled stubs (owner + reminted `object_key`).
 /// Returns `true` iff a row under `from_owner` matched and was updated.
 ///
 /// Sidecar rows stay keyed by `t`. Cited `blob` rows move when no other
@@ -420,6 +422,7 @@ pub(crate) async fn visible_home_owner(
 /// Unique / check violations surface as `ConstraintViolation`.
 pub(crate) async fn transfer_to_world(
     pool: &PgPool,
+    cold: &dyn ColdObjectStore,
     entity: EntityId,
     from_owner: OwnerRef,
 ) -> Result<bool, StorageError> {
@@ -427,15 +430,27 @@ pub(crate) async fn transfer_to_world(
     let world = OwnerRef::World.stored_owner_id();
     with_bounded_retry(move || async move {
         let mut tx = pool.begin().await.map_err(internal)?;
-        let transferred = match entity {
+        let (transferred, stale_cold_keys) = match entity {
             EntityId::Memory(memory_id) => {
-                transfer_memory_t(&mut tx, memory_id.into_inner(), from_id, world).await?
+                transfer_memory_t(&mut tx, cold, memory_id.into_inner(), from_id, world).await?
             }
             EntityId::Goal(goal_id) => {
-                transfer_goal_t(&mut tx, goal_id.into_inner(), from_id, world).await?
+                transfer_goal_t(&mut tx, cold, goal_id.into_inner(), from_id, world).await?
             }
         };
         tx.commit().await.map_err(map_err)?;
+        for key in stale_cold_keys {
+            match cold.delete(&key).await {
+                Ok(()) | Err(StorageError::NotFound) => {}
+                Err(err) => {
+                    tracing::warn!(
+                        error = %err,
+                        key,
+                        "published series left a personal cold object after remint"
+                    );
+                }
+            }
+        }
         Ok(transferred)
     })
     .await
@@ -443,10 +458,11 @@ pub(crate) async fn transfer_to_world(
 
 async fn transfer_memory_t(
     tx: &mut Transaction<'_, Postgres>,
+    cold: &dyn ColdObjectStore,
     t: uuid::Uuid,
     from_id: uuid::Uuid,
     world: uuid::Uuid,
-) -> Result<bool, StorageError> {
+) -> Result<(bool, Vec<String>), StorageError> {
     let handle: Option<uuid::Uuid> = sqlx::query_scalar(
         "SELECT handle FROM proxima_core.memory
           WHERE t = $1 AND owner_id = $2",
@@ -457,17 +473,18 @@ async fn transfer_memory_t(
     .await
     .map_err(map_err)?;
     let Some(handle) = handle else {
-        return Ok(false);
+        return Ok((false, Vec::new()));
     };
-    transfer_memory_handle(tx, handle, from_id, world).await
+    transfer_memory_handle(tx, cold, handle, from_id, world).await
 }
 
 async fn transfer_memory_handle(
     tx: &mut Transaction<'_, Postgres>,
+    cold: &dyn ColdObjectStore,
     handle: uuid::Uuid,
     from_id: uuid::Uuid,
     world: uuid::Uuid,
-) -> Result<bool, StorageError> {
+) -> Result<(bool, Vec<String>), StorageError> {
     let ts: Vec<uuid::Uuid> =
         sqlx::query_scalar("SELECT t FROM proxima_core.memory WHERE handle = $1 AND owner_id = $2")
             .bind(handle)
@@ -476,10 +493,91 @@ async fn transfer_memory_handle(
             .await
             .map_err(map_err)?;
     if ts.is_empty() {
-        return Ok(false);
+        return Ok((false, Vec::new()));
     }
     transfer_exclusive_blobs(tx, handle, from_id, world).await?;
     transfer_content_for_handle(tx, handle, from_id, world).await?;
+    let reminted = remint_cooled_for_handle(tx, cold, handle, from_id, world).await?;
+    let persist = persist_hot_series_transfer(tx, handle, from_id, world, &ts).await;
+    match persist {
+        Ok(true) => Ok((true, reminted.old_keys)),
+        Ok(false) => {
+            for key in reminted.new_keys {
+                crate::verbs::forget::delete_cold_object(cold, &key).await;
+            }
+            Ok((false, Vec::new()))
+        }
+        Err(err) => {
+            for key in reminted.new_keys {
+                crate::verbs::forget::delete_cold_object(cold, &key).await;
+            }
+            Err(err)
+        }
+    }
+}
+
+struct RemintedCold {
+    old_keys: Vec<String>,
+    new_keys: Vec<String>,
+}
+
+async fn remint_cooled_for_handle(
+    tx: &mut Transaction<'_, Postgres>,
+    cold: &dyn ColdObjectStore,
+    handle: uuid::Uuid,
+    from_id: uuid::Uuid,
+    world: uuid::Uuid,
+) -> Result<RemintedCold, StorageError> {
+    let rows: Vec<(uuid::Uuid, String)> = sqlx::query_as(
+        "SELECT t, object_key FROM proxima_core.cooled
+          WHERE handle = $1 AND owner_id = $2",
+    )
+    .bind(handle)
+    .bind(from_id)
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(map_err)?;
+    let world_hash = crate::verbs::forget::owner_hash_hex(&OwnerRef::World);
+    let mut reminted = RemintedCold {
+        old_keys: Vec::new(),
+        new_keys: Vec::new(),
+    };
+    for (t, old_key) in rows {
+        let new_key = crate::verbs::forget::cold_object_key(&world_hash, handle, t);
+        if new_key != old_key {
+            let bytes = cold.get(&old_key).await?;
+            if let Err(err) = cold.put(&new_key, &bytes).await {
+                for key in &reminted.new_keys {
+                    crate::verbs::forget::delete_cold_object(cold, key).await;
+                }
+                return Err(err);
+            }
+            reminted.old_keys.push(old_key);
+            reminted.new_keys.push(new_key.clone());
+        }
+        sqlx::query(
+            "UPDATE proxima_core.cooled
+                SET owner_id = $3, object_key = $4
+              WHERE t = $1 AND owner_id = $2",
+        )
+        .bind(t)
+        .bind(from_id)
+        .bind(world)
+        .bind(&new_key)
+        .execute(&mut **tx)
+        .await
+        .map_err(map_err)?;
+    }
+    Ok(reminted)
+}
+
+async fn persist_hot_series_transfer(
+    tx: &mut Transaction<'_, Postgres>,
+    handle: uuid::Uuid,
+    from_id: uuid::Uuid,
+    world: uuid::Uuid,
+    ts: &[uuid::Uuid],
+) -> Result<bool, StorageError> {
     let head = sqlx::query(
         "UPDATE proxima_core.memory_head
             SET owner_id = $3
@@ -505,9 +603,9 @@ async fn transfer_memory_handle(
     .execute(&mut **tx)
     .await
     .map_err(map_err)?;
-    follow_embedding_owners(tx, &ts, world).await?;
+    follow_embedding_owners(tx, ts, world).await?;
     sqlx::query("DELETE FROM proxima_core.ingest_keys WHERE t = ANY($1::uuid[])")
-        .bind(&ts)
+        .bind(ts)
         .execute(&mut **tx)
         .await
         .map_err(map_err)?;
@@ -657,10 +755,11 @@ async fn follow_embedding_owners(
 
 async fn transfer_goal_t(
     tx: &mut Transaction<'_, Postgres>,
+    cold: &dyn ColdObjectStore,
     t: uuid::Uuid,
     from_id: uuid::Uuid,
     world: uuid::Uuid,
-) -> Result<bool, StorageError> {
+) -> Result<(bool, Vec<String>), StorageError> {
     let handle: Option<uuid::Uuid> = sqlx::query_scalar(
         "SELECT handle FROM proxima_core.goal
           WHERE t = $1 AND owner_id = $2",
@@ -671,7 +770,7 @@ async fn transfer_goal_t(
     .await
     .map_err(map_err)?;
     let Some(handle) = handle else {
-        return Ok(false);
+        return Ok((false, Vec::new()));
     };
     let close_facts: Vec<uuid::Uuid> = sqlx::query_scalar(
         "SELECT DISTINCT close_fact_t
@@ -695,7 +794,7 @@ async fn transfer_goal_t(
     .await
     .map_err(map_err)?;
     if head.rows_affected() == 0 {
-        return Ok(false);
+        return Ok((false, Vec::new()));
     }
     sqlx::query(
         "UPDATE proxima_core.goal
@@ -716,6 +815,7 @@ async fn transfer_goal_t(
             .await
             .map_err(map_err)?;
     follow_embedding_owners(tx, &goal_ts, world).await?;
+    let mut stale_cold_keys = Vec::new();
     for close_t in close_facts {
         let close_owner: Option<uuid::Uuid> =
             sqlx::query_scalar("SELECT owner_id FROM proxima_core.memory WHERE t = $1")
@@ -727,11 +827,13 @@ async fn transfer_goal_t(
             None => {}
             Some(id) if id == world => {}
             Some(id) if id == from_id => {
-                if !transfer_memory_t(tx, close_t, from_id, world).await? {
+                let (moved, keys) = transfer_memory_t(tx, cold, close_t, from_id, world).await?;
+                if !moved {
                     return Err(StorageError::Conflict(
                         "terminal goal close_fact_t could not be transferred with the goal".into(),
                     ));
                 }
+                stale_cold_keys.extend(keys);
             }
             Some(_) => {
                 return Err(StorageError::Conflict(
@@ -740,7 +842,7 @@ async fn transfer_goal_t(
             }
         }
     }
-    Ok(true)
+    Ok((true, stale_cold_keys))
 }
 
 /// # Errors

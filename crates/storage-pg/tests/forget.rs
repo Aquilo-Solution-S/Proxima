@@ -823,6 +823,61 @@ async fn forget_and_admit_preserve_grounding_support() {
 }
 
 #[tokio::test]
+async fn refused_forget_does_not_leave_untracked_cold_object() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    if let Err(e) = create_db(&db_name).await {
+        panic!("PG required for tests but admin connect failed: {e}");
+    }
+    let url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&url).await?;
+        pg.run_migrations().await?;
+        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
+        let pool = pg.pool_for_tests();
+        let cold = MemoryColdStore::default();
+        let fact = ingest_fact_atomic(pool, &permit, &draft(None), None).await?;
+        let abs = ingest_fact_atomic(
+            pool,
+            &permit,
+            &derived_abstraction(EntityKind::Fact, fact.memory_id.into_inner()),
+            None,
+        )
+        .await?;
+        let abs2 = ingest_fact_atomic(
+            pool,
+            &permit,
+            &derived_abstraction(EntityKind::Abstraction, abs.memory_id.into_inner()),
+            None,
+        )
+        .await?;
+        let key = "cold/refuse-orphan";
+        let mut tx = pool.begin().await?;
+        forget_memory(
+            &mut tx,
+            &core_pg_sidecars(),
+            &cold,
+            key,
+            abs.memory_id.into_inner(),
+            owner.stored_owner_id(),
+        )
+        .await
+        .expect_err("A2 still pins only A");
+        tx.rollback().await?;
+        let leftover = ColdObjectStore::get(&cold, key).await;
+        assert!(
+            matches!(leftover, Err(StorageError::NotFound)),
+            "refused forget must not leave an untracked cold object: {leftover:?}"
+        );
+        let _ = (fact, abs2);
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("refused-forget orphan test failed");
+}
+
+#[tokio::test]
 async fn forget_pinless_abstraction_is_refused() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
     if let Err(e) = create_db(&db_name).await {

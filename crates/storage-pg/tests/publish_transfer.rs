@@ -132,6 +132,61 @@ async fn publish_transfers_same_memory_t_and_sidecar() {
 }
 
 #[tokio::test]
+async fn publish_rehomes_cooled_versions_and_remints_object_key() {
+    let (db_name, pg) = fresh_pg().await;
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        use proxima_core::storage_ports::MemoryAuthoringPort;
+        use proxima_storage_pg::verbs::forget::{cold_object_key, owner_hash_hex};
+
+        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
+        let pool = pg.pool_for_tests();
+        let first = ingest_fact_atomic(pool, &permit, &draft(), None).await?;
+        MemoryAuthoringPort::forget_memory(&pg, &permit, first.memory_id).await?;
+        let mut later = draft();
+        later.handle = Some(first.handle);
+        later.ingest_key = Some("k2".into());
+        let second = ingest_fact_atomic(pool, &permit, &later, None).await?;
+        assert_eq!(second.handle, first.handle);
+
+        let transferred = pg
+            .transfer_to_world(&permit, EntityId::Memory(second.memory_id))
+            .await?;
+        assert!(transferred);
+        let cooled_owner: uuid::Uuid =
+            sqlx::query_scalar("SELECT owner_id FROM proxima_core.cooled WHERE t = $1")
+                .bind(first.memory_id.into_inner())
+                .fetch_one(pool)
+                .await?;
+        assert_eq!(
+            cooled_owner,
+            OwnerRef::World.stored_owner_id(),
+            "publish must re-home cooled versions with the series"
+        );
+        let object_key: String =
+            sqlx::query_scalar("SELECT object_key FROM proxima_core.cooled WHERE t = $1")
+                .bind(first.memory_id.into_inner())
+                .fetch_one(pool)
+                .await?;
+        let expected = cold_object_key(
+            &owner_hash_hex(&OwnerRef::World),
+            first.handle,
+            first.memory_id.into_inner(),
+        );
+        assert_eq!(object_key, expected);
+        let personal_prefix = format!("cold/{}/", owner_hash_hex(&owner));
+        assert!(
+            !object_key.starts_with(&personal_prefix),
+            "reminted key must not stay under the personal owner hash"
+        );
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("publish cooled remint failed");
+}
+
+#[tokio::test]
 async fn publish_transfers_goal_same_t() {
     let (db_name, pg) = fresh_pg().await;
     let result: Result<(), Box<dyn std::error::Error>> = async {
