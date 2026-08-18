@@ -7,7 +7,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use proxima_core::storage_ports::{MemoryAuthoringPort, OwnerWritePermit};
 use proxima_core::verbs::fact_ingest::FactWriteCommand;
 use proxima_core::{
-    AccessKind, ColdObjectStore, OwnerRef, SchemaId, SchemaVersion, StorageError, UserId,
+    AccessKind, ColdObjectStore, EdgeEndpoint, EntityKind, OwnerRef, SchemaId, SchemaVersion,
+    StorageError, UserId,
 };
 use proxima_pg_testkit::{create_db, db_url, drop_db};
 use proxima_storage_pg::PgStorage;
@@ -34,7 +35,7 @@ async fn ingest_stamped(
         .begin()
         .await
         .map_err(|err| StorageError::Internal(err.to_string()))?;
-    let outcome = ingest_fact_timeseries(&mut tx, permit.owner(), draft, tables).await?;
+    let outcome = ingest_fact_timeseries(&mut tx, permit.owner(), draft, tables, None).await?;
     tx.commit()
         .await
         .map_err(|err| StorageError::Internal(err.to_string()))?;
@@ -80,7 +81,8 @@ async fn forget_hydrate_erase_and_world_never() {
         let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let pool = pg.pool_for_tests();
-        let sourced = draft(Some(("src", "k1")));
+        let mut sourced = draft(Some(("src", "k1")));
+        sourced.rendered_text = Some("Actual title\nbody".into());
         let written = ingest_fact_atomic(pool, &permit, &sourced, None).await?;
         let t = written.memory_id.into_inner();
         let stamped = sidecar_tables_for(pool, t).await?;
@@ -88,6 +90,13 @@ async fn forget_hydrate_erase_and_world_never() {
             stamped.is_empty(),
             "sidecar-less ingest stamps '{{}}'; forget still cools: {stamped:?}"
         );
+        let sketch_before: String =
+            sqlx::query_scalar("SELECT text FROM proxima_core.sketch WHERE t = $1")
+                .bind(t)
+                .fetch_one(pool)
+                .await?;
+        assert_eq!(sketch_before, "Actual title");
+
         let key = cold_object_key("ownerhash", written.handle, t);
         assert!(key.starts_with("cold/"));
         assert!(!key.contains(&owner.stored_owner_id().to_string()));
@@ -96,6 +105,13 @@ async fn forget_hydrate_erase_and_world_never() {
         let mut tx = pool.begin().await?;
         forget_memory(&mut tx, &core_pg_sidecars(), &cold, &key, t).await?;
         tx.commit().await?;
+
+        let sketches: i64 =
+            sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_core.sketch WHERE t = $1")
+                .bind(t)
+                .fetch_one(pool)
+                .await?;
+        assert_eq!(sketches, 0, "forget must delete the hot sketch");
 
         let hot: i64 =
             sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_core.memory WHERE t = $1")
@@ -138,6 +154,12 @@ async fn forget_hydrate_erase_and_world_never() {
                 .fetch_one(pool)
                 .await?;
         assert_eq!(head_t, t, "P3: hydrate recreates head at the same t");
+        let sketch_after: String =
+            sqlx::query_scalar("SELECT text FROM proxima_core.sketch WHERE t = $1")
+                .bind(t)
+                .fetch_one(pool)
+                .await?;
+        assert_eq!(sketch_after, "Actual title");
         let restored: (Option<String>, Option<String>, Vec<Uuid>, Vec<Uuid>) = sqlx::query_as(
             "SELECT source_id, ingest_key, origins, refs FROM proxima_core.memory WHERE t = $1",
         )
@@ -607,4 +629,463 @@ async fn forget_dumps_every_stamped_extra() {
     .await;
     let _ = drop_db(&db_name).await;
     result.expect("extras forget failed");
+}
+
+fn derived_abstraction(origin_kind: EntityKind, origin: Uuid) -> FactWriteCommand {
+    let mut cmd = draft(None);
+    cmd.kind = "abstraction".into();
+    cmd.derived_from = vec![EdgeEndpoint::memory(
+        origin_kind,
+        proxima_core::MemoryId::new(origin),
+    )];
+    cmd
+}
+
+#[tokio::test]
+async fn forget_and_admit_preserve_grounding_support() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    if let Err(e) = create_db(&db_name).await {
+        panic!("PG required for tests but admin connect failed: {e}");
+    }
+    let url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&url).await?;
+        pg.run_migrations().await?;
+        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
+        let pool = pg.pool_for_tests();
+        let cold = MemoryColdStore::default();
+
+        let fact = ingest_fact_atomic(pool, &permit, &draft(None), None).await?;
+        let abs = ingest_fact_atomic(
+            pool,
+            &permit,
+            &derived_abstraction(EntityKind::Fact, fact.memory_id.into_inner()),
+            None,
+        )
+        .await
+        .expect("A from Fact");
+        let abs2 = ingest_fact_atomic(
+            pool,
+            &permit,
+            &derived_abstraction(EntityKind::Abstraction, abs.memory_id.into_inner()),
+            None,
+        )
+        .await
+        .expect("A2 from A");
+
+        let mut tx = pool.begin().await?;
+        let err = forget_memory(
+            &mut tx,
+            &core_pg_sidecars(),
+            &cold,
+            "cold/refuse-a",
+            abs.memory_id.into_inner(),
+        )
+        .await
+        .expect_err("forget A while A2 pins only A");
+        assert!(
+            err.to_string().contains("ungrounded") || err.to_string().contains("23514"),
+            "got: {err}"
+        );
+        tx.rollback().await?;
+        let still_hot: i64 =
+            sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_core.memory WHERE t = $1")
+                .bind(abs.memory_id.into_inner())
+                .fetch_one(pool)
+                .await?;
+        assert_eq!(still_hot, 1, "refused forget must leave A hot");
+
+        let mut tx = pool.begin().await?;
+        forget_memory(
+            &mut tx,
+            &core_pg_sidecars(),
+            &cold,
+            "cold/fact",
+            fact.memory_id.into_inner(),
+        )
+        .await
+        .expect("forget Fact under A is a cooled-Fact leaf");
+        tx.commit().await?;
+
+        let mut mixed = draft(None);
+        mixed.kind = "abstraction".into();
+        mixed.derived_from = vec![
+            EdgeEndpoint::memory(EntityKind::Abstraction, abs.memory_id),
+            EdgeEndpoint::memory(EntityKind::Fact, fact.memory_id),
+        ];
+        let mixed_abs = ingest_fact_atomic(pool, &permit, &mixed, None)
+            .await
+            .expect("A from hot A + cooled Fact");
+
+        let mut tx = pool.begin().await?;
+        forget_memory(
+            &mut tx,
+            &core_pg_sidecars(),
+            &cold,
+            "cold/mixed-src",
+            abs.memory_id.into_inner(),
+        )
+        .await
+        .expect_err("A2 still pins only A");
+        tx.rollback().await?;
+
+        let mut tx = pool.begin().await?;
+        forget_memory(
+            &mut tx,
+            &core_pg_sidecars(),
+            &cold,
+            "cold/a2",
+            abs2.memory_id.into_inner(),
+        )
+        .await
+        .expect("forget A2 (no dependers)");
+        tx.commit().await?;
+
+        let mut tx = pool.begin().await?;
+        forget_memory(
+            &mut tx,
+            &core_pg_sidecars(),
+            &cold,
+            "cold/a-after-a2",
+            abs.memory_id.into_inner(),
+        )
+        .await
+        .expect("forget A after A2 gone; mixed_abs still has cooled Fact");
+        tx.commit().await?;
+
+        let err = ingest_fact_atomic(
+            pool,
+            &permit,
+            &derived_abstraction(EntityKind::Abstraction, abs.memory_id.into_inner()),
+            None,
+        )
+        .await
+        .expect_err("admit A from cooled A only");
+        assert!(
+            err.to_string().contains("cooled fact") || err.to_string().contains("23514"),
+            "got: {err}"
+        );
+
+        ingest_fact_atomic(
+            pool,
+            &permit,
+            &derived_abstraction(EntityKind::Fact, fact.memory_id.into_inner()),
+            None,
+        )
+        .await
+        .expect("admit A from cooled Fact");
+
+        let _ = mixed_abs;
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("grounding-support forget/admit test failed");
+}
+
+#[tokio::test]
+async fn forget_pinless_abstraction_is_refused() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    if let Err(e) = create_db(&db_name).await {
+        panic!("PG required for tests but admin connect failed: {e}");
+    }
+    let url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&url).await?;
+        pg.run_migrations().await?;
+        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
+        let pool = pg.pool_for_tests();
+        ingest_fact_atomic(pool, &permit, &draft(None), None).await?;
+        let owner_id = owner.stored_owner_id();
+        let handle = Uuid::now_v7();
+        let t = Uuid::now_v7();
+        let content_id: Uuid = sqlx::query_scalar(
+            "INSERT INTO proxima_core.content (owner_id, schema_id, content_hash)
+             VALUES ($1, 'core/test-abs-v1', $2)
+             RETURNING content_id",
+        )
+        .bind(owner_id)
+        .bind(vec![0_u8; 32])
+        .fetch_one(pool)
+        .await?;
+        sqlx::query(
+            "INSERT INTO proxima_core.memory_head (handle, kind, schema_id, owner_id, t)
+             VALUES ($1, 'abstraction', 'core/test-abs-v1', $2, $3)",
+        )
+        .bind(handle)
+        .bind(owner_id)
+        .bind(t)
+        .execute(pool)
+        .await?;
+        let err = sqlx::query(
+            "INSERT INTO proxima_core.memory
+                (handle, t, kind, owner_id, schema_id, content_id, origins, refs)
+             VALUES ($1, $2, 'abstraction', $3, 'core/test-abs-v1', $4, '{}', '{}')",
+        )
+        .bind(handle)
+        .bind(t)
+        .bind(owner_id)
+        .bind(content_id)
+        .execute(pool)
+        .await
+        .expect_err("pinless A");
+        assert!(
+            err.to_string().contains("cooled fact") || err.to_string().contains("23514"),
+            "got: {err}"
+        );
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("pinless abstraction test failed");
+}
+
+#[tokio::test]
+async fn concurrent_forget_keeps_one_grounding_support() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    if let Err(e) = create_db(&db_name).await {
+        panic!("PG required for tests but admin connect failed: {e}");
+    }
+    let url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&url).await?;
+        pg.run_migrations().await?;
+        let p1 = OwnerWritePermit::new_for_tests(
+            OwnerRef::Personal(UserId::new(Uuid::now_v7())),
+            AccessKind::Fact,
+        );
+        let p2 = OwnerWritePermit::new_for_tests(
+            OwnerRef::Personal(UserId::new(Uuid::now_v7())),
+            AccessKind::Fact,
+        );
+        let p3 = OwnerWritePermit::new_for_tests(
+            OwnerRef::Personal(UserId::new(Uuid::now_v7())),
+            AccessKind::Fact,
+        );
+        let pool = pg.pool_for_tests().clone();
+        let f1 = ingest_fact_atomic(&pool, &p1, &draft(None), None).await?;
+        let f2 = ingest_fact_atomic(&pool, &p2, &draft(None), None).await?;
+        ingest_fact_atomic(&pool, &p3, &draft(None), None).await?;
+        let a1 = ingest_fact_atomic(
+            &pool,
+            &p1,
+            &derived_abstraction(EntityKind::Fact, f1.memory_id.into_inner()),
+            None,
+        )
+        .await?;
+        let a2 = ingest_fact_atomic(
+            &pool,
+            &p2,
+            &derived_abstraction(EntityKind::Fact, f2.memory_id.into_inner()),
+            None,
+        )
+        .await?;
+        let mut both = draft(None);
+        both.kind = "abstraction".into();
+        both.derived_from = vec![
+            EdgeEndpoint::memory(EntityKind::Abstraction, a1.memory_id),
+            EdgeEndpoint::memory(EntityKind::Abstraction, a2.memory_id),
+        ];
+        let dep = ingest_fact_atomic(&pool, &p3, &both, None).await?;
+
+        let a1_t = a1.memory_id.into_inner();
+        let a2_t = a2.memory_id.into_inner();
+        let dep_t = dep.memory_id.into_inner();
+        let mut gate = pool.begin().await?;
+        let _: Uuid =
+            sqlx::query_scalar("SELECT t FROM proxima_core.memory WHERE t = $1 FOR UPDATE")
+                .bind(dep_t)
+                .fetch_one(&mut *gate)
+                .await?;
+
+        let pool_a = pool.clone();
+        let pool_b = pool.clone();
+        let f1 = tokio::spawn(async move {
+            let mut tx = pool_a.begin().await.map_err(|err| err.to_string())?;
+            let r = forget_memory(
+                &mut tx,
+                &core_pg_sidecars(),
+                &MemoryColdStore::default(),
+                "cold/conc-a1",
+                a1_t,
+            )
+            .await;
+            match &r {
+                Ok(()) => tx.commit().await.map_err(|err| err.to_string())?,
+                Err(_) => tx.rollback().await.map_err(|err| err.to_string())?,
+            }
+            Ok::<_, String>(r)
+        });
+        let f2 = tokio::spawn(async move {
+            let mut tx = pool_b.begin().await.map_err(|err| err.to_string())?;
+            let r = forget_memory(
+                &mut tx,
+                &core_pg_sidecars(),
+                &MemoryColdStore::default(),
+                "cold/conc-a2",
+                a2_t,
+            )
+            .await;
+            match &r {
+                Ok(()) => tx.commit().await.map_err(|err| err.to_string())?,
+                Err(_) => tx.rollback().await.map_err(|err| err.to_string())?,
+            }
+            Ok::<_, String>(r)
+        });
+
+        for _ in 0..50 {
+            if f1.is_finished() || f2.is_finished() {
+                break;
+            }
+            let waiting: i64 =
+                sqlx::query_scalar("SELECT count(*)::bigint FROM pg_locks WHERE NOT granted")
+                    .fetch_one(&pool)
+                    .await?;
+            if waiting >= 2 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert!(
+            !f1.is_finished() && !f2.is_finished(),
+            "both forgets must wait on the depender FOR UPDATE"
+        );
+        gate.rollback().await?;
+
+        let r1 = f1.await.expect("join a1").expect("tx a1");
+        let r2 = f2.await.expect("join a2").expect("tx a2");
+        let ok_count = usize::from(r1.is_ok()) + usize::from(r2.is_ok());
+        assert_eq!(
+            ok_count, 1,
+            "exactly one of A1/A2 forgets may commit; {r1:?} {r2:?}"
+        );
+        let remaining: i64 = sqlx::query_scalar(
+            "SELECT count(*)::bigint
+               FROM unnest(
+                    (SELECT origins || refs FROM proxima_core.memory WHERE t = $1)
+               ) AS p(id)
+              WHERE EXISTS (SELECT 1 FROM proxima_core.memory h WHERE h.t = p.id)
+                 OR EXISTS (
+                        SELECT 1 FROM proxima_core.cooled c
+                         WHERE c.t = p.id AND c.kind = 'fact'
+                    )",
+        )
+        .bind(dep.memory_id.into_inner())
+        .fetch_one(&pool)
+        .await?;
+        assert!(
+            remaining > 0,
+            "dependent must keep a hot pin or cooled Fact"
+        );
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("concurrent forget grounding test failed");
+}
+
+#[tokio::test]
+async fn forget_blocks_admit_until_grounding_rechecked() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    if let Err(e) = create_db(&db_name).await {
+        panic!("PG required for tests but admin connect failed: {e}");
+    }
+    let url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&url).await?;
+        pg.run_migrations().await?;
+        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
+        let pool = pg.pool_for_tests().clone();
+        let fact = ingest_fact_atomic(&pool, &permit, &draft(None), None).await?;
+        let abs = ingest_fact_atomic(
+            &pool,
+            &permit,
+            &derived_abstraction(EntityKind::Fact, fact.memory_id.into_inner()),
+            None,
+        )
+        .await?;
+        let a_t = abs.memory_id.into_inner();
+
+        let mut tx_f = pool.begin().await?;
+        let _: Uuid = sqlx::query_scalar("SELECT t FROM proxima_core.memory WHERE t = $1 FOR UPDATE")
+            .bind(a_t)
+            .fetch_one(&mut *tx_f)
+            .await?;
+
+        let owner_id = owner.stored_owner_id();
+        let handle = Uuid::now_v7();
+        let new_t = Uuid::now_v7();
+        let content_id: Uuid = sqlx::query_scalar(
+            "INSERT INTO proxima_core.content (owner_id, schema_id, content_hash)
+             VALUES ($1, 'core/test-abs-v1', $2)
+             RETURNING content_id",
+        )
+        .bind(owner_id)
+        .bind(vec![1_u8; 32])
+        .fetch_one(&pool)
+        .await?;
+        sqlx::query(
+            "INSERT INTO proxima_core.memory_head (handle, kind, schema_id, owner_id, t)
+             VALUES ($1, 'abstraction', 'core/test-abs-v1', $2, $3)",
+        )
+        .bind(handle)
+        .bind(owner_id)
+        .bind(new_t)
+        .execute(&pool)
+        .await?;
+
+        let pool_admit = pool.clone();
+        let admit = tokio::spawn(async move {
+            sqlx::query(
+                "INSERT INTO proxima_core.memory
+                    (handle, t, kind, owner_id, schema_id, content_id, origins, refs)
+                 VALUES ($1, $2, 'abstraction', $3, 'core/test-abs-v1', $4, ARRAY[$5]::uuid[], '{}')",
+            )
+            .bind(handle)
+            .bind(new_t)
+            .bind(owner_id)
+            .bind(content_id)
+            .bind(a_t)
+            .execute(&pool_admit)
+            .await
+        });
+
+        for _ in 0..50 {
+            let waiting: i64 =
+                sqlx::query_scalar("SELECT count(*)::bigint FROM pg_locks WHERE NOT granted")
+                    .fetch_one(&pool)
+                    .await?;
+            if waiting > 0 || admit.is_finished() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert!(
+            !admit.is_finished(),
+            "admit must wait on FOR SHARE, not pass B2 against the still-hot A"
+        );
+
+        forget_memory(
+            &mut tx_f,
+            &core_pg_sidecars(),
+            &MemoryColdStore::default(),
+            "cold/admit-race",
+            a_t,
+        )
+        .await?;
+        tx_f.commit().await?;
+
+        let err = admit.await?.expect_err("admit after forget of sole A origin");
+        assert!(
+            err.to_string().contains("cooled fact") || err.to_string().contains("23514"),
+            "got: {err}"
+        );
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("admit-vs-forget overlap test failed");
 }

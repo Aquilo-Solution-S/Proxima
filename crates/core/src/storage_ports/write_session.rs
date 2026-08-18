@@ -3,6 +3,7 @@
 use crate::storage::{AuthorDerivedOutcome, AuthorDerivedRequest, StorageError};
 use crate::storage_ports::OwnerWritePermit;
 use crate::verbs::fact_ingest::{AuthorizedFactWrite, FactIngestOutcome};
+use crate::verbs::goal_write::{CreateGoalAtomicRequest, GoalWriteOutcome};
 use crate::{MemoryId, SidecarPayload};
 
 /// Opens a backend-owned write session (one transaction).
@@ -35,6 +36,12 @@ pub trait WriteSession: Send {
         permit: &OwnerWritePermit,
         memory_id: MemoryId,
     ) -> Result<(), StorageError>;
+
+    async fn create_goal(
+        &mut self,
+        req: &CreateGoalAtomicRequest<'_>,
+        permit: &OwnerWritePermit,
+    ) -> Result<GoalWriteOutcome, StorageError>;
 
     async fn commit(self: Box<Self>) -> Result<(), StorageError>;
 }

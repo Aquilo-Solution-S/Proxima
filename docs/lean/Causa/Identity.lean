@@ -12,8 +12,9 @@ Identity (UML §0):
 
 There is no `FactEntity`, no `EdgeId`, no `CitationMappingId`. Citation is
 `blob_id` 0..1 on the Memory row. Schema lives on the handle catalog, not on
-every version. The kernel's time axis is `tick : Instant`, the model of
-uuidv7 `t` order — not a second storage column named `created_at`.
+every version. Typed payload is `Content` (owner-scoped); many admissions
+may share one `ContentId`. The kernel's time axis is `tick : Instant`, the
+model of uuidv7 `t` order — not a second storage column named `created_at`.
 -/
 
 import Causa.Prelude
@@ -38,6 +39,12 @@ abbrev GoalId            : Type := Id
 abbrev Handle            : Type := Id
 abbrev WakeId            : Type := Id
 abbrev BlobId            : Type := Id
+/-- Typed sidecar payload. Not an admission. Shareable within one owner. -/
+abbrev ContentId         : Type := Id
+/-- Engine digest of a Content payload. Opaque equality only. -/
+opaque ContentHash : Type := String
+/-- Kernel face of a retrieval situation: admitted `t`s in scope. -/
+abbrev Cue : Type := Set MemoryId
 
 /-- Stable persisted owner-table reference. This is not the resolved membership
     map (`Owner := User → Option Role`). Entity rows should store this reference;

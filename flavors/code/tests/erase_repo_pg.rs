@@ -115,6 +115,16 @@ async fn exercise_repo_erase(pool: &sqlx::PgPool) -> Result<(), Box<dyn std::err
     insert_repo_commit_with_test_request(pool, &owner, repo_id, memory_id).await?;
     let other_memory_id = Uuid::now_v7();
     insert_repo_commit_with_test_request(pool, &owner, other_repo_id, other_memory_id).await?;
+    let owner_id = owner.stored_owner_id();
+    sqlx::query(
+        "INSERT INTO proxima_core.sketch (t, owner_id, kind, text)
+         VALUES ($1, $2, 'fact', 'erase-repo-target'), ($3, $2, 'fact', 'erase-repo-keep')",
+    )
+    .bind(memory_id)
+    .bind(owner_id)
+    .bind(other_memory_id)
+    .execute(pool)
+    .await?;
 
     let receipt = erase_repo(pool, &owner, repo_id).await?;
     assert_eq!(receipt.repo_id, repo_id);
@@ -176,6 +186,15 @@ async fn assert_repo_erased(
         .await?,
         0_i64
     );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*)::bigint FROM proxima_core.sketch WHERE t = $1",
+        )
+        .bind(memory_id)
+        .fetch_one(pool)
+        .await?,
+        0_i64
+    );
     Ok(())
 }
 
@@ -198,6 +217,15 @@ async fn assert_other_repo_preserved(
             "SELECT COUNT(*)::bigint FROM proxima_code.repos WHERE repo_id = $1",
         )
         .bind(repo_id)
+        .fetch_one(pool)
+        .await?,
+        1_i64
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*)::bigint FROM proxima_core.sketch WHERE t = $1",
+        )
+        .bind(memory_id)
         .fetch_one(pool)
         .await?,
         1_i64

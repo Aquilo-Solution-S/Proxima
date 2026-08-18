@@ -364,6 +364,7 @@ async fn facade_engine_reads_lineage_edges_and_derives_without_embedding_client(
                     }),
                     authoring_perspective_id: None,
                     derived_from: &derived_from,
+                    extra_refs: &[],
                     supersedes: None,
                     lexical_language: None,
                 },

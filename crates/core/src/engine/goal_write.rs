@@ -138,7 +138,11 @@ impl Engine {
             .goal_command
             .goal_write
             .create_goal_atomic(
-                &CreateGoalAtomicRequest { draft, context },
+                &CreateGoalAtomicRequest {
+                    draft,
+                    context,
+                    write_act_t: None,
+                },
                 permit.owner_write_permit(),
             )
             .await
@@ -405,6 +409,7 @@ impl Engine {
                         embedding_model_id,
                         author_self_perspective_id,
                     },
+                    write_act_t: None,
                 },
                 permit.owner_write_permit(),
             )
@@ -413,7 +418,7 @@ impl Engine {
         Ok(outcome)
     }
 
-    fn goal_atomic_context<'a>(
+    pub(in crate::engine) fn goal_atomic_context<'a>(
         &'a self,
         embedding_client: Option<&'a std::sync::Arc<dyn crate::llm::EmbeddingClient>>,
         author_self_perspective_id: Option<MemoryId>,
@@ -426,7 +431,7 @@ impl Engine {
         }
     }
 
-    fn normalize_payload_write(
+    pub(in crate::engine) fn normalize_payload_write(
         &self,
         mut payload_write: GoalPayloadWrite,
     ) -> Result<GoalPayloadWrite, ProtocolError> {
@@ -455,14 +460,30 @@ impl Engine {
         goal_owner: &crate::Owner,
         topology: &GoalTopologyWrite,
     ) -> Result<(), ProtocolError> {
-        self.target_perspective_authorized(
-            authz,
-            goal_owner,
-            topology.assignment().perspective_id(),
-        )
-        .await?;
-        self.validate_goal_evidence_authorized(authz, topology.evidence())
+        self.validate_goal_topology_authorized_visible(authz, goal_owner, topology, &[])
             .await
+    }
+
+    pub(in crate::engine) async fn validate_goal_topology_authorized_visible(
+        &self,
+        authz: &AuthzContext,
+        goal_owner: &crate::Owner,
+        topology: &GoalTopologyWrite,
+        written: &[MemoryId],
+    ) -> Result<(), ProtocolError> {
+        let assignment = topology.assignment().perspective_id();
+        if !written.contains(&assignment) {
+            self.target_perspective_authorized(authz, goal_owner, assignment)
+                .await?;
+        }
+        for item in topology.evidence() {
+            if written.contains(&item.memory_id()) {
+                continue;
+            }
+            self.authorize_entry_read(authz, crate::access::EntityId::Memory(item.memory_id()))
+                .await?;
+        }
+        Ok(())
     }
 
     async fn validate_optional_goal_evidence_authorized(
@@ -518,7 +539,7 @@ impl Engine {
         Ok(memory_id)
     }
 
-    async fn author_self_perspective_authorized(
+    pub(in crate::engine) async fn author_self_perspective_authorized(
         &self,
         authz: &AuthzContext,
         memory_id: Option<MemoryId>,
@@ -541,7 +562,7 @@ impl Engine {
         Ok(Some(memory_id))
     }
 
-    async fn validate_wake_config_for_write(
+    pub(in crate::engine) async fn validate_wake_config_for_write(
         &self,
         authz: &AuthzContext,
         wake: Option<&GoalWakeConfigWrite>,

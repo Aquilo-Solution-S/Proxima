@@ -354,6 +354,7 @@ pub async fn append_code_slices_with_handles(
             sidecar_payload: SidecarPayload::abstraction(payload.clone()),
             authoring_perspective_id: None,
             derived_from: &origins,
+            extra_refs: &[],
             supersedes: None,
             lexical_language: Some(crate::payloads::CODE_LEXICAL_LANGUAGE),
         });

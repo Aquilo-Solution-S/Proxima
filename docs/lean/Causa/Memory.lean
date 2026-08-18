@@ -9,7 +9,8 @@ The F/A/P cognitive graph as a timeseries (UML §0–§2).
 
 No `supersedes` / `text` / `authoring_*` / schema-on-version / `created_at`.
 Pins (`origins`, `refs`) are target `t`, frozen at write. Schema and series
-contract live on `MemoryHead`. There is no `FactEntity`.
+contract live on `MemoryHead`. Typed payload is `Content` (owner-scoped);
+`Memory.content_id` may be shared across admissions. There is no `FactEntity`.
 -/
 
 import Causa.Prelude
@@ -35,20 +36,58 @@ def MemoryKind.layer : MemoryKind → Nat
   | .Perspective => 2
 
 -- ============================================================
+-- Content — owner-scoped typed payload (not an admission)
+-- ============================================================
+
+/-- Immutable sidecar payload. No time, no pins. Shareable within one owner. -/
+structure Content where
+  id     : ContentId
+  owner  : Owner
+  schema : SchemaRef
+  hash   : ContentHash
+
+def content_id : Content → ContentId := Content.id
+def content_owner : Content → Owner := Content.owner
+def content_schema : Content → SchemaRef := Content.schema
+def content_hash : Content → ContentHash := Content.hash
+
+def ContentIdUnique (contents : Set Content) : Prop :=
+  ∀ c1 c2 : Content,
+    c1 ∈ contents →
+    c2 ∈ contents →
+    content_id c1 = content_id c2 →
+    c1 = c2
+
+/-- S1 — `(owner, schema, hash)` is unique. Cross-owner equality is not identity. -/
+def ContentKeyUnique (contents : Set Content) : Prop :=
+  ∀ c1 c2 : Content,
+    c1 ∈ contents →
+    c2 ∈ contents →
+    content_owner c1 = content_owner c2 →
+    content_schema c1 = content_schema c2 →
+    content_hash c1 = content_hash c2 →
+    c1 = c2
+
+instance : AppendOnly Content := ⟨⟩
+instance : Immutable Content := ⟨⟩
+
+-- ============================================================
 -- The core entity — one version of a series
 -- ============================================================
 
 /-- One Memory version. `t` is the row id. `tick` is the kernel face of
-    uuidv7 `t` order (not a storage `created_at` column). Schema is not here. -/
+    uuidv7 `t` order (not a storage `created_at` column). Schema is not here.
+    `content_id` names the typed payload (shared across admissions). -/
 structure Memory where
-  handle  : Handle
-  t       : MemoryId
-  kind    : MemoryKind
-  owner   : Owner
-  origins : List MemoryId
-  refs    : List MemoryId
-  blob_id : Option BlobId
-  tick    : Instant
+  handle     : Handle
+  t          : MemoryId
+  kind       : MemoryKind
+  owner      : Owner
+  origins    : List MemoryId
+  refs       : List MemoryId
+  blob_id    : Option BlobId
+  content_id : Option ContentId
+  tick       : Instant
   /-- Fact origins are empty (UML §2). -/
   fact_origins_empty : kind = .Fact → origins = []
   /-- A Perspective never cites (UML §4). -/
@@ -65,16 +104,18 @@ def memory_owner : Memory → Owner := Memory.owner
 def memory_origins : Memory → List MemoryId := Memory.origins
 def memory_refs : Memory → List MemoryId := Memory.refs
 def memory_blob_id : Memory → Option BlobId := Memory.blob_id
+def memory_content_id : Memory → Option ContentId := Memory.content_id
 def memory_tick : Memory → Instant := Memory.tick
 
 theorem memory_field_projection
     (handle : Handle) (t : MemoryId) (kind : MemoryKind) (owner : Owner)
-    (origins refs : List MemoryId) (blob_id : Option BlobId) (tick : Instant)
+    (origins refs : List MemoryId) (blob_id : Option BlobId)
+    (content_id : Option ContentId) (tick : Instant)
     (fact_origins_empty : kind = .Fact → origins = [])
     (perspective_never_cites : kind = .Perspective → blob_id = none)
     (blob_fa_only : blob_id ≠ none → kind = .Fact ∨ kind = .Abstraction) :
     memory_t
-      (Memory.mk handle t kind owner origins refs blob_id tick
+      (Memory.mk handle t kind owner origins refs blob_id content_id tick
         fact_origins_empty perspective_never_cites blob_fa_only) = t := rfl
 
 /-- `t` uniqueness is a table/store invariant. -/
@@ -136,6 +177,43 @@ def MemoryHeadAligned (memories : Set Memory) (heads : Set MemoryHead) : Prop :=
       memory_kind m = memory_head_kind h ∧
       memory_owner m = memory_head_owner h
 
+/-- A/P always name a Content. Facts only if the schema has a sidecar
+    (engine); the kernel only requires A/P. -/
+def memoryRequiresContent (m : Memory) : Prop :=
+  memory_kind m = .Abstraction ∨ memory_kind m = .Perspective
+
+def ContentNamed
+    (contents : Set Content) (m : Memory) : Prop :=
+  ∃ c : Content, c ∈ contents ∧ memory_content_id m = some (content_id c)
+
+/-- Owner-scoped share: an admission may name only a Content of the same owner.
+    Head schema must match Content.schema when both are present. -/
+structure ContentAligned
+    (memories : Set Memory) (heads : Set MemoryHead) (contents : Set Content) : Prop where
+  idsUnique : ContentIdUnique contents
+  keysUnique : ContentKeyUnique contents
+  apHasContent : ∀ m : Memory, m ∈ memories → memoryRequiresContent m →
+    ContentNamed contents m
+  ownerMatch : ∀ (m : Memory) (c : Content),
+    m ∈ memories → c ∈ contents → memory_content_id m = some (content_id c) →
+      memory_owner m = content_owner c
+  schemaMatch : ∀ (m : Memory) (h : MemoryHead) (c : Content),
+    m ∈ memories → h ∈ heads → c ∈ contents →
+    memory_handle m = memory_head_handle h →
+    memory_content_id m = some (content_id c) →
+      memory_head_schema h = content_schema c
+
+/-- Two admissions share a payload. Identity remains the two `t`s. -/
+def contentShared (m1 m2 : Memory) : Prop :=
+  memory_content_id m1 = memory_content_id m2 ∧
+  (memory_content_id m1).isSome = true ∧
+  memory_t m1 ≠ memory_t m2
+
+theorem shared_content_preserves_distinct_admissions
+    (m1 m2 : Memory) (h : contentShared m1 m2) :
+    memory_t m1 ≠ memory_t m2 :=
+  h.2.2
+
 /-- A Memory lifecycle head: the catalog names this `t` for the handle. -/
 def memoryIsHead (memories : Set Memory) (heads : Set MemoryHead) (m : Memory) : Prop :=
   m ∈ memories ∧
@@ -194,6 +272,11 @@ def pinKindIs
   (∃ tgt : Memory, tgt ∈ memories ∧ memory_t tgt = id ∧ memory_kind tgt = k) ∨
   (∃ c : Cooled, c ∈ cooled ∧ cooled_t c = id ∧ cooled_kind c = k)
 
+/-- B1 — A origins are Fact or Abstraction (F→A and A→A). -/
+def pinKindFactOrAbstraction
+    (memories : Set Memory) (cooled : Set Cooled) (id : MemoryId) : Prop :=
+  pinKindIs memories cooled id .Fact ∨ pinKindIs memories cooled id .Abstraction
+
 -- ============================================================
 -- Origin kind CHECKs (UML §2) — Tesla valve, no extra if
 -- ============================================================
@@ -201,9 +284,9 @@ def pinKindIs
 structure OriginKindValid
     (memories : Set Memory) (cooled : Set Cooled) (m : Memory) : Prop where
   factEmpty : memory_kind m = .Fact → memory_origins m = []
-  absFacts : memory_kind m = .Abstraction →
+  absFactOrAbs : memory_kind m = .Abstraction →
     ∀ id : MemoryId, id ∈ memory_origins m →
-      pinKindIs memories cooled id .Fact
+      pinKindFactOrAbstraction memories cooled id
   perspAbsOrEmpty : memory_kind m = .Perspective →
     memory_origins m = [] ∨
     ∀ id : MemoryId, id ∈ memory_origins m →
@@ -218,6 +301,7 @@ theorem facts_declare_no_origins (m : Memory) (hk : memory_kind m = .Fact) :
 -- Personality absence (doc 02 §Personality, D4)
 -- ============================================================
 
-/- Personality is not a kernel entity. No FactEntity. No supersedes. -/
+/- Personality is not a kernel entity. No FactEntity. No supersedes.
+   Content is a payload sort, not a fourth cognitive kind. -/
 
 end Causa

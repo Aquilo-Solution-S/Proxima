@@ -24,8 +24,7 @@ pub struct ForgetTool;
 
 impl McpTool for ForgetTool {
     const NAME: &'static str = protocol_tool::CORE_FORGET;
-    const DESCRIPTION: &'static str =
-        "Cool one memory t: PUT cold object, delete hot row, announce.forget. ingest_keys stay.";
+    const DESCRIPTION: &'static str = "Cool one memory t: PUT cold object, delete hot row, announce.forget. ingest_keys stay. Refuses if a remaining hot non-Fact would lose its last hot pin / cooled-Fact leaf.";
     const ANNOTATIONS: Option<crate::mcp::McpToolAnnotations> = Some(DESTRUCTIVE_NON_IDEMPOTENT);
     type Args = ForgetArgs;
     type Output = ForgetOutput;

@@ -259,6 +259,45 @@ async fn lexical_search_is_sidecar_first_then_owner_admit() {
 }
 
 #[tokio::test]
+async fn lexical_search_does_not_let_other_owner_fill_overfetch() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    if let Err(e) = create_db(&db_name).await {
+        panic!("PG required for tests but admin connect failed: {e}");
+    }
+    let url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&url).await?;
+        pg.run_migrations().await?;
+        let pool = pg.pool_for_tests();
+        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let other = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let ours = seed_note(pool, owner, "zebra", "owner-local zebra needle").await?;
+        for i in 0..25 {
+            seed_note(
+                pool,
+                other,
+                &format!("zebra {i}"),
+                "other-owner zebra flood",
+            )
+            .await?;
+        }
+        let mut req = search_req(owner, "zebra");
+        req.limit = 1;
+        let page = pg.search_memories(&req, &[note_projection()]).await?;
+        assert_eq!(
+            page.results.len(),
+            1,
+            "other-owner GIN hits must not occupy the overfetch window"
+        );
+        assert_eq!(page.results[0].memory_id.into_inner(), ours);
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("owner-at-scan search test failed");
+}
+
+#[tokio::test]
 async fn tagged_search_scans_flavor_sidecars() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
     if let Err(e) = create_db(&db_name).await {
@@ -303,13 +342,48 @@ async fn tagged_search_scans_flavor_sidecars() {
         .bind(t)
         .execute(pool)
         .await?;
+        let mut hash = [0_u8; 32];
+        hash[..16].copy_from_slice(t.as_bytes());
+        hash[16..].copy_from_slice(t.as_bytes());
+        let content_id: Uuid = sqlx::query_scalar(
+            "INSERT INTO proxima_core.content (owner_id, schema_id, content_hash)
+             VALUES ($1, 'proxima-docs/section-text-v1', $2)
+             RETURNING content_id",
+        )
+        .bind(owner_id)
+        .bind(hash.as_slice())
+        .fetch_one(pool)
+        .await?;
+        let fact_handle = Uuid::now_v7();
+        let fact_t = Uuid::now_v7();
+        sqlx::query(
+            "INSERT INTO proxima_core.memory_head (handle, kind, schema_id, owner_id, t)
+             VALUES ($1, 'fact', 'core/test-fact-v1', $2, $3)",
+        )
+        .bind(fact_handle)
+        .bind(owner_id)
+        .bind(fact_t)
+        .execute(pool)
+        .await?;
         sqlx::query(
             "INSERT INTO proxima_core.memory (handle, t, kind, owner_id, schema_id)
-             VALUES ($1, $2, 'abstraction', $3, 'proxima-docs/section-text-v1')",
+             VALUES ($1, $2, 'fact', $3, 'core/test-fact-v1')",
+        )
+        .bind(fact_handle)
+        .bind(fact_t)
+        .bind(owner_id)
+        .execute(pool)
+        .await?;
+        sqlx::query(
+            "INSERT INTO proxima_core.memory
+                (handle, t, kind, owner_id, schema_id, origins, content_id)
+             VALUES ($1, $2, 'abstraction', $3, 'proxima-docs/section-text-v1', ARRAY[$4]::uuid[], $5)",
         )
         .bind(handle)
         .bind(t)
         .bind(owner_id)
+        .bind(fact_t)
+        .bind(content_id)
         .execute(pool)
         .await?;
         sqlx::query(

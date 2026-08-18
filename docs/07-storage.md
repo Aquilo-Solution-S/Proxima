@@ -14,6 +14,7 @@ sidecars. Exact DDL is `crates/storage-pg/migrations/0001_v008.sql`.
 | `SchemaId` | text | flavor-qualified; on `memory_head` and each `memory` row (same value) |
 | `ToolId` | text | build-time tool id (05 / 12) |
 | `MemoryId` | UUIDv7 | `memory.t` |
+| `ContentId` | UUIDv7 | `content.content_id` |
 | `GoalId` | UUIDv7 | `goal.t` |
 | `ChangeEvent.seq` | UUIDv7 | `announce.seq` |
 | `EmbeddingVersion` | integer | independent of entity identity |
@@ -79,7 +80,8 @@ Closed vocabularies are SQL enums.
 |---|---|
 | `owners` | `owner_id`, `kind`; World seeded |
 | `memory_head` | `handle` PK, `kind`, `schema_id`, `owner_id`, head `t` |
-| `memory` | `(handle, t)` PK, `UNIQUE(t)`, `schema_id`, `origins[]`, `refs[]`, `blob_id` |
+| `memory` | `(handle, t)` PK, `UNIQUE(t)`, `schema_id`, `origins[]`, `refs[]`, `blob_id`, `content_id` |
+| `content` | owner-scoped payload; `UNIQUE (owner_id, schema_id, content_hash)` |
 | `ingest_keys` | `(owner_id, source_id, ingest_key)` → `t` |
 | `announce` | `seq`, `op` append\|forget\|erase, `entity` memory\|goal |
 | `blob` | cited artefact |
@@ -87,6 +89,7 @@ Closed vocabularies are SQL enums.
 | `goal_head` / `goal` | Goal timeseries; `wake_id`, `write_act_t`, `dependency_t`, `evidence_t` |
 | `wake_config` | the one UPDATE table; N Goals share `wake_id`; DELETE RESTRICT |
 | `cooled` | forget stub; object key `cold/<owner_hash>/<handle>/<t>` |
+| `sketch` | hot one-liner for recall/think (`t` PK = Memory.t or Goal.t); forget deletes |
 | embeddings / jobs / heads | independent of graph authorship |
 | core sidecars | `agent_note_v1`, `utterance_v1`, `agent_derivation_v1`, `interpretation_v1`, `mcp_call_logged_v1`, `task_goal_v1` |
 
@@ -149,7 +152,7 @@ Independent of entity tables.
 |---|---|
 | CDC | `announce.seq` |
 | writes are replayable | `ingest_keys` |
-| forget is cool | PUT `cold/` first, then delete hot; last-t forget deletes `memory_head` |
+| forget is cool | PUT `cold/` first, then delete hot; last-t forget deletes `memory_head`. Refuse if a remaining hot non-Fact would lose `groundingSupport` (no hot pin and no cooled Fact). |
 | hydrate | same `t`; recreates `memory_head` when the series was empty |
 
 <a id="scaling-envelope"></a>

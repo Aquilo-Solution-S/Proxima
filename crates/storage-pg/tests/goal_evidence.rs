@@ -8,7 +8,8 @@ use proxima_core::verbs::goal_write::{
     GoalEvidenceRef, GoalState, GoalTopologyWrite, IdempotencyKey,
 };
 use proxima_core::{
-    AccessKind, FlavorRegistry, OwnerRef, SchemaId, SchemaVersion, StorageError, UserId,
+    AccessKind, EdgeEndpoint, EntityKind, FlavorRegistry, OwnerRef, SchemaId, SchemaVersion,
+    StorageError, UserId,
 };
 use proxima_pg_testkit::{create_db, db_url, drop_db};
 use proxima_storage_pg::PgStorage;
@@ -47,7 +48,14 @@ async fn perspective_evidence_is_rejected_in_tx() {
         let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Goal);
         let pool = pg.pool_for_tests();
-        let perspective = ingest_fact_atomic(pool, &permit, &draft("perspective"), None).await?;
+        let fact = ingest_fact_atomic(pool, &permit, &draft("fact"), None).await?;
+        let mut abs = draft("abstraction");
+        abs.derived_from = vec![EdgeEndpoint::memory(EntityKind::Fact, fact.memory_id)];
+        let abs = ingest_fact_atomic(pool, &permit, &abs, None).await?;
+        let mut perspective = draft("perspective");
+        perspective.derived_from =
+            vec![EdgeEndpoint::memory(EntityKind::Abstraction, abs.memory_id)];
+        let perspective = ingest_fact_atomic(pool, &permit, &perspective, None).await?;
         let registry = FlavorRegistry::new().freeze_or_panic_for_tests();
         let topology = GoalTopologyWrite::new(
             GoalAssignmentTarget::perspective(perspective.memory_id),
@@ -77,6 +85,7 @@ async fn perspective_evidence_is_rejected_in_tx() {
                         embedding_model_id: None,
                         author_self_perspective_id: None,
                     },
+                    write_act_t: None,
                 },
                 &permit,
             )

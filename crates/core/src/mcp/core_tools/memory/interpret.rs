@@ -14,8 +14,8 @@ use crate::{
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-const MAX_CLAIM_CHARS: usize = 1000;
-const MAX_SUBJECTS: usize = 64;
+pub(crate) const MAX_CLAIM_CHARS: usize = 1000;
+pub(crate) const MAX_SUBJECTS: usize = 64;
 
 const INTERPRET_NAMESPACE: uuid::Uuid = uuid::Uuid::from_bytes([
     0x1b, 0x6a, 0x4c, 0x9e, 0x2d, 0x77, 0x4f, 0x0b, 0xa5, 0x31, 0x8e, 0x24, 0x6c, 0x0d, 0x91, 0xf3,
@@ -24,7 +24,7 @@ const INTERPRET_OPERATOR_NAMESPACE: uuid::Uuid = uuid::Uuid::from_bytes([
     0x52, 0x18, 0xc7, 0x3f, 0x9a, 0x40, 0x4d, 0x86, 0xb1, 0x0c, 0x7f, 0x5e, 0x33, 0xa8, 0x62, 0x1d,
 ]);
 
-fn default_confidence() -> u8 {
+pub(crate) fn default_confidence() -> u8 {
     80
 }
 
@@ -173,6 +173,7 @@ impl McpTool for InterpretTool {
                         // it declares no derivation and writes no
                         // `origin` rows.
                         derived_from: &[],
+                        extra_refs: &[],
                         supersedes: None,
                         lexical_language: None,
                     },
@@ -195,7 +196,10 @@ impl McpTool for InterpretTool {
 /// subject list, so naming itself changes the id it was named for — and
 /// kept anyway, because "unreachable" is a property of today's id
 /// derivation rather than of the rule.
-fn reject_self_subject(memory_id: MemoryId, subjects: &[uuid::Uuid]) -> Result<(), McpToolError> {
+pub(crate) fn reject_self_subject(
+    memory_id: MemoryId,
+    subjects: &[uuid::Uuid],
+) -> Result<(), McpToolError> {
     if subjects.contains(&memory_id.into_inner()) {
         return Err(McpToolError::InvalidInput(
             "an interpretation cannot take itself as a subject".into(),
@@ -204,7 +208,7 @@ fn reject_self_subject(memory_id: MemoryId, subjects: &[uuid::Uuid]) -> Result<(
     Ok(())
 }
 
-fn resolve_subject(
+pub(crate) fn resolve_subject(
     ctx: &McpToolCtx,
     handle: &str,
 ) -> Result<(MemoryId, InterpretationSubjectKind), McpToolError> {
@@ -223,14 +227,14 @@ fn resolve_subject(
     Ok((memory_id, InterpretationSubjectKind::Fact))
 }
 
-fn interpret_operator_id() -> OperatorId {
+pub(crate) fn interpret_operator_id() -> OperatorId {
     OperatorId::new(uuid::Uuid::new_v5(
         &INTERPRET_OPERATOR_NAMESPACE,
         protocol_tool::CORE_INTERPRET.as_bytes(),
     ))
 }
 
-fn interpret_input_contract_id() -> InputContractId {
+pub(crate) fn interpret_input_contract_id() -> InputContractId {
     InputContractId::new(uuid::Uuid::new_v5(
         &INTERPRET_OPERATOR_NAMESPACE,
         format!("{}:subjects-v1", protocol_tool::CORE_INTERPRET).as_bytes(),
@@ -240,7 +244,7 @@ fn interpret_input_contract_id() -> InputContractId {
 /// Deterministic id folded from owner, model, claim, confidence and
 /// subjects: re-asserting the same interpretation is one memory, not a
 /// growing pile of identical judgments.
-fn interpretation_memory_id(
+pub(crate) fn interpretation_memory_id(
     owner: &crate::Owner,
     model_id: &str,
     claim: &str,

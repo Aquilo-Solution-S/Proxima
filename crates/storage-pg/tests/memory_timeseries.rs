@@ -228,6 +228,16 @@ async fn memory_timeseries_pins_blob_and_closed_handle() {
             .await
             .expect("A origins many Facts");
 
+        let mut abs_from_abs = draft(None);
+        abs_from_abs.kind = "abstraction".into();
+        abs_from_abs.derived_from = vec![proxima_core::EdgeEndpoint::memory(
+            proxima_core::EntityKind::Abstraction,
+            abs_out.memory_id,
+        )];
+        ingest_fact_atomic(pool, &permit, &abs_from_abs, None)
+            .await
+            .expect("A origins Abstraction t");
+
         let mut persp_from_fact = draft(None);
         persp_from_fact.kind = "perspective".into();
         persp_from_fact.derived_from = vec![proxima_core::EdgeEndpoint::memory(
@@ -282,6 +292,10 @@ async fn memory_timeseries_pins_blob_and_closed_handle() {
 
         let mut persp = draft(None);
         persp.kind = "perspective".into();
+        persp.derived_from = vec![proxima_core::EdgeEndpoint::memory(
+            proxima_core::EntityKind::Abstraction,
+            abs_out.memory_id,
+        )];
         persp.blob_id = Some(blob_id);
         let err = ingest_fact_atomic(pool, &permit, &persp, None)
             .await
@@ -354,6 +368,7 @@ async fn owners_upsert_rejects_kind_conflict_on_every_write_path() {
                     evidence_t: vec![],
                     wake_id: None,
                     mint_write_act: false,
+                    write_act_t: None,
                 },
             )
             .await

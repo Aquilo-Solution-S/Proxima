@@ -191,6 +191,64 @@ impl Engine {
         Ok(GetMemoriesReadResponse { memories })
     }
 
+    /// Owner-scoped persisted one-liners. Missing/unreadable ids are absent.
+    ///
+    /// # Errors
+    ///
+    /// `Forbidden` when the context authorizes no reads; `Internal` on storage.
+    pub async fn load_sketches(
+        &self,
+        authz: &AuthzContext,
+        memory_ids: &[MemoryId],
+    ) -> Result<Vec<crate::read_models::MemorySketch>, ProtocolError> {
+        let read_owners = self.authorize_read(authz).await?;
+        self.storage
+            .read_verb
+            .memory_read
+            .load_sketches(&read_owners, memory_ids)
+            .await
+            .map_err(|err| storage_error("load_sketches", &err))
+    }
+
+    /// Owner-scoped pin carriers for the given `t`s. Missing/unreadable
+    /// ids are absent.
+    ///
+    /// # Errors
+    ///
+    /// `Forbidden` when the context authorizes no reads; `Internal` on storage.
+    pub async fn pin_nodes(
+        &self,
+        authz: &AuthzContext,
+        memory_ids: &[MemoryId],
+    ) -> Result<Vec<crate::PinNode>, ProtocolError> {
+        let read_owners = self.authorize_read(authz).await?;
+        self.storage
+            .read_verb
+            .memory_read
+            .load_pin_nodes(&read_owners, memory_ids)
+            .await
+            .map_err(|err| storage_error("load_pin_nodes", &err))
+    }
+
+    /// Newest-first inbound pin page.
+    ///
+    /// # Errors
+    ///
+    /// `Forbidden` when the context authorizes no reads; `Internal` on storage.
+    pub async fn inbound_pin_nodes(
+        &self,
+        authz: &AuthzContext,
+        query: crate::storage_ports::InboundPinQuery<'_>,
+    ) -> Result<Vec<crate::PinNode>, ProtocolError> {
+        let read_owners = self.authorize_read(authz).await?;
+        self.storage
+            .read_verb
+            .memory_read
+            .load_inbound_pin_nodes(&read_owners, query)
+            .await
+            .map_err(|err| storage_error("load_inbound_pin_nodes", &err))
+    }
+
     /// Owner-scoped graph overview domain read.
     ///
     /// # Errors

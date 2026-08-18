@@ -138,7 +138,7 @@ pub async fn seed_memory(
 
 /// Same as [`seed_memory`], with `memory.sidecar_tables` set at insert
 /// (the row is append-only).
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 pub async fn seed_memory_with_sidecars(
     pool: &sqlx::PgPool,
     owner: &Owner,
@@ -151,6 +151,36 @@ pub async fn seed_memory_with_sidecars(
 ) -> Result<(Uuid, Uuid), sqlx::Error> {
     let handle = handle.unwrap_or_else(Uuid::now_v7);
     let t = t.unwrap_or_else(Uuid::now_v7);
+    let mut origins = origins.to_vec();
+    if kind != "fact" && origins.is_empty() {
+        let (_, fact_t) = Box::pin(seed_memory_with_sidecars(
+            pool,
+            owner,
+            "core/test-fact-v1",
+            "fact",
+            None,
+            None,
+            &[],
+            &[],
+        ))
+        .await?;
+        if kind == "perspective" {
+            let (_, abs_t) = Box::pin(seed_memory_with_sidecars(
+                pool,
+                owner,
+                "core/test-abs-v1",
+                "abstraction",
+                None,
+                None,
+                &[fact_t],
+                &[],
+            ))
+            .await?;
+            origins.push(abs_t);
+        } else {
+            origins.push(fact_t);
+        }
+    }
     let owner_id = owner.stored_owner_id();
     sqlx::query(
         "INSERT INTO proxima_core.owners (owner_id, kind)
@@ -186,10 +216,29 @@ pub async fn seed_memory_with_sidecars(
         .await?;
     }
     let tables: Vec<String> = sidecar_tables.iter().map(|s| (*s).to_string()).collect();
+    let content_id: Option<Uuid> = if kind == "fact" {
+        None
+    } else {
+        let mut hash = [0_u8; 32];
+        hash[..16].copy_from_slice(t.as_bytes());
+        hash[16..].copy_from_slice(t.as_bytes());
+        Some(
+            sqlx::query_scalar(
+                "INSERT INTO proxima_core.content (owner_id, schema_id, content_hash)
+                 VALUES ($1, $2, $3)
+                 RETURNING content_id",
+            )
+            .bind(owner_id)
+            .bind(schema_id)
+            .bind(hash.as_slice())
+            .fetch_one(pool)
+            .await?,
+        )
+    };
     sqlx::query(
         "INSERT INTO proxima_core.memory
-            (handle, t, kind, owner_id, schema_id, origins, sidecar_tables)
-         VALUES ($1, $2, $3::proxima_core.memory_kind, $4, $5, $6, $7)",
+            (handle, t, kind, owner_id, schema_id, origins, sidecar_tables, content_id)
+         VALUES ($1, $2, $3::proxima_core.memory_kind, $4, $5, $6, $7, $8)",
     )
     .bind(handle)
     .bind(t)
@@ -198,6 +247,7 @@ pub async fn seed_memory_with_sidecars(
     .bind(schema_id)
     .bind(origins)
     .bind(&tables)
+    .bind(content_id)
     .execute(pool)
     .await?;
     Ok((handle, t))

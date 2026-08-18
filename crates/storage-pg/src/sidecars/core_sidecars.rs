@@ -17,6 +17,17 @@ fn parse_utterance_speaker(value: &str) -> Result<proxima_core::Speaker, Storage
 }
 
 crate::pg_sidecar! {
+    payload: proxima_core::WriteActV1,
+    row: WriteActPayloadRow,
+    kinds: [Fact],
+    table: "proxima_core.write_act_v1",
+    key: t,
+    fields: {
+        episode_id => episode_id: (uuid),
+    },
+}
+
+crate::pg_sidecar! {
     payload: proxima_core::AgentNoteV1,
     row: AgentNotePayloadRow,
     kinds: [Fact],
@@ -353,6 +364,7 @@ pub fn core_pg_sidecars() -> PgSidecarRegistryFrozen {
 }
 
 pub fn register_core_pg_sidecars(registry: &mut PgSidecarRegistry) {
+    registry.add_fact::<proxima_core::WriteActV1>();
     registry.add_fact::<proxima_core::AgentNoteV1>();
     registry.add_fact::<proxima_core::UtteranceV1>();
     registry.add_fact::<proxima_core::verbs::persist_mcp_call::McpCallLoggedV1>();

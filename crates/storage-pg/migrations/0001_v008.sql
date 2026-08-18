@@ -89,6 +89,18 @@ CREATE TABLE proxima_core.blob (
     CONSTRAINT blob_hash_len_chk CHECK (octet_length(content_hash) = 32)
 );
 
+CREATE TABLE proxima_core.content (
+    content_id uuid PRIMARY KEY DEFAULT uuidv7(),
+    owner_id uuid NOT NULL REFERENCES proxima_core.owners (owner_id),
+    schema_id text NOT NULL,
+    content_hash bytea NOT NULL,
+    UNIQUE (owner_id, schema_id, content_hash),
+    CONSTRAINT content_hash_len_chk CHECK (octet_length(content_hash) = 32)
+);
+
+CREATE INDEX content_owner_schema_idx
+    ON proxima_core.content (owner_id, schema_id);
+
 CREATE TABLE proxima_core.closed_handle (
     handle uuid PRIMARY KEY,
     closed_at timestamptz NOT NULL DEFAULT now()
@@ -117,6 +129,7 @@ CREATE TABLE proxima_core.memory (
     source_id text,
     ingest_key text,
     blob_id uuid REFERENCES proxima_core.blob (blob_id),
+    content_id uuid REFERENCES proxima_core.content (content_id),
     origins uuid[] NOT NULL DEFAULT '{}',
     refs uuid[] NOT NULL DEFAULT '{}',
     sidecar_tables text[] NOT NULL DEFAULT '{}',
@@ -131,6 +144,9 @@ CREATE TABLE proxima_core.memory (
     ),
     CONSTRAINT memory_blob_fa_chk CHECK (
         blob_id IS NULL OR kind IN ('fact', 'abstraction')
+    ),
+    CONSTRAINT memory_ap_content_chk CHECK (
+        kind = 'fact' OR content_id IS NOT NULL
     ),
     CONSTRAINT memory_origins_no_null_chk CHECK (array_position(origins, NULL) IS NULL),
     CONSTRAINT memory_refs_no_null_chk CHECK (array_position(refs, NULL) IS NULL),
@@ -149,6 +165,10 @@ CREATE INDEX memory_owner_schema_t_idx
 CREATE INDEX memory_blob_id_idx
     ON proxima_core.memory (blob_id)
     WHERE blob_id IS NOT NULL;
+
+CREATE INDEX memory_content_id_idx
+    ON proxima_core.memory (content_id)
+    WHERE content_id IS NOT NULL;
 
 CREATE INDEX memory_origins_gin
     ON proxima_core.memory USING gin (origins);
@@ -235,6 +255,9 @@ CREATE TABLE proxima_core.goal (
 CREATE INDEX goal_owner_handle_t_idx
     ON proxima_core.goal (owner_id, handle, t DESC);
 
+CREATE INDEX goal_owner_state_t_idx
+    ON proxima_core.goal (owner_id, state, t DESC);
+
 CREATE INDEX goal_wake_idx
     ON proxima_core.goal (wake_id) WHERE wake_id IS NOT NULL;
 
@@ -250,8 +273,13 @@ CREATE TABLE proxima_core.cooled (
     owner_id uuid NOT NULL REFERENCES proxima_core.owners (owner_id),
     kind proxima_core.memory_kind NOT NULL,
     object_key text NOT NULL,
+    content_id uuid REFERENCES proxima_core.content (content_id),
     cooled_at timestamptz NOT NULL DEFAULT now()
 );
+
+CREATE INDEX cooled_content_id_idx
+    ON proxima_core.cooled (content_id)
+    WHERE content_id IS NOT NULL;
 
 CREATE TABLE proxima_core.group_memberships (
     group_id uuid NOT NULL,
@@ -347,6 +375,32 @@ CREATE TABLE proxima_core.mcp_call_logged_v1 (
     io_content_hash bytea NOT NULL
 );
 
+-- Hot one-liners for recall/think. Plumbing, not a kernel sort.
+-- `t` is Memory.t or Goal.t; no FK (two home tables). Forget deletes the row.
+CREATE TYPE proxima_core.sketch_kind AS ENUM (
+    'fact',
+    'abstraction',
+    'perspective',
+    'goal'
+);
+
+CREATE TABLE proxima_core.sketch (
+    t uuid PRIMARY KEY,
+    owner_id uuid NOT NULL REFERENCES proxima_core.owners (owner_id),
+    kind proxima_core.sketch_kind NOT NULL,
+    text text NOT NULL,
+    search_tsv tsvector GENERATED ALWAYS AS (
+        proxima_core.lexical_tsv(proxima_core.lexical_config(), NULLIF(btrim(text), ''))
+    ) STORED,
+    CONSTRAINT sketch_text_nonblank_chk CHECK (length(btrim(text)) > 0)
+);
+
+CREATE INDEX sketch_owner_t_idx
+    ON proxima_core.sketch (owner_id, t DESC);
+
+CREATE INDEX sketch_search_tsv_gin
+    ON proxima_core.sketch USING gin (search_tsv);
+
 CREATE TABLE proxima_core.embeddings (
     entity_id uuid NOT NULL,
     model_id text NOT NULL,
@@ -358,6 +412,9 @@ CREATE TABLE proxima_core.embeddings (
 
 CREATE INDEX idx_embeddings_vec_hnsw
     ON proxima_core.embeddings USING hnsw (vec vector_cosine_ops);
+
+CREATE INDEX embeddings_owner_model_idx
+    ON proxima_core.embeddings (owner_id, model_id);
 
 CREATE TABLE proxima_core.embedding_heads (
     entity_id uuid NOT NULL,
@@ -379,6 +436,11 @@ CREATE TABLE proxima_core.embedding_jobs (
 CREATE INDEX embedding_jobs_pending_claim_idx
     ON proxima_core.embedding_jobs (model_id, job_id)
     WHERE status = 'pending';
+
+CREATE TABLE proxima_core.write_act_v1 (
+    t uuid PRIMARY KEY REFERENCES proxima_core.memory (t),
+    episode_id uuid NOT NULL
+);
 
 CREATE TABLE proxima_core.agent_note_v1 (
     t uuid PRIMARY KEY REFERENCES proxima_core.memory (t),
@@ -683,6 +745,32 @@ BEGIN
 END;
 $$;
 
+-- B2 — a pin is grounding support iff it is a hot row, or a cooled Fact.
+-- `cooling` is the t about to leave the hot set (forget); NULL at admit.
+CREATE FUNCTION proxima_core.pins_have_grounding_support(
+    pins uuid[],
+    cooling uuid,
+    cooling_kind proxima_core.memory_kind
+) RETURNS boolean
+    LANGUAGE sql
+    VOLATILE
+    AS $$
+    SELECT EXISTS (
+        SELECT 1
+          FROM unnest(pins) AS p(id)
+         WHERE CASE
+                 WHEN cooling IS NOT NULL AND p.id = cooling THEN
+                   cooling_kind = 'fact'
+                 ELSE
+                   EXISTS (SELECT 1 FROM proxima_core.memory h WHERE h.t = p.id)
+                   OR EXISTS (
+                        SELECT 1 FROM proxima_core.cooled c
+                         WHERE c.t = p.id AND c.kind = 'fact'
+                   )
+               END
+    );
+$$;
+
 CREATE FUNCTION proxima_core.memory_pin_checks() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -690,6 +778,27 @@ DECLARE
     pin uuid;
     pin_handle uuid;
 BEGIN
+    IF NEW.kind = 'fact' AND NEW.origins = '{}' AND NEW.refs = '{}' THEN
+        RETURN NEW;
+    END IF;
+
+    IF NEW.origins <> '{}' OR NEW.refs <> '{}' THEN
+        -- Wait out an in-flight forget *before* B2 (FOR UPDATE in commit_forget).
+        PERFORM 1
+          FROM proxima_core.memory
+         WHERE t = ANY (NEW.origins || NEW.refs)
+         FOR SHARE;
+    END IF;
+
+    IF NEW.kind <> 'fact'
+       AND NOT proxima_core.pins_have_grounding_support(
+             NEW.origins || NEW.refs, NULL, NULL
+           )
+    THEN
+        RAISE EXCEPTION 'non-fact must pin a hot memory or a cooled fact'
+            USING ERRCODE = '23514';
+    END IF;
+
     IF NEW.origins = '{}' AND NEW.refs = '{}' THEN
         RETURN NEW;
     END IF;
@@ -697,7 +806,8 @@ BEGIN
     SELECT p.pin INTO pin
       FROM unnest(NEW.origins || NEW.refs) AS p(pin)
       LEFT JOIN proxima_core.memory m ON m.t = p.pin
-     WHERE m.t IS NULL
+      LEFT JOIN proxima_core.cooled c ON c.t = p.pin
+     WHERE m.t IS NULL AND c.t IS NULL
      LIMIT 1;
     IF FOUND THEN
         RAISE EXCEPTION 'pin % does not exist', pin USING ERRCODE = '23503';
@@ -715,9 +825,15 @@ BEGIN
     IF NEW.kind = 'abstraction' AND NEW.origins <> '{}' THEN
         IF EXISTS (
             SELECT 1
-              FROM proxima_core.memory m
-             WHERE m.t = ANY (NEW.origins)
-               AND m.kind NOT IN ('fact', 'abstraction')
+              FROM unnest(NEW.origins) AS o(id)
+             WHERE NOT EXISTS (
+                       SELECT 1 FROM proxima_core.memory m
+                        WHERE m.t = o.id AND m.kind IN ('fact', 'abstraction')
+                   )
+               AND NOT EXISTS (
+                       SELECT 1 FROM proxima_core.cooled c
+                        WHERE c.t = o.id AND c.kind IN ('fact', 'abstraction')
+                   )
         ) THEN
             RAISE EXCEPTION 'abstraction origins must be fact or abstraction t'
                 USING ERRCODE = '23514';
@@ -725,13 +841,52 @@ BEGIN
     ELSIF NEW.kind = 'perspective' AND NEW.origins <> '{}' THEN
         IF EXISTS (
             SELECT 1
-              FROM proxima_core.memory m
-             WHERE m.t = ANY (NEW.origins)
-               AND m.kind IS DISTINCT FROM 'abstraction'
+              FROM unnest(NEW.origins) AS o(id)
+             WHERE NOT EXISTS (
+                       SELECT 1 FROM proxima_core.memory m
+                        WHERE m.t = o.id AND m.kind = 'abstraction'
+                   )
+               AND NOT EXISTS (
+                       SELECT 1 FROM proxima_core.cooled c
+                        WHERE c.t = o.id AND c.kind = 'abstraction'
+                   )
         ) THEN
             RAISE EXCEPTION 'perspective origins must be abstraction t'
                 USING ERRCODE = '23514';
         END IF;
+    END IF;
+    RETURN NEW;
+END;
+$$;
+
+CREATE FUNCTION proxima_core.cooled_forget_grounding() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+    IF NEW.kind = 'fact' THEN
+        RETURN NEW;
+    END IF;
+    -- Lock dependers (any owner) so two forgets cannot each treat the
+    -- other target as still-hot support. ORDER BY t for a stable wait graph.
+    PERFORM 1
+      FROM proxima_core.memory m
+     WHERE m.kind <> 'fact'
+       AND m.t <> NEW.t
+       AND (m.origins @> ARRAY[NEW.t] OR m.refs @> ARRAY[NEW.t])
+     ORDER BY m.t
+     FOR UPDATE;
+    IF EXISTS (
+        SELECT 1
+          FROM proxima_core.memory m
+         WHERE m.kind <> 'fact'
+           AND m.t <> NEW.t
+           AND (m.origins @> ARRAY[NEW.t] OR m.refs @> ARRAY[NEW.t])
+           AND NOT proxima_core.pins_have_grounding_support(
+                 m.origins || m.refs, NEW.t, NEW.kind
+               )
+    ) THEN
+        RAISE EXCEPTION 'forget would leave an ungrounded memory'
+            USING ERRCODE = '23514';
     END IF;
     RETURN NEW;
 END;
@@ -822,6 +977,11 @@ CREATE TRIGGER memory_pin_checks
     BEFORE INSERT ON proxima_core.memory
     FOR EACH ROW
     EXECUTE FUNCTION proxima_core.memory_pin_checks();
+
+CREATE TRIGGER cooled_forget_grounding
+    BEFORE INSERT ON proxima_core.cooled
+    FOR EACH ROW
+    EXECUTE FUNCTION proxima_core.cooled_forget_grounding();
 
 CREATE TRIGGER goal_append_only
     BEFORE UPDATE ON proxima_core.goal

@@ -29,6 +29,8 @@ pub struct GoalWriteCommand {
     pub evidence_t: Vec<Uuid>,
     pub wake_id: Option<Uuid>,
     pub mint_write_act: bool,
+    /// Attach an already-minted write-act when `mint_write_act` is false.
+    pub write_act_t: Option<Uuid>,
 }
 
 #[derive(Debug, Clone)]
@@ -93,7 +95,7 @@ pub async fn ingest_write_act(
         blob_id: None,
         kind: "fact".into(),
     };
-    ingest_fact_timeseries(tx, owner, &draft, &[]).await
+    ingest_fact_timeseries(tx, owner, &draft, &[], None).await
 }
 
 pub async fn write_goal(
@@ -113,12 +115,11 @@ pub async fn write_goal(
         });
     }
 
-    let write_act = if draft.mint_write_act {
-        Some(ingest_write_act(tx, owner).await?)
+    let write_act_t = if draft.mint_write_act {
+        Some(ingest_write_act(tx, owner).await?.memory_id.into_inner())
     } else {
-        None
+        draft.write_act_t
     };
-    let write_act_t = write_act.as_ref().map(|o| o.memory_id.into_inner());
 
     let handle = draft.handle.unwrap_or_else(Uuid::now_v7);
     let t: Uuid = sqlx::query_scalar("SELECT uuidv7()")
@@ -168,6 +169,8 @@ pub async fn write_goal(
     .execute(tx.as_mut())
     .await
     .map_err(map_err)?;
+
+    crate::verbs::sketch::upsert_sketch(tx, owner_id, t, "goal", &draft.title).await?;
 
     sqlx::query(
         "INSERT INTO proxima_core.announce (owner_id, op, entity, handle, t)

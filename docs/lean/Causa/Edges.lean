@@ -58,15 +58,14 @@ theorem fact_source_reaches_only_facts (m : Memory)
     memory_origins m = [] :=
   m.fact_origins_empty hk
 
-/-- Layer rule on origins: A origins are Facts; P origins are empty or A's.
-    Targets may be hot or cooled. -/
+/-- Layer rule on origins: A origins are Facts or Abstractions; P origins
+    are empty or A's. Targets may be hot or cooled. -/
 theorem origin_layer_rule
     (memories : Set Memory) (cooled : Set Cooled) (m : Memory)
     (hv : OriginKindValid memories cooled m) :
     (memory_kind m = .Abstraction →
       ∀ id : MemoryId, id ∈ memory_origins m →
-        pinKindIs memories cooled id .Fact ∧
-          MemoryKind.layer .Fact ≤ (memory_kind m).layer) ∧
+        pinKindFactOrAbstraction memories cooled id) ∧
     (memory_kind m = .Perspective →
       memory_origins m = [] ∨
       ∀ id : MemoryId, id ∈ memory_origins m →
@@ -74,9 +73,7 @@ theorem origin_layer_rule
           MemoryKind.layer .Abstraction ≤ (memory_kind m).layer) := by
   constructor
   · intro habs id hid
-    refine ⟨hv.absFacts habs id hid, ?_⟩
-    rw [habs]
-    exact Nat.le_succ 0
+    exact hv.absFactOrAbs habs id hid
   · intro hp
     cases hv.perspAbsOrEmpty hp with
     | inl hempty => exact Or.inl hempty
@@ -86,6 +83,14 @@ theorem origin_layer_rule
       refine ⟨hall id hid, ?_⟩
       rw [hp]
       exact Nat.le_succ 1
+
+theorem abstraction_origin_fact_or_abstraction
+    (memories : Set Memory) (cooled : Set Cooled) (m : Memory) (id : MemoryId)
+    (hv : OriginKindValid memories cooled m)
+    (habs : memory_kind m = .Abstraction)
+    (hid : id ∈ memory_origins m) :
+    pinKindFactOrAbstraction memories cooled id :=
+  hv.absFactOrAbs habs id hid
 
 /-- Interpretation is a Perspective with empty origins that refs a subject. -/
 def interpretationOf (p : Memory) (subject : Memory) : Prop :=
@@ -143,5 +148,9 @@ theorem principle_epistemic_edge_kinds_are_exactly_two_aux (k : EdgeKind) :
 /-- info: 'Causa.origin_layer_rule' does not depend on any axioms -/
 #guard_msgs in
 #print axioms origin_layer_rule
+
+/-- info: 'Causa.abstraction_origin_fact_or_abstraction' does not depend on any axioms -/
+#guard_msgs in
+#print axioms abstraction_origin_fact_or_abstraction
 
 end Causa

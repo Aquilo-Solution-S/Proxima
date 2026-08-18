@@ -271,7 +271,7 @@ async fn assert_lineage_clamps_pages_and_reports_missing_start(
         .await?;
     assert_eq!(
         clamped["edges"].as_array().expect("edges").len(),
-        2,
+        3,
         "depth=300 clamps to the documented maximum instead of erroring"
     );
 
@@ -301,11 +301,11 @@ async fn assert_lineage_clamps_pages_and_reports_missing_start(
             Some(token) => cursor = Some(token.to_string()),
             None => break,
         }
-        assert!(edges_seen.len() <= 2, "lineage paging must terminate");
+        assert!(edges_seen.len() <= 3, "lineage paging must terminate");
     }
     edges_seen.sort_unstable();
     edges_seen.dedup();
-    assert_eq!(edges_seen.len(), 2, "pages disjoint and exhaustive");
+    assert_eq!(edges_seen.len(), 3, "pages disjoint and exhaustive");
 
     let lineage_missing = server
         .read_resource(
@@ -810,6 +810,30 @@ async fn insert_memory_row(
 ) -> Result<uuid::Uuid, Box<dyn std::error::Error>> {
     let handle = uuid::Uuid::now_v7();
     let t = uuid::Uuid::now_v7();
+    let mut origins = origins.to_vec();
+    if kind != "fact" && origins.is_empty() {
+        let fact_t = Box::pin(insert_memory_row(
+            pg,
+            owner,
+            "fact",
+            "core/test-fact-v1",
+            &[],
+        ))
+        .await?;
+        if kind == "perspective" {
+            let abs_t = Box::pin(insert_memory_row(
+                pg,
+                owner,
+                "abstraction",
+                "core/test-abs-v1",
+                &[fact_t],
+            ))
+            .await?;
+            origins.push(abs_t);
+        } else {
+            origins.push(fact_t);
+        }
+    }
     let owner_id = owner.stored_owner_id();
     sqlx::query(
         "INSERT INTO proxima_core.owners (owner_id, kind)
@@ -830,9 +854,28 @@ async fn insert_memory_row(
     .bind(t)
     .execute(pg.pool_for_tests())
     .await?;
+    let content_id: Option<uuid::Uuid> = if kind == "fact" {
+        None
+    } else {
+        let mut hash = [0_u8; 32];
+        hash[..16].copy_from_slice(t.as_bytes());
+        hash[16..].copy_from_slice(t.as_bytes());
+        Some(
+            sqlx::query_scalar(
+                "INSERT INTO proxima_core.content (owner_id, schema_id, content_hash)
+                 VALUES ($1, $2, $3)
+                 RETURNING content_id",
+            )
+            .bind(owner_id)
+            .bind(schema_id)
+            .bind(hash.as_slice())
+            .fetch_one(pg.pool_for_tests())
+            .await?,
+        )
+    };
     sqlx::query(
-        "INSERT INTO proxima_core.memory (handle, t, kind, owner_id, schema_id, origins)
-         VALUES ($1, $2, $3::proxima_core.memory_kind, $4, $5, $6)",
+        "INSERT INTO proxima_core.memory (handle, t, kind, owner_id, schema_id, origins, content_id)
+         VALUES ($1, $2, $3::proxima_core.memory_kind, $4, $5, $6, $7)",
     )
     .bind(handle)
     .bind(t)
@@ -840,6 +883,7 @@ async fn insert_memory_row(
     .bind(owner_id)
     .bind(schema_id)
     .bind(origins)
+    .bind(content_id)
     .execute(pg.pool_for_tests())
     .await?;
     Ok(t)
@@ -883,11 +927,12 @@ async fn insert_origin_edge(
     target: uuid::Uuid,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let _ = owner;
-    let (handle, kind, owner_id): (Uuid, String, Uuid) =
-        sqlx::query_as("SELECT handle, kind::text, owner_id FROM proxima_core.memory WHERE t = $1")
-            .bind(source)
-            .fetch_one(pg.pool_for_tests())
-            .await?;
+    let (handle, kind, owner_id, content_id): (Uuid, String, Uuid, Option<Uuid>) = sqlx::query_as(
+        "SELECT handle, kind::text, owner_id, content_id FROM proxima_core.memory WHERE t = $1",
+    )
+    .bind(source)
+    .fetch_one(pg.pool_for_tests())
+    .await?;
     let schema_id: String =
         sqlx::query_scalar("SELECT schema_id FROM proxima_core.memory WHERE t = $1")
             .bind(source)
@@ -900,8 +945,8 @@ async fn insert_origin_edge(
         .execute(pg.pool_for_tests())
         .await?;
     sqlx::query(
-        "INSERT INTO proxima_core.memory (handle, t, kind, owner_id, schema_id, origins)
-         VALUES ($1, $2, $3::proxima_core.memory_kind, $4, $5, $6)",
+        "INSERT INTO proxima_core.memory (handle, t, kind, owner_id, schema_id, origins, content_id)
+         VALUES ($1, $2, $3::proxima_core.memory_kind, $4, $5, $6, $7)",
     )
     .bind(handle)
     .bind(t)
@@ -909,6 +954,7 @@ async fn insert_origin_edge(
     .bind(owner_id)
     .bind(&schema_id)
     .bind([target])
+    .bind(content_id)
     .execute(pg.pool_for_tests())
     .await?;
     Ok(())

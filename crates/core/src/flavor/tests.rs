@@ -275,14 +275,17 @@ fn add_mcp_tool_rejects_unprefixed_tool_name() {
 }
 
 #[test]
-fn default_registry_includes_all_11_substrate_mcp_tools() {
+fn default_registry_includes_all_substrate_mcp_tools() {
     let frozen = FlavorRegistry::new().freeze_or_panic_for_tests();
     let names: std::collections::HashSet<_> =
         frozen.list_mcp_tools().iter().map(|d| d.name).collect();
     let expected = [
         protocol_tool::CORE_SEARCH_MEMORIES,
+        protocol_tool::CORE_RECALL,
+        protocol_tool::CORE_THINK,
         protocol_tool::CORE_MEMORY_SPACES,
         protocol_tool::CORE_REMEMBER,
+        protocol_tool::CORE_EPISODE_COMMIT,
         protocol_tool::CORE_FORGET,
         protocol_tool::CORE_RECORD_UTTERANCE,
         protocol_tool::CORE_DERIVE,
@@ -300,7 +303,7 @@ fn default_registry_includes_all_11_substrate_mcp_tools() {
         !names.contains("core/emit_budget_decision"),
         "retired tool name must not remain registered"
     );
-    assert_eq!(names.len(), 12, "exactly 12 substrate tools registered");
+    assert_eq!(names.len(), 15, "exactly 15 substrate tools registered");
     for desc in frozen.list_mcp_tools() {
         assert!(
             matches!(desc.origin, McpToolOrigin::Substrate),

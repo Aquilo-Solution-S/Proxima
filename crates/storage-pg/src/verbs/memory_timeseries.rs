@@ -28,11 +28,13 @@ pub struct MemoryRow {
 ///
 /// `sidecar_tables` is the declared set forget will dump/delete — tables
 /// actually inserted for this `t`, never the global registry.
+/// `content_id` is the owner-scoped payload (required for A/P).
 pub async fn ingest_fact_timeseries(
     tx: &mut Transaction<'_, Postgres>,
     owner: &Owner,
     draft: &FactWriteCommand,
     sidecar_tables: &[String],
+    content_id: Option<Uuid>,
 ) -> Result<FactIngestOutcome, StorageError> {
     crate::access::owner_columns::reject_world_write_owner(owner)?;
     let owner_id = crate::access::owner_columns::ensure_owner_row(tx.as_mut(), owner).await?;
@@ -60,6 +62,20 @@ pub async fn ingest_fact_timeseries(
             "A/P cannot carry source_id/ingest_key".into(),
         ));
     }
+    let content_id = if let Some(id) = content_id {
+        Some(id)
+    } else if kind == "fact" {
+        None
+    } else {
+        let text = draft
+            .rendered_text
+            .as_deref()
+            .map_or(draft.payload.as_slice(), str::as_bytes);
+        Some(
+            super::content::ensure_text_content(tx, owner_id, draft.schema_id.as_str(), text)
+                .await?,
+        )
+    };
 
     let mut origins: Vec<Uuid> = draft
         .derived_from
@@ -150,8 +166,8 @@ pub async fn ingest_fact_timeseries(
     sqlx::query(
         "INSERT INTO proxima_core.memory
             (handle, t, kind, owner_id, schema_id, source_id, ingest_key, blob_id,
-             origins, refs, sidecar_tables)
-         VALUES ($1, $2, $3::proxima_core.memory_kind, $4, $5, $6, $7, $8, $9, $10, $11)",
+             content_id, origins, refs, sidecar_tables)
+         VALUES ($1, $2, $3::proxima_core.memory_kind, $4, $5, $6, $7, $8, $9, $10, $11, $12)",
     )
     .bind(handle)
     .bind(t)
@@ -161,6 +177,7 @@ pub async fn ingest_fact_timeseries(
     .bind(source_id.as_deref())
     .bind(ingest_key.as_deref())
     .bind(draft.blob_id)
+    .bind(content_id)
     .bind(&origins)
     .bind(&refs)
     .bind(sidecar_tables)
@@ -180,6 +197,15 @@ pub async fn ingest_fact_timeseries(
     .fetch_one(tx.as_mut())
     .await
     .map_err(map_err)?;
+
+    super::sketch::upsert_sketch(
+        tx,
+        owner_id,
+        t,
+        kind,
+        &super::sketch::sketch_line(kind, draft.rendered_text.as_deref(), &[]),
+    )
+    .await?;
 
     Ok(FactIngestOutcome {
         receipt_id: None,

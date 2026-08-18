@@ -14,6 +14,7 @@ pub(super) async fn insert_or_replay_goal(
     expected_prior: Option<GoalId>,
     context: GoalAtomicContext<'_>,
     wake_write: WakeWrite<'_>,
+    write_act_t: Option<uuid::Uuid>,
 ) -> Result<InsertedGoal, StorageError> {
     validate_goal_schema(context, draft)?;
     let owner = draft.owner();
@@ -73,6 +74,7 @@ pub(super) async fn insert_or_replay_goal(
                 .collect(),
             wake_id,
             mint_write_act: false,
+            write_act_t,
         },
     )
     .await?;

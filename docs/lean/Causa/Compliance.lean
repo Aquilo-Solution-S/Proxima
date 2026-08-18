@@ -29,6 +29,25 @@ def unreferenced (memories : Set Memory) (id : MemoryId) : Prop :=
   ∀ m : Memory, m ∈ memories →
     id ∉ memory_origins m ∧ id ∉ memory_refs m
 
+/-- No remaining admission names this Content. Cooled stubs do not keep
+    payload identity; Content GC is admission-set emptiness. -/
+def contentUnreferenced (memories : Set Memory) (id : ContentId) : Prop :=
+  ∀ m : Memory, m ∈ memories → memory_content_id m ≠ some id
+
+def contentWipeable (o : Owner) (memories : Set Memory) (id : ContentId) : Prop :=
+  abandoned o ∨ contentUnreferenced memories id
+
+theorem content_wipeable_when_abandoned
+    (o : Owner) (memories : Set Memory) (id : ContentId) (h : abandoned o) :
+    contentWipeable o memories id :=
+  Or.inl h
+
+theorem content_wipeable_when_unreferenced
+    (o : Owner) (memories : Set Memory) (id : ContentId)
+    (h : contentUnreferenced memories id) :
+    contentWipeable o memories id :=
+  Or.inr h
+
 def cold (stubs : Set Cooled) (id : MemoryId) : Prop :=
   ∃ c : Cooled, c ∈ stubs ∧ cooled_t c = id
 

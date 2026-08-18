@@ -186,6 +186,7 @@ where
         authorized,
         embedding_model_id,
         sidecar_tables,
+        None,
         sidecar,
     )
     .await?;
@@ -366,7 +367,7 @@ where
         .map(str::to_owned)
         .into_iter()
         .collect::<Vec<_>>();
-    ingest_core(tx, owner, draft, options, &tables, sidecar).await
+    ingest_core(tx, owner, draft, options, &tables, None, sidecar).await
 }
 
 /// Pool-scoped uncited Fact ingest helper. Opens its own transaction;
@@ -545,9 +546,15 @@ pub(crate) async fn ingest_fact_command_in_tx(
         embedding_model_id,
         citation_plan: CitationPlan::DraftHint,
     };
-    ingest_core(tx, permit.owner(), draft, options, &[], |_tx, _outcome| {
-        Box::pin(async { Ok(()) })
-    })
+    ingest_core(
+        tx,
+        permit.owner(),
+        draft,
+        options,
+        &[],
+        None,
+        |_tx, _outcome| Box::pin(async { Ok(()) }),
+    )
     .await
 }
 
@@ -590,7 +597,7 @@ where
         .map(str::to_owned)
         .into_iter()
         .collect::<Vec<_>>();
-    ingest_core(tx, permit.owner(), draft, options, &tables, sidecar).await
+    ingest_core(tx, permit.owner(), draft, options, &tables, None, sidecar).await
 }
 
 /// Run gated Fact ingest plus typed inline citation sidecars inside an
@@ -630,6 +637,7 @@ where
         draft,
         options,
         sidecar_tables,
+        None,
         fact_sidecar,
     )
     .await
@@ -680,6 +688,7 @@ where
         draft,
         options,
         sidecar_tables,
+        None,
         fact_sidecar,
     )
     .await
@@ -834,6 +843,7 @@ pub async fn ingest_fact_with_sidecar_in_tx<F>(
     authorized: &AuthorizedFactWrite,
     embedding_model_id: Option<&str>,
     sidecar_tables: &[String],
+    content_id: Option<uuid::Uuid>,
     sidecar: F,
 ) -> Result<FactIngestOutcome, StorageError>
 where
@@ -853,6 +863,7 @@ where
         draft,
         options,
         sidecar_tables,
+        content_id,
         sidecar,
     )
     .await
@@ -865,6 +876,7 @@ async fn ingest_core<F>(
     draft: &FactWriteCommand,
     options: IngestCoreOptions<'_>,
     sidecar_tables: &[String],
+    content_id: Option<uuid::Uuid>,
     sidecar: F,
 ) -> Result<FactIngestOutcome, StorageError>
 where
@@ -879,8 +891,14 @@ where
         write.blob_id =
             persist_citation_timeseries(tx, owner, draft, options.citation_plan).await?;
     }
-    let mut outcome =
-        super::memory_timeseries::ingest_fact_timeseries(tx, owner, &write, sidecar_tables).await?;
+    let mut outcome = super::memory_timeseries::ingest_fact_timeseries(
+        tx,
+        owner,
+        &write,
+        sidecar_tables,
+        content_id,
+    )
+    .await?;
     // Replay reuses the original `(handle, t)`. The sidecar row is already
     // there; inserting again trips `<table>_pkey` on `t`.
     if !outcome.idempotent_replay {

@@ -724,6 +724,9 @@ pub struct GoalAtomicContext<'a> {
 pub struct CreateGoalAtomicRequest<'a> {
     pub draft: GoalDraft,
     pub context: GoalAtomicContext<'a>,
+    /// When set, the new Goal row pins this write-act Fact (`Goal.write_act_t`).
+    /// Replay does not rewrite the column; a bound episode must fail instead.
+    pub write_act_t: Option<MemoryId>,
 }
 
 #[derive(Debug)]

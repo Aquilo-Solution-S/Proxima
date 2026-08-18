@@ -58,6 +58,7 @@ async fn append_derived_timeseries(
     origins: &[EdgeEndpoint],
     references: &[EdgeEndpoint],
     sidecar_tables: &[String],
+    content_id: Option<uuid::Uuid>,
     sidecar: impl for<'t> FnOnce(
         &'t mut Transaction<'_, Postgres>,
         &'t DerivedOutcome,
@@ -135,9 +136,15 @@ async fn append_derived_timeseries(
         blob_id: None,
         kind: kind.into(),
     };
-    let ingested =
-        super::memory_timeseries::ingest_fact_timeseries(tx, &draft.owner, &cmd, sidecar_tables)
-            .await?;
+    let content_id = resolve_derived_content_id(tx, draft, kind, content_id).await?;
+    let ingested = super::memory_timeseries::ingest_fact_timeseries(
+        tx,
+        &draft.owner,
+        &cmd,
+        sidecar_tables,
+        content_id,
+    )
+    .await?;
     let outcome = DerivedOutcome {
         memory_id: ingested.memory_id,
         idempotent_replay: ingested.idempotent_replay,
@@ -183,11 +190,42 @@ async fn settle_derived_embedding(
     }
 }
 
+async fn resolve_derived_content_id(
+    tx: &mut Transaction<'_, Postgres>,
+    draft: &DerivedDraft<'_>,
+    kind: &str,
+    content_id: Option<uuid::Uuid>,
+) -> Result<Option<uuid::Uuid>, StorageError> {
+    if let Some(id) = content_id {
+        return Ok(Some(id));
+    }
+    if kind == "fact" {
+        return Ok(None);
+    }
+    let owner_id =
+        crate::access::owner_columns::ensure_owner_row(tx.as_mut(), &draft.owner).await?;
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"proxima-content-text-v1\0");
+    hasher.update(draft.schema_id.as_str().as_bytes());
+    hasher.update(b"\0");
+    hasher.update(draft.text.as_bytes());
+    Ok(Some(
+        super::content::ensure_content(
+            tx,
+            owner_id,
+            draft.schema_id.as_str(),
+            hasher.finalize().as_bytes(),
+        )
+        .await?,
+    ))
+}
+
 /// Append one Derived row, optional typed sidecar, and one change event.
 ///
 /// # Errors
 ///
 /// Returns storage constraint/internal errors from Postgres.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn append_derived_in_tx(
     tx: &mut Transaction<'_, Postgres>,
     permit: &OwnerWritePermit,
@@ -195,6 +233,7 @@ pub(crate) async fn append_derived_in_tx(
     origins: &[EdgeEndpoint],
     references: &[EdgeEndpoint],
     sidecar_tables: &[String],
+    content_id: Option<uuid::Uuid>,
     sidecar: impl for<'t> FnOnce(
         &'t mut Transaction<'_, Postgres>,
         &'t DerivedOutcome,
@@ -202,7 +241,16 @@ pub(crate) async fn append_derived_in_tx(
 ) -> Result<DerivedOutcome, StorageError> {
     validate_permit_owner(permit, &draft.owner)?;
     crate::access::owner_columns::reject_world_write_owner(&draft.owner)?;
-    append_derived_timeseries(tx, draft, origins, references, sidecar_tables, sidecar).await
+    append_derived_timeseries(
+        tx,
+        draft,
+        origins,
+        references,
+        sidecar_tables,
+        content_id,
+        sidecar,
+    )
+    .await
 }
 
 /// Append one operator-derived memory together with the index rows its own
@@ -249,6 +297,7 @@ pub async fn append_derived_with_edges_in_tx(
         origins,
         references,
         sidecar_tables,
+        None,
         sidecar,
     )
     .await?;
@@ -311,6 +360,7 @@ where
                 entry.origins,
                 entry.references,
                 entry.sidecar_tables,
+                None,
                 move |tx, outcome| sidecar(index, tx, outcome),
             )
             .await?,

@@ -144,16 +144,13 @@ theorem operator_inputs_match_phase :
     | atop => rw [hp] at h; exact h
     | atogoal => rw [hp] at h; exact h
 
-/-- Origins of a derived output sit at or below its layer (UML CHECKs). -/
+/-- Origins of a derived Abstraction sit at or below its layer (F→A / A→A). -/
 theorem operator_origin_row_not_upward :
     ∀ (memories : Set Memory) (cooled : Set Cooled) (out : Memory) (id : MemoryId),
       OriginKindValid memories cooled out →
       memory_kind out = .Abstraction →
       id ∈ memory_origins out →
-      pinKindIs memories cooled id .Fact ∧
-        MemoryKind.layer .Fact ≤ MemoryKind.layer .Abstraction := by
-  intro memories cooled out id hv houtk hin
-  refine ⟨hv.absFacts houtk id hin, ?_⟩
-  exact Nat.le_succ 0
+      pinKindFactOrAbstraction memories cooled id :=
+  fun _ _ _ id hv houtk hin => hv.absFactOrAbs houtk id hin
 
 end Causa

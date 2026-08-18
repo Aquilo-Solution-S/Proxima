@@ -80,27 +80,38 @@ pub(crate) async fn create_goal_atomic_in_pool(
     pool: &PgPool,
     sidecars: &PgSidecarRegistryFrozen,
     req: &CreateGoalAtomicRequest<'_>,
+    permit: &OwnerWritePermit,
+) -> Result<GoalWriteOutcome, StorageError> {
+    let mut tx = pool.begin().await.map_err(internal)?;
+    let outcome = create_goal_in_tx(&mut tx, sidecars, req, permit).await?;
+    tx.commit().await.map_err(map_err)?;
+    Ok(outcome)
+}
+
+pub(crate) async fn create_goal_in_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    sidecars: &PgSidecarRegistryFrozen,
+    req: &CreateGoalAtomicRequest<'_>,
     _permit: &OwnerWritePermit,
 ) -> Result<GoalWriteOutcome, StorageError> {
     let owner = req.draft.owner();
-    let mut tx = pool.begin().await.map_err(internal)?;
-    let evidence =
-        validate_evidence_in_owner(&mut tx, &owner, req.draft.topology.evidence()).await?;
+    let evidence = validate_evidence_in_owner(tx, &owner, req.draft.topology.evidence()).await?;
     validate_operator_goal_evidence(&req.draft.authorship, &evidence)?;
     let inserted = insert_or_replay_goal(
-        &mut tx,
+        tx,
         sidecars,
         &req.draft,
         None,
         req.context,
         WakeWrite::Explicit(req.draft.wake.as_ref()),
+        req.write_act_t.map(proxima_core::MemoryId::into_inner),
     )
     .await?;
     // A create writes rows no other Goal verb does, so its replay carries
     // this extra proof on top of the one the shared tail applies to all five.
     if inserted.idempotent_replay {
         ensure_create_goal_replay_side_effects_match(
-            &mut tx,
+            tx,
             CreateGoalReplayExpectation {
                 goal_id: inserted.goal_id,
                 target_self_perspective_id: req.draft.topology.assignment().perspective_id(),
@@ -113,8 +124,8 @@ pub(crate) async fn create_goal_atomic_in_pool(
         .await?;
     }
     let dependencies = draft_dependency_ids(&req.draft);
-    let outcome = lifecycle_outcome(
-        &mut tx,
+    lifecycle_outcome(
+        tx,
         LifecycleWrite {
             owner: &owner,
             inserted,
@@ -125,9 +136,7 @@ pub(crate) async fn create_goal_atomic_in_pool(
             request_id: &req.draft.request_id,
         },
     )
-    .await?;
-    tx.commit().await.map_err(map_err)?;
-    Ok(outcome)
+    .await
 }
 
 pub(crate) async fn transition_goal_atomic_in_pool(
@@ -170,6 +179,7 @@ pub(crate) async fn transition_goal_atomic_in_pool(
         Some(req.prior_goal_id),
         req.context,
         WakeWrite::CarryFrom(req.prior_goal_id),
+        None,
     )
     .await?;
     let outcome = lifecycle_outcome(
@@ -221,6 +231,7 @@ pub(crate) async fn achieve_goal_atomic_in_pool(
         Some(req.prior_goal_id),
         req.context,
         WakeWrite::CarryFrom(req.prior_goal_id),
+        None,
     )
     .await?;
     let outcome = lifecycle_outcome(
@@ -290,6 +301,7 @@ pub(crate) async fn modify_goal_atomic_in_pool(
         Some(req.prior_goal_id),
         req.context,
         wake_write,
+        None,
     )
     .await?;
     let dependencies = draft_dependency_ids(&draft);
@@ -337,6 +349,7 @@ pub(crate) async fn decompose_goal_atomic_in_pool(
             None,
             req.context,
             WakeWrite::Explicit(child.wake.as_ref()),
+            None,
         )
         .await?;
         let dependencies = draft_dependency_ids(&draft);

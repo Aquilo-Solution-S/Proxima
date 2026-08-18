@@ -662,6 +662,13 @@ impl FactWriteCommand {
         self
     }
 
+    /// Observation-neutral pins (visit, write-act). Not origins.
+    #[must_use]
+    pub fn with_refs(mut self, refs: Vec<Uuid>) -> Self {
+        self.refs = refs;
+        self
+    }
+
     /// Attach an opaque citation hint to the draft.
     #[must_use]
     pub fn with_citation(mut self, citation: impl Into<Citation>) -> Self {
