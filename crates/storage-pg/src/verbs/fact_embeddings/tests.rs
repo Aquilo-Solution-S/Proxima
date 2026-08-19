@@ -3,7 +3,10 @@
 // external test binaries cannot reach them without a forgeable-proof surface.
 #[cfg(test)]
 mod pg_tests {
-    use proxima_core::storage_ports::OwnerWritePermit;
+    use std::sync::Arc;
+
+    use proxima_core::llm::{EmbeddingClient, LlmError};
+    use proxima_core::storage_ports::{EmbeddingWritePort, EmbeddingWriteProof, OwnerWritePermit};
     use proxima_core::test_fixtures::owner_fixture;
     use proxima_core::verbs::fact_ingest::{FactReceiptDraft, FactWriteCommand};
     use proxima_core::verbs::schema::MemorySearchProjection;
@@ -18,11 +21,16 @@ mod pg_tests {
     use proxima_core::llm::EMBEDDING_DIM;
 
     use super::super::{
-        claim_pending_embedding_jobs, embedding_ann_observability, insert_embedding,
-        insert_memory_embedding, list_facts_missing_embedding, load_embedding_text,
-        load_embedding_texts,
+        EmbeddingReconcileOptions, EmbeddingReconcileScope, STALE_PROCESSING_RECLAIM_SECONDS,
+        claim_pending_embedding_jobs, complete_embedding_job, count_embedding_job_status,
+        drain_embedding_jobs_inline, embedding_ann_observability, fail_embedding_job,
+        fail_embedding_job_permanently, insert_embedding, insert_memory_embedding,
+        list_facts_missing_embedding, load_embedding_text, load_embedding_texts,
+        reclaim_stale_embedding_jobs, reconcile_embeddings, release_embedding_jobs,
     };
+    use crate::core_pg_sidecars;
     use crate::test_fixtures::fresh_pg;
+    use crate::verbs::forget::{MemoryColdStore, cold_object_key, forget_memory, owner_hash_hex};
 
     fn core_projections() -> Vec<MemorySearchProjection> {
         FlavorRegistry::new()
@@ -35,6 +43,33 @@ mod pg_tests {
         let mut embedding = vec![0.0; EMBEDDING_DIM];
         embedding[..prefix.len()].copy_from_slice(&prefix);
         embedding
+    }
+
+    #[derive(Debug)]
+    struct BlockingEmbedding {
+        entered: Arc<tokio::sync::Semaphore>,
+        release: Arc<tokio::sync::Semaphore>,
+    }
+
+    #[async_trait::async_trait]
+    impl EmbeddingClient for BlockingEmbedding {
+        async fn embed(&self, _text: &str) -> Result<Vec<f32>, LlmError> {
+            self.entered.add_permits(1);
+            self.release
+                .acquire()
+                .await
+                .map_err(|err| LlmError::Internal(err.to_string()))?
+                .forget();
+            Ok(padded_embedding([0.7, 0.8, 0.9]))
+        }
+
+        fn model_id(&self) -> &'static str {
+            "stub-fact-embed"
+        }
+
+        fn dim(&self) -> usize {
+            EMBEDDING_DIM
+        }
     }
 
     fn fact_draft(label: &str) -> FactWriteCommand {
@@ -128,6 +163,63 @@ mod pg_tests {
         .bind(memory_id.into_inner())
         .fetch_one(pool)
         .await
+    }
+
+    async fn insert_claimed_fact_embedding(
+        pg: &crate::PgStorage,
+        claim: &proxima_core::EmbeddingJobClaim,
+        prefix: [f32; 3],
+    ) -> Result<proxima_core::EmbeddingWriteOutcome, StorageError> {
+        pg.insert_embedding(
+            &claim.owner,
+            EmbeddableEntityRef::Memory {
+                kind: claim.entity_kind,
+                memory_id: claim.entity_id,
+            },
+            &claim.model_id,
+            EMBEDDING_DIM,
+            &padded_embedding(prefix),
+            EmbeddingWriteProof::for_claim_for_tests(claim),
+        )
+        .await
+    }
+
+    /// `(status, last_error, claimed_at IS NULL)` for one entity's job.
+    async fn job_state(
+        pool: &sqlx::PgPool,
+        entity_id: Uuid,
+    ) -> Result<(String, Option<String>, bool), sqlx::Error> {
+        sqlx::query_as(
+            "SELECT status::text, last_error, claimed_at IS NULL
+               FROM proxima_core.embedding_jobs
+              WHERE entity_id = $1",
+        )
+        .bind(entity_id)
+        .fetch_one(pool)
+        .await
+    }
+
+    async fn job_claim_token(
+        pool: &sqlx::PgPool,
+        entity_id: Uuid,
+    ) -> Result<Option<Uuid>, sqlx::Error> {
+        sqlx::query_scalar(
+            "SELECT claim_token
+               FROM proxima_core.embedding_jobs
+              WHERE entity_id = $1",
+        )
+        .bind(entity_id)
+        .fetch_one(pool)
+        .await
+    }
+
+    fn missing_only(limit: i64) -> EmbeddingReconcileOptions<'static> {
+        EmbeddingReconcileOptions {
+            model_id: "stub-fact-embed",
+            scope: EmbeddingReconcileScope::MissingOnly,
+            limit: Some(limit),
+            non_embeddable_schemas: &[],
+        }
     }
 
     async fn insert_goal_for_embedding(
@@ -739,6 +831,516 @@ mod pg_tests {
             )
             .await?;
             assert!(skipped.is_empty(), "non_embeddable_schemas must be applied");
+            Ok(())
+        }
+        .await;
+        drop(pg);
+        drop_db(&db_name).await?;
+        result
+    }
+
+    /// A provider that rejects an input will reject it again. Requeueing such
+    /// a job spins claim → reject → requeue forever, which is what a shared
+    /// `failed` status for both failure causes produced.
+    #[tokio::test]
+    async fn permanently_failed_job_is_never_requeued() -> Result<(), Box<dyn std::error::Error>> {
+        let (pg, db_name) = fresh_pg("proxima_spg_embed").await;
+        let result: Result<(), Box<dyn std::error::Error>> = async {
+            let owner = owner_fixture();
+            let permit = owner_fact_write_permit(&owner).await?;
+            let outcome = pg
+                .ingest_fact_atomic(
+                    &permit,
+                    &fact_draft("rejected forever"),
+                    Some("stub-fact-embed"),
+                )
+                .await?;
+            let pool = pg.pool_for_tests();
+            let entity_id = outcome.memory_id.into_inner();
+
+            let claims = claim_pending_embedding_jobs(pool, "stub-fact-embed", 1).await?;
+            assert_eq!(claims.len(), 1);
+            let (status, _, claim_unstamped) = job_state(pool, entity_id).await?;
+            assert_eq!(status, "processing");
+            assert!(!claim_unstamped, "the claim must stamp claimed_at");
+            assert_eq!(
+                job_claim_token(pool, entity_id).await?,
+                Some(claims[0].claim_token)
+            );
+
+            fail_embedding_job_permanently(pool, &claims[0], "embed memory text: over token limit")
+                .await?;
+            assert_eq!(
+                job_state(pool, entity_id).await?,
+                (
+                    "failed_permanent".to_owned(),
+                    Some("embed memory text: over token limit".to_owned()),
+                    true
+                ),
+            );
+
+            let outcome = reconcile_embeddings(pool, missing_only(100)).await?;
+            assert_eq!(outcome.enqueued, 0, "a permanent rejection is not requeued");
+            assert_eq!(job_state(pool, entity_id).await?.0, "failed_permanent");
+
+            // The terminal backlog is still visible to an operator.
+            assert_eq!(count_embedding_job_status(pool, &owner).await?.failed, 1);
+            Ok(())
+        }
+        .await;
+        drop(pg);
+        drop_db(&db_name).await?;
+        result
+    }
+
+    #[tokio::test]
+    async fn permanently_failed_earlier_candidate_does_not_starve_later_missing_one()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (pg, db_name) = fresh_pg("proxima_spg_embed").await;
+        let result: Result<(), Box<dyn std::error::Error>> = async {
+            let owner = owner_fixture();
+            let permit = owner_fact_write_permit(&owner).await?;
+            let permanently_rejected = pg
+                .ingest_fact_atomic(
+                    &permit,
+                    &fact_draft("earlier permanent rejection"),
+                    Some("stub-fact-embed"),
+                )
+                .await?;
+            let later_missing = pg
+                .ingest_fact_atomic(&permit, &fact_draft("later missing embedding"), None)
+                .await?;
+            let pool = pg.pool_for_tests();
+
+            let claims = claim_pending_embedding_jobs(pool, "stub-fact-embed", 1).await?;
+            assert_eq!(claims.len(), 1);
+            assert_eq!(claims[0].entity_id, permanently_rejected.memory_id);
+            fail_embedding_job_permanently(pool, &claims[0], "provider rejects forever").await?;
+
+            let reconciled = reconcile_embeddings(
+                pool,
+                EmbeddingReconcileOptions {
+                    model_id: "stub-fact-embed",
+                    scope: EmbeddingReconcileScope::MissingOnly,
+                    limit: Some(1),
+                    non_embeddable_schemas: &[],
+                },
+            )
+            .await?;
+            assert_eq!(reconciled.scanned, 1);
+            assert_eq!(reconciled.enqueued, 1);
+            assert_eq!(
+                job_state(pool, later_missing.memory_id.into_inner())
+                    .await?
+                    .0,
+                "pending"
+            );
+            assert_eq!(
+                job_state(pool, permanently_rejected.memory_id.into_inner())
+                    .await?
+                    .0,
+                "failed_permanent"
+            );
+            Ok(())
+        }
+        .await;
+        drop(pg);
+        drop_db(&db_name).await?;
+        result
+    }
+
+    #[tokio::test]
+    async fn reconcile_cannot_recreate_job_after_concurrent_forget()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (pg, db_name) = fresh_pg("proxima_spg_embed").await;
+        let result: Result<(), Box<dyn std::error::Error>> = async {
+            let owner = owner_fixture();
+            let permit = owner_fact_write_permit(&owner).await?;
+            let written = pg
+                .ingest_fact_atomic(&permit, &fact_draft("forget during reconcile"), None)
+                .await?;
+            let pool = pg.pool_for_tests();
+            let t = written.memory_id.into_inner();
+
+            let mut forget_tx = pool.begin().await?;
+            sqlx::query("SELECT t FROM proxima_core.memory WHERE t = $1 FOR UPDATE")
+                .bind(t)
+                .fetch_one(forget_tx.as_mut())
+                .await?;
+
+            let mut reconcile = {
+                let pool = pool.clone();
+                tokio::spawn(async move {
+                    reconcile_embeddings(
+                        &pool,
+                        EmbeddingReconcileOptions {
+                            model_id: "stub-fact-embed",
+                            scope: EmbeddingReconcileScope::MissingOnly,
+                            limit: Some(10),
+                            non_embeddable_schemas: &[],
+                        },
+                    )
+                    .await
+                })
+            };
+            assert!(
+                tokio::time::timeout(std::time::Duration::from_millis(50), &mut reconcile)
+                    .await
+                    .is_err(),
+                "reconcile must wait on the memory row selected for enqueue"
+            );
+
+            let cold = MemoryColdStore::default();
+            let object_key = cold_object_key(&owner_hash_hex(&owner), written.handle, t);
+            forget_memory(
+                &mut forget_tx,
+                &core_pg_sidecars(),
+                &cold,
+                &object_key,
+                t,
+                owner.stored_owner_id(),
+            )
+            .await?;
+            forget_tx.commit().await?;
+
+            let reconciled = reconcile.await??;
+            assert_eq!(reconciled.enqueued, 0);
+            let jobs: i64 = sqlx::query_scalar(
+                "SELECT count(*)::bigint
+                   FROM proxima_core.embedding_jobs
+                  WHERE entity_id = $1",
+            )
+            .bind(t)
+            .fetch_one(pool)
+            .await?;
+            assert_eq!(jobs, 0, "forget must not leave a recreated orphan job");
+            Ok(())
+        }
+        .await;
+        drop(pg);
+        drop_db(&db_name).await?;
+        result
+    }
+
+    /// The retryable dead-end reconcile exists to lift a memory out of.
+    #[tokio::test]
+    async fn retryably_failed_job_is_requeued_with_its_error_cleared()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (pg, db_name) = fresh_pg("proxima_spg_embed").await;
+        let result: Result<(), Box<dyn std::error::Error>> = async {
+            let owner = owner_fixture();
+            let permit = owner_fact_write_permit(&owner).await?;
+            let outcome = pg
+                .ingest_fact_atomic(
+                    &permit,
+                    &fact_draft("provider blipped"),
+                    Some("stub-fact-embed"),
+                )
+                .await?;
+            let pool = pg.pool_for_tests();
+            let entity_id = outcome.memory_id.into_inner();
+
+            let claims = claim_pending_embedding_jobs(pool, "stub-fact-embed", 1).await?;
+            fail_embedding_job(pool, &claims[0], "embed memory text: 503").await?;
+            assert_eq!(
+                job_state(pool, entity_id).await?,
+                (
+                    "failed".to_owned(),
+                    Some("embed memory text: 503".to_owned()),
+                    true
+                ),
+            );
+
+            let reconciled = reconcile_embeddings(pool, missing_only(100)).await?;
+            assert_eq!(reconciled.enqueued, 1);
+            assert_eq!(
+                job_state(pool, entity_id).await?,
+                ("pending".to_owned(), None, true),
+                "a requeued job carries no stale error"
+            );
+            let claimed_again = claim_pending_embedding_jobs(pool, "stub-fact-embed", 1).await?;
+            assert_eq!(claimed_again.len(), 1, "the requeued job is claimable");
+            Ok(())
+        }
+        .await;
+        drop(pg);
+        drop_db(&db_name).await?;
+        result
+    }
+
+    /// A drainer that dies holding a claim leaves `processing` forever, and
+    /// the job's unique key blocks any re-enqueue — so the memory stops being
+    /// embeddable with nothing reporting it.
+    #[tokio::test]
+    async fn stale_processing_job_is_reclaimed_and_a_fresh_claim_is_not()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (pg, db_name) = fresh_pg("proxima_spg_embed").await;
+        let result: Result<(), Box<dyn std::error::Error>> = async {
+            let owner = owner_fixture();
+            let permit = owner_fact_write_permit(&owner).await?;
+            let abandoned = pg
+                .ingest_fact_atomic(
+                    &permit,
+                    &fact_draft("abandoned claim"),
+                    Some("stub-fact-embed"),
+                )
+                .await?;
+            let live = pg
+                .ingest_fact_atomic(&permit, &fact_draft("live claim"), Some("stub-fact-embed"))
+                .await?;
+            let pool = pg.pool_for_tests();
+
+            let claims = claim_pending_embedding_jobs(pool, "stub-fact-embed", 2).await?;
+            assert_eq!(claims.len(), 2);
+
+            sqlx::query(
+                "UPDATE proxima_core.embedding_jobs
+                    SET claimed_at = now() - make_interval(secs => $2::double precision)
+                  WHERE entity_id = $1",
+            )
+            .bind(abandoned.memory_id.into_inner())
+            .bind(f64::from(u32::try_from(STALE_PROCESSING_RECLAIM_SECONDS)?) * 2.0)
+            .execute(pool)
+            .await?;
+
+            let health = embedding_ann_observability(pool).await?;
+            assert_eq!(health.stale_processing_jobs, 1);
+            assert_eq!(health.backlog.processing, 2);
+
+            let reclaimed =
+                reclaim_stale_embedding_jobs(pool, STALE_PROCESSING_RECLAIM_SECONDS).await?;
+            assert_eq!(reclaimed, 1, "only the abandoned claim is reclaimed");
+            assert_eq!(
+                job_state(pool, abandoned.memory_id.into_inner()).await?,
+                ("pending".to_owned(), None, true),
+            );
+            assert_eq!(
+                job_claim_token(pool, abandoned.memory_id.into_inner()).await?,
+                None,
+                "reclaim clears the fencing token"
+            );
+            assert_eq!(
+                job_state(pool, live.memory_id.into_inner()).await?.0,
+                "processing",
+                "a claim inside the window belongs to a live drainer"
+            );
+
+            let reclaimable = claim_pending_embedding_jobs(pool, "stub-fact-embed", 2).await?;
+            assert_eq!(
+                reclaimable.len(),
+                1,
+                "the reclaimed job is claimable again; the live one is not"
+            );
+            assert_eq!(reclaimable[0].entity_id, abandoned.memory_id);
+            Ok(())
+        }
+        .await;
+        drop(pg);
+        drop_db(&db_name).await?;
+        result
+    }
+
+    #[tokio::test]
+    async fn reclaimed_claim_cannot_mutate_successor_job() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let (pg, db_name) = fresh_pg("proxima_spg_embed").await;
+        let result: Result<(), Box<dyn std::error::Error>> = async {
+            let owner = owner_fixture();
+            let permit = owner_fact_write_permit(&owner).await?;
+            let outcome = pg
+                .ingest_fact_atomic(
+                    &permit,
+                    &fact_draft("fenced claim"),
+                    Some("stub-fact-embed"),
+                )
+                .await?;
+            let pool = pg.pool_for_tests();
+            let old_claims = claim_pending_embedding_jobs(pool, "stub-fact-embed", 1).await?;
+            let old_claim = old_claims[0].clone();
+
+            sqlx::query(
+                "UPDATE proxima_core.embedding_jobs
+                    SET claimed_at = now() - make_interval(secs => $2::double precision)
+                  WHERE entity_id = $1",
+            )
+            .bind(outcome.memory_id.into_inner())
+            .bind(f64::from(u32::try_from(STALE_PROCESSING_RECLAIM_SECONDS)?) * 2.0)
+            .execute(pool)
+            .await?;
+            assert_eq!(
+                reclaim_stale_embedding_jobs(pool, STALE_PROCESSING_RECLAIM_SECONDS).await?,
+                1
+            );
+
+            let successor_claims = claim_pending_embedding_jobs(pool, "stub-fact-embed", 1).await?;
+            assert_eq!(successor_claims.len(), 1);
+            let successor = &successor_claims[0];
+            assert_eq!(old_claim.job_id, successor.job_id);
+            assert_ne!(old_claim.claim_token, successor.claim_token);
+            assert_eq!(
+                job_claim_token(pool, outcome.memory_id.into_inner()).await?,
+                Some(successor.claim_token)
+            );
+            assert_eq!(
+                job_state(pool, outcome.memory_id.into_inner()).await?.0,
+                "processing"
+            );
+
+            let stale_write = insert_claimed_fact_embedding(&pg, &old_claim, [0.1, 0.2, 0.3]).await;
+            assert!(
+                matches!(stale_write, Err(StorageError::Conflict(_))),
+                "stale worker embedding write must be fenced: {stale_write:?}"
+            );
+            assert_eq!(count_fact_embeddings(pool, outcome.memory_id).await?, 0);
+
+            for stale in [
+                complete_embedding_job(pool, &old_claim).await,
+                fail_embedding_job(pool, &old_claim, "stale failure").await,
+                release_embedding_jobs(pool, std::slice::from_ref(&old_claim), "stale release")
+                    .await,
+            ] {
+                assert!(
+                    matches!(stale, Err(StorageError::Conflict(_))),
+                    "stale worker transition must be fenced: {stale:?}"
+                );
+            }
+            assert_eq!(
+                job_state(pool, outcome.memory_id.into_inner()).await?.0,
+                "processing"
+            );
+            assert_eq!(
+                job_claim_token(pool, outcome.memory_id.into_inner()).await?,
+                Some(successor.claim_token)
+            );
+
+            insert_claimed_fact_embedding(&pg, successor, [0.4, 0.5, 0.6]).await?;
+            complete_embedding_job(pool, successor).await?;
+            assert_eq!(count_fact_embeddings(pool, outcome.memory_id).await?, 1);
+            assert_eq!(
+                load_embedding_head_version(
+                    pool,
+                    EntityKind::Fact,
+                    outcome.memory_id.into_inner(),
+                    "stub-fact-embed",
+                )
+                .await?,
+                Some(1)
+            );
+            let remaining: i64 = sqlx::query_scalar(
+                "SELECT count(*)::bigint FROM proxima_core.embedding_jobs WHERE entity_id = $1",
+            )
+            .bind(outcome.memory_id.into_inner())
+            .fetch_one(pool)
+            .await?;
+            assert_eq!(remaining, 0, "the successor can finalize its own claim");
+            Ok(())
+        }
+        .await;
+        drop(pg);
+        drop_db(&db_name).await?;
+        result
+    }
+
+    #[tokio::test]
+    async fn reclaimed_inline_drain_cannot_write_after_successor_claim()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (pg, db_name) = fresh_pg("proxima_spg_embed").await;
+        let result: Result<(), Box<dyn std::error::Error>> = async {
+            let owner = owner_fixture();
+            let permit = owner_fact_write_permit(&owner).await?;
+            let mut draft = fact_draft("blocked inline drainer");
+            draft.schema_id = SchemaId::new("core/agent-note-v1".into());
+            let written = pg
+                .ingest_fact_atomic(&permit, &draft, Some("stub-fact-embed"))
+                .await?;
+            let pool = pg.pool_for_tests();
+            sqlx::query(
+                "INSERT INTO proxima_core.agent_note_v1 (t, note_id, title, body)
+                 VALUES ($1, $2, 'blocked', 'inline drainer')",
+            )
+            .bind(written.memory_id.into_inner())
+            .bind(Uuid::now_v7())
+            .execute(pool)
+            .await?;
+            let client = Arc::new(BlockingEmbedding {
+                entered: Arc::new(tokio::sync::Semaphore::new(0)),
+                release: Arc::new(tokio::sync::Semaphore::new(0)),
+            });
+            let drain = {
+                let pool = pool.clone();
+                let client = client.clone();
+                tokio::spawn(async move {
+                    drain_embedding_jobs_inline(&pool, client.as_ref(), 1, &core_projections())
+                        .await
+                })
+            };
+            client.entered.acquire().await?.forget();
+
+            sqlx::query(
+                "UPDATE proxima_core.embedding_jobs
+                    SET claimed_at = now() - make_interval(secs => $2::double precision)
+                  WHERE entity_id = $1",
+            )
+            .bind(written.memory_id.into_inner())
+            .bind(f64::from(u32::try_from(STALE_PROCESSING_RECLAIM_SECONDS)?) * 2.0)
+            .execute(pool)
+            .await?;
+            assert_eq!(
+                reclaim_stale_embedding_jobs(pool, STALE_PROCESSING_RECLAIM_SECONDS).await?,
+                1
+            );
+            let successor = claim_pending_embedding_jobs(pool, "stub-fact-embed", 1).await?;
+            assert_eq!(successor.len(), 1);
+
+            client.release.add_permits(1);
+            let stale_error = drain
+                .await?
+                .expect_err("the reclaimed inline drainer must lose its write fence");
+            assert!(matches!(stale_error, StorageError::Conflict(_)));
+            assert_eq!(count_fact_embeddings(pool, written.memory_id).await?, 0);
+            assert_eq!(
+                job_claim_token(pool, written.memory_id.into_inner()).await?,
+                Some(successor[0].claim_token)
+            );
+            complete_embedding_job(pool, &successor[0]).await?;
+            Ok(())
+        }
+        .await;
+        drop(pg);
+        drop_db(&db_name).await?;
+        result
+    }
+
+    /// Reconcile is the maintenance entry point, so it is what has to carry
+    /// the reclaim: nothing else runs on the `maintain-embeddings` path.
+    #[tokio::test]
+    async fn reconcile_reclaims_an_abandoned_claim() -> Result<(), Box<dyn std::error::Error>> {
+        let (pg, db_name) = fresh_pg("proxima_spg_embed").await;
+        let result: Result<(), Box<dyn std::error::Error>> = async {
+            let owner = owner_fixture();
+            let permit = owner_fact_write_permit(&owner).await?;
+            let outcome = pg
+                .ingest_fact_atomic(
+                    &permit,
+                    &fact_draft("abandoned by reconcile"),
+                    Some("stub-fact-embed"),
+                )
+                .await?;
+            let pool = pg.pool_for_tests();
+            let entity_id = outcome.memory_id.into_inner();
+            claim_pending_embedding_jobs(pool, "stub-fact-embed", 1).await?;
+            sqlx::query(
+                "UPDATE proxima_core.embedding_jobs
+                    SET claimed_at = now() - make_interval(secs => $2::double precision)
+                  WHERE entity_id = $1",
+            )
+            .bind(entity_id)
+            .bind(f64::from(u32::try_from(STALE_PROCESSING_RECLAIM_SECONDS)?) * 2.0)
+            .execute(pool)
+            .await?;
+
+            reconcile_embeddings(pool, missing_only(100)).await?;
+            assert_eq!(job_state(pool, entity_id).await?.0, "pending");
             Ok(())
         }
         .await;

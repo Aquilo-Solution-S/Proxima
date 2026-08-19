@@ -70,12 +70,14 @@ impl EmbeddingWritePort for PgStorage {
         model_id: &str,
         dim: usize,
         vec: &[f32],
-        _proof: proxima_core::storage_ports::EmbeddingWriteProof,
+        proof: proxima_core::storage_ports::EmbeddingWriteProof,
     ) -> Result<EmbeddingWriteOutcome, StorageError> {
         let mut tx =
             self.pool.begin().await.map_err(|err| {
                 StorageError::Internal(format!("begin embedding insert tx: {err}"))
             })?;
+        verbs::fact_embeddings::lock_embedding_job_claim(&mut tx, owner, entity, model_id, proof)
+            .await?;
         let outcome =
             verbs::fact_embeddings::insert_embedding(&mut tx, owner, entity, model_id, dim, vec)
                 .await?;
@@ -90,11 +92,13 @@ impl EmbeddingWritePort for PgStorage {
         model_id: &str,
         dim: usize,
         chunks: &[&[f32]],
-        _proof: proxima_core::storage_ports::EmbeddingWriteProof,
+        proof: proxima_core::storage_ports::EmbeddingWriteProof,
     ) -> Result<EmbeddingWriteOutcome, StorageError> {
         let mut tx = self.pool.begin().await.map_err(|err| {
             StorageError::Internal(format!("begin embedding chunks insert tx: {err}"))
         })?;
+        verbs::fact_embeddings::lock_embedding_job_claim(&mut tx, owner, entity, model_id, proof)
+            .await?;
         let outcome = verbs::fact_embeddings::insert_embedding_chunks(
             &mut tx, owner, entity, model_id, dim, chunks,
         )

@@ -298,40 +298,123 @@ pub async fn ensure_core_schema_current(pool: &PgPool) -> Result<(), StorageErro
 /// # Errors
 ///
 /// Returns [`StorageError::Internal`] when any structural marker for the
-/// current lane is absent.
+/// current lane is absent or has the wrong type, nullability, enum order, or
+/// processing-claim invariant.
+#[allow(clippy::too_many_lines)]
 pub async fn ensure_core_schema_markers(pool: &PgPool) -> Result<(), StorageError> {
-    let ready: bool = sqlx::query_scalar(
-        "SELECT to_regclass('proxima_core.memory') IS NOT NULL
-         AND to_regclass('proxima_core.memory_head') IS NOT NULL
-         AND to_regclass('proxima_core.ingest_keys') IS NOT NULL
-         AND to_regclass('proxima_core.announce') IS NOT NULL
-         AND to_regclass('proxima_core.goal') IS NOT NULL
-         AND to_regclass('proxima_core.wake_config') IS NOT NULL
-         AND to_regclass('proxima_core.embeddings') IS NOT NULL
-         AND to_regclass('proxima_core.agent_note_v1') IS NOT NULL
-         AND to_regclass('proxima_core.group_memberships') IS NOT NULL
-         AND to_regclass('proxima_core.lexical_languages') IS NOT NULL
-         AND to_regprocedure('proxima_core.lexical_tsv(text)') IS NOT NULL
-         AND to_regprocedure('proxima_core.lexical_config()') IS NOT NULL
-         AND (
-             to_regclass('proxima_code.code_chunk_v1') IS NULL
-             OR EXISTS (
-                 SELECT 1
-                   FROM information_schema.columns
-                  WHERE table_schema = 'proxima_code'
-                    AND table_name = 'code_chunk_v1'
-                    AND column_name = 'search_tsv'
-             )
-         )",
+    let marker_error: Option<String> = sqlx::query_scalar(
+        r"SELECT CASE
+         WHEN to_regclass('proxima_core.memory') IS NULL
+           THEN 'missing relation proxima_core.memory'
+         WHEN to_regclass('proxima_core.memory_head') IS NULL
+           THEN 'missing relation proxima_core.memory_head'
+         WHEN to_regclass('proxima_core.ingest_keys') IS NULL
+           THEN 'missing relation proxima_core.ingest_keys'
+         WHEN to_regclass('proxima_core.announce') IS NULL
+           THEN 'missing relation proxima_core.announce'
+         WHEN to_regclass('proxima_core.goal') IS NULL
+           THEN 'missing relation proxima_core.goal'
+         WHEN to_regclass('proxima_core.wake_config') IS NULL
+           THEN 'missing relation proxima_core.wake_config'
+         WHEN to_regclass('proxima_core.embeddings') IS NULL
+           THEN 'missing relation proxima_core.embeddings'
+         WHEN to_regclass('proxima_core.embedding_jobs') IS NULL
+           THEN 'missing relation proxima_core.embedding_jobs'
+         WHEN to_regclass('proxima_core.agent_note_v1') IS NULL
+           THEN 'missing relation proxima_core.agent_note_v1'
+         WHEN to_regclass('proxima_core.group_memberships') IS NULL
+           THEN 'missing relation proxima_core.group_memberships'
+         WHEN to_regclass('proxima_core.owner_fact_retention') IS NULL
+           THEN 'missing relation proxima_core.owner_fact_retention'
+         WHEN to_regclass('proxima_core.lexical_languages') IS NULL
+           THEN 'missing relation proxima_core.lexical_languages'
+         WHEN to_regprocedure('proxima_core.lexical_tsv(text)') IS NULL
+           THEN 'missing function proxima_core.lexical_tsv(text)'
+         WHEN to_regprocedure('proxima_core.lexical_config()') IS NULL
+           THEN 'missing function proxima_core.lexical_config()'
+         WHEN to_regclass('proxima_code.code_chunk_v1') IS NOT NULL
+              AND NOT EXISTS (
+                  SELECT 1
+                    FROM information_schema.columns
+                   WHERE table_schema = 'proxima_code'
+                     AND table_name = 'code_chunk_v1'
+                     AND column_name = 'search_tsv'
+              )
+           THEN 'missing column proxima_code.code_chunk_v1.search_tsv'
+         WHEN COALESCE((
+                  SELECT array_agg(e.enumlabel::text ORDER BY e.enumsortorder)
+                    FROM pg_enum e
+                    JOIN pg_type t ON t.oid = e.enumtypid
+                    JOIN pg_namespace n ON n.oid = t.typnamespace
+                   WHERE n.nspname = 'proxima_core'
+                     AND t.typname = 'embedding_job_status'
+                ), ARRAY[]::text[]) <> ARRAY['pending', 'processing', 'failed', 'failed_permanent']
+           THEN 'embedding_job_status labels/order must be pending, processing, failed, failed_permanent'
+         WHEN NOT EXISTS (
+                  SELECT 1
+                    FROM information_schema.columns
+                   WHERE table_schema = 'proxima_core'
+                     AND table_name = 'embedding_jobs'
+                     AND column_name = 'status'
+                     AND udt_schema = 'proxima_core'
+                     AND udt_name = 'embedding_job_status'
+                     AND is_nullable = 'NO'
+                )
+           THEN 'embedding_jobs.status must be proxima_core.embedding_job_status NOT NULL'
+         WHEN NOT EXISTS (
+                  SELECT 1
+                    FROM information_schema.columns
+                   WHERE table_schema = 'proxima_core'
+                     AND table_name = 'embedding_jobs'
+                     AND column_name = 'claimed_at'
+                     AND data_type = 'timestamp with time zone'
+                     AND is_nullable = 'YES'
+                )
+           THEN 'embedding_jobs.claimed_at must be nullable timestamptz'
+         WHEN NOT EXISTS (
+                  SELECT 1
+                    FROM information_schema.columns
+                   WHERE table_schema = 'proxima_core'
+                     AND table_name = 'embedding_jobs'
+                     AND column_name = 'last_error'
+                     AND data_type = 'text'
+                     AND is_nullable = 'YES'
+                )
+           THEN 'embedding_jobs.last_error must be nullable text'
+         WHEN NOT EXISTS (
+                  SELECT 1
+                    FROM information_schema.columns
+                   WHERE table_schema = 'proxima_core'
+                     AND table_name = 'embedding_jobs'
+                     AND column_name = 'claim_token'
+                     AND data_type = 'uuid'
+                     AND is_nullable = 'YES'
+                )
+           THEN 'embedding_jobs.claim_token must be nullable uuid'
+         WHEN NOT EXISTS (
+                  SELECT 1
+                    FROM pg_constraint c
+                    JOIN pg_class r ON r.oid = c.conrelid
+                    JOIN pg_namespace n ON n.oid = r.relnamespace
+                   WHERE n.nspname = 'proxima_core'
+                     AND r.relname = 'embedding_jobs'
+                     AND c.conname = 'embedding_job_processing_claim_chk'
+                     AND c.convalidated
+                     AND pg_get_constraintdef(c.oid, true) =
+                         'CHECK ((status = ''processing''::proxima_core.embedding_job_status) = (claimed_at IS NOT NULL AND claim_token IS NOT NULL))'
+                )
+           THEN 'embedding_jobs.processing claim check is missing or incorrect'
+         ELSE NULL
+       END",
     )
     .fetch_one(pool)
     .await
     .map_err(internal)?;
 
-    if !ready {
-        return Err(StorageError::Internal(
-            "database is missing v0.0.8 schema markers (memory/memory_head/ingest_keys/announce/goal/wake_config/embeddings/agent_note_v1/group_memberships/lexical_tsv); apply migrations before boot".into(),
-        ));
+    if let Some(marker_error) = marker_error {
+        return Err(StorageError::Internal(format!(
+            "database is missing or has an incorrect v0.0.8 schema marker: {marker_error}; apply migrations before boot"
+        )));
     }
     Ok(())
 }
@@ -816,7 +899,8 @@ impl PgStorage {
         Ok(locked.then_some(conn))
     }
 
-    /// Tombstone Facts past their owner's configured retention window.
+    /// Forget Facts past their owner's configured retention window, leaving
+    /// cold stubs and `announce.forget` events.
     /// Operator surface for the maintenance CLI; see
     /// [`Self::sweep_orphan_embedding_rows`] for the authority note. Each
     /// owner is processed under the per-owner legal-hold advisory lock and
@@ -830,7 +914,13 @@ impl PgStorage {
         &self,
         options: RetentionEnforceOptions,
     ) -> Result<RetentionEnforceOutcome, StorageError> {
-        verbs::retention_maintenance::enforce_fact_retention(&self.pool, options).await
+        verbs::retention_maintenance::enforce_fact_retention(
+            &self.pool,
+            &self.sidecars,
+            self.cold.as_ref(),
+            options,
+        )
+        .await
     }
 
     /// Delete `change_event` rows older than an explicit age horizon.

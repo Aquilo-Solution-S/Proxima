@@ -6,13 +6,25 @@ use crate::error::map_err;
 
 use super::ensure_nonnegative_limit;
 
+/// Seconds a job may sit in `processing` before
+/// [`reclaim_stale_embedding_jobs`] returns it to `pending`.
+///
+/// A drainer that dies between claim and complete/fail leaves the row
+/// `processing` forever, and the unique `(owner_id, entity_id, model_id)`
+/// key means no re-enqueue can replace it — the memory silently stops
+/// being embeddable. The window only needs to exceed the longest honest
+/// drain of one batch.
+pub const STALE_PROCESSING_RECLAIM_SECONDS: i64 = 900;
+
 /// Claim pending jobs for one model, ordered by `job_id`.
 ///
 /// One arm: `status = 'pending'`. Rides
 /// `embedding_jobs_pending_claim_idx (model_id, job_id) WHERE status =
 /// 'pending'`. Locked unclaimed rows release with the statement's
-/// transaction. There is no processing-reclaim arm and no
-/// `next_attempt_at` column.
+/// transaction. `claimed_at` is what makes a crashed drainer's row
+/// recoverable ([`reclaim_stale_embedding_jobs`]); there is no
+/// `next_attempt_at` column. Each claim also gets a fencing token so a
+/// reclaimed worker cannot complete a successor's claim.
 const CLAIM_EMBEDDING_JOBS_SQL: &str = "WITH claimed AS (
              SELECT job_id
                FROM proxima_core.embedding_jobs
@@ -24,16 +36,20 @@ const CLAIM_EMBEDDING_JOBS_SQL: &str = "WITH claimed AS (
               LIMIT $3
          )
          UPDATE proxima_core.embedding_jobs j
-            SET status = 'processing'
+            SET status = 'processing',
+                claimed_at = now(),
+                claim_token = uuidv7()
            FROM claimed, proxima_core.memory m, proxima_core.owners o
           WHERE j.job_id = claimed.job_id
             AND m.t = j.entity_id
             AND o.owner_id = j.owner_id
         RETURNING o.kind::text AS owner_kind,
+                  j.job_id,
                   j.owner_id,
                   m.kind::text AS entity_kind,
                   j.entity_id,
-                  j.model_id";
+                  j.model_id,
+                  j.claim_token";
 
 /// The claim statement, for EXPLAIN-based plan guards. Same cfg gate as
 /// `search.rs`'s `*_sql_for_tests` exports.
@@ -47,10 +63,12 @@ pub fn claim_embedding_jobs_sql_for_tests() -> &'static str {
 #[derive(sqlx::FromRow)]
 struct EmbeddingJobClaimRow {
     owner_kind: String,
+    job_id: uuid::Uuid,
     owner_id: uuid::Uuid,
     entity_kind: String,
     entity_id: uuid::Uuid,
     model_id: String,
+    claim_token: uuid::Uuid,
 }
 
 impl From<EmbeddingJobClaimRow> for EmbeddingJobClaim {
@@ -67,6 +85,7 @@ impl From<EmbeddingJobClaimRow> for EmbeddingJobClaim {
             _ => EntityKind::Fact,
         };
         Self {
+            job_id: row.job_id,
             owner: owner_kind
                 .with_uuid(Some(row.owner_id))
                 .expect("embedding job row has valid owner_ref shape"),
@@ -75,6 +94,7 @@ impl From<EmbeddingJobClaimRow> for EmbeddingJobClaim {
             model_id: row.model_id,
             embedding_version: 1,
             attempts: 0,
+            claim_token: row.claim_token,
         }
     }
 }
@@ -135,8 +155,9 @@ async fn missing_embedding_ids(
 /// Atomically claim pending embedding jobs for one model.
 ///
 /// Selects `status = 'pending'` rows for `$1`, skips the exclude list,
-/// `FOR UPDATE SKIP LOCKED`, then sets `processing`. v0.0.8 has no
-/// `next_attempt_at` and no processing-reclaim arm.
+/// `FOR UPDATE SKIP LOCKED`, then sets `processing` and stamps
+/// `claimed_at`. v0.0.8 has no `next_attempt_at`; a claim a drainer never
+/// finishes is recovered by [`reclaim_stale_embedding_jobs`].
 ///
 /// # Errors
 ///
@@ -172,131 +193,199 @@ pub(super) async fn claim_pending_embedding_jobs_excluding(
     Ok(rows.into_iter().map(EmbeddingJobClaim::from).collect())
 }
 
-/// Delete a completed embedding job.
+/// Delete a completed embedding job, fenced by the claim token.
 ///
 /// # Errors
 ///
-/// Maps SQL failures through the shared mapper.
+/// Returns `Conflict` for a stale/non-processing claim; maps SQL failures
+/// through the shared mapper.
 pub async fn complete_embedding_job(
     pool: &PgPool,
     claim: &EmbeddingJobClaim,
 ) -> Result<(), StorageError> {
-    let owner_id = claim.owner.stored_owner_id();
-    sqlx::query(
+    let result = sqlx::query(
         "DELETE FROM proxima_core.embedding_jobs
-          WHERE owner_id = $1
-            AND entity_id = $2
-            AND model_id = $3",
+          WHERE job_id = $1
+            AND claim_token = $2
+            AND status = 'processing'",
     )
-    .bind(owner_id)
-    .bind(claim.entity_id.into_inner())
-    .bind(&claim.model_id)
+    .bind(claim.job_id)
+    .bind(claim.claim_token)
     .execute(pool)
     .await
     .map_err(map_err)?;
+    if result.rows_affected() == 0 {
+        return Err(StorageError::Conflict(
+            "embedding job claim is stale or no longer processing".into(),
+        ));
+    }
     Ok(())
 }
 
-/// Return a processing job to `pending`.
+/// Fail an attempted job for a retryable cause: `failed`, with `error`
+/// kept on the row.
 ///
-/// v0.0.8 has no attempt counter or `next_attempt_at`; the row is
-/// immediately claimable again. Permanent rejection uses
-/// [`fail_embedding_job_permanently`].
+/// v0.0.8 has no attempt counter or `next_attempt_at`, so `failed` is the
+/// retry dead-end that `reconcile_embeddings` lifts a memory out of —
+/// requeueing here instead would spin a broken provider at the drain
+/// loop's interval with nothing recording why. Permanent rejection uses
+/// [`fail_embedding_job_permanently`]; a claimed-but-unattempted job uses
+/// [`release_embedding_jobs`].
 ///
 /// # Errors
 ///
-/// Maps SQL failures through the shared mapper.
+/// Returns `Conflict` for a stale/non-processing claim; maps SQL failures
+/// through the shared mapper.
 pub async fn fail_embedding_job(
     pool: &PgPool,
     claim: &EmbeddingJobClaim,
     error: &str,
 ) -> Result<(), StorageError> {
-    let owner_id = claim.owner.stored_owner_id();
-    let _ = error;
-    sqlx::query(
+    let result = sqlx::query(
         "UPDATE proxima_core.embedding_jobs
-            SET status = 'pending'
-          WHERE owner_id = $1
-            AND entity_id = $2
-            AND model_id = $3
+            SET status = 'failed',
+                claimed_at = NULL,
+                claim_token = NULL,
+                last_error = $3
+          WHERE job_id = $1
+            AND claim_token = $2
             AND status = 'processing'",
     )
-    .bind(owner_id)
-    .bind(claim.entity_id.into_inner())
-    .bind(&claim.model_id)
+    .bind(claim.job_id)
+    .bind(claim.claim_token)
+    .bind(error)
     .execute(pool)
     .await
     .map_err(map_err)?;
+    if result.rows_affected() == 0 {
+        return Err(StorageError::Conflict(
+            "embedding job claim is stale or no longer processing".into(),
+        ));
+    }
     Ok(())
 }
 
 /// Terminally fail a job whose input the provider rejects for a permanent
-/// cause (e.g. over the embedding model's token limit). Goes straight to
-/// `failed` with a
-/// [`proxima_core::storage_ports::PERMANENT_EMBED_FAILURE_MARKER`]-prefixed
-/// `last_error`; `reconcile_embeddings` skips marker-prefixed rows so the
-/// job stays terminal instead of cycling reject-retry forever.
+/// cause (e.g. over the embedding model's token limit): `failed_permanent`,
+/// with `error` kept on the row.
+///
+/// The separate status — not a marker string inside `last_error` — is what
+/// keeps `reconcile_embeddings` from cycling the job reject-retry forever:
+/// its requeue arm names `failed` only.
 ///
 /// # Errors
 ///
-/// Maps SQL failures through the shared mapper.
+/// Returns `Conflict` for a stale/non-processing claim; maps SQL failures
+/// through the shared mapper.
 pub async fn fail_embedding_job_permanently(
     pool: &PgPool,
     claim: &EmbeddingJobClaim,
     error: &str,
 ) -> Result<(), StorageError> {
-    let owner_id = claim.owner.stored_owner_id();
-    let _ = error;
-    sqlx::query(
+    let result = sqlx::query(
         "UPDATE proxima_core.embedding_jobs
-            SET status = 'failed'
-          WHERE owner_id = $1
-            AND entity_id = $2
-            AND model_id = $3
+            SET status = 'failed_permanent',
+                claimed_at = NULL,
+                claim_token = NULL,
+                last_error = $3
+          WHERE job_id = $1
+            AND claim_token = $2
             AND status = 'processing'",
     )
-    .bind(owner_id)
-    .bind(claim.entity_id.into_inner())
-    .bind(&claim.model_id)
+    .bind(claim.job_id)
+    .bind(claim.claim_token)
+    .bind(error)
     .execute(pool)
     .await
     .map_err(map_err)?;
+    if result.rows_affected() == 0 {
+        return Err(StorageError::Conflict(
+            "embedding job claim is stale or no longer processing".into(),
+        ));
+    }
     Ok(())
 }
 
 /// Return claimed-but-unattempted jobs to `pending`.
 ///
 /// Batch-drain uses this when one provider call covering many jobs
-/// fails for a transient cause. v0.0.8 has no `next_attempt_at`; rows
-/// are immediately claimable.
+/// fails for a transient cause. Nothing was tried, so the rows are
+/// immediately claimable again; `error` records why they were let go.
 ///
 /// # Errors
 ///
-/// Maps SQL failures through the shared mapper.
+/// Returns `Conflict` when any claim is stale/non-processing; maps SQL
+/// failures through the shared mapper. The batch is atomic.
 pub async fn release_embedding_jobs(
     pool: &PgPool,
     claims: &[EmbeddingJobClaim],
     error: &str,
 ) -> Result<(), StorageError> {
+    let mut tx = pool.begin().await.map_err(map_err)?;
     for claim in claims {
-        let owner_id = claim.owner.stored_owner_id();
-        let _ = error;
-        sqlx::query(
+        let result = sqlx::query(
             "UPDATE proxima_core.embedding_jobs
-                SET status = 'pending'
-              WHERE owner_id = $1
-                AND entity_id = $2
-                AND model_id = $3
+                SET status = 'pending',
+                    claimed_at = NULL,
+                    claim_token = NULL,
+                    last_error = $3
+              WHERE job_id = $1
+                AND claim_token = $2
                 AND status = 'processing'",
         )
-        .bind(owner_id)
-        .bind(claim.entity_id.into_inner())
-        .bind(&claim.model_id)
-        .execute(pool)
+        .bind(claim.job_id)
+        .bind(claim.claim_token)
+        .bind(error)
+        .execute(&mut *tx)
         .await
         .map_err(map_err)?;
+        if result.rows_affected() == 0 {
+            return Err(StorageError::Conflict(
+                "embedding job claim is stale or no longer processing".into(),
+            ));
+        }
     }
+    tx.commit().await.map_err(map_err)?;
     Ok(())
+}
+
+/// Return `processing` jobs claimed more than `older_than_seconds` ago to
+/// `pending`.
+///
+/// The one recovery path for a drainer that died holding a claim. Rows with
+/// no `claimed_at` at all are stale by definition — nothing can date them,
+/// so nothing else can ever free them.
+///
+/// # Errors
+///
+/// Returns `ConstraintViolation` for a non-positive window, otherwise maps
+/// SQL failures through the shared mapper.
+pub async fn reclaim_stale_embedding_jobs(
+    pool: &PgPool,
+    older_than_seconds: i64,
+) -> Result<u64, StorageError> {
+    if older_than_seconds < 1 {
+        return Err(StorageError::ConstraintViolation(
+            "stale processing reclaim window must be positive".into(),
+        ));
+    }
+    let result = sqlx::query(
+        "UPDATE proxima_core.embedding_jobs
+            SET status = 'pending',
+                claimed_at = NULL,
+                claim_token = NULL
+          WHERE status = 'processing'
+            AND (
+                claimed_at IS NULL
+                OR claimed_at < now()
+                    - make_interval(secs => ($1::bigint)::double precision)
+            )",
+    )
+    .bind(older_than_seconds)
+    .execute(pool)
+    .await
+    .map_err(map_err)?;
+    Ok(result.rows_affected())
 }
 
 /// Enqueue pending jobs for owner-scoped Facts missing a current
@@ -364,7 +453,8 @@ pub async fn count_pending_embedding_jobs(
         .map_err(|_| StorageError::Internal("pending embedding job count is negative".into()))
 }
 
-/// Owner-scoped count of embedding jobs in the terminal `failed` state.
+/// Owner-scoped count of embedding jobs in a terminal state — both the
+/// requeueable `failed` and the permanently rejected `failed_permanent`.
 ///
 /// # Errors
 ///
@@ -378,7 +468,7 @@ pub async fn count_failed_embedding_jobs(
         "SELECT count(*)
            FROM proxima_core.embedding_jobs
           WHERE owner_id = $1
-            AND status = 'failed'",
+            AND status IN ('failed', 'failed_permanent')",
     )
     .bind(owner_id)
     .fetch_one(pool)
@@ -401,7 +491,7 @@ pub async fn count_embedding_job_status(
     let row: (i64, i64) = sqlx::query_as(
         "SELECT
              count(*) FILTER (WHERE status IN ('pending', 'processing')),
-             count(*) FILTER (WHERE status = 'failed')
+             count(*) FILTER (WHERE status IN ('failed', 'failed_permanent'))
            FROM proxima_core.embedding_jobs
           WHERE owner_id = $1",
     )
@@ -488,6 +578,13 @@ mod tests {
         );
     }
 
+    /// `reclaim_stale_embedding_jobs` can only date a claim the claim
+    /// itself stamped.
+    #[test]
+    fn the_claim_stamps_claimed_at() {
+        assert!(CLAIM_EMBEDDING_JOBS_SQL.contains("claimed_at = now()"));
+    }
+
     #[test]
     fn the_claim_names_pending_only() {
         assert_eq!(
@@ -509,14 +606,18 @@ mod tests {
               LIMIT $3
          )
          UPDATE proxima_core.embedding_jobs j
-            SET status = 'processing'
+            SET status = 'processing',
+                claimed_at = now(),
+                claim_token = uuidv7()
            FROM claimed, proxima_core.memory m, proxima_core.owners o
           WHERE j.job_id = claimed.job_id
             AND m.t = j.entity_id
             AND o.owner_id = j.owner_id
         RETURNING o.kind::text AS owner_kind,
+                  j.job_id,
                   j.owner_id,
                   m.kind::text AS entity_kind,
                   j.entity_id,
-                  j.model_id";
+                  j.model_id,
+                  j.claim_token";
 }

@@ -7,7 +7,7 @@ pub use args::{
     parse_retention_args,
 };
 
-use proxima_blob_s3::S3RuntimeConfig;
+use proxima_blob_s3::{CitedBlobStore, S3RuntimeConfig};
 
 use std::collections::{BTreeSet, HashSet};
 use std::num::NonZeroU32;
@@ -16,7 +16,7 @@ use std::sync::Arc;
 use proxima::flavor::FlavorBundle;
 use proxima::{
     AppContext, AppInfo, FlavorApp, FlavorServiceError, FlavorServices, Proxima, ProximaError,
-    RunningProxima, RuntimeBuilder,
+    RunningProxima, RuntimeBuilder, run_core_and_flavor_migrations,
 };
 use proxima_core::protocol::profile as protocol_profile;
 use proxima_core::{
@@ -471,20 +471,48 @@ async fn run_maintain(config: MaintainConfig) -> Result<(), CliError> {
     Ok(())
 }
 
-/// One retention pass: Fact-retention enforcement (tombstone sweep) and/or
+/// One retention pass: Fact-retention enforcement (forget/cool sweep) and/or
 /// `change_event` pruning, per the explicit action flags. Serialized across
 /// processes by its own Postgres advisory lock — an overlapping pass skips
 /// with exit 0, like `maintain-embeddings`. Owners under an active
 /// legal/security hold are skipped inside each owner's transaction and
 /// surface in the report.
 async fn run_maintain_retention(config: RetentionConfig) -> Result<(), CliError> {
+    let s3 = (config.enforce_fact_retention && !config.dry_run)
+        .then(|| {
+            S3RuntimeConfig::from_env().map_err(|err| {
+                ProximaError::Config(format!(
+                    "Fact-retention cooling needs the host's PROXIMA_S3_* block: {err}"
+                ))
+            })
+        })
+        .transpose()?;
+
     let storage = PgStorage::connect(&config.database_url)
         .await
         .map_err(|err| ProximaError::Storage(err.to_string()))?;
-    storage
-        .run_migrations()
+    run_core_and_flavor_migrations(&storage, ProximaMcpApp::migrators())
         .await
         .map_err(|err| ProximaError::Storage(err.to_string()))?;
+
+    let storage = if let Some(s3) = s3 {
+        let mut registry = FlavorRegistry::new();
+        <ProximaMcpApp as FlavorBundle>::register(&mut registry).map_err(ProximaError::from)?;
+        let registry = registry.try_freeze().map_err(ProximaError::from)?;
+        let mut sidecars = proxima::flavor::PgSidecarRegistry::new();
+        proxima::flavor::register_core_pg_sidecars(&mut sidecars);
+        <ProximaMcpApp as FlavorBundle>::register_pg_sidecars(&mut sidecars);
+        let sidecars = sidecars
+            .freeze_against(registry.schemas())
+            .map_err(|err| ProximaError::Storage(err.to_string()))?;
+        let blobs = CitedBlobStore::new(storage.clone_pool_for_backend(), s3)
+            .map_err(|err| ProximaError::Config(err.to_string()))?;
+        storage
+            .with_sidecars(sidecars)
+            .with_cold(Arc::new(blobs.cold_store()))
+    } else {
+        storage
+    };
 
     let Some(_lock) = storage
         .try_retention_maintenance_lock()
@@ -525,9 +553,9 @@ async fn run_maintain_retention(config: RetentionConfig) -> Result<(), CliError>
 
 fn print_retention_report(outcome: &RetentionEnforceOutcome, dry_run_suffix: &str) {
     println!(
-        "fact-retention: owners={} tombstoned={} skipped-hold={}{dry_run_suffix}",
+        "fact-retention: owners={} forgotten={} skipped-hold={}{dry_run_suffix}",
         outcome.owners.len(),
-        outcome.facts_tombstoned,
+        outcome.facts_forgotten,
         outcome.owners_skipped_hold
     );
     for owner in &outcome.owners {
@@ -537,10 +565,10 @@ fn print_retention_report(outcome: &RetentionEnforceOutcome, dry_run_suffix: &st
             ""
         };
         println!(
-            "  {} retention={}s tombstoned={}{hold}",
+            "  {} retention={}s forgotten={}{hold}",
             owner.owner.external_key(),
             owner.retention_seconds,
-            owner.facts_tombstoned
+            owner.facts_forgotten
         );
     }
 }

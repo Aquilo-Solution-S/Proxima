@@ -63,7 +63,7 @@ not an MCP tool (see [15 §Embedding Ops](../15-deployment.md#embedding-ops)):
 
 | Signal | Condition | Action |
 |---|---|---|
-| `backlog.failed` | `> 0` | jobs erroring; inspect drainer logs (jobs retry) |
+| `backlog.failed` | `> 0` | jobs erroring; inspect `embedding_jobs.last_error`. `failed` requeues on the next reconcile (restart or `maintain-embeddings`); `failed_permanent` never does — the provider rejects that input at any length |
 | `stale_processing_jobs` | `> 0` persistent | claims stuck past the stale-reclaim window (crashed drainer); auto-reclaimed, investigate if it does not clear |
 | `orphan_rows.{embeddings,heads,jobs}` | `> 0` | crash-residue infra rows; run `Engine::sweep_orphan_embedding_rows` (same authz) |
 | `recall_canary.recall_at_k` | low vs `k` | ANN recall degraded against exact; consider HNSW rebuild / `hnsw.ef_search` tuning (see [15 §Embedding Ops](../15-deployment.md#embedding-ops)) |

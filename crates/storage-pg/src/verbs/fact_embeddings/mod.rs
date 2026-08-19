@@ -12,10 +12,10 @@ mod write;
 pub use jobs::claim_embedding_jobs_sql_for_tests;
 pub(crate) use jobs::enqueue_embedding_job_in_tx;
 pub use jobs::{
-    claim_pending_embedding_jobs, complete_embedding_job, count_embedding_job_status,
-    count_failed_embedding_jobs, count_pending_embedding_jobs, enqueue_missing_embedding_jobs,
-    fail_embedding_job, fail_embedding_job_permanently, list_facts_missing_embedding,
-    release_embedding_jobs,
+    STALE_PROCESSING_RECLAIM_SECONDS, claim_pending_embedding_jobs, complete_embedding_job,
+    count_embedding_job_status, count_failed_embedding_jobs, count_pending_embedding_jobs,
+    enqueue_missing_embedding_jobs, fail_embedding_job, fail_embedding_job_permanently,
+    list_facts_missing_embedding, reclaim_stale_embedding_jobs, release_embedding_jobs,
 };
 pub(crate) use ops::{embedding_ann_observability, sweep_orphan_embedding_rows};
 pub use reconcile::{
@@ -23,7 +23,10 @@ pub use reconcile::{
     EmbeddingReconcileScope, drain_embedding_jobs_inline, reconcile_embeddings,
 };
 pub use text::{load_embedding_text, load_embedding_texts, load_fact_text, load_fact_text_in_tx};
-pub(crate) use write::{insert_embedding, insert_embedding_chunks, insert_memory_embedding};
+pub(crate) use write::{
+    insert_embedding, insert_embedding_chunks, insert_memory_embedding, lock_embedding_job_claim,
+    lock_embedding_job_claim_for_claim,
+};
 
 fn ensure_nonnegative_limit(limit: i64) -> Result<i64, StorageError> {
     if limit < 0 {

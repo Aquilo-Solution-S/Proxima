@@ -132,13 +132,39 @@ impl OperatorWriteProof {
 /// for an embedding write before a storage backend performs it.
 #[derive(Debug, Clone, Copy)]
 pub struct EmbeddingWriteProof {
+    claim_fence: Option<(uuid::Uuid, uuid::Uuid)>,
     _private: (),
 }
 
 impl EmbeddingWriteProof {
     #[must_use]
     pub(crate) const fn new() -> Self {
-        Self { _private: () }
+        Self {
+            claim_fence: None,
+            _private: (),
+        }
+    }
+
+    #[must_use]
+    pub(crate) const fn for_claim(claim: &crate::EmbeddingJobClaim) -> Self {
+        Self {
+            claim_fence: Some((claim.job_id, claim.claim_token)),
+            _private: (),
+        }
+    }
+
+    /// Test-only constructor for exercising a backend's claim fence.
+    #[cfg(any(test, feature = "test-fixtures"))]
+    #[must_use]
+    pub const fn for_claim_for_tests(claim: &crate::EmbeddingJobClaim) -> Self {
+        Self::for_claim(claim)
+    }
+
+    /// The durable job id and per-claim fencing token, when this write was
+    /// authorized by a queue claim rather than direct entity admission.
+    #[must_use]
+    pub const fn claim_fence(self) -> Option<(uuid::Uuid, uuid::Uuid)> {
+        self.claim_fence
     }
 }
 
