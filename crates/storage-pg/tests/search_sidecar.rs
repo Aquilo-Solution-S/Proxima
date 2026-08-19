@@ -480,6 +480,99 @@ async fn lexical_search_matches_german_via_lexical_languages() {
 }
 
 #[tokio::test]
+async fn lexical_default_switch_stamps_only_subsequent_core_rows() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    if let Err(e) = create_db(&db_name).await {
+        panic!("PG required for tests but admin connect failed: {e}");
+    }
+    let url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&url).await?;
+        pg.run_migrations().await?;
+        let pool = pg.pool_for_tests();
+        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+
+        let initial_default_is_english: bool =
+            sqlx::query_scalar("SELECT proxima_core.lexical_config() = 'english'::regconfig")
+                .fetch_one(pool)
+                .await?;
+        assert!(
+            initial_default_is_english,
+            "initial default must be english"
+        );
+
+        let english = seed_note(pool, owner, "Cats", "the cats sleep on the sofa").await?;
+        sqlx::query("SELECT proxima_core.set_lexical_config('german')")
+            .execute(pool)
+            .await?;
+        let german = seed_note(pool, owner, "Tiere", "die Katzen schlafen auf dem Sofa").await?;
+
+        let stamped: Vec<(Uuid, String)> = sqlx::query_as(
+            "SELECT t, lexical_language::text
+               FROM proxima_core.agent_note_v1
+              WHERE t = ANY($1::uuid[])
+              ORDER BY t",
+        )
+        .bind(vec![english, german])
+        .fetch_all(pool)
+        .await?;
+        assert_eq!(
+            stamped,
+            vec![(english, "english".into()), (german, "german".into())],
+            "the switch must stamp only subsequently inserted omitted-language rows"
+        );
+
+        let default_is_german: bool =
+            sqlx::query_scalar("SELECT proxima_core.lexical_config() = 'german'::regconfig")
+                .fetch_one(pool)
+                .await?;
+        assert!(
+            default_is_german,
+            "set_lexical_config must change the default"
+        );
+
+        let german_is_active: bool = sqlx::query_scalar(
+            "SELECT EXISTS (
+                 SELECT 1 FROM proxima_core.lexical_languages
+                  WHERE config = 'german'::regconfig
+             )",
+        )
+        .fetch_one(pool)
+        .await?;
+        assert!(
+            german_is_active,
+            "the new default must be an active language"
+        );
+        let english_is_still_active: bool = sqlx::query_scalar(
+            "SELECT EXISTS (
+                 SELECT 1 FROM proxima_core.lexical_languages
+                  WHERE config = 'english'::regconfig
+             )",
+        )
+        .fetch_one(pool)
+        .await?;
+        assert!(
+            english_is_still_active,
+            "switching the prose default must keep pinned-English rows searchable"
+        );
+
+        let page = pg
+            .search_memories(&search_req(owner, "Katze"), &[note_projection()])
+            .await?;
+        assert!(
+            page.results
+                .iter()
+                .any(|row| row.memory_id.into_inner() == german),
+            "the German-default row must match through the active-language OR"
+        );
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("lexical default switch checks failed");
+}
+
+#[tokio::test]
 async fn semantic_search_respects_until() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
     if let Err(e) = create_db(&db_name).await {

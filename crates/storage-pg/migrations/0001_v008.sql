@@ -327,6 +327,16 @@ INSERT INTO proxima_core.lexical_languages (config)
 VALUES ('english'::regconfig)
 ON CONFLICT DO NOTHING;
 
+-- The mutable deployment default is data, not an IMMUTABLE function body.
+-- The boolean key admits at most one row and serializes concurrent switches.
+CREATE TABLE proxima_core.lexical_default (
+    singleton boolean PRIMARY KEY DEFAULT true CHECK (singleton),
+    config regconfig NOT NULL REFERENCES proxima_core.lexical_languages (config)
+);
+
+INSERT INTO proxima_core.lexical_default (singleton, config)
+VALUES (true, 'english'::regconfig);
+
 CREATE FUNCTION proxima_core.lexical_scrub(txt text) RETURNS text
 LANGUAGE sql IMMUTABLE STRICT PARALLEL SAFE AS
 $$ SELECT regexp_replace(
@@ -334,11 +344,13 @@ $$ SELECT regexp_replace(
        '\m[[:alnum:]]{255}[[:alnum:]]+\M', ' ', 'g') $$;
 
 CREATE FUNCTION proxima_core.lexical_config() RETURNS regconfig
-LANGUAGE sql IMMUTABLE PARALLEL SAFE AS
-$$ SELECT 'english'::regconfig $$;
+LANGUAGE sql STABLE PARALLEL SAFE AS
+$$ SELECT config
+     FROM proxima_core.lexical_default
+    WHERE singleton $$;
 
 CREATE FUNCTION proxima_core.lexical_tsv(txt text) RETURNS tsvector
-LANGUAGE sql IMMUTABLE STRICT PARALLEL SAFE AS
+LANGUAGE sql STABLE STRICT PARALLEL SAFE AS
 $$ SELECT to_tsvector(proxima_core.lexical_config(), proxima_core.lexical_scrub(txt)) $$;
 
 CREATE FUNCTION proxima_core.lexical_tsv(config regconfig, txt text) RETURNS tsvector
@@ -376,7 +388,11 @@ CREATE FUNCTION proxima_core.set_lexical_config(cfg text) RETURNS void
 LANGUAGE sql VOLATILE AS
 $$ INSERT INTO proxima_core.lexical_languages (config)
    VALUES (cfg::regconfig)
-   ON CONFLICT DO NOTHING $$;
+   ON CONFLICT DO NOTHING;
+   INSERT INTO proxima_core.lexical_default (singleton, config)
+   VALUES (true, cfg::regconfig)
+   ON CONFLICT (singleton) DO UPDATE
+   SET config = EXCLUDED.config $$;
 
 CREATE FUNCTION proxima_core.remember_lexical_language() RETURNS trigger
 LANGUAGE plpgsql AS $$
@@ -415,11 +431,17 @@ CREATE TABLE proxima_core.sketch (
     owner_id uuid NOT NULL REFERENCES proxima_core.owners (owner_id),
     kind proxima_core.sketch_kind NOT NULL,
     text text NOT NULL,
+    lexical_language regconfig NOT NULL DEFAULT proxima_core.lexical_config(),
     search_tsv tsvector GENERATED ALWAYS AS (
-        proxima_core.lexical_tsv(proxima_core.lexical_config(), NULLIF(btrim(text), ''))
+        proxima_core.lexical_tsv(lexical_language, NULLIF(btrim(text), ''))
     ) STORED,
     CONSTRAINT sketch_text_nonblank_chk CHECK (length(btrim(text)) > 0)
 );
+
+CREATE TRIGGER sketch_remember_lang
+    AFTER INSERT ON proxima_core.sketch
+    FOR EACH ROW
+    EXECUTE FUNCTION proxima_core.remember_lexical_language();
 
 CREATE INDEX sketch_owner_t_idx
     ON proxima_core.sketch (owner_id, t DESC);

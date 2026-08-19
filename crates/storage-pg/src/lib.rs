@@ -422,6 +422,76 @@ pub async fn ensure_core_schema_markers(pool: &PgPool) -> Result<(), StorageErro
            THEN 'cooled.blob_id must be nullable uuid'
          WHEN to_regclass('proxima_core.lexical_languages') IS NULL
            THEN 'missing relation proxima_core.lexical_languages'
+         WHEN to_regclass('proxima_core.lexical_default') IS NULL
+           THEN 'missing relation proxima_core.lexical_default'
+         WHEN NOT EXISTS (
+                  SELECT 1
+                    FROM information_schema.columns
+                   WHERE table_schema = 'proxima_core'
+                     AND table_name = 'lexical_default'
+                     AND column_name = 'singleton'
+                     AND data_type = 'boolean'
+                     AND is_nullable = 'NO'
+                )
+           THEN 'lexical_default.singleton must be boolean NOT NULL'
+         WHEN NOT EXISTS (
+                  SELECT 1
+                    FROM information_schema.table_constraints tc
+                    JOIN information_schema.key_column_usage kcu
+                      ON kcu.constraint_catalog = tc.constraint_catalog
+                     AND kcu.constraint_schema = tc.constraint_schema
+                     AND kcu.constraint_name = tc.constraint_name
+                   WHERE tc.table_schema = 'proxima_core'
+                     AND tc.table_name = 'lexical_default'
+                     AND tc.constraint_type = 'PRIMARY KEY'
+                     AND kcu.column_name = 'singleton'
+                     AND 1 = (
+                         SELECT count(*)
+                           FROM information_schema.key_column_usage only_kcu
+                          WHERE only_kcu.constraint_catalog = tc.constraint_catalog
+                            AND only_kcu.constraint_schema = tc.constraint_schema
+                            AND only_kcu.constraint_name = tc.constraint_name
+                     )
+                )
+           THEN 'lexical_default.singleton must be the sole primary-key column'
+         WHEN NOT EXISTS (
+                  SELECT 1
+                    FROM information_schema.columns
+                   WHERE table_schema = 'proxima_core'
+                     AND table_name = 'lexical_default'
+                     AND column_name = 'config'
+                     AND udt_schema = 'pg_catalog'
+                     AND udt_name = 'regconfig'
+                     AND is_nullable = 'NO'
+                )
+           THEN 'lexical_default.config must be regconfig NOT NULL'
+         WHEN NOT EXISTS (
+                  SELECT 1
+                    FROM information_schema.table_constraints tc
+                    JOIN information_schema.key_column_usage kcu
+                      ON kcu.constraint_catalog = tc.constraint_catalog
+                     AND kcu.constraint_schema = tc.constraint_schema
+                     AND kcu.constraint_name = tc.constraint_name
+                    JOIN information_schema.constraint_column_usage ccu
+                      ON ccu.constraint_catalog = tc.constraint_catalog
+                     AND ccu.constraint_schema = tc.constraint_schema
+                     AND ccu.constraint_name = tc.constraint_name
+                   WHERE tc.table_schema = 'proxima_core'
+                     AND tc.table_name = 'lexical_default'
+                     AND tc.constraint_type = 'FOREIGN KEY'
+                     AND kcu.column_name = 'config'
+                     AND ccu.table_schema = 'proxima_core'
+                     AND ccu.table_name = 'lexical_languages'
+                     AND ccu.column_name = 'config'
+                     AND 1 = (
+                         SELECT count(*)
+                           FROM information_schema.key_column_usage only_kcu
+                          WHERE only_kcu.constraint_catalog = tc.constraint_catalog
+                            AND only_kcu.constraint_schema = tc.constraint_schema
+                            AND only_kcu.constraint_name = tc.constraint_name
+                     )
+                )
+           THEN 'lexical_default.config must reference lexical_languages(config)'
          WHEN to_regprocedure('proxima_core.lexical_tsv(text)') IS NULL
            THEN 'missing function proxima_core.lexical_tsv(text)'
          WHEN to_regprocedure('proxima_core.lexical_config()') IS NULL
