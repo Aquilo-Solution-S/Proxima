@@ -7,11 +7,14 @@ use uuid::Uuid;
 
 pub(super) use proxima_core::owner_hash_hex;
 
+/// Bucket-wide prefix for completed cited blobs.
+pub(super) const CANONICAL_OBJECT_PREFIX: &str = "objects/";
+
 /// Prefix under which an owner's canonical (completed) blobs live. Single
 /// source of truth for the `objects/<owner_hash>/` key space so the erase
 /// purge and the write path can never drift.
 pub(super) fn objects_owner_prefix(owner_hash: &str) -> String {
-    format!("objects/{owner_hash}/")
+    format!("{CANONICAL_OBJECT_PREFIX}{owner_hash}/")
 }
 
 /// Prefix under which an owner's in-flight (pending) uploads live.
@@ -74,6 +77,7 @@ mod tests {
         let objects = objects_owner_prefix(&owner_hash);
         let pending = pending_owner_prefix(&owner_hash);
 
+        assert_eq!(CANONICAL_OBJECT_PREFIX, "objects/");
         assert_eq!(objects, format!("objects/{owner_hash}/"));
         assert_eq!(pending, format!("pending/{owner_hash}/"));
 
