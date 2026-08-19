@@ -480,6 +480,56 @@ async fn lexical_search_matches_german_via_lexical_languages() {
 }
 
 #[tokio::test]
+async fn simple_rows_retain_stopwords_after_default_switch() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    if let Err(e) = create_db(&db_name).await {
+        panic!("PG required for tests but admin connect failed: {e}");
+    }
+    let url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&url).await?;
+        pg.run_migrations().await?;
+        let pool = pg.pool_for_tests();
+        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+
+        sqlx::query("SELECT proxima_core.set_lexical_config('simple')")
+            .execute(pool)
+            .await?;
+        let simple = seed_note(pool, owner, "Stopword", "the").await?;
+        sqlx::query("SELECT proxima_core.set_lexical_config('english')")
+            .execute(pool)
+            .await?;
+
+        let stamped_simple: bool = sqlx::query_scalar(
+            "SELECT lexical_language = 'simple'::regconfig
+               FROM proxima_core.agent_note_v1
+              WHERE t = $1",
+        )
+        .bind(simple)
+        .fetch_one(pool)
+        .await?;
+        assert!(
+            stamped_simple,
+            "the existing row must retain its simple config"
+        );
+
+        let page = pg
+            .search_memories(&search_req(owner, "the"), &[note_projection()])
+            .await?;
+        assert!(
+            page.results
+                .iter()
+                .any(|row| row.memory_id.into_inner() == simple),
+            "a simple-config row must retain stopword matches after the default becomes english"
+        );
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("simple lexical stability check failed");
+}
+
+#[tokio::test]
 async fn lexical_default_switch_stamps_only_subsequent_core_rows() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
     if let Err(e) = create_db(&db_name).await {

@@ -367,15 +367,8 @@ $$ SELECT NULLIF(concat_ws(' ', VARIADIC parts), '') $$;
 
 CREATE FUNCTION proxima_core.lexical_query_text(config regconfig, query_text text)
 RETURNS text
-LANGUAGE sql STABLE PARALLEL SAFE AS
-$$ SELECT CASE
-       WHEN config = 'simple'::regconfig THEN
-           (SELECT COALESCE(string_agg(tok, ' '), '')
-              FROM regexp_split_to_table(query_text, '\s+') AS tok
-             WHERE tok <> ''
-               AND to_tsvector(proxima_core.lexical_config(), tok) <> '')
-       ELSE query_text
-   END $$;
+LANGUAGE sql IMMUTABLE PARALLEL SAFE AS
+$$ SELECT query_text $$;
 
 CREATE AGGREGATE proxima_core.tsquery_or_agg(tsquery) (
     SFUNC = pg_catalog.tsquery_or,
