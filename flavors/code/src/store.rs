@@ -86,23 +86,6 @@ impl CodeFlavorStore {
             .await
     }
 
-    pub(crate) async fn authorized_fact_payloads_include_tombstones<P>(
-        &self,
-        engine: &proxima_core::Engine,
-        authz: &AuthzContext,
-        owner: Owner,
-        candidates: &[uuid::Uuid],
-        limit: usize,
-    ) -> Result<Vec<(MemoryId, P)>, ToolError>
-    where
-        P: FactPayload + Clone,
-    {
-        proxima::flavor::authorized_fact_payloads_include_tombstones::<P>(
-            engine, authz, owner, candidates, limit,
-        )
-        .await
-    }
-
     pub(crate) async fn authorized_abstraction_payloads<P>(
         &self,
         engine: &proxima_core::Engine,

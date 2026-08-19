@@ -199,11 +199,8 @@ async fn author_assignment(
                 operator_kind: MemoryOperatorKind::AtoP,
                 operator_id: work_assignment_operator_id(),
                 input_contract_id: work_assignment_input_contract_id(),
-                source_batch_id: None,
                 model_id: caller.model_id.as_str(),
-                prompt_version: "proxima-code/work-assignment-v1",
                 sidecar_payload: SidecarPayload::perspective(payload),
-                authoring_perspective_id: ctx.caller_self_perspective(),
                 // An assignment consumes nothing. It grounds through the
                 // references its payload carries.
                 derived_from: &[],

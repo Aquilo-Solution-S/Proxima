@@ -1,17 +1,20 @@
-use proxima_core::verbs::query::{
-    QueryCursor, QueryPage, QueryRequest, SupersessionStatus, TombstoneFilter,
-};
+use proxima_core::verbs::query::{QueryCursor, QueryPage, QueryRequest, SupersessionStatus};
 use proxima_core::{MemoryId, Owner, UserId};
 use uuid::Uuid;
 
 #[test]
-fn query_request_defaults_to_present_only() {
+fn query_request_defaults_to_heads_only_without_dead_tombstone_axis() {
     let owner = Owner::Personal(UserId::new(Uuid::now_v7()));
     let req = QueryRequest::for_owner(owner);
     assert_eq!(req.supersession, SupersessionStatus::HeadsOnly);
-    assert_eq!(req.tombstones, TombstoneFilter::PresentOnly);
+    assert!(
+        !serde_json::to_value(&req)
+            .expect("QueryRequest serializes")
+            .as_object()
+            .expect("QueryRequest serializes as an object")
+            .contains_key("tombstones")
+    );
     assert_eq!(req.page, QueryPage::default());
-    assert!(req.stateful_heads.is_empty());
     assert_eq!(req.assignment, None);
     assert_eq!(req.evidence_contains, None);
 }

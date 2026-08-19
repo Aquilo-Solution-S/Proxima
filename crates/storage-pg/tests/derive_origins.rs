@@ -5,8 +5,8 @@
 use proxima_core::storage_ports::OwnerWritePermit;
 use proxima_core::verbs::fact_ingest::FactWriteCommand;
 use proxima_core::{
-    AccessKind, DerivedEmbedding, EdgeEndpoint, EntityKind, InputContractId, MemoryOperatorKind,
-    OperatorId, OwnerRef, SchemaId, SchemaVersion, StorageError, UserId,
+    AccessKind, DerivedEmbedding, EdgeEndpoint, EntityKind, MemoryOperatorKind, OwnerRef, SchemaId,
+    SchemaVersion, StorageError, UserId,
 };
 use proxima_pg_testkit::{create_db, db_url, drop_db};
 use proxima_storage_pg::PgStorage;
@@ -48,12 +48,7 @@ fn derived_draft(
         schema_version: SchemaVersion::new(1),
         text: "derived".into(),
         operator_kind,
-        operator_id: OperatorId::new(Uuid::now_v7()),
-        input_contract_id: InputContractId::new(Uuid::now_v7()),
-        source_batch_id: None,
         model_id,
-        prompt_version: "d2",
-        authoring_perspective_id: None,
         supersedes: None,
         lexical_language: None,
         embedding: DerivedEmbedding::None,

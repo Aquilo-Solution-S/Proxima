@@ -193,7 +193,6 @@ impl Tool for CodeEmitExecutionPlanTool {
             let plan_outcome = append_execution_plan(
                 &mut uow,
                 &ctx,
-                planner_root,
                 plan_source_memory_id,
                 &plan_key,
                 &plan_summary,

@@ -12,9 +12,9 @@ use super::{execution_plan_input_contract_id, execution_plan_operator_id};
 #[derive(Debug)]
 pub(super) struct PlanAppendOutcome {
     pub(super) memory_id: MemoryId,
-    /// Index rows the plan write asserted: one `origin` to the Abstraction
-    /// it was derived from, plus one `reference` per target its payload
-    /// names. A count, not handles — an edge has no id.
+    /// Pins the plan write declared: one `origin` to the Abstraction it
+    /// was derived from, plus one `ref` per target its payload names. A
+    /// count, not handles — a pin is a column value, not a row with an id.
     pub(super) edge_count: usize,
     pub(super) idempotent_replay: bool,
 }
@@ -68,7 +68,6 @@ pub(super) fn execution_plan_memory_id(
 pub(super) async fn append_execution_plan(
     uow: &mut UnitOfWork<'_>,
     ctx: &ToolCtx,
-    planner_root: MemoryId,
     plan_source_memory_id: MemoryId,
     plan_key: &str,
     plan_summary: &str,
@@ -102,11 +101,8 @@ pub(super) async fn append_execution_plan(
             operator_kind: MemoryOperatorKind::AtoA,
             operator_id: execution_plan_operator_id(),
             input_contract_id: execution_plan_input_contract_id(),
-            source_batch_id: None,
             model_id: caller.model_id.as_str(),
-            prompt_version: "proxima-code/emit_execution_plan-v1",
             sidecar_payload: SidecarPayload::abstraction(payload.clone()),
-            authoring_perspective_id: Some(planner_root),
             derived_from: &origins,
             extra_refs: &[],
             supersedes: None,

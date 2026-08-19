@@ -115,7 +115,7 @@ impl Tool for CodeOpenFileRevisionTool {
                 .readable_file_revision_head_ts(ctx.owner(), repo_id, &args.file_path)
                 .await?;
             let revision_with_id = pool
-                .authorized_fact_payloads_include_tombstones::<FileRevisionV1>(
+                .authorized_fact_payloads::<FileRevisionV1>(
                     &engine,
                     ctx.authz(),
                     ctx.owner(),

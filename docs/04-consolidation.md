@@ -48,7 +48,7 @@ Operator rules:
 | F->A | `2^F x Pi -> A` | Facts become one typed Abstraction. |
 | A->A | `2^A x Pi -> A` | Abstractions become one typed Abstraction. |
 | A->P | `2^A x Pi -> P` | Abstractions become one typed Perspective. |
-| A->Goal | `2^A x Pi -> Goal` | Abstractions may propose or supersede Goals. |
+| A->Goal | `2^A x Pi -> Goal` | Abstractions may propose or advance Goals. |
 
 `Pi` = active Perspective context plus registered flavor behavior.
 
@@ -85,8 +85,9 @@ Prompts live with the flavor operators that use them.
 | Flavor | prompt text, operator code, retrieval policy, write allow-list |
 | Runtime config | host-injected embedding client (retrieval), Postgres connection |
 
-Core stores prompt version references on outputs. Core does not ship
-domain prompts and does not accept runtime prompt registration.
+Core does not persist universal prompt/operator/model columns on Memory.
+Schema-specific recipe metadata may live in typed Content. Core does not ship
+domain prompts or accept runtime prompt registration.
 
 ## Execution model and isolation
 
@@ -99,7 +100,7 @@ Goal-owned wake config:
 
 | Carrier | Key | Function |
 |---|---|---|
-| `Goal.wake` side table | `(Owner, goal_id)` | trigger selector, prompt, hard-memory context, canonical tool/action allow-list |
+| `wake_config` | `wake_id` referenced by Goal versions | trigger selector, prompt, hard-memory context, canonical tool/action allow-list |
 
 Harness wake loop (driven externally, served by core pull verbs):
 
@@ -115,7 +116,7 @@ Harness wake loop (driven externally, served by core pull verbs):
 6. Execute externally; core does not run a scheduler, plugin host, or tool executor.
 7. Validate every write through the schema registry.
 8. Commit output rows and emitted `announce` rows atomically; the Goal
-   records its wake evidence in `goals.evidence_memory_ids`, from which the
+   records its wake evidence in `Goal.evidence_t`, from which the
    `reference` entries are derived in that same transaction.
 9. Advance the harness cursor after consideration, independent of output count.
 
@@ -136,9 +137,9 @@ Operators write ordinary typed entities only:
 
 | Output | Required |
 |---|---|
-| Abstraction | memory row, typed sidecar, text, operator provenance |
-| Perspective | memory row, typed sidecar, text, operator provenance |
-| Goal | goal row, typed sidecar, authorship, optional supersession |
+| Abstraction | Memory version, typed Content, declared `origins` |
+| Perspective | Memory version, typed Content, declared `origins` / `refs` |
+| Goal | Goal version, typed sidecar, topology columns, optional `write_act_t` |
 
 Edges are not in that table because operators do not write them. They follow
 from what the nodes above declare: `derived_from` on the write, reference
@@ -162,26 +163,27 @@ Idempotence keys:
 | Fact ingest | `receipt_id` |
 | GoalWrite | client `request_id` |
 
-Reproducibility metadata:
+Persisted derivation evidence:
 
-| Row | Columns |
+| Entity | Evidence |
 |---|---|
-| Abstraction / Perspective | operator kind, model id, prompt version, declared input/provenance context |
-| Goal | authorship, schema id/version, supersession lineage |
+| Abstraction / Perspective | declared input `t`s in `origins`; schema-specific recipe metadata may live in typed Content |
+| Goal | `request_id`, version order on one `handle`, topology pins, optional write-act Fact in `write_act_t` |
 
-Bibliographic citation is Fact ∪ Abstraction (see 11). Operator reproducibility
-is inline provenance, not citation.
+The operator id, input contract, and model binding are admission/embedding
+inputs, not universal Memory columns. The invocation manifest validates the
+declared origins before admission. Bibliographic citation is Fact ∪
+Abstraction (see 11), not operator provenance.
 
-Retries append only through the same idempotency boundary. A changed prompt,
-model binding, operator version, Perspective context, or input contract is a
-new derivation, not mutation of the old row.
+Retries use the same idempotency boundary. A changed recipe, context, or input
+set is a new `t`, not mutation of the old row.
 
 ## Invariants
 
 - F/A/P layering and edge direction: 02 §The Directionality Rule; the model
   itself: 16.
 - Typed A/P sidecars: 03 §Sidecar tables.
-- Append-only identity and supersession: 07 §Append-only.
+- Append-only identity and head advancement: 07 §Append-only.
 - Build-time schemas, prompts, tools: 08 §Registration mechanism.
 - Bibliographic citation on Fact and Abstraction: 11 §Three-layer model.
 - Source-batch lifecycle is core; domain metadata is citation-sidecar data.

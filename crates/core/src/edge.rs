@@ -14,10 +14,12 @@
 //!   writer chooses. `Origin` is what a derivation declaration produces;
 //!   `Reference` is what a schema-declared reference field produces. No
 //!   public API takes an `EdgeKind` from a caller.
-//! - **The row is its own identity.** There is no edge id. The primary
-//!   key is `(source, target, kind)`, so replaying a write re-asserts the
-//!   same row and idempotency is structural rather than derived from a
-//!   content hash.
+//! - **The pin is its own identity.** There is no edge row and no edge
+//!   id: a pin is a `MemoryId` in the source row's `origins` or `refs`
+//!   column, so replaying a write re-asserts the same column values and
+//!   idempotency is structural rather than derived from a content hash.
+//!   The [`Edge`] / [`EdgeKind`] types below are the read-side
+//!   projection of those columns, not a table.
 
 use crate::change_event::EntityRef;
 use crate::{EntityKind, GoalId, MemoryId};
@@ -27,11 +29,7 @@ use crate::{EntityKind, GoalId, MemoryId};
 /// seems to need a third kind fails the node-home test (docs/16 §The
 /// Thesis) and is missing a node, not a kind.
 ///
-/// Discriminator values match the SQL enum `proxima_core.edge_kind`.
-#[derive(
-    Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, sqlx::Type,
-)]
-#[sqlx(type_name = "proxima_core.edge_kind", rename_all = "lowercase")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum EdgeKind {
     /// A memory declares what it was made from. Written only by a node

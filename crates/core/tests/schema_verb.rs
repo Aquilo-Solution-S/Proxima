@@ -96,8 +96,11 @@ fn schema_response_lists_the_frozen_registry() {
     assert_eq!(actual, expected);
 }
 
+/// Every registered version of a stateful Fact schema carries its own
+/// sidecar table and natural-key columns. Storage reads them at ingest to
+/// pick the series `handle`; there is no separate per-query filter list.
 #[test]
-fn stateful_filters_for_schema_returns_all_versions() {
+fn every_stateful_fact_schema_version_registers_its_natural_key() {
     let schema_id = SchemaId::new("test/stateful".into());
     let mut registry = FlavorRegistry::new();
     registry
@@ -111,18 +114,28 @@ fn stateful_filters_for_schema_returns_all_versions() {
         .expect("stateless registration");
     let registry = registry.try_freeze().expect("typed test schemas freeze");
 
-    let filters = registry.stateful_filters_for_schema(&schema_id);
-    let versions = filters
+    let stateful = registry
+        .list()
+        .into_iter()
+        .filter(|info| info.schema_id == schema_id && info.kind == PayloadKind::Fact)
+        .collect::<Vec<_>>();
+    let versions = stateful
         .iter()
-        .map(|filter| filter.schema_version.into_inner())
+        .map(|info| info.schema_version.into_inner())
         .collect::<Vec<_>>();
     assert_eq!(versions, vec![1, 2]);
     assert_eq!(
-        filters
+        stateful
             .iter()
-            .map(|filter| filter.sidecar_table.as_str())
+            .map(|info| info.sidecar_table.as_deref().expect("sidecar table"))
             .collect::<Vec<_>>(),
         vec!["test_schema.stateful_v1", "test_schema.stateful_v2"],
+    );
+    assert!(
+        stateful
+            .iter()
+            .all(|info| !info.natural_key_columns.is_empty()),
+        "every stateful version must declare its natural key"
     );
     assert_eq!(
         registry

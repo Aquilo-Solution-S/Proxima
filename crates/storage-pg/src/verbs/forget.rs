@@ -885,40 +885,6 @@ pub(crate) async fn sync_memory_head(
     Ok(())
 }
 
-/// Same as [`sync_memory_head`] for `goal` / `goal_head`.
-/// Owner-erase uses set SQL; this is the single-handle form.
-#[allow(dead_code)]
-pub(crate) async fn sync_goal_head(
-    tx: &mut Transaction<'_, Postgres>,
-    handle: Uuid,
-) -> Result<(), StorageError> {
-    let remaining: Option<Uuid> = sqlx::query_scalar(
-        "SELECT t FROM proxima_core.goal WHERE handle = $1 ORDER BY t DESC LIMIT 1",
-    )
-    .bind(handle)
-    .fetch_optional(tx.as_mut())
-    .await
-    .map_err(map_err)?;
-    match remaining {
-        Some(t) => {
-            sqlx::query("UPDATE proxima_core.goal_head SET t = $2 WHERE handle = $1")
-                .bind(handle)
-                .bind(t)
-                .execute(tx.as_mut())
-                .await
-                .map_err(map_err)?;
-        }
-        None => {
-            sqlx::query("DELETE FROM proxima_core.goal_head WHERE handle = $1")
-                .bind(handle)
-                .execute(tx.as_mut())
-                .await
-                .map_err(map_err)?;
-        }
-    }
-    Ok(())
-}
-
 async fn ensure_memory_head(
     tx: &mut Transaction<'_, Postgres>,
     rec: &ColdRecord,

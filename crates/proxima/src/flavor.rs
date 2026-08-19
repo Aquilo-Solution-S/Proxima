@@ -82,9 +82,9 @@ pub use proxima_core::verbs::query::{
 /// override without it. The in-tree precedent (`flavors/code`'s
 /// `FileRevisionV1`) reaches it through a direct `proxima-core` dependency
 /// an out-of-tree flavor does not have. Without the override a schema can
-/// still declare `natural_key_columns`, but storage has no discriminator
-/// for `PresentOnly` queries, so a deleted entity stays a live head
-/// forever.
+/// still declare `natural_key_columns`, but registry consumers cannot
+/// identify which hot-head payload value represents a deletion observation.
+/// Core Query does not filter tombstone heads.
 pub use proxima_core::{
     AbstractionPayload, CapabilitySet, CitationMappingPayload, CitedObjectPayload,
     DelegatedAuthorityError, DelegatedAuthorityService, DelegatedCommand, DelegatedPhase,
@@ -187,6 +187,5 @@ pub use proxima_storage_pg::{
 
 mod authorized_read;
 pub use authorized_read::{
-    authorized_abstraction_payloads, authorized_fact_payloads,
-    authorized_fact_payloads_include_tombstones, authorized_memory_ids,
+    authorized_abstraction_payloads, authorized_fact_payloads, authorized_memory_ids,
 };

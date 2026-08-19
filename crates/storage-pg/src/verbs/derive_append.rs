@@ -5,8 +5,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use proxima_core::storage_ports::OwnerWritePermit;
 use proxima_core::{
-    DerivedEmbedding, EdgeEndpoint, EntityKind, InputContractId, MemoryId, MemoryOperatorKind,
-    OperatorId, Owner, OwnerRefKind, SchemaId, SchemaVersion, SourceBatchId, StorageError,
+    DerivedEmbedding, EdgeEndpoint, EntityKind, MemoryId, MemoryOperatorKind, Owner, OwnerRefKind,
+    SchemaId, SchemaVersion, StorageError,
 };
 use sqlx::{Postgres, Transaction};
 
@@ -24,18 +24,11 @@ pub struct DerivedDraft<'a> {
     pub schema_version: SchemaVersion,
     pub text: String,
     pub operator_kind: MemoryOperatorKind,
-    pub operator_id: OperatorId,
-    pub input_contract_id: InputContractId,
-    pub source_batch_id: Option<SourceBatchId>,
     pub model_id: &'a str,
-    pub prompt_version: &'a str,
-    /// Perspective that emitted this memory. A column on the row, because
-    /// "emitted by P" is known at write time and answered by the node.
-    pub authoring_perspective_id: Option<MemoryId>,
-    /// Prior head this row revises. Storage stamps `supersedes` here and
-    /// `superseded_by` on the prior row, in this transaction, and writes
-    /// no edge: supersession is the same thing persisting, not a
-    /// connection between two things.
+    /// Prior `t` this write revises. Resolved to its `handle` in this
+    /// transaction so the write lands as a later `t` on the same series —
+    /// that later `t` *is* the supersession. No column records it and no
+    /// edge is written. `None` mints a new series.
     pub supersedes: Option<MemoryId>,
     /// Resolved text-search configuration name; `None` applies the
     /// database default (`proxima_core.lexical_config()`).

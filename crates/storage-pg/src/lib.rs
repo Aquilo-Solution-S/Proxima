@@ -32,7 +32,6 @@ use crate::pgvector::set_hnsw_search_sql;
 
 #[doc(hidden)]
 pub mod access;
-mod authorship;
 mod change_event;
 mod delegated_authority;
 mod error;

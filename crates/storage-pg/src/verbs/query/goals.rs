@@ -84,10 +84,9 @@ fn goal_page_sql(req: &QueryRequest, has_schema_filter: bool) -> String {
     let mut sql = format!(
         "SELECT g.handle, g.t AS goal_id, \
                 COALESCE(uuid_extract_timestamp(g.t), TIMESTAMPTZ '1970-01-01') AS created_at, \
-                h.schema_id, 1::int4 AS schema_version, \
+                h.schema_id, \
                 o.kind::text::proxima_core.owner_kind AS owner_kind, \
-                g.owner_id, g.title, ''::text AS text, g.state, \
-                NULL::uuid AS supersedes, ''::bytea AS payload, \
+                g.owner_id, g.title, g.state, \
                 g.dependency_t AS dependency_goal_ids, \
                 g.assignment_t AS assignment, \
                 g.evidence_t AS evidence \

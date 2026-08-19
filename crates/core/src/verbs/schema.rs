@@ -69,10 +69,12 @@ pub struct SchemaInfo {
     /// citation schemas.
     pub sidecar_table: Option<String>,
     /// Natural-key columns for stateful Fact schemas (docs/03 §Stateful
-    /// Fact schemas). Empty for stateless / non-Fact schemas. Drives the
-    /// head-by-natural-key SQL emission in `Query` heads-only mode.
+    /// Fact schemas). Empty for stateless / non-Fact schemas. Decides
+    /// which series `handle` an ingest lands on, which is what makes
+    /// heads-only `Query` return one row per key.
     pub natural_key_columns: Vec<String>,
-    /// Build-time tombstone discriminator for stateful Fact schemas.
+    /// Build-time catalog discriminator for stateful Fact deletion
+    /// observations. Query still returns the hot head.
     pub tombstone: Option<SchemaTombstone>,
     /// Typed/opaque discriminant. The frozen registry owns the actual
     /// process-local protocol-ingress function pointers.
@@ -503,47 +505,6 @@ impl FlavorRegistryFrozen {
             version.into_inner(),
             kind,
         ))
-    }
-
-    #[must_use]
-    pub fn stateful_filters_for_schema(
-        &self,
-        schema_id: &SchemaId,
-    ) -> Vec<crate::verbs::query::StatefulHeadsFilter> {
-        self.schemas
-            .iter()
-            .filter(|s| {
-                s.schema_id == *schema_id
-                    && s.kind == PayloadKind::Fact
-                    && !s.natural_key_columns.is_empty()
-            })
-            .filter_map(|info| {
-                Some(crate::verbs::query::StatefulHeadsFilter {
-                    schema_id: info.schema_id.clone(),
-                    schema_version: info.schema_version,
-                    sidecar_table: info.sidecar_table.clone()?,
-                    natural_key_columns: info.natural_key_columns.clone(),
-                    tombstone: info.tombstone.clone(),
-                })
-            })
-            .collect()
-    }
-
-    #[must_use]
-    pub fn stateful_filters(&self) -> Vec<crate::verbs::query::StatefulHeadsFilter> {
-        self.schemas
-            .iter()
-            .filter(|s| s.kind == PayloadKind::Fact && !s.natural_key_columns.is_empty())
-            .filter_map(|info| {
-                Some(crate::verbs::query::StatefulHeadsFilter {
-                    schema_id: info.schema_id.clone(),
-                    schema_version: info.schema_version,
-                    sidecar_table: info.sidecar_table.clone()?,
-                    natural_key_columns: info.natural_key_columns.clone(),
-                    tombstone: info.tombstone.clone(),
-                })
-            })
-            .collect()
     }
 
     #[must_use]

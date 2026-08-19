@@ -14,8 +14,7 @@ use crate::{
     PayloadReference, PerspectivePayload,
 };
 use crate::{
-    EntityKind, InputContractId, MemoryId, MemoryOperatorKind, OperatorId, Owner, SchemaId,
-    SchemaVersion, SourceBatchId,
+    EntityKind, MemoryId, MemoryOperatorKind, Owner, SchemaId, SchemaVersion, SourceBatchId,
 };
 
 #[derive(Debug, Clone, thiserror::Error)]
@@ -367,37 +366,29 @@ pub struct AuthorDerivedRequest<'a> {
     pub schema_id: SchemaId,
     pub schema_version: SchemaVersion,
     pub operator_kind: MemoryOperatorKind,
-    pub operator_id: OperatorId,
-    pub input_contract_id: InputContractId,
-    pub source_batch_id: Option<SourceBatchId>,
     pub model_id: &'a str,
-    pub prompt_version: &'a str,
     pub sidecar_payload: SidecarPayload,
-    /// Perspective that emitted this memory, when one did. Node
-    /// metadata, known at write time: storage stamps it on the memory
-    /// row. Authorship is not a connection between two things, so it is
-    /// not an edge (docs/16 §The Model).
-    pub authoring_perspective_id: Option<MemoryId>,
-    /// Prior A/P memory this one revises. Supersession is the same thing
-    /// persisting through revision, not a connection between two things:
-    /// storage records the lineage pointer on the rows themselves — the
-    /// prior row's `superseded_by` and this row's `supersedes` — in the
-    /// same transaction, and writes NO edge.
+    /// Prior `t` of the series this write revises. Supersession is a
+    /// later `t` on the same `handle`, not a column: storage resolves the
+    /// prior row's `handle` and appends this write to that series, so
+    /// there is no lineage pointer and no edge. `None` mints a new
+    /// series.
     pub supersedes: Option<MemoryId>,
     /// Resolved text-search configuration name to stamp on the row;
     /// `None` applies the database default. Storage verifies the name
     /// against the catalog inside the write transaction.
     pub lexical_language: Option<&'a str>,
     pub embedding: DerivedEmbedding<'a>,
-    /// What this memory was made from. Storage writes one
-    /// [`crate::EdgeKind::Origin`] index row per entry, sourced at this
-    /// memory, in the same transaction as the row — the kind is a
-    /// consequence of the declaration, never a parameter.
+    /// What this memory was made from. Storage stores the entries in the
+    /// row's own `origins` pin column, in the same transaction as the
+    /// row — the [`crate::EdgeKind::Origin`] reading is a consequence of
+    /// which column they land in, never a parameter.
     pub origins: &'a [EdgeEndpoint],
     /// Nodes this memory's payload points at, read off its
-    /// schema-declared reference fields by the engine. Storage writes one
-    /// [`crate::EdgeKind::Reference`] index row per entry, sourced at
-    /// this memory, in the same transaction as the row.
+    /// schema-declared reference fields by the engine. Storage stores
+    /// them in the row's own `refs` pin column, in the same transaction
+    /// as the row, which is what makes them
+    /// [`crate::EdgeKind::Reference`] pins.
     pub references: &'a [EdgeEndpoint],
 }
 
@@ -405,9 +396,9 @@ pub struct AuthorDerivedRequest<'a> {
 pub struct AuthorDerivedOutcome {
     pub memory_id: MemoryId,
     pub idempotent_replay: bool,
-    /// Index rows this write asserted. Structural idempotency makes this
-    /// a count, not a list of ids: replaying the write re-asserts the
-    /// same primary keys, and there are no edge ids to hand back.
+    /// Pins this write declared (`origins` + `refs`). A count, not a
+    /// list: pins live in the row's own columns, so replaying the write
+    /// re-asserts the same values and there is no pin id to hand back.
     pub edge_count: usize,
     /// The memory landed without a vector and carries a pending embedding
     /// job instead ([`DerivedEmbedding::Deferred`]). Until a drain runs, the

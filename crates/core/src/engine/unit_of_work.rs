@@ -11,9 +11,8 @@ use crate::verbs::fact_ingest::{CitationSpec, FactIngestOutcome, FactWriteComman
 use crate::verbs::goal_write::{CreateGoalAtomicRequest, GoalDraft, GoalWriteOutcome};
 use crate::verbs::query::SidecarAtom;
 use crate::{
-    AuthorDerivedAuthorizedOutcome, AuthorDerivedRequestInput, EntityKind, FactPayload,
-    InputContractId, MemoryId, MemoryOperatorKind, OperatorId, Owner, SchemaId, SchemaVersion,
-    SidecarPayload, SourceBatchId,
+    AuthorDerivedAuthorizedOutcome, AuthorDerivedRequestInput, EntityKind, FactPayload, MemoryId,
+    MemoryOperatorKind, Owner, SchemaId, SchemaVersion, SidecarPayload, SourceBatchId,
 };
 
 /// Owned embedding so a prepared batch can outlive the client borrow
@@ -46,13 +45,8 @@ struct PreparedDerived {
     schema_id: SchemaId,
     schema_version: SchemaVersion,
     operator_kind: MemoryOperatorKind,
-    operator_id: OperatorId,
-    input_contract_id: InputContractId,
-    source_batch_id: Option<SourceBatchId>,
     model_id: String,
-    prompt_version: String,
     sidecar_payload: SidecarPayload,
-    authoring_perspective_id: Option<MemoryId>,
     supersedes: Option<MemoryId>,
     lexical_language: Option<String>,
     embedding: PreparedEmbedding,
@@ -504,13 +498,8 @@ impl UnitOfWork<'_> {
             schema_id: req.schema_id,
             schema_version: req.schema_version,
             operator_kind: req.operator_kind,
-            operator_id: req.operator_id,
-            input_contract_id: req.input_contract_id,
-            source_batch_id: req.source_batch_id,
             model_id: req.model_id.to_owned(),
-            prompt_version: req.prompt_version.to_owned(),
             sidecar_payload: req.sidecar_payload,
-            authoring_perspective_id: req.authoring_perspective_id,
             supersedes: req.supersedes,
             lexical_language: req.lexical_language.map(ToOwned::to_owned),
             embedding,
@@ -563,13 +552,8 @@ impl UnitOfWork<'_> {
             schema_id: item.schema_id,
             schema_version: item.schema_version,
             operator_kind: item.operator_kind,
-            operator_id: item.operator_id,
-            input_contract_id: item.input_contract_id,
-            source_batch_id: item.source_batch_id,
             model_id: &item.model_id,
-            prompt_version: &item.prompt_version,
             sidecar_payload: item.sidecar_payload,
-            authoring_perspective_id: item.authoring_perspective_id,
             supersedes: item.supersedes,
             lexical_language: item.lexical_language.as_deref(),
             embedding,

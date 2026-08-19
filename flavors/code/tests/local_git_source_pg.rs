@@ -190,7 +190,6 @@ async fn local_git_source_full_cycle() {
                 <CodeChunkV1 as AbstractionPayload>::SCHEMA_ID.into(),
             )),
             supersession: SupersessionStatus::HeadsOnly,
-            tombstones: proxima_core::verbs::query::TombstoneFilter::PresentOnly,
             goal_state: None,
             assignment: None,
             evidence_contains: None,
@@ -199,7 +198,6 @@ async fn local_git_source_full_cycle() {
             include_payloads: true,
             memory_ids: Vec::new(),
             goal_ids: Vec::new(),
-            stateful_heads: Vec::new(),
         };
         let resp = engine
             .query(
@@ -263,7 +261,6 @@ async fn local_git_source_full_cycle() {
             entity_kind: None,
             schema_id: Some(SchemaId::new(FileRevisionV1::SCHEMA_ID.into())),
             supersession: SupersessionStatus::IncludeSuperseded,
-            tombstones: proxima_core::verbs::query::TombstoneFilter::PresentOnly,
             goal_state: None,
             assignment: None,
             evidence_contains: None,
@@ -272,7 +269,6 @@ async fn local_git_source_full_cycle() {
             include_payloads: true,
             memory_ids: Vec::new(),
             goal_ids: Vec::new(),
-            stateful_heads: Vec::new(),
         };
         let resp_all = engine
             .query(

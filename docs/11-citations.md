@@ -335,25 +335,23 @@ its CitedObject — the engine checks they match).
 
 ## Edges do not cite
 
-An edge has no citation, and no column that could hold one: it is
-`(source, target, kind, owner, created_at)` and nothing else. There is no
-authorship column either — who reasoned is answered by the node that owns the
-statement (its `authoring_perspective_id` and operator columns), not by the
-index row that follows from it.
+An edge has no citation, and nowhere that could hold one: it is a pin in the
+source row's `origins` / `refs` column and nothing else. There is no
+authorship column either — who reasoned is answered by the write-act Fact that
+produced the statement, not by the pin that follows from it.
 
 Anything you'd want a "citation" to express on an edge is already encoded by
 the citing memory's own citation chain. An edge that seemed to need a
 citation is a node that has not been written yet.
 
-## Operator-invocation provenance lives on the Memory row
+## Operator-invocation provenance is not a citation
 
-Bibliographic citation is artefact-only. The reproducibility metadata
-for an operator-derived memory — `(operator_kind, model_id,
-prompt_version)` plus the declared inputs its `origin` entries index — are
-inline columns, NULL for Facts where not applicable and present for A/P.
-There is no
-separate `citations` table for them; the F→A / A→P invocation key
-(see [04 §Idempotence and reproducibility](04-consolidation.md#idempotence-and-reproducibility)) is built from those columns directly.
+Bibliographic citation is artefact-only. Declared inputs for an
+operator-derived Memory live in `origins`; schema-specific recipe metadata may
+live in typed Content. Operator id, input contract, and embedding model are not
+universal Memory columns. There is no operator/invocation table; the invocation
+manifest validates the declared inputs before admission (see
+[04 §Idempotence and reproducibility](04-consolidation.md#idempotence-and-reproducibility)).
 
 ## What this does not include
 

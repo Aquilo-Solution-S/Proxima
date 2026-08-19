@@ -7,8 +7,8 @@ Owned here:
 | Family | Entity row | Sidecar key | Text rule |
 |---|---|---|---|
 | `FactPayload` | `proxima_core.memory` | `t` | no stored `text`; render on demand |
-| `AbstractionPayload` | `proxima_core.memory` | `t` | operator-authored `text` required |
-| `PerspectivePayload` | `proxima_core.memory` | `t` | operator-authored `text` required |
+| `AbstractionPayload` | `proxima_core.memory` | `t` | typed Content required; authoring text feeds embedding/search, not Memory |
+| `PerspectivePayload` | `proxima_core.memory` | `t` | typed Content required; authoring text feeds embedding/search, not Memory |
 
 There is no edge payload family and no edge table. Pins are
 `memory.origins` / `memory.refs` (see [16](16-edges.md)); a payload's
@@ -130,17 +130,18 @@ nullable. They are still typed schema fields, not an escape hatch.
 
 ### `AbstractionPayload` and `PerspectivePayload`
 
-A/P schema = typed scaffolding beside immutable operator-authored text.
+A/P schema = durable typed Content. The authoring request's text is an
+embedding/search input, not a Memory column.
 
 Rules:
 
 | Rule | Consequence |
 |---|---|
-| `Memory.text` required | narrative, rationale, hedging live there |
+| no `Memory.text` | durable narrative/rationale fields belong to typed Content |
 | sidecar row required | every A/P has a queryable payload |
-| no `render()` | text is authored, not derived |
+| no `render()` | search/body projections come from typed sidecar fields |
 | no `extra: json` / map escape hatch | fields worth querying become real typed fields |
-| selective structure | fields not worth querying stay in `text` |
+| explicit structure | durable fields remain schema-owned and typed |
 
 Nullable A/P fields are allowed when null is part of the domain model
 (`repo_id = NULL` for global code perspective, optional idempotency key,
@@ -305,15 +306,15 @@ Rules:
 | no Fact `supersedes` | current state is not lineage |
 | head query orders by memory creation/observation time | latest row per natural key |
 | tombstone is a Fact under the same schema/key | deletion is observed state |
-| `PresentOnly` hides tombstone heads | does not revive older present rows |
+| Query returns the tombstone head | deletion state is not a core filtering axis |
 
 Schema metadata:
 
 | Field | Meaning |
 |---|---|
 | `natural_key_columns` | sidecar columns grouped for heads-only queries |
-| `tombstone.column` | sidecar discriminator column |
-| `tombstone.value` | discriminator value treated as absent head |
+| `tombstone.column` | cataloged sidecar discriminator column |
+| `tombstone.value` | value identifying a deletion-observation head |
 
 Stateless Fact schemas leave `natural_key_columns` empty.
 
@@ -353,7 +354,8 @@ Lookup:
   -> join by memory_id
 ```
 
-For A/P, schema migration never rewrites `Memory.text`.
+For A/P, no `Memory.text` exists to migrate; schema evolution changes typed
+sidecar representation without changing the admitted Memory `t`.
 
 For Facts, schema migration never rewrites Fact `MemoryId`, optional receipt
 metadata, or citation mapping.
@@ -442,7 +444,7 @@ Migration keeps:
 |---|---|
 | entity id | yes |
 | event id / citation | yes |
-| A/P text | yes |
+| admitted Memory `t` and pins | yes |
 | `origin` provenance entries | yes |
 | active query shape | yes |
 
@@ -461,7 +463,9 @@ Rules:
 | not stored | no Fact `text` column value |
 | prompt/UI/debug only | not identity |
 
-No renderer for A/P. Their `Memory.text` is the authored text view.
+No renderer for A/P. Durable body/search fields come from typed sidecars;
+authoring text feeds embedding/search projections without becoming a Memory
+column.
 
 No "dream renderer." Dream/wake passes write new Abstractions,
 Perspectives, or Goals through flavor-declared operators; the index entries
@@ -486,7 +490,7 @@ follow from what those nodes declare (see
 | semantic truth validation | operators / sources |
 | access control | owner scoping and protocol guards |
 | runtime schema registration | forbidden by 08 |
-| replacing A/P text | forbidden by 02 |
+| untyped A/P body escape hatch | forbidden by 02 / this registry contract |
 | authoritative causal chains | query only; see [02 §Causal chain query](02-memory.md#causal-chain-query) |
 | embedding storage | independent vector store; see [07](07-storage.md#vector-store--independent) |
 

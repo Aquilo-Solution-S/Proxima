@@ -257,11 +257,9 @@ fn flavor_sdk_exposes_mcp_tool_authoring_surface() {
     )> = None;
 }
 
-/// A stateful Fact declared through the SDK alone: a head per natural key,
-/// plus the discriminator that tells storage which observation means
-/// "gone". Both halves are needed — `natural_key_columns` without
-/// `tombstone` leaves a deleted entity as a live head forever, because
-/// `PresentOnly` has nothing to filter on.
+/// A stateful Fact declared through the SDK alone: one hot head per natural
+/// key, plus catalog metadata identifying which payload value means "gone".
+/// Query still returns that deletion-observation head.
 #[derive(serde::Serialize, serde::Deserialize)]
 struct TierStatefulFact {
     slot: String,
@@ -306,7 +304,7 @@ fn flavor_sdk_exposes_the_stateful_fact_tombstone() {
 
     // Naming the override's return type is the load-bearing half: without
     // `FactTombstone` on the facade the signature above is unspellable, and
-    // an out-of-tree flavor cannot declare a stateful Fact schema at all.
+    // an out-of-tree flavor cannot expose its deletion discriminator.
     let tombstone: Option<FactTombstone> = <TierStatefulFact as FactPayload>::tombstone();
     let tombstone = tombstone.expect("the schema declares a tombstone discriminator");
     assert_eq!(tombstone.column, "state");
@@ -496,13 +494,10 @@ fn flavor_sdk_exposes_the_derived_memory_write_lane() {
         operator_kind: MemoryOperatorKind::FtoA,
         operator_id: OperatorId::new(uuid::Uuid::nil()),
         input_contract_id: InputContractId::new(uuid::Uuid::nil()),
-        source_batch_id: None,
         model_id: "tier-test",
-        prompt_version: "1",
         sidecar_payload: SidecarPayload::abstraction(TierAbstraction {
             note: "sidecar".to_owned(),
         }),
-        authoring_perspective_id: None,
         derived_from: &derived_from,
         extra_refs: &[],
         supersedes: None,

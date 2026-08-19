@@ -177,7 +177,6 @@ async fn self_ingestion_streams_proxima_main() {
                     entity_kind: Some(proxima_core::verbs::query::EntityKind::Fact),
                     schema_id: Some(commit_schema.clone()),
                     supersession: proxima_core::verbs::query::SupersessionStatus::IncludeSuperseded,
-                    tombstones: proxima_core::verbs::query::TombstoneFilter::PresentOnly,
                     goal_state: None,
                     assignment: None,
                     evidence_contains: None,
@@ -186,7 +185,6 @@ async fn self_ingestion_streams_proxima_main() {
                     include_payloads: true,
                     memory_ids: Vec::new(),
                     goal_ids: Vec::new(),
-                    stateful_heads: Vec::new(),
                 },
             )
             .await?;
@@ -235,7 +233,6 @@ async fn self_ingestion_streams_proxima_main() {
                     entity_kind: Some(proxima_core::verbs::query::EntityKind::Fact),
                     schema_id: None,
                     supersession: proxima_core::verbs::query::SupersessionStatus::IncludeSuperseded,
-                    tombstones: proxima_core::verbs::query::TombstoneFilter::PresentOnly,
                     goal_state: None,
                     assignment: None,
                     evidence_contains: None,
@@ -244,7 +241,6 @@ async fn self_ingestion_streams_proxima_main() {
                     include_payloads: true,
                     memory_ids: Vec::new(),
                     goal_ids: Vec::new(),
-                    stateful_heads: Vec::new(),
                 },
             )
             .await?;
