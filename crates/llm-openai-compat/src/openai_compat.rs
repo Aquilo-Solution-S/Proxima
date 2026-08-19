@@ -137,8 +137,9 @@ struct OpenAiEmbeddingDatum {
 /// Only statuses that unambiguously identify the submitted entity as the
 /// rejected cause are permanent. 400 is deliberately ambiguous: compatible
 /// endpoints use it for input limits, malformed requests, authentication,
-/// routing, and provider failures alike. The liveness probe at the drain
-/// boundary handles that ambiguity without fencing a repairable job forever.
+/// routing, and provider failures alike. Liveness probes at the drain and
+/// per-item rescue boundaries handle that ambiguity without fencing a
+/// repairable job forever.
 /// Every other non-success status remains retryable, including auth, routing,
 /// policy, and server responses.
 ///

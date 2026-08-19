@@ -835,12 +835,12 @@ impl Engine {
     ///   jobs back to `pending` without burning retry attempts — a provider
     ///   outage is not evidence against any individual job — and ends the
     ///   drain call;
-    /// - a *permanent* batch rejection ([`LlmError::EmbedPermanent`])
-    ///   re-embeds the batch one text at a time to isolate the poison
-    ///   input(s); an over-limit input is rescued by bisecting it into
-    ///   chunked embeddings (full coverage), jobs rejected at every length go
-    ///   terminal instead of cycling reject-retry forever, and their
-    ///   batch-mates still embed.
+    /// - a batch failure whose liveness probe succeeds re-embeds the batch one
+    ///   text at a time to isolate the content-attributed input(s); an
+    ///   over-limit input is rescued by bisecting it into chunked embeddings
+    ///   (full coverage), jobs rejected at every length go terminal instead of
+    ///   cycling reject-retry forever, and their batch-mates still embed;
+    ///   when the probe fails, all jobs remain retryable.
     ///
     /// # Errors
     ///
@@ -1045,11 +1045,12 @@ impl Engine {
         Ok(true)
     }
 
-    /// Per-item fallback after a permanent batch rejection: isolate which
+    /// Per-item fallback after a live-provider batch rejection: isolate which
     /// inputs the provider rejects. A rejected input is bisected into
-    /// provider-acceptable chunks ([`crate::llm::embed_in_chunks`]) — over-limit
-    /// inputs, the dominant permanent cause, stay fully semantically
-    /// findable through chunked embeddings instead of going invisible.
+    /// provider-acceptable chunks ([`crate::llm::embed_in_chunks_after_failure`])
+    /// — over-limit inputs stay fully semantically findable through chunked
+    /// embeddings instead of going invisible. An ambiguous per-item failure
+    /// is eligible only after its own liveness probe succeeds.
     /// Inputs the provider rejects at every length go terminal; other
     /// errors record one ordinary attempt. Either way each job gets at
     /// most one attempt in this pass.
@@ -1067,8 +1068,11 @@ impl Engine {
                         outcome.failed += 1;
                     }
                 }
-                Err(LlmError::EmbedPermanent(message)) => {
-                    match crate::llm::embed_in_chunks(client.as_ref(), &text).await {
+                Err(err) => {
+                    let initial_error = err.to_string();
+                    match crate::llm::embed_in_chunks_after_failure(client.as_ref(), &text, err)
+                        .await
+                    {
                         Ok(Some(vectors)) => {
                             tracing::warn!(
                                 entity_id = ?claim.entity_id,
@@ -1094,7 +1098,7 @@ impl Engine {
                                 .embedding_job
                                 .fail_embedding_job_permanently(
                                     &claim,
-                                    &format!("embed memory text: {message}"),
+                                    &format!("embed memory text: {initial_error}"),
                                 )
                                 .await?;
                         }
@@ -1110,14 +1114,6 @@ impl Engine {
                                 .await?;
                         }
                     }
-                }
-                Err(err) => {
-                    outcome.failed += 1;
-                    self.storage
-                        .ingest
-                        .embedding_job
-                        .fail_embedding_job(&claim, &format!("embed memory text: {err}"))
-                        .await?;
                 }
             }
         }

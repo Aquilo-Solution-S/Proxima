@@ -115,9 +115,10 @@ mod pg_tests {
     }
 
     #[derive(Debug)]
-    struct InlinePoisonEmbedding {
+    struct InlineAmbiguousEmbedding {
         max_chars: usize,
         accepted_calls: Arc<std::sync::atomic::AtomicUsize>,
+        provider_down: bool,
     }
 
     #[derive(Debug)]
@@ -147,10 +148,16 @@ mod pg_tests {
     }
 
     #[async_trait::async_trait]
-    impl EmbeddingClient for InlinePoisonEmbedding {
+    impl EmbeddingClient for InlineAmbiguousEmbedding {
         async fn embed(&self, text: &str) -> Result<Vec<f32>, LlmError> {
-            if text.contains("always poison") || text.chars().count() > self.max_chars {
-                return Err(LlmError::EmbedPermanent("input rejected".into()));
+            if self.provider_down {
+                return Err(LlmError::Embed("400 EOF".into()));
+            }
+            if text.chars().count() > self.max_chars {
+                // The same ambiguous error is returned for the over-limit
+                // individual request and for the batch. A successful probe
+                // must be what makes the chunk rescue eligible.
+                return Err(LlmError::Embed("400 EOF".into()));
             }
             self.accepted_calls
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -158,10 +165,13 @@ mod pg_tests {
         }
 
         async fn embed_many(&self, _texts: &[String]) -> Result<Vec<Vec<f32>>, LlmError> {
+            if self.provider_down {
+                return Err(LlmError::Embed("400 EOF".into()));
+            }
             // A compatible endpoint may collapse an input-triggered process
             // failure into an ambiguous 400/EOF. The inline drain must use
-            // its trivial probe to isolate this batch so an over-limit item
-            // still reaches the existing chunk rescue.
+            // its trivial probe to isolate this batch and then the same
+            // per-item error must reach chunk rescue.
             Err(LlmError::Embed("400 EOF".into()))
         }
 
@@ -1348,7 +1358,6 @@ mod pg_tests {
             let mut ids = Vec::new();
             for (kind, text) in [
                 ("good", "ordinary text".to_owned()),
-                ("poison", "always poison".to_owned()),
                 ("long", "x".repeat(12_000)),
             ] {
                 let mut draft = fact_draft(&text);
@@ -1377,9 +1386,10 @@ mod pg_tests {
             let accepted_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
             let outcome = drain_embedding_jobs_inline(
                 pg.pool_for_tests(),
-                &InlinePoisonEmbedding {
+                &InlineAmbiguousEmbedding {
                     max_chars: proxima_core::llm::MIN_EMBED_INPUT_CAP_CHARS,
                     accepted_calls: accepted_calls.clone(),
+                    provider_down: false,
                 },
                 3,
                 &core_projections(),
@@ -1388,16 +1398,11 @@ mod pg_tests {
             .await?;
 
             assert_eq!(outcome.embedded, 2);
-            assert_eq!(outcome.failed, 1);
+            assert_eq!(outcome.failed, 0);
             let good = ids
                 .iter()
                 .find(|(kind, _)| *kind == "good")
                 .expect("good id")
-                .1;
-            let poison = ids
-                .iter()
-                .find(|(kind, _)| *kind == "poison")
-                .expect("poison id")
                 .1;
             let long = ids
                 .iter()
@@ -1405,16 +1410,76 @@ mod pg_tests {
                 .expect("long id")
                 .1;
             assert_eq!(count_fact_embeddings(pg.pool_for_tests(), good).await?, 1);
-            assert_eq!(count_fact_embeddings(pg.pool_for_tests(), poison).await?, 0);
             assert_eq!(count_fact_embeddings(pg.pool_for_tests(), long).await?, 1);
             assert!(
                 accepted_calls.load(std::sync::atomic::Ordering::SeqCst) > 2,
                 "long input must be accepted through multiple rescued chunk calls"
             );
+            Ok(())
+        }
+        .await;
+        drop(pg);
+        drop_db(&db_name).await?;
+        result
+    }
+
+    #[tokio::test]
+    async fn inline_provider_down_probe_keeps_ambiguous_failure_retryable()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (pg, db_name) = fresh_pg("proxima_spg_embed").await;
+        let result: Result<(), Box<dyn std::error::Error>> = async {
+            let owner = owner_fixture();
+            let permit = owner_fact_write_permit(&owner).await?;
+            let mut draft = fact_draft("provider-down input");
+            draft.schema_id = SchemaId::new("core/agent-note-v1".into());
+            let written = pg
+                .ingest_fact_atomic(&permit, &draft, Some("stub-fact-embed"))
+                .await?;
+            sqlx::query(
+                "INSERT INTO proxima_core.agent_note_v1 (t, note_id, title, body)
+                 VALUES ($1, $2, $3, $3)",
+            )
+            .bind(written.memory_id.into_inner())
+            .bind(Uuid::now_v7())
+            .bind("provider-down input")
+            .execute(pg.pool_for_tests())
+            .await?;
+
+            let policy = EmbeddingRuntimePolicy::new(
+                std::time::Duration::from_secs(1),
+                1,
+                std::time::Duration::from_secs(1),
+                std::time::Duration::from_secs(3),
+            )?;
+            let outcome = drain_embedding_jobs_inline(
+                pg.pool_for_tests(),
+                &InlineAmbiguousEmbedding {
+                    max_chars: proxima_core::llm::MIN_EMBED_INPUT_CAP_CHARS,
+                    accepted_calls: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+                    provider_down: true,
+                },
+                1,
+                &core_projections(),
+                policy,
+            )
+            .await?;
+
+            assert_eq!(outcome.embedded, 0);
+            assert_eq!(outcome.failed, 0);
             assert_eq!(
-                job_state(pg.pool_for_tests(), poison.into_inner()).await?.0,
-                "failed_permanent"
+                count_fact_embeddings(pg.pool_for_tests(), written.memory_id).await?,
+                0
             );
+            let state = job_state(pg.pool_for_tests(), written.memory_id.into_inner()).await?;
+            assert_eq!(
+                state.0, "pending",
+                "provider outage must not poison the job"
+            );
+            assert!(
+                state.1.is_some(),
+                "release should preserve the retry reason"
+            );
+            assert!(state.2, "released claims must be claimable again");
             Ok(())
         }
         .await;

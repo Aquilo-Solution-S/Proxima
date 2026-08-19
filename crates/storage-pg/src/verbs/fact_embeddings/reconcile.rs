@@ -1,5 +1,5 @@
 use proxima_core::llm::{
-    EMBED_LIVENESS_PROBE, EmbeddingClient, LlmError, embed_in_chunks_with_timeout,
+    EMBED_LIVENESS_PROBE, EmbeddingClient, LlmError, embed_in_chunks_after_failure_with_timeout,
     embed_many_with_timeout, embed_with_timeout,
 };
 use proxima_core::verbs::schema::MemorySearchProjection;
@@ -409,13 +409,21 @@ async fn embed_claim(
 ) -> Result<bool, EmbedClaimFailure> {
     let embedding = match embed_with_timeout(client, text, policy.request_timeout()).await {
         Ok(embedding) => embedding,
-        // An over-limit input is not a dead memory. The engine's drain
-        // rescues it as a chunked embedding version; this drain must do the
-        // same, or which drain happens to reach a job first decides whether
-        // the memory is recoverable — and a job failed here goes
-        // `failed_permanent`, which `reconcile_embeddings` never requeues.
-        Err(LlmError::EmbedPermanent(message)) => {
-            return match embed_in_chunks_with_timeout(client, text, policy.request_timeout()).await
+        // A live provider's content-attributed rejection is not a dead
+        // memory. The engine's drain rescues it as a chunked embedding
+        // version; this drain must do the same, or which drain happens to
+        // reach a job first decides whether the memory is recoverable. An
+        // ambiguous rejection is eligible only after a successful liveness
+        // probe; a failed probe remains retryable.
+        Err(error) => {
+            let initial_error = error.to_string();
+            return match embed_in_chunks_after_failure_with_timeout(
+                client,
+                text,
+                error,
+                policy.request_timeout(),
+            )
+            .await
             {
                 Ok(Some(vectors)) => {
                     tracing::warn!(
@@ -427,20 +435,15 @@ async fn embed_claim(
                     store_claim_chunks(pool, client, claim, &vectors).await?;
                     Ok(true)
                 }
-                // Rejected at every length: genuinely invalid input, so the
-                // job goes terminal exactly as it did before.
+                // Rejected at every length by a live provider: genuinely
+                // invalid input, so the job goes terminal exactly as before.
                 Ok(None) => Err(EmbedClaimFailure::Permanent(format!(
-                    "embed memory text: {message}"
+                    "embed memory text: {initial_error}"
                 ))),
                 Err(err) => Err(EmbedClaimFailure::Retryable(StorageError::Internal(
                     format!("embed memory text in chunks: {err}"),
                 ))),
             };
-        }
-        Err(other) => {
-            return Err(EmbedClaimFailure::Retryable(StorageError::Internal(
-                format!("embed memory text: {other}"),
-            )));
         }
     };
     store_claim_embedding(pool, client, claim, &embedding).await

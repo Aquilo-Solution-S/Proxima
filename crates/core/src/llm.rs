@@ -356,27 +356,33 @@ pub const MIN_EMBED_INPUT_CAP_CHARS: usize = 2 * CHUNKED_EMBED_MIN_BYTES - 1;
 
 /// Bisect an over-limit input into pieces the provider accepts.
 ///
-/// Rejection does not say *why*: over-limit starts embedding once pieces
-/// are short enough; any other reason fails all the way down (`Ok(None)`).
-/// Halves below [`CHUNKED_EMBED_MIN_BYTES`] abort — partial coverage would
-/// mask poison input.
+/// A permanent rejection, or an ambiguous rejection followed by a successful
+/// liveness probe, starts embedding once pieces are short enough. An
+/// ambiguous rejection whose probe fails remains retryable. Halves below
+/// [`CHUNKED_EMBED_MIN_BYTES`] abort — partial coverage would mask poison
+/// input.
 ///
 /// Lives here, not on `Engine`: both the in-process drain and
 /// `maintain-embeddings --drain` must rescue the same way.
 ///
-/// `Ok(Some(vectors))` in text order, `Ok(None)` if every length is
-/// refused, `Err` on the first transient provider error.
+/// `Ok(Some(vectors))` in text order, `Ok(None)` if a live provider refuses
+/// every length, `Err` on a failed liveness probe or another transient
+/// provider error.
 ///
 /// # Errors
 ///
-/// First non-`EmbedPermanent` provider error.
+/// First non-content-attributed provider error.
 pub async fn embed_in_chunks(
     client: &dyn EmbeddingClient,
     text: &str,
 ) -> Result<Option<Vec<Vec<f32>>>, LlmError> {
-    embed_in_chunks_with(client, text, |client, segment| {
-        Box::pin(client.embed(segment))
-    })
+    embed_in_chunks_with(
+        client,
+        text,
+        None,
+        |client, segment| Box::pin(client.embed(segment)),
+        |client| Box::pin(client.embed(EMBED_LIVENESS_PROBE)),
+    )
     .await
 }
 
@@ -387,23 +393,89 @@ pub async fn embed_in_chunks(
 ///
 /// # Errors
 ///
-/// Returns the first non-permanent client error, including retryable
-/// [`LlmError::Embed`] when an individual request deadline elapses.
+/// Returns the first non-content-attributed client error, including
+/// retryable [`LlmError::Embed`] when an individual request deadline elapses
+/// or its liveness probe fails.
 pub async fn embed_in_chunks_with_timeout(
     client: &dyn EmbeddingClient,
     text: &str,
     request_timeout: Duration,
 ) -> Result<Option<Vec<Vec<f32>>>, LlmError> {
-    embed_in_chunks_with(client, text, |client, segment| {
-        Box::pin(embed_with_timeout(client, segment, request_timeout))
-    })
+    embed_in_chunks_with(
+        client,
+        text,
+        None,
+        |client, segment| Box::pin(embed_with_timeout(client, segment, request_timeout)),
+        |client| {
+            Box::pin(embed_with_timeout(
+                client,
+                EMBED_LIVENESS_PROBE,
+                request_timeout,
+            ))
+        },
+    )
     .await
 }
 
-async fn embed_in_chunks_with<'a, F>(
+/// Rescue a failed embedding request by attributing an ambiguous provider
+/// failure to the submitted content only when a trivial liveness probe still
+/// succeeds. A failed probe returns the original retryable error; it never
+/// turns a provider outage into a terminal job failure.
+///
+/// # Errors
+///
+/// Returns the original error when the liveness probe fails, or the first
+/// later provider error that is not content-attributed.
+pub async fn embed_in_chunks_after_failure(
+    client: &dyn EmbeddingClient,
+    text: &str,
+    error: LlmError,
+) -> Result<Option<Vec<Vec<f32>>>, LlmError> {
+    embed_in_chunks_with(
+        client,
+        text,
+        Some(error),
+        |client, segment| Box::pin(client.embed(segment)),
+        |client| Box::pin(client.embed(EMBED_LIVENESS_PROBE)),
+    )
+    .await
+}
+
+/// Timeout-bounded form of [`embed_in_chunks_after_failure`]. Every segment
+/// and every liveness probe receives the same configured request budget.
+///
+/// # Errors
+///
+/// Returns the original error when the timeout-bounded liveness probe fails,
+/// or the first later provider error that is not content-attributed.
+pub async fn embed_in_chunks_after_failure_with_timeout(
+    client: &dyn EmbeddingClient,
+    text: &str,
+    error: LlmError,
+    request_timeout: Duration,
+) -> Result<Option<Vec<Vec<f32>>>, LlmError> {
+    embed_in_chunks_with(
+        client,
+        text,
+        Some(error),
+        |client, segment| Box::pin(embed_with_timeout(client, segment, request_timeout)),
+        |client| {
+            Box::pin(embed_with_timeout(
+                client,
+                EMBED_LIVENESS_PROBE,
+                request_timeout,
+            ))
+        },
+    )
+    .await
+}
+
+async fn embed_in_chunks_with<'a, F, P>(
     client: &'a dyn EmbeddingClient,
     text: &'a str,
+    initial_error: Option<LlmError>,
     mut embed: F,
+    mut probe: P,
 ) -> Result<Option<Vec<Vec<f32>>>, LlmError>
 where
     F: for<'b> FnMut(
@@ -412,31 +484,76 @@ where
     ) -> std::pin::Pin<
         Box<dyn std::future::Future<Output = Result<Vec<f32>, LlmError>> + Send + 'b>,
     >,
+    P: for<'b> FnMut(
+        &'b dyn EmbeddingClient,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<Vec<f32>, LlmError>> + Send + 'b>,
+    >,
 {
     // Depth-first, left-to-right bisection keeps chunk vectors in text
     // order without recursion (async fns don't recurse).
-    let mut pending: Vec<&str> = vec![text];
+    let mut pending: Vec<&str> = Vec::with_capacity(1);
     let mut vectors: Vec<Vec<f32>> = Vec::new();
+
+    if let Some(error) = initial_error {
+        if !failure_is_content_attributed(client, &error, &mut probe).await {
+            return Err(error);
+        }
+        let Some((left, right)) = split_segment(text) else {
+            return Ok(None);
+        };
+        // Push the right half first so the left half embeds (or splits) next.
+        pending.push(right);
+        pending.push(left);
+    } else {
+        pending.push(text);
+    }
+
     while let Some(segment) = pending.pop() {
         match embed(client, segment).await {
             Ok(vector) => vectors.push(vector),
-            Err(LlmError::EmbedPermanent(_)) => {
-                let mut cut = segment.len() / 2;
-                while cut > 0 && !segment.is_char_boundary(cut) {
-                    cut -= 1;
-                }
-                if cut < CHUNKED_EMBED_MIN_BYTES {
+            Err(error) if failure_is_content_attributed(client, &error, &mut probe).await => {
+                let Some((left, right)) = split_segment(segment) else {
                     return Ok(None);
-                }
+                };
                 // Pop order: push right half first so the left half embeds
                 // (or splits) next.
-                pending.push(&segment[cut..]);
-                pending.push(&segment[..cut]);
+                pending.push(right);
+                pending.push(left);
             }
-            Err(err) => return Err(err),
+            Err(error) => return Err(error),
         }
     }
     Ok(Some(vectors))
+}
+
+fn split_segment(segment: &str) -> Option<(&str, &str)> {
+    let mut cut = segment.len() / 2;
+    while cut > 0 && !segment.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    if cut < CHUNKED_EMBED_MIN_BYTES {
+        return None;
+    }
+    Some((&segment[..cut], &segment[cut..]))
+}
+
+async fn failure_is_content_attributed<P>(
+    client: &dyn EmbeddingClient,
+    error: &LlmError,
+    probe: &mut P,
+) -> bool
+where
+    P: for<'a> FnMut(
+        &'a dyn EmbeddingClient,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<Vec<f32>, LlmError>> + Send + 'a>,
+    >,
+{
+    if matches!(error, LlmError::EmbedPermanent(_)) {
+        return true;
+    }
+    probe(client).await.is_ok()
 }
 
 #[cfg(test)]
@@ -447,7 +564,8 @@ mod tests {
         EmbeddingRuntimePolicy, EmbeddingRuntimePolicyError, LlmError, MIN_EMBED_INPUT_CAP_CHARS,
         PROXIMA_EMBED_BATCH_SIZE, PROXIMA_EMBED_REQUEST_TIMEOUT_SECONDS,
         PROXIMA_EMBED_STALE_CLAIM_TIMEOUT_SECONDS, PROXIMA_EMBED_WORKER_INTERVAL_SECONDS,
-        embed_in_chunks, embed_in_chunks_with_timeout, embed_many_with_timeout, embed_with_timeout,
+        embed_in_chunks, embed_in_chunks_after_failure, embed_in_chunks_after_failure_with_timeout,
+        embed_in_chunks_with_timeout, embed_many_with_timeout, embed_with_timeout,
     };
     use async_trait::async_trait;
     use std::sync::Mutex;
@@ -716,6 +834,96 @@ mod tests {
                 "a piece of {chars} chars was embedded above the cap",
             );
         }
+    }
+
+    #[derive(Debug)]
+    struct AmbiguousCappedEmbedding {
+        max_chars: usize,
+        provider_down: bool,
+        offered: Mutex<Vec<usize>>,
+    }
+
+    #[async_trait]
+    impl EmbeddingClient for AmbiguousCappedEmbedding {
+        async fn embed(&self, text: &str) -> Result<Vec<f32>, LlmError> {
+            if self.provider_down {
+                return Err(LlmError::Embed("provider unavailable".into()));
+            }
+            let chars = text.chars().count();
+            self.offered
+                .lock()
+                .expect("no test holds this across a panic")
+                .push(chars);
+            if chars > self.max_chars {
+                return Err(LlmError::Embed("400 EOF".into()));
+            }
+            Ok(vec![0.0; 4])
+        }
+
+        fn model_id(&self) -> &'static str {
+            "ambiguous-capped"
+        }
+
+        fn dim(&self) -> usize {
+            4
+        }
+    }
+
+    #[tokio::test]
+    async fn live_ambiguous_rejection_is_rescued_into_chunks() {
+        let client = AmbiguousCappedEmbedding {
+            max_chars: MIN_EMBED_INPUT_CAP_CHARS,
+            provider_down: false,
+            offered: Mutex::new(Vec::new()),
+        };
+        let text = "a".repeat(MIN_EMBED_INPUT_CAP_CHARS * 5);
+        let initial = client.embed(&text).await.expect_err("over-limit input");
+        let vectors = embed_in_chunks_after_failure(&client, &text, initial)
+            .await
+            .expect("live provider rejection should be content-attributed")
+            .expect("over-limit input should be splittable");
+
+        assert!(vectors.len() > 1, "long input must be chunked");
+        assert!(
+            client
+                .offered
+                .lock()
+                .expect("no test holds this across a panic")
+                .iter()
+                .any(|chars| *chars <= MIN_EMBED_INPUT_CAP_CHARS),
+            "rescue must submit provider-acceptable pieces"
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_liveness_probe_keeps_ambiguous_rejection_retryable() {
+        let client = AmbiguousCappedEmbedding {
+            max_chars: MIN_EMBED_INPUT_CAP_CHARS,
+            provider_down: true,
+            offered: Mutex::new(Vec::new()),
+        };
+        let text = "a".repeat(MIN_EMBED_INPUT_CAP_CHARS * 5);
+        let initial = client.embed(&text).await.expect_err("provider is down");
+        let result = embed_in_chunks_after_failure_with_timeout(
+            &client,
+            &text,
+            initial,
+            Duration::from_secs(1),
+        )
+        .await;
+
+        assert!(
+            matches!(result, Err(LlmError::Embed(ref message)) if message == "provider unavailable"),
+            "a failed probe must preserve a retryable error: {result:?}"
+        );
+        assert!(
+            client
+                .offered
+                .lock()
+                .expect("no test holds this across a panic")
+                .is_empty(),
+            "the provider-down mock must not reach chunk rescue"
+        );
     }
 
     /// Floor is a real bound: rescued at the floor, terminal one char below.
