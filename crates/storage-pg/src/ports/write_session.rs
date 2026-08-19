@@ -5,7 +5,7 @@ use proxima_core::verbs::fact_ingest::{AuthorizedFactWrite, FactIngestOutcome};
 use proxima_core::verbs::goal_write::{CreateGoalAtomicRequest, GoalWriteOutcome};
 use proxima_core::{
     AuthorDerivedOutcome, AuthorDerivedRequest, ColdObjectStore, MemoryId, SidecarPayload,
-    StorageError,
+    StorageError, cold_object_key, owner_hash_hex,
 };
 use sqlx::{Postgres, Transaction};
 
@@ -214,7 +214,7 @@ impl WriteSession for PgWriteSession {
         .await
         .map_err(internal)?
         .ok_or(StorageError::NotFound)?;
-        let key = verbs::forget::cold_object_key(&verbs::forget::owner_hash_hex(owner), handle, t);
+        let key = cold_object_key(&owner_hash_hex(owner), handle, t);
         verbs::forget::forget_memory(
             &mut self.tx,
             &self.sidecars,
