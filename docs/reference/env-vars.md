@@ -45,11 +45,11 @@ whether that is legal.
 | `PROXIMA_EMBED_WORKER_INTERVAL_SECONDS` | embedding runtime | `5` | worker cadence tuning | idle poll seconds; range `1..=3600`; invalid values fail boot |
 | `PROXIMA_EMBED_STALE_CLAIM_TIMEOUT_SECONDS` | embedding runtime | `900` | crash-reclaim tuning | range `1..=86400`; must be strictly greater than request timeout and cover the longest honest drain interval between successful claim renewals |
 | `PROXIMA_SKIP_MIGRATIONS` | boot | `false` | split-role GitOps deploys | boot without applying migrations; the schema must already be at the current lane or boot fails closed |
-| `PROXIMA_PG_MAX_CONNECTIONS` | Postgres pool | `10` | tuning pool size | minimum 1 |
-| `PROXIMA_PG_STATEMENT_TIMEOUT_MS` | Postgres pool | `300000` | tuning request timeouts | `0` disables; migrations and bulk erase opt out separately |
-| `PROXIMA_PG_ACQUIRE_TIMEOUT_SECS` | Postgres pool | `5` | tuning pool acquisition | seconds |
-| `PROXIMA_PG_IDLE_TIMEOUT_SECS` | Postgres pool | `600` | tuning connection reuse | seconds |
-| `PROXIMA_PG_MAX_LIFETIME_SECS` | Postgres pool | `1800` | tuning connection recycling | seconds |
+| `PROXIMA_PG_MAX_CONNECTIONS` | Postgres pool | `10` | tuning pool size | minimum 1; invalid values fail config resolution |
+| `PROXIMA_PG_STATEMENT_TIMEOUT_MS` | Postgres pool | `300000` | tuning request timeouts | `0` disables by omitting the Postgres option; migrations and bulk erase opt out separately |
+| `PROXIMA_PG_ACQUIRE_TIMEOUT_SECS` | Postgres pool | `5` | tuning pool acquisition | seconds; `0` is passed to SQLx unchanged |
+| `PROXIMA_PG_IDLE_TIMEOUT_SECS` | Postgres pool | `600` | tuning connection reuse | seconds; `0` is passed to SQLx unchanged |
+| `PROXIMA_PG_MAX_LIFETIME_SECS` | Postgres pool | `1800` | tuning connection recycling | seconds; `0` is passed to SQLx unchanged |
 | `PROXIMA_PG_SEMANTIC_INDEX_FIRST` | Postgres search | `pushdown` | restoring legacy semantic membership | `off` \| `overfetch` \| `pushdown`. Where the semantic branch's nearest-neighbour scan sits relative to the eligibility joins. The index-first modes (`overfetch`, `pushdown`) change result membership: the eligibility and query filters apply to a bounded ANN candidate window, so a matching row past the window can be missed (an ANN-window approximation — recall, never scope: no mode ever returns a row the filters exclude). `pushdown` is the new default and additionally pushes the owner scope onto the index scan. `off` restores the exact legacy membership: every filter applies under the scan's limit and the branch is exact |
 | `PROXIMA_PG_CANDIDATE_WINDOW_DEDUP` | Postgres search | `true` | restoring legacy statement text | window-function candidate dedup and a unique-join supersedes anti-join instead of `DISTINCT ON` and a per-row `NOT EXISTS` probe. Result membership is identical either way; `off` restores the legacy SQL text |
 | `PROXIMA_PG_HNSW_EF_SEARCH` | Postgres search | `100` | tuning ANN recall/latency | pgvector `hnsw.ef_search` for the semantic branch's session; range `1..=1000` (the GUC's own bounds); out-of-range refuses at boot |
@@ -86,7 +86,7 @@ whether that is legal.
 Inventory sources checked: `docs/10-configuration.md`, `docs/15-deployment.md`,
 `apps/proxima-mcp/src/lib.rs`, `crates/proxima/src/runtime_config.rs`,
 `crates/proxima/src/config.rs`, `crates/storage-pg/src/lib.rs`,
-`crates/storage-pg/src/tuning.rs`,
+`crates/storage-pg/src/pool_config.rs`, `crates/storage-pg/src/tuning.rs`,
 `crates/storage-pg/src/verbs/consolidate/events.rs`,
 `crates/blob-s3/src/config.rs`, and `.github/workflows/ci.yml`. Runtime variables from that inventory are listed in
 the runtime table. Test-only and source-constant names are listed under

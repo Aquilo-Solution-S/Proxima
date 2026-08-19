@@ -37,6 +37,7 @@ use proxima_storage_pg::{PgDelegationStore, PgOwnerAccessResolver, PgSidecarRegi
 pub struct Proxima<A: FlavorApp> {
     overlay: RuntimeBuilder,
     use_env: bool,
+    injected_env: Option<RuntimeBuilder>,
     _app: PhantomData<A>,
 }
 
@@ -45,6 +46,7 @@ impl<A: FlavorApp> std::fmt::Debug for Proxima<A> {
         f.debug_struct("Proxima")
             .field("overlay", &self.overlay)
             .field("use_env", &self.use_env)
+            .field("has_injected_env", &self.injected_env.is_some())
             .finish()
     }
 }
@@ -55,6 +57,7 @@ impl<A: FlavorApp + 'static> Proxima<A> {
         Self {
             overlay: RuntimeBuilder::default(),
             use_env: false,
+            injected_env: None,
             _app: PhantomData,
         }
     }
@@ -62,7 +65,26 @@ impl<A: FlavorApp + 'static> Proxima<A> {
     #[must_use]
     pub fn from_env(mut self) -> Self {
         self.use_env = true;
+        self.injected_env = None;
         self
+    }
+
+    /// Resolve the environment layer through an injected lookup.
+    ///
+    /// This is the process-env-equivalent path for hosts whose configuration
+    /// source is not global process state. Resolution happens once; storage
+    /// boot consumes the resulting `RuntimeConfig` without another env read.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ProximaError::Config`] when a supplied value is malformed.
+    pub fn from_lookup(
+        mut self,
+        lookup: impl Fn(&str) -> Option<String>,
+    ) -> Result<Self, ProximaError> {
+        self.injected_env = Some(RuntimeBuilder::default().apply_lookup(lookup)?);
+        self.use_env = false;
+        Ok(self)
     }
 
     #[must_use]
@@ -74,6 +96,13 @@ impl<A: FlavorApp + 'static> Proxima<A> {
     #[must_use]
     pub fn s3(mut self, s3: S3RuntimeConfig) -> Self {
         self.overlay = self.overlay.s3(s3);
+        self
+    }
+
+    /// Set Postgres pool and per-connection timeout policy.
+    #[must_use]
+    pub fn pg_pool_config(mut self, config: proxima_storage_pg::PgPoolConfig) -> Self {
+        self.overlay = self.overlay.pg_pool_config(config);
         self
     }
 
@@ -356,7 +385,9 @@ impl<A: FlavorApp + 'static> Proxima<A> {
 
     fn resolve(self) -> Result<(crate::RuntimeConfig, crate::RuntimeParts), ProximaError> {
         let base = A::configure(RuntimeBuilder::default());
-        let env_layer = if self.use_env {
+        let env_layer = if let Some(injected) = self.injected_env {
+            injected
+        } else if self.use_env {
             RuntimeBuilder::default().apply_env()?
         } else {
             RuntimeBuilder::default()
@@ -823,6 +854,7 @@ async fn boot_app<A: FlavorApp + 'static>(
     )
     .bundle::<A>()
     .deployment_tool_scope(config.tool_scope.clone())
+    .pg_pool_config(config.pg_pool_config)
     .pg_tuning(config.pg_tuning)
     .embedding_runtime_policy(config.embedding_runtime_policy);
     if config.skip_migrations {
@@ -1359,6 +1391,19 @@ mod tests {
             config.stream_revalidation.max_stream_lifetime,
             std::time::Duration::from_secs(12)
         );
+    }
+
+    #[test]
+    fn injected_lookup_replaces_the_ambient_process_env_source() {
+        let (config, _) = Proxima::<AlphaApp>::app()
+            .from_env()
+            .from_lookup(|key| (key == "PROXIMA_PG_MAX_CONNECTIONS").then(|| "4".to_string()))
+            .expect("injected pool lookup")
+            .tool_scope(ToolScope::All)
+            .resolve()
+            .expect("resolved runtime config");
+
+        assert_eq!(config.pg_pool_config.max_connections, 4);
     }
 
     #[test]

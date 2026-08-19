@@ -151,6 +151,7 @@ pub struct ProximaBuilder {
     embed_client: Option<Arc<dyn EmbeddingClient>>,
     embedding_runtime_policy: proxima_core::EmbeddingRuntimePolicy,
     deployment_tool_scope: Option<proxima_core::ToolScope>,
+    pg_pool_config: Option<proxima_storage_pg::PgPoolConfig>,
     pg_tuning: Option<proxima_storage_pg::PgTuning>,
 }
 
@@ -166,6 +167,7 @@ impl std::fmt::Debug for ProximaBuilder {
             .field("has_embed_client", &self.embed_client.is_some())
             .field("embedding_runtime_policy", &self.embedding_runtime_policy)
             .field("deployment_tool_scope", &self.deployment_tool_scope)
+            .field("pg_pool_config", &self.pg_pool_config)
             .field("pg_tuning", &self.pg_tuning)
             .finish()
     }
@@ -226,6 +228,7 @@ impl ProximaBuilder {
             embed_client: None,
             embedding_runtime_policy: proxima_core::EmbeddingRuntimePolicy::default(),
             deployment_tool_scope: None,
+            pg_pool_config: None,
             pg_tuning: None,
         }
     }
@@ -324,6 +327,15 @@ impl ProximaBuilder {
         self
     }
 
+    /// Postgres pool policy passthrough. Unset, the process environment
+    /// decides. Runtime hosts should pass their already-resolved policy so
+    /// storage construction does not perform a second environment read.
+    #[must_use]
+    pub fn pg_pool_config(mut self, config: proxima_storage_pg::PgPoolConfig) -> Self {
+        self.pg_pool_config = Some(config);
+        self
+    }
+
     /// Storage tuning passthrough. Unset, the `PROXIMA_PG_*` environment
     /// decides, and its defaults are this release's shipped behaviour.
     #[must_use]
@@ -352,14 +364,19 @@ impl ProximaBuilder {
             embed_client,
             embedding_runtime_policy,
             deployment_tool_scope,
+            pg_pool_config,
             pg_tuning,
         } = self;
 
+        let pg_pool_config = match pg_pool_config {
+            Some(config) => config,
+            None => proxima_storage_pg::PgPoolConfig::from_env().map_err(embed_storage_error)?,
+        };
         let pg_tuning = match pg_tuning {
             Some(tuning) => tuning,
             None => proxima_storage_pg::PgTuning::from_env().map_err(embed_storage_error)?,
         };
-        let pg = PgStorage::connect_with_tuning(&config.database_url, pg_tuning)
+        let pg = PgStorage::connect_with_config(&config.database_url, pg_pool_config, pg_tuning)
             .await
             .map_err(embed_storage_error)?;
         if skip_migrations {

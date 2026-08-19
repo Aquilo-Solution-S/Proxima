@@ -646,7 +646,7 @@ fn build_app(
     let oidc = oidc_from_env(&lookup, owner_access)?;
     let embedding_policy = embedding_runtime_policy_from_lookup(&lookup)?;
     let mut app = Proxima::<ProximaMcpApp>::app()
-        .from_env()
+        .from_lookup(&lookup)?
         .database_url(config.database_url)
         .tool_scope(tool_scope)
         .embedding_runtime_policy(embedding_policy);
@@ -1099,6 +1099,19 @@ mod tests {
             .expect_err("invalid embedding runtime policy must fail before boot");
             assert!(err.to_string().contains(key), "{key}: {err}");
         }
+    }
+
+    #[tokio::test]
+    async fn app_construction_resolves_pool_policy_from_its_injected_lookup() {
+        let err = build_app(config(), |key| {
+            (key == "PROXIMA_PG_MAX_CONNECTIONS").then(|| "many".to_string())
+        })
+        .expect_err("canonical app must resolve pool policy from this lookup");
+
+        assert!(
+            err.to_string().contains("PROXIMA_PG_MAX_CONNECTIONS=many"),
+            "message: {err}"
+        );
     }
 
     #[tokio::test]
