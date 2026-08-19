@@ -1,6 +1,7 @@
 //! Embedding-client contracts used by vector retrieval.
 
 use async_trait::async_trait;
+use std::time::Duration;
 
 #[derive(Debug, thiserror::Error)]
 pub enum LlmError {
@@ -21,10 +22,231 @@ pub enum LlmError {
 
 pub const EMBEDDING_DIM: usize = 1024;
 pub const EMBEDDING_JOB_MAX_ATTEMPTS: i32 = 5;
-/// How many texts the drain worker embeds per provider call. Providers'
-/// `/embeddings` endpoints accept arrays; batching divides request count
-/// (and therefore request-rate-limit pressure) by this factor.
-pub const EMBEDDING_BATCH_SIZE: usize = 32;
+
+pub const PROXIMA_EMBED_REQUEST_TIMEOUT_SECONDS: &str = "PROXIMA_EMBED_REQUEST_TIMEOUT_SECONDS";
+pub const PROXIMA_EMBED_BATCH_SIZE: &str = "PROXIMA_EMBED_BATCH_SIZE";
+pub const PROXIMA_EMBED_WORKER_INTERVAL_SECONDS: &str = "PROXIMA_EMBED_WORKER_INTERVAL_SECONDS";
+pub const PROXIMA_EMBED_STALE_CLAIM_TIMEOUT_SECONDS: &str =
+    "PROXIMA_EMBED_STALE_CLAIM_TIMEOUT_SECONDS";
+
+pub const DEFAULT_EMBED_REQUEST_TIMEOUT: Duration = Duration::from_mins(2);
+pub const DEFAULT_EMBED_BATCH_SIZE: usize = 32;
+pub const DEFAULT_EMBED_WORKER_INTERVAL: Duration = Duration::from_secs(5);
+pub const DEFAULT_EMBED_STALE_CLAIM_TIMEOUT: Duration = Duration::from_mins(15);
+
+pub const MAX_EMBED_REQUEST_TIMEOUT: Duration = Duration::from_hours(1);
+pub const MAX_EMBED_BATCH_SIZE: usize = 1_024;
+pub const MAX_EMBED_WORKER_INTERVAL: Duration = Duration::from_hours(1);
+pub const MAX_EMBED_STALE_CLAIM_TIMEOUT: Duration = Duration::from_hours(24);
+
+/// Generic host policy for durable embedding work.
+///
+/// The engine and maintenance boundaries apply the request timeout to every
+/// installed client call. The shipped OpenAI-compatible adapter also applies
+/// it at the HTTP layer. Claims are renewed on a separate task every third of
+/// `stale_claim_timeout`, so poison isolation and chunk rescue may make
+/// several bounded provider calls without looking abandoned to a concurrent
+/// reconciler.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EmbeddingRuntimePolicy {
+    request_timeout: Duration,
+    batch_size: usize,
+    worker_interval: Duration,
+    stale_claim_timeout: Duration,
+}
+
+impl Default for EmbeddingRuntimePolicy {
+    fn default() -> Self {
+        Self {
+            request_timeout: DEFAULT_EMBED_REQUEST_TIMEOUT,
+            batch_size: DEFAULT_EMBED_BATCH_SIZE,
+            worker_interval: DEFAULT_EMBED_WORKER_INTERVAL,
+            stale_claim_timeout: DEFAULT_EMBED_STALE_CLAIM_TIMEOUT,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum EmbeddingRuntimePolicyError {
+    #[error("{key} must be integer seconds, got {value:?}")]
+    MalformedSeconds { key: &'static str, value: String },
+    #[error("{key} must be a positive integer, got {value:?}")]
+    MalformedBatch { key: &'static str, value: String },
+    #[error("{field} must be in {min}..={max} seconds, got {actual}")]
+    DurationOutOfRange {
+        field: &'static str,
+        min: u64,
+        max: u64,
+        actual: u64,
+    },
+    #[error("batch size must be in 1..={max}, got {actual}")]
+    BatchSizeOutOfRange { max: usize, actual: usize },
+    #[error("{field} must be an integral number of seconds")]
+    NonIntegralSeconds { field: &'static str },
+    #[error(
+        "PROXIMA_EMBED_STALE_CLAIM_TIMEOUT_SECONDS ({stale_seconds}s) must be strictly greater than PROXIMA_EMBED_REQUEST_TIMEOUT_SECONDS ({request_seconds}s)"
+    )]
+    StaleClaimNotLongerThanRequest {
+        stale_seconds: u64,
+        request_seconds: u64,
+    },
+}
+
+impl EmbeddingRuntimePolicy {
+    /// Construct and validate a host embedding policy.
+    ///
+    /// # Errors
+    ///
+    /// Rejects zero, out-of-range, and unsafe stale-claim values.
+    pub fn new(
+        request_timeout: Duration,
+        batch_size: usize,
+        worker_interval: Duration,
+        stale_claim_timeout: Duration,
+    ) -> Result<Self, EmbeddingRuntimePolicyError> {
+        validate_duration(
+            PROXIMA_EMBED_REQUEST_TIMEOUT_SECONDS,
+            request_timeout,
+            MAX_EMBED_REQUEST_TIMEOUT,
+        )?;
+        if !(1..=MAX_EMBED_BATCH_SIZE).contains(&batch_size) {
+            return Err(EmbeddingRuntimePolicyError::BatchSizeOutOfRange {
+                max: MAX_EMBED_BATCH_SIZE,
+                actual: batch_size,
+            });
+        }
+        validate_duration(
+            PROXIMA_EMBED_WORKER_INTERVAL_SECONDS,
+            worker_interval,
+            MAX_EMBED_WORKER_INTERVAL,
+        )?;
+        validate_duration(
+            PROXIMA_EMBED_STALE_CLAIM_TIMEOUT_SECONDS,
+            stale_claim_timeout,
+            MAX_EMBED_STALE_CLAIM_TIMEOUT,
+        )?;
+        if stale_claim_timeout <= request_timeout {
+            return Err(
+                EmbeddingRuntimePolicyError::StaleClaimNotLongerThanRequest {
+                    stale_seconds: stale_claim_timeout.as_secs(),
+                    request_seconds: request_timeout.as_secs(),
+                },
+            );
+        }
+        Ok(Self {
+            request_timeout,
+            batch_size,
+            worker_interval,
+            stale_claim_timeout,
+        })
+    }
+
+    /// Parse the canonical `PROXIMA_EMBED_*` policy block through an injected
+    /// lookup. Unset fields retain finite defaults; empty values are unset.
+    ///
+    /// # Errors
+    ///
+    /// Rejects malformed, zero, out-of-range, and unsafe combinations.
+    pub fn from_lookup(
+        lookup: &impl Fn(&str) -> Option<String>,
+    ) -> Result<Self, EmbeddingRuntimePolicyError> {
+        let defaults = Self::default();
+        let request_timeout = parse_duration_setting(
+            lookup,
+            PROXIMA_EMBED_REQUEST_TIMEOUT_SECONDS,
+            defaults.request_timeout,
+        )?;
+        let batch_size = match crate::env_value(lookup, PROXIMA_EMBED_BATCH_SIZE) {
+            Some(raw) => {
+                raw.parse::<usize>()
+                    .map_err(|_| EmbeddingRuntimePolicyError::MalformedBatch {
+                        key: PROXIMA_EMBED_BATCH_SIZE,
+                        value: raw,
+                    })?
+            }
+            None => defaults.batch_size,
+        };
+        let worker_interval = parse_duration_setting(
+            lookup,
+            PROXIMA_EMBED_WORKER_INTERVAL_SECONDS,
+            defaults.worker_interval,
+        )?;
+        let stale_claim_timeout = parse_duration_setting(
+            lookup,
+            PROXIMA_EMBED_STALE_CLAIM_TIMEOUT_SECONDS,
+            defaults.stale_claim_timeout,
+        )?;
+        Self::new(
+            request_timeout,
+            batch_size,
+            worker_interval,
+            stale_claim_timeout,
+        )
+    }
+
+    #[must_use]
+    pub const fn request_timeout(self) -> Duration {
+        self.request_timeout
+    }
+
+    #[must_use]
+    pub const fn batch_size(self) -> usize {
+        self.batch_size
+    }
+
+    #[must_use]
+    pub const fn worker_interval(self) -> Duration {
+        self.worker_interval
+    }
+
+    #[must_use]
+    pub const fn stale_claim_timeout(self) -> Duration {
+        self.stale_claim_timeout
+    }
+
+    #[must_use]
+    pub fn claim_heartbeat_interval(self) -> Duration {
+        self.stale_claim_timeout / 3
+    }
+
+    #[must_use]
+    pub fn stale_claim_timeout_seconds(self) -> i64 {
+        i64::try_from(self.stale_claim_timeout.as_secs()).unwrap_or(i64::MAX)
+    }
+}
+
+fn validate_duration(
+    field: &'static str,
+    value: Duration,
+    max: Duration,
+) -> Result<(), EmbeddingRuntimePolicyError> {
+    if value.subsec_nanos() != 0 {
+        return Err(EmbeddingRuntimePolicyError::NonIntegralSeconds { field });
+    }
+    if value < Duration::from_secs(1) || value > max {
+        return Err(EmbeddingRuntimePolicyError::DurationOutOfRange {
+            field,
+            min: 1,
+            max: max.as_secs(),
+            actual: value.as_secs(),
+        });
+    }
+    Ok(())
+}
+
+fn parse_duration_setting(
+    lookup: &impl Fn(&str) -> Option<String>,
+    key: &'static str,
+    default: Duration,
+) -> Result<Duration, EmbeddingRuntimePolicyError> {
+    let Some(raw) = crate::env_value(lookup, key) else {
+        return Ok(default);
+    };
+    let seconds = raw
+        .parse::<u64>()
+        .map_err(|_| EmbeddingRuntimePolicyError::MalformedSeconds { key, value: raw })?;
+    Ok(Duration::from_secs(seconds))
+}
 
 /// Embedding client surface. Concrete impls live outside core.
 #[async_trait]
@@ -46,9 +268,57 @@ pub trait EmbeddingClient: Send + Sync + std::fmt::Debug {
     fn dim(&self) -> usize;
 }
 
+/// Run one provider request under the host's generic request deadline.
+///
+/// Timeout is a retryable provider failure. This boundary is required even
+/// for custom clients; adapter-native timeouts remain useful for cancelling
+/// socket work promptly.
+///
+/// # Errors
+///
+/// Returns the client's error, or retryable [`LlmError::Embed`] when the
+/// deadline elapses.
+pub async fn embed_with_timeout(
+    client: &dyn EmbeddingClient,
+    text: &str,
+    request_timeout: Duration,
+) -> Result<Vec<f32>, LlmError> {
+    tokio::time::timeout(request_timeout, client.embed(text))
+        .await
+        .map_err(|_| {
+            LlmError::Embed(format!(
+                "request timed out after {} seconds",
+                request_timeout.as_secs()
+            ))
+        })?
+}
+
+/// Run one batched provider request under the host's generic request
+/// deadline. Timeout is retryable.
+///
+/// # Errors
+///
+/// Returns the client's error, or retryable [`LlmError::Embed`] when the
+/// deadline elapses.
+pub async fn embed_many_with_timeout(
+    client: &dyn EmbeddingClient,
+    texts: &[String],
+    request_timeout: Duration,
+) -> Result<Vec<Vec<f32>>, LlmError> {
+    tokio::time::timeout(request_timeout, client.embed_many(texts))
+        .await
+        .map_err(|_| {
+            LlmError::Embed(format!(
+                "request timed out after {} seconds",
+                request_timeout.as_secs()
+            ))
+        })?
+}
+
 /// Trivial liveness probe after a provider refuses a real input.
 /// Short enough that no cap, context window, or token limit can refuse it.
-pub(crate) const EMBED_LIVENESS_PROBE: &str = "ok";
+#[doc(hidden)]
+pub const EMBED_LIVENESS_PROBE: &str = "ok";
 
 /// Whether an embedding failure is the input's fault.
 ///
@@ -105,12 +375,51 @@ pub async fn embed_in_chunks(
     client: &dyn EmbeddingClient,
     text: &str,
 ) -> Result<Option<Vec<Vec<f32>>>, LlmError> {
+    embed_in_chunks_with(client, text, |client, segment| {
+        Box::pin(client.embed(segment))
+    })
+    .await
+}
+
+/// [`embed_in_chunks`] with a deadline around every provider request.
+///
+/// One rescue can legitimately issue several calls; each individual call,
+/// rather than the whole rescue, receives the configured request budget.
+///
+/// # Errors
+///
+/// Returns the first non-permanent client error, including retryable
+/// [`LlmError::Embed`] when an individual request deadline elapses.
+pub async fn embed_in_chunks_with_timeout(
+    client: &dyn EmbeddingClient,
+    text: &str,
+    request_timeout: Duration,
+) -> Result<Option<Vec<Vec<f32>>>, LlmError> {
+    embed_in_chunks_with(client, text, |client, segment| {
+        Box::pin(embed_with_timeout(client, segment, request_timeout))
+    })
+    .await
+}
+
+async fn embed_in_chunks_with<'a, F>(
+    client: &'a dyn EmbeddingClient,
+    text: &'a str,
+    mut embed: F,
+) -> Result<Option<Vec<Vec<f32>>>, LlmError>
+where
+    F: for<'b> FnMut(
+        &'b dyn EmbeddingClient,
+        &'b str,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<Vec<f32>, LlmError>> + Send + 'b>,
+    >,
+{
     // Depth-first, left-to-right bisection keeps chunk vectors in text
     // order without recursion (async fns don't recurse).
     let mut pending: Vec<&str> = vec![text];
     let mut vectors: Vec<Vec<f32>> = Vec::new();
     while let Some(segment) = pending.pop() {
-        match client.embed(segment).await {
+        match embed(client, segment).await {
             Ok(vector) => vectors.push(vector),
             Err(LlmError::EmbedPermanent(_)) => {
                 let mut cut = segment.len() / 2;
@@ -134,11 +443,198 @@ pub async fn embed_in_chunks(
 #[cfg(test)]
 mod tests {
     use super::{
-        CHUNKED_EMBED_MIN_BYTES, EmbeddingClient, LlmError, MIN_EMBED_INPUT_CAP_CHARS,
-        embed_in_chunks,
+        CHUNKED_EMBED_MIN_BYTES, DEFAULT_EMBED_BATCH_SIZE, DEFAULT_EMBED_REQUEST_TIMEOUT,
+        DEFAULT_EMBED_STALE_CLAIM_TIMEOUT, DEFAULT_EMBED_WORKER_INTERVAL, EmbeddingClient,
+        EmbeddingRuntimePolicy, EmbeddingRuntimePolicyError, LlmError, MIN_EMBED_INPUT_CAP_CHARS,
+        PROXIMA_EMBED_BATCH_SIZE, PROXIMA_EMBED_REQUEST_TIMEOUT_SECONDS,
+        PROXIMA_EMBED_STALE_CLAIM_TIMEOUT_SECONDS, PROXIMA_EMBED_WORKER_INTERVAL_SECONDS,
+        embed_in_chunks, embed_in_chunks_with_timeout, embed_many_with_timeout, embed_with_timeout,
     };
     use async_trait::async_trait;
     use std::sync::Mutex;
+    use std::time::Duration;
+
+    fn lookup<'a>(pairs: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<String> + 'a {
+        move |key| {
+            pairs
+                .iter()
+                .find(|(candidate, _)| *candidate == key)
+                .map(|(_, value)| (*value).to_string())
+        }
+    }
+
+    #[test]
+    fn embedding_runtime_policy_has_finite_defaults() {
+        let policy = EmbeddingRuntimePolicy::default();
+        assert_eq!(policy.request_timeout(), DEFAULT_EMBED_REQUEST_TIMEOUT);
+        assert_eq!(policy.batch_size(), DEFAULT_EMBED_BATCH_SIZE);
+        assert_eq!(policy.worker_interval(), DEFAULT_EMBED_WORKER_INTERVAL);
+        assert_eq!(
+            policy.stale_claim_timeout(),
+            DEFAULT_EMBED_STALE_CLAIM_TIMEOUT
+        );
+        assert_eq!(policy.claim_heartbeat_interval(), Duration::from_mins(5));
+    }
+
+    #[test]
+    fn embedding_runtime_policy_parses_canonical_env_block() {
+        let policy = EmbeddingRuntimePolicy::from_lookup(&lookup(&[
+            (PROXIMA_EMBED_REQUEST_TIMEOUT_SECONDS, "30"),
+            (PROXIMA_EMBED_BATCH_SIZE, "17"),
+            (PROXIMA_EMBED_WORKER_INTERVAL_SECONDS, "9"),
+            (PROXIMA_EMBED_STALE_CLAIM_TIMEOUT_SECONDS, "91"),
+        ]))
+        .expect("valid policy");
+        assert_eq!(policy.request_timeout(), Duration::from_secs(30));
+        assert_eq!(policy.batch_size(), 17);
+        assert_eq!(policy.worker_interval(), Duration::from_secs(9));
+        assert_eq!(policy.stale_claim_timeout(), Duration::from_secs(91));
+    }
+
+    #[test]
+    fn embedding_runtime_policy_rejects_bad_values_and_unsafe_relation() {
+        for (key, value) in [
+            (PROXIMA_EMBED_REQUEST_TIMEOUT_SECONDS, "0"),
+            (PROXIMA_EMBED_REQUEST_TIMEOUT_SECONDS, "3601"),
+            (PROXIMA_EMBED_BATCH_SIZE, "0"),
+            (PROXIMA_EMBED_BATCH_SIZE, "1025"),
+            (PROXIMA_EMBED_WORKER_INTERVAL_SECONDS, "nope"),
+            (PROXIMA_EMBED_STALE_CLAIM_TIMEOUT_SECONDS, "86401"),
+        ] {
+            let err = EmbeddingRuntimePolicy::from_lookup(&lookup(&[(key, value)]))
+                .expect_err("invalid setting must fail");
+            assert!(err.to_string().contains(key) || err.to_string().contains("batch size"));
+        }
+
+        let err = EmbeddingRuntimePolicy::from_lookup(&lookup(&[
+            (PROXIMA_EMBED_REQUEST_TIMEOUT_SECONDS, "120"),
+            (PROXIMA_EMBED_STALE_CLAIM_TIMEOUT_SECONDS, "120"),
+        ]))
+        .expect_err("stale claim must outlive one request");
+        assert!(err.to_string().contains("strictly greater"));
+    }
+
+    #[test]
+    fn embedding_runtime_policy_rejects_fractional_programmatic_durations() {
+        for (field, result) in [
+            (
+                PROXIMA_EMBED_REQUEST_TIMEOUT_SECONDS,
+                EmbeddingRuntimePolicy::new(
+                    Duration::from_millis(1_500),
+                    2,
+                    Duration::from_secs(1),
+                    Duration::from_secs(3),
+                ),
+            ),
+            (
+                PROXIMA_EMBED_WORKER_INTERVAL_SECONDS,
+                EmbeddingRuntimePolicy::new(
+                    Duration::from_secs(1),
+                    2,
+                    Duration::from_millis(1_500),
+                    Duration::from_secs(3),
+                ),
+            ),
+            (
+                PROXIMA_EMBED_STALE_CLAIM_TIMEOUT_SECONDS,
+                EmbeddingRuntimePolicy::new(
+                    Duration::from_secs(1),
+                    2,
+                    Duration::from_secs(1),
+                    Duration::from_millis(3_500),
+                ),
+            ),
+        ] {
+            assert!(
+                matches!(
+                    result,
+                    Err(EmbeddingRuntimePolicyError::NonIntegralSeconds { field: actual })
+                        if actual == field
+                ),
+                "fractional {field} must be rejected"
+            );
+        }
+    }
+
+    #[derive(Debug)]
+    struct HangingEmbedding;
+
+    #[async_trait]
+    impl EmbeddingClient for HangingEmbedding {
+        async fn embed(&self, _text: &str) -> Result<Vec<f32>, LlmError> {
+            std::future::pending().await
+        }
+
+        async fn embed_many(&self, _texts: &[String]) -> Result<Vec<Vec<f32>>, LlmError> {
+            std::future::pending().await
+        }
+
+        fn model_id(&self) -> &'static str {
+            "hanging"
+        }
+
+        fn dim(&self) -> usize {
+            4
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn request_timeout_bounds_single_and_batch_custom_client_calls() {
+        let timeout = Duration::from_secs(1);
+        for result in [
+            embed_with_timeout(&HangingEmbedding, "one", timeout)
+                .await
+                .map(|_| ()),
+            embed_many_with_timeout(&HangingEmbedding, &["one".to_owned()], timeout)
+                .await
+                .map(|_| ()),
+        ] {
+            assert!(
+                matches!(result, Err(LlmError::Embed(ref message)) if message.contains("timed out")),
+                "timeout must be a retryable embedding error: {result:?}"
+            );
+        }
+    }
+
+    #[derive(Debug)]
+    struct RescueThenHang {
+        calls: std::sync::atomic::AtomicUsize,
+    }
+
+    #[async_trait]
+    impl EmbeddingClient for RescueThenHang {
+        async fn embed(&self, _text: &str) -> Result<Vec<f32>, LlmError> {
+            if self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+                return Err(LlmError::EmbedPermanent("split me".into()));
+            }
+            std::future::pending().await
+        }
+
+        fn model_id(&self) -> &'static str {
+            "rescue-then-hang"
+        }
+
+        fn dim(&self) -> usize {
+            4
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn request_timeout_bounds_each_chunk_rescue_provider_call() {
+        let client = RescueThenHang {
+            calls: std::sync::atomic::AtomicUsize::new(0),
+        };
+        let result = embed_in_chunks_with_timeout(
+            &client,
+            &"a".repeat(CHUNKED_EMBED_MIN_BYTES * 2),
+            Duration::from_secs(1),
+        )
+        .await;
+        assert!(
+            matches!(result, Err(LlmError::Embed(ref message)) if message.contains("timed out")),
+            "a hung chunk request must be retryable: {result:?}"
+        );
+    }
 
     /// A provider that refuses over-cap input the way a client-side
     /// `max_input_chars` does — and records every length it was offered, so a

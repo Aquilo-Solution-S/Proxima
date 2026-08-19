@@ -6,8 +6,9 @@ use crate::access::Relation;
 use crate::authz::{AuthzContext, EngineAuthority};
 use crate::edge::EdgeEndpoint;
 use crate::error::ProtocolError;
-use crate::llm::{EMBEDDING_BATCH_SIZE, EmbeddingClient, LlmError};
+use crate::llm::{EmbeddingClient, LlmError};
 use crate::storage::{EmbeddingJobClaim, StorageError};
+use crate::storage_ports::EmbeddingJobHandle;
 
 use crate::verbs::fact_ingest::{
     AuthorizedCitationAttachment, AuthorizedFactWithCitation, AuthorizedFactWithCitationRef,
@@ -40,6 +41,32 @@ pub struct EmbeddingDrainOutcome {
 enum EmbedStep {
     Embedded,
     NothingToEmbed,
+}
+
+struct EmbeddingClaimHeartbeat {
+    handle: tokio::task::JoinHandle<()>,
+}
+
+impl Drop for EmbeddingClaimHeartbeat {
+    fn drop(&mut self) {
+        self.handle.abort();
+    }
+}
+
+fn spawn_embedding_claim_heartbeat(
+    jobs: EmbeddingJobHandle,
+    claims: Vec<EmbeddingJobClaim>,
+    interval: std::time::Duration,
+) -> EmbeddingClaimHeartbeat {
+    let handle = tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(interval).await;
+            if let Err(err) = jobs.renew_embedding_jobs(&claims).await {
+                tracing::warn!(error = %err, "embedding claim heartbeat failed");
+            }
+        }
+    });
+    EmbeddingClaimHeartbeat { handle }
 }
 
 impl Engine {
@@ -799,9 +826,9 @@ impl Engine {
     /// for the currently active embedding model. This method does not
     /// spawn a worker, timer, or model decision loop; the caller controls
     /// invocation and `limit`. Jobs are claimed and embedded in batches of
-    /// up to [`EMBEDDING_BATCH_SIZE`] texts per provider call (`/embeddings`
-    /// endpoints accept arrays), dividing request count — and request-rate-
-    /// limit pressure — by the batch width.
+    /// up to the host-configured [`crate::EmbeddingRuntimePolicy::batch_size`]
+    /// texts per provider call. Direct core hosts can install the policy with
+    /// [`Engine::with_embedding_runtime_policy`].
     ///
     /// Failure semantics:
     /// - a *transient* batch failure (429/5xx/network) releases the claimed
@@ -828,10 +855,11 @@ impl Engine {
         let Some(client) = self.embed_client() else {
             return Ok(EmbeddingDrainOutcome::default());
         };
+        let policy = self.embedding_runtime_policy();
         let mut outcome = EmbeddingDrainOutcome::default();
         let mut remaining = limit;
         while remaining > 0 {
-            let take = i64::try_from(remaining.min(EMBEDDING_BATCH_SIZE))
+            let take = i64::try_from(remaining.min(policy.batch_size()))
                 .map_err(|_| StorageError::ConstraintViolation("limit too large".into()))?;
             let claims = self
                 .storage
@@ -843,6 +871,11 @@ impl Engine {
                 break;
             }
             remaining = remaining.saturating_sub(claims.len());
+            let _heartbeat = spawn_embedding_claim_heartbeat(
+                self.storage.ingest.embedding_job.clone(),
+                claims.clone(),
+                policy.claim_heartbeat_interval(),
+            );
 
             // Jobs whose memory no longer yields embeddable text are
             // complete as-is; only texted jobs go to the provider.
@@ -878,6 +911,11 @@ impl Engine {
 
             let texts: Vec<String> = batch.iter().map(|(_, text)| text.clone()).collect();
             match client.embed_many(&texts).await {
+                Ok(vectors) if vectors.len() != batch.len() => {
+                    self.release_malformed_embedding_batch(batch, vectors.len())
+                        .await?;
+                    break;
+                }
                 Ok(vectors) => {
                     for ((claim, _), vector) in batch.iter().zip(vectors) {
                         outcome.processed += 1;
@@ -938,6 +976,28 @@ impl Engine {
             }
         }
         Ok(outcome)
+    }
+
+    async fn release_malformed_embedding_batch(
+        &self,
+        batch: Vec<(EmbeddingJobClaim, String)>,
+        received: usize,
+    ) -> Result<(), StorageError> {
+        let error = format!(
+            "embedding batch cardinality mismatch: sent {} texts but received {received} vectors",
+            batch.len(),
+        );
+        tracing::warn!(
+            sent = batch.len(),
+            received,
+            "embedding provider returned malformed batch cardinality"
+        );
+        let claims: Vec<EmbeddingJobClaim> = batch.into_iter().map(|(claim, _)| claim).collect();
+        self.storage
+            .ingest
+            .embedding_job
+            .release_embedding_jobs(&claims, &error)
+            .await
     }
 
     /// Store one produced vector for its claim and complete the job; a
@@ -1142,6 +1202,7 @@ impl Engine {
                     limit: Some(limit.unwrap_or(crate::EMBEDDING_RECONCILE_DEFAULT_LIMIT)),
                     non_embeddable_schemas: self.registry().non_embeddable_schema_ids(),
                 },
+                self.embedding_runtime_policy(),
                 crate::storage_ports::OperatorMaintenanceProof::new(),
             )
             .await

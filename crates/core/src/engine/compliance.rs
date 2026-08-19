@@ -177,7 +177,10 @@ impl Engine {
         self.storage
             .compliance
             .embedding_maintenance
-            .embedding_ann_observability(OperatorMaintenanceProof::new())
+            .embedding_ann_observability(
+                self.embedding_runtime_policy(),
+                OperatorMaintenanceProof::new(),
+            )
             .await
             .map_err(|e| ProtocolError::internal(format!("embedding_ann_observability: {e}")))
     }

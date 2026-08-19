@@ -346,6 +346,15 @@ impl EmbeddingJobPort for RejectingStorage {
         ))
     }
 
+    async fn renew_embedding_jobs(
+        &self,
+        _claims: &[EmbeddingJobClaim],
+    ) -> Result<u64, StorageError> {
+        Err(StorageError::Internal(
+            "RejectingStorage rejects writes".into(),
+        ))
+    }
+
     async fn fail_embedding_job(
         &self,
         _claim: &EmbeddingJobClaim,
@@ -401,6 +410,7 @@ impl EmbeddingJobPort for RejectingStorage {
 impl EmbeddingMaintenancePort for RejectingStorage {
     async fn embedding_ann_observability(
         &self,
+        _policy: crate::EmbeddingRuntimePolicy,
         _proof: OperatorMaintenanceProof,
     ) -> Result<super::embeddings::EmbeddingAnnObservability, StorageError> {
         Err(StorageError::Internal(
@@ -420,6 +430,7 @@ impl EmbeddingMaintenancePort for RejectingStorage {
     async fn reconcile_embeddings(
         &self,
         _options: super::embeddings::EmbeddingReconcileOptions<'_>,
+        _policy: crate::EmbeddingRuntimePolicy,
         _proof: OperatorMaintenanceProof,
     ) -> Result<super::embeddings::EmbeddingReconcileOutcome, StorageError> {
         Err(StorageError::Internal(

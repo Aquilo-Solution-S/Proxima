@@ -363,6 +363,13 @@ mod storage_port_tests_support {
             Ok(())
         }
 
+        async fn renew_embedding_jobs(
+            &self,
+            claims: &[crate::storage::EmbeddingJobClaim],
+        ) -> Result<u64, StorageError> {
+            Ok(u64::try_from(claims.len()).expect("test claim count fits u64"))
+        }
+
         async fn fail_embedding_job(
             &self,
             _claim: &crate::storage::EmbeddingJobClaim,
@@ -416,6 +423,7 @@ mod storage_port_tests_support {
     impl crate::EmbeddingMaintenancePort for EmbeddingJobFake {
         async fn embedding_ann_observability(
             &self,
+            _policy: crate::EmbeddingRuntimePolicy,
             _proof: crate::OperatorMaintenanceProof,
         ) -> Result<crate::EmbeddingAnnObservability, StorageError> {
             Ok(crate::EmbeddingAnnObservability {
@@ -442,6 +450,7 @@ mod storage_port_tests_support {
         async fn reconcile_embeddings(
             &self,
             _options: crate::EmbeddingReconcileOptions<'_>,
+            _policy: crate::EmbeddingRuntimePolicy,
             _proof: crate::OperatorMaintenanceProof,
         ) -> Result<crate::EmbeddingReconcileOutcome, StorageError> {
             Ok(crate::EmbeddingReconcileOutcome {

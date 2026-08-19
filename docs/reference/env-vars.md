@@ -40,6 +40,10 @@ whether that is legal.
 | `PROXIMA_EMBED_API_KEY` | embeddings | unset | hosted embedding endpoint | bearer sent to `/embeddings` |
 | `PROXIMA_EMBED_MODEL` | embeddings | unset | embeddings enabled | required with `PROXIMA_EMBED_BASE_URL`; must yield 1024-dim vectors |
 | `PROXIMA_EMBED_MATRYOSHKA` | embeddings | `false` | nested-prefix model wider than 1024 | sends a `dimensions` request parameter |
+| `PROXIMA_EMBED_REQUEST_TIMEOUT_SECONDS` | embedding runtime | `120` | slow provider | complete provider request timeout; range `1..=3600`; invalid values fail boot |
+| `PROXIMA_EMBED_BATCH_SIZE` | embedding runtime | `32` | provider batch tuning | texts per provider call; range `1..=1024`; invalid values fail boot |
+| `PROXIMA_EMBED_WORKER_INTERVAL_SECONDS` | embedding runtime | `5` | worker cadence tuning | idle poll seconds; range `1..=3600`; invalid values fail boot |
+| `PROXIMA_EMBED_STALE_CLAIM_TIMEOUT_SECONDS` | embedding runtime | `900` | crash-reclaim tuning | range `1..=86400`; must be strictly greater than request timeout and cover the longest honest drain interval between successful claim renewals |
 | `PROXIMA_SKIP_MIGRATIONS` | boot | `false` | split-role GitOps deploys | boot without applying migrations; the schema must already be at the current lane or boot fails closed |
 | `PROXIMA_PG_MAX_CONNECTIONS` | Postgres pool | `10` | tuning pool size | minimum 1 |
 | `PROXIMA_PG_STATEMENT_TIMEOUT_MS` | Postgres pool | `300000` | tuning request timeouts | `0` disables; migrations and bulk erase opt out separately |

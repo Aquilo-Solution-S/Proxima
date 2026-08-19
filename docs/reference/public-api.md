@@ -249,6 +249,8 @@ Public facade status:
 | `EmbeddingOrphanCounts` | `proxima::EmbeddingOrphanCounts` | Host API DTO |
 | `EmbeddingOrphanSweepOutcome` | `proxima::EmbeddingOrphanSweepOutcome` | Host API DTO |
 | `EmbeddingRecallCanary` | `proxima::EmbeddingRecallCanary` | Host API DTO |
+| `EmbeddingRuntimePolicy` | `proxima::EmbeddingRuntimePolicy` | Validated whole-second host policy; programmatic equivalent of generic `PROXIMA_EMBED_*` runtime variables |
+| `RuntimeBuilder::embedding_runtime_policy(policy)` | `proxima::RuntimeBuilder` | Installs provider batch width, enforced request timeout, worker cadence, and claim lifecycle as one block |
 | `Engine::embedding_ann_observability(authz)` | `proxima::Engine` | Host API verb |
 | `Engine::sweep_orphan_embedding_rows(authz)` | `proxima::Engine` | Host API verb |
 

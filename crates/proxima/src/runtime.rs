@@ -33,8 +33,6 @@ use crate::{
 };
 use proxima_storage_pg::{PgDelegationStore, PgOwnerAccessResolver, PgSidecarRegistryFrozen};
 
-const EMBEDDING_WORKER_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
-
 /// Application runtime facade.
 pub struct Proxima<A: FlavorApp> {
     overlay: RuntimeBuilder,
@@ -170,6 +168,15 @@ impl<A: FlavorApp + 'static> Proxima<A> {
     #[must_use]
     pub fn embed_client(mut self, client: Arc<dyn EmbeddingClient>) -> Self {
         self.overlay = self.overlay.embed_client(client);
+        self
+    }
+
+    #[must_use]
+    pub fn embedding_runtime_policy(
+        mut self,
+        policy: proxima_core::EmbeddingRuntimePolicy,
+    ) -> Self {
+        self.overlay = self.overlay.embedding_runtime_policy(policy);
         self
     }
 
@@ -601,6 +608,7 @@ fn spawn_embedding_worker(engine: Arc<Engine>, cancel: CancellationToken) -> Joi
         if engine.embed_client().is_none() {
             return;
         }
+        let policy = engine.embedding_runtime_policy();
         // Boot-time catch-up, not a recurring clock: memories written while
         // no embedding client was configured never got a job (and exhausted
         // `failed` jobs stay dead), so one reconcile pass before the first
@@ -636,10 +644,7 @@ fn spawn_embedding_worker(engine: Arc<Engine>, cancel: CancellationToken) -> Joi
                 if cancel.is_cancelled() {
                     return;
                 }
-                match engine
-                    .drain_embedding_jobs(proxima_core::llm::EMBEDDING_BATCH_SIZE)
-                    .await
-                {
+                match engine.drain_embedding_jobs(policy.batch_size()).await {
                     Ok(outcome) if outcome.processed > 0 => {
                         processed += outcome.processed;
                         failed += outcome.failed;
@@ -656,7 +661,7 @@ fn spawn_embedding_worker(engine: Arc<Engine>, cancel: CancellationToken) -> Joi
             }
             tokio::select! {
                 () = cancel.cancelled() => break,
-                () = tokio::time::sleep(EMBEDDING_WORKER_INTERVAL) => {}
+                () = tokio::time::sleep(policy.worker_interval()) => {}
             }
         }
     })
@@ -818,7 +823,8 @@ async fn boot_app<A: FlavorApp + 'static>(
     )
     .bundle::<A>()
     .deployment_tool_scope(config.tool_scope.clone())
-    .pg_tuning(config.pg_tuning);
+    .pg_tuning(config.pg_tuning)
+    .embedding_runtime_policy(config.embedding_runtime_policy);
     if config.skip_migrations {
         builder = builder.skip_migrations();
     }

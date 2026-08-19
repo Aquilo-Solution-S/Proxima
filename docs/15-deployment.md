@@ -93,6 +93,10 @@ lock fails and retries on the next pod rather than queueing behind readers.
 | `PROXIMA_EMBED_MODEL` | when enabled | `provider-embedding-model` | Embedding model id. Required with `PROXIMA_EMBED_BASE_URL` when embeddings are enabled; must return 1024-dim vectors. |
 | `PROXIMA_EMBED_MATRYOSHKA` | no | `false` | Request 1024 dimensions from a nested-prefix model wider than 1024. |
 | `PROXIMA_EMBED_MAX_INPUT_CHARS` | no | `16384` | Longest input, in characters, that will be *sent*. Unset ⇒ no client-side bound. Over-cap input is refused without a request and split into chunked embeddings instead. Minimum `4095`; below that the split cannot satisfy the cap and boot fails. Set it for a provider that dies on over-long input rather than rejecting it (a local Ollama does) — see docs/10 §Bounding embedding input. |
+| `PROXIMA_EMBED_REQUEST_TIMEOUT_SECONDS` | no | `120` | Complete provider-request timeout; range `1..=3600`. Enforced at the generic client boundary and by the shipped HTTP adapter. |
+| `PROXIMA_EMBED_BATCH_SIZE` | no | `32` | Texts per provider call; range `1..=1024`. |
+| `PROXIMA_EMBED_WORKER_INTERVAL_SECONDS` | no | `5` | Idle worker poll interval; range `1..=3600`. |
+| `PROXIMA_EMBED_STALE_CLAIM_TIMEOUT_SECONDS` | no | `900` | Crash-reclaim window; range `1..=86400`, strictly greater than request timeout. Must cover the longest honest drain interval between successful claim renewals. Live claims heartbeat every third of the window; claim-token fencing rejects writes after a real reclaim. |
 | `PROXIMA_SKIP_MIGRATIONS` | no | `true` | Boot without applying migrations, for the split-role topology above. The schema must already be at the current lane — boot fails closed otherwise. |
 | `PROXIMA_S3_BUCKET` | no | `proxima-cited-blobs` | Cited-blob bucket. |
 | `PROXIMA_S3_REGION` | no | `us-east-1` | S3 region. |
@@ -237,6 +241,8 @@ Runtime search:
 |---|---|
 | vector type | `vector(1024)`. Any embedding model must return 1024 dimensions — see `PROXIMA_EMBED_MATRYOSHKA` for nested-prefix models wider than that |
 | ANN index | shared `idx_embeddings_vec_hnsw` |
+| provider batching | `PROXIMA_EMBED_BATCH_SIZE`; host policy, not a core provider assumption |
+| durable claims | heartbeat during all provider calls; reconcile and observability use `PROXIMA_EMBED_STALE_CLAIM_TIMEOUT_SECONDS` |
 | semantic-search GUCs | `SET LOCAL hnsw.ef_search = 100`; `SET LOCAL hnsw.iterative_scan = relaxed_order`; `SET LOCAL hnsw.max_scan_tuples = 20000` |
 | cold owner subsets | planner may prefer owner btree + exact sort |
 

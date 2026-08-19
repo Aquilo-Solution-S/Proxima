@@ -12,10 +12,10 @@ mod write;
 pub use jobs::claim_embedding_jobs_sql_for_tests;
 pub(crate) use jobs::enqueue_embedding_job_in_tx;
 pub use jobs::{
-    STALE_PROCESSING_RECLAIM_SECONDS, claim_pending_embedding_jobs, complete_embedding_job,
-    count_embedding_job_status, count_failed_embedding_jobs, count_pending_embedding_jobs,
-    enqueue_missing_embedding_jobs, fail_embedding_job, fail_embedding_job_permanently,
-    list_facts_missing_embedding, reclaim_stale_embedding_jobs, release_embedding_jobs,
+    claim_pending_embedding_jobs, complete_embedding_job, count_embedding_job_status,
+    count_failed_embedding_jobs, count_pending_embedding_jobs, enqueue_missing_embedding_jobs,
+    fail_embedding_job, fail_embedding_job_permanently, list_facts_missing_embedding,
+    reclaim_stale_embedding_jobs, release_embedding_jobs, renew_embedding_jobs,
 };
 pub(crate) use ops::{embedding_ann_observability, sweep_orphan_embedding_rows};
 pub use reconcile::{

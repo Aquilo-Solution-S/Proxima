@@ -221,6 +221,14 @@ pub trait EmbeddingJobPort: Send + Sync {
 
     async fn complete_embedding_job(&self, claim: &EmbeddingJobClaim) -> Result<(), StorageError>;
 
+    /// Refresh `claimed_at` for still-live, token-matching claims.
+    ///
+    /// Returns the number renewed. Missing rows are allowed: another step in
+    /// the same drain may already have completed them. Every terminal write
+    /// remains fenced by the claim token.
+    async fn renew_embedding_jobs(&self, claims: &[EmbeddingJobClaim])
+    -> Result<u64, StorageError>;
+
     /// Fail an attempted job for a retryable cause. The job holds `error`
     /// and waits for a reconciliation pass to requeue it.
     async fn fail_embedding_job(
@@ -343,6 +351,7 @@ pub struct EmbeddingReconcileOutcome {
 pub trait EmbeddingMaintenancePort: Send + Sync {
     async fn embedding_ann_observability(
         &self,
+        policy: crate::EmbeddingRuntimePolicy,
         proof: OperatorMaintenanceProof,
     ) -> Result<EmbeddingAnnObservability, StorageError>;
 
@@ -358,6 +367,7 @@ pub trait EmbeddingMaintenancePort: Send + Sync {
     async fn reconcile_embeddings(
         &self,
         options: EmbeddingReconcileOptions<'_>,
+        policy: crate::EmbeddingRuntimePolicy,
         proof: OperatorMaintenanceProof,
     ) -> Result<EmbeddingReconcileOutcome, StorageError>;
 }

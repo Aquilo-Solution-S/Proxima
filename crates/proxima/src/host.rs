@@ -12,6 +12,7 @@ pub use crate::runtime::{
 };
 pub use crate::runtime_config::{
     McpSettings, ProximaError, RuntimeBuilder, RuntimeConfig, RuntimeParts,
+    embedding_runtime_policy_from_lookup,
 };
 /// The S3-backed cited-blob lane.
 ///
@@ -122,10 +123,10 @@ pub use proxima_core::{
     DelegatedAuthorityError, DelegatedAuthorityService, DelegatedCommand, DelegatedPhase,
     DelegationId, DelegationIssued, DelegationRevocation, EmbeddingAnnObservability,
     EmbeddingJobBacklog, EmbeddingOrphanCounts, EmbeddingOrphanSweepOutcome, EmbeddingRecallCanary,
-    Engine, EngineAuthority, EngineHandle, FlavorRegistryFrozen, FlavorServiceError,
-    FlavorServices, GoalWakeCandidate, GoalWakeHardMemory, GroupId, MemoryId, Owner,
-    OwnerAccessPort, OwnerExternalKeyParseError, OwnerRef, OwnerRefKind, OwnerRoles, Relation,
-    Role, SourceBatchId, SourceId, StorageError, ToolScope, UserId, canonical_json_bytes,
+    EmbeddingRuntimePolicy, Engine, EngineAuthority, EngineHandle, FlavorRegistryFrozen,
+    FlavorServiceError, FlavorServices, GoalWakeCandidate, GoalWakeHardMemory, GroupId, MemoryId,
+    Owner, OwnerAccessPort, OwnerExternalKeyParseError, OwnerRef, OwnerRefKind, OwnerRoles,
+    Relation, Role, SourceBatchId, SourceId, StorageError, ToolScope, UserId, canonical_json_bytes,
     env_value, parse_external_key, provider_safe_tool_name,
 };
 /// The three citation schema ids [`CitationSpec`] is written with:

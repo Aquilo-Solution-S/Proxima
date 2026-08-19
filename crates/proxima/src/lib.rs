@@ -149,6 +149,7 @@ pub struct ProximaBuilder {
     migrators: Vec<NamedMigrator>,
     skip_migrations: bool,
     embed_client: Option<Arc<dyn EmbeddingClient>>,
+    embedding_runtime_policy: proxima_core::EmbeddingRuntimePolicy,
     deployment_tool_scope: Option<proxima_core::ToolScope>,
     pg_tuning: Option<proxima_storage_pg::PgTuning>,
 }
@@ -163,6 +164,7 @@ impl std::fmt::Debug for ProximaBuilder {
             .field("migrators", &self.migrators.len())
             .field("skip_migrations", &self.skip_migrations)
             .field("has_embed_client", &self.embed_client.is_some())
+            .field("embedding_runtime_policy", &self.embedding_runtime_policy)
             .field("deployment_tool_scope", &self.deployment_tool_scope)
             .field("pg_tuning", &self.pg_tuning)
             .finish()
@@ -222,6 +224,7 @@ impl ProximaBuilder {
             migrators: Vec::new(),
             skip_migrations: false,
             embed_client: None,
+            embedding_runtime_policy: proxima_core::EmbeddingRuntimePolicy::default(),
             deployment_tool_scope: None,
             pg_tuning: None,
         }
@@ -299,6 +302,17 @@ impl ProximaBuilder {
         self
     }
 
+    /// Set the validated embedding runtime policy for provider batching,
+    /// worker cadence, and durable-claim maintenance.
+    #[must_use]
+    pub const fn embedding_runtime_policy(
+        mut self,
+        policy: proxima_core::EmbeddingRuntimePolicy,
+    ) -> Self {
+        self.embedding_runtime_policy = policy;
+        self
+    }
+
     /// Deployment tool-surface profile passthrough
     /// (`Engine::with_deployment_tool_scope`). The runtime facade forwards
     /// its required `tool_scope` here so engine chokepoints enforce the
@@ -336,6 +350,7 @@ impl ProximaBuilder {
             migrators,
             skip_migrations,
             embed_client,
+            embedding_runtime_policy,
             deployment_tool_scope,
             pg_tuning,
         } = self;
@@ -376,7 +391,8 @@ impl ProximaBuilder {
         let pg_sidecars = Arc::new(pg_sidecars);
         let pg = pg
             .with_sidecars(pg_sidecars.as_ref().clone())
-            .with_search_projections(registry.search_projections().to_vec());
+            .with_search_projections(registry.search_projections().to_vec())
+            .with_embedding_runtime_policy(embedding_runtime_policy);
 
         let pool = pg.clone_pool_for_backend();
         let blobs = config
@@ -389,8 +405,9 @@ impl ProximaBuilder {
             None => pg,
         };
 
-        let mut engine =
-            Engine::new(registry).with_storage_ports(Arc::new(pg.clone()).storage_ports());
+        let mut engine = Engine::new(registry)
+            .with_storage_ports(Arc::new(pg.clone()).storage_ports())
+            .with_embedding_runtime_policy(embedding_runtime_policy);
         if let Some(scope) = deployment_tool_scope {
             engine = engine.with_deployment_tool_scope(scope);
         }

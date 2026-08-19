@@ -464,6 +464,15 @@ pub(in crate::engine) mod tests {
             ))
         }
 
+        async fn renew_embedding_jobs(
+            &self,
+            _claims: &[EmbeddingJobClaim],
+        ) -> Result<u64, StorageError> {
+            Err(StorageError::Internal(
+                "MembershipStorage rejects writes".into(),
+            ))
+        }
+
         async fn fail_embedding_job(
             &self,
             _claim: &EmbeddingJobClaim,
@@ -519,6 +528,7 @@ pub(in crate::engine) mod tests {
     impl crate::EmbeddingMaintenancePort for MembershipStorage {
         async fn embedding_ann_observability(
             &self,
+            _policy: crate::EmbeddingRuntimePolicy,
             _proof: crate::OperatorMaintenanceProof,
         ) -> Result<crate::EmbeddingAnnObservability, StorageError> {
             Err(StorageError::Internal(
@@ -538,6 +548,7 @@ pub(in crate::engine) mod tests {
         async fn reconcile_embeddings(
             &self,
             _options: crate::EmbeddingReconcileOptions<'_>,
+            _policy: crate::EmbeddingRuntimePolicy,
             _proof: crate::OperatorMaintenanceProof,
         ) -> Result<crate::EmbeddingReconcileOutcome, StorageError> {
             Err(StorageError::Internal(

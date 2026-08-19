@@ -16,7 +16,7 @@ use crate::{build_client, ensure_secure_base_url, join_endpoint};
 /// fast request, and the in-process serial drainer must not stall for
 /// minutes on one wedged call. Override with
 /// [`OpenAiCompatConfig::with_timeout`] for unusually slow local models.
-pub const DEFAULT_EMBED_TIMEOUT: Duration = Duration::from_mins(2);
+pub const DEFAULT_EMBED_TIMEOUT: Duration = proxima_core::llm::DEFAULT_EMBED_REQUEST_TIMEOUT;
 
 #[derive(Clone)]
 pub struct OpenAiCompatConfig {
@@ -169,6 +169,12 @@ impl OpenAiCompatEmbeddingClient {
     #[must_use]
     pub fn caps(&self) -> EmbedCaps {
         self.caps
+    }
+
+    /// Complete-request timeout applied to the underlying HTTP client.
+    #[must_use]
+    pub const fn request_timeout(&self) -> Duration {
+        self.config.timeout
     }
 
     /// Refuse over-cap input *before* it is sent, naming the bound it broke.

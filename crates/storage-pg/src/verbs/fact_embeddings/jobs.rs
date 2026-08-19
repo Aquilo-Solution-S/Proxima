@@ -6,16 +6,6 @@ use crate::error::map_err;
 
 use super::ensure_nonnegative_limit;
 
-/// Seconds a job may sit in `processing` before
-/// [`reclaim_stale_embedding_jobs`] returns it to `pending`.
-///
-/// A drainer that dies between claim and complete/fail leaves the row
-/// `processing` forever, and the unique `(owner_id, entity_id, model_id)`
-/// key means no re-enqueue can replace it — the memory silently stops
-/// being embeddable. The window only needs to exceed the longest honest
-/// drain of one batch.
-pub const STALE_PROCESSING_RECLAIM_SECONDS: i64 = 900;
-
 /// Claim pending jobs for one model, ordered by `job_id`.
 ///
 /// One arm: `status = 'pending'`. Rides
@@ -24,16 +14,18 @@ pub const STALE_PROCESSING_RECLAIM_SECONDS: i64 = 900;
 /// transaction. `claimed_at` is what makes a crashed drainer's row
 /// recoverable ([`reclaim_stale_embedding_jobs`]); there is no
 /// `next_attempt_at` column. Each claim also gets a fencing token so a
-/// reclaimed worker cannot complete a successor's claim.
+/// reclaimed worker cannot complete a successor's claim. The table's unique
+/// `(owner_id, entity_id, model_id)` key guarantees at most one job for an
+/// entity in this model; callers never need an invocation-sized exclusion
+/// list to prevent duplicate work.
 const CLAIM_EMBEDDING_JOBS_SQL: &str = "WITH claimed AS (
              SELECT job_id
                FROM proxima_core.embedding_jobs
               WHERE model_id = $1
                 AND status = 'pending'
-                AND NOT (entity_id = ANY($2::uuid[]))
               ORDER BY job_id ASC
               FOR UPDATE SKIP LOCKED
-              LIMIT $3
+              LIMIT $2
          )
          UPDATE proxima_core.embedding_jobs j
             SET status = 'processing',
@@ -154,10 +146,10 @@ async fn missing_embedding_ids(
 
 /// Atomically claim pending embedding jobs for one model.
 ///
-/// Selects `status = 'pending'` rows for `$1`, skips the exclude list,
-/// `FOR UPDATE SKIP LOCKED`, then sets `processing` and stamps
-/// `claimed_at`. v0.0.8 has no `next_attempt_at`; a claim a drainer never
-/// finishes is recovered by [`reclaim_stale_embedding_jobs`].
+/// Selects `status = 'pending'` rows for `$1`, `FOR UPDATE SKIP LOCKED`, then
+/// sets `processing` and stamps `claimed_at`. v0.0.8 has no
+/// `next_attempt_at`; a claim a drainer never finishes is recovered by
+/// [`reclaim_stale_embedding_jobs`].
 ///
 /// # Errors
 ///
@@ -168,15 +160,6 @@ pub async fn claim_pending_embedding_jobs(
     model_id: &str,
     limit: i64,
 ) -> Result<Vec<EmbeddingJobClaim>, StorageError> {
-    claim_pending_embedding_jobs_excluding(pool, model_id, limit, &[]).await
-}
-
-pub(super) async fn claim_pending_embedding_jobs_excluding(
-    pool: &PgPool,
-    model_id: &str,
-    limit: i64,
-    exclude_entity_ids: &[uuid::Uuid],
-) -> Result<Vec<EmbeddingJobClaim>, StorageError> {
     let limit = ensure_nonnegative_limit(limit)?;
     if limit == 0 {
         return Ok(Vec::new());
@@ -185,7 +168,6 @@ pub(super) async fn claim_pending_embedding_jobs_excluding(
     // every value is bound.
     let rows = sqlx::query_as::<_, EmbeddingJobClaimRow>(CLAIM_EMBEDDING_JOBS_SQL)
         .bind(model_id)
-        .bind(exclude_entity_ids)
         .bind(limit)
         .fetch_all(pool)
         .await
@@ -220,6 +202,41 @@ pub async fn complete_embedding_job(
         ));
     }
     Ok(())
+}
+
+/// Refresh the lease timestamp for token-matching processing claims.
+///
+/// Missing claims are skipped rather than treated as a conflict: a batch
+/// heartbeat includes claims that earlier steps may already have completed.
+/// Claim-token fencing still prevents an old drainer from renewing or
+/// mutating a successor claim.
+///
+/// # Errors
+///
+/// Maps SQL failures through the shared mapper.
+pub async fn renew_embedding_jobs(
+    pool: &PgPool,
+    claims: &[EmbeddingJobClaim],
+) -> Result<u64, StorageError> {
+    if claims.is_empty() {
+        return Ok(0);
+    }
+    let job_ids: Vec<uuid::Uuid> = claims.iter().map(|claim| claim.job_id).collect();
+    let claim_tokens: Vec<uuid::Uuid> = claims.iter().map(|claim| claim.claim_token).collect();
+    let result = sqlx::query(
+        "UPDATE proxima_core.embedding_jobs j
+            SET claimed_at = now()
+           FROM unnest($1::uuid[], $2::uuid[]) AS claim(job_id, claim_token)
+          WHERE j.job_id = claim.job_id
+            AND j.claim_token = claim.claim_token
+            AND j.status = 'processing'",
+    )
+    .bind(&job_ids)
+    .bind(&claim_tokens)
+    .execute(pool)
+    .await
+    .map_err(map_err)?;
+    Ok(result.rows_affected())
 }
 
 /// Fail an attempted job for a retryable cause: `failed`, with `error`
@@ -509,9 +526,8 @@ pub async fn count_embedding_job_status(
 /// Enqueue one durable embedding job in the caller's transaction, so the
 /// job row and the memory row land together or not at all.
 ///
-/// Idempotent on the table's natural key `(owner, entity_kind, entity_id,
-/// model_id, embedding_version)`, which is why a replayed write and a
-/// re-enqueued deferral are both free.
+/// Idempotent on the table's natural key `(owner_id, entity_id, model_id)`,
+/// which is why a replayed write and a re-enqueued deferral are both free.
 ///
 /// `entity_kind` is deliberately a parameter rather than `Fact`: the
 /// column is the full `proxima_core.entity_kind` enum, so an `Abstraction`
@@ -595,15 +611,25 @@ mod tests {
         );
     }
 
+    #[test]
+    fn claim_needs_no_growing_entity_exclusion_parameter() {
+        let migration = include_str!("../../../migrations/0001_v008.sql");
+        assert!(
+            migration.contains("UNIQUE (owner_id, entity_id, model_id)"),
+            "the DB must admit at most one job per entity and model"
+        );
+        assert!(!CLAIM_EMBEDDING_JOBS_SQL.contains("ANY("));
+        assert!(!CLAIM_EMBEDDING_JOBS_SQL.contains("$3"));
+    }
+
     const CLAIM_GOLDEN: &str = r"WITH claimed AS (
              SELECT job_id
                FROM proxima_core.embedding_jobs
               WHERE model_id = $1
                 AND status = 'pending'
-                AND NOT (entity_id = ANY($2::uuid[]))
               ORDER BY job_id ASC
               FOR UPDATE SKIP LOCKED
-              LIMIT $3
+              LIMIT $2
          )
          UPDATE proxima_core.embedding_jobs j
             SET status = 'processing',

@@ -24,6 +24,7 @@ impl Engine {
             storage: EngineStoragePorts::from(StoragePorts::rejecting()),
             deployment_tool_scope: crate::authz::ToolScope::All,
             embed: Arc::new(RwLock::new(None)),
+            embedding_runtime_policy: crate::llm::EmbeddingRuntimePolicy::default(),
             embedding_reloader: None,
             cited_object_erase: None,
             mcp_listen_addr: DEFAULT_MCP_LISTEN_ADDR,
@@ -131,6 +132,19 @@ impl Engine {
         self
     }
 
+    /// Set provider batching and durable-claim lifecycle policy for the
+    /// installed embedding client. Direct core composition defaults to the
+    /// generic finite policy; hosts should pass their resolved deployment
+    /// policy explicitly.
+    #[must_use]
+    pub const fn with_embedding_runtime_policy(
+        mut self,
+        policy: crate::llm::EmbeddingRuntimePolicy,
+    ) -> Self {
+        self.embedding_runtime_policy = policy;
+        self
+    }
+
     #[must_use]
     pub fn with_embedding_reloader(mut self, reloader: Arc<dyn EmbeddingClientReloader>) -> Self {
         self.embedding_reloader = Some(reloader);
@@ -167,13 +181,64 @@ impl Engine {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use async_trait::async_trait;
+
     use super::Engine;
-    use crate::StoragePorts;
+    use crate::{EmbeddingClient, EmbeddingRuntimePolicy, FlavorRegistry, LlmError, StoragePorts};
 
     #[test]
     fn compose_assembles_engine_over_registry_closure() {
         let engine = Engine::compose_or_panic_for_tests(StoragePorts::rejecting(), |_registry| {});
         assert!(engine.mcp_url().is_none());
         assert!(engine.embed_client().is_none());
+    }
+
+    #[derive(Debug)]
+    struct HangingCustomEmbedding;
+
+    #[async_trait]
+    impl EmbeddingClient for HangingCustomEmbedding {
+        async fn embed(&self, _text: &str) -> Result<Vec<f32>, LlmError> {
+            std::future::pending().await
+        }
+
+        async fn embed_many(&self, _texts: &[String]) -> Result<Vec<Vec<f32>>, LlmError> {
+            std::future::pending().await
+        }
+
+        fn model_id(&self) -> &'static str {
+            "hanging-custom"
+        }
+
+        fn dim(&self) -> usize {
+            4
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn engine_enforces_request_timeout_for_custom_client_batches() {
+        let policy = EmbeddingRuntimePolicy::new(
+            Duration::from_secs(1),
+            2,
+            Duration::from_secs(1),
+            Duration::from_secs(3),
+        )
+        .expect("valid policy");
+        let engine = Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests())
+            .with_embedding_runtime_policy(policy)
+            .with_embed(Arc::new(HangingCustomEmbedding));
+
+        let result = engine
+            .embed_client()
+            .expect("client")
+            .embed_many(&["one".to_owned(), "two".to_owned()])
+            .await;
+        assert!(
+            matches!(result, Err(LlmError::Embed(ref message)) if message.contains("timed out")),
+            "engine timeout must remain retryable: {result:?}"
+        );
     }
 }

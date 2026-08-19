@@ -64,11 +64,37 @@ pub struct Engine {
     storage: EngineStoragePorts,
     deployment_tool_scope: crate::authz::ToolScope,
     embed: Arc<RwLock<Option<Arc<dyn EmbeddingClient>>>>,
+    embedding_runtime_policy: crate::llm::EmbeddingRuntimePolicy,
     embedding_reloader: Option<Arc<dyn EmbeddingClientReloader>>,
     cited_object_erase: Option<Arc<dyn CitedObjectErasePort>>,
     pub(crate) mcp_listen_addr: SocketAddr,
     pub(crate) mcp_listener: Option<Arc<dyn EngineMcpListener>>,
     pub(crate) mcp_url: Arc<RwLock<Option<String>>>,
+}
+
+#[derive(Debug)]
+struct RequestTimeoutEmbeddingClient {
+    inner: Arc<dyn EmbeddingClient>,
+    request_timeout: std::time::Duration,
+}
+
+#[async_trait::async_trait]
+impl EmbeddingClient for RequestTimeoutEmbeddingClient {
+    async fn embed(&self, text: &str) -> Result<Vec<f32>, crate::llm::LlmError> {
+        crate::llm::embed_with_timeout(self.inner.as_ref(), text, self.request_timeout).await
+    }
+
+    async fn embed_many(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, crate::llm::LlmError> {
+        crate::llm::embed_many_with_timeout(self.inner.as_ref(), texts, self.request_timeout).await
+    }
+
+    fn model_id(&self) -> &str {
+        self.inner.model_id()
+    }
+
+    fn dim(&self) -> usize {
+        self.inner.dim()
+    }
 }
 
 pub trait EmbeddingClientReloader: Send + Sync + std::fmt::Debug {
@@ -123,7 +149,19 @@ impl Engine {
 
     #[must_use]
     pub fn embed_client(&self) -> Option<Arc<dyn EmbeddingClient>> {
-        self.embed.try_read().ok().and_then(|slot| slot.clone())
+        self.embed.try_read().ok().and_then(|slot| {
+            slot.clone().map(|inner| {
+                Arc::new(RequestTimeoutEmbeddingClient {
+                    inner,
+                    request_timeout: self.embedding_runtime_policy.request_timeout(),
+                }) as Arc<dyn EmbeddingClient>
+            })
+        })
+    }
+
+    #[must_use]
+    pub const fn embedding_runtime_policy(&self) -> crate::llm::EmbeddingRuntimePolicy {
+        self.embedding_runtime_policy
     }
 
     pub async fn set_embed_client(&self, embed: Option<Arc<dyn EmbeddingClient>>) {

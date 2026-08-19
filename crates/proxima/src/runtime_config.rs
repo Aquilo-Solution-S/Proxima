@@ -4,8 +4,8 @@ use std::time::Duration;
 
 use proxima_blob_s3::S3RuntimeConfig;
 use proxima_core::{
-    Authenticator, EmbeddingClient, FlavorServiceError, Owner, RevalidationConfig, ToolScope,
-    is_loopback_host,
+    Authenticator, EmbeddingClient, EmbeddingRuntimePolicy, FlavorServiceError, Owner,
+    RevalidationConfig, ToolScope, is_loopback_host,
 };
 use proxima_mcp_server::ResourceServerMetadata;
 use proxima_storage_pg::PgTuning;
@@ -36,6 +36,7 @@ pub struct RuntimeBuilder {
     authenticator: Option<Arc<dyn Authenticator>>,
     resource_metadata: Option<ResourceServerMetadata>,
     embed_client: Option<Arc<dyn EmbeddingClient>>,
+    embedding_runtime_policy: Option<EmbeddingRuntimePolicy>,
 }
 
 impl std::fmt::Debug for RuntimeBuilder {
@@ -59,6 +60,7 @@ impl std::fmt::Debug for RuntimeBuilder {
             .field("has_authenticator", &self.authenticator.is_some())
             .field("has_resource_metadata", &self.resource_metadata.is_some())
             .field("has_embed_client", &self.embed_client.is_some())
+            .field("embedding_runtime_policy", &self.embedding_runtime_policy)
             .finish()
     }
 }
@@ -85,6 +87,9 @@ impl RuntimeBuilder {
             authenticator: self.authenticator.or(base.authenticator),
             resource_metadata: self.resource_metadata.or(base.resource_metadata),
             embed_client: self.embed_client.or(base.embed_client),
+            embedding_runtime_policy: self
+                .embedding_runtime_policy
+                .or(base.embedding_runtime_policy),
         }
     }
 
@@ -240,6 +245,14 @@ impl RuntimeBuilder {
         self
     }
 
+    /// Set provider batching, request timeout, worker cadence, and durable
+    /// claim lifecycle as one validated policy block.
+    #[must_use]
+    pub fn embedding_runtime_policy(mut self, policy: EmbeddingRuntimePolicy) -> Self {
+        self.embedding_runtime_policy = Some(policy);
+        self
+    }
+
     /// Apply process environment variables to unset fields.
     ///
     /// # Errors
@@ -315,6 +328,9 @@ impl RuntimeBuilder {
                 .map(|raw| parse_duration_seconds("PROXIMA_STREAM_EPOCH_INTERVAL", &raw))
                 .transpose()?;
         }
+        if self.embedding_runtime_policy.is_none() && embedding_runtime_policy_env_is_set(&lookup) {
+            self.embedding_runtime_policy = Some(embedding_runtime_policy_from_lookup(&lookup)?);
+        }
         Ok(self)
     }
 
@@ -376,6 +392,7 @@ impl RuntimeBuilder {
                 has_host_authenticator: parts.authenticator.is_some(),
             },
             resource_metadata: self.resource_metadata,
+            embedding_runtime_policy: self.embedding_runtime_policy.unwrap_or_default(),
         };
         config.validate()?;
         Ok((config, parts))
@@ -422,6 +439,7 @@ pub struct RuntimeConfig {
     pub pg_tuning: PgTuning,
     pub auth: RuntimeAuthState,
     pub resource_metadata: Option<ResourceServerMetadata>,
+    pub embedding_runtime_policy: EmbeddingRuntimePolicy,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -447,6 +465,7 @@ impl std::fmt::Debug for RuntimeConfig {
             .field("pg_tuning", &self.pg_tuning)
             .field("auth", &self.auth)
             .field("resource_metadata", &self.resource_metadata)
+            .field("embedding_runtime_policy", &self.embedding_runtime_policy)
             .finish()
     }
 }
@@ -664,6 +683,30 @@ fn parse_duration_seconds(key: &str, raw: &str) -> Result<Duration, ProximaError
     Ok(Duration::from_secs(seconds))
 }
 
+fn embedding_runtime_policy_env_is_set(lookup: &impl Fn(&str) -> Option<String>) -> bool {
+    [
+        proxima_core::PROXIMA_EMBED_REQUEST_TIMEOUT_SECONDS,
+        proxima_core::PROXIMA_EMBED_BATCH_SIZE,
+        proxima_core::PROXIMA_EMBED_WORKER_INTERVAL_SECONDS,
+        proxima_core::PROXIMA_EMBED_STALE_CLAIM_TIMEOUT_SECONDS,
+    ]
+    .iter()
+    .any(|key| proxima_core::env_value(lookup, key).is_some())
+}
+
+/// Parse the canonical generic embedding policy block through an injected
+/// lookup. Shared by the facade env layer and host binaries that must build a
+/// concrete embedding adapter before calling the facade.
+///
+/// # Errors
+///
+/// Rejects malformed, zero, out-of-range, and unsafe policy values.
+pub fn embedding_runtime_policy_from_lookup(
+    lookup: &impl Fn(&str) -> Option<String>,
+) -> Result<EmbeddingRuntimePolicy, ProximaError> {
+    EmbeddingRuntimePolicy::from_lookup(lookup).map_err(|err| ProximaError::Config(err.to_string()))
+}
+
 fn validate_revalidation_config(config: RevalidationConfig) -> Result<(), ProximaError> {
     if config.max_stream_lifetime.is_zero() {
         return Err(ProximaError::Config(
@@ -734,6 +777,7 @@ mod tests {
                 has_host_authenticator: true,
             },
             resource_metadata: None,
+            embedding_runtime_policy: EmbeddingRuntimePolicy::default(),
         }
     }
 
@@ -1036,6 +1080,75 @@ mod tests {
             .unwrap();
 
         assert_eq!(config.stream_revalidation, RevalidationConfig::default());
+    }
+
+    #[test]
+    fn embedding_runtime_policy_env_is_typed_and_programmatic_override_wins() {
+        let env_policy = RuntimeBuilder::default()
+            .apply_lookup(lookup(&[
+                (proxima_core::PROXIMA_EMBED_REQUEST_TIMEOUT_SECONDS, "30"),
+                (proxima_core::PROXIMA_EMBED_BATCH_SIZE, "12"),
+                (proxima_core::PROXIMA_EMBED_WORKER_INTERVAL_SECONDS, "7"),
+                (
+                    proxima_core::PROXIMA_EMBED_STALE_CLAIM_TIMEOUT_SECONDS,
+                    "90",
+                ),
+            ]))
+            .expect("valid env policy");
+        assert_eq!(
+            env_policy
+                .embedding_runtime_policy
+                .expect("env policy present")
+                .batch_size(),
+            12
+        );
+
+        let explicit = EmbeddingRuntimePolicy::new(
+            Duration::from_secs(20),
+            4,
+            Duration::from_secs(2),
+            Duration::from_mins(1),
+        )
+        .expect("valid explicit policy");
+        let merged =
+            env_policy.merge_over(RuntimeBuilder::default().embedding_runtime_policy(explicit));
+        assert_eq!(
+            merged.embedding_runtime_policy.expect("merged policy"),
+            EmbeddingRuntimePolicy::new(
+                Duration::from_secs(30),
+                12,
+                Duration::from_secs(7),
+                Duration::from_secs(90),
+            )
+            .expect("valid expected policy")
+        );
+
+        let resolved = RuntimeBuilder::default()
+            .database_url("postgres://localhost/proxima")
+            .owner(owner(uuid::Uuid::now_v7()))
+            .tool_scope(ToolScope::All)
+            .embedding_runtime_policy(explicit)
+            .resolve()
+            .expect("programmatic policy resolves")
+            .0;
+        assert_eq!(resolved.embedding_runtime_policy, explicit);
+    }
+
+    #[test]
+    fn unset_embedding_policy_env_does_not_override_programmatic_base() {
+        let explicit = EmbeddingRuntimePolicy::new(
+            Duration::from_secs(20),
+            4,
+            Duration::from_secs(2),
+            Duration::from_mins(1),
+        )
+        .expect("valid explicit policy");
+        let env_layer = RuntimeBuilder::default()
+            .apply_lookup(lookup(&[]))
+            .expect("unset env");
+        let merged =
+            env_layer.merge_over(RuntimeBuilder::default().embedding_runtime_policy(explicit));
+        assert_eq!(merged.embedding_runtime_policy, Some(explicit));
     }
 
     #[test]

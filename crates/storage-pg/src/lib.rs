@@ -661,6 +661,7 @@ pub struct PgStorage {
     sidecars: PgSidecarRegistryFrozen,
     search_projections: Vec<proxima_core::verbs::schema::MemorySearchProjection>,
     tuning: PgTuning,
+    embedding_runtime_policy: proxima_core::EmbeddingRuntimePolicy,
     cold: Arc<dyn proxima_core::ColdObjectStore>,
 }
 
@@ -848,6 +849,7 @@ impl PgStorage {
             sidecars: core_pg_sidecars(),
             search_projections: Vec::new(),
             tuning,
+            embedding_runtime_policy: proxima_core::EmbeddingRuntimePolicy::default(),
             cold: Arc::new(verbs::forget::MemoryColdStore::default()),
         })
     }
@@ -913,6 +915,17 @@ impl PgStorage {
         self
     }
 
+    /// Apply the host's validated embedding runtime policy to every storage
+    /// reclaim and stale-observability path.
+    #[must_use]
+    pub fn with_embedding_runtime_policy(
+        mut self,
+        policy: proxima_core::EmbeddingRuntimePolicy,
+    ) -> Self {
+        self.embedding_runtime_policy = policy;
+        self
+    }
+
     #[must_use]
     pub fn storage_ports(self: Arc<Self>) -> StoragePorts {
         StoragePorts::builder()
@@ -952,7 +965,12 @@ impl PgStorage {
         &self,
         options: EmbeddingReconcileOptions<'_>,
     ) -> Result<EmbeddingReconcileOutcome, StorageError> {
-        verbs::fact_embeddings::reconcile_embeddings(&self.pool, options).await
+        verbs::fact_embeddings::reconcile_embeddings(
+            &self.pool,
+            options,
+            self.embedding_runtime_policy.stale_claim_timeout_seconds(),
+        )
+        .await
     }
 
     /// Inline drain for queued embedding jobs.
@@ -970,6 +988,7 @@ impl PgStorage {
             client,
             limit,
             &self.search_projections,
+            self.embedding_runtime_policy,
         )
         .await
     }
@@ -999,7 +1018,11 @@ impl PgStorage {
     pub async fn embedding_ann_observability(
         &self,
     ) -> Result<proxima_core::EmbeddingAnnObservability, StorageError> {
-        verbs::fact_embeddings::embedding_ann_observability(&self.pool).await
+        verbs::fact_embeddings::embedding_ann_observability(
+            &self.pool,
+            self.embedding_runtime_policy.stale_claim_timeout_seconds(),
+        )
+        .await
     }
 
     /// Try to take the global embedding-maintenance advisory lock.

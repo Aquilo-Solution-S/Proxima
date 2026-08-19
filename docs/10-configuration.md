@@ -167,10 +167,19 @@ PROXIMA_TOOL_DENY=core_membership:add_member,core_membership:remove_member,core_
 <a id="embedding-client"></a>
 ## Embedding Client
 
-Embedding-for-retrieval is host-injected, not configured by Proxima:
+The embedding client and model are host-injected:
 
 ```rust
-builder.embed_client(client: Arc<dyn EmbeddingClient>)
+let policy = EmbeddingRuntimePolicy::new(
+    Duration::from_secs(120), // enforced request timeout
+    32,                       // provider batch width
+    Duration::from_secs(5),   // idle worker interval
+    Duration::from_secs(900), // stale-claim timeout
+)?;
+
+builder
+    .embed_client(client)
+    .embedding_runtime_policy(policy)
 ```
 
 Proxima holds no embedding-model registry and no active-model singleton —
@@ -193,6 +202,19 @@ llama.cpp, LM Studio, vLLM) needs no credential:
 | `PROXIMA_EMBED_API_KEY` | no | - | Bearer for a hosted endpoint. Omit for a local one. |
 | `PROXIMA_EMBED_MATRYOSHKA` | no | `false` | Send a `dimensions` parameter so a nested-prefix model returns 1024 rather than its native width. |
 | `PROXIMA_EMBED_MAX_INPUT_CHARS` | no | - | Longest input, in characters, that will be sent. Unset ⇒ no client-side bound. Minimum `4095`. |
+| `PROXIMA_EMBED_REQUEST_TIMEOUT_SECONDS` | no | `120` | Complete provider-request timeout. Range `1..=3600`. Core bounds every installed-client future; the shipped adapter additionally applies it to connect, send, and response read. |
+| `PROXIMA_EMBED_BATCH_SIZE` | no | `32` | Texts per provider call. Range `1..=1024`. Custom clients remain usable because batching is host policy, not a core provider constant. |
+| `PROXIMA_EMBED_WORKER_INTERVAL_SECONDS` | no | `5` | Idle in-process worker poll interval. Range `1..=3600`. |
+| `PROXIMA_EMBED_STALE_CLAIM_TIMEOUT_SECONDS` | no | `900` | Processing claim is reclaimable after this crash window. Range `1..=86400`; must be strictly greater than request timeout. |
+
+Zero, malformed, out-of-range, and unsafe combinations fail boot. Programmatic
+durations must also be integral seconds. The stale
+window must cover the longest honest drain interval between successful claim
+renewals. The drainer renews every live batch claim on a separate heartbeat every
+third of this window, including during poison isolation and chunk rescue;
+claim-token fencing still rejects any old worker write after a real reclaim.
+Both the in-process worker and `maintain-embeddings --drain` claim at most one
+configured provider batch and use the same batch rejection/isolation path.
 
 <a id="bounding-embedding-input"></a>
 ### Bounding embedding input
