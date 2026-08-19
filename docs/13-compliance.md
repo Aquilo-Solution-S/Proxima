@@ -64,7 +64,7 @@ Refusal is a valid compliance result, not a substrate failure.
 |---|---|
 | scope | one `OwnerRef` |
 | active state | present owner hold row; set/clear require compliance-erase operator approval plus owner `Admin` write authority; get requires owner `Admin` |
-| gated paths | substantive owner-memory physical destruction: the `erase_*` compliance family (`delete_owner`, `delete_source_scope`) and the `maintain-retention` pass (`announce` pruning) |
+| gated paths | substantive owner-memory physical destruction: the `erase_*` compliance family (`delete_owner`, `delete_source_scope`) and both `maintain-retention` actions (`announce` pruning; Fact forget/cool) |
 | refusal | typed `ComplianceEraseRefusal::LegalHoldActive`; no destructive statement runs |
 | non-effects | no change to abandonment law, drop proof, reads, ordinary writes, embedding work-queue consumption, suppression checks, export, or audit retention |
 | race boundary | checked inside the storage compliance-erase transaction under the owner legal-hold lock before deletion |
@@ -74,7 +74,7 @@ same in-transaction owner hold gate before it can exist.
 The `maintain-retention` pass inherits it: every per-owner transaction
 takes the owner hold lock, re-checks the hold, and skips held owners —
 for `announce` pruning (destruction) and, conservatively, for the
-Fact tombstone sweep as well (a hold means "freeze this owner's state").
+Fact forget/cool pass as well (a hold means "freeze this owner's state").
 Exception: transient work-queue rows (`proxima_core.embedding_jobs`) are
 consumed by ordinary embedding-pipeline operation; legal holds do not
 suspend that pipeline.
@@ -94,14 +94,15 @@ same external-clock doctrine as `maintain-embeddings`.
 | Rule | Contract |
 |---|---|
 | enforcement action | expired Facts are forgotten (cool), never hard-deleted except erase; physical destruction stays exclusive to the `erase_*` family |
+| cold store | a live pass requires the serving host's `PROXIMA_S3_*` block; enforcement fails before database access when it is absent or invalid; dry run needs no object store |
 | scope | Fact rows of owners with a configured window; owners without a window are untouched; Abstractions/Perspectives derived from expired Facts persist |
 | audit exclusion | `core/mcp-call-logged-v1` Facts are never aged out — indefinite controller evidence (see Audit log) |
-| change feed | each tombstone batch commits its `EntityDelete` change events atomically with the sweep transaction |
+| change feed | each forget batch commits its `announce.forget` events atomically with the cooling transaction |
 | `announce` pruning | rows older than an explicit operator-supplied age horizon are deleted per owner; there is deliberately no default horizon — destruction requires an explicit flag |
 | legal hold | both halves take the per-owner hold lock in every transaction and skip held owners (forward-rule inheritance above) |
 | serialization | one pass at a time via a process-global advisory lock; an overlapping cron fire prints a skip notice and exits 0 |
 | cursor safety | pruning creates an undetectable gap for forward pollers whose `since` cursor predates the horizon; choose a horizon comfortably larger than the slowest consumer's lag, or have lagging consumers re-baseline with a fresh full read |
-| dry run | `--dry-run` reports would-be tombstone/prune counts per owner without mutating anything |
+| dry run | `--dry-run` reports would-be forgotten/pruned counts per owner without mutating anything |
 
 ## Suppression list — re-ingest rejection
 
@@ -187,7 +188,7 @@ code path explicitly implements it.
 |---|---|---|
 | pause flag | `false` | paused owners skip future operator dispatch and wake execution |
 | residency allowlist | empty | empty means unrestricted; non-empty constrains future residency checks |
-| retention override | absent | absent inherits source retention policy; a configured `owner_fact_retention` window is enforced by the `maintain-retention` tombstone sweep |
+| retention override | absent | absent inherits source retention policy; a configured `owner_fact_retention` window is enforced by the `maintain-retention` forget/cool pass, which leaves cold stubs rather than a tombstone flag |
 | legal/security hold | absent | active row suspends substantive owner-memory physical destruction for the owner-scoped `erase_*` family and the `maintain-retention` pass; transient `proxima_core.embedding_jobs` may still be consumed |
 | consent state | empty opaque value | controller-managed; substrate stores, controller interprets |
 | legal-consequence override | `false` | future override for automated legal-consequence blocking |

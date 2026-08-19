@@ -66,7 +66,7 @@ Maintenance:
   maintain-embeddings      One self-healing pass: orphan sweep, reconcile
                            enqueue, optional inline drain, health report.
                            Cron-safe (skips if another pass holds the lock)
-  maintain-retention       One retention pass: tombstone Facts past their
+  maintain-retention       One retention pass: forget Facts past their
                            owner's retention window and/or prune old
                            change_event rows. Cron-safe; legal holds skip
   maintain-blobs           One reconcile pass over the S3 bucket: report
@@ -154,11 +154,12 @@ At least one action flag is required — there are deliberately no
 destruction defaults.
 
 Actions (at least one):
-  --enforce-fact-retention Tombstone Facts older than their owner's
+  --enforce-fact-retention Forget (cool) Facts older than their owner's
                            configured retention window. Owners without a
                            configured window are untouched; MCP-call audit
                            Facts are never aged out (indefinite controller
-                           evidence)
+                           evidence). Live enforcement requires the same
+                           PROXIMA_S3_* block as the serving host
   --prune-change-events-older-than <DURATION>
                            Delete change_event rows older than the horizon
                            (e.g. 90d, 36h, 45m, 3600s)
@@ -166,7 +167,7 @@ Actions (at least one):
 Optional:
   --database-url <URL>     Postgres URL (defaults to DATABASE_URL or proxima_dev)
   --batch-size <N>         Rows per transaction (default 1000)
-  --dry-run                Report what would be tombstoned/pruned without
+  --dry-run                Report what would be forgotten/pruned without
                            changing anything
   -h, --help               Print this message
 ";
@@ -587,6 +588,7 @@ mod tests {
     fn retention_help_flag_returns_help() {
         let err = parse_retention_args(["--help".to_string()]).expect_err("help");
         assert!(err.is_help());
+        assert!(RETENTION_USAGE.contains("PROXIMA_S3_*"));
     }
 
     #[test]

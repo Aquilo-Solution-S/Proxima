@@ -52,14 +52,16 @@ WITH scoped AS MATERIALIZED (
              WHERE j.owner_id = s.owner_id
                AND j.entity_id = s.memory_id
                AND j.model_id = $1
-               AND j.status IN ('pending', 'processing')
+               AND j.status IN ('pending', 'processing', 'failed_permanent')
         )
  ),
  limited AS MATERIALIZED (
-     SELECT *
-       FROM eligible
-      ORDER BY memory_id ASC
+     SELECT e.*
+       FROM eligible e
+       JOIN proxima_core.memory m ON m.t = e.memory_id
+      ORDER BY e.memory_id ASC
       LIMIT $2
+      FOR UPDATE OF m
  ),
  inserted AS (
      INSERT INTO proxima_core.embedding_jobs
@@ -67,9 +69,10 @@ WITH scoped AS MATERIALIZED (
      SELECT memory_id, $1, owner_id
        FROM limited
      ON CONFLICT (owner_id, entity_id, model_id)
-     DO UPDATE SET status = 'pending',
-                   claimed_at = NULL,
-                   last_error = NULL
+         DO UPDATE SET status = 'pending',
+                       claimed_at = NULL,
+                       claim_token = NULL,
+                       last_error = NULL
          WHERE embedding_jobs.status = 'failed'
      RETURNING 1
  )
@@ -262,6 +265,7 @@ async fn store_claim_chunks(
     let mut tx = pool.begin().await.map_err(|err| {
         StorageError::Internal(format!("begin chunked embedding upsert tx: {err}"))
     })?;
+    super::lock_embedding_job_claim_for_claim(&mut tx, claim, client.model_id()).await?;
     insert_embedding_chunks(
         &mut tx,
         &claim.owner,
@@ -350,6 +354,7 @@ async fn embed_claim(
     let mut tx = pool.begin().await.map_err(|err| {
         StorageError::Internal(format!("begin memory embedding upsert tx: {err}"))
     })?;
+    super::lock_embedding_job_claim_for_claim(&mut tx, claim, client.model_id()).await?;
     insert_memory_embedding(
         &mut tx,
         &claim.owner,

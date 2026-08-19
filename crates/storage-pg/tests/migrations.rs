@@ -4,7 +4,7 @@ use std::collections::BTreeSet;
 use std::path::Path;
 
 use proxima_pg_testkit::{create_db, db_url, drop_db};
-use proxima_storage_pg::PgStorage;
+use proxima_storage_pg::{PgStorage, ensure_core_schema_markers};
 use uuid::Uuid;
 
 async fn table_exists(pg: &PgStorage, table_name: &str) -> bool {
@@ -462,6 +462,98 @@ async fn memory_is_append_only_and_head_t_only() {
     .await;
     let _ = drop_db(&db_name).await;
     result.expect("append-only / head freeze test failed");
+}
+
+#[tokio::test]
+async fn schema_markers_accept_fresh_schema_and_reject_incomplete_claim_lane() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+
+    if let Err(e) = create_db(&db_name).await {
+        panic!("PG required for tests but admin connect failed: {e}");
+    }
+
+    let url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&url).await?;
+        pg.run_migrations().await?;
+        ensure_core_schema_markers(pg.pool_for_tests()).await?;
+
+        sqlx::query(
+            "ALTER TYPE proxima_core.embedding_job_status
+             RENAME VALUE 'failed_permanent' TO 'failed_terminal'",
+        )
+        .execute(pg.pool_for_tests())
+        .await?;
+        let err = ensure_core_schema_markers(pg.pool_for_tests())
+            .await
+            .expect_err("incorrect embedding-job enum labels must reject --stamp");
+        assert!(
+            err.to_string().contains("labels/order"),
+            "marker error must name the incorrect enum vocabulary: {err}"
+        );
+        sqlx::query(
+            "ALTER TYPE proxima_core.embedding_job_status
+             RENAME VALUE 'failed_terminal' TO 'failed_permanent'",
+        )
+        .execute(pg.pool_for_tests())
+        .await?;
+
+        sqlx::query(
+            "ALTER TABLE proxima_core.embedding_jobs
+             DROP CONSTRAINT embedding_job_processing_claim_chk",
+        )
+        .execute(pg.pool_for_tests())
+        .await?;
+        let err = ensure_core_schema_markers(pg.pool_for_tests())
+            .await
+            .expect_err("missing processing-claim check must reject --stamp");
+        assert!(
+            err.to_string().contains("processing claim check"),
+            "marker error must name the missing check: {err}"
+        );
+
+        sqlx::query(
+            "ALTER TABLE proxima_core.embedding_jobs
+             ADD CONSTRAINT embedding_job_processing_claim_chk CHECK (
+                 (status = 'processing') = (claimed_at IS NOT NULL AND claim_token IS NOT NULL)
+             ) NOT VALID",
+        )
+        .execute(pg.pool_for_tests())
+        .await?;
+        let err = ensure_core_schema_markers(pg.pool_for_tests())
+            .await
+            .expect_err("unvalidated processing-claim check must reject --stamp");
+        assert!(
+            err.to_string().contains("processing claim check"),
+            "marker error must reject a NOT VALID claim check: {err}"
+        );
+        sqlx::query(
+            "ALTER TABLE proxima_core.embedding_jobs
+             VALIDATE CONSTRAINT embedding_job_processing_claim_chk",
+        )
+        .execute(pg.pool_for_tests())
+        .await?;
+        ensure_core_schema_markers(pg.pool_for_tests()).await?;
+        sqlx::query(
+            "ALTER TABLE proxima_core.embedding_jobs
+             RENAME COLUMN claim_token TO claim_token_old",
+        )
+        .execute(pg.pool_for_tests())
+        .await?;
+        let err = ensure_core_schema_markers(pg.pool_for_tests())
+            .await
+            .expect_err("missing claim_token must reject --stamp");
+        assert!(
+            err.to_string()
+                .contains("claim_token must be nullable uuid"),
+            "marker error must name the incorrect column: {err}"
+        );
+        Ok(())
+    }
+    .await;
+
+    let _ = drop_db(&db_name).await;
+    result.expect("schema marker validation test failed");
 }
 
 #[tokio::test]

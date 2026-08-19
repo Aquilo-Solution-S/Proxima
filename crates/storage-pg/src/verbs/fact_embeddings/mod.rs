@@ -23,7 +23,10 @@ pub use reconcile::{
     EmbeddingReconcileScope, drain_embedding_jobs_inline, reconcile_embeddings,
 };
 pub use text::{load_embedding_text, load_embedding_texts, load_fact_text, load_fact_text_in_tx};
-pub(crate) use write::{insert_embedding, insert_embedding_chunks, insert_memory_embedding};
+pub(crate) use write::{
+    insert_embedding, insert_embedding_chunks, insert_memory_embedding, lock_embedding_job_claim,
+    lock_embedding_job_claim_for_claim,
+};
 
 fn ensure_nonnegative_limit(limit: i64) -> Result<i64, StorageError> {
     if limit < 0 {

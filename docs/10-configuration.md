@@ -322,9 +322,12 @@ proxima-mcp maintain-retention --enforce-fact-retention \
     --prune-change-events-older-than 90d
 ```
 
-`--enforce-fact-retention` tombstones Facts older than their owner's
-configured retention window (owners without a window are untouched;
-MCP-call audit Facts are never aged out).
+`--enforce-fact-retention` forgets (cools) Facts older than their owner's
+configured retention window, leaving a cold stub rather than a tombstone flag
+(owners without a window are untouched; MCP-call audit Facts are never aged
+out). A live (non-dry-run) action requires the same `PROXIMA_S3_*` block as
+the serving host; it fails closed rather than writing cold objects to a
+process-local store.
 `--prune-change-events-older-than <DURATION>` deletes `announce`
 rows older than the horizon (`3600s`, `45m`, `36h`, `90d`, `2w`). At
 least one action flag is required and there is deliberately no default

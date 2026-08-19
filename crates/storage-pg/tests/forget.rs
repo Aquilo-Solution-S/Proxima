@@ -15,8 +15,8 @@ use proxima_storage_pg::PgStorage;
 use proxima_storage_pg::core_pg_sidecars;
 use proxima_storage_pg::verbs::fact_ingest::ingest_fact_atomic;
 use proxima_storage_pg::verbs::forget::{
-    MemoryColdStore, cold_object_key, commit_forget, erase_memory, forget_memory, hydrate_memory,
-    owner_hash_hex, snapshot_hot,
+    MemoryColdStore, cold_object_key, commit_forget, erase_memory, forget_memory,
+    forget_memory_oneshot, hydrate_memory, owner_hash_hex, snapshot_hot,
 };
 use proxima_storage_pg::verbs::memory_timeseries::ingest_fact_timeseries;
 use uuid::Uuid;
@@ -471,6 +471,121 @@ impl ColdObjectStore for CountingCold {
     async fn delete(&self, key: &str) -> Result<(), StorageError> {
         self.inner.delete(key).await
     }
+}
+
+struct BlockingPutCold {
+    inner: MemoryColdStore,
+    first_put_entered: tokio::sync::Semaphore,
+    release_first_put: tokio::sync::Semaphore,
+    puts: AtomicUsize,
+    deletes: AtomicUsize,
+}
+
+#[async_trait::async_trait]
+impl ColdObjectStore for BlockingPutCold {
+    async fn put(&self, key: &str, bytes: &[u8]) -> Result<(), StorageError> {
+        let put_index = self.puts.fetch_add(1, Ordering::SeqCst);
+        if put_index == 0 {
+            self.first_put_entered.add_permits(1);
+            self.release_first_put
+                .acquire()
+                .await
+                .map_err(|err| StorageError::Internal(err.to_string()))?
+                .forget();
+        }
+        self.inner.put(key, bytes).await
+    }
+
+    async fn get(&self, key: &str) -> Result<Vec<u8>, StorageError> {
+        self.inner.get(key).await
+    }
+
+    async fn delete(&self, key: &str) -> Result<(), StorageError> {
+        self.deletes.fetch_add(1, Ordering::SeqCst);
+        self.inner.delete(key).await
+    }
+}
+
+#[tokio::test]
+async fn concurrent_forget_serializes_before_cold_put() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    if let Err(e) = create_db(&db_name).await {
+        panic!("PG required for tests but admin connect failed: {e}");
+    }
+    let url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&url).await?;
+        pg.run_migrations().await?;
+        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
+        let written = ingest_fact_atomic(pg.pool_for_tests(), &permit, &draft(None), None).await?;
+        let t = written.memory_id.into_inner();
+        let key = cold_object_key(&owner_hash_hex(&owner), written.handle, t);
+        let cold = Arc::new(BlockingPutCold {
+            inner: MemoryColdStore::default(),
+            first_put_entered: tokio::sync::Semaphore::new(0),
+            release_first_put: tokio::sync::Semaphore::new(0),
+            puts: AtomicUsize::new(0),
+            deletes: AtomicUsize::new(0),
+        });
+
+        let first = {
+            let pool = pg.pool_for_tests().clone();
+            let cold = cold.clone();
+            let key = key.clone();
+            tokio::spawn(async move {
+                let sidecars = core_pg_sidecars();
+                forget_memory_oneshot(
+                    &pool,
+                    &sidecars,
+                    cold.as_ref(),
+                    &key,
+                    t,
+                    owner.stored_owner_id(),
+                )
+                .await
+            })
+        };
+        cold.first_put_entered.acquire().await?.forget();
+
+        let mut second = {
+            let pool = pg.pool_for_tests().clone();
+            let cold = cold.clone();
+            let key = key.clone();
+            tokio::spawn(async move {
+                let sidecars = core_pg_sidecars();
+                forget_memory_oneshot(
+                    &pool,
+                    &sidecars,
+                    cold.as_ref(),
+                    &key,
+                    t,
+                    owner.stored_owner_id(),
+                )
+                .await
+            })
+        };
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(50), &mut second)
+                .await
+                .is_err(),
+            "the second forget must wait before PUT"
+        );
+
+        cold.release_first_put.add_permits(1);
+        first.await??;
+        let second_error = second
+            .await?
+            .expect_err("the serialized loser must observe the row already cooled");
+        assert!(matches!(second_error, StorageError::NotFound));
+        assert_eq!(cold.puts.load(Ordering::SeqCst), 1);
+        assert_eq!(cold.deletes.load(Ordering::SeqCst), 0);
+        assert!(!cold.get(&key).await?.is_empty());
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("concurrent forget serialization test failed");
 }
 
 #[tokio::test]

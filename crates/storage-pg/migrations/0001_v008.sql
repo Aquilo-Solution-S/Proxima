@@ -449,8 +449,12 @@ CREATE TABLE proxima_core.embedding_jobs (
     owner_id uuid NOT NULL REFERENCES proxima_core.owners (owner_id),
     status proxima_core.embedding_job_status NOT NULL DEFAULT 'pending',
     claimed_at timestamptz,
+    claim_token uuid,
     last_error text,
-    UNIQUE (owner_id, entity_id, model_id)
+    UNIQUE (owner_id, entity_id, model_id),
+    CONSTRAINT embedding_job_processing_claim_chk CHECK (
+        (status = 'processing') = (claimed_at IS NOT NULL AND claim_token IS NOT NULL)
+    )
 );
 
 CREATE INDEX embedding_jobs_pending_claim_idx

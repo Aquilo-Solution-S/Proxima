@@ -1,10 +1,83 @@
 use proxima_core::llm::EMBEDDING_DIM;
+use proxima_core::storage_ports::EmbeddingWriteProof;
 use proxima_core::{
     EmbeddableEntityRef, EmbeddingWriteOutcome, EntityKind, MemoryId, Owner, StorageError,
 };
 use sqlx::{Postgres, Transaction};
 
 use crate::error::map_err;
+
+/// Lock and validate the queue claim that authorized an embedding write.
+///
+/// The lock is held through the embedding transaction. A stale worker either
+/// loses before writing, or commits before reclamation can mint a successor;
+/// in the latter case the successor necessarily writes the later head.
+pub(crate) async fn lock_embedding_job_claim(
+    tx: &mut Transaction<'_, Postgres>,
+    owner: &Owner,
+    entity: EmbeddableEntityRef,
+    model_id: &str,
+    proof: EmbeddingWriteProof,
+) -> Result<(), StorageError> {
+    let Some((job_id, claim_token)) = proof.claim_fence() else {
+        return Ok(());
+    };
+    lock_embedding_job_claim_fields(tx, owner, entity, model_id, job_id, claim_token).await
+}
+
+pub(crate) async fn lock_embedding_job_claim_for_claim(
+    tx: &mut Transaction<'_, Postgres>,
+    claim: &proxima_core::EmbeddingJobClaim,
+    model_id: &str,
+) -> Result<(), StorageError> {
+    lock_embedding_job_claim_fields(
+        tx,
+        &claim.owner,
+        EmbeddableEntityRef::Memory {
+            kind: claim.entity_kind,
+            memory_id: claim.entity_id,
+        },
+        model_id,
+        claim.job_id,
+        claim.claim_token,
+    )
+    .await
+}
+
+async fn lock_embedding_job_claim_fields(
+    tx: &mut Transaction<'_, Postgres>,
+    owner: &Owner,
+    entity: EmbeddableEntityRef,
+    model_id: &str,
+    job_id: uuid::Uuid,
+    claim_token: uuid::Uuid,
+) -> Result<(), StorageError> {
+    let locked = sqlx::query_scalar::<_, uuid::Uuid>(
+        "SELECT job_id
+           FROM proxima_core.embedding_jobs
+          WHERE job_id = $1
+            AND claim_token = $2
+            AND status = 'processing'
+            AND owner_id = $3
+            AND entity_id = $4
+            AND model_id = $5
+          FOR UPDATE",
+    )
+    .bind(job_id)
+    .bind(claim_token)
+    .bind(owner.stored_owner_id())
+    .bind(entity.entity_id())
+    .bind(model_id)
+    .fetch_optional(tx.as_mut())
+    .await
+    .map_err(map_err)?;
+    if locked.is_none() {
+        return Err(StorageError::Conflict(
+            "embedding job claim is stale or does not match the write".into(),
+        ));
+    }
+    Ok(())
+}
 
 /// Append one memory embedding row inside an existing tx.
 ///

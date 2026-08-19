@@ -23,7 +23,8 @@ pub const STALE_PROCESSING_RECLAIM_SECONDS: i64 = 900;
 /// 'pending'`. Locked unclaimed rows release with the statement's
 /// transaction. `claimed_at` is what makes a crashed drainer's row
 /// recoverable ([`reclaim_stale_embedding_jobs`]); there is no
-/// `next_attempt_at` column.
+/// `next_attempt_at` column. Each claim also gets a fencing token so a
+/// reclaimed worker cannot complete a successor's claim.
 const CLAIM_EMBEDDING_JOBS_SQL: &str = "WITH claimed AS (
              SELECT job_id
                FROM proxima_core.embedding_jobs
@@ -36,16 +37,19 @@ const CLAIM_EMBEDDING_JOBS_SQL: &str = "WITH claimed AS (
          )
          UPDATE proxima_core.embedding_jobs j
             SET status = 'processing',
-                claimed_at = now()
+                claimed_at = now(),
+                claim_token = uuidv7()
            FROM claimed, proxima_core.memory m, proxima_core.owners o
           WHERE j.job_id = claimed.job_id
             AND m.t = j.entity_id
             AND o.owner_id = j.owner_id
         RETURNING o.kind::text AS owner_kind,
+                  j.job_id,
                   j.owner_id,
                   m.kind::text AS entity_kind,
                   j.entity_id,
-                  j.model_id";
+                  j.model_id,
+                  j.claim_token";
 
 /// The claim statement, for EXPLAIN-based plan guards. Same cfg gate as
 /// `search.rs`'s `*_sql_for_tests` exports.
@@ -59,10 +63,12 @@ pub fn claim_embedding_jobs_sql_for_tests() -> &'static str {
 #[derive(sqlx::FromRow)]
 struct EmbeddingJobClaimRow {
     owner_kind: String,
+    job_id: uuid::Uuid,
     owner_id: uuid::Uuid,
     entity_kind: String,
     entity_id: uuid::Uuid,
     model_id: String,
+    claim_token: uuid::Uuid,
 }
 
 impl From<EmbeddingJobClaimRow> for EmbeddingJobClaim {
@@ -79,6 +85,7 @@ impl From<EmbeddingJobClaimRow> for EmbeddingJobClaim {
             _ => EntityKind::Fact,
         };
         Self {
+            job_id: row.job_id,
             owner: owner_kind
                 .with_uuid(Some(row.owner_id))
                 .expect("embedding job row has valid owner_ref shape"),
@@ -87,6 +94,7 @@ impl From<EmbeddingJobClaimRow> for EmbeddingJobClaim {
             model_id: row.model_id,
             embedding_version: 1,
             attempts: 0,
+            claim_token: row.claim_token,
         }
     }
 }
@@ -185,28 +193,32 @@ pub(super) async fn claim_pending_embedding_jobs_excluding(
     Ok(rows.into_iter().map(EmbeddingJobClaim::from).collect())
 }
 
-/// Delete a completed embedding job.
+/// Delete a completed embedding job, fenced by the claim token.
 ///
 /// # Errors
 ///
-/// Maps SQL failures through the shared mapper.
+/// Returns `Conflict` for a stale/non-processing claim; maps SQL failures
+/// through the shared mapper.
 pub async fn complete_embedding_job(
     pool: &PgPool,
     claim: &EmbeddingJobClaim,
 ) -> Result<(), StorageError> {
-    let owner_id = claim.owner.stored_owner_id();
-    sqlx::query(
+    let result = sqlx::query(
         "DELETE FROM proxima_core.embedding_jobs
-          WHERE owner_id = $1
-            AND entity_id = $2
-            AND model_id = $3",
+          WHERE job_id = $1
+            AND claim_token = $2
+            AND status = 'processing'",
     )
-    .bind(owner_id)
-    .bind(claim.entity_id.into_inner())
-    .bind(&claim.model_id)
+    .bind(claim.job_id)
+    .bind(claim.claim_token)
     .execute(pool)
     .await
     .map_err(map_err)?;
+    if result.rows_affected() == 0 {
+        return Err(StorageError::Conflict(
+            "embedding job claim is stale or no longer processing".into(),
+        ));
+    }
     Ok(())
 }
 
@@ -222,30 +234,34 @@ pub async fn complete_embedding_job(
 ///
 /// # Errors
 ///
-/// Maps SQL failures through the shared mapper.
+/// Returns `Conflict` for a stale/non-processing claim; maps SQL failures
+/// through the shared mapper.
 pub async fn fail_embedding_job(
     pool: &PgPool,
     claim: &EmbeddingJobClaim,
     error: &str,
 ) -> Result<(), StorageError> {
-    let owner_id = claim.owner.stored_owner_id();
-    sqlx::query(
+    let result = sqlx::query(
         "UPDATE proxima_core.embedding_jobs
             SET status = 'failed',
                 claimed_at = NULL,
-                last_error = $4
-          WHERE owner_id = $1
-            AND entity_id = $2
-            AND model_id = $3
+                claim_token = NULL,
+                last_error = $3
+          WHERE job_id = $1
+            AND claim_token = $2
             AND status = 'processing'",
     )
-    .bind(owner_id)
-    .bind(claim.entity_id.into_inner())
-    .bind(&claim.model_id)
+    .bind(claim.job_id)
+    .bind(claim.claim_token)
     .bind(error)
     .execute(pool)
     .await
     .map_err(map_err)?;
+    if result.rows_affected() == 0 {
+        return Err(StorageError::Conflict(
+            "embedding job claim is stale or no longer processing".into(),
+        ));
+    }
     Ok(())
 }
 
@@ -259,30 +275,34 @@ pub async fn fail_embedding_job(
 ///
 /// # Errors
 ///
-/// Maps SQL failures through the shared mapper.
+/// Returns `Conflict` for a stale/non-processing claim; maps SQL failures
+/// through the shared mapper.
 pub async fn fail_embedding_job_permanently(
     pool: &PgPool,
     claim: &EmbeddingJobClaim,
     error: &str,
 ) -> Result<(), StorageError> {
-    let owner_id = claim.owner.stored_owner_id();
-    sqlx::query(
+    let result = sqlx::query(
         "UPDATE proxima_core.embedding_jobs
             SET status = 'failed_permanent',
                 claimed_at = NULL,
-                last_error = $4
-          WHERE owner_id = $1
-            AND entity_id = $2
-            AND model_id = $3
+                claim_token = NULL,
+                last_error = $3
+          WHERE job_id = $1
+            AND claim_token = $2
             AND status = 'processing'",
     )
-    .bind(owner_id)
-    .bind(claim.entity_id.into_inner())
-    .bind(&claim.model_id)
+    .bind(claim.job_id)
+    .bind(claim.claim_token)
     .bind(error)
     .execute(pool)
     .await
     .map_err(map_err)?;
+    if result.rows_affected() == 0 {
+        return Err(StorageError::Conflict(
+            "embedding job claim is stale or no longer processing".into(),
+        ));
+    }
     Ok(())
 }
 
@@ -294,32 +314,38 @@ pub async fn fail_embedding_job_permanently(
 ///
 /// # Errors
 ///
-/// Maps SQL failures through the shared mapper.
+/// Returns `Conflict` when any claim is stale/non-processing; maps SQL
+/// failures through the shared mapper. The batch is atomic.
 pub async fn release_embedding_jobs(
     pool: &PgPool,
     claims: &[EmbeddingJobClaim],
     error: &str,
 ) -> Result<(), StorageError> {
+    let mut tx = pool.begin().await.map_err(map_err)?;
     for claim in claims {
-        let owner_id = claim.owner.stored_owner_id();
-        sqlx::query(
+        let result = sqlx::query(
             "UPDATE proxima_core.embedding_jobs
                 SET status = 'pending',
                     claimed_at = NULL,
-                    last_error = $4
-              WHERE owner_id = $1
-                AND entity_id = $2
-                AND model_id = $3
+                    claim_token = NULL,
+                    last_error = $3
+              WHERE job_id = $1
+                AND claim_token = $2
                 AND status = 'processing'",
         )
-        .bind(owner_id)
-        .bind(claim.entity_id.into_inner())
-        .bind(&claim.model_id)
+        .bind(claim.job_id)
+        .bind(claim.claim_token)
         .bind(error)
-        .execute(pool)
+        .execute(&mut *tx)
         .await
         .map_err(map_err)?;
+        if result.rows_affected() == 0 {
+            return Err(StorageError::Conflict(
+                "embedding job claim is stale or no longer processing".into(),
+            ));
+        }
     }
+    tx.commit().await.map_err(map_err)?;
     Ok(())
 }
 
@@ -346,7 +372,8 @@ pub async fn reclaim_stale_embedding_jobs(
     let result = sqlx::query(
         "UPDATE proxima_core.embedding_jobs
             SET status = 'pending',
-                claimed_at = NULL
+                claimed_at = NULL,
+                claim_token = NULL
           WHERE status = 'processing'
             AND (
                 claimed_at IS NULL
@@ -580,14 +607,17 @@ mod tests {
          )
          UPDATE proxima_core.embedding_jobs j
             SET status = 'processing',
-                claimed_at = now()
+                claimed_at = now(),
+                claim_token = uuidv7()
            FROM claimed, proxima_core.memory m, proxima_core.owners o
           WHERE j.job_id = claimed.job_id
             AND m.t = j.entity_id
             AND o.owner_id = j.owner_id
         RETURNING o.kind::text AS owner_kind,
+                  j.job_id,
                   j.owner_id,
                   m.kind::text AS entity_kind,
                   j.entity_id,
-                  j.model_id";
+                  j.model_id,
+                  j.claim_token";
 }
