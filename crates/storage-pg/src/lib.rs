@@ -451,6 +451,18 @@ pub async fn ensure_core_schema_markers(pool: &PgPool) -> Result<(), StorageErro
            THEN 'lexical_default.singleton must be the sole primary-key column'
          WHEN NOT EXISTS (
                   SELECT 1
+                    FROM pg_constraint c
+                    JOIN pg_class r ON r.oid = c.conrelid
+                    JOIN pg_namespace n ON n.oid = r.relnamespace
+                   WHERE n.nspname = 'proxima_core'
+                     AND r.relname = 'lexical_default'
+                     AND c.contype = 'c'
+                     AND c.convalidated
+                     AND pg_get_expr(c.conbin, c.conrelid, true) = 'singleton'
+                )
+           THEN 'lexical_default.singleton CHECK (singleton) is missing or incorrect'
+         WHEN NOT EXISTS (
+                  SELECT 1
                     FROM information_schema.columns
                    WHERE table_schema = 'proxima_core'
                      AND table_name = 'lexical_default'
@@ -487,6 +499,12 @@ pub async fn ensure_core_schema_markers(pool: &PgPool) -> Result<(), StorageErro
                      )
                 )
            THEN 'lexical_default.config must reference lexical_languages(config)'
+         WHEN 1 <> (
+                  SELECT count(*)
+                    FROM proxima_core.lexical_default
+                   WHERE singleton
+                )
+           THEN 'lexical_default must contain exactly one singleton=true row'
          WHEN to_regprocedure('proxima_core.lexical_tsv(text)') IS NULL
            THEN 'missing function proxima_core.lexical_tsv(text)'
          WHEN to_regprocedure('proxima_core.lexical_config()') IS NULL

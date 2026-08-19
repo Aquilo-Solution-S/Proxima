@@ -682,6 +682,26 @@ async fn schema_markers_reject_damaged_lexical_default() {
 
         sqlx::query(
             "ALTER TABLE proxima_core.lexical_default
+             DROP CONSTRAINT lexical_default_singleton_check",
+        )
+        .execute(pool)
+        .await?;
+        let err = ensure_core_schema_markers(pool)
+            .await
+            .expect_err("lexical default without CHECK (singleton) must reject --stamp");
+        assert!(
+            err.to_string().contains("CHECK (singleton)"),
+            "marker error must name the damaged lexical-default singleton check: {err}"
+        );
+        sqlx::query(
+            "ALTER TABLE proxima_core.lexical_default
+             ADD CONSTRAINT lexical_default_singleton_check CHECK (singleton)",
+        )
+        .execute(pool)
+        .await?;
+
+        sqlx::query(
+            "ALTER TABLE proxima_core.lexical_default
              DROP CONSTRAINT lexical_default_config_fkey",
         )
         .execute(pool)
@@ -694,6 +714,29 @@ async fn schema_markers_reject_damaged_lexical_default() {
                 .contains("must reference lexical_languages(config)"),
             "marker error must name the damaged lexical-default foreign key: {err}"
         );
+        sqlx::query(
+            "ALTER TABLE proxima_core.lexical_default
+             ADD CONSTRAINT lexical_default_config_fkey
+             FOREIGN KEY (config) REFERENCES proxima_core.lexical_languages(config)",
+        )
+        .execute(pool)
+        .await?;
+
+        sqlx::query("DELETE FROM proxima_core.lexical_default")
+            .execute(pool)
+            .await?;
+        let err = ensure_core_schema_markers(pool)
+            .await
+            .expect_err("lexical default without its live singleton row must reject --stamp");
+        assert!(
+            err.to_string().contains("exactly one singleton=true row"),
+            "marker error must name the missing lexical-default row: {err}"
+        );
+
+        sqlx::query("SELECT proxima_core.set_lexical_config('simple')")
+            .execute(pool)
+            .await?;
+        ensure_core_schema_markers(pool).await?;
         Ok(())
     }
     .await;
