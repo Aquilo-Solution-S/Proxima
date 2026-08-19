@@ -326,6 +326,16 @@ pub async fn ensure_core_schema_markers(pool: &PgPool) -> Result<(), StorageErro
            THEN 'missing relation proxima_core.group_memberships'
          WHEN to_regclass('proxima_core.owner_fact_retention') IS NULL
            THEN 'missing relation proxima_core.owner_fact_retention'
+         WHEN NOT EXISTS (
+                  SELECT 1
+                    FROM information_schema.columns
+                   WHERE table_schema = 'proxima_core'
+                     AND table_name = 'cooled'
+                     AND column_name = 'blob_id'
+                     AND data_type = 'uuid'
+                     AND is_nullable = 'YES'
+                )
+           THEN 'cooled.blob_id must be nullable uuid'
          WHEN to_regclass('proxima_core.lexical_languages') IS NULL
            THEN 'missing relation proxima_core.lexical_languages'
          WHEN to_regprocedure('proxima_core.lexical_tsv(text)') IS NULL

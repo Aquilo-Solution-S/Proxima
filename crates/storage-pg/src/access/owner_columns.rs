@@ -485,13 +485,16 @@ async fn transfer_memory_handle(
     from_id: uuid::Uuid,
     world: uuid::Uuid,
 ) -> Result<(bool, Vec<String>), StorageError> {
-    let ts: Vec<uuid::Uuid> =
-        sqlx::query_scalar("SELECT t FROM proxima_core.memory WHERE handle = $1 AND owner_id = $2")
-            .bind(handle)
-            .bind(from_id)
-            .fetch_all(&mut **tx)
-            .await
-            .map_err(map_err)?;
+    let ts: Vec<uuid::Uuid> = sqlx::query_scalar(
+        "SELECT t FROM proxima_core.memory WHERE handle = $1 AND owner_id = $2
+         UNION
+         SELECT t FROM proxima_core.cooled WHERE handle = $1 AND owner_id = $2",
+    )
+    .bind(handle)
+    .bind(from_id)
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(map_err)?;
     if ts.is_empty() {
         return Ok((false, Vec::new()));
     }
@@ -619,8 +622,12 @@ async fn transfer_exclusive_blobs(
     world: uuid::Uuid,
 ) -> Result<(), StorageError> {
     let blob_ids: Vec<uuid::Uuid> = sqlx::query_scalar(
-        "SELECT DISTINCT blob_id
+        "SELECT blob_id
            FROM proxima_core.memory
+          WHERE handle = $1 AND owner_id = $2 AND blob_id IS NOT NULL
+         UNION
+         SELECT blob_id
+           FROM proxima_core.cooled
           WHERE handle = $1 AND owner_id = $2 AND blob_id IS NOT NULL",
     )
     .bind(handle)
@@ -633,6 +640,12 @@ async fn transfer_exclusive_blobs(
             "SELECT EXISTS (
                  SELECT 1
                    FROM proxima_core.memory
+                  WHERE blob_id = $1
+                    AND handle <> $2
+                    AND owner_id <> $3
+                 UNION ALL
+                 SELECT 1
+                   FROM proxima_core.cooled
                   WHERE blob_id = $1
                     AND handle <> $2
                     AND owner_id <> $3

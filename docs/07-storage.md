@@ -88,7 +88,7 @@ Closed vocabularies are SQL enums.
 | `closed_handle` | no new pin to any `t` of that handle |
 | `goal_head` / `goal` | Goal timeseries; `wake_id`, `write_act_t`, `dependency_t`, `evidence_t` |
 | `wake_config` | the one UPDATE table; N Goals share `wake_id`; DELETE RESTRICT |
-| `cooled` | forget stub; object key `cold/<owner_hash>/<handle>/<t>`; `source_id` / `ingest_key` copied from the hot row so source-scope erase can select |
+| `cooled` | forget stub; object key `cold/<owner_hash>/<handle>/<t>`; `blob_id`, `source_id`, and `ingest_key` copied from the hot row for replay/compliance |
 | `sketch` | hot one-liner for recall/think (`t` PK = Memory.t or Goal.t); forget deletes |
 | embeddings / jobs / heads | independent of graph authorship |
 | core sidecars | `agent_note_v1`, `utterance_v1`, `agent_derivation_v1`, `interpretation_v1`, `mcp_call_logged_v1`, `task_goal_v1` |
@@ -151,8 +151,8 @@ Independent of entity tables.
 | Consequence | Effect |
 |---|---|
 | CDC | `announce.seq` |
-| writes are replayable | `ingest_keys` |
-| forget is cool | lock `(t, owner)`, PUT `cold/`, insert locator, delete hot; compensate the PUT if the locator write is refused or rolled back. Last-t forget deletes `memory_head`. Refuse if a remaining hot non-Fact would lose `groundingSupport` (no hot pin and no cooled Fact). |
+| writes are replayable | `ingest_keys`; the handle resolves through `memory` ∪ `cooled`, so a cooled admission still replays |
+| forget is cool | lock `(t, owner)`, PUT `cold/`, insert locator, delete hot; on a pre-commit error retain the PUT only when `cooled(t, object_key)` names it; retain on an ambiguous commit outcome. Last-t forget deletes `memory_head`. Refuse if a remaining hot non-Fact would lose `groundingSupport` (no hot pin and no cooled Fact). |
 | hydrate | same `t`; recreates `memory_head` when the series was empty |
 
 <a id="scaling-envelope"></a>

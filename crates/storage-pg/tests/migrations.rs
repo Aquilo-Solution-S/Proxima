@@ -250,6 +250,10 @@ async fn migrations_apply_to_fresh_db() {
             "cooled carries ingest_key next to source_id"
         );
         assert!(
+            column_exists(&pg, "cooled", "blob_id").await,
+            "cooled carries blob_id so citation-bearing replays keep their object"
+        );
+        assert!(
             column_exists(&pg, "memory", "schema_id").await,
             "schema_id is on each memory row (same value as the handle)"
         );
@@ -477,6 +481,20 @@ async fn schema_markers_accept_fresh_schema_and_reject_incomplete_claim_lane() {
         let pg = PgStorage::connect(&url).await?;
         pg.run_migrations().await?;
         ensure_core_schema_markers(pg.pool_for_tests()).await?;
+
+        sqlx::query("ALTER TABLE proxima_core.cooled RENAME COLUMN blob_id TO blob_id_old")
+            .execute(pg.pool_for_tests())
+            .await?;
+        let err = ensure_core_schema_markers(pg.pool_for_tests())
+            .await
+            .expect_err("missing cooled.blob_id must reject --stamp");
+        assert!(
+            err.to_string().contains("cooled.blob_id"),
+            "marker error must name the missing cooled witness: {err}"
+        );
+        sqlx::query("ALTER TABLE proxima_core.cooled RENAME COLUMN blob_id_old TO blob_id")
+            .execute(pg.pool_for_tests())
+            .await?;
 
         sqlx::query(
             "ALTER TYPE proxima_core.embedding_job_status

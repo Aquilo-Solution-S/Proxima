@@ -782,14 +782,20 @@ async fn persist_draft_citation(
 
 async fn citation_object_for_t(
     tx: &mut Transaction<'_, Postgres>,
+    owner_id: uuid::Uuid,
     memory_id: MemoryId,
 ) -> Result<Option<uuid::Uuid>, StorageError> {
-    let blob_id: Option<Option<uuid::Uuid>> =
-        sqlx::query_scalar("SELECT blob_id FROM proxima_core.memory WHERE t = $1")
-            .bind(memory_id.into_inner())
-            .fetch_optional(tx.as_mut())
-            .await
-            .map_err(map_err)?;
+    let blob_id: Option<Option<uuid::Uuid>> = sqlx::query_scalar(
+        "SELECT blob_id FROM proxima_core.memory WHERE t = $1 AND owner_id = $2
+             UNION ALL
+             SELECT blob_id FROM proxima_core.cooled WHERE t = $1 AND owner_id = $2
+             LIMIT 1",
+    )
+    .bind(memory_id.into_inner())
+    .bind(owner_id)
+    .fetch_optional(tx.as_mut())
+    .await
+    .map_err(map_err)?;
     Ok(blob_id.flatten())
 }
 
@@ -905,7 +911,8 @@ where
         sidecar(tx, &outcome).await?;
     }
     if outcome.idempotent_replay {
-        outcome.cited_object_id = citation_object_for_t(tx, outcome.memory_id).await?;
+        outcome.cited_object_id =
+            citation_object_for_t(tx, owner.stored_owner_id(), outcome.memory_id).await?;
     } else {
         outcome.cited_object_id = write.blob_id;
         if let Some(model_id) = options.embedding_model_id {

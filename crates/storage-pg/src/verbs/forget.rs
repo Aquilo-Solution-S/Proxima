@@ -15,6 +15,12 @@ use crate::sidecars::PgSidecarRegistryFrozen;
 
 pub const COLD_FORMAT_VERSION: u8 = 4;
 
+/// Deterministic in `(owner_hash, handle, t)`: one object per Memory `t`,
+/// not one per forget attempt. Two racing forgets of the same `t` therefore
+/// PUT the same logical record to the same key, and a hydrate → forget cycle
+/// overwrites in place instead of orphaning the object hydrate left behind.
+/// `compensate_forget_put` depends on this: the key is not owned by one
+/// attempt, so a losing attempt must not delete it.
 #[must_use]
 pub fn cold_object_key(owner_hash: &str, handle: Uuid, t: Uuid) -> String {
     format!("cold/{owner_hash}/{handle}/{t}")
@@ -468,14 +474,15 @@ async fn persist_cooled_after_put(
     let t = current.row.t;
     sqlx::query(
         "INSERT INTO proxima_core.cooled
-            (t, handle, owner_id, kind, object_key, content_id, source_id, ingest_key)
-         VALUES ($1, $2, $3, $4::proxima_core.memory_kind, $5, $6, $7, $8)",
+            (t, handle, owner_id, kind, object_key, blob_id, content_id, source_id, ingest_key)
+         VALUES ($1, $2, $3, $4::proxima_core.memory_kind, $5, $6, $7, $8, $9)",
     )
     .bind(current.row.t)
     .bind(current.row.handle)
     .bind(current.row.owner_id)
     .bind(&current.row.kind)
     .bind(object_key)
+    .bind(current.row.blob_id)
     .bind(current.row.content_id)
     .bind(current.row.source_id.as_deref())
     .bind(current.row.ingest_key.as_deref())
@@ -504,6 +511,46 @@ async fn persist_cooled_after_put(
     .await
     .map_err(map_err)?;
     Ok(())
+}
+
+/// Undo the pre-commit PUT of a forget attempt that failed before it
+/// committed, unless a committed cooled locator names that exact key.
+///
+/// Production forgets serialize before PUT. The locator check also makes a
+/// raw losing [`commit_forget`] safe without retaining payload after a
+/// concurrent publish or hard erase, both of which leave no matching row.
+async fn compensate_forget_put(
+    tx: &mut Transaction<'_, Postgres>,
+    cold: &dyn ColdObjectStore,
+    object_key: &str,
+    t: Uuid,
+    err: &StorageError,
+) {
+    if matches!(err, StorageError::NotFound) {
+        let referenced = sqlx::query_scalar::<_, bool>(
+            "SELECT EXISTS (
+                 SELECT 1 FROM proxima_core.cooled
+                  WHERE t = $1 AND object_key = $2
+             )",
+        )
+        .bind(t)
+        .bind(object_key)
+        .fetch_one(tx.as_mut())
+        .await;
+        match referenced {
+            Ok(true) => return,
+            Ok(false) => {}
+            Err(lookup_err) => {
+                tracing::warn!(
+                    error = %lookup_err,
+                    key = object_key,
+                    t = %t,
+                    "failed to verify cold locator while compensating forget PUT"
+                );
+            }
+        }
+    }
+    delete_cold_object(cold, object_key).await;
 }
 
 pub(crate) async fn delete_cold_object(cold: &dyn ColdObjectStore, object_key: &str) {
@@ -799,7 +846,7 @@ pub async fn forget_memory(
     match commit_forget(tx, sidecars, cold, object_key, &rec, expected_owner_id).await {
         Ok(()) => Ok(()),
         Err(err) => {
-            delete_cold_object(cold, object_key).await;
+            compensate_forget_put(tx, cold, object_key, t, &err).await;
             Err(err)
         }
     }
@@ -824,8 +871,8 @@ pub async fn forget_memory_oneshot(
     if let Err(err) =
         commit_forget(&mut tx, sidecars, cold, object_key, &rec, expected_owner_id).await
     {
+        compensate_forget_put(&mut tx, cold, object_key, t, &err).await;
         let _ = tx.rollback().await;
-        delete_cold_object(cold, object_key).await;
         return Err(err);
     }
     if let Err(err) = tx.commit().await.map_err(map_err) {
