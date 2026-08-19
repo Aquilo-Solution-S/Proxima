@@ -1092,9 +1092,28 @@ mod tests {
             "PROXIMA_OIDC_AUDIENCE" => Some("proxima-mcp".into()),
             "PROXIMA_PUBLIC_URL" => Some("https://proxima.test".into()),
             "PROXIMA_OIDC_SUBJECT_MAP" => Some(format!("subject-1:{}", uuid::Uuid::nil())),
+            "PROXIMA_OIDC_HTTP_TIMEOUT_SECONDS" => Some("17".into()),
             _ => None,
         })
         .expect("app builds with oidc env");
+    }
+
+    #[tokio::test]
+    async fn oidc_env_rejects_invalid_http_timeout() {
+        let err = build_app(config(), |key| match key {
+            "PROXIMA_OIDC_ISSUER" => Some("https://idp.test".into()),
+            "PROXIMA_OIDC_AUDIENCE" => Some("proxima-mcp".into()),
+            "PROXIMA_PUBLIC_URL" => Some("https://proxima.test".into()),
+            "PROXIMA_OIDC_SUBJECT_MAP" => Some(format!("subject-1:{}", uuid::Uuid::nil())),
+            "PROXIMA_OIDC_HTTP_TIMEOUT_SECONDS" => Some("0".into()),
+            _ => None,
+        })
+        .expect_err("zero OIDC HTTP timeout must fail boot");
+        assert!(
+            err.to_string()
+                .contains("PROXIMA_OIDC_HTTP_TIMEOUT_SECONDS"),
+            "message: {err}"
+        );
     }
 
     #[tokio::test]

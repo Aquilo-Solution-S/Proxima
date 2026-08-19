@@ -19,5 +19,8 @@ pub use binding_set::{
     OidcBinding, OidcBindingRoute, OidcBindingSet, OidcBindingSetError, OidcRoleShape,
 };
 pub use config::{OidcAuthConfig, OidcConfigError};
-pub use keys::{HttpJwksResolver, KeyError, KeyResolver, StaticJwksResolver};
+pub use keys::{
+    DEFAULT_HTTP_REQUEST_TIMEOUT, HttpJwksResolver, KeyError, KeyResolver,
+    MAX_HTTP_REQUEST_TIMEOUT, StaticJwksResolver,
+};
 pub use subject_map::{OidcSubjectMap, OidcSubjectMapError};

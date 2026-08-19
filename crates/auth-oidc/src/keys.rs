@@ -21,6 +21,14 @@ const JWKS_REFRESH_COOLDOWN: Duration = Duration::from_mins(1);
 /// clock, so a stale hit refetches at most once per age window.
 const JWKS_MAX_AGE: Duration = Duration::from_hours(1);
 
+/// Complete-request timeout used by [`HttpJwksResolver::new`]. It covers DNS,
+/// connection establishment, response headers, and response-body reads for
+/// both discovery and JWKS requests.
+pub const DEFAULT_HTTP_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Largest complete-request timeout accepted by [`HttpJwksResolver`].
+pub const MAX_HTTP_REQUEST_TIMEOUT: Duration = Duration::from_mins(5);
+
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum KeyError {
     #[error("unknown key id")]
@@ -99,6 +107,7 @@ pub struct HttpJwksResolver {
     issuer: String,
     jwks_uri: Option<String>,
     http: reqwest::Client,
+    request_timeout: Duration,
     cache: RwLock<HashMap<String, Arc<DecodingKey>>>,
     /// Last successful JWKS refetch; drives TTL staleness checks.
     last_refresh: RwLock<Option<Instant>>,
@@ -112,6 +121,7 @@ impl std::fmt::Debug for HttpJwksResolver {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("HttpJwksResolver")
             .field("issuer", &self.issuer)
+            .field("request_timeout", &self.request_timeout)
             .finish_non_exhaustive()
     }
 }
@@ -124,19 +134,58 @@ impl HttpJwksResolver {
     /// entitled to name — only a loopback issuer may point at a loopback
     /// JWKS, so a remote provider cannot move key resolution onto the host.
     pub fn new(issuer: String, jwks_uri: Option<String>) -> Result<Self, OidcConfigError> {
+        Self::with_request_timeout(issuer, jwks_uri, DEFAULT_HTTP_REQUEST_TIMEOUT)
+    }
+
+    /// Construct a resolver with an explicit complete-request timeout.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same URL errors as [`Self::new`], or an error when
+    /// `request_timeout` is zero or exceeds [`MAX_HTTP_REQUEST_TIMEOUT`].
+    pub fn with_request_timeout(
+        issuer: String,
+        jwks_uri: Option<String>,
+        request_timeout: Duration,
+    ) -> Result<Self, OidcConfigError> {
+        Self::with_http_client(issuer, jwks_uri, reqwest::Client::new(), request_timeout)
+    }
+
+    /// Construct a resolver with an injected HTTP client and an explicit
+    /// complete-request timeout. The timeout is applied to each request, so a
+    /// client with a weaker or absent default cannot make discovery or JWKS
+    /// body reads unbounded.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same URL and timeout errors as [`Self::with_request_timeout`].
+    pub fn with_http_client(
+        issuer: String,
+        jwks_uri: Option<String>,
+        http: reqwest::Client,
+        request_timeout: Duration,
+    ) -> Result<Self, OidcConfigError> {
         validate_https_url("issuer", &issuer)?;
         if let Some(uri) = &jwks_uri {
             validate_jwks_url("jwks_uri", uri, &issuer)?;
         }
+        validate_request_timeout(request_timeout)?;
         Ok(Self {
             issuer,
             jwks_uri,
-            http: reqwest::Client::new(),
+            http,
+            request_timeout,
             cache: RwLock::new(HashMap::new()),
             last_refresh: RwLock::new(None),
             last_attempt: RwLock::new(None),
             refresh_gate: Mutex::new(()),
         })
+    }
+
+    /// Complete-request timeout applied to discovery and JWKS requests.
+    #[must_use]
+    pub const fn request_timeout(&self) -> Duration {
+        self.request_timeout
     }
 
     async fn jwks_endpoint(&self) -> Result<String, KeyError> {
@@ -150,6 +199,7 @@ impl HttpJwksResolver {
         let cfg: OpenIdConfig = self
             .http
             .get(url)
+            .timeout(self.request_timeout)
             .send()
             .await
             .map_err(|e| KeyError::Fetch(e.to_string()))?
@@ -168,6 +218,7 @@ impl HttpJwksResolver {
         let set: JwkSet = self
             .http
             .get(endpoint)
+            .timeout(self.request_timeout)
             .send()
             .await
             .map_err(|e| KeyError::Fetch(e.to_string()))?
@@ -210,6 +261,16 @@ impl HttpJwksResolver {
     async fn mark_attempt(&self) {
         *self.last_attempt.write().await = Some(Instant::now());
     }
+}
+
+fn validate_request_timeout(request_timeout: Duration) -> Result<(), OidcConfigError> {
+    if request_timeout.is_zero() || request_timeout > MAX_HTTP_REQUEST_TIMEOUT {
+        return Err(OidcConfigError::InvalidTimeout {
+            field: "OIDC HTTP request timeout",
+            max_seconds: MAX_HTTP_REQUEST_TIMEOUT.as_secs(),
+        });
+    }
+    Ok(())
 }
 
 /// True when a JWK entry should be materialized as RSA.
@@ -297,16 +358,20 @@ impl KeyResolver for HttpJwksResolver {
 
 #[cfg(test)]
 mod http_tests {
+    use std::convert::Infallible;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::{Duration, Instant};
 
-    use axum::{Router, http::StatusCode, routing::get};
+    use axum::{Router, body::Body, http::StatusCode, response::Response, routing::get};
     use tokio::sync::Barrier;
 
     use crate::config::{OidcConfigError, validate_https_url};
 
-    use super::{HttpJwksResolver, JWKS_MAX_AGE, JWKS_REFRESH_COOLDOWN, KeyError, KeyResolver};
+    use super::{
+        DEFAULT_HTTP_REQUEST_TIMEOUT, HttpJwksResolver, JWKS_MAX_AGE, JWKS_REFRESH_COOLDOWN,
+        KeyError, KeyResolver, MAX_HTTP_REQUEST_TIMEOUT,
+    };
 
     // Static 2048-bit RSA public key as JWK n/e (base64url). Baked so this
     // test needs neither `rsa` nor `rand` (RUSTSEC-2023-0071: the `rsa` crate
@@ -320,6 +385,81 @@ mod http_tests {
             jsonwebtoken::DecodingKey::from_rsa_components(TEST_JWK_N, TEST_JWK_E)
                 .expect("valid baked test key"),
         )
+    }
+
+    #[test]
+    fn default_request_timeout_is_finite_and_explicit() {
+        assert_eq!(DEFAULT_HTTP_REQUEST_TIMEOUT, Duration::from_secs(10));
+        let resolver = HttpJwksResolver::new("http://127.0.0.1:4180".into(), None)
+            .expect("loopback issuer and default timeout are valid");
+
+        assert_eq!(resolver.request_timeout(), DEFAULT_HTTP_REQUEST_TIMEOUT);
+        assert!(!resolver.request_timeout().is_zero());
+        assert!(resolver.request_timeout() <= MAX_HTTP_REQUEST_TIMEOUT);
+    }
+
+    #[test]
+    fn explicit_request_timeout_rejects_zero_and_out_of_range_values() {
+        for invalid in [
+            Duration::ZERO,
+            MAX_HTTP_REQUEST_TIMEOUT + Duration::from_nanos(1),
+        ] {
+            assert!(matches!(
+                HttpJwksResolver::with_request_timeout(
+                    "http://127.0.0.1:4180".into(),
+                    None,
+                    invalid
+                ),
+                Err(OidcConfigError::InvalidTimeout { .. })
+            ));
+        }
+    }
+
+    async fn stalled_body() -> Response {
+        let body =
+            Body::from_stream(futures::stream::pending::<Result<&'static [u8], Infallible>>());
+        Response::builder()
+            .header("content-type", "application/json")
+            .body(body)
+            .expect("static stalled response")
+    }
+
+    async fn spawn_stalling_idp() -> (String, tokio::task::JoinHandle<()>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind test listener");
+        let addr = listener.local_addr().expect("read listener addr");
+        let issuer = format!("http://{addr}");
+        let app = Router::new()
+            .route("/.well-known/openid-configuration", get(stalled_body))
+            .route("/keys", get(stalled_body));
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app)
+                .await
+                .expect("mock idp server failed");
+        });
+        (issuer, server)
+    }
+
+    #[tokio::test]
+    async fn stalled_discovery_and_jwks_bodies_time_out() {
+        let (issuer, server) = spawn_stalling_idp().await;
+        let request_timeout = Duration::from_millis(50);
+
+        for jwks_uri in [None, Some(format!("{issuer}/keys"))] {
+            let resolver =
+                HttpJwksResolver::with_request_timeout(issuer.clone(), jwks_uri, request_timeout)
+                    .expect("short explicit timeout is valid");
+            let result = tokio::time::timeout(Duration::from_secs(2), resolver.key_for("k1"))
+                .await
+                .expect("resolver's request timeout must fire before the test guard");
+            assert!(
+                matches!(result, Err(KeyError::Parse(_))),
+                "stalled response body must terminate through the existing parse-error path: {result:?}"
+            );
+        }
+
+        server.abort();
     }
 
     async fn seed_stale_key(

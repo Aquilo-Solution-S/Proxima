@@ -80,6 +80,7 @@ lock fails and retries on the next pod rather than queueing behind readers.
 | `PROXIMA_OIDC_ISSUER` | yes | `https://zitadel.example.com` | Zitadel issuer URL. |
 | `PROXIMA_OIDC_AUDIENCE` | yes | `https://proxima.example.com` | Public-origin resource id expected in token `aud`; one token covers `/mcp` and an enabled `/v1`. |
 | `PROXIMA_OIDC_JWKS_URI` | no | `https://zitadel.example.com/oauth/v2/keys` | Overrides OIDC discovery. |
+| `PROXIMA_OIDC_HTTP_TIMEOUT_SECONDS` | no | `10` | Complete-request timeout for discovery and JWKS HTTP requests, including connect and body read. Default `10`; range `1..=300`; invalid values fail boot. |
 | `PROXIMA_OIDC_SUBJECT_MAP_JSON` | yes* | `[{"iss":"https://zitadel.example.com","sub":"...","user_id":"550e8400-e29b-41d4-a716-446655440000"}]` | Issuer-aware `(iss, sub) -> user_id` identity map. Required whenever `PROXIMA_OIDC_ISSUER` is set, unless `PROXIMA_OIDC_SUBJECT_MAP` is given instead (the two are mutually exclusive). |
 | `PROXIMA_OIDC_SUBJECT_MAP` | yes* | `sub-1:550e8400-e29b-41d4-a716-446655440000` | Legacy single-issuer shorthand `sub:<uuid>,sub2:<uuid2>`; every entry binds to `PROXIMA_OIDC_ISSUER`. Valid only because exactly one issuer is ever accepted here. |
 | `PROXIMA_OIDC_ALLOWED_SUBJECTS` | no | `user1,user2` | Comma-separated `sub` allowlist layered on top of the subject map above; never an identity source by itself. |

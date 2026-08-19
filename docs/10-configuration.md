@@ -59,6 +59,7 @@ Proxima::<App>::app()
 | `PROXIMA_ALLOWED_HOSTS` | Comma-separated inbound `Host` allowlist (hostnames or `host:port`, no wildcards) for the listener-wide DNS-rebinding guard; defaults to the host of `PROXIMA_PUBLIC_URL` + the allowed origins. Loopback always permitted. |
 | `PROXIMA_STREAM_MAX_LIFETIME` | Max lifetime (seconds) of an authenticated MCP (Streamable HTTP) response stream before re-validation. |
 | `PROXIMA_STREAM_EPOCH_INTERVAL` | Auth-epoch re-check interval (seconds) for an open MCP response stream. |
+| `PROXIMA_OIDC_HTTP_TIMEOUT_SECONDS` | Complete-request timeout for OIDC discovery and JWKS HTTP requests. Default `10`; range `1..=300` seconds. Covers connection establishment and response-body reads. |
 | `PROXIMA_EMBED_BASE_URL` | OpenAI-compatible `/embeddings` base URL. Required with `PROXIMA_EMBED_MODEL` to enable embeddings. |
 | `PROXIMA_EMBED_API_KEY` | Optional bearer for a hosted embedding endpoint. |
 | `PROXIMA_EMBED_MODEL` | Embedding model id. Required with `PROXIMA_EMBED_BASE_URL` to enable embeddings. |
@@ -93,6 +94,10 @@ The Streamable HTTP MCP listener turns on when `PROXIMA_MCP_BIND` (or
 | Mode | How | Identity model |
 |---|---|---|
 | Host `Authenticator` | `.authenticator(Arc<dyn Authenticator>)` | bearer resolves to an `AuthzContext` carrying current, server-resolved `OwnerRoles` |
+
+The shipped OIDC resolver bounds each discovery and JWKS request, including
+connect and body read, to `PROXIMA_OIDC_HTTP_TIMEOUT_SECONDS` (`10` by default;
+`1..=300`). Zero, malformed, and out-of-range values fail boot.
 
 `OwnerAccessPort` is not a second runtime input. The shipped
 `OidcAuthenticator` and each `OidcBinding` receive the port at construction

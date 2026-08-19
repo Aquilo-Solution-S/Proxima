@@ -15,6 +15,7 @@
 
 use std::collections::HashSet;
 use std::sync::Arc;
+use std::time::Duration;
 
 use proxima_core::Authenticator;
 use proxima_mcp_server::ResourceServerMetadata;
@@ -27,6 +28,9 @@ use crate::runtime_config::ProximaError;
 const SUBJECT_MAP_JSON: &str = "PROXIMA_OIDC_SUBJECT_MAP_JSON";
 const SUBJECT_MAP_LEGACY: &str = "PROXIMA_OIDC_SUBJECT_MAP";
 
+/// Complete-request timeout for OIDC discovery and JWKS HTTP requests.
+const OIDC_HTTP_TIMEOUT_SECONDS: &str = "PROXIMA_OIDC_HTTP_TIMEOUT_SECONDS";
+
 /// How much clock skew a token may carry, in seconds.
 const LEEWAY_SECS: u64 = 60;
 
@@ -37,7 +41,8 @@ pub type OidcBundle = (Arc<dyn Authenticator>, ResourceServerMetadata);
 /// Low-level OIDC primitives a host authenticator composes. Not a second
 /// authenticator: `oidc_from_env` stays the one-audience env path.
 pub use proxima_auth_oidc::{
-    HttpJwksResolver, KeyError, KeyResolver, OidcAuthConfig, OidcConfigError, OidcTokenValidator,
+    DEFAULT_HTTP_REQUEST_TIMEOUT, HttpJwksResolver, KeyError, KeyResolver,
+    MAX_HTTP_REQUEST_TIMEOUT, OidcAuthConfig, OidcConfigError, OidcTokenValidator,
     ValidatedOidcClaims,
 };
 pub use proxima_core::{AccessError, OwnerRoles};
@@ -59,6 +64,8 @@ pub use proxima_core::{AccessError, OwnerRoles};
 /// - `PROXIMA_OIDC_SUBJECT_MAP_JSON` or `PROXIMA_OIDC_SUBJECT_MAP` — which
 ///   subject maps to which owner. Mutually exclusive.
 /// - `PROXIMA_OIDC_JWKS_URI` — optional override; discovered otherwise.
+/// - `PROXIMA_OIDC_HTTP_TIMEOUT_SECONDS` — optional complete-request timeout;
+///   default 10 seconds, maximum 300 seconds.
 /// - `PROXIMA_OIDC_ALLOWED_SUBJECTS` — optional comma-separated allowlist.
 ///
 /// # Errors
@@ -108,12 +115,22 @@ pub fn oidc_from_lookup(
         allowed_subjects,
         leeway_secs: LEEWAY_SECS,
     };
+    // Keep the URL security boundary ahead of non-security companion parsing.
+    // `with_request_timeout` validates it again so its standalone low-level
+    // contract does not depend on this facade.
+    config
+        .validate()
+        .map_err(|err| ProximaError::Config(err.to_string()))?;
+    let request_timeout = oidc_http_timeout(lookup)?;
     // The issuer/JWKS URL boundary is validated BEFORE the subject map and
     // before storage, so an insecure-URL rejection short-circuits rather
     // than being reported after two other things have already been parsed.
-    let resolver =
-        proxima_auth_oidc::HttpJwksResolver::new(issuer.clone(), config.jwks_uri.clone())
-            .map_err(|err| ProximaError::Config(err.to_string()))?;
+    let resolver = proxima_auth_oidc::HttpJwksResolver::with_request_timeout(
+        issuer.clone(),
+        config.jwks_uri.clone(),
+        request_timeout,
+    )
+    .map_err(|err| ProximaError::Config(err.to_string()))?;
     let subject_map = subject_map(lookup, &issuer)?;
 
     let authenticator = proxima_auth_oidc::OidcAuthenticator::new(
@@ -130,6 +147,24 @@ pub fn oidc_from_lookup(
             authorization_servers: vec![issuer],
         },
     )))
+}
+
+fn oidc_http_timeout(lookup: &impl Fn(&str) -> Option<String>) -> Result<Duration, ProximaError> {
+    let Some(raw) = non_empty(lookup, OIDC_HTTP_TIMEOUT_SECONDS) else {
+        return Ok(proxima_auth_oidc::DEFAULT_HTTP_REQUEST_TIMEOUT);
+    };
+    let seconds = raw.parse::<u64>().map_err(|_| {
+        ProximaError::Config(format!(
+            "{OIDC_HTTP_TIMEOUT_SECONDS} must be integer seconds, got {raw:?}"
+        ))
+    })?;
+    if seconds == 0 || seconds > proxima_auth_oidc::MAX_HTTP_REQUEST_TIMEOUT.as_secs() {
+        return Err(ProximaError::Config(format!(
+            "{OIDC_HTTP_TIMEOUT_SECONDS} must be between 1 and {} seconds, got {raw:?}",
+            proxima_auth_oidc::MAX_HTTP_REQUEST_TIMEOUT.as_secs()
+        )));
+    }
+    Ok(Duration::from_secs(seconds))
 }
 
 /// Parse the issuer-aware subject map.
@@ -172,7 +207,7 @@ mod tests {
     use std::collections::HashMap;
     use std::sync::Arc;
 
-    use super::{non_empty, oidc_from_lookup};
+    use super::{non_empty, oidc_from_lookup, oidc_http_timeout};
 
     /// A lookup over a fixed map, so none of this touches the process
     /// environment — which is what lets these run in parallel with every
@@ -204,6 +239,57 @@ mod tests {
         let resolved =
             oidc_from_lookup(&env(&[]), owner_access()).expect("absence is not an error");
         assert!(resolved.is_none());
+    }
+
+    #[test]
+    fn oidc_http_timeout_has_a_finite_default_and_parses_an_override() {
+        assert_eq!(
+            oidc_http_timeout(&env(&[])).expect("default timeout"),
+            proxima_auth_oidc::DEFAULT_HTTP_REQUEST_TIMEOUT
+        );
+        assert_eq!(
+            oidc_http_timeout(&env(&[("PROXIMA_OIDC_HTTP_TIMEOUT_SECONDS", "17")]))
+                .expect("valid override"),
+            std::time::Duration::from_secs(17)
+        );
+    }
+
+    #[tokio::test]
+    async fn oidc_http_timeout_override_is_wired_and_invalid_values_are_refused() {
+        let configured = [
+            ("PROXIMA_OIDC_ISSUER", "https://idp.test"),
+            ("PROXIMA_OIDC_AUDIENCE", "proxima-mcp"),
+            ("PROXIMA_PUBLIC_URL", "https://mcp.test"),
+            (
+                "PROXIMA_OIDC_SUBJECT_MAP",
+                "sub:0195a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b",
+            ),
+            ("PROXIMA_OIDC_HTTP_TIMEOUT_SECONDS", "17"),
+        ];
+        oidc_from_lookup(&env(&configured), owner_access())
+            .expect("valid timeout reaches resolver construction")
+            .expect("issuer config produces a bundle");
+
+        for invalid in ["0", "301", "not-a-number"] {
+            let invalid_config = [
+                ("PROXIMA_OIDC_ISSUER", "https://idp.test"),
+                ("PROXIMA_OIDC_AUDIENCE", "proxima-mcp"),
+                ("PROXIMA_PUBLIC_URL", "https://mcp.test"),
+                (
+                    "PROXIMA_OIDC_SUBJECT_MAP",
+                    "sub:0195a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b",
+                ),
+                ("PROXIMA_OIDC_HTTP_TIMEOUT_SECONDS", invalid),
+            ];
+            let Err(err) = oidc_from_lookup(&env(&invalid_config), owner_access()) else {
+                panic!("configured invalid timeout must fail boot");
+            };
+            assert!(
+                err.to_string()
+                    .contains("PROXIMA_OIDC_HTTP_TIMEOUT_SECONDS"),
+                "message: {err}"
+            );
+        }
     }
 
     /// Once an issuer IS set every companion becomes required. A silent

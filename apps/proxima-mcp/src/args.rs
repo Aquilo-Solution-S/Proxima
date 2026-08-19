@@ -45,6 +45,9 @@ Environment:
   PROXIMA_OIDC_ISSUER           OIDC issuer / authorization server
   PROXIMA_OIDC_AUDIENCE         Expected token audience
   PROXIMA_OIDC_JWKS_URI         Optional explicit JWKS endpoint
+  PROXIMA_OIDC_HTTP_TIMEOUT_SECONDS
+                                Discovery/JWKS complete-request timeout
+                                (default 10; range 1..=300 seconds)
   PROXIMA_OIDC_ALLOWED_SUBJECTS Optional comma-separated sub allowlist
                                 (in addition to the subject map below, never
                                 an identity source by itself)
