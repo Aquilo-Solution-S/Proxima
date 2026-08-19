@@ -310,7 +310,7 @@ fn print_instructions(config: &Config, issuer: &str, token: &str, key_file: Opti
     println!(
         "\n1. Point Proxima at this issuer, in another shell:\n\
          \n\
-         export DATABASE_URL=postgres://proxima:proxima@localhost:5434/proxima\n\
+         export DATABASE_URL=postgres://proxima:proxima@localhost:${{PROXIMA_DEV_POSTGRES_PORT:-5434}}/proxima\n\
          export PROXIMA_OIDC_ISSUER={issuer}\n\
          export PROXIMA_OIDC_AUDIENCE={audience}\n\
          export PROXIMA_OIDC_SUBJECT_MAP={subject}:{user_id}\n\

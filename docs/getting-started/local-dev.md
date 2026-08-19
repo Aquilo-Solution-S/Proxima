@@ -14,12 +14,51 @@ account anywhere: your Postgres, your OIDC issuer, your embedding model.
 ## Start Postgres
 
 ```sh
+# Optional: override published host ports if the defaults are occupied.
+# Keep these exports in the shell that runs Compose and the server.
+# export PROXIMA_DEV_POSTGRES_PORT=55432
+# export PROXIMA_DEV_S3_PORT=59100
 docker compose -f docker-compose.dev.yml up -d --wait postgres
 ```
 
-The dev compose file exposes pgvector Postgres at `localhost:5434`. If your
-Compose implementation lacks `--wait`, run `docker compose -f docker-compose.dev.yml ps`
-until the Postgres service is healthy before starting the server.
+The project-scoped dev Compose file exposes pgvector Postgres at
+`localhost:${PROXIMA_DEV_POSTGRES_PORT:-5434}`. When started, RustFS is exposed
+at `localhost:${PROXIMA_DEV_S3_PORT:-9100}`. The container ports remain `5432`
+and `9000`. If your Compose implementation lacks `--wait`, run `docker compose
+-f docker-compose.dev.yml ps` until the Postgres service is healthy before
+starting the server. To use cited-blob storage against the local RustFS,
+configure `PROXIMA_S3_ENDPOINT_URL` with the selected host port, for example
+`http://127.0.0.1:${PROXIMA_DEV_S3_PORT:-9100}`. If you use an override, export
+the same variable in every shell where you run Compose, `dev-idp`, or the
+server.
+
+## Optional Local RustFS Cited-Blob Store
+
+Start RustFS and wait for its health check, then run the profile-scoped
+one-shot initializer. The initializer creates the `proxima-dev` bucket and
+enables versioning before the server uses it:
+
+```sh
+docker compose -f docker-compose.dev.yml up -d --wait s3
+docker compose -f docker-compose.dev.yml --profile init run --rm s3-init
+```
+
+`--wait` applies to the long-running `s3` service. `s3-init` is intentionally
+run as a one-shot command so the shell waits for bucket creation and versioning
+to finish; do not use `up -d --wait s3-init` as a replacement.
+
+Export the same local target and AWS SDK credential-chain values in the shell
+that starts `proxima-mcp`:
+
+```sh
+export PROXIMA_S3_BUCKET=proxima-dev
+export PROXIMA_S3_REGION=us-east-1
+export PROXIMA_S3_ENDPOINT_URL="http://127.0.0.1:${PROXIMA_DEV_S3_PORT:-9100}"
+export PROXIMA_S3_FORCE_PATH_STYLE=true
+export AWS_ACCESS_KEY_ID=proxima
+export AWS_SECRET_ACCESS_KEY=proxima-dev
+export AWS_DEFAULT_REGION=us-east-1
+```
 
 ## Start A Local OIDC Issuer
 
@@ -48,7 +87,7 @@ issues a valid identity to anyone who can reach it.
 Paste the exports `dev-idp` printed, then:
 
 ```sh
-export DATABASE_URL=postgres://proxima:proxima@localhost:5434/proxima
+export DATABASE_URL="postgres://proxima:proxima@localhost:${PROXIMA_DEV_POSTGRES_PORT:-5434}/proxima"
 export PROXIMA_TOOL_PROFILE=full
 cargo run -p proxima-mcp
 ```

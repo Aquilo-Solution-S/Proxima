@@ -2,22 +2,28 @@
 
 This table is a human reference. Source code and deployment manifests remain authoritative.
 
-**Empty means unset.** Every variable below is trimmed before it is read, and a
-variable set to the empty string — or to nothing but whitespace — is treated
-exactly as if it were absent, taking the `Default` column. Exporting `FOO=` is
-therefore never a way to say something different from leaving `FOO` out. This
-also means a trailing newline picked up from a here-doc or a mounted secret
-file is harmless rather than a startup error naming a value nobody typed.
+**Runtime parsing.** Ordinary Proxima runtime and deployment settings are
+trimmed before they are read. A variable set to the empty string — or to
+nothing but whitespace — is treated exactly as if it were absent, taking the
+`Default` column. Exporting `FOO=` is therefore never a way to say something
+different from leaving `FOO` out. A trailing newline picked up from a here-doc
+is harmless rather than a startup error naming a value nobody typed.
 
 The one deliberate exception is the `env:` secret scheme, where an empty
 variable resolves as a present-but-empty secret and the consumer decides
 whether that is legal.
 
+**Dev Compose interpolation.** The Dev Compose variables below are consumed by
+Docker Compose, not Proxima's runtime parser. The `${VAR:-default}` form selects
+`default` when `VAR` is unset or empty. Compose does not trim values, so a
+whitespace-only value is passed through and rejected as an invalid `hostPort`;
+set a valid non-whitespace host port such as `55432` instead.
+
 ## Runtime and Deployment Variables
 
 | Variable | Scope | Default | Required when | Notes |
 |---|---|---|---|---|
-| `DATABASE_URL` | storage | binary default: `postgres://postgres@localhost/proxima_dev` | any non-default DB | dev compose uses `postgres://proxima:proxima@localhost:5434/proxima` |
+| `DATABASE_URL` | storage | binary default: `postgres://postgres@localhost/proxima_dev` | any non-default DB | dev compose uses `postgres://proxima:proxima@localhost:${PROXIMA_DEV_POSTGRES_PORT:-5434}/proxima` |
 | `PROXIMA_MCP_BIND` | MCP server | `127.0.0.1:31415` for `proxima-mcp` | custom listener / deployment | non-loopback requires `PROXIMA_EXPOSE_NETWORK=true` |
 | `PROXIMA_EXPOSE_NETWORK` | MCP server | unset/false | non-loopback bind | fail-closed exposure gate |
 | `PROXIMA_ALLOWED_ORIGINS` | MCP HTTP | unset/deployment-specific | browser/front-door exposure | listener-wide CORS allowlist; comma-separated; never wildcard |
@@ -73,6 +79,17 @@ whether that is legal.
 | `--database-url <URL>` | non-default DB without `DATABASE_URL` | overrides the Postgres URL |
 | `--bind <ADDR>` | custom loopback listener | non-loopback binds use env-gated deployment config |
 
+## Dev Compose Variables
+
+These variables affect only the host ports published by
+`docker-compose.dev.yml`. Set them before `docker compose up`; container ports
+remain fixed at `5432` (Postgres) and `9000` (RustFS).
+
+| Variable | Scope | Default | Required when | Notes |
+|---|---|---|---|---|
+| `PROXIMA_DEV_POSTGRES_PORT` | dev Compose | `5434` | the default host port is occupied | published host port for pgvector Postgres; use the same value in `DATABASE_URL` |
+| `PROXIMA_DEV_S3_PORT` | dev Compose | `9100` | the default host port is occupied | published host port for RustFS; use `http://127.0.0.1:<port>` as `PROXIMA_S3_ENDPOINT_URL` |
+
 ## Build/Test/Internal Variables
 
 | Variable | Scope | Notes |
@@ -84,6 +101,7 @@ whether that is legal.
 ## Source Inventory Reconciliation
 
 Inventory sources checked: `docs/10-configuration.md`, `docs/15-deployment.md`,
+`docker-compose.dev.yml`,
 `apps/proxima-mcp/src/lib.rs`, `crates/proxima/src/runtime_config.rs`,
 `crates/proxima/src/config.rs`, `crates/storage-pg/src/lib.rs`,
 `crates/storage-pg/src/pool_config.rs`, `crates/storage-pg/src/tuning.rs`,

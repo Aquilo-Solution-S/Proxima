@@ -8,7 +8,7 @@ Postgres and the local OIDC issuer.
 ## Start Loopback Server
 
 ```sh
-export DATABASE_URL=postgres://proxima:proxima@localhost:5434/proxima
+export DATABASE_URL="postgres://proxima:proxima@localhost:${PROXIMA_DEV_POSTGRES_PORT:-5434}/proxima"
 export PROXIMA_TOOL_PROFILE=full
 cargo run -p proxima-mcp
 ```
