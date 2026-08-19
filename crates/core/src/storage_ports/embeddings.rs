@@ -4,12 +4,6 @@ use crate::storage::{EmbeddingJobClaim, StorageError};
 use crate::storage_ports::{OperatorMaintenanceProof, OwnerWritePermit};
 use crate::{EmbeddableEntityRef, EntityKind, Owner};
 
-/// `last_error` prefix marking a job that failed for a permanent,
-/// input-specific cause (embed input the provider will always reject).
-/// Reconciliation keys off this marker to leave such jobs terminal instead
-/// of requeueing them into an endless reject-retry loop.
-pub const PERMANENT_EMBED_FAILURE_MARKER: &str = "permanent: ";
-
 #[async_trait::async_trait]
 pub trait EmbeddingTextPort: Send + Sync {
     /// The text to embed for one entity, or `None` when there is nothing
@@ -227,6 +221,8 @@ pub trait EmbeddingJobPort: Send + Sync {
 
     async fn complete_embedding_job(&self, claim: &EmbeddingJobClaim) -> Result<(), StorageError>;
 
+    /// Fail an attempted job for a retryable cause. The job holds `error`
+    /// and waits for a reconciliation pass to requeue it.
     async fn fail_embedding_job(
         &self,
         claim: &EmbeddingJobClaim,
@@ -235,8 +231,7 @@ pub trait EmbeddingJobPort: Send + Sync {
 
     /// Terminally fail a job whose input the embedding provider rejects for
     /// a cause retries cannot fix (e.g. text over the model's token limit).
-    /// The job goes straight to `failed` with
-    /// [`PERMANENT_EMBED_FAILURE_MARKER`]-prefixed `last_error`, and
+    /// The job takes a distinct terminal status carrying `error`, and
     /// reconciliation must not resurrect it (the memory would just poison
     /// the queue again).
     async fn fail_embedding_job_permanently(
@@ -248,7 +243,8 @@ pub trait EmbeddingJobPort: Send + Sync {
     /// Return claimed-but-unattempted jobs to `pending`.
     ///
     /// Used when a batch embed call fails for a transient provider-side
-    /// cause. v0.0.8 has no attempt counter or `next_attempt_at`.
+    /// cause. Nothing was tried, so the rows stay immediately claimable;
+    /// v0.0.8 has no attempt counter or `next_attempt_at`.
     async fn release_embedding_jobs(
         &self,
         claims: &[EmbeddingJobClaim],
@@ -272,9 +268,10 @@ pub trait EmbeddingJobPort: Send + Sync {
 
     async fn count_pending_embedding_jobs(&self, owner: &Owner) -> Result<u64, StorageError>;
 
-    /// Count the owner's embedding jobs in the terminal `failed` state (retries
-    /// exhausted). Surfaced on the readiness resource so an operator can see the
-    /// retry dead-end that `reconcile` requeues.
+    /// Count the owner's embedding jobs in a terminal state — the retryable
+    /// dead-end `reconcile` requeues plus the permanent rejections it never
+    /// will. Surfaced on the readiness resource so an operator sees the
+    /// backlog no drain is going to clear on its own.
     async fn count_failed_embedding_jobs(&self, owner: &Owner) -> Result<u64, StorageError>;
 
     /// Owner-scoped pending+failed embedding job counts in one call. Both

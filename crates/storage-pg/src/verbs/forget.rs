@@ -416,8 +416,9 @@ pub async fn snapshot_hot(
 /// `FOR UPDATE` + cooled stub + hot delete. Re-PUTs only when the locked
 /// dump differs from `snapshot` (late sidecar). Owner is the permit owner;
 /// a concurrent publish that rewrote `owner_id` is `NotFound`.
-/// The caller PUTs before this so the row lock is not held across cold I/O;
-/// this function compensates that object if the locator write fails.
+/// Production callers hold the per-memory forget advisory lock across their
+/// PUT, but do not hold this row lock across cold I/O. This function
+/// compensates the object if the locator write fails.
 pub async fn commit_forget(
     tx: &mut Transaction<'_, Postgres>,
     sidecars: &PgSidecarRegistryFrozen,
@@ -516,6 +517,22 @@ pub(crate) async fn delete_cold_object(cold: &dyn ColdObjectStore, object_key: &
             );
         }
     }
+}
+
+async fn lock_forget_memory_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    t: Uuid,
+) -> Result<(), StorageError> {
+    sqlx::query(
+        "SELECT pg_advisory_xact_lock(
+             hashtextextended('proxima-forget:' || $1::text, 0)
+         )",
+    )
+    .bind(t)
+    .execute(tx.as_mut())
+    .await
+    .map_err(map_err)?;
+    Ok(())
 }
 
 async fn insertable_columns(
@@ -773,6 +790,7 @@ pub async fn forget_memory(
     t: Uuid,
     expected_owner_id: Uuid,
 ) -> Result<(), StorageError> {
+    lock_forget_memory_tx(tx, t).await?;
     let rec = snapshot_hot(tx.as_mut(), sidecars, t).await?;
     if rec.row.owner_id != expected_owner_id {
         return Err(StorageError::NotFound);
@@ -796,15 +814,13 @@ pub async fn forget_memory_oneshot(
     t: Uuid,
     expected_owner_id: Uuid,
 ) -> Result<(), StorageError> {
-    let rec = {
-        let mut conn = pool.acquire().await.map_err(map_err)?;
-        snapshot_hot(&mut conn, sidecars, t).await?
-    };
+    let mut tx = pool.begin().await.map_err(map_err)?;
+    lock_forget_memory_tx(&mut tx, t).await?;
+    let rec = snapshot_hot(tx.as_mut(), sidecars, t).await?;
     if rec.row.owner_id != expected_owner_id {
         return Err(StorageError::NotFound);
     }
     cold.put(object_key, &encode_record(&rec)?).await?;
-    let mut tx = pool.begin().await.map_err(map_err)?;
     if let Err(err) =
         commit_forget(&mut tx, sidecars, cold, object_key, &rec, expected_owner_id).await
     {
@@ -813,7 +829,11 @@ pub async fn forget_memory_oneshot(
         return Err(err);
     }
     if let Err(err) = tx.commit().await.map_err(map_err) {
-        delete_cold_object(cold, object_key).await;
+        tracing::warn!(
+            error = %err,
+            key = object_key,
+            "retaining cold object after ambiguous forget commit"
+        );
         return Err(err);
     }
     Ok(())
@@ -1013,7 +1033,10 @@ pub async fn erase_memory(
          SELECT $1, 'erase', 'memory', $2, $3",
     )
     .bind(owner.stored_owner_id())
-    .bind(t)
+    // The series handle, not t: a ChangeHistory reader pages by handle, and a
+    // t-shaped handle matches no series. Keyless rows (no hot or cooled row
+    // left to read it from) fall back to t.
+    .bind(handle.unwrap_or(t))
     .bind(t)
     .execute(tx.as_mut())
     .await

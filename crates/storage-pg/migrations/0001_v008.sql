@@ -433,13 +433,28 @@ CREATE TABLE proxima_core.embedding_heads (
     PRIMARY KEY (entity_id, model_id)
 );
 
+-- `failed` is retryable-terminal (reconcile requeues it); `failed_permanent`
+-- is an input the provider will always reject, so nothing requeues it.
+CREATE TYPE proxima_core.embedding_job_status AS ENUM (
+    'pending',
+    'processing',
+    'failed',
+    'failed_permanent'
+);
+
 CREATE TABLE proxima_core.embedding_jobs (
     job_id uuid PRIMARY KEY DEFAULT uuidv7(),
     entity_id uuid NOT NULL,
     model_id text NOT NULL,
     owner_id uuid NOT NULL REFERENCES proxima_core.owners (owner_id),
-    status text NOT NULL DEFAULT 'pending',
-    UNIQUE (owner_id, entity_id, model_id)
+    status proxima_core.embedding_job_status NOT NULL DEFAULT 'pending',
+    claimed_at timestamptz,
+    claim_token uuid,
+    last_error text,
+    UNIQUE (owner_id, entity_id, model_id),
+    CONSTRAINT embedding_job_processing_claim_chk CHECK (
+        (status = 'processing') = (claimed_at IS NOT NULL AND claim_token IS NOT NULL)
+    )
 );
 
 CREATE INDEX embedding_jobs_pending_claim_idx
@@ -632,6 +647,19 @@ CREATE TABLE proxima_core.owner_legal_holds (
     owner_id uuid,
     hold_active boolean NOT NULL,
     updated_at timestamptz NOT NULL DEFAULT now(),
+    UNIQUE NULLS NOT DISTINCT (owner_kind, owner_id)
+);
+
+-- Per-owner Fact-retention window, read by `proxima://graph` and enforced by
+-- the `maintain-retention` sweep. `NULLS NOT DISTINCT` is the ON CONFLICT
+-- arbiter `upsert_fact_retention` names.
+CREATE TABLE proxima_core.owner_fact_retention (
+    owner_kind proxima_core.owner_kind NOT NULL,
+    owner_id uuid,
+    retention_seconds bigint NOT NULL,
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT owner_fact_retention_retention_seconds_check
+        CHECK (retention_seconds > 0),
     UNIQUE NULLS NOT DISTINCT (owner_kind, owner_id)
 );
 

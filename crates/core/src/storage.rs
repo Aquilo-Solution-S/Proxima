@@ -6,6 +6,8 @@
 use std::any::{Any, TypeId};
 use std::sync::Arc;
 
+use uuid::Uuid;
+
 use crate::edge::EdgeEndpoint;
 use crate::{
     AbstractionPayload, CitationMappingPayload, CitedObjectPayload, FactPayload, GoalPayload,
@@ -417,10 +419,12 @@ pub struct AuthorDerivedOutcome {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EmbeddingJobClaim {
+    pub job_id: Uuid,
     pub owner: Owner,
     pub entity_kind: EntityKind,
     pub entity_id: MemoryId,
     pub model_id: String,
     pub embedding_version: i32,
     pub attempts: i32,
+    pub claim_token: Uuid,
 }

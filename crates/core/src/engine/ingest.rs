@@ -974,7 +974,7 @@ impl Engine {
                 client.model_id(),
                 client.dim(),
                 vector,
-                crate::storage_ports::EmbeddingWriteProof::new(),
+                crate::storage_ports::EmbeddingWriteProof::for_claim(claim),
             )
             .await?;
         self.storage
@@ -1101,7 +1101,7 @@ impl Engine {
                 client.model_id(),
                 client.dim(),
                 &chunks,
-                crate::storage_ports::EmbeddingWriteProof::new(),
+                crate::storage_ports::EmbeddingWriteProof::for_claim(claim),
             )
             .await?;
         self.storage

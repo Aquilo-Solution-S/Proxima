@@ -16,7 +16,7 @@ const ANN_CANARY_SESSION_SQL: &str = concat!(
     "SET LOCAL hnsw.iterative_scan = relaxed_order"
 );
 
-use super::{nonnegative_count, ratio_count, usize_count};
+use super::{STALE_PROCESSING_RECLAIM_SECONDS, nonnegative_count, ratio_count, usize_count};
 
 #[derive(sqlx::FromRow)]
 struct EmbeddingAnnObservabilityRow {
@@ -120,13 +120,22 @@ pub(crate) async fn embedding_ann_observability(
                  AS processing_jobs,
              (SELECT count(*)::bigint
                 FROM proxima_core.embedding_jobs
-               WHERE status = 'failed')
+               WHERE status IN ('failed', 'failed_permanent'))
                  AS failed_jobs,
-             0::bigint AS stale_processing_jobs,
+             (SELECT count(*)::bigint
+                FROM proxima_core.embedding_jobs
+               WHERE status = 'processing'
+                 AND (
+                     claimed_at IS NULL
+                     OR claimed_at < now()
+                         - make_interval(secs => ($1::bigint)::double precision)
+                 ))
+                 AS stale_processing_jobs,
              (SELECT count FROM orphan_embeddings) AS orphan_embeddings,
              (SELECT count FROM orphan_heads) AS orphan_heads,
              (SELECT count FROM orphan_jobs) AS orphan_jobs",
     )
+    .bind(STALE_PROCESSING_RECLAIM_SECONDS)
     .fetch_one(pool)
     .await
     .map_err(map_err)?;
