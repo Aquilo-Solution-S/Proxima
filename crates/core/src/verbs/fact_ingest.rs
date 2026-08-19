@@ -623,6 +623,19 @@ impl FactWriteCommand {
     /// the payload's schema id/version and schema-owned receipt key. The
     /// engine stamps the owner from authorization before computing the
     /// receipt id; no caller-supplied owner is carried in the command.
+    ///
+    /// The `ingest_key` is the hex BLAKE3 digest of the receipt key, not
+    /// the receipt key's own bytes. The key lands in the
+    /// `ingest_keys (owner, source, ingest_key)` primary-key btree, and a
+    /// receipt key embeds every declared field value verbatim — so a long
+    /// Fact body (the remember surface admits 20,000 chars; btree index
+    /// rows cap at a few KB) made the write fail with an index-row-size
+    /// error, far from the payload that caused it. The digest is
+    /// fixed-width (64 hex chars) and a pure function of the receipt key,
+    /// so replay semantics are unchanged: the same declared values digest
+    /// to the same key and replay, different values digest apart and
+    /// mint. The raw bytes stay in `payload`, where
+    /// [`Self::receipt_id_for_owner`] folds them.
     pub fn from_payload<P: FactPayload>(
         source_id: impl Into<String>,
         source_batch_id: SourceBatchId,
@@ -630,13 +643,14 @@ impl FactWriteCommand {
         observed_at: time::OffsetDateTime,
     ) -> Self {
         let source_id = source_id.into();
+        let receipt_key = payload.receipt_key();
         Self {
             schema_id: P::schema_id(),
             schema_version: SchemaVersion::new(P::SCHEMA_VERSION),
             handle: None,
             source_id: Some(source_id.clone()),
-            ingest_key: Some(hex::encode(payload.receipt_key())),
-            payload: payload.receipt_key(),
+            ingest_key: Some(hex::encode(blake3::hash(&receipt_key).as_bytes())),
+            payload: receipt_key,
             rendered_text: Some(payload.render()),
             lexical_language: None,
             receipt: Some(FactReceiptDraft {
@@ -838,5 +852,65 @@ mod tests {
             ),
             "2469dc45f6d65917f6b3b13606ee8165330351f773bfec45c144ecabc5992da3"
         );
+    }
+
+    #[derive(Clone, serde::Serialize, serde::Deserialize)]
+    struct NotePayload {
+        title: String,
+        body: String,
+    }
+
+    impl crate::FactPayload for NotePayload {
+        const SCHEMA_ID: &'static str = "test/note";
+        const SCHEMA_VERSION: u32 = 1;
+
+        fn receipt_key(&self) -> Vec<u8> {
+            let mut key = PayloadKeyBuilder::new(Self::SCHEMA_ID, Self::SCHEMA_VERSION);
+            key.field_str("title", &self.title);
+            key.field_str("body", &self.body);
+            key.finish()
+        }
+
+        fn render(&self) -> String {
+            format!("{}\n\n{}", self.title, self.body)
+        }
+    }
+
+    /// The ingest key is the fixed-width digest of the receipt key, never
+    /// the key's own bytes: a receipt key embeds every declared field value
+    /// verbatim, and the `ingest_keys` primary-key btree caps index rows at
+    /// ~2.7KB, so a Fact body within the surface's 20,000-char bound must
+    /// not reach that index verbatim. Identity survives the digest — equal
+    /// receipt keys hash together, a difference at the far end of a long
+    /// body hashes apart.
+    #[test]
+    fn from_payload_ingest_key_is_a_fixed_width_digest_of_the_receipt_key() {
+        let long_body = "x".repeat(20_000);
+        let note = |body: String| NotePayload {
+            title: "same title".into(),
+            body,
+        };
+        let command = |payload: &NotePayload| {
+            FactWriteCommand::from_payload(
+                "test/source",
+                SourceBatchId::new(Uuid::nil()),
+                payload,
+                time::OffsetDateTime::UNIX_EPOCH,
+            )
+        };
+
+        let first = command(&note(long_body.clone()));
+        let key = first
+            .ingest_key
+            .as_deref()
+            .expect("sourced command carries an ingest key");
+        assert_eq!(key.len(), 64, "hex-encoded BLAKE3-256 is 64 chars");
+        assert_eq!(key, hex::encode(blake3::hash(&first.payload).as_bytes()));
+
+        let replay = command(&note(long_body.clone()));
+        assert_eq!(replay.ingest_key, first.ingest_key);
+
+        let deep_change = command(&note(format!("{}y", &long_body[..19_999])));
+        assert_ne!(deep_change.ingest_key, first.ingest_key);
     }
 }

@@ -2104,3 +2104,112 @@ async fn request_services_reject_duplicate_boot_type() {
     let _ = drop_db(&db_name).await;
     result.expect("duplicate request service must fail");
 }
+
+/// A `core_remember` body at the surface's 20,000-char cap must land.
+///
+/// The `(owner, source, ingest_key)` replay key is the fixed-width BLAKE3
+/// digest of the schema-owned receipt key. Before it was hashed, the raw
+/// key — which embeds the full title/body/tags verbatim — was hex-encoded
+/// into the `ingest_keys` primary-key btree, so any body past roughly
+/// 1.3KB failed ingest with an index-row-size error while the surface
+/// admits 20,000 chars. Replay semantics ride the digest unchanged: an
+/// exact replay is a no-op that leaves the row count alone, and a change
+/// deep in the body (same title, same idempotency key) digests apart and
+/// lands as a new version.
+#[tokio::test]
+async fn remember_lands_a_20k_body_and_replays_by_digest() {
+    let db_name = unique_db_name("proxima_remember_long_body");
+    create_db(&db_name).await.expect("PG required for tests");
+    let db_url = db_url(&db_name);
+
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let personal = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let built = Proxima::<AgentMemoryApp>::app()
+            .database_url(db_url.clone())
+            .owner(personal)
+            .tool_scope(ToolScope::All)
+            .build()
+            .await?;
+        let tools = built.core_mcp_tools();
+        let authz = host_authz(&personal, ToolScope::All);
+        let pg = PgStorage::connect(&db_url).await?;
+        let note_count = || async {
+            let count: i64 = sqlx::query_scalar(
+                "SELECT count(*) FROM proxima_core.memory
+                  WHERE schema_id = 'core/agent-note-v1'",
+            )
+            .fetch_one(pg.pool_for_tests())
+            .await?;
+            Ok::<i64, Box<dyn std::error::Error>>(count)
+        };
+
+        // Exactly the surface's 20,000-char cap, and deliberately
+        // high-entropy: btree index entries are pglz-compressed before the
+        // ~2.7KB row-size ceiling applies, so a repetitive filler body
+        // would squeeze under the limit and mask the very overflow this
+        // test exists to catch. A deterministic xorshift keeps the corpus
+        // reproducible without a rand dependency.
+        let mut state: u64 = 0x9e37_79b9_7f4a_7c15;
+        let mut words = Vec::with_capacity(1_250);
+        while words.len() < 1_250 {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            words.push(format!("{state:016x}"));
+        }
+        let long_body = words.concat();
+        assert_eq!(long_body.len(), 20_000);
+        let remember_args = |body: &str| {
+            serde_json::json!({
+                "title": "long note",
+                "body": body,
+                "tags": [],
+                "idempotency_key": "long-note",
+            })
+        };
+
+        let first = call_test_model_tool(
+            &tools,
+            authz.clone(),
+            personal,
+            "core_remember",
+            remember_args(&long_body),
+        )
+        .await?;
+        assert_eq!(first["idempotent_replay"], false, "{first}");
+        assert_eq!(note_count().await?, 1);
+
+        let replay = call_test_model_tool(
+            &tools,
+            authz.clone(),
+            personal,
+            "core_remember",
+            remember_args(&long_body),
+        )
+        .await?;
+        assert_eq!(replay["idempotent_replay"], true, "{replay}");
+        assert_eq!(replay["handle"], first["handle"]);
+        assert_eq!(note_count().await?, 1, "an exact replay writes nothing");
+
+        let deep_change = format!("{}Y", &long_body[..long_body.len() - 1]);
+        let changed = call_test_model_tool(
+            &tools,
+            authz,
+            personal,
+            "core_remember",
+            remember_args(&deep_change),
+        )
+        .await?;
+        assert_eq!(changed["idempotent_replay"], false, "{changed}");
+        assert_ne!(changed["handle"], first["handle"]);
+        assert_eq!(note_count().await?, 2, "a deep body change is a new Fact");
+
+        drop(pg);
+        built.shutdown();
+        Ok(())
+    }
+    .await;
+
+    let _ = drop_db(&db_name).await;
+    result.expect("20k-body remember must land and replay by digest");
+}
