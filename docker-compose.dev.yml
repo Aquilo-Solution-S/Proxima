@@ -4,6 +4,7 @@ services:
     # extension (embeddings; `vector(1024)`) and pg-init/pg-testkit do `CREATE
     # EXTENSION vector`, which needs the .so present in the image.
     image: pgvector/pgvector:pg18
+    restart: unless-stopped
     environment:
       POSTGRES_USER: proxima
       POSTGRES_PASSWORD: proxima
