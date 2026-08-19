@@ -15,7 +15,7 @@ binary/profile.
 | goals | `core_goal` | advertised only when profile includes goals |
 | citations | citation/fact resources and tools | Facts only carry citation mappings |
 | membership | `core_membership` | group roster only: `add_member`, `remove_member`, `list_members` |
-| publish | `core_publish` | irreversible owner transfer via `publish_to_world`; not ACL/share |
+| publish | `core_publish` | irreversible memory owner transfer via `publish_to_world`; not ACL/share; goals are never publishable |
 | memory reads | `proxima://memory/{id}{?expand_neighbors}`, `proxima://memories{?ids}`, `proxima://memory/{id}/lineage{?direction,depth,limit,cursor}` | batch read takes at most 100 ids; lineage paginates by cursor and reports `has_more` |
 | goal reads | `proxima://goals{?state,limit,cursor}`, `proxima://goal/{id}` | keyset pagination |
 | pin walks | lineage / neighbor expansion | `origins` / `refs` on `memory` |

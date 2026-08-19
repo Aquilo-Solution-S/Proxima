@@ -130,6 +130,12 @@ fn decode_announce_row(row: AnnounceRow) -> Result<ChangeEvent, StorageError> {
             schema_id,
             schema_version,
         },
+        "transfer" => ChangeEventKind::EntityTransfer {
+            entity_kind,
+            entity,
+            schema_id,
+            schema_version,
+        },
         _ => ChangeEventKind::EntityAppend {
             entity_kind,
             entity,

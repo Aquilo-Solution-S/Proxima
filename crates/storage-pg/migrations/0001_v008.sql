@@ -20,7 +20,8 @@ CREATE TYPE proxima_core.memory_kind AS ENUM (
 CREATE TYPE proxima_core.announce_op AS ENUM (
     'append',
     'forget',
-    'erase'
+    'erase',
+    'transfer'
 );
 
 CREATE TYPE proxima_core.announce_entity AS ENUM (
@@ -216,11 +217,16 @@ CREATE TABLE proxima_core.wake_config (
     CONSTRAINT wake_hard_no_null_chk CHECK (array_position(hard_memory_t, NULL) IS NULL)
 );
 
+-- Goals can't live in the World at all: publish-to-World is memory-only,
+-- so no Goal row — head or version — ever carries the World owner.
 CREATE TABLE proxima_core.goal_head (
     handle uuid PRIMARY KEY,
     schema_id text NOT NULL,
     owner_id uuid NOT NULL REFERENCES proxima_core.owners (owner_id),
-    t uuid NOT NULL
+    t uuid NOT NULL,
+    CONSTRAINT goal_head_not_world_owner_chk CHECK (
+        owner_id <> '00000000-0000-0000-0000-000000000001'::uuid
+    )
 );
 
 CREATE INDEX goal_head_owner_schema_idx
@@ -249,6 +255,9 @@ CREATE TABLE proxima_core.goal (
     CONSTRAINT goal_arrays_no_null_chk CHECK (
         array_position(dependency_t, NULL) IS NULL
         AND array_position(evidence_t, NULL) IS NULL
+    ),
+    CONSTRAINT goal_not_world_owner_chk CHECK (
+        owner_id <> '00000000-0000-0000-0000-000000000001'::uuid
     )
 );
 
@@ -387,6 +396,9 @@ $$ INSERT INTO proxima_core.lexical_languages (config)
    ON CONFLICT (singleton) DO UPDATE
    SET config = EXCLUDED.config $$;
 
+-- Fired BEFORE INSERT, not AFTER: the stamped columns carry a foreign key
+-- into lexical_languages, and the RI check queues with the other AFTER-row
+-- triggers — self-registration must already be visible when it runs.
 CREATE FUNCTION proxima_core.remember_lexical_language() RETURNS trigger
 LANGUAGE plpgsql AS $$
 BEGIN
@@ -396,6 +408,57 @@ BEGIN
     RETURN NEW;
 END;
 $$;
+
+-- ---------------------------------------------------------------------------
+-- Guarded removal from the active-language set. PostgreSQL does not block
+-- DROP TEXT SEARCH CONFIGURATION while table rows hold its regconfig value
+-- (no pg_depend entry is recorded for stored values — verified on PG 18.4):
+-- the rows are left with a dangling OID that renders as a number and makes
+-- any later UPDATE of the row fail with `cache lookup failed`. So the rule
+-- is: forget a language here FIRST — this refuses while any row still
+-- references it — and only then, if it was a custom configuration, drop it.
+--
+-- The still-referenced guarantee is the FK machinery, not a scan: every
+-- stamped `lexical_language` column REFERENCES lexical_languages (config),
+-- so a concurrent writer's RI check holds KEY SHARE on the registration row
+-- for its transaction and this DELETE blocks or refuses — there is no
+-- check-then-delete window. Regconfig columns outside those FKs (operator
+-- DDL, foreign tables) are the operator's own responsibility.
+-- ---------------------------------------------------------------------------
+CREATE FUNCTION proxima_core.lexical_language_forget(config_to_forget regconfig)
+RETURNS void
+LANGUAGE plpgsql AS
+$$
+DECLARE
+    holder_table text;
+    fk_detail text;
+BEGIN
+    IF config_to_forget IS NULL THEN
+        RAISE EXCEPTION 'lexical configuration must not be null';
+    END IF;
+    IF config_to_forget = proxima_core.lexical_config() THEN
+        RAISE EXCEPTION 'cannot forget %: it is the default lexical configuration',
+            config_to_forget;
+    END IF;
+
+    BEGIN
+        DELETE FROM proxima_core.lexical_languages
+         WHERE config = config_to_forget;
+        -- Zero rows deleted = not registered: nothing to forget.
+    EXCEPTION
+        WHEN foreign_key_violation THEN
+            GET STACKED DIAGNOSTICS
+                holder_table = TABLE_NAME,
+                fk_detail = PG_EXCEPTION_DETAIL;
+            RAISE EXCEPTION 'cannot forget %: rows in % still reference it (%)',
+                config_to_forget, holder_table, fk_detail
+                USING ERRCODE = '23503';
+    END;
+END
+$$;
+
+COMMENT ON FUNCTION proxima_core.lexical_language_forget(regconfig) IS
+'Remove a configuration from the active-language set, refusing while any row still holds it in an FK-stamped lexical_language column. The FK checks serialize this against in-flight writes. Run this BEFORE dropping a custom text search configuration: PostgreSQL allows the drop with rows still referencing it, and those rows are then un-updatable (cache lookup failed on the dangling OID).';
 
 CREATE TABLE proxima_core.mcp_call_logged_v1 (
     t uuid PRIMARY KEY REFERENCES proxima_core.memory (t),
@@ -424,7 +487,8 @@ CREATE TABLE proxima_core.sketch (
     owner_id uuid NOT NULL REFERENCES proxima_core.owners (owner_id),
     kind proxima_core.sketch_kind NOT NULL,
     text text NOT NULL,
-    lexical_language regconfig NOT NULL DEFAULT proxima_core.lexical_config(),
+    lexical_language regconfig NOT NULL DEFAULT proxima_core.lexical_config()
+        REFERENCES proxima_core.lexical_languages (config),
     search_tsv tsvector GENERATED ALWAYS AS (
         proxima_core.lexical_tsv(lexical_language, NULLIF(btrim(text), ''))
     ) STORED,
@@ -432,7 +496,7 @@ CREATE TABLE proxima_core.sketch (
 );
 
 CREATE TRIGGER sketch_remember_lang
-    AFTER INSERT ON proxima_core.sketch
+    BEFORE INSERT ON proxima_core.sketch
     FOR EACH ROW
     EXECUTE FUNCTION proxima_core.remember_lexical_language();
 
@@ -505,7 +569,8 @@ CREATE TABLE proxima_core.agent_note_v1 (
     body text NOT NULL,
     tags text[] NOT NULL DEFAULT '{}',
     idempotency_key text,
-    lexical_language regconfig NOT NULL DEFAULT proxima_core.lexical_config(),
+    lexical_language regconfig NOT NULL DEFAULT proxima_core.lexical_config()
+        REFERENCES proxima_core.lexical_languages (config),
     search_tsv tsvector GENERATED ALWAYS AS (
         proxima_core.lexical_tsv(
             lexical_language,
@@ -537,7 +602,8 @@ CREATE TABLE proxima_core.utterance_v1 (
     speaker text NOT NULL,
     conversation_id text NOT NULL,
     text text NOT NULL,
-    lexical_language regconfig NOT NULL DEFAULT proxima_core.lexical_config(),
+    lexical_language regconfig NOT NULL DEFAULT proxima_core.lexical_config()
+        REFERENCES proxima_core.lexical_languages (config),
     search_tsv tsvector GENERATED ALWAYS AS (
         proxima_core.lexical_tsv(lexical_language, NULLIF(text, ''))
     ) STORED,
@@ -557,7 +623,8 @@ CREATE TABLE proxima_core.agent_derivation_v1 (
     model_id text NOT NULL,
     client_name text NOT NULL,
     client_version text NOT NULL,
-    lexical_language regconfig NOT NULL DEFAULT proxima_core.lexical_config(),
+    lexical_language regconfig NOT NULL DEFAULT proxima_core.lexical_config()
+        REFERENCES proxima_core.lexical_languages (config),
     search_tsv tsvector GENERATED ALWAYS AS (
         proxima_core.lexical_tsv(
             lexical_language,
@@ -593,7 +660,8 @@ CREATE TABLE proxima_core.interpretation_v1 (
     model_id text NOT NULL,
     client_name text NOT NULL,
     client_version text NOT NULL,
-    lexical_language regconfig NOT NULL DEFAULT proxima_core.lexical_config(),
+    lexical_language regconfig NOT NULL DEFAULT proxima_core.lexical_config()
+        REFERENCES proxima_core.lexical_languages (config),
     search_tsv tsvector GENERATED ALWAYS AS (
         proxima_core.lexical_tsv(lexical_language, NULLIF(claim, ''))
     ) STORED,
@@ -604,22 +672,22 @@ CREATE INDEX interpretation_v1_search_tsv_gin
     ON proxima_core.interpretation_v1 USING gin (search_tsv);
 
 CREATE TRIGGER agent_note_v1_remember_lang
-    AFTER INSERT ON proxima_core.agent_note_v1
+    BEFORE INSERT ON proxima_core.agent_note_v1
     FOR EACH ROW
     EXECUTE FUNCTION proxima_core.remember_lexical_language();
 
 CREATE TRIGGER utterance_v1_remember_lang
-    AFTER INSERT ON proxima_core.utterance_v1
+    BEFORE INSERT ON proxima_core.utterance_v1
     FOR EACH ROW
     EXECUTE FUNCTION proxima_core.remember_lexical_language();
 
 CREATE TRIGGER agent_derivation_v1_remember_lang
-    AFTER INSERT ON proxima_core.agent_derivation_v1
+    BEFORE INSERT ON proxima_core.agent_derivation_v1
     FOR EACH ROW
     EXECUTE FUNCTION proxima_core.remember_lexical_language();
 
 CREATE TRIGGER interpretation_v1_remember_lang
-    AFTER INSERT ON proxima_core.interpretation_v1
+    BEFORE INSERT ON proxima_core.interpretation_v1
     FOR EACH ROW
     EXECUTE FUNCTION proxima_core.remember_lexical_language();
 
@@ -971,35 +1039,16 @@ BEGIN
 END;
 $$;
 
+-- Goals never change owner (World owns no goals and there is no other
+-- transfer), so only the head pointer `t` may move.
 CREATE FUNCTION proxima_core.goal_head_t_only() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
 BEGIN
     IF NEW.handle IS DISTINCT FROM OLD.handle
-       OR NEW.schema_id IS DISTINCT FROM OLD.schema_id THEN
-        RAISE EXCEPTION 'goal_head is frozen except t and owner_id'
-            USING ERRCODE = '25006';
-    END IF;
-    RETURN NEW;
-END;
-$$;
-
-CREATE FUNCTION proxima_core.goal_owner_or_append_only() RETURNS trigger
-    LANGUAGE plpgsql
-    AS $$
-BEGIN
-    IF NEW.handle IS DISTINCT FROM OLD.handle
-       OR NEW.t IS DISTINCT FROM OLD.t
-       OR NEW.title IS DISTINCT FROM OLD.title
-       OR NEW.state IS DISTINCT FROM OLD.state
-       OR NEW.request_id IS DISTINCT FROM OLD.request_id
-       OR NEW.close_fact_t IS DISTINCT FROM OLD.close_fact_t
-       OR NEW.assignment_t IS DISTINCT FROM OLD.assignment_t
-       OR NEW.dependency_t IS DISTINCT FROM OLD.dependency_t
-       OR NEW.evidence_t IS DISTINCT FROM OLD.evidence_t
-       OR NEW.wake_id IS DISTINCT FROM OLD.wake_id
-       OR NEW.write_act_t IS DISTINCT FROM OLD.write_act_t THEN
-        RAISE EXCEPTION 'append-only: % does not accept UPDATE', TG_TABLE_NAME
+       OR NEW.schema_id IS DISTINCT FROM OLD.schema_id
+       OR NEW.owner_id IS DISTINCT FROM OLD.owner_id THEN
+        RAISE EXCEPTION 'goal_head is frozen except t'
             USING ERRCODE = '25006';
     END IF;
     RETURN NEW;
@@ -1065,7 +1114,7 @@ CREATE TRIGGER cooled_forget_grounding
 CREATE TRIGGER goal_append_only
     BEFORE UPDATE ON proxima_core.goal
     FOR EACH ROW
-    EXECUTE FUNCTION proxima_core.goal_owner_or_append_only();
+    EXECUTE FUNCTION proxima_core.enforce_row_append_only();
 
 CREATE TRIGGER goal_head_t_only
     BEFORE UPDATE ON proxima_core.goal_head

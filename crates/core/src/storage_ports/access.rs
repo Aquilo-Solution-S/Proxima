@@ -20,13 +20,15 @@ pub trait OwnerAccessReadPort: Send + Sync {
 
 #[async_trait::async_trait]
 pub trait OwnerTransferPort: Send + Sync {
-    /// Transfer one memory or goal **series** to [`OwnerRef::World`].
+    /// Transfer one memory **series** to [`OwnerRef::World`].
     /// Same `(handle, t)`; head and every version move together, including
     /// cooled stubs. Returns
     /// `true` when a row existed under `from_owner` and was updated;
     /// `false` when no row matched (already published, owner changed
     /// concurrently, or absent) — the caller treats `false` as a clean,
-    /// non-panicking denial rather than a storage error.
+    /// non-panicking denial rather than a storage error. Goal entities are
+    /// refused by the engine before this port; implementations fail loudly
+    /// on one rather than no-oping.
     async fn transfer_to_world(
         &self,
         permit: &OwnerWritePermit,

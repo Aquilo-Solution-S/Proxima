@@ -1,14 +1,23 @@
 //! P2: publish-to-World is an in-place series transfer.
 #![allow(clippy::doc_markdown, clippy::too_many_lines)]
 
-use proxima_core::storage_ports::{OwnerTransferPort, OwnerWritePermit};
+use proxima_core::compliance::{ComplianceEraseOutcome, ComplianceEraseTarget, EraseAuthorization};
+use proxima_core::storage_ports::{
+    ChangeEventPort, ComplianceErasePort, OwnerTransferPort, OwnerWritePermit,
+};
 use proxima_core::verbs::fact_ingest::{CitationSpec, FactWriteCommand};
 use proxima_core::verbs::goal_write::GoalState;
-use proxima_core::{AccessKind, EntityId, GoalId, OwnerRef, SchemaId, SchemaVersion, UserId};
+use proxima_core::{
+    AccessKind, ChangeEventKind, EntityId, EntityRef, GoalId, MemoryId, OwnerRef, SchemaId,
+    SchemaVersion, StorageError, UserId,
+};
 use proxima_pg_testkit::{create_db, db_url, drop_db};
 use proxima_storage_pg::PgStorage;
 use proxima_storage_pg::verbs::fact_ingest::ingest_fact_atomic;
 use proxima_storage_pg::verbs::goal_timeseries::{GoalWriteCommand, write_goal};
+use proxima_storage_pg::verbs::wake_timeseries::{
+    WakeConfigDraft, WakeTriggerKind, insert_wake_config, write_armed_goal,
+};
 use uuid::Uuid;
 
 fn draft() -> FactWriteCommand {
@@ -218,8 +227,106 @@ async fn publish_rehomes_cooled_versions_and_remints_object_key() {
     result.expect("publish cooled remint failed");
 }
 
+/// The persist step can find no head under the prior owner after the series
+/// reads already ran (the false-branch's "owner changed concurrently"):
+/// earlier statements have then reminted cooled rows to World inside the
+/// transaction. That transaction must roll back — a commit would publish
+/// cooled rows with no announce row and object keys naming deleted objects.
+/// The head DELETE variant of this state is not statically constructible
+/// (`memory.handle` FK-references `memory_head`), so the probe diverges the
+/// head owner, which `memory_head_t_only` deliberately admits.
 #[tokio::test]
-async fn publish_transfers_goal_same_t() {
+async fn publish_rolls_back_when_the_head_is_lost_mid_transfer() {
+    let (db_name, pg) = fresh_pg().await;
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        use proxima_core::storage_ports::MemoryAuthoringPort;
+        use proxima_storage_pg::verbs::forget::{cold_object_key, owner_hash_hex};
+
+        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
+        let pool = pg.pool_for_tests();
+        let first = ingest_fact_atomic(pool, &permit, &draft(), None).await?;
+        MemoryAuthoringPort::forget_memory(&pg, &permit, first.memory_id).await?;
+        let mut later = draft();
+        later.handle = Some(first.handle);
+        later.ingest_key = Some("k2".into());
+        let second = ingest_fact_atomic(pool, &permit, &later, None).await?;
+        assert_eq!(second.handle, first.handle);
+        let personal_key = cold_object_key(
+            &owner_hash_hex(&owner),
+            first.handle,
+            first.memory_id.into_inner(),
+        );
+
+        let usurper = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        sqlx::query(
+            "INSERT INTO proxima_core.owners (owner_id, kind)
+             VALUES ($1, 'personal') ON CONFLICT DO NOTHING",
+        )
+        .bind(usurper.stored_owner_id())
+        .execute(pool)
+        .await?;
+        sqlx::query("UPDATE proxima_core.memory_head SET owner_id = $2 WHERE handle = $1")
+            .bind(first.handle)
+            .bind(usurper.stored_owner_id())
+            .execute(pool)
+            .await?;
+        let announces_before: i64 =
+            sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_core.announce")
+                .fetch_one(pool)
+                .await?;
+
+        let transferred = pg
+            .transfer_to_world(&permit, EntityId::Memory(second.memory_id))
+            .await?;
+        assert!(
+            !transferred,
+            "a lost head is the clean not-transferred false, not an error"
+        );
+
+        let (cooled_owner, cooled_key): (Uuid, String) =
+            sqlx::query_as("SELECT owner_id, object_key FROM proxima_core.cooled WHERE t = $1")
+                .bind(first.memory_id.into_inner())
+                .fetch_one(pool)
+                .await?;
+        assert_eq!(
+            cooled_owner,
+            owner.stored_owner_id(),
+            "the rolled-back transfer must not re-home the cooled row"
+        );
+        assert_eq!(
+            cooled_key, personal_key,
+            "the rolled-back transfer must keep the personal object key"
+        );
+        let hot_owner: Uuid =
+            sqlx::query_scalar("SELECT owner_id FROM proxima_core.memory WHERE t = $1")
+                .bind(second.memory_id.into_inner())
+                .fetch_one(pool)
+                .await?;
+        assert_eq!(hot_owner, owner.stored_owner_id());
+        let transfer_rows: i64 = sqlx::query_scalar(
+            "SELECT count(*)::bigint FROM proxima_core.announce WHERE op = 'transfer'",
+        )
+        .fetch_one(pool)
+        .await?;
+        assert_eq!(transfer_rows, 0, "no lane may announce a failed transfer");
+        let announces_after: i64 =
+            sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_core.announce")
+                .fetch_one(pool)
+                .await?;
+        assert_eq!(
+            announces_after, announces_before,
+            "a rolled-back transfer leaves the log exactly as it was"
+        );
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("mid-transfer head loss rollback failed");
+}
+
+#[tokio::test]
+async fn publish_refuses_goal_transfer() {
     let (db_name, pg) = fresh_pg().await;
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
@@ -247,27 +354,228 @@ async fn publish_transfers_goal_same_t() {
         .await?;
         tx.commit().await?;
 
-        let transferred = pg
+        let err = pg
             .transfer_to_world(&permit, EntityId::Goal(GoalId::new(out.t)))
-            .await?;
-        assert!(transferred);
+            .await
+            .expect_err("goals are never publishable");
+        assert!(
+            matches!(&err, StorageError::ConstraintViolation(msg)
+                if msg.contains("never publishable")),
+            "refusal must be a ConstraintViolation naming the ruling: {err}"
+        );
         let head_owner: Uuid =
             sqlx::query_scalar("SELECT owner_id FROM proxima_core.goal_head WHERE handle = $1")
                 .bind(out.handle)
                 .fetch_one(pool)
                 .await?;
-        assert_eq!(head_owner, OwnerRef::World.stored_owner_id());
+        assert_eq!(head_owner, owner.stored_owner_id());
         let row_owner: Uuid =
             sqlx::query_scalar("SELECT owner_id FROM proxima_core.goal WHERE t = $1")
                 .bind(out.t)
                 .fetch_one(pool)
                 .await?;
-        assert_eq!(row_owner, OwnerRef::World.stored_owner_id());
+        assert_eq!(row_owner, owner.stored_owner_id());
+        let transfer_rows: i64 = sqlx::query_scalar(
+            "SELECT count(*)::bigint FROM proxima_core.announce WHERE op = 'transfer'",
+        )
+        .fetch_one(pool)
+        .await?;
+        assert_eq!(transfer_rows, 0, "a refused transfer announces nothing");
+
+        // DDL backstops behind the storage guard: goal rows refuse UPDATE
+        // entirely, and no goal row admits the World owner at INSERT.
+        let frozen = sqlx::query("UPDATE proxima_core.goal SET owner_id = $2 WHERE t = $1")
+            .bind(out.t)
+            .bind(OwnerRef::World.stored_owner_id())
+            .execute(pool)
+            .await;
+        assert!(frozen.is_err(), "goal must refuse UPDATE entirely");
+        let world_head = sqlx::query(
+            "INSERT INTO proxima_core.goal_head (handle, schema_id, owner_id, t)
+             VALUES ($1, 'core/task-goal-v1', $2, $1)",
+        )
+        .bind(Uuid::now_v7())
+        .bind(OwnerRef::World.stored_owner_id())
+        .execute(pool)
+        .await;
+        assert!(
+            world_head.is_err(),
+            "goal_head must refuse the World owner at the DDL layer"
+        );
         Ok(())
     }
     .await;
     let _ = drop_db(&db_name).await;
-    result.expect("goal transfer failed");
+    result.expect("goal transfer refusal failed");
+}
+
+/// The erase-poison scenario: publishing an armed goal would strand its
+/// `wake_config` row under the prior owner while the World goal keeps arming
+/// it, and that owner's compliance erase would abort forever on the
+/// `ON DELETE RESTRICT` FK. Refusal keeps the wake row erasable.
+#[tokio::test]
+async fn publish_refuses_armed_goal_and_owner_erase_still_succeeds() {
+    let (db_name, pg) = fresh_pg().await;
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let user = UserId::new(Uuid::now_v7());
+        let owner = OwnerRef::Personal(user);
+        let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Goal);
+        let pool = pg.pool_for_tests();
+        let mut tx = pool.begin().await?;
+        let wake = insert_wake_config(
+            &mut tx,
+            &owner,
+            &WakeConfigDraft {
+                trigger_kind: WakeTriggerKind::FactSchema,
+                trigger_schema_id: Some("core/test-fact-v1".into()),
+                trigger_t: None,
+                tool_ids: vec!["core.remember".into()],
+                prompt: "private prompt".into(),
+                hard_memory_t: vec![],
+            },
+        )
+        .await?;
+        let goal_handle =
+            write_armed_goal(&mut tx, &owner, "armed goal", "pub-armed", wake).await?;
+        tx.commit().await?;
+        let goal_t: Uuid = sqlx::query_scalar("SELECT t FROM proxima_core.goal WHERE handle = $1")
+            .bind(goal_handle)
+            .fetch_one(pool)
+            .await?;
+
+        let err = pg
+            .transfer_to_world(&permit, EntityId::Goal(GoalId::new(goal_t)))
+            .await
+            .expect_err("an armed goal is refused like any goal");
+        assert!(matches!(err, StorageError::ConstraintViolation(_)));
+        let wake_owner: Uuid =
+            sqlx::query_scalar("SELECT owner_id FROM proxima_core.wake_config WHERE wake_id = $1")
+                .bind(wake)
+                .fetch_one(pool)
+                .await?;
+        assert_eq!(
+            wake_owner,
+            owner.stored_owner_id(),
+            "the wake row must stay with the goal's owner"
+        );
+
+        let auth = EraseAuthorization::new_for_tests(ComplianceEraseTarget::PersonalOwner {
+            user_id: user,
+            drop_event_id: "test-drop-armed-publish".into(),
+        });
+        let outcome = pg
+            .erase_personal_owner_if_drop_verified(&auth, user, false, &[], &[], &[], &[])
+            .await?;
+        let ComplianceEraseOutcome::Completed { counts, .. } = outcome else {
+            panic!("erase must complete after the refused publish, got {outcome:?}");
+        };
+        assert_eq!(counts.wake_configs, 1, "the armed wake row is erased");
+        let remaining: i64 = sqlx::query_scalar(
+            "SELECT count(*)::bigint FROM proxima_core.wake_config WHERE owner_id = $1",
+        )
+        .bind(owner.stored_owner_id())
+        .fetch_one(pool)
+        .await?;
+        assert_eq!(remaining, 0);
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("armed goal refusal / erase failed");
+}
+
+#[tokio::test]
+async fn publish_writes_transfer_announce_rows_under_both_lanes() {
+    let (db_name, pg) = fresh_pg().await;
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let user = UserId::new(Uuid::now_v7());
+        let owner = OwnerRef::Personal(user);
+        let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
+        let pool = pg.pool_for_tests();
+        let written = ingest_fact_atomic(pool, &permit, &draft(), None).await?;
+        let t = written.memory_id.into_inner();
+
+        assert!(
+            pg.transfer_to_world(&permit, EntityId::Memory(written.memory_id))
+                .await?
+        );
+
+        // Raw rail: exactly one 'transfer' row per lane, same (handle, t).
+        let rows: Vec<(Uuid, Uuid, Uuid)> = sqlx::query_as(
+            "SELECT owner_id, handle, t FROM proxima_core.announce
+              WHERE op = 'transfer' ORDER BY seq",
+        )
+        .fetch_all(pool)
+        .await?;
+        let lanes: Vec<Uuid> = rows.iter().map(|(owner_id, _, _)| *owner_id).collect();
+        assert_eq!(rows.len(), 2, "one row per lane: prior owner and World");
+        assert!(lanes.contains(&owner.stored_owner_id()));
+        assert!(lanes.contains(&OwnerRef::World.stored_owner_id()));
+        for (_, handle, event_t) in &rows {
+            assert_eq!(*handle, written.handle);
+            assert_eq!(*event_t, t);
+        }
+
+        // The prior owner's earlier 'append' row is untouched.
+        let (append_op, append_owner): (String, Uuid) =
+            sqlx::query_as("SELECT op::text, owner_id FROM proxima_core.announce WHERE seq = $1")
+                .bind(written.change_event_seq)
+                .fetch_one(pool)
+                .await?;
+        assert_eq!(append_op, "append");
+        assert_eq!(append_owner, owner.stored_owner_id());
+
+        // The log stays append-only: the transfer wrote new rows, and no row
+        // accepts UPDATE.
+        let frozen =
+            sqlx::query("UPDATE proxima_core.announce SET op = 'append' WHERE op = 'transfer'")
+                .execute(pool)
+                .await;
+        assert!(frozen.is_err(), "announce rows must refuse UPDATE");
+
+        // Hydrated rail, prior owner's lane: the transfer event is visible.
+        let prior_lane = pg
+            .list_change_events_after(std::slice::from_ref(&owner), Uuid::nil(), 100)
+            .await?;
+        let departed = prior_lane
+            .iter()
+            .find(|row| {
+                matches!(
+                    &row.event.kind,
+                    ChangeEventKind::EntityTransfer { entity, .. }
+                        if *entity == EntityRef::Memory(MemoryId::new(t))
+                )
+            })
+            .expect("the prior owner's poll sees the transfer");
+        assert_eq!(departed.event.owner, owner);
+
+        // World-reading lane: the arrival is visible under World.
+        let world_lane = pg
+            .list_change_events_after(&[OwnerRef::World], Uuid::nil(), 100)
+            .await?;
+        let arrived = world_lane
+            .iter()
+            .find(|row| {
+                matches!(
+                    &row.event.kind,
+                    ChangeEventKind::EntityTransfer { entity, .. }
+                        if *entity == EntityRef::Memory(MemoryId::new(t))
+                )
+            })
+            .expect("a World-reading poll sees the arrival");
+        assert_eq!(arrived.event.owner, OwnerRef::World);
+        assert!(
+            !world_lane.iter().any(|row| matches!(
+                row.event.kind,
+                ChangeEventKind::EntityAppend { .. } | ChangeEventKind::EntityDelete { .. }
+            )),
+            "the append stays on the prior owner's lane"
+        );
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("transfer announce rows failed");
 }
 
 #[tokio::test]

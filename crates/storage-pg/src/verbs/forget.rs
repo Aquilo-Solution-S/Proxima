@@ -672,6 +672,25 @@ async fn lock_forget_memory_tx(
     Ok(())
 }
 
+/// The publish transfer's half of the forget serialization: the same
+/// per-memory advisory lock [`lock_forget_memory_tx`] takes, over every `t`
+/// of the series, in sorted order. Forget takes its single lock before any
+/// row lock, and the transfer calls this before writing any row, so the two
+/// paths cannot form an advisory-lock cycle — a forget on a locked `t`
+/// simply queues behind the transfer (and vice versa).
+pub(crate) async fn lock_forget_memories_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    ts: &[Uuid],
+) -> Result<(), StorageError> {
+    let mut sorted = ts.to_vec();
+    sorted.sort_unstable();
+    sorted.dedup();
+    for t in sorted {
+        lock_forget_memory_tx(tx, t).await?;
+    }
+    Ok(())
+}
+
 async fn insertable_columns(
     tx: &mut Transaction<'_, Postgres>,
     table: &str,

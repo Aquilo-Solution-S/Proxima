@@ -50,8 +50,11 @@ World is `00000000-0000-0000-0000-000000000001`. No `owner_kind` on memory/goal.
 Access uses server-resolved `OwnerRef` → roles. No org column.
 
 `publish_to_world` is an in-place series transfer: `UPDATE owner_id` on
-`memory_head`/`goal_head` and every `t` on that handle. Same `(handle, t)`.
-Triggers allow that column only; all other memory/goal fields stay append-only.
+`memory_head` and every `t` on that handle. Same `(handle, t)`. Triggers
+allow that column only; all other memory fields stay append-only. It also
+commits paired `transfer` rows into `announce` (prior owner's lane +
+World's lane). Goals are never publishable: `goal`/`goal_head` refuse the
+World owner outright (`*_not_world_owner_chk`) and refuse UPDATE entirely.
 
 <a id="storage-layout"></a>
 
@@ -83,7 +86,7 @@ Closed vocabularies are SQL enums.
 | `memory` | `(handle, t)` PK, `UNIQUE(t)`, `schema_id`, `origins[]`, `refs[]`, `blob_id`, `content_id` |
 | `content` | owner-scoped payload; `UNIQUE (owner_id, schema_id, content_hash)` |
 | `ingest_keys` | `(owner_id, source_id, ingest_key)` → `t` |
-| `announce` | `seq`, `op` append\|forget\|erase, `entity` memory\|goal |
+| `announce` | `seq`, `op` append\|forget\|erase\|transfer, `entity` memory\|goal |
 | `blob` | cited artefact |
 | `closed_handle` | no new pin to any `t` of that handle |
 | `goal_head` / `goal` | Goal timeseries; `wake_id`, `write_act_t`, `dependency_t`, `evidence_t` |

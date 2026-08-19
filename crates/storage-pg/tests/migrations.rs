@@ -588,6 +588,26 @@ async fn schema_markers_accept_fresh_schema_and_reject_incomplete_claim_lane() {
         .await?;
 
         sqlx::query(
+            "ALTER TYPE proxima_core.announce_op
+             RENAME VALUE 'transfer' TO 'transfer_old'",
+        )
+        .execute(pg.pool_for_tests())
+        .await?;
+        let err = ensure_core_schema_markers(pg.pool_for_tests())
+            .await
+            .expect_err("incorrect announce-op enum labels must reject --stamp");
+        assert!(
+            err.to_string().contains("announce_op labels/order"),
+            "marker error must name the incorrect announce vocabulary: {err}"
+        );
+        sqlx::query(
+            "ALTER TYPE proxima_core.announce_op
+             RENAME VALUE 'transfer_old' TO 'transfer'",
+        )
+        .execute(pg.pool_for_tests())
+        .await?;
+
+        sqlx::query(
             "ALTER TABLE proxima_core.embedding_jobs
              DROP CONSTRAINT embedding_job_processing_claim_chk",
         )
@@ -646,6 +666,7 @@ async fn schema_markers_accept_fresh_schema_and_reject_incomplete_claim_lane() {
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn schema_markers_reject_damaged_lexical_default() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
 
@@ -718,6 +739,29 @@ async fn schema_markers_reject_damaged_lexical_default() {
             "ALTER TABLE proxima_core.lexical_default
              ADD CONSTRAINT lexical_default_config_fkey
              FOREIGN KEY (config) REFERENCES proxima_core.lexical_languages(config)",
+        )
+        .execute(pool)
+        .await?;
+
+        sqlx::query(
+            "ALTER TABLE proxima_core.utterance_v1
+             DROP CONSTRAINT utterance_v1_lexical_language_fkey",
+        )
+        .execute(pool)
+        .await?;
+        let err = ensure_core_schema_markers(pool)
+            .await
+            .expect_err("a stamped table without its language FK must reject --stamp");
+        assert!(
+            err.to_string()
+                .contains("every stamped lexical_language column"),
+            "marker error must name the missing stamped-language foreign key: {err}"
+        );
+        sqlx::query(
+            "ALTER TABLE proxima_core.utterance_v1
+             ADD CONSTRAINT utterance_v1_lexical_language_fkey
+             FOREIGN KEY (lexical_language)
+             REFERENCES proxima_core.lexical_languages(config)",
         )
         .execute(pool)
         .await?;

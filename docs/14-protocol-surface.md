@@ -288,7 +288,10 @@ detect the gap. Deployments that prune must pick a horizon comfortably
 larger than their slowest consumer's lag, or have lagging consumers
 re-baseline via the cold-start stitching below. Retention tombstoning
 also writes to this log: a Fact aged out by the owner's retention window
-appears as an `EntityDelete` event.
+appears as an `EntityDelete` event. Publish-to-World writes paired
+`EntityTransfer` events in the transferring transaction — one under the
+prior owner's lane (the series left their owned view) and one under
+World's lane (it arrived), same entity and handle on both.
 
 Forward poll (events after a cursor):
 
@@ -318,7 +321,11 @@ Cold-start stitching — seed from a snapshot, then poll forward:
 Events committed after `hwm` are read by the poll; events at or before
 `hwm` are already represented in the snapshot. A history-rail variant
 seeds recent context with `ChangeHistory(owner, limit = N)` before the
-first forward poll.
+first forward poll. Ownership transfers stitch the same way: an
+`EntityTransfer` read on the World lane after `hwm` is an arrival to
+hydrate with `Query`; one read on the prior owner's lane is a departure
+from that owned view. A transfer at or before `hwm` is already
+reflected in the snapshot's owner column.
 
 ## Consistency — Strong Write -> Log
 
@@ -328,6 +335,7 @@ Graph writes commit Memory/Goal rows and corresponding
 | Property | Contract |
 |---|---|
 | atomic write/event | no committed graph row without its `announce` row |
+| atomic transfer/event | `publish_to_world` commits the owner UPDATE and its paired `transfer` rows (prior owner's lane + World's lane) in one transaction |
 | write return | `GoalWrite` / `FactIngest` success means the graph change is committed and durably readable |
 | read | a committed event is visible to any subsequent forward poll / `ChangeHistory` read |
 | replay | `ChangeHistory` and the forward poll read the same `announce` log |
@@ -389,11 +397,12 @@ Per-call dispatch enforces `call.owner` inside the resolved Owner set.
 Signup, MFA, billing, tenancy lifecycle, group naming, invites, archive/delete,
 and product audit timelines live in front of the engine. `core_membership`
 mutates only the explicit group roster when the host exposes that
-controller-scoped tool. `core_publish` transfers a memory or goal's owner to
+controller-scoped tool. `core_publish` transfers a memory's owner to
 `OwnerRef::World` — an irreversible owner transfer, not an ACL flag or share
 row; World is universally readable and never a write owner again afterward.
 It requires write/manage authority (`Relation::Admin`) on the entity's
-current owner.
+current owner. Goals are never publishable: World owns no goals, and a Goal
+entity is refused before any owner lookup.
 
 ## Error Envelope
 

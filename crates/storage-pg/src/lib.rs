@@ -509,6 +509,31 @@ pub async fn ensure_core_schema_markers(pool: &PgPool) -> Result<(), StorageErro
            THEN 'missing function proxima_core.lexical_tsv(text)'
          WHEN to_regprocedure('proxima_core.lexical_config()') IS NULL
            THEN 'missing function proxima_core.lexical_config()'
+         WHEN to_regprocedure('proxima_core.lexical_language_forget(regconfig)') IS NULL
+           THEN 'missing function proxima_core.lexical_language_forget(regconfig)'
+         WHEN 5 <> (
+                  SELECT count(DISTINCT tc.table_name)
+                    FROM information_schema.table_constraints tc
+                    JOIN information_schema.key_column_usage kcu
+                      ON kcu.constraint_catalog = tc.constraint_catalog
+                     AND kcu.constraint_schema = tc.constraint_schema
+                     AND kcu.constraint_name = tc.constraint_name
+                    JOIN information_schema.constraint_column_usage ccu
+                      ON ccu.constraint_catalog = tc.constraint_catalog
+                     AND ccu.constraint_schema = tc.constraint_schema
+                     AND ccu.constraint_name = tc.constraint_name
+                   WHERE tc.table_schema = 'proxima_core'
+                     AND tc.table_name IN (
+                         'sketch', 'agent_note_v1', 'utterance_v1',
+                         'agent_derivation_v1', 'interpretation_v1'
+                     )
+                     AND tc.constraint_type = 'FOREIGN KEY'
+                     AND kcu.column_name = 'lexical_language'
+                     AND ccu.table_schema = 'proxima_core'
+                     AND ccu.table_name = 'lexical_languages'
+                     AND ccu.column_name = 'config'
+                )
+           THEN 'every stamped lexical_language column must reference lexical_languages(config)'
          WHEN to_regclass('proxima_code.code_chunk_v1') IS NOT NULL
               AND NOT EXISTS (
                   SELECT 1
@@ -527,6 +552,15 @@ pub async fn ensure_core_schema_markers(pool: &PgPool) -> Result<(), StorageErro
                      AND t.typname = 'embedding_job_status'
                 ), ARRAY[]::text[]) <> ARRAY['pending', 'processing', 'failed', 'failed_permanent']
            THEN 'embedding_job_status labels/order must be pending, processing, failed, failed_permanent'
+         WHEN COALESCE((
+                  SELECT array_agg(e.enumlabel::text ORDER BY e.enumsortorder)
+                    FROM pg_enum e
+                    JOIN pg_type t ON t.oid = e.enumtypid
+                    JOIN pg_namespace n ON n.oid = t.typnamespace
+                   WHERE n.nspname = 'proxima_core'
+                     AND t.typname = 'announce_op'
+                ), ARRAY[]::text[]) <> ARRAY['append', 'forget', 'erase', 'transfer']
+           THEN 'announce_op labels/order must be append, forget, erase, transfer'
          WHEN NOT EXISTS (
                   SELECT 1
                     FROM information_schema.columns

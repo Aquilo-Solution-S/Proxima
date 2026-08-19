@@ -193,11 +193,14 @@ impl Engine {
         Ok(GroupMemberPage { members, has_more })
     }
 
-    /// Transfer one memory or goal's owner to `OwnerRef::World` — the
+    /// Transfer one memory's owner to `OwnerRef::World` — the
     /// kernel-law publish verb. This is an owner TRANSFER, not an ACL
     /// flag or a share row: World is universally readable and, per
     /// `authorize_write`'s `resolved == world()` short-circuit, never a
     /// write owner again afterward.
+    ///
+    /// Goals are never publishable — World owns no goals — so a Goal
+    /// entity is refused here, before any owner lookup or storage call.
     ///
     /// Requires write/manage authority (`Relation::Admin`) on the entity's
     /// CURRENT owner — for a personal owner that is the subject's own
@@ -209,18 +212,25 @@ impl Engine {
     ///
     /// # Errors
     ///
-    /// Returns `NotFound` when the entity has no home owner (absent or,
-    /// for a memory, tombstoned). Returns `Forbidden` when the caller
-    /// lacks admin/manage authority on the current owner, or when the
-    /// current owner is already World. Returns `Internal` for storage
-    /// failures, and `NotFound` if the storage transfer finds no matching
-    /// row (owner changed concurrently between the lookup and the write).
+    /// Returns `InvalidArgument` for a Goal entity. Returns `NotFound`
+    /// when the entity has no home owner (absent or tombstoned). Returns
+    /// `Forbidden` when the caller lacks admin/manage authority on the
+    /// current owner, or when the current owner is already World. Returns
+    /// `Internal` for storage failures, and `NotFound` if the storage
+    /// transfer finds no matching row (owner changed concurrently between
+    /// the lookup and the write).
     pub async fn publish_to_world(
         &self,
         authz: &AuthzContext,
         entity: EntityId,
     ) -> Result<(), ProtocolError> {
         self.operation_authority(authz)?;
+        if matches!(entity, EntityId::Goal(_)) {
+            return Err(ProtocolError::invalid_argument(
+                "entity",
+                "goals are never publishable: World owns no goals",
+            ));
+        }
         let current_owner = self
             .storage()
             .access_admin
@@ -445,6 +455,27 @@ mod tests {
             entity_readable: true,
             memory_kind: None,
         }
+    }
+
+    #[tokio::test]
+    async fn access_admin_publish_refuses_goal_entities_before_owner_lookup() {
+        let engine = crate::Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests());
+        let caller = UserId::new(Uuid::now_v7());
+        let authz = AuthzContext::for_subject(caller, AuthPath::HostBearer);
+        let goal = crate::EntityId::Goal(crate::GoalId::new(Uuid::now_v7()));
+
+        // The default engine has no storage: reaching the owner lookup would
+        // surface Internal, so InvalidArgument proves the gate fired first.
+        let err = engine
+            .publish_to_world(&authz, goal)
+            .await
+            .expect_err("goals are never publishable");
+        assert_eq!(err.code, ErrorCode::InvalidArgument);
+        assert!(
+            err.message.contains("never publishable"),
+            "refusal must state the ruling: {}",
+            err.message
+        );
     }
 
     #[tokio::test]

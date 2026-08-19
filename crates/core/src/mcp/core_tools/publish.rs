@@ -12,7 +12,7 @@ pub const CORE_PUBLISH_ACTIONS: &[CoreActionMeta] = &[CoreActionMeta {
     tool: CorePublishTool::NAME,
     action: "publish_to_world",
     scope_key: protocol_action::CORE_PUBLISH_TO_WORLD,
-    description: "Transfer a memory or goal's owner to World — a deliberate, irreversible publish. World is universally readable and never writable; this is an owner transfer, not a share or ACL flag.",
+    description: "Transfer a memory's owner to World — a deliberate, irreversible publish. World is universally readable and never writable; this is an owner transfer, not a share or ACL flag. Goals are never publishable.",
     produces_schema_ids: &[],
 }];
 
@@ -27,10 +27,11 @@ pub enum CorePublishArgs {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct PublishToWorldArgs {
-    /// Memory or Goal reference: `F:<uuid>`, `A:<uuid>`, `P:<uuid>`, or
-    /// `G:<uuid>`. The current owner (looked up from storage, not
-    /// trusted from the caller) must grant the caller write/manage
-    /// (`Relation::Admin`) authority.
+    /// Memory reference: `F:<uuid>`, `A:<uuid>`, or `P:<uuid>`. The
+    /// current owner (looked up from storage, not trusted from the
+    /// caller) must grant the caller write/manage (`Relation::Admin`)
+    /// authority. Goal references (`G:<uuid>`) are refused: goals are
+    /// never publishable.
     pub entity: String,
 }
 
@@ -68,8 +69,9 @@ impl McpTool for CorePublishTool {
     }
 }
 
-/// Resolve a wire reference to a memory or goal entity — the two row
-/// families a publish-to-World transfer may target.
+/// Resolve a wire reference to a memory or goal entity. Goal references
+/// still resolve here so `Engine::publish_to_world` can refuse them with
+/// the typed "goals are never publishable" error instead of a parse error.
 fn resolve_publishable_entity(ctx: &McpToolCtx, raw: &str) -> Result<EntityId, McpToolError> {
     match ctx.resolve_memory(raw) {
         Ok(memory_id) => Ok(EntityId::Memory(memory_id)),
