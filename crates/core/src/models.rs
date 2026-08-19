@@ -1,66 +1,9 @@
-//! Capability types for embedding clients, plus named LLM vocabulary
-//! that is not a runtime-config surface.
+//! Capability types for embedding clients.
 //!
 //! - [`EmbedCaps`] is live: `dim` must match the vector column;
 //!   `matryoshka` / `max_input_chars` are host-injected client flags.
-//! - [`LlmCaps`] and [`Dialect`] remain named types. They are not an
-//!   operator-`requires` key, not a host-injected inference client, and
-//!   not env/boot config. Proxima hosts no model loop.
-//!
-//! See docs/10 §Capability vocabulary.
 
 use std::num::NonZeroU32;
-
-/// Named HTTP API shape. Not a host-injected client selector; the live
-/// model-adjacent client is [`crate::llm::EmbeddingClient`]
-/// (OpenAI-compatible embeddings).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Dialect {
-    Anthropic,
-    #[serde(rename = "openai")]
-    OpenAI,
-}
-
-/// Named LLM capability axes. Not a runtime-config or operator-registration
-/// surface; hosts inject no inference client.
-#[derive(
-    Debug, Clone, Copy, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
-)]
-#[expect(
-    clippy::struct_excessive_bools,
-    reason = "orthogonal LLM capability flags"
-)]
-pub struct LlmCaps {
-    pub tool_use: bool,
-    pub json_mode: bool,
-    pub long_context: bool,
-    pub vision: bool,
-}
-
-impl LlmCaps {
-    /// All-false. Useful with functional update —
-    /// `LlmCaps { json_mode: true, ..LlmCaps::none() }`.
-    #[must_use]
-    pub const fn none() -> Self {
-        Self {
-            tool_use: false,
-            json_mode: false,
-            long_context: false,
-            vision: false,
-        }
-    }
-
-    /// Does `self` satisfy `required`? — every cap that `required`
-    /// demands must be present in `self`.
-    #[must_use]
-    pub const fn satisfies(&self, required: &Self) -> bool {
-        (!required.tool_use || self.tool_use)
-            && (!required.json_mode || self.json_mode)
-            && (!required.long_context || self.long_context)
-            && (!required.vision || self.vision)
-    }
-}
 
 /// Embedding capability axes. `dim` is the vector size — boot-time
 /// mismatch against the storage migration's vector column is fatal.
@@ -114,55 +57,5 @@ impl EmbedCaps {
     pub const fn with_max_input_chars(mut self, chars: NonZeroU32) -> Self {
         self.max_input_chars = Some(chars);
         self
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn dialect_serde_lowercase() {
-        let s = serde_json::to_string(&Dialect::OpenAI).unwrap();
-        assert_eq!(s, "\"openai\"");
-        let back: Dialect = serde_json::from_str(&s).unwrap();
-        assert_eq!(back, Dialect::OpenAI);
-
-        let s = serde_json::to_string(&Dialect::Anthropic).unwrap();
-        assert_eq!(s, "\"anthropic\"");
-    }
-
-    #[test]
-    fn caps_satisfies_when_all_required_present() {
-        let have = LlmCaps {
-            tool_use: true,
-            json_mode: true,
-            ..LlmCaps::none()
-        };
-        let want = LlmCaps {
-            json_mode: true,
-            ..LlmCaps::none()
-        };
-        assert!(have.satisfies(&want));
-    }
-
-    #[test]
-    fn caps_rejects_when_required_missing() {
-        let have = LlmCaps {
-            tool_use: true,
-            ..LlmCaps::none()
-        };
-        let want = LlmCaps {
-            json_mode: true,
-            ..LlmCaps::none()
-        };
-        assert!(!have.satisfies(&want));
-    }
-
-    #[test]
-    fn caps_none_requires_nothing() {
-        let have = LlmCaps::none();
-        let want = LlmCaps::none();
-        assert!(have.satisfies(&want));
     }
 }

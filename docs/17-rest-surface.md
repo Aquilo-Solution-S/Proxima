@@ -239,7 +239,7 @@ POST /v1/tools/core_remember
 Authorization: Bearer …
 X-Proxima-Owner: …
 
-{"text": "…", "model_id": "claude-opus-5"}
+{"text": "…", "model_id": "example-model"}
 ```
 
 ```json

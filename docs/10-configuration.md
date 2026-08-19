@@ -371,11 +371,6 @@ capability type: boot checks `dim` against the vector column;
 `matryoshka` / `max_input_chars` are host-injected client flags (see
 [Embedding Client](#embedding-client)).
 
-`LlmCaps { tool_use, json_mode, long_context, vision }` and `Dialect`
-remain named types in `proxima_core::models`. They are not a
-runtime-config surface, not an operator-`requires` registration key, and
-not a host-injected inference client.
-
 <a id="large-artefact-s3"></a>
 ## Large Artefact S3
 
