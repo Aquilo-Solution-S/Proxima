@@ -1318,6 +1318,29 @@ mod tests {
     }
 
     #[test]
+    fn an_explicit_default_pool_env_overrides_configured_pool_policy() {
+        let configured = PgPoolConfig {
+            max_connections: 3,
+            ..PgPoolConfig::default()
+        };
+        let injected = RuntimeBuilder::default()
+            .apply_lookup(lookup(&[("PROXIMA_PG_MAX_CONNECTIONS", "10")]))
+            .expect("explicit default-valued pool env");
+        let configured_base = RuntimeBuilder::default()
+            .database_url("postgres://localhost/proxima")
+            .owner(owner(uuid::Uuid::now_v7()))
+            .tool_scope(ToolScope::All)
+            .pg_pool_config(configured);
+
+        let (config, _) = injected
+            .merge_over(configured_base)
+            .resolve()
+            .expect("resolved pool policy");
+
+        assert_eq!(config.pg_pool_config.max_connections, 10);
+    }
+
+    #[test]
     fn malformed_pg_tuning_errors() {
         let err = RuntimeBuilder::default()
             .apply_lookup(lookup(&[(

@@ -50,9 +50,10 @@ impl PgPoolConfig {
 
     /// Read pool policy from an injected lookup.
     ///
-    /// `None` means the lookup is silent (or resolves exactly to the shipped
-    /// defaults), which lets layered builders preserve a programmatic base.
-    /// Empty and whitespace-only values are unset.
+    /// `None` means the lookup is silent, which lets layered builders preserve
+    /// a programmatic base. Empty and whitespace-only values are unset. An
+    /// explicitly supplied value equal to a shipped default is still an
+    /// environment answer and therefore returns `Some`.
     ///
     /// # Errors
     ///
@@ -61,8 +62,8 @@ impl PgPoolConfig {
     pub fn from_lookup(
         lookup: &impl Fn(&str) -> Option<String>,
     ) -> Result<Option<Self>, StorageError> {
-        let config = Self::resolve(lookup)?;
-        Ok((config != Self::default()).then_some(config))
+        let (config, configured) = Self::resolve(lookup)?;
+        Ok(configured.then_some(config))
     }
 
     /// Validate a programmatically constructed policy.
@@ -80,37 +81,50 @@ impl PgPoolConfig {
         Ok(self)
     }
 
-    fn resolve(lookup: &impl Fn(&str) -> Option<String>) -> Result<Self, StorageError> {
+    fn resolve(lookup: &impl Fn(&str) -> Option<String>) -> Result<(Self, bool), StorageError> {
         let defaults = Self::default();
-        Self {
-            max_connections: crate::env_int_or(
-                lookup,
-                "PROXIMA_PG_MAX_CONNECTIONS",
-                defaults.max_connections,
-            )?,
-            statement_timeout: Duration::from_millis(crate::env_int_or(
-                lookup,
-                "PROXIMA_PG_STATEMENT_TIMEOUT_MS",
-                u64::try_from(defaults.statement_timeout.as_millis())
-                    .expect("default statement timeout fits u64 milliseconds"),
-            )?),
-            acquire_timeout: Duration::from_secs(crate::env_int_or(
-                lookup,
-                "PROXIMA_PG_ACQUIRE_TIMEOUT_SECS",
-                defaults.acquire_timeout.as_secs(),
-            )?),
-            idle_timeout: Duration::from_secs(crate::env_int_or(
-                lookup,
-                "PROXIMA_PG_IDLE_TIMEOUT_SECS",
-                defaults.idle_timeout.as_secs(),
-            )?),
-            max_lifetime: Duration::from_secs(crate::env_int_or(
-                lookup,
-                "PROXIMA_PG_MAX_LIFETIME_SECS",
-                defaults.max_lifetime.as_secs(),
-            )?),
+        let (max_connections, max_connections_configured) = env_int_with_presence(
+            lookup,
+            "PROXIMA_PG_MAX_CONNECTIONS",
+            defaults.max_connections,
+        )?;
+        let (statement_timeout_ms, statement_timeout_configured) = env_int_with_presence(
+            lookup,
+            "PROXIMA_PG_STATEMENT_TIMEOUT_MS",
+            u64::try_from(defaults.statement_timeout.as_millis())
+                .expect("default statement timeout fits u64 milliseconds"),
+        )?;
+        let (acquire_timeout_secs, acquire_timeout_configured) = env_int_with_presence(
+            lookup,
+            "PROXIMA_PG_ACQUIRE_TIMEOUT_SECS",
+            defaults.acquire_timeout.as_secs(),
+        )?;
+        let (idle_timeout_secs, idle_timeout_configured) = env_int_with_presence(
+            lookup,
+            "PROXIMA_PG_IDLE_TIMEOUT_SECS",
+            defaults.idle_timeout.as_secs(),
+        )?;
+        let (max_lifetime_secs, max_lifetime_configured) = env_int_with_presence(
+            lookup,
+            "PROXIMA_PG_MAX_LIFETIME_SECS",
+            defaults.max_lifetime.as_secs(),
+        )?;
+        let config = Self {
+            max_connections,
+            statement_timeout: Duration::from_millis(statement_timeout_ms),
+            acquire_timeout: Duration::from_secs(acquire_timeout_secs),
+            idle_timeout: Duration::from_secs(idle_timeout_secs),
+            max_lifetime: Duration::from_secs(max_lifetime_secs),
         }
-        .validate()
+        .validate()?;
+        Ok((
+            config,
+            max_connections_configured
+                || statement_timeout_configured
+                || acquire_timeout_configured
+                || idle_timeout_configured
+                || max_lifetime_configured,
+        ))
     }
 
     pub(crate) fn connect_options(self, url: &str) -> Result<PgConnectOptions, StorageError> {
@@ -133,6 +147,23 @@ impl PgPoolConfig {
             .idle_timeout(self.idle_timeout)
             .max_lifetime(self.max_lifetime)
     }
+}
+
+/// Parse one pool integer while retaining whether the lookup supplied a
+/// non-empty value. Value equality with the default cannot answer that
+/// presence question: an explicit default still outranks flavor configuration.
+fn env_int_with_presence<T: std::str::FromStr>(
+    lookup: &impl Fn(&str) -> Option<String>,
+    key: &str,
+    default: T,
+) -> Result<(T, bool), StorageError> {
+    let Some(value) = proxima_core::env_value(lookup, key) else {
+        return Ok((default, false));
+    };
+    value
+        .parse()
+        .map(|parsed| (parsed, true))
+        .map_err(|_| StorageError::Unavailable(format!("invalid integer {key}={value}")))
 }
 
 #[cfg(test)]
@@ -161,6 +192,14 @@ mod tests {
             }
         );
         assert_eq!(PgPoolConfig::from_lookup(&env(&[])).unwrap(), None);
+    }
+
+    #[test]
+    fn explicit_shipped_default_is_not_silent() {
+        assert_eq!(
+            PgPoolConfig::from_lookup(&env(&[("PROXIMA_PG_MAX_CONNECTIONS", "10")])).unwrap(),
+            Some(PgPoolConfig::default())
+        );
     }
 
     #[test]

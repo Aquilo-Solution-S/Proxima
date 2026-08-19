@@ -978,6 +978,7 @@ mod tests {
         AuthError, AuthPath, Authenticator, AuthzContext, Credentials, FlavorRegistry,
         FlavorRegistryError, Owner,
     };
+    use proxima_storage_pg::PgPoolConfig;
     use uuid::Uuid;
 
     use super::*;
@@ -1029,7 +1030,12 @@ mod tests {
         }
 
         fn configure(builder: RuntimeBuilder) -> RuntimeBuilder {
-            builder.database_url("postgres://alpha/proxima")
+            builder
+                .database_url("postgres://alpha/proxima")
+                .pg_pool_config(PgPoolConfig {
+                    max_connections: 3,
+                    ..PgPoolConfig::default()
+                })
         }
     }
 
@@ -1404,6 +1410,45 @@ mod tests {
             .expect("resolved runtime config");
 
         assert_eq!(config.pg_pool_config.max_connections, 4);
+    }
+
+    #[test]
+    fn pg_pool_env_overrides_flavor_configuration_even_at_the_shipped_default() {
+        let (config, _) = Proxima::<AlphaApp>::app()
+            .from_lookup(|key| (key == "PROXIMA_PG_MAX_CONNECTIONS").then(|| "10".to_string()))
+            .expect("injected pool lookup")
+            .tool_scope(ToolScope::All)
+            .resolve()
+            .expect("resolved runtime config");
+
+        assert_eq!(config.pg_pool_config.max_connections, 10);
+    }
+
+    #[test]
+    fn silent_pg_pool_env_preserves_flavor_configuration() {
+        let (config, _) = Proxima::<AlphaApp>::app()
+            .tool_scope(ToolScope::All)
+            .resolve()
+            .expect("resolved runtime config");
+
+        assert_eq!(config.pg_pool_config.max_connections, 3);
+    }
+
+    #[test]
+    fn explicit_pg_pool_overlay_overrides_environment_and_flavor_configuration() {
+        let explicit = PgPoolConfig {
+            max_connections: 7,
+            ..PgPoolConfig::default()
+        };
+        let (config, _) = Proxima::<AlphaApp>::app()
+            .from_lookup(|key| (key == "PROXIMA_PG_MAX_CONNECTIONS").then(|| "10".to_string()))
+            .expect("injected pool lookup")
+            .pg_pool_config(explicit)
+            .tool_scope(ToolScope::All)
+            .resolve()
+            .expect("resolved runtime config");
+
+        assert_eq!(config.pg_pool_config, explicit);
     }
 
     #[test]
