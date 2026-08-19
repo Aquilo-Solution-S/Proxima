@@ -273,6 +273,7 @@ CREATE TABLE proxima_core.cooled (
     owner_id uuid NOT NULL REFERENCES proxima_core.owners (owner_id),
     kind proxima_core.memory_kind NOT NULL,
     object_key text NOT NULL,
+    blob_id uuid REFERENCES proxima_core.blob (blob_id),
     content_id uuid REFERENCES proxima_core.content (content_id),
     source_id text,
     ingest_key text,

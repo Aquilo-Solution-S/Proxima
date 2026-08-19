@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use proxima_core::storage_ports::{MemoryAuthoringPort, OwnerTransferPort, OwnerWritePermit};
-use proxima_core::verbs::fact_ingest::FactWriteCommand;
+use proxima_core::verbs::fact_ingest::{CitationSpec, FactWriteCommand};
 use proxima_core::{
     AccessKind, ColdObjectStore, EdgeEndpoint, EntityId, EntityKind, OwnerRef, SchemaId,
     SchemaVersion, StorageError, UserId,
@@ -1050,6 +1050,220 @@ async fn refused_forget_does_not_leave_untracked_cold_object() {
     .await;
     let _ = drop_db(&db_name).await;
     result.expect("refused-forget orphan test failed");
+}
+
+#[tokio::test]
+async fn concurrent_erase_after_forget_put_does_not_leave_cold_object() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    if let Err(e) = create_db(&db_name).await {
+        panic!("PG required for tests but admin connect failed: {e}");
+    }
+    let url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&url).await?;
+        pg.run_migrations().await?;
+        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
+        let pool = pg.pool_for_tests().clone();
+        let written = ingest_fact_atomic(&pool, &permit, &draft(None), None).await?;
+        let t = written.memory_id.into_inner();
+        let owner_id = owner.stored_owner_id();
+        let key = cold_object_key(&owner_hash_hex(&owner), written.handle, t);
+        let cold = Arc::new(BlockingPutCold {
+            inner: MemoryColdStore::default(),
+            first_put_entered: tokio::sync::Semaphore::new(0),
+            release_first_put: tokio::sync::Semaphore::new(0),
+            puts: AtomicUsize::new(0),
+            deletes: AtomicUsize::new(0),
+        });
+
+        let forget = {
+            let pool = pool.clone();
+            let cold = Arc::clone(&cold);
+            let key = key.clone();
+            tokio::spawn(async move {
+                forget_memory_oneshot(&pool, &core_pg_sidecars(), cold.as_ref(), &key, t, owner_id)
+                    .await
+            })
+        };
+        cold.first_put_entered.acquire().await?.forget();
+
+        let mut erase_tx = pool.begin().await?;
+        erase_memory(&mut erase_tx, &core_pg_sidecars(), cold.as_ref(), &owner, t).await?;
+        erase_tx.commit().await?;
+
+        // The PUT completes only after erase committed. The forget reread is
+        // then NotFound, with no cooled locator allowed to retain the object.
+        cold.release_first_put.add_permits(1);
+        let err = forget
+            .await?
+            .expect_err("hard erase must win the overlapping forget");
+        assert!(matches!(err, StorageError::NotFound), "got {err:?}");
+        assert_eq!(cold.puts.load(Ordering::SeqCst), 1);
+        assert_eq!(cold.deletes.load(Ordering::SeqCst), 1);
+        assert!(
+            matches!(cold.get(&key).await, Err(StorageError::NotFound)),
+            "a completed hard erase must not leave an untracked cold payload"
+        );
+
+        let rows: i64 = sqlx::query_scalar(
+            "SELECT (SELECT count(*) FROM proxima_core.memory WHERE t = $1)
+                  + (SELECT count(*) FROM proxima_core.cooled WHERE t = $1)",
+        )
+        .bind(t)
+        .fetch_one(&pool)
+        .await?;
+        assert_eq!(rows, 0, "erase removes both hot and cooled state");
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("concurrent erase/forget cleanup test failed");
+}
+
+/// Pinned shape for the loser of a double forget and for a plain second
+/// call: `NotFound`, the same answer an unknown `t` gets. Not `Ok`, because
+/// the identical miss is produced by a concurrent publish that moved the row
+/// out of the caller's ownership, where reporting success would be a lie.
+/// Either way the attempt leaves the existing cooled object untouched.
+#[tokio::test]
+async fn forget_of_an_already_cooled_t_reports_not_found() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    if let Err(e) = create_db(&db_name).await {
+        panic!("PG required for tests but admin connect failed: {e}");
+    }
+    let url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let cold = Arc::new(MemoryColdStore::default());
+        let pg = PgStorage::connect(&url).await?.with_cold(cold.clone());
+        pg.run_migrations().await?;
+        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
+        let pool = pg.pool_for_tests().clone();
+        let written = ingest_fact_atomic(&pool, &permit, &draft(None), None).await?;
+        let t = written.memory_id.into_inner();
+        let key = cold_object_key(&owner_hash_hex(&owner), written.handle, t);
+
+        MemoryAuthoringPort::forget_memory(&pg, &permit, written.memory_id).await?;
+
+        let err = MemoryAuthoringPort::forget_memory(&pg, &permit, written.memory_id)
+            .await
+            .expect_err("second forget of the same t");
+        assert!(matches!(err, StorageError::NotFound), "got {err:?}");
+
+        let mut tx = pool.begin().await?;
+        let err = forget_memory(
+            &mut tx,
+            &core_pg_sidecars(),
+            cold.as_ref(),
+            &key,
+            t,
+            owner.stored_owner_id(),
+        )
+        .await
+        .expect_err("verb-level forget of a cooled t");
+        assert!(matches!(err, StorageError::NotFound), "got {err:?}");
+        tx.rollback().await?;
+
+        ColdObjectStore::get(cold.as_ref(), &key)
+            .await
+            .expect("a refused re-forget must not delete the cooled object");
+        let mut tx = pool.begin().await?;
+        hydrate_memory(&mut tx, &core_pg_sidecars(), cold.as_ref(), t).await?;
+        tx.commit().await?;
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("already-cooled forget outcome test failed");
+}
+
+/// Forget keeps `ingest_keys` and moves the handle to the cooled stub, so an
+/// at-least-once source re-delivering a cooled admission must still get the
+/// idempotent replay carrying the original handle and citation.
+#[tokio::test]
+async fn redelivering_a_cooled_ingest_key_is_an_idempotent_replay() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    if let Err(e) = create_db(&db_name).await {
+        panic!("PG required for tests but admin connect failed: {e}");
+    }
+    let url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&url).await?;
+        pg.run_migrations().await?;
+        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
+        let pool = pg.pool_for_tests();
+        let mut sourced = draft(Some(("src/webhook", "delivery-cooled")));
+        sourced.citation = Some(
+            CitationSpec::v1(
+                "core/test-cited-object-v1",
+                [7_u8; 32],
+                "core/test-citation-mapping-v1",
+            )
+            .into(),
+        );
+        let written = ingest_fact_atomic(pool, &permit, &sourced, None).await?;
+        let t = written.memory_id.into_inner();
+        let cited_object_id = written
+            .cited_object_id
+            .expect("citation-bearing write returns its object");
+
+        let cold = MemoryColdStore::default();
+        let key = cold_object_key(&owner_hash_hex(&owner), written.handle, t);
+        let mut tx = pool.begin().await?;
+        forget_memory(
+            &mut tx,
+            &core_pg_sidecars(),
+            &cold,
+            &key,
+            t,
+            owner.stored_owner_id(),
+        )
+        .await?;
+        tx.commit().await?;
+
+        let cooled_blob: Option<Uuid> =
+            sqlx::query_scalar("SELECT blob_id FROM proxima_core.cooled WHERE t = $1")
+                .bind(t)
+                .fetch_one(pool)
+                .await?;
+        assert_eq!(cooled_blob, Some(cited_object_id));
+
+        // The retry need not repeat the citation input: replay reads the
+        // original witness from the admission selected by its ingest key.
+        let mut replay_input = sourced.clone();
+        replay_input.citation = None;
+        replay_input.blob_id = None;
+        let replay = ingest_fact_atomic(pool, &permit, &replay_input, None)
+            .await
+            .expect("re-delivery of a cooled admission");
+        assert!(replay.idempotent_replay);
+        assert_eq!(replay.memory_id, written.memory_id);
+        assert_eq!(replay.handle, written.handle, "replay keeps the handle");
+        assert_eq!(
+            replay.cited_object_id,
+            Some(cited_object_id),
+            "replay keeps the original cited object"
+        );
+
+        let hot: i64 = sqlx::query_scalar(
+            "SELECT count(*)::bigint FROM proxima_core.memory WHERE ingest_key = 'delivery-cooled'",
+        )
+        .fetch_one(pool)
+        .await?;
+        assert_eq!(hot, 0, "a replay mints no new hot row");
+        let stub: i64 =
+            sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_core.cooled WHERE t = $1")
+                .bind(t)
+                .fetch_one(pool)
+                .await?;
+        assert_eq!(stub, 1, "the admission stays cooled");
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("cooled ingest-key replay test failed");
 }
 
 #[tokio::test]

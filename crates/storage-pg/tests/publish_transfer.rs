@@ -2,7 +2,7 @@
 #![allow(clippy::doc_markdown, clippy::too_many_lines)]
 
 use proxima_core::storage_ports::{OwnerTransferPort, OwnerWritePermit};
-use proxima_core::verbs::fact_ingest::FactWriteCommand;
+use proxima_core::verbs::fact_ingest::{CitationSpec, FactWriteCommand};
 use proxima_core::verbs::goal_write::GoalState;
 use proxima_core::{AccessKind, EntityId, GoalId, OwnerRef, SchemaId, SchemaVersion, UserId};
 use proxima_pg_testkit::{create_db, db_url, drop_db};
@@ -141,7 +141,19 @@ async fn publish_rehomes_cooled_versions_and_remints_object_key() {
         let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let pool = pg.pool_for_tests();
-        let first = ingest_fact_atomic(pool, &permit, &draft(), None).await?;
+        let mut first_draft = draft();
+        first_draft.citation = Some(
+            CitationSpec::v1(
+                "core/test-cited-object-v1",
+                [9_u8; 32],
+                "core/test-citation-mapping-v1",
+            )
+            .into(),
+        );
+        let first = ingest_fact_atomic(pool, &permit, &first_draft, None).await?;
+        let cited_object_id = first
+            .cited_object_id
+            .expect("citation-bearing write returns its object");
         MemoryAuthoringPort::forget_memory(&pg, &permit, first.memory_id).await?;
         let mut later = draft();
         later.handle = Some(first.handle);
@@ -178,6 +190,26 @@ async fn publish_rehomes_cooled_versions_and_remints_object_key() {
         assert!(
             !object_key.starts_with(&personal_prefix),
             "reminted key must not stay under the personal owner hash"
+        );
+        let blob_owner: Uuid =
+            sqlx::query_scalar("SELECT owner_id FROM proxima_core.blob WHERE blob_id = $1")
+                .bind(cited_object_id)
+                .fetch_one(pool)
+                .await?;
+        assert_eq!(
+            blob_owner,
+            OwnerRef::World.stored_owner_id(),
+            "a cooled citation follows its published series"
+        );
+        let stale_ingest_keys: i64 = sqlx::query_scalar(
+            "SELECT count(*)::bigint FROM proxima_core.ingest_keys WHERE t = $1",
+        )
+        .bind(first.memory_id.into_inner())
+        .fetch_one(pool)
+        .await?;
+        assert_eq!(
+            stale_ingest_keys, 0,
+            "publish removes ingest keys for cooled versions too"
         );
         Ok(())
     }

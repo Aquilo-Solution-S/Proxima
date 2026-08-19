@@ -123,12 +123,25 @@ pub async fn ingest_fact_timeseries(
             .fetch_one(tx.as_mut())
             .await
             .map_err(map_err)?;
-            let replay_handle: Uuid =
-                sqlx::query_scalar("SELECT handle FROM proxima_core.memory WHERE t = $1")
-                    .bind(replay_t)
-                    .fetch_one(tx.as_mut())
-                    .await
-                    .map_err(map_err)?;
+            // Forget keeps the `ingest_keys` row and moves the handle to the
+            // `cooled` stub, so a source re-delivering a cooled admission
+            // still replays. Reading `memory` alone answered `Internal`.
+            let replay_handle: Uuid = sqlx::query_scalar(
+                "SELECT handle FROM proxima_core.memory WHERE t = $1 AND owner_id = $2
+                 UNION ALL
+                 SELECT handle FROM proxima_core.cooled WHERE t = $1 AND owner_id = $2
+                 LIMIT 1",
+            )
+            .bind(replay_t)
+            .bind(owner_id)
+            .fetch_optional(tx.as_mut())
+            .await
+            .map_err(map_err)?
+            .ok_or_else(|| {
+                internal(format!(
+                    "ingest key claims t {replay_t} with no hot or cooled row"
+                ))
+            })?;
             return Ok(FactIngestOutcome {
                 receipt_id: None,
                 memory_id: MemoryId::new(replay_t),
