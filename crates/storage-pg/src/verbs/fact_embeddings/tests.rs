@@ -158,9 +158,11 @@ mod pg_tests {
         }
 
         async fn embed_many(&self, _texts: &[String]) -> Result<Vec<Vec<f32>>, LlmError> {
-            Err(LlmError::EmbedPermanent(
-                "batch contains rejected input".into(),
-            ))
+            // A compatible endpoint may collapse an input-triggered process
+            // failure into an ambiguous 400/EOF. The inline drain must use
+            // its trivial probe to isolate this batch so an over-limit item
+            // still reaches the existing chunk rescue.
+            Err(LlmError::Embed("400 EOF".into()))
         }
 
         fn model_id(&self) -> &'static str {
@@ -1337,7 +1339,7 @@ mod pg_tests {
     }
 
     #[tokio::test]
-    async fn inline_batch_permanent_failure_isolates_poison_and_rescues_long_input()
+    async fn inline_ambiguous_batch_failure_uses_probe_and_rescues_long_input()
     -> Result<(), Box<dyn std::error::Error>> {
         let (pg, db_name) = fresh_pg("proxima_spg_embed").await;
         let result: Result<(), Box<dyn std::error::Error>> = async {

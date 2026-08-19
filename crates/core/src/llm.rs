@@ -10,7 +10,7 @@ pub enum LlmError {
     #[error("embedding call failed: {0}")]
     Embed(String),
     /// Embedding rejected for a cause retries cannot fix (e.g. input over
-    /// the model's token limit — HTTP 400/413/422). Jobs hitting this must
+    /// the model's token limit — HTTP 413/422). Jobs hitting this must
     /// fail terminally instead of burning retry attempts forever.
     #[error("embedding permanently rejected: {0}")]
     EmbedPermanent(String),

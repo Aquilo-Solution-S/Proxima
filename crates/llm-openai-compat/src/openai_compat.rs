@@ -134,21 +134,19 @@ struct OpenAiEmbeddingDatum {
 /// Whether a non-success `/embeddings` status is evidence of a request that
 /// retries cannot fix.
 ///
-/// Every 4xx status is a permanent client/request failure except statuses
-/// whose HTTP semantics explicitly permit retrying: 408 (timeout), 409
-/// (conflict), 421 (misdirected request), 423 (locked), 424 (failed
-/// dependency), 425 (too early), and 429 (rate limit). Every 5xx status is a
-/// retryable server failure. Other non-success classes remain retryable so an
-/// unexpected protocol response does not terminally reject the input.
+/// Only statuses that unambiguously identify the submitted entity as the
+/// rejected cause are permanent. 400 is deliberately ambiguous: compatible
+/// endpoints use it for input limits, malformed requests, authentication,
+/// routing, and provider failures alike. The liveness probe at the drain
+/// boundary handles that ambiguity without fencing a repairable job forever.
+/// Every other non-success status remains retryable, including auth, routing,
+/// policy, and server responses.
 ///
 /// Classification deliberately depends only on the HTTP status. Compatible
 /// endpoints may format error bodies differently, and free-text bodies cannot
 /// establish whether the input or the service caused a failure.
 fn permanent_embed_status(status: reqwest::StatusCode) -> bool {
-    if status.is_client_error() {
-        return !matches!(status.as_u16(), 408 | 409 | 421 | 423 | 424 | 425 | 429);
-    }
-    false
+    matches!(status.as_u16(), 413 | 422)
 }
 
 fn embed_http_error(status: reqwest::StatusCode, body: &str) -> LlmError {
@@ -526,40 +524,41 @@ mod tests {
         use reqwest::StatusCode;
         let bodies = [
             "",
+            "EOF",
             r#"{"error":{"message":"input exceeds the configured limit"}}"#,
             r#"{"message":"temporary service condition"}"#,
             "arbitrary text with no protocol meaning",
         ];
         let policy = [
-            (400, true),
-            (401, true),
-            (402, true),
-            (403, true),
-            (404, true),
-            (405, true),
-            (406, true),
-            (407, true),
+            (400, false),
+            (401, false),
+            (402, false),
+            (403, false),
+            (404, false),
+            (405, false),
+            (406, false),
+            (407, false),
             (408, false),
             (409, false),
-            (410, true),
-            (411, true),
-            (412, true),
+            (410, false),
+            (411, false),
+            (412, false),
             (413, true),
-            (414, true),
-            (415, true),
-            (416, true),
-            (417, true),
-            (418, true),
+            (414, false),
+            (415, false),
+            (416, false),
+            (417, false),
+            (418, false),
             (421, false),
             (422, true),
             (423, false),
             (424, false),
             (425, false),
-            (426, true),
-            (428, true),
+            (426, false),
+            (428, false),
             (429, false),
-            (431, true),
-            (451, true),
+            (431, false),
+            (451, false),
             (500, false),
             (501, false),
             (502, false),
