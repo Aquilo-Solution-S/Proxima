@@ -202,14 +202,8 @@ impl Tool for CodeSearchCommitsTool {
 
 const COMMIT_SEARCH_SQL: &str = "
 WITH q AS (
-     SELECT websearch_to_tsquery('english'::regconfig,
-                proxima_core.lexical_scrub($1)) AS tsq,
-            NULLIF(
-                replace(
-                    plainto_tsquery('english'::regconfig,
-                        proxima_core.lexical_scrub($1))::text,
-                    ' & ', ' | '),
-                '')::tsquery AS any_tsq
+     SELECT proxima_code.commit_search_web_tsquery($1) AS tsq,
+            proxima_code.commit_search_any_tsquery($1) AS any_tsq
 )
 SELECT c.t AS memory_id,
        GREATEST(
@@ -230,14 +224,8 @@ LIMIT $3
 
 const SUMMARY_SEARCH_SQL: &str = "
 WITH q AS (
-     SELECT websearch_to_tsquery('english'::regconfig,
-                proxima_core.lexical_scrub($1)) AS tsq,
-            NULLIF(
-                replace(
-                    plainto_tsquery('english'::regconfig,
-                        proxima_core.lexical_scrub($1))::text,
-                    ' & ', ' | '),
-                '')::tsquery AS any_tsq
+     SELECT proxima_code.commit_search_web_tsquery($1) AS tsq,
+            proxima_code.commit_search_any_tsquery($1) AS any_tsq
 )
 SELECT s.t AS memory_id,
        GREATEST(
@@ -369,17 +357,13 @@ mod tests {
     }
 
     #[test]
-    fn commit_search_matches_english_tsv_and_like_on_gin_miss() {
+    fn commit_search_matches_prose_tsv_and_like_on_gin_miss() {
         let src = include_str!("search_commits.rs");
         let prod = src.split("mod tests").next().expect("production");
-        let simple = format!("{}{}", "pg_catalog.", "simple");
         assert!(
-            !prod.contains(&simple),
-            "query config must match stored english tsv"
-        );
-        assert!(
-            prod.contains("'english'") && prod.contains("lexical_scrub"),
-            "query side must be english + scrub"
+            prod.contains("commit_search_web_tsquery")
+                && prod.contains("commit_search_any_tsquery"),
+            "query side must use the SQL prose query authorities"
         );
         assert!(
             super::COMMIT_LIKE_SQL.contains("LIKE") && super::SUMMARY_LIKE_SQL.contains("LIKE"),
