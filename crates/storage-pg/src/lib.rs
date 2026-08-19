@@ -66,10 +66,6 @@ pub use sidecars::{
 };
 pub use tuning::{HnswIterativeScan, PgTuning, SemanticIndexFirst};
 
-/// Default DB URL when `DATABASE_URL` is unset. Matches the
-/// dev DB created locally via `createdb proxima_dev`.
-pub const DEFAULT_DATABASE_URL: &str = "postgres://postgres@localhost/proxima_dev";
-
 /// Namespace boundary between core and flavor migration versions.
 ///
 /// Core migrations use small sequential integer versions (`0001_v008.sql`);
@@ -859,13 +855,6 @@ impl PgStorage {
     pub fn with_cold(mut self, cold: Arc<dyn proxima_core::ColdObjectStore>) -> Self {
         self.cold = cold;
         self
-    }
-
-    /// Read `DATABASE_URL` from env, fallback to
-    /// `DEFAULT_DATABASE_URL`. Convenience for the bin / dev.
-    #[must_use]
-    pub fn url_from_env() -> String {
-        std::env::var("DATABASE_URL").unwrap_or_else(|_| DEFAULT_DATABASE_URL.to_string())
     }
 
     #[cfg(any(
