@@ -56,11 +56,33 @@ async fn purge_prefix(
     bucket: &str,
     prefix: &str,
 ) -> Result<u64, StorageError> {
+    purge_versions(client, bucket, prefix, false).await
+}
+
+/// Permanently delete every version and delete marker of exactly one key.
+/// Prefix-colliding keys are deliberately excluded.
+pub(super) async fn purge_exact_key(
+    client: &aws_sdk_s3::Client,
+    bucket: &str,
+    key: &str,
+) -> Result<u64, StorageError> {
+    purge_versions(client, bucket, key, true).await
+}
+
+async fn purge_versions(
+    client: &aws_sdk_s3::Client,
+    bucket: &str,
+    listing_prefix: &str,
+    exact: bool,
+) -> Result<u64, StorageError> {
     let mut deleted = 0_u64;
     let mut key_marker: Option<String> = None;
     let mut version_id_marker: Option<String> = None;
     loop {
-        let mut list = client.list_object_versions().bucket(bucket).prefix(prefix);
+        let mut list = client
+            .list_object_versions()
+            .bucket(bucket)
+            .prefix(listing_prefix);
         if let Some(km) = &key_marker {
             list = list.key_marker(km);
         }
@@ -68,7 +90,7 @@ async fn purge_prefix(
             list = list.version_id_marker(vm);
         }
         let page = list.send().await.map_err(|e| {
-            StorageError::Unavailable(format!("list object versions under {prefix}: {e}"))
+            StorageError::Unavailable(format!("list object versions under {listing_prefix}: {e}"))
         })?;
 
         // A single `list_object_versions` page returns at most `max-keys`
@@ -85,7 +107,9 @@ async fn purge_prefix(
                     .map(|m| (m.key(), m.version_id())),
             )
         {
-            if let Some(key) = key {
+            if let Some(key) = key
+                && (!exact || key == listing_prefix)
+            {
                 let mut id = ObjectIdentifier::builder().key(key);
                 if let Some(vid) = version_id {
                     id = id.version_id(vid);
@@ -108,7 +132,7 @@ async fn purge_prefix(
                 .send()
                 .await
                 .map_err(|e| {
-                    StorageError::Unavailable(format!("delete objects under {prefix}: {e}"))
+                    StorageError::Unavailable(format!("delete objects under {listing_prefix}: {e}"))
                 })?;
             let errors = response.errors();
             if !errors.is_empty() {
@@ -117,7 +141,7 @@ async fn purge_prefix(
                     .and_then(aws_sdk_s3::types::Error::message)
                     .unwrap_or("unknown");
                 return Err(StorageError::Unavailable(format!(
-                    "delete objects under {prefix} reported {} error(s): {first}",
+                    "delete objects under {listing_prefix} reported {} error(s): {first}",
                     errors.len()
                 )));
             }

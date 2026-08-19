@@ -160,6 +160,10 @@ Actions (at least one):
                            Facts are never aged out (indefinite controller
                            evidence). Live enforcement requires the same
                            PROXIMA_S3_* block as the serving host
+  --retry-cold-object-purges
+                           Retry a bounded batch of exact object-store keys
+                           left by committed compliance erases. Live retry
+                           requires the serving host's PROXIMA_S3_* block
   --prune-change-events-older-than <DURATION>
                            Delete change_event rows older than the horizon
                            (e.g. 90d, 36h, 45m, 3600s)
@@ -219,6 +223,7 @@ pub enum ReconcileScope {
 pub struct RetentionConfig {
     pub database_url: String,
     pub enforce_fact_retention: bool,
+    pub retry_cold_object_purges: bool,
     pub prune_change_events_older_than_seconds: Option<i64>,
     pub batch_size: i64,
     pub dry_run: bool,
@@ -229,6 +234,7 @@ impl std::fmt::Debug for RetentionConfig {
         f.debug_struct("RetentionConfig")
             .field("database_url", &"<redacted>")
             .field("enforce_fact_retention", &self.enforce_fact_retention)
+            .field("retry_cold_object_purges", &self.retry_cold_object_purges)
             .field(
                 "prune_change_events_older_than_seconds",
                 &self.prune_change_events_older_than_seconds,
@@ -412,6 +418,7 @@ pub fn parse_retention_args<I: IntoIterator<Item = String>>(
 ) -> Result<RetentionConfig, ArgsError> {
     let mut database_url: Option<String> = None;
     let mut enforce_fact_retention = false;
+    let mut retry_cold_object_purges = false;
     let mut prune_older_than: Option<i64> = None;
     let mut batch_size: i64 = 1000;
     let mut dry_run = false;
@@ -421,6 +428,7 @@ pub fn parse_retention_args<I: IntoIterator<Item = String>>(
         match flag.as_str() {
             "-h" | "--help" => return Err(ArgsError::Help),
             "--enforce-fact-retention" => enforce_fact_retention = true,
+            "--retry-cold-object-purges" => retry_cold_object_purges = true,
             "--dry-run" => dry_run = true,
             f => {
                 let value = iter
@@ -451,10 +459,10 @@ pub fn parse_retention_args<I: IntoIterator<Item = String>>(
         }
     }
 
-    if !enforce_fact_retention && prune_older_than.is_none() {
+    if !enforce_fact_retention && !retry_cold_object_purges && prune_older_than.is_none() {
         return Err(ArgsError::Invalid(
-            "maintain-retention requires at least one action: --enforce-fact-retention \
-             and/or --prune-change-events-older-than <DURATION>"
+            "maintain-retention requires at least one action: --enforce-fact-retention, \
+             --retry-cold-object-purges, and/or --prune-change-events-older-than <DURATION>"
                 .into(),
         ));
     }
@@ -464,6 +472,7 @@ pub fn parse_retention_args<I: IntoIterator<Item = String>>(
     Ok(RetentionConfig {
         database_url,
         enforce_fact_retention,
+        retry_cold_object_purges,
         prune_change_events_older_than_seconds: prune_older_than,
         batch_size,
         dry_run,
@@ -628,6 +637,22 @@ mod tests {
         assert_eq!(cfg.prune_change_events_older_than_seconds, None);
         assert_eq!(cfg.batch_size, 1000);
         assert!(!cfg.dry_run);
+    }
+
+    #[test]
+    fn retention_cold_purge_retry_is_an_explicit_action() {
+        let cfg = parse_retention_args([
+            "--retry-cold-object-purges".to_string(),
+            "--batch-size".to_string(),
+            "17".to_string(),
+            "--dry-run".to_string(),
+        ])
+        .expect("retry alone is a valid bounded pass");
+        assert!(cfg.retry_cold_object_purges);
+        assert!(!cfg.enforce_fact_retention);
+        assert_eq!(cfg.prune_change_events_older_than_seconds, None);
+        assert_eq!(cfg.batch_size, 17);
+        assert!(cfg.dry_run);
     }
 
     #[test]

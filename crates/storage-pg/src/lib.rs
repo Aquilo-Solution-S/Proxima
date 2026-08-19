@@ -23,8 +23,8 @@ pub use verbs::fact_embeddings::{
     EmbeddingReconcileScope,
 };
 pub use verbs::retention_maintenance::{
-    ChangeEventPruneOptions, ChangeEventPruneOutcome, PruneOwnerOutcome, RetentionEnforceOptions,
-    RetentionEnforceOutcome, RetentionOwnerOutcome,
+    ChangeEventPruneOptions, ChangeEventPruneOutcome, ColdPurgeRetryOptions, ColdPurgeRetryOutcome,
+    PruneOwnerOutcome, RetentionEnforceOptions, RetentionEnforceOutcome, RetentionOwnerOutcome,
 };
 
 use crate::error::internal;
@@ -326,6 +326,91 @@ pub async fn ensure_core_schema_markers(pool: &PgPool) -> Result<(), StorageErro
            THEN 'missing relation proxima_core.group_memberships'
          WHEN to_regclass('proxima_core.owner_fact_retention') IS NULL
            THEN 'missing relation proxima_core.owner_fact_retention'
+         WHEN to_regclass('proxima_core.cold_purge_pending') IS NULL
+           THEN 'missing relation proxima_core.cold_purge_pending'
+         WHEN NOT EXISTS (
+                  SELECT 1 FROM information_schema.columns
+                   WHERE table_schema = 'proxima_core' AND table_name = 'cold_purge_pending'
+                     AND column_name = 'object_key' AND data_type = 'text'
+                     AND is_nullable = 'NO'
+                )
+           THEN 'cold_purge_pending.object_key must be text NOT NULL'
+         WHEN NOT EXISTS (
+                  SELECT 1
+                    FROM information_schema.table_constraints tc
+                    JOIN information_schema.key_column_usage kcu
+                      ON kcu.constraint_catalog = tc.constraint_catalog
+                     AND kcu.constraint_schema = tc.constraint_schema
+                     AND kcu.constraint_name = tc.constraint_name
+                   WHERE tc.table_schema = 'proxima_core'
+                     AND tc.table_name = 'cold_purge_pending'
+                     AND tc.constraint_type = 'PRIMARY KEY'
+                     AND kcu.column_name = 'object_key'
+                     AND 1 = (
+                         SELECT count(*)
+                           FROM information_schema.key_column_usage only_kcu
+                          WHERE only_kcu.constraint_catalog = tc.constraint_catalog
+                            AND only_kcu.constraint_schema = tc.constraint_schema
+                            AND only_kcu.constraint_name = tc.constraint_name
+                     )
+                )
+           THEN 'cold_purge_pending.object_key must be the primary key'
+         WHEN NOT EXISTS (
+                  SELECT 1 FROM information_schema.columns
+                   WHERE table_schema = 'proxima_core' AND table_name = 'cold_purge_pending'
+                     AND column_name = 'owner_id' AND data_type = 'uuid'
+                     AND is_nullable = 'NO'
+                )
+           THEN 'cold_purge_pending.owner_id must be uuid NOT NULL'
+         WHEN NOT EXISTS (
+                  SELECT 1 FROM information_schema.columns
+                   WHERE table_schema = 'proxima_core' AND table_name = 'cold_purge_pending'
+                     AND column_name = 'compliance_operation_id' AND data_type = 'uuid'
+                     AND is_nullable = 'YES'
+                )
+           THEN 'cold_purge_pending.compliance_operation_id must be nullable uuid'
+         WHEN NOT EXISTS (
+                  SELECT 1 FROM information_schema.columns
+                   WHERE table_schema = 'proxima_core' AND table_name = 'cold_purge_pending'
+                     AND column_name = 'enqueued_at'
+                     AND data_type = 'timestamp with time zone' AND is_nullable = 'NO'
+                )
+           THEN 'cold_purge_pending.enqueued_at must be timestamptz NOT NULL'
+         WHEN NOT EXISTS (
+                  SELECT 1 FROM information_schema.columns
+                   WHERE table_schema = 'proxima_core' AND table_name = 'compliance_audit_log'
+                     AND column_name = 'wake_configs_count' AND data_type = 'bigint'
+                     AND is_nullable = 'NO'
+                )
+           THEN 'compliance_audit_log.wake_configs_count must be bigint NOT NULL'
+         WHEN NOT EXISTS (
+                  SELECT 1 FROM information_schema.columns
+                   WHERE table_schema = 'proxima_core' AND table_name = 'compliance_audit_log'
+                     AND column_name = 'blobs_count' AND data_type = 'bigint'
+                     AND is_nullable = 'NO'
+                )
+           THEN 'compliance_audit_log.blobs_count must be bigint NOT NULL'
+         WHEN NOT EXISTS (
+                  SELECT 1 FROM information_schema.columns
+                   WHERE table_schema = 'proxima_core' AND table_name = 'compliance_audit_log'
+                     AND column_name = 'blob_uploads_count' AND data_type = 'bigint'
+                     AND is_nullable = 'NO'
+                )
+           THEN 'compliance_audit_log.blob_uploads_count must be bigint NOT NULL'
+         WHEN NOT EXISTS (
+                  SELECT 1 FROM information_schema.columns
+                   WHERE table_schema = 'proxima_core' AND table_name = 'compliance_audit_log'
+                     AND column_name = 'sidecar_rows_count' AND data_type = 'bigint'
+                     AND is_nullable = 'NO'
+                )
+           THEN 'compliance_audit_log.sidecar_rows_count must be bigint NOT NULL'
+         WHEN NOT EXISTS (
+                  SELECT 1 FROM information_schema.columns
+                   WHERE table_schema = 'proxima_core' AND table_name = 'compliance_audit_log'
+                     AND column_name = 'cold_object_purge_pending' AND data_type = 'boolean'
+                     AND is_nullable = 'NO'
+                )
+           THEN 'compliance_audit_log.cold_object_purge_pending must be boolean NOT NULL'
          WHEN NOT EXISTS (
                   SELECT 1
                     FROM information_schema.columns
@@ -947,6 +1032,26 @@ impl PgStorage {
         options: ChangeEventPruneOptions,
     ) -> Result<ChangeEventPruneOutcome, StorageError> {
         verbs::retention_maintenance::prune_change_events(&self.pool, options).await
+    }
+
+    /// Retry a bounded batch of durable exact-key cold/object-store purge debts.
+    /// Object deletion occurs without an open database transaction; successful
+    /// keys are reconciled afterward in short idempotent transactions.
+    ///
+    /// # Errors
+    ///
+    /// Returns storage errors while reading or reconciling pending rows, and a
+    /// constraint violation for a non-positive batch size.
+    pub async fn retry_cold_object_purges(
+        &self,
+        options: ColdPurgeRetryOptions,
+    ) -> Result<ColdPurgeRetryOutcome, StorageError> {
+        verbs::retention_maintenance::retry_cold_object_purges(
+            &self.pool,
+            self.cold.as_ref(),
+            options,
+        )
+        .await
     }
 
     /// Apply all pending migrations under

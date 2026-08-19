@@ -252,6 +252,7 @@ impl Engine {
         let ComplianceEraseOutcome::Completed {
             operation_id,
             counts,
+            cold_object_purge_pending,
             ..
         } = outcome
         else {
@@ -298,6 +299,7 @@ impl Engine {
             operation_id,
             counts,
             cited_object_purge_pending,
+            cold_object_purge_pending,
         }
     }
 
@@ -676,12 +678,28 @@ mod purge_tests {
             Self::completed_with_clear_outcome(false)
         }
 
+        fn completed_with_cold_pending() -> Self {
+            Self {
+                outcome: ComplianceEraseOutcome::Completed {
+                    operation_id: uuid::Uuid::now_v7(),
+                    counts: ComplianceEraseCounts::default(),
+                    cited_object_purge_pending: false,
+                    cold_object_purge_pending: true,
+                },
+                clear_calls: Mutex::new(Vec::new()),
+                fail_clear: false,
+                erase_calls: AtomicUsize::new(0),
+                recorded: AtomicUsize::new(0),
+            }
+        }
+
         fn completed_with_clear_outcome(clear_succeeds: bool) -> Self {
             Self {
                 outcome: ComplianceEraseOutcome::Completed {
                     operation_id: uuid::Uuid::now_v7(),
                     counts: ComplianceEraseCounts::default(),
                     cited_object_purge_pending: false,
+                    cold_object_purge_pending: false,
                 },
                 clear_calls: Mutex::new(Vec::new()),
                 fail_clear: !clear_succeeds,
@@ -937,6 +955,27 @@ mod purge_tests {
             &[operation_id],
             "purge success must clear the durable audit flag exactly once"
         );
+    }
+
+    #[tokio::test]
+    async fn cited_object_finalization_preserves_independent_cold_purge_state() {
+        let group = GroupId::new(uuid::Uuid::now_v7());
+        let purge = Arc::new(RecordingPurge::default());
+        let erase = Arc::new(FixedOutcomeErase::completed_with_cold_pending());
+        let engine = engine_with(erase, None, purge);
+
+        let outcome = engine
+            .erase_abandoned_group_owner(&system_authz(), group)
+            .await
+            .expect("erase returns an outcome");
+        assert!(matches!(
+            outcome,
+            ComplianceEraseOutcome::Completed {
+                cited_object_purge_pending: false,
+                cold_object_purge_pending: true,
+                ..
+            }
+        ));
     }
 
     #[tokio::test]

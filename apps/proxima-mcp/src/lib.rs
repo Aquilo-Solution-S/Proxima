@@ -27,8 +27,9 @@ use proxima_llm_openai_compat::{
     MISTRAL_EMBED_BASE_URL, MISTRAL_EMBED_MODEL, OpenAiCompatEmbeddingClient,
 };
 use proxima_storage_pg::{
-    ChangeEventPruneOptions, ChangeEventPruneOutcome, EmbeddingReconcileOptions,
-    EmbeddingReconcileScope, PgStorage, RetentionEnforceOptions, RetentionEnforceOutcome,
+    ChangeEventPruneOptions, ChangeEventPruneOutcome, ColdPurgeRetryOptions, ColdPurgeRetryOutcome,
+    EmbeddingReconcileOptions, EmbeddingReconcileScope, PgStorage, RetentionEnforceOptions,
+    RetentionEnforceOutcome,
 };
 
 const MISTRAL_API_KEY: &str = "MISTRAL_API_KEY";
@@ -478,11 +479,13 @@ async fn run_maintain(config: MaintainConfig) -> Result<(), CliError> {
 /// legal/security hold are skipped inside each owner's transaction and
 /// surface in the report.
 async fn run_maintain_retention(config: RetentionConfig) -> Result<(), CliError> {
-    let s3 = (config.enforce_fact_retention && !config.dry_run)
+    let s3 = ((config.enforce_fact_retention || config.retry_cold_object_purges)
+        && !config.dry_run)
         .then(|| {
             S3RuntimeConfig::from_env().map_err(|err| {
                 ProximaError::Config(format!(
-                    "Fact-retention cooling needs the host's PROXIMA_S3_* block: {err}"
+                    "retention maintenance object-store actions need the host's \
+                     PROXIMA_S3_* block: {err}"
                 ))
             })
         })
@@ -536,6 +539,17 @@ async fn run_maintain_retention(config: RetentionConfig) -> Result<(), CliError>
         print_retention_report(&outcome, dry_run_suffix);
     }
 
+    if config.retry_cold_object_purges {
+        let outcome = storage
+            .retry_cold_object_purges(ColdPurgeRetryOptions {
+                batch_size: config.batch_size,
+                dry_run: config.dry_run,
+            })
+            .await
+            .map_err(|err| ProximaError::Storage(err.to_string()))?;
+        print_cold_purge_retry_report(&outcome, dry_run_suffix);
+    }
+
     if let Some(older_than_seconds) = config.prune_change_events_older_than_seconds {
         let outcome = storage
             .prune_change_events(ChangeEventPruneOptions {
@@ -549,6 +563,13 @@ async fn run_maintain_retention(config: RetentionConfig) -> Result<(), CliError>
     }
 
     Ok(())
+}
+
+fn print_cold_purge_retry_report(outcome: &ColdPurgeRetryOutcome, dry_run_suffix: &str) {
+    println!(
+        "cold-object-purge: selected={} purged={} failed={} remaining={}{dry_run_suffix}",
+        outcome.selected, outcome.purged, outcome.failed, outcome.remaining
+    );
 }
 
 fn print_retention_report(outcome: &RetentionEnforceOutcome, dry_run_suffix: &str) {

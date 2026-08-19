@@ -100,6 +100,15 @@ pub struct ComplianceExportCounts {
     pub source_cursors: usize,
     #[serde(default)]
     pub delegated_authority_grants: usize,
+    /// Cooled admissions, exported as locator metadata only (see
+    /// [`ComplianceExportBundle::cooled`]).
+    #[serde(default)]
+    pub cooled: usize,
+    #[serde(default)]
+    pub sketches: usize,
+    /// Authoritative cited-object identities exported from `proxima_core.blob`.
+    #[serde(default)]
+    pub blobs: usize,
     pub sidecar_rows: usize,
     pub compliance_audit_rows: usize,
 }
@@ -129,6 +138,24 @@ pub struct ComplianceExportBundle {
     pub source_cursors: Vec<serde_json::Value>,
     #[serde(default)]
     pub delegated_authority_grants: Vec<serde_json::Value>,
+    /// Cooled admissions of the owner: one row per admission whose content
+    /// left `memory` for cold storage, carrying the `object_key` that locates
+    /// the dumped payload. A manifest, not the payload — the bundle stays a
+    /// database export and never streams object-store bytes.
+    #[serde(default)]
+    pub cooled: Vec<serde_json::Value>,
+    /// The owner's derived one-liners, minus the generated `search_tsv`
+    /// lexical-index column.
+    #[serde(default)]
+    pub sketches: Vec<serde_json::Value>,
+    /// The owner's authoritative cited-object identities. Each row contains
+    /// only `blob_id`, `schema_id`, and `content_hash`; upload coordinates and
+    /// object-store bytes are outside the compliance bundle.
+    #[serde(default)]
+    pub blobs: Vec<serde_json::Value>,
+    /// Registered memory, goal, cited-object, and citation-mapping sidecar
+    /// rows. Citation sidecars are owner-filtered through
+    /// `proxima_core.blob`, the row a v0.0.8 citation is.
     pub sidecars: Vec<ComplianceExportSidecarRows>,
     pub compliance_audit_rows: Vec<serde_json::Value>,
 }
@@ -150,6 +177,21 @@ impl ComplianceExportBundle {
 pub struct ComplianceEraseCounts {
     pub memories: u64,
     pub goals: u64,
+    /// Owner-authored wake configuration rows destroyed (`prompt`,
+    /// `tool_ids`, `hard_memory_t`).
+    #[serde(default)]
+    pub wake_configs: u64,
+    /// Cited-blob rows destroyed (`schema_id`, `content_hash`).
+    #[serde(default)]
+    pub blobs: u64,
+    /// Blob upload records destroyed (`bucket`, `object_key`, `filename`,
+    /// `mime`, `sha256`, `etag`, `error_message`).
+    #[serde(default)]
+    pub blob_uploads: u64,
+    /// Registered sidecar rows destroyed across all four families: memory,
+    /// goal, cited-object, and citation-mapping.
+    #[serde(default)]
+    pub sidecar_rows: u64,
     pub edges: u64,
     pub receipts: u64,
     pub source_batches: u64,
@@ -176,6 +218,10 @@ pub enum ComplianceEraseOutcome {
         /// out-of-band before treating erasure as fully complete.
         #[serde(default)]
         cited_object_purge_pending: bool,
+        /// Postgres rows are deleted but one or more exact cold/object-store
+        /// keys still have a durable purge debt.
+        #[serde(default)]
+        cold_object_purge_pending: bool,
     },
     /// Erasure was refused due to policy.
     Refused {

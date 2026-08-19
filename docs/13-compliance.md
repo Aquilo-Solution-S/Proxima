@@ -23,7 +23,7 @@ bounded primitives and metadata vocabulary.
 
 | Operation | Status | Scope | Contract |
 |---|---|---|---|
-| `delete_owner` | current Host API for erase; transport RPC deferred | one abandoned group `Owner`, verified dropped personal `Owner`, or refused World owner | remove owner-scoped memories, goals, edges, sidecars, embeddings, source-batch payloads, invocation caches, and delegated-authority grants only after abandonment/drop proof; group erase deletes grants for that exact owner; personal erase also deletes cross-owner grants issued by the dropped subject; live owners refuse; retain suppression and compliance-audit rows |
+| `delete_owner` | current Host API for erase; transport RPC deferred | one abandoned group `Owner`, verified dropped personal `Owner`, or refused World owner | remove owner-scoped memories, goals, wake configs, edges, sidecars, cited blobs and their upload records, embeddings, source-batch payloads, invocation caches, and delegated-authority grants only after abandonment/drop proof; group erase deletes grants for that exact owner; personal erase also deletes cross-owner grants issued by the dropped subject; live owners refuse; retain suppression and compliance-audit rows |
 | `delete_source_scope` | current Host API for erase; transport RPC deferred | one source object inside one abandoned/dropped `Owner` | erase rows attributable to the scope only under the same abandonment/drop proof as owner erase; delegated-authority grants are owner-level and remain; live owners refuse; flavor resolves scope, substrate executes compliance deletion |
 | `pause_owner` | v1 intent | one `Owner` | stop future operator dispatch and wake execution; reads and export remain available |
 | `resume_owner` | v1 intent | one `Owner` | clear pause state for future dispatch |
@@ -34,16 +34,29 @@ bounded primitives and metadata vocabulary.
 
 The World-owner refusal above has a publish-side consequence — rows published to World permanently leave personal/group erase reach; see [Consumer Projector Guidance](reference/public-api.md#consumer-projector-guidance).
 
+Erase row inventory — rows the `erase_*` family destroys that the operation
+tables above do not name column-by-column:
+
+| Rows | Contract |
+|---|---|
+| `wake_config` | owner-authored `prompt` / `hard_memory_t` / `tool_ids`; nothing else collects it (`goal.wake_id` is `ON DELETE RESTRICT` and erase never deletes the `owners` row). Owner erase destroys every wake row of the owner. Source-scope erase destroys none because the rows carry no source attribution. Counted as `wake_configs_count`. |
+| external objects | each exact `cooled.object_key` or erased `blob_uploads.object_key` is marked in `cold_purge_pending` inside the erase transaction and destroyed only after commit. Compliance rows carry `compliance_operation_id`; standalone `erase_memory` debts do not. `cold_object_purge_pending` remains true until every attributed key is reconciled. |
+| `blob`, `blob_uploads`, registered citation sidecars | content hashes, and upload `bucket` / `object_key` / `filename` / `mime` / `sha256` / `etag` / `error_message`, plus whatever a flavor's citation payload carries. Deleted in FK order after the memory deletions: citation sidecar rows (keyed on `blob_id`, both families), then `blob_uploads`, then `blob`. Counted as `blobs_count`, `blob_uploads_count`, and `sidecar_rows_count` (all four sidecar families). |
+| blobs under source scope | candidates are the selected hot/cooled admissions' `blob_id` values captured before deletion; any candidate still cited by a surviving hot or cooled admission remains. Exact upload object keys for deleted candidates enter `cold_purge_pending`; NULL-`blob_id` uploads remain owner-level. |
+
 Current export bundle:
 
 | Section | Rows |
 |---|---|
-| substrate | `memory`, `goal`, `blob`, `ingest_keys`, `announce`, `cooled` |
+| substrate | `memory`, `goal`, `ingest_keys`, `source_cursors`, `cooled`, `sketch` |
+| cooled | row metadata only, including the `object_key` that locates the dumped payload — a manifest, not the bytes; the bundle is a database export and hydration recovers the payload |
+| sketch | derived one-liners minus the generated `search_tsv` lexical index |
 | delegated authority | exact-owner `delegated_authority_grants` only; explicit stable JSON field allowlist excludes redeemable `delegation_id` and credentials; a personal export does not pull group-owned grants merely because the same subject issued them |
-| sidecars | registered memory/goal/citation/cited-object sidecar rows for the target owner |
-| blob refs | `cited_uploaded_blob_v1` / other registered cited-object sidecars; object bytes remain external |
+| blobs | exact-owner `proxima_core.blob` rows with stable `blob_id`, `schema_id`, and `content_hash` allowlist; covers opaque CitedObject schemas without sidecars; excludes `blob_uploads`, storage coordinates, and object bytes |
+| sidecars | registered memory/goal sidecar rows joined on the entity id; registered cited-object and citation-mapping sidecar rows joined on `blob_id` and owner-filtered by `blob.owner_id` |
+| blob refs | `memory.blob_id` resolves through the exported authoritative blob row; typed citation content also lives in registered cited-object sidecars, while opaque CitedObject schemas require no sidecar; object bytes remain external |
 | audit | matching `compliance_audit_log` rows by owner digest |
-| excluded | persona/self rows, caller-supplied auth path, caller-supplied audit context |
+| excluded | persona/self rows, caller-supplied auth path, caller-supplied audit context, `announce` (the bundle's `source_batches` section is present but reads no rows) |
 | gate | system auth path or `ComplianceAdminPort::may_perform_compliance_export` |
 | legal hold | no effect on export; hold blocks physical destruction only |
 
@@ -51,7 +64,7 @@ Current export bundle:
 
 | Outcome | Meaning | Contract |
 |---|---|---|
-| `completed` | operation applied | receipt records ids, timestamps, scope, requester, counts; never deleted payloads |
+| `completed` | database operation applied | receipt records ids, timestamps, scope, requester, counts; `cold_object_purge_pending` and `cited_object_purge_pending` independently report outstanding external destruction |
 | `refused` | lawful/retention hold blocks operation | receipt records refusal class and controller citation |
 | `not-found` | scoped owner/source absent | no mutation; auditable response |
 | `unauthorized` | requester lacks admin right | no mutation; auditable response |
@@ -64,7 +77,7 @@ Refusal is a valid compliance result, not a substrate failure.
 |---|---|
 | scope | one `OwnerRef` |
 | active state | present owner hold row; set/clear require compliance-erase operator approval plus owner `Admin` write authority; get requires owner `Admin` |
-| gated paths | substantive owner-memory physical destruction: the `erase_*` compliance family (`delete_owner`, `delete_source_scope`) and both `maintain-retention` actions (`announce` pruning; Fact forget/cool) |
+| gated paths | substantive owner-memory selection for physical destruction: the `erase_*` compliance family (`delete_owner`, `delete_source_scope`) and the owner-data `maintain-retention` actions (`announce` pruning; Fact forget/cool) |
 | refusal | typed `ComplianceEraseRefusal::LegalHoldActive`; no destructive statement runs |
 | non-effects | no change to abandonment law, drop proof, reads, ordinary writes, embedding work-queue consumption, suppression checks, export, or audit retention |
 | race boundary | checked inside the storage compliance-erase transaction under the owner legal-hold lock before deletion |
@@ -78,6 +91,8 @@ Fact forget/cool pass as well (a hold means "freeze this owner's state").
 Exception: transient work-queue rows (`proxima_core.embedding_jobs`) are
 consumed by ordinary embedding-pipeline operation; legal holds do not
 suspend that pipeline.
+`--retry-cold-object-purges` selects no owner data: it completes exact-key
+debts already committed by an erase that passed the hold gate.
 
 Operator rule: the controller/operator owns the legal judgment
 (litigation hold, GDPR erasure duty, regulator instruction). Proxima
@@ -99,10 +114,11 @@ same external-clock doctrine as `maintain-embeddings`.
 | audit exclusion | `core/mcp-call-logged-v1` Facts are never aged out — indefinite controller evidence (see Audit log) |
 | change feed | each forget batch commits its `announce.forget` events atomically with the cooling transaction |
 | `announce` pruning | rows older than an explicit operator-supplied age horizon are deleted per owner; there is deliberately no default horizon — destruction requires an explicit flag |
+| purge retry | `--retry-cold-object-purges` retries at most `--batch-size` durable exact-key debts; each S3 deletion runs without an open database transaction, then a short transaction clears the debt and its audit flag after the operation's last key |
 | legal hold | both halves take the per-owner hold lock in every transaction and skip held owners (forward-rule inheritance above) |
 | serialization | one pass at a time via a process-global advisory lock; an overlapping cron fire prints a skip notice and exits 0 |
 | cursor safety | pruning creates an undetectable gap for forward pollers whose `since` cursor predates the horizon; choose a horizon comfortably larger than the slowest consumer's lag, or have lagging consumers re-baseline with a fresh full read |
-| dry run | `--dry-run` reports would-be forgotten/pruned counts per owner without mutating anything |
+| dry run | `--dry-run` reports would-be forgotten/pruned/purge-retry counts without mutating anything or requiring S3 |
 
 ## Suppression list — re-ingest rejection
 
@@ -125,7 +141,8 @@ Hard deletion must not reopen ingest.
 | timing | requested/completed timestamps |
 | outcome | `completed`, `refused`, `not-found`, `unauthorized` |
 | owner roles | group membership/role administration and authorization denials are audit-worthy controller events; personal-memory MCP calls should be logged metadata-only or redacted by host/admin policy, not copied into a shared audit payload |
-| counts | affected-row counts only, including `delegated_authority_grants_count` for owner erasure |
+| counts | affected-row counts only, including `delegated_authority_grants_count`, `wake_configs_count`, `blobs_count`, `blob_uploads_count` and `sidecar_rows_count` for owner erasure |
+| external purge state | independent `cold_object_purge_pending` (exact queued keys) and `cited_object_purge_pending` (owner-prefix purge); either may remain true after database erasure completes |
 | refusal | structured reason and retention/legal citation |
 | forbidden content | deleted payloads, payload diffs, natural-person identifiers, decision trees |
 | visibility | admin protocol only; not queryable by operators |

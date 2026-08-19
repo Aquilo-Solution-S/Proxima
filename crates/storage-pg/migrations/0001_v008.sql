@@ -291,6 +291,22 @@ CREATE INDEX cooled_owner_source_idx
     ON proxima_core.cooled (owner_id, source_id)
     WHERE source_id IS NOT NULL;
 
+-- Cold objects a committed erase still owes the object store. An erase marks
+-- the locator here in the same transaction that deletes the `cooled` row and
+-- destroys the object only after that transaction commits: destroying it
+-- in-transaction loses the object outright on rollback (the locator returns,
+-- the bytes do not), and a crash between commit and destruction leaves a
+-- reclaimable mark instead of a `cooled` row naming nothing.
+CREATE TABLE proxima_core.cold_purge_pending (
+    object_key text PRIMARY KEY,
+    owner_id uuid NOT NULL REFERENCES proxima_core.owners (owner_id),
+    compliance_operation_id uuid,
+    enqueued_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX cold_purge_pending_owner_idx
+    ON proxima_core.cold_purge_pending (owner_id, enqueued_at);
+
 CREATE TABLE proxima_core.group_memberships (
     group_id uuid NOT NULL,
     member_user_id uuid NOT NULL,
@@ -677,6 +693,10 @@ CREATE TABLE proxima_core.compliance_audit_log (
     completed_at timestamptz,
     memories_count bigint NOT NULL DEFAULT 0,
     goals_count bigint NOT NULL DEFAULT 0,
+    wake_configs_count bigint NOT NULL DEFAULT 0,
+    blobs_count bigint NOT NULL DEFAULT 0,
+    blob_uploads_count bigint NOT NULL DEFAULT 0,
+    sidecar_rows_count bigint NOT NULL DEFAULT 0,
     edges_count bigint NOT NULL DEFAULT 0,
     receipts_count bigint NOT NULL DEFAULT 0,
     source_batches_count bigint NOT NULL DEFAULT 0,
@@ -688,8 +708,14 @@ CREATE TABLE proxima_core.compliance_audit_log (
     redacted_edge_targets_count bigint NOT NULL DEFAULT 0,
     suppressed_keys_count bigint NOT NULL DEFAULT 0,
     delegated_authority_grants_count bigint NOT NULL DEFAULT 0,
+    cold_object_purge_pending boolean NOT NULL DEFAULT false,
     cited_object_purge_pending boolean NOT NULL DEFAULT false
 );
+
+ALTER TABLE proxima_core.cold_purge_pending
+    ADD CONSTRAINT cold_purge_pending_compliance_operation_fk
+    FOREIGN KEY (compliance_operation_id)
+    REFERENCES proxima_core.compliance_audit_log (operation_id);
 
 CREATE TABLE proxima_core.delegated_authority_grants (
     delegation_id uuid PRIMARY KEY,

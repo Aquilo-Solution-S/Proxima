@@ -13,7 +13,9 @@ use proxima_core::storage_ports::{
     CitedBlobReconcileOutcome, CitedObjectErasePort, MAX_HELD_BLOB_DIGESTS,
 };
 use proxima_core::test_fixtures::owner_fixture;
-use proxima_core::{AuthPath, AuthzContext, FlavorRegistry, OwnerRef, StorageError, UserId};
+use proxima_core::{
+    AuthPath, AuthzContext, ColdObjectStore, FlavorRegistry, OwnerRef, StorageError, UserId,
+};
 use std::num::NonZeroU64;
 
 // Contexts here are `AuthPath::HostBearer`, matching every production
@@ -1162,6 +1164,85 @@ async fn versioned_bucket_purge_removes_all_object_versions() {
         versions.delete_markers().len(),
     );
 
+    drop(pool);
+    drop_db(&db_name).await.expect("drop db");
+}
+
+#[tokio::test]
+async fn versioned_cold_delete_removes_exact_key_versions_and_preserves_prefix_collision() {
+    if !S3RuntimeConfig::present_in_env() {
+        eprintln!("skipped: PROXIMA_S3_* unset (run the s3 service to enable)");
+        return;
+    }
+    let base = s3_config_for_dev();
+    let (pg, db_name) = fresh_storage().await;
+    let pool = pg.pool_for_tests().clone();
+    let config = S3RuntimeConfig {
+        bucket: format!("{}-versioned", base.bucket),
+        ..base
+    };
+    let client = s3_client(&config).await;
+    let _ = client.create_bucket().bucket(&config.bucket).send().await;
+    client
+        .put_bucket_versioning()
+        .bucket(&config.bucket)
+        .versioning_configuration(
+            aws_sdk_s3::types::VersioningConfiguration::builder()
+                .status(aws_sdk_s3::types::BucketVersioningStatus::Enabled)
+                .build(),
+        )
+        .send()
+        .await
+        .expect("enable versioning");
+    let exact = format!("cold/exact/{}", Uuid::now_v7());
+    let collision = format!("{exact}-suffix");
+    put_object_via_sdk(&config, &exact, b"first").await;
+    put_object_via_sdk(&config, &exact, b"second").await;
+    put_object_via_sdk(&config, &collision, b"keep").await;
+    client
+        .delete_object()
+        .bucket(&config.bucket)
+        .key(&exact)
+        .send()
+        .await
+        .expect("create exact-key delete marker");
+
+    let store = CitedBlobStore::new(pool.clone(), config.clone()).expect("valid S3 config");
+    store
+        .cold_store()
+        .delete(&exact)
+        .await
+        .expect("hard-delete exact key");
+    let listed = client
+        .list_object_versions()
+        .bucket(&config.bucket)
+        .prefix(&exact)
+        .send()
+        .await
+        .expect("list exact prefix");
+    assert!(
+        listed
+            .versions()
+            .iter()
+            .all(|version| version.key() != Some(exact.as_str()))
+            && listed
+                .delete_markers()
+                .iter()
+                .all(|marker| marker.key() != Some(exact.as_str())),
+        "every exact-key version and delete marker must be gone"
+    );
+    assert!(
+        listed
+            .versions()
+            .iter()
+            .any(|version| version.key() == Some(collision.as_str())),
+        "prefix-collision key must survive exact deletion"
+    );
+    store
+        .cold_store()
+        .delete(&collision)
+        .await
+        .expect("clean collision key");
     drop(pool);
     drop_db(&db_name).await.expect("drop db");
 }

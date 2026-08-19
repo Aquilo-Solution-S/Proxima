@@ -28,6 +28,9 @@ pub async fn export_owner_bundle(
     let source_cursors = owner_rows(pool, owner, OwnerRowsTable::SourceCursors).await?;
     let delegated_authority_grants =
         owner_rows(pool, owner, OwnerRowsTable::DelegatedAuthorityGrants).await?;
+    let cooled = owner_rows(pool, owner, OwnerRowsTable::Cooled).await?;
+    let sketches = owner_rows(pool, owner, OwnerRowsTable::Sketches).await?;
+    let blobs = owner_rows(pool, owner, OwnerRowsTable::Blobs).await?;
     let compliance_audit_rows = audit_rows(pool, owner).await?;
     let sidecars = export_sidecars(
         pool,
@@ -49,6 +52,9 @@ pub async fn export_owner_bundle(
         source_batches: source_batches.len(),
         source_cursors: source_cursors.len(),
         delegated_authority_grants: delegated_authority_grants.len(),
+        cooled: cooled.len(),
+        sketches: sketches.len(),
+        blobs: blobs.len(),
         sidecar_rows: sidecars.iter().map(|sidecar| sidecar.rows.len()).sum(),
         compliance_audit_rows: compliance_audit_rows.len(),
     };
@@ -68,6 +74,9 @@ pub async fn export_owner_bundle(
         source_batches,
         source_cursors,
         delegated_authority_grants,
+        cooled,
+        sketches,
+        blobs,
         sidecars,
         compliance_audit_rows,
     })
@@ -88,6 +97,9 @@ enum OwnerRowsTable {
     SourceBatches,
     SourceCursors,
     DelegatedAuthorityGrants,
+    Cooled,
+    Sketches,
+    Blobs,
 }
 
 async fn export_sidecars(
@@ -120,8 +132,36 @@ async fn export_sidecars(
         },
     )
     .await?;
-    let _ = tables.citation_mapping;
-    let _ = tables.cited_object;
+    // A v0.0.8 citation *is* the `proxima_core.blob` row a Memory names through
+    // `memory.blob_id`: `citation_of_fact` reads the cited-object id and the
+    // citation-mapping id off that one row, so both citation sidecar families
+    // key on `blob_id` and both are owner-filtered by `blob.owner_id`. Before
+    // this, the registered table lists arrived here and were discarded, so a
+    // flavor's citation sidecar rows were silently absent from the bundle.
+    extend_sidecars(
+        pool,
+        owner,
+        &mut sidecars,
+        tables.cited_object,
+        SidecarJoin {
+            sidecar_column: "cited_object_id",
+            base_table: "proxima_core.blob",
+            base_column: "blob_id",
+        },
+    )
+    .await?;
+    extend_sidecars(
+        pool,
+        owner,
+        &mut sidecars,
+        tables.citation_mapping,
+        SidecarJoin {
+            sidecar_column: "citation_mapping_id",
+            base_table: "proxima_core.blob",
+            base_column: "blob_id",
+        },
+    )
+    .await?;
     sidecars.sort_by(|left, right| left.table.cmp(&right.table));
     Ok(sidecars)
 }
@@ -171,6 +211,24 @@ async fn owner_rows(
                 .await
                 .map_err(map_err)
         }
+        OwnerRowsTable::Cooled => sqlx::query_scalar::<_, Value>(COOLED_ROWS_SQL)
+            .bind(owner_kind)
+            .bind(owner_id)
+            .fetch_all(pool)
+            .await
+            .map_err(map_err),
+        OwnerRowsTable::Sketches => sqlx::query_scalar::<_, Value>(SKETCH_ROWS_SQL)
+            .bind(owner_kind)
+            .bind(owner_id)
+            .fetch_all(pool)
+            .await
+            .map_err(map_err),
+        OwnerRowsTable::Blobs => sqlx::query_scalar::<_, Value>(BLOB_ROWS_SQL)
+            .bind(owner_kind)
+            .bind(owner_id)
+            .fetch_all(pool)
+            .await
+            .map_err(map_err),
     }
 }
 
@@ -258,6 +316,40 @@ SELECT to_jsonb(g)
   FROM proxima_core.goal g
  WHERE g.owner_id IS NOT DISTINCT FROM $2
  ORDER BY g.t";
+
+// A cooled admission's content has left `memory` for the object store, so
+// omitting this table returned an incomplete owner bundle for every forgotten
+// admission. The row is exported as a locator manifest — `object_key` names
+// where the dumped payload lives — and the bundle deliberately does not stream
+// cold-store bytes: it is a database export, and the payload is recoverable by
+// hydrating the admission.
+const COOLED_ROWS_SQL: &str = "
+SELECT to_jsonb(c)
+  FROM proxima_core.cooled c
+ WHERE c.owner_id IS NOT DISTINCT FROM $2
+ ORDER BY c.t";
+
+// The derived one-liner of each of the owner's memories and goals. `search_tsv`
+// is a generated lexical-index column over `text`, not owner data, so it is
+// dropped rather than dumped into a portability bundle.
+const SKETCH_ROWS_SQL: &str = "
+SELECT to_jsonb(s) - 'search_tsv'
+  FROM proxima_core.sketch s
+ WHERE s.owner_id IS NOT DISTINCT FROM $2
+ ORDER BY s.t";
+
+// Keep this an explicit field allowlist: the blob row is the authoritative
+// cited-object identity even for opaque schemas, while upload coordinates and
+// object-store bytes are not part of a database compliance export.
+const BLOB_ROWS_SQL: &str = "
+SELECT jsonb_build_object(
+           'blob_id', b.blob_id,
+           'schema_id', b.schema_id,
+           'content_hash', b.content_hash
+       )
+  FROM proxima_core.blob b
+ WHERE b.owner_id IS NOT DISTINCT FROM $2
+ ORDER BY b.blob_id";
 
 fn pins_from_memories(memories: &[Value]) -> Vec<Value> {
     let mut edges = Vec::new();

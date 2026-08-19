@@ -16,7 +16,8 @@ use proxima_storage_pg::core_pg_sidecars;
 use proxima_storage_pg::verbs::fact_ingest::ingest_fact_atomic;
 use proxima_storage_pg::verbs::forget::{
     MemoryColdStore, cold_object_key, commit_forget, erase_memory, forget_memory,
-    forget_memory_oneshot, hydrate_memory, owner_hash_hex, snapshot_hot,
+    forget_memory_oneshot, hydrate_memory, owner_hash_hex, purge_cold_objects_after_commit,
+    snapshot_hot,
 };
 use proxima_storage_pg::verbs::memory_timeseries::ingest_fact_timeseries;
 use uuid::Uuid;
@@ -194,17 +195,36 @@ async fn forget_hydrate_erase_and_world_never() {
             owner.stored_owner_id(),
         )
         .await?;
-        erase_memory(&mut tx, &core_pg_sidecars(), &cold, &owner, t).await?;
+        let plan = erase_memory(&mut tx, &core_pg_sidecars(), &owner, t).await?;
         tx.commit().await?;
+        assert_eq!(
+            plan.object_keys(),
+            std::slice::from_ref(&key),
+            "the erase owes the cold object it just unlinked"
+        );
+        let purge = purge_cold_objects_after_commit(pool, &cold, &plan).await;
+        assert_eq!(purge.purged, 1);
+        assert!(!purge.pending);
+        assert!(
+            matches!(cold.get(&key).await, Err(StorageError::NotFound)),
+            "the post-commit purge destroys the object"
+        );
         let stub: i64 =
             sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_core.cooled WHERE t = $1")
                 .bind(t)
                 .fetch_one(pool)
                 .await?;
         assert_eq!(stub, 0);
+        let pending: i64 = sqlx::query_scalar(
+            "SELECT count(*)::bigint FROM proxima_core.cold_purge_pending WHERE object_key = $1",
+        )
+        .bind(&key)
+        .fetch_one(pool)
+        .await?;
+        assert_eq!(pending, 0, "a purged object clears its pending mark");
 
         let mut tx = pool.begin().await?;
-        let err = erase_memory(&mut tx, &core_pg_sidecars(), &cold, &OwnerRef::World, t)
+        let err = erase_memory(&mut tx, &core_pg_sidecars(), &OwnerRef::World, t)
             .await
             .expect_err("World never");
         assert!(err.to_string().contains("World"), "got: {err}");
@@ -232,7 +252,6 @@ async fn erase_announce_carries_the_series_handle() {
         let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let pool = pg.pool_for_tests();
-        let cold = MemoryColdStore::default();
 
         // Two t on one handle, so a handle-shaped and a t-shaped value differ.
         let first = ingest_fact_atomic(pool, &permit, &draft(Some(("src", "e1"))), None).await?;
@@ -244,7 +263,7 @@ async fn erase_announce_carries_the_series_handle() {
         assert_ne!(t, second.handle, "the erased t is not its own handle");
 
         let mut tx = pool.begin().await?;
-        erase_memory(&mut tx, &core_pg_sidecars(), &cold, &owner, t).await?;
+        erase_memory(&mut tx, &core_pg_sidecars(), &owner, t).await?;
         tx.commit().await?;
 
         let announced: Uuid = sqlx::query_scalar(
@@ -1089,7 +1108,7 @@ async fn concurrent_erase_after_forget_put_does_not_leave_cold_object() {
         cold.first_put_entered.acquire().await?.forget();
 
         let mut erase_tx = pool.begin().await?;
-        erase_memory(&mut erase_tx, &core_pg_sidecars(), cold.as_ref(), &owner, t).await?;
+        erase_memory(&mut erase_tx, &core_pg_sidecars(), &owner, t).await?;
         erase_tx.commit().await?;
 
         // The PUT completes only after erase committed. The forget reread is
@@ -1652,8 +1671,76 @@ async fn commit_forget_aborts_when_owner_transferred() {
     result.expect("forget-after-publish must abort");
 }
 
+/// An erase that destroyed its cold object inside the caller's transaction lost
+/// the object outright whenever that transaction later rolled back: the `cooled`
+/// locator came back and the bytes did not. The destruction is deferred to after
+/// the commit, and a rolled-back erase must leave locator and object together.
 #[tokio::test]
-async fn erase_memory_fails_closed_when_cold_delete_fails() {
+async fn a_rolled_back_erase_keeps_the_cold_object_and_its_locator() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    if let Err(e) = create_db(&db_name).await {
+        panic!("PG required for tests but admin connect failed: {e}");
+    }
+    let url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&url).await?;
+        pg.run_migrations().await?;
+        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
+        let pool = pg.pool_for_tests();
+        let written = ingest_fact_atomic(pool, &permit, &draft(None), None).await?;
+        let t = written.memory_id.into_inner();
+        let key = cold_object_key(&owner_hash_hex(&owner), written.handle, t);
+        let cold = MemoryColdStore::default();
+        let mut tx = pool.begin().await?;
+        forget_memory(
+            &mut tx,
+            &core_pg_sidecars(),
+            &cold,
+            &key,
+            t,
+            owner.stored_owner_id(),
+        )
+        .await?;
+        tx.commit().await?;
+
+        let mut tx = pool.begin().await?;
+        let plan = erase_memory(&mut tx, &core_pg_sidecars(), &owner, t).await?;
+        assert_eq!(plan.object_keys(), std::slice::from_ref(&key));
+        tx.rollback().await?;
+
+        assert!(
+            cold.get(&key).await.is_ok(),
+            "nothing may destroy the object before the erase commits"
+        );
+        let stub: i64 =
+            sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_core.cooled WHERE t = $1")
+                .bind(t)
+                .fetch_one(pool)
+                .await?;
+        assert_eq!(stub, 1, "the rolled-back erase restores the cooled locator");
+        let pending: i64 = sqlx::query_scalar(
+            "SELECT count(*)::bigint FROM proxima_core.cold_purge_pending WHERE object_key = $1",
+        )
+        .bind(&key)
+        .fetch_one(pool)
+        .await?;
+        assert_eq!(
+            pending, 0,
+            "the pending mark rolls back with the erase that made it"
+        );
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("rolled-back erase consistency test failed");
+}
+
+/// The erase is already committed by the time the object store is asked, so a
+/// refusing store cannot undo it. What it must not do is lose the debt: the
+/// key stays in `cold_purge_pending` as the durable record a retry reads.
+#[tokio::test]
+async fn a_refusing_cold_store_leaves_the_purge_mark_for_retry() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
     if let Err(e) = create_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
@@ -1682,20 +1769,24 @@ async fn erase_memory_fails_closed_when_cold_delete_fails() {
         tx.commit().await?;
 
         let mut tx = pool.begin().await?;
-        let err = erase_memory(&mut tx, &core_pg_sidecars(), &FailDeleteCold, &owner, t)
-            .await
-            .expect_err("erase must not drop cooled locator if cold delete fails");
-        assert!(
-            matches!(err, StorageError::Internal(ref msg) if msg.contains("cold delete refused")),
-            "got {err:?}"
+        let plan = erase_memory(&mut tx, &core_pg_sidecars(), &owner, t).await?;
+        tx.commit().await?;
+
+        let purged = purge_cold_objects_after_commit(pool, &FailDeleteCold, &plan).await;
+        assert_eq!(purged.purged, 0, "a refusing object store destroys nothing");
+        assert!(purged.pending);
+        let pending: Vec<(String, Option<Uuid>)> = sqlx::query_as(
+            "SELECT object_key, compliance_operation_id
+               FROM proxima_core.cold_purge_pending WHERE owner_id = $1",
+        )
+        .bind(owner.stored_owner_id())
+        .fetch_all(pool)
+        .await?;
+        assert_eq!(
+            pending,
+            vec![(key, None)],
+            "standalone erase keeps a durable, unattributed purge debt"
         );
-        tx.rollback().await?;
-        let stub: i64 =
-            sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_core.cooled WHERE t = $1")
-                .bind(t)
-                .fetch_one(pool)
-                .await?;
-        assert_eq!(stub, 1, "cooled locator must survive a failed cold delete");
         Ok(())
     }
     .await;
