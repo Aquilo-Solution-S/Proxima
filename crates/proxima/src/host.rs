@@ -95,7 +95,7 @@ pub use proxima_core::{McpToolDescriptor, McpToolOrigin};
 ///
 /// Both are nameable from the host facade and have programmatic builder
 /// methods; hosts do not need process environment to configure either block.
-pub use proxima_storage_pg::{HnswIterativeScan, PgPoolConfig, PgTuning, SemanticIndexFirst};
+pub use proxima_storage_pg::{HnswIterativeScan, PgPoolConfig, PgTuning};
 // `GoalWriteBuildError`'s variants carry this, so a host that matches on
 // them cannot bind the payload without being able to name its type. An
 // unnameable type in a public signature is the usual shape of an

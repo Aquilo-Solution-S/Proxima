@@ -104,11 +104,12 @@ pub async fn nearest_code_chunk_candidates(
 
     let mut tx = pool.begin().await.map_err(map_err)?;
     // A flavor reaches this query with a pool and no storage handle, so
-    // there is no deployment tuning to read here: the session settings are
-    // the defaults, which is what this scan has always run under.
+    // deployment tuning is read from the environment: PROXIMA_PG_HNSW_*
+    // applies here; tuning a host sets programmatically does not reach
+    // this path.
     // SQL-POLICY: fixed-fragment
     sqlx::raw_sql(sqlx::AssertSqlSafe(set_hnsw_search_sql(
-        &PgTuning::default(),
+        &PgTuning::from_env()?,
     )))
     .execute(&mut *tx)
     .await

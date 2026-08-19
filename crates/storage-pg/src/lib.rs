@@ -63,7 +63,7 @@ pub use sidecars::{
     PgSidecarKey, PgSidecarRegistry, PgSidecarRegistryFrozen, core_pg_sidecars,
     register_core_pg_sidecars,
 };
-pub use tuning::{HnswIterativeScan, PgTuning, SemanticIndexFirst};
+pub use tuning::{HnswIterativeScan, PgTuning};
 
 /// Namespace boundary between core and flavor migration versions.
 ///
