@@ -553,6 +553,125 @@ async fn compensate_forget_put(
     delete_cold_object(cold, object_key).await;
 }
 
+/// Cold objects a committed erase still owes the object store.
+///
+/// An erase marks each locator in `proxima_core.cold_purge_pending` inside the
+/// transaction that deletes its `cooled` row, and destroys the object only
+/// after that transaction commits ([`purge_cold_objects_after_commit`]).
+/// Deleting from inside the transaction loses the object outright when the
+/// transaction later rolls back — the locator comes back, the bytes do not —
+/// and a crash between commit and destruction leaves a reclaimable mark rather
+/// than a `cooled` row naming nothing.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct ColdPurgePlan {
+    object_keys: Vec<String>,
+}
+
+impl ColdPurgePlan {
+    pub(crate) fn from_keys(object_keys: Vec<String>) -> Self {
+        Self { object_keys }
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.object_keys.is_empty()
+    }
+
+    #[must_use]
+    pub fn object_keys(&self) -> &[String] {
+        &self.object_keys
+    }
+}
+
+/// Result of one post-commit exact-key purge attempt.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct ColdPurgeOutcome {
+    pub attempted: u64,
+    pub purged: u64,
+    pub failed: u64,
+    /// At least one durable row could not be reconciled. This deliberately
+    /// over-reports when object deletion succeeded but the database write did
+    /// not: repeating an exact-key delete is safe.
+    pub pending: bool,
+}
+
+/// Destroy the cold objects a committed erase marked pending, clearing each
+/// mark as its object goes.
+///
+/// Best effort by construction: the erase is already committed, so a refusing
+/// object store cannot undo it. A key whose destruction (or whose mark clear)
+/// fails keeps its `cold_purge_pending` row, which is the durable record an
+/// operator retry reads — the same over-report-pending-rather-than-lose-it rule
+/// the cited-object purge follows. Returns the number of objects destroyed and
+/// cleared.
+pub async fn purge_cold_objects_after_commit(
+    pool: &PgPool,
+    cold: &dyn ColdObjectStore,
+    plan: &ColdPurgePlan,
+) -> ColdPurgeOutcome {
+    let mut outcome = ColdPurgeOutcome {
+        attempted: u64::try_from(plan.object_keys().len()).unwrap_or(u64::MAX),
+        ..ColdPurgeOutcome::default()
+    };
+    for key in plan.object_keys() {
+        match cold.delete(key).await {
+            Ok(()) | Err(StorageError::NotFound) => match clear_cold_purge_pending(pool, key).await
+            {
+                Ok(()) => outcome.purged = outcome.purged.saturating_add(1),
+                Err(error) => {
+                    outcome.failed = outcome.failed.saturating_add(1);
+                    tracing::warn!(
+                        %error,
+                        key,
+                        "destroyed a cold object but failed to clear its purge-pending mark"
+                    );
+                }
+            },
+            Err(error) => {
+                outcome.failed = outcome.failed.saturating_add(1);
+                tracing::warn!(
+                    %error,
+                    key,
+                    "cold object outlives its committed erase; the purge-pending mark stays for retry"
+                );
+            }
+        }
+    }
+    outcome.pending = outcome.purged != outcome.attempted;
+    outcome
+}
+
+async fn clear_cold_purge_pending(pool: &PgPool, object_key: &str) -> Result<(), StorageError> {
+    let mut tx = pool.begin().await.map_err(map_err)?;
+    let operation_id: Option<Option<Uuid>> = sqlx::query_scalar(
+        "DELETE FROM proxima_core.cold_purge_pending
+          WHERE object_key = $1
+          RETURNING compliance_operation_id",
+    )
+    .bind(object_key)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(map_err)?;
+    if let Some(Some(operation_id)) = operation_id {
+        sqlx::query(
+            "UPDATE proxima_core.compliance_audit_log a
+                SET cold_object_purge_pending = false
+              WHERE a.operation_id = $1
+                AND NOT EXISTS (
+                    SELECT 1
+                      FROM proxima_core.cold_purge_pending p
+                     WHERE p.compliance_operation_id = a.operation_id
+                )",
+        )
+        .bind(operation_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(map_err)?;
+    }
+    tx.commit().await.map_err(map_err)?;
+    Ok(())
+}
+
 pub(crate) async fn delete_cold_object(cold: &dyn ColdObjectStore, object_key: &str) {
     match cold.delete(object_key).await {
         Ok(()) | Err(StorageError::NotFound) => {}
@@ -988,13 +1107,19 @@ pub async fn hydrate_memory(
     Ok(())
 }
 
+/// Hard-delete one admission of an abandoned owner.
+///
+/// Returns the cold objects the erase still owes the object store: the caller
+/// commits this transaction and then calls
+/// [`purge_cold_objects_after_commit`]. The cold delete cannot run here —
+/// a rollback after it would restore the `cooled` locator over destroyed
+/// bytes.
 pub async fn erase_memory(
     tx: &mut Transaction<'_, Postgres>,
     sidecars: &PgSidecarRegistryFrozen,
-    cold: &dyn ColdObjectStore,
     owner: &Owner,
     t: Uuid,
-) -> Result<(), StorageError> {
+) -> Result<ColdPurgePlan, StorageError> {
     if matches!(owner, Owner::World) {
         return Err(StorageError::ConstraintViolation(
             "World is never abandoned".into(),
@@ -1030,24 +1155,25 @@ pub async fn erase_memory(
     .await
     .map_err(map_err)?
     .flatten();
-    if let Ok(key) = sqlx::query_scalar::<_, String>(
-        "SELECT object_key FROM proxima_core.cooled WHERE t = $1 AND owner_id = $2",
+    let pending: Vec<String> = sqlx::query_scalar(
+        "INSERT INTO proxima_core.cold_purge_pending (object_key, owner_id)
+         SELECT c.object_key, c.owner_id
+           FROM proxima_core.cooled c
+          WHERE c.t = $1 AND c.owner_id = $2
+         ON CONFLICT (object_key) DO UPDATE SET enqueued_at = now()
+         RETURNING object_key",
     )
     .bind(t)
     .bind(owner.stored_owner_id())
-    .fetch_one(tx.as_mut())
+    .fetch_all(tx.as_mut())
     .await
-    {
-        match cold.delete(&key).await {
-            Ok(()) | Err(StorageError::NotFound) => {}
-            Err(err) => return Err(err),
-        }
-        sqlx::query("DELETE FROM proxima_core.cooled WHERE t = $1")
-            .bind(t)
-            .execute(tx.as_mut())
-            .await
-            .map_err(map_err)?;
-    }
+    .map_err(map_err)?;
+    sqlx::query("DELETE FROM proxima_core.cooled WHERE t = $1 AND owner_id = $2")
+        .bind(t)
+        .bind(owner.stored_owner_id())
+        .execute(tx.as_mut())
+        .await
+        .map_err(map_err)?;
     let stamped: Vec<String> = sqlx::query_scalar(
         "SELECT unnest(sidecar_tables) FROM proxima_core.memory WHERE t = $1 AND owner_id = $2",
     )
@@ -1088,7 +1214,7 @@ pub async fn erase_memory(
     .execute(tx.as_mut())
     .await
     .map_err(map_err)?;
-    Ok(())
+    Ok(ColdPurgePlan::from_keys(pending))
 }
 
 #[cfg(test)]

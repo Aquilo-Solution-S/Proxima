@@ -16,6 +16,7 @@ use crate::access::owner_columns::{lock_group_membership_tx, owner_binds};
 use crate::error::map_err;
 use crate::pg_ident::PgIdent;
 use crate::verbs::fact_retention::{legal_hold_active_tx, lock_legal_hold_tx};
+use crate::verbs::forget::ColdPurgePlan;
 
 type Tx<'a> = Transaction<'a, Postgres>;
 
@@ -104,9 +105,8 @@ pub async fn erase_group_owner_if_abandoned(
         tx.commit().await.map_err(map_err)?;
         return Ok(outcome);
     }
-    erase_selected(
+    let cold_purge = erase_selected(
         &mut tx,
-        cold,
         auth,
         owner,
         SelectionScope::Owner,
@@ -121,10 +121,11 @@ pub async fn erase_group_owner_if_abandoned(
         operation_id: auth.audit().operation_id(),
         counts,
         cited_object_purge_pending: object_purge_planned,
+        cold_object_purge_pending: !cold_purge.is_empty(),
     };
     upsert_audit_outcome(&mut tx, auth.audit(), &outcome, counts).await?;
     tx.commit().await.map_err(map_err)?;
-    Ok(outcome)
+    Ok(finalize_cold_purge(pool, cold, &cold_purge, outcome).await)
 }
 
 pub async fn erase_personal_owner_if_drop_verified(
@@ -144,9 +145,8 @@ pub async fn erase_personal_owner_if_drop_verified(
         tx.commit().await.map_err(map_err)?;
         return Ok(outcome);
     }
-    erase_selected(
+    let cold_purge = erase_selected(
         &mut tx,
-        cold,
         auth,
         owner,
         SelectionScope::Owner,
@@ -161,10 +161,11 @@ pub async fn erase_personal_owner_if_drop_verified(
         operation_id: auth.audit().operation_id(),
         counts,
         cited_object_purge_pending: object_purge_planned,
+        cold_object_purge_pending: !cold_purge.is_empty(),
     };
     upsert_audit_outcome(&mut tx, auth.audit(), &outcome, counts).await?;
     tx.commit().await.map_err(map_err)?;
-    Ok(outcome)
+    Ok(finalize_cold_purge(pool, cold, &cold_purge, outcome).await)
 }
 
 pub async fn erase_group_source_scope_if_owner_abandoned(
@@ -197,9 +198,8 @@ pub async fn erase_group_source_scope_if_owner_abandoned(
         tx.commit().await.map_err(map_err)?;
         return Ok(outcome);
     }
-    erase_selected(
+    let cold_purge = erase_selected(
         &mut tx,
-        cold,
         auth,
         owner,
         SelectionScope::Source(source_id),
@@ -214,10 +214,11 @@ pub async fn erase_group_source_scope_if_owner_abandoned(
         operation_id: auth.audit().operation_id(),
         counts,
         cited_object_purge_pending: false,
+        cold_object_purge_pending: !cold_purge.is_empty(),
     };
     upsert_audit_outcome(&mut tx, auth.audit(), &outcome, counts).await?;
     tx.commit().await.map_err(map_err)?;
-    Ok(outcome)
+    Ok(finalize_cold_purge(pool, cold, &cold_purge, outcome).await)
 }
 
 pub async fn erase_personal_source_scope_if_drop_verified(
@@ -237,9 +238,8 @@ pub async fn erase_personal_source_scope_if_drop_verified(
         tx.commit().await.map_err(map_err)?;
         return Ok(outcome);
     }
-    erase_selected(
+    let cold_purge = erase_selected(
         &mut tx,
-        cold,
         auth,
         owner,
         SelectionScope::Source(source_id),
@@ -254,10 +254,35 @@ pub async fn erase_personal_source_scope_if_drop_verified(
         operation_id: auth.audit().operation_id(),
         counts,
         cited_object_purge_pending: false,
+        cold_object_purge_pending: !cold_purge.is_empty(),
     };
     upsert_audit_outcome(&mut tx, auth.audit(), &outcome, counts).await?;
     tx.commit().await.map_err(map_err)?;
-    Ok(outcome)
+    Ok(finalize_cold_purge(pool, cold, &cold_purge, outcome).await)
+}
+
+async fn finalize_cold_purge(
+    pool: &PgPool,
+    cold: &dyn ColdObjectStore,
+    plan: &ColdPurgePlan,
+    outcome: ComplianceEraseOutcome,
+) -> ComplianceEraseOutcome {
+    let purge = super::forget::purge_cold_objects_after_commit(pool, cold, plan).await;
+    let ComplianceEraseOutcome::Completed {
+        operation_id,
+        counts,
+        cited_object_purge_pending,
+        ..
+    } = outcome
+    else {
+        return outcome;
+    };
+    ComplianceEraseOutcome::Completed {
+        operation_id,
+        counts,
+        cited_object_purge_pending,
+        cold_object_purge_pending: purge.pending,
+    }
 }
 
 async fn group_member_count(tx: &mut Tx<'_>, group_id: GroupId) -> Result<i64, StorageError> {
@@ -286,7 +311,6 @@ async fn refuse_if_legal_hold_active(
 
 async fn erase_selected(
     tx: &mut Tx<'_>,
-    cold: &dyn ColdObjectStore,
     auth: &EraseAuthorization,
     owner: OwnerRef,
     scope: SelectionScope<'_>,
@@ -294,26 +318,8 @@ async fn erase_selected(
     goal_sidecar_tables: &[String],
     citation_mapping_sidecar_tables: &[String],
     cited_object_sidecar_tables: &[String],
-) -> Result<(), StorageError> {
-    create_selected_sets(tx, owner, scope).await?;
-    capture_selected_handles(tx).await?;
-    upsert_audit_outcome(
-        tx,
-        auth.audit(),
-        &ComplianceEraseOutcome::Refused {
-            operation_id: auth.audit().operation_id(),
-            reason: ComplianceEraseRefusal::OwnerNotAbandoned,
-        },
-        ComplianceEraseCounts::default(),
-    )
-    .await?;
-    let redactions = insert_redactions(tx, auth.audit().operation_id());
-    sqlx::query("CREATE TEMP TABLE compliance_counts(name text PRIMARY KEY, count bigint NOT NULL) ON COMMIT DROP")
-        .execute(&mut **tx)
-        .await
-        .map_err(map_err)?;
-    record_count(tx, "redacted_edge_targets", redactions).await?;
-    record_count(tx, "suppressed_keys", 0).await?;
+) -> Result<ColdPurgePlan, StorageError> {
+    open_erase_bookkeeping(tx, auth, owner, scope).await?;
 
     let delegated_authority_grants = delete_delegated_authority_grants(tx, owner, scope).await?;
     record_count(tx, "delegated_authority_grants", delegated_authority_grants).await?;
@@ -330,9 +336,10 @@ async fn erase_selected(
     delete_goal_refs(tx);
     delete_memory_refs(tx);
 
-    delete_dynamic_sidecars(tx, goal_sidecar_tables, "t", "selected_goals", "goal_id").await?;
+    let mut sidecar_rows =
+        delete_dynamic_sidecars(tx, goal_sidecar_tables, "t", "selected_goals", "goal_id").await?;
     delete_fixed_goal_sidecars(tx).await?;
-    delete_dynamic_sidecars(
+    sidecar_rows += delete_dynamic_sidecars(
         tx,
         fact_sidecar_tables,
         "t",
@@ -341,8 +348,6 @@ async fn erase_selected(
     )
     .await?;
     delete_fixed_memory_sidecars(tx).await?;
-    let _ = citation_mapping_sidecar_tables;
-    let _ = cited_object_sidecar_tables;
 
     let sketches = sqlx::query(
         "DELETE FROM proxima_core.sketch s
@@ -381,7 +386,8 @@ async fn erase_selected(
         "memory_id",
     )
     .await?;
-    let cooled = delete_selected_cooled(tx, cold).await?;
+    let operation_id = auth.audit().operation_id();
+    let (cooled, cold_purge) = delete_selected_cooled(tx, operation_id).await?;
     for id in content_ids {
         super::content::gc_unreferenced_content(tx, id).await?;
     }
@@ -389,12 +395,61 @@ async fn erase_selected(
     let goals =
         delete_selected_table(tx, "proxima_core.goal", "t", "selected_goals", "goal_id").await?;
     record_count(tx, "goals", goals).await?;
+    let wake_configs = delete_wake_configs(tx, owner, scope).await?;
+    record_count(tx, "wake_configs", wake_configs).await?;
+    let blobs = delete_blobs(
+        tx,
+        owner,
+        scope,
+        operation_id,
+        citation_mapping_sidecar_tables,
+        cited_object_sidecar_tables,
+    )
+    .await?;
+    sidecar_rows += blobs.sidecar_rows;
+    record_count(tx, "sidecar_rows", sidecar_rows).await?;
+    record_count(tx, "blob_uploads", blobs.uploads).await?;
+    record_count(tx, "blobs", blobs.blobs).await?;
     sync_selected_heads(tx).await?;
     let receipts = 0;
     record_count(tx, "receipts", receipts).await?;
     let source_batches = 0;
     record_count(tx, "source_batches", source_batches).await?;
-    Ok(())
+    let mut object_keys = cold_purge.object_keys().to_vec();
+    object_keys.extend_from_slice(blobs.cold_purge.object_keys());
+    object_keys.sort_unstable();
+    object_keys.dedup();
+    Ok(ColdPurgePlan::from_keys(object_keys))
+}
+
+/// Build the selection sets, stamp the in-progress (`Refused`) audit row that a
+/// crash mid-erase leaves behind, and open the per-transaction count table the
+/// deletions below tally into.
+async fn open_erase_bookkeeping(
+    tx: &mut Tx<'_>,
+    auth: &EraseAuthorization,
+    owner: OwnerRef,
+    scope: SelectionScope<'_>,
+) -> Result<(), StorageError> {
+    create_selected_sets(tx, owner, scope).await?;
+    capture_selected_handles(tx).await?;
+    upsert_audit_outcome(
+        tx,
+        auth.audit(),
+        &ComplianceEraseOutcome::Refused {
+            operation_id: auth.audit().operation_id(),
+            reason: ComplianceEraseRefusal::OwnerNotAbandoned,
+        },
+        ComplianceEraseCounts::default(),
+    )
+    .await?;
+    let redactions = insert_redactions(tx, auth.audit().operation_id());
+    sqlx::query("CREATE TEMP TABLE compliance_counts(name text PRIMARY KEY, count bigint NOT NULL) ON COMMIT DROP")
+        .execute(&mut **tx)
+        .await
+        .map_err(map_err)?;
+    record_count(tx, "redacted_edge_targets", redactions).await?;
+    record_count(tx, "suppressed_keys", 0).await
 }
 
 async fn create_selected_sets(
@@ -445,6 +500,42 @@ async fn create_selected_sets(
             )
             .bind(owner_id)
             .bind(source_id.as_str())
+            .execute(&mut **tx)
+            .await
+            .map_err(map_err)?;
+        }
+    }
+
+    sqlx::query("CREATE TEMP TABLE selected_blobs(blob_id uuid PRIMARY KEY) ON COMMIT DROP")
+        .execute(&mut **tx)
+        .await
+        .map_err(map_err)?;
+    match scope {
+        SelectionScope::Owner => {
+            sqlx::query(
+                "INSERT INTO selected_blobs(blob_id)
+                 SELECT blob_id FROM proxima_core.blob WHERE owner_id = $1",
+            )
+            .bind(owner_id)
+            .execute(&mut **tx)
+            .await
+            .map_err(map_err)?;
+        }
+        SelectionScope::Source(_) => {
+            sqlx::query(
+                "INSERT INTO selected_blobs(blob_id)
+                 SELECT blob_id FROM (
+                     SELECT m.blob_id
+                       FROM proxima_core.memory m
+                       JOIN selected_memories sm ON sm.memory_id = m.t
+                      WHERE m.blob_id IS NOT NULL
+                     UNION
+                     SELECT c.blob_id
+                       FROM proxima_core.cooled c
+                       JOIN selected_memories sm ON sm.memory_id = c.t
+                      WHERE c.blob_id IS NOT NULL
+                 ) selected",
+            )
             .execute(&mut **tx)
             .await
             .map_err(map_err)?;
@@ -621,25 +712,32 @@ async fn upsert_audit_outcome(
         )
     });
     let (outcome_name, refusal) = outcome_labels(outcome);
-    let purge_pending = outcome_purge_pending(outcome);
+    let (cold_purge_pending, cited_purge_pending) = outcome_purge_pending(outcome);
     sqlx::query(
         "INSERT INTO proxima_core.compliance_audit_log(
              operation_id, target_kind, outcome, refusal, owner_ref_digest,
              requester_digest, source_scope_digest, derived_auth_path, requested_at,
-             completed_at, memories_count, goals_count, edges_count,
+             completed_at, memories_count, goals_count, wake_configs_count,
+             blobs_count, blob_uploads_count, sidecar_rows_count, edges_count,
              receipts_count, source_batches_count,
              source_cursors_count, embeddings_count, embedding_jobs_count, mcp_call_rows_count,
              change_events_count, redacted_edge_targets_count, suppressed_keys_count,
-             delegated_authority_grants_count, cited_object_purge_pending)
+             delegated_authority_grants_count, cold_object_purge_pending,
+             cited_object_purge_pending)
          VALUES ($1, $2, $3::proxima_core.compliance_erase_outcome,
                  $4::proxima_core.compliance_erase_refusal, $5, $6, $7, $8, $9,
-                 now(), $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23)
+                 now(), $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23,
+                 $24, $25, $26, $27, $28)
          ON CONFLICT (operation_id) DO UPDATE SET
              outcome = EXCLUDED.outcome,
              refusal = EXCLUDED.refusal,
              completed_at = EXCLUDED.completed_at,
              memories_count = EXCLUDED.memories_count,
              goals_count = EXCLUDED.goals_count,
+             wake_configs_count = EXCLUDED.wake_configs_count,
+             blobs_count = EXCLUDED.blobs_count,
+             blob_uploads_count = EXCLUDED.blob_uploads_count,
+             sidecar_rows_count = EXCLUDED.sidecar_rows_count,
              edges_count = EXCLUDED.edges_count,
              receipts_count = EXCLUDED.receipts_count,
              source_batches_count = EXCLUDED.source_batches_count,
@@ -651,6 +749,7 @@ async fn upsert_audit_outcome(
              redacted_edge_targets_count = EXCLUDED.redacted_edge_targets_count,
              suppressed_keys_count = EXCLUDED.suppressed_keys_count,
              delegated_authority_grants_count = EXCLUDED.delegated_authority_grants_count,
+             cold_object_purge_pending = EXCLUDED.cold_object_purge_pending,
              cited_object_purge_pending = EXCLUDED.cited_object_purge_pending",
     )
     .bind(audit.operation_id())
@@ -664,6 +763,10 @@ async fn upsert_audit_outcome(
     .bind(audit.requested_at())
     .bind(i64::try_from(counts.memories).unwrap_or(i64::MAX))
     .bind(i64::try_from(counts.goals).unwrap_or(i64::MAX))
+    .bind(i64::try_from(counts.wake_configs).unwrap_or(i64::MAX))
+    .bind(i64::try_from(counts.blobs).unwrap_or(i64::MAX))
+    .bind(i64::try_from(counts.blob_uploads).unwrap_or(i64::MAX))
+    .bind(i64::try_from(counts.sidecar_rows).unwrap_or(i64::MAX))
     .bind(i64::try_from(counts.edges).unwrap_or(i64::MAX))
     .bind(i64::try_from(counts.receipts).unwrap_or(i64::MAX))
     .bind(i64::try_from(counts.source_batches).unwrap_or(i64::MAX))
@@ -675,7 +778,8 @@ async fn upsert_audit_outcome(
     .bind(i64::try_from(counts.redacted_edge_targets).unwrap_or(i64::MAX))
     .bind(i64::try_from(counts.suppressed_keys).unwrap_or(i64::MAX))
     .bind(i64::try_from(counts.delegated_authority_grants).unwrap_or(i64::MAX))
-    .bind(purge_pending)
+    .bind(cold_purge_pending)
+    .bind(cited_purge_pending)
     .execute(&mut **tx)
     .await
     .map_err(map_err)?;
@@ -732,15 +836,16 @@ fn outcome_labels(outcome: &ComplianceEraseOutcome) -> (&'static str, Option<&'s
 /// `Completed` erase can have a cited-object purge outstanding, and every
 /// other outcome (refused/not-found/unauthorized) never touched an object
 /// store, so it is always `false`.
-fn outcome_purge_pending(outcome: &ComplianceEraseOutcome) -> bool {
+fn outcome_purge_pending(outcome: &ComplianceEraseOutcome) -> (bool, bool) {
     match outcome {
         ComplianceEraseOutcome::Completed {
             cited_object_purge_pending,
+            cold_object_purge_pending,
             ..
-        } => *cited_object_purge_pending,
+        } => (*cold_object_purge_pending, *cited_object_purge_pending),
         ComplianceEraseOutcome::Refused { .. }
         | ComplianceEraseOutcome::NotFound { .. }
-        | ComplianceEraseOutcome::Unauthorized { .. } => false,
+        | ComplianceEraseOutcome::Unauthorized { .. } => (false, false),
     }
 }
 
@@ -789,6 +894,10 @@ async fn final_counts(tx: &mut Tx<'_>) -> Result<ComplianceEraseCounts, StorageE
     Ok(ComplianceEraseCounts {
         memories: count_named(tx, "memories").await?,
         goals: count_named(tx, "goals").await?,
+        wake_configs: count_named(tx, "wake_configs").await?,
+        blobs: count_named(tx, "blobs").await?,
+        blob_uploads: count_named(tx, "blob_uploads").await?,
+        sidecar_rows: count_named(tx, "sidecar_rows").await?,
         edges: count_named(tx, "edges").await?,
         receipts: count_named(tx, "receipts").await?,
         source_batches: count_named(tx, "source_batches").await?,
@@ -871,25 +980,33 @@ async fn delete_selected_table(
     .await
 }
 
-/// Delete cooled stubs for selected admissions, their cold objects, then GC Content.
+/// Delete cooled stubs for selected admissions and mark their cold objects
+/// pending destruction. The objects themselves are destroyed after this
+/// transaction commits (see [`super::forget::purge_cold_objects_after_commit`]):
+/// deleting them here would destroy the payload of an admission that a
+/// rollback puts back.
 async fn delete_selected_cooled(
     tx: &mut Tx<'_>,
-    cold: &dyn ColdObjectStore,
-) -> Result<u64, StorageError> {
+    operation_id: uuid::Uuid,
+) -> Result<(u64, ColdPurgePlan), StorageError> {
     let keys: Vec<String> = sqlx::query_scalar(
-        "SELECT c.object_key
+        "INSERT INTO proxima_core.cold_purge_pending
+             (object_key, owner_id, compliance_operation_id)
+         SELECT c.object_key, c.owner_id, $1
            FROM proxima_core.cooled c
-           JOIN selected_memories sm ON sm.memory_id = c.t",
+           JOIN selected_memories sm ON sm.memory_id = c.t
+         ON CONFLICT (object_key) DO UPDATE SET
+             enqueued_at = now(),
+             compliance_operation_id = COALESCE(
+                 EXCLUDED.compliance_operation_id,
+                 cold_purge_pending.compliance_operation_id
+             )
+         RETURNING object_key",
     )
+    .bind(operation_id)
     .fetch_all(&mut **tx)
     .await
     .map_err(map_err)?;
-    for key in &keys {
-        match cold.delete(key).await {
-            Ok(()) | Err(StorageError::NotFound) => {}
-            Err(err) => return Err(err),
-        }
-    }
     let deleted = sqlx::query(
         "DELETE FROM proxima_core.cooled c
           WHERE EXISTS (
@@ -900,7 +1017,7 @@ async fn delete_selected_cooled(
     .await
     .map_err(map_err)?
     .rows_affected();
-    Ok(deleted)
+    Ok((deleted, ColdPurgePlan::from_keys(keys)))
 }
 
 async fn selected_content_ids(tx: &mut Tx<'_>) -> Result<Vec<uuid::Uuid>, StorageError> {
@@ -1023,6 +1140,192 @@ async fn delete_delegated_authority_grants(
     .await
     .map_err(map_err)?;
     Ok(result.rows_affected())
+}
+
+/// Destroy the owner's wake configuration. `wake_config` is owner-authored
+/// content — a free-text `prompt`, the hard-context `hard_memory_t` set, the
+/// armed `tool_ids` — and nothing else collects it: `goal.wake_id` is
+/// `ON DELETE RESTRICT` and erase never deletes the `owners` row, so a
+/// forgotten statement here leaves the prompt text behind forever.
+///
+/// Owner erase has already deleted every goal of the owner, so every wake row
+/// of that owner goes; a wake row an outside owner's goal still arms fails the
+/// RESTRICT FK and aborts the erase rather than silently surviving it.
+/// Source-scope erase selects no goals and `wake_config` has no source
+/// attribution, so every wake row remains outside that erase scope.
+async fn delete_wake_configs(
+    tx: &mut Tx<'_>,
+    owner: OwnerRef,
+    scope: SelectionScope<'_>,
+) -> Result<u64, StorageError> {
+    let (_owner_kind, owner_id) = owner_binds(&owner);
+    let result = match scope {
+        SelectionScope::Owner => sqlx::query(
+            "DELETE FROM proxima_core.wake_config
+              WHERE owner_id = $1",
+        )
+        .bind(owner_id)
+        .execute(&mut **tx)
+        .await
+        .map_err(map_err)?,
+        SelectionScope::Source(_) => return Ok(0),
+    };
+    Ok(result.rows_affected())
+}
+
+/// Rows destroyed by [`delete_blobs`], reported separately because the three
+/// tables hold different owner data: content hashes, S3 upload metadata, and
+/// whatever a flavor's citation payload carries.
+struct BlobEraseCounts {
+    sidecar_rows: u64,
+    uploads: u64,
+    blobs: u64,
+    cold_purge: ColdPurgePlan,
+}
+
+/// Destroy the owner's cited-blob rows: the registered citation sidecar rows
+/// keyed on `blob_id`, then `blob_uploads`, then `blob` itself. That order is
+/// the FK order — `blob_uploads.blob_id` and a flavor sidecar's own
+/// `blob_id` reference both point at `blob` — and `memory.blob_id` is why this
+/// runs after the memory deletions above.
+///
+/// `blob` carries `schema_id` and `content_hash`; `blob_uploads` carries
+/// `bucket`, `object_key`, `filename`, `mime`, `sha256`, `etag` and
+/// `error_message`. All of it is owner data, and nothing else collected it:
+/// erase never deletes the `owners` row, so the rows persisted forever.
+///
+/// Owner erase takes every
+/// blob row of the owner — the memory rows are already gone, so a surviving
+/// reference means the erase is wrong and the `NO ACTION` FK aborts it rather
+/// than letting the row survive quietly. Source-scope candidates are captured
+/// from the selected hot and cooled admissions before either table is deleted.
+/// After those deletions, candidates still referenced by a surviving hot or
+/// cooled admission are removed from the set.
+///
+/// `blob_uploads` rows with a NULL `blob_id` are pending or aborted uploads
+/// attributable to the owner and to no source, so source-scope erase leaves
+/// them exactly as it leaves owner-level delegated-authority grants.
+async fn delete_blobs(
+    tx: &mut Tx<'_>,
+    owner: OwnerRef,
+    scope: SelectionScope<'_>,
+    operation_id: uuid::Uuid,
+    citation_mapping_sidecar_tables: &[String],
+    cited_object_sidecar_tables: &[String],
+) -> Result<BlobEraseCounts, StorageError> {
+    let (_owner_kind, owner_id) = owner_binds(&owner);
+    if matches!(scope, SelectionScope::Source(_)) {
+        sqlx::query(
+            "DELETE FROM selected_blobs sb
+              WHERE EXISTS (
+                    SELECT 1 FROM proxima_core.memory m WHERE m.blob_id = sb.blob_id
+              )
+                 OR EXISTS (
+                    SELECT 1 FROM proxima_core.cooled c WHERE c.blob_id = sb.blob_id
+              )",
+        )
+        .execute(&mut **tx)
+        .await
+        .map_err(map_err)?;
+    }
+    let mut sidecar_rows = delete_dynamic_sidecars(
+        tx,
+        cited_object_sidecar_tables,
+        "cited_object_id",
+        "selected_blobs",
+        "blob_id",
+    )
+    .await?;
+    sidecar_rows += delete_dynamic_sidecars(
+        tx,
+        citation_mapping_sidecar_tables,
+        "citation_mapping_id",
+        "selected_blobs",
+        "blob_id",
+    )
+    .await?;
+    let object_keys = enqueue_blob_object_keys(tx, owner_id, scope, operation_id).await?;
+    let uploads = match scope {
+        SelectionScope::Owner => {
+            sqlx::query("DELETE FROM proxima_core.blob_uploads WHERE owner_id = $1")
+                .bind(owner_id)
+                .execute(&mut **tx)
+                .await
+                .map_err(map_err)?
+                .rows_affected()
+        }
+        SelectionScope::Source(_) => {
+            delete_selected_table(
+                tx,
+                "proxima_core.blob_uploads",
+                "blob_id",
+                "selected_blobs",
+                "blob_id",
+            )
+            .await?
+        }
+    };
+    let blobs = delete_selected_table(
+        tx,
+        "proxima_core.blob",
+        "blob_id",
+        "selected_blobs",
+        "blob_id",
+    )
+    .await?;
+    Ok(BlobEraseCounts {
+        sidecar_rows,
+        uploads,
+        blobs,
+        cold_purge: ColdPurgePlan::from_keys(object_keys),
+    })
+}
+
+async fn enqueue_blob_object_keys(
+    tx: &mut Tx<'_>,
+    owner_id: Option<uuid::Uuid>,
+    scope: SelectionScope<'_>,
+    operation_id: uuid::Uuid,
+) -> Result<Vec<String>, StorageError> {
+    match scope {
+        SelectionScope::Owner => sqlx::query_scalar(
+            "INSERT INTO proxima_core.cold_purge_pending
+                 (object_key, owner_id, compliance_operation_id)
+             SELECT DISTINCT object_key, owner_id, $2
+               FROM proxima_core.blob_uploads
+              WHERE owner_id = $1
+             ON CONFLICT (object_key) DO UPDATE SET
+                 enqueued_at = now(),
+                 compliance_operation_id = COALESCE(
+                     EXCLUDED.compliance_operation_id,
+                     cold_purge_pending.compliance_operation_id
+                 )
+             RETURNING object_key",
+        )
+        .bind(owner_id)
+        .bind(operation_id)
+        .fetch_all(&mut **tx)
+        .await
+        .map_err(map_err),
+        SelectionScope::Source(_) => sqlx::query_scalar(
+            "INSERT INTO proxima_core.cold_purge_pending
+                 (object_key, owner_id, compliance_operation_id)
+             SELECT DISTINCT u.object_key, u.owner_id, $1
+               FROM proxima_core.blob_uploads u
+               JOIN selected_blobs sb ON sb.blob_id = u.blob_id
+             ON CONFLICT (object_key) DO UPDATE SET
+                 enqueued_at = now(),
+                 compliance_operation_id = COALESCE(
+                     EXCLUDED.compliance_operation_id,
+                     cold_purge_pending.compliance_operation_id
+                 )
+             RETURNING object_key",
+        )
+        .bind(operation_id)
+        .fetch_all(&mut **tx)
+        .await
+        .map_err(map_err),
+    }
 }
 
 /// Delete persisted projector source cursors for the erased scope inside the

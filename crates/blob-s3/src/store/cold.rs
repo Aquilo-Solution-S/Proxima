@@ -66,13 +66,7 @@ impl ColdObjectStore for S3ColdStore {
             .client()
             .await
             .map_err(|err| StorageError::Unavailable(err.to_string()))?;
-        client
-            .delete_object()
-            .bucket(self.store.bucket())
-            .key(key)
-            .send()
-            .await
-            .map_err(|err| StorageError::Unavailable(format!("cold delete {key}: {err}")))?;
+        super::erase::purge_exact_key(client, self.store.bucket(), key).await?;
         Ok(())
     }
 }

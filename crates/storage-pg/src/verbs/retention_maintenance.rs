@@ -104,6 +104,73 @@ pub struct ChangeEventPruneOutcome {
     pub dry_run: bool,
 }
 
+/// Options for one bounded retry of exact object-store purge debts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ColdPurgeRetryOptions {
+    pub batch_size: i64,
+    pub dry_run: bool,
+}
+
+/// Outcome of one bounded cold-object purge retry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ColdPurgeRetryOutcome {
+    pub selected: u64,
+    pub purged: u64,
+    pub failed: u64,
+    pub remaining: u64,
+    pub dry_run: bool,
+}
+
+/// Retry a stable, bounded batch of durable exact-key purge debts.
+pub(crate) async fn retry_cold_object_purges(
+    pool: &PgPool,
+    cold: &dyn ColdObjectStore,
+    options: ColdPurgeRetryOptions,
+) -> Result<ColdPurgeRetryOutcome, StorageError> {
+    if options.batch_size < 1 {
+        return Err(StorageError::ConstraintViolation(
+            "cold purge retry batch_size must be positive".into(),
+        ));
+    }
+    let object_keys: Vec<String> = sqlx::query_scalar(
+        "SELECT object_key
+           FROM proxima_core.cold_purge_pending
+          ORDER BY enqueued_at, object_key
+          LIMIT $1",
+    )
+    .bind(options.batch_size)
+    .fetch_all(pool)
+    .await
+    .map_err(map_err)?;
+    let selected = u64::try_from(object_keys.len()).unwrap_or(u64::MAX);
+    if options.dry_run {
+        return Ok(ColdPurgeRetryOutcome {
+            selected,
+            remaining: pending_cold_purge_count(pool).await?,
+            dry_run: true,
+            ..ColdPurgeRetryOutcome::default()
+        });
+    }
+    let plan = crate::verbs::forget::ColdPurgePlan::from_keys(object_keys);
+    let purge = crate::verbs::forget::purge_cold_objects_after_commit(pool, cold, &plan).await;
+    Ok(ColdPurgeRetryOutcome {
+        selected,
+        purged: purge.purged,
+        failed: purge.failed,
+        remaining: pending_cold_purge_count(pool).await?,
+        dry_run: false,
+    })
+}
+
+async fn pending_cold_purge_count(pool: &PgPool) -> Result<u64, StorageError> {
+    let count: i64 =
+        sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_core.cold_purge_pending")
+            .fetch_one(pool)
+            .await
+            .map_err(map_err)?;
+    Ok(count.unsigned_abs())
+}
+
 pub(crate) async fn enforce_fact_retention(
     pool: &PgPool,
     sidecars: &PgSidecarRegistryFrozen,
