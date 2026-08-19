@@ -84,8 +84,6 @@ impl From<EmbeddingJobClaimRow> for EmbeddingJobClaim {
             entity_kind,
             entity_id: MemoryId::new(row.entity_id),
             model_id: row.model_id,
-            embedding_version: 1,
-            attempts: 0,
             claim_token: row.claim_token,
         }
     }
@@ -620,6 +618,30 @@ mod tests {
         );
         assert!(!CLAIM_EMBEDDING_JOBS_SQL.contains("ANY("));
         assert!(!CLAIM_EMBEDDING_JOBS_SQL.contains("$3"));
+    }
+
+    #[test]
+    fn job_claim_shape_tracks_durable_claim_state() {
+        let claim = EmbeddingJobClaim {
+            job_id: uuid::Uuid::from_u128(2),
+            owner: Owner::world(),
+            entity_kind: EntityKind::Fact,
+            entity_id: MemoryId::new(uuid::Uuid::from_u128(3)),
+            model_id: "model".into(),
+            claim_token: uuid::Uuid::from_u128(4),
+        };
+        assert_eq!(claim.model_id, "model");
+
+        let migration = include_str!("../../../migrations/0001_v008.sql");
+        let job_table = migration
+            .split_once("CREATE TABLE proxima_core.embedding_jobs (")
+            .expect("v0.0.8 migration defines embedding_jobs")
+            .1
+            .split_once("\n);")
+            .expect("embedding_jobs definition is closed")
+            .0;
+        assert!(!job_table.contains("embedding_version"));
+        assert!(!job_table.contains("attempts"));
     }
 
     const CLAIM_GOLDEN: &str = r"WITH claimed AS (

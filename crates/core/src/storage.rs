@@ -415,7 +415,5 @@ pub struct EmbeddingJobClaim {
     pub entity_kind: EntityKind,
     pub entity_id: MemoryId,
     pub model_id: String,
-    pub embedding_version: i32,
-    pub attempts: i32,
     pub claim_token: Uuid,
 }
