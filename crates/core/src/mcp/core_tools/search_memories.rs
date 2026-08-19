@@ -968,7 +968,7 @@ mod tests {
     #[test]
     fn semantic_unavailable_message_is_provider_neutral() {
         assert!(
-            !SEMANTIC_SEARCH_UNAVAILABLE.contains("MISTRAL"),
+            !SEMANTIC_SEARCH_UNAVAILABLE.contains("_API_KEY"),
             "the actionable message must not hardcode a provider env var: {SEMANTIC_SEARCH_UNAVAILABLE}",
         );
         assert!(SEMANTIC_SEARCH_UNAVAILABLE.contains("no embedding client is configured"));

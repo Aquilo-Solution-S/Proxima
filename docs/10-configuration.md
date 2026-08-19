@@ -59,13 +59,11 @@ Proxima::<App>::app()
 | `PROXIMA_ALLOWED_HOSTS` | Comma-separated inbound `Host` allowlist (hostnames or `host:port`, no wildcards) for the listener-wide DNS-rebinding guard; defaults to the host of `PROXIMA_PUBLIC_URL` + the allowed origins. Loopback always permitted. |
 | `PROXIMA_STREAM_MAX_LIFETIME` | Max lifetime (seconds) of an authenticated MCP (Streamable HTTP) response stream before re-validation. |
 | `PROXIMA_STREAM_EPOCH_INTERVAL` | Auth-epoch re-check interval (seconds) for an open MCP response stream. |
-| `PROXIMA_EMBED_BASE_URL` | OpenAI-compatible `/embeddings` base URL. Setting it alone enables embeddings — a loopback endpoint needs no key. |
+| `PROXIMA_EMBED_BASE_URL` | OpenAI-compatible `/embeddings` base URL. Required with `PROXIMA_EMBED_MODEL` to enable embeddings. |
 | `PROXIMA_EMBED_API_KEY` | Optional bearer for a hosted embedding endpoint. |
-| `PROXIMA_EMBED_MODEL` | Embedding model id; defaults to `mistral-embed`. |
+| `PROXIMA_EMBED_MODEL` | Embedding model id. Required with `PROXIMA_EMBED_BASE_URL` to enable embeddings. |
 | `PROXIMA_EMBED_MATRYOSHKA` | Send a `dimensions` request parameter for nested-prefix models. Default `false`. |
 | `PROXIMA_EMBED_MAX_INPUT_CHARS` | Longest input, in characters, the client will send. Unset (default) sends every input and lets the provider judge it. Set this when the provider does not reject over-long input cleanly — see below. Minimum 4095. |
-| `MISTRAL_API_KEY` | Alias for `PROXIMA_EMBED_API_KEY`. |
-| `MISTRAL_API_BASE` | Alias for `PROXIMA_EMBED_BASE_URL`; defaults to `https://api.mistral.ai/v1` when only a key is set. |
 | `PROXIMA_REST_ENABLED` | Serve the `/v1` REST rendering of the tool manifest beside `/mcp` (see [17](17-rest-surface.md)). Default `false`; requires the `rest` cargo feature at build time. |
 | `PROXIMA_TOOL_PROFILE` | `proxima-mcp` deployment tool profile: `memory` (default, fail-closed) or `full` (opt-in). |
 | `PROXIMA_TOOL_ALLOW` | Optional comma-separated canonical scope keys unioned into the resolved profile. |
@@ -180,19 +178,16 @@ require re-embedding. Re-embedding appends a new version and advances
 injected, semantic search modes are unavailable; lexical paths still work.
 
 `apps/proxima-mcp` talks to any OpenAI-compatible `/embeddings` endpoint.
-Either a base URL or a key enables the client — a locally-hosted endpoint
-(Ollama, llama.cpp, LM Studio, vLLM) needs only the base URL, so a fully
-local deployment never has to invent a fake credential:
+Base URL and model are explicit; a locally-hosted endpoint (Ollama,
+llama.cpp, LM Studio, vLLM) needs no credential:
 
 | Env var | Required | Default | Meaning |
 |---|---:|---|---|
-| `PROXIMA_EMBED_BASE_URL` | one of these two | `https://api.mistral.ai/v1` when only a key is set | OpenAI-compatible embeddings API base. Plaintext `http://` is accepted for loopback only. |
-| `PROXIMA_EMBED_API_KEY` | one of these two | - | Bearer for a hosted endpoint. Omit for a local one. |
-| `PROXIMA_EMBED_MODEL` | no | `mistral-embed` | Model id sent to `/embeddings`. |
+| `PROXIMA_EMBED_BASE_URL` | when embeddings enabled | - | OpenAI-compatible embeddings API base. Plaintext `http://` is accepted for loopback only. |
+| `PROXIMA_EMBED_MODEL` | when embeddings enabled | - | Model id sent to `/embeddings`. |
+| `PROXIMA_EMBED_API_KEY` | no | - | Bearer for a hosted endpoint. Omit for a local one. |
 | `PROXIMA_EMBED_MATRYOSHKA` | no | `false` | Send a `dimensions` parameter so a nested-prefix model returns 1024 rather than its native width. |
 | `PROXIMA_EMBED_MAX_INPUT_CHARS` | no | - | Longest input, in characters, that will be sent. Unset ⇒ no client-side bound. Minimum `4095`. |
-| `MISTRAL_API_KEY` | no | - | Alias for `PROXIMA_EMBED_API_KEY`. |
-| `MISTRAL_API_BASE` | no | - | Alias for `PROXIMA_EMBED_BASE_URL`. |
 
 <a id="bounding-embedding-input"></a>
 ### Bounding embedding input
@@ -228,8 +223,8 @@ loaded at 16k tokens, `16384` characters is comfortably conservative.
 
 The model must return **1024-dimensional** vectors — the width of the
 `vector(1024)` column that is the substrate's single embedding space.
-`mistral-embed`, `qwen3-embedding:0.6b`, and `mxbai-embed-large` are all
-1024 natively. A wider Matryoshka model needs
+`qwen3-embedding:0.6b` and `mxbai-embed-large` are 1024 natively. A wider
+Matryoshka model needs
 `PROXIMA_EMBED_MATRYOSHKA=true`; a model that is natively narrower cannot
 be used without re-embedding into a different space.
 
@@ -240,11 +235,12 @@ export PROXIMA_EMBED_BASE_URL=http://127.0.0.1:11434/v1
 export PROXIMA_EMBED_MODEL=qwen3-embedding:0.6b
 ```
 
-When neither a base URL nor a key is set, `proxima-mcp` starts in degraded mode:
-no embedding client is installed,
+When no `PROXIMA_EMBED_*` setting is set, `proxima-mcp` starts in degraded
+mode: no embedding client is installed,
 `proxima://graph.embeddings_client_configured` is `false`,
 semantic/hybrid search reports the missing capability, and lexical-only
-paths remain available. When a client is configured, `proxima-mcp`
+paths remain available. A partial block fails at boot: base URL and model
+must be set together. When a client is configured, `proxima-mcp`
 drains queued embedding jobs automatically in-process every few seconds;
 no external drain cron is required. At startup with a client configured,
 the worker also runs one `missing-only` reconcile pass before its first
@@ -310,8 +306,9 @@ succeeded and the news is bad.
 Passes are serialized by a Postgres advisory lock: an invocation that
 finds the lock held prints a skip notice and exits `0`, so overlapping
 cron fires are harmless by construction. `--drain` processes queued jobs
-inline with the same Mistral client and therefore requires
-`MISTRAL_API_KEY`; it is not required for steady-state draining.
+inline with the configured embedding client and therefore requires the same
+`PROXIMA_EMBED_BASE_URL` + `PROXIMA_EMBED_MODEL` block; the API key remains
+optional.
 
 Retention maintenance follows the same doctrine — one idempotent,
 cron-safe command, serialized by its own advisory lock, with no

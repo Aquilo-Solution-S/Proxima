@@ -57,10 +57,8 @@ pub use proxima_core::error::ProtocolError;
 pub use proxima_core::llm;
 /// [`EmbedCaps`] is the second parameter of
 /// [`OpenAiCompatEmbeddingClient::new`], so without it on the facade that
-/// constructor is unspellable and `mistral()` is the only embedding client
-/// a host depending on `proxima` alone can build. That rules out every
-/// other OpenAI-compatible endpoint — a local Ollama, a self-hosted
-/// inference server, any provider needing `matryoshka` to return
+/// constructor is unspellable for a host depending on `proxima` alone. That
+/// rules out OpenAI-compatible endpoints needing `matryoshka` to return
 /// [`llm::EMBEDDING_DIM`] rather than its native width.
 pub use proxima_core::models::EmbedCaps;
 /// Cited-blob verified-read and reconciliation surfaces.
@@ -144,9 +142,7 @@ pub use proxima_core::{
     UPLOADED_BLOB_PAGE_SPAN_SCHEMA_ID, UPLOADED_BLOB_SCHEMA_ID, UPLOADED_BLOB_WHOLE_SCHEMA_ID,
 };
 #[cfg(feature = "openai-compat-embed")]
-pub use proxima_llm_openai_compat::{
-    MISTRAL_EMBED_BASE_URL, MISTRAL_EMBED_MODEL, OpenAiCompatConfig, OpenAiCompatEmbeddingClient,
-};
+pub use proxima_llm_openai_compat::{OpenAiCompatConfig, OpenAiCompatEmbeddingClient};
 pub use proxima_mcp_server::selfdoc::{build_instructions, how_to_markdown};
 pub use proxima_mcp_server::{HostAllowlist, McpAuthContext, ResourceServerMetadata};
 #[cfg(feature = "testkit")]

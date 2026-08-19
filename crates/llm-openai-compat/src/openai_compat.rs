@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use async_trait::async_trait;
-use proxima_core::llm::{EMBEDDING_DIM, EmbeddingClient, LlmError, MIN_EMBED_INPUT_CAP_CHARS};
+use proxima_core::llm::{EmbeddingClient, LlmError, MIN_EMBED_INPUT_CAP_CHARS};
 use proxima_core::models::EmbedCaps;
 use serde::{Deserialize, Serialize};
 
@@ -10,9 +10,6 @@ use crate::{build_client, ensure_secure_base_url, join_endpoint};
 // =====================================================================
 // OpenAI-compatible embedding client — /embeddings
 // =====================================================================
-
-pub const MISTRAL_EMBED_BASE_URL: &str = "https://api.mistral.ai/v1";
-pub const MISTRAL_EMBED_MODEL: &str = "mistral-embed";
 
 /// Default per-request timeout for `/embeddings` calls. Deliberately far
 /// shorter than a text-generation timeout: a single embedding is a small,
@@ -119,25 +116,6 @@ impl OpenAiCompatEmbeddingClient {
             model_id: model_id.into(),
             caps,
         })
-    }
-
-    /// Construct a Mistral `/embeddings` client using the OpenAI-compatible
-    /// request/response shape.
-    ///
-    /// # Errors
-    /// Returns `LlmError::Internal` if the HTTP client cannot be built.
-    pub fn mistral(
-        bearer_token: impl Into<String>,
-        model_id: impl Into<String>,
-        base_url: impl Into<String>,
-    ) -> Result<Self, LlmError> {
-        let dim = u32::try_from(EMBEDDING_DIM)
-            .map_err(|_| LlmError::Internal("EMBEDDING_DIM does not fit u32".into()))?;
-        Self::new(
-            model_id,
-            EmbedCaps::new(dim, false),
-            OpenAiCompatConfig::new(base_url, Some(bearer_token.into())),
-        )
     }
 }
 
@@ -482,14 +460,14 @@ mod tests {
     #[test]
     fn config_debug_redacts_bearer_token() {
         let cfg = super::OpenAiCompatConfig::new(
-            "https://api.mistral.ai/v1",
+            "https://embeddings.example/v1",
             Some("sk-supersecret".into()),
         );
         let debug = format!("{cfg:?}");
         assert!(debug.contains("<redacted>"));
         assert!(!debug.contains("sk-supersecret"));
         // Non-secret fields stay visible for diagnostics.
-        assert!(debug.contains("api.mistral.ai"));
+        assert!(debug.contains("embeddings.example"));
     }
 
     #[test]
@@ -502,10 +480,13 @@ mod tests {
 
     #[test]
     fn client_debug_inherits_bearer_redaction() {
-        let client = super::OpenAiCompatEmbeddingClient::mistral(
-            "sk-topsecret",
-            super::MISTRAL_EMBED_MODEL,
-            super::MISTRAL_EMBED_BASE_URL,
+        let client = super::OpenAiCompatEmbeddingClient::new(
+            "test-embed",
+            probe_caps(),
+            super::OpenAiCompatConfig::new(
+                "https://embeddings.example/v1",
+                Some("sk-topsecret".into()),
+            ),
         )
         .expect("client builds");
         let debug = format!("{client:?}");
@@ -516,19 +497,15 @@ mod tests {
     #[test]
     fn client_rejects_plaintext_non_loopback_base_url() {
         let cfg = super::OpenAiCompatConfig::new("HTTP://api.example.com/v1", Some("t".into()));
-        let err =
-            super::OpenAiCompatEmbeddingClient::new(super::MISTRAL_EMBED_MODEL, probe_caps(), cfg)
-                .expect_err("plaintext remote base must be rejected");
+        let err = super::OpenAiCompatEmbeddingClient::new("test-embed", probe_caps(), cfg)
+            .expect_err("plaintext remote base must be rejected");
         assert!(matches!(err, LlmError::Internal(_)));
     }
 
     #[test]
     fn client_allows_https_remote_base_url() {
-        let cfg = super::OpenAiCompatConfig::new(super::MISTRAL_EMBED_BASE_URL, Some("t".into()));
-        assert!(
-            super::OpenAiCompatEmbeddingClient::new(super::MISTRAL_EMBED_MODEL, probe_caps(), cfg)
-                .is_ok()
-        );
+        let cfg = super::OpenAiCompatConfig::new("https://embeddings.example/v1", Some("t".into()));
+        assert!(super::OpenAiCompatEmbeddingClient::new("test-embed", probe_caps(), cfg).is_ok());
     }
 
     #[test]
@@ -541,12 +518,7 @@ mod tests {
         ] {
             let cfg = super::OpenAiCompatConfig::new(base, None);
             assert!(
-                super::OpenAiCompatEmbeddingClient::new(
-                    super::MISTRAL_EMBED_MODEL,
-                    probe_caps(),
-                    cfg
-                )
-                .is_ok(),
+                super::OpenAiCompatEmbeddingClient::new("test-embed", probe_caps(), cfg).is_ok(),
                 "loopback base {base} must be allowed"
             );
         }
@@ -627,7 +599,7 @@ mod tests {
         // batch width of one request is what divides request-rate-limit
         // pressure, so the wire shape is load-bearing.
         let body = super::EmbedRequest {
-            model: "mistral-embed",
+            model: "test-embed",
             input: &["first text", "second text"],
             dimensions: None,
         };
@@ -635,28 +607,9 @@ mod tests {
         assert_eq!(
             json,
             serde_json::json!({
-                "model": "mistral-embed",
+                "model": "test-embed",
                 "input": ["first text", "second text"],
             })
         );
-    }
-
-    #[test]
-    fn mistral_preset_uses_core_embedding_space_without_matryoshka() {
-        let client = super::OpenAiCompatEmbeddingClient::mistral(
-            "secret",
-            super::MISTRAL_EMBED_MODEL,
-            super::MISTRAL_EMBED_BASE_URL,
-        )
-        .expect("client builds");
-
-        assert_eq!(client.model_id, super::MISTRAL_EMBED_MODEL);
-        assert_eq!(client.config.base_url, super::MISTRAL_EMBED_BASE_URL);
-        assert_eq!(client.config.bearer_token.as_deref(), Some("secret"));
-        assert_eq!(
-            client.caps.dim,
-            u32::try_from(proxima_core::llm::EMBEDDING_DIM).expect("EMBEDDING_DIM fits u32")
-        );
-        assert!(!client.caps.matryoshka);
     }
 }
