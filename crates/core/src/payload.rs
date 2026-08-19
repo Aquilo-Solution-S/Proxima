@@ -618,8 +618,9 @@ pub trait FactPayload:
     fn natural_key_columns() -> &'static [&'static str] {
         &[]
     }
-    /// Optional discriminator for stateful Fact deletion observations.
-    /// Storage uses this build-time metadata for `PresentOnly` queries.
+    /// Optional catalog discriminator for stateful Fact deletion observations.
+    /// The deletion observation remains the current hot head; core Query does
+    /// not filter it.
     #[must_use]
     fn tombstone() -> Option<FactTombstone> {
         None

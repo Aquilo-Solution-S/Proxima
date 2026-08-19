@@ -163,11 +163,8 @@ impl McpTool for InterpretTool {
                         operator_kind: crate::MemoryOperatorKind::AtoP,
                         operator_id: interpret_operator_id(),
                         input_contract_id: interpret_input_contract_id(),
-                        source_batch_id: None,
                         model_id: &model_id,
-                        prompt_version: "mcp-agent-v1",
                         sidecar_payload: SidecarPayload::perspective(payload),
-                        authoring_perspective_id: ctx.caller_self_perspective,
                         // An interpretation consumes nothing. It grounds
                         // through the references its payload carries, so
                         // it declares no derivation and writes no

@@ -153,13 +153,13 @@ Self is a query over existing rows:
 ```
 Self(perspective_id, read_owners)
   readable Perspective selector
-  active Goal heads whose `assignment_perspective_id` names it
+  active Goal heads whose `assignment_t` names it
 ```
 
 Wake is Goal-owned config:
 
 ```
-Goal.wake = none | some WakeConfig
+Goal.wake_id = none | some WakeId
 WakeConfig.toolset subset-of actor ToolScope intersect deployment profile
 ```
 
@@ -207,9 +207,9 @@ Core owns:
 | Surface | Core contract |
 |---|---|
 | Entity | Goal identity and 4-state lifecycle (`Active`, `Paused`, `Achieved`, `Abandoned`) |
-| Verb | `GoalWrite` create / supersede semantics |
+| Verb | `GoalWrite` create / later-`t` head advancement |
 | Query | active-goal heads and assignment traversal |
-| Topology | `assignment_perspective_id`, `dependency_goal_ids`, `evidence_memory_ids` on the Goal row; the index entries are derived from them |
+| Topology | `assignment_t`, `dependency_t`, `evidence_t` on the Goal row; index entries are derived from them |
 | Payloads | core `GoalPayload` schemas |
 | Tools | `core_goal` action dispatcher: `set`, `transition`, `mark_achieved`, `modify`, `decompose` |
 

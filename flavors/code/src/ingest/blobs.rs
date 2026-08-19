@@ -33,8 +33,6 @@ const CODE_SLICE_OPERATOR_MODEL: &str = "proxima-code/local-git-source";
 /// after a chunker change is `proxima-code_erase_repo` plus a fresh
 /// register.
 const CODE_SLICE_IDENTITY: &[u8] = b"proxima-code/code-slice:local-git-file-facts-v3";
-const CODE_SLICE_PROMPT_VERSION: &str = "code-slice-v3";
-
 const CODE_SLICE_NAMESPACE: uuid::Uuid = uuid::Uuid::from_bytes([
     0x8d, 0xb6, 0x89, 0x67, 0x17, 0x34, 0x44, 0x11, 0xaa, 0xe6, 0x68, 0xef, 0x6c, 0x2a, 0x31, 0x8d,
 ]);
@@ -279,15 +277,13 @@ pub async fn ingest_file_revision(
 /// instead of minting new ones.
 ///
 /// Chunking is deterministic F→A operator work over file/blob Facts;
-/// callers must materialize all batch Facts and close `source_batch_id`
-/// before invoking this helper. This helper deliberately does not write
-/// an event, source batch, or Fact citation.
-#[allow(clippy::too_many_arguments)]
+/// callers must materialize all batch Facts before invoking this helper.
+/// This helper deliberately does not write an event, source batch, or
+/// Fact citation.
 pub async fn append_code_slices(
     engine: &Engine,
     authz: &AuthzContext,
     owner: Owner,
-    source_batch_id: SourceBatchId,
     store: &CodeFlavorStore,
     payloads: &[CodeChunkV1],
     source_file_revision: MemoryId,
@@ -298,7 +294,6 @@ pub async fn append_code_slices(
         engine,
         authz,
         owner,
-        source_batch_id,
         payloads,
         source_file_revision,
         source_commit,
@@ -309,12 +304,10 @@ pub async fn append_code_slices(
 
 /// [`append_code_slices`] when the caller already resolved series handles
 /// (intra-file call naming).
-#[allow(clippy::too_many_arguments)]
 pub async fn append_code_slices_with_handles(
     engine: &Engine,
     authz: &AuthzContext,
     owner: Owner,
-    source_batch_id: SourceBatchId,
     payloads: &[CodeChunkV1],
     source_file_revision: MemoryId,
     source_commit: Option<MemoryId>,
@@ -348,11 +341,8 @@ pub async fn append_code_slices_with_handles(
             operator_kind: MemoryOperatorKind::FtoA,
             operator_id: code_slice_operator_id(),
             input_contract_id: code_slice_input_contract_id(payload, source_file_revision),
-            source_batch_id: Some(source_batch_id),
             model_id: CODE_SLICE_OPERATOR_MODEL,
-            prompt_version: CODE_SLICE_PROMPT_VERSION,
             sidecar_payload: SidecarPayload::abstraction(payload.clone()),
-            authoring_perspective_id: None,
             derived_from: &origins,
             extra_refs: &[],
             supersedes: None,
@@ -366,12 +356,10 @@ pub async fn append_code_slices_with_handles(
 
 /// One code slice, on its own. The tombstone path writes a single chunk that
 /// declares no calls, so it needs no group.
-#[allow(clippy::too_many_arguments)]
 pub async fn append_code_slice(
     engine: &Engine,
     authz: &AuthzContext,
     owner: Owner,
-    source_batch_id: SourceBatchId,
     payload: &CodeChunkV1,
     source_file_revision: MemoryId,
     source_commit: Option<MemoryId>,
@@ -390,7 +378,6 @@ pub async fn append_code_slice(
         engine,
         authz,
         owner,
-        source_batch_id,
         std::slice::from_ref(payload),
         source_file_revision,
         source_commit,

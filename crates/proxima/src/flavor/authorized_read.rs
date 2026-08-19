@@ -14,7 +14,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use proxima_core::verbs::query::{EntityKind, QueryRequest, SupersessionStatus, TombstoneFilter};
+use proxima_core::verbs::query::{EntityKind, QueryRequest, SupersessionStatus};
 use proxima_core::{
     AbstractionPayload, AuthzContext, Engine, FactPayload, MemoryId, Owner, SchemaId,
     SidecarPayload, ToolError,
@@ -25,7 +25,7 @@ use proxima_core::{
 const MAX_AUTHZ_CANDIDATES: usize = 2_000;
 
 /// Narrow `candidates` to the ids visible to `authz` for `owner`, optionally
-/// restricted to one `entity_kind`/`schema_id`. Heads-only, present-only,
+/// restricted to one `entity_kind`/`schema_id`. Heads-only,
 /// same ordering-agnostic contract as the other helpers in this module.
 ///
 /// # Errors
@@ -51,7 +51,6 @@ pub async fn authorized_memory_ids(
     req.entity_kind = Some(entity_kind);
     req.schema_id = schema_id;
     req.supersession = SupersessionStatus::HeadsOnly;
-    req.tombstones = TombstoneFilter::PresentOnly;
     req.limit = u32::try_from(candidates.len()).unwrap_or(u32::MAX);
     req.include_payloads = false;
     req.memory_ids = candidates.iter().copied().map(MemoryId::new).collect();
@@ -71,9 +70,10 @@ pub async fn authorized_memory_ids(
         .collect())
 }
 
-/// Authorized, typed Fact payload fetch (present-only) for a candidate id
-/// list. See [`authorized_fact_payloads_include_tombstones`] to also
-/// surface tombstoned heads.
+/// Authorized, typed Fact payload fetch for a candidate id list.
+///
+/// Reads return the current hot head. A flavor-defined tombstone payload is
+/// itself a hot head and remains observable; it is not a core query state.
 ///
 /// # Errors
 ///
@@ -89,57 +89,6 @@ pub async fn authorized_fact_payloads<P>(
 where
     P: FactPayload + Clone,
 {
-    authorized_fact_payloads_with_tombstone_filter::<P>(
-        engine,
-        authz,
-        owner,
-        candidates,
-        TombstoneFilter::PresentOnly,
-        limit,
-    )
-    .await
-}
-
-/// Authorized, typed Fact payload fetch that also surfaces tombstoned
-/// heads (a caller-visible "this file was deleted" state, distinct from
-/// entity-level GDPR tombstoning).
-///
-/// # Errors
-///
-/// Returns whatever [`Engine::query`] returns for an unauthorized owner or
-/// storage failure.
-pub async fn authorized_fact_payloads_include_tombstones<P>(
-    engine: &Engine,
-    authz: &AuthzContext,
-    owner: Owner,
-    candidates: &[uuid::Uuid],
-    limit: usize,
-) -> Result<Vec<(MemoryId, P)>, ToolError>
-where
-    P: FactPayload + Clone,
-{
-    authorized_fact_payloads_with_tombstone_filter::<P>(
-        engine,
-        authz,
-        owner,
-        candidates,
-        TombstoneFilter::IncludeTombstoned,
-        limit,
-    )
-    .await
-}
-
-async fn authorized_fact_payloads_with_tombstone_filter<P>(
-    engine: &Engine,
-    authz: &AuthzContext,
-    owner: Owner,
-    candidates: &[uuid::Uuid],
-    tombstones: TombstoneFilter,
-    limit: usize,
-) -> Result<Vec<(MemoryId, P)>, ToolError>
-where
-    P: FactPayload + Clone,
-{
     let payloads = authorized_payloads(
         engine,
         authz,
@@ -148,7 +97,6 @@ where
         EntityKind::Fact,
         P::schema_id(),
         SupersessionStatus::HeadsOnly,
-        tombstones,
         limit,
     )
     .await?;
@@ -158,8 +106,7 @@ where
         .collect())
 }
 
-/// Authorized, typed Abstraction payload fetch (present-only) for a
-/// candidate id list.
+/// Authorized, typed Abstraction payload fetch for a candidate id list.
 ///
 /// `SupersessionStatus::HeadsOnly` is the chunk admit: ingest keeps one
 /// handle per `(owner, repo, path, index)`, so `memory_head.t` is the
@@ -187,7 +134,6 @@ where
         EntityKind::Abstraction,
         P::schema_id(),
         SupersessionStatus::HeadsOnly,
-        TombstoneFilter::PresentOnly,
         limit,
     )
     .await?;
@@ -206,7 +152,6 @@ async fn authorized_payloads(
     entity_kind: EntityKind,
     schema_id: SchemaId,
     supersession: SupersessionStatus,
-    tombstones: TombstoneFilter,
     limit: usize,
 ) -> Result<Vec<(MemoryId, SidecarPayload)>, ToolError> {
     let candidates = bounded_candidates(candidates, limit);
@@ -218,7 +163,6 @@ async fn authorized_payloads(
     req.entity_kind = Some(entity_kind);
     req.schema_id = Some(schema_id);
     req.supersession = supersession;
-    req.tombstones = tombstones;
     req.limit = u32::try_from(candidates.len()).unwrap_or(u32::MAX);
     req.include_payloads = true;
     req.memory_ids = candidates.iter().copied().map(MemoryId::new).collect();

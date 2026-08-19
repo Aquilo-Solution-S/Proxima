@@ -19,7 +19,6 @@ pub mod forget;
 pub mod goal_timeseries;
 pub(crate) mod goal_wake_candidates;
 pub(crate) mod goal_write;
-pub(crate) mod lexical_language;
 pub(crate) mod mcp_call_history;
 pub mod memory_timeseries;
 pub mod persist_mcp_call;

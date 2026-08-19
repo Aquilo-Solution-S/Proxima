@@ -594,12 +594,10 @@ impl LocalGitSource {
         }
         crate::ingest::close_local_git_batch(pool, &permit, batch_id).await?;
         for pending in pending_present {
-            self.derive_present_blob(ctx, batch_id, pending, &mut report)
-                .await?;
+            self.derive_present_blob(ctx, pending, &mut report).await?;
         }
         for pending in pending_deleted {
-            self.derive_deleted_path(ctx, batch_id, pending, &mut report)
-                .await?;
+            self.derive_deleted_path(ctx, pending, &mut report).await?;
         }
         Ok(report)
     }
@@ -716,12 +714,10 @@ impl LocalGitSource {
         // Close this commit's batch before any F→A derivation consumes it.
         crate::ingest::close_local_git_batch(pool, &permit, batch_id).await?;
         for pending in pending_present {
-            self.derive_present_blob(ctx, batch_id, pending, report)
-                .await?;
+            self.derive_present_blob(ctx, pending, report).await?;
         }
         for pending in pending_deleted {
-            self.derive_deleted_path(ctx, batch_id, pending, report)
-                .await?;
+            self.derive_deleted_path(ctx, pending, report).await?;
         }
         Ok(())
     }
@@ -898,7 +894,6 @@ impl LocalGitSource {
     async fn derive_present_blob(
         &self,
         ctx: &CodeIngestContext<'_>,
-        batch_id: SourceBatchId,
         pending: PendingPresentBlob,
         report: &mut IndexReport,
     ) -> Result<(), IndexError> {
@@ -955,7 +950,6 @@ impl LocalGitSource {
                 ctx.engine,
                 ctx.authz,
                 self.owner,
-                batch_id,
                 &tomb_payloads,
                 pending.file_revision,
                 pending.source_commit,
@@ -1070,7 +1064,6 @@ impl LocalGitSource {
             ctx.engine,
             ctx.authz,
             self.owner,
-            batch_id,
             &payloads,
             pending.file_revision,
             pending.source_commit,
@@ -1123,7 +1116,6 @@ impl LocalGitSource {
     async fn derive_deleted_path(
         &self,
         ctx: &CodeIngestContext<'_>,
-        batch_id: SourceBatchId,
         pending: PendingDeletedPath,
         report: &mut IndexReport,
     ) -> Result<(), IndexError> {
@@ -1150,7 +1142,6 @@ impl LocalGitSource {
                 ctx.engine,
                 ctx.authz,
                 self.owner,
-                batch_id,
                 &tomb_payloads,
                 pending.file_revision,
                 pending.source_commit,

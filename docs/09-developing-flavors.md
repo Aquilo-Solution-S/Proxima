@@ -112,9 +112,9 @@ Rules:
 | Payload kind | Required key/text |
 |---|---|
 | Fact | `receipt_key()` + `render()` |
-| Abstraction | immutable `text` on memory row + typed sidecar |
-| Perspective | immutable `text` on memory row + typed sidecar |
-| Goal | `goal_key()`; title/text live on `goals` |
+| Abstraction | typed sidecar; authored text feeds embedding/search, not a Memory column |
+| Perspective | typed sidecar; authored text feeds embedding/search, not a Memory column |
+| Goal | `goal_key()`; title on Goal version; schema-specific sidecar optional |
 
 No `serde_json::Value` payload fields. No generic canonical payload
 encoder. Keys are schema-owned semantic identity bytes, built with
@@ -190,7 +190,7 @@ Embedded hosts create product-authored Goals through
 `Engine::create_goal(GoalCreateRequest::product(...))`. The helper calls
 `GoalPayload::goal_key()`, validates the registered Goal schema, applies
 the stable request id, and records the Self assignment on the Goal row
-(`assignment_perspective_id`), from which the index entry follows; host apps
+(`assignment_t`), from which the index entry follows; host apps
 do not insert `proxima_core.goal` rows directly.
 
 Include `SCHEMA_ID` and `SCHEMA_VERSION` through `PayloadKeyBuilder::new`.
@@ -467,7 +467,8 @@ pool private.
 Stateful Fact ingest resolves the series handle from
 `FactPayload::natural_key_columns()` when `handle` is unset. A/P series
 continuity is `Engine::owned_series_handle` (one NK, owner-only) or
-`supersedes`. A file's chunk series are listed together
+the prior-`t` selector named `supersedes` on the authoring request. A file's
+chunk series are listed together
 (`CodeFlavorStore::owned_chunk_series_heads` — same family as
 file-revision heads). Flavor `src/` does not JOIN `proxima_core.memory_head`.
 Goal assignment / evidence are `GoalRow` fields; filter with
@@ -595,19 +596,18 @@ ctx.engine.author_derived_authorized(&authz, AuthorDerivedRequestInput {
     schema_version: SchemaVersion::new(MySlice::SCHEMA_VERSION),
     operator_kind: MemoryOperatorKind::FtoA,
     operator_id, input_contract_id,
-    source_batch_id: None,
     model_id: "my-flavor/slicer-v1",
-    prompt_version: "1",
     sidecar_payload: SidecarPayload::abstraction(payload),
-    authoring_perspective_id: None,
     derived_from: &derived_from,
+    extra_refs: &[],
     supersedes: None,
     lexical_language: None,
 }).await?;
 ```
 
-The outcome reports an `edge_count`, not a list of handles: an edge has no id
-to hand back, and re-running the write re-asserts the same rows.
+The outcome reports an `edge_count`, not a list of handles: pins are column
+values on the row, so re-running the write re-asserts the same values and
+there is no pin id to hand back.
 
 Four contract points that are easy to get wrong:
 
@@ -618,11 +618,10 @@ Four contract points that are easy to get wrong:
 - **Derive `memory_id` deterministically** (a UUIDv5 over the operator
   identity plus the source memory and slice index, as `flavors/code`
   does) so re-running the operator replays onto the same row instead of
-  appending a duplicate. Use `supersedes` when the new output genuinely
-  replaces an earlier one; that records the lineage pointers
-  (`supersedes` on the new row, `superseded_by` on the old one) in the same
-  transaction. Supersession is never an edge — it is the same thing
-  persisting through revision.
+  appending a duplicate. When a new output genuinely replaces an earlier
+  `t`, pass that prior `t` as `supersedes`; storage resolves its stable handle
+  and appends the new `t` to the same series. Neither row stores a lineage
+  pointer.
 - **Embedding runs before the write transaction begins.** A refused text
   is not a lost write: the memory lands with no vector and a durable
   `embedding_jobs` row enqueued in the same transaction, and the

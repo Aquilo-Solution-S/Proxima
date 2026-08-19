@@ -167,11 +167,10 @@ Snapshot read of memories and goals scoped to the server-resolved authorized Own
 | entity kind | optional |
 | schema id | optional |
 | supersession | heads-only or include superseded |
-| tombstones | present-only or include tombstoned |
 | Goal/Perspective selectors | explicit ids; selectors never authorize by themselves |
 | pagination | single-kind keyset: `limit` + `page.after` over `(created_at, id) DESC` |
 | payloads | optional typed payload projections; identity hydration by memory/goal ids |
-| stateful Facts | heads by registered natural key; tombstone heads suppress prior present rows |
+| stateful Facts | heads by registered natural key; a flavor-defined tombstone payload is the current hot head and suppresses the prior present row |
 | flavor-typed filters | design intent; advertised/validated only when implemented by a linked flavor |
 | pin walk | `origins` / `refs`; lineage is the multi-hop walk |
 
@@ -242,7 +241,7 @@ let outcome = engine
 ```
 
 Current create semantics assign every new Active Goal to an explicit
-Perspective by setting `goals.assignment_perspective_id`; one `reference`
+Perspective by setting `Goal.assignment_t`; one `reference`
 index entry is derived from it in the same transaction.
 Unassigned owner-only Goal rows are not part of the public helper.
 

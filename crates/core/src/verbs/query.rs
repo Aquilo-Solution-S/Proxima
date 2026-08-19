@@ -9,7 +9,6 @@ use crate::change_event::EntityRef;
 pub use crate::edge::EdgeTargetProjection;
 use crate::edge::{Edge, EdgeKind};
 use crate::verbs::goal_write::GoalState;
-use crate::verbs::schema::SchemaTombstone;
 use crate::{GoalId, MemoryId, Owner, OwnerRef, SchemaId, SchemaVersion, SidecarPayload};
 
 /// Re-export the canonical `EntityKind` from `change_event` so query
@@ -342,32 +341,8 @@ pub enum SupersessionStatus {
     IncludeSuperseded,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub enum TombstoneFilter {
-    PresentOnly,
-    IncludeTombstoned,
-}
-
-fn default_tombstone_filter() -> TombstoneFilter {
-    TombstoneFilter::PresentOnly
-}
-
 fn default_include_payloads() -> bool {
     true
-}
-
-/// Engine-resolved head-by-natural-key filter for stateful Fact
-/// schemas (docs/03 §Stateful Fact schemas). Populated from the
-/// schema registry when `Engine::query` sees a heads-only request
-/// against a stateful Fact schema; storage uses it to emit the
-/// per-NK head SQL. Internal — clients do not set this directly.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct StatefulHeadsFilter {
-    pub schema_id: SchemaId,
-    pub schema_version: SchemaVersion,
-    pub sidecar_table: String,
-    pub natural_key_columns: Vec<String>,
-    pub tombstone: Option<SchemaTombstone>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -399,8 +374,6 @@ pub struct QueryRequest {
     pub entity_kind: Option<EntityKind>,
     pub schema_id: Option<SchemaId>,
     pub supersession: SupersessionStatus,
-    #[serde(default = "default_tombstone_filter")]
-    pub tombstones: TombstoneFilter,
     /// Goal-stream state filter. Only meaningful with
     /// `entity_kind == Some(EntityKind::Goal)`; other streams ignore it.
     #[serde(default)]
@@ -425,11 +398,6 @@ pub struct QueryRequest {
     pub memory_ids: Vec<MemoryId>,
     #[serde(default)]
     pub goal_ids: Vec<GoalId>,
-    /// Engine-resolved metadata for stateful-Fact heads-only queries.
-    /// Skipped over the wire — clients don't set this; the engine
-    /// populates it from the schema registry before dispatch.
-    #[serde(skip)]
-    pub stateful_heads: Vec<StatefulHeadsFilter>,
 }
 
 impl QueryRequest {
@@ -443,7 +411,6 @@ impl QueryRequest {
             entity_kind: None,
             schema_id: None,
             supersession: SupersessionStatus::HeadsOnly,
-            tombstones: TombstoneFilter::PresentOnly,
             goal_state: None,
             assignment: None,
             evidence_contains: None,
@@ -452,7 +419,6 @@ impl QueryRequest {
             include_payloads: true,
             memory_ids: Vec::new(),
             goal_ids: Vec::new(),
-            stateful_heads: Vec::new(),
         }
     }
 }
@@ -489,25 +455,25 @@ impl From<&MemoryRow> for crate::PinNode {
     }
 }
 
+/// Snapshot of a Goal row. Supersession is not a field: a later `t` on
+/// the same `handle` is the revision, so there is nothing on the row to
+/// point back with.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct GoalRow {
     pub handle: uuid::Uuid,
+    /// Version `t` (also [`GoalId`]).
     pub id: GoalId,
     pub schema_id: SchemaId,
-    pub schema_version: SchemaVersion,
     pub owner: Owner,
     pub title: String,
-    pub text: String,
     pub state: GoalState,
     pub dependency_goal_ids: Vec<GoalId>,
-    pub supersedes: Option<GoalId>,
     /// Assigned Perspective (`goal.assignment_t`).
     #[serde(default)]
     pub assignment: Option<MemoryId>,
     /// Evidence pins (`goal.evidence_t`).
     #[serde(default)]
     pub evidence: Vec<MemoryId>,
-    pub payload: Vec<u8>,
 }
 
 /// Scalar bind for a sidecar-column series-handle lookup.

@@ -1,12 +1,11 @@
 use proxima_core::verbs::goal_write::GoalState;
-use proxima_core::verbs::query::{GoalRow, MemoryRow, StatefulHeadsFilter};
+use proxima_core::verbs::query::{GoalRow, MemoryRow};
 use proxima_core::{
     GoalId, MemoryId, Owner, OwnerRefKind, SchemaId, SchemaVersion, SidecarPayload, StorageError,
 };
 use sqlx::PgPool;
 
 use crate::error::map_err;
-use crate::pg_ident::PgIdent;
 
 pub(super) fn memory_row_from_db(
     r: MemoryRowDb,
@@ -36,27 +35,16 @@ pub(super) fn memory_row_from_db(
 }
 
 pub(super) fn goal_row_from_db(r: GoalRowDb) -> Result<GoalRow, StorageError> {
-    let state = r.state;
-    let schema_version = u32::try_from(r.schema_version).map_err(|_| {
-        StorageError::Internal(format!(
-            "invalid goal schema_version {} for goal {}",
-            r.schema_version, r.goal_id
-        ))
-    })?;
     Ok(GoalRow {
         handle: r.handle,
         id: GoalId::new(r.goal_id),
         schema_id: SchemaId::new(r.schema_id),
-        schema_version: SchemaVersion::new(schema_version),
         owner: owner_from_parts(r.owner_kind, r.owner_id)?,
         title: r.title,
-        text: r.text,
-        state,
+        state: r.state,
         dependency_goal_ids: r.dependency_goal_ids.into_iter().map(GoalId::new).collect(),
-        supersedes: r.supersedes.map(GoalId::new),
         assignment: r.assignment.map(MemoryId::new),
         evidence: r.evidence.into_iter().map(MemoryId::new).collect(),
-        payload: r.payload,
     })
 }
 
@@ -92,14 +80,10 @@ pub(super) struct GoalRowDb {
     pub(super) goal_id: uuid::Uuid,
     pub(super) created_at: time::OffsetDateTime,
     schema_id: String,
-    schema_version: i32,
     owner_kind: OwnerRefKind,
     owner_id: Option<uuid::Uuid>,
     title: String,
-    text: String,
     state: GoalState,
-    supersedes: Option<uuid::Uuid>,
-    payload: Vec<u8>,
     dependency_goal_ids: Vec<uuid::Uuid>,
     assignment: Option<uuid::Uuid>,
     evidence: Vec<uuid::Uuid>,
@@ -151,30 +135,4 @@ fn read_seq_high_water_sql() -> String {
 #[must_use]
 pub fn read_seq_high_water_sql_for_tests() -> String {
     read_seq_high_water_sql()
-}
-
-/// Validate identifiers from `StatefulHeadsFilter` before splicing them
-/// into SQL. The values come from build-time-registered schemas
-/// (`FactPayload::sidecar_table`, `FactPayload::natural_key_columns`)
-/// which are `&'static str` constants — author-controlled, not
-/// caller-controlled. This is a defense-in-depth check that catches
-/// typos and rejects anything that doesn't look like a postgres
-/// identifier.
-#[allow(dead_code)]
-pub(super) fn validate_stateful_filter(
-    sf: &StatefulHeadsFilter,
-) -> Result<&StatefulHeadsFilter, StorageError> {
-    PgIdent::table(&sf.sidecar_table)?;
-    if sf.natural_key_columns.is_empty() {
-        return Err(StorageError::Internal(
-            "stateful_heads with empty natural_key_columns".into(),
-        ));
-    }
-    for col in &sf.natural_key_columns {
-        PgIdent::column(col)?;
-    }
-    if let Some(tombstone) = &sf.tombstone {
-        PgIdent::column(&tombstone.column)?;
-    }
-    Ok(sf)
 }

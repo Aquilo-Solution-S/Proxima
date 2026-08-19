@@ -21,7 +21,7 @@ use proxima_core::engine::Engine;
 use proxima_core::verbs::fact_ingest::{
     Citation, CitationMappingHint, CitedObjectHint, FactReceiptDraft, FactWriteCommand,
 };
-use proxima_core::verbs::query::{QueryRequest, SupersessionStatus, TombstoneFilter};
+use proxima_core::verbs::query::{QueryRequest, SupersessionStatus};
 use proxima_core::verbs::schema::{FlavorRegistryFrozen, PayloadKind, SchemaTombstone};
 use proxima_core::{
     AbstractionPayload, FactPayload, FlavorRegistry, Owner, OwnerRef, SchemaId, SchemaVersion,
@@ -203,15 +203,15 @@ async fn heads_only_returns_latest_per_natural_key() {
         )
         .await?;
 
-        // Heads-only query — engine populates stateful_heads from the
-        // registered NK columns on FileRevisionV1.
+        // Heads-only query. FileRevisionV1's registered NK columns put
+        // every revision of one path on one handle at ingest, so the head
+        // scan needs no per-schema filter.
         let req = QueryRequest {
             owner,
             read_owners: vec![owner],
             entity_kind: None,
             schema_id: Some(SchemaId::new(FileRevisionV1::SCHEMA_ID.into())),
             supersession: SupersessionStatus::HeadsOnly,
-            tombstones: proxima_core::verbs::query::TombstoneFilter::PresentOnly,
             goal_state: None,
             assignment: None,
             evidence_contains: None,
@@ -220,7 +220,6 @@ async fn heads_only_returns_latest_per_natural_key() {
             include_payloads: true,
             memory_ids: Vec::new(),
             goal_ids: Vec::new(),
-            stateful_heads: Vec::new(),
         };
         let resp = engine
             .query(
@@ -259,7 +258,6 @@ async fn heads_only_returns_latest_per_natural_key() {
             entity_kind: None,
             schema_id: Some(SchemaId::new(FileRevisionV1::SCHEMA_ID.into())),
             supersession: SupersessionStatus::IncludeSuperseded,
-            tombstones: proxima_core::verbs::query::TombstoneFilter::PresentOnly,
             goal_state: None,
             assignment: None,
             evidence_contains: None,
@@ -268,7 +266,6 @@ async fn heads_only_returns_latest_per_natural_key() {
             include_payloads: true,
             memory_ids: Vec::new(),
             goal_ids: Vec::new(),
-            stateful_heads: Vec::new(),
         };
         let resp_all = engine
             .query(
@@ -326,7 +323,6 @@ async fn heads_only_no_op_for_stateless_fact_schema() {
             entity_kind: None,
             schema_id: Some(SchemaId::new(CommitV1::SCHEMA_ID.into())),
             supersession: SupersessionStatus::HeadsOnly,
-            tombstones: proxima_core::verbs::query::TombstoneFilter::PresentOnly,
             goal_state: None,
             assignment: None,
             evidence_contains: None,
@@ -335,7 +331,6 @@ async fn heads_only_no_op_for_stateless_fact_schema() {
             include_payloads: true,
             memory_ids: Vec::new(),
             goal_ids: Vec::new(),
-            stateful_heads: Vec::new(),
         };
         let resp = engine
             .query(
@@ -401,7 +396,6 @@ async fn heads_only_supersedes_older_same_principal_nk_revision() {
             entity_kind: None,
             schema_id: Some(SchemaId::new(FileRevisionV1::SCHEMA_ID.into())),
             supersession: SupersessionStatus::HeadsOnly,
-            tombstones: TombstoneFilter::PresentOnly,
             goal_state: None,
             assignment: None,
             evidence_contains: None,
@@ -410,7 +404,6 @@ async fn heads_only_supersedes_older_same_principal_nk_revision() {
             include_payloads: true,
             memory_ids: Vec::new(),
             goal_ids: Vec::new(),
-            stateful_heads: Vec::new(),
         };
         let resp = engine
             .query(

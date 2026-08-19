@@ -34,8 +34,8 @@ tool definitions, source types, wake trigger kinds, and agent type
 registration.
 
 Wake config is per-Goal data written through GoalWrite and stored as
-`Goal.wake`, not an env/boot surface and not a separate runtime config
-entity. See [08](08-core-and-flavors.md), [06](06-goals-and-self.md), and
+`wake_config`, referenced by `Goal.wake_id`; it is not an env/boot surface or
+graph node. See [08](08-core-and-flavors.md), [06](06-goals-and-self.md), and
 the protocol surface [14](14-protocol-surface.md).
 
 <a id="framework-facade-host-app-boot"></a>

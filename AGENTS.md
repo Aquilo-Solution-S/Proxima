@@ -194,12 +194,11 @@ runtime checklist most likely to prevent regressions.
   write that declares NO derivation (an interpretation Perspective grounding
   through its references) declares no inputs and carries no manifest, which is
   legal and is the E4 case the kernel accommodates.
-- **Goals/Self/Wake:** Goals are structural entities. Lifecycle supersession is
-  row-local; topology/assignment/evidence are Goal row columns
-  (`dependency_goal_ids`, `assignment_perspective_id`, `evidence_memory_ids` —
-  `Goal.dependencies` / `.assignment` / `.evidence` in the kernel) from which
-  the index entries are derived. Memory supersession and authorship are row
-  columns too (`Memory.supersedes`, `Memory.authoring_perspective`). Self is a
+- **Goals/Self/Wake:** Goals are structural entities. Lifecycle advances by a
+  later `t` on the same handle; topology/assignment/evidence are Goal row
+  columns (`dependency_t`, `assignment_t`, `evidence_t`) from which the index
+  entries are derived. Memory and Goal carry neither a supersession pointer nor
+  authorship; authorship is the write-act Fact. Self is a
   cue-indexed query (`situatedSelf`), never a row and never parameterless.
   Wake is armed Goal behavior, not a separate kernel entity.
 - **Citations/compliance/embeddings:** citations are `blob_id` 0..1 on

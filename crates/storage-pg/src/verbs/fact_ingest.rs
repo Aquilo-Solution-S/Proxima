@@ -52,9 +52,6 @@ pub struct FactIngestContext<'a> {
     /// Endpoints only — the kind follows from the field, never from a
     /// caller.
     pub derived_from: &'a [EdgeEndpoint],
-    /// Perspective that emitted this Fact. A column on the row, because
-    /// "emitted by P" is known at write time and belongs to the node.
-    pub authoring_perspective_id: Option<MemoryId>,
     /// Series handle. `None` mints a new series.
     pub handle: Option<uuid::Uuid>,
 }
@@ -74,7 +71,6 @@ impl<'a> FactIngestContext<'a> {
             observed_at: time::OffsetDateTime::now_utc(),
             embedding_model_id: None,
             derived_from: &[],
-            authoring_perspective_id: None,
             handle: None,
         }
     }
@@ -99,13 +95,6 @@ impl<'a> FactIngestContext<'a> {
     #[must_use]
     pub const fn derived_from(mut self, derived_from: &'a [EdgeEndpoint]) -> Self {
         self.derived_from = derived_from;
-        self
-    }
-
-    /// Stamp the Perspective that emitted this Fact on the row.
-    #[must_use]
-    pub const fn authoring_perspective_id(mut self, memory_id: Option<MemoryId>) -> Self {
-        self.authoring_perspective_id = memory_id;
         self
     }
 
@@ -151,8 +140,7 @@ pub async fn ingest_fact_atomic(
     // Retry the whole transaction on transient deadlock/serialization.
     with_bounded_retry(move || async move {
         let mut tx = pool.begin().await.map_err(internal)?;
-        let outcome =
-            ingest_fact_command_in_tx(&mut tx, permit, draft, embedding_model_id, None).await?;
+        let outcome = ingest_fact_command_in_tx(&mut tx, permit, draft, embedding_model_id).await?;
         tx.commit().await.map_err(map_err)?;
         Ok(outcome)
     })
@@ -509,7 +497,6 @@ where
         P::sidecar_table(),
         P::natural_key_columns(),
         &references,
-        ctx.authoring_perspective_id,
         move |tx, outcome| {
             Box::pin(async move {
                 if outcome.idempotent_replay {
@@ -540,7 +527,6 @@ pub(crate) async fn ingest_fact_command_in_tx(
     permit: &OwnerWritePermit,
     draft: &FactWriteCommand,
     embedding_model_id: Option<&str>,
-    _authoring_perspective_id: Option<MemoryId>,
 ) -> Result<FactIngestOutcome, StorageError> {
     let options = IngestCoreOptions {
         embedding_model_id,
@@ -580,7 +566,6 @@ pub(crate) async fn ingest_fact_with_derived_sidecar_in_tx<F>(
     sidecar_table: Option<&str>,
     _natural_key_columns: &[&str],
     _references: &[EdgeEndpoint],
-    _authoring_perspective_id: Option<MemoryId>,
     sidecar: F,
 ) -> Result<FactIngestOutcome, StorageError>
 where

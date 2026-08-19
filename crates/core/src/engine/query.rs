@@ -33,12 +33,10 @@ impl Engine {
     /// what the caller sees (writes/admin reject a foreign owner; reads simply
     /// return the caller's accessible subset).
     ///
-    /// For heads-only requests targeting a stateful Fact schema (one
-    /// whose `FactPayload::natural_key_columns()` is non-empty), the
-    /// engine populates `QueryRequest::stateful_heads` from the
-    /// registry before dispatch. Storage emits the per-NK head SQL
-    /// when the field is `Some`; otherwise the existing
-    /// `supersedes`-based head scan applies (A/P).
+    /// Heads-only requests need no per-schema natural-key filter: a head
+    /// is the latest `t` on a `handle`, and `FactPayload`
+    /// natural-key columns already decide which `handle` an ingest lands
+    /// on (docs/03 §Stateful Fact schemas).
     ///
     /// # Errors
     ///
@@ -196,12 +194,6 @@ pub(in crate::engine) async fn query_authorized(
     validate_query_cursor(req)?;
     let mut effective = req.clone();
     effective.read_owners = read_owners.to_vec();
-    if effective.stateful_heads.is_empty() {
-        effective.stateful_heads = match effective.schema_id.as_ref() {
-            Some(sid) => registry.stateful_filters_for_schema(sid),
-            None => registry.stateful_filters(),
-        };
-    }
     ports
         .memory_read
         .query_memories(&effective, registry.list().as_slice())

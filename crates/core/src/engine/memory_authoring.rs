@@ -7,7 +7,7 @@ use crate::storage::{AuthorDerivedOutcome, AuthorDerivedRequest, DerivedEmbeddin
 use crate::storage_ports::OwnerWritePermit;
 use crate::{
     EntityId, EntityKind, InputContractId, MemoryId, MemoryOperatorKind, OperatorId, Owner,
-    PayloadReference, SchemaId, SchemaVersion, SidecarPayload, SourceBatchId,
+    PayloadReference, SchemaId, SchemaVersion, SidecarPayload,
 };
 use crate::{MemoryOutputInvocation, OperatorInvocationManifest, OutputEdgeManifest};
 
@@ -20,25 +20,23 @@ pub struct AuthorDerivedRequestInput<'a> {
     pub schema_id: SchemaId,
     pub schema_version: SchemaVersion,
     pub operator_kind: MemoryOperatorKind,
+    /// Named in the [`OperatorInvocationManifest`] this write's declared
+    /// origins prove. Not persisted — no operator table exists.
     pub operator_id: OperatorId,
+    /// Manifest input contract, same lifetime as `operator_id`.
     pub input_contract_id: InputContractId,
-    pub source_batch_id: Option<SourceBatchId>,
     pub model_id: &'a str,
-    pub prompt_version: &'a str,
     pub sidecar_payload: SidecarPayload,
-    /// Perspective that emitted this memory. Node metadata on the row,
-    /// not an edge: "emitted by P" is known at write time and belongs to
-    /// the node, so nothing has to be traversed to answer it.
-    pub authoring_perspective_id: Option<MemoryId>,
     /// What this memory was made from. Each entry becomes an `Origin`
-    /// index row sourced at this memory, written in the same transaction.
+    /// pin on this memory's own row, written in the same transaction.
     /// The writer names targets; it never names a kind.
     pub derived_from: &'a [EdgeEndpoint],
     /// Extra reference pins (write-act, visit). Merged with payload
     /// `references()`; empty for ordinary derives.
     pub extra_refs: &'a [MemoryId],
-    /// Prior A/P memory this one revises. The engine records it as a
-    /// lineage pointer on the rows — no supersession edge exists to write.
+    /// Prior `t` of the series this write revises. The engine hands it to
+    /// storage, which appends this write to the prior row's `handle` — a
+    /// later `t` on the same series is what supersession is.
     pub supersedes: Option<MemoryId>,
     /// Text-search configuration to stamp on the derived row, resolved
     /// by [`crate::lexical_language::resolve_lexical_language`]; `None`
@@ -50,9 +48,9 @@ pub struct AuthorDerivedRequestInput<'a> {
 pub struct AuthorDerivedAuthorizedOutcome {
     pub memory_id: MemoryId,
     pub idempotent_replay: bool,
-    /// Index rows asserted by this write. A count, not a list of
-    /// handles: an edge has no id to hand back, and re-running the write
-    /// re-asserts the same rows.
+    /// Pins declared by this write (`origins` + `refs`). A count, not a
+    /// list of handles: a pin has no id to hand back, and re-running the
+    /// write re-asserts the same column values.
     pub edge_count: usize,
     /// The memory landed with no vector and a pending embedding job; it is
     /// lexically findable and semantically invisible until a drain runs.
@@ -176,7 +174,6 @@ impl Engine {
         let references = self
             .authorized_payload_references(authority, source, &declared)
             .await?;
-        let source_batch_id = None;
         let outcome = self
             .author_derived(
                 write_permit.owner_write_permit(),
@@ -190,11 +187,8 @@ impl Engine {
                     operator_kind: req.operator_kind,
                     operator_id: req.operator_id,
                     input_contract_id: req.input_contract_id,
-                    source_batch_id,
                     model_id: req.model_id,
-                    prompt_version: req.prompt_version,
                     sidecar_payload: req.sidecar_payload,
-                    authoring_perspective_id: req.authoring_perspective_id,
                     derived_from: &origins,
                     extra_refs: &[],
                     supersedes: req.supersedes,
@@ -265,16 +259,11 @@ impl Engine {
             schema_id: req.schema_id,
             schema_version: req.schema_version,
             operator_kind: req.operator_kind,
-            operator_id: req.operator_id,
-            input_contract_id: req.input_contract_id,
-            source_batch_id: req.source_batch_id,
             model_id: req.model_id,
-            prompt_version: req.prompt_version,
             sidecar_payload: req.sidecar_payload,
-            authoring_perspective_id: req.authoring_perspective_id,
-            // Supersession is a pointer on the rows, not an edge: there
-            // is nothing to append here, only a field for storage to
-            // stamp inside the same transaction.
+            // Supersession is a later `t` on the same series, not an
+            // edge and not a column: storage resolves the prior row's
+            // handle and appends to it inside the same transaction.
             supersedes: req.supersedes,
             lexical_language: req.lexical_language,
             embedding,
@@ -518,8 +507,6 @@ pub(in crate::engine) async fn resolve_derived_embedding<'client>(
 pub(in crate::engine) fn validate_operator_memory_invocation_request(
     req: &AuthorDerivedRequestInput<'_>,
 ) -> Result<(), StorageError> {
-    let _ = req.source_batch_id;
-
     // The operator manifest proves a *derivation*: output kind, input
     // kinds, and one origin row per declared input. A write that declares
     // no origins has no derivation to prove — an interpretation
@@ -617,11 +604,8 @@ mod tests {
             operator_kind: MemoryOperatorKind::FtoA,
             operator_id: OperatorId::new(uuid::Uuid::now_v7()),
             input_contract_id: InputContractId::new(uuid::Uuid::now_v7()),
-            source_batch_id: Some(SourceBatchId::new(uuid::Uuid::now_v7())),
             model_id: "test-model",
-            prompt_version: "test",
             sidecar_payload: derivation_sidecar(),
-            authoring_perspective_id: None,
             derived_from,
             extra_refs: &[],
             supersedes: None,
@@ -629,8 +613,12 @@ mod tests {
         }
     }
 
+    /// An F→A derive that names its inputs carries a well-formed
+    /// manifest and reaches storage. There is no batch input left on the
+    /// request for a validator to demand: the derived-write API declares
+    /// origins and nothing else about the operator run.
     #[tokio::test]
-    async fn author_derived_allows_operator_ftoa_without_source_batch() {
+    async fn author_derived_ftoa_with_origins_passes_manifest_validation() {
         let engine = engine();
         let owner = owner();
         let permit = OwnerWritePermit::new(owner, crate::access::AccessKind::Perspective);
@@ -638,18 +626,13 @@ mod tests {
             EntityKind::Fact,
             MemoryId::new(uuid::Uuid::now_v7()),
         )];
-        let mut req = request(owner, &origins);
-        req.source_batch_id = None;
         let err = engine
-            .author_derived(&permit, req, &[])
+            .author_derived(&permit, request(owner, &origins), &[])
             .await
             .expect_err("the fake storage port refuses every write");
         assert!(
-            !matches!(
-                &err,
-                StorageError::ConstraintViolation(msg) if msg.contains("source_batch_id")
-            ),
-            "F→A no longer requires a source batch: {err}"
+            !matches!(&err, StorageError::ConstraintViolation(_)),
+            "a well-formed F→A manifest must reach storage: {err}"
         );
     }
 
@@ -666,7 +649,6 @@ mod tests {
         let mut req = request(owner, &[]);
         req.operator_kind = MemoryOperatorKind::AtoP;
         req.kind = EntityKind::Perspective;
-        req.source_batch_id = None;
         let err = engine
             .author_derived(&permit, req, &[])
             .await

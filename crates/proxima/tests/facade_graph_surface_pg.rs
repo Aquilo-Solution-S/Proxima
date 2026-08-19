@@ -42,7 +42,7 @@ mod facade_imports_compile {
         EdgeExistsRequest, EdgeExistsResponse, EdgeFilter, EdgeReadCursor, EdgeReadRequest,
         EdgeReadResponse, FactCitationReadback, MemoryLineageDirection, MemoryLineageEdge,
         MemoryLineageNode, MemoryLineageRequest, MemoryLineageResponse, MemoryRow, QueryRequest,
-        QueryResponse, SupersessionStatus, TombstoneFilter, build_instructions, how_to_markdown,
+        QueryResponse, SupersessionStatus, build_instructions, how_to_markdown,
     };
 
     #[cfg(feature = "openai-compat-embed")]
@@ -353,16 +353,13 @@ async fn facade_engine_reads_lineage_edges_and_derives_without_embedding_client(
                     operator_kind: MemoryOperatorKind::FtoA,
                     operator_id: OperatorId::new(Uuid::now_v7()),
                     input_contract_id: InputContractId::new(Uuid::now_v7()),
-                    source_batch_id: None,
                     model_id: "facade-test",
-                    prompt_version: "v1",
                     sidecar_payload: SidecarPayload::abstraction(FacadeAbstraction {
                         title: "Facade surface".to_string(),
                         body: "Single facade dependency is enough for flavor authors.".to_string(),
                         source_count: 1,
                         observed_entity: fact_outcome.memory_id.into_inner(),
                     }),
-                    authoring_perspective_id: None,
                     derived_from: &derived_from,
                     extra_refs: &[],
                     supersedes: None,

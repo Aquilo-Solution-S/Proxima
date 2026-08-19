@@ -29,6 +29,8 @@ pub struct ListChangeEventsOutput {
     pub has_more: bool,
 }
 
+/// One `entity_append` / `entity_delete` event. Pins carry no event of
+/// their own — they are columns on the appended node.
 #[derive(Debug, Serialize)]
 pub struct ChangeEventItem {
     pub seq: String,
@@ -41,16 +43,6 @@ pub struct ChangeEventItem {
     pub schema_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub schema_version: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub supersedes: Option<String>,
-    /// `origin` or `reference` on edge events. There is no edge handle
-    /// alongside it: an edge is identified by its endpoints and kind.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub edge_kind: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub source: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub target: Option<String>,
 }
 
 /// # Errors
@@ -111,7 +103,6 @@ fn event_item(ctx: &McpToolCtx, row: ChangeEventForWake) -> ChangeEventItem {
             entity,
             schema_id,
             schema_version,
-            supersedes,
         } => ChangeEventItem {
             seq,
             kind: "entity_append".into(),
@@ -119,10 +110,6 @@ fn event_item(ctx: &McpToolCtx, row: ChangeEventForWake) -> ChangeEventItem {
             entity_kind: Some(entity_kind.as_str().into()),
             schema_id: Some(schema_id.as_str().to_string()),
             schema_version: Some(schema_version.into_inner()),
-            supersedes: supersedes.as_ref().map(|r| format_ref(ctx, r, entity_kind)),
-            edge_kind: None,
-            source: None,
-            target: None,
         },
         ChangeEventKind::EntityDelete {
             entity_kind,
@@ -136,48 +123,12 @@ fn event_item(ctx: &McpToolCtx, row: ChangeEventForWake) -> ChangeEventItem {
             entity_kind: Some(entity_kind.as_str().into()),
             schema_id: Some(schema_id.as_str().to_string()),
             schema_version: Some(schema_version.into_inner()),
-            supersedes: None,
-            edge_kind: None,
-            source: None,
-            target: None,
         },
-        ChangeEventKind::EdgeAppend {
-            source,
-            target,
-            kind,
-        } => edge_event_item(ctx, seq, "edge_append", source, target, kind),
-        ChangeEventKind::EdgeDelete {
-            source,
-            target,
-            kind,
-        } => edge_event_item(ctx, seq, "edge_delete", source, target, kind),
     }
 }
 
 fn format_ref(ctx: &McpToolCtx, r: &EntityRef, kind: EntityKind) -> String {
     super::wire_ref::format_entity_ref(ctx, r, Some(kind))
-}
-
-fn edge_event_item(
-    ctx: &McpToolCtx,
-    seq: String,
-    wire_kind: &str,
-    source: crate::EdgeEndpoint,
-    target: crate::EdgeTargetProjection,
-    kind: crate::EdgeKind,
-) -> ChangeEventItem {
-    ChangeEventItem {
-        seq,
-        kind: wire_kind.into(),
-        entity: None,
-        entity_kind: None,
-        schema_id: None,
-        schema_version: None,
-        supersedes: None,
-        edge_kind: Some(kind.as_str().to_string()),
-        source: Some(super::wire_ref::format_endpoint(ctx, source)),
-        target: Some(super::wire_ref::format_target_projection(ctx, target)),
-    }
 }
 
 #[cfg(test)]

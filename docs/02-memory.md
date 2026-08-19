@@ -65,7 +65,8 @@ Facts are accepted, not revised. A/P are re-derivable. Perspective changes affec
 
 Fact identity is `t`, not content hash or ingest key. Same `(owner, source, ingest_key)` replays the same `(handle, t)`.
 
-A/P provenance is `origins` (from `derived_from`). Authorship is a row column when present, not a pin kind.
+A/P provenance is `origins` (from `derived_from`). Authorship is not a row
+column or pin kind; a write-act Fact may be named in `refs`.
 
 ## Edges
 
@@ -133,7 +134,9 @@ Wake config is `wake_config` (N Goals share `wake_id`). Fire writes a `core/writ
 
 ## Re-derivation and Supersession
 
-Facts never supersede. A/P/Goals may: a later `t` on the same `handle`. Old row stays. Head `t` moves.
+Facts have no later version. A/P/Goals may append a later `t` on the same
+`handle`. The old row stays; head `t` moves. No row stores a supersession
+pointer.
 
 Hard delete is abandonment-only (13). World is never abandoned. Forget cools to `cold/` and leaves `ingest_keys`.
 

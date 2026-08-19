@@ -12,9 +12,7 @@ use crate::mcp::handles::{PrefixedUuidClass, format_prefixed_uuid, parse_prefixe
 use crate::mcp::{McpToolCtx, McpToolError};
 use crate::read_models::GoalWakeConfigRow;
 use crate::verbs::goal_write::GoalState;
-use crate::verbs::query::{
-    EntityKind, QueryCursor, QueryPage, QueryRequest, SupersessionStatus, TombstoneFilter,
-};
+use crate::verbs::query::{EntityKind, QueryCursor, QueryPage, QueryRequest, SupersessionStatus};
 
 /// Opaque cursor codec: the shared `{v, fp, c}` envelope with the goal
 /// keyset under `c`. The fingerprint binds the state filter; `limit`
@@ -49,11 +47,8 @@ pub struct GoalItem {
     /// Goal reference (`G:<uuid>`), as accepted by `core_goal`.
     pub goal: String,
     pub title: String,
-    pub text: String,
     pub state: String,
     pub schema_id: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub supersedes: Option<String>,
     /// Goals this one depends on (`G:<uuid>`), as declared on its own row.
     pub dependencies: Vec<String>,
     /// Stored wake configuration; absent when the goal is not armed.
@@ -113,7 +108,6 @@ pub async fn list_goals(
     req.limit = limit;
     req.page = QueryPage { after };
     req.include_payloads = false;
-    req.tombstones = TombstoneFilter::PresentOnly;
     req.supersession = SupersessionStatus::HeadsOnly;
     let response = engine.query(&ctx.authz, &req).await?;
 
@@ -180,12 +174,8 @@ fn project_goals(
             GoalItem {
                 goal: format_prefixed_uuid(row.id.into_inner(), PrefixedUuidClass::Goal),
                 title: row.title,
-                text: row.text,
                 state: state_str(row.state).to_string(),
                 schema_id: row.schema_id.as_str().to_string(),
-                supersedes: row
-                    .supersedes
-                    .map(|id| format_prefixed_uuid(id.into_inner(), PrefixedUuidClass::Goal)),
                 dependencies: row
                     .dependency_goal_ids
                     .into_iter()

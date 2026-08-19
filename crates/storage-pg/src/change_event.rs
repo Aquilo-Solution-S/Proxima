@@ -135,7 +135,6 @@ fn decode_announce_row(row: AnnounceRow) -> Result<ChangeEvent, StorageError> {
             entity,
             schema_id,
             schema_version,
-            supersedes: None,
         },
     };
     Ok(ChangeEvent {
