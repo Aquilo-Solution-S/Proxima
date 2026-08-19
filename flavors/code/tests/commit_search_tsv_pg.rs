@@ -141,6 +141,7 @@ async fn commit_and_summary_search_accept_non_english_prose() {
                    FROM proxima_code.{table}
                   WHERE t = $1"
             );
+            // SQL-POLICY: fixed-fragment — table and fields come only from the fixed test cases above.
             let matches_authority: bool = sqlx::query_scalar(sqlx::AssertSqlSafe(expression))
                 .bind(t)
                 .fetch_one(pool)
