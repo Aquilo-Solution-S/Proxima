@@ -142,12 +142,10 @@ fn host_api_names_every_citation_schema_id() {
 }
 
 #[test]
-fn host_api_can_build_a_non_mistral_embedding_client() {
+fn host_api_can_build_an_openai_compatible_embedding_client() {
     // `OpenAiCompatEmbeddingClient` was already exported, but its `new`
-    // takes an `EmbedCaps` the facade did not name — so `mistral()` was the
-    // only constructible embedding client, and every other
-    // OpenAI-compatible endpoint (a local Ollama, a self-hosted server) was
-    // out of reach for a host depending on `proxima` alone.
+    // takes an `EmbedCaps` the facade did not name, leaving the generic
+    // constructor out of reach for a host depending on `proxima` alone.
     // Built through the constructor, not a struct literal, and deliberately:
     // a literal names every field, so each new capability axis breaks every
     // out-of-tree host that ever built one. `new` + `with_*` keeps them

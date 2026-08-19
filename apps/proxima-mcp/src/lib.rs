@@ -23,18 +23,14 @@ use proxima_core::{
     FlavorRegistry, FlavorRegistryError, OwnerAccessPort, ToolScope, all_core_actions,
     all_core_resources, llm::EmbeddingClient,
 };
-use proxima_llm_openai_compat::{
-    MISTRAL_EMBED_BASE_URL, MISTRAL_EMBED_MODEL, OpenAiCompatEmbeddingClient,
-};
+use proxima_llm_openai_compat::OpenAiCompatEmbeddingClient;
 use proxima_storage_pg::{
     ChangeEventPruneOptions, ChangeEventPruneOutcome, ColdPurgeRetryOptions, ColdPurgeRetryOutcome,
     EmbeddingReconcileOptions, EmbeddingReconcileScope, PgStorage, RetentionEnforceOptions,
     RetentionEnforceOutcome,
 };
 
-const MISTRAL_API_KEY: &str = "MISTRAL_API_KEY";
 const PROXIMA_EMBED_MODEL: &str = "PROXIMA_EMBED_MODEL";
-const MISTRAL_API_BASE: &str = "MISTRAL_API_BASE";
 const PROXIMA_EMBED_BASE_URL: &str = "PROXIMA_EMBED_BASE_URL";
 const PROXIMA_EMBED_API_KEY: &str = "PROXIMA_EMBED_API_KEY";
 const PROXIMA_EMBED_MATRYOSHKA: &str = "PROXIMA_EMBED_MATRYOSHKA";
@@ -360,9 +356,7 @@ async fn run_maintain_blobs(config: MaintainBlobsConfig) -> Result<(), CliError>
 }
 
 async fn run_maintain(config: MaintainConfig) -> Result<(), CliError> {
-    let model = config
-        .model
-        .unwrap_or_else(|| active_embedding_model(proxima_core::process_env));
+    let model = maintenance_embedding_model(config.model, proxima_core::process_env)?;
     let storage = PgStorage::connect(&config.database_url)
         .await
         .map_err(|err| ProximaError::Storage(err.to_string()))?;
@@ -422,15 +416,14 @@ async fn run_maintain(config: MaintainConfig) -> Result<(), CliError> {
     if config.drain {
         let client = embedding_client_from_env(proxima_core::process_env)?.ok_or_else(|| {
             CliError::Runtime(ProximaError::Config(
-                "maintain-embeddings --drain requires an embedding endpoint: set \
-                 PROXIMA_EMBED_BASE_URL (local, e.g. http://127.0.0.1:11434/v1) \
-                 or PROXIMA_EMBED_API_KEY / MISTRAL_API_KEY (hosted)"
+                "maintain-embeddings --drain requires PROXIMA_EMBED_BASE_URL and \
+                 PROXIMA_EMBED_MODEL; PROXIMA_EMBED_API_KEY is optional"
                     .into(),
             ))
         })?;
         if client.model_id() != model {
             return Err(CliError::Runtime(ProximaError::Config(format!(
-                "maintain-embeddings --drain model mismatch: queued model {model:?}, Mistral client model {:?}",
+                "maintain-embeddings --drain model mismatch: queued model {model:?}, embedding client model {:?}",
                 client.model_id()
             ))));
         }
@@ -796,11 +789,8 @@ fn oidc_from_env(
 
 /// Build the embedding client from env, or `None` for degraded mode.
 ///
-/// Any OpenAI-compatible `/embeddings` endpoint. Hosted needs a key; local
-/// needs only `PROXIMA_EMBED_BASE_URL`. The key is not the on-switch.
-///
-/// `MISTRAL_API_KEY` / `MISTRAL_API_BASE` stay accepted as aliases so
-/// existing deployments keep working unchanged.
+/// Any OpenAI-compatible `/embeddings` endpoint. Base URL and model are
+/// explicit; hosted endpoints may also set `PROXIMA_EMBED_API_KEY`.
 ///
 /// Whatever the model, it must land in the substrate's single embedding
 /// space: `proxima_core::llm::EMBEDDING_DIM` (1024), which is the width of
@@ -816,20 +806,32 @@ fn oidc_from_env(
 fn embedding_client_from_env(
     lookup: impl Fn(&str) -> Option<String>,
 ) -> Result<Option<OpenAiCompatEmbeddingClient>, CliError> {
-    let api_key = lookup_non_empty(&lookup, PROXIMA_EMBED_API_KEY)
-        .or_else(|| lookup_non_empty(&lookup, MISTRAL_API_KEY));
-    let base_url = lookup_non_empty(&lookup, PROXIMA_EMBED_BASE_URL)
-        .or_else(|| lookup_non_empty(&lookup, MISTRAL_API_BASE));
+    let api_key = lookup_non_empty(&lookup, PROXIMA_EMBED_API_KEY);
+    let base_url = lookup_non_empty(&lookup, PROXIMA_EMBED_BASE_URL);
+    let model = embedding_model_from_env(&lookup);
+    let matryoshka_is_set = lookup_non_empty(&lookup, PROXIMA_EMBED_MATRYOSHKA).is_some();
+    let max_input_is_set = lookup_non_empty(&lookup, PROXIMA_EMBED_MAX_INPUT_CHARS).is_some();
 
-    // Degraded mode only when neither a key nor an endpoint was configured:
-    // an operator who named an endpoint asked for embeddings.
-    let base_url = match (base_url, api_key.as_ref()) {
-        (Some(url), _) => url,
-        (None, Some(_)) => MISTRAL_EMBED_BASE_URL.to_string(),
-        (None, None) => return Ok(None),
-    };
+    if base_url.is_none()
+        && model.is_none()
+        && api_key.is_none()
+        && !matryoshka_is_set
+        && !max_input_is_set
+    {
+        return Ok(None);
+    }
 
-    let model = active_embedding_model(&lookup);
+    let base_url = base_url.ok_or_else(|| {
+        CliError::Runtime(ProximaError::Config(
+            "PROXIMA_EMBED_BASE_URL is required when any PROXIMA_EMBED_* setting is set".into(),
+        ))
+    })?;
+    let model = model.ok_or_else(|| {
+        CliError::Runtime(ProximaError::Config(
+            "PROXIMA_EMBED_MODEL is required when any PROXIMA_EMBED_* setting is set".into(),
+        ))
+    })?;
+
     let matryoshka = parse_bool_env(&lookup, PROXIMA_EMBED_MATRYOSHKA)?;
     let dim = u32::try_from(proxima_core::llm::EMBEDDING_DIM).map_err(|_| {
         CliError::Runtime(ProximaError::Config(
@@ -886,9 +888,21 @@ fn parse_bool_env(
     }
 }
 
-fn active_embedding_model(lookup: impl Fn(&str) -> Option<String>) -> String {
+fn embedding_model_from_env(lookup: impl Fn(&str) -> Option<String>) -> Option<String> {
     lookup_non_empty(&lookup, PROXIMA_EMBED_MODEL)
-        .unwrap_or_else(|| MISTRAL_EMBED_MODEL.to_string())
+}
+
+fn maintenance_embedding_model(
+    explicit: Option<String>,
+    lookup: impl Fn(&str) -> Option<String>,
+) -> Result<String, CliError> {
+    explicit
+        .or_else(|| embedding_model_from_env(lookup))
+        .ok_or_else(|| {
+            CliError::Runtime(ProximaError::Config(
+                "maintain-embeddings requires --model or PROXIMA_EMBED_MODEL".into(),
+            ))
+        })
 }
 
 fn lookup_non_empty(lookup: &impl Fn(&str) -> Option<String>, key: &str) -> Option<String> {
@@ -1056,7 +1070,7 @@ mod tests {
     // though it defers the actual network connect (sqlx panics with "this
     // functionality requires a Tokio context" otherwise).
     #[tokio::test]
-    async fn app_construction_without_mistral_key_keeps_degraded_mode() {
+    async fn app_construction_without_embedding_config_keeps_degraded_mode() {
         build_app(config(), |_| None).expect("app construction does not require embeddings");
     }
 
@@ -1304,23 +1318,23 @@ mod tests {
     }
 
     #[test]
-    fn mistral_client_is_secret_gated_and_configurable() {
+    fn hosted_openai_compatible_client_is_configurable() {
         let client = embedding_client_from_env(|key| match key {
-            MISTRAL_API_KEY => Some("secret".to_string()),
-            PROXIMA_EMBED_MODEL => Some("custom-mistral-embed".to_string()),
-            MISTRAL_API_BASE => Some("https://mistral.example/v1".to_string()),
+            PROXIMA_EMBED_API_KEY => Some("secret".to_string()),
+            PROXIMA_EMBED_MODEL => Some("hosted-embed".to_string()),
+            PROXIMA_EMBED_BASE_URL => Some("https://embeddings.example/v1".to_string()),
             _ => None,
         })
         .expect("client construction succeeds")
-        .expect("secret enables client");
+        .expect("explicit endpoint and model enable the client");
 
-        assert_eq!(client.model_id(), "custom-mistral-embed");
+        assert_eq!(client.model_id(), "hosted-embed");
         assert_eq!(client.dim(), proxima_core::llm::EMBEDDING_DIM);
     }
 
     /// The local-first path: a loopback endpoint and no credential at all.
-    /// Requiring a key here would force `MISTRAL_API_KEY=unused` into every
-    /// fully-local config.
+    /// Requiring a key here would force a fake credential into every fully
+    /// local config.
     #[test]
     fn local_endpoint_needs_no_api_key() {
         let client = embedding_client_from_env(|key| match key {
@@ -1329,14 +1343,14 @@ mod tests {
             _ => None,
         })
         .expect("client construction succeeds")
-        .expect("a base URL alone enables embeddings");
+        .expect("an explicit base URL and model enable embeddings");
 
         assert_eq!(client.model_id(), "qwen3-embedding:0.6b");
         assert_eq!(client.dim(), proxima_core::llm::EMBEDDING_DIM);
     }
 
     #[test]
-    fn no_endpoint_and_no_key_stays_degraded() {
+    fn no_embedding_config_stays_degraded() {
         assert!(
             embedding_client_from_env(|_| None)
                 .expect("no config is not an error")
@@ -1344,21 +1358,31 @@ mod tests {
         );
     }
 
-    /// `PROXIMA_EMBED_*` is the provider-neutral spelling; the `MISTRAL_*`
-    /// names remain as aliases so existing deployments keep working.
     #[test]
-    fn proxima_embed_vars_win_over_the_mistral_aliases() {
-        let client = embedding_client_from_env(|key| match key {
-            PROXIMA_EMBED_BASE_URL => Some("http://127.0.0.1:11434/v1".to_string()),
-            PROXIMA_EMBED_API_KEY => Some("preferred".to_string()),
-            MISTRAL_API_BASE => Some("https://mistral.example/v1".to_string()),
-            MISTRAL_API_KEY => Some("legacy".to_string()),
-            PROXIMA_EMBED_MODEL => Some("local-model".to_string()),
-            _ => None,
-        })
-        .expect("client construction succeeds")
-        .expect("configured");
-        assert_eq!(client.model_id(), "local-model");
+    fn partial_embedding_config_fails_closed() {
+        for (configured_key, value, missing_key) in [
+            (
+                PROXIMA_EMBED_BASE_URL,
+                "https://embeddings.example/v1",
+                PROXIMA_EMBED_MODEL,
+            ),
+            (PROXIMA_EMBED_MODEL, "hosted-embed", PROXIMA_EMBED_BASE_URL),
+            (PROXIMA_EMBED_API_KEY, "secret", PROXIMA_EMBED_BASE_URL),
+            (PROXIMA_EMBED_MATRYOSHKA, "false", PROXIMA_EMBED_BASE_URL),
+            (
+                PROXIMA_EMBED_MAX_INPUT_CHARS,
+                "4095",
+                PROXIMA_EMBED_BASE_URL,
+            ),
+        ] {
+            let err =
+                embedding_client_from_env(|key| (key == configured_key).then(|| value.to_string()))
+                    .expect_err("partial embedding configuration must not degrade silently");
+            assert!(
+                err.to_string().contains(missing_key),
+                "{configured_key}: {err}"
+            );
+        }
     }
 
     /// The cap is opt-in: a deployment that says nothing keeps sending every
@@ -1367,6 +1391,7 @@ mod tests {
     fn no_input_cap_is_configured_by_default() {
         let client = embedding_client_from_env(|key| match key {
             PROXIMA_EMBED_BASE_URL => Some("http://127.0.0.1:11434/v1".to_string()),
+            PROXIMA_EMBED_MODEL => Some("local-embed".to_string()),
             _ => None,
         })
         .expect("client construction succeeds")
@@ -1379,6 +1404,7 @@ mod tests {
         let cap = proxima_core::llm::MIN_EMBED_INPUT_CAP_CHARS;
         let client = embedding_client_from_env(|key| match key {
             PROXIMA_EMBED_BASE_URL => Some("http://127.0.0.1:11434/v1".to_string()),
+            PROXIMA_EMBED_MODEL => Some("local-embed".to_string()),
             PROXIMA_EMBED_MAX_INPUT_CHARS => Some(cap.to_string()),
             _ => None,
         })
@@ -1399,6 +1425,7 @@ mod tests {
         let too_low = proxima_core::llm::MIN_EMBED_INPUT_CAP_CHARS - 1;
         let err = embedding_client_from_env(|key| match key {
             PROXIMA_EMBED_BASE_URL => Some("http://127.0.0.1:11434/v1".to_string()),
+            PROXIMA_EMBED_MODEL => Some("local-embed".to_string()),
             PROXIMA_EMBED_MAX_INPUT_CHARS => Some(too_low.to_string()),
             _ => None,
         })
@@ -1430,6 +1457,7 @@ mod tests {
     fn remote_plaintext_endpoint_is_refused() {
         let err = embedding_client_from_env(|key| match key {
             PROXIMA_EMBED_BASE_URL => Some("http://embeddings.example/v1".to_string()),
+            PROXIMA_EMBED_MODEL => Some("hosted-embed".to_string()),
             _ => None,
         })
         .expect_err("remote plaintext must not build");
@@ -1464,11 +1492,34 @@ mod tests {
     }
 
     #[test]
-    fn active_embedding_model_uses_same_env_default_as_mistral_client() {
-        assert_eq!(active_embedding_model(|_| None), MISTRAL_EMBED_MODEL);
+    fn embedding_model_has_no_provider_default() {
+        assert_eq!(embedding_model_from_env(|_| None), None);
         assert_eq!(
-            active_embedding_model(|key| (key == PROXIMA_EMBED_MODEL).then(|| "custom".into())),
-            "custom"
+            embedding_model_from_env(|key| {
+                (key == PROXIMA_EMBED_MODEL).then(|| "custom".into())
+            }),
+            Some("custom".into())
         );
+    }
+
+    #[test]
+    fn maintenance_model_is_explicit_or_from_generic_env() {
+        assert_eq!(
+            maintenance_embedding_model(Some("flag-model".into()), |_| {
+                Some("env-model".into())
+            })
+            .expect("explicit model wins"),
+            "flag-model"
+        );
+        assert_eq!(
+            maintenance_embedding_model(None, |key| {
+                (key == PROXIMA_EMBED_MODEL).then(|| "env-model".into())
+            })
+            .expect("generic env model is accepted"),
+            "env-model"
+        );
+        let err = maintenance_embedding_model(None, |_| None)
+            .expect_err("there is no provider-specific default");
+        assert!(err.to_string().contains(PROXIMA_EMBED_MODEL), "{err}");
     }
 }

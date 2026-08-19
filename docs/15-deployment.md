@@ -14,7 +14,7 @@ Postgres must have pgvector `>= 0.8.0` with `hnsw` index type and
 `hnsw.iterative_scan` support. Migrations run automatically on first boot and
 fail closed if the extension version/GUC preflight is not satisfied.
 Optional dependencies: S3 for cited-blob storage (see [10](10-configuration.md#large-artefact-s3)),
-and a Mistral-compatible embedding client; when configured, the server
+and an OpenAI-compatible embedding client; when configured, the server
 drains embeddings in-process automatically. Without embeddings the server
 operates in degraded lexical-only mode.
 
@@ -87,13 +87,11 @@ lock fails and retries on the next pod rather than queueing behind readers.
 | `PROXIMA_TOOL_PROFILE` | no | `memory` | Tool profile. **Unset ⇒ fail-closed `memory`** (excludes `core_membership` + `core_publish`). Set `full` to advertise the whole surface incl. `core_publish` (irreversible World transfer) — logged at startup. |
 | `PROXIMA_TOOL_ALLOW` | no | `core_goal:set` | Comma-separated canonical scope keys added after profile resolution. |
 | `PROXIMA_TOOL_DENY` | no | `core_goal:decompose` | Comma-separated canonical scope keys removed after allow. Compliance erase is not exposed as an MCP action. |
-| `PROXIMA_EMBED_BASE_URL` | no | `https://api.mistral.ai/v1` | OpenAI-compatible `/embeddings` base. Setting it alone enables embeddings; plaintext `http://` is accepted for loopback only. |
+| `PROXIMA_EMBED_BASE_URL` | when enabled | `https://embeddings.example/v1` | OpenAI-compatible `/embeddings` base. Required with `PROXIMA_EMBED_MODEL` when embeddings are enabled; plaintext `http://` is accepted for loopback only. |
 | `PROXIMA_EMBED_API_KEY` | no | `sk-...` | Bearer for a hosted embedding endpoint. Omit for a local one. |
-| `PROXIMA_EMBED_MODEL` | no | `mistral-embed` | Embedding model id. Must return 1024-dim vectors. |
+| `PROXIMA_EMBED_MODEL` | when enabled | `provider-embedding-model` | Embedding model id. Required with `PROXIMA_EMBED_BASE_URL` when embeddings are enabled; must return 1024-dim vectors. |
 | `PROXIMA_EMBED_MATRYOSHKA` | no | `false` | Request 1024 dimensions from a nested-prefix model wider than 1024. |
 | `PROXIMA_EMBED_MAX_INPUT_CHARS` | no | `16384` | Longest input, in characters, that will be *sent*. Unset ⇒ no client-side bound. Over-cap input is refused without a request and split into chunked embeddings instead. Minimum `4095`; below that the split cannot satisfy the cap and boot fails. Set it for a provider that dies on over-long input rather than rejecting it (a local Ollama does) — see docs/10 §Bounding embedding input. |
-| `MISTRAL_API_KEY` | no | `sk-...` | Alias for `PROXIMA_EMBED_API_KEY`. |
-| `MISTRAL_API_BASE` | no | `https://api.mistral.ai/v1` | Alias for `PROXIMA_EMBED_BASE_URL`. |
 | `PROXIMA_SKIP_MIGRATIONS` | no | `true` | Boot without applying migrations, for the split-role topology above. The schema must already be at the current lane — boot fails closed otherwise. |
 | `PROXIMA_S3_BUCKET` | no | `proxima-cited-blobs` | Cited-blob bucket. |
 | `PROXIMA_S3_REGION` | no | `us-east-1` | S3 region. |

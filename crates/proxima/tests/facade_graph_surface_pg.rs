@@ -46,10 +46,7 @@ mod facade_imports_compile {
     };
 
     #[cfg(feature = "openai-compat-embed")]
-    use proxima::{
-        MISTRAL_EMBED_BASE_URL, MISTRAL_EMBED_MODEL, OpenAiCompatConfig,
-        OpenAiCompatEmbeddingClient,
-    };
+    use proxima::{OpenAiCompatConfig, OpenAiCompatEmbeddingClient};
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -277,11 +274,10 @@ fn facade_flavor_authoring_symbols_are_reachable() {
     #[cfg(feature = "openai-compat-embed")]
     {
         let config = proxima::OpenAiCompatConfig::new(
-            proxima::MISTRAL_EMBED_BASE_URL,
+            "https://embeddings.example/v1",
             Some("token".to_string()),
         );
-        assert_eq!(config.base_url, proxima::MISTRAL_EMBED_BASE_URL);
-        assert_eq!(proxima::MISTRAL_EMBED_MODEL, "mistral-embed");
+        assert_eq!(config.base_url, "https://embeddings.example/v1");
         let _client_size = std::mem::size_of::<proxima::OpenAiCompatEmbeddingClient>();
     }
 }

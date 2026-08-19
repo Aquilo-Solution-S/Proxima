@@ -53,7 +53,7 @@ version/GUC preflight (see [15 §Runtime requirements](../15-deployment.md#runti
 
 | Signal | Condition | Action |
 |---|---|---|
-| `embeddings_client_configured` | `false` | no embedding client; search is lexical-only (`degraded_to_lexical=true`). Set `MISTRAL_API_KEY` / `PROXIMA_EMBED_MODEL` if semantic recall is expected (see [10-configuration.md](../10-configuration.md)) |
+| `embeddings_client_configured` | `false` | no embedding client; search is lexical-only (`degraded_to_lexical=true`). Set `PROXIMA_EMBED_BASE_URL` + `PROXIMA_EMBED_MODEL` if semantic recall is expected (see [10-configuration.md](../10-configuration.md)) |
 | `pending_embedding_jobs` | `> 0`, trending down | normal in-process catch-up; no action |
 | `pending_embedding_jobs` | `> 0`, flat/rising | drainer stalled or client unreachable; check embedding client reachability and logs |
 

@@ -35,12 +35,10 @@ whether that is legal.
 | `PROXIMA_TOOL_PROFILE` | MCP tool surface | `memory` | widening to the full surface | `full` is opt-in and adds `core_membership`/`core_publish` |
 | `PROXIMA_TOOL_ALLOW` | MCP tool surface | unset | profile extension | comma-separated canonical scope keys unioned into profile |
 | `PROXIMA_TOOL_DENY` | MCP tool surface | unset | profile restriction | comma-separated canonical scope keys removed after allow |
-| `PROXIMA_EMBED_BASE_URL` | embeddings | unset | any OpenAI-compatible endpoint, local or hosted | setting it alone enables embeddings; loopback needs no key |
+| `PROXIMA_EMBED_BASE_URL` | embeddings | unset | any OpenAI-compatible endpoint, local or hosted | required with `PROXIMA_EMBED_MODEL` to enable embeddings; loopback needs no key |
 | `PROXIMA_EMBED_API_KEY` | embeddings | unset | hosted embedding endpoint | bearer sent to `/embeddings` |
-| `PROXIMA_EMBED_MODEL` | embeddings | `mistral-embed` | non-default embedding model | must yield 1024-dim vectors |
+| `PROXIMA_EMBED_MODEL` | embeddings | unset | embeddings enabled | required with `PROXIMA_EMBED_BASE_URL`; must yield 1024-dim vectors |
 | `PROXIMA_EMBED_MATRYOSHKA` | embeddings | `false` | nested-prefix model wider than 1024 | sends a `dimensions` request parameter |
-| `MISTRAL_API_KEY` | embeddings | unset | alias for `PROXIMA_EMBED_API_KEY` | absent and no base URL means semantic search degrades to lexical paths |
-| `MISTRAL_API_BASE` | embeddings | `https://api.mistral.ai/v1` | alias for `PROXIMA_EMBED_BASE_URL` | OpenAI-compatible base URL |
 | `PROXIMA_SKIP_MIGRATIONS` | boot | `false` | split-role GitOps deploys | boot without applying migrations; the schema must already be at the current lane or boot fails closed |
 | `PROXIMA_PG_MAX_CONNECTIONS` | Postgres pool | `10` | tuning pool size | minimum 1 |
 | `PROXIMA_PG_STATEMENT_TIMEOUT_MS` | Postgres pool | `300000` | tuning request timeouts | `0` disables; migrations and bulk erase opt out separately |
@@ -76,8 +74,6 @@ whether that is legal.
 |---|---|---|
 | `PROXIMA_TEST_PG_URL` | tests | pg-testkit integration test source DB |
 | `PROXIMA_TEST_DATABASE_URL` | tests | HTTP/OIDC e2e dedicated DB |
-| `MISTRAL_EMBED_BASE_URL` | source constant | Rust constant for the default Mistral base URL, not an environment variable |
-| `MISTRAL_EMBED_MODEL` | source constant | Rust constant for the default Mistral model, not an environment variable |
 | `PROXIMA_S3_` | source prefix | configuration prefix constant used to resolve the S3 variables listed above |
 
 ## Source Inventory Reconciliation
