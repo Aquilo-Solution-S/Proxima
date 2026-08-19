@@ -19,7 +19,7 @@ pub const COLD_FORMAT_VERSION: u8 = 4;
 /// not one per forget attempt. Two racing forgets of the same `t` therefore
 /// PUT the same logical record to the same key, and a hydrate → forget cycle
 /// overwrites in place instead of orphaning the object hydrate left behind.
-/// [`compensate_forget_put`] depends on this: the key is not owned by one
+/// `compensate_forget_put` depends on this: the key is not owned by one
 /// attempt, so a losing attempt must not delete it.
 #[must_use]
 pub fn cold_object_key(owner_hash: &str, handle: Uuid, t: Uuid) -> String {
