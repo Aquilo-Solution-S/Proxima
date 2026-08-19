@@ -10,7 +10,8 @@ use proxima_core::verbs::query::{
 };
 use proxima_core::{
     AuthorDerivedOutcome, AuthorDerivedRequest, FactSourceBatchRow, MemoryGraphIdentity,
-    MemoryGraphPayloadRow, MemoryId, MemoryKindRow, Owner, OwnerRef, StorageError,
+    MemoryGraphPayloadRow, MemoryId, MemoryKindRow, Owner, OwnerRef, StorageError, cold_object_key,
+    owner_hash_hex,
 };
 
 use crate::error::{internal, with_bounded_retry};
@@ -186,7 +187,7 @@ impl MemoryAuthoringPort for PgStorage {
         .await
         .map_err(internal)?
         .ok_or(StorageError::NotFound)?;
-        let key = verbs::forget::cold_object_key(&verbs::forget::owner_hash_hex(owner), handle, t);
+        let key = cold_object_key(&owner_hash_hex(owner), handle, t);
         let pool = self.pool.clone();
         let cold = Arc::clone(&self.cold);
         let sidecars = self.sidecars.clone();

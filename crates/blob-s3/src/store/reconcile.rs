@@ -13,7 +13,7 @@ use sqlx::Row as _;
 
 use super::CitedBlobStore;
 use super::guards::ensure_owner_access;
-use super::keys::{objects_owner_prefix, owner_hash_hex};
+use super::keys::{CANONICAL_OBJECT_PREFIX, objects_owner_prefix, owner_hash_hex};
 use super::port::blob_error_to_storage;
 
 /// Rows read per round trip.
@@ -25,16 +25,6 @@ use super::port::blob_error_to_storage;
 /// below is set-based and order-free, so the key it pages by is free to be
 /// whichever one is indexed.
 const ROW_PAGE: i64 = 1000;
-
-/// Every canonical object lives under this prefix; `pending/` deliberately
-/// does not, and must not be swept.
-///
-/// A pending object has NO completed `blob_uploads` row by design — the row
-/// is written by the completion, not the transfer — so including `pending/`
-/// would report every upload currently in flight as an orphan. That is not
-/// a hypothetical race: on a 632-page book at concurrency 4 there are
-/// always several.
-const CANONICAL_PREFIX: &str = "objects/";
 
 #[async_trait::async_trait]
 impl CitedBlobReconcilePort for CitedBlobStore {
@@ -91,7 +81,9 @@ impl CitedBlobStore {
         // silently report intact artefacts as missing. A set has no such
         // failure mode. The cost is one key per object in memory: ~120
         // bytes each, so a shelf of 52,000 artefacts is about 6 MB.
-        let mut objects = self.list_keys(CANONICAL_PREFIX).await?;
+        // `pending/` deliberately is not swept: in-flight uploads have no
+        // completed `blob_uploads` row yet and would appear orphaned.
+        let mut objects = self.list_keys(CANONICAL_OBJECT_PREFIX).await?;
         let objects_scanned = objects.len() as u64;
 
         let mut outcome = CitedBlobReconcileOutcome {
@@ -129,7 +121,8 @@ impl CitedBlobStore {
 
                 // Counted apart from the sweep, because the cause and the
                 // repair are both different — see the field's own doc.
-                if bucket != self.config.bucket || !object_key.starts_with(CANONICAL_PREFIX) {
+                if bucket != self.config.bucket || !object_key.starts_with(CANONICAL_OBJECT_PREFIX)
+                {
                     outcome.foreign_locators = outcome.foreign_locators.saturating_add(1);
                     if outcome.foreign_sample.len() < MAX_RECONCILE_SAMPLE {
                         outcome
@@ -332,8 +325,19 @@ mod tests {
     use proxima_core::{AuthPath, AuthzContext, Engine, FlavorRegistry, OwnerRef, UserId};
     use uuid::Uuid;
 
+    use super::super::keys::{canonical_object_key, pending_object_key};
     use super::super::testkit::{lazy_test_pool, store_config};
     use super::*;
+
+    #[test]
+    fn sweep_prefix_contains_written_canonical_keys_only() {
+        let owner_hash = "a".repeat(64);
+        let canonical = canonical_object_key(&owner_hash, &"b".repeat(64));
+        let pending = pending_object_key(&owner_hash, Uuid::nil());
+
+        assert!(canonical.starts_with(CANONICAL_OBJECT_PREFIX));
+        assert!(!pending.starts_with(CANONICAL_OBJECT_PREFIX));
+    }
 
     #[tokio::test]
     async fn denied_owner_is_rejected_before_postgres_or_s3() {
@@ -402,21 +406,22 @@ mod tests {
     #[test]
     fn truncated_object_listing_requires_a_fresh_continuation_token() {
         let mut seen = BTreeSet::new();
-        let missing = next_list_token(true, None, &mut seen, "objects/")
+        let missing = next_list_token(true, None, &mut seen, CANONICAL_OBJECT_PREFIX)
             .expect_err("a partial listing is never a complete answer");
         assert!(matches!(missing, StorageError::Unavailable(_)));
 
         assert_eq!(
-            next_list_token(true, Some("next"), &mut seen, "objects/")
+            next_list_token(true, Some("next"), &mut seen, CANONICAL_OBJECT_PREFIX)
                 .expect("first token advances"),
             Some("next".to_owned())
         );
-        let repeated = next_list_token(true, Some("next"), &mut seen, "objects/")
+        let repeated = next_list_token(true, Some("next"), &mut seen, CANONICAL_OBJECT_PREFIX)
             .expect_err("a repeated token must not loop or return a partial answer");
         assert!(matches!(repeated, StorageError::Unavailable(_)));
 
         assert_eq!(
-            next_list_token(false, None, &mut seen, "objects/").expect("complete page stops"),
+            next_list_token(false, None, &mut seen, CANONICAL_OBJECT_PREFIX)
+                .expect("complete page stops"),
             None
         );
     }

@@ -12,6 +12,7 @@ pub use crate::runtime::{
 };
 pub use crate::runtime_config::{
     McpSettings, ProximaError, RuntimeBuilder, RuntimeConfig, RuntimeParts,
+    embedding_runtime_policy_from_lookup,
 };
 /// The S3-backed cited-blob lane.
 ///
@@ -90,15 +91,11 @@ pub use proxima_core::verbs::goal_write::{
 /// depending only on `proxima` cannot write a typed signature or match
 /// [`McpToolOrigin`]. `CoreToolInfo` stays the projected list DTO.
 pub use proxima_core::{McpToolDescriptor, McpToolOrigin};
-/// The Postgres tuning block.
+/// The Postgres pool and query-tuning blocks.
 ///
-/// [`RuntimeConfig::pg_tuning`] is a `pub` field and
-/// [`RuntimeBuilder::pg_tuning`] a `pub` builder method, so these types were
-/// already part of the public surface — just not nameable from `proxima`.
-/// A host could not write one in a signature or set a single knob
-/// programmatically, which would leave the `PROXIMA_PG_*` environment as the
-/// only route in.
-pub use proxima_storage_pg::{HnswIterativeScan, PgTuning, SemanticIndexFirst};
+/// Both are nameable from the host facade and have programmatic builder
+/// methods; hosts do not need process environment to configure either block.
+pub use proxima_storage_pg::{HnswIterativeScan, PgPoolConfig, PgTuning, SemanticIndexFirst};
 // `GoalWriteBuildError`'s variants carry this, so a host that matches on
 // them cannot bind the payload without being able to name its type. An
 // unnameable type in a public signature is the usual shape of an
@@ -122,10 +119,10 @@ pub use proxima_core::{
     DelegatedAuthorityError, DelegatedAuthorityService, DelegatedCommand, DelegatedPhase,
     DelegationId, DelegationIssued, DelegationRevocation, EmbeddingAnnObservability,
     EmbeddingJobBacklog, EmbeddingOrphanCounts, EmbeddingOrphanSweepOutcome, EmbeddingRecallCanary,
-    Engine, EngineAuthority, EngineHandle, FlavorRegistryFrozen, FlavorServiceError,
-    FlavorServices, GoalWakeCandidate, GoalWakeHardMemory, GroupId, MemoryId, Owner,
-    OwnerAccessPort, OwnerExternalKeyParseError, OwnerRef, OwnerRefKind, OwnerRoles, Relation,
-    Role, SourceBatchId, SourceId, StorageError, ToolScope, UserId, canonical_json_bytes,
+    EmbeddingRuntimePolicy, Engine, EngineAuthority, EngineHandle, FlavorRegistryFrozen,
+    FlavorServiceError, FlavorServices, GoalWakeCandidate, GoalWakeHardMemory, GroupId, MemoryId,
+    Owner, OwnerAccessPort, OwnerExternalKeyParseError, OwnerRef, OwnerRefKind, OwnerRoles,
+    Relation, Role, SourceBatchId, SourceId, StorageError, ToolScope, UserId, canonical_json_bytes,
     env_value, parse_external_key, provider_safe_tool_name,
 };
 /// The three citation schema ids [`CitationSpec`] is written with:

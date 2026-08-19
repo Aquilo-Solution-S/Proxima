@@ -893,9 +893,9 @@ mod tests {
         // `model_id` is captured into the author context before stripping, then
         // removed so a dispatcher tool that does not list it as an action field
         // is not tripped by an unexpected-field rejection.
-        let args = serde_json::json!({ "action": "set", "model_id": "claude" });
+        let args = serde_json::json!({ "action": "set", "model_id": "example-model" });
         let author = author_from_args(&args, None, "unknown", "0").expect("author reads model_id");
-        assert_eq!(author.model_id, "claude");
+        assert_eq!(author.model_id, "example-model");
 
         let mut args = args;
         strip_call_context_args(&mut args);

@@ -646,6 +646,106 @@ async fn schema_markers_accept_fresh_schema_and_reject_incomplete_claim_lane() {
 }
 
 #[tokio::test]
+async fn schema_markers_reject_damaged_lexical_default() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+
+    if let Err(e) = create_db(&db_name).await {
+        panic!("PG required for tests but admin connect failed: {e}");
+    }
+
+    let url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&url).await?;
+        pg.run_migrations().await?;
+        let pool = pg.pool_for_tests();
+        ensure_core_schema_markers(pool).await?;
+
+        sqlx::query(
+            "ALTER TABLE proxima_core.lexical_default
+             DROP CONSTRAINT lexical_default_pkey",
+        )
+        .execute(pool)
+        .await?;
+        let err = ensure_core_schema_markers(pool)
+            .await
+            .expect_err("lexical default without its singleton primary key must reject --stamp");
+        assert!(
+            err.to_string().contains("sole primary-key column"),
+            "marker error must name the damaged lexical-default primary key: {err}"
+        );
+        sqlx::query(
+            "ALTER TABLE proxima_core.lexical_default
+             ADD CONSTRAINT lexical_default_pkey PRIMARY KEY (singleton)",
+        )
+        .execute(pool)
+        .await?;
+
+        sqlx::query(
+            "ALTER TABLE proxima_core.lexical_default
+             DROP CONSTRAINT lexical_default_singleton_check",
+        )
+        .execute(pool)
+        .await?;
+        let err = ensure_core_schema_markers(pool)
+            .await
+            .expect_err("lexical default without CHECK (singleton) must reject --stamp");
+        assert!(
+            err.to_string().contains("CHECK (singleton)"),
+            "marker error must name the damaged lexical-default singleton check: {err}"
+        );
+        sqlx::query(
+            "ALTER TABLE proxima_core.lexical_default
+             ADD CONSTRAINT lexical_default_singleton_check CHECK (singleton)",
+        )
+        .execute(pool)
+        .await?;
+
+        sqlx::query(
+            "ALTER TABLE proxima_core.lexical_default
+             DROP CONSTRAINT lexical_default_config_fkey",
+        )
+        .execute(pool)
+        .await?;
+        let err = ensure_core_schema_markers(pool)
+            .await
+            .expect_err("lexical default without its active-language FK must reject --stamp");
+        assert!(
+            err.to_string()
+                .contains("must reference lexical_languages(config)"),
+            "marker error must name the damaged lexical-default foreign key: {err}"
+        );
+        sqlx::query(
+            "ALTER TABLE proxima_core.lexical_default
+             ADD CONSTRAINT lexical_default_config_fkey
+             FOREIGN KEY (config) REFERENCES proxima_core.lexical_languages(config)",
+        )
+        .execute(pool)
+        .await?;
+
+        sqlx::query("DELETE FROM proxima_core.lexical_default")
+            .execute(pool)
+            .await?;
+        let err = ensure_core_schema_markers(pool)
+            .await
+            .expect_err("lexical default without its live singleton row must reject --stamp");
+        assert!(
+            err.to_string().contains("exactly one singleton=true row"),
+            "marker error must name the missing lexical-default row: {err}"
+        );
+
+        sqlx::query("SELECT proxima_core.set_lexical_config('simple')")
+            .execute(pool)
+            .await?;
+        ensure_core_schema_markers(pool).await?;
+        Ok(())
+    }
+    .await;
+
+    let _ = drop_db(&db_name).await;
+    result.expect("lexical default schema marker checks failed");
+}
+
+#[tokio::test]
 async fn pre_v008_database_fails_closed() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
 

@@ -53,7 +53,7 @@ pub use canonical_json::canonical_json_bytes;
 pub use capability::*;
 pub use change_event::*;
 pub use citations::*;
-pub use cold::ColdObjectStore;
+pub use cold::{ColdObjectStore, cold_object_key, cold_owner_prefix, owner_hash_hex};
 pub use compliance::{
     ComplianceEraseCounts, ComplianceEraseOutcome, ComplianceEraseRefusal, ComplianceEraseRequest,
     ComplianceEraseTarget, ComplianceExportBundle, ComplianceExportCounts, ComplianceExportRequest,

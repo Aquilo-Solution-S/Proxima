@@ -18,7 +18,7 @@
 
 use proxima_core::ColdObjectStore;
 use proxima_core::verbs::persist_mcp_call::MCP_CALL_FACT_SCHEMA;
-use proxima_core::{Owner, OwnerRefKind, StorageError};
+use proxima_core::{Owner, OwnerRefKind, StorageError, cold_object_key, owner_hash_hex};
 use sqlx::{PgPool, Postgres, Transaction};
 use uuid::Uuid;
 
@@ -346,10 +346,9 @@ async fn forget_expired_batch(
     .map_err(map_err)?;
 
     let mut object_keys: Vec<String> = Vec::with_capacity(candidates.len());
-    let owner_hash = crate::verbs::forget::owner_hash_hex(owner);
+    let owner_hash = owner_hash_hex(owner);
     for candidate in candidates {
-        let object_key =
-            crate::verbs::forget::cold_object_key(&owner_hash, candidate.handle, candidate.t);
+        let object_key = cold_object_key(&owner_hash, candidate.handle, candidate.t);
         if let Err(err) = crate::verbs::forget::forget_memory(
             tx,
             sidecars,

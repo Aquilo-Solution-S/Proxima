@@ -2,7 +2,7 @@
 
 use proxima_core::{
     ColdObjectStore, EntityId, GroupId, MembershipRow, OwnerRef, OwnerRefKind, Relation,
-    StorageError, UserId,
+    StorageError, UserId, cold_object_key, owner_hash_hex,
 };
 use sqlx::{PgPool, Postgres, Transaction};
 
@@ -540,13 +540,13 @@ async fn remint_cooled_for_handle(
     .fetch_all(&mut **tx)
     .await
     .map_err(map_err)?;
-    let world_hash = crate::verbs::forget::owner_hash_hex(&OwnerRef::World);
+    let world_hash = owner_hash_hex(&OwnerRef::World);
     let mut reminted = RemintedCold {
         old_keys: Vec::new(),
         new_keys: Vec::new(),
     };
     for (t, old_key) in rows {
-        let new_key = crate::verbs::forget::cold_object_key(&world_hash, handle, t);
+        let new_key = cold_object_key(&world_hash, handle, t);
         if new_key != old_key {
             let bytes = cold.get(&old_key).await?;
             if let Err(err) = cold.put(&new_key, &bytes).await {

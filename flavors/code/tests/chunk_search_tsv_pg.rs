@@ -15,7 +15,7 @@
 //! `proxima_core.lexical_tsv(proxima_core.lexical_join(...))`, which is the
 //! single definition core and the flavor now share.
 
-use proxima_code::payloads::CodeChunkV1;
+use proxima_code::payloads::{CODE_LEXICAL_LANGUAGE, CodeChunkV1};
 use proxima_core::AbstractionPayload;
 use proxima_pg_testkit::{create_db, db_url, drop_db, unique_db_name};
 use proxima_storage_pg::PgStorage;
@@ -35,6 +35,67 @@ fn adversarial_chunks() -> Vec<(&'static str, &'static str)> {
         ("src/long.rs", "x"),
         ("src/empty.rs", ""),
     ]
+}
+
+/// The Rust ingest path stamps `CODE_LEXICAL_LANGUAGE`; the database owns the
+/// actual SQL configuration used by the default, generated vector, and query
+/// builders. Keep those authorities synchronized at the executable boundary.
+#[tokio::test]
+async fn code_chunk_sql_authority_matches_rust_ingest_constant() {
+    let db_name = unique_db_name("proxima_test");
+    create_db(&db_name).await.expect("PG required for tests");
+    let url = db_url(&db_name);
+
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&url).await?;
+        pg.run_migrations().await?;
+        proxima_code::migrator().run(pg.pool_for_tests()).await?;
+
+        let sql_language: String =
+            sqlx::query_scalar("SELECT proxima_code.code_lexical_config()::text")
+                .fetch_one(pg.pool_for_tests())
+                .await?;
+        assert_eq!(
+            sql_language, CODE_LEXICAL_LANGUAGE,
+            "Rust code-chunk ingest language must match the SQL authority"
+        );
+
+        let default_expression: Option<String> = sqlx::query_scalar(
+            "SELECT column_default
+               FROM information_schema.columns
+              WHERE table_schema = 'proxima_code'
+                AND table_name = 'code_chunk_v1'
+                AND column_name = 'lexical_language'",
+        )
+        .fetch_one(pg.pool_for_tests())
+        .await?;
+        let default_expression = default_expression.expect("code-chunk lexical default");
+        assert!(
+            default_expression.contains("code_lexical_config"),
+            "code-chunk default must use the SQL authority: {default_expression}"
+        );
+
+        let generation_expression: Option<String> = sqlx::query_scalar(
+            "SELECT generation_expression
+               FROM information_schema.columns
+              WHERE table_schema = 'proxima_code'
+                AND table_name = 'code_chunk_v1'
+                AND column_name = 'search_tsv'",
+        )
+        .fetch_one(pg.pool_for_tests())
+        .await?;
+        let generation_expression =
+            generation_expression.expect("code-chunk search_tsv generation expression");
+        assert!(
+            generation_expression.contains("code_lexical_config"),
+            "code-chunk vector must use the SQL authority: {generation_expression}"
+        );
+        Ok(())
+    }
+    .await;
+
+    drop_db(&db_name).await.ok();
+    result.expect("code-chunk lexical authority guard failed");
 }
 
 /// The generated column must equal `lexical_tsv(lexical_join(file_path,
@@ -100,7 +161,7 @@ async fn code_chunk_search_tsv_matches_the_projection() {
             "CREATE TABLE tsv_probe (
                  file_path text,
                  text text,
-                 lexical_language regconfig NOT NULL DEFAULT 'english'::regconfig,
+                 lexical_language regconfig NOT NULL DEFAULT proxima_code.code_lexical_config(),
                  stored tsvector GENERATED ALWAYS AS ({generation}) STORED
              )"
         )))
@@ -163,7 +224,8 @@ async fn code_chunk_search_tsv_shares_core_text_search_config() {
                FROM information_schema.columns
               WHERE column_name = 'search_tsv'
                 AND table_schema IN ('proxima_core', 'proxima_code')
-                AND generation_expression NOT LIKE '%lexical_tsv%'",
+                AND generation_expression NOT LIKE '%lexical_tsv%'
+                AND generation_expression NOT LIKE '%commit_search_tsv%'",
         )
         .fetch_all(pg.pool_for_tests())
         .await?;
@@ -173,11 +235,22 @@ async fn code_chunk_search_tsv_shares_core_text_search_config() {
              substituted for core's builder expression: {rogue:?}"
         );
 
+        let commit_builder: String = sqlx::query_scalar(
+            "SELECT pg_get_functiondef(
+                        'proxima_code.commit_search_tsv(text)'::regprocedure)",
+        )
+        .fetch_one(pg.pool_for_tests())
+        .await?;
+        assert!(
+            commit_builder.contains("proxima_core.lexical_tsv"),
+            "commit prose builder must route through the core lexical_tsv helper"
+        );
+
         // A stemming query must reach a stored row: this is the property a
         // 'simple' column would silently lose.
         let stems: bool = sqlx::query_scalar(
             "SELECT proxima_core.lexical_tsv('fn parse_manifest(input: &str)')
-                    @@ websearch_to_tsquery('english'::regconfig,
+                    @@ websearch_to_tsquery(proxima_code.code_lexical_config(),
                            proxima_core.lexical_scrub('parsing manifests'))",
         )
         .fetch_one(pg.pool_for_tests())
@@ -260,9 +333,9 @@ async fn the_pinned_chunk_language_is_registered_and_matchable() {
             .execute(pg.pool_for_tests())
             .await?;
         let matched: bool = sqlx::query_scalar(
-            "SELECT proxima_core.lexical_tsv('english'::regconfig,
+            "SELECT proxima_core.lexical_tsv(proxima_code.code_lexical_config(),
                         'fn register_repo handles adopted branches quickly')
-                    @@ websearch_to_tsquery('english'::regconfig, 'adopted branches')",
+                    @@ websearch_to_tsquery(proxima_code.code_lexical_config(), 'adopted branches')",
         )
         .fetch_one(pg.pool_for_tests())
         .await?;

@@ -80,6 +80,7 @@ lock fails and retries on the next pod rather than queueing behind readers.
 | `PROXIMA_OIDC_ISSUER` | yes | `https://zitadel.example.com` | Zitadel issuer URL. |
 | `PROXIMA_OIDC_AUDIENCE` | yes | `https://proxima.example.com` | Public-origin resource id expected in token `aud`; one token covers `/mcp` and an enabled `/v1`. |
 | `PROXIMA_OIDC_JWKS_URI` | no | `https://zitadel.example.com/oauth/v2/keys` | Overrides OIDC discovery. |
+| `PROXIMA_OIDC_HTTP_TIMEOUT_SECONDS` | no | `10` | Complete-request timeout for discovery and JWKS HTTP requests, including connect and body read. Default `10`; range `1..=300`; invalid values fail boot. |
 | `PROXIMA_OIDC_SUBJECT_MAP_JSON` | yes* | `[{"iss":"https://zitadel.example.com","sub":"...","user_id":"550e8400-e29b-41d4-a716-446655440000"}]` | Issuer-aware `(iss, sub) -> user_id` identity map. Required whenever `PROXIMA_OIDC_ISSUER` is set, unless `PROXIMA_OIDC_SUBJECT_MAP` is given instead (the two are mutually exclusive). |
 | `PROXIMA_OIDC_SUBJECT_MAP` | yes* | `sub-1:550e8400-e29b-41d4-a716-446655440000` | Legacy single-issuer shorthand `sub:<uuid>,sub2:<uuid2>`; every entry binds to `PROXIMA_OIDC_ISSUER`. Valid only because exactly one issuer is ever accepted here. |
 | `PROXIMA_OIDC_ALLOWED_SUBJECTS` | no | `user1,user2` | Comma-separated `sub` allowlist layered on top of the subject map above; never an identity source by itself. |
@@ -92,6 +93,10 @@ lock fails and retries on the next pod rather than queueing behind readers.
 | `PROXIMA_EMBED_MODEL` | when enabled | `provider-embedding-model` | Embedding model id. Required with `PROXIMA_EMBED_BASE_URL` when embeddings are enabled; must return 1024-dim vectors. |
 | `PROXIMA_EMBED_MATRYOSHKA` | no | `false` | Request 1024 dimensions from a nested-prefix model wider than 1024. |
 | `PROXIMA_EMBED_MAX_INPUT_CHARS` | no | `16384` | Longest input, in characters, that will be *sent*. Unset ⇒ no client-side bound. Over-cap input is refused without a request and split into chunked embeddings instead. Minimum `4095`; below that the split cannot satisfy the cap and boot fails. Set it for a provider that dies on over-long input rather than rejecting it (a local Ollama does) — see docs/10 §Bounding embedding input. |
+| `PROXIMA_EMBED_REQUEST_TIMEOUT_SECONDS` | no | `120` | Complete provider-request timeout; range `1..=3600`. Enforced at the generic client boundary and by the shipped HTTP adapter. |
+| `PROXIMA_EMBED_BATCH_SIZE` | no | `32` | Texts per provider call; range `1..=1024`. |
+| `PROXIMA_EMBED_WORKER_INTERVAL_SECONDS` | no | `5` | Idle worker poll interval; range `1..=3600`. |
+| `PROXIMA_EMBED_STALE_CLAIM_TIMEOUT_SECONDS` | no | `900` | Crash-reclaim window; range `1..=86400`, strictly greater than request timeout. Must cover the longest honest drain interval between successful claim renewals. Live claims heartbeat every third of the window; claim-token fencing rejects writes after a real reclaim. |
 | `PROXIMA_SKIP_MIGRATIONS` | no | `true` | Boot without applying migrations, for the split-role topology above. The schema must already be at the current lane — boot fails closed otherwise. |
 | `PROXIMA_S3_BUCKET` | no | `proxima-cited-blobs` | Cited-blob bucket. |
 | `PROXIMA_S3_REGION` | no | `us-east-1` | S3 region. |
@@ -236,6 +241,8 @@ Runtime search:
 |---|---|
 | vector type | `vector(1024)`. Any embedding model must return 1024 dimensions — see `PROXIMA_EMBED_MATRYOSHKA` for nested-prefix models wider than that |
 | ANN index | shared `idx_embeddings_vec_hnsw` |
+| provider batching | `PROXIMA_EMBED_BATCH_SIZE`; host policy, not a core provider assumption |
+| durable claims | heartbeat during all provider calls; reconcile and observability use `PROXIMA_EMBED_STALE_CLAIM_TIMEOUT_SECONDS` |
 | semantic-search GUCs | `SET LOCAL hnsw.ef_search = 100`; `SET LOCAL hnsw.iterative_scan = relaxed_order`; `SET LOCAL hnsw.max_scan_tuples = 20000` |
 | cold owner subsets | planner may prefer owner btree + exact sort |
 

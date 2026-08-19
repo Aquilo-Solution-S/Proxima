@@ -59,6 +59,7 @@ Proxima::<App>::app()
 | `PROXIMA_ALLOWED_HOSTS` | Comma-separated inbound `Host` allowlist (hostnames or `host:port`, no wildcards) for the listener-wide DNS-rebinding guard; defaults to the host of `PROXIMA_PUBLIC_URL` + the allowed origins. Loopback always permitted. |
 | `PROXIMA_STREAM_MAX_LIFETIME` | Max lifetime (seconds) of an authenticated MCP (Streamable HTTP) response stream before re-validation. |
 | `PROXIMA_STREAM_EPOCH_INTERVAL` | Auth-epoch re-check interval (seconds) for an open MCP response stream. |
+| `PROXIMA_OIDC_HTTP_TIMEOUT_SECONDS` | Complete-request timeout for OIDC discovery and JWKS HTTP requests. Default `10`; range `1..=300` seconds. Covers connection establishment and response-body reads. |
 | `PROXIMA_EMBED_BASE_URL` | OpenAI-compatible `/embeddings` base URL. Required with `PROXIMA_EMBED_MODEL` to enable embeddings. |
 | `PROXIMA_EMBED_API_KEY` | Optional bearer for a hosted embedding endpoint. |
 | `PROXIMA_EMBED_MODEL` | Embedding model id. Required with `PROXIMA_EMBED_BASE_URL` to enable embeddings. |
@@ -93,6 +94,10 @@ The Streamable HTTP MCP listener turns on when `PROXIMA_MCP_BIND` (or
 | Mode | How | Identity model |
 |---|---|---|
 | Host `Authenticator` | `.authenticator(Arc<dyn Authenticator>)` | bearer resolves to an `AuthzContext` carrying current, server-resolved `OwnerRoles` |
+
+The shipped OIDC resolver bounds each discovery and JWKS request, including
+connect and body read, to `PROXIMA_OIDC_HTTP_TIMEOUT_SECONDS` (`10` by default;
+`1..=300`). Zero, malformed, and out-of-range values fail boot.
 
 `OwnerAccessPort` is not a second runtime input. The shipped
 `OidcAuthenticator` and each `OidcBinding` receive the port at construction
@@ -162,10 +167,19 @@ PROXIMA_TOOL_DENY=core_membership:add_member,core_membership:remove_member,core_
 <a id="embedding-client"></a>
 ## Embedding Client
 
-Embedding-for-retrieval is host-injected, not configured by Proxima:
+The embedding client and model are host-injected:
 
 ```rust
-builder.embed_client(client: Arc<dyn EmbeddingClient>)
+let policy = EmbeddingRuntimePolicy::new(
+    Duration::from_secs(120), // enforced request timeout
+    32,                       // provider batch width
+    Duration::from_secs(5),   // idle worker interval
+    Duration::from_secs(900), // stale-claim timeout
+)?;
+
+builder
+    .embed_client(client)
+    .embedding_runtime_policy(policy)
 ```
 
 Proxima holds no embedding-model registry and no active-model singleton —
@@ -188,6 +202,19 @@ llama.cpp, LM Studio, vLLM) needs no credential:
 | `PROXIMA_EMBED_API_KEY` | no | - | Bearer for a hosted endpoint. Omit for a local one. |
 | `PROXIMA_EMBED_MATRYOSHKA` | no | `false` | Send a `dimensions` parameter so a nested-prefix model returns 1024 rather than its native width. |
 | `PROXIMA_EMBED_MAX_INPUT_CHARS` | no | - | Longest input, in characters, that will be sent. Unset ⇒ no client-side bound. Minimum `4095`. |
+| `PROXIMA_EMBED_REQUEST_TIMEOUT_SECONDS` | no | `120` | Complete provider-request timeout. Range `1..=3600`. Core bounds every installed-client future; the shipped adapter additionally applies it to connect, send, and response read. |
+| `PROXIMA_EMBED_BATCH_SIZE` | no | `32` | Texts per provider call. Range `1..=1024`. Custom clients remain usable because batching is host policy, not a core provider constant. |
+| `PROXIMA_EMBED_WORKER_INTERVAL_SECONDS` | no | `5` | Idle in-process worker poll interval. Range `1..=3600`. |
+| `PROXIMA_EMBED_STALE_CLAIM_TIMEOUT_SECONDS` | no | `900` | Processing claim is reclaimable after this crash window. Range `1..=86400`; must be strictly greater than request timeout. |
+
+Zero, malformed, out-of-range, and unsafe combinations fail boot. Programmatic
+durations must also be integral seconds. The stale
+window must cover the longest honest drain interval between successful claim
+renewals. The drainer renews every live batch claim on a separate heartbeat every
+third of this window, including during poison isolation and chunk rescue;
+claim-token fencing still rejects any old worker write after a real reclaim.
+Both the in-process worker and `maintain-embeddings --drain` claim at most one
+configured provider batch and use the same batch rejection/isolation path.
 
 <a id="bounding-embedding-input"></a>
 ### Bounding embedding input
@@ -343,11 +370,6 @@ caveat when choosing a prune horizon.
 capability type: boot checks `dim` against the vector column;
 `matryoshka` / `max_input_chars` are host-injected client flags (see
 [Embedding Client](#embedding-client)).
-
-`LlmCaps { tool_use, json_mode, long_context, vision }` and `Dialect`
-remain named types in `proxima_core::models`. They are not a
-runtime-config surface, not an operator-`requires` registration key, and
-not a host-injected inference client.
 
 <a id="large-artefact-s3"></a>
 ## Large Artefact S3

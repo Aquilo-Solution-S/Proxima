@@ -380,7 +380,6 @@ async fn hot_path_plans_use_expected_indexes() {
         // SQL-POLICY: fixed-fragment
         let plan: serde_json::Value = sqlx::query_scalar(sqlx::AssertSqlSafe(claim_explain))
             .bind("test-embed")
-            .bind(Vec::<Uuid>::new())
             .bind(32_i64)
             .fetch_one(&mut *tx)
             .await?;

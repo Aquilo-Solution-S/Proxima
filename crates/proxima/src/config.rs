@@ -1,5 +1,5 @@
 use proxima_blob_s3::S3RuntimeConfig;
-use proxima_storage_pg::PgTuning;
+use proxima_storage_pg::{PgPoolConfig, PgTuning};
 
 use crate::EmbedError;
 
@@ -44,6 +44,16 @@ pub(crate) fn pg_tuning_from_lookup(
     PgTuning::from_lookup(lookup).map_err(|error| EmbedError::Config(error.to_string()))
 }
 
+/// Read the `PROXIMA_PG_*` pool block through the storage crate's parser.
+///
+/// Pool construction consumes this resolved value. The canonical runtime path
+/// therefore never falls back to a second process-environment read.
+pub(crate) fn pg_pool_config_from_lookup(
+    lookup: &impl Fn(&str) -> Option<String>,
+) -> Result<Option<PgPoolConfig>, EmbedError> {
+    PgPoolConfig::from_lookup(lookup).map_err(|error| EmbedError::Config(error.to_string()))
+}
+
 pub(crate) fn parse_bool_value(key: &str, raw: &str) -> Result<bool, EmbedError> {
     match raw.to_ascii_lowercase().as_str() {
         "1" | "true" | "yes" | "on" => Ok(true),
@@ -81,6 +91,14 @@ mod tests {
         ]))
         .unwrap();
         assert_eq!(s3.as_ref().map(|s| s.bucket.as_str()), Some("proxima"));
+    }
+
+    #[test]
+    fn pg_pool_config_uses_the_injected_lookup() {
+        let config = pg_pool_config_from_lookup(&env(&[("PROXIMA_PG_MAX_CONNECTIONS", "4")]))
+            .unwrap()
+            .expect("non-default pool config");
+        assert_eq!(config.max_connections, 4);
     }
 
     #[test]

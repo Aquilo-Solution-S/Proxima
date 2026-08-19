@@ -34,6 +34,9 @@ Your machine, your Postgres, your embedding model. No hosted service.
 
 ```sh
 # 1. Postgres with pgvector
+# Optional: override the published host ports when 5434 or 9100 is occupied.
+# export PROXIMA_DEV_POSTGRES_PORT=55432
+# export PROXIMA_DEV_S3_PORT=59100
 docker compose -f docker-compose.dev.yml up -d --wait postgres
 
 # 2. A local OIDC issuer. One auth path: RS256 bearer vs JWKS.
@@ -41,10 +44,19 @@ docker compose -f docker-compose.dev.yml up -d --wait postgres
 cargo run -p proxima-dev-idp
 
 # 3. In another shell, paste what step 2 printed, then:
-export DATABASE_URL=postgres://proxima:proxima@localhost:5434/proxima
+export DATABASE_URL="postgres://proxima:proxima@localhost:${PROXIMA_DEV_POSTGRES_PORT:-5434}/proxima"
 export PROXIMA_TOOL_PROFILE=full
 cargo run -p proxima-mcp
 ```
+
+The dev Compose project publishes Postgres on host port `5434` and RustFS on
+host port `9100` by default when those services are started. Set
+`PROXIMA_DEV_POSTGRES_PORT` and/or `PROXIMA_DEV_S3_PORT` before starting
+Compose to use different host ports; the container ports remain `5432` and
+`9000`. See the [local development quickstart](docs/getting-started/local-dev.md)
+for the optional RustFS startup and environment block. If you use an override,
+export the same variable in every shell where you run Compose, `dev-idp`, or
+the server.
 
 Headless MCP at `http://127.0.0.1:31415/mcp`. Code flavor is default-on;
 `--no-default-features` is substrate-only.

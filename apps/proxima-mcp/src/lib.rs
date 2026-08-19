@@ -15,8 +15,9 @@ use std::sync::Arc;
 
 use proxima::flavor::FlavorBundle;
 use proxima::{
-    AppContext, AppInfo, FlavorApp, FlavorServiceError, FlavorServices, Proxima, ProximaError,
-    RunningProxima, RuntimeBuilder, run_core_and_flavor_migrations,
+    AppContext, AppInfo, EmbeddingRuntimePolicy, FlavorApp, FlavorServiceError, FlavorServices,
+    Proxima, ProximaError, RunningProxima, RuntimeBuilder, embedding_runtime_policy_from_lookup,
+    run_core_and_flavor_migrations,
 };
 use proxima_core::protocol::profile as protocol_profile;
 use proxima_core::{
@@ -357,9 +358,11 @@ async fn run_maintain_blobs(config: MaintainBlobsConfig) -> Result<(), CliError>
 
 async fn run_maintain(config: MaintainConfig) -> Result<(), CliError> {
     let model = maintenance_embedding_model(config.model, proxima_core::process_env)?;
+    let embedding_policy = embedding_runtime_policy_from_lookup(&proxima_core::process_env)?;
     let storage = PgStorage::connect(&config.database_url)
         .await
-        .map_err(|err| ProximaError::Storage(err.to_string()))?;
+        .map_err(|err| ProximaError::Storage(err.to_string()))?
+        .with_embedding_runtime_policy(embedding_policy);
     storage
         .run_migrations()
         .await
@@ -414,13 +417,14 @@ async fn run_maintain(config: MaintainConfig) -> Result<(), CliError> {
     );
 
     if config.drain {
-        let client = embedding_client_from_env(proxima_core::process_env)?.ok_or_else(|| {
-            CliError::Runtime(ProximaError::Config(
-                "maintain-embeddings --drain requires PROXIMA_EMBED_BASE_URL and \
+        let client = embedding_client_from_env(proxima_core::process_env, embedding_policy)?
+            .ok_or_else(|| {
+                CliError::Runtime(ProximaError::Config(
+                    "maintain-embeddings --drain requires PROXIMA_EMBED_BASE_URL and \
                  PROXIMA_EMBED_MODEL; PROXIMA_EMBED_API_KEY is optional"
-                    .into(),
-            ))
-        })?;
+                        .into(),
+                ))
+            })?;
         if client.model_id() != model {
             return Err(CliError::Runtime(ProximaError::Config(format!(
                 "maintain-embeddings --drain model mismatch: queued model {model:?}, embedding client model {:?}",
@@ -640,17 +644,19 @@ fn build_app(
             .map_err(|err| CliError::Runtime(ProximaError::Storage(err.to_string())))?,
     );
     let oidc = oidc_from_env(&lookup, owner_access)?;
+    let embedding_policy = embedding_runtime_policy_from_lookup(&lookup)?;
     let mut app = Proxima::<ProximaMcpApp>::app()
-        .from_env()
+        .from_lookup(&lookup)?
         .database_url(config.database_url)
-        .tool_scope(tool_scope);
+        .tool_scope(tool_scope)
+        .embedding_runtime_policy(embedding_policy);
     if let Some(bind) = config.bind {
         app = app.mcp_bind(bind);
     }
     if let Some((authenticator, metadata)) = oidc {
         app = app.authenticator(authenticator).resource_metadata(metadata);
     }
-    if let Some(client) = embedding_client_from_env(&lookup)? {
+    if let Some(client) = embedding_client_from_env(&lookup, embedding_policy)? {
         app = app.embed_client(Arc::new(client));
     }
     Ok(app)
@@ -805,6 +811,7 @@ fn oidc_from_env(
 /// embedding input.
 fn embedding_client_from_env(
     lookup: impl Fn(&str) -> Option<String>,
+    policy: EmbeddingRuntimePolicy,
 ) -> Result<Option<OpenAiCompatEmbeddingClient>, CliError> {
     let api_key = lookup_non_empty(&lookup, PROXIMA_EMBED_API_KEY);
     let base_url = lookup_non_empty(&lookup, PROXIMA_EMBED_BASE_URL);
@@ -847,7 +854,8 @@ fn embedding_client_from_env(
     OpenAiCompatEmbeddingClient::new(
         model,
         caps,
-        proxima_llm_openai_compat::OpenAiCompatConfig::new(base_url, api_key),
+        proxima_llm_openai_compat::OpenAiCompatConfig::new(base_url, api_key)
+            .with_timeout(policy.request_timeout()),
     )
     .map(Some)
     .map_err(|err| CliError::Runtime(ProximaError::Config(err.to_string())))
@@ -1075,6 +1083,38 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn app_construction_rejects_invalid_embedding_runtime_policy() {
+        for (key, value) in [
+            (proxima_core::PROXIMA_EMBED_REQUEST_TIMEOUT_SECONDS, "0"),
+            (proxima_core::PROXIMA_EMBED_BATCH_SIZE, "bad"),
+            (proxima_core::PROXIMA_EMBED_WORKER_INTERVAL_SECONDS, "3601"),
+            (
+                proxima_core::PROXIMA_EMBED_STALE_CLAIM_TIMEOUT_SECONDS,
+                "120",
+            ),
+        ] {
+            let err = build_app(config(), |candidate| {
+                (candidate == key).then(|| value.to_string())
+            })
+            .expect_err("invalid embedding runtime policy must fail before boot");
+            assert!(err.to_string().contains(key), "{key}: {err}");
+        }
+    }
+
+    #[tokio::test]
+    async fn app_construction_resolves_pool_policy_from_its_injected_lookup() {
+        let err = build_app(config(), |key| {
+            (key == "PROXIMA_PG_MAX_CONNECTIONS").then(|| "many".to_string())
+        })
+        .expect_err("canonical app must resolve pool policy from this lookup");
+
+        assert!(
+            err.to_string().contains("PROXIMA_PG_MAX_CONNECTIONS=many"),
+            "message: {err}"
+        );
+    }
+
+    #[tokio::test]
     async fn old_reconcile_subcommand_names_the_rename() {
         let err = run(["reconcile-embeddings".to_string()])
             .await
@@ -1092,9 +1132,28 @@ mod tests {
             "PROXIMA_OIDC_AUDIENCE" => Some("proxima-mcp".into()),
             "PROXIMA_PUBLIC_URL" => Some("https://proxima.test".into()),
             "PROXIMA_OIDC_SUBJECT_MAP" => Some(format!("subject-1:{}", uuid::Uuid::nil())),
+            "PROXIMA_OIDC_HTTP_TIMEOUT_SECONDS" => Some("17".into()),
             _ => None,
         })
         .expect("app builds with oidc env");
+    }
+
+    #[tokio::test]
+    async fn oidc_env_rejects_invalid_http_timeout() {
+        let err = build_app(config(), |key| match key {
+            "PROXIMA_OIDC_ISSUER" => Some("https://idp.test".into()),
+            "PROXIMA_OIDC_AUDIENCE" => Some("proxima-mcp".into()),
+            "PROXIMA_PUBLIC_URL" => Some("https://proxima.test".into()),
+            "PROXIMA_OIDC_SUBJECT_MAP" => Some(format!("subject-1:{}", uuid::Uuid::nil())),
+            "PROXIMA_OIDC_HTTP_TIMEOUT_SECONDS" => Some("0".into()),
+            _ => None,
+        })
+        .expect_err("zero OIDC HTTP timeout must fail boot");
+        assert!(
+            err.to_string()
+                .contains("PROXIMA_OIDC_HTTP_TIMEOUT_SECONDS"),
+            "message: {err}"
+        );
     }
 
     #[tokio::test]
@@ -1319,12 +1378,15 @@ mod tests {
 
     #[test]
     fn hosted_openai_compatible_client_is_configurable() {
-        let client = embedding_client_from_env(|key| match key {
-            PROXIMA_EMBED_API_KEY => Some("secret".to_string()),
-            PROXIMA_EMBED_MODEL => Some("hosted-embed".to_string()),
-            PROXIMA_EMBED_BASE_URL => Some("https://embeddings.example/v1".to_string()),
-            _ => None,
-        })
+        let client = embedding_client_from_env(
+            |key| match key {
+                PROXIMA_EMBED_API_KEY => Some("secret".to_string()),
+                PROXIMA_EMBED_MODEL => Some("hosted-embed".to_string()),
+                PROXIMA_EMBED_BASE_URL => Some("https://embeddings.example/v1".to_string()),
+                _ => None,
+            },
+            EmbeddingRuntimePolicy::default(),
+        )
         .expect("client construction succeeds")
         .expect("explicit endpoint and model enable the client");
 
@@ -1332,16 +1394,42 @@ mod tests {
         assert_eq!(client.dim(), proxima_core::llm::EMBEDDING_DIM);
     }
 
+    #[test]
+    fn generic_request_timeout_is_wired_into_openai_compatible_client() {
+        let policy = EmbeddingRuntimePolicy::new(
+            std::time::Duration::from_secs(17),
+            8,
+            std::time::Duration::from_secs(3),
+            std::time::Duration::from_mins(1),
+        )
+        .expect("valid policy");
+        let client = embedding_client_from_env(
+            |key| match key {
+                PROXIMA_EMBED_MODEL => Some("hosted-embed".to_string()),
+                PROXIMA_EMBED_BASE_URL => Some("https://embeddings.example/v1".to_string()),
+                _ => None,
+            },
+            policy,
+        )
+        .expect("client construction succeeds")
+        .expect("configured");
+
+        assert_eq!(client.request_timeout(), std::time::Duration::from_secs(17));
+    }
+
     /// The local-first path: a loopback endpoint and no credential at all.
     /// Requiring a key here would force a fake credential into every fully
     /// local config.
     #[test]
     fn local_endpoint_needs_no_api_key() {
-        let client = embedding_client_from_env(|key| match key {
-            PROXIMA_EMBED_BASE_URL => Some("http://127.0.0.1:11434/v1".to_string()),
-            PROXIMA_EMBED_MODEL => Some("qwen3-embedding:0.6b".to_string()),
-            _ => None,
-        })
+        let client = embedding_client_from_env(
+            |key| match key {
+                PROXIMA_EMBED_BASE_URL => Some("http://127.0.0.1:11434/v1".to_string()),
+                PROXIMA_EMBED_MODEL => Some("qwen3-embedding:0.6b".to_string()),
+                _ => None,
+            },
+            EmbeddingRuntimePolicy::default(),
+        )
         .expect("client construction succeeds")
         .expect("an explicit base URL and model enable embeddings");
 
@@ -1352,7 +1440,7 @@ mod tests {
     #[test]
     fn no_embedding_config_stays_degraded() {
         assert!(
-            embedding_client_from_env(|_| None)
+            embedding_client_from_env(|_| None, EmbeddingRuntimePolicy::default())
                 .expect("no config is not an error")
                 .is_none()
         );
@@ -1375,9 +1463,11 @@ mod tests {
                 PROXIMA_EMBED_BASE_URL,
             ),
         ] {
-            let err =
-                embedding_client_from_env(|key| (key == configured_key).then(|| value.to_string()))
-                    .expect_err("partial embedding configuration must not degrade silently");
+            let err = embedding_client_from_env(
+                |key| (key == configured_key).then(|| value.to_string()),
+                EmbeddingRuntimePolicy::default(),
+            )
+            .expect_err("partial embedding configuration must not degrade silently");
             assert!(
                 err.to_string().contains(missing_key),
                 "{configured_key}: {err}"
@@ -1389,11 +1479,14 @@ mod tests {
     /// input, exactly as before.
     #[test]
     fn no_input_cap_is_configured_by_default() {
-        let client = embedding_client_from_env(|key| match key {
-            PROXIMA_EMBED_BASE_URL => Some("http://127.0.0.1:11434/v1".to_string()),
-            PROXIMA_EMBED_MODEL => Some("local-embed".to_string()),
-            _ => None,
-        })
+        let client = embedding_client_from_env(
+            |key| match key {
+                PROXIMA_EMBED_BASE_URL => Some("http://127.0.0.1:11434/v1".to_string()),
+                PROXIMA_EMBED_MODEL => Some("local-embed".to_string()),
+                _ => None,
+            },
+            EmbeddingRuntimePolicy::default(),
+        )
         .expect("client construction succeeds")
         .expect("configured");
         assert!(client.caps().max_input_chars.is_none());
@@ -1402,12 +1495,15 @@ mod tests {
     #[test]
     fn an_input_cap_is_read_from_the_environment() {
         let cap = proxima_core::llm::MIN_EMBED_INPUT_CAP_CHARS;
-        let client = embedding_client_from_env(|key| match key {
-            PROXIMA_EMBED_BASE_URL => Some("http://127.0.0.1:11434/v1".to_string()),
-            PROXIMA_EMBED_MODEL => Some("local-embed".to_string()),
-            PROXIMA_EMBED_MAX_INPUT_CHARS => Some(cap.to_string()),
-            _ => None,
-        })
+        let client = embedding_client_from_env(
+            |key| match key {
+                PROXIMA_EMBED_BASE_URL => Some("http://127.0.0.1:11434/v1".to_string()),
+                PROXIMA_EMBED_MODEL => Some("local-embed".to_string()),
+                PROXIMA_EMBED_MAX_INPUT_CHARS => Some(cap.to_string()),
+                _ => None,
+            },
+            EmbeddingRuntimePolicy::default(),
+        )
         .expect("client construction succeeds")
         .expect("configured");
         assert_eq!(
@@ -1423,12 +1519,15 @@ mod tests {
     #[test]
     fn an_input_cap_below_the_rescue_floor_refuses_to_boot() {
         let too_low = proxima_core::llm::MIN_EMBED_INPUT_CAP_CHARS - 1;
-        let err = embedding_client_from_env(|key| match key {
-            PROXIMA_EMBED_BASE_URL => Some("http://127.0.0.1:11434/v1".to_string()),
-            PROXIMA_EMBED_MODEL => Some("local-embed".to_string()),
-            PROXIMA_EMBED_MAX_INPUT_CHARS => Some(too_low.to_string()),
-            _ => None,
-        })
+        let err = embedding_client_from_env(
+            |key| match key {
+                PROXIMA_EMBED_BASE_URL => Some("http://127.0.0.1:11434/v1".to_string()),
+                PROXIMA_EMBED_MODEL => Some("local-embed".to_string()),
+                PROXIMA_EMBED_MAX_INPUT_CHARS => Some(too_low.to_string()),
+                _ => None,
+            },
+            EmbeddingRuntimePolicy::default(),
+        )
         .expect_err("a cap under the floor must not build");
         assert!(err.to_string().contains("terminal"), "{err}");
     }
@@ -1455,11 +1554,14 @@ mod tests {
     /// wire, so the client must refuse to be built at all.
     #[test]
     fn remote_plaintext_endpoint_is_refused() {
-        let err = embedding_client_from_env(|key| match key {
-            PROXIMA_EMBED_BASE_URL => Some("http://embeddings.example/v1".to_string()),
-            PROXIMA_EMBED_MODEL => Some("hosted-embed".to_string()),
-            _ => None,
-        })
+        let err = embedding_client_from_env(
+            |key| match key {
+                PROXIMA_EMBED_BASE_URL => Some("http://embeddings.example/v1".to_string()),
+                PROXIMA_EMBED_MODEL => Some("hosted-embed".to_string()),
+                _ => None,
+            },
+            EmbeddingRuntimePolicy::default(),
+        )
         .expect_err("remote plaintext must not build");
         assert!(err.to_string().contains("https"), "{err}");
     }

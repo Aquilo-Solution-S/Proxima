@@ -16,7 +16,7 @@ const ANN_CANARY_SESSION_SQL: &str = concat!(
     "SET LOCAL hnsw.iterative_scan = relaxed_order"
 );
 
-use super::{STALE_PROCESSING_RECLAIM_SECONDS, nonnegative_count, ratio_count, usize_count};
+use super::{nonnegative_count, ratio_count, usize_count};
 
 #[derive(sqlx::FromRow)]
 struct EmbeddingAnnObservabilityRow {
@@ -59,6 +59,7 @@ struct EmbeddingOrphanSweepRow {
 /// Maps SQL failures through the shared mapper.
 pub(crate) async fn embedding_ann_observability(
     pool: &PgPool,
+    stale_claim_timeout_seconds: i64,
 ) -> Result<EmbeddingAnnObservability, StorageError> {
     let row = sqlx::query_as::<_, EmbeddingAnnObservabilityRow>(
         "WITH source_entities AS MATERIALIZED (
@@ -135,7 +136,7 @@ pub(crate) async fn embedding_ann_observability(
              (SELECT count FROM orphan_heads) AS orphan_heads,
              (SELECT count FROM orphan_jobs) AS orphan_jobs",
     )
-    .bind(STALE_PROCESSING_RECLAIM_SECONDS)
+    .bind(stale_claim_timeout_seconds)
     .fetch_one(pool)
     .await
     .map_err(map_err)?;

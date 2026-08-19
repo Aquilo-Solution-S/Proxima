@@ -1,27 +1,20 @@
-//! Where an owner's bytes live in S3, and how an `Owner` reaches its rows.
-//!
-//! Every key this crate writes and every prefix the erase purge scans is
-//! derived here, so the write path and the purge cannot drift apart.
+//! Where an owner's cited bytes live in S3, and how an `Owner` reaches its
+//! rows. The persisted owner hash and cold-memory key are shared with
+//! `proxima_core`; the cited-blob prefixes remain local to this store.
 
-use proxima_core::{Owner, OwnerRefKind, UPLOADED_BLOB_SCHEMA_ID};
+use proxima_core::{Owner, UPLOADED_BLOB_SCHEMA_ID};
 use uuid::Uuid;
 
-pub(super) fn owner_hash_hex(owner: &Owner) -> String {
-    let kind = OwnerRefKind::of(owner);
-    let owner_key_id = owner.stable_key_uuid();
-    let mut hasher = blake3::Hasher::new();
-    hasher.update(b"proxima-owner-s3-key-v1\0");
-    hasher.update(kind.as_str().as_bytes());
-    hasher.update(b"\0");
-    hasher.update(owner_key_id.as_bytes());
-    hex::encode(hasher.finalize().as_bytes())
-}
+pub(super) use proxima_core::owner_hash_hex;
+
+/// Bucket-wide prefix for completed cited blobs.
+pub(super) const CANONICAL_OBJECT_PREFIX: &str = "objects/";
 
 /// Prefix under which an owner's canonical (completed) blobs live. Single
 /// source of truth for the `objects/<owner_hash>/` key space so the erase
 /// purge and the write path can never drift.
 pub(super) fn objects_owner_prefix(owner_hash: &str) -> String {
-    format!("objects/{owner_hash}/")
+    format!("{CANONICAL_OBJECT_PREFIX}{owner_hash}/")
 }
 
 /// Prefix under which an owner's in-flight (pending) uploads live.
@@ -40,16 +33,9 @@ pub(super) fn canonical_object_key(owner_hash: &str, blake3_hex: &str) -> String
     )
 }
 
-/// Forget/hydrate/erase: one object per Memory `t`.
-#[must_use]
-pub fn cold_owner_prefix(owner_hash: &str) -> String {
-    format!("cold/{owner_hash}/")
-}
-
-#[must_use]
-pub fn cold_object_key(owner_hash: &str, handle: Uuid, t: Uuid) -> String {
-    format!("{}{handle}/{t}", cold_owner_prefix(owner_hash))
-}
+/// Forget/hydrate/erase: one object per Memory `t`; the derivation is owned by
+/// `proxima_core` so storage-pg and blob-s3 cannot drift apart.
+pub use proxima_core::{cold_object_key, cold_owner_prefix};
 
 #[must_use]
 pub fn owner_hash_hex_public(owner: &Owner) -> String {
@@ -58,7 +44,7 @@ pub fn owner_hash_hex_public(owner: &Owner) -> String {
 
 #[cfg(test)]
 mod tests {
-    use proxima_core::{OwnerRef, UserId};
+    use proxima_core::{OwnerRef, OwnerRefKind, UserId};
 
     use super::*;
 
@@ -91,6 +77,7 @@ mod tests {
         let objects = objects_owner_prefix(&owner_hash);
         let pending = pending_owner_prefix(&owner_hash);
 
+        assert_eq!(CANONICAL_OBJECT_PREFIX, "objects/");
         assert_eq!(objects, format!("objects/{owner_hash}/"));
         assert_eq!(pending, format!("pending/{owner_hash}/"));
 
@@ -127,6 +114,29 @@ mod tests {
         assert_eq!(
             owner_hash_hex(&owner),
             "c022815b2b51727207c5f3014833f1a5c09ae92edfb752c394c9caa3d96374ce"
+        );
+    }
+
+    #[test]
+    fn persisted_keys_match_storage_pg_exactly() {
+        let owner = OwnerRef::Personal(UserId::new(
+            Uuid::parse_str("00000000-0000-0000-0000-000000000001").expect("uuid literal"),
+        ));
+        let owner_hash = owner_hash_hex(&owner);
+        let handle = Uuid::parse_str("00000000-0000-0000-0000-000000000002").expect("uuid literal");
+        let t = Uuid::parse_str("00000000-0000-0000-0000-000000000003").expect("uuid literal");
+
+        assert_eq!(
+            owner_hash,
+            proxima_storage_pg::verbs::forget::owner_hash_hex(&owner)
+        );
+        assert_eq!(
+            cold_object_key(&owner_hash, handle, t),
+            proxima_storage_pg::verbs::forget::cold_object_key(&owner_hash, handle, t)
+        );
+        assert_eq!(
+            cold_object_key(&owner_hash, handle, t),
+            "cold/c022815b2b51727207c5f3014833f1a5c09ae92edfb752c394c9caa3d96374ce/00000000-0000-0000-0000-000000000002/00000000-0000-0000-0000-000000000003"
         );
     }
 }

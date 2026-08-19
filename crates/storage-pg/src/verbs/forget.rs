@@ -15,38 +15,9 @@ use crate::sidecars::PgSidecarRegistryFrozen;
 
 pub const COLD_FORMAT_VERSION: u8 = 4;
 
-/// Deterministic in `(owner_hash, handle, t)`: one object per Memory `t`,
-/// not one per forget attempt. Two racing forgets of the same `t` therefore
-/// PUT the same logical record to the same key, and a hydrate → forget cycle
-/// overwrites in place instead of orphaning the object hydrate left behind.
-/// `compensate_forget_put` depends on this: the key is not owned by one
-/// attempt, so a losing attempt must not delete it.
-#[must_use]
-pub fn cold_object_key(owner_hash: &str, handle: Uuid, t: Uuid) -> String {
-    format!("cold/{owner_hash}/{handle}/{t}")
-}
-
-/// Same owner hash as `proxima-blob-s3` (`proxima-owner-s3-key-v1`).
-#[must_use]
-pub fn owner_hash_hex(owner: &Owner) -> String {
-    let kind = proxima_core::OwnerRefKind::of(owner);
-    let mut hasher = blake3::Hasher::new();
-    hasher.update(b"proxima-owner-s3-key-v1\0");
-    hasher.update(kind.as_str().as_bytes());
-    hasher.update(b"\0");
-    hasher.update(owner.stable_key_uuid().as_bytes());
-    hex_lower(hasher.finalize().as_bytes())
-}
-
-fn hex_lower(bytes: &[u8]) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut out = String::with_capacity(bytes.len().saturating_mul(2));
-    for byte in bytes {
-        out.push(char::from(HEX[usize::from(byte >> 4)]));
-        out.push(char::from(HEX[usize::from(byte & 0x0f)]));
-    }
-    out
-}
+// Keep the historical storage-path exports while routing the persisted key
+// derivation through core, the lowest crate shared by storage-pg and blob-s3.
+pub use proxima_core::{cold_object_key, owner_hash_hex};
 
 #[derive(Default)]
 pub struct MemoryColdStore {

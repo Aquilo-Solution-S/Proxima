@@ -121,7 +121,7 @@ pub struct DeriveArgs {
     #[serde(default)]
     #[schemars(
         length(max = 120),
-        description = "Optional model/agent label recorded as operator provenance (e.g. `claude-opus-4-8`), 1 to 120 chars. Defaults to the reserved `model_id` request-context field when omitted."
+        description = "Optional model/agent label recorded as operator provenance (e.g. `example-model`), 1 to 120 chars. Defaults to the reserved `model_id` request-context field when omitted."
     )]
     pub model_id: Option<String>,
     #[schemars(
@@ -214,7 +214,7 @@ impl McpTool for DeriveTool {
                 .unwrap_or_else(|| ctx.author.model_id.clone());
             // Trimmed before it is *used*, not just before it is checked. The
             // old guard tested `model_id.trim().is_empty()` and then stored
-            // and hashed the untrimmed string, so `" claude "` and `"claude"`
+            // and hashed the untrimmed string, so `" example "` and `"example"`
             // were one label to the validator and two to the idempotency key
             // derived from it — the same replay-dedup miss
             // `normalize_idempotency_key` exists to prevent.

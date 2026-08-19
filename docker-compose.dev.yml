@@ -4,19 +4,15 @@ services:
     # extension (embeddings; `vector(1024)`) and pg-init/pg-testkit do `CREATE
     # EXTENSION vector`, which needs the .so present in the image.
     image: pgvector/pgvector:pg18
-    container_name: proxima_dev_pg
-    # Survive Docker/Mac restarts so local Proxima (and aquilo wkh, which shares
-    # PROXIMA_TEST_PG_URL) don't silently fail when the box reboots.
     restart: unless-stopped
     environment:
       POSTGRES_USER: proxima
       POSTGRES_PASSWORD: proxima
       POSTGRES_DB: proxima
     ports:
-      # Host 5434 (NOT 5432) — the Homebrew postgresql@17 owns 5432 for
-      # prometheus/rechnungen/Strassberger. Point Proxima at this via
-      # PROXIMA_TEST_PG_URL=postgres://proxima:proxima@localhost:5434/proxima.
-      - "5434:5432"
+      # The host default is 5434 for compatibility. Override with
+      # PROXIMA_DEV_POSTGRES_PORT when that port is already in use.
+      - "127.0.0.1:${PROXIMA_DEV_POSTGRES_PORT:-5434}:5432"
     # Bumped from the 64MB default — test parallelism creates many
     # transient databases and PG's per-backend hash/sort memory plus
     # FK validation scans during `run_migrations` blow the 64MB cap
@@ -48,12 +44,13 @@ services:
   # make it awkward to depend on for a dev fixture.
   s3:
     image: rustfs/rustfs:1.0.0-beta.11@sha256:84ce557a0245a06a9aae5516f55ee0f007fca78d41df356f419306fdc0cb168c
-    container_name: proxima_dev_s3
     environment:
       RUSTFS_ACCESS_KEY: proxima
       RUSTFS_SECRET_KEY: proxima-dev
     ports:
-      - "9100:9000"
+      # The host default is 9100 for compatibility. Override with
+      # PROXIMA_DEV_S3_PORT when that port is already in use.
+      - "127.0.0.1:${PROXIMA_DEV_S3_PORT:-9100}:9000"
     volumes:
       - proxima_dev_s3_data:/data
     healthcheck:

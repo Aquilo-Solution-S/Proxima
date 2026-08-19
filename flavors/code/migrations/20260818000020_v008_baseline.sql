@@ -142,6 +142,69 @@ CREATE FUNCTION proxima_code.text_array_search(items text[]) RETURNS text
 $$;
 
 
+-- Code identifiers, keywords, and comments use a fixed configuration. This
+-- is deliberately independent of proxima_core.lexical_config(), which is the
+-- deployment default for human prose.
+--
+-- Commit messages and generated summaries are human prose. `simple` keeps
+-- their lexical index language-neutral without introducing a provider or
+-- runtime configuration surface.
+CREATE FUNCTION proxima_code.code_lexical_config() RETURNS regconfig
+    LANGUAGE sql IMMUTABLE PARALLEL SAFE
+    AS $$
+    SELECT 'english'::regconfig
+$$;
+
+CREATE FUNCTION proxima_code.commit_search_lexical_config() RETURNS regconfig
+    LANGUAGE sql IMMUTABLE PARALLEL SAFE
+    AS $$
+    SELECT 'simple'::regconfig
+$$;
+
+-- `simple` is the primary prose configuration. Keep the English stemmed
+-- lexemes in the same indexed vector and query arms for compatibility with
+-- existing English searches; the simple arm retains words from every other
+-- language instead of dropping them through English stop-word rules.
+CREATE FUNCTION proxima_code.commit_search_tsv(txt text) RETURNS tsvector
+    LANGUAGE sql IMMUTABLE STRICT PARALLEL SAFE
+    AS $$
+    SELECT proxima_core.lexical_tsv(proxima_code.commit_search_lexical_config(), txt)
+           || proxima_core.lexical_tsv(proxima_code.code_lexical_config(), txt)
+$$;
+
+CREATE FUNCTION proxima_code.commit_search_web_tsquery(txt text) RETURNS tsquery
+    LANGUAGE sql IMMUTABLE STRICT PARALLEL SAFE
+    AS $$
+    SELECT proxima_core.tsquery_or_agg(
+               websearch_to_tsquery(cfg, proxima_core.lexical_scrub(txt))
+               ORDER BY cfg
+           )
+      FROM unnest(ARRAY[
+          proxima_code.commit_search_lexical_config(),
+          proxima_code.code_lexical_config()
+      ]) AS configs(cfg)
+$$;
+
+CREATE FUNCTION proxima_code.commit_search_any_tsquery(txt text) RETURNS tsquery
+    LANGUAGE sql IMMUTABLE STRICT PARALLEL SAFE
+    AS $$
+    SELECT proxima_core.tsquery_or_agg(
+               NULLIF(
+                   replace(
+                       plainto_tsquery(cfg, proxima_core.lexical_scrub(txt))::text,
+                       ' & ', ' | '
+                   ),
+                   ''
+               )::tsquery
+               ORDER BY cfg
+           )
+      FROM unnest(ARRAY[
+          proxima_code.commit_search_lexical_config(),
+          proxima_code.code_lexical_config()
+      ]) AS configs(cfg)
+$$;
+
+
 SET default_tablespace = '';
 
 SET default_table_access_method = heap;
@@ -281,8 +344,8 @@ CREATE TABLE proxima_code.code_chunk_v1 (
     line_range_start bigint NOT NULL,
     line_range_end bigint NOT NULL,
     state proxima_code.file_state NOT NULL,
-    search_tsv tsvector GENERATED ALWAYS AS (proxima_core.lexical_tsv(lexical_language, proxima_core.lexical_join(VARIADIC ARRAY[NULLIF(file_path, ''::text), NULLIF(text, ''::text)]))) STORED,
-    lexical_language regconfig DEFAULT 'english'::regconfig NOT NULL,
+    lexical_language regconfig DEFAULT proxima_code.code_lexical_config() NOT NULL,
+    search_tsv tsvector GENERATED ALWAYS AS (proxima_core.lexical_tsv(proxima_code.code_lexical_config(), proxima_core.lexical_join(VARIADIC ARRAY[NULLIF(file_path, ''::text), NULLIF(text, ''::text)]))) STORED,
     embed_text text GENERATED ALWAYS AS (
         NULLIF(
             CASE state
@@ -294,7 +357,8 @@ CREATE TABLE proxima_code.code_chunk_v1 (
             ''
         )
     ) STORED,
-    CONSTRAINT code_chunk_v1_chunk_index_chk CHECK ((chunk_index >= 0))
+    CONSTRAINT code_chunk_v1_chunk_index_chk CHECK ((chunk_index >= 0)),
+    CONSTRAINT code_chunk_v1_lexical_language_chk CHECK ((lexical_language = proxima_code.code_lexical_config()))
 );
 
 
@@ -302,14 +366,14 @@ CREATE TABLE proxima_code.code_chunk_v1 (
 -- Name: COLUMN code_chunk_v1.search_tsv; Type: COMMENT; Schema: proxima_code; Owner: -
 --
 
-COMMENT ON COLUMN proxima_code.code_chunk_v1.search_tsv IS 'Lexical vector over file_path + text via the two-argument proxima_core.lexical_tsv under the row''s lexical_language (pinned english), so CodeChunkV1::search_projection() can name this column as its tsv_column. Must stay identical to lexical_tsv(lexical_language, lexical_join(<projected fields>)).';
+COMMENT ON COLUMN proxima_code.code_chunk_v1.search_tsv IS 'Lexical vector over file_path + text via the two-argument proxima_core.lexical_tsv under proxima_code.code_lexical_config() (pinned English), so CodeChunkV1::search_projection() can name this column as its tsv_column. Must stay identical to lexical_tsv(code_lexical_config(), lexical_join(<projected fields>)).';
 
 
 --
 -- Name: COLUMN code_chunk_v1.lexical_language; Type: COMMENT; Schema: proxima_code; Owner: -
 --
 
-COMMENT ON COLUMN proxima_code.code_chunk_v1.lexical_language IS 'Text-search configuration for this chunk''s stored vector. Pinned english per row: code search must not follow proxima_core.set_lexical_config, which serves the deployment''s prose.';
+COMMENT ON COLUMN proxima_code.code_chunk_v1.lexical_language IS 'Text-search configuration for this chunk''s stored vector. Pinned to proxima_code.code_lexical_config(): code search must not follow proxima_core.set_lexical_config, which serves the deployment''s prose.';
 
 
 --
@@ -335,8 +399,7 @@ CREATE TABLE proxima_code.commit_summary_v1 (
     key_files text[] NOT NULL,
     change_kind text NOT NULL,
     search_tsv tsvector GENERATED ALWAYS AS (
-        proxima_core.lexical_tsv(
-            'english'::regconfig,
+        proxima_code.commit_search_tsv(
             proxima_core.lexical_join(
                 VARIADIC ARRAY[
                     NULLIF(commit_sha, ''),
@@ -375,8 +438,7 @@ CREATE TABLE proxima_code.commit_v1 (
     committer_time timestamp with time zone NOT NULL,
     message text NOT NULL,
     search_tsv tsvector GENERATED ALWAYS AS (
-        proxima_core.lexical_tsv(
-            'english'::regconfig,
+        proxima_code.commit_search_tsv(
             proxima_core.lexical_join(
                 VARIADIC ARRAY[
                     NULLIF(sha, ''),
@@ -1432,5 +1494,3 @@ ALTER TABLE ONLY proxima_code.test_result_v1
 
 ALTER TABLE ONLY proxima_code.work_requested_v1
     ADD CONSTRAINT work_requested_v1_t_fkey FOREIGN KEY (t) REFERENCES proxima_core.memory(t);
-
-

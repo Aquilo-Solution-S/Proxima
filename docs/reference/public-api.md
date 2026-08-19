@@ -238,6 +238,23 @@ Contract:
 | rows | owner-scoped substrate rows, source cursors, registered sidecars, cited-object blob refs, delegated-grant non-secret metadata, and matching compliance audit rows; grant export omits redeemable `delegation_id` and credential material |
 | serialization | `ComplianceExportBundle::canonical_json_bytes()` emits recursively sorted-key JSON bytes |
 
+## PostgreSQL Runtime Configuration
+
+| Type / method | Import | Contract |
+|---|---|---|
+| `PgPoolConfig` | `proxima::PgPoolConfig` | Five finite pool/connection defaults; `from_lookup` resolves the `PROXIMA_PG_{MAX_CONNECTIONS,STATEMENT_TIMEOUT_MS,ACQUIRE_TIMEOUT_SECS,IDLE_TIMEOUT_SECS,MAX_LIFETIME_SECS}` block through an injected source |
+| `RuntimeBuilder::pg_pool_config(config)` | `proxima::RuntimeBuilder` | Programmatic pool policy; explicit config outranks the environment layer |
+| `Proxima::pg_pool_config(config)` | `proxima::Proxima<App>` | Host-facade passthrough to `RuntimeBuilder` |
+| `Proxima::from_lookup(lookup)` | `proxima::Proxima<App>` | Resolve the whole environment layer once from host-injected lookup; canonical storage boot does not fall back to process env |
+| `PgTuning` | `proxima::PgTuning` | Separate query/search policy; unchanged by pool configuration |
+
+`PgPoolConfig::default()` is `10` max connections, `300000ms` statement
+timeout, `5s` acquire timeout, `600s` idle timeout, and `1800s` max lifetime.
+`max_connections = 0` is invalid. Zero duration values preserve the env
+contract: statement timeout is omitted; SQLx pool durations receive zero
+unchanged. `RuntimeConfig::pg_pool_config` is the resolved value consumed by
+`ProximaBuilder`; it is not re-resolved during canonical boot.
+
 ## Embedding Ops Host API
 
 Public facade status:
@@ -249,6 +266,8 @@ Public facade status:
 | `EmbeddingOrphanCounts` | `proxima::EmbeddingOrphanCounts` | Host API DTO |
 | `EmbeddingOrphanSweepOutcome` | `proxima::EmbeddingOrphanSweepOutcome` | Host API DTO |
 | `EmbeddingRecallCanary` | `proxima::EmbeddingRecallCanary` | Host API DTO |
+| `EmbeddingRuntimePolicy` | `proxima::EmbeddingRuntimePolicy` | Validated whole-second host policy; programmatic equivalent of generic `PROXIMA_EMBED_*` runtime variables |
+| `RuntimeBuilder::embedding_runtime_policy(policy)` | `proxima::RuntimeBuilder` | Installs provider batch width, enforced request timeout, worker cadence, and claim lifecycle as one block |
 | `Engine::embedding_ann_observability(authz)` | `proxima::Engine` | Host API verb |
 | `Engine::sweep_orphan_embedding_rows(authz)` | `proxima::Engine` | Host API verb |
 

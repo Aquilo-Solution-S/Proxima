@@ -1,16 +1,18 @@
-use proxima_core::llm::{EmbeddingClient, LlmError};
+use proxima_core::llm::{
+    EMBED_LIVENESS_PROBE, EmbeddingClient, LlmError, embed_in_chunks_after_failure_with_timeout,
+    embed_many_with_timeout, embed_with_timeout,
+};
 use proxima_core::verbs::schema::MemorySearchProjection;
 use proxima_core::{EmbeddableEntityRef, EmbeddingJobClaim, StorageError};
 use sqlx::PgPool;
 
 use crate::error::map_err;
 
-use super::jobs::claim_pending_embedding_jobs_excluding;
 use super::{
-    STALE_PROCESSING_RECLAIM_SECONDS, complete_embedding_job, ensure_nonnegative_limit,
+    claim_pending_embedding_jobs, complete_embedding_job, ensure_nonnegative_limit,
     fail_embedding_job, fail_embedding_job_permanently, insert_embedding_chunks,
     insert_memory_embedding, load_embedding_texts, reclaim_stale_embedding_jobs,
-    release_embedding_jobs,
+    release_embedding_jobs, renew_embedding_jobs,
 };
 
 pub use proxima_core::{
@@ -21,6 +23,32 @@ pub use proxima_core::{
 pub struct EmbeddingInlineDrainOutcome {
     pub embedded: usize,
     pub failed: usize,
+}
+
+struct EmbeddingClaimHeartbeat {
+    handle: tokio::task::JoinHandle<()>,
+}
+
+impl Drop for EmbeddingClaimHeartbeat {
+    fn drop(&mut self) {
+        self.handle.abort();
+    }
+}
+
+fn spawn_claim_heartbeat(
+    pool: PgPool,
+    claims: Vec<EmbeddingJobClaim>,
+    interval: std::time::Duration,
+) -> EmbeddingClaimHeartbeat {
+    let handle = tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(interval).await;
+            if let Err(err) = renew_embedding_jobs(&pool, &claims).await {
+                tracing::warn!(error = %err, "inline embedding claim heartbeat failed");
+            }
+        }
+    });
+    EmbeddingClaimHeartbeat { handle }
 }
 
 const RECONCILE_EMBEDDINGS_SQL: &str = "
@@ -91,8 +119,7 @@ WITH scoped AS MATERIALIZED (
 /// `failed_permanent` jobs (`fail_embedding_job_permanently`) are NOT
 /// requeued: the provider will always reject the same input again.
 /// Live `pending`/`processing` jobs are left untouched, except that the pass
-/// first reclaims claims older than
-/// [`STALE_PROCESSING_RECLAIM_SECONDS`](super::STALE_PROCESSING_RECLAIM_SECONDS)
+/// first reclaims claims older than the host's configured stale-claim timeout
 /// — a `processing` row whose drainer died is the one backlog no enqueue can
 /// reach, because the job's unique key is already taken.
 ///
@@ -103,17 +130,18 @@ WITH scoped AS MATERIALIZED (
 pub async fn reconcile_embeddings(
     pool: &PgPool,
     options: EmbeddingReconcileOptions<'_>,
+    stale_claim_timeout_seconds: i64,
 ) -> Result<EmbeddingReconcileOutcome, StorageError> {
     let limit = resolve_reconcile_limit(options.limit)?;
     if limit == 0 {
         return Ok(EmbeddingReconcileOutcome::default());
     }
 
-    let reclaimed = reclaim_stale_embedding_jobs(pool, STALE_PROCESSING_RECLAIM_SECONDS).await?;
+    let reclaimed = reclaim_stale_embedding_jobs(pool, stale_claim_timeout_seconds).await?;
     if reclaimed > 0 {
         tracing::warn!(
             reclaimed,
-            stale_after_seconds = STALE_PROCESSING_RECLAIM_SECONDS,
+            stale_after_seconds = stale_claim_timeout_seconds,
             "reclaimed abandoned processing embedding jobs"
         );
     }
@@ -154,8 +182,9 @@ fn resolve_reconcile_limit(limit: Option<i64>) -> Result<i64, StorageError> {
     }
 }
 
-/// Drain queued embedding jobs inline. Claims the whole batch in one
-/// statement; a processed job cannot be re-claimed.
+/// Drain queued embedding jobs inline. Claims at most the host policy's
+/// provider batch width at once; a processed entity cannot be re-claimed by
+/// this invocation.
 ///
 /// # Errors
 ///
@@ -167,63 +196,139 @@ pub async fn drain_embedding_jobs_inline(
     client: &dyn EmbeddingClient,
     limit: i64,
     projections: &[MemorySearchProjection],
+    policy: proxima_core::EmbeddingRuntimePolicy,
 ) -> Result<EmbeddingInlineDrainOutcome, StorageError> {
-    let limit = ensure_nonnegative_limit(limit)?;
-    let claims =
-        claim_pending_embedding_jobs_excluding(pool, client.model_id(), limit, &[]).await?;
-    drain_claimed_jobs(pool, client, claims, projections).await
+    let mut remaining = ensure_nonnegative_limit(limit)?;
+    let batch_size = i64::try_from(policy.batch_size())
+        .map_err(|_| StorageError::ConstraintViolation("embedding batch size too large".into()))?;
+    let mut outcome = EmbeddingInlineDrainOutcome::default();
+    while remaining > 0 {
+        let claims =
+            claim_pending_embedding_jobs(pool, client.model_id(), remaining.min(batch_size))
+                .await?;
+        if claims.is_empty() {
+            break;
+        }
+        remaining = remaining.saturating_sub(i64::try_from(claims.len()).map_err(|_| {
+            StorageError::ConstraintViolation("claimed embedding job count too large".into())
+        })?);
+        let keep_draining =
+            drain_claimed_jobs(pool, client, claims, projections, policy, &mut outcome).await?;
+        if !keep_draining {
+            break;
+        }
+    }
+    Ok(outcome)
 }
 
-/// Process one claimed batch: each entity's first claim embeds, and a
-/// second claimed job for an entity already handled this drain (two queued
-/// `embedding_version`s of one entity) is released back to `pending`
-/// unprocessed — the per-iteration path's exclusion list kept such a job
-/// unclaimed, and embedding it again would only mint an identical extra
-/// version.
+/// Process one claimed batch. The database unique key admits at most one job
+/// per `(owner_id, entity_id, model_id)`, so the batch contains each entity at
+/// most once without caller-maintained exclusion state.
 async fn drain_claimed_jobs(
     pool: &PgPool,
     client: &dyn EmbeddingClient,
     claims: Vec<EmbeddingJobClaim>,
     projections: &[MemorySearchProjection],
-) -> Result<EmbeddingInlineDrainOutcome, StorageError> {
+    policy: proxima_core::EmbeddingRuntimePolicy,
+    outcome: &mut EmbeddingInlineDrainOutcome,
+) -> Result<bool, StorageError> {
+    let _heartbeat = spawn_claim_heartbeat(
+        pool.clone(),
+        claims.clone(),
+        policy.claim_heartbeat_interval(),
+    );
     let items: Vec<_> = claims
         .iter()
         .map(|claim| (claim.owner, claim.entity_kind, claim.entity_id))
         .collect();
     let texts = load_embedding_texts(pool, &items, &[], projections).await?;
-    let mut outcome = EmbeddingInlineDrainOutcome::default();
-    let mut processed_entity_ids = Vec::new();
-    let mut duplicates = Vec::new();
+    let mut batch = Vec::with_capacity(claims.len());
     for (claim, text) in claims.into_iter().zip(texts) {
-        if processed_entity_ids.contains(&claim.entity_id) {
-            duplicates.push(claim);
-            continue;
+        match text {
+            Some(text) => batch.push((claim, text)),
+            None => complete_embedding_job(pool, &claim).await?,
         }
-        processed_entity_ids.push(claim.entity_id);
-        outcome = drain_one_claim(pool, client, &claim, text.as_deref(), outcome).await?;
     }
-    if !duplicates.is_empty() {
-        release_embedding_jobs(
-            pool,
-            &duplicates,
-            "released unprocessed: entity already embedded by this drain batch",
-        )
-        .await?;
+    if batch.is_empty() {
+        return Ok(true);
     }
-    Ok(outcome)
+
+    let texts: Vec<String> = batch.iter().map(|(_, text)| text.clone()).collect();
+    match embed_many_with_timeout(client, &texts, policy.request_timeout()).await {
+        Ok(vectors) if vectors.len() != batch.len() => {
+            let error = format!(
+                "embedding batch cardinality mismatch: sent {} texts but received {} vectors",
+                batch.len(),
+                vectors.len(),
+            );
+            tracing::warn!(
+                sent = batch.len(),
+                received = vectors.len(),
+                "inline embedding provider returned malformed batch cardinality"
+            );
+            let claims: Vec<EmbeddingJobClaim> =
+                batch.into_iter().map(|(claim, _)| claim).collect();
+            release_embedding_jobs(pool, &claims, &error).await?;
+            Ok(false)
+        }
+        Ok(vectors) => {
+            for ((claim, _), vector) in batch.iter().zip(vectors) {
+                finish_claim(
+                    pool,
+                    claim,
+                    store_claim_embedding(pool, client, claim, &vector).await,
+                    outcome,
+                )
+                .await?;
+            }
+            Ok(true)
+        }
+        Err(LlmError::EmbedPermanent(_)) => {
+            drain_claims_individually(pool, client, batch, policy, outcome).await?;
+            Ok(true)
+        }
+        Err(err) => {
+            if embed_with_timeout(client, EMBED_LIVENESS_PROBE, policy.request_timeout())
+                .await
+                .is_ok()
+            {
+                tracing::warn!(
+                    error = %err,
+                    jobs = batch.len(),
+                    "transient inline embedding batch failure but provider answers; isolating inputs"
+                );
+                drain_claims_individually(pool, client, batch, policy, outcome).await?;
+                return Ok(true);
+            }
+            let claims: Vec<EmbeddingJobClaim> =
+                batch.into_iter().map(|(claim, _)| claim).collect();
+            release_embedding_jobs(pool, &claims, &format!("embed memory text: {err}")).await?;
+            Ok(false)
+        }
+    }
 }
 
-/// Embed one claim and record its terminal job state, counting the result
-/// into `outcome`. Shared by both drain shapes so the flag can only change
-/// how jobs are claimed, never what happens to a claimed job.
-async fn drain_one_claim(
+async fn drain_claims_individually(
     pool: &PgPool,
     client: &dyn EmbeddingClient,
+    batch: Vec<(EmbeddingJobClaim, String)>,
+    policy: proxima_core::EmbeddingRuntimePolicy,
+    outcome: &mut EmbeddingInlineDrainOutcome,
+) -> Result<(), StorageError> {
+    for (claim, text) in batch {
+        let result = embed_claim(pool, client, &claim, &text, policy).await;
+        finish_claim(pool, &claim, result, outcome).await?;
+    }
+    Ok(())
+}
+
+async fn finish_claim(
+    pool: &PgPool,
     claim: &EmbeddingJobClaim,
-    text: Option<&str>,
-    mut outcome: EmbeddingInlineDrainOutcome,
-) -> Result<EmbeddingInlineDrainOutcome, StorageError> {
-    match embed_claim(pool, client, claim, text).await {
+    result: Result<bool, EmbedClaimFailure>,
+    outcome: &mut EmbeddingInlineDrainOutcome,
+) -> Result<(), StorageError> {
+    match result {
         Ok(true) => {
             complete_embedding_job(pool, claim).await?;
             outcome.embedded += 1;
@@ -240,7 +345,7 @@ async fn drain_one_claim(
             fail_embedding_job(pool, claim, &err.to_string()).await?;
         }
     }
-    Ok(outcome)
+    Ok(())
 }
 
 /// Write one chunked embedding version for a claim, mirroring the engine
@@ -299,23 +404,27 @@ async fn embed_claim(
     pool: &PgPool,
     client: &dyn EmbeddingClient,
     claim: &EmbeddingJobClaim,
-    text: Option<&str>,
+    text: &str,
+    policy: proxima_core::EmbeddingRuntimePolicy,
 ) -> Result<bool, EmbedClaimFailure> {
-    // Empty exclusion list at the batch load: this drain only ever sees
-    // rows that a job was enqueued for. The queue-bypass gate lives on
-    // `EmbeddingTextPort::load_embedding_text`.
-    let Some(text) = text else {
-        return Ok(false);
-    };
-    let embedding = match client.embed(text).await {
+    let embedding = match embed_with_timeout(client, text, policy.request_timeout()).await {
         Ok(embedding) => embedding,
-        // An over-limit input is not a dead memory. The engine's drain
-        // rescues it as a chunked embedding version; this drain must do the
-        // same, or which drain happens to reach a job first decides whether
-        // the memory is recoverable — and a job failed here goes
-        // `failed_permanent`, which `reconcile_embeddings` never requeues.
-        Err(LlmError::EmbedPermanent(message)) => {
-            return match proxima_core::llm::embed_in_chunks(client, text).await {
+        // A live provider's content-attributed rejection is not a dead
+        // memory. The engine's drain rescues it as a chunked embedding
+        // version; this drain must do the same, or which drain happens to
+        // reach a job first decides whether the memory is recoverable. An
+        // ambiguous rejection is eligible only after a successful liveness
+        // probe; a failed probe remains retryable.
+        Err(error) => {
+            let initial_error = error.to_string();
+            return match embed_in_chunks_after_failure_with_timeout(
+                client,
+                text,
+                error,
+                policy.request_timeout(),
+            )
+            .await
+            {
                 Ok(Some(vectors)) => {
                     tracing::warn!(
                         entity_id = ?claim.entity_id,
@@ -326,22 +435,26 @@ async fn embed_claim(
                     store_claim_chunks(pool, client, claim, &vectors).await?;
                     Ok(true)
                 }
-                // Rejected at every length: genuinely invalid input, so the
-                // job goes terminal exactly as it did before.
+                // Rejected at every length by a live provider: genuinely
+                // invalid input, so the job goes terminal exactly as before.
                 Ok(None) => Err(EmbedClaimFailure::Permanent(format!(
-                    "embed memory text: {message}"
+                    "embed memory text: {initial_error}"
                 ))),
                 Err(err) => Err(EmbedClaimFailure::Retryable(StorageError::Internal(
                     format!("embed memory text in chunks: {err}"),
                 ))),
             };
         }
-        Err(other) => {
-            return Err(EmbedClaimFailure::Retryable(StorageError::Internal(
-                format!("embed memory text: {other}"),
-            )));
-        }
     };
+    store_claim_embedding(pool, client, claim, &embedding).await
+}
+
+async fn store_claim_embedding(
+    pool: &PgPool,
+    client: &dyn EmbeddingClient,
+    claim: &EmbeddingJobClaim,
+    embedding: &[f32],
+) -> Result<bool, EmbedClaimFailure> {
     if embedding.len() != client.dim() {
         return Err(StorageError::ConstraintViolation(format!(
             "embedding dim mismatch: client dim {} but vector len {}",
@@ -362,7 +475,7 @@ async fn embed_claim(
         claim.entity_id,
         client.model_id(),
         client.dim(),
-        &embedding,
+        embedding,
     )
     .await?;
     tx.commit().await.map_err(map_err)?;

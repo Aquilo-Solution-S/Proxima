@@ -308,6 +308,13 @@ impl EmbeddingJobPort for EmbeddingJobFake {
         fake_error()
     }
 
+    async fn renew_embedding_jobs(
+        &self,
+        _claims: &[EmbeddingJobClaim],
+    ) -> Result<u64, StorageError> {
+        fake_error()
+    }
+
     async fn fail_embedding_job(
         &self,
         claim: &EmbeddingJobClaim,
@@ -357,9 +364,10 @@ impl EmbeddingJobPort for EmbeddingJobFake {
 impl EmbeddingMaintenancePort for EmbeddingJobFake {
     async fn embedding_ann_observability(
         &self,
+        policy: proxima_core::EmbeddingRuntimePolicy,
         proof: OperatorMaintenanceProof,
     ) -> Result<EmbeddingAnnObservability, StorageError> {
-        let _ = proof;
+        let _ = (policy, proof);
         fake_error()
     }
 
@@ -374,9 +382,10 @@ impl EmbeddingMaintenancePort for EmbeddingJobFake {
     async fn reconcile_embeddings(
         &self,
         options: proxima_core::EmbeddingReconcileOptions<'_>,
+        policy: proxima_core::EmbeddingRuntimePolicy,
         proof: OperatorMaintenanceProof,
     ) -> Result<proxima_core::EmbeddingReconcileOutcome, StorageError> {
-        let _ = (options, proof);
+        let _ = (options, policy, proof);
         fake_error()
     }
 }

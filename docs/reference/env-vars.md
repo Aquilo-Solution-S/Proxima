@@ -2,22 +2,28 @@
 
 This table is a human reference. Source code and deployment manifests remain authoritative.
 
-**Empty means unset.** Every variable below is trimmed before it is read, and a
-variable set to the empty string — or to nothing but whitespace — is treated
-exactly as if it were absent, taking the `Default` column. Exporting `FOO=` is
-therefore never a way to say something different from leaving `FOO` out. This
-also means a trailing newline picked up from a here-doc or a mounted secret
-file is harmless rather than a startup error naming a value nobody typed.
+**Runtime parsing.** Ordinary Proxima runtime and deployment settings are
+trimmed before they are read. A variable set to the empty string — or to
+nothing but whitespace — is treated exactly as if it were absent, taking the
+`Default` column. Exporting `FOO=` is therefore never a way to say something
+different from leaving `FOO` out. A trailing newline picked up from a here-doc
+is harmless rather than a startup error naming a value nobody typed.
 
 The one deliberate exception is the `env:` secret scheme, where an empty
 variable resolves as a present-but-empty secret and the consumer decides
 whether that is legal.
 
+**Dev Compose interpolation.** The Dev Compose variables below are consumed by
+Docker Compose, not Proxima's runtime parser. The `${VAR:-default}` form selects
+`default` when `VAR` is unset or empty. Compose does not trim values, so a
+whitespace-only value is passed through and rejected as an invalid `hostPort`;
+set a valid non-whitespace host port such as `55432` instead.
+
 ## Runtime and Deployment Variables
 
 | Variable | Scope | Default | Required when | Notes |
 |---|---|---|---|---|
-| `DATABASE_URL` | storage | binary default: `postgres://postgres@localhost/proxima_dev` | any non-default DB | dev compose uses `postgres://proxima:proxima@localhost:5434/proxima` |
+| `DATABASE_URL` | storage | binary default: `postgres://postgres@localhost/proxima_dev` | any non-default DB | dev compose uses `postgres://proxima:proxima@localhost:${PROXIMA_DEV_POSTGRES_PORT:-5434}/proxima` |
 | `PROXIMA_MCP_BIND` | MCP server | `127.0.0.1:31415` for `proxima-mcp` | custom listener / deployment | non-loopback requires `PROXIMA_EXPOSE_NETWORK=true` |
 | `PROXIMA_EXPOSE_NETWORK` | MCP server | unset/false | non-loopback bind | fail-closed exposure gate |
 | `PROXIMA_ALLOWED_ORIGINS` | MCP HTTP | unset/deployment-specific | browser/front-door exposure | listener-wide CORS allowlist; comma-separated; never wildcard |
@@ -26,6 +32,7 @@ whether that is legal.
 | `PROXIMA_OIDC_ISSUER` | OIDC auth | unset | OIDC deployment | issuer URL |
 | `PROXIMA_OIDC_AUDIENCE` | OIDC auth | unset | OIDC deployment | expected token audience |
 | `PROXIMA_OIDC_JWKS_URI` | OIDC auth | discovery default | non-default JWKS | overrides discovery |
+| `PROXIMA_OIDC_HTTP_TIMEOUT_SECONDS` | OIDC auth | `10` | slower issuer response budget | complete discovery/JWKS request timeout, including connect and body read; range `1..=300`; invalid values fail boot |
 | `PROXIMA_OIDC_ALLOWED_SUBJECTS` | OIDC auth | unset | subject allowlist desired | comma-separated `sub` values |
 | `PROXIMA_OIDC_SUBJECT_MAP_JSON` | OIDC auth | unset | OIDC deployment unless shorthand is used | issuer-aware `(iss, sub) -> user_id` JSON map; mutually exclusive with `PROXIMA_OIDC_SUBJECT_MAP` |
 | `PROXIMA_OIDC_SUBJECT_MAP` | OIDC auth | unset | OIDC deployment unless JSON map is used | single-issuer `sub:<uuid>` shorthand bound to `PROXIMA_OIDC_ISSUER`; mutually exclusive with JSON map |
@@ -39,12 +46,17 @@ whether that is legal.
 | `PROXIMA_EMBED_API_KEY` | embeddings | unset | hosted embedding endpoint | bearer sent to `/embeddings` |
 | `PROXIMA_EMBED_MODEL` | embeddings | unset | embeddings enabled | required with `PROXIMA_EMBED_BASE_URL`; must yield 1024-dim vectors |
 | `PROXIMA_EMBED_MATRYOSHKA` | embeddings | `false` | nested-prefix model wider than 1024 | sends a `dimensions` request parameter |
+| `PROXIMA_EMBED_MAX_INPUT_CHARS` | embeddings | unset | provider needs a client-side input bound | longest input, in characters, sent before chunked rescue; unset/empty/whitespace means no client-side bound; minimum `4095`; invalid values fail boot |
+| `PROXIMA_EMBED_REQUEST_TIMEOUT_SECONDS` | embedding runtime | `120` | slow provider | complete provider request timeout; range `1..=3600`; invalid values fail boot |
+| `PROXIMA_EMBED_BATCH_SIZE` | embedding runtime | `32` | provider batch tuning | texts per provider call; range `1..=1024`; invalid values fail boot |
+| `PROXIMA_EMBED_WORKER_INTERVAL_SECONDS` | embedding runtime | `5` | worker cadence tuning | idle poll seconds; range `1..=3600`; invalid values fail boot |
+| `PROXIMA_EMBED_STALE_CLAIM_TIMEOUT_SECONDS` | embedding runtime | `900` | crash-reclaim tuning | range `1..=86400`; must be strictly greater than request timeout and cover the longest honest drain interval between successful claim renewals |
 | `PROXIMA_SKIP_MIGRATIONS` | boot | `false` | split-role GitOps deploys | boot without applying migrations; the schema must already be at the current lane or boot fails closed |
-| `PROXIMA_PG_MAX_CONNECTIONS` | Postgres pool | `10` | tuning pool size | minimum 1 |
-| `PROXIMA_PG_STATEMENT_TIMEOUT_MS` | Postgres pool | `300000` | tuning request timeouts | `0` disables; migrations and bulk erase opt out separately |
-| `PROXIMA_PG_ACQUIRE_TIMEOUT_SECS` | Postgres pool | `5` | tuning pool acquisition | seconds |
-| `PROXIMA_PG_IDLE_TIMEOUT_SECS` | Postgres pool | `600` | tuning connection reuse | seconds |
-| `PROXIMA_PG_MAX_LIFETIME_SECS` | Postgres pool | `1800` | tuning connection recycling | seconds |
+| `PROXIMA_PG_MAX_CONNECTIONS` | Postgres pool | `10` | tuning pool size | minimum 1; invalid values fail config resolution |
+| `PROXIMA_PG_STATEMENT_TIMEOUT_MS` | Postgres pool | `300000` | tuning request timeouts | `0` disables by omitting the Postgres option; migrations and bulk erase opt out separately |
+| `PROXIMA_PG_ACQUIRE_TIMEOUT_SECS` | Postgres pool | `5` | tuning pool acquisition | seconds; `0` is passed to SQLx unchanged |
+| `PROXIMA_PG_IDLE_TIMEOUT_SECS` | Postgres pool | `600` | tuning connection reuse | seconds; `0` is passed to SQLx unchanged |
+| `PROXIMA_PG_MAX_LIFETIME_SECS` | Postgres pool | `1800` | tuning connection recycling | seconds; `0` is passed to SQLx unchanged |
 | `PROXIMA_PG_SEMANTIC_INDEX_FIRST` | Postgres search | `pushdown` | restoring legacy semantic membership | `off` \| `overfetch` \| `pushdown`. Where the semantic branch's nearest-neighbour scan sits relative to the eligibility joins. The index-first modes (`overfetch`, `pushdown`) change result membership: the eligibility and query filters apply to a bounded ANN candidate window, so a matching row past the window can be missed (an ANN-window approximation — recall, never scope: no mode ever returns a row the filters exclude). `pushdown` is the new default and additionally pushes the owner scope onto the index scan. `off` restores the exact legacy membership: every filter applies under the scan's limit and the branch is exact |
 | `PROXIMA_PG_CANDIDATE_WINDOW_DEDUP` | Postgres search | `true` | restoring legacy statement text | window-function candidate dedup and a unique-join supersedes anti-join instead of `DISTINCT ON` and a per-row `NOT EXISTS` probe. Result membership is identical either way; `off` restores the legacy SQL text |
 | `PROXIMA_PG_HNSW_EF_SEARCH` | Postgres search | `100` | tuning ANN recall/latency | pgvector `hnsw.ef_search` for the semantic branch's session; range `1..=1000` (the GUC's own bounds); out-of-range refuses at boot |
@@ -68,6 +80,17 @@ whether that is legal.
 | `--database-url <URL>` | non-default DB without `DATABASE_URL` | overrides the Postgres URL |
 | `--bind <ADDR>` | custom loopback listener | non-loopback binds use env-gated deployment config |
 
+## Dev Compose Variables
+
+These variables affect only the host ports published by
+`docker-compose.dev.yml`. Set them before `docker compose up`; container ports
+remain fixed at `5432` (Postgres) and `9000` (RustFS).
+
+| Variable | Scope | Default | Required when | Notes |
+|---|---|---|---|---|
+| `PROXIMA_DEV_POSTGRES_PORT` | dev Compose | `5434` | the default host port is occupied | published host port for pgvector Postgres; use the same value in `DATABASE_URL` |
+| `PROXIMA_DEV_S3_PORT` | dev Compose | `9100` | the default host port is occupied | published host port for RustFS; use `http://127.0.0.1:<port>` as `PROXIMA_S3_ENDPOINT_URL` |
+
 ## Build/Test/Internal Variables
 
 | Variable | Scope | Notes |
@@ -79,9 +102,10 @@ whether that is legal.
 ## Source Inventory Reconciliation
 
 Inventory sources checked: `docs/10-configuration.md`, `docs/15-deployment.md`,
+`docker-compose.dev.yml`,
 `apps/proxima-mcp/src/lib.rs`, `crates/proxima/src/runtime_config.rs`,
 `crates/proxima/src/config.rs`, `crates/storage-pg/src/lib.rs`,
-`crates/storage-pg/src/tuning.rs`,
+`crates/storage-pg/src/pool_config.rs`, `crates/storage-pg/src/tuning.rs`,
 `crates/storage-pg/src/verbs/consolidate/events.rs`,
 `crates/blob-s3/src/config.rs`, and `.github/workflows/ci.yml`. Runtime variables from that inventory are listed in
 the runtime table. Test-only and source-constant names are listed under

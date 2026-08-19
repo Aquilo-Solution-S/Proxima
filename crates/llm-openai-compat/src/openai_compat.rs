@@ -16,7 +16,7 @@ use crate::{build_client, ensure_secure_base_url, join_endpoint};
 /// fast request, and the in-process serial drainer must not stall for
 /// minutes on one wedged call. Override with
 /// [`OpenAiCompatConfig::with_timeout`] for unusually slow local models.
-pub const DEFAULT_EMBED_TIMEOUT: Duration = Duration::from_mins(2);
+pub const DEFAULT_EMBED_TIMEOUT: Duration = proxima_core::llm::DEFAULT_EMBED_REQUEST_TIMEOUT;
 
 #[derive(Clone)]
 pub struct OpenAiCompatConfig {
@@ -131,37 +131,32 @@ struct OpenAiEmbeddingDatum {
     embedding: Vec<f32>,
 }
 
-/// Signatures of a provider that never reached its model, as they appear
-/// inside an otherwise input-shaped error body. All Go transport errors —
-/// Ollama proxies `/v1/embeddings` to a per-model runner and reports the
-/// runner's connection failures this way.
-const TRANSPORT_FAILURE_MARKERS: [&str; 7] = [
-    ": eof",
-    "connection refused",
-    "connection reset",
-    "broken pipe",
-    "context deadline exceeded",
-    "i/o timeout",
-    "no such host",
-];
-
-/// Whether a non-success `/embeddings` status is one retries cannot fix.
-/// 400/413/422 reject the request itself (over-limit input, malformed
-/// payload); 408/429/5xx are transient.
+/// Whether a non-success `/embeddings` status is evidence of a request that
+/// retries cannot fix.
 ///
-/// A 400 only means "your input is bad" when the provider looked at the
-/// input. Ollama returns 400 on its own runner-connection EOF — a transport
-/// failure wearing an input-rejection status. Treating that as permanent
-/// sends the job to `fail_embedding_job_permanently`, which
-/// `reconcile_embeddings` will not requeue.
-fn permanent_embed_status(status: reqwest::StatusCode, body: &str) -> bool {
-    if !matches!(status.as_u16(), 400 | 413 | 422) {
-        return false;
+/// Only statuses that unambiguously identify the submitted entity as the
+/// rejected cause are permanent. 400 is deliberately ambiguous: compatible
+/// endpoints use it for input limits, malformed requests, authentication,
+/// routing, and provider failures alike. Liveness probes at the drain and
+/// per-item rescue boundaries handle that ambiguity without fencing a
+/// repairable job forever.
+/// Every other non-success status remains retryable, including auth, routing,
+/// policy, and server responses.
+///
+/// Classification deliberately depends only on the HTTP status. Compatible
+/// endpoints may format error bodies differently, and free-text bodies cannot
+/// establish whether the input or the service caused a failure.
+fn permanent_embed_status(status: reqwest::StatusCode) -> bool {
+    matches!(status.as_u16(), 413 | 422)
+}
+
+fn embed_http_error(status: reqwest::StatusCode, body: &str) -> LlmError {
+    let message = format!("openai-compatible /embeddings returned {status}: {body}");
+    if permanent_embed_status(status) {
+        LlmError::EmbedPermanent(message)
+    } else {
+        LlmError::Embed(message)
     }
-    let lowered = body.to_ascii_lowercase();
-    !TRANSPORT_FAILURE_MARKERS
-        .iter()
-        .any(|marker| lowered.contains(marker))
 }
 
 impl OpenAiCompatEmbeddingClient {
@@ -173,6 +168,12 @@ impl OpenAiCompatEmbeddingClient {
     #[must_use]
     pub fn caps(&self) -> EmbedCaps {
         self.caps
+    }
+
+    /// Complete-request timeout applied to the underlying HTTP client.
+    #[must_use]
+    pub const fn request_timeout(&self) -> Duration {
+        self.config.timeout
     }
 
     /// Refuse over-cap input *before* it is sent, naming the bound it broke.
@@ -231,12 +232,7 @@ impl OpenAiCompatEmbeddingClient {
             .map_err(|e| LlmError::Embed(format!("HTTP body read: {e}")))?;
 
         if !status.is_success() {
-            let message = format!("openai-compatible /embeddings returned {status}: {text_body}");
-            return Err(if permanent_embed_status(status, &text_body) {
-                LlmError::EmbedPermanent(message)
-            } else {
-                LlmError::Embed(message)
-            });
+            return Err(embed_http_error(status, &text_body));
         }
 
         let parsed: OpenAiEmbeddingResponse = serde_json::from_str(&text_body).map_err(|e| {
@@ -510,7 +506,7 @@ mod tests {
 
     #[test]
     fn client_allows_loopback_http_base_url() {
-        // Ollama default and IPv4/IPv6 loopback plaintext must keep working.
+        // IPv4/IPv6 loopback plaintext must keep working.
         for base in [
             "http://LOCALHOST:11434/v1",
             "http://127.0.0.1:11434/v1",
@@ -525,72 +521,68 @@ mod tests {
     }
 
     #[test]
-    fn permanent_statuses_are_request_rejections_only() {
+    fn status_policy_is_independent_of_error_body() {
         use reqwest::StatusCode;
-        // Rejections of the request itself — retrying the same input can
-        // never succeed, so jobs must go terminal.
-        let input_rejection =
-            r#"{"error":{"message":"input exceeds maximum context length of 512 tokens"}}"#;
-        for permanent in [
-            StatusCode::BAD_REQUEST,
-            StatusCode::PAYLOAD_TOO_LARGE,
-            StatusCode::UNPROCESSABLE_ENTITY,
-        ] {
-            assert!(
-                super::permanent_embed_status(permanent, input_rejection),
-                "{permanent}"
-            );
+        let bodies = [
+            "",
+            "EOF",
+            r#"{"error":{"message":"input exceeds the configured limit"}}"#,
+            r#"{"message":"temporary service condition"}"#,
+            "arbitrary text with no protocol meaning",
+        ];
+        let policy = [
+            (400, false),
+            (401, false),
+            (402, false),
+            (403, false),
+            (404, false),
+            (405, false),
+            (406, false),
+            (407, false),
+            (408, false),
+            (409, false),
+            (410, false),
+            (411, false),
+            (412, false),
+            (413, true),
+            (414, false),
+            (415, false),
+            (416, false),
+            (417, false),
+            (418, false),
+            (421, false),
+            (422, true),
+            (423, false),
+            (424, false),
+            (425, false),
+            (426, false),
+            (428, false),
+            (429, false),
+            (431, false),
+            (451, false),
+            (500, false),
+            (501, false),
+            (502, false),
+            (503, false),
+            (504, false),
+            (505, false),
+            (506, false),
+            (507, false),
+            (508, false),
+            (510, false),
+            (511, false),
+        ];
+        for (code, expected_permanent) in policy {
+            let status = StatusCode::from_u16(code).expect("valid HTTP status");
+            for body in bodies {
+                let error = super::embed_http_error(status, body);
+                assert_eq!(
+                    matches!(error, LlmError::EmbedPermanent(_)),
+                    expected_permanent,
+                    "status {status} was classified from its body: {body:?}",
+                );
+            }
         }
-        // Auth, rate-limit, timeout, and server-side failures are all
-        // retryable: the same input may embed fine later.
-        for transient in [
-            StatusCode::UNAUTHORIZED,
-            StatusCode::FORBIDDEN,
-            StatusCode::NOT_FOUND,
-            StatusCode::REQUEST_TIMEOUT,
-            StatusCode::TOO_MANY_REQUESTS,
-            StatusCode::INTERNAL_SERVER_ERROR,
-            StatusCode::BAD_GATEWAY,
-            StatusCode::SERVICE_UNAVAILABLE,
-        ] {
-            assert!(
-                !super::permanent_embed_status(transient, input_rejection),
-                "{transient}"
-            );
-        }
-    }
-
-    /// Verbatim bodies a local Ollama returns when its connection to the
-    /// model runner drops. The status is 400, but nothing looked at the
-    /// input, so retrying is exactly what should happen.
-    #[test]
-    fn a_transport_failure_dressed_as_400_is_not_permanent() {
-        use reqwest::StatusCode;
-        for body in [
-            r#"{"error":{"message":"do embedding request: Post \"http://127.0.0.1:50103/v1/embeddings\": EOF","type":"invalid_request_error"}}"#,
-            r#"{"error":{"message":"Post \"http://127.0.0.1:9001/v1/embeddings\": dial tcp: connection refused"}}"#,
-            r#"{"error":{"message":"Post \"http://127.0.0.1:9001/v1/embeddings\": context deadline exceeded"}}"#,
-            r#"{"error":{"message":"read tcp 127.0.0.1:1: connection reset by peer"}}"#,
-            r#"{"error":{"message":"write tcp: broken pipe"}}"#,
-            r#"{"error":{"message":"dial tcp: lookup embed.internal: no such host"}}"#,
-            r#"{"error":{"message":"Post \"http://x/v1/embeddings\": i/o timeout"}}"#,
-        ] {
-            assert!(
-                !super::permanent_embed_status(StatusCode::BAD_REQUEST, body),
-                "must stay retryable: {body}"
-            );
-        }
-    }
-
-    /// The marker match must not swallow a real input rejection that merely
-    /// mentions the end of the input.
-    #[test]
-    fn an_input_rejection_naming_eof_is_still_permanent() {
-        use reqwest::StatusCode;
-        assert!(super::permanent_embed_status(
-            StatusCode::BAD_REQUEST,
-            r#"{"error":{"message":"unexpected EOF while parsing input array"}}"#
-        ));
     }
 
     #[test]

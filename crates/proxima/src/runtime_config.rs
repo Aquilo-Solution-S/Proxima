@@ -4,14 +4,16 @@ use std::time::Duration;
 
 use proxima_blob_s3::S3RuntimeConfig;
 use proxima_core::{
-    Authenticator, EmbeddingClient, FlavorServiceError, Owner, RevalidationConfig, ToolScope,
-    is_loopback_host,
+    Authenticator, EmbeddingClient, EmbeddingRuntimePolicy, FlavorServiceError, Owner,
+    RevalidationConfig, ToolScope, is_loopback_host,
 };
 use proxima_mcp_server::ResourceServerMetadata;
-use proxima_storage_pg::PgTuning;
+use proxima_storage_pg::{PgPoolConfig, PgTuning};
 
 use crate::EmbedError;
-use crate::config::{parse_bool_value, pg_tuning_from_lookup, s3_from_lookup};
+use crate::config::{
+    parse_bool_value, pg_pool_config_from_lookup, pg_tuning_from_lookup, s3_from_lookup,
+};
 
 const DEFAULT_MCP_BIND: &str = "127.0.0.1:31415";
 
@@ -32,10 +34,12 @@ pub struct RuntimeBuilder {
     insecure_single_owner: bool,
     rest_enabled: Option<bool>,
     skip_migrations: Option<bool>,
+    pg_pool_config: Option<PgPoolConfig>,
     pg_tuning: Option<PgTuning>,
     authenticator: Option<Arc<dyn Authenticator>>,
     resource_metadata: Option<ResourceServerMetadata>,
     embed_client: Option<Arc<dyn EmbeddingClient>>,
+    embedding_runtime_policy: Option<EmbeddingRuntimePolicy>,
 }
 
 impl std::fmt::Debug for RuntimeBuilder {
@@ -55,10 +59,12 @@ impl std::fmt::Debug for RuntimeBuilder {
             .field("insecure_single_owner", &self.insecure_single_owner)
             .field("rest_enabled", &self.rest_enabled)
             .field("skip_migrations", &self.skip_migrations)
+            .field("pg_pool_config", &self.pg_pool_config)
             .field("pg_tuning", &self.pg_tuning)
             .field("has_authenticator", &self.authenticator.is_some())
             .field("has_resource_metadata", &self.resource_metadata.is_some())
             .field("has_embed_client", &self.embed_client.is_some())
+            .field("embedding_runtime_policy", &self.embedding_runtime_policy)
             .finish()
     }
 }
@@ -81,10 +87,14 @@ impl RuntimeBuilder {
             insecure_single_owner: self.insecure_single_owner || base.insecure_single_owner,
             rest_enabled: self.rest_enabled.or(base.rest_enabled),
             skip_migrations: self.skip_migrations.or(base.skip_migrations),
+            pg_pool_config: self.pg_pool_config.or(base.pg_pool_config),
             pg_tuning: self.pg_tuning.or(base.pg_tuning),
             authenticator: self.authenticator.or(base.authenticator),
             resource_metadata: self.resource_metadata.or(base.resource_metadata),
             embed_client: self.embed_client.or(base.embed_client),
+            embedding_runtime_policy: self
+                .embedding_runtime_policy
+                .or(base.embedding_runtime_policy),
         }
     }
 
@@ -208,8 +218,19 @@ impl RuntimeBuilder {
         self
     }
 
-    /// Set the Postgres query tuning, bypassing the `PROXIMA_PG_*` block a
-    /// deployment would otherwise be read from. Its defaults are this
+    /// Set Postgres pool and per-connection timeout policy.
+    ///
+    /// Env equivalents are `PROXIMA_PG_MAX_CONNECTIONS`,
+    /// `PROXIMA_PG_STATEMENT_TIMEOUT_MS`, `PROXIMA_PG_ACQUIRE_TIMEOUT_SECS`,
+    /// `PROXIMA_PG_IDLE_TIMEOUT_SECS`, and `PROXIMA_PG_MAX_LIFETIME_SECS`.
+    #[must_use]
+    pub fn pg_pool_config(mut self, pg_pool_config: PgPoolConfig) -> Self {
+        self.pg_pool_config = Some(pg_pool_config);
+        self
+    }
+
+    /// Set the Postgres query tuning, bypassing the `PROXIMA_PG_*` search
+    /// variables a deployment would otherwise read. Its defaults are this
     /// release's shipped behaviour, so a host that never calls this and an
     /// environment that sets nothing are the same deployment.
     #[must_use]
@@ -237,6 +258,14 @@ impl RuntimeBuilder {
     #[must_use]
     pub fn embed_client(mut self, client: Arc<dyn EmbeddingClient>) -> Self {
         self.embed_client = Some(client);
+        self
+    }
+
+    /// Set provider batching, request timeout, worker cadence, and durable
+    /// claim lifecycle as one validated policy block.
+    #[must_use]
+    pub fn embedding_runtime_policy(mut self, policy: EmbeddingRuntimePolicy) -> Self {
+        self.embedding_runtime_policy = Some(policy);
         self
     }
 
@@ -294,6 +323,9 @@ impl RuntimeBuilder {
                 .map(|raw| parse_bool_value("PROXIMA_SKIP_MIGRATIONS", &raw))
                 .transpose()?;
         }
+        if self.pg_pool_config.is_none() {
+            self.pg_pool_config = pg_pool_config_from_lookup(&lookup)?;
+        }
         if self.pg_tuning.is_none() {
             self.pg_tuning = pg_tuning_from_lookup(&lookup)?;
         }
@@ -314,6 +346,9 @@ impl RuntimeBuilder {
             self.epoch_check_interval = lookup("PROXIMA_STREAM_EPOCH_INTERVAL")
                 .map(|raw| parse_duration_seconds("PROXIMA_STREAM_EPOCH_INTERVAL", &raw))
                 .transpose()?;
+        }
+        if self.embedding_runtime_policy.is_none() && embedding_runtime_policy_env_is_set(&lookup) {
+            self.embedding_runtime_policy = Some(embedding_runtime_policy_from_lookup(&lookup)?);
         }
         Ok(self)
     }
@@ -358,6 +393,7 @@ impl RuntimeBuilder {
             authenticator: self.authenticator,
             embed_client: self.embed_client,
         };
+        let pg_pool_config = self.pg_pool_config.unwrap_or_default();
         let config = RuntimeConfig {
             database_url,
             s3: self.s3,
@@ -371,11 +407,13 @@ impl RuntimeBuilder {
             insecure_single_owner: self.insecure_single_owner,
             rest_enabled: self.rest_enabled.unwrap_or(false),
             skip_migrations: self.skip_migrations.unwrap_or(false),
+            pg_pool_config,
             pg_tuning: self.pg_tuning.unwrap_or_default(),
             auth: RuntimeAuthState {
                 has_host_authenticator: parts.authenticator.is_some(),
             },
             resource_metadata: self.resource_metadata,
+            embedding_runtime_policy: self.embedding_runtime_policy.unwrap_or_default(),
         };
         config.validate()?;
         Ok((config, parts))
@@ -415,6 +453,9 @@ pub struct RuntimeConfig {
     /// Boot without applying migrations (preflight only) — schema is migrated
     /// out-of-band under a DDL role in split-role `GitOps` deploys.
     pub skip_migrations: bool,
+    /// Postgres pool size and timeout policy. Resolved once before storage
+    /// construction; the canonical boot path never re-reads process env.
+    pub pg_pool_config: PgPoolConfig,
     /// Postgres query tuning (`PROXIMA_PG_*`). Defaults are this release's
     /// shipped behaviour, so an unset environment is production;
     /// `PROXIMA_PG_SEMANTIC_INDEX_FIRST=off` restores the legacy semantic
@@ -422,6 +463,7 @@ pub struct RuntimeConfig {
     pub pg_tuning: PgTuning,
     pub auth: RuntimeAuthState,
     pub resource_metadata: Option<ResourceServerMetadata>,
+    pub embedding_runtime_policy: EmbeddingRuntimePolicy,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -444,9 +486,11 @@ impl std::fmt::Debug for RuntimeConfig {
             .field("insecure_single_owner", &self.insecure_single_owner)
             .field("rest_enabled", &self.rest_enabled)
             .field("skip_migrations", &self.skip_migrations)
+            .field("pg_pool_config", &self.pg_pool_config)
             .field("pg_tuning", &self.pg_tuning)
             .field("auth", &self.auth)
             .field("resource_metadata", &self.resource_metadata)
+            .field("embedding_runtime_policy", &self.embedding_runtime_policy)
             .finish()
     }
 }
@@ -458,6 +502,9 @@ impl RuntimeConfig {
     ///
     /// Returns `ProximaError::Security` when transport exposure is unsafe.
     pub fn validate(&self) -> Result<(), ProximaError> {
+        self.pg_pool_config
+            .validate()
+            .map_err(|error| ProximaError::Config(error.to_string()))?;
         let Some(mcp) = &self.mcp else {
             return Ok(());
         };
@@ -664,6 +711,30 @@ fn parse_duration_seconds(key: &str, raw: &str) -> Result<Duration, ProximaError
     Ok(Duration::from_secs(seconds))
 }
 
+fn embedding_runtime_policy_env_is_set(lookup: &impl Fn(&str) -> Option<String>) -> bool {
+    [
+        proxima_core::PROXIMA_EMBED_REQUEST_TIMEOUT_SECONDS,
+        proxima_core::PROXIMA_EMBED_BATCH_SIZE,
+        proxima_core::PROXIMA_EMBED_WORKER_INTERVAL_SECONDS,
+        proxima_core::PROXIMA_EMBED_STALE_CLAIM_TIMEOUT_SECONDS,
+    ]
+    .iter()
+    .any(|key| proxima_core::env_value(lookup, key).is_some())
+}
+
+/// Parse the canonical generic embedding policy block through an injected
+/// lookup. Shared by the facade env layer and host binaries that must build a
+/// concrete embedding adapter before calling the facade.
+///
+/// # Errors
+///
+/// Rejects malformed, zero, out-of-range, and unsafe policy values.
+pub fn embedding_runtime_policy_from_lookup(
+    lookup: &impl Fn(&str) -> Option<String>,
+) -> Result<EmbeddingRuntimePolicy, ProximaError> {
+    EmbeddingRuntimePolicy::from_lookup(lookup).map_err(|err| ProximaError::Config(err.to_string()))
+}
+
 fn validate_revalidation_config(config: RevalidationConfig) -> Result<(), ProximaError> {
     if config.max_stream_lifetime.is_zero() {
         return Err(ProximaError::Config(
@@ -729,11 +800,13 @@ mod tests {
             insecure_single_owner: false,
             rest_enabled: false,
             skip_migrations: false,
+            pg_pool_config: PgPoolConfig::default(),
             pg_tuning: PgTuning::default(),
             auth: RuntimeAuthState {
                 has_host_authenticator: true,
             },
             resource_metadata: None,
+            embedding_runtime_policy: EmbeddingRuntimePolicy::default(),
         }
     }
 
@@ -1039,6 +1112,75 @@ mod tests {
     }
 
     #[test]
+    fn embedding_runtime_policy_env_is_typed_and_programmatic_override_wins() {
+        let env_policy = RuntimeBuilder::default()
+            .apply_lookup(lookup(&[
+                (proxima_core::PROXIMA_EMBED_REQUEST_TIMEOUT_SECONDS, "30"),
+                (proxima_core::PROXIMA_EMBED_BATCH_SIZE, "12"),
+                (proxima_core::PROXIMA_EMBED_WORKER_INTERVAL_SECONDS, "7"),
+                (
+                    proxima_core::PROXIMA_EMBED_STALE_CLAIM_TIMEOUT_SECONDS,
+                    "90",
+                ),
+            ]))
+            .expect("valid env policy");
+        assert_eq!(
+            env_policy
+                .embedding_runtime_policy
+                .expect("env policy present")
+                .batch_size(),
+            12
+        );
+
+        let explicit = EmbeddingRuntimePolicy::new(
+            Duration::from_secs(20),
+            4,
+            Duration::from_secs(2),
+            Duration::from_mins(1),
+        )
+        .expect("valid explicit policy");
+        let merged =
+            env_policy.merge_over(RuntimeBuilder::default().embedding_runtime_policy(explicit));
+        assert_eq!(
+            merged.embedding_runtime_policy.expect("merged policy"),
+            EmbeddingRuntimePolicy::new(
+                Duration::from_secs(30),
+                12,
+                Duration::from_secs(7),
+                Duration::from_secs(90),
+            )
+            .expect("valid expected policy")
+        );
+
+        let resolved = RuntimeBuilder::default()
+            .database_url("postgres://localhost/proxima")
+            .owner(owner(uuid::Uuid::now_v7()))
+            .tool_scope(ToolScope::All)
+            .embedding_runtime_policy(explicit)
+            .resolve()
+            .expect("programmatic policy resolves")
+            .0;
+        assert_eq!(resolved.embedding_runtime_policy, explicit);
+    }
+
+    #[test]
+    fn unset_embedding_policy_env_does_not_override_programmatic_base() {
+        let explicit = EmbeddingRuntimePolicy::new(
+            Duration::from_secs(20),
+            4,
+            Duration::from_secs(2),
+            Duration::from_mins(1),
+        )
+        .expect("valid explicit policy");
+        let env_layer = RuntimeBuilder::default()
+            .apply_lookup(lookup(&[]))
+            .expect("unset env");
+        let merged =
+            env_layer.merge_over(RuntimeBuilder::default().embedding_runtime_policy(explicit));
+        assert_eq!(merged.embedding_runtime_policy, Some(explicit));
+    }
+
+    #[test]
     fn malformed_mcp_bind_errors() {
         let err = RuntimeBuilder::default()
             .apply_lookup(lookup(&[("PROXIMA_MCP_BIND", "not-a-socket")]))
@@ -1071,6 +1213,77 @@ mod tests {
         );
     }
 
+    #[test]
+    fn pg_pool_config_reads_the_injected_env_block() {
+        let (config, _) = RuntimeBuilder::default()
+            .database_url("postgres://localhost/proxima")
+            .owner(owner(uuid::Uuid::now_v7()))
+            .tool_scope(ToolScope::All)
+            .apply_lookup(lookup(&[
+                ("PROXIMA_PG_MAX_CONNECTIONS", "4"),
+                ("PROXIMA_PG_ACQUIRE_TIMEOUT_SECS", "9"),
+            ]))
+            .unwrap()
+            .resolve()
+            .unwrap();
+
+        assert_eq!(config.pg_pool_config.max_connections, 4);
+        assert_eq!(
+            config.pg_pool_config.acquire_timeout,
+            Duration::from_secs(9)
+        );
+    }
+
+    #[test]
+    fn programmatic_pg_pool_config_reaches_resolved_config() {
+        let configured = PgPoolConfig {
+            max_connections: 3,
+            statement_timeout: Duration::from_secs(41),
+            acquire_timeout: Duration::from_secs(2),
+            idle_timeout: Duration::from_secs(17),
+            max_lifetime: Duration::from_secs(29),
+        };
+        let (config, _) = RuntimeBuilder::default()
+            .database_url("postgres://localhost/proxima")
+            .owner(owner(uuid::Uuid::now_v7()))
+            .tool_scope(ToolScope::All)
+            .pg_pool_config(configured)
+            .apply_lookup(lookup(&[("PROXIMA_PG_MAX_CONNECTIONS", "9")]))
+            .expect("explicit pool policy outranks the injected lookup")
+            .resolve()
+            .unwrap();
+
+        assert_eq!(config.pg_pool_config, configured);
+    }
+
+    #[test]
+    fn invalid_pg_pool_config_fails_at_resolution() {
+        let lookup_error = RuntimeBuilder::default()
+            .apply_lookup(lookup(&[("PROXIMA_PG_MAX_CONNECTIONS", "many")]))
+            .expect_err("malformed injected pool config must fail");
+        assert!(
+            lookup_error
+                .to_string()
+                .contains("PROXIMA_PG_MAX_CONNECTIONS=many")
+        );
+
+        let programmatic_error = RuntimeBuilder::default()
+            .database_url("postgres://localhost/proxima")
+            .owner(owner(uuid::Uuid::now_v7()))
+            .tool_scope(ToolScope::All)
+            .pg_pool_config(PgPoolConfig {
+                max_connections: 0,
+                ..PgPoolConfig::default()
+            })
+            .resolve()
+            .expect_err("zero programmatic pool size must fail resolution");
+        assert!(
+            programmatic_error
+                .to_string()
+                .contains("at least one connection")
+        );
+    }
+
     /// An untuned environment is silent, not an answer, so it leaves a
     /// programmatically tuned base alone — the same `merge_over` rule the
     /// allowlists follow.
@@ -1087,6 +1300,44 @@ mod tests {
         let merged = from_env.merge_over(RuntimeBuilder::default().pg_tuning(tuned));
 
         assert_eq!(merged.pg_tuning, Some(tuned));
+    }
+
+    #[test]
+    fn a_silent_lookup_does_not_override_configured_pool_policy() {
+        let configured = PgPoolConfig {
+            max_connections: 3,
+            ..PgPoolConfig::default()
+        };
+        let injected = RuntimeBuilder::default()
+            .apply_lookup(lookup(&[("PROXIMA_REST_ENABLED", "true")]))
+            .expect("silent pool lookup");
+
+        let merged = injected.merge_over(RuntimeBuilder::default().pg_pool_config(configured));
+
+        assert_eq!(merged.pg_pool_config, Some(configured));
+    }
+
+    #[test]
+    fn an_explicit_default_pool_env_overrides_configured_pool_policy() {
+        let configured = PgPoolConfig {
+            max_connections: 3,
+            ..PgPoolConfig::default()
+        };
+        let injected = RuntimeBuilder::default()
+            .apply_lookup(lookup(&[("PROXIMA_PG_MAX_CONNECTIONS", "10")]))
+            .expect("explicit default-valued pool env");
+        let configured_base = RuntimeBuilder::default()
+            .database_url("postgres://localhost/proxima")
+            .owner(owner(uuid::Uuid::now_v7()))
+            .tool_scope(ToolScope::All)
+            .pg_pool_config(configured);
+
+        let (config, _) = injected
+            .merge_over(configured_base)
+            .resolve()
+            .expect("resolved pool policy");
+
+        assert_eq!(config.pg_pool_config.max_connections, 10);
     }
 
     #[test]

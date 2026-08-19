@@ -196,12 +196,12 @@ mod tests {
     #[test]
     fn model_id_prefers_the_header_then_the_token_then_unknown() {
         let with_header = author_from_headers(
-            &headers(&[(MODEL_ID_HEADER, "claude-opus-5")]),
+            &headers(&[(MODEL_ID_HEADER, "example-model")]),
             &auth(Some("token-model")),
             "/v1/tools/core_remember",
         )
         .expect("author");
-        assert_eq!(with_header.model_id, "claude-opus-5");
+        assert_eq!(with_header.model_id, "example-model");
 
         let from_token = author_from_headers(
             &headers(&[]),

@@ -24,6 +24,7 @@ uuid = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 aws-lc-rs = { workspace = true }
 axum = { workspace = true }
+futures = { workspace = true }
 
 [lints]
 workspace = true

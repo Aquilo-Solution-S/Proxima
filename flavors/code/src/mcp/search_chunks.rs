@@ -793,7 +793,8 @@ struct ChunkSidecarScan<'a> {
 
 /// Phase 1: GIN/`search_tsv` on `code_chunk_v1` only. No `proxima_core.*`.
 ///
-/// `'english'` is pinned (code is not the deployment's prose language).
+/// `proxima_code.code_lexical_config()` is pinned (code is not the
+/// deployment's prose language).
 /// Bands: strict 4.x / rare-all 3.x / rare-any 2.x / rescue 1.x, plus
 /// path/text literal bonuses on the GIN hit set. `LIKE` is a separate
 /// scan, only when this GIN arm returns nothing.
@@ -816,19 +817,19 @@ async fn scan_chunk_sidecar(
 }
 
 const CHUNK_GIN_SQL: &str = "WITH q AS (
-             SELECT websearch_to_tsquery('english'::regconfig,
+             SELECT websearch_to_tsquery(proxima_code.code_lexical_config(),
                         proxima_core.lexical_scrub($1)) AS tsq,
                     NULLIF(
                         replace(
-                            plainto_tsquery('english'::regconfig,
+                            plainto_tsquery(proxima_code.code_lexical_config(),
                                 proxima_core.lexical_scrub($1))::text,
                             ' & ', ' | '),
                         '')::tsquery AS any_tsq,
-                    websearch_to_tsquery('english'::regconfig,
+                    websearch_to_tsquery(proxima_code.code_lexical_config(),
                         proxima_core.lexical_scrub(NULLIF($7, ''))) AS rare_all_tsq,
                     NULLIF(
                         replace(
-                            plainto_tsquery('english'::regconfig,
+                            plainto_tsquery(proxima_code.code_lexical_config(),
                                 proxima_core.lexical_scrub(NULLIF($7, '')))::text,
                             ' & ', ' | '),
                         '')::tsquery AS rare_any_tsq

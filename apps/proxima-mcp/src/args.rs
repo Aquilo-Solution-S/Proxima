@@ -45,6 +45,9 @@ Environment:
   PROXIMA_OIDC_ISSUER           OIDC issuer / authorization server
   PROXIMA_OIDC_AUDIENCE         Expected token audience
   PROXIMA_OIDC_JWKS_URI         Optional explicit JWKS endpoint
+  PROXIMA_OIDC_HTTP_TIMEOUT_SECONDS
+                                Discovery/JWKS complete-request timeout
+                                (default 10; range 1..=300 seconds)
   PROXIMA_OIDC_ALLOWED_SUBJECTS Optional comma-separated sub allowlist
                                 (in addition to the subject map below, never
                                 an identity source by itself)
@@ -61,6 +64,18 @@ Environment:
                                 full (opt-in; adds core_publish/core_membership)
   PROXIMA_TOOL_ALLOW            Comma-separated canonical tool ids added to profile
   PROXIMA_TOOL_DENY             Comma-separated canonical tool ids removed from profile
+  PROXIMA_EMBED_REQUEST_TIMEOUT_SECONDS
+                                Complete /embeddings request timeout
+                                (default 120; range 1..=3600)
+  PROXIMA_EMBED_BATCH_SIZE      Texts per provider request
+                                (default 32; range 1..=1024)
+  PROXIMA_EMBED_WORKER_INTERVAL_SECONDS
+                                Idle worker poll interval
+                                (default 5; range 1..=3600)
+  PROXIMA_EMBED_STALE_CLAIM_TIMEOUT_SECONDS
+                                Processing-claim crash timeout
+                                (default 900; range 1..=86400; must be
+                                greater than request timeout)
 
 Maintenance:
   maintain-embeddings      One self-healing pass: orphan sweep, reconcile

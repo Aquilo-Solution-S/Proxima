@@ -13,6 +13,11 @@ pub enum OidcConfigError {
     },
     #[error("{field} must use https: {value}")]
     InsecureUrl { field: &'static str, value: String },
+    #[error("{field} must be greater than zero and at most {max_seconds} seconds")]
+    InvalidTimeout {
+        field: &'static str,
+        max_seconds: u64,
+    },
 }
 
 /// Configuration for [`crate::OidcTokenValidator`] / [`crate::OidcAuthenticator`].

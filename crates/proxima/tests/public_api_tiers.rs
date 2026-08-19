@@ -666,6 +666,30 @@ fn host_api_can_configure_the_blob_lane_without_the_environment() {
 }
 
 #[test]
+fn host_api_can_configure_the_pg_pool_without_process_environment() {
+    let config = proxima::PgPoolConfig {
+        max_connections: 4,
+        statement_timeout: std::time::Duration::from_secs(30),
+        acquire_timeout: std::time::Duration::from_secs(2),
+        idle_timeout: std::time::Duration::from_mins(1),
+        max_lifetime: std::time::Duration::from_mins(2),
+    };
+    assert_eq!(config.max_connections, 4);
+
+    std::hint::black_box(
+        proxima::RuntimeBuilder::pg_pool_config
+            as fn(proxima::RuntimeBuilder, proxima::PgPoolConfig) -> proxima::RuntimeBuilder,
+    );
+    std::hint::black_box(
+        proxima::Proxima::<TierExtensionApp>::pg_pool_config
+            as fn(
+                proxima::Proxima<TierExtensionApp>,
+                proxima::PgPoolConfig,
+            ) -> proxima::Proxima<TierExtensionApp>,
+    );
+}
+
+#[test]
 fn host_api_names_global_and_owner_reconcile_outcomes() {
     // `CitedBlobStore::reconcile_all` is a `pub async fn` reachable
     // through `AppContext::blobs` / `BuiltProxima::blobs` /
@@ -783,7 +807,8 @@ fn raw_storage_surfaces_are_not_supported_tier_exports() {
     let flavor_exports = include_str!("../src/flavor.rs");
     let authorized_read = include_str!("../src/flavor/authorized_read.rs");
 
-    assert!(!host_exports.contains("PgPool"));
+    // `PgPoolConfig` is pure policy, not the raw SQLx handle this guard bans.
+    assert!(!host_exports.replace("PgPoolConfig", "").contains("PgPool"));
     assert!(!host_exports.contains("PgStorage"));
     assert!(!host_exports.contains("StorageHandle"));
     assert!(!flavor_exports.contains("PgPool"));

@@ -15,7 +15,7 @@ use proxima_core::{
     UserId,
 };
 use proxima_pg_testkit::{admin_url, create_db, db_url, drop_db, unique_db_name};
-use proxima_storage_pg::{PgSidecarKey, PgStorage};
+use proxima_storage_pg::{PgPoolConfig, PgSidecarKey, PgStorage};
 use sqlx::migrate::{Migration, MigrationType, Migrator};
 use sqlx::{Connection, SqlSafeStr};
 use tokio::time::{Duration, Instant};
@@ -226,6 +226,48 @@ async fn boots_engine_with_core_goal_tools_on_fresh_db() {
 
     let _ = drop_db(&db_name).await;
     result.expect("embedded boot failed");
+}
+
+#[tokio::test]
+async fn programmatic_pool_config_reaches_runtime_pool_construction() {
+    let db_name = unique_db_name("proxima_test");
+    create_db(&db_name).await.expect("PG required for tests");
+    let db_url = db_url(&db_name);
+
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pool_config = PgPoolConfig {
+            max_connections: 3,
+            statement_timeout: Duration::from_secs(41),
+            acquire_timeout: Duration::from_secs(2),
+            idle_timeout: Duration::from_secs(19),
+            max_lifetime: Duration::from_secs(23),
+        };
+        let built = Proxima::<GoalTestApp>::app()
+            .database_url(db_url)
+            .owner(company_owner(Uuid::now_v7()))
+            .tool_scope(ToolScope::All)
+            .allow_insecure_single_owner()
+            .pg_pool_config(pool_config)
+            .build()
+            .await?;
+
+        let options = built.pool_for_tests().options();
+        assert_eq!(options.get_max_connections(), 3);
+        assert_eq!(options.get_acquire_timeout(), Duration::from_secs(2));
+        assert_eq!(options.get_idle_timeout(), Some(Duration::from_secs(19)));
+        assert_eq!(options.get_max_lifetime(), Some(Duration::from_secs(23)));
+        let statement_timeout: String = sqlx::query_scalar("SHOW statement_timeout")
+            .fetch_one(built.pool_for_tests())
+            .await?;
+        assert_eq!(statement_timeout, "41s");
+
+        built.shutdown();
+        Ok(())
+    }
+    .await;
+
+    let _ = drop_db(&db_name).await;
+    result.expect("programmatic pool config boot failed");
 }
 
 #[tokio::test]

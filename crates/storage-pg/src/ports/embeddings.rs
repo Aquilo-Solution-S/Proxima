@@ -151,6 +151,13 @@ impl EmbeddingJobPort for PgStorage {
         verbs::fact_embeddings::complete_embedding_job(&self.pool, claim).await
     }
 
+    async fn renew_embedding_jobs(
+        &self,
+        claims: &[EmbeddingJobClaim],
+    ) -> Result<u64, StorageError> {
+        verbs::fact_embeddings::renew_embedding_jobs(&self.pool, claims).await
+    }
+
     async fn fail_embedding_job(
         &self,
         claim: &EmbeddingJobClaim,
@@ -212,9 +219,14 @@ impl EmbeddingJobPort for PgStorage {
 impl EmbeddingMaintenancePort for PgStorage {
     async fn embedding_ann_observability(
         &self,
+        policy: proxima_core::EmbeddingRuntimePolicy,
         _proof: OperatorMaintenanceProof,
     ) -> Result<EmbeddingAnnObservability, StorageError> {
-        verbs::fact_embeddings::embedding_ann_observability(&self.pool).await
+        verbs::fact_embeddings::embedding_ann_observability(
+            &self.pool,
+            policy.stale_claim_timeout_seconds(),
+        )
+        .await
     }
 
     async fn sweep_orphan_embedding_rows(
@@ -227,8 +239,14 @@ impl EmbeddingMaintenancePort for PgStorage {
     async fn reconcile_embeddings(
         &self,
         options: proxima_core::EmbeddingReconcileOptions<'_>,
+        policy: proxima_core::EmbeddingRuntimePolicy,
         _proof: OperatorMaintenanceProof,
     ) -> Result<proxima_core::EmbeddingReconcileOutcome, StorageError> {
-        verbs::fact_embeddings::reconcile_embeddings(&self.pool, options).await
+        verbs::fact_embeddings::reconcile_embeddings(
+            &self.pool,
+            options,
+            policy.stale_claim_timeout_seconds(),
+        )
+        .await
     }
 }

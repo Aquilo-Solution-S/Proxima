@@ -8,7 +8,6 @@ use uuid::Uuid;
 use crate::{GroupId, UserId};
 
 pub const WORLD_OWNER_UUID: Uuid = Uuid::from_u128(1);
-pub const WORLD_GROUP_ID: GroupId = GroupId::new(WORLD_OWNER_UUID);
 
 /// Row owner reference. This is stable persisted identity, not the resolved
 /// role map used for authorization.
