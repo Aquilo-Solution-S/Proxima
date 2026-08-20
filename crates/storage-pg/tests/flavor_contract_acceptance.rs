@@ -73,6 +73,93 @@ fn goals_are_not_transferable_and_the_declaration_names_its_enforcement() {
     }
 }
 
+/// Whether `source` declares `symbol`, a Rust path like
+/// `Engine::transfer_to_owner` or a bare `transfer_to_owner`.
+///
+/// Two bounds carry the weight. The `(` in the needle is what stops a
+/// SUFFIXED rename from answering for the old name: without it,
+/// `fn transfer_to_owner_v2` contains `fn transfer_to_owner`, so a
+/// tree-wide rename passes the very test that exists to catch it. And a
+/// qualified citation has to land under a matching `impl`, so a free
+/// function of the same name elsewhere in the file does not answer for an
+/// `Engine::` citation.
+///
+/// LIMITS, both deliberate. The impl tracker does not count braces: it
+/// means "the nearest preceding `impl` header", not "inside that block", so
+/// an item after a block closes is still attributed to it. And the generic
+/// list is skipped to the first `>`, which a nested generic would defeat.
+/// Both are enough to separate a free function from an inherent method,
+/// which is the confusion worth guarding against here.
+fn declares(source: &str, symbol: &str) -> bool {
+    let mut segments = symbol.rsplit("::");
+    let Some(item) = segments.next() else {
+        return false;
+    };
+    let qualifier = segments.next();
+    let needle = format!("fn {item}(");
+    let mut nearest_impl: Option<&str> = None;
+    for line in source.lines() {
+        if let Some(target) = impl_target(line) {
+            nearest_impl = Some(target);
+        }
+        if line.contains(&needle) && (qualifier.is_none() || nearest_impl == qualifier) {
+            return true;
+        }
+    }
+    false
+}
+
+/// The type an `impl` header hangs its items on: `Engine` for
+/// `impl Engine {`, `PgStore` for `impl<S> Store for PgStore<S> {`.
+fn impl_target(line: &str) -> Option<&str> {
+    let rest = line.trim_start().strip_prefix("impl")?;
+    if !rest.starts_with([' ', '<']) {
+        return None;
+    }
+    let rest = rest.trim_start();
+    let rest = rest.strip_prefix('<').map_or(rest, |generics| {
+        generics.split_once('>').map_or(generics, |(_, tail)| tail)
+    });
+    let target = rest.rsplit(" for ").next().unwrap_or(rest).trim_start();
+    let ident = target
+        .split(|ch: char| !(ch.is_alphanumeric() || ch == '_'))
+        .next()?;
+    (!ident.is_empty()).then_some(ident)
+}
+
+/// The whole `CREATE TRIGGER` statement for `name`, so the relation it
+/// fires on can be checked too.
+///
+/// The name is matched as an exact TOKEN. `goal_head_t_only_v2` is a
+/// different trigger and must not satisfy a citation of
+/// `goal_head_t_only`; a `contains` test cannot say so.
+///
+/// Read line-wise rather than by composing a `CREATE TRIGGER ...` needle:
+/// this test reads SQL and never runs any, and assembling that string would
+/// look exactly like a dynamic statement to the SQL-policy guardrail.
+fn create_trigger_statement(migration: &str, name: &str) -> Option<String> {
+    let mut lines = migration.lines();
+    while let Some(line) = lines.next() {
+        let mut tokens = line.split_whitespace();
+        if tokens.next() != Some("CREATE")
+            || tokens.next() != Some("TRIGGER")
+            || tokens.next() != Some(name)
+        {
+            continue;
+        }
+        let mut statement = line.to_owned();
+        for tail in lines.by_ref() {
+            statement.push('\n');
+            statement.push_str(tail);
+            if tail.contains(';') {
+                break;
+            }
+        }
+        return Some(statement);
+    }
+    None
+}
+
 /// Every cited enforcement site resolves to something that exists.
 ///
 /// `Enforcement::EngineRefusal`/`StorageBackstop` carry a free-form
@@ -80,8 +167,8 @@ fn goals_are_not_transferable_and_the_declaration_names_its_enforcement() {
 /// the contract goes on claiming a refusal at an address nothing answers.
 /// The citation format is `<crate-dir>/<path>::<symbol path>`, so both
 /// halves are resolvable — the file relative to the workspace root, and the
-/// last symbol segment as an item declared in it. Triggers and constraints
-/// resolve against the migration that creates them.
+/// symbol as an item declared in it under the right `impl`. Triggers
+/// resolve against the migration that creates them, name AND relation.
 #[test]
 fn every_cited_enforcement_site_resolves() {
     let workspace = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -115,26 +202,37 @@ fn every_cited_enforcement_site_resolves() {
                     let source = std::fs::read_to_string(&file).unwrap_or_else(|err| {
                         panic!("{at} cites {} which does not read: {err}", file.display())
                     });
-                    let item = symbol.rsplit("::").next().expect("a symbol segment");
                     assert!(
-                        source.contains(&format!("fn {item}")),
-                        "{at} cites `{item}`, which {} does not declare",
+                        declares(&source, symbol),
+                        "{at} cites `{symbol}`, which {} does not declare",
                         file.display()
                     );
                 }
-                // Matched line-wise rather than by building the DDL string:
-                // this test reads SQL, it never runs any, and assembling a
-                // `CREATE TRIGGER ...` needle would look exactly like a
-                // dynamic statement to the SQL-policy guardrail.
-                Enforcement::Trigger(trigger) => assert!(
-                    migration.lines().any(|line| {
-                        line.starts_with("CREATE TRIGGER") && line.contains(trigger.name)
-                    }),
-                    "the migration creates no trigger named {}",
-                    trigger.name
-                ),
+                Enforcement::Trigger(trigger) => {
+                    let statement = create_trigger_statement(&migration, trigger.name)
+                        .unwrap_or_else(|| {
+                            panic!("the migration creates no trigger named {}", trigger.name)
+                        });
+                    let fires_on = statement
+                        .split_whitespace()
+                        .skip_while(|token| *token != "ON")
+                        .nth(1)
+                        .map(|token| token.trim_end_matches(';'));
+                    assert_eq!(
+                        fires_on,
+                        Some(trigger.relation),
+                        "{} fires on a different relation than the contract claims",
+                        trigger.name
+                    );
+                }
+                // Exact token, for the same reason the trigger name is. No
+                // member today (map RA-6: the goals CHECK constraints went
+                // with the World owner), so the relation is not cross-checked
+                // here — the first `Constraint` citation should add that.
                 Enforcement::Constraint(constraint) => assert!(
-                    migration.contains(constraint.name),
+                    migration
+                        .split(|ch: char| !(ch.is_alphanumeric() || ch == '_'))
+                        .any(|token| token == constraint.name),
                     "the migration names no constraint {}",
                     constraint.name
                 ),

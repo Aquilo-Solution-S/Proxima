@@ -260,11 +260,24 @@ a misprefixed id fails the build rather than the first boot.
 <a id="contract-reach"></a>
 ## Contract Reach
 
-The registry-derived lanes are erase, export, the owner-pinned sidecar set,
-the MCP resource catalog, the lexical-stamp migration guardrail, and
-unscoped search's core-sidecar selection. Everything else still names its
-tables in code. Four places are worth knowing about, because each looks like
-it reads the contract and does not:
+**What the registry derives is the LISTS.** Erase, export, the owner-pinned
+sidecar set, the MCP resource catalog, the lexical-stamp migration guardrail
+and unscoped search's core-sidecar selection all iterate the contracts to
+learn *which tables exist*. That is the whole of it.
+
+**The per-`Surface` rule arms are vocabulary, not behaviour.**
+`ExportRule`, `EraseRule`, `ForgetRule` and `KeyShape` are read by no lane
+in the tree — only by the acceptance tests that check each arm carries a
+reason. A reader must not conclude that a declared export exclusion is
+enforced: flavor #0 carries eleven `ExportRule::Excluded` surfaces, three of
+which say `DECLARED GAP` outright (`wake_config`, `blob_uploads`,
+`content` — erased but never exported), and the export lane arrives at the
+same answer by its own hand-written route. The declarations and the code
+agree today because both were written to; nothing checks that they keep
+agreeing.
+
+Four places are worth knowing about individually, because each looks like it
+reads the contract and does not:
 
 1. `storage-pg/src/lib.rs` — the boot marker's `to_regclass` relation probes
    are a hand-written list. It names `proxima_core.agent_note_v1`, which is a
@@ -275,17 +288,39 @@ it reads the contract and does not:
    contract's transfer arms describe that behaviour and do not yet drive it;
    the goals refusal is the exception, and it is enforced at the three sites
    its declaration cites.
-3. `storage-pg/src/verbs/code_repo_erase.rs` — seven code-flavor sidecars are
-   hand-listed twice, in the `UNION` that collects the affected `t`s and again
-   in the delete sequence.
-4. `flavors/code/src/mcp/search_commits.rs` — the three band formulas are
-   inline literals, a second author of `BAND_RESCUE` and `BAND_SUBSTRING`.
+3. `storage-pg/src/verbs/code_repo_erase.rs` — five code-flavor sidecars are
+   hand-listed in the `UNION` that collects the affected `t`s
+   (`file_revision_v1`, `code_chunk_v1`, `commit_v1`, `commit_summary_v1`,
+   `test_requested_v1`), and the delete sequence names those five plus two
+   more that appear nowhere else: `code_chunk_call_v1` and
+   `test_requested_criterion_v1`.
+4. `flavors/code/src/mcp/search_commits.rs` — two bands are duplicated
+   inline, the rescue arm twice and the flat substring score twice, making it
+   a second author of `BAND_RESCUE` and `BAND_SUBSTRING`. The exact arm is
+   worse than duplicated: it emits raw `ts_rank_cd` with no band at all, so
+   **code-flavor exact scores are not comparable with core's.** That, not the
+   duplication, is the live cross-flavor merge gap.
 
 The root cause of (3) and (4) is the same and is not an oversight: **the code
 flavor ships no `FlavorContract`.** Its schemas, sidecars and search surfaces
 are registered but undeclared, so there is nothing for those lanes to iterate
 and `check_owner_pinned_against_contracts` skips it entirely. Giving the code
 flavor a contract is what unlocks them.
+
+**Not every kernel relation is a declared `Surface`.** Six carry owner-scoped
+state and appear in no contract: `group_memberships` (boot-probed and swept
+by erase), `owner_fact_retention` (boot-probed), `owner_legal_holds` (read by
+the retention lane), `compliance_audit_log` (erased and exported), and
+`lexical_languages` / `lexical_default` (boot-probed by the stamp guardrail).
+Two of them are named in a `ResourceContract`'s `reads`, which is a different
+claim — what a handler touches, not a surface with erase/export/forget rules.
+
+**`flavor_surface` enforces one direction, not both.** The database trigger
+on `proxima_core.memory` is `stamp ⊆ registry`: a `sidecar_tables` stamp
+naming an undeclared table is refused. The converse — every declared sidecar
+has a `flavor_surface` row — is a Rust test in
+`storage-pg/tests/migrations.rs`, not a constraint, because an array FK is
+not expressible in Postgres.
 
 <a id="inclusion"></a>
 ## Inclusion
