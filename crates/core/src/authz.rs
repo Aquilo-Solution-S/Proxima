@@ -142,7 +142,7 @@ pub enum AuthPath {
     Wake,
     System,
     /// Fail-closed sentinel for a context that carries no real
-    /// credentials (see [`AuthzContext::denied`]).
+    /// credentials (see [`AuthzContext::denied_for_owner`]).
     Denied,
 }
 
