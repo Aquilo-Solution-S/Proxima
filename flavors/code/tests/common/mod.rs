@@ -352,6 +352,6 @@ fn code_pg_sidecars() -> PgSidecarRegistryFrozen {
     register_core_pg_sidecars(&mut sidecars);
     proxima_code::register_pg_sidecars(&mut sidecars);
     sidecars
-        .freeze_against(registry.schemas())
+        .freeze_against(&registry)
         .expect("code test PG sidecars match code schema registry")
 }

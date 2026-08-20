@@ -5,12 +5,10 @@ use crate::authz::{AuthPath, AuthzContext};
 use crate::compliance::{
     ComplianceAuditContext, ComplianceEraseOutcome, ComplianceEraseRefusal, ComplianceEraseTarget,
     ComplianceExportAuditContext, ComplianceExportBundle, ComplianceExportTarget,
-    EraseAuthorization, ExportAuthorization,
+    ComplianceSidecarTables, EraseAuthorization, ExportAuthorization,
 };
 use crate::error::ProtocolError;
-use crate::sidecar_tables;
 use crate::storage_ports::OperatorMaintenanceProof;
-use crate::verbs::schema::PayloadKind;
 use crate::{EmbeddingAnnObservability, EmbeddingOrphanSweepOutcome};
 use crate::{GroupId, OwnerRef, SourceId, UserId};
 
@@ -23,36 +21,16 @@ enum EraseAdmission {
     Refused(ComplianceEraseOutcome),
 }
 
-struct ComplianceSidecarTables {
-    fact: Vec<String>,
-    goal: Vec<String>,
-    citation_mapping: Vec<String>,
-    cited_object: Vec<String>,
-}
-
 impl Engine {
-    fn compliance_memory_sidecar_tables(&self) -> Vec<String> {
-        let mut tables = sidecar_tables(self.registry.schemas(), PayloadKind::Fact);
-        tables.extend(sidecar_tables(
-            self.registry.schemas(),
-            PayloadKind::Abstraction,
-        ));
-        tables.extend(sidecar_tables(
-            self.registry.schemas(),
-            PayloadKind::Perspective,
-        ));
-        tables.sort();
-        tables.dedup();
-        tables
-    }
-
+    /// The one place the compliance lanes learn which tables exist.
+    ///
+    /// The `owner_pinned` leg used to be appended by the Postgres adapter
+    /// from `pg_sidecar!(owner_pinned: true)`, a third source of truth core
+    /// could not see. It now comes off the same flavor contracts as the
+    /// other four, via `TransferRule::RetainAtSource`, and the adapter's
+    /// macro flag is checked against it when the sidecar registry freezes.
     fn compliance_sidecar_tables(&self) -> ComplianceSidecarTables {
-        ComplianceSidecarTables {
-            fact: self.compliance_memory_sidecar_tables(),
-            goal: sidecar_tables(self.registry.schemas(), PayloadKind::Goal),
-            citation_mapping: sidecar_tables(self.registry.schemas(), PayloadKind::CitationMapping),
-            cited_object: sidecar_tables(self.registry.schemas(), PayloadKind::CitedObject),
-        }
+        ComplianceSidecarTables::for_registry(&self.registry)
     }
 
     fn compliance_audit_context(
@@ -386,13 +364,7 @@ impl Engine {
         self.storage
             .compliance
             .compliance_erase
-            .export_owner_bundle(
-                &auth,
-                &sidecars.fact,
-                &sidecars.goal,
-                &sidecars.citation_mapping,
-                &sidecars.cited_object,
-            )
+            .export_owner_bundle(&auth, &sidecars)
             .await
             .map_err(|e| ProtocolError::internal(format!("export_owner_bundle: {e}")))
     }
@@ -423,15 +395,7 @@ impl Engine {
             .storage
             .compliance
             .compliance_erase
-            .erase_group_owner_if_abandoned(
-                &auth,
-                group_id,
-                object_purge_planned,
-                &sidecars.fact,
-                &sidecars.goal,
-                &sidecars.citation_mapping,
-                &sidecars.cited_object,
-            )
+            .erase_group_owner_if_abandoned(&auth, group_id, object_purge_planned, &sidecars)
             .await
             .map_err(|e| ProtocolError::internal(format!("erase_group_owner_if_abandoned: {e}")))?;
         Ok(self
@@ -471,15 +435,7 @@ impl Engine {
             .storage
             .compliance
             .compliance_erase
-            .erase_personal_owner_if_drop_verified(
-                &auth,
-                user_id,
-                object_purge_planned,
-                &sidecars.fact,
-                &sidecars.goal,
-                &sidecars.citation_mapping,
-                &sidecars.cited_object,
-            )
+            .erase_personal_owner_if_drop_verified(&auth, user_id, object_purge_planned, &sidecars)
             .await
             .map_err(|e| {
                 ProtocolError::internal(format!("erase_personal_owner_if_drop_verified: {e}"))
@@ -517,15 +473,7 @@ impl Engine {
         self.storage
             .compliance
             .compliance_erase
-            .erase_group_source_scope_if_owner_abandoned(
-                &auth,
-                group_id,
-                &source_id,
-                &sidecars.fact,
-                &sidecars.goal,
-                &sidecars.citation_mapping,
-                &sidecars.cited_object,
-            )
+            .erase_group_source_scope_if_owner_abandoned(&auth, group_id, &source_id, &sidecars)
             .await
             .map_err(|e| {
                 ProtocolError::internal(format!("erase_group_source_scope_if_owner_abandoned: {e}"))
@@ -564,15 +512,7 @@ impl Engine {
         self.storage
             .compliance
             .compliance_erase
-            .erase_personal_source_scope_if_drop_verified(
-                &auth,
-                user_id,
-                &source_id,
-                &sidecars.fact,
-                &sidecars.goal,
-                &sidecars.citation_mapping,
-                &sidecars.cited_object,
-            )
+            .erase_personal_source_scope_if_drop_verified(&auth, user_id, &source_id, &sidecars)
             .await
             .map_err(|e| {
                 ProtocolError::internal(format!(
@@ -704,10 +644,7 @@ mod purge_tests {
             _auth: &EraseAuthorization,
             _group_id: GroupId,
             _object_purge_planned: bool,
-            _fact: &[String],
-            _goal: &[String],
-            _citation_mapping: &[String],
-            _cited_object: &[String],
+            _tables: &crate::compliance::ComplianceSidecarTables,
         ) -> Result<ComplianceEraseOutcome, StorageError> {
             self.erase_calls.fetch_add(1, Ordering::SeqCst);
             Ok(self.outcome.clone())
@@ -718,10 +655,7 @@ mod purge_tests {
             _auth: &EraseAuthorization,
             _user_id: UserId,
             _object_purge_planned: bool,
-            _fact: &[String],
-            _goal: &[String],
-            _citation_mapping: &[String],
-            _cited_object: &[String],
+            _tables: &crate::compliance::ComplianceSidecarTables,
         ) -> Result<ComplianceEraseOutcome, StorageError> {
             self.erase_calls.fetch_add(1, Ordering::SeqCst);
             Ok(self.outcome.clone())
@@ -732,10 +666,7 @@ mod purge_tests {
             _auth: &EraseAuthorization,
             _group_id: GroupId,
             _source_id: &SourceId,
-            _fact: &[String],
-            _goal: &[String],
-            _citation_mapping: &[String],
-            _cited_object: &[String],
+            _tables: &crate::compliance::ComplianceSidecarTables,
         ) -> Result<ComplianceEraseOutcome, StorageError> {
             self.erase_calls.fetch_add(1, Ordering::SeqCst);
             Ok(self.outcome.clone())
@@ -746,10 +677,7 @@ mod purge_tests {
             _auth: &EraseAuthorization,
             _user_id: UserId,
             _source_id: &SourceId,
-            _fact: &[String],
-            _goal: &[String],
-            _citation_mapping: &[String],
-            _cited_object: &[String],
+            _tables: &crate::compliance::ComplianceSidecarTables,
         ) -> Result<ComplianceEraseOutcome, StorageError> {
             self.erase_calls.fetch_add(1, Ordering::SeqCst);
             Ok(self.outcome.clone())
@@ -758,10 +686,7 @@ mod purge_tests {
         async fn export_owner_bundle(
             &self,
             _auth: &ExportAuthorization,
-            _fact: &[String],
-            _goal: &[String],
-            _citation_mapping: &[String],
-            _cited_object: &[String],
+            _tables: &crate::compliance::ComplianceSidecarTables,
         ) -> Result<ComplianceExportBundle, StorageError> {
             Err(StorageError::Internal("export not used in test".into()))
         }

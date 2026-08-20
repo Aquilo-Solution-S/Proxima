@@ -6,7 +6,7 @@ use super::{
     AbstractionPayload, Arc, CitationMappingPayload, CitedObjectPayload, FactPayload, GoalPayload,
     HashMap, PayloadKind, PerspectivePayload, PgCitationMappingSidecar, PgCitedObjectSidecar,
     PgGoalSidecar, PgMemoryPayload, PgMemorySidecar, PgSidecarEntry, PgSidecarKey,
-    PgSidecarRegistryFrozen, SchemaId, SchemaInfo, SchemaVersion, StorageError,
+    PgSidecarRegistryFrozen, SchemaId, SchemaVersion, StorageError,
 };
 
 #[derive(Debug, Clone, Default)]
@@ -223,15 +223,23 @@ impl PgSidecarRegistry {
 
     /// Seal the PG registry against the already-frozen core registry.
     ///
+    /// Takes the whole frozen registry, not just its `SchemaInfo` slice,
+    /// because the flavor contracts are part of what a PG registration has
+    /// to agree with: `pg_sidecar!(owner_pinned: true)` and
+    /// `TransferRule::RetainAtSource` are two statements of the same fact,
+    /// and until this check existed nothing compared them.
+    ///
     /// # Errors
     ///
     /// Returns `ConstraintViolation` if a sidecar-bearing schema has no
     /// PG registration, a registration is orphaned, a table name drifts,
-    /// or an insert-capable kind has no typed inserter.
+    /// an insert-capable kind has no typed inserter, or a registration's
+    /// `owner_pinned` flag contradicts its schema's declared transfer rule.
     pub fn freeze_against(
         self,
-        schemas: &[SchemaInfo],
+        registry: &proxima_core::FlavorRegistryFrozen,
     ) -> Result<PgSidecarRegistryFrozen, StorageError> {
+        let schemas = registry.schemas();
         let schema_keys = schemas
             .iter()
             .filter_map(|schema| {
@@ -314,8 +322,59 @@ impl PgSidecarRegistry {
             }
         }
 
+        self.check_owner_pinned_against_contracts(registry)?;
+
         Ok(PgSidecarRegistryFrozen {
             entries: Arc::new(self.entries),
         })
+    }
+
+    /// The macro flag and the contract must agree about which sidecars stay
+    /// with the source owner on transfer.
+    ///
+    /// Before the flavor contract, `owner_pinned` was declared once in
+    /// `pg_sidecar!` and consumed by the Postgres adapter alone: core built
+    /// the compliance table lists without it and the adapter appended its
+    /// own leg on the way past. A schema could therefore be owner-pinned in
+    /// storage and `Follow` in the contract with nothing to notice, which is
+    /// a wrong-owner bundle rather than a crash.
+    ///
+    /// Schemas whose flavor registered no contract are skipped: a flavor
+    /// without a contract has made no claim to contradict.
+    fn check_owner_pinned_against_contracts(
+        &self,
+        registry: &proxima_core::FlavorRegistryFrozen,
+    ) -> Result<(), StorageError> {
+        let retained = registry.retain_at_source_sidecar_tables();
+        for entry in self.entries.values() {
+            if !matches!(
+                entry.key.kind,
+                PayloadKind::Fact | PayloadKind::Abstraction | PayloadKind::Perspective
+            ) {
+                continue;
+            }
+            let Some((flavor_id, _)) = entry.key.schema_id.as_str().split_once('/') else {
+                continue;
+            };
+            if registry.flavor_contract(flavor_id).is_none() {
+                continue;
+            }
+            let declared = retained.iter().any(|table| table == &entry.sidecar_table);
+            if declared != entry.owner_pinned {
+                return Err(StorageError::ConstraintViolation(format!(
+                    "PG sidecar {} registers owner_pinned={} but {} v{} declares {}",
+                    entry.sidecar_table,
+                    entry.owner_pinned,
+                    entry.key.schema_id.as_str(),
+                    entry.key.schema_version.into_inner(),
+                    if declared {
+                        "TransferRule::RetainAtSource"
+                    } else {
+                        "a transfer rule that follows the memory"
+                    },
+                )));
+            }
+        }
+        Ok(())
     }
 }

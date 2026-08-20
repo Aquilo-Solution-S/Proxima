@@ -11,6 +11,63 @@
 
 use crate::{AuthPath, GroupId, OwnerRef, SourceId, UserId};
 
+/// Every sidecar table an owner-scoped erase or export has to reach, in the
+/// four shapes the sweep treats differently, plus the ones that do not move
+/// with a transfer.
+///
+/// This exists because the legs used to be assembled twice. Core built four
+/// of them from the schema registry and handed them to the port as four
+/// separate slices; the Postgres adapter then appended a fifth of its own,
+/// derived from `pg_sidecar!(owner_pinned: true)` — a source of truth that
+/// core could not see and no test compared against. A schema whose contract
+/// said `RetainAtSource` while its macro said nothing (or the reverse) had
+/// two lanes disagreeing about which owner's bundle its rows belonged in.
+///
+/// One struct, built once, from the flavor contracts.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ComplianceSidecarTables {
+    /// Memory-keyed sidecars: Fact, Abstraction and Perspective together,
+    /// because all three are reached through `proxima_core.memory`.
+    pub fact: Vec<String>,
+    pub goal: Vec<String>,
+    pub citation_mapping: Vec<String>,
+    pub cited_object: Vec<String>,
+    /// Sidecars carrying their own `owner_id`, declared
+    /// [`TransferRule::RetainAtSource`](crate::flavor::TransferRule::RetainAtSource).
+    ///
+    /// A subset of [`Self::fact`], and held out of the Memory-keyed sweep:
+    /// a transfer leaves these rows behind, so joining them through the
+    /// Memory would move them into the receiving owner's bundle and out of
+    /// the writing owner's reach.
+    pub owner_pinned: Vec<String>,
+}
+
+impl ComplianceSidecarTables {
+    /// Read all five legs off one frozen registry.
+    ///
+    /// The engine calls this; so should anything else that needs the set,
+    /// because assembling the legs by hand is what let them disagree.
+    #[must_use]
+    pub fn for_registry(registry: &crate::FlavorRegistryFrozen) -> Self {
+        use crate::verbs::schema::PayloadKind;
+        use crate::verbs::schema::sidecar_tables;
+
+        let schemas = registry.schemas();
+        let mut fact = sidecar_tables(schemas, PayloadKind::Fact);
+        fact.extend(sidecar_tables(schemas, PayloadKind::Abstraction));
+        fact.extend(sidecar_tables(schemas, PayloadKind::Perspective));
+        fact.sort();
+        fact.dedup();
+        Self {
+            fact,
+            goal: sidecar_tables(schemas, PayloadKind::Goal),
+            citation_mapping: sidecar_tables(schemas, PayloadKind::CitationMapping),
+            cited_object: sidecar_tables(schemas, PayloadKind::CitedObject),
+            owner_pinned: registry.retain_at_source_sidecar_tables(),
+        }
+    }
+}
+
 /// The entity to erase under compliance.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ComplianceEraseTarget {

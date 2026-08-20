@@ -404,7 +404,7 @@ impl ProximaBuilder {
             register(&mut pg_sidecars);
         }
         let pg_sidecars = pg_sidecars
-            .freeze_against(registry.schemas())
+            .freeze_against(&registry)
             .map_err(embed_storage_error)?;
         let pg_sidecars = Arc::new(pg_sidecars);
         let pg = pg

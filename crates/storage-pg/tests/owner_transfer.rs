@@ -4,8 +4,8 @@
 use std::sync::Arc;
 
 use proxima_core::compliance::{
-    ComplianceEraseOutcome, ComplianceEraseTarget, ComplianceExportTarget, EraseAuthorization,
-    ExportAuthorization,
+    ComplianceEraseOutcome, ComplianceEraseTarget, ComplianceExportTarget, ComplianceSidecarTables,
+    EraseAuthorization, ExportAuthorization,
 };
 use proxima_core::storage_ports::MemoryAuthoringPort;
 use proxima_core::storage_ports::{
@@ -32,6 +32,16 @@ use proxima_storage_pg::verbs::wake_timeseries::{
 };
 use proxima_storage_pg::{PgStorage, core_pg_sidecars};
 use uuid::Uuid;
+
+/// The five sidecar legs exactly as the engine assembles them: from the
+/// frozen flavor registry. Passing empty slices here would silently skip
+/// the owner-pinned leg, which is the difference these tests exist to
+/// measure.
+fn contract_sidecar_tables() -> ComplianceSidecarTables {
+    ComplianceSidecarTables::for_registry(
+        &proxima_core::FlavorRegistry::new().freeze_or_panic_for_tests(),
+    )
+}
 
 fn draft() -> FactWriteCommand {
     FactWriteCommand {
@@ -160,10 +170,7 @@ async fn export_bundle(
     };
     pg.export_owner_bundle(
         &ExportAuthorization::new_for_tests(target),
-        &[],
-        &[],
-        &[],
-        &[],
+        &contract_sidecar_tables(),
     )
     .await
 }
@@ -825,7 +832,7 @@ async fn transfer_refuses_armed_goal_and_owner_erase_still_succeeds() {
             drop_event_id: "test-drop-armed-transfer".into(),
         });
         let outcome = pg
-            .erase_personal_owner_if_drop_verified(&auth, user, false, &[], &[], &[], &[])
+            .erase_personal_owner_if_drop_verified(&auth, user, false, &contract_sidecar_tables())
             .await?;
         let ComplianceEraseOutcome::Completed { counts, .. } = outcome else {
             panic!("erase must complete after the refused transfer, got {outcome:?}");
@@ -1119,7 +1126,12 @@ async fn transfer_leaves_the_actor_call_log_with_the_owner_that_made_the_call() 
             drop_event_id: "test-drop-retained-audit".into(),
         });
         let erased = pg
-            .erase_personal_owner_if_drop_verified(&auth, user_id, false, &[], &[], &[], &[])
+            .erase_personal_owner_if_drop_verified(
+                &auth,
+                user_id,
+                false,
+                &contract_sidecar_tables(),
+            )
             .await?;
         assert!(
             matches!(erased, ComplianceEraseOutcome::Completed { .. }),
@@ -1212,7 +1224,7 @@ async fn the_destination_can_forget_and_erase_without_touching_the_source_audit_
         let auth =
             EraseAuthorization::new_for_tests(ComplianceEraseTarget::GroupOwner { group_id });
         let erased = pg
-            .erase_group_owner_if_abandoned(&auth, group_id, false, &[], &[], &[], &[])
+            .erase_group_owner_if_abandoned(&auth, group_id, false, &contract_sidecar_tables())
             .await?;
         assert!(
             matches!(erased, ComplianceEraseOutcome::Completed { .. }),

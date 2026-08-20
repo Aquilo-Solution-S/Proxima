@@ -757,10 +757,7 @@ impl ComplianceErasePort for RejectingStorage {
         _auth: &crate::compliance::EraseAuthorization,
         _group_id: GroupId,
         _object_purge_planned: bool,
-        _fact_sidecar_tables: &[String],
-        _goal_sidecar_tables: &[String],
-        _citation_mapping_sidecar_tables: &[String],
-        _cited_object_sidecar_tables: &[String],
+        _tables: &crate::compliance::ComplianceSidecarTables,
     ) -> Result<crate::compliance::ComplianceEraseOutcome, StorageError> {
         Err(StorageError::Internal(
             "RejectingStorage rejects writes".into(),
@@ -772,10 +769,7 @@ impl ComplianceErasePort for RejectingStorage {
         _auth: &crate::compliance::EraseAuthorization,
         _user_id: UserId,
         _object_purge_planned: bool,
-        _fact_sidecar_tables: &[String],
-        _goal_sidecar_tables: &[String],
-        _citation_mapping_sidecar_tables: &[String],
-        _cited_object_sidecar_tables: &[String],
+        _tables: &crate::compliance::ComplianceSidecarTables,
     ) -> Result<crate::compliance::ComplianceEraseOutcome, StorageError> {
         Err(StorageError::Internal(
             "RejectingStorage rejects writes".into(),
@@ -787,10 +781,7 @@ impl ComplianceErasePort for RejectingStorage {
         _auth: &crate::compliance::EraseAuthorization,
         _group_id: GroupId,
         _source_id: &SourceId,
-        _fact_sidecar_tables: &[String],
-        _goal_sidecar_tables: &[String],
-        _citation_mapping_sidecar_tables: &[String],
-        _cited_object_sidecar_tables: &[String],
+        _tables: &crate::compliance::ComplianceSidecarTables,
     ) -> Result<crate::compliance::ComplianceEraseOutcome, StorageError> {
         Err(StorageError::Internal(
             "RejectingStorage rejects writes".into(),
@@ -802,10 +793,7 @@ impl ComplianceErasePort for RejectingStorage {
         _auth: &crate::compliance::EraseAuthorization,
         _user_id: UserId,
         _source_id: &SourceId,
-        _fact_sidecar_tables: &[String],
-        _goal_sidecar_tables: &[String],
-        _citation_mapping_sidecar_tables: &[String],
-        _cited_object_sidecar_tables: &[String],
+        _tables: &crate::compliance::ComplianceSidecarTables,
     ) -> Result<crate::compliance::ComplianceEraseOutcome, StorageError> {
         Err(StorageError::Internal(
             "RejectingStorage rejects writes".into(),
@@ -815,10 +803,7 @@ impl ComplianceErasePort for RejectingStorage {
     async fn export_owner_bundle(
         &self,
         _auth: &crate::compliance::ExportAuthorization,
-        _fact_sidecar_tables: &[String],
-        _goal_sidecar_tables: &[String],
-        _citation_mapping_sidecar_tables: &[String],
-        _cited_object_sidecar_tables: &[String],
+        _tables: &crate::compliance::ComplianceSidecarTables,
     ) -> Result<crate::compliance::ComplianceExportBundle, StorageError> {
         Err(StorageError::Internal(
             "RejectingStorage rejects reads".into(),

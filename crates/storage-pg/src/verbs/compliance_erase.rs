@@ -7,7 +7,7 @@
 
 use proxima_core::compliance::{
     ComplianceAuditContext, ComplianceEraseCounts, ComplianceEraseOutcome, ComplianceEraseRefusal,
-    ComplianceEraseTarget, EraseAuthorization,
+    ComplianceEraseTarget, ComplianceSidecarTables, EraseAuthorization,
 };
 use proxima_core::{ColdObjectStore, GroupId, OwnerRef, SourceId, StorageError, UserId};
 use sqlx::{PgPool, Postgres, Transaction};
@@ -81,11 +81,7 @@ pub async fn erase_group_owner_if_abandoned(
     auth: &EraseAuthorization,
     group_id: GroupId,
     object_purge_planned: bool,
-    fact_sidecar_tables: &[String],
-    goal_sidecar_tables: &[String],
-    citation_mapping_sidecar_tables: &[String],
-    cited_object_sidecar_tables: &[String],
-    owner_pinned_sidecar_tables: &[String],
+    tables: &ComplianceSidecarTables,
 ) -> Result<ComplianceEraseOutcome, StorageError> {
     let owner = OwnerRef::Group(group_id);
     let mut tx = begin_bulk_erase_tx(pool).await?;
@@ -106,18 +102,7 @@ pub async fn erase_group_owner_if_abandoned(
         tx.commit().await.map_err(map_err)?;
         return Ok(outcome);
     }
-    let cold_purge = erase_selected(
-        &mut tx,
-        auth,
-        owner,
-        SelectionScope::Owner,
-        fact_sidecar_tables,
-        goal_sidecar_tables,
-        citation_mapping_sidecar_tables,
-        cited_object_sidecar_tables,
-        owner_pinned_sidecar_tables,
-    )
-    .await?;
+    let cold_purge = erase_selected(&mut tx, auth, owner, SelectionScope::Owner, tables).await?;
     let counts = final_counts(&mut tx).await?;
     let outcome = ComplianceEraseOutcome::Completed {
         operation_id: auth.audit().operation_id(),
@@ -136,11 +121,7 @@ pub async fn erase_personal_owner_if_drop_verified(
     auth: &EraseAuthorization,
     user_id: UserId,
     object_purge_planned: bool,
-    fact_sidecar_tables: &[String],
-    goal_sidecar_tables: &[String],
-    citation_mapping_sidecar_tables: &[String],
-    cited_object_sidecar_tables: &[String],
-    owner_pinned_sidecar_tables: &[String],
+    tables: &ComplianceSidecarTables,
 ) -> Result<ComplianceEraseOutcome, StorageError> {
     let owner = OwnerRef::Personal(user_id);
     let mut tx = begin_bulk_erase_tx(pool).await?;
@@ -148,18 +129,7 @@ pub async fn erase_personal_owner_if_drop_verified(
         tx.commit().await.map_err(map_err)?;
         return Ok(outcome);
     }
-    let cold_purge = erase_selected(
-        &mut tx,
-        auth,
-        owner,
-        SelectionScope::Owner,
-        fact_sidecar_tables,
-        goal_sidecar_tables,
-        citation_mapping_sidecar_tables,
-        cited_object_sidecar_tables,
-        owner_pinned_sidecar_tables,
-    )
-    .await?;
+    let cold_purge = erase_selected(&mut tx, auth, owner, SelectionScope::Owner, tables).await?;
     let counts = final_counts(&mut tx).await?;
     let outcome = ComplianceEraseOutcome::Completed {
         operation_id: auth.audit().operation_id(),
@@ -178,11 +148,7 @@ pub async fn erase_group_source_scope_if_owner_abandoned(
     auth: &EraseAuthorization,
     group_id: GroupId,
     source_id: &SourceId,
-    fact_sidecar_tables: &[String],
-    goal_sidecar_tables: &[String],
-    citation_mapping_sidecar_tables: &[String],
-    cited_object_sidecar_tables: &[String],
-    owner_pinned_sidecar_tables: &[String],
+    tables: &ComplianceSidecarTables,
 ) -> Result<ComplianceEraseOutcome, StorageError> {
     let owner = OwnerRef::Group(group_id);
     let mut tx = begin_bulk_erase_tx(pool).await?;
@@ -208,11 +174,7 @@ pub async fn erase_group_source_scope_if_owner_abandoned(
         auth,
         owner,
         SelectionScope::Source(source_id),
-        fact_sidecar_tables,
-        goal_sidecar_tables,
-        citation_mapping_sidecar_tables,
-        cited_object_sidecar_tables,
-        owner_pinned_sidecar_tables,
+        tables,
     )
     .await?;
     let counts = final_counts(&mut tx).await?;
@@ -233,11 +195,7 @@ pub async fn erase_personal_source_scope_if_drop_verified(
     auth: &EraseAuthorization,
     user_id: UserId,
     source_id: &SourceId,
-    fact_sidecar_tables: &[String],
-    goal_sidecar_tables: &[String],
-    citation_mapping_sidecar_tables: &[String],
-    cited_object_sidecar_tables: &[String],
-    owner_pinned_sidecar_tables: &[String],
+    tables: &ComplianceSidecarTables,
 ) -> Result<ComplianceEraseOutcome, StorageError> {
     let owner = OwnerRef::Personal(user_id);
     let mut tx = begin_bulk_erase_tx(pool).await?;
@@ -250,11 +208,7 @@ pub async fn erase_personal_source_scope_if_drop_verified(
         auth,
         owner,
         SelectionScope::Source(source_id),
-        fact_sidecar_tables,
-        goal_sidecar_tables,
-        citation_mapping_sidecar_tables,
-        cited_object_sidecar_tables,
-        owner_pinned_sidecar_tables,
+        tables,
     )
     .await?;
     let counts = final_counts(&mut tx).await?;
@@ -322,11 +276,7 @@ async fn erase_selected(
     auth: &EraseAuthorization,
     owner: OwnerRef,
     scope: SelectionScope<'_>,
-    fact_sidecar_tables: &[String],
-    goal_sidecar_tables: &[String],
-    citation_mapping_sidecar_tables: &[String],
-    cited_object_sidecar_tables: &[String],
-    owner_pinned_sidecar_tables: &[String],
+    tables: &ComplianceSidecarTables,
 ) -> Result<ColdPurgePlan, StorageError> {
     open_erase_bookkeeping(tx, auth, owner, scope).await?;
 
@@ -346,15 +296,18 @@ async fn erase_selected(
     delete_memory_refs(tx);
 
     let mut sidecar_rows =
-        delete_dynamic_sidecars(tx, goal_sidecar_tables, "t", "selected_goals", "goal_id").await?;
+        delete_dynamic_sidecars(tx, tables.goal.as_slice(), "t", "selected_goals", "goal_id")
+            .await?;
     delete_fixed_goal_sidecars(tx).await?;
     // Owner-pinned sidecars are held out of the Memory-keyed sweep: their
     // rows do not follow a transfer, so `selected_memories` is the wrong
     // set for them in both directions. They are erased below, by their own
     // `owner_id`.
-    let memory_keyed_fact_tables = fact_sidecar_tables
+    let memory_keyed_fact_tables = tables
+        .fact
+        .as_slice()
         .iter()
-        .filter(|table| !owner_pinned_sidecar_tables.contains(table))
+        .filter(|table| !tables.owner_pinned.as_slice().contains(table))
         .cloned()
         .collect::<Vec<_>>();
     sidecar_rows += delete_dynamic_sidecars(
@@ -385,7 +338,7 @@ async fn erase_selected(
     record_count(tx, "embeddings", embeddings.saturating_add(embedding_heads)).await?;
 
     let mcp_rows =
-        delete_owner_pinned_sidecars(tx, owner_pinned_sidecar_tables, owner, scope).await?;
+        delete_owner_pinned_sidecars(tx, tables.owner_pinned.as_slice(), owner, scope).await?;
     record_count(tx, "mcp_call_rows", mcp_rows).await?;
 
     let content_ids = selected_content_ids(tx).await?;
@@ -408,15 +361,7 @@ async fn erase_selected(
     record_count(tx, "goals", goals).await?;
     let wake_configs = delete_wake_configs(tx, owner, scope).await?;
     record_count(tx, "wake_configs", wake_configs).await?;
-    let blobs = delete_blobs(
-        tx,
-        owner,
-        scope,
-        operation_id,
-        citation_mapping_sidecar_tables,
-        cited_object_sidecar_tables,
-    )
-    .await?;
+    let blobs = delete_blobs(tx, owner, scope, operation_id, tables).await?;
     sidecar_rows += blobs.sidecar_rows;
     record_count(tx, "sidecar_rows", sidecar_rows).await?;
     record_count(tx, "blob_uploads", blobs.uploads).await?;
@@ -1274,8 +1219,7 @@ async fn delete_blobs(
     owner: OwnerRef,
     scope: SelectionScope<'_>,
     operation_id: uuid::Uuid,
-    citation_mapping_sidecar_tables: &[String],
-    cited_object_sidecar_tables: &[String],
+    tables: &ComplianceSidecarTables,
 ) -> Result<BlobEraseCounts, StorageError> {
     let (_owner_kind, owner_id) = owner_binds(&owner);
     if matches!(scope, SelectionScope::Source(_)) {
@@ -1294,7 +1238,7 @@ async fn delete_blobs(
     }
     let mut sidecar_rows = delete_dynamic_sidecars(
         tx,
-        cited_object_sidecar_tables,
+        tables.cited_object.as_slice(),
         "cited_object_id",
         "selected_blobs",
         "blob_id",
@@ -1302,7 +1246,7 @@ async fn delete_blobs(
     .await?;
     sidecar_rows += delete_dynamic_sidecars(
         tx,
-        citation_mapping_sidecar_tables,
+        tables.citation_mapping.as_slice(),
         "citation_mapping_id",
         "selected_blobs",
         "blob_id",
