@@ -357,20 +357,20 @@ async fn transfer_retries_when_ingest_advances_the_captured_head() {
         let second = ingest_fact_atomic(pool, &permit, &second_draft, None).await?;
 
         sqlx::raw_sql(
-            "CREATE SEQUENCE public.publish_race_probe;
-             CREATE FUNCTION public.block_publish_transfer() RETURNS trigger
+            "CREATE SEQUENCE public.transfer_race_probe;
+             CREATE FUNCTION public.block_owner_transfer() RETURNS trigger
              LANGUAGE plpgsql AS $$
              BEGIN
-                 PERFORM nextval('public.publish_race_probe');
+                 PERFORM nextval('public.transfer_race_probe');
                  PERFORM pg_advisory_xact_lock(5787775711847989816);
                  RETURN NEW;
              END
              $$;
-             CREATE TRIGGER block_publish_transfer
+             CREATE TRIGGER block_owner_transfer
              BEFORE UPDATE OF owner_id ON proxima_core.cooled
              FOR EACH ROW
              WHEN (OLD.owner_id IS DISTINCT FROM NEW.owner_id)
-             EXECUTE FUNCTION public.block_publish_transfer();",
+             EXECUTE FUNCTION public.block_owner_transfer();",
         )
         .execute(pool)
         .await?;
@@ -381,19 +381,19 @@ async fn transfer_retries_when_ingest_advances_the_captured_head() {
             .execute(&mut *blocker)
             .await?;
 
-        let publish_pg = pg.clone();
-        let published_id = second.memory_id;
-        let publish = tokio::spawn(async move {
+        let transfer_pg = pg.clone();
+        let transferred_id = second.memory_id;
+        let transfer = tokio::spawn(async move {
             let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
-            publish_pg
-                .transfer_to_owner(&permit, EntityId::Memory(published_id), dest)
+            transfer_pg
+                .transfer_to_owner(&permit, EntityId::Memory(transferred_id), dest)
                 .await
         });
 
         tokio::time::timeout(std::time::Duration::from_secs(5), async {
             loop {
                 let reached: bool =
-                    sqlx::query_scalar("SELECT is_called FROM public.publish_race_probe")
+                    sqlx::query_scalar("SELECT is_called FROM public.transfer_race_probe")
                         .fetch_one(pool)
                         .await?;
                 if reached {
@@ -416,7 +416,7 @@ async fn transfer_retries_when_ingest_advances_the_captured_head() {
         assert!(unlocked, "test must release the transfer probe lock");
         drop(blocker);
 
-        let transferred = tokio::time::timeout(std::time::Duration::from_secs(5), publish)
+        let transferred = tokio::time::timeout(std::time::Duration::from_secs(5), transfer)
             .await??
             .map_err(|err| format!("transfer failed after retry: {err}"))?;
         assert!(transferred);
@@ -576,7 +576,7 @@ async fn transfer_refuses_goal_entities() {
             &GoalWriteCommand {
                 handle: None,
                 schema_id: "core/task-goal-v1".into(),
-                title: "publish me".into(),
+                title: "transfer me".into(),
                 state: GoalState::Active,
                 request_id: "pub-g".into(),
                 close_fact_t: None,
@@ -704,13 +704,13 @@ async fn transfer_refuses_armed_goal_and_owner_erase_still_succeeds() {
 
         let auth = EraseAuthorization::new_for_tests(ComplianceEraseTarget::PersonalOwner {
             user_id: user,
-            drop_event_id: "test-drop-armed-publish".into(),
+            drop_event_id: "test-drop-armed-transfer".into(),
         });
         let outcome = pg
             .erase_personal_owner_if_drop_verified(&auth, user, false, &[], &[], &[], &[])
             .await?;
         let ComplianceEraseOutcome::Completed { counts, .. } = outcome else {
-            panic!("erase must complete after the refused publish, got {outcome:?}");
+            panic!("erase must complete after the refused transfer, got {outcome:?}");
         };
         assert_eq!(counts.wake_configs, 1, "the armed wake row is erased");
         let remaining: i64 = sqlx::query_scalar(

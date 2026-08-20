@@ -1136,7 +1136,7 @@ async fn concurrent_erase_after_forget_put_does_not_leave_cold_object() {
 
 /// Pinned shape for the loser of a double forget and for a plain second
 /// call: `NotFound`, the same answer an unknown `t` gets. Not `Ok`, because
-/// the identical miss is produced by a concurrent publish that moved the row
+/// the identical miss is produced by a concurrent transfer that moved the row
 /// out of the caller's ownership, where reporting success would be a lie.
 /// Either way the attempt leaves the existing cooled object untouched.
 #[tokio::test]
@@ -1663,7 +1663,7 @@ async fn commit_forget_aborts_when_owner_transferred() {
     }
     .await;
     let _ = drop_db(&db_name).await;
-    result.expect("forget-after-publish must abort");
+    result.expect("forget-after-transfer must abort");
 }
 
 /// An erase that destroyed its cold object inside the caller's transaction lost

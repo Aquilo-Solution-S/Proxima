@@ -402,7 +402,7 @@ pub async fn snapshot_hot(
 
 /// `FOR UPDATE` + cooled stub + hot delete. Re-PUTs only when the locked
 /// dump differs from `snapshot` (late sidecar). Owner is the permit owner;
-/// a concurrent publish that rewrote `owner_id` is `NotFound`.
+/// a concurrent owner transfer that rewrote `owner_id` is `NotFound`.
 /// Production callers hold the per-memory forget advisory lock across their
 /// PUT, but do not hold this row lock across cold I/O. This function
 /// compensates the object if the locator write fails.
@@ -499,7 +499,7 @@ async fn persist_cooled_after_put(
 ///
 /// Production forgets serialize before PUT. The locator check also makes a
 /// raw losing [`commit_forget`] safe without retaining payload after a
-/// concurrent publish or hard erase, both of which leave no matching row.
+/// concurrent owner transfer or hard erase, both of which leave no matching row.
 async fn compensate_forget_put(
     tx: &mut Transaction<'_, Postgres>,
     cold: &dyn ColdObjectStore,
@@ -682,7 +682,7 @@ async fn lock_forget_memory_tx(
     Ok(())
 }
 
-/// The publish transfer's half of the forget serialization: the same
+/// The owner transfer's half of the forget serialization: the same
 /// per-memory advisory lock [`lock_forget_memory_tx`] takes, over every `t`
 /// of the series, in sorted order. Forget takes its single lock before any
 /// row lock, and the transfer calls this before writing any row, so the two

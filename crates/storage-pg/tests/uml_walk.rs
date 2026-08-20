@@ -1,4 +1,4 @@
-//! UML §10 walk + query / ChangeHistory / publish.
+//! UML §10 walk + query / ChangeHistory / owner transfer.
 #![allow(
     clippy::doc_markdown,
     clippy::too_many_lines,
@@ -46,7 +46,7 @@ fn fact(schema: &str, refs: Vec<Uuid>, origins: Vec<Uuid>, kind: &str) -> FactWr
 }
 
 #[tokio::test]
-async fn uml_section_10_walk_query_history_publish() {
+async fn uml_section_10_walk_query_history_transfer() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
     if let Err(e) = create_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");

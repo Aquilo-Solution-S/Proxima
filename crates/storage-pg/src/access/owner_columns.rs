@@ -477,7 +477,7 @@ const SERIES_TS_SQL: &str = "SELECT t FROM proxima_core.memory WHERE handle = $1
 /// `Retryable`. Growth between rounds needs a concurrent same-series ingest
 /// inside a statement-sized window, so one extra round is already rare;
 /// three keep an adversary appending versions in a tight loop from wedging
-/// a publish — the bounded work ends in a typed transient error, never in
+/// a transfer — the bounded work ends in a typed transient error, never in
 /// an unlocked t.
 const MAX_SERIES_LOCK_ROUNDS: usize = 3;
 
