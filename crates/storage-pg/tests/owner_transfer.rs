@@ -1426,6 +1426,22 @@ async fn cite(
     ingest_fact_atomic(pool, permit, &cited, None).await
 }
 
+/// [`cite`], attributed to a named source so a source-scope erase can
+/// select it. `draft()` attributes everything to `src`, which is one scope.
+async fn cite_from(
+    pool: &sqlx::PgPool,
+    permit: &OwnerWritePermit,
+    source: &str,
+    key: &str,
+    blob_id: Uuid,
+) -> Result<FactIngestOutcome, StorageError> {
+    let mut cited = draft();
+    cited.source_id = Some(source.into());
+    cited.ingest_key = Some(key.into());
+    cited.blob_id = Some(blob_id);
+    ingest_fact_atomic(pool, permit, &cited, None).await
+}
+
 /// The refusal that the dedupe arm replaced.
 ///
 /// One owner cites the same uploaded document from two series and then
@@ -1836,4 +1852,112 @@ async fn erasing_one_owner_of_a_mounted_object_does_not_destroy_the_bytes() {
     .await;
     let _ = drop_db(&db_name).await;
     result.expect("refcounted object purge failed");
+}
+
+/// The same guarantee, on the source-scope arm.
+///
+/// `enqueue_blob_object_keys` has two arms and they refcount differently:
+/// the owner arm asks whether another OWNER names the key, the source arm
+/// asks whether another upload row outside the selected blob set does. Only
+/// the owner arm was pinned, so deleting the source arm's whole
+/// `NOT EXISTS` left the suite green while a source-scope erase enqueued the
+/// object key of a blob another owner had mounted — and the retention lane
+/// would then destroy bytes that owner still reads. This is that arm.
+///
+/// The shape is the one a mount actually produces: one owner cites an
+/// upload from two sources, hands one series to a group (which mounts
+/// rather than copies), then erases the source scope it kept. The blob the
+/// erase selects is the last thing IT has naming the object — and the mount
+/// is the thing that must stop the object going.
+#[tokio::test]
+async fn erasing_one_source_scope_of_a_mounted_object_does_not_destroy_the_bytes() {
+    let (db_name, pg, cold) = fresh_pg_with_cold().await;
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let user_id = UserId::new(Uuid::now_v7());
+        let owner = OwnerRef::Personal(user_id);
+        let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
+        let dest = destination();
+        let pool = pg.pool_for_tests();
+
+        let (blob_id, upload_id) = seed_cited_blob(pool, owner, &[23_u8; 32]).await?;
+        let object_key = format!("objects/{upload_id}");
+        cold.put(&object_key, b"bytes two owners read").await?;
+
+        let dropped = cite_from(pool, &permit, "src-drop", "scope-drop", blob_id).await?;
+        let handed_over = cite_from(pool, &permit, "src-keep", "scope-keep", blob_id).await?;
+        assert!(
+            pg.transfer_to_owner(&permit, EntityId::Memory(handed_over.memory_id), dest)
+                .await?
+        );
+        let mounts: i64 = sqlx::query_scalar(
+            "SELECT count(*)::bigint FROM proxima_core.blob_uploads WHERE object_key = $1",
+        )
+        .bind(&object_key)
+        .fetch_one(pool)
+        .await?;
+        assert_eq!(mounts, 2, "the transfer mounted rather than copied");
+        let _ = dropped;
+
+        // The source owner erases the scope that holds its only remaining
+        // citation. Its blob row and upload row go; the object must not.
+        let auth = EraseAuthorization::new_for_tests(ComplianceEraseTarget::PersonalSourceScope {
+            user_id,
+            source_id: proxima_core::SourceId::new("src-drop"),
+            drop_event_id: "drop-source-mounted".into(),
+        });
+        let outcome = pg
+            .erase_personal_source_scope_if_drop_verified(
+                &auth,
+                user_id,
+                &proxima_core::SourceId::new("src-drop"),
+                &contract_sidecar_tables(),
+            )
+            .await?;
+        assert!(
+            matches!(outcome, ComplianceEraseOutcome::Completed { .. }),
+            "the source-scope erase completes: {outcome:?}"
+        );
+        let source_rows: i64 = sqlx::query_scalar(
+            "SELECT count(*)::bigint FROM proxima_core.blob_uploads
+              WHERE object_key = $1 AND owner_id = $2",
+        )
+        .bind(&object_key)
+        .bind(owner.stored_owner_id())
+        .fetch_one(pool)
+        .await?;
+        assert_eq!(source_rows, 0, "the erased scope's own upload row goes");
+        assert_eq!(
+            cold.get(&object_key).await?,
+            b"bytes two owners read".to_vec(),
+            "the object the destination mounted survives the source's scope erase"
+        );
+
+        // The mount is now the only thing naming the object. When it goes,
+        // the object goes: the anti-join withholds keys, it does not leak
+        // them.
+        let group_id = match dest {
+            OwnerRef::Group(group_id) => group_id,
+            OwnerRef::Personal(_) => panic!("a transfer destination is a group"),
+        };
+        let last =
+            EraseAuthorization::new_for_tests(ComplianceEraseTarget::GroupOwner { group_id });
+        let outcome = pg
+            .erase_group_owner_if_abandoned(&last, group_id, false, &contract_sidecar_tables())
+            .await?;
+        assert!(
+            matches!(outcome, ComplianceEraseOutcome::Completed { .. }),
+            "the destination's erase completes: {outcome:?}"
+        );
+        assert!(
+            matches!(
+                cold.get(&object_key).await,
+                Err(proxima_core::StorageError::NotFound)
+            ),
+            "with the last row naming it gone, the object is destroyed"
+        );
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("source-scope refcounted object purge failed");
 }
