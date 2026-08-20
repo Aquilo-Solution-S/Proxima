@@ -49,9 +49,7 @@ pub use search::{
 };
 pub(crate) use series_handle::{owned_head_handle, sidecar_atoms_from_payload};
 
-pub(crate) fn read_owner_columns(
-    read_owners: &[OwnerRef],
-) -> (Vec<OwnerRefKind>, Vec<Option<uuid::Uuid>>) {
+pub(crate) fn read_owner_columns(read_owners: &[OwnerRef]) -> (Vec<OwnerRefKind>, Vec<uuid::Uuid>) {
     crate::access::owner_columns::owner_arrays(read_owners)
 }
 

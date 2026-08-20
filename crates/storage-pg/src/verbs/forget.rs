@@ -17,7 +17,7 @@ pub const COLD_FORMAT_VERSION: u8 = 4;
 
 // Keep the historical storage-path exports while routing the persisted key
 // derivation through core, the lowest crate shared by storage-pg and blob-s3.
-pub use proxima_core::{cold_object_key, owner_hash_hex};
+pub use proxima_core::cold_object_key;
 
 #[derive(Default)]
 pub struct MemoryColdStore {
@@ -159,15 +159,6 @@ fn decode_record(bytes: &[u8]) -> Result<ColdRecord, StorageError> {
     })
 }
 
-/// Rewrite the owner embedded in a cold record while preserving its payload.
-/// Publish remints the locator under World; the bytes must carry the same owner
-/// because hydrate reconstructs owner-scoped rows from this record.
-pub(crate) fn rehome_cold_record(bytes: &[u8], owner_id: Uuid) -> Result<Vec<u8>, StorageError> {
-    let mut rec = decode_record(bytes)?;
-    rec.row.owner_id = owner_id;
-    encode_record(&rec)
-}
-
 fn write_u16(out: &mut Vec<u8>, value: u16) {
     out.extend_from_slice(&value.to_be_bytes());
 }
@@ -301,6 +292,21 @@ fn read_uuid_list(bytes: &[u8], i: &mut usize) -> Result<Vec<Uuid>, StorageError
     Ok(out)
 }
 
+/// Owner-pinned sidecars do not take part in forget/hydrate at all.
+///
+/// They are not the Memory's data: they belong to the owner that acted, and
+/// after a transfer that is not the owner doing the forgetting. Cooling them
+/// into the Memory's cold object would let the receiving owner delete — or,
+/// via a cold-object erase, permanently destroy — another owner's audit
+/// trail. They simply stay in the hot table, which is safe because they hold
+/// no foreign key into `memory`.
+fn is_owner_pinned(sidecars: &PgSidecarRegistryFrozen, table: &str) -> bool {
+    sidecars
+        .owner_pinned_memory_sidecar_tables()
+        .iter()
+        .any(|pinned| pinned == table)
+}
+
 async fn dump_stamped_sidecars(
     conn: &mut PgConnection,
     sidecars: &PgSidecarRegistryFrozen,
@@ -313,6 +319,9 @@ async fn dump_stamped_sidecars(
             return Err(StorageError::ConstraintViolation(format!(
                 "stamped sidecar table {table} is not registered"
             )));
+        }
+        if is_owner_pinned(sidecars, table) {
+            continue;
         }
         let ident = PgIdent::table(table)?;
         let sql = format!(
@@ -401,7 +410,7 @@ pub async fn snapshot_hot(
 
 /// `FOR UPDATE` + cooled stub + hot delete. Re-PUTs only when the locked
 /// dump differs from `snapshot` (late sidecar). Owner is the permit owner;
-/// a concurrent publish that rewrote `owner_id` is `NotFound`.
+/// a concurrent owner transfer that rewrote `owner_id` is `NotFound`.
 /// Production callers hold the per-memory forget advisory lock across their
 /// PUT, but do not hold this row lock across cold I/O. This function
 /// compensates the object if the locator write fails.
@@ -498,7 +507,7 @@ async fn persist_cooled_after_put(
 ///
 /// Production forgets serialize before PUT. The locator check also makes a
 /// raw losing [`commit_forget`] safe without retaining payload after a
-/// concurrent publish or hard erase, both of which leave no matching row.
+/// concurrent owner transfer or hard erase, both of which leave no matching row.
 async fn compensate_forget_put(
     tx: &mut Transaction<'_, Postgres>,
     cold: &dyn ColdObjectStore,
@@ -681,7 +690,7 @@ async fn lock_forget_memory_tx(
     Ok(())
 }
 
-/// The publish transfer's half of the forget serialization: the same
+/// The owner transfer's half of the forget serialization: the same
 /// per-memory advisory lock [`lock_forget_memory_tx`] takes, over every `t`
 /// of the series, in sorted order. Forget takes its single lock before any
 /// row lock, and the transfer calls this before writing any row, so the two
@@ -775,6 +784,11 @@ async fn delete_stamped_sidecars(
                 "stamped sidecar table {table} is not registered"
             )));
         }
+        // See [`is_owner_pinned`]: forgetting a Memory must not delete
+        // somebody else's audit rows.
+        if is_owner_pinned(sidecars, table) {
+            continue;
+        }
         let ident = PgIdent::table(table)?;
         // SQL-POLICY: PgIdent
         let sql = format!("DELETE FROM {tbl} WHERE t = $1", tbl = ident.as_str());
@@ -806,7 +820,6 @@ async fn enqueue_embed_jobs(
             .await
             .map_err(map_err)?;
     let owner_kind = match owner_kind.as_str() {
-        "world" => proxima_core::OwnerRefKind::World,
         "group" => proxima_core::OwnerRefKind::Group,
         _ => proxima_core::OwnerRefKind::Personal,
     };
@@ -884,9 +897,13 @@ pub(crate) async fn sync_memory_head(
     Ok(())
 }
 
+/// `owner_id` comes from the `cooled` ROW, never from `rec`. The dump is a
+/// snapshot of the memory as it was when it cooled; an owner transfer
+/// afterwards updates the row and deliberately does not rewrite the bytes.
 async fn ensure_memory_head(
     tx: &mut Transaction<'_, Postgres>,
     rec: &ColdRecord,
+    owner_id: Uuid,
 ) -> Result<(), StorageError> {
     let head = sqlx::query(
         "INSERT INTO proxima_core.memory_head (handle, kind, schema_id, owner_id, t)
@@ -900,7 +917,7 @@ async fn ensure_memory_head(
     .bind(rec.row.handle)
     .bind(&rec.row.kind)
     .bind(&rec.schema_id)
-    .bind(rec.row.owner_id)
+    .bind(owner_id)
     .bind(rec.row.t)
     .fetch_optional(tx.as_mut())
     .await
@@ -976,16 +993,21 @@ pub async fn hydrate_memory(
     cold: &dyn ColdObjectStore,
     t: Uuid,
 ) -> Result<(), StorageError> {
-    let object_key: String =
-        sqlx::query_scalar("SELECT object_key FROM proxima_core.cooled WHERE t = $1")
+    // The row is the authority on WHO owns this series; the object is the
+    // authority on WHAT it contains. An owner transfer updates
+    // `cooled.owner_id` and leaves the bytes untouched (keys are
+    // owner-free), so hydrating from the dump's embedded owner would
+    // restore a transferred series back under the owner that gave it away.
+    let cooled: Option<(String, Uuid)> =
+        sqlx::query_as("SELECT object_key, owner_id FROM proxima_core.cooled WHERE t = $1")
             .bind(t)
             .fetch_optional(tx.as_mut())
             .await
-            .map_err(map_err)?
-            .ok_or(StorageError::NotFound)?;
+            .map_err(map_err)?;
+    let (object_key, owner_id) = cooled.ok_or(StorageError::NotFound)?;
 
     let rec = decode_record(&cold.get(&object_key).await?)?;
-    ensure_memory_head(tx, &rec).await?;
+    ensure_memory_head(tx, &rec, owner_id).await?;
     let cooled_content: Option<Uuid> = sqlx::query_scalar::<_, Option<Uuid>>(
         "SELECT content_id FROM proxima_core.cooled WHERE t = $1",
     )
@@ -1002,7 +1024,7 @@ pub async fn hydrate_memory(
     .bind(rec.row.handle)
     .bind(rec.row.t)
     .bind(&rec.row.kind)
-    .bind(rec.row.owner_id)
+    .bind(owner_id)
     .bind(&rec.schema_id)
     .bind(rec.row.source_id.as_deref())
     .bind(rec.row.ingest_key.as_deref())
@@ -1085,11 +1107,6 @@ pub async fn erase_memory(
     owner: &Owner,
     t: Uuid,
 ) -> Result<ColdPurgePlan, StorageError> {
-    if matches!(owner, Owner::World) {
-        return Err(StorageError::ConstraintViolation(
-            "World is never abandoned".into(),
-        ));
-    }
     let handle: Option<Uuid> =
         sqlx::query_scalar("SELECT handle FROM proxima_core.memory WHERE t = $1 AND owner_id = $2")
             .bind(t)

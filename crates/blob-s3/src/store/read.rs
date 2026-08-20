@@ -1,15 +1,14 @@
 //! The read lane: one presigned GET, over a locator this store itself wrote.
 
-use proxima_core::AuthzContext;
+use proxima_core::{AuthzContext, OwnerRef};
 use time::OffsetDateTime;
 
 use super::CitedBlobStore;
 use super::dto::{CitedBlobReadUrlOutcomeTs, CitedBlobReadUrlTs};
 use super::guards::{ensure_owner_access, format_time, parse_uuid, presign_config};
-use super::keys::{objects_owner_prefix, owner_hash_hex};
+use super::keys::locator_was_minted_here;
 use super::rows::{find_held_blobs, load_blob_location};
 use crate::error::BlobError;
-use proxima_core::OwnerRef;
 use proxima_core::storage_ports::{CitedBlobHeld, MAX_HELD_BLOB_DIGESTS};
 
 impl CitedBlobStore {
@@ -69,14 +68,13 @@ impl CitedBlobStore {
         // is a registered cited-object schema, so an inline citation can
         // persist an arbitrary bucket/object_key row under the caller's own
         // owner — and SigV4 presigning is offline, with no S3 existence
-        // check. Presign only locators this store itself wrote (the
-        // configured bucket, under the owner's canonical objects/ prefix),
-        // and answer anything else exactly like a missing row so a probe
-        // cannot learn whether the forged row exists.
+        // check. Owning the row is therefore NOT enough to be allowed to
+        // presign its key: a forged row is owned by the forger. Presign
+        // only locators this store itself minted, and answer anything else
+        // exactly like a missing row so a probe cannot learn whether the
+        // forged row exists.
         if row.bucket != self.config.bucket
-            || !row
-                .object_key
-                .starts_with(&objects_owner_prefix(&owner_hash_hex(&owner)))
+            || !locator_was_minted_here(&row.object_key, row.upload_id)
         {
             return Err(BlobError::State("cited object not found for Owner".into()));
         }

@@ -1410,7 +1410,7 @@ mod tests {
     #[test]
     fn resolve_without_tool_scope_fails_closed_with_actionable_message() {
         // No embedding host may silently advertise the full tool surface
-        // (core_publish/core_membership included) by omitting `.tool_scope(...)`.
+        // (core_transfer/core_membership included) by omitting `.tool_scope(...)`.
         let err = RuntimeBuilder::default()
             .database_url("postgres://localhost/proxima")
             .owner(owner(uuid::Uuid::now_v7()))

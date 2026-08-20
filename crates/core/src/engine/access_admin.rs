@@ -1,4 +1,4 @@
-use crate::access::{EntityId, Relation};
+use crate::access::{AccessKind, EntityId, Relation};
 use crate::authz::{
     AuthPath, AuthzContext, AuthzInput, AuthzOperation, AuthzOutcome, MembershipChange,
 };
@@ -193,42 +193,67 @@ impl Engine {
         Ok(GroupMemberPage { members, has_more })
     }
 
-    /// Transfer one memory's owner to `OwnerRef::World` — the
-    /// kernel-law publish verb. This is an owner TRANSFER, not an ACL
-    /// flag or a share row: World is universally readable and, per
-    /// `authorize_write`'s `resolved == world()` short-circuit, never a
-    /// write owner again afterward.
+    /// Transfer one memory's owner to `to_owner`. This is an owner
+    /// TRANSFER, not an ACL flag or a share row: the series moves in place
+    /// (`MemoryHeadAligned`) and leaves the prior owner's view entirely.
     ///
-    /// Goals are never publishable — World owns no goals — so a Goal
-    /// entity is refused here, before any owner lookup or storage call.
+    /// Goals do not transfer, so a Goal entity is refused here, before any
+    /// owner lookup or storage call. The `goal_head_t_only` trigger is the
+    /// DDL backstop for the same rule.
     ///
-    /// Requires write/manage authority (`Relation::Admin`) on the entity's
-    /// CURRENT owner — for a personal owner that is the subject's own
-    /// `Role::personal()`; for a group owner it is a member holding
-    /// `Role::admin()` (`manage = true`). Re-publishing an already-World
-    /// entity fails closed: the current-owner lookup resolves to World,
-    /// and `authorize_write` denies World as a write owner before any
-    /// storage call.
+    /// Authorization is **admin on both sides**:
+    /// * `Relation::Admin` on the entity's CURRENT owner — for a personal
+    ///   owner that is the subject's own `Role::personal()`; for a group
+    ///   owner it is a member holding `Role::admin()` (`manage = true`),
+    ///   re-checked through `require_group_manage`. This is the side the
+    ///   request is scoped to: the write permit that carries the transfer
+    ///   into storage is the SOURCE owner's, so a caller gives a memory
+    ///   away while acting AS its owner.
+    /// * Write-Goal plus group-manage on `to_owner`, resolved by
+    ///   `authorize_transfer_destination`. The destination must
+    ///   therefore be a **Group**: `may_manage` is false for every personal
+    ///   owner by construction, so there is no personal-owner spelling of
+    ///   receiving-side consent. A personal destination is refused with
+    ///   `InvalidArgument`.
+    ///
+    /// The destination's `owners` row is minted inside the storage
+    /// transaction (`ensure_owner_row`), so the paired announce rows'
+    /// `owner_id` FKs hold without any migration-seeded owner.
+    ///
+    /// The ownership oracle is closed by ordering: the `to_owner ==
+    /// current_owner` refusal fires only AFTER both sides authorize, so a
+    /// caller with no authority cannot tell `InvalidArgument` (the entity
+    /// already lives at the owner they named) from `Forbidden` (it does
+    /// not) and probe entity→owner mappings.
     ///
     /// # Errors
     ///
-    /// Returns `InvalidArgument` for a Goal entity. Returns `NotFound`
-    /// when the entity has no home owner (absent or tombstoned). Returns
-    /// `Forbidden` when the caller lacks admin/manage authority on the
-    /// current owner, or when the current owner is already World. Returns
-    /// `Internal` for storage failures, and `NotFound` if the storage
-    /// transfer finds no matching row (owner changed concurrently between
-    /// the lookup and the write).
-    pub async fn publish_to_world(
+    /// Returns `InvalidArgument` for a Goal entity and for a non-Group
+    /// destination. Returns `NotFound` when the entity has no home owner
+    /// (absent or tombstoned). Returns `Forbidden` when the caller lacks
+    /// admin/manage authority on either side. Returns `InvalidArgument`
+    /// when an authorized caller names the current owner as the
+    /// destination. Returns `Internal` for storage failures, and
+    /// `NotFound` if the storage transfer finds no matching row (owner
+    /// changed concurrently between the lookup and the write).
+    pub async fn transfer_to_owner(
         &self,
         authz: &AuthzContext,
         entity: EntityId,
+        to_owner: OwnerRef,
     ) -> Result<(), ProtocolError> {
         self.operation_authority(authz)?;
         if matches!(entity, EntityId::Goal(_)) {
             return Err(ProtocolError::invalid_argument(
                 "entity",
-                "goals are never publishable: World owns no goals",
+                "goals do not transfer",
+            ));
+        }
+        if !matches!(to_owner, OwnerRef::Group(_)) {
+            return Err(ProtocolError::invalid_argument(
+                "to_owner",
+                "transfer destination must be a group owner: receiving-side consent is \
+                 group-manage authority, which no personal owner can grant",
             ));
         }
         let current_owner = self
@@ -246,32 +271,142 @@ impl Engine {
         if matches!(current_owner, OwnerRef::Group(_)) {
             require_group_manage(authz, &current_owner)?;
         }
+        // Receiving side: the destination consents by the caller holding
+        // manage on it. A transfer needs consent from both owners.
+        self.authorize_transfer_destination(authz, &to_owner)
+            .await?;
+
+        // Only now, with both sides authorized, is it safe to say that the
+        // destination is where the entity already lives. Answering that
+        // earlier told an unauthorized caller where any entity is homed.
+        if current_owner == to_owner {
+            return Err(ProtocolError::invalid_argument(
+                "to_owner",
+                "transfer destination is already the current owner",
+            ));
+        }
 
         self.veto_and_observe_access_admin(
             authz,
             &current_owner,
             permit.owner(),
             Relation::Admin,
-            AuthzOperation::EntityShare {
-                entity,
-                owner: OwnerRef::World,
-            },
+            AuthzOperation::EntityTransfer { entity, to_owner },
         )?;
 
         let transferred = self
             .storage()
             .access_admin
             .owner_transfer
-            .transfer_to_world(permit.owner_write_permit(), entity)
+            .transfer_to_owner(permit.owner_write_permit(), entity, to_owner)
             .await
-            .map_err(|err| storage_error("transfer_to_world", &err))?;
+            .map_err(|err| storage_error("transfer_to_owner", &err))?;
 
         if !transferred {
             return Err(ProtocolError::not_found(
-                "entity already published or owner changed concurrently",
+                "entity owner changed concurrently",
             ));
         }
         Ok(())
+    }
+
+    /// Receiving-side consent for [`Self::transfer_to_owner`].
+    ///
+    /// A transfer is the one verb that needs authority on TWO owners at
+    /// once, and the served surface cannot hand it both. `mcp_auth`
+    /// narrows every authenticated request through
+    /// `AuthzContext::narrowed_to_owner(selected_owner)`, whose role map
+    /// holds exactly the one owner the caller selected — so whichever side
+    /// the caller selects, the request context is silent about the other.
+    /// The narrowing is a security boundary and stays; the destination's
+    /// consent is resolved out of band instead, the way
+    /// [`Self::bootstrap_group_admin`] steps outside the request context
+    /// rather than widening it.
+    ///
+    /// Two paths, in priority order:
+    /// * The request context already carries a resolved role for
+    ///   `to_owner` (an embedded host that never narrowed, or a caller who
+    ///   selected the destination). That role is authoritative and is
+    ///   gated exactly as before — `authorize_write(.., Admin)` plus
+    ///   [`require_group_manage`], hooks and owner resolution included. A
+    ///   role that is present but insufficient is a refusal, never a
+    ///   fall-through to storage: a host that deliberately hands out a
+    ///   narrowed role must not be overruled by a membership row.
+    /// * The context is silent about `to_owner` — the narrowed served
+    ///   surface. Then, and only then, the authenticated subject's
+    ///   membership is re-read from storage. Those rows are
+    ///   engine-authoritative: [`Self::add_member`] and
+    ///   [`Self::bootstrap_group_admin`] are what write them, and every
+    ///   write is itself manage-gated.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Forbidden` when neither path establishes write-Goal plus
+    /// manage on `to_owner`, and `Internal` when the membership re-read
+    /// fails.
+    async fn authorize_transfer_destination(
+        &self,
+        authz: &AuthzContext,
+        to_owner: &OwnerRef,
+    ) -> Result<(), ProtocolError> {
+        if authz.role_for_owner(to_owner).is_some() {
+            self.authorize_write(authz, to_owner, Relation::Admin)
+                .await?;
+            return require_group_manage(authz, to_owner);
+        }
+        self.authorize_transfer_destination_out_of_band(authz, to_owner)
+            .await
+    }
+
+    /// Re-read the authenticated subject's membership on `to_owner` and
+    /// require the same authority the in-context gate requires: a role
+    /// that may write Goals AND carries `manage`. Only `Relation::Admin`
+    /// maps to such a role, so this is `Relation::Admin` on the
+    /// destination group — spelled through [`Relation::role`] so the rule
+    /// tracks the role table rather than restating it.
+    ///
+    /// Refused before the lookup for every context that does not name a
+    /// subject whose membership may stand in for its own authority:
+    ///
+    /// * `Delegated` — a delegated grant decodes `manage = false` by
+    ///   construction (`storage-pg/src/delegated_authority.rs`). Its
+    ///   subject is a real user who may well hold Admin on the
+    ///   destination, so re-reading membership would hand the grant an
+    ///   authority the grant does not carry. `operation_authority` already
+    ///   refuses raw delegated contexts and `transfer_to_owner` takes no
+    ///   `DelegatedPhase`, so this is the second lock on a shut door —
+    ///   worth keeping, because the first one lives in another module.
+    /// * `Denied` and any context that is not server-resolved — fail
+    ///   closed; a denied context authorizes nothing.
+    async fn authorize_transfer_destination_out_of_band(
+        &self,
+        authz: &AuthzContext,
+        to_owner: &OwnerRef,
+    ) -> Result<(), ProtocolError> {
+        let refused = || ProtocolError::forbidden("requires manage on this owner");
+        if matches!(authz.auth_path(), AuthPath::Delegated | AuthPath::Denied)
+            || !authz.is_server_resolved()
+        {
+            return Err(refused());
+        }
+        let Some(subject) = authz.subject() else {
+            return Err(refused());
+        };
+        let memberships = self
+            .storage()
+            .access_admin
+            .owner_access_read
+            .resolve_membership(&OwnerRef::Personal(subject))
+            .await
+            .map_err(|err| storage_error("resolve_membership", &err))?;
+        let consents = memberships.iter().any(|row| {
+            if OwnerRef::Group(row.group) != *to_owner {
+                return false;
+            }
+            let role = row.relation.role();
+            role.may_write(AccessKind::Goal) && role.manages()
+        });
+        if consents { Ok(()) } else { Err(refused()) }
     }
 
     fn veto_and_observe_access_admin(
@@ -304,13 +439,13 @@ impl Engine {
     }
 }
 
-/// Membership-admin and group publish require the `manage` bit, not merely
+/// Membership-admin and group transfer require the `manage` bit, not merely
 /// `Relation::Admin` write authority. `authorize_write(.., Admin)` is satisfied
 /// by any role that can write Goals (`write >= Goal`), so a custom
 /// `OwnerAccessPort` could hand out `Role::new(Goal, Goal, false)` — write-Goal
 /// but `manage = false` — and pass the write gate. Consult `may_manage`
 /// explicitly so only roles with `manage = true` (e.g. `Role::admin`) mutate
-/// membership or publish a group-owned entity.
+/// membership or move a group-owned entity to another owner.
 fn require_group_manage(authz: &AuthzContext, group_owner: &OwnerRef) -> Result<(), ProtocolError> {
     if authz.may_manage(group_owner) {
         Ok(())
@@ -342,8 +477,86 @@ mod tests {
     use crate::authz::{
         AuthPath, AuthorizationHook, AuthzContext, AuthzInput, AuthzOperation, MembershipChange,
     };
-    use crate::{ErrorCode, FlavorRegistry, GroupId, OwnerRef, UserId};
+    use crate::{EntityId, ErrorCode, FlavorRegistry, GroupId, MemoryId, OwnerRef, UserId};
     use uuid::Uuid;
+
+    /// The destination gate has two paths and they must never merge.
+    ///
+    /// When the request context already carries a resolved role for the
+    /// destination, that role is the answer — including when the answer is
+    /// no. Falling through to the membership re-read on a refusal would let
+    /// a stored Admin row overrule a host that deliberately handed out a
+    /// narrowed role, and the narrowed served surface is the only reason
+    /// resolving the destination out of band is safe at all.
+    ///
+    /// The control is what gives the refusals meaning. The SAME storage,
+    /// holding a real Admin membership on the destination the whole time,
+    /// is consulted when the context is silent — consent is granted, the
+    /// transfer gets past the gate, and it dies further down on the
+    /// double's rejecting write with `Internal`. So `Forbidden` below can
+    /// only mean the lookup never ran.
+    #[tokio::test]
+    async fn a_carried_role_that_cannot_manage_never_falls_through_to_the_membership_row() {
+        let subject = UserId::new(Uuid::now_v7());
+        let destination_group = GroupId::new(Uuid::now_v7());
+        let destination = OwnerRef::Group(destination_group);
+        let entity = EntityId::Memory(MemoryId::new(Uuid::now_v7()));
+
+        let engine = || {
+            crate::Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests())
+                .with_storage_ports(
+                    MembershipStorage {
+                        member: OwnerRef::Personal(subject),
+                        group: destination_group,
+                        // Real, sufficient, receiving-side consent, sitting
+                        // in storage for every case in this test.
+                        membership_relation: Relation::Admin,
+                        home_owner: Some(OwnerRef::Personal(subject)),
+                        entity_readable: true,
+                        memory_kind: None,
+                    }
+                    .storage_ports(),
+                )
+        };
+
+        let silent = AuthzContext::for_subject(subject, AuthPath::HostBearer);
+        let control = engine()
+            .transfer_to_owner(&silent, entity, destination)
+            .await
+            .expect_err("the storage double rejects the transfer write itself");
+        assert_eq!(
+            control.code,
+            ErrorCode::Internal,
+            "a context silent about the destination must reach the membership row and be \
+             consented — otherwise the refusals below prove nothing"
+        );
+
+        // Present but insufficient. `Role::personal()` is the sharp one: it
+        // may write Goals, so only `manages()` separates it from Admin.
+        for role in [
+            Role::viewer(),
+            Role::ingest(),
+            Role::editor(),
+            Role::personal(),
+        ] {
+            let carried = AuthzContext::for_subject_with_role(
+                subject,
+                [(destination, role)],
+                AuthPath::HostBearer,
+            );
+            let err = engine()
+                .transfer_to_owner(&carried, entity, destination)
+                .await
+                .expect_err("a carried role that cannot manage must refuse");
+            assert_eq!(
+                err.code,
+                ErrorCode::Forbidden,
+                "carried role {role:?} must refuse outright; Internal here would mean the \
+                 gate fell through to the membership lookup and the stored Admin row \
+                 overruled the narrowed role"
+            );
+        }
+    }
 
     #[test]
     fn access_admin_bootstrap_group_admin_is_not_mcp_exposed() {
@@ -458,28 +671,48 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn access_admin_publish_refuses_goal_entities_before_owner_lookup() {
+    async fn access_admin_transfer_refuses_goal_entities_before_owner_lookup() {
         let engine = crate::Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests());
         let caller = UserId::new(Uuid::now_v7());
         let authz = AuthzContext::for_subject(caller, AuthPath::HostBearer);
         let goal = crate::EntityId::Goal(crate::GoalId::new(Uuid::now_v7()));
+        let destination = OwnerRef::Group(GroupId::new(Uuid::now_v7()));
 
         // The default engine has no storage: reaching the owner lookup would
         // surface Internal, so InvalidArgument proves the gate fired first.
         let err = engine
-            .publish_to_world(&authz, goal)
+            .transfer_to_owner(&authz, goal, destination)
             .await
-            .expect_err("goals are never publishable");
+            .expect_err("goals do not transfer");
         assert_eq!(err.code, ErrorCode::InvalidArgument);
         assert!(
-            err.message.contains("never publishable"),
+            err.message.contains("goals do not transfer"),
             "refusal must state the ruling: {}",
             err.message
         );
     }
 
     #[tokio::test]
-    async fn access_admin_membership_and_publish_require_manage_not_just_write() {
+    async fn access_admin_transfer_refuses_a_personal_destination() {
+        let engine = crate::Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests());
+        let caller = UserId::new(Uuid::now_v7());
+        let authz = AuthzContext::for_subject(caller, AuthPath::HostBearer);
+        let entity = crate::EntityId::Memory(crate::MemoryId::new(Uuid::now_v7()));
+
+        let err = engine
+            .transfer_to_owner(&authz, entity, OwnerRef::Personal(caller))
+            .await
+            .expect_err("a personal owner cannot grant receiving-side consent");
+        assert_eq!(err.code, ErrorCode::InvalidArgument);
+        assert!(
+            err.message.contains("must be a group owner"),
+            "refusal must name the destination rule: {}",
+            err.message
+        );
+    }
+
+    #[tokio::test]
+    async fn access_admin_membership_and_transfer_require_manage_not_just_write() {
         use crate::access::AccessCeiling;
 
         let group = GroupId::new(Uuid::now_v7());
@@ -496,9 +729,14 @@ mod tests {
             [(group_owner, write_only)],
             AuthPath::HostBearer,
         );
+        let destination = GroupId::new(Uuid::now_v7());
+        let destination_owner = OwnerRef::Group(destination);
         let admin_authz = AuthzContext::for_subject_with_role(
             caller,
-            [(group_owner, Role::admin())],
+            [
+                (group_owner, Role::admin()),
+                (destination_owner, Role::admin()),
+            ],
             AuthPath::HostBearer,
         );
 
@@ -520,12 +758,59 @@ mod tests {
             .expect_err("write-without-manage must not remove members");
         assert_eq!(denied.code, ErrorCode::Forbidden);
 
-        // publish of a group-owned entity: same manage gate.
+        // transfer OUT of a group-owned entity: same manage gate on the
+        // source side.
         let denied = engine
-            .publish_to_world(&write_only_authz, entity)
+            .transfer_to_owner(&write_only_authz, entity, destination_owner)
             .await
-            .expect_err("write-without-manage must not publish a group entity");
+            .expect_err("write-without-manage must not transfer a group entity");
         assert_eq!(denied.code, ErrorCode::Forbidden);
+
+        // Admin on the source but nothing at all on the destination: the
+        // receiving side refuses. `MembershipStorage` reports no membership
+        // for this caller, so the out-of-band destination lookup finds
+        // nothing either — neither path consents.
+        let source_only_authz = AuthzContext::for_subject_with_role(
+            caller,
+            [(group_owner, Role::admin())],
+            AuthPath::HostBearer,
+        );
+        let denied = engine
+            .transfer_to_owner(&source_only_authz, entity, destination_owner)
+            .await
+            .expect_err("no authority on the destination must refuse the transfer");
+        assert_eq!(denied.code, ErrorCode::Forbidden);
+
+        // Full admin on the SOURCE, write-without-manage on the
+        // DESTINATION. `authorize_write(.., Admin)` is satisfied on both
+        // sides — write == Goal is all it asks — so the destination's
+        // `require_group_manage` is the only thing standing between this
+        // caller and a transfer into a group that never consented. Delete
+        // that one call and this assertion sees `Internal` (the stub
+        // storage refusing the write) instead of `Forbidden`.
+        let write_only_destination_authz = AuthzContext::for_subject_with_role(
+            caller,
+            [
+                (group_owner, Role::admin()),
+                (destination_owner, write_only),
+            ],
+            AuthPath::HostBearer,
+        );
+        let denied = engine
+            .transfer_to_owner(&write_only_destination_authz, entity, destination_owner)
+            .await
+            .expect_err("write-without-manage on the destination is not receiving-side consent");
+        assert_eq!(
+            denied.code,
+            ErrorCode::Forbidden,
+            "the destination manage gate must refuse before storage is touched: {}",
+            denied.message
+        );
+        assert!(
+            denied.message.contains("requires manage on this owner"),
+            "refusal must name the manage bit: {}",
+            denied.message
+        );
 
         // manage == true (Role::admin) passes the manage gate and reaches storage,
         // which this stub rejects with an Internal error — proving the gate opened.
@@ -536,9 +821,119 @@ mod tests {
         assert_eq!(past_gate.code, ErrorCode::Internal);
 
         let past_gate = engine
-            .publish_to_world(&admin_authz, entity)
+            .transfer_to_owner(&admin_authz, entity, destination_owner)
             .await
             .expect_err("stub storage rejects the transfer after the gate opens");
         assert_eq!(past_gate.code, ErrorCode::Internal);
+    }
+
+    /// The served surface narrows every request to ONE owner, so a
+    /// transfer's context can never name both sides. This is that context:
+    /// `Role::admin()` on the source group and literally nothing on the
+    /// destination — the exact shape
+    /// `AuthzContext::narrowed_to_owner(source)` produces. The destination's
+    /// consent comes from the membership rows instead, so an Admin row for
+    /// this caller on the destination group opens the gate and a
+    /// non-manage row does not.
+    #[tokio::test]
+    async fn access_admin_transfer_resolves_a_narrowed_destination_out_of_band() {
+        let source = GroupId::new(Uuid::now_v7());
+        let source_owner = OwnerRef::Group(source);
+        let destination = GroupId::new(Uuid::now_v7());
+        let destination_owner = OwnerRef::Group(destination);
+        let caller = UserId::new(Uuid::now_v7());
+        let entity = crate::EntityId::Memory(crate::MemoryId::new(Uuid::now_v7()));
+
+        // Exactly what the middleware hands the engine: one owner, one role.
+        let narrowed = AuthzContext::for_subject_with_role(
+            caller,
+            [(source_owner, Role::admin())],
+            AuthPath::HostBearer,
+        );
+        assert!(
+            narrowed.role_for_owner(&destination_owner).is_none(),
+            "a narrowed context must carry no role for the destination"
+        );
+
+        let storage_with_relation = |relation: Relation| {
+            crate::Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests())
+                .with_storage_ports(
+                    MembershipStorage {
+                        member: OwnerRef::Personal(caller),
+                        group: destination,
+                        membership_relation: relation,
+                        home_owner: Some(source_owner),
+                        entity_readable: true,
+                        memory_kind: None,
+                    }
+                    .storage_ports(),
+                )
+        };
+
+        // An Admin row on the destination is the receiving side's consent:
+        // the gate opens and the stub storage refuses the write instead.
+        let past_gate = storage_with_relation(Relation::Admin)
+            .transfer_to_owner(&narrowed, entity, destination_owner)
+            .await
+            .expect_err("stub storage rejects the transfer after the gate opens");
+        assert_eq!(
+            past_gate.code,
+            ErrorCode::Internal,
+            "an Admin membership row on the destination must open the gate: {}",
+            past_gate.message
+        );
+
+        // Every other relation maps to a role without `manage`, so none of
+        // them is consent — this is the regression that made the verb
+        // unreachable in the first place, inverted.
+        for relation in [Relation::Editor, Relation::Viewer, Relation::Ingest] {
+            let denied = storage_with_relation(relation)
+                .transfer_to_owner(&narrowed, entity, destination_owner)
+                .await
+                .unwrap_err();
+            assert_eq!(
+                denied.code,
+                ErrorCode::Forbidden,
+                "{relation:?} on the destination is not receiving-side consent: {}",
+                denied.message
+            );
+        }
+    }
+
+    /// A delegated grant decodes `manage = false`, so it must not reach the
+    /// out-of-band lookup and borrow its own subject's Admin membership.
+    #[tokio::test]
+    async fn access_admin_transfer_refuses_a_delegated_context_before_the_membership_lookup() {
+        let source = GroupId::new(Uuid::now_v7());
+        let source_owner = OwnerRef::Group(source);
+        let destination = GroupId::new(Uuid::now_v7());
+        let caller = UserId::new(Uuid::now_v7());
+        let entity = crate::EntityId::Memory(crate::MemoryId::new(Uuid::now_v7()));
+
+        // Admin on the destination in storage — the authority the grant
+        // must NOT be able to borrow.
+        let engine = crate::Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests())
+            .with_storage_ports(
+                MembershipStorage {
+                    member: OwnerRef::Personal(caller),
+                    group: destination,
+                    membership_relation: Relation::Admin,
+                    home_owner: Some(source_owner),
+                    entity_readable: true,
+                    memory_kind: None,
+                }
+                .storage_ports(),
+            );
+        let delegated = AuthzContext::for_subject_with_role(
+            caller,
+            [(source_owner, Role::admin())],
+            AuthPath::Delegated,
+        );
+
+        let denied = engine
+            .transfer_to_owner(&delegated, entity, OwnerRef::Group(destination))
+            .await
+            .expect_err("a raw delegated context is not Engine authority");
+        assert_eq!(denied.code, ErrorCode::Forbidden);
     }
 }

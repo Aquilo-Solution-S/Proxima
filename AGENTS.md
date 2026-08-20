@@ -203,8 +203,8 @@ runtime checklist most likely to prevent regressions.
   Wake is armed Goal behavior, not a separate kernel entity.
 - **Citations/compliance/embeddings:** citations are `blob_id` 0..1 on
   Fact ∪ Abstraction (a Perspective never cites). Hard deletion is
-  `wipeable := abandoned ∨ (cold ∧ unreferenced ∧ policy)`; World never
-  abandoned. Embeddings are independent rows and never graph authors.
+  `wipeable := abandoned ∨ (cold ∧ unreferenced ∧ policy)`.
+  Embeddings are independent rows and never graph authors.
 - **Flavor/API/storage:** flavor composition is build-time; no runtime registry
   or plugin tier. Flavor code must use authorized helpers/private permits, not
   raw core-table SQL. Writes are atomic command-port operations or explicit

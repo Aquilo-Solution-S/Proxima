@@ -876,7 +876,6 @@ where
         &'t FactIngestOutcome,
     ) -> FactIngestSidecarFuture<'t>,
 {
-    crate::access::owner_columns::reject_world_write_owner(owner)?;
     let mut write = draft.clone();
     if write.blob_id.is_none() {
         write.blob_id =

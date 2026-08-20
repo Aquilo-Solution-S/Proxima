@@ -70,9 +70,9 @@ pub struct CitedBlobReconcileOutcome {
     /// NOT COUNTED AS MISSING, because the cause is different and so is the
     /// repair. The locator columns are client-writable — `read_url` says so
     /// in its own comment and refuses to presign such a row — so a non-zero
-    /// count here is either a legacy locator or someone writing rows
-    /// directly, and folding it into `missing_objects` would report a data
-    /// loss that never happened.
+    /// count here means rows were written directly rather than through the
+    /// upload path, and folding it into `missing_objects` would report a
+    /// data loss that never happened.
     pub foreign_locators: u64,
     pub foreign_sample: Vec<String>,
 }
@@ -113,6 +113,14 @@ pub struct CitedBlobOwnerReconcileOutcome {
     pub objects_scanned: u64,
     pub missing_objects: u64,
     pub missing_sample: Vec<CitedBlobOwnerMissingObject>,
+    /// Always `0` in this lane, and structurally so.
+    ///
+    /// An orphan is an object no row claims. Object keys carry no owner —
+    /// that is what lets a transfer move a series without rewriting bytes —
+    /// so an unclaimed object has no owner to attribute it to and cannot
+    /// appear in one owner's report. Orphan detection is bucket-wide and
+    /// lives in [`CitedBlobReconcilePort::reconcile_all`], which is the
+    /// only place it was ever authoritative.
     pub orphan_objects: u64,
     pub foreign_locators: u64,
 }

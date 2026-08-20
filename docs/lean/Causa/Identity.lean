@@ -51,7 +51,6 @@ abbrev Cue : Type := Set MemoryId
     the host resolves it through `OwnerState` before authorization. No new axiom:
     group refs reuse the existing engine-minted `Id`. -/
 inductive OwnerRef where
-  | world
   | personal (u : User)
   | group (id : Id)
 
@@ -63,7 +62,6 @@ abbrev ResolvedOwner : Type := Owner
     algorithm, SQL tables, or caches; it consumes only this resolved function. -/
 structure OwnerState where
   resolve : OwnerRef → ResolvedOwner
-  world_resolves : resolve .world = world
   personal_resolves : ∀ u : User, resolve (.personal u) = Owner.ofUser u
 
 /-- Which operator produced a derived memory. Reproducibility metadata stays

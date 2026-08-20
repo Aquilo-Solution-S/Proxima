@@ -77,7 +77,7 @@ impl PgOwnerAccessResolver {
     /// only need one relation check (e.g. gating a manage-only action).
     ///
     /// Only [`OwnerRef::Group`] owners carry row-backed relations in
-    /// `proxima_core.group_memberships`; World and Personal access is
+    /// `proxima_core.group_memberships`; Personal access is
     /// derived by the kernel rules, never by a membership row, so probing
     /// either always returns `Ok(false)` — fail closed rather than mint a
     /// relation that was never granted.

@@ -37,8 +37,13 @@ pub enum AuthzOperation {
         member: OwnerRef,
         relation: Relation,
     },
-    /// Entity ownership/share mutation audited by entity and owner.
-    EntityShare { entity: EntityId, owner: OwnerRef },
+    /// Entity ownership move audited by entity and destination owner.
+    /// There is no share: an owner transfer is the only cross-owner move,
+    /// and the series leaves the source owner's view entirely.
+    EntityTransfer {
+        entity: EntityId,
+        to_owner: OwnerRef,
+    },
 }
 
 #[derive(Debug)]

@@ -149,7 +149,7 @@ impl Engine {
 
     /// Current owned series handle whose sidecar matches `columns`.
     ///
-    /// Owner-only. A World-transferred series is a miss for the prior
+    /// Owner-only. A transferred series is a miss for the prior
     /// owner. Flavor code must not JOIN `memory_head` to answer this.
     ///
     /// # Errors

@@ -161,7 +161,7 @@ normalization of action-dispatch tools described below.
 
 A dispatcher is any tool whose argument type is an internally-tagged enum
 **and** which declares `ACTION_ARG_SPECS`. The substrate ships five —
-`core_goal`, `core_fact`, `core_membership`, `core_publish`, `core_upload` —
+`core_goal`, `core_fact`, `core_membership`, `core_transfer`, `core_upload` —
 and a flavor declares its own the same way, through `proxima_flavor!`.
 
 Their argument schema is normalized into a client-safe shape after

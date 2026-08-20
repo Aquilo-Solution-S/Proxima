@@ -66,7 +66,6 @@ struct EmbeddingJobClaimRow {
 impl From<EmbeddingJobClaimRow> for EmbeddingJobClaim {
     fn from(row: EmbeddingJobClaimRow) -> Self {
         let owner_kind = match row.owner_kind.as_str() {
-            "world" => OwnerRefKind::World,
             "group" => OwnerRefKind::Group,
             _ => OwnerRefKind::Personal,
         };
@@ -78,9 +77,7 @@ impl From<EmbeddingJobClaimRow> for EmbeddingJobClaim {
         };
         Self {
             job_id: row.job_id,
-            owner: owner_kind
-                .with_uuid(Some(row.owner_id))
-                .expect("embedding job row has valid owner_ref shape"),
+            owner: owner_kind.with_uuid(row.owner_id),
             entity_kind,
             entity_id: MemoryId::new(row.entity_id),
             model_id: row.model_id,
@@ -624,7 +621,7 @@ mod tests {
     fn job_claim_shape_tracks_durable_claim_state() {
         let claim = EmbeddingJobClaim {
             job_id: uuid::Uuid::from_u128(2),
-            owner: Owner::world(),
+            owner: Owner::Personal(proxima_core::UserId::new(uuid::Uuid::from_u128(1))),
             entity_kind: EntityKind::Fact,
             entity_id: MemoryId::new(uuid::Uuid::from_u128(3)),
             model_id: "model".into(),

@@ -1,19 +1,4 @@
-use proxima_core::{ComplianceEraseOutcome, ComplianceEraseRefusal, OwnerRef};
-
-#[test]
-fn world_owner_delete_request_maps_to_refused_outcome() {
-    let outcome = ComplianceEraseOutcome::Refused {
-        operation_id: uuid::Uuid::now_v7(),
-        reason: ComplianceEraseRefusal::WorldOwner,
-    };
-    assert!(matches!(
-        outcome,
-        ComplianceEraseOutcome::Refused {
-            reason: ComplianceEraseRefusal::WorldOwner,
-            ..
-        }
-    ));
-}
+use proxima_core::{ComplianceEraseOutcome, OwnerRef, UserId};
 
 #[test]
 fn public_api_does_not_expose_forgeable_abandoned_owner_constructor() {
@@ -21,8 +6,8 @@ fn public_api_does_not_expose_forgeable_abandoned_owner_constructor() {
     // compile-fail UI tests are not currently wired for this workspace.
     // This test still pins the intended public API: callers work with requests
     // and outcomes, not deletion witnesses.
-    let owner = OwnerRef::World;
-    assert!(matches!(owner, OwnerRef::World));
+    let owner = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
+    assert!(matches!(owner, OwnerRef::Personal(_)));
     assert!(matches!(
         ComplianceEraseOutcome::NotFound {
             operation_id: uuid::Uuid::now_v7()

@@ -14,8 +14,6 @@ use crate::{AuthPath, GroupId, OwnerRef, SourceId, UserId};
 /// The entity to erase under compliance.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ComplianceEraseTarget {
-    /// Attempt to erase the world owner; always refused and audited.
-    WorldOwner,
     /// Erase a group owner and all its owned rows.
     GroupOwner { group_id: GroupId },
     /// Erase a personal owner and all its owned rows.
@@ -239,8 +237,6 @@ pub enum ComplianceEraseOutcome {
 pub enum ComplianceEraseRefusal {
     /// The owner is not abandoned (still has members for groups, or drop not verified for personal).
     OwnerNotAbandoned,
-    /// Cannot erase World owner.
-    WorldOwner,
     /// The source scope's owner is still live.
     SourceScopeOwnerStillLive,
     /// Personal owner drop could not be verified.

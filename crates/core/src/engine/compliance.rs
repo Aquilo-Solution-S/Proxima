@@ -358,30 +358,6 @@ impl Engine {
         Ok(EraseAdmission::Admitted(EraseAuthorization::new(audit)))
     }
 
-    /// Refuse and audit an attempted world-owner erase.
-    ///
-    /// # Errors
-    ///
-    /// Returns a protocol error when audit recording fails.
-    pub async fn erase_world_owner(
-        &self,
-        authz: &AuthzContext,
-    ) -> Result<ComplianceEraseOutcome, ProtocolError> {
-        let target = ComplianceEraseTarget::WorldOwner;
-        let audit = Self::compliance_audit_context(authz, target);
-        let operation_id = audit.operation_id();
-        let outcome = self
-            .pre_storage_outcome(
-                &audit,
-                ComplianceEraseOutcome::Refused {
-                    operation_id,
-                    reason: ComplianceEraseRefusal::WorldOwner,
-                },
-            )
-            .await?;
-        Ok(outcome)
-    }
-
     /// Export one owner's compliance bundle.
     ///
     /// Requires compliance-controller authorization. Export is
@@ -979,30 +955,6 @@ mod purge_tests {
                 ..
             }
         ));
-    }
-
-    #[tokio::test]
-    async fn refused_world_owner_erase_does_not_purge() {
-        let purge = Arc::new(RecordingPurge::default());
-        let engine = engine_with(
-            Arc::new(FixedOutcomeErase::completed()),
-            None,
-            purge.clone(),
-        );
-
-        let outcome = engine
-            .erase_world_owner(&system_authz())
-            .await
-            .expect("world erase records a refusal");
-
-        assert!(matches!(
-            outcome,
-            ComplianceEraseOutcome::Refused {
-                reason: ComplianceEraseRefusal::WorldOwner,
-                ..
-            }
-        ));
-        assert!(purge.purged.lock().unwrap().is_empty());
     }
 
     #[tokio::test]

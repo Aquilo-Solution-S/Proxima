@@ -58,14 +58,15 @@ Canonical substrate tools:
 | `core_search_memories` | precision search; may include neighbor edges, per-result tags, lexical-degradation status, and selected memory-space labels. Optional `min_score` relevance floor and hybrid `semantic_weight` (default 0.6 semantic / 0.4 lexical). Pages of at most 50: `has_more` plus an opaque `next_cursor`. The cursor is fingerprint-bound to query / mode / filters / order / spaces / score knobs and fails closed if those change. `limit`, `include_body`, and `include_neighbor_edges` may vary between pages. Neighbors default off |
 | `core_memory_spaces` | list server-issued memory-space keys with labels and coarse unrestricted-access flags |
 | `core_membership` | group roster dispatcher: `add_member`, `remove_member`, `list_members`; host/controller scoped. `list_members` pages (default 50, max 200) with keyset `cursor`/`next_cursor` + `has_more`, cursor bound to the group |
-| `core_publish` | owner-transfer dispatcher: `publish_to_world`; irreversible transfer to `OwnerRef::World`, not membership or ACL |
+| `core_transfer` | owner-transfer dispatcher: `transfer_to_owner`; moves a memory's owner to a destination group, not membership or ACL. Args: `entity` plus a required `to_owner` external owner key (`group:<uuid>`) |
 | `core_goal` | goal action dispatcher: `set`, `transition`, `modify`, `mark_achieved`, `decompose` |
 | `core_fact` | Fact action dispatcher: `citation_of_fact`, `facts_citing_object`. `facts_citing_object` pages newest-first (default 50, max 200) with keyset `cursor`/`next_cursor` + `has_more`, cursor bound to the cited object |
 | `core_upload` | cited-blob upload dispatcher: `prepare`, `complete`, `abort`, `read_url`; artefact bytes travel by presigned URL only, and the tool never emits `bucket`/`object_key` |
 
-Compatibility: `core_membership:publish_to_world` is removed. Clients and
-tool-scope palettes must use `core_publish:publish_to_world`; no compatibility
-alias is retained.
+Compatibility: `core_membership:publish_to_world` and
+`core_publish:publish_to_world` are both removed. Clients and tool-scope
+palettes must use `core_transfer:transfer_to_owner`; no compatibility alias
+is retained for either rename.
 
 Graph search is unified into `core_search_memories`; there is no
 separate graph-search tool.
@@ -288,10 +289,10 @@ detect the gap. Deployments that prune must pick a horizon comfortably
 larger than their slowest consumer's lag, or have lagging consumers
 re-baseline via the cold-start stitching below. Retention tombstoning
 also writes to this log: a Fact aged out by the owner's retention window
-appears as an `EntityDelete` event. Publish-to-World writes paired
+appears as an `EntityDelete` event. An owner-to-owner transfer writes paired
 `EntityTransfer` events in the transferring transaction — one under the
-prior owner's lane (the series left their owned view) and one under
-World's lane (it arrived), same entity and handle on both.
+prior owner's lane (the series left their owned view) and one under the
+destination owner's lane (it arrived), same entity and handle on both.
 
 Forward poll (events after a cursor):
 
@@ -322,9 +323,9 @@ Events committed after `hwm` are read by the poll; events at or before
 `hwm` are already represented in the snapshot. A history-rail variant
 seeds recent context with `ChangeHistory(owner, limit = N)` before the
 first forward poll. Ownership transfers stitch the same way: an
-`EntityTransfer` read on the World lane after `hwm` is an arrival to
-hydrate with `Query`; one read on the prior owner's lane is a departure
-from that owned view. A transfer at or before `hwm` is already
+`EntityTransfer` read on the destination owner's lane after `hwm` is an
+arrival to hydrate with `Query`; one read on the prior owner's lane is a
+departure from that owned view. A transfer at or before `hwm` is already
 reflected in the snapshot's owner column.
 
 ## Consistency — Strong Write -> Log
@@ -335,7 +336,7 @@ Graph writes commit Memory/Goal rows and corresponding
 | Property | Contract |
 |---|---|
 | atomic write/event | no committed graph row without its `announce` row |
-| atomic transfer/event | `publish_to_world` commits the owner UPDATE and its paired `transfer` rows (prior owner's lane + World's lane) in one transaction |
+| atomic transfer/event | `transfer_to_owner` commits the owner UPDATE and its paired `transfer` rows (prior owner's lane + destination owner's lane) in one transaction |
 | write return | `GoalWrite` / `FactIngest` success means the graph change is committed and durably readable |
 | read | a committed event is visible to any subsequent forward poll / `ChangeHistory` read |
 | replay | `ChangeHistory` and the forward poll read the same `announce` log |
@@ -365,7 +366,7 @@ RPCs beyond those concrete methods stay deferred.
 
 | Primitive | Protocol status |
 |---|---|
-| `delete_owner` | current Host API: `erase_abandoned_group_owner`, `erase_dropped_personal_owner`, `erase_world_owner` refusal |
+| `delete_owner` | current Host API: `erase_abandoned_group_owner`, `erase_dropped_personal_owner` |
 | `delete_source_scope` | current Host API: `erase_abandoned_group_source_scope`, `erase_dropped_personal_source_scope` |
 | `pause_owner` / `resume_owner` | design intent |
 | `export_owner` | design intent |
@@ -397,12 +398,16 @@ Per-call dispatch enforces `call.owner` inside the resolved Owner set.
 Signup, MFA, billing, tenancy lifecycle, group naming, invites, archive/delete,
 and product audit timelines live in front of the engine. `core_membership`
 mutates only the explicit group roster when the host exposes that
-controller-scoped tool. `core_publish` transfers a memory's owner to
-`OwnerRef::World` — an irreversible owner transfer, not an ACL flag or share
-row; World is universally readable and never a write owner again afterward.
-It requires write/manage authority (`Relation::Admin`) on the entity's
-current owner. Goals are never publishable: World owns no goals, and a Goal
-entity is refused before any owner lookup.
+controller-scoped tool. `core_transfer` moves a memory's owner to another
+owner — an owner transfer, not an ACL flag or share row; the series leaves
+the prior owner's view entirely. It requires admin on both sides:
+`Relation::Admin` on the entity's current owner (plus group-manage when that
+owner is a group) and `Relation::Admin` plus group-manage on the destination.
+The destination must be a Group — receiving-side consent is group-manage
+authority, which no personal owner can grant, so a personal destination is
+refused with `InvalidArgument`, as is a destination equal to the current
+owner. Goals do not transfer: a Goal entity is refused before any owner
+lookup.
 
 ## Error Envelope
 

@@ -138,7 +138,7 @@ Every action-attempt or effect Fact follows the ordinary ingest contract:
 | Check | Rule |
 |---|---|
 | owner | source/tool may write only within the authorized Owner |
-| owner roles | memory writes require a resolved write-capable role for that `Owner`; cross-owner copy/publish is not a current protocol action |
+| owner roles | memory writes require a resolved write-capable role for that `Owner`; there is no cross-owner copy on the ingest path. The only cross-owner move is `core_transfer`, which relocates an existing series and writes no Fact |
 | schema | `schema_id` / version must resolve to a registered `FactPayload` |
 | references | index entries come from the payload's own `references()`; nothing writes one directly |
 | capability | tool output must stay within registered schemas and resolved tool scope |

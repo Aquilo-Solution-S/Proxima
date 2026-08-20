@@ -150,9 +150,8 @@ fn sorted_accessible_principals(ctx: &McpToolCtx) -> Vec<Owner> {
 
 const fn owner_kind_sort_key(kind: OwnerRefKind) -> u8 {
     match kind {
-        OwnerRefKind::World => 0,
-        OwnerRefKind::Personal => 1,
-        OwnerRefKind::Group => 2,
+        OwnerRefKind::Personal => 0,
+        OwnerRefKind::Group => 1,
     }
 }
 
@@ -164,7 +163,6 @@ pub(crate) enum MemorySpaceKey {
 
 impl MemorySpaceKey {
     const CURRENT: &'static str = "current";
-    const WORLD: &'static str = "world";
     const PERSONAL_PREFIX: &'static str = "personal:";
     const GROUP_PREFIX: &'static str = "group:";
 
@@ -177,9 +175,6 @@ impl MemorySpaceKey {
     pub fn parse(raw: &str) -> Option<Self> {
         if raw == Self::CURRENT {
             return Some(Self::Current);
-        }
-        if raw == Self::WORLD {
-            return Some(Self::Owner(OwnerRef::World));
         }
         if let Some(id) = raw.strip_prefix(Self::PERSONAL_PREFIX) {
             return uuid::Uuid::parse_str(id)
@@ -198,7 +193,6 @@ impl MemorySpaceKey {
         match self {
             Self::Current => Self::CURRENT.to_string(),
             Self::Owner(owner) => match owner {
-                OwnerRef::World => Self::WORLD.to_string(),
                 OwnerRef::Personal(user) => {
                     format!("{}{}", Self::PERSONAL_PREFIX, user.into_inner())
                 }
@@ -210,7 +204,6 @@ impl MemorySpaceKey {
 
 pub(crate) fn space_label(owner: &Owner) -> String {
     match owner {
-        OwnerRef::World => "World".to_string(),
         OwnerRef::Personal(user) => format!("Personal {}", user.into_inner()),
         OwnerRef::Group(group) => format!("Group {}", group.into_inner()),
     }
@@ -227,7 +220,7 @@ pub(crate) mod test_ctx {
     use crate::{AuthPath, AuthzContext, FlavorRegistry, FlavorServices, OwnerRef, UserId};
 
     /// Build a server-resolved caller context: personal role on `subject`'s own
-    /// owner, World viewer, plus the given per-group roles.
+    /// owner plus the given per-group roles.
     pub(crate) fn ctx_for(subject: UserId, group_roles: Vec<(OwnerRef, Role)>) -> McpToolCtx {
         make_ctx(
             OwnerRef::Personal(subject),
@@ -276,18 +269,16 @@ mod tests {
         let subject = UserId::new(uuid::Uuid::now_v7());
         let shared = OwnerRef::Group(GroupId::new(uuid::Uuid::now_v7()));
         let shared_key = MemorySpaceKey::owner(shared).to_wire();
-        let world_key = MemorySpaceKey::owner(OwnerRef::World).to_wire();
         let ctx = ctx_for(subject, vec![(shared, Role::editor())]);
 
         let out = MemorySpacesTool::call(ctx, MemorySpacesArgs {})
             .await
             .unwrap();
-        // current (own personal) sorts first; World and the editor group follow.
+        // current (own personal) sorts first; the editor group follows.
         assert_eq!(out.spaces[0].key, "current");
         assert!(writable_for(&out.spaces, "current"));
-        // Editor on the group → writable; World is public-read, never writable.
+        // Editor on the group → writable.
         assert!(writable_for(&out.spaces, &shared_key));
-        assert!(!writable_for(&out.spaces, &world_key));
     }
 
     #[tokio::test]
@@ -322,10 +313,6 @@ mod tests {
         let subject = UserId::new(uuid::Uuid::now_v7());
         let shared = OwnerRef::Group(GroupId::new(uuid::Uuid::now_v7()));
         let ctx = ctx_for(subject, vec![(shared, Role::viewer())]);
-
-        let world = resolve_space_owner(&ctx, Some("world"), SpaceDefault::Current).unwrap();
-        assert_eq!(world.owner, OwnerRef::World);
-        assert_eq!(world.key, "world");
 
         let group_key = MemorySpaceKey::owner(shared).to_wire();
         let group = resolve_space_owner(&ctx, Some(&group_key), SpaceDefault::Current).unwrap();
@@ -365,7 +352,6 @@ mod tests {
     #[test]
     fn space_key_wire_round_trip_covers_every_owner_kind() {
         for owner in [
-            OwnerRef::World,
             OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7())),
             OwnerRef::Group(GroupId::new(uuid::Uuid::now_v7())),
         ] {
@@ -383,6 +369,7 @@ mod tests {
         // Unknown prefixes and malformed uuids fail closed.
         assert_eq!(MemorySpaceKey::parse("personal:not-a-uuid"), None);
         assert_eq!(MemorySpaceKey::parse("tenant:123"), None);
+        assert_eq!(MemorySpaceKey::parse("world"), None);
     }
 
     #[test]
@@ -397,7 +384,7 @@ mod tests {
             err.to_string()
                 .contains(&format!("unknown memory space: {hidden_key}"))
         );
-        // A bare subject sees only its own space + World (public read).
-        assert_eq!(list_memory_spaces(&ctx).len(), 2);
+        // A bare subject sees only its own space.
+        assert_eq!(list_memory_spaces(&ctx).len(), 1);
     }
 }

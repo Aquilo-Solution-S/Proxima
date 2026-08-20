@@ -7,7 +7,7 @@ use proxima_core::storage_ports::{
     DelegationGrant, DelegationGrantStorage, DelegationId, DelegationMutationPermit,
     DelegationStorePort,
 };
-use proxima_core::{AccessCeiling, GroupId, OwnerRef, OwnerRefKind, Role, StorageError, UserId};
+use proxima_core::{AccessCeiling, OwnerRef, OwnerRefKind, Role, StorageError, UserId};
 use sqlx::{PgPool, Row as _};
 use time::OffsetDateTime;
 
@@ -169,17 +169,8 @@ fn decode_grant(
     row: &sqlx::postgres::PgRow,
 ) -> Result<DelegationGrant, StorageError> {
     let owner_kind: OwnerRefKind = row.try_get("owner_kind").map_err(internal)?;
-    let owner_id: Option<uuid::Uuid> = row.try_get("owner_id").map_err(internal)?;
-    let owner = match (owner_kind, owner_id) {
-        (OwnerRefKind::World, None) => OwnerRef::World,
-        (OwnerRefKind::Personal, Some(id)) => OwnerRef::Personal(UserId::new(id)),
-        (OwnerRefKind::Group, Some(id)) => OwnerRef::Group(GroupId::new(id)),
-        _ => {
-            return Err(StorageError::Internal(
-                "invalid delegated authority owner shape".into(),
-            ));
-        }
-    };
+    let owner_id: uuid::Uuid = row.try_get("owner_id").map_err(internal)?;
+    let owner = owner_kind.with_uuid(owner_id);
     let read: PgAccessCeiling = row.try_get("read_ceiling").map_err(internal)?;
     let write: PgAccessCeiling = row.try_get("write_ceiling").map_err(internal)?;
     let role_ceiling = Role::new(read.into(), write.into(), false)

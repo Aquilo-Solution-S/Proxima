@@ -707,7 +707,7 @@ fn resolve_tool_scope(
     registered_ids: &[&str],
 ) -> Result<ToolScope, CliError> {
     // Fail closed. With no PROXIMA_TOOL_PROFILE set, default to `memory` —
-    // which excludes core_publish (irreversible owner transfer to World)
+    // which excludes core_transfer (owner transfer of a memory series)
     // and core_membership. Operators opt into the dangerous surface with
     // an explicit PROXIMA_TOOL_PROFILE=full.
     let profile = match profile_name {
@@ -722,7 +722,7 @@ fn resolve_tool_scope(
     if profile == ToolProfile::Full && allow.is_empty() && deny.is_empty() {
         tracing::warn!(
             "PROXIMA_TOOL_PROFILE=full advertises the whole tool surface, including \
-             core_publish (irreversible owner transfer to World) and core_membership; \
+             core_transfer (owner transfer of a memory series) and core_membership; \
              set PROXIMA_TOOL_PROFILE=memory for agent-facing hosts"
         );
         return Ok(ToolScope::All);
@@ -1236,11 +1236,11 @@ mod tests {
             protocol_tool::CORE_SEARCH_MEMORIES,
             protocol_tool::CORE_MEMORY_SPACES,
             protocol_tool::CORE_MEMBERSHIP,
-            protocol_tool::CORE_PUBLISH,
+            protocol_tool::CORE_TRANSFER,
             protocol_action::CORE_MEMBERSHIP_ADD_MEMBER,
             protocol_action::CORE_MEMBERSHIP_REMOVE_MEMBER,
             protocol_action::CORE_MEMBERSHIP_LIST_MEMBERS,
-            protocol_action::CORE_PUBLISH_TO_WORLD,
+            protocol_action::CORE_TRANSFER_TO_OWNER,
             protocol_action::CORE_FACT_CITATION_OF_FACT,
             protocol_action::CORE_FACT_FACTS_CITING_OBJECT,
             protocol_tool::CORE_FORGET,
@@ -1253,9 +1253,9 @@ mod tests {
         let default_scope =
             resolve_tool_scope(None, None, None, &registered_ids).expect("default profile");
         assert!(default_scope.allows(protocol_tool::CORE_SEARCH_MEMORIES));
-        assert!(!default_scope.allows(protocol_tool::CORE_PUBLISH));
+        assert!(!default_scope.allows(protocol_tool::CORE_TRANSFER));
         assert!(!default_scope.allows(protocol_tool::CORE_MEMBERSHIP));
-        assert!(!default_scope.allows(protocol_action::CORE_PUBLISH_TO_WORLD));
+        assert!(!default_scope.allows(protocol_action::CORE_TRANSFER_TO_OWNER));
 
         // Explicit `full` still yields the whole surface.
         let full = resolve_tool_scope(Some(protocol_profile::FULL), None, None, &registered_ids)
@@ -1273,13 +1273,13 @@ mod tests {
         assert!(memory.allows(protocol_action::CORE_FACT_FACTS_CITING_OBJECT));
         assert!(memory.allows(protocol_tool::CORE_FORGET));
         assert!(!memory.allows(protocol_tool::CORE_MEMBERSHIP));
-        assert!(!memory.allows(protocol_tool::CORE_PUBLISH));
+        assert!(!memory.allows(protocol_tool::CORE_TRANSFER));
         assert!(!memory.allows(protocol_action::CORE_MEMBERSHIP_ADD_MEMBER));
         assert!(!memory.allows(protocol_action::CORE_MEMBERSHIP_REMOVE_MEMBER));
         assert!(!memory.allows(protocol_action::CORE_MEMBERSHIP_LIST_MEMBERS));
-        assert!(!memory.allows(protocol_action::CORE_PUBLISH_TO_WORLD));
+        assert!(!memory.allows(protocol_action::CORE_TRANSFER_TO_OWNER));
         assert!(!memory.allows_group_advertisement(protocol_tool::CORE_MEMBERSHIP));
-        assert!(!memory.allows_group_advertisement(protocol_tool::CORE_PUBLISH));
+        assert!(!memory.allows_group_advertisement(protocol_tool::CORE_TRANSFER));
 
         // Code-flavor tools join the memory keep set only when the `code`
         // flavor is compiled in (the keep set references their `NAME`
@@ -1359,12 +1359,12 @@ mod tests {
             protocol_action::CORE_MEMBERSHIP_ADD_MEMBER,
             protocol_action::CORE_MEMBERSHIP_REMOVE_MEMBER,
             protocol_action::CORE_MEMBERSHIP_LIST_MEMBERS,
-            protocol_action::CORE_PUBLISH_TO_WORLD,
+            protocol_action::CORE_TRANSFER_TO_OWNER,
         ];
         let scope = resolve_tool_scope(
             None,
             None,
-            Some("core_membership:add_member,core_membership:remove_member,core_membership:list_members,core_publish:publish_to_world"),
+            Some("core_membership:add_member,core_membership:remove_member,core_membership:list_members,core_transfer:transfer_to_owner"),
             &registered_ids,
         )
         .expect("known grouped deny entries are accepted");
@@ -1372,9 +1372,9 @@ mod tests {
         assert!(!scope.allows(protocol_action::CORE_MEMBERSHIP_ADD_MEMBER));
         assert!(!scope.allows(protocol_action::CORE_MEMBERSHIP_REMOVE_MEMBER));
         assert!(!scope.allows(protocol_action::CORE_MEMBERSHIP_LIST_MEMBERS));
-        assert!(!scope.allows(protocol_action::CORE_PUBLISH_TO_WORLD));
+        assert!(!scope.allows(protocol_action::CORE_TRANSFER_TO_OWNER));
         assert!(!scope.allows_group_advertisement(protocol_tool::CORE_MEMBERSHIP));
-        assert!(!scope.allows_group_advertisement(protocol_tool::CORE_PUBLISH));
+        assert!(!scope.allows_group_advertisement(protocol_tool::CORE_TRANSFER));
     }
 
     #[test]

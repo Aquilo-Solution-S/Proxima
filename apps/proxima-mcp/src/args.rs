@@ -61,7 +61,7 @@ Environment:
                                 to PROXIMA_OIDC_ISSUER. Mutually exclusive
                                 with PROXIMA_OIDC_SUBJECT_MAP_JSON.
   PROXIMA_TOOL_PROFILE          Tool profile: memory (fail-closed default) or
-                                full (opt-in; adds core_publish/core_membership)
+                                full (opt-in; adds core_transfer/core_membership)
   PROXIMA_TOOL_ALLOW            Comma-separated canonical tool ids added to profile
   PROXIMA_TOOL_DENY             Comma-separated canonical tool ids removed from profile
   PROXIMA_EMBED_REQUEST_TIMEOUT_SECONDS
@@ -90,9 +90,8 @@ Maintenance:
 
 Endpoint:
   http://127.0.0.1:31415/mcp
-  MCP initialize must include X-Proxima-Owner: personal:<uuid>,
-  group:<uuid>, or world:00000000-0000-0000-0000-000000000001. The server
-  binds that owner to Mcp-Session-Id.
+  MCP initialize must include X-Proxima-Owner: personal:<uuid> or
+  group:<uuid>. The server binds that owner to Mcp-Session-Id.
 
 Tools:
   core_search_memories
@@ -108,7 +107,7 @@ Tools:
   core_goal
   core_fact
   core_membership
-  core_publish
+  core_transfer
   core_upload
 ";
 
@@ -144,8 +143,9 @@ Reports three separate numbers, which are three different problems:
   missing   an artefact the corpus claims to hold whose object is absent.
             A CITATION THAT CANNOT BE RESOLVED. This is the one to alert on
   orphans   objects no row claims: cost and retention, nothing broken
-  foreign   rows naming another bucket or a key outside objects/. Neither
-            loss nor waste - usually a legacy or hand-written locator
+  foreign   rows naming another bucket, or any key other than the one
+            derived from the row's own upload id. Neither loss nor waste -
+            a hand-written locator, not something this host minted
 
 Requires the same PROXIMA_S3_* block the host runs with; the bucket is taken
 from the environment rather than a flag so it cannot be pointed at a store

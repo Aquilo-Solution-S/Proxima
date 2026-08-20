@@ -9,7 +9,7 @@ Group maps each member to a `Role`. Stable persisted owner references are modele
 separately in `Causa.Identity` (`OwnerRef`); this file models the resolved
 Leopard-style result. The one irreducible atom is `User` (a role-bearing
 identity atom: human user, configured Agent, service actor); groups, resolved
-owners, roles, and World are structural over it.
+owners, and roles are structural over it.
 
 A `Role` is two independent capability ceilings over the access ladder
 F < A < P < G — how high a member may READ and how high they may WRITE (read and
@@ -29,7 +29,9 @@ storage should point at a stable `OwnerRef`; the host resolves that reference to
 this group-shaped `Owner` before the kernel rule runs. There is no separate
 `is_home`/`reaches`/`entity_owner` reachability layer (removed with the share
 set, D11): read-only sharing is a viewer-role membership in that one group, and
-publishing is transfer to World. One entity, one owner group.
+sharing beyond it is an owner-to-owner TRANSFER of the entity into another
+group. There is no universal-read owner: an entity is exactly as readable as
+its owning group. One entity, one owner group.
 -/
 
 import Causa.Prelude
@@ -160,11 +162,6 @@ theorem Owner.ofUser_other {u x : User} (h : x ≠ u) :
 
 /-- An Owner is personal iff it is some user's personal group. -/
 def Owner.isPersonal (o : Owner) : Prop := ∃ u : User, o = Owner.ofUser u
-
-/-- The reserved World group — public read. Every user is a member at `viewer`:
-    reads all kinds, writes none. Defined at the resolved-owner layer; the stable
-    `.world` owner reference is introduced in `Causa.Identity`. -/
-def world : Owner := fun _ => some Role.viewer
 
 -- ============================================================
 -- Membership

@@ -20,7 +20,7 @@ pub mod list_wake_candidates;
 pub mod membership;
 pub mod memory;
 pub mod memory_spaces;
-pub mod publish;
+pub mod transfer;
 pub mod upload;
 pub mod walk_memory_lineage;
 pub(crate) mod wire_ref;
@@ -31,10 +31,10 @@ pub use goal::CoreGoalTool;
 pub use membership::CoreMembershipTool;
 pub use memory::{DeriveTool, ForgetTool, InterpretTool, RecordUtteranceTool, RememberTool};
 pub use memory_spaces::MemorySpacesTool;
-pub use publish::CorePublishTool;
 pub use recall::RecallTool;
 pub use search_memories::SearchMemoriesTool;
 pub use think::ThinkTool;
+pub use transfer::CoreTransferTool;
 pub use upload::CoreUploadTool;
 
 use crate::mcp::McpToolAnnotations;
@@ -91,7 +91,7 @@ pub(crate) fn register_all(
     registry.try_add_mcp_tool::<CoreGoalTool>("core")?;
     registry.try_add_mcp_tool::<CoreFactTool>("core")?;
     registry.try_add_mcp_tool::<CoreMembershipTool>("core")?;
-    registry.try_add_mcp_tool::<CorePublishTool>("core")?;
+    registry.try_add_mcp_tool::<CoreTransferTool>("core")?;
     registry.try_add_mcp_tool::<CoreUploadTool>("core")?;
     Ok(())
 }

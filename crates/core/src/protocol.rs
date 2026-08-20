@@ -14,7 +14,7 @@ pub mod tool {
     pub const CORE_GOAL: &str = "core_goal";
     pub const CORE_FACT: &str = "core_fact";
     pub const CORE_MEMBERSHIP: &str = "core_membership";
-    pub const CORE_PUBLISH: &str = "core_publish";
+    pub const CORE_TRANSFER: &str = "core_transfer";
     pub const CORE_UPLOAD: &str = "core_upload";
     pub const CORE_FORGET: &str = "core_forget";
 }
@@ -33,7 +33,7 @@ pub mod action {
     pub const CORE_MEMBERSHIP_REMOVE_MEMBER: &str = "core_membership:remove_member";
     pub const CORE_MEMBERSHIP_LIST_MEMBERS: &str = "core_membership:list_members";
 
-    pub const CORE_PUBLISH_TO_WORLD: &str = "core_publish:publish_to_world";
+    pub const CORE_TRANSFER_TO_OWNER: &str = "core_transfer:transfer_to_owner";
 
     pub const CORE_UPLOAD_PREPARE: &str = "core_upload:prepare";
     pub const CORE_UPLOAD_COMPLETE: &str = "core_upload:complete";

@@ -1,7 +1,7 @@
 //! Owned current-head handle lookup by sidecar column values.
 //!
 //! Tesla-valve admit: sidecar row → `memory.t` → `memory_head` (`h.t = m.t`).
-//! Owner-only. A World-transferred series is a miss for the prior owner.
+//! Owner-only. A transferred series is a miss for the prior owner.
 
 use proxima_core::verbs::query::SidecarAtom;
 use proxima_core::{Owner, SchemaId, StorageError};

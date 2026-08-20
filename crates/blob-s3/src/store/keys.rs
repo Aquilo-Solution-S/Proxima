@@ -1,46 +1,54 @@
-//! Where an owner's cited bytes live in S3, and how an `Owner` reaches its
-//! rows. The persisted owner hash and cold-memory key are shared with
-//! `proxima_core`; the cited-blob prefixes remain local to this store.
+//! Where an owner's cited bytes live in S3.
+//!
+//! **Keys carry no owner, and there is exactly one scheme.** A key is
+//! minted once from the server-minted `blob_uploads.upload_id` that names
+//! the row it belongs to, and never changes again — an owner transfer is an
+//! `owner_id` update on the row and nothing else.
+//!
+//! That is also what makes the read gate safe without a prefix: a locator
+//! is honoured only when it is byte-for-byte the key this store would mint
+//! for THAT row's own id. `core/uploaded-blob-v1` is a registered
+//! cited-object schema, so a locator row can be persisted under the
+//! caller's own owner — owning the row is therefore not evidence of
+//! anything. A forged row can only ever vouch for its own object, because
+//! the key is derived from its primary key.
+//!
+//! There is no legacy branch. Keys written by the retired owner-scoped
+//! scheme are not readable and are not meant to be; v0.0.8 is a breaking
+//! release and existing deployments re-ingest.
 
-use proxima_core::{Owner, UPLOADED_BLOB_SCHEMA_ID};
 use uuid::Uuid;
-
-pub(super) use proxima_core::owner_hash_hex;
 
 /// Bucket-wide prefix for completed cited blobs.
 pub(super) const CANONICAL_OBJECT_PREFIX: &str = "objects/";
 
-/// Prefix under which an owner's canonical (completed) blobs live. Single
-/// source of truth for the `objects/<owner_hash>/` key space so the erase
-/// purge and the write path can never drift.
-pub(super) fn objects_owner_prefix(owner_hash: &str) -> String {
-    format!("{CANONICAL_OBJECT_PREFIX}{owner_hash}/")
+/// In-flight bytes for one upload. The upload id already names exactly one
+/// `blob_uploads` row.
+pub(super) fn pending_object_key(upload_id: Uuid) -> String {
+    format!("pending/{upload_id}")
 }
 
-/// Prefix under which an owner's in-flight (pending) uploads live.
-pub(super) fn pending_owner_prefix(owner_hash: &str) -> String {
-    format!("pending/{owner_hash}/")
+/// The committed object for one upload, derived from the row's own primary
+/// key — which is what the read gate compares against.
+pub(super) fn canonical_object_key(upload_id: Uuid) -> String {
+    format!("{CANONICAL_OBJECT_PREFIX}{upload_id}")
 }
 
-pub(super) fn pending_object_key(owner_hash: &str, upload_id: Uuid) -> String {
-    format!("{}{upload_id}", pending_owner_prefix(owner_hash))
-}
-
-pub(super) fn canonical_object_key(owner_hash: &str, blake3_hex: &str) -> String {
-    format!(
-        "{}{UPLOADED_BLOB_SCHEMA_ID}/{blake3_hex}",
-        objects_owner_prefix(owner_hash)
-    )
+/// Is `object_key` the locator this store minted for the upload row
+/// `upload_id`?
+///
+/// ONE rule, shared by every surface that trusts a stored locator
+/// (`read_url`, the verified read, and reconcile's foreign-locator count),
+/// because they must agree on what "ours" means. `owner` is not consulted:
+/// the row's own id decides, and the owner predicates in the SQL decide
+/// who may reach the row at all.
+pub(super) fn locator_was_minted_here(object_key: &str, upload_id: Uuid) -> bool {
+    object_key == canonical_object_key(upload_id)
 }
 
 /// Forget/hydrate/erase: one object per Memory `t`; the derivation is owned by
 /// `proxima_core` so storage-pg and blob-s3 cannot drift apart.
-pub use proxima_core::{cold_object_key, cold_owner_prefix};
-
-#[must_use]
-pub fn owner_hash_hex_public(owner: &Owner) -> String {
-    owner_hash_hex(owner)
-}
+pub use proxima_core::cold_object_key;
 
 #[cfg(test)]
 mod tests {
@@ -48,95 +56,122 @@ mod tests {
 
     use super::*;
 
+    /// The whole point of the scheme: nothing an owner is identified by
+    /// appears in a key.
     #[test]
-    fn object_keys_do_not_embed_raw_owner_ids() {
+    fn minted_keys_carry_no_owner_component_at_all() {
         let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
         let owner_kind = OwnerRefKind::of(&owner);
-        let owner_key_id = owner.stable_key_uuid();
-        let owner_hash = owner_hash_hex(&owner);
-        let pending = pending_object_key(&owner_hash, Uuid::now_v7());
-        let canonical = canonical_object_key(&owner_hash, &"a".repeat(64));
+        let owner_key_id = owner.stable_key_uuid().to_string();
+        let upload_id = Uuid::now_v7();
+        let t = Uuid::now_v7();
 
-        assert_eq!(owner_hash.len(), 64);
-        assert!(!pending.contains(owner_kind.as_str()));
-        assert!(!pending.contains(&owner_key_id.to_string()));
-        assert!(pending.starts_with("pending/"));
-        assert!(canonical.contains(UPLOADED_BLOB_SCHEMA_ID));
-        assert!(canonical.starts_with("objects/"));
-    }
+        for key in [
+            pending_object_key(upload_id),
+            canonical_object_key(upload_id),
+            cold_object_key(t),
+        ] {
+            assert!(!key.contains(&owner_key_id), "{key} leaks the owner id");
+            assert!(
+                !key.contains(owner_kind.as_str()),
+                "{key} leaks the owner kind"
+            );
+        }
 
-    /// The erase purge must target exactly the two owner-scoped prefixes that
-    /// prepare/complete write under, derived from the same helpers (no
-    /// hardcoded key format). The S3 round-trip itself is only exercised under
-    /// `PROXIMA_S3_*` (see `blob_roundtrip_pg`); this pins the deterministic,
-    /// network-free key/prefix derivation the purge relies on.
-    #[test]
-    fn purge_prefixes_are_owner_scoped_ancestors_of_written_keys() {
-        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
-        let owner_hash = owner_hash_hex(&owner);
-        let objects = objects_owner_prefix(&owner_hash);
-        let pending = pending_owner_prefix(&owner_hash);
-
-        assert_eq!(CANONICAL_OBJECT_PREFIX, "objects/");
-        assert_eq!(objects, format!("objects/{owner_hash}/"));
-        assert_eq!(pending, format!("pending/{owner_hash}/"));
-
-        // Every key the write path emits sits under the prefix the purge scans.
-        assert!(canonical_object_key(&owner_hash, &"a".repeat(64)).starts_with(&objects));
-        assert!(pending_object_key(&owner_hash, Uuid::now_v7()).starts_with(&pending));
-        let cold = cold_object_key(&owner_hash, Uuid::now_v7(), Uuid::now_v7());
-        assert!(cold.starts_with(&cold_owner_prefix(&owner_hash)));
-        assert!(!cold.contains(&owner.stable_key_uuid().to_string()));
-
-        // A different owner yields disjoint prefixes, so a purge never reaches
-        // another owner's objects.
-        let other_hash = owner_hash_hex(&OwnerRef::Personal(UserId::new(Uuid::now_v7())));
-        assert_ne!(objects, objects_owner_prefix(&other_hash));
-        assert_ne!(pending, pending_owner_prefix(&other_hash));
-    }
-
-    #[test]
-    fn owner_hash_is_owner_scoped() {
-        let a = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
-        let b = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
-        assert_ne!(owner_hash_hex(&a), owner_hash_hex(&b));
-    }
-
-    /// Pins the org-free S3 `owner_hash_hex` against drift. The BLAKE3 folds
-    /// the domain tag ‖ principal kind/id — no org. A
-    /// fixed principal must reproduce exactly this hex (and thus the same
-    /// stored S3 object path) forever.
-    #[test]
-    fn owner_hash_hex_golden_is_org_free() {
-        let owner = OwnerRef::Personal(UserId::new(
-            Uuid::parse_str("00000000-0000-0000-0000-000000000001").expect("uuid literal"),
-        ));
         assert_eq!(
-            owner_hash_hex(&owner),
-            "c022815b2b51727207c5f3014833f1a5c09ae92edfb752c394c9caa3d96374ce"
+            pending_object_key(upload_id),
+            format!("pending/{upload_id}")
         );
+        assert_eq!(
+            canonical_object_key(upload_id),
+            format!("objects/{upload_id}")
+        );
+        assert_eq!(CANONICAL_OBJECT_PREFIX, "objects/");
+    }
+
+    /// The read gate compares a stored locator against the key derived from
+    /// the row's OWN upload id. Two rows therefore never share a key, so a
+    /// forged row cannot name another row's object and pass.
+    #[test]
+    fn one_key_per_upload_row_is_what_makes_the_gate_unforgeable() {
+        let mine = Uuid::now_v7();
+        let yours = Uuid::now_v7();
+
+        assert!(locator_was_minted_here(&canonical_object_key(mine), mine));
+        assert!(!locator_was_minted_here(&canonical_object_key(yours), mine));
+        assert!(!locator_was_minted_here(&pending_object_key(mine), mine));
+        assert_ne!(canonical_object_key(mine), canonical_object_key(yours));
+        // Deriving twice from the same id is stable — the key never moves.
+        assert_eq!(canonical_object_key(mine), canonical_object_key(mine));
+    }
+
+    /// Exact equality, and nothing weaker.
+    ///
+    /// Every candidate below carries the row's OWN `upload_id`, so nothing
+    /// else in the system can save the gate here: not the owner predicate
+    /// in the SQL (the row is the caller's), not the bucket check (same
+    /// bucket), not the prefix (all under `objects/`). The only thing
+    /// separating an honoured locator from a forged one is that the bytes
+    /// match exactly.
+    ///
+    /// The first four are the reason this is `==` and not `starts_with`.
+    /// A prefix test honours every one of them, and each names a DIFFERENT
+    /// S3 object than the row does — so weakening the comparison hands out
+    /// a presigned GET for bytes the row never claimed. The rest pin the
+    /// other plausible slips: trimming, case folding, and any test that
+    /// looks at only part of the key.
+    #[test]
+    fn only_the_exact_minted_key_is_honoured_for_a_row() {
+        let upload_id = Uuid::now_v7();
+        let exact = canonical_object_key(upload_id);
+
+        // Control. Without it every assertion below is satisfied by a gate
+        // that refuses unconditionally.
+        assert!(
+            locator_was_minted_here(&exact, upload_id),
+            "the key this store mints for the row must be honoured"
+        );
+
+        for near_miss in [
+            // Extensions of the exact key — a prefix test accepts all four.
+            format!("{exact}/child"),
+            format!("{exact}x"),
+            format!("{exact} "),
+            format!("{exact}\n"),
+            // Decorations and truncations of it.
+            format!(" {exact}"),
+            format!("/{exact}"),
+            format!("{CANONICAL_OBJECT_PREFIX}/{upload_id}"),
+            exact.replace(CANONICAL_OBJECT_PREFIX, "Objects/"),
+            exact.to_uppercase(),
+            format!(
+                "{CANONICAL_OBJECT_PREFIX}{}",
+                upload_id.to_string().to_uppercase()
+            ),
+            // Real keys of other shapes that name the same id.
+            pending_object_key(upload_id),
+            cold_object_key(upload_id),
+            upload_id.to_string(),
+            String::new(),
+        ] {
+            assert!(
+                !locator_was_minted_here(&near_miss, upload_id),
+                "{near_miss:?} is not the key minted for this row and must be refused"
+            );
+        }
     }
 
     #[test]
-    fn persisted_keys_match_storage_pg_exactly() {
-        let owner = OwnerRef::Personal(UserId::new(
-            Uuid::parse_str("00000000-0000-0000-0000-000000000001").expect("uuid literal"),
-        ));
-        let owner_hash = owner_hash_hex(&owner);
-        let handle = Uuid::parse_str("00000000-0000-0000-0000-000000000002").expect("uuid literal");
+    fn persisted_cold_keys_match_storage_pg_exactly() {
         let t = Uuid::parse_str("00000000-0000-0000-0000-000000000003").expect("uuid literal");
 
         assert_eq!(
-            owner_hash,
-            proxima_storage_pg::verbs::forget::owner_hash_hex(&owner)
+            cold_object_key(t),
+            proxima_storage_pg::verbs::forget::cold_object_key(t)
         );
         assert_eq!(
-            cold_object_key(&owner_hash, handle, t),
-            proxima_storage_pg::verbs::forget::cold_object_key(&owner_hash, handle, t)
-        );
-        assert_eq!(
-            cold_object_key(&owner_hash, handle, t),
-            "cold/c022815b2b51727207c5f3014833f1a5c09ae92edfb752c394c9caa3d96374ce/00000000-0000-0000-0000-000000000002/00000000-0000-0000-0000-000000000003"
+            cold_object_key(t),
+            "cold/00000000-0000-0000-0000-000000000003"
         );
     }
 }

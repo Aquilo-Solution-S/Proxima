@@ -150,16 +150,19 @@ impl CodeFlavorStore {
         .map_err(ToolError::Storage)
     }
 
-    /// Owner∪World current file-revision `t`s for one path.
+    /// Current file-revision `t`s for one path across the caller's
+    /// read-owner set, own rows first.
     pub(crate) async fn readable_file_revision_head_ts(
         &self,
         owner: Owner,
+        read_owners: &[Owner],
         repo_id: uuid::Uuid,
         file_path: &str,
     ) -> Result<Vec<uuid::Uuid>, ToolError> {
         readable_file_revision_head_ts(
             &self.pool,
             owner,
+            read_owners,
             &crate::payloads::FileRevisionV1::schema_id(),
             repo_id,
             file_path,
@@ -186,16 +189,19 @@ impl CodeFlavorStore {
         .map_err(ToolError::Storage)
     }
 
-    /// Owner∪World present chunk head `t`s for one file.
+    /// Present chunk head `t`s for one file across the caller's read-owner
+    /// set.
     pub(crate) async fn readable_chunk_head_ts_for_file(
         &self,
         owner: Owner,
+        read_owners: &[Owner],
         repo_id: uuid::Uuid,
         file_path: &str,
     ) -> Result<Vec<uuid::Uuid>, ToolError> {
         readable_chunk_head_ts_for_file(
             &self.pool,
             owner,
+            read_owners,
             &crate::payloads::CodeChunkV1::schema_id(),
             repo_id,
             file_path,

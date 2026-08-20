@@ -85,8 +85,9 @@ impl Engine {
     ///
     /// # Idempotency
     ///
-    /// Safe to call again with the same `upload_id`. Staging is
-    /// content-addressed, the Fact replays on its receipt and returns the
+    /// Safe to call again with the same `upload_id`. Staging derives its
+    /// destination key from that `upload_id`, so a repeat lands on exactly
+    /// the same object; the Fact replays on its receipt and returns the
     /// same `memory_id` and cited object, and finishing tolerates an
     /// upload already completed against the same artefact.
     ///
@@ -111,7 +112,7 @@ impl Engine {
     {
         let _operation = self.operation_authority(authority)?;
         // Staging does the object-store half and stops: bytes verified,
-        // moved to their canonical content-addressed key, nothing
+        // moved to the canonical key derived from `upload_id`, nothing
         // recorded. Everything below this line is one transaction.
         let staged = blobs
             .stage_upload(authority, owner, upload_id)

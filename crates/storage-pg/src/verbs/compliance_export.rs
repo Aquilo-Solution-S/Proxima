@@ -18,6 +18,7 @@ pub async fn export_owner_bundle(
     goal_sidecar_tables: &[String],
     citation_mapping_sidecar_tables: &[String],
     cited_object_sidecar_tables: &[String],
+    owner_pinned_sidecar_tables: &[String],
 ) -> Result<ComplianceExportBundle, StorageError> {
     let owner = auth.audit().owner();
     let memories = owner_rows(pool, owner, OwnerRowsTable::Memories).await?;
@@ -40,6 +41,7 @@ pub async fn export_owner_bundle(
             goal: goal_sidecar_tables,
             citation_mapping: citation_mapping_sidecar_tables,
             cited_object: cited_object_sidecar_tables,
+            owner_pinned: owner_pinned_sidecar_tables,
         },
     )
     .await?;
@@ -87,6 +89,11 @@ struct SidecarTables<'a> {
     goal: &'a [String],
     citation_mapping: &'a [String],
     cited_object: &'a [String],
+    /// Memory sidecars that carry their own `owner_id`. Exported by that
+    /// column instead of through the Memory, so an audit row stays in the
+    /// bundle of the owner that wrote it after the Memory it describes has
+    /// been transferred away — and stays out of the receiving owner's.
+    owner_pinned: &'a [String],
 }
 
 #[derive(Clone, Copy)]
@@ -108,11 +115,17 @@ async fn export_sidecars(
     tables: SidecarTables<'_>,
 ) -> Result<Vec<ComplianceExportSidecarRows>, StorageError> {
     let mut sidecars = Vec::new();
+    let memory_keyed_fact_tables = tables
+        .fact
+        .iter()
+        .filter(|table| !tables.owner_pinned.contains(table))
+        .cloned()
+        .collect::<Vec<_>>();
     extend_sidecars(
         pool,
         owner,
         &mut sidecars,
-        tables.fact,
+        &memory_keyed_fact_tables,
         SidecarJoin {
             sidecar_column: "t",
             base_table: "proxima_core.memory",
@@ -120,6 +133,7 @@ async fn export_sidecars(
         },
     )
     .await?;
+    extend_owner_pinned_sidecars(pool, owner, &mut sidecars, tables.owner_pinned).await?;
     extend_sidecars(
         pool,
         owner,
@@ -270,6 +284,53 @@ async fn extend_sidecars(
         });
     }
     Ok(())
+}
+
+async fn extend_owner_pinned_sidecars(
+    pool: &PgPool,
+    owner: OwnerRef,
+    sidecars: &mut Vec<ComplianceExportSidecarRows>,
+    tables: &[String],
+) -> Result<(), StorageError> {
+    for table in tables {
+        let rows = owner_pinned_sidecar_rows(pool, owner, table).await?;
+        if rows.is_empty() {
+            continue;
+        }
+        sidecars.push(ComplianceExportSidecarRows {
+            table: table.clone(),
+            rows,
+        });
+    }
+    Ok(())
+}
+
+async fn owner_pinned_sidecar_rows(
+    pool: &PgPool,
+    owner: OwnerRef,
+    table: &str,
+) -> Result<Vec<Value>, StorageError> {
+    let table = PgIdent::table(table)?;
+    let (owner_kind, owner_id) = owner_binds(&owner);
+    // No join: the row's own `owner_id` is the authority. Joining
+    // `proxima_core.memory` would drop rows whose Memory has been
+    // transferred away, which is exactly the history this owner is
+    // entitled to a copy of.
+    // SQL-POLICY: PgIdent
+    let sql = format!(
+        "SELECT to_jsonb(t)
+           FROM {table} t
+          WHERE t.owner_id IS NOT DISTINCT FROM $2
+          ORDER BY t.t",
+        table = table.as_str(),
+    );
+    // SQL-POLICY: PgIdent
+    sqlx::query_scalar::<_, Value>(sqlx::AssertSqlSafe(sql))
+        .bind(owner_kind)
+        .bind(owner_id)
+        .fetch_all(pool)
+        .await
+        .map_err(map_err)
 }
 
 async fn sidecar_rows(

@@ -11,7 +11,6 @@ use sqlx::Row;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-use super::keys::{canonical_object_key, owner_hash_hex};
 use crate::error::BlobError;
 
 #[derive(Debug, Clone)]
@@ -42,6 +41,10 @@ pub(super) enum UploadStatus {
 pub(super) struct BlobLocation {
     pub(super) bucket: String,
     pub(super) object_key: String,
+    /// The upload row's own primary key. The read gate re-derives the
+    /// canonical key from it and demands a byte-exact match, which is what
+    /// stops a locator this store did not mint.
+    pub(super) upload_id: Uuid,
 }
 
 #[derive(Debug, Clone)]
@@ -50,6 +53,8 @@ pub(super) struct BlobReadRecord {
     pub(super) content_hash: [u8; 32],
     pub(super) bucket: String,
     pub(super) object_key: String,
+    /// See [`BlobLocation::upload_id`].
+    pub(super) upload_id: Uuid,
     pub(super) sha256: [u8; 32],
     pub(super) byte_len: u64,
     pub(super) mime: String,
@@ -236,11 +241,16 @@ pub(super) async fn load_blob_location(
 ) -> Result<BlobLocation, BlobError> {
     let owner_id = owner.stored_owner_id();
     if let Some(row) = sqlx::query(
-        "SELECT u.bucket, u.object_key \
+        // `u.owner_id = $2` as well as `b.owner_id`: a transfer moves both
+        // rows together, so the two must agree. Without it a stale upload
+        // row left behind by a half-applied transfer would still locate
+        // bytes for whoever now holds the blob row.
+        "SELECT u.bucket, u.object_key, u.upload_id \
            FROM proxima_core.blob b \
            JOIN proxima_core.blob_uploads u ON u.blob_id = b.blob_id \
           WHERE b.blob_id = $1 \
             AND b.owner_id = $2 \
+            AND u.owner_id = $2 \
             AND b.schema_id = $3 \
             AND u.status = 'completed' \
           ORDER BY u.completed_at DESC NULLS LAST \
@@ -256,26 +266,15 @@ pub(super) async fn load_blob_location(
         return Ok(BlobLocation {
             bucket: row.get("bucket"),
             object_key: row.get("object_key"),
+            upload_id: row.get("upload_id"),
         });
     }
 
-    let content_hash: Option<Vec<u8>> = sqlx::query_scalar(
-        "SELECT content_hash
-           FROM proxima_core.blob
-          WHERE blob_id = $1
-            AND owner_id = $2
-            AND schema_id = $3",
-    )
-    .bind(blob_id)
-    .bind(owner_id)
-    .bind(UPLOADED_BLOB_SCHEMA_ID)
-    .fetch_optional(pool)
-    .await
-    .map_err(BlobError::Db)?;
-    let Some(content_hash) = content_hash else {
-        return Err(BlobError::State("cited object not found for Owner".into()));
-    };
-    let _object_key = canonical_object_key(&owner_hash_hex(owner), &hex::encode(content_hash));
+    // No completed upload row for this owner: there is no locator to
+    // return. A blob row alone never yielded one — the content-addressed
+    // derivation that used to stand here computed a key and discarded it,
+    // and under owner-free keys there is nothing to derive from a hash at
+    // all. One answer for "absent" and "not yours", so neither is a probe.
     Err(BlobError::State("cited object not found for Owner".into()))
 }
 
@@ -286,12 +285,13 @@ pub(super) async fn load_blob_read_record(
 ) -> Result<Option<BlobReadRecord>, BlobError> {
     let owner_id = owner.stored_owner_id();
     let row = sqlx::query(
-        "SELECT b.blob_id, b.content_hash, u.bucket, u.object_key, \
+        "SELECT b.blob_id, b.content_hash, u.bucket, u.object_key, u.upload_id, \
                 u.sha256, u.expected_byte_len AS byte_len, u.mime, u.filename \
            FROM proxima_core.blob b \
            JOIN proxima_core.blob_uploads u ON u.blob_id = b.blob_id \
           WHERE b.blob_id = $1 \
             AND b.owner_id = $2 \
+            AND u.owner_id = $2 \
             AND b.schema_id = $3 \
             AND u.status = 'completed' \
           ORDER BY u.completed_at DESC NULLS LAST \
@@ -316,6 +316,7 @@ pub(super) async fn load_blob_read_record(
             content_hash: hash32(&row.get::<Vec<u8>, _>("content_hash"), "content_hash")?,
             bucket: row.get("bucket"),
             object_key: row.get("object_key"),
+            upload_id: row.get("upload_id"),
             sha256,
             byte_len: u64::try_from(byte_len)
                 .map_err(|_| BlobError::State("stored byte_len is negative".into()))?,

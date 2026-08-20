@@ -114,7 +114,7 @@ where
 
 /// Current series handle for this owner's chunk at `(repo, path, index)`.
 ///
-/// Miss after World transfer is expected: that series is no longer this
+/// Miss after an owner transfer is expected: that series is no longer this
 /// owner's. The caller mints a new handle.
 pub async fn existing_code_chunk_handle(
     engine: &Engine,

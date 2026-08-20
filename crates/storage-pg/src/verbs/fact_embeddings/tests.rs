@@ -30,7 +30,7 @@ mod pg_tests {
     };
     use crate::core_pg_sidecars;
     use crate::test_fixtures::fresh_pg;
-    use crate::verbs::forget::{MemoryColdStore, cold_object_key, forget_memory, owner_hash_hex};
+    use crate::verbs::forget::{MemoryColdStore, cold_object_key, forget_memory};
 
     fn core_projections() -> Vec<MemorySearchProjection> {
         FlavorRegistry::new()
@@ -1147,7 +1147,7 @@ mod pg_tests {
             );
 
             let cold = MemoryColdStore::default();
-            let object_key = cold_object_key(&owner_hash_hex(&owner), written.handle, t);
+            let object_key = cold_object_key(t);
             forget_memory(
                 &mut forget_tx,
                 &core_pg_sidecars(),

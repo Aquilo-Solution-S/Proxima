@@ -138,7 +138,7 @@ Facts have no later version. A/P/Goals may append a later `t` on the same
 `handle`. The old row stays; head `t` moves. No row stores a supersession
 pointer.
 
-Hard delete is abandonment-only (13). World is never abandoned. Forget cools to `cold/` and leaves `ingest_keys`.
+Hard delete is abandonment-only (13). Forget cools to `cold/` and leaves `ingest_keys`.
 
 Stateful Fact current-state is head-by-natural-key on the sidecar (03), not supersession.
 

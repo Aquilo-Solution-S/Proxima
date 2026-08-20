@@ -48,6 +48,10 @@ impl PgSidecarKey {
 pub struct PgSidecarEntry {
     pub key: PgSidecarKey,
     pub sidecar_table: String,
+    /// See [`super::PgMemoryPayload::OWNER_PINNED`]. Carried on the entry so
+    /// erase and export can find owner-pinned tables without knowing which
+    /// payload types they belong to.
+    pub owner_pinned: bool,
     pub(super) memory_insert: Option<PgMemorySidecarInserter>,
     pub(super) memory_load: Option<PgMemoryPayloadLoader>,
     pub(super) memory_load_batch: Option<PgMemoryPayloadBatchLoader>,

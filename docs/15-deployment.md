@@ -85,7 +85,7 @@ lock fails and retries on the next pod rather than queueing behind readers.
 | `PROXIMA_OIDC_SUBJECT_MAP` | yes* | `sub-1:550e8400-e29b-41d4-a716-446655440000` | Legacy single-issuer shorthand `sub:<uuid>,sub2:<uuid2>`; every entry binds to `PROXIMA_OIDC_ISSUER`. Valid only because exactly one issuer is ever accepted here. |
 | `PROXIMA_OIDC_ALLOWED_SUBJECTS` | no | `user1,user2` | Comma-separated `sub` allowlist layered on top of the subject map above; never an identity source by itself. |
 | `PROXIMA_REST_ENABLED` | no | `true` | Serve `/v1` on the MCP listener. Default `false`; has no effect unless the binary was built with the `rest` feature. |
-| `PROXIMA_TOOL_PROFILE` | no | `memory` | Tool profile. **Unset ⇒ fail-closed `memory`** (excludes `core_membership` + `core_publish`). Set `full` to advertise the whole surface incl. `core_publish` (irreversible World transfer) — logged at startup. |
+| `PROXIMA_TOOL_PROFILE` | no | `memory` | Tool profile. **Unset ⇒ fail-closed `memory`** (excludes `core_membership` + `core_transfer`). Set `full` to advertise the whole surface incl. `core_transfer` (moves a memory's owner to another group) — logged at startup. |
 | `PROXIMA_TOOL_ALLOW` | no | `core_goal:set` | Comma-separated canonical scope keys added after profile resolution. |
 | `PROXIMA_TOOL_DENY` | no | `core_goal:decompose` | Comma-separated canonical scope keys removed after allow. Compliance erase is not exposed as an MCP action. |
 | `PROXIMA_EMBED_BASE_URL` | when enabled | `https://embeddings.example/v1` | OpenAI-compatible `/embeddings` base. Required with `PROXIMA_EMBED_MODEL` when embeddings are enabled; plaintext `http://` is accepted for loopback only. |
@@ -128,8 +128,7 @@ cluster edge (see [§Edge defense-in-depth](#edge-defense-in-depth)).
 > `PROXIMA_OIDC_SUBJECT_MAP` to a Proxima `UserId`; `PgOwnerAccessResolver`
 > reads current group memberships into `OwnerRoles`. The client selects one
 > authorized owner during MCP `initialize` using `X-Proxima-Owner`:
-> `personal:<uuid>`, `group:<uuid>`, or
-> `world:00000000-0000-0000-0000-000000000001`. The server binds that owner to
+> `personal:<uuid>` or `group:<uuid>`. The server binds that owner to
 > the returned `Mcp-Session-Id`. Every later request revalidates the bearer and
 > narrows the freshly resolved roles to the bound owner; membership
 > removal denies the next request, including an already-bound session. An
@@ -213,7 +212,7 @@ mounts it. Both gates are required. Route `/v1` at the gateway only when both
 are set (see [10 §REST Surface](10-configuration.md#rest-surface)).
 
 The default `memory` profile keeps the advertised tool surface small (better LLM
-tool selection, lower blast radius) and fail-closed — `core_publish` and
+tool selection, lower blast radius) and fail-closed — `core_transfer` and
 `core_membership` are opt-in via `PROXIMA_TOOL_PROFILE=full`. The profile is not
 itself a security boundary: every tool call remains gated by per-actor authz and
 role checks.
@@ -326,12 +325,18 @@ place the optional path on a separate unauthenticated Ingress.
 
 ## Blob storage lifecycle
 
-Uploaded cited blobs live under `objects/<owner_hash>/…`; in-flight uploads live
-under `pending/<owner_hash>/…`. Proxima runs no in-process pending sweep, so the
+Uploaded cited blobs live under `objects/<upload_id>`; in-flight uploads live
+under `pending/<upload_id>`; cold Memory objects live under `cold/<t>`. Keys carry
+no owner, so an owner transfer moves rows only. There is one key scheme and no
+compatibility branch — objects written by an earlier scheme are unreachable and
+a v0.0.8 upgrade re-ingests. Proxima runs no in-process pending sweep, so the
 bucket MUST carry an S3 lifecycle-expiration rule on the `pending/` prefix
 (≥ the configured upload TTL) to reclaim uploads that never complete. Owner
 erasure removes the canonical objects as part of compliance erase (see
-[13 §External side effects](13-compliance.md#external-side-effects)).
+[13 §External side effects](13-compliance.md#external-side-effects)); it
+enumerates the keys named by that owner's rows rather than listing a prefix, so
+an object whose row is already gone is reclaimed by the lifecycle rule and the
+`maintain-blobs` orphan report instead.
 
 In-process byte consumers use `CitedBlobReadService::collect_verified` with a
 required non-zero ceiling. Ordinary callers pass `AuthzContext`; queued

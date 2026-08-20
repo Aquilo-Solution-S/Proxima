@@ -97,18 +97,14 @@ impl OwnerMembershipAdminPort for PgStorage {
 
 #[async_trait::async_trait]
 impl OwnerTransferPort for PgStorage {
-    async fn transfer_to_world(
+    async fn transfer_to_owner(
         &self,
         permit: &OwnerWritePermit,
         entity: EntityId,
+        to_owner: OwnerRef,
     ) -> Result<bool, StorageError> {
-        access::owner_columns::transfer_to_world(
-            &self.pool,
-            self.cold.as_ref(),
-            entity,
-            *permit.owner(),
-        )
-        .await
+        access::owner_columns::transfer_to_owner(&self.pool, entity, *permit.owner(), to_owner)
+            .await
     }
 }
 

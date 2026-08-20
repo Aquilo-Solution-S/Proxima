@@ -34,7 +34,6 @@ pub async fn insert_wake_config(
     owner: &Owner,
     draft: &WakeConfigDraft,
 ) -> Result<Uuid, StorageError> {
-    crate::access::owner_columns::reject_world_write_owner(owner)?;
     let owner_id = crate::access::owner_columns::ensure_owner_row(tx.as_mut(), owner).await?;
 
     sqlx::query_scalar(

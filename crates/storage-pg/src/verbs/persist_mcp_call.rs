@@ -44,7 +44,6 @@ pub async fn persist_mcp_call_in_tx(
     let mut stamped = input.clone();
     stamped.owner = *permit.owner();
     let input = &stamped;
-    crate::access::owner_columns::reject_world_write_owner(&input.owner)?;
     let receipt_id = input.receipt_id();
     let ingest_key =
         receipt_id

@@ -6,7 +6,6 @@ CREATE EXTENSION IF NOT EXISTS vector;
 CREATE SCHEMA proxima_core;
 
 CREATE TYPE proxima_core.owner_kind AS ENUM (
-    'world',
     'personal',
     'group'
 );
@@ -69,14 +68,8 @@ CREATE TYPE proxima_core.blob_upload_status AS ENUM (
 
 CREATE TABLE proxima_core.owners (
     owner_id uuid PRIMARY KEY,
-    kind proxima_core.owner_kind NOT NULL,
-    CONSTRAINT owners_world_kind_chk CHECK (
-        (kind = 'world') = (owner_id = '00000000-0000-0000-0000-000000000001'::uuid)
-    )
+    kind proxima_core.owner_kind NOT NULL
 );
-
-INSERT INTO proxima_core.owners (owner_id, kind)
-VALUES ('00000000-0000-0000-0000-000000000001'::uuid, 'world');
 
 CREATE INDEX owners_kind_idx
     ON proxima_core.owners (kind, owner_id);
@@ -217,16 +210,13 @@ CREATE TABLE proxima_core.wake_config (
     CONSTRAINT wake_hard_no_null_chk CHECK (array_position(hard_memory_t, NULL) IS NULL)
 );
 
--- Goals can't live in the World at all: publish-to-World is memory-only,
--- so no Goal row — head or version — ever carries the World owner.
+-- Goals do not transfer: the owner transfer verb is memory-only, and
+-- `goal_head_t_only` freezes `goal_head.owner_id` as the DDL backstop.
 CREATE TABLE proxima_core.goal_head (
     handle uuid PRIMARY KEY,
     schema_id text NOT NULL,
     owner_id uuid NOT NULL REFERENCES proxima_core.owners (owner_id),
-    t uuid NOT NULL,
-    CONSTRAINT goal_head_not_world_owner_chk CHECK (
-        owner_id <> '00000000-0000-0000-0000-000000000001'::uuid
-    )
+    t uuid NOT NULL
 );
 
 CREATE INDEX goal_head_owner_schema_idx
@@ -255,9 +245,6 @@ CREATE TABLE proxima_core.goal (
     CONSTRAINT goal_arrays_no_null_chk CHECK (
         array_position(dependency_t, NULL) IS NULL
         AND array_position(evidence_t, NULL) IS NULL
-    ),
-    CONSTRAINT goal_not_world_owner_chk CHECK (
-        owner_id <> '00000000-0000-0000-0000-000000000001'::uuid
     )
 );
 
@@ -460,8 +447,20 @@ $$;
 COMMENT ON FUNCTION proxima_core.lexical_language_forget(regconfig) IS
 'Remove a configuration from the active-language set, refusing while any row still holds it in an FK-stamped lexical_language column. The FK checks serialize this against in-flight writes. Run this BEFORE dropping a custom text search configuration: PostgreSQL allows the drop with rows still referencing it, and those rows are then un-updatable (cache lookup failed on the dangling OID).';
 
+-- The one owner-pinned Memory sidecar. `owner_id` is the owner that MADE
+-- the call, stamped at write time from the Memory's owner and never
+-- rewritten: this table answers "what did my agents do", which stays true
+-- of the acting owner after the Memory it describes is transferred away.
+-- Every other sidecar reaches its owner through the Memory and follows it.
+-- `t` names the Memory the call was recorded as, and carries NO foreign key
+-- to it — the same FK-free `t` `sketch` below has, for a different reason.
+-- The row outlives that Memory on purpose: once the Memory is transferred
+-- away, its new owner may forget or erase it, and neither of those is
+-- allowed to destroy the acting owner's audit trail — nor to fail on a
+-- child row the erasing owner cannot see. The row dies with its own owner.
 CREATE TABLE proxima_core.mcp_call_logged_v1 (
-    t uuid PRIMARY KEY REFERENCES proxima_core.memory (t),
+    t uuid PRIMARY KEY,
+    owner_id uuid NOT NULL REFERENCES proxima_core.owners (owner_id),
     tool_name text NOT NULL,
     actor_oid text NOT NULL,
     actor_upn text NOT NULL,
@@ -472,6 +471,15 @@ CREATE TABLE proxima_core.mcp_call_logged_v1 (
     io_truncated boolean NOT NULL,
     io_content_hash bytea NOT NULL
 );
+
+COMMENT ON COLUMN proxima_core.mcp_call_logged_v1.owner_id IS
+'The owner that made the call, pinned at write time. Deliberately NOT derived from proxima_core.memory.owner_id on read: an owner transfer moves the Memory and leaves this row behind, so history, export, and Art. 17 erase all stay with the acting owner and the destination never sees the prior owner''s actor identities.';
+
+-- read_mcp_call_history pages by (time, t) for one owner, optionally
+-- filtered by actor. The Memory-side index cannot serve it any more: the
+-- scope is this table's own owner_id.
+CREATE INDEX mcp_call_logged_v1_owner_t_idx
+    ON proxima_core.mcp_call_logged_v1 (owner_id, t DESC);
 
 -- Hot one-liners for recall/think. Plumbing, not a kernel sort.
 -- `t` is Memory.t or Goal.t; no FK (two home tables). Forget deletes the row.
@@ -735,7 +743,6 @@ CREATE TYPE proxima_core.compliance_erase_outcome AS ENUM (
 
 CREATE TYPE proxima_core.compliance_erase_refusal AS ENUM (
     'OwnerNotAbandoned',
-    'WorldOwner',
     'SourceScopeOwnerStillLive',
     'PersonalDropNotVerified',
     'DropProofPortUnavailable',
@@ -744,23 +751,24 @@ CREATE TYPE proxima_core.compliance_erase_refusal AS ENUM (
 
 CREATE TABLE proxima_core.owner_legal_holds (
     owner_kind proxima_core.owner_kind NOT NULL,
-    owner_id uuid,
+    owner_id uuid NOT NULL,
     hold_active boolean NOT NULL,
     updated_at timestamptz NOT NULL DEFAULT now(),
-    UNIQUE NULLS NOT DISTINCT (owner_kind, owner_id)
+    UNIQUE (owner_kind, owner_id)
 );
 
 -- Per-owner Fact-retention window, read by `proxima://graph` and enforced by
--- the `maintain-retention` sweep. `NULLS NOT DISTINCT` is the ON CONFLICT
--- arbiter `upsert_fact_retention` names.
+-- the `maintain-retention` sweep. `(owner_kind, owner_id)` is the ON CONFLICT
+-- arbiter `upsert_fact_retention` names; every owner kind carries an id, so
+-- no NULL arbiter arm is needed.
 CREATE TABLE proxima_core.owner_fact_retention (
     owner_kind proxima_core.owner_kind NOT NULL,
-    owner_id uuid,
+    owner_id uuid NOT NULL,
     retention_seconds bigint NOT NULL,
     updated_at timestamptz NOT NULL DEFAULT now(),
     CONSTRAINT owner_fact_retention_retention_seconds_check
         CHECK (retention_seconds > 0),
-    UNIQUE NULLS NOT DISTINCT (owner_kind, owner_id)
+    UNIQUE (owner_kind, owner_id)
 );
 
 CREATE TABLE proxima_core.compliance_audit_log (
@@ -804,7 +812,7 @@ CREATE TABLE proxima_core.delegated_authority_grants (
     delegation_id uuid PRIMARY KEY,
     subject_user_id uuid NOT NULL,
     owner_kind proxima_core.owner_kind NOT NULL,
-    owner_id uuid,
+    owner_id uuid NOT NULL,
     tool_name text NOT NULL,
     action_name text,
     read_ceiling proxima_core.access_ceiling NOT NULL,
@@ -869,8 +877,8 @@ BEGIN
 END;
 $$;
 
--- Content is append-only. `owner_id` may move: publish-to-World is a
--- series transfer (MemoryHeadAligned), not a new (handle, t).
+-- Content is append-only. `owner_id` may move: an owner-to-owner transfer
+-- is a series transfer (MemoryHeadAligned), not a new (handle, t).
 CREATE FUNCTION proxima_core.memory_owner_or_append_only() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -1039,8 +1047,8 @@ BEGIN
 END;
 $$;
 
--- Goals never change owner (World owns no goals and there is no other
--- transfer), so only the head pointer `t` may move.
+-- Goals never change owner (the transfer verb is memory-only), so only the
+-- head pointer `t` may move.
 CREATE FUNCTION proxima_core.goal_head_t_only() RETURNS trigger
     LANGUAGE plpgsql
     AS $$

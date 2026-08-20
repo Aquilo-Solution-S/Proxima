@@ -148,10 +148,9 @@ Generic uploaded blob:
 Direct upload:
 
 1. `prepare` inserts a pending upload and returns a presigned S3 `PUT`.
-2. Client uploads bytes directly to `pending/<owner-hash>/<upload-id>`.
+2. Client uploads bytes directly to `pending/<upload-id>`.
 3. `complete` verifies the pending object, streams bytes to compute
-   BLAKE3 + SHA-256, copies to
-   `objects/<owner-hash>/core/uploaded-blob-v1/<blake3-hex>`,
+   BLAKE3 + SHA-256, copies to `objects/<upload-id>`,
    deletes the pending object, inserts or reuses `blob`,
    marks upload completed.
 4. Same Owner + same bytes returns the existing CitedObject and marks
@@ -159,13 +158,20 @@ Direct upload:
 5. `abort` deletes the pending object when present and marks the
    upload aborted.
 
+Keys carry no owner. `upload_id` is the server-minted primary key of
+the `blob_uploads` row, so a key names exactly one row and never has to
+change: an owner transfer is an `owner_id` update on `blob` and
+`blob_uploads` and performs no object-store work at all.
+
 The upload lane is the only writer the presigner trusts. An inline
 `core/uploaded-blob-v1` citation payload is a caller-asserted locator:
 the substrate stores its `bucket`/`object_key` verbatim and never
-verifies they point at anything. `read_url` therefore serves only
-locators the store itself wrote — the configured bucket, under the
-owner's canonical `objects/<owner-hash>/` prefix — and answers any
-other row exactly like a missing object.
+verifies they point at anything. Owning the row is therefore not
+enough — a forged row is owned by the forger. `read_url` serves a
+locator only when it is the configured bucket and the key this store
+would mint for THAT row's own `upload_id`, and answers any other row
+exactly like a missing object. There is exactly one key scheme and no
+legacy branch: objects written by an earlier scheme are not readable.
 
 S3 preserves original bytes only. It does not replace
 `CitationMapping`, the 0..1 citation on a memory, or `origin` provenance.
@@ -248,8 +254,8 @@ What cannot be inside that transaction is the object-store work. Streaming,
 hashing, and copying an S3 object is not a database statement and must not
 hold a transaction open while it runs. Completion is therefore three steps:
 
-1. **stage** — verify the bytes, move them to their canonical
-   content-addressed key, record nothing. Idempotent; the pending object is
+1. **stage** — verify the bytes, move them to the canonical key derived from
+   their `upload_id`, record nothing. Idempotent; the pending object is
    left in place so a retry can re-read it.
 2. **the transaction** — everything above.
 3. **finish** — mark the upload row completed against the cited object and

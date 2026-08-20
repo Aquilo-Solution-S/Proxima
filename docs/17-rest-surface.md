@@ -27,7 +27,7 @@ no REST-side edit, and cannot appear on REST without appearing on MCP.
 | Placement | feature-gated module, nested under the existing listener |
 
 Two consequences worth stating plainly. REST grants no authority MCP
-does not already grant — a token that cannot call `core_publish` over
+does not already grant — a token that cannot call `core_transfer` over
 MCP cannot call it over REST, because the gate runs below the seam.
 And REST cannot drift from MCP by omission, because both surfaces read
 the same frozen registry rather than two lists.
@@ -160,7 +160,7 @@ known removal condition.
 ### Dispatcher actions
 
 A dispatcher is any tool declaring `ACTION_ARG_SPECS` — the five substrate
-ones (`core_goal`, `core_fact`, `core_membership`, `core_publish`,
+ones (`core_goal`, `core_fact`, `core_membership`, `core_transfer`,
 `core_upload`) and any flavor tool that declares its own. Its discriminator
 must be `action`: this surface injects `"action"` into the body on the
 narrowed route, and `try_freeze` refuses a dispatcher tagged on anything else
@@ -274,8 +274,8 @@ extension 14 anticipates.
   "type": "https://proxima.dev/errors/not-authorized",
   "title": "Not authorized",
   "status": 403,
-  "detail": "tool core_publish not authorized for this MCP token",
-  "instance": "/v1/tools/core_publish/publish_to_world"
+  "detail": "tool core_transfer not authorized for this MCP token",
+  "instance": "/v1/tools/core_transfer/transfer_to_owner"
 }
 ```
 

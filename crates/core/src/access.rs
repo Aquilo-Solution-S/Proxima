@@ -8,11 +8,6 @@ use uuid::Uuid;
 
 use crate::{GoalId, GroupId, MemoryId, OwnerRef, UserId};
 
-#[must_use]
-pub const fn world() -> OwnerRef {
-    OwnerRef::World
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum AccessKind {
     Fact,
@@ -68,7 +63,7 @@ impl AccessCeiling {
 pub enum AccessError {
     #[error("write ceiling exceeds read ceiling")]
     WriteExceedsRead,
-    #[error("world and personal roles are derived, not resolver-provided")]
+    #[error("personal roles are derived, not resolver-provided")]
     DerivedOwnerOverride,
     #[error("owner access resolution failed: {0}")]
     Resolution(String),
@@ -213,20 +208,19 @@ impl OwnerRoles {
     /// # Errors
     ///
     /// Returns [`AccessError::DerivedOwnerOverride`] if the resolver tries to
-    /// provide World or Personal roles; those are derived by the kernel rules.
+    /// provide Personal roles; those are derived by the kernel rules.
     pub fn for_subject<I>(subject: UserId, group_roles: I) -> Result<Self, AccessError>
     where
         I: IntoIterator<Item = (OwnerRef, Role)>,
     {
         let mut roles = HashMap::new();
-        roles.insert(OwnerRef::World, Role::viewer());
         roles.insert(OwnerRef::Personal(subject), Role::personal());
         for (owner, role) in group_roles {
             match owner {
                 OwnerRef::Group(_) => {
                     roles.insert(owner, role);
                 }
-                OwnerRef::World | OwnerRef::Personal(_) => {
+                OwnerRef::Personal(_) => {
                     return Err(AccessError::DerivedOwnerOverride);
                 }
             }
@@ -242,7 +236,6 @@ impl OwnerRoles {
     #[must_use]
     pub(crate) fn scoped_to(subject: UserId, owner: OwnerRef, role: Role) -> Self {
         let mut roles = HashMap::new();
-        roles.insert(OwnerRef::World, Role::viewer());
         roles.insert(owner, role);
         Self { subject, roles }
     }
@@ -250,7 +243,6 @@ impl OwnerRoles {
     #[must_use]
     pub fn empty_for_subject(subject: UserId) -> Self {
         let mut roles = HashMap::new();
-        roles.insert(OwnerRef::World, Role::viewer());
         roles.insert(OwnerRef::Personal(subject), Role::personal());
         Self { subject, roles }
     }
@@ -277,7 +269,7 @@ impl OwnerRoles {
     #[must_use]
     pub fn may_manage(&self, owner: &OwnerRef) -> bool {
         match owner {
-            OwnerRef::World | OwnerRef::Personal(_) => false,
+            OwnerRef::Personal(_) => false,
             OwnerRef::Group(_) => self.role_for(owner).is_some_and(Role::manages),
         }
     }
@@ -382,7 +374,6 @@ mod tests {
         let user = UserId::new(uuid::Uuid::now_v7());
         let group = GroupId::new(uuid::Uuid::now_v7());
 
-        assert_eq!(OwnerRefKind::of(&OwnerRef::World), OwnerRefKind::World);
         assert_eq!(
             OwnerRefKind::of(&OwnerRef::Personal(user)),
             OwnerRefKind::Personal
@@ -413,17 +404,13 @@ mod tests {
     }
 
     #[test]
-    fn owner_roles_auto_include_world_and_subject_personal_owner() {
+    fn owner_roles_auto_include_subject_personal_owner() {
         let subject = UserId::new(uuid::Uuid::now_v7());
         let other = UserId::new(uuid::Uuid::now_v7());
         let group = GroupId::new(uuid::Uuid::now_v7());
         let owner = OwnerRef::Group(group);
 
         let roles = OwnerRoles::for_subject(subject, [(owner, Role::editor())]).unwrap();
-
-        assert!(roles.may_read(&OwnerRef::World, AccessKind::Goal));
-        assert!(!roles.may_write(&OwnerRef::World, AccessKind::Fact));
-        assert!(!roles.may_manage(&OwnerRef::World));
 
         assert!(roles.may_write(&OwnerRef::Personal(subject), AccessKind::Goal));
         assert!(!roles.may_manage(&OwnerRef::Personal(subject)));
@@ -434,9 +421,8 @@ mod tests {
     }
 
     #[test]
-    fn owner_roles_reject_world_or_personal_overrides() {
+    fn owner_roles_reject_personal_overrides() {
         let subject = UserId::new(uuid::Uuid::now_v7());
-        assert!(OwnerRoles::for_subject(subject, [(OwnerRef::World, Role::admin())]).is_err());
         assert!(
             OwnerRoles::for_subject(subject, [(OwnerRef::Personal(subject), Role::admin())])
                 .is_err()
@@ -453,10 +439,5 @@ mod tests {
         assert!(!Viewer.dominates(Editor));
         assert!(Admin.dominates(Admin) && !Admin.dominates(Editor));
         assert!(Ingest.dominates(Ingest) && !Ingest.dominates(Viewer));
-    }
-
-    #[test]
-    fn world_is_stable_owner_ref() {
-        assert_eq!(world(), OwnerRef::World);
     }
 }

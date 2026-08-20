@@ -610,7 +610,6 @@ fn insecure_single_owner_authz(owner: &Owner, auth_path: AuthPath) -> InsecureAu
         )
         .narrowed_to_owner(*owner)
         .expect("group owner role is self-accessible"),
-        OwnerRef::World => AuthzContext::denied_for_owner(owner),
     }
 }
 

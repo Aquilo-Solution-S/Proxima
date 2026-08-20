@@ -293,7 +293,7 @@ mod tests {
             StatusCode::NOT_FOUND
         );
         assert_eq!(
-            status_of(&ToolInvocationError::NotAuthorized("core_publish".into())),
+            status_of(&ToolInvocationError::NotAuthorized("core_transfer".into())),
             StatusCode::FORBIDDEN
         );
         for (err, expected) in [
@@ -416,8 +416,8 @@ mod tests {
     #[test]
     fn document_carries_the_rfc_9457_members() {
         let problem = problem_for(
-            &ToolInvocationError::NotAuthorized("core_publish:to_world".into()),
-            "/v1/tools/core_publish/to_world",
+            &ToolInvocationError::NotAuthorized("core_transfer:to_owner".into()),
+            "/v1/tools/core_transfer/to_owner",
         );
         let json = problem.to_json();
         assert_eq!(json["type"], "https://proxima.dev/errors/not-authorized");
@@ -425,8 +425,8 @@ mod tests {
         assert_eq!(json["status"], 403);
         assert_eq!(
             json["detail"],
-            "tool core_publish:to_world not authorized for this MCP token"
+            "tool core_transfer:to_owner not authorized for this MCP token"
         );
-        assert_eq!(json["instance"], "/v1/tools/core_publish/to_world");
+        assert_eq!(json["instance"], "/v1/tools/core_transfer/to_owner");
     }
 }

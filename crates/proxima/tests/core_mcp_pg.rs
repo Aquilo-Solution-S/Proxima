@@ -198,7 +198,6 @@ fn host_authz(owner: &Owner, tool_scope: ToolScope) -> ResolvedAuthz {
             [(*owner, Role::admin())],
             AuthPath::HostBearer,
         ),
-        OwnerRef::World => AuthzContext::denied_for_owner(owner),
     };
     authz.with_tool_scope(tool_scope)
 }
@@ -260,7 +259,7 @@ async fn server_issued_group_space_selector(
         .expect("spaces is an array")
         .iter()
         .filter_map(|space| space["key"].as_str())
-        .find(|key| *key != "current" && *key != "world")
+        .find(|key| *key != "current")
         .expect("group space exists")
         .to_string()
 }
@@ -1893,22 +1892,26 @@ async fn ensure_fact_embedding_for_handle(
 
 /// The authorized flavor-read facade
 /// (`proxima::flavor::authorized_memory_ids` and friends) routes candidate
-/// filtering through `Engine::query`, which must treat a World-owned
-/// (published) memory as visible to any caller, not just its original
-/// owner. Publish keeps the same `t` and moves `owner_id` to World.
-/// This is the read half of the raw-PgPool boundary breach fix —
-/// a flavor's own owner-equality-only candidate SQL would have hidden a
-/// published memory from a non-owner caller even though it is supposed to
-/// be universally readable.
+/// filtering through `Engine::query`, which resolves the CALLER'S whole
+/// read-owner set — not owner-equality against the request's owner scope.
+/// A memory transferred into a group must therefore surface for a group
+/// member who has no relationship at all to the original owner. This is the
+/// read half of the raw-PgPool boundary breach fix: a flavor's own
+/// owner-equality-only candidate SQL would have hidden it.
 #[tokio::test]
-async fn facade_authorized_read_surfaces_world_published_fact_to_non_owner() {
-    let db_name = unique_db_name("proxima_authorized_read_world");
+#[allow(clippy::too_many_lines)]
+async fn facade_authorized_read_surfaces_group_transferred_fact_to_group_member() {
+    let db_name = unique_db_name("proxima_authorized_read_transfer");
     create_db(&db_name).await.expect("PG required for tests");
     let db_url = db_url(&db_name);
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
-        let other_owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let author = UserId::new(Uuid::now_v7());
+        let owner = OwnerRef::Personal(author);
+        let group = GroupId::new(Uuid::now_v7());
+        let group_owner = OwnerRef::Group(group);
+        let member = UserId::new(Uuid::now_v7());
+        let member_owner = OwnerRef::Personal(member);
         let built = Proxima::<EmptyApp>::app()
             .database_url(db_url)
             .owner(owner)
@@ -1924,10 +1927,10 @@ async fn facade_authorized_read_surfaces_world_published_fact_to_non_owner() {
             owner,
             "core_remember",
             serde_json::json!({
-                "title": "Publish candidate",
-                "body": "world-visible body unique needle",
+                "title": "Transfer candidate",
+                "body": "group-visible body unique needle",
                 "tags": [],
-                "idempotency_key": "facade-authorized-read-world-publish"
+                "idempotency_key": "facade-authorized-read-owner-transfer"
             }),
         )
         .await?;
@@ -1937,20 +1940,30 @@ async fn facade_authorized_read_surfaces_world_published_fact_to_non_owner() {
             .expect("prefixed fact handle")
             .parse::<Uuid>()?;
 
+        // Admin on BOTH sides: the author's own personal owner (source) and
+        // the destination group (receiving-side consent).
+        let transfer_authz = AuthzContext::for_subject_with_role(
+            author,
+            [(group_owner, Role::admin())],
+            AuthPath::HostBearer,
+        );
         built
             .engine
-            .publish_to_world(&authz, proxima_core::EntityId::Memory(MemoryId::new(memory_id)))
+            .transfer_to_owner(
+                &transfer_authz,
+                proxima_core::EntityId::Memory(MemoryId::new(memory_id)),
+                group_owner,
+            )
             .await?;
-        let published_owner: Uuid = sqlx::query_scalar(
-            "SELECT owner_id FROM proxima_core.memory WHERE t = $1",
-        )
-        .bind(memory_id)
-        .fetch_one(built.pool_for_tests())
-        .await?;
+        let transferred_owner: Uuid =
+            sqlx::query_scalar("SELECT owner_id FROM proxima_core.memory WHERE t = $1")
+                .bind(memory_id)
+                .fetch_one(built.pool_for_tests())
+                .await?;
         assert_eq!(
-            published_owner,
-            proxima_core::OwnerRef::World.stored_owner_id(),
-            "publish keeps the same t and moves owner to World"
+            transferred_owner,
+            group_owner.stored_owner_id(),
+            "a transfer keeps the same t and moves owner to the destination"
         );
         let still_private: i64 = sqlx::query_scalar(
             "SELECT count(*)::bigint FROM proxima_core.memory
@@ -1962,14 +1975,19 @@ async fn facade_authorized_read_surfaces_world_published_fact_to_non_owner() {
         .await?;
         assert_eq!(still_private, 0);
 
-        // A caller with no relationship to `owner` — not a group co-member,
-        // no share, nothing — must still see the transferred t
-        // through the same authorized-read helper the Code flavor calls.
-        let other_authz = host_authz(&other_owner, ToolScope::All);
+        // A caller with no relationship to `owner` — not a co-member of any
+        // of the author's other groups, no share, nothing — but a viewer of
+        // the destination group. The request's owner scope is the caller's
+        // OWN personal owner, so only the read-set union can surface the row.
+        let member_authz = AuthzContext::for_subject_with_role(
+            member,
+            [(group_owner, Role::viewer())],
+            AuthPath::HostBearer,
+        );
         let visible = proxima::flavor::authorized_memory_ids(
             &built.engine,
-            &other_authz,
-            other_owner,
+            &member_authz,
+            member_owner,
             &[memory_id],
             proxima_core::verbs::query::EntityKind::Fact,
             None,
@@ -1979,7 +1997,26 @@ async fn facade_authorized_read_surfaces_world_published_fact_to_non_owner() {
         assert_eq!(
             visible,
             vec![MemoryId::new(memory_id)],
-            "a World-published Fact must surface through the authorized-read facade for a non-owner caller"
+            "a group-transferred Fact must surface through the authorized-read facade for a group member"
+        );
+
+        // The same caller without the group role sees nothing: the read set,
+        // not the transfer, is what grants visibility.
+        let stranger = UserId::new(Uuid::now_v7());
+        let stranger_authz = AuthzContext::for_subject(stranger, AuthPath::HostBearer);
+        let hidden = proxima::flavor::authorized_memory_ids(
+            &built.engine,
+            &stranger_authz,
+            OwnerRef::Personal(stranger),
+            &[memory_id],
+            proxima_core::verbs::query::EntityKind::Fact,
+            None,
+            10,
+        )
+        .await?;
+        assert!(
+            hidden.is_empty(),
+            "a transfer is not a publish: a caller outside the destination group sees nothing"
         );
 
         built.shutdown();
@@ -1988,7 +2025,7 @@ async fn facade_authorized_read_surfaces_world_published_fact_to_non_owner() {
     .await;
 
     let _ = drop_db(&db_name).await;
-    result.expect("authorized-read World visibility test failed");
+    result.expect("authorized-read owner-transfer visibility test failed");
 }
 
 #[tokio::test]

@@ -142,7 +142,7 @@ pub enum AuthPath {
     Wake,
     System,
     /// Fail-closed sentinel for a context that carries no real
-    /// credentials (see [`AuthzContext::denied`]).
+    /// credentials (see [`AuthzContext::denied_for_owner`]).
     Denied,
 }
 
@@ -525,10 +525,7 @@ impl AuthzContext {
                 let role = roles.role_for(&owner)?;
                 OwnerRoles::scoped_to(subject, owner, role)
             }
-            OwnerRef::World if roles.role_for(&owner).is_some() => {
-                OwnerRoles::scoped_to(subject, owner, crate::access::Role::viewer())
-            }
-            OwnerRef::World | OwnerRef::Personal(_) => return None,
+            OwnerRef::Personal(_) => return None,
         };
         let accessible_principals = narrowed_roles
             .readable_owners(AccessKind::Goal)
@@ -577,19 +574,18 @@ impl AuthzContext {
     pub fn single_owner(owner: &Owner, auth_path: AuthPath) -> Self {
         match *owner {
             OwnerRef::Personal(subject) => Self::for_subject(subject, auth_path),
-            OwnerRef::World | OwnerRef::Group(_) => Self::denied_for_owner(owner),
+            OwnerRef::Group(_) => Self::denied_for_owner(owner),
         }
     }
 
-    /// Fail-closed, zero-capability context. Carries the owner's
-    /// identity for audit but grants no roles, an empty tool palette,
-    /// and no accessible principals — every capability check and every
-    /// owner-scope check denies.
-    #[must_use]
-    pub fn denied() -> Self {
-        Self::denied_for_owner(&OwnerRef::World)
-    }
-
+    /// Fail-closed, zero-capability context. Carries `owner`'s identity for
+    /// audit but grants no roles, an empty tool palette, and no accessible
+    /// principals — every capability check and every owner-scope check
+    /// denies.
+    ///
+    /// There is no owner-less `denied()`: a denied context still names the
+    /// principal the denial was about, and no owner kind exists to stand in
+    /// as a placeholder.
     #[must_use]
     pub fn denied_for_owner(owner: &Owner) -> Self {
         Self {
@@ -814,7 +810,7 @@ mod tests {
         Identity {
             subject: match principal {
                 OwnerRef::Personal(user) => Some(user),
-                OwnerRef::World | OwnerRef::Group(_) => None,
+                OwnerRef::Group(_) => None,
             },
             principal,
             accessible_principals,
@@ -887,7 +883,7 @@ mod tests {
     #[test]
     fn unauthenticated_denied_context_grants_no_owner_access() {
         let owner = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
-        let ctx = AuthzContext::denied();
+        let ctx = AuthzContext::denied_for_owner(&owner);
 
         assert_eq!(ctx.auth_path(), AuthPath::Denied);
         assert_eq!(ctx.subject(), None);
@@ -899,7 +895,7 @@ mod tests {
     }
 
     #[test]
-    fn resolved_subject_context_gets_world_read_and_role_ceilings() {
+    fn resolved_subject_context_gets_role_ceilings() {
         let subject = UserId::new(uuid::Uuid::now_v7());
         let group = OwnerRef::Group(GroupId::new(uuid::Uuid::now_v7()));
         let roles = OwnerRoles::for_subject(subject, [(group, Role::editor())]).unwrap();
@@ -907,21 +903,18 @@ mod tests {
         let ctx = AuthzContext::server_resolved(roles, AuthPath::HostBearer);
 
         assert_eq!(ctx.subject(), Some(subject));
-        assert!(ctx.may_read(&OwnerRef::World, AccessKind::Goal));
-        assert!(!ctx.may_write(&OwnerRef::World, AccessKind::Fact));
         assert!(ctx.may_write(&OwnerRef::Personal(subject), AccessKind::Goal));
         assert!(ctx.may_write(&group, AccessKind::Perspective));
         assert!(!ctx.may_write(&group, AccessKind::Goal));
         assert!(!ctx.may_manage(&group));
 
         let readable = ctx.readable_owners(AccessKind::Goal);
-        assert!(readable.contains(&OwnerRef::World));
+        assert_eq!(readable.len(), 2, "own personal owner plus the one group");
         assert!(readable.contains(&OwnerRef::Personal(subject)));
         assert!(readable.contains(&group));
 
         let writable = ctx.writable_owners(AccessKind::Goal);
         assert!(writable.contains(&OwnerRef::Personal(subject)));
-        assert!(!writable.contains(&OwnerRef::World));
         assert!(!writable.contains(&group));
     }
 

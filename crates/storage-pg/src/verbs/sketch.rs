@@ -1,6 +1,6 @@
 //! Persisted recall/think one-liners. Rebuildable plumbing (not Lean).
 
-use proxima_core::{EntityKind, MemoryId, OwnerRef, SidecarPayload, StorageError};
+use proxima_core::{EntityKind, MemoryId, OwnerRef, OwnerRefKind, SidecarPayload, StorageError};
 use sqlx::{Postgres, Transaction};
 use uuid::Uuid;
 
@@ -107,8 +107,8 @@ pub async fn load_sketches(
         .copied()
         .map(OwnerRef::stored_owner_id)
         .collect();
-    let rows: Vec<(Uuid, Uuid, String, String, String)> = sqlx::query_as(
-        "SELECT s.t, s.owner_id, o.kind::text, s.kind::text, s.text
+    let rows: Vec<(Uuid, Uuid, OwnerRefKind, String, String)> = sqlx::query_as(
+        "SELECT s.t, s.owner_id, o.kind::text::proxima_core.owner_kind, s.kind::text, s.text
            FROM proxima_core.sketch s
            JOIN proxima_core.owners o ON o.owner_id = s.owner_id
           WHERE s.t = ANY($1::uuid[])
@@ -124,7 +124,7 @@ pub async fn load_sketches(
         .filter_map(|(t, owner_id, owner_kind, kind, text)| {
             Some(SketchRow {
                 id: MemoryId::new(t),
-                owner: owner_from(owner_kind.as_str(), owner_id)?,
+                owner: owner_from(owner_kind, owner_id),
                 kind: parse_kind(&kind)?,
                 text,
             })
@@ -154,13 +154,8 @@ fn parse_kind(kind: &str) -> Option<EntityKind> {
     }
 }
 
-fn owner_from(kind: &str, owner_id: Uuid) -> Option<OwnerRef> {
-    match kind {
-        "world" => Some(OwnerRef::World),
-        "personal" => Some(OwnerRef::Personal(proxima_core::UserId::new(owner_id))),
-        "group" => Some(OwnerRef::Group(proxima_core::GroupId::new(owner_id))),
-        _ => None,
-    }
+fn owner_from(kind: OwnerRefKind, owner_id: Uuid) -> OwnerRef {
+    kind.with_uuid(owner_id)
 }
 
 #[cfg(test)]

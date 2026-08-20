@@ -5,7 +5,7 @@ use proxima_core::verbs::fact_ingest::{AuthorizedFactWrite, FactIngestOutcome};
 use proxima_core::verbs::goal_write::{CreateGoalAtomicRequest, GoalWriteOutcome};
 use proxima_core::{
     AuthorDerivedOutcome, AuthorDerivedRequest, ColdObjectStore, MemoryId, SidecarPayload,
-    StorageError, cold_object_key, owner_hash_hex,
+    StorageError, cold_object_key,
 };
 use sqlx::{Postgres, Transaction};
 
@@ -52,7 +52,6 @@ impl WriteSession for PgWriteSession {
         let payloads = sidecar_payloads.to_vec();
         let tables = self.sidecars.tables_for_payloads(sidecar_payloads)?;
         let owner = authorized.owner_write_permit().owner();
-        crate::access::owner_columns::reject_world_write_owner(owner)?;
         let owner_id =
             crate::access::owner_columns::ensure_owner_row(self.tx.as_mut(), owner).await?;
         let content_id = verbs::content::ensure_content_from_payloads(
@@ -124,7 +123,6 @@ impl WriteSession for PgWriteSession {
         let tables = self
             .sidecars
             .tables_for_payloads(std::slice::from_ref(&sidecar_payload))?;
-        crate::access::owner_columns::reject_world_write_owner(permit.owner())?;
         let owner_id =
             crate::access::owner_columns::ensure_owner_row(self.tx.as_mut(), permit.owner())
                 .await?;
@@ -202,10 +200,12 @@ impl WriteSession for PgWriteSession {
         memory_id: MemoryId,
     ) -> Result<(), StorageError> {
         let owner = permit.owner();
-        crate::access::owner_columns::reject_world_write_owner(owner)?;
         let owner_id = owner.stored_owner_id();
         let t = memory_id.into_inner();
-        let handle: uuid::Uuid = sqlx::query_scalar(
+        // Ownership precondition, not a key ingredient: the cold key is
+        // `cold/<t>` now, but a `t` the caller does not own must still be
+        // NotFound rather than a forget on someone else's row.
+        sqlx::query_scalar::<_, uuid::Uuid>(
             "SELECT handle FROM proxima_core.memory WHERE t = $1 AND owner_id = $2",
         )
         .bind(t)
@@ -214,7 +214,7 @@ impl WriteSession for PgWriteSession {
         .await
         .map_err(internal)?
         .ok_or(StorageError::NotFound)?;
-        let key = cold_object_key(&owner_hash_hex(owner), handle, t);
+        let key = cold_object_key(t);
         verbs::forget::forget_memory(
             &mut self.tx,
             &self.sidecars,

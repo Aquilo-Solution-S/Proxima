@@ -6,12 +6,23 @@ use proxima_core::storage_ports::CitedObjectErasePort;
 use proxima_core::{Owner, StorageError};
 
 use super::CitedBlobStore;
-use super::keys::{objects_owner_prefix, owner_hash_hex, pending_owner_prefix};
 
 #[async_trait::async_trait]
 impl CitedObjectErasePort for CitedBlobStore {
-    /// Purge every S3 object owned by `owner` under both the canonical
-    /// `objects/<owner_hash>/` and in-flight `pending/<owner_hash>/` prefixes.
+    /// Purge every S3 object this owner's rows point at.
+    ///
+    /// Enumerated from Postgres, not from a key prefix. Keys carry no owner
+    /// any more — that is what lets a transfer move a series without
+    /// touching S3 — so `objects/<owner_hash>/` is no longer a thing to
+    /// list. The rows are the index: `blob_uploads` for cited blobs at
+    /// every status (pending bytes are as PII-bearing as committed ones)
+    /// and `cooled` for cold Memory objects.
+    ///
+    /// The consequence is deliberate and worth naming: an object whose row
+    /// is already gone (a crashed prepare, an abandoned upload) is no
+    /// longer reachable by this purge. Those are reclaimed by the mandatory
+    /// S3 lifecycle rule on `pending/` and by the orphan sweep
+    /// `reconcile_all` reports.
     ///
     /// Wired in-band by owner-scope compliance erase so an Art. 17 owner
     /// erasure removes the owner's uploaded (PII-bearing) documents, not just
@@ -20,47 +31,53 @@ impl CitedObjectErasePort for CitedBlobStore {
     ///
     /// # Errors
     ///
-    /// Returns [`StorageError::Unavailable`] when S3 listing/deletion fails.
+    /// Returns [`StorageError::Unavailable`] when the row enumeration or any
+    /// S3 deletion fails.
     async fn purge_owner_objects(&self, owner: Owner) -> Result<u64, StorageError> {
-        let owner_hash = owner_hash_hex(&owner);
         let client = self
             .client()
             .await
             .map_err(|e| StorageError::Unavailable(format!("s3 client: {e}")))?;
         let mut deleted = 0_u64;
-        for prefix in [
-            objects_owner_prefix(&owner_hash),
-            pending_owner_prefix(&owner_hash),
-        ] {
+        for key in owned_object_keys(&self.pool, &owner).await? {
             deleted =
-                deleted.saturating_add(purge_prefix(client, &self.config.bucket, &prefix).await?);
+                deleted.saturating_add(purge_exact_key(client, &self.config.bucket, &key).await?);
         }
         Ok(deleted)
     }
 }
 
-/// List and batch-delete EVERY version (and delete marker) under one S3
-/// `prefix`, paging over the `list_object_versions` key/version markers.
-/// Returns the number of object versions + delete markers deleted.
+/// Every object key reachable from `owner`'s rows, deduplicated.
 ///
-/// Deletion is by `(key, version_id)`, not by key
-/// alone. On a *versioned* bucket — the deployment recommended in
-/// `docs/how-to/operate.md` — a key-only `delete_objects` merely inserts a
-/// delete marker and leaves the noncurrent PII object versions recoverable via
-/// `GetObject?versionId`, defeating the Art. 17 erasure guarantee. Enumerating
-/// versions and deleting each by its `version_id` physically removes the bytes.
-/// On a non-versioned bucket every entry has `version_id = "null"`, so the same
-/// path deletes the live object and remains correct.
-async fn purge_prefix(
-    client: &aws_sdk_s3::Client,
-    bucket: &str,
-    prefix: &str,
-) -> Result<u64, StorageError> {
-    purge_versions(client, bucket, prefix, false).await
+/// `blob_uploads` is read at every status on purpose: a pending row still
+/// names bytes that were uploaded, and an aborted one may too.
+async fn owned_object_keys(
+    pool: &sqlx::PgPool,
+    owner: &Owner,
+) -> Result<Vec<String>, StorageError> {
+    let owner_id = owner.stored_owner_id();
+    sqlx::query_scalar::<_, String>(
+        "SELECT object_key FROM proxima_core.blob_uploads WHERE owner_id = $1
+         UNION
+         SELECT object_key FROM proxima_core.cooled WHERE owner_id = $1",
+    )
+    .bind(owner_id)
+    .fetch_all(pool)
+    .await
+    .map_err(|e| StorageError::Unavailable(format!("enumerate owner object keys: {e}")))
 }
 
 /// Permanently delete every version and delete marker of exactly one key.
 /// Prefix-colliding keys are deliberately excluded.
+///
+/// Deletion is by `(key, version_id)`, not by key alone. On a *versioned*
+/// bucket — the deployment recommended in `docs/how-to/operate.md` — a
+/// key-only `delete_objects` merely inserts a delete marker and leaves the
+/// noncurrent PII object versions recoverable via `GetObject?versionId`,
+/// defeating the Art. 17 erasure guarantee. Enumerating versions and
+/// deleting each by its `version_id` physically removes the bytes. On a
+/// non-versioned bucket every entry has `version_id = "null"`, so the same
+/// path deletes the live object and remains correct.
 pub(super) async fn purge_exact_key(
     client: &aws_sdk_s3::Client,
     bucket: &str,

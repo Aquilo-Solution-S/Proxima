@@ -85,6 +85,7 @@ pub async fn erase_group_owner_if_abandoned(
     goal_sidecar_tables: &[String],
     citation_mapping_sidecar_tables: &[String],
     cited_object_sidecar_tables: &[String],
+    owner_pinned_sidecar_tables: &[String],
 ) -> Result<ComplianceEraseOutcome, StorageError> {
     let owner = OwnerRef::Group(group_id);
     let mut tx = begin_bulk_erase_tx(pool).await?;
@@ -114,6 +115,7 @@ pub async fn erase_group_owner_if_abandoned(
         goal_sidecar_tables,
         citation_mapping_sidecar_tables,
         cited_object_sidecar_tables,
+        owner_pinned_sidecar_tables,
     )
     .await?;
     let counts = final_counts(&mut tx).await?;
@@ -138,6 +140,7 @@ pub async fn erase_personal_owner_if_drop_verified(
     goal_sidecar_tables: &[String],
     citation_mapping_sidecar_tables: &[String],
     cited_object_sidecar_tables: &[String],
+    owner_pinned_sidecar_tables: &[String],
 ) -> Result<ComplianceEraseOutcome, StorageError> {
     let owner = OwnerRef::Personal(user_id);
     let mut tx = begin_bulk_erase_tx(pool).await?;
@@ -154,6 +157,7 @@ pub async fn erase_personal_owner_if_drop_verified(
         goal_sidecar_tables,
         citation_mapping_sidecar_tables,
         cited_object_sidecar_tables,
+        owner_pinned_sidecar_tables,
     )
     .await?;
     let counts = final_counts(&mut tx).await?;
@@ -178,6 +182,7 @@ pub async fn erase_group_source_scope_if_owner_abandoned(
     goal_sidecar_tables: &[String],
     citation_mapping_sidecar_tables: &[String],
     cited_object_sidecar_tables: &[String],
+    owner_pinned_sidecar_tables: &[String],
 ) -> Result<ComplianceEraseOutcome, StorageError> {
     let owner = OwnerRef::Group(group_id);
     let mut tx = begin_bulk_erase_tx(pool).await?;
@@ -207,6 +212,7 @@ pub async fn erase_group_source_scope_if_owner_abandoned(
         goal_sidecar_tables,
         citation_mapping_sidecar_tables,
         cited_object_sidecar_tables,
+        owner_pinned_sidecar_tables,
     )
     .await?;
     let counts = final_counts(&mut tx).await?;
@@ -231,6 +237,7 @@ pub async fn erase_personal_source_scope_if_drop_verified(
     goal_sidecar_tables: &[String],
     citation_mapping_sidecar_tables: &[String],
     cited_object_sidecar_tables: &[String],
+    owner_pinned_sidecar_tables: &[String],
 ) -> Result<ComplianceEraseOutcome, StorageError> {
     let owner = OwnerRef::Personal(user_id);
     let mut tx = begin_bulk_erase_tx(pool).await?;
@@ -247,6 +254,7 @@ pub async fn erase_personal_source_scope_if_drop_verified(
         goal_sidecar_tables,
         citation_mapping_sidecar_tables,
         cited_object_sidecar_tables,
+        owner_pinned_sidecar_tables,
     )
     .await?;
     let counts = final_counts(&mut tx).await?;
@@ -318,6 +326,7 @@ async fn erase_selected(
     goal_sidecar_tables: &[String],
     citation_mapping_sidecar_tables: &[String],
     cited_object_sidecar_tables: &[String],
+    owner_pinned_sidecar_tables: &[String],
 ) -> Result<ColdPurgePlan, StorageError> {
     open_erase_bookkeeping(tx, auth, owner, scope).await?;
 
@@ -339,9 +348,18 @@ async fn erase_selected(
     let mut sidecar_rows =
         delete_dynamic_sidecars(tx, goal_sidecar_tables, "t", "selected_goals", "goal_id").await?;
     delete_fixed_goal_sidecars(tx).await?;
+    // Owner-pinned sidecars are held out of the Memory-keyed sweep: their
+    // rows do not follow a transfer, so `selected_memories` is the wrong
+    // set for them in both directions. They are erased below, by their own
+    // `owner_id`.
+    let memory_keyed_fact_tables = fact_sidecar_tables
+        .iter()
+        .filter(|table| !owner_pinned_sidecar_tables.contains(table))
+        .cloned()
+        .collect::<Vec<_>>();
     sidecar_rows += delete_dynamic_sidecars(
         tx,
-        fact_sidecar_tables,
+        &memory_keyed_fact_tables,
         "t",
         "selected_memories",
         "memory_id",
@@ -366,15 +384,8 @@ async fn erase_selected(
     let embeddings = delete_embeddings(tx, "proxima_core.embeddings").await?;
     record_count(tx, "embeddings", embeddings.saturating_add(embedding_heads)).await?;
 
-    let mcp_rows = delete_fixed_by_selected(
-        tx,
-        "proxima_core.mcp_call_logged_v1",
-        "t",
-        "selected_memories",
-        "memory_id",
-        "mcp_call_rows",
-    )
-    .await?;
+    let mcp_rows =
+        delete_owner_pinned_sidecars(tx, owner_pinned_sidecar_tables, owner, scope).await?;
     record_count(tx, "mcp_call_rows", mcp_rows).await?;
 
     let content_ids = selected_content_ids(tx).await?;
@@ -457,11 +468,11 @@ async fn create_selected_sets(
     owner: OwnerRef,
     scope: SelectionScope<'_>,
 ) -> Result<(), StorageError> {
-    // Every erase entry point constructs `owner` as Group or Personal from a
-    // typed id — World is not representable on this path — so `owner_id`
-    // binds non-NULL here and in every erase statement below, and plain `=`
-    // is exactly `IS NOT DISTINCT FROM` while staying an index condition
-    // (`PostgreSQL` has no index strategy for DistinctExpr).
+    // `owner_id` is NOT NULL on every owned table and `OwnerRef` has no
+    // id-less kind, so `owner_id` binds non-NULL here and in every erase
+    // statement below: plain `=` is exactly `IS NOT DISTINCT FROM` while
+    // staying an index condition (`PostgreSQL` has no index strategy for
+    // DistinctExpr).
     let (owner_kind, owner_id) = owner_binds(&owner);
 
     sqlx::query("CREATE TEMP TABLE selected_memories(memory_id uuid PRIMARY KEY, kind text NOT NULL) ON COMMIT DROP")
@@ -788,7 +799,6 @@ async fn upsert_audit_outcome(
 
 fn audit_target(target: &ComplianceEraseTarget) -> (&'static str, OwnerRef, Option<&SourceId>) {
     match target {
-        ComplianceEraseTarget::WorldOwner => ("WorldOwner", OwnerRef::World, None),
         ComplianceEraseTarget::GroupOwner { group_id } => {
             ("GroupOwner", OwnerRef::Group(*group_id), None)
         }
@@ -816,10 +826,11 @@ fn audit_target(target: &ComplianceEraseTarget) -> (&'static str, OwnerRef, Opti
 pub(crate) fn owner_digest(owner: OwnerRef) -> Vec<u8> {
     let (kind, owner_id) = owner.columns();
     let stable_key = owner.stable_key_uuid();
-    let mut parts: Vec<&[u8]> = vec![kind.as_str().as_bytes(), stable_key.as_bytes()];
-    if let Some(id) = owner_id.as_ref() {
-        parts.push(id.as_bytes());
-    }
+    let parts: Vec<&[u8]> = vec![
+        kind.as_str().as_bytes(),
+        stable_key.as_bytes(),
+        owner_id.as_bytes(),
+    ];
     digest_bytes("owner", &parts)
 }
 
@@ -852,7 +863,6 @@ fn outcome_purge_pending(outcome: &ComplianceEraseOutcome) -> (bool, bool) {
 fn refusal_label(reason: &ComplianceEraseRefusal) -> &'static str {
     match reason {
         ComplianceEraseRefusal::OwnerNotAbandoned => "OwnerNotAbandoned",
-        ComplianceEraseRefusal::WorldOwner => "WorldOwner",
         ComplianceEraseRefusal::SourceScopeOwnerStillLive => "SourceScopeOwnerStillLive",
         ComplianceEraseRefusal::PersonalDropNotVerified => "PersonalDropNotVerified",
         ComplianceEraseRefusal::DropProofPortUnavailable => "DropProofPortUnavailable",
@@ -930,6 +940,60 @@ async fn delete_dynamic_sidecars(
             "sidecar",
         )
         .await?;
+    }
+    Ok(total)
+}
+
+/// Erase owner-pinned sidecars by the sidecar's OWN owner.
+///
+/// These rows record an act, not a Memory: an owner transfer moves the
+/// Memory and leaves them behind. Reached through `selected_memories` they
+/// would be unerasable by the owner that wrote them (its Memory is gone)
+/// and erasable by the owner that received it (which never owned them) —
+/// zombie rows on one side, someone else's audit trail on the other.
+///
+/// Source-scoped erase still asks the Memory which source a call belongs
+/// to, deliberately without an owner predicate on that lookup: the row
+/// being erased is already proven to be this owner's, and the Memory is
+/// only being consulted for its `source_id`.
+async fn delete_owner_pinned_sidecars(
+    tx: &mut Tx<'_>,
+    tables: &[String],
+    owner: OwnerRef,
+    scope: SelectionScope<'_>,
+) -> Result<u64, StorageError> {
+    let (_owner_kind, owner_id) = owner_binds(&owner);
+    let mut total = 0;
+    for table in tables {
+        let ident = PgIdent::table(table)?;
+        // SQL-POLICY: PgIdent
+        let sql = match scope {
+            SelectionScope::Owner => {
+                format!(
+                    "DELETE FROM {tbl} WHERE owner_id = $1",
+                    tbl = ident.as_str()
+                )
+            }
+            SelectionScope::Source(_) => format!(
+                "DELETE FROM {tbl} a
+                  WHERE a.owner_id = $1
+                    AND (EXISTS (SELECT 1 FROM proxima_core.memory m
+                                  WHERE m.t = a.t AND m.source_id = $2)
+                      OR EXISTS (SELECT 1 FROM proxima_core.cooled c
+                                  WHERE c.t = a.t AND c.source_id = $2))",
+                tbl = ident.as_str()
+            ),
+        };
+        // SQL-POLICY: PgIdent
+        let mut query = sqlx::query(sqlx::AssertSqlSafe(sql)).bind(owner_id);
+        if let SelectionScope::Source(source_id) = scope {
+            query = query.bind(source_id.as_str());
+        }
+        total += query
+            .execute(&mut **tx)
+            .await
+            .map_err(map_err)?
+            .rows_affected();
     }
     Ok(total)
 }
@@ -1125,7 +1189,7 @@ async fn delete_delegated_authority_grants(
     let (owner_kind, owner_id) = owner_binds(&owner);
     let erased_subject = match owner {
         OwnerRef::Personal(user_id) => Some(user_id.into_inner()),
-        OwnerRef::World | OwnerRef::Group(_) => None,
+        OwnerRef::Group(_) => None,
     };
     let result = sqlx::query(
         "DELETE FROM proxima_core.delegated_authority_grants dag
@@ -1283,7 +1347,7 @@ async fn delete_blobs(
 
 async fn enqueue_blob_object_keys(
     tx: &mut Tx<'_>,
-    owner_id: Option<uuid::Uuid>,
+    owner_id: uuid::Uuid,
     scope: SelectionScope<'_>,
     operation_id: uuid::Uuid,
 ) -> Result<Vec<String>, StorageError> {

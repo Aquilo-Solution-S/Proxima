@@ -1,5 +1,5 @@
 use crate::OwnerRef;
-use crate::access::{AccessKind, Relation, world};
+use crate::access::{AccessKind, Relation};
 use crate::authz::{AuthPath, AuthzContext};
 use crate::error::ProtocolError;
 
@@ -98,7 +98,6 @@ fn push_role_access(access: &mut AccessSets, authz: &AuthzContext) {
     for owner in authz.writable_owners(AccessKind::Goal) {
         push_write_owner(&mut access.write, owner, Relation::Admin);
     }
-    push_read_owner(&mut access.read, world());
 }
 
 fn push_read_owner(read: &mut Vec<OwnerRef>, owner: OwnerRef) {
@@ -108,19 +107,12 @@ fn push_read_owner(read: &mut Vec<OwnerRef>, owner: OwnerRef) {
 }
 
 fn push_write_owner(write: &mut Vec<(OwnerRef, Relation)>, owner: OwnerRef, relation: Relation) {
-    if is_world(&owner) {
-        return;
-    }
     if !write
         .iter()
         .any(|(candidate, existing)| candidate == &owner && existing == &relation)
     {
         write.push((owner, relation));
     }
-}
-
-fn is_world(principal: &OwnerRef) -> bool {
-    principal == &world()
 }
 
 #[cfg(test)]
@@ -784,10 +776,11 @@ pub(in crate::engine) mod tests {
 
     #[async_trait::async_trait]
     impl OwnerTransferPort for MembershipStorage {
-        async fn transfer_to_world(
+        async fn transfer_to_owner(
             &self,
             _permit: &crate::storage_ports::OwnerWritePermit,
             _entity: EntityId,
+            _to_owner: OwnerRef,
         ) -> Result<bool, StorageError> {
             Err(StorageError::Internal(
                 "MembershipStorage rejects writes".into(),
@@ -1055,7 +1048,11 @@ pub(in crate::engine) mod tests {
             .await
             .expect("server-resolved roles should not need storage expansion");
 
-        assert!(access.read_owners().contains(&world()));
+        assert_eq!(
+            access.read_owners().len(),
+            2,
+            "read set is exactly the caller's own owner plus its group"
+        );
         assert!(access.read_owners().contains(&personal));
         assert!(access.read_owners().contains(&group));
         assert!(access.can_write(&personal, Relation::Admin));
@@ -1064,6 +1061,5 @@ pub(in crate::engine) mod tests {
         assert!(!access.can_write(&group, Relation::Admin));
         assert!(access.can_write(&group, Relation::Editor));
         assert!(access.can_write(&group, Relation::Ingest));
-        assert!(!access.can_write(&world(), Relation::Ingest));
     }
 }

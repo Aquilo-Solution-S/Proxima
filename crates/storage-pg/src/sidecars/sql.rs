@@ -36,6 +36,13 @@ pub fn int_to_u64(value: i64, column: &str) -> Result<u64, StorageError> {
 
 /// Build a memory sidecar insert statement.
 ///
+/// `owner_pinned` stamps the row with the owner that WROTE it, read out of
+/// `proxima_core.memory` in the same statement — so the value is the acting
+/// owner at write time and no caller can supply it. The row then stops
+/// following the Memory: an owner transfer rewrites `memory.owner_id` and
+/// leaves this row's `owner_id` alone, which is the whole point for an
+/// audit sidecar that describes who acted rather than what was said.
+///
 /// # Errors
 ///
 /// Returns `StorageError::Internal` when the table, key column, or payload
@@ -44,6 +51,7 @@ pub fn memory_insert_sql(
     table: &str,
     key_column: &str,
     columns: &[(&str, Option<&str>)],
+    owner_pinned: bool,
 ) -> Result<String, StorageError> {
     let table = PgIdent::table(table)?.as_str();
     let key_column = PgIdent::column(key_column)?.as_str();
@@ -54,10 +62,17 @@ pub fn memory_insert_sql(
     let mut sql = String::new();
     write!(&mut sql, "INSERT INTO {table} ({key_column}")
         .expect("writing SQL into String cannot fail");
+    if owner_pinned {
+        sql.push_str(", owner_id");
+    }
     for (column, _) in &columns {
         write!(&mut sql, ", {column}").expect("writing SQL into String cannot fail");
     }
-    sql.push_str(") VALUES ($1");
+    if owner_pinned {
+        sql.push_str(") SELECT $1, m.owner_id");
+    } else {
+        sql.push_str(") VALUES ($1");
+    }
     for (index, (_, cast)) in columns.iter().enumerate() {
         write!(&mut sql, ", ${}", index + 2).expect("writing SQL into String cannot fail");
         if let Some(pg_type) = cast {
@@ -68,7 +83,11 @@ pub fn memory_insert_sql(
             write!(&mut sql, "::{pg_type}").expect("writing SQL into String cannot fail");
         }
     }
-    sql.push(')');
+    if owner_pinned {
+        sql.push_str(" FROM proxima_core.memory m WHERE m.t = $1");
+    } else {
+        sql.push(')');
+    }
     Ok(sql)
 }
 
@@ -97,5 +116,49 @@ pub fn memory_select_batch_sql(
     }
     write!(&mut sql, " FROM {table} WHERE {key_column} = ANY($1)")
         .expect("writing SQL into String cannot fail");
+    Ok(sql)
+}
+
+/// The owner-pinned variant of [`memory_select_batch_sql`].
+///
+/// Hydrates a row only while the Memory it hangs off is still held by the
+/// owner that WROTE the row. That is the whole difference an owner-pinned
+/// sidecar makes: an ordinary sidecar is a column on the Memory and follows
+/// it, while this one records an act and stays with its actor. After a
+/// transfer the two owners differ, the join drops the row, and the
+/// destination's `get_memory`/`get_memories`/`query_memories` never sees
+/// the prior owner's actor identities.
+///
+/// The predicate is the Memory's owner rather than the reader's, which is
+/// stricter: a caller that can read BOTH owners still gets the row only
+/// where it belongs.
+///
+/// # Errors
+///
+/// Returns `StorageError::Internal` when the table or key column are not
+/// valid Postgres identifiers. `columns` are the same compile-time
+/// projection expressions [`memory_select_batch_sql`] documents.
+pub fn memory_select_batch_owner_pinned_sql(
+    table: &str,
+    key_column: &str,
+    columns: &[&str],
+) -> Result<String, StorageError> {
+    let table = PgIdent::table(table)?.as_str();
+    let key_column = PgIdent::column(key_column)?.as_str();
+    let mut sql = String::new();
+    write!(&mut sql, "SELECT s.{key_column}").expect("writing SQL into String cannot fail");
+    for column in columns {
+        // `s.` prefixes both projection shapes the macro emits: `col` and
+        // the enum form `col::text AS col`.
+        write!(&mut sql, ", s.{column}").expect("writing SQL into String cannot fail");
+    }
+    write!(
+        &mut sql,
+        " FROM {table} s \
+           JOIN proxima_core.memory m \
+             ON m.t = s.{key_column} AND m.owner_id = s.owner_id \
+          WHERE s.{key_column} = ANY($1)"
+    )
+    .expect("writing SQL into String cannot fail");
     Ok(sql)
 }

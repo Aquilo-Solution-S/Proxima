@@ -404,7 +404,22 @@ def run_fixture(path: Path) -> int:
 # thing standing between the gate and its old position above the candidate
 # CTE — both spellings return identical rows, so nothing else in the suite
 # would notice the index becoming unreachable again.
-EXPECTED_DYNAMIC_SQL_SITES = 52
+# 52 -> 55 with the owner-pinned Memory sidecar. All three are production,
+# and all three are the same statement in three places: "reach an
+# owner-pinned sidecar by its OWN owner_id rather than through the Memory
+# it hangs off". The table name is the only dynamic part and it comes from
+# the frozen sidecar registry through `PgIdent::table`, exactly as the
+# memory-keyed sidecar sweeps beside them already do — every value is bound.
+#
+# `compliance_erase::delete_owner_pinned_sidecars` and
+# `compliance_export::owner_pinned_sidecar_rows` replace what used to be a
+# single hardcoded `proxima_core.mcp_call_logged_v1` statement each, so the
+# count rises while the hardcoded table name disappears. The third,
+# `sidecars::read_ctx::fetch_all_by_memory_ids_owner_pinned`, is the read
+# half: backend-generated SQL from `memory_select_batch_owner_pinned_sql`,
+# whose `proxima_core.memory` join IS the owner rule and is therefore the
+# one sidecar read allowed to name a core table.
+EXPECTED_DYNAMIC_SQL_SITES = 55
 
 
 def run_self_test() -> int:

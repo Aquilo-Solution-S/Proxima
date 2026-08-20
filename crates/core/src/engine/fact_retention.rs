@@ -7,7 +7,6 @@ use crate::owner::Owner;
 
 fn compliance_target_for_owner(owner: &Owner) -> ComplianceEraseTarget {
     match *owner {
-        crate::OwnerRef::World => ComplianceEraseTarget::WorldOwner,
         crate::OwnerRef::Personal(user_id) => ComplianceEraseTarget::PersonalOwner {
             user_id,
             drop_event_id: String::new(),

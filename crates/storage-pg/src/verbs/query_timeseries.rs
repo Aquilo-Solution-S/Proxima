@@ -1,5 +1,5 @@
 //! Query starts at memory_head. ChangeHistory pages announce.seq.
-//! Publish-to-World is `transfer_to_world` (in-place series owner UPDATE).
+//! Owner transfer is `transfer_to_owner` (in-place series owner UPDATE).
 #![allow(clippy::missing_errors_doc, clippy::doc_markdown)]
 
 use proxima_core::StorageError;

@@ -579,7 +579,7 @@ CREATE TABLE proxima_code.file_revision_v1 (
 CREATE TABLE proxima_code.repo_ingestion_runs (
     run_id uuid NOT NULL,
     owner_kind proxima_core.owner_kind NOT NULL,
-    owner_id uuid,
+    owner_id uuid NOT NULL,
     repo_id uuid NOT NULL,
     status proxima_code.repo_ingestion_run_status NOT NULL,
     stage proxima_code.repo_ingestion_run_stage NOT NULL,
@@ -596,8 +596,6 @@ CREATE TABLE proxima_code.repo_ingestion_runs (
     started_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
     finished_at timestamp with time zone,
-    CONSTRAINT repo_ingestion_runs_owner_ref_shape_chk CHECK ((((owner_kind = 'world'::proxima_core.owner_kind) AND (owner_id IS NULL)) OR ((owner_kind = ANY (ARRAY['personal'::proxima_core.owner_kind, 'group'::proxima_core.owner_kind])) AND (owner_id IS NOT NULL)))),
-    CONSTRAINT repo_ingestion_runs_world_not_write_owner_chk CHECK ((owner_kind <> 'world'::proxima_core.owner_kind)),
     CONSTRAINT runs_finished_when_terminal_chk CHECK ((((status = ANY (ARRAY['succeeded'::proxima_code.repo_ingestion_run_status, 'failed'::proxima_code.repo_ingestion_run_status])) AND (finished_at IS NOT NULL)) OR ((status = ANY (ARRAY['queued'::proxima_code.repo_ingestion_run_status, 'running'::proxima_code.repo_ingestion_run_status])) AND (finished_at IS NULL))))
 );
 
@@ -617,9 +615,7 @@ CREATE TABLE proxima_code.repos (
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     target_branch text,
     include_globs text[] DEFAULT '{}'::text[] NOT NULL,
-    exclude_globs text[] DEFAULT '{}'::text[] NOT NULL,
-    CONSTRAINT repos_owner_ref_shape_chk CHECK ((((owner_kind = 'world'::proxima_core.owner_kind) AND (owner_id IS NULL)) OR ((owner_kind = ANY (ARRAY['personal'::proxima_core.owner_kind, 'group'::proxima_core.owner_kind])) AND (owner_id IS NOT NULL)))),
-    CONSTRAINT repos_world_not_write_owner_chk CHECK ((owner_kind <> 'world'::proxima_core.owner_kind))
+    exclude_globs text[] DEFAULT '{}'::text[] NOT NULL
 );
 
 

@@ -9,12 +9,13 @@ general editor.
 
 Each entity has a SINGLE owning Group. There is no `is_home`/`reaches`/
 `entity_owner` share layer (removed with the share set, D11): a read-only share
-is just a viewer-role membership in that one group, and publishing is transfer to
-World. The host resolves the DATA — who populates each group at what role — ONCE;
-the kernel fixes only the RULE (read/write = the role's ceiling over the kind).
-World is the universal read-only group. No grant or visibility flag lives on the
-entity (invariant #5); the retired owner-space `AccessGrant` / `MemoryAction`
-layer is gone.
+is just a viewer-role membership in that one group, and sharing beyond that is
+an owner-to-owner TRANSFER of the entity into another group. The host resolves
+the DATA — who populates each group at what role — ONCE; the kernel fixes only
+the RULE (read/write = the role's ceiling over the kind). There is no
+universal-read owner: an entity is exactly as readable as its owning group. No
+grant or visibility flag lives on the entity (invariant #5); the retired
+owner-space `AccessGrant` / `MemoryAction` layer is gone.
 -/
 
 import Causa.Prelude
@@ -32,8 +33,7 @@ namespace Causa
    membership, write is an editor-or-higher role. There is NO share set above
    the owner, because the Group already IS the sharing mechanism — to share an
    entity you move it to (or create) a group holding the desired members at the
-   desired roles; to publish it you transfer it to World (the universal viewer
-   group). One owner per entity ⇒ the "single write owner" invariant is
+   desired roles. One owner per entity ⇒ the "single write owner" invariant is
    structural, and per-entity sharing is per-entity group choice. -/
 
 /-- AUTH-READ (invariant #2) — a request may READ an entity of kind `k` iff the
@@ -86,43 +86,27 @@ theorem may_write_in_implies_read_in :
   intro s r o k h
   exact may_write_implies_read r (s.resolve o) k h
 
-/-- AUTH-2 — World is read-only: an entity owned by World cannot be written.
-    THEOREM — World maps everyone to `viewer`, whose write ceiling is 0, so
-    `k.rank < 0` is absurd. -/
-theorem world_read_only :
-    ∀ (r : User) (k : AccessKind), ¬ may_write r world k := by
-  rintro r k ⟨x, hx, hw⟩
-  simp only [world, Option.some.injEq] at hx
-  subst hx
-  exact Nat.not_lt_zero _ hw
+/-- AUTH-NO-UNIVERSAL-READ — access IS membership: a requester holding no role
+    in the owning group can neither read nor write the entity, whatever its
+    kind. THEOREM. This is what stands where the World lane stood: no owner is
+    readable by everyone, so no owner needs an exception carved out of the
+    read/write gates. -/
+theorem non_member_denied :
+    ∀ (r : User) (o : Owner) (k : AccessKind),
+      o r = none → ¬ may_read r o k ∧ ¬ may_write r o k := by
+  intro r o k hout
+  constructor
+  · rintro ⟨x, hx, _⟩; rw [hout] at hx; exact Option.noConfusion hx
+  · rintro ⟨x, hx, _⟩; rw [hout] at hx; exact Option.noConfusion hx
 
-/-- AUTH-3 — World is universally readable: an entity owned by World is readable
-    by every requester (World maps everyone to `viewer`, read ceiling 4 > any
-    kind rank). THEOREM. -/
-theorem world_universally_readable :
-    ∀ (r : User) (k : AccessKind), may_read r world k := by
-  intro r k
-  exact ⟨Role.viewer, rfl, by cases k <;> simp [Role.mayRead, Role.viewer, AccessKind.rank]⟩
-
-/-- The stable `.world` owner reference resolves to a read-only owner in every
-    admissible owner state. -/
-theorem owner_state_world_read_only :
-    ∀ (s : OwnerState) (r : User) (k : AccessKind),
-      ¬ may_write_in s r .world k := by
-  intro s r k h
-  unfold may_write_in at h
-  rw [s.world_resolves] at h
-  exact world_read_only r k h
-
-/-- The stable `.world` owner reference is universally readable after server
-    resolution. -/
-theorem owner_state_world_universally_readable :
-    ∀ (s : OwnerState) (r : User) (k : AccessKind),
-      may_read_in s r .world k := by
-  intro s r k
-  unfold may_read_in
-  rw [s.world_resolves]
-  exact world_universally_readable r k
+/-- The same law over the stable owner boundary: server resolution introduces no
+    universally readable reference. -/
+theorem owner_state_non_member_denied :
+    ∀ (s : OwnerState) (r : User) (o : OwnerRef) (k : AccessKind),
+      s.resolve o r = none →
+      ¬ may_read_in s r o k ∧ ¬ may_write_in s r o k := by
+  intro s r o k hout
+  exact non_member_denied r (s.resolve o) k hout
 
 /-- AUTH-MANAGE-personal — personal groups forbid meta-management: no requester
     may manage a user's personal group. THEOREM — the gate requires
@@ -148,23 +132,6 @@ theorem owner_state_personal_forbids_manage :
   unfold may_manage_in at h
   rw [s.personal_resolves u] at h
   exact personal_forbids_manage u r h
-
-/-- AUTH-MANAGE-world — the World group cannot be managed either: every member
-    is a `viewer` (`manage = false`), so no one holds a managing role there.
-    THEOREM — independent of the personal-group rule. -/
-theorem world_forbids_manage : ∀ r : User, ¬ may_manage r world := by
-  rintro r ⟨_, x, hx, hm⟩
-  simp only [world, Option.some.injEq] at hx
-  subst hx
-  simp [Role.manages, Role.viewer] at hm
-
-/-- The stable World owner ref remains unmanageable after server resolution. -/
-theorem owner_state_world_forbids_manage :
-    ∀ (s : OwnerState) (r : User), ¬ may_manage_in s r .world := by
-  intro s r h
-  unfold may_manage_in at h
-  rw [s.world_resolves] at h
-  exact world_forbids_manage r h
 
 /-- Read access through a stable owner ref depends only on the server-resolved
     owner map for that ref. -/

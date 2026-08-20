@@ -169,14 +169,13 @@ mod tests {
         let personal = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
         let group = OwnerRef::Group(GroupId::new(Uuid::now_v7()));
 
-        assert_eq!(
-            parse_owner_key(&owner_key(OwnerRef::World)),
-            Some(OwnerRef::World)
-        );
         assert_eq!(parse_owner_key(&owner_key(personal)), Some(personal));
         assert_eq!(parse_owner_key(&owner_key(group)), Some(group));
         assert_eq!(parse_owner_key("current"), None);
-        assert_eq!(parse_owner_key("world"), None);
+        assert_eq!(
+            parse_owner_key("world:00000000-0000-0000-0000-000000000001"),
+            None
+        );
         assert_eq!(parse_owner_key("personal:not-a-uuid"), None);
     }
 
