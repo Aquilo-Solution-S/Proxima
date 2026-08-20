@@ -203,12 +203,11 @@ async fn seed_chunk_corpus(
     .bind(proxima_core::OwnerRefKind::of(owner).as_str())
     .execute(pool)
     .await?;
-    // SQL-POLICY: fixed-fragment
-    sqlx::query(sqlx::AssertSqlSafe(
+    sqlx::query(
         "INSERT INTO proxima_core.memory_head (handle, kind, schema_id, owner_id, t)
          SELECT uuidv7(), 'fact', 'proxima-code/code-chunk-v1', $1, uuidv7()
            FROM generate_series(1, $2)",
-    ))
+    )
     .bind(owner.stored_owner_id())
     .bind(CORPUS_ROWS)
     .execute(pool)
@@ -216,8 +215,7 @@ async fn seed_chunk_corpus(
     // The decoys are exactly the heads that have no admission yet, which is
     // the statement above and nothing else: `seed_memory` writes head and
     // admission together.
-    // SQL-POLICY: fixed-fragment
-    sqlx::query(sqlx::AssertSqlSafe(
+    sqlx::query(
         "WITH ids AS MATERIALIZED (
              SELECT h.handle, h.t, row_number() OVER (ORDER BY h.t) AS n
                FROM proxima_core.memory_head h
@@ -242,7 +240,7 @@ async fn seed_chunk_corpus(
                 to_tsvector(proxima_code.code_lexical_config(),
                             'fn needle_' || n || ' let needle straw ' || n)
            FROM ids",
-    ))
+    )
     .bind(owner.stored_owner_id())
     .bind(repo_id)
     .execute(pool)

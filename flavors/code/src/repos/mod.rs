@@ -7,7 +7,7 @@ mod rows;
 pub mod runs;
 pub mod scope;
 
-pub use erase::erase_repo;
+pub use erase::{erase_repo, reference_closure_sql};
 pub use records::{
     RepoEraseReceipt, RepoIngestionRun, RepoRecord, RepoRegistryError, RunStage, RunStatus,
     StageCounters,

@@ -526,3 +526,259 @@ async fn exercise_work_item_erase(pool: &sqlx::PgPool) -> Result<(), Box<dyn std
     );
     Ok(())
 }
+
+/// A row in ANOTHER repository pointing at this one's work item.
+///
+/// Nine `proxima_code` columns reference `proxima_core.memory` outside their
+/// own `t`, all `NO ACTION`, and nothing constrains the referencing row's
+/// `repo_id` to agree with the repo of the memory it names — the sweep
+/// filters each table by its own `repo_id`, so a cross-repo pointer simply
+/// survives it. Before the reference closure this ABORTED: repo B's
+/// `execution_result_v1` still named repo A's work item when A's admission
+/// was deleted, and `execution_result_v1_work_requested_memory_id_fkey`
+/// raised. Erasing A was impossible for as long as B held the pointer.
+///
+/// The semantics now: the pointer is erased with what it points at, and so
+/// is the admission behind it. Repo B survives; the row of B's that was a
+/// reference into A does not.
+#[tokio::test]
+async fn a_cross_repo_reference_is_erased_with_what_it_points_at() {
+    let (db_name, pg) = migrated_db().await;
+    let result = exercise_cross_repo_erase(pg.pool_for_tests()).await;
+    let _ = drop_db(&db_name).await;
+    result.expect("a_cross_repo_reference_is_erased_with_what_it_points_at failed");
+}
+
+async fn exercise_cross_repo_erase(pool: &sqlx::PgPool) -> Result<(), Box<dyn std::error::Error>> {
+    let owner = test_owner();
+    let erased_repo = Uuid::now_v7();
+    let other_repo = Uuid::now_v7();
+    let WorkItemFixture { work_item, .. } =
+        seed_work_item_fixture(pool, &owner, erased_repo).await?;
+    register_repo(
+        pool,
+        &owner,
+        other_repo,
+        &format!("/tmp/proxima-erase-cross-{other_repo}"),
+        "the repo that points across",
+        &RepoScope::default(),
+    )
+    .await?;
+
+    // Filed under `other_repo`, reporting on `erased_repo`'s work item.
+    let stray_result = Uuid::now_v7();
+    insert_memory(pool, &owner, stray_result).await?;
+    sqlx::query(
+        "INSERT INTO proxima_code.execution_result_v1
+            (t, repo_id, work_requested_memory_id, status, summary, artifact_refs)
+         VALUES ($1, $2, $3, 'succeeded', 'done elsewhere', ARRAY[]::text[])",
+    )
+    .bind(stray_result)
+    .bind(other_repo)
+    .bind(work_item)
+    .execute(pool)
+    .await?;
+
+    let store = CodeFlavorStore::from_backend_pool_for_tests(pool.clone());
+    let receipt = erase_repo(&store, &owner, erased_repo).await?;
+    assert!(receipt.repo_record_deleted);
+    assert_eq!(
+        receipt.memories_deleted, 6,
+        "the five rows of the erased repo, plus the other repo's reference into it"
+    );
+
+    let survivors: Vec<String> = sqlx::query_scalar(
+        "SELECT 'execution_result_v1' AS relation
+           FROM proxima_code.execution_result_v1 WHERE t = $1
+         UNION ALL
+         SELECT 'its admission' FROM proxima_core.memory WHERE t = $1
+         ORDER BY relation",
+    )
+    .bind(stray_result)
+    .fetch_all(pool)
+    .await?;
+    assert!(
+        survivors.is_empty(),
+        "a reference to erased data is erased with it, admission included: {survivors:?}"
+    );
+    let other_repo_rows: i64 =
+        sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_code.repos WHERE repo_id = $1")
+            .bind(other_repo)
+            .fetch_one(pool)
+            .await?;
+    assert_eq!(
+        other_repo_rows, 1,
+        "the other repository itself is untouched — only its dangling pointer went"
+    );
+    Ok(())
+}
+
+/// `development_perspective_v1.repo_id` is nullable, and the sweep filters
+/// `WHERE repo_id = $1`.
+///
+/// A nullable column silently excluded from a sweep looks exactly like a
+/// bug, so the intent is written down here rather than left to be
+/// rediscovered: the payload documents `repo_id: None` as "cross-repo
+/// observations", which makes a NULL-repo perspective the owner's, not any
+/// one repository's — the same standing `engineer_self_v1` has. It goes
+/// with the owner, through the compliance erase.
+#[tokio::test]
+async fn a_perspective_about_no_particular_repo_survives_a_repo_erase() {
+    let (db_name, pg) = migrated_db().await;
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pool = pg.pool_for_tests();
+        let owner = test_owner();
+        let repo_id = Uuid::now_v7();
+        let _ = seed_work_item_fixture(pool, &owner, repo_id).await?;
+
+        let cross_repo = Uuid::now_v7();
+        insert_memory(pool, &owner, cross_repo).await?;
+        sqlx::query(
+            "INSERT INTO proxima_code.development_perspective_v1
+                (t, repo_id, summary, pattern, risk, recommended_posture, confidence)
+             VALUES ($1, NULL, 'about the codebase at large', 'p', 'r', 'rp', 0.5)",
+        )
+        .bind(cross_repo)
+        .execute(pool)
+        .await?;
+
+        let store = CodeFlavorStore::from_backend_pool_for_tests(pool.clone());
+        erase_repo(&store, &owner, repo_id).await?;
+
+        let survived: i64 = sqlx::query_scalar(
+            "SELECT count(*)::bigint
+               FROM proxima_code.development_perspective_v1 WHERE t = $1",
+        )
+        .bind(cross_repo)
+        .fetch_one(pool)
+        .await?;
+        assert_eq!(
+            survived, 1,
+            "a perspective filed under no repository is not one repository's to erase"
+        );
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("a_perspective_about_no_particular_repo_survives_a_repo_erase failed");
+}
+
+/// The closure statement's column list, asked of the database.
+///
+/// The list is nine columns hand-written into one SQL constant. A tenth
+/// added by a migration and not added there is not a stale row: it is a
+/// repo erase that raises a foreign-key violation the first time anyone
+/// points across. `pg_constraint` is the only thing that knows the real
+/// list, so this asks it.
+#[tokio::test]
+async fn the_reference_closure_covers_every_non_t_foreign_key_into_memory() {
+    let (db_name, pg) = migrated_db().await;
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let found: Vec<(String, String)> = sqlx::query_as(
+            "SELECT src.relname::text, a.attname::text
+               FROM pg_constraint c
+               JOIN pg_class src ON src.oid = c.conrelid
+               JOIN pg_class tgt ON tgt.oid = c.confrelid
+               CROSS JOIN LATERAL unnest(c.conkey) AS k(attnum)
+               JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = k.attnum
+              WHERE c.contype = 'f'
+                AND src.relnamespace = 'proxima_code'::regnamespace
+                AND tgt.relnamespace = 'proxima_core'::regnamespace
+                AND tgt.relname = 'memory'
+                AND a.attname <> 't'
+                AND c.confdeltype = 'a'
+              ORDER BY 1, 2",
+        )
+        .fetch_all(pg.pool_for_tests())
+        .await?;
+        let closure = proxima_code::testkit::reference_closure_sql();
+        let mut missed = Vec::new();
+        for (table, column) in &found {
+            let reached = closure.contains(&format!("proxima_code.{table}"))
+                && closure.contains(&format!("{column} IN (SELECT t FROM erased)"));
+            if !reached {
+                missed.push(format!("{table}.{column}"));
+            }
+        }
+        assert!(
+            missed.is_empty(),
+            "these NO ACTION references into proxima_core.memory are not closed by the \
+             repo erase, so a cross-repo pointer through any of them aborts it: {missed:?}"
+        );
+        assert_eq!(
+            found.len(),
+            9,
+            "the closure was written against nine such columns; the schema now has \
+             {} — {found:?}",
+            found.len()
+        );
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("the_reference_closure_covers_every_non_t_foreign_key_into_memory failed");
+}
+
+/// `EraseRule::Cascade { via }` is a claim about the database, and until now
+/// nothing checked it.
+///
+/// The repo-erase completeness test exempts a surface from the sweep on the
+/// strength of that declaration alone. Declare `Cascade` and write the
+/// foreign key without `ON DELETE CASCADE` and both tests stay green while
+/// the rows survive every erase. This asks `pg_constraint` whether the
+/// cascade the contract promises is the cascade the schema has.
+#[tokio::test]
+async fn every_cascade_the_contract_declares_is_a_cascade_the_schema_enforces() {
+    let (db_name, pg) = migrated_db().await;
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let mut relations = Vec::new();
+        let mut names = Vec::new();
+        for surface in proxima_code::contract::CODE_FLAVOR_CONTRACT
+            .schemas
+            .iter()
+            .flat_map(|schema| schema.surfaces.iter())
+            .chain(
+                proxima_code::contract::CODE_FLAVOR_CONTRACT
+                    .state_surfaces
+                    .iter(),
+            )
+        {
+            if let proxima_core::flavor::EraseRule::Cascade { via } = surface.erase {
+                relations.push(via.relation.to_owned());
+                names.push(via.name.to_owned());
+            }
+        }
+        assert!(
+            !names.is_empty(),
+            "the code flavor declares at least one cascading surface"
+        );
+        let unenforced: Vec<(String, String)> = sqlx::query_as(
+            "SELECT d.relation, d.name
+               FROM unnest($1::text[], $2::text[]) AS d(relation, name)
+              WHERE NOT EXISTS (
+                    SELECT 1
+                      FROM pg_constraint c
+                      JOIN pg_class src ON src.oid = c.conrelid
+                     WHERE c.conname = d.name
+                       AND c.contype = 'f'
+                       AND c.confdeltype = 'c'
+                       AND (src.relnamespace::regnamespace)::text || '.' || src.relname
+                           = d.relation
+                )",
+        )
+        .bind(&relations)
+        .bind(&names)
+        .fetch_all(pg.pool_for_tests())
+        .await?;
+        assert!(
+            unenforced.is_empty(),
+            "these surfaces declare EraseRule::Cascade and are exempted from the repo \
+             sweep on that declaration, but no ON DELETE CASCADE foreign key of that \
+             name backs it: {unenforced:?}"
+        );
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("every_cascade_the_contract_declares_is_a_cascade_the_schema_enforces failed");
+}
