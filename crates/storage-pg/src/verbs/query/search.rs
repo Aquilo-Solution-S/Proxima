@@ -308,9 +308,11 @@ async fn scan_one_sidecar(
 /// scaled by to fill the window.
 ///
 /// Rendered at two decimals rather than through `f32`'s own `Display`,
-/// because `0.45f32 - 0.25f32` is `0.19999999` and emitting that would put
-/// a different literal in the query than the one this builder has always
-/// carried. Two decimals is the precision the bands are declared at.
+/// because `0.45f32 - 0.25f32` is `0.19999999`, which is a different NUMBER
+/// from the `0.2` this builder used to emit. Two decimals is the precision
+/// the bands are declared at. The spelling does change — `0.5` becomes
+/// `0.50` — but `0.5` and `0.50` are the same `numeric` to Postgres, so no
+/// score moves.
 fn band_parts(band: Band) -> (String, String) {
     (
         format!("{:.2}", band.floor),
@@ -344,7 +346,8 @@ fn lexical_sidecar_sql(
     // `BAND_RESCUE`, `BAND_SUBSTRING`) and rendered from it here. Raw
     // `ts_rank` is not comparable across corpora; a band is, which is what
     // makes a cross-flavor merge meaningful. Naming them moved no score:
-    // floor and width below are the literals this SQL already carried.
+    // the floor and width below are the numbers this SQL already carried,
+    // re-spelled at two decimals (`0.5` -> `0.50`).
     let (rescue_floor, rescue_width) = band_parts(BAND_RESCUE);
     let rescue_score = if rescue && !like_only {
         format!(
@@ -759,6 +762,49 @@ mod tests {
         assert!(prod.contains(&admit), "admit must run search_admit_sql");
     }
 
+    /// Parity pin for the unscoped-search rewire.
+    ///
+    /// The filter in `core_search_projections` was
+    /// `sidecar_table.starts_with("proxima_core.")` and is now
+    /// `FLAVOR_0.declares_sidecar_table(..)`. The literal below is the set
+    /// the prefix test selected out of the shipped registry, held HERE so
+    /// production carries no second copy of it: if the contract ever stops
+    /// declaring one of these, unscoped search silently narrows and this
+    /// test says which one went.
+    #[test]
+    fn the_contract_selects_the_sidecars_the_name_prefix_used_to() {
+        let registry = proxima_core::FlavorRegistry::new().freeze_or_panic_for_tests();
+        let mut by_contract = registry
+            .search_projections()
+            .iter()
+            .map(|projection| projection.sidecar_table.as_str())
+            .filter(|table| proxima_core::FLAVOR_0.declares_sidecar_table(table))
+            .collect::<Vec<_>>();
+        by_contract.sort_unstable();
+        by_contract.dedup();
+        assert_eq!(
+            by_contract,
+            vec![
+                "proxima_core.agent_derivation_v1",
+                "proxima_core.agent_note_v1",
+                "proxima_core.interpretation_v1",
+                "proxima_core.utterance_v1",
+            ],
+        );
+        let mut by_prefix = registry
+            .search_projections()
+            .iter()
+            .map(|projection| projection.sidecar_table.as_str())
+            .filter(|table| table.starts_with("proxima_core."))
+            .collect::<Vec<_>>();
+        by_prefix.sort_unstable();
+        by_prefix.dedup();
+        assert_eq!(
+            by_contract, by_prefix,
+            "the ordinal and the schema-name prefix must still agree on core's own sidecars"
+        );
+    }
+
     #[test]
     fn sidecar_scan_filters_owner_before_limit() {
         let src = include_str!("search.rs");
@@ -776,9 +822,14 @@ mod tests {
     ///
     /// The three score windows were inline float literals in this builder.
     /// They are now `BAND_EXACT`, `BAND_RESCUE` and `BAND_SUBSTRING` in the
-    /// flavor contract, rendered as `floor + LEAST(rank, 1.0) * width`. The
-    /// fragments below are the arithmetic the SQL carried before the lift —
-    /// naming a band must not move a score.
+    /// flavor contract, rendered as `floor + LEAST(rank, 1.0) * width`.
+    ///
+    /// The emitted TEXT is not byte-identical to what shipped: the builder
+    /// wrote `0.5` and `0.2`, and `{:.2}` renders `0.50` and `0.20`. The
+    /// VALUE is. Both spellings parse to the same `numeric`, and the width
+    /// is rendered rather than printed with `f32`'s `Display` precisely
+    /// because `0.45f32 - 0.25f32` is `0.19999999` — which would have moved
+    /// a score. This pins the values; naming a band must not move one.
     #[test]
     fn the_named_bands_render_the_arithmetic_the_sql_already_had() {
         use super::{BAND_EXACT, BAND_RESCUE, BAND_SUBSTRING, band_parts};

@@ -73,6 +73,80 @@ fn goals_are_not_transferable_and_the_declaration_names_its_enforcement() {
     }
 }
 
+/// Every cited enforcement site resolves to something that exists.
+///
+/// `Enforcement::EngineRefusal`/`StorageBackstop` carry a free-form
+/// `&'static str`, which the compiler cannot check: rename the function and
+/// the contract goes on claiming a refusal at an address nothing answers.
+/// The citation format is `<crate-dir>/<path>::<symbol path>`, so both
+/// halves are resolvable — the file relative to the workspace root, and the
+/// last symbol segment as an item declared in it. Triggers and constraints
+/// resolve against the migration that creates them.
+#[test]
+fn every_cited_enforcement_site_resolves() {
+    let workspace = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(std::path::Path::parent)
+        .expect("crates/storage-pg sits two levels under the workspace root")
+        .to_owned();
+    let migration = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("migrations/0001_v008.sql"),
+    )
+    .expect("the v0.0.8 migration is readable");
+
+    let mut checked = 0_usize;
+    let rules = FLAVOR_0
+        .schemas
+        .iter()
+        .map(|schema| schema.transfer)
+        .chain(FLAVOR_0.all_surfaces().map(|surface| surface.transfer));
+    for rule in rules {
+        let TransferRule::NotTransferable { enforced_by, .. } = rule else {
+            continue;
+        };
+        for site in enforced_by {
+            checked += 1;
+            match site {
+                Enforcement::EngineRefusal { at } | Enforcement::StorageBackstop { at } => {
+                    let (path, symbol) = at
+                        .split_once("::")
+                        .unwrap_or_else(|| panic!("{at} must cite <path>::<symbol>"));
+                    let file = workspace.join("crates").join(path);
+                    let source = std::fs::read_to_string(&file).unwrap_or_else(|err| {
+                        panic!("{at} cites {} which does not read: {err}", file.display())
+                    });
+                    let item = symbol.rsplit("::").next().expect("a symbol segment");
+                    assert!(
+                        source.contains(&format!("fn {item}")),
+                        "{at} cites `{item}`, which {} does not declare",
+                        file.display()
+                    );
+                }
+                // Matched line-wise rather than by building the DDL string:
+                // this test reads SQL, it never runs any, and assembling a
+                // `CREATE TRIGGER ...` needle would look exactly like a
+                // dynamic statement to the SQL-policy guardrail.
+                Enforcement::Trigger(trigger) => assert!(
+                    migration.lines().any(|line| {
+                        line.starts_with("CREATE TRIGGER") && line.contains(trigger.name)
+                    }),
+                    "the migration creates no trigger named {}",
+                    trigger.name
+                ),
+                Enforcement::Constraint(constraint) => assert!(
+                    migration.contains(constraint.name),
+                    "the migration names no constraint {}",
+                    constraint.name
+                ),
+            }
+        }
+    }
+    assert!(
+        checked >= 3,
+        "goals alone cite three sites; found {checked}"
+    );
+}
+
 // ── §2.5 (2): declared absence ──────────────────────────────────────────
 
 /// A non-surface is a value, not an omission.
@@ -81,9 +155,9 @@ fn goals_are_not_transferable_and_the_declaration_names_its_enforcement() {
 /// ways — no projection, empty fields, no sidecar table — so a schema that
 /// deliberately does not search was indistinguishable from one whose
 /// declaration was forgotten. The plan's acceptance case is spelled
-/// "ChatTurn-style"; utterances are searchable in this tree (operator
-/// ruling §4.3), so the declared-absence exemplars are the schemas that
-/// really do decline.
+/// "ChatTurn-style"; utterances are a search surface in this tree — they
+/// carry their own score band — so the declared-absence exemplars are the
+/// schemas that really do decline.
 #[test]
 fn declared_absence_is_a_value_with_a_reason() {
     let declining = FLAVOR_0
