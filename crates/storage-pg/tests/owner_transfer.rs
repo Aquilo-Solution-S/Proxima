@@ -25,7 +25,7 @@ use proxima_core::{
 use proxima_pg_testkit::{create_db, db_url, drop_db};
 use proxima_storage_pg::sidecars::PgMemorySidecar;
 use proxima_storage_pg::verbs::fact_ingest::{ingest_fact_atomic, ingest_fact_in_tx};
-use proxima_storage_pg::verbs::forget::{MemoryColdStore, hydrate_memory};
+use proxima_storage_pg::verbs::forget::{MemoryColdStore, erase_memory_series, hydrate_memory};
 use proxima_storage_pg::verbs::goal_timeseries::{GoalWriteCommand, write_goal};
 use proxima_storage_pg::verbs::wake_timeseries::{
     WakeConfigDraft, WakeTriggerKind, insert_wake_config, write_armed_goal,
@@ -1960,4 +1960,143 @@ async fn erasing_one_source_scope_of_a_mounted_object_does_not_destroy_the_bytes
     .await;
     let _ = drop_db(&db_name).await;
     result.expect("source-scope refcounted object purge failed");
+}
+
+/// A flavor-scope erase must take the blobs its admissions cited.
+///
+/// `erase_memory_series` is presented as the complete inverse a flavor gets
+/// for free, and the code flavor's entire citation story is blobs. It read
+/// `blob_id` into its hot row and used it for nothing: erasing a repository
+/// left the `blob` row, the `blob_uploads` row and the S3 object behind,
+/// with no admission left anywhere to reach them from. Nothing would ever
+/// have collected them — compliance erase is the only other thing that
+/// deletes blobs, and it works by owner or by source, not by flavor scope.
+///
+/// Both directions, because a refcount that only ever says "delete" is not
+/// a refcount: the bytes go when this was the last reference, and stay when
+/// another owner mounted the same object.
+#[tokio::test]
+async fn erasing_the_last_admission_citing_a_blob_takes_the_blob_and_owes_its_bytes() {
+    let (db_name, pg) = fresh_pg().await;
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
+        let pool = pg.pool_for_tests();
+
+        let (blob_id, upload_id) = seed_cited_blob(pool, owner, &[31_u8; 32]).await?;
+        let object_key = format!("objects/{upload_id}");
+        let mine = cite(pool, &permit, "series-erase", blob_id).await?;
+
+        let mut tx = pool.begin().await?;
+        let (erased, plan) = erase_memory_series(
+            &mut tx,
+            &core_pg_sidecars(),
+            &owner,
+            &[mine.memory_id.into_inner()],
+        )
+        .await?;
+        tx.commit().await?;
+        assert_eq!(erased, 1);
+        assert_eq!(
+            plan.object_keys(),
+            std::slice::from_ref(&object_key),
+            "the erase owes the object store the bytes of the blob it just orphaned"
+        );
+
+        let leftovers: Vec<String> = sqlx::query_scalar(
+            "SELECT 'blob' AS relation FROM proxima_core.blob WHERE blob_id = $1
+             UNION ALL
+             SELECT 'blob_uploads' FROM proxima_core.blob_uploads WHERE blob_id = $1
+             ORDER BY relation",
+        )
+        .bind(blob_id)
+        .fetch_all(pool)
+        .await?;
+        assert!(
+            leftovers.is_empty(),
+            "no row of a blob nothing cites survives the erase: {leftovers:?}"
+        );
+        let queued: i64 = sqlx::query_scalar(
+            "SELECT count(*)::bigint FROM proxima_core.cold_purge_pending WHERE object_key = $1",
+        )
+        .bind(&object_key)
+        .fetch_one(pool)
+        .await?;
+        assert_eq!(
+            queued, 1,
+            "and the durable purge record is there for the retention lane to drain"
+        );
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("series erase blob leg failed");
+}
+
+/// The other direction: the object another owner mounted stays.
+#[tokio::test]
+async fn a_series_erase_does_not_owe_bytes_another_owner_mounted() {
+    let (db_name, pg) = fresh_pg().await;
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
+        let dest = destination();
+        let pool = pg.pool_for_tests();
+
+        let (blob_id, upload_id) = seed_cited_blob(pool, owner, &[37_u8; 32]).await?;
+        let object_key = format!("objects/{upload_id}");
+        let mine = cite(pool, &permit, "series-mine", blob_id).await?;
+        let handed_over = cite(pool, &permit, "series-handed-over", blob_id).await?;
+        assert!(
+            pg.transfer_to_owner(&permit, EntityId::Memory(handed_over.memory_id), dest)
+                .await?
+        );
+
+        let mut tx = pool.begin().await?;
+        let (erased, plan) = erase_memory_series(
+            &mut tx,
+            &core_pg_sidecars(),
+            &owner,
+            &[mine.memory_id.into_inner()],
+        )
+        .await?;
+        tx.commit().await?;
+        assert_eq!(erased, 1);
+        assert!(
+            plan.object_keys().is_empty(),
+            "the destination mounted this object; the erase owes nothing: {:?}",
+            plan.object_keys()
+        );
+
+        let source_rows: i64 =
+            sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_core.blob WHERE blob_id = $1")
+                .bind(blob_id)
+                .fetch_one(pool)
+                .await?;
+        assert_eq!(
+            source_rows, 0,
+            "the source's own blob row still goes — it is the OBJECT that is shared"
+        );
+        let mount_rows: i64 = sqlx::query_scalar(
+            "SELECT count(*)::bigint FROM proxima_core.blob_uploads WHERE object_key = $1",
+        )
+        .bind(&object_key)
+        .fetch_one(pool)
+        .await?;
+        assert_eq!(mount_rows, 1, "the destination's mount is untouched");
+        let queued: i64 = sqlx::query_scalar(
+            "SELECT count(*)::bigint FROM proxima_core.cold_purge_pending WHERE object_key = $1",
+        )
+        .bind(&object_key)
+        .fetch_one(pool)
+        .await?;
+        assert_eq!(
+            queued, 0,
+            "nothing enqueued the bytes a live owner still reads"
+        );
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("series erase mount refcount failed");
 }

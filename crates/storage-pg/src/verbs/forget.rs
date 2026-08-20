@@ -1232,6 +1232,28 @@ pub async fn erase_memory(
 /// collected ids from its own tables would erase the live versions and
 /// leave the cooled ones behind.
 ///
+/// A cited blob goes when the last admission citing it does. That leg is
+/// here rather than in [`erase_memory`] because it is a question about the
+/// SET: erasing one version of a series says nothing about whether the
+/// blob is still cited, and asking per-version would answer "still cited"
+/// for every version but the last. `proxima_core.blob` is referenced by
+/// `memory.blob_id`, `cooled.blob_id` and `blob_uploads.blob_id` and by
+/// nothing else, so once the admissions are gone the reference question is
+/// answerable in one statement — see [`gc_unreferenced_blobs`].
+///
+/// What it does NOT reach: unowned `t`-references. `goal.close_fact_t`,
+/// `goal.assignment_t`, `goal.evidence_t[]`, `wake_config.trigger_t` and
+/// `wake_config.hard_memory_t[]` name memories without a foreign key, so an
+/// erase here can leave them pointing at nothing. That is deliberate and
+/// not new: [`erase_memory`] has always left them, and the compliance
+/// erase's own partial arm (source scope) leaves `goal` and `wake_config`
+/// untouched too — it deletes them only in the owner arm, where the whole
+/// row goes rather than one column of it. Nulling them here would make the
+/// set-erase do something the single-memory erase does not, which is
+/// exactly the divergence this function exists to end. A goal whose
+/// evidence was erased is a goal with a dangling pointer either way; the
+/// reader resolves it to nothing, which is what "erased" should look like.
+///
 /// Returns the number of admissions erased and the cold objects the erase
 /// still owes the object store; see [`erase_memory`] for why the caller
 /// commits first.
@@ -1271,6 +1293,15 @@ pub async fn erase_memory_series(
     .await
     .map_err(map_err)?;
 
+    // Captured BEFORE the loop, because the loop is what makes them
+    // unreferenced: after it, no row is left to read `blob_id` from.
+    let cited: Vec<Uuid> = sqlx::query_scalar(CITED_BLOBS_SQL)
+        .bind(&versions)
+        .bind(owner_id)
+        .fetch_all(tx.as_mut())
+        .await
+        .map_err(map_err)?;
+
     let mut keys = Vec::new();
     let mut erased = 0_u64;
     for t in versions {
@@ -1278,8 +1309,101 @@ pub async fn erase_memory_series(
         keys.extend_from_slice(plan.object_keys());
         erased += 1;
     }
+    keys.extend(gc_unreferenced_blobs(tx, owner_id, &cited).await?);
     Ok((erased, ColdPurgePlan::from_keys(keys)))
 }
+
+/// The blobs the admissions about to be erased cite.
+const CITED_BLOBS_SQL: &str = "\
+SELECT m.blob_id FROM proxima_core.memory m
+ WHERE m.t = ANY($1::uuid[]) AND m.owner_id = $2 AND m.blob_id IS NOT NULL
+UNION
+SELECT c.blob_id FROM proxima_core.cooled c
+ WHERE c.t = ANY($1::uuid[]) AND c.owner_id = $2 AND c.blob_id IS NOT NULL";
+
+/// Delete each of `cited` that no admission still cites, with its upload
+/// rows, and enqueue the objects that no other upload row names.
+///
+/// `gc_unreferenced_content`'s idiom, at the blob level, plus the refcount
+/// `enqueue_blob_object_keys` had to learn when the dedupe arm made one
+/// object reachable from several upload rows. `proxima_core.blob` is
+/// referenced by exactly three columns — `memory.blob_id`,
+/// `cooled.blob_id`, `blob_uploads.blob_id`, all `NO ACTION` — so "no
+/// admission cites it" is the whole reference question. Citation sidecars
+/// hold no foreign key on it: they are opaque payload tables, which is why
+/// `ComplianceSidecarTables::for_registry` finds no cited-object family for
+/// core or code to consult.
+///
+/// The three deletes and the enqueue are one statement so they share one
+/// snapshot. That is what makes the object anti-join ask the right
+/// question: "does a row OUTSIDE this orphan set name the key", evaluated
+/// against the rows as they stood before any of them went, exactly as the
+/// compliance arm evaluates it.
+///
+/// `b.owner_id = $1` is the Lean citation invariant restated
+/// (`memory_cites m b -> memory_owner m = blob_owner b`). It costs nothing
+/// when the invariant holds and, if it ever did not, leaves the row rather
+/// than deleting another owner's blob.
+async fn gc_unreferenced_blobs(
+    tx: &mut Transaction<'_, Postgres>,
+    owner_id: Uuid,
+    cited: &[Uuid],
+) -> Result<Vec<String>, StorageError> {
+    if cited.is_empty() {
+        return Ok(Vec::new());
+    }
+    sqlx::query_scalar(GC_UNREFERENCED_BLOBS_SQL)
+        .bind(cited)
+        .bind(owner_id)
+        .fetch_all(tx.as_mut())
+        .await
+        .map_err(map_err)
+}
+
+const GC_UNREFERENCED_BLOBS_SQL: &str = "\
+WITH orphans AS MATERIALIZED (
+    SELECT b.blob_id
+      FROM proxima_core.blob b
+     WHERE b.blob_id = ANY($1::uuid[])
+       AND b.owner_id = $2
+       AND NOT EXISTS (
+               SELECT 1 FROM proxima_core.memory m WHERE m.blob_id = b.blob_id
+           )
+       AND NOT EXISTS (
+               SELECT 1 FROM proxima_core.cooled c WHERE c.blob_id = b.blob_id
+           )
+),
+enqueued AS (
+    INSERT INTO proxima_core.cold_purge_pending (object_key, owner_id)
+    SELECT DISTINCT u.object_key, u.owner_id
+      FROM proxima_core.blob_uploads u
+      JOIN orphans o ON o.blob_id = u.blob_id
+     WHERE NOT EXISTS (
+               SELECT 1
+                 FROM proxima_core.blob_uploads other
+                WHERE other.object_key = u.object_key
+                  AND other.upload_id <> u.upload_id
+                  AND NOT EXISTS (
+                          SELECT 1 FROM orphans o2 WHERE o2.blob_id = other.blob_id
+                      )
+           )
+    ON CONFLICT (object_key) DO UPDATE SET enqueued_at = now()
+    RETURNING object_key
+),
+d_uploads AS (
+    DELETE FROM proxima_core.blob_uploads u
+     USING orphans o
+     WHERE u.blob_id = o.blob_id
+),
+d_blobs AS (
+    DELETE FROM proxima_core.blob b
+     USING orphans o
+     WHERE b.blob_id = o.blob_id
+)
+-- `d_uploads` and `d_blobs` are read by nothing on purpose: a
+-- data-modifying WITH clause runs exactly once and to completion whether
+-- or not the primary query reads its output.
+SELECT object_key FROM enqueued";
 
 #[cfg(test)]
 mod tests {
