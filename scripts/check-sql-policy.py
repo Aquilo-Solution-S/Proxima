@@ -419,7 +419,17 @@ def run_fixture(path: Path) -> int:
 # half: backend-generated SQL from `memory_select_batch_owner_pinned_sql`,
 # whose `proxima_core.memory` join IS the owner rule and is therefore the
 # one sidecar read allowed to name a core table.
-EXPECTED_DYNAMIC_SQL_SITES = 55
+#
+# 55 -> 56 with the embedding byte-parity gate
+# (`storage-pg/tests/flavor_contract_acceptance.rs`). Test-only, and the
+# dynamism is the point of the test: it reads the `(table, column)` pair a
+# flavor #0 `EmbeddingRecipe` resolves to, and compares the bytes against
+# what the shipped `embed_text_column` drain returns for the same row. A
+# hardcoded statement would be a second hand-written map of exactly the
+# thing the recipe exists to stop hand-writing, so it would pass while the
+# recipe pointed somewhere else. Both fragments are `&'static str` off the
+# compiled-in contract; the id is bound.
+EXPECTED_DYNAMIC_SQL_SITES = 56
 
 
 def run_self_test() -> int:

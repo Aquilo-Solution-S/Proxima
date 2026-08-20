@@ -442,7 +442,8 @@ async fn each_recipe_reproduces_the_bytes_the_shipped_path_embeds() {
             );
 
             // What the recipe says to read, read literally.
-            // SQL-POLICY: identifiers come from the compiled-in contract
+            // SQL-POLICY: fixed-fragment — `table` and `column` are
+            // `&'static str` off the compiled-in contract, not runtime input.
             let recipe_text: Option<String> = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
                 "SELECT c.{column} FROM {table} c WHERE c.t = $1"
             )))
