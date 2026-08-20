@@ -1319,21 +1319,19 @@ mod tests {
     /// `ensure_core_schema_markers` used to assert `5 <> (… table_name IN
     /// ('sketch', 'agent_note_v1', 'utterance_v1', 'agent_derivation_v1',
     /// 'interpretation_v1'))`. The count and the list were both by hand.
-    /// They are now flavor #0's declared `lexical_language_column`
-    /// surfaces; the five names below are the deleted literal.
+    /// They became flavor #0's declared `lexical_language_column` surfaces,
+    /// and the guardrail read the declaration instead of the literal.
+    ///
+    /// The projection then collapsed those five columns into one. That is
+    /// the payoff the rewire was for: the marker query, the FK-backed
+    /// `lexical_language_forget()` completeness argument and this pin all
+    /// followed the declaration without anyone editing a list. The name
+    /// below is not a smaller literal — it is the whole set, and a sixth
+    /// searchable core sidecar would not add to it.
     #[test]
     fn the_declared_lexical_stamps_are_the_guardrails_deleted_literal() {
         let declared = proxima_core::FLAVOR_0.lexical_stamped_tables();
 
-        assert_eq!(
-            declared,
-            vec![
-                "proxima_core.agent_derivation_v1",
-                "proxima_core.agent_note_v1",
-                "proxima_core.interpretation_v1",
-                "proxima_core.sketch",
-                "proxima_core.utterance_v1",
-            ]
-        );
+        assert_eq!(declared, vec!["proxima_core.projection"]);
     }
 }
