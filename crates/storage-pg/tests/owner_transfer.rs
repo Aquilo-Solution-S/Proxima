@@ -1,4 +1,4 @@
-//! P2: publish-to-World is an in-place series transfer.
+//! P2: an owner-to-owner transfer is an in-place series transfer.
 #![allow(clippy::doc_markdown, clippy::too_many_lines)]
 
 use std::sync::Arc;
@@ -10,8 +10,8 @@ use proxima_core::storage_ports::{
 use proxima_core::verbs::fact_ingest::{CitationSpec, FactWriteCommand};
 use proxima_core::verbs::goal_write::GoalState;
 use proxima_core::{
-    AccessKind, ChangeEventKind, EntityId, EntityRef, GoalId, MemoryId, OwnerRef, SchemaId,
-    SchemaVersion, StorageError, UserId,
+    AccessKind, ChangeEventKind, EntityId, EntityRef, GoalId, GroupId, MemoryId, OwnerRef,
+    SchemaId, SchemaVersion, StorageError, UserId,
 };
 use proxima_pg_testkit::{create_db, db_url, drop_db};
 use proxima_storage_pg::verbs::fact_ingest::ingest_fact_atomic;
@@ -42,6 +42,15 @@ fn draft() -> FactWriteCommand {
     }
 }
 
+/// Transfers go owner -> owner. The destination is a group: group-manage is
+/// the receiving side's consent, so a group is the only destination the
+/// engine gate admits. Its `owners` row is deliberately NOT pre-created —
+/// the transfer transaction must mint it (`ensure_owner_row`) or every
+/// `owner_id` FK below fails.
+fn destination() -> OwnerRef {
+    OwnerRef::Group(GroupId::new(Uuid::now_v7()))
+}
+
 async fn fresh_pg() -> (String, PgStorage) {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
     if let Err(e) = create_db(&db_name).await {
@@ -69,11 +78,12 @@ async fn fresh_pg_with_cold() -> (String, PgStorage, Arc<MemoryColdStore>) {
 }
 
 #[tokio::test]
-async fn publish_transfers_same_memory_t_and_sidecar() {
+async fn transfer_moves_same_memory_t_and_sidecar() {
     let (db_name, pg) = fresh_pg().await;
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
+        let dest = destination();
         let pool = pg.pool_for_tests();
         let written = ingest_fact_atomic(pool, &permit, &draft(), None).await?;
         let t = written.memory_id.into_inner();
@@ -100,7 +110,7 @@ async fn publish_transfers_same_memory_t_and_sidecar() {
             .await?;
 
         let first = pg
-            .transfer_to_world(&permit, EntityId::Memory(written.memory_id))
+            .transfer_to_owner(&permit, EntityId::Memory(written.memory_id), dest)
             .await?;
         assert!(first);
         let content_owner: Uuid = sqlx::query_scalar(
@@ -114,8 +124,8 @@ async fn publish_transfers_same_memory_t_and_sidecar() {
         .await?;
         assert_eq!(
             content_owner,
-            OwnerRef::World.stored_owner_id(),
-            "publish must re-home Content with the Memory"
+            dest.stored_owner_id(),
+            "transfer must re-home Content with the Memory"
         );
         let old_left: i64 = sqlx::query_scalar(
             "SELECT count(*)::bigint FROM proxima_core.content WHERE content_id = $1",
@@ -125,14 +135,14 @@ async fn publish_transfers_same_memory_t_and_sidecar() {
         .await?;
         assert_eq!(
             old_left, 0,
-            "origin Content is GC'd after exclusive publish"
+            "origin Content is GC'd after an exclusive transfer"
         );
         let owner_id: Uuid =
             sqlx::query_scalar("SELECT owner_id FROM proxima_core.memory WHERE t = $1")
                 .bind(t)
                 .fetch_one(pool)
                 .await?;
-        assert_eq!(owner_id, OwnerRef::World.stored_owner_id());
+        assert_eq!(owner_id, dest.stored_owner_id());
         let sketch_owner: Uuid =
             sqlx::query_scalar("SELECT owner_id FROM proxima_core.sketch WHERE t = $1")
                 .bind(t)
@@ -140,12 +150,16 @@ async fn publish_transfers_same_memory_t_and_sidecar() {
                 .await?;
         assert_eq!(
             sketch_owner,
-            OwnerRef::World.stored_owner_id(),
-            "the hot sketch must follow its published Memory"
+            dest.stored_owner_id(),
+            "the hot sketch must follow its transferred Memory"
         );
-        let world_sketches =
-            MemoryReadPort::load_sketches(&pg, &[OwnerRef::World], &[written.memory_id]).await?;
-        assert_eq!(world_sketches.len(), 1, "World must read the moved sketch");
+        let dest_sketches =
+            MemoryReadPort::load_sketches(&pg, &[dest], &[written.memory_id]).await?;
+        assert_eq!(
+            dest_sketches.len(),
+            1,
+            "the destination must read the moved sketch"
+        );
         let notes: i64 = sqlx::query_scalar(
             "SELECT count(*)::bigint FROM proxima_core.agent_note_v1 WHERE t = $1",
         )
@@ -160,9 +174,12 @@ async fn publish_transfers_same_memory_t_and_sidecar() {
         .await?;
         assert_eq!(keys, 0);
         let replay = pg
-            .transfer_to_world(&permit, EntityId::Memory(written.memory_id))
+            .transfer_to_owner(&permit, EntityId::Memory(written.memory_id), dest)
             .await?;
-        assert!(!replay, "already World is a clean false");
+        assert!(
+            !replay,
+            "a series that already left this owner is a clean false"
+        );
         Ok(())
     }
     .await;
@@ -171,7 +188,7 @@ async fn publish_transfers_same_memory_t_and_sidecar() {
 }
 
 #[tokio::test]
-async fn publish_rehomes_cooled_versions_and_remints_object_key() {
+async fn transfer_rehomes_cooled_versions_and_remints_object_key() {
     let (db_name, pg, cold) = fresh_pg_with_cold().await;
     let result: Result<(), Box<dyn std::error::Error>> = async {
         use proxima_core::storage_ports::MemoryAuthoringPort;
@@ -179,6 +196,7 @@ async fn publish_rehomes_cooled_versions_and_remints_object_key() {
 
         let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
+        let dest = destination();
         let pool = pg.pool_for_tests();
         let mut first_draft = draft();
         first_draft.citation = Some(
@@ -215,7 +233,7 @@ async fn publish_rehomes_cooled_versions_and_remints_object_key() {
         assert_eq!(second.handle, first.handle);
 
         let transferred = pg
-            .transfer_to_world(&permit, EntityId::Memory(second.memory_id))
+            .transfer_to_owner(&permit, EntityId::Memory(second.memory_id), dest)
             .await?;
         assert!(transferred);
         let cooled_owner: uuid::Uuid =
@@ -225,8 +243,8 @@ async fn publish_rehomes_cooled_versions_and_remints_object_key() {
                 .await?;
         assert_eq!(
             cooled_owner,
-            OwnerRef::World.stored_owner_id(),
-            "publish must re-home cooled versions with the series"
+            dest.stored_owner_id(),
+            "transfer must re-home cooled versions with the series"
         );
         let object_key: String =
             sqlx::query_scalar("SELECT object_key FROM proxima_core.cooled WHERE t = $1")
@@ -234,7 +252,7 @@ async fn publish_rehomes_cooled_versions_and_remints_object_key() {
                 .fetch_one(pool)
                 .await?;
         let expected = cold_object_key(
-            &owner_hash_hex(&OwnerRef::World),
+            &owner_hash_hex(&dest),
             first.handle,
             first.memory_id.into_inner(),
         );
@@ -251,8 +269,8 @@ async fn publish_rehomes_cooled_versions_and_remints_object_key() {
                 .await?;
         assert_eq!(
             blob_owner,
-            OwnerRef::World.stored_owner_id(),
-            "a cooled citation follows its published series"
+            dest.stored_owner_id(),
+            "a cooled citation follows its transferred series"
         );
         let stale_ingest_keys: i64 = sqlx::query_scalar(
             "SELECT count(*)::bigint FROM proxima_core.ingest_keys WHERE t = $1",
@@ -262,7 +280,7 @@ async fn publish_rehomes_cooled_versions_and_remints_object_key() {
         .await?;
         assert_eq!(
             stale_ingest_keys, 0,
-            "publish removes ingest keys for cooled versions too"
+            "transfer removes ingest keys for cooled versions too"
         );
         let cooled_content_owner: Uuid = sqlx::query_scalar(
             "SELECT c.owner_id
@@ -275,7 +293,7 @@ async fn publish_rehomes_cooled_versions_and_remints_object_key() {
         .await?;
         assert_eq!(
             cooled_content_owner,
-            OwnerRef::World.stored_owner_id(),
+            dest.stored_owner_id(),
             "Content referenced only by a cooled version must follow it"
         );
         let personal_content_left: i64 = sqlx::query_scalar(
@@ -286,7 +304,7 @@ async fn publish_rehomes_cooled_versions_and_remints_object_key() {
         .await?;
         assert_eq!(
             personal_content_left, 0,
-            "exclusive cooled Content is GC'd after its World remap"
+            "exclusive cooled Content is GC'd after its destination remap"
         );
 
         let mut tx = pool.begin().await?;
@@ -305,14 +323,14 @@ async fn publish_rehomes_cooled_versions_and_remints_object_key() {
                 .await?;
         assert_eq!(
             hydrated_owner,
-            OwnerRef::World.stored_owner_id(),
-            "the reminted cold record must hydrate under World"
+            dest.stored_owner_id(),
+            "the reminted cold record must hydrate under the destination"
         );
         Ok(())
     }
     .await;
     let _ = drop_db(&db_name).await;
-    result.expect("publish cooled remint failed");
+    result.expect("transfer cooled remint failed");
 }
 
 /// The transfer captures the old head, then blocks on the cooled-row UPDATE.
@@ -320,7 +338,7 @@ async fn publish_rehomes_cooled_versions_and_remints_object_key() {
 /// must roll back that partial attempt, retry with the grown series, and move
 /// every owner-scoped row together without adding a lock to normal ingest.
 #[tokio::test]
-async fn publish_retries_when_ingest_advances_the_captured_head() {
+async fn transfer_retries_when_ingest_advances_the_captured_head() {
     const PROBE_LOCK: i64 = 0x5052_4f58_5055_4238;
 
     let (db_name, pg) = fresh_pg().await;
@@ -329,6 +347,7 @@ async fn publish_retries_when_ingest_advances_the_captured_head() {
 
         let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
+        let dest = destination();
         let pool = pg.pool_for_tests();
         let first = ingest_fact_atomic(pool, &permit, &draft(), None).await?;
         MemoryAuthoringPort::forget_memory(&pg, &permit, first.memory_id).await?;
@@ -367,7 +386,7 @@ async fn publish_retries_when_ingest_advances_the_captured_head() {
         let publish = tokio::spawn(async move {
             let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
             publish_pg
-                .transfer_to_world(&permit, EntityId::Memory(published_id))
+                .transfer_to_owner(&permit, EntityId::Memory(published_id), dest)
                 .await
         });
 
@@ -399,7 +418,7 @@ async fn publish_retries_when_ingest_advances_the_captured_head() {
 
         let transferred = tokio::time::timeout(std::time::Duration::from_secs(5), publish)
             .await??
-            .map_err(|err| format!("publish failed after retry: {err}"))?;
+            .map_err(|err| format!("transfer failed after retry: {err}"))?;
         assert!(transferred);
 
         let head: (Uuid, Uuid) =
@@ -408,8 +427,8 @@ async fn publish_retries_when_ingest_advances_the_captured_head() {
                 .fetch_one(pool)
                 .await?;
         assert_eq!(head.0, third.memory_id.into_inner());
-        assert_eq!(head.1, OwnerRef::World.stored_owner_id());
-        let non_world_versions: i64 = sqlx::query_scalar(
+        assert_eq!(head.1, dest.stored_owner_id());
+        let unmoved_versions: i64 = sqlx::query_scalar(
             "SELECT count(*)::bigint
                FROM (
                      SELECT owner_id FROM proxima_core.memory WHERE handle = $1
@@ -419,13 +438,10 @@ async fn publish_retries_when_ingest_advances_the_captured_head() {
               WHERE owner_id <> $2",
         )
         .bind(first.handle)
-        .bind(OwnerRef::World.stored_owner_id())
+        .bind(dest.stored_owner_id())
         .fetch_one(pool)
         .await?;
-        assert_eq!(
-            non_world_versions, 0,
-            "the retry must move the grown series"
-        );
+        assert_eq!(unmoved_versions, 0, "the retry must move the grown series");
         let stale_third_key: i64 = sqlx::query_scalar(
             "SELECT count(*)::bigint FROM proxima_core.ingest_keys WHERE t = $1",
         )
@@ -441,12 +457,12 @@ async fn publish_retries_when_ingest_advances_the_captured_head() {
                 .bind(third.memory_id.into_inner())
                 .fetch_one(pool)
                 .await?;
-        assert_eq!(third_sketch_owner, OwnerRef::World.stored_owner_id());
+        assert_eq!(third_sketch_owner, dest.stored_owner_id());
         Ok(())
     }
     .await;
     let _ = drop_db(&db_name).await;
-    result.expect("publish/ingest CAS retry failed");
+    result.expect("transfer/ingest CAS retry failed");
 }
 
 /// A caller can resolve the Memory under its prior owner after the series head
@@ -455,7 +471,7 @@ async fn publish_retries_when_ingest_advances_the_captured_head() {
 /// not statically constructible (`memory.handle` FK-references `memory_head`),
 /// so the probe diverges the head owner, which `memory_head_t_only` admits.
 #[tokio::test]
-async fn publish_is_unchanged_when_the_head_owner_is_already_lost() {
+async fn transfer_is_unchanged_when_the_head_owner_is_already_lost() {
     let (db_name, pg) = fresh_pg().await;
     let result: Result<(), Box<dyn std::error::Error>> = async {
         use proxima_core::storage_ports::MemoryAuthoringPort;
@@ -463,6 +479,7 @@ async fn publish_is_unchanged_when_the_head_owner_is_already_lost() {
 
         let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
+        let dest = destination();
         let pool = pg.pool_for_tests();
         let first = ingest_fact_atomic(pool, &permit, &draft(), None).await?;
         MemoryAuthoringPort::forget_memory(&pg, &permit, first.memory_id).await?;
@@ -496,7 +513,7 @@ async fn publish_is_unchanged_when_the_head_owner_is_already_lost() {
                 .await?;
 
         let transferred = pg
-            .transfer_to_world(&permit, EntityId::Memory(second.memory_id))
+            .transfer_to_owner(&permit, EntityId::Memory(second.memory_id), dest)
             .await?;
         assert!(
             !transferred,
@@ -545,11 +562,12 @@ async fn publish_is_unchanged_when_the_head_owner_is_already_lost() {
 }
 
 #[tokio::test]
-async fn publish_refuses_goal_transfer() {
+async fn transfer_refuses_goal_entities() {
     let (db_name, pg) = fresh_pg().await;
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Goal);
+        let dest = destination();
         let pool = pg.pool_for_tests();
         let mut tx = pool.begin().await?;
         let out = write_goal(
@@ -574,12 +592,12 @@ async fn publish_refuses_goal_transfer() {
         tx.commit().await?;
 
         let err = pg
-            .transfer_to_world(&permit, EntityId::Goal(GoalId::new(out.t)))
+            .transfer_to_owner(&permit, EntityId::Goal(GoalId::new(out.t)), dest)
             .await
-            .expect_err("goals are never publishable");
+            .expect_err("goals do not transfer");
         assert!(
             matches!(&err, StorageError::ConstraintViolation(msg)
-                if msg.contains("never publishable")),
+                if msg.contains("goals do not transfer")),
             "refusal must be a ConstraintViolation naming the ruling: {err}"
         );
         let head_owner: Uuid =
@@ -602,24 +620,29 @@ async fn publish_refuses_goal_transfer() {
         assert_eq!(transfer_rows, 0, "a refused transfer announces nothing");
 
         // DDL backstops behind the storage guard: goal rows refuse UPDATE
-        // entirely, and no goal row admits the World owner at INSERT.
+        // entirely, and `goal_head_t_only` freezes the head's owner_id.
         let frozen = sqlx::query("UPDATE proxima_core.goal SET owner_id = $2 WHERE t = $1")
             .bind(out.t)
-            .bind(OwnerRef::World.stored_owner_id())
+            .bind(dest.stored_owner_id())
             .execute(pool)
             .await;
         assert!(frozen.is_err(), "goal must refuse UPDATE entirely");
-        let world_head = sqlx::query(
-            "INSERT INTO proxima_core.goal_head (handle, schema_id, owner_id, t)
-             VALUES ($1, 'core/task-goal-v1', $2, $1)",
+        sqlx::query(
+            "INSERT INTO proxima_core.owners (owner_id, kind)
+             VALUES ($1, 'group') ON CONFLICT DO NOTHING",
         )
-        .bind(Uuid::now_v7())
-        .bind(OwnerRef::World.stored_owner_id())
+        .bind(dest.stored_owner_id())
         .execute(pool)
-        .await;
+        .await?;
+        let head_frozen =
+            sqlx::query("UPDATE proxima_core.goal_head SET owner_id = $2 WHERE handle = $1")
+                .bind(out.handle)
+                .bind(dest.stored_owner_id())
+                .execute(pool)
+                .await;
         assert!(
-            world_head.is_err(),
-            "goal_head must refuse the World owner at the DDL layer"
+            head_frozen.is_err(),
+            "goal_head_t_only must freeze the goal head's owner at the DDL layer"
         );
         Ok(())
     }
@@ -628,17 +651,18 @@ async fn publish_refuses_goal_transfer() {
     result.expect("goal transfer refusal failed");
 }
 
-/// The erase-poison scenario: publishing an armed goal would strand its
-/// `wake_config` row under the prior owner while the World goal keeps arming
+/// The erase-poison scenario: transferring an armed goal would strand its
+/// `wake_config` row under the prior owner while the moved goal keeps arming
 /// it, and that owner's compliance erase would abort forever on the
 /// `ON DELETE RESTRICT` FK. Refusal keeps the wake row erasable.
 #[tokio::test]
-async fn publish_refuses_armed_goal_and_owner_erase_still_succeeds() {
+async fn transfer_refuses_armed_goal_and_owner_erase_still_succeeds() {
     let (db_name, pg) = fresh_pg().await;
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let user = UserId::new(Uuid::now_v7());
         let owner = OwnerRef::Personal(user);
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Goal);
+        let dest = destination();
         let pool = pg.pool_for_tests();
         let mut tx = pool.begin().await?;
         let wake = insert_wake_config(
@@ -663,7 +687,7 @@ async fn publish_refuses_armed_goal_and_owner_erase_still_succeeds() {
             .await?;
 
         let err = pg
-            .transfer_to_world(&permit, EntityId::Goal(GoalId::new(goal_t)))
+            .transfer_to_owner(&permit, EntityId::Goal(GoalId::new(goal_t)), dest)
             .await
             .expect_err("an armed goal is refused like any goal");
         assert!(matches!(err, StorageError::ConstraintViolation(_)));
@@ -704,18 +728,19 @@ async fn publish_refuses_armed_goal_and_owner_erase_still_succeeds() {
 }
 
 #[tokio::test]
-async fn publish_writes_transfer_announce_rows_under_both_lanes() {
+async fn transfer_writes_announce_rows_under_both_lanes() {
     let (db_name, pg) = fresh_pg().await;
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let user = UserId::new(Uuid::now_v7());
         let owner = OwnerRef::Personal(user);
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
+        let dest = destination();
         let pool = pg.pool_for_tests();
         let written = ingest_fact_atomic(pool, &permit, &draft(), None).await?;
         let t = written.memory_id.into_inner();
 
         assert!(
-            pg.transfer_to_world(&permit, EntityId::Memory(written.memory_id))
+            pg.transfer_to_owner(&permit, EntityId::Memory(written.memory_id), dest)
                 .await?
         );
 
@@ -727,9 +752,13 @@ async fn publish_writes_transfer_announce_rows_under_both_lanes() {
         .fetch_all(pool)
         .await?;
         let lanes: Vec<Uuid> = rows.iter().map(|(owner_id, _, _)| *owner_id).collect();
-        assert_eq!(rows.len(), 2, "one row per lane: prior owner and World");
+        assert_eq!(
+            rows.len(),
+            2,
+            "one row per lane: prior owner and destination owner"
+        );
         assert!(lanes.contains(&owner.stored_owner_id()));
-        assert!(lanes.contains(&OwnerRef::World.stored_owner_id()));
+        assert!(lanes.contains(&dest.stored_owner_id()));
         for (_, handle, event_t) in &rows {
             assert_eq!(*handle, written.handle);
             assert_eq!(*event_t, t);
@@ -768,11 +797,11 @@ async fn publish_writes_transfer_announce_rows_under_both_lanes() {
             .expect("the prior owner's poll sees the transfer");
         assert_eq!(departed.event.owner, owner);
 
-        // World-reading lane: the arrival is visible under World.
-        let world_lane = pg
-            .list_change_events_after(&[OwnerRef::World], Uuid::nil(), 100)
+        // Destination lane: the arrival is visible under the new owner.
+        let dest_lane = pg
+            .list_change_events_after(&[dest], Uuid::nil(), 100)
             .await?;
-        let arrived = world_lane
+        let arrived = dest_lane
             .iter()
             .find(|row| {
                 matches!(
@@ -781,10 +810,10 @@ async fn publish_writes_transfer_announce_rows_under_both_lanes() {
                         if *entity == EntityRef::Memory(MemoryId::new(t))
                 )
             })
-            .expect("a World-reading poll sees the arrival");
-        assert_eq!(arrived.event.owner, OwnerRef::World);
+            .expect("the destination's poll sees the arrival");
+        assert_eq!(arrived.event.owner, dest);
         assert!(
-            !world_lane.iter().any(|row| matches!(
+            !dest_lane.iter().any(|row| matches!(
                 row.event.kind,
                 ChangeEventKind::EntityAppend { .. } | ChangeEventKind::EntityDelete { .. }
             )),
@@ -798,11 +827,12 @@ async fn publish_writes_transfer_announce_rows_under_both_lanes() {
 }
 
 #[tokio::test]
-async fn publish_moves_exclusive_blob_with_the_fact() {
+async fn transfer_moves_exclusive_blob_with_the_fact() {
     let (db_name, pg) = fresh_pg().await;
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
+        let dest = destination();
         let pool = pg.pool_for_tests();
         let seed = ingest_fact_atomic(pool, &permit, &draft(), None).await?;
         let _ = seed;
@@ -822,7 +852,7 @@ async fn publish_moves_exclusive_blob_with_the_fact() {
         cited.blob_id = Some(blob_id);
         let written = ingest_fact_atomic(pool, &permit, &cited, None).await?;
         assert!(
-            pg.transfer_to_world(&permit, EntityId::Memory(written.memory_id))
+            pg.transfer_to_owner(&permit, EntityId::Memory(written.memory_id), dest)
                 .await?
         );
         let blob_owner: Uuid =
@@ -830,7 +860,7 @@ async fn publish_moves_exclusive_blob_with_the_fact() {
                 .bind(blob_id)
                 .fetch_one(pool)
                 .await?;
-        assert_eq!(blob_owner, OwnerRef::World.stored_owner_id());
+        assert_eq!(blob_owner, dest.stored_owner_id());
         let stored_blob: Option<Uuid> =
             sqlx::query_scalar("SELECT blob_id FROM proxima_core.memory WHERE t = $1")
                 .bind(written.memory_id.into_inner())
@@ -842,4 +872,154 @@ async fn publish_moves_exclusive_blob_with_the_fact() {
     .await;
     let _ = drop_db(&db_name).await;
     result.expect("blob transfer failed");
+}
+
+/// Retain-at-source for the audit sidecar. `mcp_call_logged_v1` describes the
+/// ACTOR of a tool call (`actor_upn`), not the memory, and it has no owner
+/// column: `read_mcp_call_history` reaches it by joining `memory.owner_id`.
+/// Left in place the rows would follow the memory and hand the destination the
+/// prior owner's actor identities, so the transfer drops them. Every other
+/// sidecar (here: `agent_note_v1`) still follows the memory.
+#[tokio::test]
+async fn transfer_drops_the_actor_call_log_but_keeps_other_sidecars() {
+    let (db_name, pg) = fresh_pg().await;
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
+        let dest = destination();
+        let pool = pg.pool_for_tests();
+        let written = ingest_fact_atomic(pool, &permit, &draft(), None).await?;
+        let t = written.memory_id.into_inner();
+        sqlx::query(
+            "INSERT INTO proxima_core.mcp_call_logged_v1
+                 (t, tool_name, actor_oid, actor_upn, ok, latency_ms,
+                  io_byte_len, io_truncated, io_content_hash)
+             VALUES ($1, 'core_remember', 'oid-1', 'alice@example.test', true, 5,
+                     10, false, $2)",
+        )
+        .bind(t)
+        .bind(vec![3_u8; 32])
+        .execute(pool)
+        .await?;
+        sqlx::query(
+            "INSERT INTO proxima_core.agent_note_v1 (t, note_id, title, body)
+             VALUES ($1, $1, 'note', 'body')",
+        )
+        .bind(t)
+        .execute(pool)
+        .await?;
+
+        assert!(
+            pg.transfer_to_owner(&permit, EntityId::Memory(written.memory_id), dest)
+                .await?
+        );
+
+        let call_rows: i64 = sqlx::query_scalar(
+            "SELECT count(*)::bigint FROM proxima_core.mcp_call_logged_v1 WHERE t = $1",
+        )
+        .bind(t)
+        .fetch_one(pool)
+        .await?;
+        assert_eq!(
+            call_rows, 0,
+            "the actor call log must not travel to the destination owner"
+        );
+        let notes: i64 = sqlx::query_scalar(
+            "SELECT count(*)::bigint FROM proxima_core.agent_note_v1 WHERE t = $1",
+        )
+        .bind(t)
+        .fetch_one(pool)
+        .await?;
+        assert_eq!(notes, 1, "ordinary sidecars still follow the memory");
+        let memory_owner: Uuid =
+            sqlx::query_scalar("SELECT owner_id FROM proxima_core.memory WHERE t = $1")
+                .bind(t)
+                .fetch_one(pool)
+                .await?;
+        assert_eq!(memory_owner, dest.stored_owner_id());
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("audit sidecar retain-at-source failed");
+}
+
+/// The FK safety that used to lean on World's migration-seeded `owners` row.
+/// The destination here has never been written to, so the transfer transaction
+/// must mint its `owners` row before any `owner_id` FK binds — including the
+/// destination's own announce lane.
+#[tokio::test]
+async fn transfer_mints_the_destination_owner_row_in_the_same_transaction() {
+    let (db_name, pg) = fresh_pg().await;
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
+        let dest = destination();
+        let pool = pg.pool_for_tests();
+        let written = ingest_fact_atomic(pool, &permit, &draft(), None).await?;
+
+        let before: i64 = sqlx::query_scalar(
+            "SELECT count(*)::bigint FROM proxima_core.owners WHERE owner_id = $1",
+        )
+        .bind(dest.stored_owner_id())
+        .fetch_one(pool)
+        .await?;
+        assert_eq!(before, 0, "the destination owner row must not pre-exist");
+
+        assert!(
+            pg.transfer_to_owner(&permit, EntityId::Memory(written.memory_id), dest)
+                .await?
+        );
+
+        let kind: String =
+            sqlx::query_scalar("SELECT kind::text FROM proxima_core.owners WHERE owner_id = $1")
+                .bind(dest.stored_owner_id())
+                .fetch_one(pool)
+                .await?;
+        assert_eq!(
+            kind, "group",
+            "the transfer mints the destination owner row"
+        );
+        let dest_announce: i64 = sqlx::query_scalar(
+            "SELECT count(*)::bigint FROM proxima_core.announce
+              WHERE op = 'transfer' AND owner_id = $1",
+        )
+        .bind(dest.stored_owner_id())
+        .fetch_one(pool)
+        .await?;
+        assert_eq!(dest_announce, 1, "the destination lane's FK holds");
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("destination owner row minting failed");
+}
+
+/// A transfer to the current owner is a no-op the storage layer refuses
+/// outright rather than announcing a self-transfer.
+#[tokio::test]
+async fn transfer_refuses_the_current_owner_as_destination() {
+    let (db_name, pg) = fresh_pg().await;
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
+        let pool = pg.pool_for_tests();
+        let written = ingest_fact_atomic(pool, &permit, &draft(), None).await?;
+
+        let err = pg
+            .transfer_to_owner(&permit, EntityId::Memory(written.memory_id), owner)
+            .await
+            .expect_err("a self-transfer is refused");
+        assert!(matches!(err, StorageError::ConstraintViolation(_)));
+        let transfer_rows: i64 = sqlx::query_scalar(
+            "SELECT count(*)::bigint FROM proxima_core.announce WHERE op = 'transfer'",
+        )
+        .fetch_one(pool)
+        .await?;
+        assert_eq!(transfer_rows, 0, "a refused transfer announces nothing");
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("self-transfer refusal failed");
 }

@@ -28,7 +28,7 @@ fn host_api_imports_from_root() {
     std::hint::black_box(proxima::store_source_cursor);
     let _outcome = proxima::ComplianceEraseOutcome::Refused {
         operation_id: uuid::Uuid::nil(),
-        reason: proxima::ComplianceEraseRefusal::WorldOwner,
+        reason: proxima::ComplianceEraseRefusal::OwnerNotAbandoned,
     };
 }
 
@@ -94,8 +94,7 @@ fn host_api_can_construct_every_compliance_erase_target() {
     let source_id = proxima::SourceId::new("proxima-tier/scope/0");
     let user_id = proxima::UserId::new(uuid::Uuid::nil());
 
-    let targets: [proxima::ComplianceEraseTarget; 5] = [
-        proxima::ComplianceEraseTarget::WorldOwner,
+    let targets: [proxima::ComplianceEraseTarget; 4] = [
         proxima::ComplianceEraseTarget::GroupOwner { group_id },
         proxima::ComplianceEraseTarget::PersonalOwner {
             user_id,
@@ -114,7 +113,7 @@ fn host_api_can_construct_every_compliance_erase_target() {
 
     // Naming the count pins the enum's shape: a sixth variant has to be
     // added here, which is the prompt to check it is constructible too.
-    assert_eq!(targets.len(), 5);
+    assert_eq!(targets.len(), 4);
 }
 
 #[test]
@@ -787,18 +786,20 @@ fn host_names_mcp_catalog_descriptor_types() {
 
 #[test]
 fn host_api_can_name_the_owner_ref_discriminant() {
-    // `OwnerRef::columns()` is public and returns `(OwnerRefKind, Option<Uuid>)`.
+    // `OwnerRef::columns()` is public and returns `(OwnerRefKind, Uuid)`.
     // Every flavor with its own tables calls it to bind owner columns, and
     // could only ever pass the result straight into a query — the moment one
     // wants to store it, return it, or match on it, the type has no name.
-    let (kind, id) = proxima::OwnerRef::World.columns();
-    assert_eq!(kind, proxima::OwnerRefKind::World);
-    assert!(id.is_none());
+    let group = proxima::GroupId::new(uuid::Uuid::nil());
+    let (kind, id) = proxima::OwnerRef::Group(group).columns();
+    assert_eq!(kind, proxima::OwnerRefKind::Group);
+    assert_eq!(id, uuid::Uuid::nil());
 
     let user = proxima::UserId::new(uuid::Uuid::nil());
     let (kind, id) = proxima::OwnerRef::Personal(user).columns();
     assert_eq!(kind, proxima::OwnerRefKind::Personal);
-    assert_eq!(id, Some(uuid::Uuid::nil()));
+    assert_eq!(id, uuid::Uuid::nil());
+    assert_eq!(kind.with_uuid(id), proxima::OwnerRef::Personal(user));
 }
 
 #[test]
@@ -901,7 +902,7 @@ fn flavor_sdk_names_query_and_ingest_types() {
     assert_hook::<dyn AuthorizationHook>();
     assert_resolver::<dyn OwnerResolver>();
 
-    let owner = proxima::Owner::World;
+    let owner = proxima::Owner::Personal(proxima::UserId::new(uuid::Uuid::nil()));
     let authz = proxima::AuthzContext::single_owner(&owner, proxima::AuthPath::System);
     let input = proxima::flavor::AuthzInput {
         authz: &authz,
@@ -957,7 +958,7 @@ fn flavor_sdk_names_query_and_ingest_types() {
         false,
     ));
 
-    let owner = proxima::OwnerRef::World;
+    let owner = proxima::OwnerRef::Personal(proxima::UserId::new(uuid::Uuid::nil()));
     let _: proxima::flavor::QueryRequest = proxima::flavor::QueryRequest::for_owner(owner);
     let _: Option<(
         proxima::flavor::QueryResponse,

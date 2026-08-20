@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use proxima_core::storage_ports::{MemoryAuthoringPort, OwnerTransferPort, OwnerWritePermit};
 use proxima_core::verbs::fact_ingest::{CitationSpec, FactWriteCommand};
 use proxima_core::{
-    AccessKind, ColdObjectStore, EdgeEndpoint, EntityId, EntityKind, OwnerRef, SchemaId,
+    AccessKind, ColdObjectStore, EdgeEndpoint, EntityId, EntityKind, GroupId, OwnerRef, SchemaId,
     SchemaVersion, StorageError, UserId,
 };
 use proxima_pg_testkit::{create_db, db_url, drop_db};
@@ -70,7 +70,7 @@ fn draft(source: Option<(&str, &str)>) -> FactWriteCommand {
 }
 
 #[tokio::test]
-async fn forget_hydrate_erase_and_world_never() {
+async fn forget_hydrate_and_erase() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
     if let Err(e) = create_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
@@ -222,12 +222,6 @@ async fn forget_hydrate_erase_and_world_never() {
         .fetch_one(pool)
         .await?;
         assert_eq!(pending, 0, "a purged object clears its pending mark");
-
-        let mut tx = pool.begin().await?;
-        let err = erase_memory(&mut tx, &core_pg_sidecars(), &OwnerRef::World, t)
-            .await
-            .expect_err("World never");
-        assert!(err.to_string().contains("World"), "got: {err}");
 
         Ok(())
     }
@@ -1631,8 +1625,9 @@ async fn commit_forget_aborts_when_owner_transferred() {
         let mut conn = pool.acquire().await?;
         let snapshot = snapshot_hot(&mut conn, &core_pg_sidecars(), t).await?;
         drop(conn);
+        let dest = OwnerRef::Group(GroupId::new(Uuid::now_v7()));
         assert!(
-            pg.transfer_to_world(&permit, EntityId::Memory(written.memory_id))
+            pg.transfer_to_owner(&permit, EntityId::Memory(written.memory_id), dest)
                 .await?
         );
 
@@ -1648,16 +1643,16 @@ async fn commit_forget_aborts_when_owner_transferred() {
             owner.stored_owner_id(),
         )
         .await
-        .expect_err("forget after publish must not cool World");
+        .expect_err("forget after a transfer must not cool the new owner");
         assert!(matches!(err, StorageError::NotFound), "got {err:?}");
         tx.rollback().await?;
 
-        let world: Uuid =
+        let moved: Uuid =
             sqlx::query_scalar("SELECT owner_id FROM proxima_core.memory WHERE t = $1")
                 .bind(t)
                 .fetch_one(pool)
                 .await?;
-        assert_eq!(world, OwnerRef::World.stored_owner_id());
+        assert_eq!(moved, dest.stored_owner_id());
         let cooled: i64 =
             sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_core.cooled WHERE t = $1")
                 .bind(t)

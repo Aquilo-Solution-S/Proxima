@@ -192,7 +192,7 @@ async fn agent_audience_resolves_narrowed_tool_scope() {
     assert!(!ctx.tool_scope().allows("core_membership"));
     assert!(
         !ctx.tool_scope()
-            .allows_action("core_publish", "publish_to_world")
+            .allows_action("core_transfer", "transfer_to_owner")
     );
 }
 

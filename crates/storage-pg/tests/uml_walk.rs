@@ -8,7 +8,9 @@
 use proxima_core::storage_ports::{OwnerTransferPort, OwnerWritePermit};
 use proxima_core::verbs::fact_ingest::FactWriteCommand;
 use proxima_core::verbs::goal_write::GoalState;
-use proxima_core::{AccessKind, EntityId, EntityKind, OwnerRef, SchemaId, SchemaVersion, UserId};
+use proxima_core::{
+    AccessKind, EntityId, EntityKind, GroupId, OwnerRef, SchemaId, SchemaVersion, UserId,
+};
 use proxima_pg_testkit::{create_db, db_url, drop_db};
 use proxima_storage_pg::PgStorage;
 use proxima_storage_pg::verbs::fact_ingest::ingest_fact_atomic;
@@ -155,16 +157,20 @@ async fn uml_section_10_walk_query_history_publish() {
         );
         assert!(hist.iter().any(|r| r.entity == "goal"));
 
+        let dest = OwnerRef::Group(GroupId::new(Uuid::now_v7()));
         let transferred = pg
-            .transfer_to_world(&permit, EntityId::Memory(file.memory_id))
+            .transfer_to_owner(&permit, EntityId::Memory(file.memory_id), dest)
             .await?;
-        assert!(transferred, "publish transfers the existing series");
-        let world_owner: Uuid =
+        assert!(
+            transferred,
+            "an owner transfer moves the existing series in place"
+        );
+        let new_owner: Uuid =
             sqlx::query_scalar("SELECT owner_id FROM proxima_core.memory WHERE t = $1")
                 .bind(file.memory_id.into_inner())
                 .fetch_one(pool)
                 .await?;
-        assert_eq!(world_owner, Uuid::from_u128(1));
+        assert_eq!(new_owner, dest.stored_owner_id());
         let handle_after: Uuid =
             sqlx::query_scalar("SELECT handle FROM proxima_core.memory WHERE t = $1")
                 .bind(file.memory_id.into_inner())

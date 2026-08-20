@@ -336,14 +336,28 @@ async fn migrations_apply_to_fresh_db() {
             "pins_have_grounding_support must be VOLATILE so B2 sees post-lock rows"
         );
 
-        let world: (Uuid, String) = sqlx::query_as(
-            "SELECT owner_id, kind::text FROM proxima_core.owners
-              WHERE owner_id = '00000000-0000-0000-0000-000000000001'::uuid",
+        // The owners table is seeded by nothing: every owner row is minted
+        // by a write (`ensure_owner_row`), including a transfer destination.
+        let seeded_owners: i64 =
+            sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_core.owners")
+                .fetch_one(pg.pool_for_tests())
+                .await?;
+        assert_eq!(seeded_owners, 0, "a fresh database seeds no owner rows");
+        let owner_kinds: Vec<String> = sqlx::query_scalar(
+            "SELECT e.enumlabel::text
+               FROM pg_enum e
+               JOIN pg_type t ON t.oid = e.enumtypid
+               JOIN pg_namespace n ON n.oid = t.typnamespace
+              WHERE n.nspname = 'proxima_core' AND t.typname = 'owner_kind'
+              ORDER BY e.enumsortorder",
         )
-        .fetch_one(pg.pool_for_tests())
+        .fetch_all(pg.pool_for_tests())
         .await?;
-        assert_eq!(world.0, Uuid::from_u128(1));
-        assert_eq!(world.1, "world");
+        assert_eq!(
+            owner_kinds,
+            vec!["personal".to_string(), "group".to_string()],
+            "owner_kind carries exactly the two owner kinds"
+        );
 
         let owner_null: (i64,) = sqlx::query_as(
             "SELECT count(*)::bigint FROM information_schema.columns
@@ -435,27 +449,31 @@ async fn memory_is_append_only_and_head_t_only() {
         .expect_err("memory_head schema_id is frozen");
         assert!(err.to_string().contains("frozen"), "got: {err}");
 
-        let world = Uuid::from_u128(1);
+        let destination = Uuid::now_v7();
+        sqlx::query("INSERT INTO proxima_core.owners (owner_id, kind) VALUES ($1, 'group')")
+            .bind(destination)
+            .execute(pool)
+            .await?;
         let mut tx = pool.begin().await?;
         sqlx::query("UPDATE proxima_core.memory_head SET owner_id = $2 WHERE handle = $1")
             .bind(handle)
-            .bind(world)
+            .bind(destination)
             .execute(&mut *tx)
             .await
-            .expect("memory_head.owner_id may move for publish");
+            .expect("memory_head.owner_id may move for an owner transfer");
         sqlx::query("UPDATE proxima_core.memory SET owner_id = $2 WHERE t = $1")
             .bind(t)
-            .bind(world)
+            .bind(destination)
             .execute(&mut *tx)
             .await
-            .expect("memory.owner_id may move for publish");
+            .expect("memory.owner_id may move for an owner transfer");
         tx.commit().await?;
         let moved: Uuid =
             sqlx::query_scalar("SELECT owner_id FROM proxima_core.memory WHERE t = $1")
                 .bind(t)
                 .fetch_one(pool)
                 .await?;
-        assert_eq!(moved, world);
+        assert_eq!(moved, destination);
 
         let err = sqlx::query(
             "INSERT INTO proxima_core.memory (handle, kind, owner_id, schema_id)
