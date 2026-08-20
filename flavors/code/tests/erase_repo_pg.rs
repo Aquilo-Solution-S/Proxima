@@ -328,19 +328,53 @@ async fn insert_memory(pool: &sqlx::PgPool, owner: &Owner, t: Uuid) -> Result<()
     Ok(())
 }
 
-async fn count(pool: &sqlx::PgPool, sql: &'static str, id: Uuid) -> Result<i64, sqlx::Error> {
-    sqlx::query_scalar::<_, i64>(sql)
-        .bind(id)
-        .fetch_one(pool)
-        .await
+/// Every relation that still holds a row it should not, by name.
+///
+/// One statement rather than a loop over table names: a loop needs the
+/// table name as data, and a table name as data is dynamic SQL. This asks
+/// the same question with fixed text and reports which relation failed,
+/// which a `count(*) = 0` per table would not.
+const SURVIVORS_SQL: &str = "\
+SELECT 'work_requested_v1' AS relation
+  FROM proxima_code.work_requested_v1 WHERE t = $1
+UNION ALL
+SELECT 'acceptance_criteria_v1'
+  FROM proxima_code.acceptance_criteria_v1 WHERE t = $2
+UNION ALL
+SELECT 'acceptance_criterion_v1 (cascade)'
+  FROM proxima_code.acceptance_criterion_v1 WHERE criteria_memory_id = $2
+UNION ALL
+SELECT 'acceptance_verification_v1'
+  FROM proxima_code.acceptance_verification_v1 WHERE t = $3
+UNION ALL
+SELECT 'work_assignment_v1'
+  FROM proxima_code.work_assignment_v1 WHERE t = $4
+UNION ALL
+SELECT 'development_perspective_v1'
+  FROM proxima_code.development_perspective_v1 WHERE t = $5
+UNION ALL
+SELECT 'the work item admission'
+  FROM proxima_core.memory WHERE t = $1
+ORDER BY relation";
+
+/// The five ids the fixture seeds, in the order they are asserted on.
+struct WorkItemFixture {
+    work_item: Uuid,
+    criteria: Uuid,
+    verification: Uuid,
+    engineer: Uuid,
+    assignment: Uuid,
+    perspective: Uuid,
 }
 
-async fn exercise_work_item_erase(pool: &sqlx::PgPool) -> Result<(), Box<dyn std::error::Error>> {
-    let owner = test_owner();
-    let repo_id = Uuid::now_v7();
+async fn seed_work_item_fixture(
+    pool: &sqlx::PgPool,
+    owner: &Owner,
+    repo_id: Uuid,
+) -> Result<WorkItemFixture, Box<dyn std::error::Error>> {
     register_repo(
         pool,
-        &owner,
+        owner,
         repo_id,
         &format!("/tmp/proxima-erase-work-item-{repo_id}"),
         "work item fixture",
@@ -349,7 +383,7 @@ async fn exercise_work_item_erase(pool: &sqlx::PgPool) -> Result<(), Box<dyn std
     .await?;
 
     let work_item = Uuid::now_v7();
-    insert_memory(pool, &owner, work_item).await?;
+    insert_memory(pool, owner, work_item).await?;
     sqlx::query(
         "INSERT INTO proxima_code.work_requested_v1
             (t, repo_id, title, instructions, request_key)
@@ -361,7 +395,7 @@ async fn exercise_work_item_erase(pool: &sqlx::PgPool) -> Result<(), Box<dyn std
     .await?;
 
     let criteria = Uuid::now_v7();
-    insert_memory(pool, &owner, criteria).await?;
+    insert_memory(pool, owner, criteria).await?;
     sqlx::query(
         "INSERT INTO proxima_code.acceptance_criteria_v1
             (t, work_item_memory_id, criteria_count)
@@ -382,7 +416,7 @@ async fn exercise_work_item_erase(pool: &sqlx::PgPool) -> Result<(), Box<dyn std
     .await?;
 
     let verification = Uuid::now_v7();
-    insert_memory(pool, &owner, verification).await?;
+    insert_memory(pool, owner, verification).await?;
     sqlx::query(
         "INSERT INTO proxima_code.acceptance_verification_v1
             (t, work_item_memory_id, criterion_key, status, summary, artifact_refs)
@@ -395,7 +429,7 @@ async fn exercise_work_item_erase(pool: &sqlx::PgPool) -> Result<(), Box<dyn std
 
     // No repo_id: the owner's engineer identity, which the erase must spare.
     let engineer = Uuid::now_v7();
-    insert_memory(pool, &owner, engineer).await?;
+    insert_memory(pool, owner, engineer).await?;
     sqlx::query(
         "INSERT INTO proxima_code.engineer_self_v1 (t, display_name, purpose)
          VALUES ($1, 'engineer', 'writes code')",
@@ -405,7 +439,7 @@ async fn exercise_work_item_erase(pool: &sqlx::PgPool) -> Result<(), Box<dyn std
     .await?;
 
     let assignment = Uuid::now_v7();
-    insert_memory(pool, &owner, assignment).await?;
+    insert_memory(pool, owner, assignment).await?;
     sqlx::query(
         "INSERT INTO proxima_code.work_assignment_v1
             (t, repo_id, work_item_memory_id, target_perspective_memory_id, reason)
@@ -419,7 +453,7 @@ async fn exercise_work_item_erase(pool: &sqlx::PgPool) -> Result<(), Box<dyn std
     .await?;
 
     let perspective = Uuid::now_v7();
-    insert_memory(pool, &owner, perspective).await?;
+    insert_memory(pool, owner, perspective).await?;
     sqlx::query(
         "INSERT INTO proxima_code.development_perspective_v1
             (t, repo_id, summary, pattern, risk, recommended_posture, confidence)
@@ -430,6 +464,28 @@ async fn exercise_work_item_erase(pool: &sqlx::PgPool) -> Result<(), Box<dyn std
     .execute(pool)
     .await?;
 
+    Ok(WorkItemFixture {
+        work_item,
+        criteria,
+        verification,
+        engineer,
+        assignment,
+        perspective,
+    })
+}
+
+async fn exercise_work_item_erase(pool: &sqlx::PgPool) -> Result<(), Box<dyn std::error::Error>> {
+    let owner = test_owner();
+    let repo_id = Uuid::now_v7();
+    let WorkItemFixture {
+        work_item,
+        criteria,
+        verification,
+        engineer,
+        assignment,
+        perspective,
+    } = seed_work_item_fixture(pool, &owner, repo_id).await?;
+
     let store = CodeFlavorStore::from_backend_pool_for_tests(pool.clone());
     let receipt = erase_repo(&store, &owner, repo_id).await?;
     assert!(receipt.repo_record_deleted);
@@ -439,69 +495,34 @@ async fn exercise_work_item_erase(pool: &sqlx::PgPool) -> Result<(), Box<dyn std
          the engineer identity is not the repo's"
     );
 
-    for (sql, id, label) in [
-        (
-            "SELECT COUNT(*)::bigint FROM proxima_code.work_requested_v1 WHERE t = $1",
-            work_item,
-            "work_requested_v1",
-        ),
-        (
-            "SELECT COUNT(*)::bigint FROM proxima_code.acceptance_criteria_v1 WHERE t = $1",
-            criteria,
-            "acceptance_criteria_v1",
-        ),
-        (
-            "SELECT COUNT(*)::bigint FROM proxima_code.acceptance_criterion_v1 WHERE criteria_memory_id = $1",
-            criteria,
-            "acceptance_criterion_v1 (cascade)",
-        ),
-        (
-            "SELECT COUNT(*)::bigint FROM proxima_code.acceptance_verification_v1 WHERE t = $1",
-            verification,
-            "acceptance_verification_v1",
-        ),
-        (
-            "SELECT COUNT(*)::bigint FROM proxima_code.work_assignment_v1 WHERE t = $1",
-            assignment,
-            "work_assignment_v1",
-        ),
-        (
-            "SELECT COUNT(*)::bigint FROM proxima_code.development_perspective_v1 WHERE t = $1",
-            perspective,
-            "development_perspective_v1",
-        ),
-        (
-            "SELECT COUNT(*)::bigint FROM proxima_core.memory WHERE t = $1",
-            work_item,
-            "the work item's admission",
-        ),
-    ] {
-        assert_eq!(
-            count(pool, sql, id).await?,
-            0_i64,
-            "{label} survived the erase"
-        );
-    }
-
-    assert_eq!(
-        count(
-            pool,
-            "SELECT COUNT(*)::bigint FROM proxima_code.engineer_self_v1 WHERE t = $1",
-            engineer,
-        )
-        .await?,
-        1_i64,
-        "the owner's engineer identity is not one repository's row"
+    let survivors: Vec<String> = sqlx::query_scalar(SURVIVORS_SQL)
+        .bind(work_item)
+        .bind(criteria)
+        .bind(verification)
+        .bind(assignment)
+        .bind(perspective)
+        .fetch_all(pool)
+        .await?;
+    assert!(
+        survivors.is_empty(),
+        "these rows survived a repo erase: {survivors:?}"
     );
+
+    let spared: Vec<String> = sqlx::query_scalar(
+        "SELECT 'engineer_self_v1' AS relation
+           FROM proxima_code.engineer_self_v1 WHERE t = $1
+         UNION ALL
+         SELECT 'its admission' FROM proxima_core.memory WHERE t = $1
+         ORDER BY relation",
+    )
+    .bind(engineer)
+    .fetch_all(pool)
+    .await?;
     assert_eq!(
-        count(
-            pool,
-            "SELECT COUNT(*)::bigint FROM proxima_core.memory WHERE t = $1",
-            engineer,
-        )
-        .await?,
-        1_i64,
-        "sparing the sidecar means sparing its admission"
+        spared,
+        vec!["engineer_self_v1".to_string(), "its admission".to_string()],
+        "the owner's engineer identity is not one repository's row, and sparing \
+         the sidecar means sparing its admission"
     );
     Ok(())
 }

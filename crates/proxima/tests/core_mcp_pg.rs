@@ -2250,3 +2250,121 @@ async fn remember_lands_a_20k_body_and_replays_by_digest() {
     let _ = drop_db(&db_name).await;
     result.expect("20k-body remember must land and replay by digest");
 }
+
+/// R12: `language` reaches the index, not just the argument parser.
+///
+/// Three MCP tools have advertised a `language` parameter since v0.0.6.
+/// `resolve_lexical_language` validated it, `FactWriteCommand` carried it,
+/// and storage dropped it: the sidecars' `search_tsv` was a GENERATED
+/// column at a fixed configuration, so there was no column to put it in and
+/// no expression that could have read it. `FactWriteCommand`'s doc claimed
+/// a memory-row stamp that did not exist.
+///
+/// The projection row is the first place that has both. This asserts the
+/// value lands, and then asserts it MATTERS: `Häuser` is only findable by
+/// the singular `Haus` under a German configuration, so a German query
+/// hitting a `simple`-indexed row would return nothing.
+#[tokio::test]
+async fn the_language_argument_reaches_the_projection_and_changes_what_matches() {
+    let db_name = unique_db_name("proxima_core_lexical_language");
+    create_db(&db_name).await.expect("PG required for tests");
+    let db_url = db_url(&db_name);
+
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let personal = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let built = Proxima::<AgentMemoryApp>::app()
+            .database_url(db_url)
+            .owner(personal)
+            .allow_insecure_single_owner()
+            .tool_scope(ToolScope::All)
+            .build()
+            .await?;
+        let tools = built.core_mcp_tools();
+        let authz = built.single_owner_authz().expect("single owner");
+
+        let german = call_test_model_tool(
+            &tools,
+            authz.clone(),
+            personal,
+            "core_remember",
+            serde_json::json!({
+                "title": "Bericht",
+                "body": "Die Häuser am Hafen sind alt.",
+                "tags": [],
+                "language": "german",
+            }),
+        )
+        .await?;
+        let default = call_test_model_tool(
+            &tools,
+            authz.clone(),
+            personal,
+            "core_remember",
+            serde_json::json!({
+                "title": "Report",
+                "body": "Die Häuser am Kai sind neu.",
+                "tags": [],
+            }),
+        )
+        .await?;
+
+        let stamped: Vec<(String, String)> = sqlx::query_as(
+            "SELECT n.title, p.lexical_language::text
+               FROM proxima_core.projection p
+               JOIN proxima_core.agent_note_v1 n ON n.t = p.memory_id
+              ORDER BY n.title",
+        )
+        .fetch_all(built.pool_for_tests())
+        .await?;
+        assert_eq!(
+            stamped,
+            vec![
+                ("Bericht".to_string(), "german".to_string()),
+                ("Report".to_string(), "english".to_string()),
+            ],
+            "the requested configuration is stamped on the projection row; \
+             an omitted one takes the deployment default"
+        );
+
+        // `Haus` stems to `haus` under german and matches `Häuser`; under
+        // this deployment's default (`english`) `Häuser` stems to `häuser`
+        // and the singular does not reach it.
+        let hits = call_test_model_tool(
+            &tools,
+            authz,
+            personal,
+            "core_search_memories",
+            serde_json::json!({
+                "query": "Haus",
+                "mode": "lexical",
+                "kind": "Fact",
+                "include_body": true,
+                "limit": 10,
+            }),
+        )
+        .await?;
+        let bodies: Vec<&str> = hits["memories"]
+            .as_array()
+            .expect("memories")
+            .iter()
+            .filter_map(|hit| hit["body"].as_str())
+            .collect();
+        assert_eq!(
+            bodies.len(),
+            1,
+            "only the German-indexed row stems Häuser to Haus; got {hits}"
+        );
+        assert!(
+            bodies[0].contains("Hafen"),
+            "the German row is the one that matched; got {hits}"
+        );
+        assert_ne!(german["handle"], default["handle"]);
+
+        built.shutdown();
+        Ok(())
+    }
+    .await;
+
+    let _ = drop_db(&db_name).await;
+    result.expect("the language argument must reach the projection");
+}

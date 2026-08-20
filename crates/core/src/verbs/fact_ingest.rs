@@ -134,12 +134,21 @@ pub struct FactWriteCommand {
     pub payload: Vec<u8>,
     #[serde(default, skip)]
     pub rendered_text: Option<String>,
-    /// Text-search configuration to stamp on the memory row, resolved by
-    /// [`crate::lexical_language::resolve_lexical_language`]; `None`
-    /// applies the database default. `skip` like `rendered_text`: the
-    /// language describes how the text is indexed, it is not receipt
-    /// key material, and replaying an import with detection newly
-    /// enabled must stay a replay.
+    /// Text-search configuration for this admission's lexical index,
+    /// resolved by [`crate::lexical_language::resolve_lexical_language`];
+    /// `None` applies the database default.
+    ///
+    /// It lands on the PROJECTION row — `<flavor>.projection`'s
+    /// `lexical_language` column — which is where the vector it governs is
+    /// derived. This doc said "the memory row" for two releases while no
+    /// such column existed, so three MCP tools advertised a `language`
+    /// parameter that reached storage and stopped there; the projection is
+    /// the first write path that has both the value and a column in scope
+    /// (R12).
+    ///
+    /// `skip` like `rendered_text`: the language describes how the text is
+    /// indexed, it is not receipt key material, and replaying an import
+    /// with detection newly enabled must stay a replay.
     #[serde(default, skip)]
     pub lexical_language: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

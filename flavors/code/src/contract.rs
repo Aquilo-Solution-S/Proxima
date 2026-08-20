@@ -722,4 +722,53 @@ mod tests {
     fn no_schema_retains_at_source() {
         assert!(CODE_FLAVOR_CONTRACT.retain_at_source_tables().is_empty());
     }
+
+    /// The acceptance test for the declaration as a whole: a registry with
+    /// core and this flavor in it has to survive every cross-check the
+    /// freeze runs, and then the PG registration has to survive
+    /// `freeze_against` — schema-to-table agreement, typed inserters,
+    /// `owner_pinned` against `TransferRule`, and the projection generator.
+    ///
+    /// Both were vacuous before this contract existed:
+    /// `validate_contract_schemas` never saw these schemas and
+    /// `check_owner_pinned_against_contracts` skipped the flavor by name.
+    /// This is the same composition `ProximaBuilder::boot` performs, so a
+    /// declaration that would fail at boot fails here instead.
+    #[test]
+    fn the_composed_registry_freezes_with_this_contract_and_its_pg_sidecars() {
+        let mut registry = proxima_core::FlavorRegistry::new();
+        crate::register(&mut registry).expect("the code flavor registers");
+        let frozen = registry.try_freeze().expect("core plus code freeze");
+        assert!(
+            frozen
+                .contracts()
+                .iter()
+                .any(|contract| contract.flavor_id == FLAVOR_ID),
+            "the frozen registry must carry this contract, not just its schemas"
+        );
+
+        let projected: Vec<&str> = frozen
+            .search_projections()
+            .iter()
+            .map(|projection| projection.schema_id.as_str())
+            .filter(|id| id.starts_with(FLAVOR_ID))
+            .collect();
+        assert_eq!(
+            projected,
+            vec![
+                "proxima-code/commit-v1",
+                "proxima-code/code-chunk-v1",
+                "proxima-code/commit-summary-v1",
+            ],
+            "three search surfaces in declaration order, and the projection \
+             generator reached all three"
+        );
+
+        let mut sidecars = proxima_storage_pg::PgSidecarRegistry::new();
+        proxima_storage_pg::register_core_pg_sidecars(&mut sidecars);
+        crate::register_pg_sidecars(&mut sidecars);
+        sidecars
+            .freeze_against(&frozen)
+            .expect("the PG registrations agree with the contract");
+    }
 }
