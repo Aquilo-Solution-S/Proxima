@@ -1239,7 +1239,8 @@ pub async fn erase_memory(
 /// for every version but the last. `proxima_core.blob` is referenced by
 /// `memory.blob_id`, `cooled.blob_id` and `blob_uploads.blob_id` and by
 /// nothing else, so once the admissions are gone the reference question is
-/// answerable in one statement — see [`gc_unreferenced_blobs`].
+/// answerable in one statement, which is what `gc_unreferenced_blobs`
+/// below is.
 ///
 /// What it does NOT reach: unowned `t`-references. `goal.close_fact_t`,
 /// `goal.assignment_t`, `goal.evidence_t[]`, `wake_config.trigger_t` and
@@ -1312,6 +1313,48 @@ pub async fn erase_memory_series(
     keys.extend(gc_unreferenced_blobs(tx, owner_id, &cited).await?);
     Ok((erased, ColdPurgePlan::from_keys(keys)))
 }
+
+/// Take a row lock on admissions a scope erase is about to delete.
+///
+/// Not an optimisation and not a formality, and flavor-agnostic for the
+/// same reason [`erase_memory_series`] is: a flavor computing which of its
+/// rows belong to a scope needs several statements to do it, `READ
+/// COMMITTED` gives each of them its own snapshot, and a row committed in
+/// any of the gaps references a memory that is about to go. With a
+/// `NO ACTION` foreign key that is not a leak — it is an abort, after all
+/// the work.
+///
+/// `FOR UPDATE` on the referenced `memory` rows closes the gaps for real.
+/// Inserting a row with a foreign key takes `FOR KEY SHARE` on the row it
+/// references, and `FOR UPDATE` conflicts with `FOR KEY SHARE`, so a
+/// concurrent writer that would create a dangling pointer blocks until this
+/// transaction commits and then fails its own foreign key — in its
+/// transaction rather than in the erase.
+///
+/// The locks last until the transaction ends, so a caller working towards a
+/// fixpoint may call this per round and rely on earlier rounds staying
+/// held.
+///
+/// # Errors
+///
+/// Returns storage errors from the lock statement.
+pub async fn lock_admissions_for_erase(
+    tx: &mut Transaction<'_, Postgres>,
+    ts: &[Uuid],
+) -> Result<(), StorageError> {
+    if ts.is_empty() {
+        return Ok(());
+    }
+    sqlx::query(LOCK_ADMISSIONS_SQL)
+        .bind(ts)
+        .execute(tx.as_mut())
+        .await
+        .map_err(map_err)?;
+    Ok(())
+}
+
+const LOCK_ADMISSIONS_SQL: &str =
+    "SELECT t FROM proxima_core.memory WHERE t = ANY($1::uuid[]) FOR UPDATE";
 
 /// The blobs the admissions about to be erased cite.
 const CITED_BLOBS_SQL: &str = "\

@@ -13,7 +13,7 @@
 //! Neither half enumerates the other's tables.
 
 use proxima_core::Owner;
-use proxima_storage_pg::verbs::forget::erase_memory_series;
+use proxima_storage_pg::verbs::forget::{erase_memory_series, lock_admissions_for_erase};
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -202,21 +202,6 @@ UNION SELECT t FROM d_execution_result
 UNION SELECT t FROM d_test_result
 UNION SELECT t FROM d_work_assignment";
 
-/// Take a row lock on the admissions about to be erased.
-///
-/// Not an optimisation and not a formality. `READ COMMITTED` gives every
-/// statement its own snapshot, so the sweep, the closure and the substrate
-/// delete are three snapshots with two gaps between them, and a referencing
-/// row committed in either gap aborts the erase after the work is done.
-/// `FOR UPDATE` on the referenced `memory` rows closes both gaps for real:
-/// inserting a row with a foreign key takes `FOR KEY SHARE` on the row it
-/// references, and `FOR UPDATE` conflicts with `FOR KEY SHARE`, so a
-/// concurrent writer that would have created a dangling pointer blocks
-/// until this transaction commits and then fails its own foreign key —
-/// which is the correct outcome, in its own transaction rather than ours.
-const LOCK_ERASED_ADMISSIONS_SQL: &str = "\
-SELECT t FROM proxima_core.memory WHERE t = ANY($1::uuid[]) FOR UPDATE";
-
 /// The repo row, locked.
 ///
 /// `FOR UPDATE` here serializes two erases of the same repository against
@@ -225,7 +210,7 @@ SELECT t FROM proxima_core.memory WHERE t = ANY($1::uuid[]) FOR UPDATE";
 /// this row, so starting a run needs `FOR KEY SHARE` on it. The sidecar
 /// tables do NOT reference `repos`, so this lock is not what makes the
 /// erase safe against a concurrent sidecar write;
-/// [`LOCK_ERASED_ADMISSIONS_SQL`] is.
+/// [`lock_admissions_for_erase`] is.
 const REPO_EXISTS_SQL: &str = "\
 SELECT repo_id FROM proxima_code.repos
  WHERE owner_kind = $1 AND owner_id = $2 AND repo_id = $3
@@ -311,11 +296,11 @@ pub fn reference_closure_sql() -> &'static str {
 /// deleting every flavor row that points at one of them and adding that
 /// row's own admission to the set.
 ///
-/// Each round locks its frontier's `memory` rows before it deletes anything
-/// that references them, so the round's own snapshot gap is closed; the
-/// locks accumulate for the life of the transaction, so by the time the
-/// last round returns nothing, every admission in the answer is held
-/// against concurrent referencing writes.
+/// Each round takes [`lock_admissions_for_erase`] on its frontier before it
+/// deletes anything that references those admissions, so the round's own
+/// snapshot gap is closed; the locks accumulate for the life of the
+/// transaction, so by the time the last round returns nothing, every
+/// admission in the answer is held against concurrent referencing writes.
 ///
 /// Termination: a round either returns nothing, or has deleted at least one
 /// row. Rows are only deleted, never created, so the rounds are bounded by
@@ -328,10 +313,7 @@ async fn close_dangling_references(
     let mut seen: std::collections::HashSet<Uuid> = all.iter().copied().collect();
     let mut frontier = all.clone();
     while !frontier.is_empty() {
-        sqlx::query(LOCK_ERASED_ADMISSIONS_SQL)
-            .bind(&frontier)
-            .execute(&mut **tx)
-            .await?;
+        lock_admissions_for_erase(tx, &frontier).await?;
         let reached: Vec<Uuid> = sqlx::query_scalar(CLOSE_DANGLING_REFERENCES_SQL)
             .bind(&frontier)
             .fetch_all(&mut **tx)
