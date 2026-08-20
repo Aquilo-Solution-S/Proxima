@@ -7,12 +7,18 @@ Pre-1.0 the git tag (e.g. `v0.0.3`) is the version; workspace crates are unpubli
 ## [Unreleased]
 
 ### Features
+- **breaking:** **blob**: A shared cited blob dedupes on transfer instead of refusing ([`b95c294`](https://github.com/Aquilo-Solution-S/Proxima/commit/b95c2949d6cb44e3798257a4aeaa12a0137d8ab3))
+- **breaking:** **search**: One projection table per flavor replaces eight sidecar tsvectors ([`6f31fa1`](https://github.com/Aquilo-Solution-S/Proxima/commit/6f31fa1cb5aaf05f387b3d9f8ae3a6131b5035c2))
+- **breaking:** **code**: The code flavor declares its FlavorContract ([`1b20d5f`](https://github.com/Aquilo-Solution-S/Proxima/commit/1b20d5fe77aefd14397a6ce639c51b5387ee754f))
+- **breaking:** **core**: Per-field weights become relative floats; projection vocabulary lands ([`9fb1d36`](https://github.com/Aquilo-Solution-S/Proxima/commit/9fb1d3655ea3897b0a3bd96f222a8b64ece31bce))
 - **breaking:** **storage-pg**: Flavor_surface makes stamp ⊆ registry a database constraint ([`db694cd`](https://github.com/Aquilo-Solution-S/Proxima/commit/db694cd34a522355382d053fc7a23eb0d8748fcd))
 - **core**: Core is flavor #0 ([`d0482ff`](https://github.com/Aquilo-Solution-S/Proxima/commit/d0482ff9c5a776f233703c4000b7b02a42efc8a5))
 - **core**: The flavor contract is a declaration, not code ([`fe0bfa8`](https://github.com/Aquilo-Solution-S/Proxima/commit/fe0bfa8d5751c80b61bb5d41362553263f860dd2))
 - **core**: Transfer a memory to another owner, not to World ([`e01b648`](https://github.com/Aquilo-Solution-S/Proxima/commit/e01b648799b140c0ded9f4a547c85654b4141757))
 
 ### Bug Fixes
+- **breaking:** **search**: The ranked arm reads the projection alone, so its GIN serves it ([`2ec6a82`](https://github.com/Aquilo-Solution-S/Proxima/commit/2ec6a82e199a89c55b369b58d74309c0b21337cc))
+- **storage-pg**: The lexical-stamp parity pin follows the declaration down to one table ([`6be0cc2`](https://github.com/Aquilo-Solution-S/Proxima/commit/6be0cc22a478f2caeca34116175f6e0c689c7746))
 - **test**: Bound the citation match, and correct the contract-reach record ([`be69924`](https://github.com/Aquilo-Solution-S/Proxima/commit/be69924a78a70a09ed1e9cb7923487a4450b5daa))
 - **breaking:** **compliance**: The owner-pinned export emits rows, not primary keys ([`bcb73a8`](https://github.com/Aquilo-Solution-S/Proxima/commit/bcb73a8ec9d2cfadf6e3b36438cbe797ebae2e59))
 - **core**: The transfer-rule doc link resolves under -D warnings ([`563c51b`](https://github.com/Aquilo-Solution-S/Proxima/commit/563c51b034b50a6853aea4b480e2d180823bfbda))
@@ -24,6 +30,7 @@ Pre-1.0 the git tag (e.g. `v0.0.3`) is the version; workspace crates are unpubli
 - **breaking:** **core**: Delete the World owner ([`87e69a5`](https://github.com/Aquilo-Solution-S/Proxima/commit/87e69a528476d03548a95767ea9df4887523c499))
 
 ### Refactor
+- **breaking:** **code**: Repo erase moves to the flavor that owns the rows ([`cdfb3aa`](https://github.com/Aquilo-Solution-S/Proxima/commit/cdfb3aa6c3a1bfed161f92a4f2fdf53a745f393e))
 - **breaking:** **core**: The frozen registry keeps one contract lookup ([`273fe44`](https://github.com/Aquilo-Solution-S/Proxima/commit/273fe444df61b47f84423bba297bf462a4009947))
 - **breaking:** **storage-pg**: Erase, the lexical guardrail and search read the contract ([`ad2122d`](https://github.com/Aquilo-Solution-S/Proxima/commit/ad2122dbb525257fce172dc8b978c96f1e6bb8ee))
 - **breaking:** **core**: The MCP resource manifest is the contract, not a copy of it ([`7f4cf93`](https://github.com/Aquilo-Solution-S/Proxima/commit/7f4cf93df44936c0d6433868f448c036f11a3dbd))
@@ -37,6 +44,9 @@ Pre-1.0 the git tag (e.g. `v0.0.3`) is the version; workspace crates are unpubli
 - **breaking:** The World owner is gone from prose, Lean, and the changelog ([`9abf3de`](https://github.com/Aquilo-Solution-S/Proxima/commit/9abf3de134b6e986f1ea0cec6885f3dc58bec8df))
 
 ### Testing
+- **compliance**: Pin that an erased owner keeps no searchable row ([`4ba05af`](https://github.com/Aquilo-Solution-S/Proxima/commit/4ba05afa8564fe48c3ff4a1f18402cad33715c2c))
+- **v0.0.8**: The write side of the projection, and R12 end to end ([`f281555`](https://github.com/Aquilo-Solution-S/Proxima/commit/f2815550fcfd13588709154c2d37cffd9f4ae511))
+- **search**: Pin the projection against b5fe11ad's results, byte for byte ([`e6db34c`](https://github.com/Aquilo-Solution-S/Proxima/commit/e6db34cafb2cd4582f3c5a9594ab086c838ac2da))
 - **storage-pg**: Pin the search rewire, and resolve the cited enforcement ([`8ef6858`](https://github.com/Aquilo-Solution-S/Proxima/commit/8ef6858a6afcd4ae22c57051957ce7dea62c1079))
 - **core**: Every contract cross-check has a registry shaped to trip it ([`8aa8eec`](https://github.com/Aquilo-Solution-S/Proxima/commit/8aa8eec695b6a17ad23789ea056fb380724a0f5c))
 - **storage-pg**: The §2.5 acceptance cases, and the embedding byte-parity gate ([`50e1adf`](https://github.com/Aquilo-Solution-S/Proxima/commit/50e1adf1e35e789d8dca27d373c58a203dd47d38))
