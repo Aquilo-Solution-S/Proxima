@@ -13,6 +13,7 @@ Pre-1.0 the git tag (e.g. `v0.0.3`) is the version; workspace crates are unpubli
 - **core**: Transfer a memory to another owner, not to World ([`e01b648`](https://github.com/Aquilo-Solution-S/Proxima/commit/e01b648799b140c0ded9f4a547c85654b4141757))
 
 ### Bug Fixes
+- **test**: Bound the citation match, and correct the contract-reach record ([`be69924`](https://github.com/Aquilo-Solution-S/Proxima/commit/be69924a78a70a09ed1e9cb7923487a4450b5daa))
 - **breaking:** **compliance**: The owner-pinned export emits rows, not primary keys ([`bcb73a8`](https://github.com/Aquilo-Solution-S/Proxima/commit/bcb73a8ec9d2cfadf6e3b36438cbe797ebae2e59))
 - **core**: The transfer-rule doc link resolves under -D warnings ([`563c51b`](https://github.com/Aquilo-Solution-S/Proxima/commit/563c51b034b50a6853aea4b480e2d180823bfbda))
 - **breaking:** **compliance**: One list of sidecar surfaces, built from the contracts ([`0155977`](https://github.com/Aquilo-Solution-S/Proxima/commit/015597739e5398e32c5e9cfb416c5c38f19fab68))
