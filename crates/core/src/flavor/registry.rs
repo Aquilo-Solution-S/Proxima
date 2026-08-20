@@ -1,3 +1,4 @@
+use super::contract::FlavorContract;
 use super::{
     Arc, AuthorizationHook, FlavorDescriptor, McpToolDescriptor, MemorySearchProjection,
     OwnerResolver, ProtocolPayloadIngressEntry, RequestBehavior, SchemaCapabilityTags, SchemaInfo,
@@ -17,6 +18,10 @@ pub struct FlavorRegistry {
     pub(crate) mcp_tools: Vec<McpToolDescriptor>,
     pub(crate) request_behaviors: Vec<Arc<dyn RequestBehavior>>,
     pub(crate) flavors: Vec<FlavorDescriptor>,
+    /// One [`FlavorContract`] per linked flavor. This is what makes erase,
+    /// export, forget, transfer and the migration guardrail a registry walk
+    /// instead of six hand-maintained lists.
+    pub(crate) contracts: Vec<&'static FlavorContract>,
     pub(crate) owner_resolver: Option<Arc<dyn OwnerResolver>>,
     pub(crate) authorization_hooks: Vec<Arc<dyn AuthorizationHook>>,
 }
@@ -31,6 +36,7 @@ impl Default for FlavorRegistry {
             mcp_tools: Vec::new(),
             request_behaviors: vec![Arc::new(ScopeGateBehavior)],
             flavors: Vec::new(),
+            contracts: Vec::new(),
             owner_resolver: None,
             authorization_hooks: Vec::new(),
         };

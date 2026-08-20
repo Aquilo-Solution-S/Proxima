@@ -5,6 +5,7 @@
 
 use crate::authz::{AuthorizationHook, AuthzContext, AuthzInput, AuthzOutcome, OwnerResolver};
 use crate::error::ProtocolError;
+use crate::flavor::contract::{FlavorContract, ResourceContract, Surface};
 use crate::mcp::RequestBehavior;
 use crate::{
     CapabilityTag, FlavorDescriptor, McpToolDescriptor, Owner, SchemaId, SchemaVersion,
@@ -247,6 +248,7 @@ pub struct FlavorRegistryFrozen {
     mcp_tools: Vec<McpToolDescriptor>,
     request_behaviors: Vec<Arc<dyn RequestBehavior>>,
     flavors: Vec<FlavorDescriptor>,
+    contracts: Vec<&'static FlavorContract>,
     owner_resolver: Option<Arc<dyn OwnerResolver>>,
     authorization_hooks: Vec<Arc<dyn AuthorizationHook>>,
     /// Lookup acceleration built during successful freeze. Not part of the
@@ -271,6 +273,7 @@ impl FlavorRegistryFrozen {
             mcp_tools,
             request_behaviors,
             flavors,
+            contracts,
             owner_resolver,
             authorization_hooks,
         } = registry;
@@ -284,10 +287,113 @@ impl FlavorRegistryFrozen {
             mcp_tools,
             request_behaviors,
             flavors,
+            contracts,
             owner_resolver,
             authorization_hooks,
             index,
         }
+    }
+
+    /// Every linked flavor's contract, in registration order.
+    #[must_use]
+    pub fn contracts(&self) -> &[&'static FlavorContract] {
+        &self.contracts
+    }
+
+    /// Flavor #0's contract — core's own declaration.
+    ///
+    /// `None` only in a registry assembled without it, which
+    /// [`crate::FlavorRegistry::try_freeze`] rejects once any contract is
+    /// registered.
+    #[must_use]
+    pub fn core_contract(&self) -> Option<&'static FlavorContract> {
+        self.contracts
+            .iter()
+            .copied()
+            .find(|contract| contract.is_core())
+    }
+
+    #[must_use]
+    pub fn flavor_contract(&self, flavor_id: &str) -> Option<&'static FlavorContract> {
+        self.contracts
+            .iter()
+            .copied()
+            .find(|contract| contract.flavor_id == flavor_id)
+    }
+
+    /// Every declared surface across every linked flavor: schema sidecars,
+    /// flavor state, and the kernel spine flavor #0 speaks for.
+    ///
+    /// This iterator is what replaces the hand-maintained table lists in
+    /// erase, export, forget and the migration preflight.
+    pub fn surfaces(&self) -> impl Iterator<Item = &'static Surface> + '_ {
+        self.contracts
+            .iter()
+            .flat_map(|contract| contract.all_surfaces())
+    }
+
+    /// The surface declared for `table`, if any.
+    #[must_use]
+    pub fn surface(&self, table: &str) -> Option<&'static Surface> {
+        self.surfaces().find(|surface| surface.table == table)
+    }
+
+    /// Memory sidecar tables whose rows stay with the SOURCE owner on
+    /// transfer — [`TransferRule::RetainAtSource`], the declaration that
+    /// replaces `pg_sidecar!(owner_pinned: true)` as the authority.
+    ///
+    /// Compliance erase and export select these by the sidecar's own owner
+    /// rather than through the Memory, because a transfer leaves them
+    /// behind: joining through the Memory would put them out of the writing
+    /// owner's reach and into the receiving owner's bundle.
+    #[must_use]
+    pub fn retain_at_source_sidecar_tables(&self) -> Vec<String> {
+        let mut tables = self
+            .contracts
+            .iter()
+            .flat_map(|contract| contract.retain_at_source_tables())
+            .collect::<Vec<_>>();
+        tables.sort();
+        tables.dedup();
+        tables
+    }
+
+    /// Tables that stamp an FK-checked `lexical_language` column. The
+    /// migration guardrail's expected set is exactly this, so it stops being
+    /// a hardcoded count and a hardcoded five-table `IN (...)`.
+    #[must_use]
+    pub fn lexical_stamped_tables(&self) -> Vec<&'static str> {
+        let mut tables = self
+            .surfaces()
+            .filter(|surface| surface.lexical_language_column.is_some())
+            .map(|surface| surface.table)
+            .collect::<Vec<_>>();
+        tables.sort_unstable();
+        tables.dedup();
+        tables
+    }
+
+    /// Every `proxima://` resource in the served catalog. Flavor #0 is the
+    /// only declarer, which the freeze enforces.
+    #[must_use]
+    pub fn resources(&self) -> &'static [ResourceContract] {
+        self.core_contract().map_or(&[], |core| core.resources)
+    }
+
+    /// Whether `sidecar_table` belongs to flavor #0.
+    ///
+    /// Unscoped `core_search_memories` stays on core sidecars. That used to
+    /// be a `"proxima_core."` table-name prefix test; it is now the contract
+    /// field the plan made load-bearing.
+    #[must_use]
+    pub fn is_core_sidecar_table(&self, sidecar_table: &str) -> bool {
+        self.contracts.iter().any(|contract| {
+            contract.is_core()
+                && contract
+                    .schemas
+                    .iter()
+                    .any(|schema| schema.sidecar_table == Some(sidecar_table))
+        })
     }
 
     #[must_use]

@@ -65,9 +65,60 @@ pub enum FlavorRegistryError {
         name: &'static str,
         message: String,
     },
+    /// Two flavors claim the same ordinal. Ordinals are load-bearing at
+    /// runtime (unscoped search is `ordinal == 0`), so they cannot collide.
+    DuplicateFlavorOrdinal {
+        ordinal: u16,
+        flavor_id: &'static str,
+    },
+    /// A flavor other than #0 declared `proxima://` resources. Resources are
+    /// substrate-only: a flavor resource needs its own scope-key namespace,
+    /// URI-template parser and pagination contract.
+    ResourcesNotPermitted {
+        flavor_id: &'static str,
+    },
+    /// Contracts were registered but none of them is flavor #0. Core is
+    /// non-removable — the two registry-reflection resources
+    /// (`proxima://schemas`, `proxima://tools`) live in its contract.
+    MissingCoreContract,
+    /// A contract entry's schema id does not carry its flavor's prefix.
+    ContractSchemaPrefix {
+        flavor_id: &'static str,
+        schema_id: SchemaId,
+    },
+    /// A schema declared `NotTransferable` without naming where the refusal
+    /// is enforced. A refusal nothing backs is a comment.
+    UnenforcedTransferRefusal {
+        flavor_id: &'static str,
+        schema_id: SchemaId,
+    },
+    /// The contract declares a schema that was never registered — erase,
+    /// export and forget would walk a surface no write can produce.
+    ContractSchemaNotRegistered {
+        flavor_id: &'static str,
+        schema_id: SchemaId,
+        schema_version: SchemaVersion,
+        kind: PayloadKind,
+    },
+    /// A schema was registered under a flavor's prefix but its contract does
+    /// not declare it — the drift that makes a registry walk miss a surface.
+    SchemaWithoutContract {
+        flavor_id: &'static str,
+        schema_id: SchemaId,
+        schema_version: SchemaVersion,
+        kind: PayloadKind,
+    },
+    /// The contract names an MCP tool that was never registered.
+    ContractToolNotRegistered {
+        flavor_id: &'static str,
+        name: &'static str,
+    },
 }
 
 impl std::fmt::Display for FlavorRegistryError {
+    // Every variant renders its own message; splitting the match would put
+    // half the vocabulary in a second place to forget one.
+    #[allow(clippy::too_many_lines)]
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::DuplicateSchema {
@@ -145,6 +196,61 @@ impl std::fmt::Display for FlavorRegistryError {
                     "tool {name} has inconsistent ACTION_ARG_SPECS: {message}"
                 )
             }
+            Self::DuplicateFlavorOrdinal { ordinal, flavor_id } => write!(
+                f,
+                "flavor {flavor_id} claims ordinal {ordinal}, which another flavor already holds; \
+                 ordinals are load-bearing at runtime and cannot collide"
+            ),
+            Self::ResourcesNotPermitted { flavor_id } => write!(
+                f,
+                "flavor {flavor_id} declares proxima:// resources, which only flavor #0 may do: a \
+                 flavor resource needs its own scope-key namespace, URI-template parser and \
+                 pagination contract"
+            ),
+            Self::MissingCoreContract => f.write_str(
+                "flavor contracts were registered but none is flavor #0; core is non-removable",
+            ),
+            Self::ContractSchemaPrefix {
+                flavor_id,
+                schema_id,
+            } => write!(
+                f,
+                "flavor {flavor_id} declares schema {schema_id}, which does not carry its prefix"
+            ),
+            Self::UnenforcedTransferRefusal {
+                flavor_id,
+                schema_id,
+            } => write!(
+                f,
+                "flavor {flavor_id} declares {schema_id} NotTransferable but names no enforcement \
+                 site; a refusal nothing backs is a comment"
+            ),
+            Self::ContractSchemaNotRegistered {
+                flavor_id,
+                schema_id,
+                schema_version,
+                kind,
+            } => write!(
+                f,
+                "flavor {flavor_id} declares {schema_id} v{schema_version} {kind:?} in its \
+                 contract but never registered it"
+            ),
+            Self::SchemaWithoutContract {
+                flavor_id,
+                schema_id,
+                schema_version,
+                kind,
+            } => write!(
+                f,
+                "schema {schema_id} v{schema_version} {kind:?} is registered under flavor \
+                 {flavor_id} but its contract does not declare it, so every registry walk \
+                 (erase, export, forget, transfer) would miss its surfaces"
+            ),
+            Self::ContractToolNotRegistered { flavor_id, name } => write!(
+                f,
+                "flavor {flavor_id} declares MCP tool {name} in its contract but never \
+                 registered it"
+            ),
         }
     }
 }

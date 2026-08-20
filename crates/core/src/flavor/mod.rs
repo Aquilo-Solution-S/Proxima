@@ -22,6 +22,7 @@ use crate::{
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
+pub mod contract;
 mod descriptor;
 mod error;
 mod freeze;
@@ -35,6 +36,13 @@ mod tool_registration;
 #[cfg(test)]
 mod tests;
 
+pub use contract::{
+    BAND_EXACT, BAND_RESCUE, BAND_SUBSTRING, Band, CORE_ORDINAL, DbConstraint, DbTrigger,
+    EmbedText, EmbedUnit, EmbeddingRecipe, EmbeddingSlot, Enforcement, EraseRule, ExportRule,
+    FlavorContract, ForgetRule, KeyShape, LanguagePolicy, Provenance, ResolvedEmbedUnit,
+    ResourceContract, SLOT_DEFAULT, SchemaContract, SchemaRef, SearchProjectionDecl, SubstringArm,
+    Surface, ToolContract, TransferRule, Weight, WeightedField,
+};
 pub use descriptor::{FlavorDescriptor, FlavorProvenance};
 pub use error::FlavorRegistryError;
 pub use prefix::schema_id_has_prefix;

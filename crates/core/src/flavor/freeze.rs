@@ -81,7 +81,116 @@ impl FlavorRegistry {
         }
         self.validate_tools_declare_behavior()?;
         self.validate_dispatcher_action_specs()?;
+        self.validate_contracts()?;
         Ok(FlavorRegistryFrozen::from_registry(self))
+    }
+
+    /// Cross-check the declarations against the registrations.
+    ///
+    /// This is the check that makes "everything is a flavor" structural
+    /// rather than aspirational: a schema registered without a contract
+    /// entry, or a contract entry with no registration, fails the build of
+    /// the composed binary rather than going missing from an erase sweep.
+    fn validate_contracts(&self) -> Result<(), FlavorRegistryError> {
+        let mut seen_ordinals = std::collections::HashSet::new();
+        let mut has_core = false;
+        for contract in &self.contracts {
+            if !seen_ordinals.insert(contract.ordinal) {
+                return Err(FlavorRegistryError::DuplicateFlavorOrdinal {
+                    ordinal: contract.ordinal,
+                    flavor_id: contract.flavor_id,
+                });
+            }
+            if contract.is_core() {
+                has_core = true;
+            } else if !contract.resources.is_empty() {
+                // Narrow reading of the resource checkpoint: resources are
+                // flavor #0's. A flavor resource would need its own
+                // scope-key namespace, a URI-template parser for its
+                // parameters and a pagination contract — a feature with its
+                // own design, not a forwarding line.
+                return Err(FlavorRegistryError::ResourcesNotPermitted {
+                    flavor_id: contract.flavor_id,
+                });
+            }
+            self.validate_contract_schemas(contract)?;
+        }
+        if !self.contracts.is_empty() && !has_core {
+            return Err(FlavorRegistryError::MissingCoreContract);
+        }
+        Ok(())
+    }
+
+    fn validate_contract_schemas(
+        &self,
+        contract: &crate::flavor::contract::FlavorContract,
+    ) -> Result<(), FlavorRegistryError> {
+        let prefix = format!("{}/", contract.flavor_id);
+        for schema in contract.schemas {
+            let schema_id = schema.schema_id();
+            if !schema_id.as_str().starts_with(&prefix) {
+                return Err(FlavorRegistryError::ContractSchemaPrefix {
+                    flavor_id: contract.flavor_id,
+                    schema_id,
+                });
+            }
+            // A NotTransferable that names no enforcement site is a comment,
+            // not a contract: the refusal has to survive a code path that
+            // forgets to ask.
+            if let crate::flavor::contract::TransferRule::NotTransferable { enforced_by, .. } =
+                schema.transfer
+                && enforced_by.is_empty()
+            {
+                return Err(FlavorRegistryError::UnenforcedTransferRefusal {
+                    flavor_id: contract.flavor_id,
+                    schema_id,
+                });
+            }
+            let registered = self.schemas.iter().any(|info| {
+                info.schema_id == schema_id
+                    && info.schema_version == schema.schema_version()
+                    && info.kind == schema.kind
+            });
+            if !registered {
+                return Err(FlavorRegistryError::ContractSchemaNotRegistered {
+                    flavor_id: contract.flavor_id,
+                    schema_id,
+                    schema_version: schema.schema_version(),
+                    kind: schema.kind,
+                });
+            }
+        }
+        for info in &self.schemas {
+            if !info.schema_id.as_str().starts_with(&prefix) {
+                continue;
+            }
+            let declared = contract.schemas.iter().any(|schema| {
+                schema.schema_id() == info.schema_id
+                    && schema.schema_version() == info.schema_version
+                    && schema.kind == info.kind
+            });
+            if !declared {
+                return Err(FlavorRegistryError::SchemaWithoutContract {
+                    flavor_id: contract.flavor_id,
+                    schema_id: info.schema_id.clone(),
+                    schema_version: info.schema_version,
+                    kind: info.kind,
+                });
+            }
+        }
+        for tool in contract.tools {
+            if !self
+                .mcp_tools
+                .iter()
+                .any(|entry| entry.name == tool.wire_name)
+            {
+                return Err(FlavorRegistryError::ContractToolNotRegistered {
+                    flavor_id: contract.flavor_id,
+                    name: tool.wire_name,
+                });
+            }
+        }
+        Ok(())
     }
 
     #[must_use]
