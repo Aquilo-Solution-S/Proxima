@@ -341,6 +341,15 @@ impl PgSidecarRegistry {
     ///
     /// Schemas whose flavor registered no contract are skipped: a flavor
     /// without a contract has made no claim to contradict.
+    ///
+    /// SO THIS CHECK IS INERT FOR EVERY FLAVOR BUT #0 TODAY. The code
+    /// flavor ships no `FlavorContract`, so its sixteen sidecars are
+    /// exempt — `pg_sidecar!(owner_pinned)` remains their only authority
+    /// and a divergence there is unobservable. Skipping is the only sound
+    /// reading of an absent contract (the alternative asserts every
+    /// contract-less sidecar is `Follow`, which is a claim nobody made),
+    /// but it means the cross-check grows teeth per flavor, as each one
+    /// gains a contract — not all at once.
     fn check_owner_pinned_against_contracts(
         &self,
         registry: &proxima_core::FlavorRegistryFrozen,

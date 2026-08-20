@@ -246,9 +246,46 @@ writes use the same tool with the matching action key.
    later spec would never be read — as do specs on a tool whose `Args` is a
    plain struct, and a schema whose `x-proxima-actions` is present but not an
    object, which is a malformed extension rather than an absent one.
+8. Contract/registration drift: two contracts claiming the same ordinal, a
+   contract set with no flavor #0 in it, resources declared by a flavor other
+   than #0, a contract schema id carrying another flavor's prefix, a
+   `NotTransferable` schema naming no enforcement site, a contract entry for a
+   schema nothing registered, a schema registered under a flavor whose
+   contract does not declare it, and a contract naming an unregistered MCP
+   tool.
 
 Prefixes in macro-registered schemas and MCP tools are `const` assertions, so
 a misprefixed id fails the build rather than the first boot.
+
+<a id="contract-reach"></a>
+## Contract Reach
+
+The registry-derived lanes are erase, export, the owner-pinned sidecar set,
+the MCP resource catalog, the lexical-stamp migration guardrail, and
+unscoped search's core-sidecar selection. Everything else still names its
+tables in code. Four places are worth knowing about, because each looks like
+it reads the contract and does not:
+
+1. `storage-pg/src/lib.rs` — the boot marker's `to_regclass` relation probes
+   are a hand-written list. It names `proxima_core.agent_note_v1`, which is a
+   flavor-#0 declared sidecar, and `proxima_code.code_chunk_v1`, which is
+   another flavor's sidecar named in kernel code.
+2. `storage-pg/src/access/owner_columns.rs` — the transfer chain never reads
+   `TransferRule`. *Which columns move on a transfer* is still code. The
+   contract's transfer arms describe that behaviour and do not yet drive it;
+   the goals refusal is the exception, and it is enforced at the three sites
+   its declaration cites.
+3. `storage-pg/src/verbs/code_repo_erase.rs` — seven code-flavor sidecars are
+   hand-listed twice, in the `UNION` that collects the affected `t`s and again
+   in the delete sequence.
+4. `flavors/code/src/mcp/search_commits.rs` — the three band formulas are
+   inline literals, a second author of `BAND_RESCUE` and `BAND_SUBSTRING`.
+
+The root cause of (3) and (4) is the same and is not an oversight: **the code
+flavor ships no `FlavorContract`.** Its schemas, sidecars and search surfaces
+are registered but undeclared, so there is nothing for those lanes to iterate
+and `check_owner_pinned_against_contracts` skips it entirely. Giving the code
+flavor a contract is what unlocks them.
 
 <a id="inclusion"></a>
 ## Inclusion
