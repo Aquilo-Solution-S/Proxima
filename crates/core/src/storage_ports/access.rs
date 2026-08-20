@@ -28,6 +28,25 @@ pub trait OwnerTransferPort: Send + Sync {
     /// non-panicking denial rather than a storage error. Goal entities are
     /// refused by the engine before this port; implementations fail loudly
     /// on one rather than no-oping.
+    ///
+    /// **Sidecars co-move, with one deletion.** Every registered sidecar row
+    /// keyed by a moved `t` follows the memory, because that is what keying
+    /// by `t` means: the generic hydrate path selects `WHERE t = ANY($1)`
+    /// with no owner predicate at all, and owner scoping happens only on the
+    /// preceding `memory` row query — the column this transfer rewrites.
+    /// The audit sidecar `mcp_call_logged_v1` is therefore DELETED rather
+    /// than retained: it carries `actor_upn`/`actor_oid`, it describes who
+    /// made a tool call rather than the memory, and it has no owner column
+    /// of its own to hold it back. Retaining those rows in place would not
+    /// keep them at the source — it would publish the prior owner's actor
+    /// identities to the destination through `get_memory`, `get_memories`,
+    /// `query_memories` (whose `include_payloads` defaults to true), and the
+    /// compliance export bundle, while simultaneously moving them out of the
+    /// source's own compliance-erase reach (erase selects by
+    /// `memory.owner_id`). Genuine retention needs an owner discriminator on
+    /// the row plus an owner predicate in the sidecar read path; until that
+    /// exists, deletion is the only spelling of "the destination does not
+    /// get the source's actors" that the read paths actually enforce.
     async fn transfer_to_owner(
         &self,
         permit: &OwnerWritePermit,
