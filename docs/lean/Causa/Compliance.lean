@@ -5,8 +5,10 @@ Hard delete is abandonment-only, plus the v0.0.8 cold path:
 
   wipeable := abandoned ∨ (cold ∧ unreferenced ∧ policy)
 
-World is never abandoned. Forget cools; erase wipes abandoned owners.
-There is no edge cascade — pins live on the declaring row.
+Forget cools; erase wipes abandoned owners. An owner-to-owner transfer carries
+the entity's erase reach with it: after the move it is the DESTINATION owner
+whose abandonment wipes the row. There is no edge cascade — pins live on the
+declaring row.
 -/
 
 import Causa.Prelude
@@ -91,10 +93,5 @@ theorem pin_survives_target_cool
     (hc : cold stubs id) :
     pinExists memories stubs id ∧ m ∈ memories :=
   ⟨Or.inr hc, hm⟩
-
-theorem world_never_abandoned (u : User) : ¬ abandoned world := by
-  intro h
-  have hu := h u
-  simp [world] at hu
 
 end Causa

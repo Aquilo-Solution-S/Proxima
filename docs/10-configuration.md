@@ -148,8 +148,8 @@ Profiles:
 
 | Profile | Scope |
 |---|---|
-| `full` | Opt-in. No filtering (`ToolScope::All`) when allow/deny are unset; otherwise all registered ids resolved to a palette. Includes controller/destructive tools such as `core_membership` and `core_publish`. |
-| `memory` | **Default.** Curated memory-brain palette: memory authoring/retrieval, citations, graph/schema introspection, citation-only Fact actions, the full goal lifecycle, the cited-blob upload lane, and code-as-memory repository/chunk/commit reads. The upload lane activates with `PROXIMA_S3_BUCKET` (without it, `core_upload` fails typed at call time) and its actions are individually deniable as `core_upload:prepare`, `core_upload:complete`, `core_upload:abort`, `core_upload:read_url`. Excludes `core_membership`, `core_publish`, and compliance erase. |
+| `full` | Opt-in. No filtering (`ToolScope::All`) when allow/deny are unset; otherwise all registered ids resolved to a palette. Includes controller/destructive tools such as `core_membership` and `core_transfer`. |
+| `memory` | **Default.** Curated memory-brain palette: memory authoring/retrieval, citations, graph/schema introspection, citation-only Fact actions, the full goal lifecycle, the cited-blob upload lane, and code-as-memory repository/chunk/commit reads. The upload lane activates with `PROXIMA_S3_BUCKET` (without it, `core_upload` fails typed at call time) and its actions are individually deniable as `core_upload:prepare`, `core_upload:complete`, `core_upload:abort`, `core_upload:read_url`. Excludes `core_membership`, `core_transfer`, and compliance erase. |
 
 Allow/deny ids use canonical scope keys: flat tool ids (`core_search_memories`),
 dispatcher action leaf keys (`core_goal:set`, `core_fact:citation_of_fact`),
@@ -157,11 +157,11 @@ resource keys (`resource:memory`, `resource:change-events`), or flavor ids
 (`proxima-code_search_chunks`). Unknown profile names and unknown allow/deny
 ids fail boot.
 
-Production hosts that expose `full` but do not intend roster or World-publish
+Production hosts that expose `full` but do not intend roster or owner-transfer
 operations should deny both controller surfaces:
 
 ```text
-PROXIMA_TOOL_DENY=core_membership:add_member,core_membership:remove_member,core_membership:list_members,core_publish:publish_to_world
+PROXIMA_TOOL_DENY=core_membership:add_member,core_membership:remove_member,core_membership:list_members,core_transfer:transfer_to_owner
 ```
 
 <a id="embedding-client"></a>

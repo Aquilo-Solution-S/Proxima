@@ -29,7 +29,7 @@ Substrate-only (no code flavor): `cargo run -p proxima-mcp --no-default-features
 ## Tool Profiles
 
 Default is fail-closed `memory`. Local full surface (including
-`core_membership` / `core_publish`): `PROXIMA_TOOL_PROFILE=full`.
+`core_membership` / `core_transfer`): `PROXIMA_TOOL_PROFILE=full`.
 
 ## Discovery
 

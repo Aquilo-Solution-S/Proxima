@@ -35,14 +35,17 @@ Unsupported:
 
 | OwnerRef | External key |
 |---|---|
-| `OwnerRef::World` | `world:00000000-0000-0000-0000-000000000001` |
 | `OwnerRef::Personal(UserId)` | `personal:<uuid>` |
 | `OwnerRef::Group(GroupId)` | `group:<uuid>` |
+
+Personal and Group are the only owner kinds. Every owner carries a UUID —
+there is no id-less owner — so `OwnerRef::columns()` returns
+`(OwnerRefKind, Uuid)` and `OwnerRefKind::with_uuid(Uuid)` is total.
 
 | Helper | Import | Contract |
 |---|---|---|
 | `OwnerRef::external_key()` | `proxima::OwnerRef` / `proxima_core::OwnerRef` | format the canonical runtime/API key |
-| `parse_external_key(&str)` | `proxima::parse_external_key` / `proxima_core::parse_external_key` | parse only canonical keys; bare `world` is invalid |
+| `parse_external_key(&str)` | `proxima::parse_external_key` / `proxima_core::parse_external_key` | parse only canonical `personal:`/`group:` keys; any other prefix or a bare kind is invalid |
 
 ## Owner Write Permit Boundary
 
@@ -142,20 +145,20 @@ embedded-consumer registration paths produce the same deterministic dump.
 `proxima::flavor::{authorized_memory_ids, authorized_fact_payloads,
 authorized_abstraction_payloads}`
 take `&Engine`, not `&PgPool`. They give flavor crates typed,
-owner/World-authorized candidate filtering and payload projection without
+owner-authorized candidate filtering and payload projection without
 writing SQL against `proxima_core.*`. Code-chunk ANN / file-revision head
 helpers that need a pool stay in `flavors/code` (backend-owned).
 
 | Property | Contract |
 |---|---|
-| authorization path | every helper routes candidate filtering through `proxima_core::Engine::query` — the same owner/group-scoped-plus-World-readable authz path used by every other read |
+| authorization path | every helper routes candidate filtering through `proxima_core::Engine::query` — the same owner/group-scoped authz path used by every other read |
 | shape | narrow a caller-supplied candidate id list down to the visible/typed subset; never a full unauthorized scan |
 | bound | helpers deduplicate and cap candidate lists at 2,000 ids before they ever reach a query, so a pathological caller cannot force an unbounded `IN (...)`/`ANY($1)` scan |
 | versions | heads-only (`memory_head`); a flavor-defined tombstone payload is itself a hot head and remains visible |
 
 `Engine::owned_series_handle` looks up the current owned handle by
 sidecar columns. It takes `Engine` + `AuthzContext`, not `PgPool`. After
-`publish_to_world` the prior owner misses and mints. Code-chunk ingest
+`transfer_to_owner` the prior owner misses and mints. Code-chunk ingest
 lists one file's series via `owned_chunk_series_heads` (store /
 `code_series_heads`), not N Engine NK lookups.
 
@@ -202,17 +205,17 @@ While active, the hold suspends substantive owner-memory physical destruction
 for exactly the current compliance `erase_*` family. The four destructive
 owner/source erase paths return `ComplianceEraseOutcome::Refused { reason:
 ComplianceEraseRefusal::LegalHoldActive, .. }` and delete no substantive owner
-memory content. `erase_world_owner` remains refusal-only with `WorldOwner`;
-reads, ordinary writes, and transient `proxima_core.embedding_jobs`
-work-queue consumption are unchanged. Future physical-destruction paths must
-inherit the same storage-transaction gate before they can exist.
-Operators own the legal judgment; Proxima guarantees only the mechanics.
+memory content. Reads, ordinary writes, and transient
+`proxima_core.embedding_jobs` work-queue consumption are unchanged. Future
+physical-destruction paths must inherit the same storage-transaction gate
+before they can exist. Operators own the legal judgment; Proxima guarantees
+only the mechanics.
 
-`ComplianceEraseTarget` has no `World` variant: `WorldOwner` exists only as
-a target that is always refused and audited (`crates/core/src/compliance.rs`).
-Personal- and group-scoped erasure never reaches a `World`-owned row. See
-[Consumer Projector Guidance](#consumer-projector-guidance) below for why
-that matters when deciding what to publish.
+`ComplianceEraseTarget` is personal/group only (`crates/core/src/compliance.rs`).
+Every row has a personal or group owner, so every row is within some owner's
+erase reach; a transfer moves that reach to the destination owner. See
+[Consumer Projector Guidance](#consumer-projector-guidance) below for what
+that means when deciding where to send a memory.
 
 ## Compliance Export Host API
 
@@ -231,7 +234,7 @@ Contract:
 
 | Field | Rule |
 |---|---|
-| target | personal/group owner only; no World export target |
+| target | personal/group owner only |
 | authorization | `AuthPath::System` or `ComplianceAdminPort::may_perform_compliance_export`; default export authorization delegates to erase-family controller approval |
 | legal hold | does not block export |
 | drop proof | not required; export is non-destructive |
@@ -321,10 +324,12 @@ execution or activity log projector):
 | idempotency keys | Proxima honors a caller-supplied idempotency key verbatim — it never invents a different projector-side key. `core_remember`'s `idempotency_key` deterministically becomes the note id via UUIDv5 over the caller's own bytes (`crates/core/src/mcp/core_tools/memory/remember.rs`); other Fact payload schemas declare their own `natural_key_columns()` from caller-supplied payload fields. Re-ingesting the same key with the same content is a no-op; re-ingesting the same key with changed content writes a new version and advances the head pointer — the identity a projector chooses is the identity Proxima keeps. |
 | source cursor bytes | `Cursor` is opaque byte state keyed by `(owner, source)`. A projector may encode `last_event_seq` into it; `store_source_cursor` persists the supplied bytes verbatim, and `load_source_cursor` returns the exact bytes last stored for that owner/source. No Centauri-side `piy_projection_cursor` table is required for that state. |
 | projection lag | `Engine::source_cursor_age(authz, owner, source)` returns the age of the owner/source cursor for EVD-012-style lag SLO evidence. It is owner-scoped and read-authorized (`Viewer`); `load_source_cursor` / `store_source_cursor` still require cursor mutation authority (`Ingest`) and do not expose cursor bytes to viewers. |
-| World publish | reserve `publish_to_world` for deliberate public catalog/trust facts only — never for private execution/activity evidence. Publishing is memory-only: goals are never publishable (World owns no goals; a Goal entity is refused before any owner lookup). Publishing is an irreversible owner **transfer**, not an ACL flag: once transferred, `authorize_write`'s World short-circuit means the row is never a write owner again, and `ComplianceEraseTarget::WorldOwner` is always refused (see above). A published memory permanently exits the personal/group compliance-erase reach — there is no path back through compliance erase if content published this way later turns out to need it. Treat `publish_to_world` as a one-way decision reserved for content the tenant intends to be permanently, publicly, and inerasably visible. |
+| owner transfer | `transfer_to_owner` is an owner **move**, not an ACL flag or a copy: the series leaves the prior owner's view entirely and lands under the destination. The destination must be a group, and the caller must hold admin on the source (plus group-manage when the source is a group) and admin + group-manage on the destination — that receiving-side manage authority is the destination's consent, which is why a personal destination is refused. Transfer is memory-only: goals do not transfer. |
+| transfer and erase reach | a transferred memory moves *between* erase reaches, it does not leave them. The destination owner can erase it under `ComplianceEraseTarget::GroupOwner`; the source owner no longer can. Send tenant evidence only to a group whose operators should own its deletion decision, because after the transfer they do — the source's compliance-erase obligation for those rows lands on the destination. |
+| transfer and audit sidecars | the `mcp_call_logged_v1` audit sidecar is retained at the source: it carries `actor_upn` and describes who made a tool call, not the memory, so the transfer deletes those rows rather than handing the destination the prior owner's actor identities. The destination receives the memory without its call log. Every other registered sidecar follows the memory. |
 
-See [14 Protocol Surface — `core_publish`](../14-protocol-surface.md)
-for the `publish_to_world` action itself.
+See [14 Protocol Surface — `core_transfer`](../14-protocol-surface.md)
+for the `transfer_to_owner` action itself.
 
 ## Embeddings
 

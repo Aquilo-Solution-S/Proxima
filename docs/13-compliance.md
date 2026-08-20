@@ -23,7 +23,7 @@ bounded primitives and metadata vocabulary.
 
 | Operation | Status | Scope | Contract |
 |---|---|---|---|
-| `delete_owner` | current Host API for erase; transport RPC deferred | one abandoned group `Owner`, verified dropped personal `Owner`, or refused World owner | remove owner-scoped memories, goals, wake configs, edges, sidecars, cited blobs and their upload records, embeddings, source-batch payloads, invocation caches, and delegated-authority grants only after abandonment/drop proof; group erase deletes grants for that exact owner; personal erase also deletes cross-owner grants issued by the dropped subject; live owners refuse; retain suppression and compliance-audit rows |
+| `delete_owner` | current Host API for erase; transport RPC deferred | one abandoned group `Owner` or verified dropped personal `Owner` | remove owner-scoped memories, goals, wake configs, edges, sidecars, cited blobs and their upload records, embeddings, source-batch payloads, invocation caches, and delegated-authority grants only after abandonment/drop proof; group erase deletes grants for that exact owner; personal erase also deletes cross-owner grants issued by the dropped subject; live owners refuse; retain suppression and compliance-audit rows |
 | `delete_source_scope` | current Host API for erase; transport RPC deferred | one source object inside one abandoned/dropped `Owner` | erase rows attributable to the scope only under the same abandonment/drop proof as owner erase; delegated-authority grants are owner-level and remain; live owners refuse; flavor resolves scope, substrate executes compliance deletion |
 | `pause_owner` | v1 intent | one `Owner` | stop future operator dispatch and wake execution; reads and export remain available |
 | `resume_owner` | v1 intent | one `Owner` | clear pause state for future dispatch |
@@ -32,7 +32,13 @@ bounded primitives and metadata vocabulary.
 | tool-recipient export from calls | deferred | external-effect calls | waits for per-call recipient storage (see [12 §Compliance Metadata](12-tool-manifest.md#compliance-metadata)) |
 | legal-consequence runtime blocking | deferred | tool invocation | `legal_consequence` remains design intent; human approval remains required pattern (see [05 §Human approval](05-actions.md#human-approval), [12 §Compliance Metadata](12-tool-manifest.md#compliance-metadata)) |
 
-The World-owner refusal above has a publish-side consequence — rows published to World permanently leave personal/group erase reach; see [Consumer Projector Guidance](reference/public-api.md#consumer-projector-guidance).
+Every owner is personal or group, so every row sits inside some owner's erase
+reach. An owner-to-owner transfer moves that reach rather than escaping it:
+the destination owner can erase the transferred rows and the source owner no
+longer can. Consent for that handover is admin on both sides of the transfer,
+including group-manage on the destination — the receiving operators accept the
+erase responsibility by holding it. See [Consumer Projector
+Guidance](reference/public-api.md#consumer-projector-guidance).
 
 Erase row inventory — rows the `erase_*` family destroys that the operation
 tables above do not name column-by-column:

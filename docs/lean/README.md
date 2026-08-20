@@ -30,7 +30,7 @@ minimization discipline) — a failing build is drift.
 | `Causa/Knowledge.lean` | text-bearing knowledge artifacts and interpreter-class recoverability |
 | `Causa/Goals.lean` | Goal `(handle, t)`, wake_id, GoalHead, transitions, evidence/assignment pins, `situatedSelf` cue-indexed query (docs 06) |
 | `Causa/Edges.lean` | pins on the node (no Edge table): two closed kinds, OriginKindValid, derivePins identity, interpretation-as-node |
-| `Causa/Authorization.lean` | owner-role read/write ceilings, owner-state resolution, world/personal/group access theorems |
+| `Causa/Authorization.lean` | owner-role read/write ceilings, owner-state resolution, personal/group access theorems |
 | `Causa/EdgeAuthorization.lean` | source-owned index reads and the uniform source-write + target-read admission rule |
 | `Causa/Operators.lean` | F→A / A→P / A→Goal phase contracts, no downward writes, invocation-ledger completeness, batch gate (docs 02, 04) |
 | `Causa/Provenance.lean` | admitted graph validity, grounding, table-scoped provenance/uniqueness witnesses |

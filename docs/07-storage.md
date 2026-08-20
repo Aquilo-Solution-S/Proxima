@@ -44,17 +44,25 @@ miss mints. Flavor code does not JOIN `memory_head`.
 
 ## Owner Columns
 
-`owners.kind` is stored once. Fact tables carry `owner_id NOT NULL` FK.
-World is `00000000-0000-0000-0000-000000000001`. No `owner_kind` on memory/goal.
+`owners.kind` is stored once — `personal` or `group`, the whole vocabulary.
+Fact tables carry `owner_id NOT NULL` FK. No `owner_kind` on memory/goal.
 
 Access uses server-resolved `OwnerRef` → roles. No org column.
 
-`publish_to_world` is an in-place series transfer: `UPDATE owner_id` on
+`transfer_to_owner` is an in-place series transfer: `UPDATE owner_id` on
 `memory_head` and every `t` on that handle. Same `(handle, t)`. Triggers
-allow that column only; all other memory fields stay append-only. It also
+allow that column only; all other memory fields stay append-only. Cooled
+stubs, `sketch`, embeddings, and exclusively cited blobs and content move
+with the series; `ingest_keys` for those `t`s are deleted, and so are the
+series' `mcp_call_logged_v1` rows — that audit sidecar carries `actor_upn`
+and describes the actor of a tool call, not the memory, so it is retained at
+the source rather than handed to the destination. Every other sidecar
+follows the memory. The destination's `owners` row is minted inside the same
+transaction (`ensure_owner_row`), which is what keeps the FKs whole. It also
 commits paired `transfer` rows into `announce` (prior owner's lane +
-World's lane). Goals are never publishable: `goal`/`goal_head` refuse the
-World owner outright (`*_not_world_owner_chk`) and refuse UPDATE entirely.
+destination owner's lane). Goals do not transfer: the verb is memory-only,
+and `goal`/`goal_head` refuse UPDATE entirely (`goal_head_t_only` freezes
+`goal_head.owner_id` as the DDL backstop).
 
 <a id="storage-layout"></a>
 
@@ -81,7 +89,7 @@ Closed vocabularies are SQL enums.
 
 | Table | Owns |
 |---|---|
-| `owners` | `owner_id`, `kind`; World seeded |
+| `owners` | `owner_id`, `kind`; no seeded rows — a fresh DB starts empty and rows are minted on first owner write |
 | `memory_head` | `handle` PK, `kind`, `schema_id`, `owner_id`, head `t` |
 | `memory` | `(handle, t)` PK, `UNIQUE(t)`, `schema_id`, `origins[]`, `refs[]`, `blob_id`, `content_id` |
 | `content` | owner-scoped payload; `UNIQUE (owner_id, schema_id, content_hash)` |
@@ -110,7 +118,7 @@ Physical source of truth: `0001_v008.sql`.
 | `UPDATE` | `memory` / `goal` / `ingest_keys` / `announce` / `owners` refuse UPDATE. Heads may move `t` only. `wake_config` is the UPDATE table. |
 | `DELETE` | forget (hot row, after cold PUT); erase (abandonment only) |
 
-`wipeable := abandoned ∨ (cold ∧ unreferenced ∧ policy)`. World is never abandoned.
+`wipeable := abandoned ∨ (cold ∧ unreferenced ∧ policy)`.
 
 <a id="content-hash-dedup"></a>
 

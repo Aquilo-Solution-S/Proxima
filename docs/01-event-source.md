@@ -13,7 +13,6 @@ Roles are resolved by the host and passed to Core as server-built access context
 
 ```rust
 enum OwnerRef {
-    World,                      // public read handle
     Personal(UserId),           // personal owner
     Group(GroupId),             // group owner
 }
@@ -53,6 +52,10 @@ v1 constraints:
   variant.
 
 No per-memory ACL or `AccessGrant` layer exists. Cross-owner access is represented by server-resolved group membership / `OwnerRoles` over concrete `OwnerRef`s.
+
+There is no universal-read lane. A caller's read set is exactly its own
+personal owner plus the groups it belongs to; nothing is readable by
+everyone. Content meant to be shared lives under a group owner.
 
 Owner remains the storage and graph isolation primitive. Access is server-resolved `OwnerRoles` over concrete `OwnerRef`s; Core enforces those roles at verb/tool entry and never adds org/share-set semantics. Pins live on the Memory admission (`origins[]` / `refs[]`); there is no Edge table.
 

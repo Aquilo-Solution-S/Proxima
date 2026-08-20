@@ -4,6 +4,11 @@ All notable changes to Proxima, generated from [Conventional Commits](https://ww
 
 Pre-1.0 the git tag (e.g. `v0.0.3`) is the version; workspace crates are unpublished (`publish = false`).
 
+## [Unreleased]
+
+### Bug Fixes
+- **breaking:** **core**: Delete the World owner ([`87e69a5`](https://github.com/Aquilo-Solution-S/Proxima/commit/87e69a528476d03548a95767ea9df4887523c499))
+
 ## [0.0.7] - 2026-08-04
 
 ### Features

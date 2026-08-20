@@ -53,8 +53,11 @@ def perspective (handle : Handle) (owner : Owner) (id : MemoryId) (tick : Instan
   perspective_never_cites := fun _ => rfl
   blob_fa_only := fun h => (h rfl).elim
 
-def published (handle : Handle) (id : MemoryId) (tick : Instant) : Memory :=
-  fact handle world id tick
+/-- An owner-to-owner TRANSFER: the same series, the same `t`, the same
+    cognitive content, under a new owning group. There is no publish and no
+    universal reader — a transferred memory is exactly as readable as `dest`. -/
+def transferred (handle : Handle) (dest : Owner) (id : MemoryId) (tick : Instant) : Memory :=
+  fact handle dest id tick
 
 structure OptionalMemorySidecar (Payload : Type) where
   memory  : Memory
@@ -135,16 +138,41 @@ theorem flavor_perspective_has_provenance
   Causa.perspective_has_provenance memories goals heads cooled hgraph _ hm
     (by simp [perspective, memory_kind])
 
-theorem published_readable (handle : Handle) (id : MemoryId) (tick : Instant) (r : User) :
-    may_read r (published handle id tick).owner .fact := by
-  simp [published, fact]
-  exact world_universally_readable r .fact
+/-- A transfer is an owner SUBSTITUTION, not a copy: handle, `t`, kind and the
+    cognitive pins are the source fact's, so the series identity survives the
+    move. THEOREM (definitional). -/
+theorem transferred_preserves_series_identity
+    (handle : Handle) (source dest : Owner) (id : MemoryId) (tick : Instant) :
+    (transferred handle dest id tick).handle = (fact handle source id tick).handle ∧
+      (transferred handle dest id tick).t = (fact handle source id tick).t ∧
+      memory_kind (transferred handle dest id tick)
+        = memory_kind (fact handle source id tick) ∧
+      memory_origins (transferred handle dest id tick)
+        = memory_origins (fact handle source id tick) ∧
+      memory_refs (transferred handle dest id tick)
+        = memory_refs (fact handle source id tick) :=
+  ⟨rfl, rfl, rfl, rfl, rfl⟩
 
-theorem published_read_only (handle : Handle) (id : MemoryId) (tick : Instant)
-    (r : User) (k : AccessKind) :
-    ¬ may_write r (published handle id tick).owner k := by
-  simp [published, fact]
-  exact world_read_only r k
+/-- Access to a transferred memory is exactly the destination group's role map:
+    the entity carries no visibility flag of its own (invariant #5). This is the
+    replacement for the deleted `published_readable` — readability is a fact
+    about the OWNER now, not about a reserved universal group. -/
+theorem transferred_readable_by_destination_member
+    (handle : Handle) (dest : Owner) (id : MemoryId) (tick : Instant)
+    (r : User) (x : Role) (hmem : dest r = some x) (hread : x.mayRead .fact) :
+    may_read r (transferred handle dest id tick).owner .fact :=
+  ⟨x, hmem, hread⟩
+
+/-- The replacement for the deleted `published_read_only`: nothing is readable
+    by everyone. A requester with no role in the destination can neither read
+    nor write the transferred memory — in particular the PRIOR owner, once the
+    transfer has moved the row out of its group, is such a requester. -/
+theorem transferred_denies_non_members
+    (handle : Handle) (dest : Owner) (id : MemoryId) (tick : Instant)
+    (r : User) (k : AccessKind) (hout : dest r = none) :
+    ¬ may_read r (transferred handle dest id tick).owner k ∧
+      ¬ may_write r (transferred handle dest id tick).owner k :=
+  non_member_denied r dest k hout
 
 theorem wipeable_when_abandoned (handle : Handle) (owner : Owner) (id : MemoryId) (tick : Instant)
     (h : abandoned (fact handle owner id tick).owner) (r : User) :
@@ -162,8 +190,9 @@ theorem wipeable_when_abandoned (handle : Handle) (owner : Owner) (id : MemoryId
 #print axioms perspective_is_perspective
 #print axioms abstraction_grounded
 #print axioms flavor_perspective_has_provenance
-#print axioms published_readable
-#print axioms published_read_only
+#print axioms transferred_preserves_series_identity
+#print axioms transferred_readable_by_destination_member
+#print axioms transferred_denies_non_members
 #print axioms wipeable_when_abandoned
 
 end Causa.Flavor
