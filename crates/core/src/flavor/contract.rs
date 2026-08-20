@@ -70,52 +70,99 @@ impl SchemaRef {
 
 // ── Search ──────────────────────────────────────────────────────────────
 
-/// `setweight` label. Net-new vocabulary: every `search_tsv` in the tree is
-/// unweighted today, so emitting anything other than [`Weight::D`]
-/// uniformly moves `ts_rank_cd` for every row. Phase 2 owns that decision;
-/// Phase 1 only records the intent.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum Weight {
-    A,
-    B,
-    C,
-    D,
-}
+/// `PostgreSQL`'s four tsvector weight classes, **lowest first**.
+///
+/// `D` leads because `D` is what an unweighted `to_tsvector` produces:
+/// "The default weight is `D` for lexemes that have no explicit weight"
+/// (`PostgreSQL` *12.3.1*). A projection unit that declares one level is
+/// therefore rank-identical to today's unweighted vector, which is what the
+/// membership-identity re-proof rests on.
+pub const TSVECTOR_WEIGHT_CLASSES: [&str; 4] = ["D", "C", "B", "A"];
 
-impl Weight {
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::A => "A",
-            Self::B => "B",
-            Self::C => "C",
-            Self::D => "D",
-        }
-    }
-}
+/// `PostgreSQL`'s default `ts_rank` weight array, `{D, C, B, A}`
+/// (*12.3.3 Ranking Search Results*). Classes a projection unit does not
+/// use keep these values.
+pub const DEFAULT_RANK_WEIGHTS: [f32; 4] = [0.1, 0.2, 0.4, 1.0];
 
-/// One projected column with its weight. `kind` is the existing
-/// [`SearchProjectionColumnKind`], so the contract cannot describe a column
-/// shape the search builder does not know how to render.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+/// One projected column with its **relative** weight.
+///
+/// The weight is an arbitrary float, not a letter: `PostgreSQL` forces four
+/// classes on the *storage*, and encoding that limit in the declaration
+/// would make a flavor choose a bucket before it has said what it means.
+/// A flavor states relative importance; the generator buckets the distinct
+/// values it finds into `setweight` classes (lowest → `D`) and the same
+/// floats become `ts_rank`'s weight array at read time. More than
+/// [`TSVECTOR_WEIGHT_CLASSES`]`.len()` distinct levels on one unit is a
+/// freeze error naming the `PostgreSQL` mechanism, not a silent collapse.
+///
+/// `kind` is the existing [`SearchProjectionColumnKind`], so the contract
+/// cannot describe a column shape the search builder cannot render.
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct WeightedField {
     pub column: &'static str,
     pub kind: SearchProjectionColumnKind,
-    pub weight: Weight,
+    pub weight: f32,
 }
 
-/// Which lexical configuration ranks a row.
+/// The one weight every flavor #0 field declares in v0.0.8.
+///
+/// Uniform ⇒ one distinct level ⇒ every lexeme lands in class `D` and the
+/// emitted vector is textually the vector the generated column already
+/// produced. The projection move is provably score-free; honouring
+/// non-uniform weights is a separate, measured retrieval-quality change.
+pub const WEIGHT_UNIFORM: f32 = 1.0;
+
+/// Which lexical configuration produces and ranks a row's vector.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum LanguagePolicy {
-    /// The row carries its own `regconfig` in `column`, FK-stamped against
-    /// `proxima_core.lexical_languages` so `lexical_language_forget`
-    /// enumerates nothing.
+    /// The row carries its own `regconfig` in `column` on the projection,
+    /// FK-stamped against `proxima_core.lexical_languages` so
+    /// `lexical_language_forget` enumerates nothing. The value is the
+    /// writing caller's language.
     PerRow { column: &'static str },
-    /// One configuration for the whole surface (the code flavor pins
-    /// `english`).
+    /// One configuration for the whole surface, whatever the caller asked
+    /// for (the code flavor pins `english`: code search must not follow the
+    /// deployment's prose configuration).
     Pinned(&'static str),
-    /// Rank with the owning memory row's language.
-    FromMemory,
+    /// The union of several pinned configurations, concatenated in the
+    /// declared order — `lexical_tsv(c1, txt) || lexical_tsv(c2, txt)`.
+    ///
+    /// Vocabulary extension rather than a generator feature (map §2.0.1):
+    /// `proxima_code.commit_search_tsv` indexes commit prose under
+    /// `simple` *and* `english` so non-English words survive English
+    /// stop-word rules, and no single-configuration arm can say that. The
+    /// FIRST configuration is the one stamped on the row.
+    PinnedUnion(&'static [&'static str]),
+}
+
+impl LanguagePolicy {
+    /// The configuration stamped on the projection row when the policy
+    /// fixes one, i.e. everything except [`Self::PerRow`].
+    #[must_use]
+    pub const fn pinned_config(&self) -> Option<&'static str> {
+        match self {
+            Self::PerRow { .. } => None,
+            Self::Pinned(config) => Some(*config),
+            Self::PinnedUnion(configs) => {
+                if configs.is_empty() {
+                    None
+                } else {
+                    Some(configs[0])
+                }
+            }
+        }
+    }
+
+    /// Every configuration the emitted vector is built from, in order.
+    /// Empty for [`Self::PerRow`], whose configuration is a row value.
+    #[must_use]
+    pub fn configs(&self) -> Vec<&'static str> {
+        match self {
+            Self::PerRow { .. } => Vec::new(),
+            Self::Pinned(config) => vec![*config],
+            Self::PinnedUnion(configs) => configs.to_vec(),
+        }
+    }
 }
 
 /// Substring / `LIKE` search, opt-in per plan §4.2.3.
@@ -177,10 +224,8 @@ pub enum SearchProjectionDecl {
     None { why: &'static str },
     Projected {
         fields: &'static [WeightedField],
+        /// Sidecar column the projection's `tag` array is copied from.
         tag_column: Option<&'static str>,
-        /// Column holding the row's pre-computed lexical vector, when the
-        /// migration adds one.
-        tsv_column: Option<&'static str>,
         language: LanguagePolicy,
         bands: &'static [Band],
         substring: SubstringArm,
@@ -201,18 +246,80 @@ impl SearchProjectionDecl {
         }
     }
 
-    /// The `lexical_language` column this surface stamps, if any. The
-    /// migration guardrail's expected FK set is a projection of exactly
-    /// this.
     #[must_use]
-    pub const fn language_column(&self) -> Option<&'static str> {
+    pub const fn fields(&self) -> &'static [WeightedField] {
         match self {
-            Self::Projected {
-                language: LanguagePolicy::PerRow { column },
-                ..
-            } => Some(*column),
-            _ => None,
+            Self::None { .. } => &[],
+            Self::Projected { fields, .. } => fields,
         }
+    }
+
+    #[must_use]
+    pub const fn language(&self) -> Option<LanguagePolicy> {
+        match self {
+            Self::None { .. } => None,
+            Self::Projected { language, .. } => Some(*language),
+        }
+    }
+
+    /// The distinct declared weight levels, **ascending**.
+    ///
+    /// Ascending because [`TSVECTOR_WEIGHT_CLASSES`] is ascending: the
+    /// lowest declared level becomes `D`, which is what an unweighted
+    /// vector already is.
+    ///
+    /// # Errors
+    ///
+    /// Returns the number of distinct levels when it exceeds
+    /// [`TSVECTOR_WEIGHT_CLASSES`]`.len()`. `PostgreSQL` stores a two-bit
+    /// weight per lexeme position and offers exactly four classes
+    /// (*12.3.1 Parsing Documents*), so a fifth level has nowhere to go and
+    /// silently collapsing two levels into one class would make `ts_rank`'s
+    /// weight array describe a document it is not scoring.
+    pub fn weight_levels(&self) -> Result<Vec<f32>, usize> {
+        let mut levels = self
+            .fields()
+            .iter()
+            .map(|field| field.weight)
+            .collect::<Vec<_>>();
+        levels.sort_by(f32::total_cmp);
+        levels.dedup_by(|a, b| a.total_cmp(b).is_eq());
+        if levels.len() > TSVECTOR_WEIGHT_CLASSES.len() {
+            return Err(levels.len());
+        }
+        Ok(levels)
+    }
+
+    /// `setweight` class for one declared weight, or `None` when the unit
+    /// declares more levels than `PostgreSQL` has classes.
+    #[must_use]
+    pub fn weight_class(&self, weight: f32) -> Option<&'static str> {
+        let levels = self.weight_levels().ok()?;
+        let index = levels
+            .iter()
+            .position(|level| level.total_cmp(&weight).is_eq())?;
+        TSVECTOR_WEIGHT_CLASSES.get(index).copied()
+    }
+
+    /// `ts_rank`'s `{D, C, B, A}` weight array, or `None` when the unit is
+    /// uniform.
+    ///
+    /// Uniform is `None` rather than `[w, .., w]` on purpose: one level
+    /// means every lexeme is class `D`, and `PostgreSQL`'s own default array
+    /// is then the array that reproduces today's unweighted score exactly.
+    /// Passing a rewritten array would move every score for no declared
+    /// reason.
+    #[must_use]
+    pub fn rank_weight_array(&self) -> Option<[f32; 4]> {
+        let levels = self.weight_levels().ok()?;
+        if levels.len() < 2 {
+            return None;
+        }
+        let mut weights = DEFAULT_RANK_WEIGHTS;
+        for (index, level) in levels.iter().enumerate() {
+            weights[index] = *level;
+        }
+        Some(weights)
     }
 }
 
@@ -510,6 +617,127 @@ pub struct Surface {
     pub completeness: Option<DbConstraint>,
 }
 
+// ── Projection ──────────────────────────────────────────────────────────
+
+/// How this flavor's score bands compare to flavor #0's.
+///
+/// RESERVED AND UNCONSUMED in v0.0.8, exactly as `EraseRule` / `ForgetRule`
+/// / `ExportRule` were reserved in Phase 1. The scatter-gather deployment
+/// layer (plan §3) merges per-flavor result sets and cannot do it on raw
+/// `ts_rank`, which is not comparable across corpora. What it needs is a
+/// per-*flavor* statement, not a per-row column — see the map's R3/R7.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum BandComparability {
+    /// Every projected surface scores inside flavor #0's `BAND_*` windows,
+    /// so a merge may compare scores directly.
+    CoreBands,
+    /// At least one arm scores outside them; `why` names which.
+    Divergent { why: &'static str },
+}
+
+/// The per-flavor lexical projection table.
+///
+/// One table per flavor, in the flavor's own schema, holding one row per
+/// searchable memory discriminated by `schema_id` — so a flavor's whole
+/// lexical surface is one composite-index scan instead of one scan per
+/// sidecar, and provisioning or tearing a flavor down stays a single
+/// schema-level operation.
+///
+/// It is deliberately NOT seeded into `proxima_core.flavor_surface`: that
+/// table's domain is "tables a `memory` row may stamp in `sidecar_tables`",
+/// and a projection row is derived, never stamped. Registering it there
+/// would widen `assert_sidecar_stamp_declared` for nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ProjectionSpec {
+    /// Qualified table name, e.g. `proxima_core.projection`.
+    pub table: &'static str,
+    /// The composite `gin (owner_id, search_tsv)` index name.
+    pub index: &'static str,
+    /// RESERVED, UNCONSUMED in v0.0.8. Rows a shard fetches before the
+    /// merge trims to the caller's limit. Reserving it costs a field;
+    /// not reserving it means the deployment layer's first change reopens
+    /// the contract.
+    pub overfetch_k: u32,
+    /// RESERVED, UNCONSUMED in v0.0.8. See [`BandComparability`].
+    pub band_comparability: BandComparability,
+}
+
+impl ProjectionSpec {
+    /// The [`Surface`] the projection table is, so erase / transfer /
+    /// export / forget walk it with no special case.
+    ///
+    /// `erase` is [`EraseRule::Cascade`] through the memory FK, which is
+    /// what makes owner erase, memory forget and flavor repo erase all
+    /// reach the projection with no new list, no new counter and no code
+    /// that knows the word "projection". That is the inverse-at-scope
+    /// property: compliance never learns about this table.
+    #[must_use]
+    pub const fn surface(&self) -> Surface {
+        Surface {
+            table: self.table,
+            key: KeyShape::MemoryT,
+            owner_columns: &["owner_id"],
+            transfer: TransferRule::Follow,
+            erase: EraseRule::Cascade {
+                via: DbConstraint {
+                    relation: self.table,
+                    name: PROJECTION_MEMORY_FK,
+                },
+            },
+            export: ExportRule::Excluded {
+                why: "a derived lexical index; every byte in it is a function of the \
+                      sidecar rows the bundle already carries",
+            },
+            forget: ForgetRule::DeleteWithMemory,
+            lexical_language_column: Some("lexical_language"),
+            counter: None,
+            completeness: Some(DbConstraint {
+                relation: self.table,
+                name: PROJECTION_MEMORY_FK,
+            }),
+        }
+    }
+}
+
+/// The name `PostgreSQL` mints for the projection's memory FK.
+///
+/// Identical for every flavor because the table is always named
+/// `projection` and the column is always `memory_id`, and constraint names
+/// are per-schema. That is the slimness rule in §2.0.1 made checkable: two
+/// flavors' emitted DDL differ only in the schema name and the index name.
+pub const PROJECTION_MEMORY_FK: &str = "projection_memory_id_fkey";
+
+/// The bare relation name every flavor's projection table carries.
+pub const PROJECTION_TABLE_NAME: &str = "projection";
+
+/// Whether a flavor has a projection table — and, when it does not, why.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ProjectionDecl {
+    /// Declared absence: no schema of this flavor is a search surface.
+    None {
+        why: &'static str,
+    },
+    Table(ProjectionSpec),
+}
+
+impl ProjectionDecl {
+    #[must_use]
+    pub const fn spec(&self) -> Option<&ProjectionSpec> {
+        match self {
+            Self::None { .. } => None,
+            Self::Table(spec) => Some(spec),
+        }
+    }
+
+    #[must_use]
+    pub const fn table(&self) -> Option<&'static str> {
+        match self {
+            Self::None { .. } => None,
+            Self::Table(spec) => Some(spec.table),
+        }
+    }
+}
+
 // ── MCP surface ─────────────────────────────────────────────────────────
 
 /// One registered MCP tool, as the contract sees it: a wire name and the
@@ -699,7 +927,8 @@ impl FlavorContract {
 mod tests {
     use super::{
         BAND_EXACT, BAND_RESCUE, BAND_SUBSTRING, EmbedText, EmbedUnit, EmbeddingRecipe,
-        SLOT_DEFAULT, SchemaRef,
+        LanguagePolicy, SLOT_DEFAULT, SchemaRef, SearchProjectionDecl, SubstringArm,
+        WEIGHT_UNIFORM, WeightedField,
     };
 
     #[test]
@@ -727,6 +956,66 @@ mod tests {
         assert_eq!(resolved[0].table, Some("proxima_core.agent_note_v1"));
         assert_eq!(resolved[0].column, Some("embed_text"));
         assert_eq!(resolved[0].slot, SLOT_DEFAULT);
+    }
+
+    fn projected(weights: &'static [f32]) -> SearchProjectionDecl {
+        // A leaked slice keeps the fixture `'static` without a macro.
+        let fields: &'static [WeightedField] = Box::leak(
+            weights
+                .iter()
+                .map(|weight| WeightedField {
+                    column: "c",
+                    kind: crate::SearchProjectionColumnKind::Text,
+                    weight: *weight,
+                })
+                .collect::<Vec<_>>()
+                .into_boxed_slice(),
+        );
+        SearchProjectionDecl::Projected {
+            fields,
+            tag_column: None,
+            language: LanguagePolicy::Pinned("simple"),
+            bands: &[],
+            substring: SubstringArm::Off,
+        }
+    }
+
+    /// The identity claim, at the level the contract can state it: a
+    /// uniform unit has ONE level, so every lexeme is class `D` — which is
+    /// what an unweighted `to_tsvector` already produces — and no weight
+    /// array is passed, so `ts_rank_cd` scores exactly what it scores today.
+    #[test]
+    fn uniform_weights_are_the_unweighted_case() {
+        let decl = projected(&[WEIGHT_UNIFORM, WEIGHT_UNIFORM, WEIGHT_UNIFORM]);
+        assert_eq!(decl.weight_levels(), Ok(vec![WEIGHT_UNIFORM]));
+        assert_eq!(decl.weight_class(WEIGHT_UNIFORM), Some("D"));
+        assert_eq!(decl.rank_weight_array(), None);
+    }
+
+    /// Ascending: the lowest declared level takes the class an unweighted
+    /// lexeme already has, so adding a heavier field never silently
+    /// re-scores the fields that were there before.
+    #[test]
+    fn distinct_levels_bucket_ascending_from_d() {
+        let decl = projected(&[1.0, 0.25, 0.5]);
+        assert_eq!(decl.weight_levels(), Ok(vec![0.25, 0.5, 1.0]));
+        assert_eq!(decl.weight_class(0.25), Some("D"));
+        assert_eq!(decl.weight_class(0.5), Some("C"));
+        assert_eq!(decl.weight_class(1.0), Some("B"));
+        assert_eq!(decl.rank_weight_array(), Some([0.25, 0.5, 1.0, 1.0]));
+    }
+
+    #[test]
+    fn a_fifth_level_has_nowhere_to_go() {
+        assert_eq!(
+            projected(&[1.0, 2.0, 3.0, 4.0, 5.0]).weight_levels(),
+            Err(5)
+        );
+        assert!(
+            projected(&[1.0, 2.0, 3.0, 4.0, 5.0])
+                .weight_class(3.0)
+                .is_none()
+        );
     }
 
     /// The bands are today's inline literals in `lexical_sidecar_sql`,

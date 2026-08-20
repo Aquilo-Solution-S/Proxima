@@ -38,11 +38,13 @@ mod tool_registration;
 mod tests;
 
 pub use contract::{
-    BAND_EXACT, BAND_RESCUE, BAND_SUBSTRING, Band, CORE_ORDINAL, DbConstraint, DbTrigger,
-    EmbedText, EmbedUnit, EmbeddingRecipe, EmbeddingSlot, Enforcement, EraseRule, ExportRule,
-    FlavorContract, ForgetRule, KeyShape, LanguagePolicy, Provenance, ResolvedEmbedUnit,
-    ResourceContract, SLOT_DEFAULT, SchemaContract, SchemaRef, SearchProjectionDecl, SubstringArm,
-    Surface, ToolContract, TransferRule, Weight, WeightedField,
+    BAND_EXACT, BAND_RESCUE, BAND_SUBSTRING, Band, BandComparability, CORE_ORDINAL,
+    DEFAULT_RANK_WEIGHTS, DbConstraint, DbTrigger, EmbedText, EmbedUnit, EmbeddingRecipe,
+    EmbeddingSlot, Enforcement, EraseRule, ExportRule, FlavorContract, ForgetRule, KeyShape,
+    LanguagePolicy, PROJECTION_MEMORY_FK, PROJECTION_TABLE_NAME, ProjectionDecl, ProjectionSpec,
+    Provenance, ResolvedEmbedUnit, ResourceContract, SLOT_DEFAULT, SchemaContract, SchemaRef,
+    SearchProjectionDecl, SubstringArm, Surface, TSVECTOR_WEIGHT_CLASSES, ToolContract,
+    TransferRule, WEIGHT_UNIFORM, WeightedField,
 };
 pub use descriptor::{FlavorDescriptor, FlavorProvenance};
 pub use error::FlavorRegistryError;

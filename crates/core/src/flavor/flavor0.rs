@@ -25,8 +25,8 @@ use crate::flavor::contract::{
     BAND_EXACT, BAND_RESCUE, BAND_SUBSTRING, Band, CORE_ORDINAL, DbConstraint, DbTrigger,
     EmbedUnit, EmbeddingRecipe, Enforcement, EraseRule, ExportRule, FlavorContract, ForgetRule,
     KeyShape, LanguagePolicy, Provenance, ResourceContract, SLOT_DEFAULT, SchemaContract,
-    SchemaRef, SearchProjectionDecl, SubstringArm, Surface, ToolContract, TransferRule, Weight,
-    WeightedField,
+    SchemaRef, SearchProjectionDecl, SubstringArm, Surface, ToolContract, TransferRule,
+    WEIGHT_UNIFORM, WeightedField,
 };
 use crate::protocol::resource as scope;
 use crate::protocol::tool;
@@ -116,21 +116,20 @@ const AGENT_NOTE_V1: SchemaContract = SchemaContract {
             WeightedField {
                 column: "title",
                 kind: ColumnKind::Text,
-                weight: Weight::A,
+                weight: WEIGHT_UNIFORM,
             },
             WeightedField {
                 column: "body",
                 kind: ColumnKind::Text,
-                weight: Weight::B,
+                weight: WEIGHT_UNIFORM,
             },
             WeightedField {
                 column: "tags",
                 kind: ColumnKind::TextArray,
-                weight: Weight::C,
+                weight: WEIGHT_UNIFORM,
             },
         ],
         tag_column: Some("tags"),
-        tsv_column: Some("search_tsv"),
         language: LanguagePolicy::PerRow {
             column: "lexical_language",
         },
@@ -162,10 +161,9 @@ const UTTERANCE_V1: SchemaContract = SchemaContract {
         fields: &[WeightedField {
             column: "text",
             kind: ColumnKind::Text,
-            weight: Weight::A,
+            weight: WEIGHT_UNIFORM,
         }],
         tag_column: None,
-        tsv_column: Some("search_tsv"),
         language: LanguagePolicy::PerRow {
             column: "lexical_language",
         },
@@ -256,21 +254,20 @@ const AGENT_DERIVATION_SEARCH: SearchProjectionDecl = SearchProjectionDecl::Proj
         WeightedField {
             column: "title",
             kind: ColumnKind::Text,
-            weight: Weight::A,
+            weight: WEIGHT_UNIFORM,
         },
         WeightedField {
             column: "body",
             kind: ColumnKind::Text,
-            weight: Weight::B,
+            weight: WEIGHT_UNIFORM,
         },
         WeightedField {
             column: "tags",
             kind: ColumnKind::TextArray,
-            weight: Weight::C,
+            weight: WEIGHT_UNIFORM,
         },
     ],
     tag_column: Some("tags"),
-    tsv_column: Some("search_tsv"),
     language: LanguagePolicy::PerRow {
         column: "lexical_language",
     },
@@ -329,10 +326,9 @@ const INTERPRETATION_V1: SchemaContract = SchemaContract {
         fields: &[WeightedField {
             column: "claim",
             kind: ColumnKind::Text,
-            weight: Weight::A,
+            weight: WEIGHT_UNIFORM,
         }],
         tag_column: None,
-        tsv_column: Some("search_tsv"),
         language: LanguagePolicy::PerRow {
             column: "lexical_language",
         },

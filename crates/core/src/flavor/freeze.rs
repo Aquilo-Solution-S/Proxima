@@ -146,6 +146,20 @@ impl FlavorRegistry {
                     schema_id,
                 });
             }
+            // `PostgreSQL` forces four tsvector weight classes on the
+            // storage; the declaration is free of that limit and states
+            // relative floats. Where the two meet is here: more distinct
+            // levels than classes has no honest bucketing, so it is a
+            // freeze error naming the mechanism rather than a silent
+            // collapse of two levels into one class.
+            if let Err(levels) = schema.search.weight_levels() {
+                return Err(FlavorRegistryError::ProjectionWeightLevels {
+                    flavor_id: contract.flavor_id,
+                    schema_id,
+                    levels,
+                    classes: crate::flavor::contract::TSVECTOR_WEIGHT_CLASSES.len(),
+                });
+            }
             let registered = self.schemas.iter().any(|info| {
                 info.schema_id == schema_id
                     && info.schema_version == schema.schema_version()
@@ -410,9 +424,11 @@ pub(crate) fn schema_capability_map(
 
 #[cfg(test)]
 mod tests {
+    use crate::SearchProjectionColumnKind;
     use crate::flavor::contract::{
-        EmbeddingRecipe, FlavorContract, Provenance, ResourceContract, SchemaContract, SchemaRef,
-        SearchProjectionDecl, ToolContract, TransferRule,
+        EmbeddingRecipe, FlavorContract, LanguagePolicy, Provenance, ResourceContract,
+        SchemaContract, SchemaRef, SearchProjectionDecl, SubstringArm, ToolContract, TransferRule,
+        WeightedField,
     };
     use crate::verbs::schema::{PayloadKind, SchemaInfo};
     use crate::{FlavorRegistry, FlavorRegistryError, SchemaId, SchemaVersion};
@@ -502,6 +518,62 @@ mod tests {
         &[],
         &[],
     );
+    /// Five distinct relative weights on one projection unit. The
+    /// declaration is free of `PostgreSQL`'s four-class limit right up to
+    /// the moment the generator has to emit `setweight`, and this is that
+    /// moment.
+    static TOO_MANY_WEIGHT_LEVELS: FlavorContract = contract(
+        7,
+        &[SchemaContract {
+            id: SchemaRef::new(FIXTURE_FLAVOR, "thing", 1),
+            kind: PayloadKind::CitedObject,
+            sidecar_table: Some("test_flavor.thing_v1"),
+            search: SearchProjectionDecl::Projected {
+                fields: &[
+                    WeightedField {
+                        column: "a",
+                        kind: SearchProjectionColumnKind::Text,
+                        weight: 5.0,
+                    },
+                    WeightedField {
+                        column: "b",
+                        kind: SearchProjectionColumnKind::Text,
+                        weight: 4.0,
+                    },
+                    WeightedField {
+                        column: "c",
+                        kind: SearchProjectionColumnKind::Text,
+                        weight: 3.0,
+                    },
+                    WeightedField {
+                        column: "d",
+                        kind: SearchProjectionColumnKind::Text,
+                        weight: 2.0,
+                    },
+                    WeightedField {
+                        column: "e",
+                        kind: SearchProjectionColumnKind::Text,
+                        weight: 1.0,
+                    },
+                ],
+                tag_column: None,
+                language: LanguagePolicy::Pinned("simple"),
+                bands: &[],
+                substring: SubstringArm::Off,
+            },
+            embedding: EmbeddingRecipe::Never {
+                why: "a fixture, not a memory",
+            },
+            transfer: TransferRule::StaysOnKey,
+            provenance: Provenance::None,
+            surfaces: &[],
+            natural_key_columns: &[],
+            special_category: false,
+        }],
+        &[],
+        &[],
+    );
+
     static UNREGISTERED_TOOL: FlavorContract = contract(
         7,
         &[],
@@ -597,6 +669,20 @@ mod tests {
                     registry.contracts.push(&EMPTY);
                 },
                 |err| matches!(err, FlavorRegistryError::SchemaWithoutContract { .. }),
+            ),
+            (
+                "one projection unit declares more weight levels than PG has classes",
+                |registry| registry.contracts.push(&TOO_MANY_WEIGHT_LEVELS),
+                |err| {
+                    matches!(
+                        err,
+                        FlavorRegistryError::ProjectionWeightLevels {
+                            levels: 5,
+                            classes: 4,
+                            ..
+                        }
+                    )
+                },
             ),
             (
                 "the contract names an MCP tool nothing registered",

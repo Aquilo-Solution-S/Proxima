@@ -113,6 +113,14 @@ pub enum FlavorRegistryError {
         flavor_id: &'static str,
         name: &'static str,
     },
+    /// One projection unit declares more distinct weight levels than
+    /// `PostgreSQL` has tsvector weight classes.
+    ProjectionWeightLevels {
+        flavor_id: &'static str,
+        schema_id: SchemaId,
+        levels: usize,
+        classes: usize,
+    },
 }
 
 impl std::fmt::Display for FlavorRegistryError {
@@ -250,6 +258,19 @@ impl std::fmt::Display for FlavorRegistryError {
                 f,
                 "flavor {flavor_id} declares MCP tool {name} in its contract but never \
                  registered it"
+            ),
+            Self::ProjectionWeightLevels {
+                flavor_id,
+                schema_id,
+                levels,
+                classes,
+            } => write!(
+                f,
+                "flavor {flavor_id} schema {schema_id} declares {levels} distinct field \
+                 weights, but `PostgreSQL` stores a two-bit weight per lexeme position and \
+                 offers exactly {classes} tsvector classes (A, B, C, D — see `PostgreSQL` \
+                 12.3.1); collapsing two levels into one class would make ts_rank's weight \
+                 array describe a document it is not scoring"
             ),
         }
     }
