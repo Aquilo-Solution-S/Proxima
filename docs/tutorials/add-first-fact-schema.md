@@ -53,10 +53,14 @@ impl FactPayload for DocumentFiledV1 {
             // the sidecar has one.
             embed_text_column: None,
             // With a stored vector, also add a `lexical_language regconfig`
-            // column mirrored from the owning memories row (attach
-            // `proxima_core.sidecar_lexical_language_from_memory` BEFORE
-            // INSERT) and name it here, so search ranks each row with the
-            // configuration its vector was tokenised with.
+            // column and name it here, so search ranks each row with the
+            // configuration its vector was tokenised with. Either pin it to
+            // a flavor-local `*_lexical_config()` function (DEFAULT + CHECK,
+            // the code flavor's idiom) or stamp the deployment default:
+            // `DEFAULT proxima_core.lexical_config() NOT NULL` plus a
+            // BEFORE INSERT trigger calling
+            // `proxima_core.remember_lexical_language()`, as the core
+            // sidecars do.
             language_column: None,
         })
     }

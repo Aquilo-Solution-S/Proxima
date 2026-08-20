@@ -25,24 +25,24 @@ pub fn owner_arrays(owners: &[OwnerRef]) -> (Vec<OwnerRefKind>, Vec<Option<uuid:
 /// Fail closed when a NEW `memories`/`goals` entity row would be created
 /// under [`OwnerRef::World`].
 ///
-/// Kernel law: World is universally readable and never a write owner. The
-/// v0.0.5 baseline correction (`0008_v005.sql`) dropped the blanket
-/// `world_not_write_owner_chk` from `memories`/`goals` so the
-/// publish-to-World owner TRANSFER (`transfer_to_world`, an UPDATE) can
-/// persist World ownership — which also removed the DB-level backstop
-/// against raw storage-verb callers (e.g. `flavors/code`, which invokes
-/// these verbs directly and bypasses `Engine::authorize_write`'s World
-/// short-circuit). This helper restores that backstop one layer up: every
-/// row-creating verb choke point calls it before its INSERT.
+/// Kernel law: World is universally readable and never a write owner.
+/// `memory` carries no World-owner CHECK because the publish-to-World owner
+/// TRANSFER (`transfer_to_world`, an UPDATE) must persist World ownership —
+/// so raw storage-verb callers (e.g. `flavors/code`, which invokes these
+/// verbs directly and bypasses `Engine::authorize_write`'s World
+/// short-circuit) have no DB-level backstop there. This helper is that
+/// backstop one layer up: every row-creating verb choke point calls it
+/// before its INSERT. Goals are never publishable at all, so `goal` /
+/// `goal_head` additionally carry `*_not_world_owner_chk` in the DDL.
 ///
 /// Deliberately NOT wired into [`owner_binds`]: rows that legitimately
-/// reference a World-owned entity post-publish, and the transfer UPDATE
-/// itself, must keep encoding World.
+/// reference a World-owned entity post-publish, and the memory transfer
+/// UPDATE itself, must keep encoding World.
 ///
 /// # Errors
 ///
 /// Returns [`StorageError::ConstraintViolation`] — the same error class
-/// the dropped DDL CHECK produced — when `owner` is [`OwnerRef::World`].
+/// a DDL CHECK produces — when `owner` is [`OwnerRef::World`].
 pub(crate) fn reject_world_write_owner(owner: &OwnerRef) -> Result<(), StorageError> {
     if matches!(owner, OwnerRef::World) {
         return Err(StorageError::ConstraintViolation(
@@ -403,7 +403,7 @@ pub(crate) async fn visible_home_owner(
     }))
 }
 
-/// Transfer one memory or goal **series** to [`OwnerRef::World`].
+/// Transfer one memory **series** to [`OwnerRef::World`].
 ///
 /// Same `(handle, t)`: publish is an owner UPDATE, not a copy. Head and
 /// every version on the handle move together (`MemoryHeadAligned`), including
@@ -414,30 +414,50 @@ pub(crate) async fn visible_home_owner(
 /// live non-World series still cites them. Embeddings / jobs follow the
 /// transferred `t`s so ANN (`emb.owner_id`) stays Tesla-valve. `ingest_keys`
 /// for those `t`s are deleted so the prior owner can mint a new series.
+/// The same transaction announces the transfer under both lanes: the prior
+/// owner's (the series left their owned view) and World's (it arrived).
+///
+/// Goals are never publishable — the engine refuses them before storage;
+/// this backstop keeps a direct storage call from transferring one.
 ///
 /// # Errors
 ///
 /// `Conflict` when a cited blob is still referenced by another live
-/// series, or a terminal Goal's `close_fact_t` is owned by someone else.
-/// Unique / check violations surface as `ConstraintViolation`.
+/// series. `ConstraintViolation` for a Goal entity, and for unique /
+/// check violations.
 pub(crate) async fn transfer_to_world(
     pool: &PgPool,
     cold: &dyn ColdObjectStore,
     entity: EntityId,
     from_owner: OwnerRef,
 ) -> Result<bool, StorageError> {
+    let memory_id = match entity {
+        EntityId::Memory(memory_id) => memory_id,
+        EntityId::Goal(_) => {
+            return Err(StorageError::ConstraintViolation(
+                "goals are never publishable: World owns no goals, so a goal series cannot \
+                 be transferred to OwnerRef::World"
+                    .into(),
+            ));
+        }
+    };
     let from_id = from_owner.stored_owner_id();
     let world = OwnerRef::World.stored_owner_id();
     with_bounded_retry(move || async move {
         let mut tx = pool.begin().await.map_err(internal)?;
-        let (transferred, stale_cold_keys) = match entity {
-            EntityId::Memory(memory_id) => {
-                transfer_memory_t(&mut tx, cold, memory_id.into_inner(), from_id, world).await?
-            }
-            EntityId::Goal(goal_id) => {
-                transfer_goal_t(&mut tx, cold, goal_id.into_inner(), from_id, world).await?
-            }
-        };
+        let (transferred, stale_cold_keys) =
+            transfer_memory_t(&mut tx, cold, memory_id.into_inner(), from_id, world).await?;
+        if !transferred {
+            // A false persist can follow real writes: when the head is gone
+            // or changed owner after the series reads, cooled/blob/content
+            // rows are already re-homed to World in this transaction with no
+            // announce row. Roll back so they revert to the prior owner and
+            // object keys (whose cold objects still exist); the minted World
+            // objects were already compensation-deleted in
+            // `transfer_memory_handle`.
+            tx.rollback().await.map_err(map_err)?;
+            return Ok(false);
+        }
         tx.commit().await.map_err(map_err)?;
         for key in stale_cold_keys {
             match cold.delete(&key).await {
@@ -478,6 +498,66 @@ async fn transfer_memory_t(
     transfer_memory_handle(tx, cold, handle, from_id, world).await
 }
 
+const SERIES_TS_SQL: &str = "SELECT t FROM proxima_core.memory WHERE handle = $1 AND owner_id = $2
+     UNION
+     SELECT t FROM proxima_core.cooled WHERE handle = $1 AND owner_id = $2";
+
+/// Lock-acquisition rounds for [`lock_series_ts`] before it gives up with
+/// `Retryable`. Growth between rounds needs a concurrent same-series ingest
+/// inside a statement-sized window, so one extra round is already rare;
+/// three keep an adversary appending versions in a tight loop from wedging
+/// a publish — the bounded work ends in a typed transient error, never in
+/// an unlocked t.
+const MAX_SERIES_LOCK_ROUNDS: usize = 3;
+
+/// Serialize the transfer against forget before any row write: hold the
+/// per-memory advisory lock the forget path takes, over every `t` of the
+/// series, so a concurrent cool cannot land between the series reads and
+/// the head persist. The set can drift between a read and the locks it
+/// names — a forget keeps the hot-union-cooled set stable, an erase
+/// shrinks it, an ingest of a new version grows it — so lock and re-read
+/// until the locked set covers the read set, acquiring only the missing
+/// `t`s each round in sorted order (xact-scoped advisory locks cannot be
+/// released; the set only grows). Two transfers acquiring
+/// overlapping-but-different sets across rounds can deadlock; that
+/// surfaces as 40P01 → `Retryable`, and `with_bounded_retry` re-runs the
+/// whole transaction — the established clean path, same as the round
+/// budget running out.
+///
+/// Returns the authoritative (fully locked) set; empty means the series
+/// left the owner while locking.
+async fn lock_series_ts(
+    tx: &mut Transaction<'_, Postgres>,
+    handle: uuid::Uuid,
+    from_id: uuid::Uuid,
+    mut ts: Vec<uuid::Uuid>,
+) -> Result<Vec<uuid::Uuid>, StorageError> {
+    let mut locked = std::collections::BTreeSet::new();
+    for _ in 0..MAX_SERIES_LOCK_ROUNDS {
+        let missing: Vec<uuid::Uuid> = ts.iter().copied().filter(|t| !locked.contains(t)).collect();
+        if missing.is_empty() {
+            return Ok(ts);
+        }
+        crate::verbs::forget::lock_forget_memories_tx(tx, &missing).await?;
+        locked.extend(missing);
+        ts = sqlx::query_scalar(SERIES_TS_SQL)
+            .bind(handle)
+            .bind(from_id)
+            .fetch_all(&mut **tx)
+            .await
+            .map_err(map_err)?;
+        if ts.is_empty() {
+            return Ok(ts);
+        }
+    }
+    if ts.iter().all(|t| locked.contains(t)) {
+        return Ok(ts);
+    }
+    Err(StorageError::Retryable(
+        "series kept growing new versions while acquiring transfer locks".into(),
+    ))
+}
+
 async fn transfer_memory_handle(
     tx: &mut Transaction<'_, Postgres>,
     cold: &dyn ColdObjectStore,
@@ -485,25 +565,46 @@ async fn transfer_memory_handle(
     from_id: uuid::Uuid,
     world: uuid::Uuid,
 ) -> Result<(bool, Vec<String>), StorageError> {
-    let ts: Vec<uuid::Uuid> = sqlx::query_scalar(
-        "SELECT t FROM proxima_core.memory WHERE handle = $1 AND owner_id = $2
-         UNION
-         SELECT t FROM proxima_core.cooled WHERE handle = $1 AND owner_id = $2",
+    let ts: Vec<uuid::Uuid> = sqlx::query_scalar(SERIES_TS_SQL)
+        .bind(handle)
+        .bind(from_id)
+        .fetch_all(&mut **tx)
+        .await
+        .map_err(map_err)?;
+    if ts.is_empty() {
+        return Ok((false, Vec::new()));
+    }
+    let ts = lock_series_ts(tx, handle, from_id, ts).await?;
+    if ts.is_empty() {
+        return Ok((false, Vec::new()));
+    }
+    let expected_head_t: Option<uuid::Uuid> = sqlx::query_scalar(
+        "SELECT t FROM proxima_core.memory_head
+          WHERE handle = $1 AND owner_id = $2",
     )
     .bind(handle)
     .bind(from_id)
-    .fetch_all(&mut **tx)
+    .fetch_optional(&mut **tx)
     .await
     .map_err(map_err)?;
-    if ts.is_empty() {
+    let Some(expected_head_t) = expected_head_t else {
         return Ok((false, Vec::new()));
+    };
+    if !ts.contains(&expected_head_t) {
+        return Err(StorageError::Retryable(
+            "series head advanced after transfer locked its version set".into(),
+        ));
     }
     transfer_exclusive_blobs(tx, handle, from_id, world).await?;
     transfer_content_for_handle(tx, handle, from_id, world).await?;
     let reminted = remint_cooled_for_handle(tx, cold, handle, from_id, world).await?;
-    let persist = persist_hot_series_transfer(tx, handle, from_id, world, &ts).await;
+    let persist =
+        persist_hot_series_transfer(tx, handle, from_id, world, expected_head_t, &ts).await;
     match persist {
-        Ok(true) => Ok((true, reminted.old_keys)),
+        Ok(true) => {
+            announce_series_transfer(tx, handle, from_id, world).await?;
+            Ok((true, reminted.old_keys))
+        }
         Ok(false) => {
             for key in reminted.new_keys {
                 crate::verbs::forget::delete_cold_object(cold, &key).await;
@@ -548,7 +649,24 @@ async fn remint_cooled_for_handle(
     for (t, old_key) in rows {
         let new_key = cold_object_key(&world_hash, handle, t);
         if new_key != old_key {
-            let bytes = cold.get(&old_key).await?;
+            let bytes = match cold.get(&old_key).await {
+                Ok(bytes) => bytes,
+                Err(err) => {
+                    for key in &reminted.new_keys {
+                        crate::verbs::forget::delete_cold_object(cold, key).await;
+                    }
+                    return Err(err);
+                }
+            };
+            let bytes = match crate::verbs::forget::rehome_cold_record(&bytes, world) {
+                Ok(bytes) => bytes,
+                Err(err) => {
+                    for key in &reminted.new_keys {
+                        crate::verbs::forget::delete_cold_object(cold, key).await;
+                    }
+                    return Err(err);
+                }
+            };
             if let Err(err) = cold.put(&new_key, &bytes).await {
                 for key in &reminted.new_keys {
                     crate::verbs::forget::delete_cold_object(cold, key).await;
@@ -579,20 +697,38 @@ async fn persist_hot_series_transfer(
     handle: uuid::Uuid,
     from_id: uuid::Uuid,
     world: uuid::Uuid,
+    expected_head_t: uuid::Uuid,
     ts: &[uuid::Uuid],
 ) -> Result<bool, StorageError> {
     let head = sqlx::query(
         "UPDATE proxima_core.memory_head
             SET owner_id = $3
-          WHERE handle = $1 AND owner_id = $2",
+          WHERE handle = $1 AND owner_id = $2 AND t = $4",
     )
     .bind(handle)
     .bind(from_id)
     .bind(world)
+    .bind(expected_head_t)
     .execute(&mut **tx)
     .await
     .map_err(map_err)?;
     if head.rows_affected() == 0 {
+        let owner_still_matches: bool = sqlx::query_scalar(
+            "SELECT EXISTS (
+                 SELECT 1 FROM proxima_core.memory_head
+                  WHERE handle = $1 AND owner_id = $2
+             )",
+        )
+        .bind(handle)
+        .bind(from_id)
+        .fetch_one(&mut **tx)
+        .await
+        .map_err(map_err)?;
+        if owner_still_matches {
+            return Err(StorageError::Retryable(
+                "series head advanced before transfer could persist".into(),
+            ));
+        }
         return Ok(false);
     }
     sqlx::query(
@@ -606,6 +742,12 @@ async fn persist_hot_series_transfer(
     .execute(&mut **tx)
     .await
     .map_err(map_err)?;
+    sqlx::query("UPDATE proxima_core.sketch SET owner_id = $2 WHERE t = ANY($1::uuid[])")
+        .bind(ts)
+        .bind(world)
+        .execute(&mut **tx)
+        .await
+        .map_err(map_err)?;
     follow_embedding_owners(tx, ts, world).await?;
     sqlx::query("DELETE FROM proxima_core.ingest_keys WHERE t = ANY($1::uuid[])")
         .bind(ts)
@@ -613,6 +755,40 @@ async fn persist_hot_series_transfer(
         .await
         .map_err(map_err)?;
     Ok(true)
+}
+
+/// One `'transfer'` announce row per lane, same series `(handle, head t)`:
+/// the prior owner's projectors learn the series left their owned view, and
+/// World-side pull consumers learn it arrived. World's `owners` row is
+/// migration-seeded and never erased, so the `announce.owner_id` FK holds.
+async fn announce_series_transfer(
+    tx: &mut Transaction<'_, Postgres>,
+    handle: uuid::Uuid,
+    from_id: uuid::Uuid,
+    world: uuid::Uuid,
+) -> Result<(), StorageError> {
+    let head_t: uuid::Uuid = sqlx::query_scalar(
+        "SELECT t FROM proxima_core.memory_head
+          WHERE handle = $1 AND owner_id = $2",
+    )
+    .bind(handle)
+    .bind(world)
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(map_err)?;
+    sqlx::query(
+        "INSERT INTO proxima_core.announce (owner_id, op, entity, handle, t)
+         VALUES ($1, 'transfer', 'memory', $3, $4),
+                ($2, 'transfer', 'memory', $3, $4)",
+    )
+    .bind(from_id)
+    .bind(world)
+    .bind(handle)
+    .bind(head_t)
+    .execute(&mut **tx)
+    .await
+    .map_err(map_err)?;
+    Ok(())
 }
 
 async fn transfer_exclusive_blobs(
@@ -683,8 +859,15 @@ async fn transfer_content_for_handle(
     let rows: Vec<(uuid::Uuid, String, Vec<u8>)> = sqlx::query_as(
         "SELECT DISTINCT c.content_id, c.schema_id, c.content_hash
            FROM proxima_core.content c
-           JOIN proxima_core.memory m ON m.content_id = c.content_id
-          WHERE m.handle = $1 AND m.owner_id = $2 AND m.content_id IS NOT NULL",
+           JOIN (
+                 SELECT content_id
+                   FROM proxima_core.memory
+                  WHERE handle = $1 AND owner_id = $2 AND content_id IS NOT NULL
+                 UNION
+                 SELECT content_id
+                   FROM proxima_core.cooled
+                  WHERE handle = $1 AND owner_id = $2 AND content_id IS NOT NULL
+                ) series_content ON series_content.content_id = c.content_id",
     )
     .bind(handle)
     .bind(from_id)
@@ -764,98 +947,6 @@ async fn follow_embedding_owners(
     .await
     .map_err(map_err)?;
     Ok(())
-}
-
-async fn transfer_goal_t(
-    tx: &mut Transaction<'_, Postgres>,
-    cold: &dyn ColdObjectStore,
-    t: uuid::Uuid,
-    from_id: uuid::Uuid,
-    world: uuid::Uuid,
-) -> Result<(bool, Vec<String>), StorageError> {
-    let handle: Option<uuid::Uuid> = sqlx::query_scalar(
-        "SELECT handle FROM proxima_core.goal
-          WHERE t = $1 AND owner_id = $2",
-    )
-    .bind(t)
-    .bind(from_id)
-    .fetch_optional(&mut **tx)
-    .await
-    .map_err(map_err)?;
-    let Some(handle) = handle else {
-        return Ok((false, Vec::new()));
-    };
-    let close_facts: Vec<uuid::Uuid> = sqlx::query_scalar(
-        "SELECT DISTINCT close_fact_t
-           FROM proxima_core.goal
-          WHERE handle = $1 AND owner_id = $2 AND close_fact_t IS NOT NULL",
-    )
-    .bind(handle)
-    .bind(from_id)
-    .fetch_all(&mut **tx)
-    .await
-    .map_err(map_err)?;
-    let head = sqlx::query(
-        "UPDATE proxima_core.goal_head
-            SET owner_id = $3
-          WHERE handle = $1 AND owner_id = $2",
-    )
-    .bind(handle)
-    .bind(from_id)
-    .bind(world)
-    .execute(&mut **tx)
-    .await
-    .map_err(map_err)?;
-    if head.rows_affected() == 0 {
-        return Ok((false, Vec::new()));
-    }
-    sqlx::query(
-        "UPDATE proxima_core.goal
-            SET owner_id = $3
-          WHERE handle = $1 AND owner_id = $2",
-    )
-    .bind(handle)
-    .bind(from_id)
-    .bind(world)
-    .execute(&mut **tx)
-    .await
-    .map_err(map_err)?;
-    let goal_ts: Vec<uuid::Uuid> =
-        sqlx::query_scalar("SELECT t FROM proxima_core.goal WHERE handle = $1 AND owner_id = $2")
-            .bind(handle)
-            .bind(world)
-            .fetch_all(&mut **tx)
-            .await
-            .map_err(map_err)?;
-    follow_embedding_owners(tx, &goal_ts, world).await?;
-    let mut stale_cold_keys = Vec::new();
-    for close_t in close_facts {
-        let close_owner: Option<uuid::Uuid> =
-            sqlx::query_scalar("SELECT owner_id FROM proxima_core.memory WHERE t = $1")
-                .bind(close_t)
-                .fetch_optional(&mut **tx)
-                .await
-                .map_err(map_err)?;
-        match close_owner {
-            None => {}
-            Some(id) if id == world => {}
-            Some(id) if id == from_id => {
-                let (moved, keys) = transfer_memory_t(tx, cold, close_t, from_id, world).await?;
-                if !moved {
-                    return Err(StorageError::Conflict(
-                        "terminal goal close_fact_t could not be transferred with the goal".into(),
-                    ));
-                }
-                stale_cold_keys.extend(keys);
-            }
-            Some(_) => {
-                return Err(StorageError::Conflict(
-                    "terminal goal close_fact_t is owned by another live owner".into(),
-                ));
-            }
-        }
-    }
-    Ok((true, stale_cold_keys))
 }
 
 /// # Errors

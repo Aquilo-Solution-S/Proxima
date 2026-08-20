@@ -159,6 +159,15 @@ fn decode_record(bytes: &[u8]) -> Result<ColdRecord, StorageError> {
     })
 }
 
+/// Rewrite the owner embedded in a cold record while preserving its payload.
+/// Publish remints the locator under World; the bytes must carry the same owner
+/// because hydrate reconstructs owner-scoped rows from this record.
+pub(crate) fn rehome_cold_record(bytes: &[u8], owner_id: Uuid) -> Result<Vec<u8>, StorageError> {
+    let mut rec = decode_record(bytes)?;
+    rec.row.owner_id = owner_id;
+    encode_record(&rec)
+}
+
 fn write_u16(out: &mut Vec<u8>, value: u16) {
     out.extend_from_slice(&value.to_be_bytes());
 }
@@ -669,6 +678,25 @@ async fn lock_forget_memory_tx(
     .execute(tx.as_mut())
     .await
     .map_err(map_err)?;
+    Ok(())
+}
+
+/// The publish transfer's half of the forget serialization: the same
+/// per-memory advisory lock [`lock_forget_memory_tx`] takes, over every `t`
+/// of the series, in sorted order. Forget takes its single lock before any
+/// row lock, and the transfer calls this before writing any row, so the two
+/// paths cannot form an advisory-lock cycle — a forget on a locked `t`
+/// simply queues behind the transfer (and vice versa).
+pub(crate) async fn lock_forget_memories_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    ts: &[Uuid],
+) -> Result<(), StorageError> {
+    let mut sorted = ts.to_vec();
+    sorted.sort_unstable();
+    sorted.dedup();
+    for t in sorted {
+        lock_forget_memory_tx(tx, t).await?;
+    }
     Ok(())
 }
 

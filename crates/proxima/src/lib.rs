@@ -20,8 +20,9 @@
 //!   SDK exposes payload traits, ids, `proxima_flavor!`, `Tool`/`ToolCtx`,
 //!   relation descriptors, sidecar macros/traits, and registry types. It does
 //!   not expose raw `PgPool`, raw storage verbs, or proofless append helpers.
-//!   Host extra-table wiring uses [`AppContext::clone_pool_for_host`] inside
-//!   [`FlavorApp::services`] and wraps the pool immediately.
+//!   Host extra-table wiring uses [`AppContext::clone_pool_for_host`] plus
+//!   [`AppContext::pg_tuning_for_host`] inside [`FlavorApp::services`] and
+//!   wraps them immediately.
 //!   Flavor crates should avoid direct `proxima-core` / `proxima-storage-pg`
 //!   dependencies except backend-owned adapters explicitly outside the stable
 //!   SDK boundary.

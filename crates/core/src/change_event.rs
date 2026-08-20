@@ -1,6 +1,6 @@
 //! Typed `ChangeEvent` — the hydrated form of an `announce` row
-//! (`EntityAppend` or `EntityDelete`), returned by the pull reads
-//! (`ChangeHistory` / `list_change_events_*`). The LISTEN/NOTIFY
+//! (`EntityAppend`, `EntityDelete`, or `EntityTransfer`), returned by the
+//! pull reads (`ChangeHistory` / `list_change_events_*`). The LISTEN/NOTIFY
 //! Subscribe push path was retired — the log is pull-only.
 //! See docs/14 §`ChangeHistory` and §Consistency.
 //!
@@ -99,6 +99,15 @@ pub enum ChangeEventKind {
         schema_version: SchemaVersion,
     },
     EntityDelete {
+        entity_kind: EntityKind,
+        entity: EntityRef,
+        schema_id: SchemaId,
+        schema_version: SchemaVersion,
+    },
+    /// Publish-to-World owner transfer of a memory series. Written in pairs
+    /// under both lanes — the prior owner's (the series left their owned
+    /// view) and World's (it arrived) — in the transferring transaction.
+    EntityTransfer {
         entity_kind: EntityKind,
         entity: EntityRef,
         schema_id: SchemaId,

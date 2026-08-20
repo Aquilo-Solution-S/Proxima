@@ -29,8 +29,8 @@ pub struct ListChangeEventsOutput {
     pub has_more: bool,
 }
 
-/// One `entity_append` / `entity_delete` event. Pins carry no event of
-/// their own — they are columns on the appended node.
+/// One `entity_append` / `entity_delete` / `entity_transfer` event. Pins
+/// carry no event of their own — they are columns on the appended node.
 #[derive(Debug, Serialize)]
 pub struct ChangeEventItem {
     pub seq: String,
@@ -119,6 +119,19 @@ fn event_item(ctx: &McpToolCtx, row: ChangeEventForWake) -> ChangeEventItem {
         } => ChangeEventItem {
             seq,
             kind: "entity_delete".into(),
+            entity: Some(format_ref(ctx, &entity, entity_kind)),
+            entity_kind: Some(entity_kind.as_str().into()),
+            schema_id: Some(schema_id.as_str().to_string()),
+            schema_version: Some(schema_version.into_inner()),
+        },
+        ChangeEventKind::EntityTransfer {
+            entity_kind,
+            entity,
+            schema_id,
+            schema_version,
+        } => ChangeEventItem {
+            seq,
+            kind: "entity_transfer".into(),
             entity: Some(format_ref(ctx, &entity, entity_kind)),
             entity_kind: Some(entity_kind.as_str().into()),
             schema_id: Some(schema_id.as_str().to_string()),

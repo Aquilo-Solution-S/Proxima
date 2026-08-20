@@ -744,7 +744,7 @@ Tool contract:
 | Args | `Deserialize + JsonSchema` |
 | Output | `Serialize` |
 | Context | `ToolCtx`: Owner, AuthzContext, frozen registry, optional `ToolCaller`, optional caller Self Perspective, optional Engine, typed ToolServices |
-| Storage | tools: Engine + `FlavorServices` store. Host extra-table: `AppContext::clone_pool_for_host`, wrap immediately. No `proxima_core.*` SQL |
+| Storage | tools: Engine + `FlavorServices` store. Host extra-table: `AppContext::{clone_pool_for_host, pg_tuning_for_host}`, wrap immediately. No `proxima_core.*` SQL |
 | Writes | emit typed Facts / A/P / Goals through registered schemas; no tool writes an edge |
 
 MCP JSON is protocol boundary only. Flavor SDK tool code targets `Tool`;
@@ -787,6 +787,7 @@ fn services(ctx: &AppContext) -> Result<FlavorServices, FlavorServiceError> {
     let mut services = FlavorServices::default();
     services.try_insert(MyFlavorStore::from_backend_pool_for_host(
         ctx.clone_pool_for_host(),
+        ctx.pg_tuning_for_host(),
     ))?;
     Ok(services)
 }
@@ -804,11 +805,11 @@ let Some(store) = ctx.service::<MyFlavorStore>() else {
 };
 ```
 
-`AppContext::clone_pool_for_host` is the Host extra-table bridge
-(docs/08). It is not Flavor SDK: wrap the pool in a store that keeps
-`proxima_core.*` SQL private, as `proxima-code` does, then insert the
-store. Tools and workers resolve the store, never the pool. Sidecar-only
-flavors do not call it. Tuple apps fold service sets left-to-right;
+`AppContext::{clone_pool_for_host, pg_tuning_for_host}` is the Host
+extra-table bridge (docs/08). It is not Flavor SDK: wrap the pool and resolved
+query policy in a store that keeps `proxima_core.*` SQL private, as
+`proxima-code` does, then insert the store. Tools and workers resolve the
+store, never the pool. Sidecar-only flavors do not call it. Tuple apps fold service sets left-to-right;
 `(A,)` is the identity-preserving singleton form. Duplicate concrete
 types fail boot with `FlavorServiceError::DuplicateService` instead of
 silently overriding an earlier flavor or the substrate's service.

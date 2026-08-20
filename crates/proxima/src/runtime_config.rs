@@ -457,9 +457,7 @@ pub struct RuntimeConfig {
     /// construction; the canonical boot path never re-reads process env.
     pub pg_pool_config: PgPoolConfig,
     /// Postgres query tuning (`PROXIMA_PG_*`). Defaults are this release's
-    /// shipped behaviour, so an unset environment is production;
-    /// `PROXIMA_PG_SEMANTIC_INDEX_FIRST=off` restores the legacy semantic
-    /// result membership.
+    /// shipped behaviour, so an unset environment is production.
     pub pg_tuning: PgTuning,
     pub auth: RuntimeAuthState,
     pub resource_metadata: Option<ResourceServerMetadata>,
@@ -755,7 +753,6 @@ mod tests {
 
     use async_trait::async_trait;
     use proxima_core::{AuthError, AuthzContext, Credentials, GroupId, OwnerRef};
-    use proxima_storage_pg::SemanticIndexFirst;
 
     use super::*;
     use crate::company_owner;
@@ -1195,10 +1192,7 @@ mod tests {
             .database_url("postgres://localhost/proxima")
             .owner(owner(uuid::Uuid::now_v7()))
             .tool_scope(ToolScope::All)
-            .apply_lookup(lookup(&[
-                ("PROXIMA_PG_SEMANTIC_INDEX_FIRST", "pushdown"),
-                ("PROXIMA_PG_HNSW_EF_SEARCH", "200"),
-            ]))
+            .apply_lookup(lookup(&[("PROXIMA_PG_HNSW_EF_SEARCH", "200")]))
             .unwrap()
             .resolve()
             .unwrap();
@@ -1206,7 +1200,6 @@ mod tests {
         assert_eq!(
             config.pg_tuning,
             PgTuning {
-                semantic_index_first: SemanticIndexFirst::Pushdown,
                 hnsw_ef_search: 200,
                 ..PgTuning::default()
             }
@@ -1343,15 +1336,12 @@ mod tests {
     #[test]
     fn malformed_pg_tuning_errors() {
         let err = RuntimeBuilder::default()
-            .apply_lookup(lookup(&[(
-                "PROXIMA_PG_SEMANTIC_INDEX_FIRST",
-                "index-first",
-            )]))
+            .apply_lookup(lookup(&[("PROXIMA_PG_HNSW_ITERATIVE_SCAN", "relaxed")]))
             .unwrap_err();
 
         assert!(
             err.to_string()
-                .contains("PROXIMA_PG_SEMANTIC_INDEX_FIRST=index-first")
+                .contains("PROXIMA_PG_HNSW_ITERATIVE_SCAN=relaxed")
         );
     }
 

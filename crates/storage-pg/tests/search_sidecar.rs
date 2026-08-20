@@ -677,3 +677,209 @@ async fn semantic_search_respects_until() {
     let _ = drop_db(&db_name).await;
     result.expect("semantic until filter failed");
 }
+
+#[tokio::test]
+async fn lexical_language_forget_refuses_while_rows_reference_it() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    if let Err(e) = create_db(&db_name).await {
+        panic!("PG required for tests but admin connect failed: {e}");
+    }
+    let url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&url).await?;
+        pg.run_migrations().await?;
+        let pool = pg.pool_for_tests();
+        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let t = seed_note_lang(pool, owner, "Tiere", "die Katzen schlafen", "german").await?;
+
+        let err = sqlx::query("SELECT proxima_core.lexical_language_forget('german')")
+            .execute(pool)
+            .await
+            .expect_err("forget must refuse while a row is stamped german");
+        assert!(
+            err.to_string().contains("still reference"),
+            "refusal must say rows still reference it: {err}"
+        );
+        let registered: bool = sqlx::query_scalar(
+            "SELECT EXISTS (
+                 SELECT 1 FROM proxima_core.lexical_languages
+                  WHERE config = 'german'::regconfig
+             )",
+        )
+        .fetch_one(pool)
+        .await?;
+        assert!(registered, "a refused forget must not deregister");
+
+        sqlx::query("DELETE FROM proxima_core.agent_note_v1 WHERE t = $1")
+            .bind(t)
+            .execute(pool)
+            .await?;
+        sqlx::query("SELECT proxima_core.lexical_language_forget('german')")
+            .execute(pool)
+            .await?;
+        let gone: bool = sqlx::query_scalar(
+            "SELECT NOT EXISTS (
+                 SELECT 1 FROM proxima_core.lexical_languages
+                  WHERE config = 'german'::regconfig
+             )",
+        )
+        .fetch_one(pool)
+        .await?;
+        assert!(gone, "forget removes the registration once unreferenced");
+
+        // Not registered any more: forgetting again is a clean no-op.
+        sqlx::query("SELECT proxima_core.lexical_language_forget('german')")
+            .execute(pool)
+            .await?;
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("lexical forget lifecycle failed");
+}
+
+#[tokio::test]
+async fn lexical_language_forget_refuses_null_and_the_default() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    if let Err(e) = create_db(&db_name).await {
+        panic!("PG required for tests but admin connect failed: {e}");
+    }
+    let url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&url).await?;
+        pg.run_migrations().await?;
+        let pool = pg.pool_for_tests();
+
+        let err = sqlx::query("SELECT proxima_core.lexical_language_forget(NULL)")
+            .execute(pool)
+            .await
+            .expect_err("NULL is refused");
+        assert!(err.to_string().contains("must not be null"), "{err}");
+
+        let err = sqlx::query("SELECT proxima_core.lexical_language_forget('english')")
+            .execute(pool)
+            .await
+            .expect_err("the default configuration is refused");
+        assert!(
+            err.to_string().contains("default lexical configuration"),
+            "{err}"
+        );
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("lexical forget default refusal failed");
+}
+
+/// The remember trigger fires BEFORE INSERT, so a single statement stamping a
+/// not-yet-registered configuration self-registers it before the FK check.
+#[tokio::test]
+async fn lexical_remember_trigger_registers_before_the_fk_check() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    if let Err(e) = create_db(&db_name).await {
+        panic!("PG required for tests but admin connect failed: {e}");
+    }
+    let url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&url).await?;
+        pg.run_migrations().await?;
+        let pool = pg.pool_for_tests();
+        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        sqlx::query(
+            "INSERT INTO proxima_core.owners (owner_id, kind)
+             VALUES ($1, 'personal') ON CONFLICT DO NOTHING",
+        )
+        .bind(owner.stored_owner_id())
+        .execute(pool)
+        .await?;
+        sqlx::query(
+            "INSERT INTO proxima_core.sketch (t, owner_id, kind, text, lexical_language)
+             VALUES ($1, $2, 'fact', 'bonjour le monde', 'french'::regconfig)",
+        )
+        .bind(Uuid::now_v7())
+        .bind(owner.stored_owner_id())
+        .execute(pool)
+        .await?;
+        let registered: bool = sqlx::query_scalar(
+            "SELECT EXISTS (
+                 SELECT 1 FROM proxima_core.lexical_languages
+                  WHERE config = 'french'::regconfig
+             )",
+        )
+        .fetch_one(pool)
+        .await?;
+        assert!(registered, "self-registration must satisfy the FK");
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("lexical self-registration failed");
+}
+
+/// The FK is the concurrency story: a writer's RI check holds KEY SHARE on
+/// the registration row for its whole transaction, so forget blocks while a
+/// write in that language is in flight and refuses once it commits — no
+/// committed row can reference a forgotten language.
+#[tokio::test]
+async fn lexical_language_forget_blocks_on_an_in_flight_writer() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    if let Err(e) = create_db(&db_name).await {
+        panic!("PG required for tests but admin connect failed: {e}");
+    }
+    let url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&url).await?;
+        pg.run_migrations().await?;
+        let pool = pg.pool_for_tests();
+        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        sqlx::query(
+            "INSERT INTO proxima_core.owners (owner_id, kind)
+             VALUES ($1, 'personal') ON CONFLICT DO NOTHING",
+        )
+        .bind(owner.stored_owner_id())
+        .execute(pool)
+        .await?;
+        sqlx::query("INSERT INTO proxima_core.lexical_languages (config) VALUES ('german')")
+            .execute(pool)
+            .await?;
+
+        // Writer: uncommitted sketch row stamped german — its RI check holds
+        // KEY SHARE on the registration row until the transaction ends.
+        let mut writer = pool.begin().await?;
+        sqlx::query(
+            "INSERT INTO proxima_core.sketch (t, owner_id, kind, text, lexical_language)
+             VALUES ($1, $2, 'fact', 'die Katzen schlafen', 'german'::regconfig)",
+        )
+        .bind(Uuid::now_v7())
+        .bind(owner.stored_owner_id())
+        .execute(&mut *writer)
+        .await?;
+
+        let mut forgetter = pool.acquire().await?;
+        sqlx::query("SET lock_timeout = '500ms'")
+            .execute(&mut *forgetter)
+            .await?;
+        let blocked = sqlx::query("SELECT proxima_core.lexical_language_forget('german')")
+            .execute(&mut *forgetter)
+            .await
+            .expect_err("forget must block on the in-flight writer, not slip past it");
+        assert!(
+            blocked.to_string().contains("lock timeout"),
+            "expected a lock wait, got: {blocked}"
+        );
+
+        writer.commit().await?;
+        sqlx::query("SET lock_timeout = 0")
+            .execute(&mut *forgetter)
+            .await?;
+        let refused = sqlx::query("SELECT proxima_core.lexical_language_forget('german')")
+            .execute(&mut *forgetter)
+            .await
+            .expect_err("after the writer commits, forget refuses on the FK");
+        assert!(refused.to_string().contains("still reference"), "{refused}");
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("lexical forget concurrency failed");
+}

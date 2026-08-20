@@ -843,6 +843,7 @@ fn host_extra_table_bridge_is_on_app_context() {
         "the pool field stays crate-private"
     );
     let _: fn(&proxima::AppContext) -> sqlx::PgPool = proxima::AppContext::clone_pool_for_host;
+    let _: fn(&proxima::AppContext) -> proxima::PgTuning = proxima::AppContext::pg_tuning_for_host;
 }
 
 /// Naming [`proxima::flavor::AuthorizationHook`] is not enough: `veto`
