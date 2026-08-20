@@ -187,4 +187,5 @@ pub use proxima_storage_pg::{
 mod authorized_read;
 pub use authorized_read::{
     authorized_abstraction_payloads, authorized_fact_payloads, authorized_memory_ids,
+    read_owner_ids,
 };

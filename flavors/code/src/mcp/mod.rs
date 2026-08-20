@@ -44,6 +44,20 @@ pub(crate) fn engine(ctx: &ToolCtx) -> Result<Arc<proxima_core::Engine>, ToolErr
         .ok_or_else(|| ToolError::Other("code flavor tools require Engine".into()))
 }
 
+/// The caller's resolved read set, as stored owner ids, for the lexical
+/// candidate scans to bind into `projection.owner_id = ANY($n)`.
+///
+/// A scan narrowed this way still overfetches and still admits every
+/// candidate through `Engine::query`; what the predicate buys is the
+/// projection's composite `gin(owner_id, search_tsv)`, which no join to a
+/// sidecar's owner can reach.
+pub(crate) async fn read_owner_ids(
+    engine: &proxima_core::Engine,
+    ctx: &ToolCtx,
+) -> Result<Vec<uuid::Uuid>, ToolError> {
+    proxima::flavor::read_owner_ids(engine, ctx.authz()).await
+}
+
 /// Wire-reference grammar on `ToolCtx` via core's extension trait.
 pub(crate) use proxima_core::mcp::McpPresentationExt as CodeToolCtxExt;
 

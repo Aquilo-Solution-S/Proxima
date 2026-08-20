@@ -52,6 +52,29 @@ impl Engine {
         query_authorized(&self.storage.query, &self.registry, &read_owners, req).await
     }
 
+    /// The read access set (`S_read`) this context resolves to.
+    ///
+    /// Every read verb above narrows to this set before it touches storage.
+    /// A flavor that runs its own candidate scan needs the same set as a SQL
+    /// predicate rather than as a post-filter: `proxima_*.projection` carries
+    /// a composite `gin(owner_id, search_tsv)`, and only an owner predicate on
+    /// the projection itself lets that index serve the scan. Handing the set
+    /// out is not a widening — it is the identical set the engine would have
+    /// applied afterwards, applied earlier. The flavor still admits its
+    /// candidates through [`Engine::query`]; pushing the owner down narrows
+    /// what the scan reads, never what the caller may see.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Forbidden` when the context resolves to an empty read set (a
+    /// denied context authorizes nothing).
+    pub async fn authorized_read_owners(
+        &self,
+        authz: &AuthzContext,
+    ) -> Result<Vec<OwnerRef>, ProtocolError> {
+        self.authorize_read(authz).await
+    }
+
     /// Edge read scoped to the context's read access set (`S_read`). Same
     /// auth shape as `Query`; callers narrow by kind and/or endpoint.
     /// Edges are source-owned: an edge is visible iff its source is

@@ -336,8 +336,11 @@ impl Tool for CodeSearchChunksTool {
             let (effective_mode, query_embedding) =
                 resolve_query_embedding(&engine, args.mode, query).await?;
 
-            // Phase 1: sidecar-only content scan. Overfetch so phase 2's
-            // owner/head admit can drop other-owner and non-head ts.
+            // Phase 1: sidecar-only content scan, narrowed to the caller's
+            // resolved read set so the projection's composite
+            // `gin(owner_id, search_tsv)` can serve it. Still overfetch: the
+            // read set admits a whole group, and phase 2 drops non-head ts.
+            let read_owner_ids = super::read_owner_ids(&engine, &ctx).await?;
             let needed = seen.saturating_add(limit);
             let candidate_limit = i64::from(needed.saturating_mul(20).max(needed).min(1_000));
             let lexical_rows: Vec<ChunkCandidateRow> =
@@ -352,6 +355,7 @@ impl Tool for CodeSearchChunksTool {
                             exact_pattern: &exact_pattern,
                             candidate_limit,
                             distinctive: &distinctive_terms(query),
+                            read_owner_ids: &read_owner_ids,
                         };
                         let gin = scan_chunk_sidecar(pool.pool(), query, &scan).await?;
                         if gin.is_empty() {
@@ -794,6 +798,10 @@ struct ChunkSidecarScan<'a> {
     exact_pattern: &'a str,
     candidate_limit: i64,
     distinctive: &'a str,
+    /// The caller's read access set, resolved by
+    /// [`proxima_core::Engine::authorized_read_owners`]. Phase 2 admits
+    /// against the same set; this copy exists so the scan can index on it.
+    read_owner_ids: &'a [uuid::Uuid],
 }
 
 /// Phase 1: GIN on `proxima_code.projection` only. No `proxima_core.*`
@@ -818,6 +826,7 @@ async fn scan_chunk_sidecar(
         .bind(scan.chunk_type)
         .bind(scan.candidate_limit)
         .bind(scan.distinctive)
+        .bind(scan.read_owner_ids)
         .fetch_all(pool)
         .await
         .map_err(map_storage)
@@ -830,6 +839,33 @@ async fn scan_chunk_sidecar(
 /// band that moved in the contract without moving here would be a score
 /// nobody could explain. The rendering is `{:.2}`, so `0.6` becomes
 /// `0.60` — the same `numeric` to `PostgreSQL`, so no score moves.
+///
+/// # Why this arm drives from the sidecar, where core's drives from the
+/// projection
+///
+/// §4.7 R6 has core rank on the projection alone and join the owning
+/// sidecar for the top-k. A chunk search cannot be shaped that way, for two
+/// independent reasons, both of which change *which rows come back*, not
+/// just how fast:
+///
+/// 1. The score reads sidecar columns. `chunk_type <> 'file'`, an exact
+///    `file_path` match, a path substring and a text substring contribute
+///    `0.3 / 10.0 / 6.0 / 4.0`. Those dwarf the tsvector band. Ranking on
+///    `search_tsv` first and adding the literal bonuses afterwards would
+///    order by the smaller half of the score and truncate before the larger
+///    half is known.
+/// 2. The filters are selective and sidecar-side. `repo_id`, `language`,
+///    `chunk_type` and `state = 'Present'` are the shape of every real
+///    query. Taking a projection-side top-k first and filtering after would
+///    spend the whole candidate budget on the largest repository and answer
+///    a repo-scoped search with nothing — the same failure the semantic arm
+///    documents at its call site.
+///
+/// What R6 is *for* survives: the composite `gin(owner_id, search_tsv)` on
+/// `proxima_code.projection` is reachable, because `p.owner_id = ANY($8)`
+/// puts both index columns on `p`. The owner set is the caller's resolved
+/// read set, so the scan reads only rows phase 2 could have admitted
+/// anyway. `code_hot_path_plans_use_expected_indexes` pins the index.
 static CHUNK_GIN_SQL: LazyLock<String> = LazyLock::new(|| {
     let (strict_floor, strict_width) = band_parts(CHUNK_BAND_STRICT);
     let (rare_all_floor, rare_all_width) = band_parts(CHUNK_BAND_RARE_ALL);
@@ -883,7 +919,8 @@ static CHUNK_GIN_SQL: LazyLock<String> = LazyLock::new(|| {
            FROM proxima_code.code_chunk_v1 c
            JOIN proxima_code.projection p
              ON p.memory_id = c.t
-            AND p.schema_id = 'proxima-code/code-chunk-v1', q
+            AND p.schema_id = 'proxima-code/code-chunk-v1'
+            AND p.owner_id = ANY($8::uuid[]), q
           WHERE c.state = 'Present'
             AND ($2::uuid IS NULL OR c.repo_id = $2)
             AND ($3::text IS NULL OR c.language = $3)

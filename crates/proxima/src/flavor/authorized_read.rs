@@ -143,6 +143,31 @@ where
         .collect())
 }
 
+/// The stored owner ids of the caller's read access set (`S_read`).
+///
+/// For a flavor that runs its own candidate scan before admitting through
+/// [`Engine::query`]. Binding this array into the scan's `owner_id = ANY($n)`
+/// is what makes a `gin(owner_id, search_tsv)` projection index reachable:
+/// with the owner reached through a join instead, the planner has the two
+/// halves of a two-column index on two relations and uses neither. It is a
+/// narrowing, never a widening — the same set the admit would have applied,
+/// applied one phase earlier.
+///
+/// # Errors
+///
+/// Returns `Forbidden` when the context resolves to an empty read set.
+pub async fn read_owner_ids(
+    engine: &Engine,
+    authz: &AuthzContext,
+) -> Result<Vec<uuid::Uuid>, ToolError> {
+    Ok(engine
+        .authorized_read_owners(authz)
+        .await?
+        .into_iter()
+        .map(proxima_core::OwnerRef::stored_owner_id)
+        .collect())
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn authorized_payloads(
     engine: &Engine,

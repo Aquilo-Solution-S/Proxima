@@ -104,8 +104,15 @@ impl Tool for CodeSearchCommitsTool {
             let engine = super::engine(&ctx)?;
             let candidate_limit = i64::from(limit.saturating_mul(4).max(limit).min(200));
 
-            let commit_rows =
-                search_commit_rows(pool.pool(), query, repo_id, candidate_limit).await?;
+            let read_owner_ids = super::read_owner_ids(&engine, &ctx).await?;
+            let commit_rows = search_commit_rows(
+                pool.pool(),
+                query,
+                repo_id,
+                candidate_limit,
+                &read_owner_ids,
+            )
+            .await?;
             let commit_ids = commit_rows
                 .iter()
                 .map(|row| row.memory_id)
@@ -152,6 +159,7 @@ impl Tool for CodeSearchCommitsTool {
                 repo_id,
                 args.change_kind.as_deref(),
                 candidate_limit,
+                &read_owner_ids,
             )
             .await?;
             let summary_ids = summary_rows
@@ -212,6 +220,17 @@ impl Tool for CodeSearchCommitsTool {
 /// thing at the same number. Scores in the exact arm therefore MOVE: a raw
 /// `ts_rank_cd` of `r` becomes `0.50 + LEAST(r, 1.0) * 0.50`. That is
 /// monotone in `r`, so the ORDER within this arm is unchanged.
+///
+/// `p.owner_id = ANY($4)` carries the caller's resolved read set. Without
+/// it the composite `gin(owner_id, search_tsv)` is unreachable — the
+/// planner sees one indexed column on `p` and the other nowhere — and the
+/// scan degrades to driving from `commit_v1` and probing the projection by
+/// primary key, once per candidate. Both commit arms drive from the
+/// sidecar rather than ranking the projection alone (§4.7 R6) because
+/// `repo_id` and `change_kind` are the selective predicates and applying
+/// them after a projection-side `LIMIT` would answer a repo-scoped search
+/// with the wrong repository's rows. See `search_chunks::CHUNK_GIN_SQL`
+/// for the full argument.
 static COMMIT_SEARCH_SQL: LazyLock<String> = LazyLock::new(|| {
     let (exact_floor, exact_width) = band_parts(BAND_EXACT);
     let (rescue_floor, rescue_width) = band_parts(BAND_RESCUE);
@@ -234,6 +253,7 @@ FROM q, proxima_code.commit_v1 c
 JOIN proxima_code.projection p
   ON p.memory_id = c.t
  AND p.schema_id = 'proxima-code/commit-v1'
+ AND p.owner_id = ANY($4::uuid[])
 WHERE ($2::uuid IS NULL OR c.repo_id = $2)
   AND (p.search_tsv @@ q.tsq
        OR (q.any_tsq IS NOT NULL AND p.search_tsv @@ q.any_tsq))
@@ -266,6 +286,7 @@ FROM q, proxima_code.commit_summary_v1 s
 JOIN proxima_code.projection p
   ON p.memory_id = s.t
  AND p.schema_id = 'proxima-code/commit-summary-v1'
+ AND p.owner_id = ANY($5::uuid[])
 WHERE ($2::uuid IS NULL OR s.repo_id = $2)
   AND ($3::text IS NULL OR s.change_kind = $3)
   AND (p.search_tsv @@ q.tsq
@@ -314,12 +335,14 @@ async fn search_commit_rows(
     query: &str,
     repo_id: Option<Uuid>,
     limit: i64,
+    read_owner_ids: &[Uuid],
 ) -> Result<Vec<ScoredMemoryRow>, ToolError> {
     let gin: Vec<ScoredMemoryRow> = // SQL-POLICY: fixed-fragment
     sqlx::query_as(sqlx::AssertSqlSafe(COMMIT_SEARCH_SQL.as_str()))
         .bind(query)
         .bind(repo_id)
         .bind(limit)
+        .bind(read_owner_ids)
         .fetch_all(pool)
         .await
         .map_err(map_storage)?;
@@ -342,6 +365,7 @@ async fn search_summary_rows(
     repo_id: Option<Uuid>,
     change_kind: Option<&str>,
     limit: i64,
+    read_owner_ids: &[Uuid],
 ) -> Result<Vec<ScoredMemoryRow>, ToolError> {
     let gin: Vec<ScoredMemoryRow> = // SQL-POLICY: fixed-fragment
     sqlx::query_as(sqlx::AssertSqlSafe(SUMMARY_SEARCH_SQL.as_str()))
@@ -349,6 +373,7 @@ async fn search_summary_rows(
         .bind(repo_id)
         .bind(change_kind)
         .bind(limit)
+        .bind(read_owner_ids)
         .fetch_all(pool)
         .await
         .map_err(map_storage)?;
