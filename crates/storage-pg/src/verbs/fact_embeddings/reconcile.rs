@@ -2,7 +2,7 @@ use proxima_core::llm::{
     EMBED_LIVENESS_PROBE, EmbeddingClient, LlmError, embed_in_chunks_after_failure_with_timeout,
     embed_many_with_timeout, embed_with_timeout,
 };
-use proxima_core::verbs::schema::MemorySearchProjection;
+use proxima_core::verbs::schema::MemoryEmbedUnit;
 use proxima_core::{EmbeddableEntityRef, EmbeddingJobClaim, StorageError};
 use sqlx::PgPool;
 
@@ -195,7 +195,7 @@ pub async fn drain_embedding_jobs_inline(
     pool: &PgPool,
     client: &dyn EmbeddingClient,
     limit: i64,
-    projections: &[MemorySearchProjection],
+    units: &[MemoryEmbedUnit],
     policy: proxima_core::EmbeddingRuntimePolicy,
 ) -> Result<EmbeddingInlineDrainOutcome, StorageError> {
     let mut remaining = ensure_nonnegative_limit(limit)?;
@@ -213,7 +213,7 @@ pub async fn drain_embedding_jobs_inline(
             StorageError::ConstraintViolation("claimed embedding job count too large".into())
         })?);
         let keep_draining =
-            drain_claimed_jobs(pool, client, claims, projections, policy, &mut outcome).await?;
+            drain_claimed_jobs(pool, client, claims, units, policy, &mut outcome).await?;
         if !keep_draining {
             break;
         }
@@ -228,7 +228,7 @@ async fn drain_claimed_jobs(
     pool: &PgPool,
     client: &dyn EmbeddingClient,
     claims: Vec<EmbeddingJobClaim>,
-    projections: &[MemorySearchProjection],
+    units: &[MemoryEmbedUnit],
     policy: proxima_core::EmbeddingRuntimePolicy,
     outcome: &mut EmbeddingInlineDrainOutcome,
 ) -> Result<bool, StorageError> {
@@ -241,7 +241,7 @@ async fn drain_claimed_jobs(
         .iter()
         .map(|claim| (claim.owner, claim.entity_kind, claim.entity_id))
         .collect();
-    let texts = load_embedding_texts(pool, &items, &[], projections).await?;
+    let texts = load_embedding_texts(pool, &items, &[], units).await?;
     let mut batch = Vec::with_capacity(claims.len());
     for (claim, text) in claims.into_iter().zip(texts) {
         match text {

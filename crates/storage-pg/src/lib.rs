@@ -38,6 +38,7 @@ mod pg_ident;
 mod pgvector;
 mod pool_config;
 mod ports;
+pub mod projection;
 pub mod sidecars;
 pub mod query {
     #[cfg(any(test, feature = "test-fixtures", debug_assertions))]
@@ -512,15 +513,6 @@ pub async fn ensure_core_schema_markers(pool: &PgPool) -> Result<(), StorageErro
            THEN 'missing function proxima_core.lexical_config()'
          WHEN to_regprocedure('proxima_core.lexical_language_forget(regconfig)') IS NULL
            THEN 'missing function proxima_core.lexical_language_forget(regconfig)'
-         WHEN to_regclass('proxima_code.code_chunk_v1') IS NOT NULL
-              AND NOT EXISTS (
-                  SELECT 1
-                    FROM information_schema.columns
-                   WHERE table_schema = 'proxima_code'
-                     AND table_name = 'code_chunk_v1'
-                     AND column_name = 'search_tsv'
-              )
-           THEN 'missing column proxima_code.code_chunk_v1.search_tsv'
          WHEN COALESCE((
                   SELECT array_agg(e.enumlabel::text ORDER BY e.enumsortorder)
                     FROM pg_enum e
@@ -757,6 +749,7 @@ pub struct PgStorage {
     pool: PgPool,
     sidecars: PgSidecarRegistryFrozen,
     search_projections: Vec<proxima_core::verbs::schema::MemorySearchProjection>,
+    embed_units: Vec<proxima_core::verbs::schema::MemoryEmbedUnit>,
     tuning: PgTuning,
     embedding_runtime_policy: proxima_core::EmbeddingRuntimePolicy,
     cold: Arc<dyn proxima_core::ColdObjectStore>,
@@ -909,6 +902,7 @@ impl PgStorage {
             pool,
             sidecars: core_pg_sidecars(),
             search_projections: Vec::new(),
+            embed_units: Vec::new(),
             tuning,
             embedding_runtime_policy: proxima_core::EmbeddingRuntimePolicy::default(),
             cold: Arc::new(verbs::forget::MemoryColdStore::default()),
@@ -966,6 +960,18 @@ impl PgStorage {
         search_projections: Vec<proxima_core::verbs::schema::MemorySearchProjection>,
     ) -> Self {
         self.search_projections = search_projections;
+        self
+    }
+
+    /// Frozen embed units used to load embed text from the sidecar column
+    /// the row's schema names. Set at boot from
+    /// [`proxima_core::FlavorRegistryFrozen::embed_units`].
+    #[must_use]
+    pub fn with_embed_units(
+        mut self,
+        embed_units: Vec<proxima_core::verbs::schema::MemoryEmbedUnit>,
+    ) -> Self {
+        self.embed_units = embed_units;
         self
     }
 
@@ -1041,7 +1047,7 @@ impl PgStorage {
             &self.pool,
             client,
             limit,
-            &self.search_projections,
+            &self.embed_units,
             self.embedding_runtime_policy,
         )
         .await

@@ -3047,6 +3047,15 @@ async fn ingest_commit_summary(
     .bind(change_kind)
     .execute(pool)
     .await?;
+    // Hand-seeded sidecar, hand-kept projection: the read path ranks on the
+    // projection now, so a fixture that skips it is invisible to search.
+    common::project_code(
+        pool,
+        memory_id,
+        <proxima_code::CommitSummaryV1 as AbstractionPayload>::SCHEMA_ID,
+        None,
+    )
+    .await?;
     Ok(memory_id)
 }
 

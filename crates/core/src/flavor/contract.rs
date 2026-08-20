@@ -845,6 +845,12 @@ pub struct FlavorContract {
     pub tools: &'static [ToolContract],
     /// Non-empty only for ordinal 0.
     pub resources: &'static [ResourceContract],
+    /// The flavor's lexical projection table, or a declared absence.
+    ///
+    /// Derived, not stamped: a projection row is a function of a sidecar
+    /// row, so it is deliberately absent from `proxima_core.flavor_surface`
+    /// (whose domain is "tables a `memory` row may stamp") and present here.
+    pub projection: ProjectionDecl,
 }
 
 /// The ordinal that marks core. Load-bearing at runtime in exactly two
@@ -860,13 +866,40 @@ impl FlavorContract {
     }
 
     /// Every surface this flavor declares, in declaration order: schema
-    /// sidecars, then flavor state, then (for flavor #0) the kernel spine.
-    pub fn all_surfaces(&self) -> impl Iterator<Item = &'static Surface> {
-        self.schemas
+    /// sidecars, then flavor state, then (for flavor #0) the kernel spine,
+    /// then the DERIVED projection surface.
+    ///
+    /// The projection surface is computed from [`ProjectionSpec`] rather
+    /// than written down, so it cannot drift from the DDL the generator
+    /// emits from the same spec — and the lexical-stamp guardrail, which
+    /// reads this iterator, follows the `lexical_language` column to its
+    /// new home without being told.
+    pub fn all_surfaces(&self) -> impl Iterator<Item = Surface> {
+        let schemas: &'static [SchemaContract] = self.schemas;
+        let state: &'static [Surface] = self.state_surfaces;
+        let kernel: &'static [Surface] = self.kernel_surfaces;
+        let projection = self.projection.spec().copied();
+        schemas
             .iter()
-            .flat_map(|schema| schema.surfaces.iter())
-            .chain(self.state_surfaces.iter())
-            .chain(self.kernel_surfaces.iter())
+            .flat_map(|schema| schema.surfaces.iter().copied())
+            .chain(state.iter().copied())
+            .chain(kernel.iter().copied())
+            .chain(projection.map(|spec| spec.surface()))
+    }
+
+    /// Every schema of this flavor that is a search surface, paired with
+    /// its sidecar table. The generator's whole input.
+    pub fn projected_schemas(
+        &self,
+    ) -> impl Iterator<Item = (&'static SchemaContract, &'static str)> {
+        let schemas: &'static [SchemaContract] = self.schemas;
+        schemas.iter().filter_map(|schema| {
+            if schema.search.is_projected() {
+                schema.sidecar_table.map(|table| (schema, table))
+            } else {
+                None
+            }
+        })
     }
 
     /// Sidecar tables whose rows stay with the source owner on transfer.

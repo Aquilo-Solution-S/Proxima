@@ -45,6 +45,8 @@ impl PgSidecarRegistry {
                     citation_mapping_insert: None,
                     goal_insert: None,
                     goal_copy: None,
+                    projection_insert: None,
+                    projection_table: None,
                 },
             );
             assert!(
@@ -108,6 +110,8 @@ impl PgSidecarRegistry {
                     citation_mapping_insert: None,
                     goal_insert: Some(insert_goal_sidecar::<P>),
                     goal_copy: Some(copy_goal_sidecar::<P>),
+                    projection_insert: None,
+                    projection_table: None,
                 },
             );
             assert!(
@@ -142,6 +146,8 @@ impl PgSidecarRegistry {
                 citation_mapping_insert: None,
                 goal_insert: None,
                 goal_copy: None,
+                projection_insert: None,
+                projection_table: None,
             },
         );
         assert!(
@@ -179,6 +185,8 @@ impl PgSidecarRegistry {
                     citation_mapping_insert: Some(insert_citation_mapping_sidecar::<P>),
                     goal_insert: None,
                     goal_copy: None,
+                    projection_insert: None,
+                    projection_table: None,
                 },
             );
             assert!(
@@ -212,6 +220,8 @@ impl PgSidecarRegistry {
                 citation_mapping_insert: None,
                 goal_insert: None,
                 goal_copy: None,
+                projection_insert: None,
+                projection_table: None,
             },
         );
         assert!(
@@ -236,7 +246,7 @@ impl PgSidecarRegistry {
     /// an insert-capable kind has no typed inserter, or a registration's
     /// `owner_pinned` flag contradicts its schema's declared transfer rule.
     pub fn freeze_against(
-        self,
+        mut self,
         registry: &proxima_core::FlavorRegistryFrozen,
     ) -> Result<PgSidecarRegistryFrozen, StorageError> {
         let schemas = registry.schemas();
@@ -323,10 +333,60 @@ impl PgSidecarRegistry {
         }
 
         self.check_owner_pinned_against_contracts(registry)?;
+        self.attach_projections(registry)?;
 
         Ok(PgSidecarRegistryFrozen {
             entries: Arc::new(self.entries),
         })
+    }
+
+    /// Generate each projected schema's maintenance statement, once, here.
+    ///
+    /// The write path then has no decision left to make: a schema whose
+    /// contract declares a search surface carries the `INSERT` that keeps
+    /// its projection row, and one that does not carries `None`. Nothing
+    /// downstream re-reads the contract, so "the write path forgot a new
+    /// searchable schema" is not a reachable state — registering the
+    /// sidecar is what wires it.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Internal` when a declared table, column or configuration
+    /// name is not a valid `PostgreSQL` identifier.
+    fn attach_projections(
+        &mut self,
+        registry: &proxima_core::FlavorRegistryFrozen,
+    ) -> Result<(), StorageError> {
+        for entry in self.entries.values_mut() {
+            if !matches!(
+                entry.key.kind,
+                PayloadKind::Fact | PayloadKind::Abstraction | PayloadKind::Perspective
+            ) {
+                continue;
+            }
+            let Some((flavor_id, _)) = entry.key.schema_id.as_str().split_once('/') else {
+                continue;
+            };
+            let Some(contract) = registry.flavor_contract(flavor_id) else {
+                continue;
+            };
+            let Some(spec) = contract.projection.spec() else {
+                continue;
+            };
+            let Some(schema) = contract
+                .schemas
+                .iter()
+                .find(|schema| schema.schema_id() == entry.key.schema_id)
+            else {
+                continue;
+            };
+            if !schema.search.is_projected() {
+                continue;
+            }
+            entry.projection_insert = Some(crate::projection::projection_insert_sql(spec, schema)?);
+            entry.projection_table = Some(spec.table.to_owned());
+        }
+        Ok(())
     }
 
     /// The macro flag and the contract must agree about which sidecars stay

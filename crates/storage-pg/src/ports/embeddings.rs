@@ -24,7 +24,7 @@ impl EmbeddingTextPort for PgStorage {
             entity_kind,
             memory_id,
             non_embeddable_schemas,
-            &self.search_projections,
+            &self.embed_units,
         )
         .await
     }
@@ -38,7 +38,7 @@ impl EmbeddingTextPort for PgStorage {
             &self.pool,
             items,
             non_embeddable_schemas,
-            &self.search_projections,
+            &self.embed_units,
         )
         .await
     }

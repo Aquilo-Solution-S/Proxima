@@ -91,10 +91,13 @@ async fn code_hot_path_plans_use_expected_indexes() {
             .fetch_one(&mut *tx)
             .await?;
         let chunk_plan = plan.to_string();
+        // The vector moved to `proxima_code.projection`: the scan must reach
+        // it by an index — the composite GIN on a large corpus, the primary
+        // key on a template-sized one — never by a sequential scan.
         assert!(
-            chunk_plan.contains("idx_code_chunk_v1_search_tsv")
-                || chunk_plan.contains("idx_code_chunk_v1_nk"),
-            "chunk GIN must index code_chunk_v1; plan:\n{chunk_plan}"
+            chunk_plan.contains("code_projection_owner_tsv_gin")
+                || chunk_plan.contains("projection_pkey"),
+            "chunk scan must index the projection; plan:\n{chunk_plan}"
         );
 
         let heads = file_revision_heads_sql_for_tests();

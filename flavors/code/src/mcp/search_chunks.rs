@@ -1,6 +1,7 @@
 //! Code-chunk search is the flavor-scoped reference:
 //!
-//! 1. **content** — GIN/`search_tsv` (and optional HNSW) on `code_chunk_v1` only
+//! 1. **content** — GIN on `proxima_code.projection` (and optional HNSW),
+//!    joined to `code_chunk_v1` for its filters and literal bonuses
 //! 2. **admit** — `Engine::query` `HeadsOnly` (`memory_head`)
 //! 3. **pins** — call-neighbour index, only if `include_calls`
 //!
@@ -8,6 +9,7 @@
 //! scans this table.
 
 use std::collections::{HashMap, HashSet};
+use std::sync::LazyLock;
 
 use proxima_core::MemoryId;
 use proxima_core::mcp::cursor as wire_cursor;
@@ -17,6 +19,9 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::contract::{
+    CHUNK_BAND_RARE_ALL, CHUNK_BAND_RARE_ANY, CHUNK_BAND_RESCUE_ANY, CHUNK_BAND_STRICT, band_parts,
+};
 use crate::payloads::{CodeChunkV1, FileState};
 use proxima_storage_pg::query::{CodeChunkVectorCandidate, CodeChunkVectorFilters};
 
@@ -791,7 +796,8 @@ struct ChunkSidecarScan<'a> {
     distinctive: &'a str,
 }
 
-/// Phase 1: GIN/`search_tsv` on `code_chunk_v1` only. No `proxima_core.*`.
+/// Phase 1: GIN on `proxima_code.projection` only. No `proxima_core.*`
+/// content tables.
 ///
 /// `proxima_code.code_lexical_config()` is pinned (code is not the
 /// deployment's prose language).
@@ -803,7 +809,8 @@ async fn scan_chunk_sidecar(
     query: &str,
     scan: &ChunkSidecarScan<'_>,
 ) -> Result<Vec<ChunkCandidateRow>, ToolError> {
-    sqlx::query_as(CHUNK_GIN_SQL)
+    // SQL-POLICY: fixed-fragment
+    sqlx::query_as(sqlx::AssertSqlSafe(CHUNK_GIN_SQL.as_str()))
         .bind(query)
         .bind(scan.repo_id)
         .bind(scan.language)
@@ -816,7 +823,20 @@ async fn scan_chunk_sidecar(
         .map_err(map_storage)
 }
 
-const CHUNK_GIN_SQL: &str = "WITH q AS (
+/// The GIN arm, over `proxima_code.projection`.
+///
+/// Built from the contract's own bands rather than from float literals:
+/// `CHUNK_BAND_STRICT` and its three siblings ARE these numbers, and a
+/// band that moved in the contract without moving here would be a score
+/// nobody could explain. The rendering is `{:.2}`, so `0.6` becomes
+/// `0.60` — the same `numeric` to `PostgreSQL`, so no score moves.
+static CHUNK_GIN_SQL: LazyLock<String> = LazyLock::new(|| {
+    let (strict_floor, strict_width) = band_parts(CHUNK_BAND_STRICT);
+    let (rare_all_floor, rare_all_width) = band_parts(CHUNK_BAND_RARE_ALL);
+    let (rare_any_floor, rare_any_width) = band_parts(CHUNK_BAND_RARE_ANY);
+    let (rescue_floor, rescue_width) = band_parts(CHUNK_BAND_RESCUE_ANY);
+    format!(
+        "WITH q AS (
              SELECT websearch_to_tsquery(proxima_code.code_lexical_config(),
                         proxima_core.lexical_scrub($1)) AS tsq,
                     NULLIF(
@@ -837,17 +857,17 @@ const CHUNK_GIN_SQL: &str = "WITH q AS (
          SELECT c.t AS memory_id,
                 (
                     GREATEST(
-                        CASE WHEN c.search_tsv @@ q.tsq
-                             THEN 4.0 + LEAST(ts_rank_cd(c.search_tsv, q.tsq, 32), 1.0) * 0.6
+                        CASE WHEN p.search_tsv @@ q.tsq
+                             THEN {strict_floor} + LEAST(ts_rank_cd(p.search_tsv, q.tsq, 32), 1.0) * {strict_width}
                              ELSE 0.0 END,
-                        CASE WHEN q.rare_all_tsq IS NOT NULL AND c.search_tsv @@ q.rare_all_tsq
-                             THEN 3.0 + LEAST(ts_rank(c.search_tsv, q.rare_all_tsq, 1|32) * 100.0, 1.0) * 0.6
+                        CASE WHEN q.rare_all_tsq IS NOT NULL AND p.search_tsv @@ q.rare_all_tsq
+                             THEN {rare_all_floor} + LEAST(ts_rank(p.search_tsv, q.rare_all_tsq, 1|32) * 100.0, 1.0) * {rare_all_width}
                              ELSE 0.0 END,
-                        CASE WHEN q.rare_any_tsq IS NOT NULL AND c.search_tsv @@ q.rare_any_tsq
-                             THEN 2.0 + LEAST(ts_rank(c.search_tsv, q.rare_any_tsq, 1|32) * 100.0, 1.0) * 0.6
+                        CASE WHEN q.rare_any_tsq IS NOT NULL AND p.search_tsv @@ q.rare_any_tsq
+                             THEN {rare_any_floor} + LEAST(ts_rank(p.search_tsv, q.rare_any_tsq, 1|32) * 100.0, 1.0) * {rare_any_width}
                              ELSE 0.0 END,
-                        CASE WHEN q.any_tsq IS NOT NULL AND c.search_tsv @@ q.any_tsq
-                             THEN 1.0 + LEAST(ts_rank(c.search_tsv, q.any_tsq, 1|32) * 100.0, 1.0) * 0.6
+                        CASE WHEN q.any_tsq IS NOT NULL AND p.search_tsv @@ q.any_tsq
+                             THEN {rescue_floor} + LEAST(ts_rank(p.search_tsv, q.any_tsq, 1|32) * 100.0, 1.0) * {rescue_width}
                              ELSE 0.0 END
                     )
                     + CASE WHEN c.chunk_type <> 'file' THEN 0.3 ELSE 0.0 END
@@ -860,24 +880,29 @@ const CHUNK_GIN_SQL: &str = "WITH q AS (
                     + CASE WHEN lower(c.file_path) LIKE $4 ESCAPE '\\' THEN 6.0 ELSE 0.0 END
                     + CASE WHEN lower(c.text) LIKE $4 ESCAPE '\\' THEN 4.0 ELSE 0.0 END
                 )::real AS literal_bonus
-           FROM proxima_code.code_chunk_v1 c, q
+           FROM proxima_code.code_chunk_v1 c
+           JOIN proxima_code.projection p
+             ON p.memory_id = c.t
+            AND p.schema_id = 'proxima-code/code-chunk-v1', q
           WHERE c.state = 'Present'
             AND ($2::uuid IS NULL OR c.repo_id = $2)
             AND ($3::text IS NULL OR c.language = $3)
             AND ($5::text IS NULL OR c.chunk_type = $5)
             AND (
-                c.search_tsv @@ q.tsq
-                OR (q.any_tsq IS NOT NULL AND c.search_tsv @@ q.any_tsq)
-                OR (q.rare_any_tsq IS NOT NULL AND c.search_tsv @@ q.rare_any_tsq)
+                p.search_tsv @@ q.tsq
+                OR (q.any_tsq IS NOT NULL AND p.search_tsv @@ q.any_tsq)
+                OR (q.rare_any_tsq IS NOT NULL AND p.search_tsv @@ q.rare_any_tsq)
             )
           ORDER BY score DESC, c.t DESC
-          LIMIT $6";
+          LIMIT $6"
+    )
+});
 
 #[cfg(any(test, debug_assertions))]
 #[doc(hidden)]
 #[must_use]
 pub fn chunk_gin_sql_for_tests() -> &'static str {
-    CHUNK_GIN_SQL
+    CHUNK_GIN_SQL.as_str()
 }
 
 /// Substring fallback: only when GIN returned nothing. Same filters, no `@@`.

@@ -1042,6 +1042,18 @@ pub async fn hydrate_memory(
     .await
     .map_err(map_err)?;
     restore_registered_sidecars(tx, sidecars, &rec.sidecar_dumps).await?;
+    // DEFERRED (v0.0.8): the cold dump predates the projection and carries
+    // no `lexical_language` — the sidecars stopped stamping one when the
+    // projection took the column over. A hydrated row therefore re-derives
+    // its vector at the DEPLOYMENT default rather than at the language the
+    // original write asked for. `hydrate_memory` has no production caller
+    // at this commit; restoring language fidelity means putting the stamp
+    // in the cold record, which is a cold-format change.
+    for (table, _) in &rec.sidecar_dumps {
+        sidecars
+            .rebuild_projection_for_table(tx, proxima_core::MemoryId::new(rec.row.t), table, None)
+            .await?;
+    }
     let hydrate_line = rec.sketch.clone().unwrap_or_else(|| {
         rec.sidecar_dumps
             .iter()

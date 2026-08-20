@@ -50,6 +50,7 @@ impl WriteSession for PgWriteSession {
     ) -> Result<FactIngestOutcome, StorageError> {
         let fact_sidecars = self.sidecars.clone();
         let payloads = sidecar_payloads.to_vec();
+        let language = authorized.draft().lexical_language.clone();
         let tables = self.sidecars.tables_for_payloads(sidecar_payloads)?;
         let owner = authorized.owner_write_permit().owner();
         let owner_id =
@@ -71,7 +72,12 @@ impl WriteSession for PgWriteSession {
                 Box::pin(async move {
                     for payload in &payloads {
                         fact_sidecars
-                            .insert_memory_sidecar(tx, outcome.memory_id, payload)
+                            .insert_memory_sidecar(
+                                tx,
+                                outcome.memory_id,
+                                payload,
+                                language.as_deref(),
+                            )
                             .await?;
                     }
                     Ok(())
@@ -120,6 +126,7 @@ impl WriteSession for PgWriteSession {
             .await?;
         let sidecars = self.sidecars.clone();
         let sidecar_payload = req.sidecar_payload.clone();
+        let language = req.lexical_language.map(str::to_owned);
         let tables = self
             .sidecars
             .tables_for_payloads(std::slice::from_ref(&sidecar_payload))?;
@@ -144,7 +151,12 @@ impl WriteSession for PgWriteSession {
             move |tx, outcome| {
                 Box::pin(async move {
                     sidecars
-                        .insert_memory_sidecar(tx, outcome.memory_id, &sidecar_payload)
+                        .insert_memory_sidecar(
+                            tx,
+                            outcome.memory_id,
+                            &sidecar_payload,
+                            language.as_deref(),
+                        )
                         .await
                 })
             },

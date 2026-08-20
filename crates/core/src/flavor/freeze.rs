@@ -426,9 +426,9 @@ pub(crate) fn schema_capability_map(
 mod tests {
     use crate::SearchProjectionColumnKind;
     use crate::flavor::contract::{
-        EmbeddingRecipe, FlavorContract, LanguagePolicy, Provenance, ResourceContract,
-        SchemaContract, SchemaRef, SearchProjectionDecl, SubstringArm, ToolContract, TransferRule,
-        WeightedField,
+        EmbeddingRecipe, FlavorContract, LanguagePolicy, ProjectionDecl, Provenance,
+        ResourceContract, SchemaContract, SchemaRef, SearchProjectionDecl, SubstringArm,
+        ToolContract, TransferRule, WeightedField,
     };
     use crate::verbs::schema::{PayloadKind, SchemaInfo};
     use crate::{FlavorRegistry, FlavorRegistryError, SchemaId, SchemaVersion};
@@ -449,6 +449,9 @@ mod tests {
             kernel_surfaces: &[],
             tools,
             resources,
+            projection: ProjectionDecl::None {
+                why: "a fixture registry has no schema that is a search surface",
+            },
         }
     }
 

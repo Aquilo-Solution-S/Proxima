@@ -1,6 +1,7 @@
 //! Sidecar-first core search: GIN on the sidecar, admit via memory_head.
 #![allow(clippy::doc_markdown, clippy::too_many_lines)]
 
+use proxima_core::flavor::{LanguagePolicy, WEIGHT_UNIFORM};
 use proxima_core::storage_ports::MemoryReadPort;
 use proxima_core::verbs::query::{
     EntityKind, MemorySearchRequest, SearchMode, SearchOrder, SupersessionStatus, TagMatch,
@@ -14,26 +15,16 @@ use proxima_storage_pg::PgStorage;
 use uuid::Uuid;
 
 fn note_projection() -> MemorySearchProjection {
-    MemorySearchProjection {
-        schema_id: SchemaId::new("core/agent-note-v1".to_string()),
-        schema_version: SchemaVersion::new(1),
-        kind: PayloadKind::Fact,
-        sidecar_table: "proxima_core.agent_note_v1".into(),
-        fields: vec![
-            MemorySearchProjectionField {
-                column: "title".into(),
-                kind: SearchProjectionColumnKind::Text,
-            },
-            MemorySearchProjectionField {
-                column: "body".into(),
-                kind: SearchProjectionColumnKind::Text,
-            },
-        ],
-        tag_column: Some("tags".into()),
-        tsv_column: Some("search_tsv".into()),
-        embed_text_column: Some("embed_text".into()),
-        language_column: Some("lexical_language".into()),
-    }
+    // The shipped declaration, not a second copy of it. This fixture used
+    // to restate `core/agent-note-v1`'s columns by hand, which meant the
+    // test agreed with the contract only by coincidence.
+    proxima_core::FlavorRegistry::new()
+        .freeze_or_panic_for_tests()
+        .search_projections()
+        .iter()
+        .find(|projection| projection.schema_id.as_str() == "core/agent-note-v1")
+        .expect("core/agent-note-v1 is a search surface")
+        .clone()
 }
 
 fn search_req(owner: OwnerRef, query: &str) -> MemorySearchRequest {
@@ -59,11 +50,55 @@ fn search_req(owner: OwnerRef, query: &str) -> MemorySearchRequest {
     }
 }
 
+/// The production maintenance statement, run against a hand-seeded row.
+///
+/// The tests below write `memory` and sidecar rows directly (they are
+/// testing the READ path), so they have to keep the projection themselves.
+/// They do it with the generator's own statement rather than a restated
+/// INSERT: a test that hand-wrote the vector expression would pass while
+/// production wrote a different one.
+async fn project(
+    pool: &sqlx::PgPool,
+    t: Uuid,
+    schema_id: &str,
+    language: Option<&str>,
+) -> Result<(), sqlx::Error> {
+    let spec = proxima_core::FLAVOR_0
+        .projection
+        .spec()
+        .expect("flavor #0 declares a projection");
+    let schema = proxima_core::FLAVOR_0
+        .schemas
+        .iter()
+        .find(|schema| schema.schema_id().as_str() == schema_id)
+        .expect("declared schema");
+    let sql = proxima_storage_pg::projection::projection_insert_sql(spec, schema)
+        .expect("the generator emits a valid statement");
+    // SQL-POLICY: generated
+    sqlx::query(sqlx::AssertSqlSafe(sql))
+        .bind(t)
+        .bind(language)
+        .bind(schema_id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
 async fn seed_note(
     pool: &sqlx::PgPool,
     owner: OwnerRef,
     title: &str,
     body: &str,
+) -> Result<Uuid, sqlx::Error> {
+    seed_note_lang(pool, owner, title, body, None).await
+}
+
+async fn seed_note_lang(
+    pool: &sqlx::PgPool,
+    owner: OwnerRef,
+    title: &str,
+    body: &str,
+    language: Option<&str>,
 ) -> Result<Uuid, sqlx::Error> {
     let owner_id = owner.stored_owner_id();
     sqlx::query(
@@ -104,57 +139,7 @@ async fn seed_note(
     .bind(body)
     .execute(pool)
     .await?;
-    Ok(t)
-}
-
-async fn seed_note_lang(
-    pool: &sqlx::PgPool,
-    owner: OwnerRef,
-    title: &str,
-    body: &str,
-    language: &str,
-) -> Result<Uuid, sqlx::Error> {
-    let owner_id = owner.stored_owner_id();
-    sqlx::query(
-        "INSERT INTO proxima_core.owners (owner_id, kind)
-         VALUES ($1, 'personal')
-         ON CONFLICT DO NOTHING",
-    )
-    .bind(owner_id)
-    .execute(pool)
-    .await?;
-    let handle = Uuid::now_v7();
-    let t = Uuid::now_v7();
-    sqlx::query(
-        "INSERT INTO proxima_core.memory_head (handle, kind, schema_id, owner_id, t)
-         VALUES ($1, 'fact', 'core/agent-note-v1', $2, $3)",
-    )
-    .bind(handle)
-    .bind(owner_id)
-    .bind(t)
-    .execute(pool)
-    .await?;
-    sqlx::query(
-        "INSERT INTO proxima_core.memory (handle, t, kind, owner_id, schema_id)
-         VALUES ($1, $2, 'fact', $3, 'core/agent-note-v1')",
-    )
-    .bind(handle)
-    .bind(t)
-    .bind(owner_id)
-    .execute(pool)
-    .await?;
-    sqlx::query(
-        "INSERT INTO proxima_core.agent_note_v1
-            (t, note_id, title, body, tags, lexical_language)
-         VALUES ($1, $2, $3, $4, '{}', $5::regconfig)",
-    )
-    .bind(t)
-    .bind(Uuid::now_v7())
-    .bind(title)
-    .bind(body)
-    .bind(language)
-    .execute(pool)
-    .await?;
+    project(pool, t, "core/agent-note-v1", language).await?;
     Ok(t)
 }
 
@@ -330,6 +315,25 @@ async fn tagged_search_scans_flavor_sidecars() {
         )
         .execute(pool)
         .await?;
+        // A flavor's projection lives in the flavor's own schema. This is
+        // the generator's shape, hand-built here because the synthetic
+        // `proxima-docs` flavor has no contract to run the generator over.
+        sqlx::query(
+            "CREATE TABLE proxima_docs.projection (
+                memory_id uuid NOT NULL
+                    REFERENCES proxima_core.memory (t) ON DELETE CASCADE,
+                schema_id text NOT NULL,
+                owner_id uuid NOT NULL REFERENCES proxima_core.owners (owner_id),
+                search_tsv tsvector NOT NULL,
+                tag text[] NOT NULL DEFAULT '{}',
+                lexical_language regconfig NOT NULL
+                    DEFAULT proxima_core.lexical_config()
+                    REFERENCES proxima_core.lexical_languages (config),
+                PRIMARY KEY (memory_id, schema_id)
+             )",
+        )
+        .execute(pool)
+        .await?;
 
         let handle = Uuid::now_v7();
         let t = Uuid::now_v7();
@@ -393,6 +397,27 @@ async fn tagged_search_scans_flavor_sidecars() {
         .bind(t)
         .execute(pool)
         .await?;
+        sqlx::query(
+            "INSERT INTO proxima_docs.projection
+                (memory_id, schema_id, owner_id, search_tsv, tag)
+             SELECT c.t,
+                    'proxima-docs/section-text-v1',
+                    m.owner_id,
+                    COALESCE(
+                        proxima_core.lexical_tsv(
+                            proxima_core.lexical_config(),
+                            proxima_core.lexical_join(VARIADIC ARRAY[NULLIF(c.text, '')])
+                        ),
+                        ''::tsvector
+                    ),
+                    c.tags
+               FROM proxima_docs.section_text_v1 c
+               JOIN proxima_core.memory m ON m.t = c.t
+              WHERE c.t = $1",
+        )
+        .bind(t)
+        .execute(pool)
+        .await?;
 
         let projection = MemorySearchProjection {
             schema_id: SchemaId::new("proxima-docs/section-text-v1".to_string()),
@@ -402,11 +427,14 @@ async fn tagged_search_scans_flavor_sidecars() {
             fields: vec![MemorySearchProjectionField {
                 column: "text".into(),
                 kind: SearchProjectionColumnKind::Text,
+                weight: WEIGHT_UNIFORM,
             }],
+            projection_table: "proxima_docs.projection".into(),
             tag_column: Some("tags".into()),
-            tsv_column: None,
-            embed_text_column: Some("text".into()),
-            language_column: None,
+            language: LanguagePolicy::PerRow {
+                column: "lexical_language",
+            },
+            rank_weights: None,
         };
 
         let unscoped = pg
@@ -450,7 +478,7 @@ async fn lexical_search_matches_german_via_lexical_languages() {
             owner,
             "Tiere",
             "die Katzen schlafen auf dem Sofa",
-            "german",
+            Some("german"),
         )
         .await?;
         let registered: bool = sqlx::query_scalar(
@@ -502,8 +530,8 @@ async fn simple_rows_retain_stopwords_after_default_switch() {
 
         let stamped_simple: bool = sqlx::query_scalar(
             "SELECT lexical_language = 'simple'::regconfig
-               FROM proxima_core.agent_note_v1
-              WHERE t = $1",
+               FROM proxima_core.projection
+              WHERE memory_id = $1",
         )
         .bind(simple)
         .fetch_one(pool)
@@ -558,10 +586,10 @@ async fn lexical_default_switch_stamps_only_subsequent_core_rows() {
         let german = seed_note(pool, owner, "Tiere", "die Katzen schlafen auf dem Sofa").await?;
 
         let stamped: Vec<(Uuid, String)> = sqlx::query_as(
-            "SELECT t, lexical_language::text
-               FROM proxima_core.agent_note_v1
-              WHERE t = ANY($1::uuid[])
-              ORDER BY t",
+            "SELECT memory_id, lexical_language::text
+               FROM proxima_core.projection
+              WHERE memory_id = ANY($1::uuid[])
+              ORDER BY memory_id",
         )
         .bind(vec![english, german])
         .fetch_all(pool)
@@ -690,7 +718,7 @@ async fn lexical_language_forget_refuses_while_rows_reference_it() {
         pg.run_migrations().await?;
         let pool = pg.pool_for_tests();
         let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
-        let t = seed_note_lang(pool, owner, "Tiere", "die Katzen schlafen", "german").await?;
+        let t = seed_note_lang(pool, owner, "Tiere", "die Katzen schlafen", Some("german")).await?;
 
         let err = sqlx::query("SELECT proxima_core.lexical_language_forget('german')")
             .execute(pool)
@@ -710,7 +738,7 @@ async fn lexical_language_forget_refuses_while_rows_reference_it() {
         .await?;
         assert!(registered, "a refused forget must not deregister");
 
-        sqlx::query("DELETE FROM proxima_core.agent_note_v1 WHERE t = $1")
+        sqlx::query("DELETE FROM proxima_core.projection WHERE memory_id = $1")
             .bind(t)
             .execute(pool)
             .await?;
@@ -792,13 +820,13 @@ async fn lexical_remember_trigger_registers_before_the_fk_check() {
         .bind(owner.stored_owner_id())
         .execute(pool)
         .await?;
-        sqlx::query(
-            "INSERT INTO proxima_core.sketch (t, owner_id, kind, text, lexical_language)
-             VALUES ($1, $2, 'fact', 'bonjour le monde', 'french'::regconfig)",
+        seed_note_lang(
+            pool,
+            owner,
+            "Salutation",
+            "bonjour le monde",
+            Some("french"),
         )
-        .bind(Uuid::now_v7())
-        .bind(owner.stored_owner_id())
-        .execute(pool)
         .await?;
         let registered: bool = sqlx::query_scalar(
             "SELECT EXISTS (
@@ -843,14 +871,20 @@ async fn lexical_language_forget_blocks_on_an_in_flight_writer() {
             .execute(pool)
             .await?;
 
-        // Writer: uncommitted sketch row stamped german — its RI check holds
-        // KEY SHARE on the registration row until the transaction ends.
+        // Writer: uncommitted projection row stamped german — its RI check
+        // holds KEY SHARE on the registration row until the transaction ends.
+        let memory_id = seed_note(pool, owner, "Tiere", "die Katzen schlafen").await?;
+        sqlx::query("DELETE FROM proxima_core.projection WHERE memory_id = $1")
+            .bind(memory_id)
+            .execute(pool)
+            .await?;
         let mut writer = pool.begin().await?;
         sqlx::query(
-            "INSERT INTO proxima_core.sketch (t, owner_id, kind, text, lexical_language)
-             VALUES ($1, $2, 'fact', 'die Katzen schlafen', 'german'::regconfig)",
+            "INSERT INTO proxima_core.projection
+                (memory_id, schema_id, owner_id, search_tsv, lexical_language)
+             VALUES ($1, 'core/agent-note-v1', $2, ''::tsvector, 'german'::regconfig)",
         )
-        .bind(Uuid::now_v7())
+        .bind(memory_id)
         .bind(owner.stored_owner_id())
         .execute(&mut *writer)
         .await?;

@@ -401,6 +401,7 @@ pub(crate) async fn visible_home_owner(
 /// check violations.
 pub(crate) async fn transfer_to_owner(
     pool: &PgPool,
+    sidecars: &crate::sidecars::PgSidecarRegistryFrozen,
     entity: EntityId,
     from_owner: OwnerRef,
     to_owner: OwnerRef,
@@ -419,10 +420,18 @@ pub(crate) async fn transfer_to_owner(
         ));
     }
     let from_id = from_owner.stored_owner_id();
+    let projection_tables = sidecars.projection_tables();
+    let projection_tables = &projection_tables;
     with_bounded_retry(move || async move {
         let mut tx = pool.begin().await.map_err(internal)?;
-        let transferred =
-            transfer_memory_t(&mut tx, memory_id.into_inner(), from_id, to_owner).await?;
+        let transferred = transfer_memory_t(
+            &mut tx,
+            projection_tables,
+            memory_id.into_inner(),
+            from_id,
+            to_owner,
+        )
+        .await?;
         if !transferred {
             // A false persist can follow real writes: when the head is gone
             // or changed owner after the series reads, cooled/blob/content
@@ -440,6 +449,7 @@ pub(crate) async fn transfer_to_owner(
 
 async fn transfer_memory_t(
     tx: &mut Transaction<'_, Postgres>,
+    projection_tables: &[String],
     t: uuid::Uuid,
     from_id: uuid::Uuid,
     to_owner: OwnerRef,
@@ -456,7 +466,7 @@ async fn transfer_memory_t(
     let Some(handle) = handle else {
         return Ok(false);
     };
-    transfer_memory_handle(tx, handle, from_id, to_owner).await
+    transfer_memory_handle(tx, projection_tables, handle, from_id, to_owner).await
 }
 
 const SERIES_TS_SQL: &str = "SELECT t FROM proxima_core.memory WHERE handle = $1 AND owner_id = $2
@@ -521,6 +531,7 @@ async fn lock_series_ts(
 
 async fn transfer_memory_handle(
     tx: &mut Transaction<'_, Postgres>,
+    projection_tables: &[String],
     handle: uuid::Uuid,
     from_id: uuid::Uuid,
     to_owner: OwnerRef,
@@ -564,7 +575,17 @@ async fn transfer_memory_handle(
     transfer_exclusive_blobs(tx, handle, from_id, to_id).await?;
     transfer_content_for_handle(tx, handle, from_id, to_id).await?;
     rehome_cooled_for_handle(tx, handle, from_id, to_id).await?;
-    if persist_hot_series_transfer(tx, handle, from_id, to_id, expected_head_t, &ts).await? {
+    if persist_hot_series_transfer(
+        tx,
+        projection_tables,
+        handle,
+        from_id,
+        to_id,
+        expected_head_t,
+        &ts,
+    )
+    .await?
+    {
         announce_series_transfer(tx, handle, from_id, to_id).await?;
         return Ok(true);
     }
@@ -601,6 +622,7 @@ async fn rehome_cooled_for_handle(
 
 async fn persist_hot_series_transfer(
     tx: &mut Transaction<'_, Postgres>,
+    projection_tables: &[String],
     handle: uuid::Uuid,
     from_id: uuid::Uuid,
     to_id: uuid::Uuid,
@@ -655,6 +677,21 @@ async fn persist_hot_series_transfer(
         .execute(&mut **tx)
         .await
         .map_err(map_err)?;
+    // The projection is the first memory-keyed surface with its own
+    // `owner_id`, so it is the first that does not follow implicitly. The
+    // list is the frozen sidecar registry's, never a literal: a flavor that
+    // declares a projection follows for free.
+    for table in projection_tables {
+        // SQL-POLICY: generated
+        sqlx::query(sqlx::AssertSqlSafe(
+            crate::projection::projection_transfer_sql(table)?,
+        ))
+        .bind(ts)
+        .bind(to_id)
+        .execute(&mut **tx)
+        .await
+        .map_err(map_err)?;
+    }
     follow_embedding_owners(tx, ts, to_id).await?;
     // NOTE: owner-pinned sidecars are deliberately untouched here.
     // `mcp_call_logged_v1` carries `actor_upn` and its own `owner_id`,

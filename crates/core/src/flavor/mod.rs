@@ -8,9 +8,8 @@ use crate::authz::{AuthorizationHook, OwnerResolver};
 use crate::mcp::schema::{mcp_output_schema, mcp_tool_schema};
 use crate::mcp::validate_action_args;
 use crate::verbs::schema::{
-    FlavorRegistryFrozen, MemorySearchProjection, MemorySearchProjectionField, PayloadKind,
-    ProtocolPayload, ProtocolPayloadIngress, ProtocolPayloadIngressEntry, SchemaCapabilityTags,
-    SchemaInfo,
+    FlavorRegistryFrozen, PayloadKind, ProtocolPayload, ProtocolPayloadIngress,
+    ProtocolPayloadIngressEntry, SchemaCapabilityTags, SchemaInfo,
 };
 use crate::{
     AbstractionPayload, CapabilityTag, CitationMappingPayload, CitedObjectPayload, FactPayload,

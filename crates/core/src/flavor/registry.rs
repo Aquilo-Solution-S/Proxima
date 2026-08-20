@@ -1,7 +1,7 @@
 use super::contract::FlavorContract;
 use super::{
-    Arc, AuthorizationHook, FlavorDescriptor, McpToolDescriptor, MemorySearchProjection,
-    OwnerResolver, ProtocolPayloadIngressEntry, RequestBehavior, SchemaCapabilityTags, SchemaInfo,
+    Arc, AuthorizationHook, FlavorDescriptor, McpToolDescriptor, OwnerResolver,
+    ProtocolPayloadIngressEntry, RequestBehavior, SchemaCapabilityTags, SchemaInfo,
     ScopeGateBehavior,
 };
 
@@ -13,7 +13,6 @@ use super::{
 pub struct FlavorRegistry {
     pub(crate) schemas: Vec<SchemaInfo>,
     pub(crate) schema_capability_tags: Vec<SchemaCapabilityTags>,
-    pub(crate) search_projections: Vec<MemorySearchProjection>,
     pub(crate) protocol_ingress: Vec<ProtocolPayloadIngressEntry>,
     pub(crate) mcp_tools: Vec<McpToolDescriptor>,
     pub(crate) request_behaviors: Vec<Arc<dyn RequestBehavior>>,
@@ -31,7 +30,6 @@ impl Default for FlavorRegistry {
         let mut registry = Self {
             schemas: Vec::new(),
             schema_capability_tags: Vec::new(),
-            search_projections: Vec::new(),
             protocol_ingress: Vec::new(),
             mcp_tools: Vec::new(),
             request_behaviors: vec![Arc::new(ScopeGateBehavior)],

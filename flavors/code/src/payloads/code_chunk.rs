@@ -1,7 +1,4 @@
-use proxima_core::{
-    AbstractionPayload, PayloadReference, SearchProjection, SearchProjectionColumnKind,
-    SearchProjectionField, proxima_schema_id,
-};
+use proxima_core::{AbstractionPayload, PayloadReference, proxima_schema_id};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -95,26 +92,7 @@ impl AbstractionPayload for CodeChunkV1 {
     /// `language` and `chunk_type` are one lexeme each against a chunk
     /// body's few hundred, so they never lift a result; they are already
     /// explicit filters on `proxima-code_search_chunks`. Every field listed
-    /// here has to appear in the generated column's expression.
-    fn search_projection() -> Option<SearchProjection> {
-        Some(SearchProjection {
-            fields: &[
-                SearchProjectionField {
-                    column: "file_path",
-                    kind: SearchProjectionColumnKind::Text,
-                },
-                SearchProjectionField {
-                    column: "text",
-                    kind: SearchProjectionColumnKind::Text,
-                },
-            ],
-            tag_column: None,
-            tsv_column: Some("search_tsv"),
-            embed_text_column: Some("embed_text"),
-            language_column: Some("lexical_language"),
-        })
-    }
-
+    /// here has to appear in the projection's vector expression.
     fn json_schema() -> Option<serde_json::Value> {
         Some(
             serde_json::to_value(schemars::schema_for!(Self))
@@ -132,11 +110,21 @@ impl AbstractionPayload for CodeChunkV1 {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::contract::CODE_FLAVOR_CONTRACT;
+    use proxima_core::AbstractionPayload;
+    use proxima_core::flavor::SLOT_DEFAULT;
 
     #[test]
-    fn chunk_projection_names_stored_embed_text() {
-        let projection = CodeChunkV1::search_projection().expect("chunk projection");
-        assert_eq!(projection.embed_text_column, Some("embed_text"));
+    fn chunk_embedding_recipe_names_the_stored_column() {
+        let schema = CODE_FLAVOR_CONTRACT
+            .schemas
+            .iter()
+            .find(|schema| schema.schema_id().as_str() == super::CodeChunkV1::SCHEMA_ID)
+            .expect("code-chunk-v1 is declared");
+        let units = schema.embedding.resolve(schema.sidecar_table);
+        assert_eq!(units.len(), 1);
+        assert_eq!(units[0].table, Some("proxima_code.code_chunk_v1"));
+        assert_eq!(units[0].column, Some("embed_text"));
+        assert_eq!(units[0].slot, SLOT_DEFAULT);
     }
 }

@@ -1,7 +1,4 @@
-use crate::{
-    FactPayload, PayloadKeyBuilder, SearchProjection, SearchProjectionColumnKind,
-    SearchProjectionField,
-};
+use crate::{FactPayload, PayloadKeyBuilder};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -36,28 +33,5 @@ impl FactPayload for AgentNoteV1 {
 
     fn natural_key_columns() -> &'static [&'static str] {
         &["note_id"]
-    }
-
-    fn search_projection() -> Option<SearchProjection> {
-        Some(SearchProjection {
-            fields: &[
-                SearchProjectionField {
-                    column: "title",
-                    kind: SearchProjectionColumnKind::Text,
-                },
-                SearchProjectionField {
-                    column: "body",
-                    kind: SearchProjectionColumnKind::Text,
-                },
-                SearchProjectionField {
-                    column: "tags",
-                    kind: SearchProjectionColumnKind::TextArray,
-                },
-            ],
-            tag_column: Some("tags".to_string()),
-            tsv_column: Some("search_tsv"),
-            embed_text_column: Some("embed_text"),
-            language_column: Some("lexical_language"),
-        })
     }
 }

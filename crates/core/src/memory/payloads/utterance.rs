@@ -1,7 +1,4 @@
-use crate::{
-    FactPayload, PayloadKeyBuilder, SearchProjection, SearchProjectionColumnKind,
-    SearchProjectionField,
-};
+use crate::{FactPayload, PayloadKeyBuilder};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -52,18 +49,5 @@ impl FactPayload for UtteranceV1 {
 
     fn sidecar_table() -> Option<&'static str> {
         Some("proxima_core.utterance_v1")
-    }
-
-    fn search_projection() -> Option<SearchProjection> {
-        Some(SearchProjection {
-            fields: &[SearchProjectionField {
-                column: "text",
-                kind: SearchProjectionColumnKind::Text,
-            }],
-            tag_column: None,
-            tsv_column: Some("search_tsv"),
-            embed_text_column: Some("embed_text"),
-            language_column: Some("lexical_language"),
-        })
     }
 }

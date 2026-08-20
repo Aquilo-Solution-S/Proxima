@@ -407,9 +407,21 @@ impl ProximaBuilder {
             .freeze_against(&registry)
             .map_err(embed_storage_error)?;
         let pg_sidecars = Arc::new(pg_sidecars);
+        // Re-run the projection generator against the composed contracts and
+        // compare it with the catalog. The migration carries the generator's
+        // output verbatim; this is the half that notices a deployment whose
+        // schema and whose linked flavors disagree — a flavor added without
+        // its baseline, or a baseline hand-edited away from the generator.
+        proxima_storage_pg::projection::ensure_projection_schema(
+            pg.pool_for_tests(),
+            registry.contracts(),
+        )
+        .await
+        .map_err(embed_storage_error)?;
         let pg = pg
             .with_sidecars(pg_sidecars.as_ref().clone())
             .with_search_projections(registry.search_projections().to_vec())
+            .with_embed_units(registry.embed_units().to_vec())
             .with_embedding_runtime_policy(embedding_runtime_policy);
 
         let pool = pg.clone_pool_for_backend();

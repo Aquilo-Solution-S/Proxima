@@ -9,12 +9,8 @@ use proxima_core::verbs::query::{
     EntityKind, MemorySearchRequest, QueryRequest, SearchMode, SearchOrder, SupersessionStatus,
     TagMatch,
 };
-use proxima_core::verbs::schema::{
-    MemorySearchProjection, MemorySearchProjectionField, PayloadKind,
-};
-use proxima_core::{
-    EdgeKind, OwnerRef, SchemaId, SchemaVersion, SearchProjectionColumnKind, UserId,
-};
+use proxima_core::verbs::schema::MemorySearchProjection;
+use proxima_core::{EdgeKind, OwnerRef, SchemaId, UserId};
 use proxima_pg_testkit::{create_db, db_url, drop_db};
 use proxima_storage_pg::PgStorage;
 use proxima_storage_pg::verbs::fact_embeddings::claim_embedding_jobs_sql_for_tests;
@@ -26,26 +22,16 @@ use proxima_storage_pg::verbs::query::{
 use uuid::Uuid;
 
 fn note_projection() -> MemorySearchProjection {
-    MemorySearchProjection {
-        schema_id: SchemaId::new("core/agent-note-v1".to_string()),
-        schema_version: SchemaVersion::new(1),
-        kind: PayloadKind::Fact,
-        sidecar_table: "proxima_core.agent_note_v1".into(),
-        fields: vec![
-            MemorySearchProjectionField {
-                column: "title".into(),
-                kind: SearchProjectionColumnKind::Text,
-            },
-            MemorySearchProjectionField {
-                column: "body".into(),
-                kind: SearchProjectionColumnKind::Text,
-            },
-        ],
-        tag_column: Some("tags".into()),
-        tsv_column: Some("search_tsv".into()),
-        embed_text_column: Some("embed_text".into()),
-        language_column: Some("lexical_language".into()),
-    }
+    // The shipped declaration, not a second copy of it. This fixture used
+    // to restate `core/agent-note-v1`'s columns by hand, which meant the
+    // test agreed with the contract only by coincidence.
+    proxima_core::FlavorRegistry::new()
+        .freeze_or_panic_for_tests()
+        .search_projections()
+        .iter()
+        .find(|projection| projection.schema_id.as_str() == "core/agent-note-v1")
+        .expect("core/agent-note-v1 is a search surface")
+        .clone()
 }
 
 fn search_req(owner: OwnerRef) -> MemorySearchRequest {

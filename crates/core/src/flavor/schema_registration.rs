@@ -4,29 +4,28 @@ use super::ingress::{
 };
 use super::{
     AbstractionPayload, CitationMappingPayload, CitedObjectPayload, FactPayload, FlavorRegistry,
-    FlavorRegistryError, GoalPayload, MemorySearchProjection, MemorySearchProjectionField,
-    PayloadKind, PerspectivePayload, ProtocolPayloadIngress, ProtocolPayloadIngressEntry, SchemaId,
-    SchemaInfo, SchemaVersion,
+    FlavorRegistryError, GoalPayload, PayloadKind, PerspectivePayload, ProtocolPayloadIngress,
+    ProtocolPayloadIngressEntry, SchemaId, SchemaInfo, SchemaVersion,
 };
 
 impl FlavorRegistry {
     /// Shared tail for the typed `add_*_schema` methods: records the
-    /// optional search projection, the `SchemaInfo`, and the protocol
-    /// ingress entry. Callers build the kind-specific `SchemaInfo`;
-    /// `schema_id` / `schema_version` / `kind` for the ingress entry
-    /// are read back off it so they cannot drift from the schema.
+    /// `SchemaInfo` and the protocol ingress entry. Callers build the
+    /// kind-specific `SchemaInfo`; `schema_id` / `schema_version` / `kind`
+    /// for the ingress entry are read back off it so they cannot drift
+    /// from the schema.
+    ///
+    /// A search projection is NOT recorded here any more. It used to be
+    /// `FactPayload::search_projection()`, a second search vocabulary that
+    /// the `FlavorContract`'s `SearchProjectionDecl` shadowed without
+    /// governing. There is one vocabulary now, and the projections are
+    /// derived from the contracts at freeze.
     fn register_schema(
         &mut self,
         schema_info: SchemaInfo,
-        search_projection: Option<crate::SearchProjection>,
         ingress: ProtocolPayloadIngress,
         json_schema: Option<serde_json::Value>,
     ) {
-        maybe_add_search_projection(
-            &mut self.search_projections,
-            &schema_info,
-            search_projection,
-        );
         let schema_id = schema_info.schema_id.clone();
         let schema_version = schema_info.schema_version;
         let kind = schema_info.kind;
@@ -64,7 +63,6 @@ impl FlavorRegistry {
                 cited_object_schema: None,
                 embeddable: F::EMBEDDABLE,
             },
-            F::search_projection(),
             ingest_fact_payload::<F>,
             F::json_schema(),
         );
@@ -97,7 +95,6 @@ impl FlavorRegistry {
                 cited_object_schema: None,
                 embeddable: true,
             },
-            A::search_projection(),
             ingest_abstraction_payload::<A>,
             A::json_schema(),
         );
@@ -130,7 +127,6 @@ impl FlavorRegistry {
                 cited_object_schema: None,
                 embeddable: true,
             },
-            P::search_projection(),
             ingest_perspective_payload::<P>,
             P::json_schema(),
         );
@@ -162,11 +158,9 @@ impl FlavorRegistry {
                 cited_object_schema: None,
                 embeddable: true,
             },
-            None,
             ingest_goal_payload::<G>,
             G::json_schema(),
         );
-        let _ = sidecar_table;
         Ok(())
     }
 
@@ -196,7 +190,6 @@ impl FlavorRegistry {
                 cited_object_schema: None,
                 embeddable: true,
             },
-            None,
             ingest_cited_object_payload::<C>,
             C::json_schema(),
         );
@@ -229,7 +222,6 @@ impl FlavorRegistry {
                 cited_object_schema: Some(M::cited_object_schema()),
                 embeddable: true,
             },
-            None,
             ingest_citation_mapping_payload::<M>,
             M::json_schema(),
         );
@@ -288,38 +280,4 @@ impl FlavorRegistry {
         self.try_add_opaque_schema(schema_id, schema_version, kind)
             .expect("opaque schema registration must be valid");
     }
-}
-
-fn maybe_add_search_projection(
-    out: &mut Vec<MemorySearchProjection>,
-    schema_info: &SchemaInfo,
-    projection: Option<crate::SearchProjection>,
-) {
-    let Some(projection) = projection else {
-        return;
-    };
-    if projection.fields.is_empty() {
-        return;
-    }
-    let Some(sidecar_table) = schema_info.sidecar_table.clone() else {
-        return;
-    };
-    out.push(MemorySearchProjection {
-        schema_id: schema_info.schema_id.clone(),
-        schema_version: schema_info.schema_version,
-        kind: schema_info.kind,
-        sidecar_table,
-        fields: projection
-            .fields
-            .iter()
-            .map(|field| MemorySearchProjectionField {
-                column: field.column.to_string(),
-                kind: field.kind,
-            })
-            .collect(),
-        tag_column: projection.tag_column,
-        tsv_column: projection.tsv_column.map(str::to_string),
-        embed_text_column: projection.embed_text_column.map(str::to_string),
-        language_column: projection.language_column.map(str::to_string),
-    });
 }

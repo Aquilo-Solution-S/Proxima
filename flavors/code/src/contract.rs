@@ -19,8 +19,9 @@ use proxima_core::SearchProjectionColumnKind as ColumnKind;
 use proxima_core::flavor::{
     BAND_EXACT, BAND_RESCUE, BAND_SUBSTRING, Band, BandComparability, DbConstraint, EmbedUnit,
     EmbeddingRecipe, EraseRule, ExportRule, FlavorContract, ForgetRule, KeyShape, LanguagePolicy,
-    Provenance, SLOT_DEFAULT, SchemaContract, SchemaRef, SearchProjectionDecl, SubstringArm,
-    Surface, ToolContract, TransferRule, WEIGHT_UNIFORM, WeightedField,
+    ProjectionDecl, ProjectionSpec, Provenance, SLOT_DEFAULT, SchemaContract, SchemaRef,
+    SearchProjectionDecl, SubstringArm, Surface, ToolContract, TransferRule, WEIGHT_UNIFORM,
+    WeightedField,
 };
 use proxima_core::verbs::schema::PayloadKind;
 
@@ -41,26 +42,40 @@ const COMMIT_BANDS: &[Band] = &[BAND_EXACT, BAND_RESCUE, BAND_SUBSTRING];
 // statement about a merge that has not been written yet; declaring the real
 // windows is what lets the deployment layer discover the divergence from
 // the contract instead of from a score it cannot explain.
-const CHUNK_BAND_STRICT: Band = Band {
+pub const CHUNK_BAND_STRICT: Band = Band {
     name: "chunk-strict",
     floor: 4.0,
     ceiling: 4.6,
 };
-const CHUNK_BAND_RARE_ALL: Band = Band {
+pub const CHUNK_BAND_RARE_ALL: Band = Band {
     name: "chunk-rare-all",
     floor: 3.0,
     ceiling: 3.6,
 };
-const CHUNK_BAND_RARE_ANY: Band = Band {
+pub const CHUNK_BAND_RARE_ANY: Band = Band {
     name: "chunk-rare-any",
     floor: 2.0,
     ceiling: 2.6,
 };
-const CHUNK_BAND_RESCUE_ANY: Band = Band {
+pub const CHUNK_BAND_RESCUE_ANY: Band = Band {
     name: "chunk-rescue-any",
     floor: 1.0,
     ceiling: 1.6,
 };
+/// A band as SQL renders it: `(floor, ceiling - floor)`, at the two
+/// decimals the bands are declared with.
+///
+/// Rendered rather than printed through `f32`'s `Display` for the same
+/// reason core's `band_parts` is: `0.45f32 - 0.25f32` is `0.19999999`,
+/// a different NUMBER from the `0.2` the SQL carried.
+#[must_use]
+pub fn band_parts(band: Band) -> (String, String) {
+    (
+        format!("{:.2}", band.floor),
+        format!("{:.2}", band.ceiling - band.floor),
+    )
+}
+
 const CHUNK_BANDS: &[Band] = &[
     CHUNK_BAND_STRICT,
     CHUNK_BAND_RARE_ALL,
@@ -632,17 +647,27 @@ pub static CODE_FLAVOR_CONTRACT: FlavorContract = FlavorContract {
     kernel_surfaces: &[],
     tools: TOOLS,
     resources: &[],
+    projection: ProjectionDecl::Table(CODE_PROJECTION),
 };
 
-/// Reserved, unconsumed: this flavor's bands are not on core's scale.
-///
-/// Named here rather than left to a comment because plan §3's band-aware
-/// merge is the first consumer of `BandComparability`, and the divergence
-/// it has to know about is chunk search's, not commit search's.
-pub const CODE_BAND_COMPARABILITY: BandComparability = BandComparability::Divergent {
-    why: "proxima-code/code-chunk-v1 scores on four arms based at 1.0/2.0/3.0/4.0 with \
-          additive literal bonuses up to +20.3, so a chunk hit is not comparable to a \
-          core hit without a rescale; commit search does score inside core's bands",
+/// The code flavor's projection: three search surfaces, one table, one
+/// composite GIN — byte-identical DDL to core's modulo the schema name and
+/// the index name, which is the slimness rule made checkable.
+const CODE_PROJECTION: ProjectionSpec = ProjectionSpec {
+    table: "proxima_code.projection",
+    index: "code_projection_owner_tsv_gin",
+    // RESERVED, UNCONSUMED. Chunk search overfetches 4x its limit today;
+    // the cap recorded here is core's, so a shard-aware merge starts from
+    // one number rather than three.
+    overfetch_k: 1_000,
+    // Reserved, unconsumed: this flavor's bands are not on core's scale,
+    // and plan §3's band-aware merge is the first thing that will need to
+    // know. The divergence is chunk search's, not commit search's.
+    band_comparability: BandComparability::Divergent {
+        why: "proxima-code/code-chunk-v1 scores on four arms based at 1.0/2.0/3.0/4.0 with \
+              additive literal bonuses up to +20.3, so a chunk hit is not comparable to a \
+              core hit without a rescale; commit search does score inside core's bands",
+    },
 };
 
 #[cfg(test)]

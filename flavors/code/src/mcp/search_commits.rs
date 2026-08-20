@@ -1,3 +1,6 @@
+use std::sync::LazyLock;
+
+use proxima_core::flavor::{BAND_EXACT, BAND_RESCUE};
 use proxima_core::verbs::query::like_pattern;
 use proxima_core::{Tool, ToolCtx, ToolError};
 use schemars::JsonSchema;
@@ -5,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 use uuid::Uuid;
 
+use crate::contract::band_parts;
 use crate::payloads::{CommitSummaryV1, CommitV1};
 
 use super::CodeToolCtxExt;
@@ -200,50 +204,77 @@ impl Tool for CodeSearchCommitsTool {
     }
 }
 
-const COMMIT_SEARCH_SQL: &str = "
+/// The commit GIN arm, over `proxima_code.projection`.
+///
+/// The exact arm was RAW `ts_rank_cd` — an unbanded score in a result set
+/// that is merged with banded ones. It is `BAND_EXACT` now, the same window
+/// core's exact arm uses, so a commit hit and a note hit mean the same
+/// thing at the same number. Scores in the exact arm therefore MOVE: a raw
+/// `ts_rank_cd` of `r` becomes `0.50 + LEAST(r, 1.0) * 0.50`. That is
+/// monotone in `r`, so the ORDER within this arm is unchanged.
+static COMMIT_SEARCH_SQL: LazyLock<String> = LazyLock::new(|| {
+    let (exact_floor, exact_width) = band_parts(BAND_EXACT);
+    let (rescue_floor, rescue_width) = band_parts(BAND_RESCUE);
+    format!(
+        "
 WITH q AS (
      SELECT proxima_code.commit_search_web_tsquery($1) AS tsq,
             proxima_code.commit_search_any_tsquery($1) AS any_tsq
 )
 SELECT c.t AS memory_id,
        GREATEST(
-           CASE WHEN c.search_tsv @@ q.tsq
-                THEN ts_rank_cd(c.search_tsv, q.tsq)
+           CASE WHEN p.search_tsv @@ q.tsq
+                THEN {exact_floor} + LEAST(ts_rank_cd(p.search_tsv, q.tsq), 1.0) * {exact_width}
                 ELSE 0.0 END,
-           CASE WHEN q.any_tsq IS NOT NULL AND c.search_tsv @@ q.any_tsq
-                THEN 0.25 + LEAST(ts_rank(c.search_tsv, q.any_tsq, 1|32) * 100.0, 1.0) * 0.2
+           CASE WHEN q.any_tsq IS NOT NULL AND p.search_tsv @@ q.any_tsq
+                THEN {rescue_floor} + LEAST(ts_rank(p.search_tsv, q.any_tsq, 1|32) * 100.0, 1.0) * {rescue_width}
                 ELSE 0.0 END
        )::real AS score
 FROM q, proxima_code.commit_v1 c
+JOIN proxima_code.projection p
+  ON p.memory_id = c.t
+ AND p.schema_id = 'proxima-code/commit-v1'
 WHERE ($2::uuid IS NULL OR c.repo_id = $2)
-  AND (c.search_tsv @@ q.tsq
-       OR (q.any_tsq IS NOT NULL AND c.search_tsv @@ q.any_tsq))
+  AND (p.search_tsv @@ q.tsq
+       OR (q.any_tsq IS NOT NULL AND p.search_tsv @@ q.any_tsq))
 ORDER BY score DESC, c.committer_time DESC
 LIMIT $3
-";
+"
+    )
+});
 
-const SUMMARY_SEARCH_SQL: &str = "
+/// The commit-summary GIN arm. Same rewrite, same band.
+static SUMMARY_SEARCH_SQL: LazyLock<String> = LazyLock::new(|| {
+    let (exact_floor, exact_width) = band_parts(BAND_EXACT);
+    let (rescue_floor, rescue_width) = band_parts(BAND_RESCUE);
+    format!(
+        "
 WITH q AS (
      SELECT proxima_code.commit_search_web_tsquery($1) AS tsq,
             proxima_code.commit_search_any_tsquery($1) AS any_tsq
 )
 SELECT s.t AS memory_id,
        GREATEST(
-           CASE WHEN s.search_tsv @@ q.tsq
-                THEN ts_rank_cd(s.search_tsv, q.tsq)
+           CASE WHEN p.search_tsv @@ q.tsq
+                THEN {exact_floor} + LEAST(ts_rank_cd(p.search_tsv, q.tsq), 1.0) * {exact_width}
                 ELSE 0.0 END,
-           CASE WHEN q.any_tsq IS NOT NULL AND s.search_tsv @@ q.any_tsq
-                THEN 0.25 + LEAST(ts_rank(s.search_tsv, q.any_tsq, 1|32) * 100.0, 1.0) * 0.2
+           CASE WHEN q.any_tsq IS NOT NULL AND p.search_tsv @@ q.any_tsq
+                THEN {rescue_floor} + LEAST(ts_rank(p.search_tsv, q.any_tsq, 1|32) * 100.0, 1.0) * {rescue_width}
                 ELSE 0.0 END
        )::real AS score
 FROM q, proxima_code.commit_summary_v1 s
+JOIN proxima_code.projection p
+  ON p.memory_id = s.t
+ AND p.schema_id = 'proxima-code/commit-summary-v1'
 WHERE ($2::uuid IS NULL OR s.repo_id = $2)
   AND ($3::text IS NULL OR s.change_kind = $3)
-  AND (s.search_tsv @@ q.tsq
-       OR (q.any_tsq IS NOT NULL AND s.search_tsv @@ q.any_tsq))
+  AND (p.search_tsv @@ q.tsq
+       OR (q.any_tsq IS NOT NULL AND p.search_tsv @@ q.any_tsq))
 ORDER BY score DESC, s.t DESC
 LIMIT $4
-";
+"
+    )
+});
 
 const COMMIT_LIKE_SQL: &str = "
 SELECT c.t AS memory_id,
@@ -284,7 +315,8 @@ async fn search_commit_rows(
     repo_id: Option<Uuid>,
     limit: i64,
 ) -> Result<Vec<ScoredMemoryRow>, ToolError> {
-    let gin: Vec<ScoredMemoryRow> = sqlx::query_as(COMMIT_SEARCH_SQL)
+    let gin: Vec<ScoredMemoryRow> = // SQL-POLICY: fixed-fragment
+    sqlx::query_as(sqlx::AssertSqlSafe(COMMIT_SEARCH_SQL.as_str()))
         .bind(query)
         .bind(repo_id)
         .bind(limit)
@@ -311,7 +343,8 @@ async fn search_summary_rows(
     change_kind: Option<&str>,
     limit: i64,
 ) -> Result<Vec<ScoredMemoryRow>, ToolError> {
-    let gin: Vec<ScoredMemoryRow> = sqlx::query_as(SUMMARY_SEARCH_SQL)
+    let gin: Vec<ScoredMemoryRow> = // SQL-POLICY: fixed-fragment
+    sqlx::query_as(sqlx::AssertSqlSafe(SUMMARY_SEARCH_SQL.as_str()))
         .bind(query)
         .bind(repo_id)
         .bind(change_kind)
@@ -342,18 +375,40 @@ struct ScoredMemoryRow {
 #[cfg(test)]
 mod tests {
     #[test]
-    fn commit_search_reads_stored_tsv() {
+    fn commit_search_reads_the_projection_vector() {
         let needle = format!("{}{}", "to_ts", "vector(");
         assert!(
             !super::COMMIT_SEARCH_SQL.contains(&needle),
-            "commit search must @@ search_tsv, not recompute to_tsvector"
+            "commit search must @@ the stored vector, not recompute to_tsvector"
         );
-        assert!(super::COMMIT_SEARCH_SQL.contains("c.search_tsv @@"));
+        assert!(super::COMMIT_SEARCH_SQL.contains("p.search_tsv @@"));
+        assert!(
+            super::COMMIT_SEARCH_SQL.contains("proxima_code.projection p"),
+            "the vector lives on the projection now"
+        );
         assert!(
             !super::SUMMARY_SEARCH_SQL.contains(&needle),
-            "summary search must @@ search_tsv, not recompute to_tsvector"
+            "summary search must @@ the stored vector, not recompute to_tsvector"
         );
-        assert!(super::SUMMARY_SEARCH_SQL.contains("s.search_tsv @@"));
+        assert!(super::SUMMARY_SEARCH_SQL.contains("p.search_tsv @@"));
+    }
+
+    /// The exact arm was raw `ts_rank_cd`, unbanded, merged with banded
+    /// scores from the rescue arm and from core. It reads `BAND_EXACT` now.
+    #[test]
+    fn the_exact_arm_is_banded_like_cores() {
+        use proxima_core::flavor::BAND_EXACT;
+        let (floor, width) = crate::contract::band_parts(BAND_EXACT);
+        assert_eq!((floor.as_str(), width.as_str()), ("0.50", "0.50"));
+        assert!(
+            super::COMMIT_SEARCH_SQL
+                .contains("0.50 + LEAST(ts_rank_cd(p.search_tsv, q.tsq), 1.0) * 0.50"),
+            "the exact arm renders BAND_EXACT"
+        );
+        assert!(
+            super::SUMMARY_SEARCH_SQL
+                .contains("0.50 + LEAST(ts_rank_cd(p.search_tsv, q.tsq), 1.0) * 0.50"),
+        );
     }
 
     #[test]

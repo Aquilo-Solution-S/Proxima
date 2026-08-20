@@ -1,24 +1,30 @@
-//! `core_search_memories` — sidecar-first content search.
+//! `core_search_memories` — projection-first content search.
 //!
 //! Same split as `proxima-code_search_chunks` (the reference):
-//! 1. **content** — one GIN query per sidecar (`@@` only); `LIKE`
-//!    runs only when that sidecar's GIN arm is empty
+//! 1. **content** — one GIN query per projected schema against its
+//!    flavor's projection table (`@@` only); `LIKE` runs against the
+//!    owning sidecar only when that schema's GIN arm is empty
 //! 2. **admit** — owner + optional current-head on the hit `t`s;
-//!    `schema_id` is on `memory`. Sidecar GIN is ownerless; the scan
-//!    joins `memory` and filters `owner_id` so another tenant cannot
-//!    fill the overfetch window.
+//!    `schema_id` is on `memory`. The projection's `owner_id` is an
+//!    index accelerator; the scan still joins `memory` and filters
+//!    `owner_id` there, so authorization never rests on the copy.
 //! 3. **pins** — engine neighbor load, only if the caller asked
 //!
-//! Unscoped search (no tags) scans only `proxima_core.*` sidecars.
+//! The ranked arm reads the projection ALONE — vector, tags and language
+//! are all on it — and joins the owning sidecar for the surviving top-k
+//! rows only, to render the snippet (R6: nothing is materialized twice).
+//!
+//! Unscoped search (no tags) scans only flavor #0's schemas.
 //! A tag filter is the documented flavor scope
 //! (`docs/09-developing-flavors.md`): those queries also scan flavor
-//! sidecars that declare a `tag_column`. A specialized flavor tool
+//! schemas that declare a `tag_column`. A specialized flavor tool
 //! (e.g. `proxima-code_search_chunks`) still owns extra filters;
 //! unscoped core search is not a mega-index.
 
 use std::collections::BTreeMap;
 
 use futures_util::future::try_join_all;
+use proxima_core::flavor::LanguagePolicy;
 use proxima_core::flavor::{BAND_EXACT, BAND_RESCUE, BAND_SUBSTRING, Band};
 use proxima_core::llm::EMBEDDING_DIM;
 use proxima_core::verbs::query::{
@@ -33,8 +39,8 @@ use sqlx::PgPool;
 use crate::error::map_err;
 use crate::pg_ident::PgIdent;
 use crate::pgvector::set_hnsw_search_sql;
+use crate::projection::{sidecar_text_sql, snippet_sql};
 use crate::tuning::PgTuning;
-use crate::verbs::query::projection_sql::projection_search_text;
 
 const SIDECAR_OVERFETCH_FACTOR: u32 = 20;
 const SIDECAR_OVERFETCH_CAP: u32 = 1_000;
@@ -154,7 +160,7 @@ fn core_search_projections<'a>(
     req: &MemorySearchRequest,
     projections: &'a [MemorySearchProjection],
 ) -> Vec<&'a MemorySearchProjection> {
-    let mut by_table = BTreeMap::<&str, &MemorySearchProjection>::new();
+    let mut by_schema = BTreeMap::<&str, &MemorySearchProjection>::new();
     for projection in projections {
         // Unscoped search stays on flavor #0's sidecars. A tag filter is
         // how a flavor scopes `core_search_memories` (docs/09); those
@@ -180,11 +186,15 @@ fn core_search_projections<'a>(
         if !req.tags.is_empty() && projection.tag_column.is_none() {
             continue;
         }
-        by_table
-            .entry(projection.sidecar_table.as_str())
+        // Keyed by schema, not by sidecar table: the projection row is
+        // keyed `(memory_id, schema_id)` and the scan filters `schema_id`,
+        // so a table shared by two schemas must be scanned for both. It
+        // used to be keyed by table because the scan WAS the table.
+        by_schema
+            .entry(projection.schema_id.as_str())
             .or_insert(projection);
     }
-    by_table.into_values().collect()
+    by_schema.into_values().collect()
 }
 
 fn payload_kind_matches(requested: Option<EntityKind>, kind: PayloadKind) -> bool {
@@ -289,6 +299,7 @@ async fn scan_one_sidecar(
         .bind(req.until)
         .bind(recency_t)
         .bind(&owner_ids)
+        .bind(projection.schema_id.as_str())
         .fetch_all(pool)
         .await
         .map_err(map_err)?;
@@ -326,77 +337,50 @@ fn lexical_sidecar_sql(
     rescue: bool,
     like_only: bool,
 ) -> Result<String, StorageError> {
+    if like_only {
+        return substring_sidecar_sql(projection, req);
+    }
+    ranked_projection_sql(projection, req, rescue)
+}
+
+/// The substring arm. Unchanged in shape: the projection stores a tsvector,
+/// not text, so `LIKE` has nowhere to run but the owning sidecar.
+fn substring_sidecar_sql(
+    projection: &MemorySearchProjection,
+    req: &MemorySearchRequest,
+) -> Result<String, StorageError> {
     let table = PgIdent::table(&projection.sidecar_table)?;
-    let search_text = projection_search_text(&projection.fields)?;
-    let tsv_expr = projection_tsv_expr(projection, &search_text)?;
+    let search_text = sidecar_text_sql(projection)?;
+    let snippet = snippet_sql(projection)?;
     let tag_pred = match projection.tag_column.as_deref() {
         Some(column) if !req.tags.is_empty() => {
             let column = PgIdent::column(column)?;
-            let op = match req.tag_match {
-                TagMatch::Any => "&&",
-                TagMatch::All => "@>",
-            };
-            format!(" AND c.{} {op} $4::text[]", column.as_str())
+            format!(
+                " AND c.{} {op} $4::text[]",
+                column.as_str(),
+                op = tag_operator(req.tag_match)
+            )
         }
         _ => String::new(),
-    };
-    let multilingual = projection.language_column.is_some();
-    let rank_tsq = rank_tsquery_expr(projection.language_column.as_deref())?;
-    // The three score windows are named in the contract (`BAND_EXACT`,
-    // `BAND_RESCUE`, `BAND_SUBSTRING`) and rendered from it here. Raw
-    // `ts_rank` is not comparable across corpora; a band is, which is what
-    // makes a cross-flavor merge meaningful. Naming them moved no score:
-    // the floor and width below are the numbers this SQL already carried,
-    // re-spelled at two decimals (`0.5` -> `0.50`).
-    let (rescue_floor, rescue_width) = band_parts(BAND_RESCUE);
-    let rescue_score = if rescue && !like_only {
-        format!(
-            ", CASE WHEN q.any_tsq IS NOT NULL AND {tsv_expr} @@ q.any_tsq
-                    THEN {rescue_floor} + LEAST(COALESCE(ts_rank({tsv_expr}, q.any_tsq, 1|32), 0.0) * 100.0, 1.0) * {rescue_width}
-                    ELSE 0.0 END"
-        )
-    } else {
-        String::new()
-    };
-    let rescue_where = if rescue && !like_only {
-        format!(" OR (q.any_tsq IS NOT NULL AND {tsv_expr} @@ q.any_tsq)")
-    } else {
-        String::new()
     };
     let order_by = match req.order {
         SearchOrder::Relevance => "lexical_score DESC, c.t DESC",
         SearchOrder::Recency => "c.t DESC",
     };
-    let match_pred = if like_only {
-        format!("lower({search_text}) LIKE $2 ESCAPE '\\'")
-    } else {
-        format!("{tsv_expr} @@ q.tsq{rescue_where}")
-    };
-    let score_expr = if like_only {
-        // A flat band: the substring arm ranks nothing, it only admits.
-        format!("{:.2}::real", BAND_SUBSTRING.floor)
-    } else {
-        let (exact_floor, exact_width) = band_parts(BAND_EXACT);
-        format!(
-            "GREATEST(
-                    CASE WHEN {tsv_expr} @@ q.tsq
-                         THEN {exact_floor} + LEAST(COALESCE(ts_rank_cd({tsv_expr}, {rank_tsq}, 32), 0.0), 1.0) * {exact_width}
-                         ELSE 0.0 END{rescue_score},
-                    0.0
-                )::real"
-        )
-    };
+    // A flat band: the substring arm ranks nothing, it only admits.
+    let score = format!("{:.2}", BAND_SUBSTRING.floor);
+    // SQL-POLICY: PgIdent
     Ok(format!(
         "{q_cte}
          SELECT c.t,
-                {score_expr} AS lexical_score,
-                left({search_text}, 480) AS snippet
+                {score}::real AS lexical_score,
+                {snippet} AS snippet
            FROM {table} c
            JOIN proxima_core.memory m ON m.t = c.t, q
           WHERE m.owner_id = ANY($8::uuid[])
-            AND ({match_pred})
+            AND m.schema_id = $9
+            AND (lower({search_text}) LIKE $2 ESCAPE '\\')
             {tag_pred}
-            AND length($2::text) >= 0
             AND ($5::timestamptz IS NULL
                  OR COALESCE(uuid_extract_timestamp(c.t), TIMESTAMPTZ '1970-01-01') >= $5)
             AND ($6::timestamptz IS NULL
@@ -404,14 +388,132 @@ fn lexical_sidecar_sql(
             AND ($7::uuid IS NULL OR c.t < $7)
           ORDER BY {order_by}
           LIMIT $3",
+        q_cte = query_side_cte(multilingual(projection)),
+        score = score,
+        table = table.as_str(),
+    ))
+}
+
+/// The ranked arm: `<flavor>.projection` alone, then the sidecar for top-k.
+fn ranked_projection_sql(
+    projection: &MemorySearchProjection,
+    req: &MemorySearchRequest,
+    rescue: bool,
+) -> Result<String, StorageError> {
+    let table = PgIdent::table(&projection.projection_table)?;
+    let sidecar = PgIdent::table(&projection.sidecar_table)?;
+    let snippet = snippet_sql(projection)?;
+    let tsv = "p.search_tsv";
+    let tag_pred = if projection.tag_column.is_some() && !req.tags.is_empty() {
+        format!(
+            " AND p.tag {op} $4::text[]",
+            op = tag_operator(req.tag_match)
+        )
+    } else {
+        String::new()
+    };
+    let multilingual = multilingual(projection);
+    let rank_tsq = rank_tsquery_expr(multilingual);
+    let weights = rank_weight_array(projection);
+    // The three score windows are named in the contract (`BAND_EXACT`,
+    // `BAND_RESCUE`, `BAND_SUBSTRING`) and rendered from it here. Raw
+    // `ts_rank` is not comparable across corpora; a band is, which is what
+    // makes a cross-flavor merge meaningful. Naming them moved no score:
+    // the floor and width below are the numbers this SQL already carried,
+    // re-spelled at two decimals (`0.5` -> `0.50`).
+    let (rescue_floor, rescue_width) = band_parts(BAND_RESCUE);
+    let rescue_score = if rescue {
+        format!(
+            ", CASE WHEN q.any_tsq IS NOT NULL AND {tsv} @@ q.any_tsq
+                    THEN {rescue_floor} + LEAST(COALESCE(ts_rank({weights}{tsv}, q.any_tsq, 1|32), 0.0) * 100.0, 1.0) * {rescue_width}
+                    ELSE 0.0 END"
+        )
+    } else {
+        String::new()
+    };
+    let rescue_where = if rescue {
+        format!(" OR (q.any_tsq IS NOT NULL AND {tsv} @@ q.any_tsq)")
+    } else {
+        String::new()
+    };
+    let (exact_floor, exact_width) = band_parts(BAND_EXACT);
+    let score_expr = format!(
+        "GREATEST(
+                    CASE WHEN {tsv} @@ q.tsq
+                         THEN {exact_floor} + LEAST(COALESCE(ts_rank_cd({weights}{tsv}, {rank_tsq}, 32), 0.0), 1.0) * {exact_width}
+                         ELSE 0.0 END{rescue_score},
+                    0.0
+                )::real"
+    );
+    let ranked_order = match req.order {
+        SearchOrder::Relevance => "lexical_score DESC, p.memory_id DESC",
+        SearchOrder::Recency => "p.memory_id DESC",
+    };
+    let outer_order = match req.order {
+        SearchOrder::Relevance => "r.lexical_score DESC, r.t DESC",
+        SearchOrder::Recency => "r.t DESC",
+    };
+    // SQL-POLICY: PgIdent
+    Ok(format!(
+        "{q_cte},
+         ranked AS (
+         SELECT p.memory_id AS t,
+                {score_expr} AS lexical_score
+           FROM {table} p
+           JOIN proxima_core.memory m ON m.t = p.memory_id, q
+          WHERE m.owner_id = ANY($8::uuid[])
+            AND p.schema_id = $9
+            AND ({tsv} @@ q.tsq{rescue_where})
+            {tag_pred}
+            AND length($2::text) >= 0
+            AND ($5::timestamptz IS NULL
+                 OR COALESCE(uuid_extract_timestamp(p.memory_id), TIMESTAMPTZ '1970-01-01') >= $5)
+            AND ($6::timestamptz IS NULL
+                 OR COALESCE(uuid_extract_timestamp(p.memory_id), TIMESTAMPTZ '1970-01-01') <= $6)
+            AND ($7::uuid IS NULL OR p.memory_id < $7)
+          ORDER BY {ranked_order}
+          LIMIT $3
+         )
+         SELECT r.t,
+                r.lexical_score,
+                {snippet} AS snippet
+           FROM ranked r
+           JOIN {sidecar} c ON c.t = r.t
+          ORDER BY {outer_order}",
         q_cte = query_side_cte(multilingual),
         table = table.as_str(),
-        search_text = search_text,
-        tag_pred = tag_pred,
-        order_by = order_by,
-        match_pred = match_pred,
-        score_expr = score_expr,
+        sidecar = sidecar.as_str(),
     ))
+}
+
+fn tag_operator(tag_match: TagMatch) -> &'static str {
+    match tag_match {
+        TagMatch::Any => "&&",
+        TagMatch::All => "@>",
+    }
+}
+
+/// Whether the query side must OR one `websearch_to_tsquery` per registered
+/// configuration. Only a `PerRow` policy leaves the row's language unknown
+/// to the query; a pinned one is known at build time.
+fn multilingual(projection: &MemorySearchProjection) -> bool {
+    matches!(projection.language, LanguagePolicy::PerRow { .. })
+}
+
+/// `ts_rank`'s weight array, or the empty string when the unit declares one
+/// uniform level. Passing no array is not the same as passing the default
+/// one only in spelling: with a single level every lexeme is class `D` and
+/// the default `{0.1,0.2,0.4,1.0}` would scale every score by 0.1.
+fn rank_weight_array(projection: &MemorySearchProjection) -> String {
+    let Some(weights) = projection.rank_weights else {
+        return String::new();
+    };
+    let rendered = weights
+        .iter()
+        .map(|weight| format!("{weight}"))
+        .collect::<Vec<_>>()
+        .join(",");
+    format!("'{{{rendered}}}'::float4[], ")
 }
 
 fn search_admit_sql(heads_only: bool) -> String {
@@ -438,30 +540,10 @@ fn search_admit_sql(heads_only: bool) -> String {
     )
 }
 
-fn projection_tsv_expr(
-    projection: &MemorySearchProjection,
-    search_text: &str,
-) -> Result<String, StorageError> {
-    if let Some(column) = &projection.tsv_column {
-        let column = PgIdent::column(column)?;
-        return Ok(format!("c.{}", column.as_str()));
-    }
-    if let Some(language) = &projection.language_column {
-        let language = PgIdent::column(language)?;
-        return Ok(format!(
-            "proxima_core.lexical_tsv(c.{}, {search_text})",
-            language.as_str()
-        ));
-    }
-    Ok(format!(
-        "proxima_core.lexical_tsv(proxima_core.lexical_config(), {search_text})"
-    ))
-}
-
-/// Match-side tsquery. When the sidecar declares `language_column` (agent
-/// memory tables), OR one `websearch_to_tsquery` per `lexical_languages`
-/// row — the query cannot know its language. Flavor tables that pin one
-/// config omit `language_column` and stay on `lexical_config()`.
+/// Match-side tsquery. When the schema declares `LanguagePolicy::PerRow`
+/// (agent memory tables), OR one `websearch_to_tsquery` per
+/// `lexical_languages` row — the query cannot know its language. Schemas
+/// that pin one config stay on `lexical_config()`.
 fn query_side_cte(multilingual: bool) -> &'static str {
     if multilingual {
         "WITH q AS (
@@ -507,15 +589,13 @@ fn query_side_cte(multilingual: bool) -> &'static str {
     }
 }
 
-fn rank_tsquery_expr(language_column: Option<&str>) -> Result<String, StorageError> {
-    let Some(column) = language_column else {
-        return Ok("q.tsq".into());
-    };
-    let column = PgIdent::column(column)?;
-    Ok(format!(
-        "websearch_to_tsquery(c.{col}, proxima_core.lexical_query_text(c.{col}, q.scrubbed))",
-        col = column.as_str()
-    ))
+fn rank_tsquery_expr(multilingual: bool) -> &'static str {
+    if multilingual {
+        "websearch_to_tsquery(p.lexical_language, \
+         proxima_core.lexical_query_text(p.lexical_language, q.scrubbed))"
+    } else {
+        "q.tsq"
+    }
 }
 
 async fn scan_embeddings(

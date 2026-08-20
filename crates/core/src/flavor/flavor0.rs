@@ -22,11 +22,11 @@
 
 use crate::SearchProjectionColumnKind as ColumnKind;
 use crate::flavor::contract::{
-    BAND_EXACT, BAND_RESCUE, BAND_SUBSTRING, Band, CORE_ORDINAL, DbConstraint, DbTrigger,
-    EmbedUnit, EmbeddingRecipe, Enforcement, EraseRule, ExportRule, FlavorContract, ForgetRule,
-    KeyShape, LanguagePolicy, Provenance, ResourceContract, SLOT_DEFAULT, SchemaContract,
-    SchemaRef, SearchProjectionDecl, SubstringArm, Surface, ToolContract, TransferRule,
-    WEIGHT_UNIFORM, WeightedField,
+    BAND_EXACT, BAND_RESCUE, BAND_SUBSTRING, Band, BandComparability, CORE_ORDINAL, DbConstraint,
+    DbTrigger, EmbedUnit, EmbeddingRecipe, Enforcement, EraseRule, ExportRule, FlavorContract,
+    ForgetRule, KeyShape, LanguagePolicy, ProjectionDecl, ProjectionSpec, Provenance,
+    ResourceContract, SLOT_DEFAULT, SchemaContract, SchemaRef, SearchProjectionDecl, SubstringArm,
+    Surface, ToolContract, TransferRule, WEIGHT_UNIFORM, WeightedField,
 };
 use crate::protocol::resource as scope;
 use crate::protocol::tool;
@@ -36,6 +36,22 @@ use crate::verbs::schema::PayloadKind;
 pub const FLAVOR_ID: &str = "core";
 
 const BANDS: &[Band] = &[BAND_EXACT, BAND_RESCUE, BAND_SUBSTRING];
+
+/// Core's lexical projection: four sidecars, one table, one composite GIN.
+///
+/// It lives in `proxima_core` because a flavor's projection lives in the
+/// flavor's own schema, and it is deliberately absent from
+/// `proxima_core.flavor_surface` — a projection row is derived from a
+/// sidecar row, never stamped by a memory.
+const CORE_PROJECTION: ProjectionSpec = ProjectionSpec {
+    table: "proxima_core.projection",
+    index: "core_projection_owner_tsv_gin",
+    // RESERVED, UNCONSUMED. The value is today's `SIDECAR_OVERFETCH_CAP`,
+    // recorded so the deployment layer inherits the number rather than
+    // inventing one.
+    overfetch_k: 1_000,
+    band_comparability: BandComparability::CoreBands,
+};
 
 /// Goals do not transfer, and the refusal is real in three places. There is
 /// no CHECK constraint to name: removing the World owner deleted
@@ -141,7 +157,7 @@ const AGENT_NOTE_V1: SchemaContract = SchemaContract {
     provenance: Provenance::None,
     surfaces: &[memory_sidecar(
         "proxima_core.agent_note_v1",
-        Some("lexical_language"),
+        None,
         Some(t_fkey("proxima_core.agent_note_v1", "agent_note_v1_t_fkey")),
     )],
     natural_key_columns: &["note_id"],
@@ -175,7 +191,7 @@ const UTTERANCE_V1: SchemaContract = SchemaContract {
     provenance: Provenance::None,
     surfaces: &[memory_sidecar(
         "proxima_core.utterance_v1",
-        Some("lexical_language"),
+        None,
         Some(t_fkey("proxima_core.utterance_v1", "utterance_v1_t_fkey")),
     )],
     natural_key_columns: &[],
@@ -277,7 +293,7 @@ const AGENT_DERIVATION_SEARCH: SearchProjectionDecl = SearchProjectionDecl::Proj
 
 const AGENT_DERIVATION_SURFACE: Surface = memory_sidecar(
     "proxima_core.agent_derivation_v1",
-    Some("lexical_language"),
+    None,
     Some(t_fkey(
         "proxima_core.agent_derivation_v1",
         "agent_derivation_v1_t_fkey",
@@ -342,7 +358,7 @@ const INTERPRETATION_V1: SchemaContract = SchemaContract {
     },
     surfaces: &[memory_sidecar(
         "proxima_core.interpretation_v1",
-        Some("lexical_language"),
+        None,
         Some(t_fkey(
             "proxima_core.interpretation_v1",
             "interpretation_v1_t_fkey",
@@ -566,9 +582,13 @@ const KERNEL_SURFACES: &[Surface] = &[
         owner_columns: &["owner_id"],
         transfer: TransferRule::Follow,
         erase: EraseRule::ByKey,
-        export: ExportRule::Allowlist(&["t", "owner_id", "kind", "text", "lexical_language"]),
+        export: ExportRule::Allowlist(&["t", "owner_id", "kind", "text"]),
         forget: ForgetRule::DeleteWithMemory,
-        lexical_language_column: Some("lexical_language"),
+        // The sketch has no reader: the search verb scans exactly the four
+        // declared sidecars, and export strips the column. Its `search_tsv`,
+        // its GIN and its stamp go with the projection move rather than
+        // being carried to a new home nothing reads.
+        lexical_language_column: None,
         // Recorded by erase today and dropped on the floor: there is no
         // `sketches` key in the final counts and no audit-log column.
         // Declaring it is what makes the gap addressable.
@@ -1059,6 +1079,7 @@ pub const FLAVOR_0: FlavorContract = FlavorContract {
     kernel_surfaces: KERNEL_SURFACES,
     tools: TOOLS,
     resources: RESOURCES,
+    projection: ProjectionDecl::Table(CORE_PROJECTION),
 };
 
 /// Look up a flavor-#0 resource by its palette scope key.

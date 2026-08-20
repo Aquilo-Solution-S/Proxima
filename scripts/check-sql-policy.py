@@ -20,6 +20,16 @@ VALID_PROOFS = (
     "SQL-POLICY: PgIdent",
     "SQL-POLICY: fixed-fragment",
     "SQL-POLICY: QueryBuilder-bound-values",
+    # v0.0.8: the projection generator. `crates/storage-pg/src/projection.rs`
+    # builds one statement per projected schema out of `FlavorContract`
+    # declarations — every spliced name goes through `PgIdent` INSIDE the
+    # generator, and every value is a bind ($1 memory id, $2 language, $3
+    # schema id). The execution sites hold an opaque `String` off the frozen
+    # registry, so `PgIdent` is not the proof AT THE SITE; the proof is that
+    # the string has exactly one producer and that producer is audited. This
+    # is deliberately narrower than `fixed-fragment`: it names the generator
+    # as the thing to re-read, not the call site.
+    "SQL-POLICY: generated",
 )
 
 # Every reviewed dynamic-SQL site proves itself with an inline
@@ -429,7 +439,34 @@ def run_fixture(path: Path) -> int:
 # thing the recipe exists to stop hand-writing, so it would pass while the
 # recipe pointed somewhere else. Both fragments are `&'static str` off the
 # compiled-in contract; the id is bound.
-EXPECTED_DYNAMIC_SQL_SITES = 56
+# 56 -> 66 with the projection (v0.0.8). Ten sites, six of them the
+# generator's own statements and their two DROP inverses:
+#
+# - `projection.rs` x2: the `DROP TABLE` / `DROP INDEX` inverses every
+#   artifact carries. Both splice a `PgIdent`-validated name and nothing
+#   else, which is why they carry `SQL-POLICY: PgIdent` rather than the new
+#   `generated` proof — there is no bind and no generator indirection.
+# - `sidecars/frozen.rs` x2: the write path and the hydrate rebuild, both
+#   executing `projection_insert_sql`'s output for the schema the frozen
+#   entry names. This is the collapse's whole point: ONE producer of that
+#   statement, reached from every verb that writes searchable text.
+# - `access/owner_columns.rs` x1: `projection_transfer_sql`, the `UPDATE
+#   ... SET owner_id` that makes the projection follow a transferred series.
+#   The table list is the frozen registry's, never a literal.
+# - `flavors/code` x3 (`search_chunks.rs`, `search_commits.rs` x2): the
+#   flavor's GIN arms became `LazyLock<String>` because they now RENDER
+#   their score bands from the contract's `Band` constants instead of
+#   carrying float literals. The text is still a compiled-in fragment with
+#   every value bound, so the proof stays `fixed-fragment`; it is dynamic
+#   only in the sense that a `format!` produced it once at first use.
+#
+# The last two are test-only: `search_sidecar.rs` and
+# `flavors/code/tests/common/mod.rs` each run `projection_insert_sql` to
+# keep the projection for rows they hand-seed. A restated INSERT there
+# would be a second copy of the vector expression the generator exists to
+# be the only copy of — the fixture would agree with itself and disagree
+# with production.
+EXPECTED_DYNAMIC_SQL_SITES = 66
 
 
 def run_self_test() -> int:

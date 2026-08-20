@@ -1,7 +1,4 @@
-use proxima_core::{
-    AbstractionPayload, SearchProjection, SearchProjectionColumnKind, SearchProjectionField,
-    proxima_schema_id,
-};
+use proxima_core::{AbstractionPayload, proxima_schema_id};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -41,29 +38,6 @@ impl AbstractionPayload for CommitSummaryV1 {
     const SCHEMA_VERSION: u32 = 1;
     fn sidecar_table() -> &'static str {
         "proxima_code.commit_summary_v1"
-    }
-
-    fn search_projection() -> Option<SearchProjection> {
-        Some(SearchProjection {
-            fields: &[
-                SearchProjectionField {
-                    column: "commit_sha",
-                    kind: SearchProjectionColumnKind::Text,
-                },
-                SearchProjectionField {
-                    column: "summary",
-                    kind: SearchProjectionColumnKind::Text,
-                },
-                SearchProjectionField {
-                    column: "key_files",
-                    kind: SearchProjectionColumnKind::TextArray,
-                },
-            ],
-            tag_column: None,
-            tsv_column: Some("search_tsv"),
-            embed_text_column: Some("embed_text"),
-            language_column: None,
-        })
     }
 
     fn json_schema() -> Option<serde_json::Value> {

@@ -2,6 +2,13 @@
 -- No ALTER of 0001–0021. Existing databases must reset.
 
 CREATE EXTENSION IF NOT EXISTS vector;
+-- The projection's index is `gin (owner_id, search_tsv)`. `btree_gin` is
+-- what lets a uuid sit in a GIN index beside a tsvector: "for queries that
+-- test both a GIN-indexable column and a B-tree-indexable column, it might
+-- be more efficient to create a multicolumn GIN index that uses one of
+-- these operator classes than to create two separate indexes that would
+-- have to be combined via bitmap ANDing" (PostgreSQL F.9).
+CREATE EXTENSION IF NOT EXISTS btree_gin;
 
 CREATE SCHEMA proxima_core;
 
@@ -527,29 +534,21 @@ CREATE TYPE proxima_core.sketch_kind AS ENUM (
     'goal'
 );
 
+-- The sketch carries no vector. It never had a reader: `core_search_memories`
+-- scans the four declared sidecars and nothing scanned `sketch`, so its
+-- `search_tsv`, its GIN and the `lexical_language` that fed them were index
+-- maintenance on every recall write for no query. Lexical search is the
+-- projection's job now.
 CREATE TABLE proxima_core.sketch (
     t uuid PRIMARY KEY,
     owner_id uuid NOT NULL REFERENCES proxima_core.owners (owner_id),
     kind proxima_core.sketch_kind NOT NULL,
     text text NOT NULL,
-    lexical_language regconfig NOT NULL DEFAULT proxima_core.lexical_config()
-        REFERENCES proxima_core.lexical_languages (config),
-    search_tsv tsvector GENERATED ALWAYS AS (
-        proxima_core.lexical_tsv(lexical_language, NULLIF(btrim(text), ''))
-    ) STORED,
     CONSTRAINT sketch_text_nonblank_chk CHECK (length(btrim(text)) > 0)
 );
 
-CREATE TRIGGER sketch_remember_lang
-    BEFORE INSERT ON proxima_core.sketch
-    FOR EACH ROW
-    EXECUTE FUNCTION proxima_core.remember_lexical_language();
-
 CREATE INDEX sketch_owner_t_idx
     ON proxima_core.sketch (owner_id, t DESC);
-
-CREATE INDEX sketch_search_tsv_gin
-    ON proxima_core.sketch USING gin (search_tsv);
 
 CREATE TABLE proxima_core.embeddings (
     entity_id uuid NOT NULL,
@@ -614,20 +613,6 @@ CREATE TABLE proxima_core.agent_note_v1 (
     body text NOT NULL,
     tags text[] NOT NULL DEFAULT '{}',
     idempotency_key text,
-    lexical_language regconfig NOT NULL DEFAULT proxima_core.lexical_config()
-        REFERENCES proxima_core.lexical_languages (config),
-    search_tsv tsvector GENERATED ALWAYS AS (
-        proxima_core.lexical_tsv(
-            lexical_language,
-            proxima_core.lexical_join(
-                VARIADIC ARRAY[
-                    NULLIF(title, ''),
-                    NULLIF(body, ''),
-                    proxima_core.lexical_text_array(tags)
-                ]
-            )
-        )
-    ) STORED,
     embed_text text GENERATED ALWAYS AS (
         proxima_core.lexical_join(
             VARIADIC ARRAY[
@@ -639,24 +624,13 @@ CREATE TABLE proxima_core.agent_note_v1 (
     ) STORED
 );
 
-CREATE INDEX agent_note_v1_search_tsv_gin
-    ON proxima_core.agent_note_v1 USING gin (search_tsv);
-
 CREATE TABLE proxima_core.utterance_v1 (
     t uuid PRIMARY KEY REFERENCES proxima_core.memory (t),
     speaker text NOT NULL,
     conversation_id text NOT NULL,
     text text NOT NULL,
-    lexical_language regconfig NOT NULL DEFAULT proxima_core.lexical_config()
-        REFERENCES proxima_core.lexical_languages (config),
-    search_tsv tsvector GENERATED ALWAYS AS (
-        proxima_core.lexical_tsv(lexical_language, NULLIF(text, ''))
-    ) STORED,
     embed_text text GENERATED ALWAYS AS (NULLIF(text, '')) STORED
 );
-
-CREATE INDEX utterance_v1_search_tsv_gin
-    ON proxima_core.utterance_v1 USING gin (search_tsv);
 
 CREATE TABLE proxima_core.agent_derivation_v1 (
     t uuid PRIMARY KEY REFERENCES proxima_core.memory (t),
@@ -668,20 +642,6 @@ CREATE TABLE proxima_core.agent_derivation_v1 (
     model_id text NOT NULL,
     client_name text NOT NULL,
     client_version text NOT NULL,
-    lexical_language regconfig NOT NULL DEFAULT proxima_core.lexical_config()
-        REFERENCES proxima_core.lexical_languages (config),
-    search_tsv tsvector GENERATED ALWAYS AS (
-        proxima_core.lexical_tsv(
-            lexical_language,
-            proxima_core.lexical_join(
-                VARIADIC ARRAY[
-                    NULLIF(title, ''),
-                    NULLIF(body, ''),
-                    proxima_core.lexical_text_array(tags)
-                ]
-            )
-        )
-    ) STORED,
     embed_text text GENERATED ALWAYS AS (
         proxima_core.lexical_join(
             VARIADIC ARRAY[
@@ -693,9 +653,6 @@ CREATE TABLE proxima_core.agent_derivation_v1 (
     ) STORED
 );
 
-CREATE INDEX agent_derivation_v1_search_tsv_gin
-    ON proxima_core.agent_derivation_v1 USING gin (search_tsv);
-
 CREATE TABLE proxima_core.interpretation_v1 (
     t uuid PRIMARY KEY REFERENCES proxima_core.memory (t),
     claim text NOT NULL,
@@ -705,34 +662,40 @@ CREATE TABLE proxima_core.interpretation_v1 (
     model_id text NOT NULL,
     client_name text NOT NULL,
     client_version text NOT NULL,
-    lexical_language regconfig NOT NULL DEFAULT proxima_core.lexical_config()
-        REFERENCES proxima_core.lexical_languages (config),
-    search_tsv tsvector GENERATED ALWAYS AS (
-        proxima_core.lexical_tsv(lexical_language, NULLIF(claim, ''))
-    ) STORED,
     embed_text text GENERATED ALWAYS AS (NULLIF(claim, '')) STORED
 );
 
-CREATE INDEX interpretation_v1_search_tsv_gin
-    ON proxima_core.interpretation_v1 USING gin (search_tsv);
+-- ---------------------------------------------------------------------------
+-- The lexical projection. GENERATED — see `crates/storage-pg/src/projection.rs`
+-- and the `generator_output_is_the_migration_text` pin. Edit the generator,
+-- not this block.
+--
+-- One table per flavor, in the flavor's own schema, holding one row per
+-- (memory, projected schema). It replaces five per-sidecar `search_tsv`
+-- generated columns and their five GIN indexes with one index the whole
+-- flavor shares, and it is where a memory's `lexical_language` is stamped
+-- now that the sidecars no longer carry one.
+--
+-- Deliberately NOT registered in `proxima_core.flavor_surface`: a
+-- projection row is derived from a sidecar row, never stamped by a memory,
+-- so `memory.sidecar_tables` must never name it.
+CREATE TABLE proxima_core.projection (
+    memory_id        uuid      NOT NULL
+                     REFERENCES proxima_core.memory (t) ON DELETE CASCADE,
+    schema_id        text      NOT NULL,
+    owner_id         uuid      NOT NULL
+                     REFERENCES proxima_core.owners (owner_id),
+    search_tsv       tsvector  NOT NULL,
+    tag              text[]    NOT NULL DEFAULT '{}',
+    lexical_language regconfig NOT NULL DEFAULT proxima_core.lexical_config()
+                     REFERENCES proxima_core.lexical_languages (config),
+    PRIMARY KEY (memory_id, schema_id)
+);
 
-CREATE TRIGGER agent_note_v1_remember_lang
-    BEFORE INSERT ON proxima_core.agent_note_v1
-    FOR EACH ROW
-    EXECUTE FUNCTION proxima_core.remember_lexical_language();
+CREATE INDEX core_projection_owner_tsv_gin ON proxima_core.projection USING gin (owner_id, search_tsv);
 
-CREATE TRIGGER utterance_v1_remember_lang
-    BEFORE INSERT ON proxima_core.utterance_v1
-    FOR EACH ROW
-    EXECUTE FUNCTION proxima_core.remember_lexical_language();
-
-CREATE TRIGGER agent_derivation_v1_remember_lang
-    BEFORE INSERT ON proxima_core.agent_derivation_v1
-    FOR EACH ROW
-    EXECUTE FUNCTION proxima_core.remember_lexical_language();
-
-CREATE TRIGGER interpretation_v1_remember_lang
-    BEFORE INSERT ON proxima_core.interpretation_v1
+CREATE TRIGGER projection_remember_lang
+    BEFORE INSERT ON proxima_core.projection
     FOR EACH ROW
     EXECUTE FUNCTION proxima_core.remember_lexical_language();
 
@@ -1164,6 +1127,33 @@ CREATE TRIGGER announce_append_only
 
 CREATE TRIGGER owners_append_only
     BEFORE UPDATE ON proxima_core.owners
+    FOR EACH ROW
+    EXECUTE FUNCTION proxima_core.enforce_row_append_only();
+
+-- The four searchable core sidecars became append-only WITH the projection.
+-- Their text used to be indexed in place by a GENERATED column, so an
+-- UPDATE re-derived the vector for free. The projection row is written
+-- once, by the same transaction as the sidecar row; an UPDATE of the text
+-- would leave the vector describing the old text with nothing to notice.
+-- Supersession is a later `t` on the same handle, never an UPDATE, so this
+-- forbids nothing the write path does — it forbids the drift.
+CREATE TRIGGER agent_note_v1_append_only
+    BEFORE UPDATE ON proxima_core.agent_note_v1
+    FOR EACH ROW
+    EXECUTE FUNCTION proxima_core.enforce_row_append_only();
+
+CREATE TRIGGER utterance_v1_append_only
+    BEFORE UPDATE ON proxima_core.utterance_v1
+    FOR EACH ROW
+    EXECUTE FUNCTION proxima_core.enforce_row_append_only();
+
+CREATE TRIGGER agent_derivation_v1_append_only
+    BEFORE UPDATE ON proxima_core.agent_derivation_v1
+    FOR EACH ROW
+    EXECUTE FUNCTION proxima_core.enforce_row_append_only();
+
+CREATE TRIGGER interpretation_v1_append_only
+    BEFORE UPDATE ON proxima_core.interpretation_v1
     FOR EACH ROW
     EXECUTE FUNCTION proxima_core.enforce_row_append_only();
 

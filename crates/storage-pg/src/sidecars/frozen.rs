@@ -107,6 +107,8 @@ impl PgSidecarRegistryFrozen {
                 citation_mapping_insert: None,
                 goal_insert: None,
                 goal_copy: None,
+                projection_insert: None,
+                projection_table: None,
             },
         );
         Self {
@@ -174,11 +176,18 @@ impl PgSidecarRegistryFrozen {
     /// registered for the payload schema or when the erased payload type
     /// does not match the registered Rust type. Returns storage errors
     /// from the concrete inserter.
+    /// `lexical_language` is the resolved text-search configuration the
+    /// caller asked for, or `None` for the deployment default. This is the
+    /// first write path that has both the value and the column in scope:
+    /// the projection row is where a memory's language is now stamped, so
+    /// the `language` parameter three MCP tools advertise finally lands
+    /// somewhere a reader consults (R12).
     pub async fn insert_memory_sidecar(
         &self,
         tx: &mut Transaction<'_, Postgres>,
         memory_id: MemoryId,
         payload: &SidecarPayload,
+        lexical_language: Option<&str>,
     ) -> Result<(), StorageError> {
         let key = PgSidecarKey::new(
             payload.kind,
@@ -201,7 +210,73 @@ impl PgSidecarRegistryFrozen {
                 key.kind,
             ))
         })?;
-        insert(tx, memory_id, payload).await
+        insert(tx, memory_id, payload).await?;
+        if let Some(sql) = entry.projection_insert.as_deref() {
+            // SQL-POLICY: generated
+            sqlx::query(sqlx::AssertSqlSafe(sql))
+                .bind(memory_id.into_inner())
+                .bind(lexical_language)
+                .bind(key.schema_id.as_str())
+                .execute(tx.as_mut())
+                .await
+                .map_err(crate::error::map_err)?;
+        }
+        Ok(())
+    }
+
+    /// Rebuild the projection row for one already-restored sidecar row.
+    ///
+    /// Hydrate restores sidecar rows generically from the cold dump, so it
+    /// cannot go through [`Self::insert_memory_sidecar`]. It re-derives the
+    /// projection from the restored row instead — the same statement, run
+    /// against a row that is already there.
+    ///
+    /// # Errors
+    ///
+    /// Returns storage errors from the generated statement.
+    pub async fn rebuild_projection_for_table(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        memory_id: MemoryId,
+        table: &str,
+        lexical_language: Option<&str>,
+    ) -> Result<(), StorageError> {
+        let Some(entry) = self
+            .entries
+            .values()
+            .find(|entry| entry.sidecar_table == table && entry.projection_insert.is_some())
+        else {
+            return Ok(());
+        };
+        let Some(sql) = entry.projection_insert.as_deref() else {
+            return Ok(());
+        };
+        // SQL-POLICY: generated
+        sqlx::query(sqlx::AssertSqlSafe(sql))
+            .bind(memory_id.into_inner())
+            .bind(lexical_language)
+            .bind(entry.key.schema_id.as_str())
+            .execute(tx.as_mut())
+            .await
+            .map_err(crate::error::map_err)?;
+        Ok(())
+    }
+
+    /// Every projection table the linked flavors maintain, in name order.
+    ///
+    /// Transfer walks this rather than a hardcoded list, so a flavor that
+    /// declares a projection gets owner-following for free and one that
+    /// does not contributes nothing.
+    #[must_use]
+    pub fn projection_tables(&self) -> Vec<String> {
+        let mut tables: Vec<String> = self
+            .entries
+            .values()
+            .filter_map(|entry| entry.projection_table.clone())
+            .collect();
+        tables.sort_unstable();
+        tables.dedup();
+        tables
     }
 
     /// Load a typed sidecar payload projection for an already-created

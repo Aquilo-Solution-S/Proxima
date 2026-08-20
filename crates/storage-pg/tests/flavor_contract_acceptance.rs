@@ -409,23 +409,23 @@ async fn transfer_is_announced_and_the_announce_surface_is_declared() {
 // ── The embedding byte-parity gate ──────────────────────────────────────
 
 /// Structural half: every flavor #0 recipe resolves to exactly the
-/// `(table, column)` pair the shipped `embed_text_column` path reads.
+/// `(table, column)` pair the shipped embed-text drain reads.
 ///
-/// `EmbeddingRecipe` generalizes `EMBEDDABLE: bool` + `embed_text_column`.
-/// A generalization that quietly changed which column is embedded would
-/// re-embed the whole corpus, so the pairs are compared both ways: no
-/// schema gains a unit it did not have, and none loses one.
+/// `EmbeddingRecipe` generalizes `EMBEDDABLE: bool` + the old
+/// `embed_text_column`. A generalization that quietly changed which column
+/// is embedded would re-embed the whole corpus, so the pairs are compared
+/// both ways: no schema gains a unit it did not have, and none loses one.
 #[test]
 fn every_recipe_resolves_to_the_pair_the_shipped_drain_reads() {
     let registry = FlavorRegistry::new().freeze_or_panic_for_tests();
 
     for schema in FLAVOR_0.schemas {
         let schema_id = schema.schema_id();
-        let projection = registry
-            .search_projections()
+        let shipped = registry
+            .embed_units()
             .iter()
-            .find(|projection| projection.schema_id == schema_id);
-        let shipped = projection.and_then(|projection| projection.embed_text_column.clone());
+            .find(|unit| unit.schema_id == schema_id)
+            .map(|unit| unit.column.clone());
 
         let resolved = schema.embedding.resolve(schema.sidecar_table);
         if let Some(column) = shipped {
@@ -630,7 +630,7 @@ async fn each_recipe_reproduces_the_bytes_the_shipped_path_embeds() {
                 entity_kind_of(schema.kind),
                 proxima_core::MemoryId::new(*t),
                 registry.non_embeddable_schema_ids(),
-                registry.search_projections(),
+                registry.embed_units(),
             )
             .await?;
 

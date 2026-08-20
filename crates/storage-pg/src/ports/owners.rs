@@ -103,8 +103,14 @@ impl OwnerTransferPort for PgStorage {
         entity: EntityId,
         to_owner: OwnerRef,
     ) -> Result<bool, StorageError> {
-        access::owner_columns::transfer_to_owner(&self.pool, entity, *permit.owner(), to_owner)
-            .await
+        access::owner_columns::transfer_to_owner(
+            &self.pool,
+            &self.sidecars,
+            entity,
+            *permit.owner(),
+            to_owner,
+        )
+        .await
     }
 }
 

@@ -92,10 +92,9 @@ pub use proxima_core::{
     EngineAuthority, FactPayload, FactReceiptId, FactTombstone, FlavorDescriptor, FlavorProvenance,
     FlavorRegistry, FlavorRegistryError, FlavorRegistryFrozen, FlavorServiceError, FlavorServices,
     GoalId, GoalPayload, InputContractId, MemoryId, ModelId, OperatorId, PayloadKeyBuilder,
-    PerspectivePayload, PromptVersion, SchemaId, SchemaVersion, SearchProjection,
-    SearchProjectionColumnKind, SearchProjectionField, SidecarPayload, Tool, ToolCaller, ToolCtx,
-    ToolError, ToolServices, is_loopback_endpoint, is_loopback_host, proxima_flavor,
-    proxima_schema_id, validate_endpoint_url,
+    PerspectivePayload, PromptVersion, SchemaId, SchemaVersion, SearchProjectionColumnKind,
+    SidecarPayload, Tool, ToolCaller, ToolCtx, ToolError, ToolServices, is_loopback_endpoint,
+    is_loopback_host, proxima_flavor, proxima_schema_id, validate_endpoint_url,
 };
 /// Derived-memory authoring: the request/outcome types of
 /// [`proxima_core::Engine::author_derived_authorized`], which is how a
