@@ -643,11 +643,18 @@ const KERNEL_SURFACES: &[Surface] = &[
         table: "proxima_core.announce",
         key: KeyShape::Custom(&["seq"]),
         owner_columns: &["owner_id"],
-        // Two rows per transfer: the prior owner's lane and the DESTINATION
-        // owner's. Every surface whose transfer is neither StaysOnKey nor
-        // RetainAtSource must be covered by the same transaction that writes
-        // them — that is the transfers-announce-everywhere invariant.
-        transfer: TransferRule::Follow,
+        // The log is append-only (`announce_append_only`), so no existing
+        // row is ever re-homed: what the transfer does is APPEND two rows
+        // in the same transaction, one under the prior owner's lane and one
+        // under the destination's, so the source's projectors learn the
+        // series left and the destination's pull consumers learn it
+        // arrived. That is the transfers-announce-everywhere invariant, and
+        // the rows already written stay where they were written.
+        transfer: TransferRule::RetainAtSource {
+            why: "an announce row records what happened to an owner's view, not to \
+                  the memory; a transfer appends to both lanes rather than moving \
+                  the log",
+        },
         erase: EraseRule::ByKey,
         export: ExportRule::Excluded {
             why: "the pull log is projector state, exported as source_batches (empty by \
