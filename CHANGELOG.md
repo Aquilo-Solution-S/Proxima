@@ -13,6 +13,7 @@ Pre-1.0 the git tag (e.g. `v0.0.3`) is the version; workspace crates are unpubli
 - **core**: Transfer a memory to another owner, not to World ([`e01b648`](https://github.com/Aquilo-Solution-S/Proxima/commit/e01b648799b140c0ded9f4a547c85654b4141757))
 
 ### Bug Fixes
+- **breaking:** **compliance**: The owner-pinned export emits rows, not primary keys ([`bcb73a8`](https://github.com/Aquilo-Solution-S/Proxima/commit/bcb73a8ec9d2cfadf6e3b36438cbe797ebae2e59))
 - **core**: The transfer-rule doc link resolves under -D warnings ([`563c51b`](https://github.com/Aquilo-Solution-S/Proxima/commit/563c51b034b50a6853aea4b480e2d180823bfbda))
 - **breaking:** **compliance**: One list of sidecar surfaces, built from the contracts ([`0155977`](https://github.com/Aquilo-Solution-S/Proxima/commit/015597739e5398e32c5e9cfb416c5c38f19fab68))
 - **breaking:** **storage-pg**: An owner transfer retains the audit sidecar instead of deleting it ([`8cfd68c`](https://github.com/Aquilo-Solution-S/Proxima/commit/8cfd68c23d4ee2f7f32f7f0d5424112c412a7160))
@@ -22,17 +23,21 @@ Pre-1.0 the git tag (e.g. `v0.0.3`) is the version; workspace crates are unpubli
 - **breaking:** **core**: Delete the World owner ([`87e69a5`](https://github.com/Aquilo-Solution-S/Proxima/commit/87e69a528476d03548a95767ea9df4887523c499))
 
 ### Refactor
+- **breaking:** **core**: The frozen registry keeps one contract lookup ([`273fe44`](https://github.com/Aquilo-Solution-S/Proxima/commit/273fe444df61b47f84423bba297bf462a4009947))
 - **breaking:** **storage-pg**: Erase, the lexical guardrail and search read the contract ([`ad2122d`](https://github.com/Aquilo-Solution-S/Proxima/commit/ad2122dbb525257fce172dc8b978c96f1e6bb8ee))
 - **breaking:** **core**: The MCP resource manifest is the contract, not a copy of it ([`7f4cf93`](https://github.com/Aquilo-Solution-S/Proxima/commit/7f4cf93df44936c0d6433868f448c036f11a3dbd))
 - **storage-pg**: Nothing on the transfer path is called publish ([`3ab827c`](https://github.com/Aquilo-Solution-S/Proxima/commit/3ab827c371852daebe55df8f6ed6020bd7f62177))
 - **breaking:** **code**: A shared repo is a group, not the World ([`a9bc93d`](https://github.com/Aquilo-Solution-S/Proxima/commit/a9bc93d050b25cb2349dfd1de2c6ce580c2fa10f))
 
 ### Documentation
+- What the contract does not yet reach, said where a reader looks ([`0e280ed`](https://github.com/Aquilo-Solution-S/Proxima/commit/0e280edc6f16a58eb43fc22ec901e0c8c6ba94a5))
 - The resource catalog is named after what it is now ([`791894d`](https://github.com/Aquilo-Solution-S/Proxima/commit/791894dd92ee6836313eb73a32179a5fffe2debd))
 - The coverage row and the transfer port name what actually exists ([`5270686`](https://github.com/Aquilo-Solution-S/Proxima/commit/5270686c604cae8964b504021332c4ba76b8a806))
 - **breaking:** The World owner is gone from prose, Lean, and the changelog ([`9abf3de`](https://github.com/Aquilo-Solution-S/Proxima/commit/9abf3de134b6e986f1ea0cec6885f3dc58bec8df))
 
 ### Testing
+- **storage-pg**: Pin the search rewire, and resolve the cited enforcement ([`8ef6858`](https://github.com/Aquilo-Solution-S/Proxima/commit/8ef6858a6afcd4ae22c57051957ce7dea62c1079))
+- **core**: Every contract cross-check has a registry shaped to trip it ([`8aa8eec`](https://github.com/Aquilo-Solution-S/Proxima/commit/8aa8eec695b6a17ad23789ea056fb380724a0f5c))
 - **storage-pg**: The §2.5 acceptance cases, and the embedding byte-parity gate ([`50e1adf`](https://github.com/Aquilo-Solution-S/Proxima/commit/50e1adf1e35e789d8dca27d373c58a203dd47d38))
 - Every World test is deleted or generalized to an owner destination ([`117b6bb`](https://github.com/Aquilo-Solution-S/Proxima/commit/117b6bb60cf2d4a17480d0db3e166525d04eafe0))
 
