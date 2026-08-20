@@ -303,7 +303,7 @@ Public facade status:
 | Lane | Authority | Scope | Samples |
 |---|---|---|---|
 | Global | same-boot `SystemAuthority`; foreign-engine witnesses fail before I/O | configured bucket + every locator row | bounded raw missing/orphan/foreign locators for restore operations |
-| Owner | ordinary `AuthzContext::may_read(owner, Fact)`; raw delegated contexts rejected | exact owner rows + `objects/<owner-hash>/` | missing cited-object id, byte length, filename; no bucket/object key or orphan/foreign locator samples |
+| Owner | ordinary `AuthzContext::may_read(owner, Fact)`; raw delegated contexts rejected | exact owner rows, each probed for its own object | missing cited-object id, byte length, filename; no bucket/object key or orphan/foreign locator samples. `orphan_objects` is structurally 0 here: keys carry no owner, so an unclaimed object has no owner to attribute it to — orphans are a Global-lane finding |
 | Verified bytes | ordinary `AuthzContext` or same-runtime `DelegatedPhase`, then Fact-read | exact owner row + canonical object | required `NonZeroU64` ceiling; length+BLAKE3+SHA-256; no partial bytes or locator |
 
 The Global and Owner reconciliation lanes report `missing_objects`,

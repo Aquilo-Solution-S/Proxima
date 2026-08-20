@@ -3,18 +3,20 @@ use aws_sdk_s3::Client;
 use aws_sdk_s3::config::Region;
 use aws_sdk_s3::primitives::ByteStream;
 use proxima_blob_s3::{
-    BlobError, CitedBlobReadUrlTs, CitedBlobStore, CitedBlobUploadAbortTs,
-    CitedBlobUploadCompleteTs, CitedBlobUploadPrepareTs, S3RuntimeConfig,
+    BlobError, CitedBlobReadUrlOutcomeTs, CitedBlobReadUrlTs, CitedBlobStore,
+    CitedBlobUploadAbortTs, CitedBlobUploadCompleteTs, CitedBlobUploadPrepareTs, S3RuntimeConfig,
 };
 use proxima_core::engine::{Engine, UploadCompleted};
 use proxima_core::error::ProtocolError;
 use proxima_core::storage_ports::{
     CitedBlobIntegrityMismatch, CitedBlobPort, CitedBlobReadError, CitedBlobReadPort,
-    CitedBlobReconcileOutcome, CitedObjectErasePort, MAX_HELD_BLOB_DIGESTS,
+    CitedBlobReconcileOutcome, CitedObjectErasePort, MAX_HELD_BLOB_DIGESTS, OwnerTransferPort,
+    OwnerWritePermit,
 };
 use proxima_core::test_fixtures::owner_fixture;
 use proxima_core::{
-    AuthPath, AuthzContext, ColdObjectStore, FlavorRegistry, OwnerRef, StorageError, UserId,
+    AccessKind, AuthPath, AuthzContext, ColdObjectStore, EntityId, FlavorRegistry, GroupId,
+    OwnerRef, Relation, StorageError, UserId,
 };
 use std::num::NonZeroU64;
 
@@ -805,7 +807,8 @@ async fn read_url_refuses_locators_the_store_did_not_write() {
     // Each clause of the gate is forged against on its own, so dropping
     // either one fails a case: (a) another bucket under this owner's real
     // canonical key — the cross-environment read the bucket check exists
-    // for; (b) this bucket, under another owner's prefix; (c) both wrong.
+    // for; (b) this bucket, under a key shaped like one this store mints
+    // but belonging to no row of the forger's; (c) both wrong.
     let foreign_bucket = forge_uploaded_blob_row(
         &pool,
         Uuid::nil(),
@@ -814,15 +817,11 @@ async fn read_url_refuses_locators_the_store_did_not_write() {
         1,
     )
     .await;
-    let foreign_prefix = forge_uploaded_blob_row(
+    let foreign_key = forge_uploaded_blob_row(
         &pool,
         Uuid::nil(),
         &config.bucket,
-        &format!(
-            "objects/{}/core/uploaded-blob-v1/{}",
-            "ab".repeat(32),
-            "ef".repeat(32)
-        ),
+        &format!("objects/{}", Uuid::now_v7()),
         2,
     )
     .await;
@@ -830,19 +829,31 @@ async fn read_url_refuses_locators_the_store_did_not_write() {
         &pool,
         Uuid::nil(),
         "not-the-configured-bucket",
-        &format!(
-            "objects/{}/core/uploaded-blob-v1/{}",
-            "ab".repeat(32),
-            "cd".repeat(32)
-        ),
+        &format!("objects/{}", Uuid::now_v7()),
         3,
+    )
+    .await;
+
+    // The decisive case, and the one a plain "does the caller own the row"
+    // check waves through: the caller's OWN owner, the CONFIGURED bucket,
+    // and the canonical key of a DIFFERENT upload row that really exists.
+    // Every owner predicate passes. Only re-deriving the key from the
+    // forged row's own `upload_id` — a server-minted primary key the
+    // forger cannot choose — refuses it.
+    let own_owner_foreign_key = forge_uploaded_blob_row(
+        &pool,
+        owner.stored_owner_id(),
+        &config.bucket,
+        &genuine_key,
+        4,
     )
     .await;
 
     for (case, forged_id) in [
         ("foreign bucket, own key", foreign_bucket),
-        ("foreign owner prefix", foreign_prefix),
-        ("foreign bucket and prefix", both_foreign),
+        ("well-shaped key of no row", foreign_key),
+        ("foreign bucket and key", both_foreign),
+        ("own owner, another row's key", own_owner_foreign_key),
     ] {
         let err = store
             .read_url(
@@ -876,6 +887,285 @@ async fn read_url_refuses_locators_the_store_did_not_write() {
 
     drop(pool);
     drop_db(&db_name).await.expect("drop db");
+}
+
+/// A transfer moves rows, not bytes.
+///
+/// Object keys carry no owner, so the destination reads the citation
+/// through the key the source minted: no GET/PUT copy, no re-mint, no
+/// second copy of the PII to erase later. Before the re-key this was
+/// impossible — the key embedded the source's `owner_hash`, so either the
+/// object had to be rewritten under the destination or the citation went
+/// dark at the destination.
+#[tokio::test]
+async fn a_transfer_moves_the_citation_without_copying_the_object() {
+    if !S3RuntimeConfig::present_in_env() {
+        eprintln!("skipped: PROXIMA_S3_* unset (run the s3 service to enable)");
+        return;
+    }
+
+    let (pg, db_name) = fresh_storage().await;
+    let pool = pg.pool_for_tests().clone();
+    let config = s3_config_for_dev();
+    let store = CitedBlobStore::new(pool.clone(), config.clone()).expect("valid S3 config");
+    let source = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+    let ctx = AuthzContext::single_owner(&source, AuthPath::HostBearer);
+    let (destination, dest_ctx) = group_destination();
+
+    let completed = upload_one_object(&pg, &store, &config, &pool, &ctx, source, b"transferred")
+        .await
+        .expect("upload");
+    let client = s3_client(&config).await;
+    let before = head(&client, &config.bucket, &completed.object_key)
+        .await
+        .expect("object present before the transfer");
+
+    let permit = OwnerWritePermit::new_for_tests(source, AccessKind::Fact);
+    assert!(
+        pg.transfer_to_owner(&permit, EntityId::Memory(completed.memory_id), destination)
+            .await
+            .expect("transfer"),
+        "the cited series transfers"
+    );
+
+    // The row moved; the key did not.
+    let after_key: String =
+        sqlx::query_scalar("SELECT object_key FROM proxima_core.blob_uploads WHERE blob_id = $1")
+            .bind(completed.cited_object_id)
+            .fetch_one(&pool)
+            .await
+            .expect("upload row after transfer");
+    assert_eq!(
+        after_key, completed.object_key,
+        "a transfer must not re-key the object"
+    );
+    let after = head(&client, &config.bucket, &completed.object_key)
+        .await
+        .expect("object still present after the transfer");
+    assert_eq!(
+        (before.0, before.1),
+        (after.0, after.1),
+        "same etag and last-modified: nothing was rewritten"
+    );
+
+    // And there is exactly one version of it: the retired re-mint path
+    // GET+PUT the bytes to a destination-derived key and deleted the
+    // source copy, so a second version (or a second key) is the signature
+    // of the work this scheme exists to avoid.
+    let versions = client
+        .list_object_versions()
+        .bucket(&config.bucket)
+        .prefix(&completed.object_key)
+        .send()
+        .await
+        .expect("list versions of the transferred object");
+    assert_eq!(
+        versions.versions().len(),
+        1,
+        "a transfer performs no object-store work at all"
+    );
+    assert!(versions.delete_markers().is_empty());
+
+    // The destination reads the citation; the source no longer can.
+    dest_ctx_reads(&store, &dest_ctx, destination, completed.cited_object_id)
+        .await
+        .expect("destination reads the transferred citation");
+    store
+        .read_url(
+            &ctx,
+            CitedBlobReadUrlTs {
+                owner: source,
+                cited_object_id: completed.cited_object_id.to_string(),
+            },
+        )
+        .await
+        .expect_err("the source no longer holds the citation");
+
+    drop(pool);
+    drop_db(&db_name).await.expect("drop db");
+}
+
+/// Erase completeness survives a transfer in both directions.
+///
+/// The purge enumerates keys from the OWNER'S ROWS, so after a transfer the
+/// object is reachable from the destination's rows and from nobody else's.
+/// A source erase must therefore leave the destination's bytes standing —
+/// the old prefix purge would have deleted them, because the key still
+/// spelled the source's hash — and the destination's own erase must still
+/// remove them, so the object never becomes un-erasable.
+#[tokio::test]
+async fn erase_follows_the_transfer_rather_than_the_key() {
+    if !S3RuntimeConfig::present_in_env() {
+        eprintln!("skipped: PROXIMA_S3_* unset (run the s3 service to enable)");
+        return;
+    }
+
+    let (pg, db_name) = fresh_storage().await;
+    let pool = pg.pool_for_tests().clone();
+    let config = s3_config_for_dev();
+    let store = CitedBlobStore::new(pool.clone(), config.clone()).expect("valid S3 config");
+    let source = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+    let ctx = AuthzContext::single_owner(&source, AuthPath::HostBearer);
+    let (destination, dest_ctx) = group_destination();
+
+    let completed = upload_one_object(&pg, &store, &config, &pool, &ctx, source, b"erase-me-later")
+        .await
+        .expect("upload");
+    // A second object the source keeps, so "the source purge did nothing"
+    // is distinguishable from "the source purge worked and skipped the
+    // transferred object".
+    let retained = upload_one_object(&pg, &store, &config, &pool, &ctx, source, b"stays-mine")
+        .await
+        .expect("second upload");
+
+    let permit = OwnerWritePermit::new_for_tests(source, AccessKind::Fact);
+    assert!(
+        pg.transfer_to_owner(&permit, EntityId::Memory(completed.memory_id), destination)
+            .await
+            .expect("transfer"),
+        "the cited series transfers"
+    );
+
+    let client = s3_client(&config).await;
+    store
+        .purge_owner_objects(source)
+        .await
+        .expect("source erase");
+
+    assert!(
+        head(&client, &config.bucket, &retained.object_key)
+            .await
+            .is_none(),
+        "the source's own object is erased"
+    );
+    assert!(
+        head(&client, &config.bucket, &completed.object_key)
+            .await
+            .is_some(),
+        "a source erase must not reach bytes it transferred away"
+    );
+    dest_ctx_reads(&store, &dest_ctx, destination, completed.cited_object_id)
+        .await
+        .expect("the destination still reads its citation after the source erase");
+
+    store
+        .purge_owner_objects(destination)
+        .await
+        .expect("destination erase");
+    assert!(
+        head(&client, &config.bucket, &completed.object_key)
+            .await
+            .is_none(),
+        "the destination's erase removes the bytes it now holds"
+    );
+
+    drop(pool);
+    drop_db(&db_name).await.expect("drop db");
+}
+
+/// A group and a context that reads it. A transfer destination is always a
+/// group (group-manage is the receiving side's consent), and group access
+/// exists only as a subject's role — `single_owner` denies a bare group on
+/// purpose.
+fn group_destination() -> (OwnerRef, AuthzContext) {
+    let group = OwnerRef::Group(GroupId::new(Uuid::now_v7()));
+    let member = UserId::new(Uuid::now_v7());
+    let ctx = AuthzContext::for_subject_with_role(
+        member,
+        [(group, Relation::Admin.role())],
+        AuthPath::HostBearer,
+    );
+    (group, ctx)
+}
+
+struct UploadedObject {
+    cited_object_id: Uuid,
+    memory_id: proxima_core::MemoryId,
+    object_key: String,
+}
+
+/// prepare -> PUT -> complete, reported with everything the transfer and
+/// erase assertions need.
+async fn upload_one_object(
+    pg: &PgStorage,
+    store: &CitedBlobStore,
+    config: &S3RuntimeConfig,
+    pool: &sqlx::PgPool,
+    ctx: &AuthzContext,
+    owner: OwnerRef,
+    body: &'static [u8],
+) -> Result<UploadedObject, BlobError> {
+    let prepared = store
+        .prepare_upload(
+            ctx,
+            CitedBlobUploadPrepareTs {
+                owner,
+                filename: "artefact.pdf".into(),
+                mime: "application/pdf".into(),
+                byte_len: body.len() as u64,
+            },
+        )
+        .await?;
+    let pending: (String,) =
+        sqlx::query_as("SELECT object_key FROM proxima_core.blob_uploads WHERE upload_id = $1")
+            .bind(Uuid::parse_str(&prepared.upload_id).expect("upload id"))
+            .fetch_one(pool)
+            .await
+            .expect("upload row");
+    put_object_via_sdk(config, &pending.0, body).await;
+    let outcome = complete_via_engine(pg, store, ctx, owner, &prepared.upload_id)
+        .await
+        .map_err(|err| BlobError::State(err.to_string()))?;
+    let cited_object_id = Uuid::parse_str(&outcome.blob.cited_object_id).expect("cited object id");
+    let object_key: String =
+        sqlx::query_scalar("SELECT object_key FROM proxima_core.blob_uploads WHERE blob_id = $1")
+            .bind(cited_object_id)
+            .fetch_one(pool)
+            .await
+            .expect("completed blob row");
+    Ok(UploadedObject {
+        cited_object_id,
+        memory_id: outcome.fact.memory_id,
+        object_key,
+    })
+}
+
+/// `(etag, last_modified)` when the object exists, `None` when it does not.
+async fn head(
+    client: &Client,
+    bucket: &str,
+    key: &str,
+) -> Option<(Option<String>, Option<aws_sdk_s3::primitives::DateTime>)> {
+    client
+        .head_object()
+        .bucket(bucket)
+        .key(key)
+        .send()
+        .await
+        .ok()
+        .map(|out| {
+            (
+                out.e_tag().map(str::to_string),
+                out.last_modified().copied(),
+            )
+        })
+}
+
+async fn dest_ctx_reads(
+    store: &CitedBlobStore,
+    ctx: &AuthzContext,
+    owner: OwnerRef,
+    cited_object_id: Uuid,
+) -> Result<CitedBlobReadUrlOutcomeTs, BlobError> {
+    store
+        .read_url(
+            ctx,
+            CitedBlobReadUrlTs {
+                owner,
+                cited_object_id: cited_object_id.to_string(),
+            },
+        )
+        .await
 }
 
 /// Once the authz gate has passed for the caller's own owner, the SQL
@@ -1004,7 +1294,7 @@ async fn purge_owner_objects_removes_completed_blob() {
     let owner = owner_fixture();
     let ctx = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
 
-    // Upload + complete: leaves a canonical object at objects/<owner_hash>/<blake3>.
+    // Upload + complete: leaves a canonical object at objects/<upload_id>.
     let prepared = store
         .prepare_upload(
             &ctx,

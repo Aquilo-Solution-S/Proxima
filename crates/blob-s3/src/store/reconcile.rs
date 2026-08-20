@@ -13,7 +13,7 @@ use sqlx::Row as _;
 
 use super::CitedBlobStore;
 use super::guards::ensure_owner_access;
-use super::keys::{CANONICAL_OBJECT_PREFIX, objects_owner_prefix, owner_hash_hex};
+use super::keys::{CANONICAL_OBJECT_PREFIX, locator_was_minted_here};
 use super::port::blob_error_to_storage;
 
 /// Rows read per round trip.
@@ -96,7 +96,7 @@ impl CitedBlobStore {
         let mut after = uuid::Uuid::nil();
         loop {
             let page = sqlx::query(
-                "SELECT blob_id AS cited_object_id, bucket, object_key, \
+                "SELECT blob_id AS cited_object_id, bucket, object_key, upload_id, \
                         expected_byte_len AS byte_len, filename \
                    FROM proxima_core.blob_uploads \
                   WHERE status = 'completed' \
@@ -117,11 +117,16 @@ impl CitedBlobStore {
             for row in &page {
                 let bucket: String = row.try_get("bucket").map_err(|e| map_row(&e))?;
                 let object_key: String = row.try_get("object_key").map_err(|e| map_row(&e))?;
+                let upload_id: uuid::Uuid = row.try_get("upload_id").map_err(|e| map_row(&e))?;
                 after = row.try_get("cited_object_id").map_err(|e| map_row(&e))?;
 
                 // Counted apart from the sweep, because the cause and the
-                // repair are both different — see the field's own doc.
-                if bucket != self.config.bucket || !object_key.starts_with(CANONICAL_OBJECT_PREFIX)
+                // repair are both different — see the field's own doc. The
+                // test is the read gate's, not a prefix shape: the key a
+                // row is allowed to name is the one derived from its own
+                // `upload_id`, and nothing else in the canonical prefix
+                // counts as this row's object.
+                if bucket != self.config.bucket || !locator_was_minted_here(&object_key, upload_id)
                 {
                     outcome.foreign_locators = outcome.foreign_locators.saturating_add(1);
                     if outcome.foreign_sample.len() < MAX_RECONCILE_SAMPLE {
@@ -178,18 +183,18 @@ impl CitedBlobStore {
     ) -> Result<CitedBlobOwnerReconcileOutcome, StorageError> {
         ensure_owner_access(authz, &owner).map_err(blob_error_to_storage)?;
 
-        let owner_prefix = objects_owner_prefix(&owner_hash_hex(&owner));
-        let mut objects = self.list_keys(&owner_prefix).await?;
-        let objects_scanned = objects.len() as u64;
-        let mut outcome = CitedBlobOwnerReconcileOutcome {
-            objects_scanned,
-            ..CitedBlobOwnerReconcileOutcome::default()
-        };
+        // Keys carry no owner any more, so there is no `objects/<hash>/`
+        // prefix to list and an owner-scoped ORPHAN is not a thing that can
+        // be computed: an object with no row has no owner to attribute it
+        // to. The rows are the index here, and each one's key is probed for
+        // existence. Bucket-wide orphan detection lives in `reconcile_all`,
+        // which is where it was always authoritative.
+        let mut outcome = CitedBlobOwnerReconcileOutcome::default();
 
         let mut after = uuid::Uuid::nil();
         loop {
             let page = sqlx::query(
-                "SELECT u.blob_id AS cited_object_id, u.bucket, u.object_key, \
+                "SELECT u.blob_id AS cited_object_id, u.bucket, u.object_key, u.upload_id, \
                         u.expected_byte_len AS byte_len, u.filename \
                    FROM proxima_core.blob_uploads u \
                   WHERE u.owner_id = $1 \
@@ -215,15 +220,21 @@ impl CitedBlobStore {
                 let cited_object_id = row.try_get("cited_object_id").map_err(|e| map_row(&e))?;
                 let bucket: String = row.try_get("bucket").map_err(|e| map_row(&e))?;
                 let object_key: String = row.try_get("object_key").map_err(|e| map_row(&e))?;
+                let upload_id: uuid::Uuid = row.try_get("upload_id").map_err(|e| map_row(&e))?;
                 after = cited_object_id;
 
-                if bucket != self.config.bucket || !object_key.starts_with(&owner_prefix) {
+                // The same provenance rule the read gate applies: a locator
+                // this store did not mint is a foreign locator, not a
+                // missing object.
+                if bucket != self.config.bucket || !locator_was_minted_here(&object_key, upload_id)
+                {
                     outcome.foreign_locators = outcome.foreign_locators.saturating_add(1);
                     continue;
                 }
 
                 outcome.rows_scanned = outcome.rows_scanned.saturating_add(1);
-                if objects.remove(&object_key) {
+                if self.object_exists(&object_key).await? {
+                    outcome.objects_scanned = outcome.objects_scanned.saturating_add(1);
                     continue;
                 }
                 outcome.missing_objects = outcome.missing_objects.saturating_add(1);
@@ -241,8 +252,37 @@ impl CitedBlobStore {
             }
         }
 
-        outcome.orphan_objects = objects.len() as u64;
+        // Structurally unavailable owner-scoped; see the note above.
+        outcome.orphan_objects = 0;
         Ok(outcome)
+    }
+
+    /// Does exactly this key resolve? `head_object` rather than a listing:
+    /// with owner-free keys the owner-scoped pass knows precisely which
+    /// keys to ask about, and asking costs one request per row instead of a
+    /// walk of the whole bucket.
+    async fn object_exists(&self, key: &str) -> Result<bool, StorageError> {
+        let client = self
+            .client()
+            .await
+            .map_err(|e| StorageError::Unavailable(format!("s3 client: {e}")))?;
+        match client
+            .head_object()
+            .bucket(&self.config.bucket)
+            .key(key)
+            .send()
+            .await
+        {
+            Ok(_) => Ok(true),
+            Err(err) => {
+                let service = err.into_service_error();
+                if service.is_not_found() {
+                    Ok(false)
+                } else {
+                    Err(StorageError::Unavailable(format!("head object: {service}")))
+                }
+            }
+        }
     }
 
     /// Every key under `prefix`, paged to exhaustion.
@@ -331,9 +371,9 @@ mod tests {
 
     #[test]
     fn sweep_prefix_contains_written_canonical_keys_only() {
-        let owner_hash = "a".repeat(64);
-        let canonical = canonical_object_key(&owner_hash, &"b".repeat(64));
-        let pending = pending_object_key(&owner_hash, Uuid::nil());
+        let upload_id = Uuid::now_v7();
+        let canonical = canonical_object_key(upload_id);
+        let pending = pending_object_key(upload_id);
 
         assert!(canonical.starts_with(CANONICAL_OBJECT_PREFIX));
         assert!(!pending.starts_with(CANONICAL_OBJECT_PREFIX));

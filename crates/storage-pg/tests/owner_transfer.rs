@@ -192,7 +192,7 @@ async fn transfer_rehomes_cooled_versions_and_remints_object_key() {
     let (db_name, pg, cold) = fresh_pg_with_cold().await;
     let result: Result<(), Box<dyn std::error::Error>> = async {
         use proxima_core::storage_ports::MemoryAuthoringPort;
-        use proxima_storage_pg::verbs::forget::{cold_object_key, owner_hash_hex};
+        use proxima_storage_pg::verbs::forget::cold_object_key;
 
         let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
@@ -251,16 +251,12 @@ async fn transfer_rehomes_cooled_versions_and_remints_object_key() {
                 .bind(first.memory_id.into_inner())
                 .fetch_one(pool)
                 .await?;
-        let expected = cold_object_key(
-            &owner_hash_hex(&dest),
-            first.handle,
-            first.memory_id.into_inner(),
-        );
+        let expected = cold_object_key(first.memory_id.into_inner());
         assert_eq!(object_key, expected);
-        let personal_prefix = format!("cold/{}/", owner_hash_hex(&owner));
         assert!(
-            !object_key.starts_with(&personal_prefix),
-            "reminted key must not stay under the personal owner hash"
+            !object_key.contains(&owner.stored_owner_id().to_string())
+                && !object_key.contains(&dest.stored_owner_id().to_string()),
+            "the cold key is owner-free, so a transfer never has to re-mint it"
         );
         let blob_owner: Uuid =
             sqlx::query_scalar("SELECT owner_id FROM proxima_core.blob WHERE blob_id = $1")
@@ -475,7 +471,7 @@ async fn transfer_is_unchanged_when_the_head_owner_is_already_lost() {
     let (db_name, pg) = fresh_pg().await;
     let result: Result<(), Box<dyn std::error::Error>> = async {
         use proxima_core::storage_ports::MemoryAuthoringPort;
-        use proxima_storage_pg::verbs::forget::{cold_object_key, owner_hash_hex};
+        use proxima_storage_pg::verbs::forget::cold_object_key;
 
         let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
@@ -488,11 +484,7 @@ async fn transfer_is_unchanged_when_the_head_owner_is_already_lost() {
         later.ingest_key = Some("k2".into());
         let second = ingest_fact_atomic(pool, &permit, &later, None).await?;
         assert_eq!(second.handle, first.handle);
-        let personal_key = cold_object_key(
-            &owner_hash_hex(&owner),
-            first.handle,
-            first.memory_id.into_inner(),
-        );
+        let personal_key = cold_object_key(first.memory_id.into_inner());
 
         let usurper = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
         sqlx::query(

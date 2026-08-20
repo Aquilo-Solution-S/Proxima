@@ -10,7 +10,6 @@ use crate::error::BlobError;
 #[derive(Debug, Clone)]
 pub(super) struct StreamedObject {
     pub(super) blake3: [u8; 32],
-    pub(super) blake3_hex: String,
     pub(super) sha256: [u8; 32],
     pub(super) byte_len: u64,
 }
@@ -59,7 +58,6 @@ pub(super) async fn hash_uploaded_object(
     let sha256: [u8; 32] = sha256_hasher.finalize().into();
     Ok(StreamedObject {
         blake3,
-        blake3_hex: hex::encode(blake3),
         sha256,
         byte_len,
     })

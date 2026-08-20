@@ -307,7 +307,7 @@ that are three different problems:
 |---|---|---|
 | `missing` | an artefact the corpus claims to hold whose object is absent | **a citation that cannot be resolved**; alert on this |
 | `orphans` | objects no row claims | cost and retention only |
-| `foreign` | rows naming another bucket, or a key outside `objects/` | usually a legacy or hand-written locator |
+| `foreign` | rows naming another bucket, or a key outside `objects/` | a hand-written or forged locator |
 
 The command boots the normal headless Proxima composition and passes its
 runtime-issued `SystemAuthority` to the global reconcile verb. The store is

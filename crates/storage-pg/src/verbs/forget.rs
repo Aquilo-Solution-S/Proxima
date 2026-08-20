@@ -17,7 +17,7 @@ pub const COLD_FORMAT_VERSION: u8 = 4;
 
 // Keep the historical storage-path exports while routing the persisted key
 // derivation through core, the lowest crate shared by storage-pg and blob-s3.
-pub use proxima_core::{cold_object_key, owner_hash_hex};
+pub use proxima_core::cold_object_key;
 
 #[derive(Default)]
 pub struct MemoryColdStore {
@@ -157,16 +157,6 @@ fn decode_record(bytes: &[u8]) -> Result<ColdRecord, StorageError> {
         embed_models,
         sketch,
     })
-}
-
-/// Rewrite the owner embedded in a cold record while preserving its payload.
-/// A transfer remints the locator under the destination owner; the bytes must
-/// carry the same owner because hydrate reconstructs owner-scoped rows from
-/// this record.
-pub(crate) fn rehome_cold_record(bytes: &[u8], owner_id: Uuid) -> Result<Vec<u8>, StorageError> {
-    let mut rec = decode_record(bytes)?;
-    rec.row.owner_id = owner_id;
-    encode_record(&rec)
 }
 
 fn write_u16(out: &mut Vec<u8>, value: u16) {
@@ -884,9 +874,13 @@ pub(crate) async fn sync_memory_head(
     Ok(())
 }
 
+/// `owner_id` comes from the `cooled` ROW, never from `rec`. The dump is a
+/// snapshot of the memory as it was when it cooled; an owner transfer
+/// afterwards updates the row and deliberately does not rewrite the bytes.
 async fn ensure_memory_head(
     tx: &mut Transaction<'_, Postgres>,
     rec: &ColdRecord,
+    owner_id: Uuid,
 ) -> Result<(), StorageError> {
     let head = sqlx::query(
         "INSERT INTO proxima_core.memory_head (handle, kind, schema_id, owner_id, t)
@@ -900,7 +894,7 @@ async fn ensure_memory_head(
     .bind(rec.row.handle)
     .bind(&rec.row.kind)
     .bind(&rec.schema_id)
-    .bind(rec.row.owner_id)
+    .bind(owner_id)
     .bind(rec.row.t)
     .fetch_optional(tx.as_mut())
     .await
@@ -976,16 +970,21 @@ pub async fn hydrate_memory(
     cold: &dyn ColdObjectStore,
     t: Uuid,
 ) -> Result<(), StorageError> {
-    let object_key: String =
-        sqlx::query_scalar("SELECT object_key FROM proxima_core.cooled WHERE t = $1")
+    // The row is the authority on WHO owns this series; the object is the
+    // authority on WHAT it contains. An owner transfer updates
+    // `cooled.owner_id` and leaves the bytes untouched (keys are
+    // owner-free), so hydrating from the dump's embedded owner would
+    // restore a transferred series back under the owner that gave it away.
+    let cooled: Option<(String, Uuid)> =
+        sqlx::query_as("SELECT object_key, owner_id FROM proxima_core.cooled WHERE t = $1")
             .bind(t)
             .fetch_optional(tx.as_mut())
             .await
-            .map_err(map_err)?
-            .ok_or(StorageError::NotFound)?;
+            .map_err(map_err)?;
+    let (object_key, owner_id) = cooled.ok_or(StorageError::NotFound)?;
 
     let rec = decode_record(&cold.get(&object_key).await?)?;
-    ensure_memory_head(tx, &rec).await?;
+    ensure_memory_head(tx, &rec, owner_id).await?;
     let cooled_content: Option<Uuid> = sqlx::query_scalar::<_, Option<Uuid>>(
         "SELECT content_id FROM proxima_core.cooled WHERE t = $1",
     )
@@ -1002,7 +1001,7 @@ pub async fn hydrate_memory(
     .bind(rec.row.handle)
     .bind(rec.row.t)
     .bind(&rec.row.kind)
-    .bind(rec.row.owner_id)
+    .bind(owner_id)
     .bind(&rec.schema_id)
     .bind(rec.row.source_id.as_deref())
     .bind(rec.row.ingest_key.as_deref())

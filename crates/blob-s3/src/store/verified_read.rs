@@ -12,7 +12,7 @@ use uuid::Uuid;
 
 use super::CitedBlobStore;
 use super::guards::ensure_owner_access;
-use super::keys::{canonical_object_key, owner_hash_hex};
+use super::keys::locator_was_minted_here;
 use super::rows::{BlobReadRecord, load_blob_read_record};
 
 fn within_ceiling(byte_len: u64, max_bytes: NonZeroU64) -> Result<(), CitedBlobReadError> {
@@ -26,10 +26,12 @@ fn within_ceiling(byte_len: u64, max_bytes: NonZeroU64) -> Result<(), CitedBlobR
     }
 }
 
-fn canonical_for_store(store: &CitedBlobStore, owner: &OwnerRef, row: &BlobReadRecord) -> bool {
-    let owner_hash = owner_hash_hex(owner);
-    row.bucket == store.config.bucket
-        && row.object_key == canonical_object_key(&owner_hash, &hex::encode(row.content_hash))
+/// Byte-exact locator provenance, the same rule `read_url` applies.
+///
+/// The key derives from `blob_uploads.upload_id` — the row's own primary
+/// key — so a row can only ever vouch for its own object.
+fn canonical_for_store(store: &CitedBlobStore, row: &BlobReadRecord) -> bool {
+    row.bucket == store.config.bucket && locator_was_minted_here(&row.object_key, row.upload_id)
 }
 
 async fn verify_body(
@@ -121,7 +123,7 @@ impl CitedBlobReadPort for CitedBlobStore {
             .await
             .map_err(|err| CitedBlobReadError::Unavailable(err.to_string()))?
             .ok_or(CitedBlobReadError::NotFound)?;
-        if !canonical_for_store(self, &owner, &row) {
+        if !canonical_for_store(self, &row) {
             return Err(CitedBlobReadError::NotFound);
         }
         // Reject from immutable metadata before constructing the S3 client or
@@ -177,6 +179,7 @@ mod tests {
         let sha256: [u8; 32] = Sha256::digest(bytes).into();
         BlobReadRecord {
             cited_object_id: Uuid::now_v7(),
+            upload_id: Uuid::now_v7(),
             content_hash: *blake3::hash(bytes).as_bytes(),
             bucket: "bucket".into(),
             object_key: "objects/owner/core/uploaded-blob-v1/hash".into(),

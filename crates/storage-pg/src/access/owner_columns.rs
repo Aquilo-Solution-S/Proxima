@@ -1,8 +1,7 @@
 //! Direct `OwnerRef` column helpers.
 
 use proxima_core::{
-    ColdObjectStore, EntityId, GroupId, MembershipRow, OwnerRef, OwnerRefKind, Relation,
-    StorageError, UserId, cold_object_key, owner_hash_hex,
+    EntityId, GroupId, MembershipRow, OwnerRef, OwnerRefKind, Relation, StorageError, UserId,
 };
 use sqlx::{PgPool, Postgres, Transaction};
 
@@ -366,7 +365,7 @@ pub(crate) async fn visible_home_owner(
 ///
 /// Same `(handle, t)`: a transfer is an owner UPDATE, not a copy. Head and
 /// every version on the handle move together (`MemoryHeadAligned`), including
-/// cooled stubs (owner + reminted `object_key`).
+/// cooled stubs (owner only: cold keys are owner-free).
 /// Returns `true` iff a row under `from_owner` matched and was updated.
 ///
 /// Most sidecar rows stay keyed by `t` and so follow the memory to
@@ -395,7 +394,6 @@ pub(crate) async fn visible_home_owner(
 /// check violations.
 pub(crate) async fn transfer_to_owner(
     pool: &PgPool,
-    cold: &dyn ColdObjectStore,
     entity: EntityId,
     from_owner: OwnerRef,
     to_owner: OwnerRef,
@@ -416,32 +414,18 @@ pub(crate) async fn transfer_to_owner(
     let from_id = from_owner.stored_owner_id();
     with_bounded_retry(move || async move {
         let mut tx = pool.begin().await.map_err(internal)?;
-        let (transferred, stale_cold_keys) =
-            transfer_memory_t(&mut tx, cold, memory_id.into_inner(), from_id, to_owner).await?;
+        let transferred =
+            transfer_memory_t(&mut tx, memory_id.into_inner(), from_id, to_owner).await?;
         if !transferred {
             // A false persist can follow real writes: when the head is gone
             // or changed owner after the series reads, cooled/blob/content
             // rows are already re-homed to the destination in this
             // transaction with no announce row. Roll back so they revert to
-            // the prior owner and object keys (whose cold objects still
-            // exist); the minted destination objects were already
-            // compensation-deleted in `transfer_memory_handle`.
+            // the prior owner.
             tx.rollback().await.map_err(map_err)?;
             return Ok(false);
         }
         tx.commit().await.map_err(map_err)?;
-        for key in stale_cold_keys {
-            match cold.delete(&key).await {
-                Ok(()) | Err(StorageError::NotFound) => {}
-                Err(err) => {
-                    tracing::warn!(
-                        error = %err,
-                        key,
-                        "transferred series left a prior-owner cold object after remint"
-                    );
-                }
-            }
-        }
         Ok(transferred)
     })
     .await
@@ -449,11 +433,10 @@ pub(crate) async fn transfer_to_owner(
 
 async fn transfer_memory_t(
     tx: &mut Transaction<'_, Postgres>,
-    cold: &dyn ColdObjectStore,
     t: uuid::Uuid,
     from_id: uuid::Uuid,
     to_owner: OwnerRef,
-) -> Result<(bool, Vec<String>), StorageError> {
+) -> Result<bool, StorageError> {
     let handle: Option<uuid::Uuid> = sqlx::query_scalar(
         "SELECT handle FROM proxima_core.memory
           WHERE t = $1 AND owner_id = $2",
@@ -464,9 +447,9 @@ async fn transfer_memory_t(
     .await
     .map_err(map_err)?;
     let Some(handle) = handle else {
-        return Ok((false, Vec::new()));
+        return Ok(false);
     };
-    transfer_memory_handle(tx, cold, handle, from_id, to_owner).await
+    transfer_memory_handle(tx, handle, from_id, to_owner).await
 }
 
 const SERIES_TS_SQL: &str = "SELECT t FROM proxima_core.memory WHERE handle = $1 AND owner_id = $2
@@ -531,11 +514,10 @@ async fn lock_series_ts(
 
 async fn transfer_memory_handle(
     tx: &mut Transaction<'_, Postgres>,
-    cold: &dyn ColdObjectStore,
     handle: uuid::Uuid,
     from_id: uuid::Uuid,
     to_owner: OwnerRef,
-) -> Result<(bool, Vec<String>), StorageError> {
+) -> Result<bool, StorageError> {
     // The destination's `owners` row is no longer migration-seeded, so mint
     // it (or confirm its kind) BEFORE any statement below binds `to_id` into
     // an `owner_id` FK — `blob`, `content`, `cooled`, `memory_head`,
@@ -549,11 +531,11 @@ async fn transfer_memory_handle(
         .await
         .map_err(map_err)?;
     if ts.is_empty() {
-        return Ok((false, Vec::new()));
+        return Ok(false);
     }
     let ts = lock_series_ts(tx, handle, from_id, ts).await?;
     if ts.is_empty() {
-        return Ok((false, Vec::new()));
+        return Ok(false);
     }
     let expected_head_t: Option<uuid::Uuid> = sqlx::query_scalar(
         "SELECT t FROM proxima_core.memory_head
@@ -565,7 +547,7 @@ async fn transfer_memory_handle(
     .await
     .map_err(map_err)?;
     let Some(expected_head_t) = expected_head_t else {
-        return Ok((false, Vec::new()));
+        return Ok(false);
     };
     if !ts.contains(&expected_head_t) {
         return Err(StorageError::Retryable(
@@ -574,100 +556,40 @@ async fn transfer_memory_handle(
     }
     transfer_exclusive_blobs(tx, handle, from_id, to_id).await?;
     transfer_content_for_handle(tx, handle, from_id, to_id).await?;
-    let reminted = remint_cooled_for_handle(tx, cold, handle, from_id, to_owner).await?;
-    let persist =
-        persist_hot_series_transfer(tx, handle, from_id, to_id, expected_head_t, &ts).await;
-    match persist {
-        Ok(true) => {
-            announce_series_transfer(tx, handle, from_id, to_id).await?;
-            Ok((true, reminted.old_keys))
-        }
-        Ok(false) => {
-            for key in reminted.new_keys {
-                crate::verbs::forget::delete_cold_object(cold, &key).await;
-            }
-            Ok((false, Vec::new()))
-        }
-        Err(err) => {
-            for key in reminted.new_keys {
-                crate::verbs::forget::delete_cold_object(cold, &key).await;
-            }
-            Err(err)
-        }
+    rehome_cooled_for_handle(tx, handle, from_id, to_id).await?;
+    if persist_hot_series_transfer(tx, handle, from_id, to_id, expected_head_t, &ts).await? {
+        announce_series_transfer(tx, handle, from_id, to_id).await?;
+        return Ok(true);
     }
+    Ok(false)
 }
 
-struct RemintedCold {
-    old_keys: Vec<String>,
-    new_keys: Vec<String>,
-}
-
-async fn remint_cooled_for_handle(
+/// Cooled stubs change owner and nothing else.
+///
+/// Object keys are owner-free (`cold/<t>`), so the bytes a cooled row
+/// points at are already correct for whoever holds the row — the transfer
+/// performs no object-store work at all. This replaced a re-mint that
+/// GET+PUT each cold object to a destination-derived key and then deleted
+/// the source copy, which made an owner move O(bytes), non-atomic with the
+/// row write, and dependent on the object store being up.
+async fn rehome_cooled_for_handle(
     tx: &mut Transaction<'_, Postgres>,
-    cold: &dyn ColdObjectStore,
     handle: uuid::Uuid,
     from_id: uuid::Uuid,
-    to_owner: OwnerRef,
-) -> Result<RemintedCold, StorageError> {
-    let to_id = to_owner.stored_owner_id();
-    let rows: Vec<(uuid::Uuid, String)> = sqlx::query_as(
-        "SELECT t, object_key FROM proxima_core.cooled
+    to_id: uuid::Uuid,
+) -> Result<(), StorageError> {
+    sqlx::query(
+        "UPDATE proxima_core.cooled
+            SET owner_id = $3
           WHERE handle = $1 AND owner_id = $2",
     )
     .bind(handle)
     .bind(from_id)
-    .fetch_all(&mut **tx)
+    .bind(to_id)
+    .execute(&mut **tx)
     .await
     .map_err(map_err)?;
-    let to_hash = owner_hash_hex(&to_owner);
-    let mut reminted = RemintedCold {
-        old_keys: Vec::new(),
-        new_keys: Vec::new(),
-    };
-    for (t, old_key) in rows {
-        let new_key = cold_object_key(&to_hash, handle, t);
-        if new_key != old_key {
-            let bytes = match cold.get(&old_key).await {
-                Ok(bytes) => bytes,
-                Err(err) => {
-                    for key in &reminted.new_keys {
-                        crate::verbs::forget::delete_cold_object(cold, key).await;
-                    }
-                    return Err(err);
-                }
-            };
-            let bytes = match crate::verbs::forget::rehome_cold_record(&bytes, to_id) {
-                Ok(bytes) => bytes,
-                Err(err) => {
-                    for key in &reminted.new_keys {
-                        crate::verbs::forget::delete_cold_object(cold, key).await;
-                    }
-                    return Err(err);
-                }
-            };
-            if let Err(err) = cold.put(&new_key, &bytes).await {
-                for key in &reminted.new_keys {
-                    crate::verbs::forget::delete_cold_object(cold, key).await;
-                }
-                return Err(err);
-            }
-            reminted.old_keys.push(old_key);
-            reminted.new_keys.push(new_key.clone());
-        }
-        sqlx::query(
-            "UPDATE proxima_core.cooled
-                SET owner_id = $3, object_key = $4
-              WHERE t = $1 AND owner_id = $2",
-        )
-        .bind(t)
-        .bind(from_id)
-        .bind(to_id)
-        .bind(&new_key)
-        .execute(&mut **tx)
-        .await
-        .map_err(map_err)?;
-    }
-    Ok(reminted)
+    Ok(())
 }
 
 async fn persist_hot_series_transfer(
@@ -831,6 +753,17 @@ async fn transfer_exclusive_blobs(
             ));
         }
         sqlx::query("UPDATE proxima_core.blob SET owner_id = $2 WHERE blob_id = $1")
+            .bind(blob_id)
+            .bind(to_id)
+            .execute(&mut **tx)
+            .await
+            .map_err(map_err)?;
+        // The upload row moves with the blob row it describes. The read
+        // path requires both to name the same owner, so leaving this behind
+        // made a transferred citation unreadable at the destination while
+        // still counting against the source. The object itself does not
+        // move: its key is derived from `upload_id`, which is unchanged.
+        sqlx::query("UPDATE proxima_core.blob_uploads SET owner_id = $2 WHERE blob_id = $1")
             .bind(blob_id)
             .bind(to_id)
             .execute(&mut **tx)

@@ -325,12 +325,18 @@ place the optional path on a separate unauthenticated Ingress.
 
 ## Blob storage lifecycle
 
-Uploaded cited blobs live under `objects/<owner_hash>/…`; in-flight uploads live
-under `pending/<owner_hash>/…`. Proxima runs no in-process pending sweep, so the
+Uploaded cited blobs live under `objects/<upload_id>`; in-flight uploads live
+under `pending/<upload_id>`; cold Memory objects live under `cold/<t>`. Keys carry
+no owner, so an owner transfer moves rows only. There is one key scheme and no
+compatibility branch — objects written by an earlier scheme are unreachable and
+a v0.0.8 upgrade re-ingests. Proxima runs no in-process pending sweep, so the
 bucket MUST carry an S3 lifecycle-expiration rule on the `pending/` prefix
 (≥ the configured upload TTL) to reclaim uploads that never complete. Owner
 erasure removes the canonical objects as part of compliance erase (see
-[13 §External side effects](13-compliance.md#external-side-effects)).
+[13 §External side effects](13-compliance.md#external-side-effects)); it
+enumerates the keys named by that owner's rows rather than listing a prefix, so
+an object whose row is already gone is reclaimed by the lifecycle rule and the
+`maintain-blobs` orphan report instead.
 
 In-process byte consumers use `CitedBlobReadService::collect_verified` with a
 required non-zero ceiling. Ordinary callers pass `AuthzContext`; queued

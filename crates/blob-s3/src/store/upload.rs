@@ -22,7 +22,7 @@ use super::dto::{
 use super::guards::{
     ensure_owner_write_access, format_time, parse_uuid, presign_config, validate_prepare,
 };
-use super::keys::{canonical_object_key, owner_hash_hex, pending_object_key};
+use super::keys::{canonical_object_key, pending_object_key};
 use super::rows::{UploadStatus, load_staged_payload, load_upload, mark_upload_expired};
 use super::transitions::{
     AbortTransitionDecision, FinishTransitionDecision, abort_transition_decision,
@@ -45,8 +45,7 @@ impl CitedBlobStore {
         let owner = req.owner();
         ensure_owner_write_access(ctx, &owner)?;
         let upload_id = Uuid::now_v7();
-        let owner_hash = owner_hash_hex(&owner);
-        let object_key = pending_object_key(&owner_hash, upload_id);
+        let object_key = pending_object_key(upload_id);
         let expires_at = OffsetDateTime::now_utc()
             + time::Duration::seconds(
                 i64::try_from(self.config.upload_ttl_seconds).unwrap_or(i64::MAX),
@@ -176,8 +175,10 @@ impl CitedBlobStore {
             self.config.max_blob_bytes,
         ))
         .await?;
-        let owner_hash = owner_hash_hex(&owner);
-        let canonical_key = canonical_object_key(&owner_hash, &streamed.blake3_hex);
+        // Derived from this upload row's own primary key, not from its
+        // bytes or its owner: the key the read gate will re-derive and
+        // compare against for the life of the row.
+        let canonical_key = canonical_object_key(upload_id);
         // GET+PUT, not CopyObject: RustFS (dev S3) acks CopyObject without
         // writing the target, so a later presigned GET 404s.
         let again = client
@@ -314,8 +315,8 @@ impl CitedBlobStore {
         }
 
         // `stage_upload` rewrites `object_key` to the canonical objects/
-        // path. The pending object is always `pending/<hash>/<upload_id>`.
-        let pending_key = pending_object_key(&owner_hash_hex(&owner), upload_id);
+        // path. The pending object is always `pending/<upload_id>`.
+        let pending_key = pending_object_key(upload_id);
         self.client()
             .await?
             .delete_object()

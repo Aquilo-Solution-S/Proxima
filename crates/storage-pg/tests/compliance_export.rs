@@ -116,7 +116,7 @@ async fn export_carries_cooled_locators_and_sketches() {
         let cooled =
             ingest_fact_atomic(pool, &permit, &sketched("fact", "Went cold\nbody"), None).await?;
         let cooled_t = cooled.memory_id.into_inner();
-        let key = cold_object_key("ownerhash", cooled.handle, cooled_t);
+        let key = cold_object_key(cooled_t);
         let mut tx = pool.begin().await?;
         forget_memory(
             &mut tx,
@@ -135,7 +135,7 @@ async fn export_carries_cooled_locators_and_sketches() {
         let neighbour =
             ingest_fact_atomic(pool, &other_permit, &sketched("fact", "Not yours"), None).await?;
         let neighbour_t = neighbour.memory_id.into_inner();
-        let neighbour_key = cold_object_key("otherhash", neighbour.handle, neighbour_t);
+        let neighbour_key = cold_object_key(neighbour_t);
         let mut tx = pool.begin().await?;
         forget_memory(
             &mut tx,

@@ -11,7 +11,6 @@ use proxima_core::verbs::query::{
 use proxima_core::{
     AuthorDerivedOutcome, AuthorDerivedRequest, FactSourceBatchRow, MemoryGraphIdentity,
     MemoryGraphPayloadRow, MemoryId, MemoryKindRow, Owner, OwnerRef, StorageError, cold_object_key,
-    owner_hash_hex,
 };
 
 use crate::error::{internal, with_bounded_retry};
@@ -176,7 +175,10 @@ impl MemoryAuthoringPort for PgStorage {
         let owner = permit.owner();
         let owner_id = owner.stored_owner_id();
         let t = memory_id.into_inner();
-        let handle: uuid::Uuid = sqlx::query_scalar(
+        // Ownership precondition, not a key ingredient: the cold key is
+        // `cold/<t>` now, but a `t` the caller does not own must still be
+        // NotFound rather than a forget on someone else's row.
+        sqlx::query_scalar::<_, uuid::Uuid>(
             "SELECT handle FROM proxima_core.memory WHERE t = $1 AND owner_id = $2",
         )
         .bind(t)
@@ -185,7 +187,7 @@ impl MemoryAuthoringPort for PgStorage {
         .await
         .map_err(internal)?
         .ok_or(StorageError::NotFound)?;
-        let key = cold_object_key(&owner_hash_hex(owner), handle, t);
+        let key = cold_object_key(t);
         let pool = self.pool.clone();
         let cold = Arc::clone(&self.cold);
         let sidecars = self.sidecars.clone();

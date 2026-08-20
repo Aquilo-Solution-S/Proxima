@@ -18,7 +18,7 @@
 
 use proxima_core::ColdObjectStore;
 use proxima_core::verbs::persist_mcp_call::MCP_CALL_FACT_SCHEMA;
-use proxima_core::{Owner, OwnerRefKind, StorageError, cold_object_key, owner_hash_hex};
+use proxima_core::{Owner, OwnerRefKind, StorageError, cold_object_key};
 use sqlx::{PgPool, Postgres, Transaction};
 use uuid::Uuid;
 
@@ -307,7 +307,6 @@ async fn count_expired_facts(
 
 #[derive(Debug, Clone, Copy, sqlx::FromRow)]
 struct ExpiredFactCandidate {
-    handle: Uuid,
     t: Uuid,
 }
 
@@ -326,7 +325,7 @@ async fn forget_expired_batch(
 ) -> Result<ForgottenBatch, StorageError> {
     let owner_id = owner.stored_owner_id();
     let candidates: Vec<ExpiredFactCandidate> = sqlx::query_as(
-        "SELECT m.handle, m.t
+        "SELECT m.t
            FROM proxima_core.memory_head h
            JOIN proxima_core.memory m ON m.handle = h.handle AND m.t = h.t
           WHERE m.owner_id = $1
@@ -346,9 +345,8 @@ async fn forget_expired_batch(
     .map_err(map_err)?;
 
     let mut object_keys: Vec<String> = Vec::with_capacity(candidates.len());
-    let owner_hash = owner_hash_hex(owner);
     for candidate in candidates {
-        let object_key = cold_object_key(&owner_hash, candidate.handle, candidate.t);
+        let object_key = cold_object_key(candidate.t);
         if let Err(err) = crate::verbs::forget::forget_memory(
             tx,
             sidecars,

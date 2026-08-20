@@ -16,8 +16,7 @@ use proxima_storage_pg::core_pg_sidecars;
 use proxima_storage_pg::verbs::fact_ingest::ingest_fact_atomic;
 use proxima_storage_pg::verbs::forget::{
     MemoryColdStore, cold_object_key, commit_forget, erase_memory, forget_memory,
-    forget_memory_oneshot, hydrate_memory, owner_hash_hex, purge_cold_objects_after_commit,
-    snapshot_hot,
+    forget_memory_oneshot, hydrate_memory, purge_cold_objects_after_commit, snapshot_hot,
 };
 use proxima_storage_pg::verbs::memory_timeseries::ingest_fact_timeseries;
 use uuid::Uuid;
@@ -98,7 +97,7 @@ async fn forget_hydrate_and_erase() {
                 .await?;
         assert_eq!(sketch_before, "Actual title");
 
-        let key = cold_object_key("ownerhash", written.handle, t);
+        let key = cold_object_key(t);
         assert!(key.starts_with("cold/"));
         assert!(!key.contains(&owner.stored_owner_id().to_string()));
 
@@ -336,7 +335,7 @@ async fn engine_forget_puts_held_store_hydrate_restores_same_t() {
 
         MemoryAuthoringPort::forget_memory(&pg, &permit, written.memory_id).await?;
 
-        let key = cold_object_key(&owner_hash_hex(&owner), written.handle, t);
+        let key = cold_object_key(t);
         let payload = cold.get(&key).await?;
         assert!(
             payload.len() > 64,
@@ -410,7 +409,7 @@ async fn forget_non_last_t_rewinds_memory_head() {
         assert_ne!(second.memory_id, first.memory_id);
 
         let cold = MemoryColdStore::default();
-        let key = cold_object_key("ownerhash", second.handle, second.memory_id.into_inner());
+        let key = cold_object_key(second.memory_id.into_inner());
         let mut tx = pool.begin().await?;
         forget_memory(
             &mut tx,
@@ -533,7 +532,7 @@ async fn concurrent_forget_serializes_before_cold_put() {
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let written = ingest_fact_atomic(pg.pool_for_tests(), &permit, &draft(None), None).await?;
         let t = written.memory_id.into_inner();
-        let key = cold_object_key(&owner_hash_hex(&owner), written.handle, t);
+        let key = cold_object_key(t);
         let cold = Arc::new(BlockingPutCold {
             inner: MemoryColdStore::default(),
             first_put_entered: tokio::sync::Semaphore::new(0),
@@ -679,7 +678,7 @@ async fn commit_forget_reputs_when_sidecar_changed() {
             inner: MemoryColdStore::default(),
             puts: AtomicUsize::new(0),
         };
-        let key = cold_object_key(&owner_hash_hex(&owner), written.handle, t);
+        let key = cold_object_key(t);
         let mut tx = pool.begin().await?;
         commit_forget(
             &mut tx,
@@ -738,7 +737,7 @@ async fn forget_dumps_only_stamped_tables_and_skips_unregistered_scan() {
         .await?;
 
         let cold = MemoryColdStore::default();
-        let key = cold_object_key("ownerhash", written.handle, t);
+        let key = cold_object_key(t);
         let mut tx = pool.begin().await?;
         forget_memory(&mut tx, &sidecars, &cold, &key, t, owner.stored_owner_id()).await?;
         tx.commit().await?;
@@ -802,7 +801,7 @@ async fn forget_dumps_every_stamped_extra() {
         .await?;
 
         let cold = MemoryColdStore::default();
-        let key = cold_object_key("ownerhash", written.handle, t);
+        let key = cold_object_key(t);
         let mut tx = pool.begin().await?;
         forget_memory(
             &mut tx,
@@ -1081,7 +1080,7 @@ async fn concurrent_erase_after_forget_put_does_not_leave_cold_object() {
         let written = ingest_fact_atomic(&pool, &permit, &draft(None), None).await?;
         let t = written.memory_id.into_inner();
         let owner_id = owner.stored_owner_id();
-        let key = cold_object_key(&owner_hash_hex(&owner), written.handle, t);
+        let key = cold_object_key(t);
         let cold = Arc::new(BlockingPutCold {
             inner: MemoryColdStore::default(),
             first_put_entered: tokio::sync::Semaphore::new(0),
@@ -1155,7 +1154,7 @@ async fn forget_of_an_already_cooled_t_reports_not_found() {
         let pool = pg.pool_for_tests().clone();
         let written = ingest_fact_atomic(&pool, &permit, &draft(None), None).await?;
         let t = written.memory_id.into_inner();
-        let key = cold_object_key(&owner_hash_hex(&owner), written.handle, t);
+        let key = cold_object_key(t);
 
         MemoryAuthoringPort::forget_memory(&pg, &permit, written.memory_id).await?;
 
@@ -1223,7 +1222,7 @@ async fn redelivering_a_cooled_ingest_key_is_an_idempotent_replay() {
             .expect("citation-bearing write returns its object");
 
         let cold = MemoryColdStore::default();
-        let key = cold_object_key(&owner_hash_hex(&owner), written.handle, t);
+        let key = cold_object_key(t);
         let mut tx = pool.begin().await?;
         forget_memory(
             &mut tx,
@@ -1632,7 +1631,7 @@ async fn commit_forget_aborts_when_owner_transferred() {
         );
 
         let cold = MemoryColdStore::default();
-        let key = cold_object_key(&owner_hash_hex(&owner), written.handle, t);
+        let key = cold_object_key(t);
         let mut tx = pool.begin().await?;
         let err = commit_forget(
             &mut tx,
@@ -1685,7 +1684,7 @@ async fn a_rolled_back_erase_keeps_the_cold_object_and_its_locator() {
         let pool = pg.pool_for_tests();
         let written = ingest_fact_atomic(pool, &permit, &draft(None), None).await?;
         let t = written.memory_id.into_inner();
-        let key = cold_object_key(&owner_hash_hex(&owner), written.handle, t);
+        let key = cold_object_key(t);
         let cold = MemoryColdStore::default();
         let mut tx = pool.begin().await?;
         forget_memory(
@@ -1749,7 +1748,7 @@ async fn a_refusing_cold_store_leaves_the_purge_mark_for_retry() {
         let pool = pg.pool_for_tests();
         let written = ingest_fact_atomic(pool, &permit, &draft(None), None).await?;
         let t = written.memory_id.into_inner();
-        let key = cold_object_key(&owner_hash_hex(&owner), written.handle, t);
+        let key = cold_object_key(t);
         let ok_cold = MemoryColdStore::default();
         let mut tx = pool.begin().await?;
         forget_memory(

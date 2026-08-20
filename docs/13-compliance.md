@@ -172,7 +172,7 @@ Compliance operations are substrate-local.
 | recipient notification inventory | deferred until per-call recipients exist (see [12](12-tool-manifest.md#compliance-metadata)) |
 | legally significant tool calls | require human approval flow; automatic blocking deferred |
 | embedding provider egress | Fact/derived text sent to the configured embedding endpoint is disclosure to an external processor — document it as an AVV/DPA recipient. Non-loopback plaintext HTTP is rejected. |
-| uploaded cited blobs (S3) | owner erasure removes the owner's canonical objects (`objects/<owner_hash>/…`) in-band; abandoned `pending/` uploads are reclaimed by the required S3 lifecycle rule (see [15 §Blob storage lifecycle](15-deployment.md#blob-storage-lifecycle)). |
+| uploaded cited blobs (S3) | owner erasure removes, in-band, every object named by that owner's `blob_uploads` and `cooled` rows — keys carry no owner, so the rows are the index and a transferred artefact is erased by whoever now holds it. Abandoned uploads whose row is gone are reclaimed by the required S3 lifecycle rule on `pending/` (see [15 §Blob storage lifecycle](15-deployment.md#blob-storage-lifecycle)). |
 
 ## Compliance vocabulary
 
