@@ -67,6 +67,13 @@ impl Default for FlavorRegistry {
         crate::goal::register_all(&mut registry).expect("built-in goal registration must be valid");
         crate::mcp::core_tools::register_all(&mut registry)
             .expect("built-in MCP tool registration must be valid");
+        // Flavor #0's contract lands beside the registrations it describes.
+        // Keeping `default()` the single entry point means the observable
+        // registry contents stay byte-identical and only the `flavors` /
+        // `contracts` vectors gain core's own entry — the rewire's blast
+        // radius is on the registry's CONSUMERS, not on its construction.
+        crate::flavor::flavor0::register(&mut registry)
+            .expect("flavor #0 contract registration must be valid");
         registry
     }
 }
