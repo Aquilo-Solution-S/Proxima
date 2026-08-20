@@ -4,6 +4,7 @@
 
 pub mod calls;
 pub mod chunker;
+pub mod contract;
 mod ingest;
 pub mod local_git_source;
 pub mod mcp;
@@ -116,6 +117,7 @@ proxima::flavor::proxima_flavor! {
         mcp::CodeRetryExecutionRequestTool,
         mcp::CodeWorkItemBundleTool,
     ],
+    contract = &contract::CODE_FLAVOR_CONTRACT,
 }
 
 pub fn register_pg_sidecars(registry: &mut proxima_storage_pg::PgSidecarRegistry) {

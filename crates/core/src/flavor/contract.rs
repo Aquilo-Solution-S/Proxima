@@ -176,6 +176,12 @@ pub enum SubstringArm {
     /// The shipped shape: a memory-first nested loop, deliberately NOT
     /// routed at the composite index (probe-measured regression).
     MemoryFirstNestedLoop,
+    /// A same-table `LIKE` scan over the sidecar's own text columns, run
+    /// only when the `@@` arm returned zero rows. The code flavor's three
+    /// search tools all use this shape; naming it is what keeps their
+    /// substring lane a declaration instead of an undeclared third
+    /// mechanism.
+    SameTableLike,
 }
 
 /// A score band — the cross-flavor merge contract. Raw `ts_rank` is not
