@@ -103,7 +103,7 @@ follow.
 | Tier | Import | Surface |
 |---|---|---|
 | Host API | `use proxima::{Proxima, RuntimeBuilder, Engine, AuthzContext};` | boot/migrate/serve/query |
-| Host extra-table | `AppContext::clone_pool_for_host` | wrap in a flavor store inside `FlavorApp::services`; tools see the store, never the pool |
+| Host extra-table | `AppContext::{clone_pool_for_host, pg_tuning_for_host}` | wrap the pool + resolved query policy in a flavor store inside `FlavorApp::services`; tools see the store, never the pool |
 | Flavor SDK | `use proxima::flavor::{FlavorBundle, FlavorRegistry, FactPayload, Tool};` | schemas, reference declarations, sidecars, tools. No `PgPool` |
 
 Root `proxima::*` is host-facing. Flavor authoring imports live under
@@ -113,9 +113,10 @@ Do not add `proxima-core` / `proxima-storage-pg` / `proxima-auth-oidc`
 unless you are a backend-owned adapter. Cargo treats `tag = "vX"` and
 `rev = "<that tag's commit>"` as two sources and duplicates `proxima-core`.
 
-Sidecar-only flavors never call `clone_pool_for_host`. Extra tables the
-flavor migrates are host-wired: clone the pool, wrap it, insert the store
-on `FlavorServices`. `proxima_core.*` SQL stays denied in flavor `src/`.
+Sidecar-only flavors call neither Host extra-table accessor. Extra tables the
+flavor migrates are host-wired: clone the pool and query policy, wrap them,
+insert the store on `FlavorServices`. `proxima_core.*` SQL stays denied in
+flavor `src/`.
 
 <a id="schema-namespacing"></a>
 ## Schema Namespacing

@@ -26,7 +26,7 @@ Rust embedding has two public tiers:
 | Tier | Import | Contract |
 |---|---|---|
 | Host API | `use proxima::{Proxima, RuntimeBuilder, Engine};` | compose/run a binary, call graph verbs, hold server-resolved `AuthzContext` |
-| Host extra-table | `AppContext::clone_pool_for_host` | wrap in a flavor store inside `FlavorApp::services`; tools never see the pool |
+| Host extra-table | `AppContext::{clone_pool_for_host, pg_tuning_for_host}` | wrap the pool + resolved query policy in a flavor store inside `FlavorApp::services`; tools never see the pool |
 | Flavor SDK | `use proxima::flavor::{FlavorBundle, FlavorRegistry, FactPayload, pg_sidecar};` | register schemas/tools/sidecars at build time; declare payload references; no raw `PgPool`, no `proxima_core.*` SQL |
 
 Transport adapters (MCP/HTTP) project the Host API. Flavor crates target

@@ -578,10 +578,28 @@ async fn transfer_memory_handle(
     if ts.is_empty() {
         return Ok((false, Vec::new()));
     }
+    let expected_head_t: Option<uuid::Uuid> = sqlx::query_scalar(
+        "SELECT t FROM proxima_core.memory_head
+          WHERE handle = $1 AND owner_id = $2",
+    )
+    .bind(handle)
+    .bind(from_id)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(map_err)?;
+    let Some(expected_head_t) = expected_head_t else {
+        return Ok((false, Vec::new()));
+    };
+    if !ts.contains(&expected_head_t) {
+        return Err(StorageError::Retryable(
+            "series head advanced after transfer locked its version set".into(),
+        ));
+    }
     transfer_exclusive_blobs(tx, handle, from_id, world).await?;
     transfer_content_for_handle(tx, handle, from_id, world).await?;
     let reminted = remint_cooled_for_handle(tx, cold, handle, from_id, world).await?;
-    let persist = persist_hot_series_transfer(tx, handle, from_id, world, &ts).await;
+    let persist =
+        persist_hot_series_transfer(tx, handle, from_id, world, expected_head_t, &ts).await;
     match persist {
         Ok(true) => {
             announce_series_transfer(tx, handle, from_id, world).await?;
@@ -631,7 +649,24 @@ async fn remint_cooled_for_handle(
     for (t, old_key) in rows {
         let new_key = cold_object_key(&world_hash, handle, t);
         if new_key != old_key {
-            let bytes = cold.get(&old_key).await?;
+            let bytes = match cold.get(&old_key).await {
+                Ok(bytes) => bytes,
+                Err(err) => {
+                    for key in &reminted.new_keys {
+                        crate::verbs::forget::delete_cold_object(cold, key).await;
+                    }
+                    return Err(err);
+                }
+            };
+            let bytes = match crate::verbs::forget::rehome_cold_record(&bytes, world) {
+                Ok(bytes) => bytes,
+                Err(err) => {
+                    for key in &reminted.new_keys {
+                        crate::verbs::forget::delete_cold_object(cold, key).await;
+                    }
+                    return Err(err);
+                }
+            };
             if let Err(err) = cold.put(&new_key, &bytes).await {
                 for key in &reminted.new_keys {
                     crate::verbs::forget::delete_cold_object(cold, key).await;
@@ -662,20 +697,38 @@ async fn persist_hot_series_transfer(
     handle: uuid::Uuid,
     from_id: uuid::Uuid,
     world: uuid::Uuid,
+    expected_head_t: uuid::Uuid,
     ts: &[uuid::Uuid],
 ) -> Result<bool, StorageError> {
     let head = sqlx::query(
         "UPDATE proxima_core.memory_head
             SET owner_id = $3
-          WHERE handle = $1 AND owner_id = $2",
+          WHERE handle = $1 AND owner_id = $2 AND t = $4",
     )
     .bind(handle)
     .bind(from_id)
     .bind(world)
+    .bind(expected_head_t)
     .execute(&mut **tx)
     .await
     .map_err(map_err)?;
     if head.rows_affected() == 0 {
+        let owner_still_matches: bool = sqlx::query_scalar(
+            "SELECT EXISTS (
+                 SELECT 1 FROM proxima_core.memory_head
+                  WHERE handle = $1 AND owner_id = $2
+             )",
+        )
+        .bind(handle)
+        .bind(from_id)
+        .fetch_one(&mut **tx)
+        .await
+        .map_err(map_err)?;
+        if owner_still_matches {
+            return Err(StorageError::Retryable(
+                "series head advanced before transfer could persist".into(),
+            ));
+        }
         return Ok(false);
     }
     sqlx::query(
@@ -689,6 +742,12 @@ async fn persist_hot_series_transfer(
     .execute(&mut **tx)
     .await
     .map_err(map_err)?;
+    sqlx::query("UPDATE proxima_core.sketch SET owner_id = $2 WHERE t = ANY($1::uuid[])")
+        .bind(ts)
+        .bind(world)
+        .execute(&mut **tx)
+        .await
+        .map_err(map_err)?;
     follow_embedding_owners(tx, ts, world).await?;
     sqlx::query("DELETE FROM proxima_core.ingest_keys WHERE t = ANY($1::uuid[])")
         .bind(ts)
@@ -800,8 +859,15 @@ async fn transfer_content_for_handle(
     let rows: Vec<(uuid::Uuid, String, Vec<u8>)> = sqlx::query_as(
         "SELECT DISTINCT c.content_id, c.schema_id, c.content_hash
            FROM proxima_core.content c
-           JOIN proxima_core.memory m ON m.content_id = c.content_id
-          WHERE m.handle = $1 AND m.owner_id = $2 AND m.content_id IS NOT NULL",
+           JOIN (
+                 SELECT content_id
+                   FROM proxima_core.memory
+                  WHERE handle = $1 AND owner_id = $2 AND content_id IS NOT NULL
+                 UNION
+                 SELECT content_id
+                   FROM proxima_core.cooled
+                  WHERE handle = $1 AND owner_id = $2 AND content_id IS NOT NULL
+                ) series_content ON series_content.content_id = c.content_id",
     )
     .bind(handle)
     .bind(from_id)

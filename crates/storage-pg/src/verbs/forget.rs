@@ -159,6 +159,15 @@ fn decode_record(bytes: &[u8]) -> Result<ColdRecord, StorageError> {
     })
 }
 
+/// Rewrite the owner embedded in a cold record while preserving its payload.
+/// Publish remints the locator under World; the bytes must carry the same owner
+/// because hydrate reconstructs owner-scoped rows from this record.
+pub(crate) fn rehome_cold_record(bytes: &[u8], owner_id: Uuid) -> Result<Vec<u8>, StorageError> {
+    let mut rec = decode_record(bytes)?;
+    rec.row.owner_id = owner_id;
+    encode_record(&rec)
+}
+
 fn write_u16(out: &mut Vec<u8>, value: u16) {
     out.extend_from_slice(&value.to_be_bytes());
 }

@@ -2,6 +2,7 @@ use proxima_core::verbs::query::EntityKind;
 use proxima_core::{
     AbstractionPayload, AuthzContext, FactPayload, GoalId, MemoryId, Owner, SchemaId, ToolError,
 };
+use proxima_storage_pg::PgTuning;
 use proxima_storage_pg::query::{
     ChunkSeriesHead, CodeChunkVectorCandidate, CodeChunkVectorFilters, FileRevisionHeadRow,
     active_goals_for_memory_targets, nearest_code_chunk_candidates, owned_chunk_series_heads,
@@ -21,6 +22,7 @@ use crate::payloads::{AcceptanceCriterionV1, AcceptanceVerifierKind, AcceptanceV
 #[derive(Clone)]
 pub struct CodeFlavorStore {
     pool: PgPool,
+    tuning: PgTuning,
 }
 
 impl std::fmt::Debug for CodeFlavorStore {
@@ -33,15 +35,22 @@ impl CodeFlavorStore {
     #[cfg(feature = "host-api")]
     #[doc(hidden)]
     #[must_use]
-    pub fn from_backend_pool_for_host(pool: PgPool) -> Self {
-        Self { pool }
+    pub fn from_backend_pool_for_host(pool: PgPool, tuning: PgTuning) -> Self {
+        Self { pool, tuning }
     }
 
     #[cfg(any(test, debug_assertions))]
     #[doc(hidden)]
     #[must_use]
     pub fn from_backend_pool_for_tests(pool: PgPool) -> Self {
-        Self { pool }
+        Self::from_backend_pool_with_tuning_for_tests(pool, PgTuning::default())
+    }
+
+    #[cfg(any(test, debug_assertions))]
+    #[doc(hidden)]
+    #[must_use]
+    pub fn from_backend_pool_with_tuning_for_tests(pool: PgPool, tuning: PgTuning) -> Self {
+        Self { pool, tuning }
     }
 
     pub(crate) fn pool(&self) -> &PgPool {
@@ -211,8 +220,8 @@ impl CodeFlavorStore {
     ) -> Result<Vec<CodeChunkVectorCandidate>, ToolError> {
         nearest_code_chunk_candidates(
             &self.pool,
+            &self.tuning,
             owner,
-            &crate::payloads::CodeChunkV1::schema_id(),
             model_id,
             query_embedding,
             filters,
@@ -300,6 +309,24 @@ impl CodeFlavorStore {
             }
         }
         Ok(out)
+    }
+}
+
+#[cfg(test)]
+mod tuning_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn store_carries_the_host_resolved_query_tuning() {
+        tokio::task::yield_now().await;
+        let tuning = PgTuning {
+            hnsw_ef_search: 321,
+            ..PgTuning::default()
+        };
+        let pool = PgPool::connect_lazy_with(sqlx::postgres::PgConnectOptions::new());
+        let store = CodeFlavorStore::from_backend_pool_with_tuning_for_tests(pool, tuning);
+
+        assert_eq!(store.tuning, tuning);
     }
 }
 

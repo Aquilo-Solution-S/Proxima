@@ -17,7 +17,7 @@
 //! exactly like the lexical candidates it is merged with. Nothing here
 //! decides visibility. Owner scope is `embeddings.owner_id = $1`.
 
-use proxima_core::{Owner, SchemaId, StorageError};
+use proxima_core::{Owner, StorageError};
 use sqlx::PgPool;
 
 use crate::error::map_err;
@@ -72,8 +72,8 @@ pub struct CodeChunkVectorCandidate {
 /// Returns `StorageError::Internal` on query failure.
 pub async fn nearest_code_chunk_candidates(
     pool: &PgPool,
+    tuning: &PgTuning,
     owner: Owner,
-    schema_id: &SchemaId,
     model_id: &str,
     query_embedding: &[f32],
     filters: CodeChunkVectorFilters<'_>,
@@ -90,7 +90,6 @@ pub async fn nearest_code_chunk_candidates(
     }
     let owner_id = owner.stored_owner_id();
 
-    let _ = schema_id;
     // Content scan: embeddings ⋈ flavor sidecar. Owner lives on embeddings.
     // Admit (memory_head / NK) happens after merge in search_chunks.
     let query = sqlx::query_as::<_, CodeChunkVectorCandidate>(NEAREST_CODE_CHUNK_SQL)
@@ -103,17 +102,11 @@ pub async fn nearest_code_chunk_candidates(
         .bind(limit);
 
     let mut tx = pool.begin().await.map_err(map_err)?;
-    // A flavor reaches this query with a pool and no storage handle, so
-    // deployment tuning is read from the environment: PROXIMA_PG_HNSW_*
-    // applies here; tuning a host sets programmatically does not reach
-    // this path.
     // SQL-POLICY: fixed-fragment
-    sqlx::raw_sql(sqlx::AssertSqlSafe(set_hnsw_search_sql(
-        &PgTuning::from_env()?,
-    )))
-    .execute(&mut *tx)
-    .await
-    .map_err(map_err)?;
+    sqlx::raw_sql(sqlx::AssertSqlSafe(set_hnsw_search_sql(tuning)))
+        .execute(&mut *tx)
+        .await
+        .map_err(map_err)?;
     let rows = query.fetch_all(&mut *tx).await.map_err(map_err)?;
     tx.commit().await.map_err(map_err)?;
     Ok(rows)

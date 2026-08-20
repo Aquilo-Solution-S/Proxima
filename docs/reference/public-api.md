@@ -12,7 +12,7 @@ Post-PR9 supported Rust tiers:
 | Tier | Import | Use |
 |---|---|---|
 | Host API | `use proxima::{Proxima, RuntimeBuilder, RuntimeConfig, Engine, CancellationToken, AccessKind, AccessCeiling, OwnerRoles};` | boot composed binaries; call graph/admin/projector verbs through server-resolved `AuthzContext`. `Role::new` / `Role::may_write` / `OwnerRoles::for_subject` name `AccessKind`, `AccessCeiling`, `AccessError`, `OwnerRoles` |
-| Host extra-table | `AppContext::clone_pool_for_host` | host `FlavorApp::services` only: wrap the pool in a flavor-owned store immediately. Tools resolve the store via `FlavorServices`. Not Flavor SDK. No `proxima_core.*` SQL |
+| Host extra-table | `AppContext::{clone_pool_for_host, pg_tuning_for_host}` | host `FlavorApp::services` only: wrap the pool and resolved query policy in a flavor-owned store immediately. Tools resolve the store via `FlavorServices`. Not Flavor SDK. No `proxima_core.*` SQL |
 | Host API (REST OpenAPI) | `use proxima::host::build_openapi_document;` | build the complete registry document with the same generator as `/v1/openapi.json` without depending on `proxima-mcp-server` internals; requires feature `rest` |
 | Flavor SDK | `use proxima::flavor::{FlavorBundle, FlavorRegistry, FactPayload, pg_sidecar, InlineCitedObjectDraft, InlineCitationMappingDraft};` | build-time schemas, payload references, tools, sidecars. Typed citation drafts + `AuthorizedFactWithCitation{,Ref}` are nameable here; `Engine` stays Host API |
 | Flavor SDK (services) | `use proxima::flavor::{FlavorServices, FlavorServiceError};` | return typed services from `FlavorApp::services`; tuple composition rejects duplicate concrete types and shares one set with MCP, REST, and workers |
@@ -25,7 +25,7 @@ Unsupported:
 
 | Surface | Status |
 |---|---|
-| raw `sqlx::PgPool` on Flavor SDK / tools | denied. The one Host extra-table bridge is `AppContext::clone_pool_for_host` (see below) |
+| raw `sqlx::PgPool` on Flavor SDK / tools | denied. The Host extra-table bridge is `AppContext::{clone_pool_for_host, pg_tuning_for_host}` (see below) |
 | aggregate `Storage` / `StorageHandle` | removed; Engine owns storage ports |
 | `proxima-storage-pg` raw write verbs | backend API only; every owner write requires `OwnerWritePermit` minted by `Engine::authorize_owner_write` |
 | flavor raw SQL against `proxima_core.*` | denied for every site. The [authorized flavor-read facade](#authorized-flavor-read-facade) replaced the last raw `flavors/code` reads against `proxima_core.*`; `scripts/check-architecture-guardrails.py`'s dated-exemption allowlist is empty, and any new raw `proxima_core.*` site in flavor code fails the guardrail (no temporary exemption path is open) |

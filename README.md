@@ -148,7 +148,7 @@ raw flavor SQL against `proxima_core.*`.
 | Tier | Import | Contract |
 |---|---|---|
 | Host API | `use proxima::{Proxima, RuntimeBuilder, Engine};` | compose/run a binary; call graph verbs; server-resolved `AuthzContext` |
-| Host extra-table | `AppContext::clone_pool_for_host` | wrap in a flavor store inside `FlavorApp::services`; tools never see the pool |
+| Host extra-table | `AppContext::{clone_pool_for_host, pg_tuning_for_host}` | wrap the pool + resolved query policy in a flavor store inside `FlavorApp::services`; tools never see the pool |
 | Flavor SDK | `use proxima::flavor::{FlavorBundle, FlavorRegistry, FactPayload, pg_sidecar};` | build-time schemas/tools/sidecars; no `PgPool`, no core-table SQL |
 
 ```rust

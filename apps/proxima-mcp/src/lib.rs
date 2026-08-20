@@ -162,6 +162,7 @@ impl FlavorApp for ProximaMcpApp {
             let mut services = FlavorServices::default();
             services.try_insert(proxima_code::CodeFlavorStore::from_backend_pool_for_host(
                 ctx.clone_pool_for_host(),
+                ctx.pg_tuning_for_host(),
             ))?;
             Ok(services)
         }

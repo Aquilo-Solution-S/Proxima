@@ -8,6 +8,7 @@ use proxima_blob_s3::CitedBlobStore;
 use proxima_core::AuthzContext;
 use proxima_core::{Engine, FlavorServiceError, FlavorServices, Owner};
 use proxima_mcp_server::McpAuthContext;
+use proxima_storage_pg::PgTuning;
 use sqlx::PgPool;
 
 use crate::RuntimeBuilder;
@@ -58,6 +59,7 @@ pub trait FlavorApp: FlavorBundle {
 pub struct AppContext {
     pub engine: Arc<Engine>,
     pub(crate) pool: PgPool,
+    pub(crate) pg_tuning: PgTuning,
     pub blobs: Option<CitedBlobStore>,
     pub owner: Option<Owner>,
 }
@@ -78,6 +80,14 @@ impl AppContext {
     #[must_use]
     pub fn clone_pool_for_host(&self) -> PgPool {
         self.pool.clone()
+    }
+
+    /// Host-resolved Postgres query tuning for an extra-table store using
+    /// [`Self::clone_pool_for_host`]. Passing this alongside the pool keeps
+    /// flavor queries on the canonical environment-independent boot policy.
+    #[must_use]
+    pub fn pg_tuning_for_host(&self) -> PgTuning {
+        self.pg_tuning
     }
 }
 
@@ -262,6 +272,7 @@ mod tests {
                 FlavorRegistry::new().freeze_or_panic_for_tests(),
             )),
             pool: sqlx::PgPool::connect_lazy_with(sqlx::postgres::PgConnectOptions::new()),
+            pg_tuning: proxima_storage_pg::PgTuning::default(),
             blobs: None,
             owner: None,
         }
