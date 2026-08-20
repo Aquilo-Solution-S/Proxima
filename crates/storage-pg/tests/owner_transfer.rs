@@ -175,13 +175,22 @@ async fn export_bundle(
     .await
 }
 
-fn mcp_rows_in(bundle: &proxima_core::compliance::ComplianceExportBundle) -> usize {
+/// The exported `mcp_call_logged_v1` rows, whole.
+///
+/// Returning the rows rather than a count is deliberate. Counting them cannot
+/// tell a row from a scalar, and the owner-pinned export once emitted the
+/// primary key where the row belonged (`to_jsonb(t)` resolves to the column
+/// named `t`, not the range table, when only one table is in scope). The
+/// cardinality was right and the bundle was empty of content.
+fn mcp_rows_in(
+    bundle: &proxima_core::compliance::ComplianceExportBundle,
+) -> Vec<&serde_json::Value> {
     bundle
         .sidecars
         .iter()
         .filter(|sidecar| sidecar.table == "proxima_core.mcp_call_logged_v1")
-        .map(|sidecar| sidecar.rows.len())
-        .sum()
+        .flat_map(|sidecar| sidecar.rows.iter())
+        .collect()
 }
 
 fn destination() -> OwnerRef {
@@ -1105,15 +1114,33 @@ async fn transfer_leaves_the_actor_call_log_with_the_owner_that_made_the_call() 
 
         // (d) Export follows the same owner: source in, destination out.
         let source_bundle = export_bundle(&pg, owner).await?;
+        let exported = mcp_rows_in(&source_bundle);
         assert_eq!(
-            mcp_rows_in(&source_bundle),
+            exported.len(),
             1,
             "the source's Art. 15 bundle carries the calls it made"
         );
-        let destination_bundle = export_bundle(&pg, dest).await?;
+        // And carries them whole. A portability bundle that lists the right
+        // number of rows and none of their fields is not a copy of anything;
+        // `actor_upn` is the field this sidecar exists to retain, so it is
+        // the one worth naming.
         assert_eq!(
-            mcp_rows_in(&destination_bundle),
-            0,
+            exported[0]
+                .get("actor_upn")
+                .and_then(serde_json::Value::as_str),
+            Some("alice@example.test"),
+            "the exported row is the row, not its primary key: {:?}",
+            exported[0]
+        );
+        assert_eq!(
+            exported[0]
+                .get("tool_name")
+                .and_then(serde_json::Value::as_str),
+            Some("core_remember"),
+        );
+        let destination_bundle = export_bundle(&pg, dest).await?;
+        assert!(
+            mcp_rows_in(&destination_bundle).is_empty(),
             "the destination's bundle must not carry another owner's actor rows"
         );
 

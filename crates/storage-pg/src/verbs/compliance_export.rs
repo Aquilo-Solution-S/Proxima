@@ -295,12 +295,19 @@ async fn owner_pinned_sidecar_rows(
     // `proxima_core.memory` would drop rows whose Memory has been
     // transferred away, which is exactly the history this owner is
     // entitled to a copy of.
+    //
+    // The table is aliased `s`, not `t`, for the same reason as the joined
+    // form below and one worse: an owner-pinned sidecar has a column named
+    // `t`, and with a single range table in scope Postgres resolves the bare
+    // `t` in `to_jsonb(t)` to *the column* rather than the row. That is not
+    // an error — it exports a JSON string holding the uuid where the whole
+    // row belongs, which is silent data loss in a portability bundle.
     // SQL-POLICY: PgIdent
     let sql = format!(
-        "SELECT to_jsonb(t)
-           FROM {table} t
-          WHERE t.owner_id IS NOT DISTINCT FROM $2
-          ORDER BY t.t",
+        "SELECT to_jsonb(s)
+           FROM {table} s
+          WHERE s.owner_id IS NOT DISTINCT FROM $2
+          ORDER BY s.t",
         table = table.as_str(),
     );
     // SQL-POLICY: PgIdent
