@@ -7,6 +7,7 @@ Pre-1.0 the git tag (e.g. `v0.0.3`) is the version; workspace crates are unpubli
 ## [Unreleased]
 
 ### Features
+- **breaking:** **core**: PerRow's column name becomes a constraint; bands stay a stated deferral ([`5fd2bf8`](https://github.com/Aquilo-Solution-S/Proxima/commit/5fd2bf8d2204b450cdf348a1a96a1114e8ef79c9))
 - **breaking:** **blob**: A shared cited blob dedupes on transfer instead of refusing ([`b95c294`](https://github.com/Aquilo-Solution-S/Proxima/commit/b95c2949d6cb44e3798257a4aeaa12a0137d8ab3))
 - **breaking:** **search**: One projection table per flavor replaces eight sidecar tsvectors ([`6f31fa1`](https://github.com/Aquilo-Solution-S/Proxima/commit/6f31fa1cb5aaf05f387b3d9f8ae3a6131b5035c2))
 - **breaking:** **code**: The code flavor declares its FlavorContract ([`1b20d5f`](https://github.com/Aquilo-Solution-S/Proxima/commit/1b20d5fe77aefd14397a6ce639c51b5387ee754f))
@@ -17,6 +18,10 @@ Pre-1.0 the git tag (e.g. `v0.0.3`) is the version; workspace crates are unpubli
 - **core**: Transfer a memory to another owner, not to World ([`e01b648`](https://github.com/Aquilo-Solution-S/Proxima/commit/e01b648799b140c0ded9f4a547c85654b4141757))
 
 ### Bug Fixes
+- **dev-migrate**: The reset owns the namespace the boot check probes ([`3f502ce`](https://github.com/Aquilo-Solution-S/Proxima/commit/3f502cee258ddca4850e7334879c288ff8829986))
+- **breaking:** **storage-pg**: A series erase takes the blobs its admissions cited ([`11149c7`](https://github.com/Aquilo-Solution-S/Proxima/commit/11149c7100b5eea347538ca20bb7219892f7e53f))
+- **breaking:** **code**: A repo erase closes its reference footprint and locks what it erases ([`12e8a93`](https://github.com/Aquilo-Solution-S/Proxima/commit/12e8a93a1147ad695686cc8883c55fec0afcb2c0))
+- **breaking:** **code**: The code lexical arms index on the owner, not filter on it ([`e7e84ea`](https://github.com/Aquilo-Solution-S/Proxima/commit/e7e84ea028867ae2347418f628b9f0f21dc70405))
 - **breaking:** **search**: The ranked arm reads the projection alone, so its GIN serves it ([`2ec6a82`](https://github.com/Aquilo-Solution-S/Proxima/commit/2ec6a82e199a89c55b369b58d74309c0b21337cc))
 - **storage-pg**: The lexical-stamp parity pin follows the declaration down to one table ([`6be0cc2`](https://github.com/Aquilo-Solution-S/Proxima/commit/6be0cc22a478f2caeca34116175f6e0c689c7746))
 - **test**: Bound the citation match, and correct the contract-reach record ([`be69924`](https://github.com/Aquilo-Solution-S/Proxima/commit/be69924a78a70a09ed1e9cb7923487a4450b5daa))
@@ -30,6 +35,7 @@ Pre-1.0 the git tag (e.g. `v0.0.3`) is the version; workspace crates are unpubli
 - **breaking:** **core**: Delete the World owner ([`87e69a5`](https://github.com/Aquilo-Solution-S/Proxima/commit/87e69a528476d03548a95767ea9df4887523c499))
 
 ### Refactor
+- **storage-pg**: The erase row lock is a substrate primitive, not flavor SQL ([`abd08fa`](https://github.com/Aquilo-Solution-S/Proxima/commit/abd08fac819ef9dc6deef1765ab3c1fc956ae27d))
 - **breaking:** **code**: Repo erase moves to the flavor that owns the rows ([`cdfb3aa`](https://github.com/Aquilo-Solution-S/Proxima/commit/cdfb3aa6c3a1bfed161f92a4f2fdf53a745f393e))
 - **breaking:** **core**: The frozen registry keeps one contract lookup ([`273fe44`](https://github.com/Aquilo-Solution-S/Proxima/commit/273fe444df61b47f84423bba297bf462a4009947))
 - **breaking:** **storage-pg**: Erase, the lexical guardrail and search read the contract ([`ad2122d`](https://github.com/Aquilo-Solution-S/Proxima/commit/ad2122dbb525257fce172dc8b978c96f1e6bb8ee))
@@ -44,6 +50,8 @@ Pre-1.0 the git tag (e.g. `v0.0.3`) is the version; workspace crates are unpubli
 - **breaking:** The World owner is gone from prose, Lean, and the changelog ([`9abf3de`](https://github.com/Aquilo-Solution-S/Proxima/commit/9abf3de134b6e986f1ea0cec6885f3dc58bec8df))
 
 ### Testing
+- **search**: The core plan pin asserts the owner is an INDEX condition ([`c90016a`](https://github.com/Aquilo-Solution-S/Proxima/commit/c90016abc0661e08969b3b9907839733c7690d8f))
+- **compliance**: Pin the source arm's object refcount, not just the owner arm's ([`6fb5a84`](https://github.com/Aquilo-Solution-S/Proxima/commit/6fb5a84c3dfcb370fb26b08991d2257cf7980fe2))
 - **compliance**: Pin that an erased owner keeps no searchable row ([`4ba05af`](https://github.com/Aquilo-Solution-S/Proxima/commit/4ba05afa8564fe48c3ff4a1f18402cad33715c2c))
 - **v0.0.8**: The write side of the projection, and R12 end to end ([`f281555`](https://github.com/Aquilo-Solution-S/Proxima/commit/f2815550fcfd13588709154c2d37cffd9f4ae511))
 - **search**: Pin the projection against b5fe11ad's results, byte for byte ([`e6db34c`](https://github.com/Aquilo-Solution-S/Proxima/commit/e6db34cafb2cd4582f3c5a9594ab086c838ac2da))
