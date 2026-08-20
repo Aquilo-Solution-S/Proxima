@@ -19,7 +19,7 @@ no REST-side edit, and cannot appear on REST without appearing on MCP.
 
 | Rule | Contract |
 |---|---|
-| Derivation | routes generated from `McpToolDescriptor` + `CORE_RESOURCES` |
+| Derivation | routes generated from `McpToolDescriptor` + flavor #0's `ResourceContract` entries |
 | Dispatch | invocation/resource routes use `McpToolHost::call_tool` / `read_resource` |
 | Authorization | shared edge middleware + `ScopeGateBehavior`; not re-implemented |
 | Persistence | none of its own; whatever the invoked tool already does |
@@ -65,7 +65,7 @@ concern.
 | `QUERY /v1/tools/{tool}` | same, read-only tools only; `405` otherwise |
 | `POST /v1/tools/{tool}/{action}` | invoke one dispatcher action with a narrowed body |
 | `QUERY /v1/tools/{tool}/{action}` | same, read-only actions only; `405` otherwise |
-| `GET /v1/resources` | scope-filtered resource catalog from `CORE_RESOURCES` |
+| `GET /v1/resources` | scope-filtered resource catalog from `all_core_resources()` |
 | `GET /v1/resources/{path}` | read a `proxima://` resource; query string passes through |
 | `GET /v1/how-to` | the generated self-documentation, `text/markdown` |
 | `GET /v1/openapi.json` | OpenAPI 3.2 document for the caller's scope |
@@ -335,7 +335,7 @@ dialect, so the newer floor costs nothing in schema fidelity.
 |---|---|
 | path per tool | `McpToolDescriptor.name` |
 | path per dispatcher action | `McpToolDescriptor.action_arg_specs` |
-| path per resource | `CoreResourceMeta.uri_template` |
+| path per resource | `ResourceContract.uri_template` |
 | `post` / `query` operations | `is_read_only()` / `action_is_read_only()` |
 | `operationId` | structurally tagged `tool` / `action` / `resource` target with byte-length-prefixed name components and an explicit method tag |
 | `summary` / `description` | `McpToolDescriptor.description`; substrate action description from `CoreActionMeta`, flavor action description from `x-proxima-actions.<action>.description` |
@@ -355,7 +355,7 @@ caller-scoped authorization context to the same generator. The facade owns
 resource enumeration, so consumers never depend on `proxima-mcp-server`'s
 descriptor-level generator or transport auth types.
 
-`/v1/resources` is generated from `CoreResourceMeta` alone: flavors cannot
+`/v1/resources` is generated from flavor #0's `ResourceContract` entries alone: flavors cannot
 declare resources, which is deliberate rather than a gap — see
 [08 §Substrate MCP Surface](08-core-and-flavors.md#substrate-mcp-surface).
 

@@ -189,9 +189,11 @@ Flavor MCP tools extend the MCP catalog, flat tools and action dispatchers
 alike. Goal WakeConfig validation checks registered trigger/tool shape;
 candidate reads apply actor and deployment tool-scope narrowing.
 
-**Resources are substrate-only, by design.** `CORE_RESOURCES` is the whole
-resource catalog, `FlavorRegistry` carries no resource vocabulary at all, and
-`proxima://` dispatch is a closed `match` in `mcp-server/src/server.rs`. This
+**Resources are flavor #0's, by design.** The `ResourceContract` entries on
+flavor #0 are the whole resource catalog; `try_freeze` rejects a resource
+declared by any other flavor, and `proxima://` dispatch is a closed `match`
+in `mcp-server/src/server.rs` whose paths are `const`-evaluated out of those
+same declarations. This
 is not the gap that tools had: a flavor resource would need its own scope-key
 namespace, a URI-template parser for its parameters, and a pagination
 contract — a separate feature with its own design, not a missing forwarding
