@@ -203,6 +203,285 @@ async fn multi_owner_sessions_bind_owner_palette_and_revocation()
     Ok(())
 }
 
+/// `core_transfer` over the wire, through the narrowing edge — the surface
+/// every real caller reaches it on.
+///
+/// `mcp_auth` narrows each authenticated request with
+/// `AuthzContext::narrowed_to_owner(selected_owner)`, whose role map holds
+/// exactly the one owner the caller selected. A transfer needs authority on
+/// TWO owners, so the request context can never carry both: before the
+/// destination was resolved out of band, whichever side the caller
+/// selected, the other answered `Forbidden` and the verb 403'd on every
+/// possible invocation. Every transfer test that passed anyway called
+/// `Engine::transfer_to_owner` directly with an un-narrowed context, which
+/// no listener can produce. This test only speaks HTTP.
+#[tokio::test]
+#[allow(clippy::too_many_lines)] // linear e2e: boot + three authorization phases read best in one flow
+async fn multi_owner_core_transfer_needs_admin_on_both_owners_through_the_narrowing_edge()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (database_url, created_db) = live_database_url().await?;
+
+    let source_group = GroupId::new(Uuid::now_v7());
+    let destination_group = GroupId::new(Uuid::now_v7());
+    let source: Owner = OwnerRef::Group(source_group);
+    let destination: Owner = OwnerRef::Group(destination_group);
+
+    // Three callers, one per authorization shape under test.
+    let both_sides = UserId::new(Uuid::now_v7());
+    let source_side = UserId::new(Uuid::now_v7());
+    let destination_side = UserId::new(Uuid::now_v7());
+
+    let owner_access: Arc<dyn OwnerAccessPort> =
+        Arc::new(PgOwnerAccessResolver::connect_lazy(&database_url)?);
+    let (signing, resolver) = keypair();
+    let mut subject_map = OidcSubjectMap::new();
+    subject_map.insert(ISSUER, "transfer-both-sides", both_sides)?;
+    subject_map.insert(ISSUER, "transfer-source-side", source_side)?;
+    subject_map.insert(ISSUER, "transfer-destination-side", destination_side)?;
+    let authn = OidcAuthenticator::new(
+        OidcAuthConfig {
+            issuer: ISSUER.to_string(),
+            jwks_uri: None,
+            audience: AUDIENCE.to_string(),
+            allowed_subjects: None,
+            leeway_secs: 60,
+        },
+        Arc::new(resolver),
+        subject_map,
+        owner_access,
+    )?;
+
+    // `core_transfer` is outside the default `memory` profile, so the
+    // deployment palette has to be the full surface for it to be served at
+    // all — the first thing that must hold for the verb to be reachable.
+    let running = Proxima::<ProximaMcpApp>::app()
+        .tool_scope(ToolScope::All)
+        .database_url(database_url.clone())
+        .authenticator(Arc::new(authn))
+        .resource_metadata(ResourceServerMetadata {
+            public_url: "https://proxima.multi-owner.test".to_string(),
+            authorization_servers: vec![ISSUER.to_string()],
+        })
+        .mcp_bind("127.0.0.1:0".parse().unwrap())
+        .run()
+        .await?;
+
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        // Real membership rows, seeded after boot the way a production grant
+        // lands. Nothing here fabricates an in-memory role.
+        let storage = PgStorage::connect(&database_url).await?;
+        grant_member(&storage, source, source_group, both_sides, Relation::Admin).await?;
+        grant_member(
+            &storage,
+            destination,
+            destination_group,
+            both_sides,
+            Relation::Admin,
+        )
+        .await?;
+        grant_member(&storage, source, source_group, source_side, Relation::Admin).await?;
+        grant_member(
+            &storage,
+            destination,
+            destination_group,
+            destination_side,
+            Relation::Admin,
+        )
+        .await?;
+
+        let addr = running.mcp_addr.ok_or("missing MCP listener address")?;
+        let url = format!("http://{addr}/mcp");
+        let client = reqwest::Client::new();
+        let source_key = owner_header(source);
+        let destination_key = owner_header(destination);
+
+        // (a) Admin + manage on BOTH the source group and the destination
+        // group. The caller selects the SOURCE — the side whose write permit
+        // carries the transfer — and the destination is re-resolved out of
+        // band from its membership row.
+        let bearer = format!("Bearer {}", mint(&signing, "transfer-both-sides"));
+        let session = initialize(&client, &url, &bearer, &source_key).await?;
+        initialized(&client, &url, &session, &bearer).await?;
+        let remembered = call_tool(
+            &client,
+            &url,
+            &session,
+            &bearer,
+            "core_remember",
+            json!({
+                "title": "transfer over the wire",
+                "body": format!("wire transfer needle {}", Uuid::now_v7()),
+                "idempotency_key": format!("wire-transfer-{}", Uuid::now_v7())
+            }),
+        )
+        .await?;
+        let handle = remembered["handle"]
+            .as_str()
+            .ok_or_else(|| format!("remember output has no handle: {remembered}"))?
+            .to_string();
+
+        let transferred = call_tool(
+            &client,
+            &url,
+            &session,
+            &bearer,
+            "core_transfer",
+            json!({
+                "action": "transfer_to_owner",
+                "entity": handle,
+                "to_owner": destination_key
+            }),
+        )
+        .await?;
+        assert_eq!(
+            transferred["ok"],
+            json!(true),
+            "admin+manage on both owners must transfer over the served surface: {transferred}"
+        );
+
+        // The move is real, not just a happy answer.
+        let memory_t = handle
+            .strip_prefix("F:")
+            .ok_or_else(|| format!("unexpected handle spelling: {handle}"))?
+            .parse::<Uuid>()?;
+        let pool = sqlx::PgPool::connect(&database_url).await?;
+        let landed: Uuid =
+            sqlx::query_scalar("SELECT owner_id FROM proxima_core.memory WHERE t = $1")
+                .bind(memory_t)
+                .fetch_one(&pool)
+                .await?;
+        assert_eq!(
+            landed,
+            destination.stored_owner_id(),
+            "the series must live at the destination owner after the transfer"
+        );
+
+        // (b) Admin on the SOURCE only. The source gate opens; the
+        // destination has no membership row for this caller, so the
+        // receiving side refuses.
+        let bearer = format!("Bearer {}", mint(&signing, "transfer-source-side"));
+        let session = initialize(&client, &url, &bearer, &source_key).await?;
+        initialized(&client, &url, &session, &bearer).await?;
+        let stranded = call_tool(
+            &client,
+            &url,
+            &session,
+            &bearer,
+            "core_remember",
+            json!({
+                "title": "source-side only",
+                "body": format!("source side needle {}", Uuid::now_v7()),
+                "idempotency_key": format!("wire-transfer-source-{}", Uuid::now_v7())
+            }),
+        )
+        .await?;
+        let stranded_handle = stranded["handle"]
+            .as_str()
+            .ok_or_else(|| format!("remember output has no handle: {stranded}"))?
+            .to_string();
+        let refused = call_tool_raw(
+            &client,
+            &url,
+            &session,
+            &bearer,
+            "core_transfer",
+            json!({
+                "action": "transfer_to_owner",
+                "entity": stranded_handle,
+                "to_owner": destination_key
+            }),
+        )
+        .await?;
+        let message = rpc_error_message(&refused)?;
+        assert!(
+            message.contains("requires manage on this owner"),
+            "admin on the source alone must be refused by the receiving side, got: {refused}"
+        );
+
+        // (c) Admin + manage on the DESTINATION only. This caller selects
+        // the destination — the one owner it can select — so the served
+        // palette does admit `core_transfer` and the refusal comes from the
+        // engine's SOURCE gate, not from the edge hiding the tool. Manage on
+        // the receiving side is consent to receive, never authority to pull
+        // another owner's memory.
+        let bearer = format!("Bearer {}", mint(&signing, "transfer-destination-side"));
+        let session = initialize(&client, &url, &bearer, &destination_key).await?;
+        initialized(&client, &url, &session, &bearer).await?;
+        let refused = call_tool_raw(
+            &client,
+            &url,
+            &session,
+            &bearer,
+            "core_transfer",
+            json!({
+                "action": "transfer_to_owner",
+                "entity": stranded_handle,
+                "to_owner": destination_key
+            }),
+        )
+        .await?;
+        let message = rpc_error_message(&refused)?;
+        assert!(
+            message.contains("requires admin on this owner"),
+            "manage on the destination alone must not move another owner's memory, got: {refused}"
+        );
+
+        // The refusals left the series where it was.
+        let stranded_t = stranded_handle
+            .strip_prefix("F:")
+            .ok_or_else(|| format!("unexpected handle spelling: {stranded_handle}"))?
+            .parse::<Uuid>()?;
+        let unmoved: Uuid =
+            sqlx::query_scalar("SELECT owner_id FROM proxima_core.memory WHERE t = $1")
+                .bind(stranded_t)
+                .fetch_one(&pool)
+                .await?;
+        assert_eq!(
+            unmoved,
+            source.stored_owner_id(),
+            "a refused transfer must not move the series"
+        );
+
+        Ok(())
+    }
+    .await;
+
+    running.shutdown().await;
+    if let Some(name) = created_db {
+        let _ = proxima_pg_testkit::drop_db(&name).await;
+    }
+    result
+}
+
+/// `PROXIMA_TEST_DATABASE_URL` when the operator pinned one, otherwise a
+/// throwaway database. Unlike the palette/revocation test above, the
+/// transfer reachability regression must not silently skip.
+async fn live_database_url() -> Result<(String, Option<String>), Box<dyn std::error::Error>> {
+    if let Some(url) = require_env_or_skip("PROXIMA_TEST_DATABASE_URL") {
+        return Ok((url, None));
+    }
+    let name = format!("proxima_multi_owner_e2e_{}", Uuid::now_v7().simple());
+    proxima_pg_testkit::create_db(&name)
+        .await
+        .map_err(|err| format!("PG required for the wire-level transfer e2e: {err}"))?;
+    Ok((proxima_pg_testkit::db_url(&name), Some(name)))
+}
+
+/// The JSON-RPC error message for a refused tool call. A `ProtocolError`
+/// with `Forbidden` reaches the wire as `invalid_request` carrying the
+/// engine's own refusal text, so the assertion can name the gate that
+/// fired instead of merely "something failed".
+fn rpc_error_message(body: &serde_json::Value) -> Result<String, Box<dyn std::error::Error>> {
+    assert!(
+        body.get("result").is_none(),
+        "expected a refusal, got a result: {body}"
+    );
+    Ok(body["error"]["message"]
+        .as_str()
+        .ok_or_else(|| format!("expected a JSON-RPC error, got: {body}"))?
+        .to_string())
+}
+
 async fn grant_member(
     storage: &PgStorage,
     owner: Owner,
@@ -345,7 +624,24 @@ async fn call_tool(
     name: &str,
     arguments: serde_json::Value,
 ) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
-    let body = post_rpc(
+    let body = call_tool_raw(client, url, session_id, bearer, name, arguments).await?;
+    let text = body["result"]["content"][0]["text"]
+        .as_str()
+        .ok_or_else(|| format!("missing text content in {body}"))?;
+    Ok(serde_json::from_str(text)?)
+}
+
+/// The whole JSON-RPC envelope for a `tools/call`, so a refusal can be
+/// inspected instead of unwrapped.
+async fn call_tool_raw(
+    client: &reqwest::Client,
+    url: &str,
+    session_id: &str,
+    bearer: &str,
+    name: &str,
+    arguments: serde_json::Value,
+) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+    post_rpc(
         client,
         url,
         Some(session_id),
@@ -357,11 +653,7 @@ async fn call_tool(
             "params": {"name": name, "arguments": arguments}
         }),
     )
-    .await?;
-    let text = body["result"]["content"][0]["text"]
-        .as_str()
-        .ok_or("missing text content")?;
-    Ok(serde_json::from_str(text)?)
+    .await
 }
 
 async fn post_rpc(

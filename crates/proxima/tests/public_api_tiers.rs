@@ -863,7 +863,7 @@ impl proxima::flavor::AuthorizationHook for TierAuthzHook {
                 change: proxima::flavor::MembershipChange::Add,
                 ..
             }
-            | proxima::flavor::AuthzOperation::EntityShare { .. } => Ok(()),
+            | proxima::flavor::AuthzOperation::EntityTransfer { .. } => Ok(()),
             proxima::flavor::AuthzOperation::Membership {
                 change: proxima::flavor::MembershipChange::Remove,
                 ..
@@ -915,17 +915,17 @@ fn flavor_sdk_names_query_and_ingest_types() {
     };
     TierAuthzHook.veto(&input).expect("relation allow");
     TierAuthzHook.observe(&input, proxima::flavor::AuthzOutcome::Allowed);
-    let share = proxima::flavor::AuthzInput {
+    let transfer = proxima::flavor::AuthzInput {
         authz: &authz,
         requested: &owner,
         resolved: &owner,
         relation: proxima::Relation::Admin,
-        operation: proxima::flavor::AuthzOperation::EntityShare {
+        operation: proxima::flavor::AuthzOperation::EntityTransfer {
             entity: proxima::flavor::EntityId::Memory(proxima::MemoryId::new(uuid::Uuid::nil())),
-            owner,
+            to_owner: owner,
         },
     };
-    TierAuthzHook.veto(&share).expect("share allow");
+    TierAuthzHook.veto(&transfer).expect("transfer allow");
     assert_eq!(
         TierOwnerResolver.resolve(&authz, &owner).expect("resolve"),
         owner
