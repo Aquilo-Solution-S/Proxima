@@ -395,6 +395,17 @@ fn substring_sidecar_sql(
 }
 
 /// The ranked arm: `<flavor>.projection` alone, then the sidecar for top-k.
+///
+/// "Alone" is literal and load-bearing. The owner predicate reads
+/// `p.owner_id`, not `memory.owner_id` through a join, which is the only
+/// spelling the composite `gin(owner_id, search_tsv)` can serve — a join
+/// puts the owner on the other side of the index and leaves the GIN with
+/// the tsvector half of a two-column index. The two columns cannot
+/// disagree: the projection row is FK'd to `memory (t) ON DELETE CASCADE`,
+/// so it never outlives its admission, and owner transfer rewrites both in
+/// one transaction (`access::owner_columns`, driven by
+/// `projection_tables()`). `search_projection_identity` pins that this
+/// answers exactly what the pre-projection join answered.
 fn ranked_projection_sql(
     projection: &MemorySearchProjection,
     req: &MemorySearchRequest,
@@ -459,9 +470,8 @@ fn ranked_projection_sql(
          ranked AS (
          SELECT p.memory_id AS t,
                 {score_expr} AS lexical_score
-           FROM {table} p
-           JOIN proxima_core.memory m ON m.t = p.memory_id, q
-          WHERE m.owner_id = ANY($8::uuid[])
+           FROM {table} p, q
+          WHERE p.owner_id = ANY($8::uuid[])
             AND p.schema_id = $9
             AND ({tsv} @@ q.tsq{rescue_where})
             {tag_pred}

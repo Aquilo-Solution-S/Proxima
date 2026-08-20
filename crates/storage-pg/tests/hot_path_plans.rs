@@ -253,14 +253,23 @@ async fn hot_path_plans_use_expected_indexes() {
             .bind(None::<time::OffsetDateTime>)
             .bind(None::<Uuid>)
             .bind(&owner_ids)
+            .bind(note_projection().schema_id.as_str())
             .fetch_one(&mut *tx)
             .await?;
         let lexical_plan = plan.to_string();
+        // The composite `gin(owner_id, search_tsv)` is the whole reason the
+        // projection carries `owner_id`: both halves of the predicate are on
+        // one relation, so one index scan answers "this owner's rows that
+        // match this query". The previous shape scanned the sidecar's own
+        // tsvector GIN and reached the owner through a join to `memory`,
+        // which is what the projection replaced.
         assert!(
-            lexical_plan.contains("agent_note_v1_search_tsv_gin")
-                || (lexical_plan.contains("agent_note_v1_pkey")
-                    && lexical_plan.contains("memory_t_key")),
-            "owner-scoped sidecar scan must use GIN or PK join through memory.t; plan:\n{lexical_plan}"
+            lexical_plan.contains("core_projection_owner_tsv_gin"),
+            "the ranked arm must scan the projection's composite GIN; plan:\n{lexical_plan}"
+        );
+        assert!(
+            !lexical_plan.contains("agent_note_v1_search_tsv_gin"),
+            "the per-sidecar tsvector index is gone; plan:\n{lexical_plan}"
         );
 
         // SQL-POLICY: fixed-fragment

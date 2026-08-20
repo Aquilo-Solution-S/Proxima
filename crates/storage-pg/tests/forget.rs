@@ -642,8 +642,17 @@ async fn oneshot_forget_put_does_not_hold_row_lock() {
     result.expect("oneshot forget lock probe failed");
 }
 
+/// `commit_forget` re-PUTs when the locked dump differs from the snapshot.
+///
+/// This used to make them differ with an `UPDATE` of the sidecar's `body`.
+/// It cannot any more: `agent_note_v1` is append-only WITH the projection,
+/// because the projection row is derived once and an in-place text edit
+/// would leave the vector describing text that is gone. A row that lands
+/// BETWEEN the snapshot and the lock is the remaining — and the only real
+/// — way for the dump to move, and it is the case the function's doc
+/// comment names ("late sidecar").
 #[tokio::test]
-async fn commit_forget_reputs_when_sidecar_changed() {
+async fn commit_forget_reputs_when_a_sidecar_row_lands_after_the_snapshot() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
     if let Err(e) = create_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
@@ -657,22 +666,19 @@ async fn commit_forget_reputs_when_sidecar_changed() {
         let pool = pg.pool_for_tests();
         let written = ingest_stamped(pool, &permit, &draft(None), &[AGENT_NOTE.to_owned()]).await?;
         let t = written.memory_id.into_inner();
-        sqlx::query(
-            "INSERT INTO proxima_core.agent_note_v1 (t, note_id, title, body, tags)
-             VALUES ($1, $1, 'n', 'sidecar body', ARRAY['tag'])",
-        )
-        .bind(t)
-        .execute(pool)
-        .await?;
 
+        // Stamped, but the sidecar row is not there yet.
         let mut conn = pool.acquire().await?;
         let snapshot = snapshot_hot(&mut conn, &core_pg_sidecars(), t).await?;
         drop(conn);
 
-        sqlx::query("UPDATE proxima_core.agent_note_v1 SET body = 'updated' WHERE t = $1")
-            .bind(t)
-            .execute(pool)
-            .await?;
+        sqlx::query(
+            "INSERT INTO proxima_core.agent_note_v1 (t, note_id, title, body, tags)
+             VALUES ($1, $1, 'n', 'late body', ARRAY['tag'])",
+        )
+        .bind(t)
+        .execute(pool)
+        .await?;
 
         let cold = CountingCold {
             inner: MemoryColdStore::default(),
@@ -692,7 +698,7 @@ async fn commit_forget_reputs_when_sidecar_changed() {
         tx.commit().await?;
         assert!(
             cold.puts.load(Ordering::SeqCst) >= 1,
-            "locked dump must re-PUT after sidecar change"
+            "locked dump must re-PUT after a late sidecar row"
         );
 
         let mut tx = pool.begin().await?;
@@ -703,7 +709,10 @@ async fn commit_forget_reputs_when_sidecar_changed() {
                 .bind(t)
                 .fetch_one(pool)
                 .await?;
-        assert_eq!(note, "updated");
+        assert_eq!(
+            note, "late body",
+            "the re-PUT dump, not the snapshot, is what hydrate restores"
+        );
         Ok(())
     }
     .await;
