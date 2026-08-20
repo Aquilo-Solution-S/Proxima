@@ -447,8 +447,20 @@ $$;
 COMMENT ON FUNCTION proxima_core.lexical_language_forget(regconfig) IS
 'Remove a configuration from the active-language set, refusing while any row still holds it in an FK-stamped lexical_language column. The FK checks serialize this against in-flight writes. Run this BEFORE dropping a custom text search configuration: PostgreSQL allows the drop with rows still referencing it, and those rows are then un-updatable (cache lookup failed on the dangling OID).';
 
+-- The one owner-pinned Memory sidecar. `owner_id` is the owner that MADE
+-- the call, stamped at write time from the Memory's owner and never
+-- rewritten: this table answers "what did my agents do", which stays true
+-- of the acting owner after the Memory it describes is transferred away.
+-- Every other sidecar reaches its owner through the Memory and follows it.
+-- `t` names the Memory the call was recorded as, and carries NO foreign key
+-- to it — the same FK-free `t` `sketch` below has, for a different reason.
+-- The row outlives that Memory on purpose: once the Memory is transferred
+-- away, its new owner may forget or erase it, and neither of those is
+-- allowed to destroy the acting owner's audit trail — nor to fail on a
+-- child row the erasing owner cannot see. The row dies with its own owner.
 CREATE TABLE proxima_core.mcp_call_logged_v1 (
-    t uuid PRIMARY KEY REFERENCES proxima_core.memory (t),
+    t uuid PRIMARY KEY,
+    owner_id uuid NOT NULL REFERENCES proxima_core.owners (owner_id),
     tool_name text NOT NULL,
     actor_oid text NOT NULL,
     actor_upn text NOT NULL,
@@ -459,6 +471,15 @@ CREATE TABLE proxima_core.mcp_call_logged_v1 (
     io_truncated boolean NOT NULL,
     io_content_hash bytea NOT NULL
 );
+
+COMMENT ON COLUMN proxima_core.mcp_call_logged_v1.owner_id IS
+'The owner that made the call, pinned at write time. Deliberately NOT derived from proxima_core.memory.owner_id on read: an owner transfer moves the Memory and leaves this row behind, so history, export, and Art. 17 erase all stay with the acting owner and the destination never sees the prior owner''s actor identities.';
+
+-- read_mcp_call_history pages by (time, t) for one owner, optionally
+-- filtered by actor. The Memory-side index cannot serve it any more: the
+-- scope is this table's own owner_id.
+CREATE INDEX mcp_call_logged_v1_owner_t_idx
+    ON proxima_core.mcp_call_logged_v1 (owner_id, t DESC);
 
 -- Hot one-liners for recall/think. Plumbing, not a kernel sort.
 -- `t` is Memory.t or Goal.t; no FK (two home tables). Forget deletes the row.

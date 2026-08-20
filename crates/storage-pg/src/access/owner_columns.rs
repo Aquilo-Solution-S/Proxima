@@ -649,17 +649,14 @@ async fn persist_hot_series_transfer(
         .await
         .map_err(map_err)?;
     follow_embedding_owners(tx, ts, to_id).await?;
-    // Retain-at-source for the audit sidecar. `mcp_call_logged_v1` carries
-    // `actor_upn` — it describes who made a tool call, not the memory — and
-    // it has no owner column of its own: `read_mcp_call_history` reaches it
-    // by joining `memory.owner_id`. Left in place the rows would follow the
-    // memory and hand the destination the prior owner's actor identities, so
-    // the transfer drops them. The memory itself is unaffected.
-    sqlx::query("DELETE FROM proxima_core.mcp_call_logged_v1 WHERE t = ANY($1::uuid[])")
-        .bind(ts)
-        .execute(&mut **tx)
-        .await
-        .map_err(map_err)?;
+    // NOTE: owner-pinned sidecars are deliberately untouched here.
+    // `mcp_call_logged_v1` carries `actor_upn` and its own `owner_id`,
+    // stamped with the owner that made the call. It stays where it is: the
+    // source keeps answering "what did my agents do" after giving the
+    // Memory away, and the destination never sees it, because every read of
+    // it filters on the sidecar's own owner. Deleting the rows here — the
+    // shape this replaced — destroyed audit history that Art. 17 and the
+    // owner's own export are both entitled to.
     sqlx::query("DELETE FROM proxima_core.ingest_keys WHERE t = ANY($1::uuid[])")
         .bind(ts)
         .execute(&mut **tx)

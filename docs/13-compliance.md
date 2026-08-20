@@ -168,6 +168,7 @@ Compliance operations are substrate-local.
 | External state | Contract |
 |---|---|
 | already-sent email / message / PR / transfer / notice | not rolled back by substrate deletion |
+| owner-pinned audit sidecars | `mcp_call_logged_v1` carries its own `owner_id` (the owner that made the call), so an owner transfer does not move it. Export and erase select it by that column: it stays in the acting owner's Art. 15 bundle and Art. 17 reach, and out of the receiving owner's. |
 | downstream cleanup | controller/Ops obligation |
 | recipient notification inventory | deferred until per-call recipients exist (see [12](12-tool-manifest.md#compliance-metadata)) |
 | legally significant tool calls | require human approval flow; automatic blocking deferred |

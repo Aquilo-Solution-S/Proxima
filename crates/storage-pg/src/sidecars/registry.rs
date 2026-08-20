@@ -37,6 +37,7 @@ impl PgSidecarRegistry {
                 PgSidecarEntry {
                     key,
                     sidecar_table: table.to_string(),
+                    owner_pinned: <P as PgMemoryPayload>::OWNER_PINNED,
                     memory_insert: Some(insert_memory_sidecar::<P>),
                     memory_load: Some(load_memory_payload::<P>),
                     memory_load_batch: Some(load_memory_payload_batch::<P>),
@@ -99,6 +100,7 @@ impl PgSidecarRegistry {
                 PgSidecarEntry {
                     key,
                     sidecar_table: table.to_string(),
+                    owner_pinned: false,
                     memory_insert: None,
                     memory_load: None,
                     memory_load_batch: None,
@@ -132,6 +134,7 @@ impl PgSidecarRegistry {
             PgSidecarEntry {
                 key,
                 sidecar_table: P::sidecar_table().to_string(),
+                owner_pinned: false,
                 memory_insert: None,
                 memory_load: None,
                 memory_load_batch: None,
@@ -168,6 +171,7 @@ impl PgSidecarRegistry {
                 PgSidecarEntry {
                     key,
                     sidecar_table: table.to_string(),
+                    owner_pinned: false,
                     memory_insert: None,
                     memory_load: None,
                     memory_load_batch: None,
@@ -200,6 +204,7 @@ impl PgSidecarRegistry {
             PgSidecarEntry {
                 key,
                 sidecar_table: sidecar_table.into(),
+                owner_pinned: <P as PgMemoryPayload>::OWNER_PINNED,
                 memory_insert: Some(insert_memory_sidecar::<P>),
                 memory_load: Some(load_memory_payload::<P>),
                 memory_load_batch: Some(load_memory_payload_batch::<P>),

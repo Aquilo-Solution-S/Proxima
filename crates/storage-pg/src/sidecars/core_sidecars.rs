@@ -83,6 +83,7 @@ crate::pg_sidecar! {
     kinds: [Fact],
     table: "proxima_core.mcp_call_logged_v1",
     key: t,
+    owner_pinned: true,
     fields: {
         tool_name => tool_name: (text),
         actor_oid => actor_oid: (text),

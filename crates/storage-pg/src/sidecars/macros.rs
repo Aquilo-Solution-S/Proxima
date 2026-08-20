@@ -438,6 +438,7 @@ macro_rules! pg_sidecar {
         kinds: [$($payload_kind:ident),+ $(,)?],
         table: $table:literal,
         key: $key_column:ident,
+        $(owner_pinned: $owner_pinned:literal,)?
         fields: {
             $(
                 $field:ident => $column:ident : $column_kind:tt
@@ -451,17 +452,21 @@ macro_rules! pg_sidecar {
                 memory_id: $crate::core::MemoryId,
             ) -> $crate::sidecars::PgSidecarFuture<'t> {
                 ::std::boxed::Box::pin(async move {
+                    // Same tokens as the OWNER_PINNED const below: one
+                    // macro invocation emits both, so they cannot drift.
+                    let owner_pinned = false $(|| $owner_pinned)?;
                     let sql = $crate::sidecars::memory_insert_sql(
                         $table,
                         ::std::stringify!($key_column),
                         &[$(
                             (::std::stringify!($column), $crate::pg_sidecar_cast! $column_kind),
                         )+],
+                        owner_pinned,
                     )?;
                     // SQL-POLICY: PgIdent — `sql` is built by memory_insert_sql
                     // from macro-literal table/column names validated as PgIdent;
                     // every value below is bound.
-                    ::sqlx::query(::sqlx::AssertSqlSafe(sql))
+                    let result = ::sqlx::query(::sqlx::AssertSqlSafe(sql))
                         .bind(memory_id.into_inner())
                         $(
                             .bind($crate::pg_sidecar_bind!($column_kind, self, $field))
@@ -469,6 +474,18 @@ macro_rules! pg_sidecar {
                         .execute(tx.as_mut())
                         .await
                         .map_err($crate::map_err)?;
+                    // An owner-pinned insert reads the owner out of the
+                    // Memory row, so a missing Memory writes nothing instead
+                    // of tripping the foreign key. Refuse rather than lose
+                    // the audit row.
+                    if owner_pinned && result.rows_affected() != 1 {
+                        return ::std::result::Result::Err(
+                            $crate::core::StorageError::ConstraintViolation(::std::format!(
+                                "owner-pinned sidecar {} has no Memory row to take its owner from",
+                                $table,
+                            )),
+                        );
+                    }
                     ::std::result::Result::Ok(())
                 })
             }
@@ -483,6 +500,8 @@ macro_rules! pg_sidecar {
         }
 
         impl $crate::sidecars::PgMemoryPayload for $($payload_ty)::+ {
+            const OWNER_PINNED: bool = false $(|| $owner_pinned)?;
+
             fn load_batch<'t>(
                 ctx: $crate::sidecars::PgSidecarReadCtx<'t>,
                 kind: $crate::core::verbs::schema::PayloadKind,
@@ -492,12 +511,22 @@ macro_rules! pg_sidecar {
                     if memory_ids.is_empty() {
                         return ::std::result::Result::Ok(::std::vec::Vec::new());
                     }
-                    let sql = $crate::sidecars::memory_select_batch_sql(
-                        $table,
-                        ::std::stringify!($key_column),
-                        &[$($crate::pg_sidecar_select_col!($column_kind, $column)),+],
-                    )?;
-                    let rows = ctx.fetch_all_by_memory_ids::<$row_ty>(&sql, memory_ids).await?;
+                    let columns = &[$($crate::pg_sidecar_select_col!($column_kind, $column)),+];
+                    let rows = if <Self as $crate::sidecars::PgMemoryPayload>::OWNER_PINNED {
+                        let sql = $crate::sidecars::memory_select_batch_owner_pinned_sql(
+                            $table,
+                            ::std::stringify!($key_column),
+                            columns,
+                        )?;
+                        ctx.fetch_all_by_memory_ids_owner_pinned::<$row_ty>(&sql, memory_ids).await?
+                    } else {
+                        let sql = $crate::sidecars::memory_select_batch_sql(
+                            $table,
+                            ::std::stringify!($key_column),
+                            columns,
+                        )?;
+                        ctx.fetch_all_by_memory_ids::<$row_ty>(&sql, memory_ids).await?
+                    };
                     rows.into_iter()
                         .map(|row| {
                             let memory_id = $crate::core::MemoryId::new(row.$key_column);

@@ -69,6 +69,37 @@ impl PgSidecarReadCtx<'_> {
             .map_err(|err| StorageError::Internal(err.to_string()))
     }
 
+    /// Fetch owner-pinned sidecar rows.
+    ///
+    /// Backend-owned SQL only: the statement comes from
+    /// [`super::memory_select_batch_owner_pinned_sql`], which is why the
+    /// `proxima_core.*` prohibition does not apply here — the join to
+    /// `proxima_core.memory` IS the owner rule, and it is emitted by the
+    /// backend rather than supplied by a flavor.
+    ///
+    /// # Errors
+    ///
+    /// Returns `StorageError` when SQL validation or query execution fails.
+    pub async fn fetch_all_by_memory_ids_owner_pinned<T>(
+        self,
+        sql: &str,
+        memory_ids: &[MemoryId],
+    ) -> Result<Vec<T>, StorageError>
+    where
+        for<'r> T: FromRow<'r, PgRow> + Send + Unpin,
+    {
+        validate_sidecar_read_sql(sql, true)?;
+        let raw_memory_ids = memory_ids
+            .iter()
+            .map(|memory_id| (*memory_id).into_inner())
+            .collect::<Vec<_>>();
+        sqlx::query_as(sqlx::AssertSqlSafe(sql))
+            .bind(&raw_memory_ids)
+            .fetch_all(self.pool)
+            .await
+            .map_err(|err| StorageError::Internal(err.to_string()))
+    }
+
     /// Fetch sidecar rows using a backend-owned, `ANY($1)` memory-id query.
     ///
     /// # Errors

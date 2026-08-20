@@ -3,18 +3,28 @@
 
 use std::sync::Arc;
 
-use proxima_core::compliance::{ComplianceEraseOutcome, ComplianceEraseTarget, EraseAuthorization};
-use proxima_core::storage_ports::{
-    ChangeEventPort, ComplianceErasePort, MemoryReadPort, OwnerTransferPort, OwnerWritePermit,
+use proxima_core::compliance::{
+    ComplianceEraseOutcome, ComplianceEraseTarget, ComplianceExportTarget, EraseAuthorization,
+    ExportAuthorization,
 };
+use proxima_core::storage_ports::MemoryAuthoringPort;
+use proxima_core::storage_ports::{
+    ChangeEventPort, ComplianceErasePort, McpCallReadPort, MemoryReadPort, OwnerTransferPort,
+    OwnerWritePermit,
+};
+use proxima_core::verbs::fact_ingest::FactIngestOutcome;
 use proxima_core::verbs::fact_ingest::{CitationSpec, FactWriteCommand};
 use proxima_core::verbs::goal_write::GoalState;
+use proxima_core::verbs::mcp_call_history::McpCallHistoryRequest;
+use proxima_core::verbs::persist_mcp_call::McpCallLoggedV1;
+use proxima_core::verbs::query::QueryRequest;
 use proxima_core::{
     AccessKind, ChangeEventKind, EntityId, EntityRef, GoalId, GroupId, MemoryId, OwnerRef,
     SchemaId, SchemaVersion, StorageError, UserId,
 };
 use proxima_pg_testkit::{create_db, db_url, drop_db};
-use proxima_storage_pg::verbs::fact_ingest::ingest_fact_atomic;
+use proxima_storage_pg::sidecars::PgMemorySidecar;
+use proxima_storage_pg::verbs::fact_ingest::{ingest_fact_atomic, ingest_fact_in_tx};
 use proxima_storage_pg::verbs::forget::{MemoryColdStore, hydrate_memory};
 use proxima_storage_pg::verbs::goal_timeseries::{GoalWriteCommand, write_goal};
 use proxima_storage_pg::verbs::wake_timeseries::{
@@ -47,6 +57,126 @@ fn draft() -> FactWriteCommand {
 /// engine gate admits. Its `owners` row is deliberately NOT pre-created —
 /// the transfer transaction must mint it (`ensure_owner_row`) or every
 /// `owner_id` FK below fails.
+/// One tool call, written the way production writes it: the typed payload
+/// through the ordinary Fact ingest, so the Memory stamps
+/// `sidecar_tables` and the sidecar's `owner_id` is filled by the
+/// owner-pinned INSERT rather than by this test.
+async fn ingest_mcp_call_fact(
+    pool: &sqlx::PgPool,
+    permit: &OwnerWritePermit,
+) -> Result<FactIngestOutcome, StorageError> {
+    let payload = McpCallLoggedV1 {
+        tool_name: "core_remember".into(),
+        actor_oid: "oid-1".into(),
+        actor_upn: "alice@example.test".into(),
+        ok: true,
+        error: None,
+        latency_ms: 5,
+        io_byte_len: 10,
+        io_truncated: false,
+        io_content_hash: [3_u8; 32],
+    };
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|err| StorageError::Unavailable(format!("begin mcp call ingest: {err}")))?;
+    let sidecar = payload.clone();
+    let outcome = ingest_fact_in_tx(&mut tx, permit, &payload, None, move |tx, outcome| {
+        Box::pin(async move { sidecar.insert_memory_sidecar(tx, outcome.memory_id).await })
+    })
+    .await?;
+    tx.commit()
+        .await
+        .map_err(|err| StorageError::Unavailable(format!("commit mcp call ingest: {err}")))?;
+    Ok(outcome)
+}
+
+/// A Fact carrying the mcp-call schema, for appending a second version to a
+/// series whose first version is a real tool call.
+fn mcp_draft() -> FactWriteCommand {
+    FactWriteCommand {
+        schema_id: SchemaId::new(
+            proxima_core::verbs::persist_mcp_call::MCP_CALL_FACT_SCHEMA.to_string(),
+        ),
+        ..draft()
+    }
+}
+
+/// How many of this Memory's hydrated payloads carry an actor identity,
+/// read as `owner`.
+async fn hydrated_actor_payloads(
+    pg: &PgStorage,
+    owner: OwnerRef,
+    memory_id: MemoryId,
+) -> Result<usize, StorageError> {
+    let response = pg
+        .query_memories(
+            &QueryRequest {
+                memory_ids: vec![memory_id],
+                include_payloads: true,
+                ..QueryRequest::for_owner(owner)
+            },
+            &[],
+        )
+        .await?;
+    Ok(response
+        .memories
+        .iter()
+        .filter(|memory| {
+            memory
+                .payload
+                .as_ref()
+                .and_then(|payload| payload.to_protocol_json().ok())
+                .is_some_and(|json| json.get("actor_upn").is_some())
+        })
+        .count())
+}
+
+/// Which owners the `mcp_call_logged_v1` rows for `t` are pinned to.
+async fn pinned_owners(pool: &sqlx::PgPool, t: Uuid) -> Result<Vec<Uuid>, sqlx::Error> {
+    sqlx::query_scalar("SELECT owner_id FROM proxima_core.mcp_call_logged_v1 WHERE t = $1")
+        .bind(t)
+        .fetch_all(pool)
+        .await
+}
+
+fn history_request(owner: OwnerRef) -> McpCallHistoryRequest {
+    McpCallHistoryRequest {
+        owner,
+        actor_oid: None,
+        before: None,
+        limit: 10,
+        include_body: false,
+    }
+}
+
+async fn export_bundle(
+    pg: &PgStorage,
+    owner: OwnerRef,
+) -> Result<proxima_core::compliance::ComplianceExportBundle, StorageError> {
+    let target = match owner {
+        OwnerRef::Personal(user_id) => ComplianceExportTarget::PersonalOwner { user_id },
+        OwnerRef::Group(group_id) => ComplianceExportTarget::GroupOwner { group_id },
+    };
+    pg.export_owner_bundle(
+        &ExportAuthorization::new_for_tests(target),
+        &[],
+        &[],
+        &[],
+        &[],
+    )
+    .await
+}
+
+fn mcp_rows_in(bundle: &proxima_core::compliance::ComplianceExportBundle) -> usize {
+    bundle
+        .sidecars
+        .iter()
+        .filter(|sidecar| sidecar.table == "proxima_core.mcp_call_logged_v1")
+        .map(|sidecar| sidecar.rows.len())
+        .sum()
+}
+
 fn destination() -> OwnerRef {
     OwnerRef::Group(GroupId::new(Uuid::now_v7()))
 }
@@ -191,7 +321,6 @@ async fn transfer_moves_same_memory_t_and_sidecar() {
 async fn transfer_rehomes_cooled_versions_and_remints_object_key() {
     let (db_name, pg, cold) = fresh_pg_with_cold().await;
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        use proxima_core::storage_ports::MemoryAuthoringPort;
         use proxima_storage_pg::verbs::forget::cold_object_key;
 
         let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
@@ -339,8 +468,6 @@ async fn transfer_retries_when_ingest_advances_the_captured_head() {
 
     let (db_name, pg) = fresh_pg().await;
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        use proxima_core::storage_ports::MemoryAuthoringPort;
-
         let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let dest = destination();
@@ -470,7 +597,6 @@ async fn transfer_retries_when_ingest_advances_the_captured_head() {
 async fn transfer_is_unchanged_when_the_head_owner_is_already_lost() {
     let (db_name, pg) = fresh_pg().await;
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        use proxima_core::storage_ports::MemoryAuthoringPort;
         use proxima_storage_pg::verbs::forget::cold_object_key;
 
         let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
@@ -866,33 +992,30 @@ async fn transfer_moves_exclusive_blob_with_the_fact() {
     result.expect("blob transfer failed");
 }
 
-/// Retain-at-source for the audit sidecar. `mcp_call_logged_v1` describes the
-/// ACTOR of a tool call (`actor_upn`), not the memory, and it has no owner
-/// column: `read_mcp_call_history` reaches it by joining `memory.owner_id`.
-/// Left in place the rows would follow the memory and hand the destination the
-/// prior owner's actor identities, so the transfer drops them. Every other
-/// sidecar (here: `agent_note_v1`) still follows the memory.
+/// Retain-at-source for the audit sidecar, and what "retain" now means.
+///
+/// `mcp_call_logged_v1` describes the ACTOR of a tool call (`actor_upn`),
+/// not the memory, and it carries its own `owner_id` stamped with the owner
+/// that made the call. A transfer moves the memory and leaves the row
+/// exactly where it is: it stays reachable by the source (history, export,
+/// Art. 17 erase) and unreachable by the destination (its payload hydrate
+/// joins the memory's owner to the row's). This replaced a DELETE, which
+/// kept the destination out but destroyed history the source was entitled
+/// to. Every other sidecar (here: `agent_note_v1`) still follows the memory.
 #[tokio::test]
-async fn transfer_drops_the_actor_call_log_but_keeps_other_sidecars() {
+async fn transfer_leaves_the_actor_call_log_with_the_owner_that_made_the_call() {
     let (db_name, pg) = fresh_pg().await;
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let dest = destination();
         let pool = pg.pool_for_tests();
-        let written = ingest_fact_atomic(pool, &permit, &draft(), None).await?;
+        // The Memory carries the mcp schema, so the payload hydrate really
+        // dispatches to this sidecar. Written against `core/test-fact-v1`
+        // it would dispatch elsewhere and the "destination sees nothing"
+        // assertion below would hold vacuously.
+        let written = ingest_mcp_call_fact(pool, &permit).await?;
         let t = written.memory_id.into_inner();
-        sqlx::query(
-            "INSERT INTO proxima_core.mcp_call_logged_v1
-                 (t, tool_name, actor_oid, actor_upn, ok, latency_ms,
-                  io_byte_len, io_truncated, io_content_hash)
-             VALUES ($1, 'core_remember', 'oid-1', 'alice@example.test', true, 5,
-                     10, false, $2)",
-        )
-        .bind(t)
-        .bind(vec![3_u8; 32])
-        .execute(pool)
-        .await?;
         sqlx::query(
             "INSERT INTO proxima_core.agent_note_v1 (t, note_id, title, body)
              VALUES ($1, $1, 'note', 'body')",
@@ -901,21 +1024,41 @@ async fn transfer_drops_the_actor_call_log_but_keeps_other_sidecars() {
         .execute(pool)
         .await?;
 
+        let pinned_owner: Uuid =
+            sqlx::query_scalar("SELECT owner_id FROM proxima_core.mcp_call_logged_v1 WHERE t = $1")
+                .bind(t)
+                .fetch_one(pool)
+                .await?;
+        assert_eq!(
+            pinned_owner,
+            owner.stored_owner_id(),
+            "the sidecar is stamped with the owner that made the call"
+        );
+
+        // The assertion that follows the transfer is only worth anything if
+        // the payload hydrates in the first place.
+        assert_eq!(
+            hydrated_actor_payloads(&pg, owner, written.memory_id).await?,
+            1,
+            "the owner that made the call sees it in its own payload"
+        );
+
         assert!(
             pg.transfer_to_owner(&permit, EntityId::Memory(written.memory_id), dest)
                 .await?
         );
 
-        let call_rows: i64 = sqlx::query_scalar(
-            "SELECT count(*)::bigint FROM proxima_core.mcp_call_logged_v1 WHERE t = $1",
-        )
-        .bind(t)
-        .fetch_one(pool)
-        .await?;
+        let still_pinned: Vec<Uuid> =
+            sqlx::query_scalar("SELECT owner_id FROM proxima_core.mcp_call_logged_v1 WHERE t = $1")
+                .bind(t)
+                .fetch_all(pool)
+                .await?;
         assert_eq!(
-            call_rows, 0,
-            "the actor call log must not travel to the destination owner"
+            still_pinned,
+            vec![owner.stored_owner_id()],
+            "the transfer must neither destroy the audit row nor re-home it"
         );
+
         let notes: i64 = sqlx::query_scalar(
             "SELECT count(*)::bigint FROM proxima_core.agent_note_v1 WHERE t = $1",
         )
@@ -929,11 +1072,175 @@ async fn transfer_drops_the_actor_call_log_but_keeps_other_sidecars() {
                 .fetch_one(pool)
                 .await?;
         assert_eq!(memory_owner, dest.stored_owner_id());
+
+        // (a) The destination's payload hydrate excludes it. The sidecar
+        // read joins the Memory's owner to the row's own, so the row is
+        // invisible to whoever now holds the Memory.
+        assert_eq!(
+            hydrated_actor_payloads(&pg, dest, written.memory_id).await?,
+            0,
+            "the destination must not hydrate the prior owner's actor identity"
+        );
+
+        // (b) The source still answers "what did my agents do".
+        let history = pg.read_mcp_call_history(&history_request(owner)).await?;
+        assert_eq!(
+            history.calls.len(),
+            1,
+            "the source keeps its own call history after giving the memory away"
+        );
+        assert_eq!(history.calls[0].tool_name, "core_remember");
+        let destination_history = pg.read_mcp_call_history(&history_request(dest)).await?;
+        assert!(
+            destination_history.calls.is_empty(),
+            "and the destination never inherits it"
+        );
+
+        // (d) Export follows the same owner: source in, destination out.
+        let source_bundle = export_bundle(&pg, owner).await?;
+        assert_eq!(
+            mcp_rows_in(&source_bundle),
+            1,
+            "the source's Art. 15 bundle carries the calls it made"
+        );
+        let destination_bundle = export_bundle(&pg, dest).await?;
+        assert_eq!(
+            mcp_rows_in(&destination_bundle),
+            0,
+            "the destination's bundle must not carry another owner's actor rows"
+        );
+
+        // (c) And the source can still erase them, which is the half a
+        // de-registration would have lost: rows reachable by nobody are
+        // rows Art. 17 cannot honour.
+        let user_id = UserId::new(owner.stored_owner_id());
+        let auth = EraseAuthorization::new_for_tests(ComplianceEraseTarget::PersonalOwner {
+            user_id,
+            drop_event_id: "test-drop-retained-audit".into(),
+        });
+        let erased = pg
+            .erase_personal_owner_if_drop_verified(&auth, user_id, false, &[], &[], &[], &[])
+            .await?;
+        assert!(
+            matches!(erased, ComplianceEraseOutcome::Completed { .. }),
+            "source erase completed: {erased:?}"
+        );
+        let left: i64 = sqlx::query_scalar(
+            "SELECT count(*)::bigint FROM proxima_core.mcp_call_logged_v1 WHERE t = $1",
+        )
+        .bind(t)
+        .fetch_one(pool)
+        .await?;
+        assert_eq!(
+            left, 0,
+            "the source's own erase reaches the rows it retained"
+        );
         Ok(())
     }
     .await;
     let _ = drop_db(&db_name).await;
     result.expect("audit sidecar retain-at-source failed");
+}
+
+/// The other half of "the row does not follow the Memory": nothing the
+/// RECEIVING owner does to that Memory may reach the row.
+///
+/// Forget cools a Memory and deletes its sidecars into the cold object;
+/// erase deletes the Memory outright. Both are the destination's to perform
+/// after a transfer, and neither may destroy — or trip over — the source's
+/// audit trail. Owner-pinned tables are therefore held out of the forget
+/// dump entirely, and the row holds no foreign key into `memory`, so the
+/// destination's erase does not fail on a child row it cannot see.
+#[tokio::test]
+async fn the_destination_can_forget_and_erase_without_touching_the_source_audit_trail() {
+    let (db_name, pg, cold) = fresh_pg_with_cold().await;
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
+        let dest = destination();
+        let pool = pg.pool_for_tests();
+
+        let first = ingest_mcp_call_fact(pool, &permit).await?;
+        // A live head keeps the series transferable after the first version
+        // is cooled.
+        let mut later = mcp_draft();
+        later.handle = Some(first.handle);
+        later.ingest_key = Some("k2".into());
+        let second = ingest_fact_atomic(pool, &permit, &later, None).await?;
+        assert!(
+            pg.transfer_to_owner(&permit, EntityId::Memory(second.memory_id), dest)
+                .await?
+        );
+
+        // The destination cools the version that carries the audit row.
+        let dest_permit = OwnerWritePermit::new_for_tests(dest, AccessKind::Fact);
+        MemoryAuthoringPort::forget_memory(&pg, &dest_permit, first.memory_id).await?;
+        assert_eq!(
+            pinned_owners(pool, first.memory_id.into_inner()).await?,
+            vec![owner.stored_owner_id()],
+            "a forget by the receiving owner must not cool away another owner's audit row"
+        );
+
+        // ...and hydrates it back. The row was never in the dump, so it is
+        // not restored either — it never left.
+        let mut tx = pool.begin().await?;
+        hydrate_memory(
+            &mut tx,
+            &core_pg_sidecars(),
+            cold.as_ref(),
+            first.memory_id.into_inner(),
+        )
+        .await?;
+        tx.commit().await?;
+        assert_eq!(
+            pinned_owners(pool, first.memory_id.into_inner()).await?,
+            vec![owner.stored_owner_id()],
+            "and the hydrate must not duplicate or re-home it"
+        );
+        assert_eq!(
+            hydrated_actor_payloads(&pg, dest, first.memory_id).await?,
+            0,
+            "the destination still cannot see the prior owner's actor identity"
+        );
+
+        // Now the destination erases its whole owner. The Memory goes; the
+        // source's audit row stays, and the erase does not fail on it.
+        let group_id = match dest {
+            OwnerRef::Group(group_id) => group_id,
+            OwnerRef::Personal(_) => panic!("a transfer destination is a group"),
+        };
+        let auth =
+            EraseAuthorization::new_for_tests(ComplianceEraseTarget::GroupOwner { group_id });
+        let erased = pg
+            .erase_group_owner_if_abandoned(&auth, group_id, false, &[], &[], &[], &[])
+            .await?;
+        assert!(
+            matches!(erased, ComplianceEraseOutcome::Completed { .. }),
+            "the destination's erase completes over a Memory whose audit row it does not own: {erased:?}"
+        );
+        let memories_left: i64 = sqlx::query_scalar(
+            "SELECT count(*)::bigint FROM proxima_core.memory WHERE handle = $1",
+        )
+        .bind(first.handle)
+        .fetch_one(pool)
+        .await?;
+        assert_eq!(memories_left, 0, "the destination's memories are gone");
+        assert_eq!(
+            pinned_owners(pool, first.memory_id.into_inner()).await?,
+            vec![owner.stored_owner_id()],
+            "the source's audit row outlives the Memory it describes"
+        );
+        let history = pg.read_mcp_call_history(&history_request(owner)).await?;
+        assert_eq!(
+            history.calls.len(),
+            1,
+            "and the source can still read it back"
+        );
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("destination lifecycle must not reach the source audit trail");
 }
 
 /// The FK safety that used to lean on World's migration-seeded `owners` row.

@@ -29,24 +29,26 @@ pub trait OwnerTransferPort: Send + Sync {
     /// refused by the engine before this port; implementations fail loudly
     /// on one rather than no-oping.
     ///
-    /// **Sidecars co-move, with one deletion.** Every registered sidecar row
-    /// keyed by a moved `t` follows the memory, because that is what keying
-    /// by `t` means: the generic hydrate path selects `WHERE t = ANY($1)`
-    /// with no owner predicate at all, and owner scoping happens only on the
-    /// preceding `memory` row query — the column this transfer rewrites.
-    /// The audit sidecar `mcp_call_logged_v1` is therefore DELETED rather
-    /// than retained: it carries `actor_upn`/`actor_oid`, it describes who
-    /// made a tool call rather than the memory, and it has no owner column
-    /// of its own to hold it back. Retaining those rows in place would not
-    /// keep them at the source — it would publish the prior owner's actor
-    /// identities to the destination through `get_memory`, `get_memories`,
-    /// `query_memories` (whose `include_payloads` defaults to true), and the
-    /// compliance export bundle, while simultaneously moving them out of the
-    /// source's own compliance-erase reach (erase selects by
-    /// `memory.owner_id`). Genuine retention needs an owner discriminator on
-    /// the row plus an owner predicate in the sidecar read path; until that
-    /// exists, deletion is the only spelling of "the destination does not
-    /// get the source's actors" that the read paths actually enforce.
+    /// **Sidecars co-move, except the owner-pinned ones.** A registered
+    /// sidecar keyed by a moved `t` follows the memory, because that is what
+    /// keying by `t` means: it is an extra column on the memory and reaches
+    /// its owner through it.
+    ///
+    /// An OWNER-PINNED sidecar carries its own `owner_id`, stamped at write
+    /// time with the owner that acted, and does not move. `mcp_call_logged_v1`
+    /// is the one core example: it holds `actor_upn`/`actor_oid` and records
+    /// who made a tool call rather than what the memory says. This transfer
+    /// leaves those rows exactly where they are, and every surface that
+    /// reaches them keys on that column rather than on `memory.owner_id`:
+    /// the payload hydrate joins the memory's owner to the row's, so
+    /// `get_memory`/`get_memories`/`query_memories` at the destination see
+    /// nothing; `read_mcp_call_history`, compliance export, and Art. 17
+    /// erase all select by the row's own owner, so the source keeps both the
+    /// history and the obligation to delete it.
+    ///
+    /// This replaced a DELETE. Deleting kept the destination out, but it
+    /// destroyed audit history the source was entitled to under Art. 15 and
+    /// still obliged to erase under Art. 17.
     async fn transfer_to_owner(
         &self,
         permit: &OwnerWritePermit,

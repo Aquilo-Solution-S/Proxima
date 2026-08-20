@@ -53,11 +53,11 @@ Access uses server-resolved `OwnerRef` → roles. No org column.
 `memory_head` and every `t` on that handle. Same `(handle, t)`. Triggers
 allow that column only; all other memory fields stay append-only. Cooled
 stubs, `sketch`, embeddings, and exclusively cited blobs and content move
-with the series; `ingest_keys` for those `t`s are deleted, and so are the
-series' `mcp_call_logged_v1` rows — that audit sidecar carries `actor_upn`
-and describes the actor of a tool call, not the memory, so it is retained at
-the source rather than handed to the destination. Every other sidecar
-follows the memory. The destination's `owners` row is minted inside the same
+with the series; `ingest_keys` for those `t`s are deleted. The series'
+`mcp_call_logged_v1` rows stay put: that audit sidecar is *owner-pinned* —
+it carries `actor_upn` and its own `owner_id`, stamped with the owner that
+made the call — so a transfer leaves it with the source, and every surface
+that reads it keys on that column. Every other sidecar follows the memory. The destination's `owners` row is minted inside the same
 transaction (`ensure_owner_row`), which is what keeps the FKs whole. It also
 commits paired `transfer` rows into `announce` (prior owner's lane +
 destination owner's lane). Goals do not transfer: the verb is memory-only,

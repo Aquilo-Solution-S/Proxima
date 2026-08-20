@@ -99,6 +99,7 @@ impl PgSidecarRegistryFrozen {
             PgSidecarEntry {
                 key,
                 sidecar_table: table.to_owned(),
+                owner_pinned: false,
                 memory_insert: Some(|_, _, _| Box::pin(async { Ok(()) })),
                 memory_load: None,
                 memory_load_batch: Some(|_, _, _| Box::pin(async { Ok(Vec::new()) })),
@@ -121,6 +122,29 @@ impl PgSidecarRegistryFrozen {
             .values()
             .filter(|entry| entry.memory_insert.is_some() || entry.memory_load_batch.is_some())
             .map(|entry| entry.sidecar_table.as_str())
+            .collect();
+        tables.sort_unstable();
+        tables.dedup();
+        tables
+    }
+
+    /// Memory sidecar tables that carry their own `owner_id` (see
+    /// [`super::PgMemoryPayload::OWNER_PINNED`]), in name order.
+    ///
+    /// Compliance erase and export select these by the sidecar's OWN owner
+    /// rather than through the Memory, because a transfer leaves them
+    /// behind: joining through the Memory would put them out of the writing
+    /// owner's reach and into the receiving owner's bundle.
+    #[must_use]
+    pub fn owner_pinned_memory_sidecar_tables(&self) -> Vec<String> {
+        let mut tables: Vec<String> = self
+            .entries
+            .values()
+            .filter(|entry| {
+                entry.owner_pinned
+                    && (entry.memory_insert.is_some() || entry.memory_load_batch.is_some())
+            })
+            .map(|entry| entry.sidecar_table.clone())
             .collect();
         tables.sort_unstable();
         tables.dedup();

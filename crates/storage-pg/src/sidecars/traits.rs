@@ -20,6 +20,16 @@ pub trait PgMemorySidecar: Send + Sync + 'static {
 /// NEITHER is a programming error and yields a clear `Internal` error rather
 /// than recursing (the two defaults must not call each other).
 pub trait PgMemoryPayload: Send + Sync + 'static {
+    /// Does this sidecar carry its OWN `owner_id`, stamped at write time?
+    ///
+    /// The default is `false`: a sidecar is an extra column on a Memory and
+    /// reaches its owner through that Memory, so it follows the Memory
+    /// wherever it goes. Set it for a sidecar that describes the ACT rather
+    /// than the Memory — an audit row naming the actor — which must stay
+    /// with the owner that wrote it when the Memory is transferred away.
+    /// Erase, export, and payload hydrate all key on it.
+    const OWNER_PINNED: bool = false;
+
     #[must_use]
     fn load_batch<'t>(
         ctx: PgSidecarReadCtx<'t>,

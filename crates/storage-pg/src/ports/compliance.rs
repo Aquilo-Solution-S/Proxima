@@ -37,6 +37,7 @@ impl ComplianceErasePort for PgStorage {
             goal_sidecar_tables,
             citation_mapping_sidecar_tables,
             cited_object_sidecar_tables,
+            &self.sidecars.owner_pinned_memory_sidecar_tables(),
         )
         .await
     }
@@ -61,6 +62,7 @@ impl ComplianceErasePort for PgStorage {
             goal_sidecar_tables,
             citation_mapping_sidecar_tables,
             cited_object_sidecar_tables,
+            &self.sidecars.owner_pinned_memory_sidecar_tables(),
         )
         .await
     }
@@ -85,6 +87,7 @@ impl ComplianceErasePort for PgStorage {
             goal_sidecar_tables,
             citation_mapping_sidecar_tables,
             cited_object_sidecar_tables,
+            &self.sidecars.owner_pinned_memory_sidecar_tables(),
         )
         .await
     }
@@ -109,6 +112,7 @@ impl ComplianceErasePort for PgStorage {
             goal_sidecar_tables,
             citation_mapping_sidecar_tables,
             cited_object_sidecar_tables,
+            &self.sidecars.owner_pinned_memory_sidecar_tables(),
         )
         .await
     }
@@ -128,6 +132,7 @@ impl ComplianceErasePort for PgStorage {
             goal_sidecar_tables,
             citation_mapping_sidecar_tables,
             cited_object_sidecar_tables,
+            &self.sidecars.owner_pinned_memory_sidecar_tables(),
         )
         .await
     }

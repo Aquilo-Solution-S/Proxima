@@ -292,6 +292,21 @@ fn read_uuid_list(bytes: &[u8], i: &mut usize) -> Result<Vec<Uuid>, StorageError
     Ok(out)
 }
 
+/// Owner-pinned sidecars do not take part in forget/hydrate at all.
+///
+/// They are not the Memory's data: they belong to the owner that acted, and
+/// after a transfer that is not the owner doing the forgetting. Cooling them
+/// into the Memory's cold object would let the receiving owner delete — or,
+/// via a cold-object erase, permanently destroy — another owner's audit
+/// trail. They simply stay in the hot table, which is safe because they hold
+/// no foreign key into `memory`.
+fn is_owner_pinned(sidecars: &PgSidecarRegistryFrozen, table: &str) -> bool {
+    sidecars
+        .owner_pinned_memory_sidecar_tables()
+        .iter()
+        .any(|pinned| pinned == table)
+}
+
 async fn dump_stamped_sidecars(
     conn: &mut PgConnection,
     sidecars: &PgSidecarRegistryFrozen,
@@ -304,6 +319,9 @@ async fn dump_stamped_sidecars(
             return Err(StorageError::ConstraintViolation(format!(
                 "stamped sidecar table {table} is not registered"
             )));
+        }
+        if is_owner_pinned(sidecars, table) {
+            continue;
         }
         let ident = PgIdent::table(table)?;
         let sql = format!(
@@ -765,6 +783,11 @@ async fn delete_stamped_sidecars(
             return Err(StorageError::ConstraintViolation(format!(
                 "stamped sidecar table {table} is not registered"
             )));
+        }
+        // See [`is_owner_pinned`]: forgetting a Memory must not delete
+        // somebody else's audit rows.
+        if is_owner_pinned(sidecars, table) {
+            continue;
         }
         let ident = PgIdent::table(table)?;
         // SQL-POLICY: PgIdent

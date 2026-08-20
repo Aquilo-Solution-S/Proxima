@@ -41,7 +41,10 @@ pub use read_ctx::PgSidecarReadCtx;
 #[cfg(test)]
 pub(crate) use read_ctx::validate_sidecar_read_sql;
 pub use registry::PgSidecarRegistry;
-pub use sql::{bytes32, int_to_u32, int_to_u64, memory_insert_sql, memory_select_batch_sql};
+pub use sql::{
+    bytes32, int_to_u32, int_to_u64, memory_insert_sql, memory_select_batch_owner_pinned_sql,
+    memory_select_batch_sql,
+};
 pub use traits::{
     PgCitationMappingSidecar, PgCitedObjectSidecar, PgGoalSidecar, PgMemoryPayload, PgMemorySidecar,
 };

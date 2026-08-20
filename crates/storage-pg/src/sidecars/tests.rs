@@ -1,4 +1,7 @@
-use super::{StorageError, memory_insert_sql, memory_select_batch_sql, validate_sidecar_read_sql};
+use super::{
+    StorageError, memory_insert_sql, memory_select_batch_owner_pinned_sql, memory_select_batch_sql,
+    validate_sidecar_read_sql,
+};
 
 #[test]
 fn memory_insert_sql_validates_identifiers() {
@@ -6,6 +9,7 @@ fn memory_insert_sql_validates_identifiers() {
         "proxima_core.agent_note_v1",
         "memory_id",
         &[("title", Some("text")), ("tags", None)],
+        false,
     )
     .unwrap();
 
@@ -15,17 +19,48 @@ fn memory_insert_sql_validates_identifiers() {
              VALUES ($1, $2::text, $3)"
     );
     assert!(
-        memory_insert_sql("proxima_core.agent_note_v1; DROP TABLE x", "memory_id", &[]).is_err()
+        memory_insert_sql(
+            "proxima_core.agent_note_v1; DROP TABLE x",
+            "memory_id",
+            &[],
+            false
+        )
+        .is_err()
     );
-    assert!(memory_insert_sql("proxima_core.agent_note_v1", "memory-id", &[]).is_err());
+    assert!(memory_insert_sql("proxima_core.agent_note_v1", "memory-id", &[], false).is_err());
     assert!(
         memory_insert_sql(
             "proxima_core.agent_note_v1",
             "memory_id",
-            &[("x); DROP TABLE y", None)]
+            &[("x); DROP TABLE y", None)],
+            false
         )
         .is_err()
     );
+}
+
+/// An owner-pinned insert takes its `owner_id` from the Memory row in the
+/// same statement. The value is therefore never a bind: no caller can
+/// choose which owner an audit row is attributed to, and the row is stamped
+/// with the owner that held the Memory at the moment of the write rather
+/// than whoever holds it later.
+#[test]
+fn owner_pinned_insert_reads_the_owner_from_the_memory_row() {
+    let sql = memory_insert_sql(
+        "proxima_core.mcp_call_logged_v1",
+        "t",
+        &[("tool_name", None), ("ok", None)],
+        true,
+    )
+    .unwrap();
+
+    assert_eq!(
+        sql,
+        "INSERT INTO proxima_core.mcp_call_logged_v1 (t, owner_id, tool_name, ok) \
+             SELECT $1, m.owner_id, $2, $3 FROM proxima_core.memory m WHERE m.t = $1"
+    );
+    // The owner is not among the bound values.
+    assert!(!sql.contains("VALUES"));
 }
 
 #[test]
@@ -58,6 +93,38 @@ fn memory_select_batch_sql_validates_identifiers() {
     assert!(
         memory_select_batch_sql("proxima_core.agent_note_v1", "memory_id;", &["title"]).is_err()
     );
+}
+
+/// An owner-pinned read hydrates a row only while the Memory is still held
+/// by the owner that wrote the row. The join IS the rule: drop it and a
+/// transfer destination hydrates the prior owner's `actor_upn` into its own
+/// `get_memory` payload.
+#[test]
+fn owner_pinned_select_hydrates_only_while_the_memory_has_not_moved() {
+    let sql = memory_select_batch_owner_pinned_sql(
+        "proxima_core.mcp_call_logged_v1",
+        "t",
+        &["tool_name", "actor_upn"],
+    )
+    .unwrap();
+
+    assert_eq!(
+        sql,
+        "SELECT s.t, s.tool_name, s.actor_upn FROM proxima_core.mcp_call_logged_v1 s \
+           JOIN proxima_core.memory m \
+             ON m.t = s.t AND m.owner_id = s.owner_id \
+          WHERE s.t = ANY($1)"
+    );
+
+    // Enum projections keep working under the alias.
+    let enum_sql = memory_select_batch_owner_pinned_sql(
+        "proxima_core.mcp_call_logged_v1",
+        "t",
+        &["state::text AS state"],
+    )
+    .unwrap();
+    assert!(enum_sql.contains("s.state::text AS state"));
+    assert!(memory_select_batch_owner_pinned_sql("bad table;", "t", &["x"]).is_err());
 }
 
 /// Payload side of the `opt_u32_as_i32` converter: `Option<u32>`.
