@@ -103,7 +103,6 @@ pub async fn write_goal(
     owner: &Owner,
     draft: &GoalWriteCommand,
 ) -> Result<GoalWriteOutcome, StorageError> {
-    crate::access::owner_columns::reject_world_write_owner(owner)?;
     let owner_id = crate::access::owner_columns::ensure_owner_row(tx.as_mut(), owner).await?;
 
     if let Some(existing) = load_goal_by_request_id(tx, owner, &draft.request_id).await? {

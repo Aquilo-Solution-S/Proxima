@@ -160,8 +160,9 @@ fn decode_record(bytes: &[u8]) -> Result<ColdRecord, StorageError> {
 }
 
 /// Rewrite the owner embedded in a cold record while preserving its payload.
-/// Publish remints the locator under World; the bytes must carry the same owner
-/// because hydrate reconstructs owner-scoped rows from this record.
+/// A transfer remints the locator under the destination owner; the bytes must
+/// carry the same owner because hydrate reconstructs owner-scoped rows from
+/// this record.
 pub(crate) fn rehome_cold_record(bytes: &[u8], owner_id: Uuid) -> Result<Vec<u8>, StorageError> {
     let mut rec = decode_record(bytes)?;
     rec.row.owner_id = owner_id;
@@ -806,7 +807,6 @@ async fn enqueue_embed_jobs(
             .await
             .map_err(map_err)?;
     let owner_kind = match owner_kind.as_str() {
-        "world" => proxima_core::OwnerRefKind::World,
         "group" => proxima_core::OwnerRefKind::Group,
         _ => proxima_core::OwnerRefKind::Personal,
     };
@@ -1085,11 +1085,6 @@ pub async fn erase_memory(
     owner: &Owner,
     t: Uuid,
 ) -> Result<ColdPurgePlan, StorageError> {
-    if matches!(owner, Owner::World) {
-        return Err(StorageError::ConstraintViolation(
-            "World is never abandoned".into(),
-        ));
-    }
     let handle: Option<Uuid> =
         sqlx::query_scalar("SELECT handle FROM proxima_core.memory WHERE t = $1 AND owner_id = $2")
             .bind(t)

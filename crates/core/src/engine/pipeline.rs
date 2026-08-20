@@ -1,4 +1,4 @@
-use crate::access::{AccessKind, EntityId, Relation, world};
+use crate::access::{AccessKind, EntityId, Relation};
 use crate::authz::{
     AuthPath, AuthzContext, AuthzInput, AuthzOperation, AuthzOutcome, EngineAuthority,
     SystemAuthority,
@@ -152,8 +152,8 @@ impl Engine {
     ///
     /// # Errors
     ///
-    /// Returns `Forbidden` when `authz` cannot write `owner`, when `owner` is
-    /// World, or when `authz` uses `System` without a runtime witness.
+    /// Returns `Forbidden` when `authz` cannot write `owner`, or when `authz`
+    /// uses `System` without a runtime witness.
     pub async fn authorize_owner_write(
         &self,
         authz: &AuthzContext,
@@ -175,8 +175,7 @@ impl Engine {
     ///
     /// # Errors
     ///
-    /// Returns `Forbidden` when `authz` cannot write `owner` or when `owner`
-    /// is World.
+    /// Returns `Forbidden` when `authz` cannot write `owner`.
     pub async fn authorize_owner_write_with_system_authority(
         &self,
         authz: &AuthzContext,
@@ -291,14 +290,6 @@ impl Engine {
             relation: required,
             operation: AuthzOperation::Relation { relation: required },
         };
-
-        if resolved == world() {
-            self.registry
-                .run_authorization_observers(&input, AuthzOutcome::DeniedGrant);
-            return Err(ProtocolError::forbidden(
-                "World is read-only and never a write owner",
-            ));
-        }
 
         let access = self.resolve_access_inner(authz, redeemed_phase)?;
         if !access.can_write(&resolved, required) {
@@ -537,7 +528,7 @@ const fn write_relation_for_access_kind(kind: AccessKind) -> Relation {
 mod tests {
     use std::sync::{Arc, Mutex};
 
-    use crate::access::{AccessKind, EntityId, Relation, world};
+    use crate::access::{AccessKind, EntityId, Relation};
     use crate::authz::{
         AuthPath, AuthorizationHook, AuthzContext, AuthzInput, AuthzOperation, AuthzOutcome,
         AuthzVeto, OwnerResolver,
@@ -786,20 +777,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn authorize_owner_write_denies_world() {
-        let p = owner();
-        let authz = AuthzContext::single_owner(&p, AuthPath::HostBearer);
-
-        let err = engine()
-            .authorize_owner_write(&authz, &world(), AccessKind::Fact)
-            .await
-            .expect_err("World must never receive an owner write permit");
-
-        assert_eq!(err.code, ErrorCode::Forbidden);
-        assert_eq!(err.message, "World is read-only and never a write owner");
-    }
-
-    #[tokio::test]
     async fn authorize_write_denies_viewer_for_editor() {
         let p = owner();
         let g1 = GroupId::new(uuid::Uuid::now_v7());
@@ -866,25 +843,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn authorize_write_denies_world_for_every_write_relation() {
-        let p = owner();
-        let g1 = GroupId::new(uuid::Uuid::now_v7());
-        let engine = engine_with_ports(storage(p, g1));
-        let authz = AuthzContext::single_owner(&p, AuthPath::HostBearer);
-
-        for relation in [Relation::Admin, Relation::Editor, Relation::Ingest] {
-            let err = engine
-                .authorize_write(&authz, &world(), relation)
-                .await
-                .expect_err("World must never be writable");
-
-            assert_eq!(err.code, ErrorCode::Forbidden);
-            assert_eq!(err.message, "World is read-only and never a write owner");
-        }
-    }
-
-    #[tokio::test]
-    async fn authorize_read_returns_world_and_groups() {
+    async fn authorize_read_returns_personal_and_groups() {
         let p = owner();
         let g1 = GroupId::new(uuid::Uuid::now_v7());
         let g1_owner = OwnerRef::Group(g1);
@@ -898,7 +857,7 @@ mod tests {
 
         assert!(read.contains(&p));
         assert!(read.contains(&g1_owner));
-        assert!(read.contains(&world()));
+        assert_eq!(read.len(), 2, "no owner beyond the caller's own read set");
     }
 
     #[tokio::test]

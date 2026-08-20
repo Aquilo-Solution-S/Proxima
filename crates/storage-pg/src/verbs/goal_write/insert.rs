@@ -18,7 +18,6 @@ pub(super) async fn insert_or_replay_goal(
 ) -> Result<InsertedGoal, StorageError> {
     validate_goal_schema(context, draft)?;
     let owner = draft.owner();
-    crate::access::owner_columns::reject_world_write_owner(&owner)?;
 
     let handle = if let Some(prior) = expected_prior {
         let handle: Option<uuid::Uuid> = sqlx::query_scalar(

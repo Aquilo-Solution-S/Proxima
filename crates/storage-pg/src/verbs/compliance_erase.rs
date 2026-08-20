@@ -457,11 +457,11 @@ async fn create_selected_sets(
     owner: OwnerRef,
     scope: SelectionScope<'_>,
 ) -> Result<(), StorageError> {
-    // Every erase entry point constructs `owner` as Group or Personal from a
-    // typed id — World is not representable on this path — so `owner_id`
-    // binds non-NULL here and in every erase statement below, and plain `=`
-    // is exactly `IS NOT DISTINCT FROM` while staying an index condition
-    // (`PostgreSQL` has no index strategy for DistinctExpr).
+    // `owner_id` is NOT NULL on every owned table and `OwnerRef` has no
+    // id-less kind, so `owner_id` binds non-NULL here and in every erase
+    // statement below: plain `=` is exactly `IS NOT DISTINCT FROM` while
+    // staying an index condition (`PostgreSQL` has no index strategy for
+    // DistinctExpr).
     let (owner_kind, owner_id) = owner_binds(&owner);
 
     sqlx::query("CREATE TEMP TABLE selected_memories(memory_id uuid PRIMARY KEY, kind text NOT NULL) ON COMMIT DROP")
@@ -788,7 +788,6 @@ async fn upsert_audit_outcome(
 
 fn audit_target(target: &ComplianceEraseTarget) -> (&'static str, OwnerRef, Option<&SourceId>) {
     match target {
-        ComplianceEraseTarget::WorldOwner => ("WorldOwner", OwnerRef::World, None),
         ComplianceEraseTarget::GroupOwner { group_id } => {
             ("GroupOwner", OwnerRef::Group(*group_id), None)
         }
@@ -816,10 +815,11 @@ fn audit_target(target: &ComplianceEraseTarget) -> (&'static str, OwnerRef, Opti
 pub(crate) fn owner_digest(owner: OwnerRef) -> Vec<u8> {
     let (kind, owner_id) = owner.columns();
     let stable_key = owner.stable_key_uuid();
-    let mut parts: Vec<&[u8]> = vec![kind.as_str().as_bytes(), stable_key.as_bytes()];
-    if let Some(id) = owner_id.as_ref() {
-        parts.push(id.as_bytes());
-    }
+    let parts: Vec<&[u8]> = vec![
+        kind.as_str().as_bytes(),
+        stable_key.as_bytes(),
+        owner_id.as_bytes(),
+    ];
     digest_bytes("owner", &parts)
 }
 
@@ -852,7 +852,6 @@ fn outcome_purge_pending(outcome: &ComplianceEraseOutcome) -> (bool, bool) {
 fn refusal_label(reason: &ComplianceEraseRefusal) -> &'static str {
     match reason {
         ComplianceEraseRefusal::OwnerNotAbandoned => "OwnerNotAbandoned",
-        ComplianceEraseRefusal::WorldOwner => "WorldOwner",
         ComplianceEraseRefusal::SourceScopeOwnerStillLive => "SourceScopeOwnerStillLive",
         ComplianceEraseRefusal::PersonalDropNotVerified => "PersonalDropNotVerified",
         ComplianceEraseRefusal::DropProofPortUnavailable => "DropProofPortUnavailable",
@@ -1125,7 +1124,7 @@ async fn delete_delegated_authority_grants(
     let (owner_kind, owner_id) = owner_binds(&owner);
     let erased_subject = match owner {
         OwnerRef::Personal(user_id) => Some(user_id.into_inner()),
-        OwnerRef::World | OwnerRef::Group(_) => None,
+        OwnerRef::Group(_) => None,
     };
     let result = sqlx::query(
         "DELETE FROM proxima_core.delegated_authority_grants dag
@@ -1283,7 +1282,7 @@ async fn delete_blobs(
 
 async fn enqueue_blob_object_keys(
     tx: &mut Tx<'_>,
-    owner_id: Option<uuid::Uuid>,
+    owner_id: uuid::Uuid,
     scope: SelectionScope<'_>,
     operation_id: uuid::Uuid,
 ) -> Result<Vec<String>, StorageError> {

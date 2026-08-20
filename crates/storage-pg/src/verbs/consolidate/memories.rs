@@ -270,7 +270,6 @@ fn payload_kind_for(kind: EntityKind) -> Option<PayloadKind> {
 
 fn owner_from_kind(kind: OwnerRefKind, owner_id: uuid::Uuid) -> OwnerRef {
     match kind {
-        OwnerRefKind::World => OwnerRef::World,
         OwnerRefKind::Personal => OwnerRef::Personal(proxima_core::UserId::new(owner_id)),
         OwnerRefKind::Group => OwnerRef::Group(proxima_core::GroupId::new(owner_id)),
     }

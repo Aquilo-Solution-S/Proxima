@@ -3,8 +3,8 @@
 //! Lifted from `flavors/code/src/store.rs`: every one of
 //! these helpers routes candidate filtering through
 //! [`proxima_core::Engine::query`], the same authorization/visibility path
-//! Owner-scoped reads use everywhere else (owner/group scoping plus
-//! `World` readable-by-everyone). Flavor crates get typed, authorized
+//! Owner-scoped reads use everywhere else (owner/group scoping). Flavor
+//! crates get typed, authorized
 //! payload projection without ever holding a raw `PgPool` or writing SQL
 //! against `proxima_core.*` themselves.
 //!

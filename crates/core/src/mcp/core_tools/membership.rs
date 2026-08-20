@@ -312,9 +312,7 @@ fn resolve_group(ctx: &McpToolCtx, raw: &str) -> Result<GroupId, McpToolError> {
     };
     match owner {
         OwnerRef::Group(group) => Ok(group),
-        OwnerRef::World | OwnerRef::Personal(_) => {
-            Err(McpToolError::InvalidInput("not a group".into()))
-        }
+        OwnerRef::Personal(_) => Err(McpToolError::InvalidInput("not a group".into())),
     }
 }
 
@@ -426,14 +424,14 @@ mod tests {
         let OwnerRef::Personal(subject) = owner else {
             panic!("ctx_with_principals requires a personal owner");
         };
-        // Server-resolved: the caller manages (admin) every group it can reach,
-        // plus its own personal owner and World (viewer). Faithful to the old
+        // Server-resolved: the caller manages (admin) every group it can
+        // reach, plus its own personal owner. Faithful to the old
         // unrestricted-over-accessible semantics for these membership tests.
         let group_roles = accessible
             .into_iter()
             .filter_map(|principal| match principal {
                 OwnerRef::Group(_) => Some((principal, Role::admin())),
-                OwnerRef::Personal(_) | OwnerRef::World => None,
+                OwnerRef::Personal(_) => None,
             });
         McpToolCtx {
             owner,
@@ -495,13 +493,13 @@ mod tests {
     }
 
     #[test]
-    fn publish_to_world_action_is_invalid_input() {
+    fn transfer_to_owner_action_is_invalid_input() {
         let err = validate_action_args(
             CoreMembershipTool::NAME,
             CoreMembershipTool::ACTION_ARG_SPECS,
-            &serde_json::json!({"action": "publish_to_world", "entity": "F:00000000-0000-0000-0000-000000000001"}),
+            &serde_json::json!({"action": "transfer_to_owner", "entity": "F:00000000-0000-0000-0000-000000000001"}),
         )
-        .expect_err("publish_to_world is no longer a membership action");
+        .expect_err("transfer_to_owner is a core_transfer action, not a membership action");
 
         assert!(matches!(err, McpToolError::InvalidInput(_)));
     }

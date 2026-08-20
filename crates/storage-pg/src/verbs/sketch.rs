@@ -156,7 +156,6 @@ fn parse_kind(kind: &str) -> Option<EntityKind> {
 
 fn owner_from(kind: &str, owner_id: Uuid) -> Option<OwnerRef> {
     match kind {
-        "world" => Some(OwnerRef::World),
         "personal" => Some(OwnerRef::Personal(proxima_core::UserId::new(owner_id))),
         "group" => Some(OwnerRef::Group(proxima_core::GroupId::new(owner_id))),
         _ => None,

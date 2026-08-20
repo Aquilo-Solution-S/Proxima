@@ -182,7 +182,7 @@ pub(crate) async fn enforce_fact_retention(
             "retention enforcement batch_size must be positive".into(),
         ));
     }
-    let configured: Vec<(OwnerRefKind, Option<Uuid>, i64)> = sqlx::query_as(
+    let configured: Vec<(OwnerRefKind, Uuid, i64)> = sqlx::query_as(
         "SELECT owner_kind, owner_id, retention_seconds
            FROM proxima_core.owner_fact_retention
           ORDER BY owner_kind, owner_id",
@@ -196,7 +196,7 @@ pub(crate) async fn enforce_fact_retention(
         ..RetentionEnforceOutcome::default()
     };
     for (owner_kind, owner_id, retention_seconds) in configured {
-        let owner = decode_owner(owner_kind, owner_id)?;
+        let owner = decode_owner(owner_kind, owner_id);
         let owner_outcome =
             enforce_owner(pool, sidecars, cold, owner, retention_seconds, options).await?;
         outcome.facts_forgotten += owner_outcome.facts_forgotten;
@@ -387,7 +387,7 @@ pub(crate) async fn prune_change_events(
             "change_event prune batch_size must be positive".into(),
         ));
     }
-    let candidates: Vec<(OwnerRefKind, Option<Uuid>)> = sqlx::query_as(
+    let candidates: Vec<(OwnerRefKind, Uuid)> = sqlx::query_as(
         "SELECT DISTINCT o.kind, a.owner_id
            FROM proxima_core.announce a
            JOIN proxima_core.owners o ON o.owner_id = a.owner_id
@@ -405,7 +405,7 @@ pub(crate) async fn prune_change_events(
         ..ChangeEventPruneOutcome::default()
     };
     for (owner_kind, owner_id) in candidates {
-        let owner = decode_owner(owner_kind, owner_id)?;
+        let owner = decode_owner(owner_kind, owner_id);
         let owner_outcome = prune_owner(pool, owner, options).await?;
         outcome.events_pruned += owner_outcome.events_pruned;
         outcome.owners_skipped_hold += u64::from(owner_outcome.skipped_legal_hold);
@@ -479,11 +479,6 @@ async fn prune_owner(
     }
 }
 
-fn decode_owner(owner_kind: OwnerRefKind, owner_id: Option<Uuid>) -> Result<Owner, StorageError> {
-    owner_kind.with_uuid(owner_id).ok_or_else(|| {
-        StorageError::Internal(format!(
-            "owner row violates owner-ref shape: kind={} id={owner_id:?}",
-            owner_kind.as_str()
-        ))
-    })
+fn decode_owner(owner_kind: OwnerRefKind, owner_id: Uuid) -> Owner {
+    owner_kind.with_uuid(owner_id)
 }

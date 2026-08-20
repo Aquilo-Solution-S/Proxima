@@ -55,7 +55,6 @@ impl MemoryAuthoringPort for PgStorage {
             let sidecars = self.sidecars.clone();
             let sidecar_payload = req.sidecar_payload.clone();
             let tables = sidecars.tables_for_payloads(std::slice::from_ref(&sidecar_payload))?;
-            crate::access::owner_columns::reject_world_write_owner(permit.owner())?;
             let owner_id =
                 crate::access::owner_columns::ensure_owner_row(tx.as_mut(), permit.owner()).await?;
             let content_id = verbs::content::ensure_content_from_payloads(
@@ -175,7 +174,6 @@ impl MemoryAuthoringPort for PgStorage {
         memory_id: MemoryId,
     ) -> Result<(), StorageError> {
         let owner = permit.owner();
-        crate::access::owner_columns::reject_world_write_owner(owner)?;
         let owner_id = owner.stored_owner_id();
         let t = memory_id.into_inner();
         let handle: uuid::Uuid = sqlx::query_scalar(

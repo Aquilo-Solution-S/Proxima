@@ -233,7 +233,6 @@ pub(crate) async fn append_derived_in_tx(
     ) -> PgSidecarFuture<'t>,
 ) -> Result<DerivedOutcome, StorageError> {
     validate_permit_owner(permit, &draft.owner)?;
-    crate::access::owner_columns::reject_world_write_owner(&draft.owner)?;
     append_derived_timeseries(
         tx,
         draft,
@@ -280,7 +279,6 @@ pub async fn append_derived_with_edges_in_tx(
     ) -> PgSidecarFuture<'t>,
 ) -> Result<DerivedOutcome, StorageError> {
     validate_permit_owner(permit, &draft.owner)?;
-    crate::access::owner_columns::reject_world_write_owner(&draft.owner)?;
     validate_derived_origins_in_tx(tx, draft, origins).await?;
     validate_derived_reference_kinds_in_tx(tx, references).await?;
     let outcome = append_derived_in_tx(
@@ -339,7 +337,6 @@ where
 {
     for entry in entries {
         validate_permit_owner(permit, &entry.draft.owner)?;
-        crate::access::owner_columns::reject_world_write_owner(&entry.draft.owner)?;
         validate_derived_origins_in_tx(tx, entry.draft, entry.origins).await?;
     }
     let mut outcomes = Vec::with_capacity(entries.len());

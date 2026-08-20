@@ -122,7 +122,7 @@ pub trait MemoryReadPort: Send + Sync {
     ) -> Result<crate::verbs::query::MemoryLineageResponse, StorageError>;
 
     /// Current owned series handle whose sidecar matches `columns`.
-    /// Owner-only (not World). Miss after transfer is expected.
+    /// Owner-only. A miss after an owner-to-owner transfer is expected.
     async fn owned_series_handle(
         &self,
         owner: Owner,

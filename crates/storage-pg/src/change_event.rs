@@ -99,7 +99,6 @@ pub(crate) async fn hydrate_change_events_batch(
 
 fn decode_announce_row(row: AnnounceRow) -> Result<ChangeEvent, StorageError> {
     let owner = match row.owner_kind.as_str() {
-        "world" => OwnerRef::World,
         "personal" => OwnerRef::Personal(UserId::new(row.owner_id)),
         "group" => OwnerRef::Group(GroupId::new(row.owner_id)),
         other => {

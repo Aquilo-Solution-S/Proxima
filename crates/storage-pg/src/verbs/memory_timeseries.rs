@@ -36,7 +36,6 @@ pub async fn ingest_fact_timeseries(
     sidecar_tables: &[String],
     content_id: Option<Uuid>,
 ) -> Result<FactIngestOutcome, StorageError> {
-    crate::access::owner_columns::reject_world_write_owner(owner)?;
     let owner_id = crate::access::owner_columns::ensure_owner_row(tx.as_mut(), owner).await?;
 
     let source_id = draft.source_id.clone();

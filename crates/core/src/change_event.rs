@@ -104,9 +104,10 @@ pub enum ChangeEventKind {
         schema_id: SchemaId,
         schema_version: SchemaVersion,
     },
-    /// Publish-to-World owner transfer of a memory series. Written in pairs
-    /// under both lanes — the prior owner's (the series left their owned
-    /// view) and World's (it arrived) — in the transferring transaction.
+    /// Owner-to-owner transfer of a memory series. Written in pairs under
+    /// both lanes — the prior owner's (the series left their owned view) and
+    /// the destination owner's (it arrived) — in the transferring
+    /// transaction.
     EntityTransfer {
         entity_kind: EntityKind,
         entity: EntityRef,

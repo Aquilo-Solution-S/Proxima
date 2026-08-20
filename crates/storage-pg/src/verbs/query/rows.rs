@@ -64,7 +64,6 @@ fn owner_from_parts(
     owner_id: Option<uuid::Uuid>,
 ) -> Result<Owner, StorageError> {
     match kind {
-        OwnerRefKind::World => Ok(proxima_core::OwnerRef::World),
         OwnerRefKind::Personal => owner_id
             .map(|id| proxima_core::OwnerRef::Personal(proxima_core::UserId::new(id)))
             .ok_or_else(|| StorageError::Internal("personal owner_id missing".into())),

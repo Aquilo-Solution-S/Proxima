@@ -52,7 +52,6 @@ impl WriteSession for PgWriteSession {
         let payloads = sidecar_payloads.to_vec();
         let tables = self.sidecars.tables_for_payloads(sidecar_payloads)?;
         let owner = authorized.owner_write_permit().owner();
-        crate::access::owner_columns::reject_world_write_owner(owner)?;
         let owner_id =
             crate::access::owner_columns::ensure_owner_row(self.tx.as_mut(), owner).await?;
         let content_id = verbs::content::ensure_content_from_payloads(
@@ -124,7 +123,6 @@ impl WriteSession for PgWriteSession {
         let tables = self
             .sidecars
             .tables_for_payloads(std::slice::from_ref(&sidecar_payload))?;
-        crate::access::owner_columns::reject_world_write_owner(permit.owner())?;
         let owner_id =
             crate::access::owner_columns::ensure_owner_row(self.tx.as_mut(), permit.owner())
                 .await?;
@@ -202,7 +200,6 @@ impl WriteSession for PgWriteSession {
         memory_id: MemoryId,
     ) -> Result<(), StorageError> {
         let owner = permit.owner();
-        crate::access::owner_columns::reject_world_write_owner(owner)?;
         let owner_id = owner.stored_owner_id();
         let t = memory_id.into_inner();
         let handle: uuid::Uuid = sqlx::query_scalar(

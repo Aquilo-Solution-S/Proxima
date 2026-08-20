@@ -7,7 +7,7 @@
 use std::time::Duration;
 
 use aws_sdk_s3::presigning::PresigningConfig;
-use proxima_core::{AccessKind, AuthzContext, Owner, OwnerRef};
+use proxima_core::{AccessKind, AuthzContext, Owner};
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 use uuid::Uuid;
@@ -64,12 +64,11 @@ pub(super) fn ensure_owner_access(ctx: &AuthzContext, owner: &Owner) -> Result<(
 /// not mere read access. A cited blob is a Fact-attached payload, so the caller
 /// must hold Fact-write (Ingest/Editor/Admin) on `owner`: a read-only group
 /// Viewer, though it can *read* the group, must not be able to mint pending rows
-/// or canonical cited-blob rows in the group's namespace. Also rejects World, which never owns cited blobs.
+/// or canonical cited-blob rows in the group's namespace.
 pub(super) fn ensure_owner_write_access(
     ctx: &AuthzContext,
     owner: &Owner,
 ) -> Result<(), BlobError> {
-    ensure_write_owner(owner)?;
     if ctx.may_write(owner, AccessKind::Fact) {
         Ok(())
     } else {
@@ -83,15 +82,6 @@ pub(super) fn parse_uuid(value: &str) -> Result<Uuid, BlobError> {
     Uuid::parse_str(value).map_err(|_| BlobError::State(format!("invalid uuid: {value}")))
 }
 
-pub(super) fn ensure_write_owner(owner: &Owner) -> Result<(), BlobError> {
-    if matches!(owner, OwnerRef::World) {
-        return Err(BlobError::State(
-            "World is read-only and cannot own cited blobs".into(),
-        ));
-    }
-    Ok(())
-}
-
 pub(super) fn format_time(value: OffsetDateTime) -> Result<String, BlobError> {
     value
         .format(&Rfc3339)
@@ -100,16 +90,10 @@ pub(super) fn format_time(value: OffsetDateTime) -> Result<String, BlobError> {
 
 #[cfg(test)]
 mod tests {
-    use proxima_core::UserId;
+    use proxima_core::{OwnerRef, UserId};
 
     use super::super::testkit::prepare_req;
     use super::*;
-
-    #[test]
-    fn world_cannot_prepare_cited_blob_write() {
-        let err = ensure_write_owner(&OwnerRef::World).expect_err("world write rejected");
-        assert!(err.to_string().contains("World is read-only"));
-    }
 
     #[test]
     fn validate_prepare_rejects_byte_len_over_cap() {
