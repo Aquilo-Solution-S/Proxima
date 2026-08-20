@@ -9,50 +9,13 @@ use sqlx::{PgPool, Postgres, Transaction};
 use crate::error::{internal, map_err, with_bounded_retry};
 
 #[must_use]
-pub fn owner_binds(owner: &OwnerRef) -> (OwnerRefKind, Option<uuid::Uuid>) {
-    match *owner {
-        OwnerRef::World => (OwnerRefKind::World, None),
-        OwnerRef::Personal(user) => (OwnerRefKind::Personal, Some(user.into_inner())),
-        OwnerRef::Group(group) => (OwnerRefKind::Group, Some(group.into_inner())),
-    }
+pub fn owner_binds(owner: &OwnerRef) -> (OwnerRefKind, uuid::Uuid) {
+    owner.columns()
 }
 
 #[must_use]
-pub fn owner_arrays(owners: &[OwnerRef]) -> (Vec<OwnerRefKind>, Vec<Option<uuid::Uuid>>) {
+pub fn owner_arrays(owners: &[OwnerRef]) -> (Vec<OwnerRefKind>, Vec<uuid::Uuid>) {
     owners.iter().map(owner_binds).unzip()
-}
-
-/// Fail closed when a NEW `memories`/`goals` entity row would be created
-/// under [`OwnerRef::World`].
-///
-/// Kernel law: World is universally readable and never a write owner.
-/// `memory` carries no World-owner CHECK because the publish-to-World owner
-/// TRANSFER (`transfer_to_world`, an UPDATE) must persist World ownership —
-/// so raw storage-verb callers (e.g. `flavors/code`, which invokes these
-/// verbs directly and bypasses `Engine::authorize_write`'s World
-/// short-circuit) have no DB-level backstop there. This helper is that
-/// backstop one layer up: every row-creating verb choke point calls it
-/// before its INSERT. Goals are never publishable at all, so `goal` /
-/// `goal_head` additionally carry `*_not_world_owner_chk` in the DDL.
-///
-/// Deliberately NOT wired into [`owner_binds`]: rows that legitimately
-/// reference a World-owned entity post-publish, and the memory transfer
-/// UPDATE itself, must keep encoding World.
-///
-/// # Errors
-///
-/// Returns [`StorageError::ConstraintViolation`] — the same error class
-/// a DDL CHECK produces — when `owner` is [`OwnerRef::World`].
-pub(crate) fn reject_world_write_owner(owner: &OwnerRef) -> Result<(), StorageError> {
-    if matches!(owner, OwnerRef::World) {
-        return Err(StorageError::ConstraintViolation(
-            "World is read-only and never a write owner; new entity rows cannot be created \
-             under OwnerRef::World (the publish-to-World owner transfer is the only path \
-             that sets it)"
-                .into(),
-        ));
-    }
-    Ok(())
 }
 
 /// Insert `proxima_core.owners` or confirm the stored kind matches `owner`.
@@ -396,65 +359,73 @@ pub(crate) async fn visible_home_owner(
     .await
     .map_err(map_err)?;
 
-    Ok(row.map(|(kind, id)| match kind {
-        OwnerRefKind::World => proxima_core::OwnerRef::World,
-        OwnerRefKind::Personal => proxima_core::OwnerRef::Personal(proxima_core::UserId::new(id)),
-        OwnerRefKind::Group => proxima_core::OwnerRef::Group(proxima_core::GroupId::new(id)),
-    }))
+    Ok(row.map(|(kind, id)| kind.with_uuid(id)))
 }
 
-/// Transfer one memory **series** to [`OwnerRef::World`].
+/// Transfer one memory **series** to `to_owner`.
 ///
-/// Same `(handle, t)`: publish is an owner UPDATE, not a copy. Head and
+/// Same `(handle, t)`: a transfer is an owner UPDATE, not a copy. Head and
 /// every version on the handle move together (`MemoryHeadAligned`), including
 /// cooled stubs (owner + reminted `object_key`).
 /// Returns `true` iff a row under `from_owner` matched and was updated.
 ///
-/// Sidecar rows stay keyed by `t`. Cited `blob` rows move when no other
-/// live non-World series still cites them. Embeddings / jobs follow the
-/// transferred `t`s so ANN (`emb.owner_id`) stays Tesla-valve. `ingest_keys`
-/// for those `t`s are deleted so the prior owner can mint a new series.
-/// The same transaction announces the transfer under both lanes: the prior
-/// owner's (the series left their owned view) and World's (it arrived).
+/// Most sidecar rows stay keyed by `t` and so follow the memory to
+/// `to_owner`. `mcp_call_logged_v1` is the exception: it describes the
+/// ACTOR of a tool call (`actor_upn`), not the memory, so it is
+/// retain-at-source. A sidecar has no owner column — reachability is the
+/// `memory` row's `owner_id` (see `read_mcp_call_history`'s join) — so the
+/// only retain that actually holds is to DELETE the series' call-log rows
+/// in this transaction: the destination receives the memory without the
+/// call log, and the prior owner keeps nothing it could still reach either.
 ///
-/// Goals are never publishable — the engine refuses them before storage;
-/// this backstop keeps a direct storage call from transferring one.
+/// Cited `blob` rows move when no other live series under a different owner
+/// still cites them. Embeddings / jobs follow the transferred `t`s so ANN
+/// (`emb.owner_id`) stays Tesla-valve. `ingest_keys` for those `t`s are
+/// deleted so the prior owner can mint a new series. The same transaction
+/// announces the transfer under both lanes: the prior owner's (the series
+/// left their owned view) and the destination's (it arrived).
+///
+/// Goals do not transfer — the engine refuses them before storage; this
+/// backstop keeps a direct storage call from transferring one.
 ///
 /// # Errors
 ///
 /// `Conflict` when a cited blob is still referenced by another live
 /// series. `ConstraintViolation` for a Goal entity, and for unique /
 /// check violations.
-pub(crate) async fn transfer_to_world(
+pub(crate) async fn transfer_to_owner(
     pool: &PgPool,
     cold: &dyn ColdObjectStore,
     entity: EntityId,
     from_owner: OwnerRef,
+    to_owner: OwnerRef,
 ) -> Result<bool, StorageError> {
     let memory_id = match entity {
         EntityId::Memory(memory_id) => memory_id,
         EntityId::Goal(_) => {
             return Err(StorageError::ConstraintViolation(
-                "goals are never publishable: World owns no goals, so a goal series cannot \
-                 be transferred to OwnerRef::World"
-                    .into(),
+                "goals do not transfer: a goal series cannot change owner".into(),
             ));
         }
     };
+    if from_owner == to_owner {
+        return Err(StorageError::ConstraintViolation(
+            "transfer destination is the current owner".into(),
+        ));
+    }
     let from_id = from_owner.stored_owner_id();
-    let world = OwnerRef::World.stored_owner_id();
     with_bounded_retry(move || async move {
         let mut tx = pool.begin().await.map_err(internal)?;
         let (transferred, stale_cold_keys) =
-            transfer_memory_t(&mut tx, cold, memory_id.into_inner(), from_id, world).await?;
+            transfer_memory_t(&mut tx, cold, memory_id.into_inner(), from_id, to_owner).await?;
         if !transferred {
             // A false persist can follow real writes: when the head is gone
             // or changed owner after the series reads, cooled/blob/content
-            // rows are already re-homed to World in this transaction with no
-            // announce row. Roll back so they revert to the prior owner and
-            // object keys (whose cold objects still exist); the minted World
-            // objects were already compensation-deleted in
-            // `transfer_memory_handle`.
+            // rows are already re-homed to the destination in this
+            // transaction with no announce row. Roll back so they revert to
+            // the prior owner and object keys (whose cold objects still
+            // exist); the minted destination objects were already
+            // compensation-deleted in `transfer_memory_handle`.
             tx.rollback().await.map_err(map_err)?;
             return Ok(false);
         }
@@ -466,7 +437,7 @@ pub(crate) async fn transfer_to_world(
                     tracing::warn!(
                         error = %err,
                         key,
-                        "published series left a personal cold object after remint"
+                        "transferred series left a prior-owner cold object after remint"
                     );
                 }
             }
@@ -481,7 +452,7 @@ async fn transfer_memory_t(
     cold: &dyn ColdObjectStore,
     t: uuid::Uuid,
     from_id: uuid::Uuid,
-    world: uuid::Uuid,
+    to_owner: OwnerRef,
 ) -> Result<(bool, Vec<String>), StorageError> {
     let handle: Option<uuid::Uuid> = sqlx::query_scalar(
         "SELECT handle FROM proxima_core.memory
@@ -495,7 +466,7 @@ async fn transfer_memory_t(
     let Some(handle) = handle else {
         return Ok((false, Vec::new()));
     };
-    transfer_memory_handle(tx, cold, handle, from_id, world).await
+    transfer_memory_handle(tx, cold, handle, from_id, to_owner).await
 }
 
 const SERIES_TS_SQL: &str = "SELECT t FROM proxima_core.memory WHERE handle = $1 AND owner_id = $2
@@ -563,8 +534,14 @@ async fn transfer_memory_handle(
     cold: &dyn ColdObjectStore,
     handle: uuid::Uuid,
     from_id: uuid::Uuid,
-    world: uuid::Uuid,
+    to_owner: OwnerRef,
 ) -> Result<(bool, Vec<String>), StorageError> {
+    // The destination's `owners` row is no longer migration-seeded, so mint
+    // it (or confirm its kind) BEFORE any statement below binds `to_id` into
+    // an `owner_id` FK — `blob`, `content`, `cooled`, `memory_head`,
+    // `memory`, `sketch`, embeddings and the announce lanes all reference
+    // `proxima_core.owners`.
+    let to_id = ensure_owner_row(tx.as_mut(), &to_owner).await?;
     let ts: Vec<uuid::Uuid> = sqlx::query_scalar(SERIES_TS_SQL)
         .bind(handle)
         .bind(from_id)
@@ -595,14 +572,14 @@ async fn transfer_memory_handle(
             "series head advanced after transfer locked its version set".into(),
         ));
     }
-    transfer_exclusive_blobs(tx, handle, from_id, world).await?;
-    transfer_content_for_handle(tx, handle, from_id, world).await?;
-    let reminted = remint_cooled_for_handle(tx, cold, handle, from_id, world).await?;
+    transfer_exclusive_blobs(tx, handle, from_id, to_id).await?;
+    transfer_content_for_handle(tx, handle, from_id, to_id).await?;
+    let reminted = remint_cooled_for_handle(tx, cold, handle, from_id, to_owner).await?;
     let persist =
-        persist_hot_series_transfer(tx, handle, from_id, world, expected_head_t, &ts).await;
+        persist_hot_series_transfer(tx, handle, from_id, to_id, expected_head_t, &ts).await;
     match persist {
         Ok(true) => {
-            announce_series_transfer(tx, handle, from_id, world).await?;
+            announce_series_transfer(tx, handle, from_id, to_id).await?;
             Ok((true, reminted.old_keys))
         }
         Ok(false) => {
@@ -630,8 +607,9 @@ async fn remint_cooled_for_handle(
     cold: &dyn ColdObjectStore,
     handle: uuid::Uuid,
     from_id: uuid::Uuid,
-    world: uuid::Uuid,
+    to_owner: OwnerRef,
 ) -> Result<RemintedCold, StorageError> {
+    let to_id = to_owner.stored_owner_id();
     let rows: Vec<(uuid::Uuid, String)> = sqlx::query_as(
         "SELECT t, object_key FROM proxima_core.cooled
           WHERE handle = $1 AND owner_id = $2",
@@ -641,13 +619,13 @@ async fn remint_cooled_for_handle(
     .fetch_all(&mut **tx)
     .await
     .map_err(map_err)?;
-    let world_hash = owner_hash_hex(&OwnerRef::World);
+    let to_hash = owner_hash_hex(&to_owner);
     let mut reminted = RemintedCold {
         old_keys: Vec::new(),
         new_keys: Vec::new(),
     };
     for (t, old_key) in rows {
-        let new_key = cold_object_key(&world_hash, handle, t);
+        let new_key = cold_object_key(&to_hash, handle, t);
         if new_key != old_key {
             let bytes = match cold.get(&old_key).await {
                 Ok(bytes) => bytes,
@@ -658,7 +636,7 @@ async fn remint_cooled_for_handle(
                     return Err(err);
                 }
             };
-            let bytes = match crate::verbs::forget::rehome_cold_record(&bytes, world) {
+            let bytes = match crate::verbs::forget::rehome_cold_record(&bytes, to_id) {
                 Ok(bytes) => bytes,
                 Err(err) => {
                     for key in &reminted.new_keys {
@@ -683,7 +661,7 @@ async fn remint_cooled_for_handle(
         )
         .bind(t)
         .bind(from_id)
-        .bind(world)
+        .bind(to_id)
         .bind(&new_key)
         .execute(&mut **tx)
         .await
@@ -696,7 +674,7 @@ async fn persist_hot_series_transfer(
     tx: &mut Transaction<'_, Postgres>,
     handle: uuid::Uuid,
     from_id: uuid::Uuid,
-    world: uuid::Uuid,
+    to_id: uuid::Uuid,
     expected_head_t: uuid::Uuid,
     ts: &[uuid::Uuid],
 ) -> Result<bool, StorageError> {
@@ -707,7 +685,7 @@ async fn persist_hot_series_transfer(
     )
     .bind(handle)
     .bind(from_id)
-    .bind(world)
+    .bind(to_id)
     .bind(expected_head_t)
     .execute(&mut **tx)
     .await
@@ -738,17 +716,28 @@ async fn persist_hot_series_transfer(
     )
     .bind(handle)
     .bind(from_id)
-    .bind(world)
+    .bind(to_id)
     .execute(&mut **tx)
     .await
     .map_err(map_err)?;
     sqlx::query("UPDATE proxima_core.sketch SET owner_id = $2 WHERE t = ANY($1::uuid[])")
         .bind(ts)
-        .bind(world)
+        .bind(to_id)
         .execute(&mut **tx)
         .await
         .map_err(map_err)?;
-    follow_embedding_owners(tx, ts, world).await?;
+    follow_embedding_owners(tx, ts, to_id).await?;
+    // Retain-at-source for the audit sidecar. `mcp_call_logged_v1` carries
+    // `actor_upn` — it describes who made a tool call, not the memory — and
+    // it has no owner column of its own: `read_mcp_call_history` reaches it
+    // by joining `memory.owner_id`. Left in place the rows would follow the
+    // memory and hand the destination the prior owner's actor identities, so
+    // the transfer drops them. The memory itself is unaffected.
+    sqlx::query("DELETE FROM proxima_core.mcp_call_logged_v1 WHERE t = ANY($1::uuid[])")
+        .bind(ts)
+        .execute(&mut **tx)
+        .await
+        .map_err(map_err)?;
     sqlx::query("DELETE FROM proxima_core.ingest_keys WHERE t = ANY($1::uuid[])")
         .bind(ts)
         .execute(&mut **tx)
@@ -759,20 +748,22 @@ async fn persist_hot_series_transfer(
 
 /// One `'transfer'` announce row per lane, same series `(handle, head t)`:
 /// the prior owner's projectors learn the series left their owned view, and
-/// World-side pull consumers learn it arrived. World's `owners` row is
-/// migration-seeded and never erased, so the `announce.owner_id` FK holds.
+/// the destination's pull consumers learn it arrived. Both `announce.owner_id`
+/// FKs hold because `transfer_memory_handle` called `ensure_owner_row` for
+/// the destination at the top of this same transaction (the prior owner's row
+/// already exists — it owns the series being read).
 async fn announce_series_transfer(
     tx: &mut Transaction<'_, Postgres>,
     handle: uuid::Uuid,
     from_id: uuid::Uuid,
-    world: uuid::Uuid,
+    to_id: uuid::Uuid,
 ) -> Result<(), StorageError> {
     let head_t: uuid::Uuid = sqlx::query_scalar(
         "SELECT t FROM proxima_core.memory_head
           WHERE handle = $1 AND owner_id = $2",
     )
     .bind(handle)
-    .bind(world)
+    .bind(to_id)
     .fetch_one(&mut **tx)
     .await
     .map_err(map_err)?;
@@ -782,7 +773,7 @@ async fn announce_series_transfer(
                 ($2, 'transfer', 'memory', $3, $4)",
     )
     .bind(from_id)
-    .bind(world)
+    .bind(to_id)
     .bind(handle)
     .bind(head_t)
     .execute(&mut **tx)
@@ -795,7 +786,7 @@ async fn transfer_exclusive_blobs(
     tx: &mut Transaction<'_, Postgres>,
     handle: uuid::Uuid,
     from_id: uuid::Uuid,
-    world: uuid::Uuid,
+    to_id: uuid::Uuid,
 ) -> Result<(), StorageError> {
     let blob_ids: Vec<uuid::Uuid> = sqlx::query_scalar(
         "SELECT blob_id
@@ -829,18 +820,19 @@ async fn transfer_exclusive_blobs(
         )
         .bind(blob_id)
         .bind(handle)
-        .bind(world)
+        .bind(to_id)
         .fetch_one(&mut **tx)
         .await
         .map_err(map_err)?;
         if shared {
             return Err(StorageError::Conflict(
-                "cited blob is still referenced by another live non-World series".into(),
+                "cited blob is still referenced by another live series under a different owner"
+                    .into(),
             ));
         }
         sqlx::query("UPDATE proxima_core.blob SET owner_id = $2 WHERE blob_id = $1")
             .bind(blob_id)
-            .bind(world)
+            .bind(to_id)
             .execute(&mut **tx)
             .await
             .map_err(map_err)?;
@@ -848,13 +840,14 @@ async fn transfer_exclusive_blobs(
     Ok(())
 }
 
-/// Re-home Content under World so `Memory.owner = Content.owner` after publish.
-/// Shared payloads stay on the origin owner; only this series is remapped.
+/// Re-home Content under the destination so `Memory.owner = Content.owner`
+/// after the transfer. Shared payloads stay on the origin owner; only this
+/// series is remapped.
 async fn transfer_content_for_handle(
     tx: &mut Transaction<'_, Postgres>,
     handle: uuid::Uuid,
     from_id: uuid::Uuid,
-    world: uuid::Uuid,
+    to_id: uuid::Uuid,
 ) -> Result<(), StorageError> {
     let rows: Vec<(uuid::Uuid, String, Vec<u8>)> = sqlx::query_as(
         "SELECT DISTINCT c.content_id, c.schema_id, c.content_hash
@@ -878,11 +871,11 @@ async fn transfer_content_for_handle(
         let hash: [u8; 32] = hash
             .try_into()
             .map_err(|_| StorageError::Internal("content hash is not 32 bytes".into()))?;
-        let new_id = crate::verbs::content::ensure_content(tx, world, &schema_id, &hash).await?;
+        let new_id = crate::verbs::content::ensure_content(tx, to_id, &schema_id, &hash).await?;
         if new_id == old_id {
             sqlx::query("UPDATE proxima_core.content SET owner_id = $2 WHERE content_id = $1")
                 .bind(old_id)
-                .bind(world)
+                .bind(to_id)
                 .execute(&mut **tx)
                 .await
                 .map_err(map_err)?;
@@ -920,13 +913,13 @@ async fn transfer_content_for_handle(
 async fn follow_embedding_owners(
     tx: &mut Transaction<'_, Postgres>,
     ts: &[uuid::Uuid],
-    world: uuid::Uuid,
+    to_id: uuid::Uuid,
 ) -> Result<(), StorageError> {
     sqlx::query(
         "UPDATE proxima_core.embeddings SET owner_id = $2 WHERE entity_id = ANY($1::uuid[])",
     )
     .bind(ts)
-    .bind(world)
+    .bind(to_id)
     .execute(&mut **tx)
     .await
     .map_err(map_err)?;
@@ -934,7 +927,7 @@ async fn follow_embedding_owners(
         "UPDATE proxima_core.embedding_heads SET owner_id = $2 WHERE entity_id = ANY($1::uuid[])",
     )
     .bind(ts)
-    .bind(world)
+    .bind(to_id)
     .execute(&mut **tx)
     .await
     .map_err(map_err)?;
@@ -942,7 +935,7 @@ async fn follow_embedding_owners(
         "UPDATE proxima_core.embedding_jobs SET owner_id = $2 WHERE entity_id = ANY($1::uuid[])",
     )
     .bind(ts)
-    .bind(world)
+    .bind(to_id)
     .execute(&mut **tx)
     .await
     .map_err(map_err)?;
@@ -973,9 +966,5 @@ pub(crate) async fn home_owner(
     .await
     .map_err(map_err)?;
 
-    Ok(row.map(|(kind, id)| match kind {
-        OwnerRefKind::World => proxima_core::OwnerRef::World,
-        OwnerRefKind::Personal => proxima_core::OwnerRef::Personal(proxima_core::UserId::new(id)),
-        OwnerRefKind::Group => proxima_core::OwnerRef::Group(proxima_core::GroupId::new(id)),
-    }))
+    Ok(row.map(|(kind, id)| kind.with_uuid(id)))
 }

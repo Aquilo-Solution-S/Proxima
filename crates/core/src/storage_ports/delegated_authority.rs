@@ -962,14 +962,15 @@ mod tests {
             .close_ftoa_source_batch_if_open(&raw, owner, &[])
             .expect_err("raw delegated context must be denied before batch lookup");
         assert_eq!(close_err.code, ErrorCode::Forbidden);
-        let publish_err = engine
-            .publish_to_world(
+        let transfer_err = engine
+            .transfer_to_owner(
                 &raw,
                 crate::access::EntityId::Memory(crate::MemoryId::new(Uuid::now_v7())),
+                crate::OwnerRef::Group(crate::GroupId::new(Uuid::now_v7())),
             )
             .await
             .expect_err("raw delegated context must be denied before owner lookup");
-        assert_eq!(publish_err.code, ErrorCode::Forbidden);
+        assert_eq!(transfer_err.code, ErrorCode::Forbidden);
         let wake_err = engine
             .read_goal_wake_configs(&raw, &[])
             .await

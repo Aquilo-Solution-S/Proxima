@@ -293,7 +293,7 @@ fn default_registry_includes_all_substrate_mcp_tools() {
         protocol_tool::CORE_GOAL,
         protocol_tool::CORE_FACT,
         protocol_tool::CORE_MEMBERSHIP,
-        protocol_tool::CORE_PUBLISH,
+        protocol_tool::CORE_TRANSFER,
         protocol_tool::CORE_UPLOAD,
     ];
     for name in expected {

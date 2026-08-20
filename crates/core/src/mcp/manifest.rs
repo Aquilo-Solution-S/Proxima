@@ -162,7 +162,7 @@ pub fn all_core_actions() -> impl Iterator<Item = &'static CoreActionMeta> {
         .iter()
         .chain(core_tools::fact::CORE_FACT_ACTIONS.iter())
         .chain(core_tools::membership::CORE_MEMBERSHIP_ACTIONS.iter())
-        .chain(core_tools::publish::CORE_PUBLISH_ACTIONS.iter())
+        .chain(core_tools::transfer::CORE_TRANSFER_ACTIONS.iter())
         .chain(core_tools::upload::CORE_UPLOAD_ACTIONS.iter())
 }
 

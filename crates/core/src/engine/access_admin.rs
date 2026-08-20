@@ -193,42 +193,56 @@ impl Engine {
         Ok(GroupMemberPage { members, has_more })
     }
 
-    /// Transfer one memory's owner to `OwnerRef::World` — the
-    /// kernel-law publish verb. This is an owner TRANSFER, not an ACL
-    /// flag or a share row: World is universally readable and, per
-    /// `authorize_write`'s `resolved == world()` short-circuit, never a
-    /// write owner again afterward.
+    /// Transfer one memory's owner to `to_owner`. This is an owner
+    /// TRANSFER, not an ACL flag or a share row: the series moves in place
+    /// (`MemoryHeadAligned`) and leaves the prior owner's view entirely.
     ///
-    /// Goals are never publishable — World owns no goals — so a Goal
-    /// entity is refused here, before any owner lookup or storage call.
+    /// Goals do not transfer, so a Goal entity is refused here, before any
+    /// owner lookup or storage call. The `goal_head_t_only` trigger is the
+    /// DDL backstop for the same rule.
     ///
-    /// Requires write/manage authority (`Relation::Admin`) on the entity's
-    /// CURRENT owner — for a personal owner that is the subject's own
-    /// `Role::personal()`; for a group owner it is a member holding
-    /// `Role::admin()` (`manage = true`). Re-publishing an already-World
-    /// entity fails closed: the current-owner lookup resolves to World,
-    /// and `authorize_write` denies World as a write owner before any
-    /// storage call.
+    /// Authorization is **admin on both sides**:
+    /// * `Relation::Admin` on the entity's CURRENT owner — for a personal
+    ///   owner that is the subject's own `Role::personal()`; for a group
+    ///   owner it is a member holding `Role::admin()` (`manage = true`),
+    ///   re-checked through `require_group_manage`.
+    /// * `Relation::Admin` plus group-manage on `to_owner`. The
+    ///   destination must therefore be a **Group**: `may_manage` is false
+    ///   for every personal owner by construction, so there is no
+    ///   personal-owner spelling of receiving-side consent. A personal
+    ///   destination is refused with `InvalidArgument`.
+    ///
+    /// The destination's `owners` row is minted inside the storage
+    /// transaction (`ensure_owner_row`), so the paired announce rows'
+    /// `owner_id` FKs hold without any migration-seeded owner.
     ///
     /// # Errors
     ///
-    /// Returns `InvalidArgument` for a Goal entity. Returns `NotFound`
-    /// when the entity has no home owner (absent or tombstoned). Returns
-    /// `Forbidden` when the caller lacks admin/manage authority on the
-    /// current owner, or when the current owner is already World. Returns
-    /// `Internal` for storage failures, and `NotFound` if the storage
-    /// transfer finds no matching row (owner changed concurrently between
-    /// the lookup and the write).
-    pub async fn publish_to_world(
+    /// Returns `InvalidArgument` for a Goal entity, for a non-Group
+    /// destination, and when `to_owner` is already the current owner.
+    /// Returns `NotFound` when the entity has no home owner (absent or
+    /// tombstoned). Returns `Forbidden` when the caller lacks admin/manage
+    /// authority on either side. Returns `Internal` for storage failures,
+    /// and `NotFound` if the storage transfer finds no matching row (owner
+    /// changed concurrently between the lookup and the write).
+    pub async fn transfer_to_owner(
         &self,
         authz: &AuthzContext,
         entity: EntityId,
+        to_owner: OwnerRef,
     ) -> Result<(), ProtocolError> {
         self.operation_authority(authz)?;
         if matches!(entity, EntityId::Goal(_)) {
             return Err(ProtocolError::invalid_argument(
                 "entity",
-                "goals are never publishable: World owns no goals",
+                "goals do not transfer",
+            ));
+        }
+        if !matches!(to_owner, OwnerRef::Group(_)) {
+            return Err(ProtocolError::invalid_argument(
+                "to_owner",
+                "transfer destination must be a group owner: receiving-side consent is \
+                 group-manage authority, which no personal owner can grant",
             ));
         }
         let current_owner = self
@@ -239,6 +253,12 @@ impl Engine {
             .await
             .map_err(|err| storage_error("home_owner", &err))?
             .ok_or_else(|| ProtocolError::not_found("entity not found"))?;
+        if current_owner == to_owner {
+            return Err(ProtocolError::invalid_argument(
+                "to_owner",
+                "transfer destination is already the current owner",
+            ));
+        }
 
         let permit = self
             .authorize_write(authz, &current_owner, Relation::Admin)
@@ -246,6 +266,11 @@ impl Engine {
         if matches!(current_owner, OwnerRef::Group(_)) {
             require_group_manage(authz, &current_owner)?;
         }
+        // Receiving side: the destination consents by the caller holding
+        // admin/manage on it. World needed no consent; an owner does.
+        self.authorize_write(authz, &to_owner, Relation::Admin)
+            .await?;
+        require_group_manage(authz, &to_owner)?;
 
         self.veto_and_observe_access_admin(
             authz,
@@ -254,7 +279,7 @@ impl Engine {
             Relation::Admin,
             AuthzOperation::EntityShare {
                 entity,
-                owner: OwnerRef::World,
+                owner: to_owner,
             },
         )?;
 
@@ -262,13 +287,13 @@ impl Engine {
             .storage()
             .access_admin
             .owner_transfer
-            .transfer_to_world(permit.owner_write_permit(), entity)
+            .transfer_to_owner(permit.owner_write_permit(), entity, to_owner)
             .await
-            .map_err(|err| storage_error("transfer_to_world", &err))?;
+            .map_err(|err| storage_error("transfer_to_owner", &err))?;
 
         if !transferred {
             return Err(ProtocolError::not_found(
-                "entity already published or owner changed concurrently",
+                "entity owner changed concurrently",
             ));
         }
         Ok(())
@@ -458,28 +483,48 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn access_admin_publish_refuses_goal_entities_before_owner_lookup() {
+    async fn access_admin_transfer_refuses_goal_entities_before_owner_lookup() {
         let engine = crate::Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests());
         let caller = UserId::new(Uuid::now_v7());
         let authz = AuthzContext::for_subject(caller, AuthPath::HostBearer);
         let goal = crate::EntityId::Goal(crate::GoalId::new(Uuid::now_v7()));
+        let destination = OwnerRef::Group(GroupId::new(Uuid::now_v7()));
 
         // The default engine has no storage: reaching the owner lookup would
         // surface Internal, so InvalidArgument proves the gate fired first.
         let err = engine
-            .publish_to_world(&authz, goal)
+            .transfer_to_owner(&authz, goal, destination)
             .await
-            .expect_err("goals are never publishable");
+            .expect_err("goals do not transfer");
         assert_eq!(err.code, ErrorCode::InvalidArgument);
         assert!(
-            err.message.contains("never publishable"),
+            err.message.contains("goals do not transfer"),
             "refusal must state the ruling: {}",
             err.message
         );
     }
 
     #[tokio::test]
-    async fn access_admin_membership_and_publish_require_manage_not_just_write() {
+    async fn access_admin_transfer_refuses_a_personal_destination() {
+        let engine = crate::Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests());
+        let caller = UserId::new(Uuid::now_v7());
+        let authz = AuthzContext::for_subject(caller, AuthPath::HostBearer);
+        let entity = crate::EntityId::Memory(crate::MemoryId::new(Uuid::now_v7()));
+
+        let err = engine
+            .transfer_to_owner(&authz, entity, OwnerRef::Personal(caller))
+            .await
+            .expect_err("a personal owner cannot grant receiving-side consent");
+        assert_eq!(err.code, ErrorCode::InvalidArgument);
+        assert!(
+            err.message.contains("must be a group owner"),
+            "refusal must name the destination rule: {}",
+            err.message
+        );
+    }
+
+    #[tokio::test]
+    async fn access_admin_membership_and_transfer_require_manage_not_just_write() {
         use crate::access::AccessCeiling;
 
         let group = GroupId::new(Uuid::now_v7());
@@ -496,9 +541,14 @@ mod tests {
             [(group_owner, write_only)],
             AuthPath::HostBearer,
         );
+        let destination = GroupId::new(Uuid::now_v7());
+        let destination_owner = OwnerRef::Group(destination);
         let admin_authz = AuthzContext::for_subject_with_role(
             caller,
-            [(group_owner, Role::admin())],
+            [
+                (group_owner, Role::admin()),
+                (destination_owner, Role::admin()),
+            ],
             AuthPath::HostBearer,
         );
 
@@ -520,11 +570,26 @@ mod tests {
             .expect_err("write-without-manage must not remove members");
         assert_eq!(denied.code, ErrorCode::Forbidden);
 
-        // publish of a group-owned entity: same manage gate.
+        // transfer OUT of a group-owned entity: same manage gate on the
+        // source side.
         let denied = engine
-            .publish_to_world(&write_only_authz, entity)
+            .transfer_to_owner(&write_only_authz, entity, destination_owner)
             .await
-            .expect_err("write-without-manage must not publish a group entity");
+            .expect_err("write-without-manage must not transfer a group entity");
+        assert_eq!(denied.code, ErrorCode::Forbidden);
+
+        // Admin on the source but nothing at all on the destination: the
+        // receiving side refuses. This is the admin-on-BOTH-sides half that
+        // World never needed.
+        let source_only_authz = AuthzContext::for_subject_with_role(
+            caller,
+            [(group_owner, Role::admin())],
+            AuthPath::HostBearer,
+        );
+        let denied = engine
+            .transfer_to_owner(&source_only_authz, entity, destination_owner)
+            .await
+            .expect_err("no authority on the destination must refuse the transfer");
         assert_eq!(denied.code, ErrorCode::Forbidden);
 
         // manage == true (Role::admin) passes the manage gate and reaches storage,
@@ -536,7 +601,7 @@ mod tests {
         assert_eq!(past_gate.code, ErrorCode::Internal);
 
         let past_gate = engine
-            .publish_to_world(&admin_authz, entity)
+            .transfer_to_owner(&admin_authz, entity, destination_owner)
             .await
             .expect_err("stub storage rejects the transfer after the gate opens");
         assert_eq!(past_gate.code, ErrorCode::Internal);

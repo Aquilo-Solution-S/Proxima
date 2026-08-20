@@ -649,10 +649,11 @@ impl OwnerMembershipAdminPort for RejectingStorage {
 
 #[async_trait::async_trait]
 impl OwnerTransferPort for RejectingStorage {
-    async fn transfer_to_world(
+    async fn transfer_to_owner(
         &self,
         _permit: &OwnerWritePermit,
         _entity: EntityId,
+        _to_owner: OwnerRef,
     ) -> Result<bool, StorageError> {
         Err(StorageError::Internal(
             "RejectingStorage rejects writes".into(),

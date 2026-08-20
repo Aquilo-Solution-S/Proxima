@@ -61,7 +61,7 @@ Environment:
                                 to PROXIMA_OIDC_ISSUER. Mutually exclusive
                                 with PROXIMA_OIDC_SUBJECT_MAP_JSON.
   PROXIMA_TOOL_PROFILE          Tool profile: memory (fail-closed default) or
-                                full (opt-in; adds core_publish/core_membership)
+                                full (opt-in; adds core_transfer/core_membership)
   PROXIMA_TOOL_ALLOW            Comma-separated canonical tool ids added to profile
   PROXIMA_TOOL_DENY             Comma-separated canonical tool ids removed from profile
   PROXIMA_EMBED_REQUEST_TIMEOUT_SECONDS
@@ -90,9 +90,8 @@ Maintenance:
 
 Endpoint:
   http://127.0.0.1:31415/mcp
-  MCP initialize must include X-Proxima-Owner: personal:<uuid>,
-  group:<uuid>, or world:00000000-0000-0000-0000-000000000001. The server
-  binds that owner to Mcp-Session-Id.
+  MCP initialize must include X-Proxima-Owner: personal:<uuid> or
+  group:<uuid>. The server binds that owner to Mcp-Session-Id.
 
 Tools:
   core_search_memories
@@ -108,7 +107,7 @@ Tools:
   core_goal
   core_fact
   core_membership
-  core_publish
+  core_transfer
   core_upload
 ";
 

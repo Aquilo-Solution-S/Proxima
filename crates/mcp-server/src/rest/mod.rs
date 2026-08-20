@@ -9,7 +9,7 @@
 //! without appearing on MCP.
 //!
 //! REST grants no authority MCP does not already grant. A token that
-//! cannot call `core_publish` over MCP cannot call it over REST, because
+//! cannot call `core_transfer` over MCP cannot call it over REST, because
 //! the gate runs below the seam — not beside it.
 //!
 //! See `docs/17-rest-surface.md`.
