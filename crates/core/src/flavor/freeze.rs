@@ -407,3 +407,224 @@ pub(crate) fn schema_capability_map(
     }
     out
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::flavor::contract::{
+        EmbeddingRecipe, FlavorContract, Provenance, ResourceContract, SchemaContract, SchemaRef,
+        SearchProjectionDecl, ToolContract, TransferRule,
+    };
+    use crate::verbs::schema::{PayloadKind, SchemaInfo};
+    use crate::{FlavorRegistry, FlavorRegistryError, SchemaId, SchemaVersion};
+
+    const FIXTURE_FLAVOR: &str = "test-flavor";
+
+    const fn contract(
+        ordinal: u16,
+        schemas: &'static [SchemaContract],
+        tools: &'static [ToolContract],
+        resources: &'static [ResourceContract],
+    ) -> FlavorContract {
+        FlavorContract {
+            flavor_id: FIXTURE_FLAVOR,
+            ordinal,
+            schemas,
+            state_surfaces: &[],
+            kernel_surfaces: &[],
+            tools,
+            resources,
+        }
+    }
+
+    const fn schema(id: SchemaRef, transfer: TransferRule) -> SchemaContract {
+        SchemaContract {
+            id,
+            kind: PayloadKind::CitedObject,
+            sidecar_table: None,
+            search: SearchProjectionDecl::None {
+                why: "a fixture, not a surface",
+            },
+            embedding: EmbeddingRecipe::Never {
+                why: "a fixture, not a memory",
+            },
+            transfer,
+            provenance: Provenance::None,
+            surfaces: &[],
+            natural_key_columns: &[],
+            special_category: false,
+        }
+    }
+
+    const RESOURCE: ResourceContract = ResourceContract {
+        uri_template: "proxima://fixture",
+        path: "fixture",
+        name: "proxima-fixture",
+        title: "Fixture",
+        description: "a resource no flavor may declare",
+        scope_key: "resource:fixture",
+        is_template: false,
+        read_only: true,
+        reads: &[],
+    };
+
+    /// Nothing declared at all: used for the two cases the *registrations*
+    /// have to disagree with.
+    static EMPTY: FlavorContract = contract(7, &[], &[], &[]);
+    static DUPLICATE_ORDINAL: FlavorContract = contract(0, &[], &[], &[]);
+    static DECLARES_A_RESOURCE: FlavorContract = contract(7, &[], &[], &[RESOURCE]);
+    static FOREIGN_SCHEMA: FlavorContract = contract(
+        7,
+        &[schema(
+            SchemaRef::new("some-other-flavor", "thing", 1),
+            TransferRule::StaysOnKey,
+        )],
+        &[],
+        &[],
+    );
+    static UNENFORCED_REFUSAL: FlavorContract = contract(
+        7,
+        &[schema(
+            SchemaRef::new(FIXTURE_FLAVOR, "thing", 1),
+            TransferRule::NotTransferable {
+                why: "says so and nothing else",
+                enforced_by: &[],
+            },
+        )],
+        &[],
+        &[],
+    );
+    static UNREGISTERED_SCHEMA: FlavorContract = contract(
+        7,
+        &[schema(
+            SchemaRef::new(FIXTURE_FLAVOR, "thing", 1),
+            TransferRule::StaysOnKey,
+        )],
+        &[],
+        &[],
+    );
+    static UNREGISTERED_TOOL: FlavorContract = contract(
+        7,
+        &[],
+        &[ToolContract {
+            wire_name: "test_flavor_absent",
+            actions: &[],
+            idempotent: true,
+        }],
+        &[],
+    );
+
+    /// A registration with no contract entry: consistent enough to reach
+    /// `validate_contracts` (opaque kinds are allowed to have no typed
+    /// ingress, and it declares no ingress entry to mismatch).
+    fn registration_without_a_contract() -> SchemaInfo {
+        SchemaInfo {
+            schema_id: SchemaId::new(format!("{FIXTURE_FLAVOR}/thing-v1")),
+            schema_version: SchemaVersion::new(1),
+            kind: PayloadKind::CitedObject,
+            filter_keys: Vec::new(),
+            sidecar_table: None,
+            natural_key_columns: Vec::new(),
+            tombstone: None,
+            has_typed_ingress: false,
+            cited_object_schema: None,
+            embeddable: true,
+        }
+    }
+
+    /// Every contract cross-check, each with a registry shaped to trip it
+    /// and nothing else.
+    ///
+    /// These are the checks that make "everything is a flavor" structural.
+    /// An unpinned check is one a refactor can delete without a single test
+    /// going red — and the resource rejection in particular is the whole of
+    /// the resources-are-substrate ruling, enforced in five lines.
+    #[test]
+    fn each_contract_cross_check_rejects_its_own_shape() {
+        #[allow(clippy::type_complexity)]
+        let cases: Vec<(
+            &'static str,
+            fn(&mut FlavorRegistry),
+            fn(&FlavorRegistryError) -> bool,
+        )> = vec![
+            (
+                "a flavor other than #0 declares a proxima:// resource",
+                |registry| registry.contracts.push(&DECLARES_A_RESOURCE),
+                |err| {
+                    matches!(
+                        err,
+                        FlavorRegistryError::ResourcesNotPermitted { flavor_id }
+                            if *flavor_id == FIXTURE_FLAVOR
+                    )
+                },
+            ),
+            (
+                "two contracts claim the same ordinal",
+                |registry| registry.contracts.push(&DUPLICATE_ORDINAL),
+                |err| {
+                    matches!(
+                        err,
+                        FlavorRegistryError::DuplicateFlavorOrdinal { ordinal: 0, .. }
+                    )
+                },
+            ),
+            (
+                "contracts were registered but core's is not among them",
+                |registry| {
+                    registry.contracts.clear();
+                    registry.contracts.push(&EMPTY);
+                },
+                |err| matches!(err, FlavorRegistryError::MissingCoreContract),
+            ),
+            (
+                "a contract entry's schema id carries another flavor's prefix",
+                |registry| registry.contracts.push(&FOREIGN_SCHEMA),
+                |err| matches!(err, FlavorRegistryError::ContractSchemaPrefix { .. }),
+            ),
+            (
+                "a NotTransferable schema names no enforcement site",
+                |registry| registry.contracts.push(&UNENFORCED_REFUSAL),
+                |err| matches!(err, FlavorRegistryError::UnenforcedTransferRefusal { .. }),
+            ),
+            (
+                "the contract declares a schema nothing registered",
+                |registry| registry.contracts.push(&UNREGISTERED_SCHEMA),
+                |err| matches!(err, FlavorRegistryError::ContractSchemaNotRegistered { .. }),
+            ),
+            (
+                "a schema was registered under a flavor that does not declare it",
+                |registry| {
+                    registry.schemas.push(registration_without_a_contract());
+                    registry.contracts.push(&EMPTY);
+                },
+                |err| matches!(err, FlavorRegistryError::SchemaWithoutContract { .. }),
+            ),
+            (
+                "the contract names an MCP tool nothing registered",
+                |registry| registry.contracts.push(&UNREGISTERED_TOOL),
+                |err| {
+                    matches!(
+                        err,
+                        FlavorRegistryError::ContractToolNotRegistered { name, .. }
+                            if *name == "test_flavor_absent"
+                    )
+                },
+            ),
+        ];
+
+        for (shape, break_it, expected) in cases {
+            let mut registry = FlavorRegistry::new();
+            break_it(&mut registry);
+            let Err(err) = registry.try_freeze() else {
+                panic!("freeze accepted a registry where {shape}");
+            };
+            assert!(expected(&err), "{shape}: freeze reported {err} instead");
+        }
+    }
+
+    /// The counterpart: the registry as the binary actually composes it,
+    /// with core's contract in place, freezes.
+    #[test]
+    fn the_shipped_registry_freezes() {
+        assert!(FlavorRegistry::new().try_freeze().is_ok());
+    }
+}
