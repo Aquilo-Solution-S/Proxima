@@ -143,8 +143,9 @@ Reports three separate numbers, which are three different problems:
   missing   an artefact the corpus claims to hold whose object is absent.
             A CITATION THAT CANNOT BE RESOLVED. This is the one to alert on
   orphans   objects no row claims: cost and retention, nothing broken
-  foreign   rows naming another bucket or a key outside objects/. Neither
-            loss nor waste - usually a legacy or hand-written locator
+  foreign   rows naming another bucket, or any key other than the one
+            derived from the row's own upload id. Neither loss nor waste -
+            a hand-written locator, not something this host minted
 
 Requires the same PROXIMA_S3_* block the host runs with; the bucket is taken
 from the environment rather than a flag so it cannot be pointed at a store

@@ -254,8 +254,8 @@ What cannot be inside that transaction is the object-store work. Streaming,
 hashing, and copying an S3 object is not a database statement and must not
 hold a transaction open while it runs. Completion is therefore three steps:
 
-1. **stage** — verify the bytes, move them to their canonical
-   content-addressed key, record nothing. Idempotent; the pending object is
+1. **stage** — verify the bytes, move them to the canonical key derived from
+   their `upload_id`, record nothing. Idempotent; the pending object is
    left in place so a retry can re-read it.
 2. **the transaction** — everything above.
 3. **finish** — mark the upload row completed against the cited object and

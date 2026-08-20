@@ -60,8 +60,8 @@ pub struct CitedBlobUploadCompleted {
 
 /// An artefact that is in the object store, and in nothing else.
 ///
-/// The bytes have been verified and moved to their canonical,
-/// content-addressed key; no row in the substrate refers to them yet.
+/// The bytes have been verified and moved to the canonical key derived
+/// from their `upload_id`; no row in the substrate refers to them yet.
 /// Everything after this point is one database transaction, which is why
 /// staging stops here rather than persisting what it staged.
 ///
@@ -150,14 +150,15 @@ pub trait CitedBlobPort: Send + Sync {
         byte_len: u64,
     ) -> Result<CitedBlobUploadPrepared, StorageError>;
 
-    /// Verify the uploaded bytes and move them to their canonical
-    /// content-addressed key, WITHOUT recording anything about them.
+    /// Verify the uploaded bytes and move them to the canonical key derived
+    /// from their `upload_id`, WITHOUT recording anything about them.
     ///
     /// The split exists so that persisting the artefact and recording its
     /// arrival can be one transaction. This half is the part that cannot
     /// be: it streams, hashes, and copies in the object store. It is
-    /// idempotent — the canonical key is the content hash — so a caller
-    /// that crashes before persisting may stage again.
+    /// idempotent — the canonical key is a function of the `upload_id`
+    /// alone, so a repeat writes the same key — and a caller that crashes
+    /// before persisting may stage again.
     ///
     /// The pending object is deliberately NOT deleted here. It is the
     /// only copy a retry can re-read if persistence fails; `finish_upload`

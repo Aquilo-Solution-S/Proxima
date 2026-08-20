@@ -101,8 +101,8 @@ impl CitedBlobStore {
         })
     }
 
-    /// Verify a pending upload's bytes and move them to their canonical
-    /// content-addressed key, recording nothing.
+    /// Verify a pending upload's bytes and move them to the canonical key
+    /// derived from their `upload_id`, recording nothing.
     ///
     /// Everything this returns is destined for ONE database transaction
     /// that the caller runs: the cited object, its typed row, and the

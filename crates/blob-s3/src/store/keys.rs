@@ -105,6 +105,62 @@ mod tests {
         assert_eq!(canonical_object_key(mine), canonical_object_key(mine));
     }
 
+    /// Exact equality, and nothing weaker.
+    ///
+    /// Every candidate below carries the row's OWN `upload_id`, so nothing
+    /// else in the system can save the gate here: not the owner predicate
+    /// in the SQL (the row is the caller's), not the bucket check (same
+    /// bucket), not the prefix (all under `objects/`). The only thing
+    /// separating an honoured locator from a forged one is that the bytes
+    /// match exactly.
+    ///
+    /// The first four are the reason this is `==` and not `starts_with`.
+    /// A prefix test honours every one of them, and each names a DIFFERENT
+    /// S3 object than the row does — so weakening the comparison hands out
+    /// a presigned GET for bytes the row never claimed. The rest pin the
+    /// other plausible slips: trimming, case folding, and any test that
+    /// looks at only part of the key.
+    #[test]
+    fn only_the_exact_minted_key_is_honoured_for_a_row() {
+        let upload_id = Uuid::now_v7();
+        let exact = canonical_object_key(upload_id);
+
+        // Control. Without it every assertion below is satisfied by a gate
+        // that refuses unconditionally.
+        assert!(
+            locator_was_minted_here(&exact, upload_id),
+            "the key this store mints for the row must be honoured"
+        );
+
+        for near_miss in [
+            // Extensions of the exact key — a prefix test accepts all four.
+            format!("{exact}/child"),
+            format!("{exact}x"),
+            format!("{exact} "),
+            format!("{exact}\n"),
+            // Decorations and truncations of it.
+            format!(" {exact}"),
+            format!("/{exact}"),
+            format!("{CANONICAL_OBJECT_PREFIX}/{upload_id}"),
+            exact.replace(CANONICAL_OBJECT_PREFIX, "Objects/"),
+            exact.to_uppercase(),
+            format!(
+                "{CANONICAL_OBJECT_PREFIX}{}",
+                upload_id.to_string().to_uppercase()
+            ),
+            // Real keys of other shapes that name the same id.
+            pending_object_key(upload_id),
+            cold_object_key(upload_id),
+            upload_id.to_string(),
+            String::new(),
+        ] {
+            assert!(
+                !locator_was_minted_here(&near_miss, upload_id),
+                "{near_miss:?} is not the key minted for this row and must be refused"
+            );
+        }
+    }
+
     #[test]
     fn persisted_cold_keys_match_storage_pg_exactly() {
         let t = Uuid::parse_str("00000000-0000-0000-0000-000000000003").expect("uuid literal");

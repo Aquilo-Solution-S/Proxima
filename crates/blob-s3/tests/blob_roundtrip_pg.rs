@@ -163,8 +163,8 @@ async fn prepare_then_complete_then_read_roundtrip() {
         )
         .await
         .expect("read url");
-    // `complete` moves the object from its pending key to the final
-    // content-addressed key (doc 11 §Large artefact storage), so the
+    // `complete` moves the object from its pending key to the final key
+    // derived from the upload row (doc 11 §Large artefact storage), so the
     // presigned GET must reference the completed blob's key, not the
     // pending upload's.
     let cited_object_id = Uuid::parse_str(&completed.cited_object_id).expect("cited object id");
@@ -1433,7 +1433,7 @@ async fn versioned_bucket_purge_removes_all_object_versions() {
             .await
             .expect("completed blob row");
 
-    // Re-put the same content-addressed key to mint a second version, so a
+    // Re-put the row's own canonical key to mint a second version, so a
     // key-only delete would demonstrably leave a noncurrent version behind.
     put_object_via_sdk(&config, &final_key.0, body).await;
 

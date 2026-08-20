@@ -210,7 +210,7 @@ impl Engine {
     ///   into storage is the SOURCE owner's, so a caller gives a memory
     ///   away while acting AS its owner.
     /// * Write-Goal plus group-manage on `to_owner`, resolved by
-    ///   [`Self::authorize_transfer_destination`]. The destination must
+    ///   `authorize_transfer_destination`. The destination must
     ///   therefore be a **Group**: `may_manage` is false for every personal
     ///   owner by construction, so there is no personal-owner spelling of
     ///   receiving-side consent. A personal destination is refused with
@@ -477,8 +477,86 @@ mod tests {
     use crate::authz::{
         AuthPath, AuthorizationHook, AuthzContext, AuthzInput, AuthzOperation, MembershipChange,
     };
-    use crate::{ErrorCode, FlavorRegistry, GroupId, OwnerRef, UserId};
+    use crate::{EntityId, ErrorCode, FlavorRegistry, GroupId, MemoryId, OwnerRef, UserId};
     use uuid::Uuid;
+
+    /// The destination gate has two paths and they must never merge.
+    ///
+    /// When the request context already carries a resolved role for the
+    /// destination, that role is the answer — including when the answer is
+    /// no. Falling through to the membership re-read on a refusal would let
+    /// a stored Admin row overrule a host that deliberately handed out a
+    /// narrowed role, and the narrowed served surface is the only reason
+    /// resolving the destination out of band is safe at all.
+    ///
+    /// The control is what gives the refusals meaning. The SAME storage,
+    /// holding a real Admin membership on the destination the whole time,
+    /// is consulted when the context is silent — consent is granted, the
+    /// transfer gets past the gate, and it dies further down on the
+    /// double's rejecting write with `Internal`. So `Forbidden` below can
+    /// only mean the lookup never ran.
+    #[tokio::test]
+    async fn a_carried_role_that_cannot_manage_never_falls_through_to_the_membership_row() {
+        let subject = UserId::new(Uuid::now_v7());
+        let destination_group = GroupId::new(Uuid::now_v7());
+        let destination = OwnerRef::Group(destination_group);
+        let entity = EntityId::Memory(MemoryId::new(Uuid::now_v7()));
+
+        let engine = || {
+            crate::Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests())
+                .with_storage_ports(
+                    MembershipStorage {
+                        member: OwnerRef::Personal(subject),
+                        group: destination_group,
+                        // Real, sufficient, receiving-side consent, sitting
+                        // in storage for every case in this test.
+                        membership_relation: Relation::Admin,
+                        home_owner: Some(OwnerRef::Personal(subject)),
+                        entity_readable: true,
+                        memory_kind: None,
+                    }
+                    .storage_ports(),
+                )
+        };
+
+        let silent = AuthzContext::for_subject(subject, AuthPath::HostBearer);
+        let control = engine()
+            .transfer_to_owner(&silent, entity, destination)
+            .await
+            .expect_err("the storage double rejects the transfer write itself");
+        assert_eq!(
+            control.code,
+            ErrorCode::Internal,
+            "a context silent about the destination must reach the membership row and be \
+             consented — otherwise the refusals below prove nothing"
+        );
+
+        // Present but insufficient. `Role::personal()` is the sharp one: it
+        // may write Goals, so only `manages()` separates it from Admin.
+        for role in [
+            Role::viewer(),
+            Role::ingest(),
+            Role::editor(),
+            Role::personal(),
+        ] {
+            let carried = AuthzContext::for_subject_with_role(
+                subject,
+                [(destination, role)],
+                AuthPath::HostBearer,
+            );
+            let err = engine()
+                .transfer_to_owner(&carried, entity, destination)
+                .await
+                .expect_err("a carried role that cannot manage must refuse");
+            assert_eq!(
+                err.code,
+                ErrorCode::Forbidden,
+                "carried role {role:?} must refuse outright; Internal here would mean the \
+                 gate fell through to the membership lookup and the stored Admin row \
+                 overruled the narrowed role"
+            );
+        }
+    }
 
     #[test]
     fn access_admin_bootstrap_group_admin_is_not_mcp_exposed() {

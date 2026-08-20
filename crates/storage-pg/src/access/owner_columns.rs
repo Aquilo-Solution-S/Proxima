@@ -369,13 +369,20 @@ pub(crate) async fn visible_home_owner(
 /// Returns `true` iff a row under `from_owner` matched and was updated.
 ///
 /// Most sidecar rows stay keyed by `t` and so follow the memory to
-/// `to_owner`. `mcp_call_logged_v1` is the exception: it describes the
-/// ACTOR of a tool call (`actor_upn`), not the memory, so it is
-/// retain-at-source. A sidecar has no owner column — reachability is the
-/// `memory` row's `owner_id` (see `read_mcp_call_history`'s join) — so the
-/// only retain that actually holds is to DELETE the series' call-log rows
-/// in this transaction: the destination receives the memory without the
-/// call log, and the prior owner keeps nothing it could still reach either.
+/// `to_owner`. Owner-pinned sidecars are the exception and this transaction
+/// does not touch them at all. `mcp_call_logged_v1` is the one today: it
+/// describes the ACTOR of a tool call (`actor_upn`), not the memory, and it
+/// carries its own `owner_id`, stamped at write time with the owner that
+/// made the call. The row stays under that owner, so the source keeps
+/// answering "what did my agents do" after giving the memory away.
+///
+/// The destination never sees it, because every read of an owner-pinned
+/// sidecar is scoped by the sidecar's OWN owner rather than the memory's:
+/// hydrate joins `memory` on `m.owner_id = s.owner_id` so a moved memory
+/// stops matching, `read_mcp_call_history` selects on `fact.owner_id` with
+/// no `memory` join at all, and compliance erase/export select the same
+/// way. Forget skips them in both directions, so cooling or forgetting a
+/// received memory cannot dump or destroy the source's audit trail.
 ///
 /// Cited `blob` rows move when no other live series under a different owner
 /// still cites them. Embeddings / jobs follow the transferred `t`s so ANN
