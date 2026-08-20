@@ -495,12 +495,15 @@ pub struct CodeEraseRepoOutput {
     pub repo_id: String,
     pub canonical_path: String,
     pub completed_at: String,
-    pub facts_deleted: u64,
-    pub abstractions_deleted: u64,
-    pub edges_deleted: u64,
-    pub embeddings_deleted: u64,
-    pub receipts_deleted: u64,
-    pub source_batches_deleted: u64,
+    /// Every admission erased — Facts, Abstractions and Perspectives —
+    /// across every version of every series the repo's rows named. This
+    /// replaces six counters, five of which were structurally zero; see
+    /// [`crate::repos::RepoEraseReceipt`].
+    pub memories_deleted: u64,
+    /// Cold objects queued for destruction by the operator's retention
+    /// pass. Non-zero only when some version of a repo memory had been
+    /// cooled to the object store.
+    pub cold_objects_pending: u64,
     pub repo_record_deleted: bool,
 }
 
@@ -545,7 +548,7 @@ impl Tool for CodeEraseRepoTool {
             }
 
             let canonical_path = repo.canonical_path.clone();
-            let receipt = crate::repos::erase_repo(pool.pool(), &ctx.owner(), repo_id)
+            let receipt = crate::repos::erase_repo(&pool, &ctx.owner(), repo_id)
                 .await
                 .map_err(map_repo_registry)?;
 
@@ -553,12 +556,8 @@ impl Tool for CodeEraseRepoTool {
                 repo_id: receipt.repo_id.to_string(),
                 canonical_path,
                 completed_at: format_time(receipt.completed_at)?,
-                facts_deleted: receipt.facts_deleted,
-                abstractions_deleted: receipt.abstractions_deleted,
-                edges_deleted: receipt.edges_deleted,
-                embeddings_deleted: receipt.embeddings_deleted,
-                receipts_deleted: receipt.receipts_deleted,
-                source_batches_deleted: receipt.source_batches_deleted,
+                memories_deleted: receipt.memories_deleted,
+                cold_objects_pending: receipt.cold_objects_pending,
                 repo_record_deleted: receipt.repo_record_deleted,
             })
         })

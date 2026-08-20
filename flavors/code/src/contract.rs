@@ -8,8 +8,9 @@
 //! comment said so ("the code flavor ships no `FlavorContract`, so its
 //! sixteen sidecars are exempt"). Every lane that should have iterated its
 //! declarations named its tables by hand instead, which is why
-//! `code_repo_erase` deletes five of sixteen sidecars and reports counters
-//! it never counted.
+//! `code_repo_erase` deleted five of sixteen sidecars and reported counters
+//! it never counted. Its replacement, `repos::erase`, is checked against
+//! these declarations by a test.
 //!
 //! Style follows `crates/core/src/flavor/flavor0.rs` exactly: `const`
 //! everything, `const fn` helpers for the repeated shapes, every field

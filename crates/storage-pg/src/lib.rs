@@ -126,10 +126,17 @@ pub async fn ensure_core_ledger_compatible(pool: &PgPool) -> Result<(), StorageE
             .await
             .map_err(internal)?;
 
+    // `proxima\_%` rather than a list. This probe runs before any registry
+    // exists, so it cannot ask which flavors are linked — and the previous
+    // spelling named `proxima_code` from inside the kernel, which made a
+    // second flavor's leftover schema invisible to the reset check. The
+    // prefix is the flavor schema convention (`proxima_core`,
+    // `proxima_code`, ...), so the pattern is the same claim without the
+    // kernel knowing any flavor's name.
     let proxima_schema_objects: Vec<String> = sqlx::query_scalar(
         "SELECT table_schema || '.' || table_name
            FROM information_schema.tables
-          WHERE table_schema IN ('proxima_core', 'proxima_code')
+          WHERE table_schema LIKE 'proxima\\_%'
           ORDER BY table_schema, table_name
           LIMIT 20",
     )

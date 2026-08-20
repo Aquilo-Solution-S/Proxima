@@ -363,6 +363,7 @@ impl<A: FlavorApp + 'static> Proxima<A> {
             engine: booted.engine.clone(),
             pool: booted.pool.clone(),
             pg_tuning: config.pg_tuning,
+            pg_sidecars: booted.pg_sidecars.clone(),
             blobs: booted.blobs.clone(),
             owner: booted.owner,
         };
@@ -1087,6 +1088,7 @@ mod tests {
             engine: Arc::new(engine),
             pool,
             pg_tuning: proxima_storage_pg::PgTuning::default(),
+            pg_sidecars: Arc::default(),
             blobs: Some(store),
             owner: None,
         };
@@ -1131,6 +1133,7 @@ mod tests {
             engine: engine.clone(),
             pool,
             pg_tuning: proxima_storage_pg::PgTuning::default(),
+            pg_sidecars: Arc::default(),
             blobs: None,
             owner: None,
         };
@@ -1186,6 +1189,7 @@ mod tests {
             engine: Arc::new(engine),
             pool,
             pg_tuning: proxima_storage_pg::PgTuning::default(),
+            pg_sidecars: Arc::default(),
             blobs: Some(store),
             owner: None,
         };

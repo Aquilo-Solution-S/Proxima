@@ -1,4 +1,4 @@
-use super::records::{RepoEraseReceipt, RepoRecord, RepoRegistryError};
+use super::records::{RepoRecord, RepoRegistryError};
 use super::rows::RepoRow;
 use super::scope::RepoScope;
 use proxima_core::Owner;
@@ -198,33 +198,6 @@ pub async fn set_repo_scope(
     .await?;
     row.map(Into::into)
         .ok_or(RepoRegistryError::NotFound { repo_id })
-}
-
-/// Erase one registered repo's code-flavor rows and owned substrate rows.
-///
-/// # Errors
-/// Returns `RepoRegistryError::NotFound` if the repo is not registered
-/// for `owner`; otherwise returns `RepoRegistryError::Database` on
-/// database failures.
-pub async fn erase_repo(
-    pool: &PgPool,
-    owner: &Owner,
-    repo_id: Uuid,
-) -> Result<RepoEraseReceipt, RepoRegistryError> {
-    let outcome = proxima_storage_pg::verbs::code_repo_erase::erase_code_repo(pool, owner, repo_id)
-        .await?
-        .ok_or(RepoRegistryError::NotFound { repo_id })?;
-    Ok(RepoEraseReceipt {
-        repo_id: outcome.repo_id,
-        completed_at: outcome.completed_at,
-        facts_deleted: outcome.facts_deleted,
-        abstractions_deleted: outcome.abstractions_deleted,
-        edges_deleted: outcome.edges_deleted,
-        embeddings_deleted: outcome.embeddings_deleted,
-        receipts_deleted: outcome.receipts_deleted,
-        source_batches_deleted: outcome.source_batches_deleted,
-        repo_record_deleted: outcome.repo_record_deleted,
-    })
 }
 
 /// Look up a single repo record by `(owner, repo_id)`.

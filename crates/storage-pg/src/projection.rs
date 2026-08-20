@@ -14,8 +14,10 @@
 //! same declaration, so they cannot drift. That is what makes provisioning
 //! and de-provisioning a flavor in a deployment two readings of one
 //! derivation instead of two hand-maintained scripts — the failure mode
-//! `verbs/code_repo_erase.rs` demonstrates, where a hand-written inverse
-//! reaches five of sixteen sidecars.
+//! `verbs/code_repo_erase.rs` demonstrated until this release, where a
+//! hand-written inverse living in the kernel reached five of the code
+//! flavor's sixteen sidecars. It is now `flavors/code/src/repos/erase.rs`,
+//! where a test can compare it against the contract.
 //!
 //! Two consumers, deliberately:
 //!

@@ -1211,6 +1211,76 @@ pub async fn erase_memory(
     Ok(ColdPurgePlan::from_keys(pending))
 }
 
+/// Hard-delete every version of every series the given admissions belong to.
+///
+/// The kernel's own erase, applied to a set. A flavor tearing down one of
+/// its scopes — a repo, a workspace, a project — knows which of ITS rows
+/// belong to that scope and nothing about the substrate rows behind them;
+/// this is the other half, and it is deliberately flavor-agnostic so the
+/// flavor never writes a `proxima_core` statement to get it.
+///
+/// It replaced a hand-written duplicate that deleted `announce`,
+/// `embedding_jobs`, `embedding_heads`, `embeddings`, `sketch`, `memory`
+/// and `memory_head` and stopped there: no sidecar rows beyond the five
+/// tables its caller had listed, no `cooled`, no `ingest_keys`, no content
+/// GC, no head resync, no cold-object plan, and an erase announce it never
+/// wrote. [`erase_memory`] does all of that from the sidecar registry, so
+/// the duplicate was both shorter and wrong.
+///
+/// Expansion to the whole series matters: a superseded version that was
+/// cooled has no sidecar row left to be found by, so a caller that
+/// collected ids from its own tables would erase the live versions and
+/// leave the cooled ones behind.
+///
+/// Returns the number of admissions erased and the cold objects the erase
+/// still owes the object store; see [`erase_memory`] for why the caller
+/// commits first.
+///
+/// # Errors
+///
+/// Returns storage errors from the delete statements.
+pub async fn erase_memory_series(
+    tx: &mut Transaction<'_, Postgres>,
+    sidecars: &PgSidecarRegistryFrozen,
+    owner: &Owner,
+    ts: &[Uuid],
+) -> Result<(u64, ColdPurgePlan), StorageError> {
+    if ts.is_empty() {
+        return Ok((0, ColdPurgePlan::default()));
+    }
+    let owner_id = owner.stored_owner_id();
+    let versions: Vec<Uuid> = sqlx::query_scalar(
+        "WITH handles AS (
+             SELECT handle FROM proxima_core.memory
+              WHERE t = ANY($1::uuid[]) AND owner_id = $2
+             UNION
+             SELECT handle FROM proxima_core.cooled
+              WHERE t = ANY($1::uuid[]) AND owner_id = $2
+         )
+         SELECT m.t FROM proxima_core.memory m
+           JOIN handles h ON h.handle = m.handle
+          WHERE m.owner_id = $2
+         UNION
+         SELECT c.t FROM proxima_core.cooled c
+           JOIN handles h ON h.handle = c.handle
+          WHERE c.owner_id = $2",
+    )
+    .bind(ts)
+    .bind(owner_id)
+    .fetch_all(tx.as_mut())
+    .await
+    .map_err(map_err)?;
+
+    let mut keys = Vec::new();
+    let mut erased = 0_u64;
+    for t in versions {
+        let plan = erase_memory(tx, sidecars, owner, t).await?;
+        keys.extend_from_slice(plan.object_keys());
+        erased += 1;
+    }
+    Ok((erased, ColdPurgePlan::from_keys(keys)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::{StorageError, write_bytes};

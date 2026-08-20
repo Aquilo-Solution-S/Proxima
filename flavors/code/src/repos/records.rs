@@ -16,16 +16,31 @@ pub struct RepoRecord {
     pub scope: super::scope::RepoScope,
 }
 
+/// What `proxima-code_erase_repo` actually did.
+///
+/// Five of the seven counters this replaced were structurally zero:
+/// `abstractions_deleted`, `edges_deleted`, `embeddings_deleted`,
+/// `receipts_deleted` and `source_batches_deleted` were literal `0`s in the
+/// only code that built the receipt, and `facts_deleted` counted every
+/// admission the erase touched — abstractions included — so its name was
+/// wrong too. A caller reading `embeddings_deleted: 0` after an erase that
+/// deleted embeddings was being told something false.
+///
+/// The kernel does not report per-kind counts because it does not delete by
+/// kind: it deletes admissions, and each admission takes its sidecar,
+/// embedding, sketch and projection rows with it. Reporting the number it
+/// actually has is the honest surface.
 #[derive(Debug, Clone)]
 pub struct RepoEraseReceipt {
     pub repo_id: Uuid,
     pub completed_at: time::OffsetDateTime,
-    pub facts_deleted: u64,
-    pub abstractions_deleted: u64,
-    pub edges_deleted: u64,
-    pub embeddings_deleted: u64,
-    pub receipts_deleted: u64,
-    pub source_batches_deleted: u64,
+    /// Admissions erased: every version of every series this repo's rows
+    /// named, Facts and Abstractions and Perspectives alike.
+    pub memories_deleted: u64,
+    /// Cold objects marked for destruction. They are destroyed by
+    /// `maintain-retention --retry-cold-object-purges`, not by the erase —
+    /// see `super::erase::erase_repo`.
+    pub cold_objects_pending: u64,
     pub repo_record_deleted: bool,
 }
 

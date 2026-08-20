@@ -383,10 +383,11 @@ async fn erase_repo_tool_clears_the_index_and_allows_a_fresh_one()
     )
     .await?;
     assert_eq!(receipt["repo_record_deleted"], true);
-    assert!(
-        receipt["facts_deleted"].as_u64().expect("count")
-            + receipt["abstractions_deleted"].as_u64().expect("count")
-            >= 1
+    assert!(receipt["memories_deleted"].as_u64().expect("count") >= 1);
+    assert_eq!(
+        receipt["cold_objects_pending"].as_u64().expect("count"),
+        0,
+        "nothing in this fixture was ever cooled"
     );
 
     let after = run_tool::<CodeSearchChunksTool>(

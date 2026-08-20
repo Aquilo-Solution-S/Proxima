@@ -276,7 +276,7 @@ same answer by its own hand-written route. The declarations and the code
 agree today because both were written to; nothing checks that they keep
 agreeing.
 
-Four places are worth knowing about individually, because each looks like it
+Two places are worth knowing about individually, because each looks like it
 reads the contract and does not:
 
 1. `storage-pg/src/lib.rs` — the boot marker's `to_regclass` relation probes
@@ -288,24 +288,24 @@ reads the contract and does not:
    contract's transfer arms describe that behaviour and do not yet drive it;
    the goals refusal is the exception, and it is enforced at the three sites
    its declaration cites.
-3. `storage-pg/src/verbs/code_repo_erase.rs` — five code-flavor sidecars are
-   hand-listed in the `UNION` that collects the affected `t`s
-   (`file_revision_v1`, `code_chunk_v1`, `commit_v1`, `commit_summary_v1`,
-   `test_requested_v1`), and the delete sequence names those five plus two
-   more that appear nowhere else: `code_chunk_call_v1` and
-   `test_requested_criterion_v1`.
-4. `flavors/code/src/mcp/search_commits.rs` — two bands are duplicated
-   inline, the rescue arm twice and the flat substring score twice, making it
-   a second author of `BAND_RESCUE` and `BAND_SUBSTRING`. The exact arm is
-   worse than duplicated: it emits raw `ts_rank_cd` with no band at all, so
-   **code-flavor exact scores are not comparable with core's.** That, not the
-   duplication, is the live cross-flavor merge gap.
 
-The root cause of (3) and (4) is the same and is not an oversight: **the code
-flavor ships no `FlavorContract`.** Its schemas, sidecars and search surfaces
-are registered but undeclared, so there is nothing for those lanes to iterate
-and `check_owner_pinned_against_contracts` skips it entirely. Giving the code
-flavor a contract is what unlocks them.
+Two more used to be on that list, and both were symptoms of the code flavor
+shipping no `FlavorContract`: nothing existed for those lanes to iterate, and
+`check_owner_pinned_against_contracts` skipped the flavor entirely. Now that
+it declares one:
+
+- Repo erase moved out of the kernel. `storage-pg/src/verbs/code_repo_erase.rs`
+  hand-listed five of the flavor's sixteen sidecars in the `UNION` that
+  collected the affected `t`s and named two detail tables the constraints
+  already cascaded. It is `flavors/code/src/repos/erase.rs` now, next to the
+  contract, and a unit test fails when a declared surface is reached by
+  neither the sweep, a cascade, nor a named exemption. The substrate half is
+  gone outright: the flavor hands its admissions to
+  `verbs::forget::erase_memory_series`, which walks the sidecar registry.
+- `flavors/code/src/mcp/search_commits.rs` read `BAND_RESCUE` and
+  `BAND_SUBSTRING` from the shared constants and banded its exact arm with
+  `BAND_EXACT`, which is what makes a code-flavor exact score comparable
+  with core's.
 
 **Not every kernel relation is a declared `Surface`.** Six carry owner-scoped
 state and appear in no contract: `group_memberships` (boot-probed and swept
