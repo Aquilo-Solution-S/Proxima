@@ -230,28 +230,44 @@ async fn flavor_migrations_apply_to_fresh_db() {
     result.expect("flavor_migrations_apply_to_fresh_db failed");
 }
 
+/// `OwnerRef` has no id-less kind, so the flavor's owner columns carry the
+/// invariant as plain NOT NULL rather than the old shape/world CHECK pair.
 async fn assert_owner_ref_constraints(
     pool: &sqlx::PgPool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     for table in ["repos", "repo_ingestion_runs"] {
-        for suffix in ["owner_ref_shape_chk", "world_not_write_owner_chk"] {
-            let constraint = format!("{table}_{suffix}");
-            let exists: bool = sqlx::query_scalar(
-                "SELECT EXISTS (
-                     SELECT 1
-                       FROM information_schema.table_constraints
-                      WHERE table_schema = 'proxima_code'
-                        AND table_name = $1
-                        AND constraint_name = $2
-                        AND constraint_type = 'CHECK'
-                 )",
+        for column in ["owner_kind", "owner_id"] {
+            let nullable: String = sqlx::query_scalar(
+                "SELECT is_nullable
+                   FROM information_schema.columns
+                  WHERE table_schema = 'proxima_code'
+                    AND table_name = $1
+                    AND column_name = $2",
             )
             .bind(table)
-            .bind(&constraint)
+            .bind(column)
             .fetch_one(pool)
             .await?;
-            assert!(exists, "proxima_code.{table} must define {constraint}");
+            assert_eq!(
+                nullable, "NO",
+                "proxima_code.{table}.{column} must be NOT NULL"
+            );
         }
+        let dead: Vec<String> = sqlx::query_scalar(
+            "SELECT constraint_name::text
+               FROM information_schema.table_constraints
+              WHERE table_schema = 'proxima_code'
+                AND table_name = $1
+                AND constraint_type = 'CHECK'
+                AND constraint_name LIKE '%world%'",
+        )
+        .bind(table)
+        .fetch_all(pool)
+        .await?;
+        assert!(
+            dead.is_empty(),
+            "proxima_code.{table} must carry no World CHECK: {dead:?}"
+        );
     }
     Ok(())
 }

@@ -1,4 +1,4 @@
-use proxima_core::{Tool, ToolCtx, ToolError};
+use proxima_core::{AccessKind, Tool, ToolCtx, ToolError};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -109,10 +109,12 @@ impl Tool for CodeOpenFileRevisionTool {
             let pool = code_store(&ctx)?;
             let engine = super::engine(&ctx)?;
 
-            // Current `memory_head` of the (owner ∪ World) series for this
-            // path. Query decides visibility; owner `t` is listed first.
+            // Current `memory_head` of the series for this path across every
+            // owner the caller can read — a shared repo simply lives under a
+            // group. Query decides visibility; own `t` is listed first.
+            let read_owners = ctx.authz().readable_owners(AccessKind::Fact);
             let revision_ids = pool
-                .readable_file_revision_head_ts(ctx.owner(), repo_id, &args.file_path)
+                .readable_file_revision_head_ts(ctx.owner(), &read_owners, repo_id, &args.file_path)
                 .await?;
             let revision_with_id = pool
                 .authorized_fact_payloads::<FileRevisionV1>(
@@ -166,7 +168,12 @@ impl Tool for CodeOpenFileRevisionTool {
             }
 
             let chunk_ids = pool
-                .readable_chunk_head_ts_for_file(ctx.owner(), repo_id, &args.file_path)
+                .readable_chunk_head_ts_for_file(
+                    ctx.owner(),
+                    &read_owners,
+                    repo_id,
+                    &args.file_path,
+                )
                 .await?;
             let mut chunks = pool
                 .authorized_abstraction_payloads::<CodeChunkV1>(

@@ -5,7 +5,7 @@ use proxima_core::{Owner, OwnerRefKind, ToolCtx, ToolError};
 use super::CodeToolCtxExt;
 use super::code_store;
 
-pub fn owner_columns(owner: &Owner) -> (OwnerRefKind, Option<uuid::Uuid>) {
+pub fn owner_columns(owner: &Owner) -> (OwnerRefKind, uuid::Uuid) {
     owner.columns()
 }
 

@@ -88,7 +88,7 @@ async fn code_stateful_ingest_reuses_handle() {
 }
 
 #[tokio::test]
-async fn code_stateful_ingest_mints_after_world_transfer() {
+async fn code_stateful_ingest_mints_after_owner_transfer() {
     let (db_name, pg) = migrated_db().await;
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = test_owner();
@@ -106,8 +106,9 @@ async fn code_stateful_ingest_mints_after_world_transfer() {
             now,
         )
         .await?;
+        let destination = proxima_core::OwnerRef::Group(proxima_core::GroupId::new(Uuid::now_v7()));
         let transferred = pg
-            .transfer_to_world(&permit, EntityId::Memory(first.memory_id))
+            .transfer_to_owner(&permit, EntityId::Memory(first.memory_id), destination)
             .await?;
         assert!(transferred);
         let after = ingest_file_revision(
@@ -120,11 +121,11 @@ async fn code_stateful_ingest_mints_after_world_transfer() {
         .await?;
         assert_ne!(
             first.handle, after.handle,
-            "World-transferred series is a miss for the prior owner"
+            "a transferred series is a miss for the prior owner"
         );
         Ok(())
     }
     .await;
     let _ = drop_db(&db_name).await;
-    result.expect("code_stateful_ingest_mints_after_world_transfer failed");
+    result.expect("code_stateful_ingest_mints_after_owner_transfer failed");
 }

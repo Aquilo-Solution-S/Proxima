@@ -104,7 +104,6 @@ pub async fn owner_write_permit(
             [(*owner, Role::admin())],
             AuthPath::HostBearer,
         ),
-        OwnerRef::World => AuthzContext::denied_for_owner(owner),
     };
     let engine = Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests());
     Ok(engine.authorize_owner_write(&authz, owner, kind).await?)

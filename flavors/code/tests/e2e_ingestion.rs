@@ -21,7 +21,7 @@ use proxima_storage_pg::sidecars::{PgMemoryPayload, PgSidecarReadCtx};
 use tempfile::TempDir;
 use uuid::Uuid;
 
-fn owner_cols(owner: &Owner) -> (proxima_core::OwnerRefKind, Option<Uuid>) {
+fn owner_cols(owner: &Owner) -> (proxima_core::OwnerRefKind, Uuid) {
     owner.columns()
 }
 

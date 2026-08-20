@@ -5,8 +5,10 @@
 //! `Engine::query` `HeadsOnly`, not by filtering an id list here.
 //!
 //! Ingest callers use the owner-only variants (same series
-//! `existing_*_handle` will advance). `open_file` uses the owner∪World
-//! variants, then `Engine::query` for real visibility.
+//! `existing_*_handle` will advance). `open_file` uses the `readable_*`
+//! variants over the caller's whole read-owner set, then `Engine::query`
+//! for real visibility. A repo meant to be shared lives under a group
+//! owner, which is simply one more owner in that set.
 
 use std::collections::HashSet;
 
@@ -15,6 +17,20 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::error::map_err;
+
+/// Stored ids for the caller's read-owner set, always including `owner`
+/// itself so a caller that passes an empty set still sees its own rows.
+fn read_owner_ids(owner: Owner, read_owners: &[Owner]) -> Vec<Uuid> {
+    let mut ids: Vec<Uuid> = Vec::with_capacity(read_owners.len() + 1);
+    ids.push(owner.stored_owner_id());
+    for candidate in read_owners {
+        let id = candidate.stored_owner_id();
+        if !ids.contains(&id) {
+            ids.push(id);
+        }
+    }
+    ids
+}
 
 const FILE_REVISION_HEADS_SQL: &str =
     "SELECT fr.t, fr.file_path, fr.content_sha256, fr.state::text AS state
@@ -105,7 +121,8 @@ pub async fn owned_present_file_revision_heads_except(
     .map_err(map_err)
 }
 
-/// Current file-revision `t`s for one path in owner∪World, owner first.
+/// Current file-revision `t`s for one path across `read_owners`, with
+/// `owner`'s own rows first.
 ///
 /// # Errors
 ///
@@ -113,25 +130,26 @@ pub async fn owned_present_file_revision_heads_except(
 pub async fn readable_file_revision_head_ts(
     pool: &PgPool,
     owner: Owner,
+    read_owners: &[Owner],
     schema_id: &SchemaId,
     repo_id: Uuid,
     file_path: &str,
 ) -> Result<Vec<Uuid>, StorageError> {
     let owner_id = owner.stored_owner_id();
-    let world_id = proxima_core::OwnerRef::World.stored_owner_id();
+    let read_owner_ids = read_owner_ids(owner, read_owners);
     sqlx::query_scalar(
         "SELECT fr.t
            FROM proxima_code.file_revision_v1 fr
            JOIN proxima_core.memory m ON m.t = fr.t
            JOIN proxima_core.memory_head h ON h.handle = m.handle AND h.t = m.t
-          WHERE h.owner_id IN ($1, $2)
+          WHERE h.owner_id = ANY($2::uuid[])
             AND fr.repo_id = $3
             AND fr.file_path = $4
             AND h.schema_id = $5
           ORDER BY (h.owner_id = $1) DESC, fr.t DESC",
     )
     .bind(owner_id)
-    .bind(world_id)
+    .bind(&read_owner_ids)
     .bind(repo_id)
     .bind(file_path)
     .bind(schema_id.as_str())
@@ -221,7 +239,7 @@ pub async fn owned_present_chunk_indexes(
         .collect())
 }
 
-/// Present chunk head `t`s for one file in owner∪World.
+/// Present chunk head `t`s for one file across `read_owners`.
 ///
 /// # Errors
 ///
@@ -229,18 +247,19 @@ pub async fn owned_present_chunk_indexes(
 pub async fn readable_chunk_head_ts_for_file(
     pool: &PgPool,
     owner: Owner,
+    read_owners: &[Owner],
     schema_id: &SchemaId,
     repo_id: Uuid,
     file_path: &str,
 ) -> Result<Vec<Uuid>, StorageError> {
     let owner_id = owner.stored_owner_id();
-    let world_id = proxima_core::OwnerRef::World.stored_owner_id();
+    let read_owner_ids = read_owner_ids(owner, read_owners);
     sqlx::query_scalar(
         "SELECT c.t
            FROM proxima_code.code_chunk_v1 c
            JOIN proxima_core.memory m ON m.t = c.t
            JOIN proxima_core.memory_head h ON h.handle = m.handle AND h.t = m.t
-          WHERE h.owner_id IN ($1, $2)
+          WHERE h.owner_id = ANY($2::uuid[])
             AND c.repo_id = $3
             AND c.file_path = $4
             AND c.state = 'Present'
@@ -248,7 +267,7 @@ pub async fn readable_chunk_head_ts_for_file(
           ORDER BY c.chunk_index ASC",
     )
     .bind(owner_id)
-    .bind(world_id)
+    .bind(&read_owner_ids)
     .bind(repo_id)
     .bind(file_path)
     .bind(schema_id.as_str())
