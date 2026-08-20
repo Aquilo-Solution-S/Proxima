@@ -864,3 +864,84 @@ async fn pre_v008_database_fails_closed() {
     let _ = drop_db(&db_name).await;
     result.expect("pre-v0.0.8 fail-closed test failed");
 }
+
+/// `proxima_core.flavor_surface` is the registry as the database sees it,
+/// and `memory.sidecar_tables` is constrained to be a subset of it.
+///
+/// Two things are asserted, because the table is only worth having if both
+/// hold: the seeded rows are exactly flavor #0's declared sidecar surfaces,
+/// and a stamp naming an undeclared table is refused at write time rather
+/// than accepted and then walked past by every registry-driven sweep.
+#[tokio::test]
+async fn flavor_surface_is_the_registry_and_the_stamp_must_be_a_subset() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+
+    if let Err(e) = create_db(&db_name).await {
+        panic!("PG required for tests but admin connect failed: {e}");
+    }
+
+    let url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&url).await?;
+        pg.run_migrations().await?;
+
+        let declared: Vec<String> = sqlx::query_scalar(
+            "SELECT table_name FROM proxima_core.flavor_surface
+              WHERE flavor_id = 'core' ORDER BY table_name",
+        )
+        .fetch_all(pg.pool_for_tests())
+        .await?;
+
+        let mut contract: Vec<String> = proxima_core::FLAVOR_0
+            .schemas
+            .iter()
+            .filter_map(|schema| schema.sidecar_table)
+            .map(str::to_owned)
+            .collect();
+        contract.sort();
+        contract.dedup();
+
+        assert_eq!(
+            declared, contract,
+            "the migration's flavor #0 rows are the contract's sidecar surfaces"
+        );
+
+        let owner_id = Uuid::now_v7();
+        let handle = Uuid::now_v7();
+        sqlx::query("INSERT INTO proxima_core.owners (owner_id, kind) VALUES ($1, 'personal')")
+            .bind(owner_id)
+            .execute(pg.pool_for_tests())
+            .await?;
+        sqlx::query(
+            "INSERT INTO proxima_core.memory_head (handle, kind, schema_id, owner_id, t)
+             VALUES ($1, 'fact', 'core/agent-note-v1', $2, $3)",
+        )
+        .bind(handle)
+        .bind(owner_id)
+        .bind(handle)
+        .execute(pg.pool_for_tests())
+        .await?;
+
+        let err = sqlx::query(
+            "INSERT INTO proxima_core.memory
+                 (handle, t, kind, owner_id, schema_id, sidecar_tables)
+             VALUES ($1, $1, 'fact', $2, 'core/agent-note-v1',
+                     ARRAY['proxima_core.not_a_declared_surface'])",
+        )
+        .bind(handle)
+        .bind(owner_id)
+        .execute(pg.pool_for_tests())
+        .await
+        .expect_err("an undeclared sidecar stamp must be refused");
+        assert!(
+            err.to_string().contains("not_a_declared_surface"),
+            "the refusal names the offending element: {err}"
+        );
+
+        Ok(())
+    }
+    .await;
+
+    let _ = drop_db(&db_name).await;
+    result.expect("flavor_surface subset test failed");
+}

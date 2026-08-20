@@ -503,5 +503,15 @@ async fn create_sidecar_tables(pool: &sqlx::PgPool) -> Result<(), sqlx::Error> {
     )
     .execute(pool)
     .await?;
+    // A test flavor is a flavor: `memory.sidecar_tables` is constrained to
+    // be a subset of `proxima_core.flavor_surface`, so a fixture that
+    // stamps a sidecar has to declare it like any other.
+    sqlx::query(
+        "INSERT INTO proxima_core.flavor_surface (table_name, flavor_id) VALUES
+             ('public.facade_surface_fact_v1', 'facade-test'),
+             ('public.facade_surface_abstraction_v1', 'facade-test')",
+    )
+    .execute(pool)
+    .await?;
     Ok(())
 }
