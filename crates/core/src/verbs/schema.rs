@@ -339,8 +339,9 @@ impl FlavorRegistryFrozen {
     }
 
     /// Memory sidecar tables whose rows stay with the SOURCE owner on
-    /// transfer — [`TransferRule::RetainAtSource`], the declaration that
-    /// replaces `pg_sidecar!(owner_pinned: true)` as the authority.
+    /// transfer — [`crate::flavor::TransferRule::RetainAtSource`], the
+    /// declaration that replaces `pg_sidecar!(owner_pinned: true)` as the
+    /// authority.
     ///
     /// Compliance erase and export select these by the sidecar's own owner
     /// rather than through the Memory, because a transfer leaves them
