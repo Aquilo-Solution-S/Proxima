@@ -667,6 +667,20 @@ impl FlavorContract {
         tables
     }
 
+    /// Whether `table` is one of this flavor's schema sidecars.
+    ///
+    /// Unscoped `core_search_memories` stays on flavor #0's sidecars. That
+    /// used to be a `starts_with("proxima_core.")` test, which is a schema
+    /// name standing in for an ordinal: it happens to be true today and
+    /// says nothing a flavor could not accidentally satisfy.
+    #[must_use]
+    pub fn declares_sidecar_table(&self, table: &str) -> bool {
+        self.schemas
+            .iter()
+            .filter_map(|schema| schema.sidecar_table)
+            .any(|declared| declared == table)
+    }
+
     /// The resource this flavor declares under `scope_key`, if any.
     ///
     /// The authorization gate calls this instead of testing the scope key

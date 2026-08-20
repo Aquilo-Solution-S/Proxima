@@ -19,6 +19,7 @@
 use std::collections::BTreeMap;
 
 use futures_util::future::try_join_all;
+use proxima_core::flavor::{BAND_EXACT, BAND_RESCUE, BAND_SUBSTRING, Band};
 use proxima_core::llm::EMBEDDING_DIM;
 use proxima_core::verbs::query::{
     DEFAULT_HYBRID_SEMANTIC_WEIGHT, EntityKind, MAX_SEARCH_PAGE_LIMIT, MemorySearchPage,
@@ -35,7 +36,6 @@ use crate::pgvector::set_hnsw_search_sql;
 use crate::tuning::PgTuning;
 use crate::verbs::query::projection_sql::projection_search_text;
 
-const CORE_SIDECAR_PREFIX: &str = "proxima_core.";
 const SIDECAR_OVERFETCH_FACTOR: u32 = 20;
 const SIDECAR_OVERFETCH_CAP: u32 = 1_000;
 
@@ -156,10 +156,17 @@ fn core_search_projections<'a>(
 ) -> Vec<&'a MemorySearchProjection> {
     let mut by_table = BTreeMap::<&str, &MemorySearchProjection>::new();
     for projection in projections {
-        // Unscoped search stays on core sidecars. A tag filter is how a
-        // flavor scopes `core_search_memories` (docs/09); those queries
-        // must reach the flavor sidecar that declared `tag_column`.
-        if !projection.sidecar_table.starts_with(CORE_SIDECAR_PREFIX) && req.tags.is_empty() {
+        // Unscoped search stays on flavor #0's sidecars. A tag filter is
+        // how a flavor scopes `core_search_memories` (docs/09); those
+        // queries must reach the flavor sidecar that declared `tag_column`.
+        //
+        // "Core" is the ordinal, asked of the contract. It used to be
+        // `starts_with("proxima_core.")` — a schema name standing in for a
+        // flavor identity, true by accident and satisfiable by any flavor
+        // that picked the same schema.
+        if !proxima_core::FLAVOR_0.declares_sidecar_table(&projection.sidecar_table)
+            && req.tags.is_empty()
+        {
             continue;
         }
         if !payload_kind_matches(req.kind, projection.kind) {
@@ -297,6 +304,20 @@ async fn scan_one_sidecar(
         .collect())
 }
 
+/// A band as SQL renders it: the floor, and the width a normalized rank is
+/// scaled by to fill the window.
+///
+/// Rendered at two decimals rather than through `f32`'s own `Display`,
+/// because `0.45f32 - 0.25f32` is `0.19999999` and emitting that would put
+/// a different literal in the query than the one this builder has always
+/// carried. Two decimals is the precision the bands are declared at.
+fn band_parts(band: Band) -> (String, String) {
+    (
+        format!("{:.2}", band.floor),
+        format!("{:.2}", band.ceiling - band.floor),
+    )
+}
+
 fn lexical_sidecar_sql(
     projection: &MemorySearchProjection,
     req: &MemorySearchRequest,
@@ -319,10 +340,16 @@ fn lexical_sidecar_sql(
     };
     let multilingual = projection.language_column.is_some();
     let rank_tsq = rank_tsquery_expr(projection.language_column.as_deref())?;
+    // The three score windows are named in the contract (`BAND_EXACT`,
+    // `BAND_RESCUE`, `BAND_SUBSTRING`) and rendered from it here. Raw
+    // `ts_rank` is not comparable across corpora; a band is, which is what
+    // makes a cross-flavor merge meaningful. Naming them moved no score:
+    // floor and width below are the literals this SQL already carried.
+    let (rescue_floor, rescue_width) = band_parts(BAND_RESCUE);
     let rescue_score = if rescue && !like_only {
         format!(
             ", CASE WHEN q.any_tsq IS NOT NULL AND {tsv_expr} @@ q.any_tsq
-                    THEN 0.25 + LEAST(COALESCE(ts_rank({tsv_expr}, q.any_tsq, 1|32), 0.0) * 100.0, 1.0) * 0.2
+                    THEN {rescue_floor} + LEAST(COALESCE(ts_rank({tsv_expr}, q.any_tsq, 1|32), 0.0) * 100.0, 1.0) * {rescue_width}
                     ELSE 0.0 END"
         )
     } else {
@@ -343,12 +370,14 @@ fn lexical_sidecar_sql(
         format!("{tsv_expr} @@ q.tsq{rescue_where}")
     };
     let score_expr = if like_only {
-        "0.25::real".to_string()
+        // A flat band: the substring arm ranks nothing, it only admits.
+        format!("{:.2}::real", BAND_SUBSTRING.floor)
     } else {
+        let (exact_floor, exact_width) = band_parts(BAND_EXACT);
         format!(
             "GREATEST(
                     CASE WHEN {tsv_expr} @@ q.tsq
-                         THEN 0.5 + LEAST(COALESCE(ts_rank_cd({tsv_expr}, {rank_tsq}, 32), 0.0), 1.0) * 0.5
+                         THEN {exact_floor} + LEAST(COALESCE(ts_rank_cd({tsv_expr}, {rank_tsq}, 32), 0.0), 1.0) * {exact_width}
                          ELSE 0.0 END{rescue_score},
                     0.0
                 )::real"
@@ -741,5 +770,32 @@ mod tests {
             src.contains("m.owner_id = ANY($8::uuid[])"),
             "owner filter must sit on the sidecar scan, not only admit"
         );
+    }
+
+    /// Parity pin for the band rewire.
+    ///
+    /// The three score windows were inline float literals in this builder.
+    /// They are now `BAND_EXACT`, `BAND_RESCUE` and `BAND_SUBSTRING` in the
+    /// flavor contract, rendered as `floor + LEAST(rank, 1.0) * width`. The
+    /// fragments below are the arithmetic the SQL carried before the lift —
+    /// naming a band must not move a score.
+    #[test]
+    fn the_named_bands_render_the_arithmetic_the_sql_already_had() {
+        use super::{BAND_EXACT, BAND_RESCUE, BAND_SUBSTRING, band_parts};
+
+        assert_eq!(
+            band_parts(BAND_EXACT),
+            ("0.50".to_owned(), "0.50".to_owned())
+        );
+        assert_eq!(
+            band_parts(BAND_RESCUE),
+            ("0.25".to_owned(), "0.20".to_owned())
+        );
+        assert_eq!(
+            band_parts(BAND_SUBSTRING),
+            ("0.25".to_owned(), "0.00".to_owned()),
+            "the substring arm admits, it does not rank: zero width"
+        );
+        assert_eq!(format!("{:.2}::real", BAND_SUBSTRING.floor), "0.25::real");
     }
 }

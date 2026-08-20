@@ -525,7 +525,9 @@ const KERNEL_SURFACES: &[Surface] = &[
         erase: EraseRule::ByKey,
         export: ExportRule::Rows,
         forget: ForgetRule::DumpThenDelete,
-        lexical_language_column: Some("lexical_language"),
+        // The Memory row itself carries no text and no `lexical_language`:
+        // ranking happens in the sidecars and in `sketch`.
+        lexical_language_column: None,
         counter: Some("memories"),
         completeness: None,
     },

@@ -295,10 +295,19 @@ async fn erase_selected(
     delete_goal_refs(tx);
     delete_memory_refs(tx);
 
+    // These two sweeps are the whole sidecar story. There used to be a
+    // second, hardcoded pass underneath each of them —
+    // `delete_fixed_goal_sidecars` naming `task_goal_v1`, and
+    // `delete_fixed_memory_sidecars` naming `agent_derivation_v1`,
+    // `agent_note_v1` and `utterance_v1`. All four are registered schemas,
+    // so the registry pass already deleted their rows and the fixed pass
+    // deleted nothing, every time. What it did instead was hide the failure
+    // mode it looked like insurance against: a core table that fell out of
+    // the registry would have kept working here and gone missing everywhere
+    // else. `the_registry_pass_reaches_every_core_sidecar` pins the set.
     let mut sidecar_rows =
         delete_dynamic_sidecars(tx, tables.goal.as_slice(), "t", "selected_goals", "goal_id")
             .await?;
-    delete_fixed_goal_sidecars(tx).await?;
     // Owner-pinned sidecars are held out of the Memory-keyed sweep: their
     // rows do not follow a transfer, so `selected_memories` is the wrong
     // set for them in both directions. They are erased below, by their own
@@ -318,7 +327,6 @@ async fn erase_selected(
         "memory_id",
     )
     .await?;
-    delete_fixed_memory_sidecars(tx).await?;
 
     let sketches = sqlx::query(
         "DELETE FROM proxima_core.sketch s
@@ -1048,38 +1056,6 @@ async fn selected_content_ids(tx: &mut Tx<'_>) -> Result<Vec<uuid::Uuid>, Storag
     .map_err(map_err)
 }
 
-async fn delete_fixed_goal_sidecars(tx: &mut Tx<'_>) -> Result<(), StorageError> {
-    delete_fixed_by_selected(
-        tx,
-        "proxima_core.task_goal_v1",
-        "t",
-        "selected_goals",
-        "goal_id",
-        "task_goal",
-    )
-    .await?;
-    Ok(())
-}
-
-async fn delete_fixed_memory_sidecars(tx: &mut Tx<'_>) -> Result<(), StorageError> {
-    for table in [
-        "proxima_core.agent_derivation_v1",
-        "proxima_core.agent_note_v1",
-        "proxima_core.utterance_v1",
-    ] {
-        delete_fixed_by_selected(
-            tx,
-            table,
-            "t",
-            "selected_memories",
-            "memory_id",
-            "memory_sidecar",
-        )
-        .await?;
-    }
-    Ok(())
-}
-
 async fn delete_embeddings(tx: &mut Tx<'_>, table: &str) -> Result<u64, StorageError> {
     let table = PgIdent::table(table)?;
     // SQL-POLICY: PgIdent
@@ -1411,6 +1387,37 @@ mod tests {
         assert!(
             src.contains(&live),
             "P1: abandonment counts proxima_core.group_memberships"
+        );
+    }
+
+    /// Parity pin for the deleted `delete_fixed_*_sidecars` overlays.
+    ///
+    /// Those two functions named four core sidecar tables by hand and
+    /// deleted from them a second time, after the registry-driven sweep had
+    /// already done it. The literals below are exactly the tables they
+    /// named; the assertion is that the registry pass reaches each one, so
+    /// removing the overlay removed duplicate work and not coverage.
+    #[test]
+    fn the_registry_pass_reaches_every_core_sidecar() {
+        let registry = proxima_core::FlavorRegistry::new().freeze_or_panic_for_tests();
+        let tables = proxima_core::compliance::ComplianceSidecarTables::for_registry(&registry);
+
+        for table in [
+            "proxima_core.agent_derivation_v1",
+            "proxima_core.agent_note_v1",
+            "proxima_core.utterance_v1",
+        ] {
+            assert!(
+                tables.fact.iter().any(|entry| entry == table),
+                "{table} was in delete_fixed_memory_sidecars; the memory-keyed sweep must reach it"
+            );
+        }
+        assert!(
+            tables
+                .goal
+                .iter()
+                .any(|entry| entry == "proxima_core.task_goal_v1"),
+            "task_goal_v1 was in delete_fixed_goal_sidecars; the goal sweep must reach it"
         );
     }
 }
