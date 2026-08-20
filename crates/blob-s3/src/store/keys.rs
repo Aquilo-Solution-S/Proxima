@@ -34,16 +34,38 @@ pub(super) fn canonical_object_key(upload_id: Uuid) -> String {
     format!("{CANONICAL_OBJECT_PREFIX}{upload_id}")
 }
 
-/// Is `object_key` the locator this store minted for the upload row
-/// `upload_id`?
+/// Which upload row's id minted the object a row names.
+///
+/// A row that uploaded its own bytes minted its own object. A row created
+/// by a cross-owner transfer mounts the object the source already has, and
+/// carries the minting id explicitly — always the id of the row that did
+/// the upload, never of the row it was mounted from, so a chain of mounts
+/// still resolves to the one object that exists.
+pub(super) fn minting_upload_id(upload_id: Uuid, mounted_from_upload_id: Option<Uuid>) -> Uuid {
+    mounted_from_upload_id.unwrap_or(upload_id)
+}
+
+/// Is `object_key` the locator this store minted for this upload row?
 ///
 /// ONE rule, shared by every surface that trusts a stored locator
 /// (`read_url`, the verified read, and reconcile's foreign-locator count),
 /// because they must agree on what "ours" means. `owner` is not consulted:
-/// the row's own id decides, and the owner predicates in the SQL decide
+/// the row's own columns decide, and the owner predicates in the SQL decide
 /// who may reach the row at all.
-pub(super) fn locator_was_minted_here(object_key: &str, upload_id: Uuid) -> bool {
-    object_key == canonical_object_key(upload_id)
+///
+/// The mount column is a parameter rather than a lookup so that no caller
+/// can reach this function without having read it — a caller that fetched
+/// only `upload_id` would silently reject every mounted row, and a
+/// verified-read path that rejects a legitimate row is a data-loss bug
+/// wearing a security bug's clothes. It stays a derivation from the row's
+/// own columns, which is the property the exact-equality test protects:
+/// nothing here is a stored locator taken on trust.
+pub(super) fn locator_was_minted_here(
+    object_key: &str,
+    upload_id: Uuid,
+    mounted_from_upload_id: Option<Uuid>,
+) -> bool {
+    object_key == canonical_object_key(minting_upload_id(upload_id, mounted_from_upload_id))
 }
 
 /// Forget/hydrate/erase: one object per Memory `t`; the derivation is owned by
@@ -90,19 +112,144 @@ mod tests {
     }
 
     /// The read gate compares a stored locator against the key derived from
-    /// the row's OWN upload id. Two rows therefore never share a key, so a
-    /// forged row cannot name another row's object and pass.
+    /// the row's OWN columns. An unmounted row can therefore only name its
+    /// own object, so a forged row cannot name another row's object and
+    /// pass.
     #[test]
     fn one_key_per_upload_row_is_what_makes_the_gate_unforgeable() {
         let mine = Uuid::now_v7();
         let yours = Uuid::now_v7();
 
-        assert!(locator_was_minted_here(&canonical_object_key(mine), mine));
-        assert!(!locator_was_minted_here(&canonical_object_key(yours), mine));
-        assert!(!locator_was_minted_here(&pending_object_key(mine), mine));
+        assert!(locator_was_minted_here(
+            &canonical_object_key(mine),
+            mine,
+            None
+        ));
+        assert!(!locator_was_minted_here(
+            &canonical_object_key(yours),
+            mine,
+            None
+        ));
+        assert!(!locator_was_minted_here(
+            &pending_object_key(mine),
+            mine,
+            None
+        ));
         assert_ne!(canonical_object_key(mine), canonical_object_key(yours));
         // Deriving twice from the same id is stable — the key never moves.
         assert_eq!(canonical_object_key(mine), canonical_object_key(mine));
+    }
+
+    /// A mount moves WHICH id the key derives from, and nothing else.
+    ///
+    /// The destination row of a cross-owner transfer has its own
+    /// `upload_id` and names the source's object. Before the mount column
+    /// existed there was no way to express that without either copying the
+    /// bytes or storing a locator on trust; the column is the third way,
+    /// and it stays a derivation.
+    #[test]
+    fn a_mounted_row_names_the_object_its_source_minted_and_nothing_else() {
+        let source = Uuid::now_v7();
+        let mounted = Uuid::now_v7();
+        let stranger = Uuid::now_v7();
+        let source_key = canonical_object_key(source);
+
+        assert!(
+            locator_was_minted_here(&source_key, mounted, Some(source)),
+            "a mounted row must reach the object its source minted"
+        );
+        assert!(
+            !locator_was_minted_here(&canonical_object_key(mounted), mounted, Some(source)),
+            "a mounted row must NOT reach a key minted for its own id: no such object exists, \
+             and honouring it would let a mount invent an object"
+        );
+        assert!(
+            !locator_was_minted_here(&canonical_object_key(stranger), mounted, Some(source)),
+            "the mount reaches exactly one object, not the whole prefix"
+        );
+        // The mount is what changes the answer. Same row, same key, no
+        // mount column: refused.
+        assert!(
+            !locator_was_minted_here(&source_key, mounted, None),
+            "without the mount the row is back to naming only its own object"
+        );
+    }
+
+    /// MUTANT PIN. A gate weakened in any of the plausible ways must fail
+    /// at least one case above.
+    ///
+    /// The cases and the mutants both live here because a mutant that no
+    /// case kills is the finding: it means the assertions above constrain
+    /// less than they appear to. `minted` is the real rule, expressed once;
+    /// every mutant is a rule someone could reach for while "simplifying"
+    /// it.
+    #[test]
+    fn every_weakening_of_the_gate_is_killed_by_a_case() {
+        let source = Uuid::now_v7();
+        let mounted = Uuid::now_v7();
+        let key = canonical_object_key(source);
+
+        // (locator, upload_id, mounted_from, expected)
+        let cases: &[(String, Uuid, Option<Uuid>, bool)] = &[
+            (canonical_object_key(mounted), mounted, None, true),
+            (key.clone(), mounted, Some(source), true),
+            (key.clone(), mounted, None, false),
+            (canonical_object_key(mounted), mounted, Some(source), false),
+            (format!("{key}x"), source, None, false),
+            (pending_object_key(source), source, None, false),
+            (String::new(), source, None, false),
+        ];
+
+        #[allow(clippy::type_complexity)]
+        let mutants: &[(&str, fn(&str, Uuid, Option<Uuid>) -> bool)] = &[
+            // Ignore the mount column: the pre-dedupe gate, which refuses
+            // every mounted row and would silently break a transferred
+            // citation.
+            ("ignores the mount", |key, upload_id, _| {
+                key == canonical_object_key(upload_id)
+            }),
+            // Trust the mount column when it is present, without deriving.
+            (
+                "honours any key on a mounted row",
+                |key, upload_id, mount| mount.is_some() || key == canonical_object_key(upload_id),
+            ),
+            // Prefix instead of equality.
+            ("prefix match", |key, upload_id, mount| {
+                key.starts_with(&canonical_object_key(mount.unwrap_or(upload_id)))
+            }),
+            // Accept anything under the canonical prefix.
+            ("prefix only", |key, _, _| {
+                key.starts_with(CANONICAL_OBJECT_PREFIX)
+            }),
+            // Accept either id, rather than the derived one.
+            ("either id", |key, upload_id, mount| {
+                key == canonical_object_key(upload_id)
+                    || mount.is_some_and(|m| key == canonical_object_key(m))
+            }),
+            // Always yes.
+            ("open gate", |_, _, _| true),
+        ];
+
+        for (name, mutant) in mutants {
+            let killed = cases.iter().any(|(key, upload_id, mount, expected)| {
+                mutant(key, *upload_id, *mount) != *expected
+            });
+            assert!(
+                killed,
+                "the mutant that {name} passes every case above; the cases do not \
+                 constrain the gate as tightly as they look"
+            );
+        }
+
+        // The real rule passes all of them. Without this the assertions
+        // above are satisfied by a gate nobody could ship.
+        for (key, upload_id, mount, expected) in cases {
+            assert_eq!(
+                locator_was_minted_here(key, *upload_id, *mount),
+                *expected,
+                "{key:?} under upload {upload_id} mounted from {mount:?}"
+            );
+        }
     }
 
     /// Exact equality, and nothing weaker.
@@ -128,7 +275,7 @@ mod tests {
         // Control. Without it every assertion below is satisfied by a gate
         // that refuses unconditionally.
         assert!(
-            locator_was_minted_here(&exact, upload_id),
+            locator_was_minted_here(&exact, upload_id, None),
             "the key this store mints for the row must be honoured"
         );
 
@@ -155,7 +302,7 @@ mod tests {
             String::new(),
         ] {
             assert!(
-                !locator_was_minted_here(&near_miss, upload_id),
+                !locator_was_minted_here(&near_miss, upload_id, None),
                 "{near_miss:?} is not the key minted for this row and must be refused"
             );
         }

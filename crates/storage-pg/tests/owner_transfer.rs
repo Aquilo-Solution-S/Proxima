@@ -19,8 +19,8 @@ use proxima_core::verbs::mcp_call_history::McpCallHistoryRequest;
 use proxima_core::verbs::persist_mcp_call::McpCallLoggedV1;
 use proxima_core::verbs::query::QueryRequest;
 use proxima_core::{
-    AccessKind, ChangeEventKind, EntityId, EntityRef, GoalId, GroupId, MemoryId, OwnerRef,
-    SchemaId, SchemaVersion, StorageError, UserId,
+    AccessKind, ChangeEventKind, ColdObjectStore, EntityId, EntityRef, GoalId, GroupId, MemoryId,
+    OwnerRef, SchemaId, SchemaVersion, StorageError, UserId,
 };
 use proxima_pg_testkit::{create_db, db_url, drop_db};
 use proxima_storage_pg::sidecars::PgMemorySidecar;
@@ -1360,4 +1360,480 @@ async fn transfer_refuses_the_current_owner_as_destination() {
     .await;
     let _ = drop_db(&db_name).await;
     result.expect("self-transfer refusal failed");
+}
+
+/// Seed a completed cited blob under `owner`, returning `(blob_id, upload_id)`.
+///
+/// Written the way the upload lane writes it: the upload row's
+/// `object_key` is the key derived from its own `upload_id`, because that
+/// derivation is the whole read gate. A fixture that invented a key would
+/// pass tests the production reader would refuse.
+async fn seed_cited_blob(
+    pool: &sqlx::PgPool,
+    owner: OwnerRef,
+    hash: &[u8],
+) -> Result<(Uuid, Uuid), sqlx::Error> {
+    sqlx::query(
+        "INSERT INTO proxima_core.owners (owner_id, kind)
+         VALUES ($1, $2::proxima_core.owner_kind) ON CONFLICT DO NOTHING",
+    )
+    .bind(owner.stored_owner_id())
+    .bind(proxima_core::OwnerRefKind::of(&owner).as_str())
+    .execute(pool)
+    .await?;
+    let blob_id: Uuid = sqlx::query_scalar(
+        "INSERT INTO proxima_core.blob (owner_id, schema_id, content_hash)
+         VALUES ($1, 'core/uploaded-blob-v1', $2)
+         RETURNING blob_id",
+    )
+    .bind(owner.stored_owner_id())
+    .bind(hash)
+    .fetch_one(pool)
+    .await?;
+    let upload_id: Uuid = sqlx::query_scalar(
+        "INSERT INTO proxima_core.blob_uploads
+             (owner_id, bucket, object_key, filename, mime, expected_byte_len,
+              status, blob_id, sha256, expires_at, completed_at)
+         VALUES ($1, 'bucket', 'placeholder', 'f.bin', 'application/octet-stream', 3,
+                 'completed', $2, $3, now() + interval '1 day', now())
+         RETURNING upload_id",
+    )
+    .bind(owner.stored_owner_id())
+    .bind(blob_id)
+    .bind(hash)
+    .fetch_one(pool)
+    .await?;
+    sqlx::query(
+        "UPDATE proxima_core.blob_uploads
+            SET object_key = 'objects/' || upload_id::text
+          WHERE upload_id = $1",
+    )
+    .bind(upload_id)
+    .execute(pool)
+    .await?;
+    Ok((blob_id, upload_id))
+}
+
+async fn cite(
+    pool: &sqlx::PgPool,
+    permit: &OwnerWritePermit,
+    key: &str,
+    blob_id: Uuid,
+) -> Result<FactIngestOutcome, StorageError> {
+    let mut cited = draft();
+    cited.ingest_key = Some(key.into());
+    cited.blob_id = Some(blob_id);
+    ingest_fact_atomic(pool, permit, &cited, None).await
+}
+
+/// The refusal that the dedupe arm replaced.
+///
+/// One owner cites the same uploaded document from two series and then
+/// transfers one of them away. Before the arm this was
+/// `Conflict("cited blob is still referenced by another live series under
+/// a different owner")` — and note what the predicate behind that message
+/// actually asked: `owner_id <> <destination>`, which the SOURCE owner
+/// satisfies. So the refusal fired for an owner citing its own document
+/// twice, which is not an exotic case at all; it is what happens the
+/// second time anyone cites a PDF they already uploaded.
+///
+/// Now the destination gets a `blob` row of its own and an upload row that
+/// MOUNTS the source's object: same key, no bytes read or written. The
+/// source keeps everything it had, because its other series still cites
+/// it.
+#[tokio::test]
+async fn a_shared_blob_transfer_dedupes_instead_of_refusing() {
+    let (db_name, pg) = fresh_pg().await;
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
+        let dest = destination();
+        let pool = pg.pool_for_tests();
+
+        let hash = vec![11_u8; 32];
+        let (blob_id, upload_id) = seed_cited_blob(pool, owner, &hash).await?;
+        let source_key: String = sqlx::query_scalar(
+            "SELECT object_key FROM proxima_core.blob_uploads WHERE upload_id = $1",
+        )
+        .bind(upload_id)
+        .fetch_one(pool)
+        .await?;
+
+        let mine = cite(pool, &permit, "shared-mine", blob_id).await?;
+        // A second series cites the very same blob row. This is what used
+        // to make the transfer below impossible. It stays behind, which is
+        // why the row cannot simply change hands.
+        let _also_mine = cite(pool, &permit, "shared-also-mine", blob_id).await?;
+
+        assert!(
+            pg.transfer_to_owner(&permit, EntityId::Memory(mine.memory_id), dest)
+                .await?,
+            "a shared cited blob must no longer refuse the transfer"
+        );
+
+        let moved_to: Uuid =
+            sqlx::query_scalar("SELECT blob_id FROM proxima_core.memory WHERE t = $1")
+                .bind(mine.memory_id.into_inner())
+                .fetch_one(pool)
+                .await?;
+        assert_ne!(
+            moved_to, blob_id,
+            "the destination gets a row of its own, not the source's"
+        );
+        let (dest_owner, dest_schema, dest_hash): (Uuid, String, Vec<u8>) = sqlx::query_as(
+            "SELECT owner_id, schema_id, content_hash FROM proxima_core.blob WHERE blob_id = $1",
+        )
+        .bind(moved_to)
+        .fetch_one(pool)
+        .await?;
+        assert_eq!(dest_owner, dest.stored_owner_id());
+        assert_eq!(dest_schema, "core/uploaded-blob-v1");
+        assert_eq!(dest_hash, hash, "the dedupe key is the content hash");
+
+        // The mount: one new upload row, naming the SOURCE's object.
+        let (mounted_key, mounted_from, mounted_owner): (String, Option<Uuid>, Uuid) =
+            sqlx::query_as(
+                "SELECT object_key, mounted_from_upload_id, owner_id
+                   FROM proxima_core.blob_uploads WHERE blob_id = $1",
+            )
+            .bind(moved_to)
+            .fetch_one(pool)
+            .await?;
+        assert_eq!(mounted_owner, dest.stored_owner_id());
+        assert_eq!(
+            mounted_key, source_key,
+            "the mount names the object that already exists; nothing is copied"
+        );
+        assert_eq!(
+            mounted_from,
+            Some(upload_id),
+            "the mount records which row minted the object it reads"
+        );
+
+        // The source is untouched: the other owner still cites it.
+        let source_owner: Uuid =
+            sqlx::query_scalar("SELECT owner_id FROM proxima_core.blob WHERE blob_id = $1")
+                .bind(blob_id)
+                .fetch_one(pool)
+                .await?;
+        assert_eq!(
+            source_owner,
+            owner.stored_owner_id(),
+            "a still-cited source row does not change hands"
+        );
+        let orphaned: i64 = sqlx::query_scalar(
+            "SELECT count(*)::bigint FROM proxima_core.memory
+              WHERE blob_id = $1 AND owner_id <> $2",
+        )
+        .bind(blob_id)
+        .bind(owner.stored_owner_id())
+        .fetch_one(pool)
+        .await?;
+        assert_eq!(
+            orphaned, 0,
+            "no memory may be left citing a blob row owned by someone else \
+             (Causa/Citations.lean: memory_cites m b -> memory_owner m = blob_owner b)"
+        );
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("shared blob dedupe failed");
+}
+
+/// The common case does not pay for the uncommon one.
+///
+/// Nothing else cites the bytes, so the rows change hands in place: same
+/// `blob_id`, same `upload_id`, no mount. The `blob_id` matters because it
+/// is the `cited_object_id` a client reads by — minting a new one on every
+/// transfer would invalidate citation ids for no reason.
+#[tokio::test]
+async fn an_unshared_blob_still_moves_in_place_with_no_mount() {
+    let (db_name, pg) = fresh_pg().await;
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
+        let dest = destination();
+        let pool = pg.pool_for_tests();
+
+        let (blob_id, upload_id) = seed_cited_blob(pool, owner, &[12_u8; 32]).await?;
+        let written = cite(pool, &permit, "solo", blob_id).await?;
+        assert!(
+            pg.transfer_to_owner(&permit, EntityId::Memory(written.memory_id), dest)
+                .await?
+        );
+
+        let (blob_owner, blob_count): (Uuid, i64) = sqlx::query_as(
+            "SELECT owner_id, (SELECT count(*)::bigint FROM proxima_core.blob)
+               FROM proxima_core.blob WHERE blob_id = $1",
+        )
+        .bind(blob_id)
+        .fetch_one(pool)
+        .await?;
+        assert_eq!(blob_owner, dest.stored_owner_id());
+        assert_eq!(blob_count, 1, "moving in place mints no second row");
+
+        let (upload_owner, mounted_from): (Uuid, Option<Uuid>) = sqlx::query_as(
+            "SELECT owner_id, mounted_from_upload_id
+               FROM proxima_core.blob_uploads WHERE upload_id = $1",
+        )
+        .bind(upload_id)
+        .fetch_one(pool)
+        .await?;
+        assert_eq!(upload_owner, dest.stored_owner_id());
+        assert_eq!(mounted_from, None, "a move is not a mount");
+
+        let cited: Option<Uuid> =
+            sqlx::query_scalar("SELECT blob_id FROM proxima_core.memory WHERE t = $1")
+                .bind(written.memory_id.into_inner())
+                .fetch_one(pool)
+                .await?;
+        assert_eq!(
+            cited,
+            Some(blob_id),
+            "the citation id a client already holds does not move"
+        );
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("unshared blob move failed");
+}
+
+/// The UNIQUE violation the arm also closes.
+///
+/// `blob` is unique on `(owner_id, schema_id, content_hash)`. If the
+/// destination already uploaded the same bytes, the old in-place move
+/// `UPDATE blob SET owner_id = <dest>` collided with the row already
+/// sitting there and the whole transfer failed on a constraint the caller
+/// could do nothing about. Now the destination's own row wins and this
+/// series' citation is repointed at it.
+#[tokio::test]
+async fn a_destination_that_already_holds_the_bytes_keeps_its_own_row() {
+    let (db_name, pg) = fresh_pg().await;
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
+        let dest = destination();
+        let pool = pg.pool_for_tests();
+
+        let hash = vec![13_u8; 32];
+        let (source_blob, _) = seed_cited_blob(pool, owner, &hash).await?;
+        let (dest_blob, dest_upload) = seed_cited_blob(pool, dest, &hash).await?;
+
+        let written = cite(pool, &permit, "collide", source_blob).await?;
+        assert!(
+            pg.transfer_to_owner(&permit, EntityId::Memory(written.memory_id), dest)
+                .await?,
+            "the destination already holding these bytes is not a conflict"
+        );
+
+        let cited: Option<Uuid> =
+            sqlx::query_scalar("SELECT blob_id FROM proxima_core.memory WHERE t = $1")
+                .bind(written.memory_id.into_inner())
+                .fetch_one(pool)
+                .await?;
+        assert_eq!(
+            cited,
+            Some(dest_blob),
+            "the citation follows the destination's existing row"
+        );
+        let mounted_from: Option<Uuid> = sqlx::query_scalar(
+            "SELECT mounted_from_upload_id FROM proxima_core.blob_uploads WHERE upload_id = $1",
+        )
+        .bind(dest_upload)
+        .fetch_one(pool)
+        .await?;
+        assert_eq!(
+            mounted_from, None,
+            "the destination already had its own object; there is nothing to mount"
+        );
+        let source_still_there: bool = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM proxima_core.blob WHERE blob_id = $1)",
+        )
+        .bind(source_blob)
+        .fetch_one(pool)
+        .await?;
+        assert!(
+            source_still_there,
+            "the transfer does not decide the fate of the source's object; erase does"
+        );
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("destination-holds-bytes transfer failed");
+}
+
+/// A mount of a mount still resolves to the row that uploaded bytes.
+///
+/// B mounts A's object. C then transfers from B. If C recorded B's
+/// `upload_id` it would derive a key for an object that never existed —
+/// B never uploaded anything. The mount column therefore always carries
+/// the MINTING id, and the chain stays one hop deep however long it gets.
+#[tokio::test]
+async fn a_mount_of_a_mount_still_names_the_object_that_was_uploaded() {
+    let (db_name, pg) = fresh_pg().await;
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
+        let first = destination();
+        let second = destination();
+        let pool = pg.pool_for_tests();
+
+        let hash = vec![14_u8; 32];
+        let (blob_id, minting_upload) = seed_cited_blob(pool, owner, &hash).await?;
+        let mine = cite(pool, &permit, "chain-mine", blob_id).await?;
+        let _also_mine = cite(pool, &permit, "chain-also-mine", blob_id).await?;
+
+        // Hop one: shared, so the destination mounts.
+        assert!(
+            pg.transfer_to_owner(&permit, EntityId::Memory(mine.memory_id), first)
+                .await?
+        );
+        let hop_one: Uuid =
+            sqlx::query_scalar("SELECT blob_id FROM proxima_core.memory WHERE t = $1")
+                .bind(mine.memory_id.into_inner())
+                .fetch_one(pool)
+                .await?;
+
+        // Make hop one's row shared too, so hop two mounts rather than moves.
+        let first_permit = OwnerWritePermit::new_for_tests(first, AccessKind::Fact);
+        let shadow = cite(pool, &first_permit, "chain-shadow", hop_one).await?;
+        let _ = shadow;
+        assert!(
+            pg.transfer_to_owner(&first_permit, EntityId::Memory(mine.memory_id), second)
+                .await?
+        );
+
+        let hop_two: Uuid =
+            sqlx::query_scalar("SELECT blob_id FROM proxima_core.memory WHERE t = $1")
+                .bind(mine.memory_id.into_inner())
+                .fetch_one(pool)
+                .await?;
+        let (key, mounted_from): (String, Option<Uuid>) = sqlx::query_as(
+            "SELECT object_key, mounted_from_upload_id
+               FROM proxima_core.blob_uploads WHERE blob_id = $1",
+        )
+        .bind(hop_two)
+        .fetch_one(pool)
+        .await?;
+        assert_eq!(
+            mounted_from,
+            Some(minting_upload),
+            "the second mount records the row that uploaded, not the row it copied from"
+        );
+        assert_eq!(
+            key,
+            format!("objects/{minting_upload}"),
+            "and therefore names the one object that exists"
+        );
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("chained mount failed");
+}
+
+/// Erasing one owner of a mounted object must not destroy the other's bytes.
+///
+/// The dedupe arm made the object many-to-one against the rows that name
+/// it, which invalidated the invariant `delete_blobs` relied on: "the row
+/// is going, so the object is going". This is that invalidation, tested
+/// from both sides — the erase that must leave the bytes alone, and the
+/// later erase that must destroy them.
+///
+/// It asserts on the OBJECT, not on `cold_purge_pending`. The pending row
+/// is a crash-recovery mark that `finalize_cold_purge` clears as soon as
+/// the destruction succeeds, so a test that counted queue rows would read
+/// zero in both the "withheld" and the "destroyed" case and pass for the
+/// wrong reason in one of them.
+#[tokio::test]
+async fn erasing_one_owner_of_a_mounted_object_does_not_destroy_the_bytes() {
+    let (db_name, pg, cold) = fresh_pg_with_cold().await;
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
+        let dest = destination();
+        let pool = pg.pool_for_tests();
+
+        let (blob_id, upload_id) = seed_cited_blob(pool, owner, &[15_u8; 32]).await?;
+        let object_key = format!("objects/{upload_id}");
+        cold.put(&object_key, b"the shared bytes").await?;
+
+        let mine = cite(pool, &permit, "purge-mine", blob_id).await?;
+        let _also_mine = cite(pool, &permit, "purge-also-mine", blob_id).await?;
+        assert!(
+            pg.transfer_to_owner(&permit, EntityId::Memory(mine.memory_id), dest)
+                .await?
+        );
+        let mounts: i64 = sqlx::query_scalar(
+            "SELECT count(*)::bigint FROM proxima_core.blob_uploads WHERE object_key = $1",
+        )
+        .bind(&object_key)
+        .fetch_one(pool)
+        .await?;
+        assert_eq!(mounts, 2, "two rows now name one object");
+
+        // The destination erases. Its row goes; the bytes must not,
+        // because the original owner still reads them.
+        let group_id = match dest {
+            OwnerRef::Group(group_id) => group_id,
+            OwnerRef::Personal(_) => panic!("a transfer destination is a group"),
+        };
+        let auth =
+            EraseAuthorization::new_for_tests(ComplianceEraseTarget::GroupOwner { group_id });
+        let erased = pg
+            .erase_group_owner_if_abandoned(&auth, group_id, false, &contract_sidecar_tables())
+            .await?;
+        assert!(
+            matches!(erased, ComplianceEraseOutcome::Completed { .. }),
+            "the destination's erase completes: {erased:?}"
+        );
+        assert_eq!(
+            cold.get(&object_key).await?,
+            b"the shared bytes".to_vec(),
+            "an object another owner still names survives that owner's erase"
+        );
+        let survivors: i64 = sqlx::query_scalar(
+            "SELECT count(*)::bigint FROM proxima_core.blob_uploads WHERE object_key = $1",
+        )
+        .bind(&object_key)
+        .fetch_one(pool)
+        .await?;
+        assert_eq!(survivors, 1, "the source's row survives the other's erase");
+
+        // Now the last owner goes, and the bytes go with it.
+        let user_id = match owner {
+            OwnerRef::Personal(user_id) => user_id,
+            OwnerRef::Group(_) => panic!("seeded as a personal owner"),
+        };
+        let last = EraseAuthorization::new_for_tests(ComplianceEraseTarget::PersonalOwner {
+            user_id,
+            drop_event_id: "drop-1".into(),
+        });
+        let erased = pg
+            .erase_personal_owner_if_drop_verified(
+                &last,
+                user_id,
+                false,
+                &contract_sidecar_tables(),
+            )
+            .await?;
+        assert!(
+            matches!(erased, ComplianceEraseOutcome::Completed { .. }),
+            "the last owner's erase completes: {erased:?}"
+        );
+        assert!(
+            matches!(
+                cold.get(&object_key).await,
+                Err(proxima_core::StorageError::NotFound)
+            ),
+            "with no row left naming it, the object is finally destroyed"
+        );
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("refcounted object purge failed");
 }

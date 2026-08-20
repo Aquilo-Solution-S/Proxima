@@ -121,6 +121,14 @@ pub enum FlavorRegistryError {
         levels: usize,
         classes: usize,
     },
+    /// A cited-object or citation-mapping schema declared a sidecar table.
+    /// Those tables point at a blob row by convention rather than by
+    /// constraint, so the shared-blob dedupe arm's remap cannot find them.
+    CitationSidecarNotRemappable {
+        flavor_id: &'static str,
+        schema_id: SchemaId,
+        table: &'static str,
+    },
 }
 
 impl std::fmt::Display for FlavorRegistryError {
@@ -271,6 +279,19 @@ impl std::fmt::Display for FlavorRegistryError {
                  offers exactly {classes} tsvector classes (A, B, C, D — see `PostgreSQL` \
                  12.3.1); collapsing two levels into one class would make ts_rank's weight \
                  array describe a document it is not scoring"
+            ),
+            Self::CitationSidecarNotRemappable {
+                flavor_id,
+                schema_id,
+                table,
+            } => write!(
+                f,
+                "flavor {flavor_id} schema {schema_id} declares sidecar table {table} for a \
+                 citation payload; a cross-owner transfer now dedupes a shared blob onto a \
+                 NEW blob row, and the columns that must follow it are the ones declared on \
+                 `TransferRule::FollowOrDedupe` -- a citation sidecar points at a blob by \
+                 convention with no SQL foreign key, so nothing would repoint it and the \
+                 rows would keep naming the source owner's row"
             ),
         }
     }

@@ -687,8 +687,15 @@ const KERNEL_SURFACES: &[Surface] = &[
         table: "proxima_core.blob",
         key: KeyShape::BlobId,
         owner_columns: &["owner_id"],
-        transfer: TransferRule::FollowIfUnshared {
-            shared_by: &["memory.blob_id", "cooled.blob_id"],
+        // The dedupe arm. A blob shared across owners used to refuse the
+        // transfer outright; now the destination gets its own row over the
+        // same object. `blob_uploads.blob_id` is in the remap list because
+        // the read path requires the blob row and the upload row to name
+        // the same owner — an upload row left pointing at the source's
+        // blob would locate bytes for whoever now holds it.
+        transfer: TransferRule::FollowOrDedupe {
+            dedupe_key: &["owner_id", "schema_id", "content_hash"],
+            remaps: &["memory.blob_id", "cooled.blob_id", "blob_uploads.blob_id"],
         },
         erase: EraseRule::ByOwner,
         export: ExportRule::Allowlist(&["blob_id", "schema_id", "content_hash"]),
@@ -722,9 +729,11 @@ const KERNEL_SURFACES: &[Surface] = &[
         table: "proxima_core.content",
         key: KeyShape::Custom(&["content_id"]),
         owner_columns: &["owner_id"],
-        // RESERVED-ARM MEMBER. `content` is the one implemented member of
-        // FollowOrDedupe; `blob` deliberately stays FollowIfUnshared and
-        // keeps refusing with Conflict until the Phase-2 dedupe arm lands.
+        // The arm's original member, and the shape `blob` was made to
+        // copy: ensure a destination-owned row, remap the referring
+        // columns, GC the orphan. The difference is that `content` has an
+        // orphan and nothing else, while `blob` also has an object in S3
+        // that two owners may now name.
         transfer: TransferRule::FollowOrDedupe {
             dedupe_key: &["owner_id", "schema_id", "content_hash"],
             remaps: &["memory.content_id", "cooled.content_id"],

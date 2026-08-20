@@ -478,20 +478,26 @@ pub enum Enforcement {
 
 /// What a transfer does to one surface.
 ///
-/// Six arms describe the shipped tree; the seventh
-/// ([`TransferRule::FollowOrDedupe`]) is reserved vocabulary with exactly
-/// one member (`content`) — the landing pad for the Phase-2 shared-blob
-/// dedupe arm. `blob` deliberately stays [`TransferRule::FollowIfUnshared`]
-/// and keeps refusing with `Conflict` until then (plan §4.5.3).
+/// Six arms describe the shipped tree, and every one of them has a member.
+/// [`TransferRule::FollowOrDedupe`] was reserved vocabulary with exactly
+/// one member (`content`) while `blob` refused cross-owner shared
+/// transfers with `Conflict`; the dedupe arm landed, `blob` joined it, and
+/// `FollowIfUnshared` — which then had zero members — was deleted, the
+/// same way `FollowAndRemint` was.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TransferRule {
     /// `UPDATE` every `owner_columns` to the destination.
     Follow,
-    /// Move only when no other live series under a different owner
-    /// references the row; `Conflict` otherwise.
-    FollowIfUnshared { shared_by: &'static [&'static str] },
     /// Move, or — when the destination already owns an identical row —
     /// remap the referring columns and GC the orphan.
+    ///
+    /// `remaps` names the referring columns this crate can see. Columns
+    /// that point at the row by convention rather than by constraint —
+    /// every flavor's cited-object and citation-mapping sidecars point at
+    /// a `blob_id` with no SQL FK — cannot be listed here, because the
+    /// flavor declaring them is not the flavor declaring this surface.
+    /// The transfer walks the frozen registry for those, exactly as
+    /// compliance erase does.
     FollowOrDedupe {
         dedupe_key: &'static [&'static str],
         remaps: &'static [&'static str],

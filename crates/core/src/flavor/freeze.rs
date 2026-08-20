@@ -160,6 +160,34 @@ impl FlavorRegistry {
                     classes: crate::flavor::contract::TSVECTOR_WEIGHT_CLASSES.len(),
                 });
             }
+            // The shared-blob dedupe arm's blind spot, made loud.
+            //
+            // A cross-owner transfer of a shared blob now gives the
+            // destination a NEW `blob` row and repoints the columns that
+            // reference it. Those columns are enumerable exactly because
+            // they are foreign keys. A cited-object or citation-mapping
+            // sidecar references a blob by convention — `cited_object_id`
+            // holds a `blob_id` with nothing in the catalog saying so — and
+            // the remap would walk straight past it, leaving the rows
+            // pointing at the source owner's row after the citation moved.
+            //
+            // Today every such schema is opaque (`sidecar_table: None`),
+            // which is why the arm is safe to land. Declaring one is the
+            // moment the remap needs designing, so that is the moment this
+            // refuses, rather than the moment a transfer silently splits a
+            // citation from its bytes.
+            if matches!(
+                schema.kind,
+                crate::verbs::schema::PayloadKind::CitedObject
+                    | crate::verbs::schema::PayloadKind::CitationMapping
+            ) && let Some(table) = schema.sidecar_table
+            {
+                return Err(FlavorRegistryError::CitationSidecarNotRemappable {
+                    flavor_id: contract.flavor_id,
+                    schema_id,
+                    table,
+                });
+            }
             let registered = self.schemas.iter().any(|info| {
                 info.schema_id == schema_id
                     && info.schema_version == schema.schema_version()
@@ -521,6 +549,34 @@ mod tests {
         &[],
         &[],
     );
+    /// A citation payload that declared a table of its own.
+    ///
+    /// The shared-blob dedupe arm repoints a citation at a new `blob` row,
+    /// and finds the columns to repoint by following foreign keys. This
+    /// table's `cited_object_id` would hold a `blob_id` with no FK saying
+    /// so, so the remap would walk past it and leave the rows pointing at
+    /// the wrong owner's blob after a transfer.
+    static CITATION_WITH_A_SIDECAR: FlavorContract = contract(
+        7,
+        &[SchemaContract {
+            id: SchemaRef::new(FIXTURE_FLAVOR, "thing", 1),
+            kind: PayloadKind::CitationMapping,
+            sidecar_table: Some("test_flavor.thing_v1"),
+            search: SearchProjectionDecl::None {
+                why: "a fixture, not a surface",
+            },
+            embedding: EmbeddingRecipe::Never {
+                why: "a fixture, not a memory",
+            },
+            transfer: TransferRule::StaysOnKey,
+            provenance: Provenance::None,
+            surfaces: &[],
+            natural_key_columns: &[],
+            special_category: false,
+        }],
+        &[],
+        &[],
+    );
     /// Five distinct relative weights on one projection unit. The
     /// declaration is free of `PostgreSQL`'s four-class limit right up to
     /// the moment the generator has to emit `setweight`, and this is that
@@ -614,6 +670,9 @@ mod tests {
     /// going red — and the resource rejection in particular is the whole of
     /// the resources-are-substrate ruling, enforced in five lines.
     #[test]
+    // One line per cross-check plus its fixture reference. Splitting it
+    // would put half the checks in a second function to forget one in.
+    #[allow(clippy::too_many_lines)]
     fn each_contract_cross_check_rejects_its_own_shape() {
         #[allow(clippy::type_complexity)]
         let cases: Vec<(
@@ -682,6 +741,19 @@ mod tests {
                         FlavorRegistryError::ProjectionWeightLevels {
                             levels: 5,
                             classes: 4,
+                            ..
+                        }
+                    )
+                },
+            ),
+            (
+                "a citation payload declares a sidecar the blob remap cannot reach",
+                |registry| registry.contracts.push(&CITATION_WITH_A_SIDECAR),
+                |err| {
+                    matches!(
+                        err,
+                        FlavorRegistryError::CitationSidecarNotRemappable {
+                            table: "test_flavor.thing_v1",
                             ..
                         }
                     )

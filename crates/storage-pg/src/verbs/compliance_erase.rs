@@ -1190,6 +1190,14 @@ struct BlobEraseCounts {
 /// `blob_uploads` rows with a NULL `blob_id` are pending or aborted uploads
 /// attributable to the owner and to no source, so source-scope erase leaves
 /// them exactly as it leaves owner-level delegated-authority grants.
+///
+/// ROW deletion is unconditional; OBJECT deletion is not. `blob` rows are
+/// per-owner by `UNIQUE (owner_id, schema_id, content_hash)`, so deleting
+/// this owner's rows can never touch another owner's — that part of the
+/// invariant above is untouched by the shared-blob dedupe arm. The S3
+/// object is the thing the arm made shareable, and
+/// [`enqueue_blob_object_keys`] is where "the row is going" stopped
+/// implying "the bytes are going".
 async fn delete_blobs(
     tx: &mut Tx<'_>,
     owner: OwnerRef,
@@ -1265,6 +1273,25 @@ async fn delete_blobs(
     })
 }
 
+/// Which of the erased scope's objects may actually be destroyed.
+///
+/// REFCOUNT BY QUERY, not by counter — `gc_unreferenced_content`'s idiom,
+/// one level down. Before the shared-blob dedupe arm, an object had exactly
+/// one `blob_uploads` row and "the row is going" and "the object is going"
+/// were the same statement. A mount makes the relation many-to-one: two
+/// owners' rows may name one object, so erasing one owner must leave the
+/// bytes the other still reads.
+///
+/// The anti-join runs BEFORE the erase deletes this scope's rows, so it has
+/// to exclude them explicitly rather than rely on them being gone: the
+/// `NOT EXISTS` asks whether any row OUTSIDE the erased scope names the
+/// key. Running it after the deletes would be simpler and wrong in the
+/// other direction — nothing else in the transaction may observe the rows
+/// as deleted before the commit that publishes it.
+///
+/// A key held back here is not leaked: it stays reachable through the
+/// surviving owner's rows, and becomes an ordinary orphan for the bucket
+/// sweep only once that owner's rows go too.
 async fn enqueue_blob_object_keys(
     tx: &mut Tx<'_>,
     owner_id: uuid::Uuid,
@@ -1275,9 +1302,15 @@ async fn enqueue_blob_object_keys(
         SelectionScope::Owner => sqlx::query_scalar(
             "INSERT INTO proxima_core.cold_purge_pending
                  (object_key, owner_id, compliance_operation_id)
-             SELECT DISTINCT object_key, owner_id, $2
-               FROM proxima_core.blob_uploads
-              WHERE owner_id = $1
+             SELECT DISTINCT u.object_key, u.owner_id, $2
+               FROM proxima_core.blob_uploads u
+              WHERE u.owner_id = $1
+                AND NOT EXISTS (
+                        SELECT 1
+                          FROM proxima_core.blob_uploads other
+                         WHERE other.object_key = u.object_key
+                           AND other.owner_id <> $1
+                    )
              ON CONFLICT (object_key) DO UPDATE SET
                  enqueued_at = now(),
                  compliance_operation_id = COALESCE(
@@ -1297,6 +1330,17 @@ async fn enqueue_blob_object_keys(
              SELECT DISTINCT u.object_key, u.owner_id, $1
                FROM proxima_core.blob_uploads u
                JOIN selected_blobs sb ON sb.blob_id = u.blob_id
+              WHERE NOT EXISTS (
+                        SELECT 1
+                          FROM proxima_core.blob_uploads other
+                         WHERE other.object_key = u.object_key
+                           AND other.upload_id <> u.upload_id
+                           AND NOT EXISTS (
+                                   SELECT 1
+                                     FROM selected_blobs sb2
+                                    WHERE sb2.blob_id = other.blob_id
+                               )
+                    )
              ON CONFLICT (object_key) DO UPDATE SET
                  enqueued_at = now(),
                  compliance_operation_id = COALESCE(

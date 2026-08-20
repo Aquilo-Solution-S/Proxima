@@ -466,7 +466,14 @@ def run_fixture(path: Path) -> int:
 # would be a second copy of the vector expression the generator exists to
 # be the only copy of — the fixture would agree with itself and disagree
 # with production.
-EXPECTED_DYNAMIC_SQL_SITES = 66
+#
+# 66 -> 67 with the identity re-proof
+# (`storage-pg/tests/search_projection_identity.rs`). Test-only, and the
+# same reason as the two fixtures above: it hand-seeds rows and keeps
+# their projection with the generator's own statement, because a test that
+# proved the projection returns the pre-projection results while writing
+# its vector by hand would have proved nothing about production.
+EXPECTED_DYNAMIC_SQL_SITES = 67
 
 
 def run_self_test() -> int:

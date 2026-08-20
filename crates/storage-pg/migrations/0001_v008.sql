@@ -720,11 +720,44 @@ CREATE TABLE proxima_core.blob_uploads (
     error_message text,
     expires_at timestamptz NOT NULL,
     completed_at timestamptz,
-    aborted_at timestamptz
+    aborted_at timestamptz,
+    -- The upload row whose id minted the object this row names, when that
+    -- is not this row itself. NULL means "I minted my own object", which
+    -- is every row an upload creates; a cross-owner transfer sets it, so
+    -- the destination gets a row of its own over the same bytes instead of
+    -- a copy of the bytes (OCI's cross-repo blob mount, same shape).
+    --
+    -- Always the MINTING id, never the immediate source: mounting B from
+    -- A and then C from B must leave C naming A's object, because B never
+    -- had one of its own. The transfer writes
+    -- COALESCE(source.mounted_from_upload_id, source.upload_id).
+    --
+    -- DELIBERATELY NOT A FOREIGN KEY, against the projection map's §3.5
+    -- prescription. A reference to blob_uploads (upload_id) makes one
+    -- owner's mount a veto over another owner's erase: NO ACTION aborts
+    -- the source's Art. 17 deletion, SET NULL silently breaks the
+    -- destination's read (the row would then claim a key it did not mint
+    -- and the gate would reject it), and CASCADE deletes the
+    -- destination's row outright. Erase must stay owner-scoped, so the
+    -- column is a derivation input rather than a relationship. It cannot
+    -- dangle onto someone else's object either: upload_id is uuidv7 and
+    -- is never reused, so a pointer to a deleted row resolves to a key
+    -- nothing else will ever mint.
+    mounted_from_upload_id uuid,
+    CONSTRAINT blob_uploads_mount_not_self_chk
+        CHECK (mounted_from_upload_id IS DISTINCT FROM upload_id)
 );
 
 CREATE INDEX blob_uploads_owner_status_idx
     ON proxima_core.blob_uploads (owner_id, status);
+
+-- Refcount-by-query for the object, the way gc_unreferenced_content is
+-- refcount-by-query for the row. Two owners may now name one object, so
+-- "delete the object when its row goes" became "delete the object when no
+-- surviving row names it" -- an anti-join that wants this index and no
+-- stored counter.
+CREATE INDEX blob_uploads_object_key_idx
+    ON proxima_core.blob_uploads (object_key);
 
 CREATE TYPE proxima_core.access_ceiling AS ENUM (
     'none',
@@ -910,6 +943,21 @@ $$;
 
 -- Content is append-only. `owner_id` may move: an owner-to-owner transfer
 -- is a series transfer (MemoryHeadAligned), not a new (handle, t).
+--
+-- `blob_id` may move too, and ONLY onto identical bytes. The Lean model
+-- (Causa/Citations.lean) requires `memory_cites m b -> memory_owner m =
+-- blob_owner b`: a memory and the blob row it cites name the same owner.
+-- A transfer moves `owner_id`, so something has to give -- the pre-dedupe
+-- code kept the invariant by moving the blob row along, or by refusing
+-- when it could not, and the dedupe arm keeps it by repointing the
+-- citation at the destination's own row over the same object.
+--
+-- The `content_hash` and `schema_id` equality check is what stops that
+-- from being a hole. `content_id` has been freely mutable here for the
+-- same remap reason with no such check, which means nothing but the
+-- calling code stops it repointing at unrelated bytes. This is that same
+-- move, done properly: the database, not the caller's memory, is what
+-- guarantees a repointed citation still cites what it cited.
 CREATE FUNCTION proxima_core.memory_owner_or_append_only() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -920,11 +968,25 @@ BEGIN
        OR NEW.schema_id IS DISTINCT FROM OLD.schema_id
        OR NEW.source_id IS DISTINCT FROM OLD.source_id
        OR NEW.ingest_key IS DISTINCT FROM OLD.ingest_key
-       OR NEW.blob_id IS DISTINCT FROM OLD.blob_id
        OR NEW.origins IS DISTINCT FROM OLD.origins
        OR NEW.refs IS DISTINCT FROM OLD.refs
        OR NEW.sidecar_tables IS DISTINCT FROM OLD.sidecar_tables THEN
         RAISE EXCEPTION 'append-only: % does not accept UPDATE', TG_TABLE_NAME
+            USING ERRCODE = '25006';
+    END IF;
+    IF NEW.blob_id IS DISTINCT FROM OLD.blob_id
+       AND NOT EXISTS (
+               SELECT 1
+                 FROM proxima_core.blob old_blob
+                 JOIN proxima_core.blob new_blob
+                   ON new_blob.schema_id = old_blob.schema_id
+                  AND new_blob.content_hash = old_blob.content_hash
+                WHERE old_blob.blob_id = OLD.blob_id
+                  AND new_blob.blob_id = NEW.blob_id
+           ) THEN
+        RAISE EXCEPTION
+            'append-only: %.blob_id may only be repointed at a blob row naming the same '
+            'schema_id and content_hash', TG_TABLE_NAME
             USING ERRCODE = '25006';
     END IF;
     RETURN NEW;
