@@ -1257,9 +1257,7 @@ mod pg_tests {
                 std::time::Duration::from_secs(3),
             )?;
             let registry = FlavorRegistry::new().freeze_or_panic_for_tests();
-            let pg = pg
-                .clone()
-                .with_search_projections(registry.search_projections().to_vec());
+            let pg = pg.clone().with_flavors(&registry);
             let engine = Engine::new(registry)
                 .with_storage_ports(Arc::new(pg.clone()).storage_ports())
                 .with_embedding_runtime_policy(policy)
@@ -1521,9 +1519,7 @@ mod pg_tests {
                 std::time::Duration::from_secs(3),
             )?;
             let registry = FlavorRegistry::new().freeze_or_panic_for_tests();
-            let configured_pg = pg
-                .clone()
-                .with_search_projections(registry.search_projections().to_vec());
+            let configured_pg = pg.clone().with_flavors(&registry);
             let engine = Engine::new(registry)
                 .with_storage_ports(Arc::new(configured_pg).storage_ports())
                 .with_embedding_runtime_policy(policy)
@@ -1648,9 +1644,7 @@ mod pg_tests {
                 std::time::Duration::from_secs(3),
             )?;
             let registry = FlavorRegistry::new().freeze_or_panic_for_tests();
-            let configured_pg = pg
-                .clone()
-                .with_search_projections(registry.search_projections().to_vec());
+            let configured_pg = pg.clone().with_flavors(&registry);
             let engine = Arc::new(
                 Engine::new(registry)
                     .with_storage_ports(Arc::new(configured_pg).storage_ports())

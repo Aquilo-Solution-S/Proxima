@@ -420,8 +420,7 @@ impl ProximaBuilder {
         .map_err(embed_storage_error)?;
         let pg = pg
             .with_sidecars(pg_sidecars.as_ref().clone())
-            .with_search_projections(registry.search_projections().to_vec())
-            .with_embed_units(registry.embed_units().to_vec())
+            .with_flavors(&registry)
             .with_embedding_runtime_policy(embedding_runtime_policy);
 
         let pool = pg.clone_pool_for_backend();

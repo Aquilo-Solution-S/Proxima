@@ -6,7 +6,6 @@ use proxima_core::verbs::fact_ingest::FactWriteCommand;
 use proxima_core::verbs::query::{
     EntityKind, MemoryLineageCursor, MemoryLineageDirection, MemoryLineageRequest, QueryRequest,
 };
-use proxima_core::verbs::schema::MemorySearchProjection;
 use proxima_core::{
     AccessKind, EdgeKind, EdgeTargetProjection, EntityRef, OwnerRef, SchemaId, SchemaVersion,
     UserId, project_listed_edge, project_window_edges,
@@ -15,19 +14,6 @@ use proxima_pg_testkit::{create_db, db_url, drop_db};
 use proxima_storage_pg::PgStorage;
 use proxima_storage_pg::verbs::fact_ingest::ingest_fact_atomic;
 use uuid::Uuid;
-
-fn note_projection() -> MemorySearchProjection {
-    // The shipped declaration, not a second copy of it. This fixture used
-    // to restate `core/agent-note-v1`'s columns by hand, which meant the
-    // test agreed with the contract only by coincidence.
-    proxima_core::FlavorRegistry::new()
-        .freeze_or_panic_for_tests()
-        .search_projections()
-        .iter()
-        .find(|projection| projection.schema_id.as_str() == "core/agent-note-v1")
-        .expect("core/agent-note-v1 is a search surface")
-        .clone()
-}
 
 fn draft(kind: &str, refs: Vec<Uuid>, origins: Vec<Uuid>) -> FactWriteCommand {
     FactWriteCommand {
@@ -63,7 +49,7 @@ async fn query_neighbors_edges_and_lineage_use_pins() {
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect(&url)
             .await?
-            .with_search_projections(vec![note_projection()]);
+            .with_flavors(&proxima_core::FlavorRegistry::new().freeze_or_panic_for_tests());
         pg.run_migrations().await?;
         let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);

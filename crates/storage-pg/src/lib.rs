@@ -951,27 +951,22 @@ impl PgStorage {
         self
     }
 
-    /// Frozen search projections used to load embed text from the
-    /// sidecar the row's schema names. Set at boot from
-    /// [`proxima_core::FlavorRegistryFrozen::search_projections`].
+    /// Install everything the frozen flavors tell storage about payload
+    /// text: the search projections the read path ranks on, and the embed
+    /// units the drain reads.
+    ///
+    /// One setter rather than two on purpose. These were separate
+    /// builders for exactly one commit, and in that commit three drain
+    /// fixtures installed the projections and not the units — which is
+    /// not a compile error and not a test failure, because a schema with
+    /// no embed unit is indistinguishable from a schema that declares no
+    /// embedding: the drain drops the job and the fixture waits forever
+    /// for a provider call that will never come. Taking the registry
+    /// makes the half-configured state unconstructible.
     #[must_use]
-    pub fn with_search_projections(
-        mut self,
-        search_projections: Vec<proxima_core::verbs::schema::MemorySearchProjection>,
-    ) -> Self {
-        self.search_projections = search_projections;
-        self
-    }
-
-    /// Frozen embed units used to load embed text from the sidecar column
-    /// the row's schema names. Set at boot from
-    /// [`proxima_core::FlavorRegistryFrozen::embed_units`].
-    #[must_use]
-    pub fn with_embed_units(
-        mut self,
-        embed_units: Vec<proxima_core::verbs::schema::MemoryEmbedUnit>,
-    ) -> Self {
-        self.embed_units = embed_units;
+    pub fn with_flavors(mut self, registry: &proxima_core::FlavorRegistryFrozen) -> Self {
+        self.search_projections = registry.search_projections().to_vec();
+        self.embed_units = registry.embed_units().to_vec();
         self
     }
 
