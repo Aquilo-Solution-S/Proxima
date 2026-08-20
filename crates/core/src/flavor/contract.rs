@@ -119,6 +119,11 @@ pub enum LanguagePolicy {
     /// FK-stamped against `proxima_core.lexical_languages` so
     /// `lexical_language_forget` enumerates nothing. The value is the
     /// writing caller's language.
+    ///
+    /// `column` must be the projection table's own language column — the
+    /// generator emits exactly one per projection table and names it — and
+    /// freeze refuses any other value rather than accepting a name nothing
+    /// renders (`FlavorRegistryError::ProjectionLanguageColumn`).
     PerRow { column: &'static str },
     /// One configuration for the whole surface, whatever the caller asked
     /// for (the code flavor pins `english`: code search must not follow the
@@ -233,6 +238,25 @@ pub enum SearchProjectionDecl {
         /// Sidecar column the projection's `tag` array is copied from.
         tag_column: Option<&'static str>,
         language: LanguagePolicy,
+        /// DECLARED, RENDERING DEFERRED TO PHASE 3. Every projected schema
+        /// states its bands and no reader consumes them: core's arms render
+        /// [`BAND_EXACT`] and [`BAND_RESCUE`] from the module constants and
+        /// the code flavor's render its own `CHUNK_BAND_*`, so a flavor
+        /// declaring different bands here is silently ignored today.
+        ///
+        /// Deferred rather than wired because consuming it is the merge
+        /// contract, not a rename. A `&[Band]` is an unordered set with a
+        /// `name` on each member; rendering from it means resolving "which
+        /// of these is the exact arm" by string at query-build time, and
+        /// the answer decides what a score MEANS across flavors. Phase 3
+        /// owns that (`overfetch_k` and band-comparability on
+        /// `ProjectionSpec` are reserved for the same reason). Wiring a
+        /// name lookup now would ship the mechanism without the contract it
+        /// is supposed to enforce.
+        ///
+        /// The parity pin stays either way: flavor #0's declared bands are
+        /// the module constants, value for value, so the day this is
+        /// consumed no score moves.
         bands: &'static [Band],
         substring: SubstringArm,
     },
@@ -265,6 +289,20 @@ impl SearchProjectionDecl {
         match self {
             Self::None { .. } => None,
             Self::Projected { language, .. } => Some(*language),
+        }
+    }
+
+    /// The projection column a [`LanguagePolicy::PerRow`] names, if this is
+    /// one. Freeze compares it against the projection table's own language
+    /// column; see `FlavorRegistryError::ProjectionLanguageColumn`.
+    #[must_use]
+    pub const fn per_row_language_column(&self) -> Option<&'static str> {
+        match self {
+            Self::Projected {
+                language: LanguagePolicy::PerRow { column },
+                ..
+            } => Some(*column),
+            _ => None,
         }
     }
 

@@ -188,6 +188,30 @@ impl FlavorRegistry {
                     table,
                 });
             }
+            // `PerRow { column }` carried a column name nothing read: the
+            // generator emits one language column per projection table and
+            // names it itself. Left unchecked, a flavor could declare
+            // `PerRow { column: "row_config" }`, see no error, and get rows
+            // stamped and ranked under a column its contract never named.
+            // Consuming the payload as a constraint is the smallest honest
+            // reading of it — the generator emits one column, so declaring
+            // a different one is a need the shape cannot express, and the
+            // rule is that such a need becomes a vocabulary extension
+            // rather than a silent divergence.
+            if let Some(declared) = schema.search.per_row_language_column() {
+                let projection_column = contract
+                    .projection
+                    .spec()
+                    .and_then(|spec| spec.surface().lexical_language_column);
+                if projection_column != Some(declared) {
+                    return Err(FlavorRegistryError::ProjectionLanguageColumn {
+                        flavor_id: contract.flavor_id,
+                        schema_id,
+                        declared,
+                        projection_column,
+                    });
+                }
+            }
             let registered = self.schemas.iter().any(|info| {
                 info.schema_id == schema_id
                     && info.schema_version == schema.schema_version()
@@ -577,6 +601,53 @@ mod tests {
         &[],
         &[],
     );
+    /// A `PerRow` policy naming a column that is not the projection
+    /// table's. The generator emits one language column per projection
+    /// table and names it `lexical_language`; a second name is a
+    /// declaration nothing renders.
+    static PER_ROW_ON_THE_WRONG_COLUMN: FlavorContract = FlavorContract {
+        flavor_id: FIXTURE_FLAVOR,
+        ordinal: 7,
+        schemas: &[SchemaContract {
+            // A Fact, not a citation payload: a citation schema declaring a
+            // sidecar trips CitationSidecarNotRemappable first and this
+            // fixture would test that instead.
+            id: SchemaRef::new(FIXTURE_FLAVOR, "thing", 1),
+            kind: PayloadKind::Fact,
+            sidecar_table: Some("test_flavor.thing_v1"),
+            search: SearchProjectionDecl::Projected {
+                fields: &[WeightedField {
+                    column: "a",
+                    kind: SearchProjectionColumnKind::Text,
+                    weight: 1.0,
+                }],
+                tag_column: None,
+                language: LanguagePolicy::PerRow {
+                    column: "row_config",
+                },
+                bands: &[],
+                substring: SubstringArm::Off,
+            },
+            embedding: EmbeddingRecipe::Never {
+                why: "a fixture, not a memory",
+            },
+            transfer: TransferRule::StaysOnKey,
+            provenance: Provenance::None,
+            surfaces: &[],
+            natural_key_columns: &[],
+            special_category: false,
+        }],
+        state_surfaces: &[],
+        kernel_surfaces: &[],
+        tools: &[],
+        resources: &[],
+        projection: ProjectionDecl::Table(crate::flavor::contract::ProjectionSpec {
+            table: "test_flavor.projection",
+            index: "test_flavor_projection_owner_tsv_gin",
+            overfetch_k: 0,
+            band_comparability: crate::flavor::contract::BandComparability::CoreBands,
+        }),
+    };
     /// Five distinct relative weights on one projection unit. The
     /// declaration is free of `PostgreSQL`'s four-class limit right up to
     /// the moment the generator has to emit `setweight`, and this is that
@@ -754,6 +825,20 @@ mod tests {
                         err,
                         FlavorRegistryError::CitationSidecarNotRemappable {
                             table: "test_flavor.thing_v1",
+                            ..
+                        }
+                    )
+                },
+            ),
+            (
+                "a PerRow policy names a column the projection table does not have",
+                |registry| registry.contracts.push(&PER_ROW_ON_THE_WRONG_COLUMN),
+                |err| {
+                    matches!(
+                        err,
+                        FlavorRegistryError::ProjectionLanguageColumn {
+                            declared: "row_config",
+                            projection_column: Some("lexical_language"),
                             ..
                         }
                     )

@@ -939,4 +939,39 @@ mod tests {
         );
         assert_eq!(format!("{:.2}::real", BAND_SUBSTRING.floor), "0.25::real");
     }
+
+    /// The bands this builder renders are the bands flavor #0 DECLARES.
+    ///
+    /// `SearchProjectionDecl::Projected::bands` is written by every
+    /// projected schema and read by nothing: the arms above render the
+    /// module constants directly, so a flavor declaring different bands is
+    /// ignored. That gap is a stated Phase 3 deferral — consuming the
+    /// declaration is the cross-flavor merge contract, not a rename — but
+    /// the deferral is only safe while the two agree. This is what makes
+    /// "no score moves the day it is consumed" a fact instead of an
+    /// intention.
+    #[test]
+    fn the_bands_the_builder_renders_are_the_bands_flavor_zero_declares() {
+        use proxima_core::flavor::SearchProjectionDecl;
+
+        let declared: Vec<&'static [proxima_core::flavor::Band]> = proxima_core::flavor::FLAVOR_0
+            .schemas
+            .iter()
+            .filter_map(|schema| match schema.search {
+                SearchProjectionDecl::Projected { bands, .. } => Some(bands),
+                SearchProjectionDecl::None { .. } => None,
+            })
+            .collect();
+        assert!(
+            !declared.is_empty(),
+            "flavor #0 has projected schemas to compare against"
+        );
+        for bands in declared {
+            assert_eq!(
+                bands,
+                &[super::BAND_EXACT, super::BAND_RESCUE, super::BAND_SUBSTRING],
+                "a projected core schema declares bands this builder would not render"
+            );
+        }
+    }
 }
