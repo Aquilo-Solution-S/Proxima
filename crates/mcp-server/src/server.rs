@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 #[cfg(test)]
 use proxima_core::AuthPath;
+use proxima_core::flavor::flavor0::resource as core_resource;
 use proxima_core::mcp::core_tools::{
     get_graph::{GetGraphArgs, get_graph},
     get_memories::{GetMemoriesArgs, get_memories},
@@ -19,9 +20,7 @@ use proxima_core::mcp::{
     McpAuthorContext, McpToolCtx, McpToolError, McpToolErrorKind, Next, TerminalDispatch, ToolCall,
     tool_name_matches,
 };
-use proxima_core::protocol::{
-    resource as protocol_resource, resource_path as protocol_resource_path,
-};
+use proxima_core::protocol::resource as protocol_resource;
 use proxima_core::{Engine, FlavorRegistry, FlavorRegistryFrozen, FlavorServices};
 use serde::Serialize;
 
@@ -312,6 +311,35 @@ impl ParsedResource {
     }
 }
 
+/// The dispatch paths, read out of flavor #0's declaration at compile time.
+///
+/// A `match` arm needs a constant, so the paths are named here — but each
+/// name is a projection of the same `ResourceContract` that supplies the
+/// advertised URI template and the palette key, not a second table that has
+/// to be kept in step with them.
+mod resource_path {
+    use super::{core_resource, protocol_resource};
+
+    pub const SCHEMAS: &str = core_resource(protocol_resource::SCHEMAS).path;
+    pub const TOOLS: &str = core_resource(protocol_resource::TOOLS).path;
+    pub const GRAPH: &str = core_resource(protocol_resource::GRAPH).path;
+    pub const CHANGE_EVENTS: &str = core_resource(protocol_resource::CHANGE_EVENTS).path;
+    pub const WAKE_CANDIDATES: &str = core_resource(protocol_resource::WAKE_CANDIDATES).path;
+    pub const MEMORIES: &str = core_resource(protocol_resource::MEMORIES).path;
+    pub const MEMORY: &str = core_resource(protocol_resource::MEMORY).path;
+    pub const GOALS: &str = core_resource(protocol_resource::GOALS).path;
+    pub const GOAL: &str = core_resource(protocol_resource::GOAL).path;
+
+    /// Everything after `<declared path>/`, or `None` when `path` is not
+    /// that resource. The id-bearing resources match by prefix rather than
+    /// by equality, and a declared `path` is a path — the separator belongs
+    /// to the parser, not to the declaration.
+    pub fn tail<'a>(path: &'a str, resource: &str) -> Option<&'a str> {
+        path.strip_prefix(resource)
+            .and_then(|rest| rest.strip_prefix('/'))
+    }
+}
+
 fn parse_resource_uri(uri: &str) -> Result<ParsedResource, ResourceUriError> {
     let rest = uri
         .strip_prefix("proxima://")
@@ -322,18 +350,16 @@ fn parse_resource_uri(uri: &str) -> Result<ParsedResource, ResourceUriError> {
     let query = parse_query(query)?;
 
     match path {
-        protocol_resource_path::SCHEMAS => Ok(ParsedResource::Schemas(ListSchemasArgs {
+        resource_path::SCHEMAS => Ok(ParsedResource::Schemas(ListSchemasArgs {
             kind: query_value(&query, "kind").map(ToOwned::to_owned),
         })),
-        protocol_resource_path::TOOLS => Ok(ParsedResource::Tools(ListSubstrateToolsArgs {})),
-        protocol_resource_path::GRAPH => Ok(ParsedResource::Graph(GetGraphArgs {})),
-        protocol_resource_path::CHANGE_EVENTS => {
-            Ok(ParsedResource::ChangeEvents(ListChangeEventsArgs {
-                since: query_value(&query, "since").map(ToOwned::to_owned),
-                limit: query_parse(&query, "limit", "a non-negative integer")?,
-            }))
-        }
-        protocol_resource_path::WAKE_CANDIDATES => {
+        resource_path::TOOLS => Ok(ParsedResource::Tools(ListSubstrateToolsArgs {})),
+        resource_path::GRAPH => Ok(ParsedResource::Graph(GetGraphArgs {})),
+        resource_path::CHANGE_EVENTS => Ok(ParsedResource::ChangeEvents(ListChangeEventsArgs {
+            since: query_value(&query, "since").map(ToOwned::to_owned),
+            limit: query_parse(&query, "limit", "a non-negative integer")?,
+        })),
+        resource_path::WAKE_CANDIDATES => {
             Ok(ParsedResource::WakeCandidates(ListWakeCandidatesArgs {
                 fact: query_value(&query, "fact")
                     .filter(|fact| !fact.is_empty())
@@ -342,7 +368,7 @@ fn parse_resource_uri(uri: &str) -> Result<ParsedResource, ResourceUriError> {
                 limit: query_parse(&query, "limit", "a non-negative integer")?,
             }))
         }
-        protocol_resource_path::MEMORIES => {
+        resource_path::MEMORIES => {
             let ids = query_value(&query, "ids")
                 .filter(|ids| !ids.is_empty())
                 .ok_or(ResourceUriError::MissingParam { param: "ids" })?;
@@ -350,14 +376,16 @@ fn parse_resource_uri(uri: &str) -> Result<ParsedResource, ResourceUriError> {
                 memories: ids.split(',').map(ToOwned::to_owned).collect(),
             }))
         }
-        protocol_resource_path::GOALS => Ok(ParsedResource::Goals(ListGoalsArgs {
+        resource_path::GOALS => Ok(ParsedResource::Goals(ListGoalsArgs {
             state: query_value(&query, "state").map(ToOwned::to_owned),
             limit: query_parse(&query, "limit", "a non-negative integer")?,
             cursor: query_value(&query, "cursor").map(ToOwned::to_owned),
         })),
-        path if path.starts_with("memory/") => parse_memory_resource_path(path, &query),
-        path if path.starts_with("goal/") => {
-            let id = path.strip_prefix("goal/").unwrap_or_default();
+        path if resource_path::tail(path, resource_path::MEMORY).is_some() => {
+            parse_memory_resource_path(path, &query)
+        }
+        path if resource_path::tail(path, resource_path::GOAL).is_some() => {
+            let id = resource_path::tail(path, resource_path::GOAL).unwrap_or_default();
             if id.is_empty() || id.contains('/') {
                 return Err(ResourceUriError::UnknownPath);
             }
@@ -371,10 +399,8 @@ fn parse_memory_resource_path(
     path: &str,
     query: &[(&str, &str)],
 ) -> Result<ParsedResource, ResourceUriError> {
-    let rest = path
-        .strip_prefix(protocol_resource_path::MEMORY)
-        .and_then(|rest| rest.strip_prefix('/'))
-        .ok_or(ResourceUriError::UnknownPath)?;
+    let rest =
+        resource_path::tail(path, resource_path::MEMORY).ok_or(ResourceUriError::UnknownPath)?;
     if let Some(id) = rest.strip_suffix("/lineage") {
         if id.is_empty() || id.contains('/') {
             return Err(ResourceUriError::UnknownPath);

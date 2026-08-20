@@ -1,5 +1,6 @@
+use crate::flavor::FLAVOR_0;
+use crate::flavor::contract::ResourceContract;
 use crate::protocol::tool as protocol_tool;
-use crate::protocol::{resource as protocol_resource, resource_uri as protocol_resource_uri};
 
 use super::core_tools;
 
@@ -56,104 +57,16 @@ pub struct CoreActionMeta {
     pub produces_schema_ids: &'static [&'static str],
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct CoreResourceMeta {
-    pub uri_template: &'static str,
-    pub name: &'static str,
-    pub title: &'static str,
-    pub scope_key: &'static str,
-    pub description: &'static str,
-    pub is_template: bool,
-}
-
-pub const CORE_RESOURCES: &[CoreResourceMeta] = &[
-    CoreResourceMeta {
-        uri_template: protocol_resource_uri::SCHEMAS,
-        name: "proxima-schemas",
-        title: "Proxima Schemas",
-        scope_key: protocol_resource::SCHEMAS,
-        description: "Registered core and flavor schema catalog, optionally filtered by payload kind.",
-        is_template: false,
-    },
-    CoreResourceMeta {
-        uri_template: protocol_resource_uri::TOOLS,
-        name: "proxima-tools",
-        title: "Proxima Tools",
-        scope_key: protocol_resource::TOOLS,
-        description: "Registered substrate and flavor MCP tool catalog visible to the caller.",
-        is_template: false,
-    },
-    CoreResourceMeta {
-        uri_template: protocol_resource_uri::GRAPH,
-        name: "proxima-graph",
-        title: "Proxima Graph",
-        scope_key: protocol_resource::GRAPH,
-        description: "Owner-scoped memory graph plus schema and tool catalogs.",
-        is_template: false,
-    },
-    CoreResourceMeta {
-        uri_template: protocol_resource_uri::MEMORY,
-        name: "proxima-memory",
-        title: "Proxima Memory",
-        scope_key: protocol_resource::MEMORY,
-        description: "Owner-scoped memory by prefixed id (`F:`/`A:`/`P:`).",
-        is_template: true,
-    },
-    CoreResourceMeta {
-        uri_template: protocol_resource_uri::MEMORIES,
-        name: "proxima-memories",
-        title: "Proxima Memories",
-        scope_key: protocol_resource::MEMORIES,
-        description: "Batch memory read by comma-separated prefixed ids (`F:`/`A:`/`P:`), \
-                      at most 100 per call; unknown or invisible ids are reported as missing.",
-        is_template: true,
-    },
-    CoreResourceMeta {
-        uri_template: protocol_resource_uri::MEMORY_LINEAGE,
-        name: "proxima-memory-lineage",
-        title: "Proxima Memory Lineage",
-        scope_key: protocol_resource::MEMORY_LINEAGE,
-        description: "Owner-scoped origin lineage from a prefixed memory id, \
-                      with keyset cursor pagination.",
-        is_template: true,
-    },
-    CoreResourceMeta {
-        uri_template: protocol_resource_uri::CHANGE_EVENTS,
-        name: "proxima-change-events",
-        title: "Proxima Change Events",
-        scope_key: protocol_resource::CHANGE_EVENTS,
-        description: "Owner-scoped change-event pull log.",
-        is_template: true,
-    },
-    CoreResourceMeta {
-        uri_template: protocol_resource_uri::WAKE_CANDIDATES,
-        name: "proxima-wake-candidates",
-        title: "Proxima Wake Candidates",
-        scope_key: protocol_resource::WAKE_CANDIDATES,
-        description: "Armed Active Goals admitted for wake planning by a trigger Fact.",
-        is_template: true,
-    },
-    CoreResourceMeta {
-        uri_template: protocol_resource_uri::GOALS,
-        name: "proxima-goals",
-        title: "Proxima Goals",
-        scope_key: protocol_resource::GOALS,
-        description: "Owner-scoped goal listing with state filter, keyset cursor, and wake-config read-back.",
-        is_template: true,
-    },
-    CoreResourceMeta {
-        uri_template: protocol_resource_uri::GOAL,
-        name: "proxima-goal",
-        title: "Proxima Goal",
-        scope_key: protocol_resource::GOAL,
-        description: "Single-goal read by G:<uuid> reference, including stored wake configuration.",
-        is_template: true,
-    },
-];
-
+/// Flavor #0's `proxima://` resources, in declaration order.
+///
+/// The list is the contract's, not a second copy of it. Before the flavor
+/// contract landed this module held its own ten-entry `CORE_RESOURCES`
+/// table whose `uri_template`s pointed at a third table in
+/// `protocol::resource_uri`, so advertising a resource and dispatching it
+/// were two acts of remembering.
 #[must_use = "iterators are lazy and must be consumed"]
-pub fn all_core_resources() -> impl Iterator<Item = &'static CoreResourceMeta> {
-    CORE_RESOURCES.iter()
+pub fn all_core_resources() -> impl Iterator<Item = &'static ResourceContract> {
+    FLAVOR_0.resources.iter()
 }
 
 #[must_use = "iterators are lazy and must be consumed"]

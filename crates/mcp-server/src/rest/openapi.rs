@@ -2,7 +2,7 @@
 //!
 //! REST is a rendering of the tool manifest, not a second API (17 §Claim),
 //! so nothing here is authored per tool: every path, operation, and request
-//! schema is derived from `McpToolDescriptor` and `CoreResourceMeta`. A tool
+//! schema is derived from `McpToolDescriptor` and `ResourceContract`. A tool
 //! added to a flavor crate appears in this document with no edit here.
 //!
 //! Both version floors are forced rather than preferred. Below 3.1 the
@@ -19,9 +19,8 @@
 use std::collections::BTreeMap;
 
 use proxima_core::FlavorRegistryFrozen;
-use proxima_core::mcp::{
-    CoreResourceMeta, McpToolAnnotations, McpToolDescriptor, all_core_resources,
-};
+use proxima_core::flavor::ResourceContract;
+use proxima_core::mcp::{McpToolAnnotations, McpToolDescriptor, all_core_resources};
 use serde_json::{Map, Value, json};
 
 use crate::McpAuthContext;
@@ -107,7 +106,7 @@ pub fn document_from_registry(
         .filter(|descriptor| auth.is_none() || tool_allowed_for_auth(auth, descriptor))
         .collect();
     let scope = auth.map(|context| context.authz.tool_scope());
-    let resources: Vec<&CoreResourceMeta> = all_core_resources()
+    let resources: Vec<&ResourceContract> = all_core_resources()
         .filter(|resource| auth.is_none() || resource_scope_allows(scope, resource.scope_key))
         .collect();
     document(&tools, &resources, public_url, auth)
@@ -122,7 +121,7 @@ pub fn document_from_registry(
 #[must_use]
 pub fn document(
     tools: &[&McpToolDescriptor],
-    resources: &[&CoreResourceMeta],
+    resources: &[&ResourceContract],
     public_url: Option<&str>,
     auth: Option<&McpAuthContext>,
 ) -> Value {
@@ -366,7 +365,7 @@ fn tool_path_item(operation: &Operation<'_>) -> Value {
 /// `GET /v1/resources/{path}`, reconstructed from the resource's own
 /// `proxima://` template. The mapping is total and mechanical, and REST adds
 /// no URI parser of its own (17 §Resource path mapping).
-fn collect_resource_path(resource: &CoreResourceMeta, paths: &mut BTreeMap<String, Value>) {
+fn collect_resource_path(resource: &ResourceContract, paths: &mut BTreeMap<String, Value>) {
     let Some((path, query_variables)) = resource_route(resource.uri_template) else {
         return;
     };
@@ -639,13 +638,14 @@ mod tests {
 
     use futures_util::future::BoxFuture;
     use proxima_core::mcp::{
-        CORE_RESOURCES, McpActionArgSpec, McpTool, McpToolAnnotations, McpToolCtx, McpToolError,
+        McpActionArgSpec, McpTool, McpToolAnnotations, McpToolCtx, McpToolError,
     };
     use proxima_core::protocol::tool as protocol_tool;
     use proxima_core::{FlavorRegistry, FlavorRegistryFrozen};
 
     use super::{
-        CoreResourceMeta, McpToolDescriptor, Value, document, document_from_registry, json,
+        McpToolDescriptor, ResourceContract, Value, all_core_resources, document,
+        document_from_registry, json,
     };
 
     const COLLISION_DISPATCHER: &str = "proxima-stub_collision";
@@ -714,7 +714,7 @@ mod tests {
     /// descriptors the server actually serves rather than hand-made ones.
     fn core_document(registry: &FlavorRegistryFrozen) -> Value {
         let tools: Vec<&McpToolDescriptor> = registry.list_mcp_tools().iter().collect();
-        let resources: Vec<&CoreResourceMeta> = CORE_RESOURCES.iter().collect();
+        let resources: Vec<&ResourceContract> = all_core_resources().collect();
         document(&tools, &resources, Some("https://proxima.example"), None)
     }
 

@@ -52,6 +52,85 @@ mod manifest_tests {
         );
     }
 
+    /// Parity pin for the manifest rewire.
+    ///
+    /// `all_core_resources()` used to read a hand-written `CORE_RESOURCES`
+    /// table here, whose `uri_template`s pointed at a second table in
+    /// `protocol::resource_uri` and whose dispatch paths lived in a third,
+    /// `protocol::resource_path`. All three are now projections of flavor
+    /// #0's `ResourceContract` entries. The literals below are the three
+    /// deleted tables, transcribed once, in the test — so a contract edit
+    /// that changes what the server advertises or how it routes has to be
+    /// stated here too.
+    #[test]
+    fn the_derived_resource_manifest_matches_the_deleted_hand_tables() {
+        let expected: &[(&str, &str, &str, bool)] = &[
+            (
+                "proxima://schemas{?kind}",
+                "schemas",
+                "proxima-schemas",
+                false,
+            ),
+            ("proxima://tools", "tools", "proxima-tools", false),
+            ("proxima://graph", "graph", "proxima-graph", false),
+            (
+                "proxima://memory/{id}{?expand_neighbors}",
+                "memory",
+                "proxima-memory",
+                true,
+            ),
+            (
+                "proxima://memories{?ids}",
+                "memories",
+                "proxima-memories",
+                true,
+            ),
+            (
+                "proxima://memory/{id}/lineage{?direction,depth,limit,cursor}",
+                "memory",
+                "proxima-memory-lineage",
+                true,
+            ),
+            (
+                "proxima://change-events{?since,limit}",
+                "change-events",
+                "proxima-change-events",
+                true,
+            ),
+            (
+                "proxima://wake-candidates{?fact,limit}",
+                "wake-candidates",
+                "proxima-wake-candidates",
+                true,
+            ),
+            (
+                "proxima://goals{?state,limit,cursor}",
+                "goals",
+                "proxima-goals",
+                true,
+            ),
+            ("proxima://goal/{id}", "goal", "proxima-goal", true),
+        ];
+
+        let actual = all_core_resources()
+            .map(|resource| {
+                (
+                    resource.uri_template,
+                    resource.path,
+                    resource.name,
+                    resource.is_template,
+                )
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(actual, expected);
+        assert!(
+            all_core_resources().all(|resource| resource.read_only),
+            "an MCP resource is a read; the gate now reads that from the \
+             declaration instead of from a `resource:` string prefix"
+        );
+    }
+
     #[test]
     fn resource_constants_match_manifest_scope_keys() {
         let expected = BTreeSet::from([

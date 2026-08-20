@@ -126,8 +126,13 @@ impl ScopeGateBehavior {
         // all miss and the `unwrap_or(false)` default asks for *write*
         // access. A read-only role could therefore see every `proxima://`
         // resource `resources/list` advertises to it and read none of them.
-        let read_only = if tool.starts_with(crate::protocol::resource::SCOPE_PREFIX) {
-            true
+        //
+        // The answer comes from the declaration, not from the shape of the
+        // string: an unknown `resource:`-prefixed key is no longer waved
+        // through as a read on the strength of its prefix alone.
+        let read_only = if let Some(resource) = crate::flavor::FLAVOR_0.resource_by_scope_key(tool)
+        {
+            resource.read_only
         } else if let Some(descriptor) =
             descriptor.filter(|value| !value.action_arg_specs.is_empty())
         {

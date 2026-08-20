@@ -666,6 +666,19 @@ impl FlavorContract {
         tables.dedup();
         tables
     }
+
+    /// The resource this flavor declares under `scope_key`, if any.
+    ///
+    /// The authorization gate calls this instead of testing the scope key
+    /// for a `resource:` prefix: a resource read is a read because the
+    /// contract says [`ResourceContract::read_only`], not because of how
+    /// its palette entry is spelled.
+    #[must_use]
+    pub fn resource_by_scope_key(&self, scope_key: &str) -> Option<&'static ResourceContract> {
+        self.resources
+            .iter()
+            .find(|resource| resource.scope_key == scope_key)
+    }
 }
 
 #[cfg(test)]

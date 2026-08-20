@@ -1058,7 +1058,7 @@ pub const FLAVOR_0: FlavorContract = FlavorContract {
 
 /// Look up a flavor-#0 resource by its palette scope key.
 ///
-/// `const fn` so `protocol::resource_path` / the served manifest can be
+/// `const fn` so the dispatcher's match arms and the served manifest are
 /// *derived* from the contract rather than repeating it: the three parallel
 /// lists that used to spell each resource's scope key, path and URI template
 /// separately are now one declaration and two projections of it.
