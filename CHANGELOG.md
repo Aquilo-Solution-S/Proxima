@@ -10,6 +10,8 @@ Pre-1.0 the git tag (e.g. `v0.0.3`) is the version; workspace crates are unpubli
 - **core**: Transfer a memory to another owner, not to World ([`e01b648`](https://github.com/Aquilo-Solution-S/Proxima/commit/e01b648799b140c0ded9f4a547c85654b4141757))
 
 ### Bug Fixes
+- **breaking:** **storage-pg**: An owner transfer retains the audit sidecar instead of deleting it ([`8cfd68c`](https://github.com/Aquilo-Solution-S/Proxima/commit/8cfd68c23d4ee2f7f32f7f0d5424112c412a7160))
+- **breaking:** **blob-s3**: Derive object keys from the upload row, not the owner ([`421034c`](https://github.com/Aquilo-Solution-S/Proxima/commit/421034c37ef5c4cf0f5f07796c8db1826acbbc51))
 - **breaking:** **core**: An owner transfer resolves the destination out of band ([`4d5e134`](https://github.com/Aquilo-Solution-S/Proxima/commit/4d5e1349262fa0fbc9d2541cbec0046375766e8b))
 - **core**: Type owner kind in sketch hydration ([`21aeba5`](https://github.com/Aquilo-Solution-S/Proxima/commit/21aeba5bec1bd6b5bf8ed79ef657e930f5acb0ea))
 - **breaking:** **core**: Delete the World owner ([`87e69a5`](https://github.com/Aquilo-Solution-S/Proxima/commit/87e69a528476d03548a95767ea9df4887523c499))
