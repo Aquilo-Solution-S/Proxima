@@ -6,8 +6,24 @@ Pre-1.0 the git tag (e.g. `v0.0.3`) is the version; workspace crates are unpubli
 
 ## [Unreleased]
 
+### Features
+- **core**: Transfer a memory to another owner, not to World ([`e01b648`](https://github.com/Aquilo-Solution-S/Proxima/commit/e01b648799b140c0ded9f4a547c85654b4141757))
+
 ### Bug Fixes
+- **breaking:** **core**: An owner transfer resolves the destination out of band ([`4d5e134`](https://github.com/Aquilo-Solution-S/Proxima/commit/4d5e1349262fa0fbc9d2541cbec0046375766e8b))
+- **core**: Type owner kind in sketch hydration ([`21aeba5`](https://github.com/Aquilo-Solution-S/Proxima/commit/21aeba5bec1bd6b5bf8ed79ef657e930f5acb0ea))
 - **breaking:** **core**: Delete the World owner ([`87e69a5`](https://github.com/Aquilo-Solution-S/Proxima/commit/87e69a528476d03548a95767ea9df4887523c499))
+
+### Refactor
+- **storage-pg**: Nothing on the transfer path is called publish ([`3ab827c`](https://github.com/Aquilo-Solution-S/Proxima/commit/3ab827c371852daebe55df8f6ed6020bd7f62177))
+- **breaking:** **code**: A shared repo is a group, not the World ([`a9bc93d`](https://github.com/Aquilo-Solution-S/Proxima/commit/a9bc93d050b25cb2349dfd1de2c6ce580c2fa10f))
+
+### Documentation
+- The coverage row and the transfer port name what actually exists ([`5270686`](https://github.com/Aquilo-Solution-S/Proxima/commit/5270686c604cae8964b504021332c4ba76b8a806))
+- **breaking:** The World owner is gone from prose, Lean, and the changelog ([`9abf3de`](https://github.com/Aquilo-Solution-S/Proxima/commit/9abf3de134b6e986f1ea0cec6885f3dc58bec8df))
+
+### Testing
+- Every World test is deleted or generalized to an owner destination ([`117b6bb`](https://github.com/Aquilo-Solution-S/Proxima/commit/117b6bb60cf2d4a17480d0db3e166525d04eafe0))
 
 ## [0.0.7] - 2026-08-04
 
