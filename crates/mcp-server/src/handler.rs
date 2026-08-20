@@ -544,14 +544,16 @@ fn to_rmcp_annotations(annotations: McpToolAnnotations) -> ToolAnnotations {
     hints
 }
 
-fn raw_resource_from_meta(meta: &proxima_core::CoreResourceMeta) -> Resource {
+fn raw_resource_from_meta(meta: &proxima_core::flavor::ResourceContract) -> Resource {
     Resource::new(static_resource_uri(meta.uri_template), meta.name)
         .with_title(meta.title)
         .with_description(meta.description)
         .with_mime_type("application/json")
 }
 
-fn raw_resource_template_from_meta(meta: &proxima_core::CoreResourceMeta) -> ResourceTemplate {
+fn raw_resource_template_from_meta(
+    meta: &proxima_core::flavor::ResourceContract,
+) -> ResourceTemplate {
     ResourceTemplate::new(meta.uri_template, meta.name)
         .with_title(meta.title)
         .with_description(meta.description)

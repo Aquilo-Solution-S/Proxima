@@ -1,7 +1,9 @@
 //! Export projects pins from memory rows; no reconstructed Edge table.
 #![allow(clippy::doc_markdown, clippy::too_many_lines)]
 
-use proxima_core::compliance::{ComplianceExportTarget, ExportAuthorization};
+use proxima_core::compliance::{
+    ComplianceExportTarget, ComplianceSidecarTables, ExportAuthorization,
+};
 use proxima_core::storage_ports::{ComplianceErasePort, OwnerWritePermit};
 use proxima_core::verbs::fact_ingest::FactWriteCommand;
 use proxima_core::verbs::query::EntityKind;
@@ -12,6 +14,16 @@ use proxima_storage_pg::core_pg_sidecars;
 use proxima_storage_pg::verbs::fact_ingest::ingest_fact_atomic;
 use proxima_storage_pg::verbs::forget::{MemoryColdStore, cold_object_key, forget_memory};
 use uuid::Uuid;
+
+/// The five sidecar legs exactly as the engine assembles them: from the
+/// frozen flavor registry. Passing empty slices here would silently skip
+/// the owner-pinned leg, which is the difference these tests exist to
+/// measure.
+fn contract_sidecar_tables() -> ComplianceSidecarTables {
+    ComplianceSidecarTables::for_registry(
+        &proxima_core::FlavorRegistry::new().freeze_or_panic_for_tests(),
+    )
+}
 
 fn draft(kind: &str, refs: Vec<Uuid>, origins: Vec<Uuid>) -> FactWriteCommand {
     FactWriteCommand {
@@ -62,7 +74,9 @@ async fn export_edges_are_the_pins_already_on_memory() {
         let auth = ExportAuthorization::new_for_tests(ComplianceExportTarget::PersonalOwner {
             user_id: user,
         });
-        let bundle = pg.export_owner_bundle(&auth, &[], &[], &[], &[]).await?;
+        let bundle = pg
+            .export_owner_bundle(&auth, &contract_sidecar_tables())
+            .await?;
         assert_eq!(bundle.counts.memories, 2);
         assert_eq!(bundle.counts.edges, 1);
         assert_eq!(bundle.edges.len(), 1);
@@ -151,7 +165,9 @@ async fn export_carries_cooled_locators_and_sketches() {
         let auth = ExportAuthorization::new_for_tests(ComplianceExportTarget::PersonalOwner {
             user_id: user,
         });
-        let bundle = pg.export_owner_bundle(&auth, &[], &[], &[], &[]).await?;
+        let bundle = pg
+            .export_owner_bundle(&auth, &contract_sidecar_tables())
+            .await?;
 
         assert_eq!(
             bundle.counts.memories, 1,
@@ -274,10 +290,11 @@ async fn export_carries_registered_citation_sidecar_rows() {
         let bundle = pg
             .export_owner_bundle(
                 &auth,
-                &[],
-                &[],
-                &["proxima_core.test_citation_mapping_v1".to_owned()],
-                &["proxima_core.test_cited_object_v1".to_owned()],
+                &ComplianceSidecarTables {
+                    citation_mapping: vec!["proxima_core.test_citation_mapping_v1".to_owned()],
+                    cited_object: vec!["proxima_core.test_cited_object_v1".to_owned()],
+                    ..ComplianceSidecarTables::default()
+                },
             )
             .await?;
 
@@ -355,7 +372,9 @@ async fn export_carries_owner_scoped_opaque_blob_metadata() {
         let auth = ExportAuthorization::new_for_tests(ComplianceExportTarget::PersonalOwner {
             user_id: user,
         });
-        let bundle = pg.export_owner_bundle(&auth, &[], &[], &[], &[]).await?;
+        let bundle = pg
+            .export_owner_bundle(&auth, &contract_sidecar_tables())
+            .await?;
 
         assert_eq!(bundle.counts.blobs, 1);
         assert_eq!(bundle.blobs.len(), 1);

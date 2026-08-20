@@ -114,6 +114,43 @@ CREATE INDEX memory_head_owner_schema_idx
 CREATE INDEX memory_head_owner_kind_idx
     ON proxima_core.memory_head (owner_id, kind, handle);
 
+-- One row per sidecar surface a flavor's contract declares.
+--
+-- `memory.sidecar_tables` is a row-stamp: it answers "what did THIS row
+-- actually write". The registry answers "what could this schema have
+-- written". Those are different questions with different failure modes, and
+-- until this table existed nothing related the two: a stamp naming a table
+-- no flavor declares was accepted at write time and then quietly skipped by
+-- erase, export, forget and hydrate, because each of those walks the
+-- registry. A row nobody can reach is the one shape Art. 17 cannot honour.
+--
+-- Stamp ⊆ registry is therefore a database constraint (see
+-- `assert_sidecar_stamp_declared` below), not a check in one of the callers.
+-- Kernel relations are deliberately absent: they are not sidecars and a
+-- stamp must never name one.
+CREATE TABLE proxima_core.flavor_surface (
+    table_name text PRIMARY KEY,
+    flavor_id text NOT NULL,
+    CONSTRAINT flavor_surface_qualified_chk
+        CHECK (table_name LIKE '%.%' AND table_name = lower(table_name)),
+    CONSTRAINT flavor_surface_flavor_id_chk
+        CHECK (flavor_id <> '')
+);
+
+COMMENT ON TABLE proxima_core.flavor_surface IS
+'Declared sidecar surfaces, one row per (table, flavor). Populated by each flavor migration; memory.sidecar_tables is constrained to be a subset. Flavor #0 (core) owns the proxima_core.* rows and is non-removable.';
+
+-- Flavor #0. Kept in step with `proxima_core::FLAVOR_0` by
+-- `the_migration_declares_exactly_the_contracts_sidecar_surfaces`.
+INSERT INTO proxima_core.flavor_surface (table_name, flavor_id) VALUES
+    ('proxima_core.agent_derivation_v1', 'core'),
+    ('proxima_core.agent_note_v1', 'core'),
+    ('proxima_core.interpretation_v1', 'core'),
+    ('proxima_core.mcp_call_logged_v1', 'core'),
+    ('proxima_core.task_goal_v1', 'core'),
+    ('proxima_core.utterance_v1', 'core'),
+    ('proxima_core.write_act_v1', 'core');
+
 CREATE TABLE proxima_core.memory (
     handle uuid NOT NULL REFERENCES proxima_core.memory_head (handle),
     t uuid NOT NULL DEFAULT uuidv7(),
@@ -842,6 +879,37 @@ BEGIN
 END;
 $$;
 
+-- Stamp ⊆ registry, enforced at write time.
+--
+-- An array cannot carry a foreign key, so this is the array-FK shim the
+-- constraint would be if PostgreSQL had element references. It is a trigger
+-- rather than a CHECK because the predicate reads another table. Same
+-- discipline as `lexical_language_forget`: no list of tables lives here —
+-- the anti-join asks `flavor_surface` and reports whichever element failed.
+CREATE FUNCTION proxima_core.assert_sidecar_stamp_declared() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+    undeclared text;
+BEGIN
+    SELECT stamped INTO undeclared
+      FROM unnest(NEW.sidecar_tables) AS stamped
+     WHERE NOT EXISTS (
+               SELECT 1
+                 FROM proxima_core.flavor_surface fs
+                WHERE fs.table_name = stamped
+           )
+     LIMIT 1;
+    IF undeclared IS NOT NULL THEN
+        RAISE EXCEPTION
+            'memory.sidecar_tables names %, which no flavor declares in proxima_core.flavor_surface',
+            undeclared
+            USING ERRCODE = '23503';
+    END IF;
+    RETURN NEW;
+END;
+$$;
+
 CREATE FUNCTION proxima_core.memory_align_head() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -1108,6 +1176,12 @@ CREATE TRIGGER memory_head_t_only
     BEFORE UPDATE ON proxima_core.memory_head
     FOR EACH ROW
     EXECUTE FUNCTION proxima_core.memory_head_t_only();
+
+CREATE TRIGGER memory_sidecar_stamp_declared
+    BEFORE INSERT OR UPDATE OF sidecar_tables ON proxima_core.memory
+    FOR EACH ROW
+    WHEN (NEW.sidecar_tables <> '{}')
+    EXECUTE FUNCTION proxima_core.assert_sidecar_stamp_declared();
 
 CREATE TRIGGER memory_pin_checks
     BEFORE INSERT ON proxima_core.memory

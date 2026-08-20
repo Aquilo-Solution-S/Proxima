@@ -1,0 +1,1204 @@
+//! Flavor #0 — core, as a declaration.
+//!
+//! Core registers 15 schemas, 15 MCP tools and 10 `proxima://` resources
+//! across five unlinked sites and, until now, had no `FlavorDescriptor` at
+//! all: it was invisible to the very registry that is meant to be the single
+//! source of truth. This module is that missing declaration.
+//!
+//! Two things make flavor #0 asymmetric, and both are named rather than
+//! inferred:
+//!
+//! - **It is non-removable.** `proxima://schemas` and `proxima://tools`
+//!   project the registry itself — a kernel axiom's read surface — and they
+//!   live here because a second resource list would be a second place to
+//!   forget one.
+//! - **Its ordinal is load-bearing.** Unscoped search stays on core sidecars;
+//!   `ordinal == 0` is what says so, replacing a `"proxima_core."` table-name
+//!   prefix test.
+//!
+//! Nothing here renames anything: every core schema id already carries
+//! `core/` and every core tool name already carries `core_`, so the existing
+//! compile-time prefix assertions pass with zero renames.
+
+use crate::SearchProjectionColumnKind as ColumnKind;
+use crate::flavor::contract::{
+    BAND_EXACT, BAND_RESCUE, BAND_SUBSTRING, Band, CORE_ORDINAL, DbConstraint, DbTrigger,
+    EmbedUnit, EmbeddingRecipe, Enforcement, EraseRule, ExportRule, FlavorContract, ForgetRule,
+    KeyShape, LanguagePolicy, Provenance, ResourceContract, SLOT_DEFAULT, SchemaContract,
+    SchemaRef, SearchProjectionDecl, SubstringArm, Surface, ToolContract, TransferRule, Weight,
+    WeightedField,
+};
+use crate::protocol::resource as scope;
+use crate::protocol::tool;
+use crate::verbs::schema::PayloadKind;
+
+/// The flavor id every core schema and tool is already prefixed with.
+pub const FLAVOR_ID: &str = "core";
+
+const BANDS: &[Band] = &[BAND_EXACT, BAND_RESCUE, BAND_SUBSTRING];
+
+/// Goals do not transfer, and the refusal is real in three places. There is
+/// no CHECK constraint to name: removing the World owner deleted
+/// `goal_not_world_owner_chk` and `goal_head_not_world_owner_chk` with it,
+/// so the DDL leg is a trigger that freezes `goal_head.owner_id`.
+const GOAL_NOT_TRANSFERABLE: TransferRule = TransferRule::NotTransferable {
+    why: "a goal series cannot change owner: an armed goal's wake_config, \
+          hard-context memory set and tool grants are the receiving owner's \
+          authority, not the goal's",
+    enforced_by: &[
+        Enforcement::EngineRefusal {
+            at: "core/src/engine/access_admin.rs::Engine::transfer_to_owner",
+        },
+        Enforcement::StorageBackstop {
+            at: "storage-pg/src/access/owner_columns.rs::transfer_to_owner",
+        },
+        Enforcement::Trigger(DbTrigger {
+            relation: "proxima_core.goal_head",
+            name: "goal_head_t_only",
+        }),
+    ],
+};
+
+/// A memory sidecar keyed on `memory.t`: nothing to re-home, because the
+/// Memory carries the owner. EMPTY `owner_columns` is the claim.
+const fn memory_sidecar(
+    table: &'static str,
+    lexical_language_column: Option<&'static str>,
+    completeness: Option<DbConstraint>,
+) -> Surface {
+    Surface {
+        table,
+        key: KeyShape::MemoryT,
+        owner_columns: &[],
+        transfer: TransferRule::StaysOnKey,
+        erase: EraseRule::ByKey,
+        export: ExportRule::Rows,
+        forget: ForgetRule::DumpThenDelete,
+        lexical_language_column,
+        counter: Some("sidecar_rows"),
+        completeness,
+    }
+}
+
+const fn t_fkey(relation: &'static str, name: &'static str) -> DbConstraint {
+    DbConstraint { relation, name }
+}
+
+// ── Schemas ─────────────────────────────────────────────────────────────
+
+const WRITE_ACT_V1: SchemaContract = SchemaContract {
+    id: SchemaRef::new(FLAVOR_ID, "write-act", 1),
+    kind: PayloadKind::Fact,
+    sidecar_table: Some("proxima_core.write_act_v1"),
+    search: SearchProjectionDecl::None {
+        why: "an episode token is two columns — t and episode_id — and neither is text",
+    },
+    embedding: EmbeddingRecipe::Never {
+        why: "an episode token has no content; its render is a template",
+    },
+    transfer: TransferRule::StaysOnKey,
+    provenance: Provenance::None,
+    surfaces: &[memory_sidecar(
+        "proxima_core.write_act_v1",
+        None,
+        Some(t_fkey("proxima_core.write_act_v1", "write_act_v1_t_fkey")),
+    )],
+    natural_key_columns: &[],
+    special_category: false,
+};
+
+const AGENT_NOTE_V1: SchemaContract = SchemaContract {
+    id: SchemaRef::new(FLAVOR_ID, "agent-note", 1),
+    kind: PayloadKind::Fact,
+    sidecar_table: Some("proxima_core.agent_note_v1"),
+    search: SearchProjectionDecl::Projected {
+        fields: &[
+            WeightedField {
+                column: "title",
+                kind: ColumnKind::Text,
+                weight: Weight::A,
+            },
+            WeightedField {
+                column: "body",
+                kind: ColumnKind::Text,
+                weight: Weight::B,
+            },
+            WeightedField {
+                column: "tags",
+                kind: ColumnKind::TextArray,
+                weight: Weight::C,
+            },
+        ],
+        tag_column: Some("tags"),
+        tsv_column: Some("search_tsv"),
+        language: LanguagePolicy::PerRow {
+            column: "lexical_language",
+        },
+        bands: BANDS,
+        substring: SubstringArm::MemoryFirstNestedLoop,
+    },
+    embedding: EmbeddingRecipe::Units(&[EmbedUnit::stored("embed_text", SLOT_DEFAULT)]),
+    transfer: TransferRule::StaysOnKey,
+    provenance: Provenance::None,
+    surfaces: &[memory_sidecar(
+        "proxima_core.agent_note_v1",
+        Some("lexical_language"),
+        Some(t_fkey("proxima_core.agent_note_v1", "agent_note_v1_t_fkey")),
+    )],
+    natural_key_columns: &["note_id"],
+    special_category: false,
+};
+
+/// Utterances ARE searchable in this tree, with their own band set. The
+/// acceptance case the plan calls "utterances-don't-search" is about an
+/// out-of-tree `ChatTurnV1`; what is testable here is that
+/// [`SearchProjectionDecl::None`] is a *value* — see `WRITE_ACT_V1` and
+/// `MCP_CALL_LOGGED_V1`, which declare it.
+const UTTERANCE_V1: SchemaContract = SchemaContract {
+    id: SchemaRef::new(FLAVOR_ID, "utterance", 1),
+    kind: PayloadKind::Fact,
+    sidecar_table: Some("proxima_core.utterance_v1"),
+    search: SearchProjectionDecl::Projected {
+        fields: &[WeightedField {
+            column: "text",
+            kind: ColumnKind::Text,
+            weight: Weight::A,
+        }],
+        tag_column: None,
+        tsv_column: Some("search_tsv"),
+        language: LanguagePolicy::PerRow {
+            column: "lexical_language",
+        },
+        bands: BANDS,
+        substring: SubstringArm::MemoryFirstNestedLoop,
+    },
+    embedding: EmbeddingRecipe::Units(&[EmbedUnit::stored("embed_text", SLOT_DEFAULT)]),
+    transfer: TransferRule::StaysOnKey,
+    provenance: Provenance::None,
+    surfaces: &[memory_sidecar(
+        "proxima_core.utterance_v1",
+        Some("lexical_language"),
+        Some(t_fkey("proxima_core.utterance_v1", "utterance_v1_t_fkey")),
+    )],
+    natural_key_columns: &[],
+    special_category: false,
+};
+
+const UPLOAD_V1: SchemaContract = SchemaContract {
+    id: SchemaRef::new(FLAVOR_ID, "upload", 1),
+    kind: PayloadKind::Fact,
+    sidecar_table: None,
+    search: SearchProjectionDecl::None {
+        why: "the Fact has no sidecar of its own; the artefact's typed description \
+              is the cited object it names",
+    },
+    embedding: EmbeddingRecipe::Never {
+        why: "the Fact is a receipt; the bytes are the blob. Tens of thousands of \
+              renders off one template are mutual near-neighbours, which is a \
+              retrieval problem before it is a bill",
+    },
+    transfer: TransferRule::StaysOnKey,
+    provenance: Provenance::None,
+    surfaces: &[],
+    natural_key_columns: &[],
+    special_category: false,
+};
+
+/// The one owner-pinned sidecar. Its `owner_id` is the owner that MADE the
+/// call and is never rewritten, so the row answers "what did my agents do"
+/// for the source owner after the Memory it describes has been transferred
+/// away — and the destination never sees it.
+const MCP_CALL_LOGGED_V1: SchemaContract = SchemaContract {
+    id: SchemaRef::new(FLAVOR_ID, "mcp-call-logged", 1),
+    kind: PayloadKind::Fact,
+    sidecar_table: Some("proxima_core.mcp_call_logged_v1"),
+    search: SearchProjectionDecl::None {
+        why: "call telemetry is not retrievable content; the table carries no search_tsv",
+    },
+    embedding: EmbeddingRecipe::Never {
+        why: "call telemetry is not retrievable content",
+    },
+    transfer: TransferRule::RetainAtSource {
+        why: "the row is about the actor, not the memory. Deleting or moving it on \
+              transfer destroys audit history that Art. 17 and the owner's own export \
+              are both entitled to, and would disclose actor_upn to the destination",
+    },
+    provenance: Provenance::None,
+    surfaces: &[Surface {
+        table: "proxima_core.mcp_call_logged_v1",
+        key: KeyShape::MemoryT,
+        owner_columns: &["owner_id"],
+        transfer: TransferRule::RetainAtSource {
+            why: "see the schema declaration",
+        },
+        erase: EraseRule::ByOwner,
+        export: ExportRule::Rows,
+        forget: ForgetRule::Keep {
+            why: "forgetting a Memory must not dump or destroy the acting owner's \
+                  audit trail; the row holds no foreign key into memory, so it can \
+                  simply stay in the hot table",
+        },
+        lexical_language_column: None,
+        counter: Some("mcp_call_rows"),
+        // Deliberately NO FK to memory: the row must outlive the Memory.
+        // Completeness rests on owner_id -> owners instead.
+        completeness: Some(DbConstraint {
+            relation: "proxima_core.mcp_call_logged_v1",
+            name: "mcp_call_logged_v1_owner_id_fkey",
+        }),
+    }],
+    natural_key_columns: &[],
+    special_category: false,
+};
+
+const AGENT_DERIVATION_SEARCH: SearchProjectionDecl = SearchProjectionDecl::Projected {
+    fields: &[
+        WeightedField {
+            column: "title",
+            kind: ColumnKind::Text,
+            weight: Weight::A,
+        },
+        WeightedField {
+            column: "body",
+            kind: ColumnKind::Text,
+            weight: Weight::B,
+        },
+        WeightedField {
+            column: "tags",
+            kind: ColumnKind::TextArray,
+            weight: Weight::C,
+        },
+    ],
+    tag_column: Some("tags"),
+    tsv_column: Some("search_tsv"),
+    language: LanguagePolicy::PerRow {
+        column: "lexical_language",
+    },
+    bands: BANDS,
+    substring: SubstringArm::MemoryFirstNestedLoop,
+};
+
+const AGENT_DERIVATION_SURFACE: Surface = memory_sidecar(
+    "proxima_core.agent_derivation_v1",
+    Some("lexical_language"),
+    Some(t_fkey(
+        "proxima_core.agent_derivation_v1",
+        "agent_derivation_v1_t_fkey",
+    )),
+);
+
+/// Registered twice — once as Abstraction, once as Perspective — because one
+/// payload type serves both layers. The registry keys on
+/// `(schema_id, version, kind)`, so the contract does too.
+const AGENT_DERIVATION_V1_A: SchemaContract = SchemaContract {
+    id: SchemaRef::new(FLAVOR_ID, "agent-derivation", 1),
+    kind: PayloadKind::Abstraction,
+    sidecar_table: Some("proxima_core.agent_derivation_v1"),
+    search: AGENT_DERIVATION_SEARCH,
+    embedding: EmbeddingRecipe::Units(&[EmbedUnit::stored("embed_text", SLOT_DEFAULT)]),
+    transfer: TransferRule::StaysOnKey,
+    provenance: Provenance::OriginEdges,
+    surfaces: &[AGENT_DERIVATION_SURFACE],
+    natural_key_columns: &[],
+    special_category: false,
+};
+
+const AGENT_DERIVATION_V1_P: SchemaContract = SchemaContract {
+    id: SchemaRef::new(FLAVOR_ID, "agent-derivation", 1),
+    kind: PayloadKind::Perspective,
+    sidecar_table: Some("proxima_core.agent_derivation_v1"),
+    search: AGENT_DERIVATION_SEARCH,
+    embedding: EmbeddingRecipe::Units(&[EmbedUnit::stored("embed_text", SLOT_DEFAULT)]),
+    transfer: TransferRule::StaysOnKey,
+    provenance: Provenance::OriginEdges,
+    // The Abstraction registration owns the surface: one table, declared
+    // once, so erase and forget cannot delete it twice.
+    surfaces: &[],
+    natural_key_columns: &[],
+    special_category: false,
+};
+
+/// Checkpoint 9: an interpretation grounds through payload columns and
+/// writes no `origin` rows, so the lineage walk will not reach its subjects.
+/// That is now a declaration instead of a call-site choice.
+const INTERPRETATION_V1: SchemaContract = SchemaContract {
+    id: SchemaRef::new(FLAVOR_ID, "interpretation", 1),
+    kind: PayloadKind::Perspective,
+    sidecar_table: Some("proxima_core.interpretation_v1"),
+    search: SearchProjectionDecl::Projected {
+        fields: &[WeightedField {
+            column: "claim",
+            kind: ColumnKind::Text,
+            weight: Weight::A,
+        }],
+        tag_column: None,
+        tsv_column: Some("search_tsv"),
+        language: LanguagePolicy::PerRow {
+            column: "lexical_language",
+        },
+        bands: BANDS,
+        substring: SubstringArm::MemoryFirstNestedLoop,
+    },
+    embedding: EmbeddingRecipe::Units(&[EmbedUnit::stored("embed_text", SLOT_DEFAULT)]),
+    transfer: TransferRule::StaysOnKey,
+    provenance: Provenance::PayloadOnly {
+        subject_columns: &["subject_memory_ids", "subject_kinds"],
+    },
+    surfaces: &[memory_sidecar(
+        "proxima_core.interpretation_v1",
+        Some("lexical_language"),
+        Some(t_fkey(
+            "proxima_core.interpretation_v1",
+            "interpretation_v1_t_fkey",
+        )),
+    )],
+    natural_key_columns: &[],
+    special_category: false,
+};
+
+const SIMPLE_TEXT_GOAL_V1: SchemaContract = SchemaContract {
+    id: SchemaRef::new(FLAVOR_ID, "simple-text", 1),
+    kind: PayloadKind::Goal,
+    sidecar_table: None,
+    search: SearchProjectionDecl::None {
+        why: "search_memories returns empty for EntityKind::Goal; a goal is reached \
+              through the goal read models, not the memory corpus",
+    },
+    embedding: EmbeddingRecipe::Never {
+        why: "no embeddings row is ever keyed on a goal t",
+    },
+    transfer: GOAL_NOT_TRANSFERABLE,
+    provenance: Provenance::None,
+    surfaces: &[],
+    natural_key_columns: &[],
+    special_category: false,
+};
+
+const TASK_GOAL_V1: SchemaContract = SchemaContract {
+    id: SchemaRef::new(FLAVOR_ID, "task", 1),
+    kind: PayloadKind::Goal,
+    sidecar_table: Some("proxima_core.task_goal_v1"),
+    search: SearchProjectionDecl::None {
+        why: "search_memories returns empty for EntityKind::Goal",
+    },
+    embedding: EmbeddingRecipe::Never {
+        why: "no embeddings row is ever keyed on a goal t",
+    },
+    transfer: GOAL_NOT_TRANSFERABLE,
+    provenance: Provenance::None,
+    surfaces: &[Surface {
+        table: "proxima_core.task_goal_v1",
+        key: KeyShape::GoalT,
+        owner_columns: &[],
+        transfer: GOAL_NOT_TRANSFERABLE,
+        erase: EraseRule::ByKey,
+        export: ExportRule::Rows,
+        forget: ForgetRule::Keep {
+            why: "no goal-forget verb exists: Abandoned is an append, not a delete. \
+                  Only compliance erase ever removes a goal",
+        },
+        lexical_language_column: None,
+        counter: Some("sidecar_rows"),
+        completeness: Some(t_fkey("proxima_core.task_goal_v1", "task_goal_v1_t_fkey")),
+    }],
+    natural_key_columns: &[],
+    special_category: false,
+};
+
+/// Cited objects and citation mappings carry no sidecar of their own in
+/// core: the whole mapping is `memory.blob_id`, and the artefact's typed
+/// description lives on the blob row.
+const fn citation_schema(
+    name: &'static str,
+    kind: PayloadKind,
+    why: &'static str,
+) -> SchemaContract {
+    SchemaContract {
+        id: SchemaRef::new(FLAVOR_ID, name, 1),
+        kind,
+        sidecar_table: None,
+        search: SearchProjectionDecl::None { why },
+        embedding: EmbeddingRecipe::Never { why },
+        transfer: TransferRule::StaysOnKey,
+        provenance: Provenance::None,
+        surfaces: &[],
+        natural_key_columns: &[],
+        special_category: false,
+    }
+}
+
+const UPLOADED_BLOB_V1: SchemaContract = citation_schema(
+    "uploaded-blob",
+    PayloadKind::CitedObject,
+    "a cited object is not a memory; it carries no embed or search surface",
+);
+const UPLOADED_BLOB_WHOLE_V1: SchemaContract = citation_schema(
+    "uploaded-blob-whole",
+    PayloadKind::CitationMapping,
+    "a pure link: the whole mapping is memory.blob_id",
+);
+const UPLOADED_BLOB_PAGE_SPAN_V1: SchemaContract = citation_schema(
+    "uploaded-blob-page-span",
+    PayloadKind::CitationMapping,
+    "a pure link: the whole mapping is memory.blob_id",
+);
+const MCP_CALL_IO_V1: SchemaContract = citation_schema(
+    "mcp-call-io",
+    PayloadKind::CitedObject,
+    "call payload bytes are evidence, not retrievable content",
+);
+const MCP_CALL_IO_CITATION_V1: SchemaContract = citation_schema(
+    "mcp-call-io-citation",
+    PayloadKind::CitationMapping,
+    "a pure link: the whole mapping is memory.blob_id",
+);
+
+// ── Flavor-#0 state surfaces (not memory sidecars) ──────────────────────
+
+const STATE_SURFACES: &[Surface] = &[
+    Surface {
+        table: "proxima_core.goal",
+        key: KeyShape::GoalT,
+        owner_columns: &["owner_id"],
+        transfer: GOAL_NOT_TRANSFERABLE,
+        erase: EraseRule::ByOwner,
+        export: ExportRule::Rows,
+        forget: ForgetRule::Keep {
+            why: "no goal-forget verb exists; Abandoned is an append, not a delete",
+        },
+        lexical_language_column: None,
+        counter: Some("goals"),
+        // WAS goal_not_world_owner_chk. That CHECK went with the World
+        // owner; the DDL backstop is now the goal_head_t_only trigger, which
+        // TransferRule::NotTransferable names directly.
+        completeness: None,
+    },
+    Surface {
+        table: "proxima_core.goal_head",
+        key: KeyShape::Custom(&["handle"]),
+        owner_columns: &["owner_id"],
+        transfer: GOAL_NOT_TRANSFERABLE,
+        erase: EraseRule::ByOwner,
+        export: ExportRule::Excluded {
+            why: "the head is derivable from the goal series",
+        },
+        forget: ForgetRule::Keep {
+            why: "see proxima_core.goal",
+        },
+        lexical_language_column: None,
+        counter: None,
+        completeness: None,
+    },
+    Surface {
+        table: "proxima_core.wake_config",
+        key: KeyShape::Custom(&["wake_id"]),
+        owner_columns: &["owner_id"],
+        transfer: GOAL_NOT_TRANSFERABLE,
+        erase: EraseRule::ByOwner,
+        export: ExportRule::Excluded {
+            why: "DECLARED GAP — wake_config is erased (delete_wake_configs) and never \
+                  exported, so a portability bundle omits the owner's own prompt text. \
+                  Stated rather than left to be discovered",
+        },
+        forget: ForgetRule::Keep {
+            why: "the goal lifecycle owns it",
+        },
+        lexical_language_column: None,
+        counter: Some("wake_configs"),
+        completeness: None,
+    },
+];
+
+// ── Kernel surfaces ─────────────────────────────────────────────────────
+//
+// The kernel is explicitly not a flavor, but its relations still need a
+// declared transfer/erase/export/forget rule somewhere a registry walk can
+// reach. Flavor #0 speaks for them because it is the non-removable flavor;
+// no other flavor may declare a `proxima_core.*` surface.
+
+const KERNEL_SURFACES: &[Surface] = &[
+    Surface {
+        table: "proxima_core.memory",
+        key: KeyShape::MemoryT,
+        owner_columns: &["owner_id"],
+        transfer: TransferRule::Follow,
+        erase: EraseRule::ByKey,
+        export: ExportRule::Rows,
+        forget: ForgetRule::DumpThenDelete,
+        // The Memory row itself carries no text and no `lexical_language`:
+        // ranking happens in the sidecars and in `sketch`.
+        lexical_language_column: None,
+        counter: Some("memories"),
+        completeness: None,
+    },
+    Surface {
+        table: "proxima_core.memory_head",
+        key: KeyShape::Custom(&["handle"]),
+        owner_columns: &["owner_id"],
+        transfer: TransferRule::Follow,
+        erase: EraseRule::Cascade {
+            via: DbConstraint {
+                relation: "proxima_core.memory",
+                name: "memory_handle_fkey",
+            },
+        },
+        export: ExportRule::Excluded {
+            why: "the head is derivable from the memory series",
+        },
+        forget: ForgetRule::DeleteWithMemory,
+        lexical_language_column: None,
+        counter: None,
+        completeness: None,
+    },
+    Surface {
+        table: "proxima_core.cooled",
+        key: KeyShape::MemoryT,
+        owner_columns: &["owner_id"],
+        transfer: TransferRule::Follow,
+        erase: EraseRule::ByKey,
+        export: ExportRule::Rows,
+        forget: ForgetRule::Keep {
+            why: "cooled IS the forgotten form; forget writes it rather than deleting it",
+        },
+        lexical_language_column: None,
+        counter: Some("memories"),
+        completeness: None,
+    },
+    Surface {
+        table: "proxima_core.sketch",
+        key: KeyShape::Custom(&["t"]),
+        owner_columns: &["owner_id"],
+        transfer: TransferRule::Follow,
+        erase: EraseRule::ByKey,
+        export: ExportRule::Allowlist(&["t", "owner_id", "kind", "text", "lexical_language"]),
+        forget: ForgetRule::DeleteWithMemory,
+        lexical_language_column: Some("lexical_language"),
+        // Recorded by erase today and dropped on the floor: there is no
+        // `sketches` key in the final counts and no audit-log column.
+        // Declaring it is what makes the gap addressable.
+        counter: Some("sketches"),
+        // No FK: `t` is a Memory t OR a Goal t, and there is no constraint
+        // that can span two home tables.
+        completeness: None,
+    },
+    Surface {
+        table: "proxima_core.embeddings",
+        key: KeyShape::Custom(&["entity_id"]),
+        owner_columns: &["owner_id"],
+        transfer: TransferRule::Follow,
+        erase: EraseRule::ByKey,
+        export: ExportRule::Excluded {
+            why: "a vector is a derived index over text the bundle already carries",
+        },
+        forget: ForgetRule::DeleteWithMemory,
+        lexical_language_column: None,
+        counter: Some("embeddings"),
+        completeness: None,
+    },
+    Surface {
+        table: "proxima_core.embedding_heads",
+        key: KeyShape::Custom(&["entity_id"]),
+        owner_columns: &["owner_id"],
+        transfer: TransferRule::Follow,
+        erase: EraseRule::ByKey,
+        export: ExportRule::Excluded {
+            why: "derived index bookkeeping",
+        },
+        forget: ForgetRule::DeleteWithMemory,
+        lexical_language_column: None,
+        counter: Some("embeddings"),
+        completeness: None,
+    },
+    Surface {
+        table: "proxima_core.embedding_jobs",
+        key: KeyShape::Custom(&["entity_id"]),
+        owner_columns: &["owner_id"],
+        transfer: TransferRule::Follow,
+        erase: EraseRule::ByKey,
+        export: ExportRule::Excluded {
+            why: "queue state, not owner data",
+        },
+        forget: ForgetRule::DeleteWithMemory,
+        lexical_language_column: None,
+        counter: Some("embedding_jobs"),
+        completeness: None,
+    },
+    Surface {
+        table: "proxima_core.ingest_keys",
+        key: KeyShape::MemoryT,
+        owner_columns: &["owner_id"],
+        transfer: TransferRule::Drop {
+            why: "a receipt proves admission by THIS owner. It does not travel, so a \
+                  received series has structurally zero receipts and 'receipts' is not \
+                  a complete audit trail for transferred content",
+        },
+        erase: EraseRule::ByKey,
+        export: ExportRule::Rows,
+        forget: ForgetRule::DeleteWithMemory,
+        lexical_language_column: None,
+        counter: Some("receipts"),
+        completeness: None,
+    },
+    Surface {
+        table: "proxima_core.announce",
+        key: KeyShape::Custom(&["seq"]),
+        owner_columns: &["owner_id"],
+        // The log is append-only (`announce_append_only`), so no existing
+        // row is ever re-homed: what the transfer does is APPEND two rows
+        // in the same transaction, one under the prior owner's lane and one
+        // under the destination's, so the source's projectors learn the
+        // series left and the destination's pull consumers learn it
+        // arrived. That is the transfers-announce-everywhere invariant, and
+        // the rows already written stay where they were written.
+        transfer: TransferRule::RetainAtSource {
+            why: "an announce row records what happened to an owner's view, not to \
+                  the memory; a transfer appends to both lanes rather than moving \
+                  the log",
+        },
+        erase: EraseRule::ByKey,
+        export: ExportRule::Excluded {
+            why: "the pull log is projector state, exported as source_batches (empty by \
+                  declaration) rather than as owner content",
+        },
+        forget: ForgetRule::Keep {
+            why: "forget APPENDS an announce row; it never removes one",
+        },
+        lexical_language_column: None,
+        counter: Some("change_events"),
+        completeness: None,
+    },
+    Surface {
+        table: "proxima_core.blob",
+        key: KeyShape::BlobId,
+        owner_columns: &["owner_id"],
+        transfer: TransferRule::FollowIfUnshared {
+            shared_by: &["memory.blob_id", "cooled.blob_id"],
+        },
+        erase: EraseRule::ByOwner,
+        export: ExportRule::Allowlist(&["blob_id", "schema_id", "content_hash"]),
+        forget: ForgetRule::Keep {
+            why: "the citation outlives the cooling of the Fact that names it",
+        },
+        lexical_language_column: None,
+        counter: Some("blobs"),
+        completeness: None,
+    },
+    Surface {
+        table: "proxima_core.blob_uploads",
+        key: KeyShape::Custom(&["upload_id"]),
+        owner_columns: &["owner_id"],
+        // Moves with the blob row it describes: the read path requires both
+        // to name the same owner.
+        transfer: TransferRule::Follow,
+        erase: EraseRule::ByOwner,
+        export: ExportRule::Excluded {
+            why: "DECLARED GAP — upload coordinates and object-store bytes are erased \
+                  but never exported",
+        },
+        forget: ForgetRule::Keep {
+            why: "upload coordination outlives the Fact",
+        },
+        lexical_language_column: None,
+        counter: Some("blob_uploads"),
+        completeness: None,
+    },
+    Surface {
+        table: "proxima_core.content",
+        key: KeyShape::Custom(&["content_id"]),
+        owner_columns: &["owner_id"],
+        // RESERVED-ARM MEMBER. `content` is the one implemented member of
+        // FollowOrDedupe; `blob` deliberately stays FollowIfUnshared and
+        // keeps refusing with Conflict until the Phase-2 dedupe arm lands.
+        transfer: TransferRule::FollowOrDedupe {
+            dedupe_key: &["owner_id", "schema_id", "content_hash"],
+            remaps: &["memory.content_id", "cooled.content_id"],
+        },
+        erase: EraseRule::Cascade {
+            via: DbConstraint {
+                relation: "proxima_core.content",
+                name: "gc_unreferenced_content",
+            },
+        },
+        export: ExportRule::Excluded {
+            why: "DECLARED GAP — the A/P body is erased but never exported",
+        },
+        forget: ForgetRule::Keep {
+            why: "many admissions may share one ContentId",
+        },
+        lexical_language_column: None,
+        counter: None,
+        completeness: None,
+    },
+    Surface {
+        table: "proxima_core.source_cursors",
+        key: KeyShape::Custom(&["owner_kind", "owner_id", "source"]),
+        owner_columns: &["owner_id"],
+        transfer: TransferRule::StaysOnKey,
+        erase: EraseRule::ByOwner,
+        export: ExportRule::Rows,
+        forget: ForgetRule::Keep {
+            why: "external ingest cursors are owner policy, not memory content",
+        },
+        lexical_language_column: None,
+        counter: Some("source_cursors"),
+        completeness: None,
+    },
+    Surface {
+        table: "proxima_core.delegated_authority_grants",
+        key: KeyShape::Custom(&["delegation_id"]),
+        owner_columns: &["owner_id"],
+        transfer: TransferRule::StaysOnKey,
+        erase: EraseRule::ByOwner,
+        export: ExportRule::Allowlist(&[
+            "subject_user_id",
+            "owner_kind",
+            "owner_id",
+            "tool_name",
+            "action_name",
+            "read_ceiling",
+            "write_ceiling",
+            "expires_at",
+            "auth_epoch",
+            "issued_at",
+            "revoked_at",
+            "revoked_by_user_id",
+        ]),
+        forget: ForgetRule::Keep {
+            why: "owner-level authority, never memory content",
+        },
+        lexical_language_column: None,
+        counter: Some("delegated_authority_grants"),
+        completeness: None,
+    },
+    Surface {
+        table: "proxima_core.cold_purge_pending",
+        key: KeyShape::Custom(&["object_key"]),
+        owner_columns: &["owner_id"],
+        transfer: TransferRule::StaysOnKey,
+        erase: EraseRule::ByOwner,
+        export: ExportRule::Excluded {
+            why: "erase bookkeeping",
+        },
+        forget: ForgetRule::Keep {
+            why: "the purge queue outlives the transaction that enqueued it",
+        },
+        lexical_language_column: None,
+        counter: None,
+        completeness: None,
+    },
+    Surface {
+        table: "proxima_core.owners",
+        key: KeyShape::OwnerId,
+        owner_columns: &["owner_id"],
+        transfer: TransferRule::StaysOnKey,
+        erase: EraseRule::Never {
+            why: "erase never deletes the owners row: 17 FKs point at it and the \
+                  destination owner's row is minted inside the transfer transaction",
+        },
+        export: ExportRule::Excluded {
+            why: "the owner is the bundle's subject, not one of its rows",
+        },
+        forget: ForgetRule::Keep {
+            why: "the star centre",
+        },
+        lexical_language_column: None,
+        counter: None,
+        completeness: None,
+    },
+];
+
+// ── MCP surface ─────────────────────────────────────────────────────────
+
+const TOOLS: &[ToolContract] = &[
+    ToolContract {
+        wire_name: tool::CORE_SEARCH_MEMORIES,
+        actions: &[],
+        idempotent: true,
+    },
+    ToolContract {
+        wire_name: tool::CORE_RECALL,
+        actions: &[],
+        idempotent: true,
+    },
+    ToolContract {
+        wire_name: tool::CORE_THINK,
+        actions: &[],
+        idempotent: true,
+    },
+    ToolContract {
+        wire_name: tool::CORE_MEMORY_SPACES,
+        actions: &[],
+        idempotent: true,
+    },
+    ToolContract {
+        wire_name: tool::CORE_REMEMBER,
+        actions: &[],
+        idempotent: false,
+    },
+    ToolContract {
+        wire_name: tool::CORE_EPISODE_COMMIT,
+        actions: &[],
+        idempotent: false,
+    },
+    ToolContract {
+        wire_name: tool::CORE_FORGET,
+        actions: &[],
+        idempotent: false,
+    },
+    ToolContract {
+        wire_name: tool::CORE_RECORD_UTTERANCE,
+        actions: &[],
+        idempotent: false,
+    },
+    ToolContract {
+        wire_name: tool::CORE_DERIVE,
+        actions: &[],
+        idempotent: true,
+    },
+    ToolContract {
+        wire_name: tool::CORE_INTERPRET,
+        actions: &[],
+        idempotent: true,
+    },
+    ToolContract {
+        wire_name: tool::CORE_GOAL,
+        actions: &["set", "transition", "modify", "mark_achieved", "decompose"],
+        idempotent: false,
+    },
+    ToolContract {
+        wire_name: tool::CORE_FACT,
+        actions: &["citation_of_fact", "facts_citing_object"],
+        idempotent: true,
+    },
+    ToolContract {
+        wire_name: tool::CORE_MEMBERSHIP,
+        actions: &["add_member", "remove_member", "list_members"],
+        idempotent: false,
+    },
+    ToolContract {
+        wire_name: tool::CORE_TRANSFER,
+        actions: &["transfer_to_owner"],
+        idempotent: false,
+    },
+    ToolContract {
+        wire_name: tool::CORE_UPLOAD,
+        actions: &["prepare", "complete", "abort", "read_url"],
+        idempotent: false,
+    },
+];
+
+/// The ten `proxima://` resources. Nine handler modules; `goal_reads` backs
+/// two. A palette built from tools alone denies every one of these reads,
+/// which is why they are contract entries rather than a separate const.
+const RESOURCES: &[ResourceContract] = &[
+    ResourceContract {
+        uri_template: "proxima://schemas{?kind}",
+        path: "schemas",
+        name: "proxima-schemas",
+        title: "Proxima Schemas",
+        description: "Registered core and flavor schema catalog, optionally filtered by payload kind.",
+        scope_key: scope::SCHEMAS,
+        is_template: false,
+        read_only: true,
+        reads: &[],
+    },
+    ResourceContract {
+        uri_template: "proxima://tools",
+        path: "tools",
+        name: "proxima-tools",
+        title: "Proxima Tools",
+        description: "Registered substrate and flavor MCP tool catalog visible to the caller.",
+        scope_key: scope::TOOLS,
+        is_template: false,
+        read_only: true,
+        reads: &[],
+    },
+    ResourceContract {
+        uri_template: "proxima://graph",
+        path: "graph",
+        name: "proxima-graph",
+        title: "Proxima Graph",
+        description: "Owner-scoped memory graph plus schema and tool catalogs.",
+        scope_key: scope::GRAPH,
+        is_template: false,
+        read_only: true,
+        reads: &[
+            "proxima_core.embedding_jobs",
+            "proxima_core.owner_fact_retention",
+            "proxima_core.owner_legal_holds",
+        ],
+    },
+    ResourceContract {
+        uri_template: "proxima://memory/{id}{?expand_neighbors}",
+        path: "memory",
+        name: "proxima-memory",
+        title: "Proxima Memory",
+        description: "Owner-scoped memory by prefixed id (`F:`/`A:`/`P:`).",
+        scope_key: scope::MEMORY,
+        is_template: true,
+        read_only: true,
+        reads: &[
+            "proxima_core.memory",
+            "proxima_core.memory_head",
+            "proxima_core.owners",
+        ],
+    },
+    ResourceContract {
+        uri_template: "proxima://memories{?ids}",
+        path: "memories",
+        name: "proxima-memories",
+        title: "Proxima Memories",
+        description: "Batch memory read by comma-separated prefixed ids (`F:`/`A:`/`P:`), \
+                      at most 100 per call; unknown or invisible ids are reported as missing.",
+        scope_key: scope::MEMORIES,
+        is_template: true,
+        read_only: true,
+        reads: &[
+            "proxima_core.memory",
+            "proxima_core.memory_head",
+            "proxima_core.owners",
+        ],
+    },
+    ResourceContract {
+        uri_template: "proxima://memory/{id}/lineage{?direction,depth,limit,cursor}",
+        path: "memory",
+        name: "proxima-memory-lineage",
+        title: "Proxima Memory Lineage",
+        description: "Owner-scoped origin lineage from a prefixed memory id, \
+                      with keyset cursor pagination.",
+        scope_key: scope::MEMORY_LINEAGE,
+        is_template: true,
+        read_only: true,
+        reads: &["proxima_core.memory"],
+    },
+    ResourceContract {
+        uri_template: "proxima://change-events{?since,limit}",
+        path: "change-events",
+        name: "proxima-change-events",
+        title: "Proxima Change Events",
+        description: "Owner-scoped change-event pull log.",
+        scope_key: scope::CHANGE_EVENTS,
+        is_template: true,
+        read_only: true,
+        reads: &[
+            "proxima_core.announce",
+            "proxima_core.memory",
+            "proxima_core.blob",
+        ],
+    },
+    ResourceContract {
+        uri_template: "proxima://wake-candidates{?fact,limit}",
+        path: "wake-candidates",
+        name: "proxima-wake-candidates",
+        title: "Proxima Wake Candidates",
+        description: "Armed Active Goals admitted for wake planning by a trigger Fact.",
+        scope_key: scope::WAKE_CANDIDATES,
+        is_template: true,
+        read_only: true,
+        reads: &[
+            "proxima_core.goal",
+            "proxima_core.goal_head",
+            "proxima_core.wake_config",
+            "proxima_core.memory",
+        ],
+    },
+    ResourceContract {
+        uri_template: "proxima://goals{?state,limit,cursor}",
+        path: "goals",
+        name: "proxima-goals",
+        title: "Proxima Goals",
+        description: "Owner-scoped goal listing with state filter, keyset cursor, and wake-config read-back.",
+        scope_key: scope::GOALS,
+        is_template: true,
+        read_only: true,
+        reads: &[
+            "proxima_core.goal",
+            "proxima_core.goal_head",
+            "proxima_core.owners",
+            "proxima_core.wake_config",
+        ],
+    },
+    ResourceContract {
+        uri_template: "proxima://goal/{id}",
+        path: "goal",
+        name: "proxima-goal",
+        title: "Proxima Goal",
+        description: "Single-goal read by G:<uuid> reference, including stored wake configuration.",
+        scope_key: scope::GOAL,
+        is_template: true,
+        read_only: true,
+        reads: &[
+            "proxima_core.goal",
+            "proxima_core.goal_head",
+            "proxima_core.owners",
+            "proxima_core.wake_config",
+        ],
+    },
+];
+
+/// Core's contract. Fifteen schema registrations over fourteen distinct
+/// schema ids (`core/agent-derivation-v1` registers as both Abstraction and
+/// Perspective), fifteen tools, ten resources.
+pub const FLAVOR_0: FlavorContract = FlavorContract {
+    flavor_id: FLAVOR_ID,
+    ordinal: CORE_ORDINAL,
+    schemas: &[
+        WRITE_ACT_V1,
+        AGENT_NOTE_V1,
+        UTTERANCE_V1,
+        UPLOAD_V1,
+        MCP_CALL_LOGGED_V1,
+        AGENT_DERIVATION_V1_A,
+        AGENT_DERIVATION_V1_P,
+        INTERPRETATION_V1,
+        SIMPLE_TEXT_GOAL_V1,
+        TASK_GOAL_V1,
+        UPLOADED_BLOB_V1,
+        UPLOADED_BLOB_WHOLE_V1,
+        UPLOADED_BLOB_PAGE_SPAN_V1,
+        MCP_CALL_IO_V1,
+        MCP_CALL_IO_CITATION_V1,
+    ],
+    state_surfaces: STATE_SURFACES,
+    kernel_surfaces: KERNEL_SURFACES,
+    tools: TOOLS,
+    resources: RESOURCES,
+};
+
+/// Look up a flavor-#0 resource by its palette scope key.
+///
+/// `const fn` so the dispatcher's match arms and the served manifest are
+/// *derived* from the contract rather than repeating it: the three parallel
+/// lists that used to spell each resource's scope key, path and URI template
+/// separately are now one declaration and two projections of it.
+///
+/// # Panics
+///
+/// Panics at compile time when `scope_key` names no declared resource.
+#[must_use]
+pub const fn resource(scope_key: &str) -> &'static ResourceContract {
+    let mut index = 0;
+    while index < RESOURCES.len() {
+        if const_str_eq(RESOURCES[index].scope_key, scope_key) {
+            return &RESOURCES[index];
+        }
+        index += 1;
+    }
+    panic!("no flavor #0 resource declares that scope key")
+}
+
+const fn const_str_eq(left: &str, right: &str) -> bool {
+    let (left, right) = (left.as_bytes(), right.as_bytes());
+    if left.len() != right.len() {
+        return false;
+    }
+    let mut index = 0;
+    while index < left.len() {
+        if left[index] != right[index] {
+            return false;
+        }
+        index += 1;
+    }
+    true
+}
+
+/// Register flavor #0's contract. Called from `FlavorRegistry::default()`
+/// alongside the schema/tool registrations it describes, so the descriptor
+/// and the registrations cannot be linked separately.
+pub(crate) fn register(
+    registry: &mut crate::FlavorRegistry,
+) -> Result<(), crate::FlavorRegistryError> {
+    registry.try_add_flavor(crate::FlavorDescriptor {
+        flavor_id: FLAVOR_ID.to_string(),
+        display_name: "Proxima Core".to_string(),
+        package_version: env!("CARGO_PKG_VERSION").to_string(),
+        author: option_env!("CARGO_PKG_AUTHORS")
+            .filter(|authors| !authors.is_empty())
+            .map(|authors| {
+                authors
+                    .split(':')
+                    .next()
+                    .unwrap_or(authors)
+                    .trim()
+                    .to_string()
+            }),
+        provenance: crate::FlavorProvenance::Builtin,
+    })?;
+    registry.try_add_contract(&FLAVOR_0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{FLAVOR_0, RESOURCES, resource};
+    use crate::flavor::contract::{SearchProjectionDecl, TransferRule};
+    use crate::protocol::resource as scope;
+
+    #[test]
+    fn flavor_zero_is_core_and_holds_the_zero_ordinal() {
+        assert_eq!(FLAVOR_0.flavor_id, "core");
+        assert!(FLAVOR_0.is_core());
+    }
+
+    #[test]
+    fn every_declared_schema_id_carries_the_flavor_prefix() {
+        for schema in FLAVOR_0.schemas {
+            assert!(
+                schema.id.render().starts_with("core/"),
+                "{} must carry the core/ prefix",
+                schema.id.render()
+            );
+        }
+    }
+
+    #[test]
+    fn every_declared_tool_carries_the_flavor_prefix() {
+        for tool in FLAVOR_0.tools {
+            assert!(
+                tool.wire_name.starts_with("core_") || tool.wire_name.starts_with("core/"),
+                "{} must carry the core prefix",
+                tool.wire_name
+            );
+        }
+    }
+
+    #[test]
+    fn ten_resources_from_nine_handler_modules() {
+        assert_eq!(RESOURCES.len(), 10);
+        assert_eq!(resource(scope::GOAL).name, "proxima-goal");
+        assert_eq!(resource(scope::GOALS).path, "goals");
+        assert!(RESOURCES.iter().all(|entry| entry.read_only));
+    }
+
+    /// Case 1 of the plan's acceptance set, as a declaration.
+    #[test]
+    fn goals_declare_not_transferable_with_real_enforcement() {
+        for schema in FLAVOR_0
+            .schemas
+            .iter()
+            .filter(|schema| schema.id.name == "task" || schema.id.name == "simple-text")
+        {
+            let TransferRule::NotTransferable { enforced_by, .. } = schema.transfer else {
+                panic!("{} must declare NotTransferable", schema.id.render());
+            };
+            assert_eq!(
+                enforced_by.len(),
+                3,
+                "goals are enforced three times over: engine refusal, storage backstop, trigger"
+            );
+        }
+    }
+
+    /// Case 2: declared absence is a value with a reason attached.
+    #[test]
+    fn declared_absence_carries_a_reason() {
+        let write_act = FLAVOR_0
+            .schemas
+            .iter()
+            .find(|schema| schema.id.name == "write-act")
+            .expect("write-act is a flavor #0 schema");
+        let SearchProjectionDecl::None { why } = write_act.search else {
+            panic!("write-act declares itself a non-surface");
+        };
+        assert!(!why.is_empty(), "a declared non-surface states why");
+    }
+}

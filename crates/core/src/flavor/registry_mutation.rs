@@ -1,3 +1,4 @@
+use super::contract::FlavorContract;
 use super::{
     Arc, AuthorizationHook, BTreeSet, CapabilityTag, FlavorDescriptor, FlavorRegistry,
     FlavorRegistryError, OwnerResolver, PayloadKind, RequestBehavior, SchemaCapabilityTags,
@@ -102,8 +103,40 @@ impl FlavorRegistry {
             .expect("flavor descriptor registration must be valid");
     }
 
+    /// Register a flavor's [`FlavorContract`].
+    ///
+    /// The contract is what erase, export, forget, transfer, the migration
+    /// guardrail and the MCP manifest iterate. A flavor that registers
+    /// schemas without one is invisible to every one of those walks, so
+    /// [`Self::try_freeze`](crate::FlavorRegistry::try_freeze) cross-checks
+    /// the two against each other.
+    ///
+    /// # Errors
+    ///
+    /// Currently infallible; ordinal collisions, resource declarations from
+    /// a non-core flavor, and contract/registration drift are all checked by
+    /// `try_freeze`, after every flavor has registered.
+    pub fn try_add_contract(
+        &mut self,
+        contract: &'static FlavorContract,
+    ) -> Result<(), FlavorRegistryError> {
+        self.contracts.push(contract);
+        Ok(())
+    }
+
+    #[doc(hidden)]
+    pub fn add_contract_or_panic_for_tests(&mut self, contract: &'static FlavorContract) {
+        self.try_add_contract(contract)
+            .expect("flavor contract registration must be valid");
+    }
+
     #[must_use]
     pub fn list_flavors(&self) -> &[FlavorDescriptor] {
         &self.flavors
+    }
+
+    #[must_use]
+    pub fn list_contracts(&self) -> &[&'static FlavorContract] {
+        &self.contracts
     }
 }

@@ -4,8 +4,8 @@
 use std::sync::Arc;
 
 use proxima_core::compliance::{
-    ComplianceEraseOutcome, ComplianceEraseTarget, ComplianceExportTarget, EraseAuthorization,
-    ExportAuthorization,
+    ComplianceEraseOutcome, ComplianceEraseTarget, ComplianceExportTarget, ComplianceSidecarTables,
+    EraseAuthorization, ExportAuthorization,
 };
 use proxima_core::storage_ports::MemoryAuthoringPort;
 use proxima_core::storage_ports::{
@@ -32,6 +32,16 @@ use proxima_storage_pg::verbs::wake_timeseries::{
 };
 use proxima_storage_pg::{PgStorage, core_pg_sidecars};
 use uuid::Uuid;
+
+/// The five sidecar legs exactly as the engine assembles them: from the
+/// frozen flavor registry. Passing empty slices here would silently skip
+/// the owner-pinned leg, which is the difference these tests exist to
+/// measure.
+fn contract_sidecar_tables() -> ComplianceSidecarTables {
+    ComplianceSidecarTables::for_registry(
+        &proxima_core::FlavorRegistry::new().freeze_or_panic_for_tests(),
+    )
+}
 
 fn draft() -> FactWriteCommand {
     FactWriteCommand {
@@ -160,21 +170,27 @@ async fn export_bundle(
     };
     pg.export_owner_bundle(
         &ExportAuthorization::new_for_tests(target),
-        &[],
-        &[],
-        &[],
-        &[],
+        &contract_sidecar_tables(),
     )
     .await
 }
 
-fn mcp_rows_in(bundle: &proxima_core::compliance::ComplianceExportBundle) -> usize {
+/// The exported `mcp_call_logged_v1` rows, whole.
+///
+/// Returning the rows rather than a count is deliberate. Counting them cannot
+/// tell a row from a scalar, and the owner-pinned export once emitted the
+/// primary key where the row belonged (`to_jsonb(t)` resolves to the column
+/// named `t`, not the range table, when only one table is in scope). The
+/// cardinality was right and the bundle was empty of content.
+fn mcp_rows_in(
+    bundle: &proxima_core::compliance::ComplianceExportBundle,
+) -> Vec<&serde_json::Value> {
     bundle
         .sidecars
         .iter()
         .filter(|sidecar| sidecar.table == "proxima_core.mcp_call_logged_v1")
-        .map(|sidecar| sidecar.rows.len())
-        .sum()
+        .flat_map(|sidecar| sidecar.rows.iter())
+        .collect()
 }
 
 fn destination() -> OwnerRef {
@@ -825,7 +841,7 @@ async fn transfer_refuses_armed_goal_and_owner_erase_still_succeeds() {
             drop_event_id: "test-drop-armed-transfer".into(),
         });
         let outcome = pg
-            .erase_personal_owner_if_drop_verified(&auth, user, false, &[], &[], &[], &[])
+            .erase_personal_owner_if_drop_verified(&auth, user, false, &contract_sidecar_tables())
             .await?;
         let ComplianceEraseOutcome::Completed { counts, .. } = outcome else {
             panic!("erase must complete after the refused transfer, got {outcome:?}");
@@ -1098,15 +1114,33 @@ async fn transfer_leaves_the_actor_call_log_with_the_owner_that_made_the_call() 
 
         // (d) Export follows the same owner: source in, destination out.
         let source_bundle = export_bundle(&pg, owner).await?;
+        let exported = mcp_rows_in(&source_bundle);
         assert_eq!(
-            mcp_rows_in(&source_bundle),
+            exported.len(),
             1,
             "the source's Art. 15 bundle carries the calls it made"
         );
-        let destination_bundle = export_bundle(&pg, dest).await?;
+        // And carries them whole. A portability bundle that lists the right
+        // number of rows and none of their fields is not a copy of anything;
+        // `actor_upn` is the field this sidecar exists to retain, so it is
+        // the one worth naming.
         assert_eq!(
-            mcp_rows_in(&destination_bundle),
-            0,
+            exported[0]
+                .get("actor_upn")
+                .and_then(serde_json::Value::as_str),
+            Some("alice@example.test"),
+            "the exported row is the row, not its primary key: {:?}",
+            exported[0]
+        );
+        assert_eq!(
+            exported[0]
+                .get("tool_name")
+                .and_then(serde_json::Value::as_str),
+            Some("core_remember"),
+        );
+        let destination_bundle = export_bundle(&pg, dest).await?;
+        assert!(
+            mcp_rows_in(&destination_bundle).is_empty(),
             "the destination's bundle must not carry another owner's actor rows"
         );
 
@@ -1119,7 +1153,12 @@ async fn transfer_leaves_the_actor_call_log_with_the_owner_that_made_the_call() 
             drop_event_id: "test-drop-retained-audit".into(),
         });
         let erased = pg
-            .erase_personal_owner_if_drop_verified(&auth, user_id, false, &[], &[], &[], &[])
+            .erase_personal_owner_if_drop_verified(
+                &auth,
+                user_id,
+                false,
+                &contract_sidecar_tables(),
+            )
             .await?;
         assert!(
             matches!(erased, ComplianceEraseOutcome::Completed { .. }),
@@ -1212,7 +1251,7 @@ async fn the_destination_can_forget_and_erase_without_touching_the_source_audit_
         let auth =
             EraseAuthorization::new_for_tests(ComplianceEraseTarget::GroupOwner { group_id });
         let erased = pg
-            .erase_group_owner_if_abandoned(&auth, group_id, false, &[], &[], &[], &[])
+            .erase_group_owner_if_abandoned(&auth, group_id, false, &contract_sidecar_tables())
             .await?;
         assert!(
             matches!(erased, ComplianceEraseOutcome::Completed { .. }),

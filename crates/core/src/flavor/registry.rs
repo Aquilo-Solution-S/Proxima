@@ -1,3 +1,4 @@
+use super::contract::FlavorContract;
 use super::{
     Arc, AuthorizationHook, FlavorDescriptor, McpToolDescriptor, MemorySearchProjection,
     OwnerResolver, ProtocolPayloadIngressEntry, RequestBehavior, SchemaCapabilityTags, SchemaInfo,
@@ -17,6 +18,10 @@ pub struct FlavorRegistry {
     pub(crate) mcp_tools: Vec<McpToolDescriptor>,
     pub(crate) request_behaviors: Vec<Arc<dyn RequestBehavior>>,
     pub(crate) flavors: Vec<FlavorDescriptor>,
+    /// One [`FlavorContract`] per linked flavor. This is what makes erase,
+    /// export, forget, transfer and the migration guardrail a registry walk
+    /// instead of six hand-maintained lists.
+    pub(crate) contracts: Vec<&'static FlavorContract>,
     pub(crate) owner_resolver: Option<Arc<dyn OwnerResolver>>,
     pub(crate) authorization_hooks: Vec<Arc<dyn AuthorizationHook>>,
 }
@@ -31,6 +36,7 @@ impl Default for FlavorRegistry {
             mcp_tools: Vec::new(),
             request_behaviors: vec![Arc::new(ScopeGateBehavior)],
             flavors: Vec::new(),
+            contracts: Vec::new(),
             owner_resolver: None,
             authorization_hooks: Vec::new(),
         };
@@ -61,6 +67,13 @@ impl Default for FlavorRegistry {
         crate::goal::register_all(&mut registry).expect("built-in goal registration must be valid");
         crate::mcp::core_tools::register_all(&mut registry)
             .expect("built-in MCP tool registration must be valid");
+        // Flavor #0's contract lands beside the registrations it describes.
+        // Keeping `default()` the single entry point means the observable
+        // registry contents stay byte-identical and only the `flavors` /
+        // `contracts` vectors gain core's own entry — the rewire's blast
+        // radius is on the registry's CONSUMERS, not on its construction.
+        crate::flavor::flavor0::register(&mut registry)
+            .expect("flavor #0 contract registration must be valid");
         registry
     }
 }

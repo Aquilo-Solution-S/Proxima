@@ -4,7 +4,8 @@
 use std::sync::Arc;
 
 use proxima_core::compliance::{
-    ComplianceEraseOutcome, ComplianceEraseRefusal, ComplianceEraseTarget, EraseAuthorization,
+    ComplianceEraseOutcome, ComplianceEraseRefusal, ComplianceEraseTarget, ComplianceSidecarTables,
+    EraseAuthorization,
 };
 use proxima_core::storage_ports::{
     ComplianceErasePort, MemoryAuthoringPort, OwnerMembershipAdminPort, OwnerWritePermit,
@@ -24,6 +25,16 @@ use proxima_storage_pg::verbs::wake_timeseries::{
 };
 use proxima_storage_pg::{ColdPurgeRetryOptions, PgStorage};
 use uuid::Uuid;
+
+/// The five sidecar legs exactly as the engine assembles them: from the
+/// frozen flavor registry. Passing empty slices here would silently skip
+/// the owner-pinned leg, which is the difference these tests exist to
+/// measure.
+fn contract_sidecar_tables() -> ComplianceSidecarTables {
+    ComplianceSidecarTables::for_registry(
+        &proxima_core::FlavorRegistry::new().freeze_or_panic_for_tests(),
+    )
+}
 
 const CITED_TABLE: &str = "proxima_core.test_cited_object_v1";
 const MAPPING_TABLE: &str = "proxima_core.test_citation_mapping_v1";
@@ -272,7 +283,7 @@ async fn erase_personal_owner_drops_memory_keys_and_embeddings() {
             drop_event_id: "test-drop".into(),
         });
         let outcome = pg
-            .erase_personal_owner_if_drop_verified(&auth, user, false, &[], &[], &[], &[])
+            .erase_personal_owner_if_drop_verified(&auth, user, false, &contract_sidecar_tables())
             .await?;
         let ComplianceEraseOutcome::Completed { counts, .. } = outcome else {
             panic!("expected completed erase, got {outcome:?}");
@@ -389,7 +400,7 @@ async fn erase_personal_owner_destroys_cooled_and_gcs_content() {
             drop_event_id: "test-drop-cooled".into(),
         });
         let outcome = pg
-            .erase_personal_owner_if_drop_verified(&auth, user, false, &[], &[], &[], &[])
+            .erase_personal_owner_if_drop_verified(&auth, user, false, &contract_sidecar_tables())
             .await?;
         assert!(
             matches!(outcome, ComplianceEraseOutcome::Completed { .. }),
@@ -460,7 +471,7 @@ async fn erase_personal_owner_destroys_wake_config() {
             drop_event_id: "test-drop-wake".into(),
         });
         let outcome = pg
-            .erase_personal_owner_if_drop_verified(&auth, user, false, &[], &[], &[], &[])
+            .erase_personal_owner_if_drop_verified(&auth, user, false, &contract_sidecar_tables())
             .await?;
         let ComplianceEraseOutcome::Completed { counts, .. } = outcome else {
             panic!("expected completed erase, got {outcome:?}");
@@ -542,10 +553,7 @@ async fn erase_source_scope_keeps_all_wake_configs() {
                 &auth,
                 user,
                 &SourceId::new("src-wake"),
-                &[],
-                &[],
-                &[],
-                &[],
+                &contract_sidecar_tables(),
             )
             .await?;
         let ComplianceEraseOutcome::Completed { counts, .. } = outcome else {
@@ -614,7 +622,7 @@ async fn erase_personal_owner_purges_cold_objects_after_commit() {
             drop_event_id: "test-drop-cold".into(),
         });
         let outcome = pg
-            .erase_personal_owner_if_drop_verified(&auth, user, false, &[], &[], &[], &[])
+            .erase_personal_owner_if_drop_verified(&auth, user, false, &contract_sidecar_tables())
             .await?;
         assert!(
             matches!(outcome, ComplianceEraseOutcome::Completed { .. }),
@@ -662,7 +670,7 @@ async fn failed_cold_purge_is_attributed_and_bounded_retry_clears_audit() {
         });
         let operation_id = auth.audit().operation_id();
         let outcome = pg
-            .erase_personal_owner_if_drop_verified(&auth, user, false, &[], &[], &[], &[])
+            .erase_personal_owner_if_drop_verified(&auth, user, false, &contract_sidecar_tables())
             .await?;
         assert!(matches!(
             outcome,
@@ -814,7 +822,7 @@ async fn an_aborted_owner_erase_keeps_the_cold_object_and_its_locator() {
             drop_event_id: "test-drop-abort".into(),
         });
         let err = pg
-            .erase_personal_owner_if_drop_verified(&auth, user, false, &[], &[], &[], &[])
+            .erase_personal_owner_if_drop_verified(&auth, user, false, &contract_sidecar_tables())
             .await
             .expect_err("the RESTRICT FK aborts the erase");
         assert!(err.to_string().contains("wake_config"), "got: {err}");
@@ -885,10 +893,11 @@ async fn erase_personal_owner_destroys_blobs_uploads_and_citation_sidecars() {
                 &auth,
                 user,
                 false,
-                &[],
-                &[],
-                &[MAPPING_TABLE.to_owned()],
-                &[CITED_TABLE.to_owned()],
+                &ComplianceSidecarTables {
+                    citation_mapping: vec![MAPPING_TABLE.to_owned()],
+                    cited_object: vec![CITED_TABLE.to_owned()],
+                    ..ComplianceSidecarTables::default()
+                },
             )
             .await?;
         let ComplianceEraseOutcome::Completed { counts, .. } = outcome else {
@@ -987,10 +996,11 @@ async fn erase_source_scope_deletes_only_unshared_selected_blobs_and_objects() {
                 &auth,
                 user,
                 &source,
-                &[],
-                &[],
-                &[MAPPING_TABLE.to_owned()],
-                &[CITED_TABLE.to_owned()],
+                &ComplianceSidecarTables {
+                    citation_mapping: vec![MAPPING_TABLE.to_owned()],
+                    cited_object: vec![CITED_TABLE.to_owned()],
+                    ..ComplianceSidecarTables::default()
+                },
             )
             .await?;
         let ComplianceEraseOutcome::Completed { counts, .. } = outcome else {
@@ -1080,7 +1090,7 @@ async fn erase_group_owner_refuses_while_membership_rows_exist() {
             group_id: group,
         });
         let outcome = pg
-            .erase_group_owner_if_abandoned(&auth, group, false, &[], &[], &[], &[])
+            .erase_group_owner_if_abandoned(&auth, group, false, &contract_sidecar_tables())
             .await?;
         let ComplianceEraseOutcome::Refused { reason, .. } = outcome else {
             panic!("expected OwnerNotAbandoned, got {outcome:?}");
@@ -1144,7 +1154,7 @@ async fn erase_group_owner_completes_when_abandoned() {
             group_id: group,
         });
         let outcome = pg
-            .erase_group_owner_if_abandoned(&auth, group, false, &[], &[], &[], &[])
+            .erase_group_owner_if_abandoned(&auth, group, false, &contract_sidecar_tables())
             .await?;
         let ComplianceEraseOutcome::Completed { counts, .. } = outcome else {
             panic!("expected completed erase, got {outcome:?}");
@@ -1210,10 +1220,7 @@ async fn erase_source_scope_rewinds_head_to_remaining_t() {
                 &auth,
                 user,
                 &SourceId::new("src-new"),
-                &[],
-                &[],
-                &[],
-                &[],
+                &contract_sidecar_tables(),
             )
             .await?;
         let ComplianceEraseOutcome::Completed { counts, .. } = outcome else {
@@ -1275,10 +1282,7 @@ async fn erase_source_scope_destroys_cooled_from_that_source() {
                 &auth,
                 user,
                 &SourceId::new("src-cool"),
-                &[],
-                &[],
-                &[],
-                &[],
+                &contract_sidecar_tables(),
             )
             .await?;
         assert!(

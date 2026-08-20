@@ -1,6 +1,6 @@
 use proxima_core::compliance::{
     ComplianceExportBundle, ComplianceExportCounts, ComplianceExportSidecarRows,
-    ExportAuthorization,
+    ComplianceSidecarTables, ExportAuthorization,
 };
 use proxima_core::{OwnerRef, StorageError};
 use serde_json::Value;
@@ -14,11 +14,7 @@ use crate::verbs::compliance_erase::owner_digest;
 pub async fn export_owner_bundle(
     pool: &PgPool,
     auth: &ExportAuthorization,
-    fact_sidecar_tables: &[String],
-    goal_sidecar_tables: &[String],
-    citation_mapping_sidecar_tables: &[String],
-    cited_object_sidecar_tables: &[String],
-    owner_pinned_sidecar_tables: &[String],
+    tables: &ComplianceSidecarTables,
 ) -> Result<ComplianceExportBundle, StorageError> {
     let owner = auth.audit().owner();
     let memories = owner_rows(pool, owner, OwnerRowsTable::Memories).await?;
@@ -33,18 +29,7 @@ pub async fn export_owner_bundle(
     let sketches = owner_rows(pool, owner, OwnerRowsTable::Sketches).await?;
     let blobs = owner_rows(pool, owner, OwnerRowsTable::Blobs).await?;
     let compliance_audit_rows = audit_rows(pool, owner).await?;
-    let sidecars = export_sidecars(
-        pool,
-        owner,
-        SidecarTables {
-            fact: fact_sidecar_tables,
-            goal: goal_sidecar_tables,
-            citation_mapping: citation_mapping_sidecar_tables,
-            cited_object: cited_object_sidecar_tables,
-            owner_pinned: owner_pinned_sidecar_tables,
-        },
-    )
-    .await?;
+    let sidecars = export_sidecars(pool, owner, tables).await?;
 
     let counts = ComplianceExportCounts {
         memories: memories.len(),
@@ -84,18 +69,6 @@ pub async fn export_owner_bundle(
     })
 }
 
-struct SidecarTables<'a> {
-    fact: &'a [String],
-    goal: &'a [String],
-    citation_mapping: &'a [String],
-    cited_object: &'a [String],
-    /// Memory sidecars that carry their own `owner_id`. Exported by that
-    /// column instead of through the Memory, so an audit row stays in the
-    /// bundle of the owner that wrote it after the Memory it describes has
-    /// been transferred away — and stays out of the receiving owner's.
-    owner_pinned: &'a [String],
-}
-
 #[derive(Clone, Copy)]
 enum OwnerRowsTable {
     Memories,
@@ -109,10 +82,16 @@ enum OwnerRowsTable {
     Blobs,
 }
 
+/// Walk every declared sidecar surface for one owner.
+///
+/// `tables.owner_pinned` is exported by the sidecar's own `owner_id`
+/// instead of through the Memory, so an audit row stays in the bundle of
+/// the owner that wrote it after the Memory it describes has been
+/// transferred away — and stays out of the receiving owner's.
 async fn export_sidecars(
     pool: &PgPool,
     owner: OwnerRef,
-    tables: SidecarTables<'_>,
+    tables: &ComplianceSidecarTables,
 ) -> Result<Vec<ComplianceExportSidecarRows>, StorageError> {
     let mut sidecars = Vec::new();
     let memory_keyed_fact_tables = tables
@@ -133,12 +112,12 @@ async fn export_sidecars(
         },
     )
     .await?;
-    extend_owner_pinned_sidecars(pool, owner, &mut sidecars, tables.owner_pinned).await?;
+    extend_owner_pinned_sidecars(pool, owner, &mut sidecars, &tables.owner_pinned).await?;
     extend_sidecars(
         pool,
         owner,
         &mut sidecars,
-        tables.goal,
+        &tables.goal,
         SidecarJoin {
             sidecar_column: "t",
             base_table: "proxima_core.goal",
@@ -156,7 +135,7 @@ async fn export_sidecars(
         pool,
         owner,
         &mut sidecars,
-        tables.cited_object,
+        &tables.cited_object,
         SidecarJoin {
             sidecar_column: "cited_object_id",
             base_table: "proxima_core.blob",
@@ -168,7 +147,7 @@ async fn export_sidecars(
         pool,
         owner,
         &mut sidecars,
-        tables.citation_mapping,
+        &tables.citation_mapping,
         SidecarJoin {
             sidecar_column: "citation_mapping_id",
             base_table: "proxima_core.blob",
@@ -316,12 +295,19 @@ async fn owner_pinned_sidecar_rows(
     // `proxima_core.memory` would drop rows whose Memory has been
     // transferred away, which is exactly the history this owner is
     // entitled to a copy of.
+    //
+    // The table is aliased `s`, not `t`, for the same reason as the joined
+    // form below and one worse: an owner-pinned sidecar has a column named
+    // `t`, and with a single range table in scope Postgres resolves the bare
+    // `t` in `to_jsonb(t)` to *the column* rather than the row. That is not
+    // an error — it exports a JSON string holding the uuid where the whole
+    // row belongs, which is silent data loss in a portability bundle.
     // SQL-POLICY: PgIdent
     let sql = format!(
-        "SELECT to_jsonb(t)
-           FROM {table} t
-          WHERE t.owner_id IS NOT DISTINCT FROM $2
-          ORDER BY t.t",
+        "SELECT to_jsonb(s)
+           FROM {table} s
+          WHERE s.owner_id IS NOT DISTINCT FROM $2
+          ORDER BY s.t",
         table = table.as_str(),
     );
     // SQL-POLICY: PgIdent
@@ -345,13 +331,19 @@ async fn sidecar_rows(
     let base_column = PgIdent::column(join.base_column)?;
     let (owner_kind, owner_id) = owner_binds(&owner);
     // SQL-POLICY: PgIdent
+    // The sidecar is aliased `s`, not `t`. Every memory- and goal-keyed
+    // sidecar joins a base table that itself has a column named `t`, so a
+    // bare `to_jsonb(t)` is an ambiguous column reference, not a whole-row
+    // reference — `column reference "t" is ambiguous`. No test reached this
+    // until the compliance lanes started passing the registry's real table
+    // list instead of an empty slice.
     let sql = format!(
-        "SELECT to_jsonb(t)
-           FROM {table} t
+        "SELECT to_jsonb(s)
+           FROM {table} s
            JOIN {base_table} base
-             ON base.{base_column} = t.{sidecar_column}
+             ON base.{base_column} = s.{sidecar_column}
           WHERE base.owner_id IS NOT DISTINCT FROM $2
-          ORDER BY t.{sidecar_column}",
+          ORDER BY s.{sidecar_column}",
         table = table.as_str(),
         base_table = base_table.as_str(),
         base_column = base_column.as_str(),

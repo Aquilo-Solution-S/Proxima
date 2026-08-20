@@ -27,7 +27,7 @@ use axum::extract::{Path, RawPathParams, State};
 use axum::http::{HeaderValue, Method, StatusCode, Uri, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{any, get};
-use proxima_core::CoreResourceMeta;
+use proxima_core::flavor::ResourceContract;
 use proxima_core::mcp::{McpToolDescriptor, McpToolOrigin, all_core_resources, tool_name_matches};
 
 use crate::handler::{
@@ -444,7 +444,7 @@ fn tool_json(
     })
 }
 
-fn resource_json(meta: &CoreResourceMeta) -> serde_json::Value {
+fn resource_json(meta: &ResourceContract) -> serde_json::Value {
     serde_json::json!({
         "name": meta.name,
         "title": meta.title,

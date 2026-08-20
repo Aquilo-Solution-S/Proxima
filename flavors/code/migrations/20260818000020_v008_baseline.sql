@@ -1490,3 +1490,32 @@ ALTER TABLE ONLY proxima_code.test_result_v1
 
 ALTER TABLE ONLY proxima_code.work_requested_v1
     ADD CONSTRAINT work_requested_v1_t_fkey FOREIGN KEY (t) REFERENCES proxima_core.memory(t);
+
+
+--
+-- Declared sidecar surfaces.
+--
+-- `proxima_core.flavor_surface` is the registry as the database sees it, and
+-- `memory.sidecar_tables` is constrained to be a subset of it. A flavor that
+-- writes a sidecar without declaring it here has its Memory write refused
+-- with a foreign-key error, which is the point: the alternative is a row
+-- that erase, export, forget and hydrate all walk past.
+--
+
+INSERT INTO proxima_core.flavor_surface (table_name, flavor_id) VALUES
+    ('proxima_code.acceptance_criteria_v1', 'code'),
+    ('proxima_code.acceptance_summary_v1', 'code'),
+    ('proxima_code.acceptance_verification_v1', 'code'),
+    ('proxima_code.code_chunk_v1', 'code'),
+    ('proxima_code.commit_summarizer_self_v1', 'code'),
+    ('proxima_code.commit_summary_v1', 'code'),
+    ('proxima_code.commit_v1', 'code'),
+    ('proxima_code.development_perspective_v1', 'code'),
+    ('proxima_code.engineer_self_v1', 'code'),
+    ('proxima_code.execution_plan_v1', 'code'),
+    ('proxima_code.execution_result_v1', 'code'),
+    ('proxima_code.file_revision_v1', 'code'),
+    ('proxima_code.test_requested_v1', 'code'),
+    ('proxima_code.test_result_v1', 'code'),
+    ('proxima_code.work_assignment_v1', 'code'),
+    ('proxima_code.work_requested_v1', 'code');

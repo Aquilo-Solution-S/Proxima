@@ -373,3 +373,31 @@ fn public_sidecar_batch_read_denies_core_schema_unless_registry_admits_it() {
     assert!(err.to_string().contains("proxima_core.*"), "message: {err}");
     validate_sidecar_read_sql(sql, true).expect("registered core sidecars may read core tables");
 }
+
+/// Parity pin for the RA-11 unification.
+///
+/// `owner_pinned` was declared in `pg_sidecar!` and consumed only by the
+/// Postgres adapter, which appended it to the compliance table lists on the
+/// way past — a fifth leg core never saw. The engine now builds all five
+/// legs from the flavor contracts, and `freeze_against` refuses a
+/// registration whose macro flag contradicts its schema's transfer rule.
+/// The literal below is the whole owner-pinned set as of v0.0.8.
+#[test]
+fn the_owner_pinned_set_is_the_contracts_retain_at_source_set() {
+    let registry = proxima_core::FlavorRegistry::new().freeze_or_panic_for_tests();
+    let sidecars = crate::sidecars::core_pg_sidecars();
+
+    let expected = vec!["proxima_core.mcp_call_logged_v1".to_owned()];
+
+    assert_eq!(
+        registry.retain_at_source_sidecar_tables(),
+        expected,
+        "core/mcp-call-logged-v1 is the only schema whose rows stay with \
+         the writing owner across a transfer"
+    );
+    assert_eq!(
+        sidecars.owner_pinned_memory_sidecar_tables(),
+        expected,
+        "the pg_sidecar! flag and the contract are two statements of one fact"
+    );
+}

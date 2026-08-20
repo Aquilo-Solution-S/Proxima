@@ -296,6 +296,7 @@ pub async fn ensure_core_schema_current(pool: &PgPool) -> Result<(), StorageErro
 /// processing-claim invariant.
 #[allow(clippy::too_many_lines)]
 pub async fn ensure_core_schema_markers(pool: &PgPool) -> Result<(), StorageError> {
+    ensure_lexical_language_stamps(pool).await?;
     let marker_error: Option<String> = sqlx::query_scalar(
         r"SELECT CASE
          WHEN to_regclass('proxima_core.memory') IS NULL
@@ -511,29 +512,6 @@ pub async fn ensure_core_schema_markers(pool: &PgPool) -> Result<(), StorageErro
            THEN 'missing function proxima_core.lexical_config()'
          WHEN to_regprocedure('proxima_core.lexical_language_forget(regconfig)') IS NULL
            THEN 'missing function proxima_core.lexical_language_forget(regconfig)'
-         WHEN 5 <> (
-                  SELECT count(DISTINCT tc.table_name)
-                    FROM information_schema.table_constraints tc
-                    JOIN information_schema.key_column_usage kcu
-                      ON kcu.constraint_catalog = tc.constraint_catalog
-                     AND kcu.constraint_schema = tc.constraint_schema
-                     AND kcu.constraint_name = tc.constraint_name
-                    JOIN information_schema.constraint_column_usage ccu
-                      ON ccu.constraint_catalog = tc.constraint_catalog
-                     AND ccu.constraint_schema = tc.constraint_schema
-                     AND ccu.constraint_name = tc.constraint_name
-                   WHERE tc.table_schema = 'proxima_core'
-                     AND tc.table_name IN (
-                         'sketch', 'agent_note_v1', 'utterance_v1',
-                         'agent_derivation_v1', 'interpretation_v1'
-                     )
-                     AND tc.constraint_type = 'FOREIGN KEY'
-                     AND kcu.column_name = 'lexical_language'
-                     AND ccu.table_schema = 'proxima_core'
-                     AND ccu.table_name = 'lexical_languages'
-                     AND ccu.column_name = 'config'
-                )
-           THEN 'every stamped lexical_language column must reference lexical_languages(config)'
          WHEN to_regclass('proxima_code.code_chunk_v1') IS NOT NULL
               AND NOT EXISTS (
                   SELECT 1
@@ -625,6 +603,78 @@ pub async fn ensure_core_schema_markers(pool: &PgPool) -> Result<(), StorageErro
     if let Some(marker_error) = marker_error {
         return Err(StorageError::Internal(format!(
             "database is missing or has an incorrect v0.0.8 schema marker: {marker_error}; apply migrations before boot"
+        )));
+    }
+    Ok(())
+}
+
+/// Every `lexical_language` column in `proxima_core` is FK-stamped against
+/// `lexical_languages(config)`, and flavor #0 declared each one.
+///
+/// `lexical_language_forget` is safe only because that FK exists on every
+/// stamped column: it deletes from `lexical_languages` and lets referential
+/// integrity refuse while any row still holds the configuration. A table
+/// added to the migration with a stamped column and no FK makes the forget
+/// silently incomplete rather than loud.
+///
+/// This used to be `WHEN 5 <> (… table_name IN ('sketch', 'agent_note_v1',
+/// …))` inside the big marker CASE: a hand-written count and a hand-written
+/// list, in a 300-line SQL literal, describing tables declared elsewhere.
+/// The expected set is now flavor #0's `lexical_language_column` surfaces,
+/// and the check runs in both directions — a stamped column nobody declared
+/// fails just as loudly as a declared stamp with no FK.
+async fn ensure_lexical_language_stamps(pool: &PgPool) -> Result<(), StorageError> {
+    let mut declared: Vec<(String, String)> = proxima_core::FLAVOR_0
+        .all_surfaces()
+        .filter_map(|surface| {
+            let column = surface.lexical_language_column?;
+            let table = surface.table.strip_prefix("proxima_core.")?;
+            Some((table.to_owned(), column.to_owned()))
+        })
+        .collect();
+    declared.sort();
+    declared.dedup();
+
+    let mut stamped: Vec<(String, String)> = sqlx::query_as(
+        "SELECT tc.table_name::text, kcu.column_name::text
+           FROM information_schema.table_constraints tc
+           JOIN information_schema.key_column_usage kcu
+             ON kcu.constraint_catalog = tc.constraint_catalog
+            AND kcu.constraint_schema = tc.constraint_schema
+            AND kcu.constraint_name = tc.constraint_name
+           JOIN information_schema.constraint_column_usage ccu
+             ON ccu.constraint_catalog = tc.constraint_catalog
+            AND ccu.constraint_schema = tc.constraint_schema
+            AND ccu.constraint_name = tc.constraint_name
+          WHERE tc.table_schema = 'proxima_core'
+            AND tc.constraint_type = 'FOREIGN KEY'
+            AND ccu.table_schema = 'proxima_core'
+            AND ccu.table_name = 'lexical_languages'
+            AND ccu.column_name = 'config'",
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(internal)?;
+    // `lexical_default.config` references the same table but is the active
+    // configuration, not a stamp on a row of content.
+    stamped.retain(|(table, _)| table != "lexical_default");
+    stamped.sort();
+    stamped.dedup();
+
+    if stamped != declared {
+        let missing = declared
+            .iter()
+            .filter(|entry| !stamped.contains(entry))
+            .map(|(table, column)| format!("proxima_core.{table}.{column}"))
+            .collect::<Vec<_>>();
+        let undeclared = stamped
+            .iter()
+            .filter(|entry| !declared.contains(entry))
+            .map(|(table, column)| format!("proxima_core.{table}.{column}"))
+            .collect::<Vec<_>>();
+        return Err(StorageError::Internal(format!(
+            "every stamped lexical_language column must reference lexical_languages(config) \
+             and be declared by flavor #0: missing FK {missing:?}, undeclared stamp {undeclared:?}"
         )));
     }
     Ok(())
@@ -1261,5 +1311,28 @@ mod tests {
             .map(|migration| migration.version)
             .collect();
         assert_eq!(versions, vec![1]);
+    }
+
+    /// Parity pin for the lexical-stamp guardrail rewire.
+    ///
+    /// `ensure_core_schema_markers` used to assert `5 <> (… table_name IN
+    /// ('sketch', 'agent_note_v1', 'utterance_v1', 'agent_derivation_v1',
+    /// 'interpretation_v1'))`. The count and the list were both by hand.
+    /// They are now flavor #0's declared `lexical_language_column`
+    /// surfaces; the five names below are the deleted literal.
+    #[test]
+    fn the_declared_lexical_stamps_are_the_guardrails_deleted_literal() {
+        let declared = proxima_core::FLAVOR_0.lexical_stamped_tables();
+
+        assert_eq!(
+            declared,
+            vec![
+                "proxima_core.agent_derivation_v1",
+                "proxima_core.agent_note_v1",
+                "proxima_core.interpretation_v1",
+                "proxima_core.sketch",
+                "proxima_core.utterance_v1",
+            ]
+        );
     }
 }

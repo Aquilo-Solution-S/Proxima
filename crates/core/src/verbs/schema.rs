@@ -5,6 +5,7 @@
 
 use crate::authz::{AuthorizationHook, AuthzContext, AuthzInput, AuthzOutcome, OwnerResolver};
 use crate::error::ProtocolError;
+use crate::flavor::contract::FlavorContract;
 use crate::mcp::RequestBehavior;
 use crate::{
     CapabilityTag, FlavorDescriptor, McpToolDescriptor, Owner, SchemaId, SchemaVersion,
@@ -247,6 +248,7 @@ pub struct FlavorRegistryFrozen {
     mcp_tools: Vec<McpToolDescriptor>,
     request_behaviors: Vec<Arc<dyn RequestBehavior>>,
     flavors: Vec<FlavorDescriptor>,
+    contracts: Vec<&'static FlavorContract>,
     owner_resolver: Option<Arc<dyn OwnerResolver>>,
     authorization_hooks: Vec<Arc<dyn AuthorizationHook>>,
     /// Lookup acceleration built during successful freeze. Not part of the
@@ -271,6 +273,7 @@ impl FlavorRegistryFrozen {
             mcp_tools,
             request_behaviors,
             flavors,
+            contracts,
             owner_resolver,
             authorization_hooks,
         } = registry;
@@ -284,10 +287,49 @@ impl FlavorRegistryFrozen {
             mcp_tools,
             request_behaviors,
             flavors,
+            contracts,
             owner_resolver,
             authorization_hooks,
             index,
         }
+    }
+
+    /// One flavor's contract, by id.
+    ///
+    /// Deliberately the only lookup on this type. The declarations are
+    /// `static`s: a consumer that knows which flavor it means reads
+    /// [`crate::FLAVOR_0`] directly and needs no registry at all. This
+    /// exists for the consumers that do NOT know — the storage sidecar
+    /// registry cross-checking whatever flavors happen to be linked. A
+    /// broader accessor surface here would be API nobody calls, with the
+    /// second copy of every walk that implies.
+    #[must_use]
+    pub fn flavor_contract(&self, flavor_id: &str) -> Option<&'static FlavorContract> {
+        self.contracts
+            .iter()
+            .copied()
+            .find(|contract| contract.flavor_id == flavor_id)
+    }
+
+    /// Memory sidecar tables whose rows stay with the SOURCE owner on
+    /// transfer — [`crate::flavor::TransferRule::RetainAtSource`], the
+    /// declaration that replaces `pg_sidecar!(owner_pinned: true)` as the
+    /// authority.
+    ///
+    /// Compliance erase and export select these by the sidecar's own owner
+    /// rather than through the Memory, because a transfer leaves them
+    /// behind: joining through the Memory would put them out of the writing
+    /// owner's reach and into the receiving owner's bundle.
+    #[must_use]
+    pub fn retain_at_source_sidecar_tables(&self) -> Vec<String> {
+        let mut tables = self
+            .contracts
+            .iter()
+            .flat_map(|contract| contract.retain_at_source_tables())
+            .collect::<Vec<_>>();
+        tables.sort();
+        tables.dedup();
+        tables
     }
 
     #[must_use]

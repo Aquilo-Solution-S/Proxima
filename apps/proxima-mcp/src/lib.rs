@@ -504,7 +504,7 @@ async fn run_maintain_retention(config: RetentionConfig) -> Result<(), CliError>
         proxima::flavor::register_core_pg_sidecars(&mut sidecars);
         <ProximaMcpApp as FlavorBundle>::register_pg_sidecars(&mut sidecars);
         let sidecars = sidecars
-            .freeze_against(registry.schemas())
+            .freeze_against(&registry)
             .map_err(|err| ProximaError::Storage(err.to_string()))?;
         let blobs = CitedBlobStore::new(storage.clone_pool_for_backend(), s3)
             .map_err(|err| ProximaError::Config(err.to_string()))?;

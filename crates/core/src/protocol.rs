@@ -59,30 +59,12 @@ pub mod resource {
     pub const GOAL: &str = "resource:goal";
 }
 
-pub mod resource_path {
-    pub const SCHEMAS: &str = "schemas";
-    pub const TOOLS: &str = "tools";
-    pub const GRAPH: &str = "graph";
-    pub const CHANGE_EVENTS: &str = "change-events";
-    pub const WAKE_CANDIDATES: &str = "wake-candidates";
-    pub const MEMORY: &str = "memory";
-    pub const MEMORIES: &str = "memories";
-    pub const GOALS: &str = "goals";
-    pub const GOAL: &str = "goal";
-}
-
-pub mod resource_uri {
-    pub const SCHEMAS: &str = "proxima://schemas{?kind}";
-    pub const TOOLS: &str = "proxima://tools";
-    pub const GRAPH: &str = "proxima://graph";
-    pub const MEMORY: &str = "proxima://memory/{id}{?expand_neighbors}";
-    pub const MEMORIES: &str = "proxima://memories{?ids}";
-    pub const MEMORY_LINEAGE: &str = "proxima://memory/{id}/lineage{?direction,depth,limit,cursor}";
-    pub const CHANGE_EVENTS: &str = "proxima://change-events{?since,limit}";
-    pub const WAKE_CANDIDATES: &str = "proxima://wake-candidates{?fact,limit}";
-    pub const GOALS: &str = "proxima://goals{?state,limit,cursor}";
-    pub const GOAL: &str = "proxima://goal/{id}";
-}
+// `resource_path` and `resource_uri` used to live here: two more tables of
+// ten, one keying the dispatcher's match and one keying the advertised
+// manifest, neither aware of the other. Both are now fields on the
+// `ResourceContract` entries in `flavor::flavor0`, reachable by scope key
+// through `flavor0::resource`, so a resource's URI template, its dispatch
+// path and its palette entry cannot drift apart.
 
 pub mod profile {
     pub const FULL: &str = "full";
