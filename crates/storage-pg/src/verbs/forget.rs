@@ -1243,7 +1243,8 @@ pub async fn erase_memory(
 /// below is.
 ///
 /// What it does NOT reach: unowned `t`-references. `goal.close_fact_t`,
-/// `goal.assignment_t`, `goal.evidence_t[]`, `wake_config.trigger_t` and
+/// `goal.assignment_t`, `goal.write_act_t`, `goal.dependency_t[]`,
+/// `goal.evidence_t[]`, `wake_config.trigger_t` and
 /// `wake_config.hard_memory_t[]` name memories without a foreign key, so an
 /// erase here can leave them pointing at nothing. That is deliberate and
 /// not new: [`erase_memory`] has always left them, and the compliance
@@ -1272,27 +1273,7 @@ pub async fn erase_memory_series(
         return Ok((0, ColdPurgePlan::default()));
     }
     let owner_id = owner.stored_owner_id();
-    let versions: Vec<Uuid> = sqlx::query_scalar(
-        "WITH handles AS (
-             SELECT handle FROM proxima_core.memory
-              WHERE t = ANY($1::uuid[]) AND owner_id = $2
-             UNION
-             SELECT handle FROM proxima_core.cooled
-              WHERE t = ANY($1::uuid[]) AND owner_id = $2
-         )
-         SELECT m.t FROM proxima_core.memory m
-           JOIN handles h ON h.handle = m.handle
-          WHERE m.owner_id = $2
-         UNION
-         SELECT c.t FROM proxima_core.cooled c
-           JOIN handles h ON h.handle = c.handle
-          WHERE c.owner_id = $2",
-    )
-    .bind(ts)
-    .bind(owner_id)
-    .fetch_all(tx.as_mut())
-    .await
-    .map_err(map_err)?;
+    let versions = expand_series_for_erase(tx, owner, ts).await?;
 
     // Captured BEFORE the loop, because the loop is what makes them
     // unreferenced: after it, no row is left to read `blob_id` from.
@@ -1314,6 +1295,102 @@ pub async fn erase_memory_series(
     Ok((erased, ColdPurgePlan::from_keys(keys)))
 }
 
+/// Every version of every series the given admissions belong to, for this
+/// owner.
+///
+/// The expansion [`erase_memory_series`] performs, exposed so a caller that
+/// must reason about the FULL set before touching any of it can ask for it
+/// first. A flavor computing an erase footprint needs exactly that: it
+/// finds admissions through its own rows, but the substrate erases whole
+/// series, and the versions the expansion adds are as much part of the
+/// footprint as the ones the flavor named. A footprint computed without
+/// this is a footprint that closes and locks the wrong set — the flavor
+/// then deletes rows referencing a version it never saw, which is an abort,
+/// not a leak.
+///
+/// Owner-scoped on both legs, so a handle that changed hands never widens
+/// one owner's erase into another's rows.
+///
+/// # Errors
+///
+/// Returns storage errors from the expansion query.
+pub async fn expand_series_for_erase(
+    tx: &mut Transaction<'_, Postgres>,
+    owner: &Owner,
+    ts: &[Uuid],
+) -> Result<Vec<Uuid>, StorageError> {
+    if ts.is_empty() {
+        return Ok(Vec::new());
+    }
+    sqlx::query_scalar(EXPAND_SERIES_SQL)
+        .bind(ts)
+        .bind(owner.stored_owner_id())
+        .fetch_all(tx.as_mut())
+        .await
+        .map_err(map_err)
+}
+
+const EXPAND_SERIES_SQL: &str = "\
+WITH handles AS (
+    SELECT handle FROM proxima_core.memory
+     WHERE t = ANY($1::uuid[]) AND owner_id = $2
+    UNION
+    SELECT handle FROM proxima_core.cooled
+     WHERE t = ANY($1::uuid[]) AND owner_id = $2
+)
+SELECT m.t FROM proxima_core.memory m
+  JOIN handles h ON h.handle = m.handle
+ WHERE m.owner_id = $2
+UNION
+SELECT c.t FROM proxima_core.cooled c
+  JOIN handles h ON h.handle = c.handle
+ WHERE c.owner_id = $2";
+
+/// Which of `ts` are NOT admissions of `owner`.
+///
+/// A flavor discovers admissions through its own tables, and a flavor table
+/// holds a foreign key on `proxima_core.memory (t)` and nothing that
+/// constrains WHOSE memory it names. One owner's row may therefore reference
+/// another owner's admission — by writing the id, or, more ordinarily,
+/// because the admission was transferred out from under it.
+///
+/// A scope erase that follows such a reference would delete a principal's
+/// rows on the authority of a different principal, and it would do it
+/// silently. This is the question that makes that unrepresentable, and it
+/// lives here rather than in the flavor for the same reason
+/// [`lock_admissions_for_erase`] does: the answer is in `proxima_core`.
+///
+/// # Errors
+///
+/// Returns storage errors from the query.
+pub async fn admissions_outside_owner(
+    tx: &mut Transaction<'_, Postgres>,
+    owner: &Owner,
+    ts: &[Uuid],
+) -> Result<Vec<Uuid>, StorageError> {
+    if ts.is_empty() {
+        return Ok(Vec::new());
+    }
+    sqlx::query_scalar(ADMISSIONS_OUTSIDE_OWNER_SQL)
+        .bind(ts)
+        .bind(owner.stored_owner_id())
+        .fetch_all(tx.as_mut())
+        .await
+        .map_err(map_err)
+}
+
+const ADMISSIONS_OUTSIDE_OWNER_SQL: &str = "\
+SELECT c.t
+  FROM unnest($1::uuid[]) AS c(t)
+ WHERE NOT EXISTS (
+           SELECT 1 FROM proxima_core.memory m
+            WHERE m.t = c.t AND m.owner_id = $2
+       )
+   AND NOT EXISTS (
+           SELECT 1 FROM proxima_core.cooled k
+            WHERE k.t = c.t AND k.owner_id = $2
+       )";
+
 /// Take a row lock on admissions a scope erase is about to delete.
 ///
 /// Not an optimisation and not a formality, and flavor-agnostic for the
@@ -1331,9 +1408,22 @@ pub async fn erase_memory_series(
 /// transaction commits and then fails its own foreign key — in its
 /// transaction rather than in the erase.
 ///
-/// The locks last until the transaction ends, so a caller working towards a
-/// fixpoint may call this per round and rely on earlier rounds staying
-/// held.
+/// CALL IT ONCE, OVER THE WHOLE SET. The locks do last until the
+/// transaction ends, so calling it per round of a fixpoint "works" — and
+/// puts an arbitrarily long window between the rounds in which this
+/// transaction holds some of the rows and is not yet asking for the rest.
+/// A writer holding `FOR KEY SHARE` on a later row and waiting on an
+/// earlier one turns that window into a deadlock, and `PostgreSQL` picks a
+/// victim by which transaction is cheapest to abort, which is the one that
+/// has not yet done its deletes: the erase. Computing the full set first
+/// and locking it in one statement shrinks that window to the inside of
+/// this statement.
+///
+/// `ORDER BY t` is the other half: two erases whose sets overlap then take
+/// the shared rows in the same order and one waits instead of both dying.
+/// It does not help against a writer, which takes its own locks in its own
+/// order — nothing does, which is why a caller must also be prepared to
+/// retry a `40P01`.
 ///
 /// # Errors
 ///
@@ -1354,7 +1444,7 @@ pub async fn lock_admissions_for_erase(
 }
 
 const LOCK_ADMISSIONS_SQL: &str =
-    "SELECT t FROM proxima_core.memory WHERE t = ANY($1::uuid[]) FOR UPDATE";
+    "SELECT t FROM proxima_core.memory WHERE t = ANY($1::uuid[]) ORDER BY t FOR UPDATE";
 
 /// The blobs the admissions about to be erased cite.
 const CITED_BLOBS_SQL: &str = "\
