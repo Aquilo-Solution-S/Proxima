@@ -5,7 +5,8 @@
 //! the declaration matches the behaviour. Requires local PG.
 
 use proxima_core::flavor::{
-    EmbedText, EmbeddingRecipe, Enforcement, SLOT_DEFAULT, SearchProjectionDecl, TransferRule,
+    EmbedText, EmbeddingRecipe, Enforcement, EraseLeg, SLOT_DEFAULT, SearchProjectionDecl,
+    TransferRule,
 };
 use proxima_core::verbs::schema::PayloadKind;
 use proxima_core::{FLAVOR_0, FlavorRegistry};
@@ -1019,4 +1020,90 @@ async fn every_dedupe_key_is_a_uniqueness_the_schema_enforces() {
     .await;
     let _ = drop_db(&db_name).await;
     result.expect("every_dedupe_key_is_a_uniqueness_the_schema_enforces failed");
+}
+
+// ── the connect default resolves through a registry, not the test seam ──
+
+/// A `PgStorage` built by the production constructor classifies flavor #0's
+/// surfaces the way flavor #0 declared them.
+///
+/// `connect_with_config` used to fill `surfaces` with
+/// `OwnerSurfaces::from_surfaces(FLAVOR_0.all_surfaces())`. That constructor
+/// is a test seam — its own doc says "Production reaches for
+/// `for_registry`" — and it classifies every surface handed to it against an
+/// EMPTY bespoke list, because a surface arriving loose has no contract to
+/// have exempted it. Flavor #0's surfaces are not loose. Sixteen of its
+/// twenty-eight came back with the wrong leg: `memory` and `cooled` as
+/// `Keyed` rather than `Bespoke`, `announce`, `content`, `sketch` and the
+/// three embedding tables as `Unreachable` — the value that is supposed to
+/// be a freeze error and never a runtime state.
+///
+/// Nothing consumed it yet, which is why nothing failed. `surfaces()` is
+/// public and `mcp-server` connects without `with_flavors`, so "nothing
+/// consumes it" was a property of the current call graph rather than of the
+/// design.
+///
+/// The assertion is on the real constructor, not on the helper it calls, so
+/// it survives someone reintroducing the seam at the call site.
+#[tokio::test]
+async fn the_connect_default_resolves_surfaces_through_the_registry() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    if let Err(e) = create_db(&db_name).await {
+        panic!("PG required for tests but admin connect failed: {e}");
+    }
+    let url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&url).await?;
+        let surfaces = pg.surfaces();
+
+        // The named case: `memory` is on flavor #0's bespoke erase list, and
+        // the seam cannot see a bespoke list at all.
+        assert_eq!(
+            surfaces.erase_leg("proxima_core.memory"),
+            EraseLeg::Bespoke,
+            "the connect default must classify against flavor #0's declared \
+             bespoke legs; `Keyed` here means it was built from a loose \
+             surface list"
+        );
+        assert_eq!(
+            surfaces.erase_leg("proxima_core.cooled"),
+            EraseLeg::Bespoke,
+            "same list, second entry"
+        );
+
+        // The class, not just the two examples: `Unreachable` is documented
+        // as "always a freeze error, never a runtime state", so a storage
+        // that reports it for a surface flavor #0 declares is reporting
+        // something that cannot be true.
+        let unreachable: Vec<&str> = surfaces
+            .surfaces()
+            .iter()
+            .filter(|surface| surfaces.erase_leg(surface.table) == EraseLeg::Unreachable)
+            .map(|surface| surface.table)
+            .collect();
+        assert!(
+            unreachable.is_empty(),
+            "a surface flavor #0 declares cannot be Unreachable in a storage \
+             flavor #0 built: {unreachable:?}"
+        );
+
+        // And it agrees with what `with_flavors` would install for the same
+        // registry, so the un-widened default is the same KIND of answer as
+        // the widened one rather than a second, cheaper one.
+        let frozen = FlavorRegistry::new().try_freeze()?;
+        let widened = proxima_core::owner_inverse::OwnerSurfaces::for_registry(&frozen);
+        for surface in widened.surfaces() {
+            assert_eq!(
+                surfaces.erase_leg(surface.table),
+                widened.erase_leg(surface.table),
+                "{} resolves differently in the connect default than through \
+                 with_flavors over the same registry",
+                surface.table
+            );
+        }
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("the_connect_default_resolves_surfaces_through_the_registry failed");
 }
