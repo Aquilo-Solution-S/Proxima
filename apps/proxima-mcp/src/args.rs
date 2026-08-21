@@ -682,7 +682,7 @@ mod tests {
     }
 
     #[test]
-    fn retention_duration_rejects_bare_number_zero_and_junk() {
+    fn prune_horizon_rejects_bare_number_zero_and_junk() {
         for raw in ["90", "0d", "-3h", "", "d", "1.5h", "90x"] {
             let err = parse_storage_maintenance_args([
                 "--prune-change-log-older-than".into(),

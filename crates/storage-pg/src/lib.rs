@@ -748,6 +748,10 @@ impl std::fmt::Debug for EmbeddingMaintenanceLock {
 /// processes. ASCII `proxretn` as a big-endian i64 — arbitrary but stable,
 /// distinct from [`EMBEDDING_MAINTENANCE_LOCK_KEY`] so the two maintenance
 /// families may run concurrently but never overlap themselves.
+///
+/// The bytes spell a retention pass that no longer exists. They stay
+/// anyway: this is a key, not a label, and rotating it would let a process
+/// on the old value and one on the new run the pass at the same time.
 const STORAGE_MAINTENANCE_LOCK_KEY: i64 = i64::from_be_bytes(*b"proxretn");
 
 /// Guard for the global storage-maintenance advisory lock. Same
@@ -759,7 +763,7 @@ pub struct StorageMaintenanceLock {
 
 impl std::fmt::Debug for StorageMaintenanceLock {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("RetentionMaintenanceLock")
+        f.debug_struct("StorageMaintenanceLock")
             .finish_non_exhaustive()
     }
 }
