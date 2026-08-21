@@ -372,6 +372,16 @@ pub fn projection_insert_sql(
     // The projection table, the sidecar table, the tag column and every
     // configuration name are validated identifiers; the schema id is a
     // bind ($3) and the memory id is a bind ($1).
+    //
+    // `m.schema_id = $3` makes `projection.schema_id = memory.schema_id` a
+    // property of the only statement that writes a projection row, rather
+    // than a convention every caller has to remember. Search relies on it:
+    // the ranked arm narrows on `p.schema_id` where `admit_hits` narrows on
+    // `m.schema_id`, and those two agreeing is what lets one stand in for
+    // the other. Nothing in the schema enforces it — the audit that found
+    // the kind door found this next to it — and a mismatched write now
+    // inserts nothing instead of writing a row search would spend a window
+    // slot on and admission would drop.
     Ok(format!(
         "INSERT INTO {table}
        (memory_id, schema_id, owner_id, search_tsv, tag, lexical_language)
@@ -383,7 +393,8 @@ SELECT c.t,
        {language_value}
   FROM {sidecar} c
   JOIN proxima_core.memory m ON m.t = c.t
- WHERE c.t = $1",
+ WHERE c.t = $1
+   AND m.schema_id = $3",
         table = table.as_str(),
         sidecar = sidecar.as_str()
     ))
