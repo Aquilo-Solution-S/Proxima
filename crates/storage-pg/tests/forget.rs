@@ -2001,3 +2001,108 @@ async fn cooling_keeps_the_receipt_and_rewinds_the_head_while_erase_takes_both()
     let _ = drop_db(&db_name).await;
     result.expect("the corrected forget declarations must match shipped behaviour");
 }
+
+/// A `ForgetRule::Keep` sidecar that is not owner-pinned stops the forget
+/// instead of being deleted by it.
+///
+/// The stamp walk in `delete_memory_dependents` used to read
+/// `surfaces.forget_leg(table)` and map everything that was not `Dumped` to
+/// the key column `"t"` — including `Kept`. So a surface declared as one the
+/// forget does not touch was deleted by the forget, silently, with the
+/// declaration sitting three files away saying otherwise.
+///
+/// Core ships one `Keep` memory sidecar, `mcp_call_logged_v1`, and its rows
+/// survive today only because it is ALSO `TransferRule::RetainAtSource` and
+/// therefore `pg_sidecar!(owner_pinned: true)`, which the walk skips a few
+/// lines earlier for an entirely different reason. Remove the pinning and the
+/// `Keep` bought nothing.
+///
+/// `freeze_against` now refuses that combination outright (see
+/// `check_keep_is_owner_pinned`), so this state is unreachable through a
+/// registry. It is reachable through `OwnerSurfaces::from_surfaces`, the
+/// public test seam, which is what this test uses: `agent_note_v1` is a real
+/// registered non-owner-pinned memory sidecar, re-declared here as `Keep`.
+///
+/// The assertion is that the forget REFUSES and the rows survive. Before the
+/// change it returned `Ok` and the row was gone.
+#[tokio::test]
+async fn a_kept_sidecar_that_is_not_owner_pinned_stops_the_forget() {
+    use proxima_core::flavor::{ForgetRule, Surface};
+
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    if let Err(e) = create_db(&db_name).await {
+        panic!("PG required for tests but admin connect failed: {e}");
+    }
+    let url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&url).await?;
+        pg.run_migrations().await?;
+        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
+        let pool = pg.pool_for_tests();
+
+        // Flavor #0's surfaces with exactly one field changed: the note
+        // sidecar now declares that the forget leaves it alone.
+        let mut declared: Vec<Surface> = proxima_core::FLAVOR_0.all_surfaces().collect();
+        let mut rewritten = 0;
+        for surface in &mut declared {
+            if surface.table == AGENT_NOTE {
+                surface.forget = ForgetRule::Keep {
+                    why: "a fixture: the declaration the walk used to ignore",
+                };
+                rewritten += 1;
+            }
+        }
+        assert_eq!(rewritten, 1, "the note sidecar is a declared surface");
+        let kept_surfaces = proxima_core::owner_inverse::OwnerSurfaces::from_surfaces(declared);
+
+        let written =
+            ingest_stamped(pool, &permit, &draft(None), &[AGENT_NOTE.to_owned()]).await?;
+        let t = written.memory_id.into_inner();
+        sqlx::query(
+            "INSERT INTO proxima_core.agent_note_v1 (t, note_id, title, body, tags)
+             VALUES ($1, $1, 'n', 'kept', ARRAY['tag'])",
+        )
+        .bind(t)
+        .execute(pool)
+        .await?;
+
+        let cold = MemoryColdStore::default();
+        let key = cold_object_key(t);
+        let mut tx = pool.begin().await?;
+        let outcome = forget_memory(
+            &mut tx,
+            &core_pg_sidecars(),
+            &kept_surfaces,
+            &cold,
+            &key,
+            t,
+            owner.stored_owner_id(),
+        )
+        .await;
+        tx.rollback().await?;
+
+        let err = outcome.expect_err(
+            "a Keep declaration the substrate cannot honour must stop the forget, \
+             not be quietly overridden by it",
+        );
+        let rendered = err.to_string();
+        assert!(
+            rendered.contains(AGENT_NOTE) && rendered.contains("ForgetRule::Keep"),
+            "the refusal must name the table and the declaration it could not \
+             honour; got {rendered}"
+        );
+
+        let notes: i64 = sqlx::query_scalar(
+            "SELECT count(*)::bigint FROM proxima_core.agent_note_v1 WHERE t = $1",
+        )
+        .bind(t)
+        .fetch_one(pool)
+        .await?;
+        assert_eq!(notes, 1, "the rows the declaration keeps are still there");
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("a_kept_sidecar_that_is_not_owner_pinned_stops_the_forget failed");
+}

@@ -860,12 +860,29 @@ async fn delete_memory_dependents(
         }
         // The declaration names the column when it has an opinion. It does
         // not always: a stamp may name a table the PG registry knows and no
-        // contract declares, which is the case the skip-unregistered-scan
-        // test installs deliberately. `t` is the fallback because it is what
-        // `pg_sidecar!` requires of every memory sidecar it registers.
+        // contract declares, which arrives here as `Unreachable` and is the
+        // case the skip-unregistered-scan test installs deliberately. `t` is
+        // the fallback because it is what `pg_sidecar!` requires of every
+        // memory sidecar it registers.
+        //
+        // `Kept` is spelled out rather than folded into that fallback, and
+        // the fallback DELETES. A `Keep` declaration reaching a delete is
+        // the failure this arm exists to make loud instead of silent: the
+        // table was declared as one the forget does not touch, and the walk
+        // is about to destroy it. `freeze_against`'s
+        // `check_keep_is_owner_pinned` makes that unreachable — `Keep`
+        // requires `owner_pinned`, and owner-pinned tables were skipped
+        // above — so this is the assertion that the boot check ran, not a
+        // second policy.
         let key_column = match surfaces.forget_leg(table) {
             ForgetLeg::Dumped { key_column } => key_column,
-            _ => "t",
+            ForgetLeg::Kept { why } => {
+                return Err(StorageError::Internal(format!(
+                    "{table} declares ForgetRule::Keep ({why}) and is not owner-pinned, \
+                     so the forget cannot honour it; freeze_against must refuse this registry"
+                )));
+            }
+            ForgetLeg::Deleted { .. } | ForgetLeg::Cascaded { .. } | ForgetLeg::Unreachable => "t",
         };
         legs.push((table.as_str(), key_column));
     }
