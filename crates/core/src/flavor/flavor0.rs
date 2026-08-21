@@ -22,13 +22,13 @@
 
 use crate::SearchProjectionColumnKind as ColumnKind;
 use crate::flavor::contract::{
-    BAND_NAME_EXACT, BAND_NAME_RESCUE, BAND_NAME_SUBSTRING, Band, BandComparability,
-    BespokeEraseLeg, CORE_ORDINAL, DbConstraint, DbTrigger, EmbedUnit, EmbeddingRecipe,
-    Enforcement, EraseRule, ExportRule, FlavorContract, ForgetRule, KeyShape, LanguagePolicy,
-    ProjectionDecl, ProjectionSpec, Provenance, RankSource, ResourceContract, SLOT_DEFAULT,
-    SchemaContract, SchemaRef, SearchProjectionDecl, SubstringArm, Surface,
-    TS_RANK_NORMALIZATION_LOG_LENGTH_SCALE, TS_RANK_NORMALIZATION_NONE,
-    TS_RANK_NORMALIZATION_SCALE, ToolContract, TransferRule, WEIGHT_UNIFORM, WeightedField,
+    BAND_NAME_EXACT, BAND_NAME_RESCUE, BAND_NAME_SUBSTRING, Band, BandComparability, CORE_ORDINAL,
+    DbConstraint, DbTrigger, EmbedUnit, EmbeddingRecipe, Enforcement, EraseRule, ExportRule,
+    FlavorContract, ForgetRule, KeyShape, LanguagePolicy, ProjectionDecl, ProjectionSpec,
+    Provenance, RankSource, ResourceContract, SLOT_DEFAULT, SchemaContract, SchemaRef,
+    SearchProjectionDecl, SubstringArm, Surface, TS_RANK_NORMALIZATION_LOG_LENGTH_SCALE,
+    TS_RANK_NORMALIZATION_NONE, TS_RANK_NORMALIZATION_SCALE, ToolContract, TransferRule,
+    WEIGHT_UNIFORM, WeightedField,
 };
 use crate::protocol::resource as scope;
 use crate::protocol::tool;
@@ -1138,8 +1138,18 @@ const RESOURCES: &[ResourceContract] = &[
 ];
 
 /// The kernel surfaces the owner erase reaches with a hand-written
-/// statement instead of a generated one, each naming the function that owns
-/// it.
+/// statement instead of a generated one.
+///
+/// A bare table list, and deliberately so (plan §4.11). Each entry used to
+/// carry the NAME of the storage-pg function that deletes it, kept honest
+/// by a test that grepped that crate's own source for `fn <name>(`. The
+/// operator ruled the names ceremony: both freeze checks work on table
+/// names alone, the behaviour is already pinned by the differential
+/// goldens, and a string-level proof that a string names a function
+/// verifies documentation rather than behaviour. What the list must say is
+/// WHICH tables the generator does not reach; who reaches them is a fact
+/// about `proxima-storage-pg`'s code, and the place to read it is
+/// `proxima-storage-pg`.
 ///
 /// Sixteen entries, and every one of them earns the exemption by needing
 /// something a generated `DELETE ... USING <selection set>` cannot express:
@@ -1157,31 +1167,24 @@ const RESOURCES: &[ResourceContract] = &[
 /// never heard of.
 ///
 /// [`FlavorRegistryError::UndeletableSurface`]: crate::flavor::FlavorRegistryError::UndeletableSurface
-const BESPOKE_ERASE_LEGS: &[BespokeEraseLeg] = &[
-    leg("proxima_core.announce", "delete_change_events"),
-    leg("proxima_core.blob", "delete_blobs"),
-    leg("proxima_core.blob_uploads", "delete_blobs"),
-    leg("proxima_core.content", "gc_unreferenced_content_batch"),
-    leg("proxima_core.cooled", "delete_selected_cooled"),
-    leg(
-        "proxima_core.delegated_authority_grants",
-        "delete_delegated_authority_grants",
-    ),
-    leg("proxima_core.embedding_heads", "delete_embeddings"),
-    leg("proxima_core.embedding_jobs", "delete_embeddings"),
-    leg("proxima_core.embeddings", "delete_embeddings"),
-    leg("proxima_core.goal", "delete_selected_table"),
-    leg("proxima_core.goal_head", "sync_selected_heads"),
-    leg("proxima_core.memory", "delete_selected_table"),
-    leg("proxima_core.memory_head", "sync_selected_heads"),
-    leg("proxima_core.sketch", "delete_selected_sketches"),
-    leg("proxima_core.source_cursors", "delete_source_cursors"),
-    leg("proxima_core.wake_config", "delete_wake_configs"),
+const BESPOKE_ERASE_LEGS: &[&str] = &[
+    "proxima_core.announce",
+    "proxima_core.blob",
+    "proxima_core.blob_uploads",
+    "proxima_core.content",
+    "proxima_core.cooled",
+    "proxima_core.delegated_authority_grants",
+    "proxima_core.embedding_heads",
+    "proxima_core.embedding_jobs",
+    "proxima_core.embeddings",
+    "proxima_core.goal",
+    "proxima_core.goal_head",
+    "proxima_core.memory",
+    "proxima_core.memory_head",
+    "proxima_core.sketch",
+    "proxima_core.source_cursors",
+    "proxima_core.wake_config",
 ];
-
-const fn leg(table: &'static str, leg: &'static str) -> BespokeEraseLeg {
-    BespokeEraseLeg { table, leg }
-}
 
 /// Core's contract. Fifteen schema registrations over fourteen distinct
 /// schema ids (`core/agent-derivation-v1` registers as both Abstraction and

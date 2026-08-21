@@ -225,10 +225,10 @@ impl FlavorRegistry {
         // place, and an exemption that claims a `Cascade` or `Never`
         // surface is a flavor arguing with itself about whether a statement
         // runs.
-        for entry in contract.bespoke_erase_legs {
+        for table in contract.bespoke_erase_legs {
             let why = match contract
                 .all_surfaces()
-                .find(|surface| surface.table == entry.table)
+                .find(|surface| surface.table == *table)
             {
                 None => "this flavor does not declare",
                 Some(surface) => match surface.erase {
@@ -243,7 +243,7 @@ impl FlavorRegistry {
             };
             return Err(FlavorRegistryError::BespokeEraseLegMismatch {
                 flavor_id: contract.flavor_id,
-                table: entry.table,
+                table,
                 why,
             });
         }
@@ -700,10 +700,9 @@ pub(crate) fn schema_capability_map(
 mod tests {
     use crate::SearchProjectionColumnKind;
     use crate::flavor::contract::{
-        BespokeEraseLeg, DbConstraint, EmbeddingRecipe, EraseRule, ExportRule, FlavorContract,
-        ForgetRule, KeyShape, LanguagePolicy, ProjectionDecl, Provenance, ResourceContract,
-        SchemaContract, SchemaRef, SearchProjectionDecl, SubstringArm, Surface, ToolContract,
-        TransferRule, WeightedField,
+        DbConstraint, EmbeddingRecipe, EraseRule, ExportRule, FlavorContract, ForgetRule, KeyShape,
+        LanguagePolicy, ProjectionDecl, Provenance, ResourceContract, SchemaContract, SchemaRef,
+        SearchProjectionDecl, SubstringArm, Surface, ToolContract, TransferRule, WeightedField,
     };
     use crate::verbs::schema::{PayloadKind, SchemaInfo};
     use crate::{FlavorRegistry, FlavorRegistryError, SchemaId, SchemaVersion};
@@ -852,7 +851,7 @@ mod tests {
 
     const fn erase_fixture(
         surfaces: &'static [Surface],
-        bespoke: &'static [BespokeEraseLeg],
+        bespoke: &'static [&'static str],
     ) -> FlavorContract {
         FlavorContract {
             flavor_id: FIXTURE_FLAVOR,
@@ -892,10 +891,7 @@ mod tests {
             EraseRule::ByKey,
             ExportRule::Rows,
         )],
-        &[BespokeEraseLeg {
-            table: "test_flavor.gone_v1",
-            leg: "delete_things",
-        }],
+        &["test_flavor.gone_v1"],
     );
 
     /// A flavor arguing with itself: the declaration says a constraint
@@ -913,10 +909,7 @@ mod tests {
             },
             ExportRule::Rows,
         )],
-        &[BespokeEraseLeg {
-            table: "test_flavor.thing_v1",
-            leg: "delete_things",
-        }],
+        &["test_flavor.thing_v1"],
     );
 
     /// Exportable while carrying neither an owner column nor a key with a

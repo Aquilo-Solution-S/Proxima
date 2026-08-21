@@ -767,29 +767,10 @@ pub enum EraseRule {
     },
 }
 
-/// A surface whose inverse is a hand-written statement, paired with the
-/// name of the function that owns it.
-///
-/// Most surfaces are reached by a generated leg: the erase reads
-/// [`Surface::erase`] and [`Surface::key`] and writes the statement. Some
-/// cannot be — a table whose deletion has to interleave with a refcount
-/// anti-join, or whose rows feed a cold-purge queue — and those name the
-/// function that takes them instead. Naming it is the point: an unlisted
-/// surface with no generated leg is a table nothing deletes, and
-/// [`crate::flavor::FlavorRegistryError::UndeletableSurface`] refuses that
-/// at boot rather than letting an erase report success over surviving rows.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct BespokeEraseLeg {
-    /// The schema-qualified table, matching [`Surface::table`] exactly.
-    pub table: &'static str,
-    /// The function that deletes it, for a reader following the claim.
-    pub leg: &'static str,
-}
-
 /// Which leg destroys a surface's rows when its owner is erased.
 ///
 /// Derived from [`Surface::erase`] × [`Surface::key`] × the flavor's
-/// declared [`BespokeEraseLeg`] list, and derived in ONE place so the boot
+/// declared bespoke-leg table list, and derived in ONE place so the boot
 /// check and the erase itself cannot hold different opinions about which
 /// table is covered.
 ///
@@ -804,8 +785,8 @@ pub enum EraseLeg {
     /// carries the memory-key column when a source scope can reach the
     /// surface, and `None` when a source scope cannot reach it at all.
     Owned { source_scoped: Option<&'static str> },
-    /// A hand-written statement, named by the flavor.
-    Bespoke { leg: &'static str },
+    /// A hand-written statement, claimed by the flavor's exemption list.
+    Bespoke,
     /// A constraint removes it with its parent; erase emits no statement.
     Cascade,
     /// A declared non-erase, with the reason the declaration gave.
@@ -828,13 +809,13 @@ impl EraseLeg {
     /// `validate_erase_legs` refuses that rather than letting this silently
     /// pick a winner.
     #[must_use]
-    pub fn derive(surface: &Surface, bespoke: &[BespokeEraseLeg]) -> Self {
+    pub fn derive(surface: &Surface, bespoke: &[&'static str]) -> Self {
         match surface.erase {
             EraseRule::Cascade { .. } => Self::Cascade,
             EraseRule::Never { why } => Self::Never { why },
             EraseRule::ByKey | EraseRule::ByOwner => {
-                if let Some(entry) = bespoke.iter().find(|entry| entry.table == surface.table) {
-                    return Self::Bespoke { leg: entry.leg };
+                if bespoke.contains(&surface.table) {
+                    return Self::Bespoke;
                 }
                 match surface.erase {
                     EraseRule::ByKey => match surface.key {
@@ -1235,7 +1216,7 @@ pub struct FlavorContract {
     /// Surfaces of this flavor whose erase is a hand-written statement
     /// rather than a generated one. Empty for a flavor whose every surface
     /// the generator reaches, which is the ordinary case.
-    pub bespoke_erase_legs: &'static [BespokeEraseLeg],
+    pub bespoke_erase_legs: &'static [&'static str],
 }
 
 /// The ordinal that marks core. Load-bearing at runtime in exactly two
