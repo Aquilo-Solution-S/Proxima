@@ -148,39 +148,38 @@ batches over time) they don't. Coincidence isn't identity.
 
 Design contract, not implemented-code in v0.0.1.
 
-Planned: every source declares four compliance-vocabulary fields at
-registration. The
-vocabulary, default-trivial values, and the why-each-field
-rationale live in
-[13 §Compliance vocabulary](13-compliance.md#compliance-vocabulary);
-01 specifies what a *source* must declare.
+Planned: every source declares four processing-metadata fields at
+registration. None of them exists in code today, and 13 no longer defines a
+vocabulary for them — a hosting application that owes its users these
+declarations keeps them where it keeps its other obligations (see
+[13 §Declared metadata](13-compliance.md#declared-metadata)). 01 specifies
+what a *source* would declare.
 
 ```rust
-struct SourceComplianceMetadata {
-    lawful_basis:        LawfulBasis,        // 13 §Compliance vocabulary
-    collection_purpose:  String,             // free-form, controller-authored
-    retention_policy:    RetentionPolicy,    // source-default; per-Owner overrides
-                                             // live in compliance.owner_policy (13)
+struct SourceProcessingMetadata {
+    lawful_basis:        LawfulBasis,        // host-defined
+    collection_purpose:  String,             // free-form, host-authored
+    retention_policy:    RetentionPolicy,    // source default; the host schedules
+                                             // its own forget_memory calls
     data_residency:      Region,             // where the source's payloads land
 }
 ```
 
-Planned inheritance: every Fact a source emits inherits these four values
-into its row at insert time. `delete_owner` and the suppression-list
-mechanic ([13 §Operations](13-compliance.md#operations),
-[13 §Suppression list](13-compliance.md#suppression-list--re-ingest-rejection))
-operate on the inherited values;
-operators and deciders never see them (compliance metadata is not
-part of the cognitive surface).
+Planned inheritance: every Fact a source emits would inherit these four
+values into its row at insert time, and the host's own policy engine would
+read them when deciding whether an owner erase
+([13 §Operations](13-compliance.md#operations)) is owed. Operators and
+deciders never see them: processing metadata is not part of the cognitive
+surface.
 
 Current runtime config is env/programmatic only (see 10). Flavor-source
 patterns own source defaults until this metadata is enforced.
 
-Per-Owner overrides — a source emitting under multiple Owners may
-have different retention obligations per Owner — are expressed via
-`compliance.owner_policy` rows, not by emitting Owner-divergent
-events from the same source. The source declares its *default*;
-the controller refines per Owner.
+Per-Owner overrides — a source emitting under multiple Owners may have
+different retention obligations per Owner — belong to the host's policy
+store, not to Owner-divergent events from one source. The source declares
+its *default*; the host refines per Owner. Proxima holds no retention window
+of its own (see [13 §Owner policy](13-compliance.md#owner-policy)).
 
 **Idempotency-key constraint.** Every source receipt id (public
 `FactIngest` still calls this `receipt_id`; storage names it
@@ -188,9 +187,9 @@ the controller refines per Owner.
 payload)`. The hash is content-derived and opaque by construction — it
 must remain so. Sources must not substitute a verbatim natural-person
 identifier (email address, national ID, phone number) for the hash,
-because the suppression list ([13 §Suppression list](13-compliance.md#suppression-list--re-ingest-rejection))
-retains the receipt id indefinitely as a re-ingest guard, and a
-non-opaque key would itself become PII surviving deletion.
+because a host that guards against re-ingest after an erase
+(see [13 §Deferred](13-compliance.md#deferred)) retains the receipt id to do
+it, and a non-opaque key would itself become PII surviving deletion.
 
 ## Properties of an Event
 

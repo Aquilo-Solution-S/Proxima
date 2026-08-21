@@ -77,7 +77,7 @@ Canonical substrate resources:
 |---|---|
 | `proxima://schemas{?kind}` | registered payload schemas |
 | `proxima://tools` | live tool catalog |
-| `proxima://graph` | graph snapshot and status fields, including `fact_retention_seconds` |
+| `proxima://graph` | graph snapshot and status fields |
 | `proxima://memory/{id}{?expand_neighbors}` | hydrate memory by id; optional neighbor edges |
 | `proxima://memories{?ids}` | batch memory read by comma-separated prefixed ids, at most 100 per call; returns found memories in request order plus a `missing` list (not-exists and not-visible are deliberately indistinguishable) |
 | `proxima://memory/{id}/lineage{?direction,depth,limit,cursor}` | traverse provenance / supersession lineage; keyset `cursor`/`next_cursor` + `has_more`, cursor bound to memory + direction + depth |
@@ -281,8 +281,8 @@ cursor state — clients poll.
 
 The log is bounded operationally, not structurally: the operator may
 prune rows older than an explicit age horizon via `proxima-mcp
-maintain-retention` (see [13 §Retention
-enforcement](13-compliance.md#retention-enforcement--maintain-retention-pass)).
+maintain-storage --prune-change-log-older-than` (see [13 §Storage
+maintenance](13-compliance.md#storage-maintenance--maintain-storage-pass)).
 A forward poller whose persisted `since` cursor predates the prune
 horizon silently misses the pruned events — the poll surface does not
 detect the gap. Deployments that prune must pick a horizon comfortably
@@ -343,8 +343,9 @@ Graph writes commit Memory/Goal rows and corresponding
 | broker | none; `announce` is a pull log — no tailing broker or push delivery |
 
 `announce` is the durable pull log (see
-[07](07-storage.md#core-tables--abstract)). Compliance audit is
-separate (see [13](13-compliance.md#audit-log)).
+[07](07-storage.md#core-tables--abstract)). It is not an audit trail of who
+erased what: core keeps no such trail, and hands the host a receipt instead
+(see [13 §Receipts](13-compliance.md#receipts)).
 
 ## Operational / Config RPCs
 
@@ -360,20 +361,21 @@ Perspective rows; no materialized Self row authorizes access.
 
 ## Compliance Admin Surface
 
-Compliance primitives are defined in [13](13-compliance.md). Current
-Rust Host API exposes abandonment-only erase entry points; transport/admin
-RPCs beyond those concrete methods stay deferred.
+The inverses of storing are defined in [13](13-compliance.md). The Rust Host
+API exposes the four erase entry points and the export; transport/admin RPCs
+beyond those concrete methods stay deferred. Who may call them is the host's
+answer, given through `OwnerEraseAuthorityPort`.
 
 | Primitive | Protocol status |
 |---|---|
-| `delete_owner` | current Host API: `erase_abandoned_group_owner`, `erase_dropped_personal_owner` |
-| `delete_source_scope` | current Host API: `erase_abandoned_group_source_scope`, `erase_dropped_personal_source_scope` |
+| `delete_owner` | current Host API: `erase_group_owner`, `erase_personal_owner` |
+| `delete_source_scope` | current Host API: `erase_group_source_scope`, `erase_personal_source_scope` |
 | `pause_owner` / `resume_owner` | design intent |
-| `export_owner` | design intent |
+| `export_owner` | current Host API: `export_owner_bundle`, reachable from `proxima` |
 | tool-recipient export | deferred |
 | legal-consequence blocking | deferred |
 
-Compliance operations are admin/controller actions, not cognitive
+The inverses are host-authorized administrative actions, not cognitive
 graph writes or MCP memory-profile actions.
 
 ## Auth Model
@@ -392,7 +394,7 @@ access.
 |---|---|
 | user (`OwnerRef::Personal`) | `Query`, `ChangeHistory`, `GoalWrite`; in-app `FactIngest` when acting as a source |
 | source | `FactIngest` for the registered source |
-| admin/controller | operational/config RPCs and future compliance admin operations |
+| admin/controller | operational/config RPCs and the owner inverses |
 
 Per-call dispatch enforces `call.owner` inside the resolved Owner set.
 Signup, MFA, billing, tenancy lifecycle, group naming, invites, archive/delete,

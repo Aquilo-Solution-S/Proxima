@@ -296,16 +296,21 @@ checked for being inside core's window, not for meaning what core's mean.
 Both are declarations on trust, in the same sense as the per-`Surface` rule
 arms below — the difference is that these two have a consumer.
 
-**The per-`Surface` rule arms are vocabulary, not behaviour.**
-`ExportRule`, `EraseRule`, `ForgetRule` and `KeyShape` are read by no lane
-in the tree — only by the acceptance tests that check each arm carries a
-reason. A reader must not conclude that a declared export exclusion is
-enforced: flavor #0 carries eleven `ExportRule::Excluded` surfaces, three of
-which say `DECLARED GAP` outright (`wake_config`, `blob_uploads`,
-`content` — erased but never exported), and the export lane arrives at the
-same answer by its own hand-written route. The declarations and the code
-agree today because both were written to; nothing checks that they keep
-agreeing.
+**The per-`Surface` rule arms are the erase and the export.**
+`EraseRule`, `ExportRule` and `KeyShape` are no longer vocabulary. The owner
+erase generates a statement per `ByKey` / `ByOwner` surface and emits none
+for a `Cascade` or a `Never`; the owner export generates a statement per
+`Rows` / `Allowlist` surface and none for an `Excluded`, with the key's
+columns as the row order. Freeze refuses a flavor that declares an
+exportable surface it cannot reach, a test asserts every declared surface is
+reached by a generated leg or named in one sorted exemption list, and
+another asks the `pg_constraint` catalog whether each declared cascade
+exists. The three `DECLARED GAP` exclusions (`wake_config`, `blob_uploads`,
+`content` — erased but never exported) are still gaps; they are now gaps the
+declaration causes rather than gaps it merely describes.
+
+`ForgetRule` remains vocabulary: the forget lane walks the sidecar registry,
+not the contract.
 
 Two places are worth knowing about individually, because each looks like it
 reads the contract and does not:
@@ -342,11 +347,12 @@ it declares one:
   read them from, deliberately, so "comparable with core" cannot be claimed
   by copying a number.
 
-**Not every kernel relation is a declared `Surface`.** Six carry owner-scoped
-state and appear in no contract: `group_memberships` (boot-probed and swept
-by erase), `owner_fact_retention` (boot-probed), `owner_legal_holds` (read by
-the retention lane), `compliance_audit_log` (erased and exported), and
-`lexical_languages` / `lexical_default` (boot-probed by the stamp guardrail).
+**Not every kernel relation is a declared `Surface`.** Three carry
+owner-scoped state and appear in no contract: `group_memberships`
+(boot-probed and swept by erase) and `lexical_languages` /
+`lexical_default` (boot-probed by the stamp guardrail). There were six —
+`owner_fact_retention`, `owner_legal_holds` and `compliance_audit_log` were
+the other three, and Phase C deleted all three tables.
 Two of them are named in a `ResourceContract`'s `reads`, which is a different
 claim — what a handler touches, not a surface with erase/export/forget rules.
 

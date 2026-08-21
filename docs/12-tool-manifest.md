@@ -304,7 +304,7 @@ Declared / deferred:
 
 | Item | v1 status |
 |---|---|
-| field vocabulary | defined in [13 §Compliance vocabulary](13-compliance.md#compliance-vocabulary) |
+| field vocabulary | host-defined; 13 no longer specifies one (see [13 §Declared metadata](13-compliance.md#declared-metadata)) |
 | field placement on tool descriptors | deferred |
 | startup failure for missing fields | deferred |
 | Owner residency allowlist enforcement for tool calls | deferred |

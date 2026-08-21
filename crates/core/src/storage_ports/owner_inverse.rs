@@ -77,7 +77,7 @@ pub trait OwnerInversePort: Send + Sync {
 /// target and returns a yes/no answer; it is not consulted for a reason, a
 /// deadline, or a policy, because core would then have to interpret one.
 /// [`AuthPath::System`](crate::AuthPath::System) bypasses it — the
-/// in-process operator path — and [`AuthPath::Delegated`] can never reach
+/// in-process operator path — and [`AuthPath::Delegated`](crate::AuthPath::Delegated) can never reach
 /// it, since a delegated worker holds a user's authority and erasing an
 /// owner is not among a user's powers.
 ///
