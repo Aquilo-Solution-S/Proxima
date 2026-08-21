@@ -144,6 +144,13 @@ pub enum FlavorRegistryError {
         recipe_is_never: bool,
         trait_says_embeddable: bool,
     },
+    /// A schema declares `EmbeddingRecipe::Units(&[])` — the claim
+    /// `Never { why }` exists to carry, with the reason deleted, and wearing
+    /// the arm that means "embeds".
+    EmptyEmbeddingUnits {
+        flavor_id: &'static str,
+        schema_id: SchemaId,
+    },
     /// A schema's contract names different natural key columns than the
     /// payload trait the ingest actually reads.
     NaturalKeyDisagreement {
@@ -399,6 +406,16 @@ impl std::fmt::Display for FlavorRegistryError {
                  {recipe_is_never} and FactPayload::EMBEDDABLE = {trait_says_embeddable}; \
                  the enqueue lane reads the constant and the reason lives on the recipe, \
                  so a disagreement files embedding jobs the drain can only drop"
+            ),
+            Self::EmptyEmbeddingUnits {
+                flavor_id,
+                schema_id,
+            } => write!(
+                f,
+                "flavor {flavor_id} declares {schema_id} with EmbeddingRecipe::Units(&[]); \
+                 an empty unit list yields the drain no text, which is what \
+                 EmbeddingRecipe::Never says — declare Never and state why, because \
+                 Units answers `false` to is_never() and the enqueue lane believes it"
             ),
             Self::NaturalKeyDisagreement {
                 flavor_id,
