@@ -21,6 +21,8 @@ Pre-1.0 the git tag (e.g. `v0.0.3`) is the version; workspace crates are unpubli
 - **core**: Transfer a memory to another owner, not to World ([`e01b648`](https://github.com/Aquilo-Solution-S/Proxima/commit/e01b648799b140c0ded9f4a547c85654b4141757))
 
 ### Bug Fixes
+- **breaking:** **storage-pg**: HeadsOnly restricts the candidate window, not only admission ([`fc790e9`](https://github.com/Aquilo-Solution-S/Proxima/commit/fc790e9674e3bf6eba7728366bf6fe0578a03618))
+- **core**: The ts_rank weight array joins the uniformity check ([`010e5a5`](https://github.com/Aquilo-Solution-S/Proxima/commit/010e5a5d8e18c40438cb05a0937f12e5af32f929))
 - **breaking:** **code**: The substring arms are declared, and their owner is a real predicate ([`0d95ff2`](https://github.com/Aquilo-Solution-S/Proxima/commit/0d95ff2bfbaa6aba418e291c405c75a35b962c55))
 - **breaking:** **code**: The owner boundary covers the seed leg, and the erase stops waiting ([`2075839`](https://github.com/Aquilo-Solution-S/Proxima/commit/2075839cc4edcff813c18cfa35bfb8d2d6590c59))
 - **storage-pg**: Giving up on a lock is transient, not a fault ([`42270bd`](https://github.com/Aquilo-Solution-S/Proxima/commit/42270bd3fcd6cdbc2acd2a7d31f0ddc2dd639b52))
@@ -43,7 +45,7 @@ Pre-1.0 the git tag (e.g. `v0.0.3`) is the version; workspace crates are unpubli
 - **breaking:** **core**: Delete the World owner ([`87e69a5`](https://github.com/Aquilo-Solution-S/Proxima/commit/87e69a528476d03548a95767ea9df4887523c499))
 
 ### Performance
-- **breaking:** **storage-pg**: One ranked statement per flavor, and the LIKE retry dies ([`5374e9c`](https://github.com/Aquilo-Solution-S/Proxima/commit/5374e9cd3e7e927e527b5f9eebd06850b83cd2d2))
+- **breaking:** **storage-pg**: One ranked statement per flavor, and the LIKE retry dies ([`5374e9c`](https://github.com/Aquilo-Solution-S/Proxima/commit/5374e9cd3e7e927e527b5f9eebd06850b83cd2d2)). Snippets are hydrated from the page instead of ridden in on the lexical statement, so a Semantic or semantic-only Hybrid hit now carries one where it previously came back empty.
 
 ### Refactor
 - **storage-pg**: The erase row lock is a substrate primitive, not flavor SQL ([`abd08fa`](https://github.com/Aquilo-Solution-S/Proxima/commit/abd08fac819ef9dc6deef1765ab3c1fc956ae27d))
@@ -55,6 +57,7 @@ Pre-1.0 the git tag (e.g. `v0.0.3`) is the version; workspace crates are unpubli
 - **breaking:** **code**: A shared repo is a group, not the World ([`a9bc93d`](https://github.com/Aquilo-Solution-S/Proxima/commit/a9bc93d050b25cb2349dfd1de2c6ce580c2fa10f))
 
 ### Documentation
+- Contract Reach says what freeze checks and what it takes on trust ([`871c011`](https://github.com/Aquilo-Solution-S/Proxima/commit/871c01180c1d58739875be7e19e5f7a83e5988e3))
 - The flavor search surface is a declaration, and pg_trgm's blocker was wrong ([`237282d`](https://github.com/Aquilo-Solution-S/Proxima/commit/237282d4d515a11ec4acc31966032314cce6af0a))
 - What the contract does not yet reach, said where a reader looks ([`0e280ed`](https://github.com/Aquilo-Solution-S/Proxima/commit/0e280edc6f16a58eb43fc22ec901e0c8c6ba94a5))
 - The resource catalog is named after what it is now ([`791894d`](https://github.com/Aquilo-Solution-S/Proxima/commit/791894dd92ee6836313eb73a32179a5fffe2debd))
@@ -62,6 +65,7 @@ Pre-1.0 the git tag (e.g. `v0.0.3`) is the version; workspace crates are unpubli
 - **breaking:** The World owner is gone from prose, Lean, and the changelog ([`9abf3de`](https://github.com/Aquilo-Solution-S/Proxima/commit/9abf3de134b6e986f1ea0cec6885f3dc58bec8df))
 
 ### Testing
+- **code**: The ranked commit arms bind the owner, and the ratchet says why ([`4487adf`](https://github.com/Aquilo-Solution-S/Proxima/commit/4487adfaa8ddc1eb2d3501e491f3d9a55d8d9208))
 - **code**: The cascade check sees every surface the contract declares ([`fb37282`](https://github.com/Aquilo-Solution-S/Proxima/commit/fb37282d80518c23d9cf5e0b9bc8b8113780b935))
 - **search**: The core plan pin asserts the owner is an INDEX condition ([`c90016a`](https://github.com/Aquilo-Solution-S/Proxima/commit/c90016abc0661e08969b3b9907839733c7690d8f))
 - **compliance**: Pin the source arm's object refcount, not just the owner arm's ([`6fb5a84`](https://github.com/Aquilo-Solution-S/Proxima/commit/6fb5a84c3dfcb370fb26b08991d2257cf7980fe2))
