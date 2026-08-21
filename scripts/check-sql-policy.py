@@ -249,6 +249,56 @@ def run_fixture(path: Path) -> int:
     return 1
 
 
+# WHAT THIS NUMBER IS NOT
+# =======================
+# Read the ratchet as a review tripwire on a SAMPLE of the tree's dynamic SQL,
+# not as a census of it. `collect_sites` scans line by line, so two large
+# classes of macro-built statement are structurally invisible to it, and the
+# arithmetic in the log below moves for reasons that are sometimes about
+# formatting rather than about safety. The 2026-08-1x entry for
+# `verbs/forget.rs` is a worked example of exactly that, kept in place.
+#
+#   1. WRAPPED `format!`. The detector's rule requires `format!(` and the
+#      opening quote of its template to be on the SAME line. Measured at this
+#      commit against the detector's own keyword set (SELECT/INSERT/UPDATE/
+#      DELETE/WITH/CREATE/ALTER/DROP), the tree holds 53 `format!` calls whose
+#      template begins with one of those verbs. The per-line rule can see 4.
+#      Forty-nine are invisible for no reason but line breaks — and rustfmt,
+#      not the author, decides where most of those breaks fall. Widen the verb
+#      set to include SET/TRUNCATE/EXPLAIN/ANALYZE and it is 67 statements
+#      against the same 4. (Reproduce: whole-file regex with re.DOTALL,
+#      comment lines stripped. The exact figure is sensitive to the verb set,
+#      which is the point.)
+#
+#   2. `sqlx::raw_sql`. Not a pattern `collect_sites` looks for at all. There
+#      are 14 call sites. The clearest one is `pgvector.rs`'s
+#      `set_hnsw_search_sql`, which assembles `SET LOCAL hnsw.ef_search = {};
+#      SET LOCAL hnsw.iterative_scan = {}` with `format!` and `write!`, and is
+#      handed to `raw_sql` at `lib.rs:699` and two other reads. That statement
+#      is safe — the interpolated values are integers and a closed enum off
+#      `PgTuning` — but it is safe because of what it interpolates, not
+#      because this script noticed it.
+#
+# WHERE THE SAFETY ACTUALLY COMES FROM
+# ====================================
+# The real boundary is `crates/storage-pg/src/pg_ident.rs`. `is_ident_part`
+# (:50-58) admits a string only if it is non-empty, at most 63 bytes, starts
+# with an ASCII letter or `_`, and contains nothing but ASCII alphanumerics
+# and `_`. Nothing that passes that filter can close a quote, open a comment
+# or introduce a statement, which is what makes a `PgIdent` substitution
+# `%I`-equivalent. Every identifier spliced by the four generators added in
+# Phase 4 — `series_leg_sql`, `dedupe_lookup_sql`, `remap_sql`,
+# `forget_leg_sql` — routes through it, and the identifiers themselves come
+# from `const` contracts that `try_freeze` validated and that
+# `every_column_a_declaration_names_is_a_column_the_catalog_has` resolved
+# against `information_schema`.
+#
+# So: this constant is worth keeping and worth arguing over, because the log
+# below is where someone has to write down what they did and why. It is not
+# evidence that dynamic SQL in this tree is bounded at 76 places. Making the
+# detector see wrapped `format!` and `raw_sql` would re-baseline roughly 120
+# sites and is a declared follow-up, not this wave's work.
+#
 # Exact current PR9 dynamic SQL inventory count (see `--inventory`). This is a
 # ratchet, not a ceiling that only grows: the ratchet mode below fails when the
 # count changes in *either* direction so a shrink still requires the PR that
@@ -569,13 +619,32 @@ def run_fixture(path: Path) -> int:
 #       hardcoded UPDATEs, while the declaration named three columns. Prose
 #       claiming a declaration drives code that it does not drive is the
 #       exact defect the whole phase exists to remove.
-#   -1  crates/storage-pg/src/verbs/forget.rs. The stamped-sidecar delete
-#       built its statement with a single-line `format!` (one site) and ran
-#       it (a second). It now shares `forget_leg_sql` with the declared
-#       `ForgetLeg::Deleted` legs, whose `format!` spans lines and is
-#       therefore not a counted site, and ONE loop runs both — so the four
+#   -1  crates/storage-pg/src/verbs/forget.rs, and this one is a DETECTOR
+#       ARTEFACT, not a reduction. Say it plainly, because the earlier
+#       wording of this entry did not.
+#
+#       At the base commit the file held four counted sites; it now holds
+#       three. The site that left is the stamped-sidecar delete's
+#       `let sql = format!("DELETE FROM {tbl} WHERE t = $1", ...)` — a
+#       SINGLE-LINE `format!`, and therefore visible to the per-line rule in
+#       `collect_sites`. Its replacement, `forget_leg_sql`, builds the same
+#       class of statement with a `format!(` whose template string sits on
+#       the NEXT line. The regex is applied per line, so it matches nothing.
+#       The execution site survived the move (base :782 -> HEAD :876), and
+#       the two unrelated sites in the file are untouched.
+#
+#       So the minus one is bought by wrapping a macro call, and nothing
+#       about the tree got safer or smaller when it was earned.
+#
+#       An earlier draft of this entry credited the minus one to "the four
 #       hand-written `DELETE`s over `embedding_jobs`, `embedding_heads`,
-#       `embeddings` and `sketch` were absorbed at a cost of minus one.
+#       `embeddings` and `sketch` being absorbed". That is false arithmetic.
+#       Those four were plain string literals — `sqlx::query("DELETE FROM
+#       proxima_core.embeddings WHERE entity_id = $1")` — which this
+#       detector has never counted and never should. Absorbing them into
+#       the declared-leg loop is a real win in the code and worth exactly
+#       zero sites. Folding it into the ratchet's arithmetic made a
+#       mechanical accident read as an earned improvement.
 #
 # Net +1, and the trade is thirteen static statements over remembered tables
 # for three generated ones over declared surfaces. That is the ratchet's
