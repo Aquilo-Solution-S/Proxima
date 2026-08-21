@@ -510,7 +510,18 @@ def run_fixture(path: Path) -> int:
 # and the three `LIKE` arms were plan-proved — the commit and
 # commit-summary ranked arms bound `p.owner_id` with nothing reading it
 # back, so `AND $4::uuid[] IS NOT NULL` passed the entire workspace.
-EXPECTED_DYNAMIC_SQL_SITES = 74
+#
+# 74 -> 76 in the same PR's third fix wave. Two test-only sites in
+# `crates/storage-pg/tests/projection_maintenance.rs`, running the
+# GENERATOR's own statement twice against one seeded memory: once with a
+# schema id the memory does not carry, which must write nothing, and once
+# with its own, which must write one row. That is the pin for
+# `projection_insert_sql`'s `AND m.schema_id = $3` guard, and it cannot be
+# written any other way — the whole property under test is what the
+# generated statement does with a bind, so a hand-restated INSERT would
+# prove nothing about it. Both carry `SQL-POLICY: generated`, whose meaning
+# is exactly this: the string has one producer and that producer is audited.
+EXPECTED_DYNAMIC_SQL_SITES = 76
 
 
 def run_self_test() -> int:

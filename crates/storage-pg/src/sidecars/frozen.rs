@@ -231,6 +231,19 @@ impl PgSidecarRegistryFrozen {
     /// projection from the restored row instead — the same statement, run
     /// against a row that is already there.
     ///
+    /// `schema_id` is the RESTORED ROW's, and it selects the entry as well
+    /// as filling the bind. Looking up by TABLE alone was wrong twice over:
+    /// `entries` is keyed by `(schema_id, version, kind)`, so `find`
+    /// returned whichever entry for that table came first, and it ran for
+    /// EVERY dumped table — including the extra sidecars a memory may be
+    /// stamped with. A memory has one `schema_id` and `projection` is keyed
+    /// `(memory_id, schema_id)`, so at most one of those tables can produce
+    /// a row: the one belonging to the memory's own schema, which is exactly
+    /// what the write path does. The others produced rows claiming a schema
+    /// the memory is not — and once the generator required
+    /// `memory.schema_id = $3`, produced nothing while reporting success.
+    /// Selecting on both leaves no accident in either direction.
+    ///
     /// # Errors
     ///
     /// Returns storage errors from the generated statement.
@@ -239,13 +252,14 @@ impl PgSidecarRegistryFrozen {
         tx: &mut Transaction<'_, Postgres>,
         memory_id: MemoryId,
         table: &str,
+        schema_id: &str,
         lexical_language: Option<&str>,
     ) -> Result<(), StorageError> {
-        let Some(entry) = self
-            .entries
-            .values()
-            .find(|entry| entry.sidecar_table == table && entry.projection_insert.is_some())
-        else {
+        let Some(entry) = self.entries.values().find(|entry| {
+            entry.sidecar_table == table
+                && entry.key.schema_id.as_str() == schema_id
+                && entry.projection_insert.is_some()
+        }) else {
             return Ok(());
         };
         let Some(sql) = entry.projection_insert.as_deref() else {
@@ -255,7 +269,7 @@ impl PgSidecarRegistryFrozen {
         sqlx::query(sqlx::AssertSqlSafe(sql))
             .bind(memory_id.into_inner())
             .bind(lexical_language)
-            .bind(entry.key.schema_id.as_str())
+            .bind(schema_id)
             .execute(tx.as_mut())
             .await
             .map_err(crate::error::map_err)?;
