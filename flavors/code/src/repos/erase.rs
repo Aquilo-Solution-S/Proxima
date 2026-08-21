@@ -12,9 +12,14 @@
 //! admissions behind them; [`erase_memory_series`] deletes the substrate.
 //! Neither half enumerates the other's tables.
 
-use proxima_core::Owner;
-use proxima_storage_pg::verbs::forget::{erase_memory_series, lock_admissions_for_erase};
+use proxima_core::{Owner, StorageError};
+use proxima_storage_pg::verbs::forget::{
+    admissions_outside_owner, erase_memory_series, expand_series_for_erase,
+    lock_admissions_for_erase,
+};
+use proxima_storage_pg::{MAX_TRANSACTION_ATTEMPTS, is_transient_conflict};
 use sqlx::PgPool;
+use std::collections::BTreeSet;
 use uuid::Uuid;
 
 use super::records::{RepoEraseReceipt, RepoRegistryError};
@@ -49,12 +54,25 @@ use crate::store::CodeFlavorStore;
 /// `development_perspective_v1.repo_id` is NULLABLE, and `repo_id = $1`
 /// therefore never matches a NULL one. That is the intended reading, not an
 /// oversight: the payload documents `None` as "cross-repo observations", so
-/// a NULL-repo perspective belongs to the owner the way the self-model rows
-/// do and no single repository's erase is entitled to it. It goes with the
-/// owner, through the compliance erase.
-/// `a_perspective_about_no_particular_repo_survives_a_repo_erase` pins it,
-/// because a nullable column silently excluded from a sweep is otherwise
-/// indistinguishable from a bug.
+/// a perspective SERIES that never named this repository belongs to the
+/// owner the way the self-model rows do, and no single repository's erase is
+/// entitled to it. It goes with the owner, through the compliance erase.
+///
+/// The unit is the series, not the version. A perspective whose current
+/// version says `None` but whose history was filed under this repository IS
+/// this repository's, and goes: the footprint expands every admission it
+/// finds to the whole series (that is what
+/// [`expand_series_for_erase`] is for), because keeping one version of a
+/// series and erasing another is not a state the substrate can be left in —
+/// the head would point at a row that no longer exists. Saying "a NULL
+/// `repo_id` survives" full stop would therefore have been a promise about
+/// rows, made in the language of series, and false in exactly the case
+/// where it mattered.
+/// `a_perspective_about_no_particular_repo_survives_a_repo_erase` pins the
+/// first half and
+/// `a_perspective_that_dropped_its_repo_id_still_goes_with_the_repo` pins
+/// the second, because a nullable column silently excluded from a sweep is
+/// otherwise indistinguishable from a bug.
 const DELETE_REPO_ROWS_SQL: &str = "\
 WITH work_items AS (
     SELECT t FROM proxima_code.work_requested_v1 WHERE repo_id = $1
@@ -122,6 +140,37 @@ UNION SELECT t FROM d_work_assignment
 UNION SELECT t FROM d_acceptance_criteria
 UNION SELECT t FROM d_acceptance_verification";
 
+/// [`DELETE_REPO_ROWS_SQL`] asked instead of performed.
+///
+/// The erase now computes its whole footprint before it deletes anything,
+/// so the first step has to be a question. The two statements name the same
+/// fourteen tables through the same predicates and
+/// `the_finder_and_the_sweep_ask_the_same_question` holds them to it; the
+/// runtime check in [`erase_repo`] holds them to it again, on real rows, by
+/// refusing to proceed if the sweep deletes a row the finder never saw.
+const FIND_REPO_ROWS_SQL: &str = "\
+WITH work_items AS (
+    SELECT t FROM proxima_code.work_requested_v1 WHERE repo_id = $1
+    UNION
+    SELECT t FROM proxima_code.test_requested_v1 WHERE repo_id = $1
+)
+SELECT t FROM proxima_code.commit_v1 WHERE repo_id = $1
+UNION SELECT t FROM proxima_code.commit_summary_v1 WHERE repo_id = $1
+UNION SELECT t FROM proxima_code.code_chunk_v1 WHERE repo_id = $1
+UNION SELECT t FROM proxima_code.file_revision_v1 WHERE repo_id = $1
+UNION SELECT t FROM proxima_code.work_requested_v1 WHERE repo_id = $1
+UNION SELECT t FROM proxima_code.test_requested_v1 WHERE repo_id = $1
+UNION SELECT t FROM proxima_code.execution_result_v1 WHERE repo_id = $1
+UNION SELECT t FROM proxima_code.test_result_v1 WHERE repo_id = $1
+UNION SELECT t FROM proxima_code.execution_plan_v1 WHERE repo_id = $1
+UNION SELECT t FROM proxima_code.acceptance_summary_v1 WHERE repo_id = $1
+UNION SELECT t FROM proxima_code.development_perspective_v1 WHERE repo_id = $1
+UNION SELECT t FROM proxima_code.work_assignment_v1 WHERE repo_id = $1
+UNION SELECT t FROM proxima_code.acceptance_criteria_v1
+ WHERE work_item_memory_id IN (SELECT t FROM work_items)
+UNION SELECT t FROM proxima_code.acceptance_verification_v1
+ WHERE work_item_memory_id IN (SELECT t FROM work_items)";
+
 /// Every `proxima_code` row that references an erased admission through a
 /// column other than its own `t`, and the admissions behind those rows.
 ///
@@ -145,14 +194,19 @@ UNION SELECT t FROM d_acceptance_verification";
 /// veto another repository's erasure, which is the inverse of what an
 /// erase is for.
 ///
-/// Run to a fixpoint by the caller: these rows carry admissions of their
-/// own, and a row erased here may in turn be referenced by a third. The
-/// loop terminates because every iteration that returns anything has
-/// deleted at least one row from a set that only shrinks.
+/// One pass, over the CLOSED footprint. These rows carry admissions of
+/// their own and a row deleted here may in turn be referenced by a third,
+/// so the set has to be a fixpoint — but the fixpoint is reached by
+/// [`FIND_DANGLING_REFERENCES_SQL`], which asks the same question without
+/// deleting anything, so that the whole set can be locked in one statement
+/// before any of it is touched. Deleting in rounds and locking per round
+/// was the earlier shape and it was wrong twice over: it left an
+/// arbitrarily long window between locking one round and asking for the
+/// next, and it could not see the versions the series expansion adds.
 ///
 /// `the_reference_closure_covers_every_non_t_foreign_key_into_memory` pins
-/// the column list against `pg_constraint` rather than against this
-/// comment.
+/// the column list of both statements against `pg_constraint` rather than
+/// against this comment.
 const CLOSE_DANGLING_REFERENCES_SQL: &str = "\
 WITH erased AS (
     SELECT unnest($1::uuid[]) AS t
@@ -202,6 +256,50 @@ UNION SELECT t FROM d_execution_result
 UNION SELECT t FROM d_test_result
 UNION SELECT t FROM d_work_assignment";
 
+/// [`CLOSE_DANGLING_REFERENCES_SQL`] asked instead of performed, with the
+/// table each answer came from.
+///
+/// The table name is not decoration: a row found here may belong to a
+/// DIFFERENT principal — a flavor table's foreign key names
+/// `proxima_core.memory (t)` and nothing constrains whose memory that is,
+/// and an admission that changed hands leaves exactly this shape behind.
+/// Following such a reference would delete one principal's rows on another
+/// principal's authority, so [`erase_repo`] refuses instead, and the
+/// refusal has to be able to say which rows.
+const FIND_DANGLING_REFERENCES_SQL: &str = "\
+WITH erased AS (
+    SELECT unnest($1::uuid[]) AS t
+)
+SELECT 'acceptance_criteria_v1' AS src, t
+  FROM proxima_code.acceptance_criteria_v1
+ WHERE work_item_memory_id IN (SELECT t FROM erased)
+UNION ALL
+SELECT 'acceptance_summary_v1', t
+  FROM proxima_code.acceptance_summary_v1
+ WHERE work_item_memory_id IN (SELECT t FROM erased)
+UNION ALL
+SELECT 'acceptance_verification_v1', t
+  FROM proxima_code.acceptance_verification_v1
+ WHERE work_item_memory_id IN (SELECT t FROM erased)
+    OR verifier_memory_id IN (SELECT t FROM erased)
+UNION ALL
+SELECT 'execution_plan_v1', t
+  FROM proxima_code.execution_plan_v1
+ WHERE goal_activated_memory_id IN (SELECT t FROM erased)
+UNION ALL
+SELECT 'execution_result_v1', t
+  FROM proxima_code.execution_result_v1
+ WHERE work_requested_memory_id IN (SELECT t FROM erased)
+UNION ALL
+SELECT 'test_result_v1', t
+  FROM proxima_code.test_result_v1
+ WHERE test_requested_memory_id IN (SELECT t FROM erased)
+UNION ALL
+SELECT 'work_assignment_v1', t
+  FROM proxima_code.work_assignment_v1
+ WHERE work_item_memory_id IN (SELECT t FROM erased)
+    OR target_perspective_memory_id IN (SELECT t FROM erased)";
+
 /// The repo row, locked.
 ///
 /// `FOR UPDATE` here serializes two erases of the same repository against
@@ -234,10 +332,48 @@ DELETE FROM proxima_code.repos
 /// this replaced never deleted the `cooled` rows at all, which leaked both
 /// the locator and the bytes.
 ///
+/// A deadlock is retried, not surfaced. The erase takes `FOR UPDATE` on
+/// admissions in `t` order and an ordinary writer takes `FOR KEY SHARE` on
+/// them in whatever order its own statement produces, so the pair can
+/// always be made cyclic and no lock ordering on this side prevents it.
+/// `PostgreSQL` then picks the cheapest transaction to abort, which is the
+/// one that has not yet written anything — this one. Re-running the whole
+/// transaction is the correct response and the only one: by the time the
+/// retry starts, the writer that won has committed, so its row is visible
+/// to the new attempt's discovery and gets erased with the rest.
+///
 /// # Errors
 /// Returns `RepoRegistryError::NotFound` if the repo is not registered for
-/// `owner`; otherwise returns database/storage errors from the transaction.
+/// `owner`, `RepoRegistryError::CrossOwnerReference` if another principal's
+/// rows point into this repo; otherwise returns database/storage errors
+/// from the transaction.
 pub async fn erase_repo(
+    store: &CodeFlavorStore,
+    owner: &Owner,
+    repo_id: Uuid,
+) -> Result<RepoEraseReceipt, RepoRegistryError> {
+    let mut attempt = 1;
+    loop {
+        match erase_repo_once(store, owner, repo_id).await {
+            Err(err) if attempt < MAX_TRANSACTION_ATTEMPTS && is_transient(&err) => {
+                attempt += 1;
+            }
+            outcome => return outcome,
+        }
+    }
+}
+
+/// Whether the whole erase transaction is worth re-running.
+fn is_transient(err: &RepoRegistryError) -> bool {
+    match err {
+        RepoRegistryError::Database(err) => is_transient_conflict(err),
+        RepoRegistryError::Storage(StorageError::Retryable(_)) => true,
+        _ => false,
+    }
+}
+
+/// One attempt: begin, compute, lock, delete, commit.
+async fn erase_repo_once(
     store: &CodeFlavorStore,
     owner: &Owner,
     repo_id: Uuid,
@@ -256,12 +392,27 @@ pub async fn erase_repo(
         return Err(RepoRegistryError::NotFound { repo_id });
     }
 
+    let ts = erase_footprint(&mut tx, owner, repo_id).await?;
+    let held: BTreeSet<Uuid> = ts.iter().copied().collect();
+
     let swept: Vec<Uuid> = sqlx::query_scalar(DELETE_REPO_ROWS_SQL)
         .bind(repo_id)
         .fetch_all(&mut *tx)
         .await?;
-
-    let ts = close_dangling_references(&mut tx, swept).await?;
+    let closed: Vec<Uuid> = sqlx::query_scalar(CLOSE_DANGLING_REFERENCES_SQL)
+        .bind(&ts)
+        .fetch_all(&mut *tx)
+        .await?;
+    // Every row the two deletes reach was in the footprint, or the
+    // footprint was not a footprint and the locks are on the wrong rows.
+    // Cheap, and the only check that sees the real rows rather than the
+    // statements.
+    if let Some(missed) = swept.iter().chain(&closed).find(|t| !held.contains(t)) {
+        return Err(RepoRegistryError::FootprintIncomplete {
+            repo_id,
+            memory_id: *missed,
+        });
+    }
 
     let (memories_deleted, cold_purge) =
         erase_memory_series(&mut tx, store.sidecars(), owner, &ts).await?;
@@ -285,48 +436,110 @@ pub async fn erase_repo(
     })
 }
 
-/// The reference-closure statement, for the test that asks `pg_constraint`
-/// whether its column list is still the schema's.
+/// The statements whose column lists the `pg_constraint` tests check, so
+/// that neither the question nor the deletion can drift from the schema.
 #[must_use]
-pub fn reference_closure_sql() -> &'static str {
-    CLOSE_DANGLING_REFERENCES_SQL
+pub fn reference_closure_sql() -> [&'static str; 2] {
+    [FIND_DANGLING_REFERENCES_SQL, CLOSE_DANGLING_REFERENCES_SQL]
 }
 
-/// Grow `swept` into the full set of admissions this erase must delete, by
-/// deleting every flavor row that points at one of them and adding that
-/// row's own admission to the set.
+/// Every admission this repo's erase will delete, locked, before anything
+/// is deleted.
 ///
-/// Each round takes [`lock_admissions_for_erase`] on its frontier before it
-/// deletes anything that references those admissions, so the round's own
-/// snapshot gap is closed; the locks accumulate for the life of the
-/// transaction, so by the time the last round returns nothing, every
-/// admission in the answer is held against concurrent referencing writes.
+/// Three things grow the set and they grow each other, so the answer is a
+/// JOINT fixpoint and not two passes:
 ///
-/// Termination: a round either returns nothing, or has deleted at least one
-/// row. Rows are only deleted, never created, so the rounds are bounded by
-/// the number of rows in the flavor's schema.
-async fn close_dangling_references(
+/// 1. the repo's own rows, found by `repo_id`;
+/// 2. every other version of those rows' series — the substrate erases a
+///    series whole ([`expand_series_for_erase`]), and nothing constrains a
+///    later version of a handle to name the same repository as the first,
+///    so the expansion routinely adds admissions the sweep never saw;
+/// 3. every flavor row that POINTS at any admission already in the set,
+///    whichever repository it is filed under, plus that row's own
+///    admission — which is a new admission, whose series expands, whose
+///    versions may be pointed at in turn.
+///
+/// Computing 1 and 3 without 2 is what made a repo erase abort on an
+/// ordinary superseded memory: the sweep found v1, the closure ran over v1
+/// and found nothing, the substrate then deleted v2 as part of the series,
+/// and v2's referencing row was still there.
+///
+/// Termination is by `seen`, which only ever grows and is bounded by the
+/// number of this owner's admissions — not by "a round deletes a row",
+/// which is false here because no round deletes anything, and which was
+/// false before too for a cycle's last round.
+///
+/// The lock is taken ONCE, over the whole answer, for the reason written on
+/// [`lock_admissions_for_erase`]: locking per round leaves a window between
+/// rounds in which this transaction holds part of the set and is not yet
+/// asking for the rest.
+///
+/// # Errors
+/// Returns `RepoRegistryError::CrossOwnerReference` if any row reached in
+/// step 3 belongs to another principal; otherwise database/storage errors.
+pub async fn erase_footprint(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-    swept: Vec<Uuid>,
+    owner: &Owner,
+    repo_id: Uuid,
 ) -> Result<Vec<Uuid>, RepoRegistryError> {
-    let mut all: Vec<Uuid> = swept;
-    let mut seen: std::collections::HashSet<Uuid> = all.iter().copied().collect();
-    let mut frontier = all.clone();
+    let mut frontier: Vec<Uuid> = sqlx::query_scalar(FIND_REPO_ROWS_SQL)
+        .bind(repo_id)
+        .fetch_all(&mut **tx)
+        .await?;
+    let mut seen: BTreeSet<Uuid> = BTreeSet::new();
+    let mut blocking: BTreeSet<String> = BTreeSet::new();
+
     while !frontier.is_empty() {
-        lock_admissions_for_erase(tx, &frontier).await?;
-        let reached: Vec<Uuid> = sqlx::query_scalar(CLOSE_DANGLING_REFERENCES_SQL)
+        seen.extend(frontier.iter().copied());
+
+        let mut next: Vec<Uuid> = expand_series_for_erase(tx, owner, &frontier).await?;
+        let referencing: Vec<(String, Uuid)> = sqlx::query_as(FIND_DANGLING_REFERENCES_SQL)
             .bind(&frontier)
             .fetch_all(&mut **tx)
             .await?;
-        frontier = reached.into_iter().filter(|t| seen.insert(*t)).collect();
-        all.extend_from_slice(&frontier);
+
+        let fresh: Vec<Uuid> = referencing
+            .iter()
+            .map(|(_, t)| *t)
+            .filter(|t| !seen.contains(t))
+            .collect();
+        let foreign: BTreeSet<Uuid> = admissions_outside_owner(tx, owner, &fresh)
+            .await?
+            .into_iter()
+            .collect();
+        for (table, t) in &referencing {
+            if foreign.contains(t) {
+                blocking.insert(format!("proxima_code.{table} t={t}"));
+            }
+        }
+
+        next.extend(fresh.into_iter().filter(|t| !foreign.contains(t)));
+        next.retain(|t| !seen.contains(t));
+        next.sort_unstable();
+        next.dedup();
+        frontier = next;
     }
-    Ok(all)
+
+    if !blocking.is_empty() {
+        return Err(RepoRegistryError::CrossOwnerReference {
+            repo_id,
+            blocking: blocking.into_iter().collect(),
+        });
+    }
+
+    // Sorted, because `seen` is a BTreeSet: two erases whose footprints
+    // overlap ask for the shared rows in the same order.
+    let footprint: Vec<Uuid> = seen.into_iter().collect();
+    lock_admissions_for_erase(tx, &footprint).await?;
+    Ok(footprint)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{CLOSE_DANGLING_REFERENCES_SQL, DELETE_REPO_ROWS_SQL, DELETE_REPO_SQL};
+    use super::{
+        CLOSE_DANGLING_REFERENCES_SQL, DELETE_REPO_ROWS_SQL, DELETE_REPO_SQL,
+        FIND_DANGLING_REFERENCES_SQL, FIND_REPO_ROWS_SQL, RepoRegistryError,
+    };
     use crate::contract::CODE_FLAVOR_CONTRACT;
     use proxima_core::flavor::{EraseRule, Surface};
     use std::collections::BTreeSet;
@@ -356,6 +569,41 @@ mod tests {
             .filter_map(|line| line.trim().strip_prefix("DELETE FROM "))
             .filter_map(|rest| rest.split_whitespace().next())
             .collect()
+    }
+
+    /// Every `proxima_code` relation the statement names, however it names
+    /// it. The `src` labels in the finder are bare table names on purpose,
+    /// so they are not mistaken for references here.
+    fn tables_named_in(sql: &'static str) -> BTreeSet<&'static str> {
+        sql.split(|c: char| c.is_whitespace() || matches!(c, '(' | ')' | ',' | '\''))
+            .filter(|token| token.starts_with("proxima_code."))
+            .collect()
+    }
+
+    /// Every `(table, col)` the statement tests with
+    /// `col IN (SELECT t FROM erased)`.
+    ///
+    /// Pairs, not columns: `work_item_memory_id` names four different
+    /// tables, so a set of bare column names would report nine references
+    /// as six and let three of them be dropped without a word.
+    fn erased_pairs_of(sql: &'static str) -> BTreeSet<(&'static str, &'static str)> {
+        let mut table = "";
+        let mut pairs = BTreeSet::new();
+        for line in sql.lines() {
+            let line = line.trim();
+            if let Some(named) = line
+                .split(|c: char| c.is_whitespace() || matches!(c, '(' | ')' | ',' | '\''))
+                .find(|token| token.starts_with("proxima_code."))
+            {
+                table = named;
+            }
+            if let Some(rest) = line.strip_suffix(" IN (SELECT t FROM erased)")
+                && let Some(column) = rest.rsplit(' ').next()
+            {
+                pairs.insert((table, column));
+            }
+        }
+        pairs
     }
 
     /// The point of the whole move: a table added to this flavor and not to
@@ -393,6 +641,70 @@ mod tests {
         );
     }
 
+    /// A deadlock is a retry; a refusal is an answer.
+    ///
+    /// The retry loop wraps the whole erase, so getting this wrong in the
+    /// other direction is worse than not retrying at all: a refusal
+    /// classified as transient would be re-run three times and then
+    /// surfaced anyway, and a cross-owner reference does not stop being a
+    /// cross-owner reference on the second attempt.
+    #[test]
+    fn a_deadlock_is_retried_and_a_refusal_is_not() {
+        use super::is_transient;
+        use proxima_core::StorageError;
+        assert!(is_transient(&RepoRegistryError::Storage(
+            StorageError::Retryable("deadlock detected".into())
+        )));
+        assert!(!is_transient(&RepoRegistryError::CrossOwnerReference {
+            repo_id: uuid::Uuid::nil(),
+            blocking: vec!["proxima_code.execution_result_v1 t=…".into()],
+        }));
+        assert!(!is_transient(&RepoRegistryError::FootprintIncomplete {
+            repo_id: uuid::Uuid::nil(),
+            memory_id: uuid::Uuid::nil(),
+        }));
+        assert!(!is_transient(&RepoRegistryError::NotFound {
+            repo_id: uuid::Uuid::nil()
+        }));
+        const {
+            assert!(
+                super::MAX_TRANSACTION_ATTEMPTS > 1,
+                "a retry budget of one is not a retry"
+            );
+        }
+    }
+
+    /// The erase asks before it deletes, which means the question and the
+    /// deletion are two statements that must mean the same thing. They are
+    /// hand-written, so nothing but this stops a table being added to one
+    /// and not the other — and the failure mode is quiet: the sweep deletes
+    /// a row the footprint never locked, or the footprint locks a row the
+    /// sweep never reaches.
+    #[test]
+    fn the_finder_and_the_sweep_ask_the_same_question() {
+        assert_eq!(
+            tables_named_in(FIND_REPO_ROWS_SQL),
+            tables_named_in(DELETE_REPO_ROWS_SQL),
+            "the repo-row finder and the repo-row sweep name different tables"
+        );
+        assert_eq!(
+            tables_named_in(FIND_DANGLING_REFERENCES_SQL),
+            tables_named_in(CLOSE_DANGLING_REFERENCES_SQL),
+            "the reference finder and the reference closure name different tables"
+        );
+        let pairs = erased_pairs_of(FIND_DANGLING_REFERENCES_SQL);
+        assert_eq!(
+            pairs,
+            erased_pairs_of(CLOSE_DANGLING_REFERENCES_SQL),
+            "the reference finder and the reference closure test different columns"
+        );
+        assert_eq!(
+            pairs.len(),
+            9,
+            "nine non-`t` foreign keys into the core admission table exist; found {pairs:?}"
+        );
+    }
+
     #[test]
     fn the_erase_names_no_table_the_contract_does_not_declare() {
         let declared: BTreeSet<&str> = every_declared_surface()
@@ -402,6 +714,8 @@ mod tests {
             .union(&tables_deleted_by(DELETE_REPO_SQL))
             .copied()
             .chain(tables_deleted_by(CLOSE_DANGLING_REFERENCES_SQL))
+            .chain(tables_named_in(FIND_REPO_ROWS_SQL))
+            .chain(tables_named_in(FIND_DANGLING_REFERENCES_SQL))
             .filter(|table| !declared.contains(table))
             .collect();
         stray.sort_unstable();

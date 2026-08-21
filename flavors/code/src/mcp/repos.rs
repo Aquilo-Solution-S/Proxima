@@ -614,6 +614,16 @@ fn map_repo_registry(error: RepoRegistryError) -> ToolError {
         RepoRegistryError::RunAlreadyTerminal { run_id, status } => ToolError::InvalidInput(
             format!("ingestion run is already terminal: {run_id} ({status:?})"),
         ),
+        // Caller-facing and actionable: it names the rows, and the caller
+        // is the one who can retire or transfer them.
+        error @ RepoRegistryError::CrossOwnerReference { .. } => {
+            ToolError::InvalidInput(error.to_string())
+        }
+        // Not caller-facing: the finding statements and the deleting
+        // statements have drifted, which is ours to fix, not theirs.
+        error @ RepoRegistryError::FootprintIncomplete { .. } => {
+            ToolError::Other(error.to_string())
+        }
         RepoRegistryError::Database(error) => map_storage(error),
         RepoRegistryError::Storage(error) => ToolError::Other(error.to_string()),
     }

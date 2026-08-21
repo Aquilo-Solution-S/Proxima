@@ -204,6 +204,37 @@ pub enum RepoRegistryError {
         #[source]
         source: super::scope::ScopeError,
     },
+    /// Another principal's rows point at memories filed under this repo.
+    ///
+    /// A code sidecar's foreign key names `proxima_core.memory (t)` and
+    /// nothing in it constrains whose memory that is, so one owner's row can
+    /// reference another's admission — most ordinarily because the
+    /// admission was transferred. The repo erase deletes a reference to
+    /// erased data along with what it points at, which is settled policy
+    /// WITHIN one owner and no one's to decide ACROSS two: erasing here
+    /// would destroy a principal's rows on a different principal's say-so,
+    /// and silently, since the referencing memory itself would survive with
+    /// its sidecar gone. So the erase stops and names the rows instead.
+    #[error(
+        "repo {repo_id} is referenced by rows another principal owns; erasing them is not \
+         this owner's to do — resolve or transfer them first: {}",
+        blocking.join(", ")
+    )]
+    CrossOwnerReference {
+        repo_id: Uuid,
+        blocking: Vec<String>,
+    },
+    /// The sweep deleted a row the footprint never named.
+    ///
+    /// The footprint is what the erase locks, so a row outside it is a row
+    /// deleted under no lock and, worse, a sign that the finding statements
+    /// and the deleting statements have drifted apart. Refusing is the only
+    /// safe answer; the alternative is an erase that looks like it worked.
+    #[error(
+        "repo {repo_id} erase reached memory {memory_id}, which its footprint never named — \
+         the finder and the sweep disagree"
+    )]
+    FootprintIncomplete { repo_id: Uuid, memory_id: Uuid },
     #[error("ingestion run not found: {run_id}")]
     RunNotFound { run_id: Uuid },
     #[error("ingestion run is already in terminal state: {run_id} ({status:?})")]
