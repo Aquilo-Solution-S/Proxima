@@ -360,7 +360,13 @@ impl CodeFlavorStore {
 /// NOT test-only, unlike [`test_sidecars`] below: the host constructor needs
 /// it too, and a `#[cfg(any(test, debug_assertions))]` gate on it compiled in
 /// dev and vanished under `--release`, which is the same trap the erase
-/// exports fell into.
+/// exports fell into. The gate is therefore the UNION of its callers' gates,
+/// not either one of them: `from_backend_pool_for_host` is `host-api` and the
+/// two fixture constructors are `test, debug_assertions`, so a release build
+/// of this crate WITHOUT `host-api` has no caller at all and the function is
+/// dead. A workspace build hides that — `proxima-mcp` unifies `host-api` on —
+/// which is why `cargo build --release -p proxima-code` is its own gate.
+#[cfg(any(feature = "host-api", test, debug_assertions))]
 fn flavor_surfaces() -> proxima_core::owner_inverse::OwnerSurfaces {
     let mut registry = proxima_core::FlavorRegistry::new();
     crate::register(&mut registry).expect("the code flavor registers against a fresh registry");
