@@ -6,7 +6,23 @@ Pre-1.0 the git tag (e.g. `v0.0.3`) is the version; workspace crates are unpubli
 
 ## [Unreleased]
 
+### Declared follow-ups
+
+Stated here rather than fixed, because closing either changes behaviour a
+pinned equivalence gate currently proves unchanged.
+
+- **`proxima_core.group_memberships` outlives a personal-owner erase.** Rows
+  naming the erased `member_user_id` survive; they are removed only by
+  `remove_group_member`. Pre-v0.0.8 code behaved identically, so the
+  differential proves parity rather than correctness. Recorded with its
+  reason in `owner_inverse_reach_pg::UNDECLARED_BUT_INTENTIONAL`.
+- **`Surface::counter: None` carries no `why`.** Every other declared
+  absence in the contract states a reason and this one does not, so "feeds
+  no counter" and "nobody said" are the same value — the exact shape the
+  contract's first rule exists to forbid.
+
 ### Features
+- **breaking:** **core**: An undeletable surface is a boot refusal, not a silent skip ([`437593c`](https://github.com/Aquilo-Solution-S/Proxima/commit/437593c2db5f0a499ca0d3ece92297301316620f)). `EraseRule::ByKey` on a key with no home fell through both generic erase loops; the only thing standing between that and a table nothing ever deletes was an exemption list in `proxima-storage-pg`, checked by a test that — because the substrate crate depends on no flavor — could only ever see flavor #0. An out-of-tree flavor could freeze, boot, and report `Completed` over rows that outlived their owner. The five-way partition now lives in freeze, over one classifier (`EraseLeg::derive`) that the boot check and the erase both call, with the bespoke list moved into `FlavorContract` where freeze can read it.
 - **breaking:** **core**: The journal leaves; the erase hands back a receipt ([`879db79`](https://github.com/Aquilo-Solution-S/Proxima/commit/879db79bbba9a7ca7992a697f7b03deb3caaff57)). `compliance_audit_log` and its seventeen counters are gone. An erase returns a map of table to rows destroyed, derived from the same `counter` declarations the surfaces already carried; a declared counter with no derivation is a freeze error. A host that must be able to show what it did records the receipt, which is a promise about its users and therefore theirs to keep.
 - **breaking:** **core**: The declarations generate the erase and the export ([`17c5486`](https://github.com/Aquilo-Solution-S/Proxima/commit/17c5486cf9eed050a9dc8b1de67f7613ff97316d)). Both verbs now read `EraseRule` and `ExportRule` off every surface in the frozen registry instead of naming tables from memory. The statement shapes did not change; the export's nine hand-written SQL constants and four dynamic sidecar builders collapsed into one generator, and the content GC lost an N+1.
 - **breaking:** **core**: The retention window and the legal hold leave core ([`1e052bf`](https://github.com/Aquilo-Solution-S/Proxima/commit/1e052bfecdd7f9682c35429957ac6de036017acd)). `owner_fact_retention`, `owner_legal_holds`, the 248-line enforcement lane and their CLI arms are gone with no successor and no consult hoisted into the erase. A retention schedule and a litigation hold are judgements about a hosting application's obligations to its own users; core stores, and offers the inverse of storing.
@@ -24,6 +40,7 @@ Pre-1.0 the git tag (e.g. `v0.0.3`) is the version; workspace crates are unpubli
 - **core**: Transfer a memory to another owner, not to World ([`e01b648`](https://github.com/Aquilo-Solution-S/Proxima/commit/e01b648799b140c0ded9f4a547c85654b4141757))
 
 ### Bug Fixes
+- **storage-pg**: The goal selection stops binding a kind nothing reads ([`21c985e`](https://github.com/Aquilo-Solution-S/Proxima/commit/21c985eb4cc76b1eb7503c1d6719c8a1249e8251)). Residue of the retired composite `(owner_kind, owner_id)` key: the statement bound `$1` and filtered on `$2`.
 - **proxima**: The export half of an owner's rights reaches the facade ([`05a6b7c`](https://github.com/Aquilo-Solution-S/Proxima/commit/05a6b7c9d2bf8114d2a85e78b45aa30b2870d7c5)). The export types were public in core and re-exported nowhere, so a host depending on `proxima` could erase an owner but not hand one a copy.
 - **breaking:** **contract**: Correct the erase declarations before anything generates from them ([`85e679f`](https://github.com/Aquilo-Solution-S/Proxima/commit/85e679fb9a30966009a989198a358262b9496d5e)). Every keyed `KeyShape` now names its own column instead of implying `t`, and freeze refuses a surface that no owner predicate can reach. Generating from declarations nobody had checked would have shipped whatever they got wrong.
 - **storage-pg**: The projection rebuild picks its statement by schema, and the guard gets a pin ([`88848d3`](https://github.com/Aquilo-Solution-S/Proxima/commit/88848d3023b7a373a056f865093702194a150dad)). Hydrate looked the projection statement up by sidecar table alone and ran it for every stamped extra, so a memory with extra sidecars got projection rows claiming schemas it is not.
@@ -68,6 +85,8 @@ Pre-1.0 the git tag (e.g. `v0.0.3`) is the version; workspace crates are unpubli
 - **breaking:** **code**: A shared repo is a group, not the World ([`a9bc93d`](https://github.com/Aquilo-Solution-S/Proxima/commit/a9bc93d050b25cb2349dfd1de2c6ce580c2fa10f))
 
 ### Documentation
+- Two ghosts and one claim that reached further than its evidence ([`573b801`](https://github.com/Aquilo-Solution-S/Proxima/commit/573b801f1b2196ce370fc4dfe11664b89e000311)). `ComplianceAdminPort::may_perform_operator_maintenance` was documented in two places and does not exist; docs/01's source block still promised substrate-enforced residency, retention cleanup and refusal-with-reason; and the differential harness now names what its corpus cannot witness.
+- Nothing in the substrate argues from a statute ([`e018f8f`](https://github.com/Aquilo-Solution-S/Proxima/commit/e018f8fe5e12764446f0e9990ab1177d78aef3b9)). Fifteen sites, one of which shipped: a `COMMENT ON COLUMN` naming Article 17 wrote into pg_description, which comes back out of every schema-dump tool an operator points at the database. The migration test now counts statute references in the catalog and requires zero.
 - The compliance chapter becomes the inverses of storing ([`d7de259`](https://github.com/Aquilo-Solution-S/Proxima/commit/d7de25932c881581984aa9b7cee19249071a118b)). Chapter 13 argued from a regulation and described enforcement core does not perform; it now states the position that replaced them and says which judgements belong to the host.
 - Contract Reach says what freeze checks and what it takes on trust ([`871c011`](https://github.com/Aquilo-Solution-S/Proxima/commit/871c01180c1d58739875be7e19e5f7a83e5988e3))
 - The flavor search surface is a declaration, and pg_trgm's blocker was wrong ([`237282d`](https://github.com/Aquilo-Solution-S/Proxima/commit/237282d4d515a11ec4acc31966032314cce6af0a))
@@ -77,6 +96,7 @@ Pre-1.0 the git tag (e.g. `v0.0.3`) is the version; workspace crates are unpubli
 - **breaking:** The World owner is gone from prose, Lean, and the changelog ([`9abf3de`](https://github.com/Aquilo-Solution-S/Proxima/commit/9abf3de134b6e986f1ea0cec6885f3dc58bec8df))
 
 ### Testing
+- **core**: The bundle is pinned to the declarations, not to a corpus ([`d615418`](https://github.com/Aquilo-Solution-S/Proxima/commit/d615418c4ea3fff64fde8b36e77c5f0491de0f9f)). `OwnerExportBundle` documents "one entry per declared exportable surface, including the ones that came back empty" and nothing checked it: deleting a surface from the generator's loop passed the whole suite AND the differential, which strips empty sections by design. Now exported from a fresh owner, twice — flavor 0 in `proxima-storage-pg`, both contracts in `proxima-code`, the one crate that sees the whole registry and the generated statements together. The same file requires every base table in `proxima_core` and `proxima_code` to be a declared surface or carry a stated reason not to be.
 - **storage-pg**: The differential dump costs no dynamic SQL ([`b0c35ee`](https://github.com/Aquilo-Solution-S/Proxima/commit/b0c35eee670f6487bead5d6f30bf096513801e7f)). Postgres assembles the per-relation query with `format(..., %I)` inside `query_to_xml`, so walking every base relation adds nothing to the ratchet.
 - **storage-pg**: Pin the owner inverse against its pre-phase self ([`dd731ef`](https://github.com/Aquilo-Solution-S/Proxima/commit/dd731ef3eaffc03dbf565e901d3bde9f3c63aef1)). On a seeded twelve-leg multi-owner corpus, the rewritten erase leaves byte-identical database state and the rewritten export produces byte-identical canonical JSON, in both owner and source scope. Generated goldens from the pre-phase tree, so the equivalence was proved before the old implementation was deleted.
 - **storage-pg**: The mirror guard counts predicates, not just binds ([`7e5fb81`](https://github.com/Aquilo-Solution-S/Proxima/commit/7e5fb81fe2b38bf5e4c95656d97e2e95019a47a8))
