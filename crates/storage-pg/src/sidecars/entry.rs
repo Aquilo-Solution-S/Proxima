@@ -59,4 +59,14 @@ pub struct PgSidecarEntry {
     pub(super) citation_mapping_insert: Option<PgCitationMappingSidecarInserter>,
     pub(super) goal_insert: Option<PgGoalSidecarInserter>,
     pub(super) goal_copy: Option<PgGoalSidecarCopier>,
+    /// The generated `INSERT INTO <flavor>.projection … FROM <sidecar>`
+    /// statement for this schema, or `None` when the schema is not a search
+    /// surface. Built in `freeze_against` from the flavor contract, so a
+    /// projected schema cannot be written without its projection row: the
+    /// two statements are one method call apart in one transaction.
+    pub(super) projection_insert: Option<String>,
+    /// The projection table this entry maintains. Carried so transfer can
+    /// ask the registry which tables follow an owner without knowing which
+    /// flavors are linked.
+    pub(super) projection_table: Option<String>,
 }

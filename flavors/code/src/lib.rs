@@ -4,6 +4,7 @@
 
 pub mod calls;
 pub mod chunker;
+pub mod contract;
 mod ingest;
 pub mod local_git_source;
 pub mod mcp;
@@ -53,8 +54,8 @@ pub mod testkit {
         start_run_with_created, sweep_orphaned_runs,
     };
     pub use crate::repos::{
-        erase_repo, get_repo, list_repos, register_repo, set_repo_scope, set_repo_target_branch,
-        update_cursor,
+        erase_footprint, erase_repo, get_repo, list_repos, reference_closure_sql, register_repo,
+        set_repo_scope, set_repo_target_branch, update_cursor,
     };
 }
 
@@ -116,6 +117,7 @@ proxima::flavor::proxima_flavor! {
         mcp::CodeRetryExecutionRequestTool,
         mcp::CodeWorkItemBundleTool,
     ],
+    contract = &contract::CODE_FLAVOR_CONTRACT,
 }
 
 pub fn register_pg_sidecars(registry: &mut proxima_storage_pg::PgSidecarRegistry) {

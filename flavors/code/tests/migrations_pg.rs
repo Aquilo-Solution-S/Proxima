@@ -302,3 +302,25 @@ async fn assert_enum_column(
     );
     Ok(())
 }
+
+/// The code baseline carries the generator's output verbatim.
+///
+/// Same pin as core's `generator_output_is_the_migration_text`, on the
+/// other side of the flavor boundary: `projection_artifacts` is run over
+/// the code flavor's OWN contract, and the baseline has to contain what it
+/// emits, character for character.
+#[test]
+fn generator_output_is_the_code_baseline_text() {
+    let artifacts = proxima_storage_pg::projection::projection_artifacts(
+        &proxima_code::contract::CODE_FLAVOR_CONTRACT,
+    )
+    .expect("code artifacts")
+    .expect("the code flavor declares a projection");
+    let baseline = include_str!("../migrations/20260818000020_v008_baseline.sql");
+    for statement in artifacts.forward() {
+        assert!(
+            baseline.contains(statement),
+            "the code baseline does not carry the generator's output verbatim:\n{statement}"
+        );
+    }
+}

@@ -8,9 +8,8 @@ use crate::authz::{AuthorizationHook, OwnerResolver};
 use crate::mcp::schema::{mcp_output_schema, mcp_tool_schema};
 use crate::mcp::validate_action_args;
 use crate::verbs::schema::{
-    FlavorRegistryFrozen, MemorySearchProjection, MemorySearchProjectionField, PayloadKind,
-    ProtocolPayload, ProtocolPayloadIngress, ProtocolPayloadIngressEntry, SchemaCapabilityTags,
-    SchemaInfo,
+    FlavorRegistryFrozen, PayloadKind, ProtocolPayload, ProtocolPayloadIngress,
+    ProtocolPayloadIngressEntry, SchemaCapabilityTags, SchemaInfo,
 };
 use crate::{
     AbstractionPayload, CapabilityTag, CitationMappingPayload, CitedObjectPayload, FactPayload,
@@ -38,11 +37,13 @@ mod tool_registration;
 mod tests;
 
 pub use contract::{
-    BAND_EXACT, BAND_RESCUE, BAND_SUBSTRING, Band, CORE_ORDINAL, DbConstraint, DbTrigger,
-    EmbedText, EmbedUnit, EmbeddingRecipe, EmbeddingSlot, Enforcement, EraseRule, ExportRule,
-    FlavorContract, ForgetRule, KeyShape, LanguagePolicy, Provenance, ResolvedEmbedUnit,
-    ResourceContract, SLOT_DEFAULT, SchemaContract, SchemaRef, SearchProjectionDecl, SubstringArm,
-    Surface, ToolContract, TransferRule, Weight, WeightedField,
+    BAND_EXACT, BAND_RESCUE, BAND_SUBSTRING, Band, BandComparability, CORE_ORDINAL,
+    DEFAULT_RANK_WEIGHTS, DbConstraint, DbTrigger, EmbedText, EmbedUnit, EmbeddingRecipe,
+    EmbeddingSlot, Enforcement, EraseRule, ExportRule, FlavorContract, ForgetRule, KeyShape,
+    LanguagePolicy, PROJECTION_MEMORY_FK, PROJECTION_TABLE_NAME, ProjectionDecl, ProjectionSpec,
+    Provenance, ResolvedEmbedUnit, ResourceContract, SLOT_DEFAULT, SchemaContract, SchemaRef,
+    SearchProjectionDecl, SubstringArm, Surface, TSVECTOR_WEIGHT_CLASSES, ToolContract,
+    TransferRule, WEIGHT_UNIFORM, WeightedField,
 };
 pub use descriptor::{FlavorDescriptor, FlavorProvenance};
 pub use error::FlavorRegistryError;

@@ -1,24 +1,27 @@
 //! The stored code-chunk vector must equal what both search surfaces expect.
 //!
-//! The v0.0.7 flavor migration moved `to_tsvector` off the read path into a
-//! generated column. Its definition now lives in three places that cannot see
-//! each other:
-//!
-//! - the migration's `GENERATED ALWAYS AS`,
-//! - the query in `flavors/code/src/mcp/search_chunks.rs` that matches a
-//!   tsquery against it,
-//! - `CodeChunkV1::search_projection()`, which names the column as its
-//!   `tsv_column` so the flavor search reads the stored vector.
-//!
-//! If any of them diverges, code search silently returns different results —
-//! no error, no signal. These pin all three against
-//! `proxima_core.lexical_tsv(proxima_core.lexical_join(...))`, which is the
-//! single definition core and the flavor now share.
+//! The vector used to be a `GENERATED ALWAYS AS` column on
+//! `proxima_code.code_chunk_v1`, with its definition living in three places
+//! that could not see each other. It is now written by ONE expression —
+//! `projection_vector_sql(&CODE_CHUNK_V1.search)` — into
+//! `proxima_code.projection`, and these tests pin that expression against
+//! the one the v0.0.7 generated column carried, input by input, so the move
+//! is provably score-preserving rather than plausibly so.
 
-use proxima_code::payloads::{CODE_LEXICAL_LANGUAGE, CodeChunkV1};
-use proxima_core::AbstractionPayload;
+use proxima_code::payloads::CODE_LEXICAL_LANGUAGE;
 use proxima_pg_testkit::{create_db, db_url, drop_db, unique_db_name};
 use proxima_storage_pg::PgStorage;
+
+/// The v0.0.7 generated column's expression, verbatim, over alias `c`.
+///
+/// The reference side of the identity proof. It is a literal here because
+/// the column it came from no longer exists to read out of the catalog —
+/// this is the last copy, and its job is to disagree if the generator ever
+/// stops reproducing it.
+const V007_GENERATED_COLUMN: &str = "proxima_core.lexical_tsv(
+     proxima_code.code_lexical_config(),
+     proxima_core.lexical_join(
+         VARIADIC ARRAY[NULLIF(c.file_path, ''), NULLIF(c.text, '')]))";
 
 /// Inputs chosen to hit the punctuation, identifier and Unicode shapes real
 /// code carries, plus the cases where a config choice is observable.
@@ -75,20 +78,22 @@ async fn code_chunk_sql_authority_matches_rust_ingest_constant() {
             "code-chunk default must use the SQL authority: {default_expression}"
         );
 
-        let generation_expression: Option<String> = sqlx::query_scalar(
-            "SELECT generation_expression
-               FROM information_schema.columns
-              WHERE table_schema = 'proxima_code'
-                AND table_name = 'code_chunk_v1'
-                AND column_name = 'search_tsv'",
-        )
-        .fetch_one(pg.pool_for_tests())
-        .await?;
-        let generation_expression =
-            generation_expression.expect("code-chunk search_tsv generation expression");
-        assert!(
-            generation_expression.contains("code_lexical_config"),
-            "code-chunk vector must use the SQL authority: {generation_expression}"
+        // The vector's config is a contract declaration now, not a column
+        // default: `LanguagePolicy::Pinned("english")` is what the generator
+        // renders, and `code_lexical_config()` is what SQL says. They must
+        // be the same configuration.
+        let schema = proxima_code::contract::CODE_FLAVOR_CONTRACT
+            .schemas
+            .iter()
+            .find(|schema| schema.sidecar_table == Some("proxima_code.code_chunk_v1"))
+            .expect("code-chunk-v1 is declared");
+        assert_eq!(
+            schema
+                .search
+                .language()
+                .and_then(|policy| policy.pinned_config()),
+            Some(sql_language.as_str()),
+            "the declared pinned config must be the SQL authority"
         );
         Ok(())
     }
@@ -98,11 +103,11 @@ async fn code_chunk_sql_authority_matches_rust_ingest_constant() {
     result.expect("code-chunk lexical authority guard failed");
 }
 
-/// The generated column must equal `lexical_tsv(lexical_join(file_path,
-/// text))` for every input — the only expression the generated column
-/// is allowed to stand in for.
+/// The generator's expression and the v0.0.7 generated column must produce
+/// the SAME tsvector for every input — that identity is the whole warrant
+/// for moving the vector off the sidecar.
 #[tokio::test]
-async fn code_chunk_search_tsv_matches_the_projection() {
+async fn the_generator_reproduces_the_v007_generated_column() {
     let db_name = unique_db_name("proxima_test");
     create_db(&db_name).await.expect("PG required for tests");
     let url = db_url(&db_name);
@@ -112,22 +117,26 @@ async fn code_chunk_search_tsv_matches_the_projection() {
         pg.run_migrations().await?;
         proxima_code::migrator().run(pg.pool_for_tests()).await?;
 
-        // The projection is the contract: the fields it lists, in order, are
-        // the arguments the column has to be generated from.
-        let projection = CodeChunkV1::search_projection().expect("chunks project for search");
-        let columns: Vec<&str> = projection.fields.iter().map(|f| f.column).collect();
+        // The contract is the authority on WHICH columns are projected, in
+        // WHICH order — the arguments the vector is built from.
+        let schema = proxima_code::contract::CODE_FLAVOR_CONTRACT
+            .schemas
+            .iter()
+            .find(|schema| schema.sidecar_table == Some("proxima_code.code_chunk_v1"))
+            .expect("code-chunk-v1 is declared");
+        let proxima_core::flavor::SearchProjectionDecl::Projected { fields, .. } = &schema.search
+        else {
+            panic!("code chunks are a search surface");
+        };
+        let columns: Vec<&str> = fields.iter().map(|field| field.column).collect();
         assert_eq!(
             columns,
             vec!["file_path", "text"],
-            "projection fields changed; the v0.0.7 generated column must change with them"
-        );
-        assert_eq!(
-            projection.tsv_column,
-            Some("search_tsv"),
-            "chunks must read the stored vector rather than recompute it"
+            "projected fields changed; the identity proof below must change with them"
         );
 
-        let generation: Option<String> = sqlx::query_scalar(
+        // The sidecar carries no vector any more.
+        let still_generated: Option<String> = sqlx::query_scalar(
             "SELECT generation_expression
                FROM information_schema.columns
               WHERE table_schema = 'proxima_code'
@@ -137,37 +146,22 @@ async fn code_chunk_search_tsv_matches_the_projection() {
         .fetch_optional(pg.pool_for_tests())
         .await?
         .flatten();
-        let generation = generation.expect("search_tsv is a generated column");
+        assert!(
+            still_generated.is_none(),
+            "the projection replaced the generated column: {still_generated:?}"
+        );
 
-        // Re-declare the migration's own expression over a scratch table
-        // whose columns carry the projected names, then compare what it
-        // stores against what `core_search_memories` builds when a sidecar
-        // declares no `tsv_column`. Reading the definition back out of the
-        // catalog is what makes this a drift test rather than a restatement:
-        // it fails if the migration and the projection stop agreeing, for
-        // any input, including the ones a reviewer would not think to try.
-        //
         // A plain table, not a TEMP one: the pool hands out a different
         // connection per statement and TEMP tables are session-scoped. The
         // whole database is dropped at the end of the test either way.
-        //
-        // `lexical_language` mirrors the chunk table's pinned-english column
-        // (the flavor baseline): the generation expression read back
-        // from the catalog references it per row.
-        //
-        // SQL-POLICY: fixed-fragment — `generation` is read from
-        // information_schema, not from a caller.
-        sqlx::query(sqlx::AssertSqlSafe(format!(
+        sqlx::query(
             "CREATE TABLE tsv_probe (
                  file_path text,
-                 text text,
-                 lexical_language regconfig NOT NULL DEFAULT proxima_code.code_lexical_config(),
-                 stored tsvector GENERATED ALWAYS AS ({generation}) STORED
-             )"
-        )))
+                 text text
+             )",
+        )
         .execute(pg.pool_for_tests())
         .await?;
-
         for (path, text) in adversarial_chunks() {
             sqlx::query("INSERT INTO tsv_probe (file_path, text) VALUES ($1, $2)")
                 .bind(path)
@@ -176,19 +170,26 @@ async fn code_chunk_search_tsv_matches_the_projection() {
                 .await?;
         }
 
-        let drifted: Vec<(String, String)> = sqlx::query_as(
-            "SELECT file_path, text
-               FROM tsv_probe
-              WHERE stored IS DISTINCT FROM
-                    proxima_core.lexical_tsv(lexical_language,
-                        proxima_core.lexical_join(
-                            NULLIF(file_path, ''), NULLIF(text, '')))",
-        )
+        // The generator's own output, run against the probe rows.
+        let generated = proxima_storage_pg::projection::projection_vector_sql(&schema.search)
+            .expect("the generator emits a vector expression");
+        // `COALESCE(.., ''::tsvector)` is the ONE deliberate difference: the
+        // projection's `search_tsv` is NOT NULL where the generated column
+        // was nullable. An empty tsvector and a NULL one both fail `@@` and
+        // both rank zero, so no result moves.
+        //
+        // SQL-POLICY: fixed-fragment — both fragments are compiled-in
+        // `&'static str`, one from the contract and one from this file.
+        let drifted: Vec<(String, String)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+            "SELECT c.file_path, c.text
+               FROM tsv_probe c
+              WHERE ({generated}) IS DISTINCT FROM COALESCE({V007_GENERATED_COLUMN}, ''::tsvector)"
+        )))
         .fetch_all(pg.pool_for_tests())
         .await?;
         assert!(
             drifted.is_empty(),
-            "stored column and the projection expression disagree for: {drifted:?}"
+            "the generator and the v0.0.7 generated column disagree for: {drifted:?}"
         );
 
         Ok(())
@@ -196,7 +197,7 @@ async fn code_chunk_search_tsv_matches_the_projection() {
     .await;
 
     drop_db(&db_name).await.ok();
-    result.expect("chunk search tsv projection checks");
+    result.expect("chunk vector identity checks");
 }
 
 /// A sidecar's stored vector stands in for one core builds with
@@ -217,22 +218,21 @@ async fn code_chunk_search_tsv_shares_core_text_search_config() {
         pg.run_migrations().await?;
         proxima_code::migrator().run(pg.pool_for_tests()).await?;
 
-        // Every stored search vector in the database, core's and the
-        // flavor's alike, has to route through lexical_tsv.
-        let rogue: Vec<(String, String, String)> = sqlx::query_as(
-            "SELECT table_schema, table_name, generation_expression
+        // There is no GENERATED search vector left anywhere: every stored
+        // vector in the database is a projection row, written by the
+        // generator, which routes through `lexical_tsv` by construction.
+        let generated: Vec<(String, String)> = sqlx::query_as(
+            "SELECT table_schema::text, table_name::text
                FROM information_schema.columns
               WHERE column_name = 'search_tsv'
                 AND table_schema IN ('proxima_core', 'proxima_code')
-                AND generation_expression NOT LIKE '%lexical_tsv%'
-                AND generation_expression NOT LIKE '%commit_search_tsv%'",
+                AND generation_expression IS NOT NULL",
         )
         .fetch_all(pg.pool_for_tests())
         .await?;
         assert!(
-            rogue.is_empty(),
-            "search_tsv columns bypassing proxima_core.lexical_tsv cannot be \
-             substituted for core's builder expression: {rogue:?}"
+            generated.is_empty(),
+            "the projection is the only home for a stored vector: {generated:?}"
         );
 
         let commit_builder: String = sqlx::query_scalar(
@@ -280,17 +280,33 @@ async fn code_chunk_search_tsv_is_stored_and_indexed() {
         pg.run_migrations().await?;
         proxima_code::migrator().run(pg.pool_for_tests()).await?;
 
+        // ONE composite GIN for the whole flavor, on the projection, where
+        // three per-sidecar ones used to be.
         let has_index: bool = sqlx::query_scalar(
             "SELECT EXISTS (
                  SELECT 1 FROM pg_indexes
                   WHERE schemaname = 'proxima_code'
-                    AND tablename = 'code_chunk_v1'
-                    AND indexdef ILIKE '%gin%search_tsv%'
+                    AND tablename = 'projection'
+                    AND indexname = 'code_projection_owner_tsv_gin'
              )",
         )
         .fetch_one(pg.pool_for_tests())
         .await?;
-        assert!(has_index, "GIN index on search_tsv is missing");
+        assert!(has_index, "the projection's composite GIN is missing");
+
+        let per_sidecar: Vec<String> = sqlx::query_scalar(
+            "SELECT indexname::text FROM pg_indexes
+              WHERE schemaname = 'proxima_code'
+                AND tablename <> 'projection'
+                AND indexdef ILIKE '%gin%search_tsv%'
+              ORDER BY 1",
+        )
+        .fetch_all(pg.pool_for_tests())
+        .await?;
+        assert!(
+            per_sidecar.is_empty(),
+            "the projection replaced the per-sidecar GINs: {per_sidecar:?}"
+        );
 
         // The superseded expression index must be gone, or every write pays
         // for two GIN indexes over the same lexemes.

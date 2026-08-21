@@ -8,7 +8,7 @@ use proxima_blob_s3::CitedBlobStore;
 use proxima_core::AuthzContext;
 use proxima_core::{Engine, FlavorServiceError, FlavorServices, Owner};
 use proxima_mcp_server::McpAuthContext;
-use proxima_storage_pg::PgTuning;
+use proxima_storage_pg::{PgSidecarRegistryFrozen, PgTuning};
 use sqlx::PgPool;
 
 use crate::RuntimeBuilder;
@@ -60,6 +60,7 @@ pub struct AppContext {
     pub engine: Arc<Engine>,
     pub(crate) pool: PgPool,
     pub(crate) pg_tuning: PgTuning,
+    pub(crate) pg_sidecars: Arc<PgSidecarRegistryFrozen>,
     pub blobs: Option<CitedBlobStore>,
     pub owner: Option<Owner>,
 }
@@ -88,6 +89,23 @@ impl AppContext {
     #[must_use]
     pub fn pg_tuning_for_host(&self) -> PgTuning {
         self.pg_tuning
+    }
+
+    /// The sidecar registry this boot froze, for a flavor-owned store that
+    /// has to reach the substrate through a storage verb.
+    ///
+    /// A flavor tearing down one of its own scopes deletes its own rows and
+    /// then hands the admissions to `verbs::forget::erase_memory_series`,
+    /// which walks THIS registry to reach the sidecars each admission
+    /// stamped. Handing over the boot's registry rather than letting the
+    /// flavor compose a second one is the point: two compositions can
+    /// disagree, and the one the write path used is the only one whose
+    /// table list matches what is actually in the rows.
+    ///
+    /// Cheap to clone — the entries live behind an `Arc`.
+    #[must_use]
+    pub fn pg_sidecars_for_host(&self) -> PgSidecarRegistryFrozen {
+        self.pg_sidecars.as_ref().clone()
     }
 }
 
@@ -273,6 +291,7 @@ mod tests {
             )),
             pool: sqlx::PgPool::connect_lazy_with(sqlx::postgres::PgConnectOptions::new()),
             pg_tuning: proxima_storage_pg::PgTuning::default(),
+            pg_sidecars: Arc::default(),
             blobs: None,
             owner: None,
         }

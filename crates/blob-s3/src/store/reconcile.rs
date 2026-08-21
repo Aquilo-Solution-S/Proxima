@@ -92,11 +92,14 @@ impl CitedBlobStore {
         };
 
         // The row side is paged, so the number of rows never bounds memory
-        // even though the object side does.
+        // even though the object side does. `claimed` is bounded by the
+        // object side too: it only ever holds keys that were listed.
+        let mut claimed: BTreeSet<String> = BTreeSet::new();
         let mut after = uuid::Uuid::nil();
         loop {
             let page = sqlx::query(
                 "SELECT blob_id AS cited_object_id, bucket, object_key, upload_id, \
+                        mounted_from_upload_id, \
                         expected_byte_len AS byte_len, filename \
                    FROM proxima_core.blob_uploads \
                   WHERE status = 'completed' \
@@ -118,6 +121,9 @@ impl CitedBlobStore {
                 let bucket: String = row.try_get("bucket").map_err(|e| map_row(&e))?;
                 let object_key: String = row.try_get("object_key").map_err(|e| map_row(&e))?;
                 let upload_id: uuid::Uuid = row.try_get("upload_id").map_err(|e| map_row(&e))?;
+                let mounted_from_upload_id: Option<uuid::Uuid> = row
+                    .try_get("mounted_from_upload_id")
+                    .map_err(|e| map_row(&e))?;
                 after = row.try_get("cited_object_id").map_err(|e| map_row(&e))?;
 
                 // Counted apart from the sweep, because the cause and the
@@ -126,7 +132,8 @@ impl CitedBlobStore {
                 // row is allowed to name is the one derived from its own
                 // `upload_id`, and nothing else in the canonical prefix
                 // counts as this row's object.
-                if bucket != self.config.bucket || !locator_was_minted_here(&object_key, upload_id)
+                if bucket != self.config.bucket
+                    || !locator_was_minted_here(&object_key, upload_id, mounted_from_upload_id)
                 {
                     outcome.foreign_locators = outcome.foreign_locators.saturating_add(1);
                     if outcome.foreign_sample.len() < MAX_RECONCILE_SAMPLE {
@@ -141,7 +148,15 @@ impl CitedBlobStore {
                 // Removing rather than testing is what leaves the orphans
                 // behind: whatever is still in the set when the rows run
                 // out is an object no row named.
-                if objects.remove(&object_key) {
+                //
+                // `claimed` exists because a mount makes the key-to-row
+                // relation many-to-one: the second row naming a mounted
+                // object finds the set already emptied of it, and without
+                // the second chance would be reported as a missing object
+                // -- an alarm raised by the dedupe working correctly.
+                let named = objects.remove(&object_key) || claimed.contains(&object_key);
+                claimed.insert(object_key.clone());
+                if named {
                     continue;
                 }
                 outcome.missing_objects = outcome.missing_objects.saturating_add(1);
@@ -195,6 +210,7 @@ impl CitedBlobStore {
         loop {
             let page = sqlx::query(
                 "SELECT u.blob_id AS cited_object_id, u.bucket, u.object_key, u.upload_id, \
+                        u.mounted_from_upload_id, \
                         u.expected_byte_len AS byte_len, u.filename \
                    FROM proxima_core.blob_uploads u \
                   WHERE u.owner_id = $1 \
@@ -221,12 +237,16 @@ impl CitedBlobStore {
                 let bucket: String = row.try_get("bucket").map_err(|e| map_row(&e))?;
                 let object_key: String = row.try_get("object_key").map_err(|e| map_row(&e))?;
                 let upload_id: uuid::Uuid = row.try_get("upload_id").map_err(|e| map_row(&e))?;
+                let mounted_from_upload_id: Option<uuid::Uuid> = row
+                    .try_get("mounted_from_upload_id")
+                    .map_err(|e| map_row(&e))?;
                 after = cited_object_id;
 
                 // The same provenance rule the read gate applies: a locator
                 // this store did not mint is a foreign locator, not a
                 // missing object.
-                if bucket != self.config.bucket || !locator_was_minted_here(&object_key, upload_id)
+                if bucket != self.config.bucket
+                    || !locator_was_minted_here(&object_key, upload_id, mounted_from_upload_id)
                 {
                     outcome.foreign_locators = outcome.foreign_locators.saturating_add(1);
                     continue;

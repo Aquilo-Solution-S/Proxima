@@ -9,12 +9,8 @@ use proxima_core::verbs::query::{
     EntityKind, MemorySearchRequest, QueryRequest, SearchMode, SearchOrder, SupersessionStatus,
     TagMatch,
 };
-use proxima_core::verbs::schema::{
-    MemorySearchProjection, MemorySearchProjectionField, PayloadKind,
-};
-use proxima_core::{
-    EdgeKind, OwnerRef, SchemaId, SchemaVersion, SearchProjectionColumnKind, UserId,
-};
+use proxima_core::verbs::schema::MemorySearchProjection;
+use proxima_core::{EdgeKind, OwnerRef, SchemaId, UserId};
 use proxima_pg_testkit::{create_db, db_url, drop_db};
 use proxima_storage_pg::PgStorage;
 use proxima_storage_pg::verbs::fact_embeddings::claim_embedding_jobs_sql_for_tests;
@@ -26,26 +22,16 @@ use proxima_storage_pg::verbs::query::{
 use uuid::Uuid;
 
 fn note_projection() -> MemorySearchProjection {
-    MemorySearchProjection {
-        schema_id: SchemaId::new("core/agent-note-v1".to_string()),
-        schema_version: SchemaVersion::new(1),
-        kind: PayloadKind::Fact,
-        sidecar_table: "proxima_core.agent_note_v1".into(),
-        fields: vec![
-            MemorySearchProjectionField {
-                column: "title".into(),
-                kind: SearchProjectionColumnKind::Text,
-            },
-            MemorySearchProjectionField {
-                column: "body".into(),
-                kind: SearchProjectionColumnKind::Text,
-            },
-        ],
-        tag_column: Some("tags".into()),
-        tsv_column: Some("search_tsv".into()),
-        embed_text_column: Some("embed_text".into()),
-        language_column: Some("lexical_language".into()),
-    }
+    // The shipped declaration, not a second copy of it. This fixture used
+    // to restate `core/agent-note-v1`'s columns by hand, which meant the
+    // test agreed with the contract only by coincidence.
+    proxima_core::FlavorRegistry::new()
+        .freeze_or_panic_for_tests()
+        .search_projections()
+        .iter()
+        .find(|projection| projection.schema_id.as_str() == "core/agent-note-v1")
+        .expect("core/agent-note-v1 is a search surface")
+        .clone()
 }
 
 fn search_req(owner: OwnerRef) -> MemorySearchRequest {
@@ -173,6 +159,84 @@ async fn seed_derived(
     Ok(t)
 }
 
+/// How many decoy notes the plan pin needs: enough that walking them all
+/// is visibly the worse plan.
+const CORPUS_ROWS: i32 = 4_000;
+
+/// Seed `CORPUS_ROWS` notes for `owner`, every one of them matching the
+/// query the pin runs, each with its admission and projection row.
+///
+/// Two statements, not one: `memory_align_head` is a BEFORE INSERT trigger
+/// that reads `memory_head` back, and every CTE of one statement reads the
+/// same snapshot, so heads written in a sibling CTE are invisible to it.
+/// The sidecar and projection rows ride along with their admissions in the
+/// second, because referential integrity is an AFTER trigger.
+async fn seed_projection_corpus(pool: &sqlx::PgPool, owner: OwnerRef) -> Result<(), sqlx::Error> {
+    let owner_id = owner.stored_owner_id();
+    sqlx::query(
+        "INSERT INTO proxima_core.owners (owner_id, kind)
+         VALUES ($1, 'personal') ON CONFLICT DO NOTHING",
+    )
+    .bind(owner_id)
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        "INSERT INTO proxima_core.memory_head (handle, kind, schema_id, owner_id, t)
+         SELECT uuidv7(), 'fact', 'core/agent-note-v1', $1, uuidv7()
+           FROM generate_series(1, $2)",
+    )
+    .bind(owner_id)
+    .bind(CORPUS_ROWS)
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        "WITH ids AS MATERIALIZED (
+             SELECT h.handle, h.t, row_number() OVER (ORDER BY h.t) AS n
+               FROM proxima_core.memory_head h
+              WHERE h.owner_id = $1
+                AND NOT EXISTS (SELECT 1 FROM proxima_core.memory m WHERE m.t = h.t)
+         ), admissions AS (
+             INSERT INTO proxima_core.memory (handle, t, kind, owner_id, schema_id)
+             SELECT handle, t, 'fact', $1, 'core/agent-note-v1' FROM ids
+             RETURNING t
+         ), notes AS (
+             INSERT INTO proxima_core.agent_note_v1 (t, note_id, title, body, tags)
+             SELECT t, uuidv7(), 'Needle ' || n, 'needle body ' || n, '{}' FROM ids
+             RETURNING t
+         )
+         INSERT INTO proxima_core.projection (memory_id, schema_id, owner_id, search_tsv)
+         SELECT t, 'core/agent-note-v1', $1,
+                to_tsvector('english', 'needle title needle body ' || n)
+           FROM ids",
+    )
+    .bind(owner_id)
+    .execute(pool)
+    .await
+    .map(|_| ())
+}
+
+/// The `Index Cond` of the first scan of `index` in an
+/// `EXPLAIN (FORMAT JSON)` tree, or `None` when the plan never reaches it.
+fn gin_index_cond(plan: &serde_json::Value, index: &str) -> Option<String> {
+    match plan {
+        serde_json::Value::Array(items) => {
+            items.iter().find_map(|item| gin_index_cond(item, index))
+        }
+        serde_json::Value::Object(node) => {
+            if node.get("Index Name").and_then(serde_json::Value::as_str) == Some(index) {
+                return Some(
+                    node.get("Index Cond")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or_default()
+                        .to_owned(),
+                );
+            }
+            node.values().find_map(|value| gin_index_cond(value, index))
+        }
+        _ => None,
+    }
+}
+
 fn assert_plan_names(plan: &serde_json::Value, needle: &str) {
     let rendered = plan.to_string();
     assert!(
@@ -232,9 +296,16 @@ async fn hot_path_plans_use_expected_indexes() {
         .bind(owner.stored_owner_id())
         .execute(pool)
         .await?;
+        // The situation the composite index exists for: a NEIGHBOUR owner
+        // whose whole corpus matches the same query word. Without it the
+        // table is two rows, every access path costs the same, and the
+        // plan says nothing about the index this release added.
+        let neighbour = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        seed_projection_corpus(pool, neighbour).await?;
         // SQL-POLICY: fixed-fragment
         sqlx::raw_sql(sqlx::AssertSqlSafe(
             "ANALYZE proxima_core.agent_note_v1;
+             ANALYZE proxima_core.projection;
              ANALYZE proxima_core.memory;
              ANALYZE proxima_core.memory_head;
              ANALYZE proxima_core.embeddings;
@@ -267,14 +338,34 @@ async fn hot_path_plans_use_expected_indexes() {
             .bind(None::<time::OffsetDateTime>)
             .bind(None::<Uuid>)
             .bind(&owner_ids)
+            .bind(note_projection().schema_id.as_str())
             .fetch_one(&mut *tx)
             .await?;
         let lexical_plan = plan.to_string();
+        // The composite `gin(owner_id, search_tsv)` is the whole reason the
+        // projection carries `owner_id`: both halves of the predicate are on
+        // one relation, so one index scan answers "this owner's rows that
+        // match this query". The previous shape scanned the sidecar's own
+        // tsvector GIN and reached the owner through a join to `memory`,
+        // which is what the projection replaced.
+        // Naming the index is not enough. A multicolumn GIN is searchable
+        // on any SUBSET of its columns, so `core_projection_owner_tsv_gin`
+        // shows up in the plan even with no owner predicate at all — as a
+        // tsvector-only scan that walks every owner's postings and filters
+        // afterwards. What has to hold is that `owner_id` is an INDEX
+        // condition, which is true only while the owner is a predicate on
+        // `p` itself rather than reached through a join.
+        let index_cond = gin_index_cond(&plan, "core_projection_owner_tsv_gin").unwrap_or_else(
+            || panic!("the ranked arm must reach the projection's composite GIN; plan:\n{lexical_plan}"),
+        );
         assert!(
-            lexical_plan.contains("agent_note_v1_search_tsv_gin")
-                || (lexical_plan.contains("agent_note_v1_pkey")
-                    && lexical_plan.contains("memory_t_key")),
-            "owner-scoped sidecar scan must use GIN or PK join through memory.t; plan:\n{lexical_plan}"
+            index_cond.contains("owner_id"),
+            "the composite GIN must index on owner_id, not filter on it afterwards; \
+             index cond was `{index_cond}`; plan:\n{lexical_plan}"
+        );
+        assert!(
+            !lexical_plan.contains("agent_note_v1_search_tsv_gin"),
+            "the per-sidecar tsvector index is gone; plan:\n{lexical_plan}"
         );
 
         // SQL-POLICY: fixed-fragment
@@ -328,9 +419,15 @@ async fn hot_path_plans_use_expected_indexes() {
             .fetch_one(&mut *tx)
             .await?;
         let heads_plan = plan.to_string();
+        // Any index ON `memory_head`, not a named one. Which of
+        // `memory_head_owner_schema_idx`, `memory_head_owner_kind_idx` and
+        // `memory_head_pkey` the planner picks is a function of the
+        // corpus's shape, and this assertion is about the access path, not
+        // about the planner's choice among equally indexed ones. Naming two
+        // of the three made the pin fail the moment the fixture stopped
+        // being two rows.
         assert!(
-            heads_plan.contains("memory_head_owner_schema_idx")
-                || heads_plan.contains("memory_head_pkey"),
+            heads_plan.contains("\"Index Name\":\"memory_head"),
             "heads page must index memory_head; plan:\n{heads_plan}"
         );
 

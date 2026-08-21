@@ -9,7 +9,7 @@ mod pg_tests {
     use proxima_core::storage_ports::{EmbeddingWritePort, EmbeddingWriteProof, OwnerWritePermit};
     use proxima_core::test_fixtures::owner_fixture;
     use proxima_core::verbs::fact_ingest::{FactReceiptDraft, FactWriteCommand};
-    use proxima_core::verbs::schema::MemorySearchProjection;
+    use proxima_core::verbs::schema::MemoryEmbedUnit;
     use proxima_core::{
         AccessKind, AuthPath, AuthzContext, Engine, EntityKind, FactIngestPort, FlavorRegistry,
         GoalId, Owner, SchemaId, SchemaVersion, SourceBatchId, SourceId, StorageError,
@@ -32,10 +32,10 @@ mod pg_tests {
     use crate::test_fixtures::fresh_pg;
     use crate::verbs::forget::{MemoryColdStore, cold_object_key, forget_memory};
 
-    fn core_projections() -> Vec<MemorySearchProjection> {
+    fn core_embed_units() -> Vec<MemoryEmbedUnit> {
         FlavorRegistry::new()
             .freeze_or_panic_for_tests()
-            .search_projections()
+            .embed_units()
             .to_vec()
     }
 
@@ -580,7 +580,7 @@ mod pg_tests {
                     EntityKind::Fact,
                     outcome.memory_id,
                     &[],
-                    &core_projections(),
+                    &core_embed_units(),
                 )
                 .await?,
                 None,
@@ -619,7 +619,7 @@ mod pg_tests {
                     EntityKind::Fact,
                     outcome.memory_id,
                     &[],
-                    &core_projections(),
+                    &core_embed_units(),
                 )
                 .await?,
                 None,
@@ -680,14 +680,14 @@ mod pg_tests {
             .execute(pg.pool_for_tests())
             .await?;
 
-            let projections = core_projections();
+            let units = core_embed_units();
             let text = load_embedding_text(
                 pg.pool_for_tests(),
                 &owner,
                 EntityKind::Fact,
                 proxima_core::MemoryId::new(note_t),
                 &[],
-                &projections,
+                units.as_slice(),
             )
             .await?;
             assert_eq!(text.as_deref(), Some("Hello world"));
@@ -698,7 +698,7 @@ mod pg_tests {
                 EntityKind::Fact,
                 proxima_core::MemoryId::new(note_t),
                 &["core/agent-note-v1".into()],
-                &projections,
+                units.as_slice(),
             )
             .await?;
             assert_eq!(skipped, None);
@@ -736,7 +736,7 @@ mod pg_tests {
                 EntityKind::Fact,
                 proxima_core::MemoryId::new(utter_t),
                 &[],
-                &projections,
+                units.as_slice(),
             )
             .await?;
             assert_eq!(
@@ -826,7 +826,7 @@ mod pg_tests {
             .await?;
 
             let missing = proxima_core::MemoryId::new(Uuid::now_v7());
-            let projections = core_projections();
+            let units = core_embed_units();
             let texts = load_embedding_texts(
                 pg.pool_for_tests(),
                 &[
@@ -840,7 +840,7 @@ mod pg_tests {
                     (other, EntityKind::Fact, proxima_core::MemoryId::new(note_t)),
                 ],
                 &[],
-                &projections,
+                units.as_slice(),
             )
             .await?;
             assert_eq!(
@@ -864,7 +864,7 @@ mod pg_tests {
                     ),
                 ],
                 &["core/agent-note-v1".into()],
-                &projections,
+                units.as_slice(),
             )
             .await?;
             assert_eq!(skipped, vec![None, Some("said this".into())]);
@@ -1257,9 +1257,7 @@ mod pg_tests {
                 std::time::Duration::from_secs(3),
             )?;
             let registry = FlavorRegistry::new().freeze_or_panic_for_tests();
-            let pg = pg
-                .clone()
-                .with_search_projections(registry.search_projections().to_vec());
+            let pg = pg.clone().with_flavors(&registry);
             let engine = Engine::new(registry)
                 .with_storage_ports(Arc::new(pg.clone()).storage_ports())
                 .with_embedding_runtime_policy(policy)
@@ -1324,7 +1322,7 @@ mod pg_tests {
                 pg.pool_for_tests(),
                 &client,
                 5,
-                &core_projections(),
+                &core_embed_units(),
                 policy,
             )
             .await?;
@@ -1392,7 +1390,7 @@ mod pg_tests {
                     provider_down: false,
                 },
                 3,
-                &core_projections(),
+                &core_embed_units(),
                 policy,
             )
             .await?;
@@ -1459,7 +1457,7 @@ mod pg_tests {
                     provider_down: true,
                 },
                 1,
-                &core_projections(),
+                &core_embed_units(),
                 policy,
             )
             .await?;
@@ -1521,9 +1519,7 @@ mod pg_tests {
                 std::time::Duration::from_secs(3),
             )?;
             let registry = FlavorRegistry::new().freeze_or_panic_for_tests();
-            let configured_pg = pg
-                .clone()
-                .with_search_projections(registry.search_projections().to_vec());
+            let configured_pg = pg.clone().with_flavors(&registry);
             let engine = Engine::new(registry)
                 .with_storage_ports(Arc::new(configured_pg).storage_ports())
                 .with_embedding_runtime_policy(policy)
@@ -1591,7 +1587,7 @@ mod pg_tests {
                     returned_vectors: 3,
                 },
                 2,
-                &core_projections(),
+                &core_embed_units(),
                 policy,
             )
             .await?;
@@ -1648,9 +1644,7 @@ mod pg_tests {
                 std::time::Duration::from_secs(3),
             )?;
             let registry = FlavorRegistry::new().freeze_or_panic_for_tests();
-            let configured_pg = pg
-                .clone()
-                .with_search_projections(registry.search_projections().to_vec());
+            let configured_pg = pg.clone().with_flavors(&registry);
             let engine = Arc::new(
                 Engine::new(registry)
                     .with_storage_ports(Arc::new(configured_pg).storage_ports())
@@ -1968,7 +1962,7 @@ mod pg_tests {
                         &pool,
                         client.as_ref(),
                         1,
-                        &core_projections(),
+                        &core_embed_units(),
                         EmbeddingRuntimePolicy::default(),
                     )
                     .await

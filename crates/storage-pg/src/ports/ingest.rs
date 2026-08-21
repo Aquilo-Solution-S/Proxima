@@ -36,6 +36,7 @@ impl FactIngestPort for PgStorage {
         with_bounded_retry(move || {
             let fact_sidecars = self.sidecars.clone();
             let payloads = sidecar_payloads.to_vec();
+            let language = authorized.draft().lexical_language.clone();
             async move {
                 let mut tx = self.pool.begin().await.map_err(internal)?;
                 let tables = fact_sidecars.tables_for_payloads(&payloads)?;
@@ -59,7 +60,12 @@ impl FactIngestPort for PgStorage {
                         Box::pin(async move {
                             for payload in &payloads {
                                 fact_sidecars
-                                    .insert_memory_sidecar(tx, outcome.memory_id, payload)
+                                    .insert_memory_sidecar(
+                                        tx,
+                                        outcome.memory_id,
+                                        payload,
+                                        language.as_deref(),
+                                    )
                                     .await?;
                             }
 
@@ -87,6 +93,7 @@ impl FactIngestPort for PgStorage {
             let sidecars = self.sidecars.clone();
             let fact_sidecars = sidecars.clone();
             let payloads = sidecar_payloads.to_vec();
+            let language = authorized.draft().lexical_language.clone();
             async move {
                 let mut tx = self.pool.begin().await.map_err(internal)?;
                 let tables = fact_sidecars.tables_for_payloads(&payloads)?;
@@ -100,7 +107,12 @@ impl FactIngestPort for PgStorage {
                         Box::pin(async move {
                             for payload in &payloads {
                                 fact_sidecars
-                                    .insert_memory_sidecar(tx, outcome.memory_id, payload)
+                                    .insert_memory_sidecar(
+                                        tx,
+                                        outcome.memory_id,
+                                        payload,
+                                        language.as_deref(),
+                                    )
                                     .await?;
                             }
 
@@ -129,6 +141,7 @@ impl FactIngestPort for PgStorage {
             let sidecars = self.sidecars.clone();
             let fact_sidecars = sidecars.clone();
             let payloads = sidecar_payloads.to_vec();
+            let language = authorized.draft().lexical_language.clone();
             async move {
                 let mut tx = self.pool.begin().await.map_err(internal)?;
                 let tables = fact_sidecars.tables_for_payloads(&payloads)?;
@@ -142,7 +155,12 @@ impl FactIngestPort for PgStorage {
                         Box::pin(async move {
                             for payload in &payloads {
                                 fact_sidecars
-                                    .insert_memory_sidecar(tx, outcome.memory_id, payload)
+                                    .insert_memory_sidecar(
+                                        tx,
+                                        outcome.memory_id,
+                                        payload,
+                                        language.as_deref(),
+                                    )
                                     .await?;
                             }
 

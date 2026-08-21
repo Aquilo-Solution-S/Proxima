@@ -74,7 +74,7 @@ impl CitedBlobStore {
         // exactly like a missing row so a probe cannot learn whether the
         // forged row exists.
         if row.bucket != self.config.bucket
-            || !locator_was_minted_here(&row.object_key, row.upload_id)
+            || !locator_was_minted_here(&row.object_key, row.upload_id, row.mounted_from_upload_id)
         {
             return Err(BlobError::State("cited object not found for Owner".into()));
         }

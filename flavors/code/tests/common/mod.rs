@@ -43,11 +43,7 @@ pub async fn migrated_db() -> (String, PgStorage) {
         }
     }
     .with_sidecars(code_pg_sidecars())
-    .with_search_projections(
-        proxima_code::schema_registry()
-            .search_projections()
-            .to_vec(),
-    );
+    .with_flavors(&proxima_code::schema_registry());
     (db_name, pg)
 }
 
@@ -72,6 +68,40 @@ pub fn code_registry_with_test_citations() -> FlavorRegistryFrozen {
         )
         .expect("opaque citation-mapping registration");
     registry.freeze_or_panic_for_tests()
+}
+
+/// Run the code flavor's own projection maintenance statement for a
+/// hand-seeded sidecar row.
+///
+/// Tests that write sidecar rows with raw SQL (they are exercising the READ
+/// path) must keep the projection themselves. They do it with the
+/// generator's statement, never a restated INSERT.
+pub async fn project_code(
+    pool: &sqlx::PgPool,
+    t: uuid::Uuid,
+    schema_id: &str,
+    language: Option<&str>,
+) -> Result<(), sqlx::Error> {
+    let contract = &proxima_code::contract::CODE_FLAVOR_CONTRACT;
+    let spec = contract
+        .projection
+        .spec()
+        .expect("the code flavor declares a projection");
+    let schema = contract
+        .schemas
+        .iter()
+        .find(|schema| schema.schema_id().as_str() == schema_id)
+        .expect("declared schema");
+    let sql = proxima_storage_pg::projection::projection_insert_sql(spec, schema)
+        .expect("the generator emits a valid statement");
+    // SQL-POLICY: generated
+    sqlx::query(sqlx::AssertSqlSafe(sql))
+        .bind(t)
+        .bind(language)
+        .bind(schema_id)
+        .execute(pool)
+        .await?;
+    Ok(())
 }
 
 #[must_use]

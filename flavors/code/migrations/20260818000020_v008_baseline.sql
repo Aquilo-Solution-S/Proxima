@@ -345,7 +345,6 @@ CREATE TABLE proxima_code.code_chunk_v1 (
     line_range_end bigint NOT NULL,
     state proxima_code.file_state NOT NULL,
     lexical_language regconfig DEFAULT proxima_code.code_lexical_config() NOT NULL,
-    search_tsv tsvector GENERATED ALWAYS AS (proxima_core.lexical_tsv(proxima_code.code_lexical_config(), proxima_core.lexical_join(VARIADIC ARRAY[NULLIF(file_path, ''::text), NULLIF(text, ''::text)]))) STORED,
     embed_text text GENERATED ALWAYS AS (
         NULLIF(
             CASE state
@@ -360,13 +359,6 @@ CREATE TABLE proxima_code.code_chunk_v1 (
     CONSTRAINT code_chunk_v1_chunk_index_chk CHECK ((chunk_index >= 0)),
     CONSTRAINT code_chunk_v1_lexical_language_chk CHECK ((lexical_language = proxima_code.code_lexical_config()))
 );
-
-
---
--- Name: COLUMN code_chunk_v1.search_tsv; Type: COMMENT; Schema: proxima_code; Owner: -
---
-
-COMMENT ON COLUMN proxima_code.code_chunk_v1.search_tsv IS 'Lexical vector over file_path + text via the two-argument proxima_core.lexical_tsv under proxima_code.code_lexical_config() (pinned English), so CodeChunkV1::search_projection() can name this column as its tsv_column. Must stay identical to lexical_tsv(code_lexical_config(), lexical_join(<projected fields>)).';
 
 
 --
@@ -398,17 +390,6 @@ CREATE TABLE proxima_code.commit_summary_v1 (
     summary text NOT NULL,
     key_files text[] NOT NULL,
     change_kind text NOT NULL,
-    search_tsv tsvector GENERATED ALWAYS AS (
-        proxima_code.commit_search_tsv(
-            proxima_core.lexical_join(
-                VARIADIC ARRAY[
-                    NULLIF(commit_sha, ''),
-                    NULLIF(summary, ''),
-                    proxima_core.lexical_text_array(key_files)
-                ]
-            )
-        )
-    ) STORED,
     embed_text text GENERATED ALWAYS AS (
         proxima_core.lexical_join(
             VARIADIC ARRAY[
@@ -437,18 +418,6 @@ CREATE TABLE proxima_code.commit_v1 (
     committer_email text NOT NULL,
     committer_time timestamp with time zone NOT NULL,
     message text NOT NULL,
-    search_tsv tsvector GENERATED ALWAYS AS (
-        proxima_code.commit_search_tsv(
-            proxima_core.lexical_join(
-                VARIADIC ARRAY[
-                    NULLIF(sha, ''),
-                    NULLIF(message, ''),
-                    NULLIF(author_name, ''),
-                    NULLIF(author_email, '')
-                ]
-            )
-        )
-    ) STORED,
     embed_text text GENERATED ALWAYS AS (
         proxima_core.lexical_join(
             VARIADIC ARRAY[
@@ -966,13 +935,6 @@ CREATE INDEX idx_code_chunk_v1_nk ON proxima_code.code_chunk_v1 USING btree (rep
 
 
 --
--- Name: idx_code_chunk_v1_search_tsv; Type: INDEX; Schema: proxima_code; Owner: -
---
-
-CREATE INDEX idx_code_chunk_v1_search_tsv ON proxima_code.code_chunk_v1 USING gin (search_tsv);
-
-
---
 -- Name: idx_code_chunk_v1_text_trgm; Type: INDEX; Schema: proxima_code; Owner: -
 --
 
@@ -984,20 +946,6 @@ CREATE INDEX idx_code_chunk_v1_text_trgm ON proxima_code.code_chunk_v1 USING gin
 --
 
 CREATE INDEX idx_commit_summary_v1_repo_sha ON proxima_code.commit_summary_v1 USING btree (repo_id, commit_sha);
-
-
---
--- Name: idx_commit_summary_v1_search; Type: INDEX; Schema: proxima_code; Owner: -
---
-
-CREATE INDEX idx_commit_summary_v1_search_tsv ON proxima_code.commit_summary_v1 USING gin (search_tsv);
-
-
---
--- Name: idx_commit_v1_message_search; Type: INDEX; Schema: proxima_code; Owner: -
---
-
-CREATE INDEX idx_commit_v1_search_tsv ON proxima_code.commit_v1 USING gin (search_tsv);
 
 
 --
@@ -1519,3 +1467,37 @@ INSERT INTO proxima_core.flavor_surface (table_name, flavor_id) VALUES
     ('proxima_code.test_result_v1', 'code'),
     ('proxima_code.work_assignment_v1', 'code'),
     ('proxima_code.work_requested_v1', 'code');
+
+
+--
+-- Name: projection; Type: TABLE; Schema: proxima_code; Owner: -
+--
+-- GENERATED — see `crates/storage-pg/src/projection.rs` and the
+-- `generator_output_is_the_migration_text` pin. Edit the generator, not
+-- this block. It is the same shape flavor #0 carries, differing only in the
+-- schema name and the index name; three sidecar `search_tsv` columns and
+-- their three GIN indexes went away in exchange for it.
+--
+-- Deliberately absent from `proxima_core.flavor_surface`: a projection row
+-- is derived from a sidecar row, never stamped by a memory.
+--
+
+CREATE TABLE proxima_code.projection (
+    memory_id        uuid      NOT NULL
+                     REFERENCES proxima_core.memory (t) ON DELETE CASCADE,
+    schema_id        text      NOT NULL,
+    owner_id         uuid      NOT NULL
+                     REFERENCES proxima_core.owners (owner_id),
+    search_tsv       tsvector  NOT NULL,
+    tag              text[]    NOT NULL DEFAULT '{}',
+    lexical_language regconfig NOT NULL DEFAULT proxima_core.lexical_config()
+                     REFERENCES proxima_core.lexical_languages (config),
+    PRIMARY KEY (memory_id, schema_id)
+);
+
+CREATE INDEX code_projection_owner_tsv_gin ON proxima_code.projection USING gin (owner_id, search_tsv);
+
+CREATE TRIGGER projection_remember_lang
+    BEFORE INSERT ON proxima_code.projection
+    FOR EACH ROW
+    EXECUTE FUNCTION proxima_core.remember_lexical_language();

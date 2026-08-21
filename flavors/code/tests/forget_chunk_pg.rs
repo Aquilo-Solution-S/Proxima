@@ -62,13 +62,19 @@ async fn forget_hydrate_restores_code_chunk_sidecar() {
                 .fetch_one(pool)
                 .await?;
         assert_eq!(text, "fn forget_me() {}");
+        // Forget deleted the memory row, so the projection row went with it
+        // through `ON DELETE CASCADE`; hydrate re-derives it from the
+        // restored sidecar. This is the property the generated column used
+        // to get for free.
         let tsv: bool = sqlx::query_scalar(
-            "SELECT search_tsv IS NOT NULL FROM proxima_code.code_chunk_v1 WHERE t = $1",
+            "SELECT search_tsv <> ''::tsvector
+               FROM proxima_code.projection
+              WHERE memory_id = $1",
         )
         .bind(memory_id)
         .fetch_one(pool)
         .await?;
-        assert!(tsv, "generated search_tsv is recomputed on hydrate");
+        assert!(tsv, "the projection vector is rebuilt on hydrate");
         Ok(())
     }
     .await;

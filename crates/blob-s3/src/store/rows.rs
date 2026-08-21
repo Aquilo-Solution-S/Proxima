@@ -45,6 +45,12 @@ pub(super) struct BlobLocation {
     /// canonical key from it and demands a byte-exact match, which is what
     /// stops a locator this store did not mint.
     pub(super) upload_id: Uuid,
+    /// Set when this row mounts an object minted by another upload row --
+    /// a cross-owner transfer's deduped reference. The gate derives from
+    /// this instead of [`Self::upload_id`] when it is present; carrying it
+    /// alongside rather than folding it in keeps the row's stored columns
+    /// visible at the call site.
+    pub(super) mounted_from_upload_id: Option<Uuid>,
 }
 
 #[derive(Debug, Clone)]
@@ -55,6 +61,8 @@ pub(super) struct BlobReadRecord {
     pub(super) object_key: String,
     /// See [`BlobLocation::upload_id`].
     pub(super) upload_id: Uuid,
+    /// See [`BlobLocation::mounted_from_upload_id`].
+    pub(super) mounted_from_upload_id: Option<Uuid>,
     pub(super) sha256: [u8; 32],
     pub(super) byte_len: u64,
     pub(super) mime: String,
@@ -245,7 +253,7 @@ pub(super) async fn load_blob_location(
         // rows together, so the two must agree. Without it a stale upload
         // row left behind by a half-applied transfer would still locate
         // bytes for whoever now holds the blob row.
-        "SELECT u.bucket, u.object_key, u.upload_id \
+        "SELECT u.bucket, u.object_key, u.upload_id, u.mounted_from_upload_id \
            FROM proxima_core.blob b \
            JOIN proxima_core.blob_uploads u ON u.blob_id = b.blob_id \
           WHERE b.blob_id = $1 \
@@ -267,6 +275,7 @@ pub(super) async fn load_blob_location(
             bucket: row.get("bucket"),
             object_key: row.get("object_key"),
             upload_id: row.get("upload_id"),
+            mounted_from_upload_id: row.get("mounted_from_upload_id"),
         });
     }
 
@@ -286,6 +295,7 @@ pub(super) async fn load_blob_read_record(
     let owner_id = owner.stored_owner_id();
     let row = sqlx::query(
         "SELECT b.blob_id, b.content_hash, u.bucket, u.object_key, u.upload_id, \
+                u.mounted_from_upload_id, \
                 u.sha256, u.expected_byte_len AS byte_len, u.mime, u.filename \
            FROM proxima_core.blob b \
            JOIN proxima_core.blob_uploads u ON u.blob_id = b.blob_id \
@@ -317,6 +327,7 @@ pub(super) async fn load_blob_read_record(
             bucket: row.get("bucket"),
             object_key: row.get("object_key"),
             upload_id: row.get("upload_id"),
+            mounted_from_upload_id: row.get("mounted_from_upload_id"),
             sha256,
             byte_len: u64::try_from(byte_len)
                 .map_err(|_| BlobError::State("stored byte_len is negative".into()))?,

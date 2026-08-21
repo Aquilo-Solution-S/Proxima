@@ -303,14 +303,62 @@ async fn migrations_apply_to_fresh_db() {
             "idx_embeddings_vec_hnsw",
             "embeddings_owner_model_idx",
             "goal_owner_state_t_idx",
-            "agent_note_v1_search_tsv_gin",
-            "utterance_v1_search_tsv_gin",
-            "agent_derivation_v1_search_tsv_gin",
-            "interpretation_v1_search_tsv_gin",
+            "sketch_owner_t_idx",
+            // ONE composite GIN for the whole flavor, where four per-sidecar
+            // ones used to be.
+            "core_projection_owner_tsv_gin",
         ] {
             assert!(
                 index_exists(&pg, index).await,
                 "missing UML §7 index {index}"
+            );
+        }
+
+        for retired in [
+            "agent_note_v1_search_tsv_gin",
+            "utterance_v1_search_tsv_gin",
+            "agent_derivation_v1_search_tsv_gin",
+            "interpretation_v1_search_tsv_gin",
+            "sketch_search_tsv_gin",
+        ] {
+            assert!(
+                !index_exists(&pg, retired).await,
+                "the projection replaced the per-sidecar GIN {retired}"
+            );
+        }
+
+        assert!(
+            table_exists(&pg, "projection").await,
+            "flavor #0 declares a projection table"
+        );
+        for (table, column) in [
+            ("agent_note_v1", "search_tsv"),
+            ("agent_note_v1", "lexical_language"),
+            ("utterance_v1", "search_tsv"),
+            ("utterance_v1", "lexical_language"),
+            ("agent_derivation_v1", "search_tsv"),
+            ("agent_derivation_v1", "lexical_language"),
+            ("interpretation_v1", "search_tsv"),
+            ("interpretation_v1", "lexical_language"),
+            ("sketch", "search_tsv"),
+            ("sketch", "lexical_language"),
+        ] {
+            assert!(
+                !column_exists(&pg, table, column).await,
+                "the projection took {table}.{column} over"
+            );
+        }
+        for column in [
+            "memory_id",
+            "schema_id",
+            "owner_id",
+            "search_tsv",
+            "tag",
+            "lexical_language",
+        ] {
+            assert!(
+                column_exists(&pg, "projection", column).await,
+                "the generator emits projection.{column}"
             );
         }
 
@@ -761,9 +809,10 @@ async fn schema_markers_reject_damaged_lexical_default() {
         .execute(pool)
         .await?;
 
+        // The stamp moved to the projection with the vector.
         sqlx::query(
-            "ALTER TABLE proxima_core.utterance_v1
-             DROP CONSTRAINT utterance_v1_lexical_language_fkey",
+            "ALTER TABLE proxima_core.projection
+             DROP CONSTRAINT projection_lexical_language_fkey",
         )
         .execute(pool)
         .await?;
@@ -776,8 +825,8 @@ async fn schema_markers_reject_damaged_lexical_default() {
             "marker error must name the missing stamped-language foreign key: {err}"
         );
         sqlx::query(
-            "ALTER TABLE proxima_core.utterance_v1
-             ADD CONSTRAINT utterance_v1_lexical_language_fkey
+            "ALTER TABLE proxima_core.projection
+             ADD CONSTRAINT projection_lexical_language_fkey
              FOREIGN KEY (lexical_language)
              REFERENCES proxima_core.lexical_languages(config)",
         )
@@ -944,4 +993,33 @@ async fn flavor_surface_is_the_registry_and_the_stamp_must_be_a_subset() {
 
     let _ = drop_db(&db_name).await;
     result.expect("flavor_surface subset test failed");
+}
+
+/// The migration text IS the generator's output.
+///
+/// The generator has two consumers (`crates/storage-pg/src/projection.rs`):
+/// the migration author, who pastes its output into the baselines, and the
+/// boot guardrail, which re-runs it. This is what keeps the first honest —
+/// a hand edit to either baseline's projection block, or a change to the
+/// generator that the baselines did not follow, fails here rather than at
+/// the next boot.
+#[test]
+fn generator_output_is_the_migration_text() {
+    let core = proxima_storage_pg::projection::projection_artifacts(&proxima_core::FLAVOR_0)
+        .expect("core artifacts")
+        .expect("flavor #0 declares a projection");
+    let baseline = include_str!("../migrations/0001_v008.sql");
+    for statement in core.forward() {
+        assert!(
+            baseline.contains(statement),
+            "0001_v008.sql does not carry the generator's output verbatim:\n{statement}"
+        );
+    }
+
+    // The code flavor's baseline is checked from its own crate's test
+    // (`flavors/code/tests/migrations_pg.rs`), which is where that file is.
+    assert!(
+        baseline.contains(proxima_storage_pg::projection::BTREE_GIN_EXTENSION),
+        "the composite GIN needs btree_gin"
+    );
 }

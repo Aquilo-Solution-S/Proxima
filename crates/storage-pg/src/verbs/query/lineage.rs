@@ -15,7 +15,7 @@ use uuid::Uuid;
 
 use crate::error::map_err;
 use crate::pg_ident::PgIdent;
-use crate::verbs::query::projection_sql::projection_search_text;
+use crate::projection::snippet_sql;
 
 /// Outbound origin pins of the frontier, newest `(src, tgt)` first.
 const ANCESTOR_HOP_SQL: &str = "SELECT DISTINCT ON (m.t, pin)
@@ -386,13 +386,13 @@ async fn load_one_schema_snippets(
         return Ok(Vec::new());
     }
     let table = PgIdent::table(&projection.sidecar_table)?;
-    let search_text = projection_search_text(&projection.fields)?;
+    let snippet = snippet_sql(projection)?;
     let sql = format!(
-        "SELECT c.t, left({search_text}, 480) AS snippet
+        "SELECT c.t, {snippet} AS snippet
            FROM {table} c
           WHERE c.t = ANY($1::uuid[])",
         table = table.as_str(),
-        search_text = search_text,
+        snippet = snippet,
     );
     // SQL-POLICY: PgIdent
     let rows: Vec<SnippetRow> = sqlx::query_as(sqlx::AssertSqlSafe(sql))

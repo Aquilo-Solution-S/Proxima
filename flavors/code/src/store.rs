@@ -2,13 +2,13 @@ use proxima_core::verbs::query::EntityKind;
 use proxima_core::{
     AbstractionPayload, AuthzContext, FactPayload, GoalId, MemoryId, Owner, SchemaId, ToolError,
 };
-use proxima_storage_pg::PgTuning;
 use proxima_storage_pg::query::{
     ChunkSeriesHead, CodeChunkVectorCandidate, CodeChunkVectorFilters, FileRevisionHeadRow,
     active_goals_for_memory_targets, nearest_code_chunk_candidates, owned_chunk_series_heads,
     owned_file_revision_heads, owned_present_file_revision_heads_except,
     readable_chunk_head_ts_for_file, readable_file_revision_head_ts,
 };
+use proxima_storage_pg::{PgSidecarRegistryFrozen, PgTuning};
 use sqlx::PgPool;
 
 use crate::payloads::{AcceptanceCriterionV1, AcceptanceVerifierKind, AcceptanceVerifierSpecV1};
@@ -19,10 +19,17 @@ use crate::payloads::{AcceptanceCriterionV1, AcceptanceVerifierKind, AcceptanceV
 /// Code-series head / ANN helpers call `proxima_storage_pg::query` here —
 /// they need the flavor's private pool and must not sit on the Flavor SDK.
 /// `pool()` stays private (`from_backend_pool_for_host`/`for_tests`).
+///
+/// It also carries the boot's frozen sidecar registry. `erase_repo` is why:
+/// the flavor deletes its own `proxima_code` rows and then hands the
+/// admissions to a storage verb that walks the registry to reach whatever
+/// else each one stamped. Composing a second registry inside the flavor
+/// would be a second answer to a question the host has already answered.
 #[derive(Clone)]
 pub struct CodeFlavorStore {
     pool: PgPool,
     tuning: PgTuning,
+    sidecars: PgSidecarRegistryFrozen,
 }
 
 impl std::fmt::Debug for CodeFlavorStore {
@@ -35,8 +42,16 @@ impl CodeFlavorStore {
     #[cfg(feature = "host-api")]
     #[doc(hidden)]
     #[must_use]
-    pub fn from_backend_pool_for_host(pool: PgPool, tuning: PgTuning) -> Self {
-        Self { pool, tuning }
+    pub fn from_backend_pool_for_host(
+        pool: PgPool,
+        tuning: PgTuning,
+        sidecars: PgSidecarRegistryFrozen,
+    ) -> Self {
+        Self {
+            pool,
+            tuning,
+            sidecars,
+        }
     }
 
     #[cfg(any(test, debug_assertions))]
@@ -50,11 +65,19 @@ impl CodeFlavorStore {
     #[doc(hidden)]
     #[must_use]
     pub fn from_backend_pool_with_tuning_for_tests(pool: PgPool, tuning: PgTuning) -> Self {
-        Self { pool, tuning }
+        Self {
+            pool,
+            tuning,
+            sidecars: test_sidecars(),
+        }
     }
 
     pub(crate) fn pool(&self) -> &PgPool {
         &self.pool
+    }
+
+    pub(crate) fn sidecars(&self) -> &PgSidecarRegistryFrozen {
+        &self.sidecars
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -316,6 +339,28 @@ impl CodeFlavorStore {
         }
         Ok(out)
     }
+}
+
+/// The host's boot composition, repeated for a store built without a host.
+///
+/// Deliberately the same four steps `ProximaBuilder::boot` runs, in the same
+/// order, so a fixture-built store answers `sidecars()` with the registry a
+/// real deployment would have frozen. Test-only: production goes through
+/// [`CodeFlavorStore::from_backend_pool_for_host`], which is handed the
+/// boot's own registry.
+#[cfg(any(test, debug_assertions))]
+fn test_sidecars() -> PgSidecarRegistryFrozen {
+    let mut registry = proxima_core::FlavorRegistry::new();
+    crate::register(&mut registry).expect("the code flavor registers against a fresh registry");
+    let registry = registry
+        .try_freeze()
+        .expect("core plus the code flavor freeze");
+    let mut sidecars = proxima_storage_pg::PgSidecarRegistry::new();
+    proxima_storage_pg::register_core_pg_sidecars(&mut sidecars);
+    crate::register_pg_sidecars(&mut sidecars);
+    sidecars
+        .freeze_against(&registry)
+        .expect("the code flavor's PG sidecars agree with its contract")
 }
 
 #[cfg(test)]

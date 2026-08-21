@@ -401,6 +401,7 @@ pub(crate) async fn visible_home_owner(
 /// check violations.
 pub(crate) async fn transfer_to_owner(
     pool: &PgPool,
+    sidecars: &crate::sidecars::PgSidecarRegistryFrozen,
     entity: EntityId,
     from_owner: OwnerRef,
     to_owner: OwnerRef,
@@ -419,10 +420,18 @@ pub(crate) async fn transfer_to_owner(
         ));
     }
     let from_id = from_owner.stored_owner_id();
+    let projection_tables = sidecars.projection_tables();
+    let projection_tables = &projection_tables;
     with_bounded_retry(move || async move {
         let mut tx = pool.begin().await.map_err(internal)?;
-        let transferred =
-            transfer_memory_t(&mut tx, memory_id.into_inner(), from_id, to_owner).await?;
+        let transferred = transfer_memory_t(
+            &mut tx,
+            projection_tables,
+            memory_id.into_inner(),
+            from_id,
+            to_owner,
+        )
+        .await?;
         if !transferred {
             // A false persist can follow real writes: when the head is gone
             // or changed owner after the series reads, cooled/blob/content
@@ -440,6 +449,7 @@ pub(crate) async fn transfer_to_owner(
 
 async fn transfer_memory_t(
     tx: &mut Transaction<'_, Postgres>,
+    projection_tables: &[String],
     t: uuid::Uuid,
     from_id: uuid::Uuid,
     to_owner: OwnerRef,
@@ -456,7 +466,7 @@ async fn transfer_memory_t(
     let Some(handle) = handle else {
         return Ok(false);
     };
-    transfer_memory_handle(tx, handle, from_id, to_owner).await
+    transfer_memory_handle(tx, projection_tables, handle, from_id, to_owner).await
 }
 
 const SERIES_TS_SQL: &str = "SELECT t FROM proxima_core.memory WHERE handle = $1 AND owner_id = $2
@@ -521,6 +531,7 @@ async fn lock_series_ts(
 
 async fn transfer_memory_handle(
     tx: &mut Transaction<'_, Postgres>,
+    projection_tables: &[String],
     handle: uuid::Uuid,
     from_id: uuid::Uuid,
     to_owner: OwnerRef,
@@ -561,10 +572,20 @@ async fn transfer_memory_handle(
             "series head advanced after transfer locked its version set".into(),
         ));
     }
-    transfer_exclusive_blobs(tx, handle, from_id, to_id).await?;
+    transfer_cited_blobs(tx, handle, from_id, to_id).await?;
     transfer_content_for_handle(tx, handle, from_id, to_id).await?;
     rehome_cooled_for_handle(tx, handle, from_id, to_id).await?;
-    if persist_hot_series_transfer(tx, handle, from_id, to_id, expected_head_t, &ts).await? {
+    if persist_hot_series_transfer(
+        tx,
+        projection_tables,
+        handle,
+        from_id,
+        to_id,
+        expected_head_t,
+        &ts,
+    )
+    .await?
+    {
         announce_series_transfer(tx, handle, from_id, to_id).await?;
         return Ok(true);
     }
@@ -601,6 +622,7 @@ async fn rehome_cooled_for_handle(
 
 async fn persist_hot_series_transfer(
     tx: &mut Transaction<'_, Postgres>,
+    projection_tables: &[String],
     handle: uuid::Uuid,
     from_id: uuid::Uuid,
     to_id: uuid::Uuid,
@@ -655,6 +677,21 @@ async fn persist_hot_series_transfer(
         .execute(&mut **tx)
         .await
         .map_err(map_err)?;
+    // The projection is the first memory-keyed surface with its own
+    // `owner_id`, so it is the first that does not follow implicitly. The
+    // list is the frozen sidecar registry's, never a literal: a flavor that
+    // declares a projection follows for free.
+    for table in projection_tables {
+        // SQL-POLICY: generated
+        sqlx::query(sqlx::AssertSqlSafe(
+            crate::projection::projection_transfer_sql(table)?,
+        ))
+        .bind(ts)
+        .bind(to_id)
+        .execute(&mut **tx)
+        .await
+        .map_err(map_err)?;
+    }
     follow_embedding_owners(tx, ts, to_id).await?;
     // NOTE: owner-pinned sidecars are deliberately untouched here.
     // `mcp_call_logged_v1` carries `actor_upn` and its own `owner_id`,
@@ -708,7 +745,36 @@ async fn announce_series_transfer(
     Ok(())
 }
 
-async fn transfer_exclusive_blobs(
+/// Move the handle's cited blobs to the destination, deduping rather than
+/// refusing when the bytes are shared.
+///
+/// `TransferRule::FollowOrDedupe` on `proxima_core.blob`, three cases:
+///
+/// 1. **The destination already holds these bytes.** Its own row wins;
+///    this handle's references are repointed at it and the source keeps
+///    whatever it still uses. Before the arm this raised a UNIQUE
+///    violation on `(owner_id, schema_id, content_hash)` — the move would
+///    collide with the row already sitting there — which is a second bug
+///    the arm closes.
+/// 2. **Nothing else references the bytes.** Move the rows in place, which
+///    is exactly what this did before the arm existed: same `blob_id`, same
+///    `upload_id`, same object, no mount. The common case does not pay for
+///    the uncommon one, and a citation id a client already holds does not
+///    move under it.
+/// 3. **Another owner's live series references the bytes.** This is the
+///    case that used to be `Conflict`. The destination gets a row of its
+///    own and an upload row that MOUNTS the source's object — OCI's
+///    cross-repo blob mount, where a mount is an optimisation over a copy
+///    and never a correctness requirement. Nothing in S3 is read, written
+///    or copied; ownership is metadata over an immutable store.
+///
+/// The source's rows are never deleted here. Deleting a blob row decides
+/// the fate of an S3 object, and a transfer has no object-store handle in
+/// scope; erase does, and its purge is refcounted precisely so a shared
+/// object survives one owner leaving. An unreferenced source row is the
+/// source owner's own row, reachable by its own erase and reported by
+/// reconcile.
+async fn transfer_cited_blobs(
     tx: &mut Transaction<'_, Postgres>,
     handle: uuid::Uuid,
     from_id: uuid::Uuid,
@@ -729,51 +795,200 @@ async fn transfer_exclusive_blobs(
     .await
     .map_err(map_err)?;
     for blob_id in blob_ids {
-        let shared: bool = sqlx::query_scalar(
-            "SELECT EXISTS (
-                 SELECT 1
-                   FROM proxima_core.memory
-                  WHERE blob_id = $1
-                    AND handle <> $2
-                    AND owner_id <> $3
-                 UNION ALL
-                 SELECT 1
-                   FROM proxima_core.cooled
-                  WHERE blob_id = $1
-                    AND handle <> $2
-                    AND owner_id <> $3
-             )",
-        )
+        transfer_one_cited_blob(tx, handle, to_id, blob_id).await?;
+    }
+    Ok(())
+}
+
+/// One cited blob, one of the three cases.
+async fn transfer_one_cited_blob(
+    tx: &mut Transaction<'_, Postgres>,
+    handle: uuid::Uuid,
+    to_id: uuid::Uuid,
+    blob_id: uuid::Uuid,
+) -> Result<(), StorageError> {
+    let Some((schema_id, content_hash)) = sqlx::query_as::<_, (String, Vec<u8>)>(
+        "SELECT schema_id, content_hash FROM proxima_core.blob WHERE blob_id = $1",
+    )
+    .bind(blob_id)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(map_err)?
+    else {
+        return Ok(());
+    };
+
+    // Case 1: the destination already owns an identical row.
+    let existing: Option<uuid::Uuid> = sqlx::query_scalar(
+        "SELECT blob_id
+           FROM proxima_core.blob
+          WHERE owner_id = $1 AND schema_id = $2 AND content_hash = $3",
+    )
+    .bind(to_id)
+    .bind(&schema_id)
+    .bind(&content_hash)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(map_err)?;
+    if let Some(dest_blob_id) = existing {
+        if dest_blob_id != blob_id {
+            remap_handle_blob_refs(tx, handle, blob_id, dest_blob_id).await?;
+        }
+        return Ok(());
+    }
+
+    // Case 2: nobody else's live series names these bytes, so the rows can
+    // simply change hands. `handle <> $2 AND owner_id <> $3` is the
+    // predicate this arm inherited, and reading it is worth the moment it
+    // takes: `$3` is the DESTINATION, so the source owner's OWN second
+    // series satisfies it. That is what the `Conflict` was refusing.
+    let shared: bool = sqlx::query_scalar(
+        "SELECT EXISTS (
+             SELECT 1
+               FROM proxima_core.memory
+              WHERE blob_id = $1
+                AND handle <> $2
+                AND owner_id <> $3
+             UNION ALL
+             SELECT 1
+               FROM proxima_core.cooled
+              WHERE blob_id = $1
+                AND handle <> $2
+                AND owner_id <> $3
+         )",
+    )
+    .bind(blob_id)
+    .bind(handle)
+    .bind(to_id)
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(map_err)?;
+    if !shared {
+        return move_blob_rows_in_place(tx, blob_id, to_id).await;
+    }
+
+    mount_blob_for_destination(tx, handle, to_id, blob_id, &schema_id, &content_hash).await
+}
+
+/// Case 2: the rows change hands, the object does not move, nothing is
+/// minted. Byte for byte what a transfer of an uncontested cited blob did
+/// before the dedupe arm.
+async fn move_blob_rows_in_place(
+    tx: &mut Transaction<'_, Postgres>,
+    blob_id: uuid::Uuid,
+    to_id: uuid::Uuid,
+) -> Result<(), StorageError> {
+    sqlx::query("UPDATE proxima_core.blob SET owner_id = $2 WHERE blob_id = $1")
         .bind(blob_id)
-        .bind(handle)
         .bind(to_id)
-        .fetch_one(&mut **tx)
+        .execute(&mut **tx)
         .await
         .map_err(map_err)?;
-        if shared {
-            return Err(StorageError::Conflict(
-                "cited blob is still referenced by another live series under a different owner"
-                    .into(),
-            ));
-        }
-        sqlx::query("UPDATE proxima_core.blob SET owner_id = $2 WHERE blob_id = $1")
-            .bind(blob_id)
-            .bind(to_id)
-            .execute(&mut **tx)
-            .await
-            .map_err(map_err)?;
-        // The upload row moves with the blob row it describes. The read
-        // path requires both to name the same owner, so leaving this behind
-        // made a transferred citation unreadable at the destination while
-        // still counting against the source. The object itself does not
-        // move: its key is derived from `upload_id`, which is unchanged.
-        sqlx::query("UPDATE proxima_core.blob_uploads SET owner_id = $2 WHERE blob_id = $1")
-            .bind(blob_id)
-            .bind(to_id)
-            .execute(&mut **tx)
-            .await
-            .map_err(map_err)?;
-    }
+    // The upload row moves with the blob row it describes. The read path
+    // requires both to name the same owner, so leaving this behind made a
+    // transferred citation unreadable at the destination while still
+    // counting against the source. The object itself does not move: its key
+    // is derived from `upload_id`, which is unchanged.
+    sqlx::query("UPDATE proxima_core.blob_uploads SET owner_id = $2 WHERE blob_id = $1")
+        .bind(blob_id)
+        .bind(to_id)
+        .execute(&mut **tx)
+        .await
+        .map_err(map_err)?;
+    Ok(())
+}
+
+/// Case 3: the destination gets its own row over the source's object.
+async fn mount_blob_for_destination(
+    tx: &mut Transaction<'_, Postgres>,
+    handle: uuid::Uuid,
+    to_id: uuid::Uuid,
+    blob_id: uuid::Uuid,
+    schema_id: &str,
+    content_hash: &[u8],
+) -> Result<(), StorageError> {
+    let dest_blob_id: uuid::Uuid = sqlx::query_scalar(
+        "INSERT INTO proxima_core.blob (owner_id, schema_id, content_hash)
+         VALUES ($1, $2, $3)
+         RETURNING blob_id",
+    )
+    .bind(to_id)
+    .bind(schema_id)
+    .bind(content_hash)
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(map_err)?;
+    // One mounted upload row per completed source upload row, naming the
+    // same object. `COALESCE(u.mounted_from_upload_id, u.upload_id)` rather
+    // than `u.upload_id`: mounting a mount must still resolve to the row
+    // that actually uploaded bytes, because an intermediate row never had
+    // an object of its own.
+    //
+    // `status`, `sha256`, `etag` and the byte length are copied because
+    // they describe the OBJECT, which is the thing being shared; the expiry
+    // and completion timestamps are copied for the same reason. Only the
+    // identity columns differ.
+    sqlx::query(
+        "INSERT INTO proxima_core.blob_uploads
+             (owner_id, bucket, object_key, filename, mime, expected_byte_len,
+              status, blob_id, sha256, etag, expires_at, completed_at,
+              mounted_from_upload_id)
+         SELECT $2, u.bucket, u.object_key, u.filename, u.mime, u.expected_byte_len,
+                u.status, $3, u.sha256, u.etag, u.expires_at, u.completed_at,
+                COALESCE(u.mounted_from_upload_id, u.upload_id)
+           FROM proxima_core.blob_uploads u
+          WHERE u.blob_id = $1
+            AND u.status = 'completed'",
+    )
+    .bind(blob_id)
+    .bind(to_id)
+    .bind(dest_blob_id)
+    .execute(&mut **tx)
+    .await
+    .map_err(map_err)?;
+    remap_handle_blob_refs(tx, handle, blob_id, dest_blob_id).await
+}
+
+/// Repoint this series' citations from one blob row to another.
+///
+/// Scoped by `handle` and not by owner: the hot rows have not changed
+/// hands yet at this point in the transfer, and the cooled rows change
+/// hands later in the same transaction. Scoping by owner here would remap
+/// nothing or everything depending on the order.
+///
+/// This is `TransferRule::FollowOrDedupe { remaps }` executed. The
+/// declaration lists the columns this crate can see; the citation sidecars
+/// that point at a blob by convention rather than by constraint are
+/// checked at freeze instead, because a flavor that declared one would
+/// need a remap this function cannot write.
+async fn remap_handle_blob_refs(
+    tx: &mut Transaction<'_, Postgres>,
+    handle: uuid::Uuid,
+    from_blob_id: uuid::Uuid,
+    to_blob_id: uuid::Uuid,
+) -> Result<(), StorageError> {
+    sqlx::query(
+        "UPDATE proxima_core.memory
+            SET blob_id = $3
+          WHERE handle = $1 AND blob_id = $2",
+    )
+    .bind(handle)
+    .bind(from_blob_id)
+    .bind(to_blob_id)
+    .execute(&mut **tx)
+    .await
+    .map_err(map_err)?;
+    sqlx::query(
+        "UPDATE proxima_core.cooled
+            SET blob_id = $3
+          WHERE handle = $1 AND blob_id = $2",
+    )
+    .bind(handle)
+    .bind(from_blob_id)
+    .bind(to_blob_id)
+    .execute(&mut **tx)
+    .await
+    .map_err(map_err)?;
     Ok(())
 }
 

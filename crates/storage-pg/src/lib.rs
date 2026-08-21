@@ -34,10 +34,12 @@ mod delegated_authority;
 mod error;
 #[doc(hidden)]
 pub use error::map_err;
+pub use error::{MAX_TRANSACTION_ATTEMPTS, is_transient_conflict};
 mod pg_ident;
 mod pgvector;
 mod pool_config;
 mod ports;
+pub mod projection;
 pub mod sidecars;
 pub mod query {
     #[cfg(any(test, feature = "test-fixtures", debug_assertions))]
@@ -125,10 +127,17 @@ pub async fn ensure_core_ledger_compatible(pool: &PgPool) -> Result<(), StorageE
             .await
             .map_err(internal)?;
 
+    // `proxima\_%` rather than a list. This probe runs before any registry
+    // exists, so it cannot ask which flavors are linked — and the previous
+    // spelling named `proxima_code` from inside the kernel, which made a
+    // second flavor's leftover schema invisible to the reset check. The
+    // prefix is the flavor schema convention (`proxima_core`,
+    // `proxima_code`, ...), so the pattern is the same claim without the
+    // kernel knowing any flavor's name.
     let proxima_schema_objects: Vec<String> = sqlx::query_scalar(
         "SELECT table_schema || '.' || table_name
            FROM information_schema.tables
-          WHERE table_schema IN ('proxima_core', 'proxima_code')
+          WHERE table_schema LIKE 'proxima\\_%'
           ORDER BY table_schema, table_name
           LIMIT 20",
     )
@@ -512,15 +521,6 @@ pub async fn ensure_core_schema_markers(pool: &PgPool) -> Result<(), StorageErro
            THEN 'missing function proxima_core.lexical_config()'
          WHEN to_regprocedure('proxima_core.lexical_language_forget(regconfig)') IS NULL
            THEN 'missing function proxima_core.lexical_language_forget(regconfig)'
-         WHEN to_regclass('proxima_code.code_chunk_v1') IS NOT NULL
-              AND NOT EXISTS (
-                  SELECT 1
-                    FROM information_schema.columns
-                   WHERE table_schema = 'proxima_code'
-                     AND table_name = 'code_chunk_v1'
-                     AND column_name = 'search_tsv'
-              )
-           THEN 'missing column proxima_code.code_chunk_v1.search_tsv'
          WHEN COALESCE((
                   SELECT array_agg(e.enumlabel::text ORDER BY e.enumsortorder)
                     FROM pg_enum e
@@ -757,6 +757,7 @@ pub struct PgStorage {
     pool: PgPool,
     sidecars: PgSidecarRegistryFrozen,
     search_projections: Vec<proxima_core::verbs::schema::MemorySearchProjection>,
+    embed_units: Vec<proxima_core::verbs::schema::MemoryEmbedUnit>,
     tuning: PgTuning,
     embedding_runtime_policy: proxima_core::EmbeddingRuntimePolicy,
     cold: Arc<dyn proxima_core::ColdObjectStore>,
@@ -909,6 +910,7 @@ impl PgStorage {
             pool,
             sidecars: core_pg_sidecars(),
             search_projections: Vec::new(),
+            embed_units: Vec::new(),
             tuning,
             embedding_runtime_policy: proxima_core::EmbeddingRuntimePolicy::default(),
             cold: Arc::new(verbs::forget::MemoryColdStore::default()),
@@ -957,15 +959,22 @@ impl PgStorage {
         self
     }
 
-    /// Frozen search projections used to load embed text from the
-    /// sidecar the row's schema names. Set at boot from
-    /// [`proxima_core::FlavorRegistryFrozen::search_projections`].
+    /// Install everything the frozen flavors tell storage about payload
+    /// text: the search projections the read path ranks on, and the embed
+    /// units the drain reads.
+    ///
+    /// One setter rather than two on purpose. These were separate
+    /// builders for exactly one commit, and in that commit three drain
+    /// fixtures installed the projections and not the units — which is
+    /// not a compile error and not a test failure, because a schema with
+    /// no embed unit is indistinguishable from a schema that declares no
+    /// embedding: the drain drops the job and the fixture waits forever
+    /// for a provider call that will never come. Taking the registry
+    /// makes the half-configured state unconstructible.
     #[must_use]
-    pub fn with_search_projections(
-        mut self,
-        search_projections: Vec<proxima_core::verbs::schema::MemorySearchProjection>,
-    ) -> Self {
-        self.search_projections = search_projections;
+    pub fn with_flavors(mut self, registry: &proxima_core::FlavorRegistryFrozen) -> Self {
+        self.search_projections = registry.search_projections().to_vec();
+        self.embed_units = registry.embed_units().to_vec();
         self
     }
 
@@ -1041,7 +1050,7 @@ impl PgStorage {
             &self.pool,
             client,
             limit,
-            &self.search_projections,
+            &self.embed_units,
             self.embedding_runtime_policy,
         )
         .await
@@ -1318,21 +1327,19 @@ mod tests {
     /// `ensure_core_schema_markers` used to assert `5 <> (… table_name IN
     /// ('sketch', 'agent_note_v1', 'utterance_v1', 'agent_derivation_v1',
     /// 'interpretation_v1'))`. The count and the list were both by hand.
-    /// They are now flavor #0's declared `lexical_language_column`
-    /// surfaces; the five names below are the deleted literal.
+    /// They became flavor #0's declared `lexical_language_column` surfaces,
+    /// and the guardrail read the declaration instead of the literal.
+    ///
+    /// The projection then collapsed those five columns into one. That is
+    /// the payoff the rewire was for: the marker query, the FK-backed
+    /// `lexical_language_forget()` completeness argument and this pin all
+    /// followed the declaration without anyone editing a list. The name
+    /// below is not a smaller literal — it is the whole set, and a sixth
+    /// searchable core sidecar would not add to it.
     #[test]
     fn the_declared_lexical_stamps_are_the_guardrails_deleted_literal() {
         let declared = proxima_core::FLAVOR_0.lexical_stamped_tables();
 
-        assert_eq!(
-            declared,
-            vec![
-                "proxima_core.agent_derivation_v1",
-                "proxima_core.agent_note_v1",
-                "proxima_core.interpretation_v1",
-                "proxima_core.sketch",
-                "proxima_core.utterance_v1",
-            ]
-        );
+        assert_eq!(declared, vec!["proxima_core.projection"]);
     }
 }

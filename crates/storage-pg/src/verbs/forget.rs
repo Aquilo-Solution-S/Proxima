@@ -1042,6 +1042,18 @@ pub async fn hydrate_memory(
     .await
     .map_err(map_err)?;
     restore_registered_sidecars(tx, sidecars, &rec.sidecar_dumps).await?;
+    // DEFERRED (v0.0.8): the cold dump predates the projection and carries
+    // no `lexical_language` — the sidecars stopped stamping one when the
+    // projection took the column over. A hydrated row therefore re-derives
+    // its vector at the DEPLOYMENT default rather than at the language the
+    // original write asked for. `hydrate_memory` has no production caller
+    // at this commit; restoring language fidelity means putting the stamp
+    // in the cold record, which is a cold-format change.
+    for (table, _) in &rec.sidecar_dumps {
+        sidecars
+            .rebuild_projection_for_table(tx, proxima_core::MemoryId::new(rec.row.t), table, None)
+            .await?;
+    }
     let hydrate_line = rec.sketch.clone().unwrap_or_else(|| {
         rec.sidecar_dumps
             .iter()
@@ -1198,6 +1210,391 @@ pub async fn erase_memory(
     .map_err(map_err)?;
     Ok(ColdPurgePlan::from_keys(pending))
 }
+
+/// Hard-delete every version of every series the given admissions belong to.
+///
+/// The kernel's own erase, applied to a set. A flavor tearing down one of
+/// its scopes — a repo, a workspace, a project — knows which of ITS rows
+/// belong to that scope and nothing about the substrate rows behind them;
+/// this is the other half, and it is deliberately flavor-agnostic so the
+/// flavor never writes a `proxima_core` statement to get it.
+///
+/// It replaced a hand-written duplicate that deleted `announce`,
+/// `embedding_jobs`, `embedding_heads`, `embeddings`, `sketch`, `memory`
+/// and `memory_head` and stopped there: no sidecar rows beyond the five
+/// tables its caller had listed, no `cooled`, no `ingest_keys`, no content
+/// GC, no head resync, no cold-object plan, and an erase announce it never
+/// wrote. [`erase_memory`] does all of that from the sidecar registry, so
+/// the duplicate was both shorter and wrong.
+///
+/// Expansion to the whole series matters: a superseded version that was
+/// cooled has no sidecar row left to be found by, so a caller that
+/// collected ids from its own tables would erase the live versions and
+/// leave the cooled ones behind.
+///
+/// A cited blob goes when the last admission citing it does. That leg is
+/// here rather than in [`erase_memory`] because it is a question about the
+/// SET: erasing one version of a series says nothing about whether the
+/// blob is still cited, and asking per-version would answer "still cited"
+/// for every version but the last. `proxima_core.blob` is referenced by
+/// `memory.blob_id`, `cooled.blob_id` and `blob_uploads.blob_id` and by
+/// nothing else, so once the admissions are gone the reference question is
+/// answerable in one statement, which is what `gc_unreferenced_blobs`
+/// below is.
+///
+/// What it does NOT reach: unowned `t`-references. `goal.close_fact_t`,
+/// `goal.assignment_t`, `goal.write_act_t`, `goal.dependency_t[]`,
+/// `goal.evidence_t[]`, `wake_config.trigger_t` and
+/// `wake_config.hard_memory_t[]` name memories without a foreign key, so an
+/// erase here can leave them pointing at nothing. That is deliberate and
+/// not new: [`erase_memory`] has always left them, and the compliance
+/// erase's own partial arm (source scope) leaves `goal` and `wake_config`
+/// untouched too — it deletes them only in the owner arm, where the whole
+/// row goes rather than one column of it. Nulling them here would make the
+/// set-erase do something the single-memory erase does not, which is
+/// exactly the divergence this function exists to end. A goal whose
+/// evidence was erased is a goal with a dangling pointer either way; the
+/// reader resolves it to nothing, which is what "erased" should look like.
+///
+/// Returns the number of admissions erased and the cold objects the erase
+/// still owes the object store; see [`erase_memory`] for why the caller
+/// commits first.
+///
+/// # Errors
+///
+/// Returns storage errors from the delete statements.
+pub async fn erase_memory_series(
+    tx: &mut Transaction<'_, Postgres>,
+    sidecars: &PgSidecarRegistryFrozen,
+    owner: &Owner,
+    ts: &[Uuid],
+) -> Result<(u64, ColdPurgePlan), StorageError> {
+    if ts.is_empty() {
+        return Ok((0, ColdPurgePlan::default()));
+    }
+    let owner_id = owner.stored_owner_id();
+    let versions = expand_series_for_erase(tx, owner, ts).await?;
+
+    // Captured BEFORE the loop, because the loop is what makes them
+    // unreferenced: after it, no row is left to read `blob_id` from.
+    let cited = cited_blobs_locked_for_erase(tx, owner, &versions).await?;
+
+    let mut keys = Vec::new();
+    let mut erased = 0_u64;
+    for t in versions {
+        let plan = erase_memory(tx, sidecars, owner, t).await?;
+        keys.extend_from_slice(plan.object_keys());
+        erased += 1;
+    }
+    keys.extend(gc_unreferenced_blobs(tx, owner_id, &cited).await?);
+    Ok((erased, ColdPurgePlan::from_keys(keys)))
+}
+
+/// Every version of every series the given admissions belong to, for this
+/// owner.
+///
+/// The expansion [`erase_memory_series`] performs, exposed so a caller that
+/// must reason about the FULL set before touching any of it can ask for it
+/// first. A flavor computing an erase footprint needs exactly that: it
+/// finds admissions through its own rows, but the substrate erases whole
+/// series, and the versions the expansion adds are as much part of the
+/// footprint as the ones the flavor named. A footprint computed without
+/// this is a footprint that closes and locks the wrong set — the flavor
+/// then deletes rows referencing a version it never saw, which is an abort,
+/// not a leak.
+///
+/// Owner-scoped on both legs, so a handle that changed hands never widens
+/// one owner's erase into another's rows.
+///
+/// # Errors
+///
+/// Returns storage errors from the expansion query.
+pub async fn expand_series_for_erase(
+    tx: &mut Transaction<'_, Postgres>,
+    owner: &Owner,
+    ts: &[Uuid],
+) -> Result<Vec<Uuid>, StorageError> {
+    if ts.is_empty() {
+        return Ok(Vec::new());
+    }
+    sqlx::query_scalar(EXPAND_SERIES_SQL)
+        .bind(ts)
+        .bind(owner.stored_owner_id())
+        .fetch_all(tx.as_mut())
+        .await
+        .map_err(map_err)
+}
+
+const EXPAND_SERIES_SQL: &str = "\
+WITH handles AS (
+    SELECT handle FROM proxima_core.memory
+     WHERE t = ANY($1::uuid[]) AND owner_id = $2
+    UNION
+    SELECT handle FROM proxima_core.cooled
+     WHERE t = ANY($1::uuid[]) AND owner_id = $2
+)
+SELECT m.t FROM proxima_core.memory m
+  JOIN handles h ON h.handle = m.handle
+ WHERE m.owner_id = $2
+UNION
+SELECT c.t FROM proxima_core.cooled c
+  JOIN handles h ON h.handle = c.handle
+ WHERE c.owner_id = $2";
+
+/// Which of `ts` are NOT admissions of `owner`.
+///
+/// A flavor discovers admissions through its own tables, and a flavor table
+/// holds a foreign key on `proxima_core.memory (t)` and nothing that
+/// constrains WHOSE memory it names. One owner's row may therefore reference
+/// another owner's admission — by writing the id, or, more ordinarily,
+/// because the admission was transferred out from under it.
+///
+/// A scope erase that follows such a reference would delete a principal's
+/// rows on the authority of a different principal, and it would do it
+/// silently. This is the question that makes that unrepresentable, and it
+/// lives here rather than in the flavor for the same reason
+/// [`lock_admissions_for_erase`] does: the answer is in `proxima_core`.
+///
+/// # Errors
+///
+/// Returns storage errors from the query.
+pub async fn admissions_outside_owner(
+    tx: &mut Transaction<'_, Postgres>,
+    owner: &Owner,
+    ts: &[Uuid],
+) -> Result<Vec<Uuid>, StorageError> {
+    if ts.is_empty() {
+        return Ok(Vec::new());
+    }
+    sqlx::query_scalar(ADMISSIONS_OUTSIDE_OWNER_SQL)
+        .bind(ts)
+        .bind(owner.stored_owner_id())
+        .fetch_all(tx.as_mut())
+        .await
+        .map_err(map_err)
+}
+
+const ADMISSIONS_OUTSIDE_OWNER_SQL: &str = "\
+SELECT c.t
+  FROM unnest($1::uuid[]) AS c(t)
+ WHERE NOT EXISTS (
+           SELECT 1 FROM proxima_core.memory m
+            WHERE m.t = c.t AND m.owner_id = $2
+       )
+   AND NOT EXISTS (
+           SELECT 1 FROM proxima_core.cooled k
+            WHERE k.t = c.t AND k.owner_id = $2
+       )";
+
+/// Take a row lock on admissions a scope erase is about to delete.
+///
+/// Not an optimisation and not a formality, and flavor-agnostic for the
+/// same reason [`erase_memory_series`] is: a flavor computing which of its
+/// rows belong to a scope needs several statements to do it, `READ
+/// COMMITTED` gives each of them its own snapshot, and a row committed in
+/// any of the gaps references a memory that is about to go. With a
+/// `NO ACTION` foreign key that is not a leak — it is an abort, after all
+/// the work.
+///
+/// `FOR UPDATE` on the referenced `memory` rows closes the gaps for real.
+/// Inserting a row with a foreign key takes `FOR KEY SHARE` on the row it
+/// references, and `FOR UPDATE` conflicts with `FOR KEY SHARE`, so a
+/// concurrent writer that would create a dangling pointer blocks until this
+/// transaction commits and then fails its own foreign key — in its
+/// transaction rather than in the erase.
+///
+/// CALL IT ONCE, OVER THE WHOLE SET. The locks do last until the
+/// transaction ends, so calling it per round of a fixpoint "works" — and
+/// puts an arbitrarily long window between the rounds in which this
+/// transaction holds some of the rows and is not yet asking for the rest.
+/// A writer holding `FOR KEY SHARE` on a later row and waiting on an
+/// earlier one turns that window into a deadlock, and `PostgreSQL` picks a
+/// victim by which transaction is cheapest to abort, which is the one that
+/// has not yet done its deletes: the erase. Computing the full set first
+/// and locking it in one statement shrinks that window to the inside of
+/// this statement.
+///
+/// `ORDER BY t` is the other half: two erases whose sets overlap then take
+/// the shared rows in the same order and one waits instead of both dying.
+/// It does not help against a writer, which takes its own locks in its own
+/// order — nothing does, which is why a caller must also be prepared to
+/// retry a `40P01`.
+///
+/// # Errors
+///
+/// Returns storage errors from the lock statement.
+pub async fn lock_admissions_for_erase(
+    tx: &mut Transaction<'_, Postgres>,
+    ts: &[Uuid],
+) -> Result<(), StorageError> {
+    if ts.is_empty() {
+        return Ok(());
+    }
+    sqlx::query(LOCK_ADMISSIONS_SQL)
+        .bind(ts)
+        .execute(tx.as_mut())
+        .await
+        .map_err(map_err)?;
+    Ok(())
+}
+
+const LOCK_ADMISSIONS_SQL: &str =
+    "SELECT t FROM proxima_core.memory WHERE t = ANY($1::uuid[]) ORDER BY t FOR UPDATE";
+
+/// The blobs the given admissions cite, held.
+///
+/// Capture and lock in ONE statement, because doing one without the other
+/// is never right and a seam between them is a line someone can delete.
+/// `gc_unreferenced_blobs` decides "no admission cites this blob" and then
+/// deletes it; `memory.blob_id` is `NO ACTION`, so a citation committed
+/// between the deciding and the deleting makes the delete wait on the
+/// citer's `FOR KEY SHARE`, and then raise `23503` and take the whole erase
+/// down with it. `FOR UPDATE` taken here — before the erase loop, while the
+/// citing rows are all still there — is what turns that into the citer
+/// waiting on us and then failing its own foreign key in its own
+/// transaction.
+///
+/// `FOR UPDATE` and not `FOR NO KEY UPDATE`. `FOR NO KEY UPDATE` is the
+/// weaker mode that PERMITS concurrent key-share holders — exactly the
+/// writer this has to exclude — so it would leave the race untouched while
+/// looking like a fix. Measured on `PostgreSQL` 18, not assumed: against a
+/// `FOR NO KEY UPDATE` holder a second session takes `FOR KEY SHARE` on the
+/// same row immediately; against a `FOR UPDATE` holder it blocks until the
+/// holder's transaction ends.
+///
+/// Locking every cited blob rather than only the orphans over-locks by
+/// design: which of them are orphans is not known until the erase loop has
+/// run, and a lock taken after the question is answered is a lock taken too
+/// late. They are this owner's blobs and the transaction is short.
+///
+/// # Errors
+///
+/// Returns storage errors from the statement.
+pub async fn cited_blobs_locked_for_erase(
+    tx: &mut Transaction<'_, Postgres>,
+    owner: &Owner,
+    ts: &[Uuid],
+) -> Result<Vec<Uuid>, StorageError> {
+    if ts.is_empty() {
+        return Ok(Vec::new());
+    }
+    sqlx::query_scalar(CITED_BLOBS_LOCKED_SQL)
+        .bind(ts)
+        .bind(owner.stored_owner_id())
+        .fetch_all(tx.as_mut())
+        .await
+        .map_err(map_err)
+}
+
+/// The blobs the admissions about to be erased cite, locked against a
+/// concurrent citation.
+///
+/// The `FOR UPDATE` binds to `b` — the one plain table in the outer
+/// `FROM` — which is why the two-legged citation question lives in a CTE
+/// rather than in a `UNION` the locking clause could not attach to.
+const CITED_BLOBS_LOCKED_SQL: &str = "\
+WITH cited AS (
+    SELECT m.blob_id FROM proxima_core.memory m
+     WHERE m.t = ANY($1::uuid[]) AND m.owner_id = $2 AND m.blob_id IS NOT NULL
+    UNION
+    SELECT c.blob_id FROM proxima_core.cooled c
+     WHERE c.t = ANY($1::uuid[]) AND c.owner_id = $2 AND c.blob_id IS NOT NULL
+)
+SELECT b.blob_id FROM proxima_core.blob b
+ WHERE b.blob_id IN (SELECT blob_id FROM cited)
+   AND b.owner_id = $2
+ ORDER BY b.blob_id
+   FOR UPDATE";
+
+/// Delete each of `cited` that no admission still cites, with its upload
+/// rows, and enqueue the objects that no other upload row names.
+///
+/// `gc_unreferenced_content`'s idiom, at the blob level, plus the refcount
+/// `enqueue_blob_object_keys` had to learn when the dedupe arm made one
+/// object reachable from several upload rows. `proxima_core.blob` is
+/// referenced by exactly three columns — `memory.blob_id`,
+/// `cooled.blob_id`, `blob_uploads.blob_id`, all `NO ACTION` — so "no
+/// admission cites it" is the whole reference question. Citation sidecars
+/// hold no foreign key on it: they are opaque payload tables, which is why
+/// `ComplianceSidecarTables::for_registry` finds no cited-object family for
+/// core or code to consult.
+///
+/// The three deletes and the enqueue are one statement so they share one
+/// snapshot. That is what makes the object anti-join ask the right
+/// question: "does a row OUTSIDE this orphan set name the key", evaluated
+/// against the rows as they stood before any of them went, exactly as the
+/// compliance arm evaluates it.
+///
+/// One snapshot is not one lock, though: the reference question is asked of
+/// this transaction's snapshot and the delete is enforced against the
+/// latest one, so a citation committed in between still aborts it. Every
+/// candidate is held under `FOR UPDATE` from before the erase loop for
+/// that; see [`cited_blobs_locked_for_erase`].
+///
+/// `b.owner_id = $1` is the Lean citation invariant restated
+/// (`memory_cites m b -> memory_owner m = blob_owner b`). It costs nothing
+/// when the invariant holds and, if it ever did not, leaves the row rather
+/// than deleting another owner's blob.
+async fn gc_unreferenced_blobs(
+    tx: &mut Transaction<'_, Postgres>,
+    owner_id: Uuid,
+    cited: &[Uuid],
+) -> Result<Vec<String>, StorageError> {
+    if cited.is_empty() {
+        return Ok(Vec::new());
+    }
+    sqlx::query_scalar(GC_UNREFERENCED_BLOBS_SQL)
+        .bind(cited)
+        .bind(owner_id)
+        .fetch_all(tx.as_mut())
+        .await
+        .map_err(map_err)
+}
+
+const GC_UNREFERENCED_BLOBS_SQL: &str = "\
+WITH orphans AS MATERIALIZED (
+    SELECT b.blob_id
+      FROM proxima_core.blob b
+     WHERE b.blob_id = ANY($1::uuid[])
+       AND b.owner_id = $2
+       AND NOT EXISTS (
+               SELECT 1 FROM proxima_core.memory m WHERE m.blob_id = b.blob_id
+           )
+       AND NOT EXISTS (
+               SELECT 1 FROM proxima_core.cooled c WHERE c.blob_id = b.blob_id
+           )
+),
+enqueued AS (
+    INSERT INTO proxima_core.cold_purge_pending (object_key, owner_id)
+    SELECT DISTINCT u.object_key, u.owner_id
+      FROM proxima_core.blob_uploads u
+      JOIN orphans o ON o.blob_id = u.blob_id
+     WHERE NOT EXISTS (
+               SELECT 1
+                 FROM proxima_core.blob_uploads other
+                WHERE other.object_key = u.object_key
+                  AND other.upload_id <> u.upload_id
+                  AND NOT EXISTS (
+                          SELECT 1 FROM orphans o2 WHERE o2.blob_id = other.blob_id
+                      )
+           )
+    ON CONFLICT (object_key) DO UPDATE SET enqueued_at = now()
+    RETURNING object_key
+),
+d_uploads AS (
+    DELETE FROM proxima_core.blob_uploads u
+     USING orphans o
+     WHERE u.blob_id = o.blob_id
+),
+d_blobs AS (
+    DELETE FROM proxima_core.blob b
+     USING orphans o
+     WHERE b.blob_id = o.blob_id
+)
+-- `d_uploads` and `d_blobs` are read by nothing on purpose: a
+-- data-modifying WITH clause runs exactly once and to completion whether
+-- or not the primary query reads its output.
+SELECT object_key FROM enqueued";
 
 #[cfg(test)]
 mod tests {

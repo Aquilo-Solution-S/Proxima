@@ -1,5 +1,4 @@
-use crate::{EntityKind, MemoryId, PayloadReference, PerspectivePayload, SearchProjection};
-use crate::{SearchProjectionColumnKind, SearchProjectionField};
+use crate::{EntityKind, MemoryId, PayloadReference, PerspectivePayload};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -91,19 +90,6 @@ impl PerspectivePayload for InterpretationV1 {
                 )
             })
             .collect()
-    }
-
-    fn search_projection() -> Option<SearchProjection> {
-        Some(SearchProjection {
-            fields: &[SearchProjectionField {
-                column: "claim",
-                kind: SearchProjectionColumnKind::Text,
-            }],
-            tag_column: None,
-            tsv_column: Some("search_tsv"),
-            embed_text_column: Some("embed_text"),
-            language_column: Some("lexical_language"),
-        })
     }
 
     fn json_schema() -> Option<serde_json::Value> {

@@ -5,7 +5,7 @@
 
 use crate::authz::{AuthorizationHook, AuthzContext, AuthzInput, AuthzOutcome, OwnerResolver};
 use crate::error::ProtocolError;
-use crate::flavor::contract::FlavorContract;
+use crate::flavor::contract::{FlavorContract, LanguagePolicy, SearchProjectionDecl};
 use crate::mcp::RequestBehavior;
 use crate::{
     CapabilityTag, FlavorDescriptor, McpToolDescriptor, Owner, SchemaId, SchemaVersion,
@@ -138,33 +138,57 @@ pub fn sidecar_tables(schemas: &[SchemaInfo], kind: PayloadKind) -> Vec<String> 
     tables
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct MemorySearchProjectionField {
     pub column: String,
     pub kind: SearchProjectionColumnKind,
+    /// The declared relative weight. Uniform across a unit in v0.0.8.
+    pub weight: f32,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// One search surface, as the SQL builders need it — the runtime reading of
+/// a `SchemaContract` whose `search` is `Projected`.
+///
+/// Built from the flavor contracts at freeze. There used to be a second
+/// source, `FactPayload::search_projection()`, which the contract's
+/// declaration shadowed without governing; a projection nothing enforced is
+/// exactly the drift the contract exists to remove.
+#[derive(Debug, Clone, PartialEq)]
 pub struct MemorySearchProjection {
     pub schema_id: SchemaId,
     pub schema_version: SchemaVersion,
     pub kind: PayloadKind,
+    /// The schema's own sidecar — still the home of the raw text, which
+    /// the substring arm scans and the top-k snippet join reads.
     pub sidecar_table: String,
+    /// The flavor's projection table, where the vector lives.
+    pub projection_table: String,
     pub fields: Vec<MemorySearchProjectionField>,
+    /// Sidecar column the projection's `tag` array was copied from.
     pub tag_column: Option<String>,
-    /// Column holding the row's pre-computed lexical vector, when the
-    /// sidecar table carries one. Present, the search builder reads it
-    /// instead of tokenising the projected text on every candidate;
-    /// absent, it falls back to computing the same vector inline.
-    pub tsv_column: Option<String>,
-    /// Column holding the row's pre-computed embed string. Drain reads
-    /// this instead of concatenating `fields`.
-    pub embed_text_column: Option<String>,
-    /// Column holding the row's lexical language, when the sidecar
-    /// table carries one. Present, the search builder ranks the
-    /// candidate with that language's tsquery; absent, it ranks with
-    /// the owning memory row's `lexical_language`.
-    pub language_column: Option<String>,
+    /// Whether the row carries its own configuration, or which one is
+    /// pinned for the whole surface.
+    pub language: LanguagePolicy,
+    /// `ts_rank`'s `{D, C, B, A}` array when the unit declares more than one
+    /// weight level. `None` — the uniform case — passes no array, which is
+    /// what keeps the score identical to the unweighted vector's.
+    pub rank_weights: Option<[f32; 4]>,
+}
+
+/// One `(sidecar table, column)` the embedding drain reads text from.
+///
+/// Split out of `MemorySearchProjection`, which used to carry
+/// `embed_text_column` inside a *search* declaration. That conflation made
+/// a schema that embeds but does not search — `proxima-code/file-revision-v1`
+/// is exactly one — unstateable: it had to declare a search projection it
+/// did not have in order to be embedded at all.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MemoryEmbedUnit {
+    pub schema_id: SchemaId,
+    pub schema_version: SchemaVersion,
+    pub kind: PayloadKind,
+    pub sidecar_table: String,
+    pub column: String,
 }
 
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
@@ -244,6 +268,7 @@ pub struct FlavorRegistryFrozen {
     schema_capability_tags:
         HashMap<(SchemaId, SchemaVersion, PayloadKind), BTreeSet<CapabilityTag>>,
     search_projections: Vec<MemorySearchProjection>,
+    embed_units: Vec<MemoryEmbedUnit>,
     protocol_ingress: Vec<ProtocolPayloadIngressEntry>,
     mcp_tools: Vec<McpToolDescriptor>,
     request_behaviors: Vec<Arc<dyn RequestBehavior>>,
@@ -254,6 +279,74 @@ pub struct FlavorRegistryFrozen {
     /// Lookup acceleration built during successful freeze. Not part of the
     /// logical registry — derived purely from the `Vec`s above.
     index: FrozenIndex,
+}
+
+/// Every search surface the linked contracts declare, in contract order.
+///
+/// This is the collapse: one vocabulary, read once, at freeze. A schema
+/// whose contract says `SearchProjectionDecl::None` contributes nothing —
+/// and, unlike the old `search_projection() -> None`, it said why.
+fn contract_search_projections(
+    contracts: &[&'static FlavorContract],
+) -> Vec<MemorySearchProjection> {
+    let mut out = Vec::new();
+    for contract in contracts {
+        let Some(spec) = contract.projection.spec() else {
+            continue;
+        };
+        for (schema, sidecar_table) in contract.projected_schemas() {
+            let SearchProjectionDecl::Projected {
+                fields,
+                tag_column,
+                language,
+                ..
+            } = &schema.search
+            else {
+                continue;
+            };
+            out.push(MemorySearchProjection {
+                schema_id: schema.schema_id(),
+                schema_version: schema.schema_version(),
+                kind: schema.kind,
+                sidecar_table: sidecar_table.to_owned(),
+                projection_table: spec.table.to_owned(),
+                fields: fields
+                    .iter()
+                    .map(|field| MemorySearchProjectionField {
+                        column: field.column.to_owned(),
+                        kind: field.kind,
+                        weight: field.weight,
+                    })
+                    .collect(),
+                tag_column: tag_column.map(str::to_owned),
+                language: *language,
+                rank_weights: schema.search.rank_weight_array(),
+            });
+        }
+    }
+    out
+}
+
+/// Every stored embed-text column the linked contracts declare.
+fn contract_embed_units(contracts: &[&'static FlavorContract]) -> Vec<MemoryEmbedUnit> {
+    let mut out = Vec::new();
+    for contract in contracts {
+        for schema in contract.schemas {
+            for unit in schema.embed_units() {
+                let (Some(table), Some(column)) = (unit.table, unit.column) else {
+                    continue;
+                };
+                out.push(MemoryEmbedUnit {
+                    schema_id: schema.schema_id(),
+                    schema_version: schema.schema_version(),
+                    kind: schema.kind,
+                    sidecar_table: table.to_owned(),
+                    column: column.to_owned(),
+                });
+            }
+        }
+    }
+    out
 }
 
 impl FlavorRegistryFrozen {
@@ -268,7 +361,6 @@ impl FlavorRegistryFrozen {
         let crate::FlavorRegistry {
             schemas,
             schema_capability_tags,
-            search_projections,
             protocol_ingress,
             mcp_tools,
             request_behaviors,
@@ -279,10 +371,13 @@ impl FlavorRegistryFrozen {
         } = registry;
         let schema_capability_tags = crate::flavor::schema_capability_map(&schema_capability_tags);
         let index = FrozenIndex::build(&schemas, &protocol_ingress);
+        let search_projections = contract_search_projections(&contracts);
+        let embed_units = contract_embed_units(&contracts);
         Self {
             schemas,
             schema_capability_tags,
             search_projections,
+            embed_units,
             protocol_ingress,
             mcp_tools,
             request_behaviors,
@@ -303,6 +398,16 @@ impl FlavorRegistryFrozen {
     /// registry cross-checking whatever flavors happen to be linked. A
     /// broader accessor surface here would be API nobody calls, with the
     /// second copy of every walk that implies.
+    /// Every linked flavor's contract, in registration order.
+    ///
+    /// The projection guardrail needs the whole set, not one by name: what
+    /// it checks is that the DATABASE and the LINKED FLAVORS agree, and
+    /// neither side can be asked schema by schema.
+    #[must_use]
+    pub fn contracts(&self) -> &[&'static FlavorContract] {
+        &self.contracts
+    }
+
     #[must_use]
     pub fn flavor_contract(&self, flavor_id: &str) -> Option<&'static FlavorContract> {
         self.contracts
@@ -335,6 +440,12 @@ impl FlavorRegistryFrozen {
     #[must_use]
     pub fn search_projections(&self) -> &[MemorySearchProjection] {
         &self.search_projections
+    }
+
+    /// The `(table, column)` pairs the embedding drain reads text from.
+    #[must_use]
+    pub fn embed_units(&self) -> &[MemoryEmbedUnit] {
+        &self.embed_units
     }
 
     #[must_use]

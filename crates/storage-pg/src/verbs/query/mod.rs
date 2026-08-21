@@ -10,7 +10,6 @@ mod edges;
 mod goals;
 mod lineage;
 mod memories;
-mod projection_sql;
 mod rows;
 mod search;
 mod series_handle;

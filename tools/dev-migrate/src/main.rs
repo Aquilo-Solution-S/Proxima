@@ -19,11 +19,13 @@
 //! printed before anything runs. Two repair modes exist beyond the plain
 //! migration run:
 //!
-//! - `--reset`: destructive drop-and-recreate of the
-//!   `proxima_core`/`proxima_code` schemas (see [`reset_local_dev_database`])
-//!   — requires `PROXIMA_RESET_CONFIRM` and refuses non-local hosts and
-//!   protected database names as a second, independent guard against pointing
-//!   this at anything but a scratch dev database.
+//! - `--reset`: destructive drop-and-recreate of every `proxima_*` schema
+//!   (see [`reset_local_dev_database`]) — the same namespace
+//!   `ensure_core_ledger_compatible` calls Proxima's, so a schema left by a
+//!   flavor no longer compiled in cannot make boot demand a reset the reset
+//!   cannot deliver. Requires `PROXIMA_RESET_CONFIRM` and refuses non-local
+//!   hosts and protected database names as a second, independent guard
+//!   against pointing this at anything but a scratch dev database.
 //! - `--stamp`: non-destructive ledger repair for a database that applied a
 //!   draft lane later squashed under a fresh version number (see
 //!   [`stamp_squashed_lane`] and docs/how-to/migrations.md). Refuses when the
@@ -137,7 +139,17 @@ async fn reset_local_dev_database_confirmed(
         return Err("dev reset refuses protected database names".into());
     }
     let pool = pg.clone_pool_for_backend();
-    let unexpected_schemas: Vec<String> = sqlx::query_scalar(
+    // A `proxima_*` schema this binary's compiled flavors did not create
+    // used to REFUSE the reset. That was the right guard while the reset
+    // dropped a hardcoded two names — it said "I will not destroy what I
+    // cannot recreate" — but it is now a deadlock, because
+    // `ensure_core_ledger_compatible` treats EVERY `proxima\_%` schema as
+    // Proxima's when the baseline marker is missing. Boot demanded a reset
+    // that the reset then refused, with nothing in between to break the
+    // tie. The two predicates have to agree on what the namespace is, so
+    // the guard becomes a report: the schema goes with the rest, and the
+    // operator sees it named before it does.
+    let unowned_schemas: Vec<String> = sqlx::query_scalar(
         "SELECT schema_name::text
            FROM information_schema.schemata
           WHERE schema_name LIKE 'proxima\\_%' ESCAPE '\\'
@@ -146,12 +158,11 @@ async fn reset_local_dev_database_confirmed(
     )
     .fetch_all(&pool)
     .await?;
-    if !unexpected_schemas.is_empty() {
-        return Err(format!(
-            "refusing reset because this binary does not own schemas: {}",
-            unexpected_schemas.join(", ")
-        )
-        .into());
+    if !unowned_schemas.is_empty() {
+        eprintln!(
+            "dropping schemas no compiled flavor of this binary owns: {}",
+            unowned_schemas.join(", ")
+        );
     }
 
     // Everything attributable to Proxima goes: the whole core version
@@ -177,13 +188,38 @@ async fn reset_local_dev_database_confirmed(
         }
     }
 
-    eprintln!("resetting schemas: proxima_code, proxima_core");
-    sqlx::query("DROP SCHEMA IF EXISTS proxima_code CASCADE")
-        .execute(&pool)
-        .await?;
-    sqlx::query("DROP SCHEMA IF EXISTS proxima_core CASCADE")
-        .execute(&pool)
-        .await?;
+    // Every `proxima_*` schema, not the two this binary happens to know
+    // about. `ensure_core_ledger_compatible` decides a database needs a
+    // reset by probing `table_schema LIKE 'proxima\_%'`, so a schema left
+    // by a flavor that is no longer compiled in makes boot demand a reset
+    // that a two-name DROP list can never satisfy — the reset "succeeds",
+    // the schema stays, and boot demands the reset again, forever. The two
+    // predicates have to be the same predicate.
+    let schemas: Vec<String> = sqlx::query_scalar(
+        "SELECT nspname::text FROM pg_namespace
+          WHERE nspname LIKE 'proxima\\_%'
+          ORDER BY nspname",
+    )
+    .fetch_all(&pool)
+    .await?;
+    eprintln!("resetting schemas: {}", schemas.join(", "));
+    // The loop is inside the database rather than in Rust so the schema
+    // name never becomes a Rust format argument: `format('%I')` is
+    // PostgreSQL's own identifier quoting, and this stays one fixed string
+    // literal instead of a dynamic SQL site needing a proof.
+    sqlx::raw_sql(
+        "DO $$
+         DECLARE schema_name text;
+         BEGIN
+             FOR schema_name IN
+                 SELECT nspname FROM pg_namespace WHERE nspname LIKE 'proxima\\_%'
+             LOOP
+                 EXECUTE format('DROP SCHEMA IF EXISTS %I CASCADE', schema_name);
+             END LOOP;
+         END $$;",
+    )
+    .execute(&pool)
+    .await?;
     for table in flavor_ledger_tables {
         eprintln!("dropping flavor ledger table: {table}");
         sqlx::query(sqlx::AssertSqlSafe(format!("DROP TABLE IF EXISTS {table}")))

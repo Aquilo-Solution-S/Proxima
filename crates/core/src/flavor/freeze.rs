@@ -146,6 +146,72 @@ impl FlavorRegistry {
                     schema_id,
                 });
             }
+            // `PostgreSQL` forces four tsvector weight classes on the
+            // storage; the declaration is free of that limit and states
+            // relative floats. Where the two meet is here: more distinct
+            // levels than classes has no honest bucketing, so it is a
+            // freeze error naming the mechanism rather than a silent
+            // collapse of two levels into one class.
+            if let Err(levels) = schema.search.weight_levels() {
+                return Err(FlavorRegistryError::ProjectionWeightLevels {
+                    flavor_id: contract.flavor_id,
+                    schema_id,
+                    levels,
+                    classes: crate::flavor::contract::TSVECTOR_WEIGHT_CLASSES.len(),
+                });
+            }
+            // The shared-blob dedupe arm's blind spot, made loud.
+            //
+            // A cross-owner transfer of a shared blob now gives the
+            // destination a NEW `blob` row and repoints the columns that
+            // reference it. Those columns are enumerable exactly because
+            // they are foreign keys. A cited-object or citation-mapping
+            // sidecar references a blob by convention — `cited_object_id`
+            // holds a `blob_id` with nothing in the catalog saying so — and
+            // the remap would walk straight past it, leaving the rows
+            // pointing at the source owner's row after the citation moved.
+            //
+            // Today every such schema is opaque (`sidecar_table: None`),
+            // which is why the arm is safe to land. Declaring one is the
+            // moment the remap needs designing, so that is the moment this
+            // refuses, rather than the moment a transfer silently splits a
+            // citation from its bytes.
+            if matches!(
+                schema.kind,
+                crate::verbs::schema::PayloadKind::CitedObject
+                    | crate::verbs::schema::PayloadKind::CitationMapping
+            ) && let Some(table) = schema.sidecar_table
+            {
+                return Err(FlavorRegistryError::CitationSidecarNotRemappable {
+                    flavor_id: contract.flavor_id,
+                    schema_id,
+                    table,
+                });
+            }
+            // `PerRow { column }` carried a column name nothing read: the
+            // generator emits one language column per projection table and
+            // names it itself. Left unchecked, a flavor could declare
+            // `PerRow { column: "row_config" }`, see no error, and get rows
+            // stamped and ranked under a column its contract never named.
+            // Consuming the payload as a constraint is the smallest honest
+            // reading of it — the generator emits one column, so declaring
+            // a different one is a need the shape cannot express, and the
+            // rule is that such a need becomes a vocabulary extension
+            // rather than a silent divergence.
+            if let Some(declared) = schema.search.per_row_language_column() {
+                let projection_column = contract
+                    .projection
+                    .spec()
+                    .and_then(|spec| spec.surface().lexical_language_column);
+                if projection_column != Some(declared) {
+                    return Err(FlavorRegistryError::ProjectionLanguageColumn {
+                        flavor_id: contract.flavor_id,
+                        schema_id,
+                        declared,
+                        projection_column,
+                    });
+                }
+            }
             let registered = self.schemas.iter().any(|info| {
                 info.schema_id == schema_id
                     && info.schema_version == schema.schema_version()
@@ -410,9 +476,11 @@ pub(crate) fn schema_capability_map(
 
 #[cfg(test)]
 mod tests {
+    use crate::SearchProjectionColumnKind;
     use crate::flavor::contract::{
-        EmbeddingRecipe, FlavorContract, Provenance, ResourceContract, SchemaContract, SchemaRef,
-        SearchProjectionDecl, ToolContract, TransferRule,
+        EmbeddingRecipe, FlavorContract, LanguagePolicy, ProjectionDecl, Provenance,
+        ResourceContract, SchemaContract, SchemaRef, SearchProjectionDecl, SubstringArm,
+        ToolContract, TransferRule, WeightedField,
     };
     use crate::verbs::schema::{PayloadKind, SchemaInfo};
     use crate::{FlavorRegistry, FlavorRegistryError, SchemaId, SchemaVersion};
@@ -433,6 +501,9 @@ mod tests {
             kernel_surfaces: &[],
             tools,
             resources,
+            projection: ProjectionDecl::None {
+                why: "a fixture registry has no schema that is a search surface",
+            },
         }
     }
 
@@ -502,6 +573,137 @@ mod tests {
         &[],
         &[],
     );
+    /// A citation payload that declared a table of its own.
+    ///
+    /// The shared-blob dedupe arm repoints a citation at a new `blob` row,
+    /// and finds the columns to repoint by following foreign keys. This
+    /// table's `cited_object_id` would hold a `blob_id` with no FK saying
+    /// so, so the remap would walk past it and leave the rows pointing at
+    /// the wrong owner's blob after a transfer.
+    static CITATION_WITH_A_SIDECAR: FlavorContract = contract(
+        7,
+        &[SchemaContract {
+            id: SchemaRef::new(FIXTURE_FLAVOR, "thing", 1),
+            kind: PayloadKind::CitationMapping,
+            sidecar_table: Some("test_flavor.thing_v1"),
+            search: SearchProjectionDecl::None {
+                why: "a fixture, not a surface",
+            },
+            embedding: EmbeddingRecipe::Never {
+                why: "a fixture, not a memory",
+            },
+            transfer: TransferRule::StaysOnKey,
+            provenance: Provenance::None,
+            surfaces: &[],
+            natural_key_columns: &[],
+            special_category: false,
+        }],
+        &[],
+        &[],
+    );
+    /// A `PerRow` policy naming a column that is not the projection
+    /// table's. The generator emits one language column per projection
+    /// table and names it `lexical_language`; a second name is a
+    /// declaration nothing renders.
+    static PER_ROW_ON_THE_WRONG_COLUMN: FlavorContract = FlavorContract {
+        flavor_id: FIXTURE_FLAVOR,
+        ordinal: 7,
+        schemas: &[SchemaContract {
+            // A Fact, not a citation payload: a citation schema declaring a
+            // sidecar trips CitationSidecarNotRemappable first and this
+            // fixture would test that instead.
+            id: SchemaRef::new(FIXTURE_FLAVOR, "thing", 1),
+            kind: PayloadKind::Fact,
+            sidecar_table: Some("test_flavor.thing_v1"),
+            search: SearchProjectionDecl::Projected {
+                fields: &[WeightedField {
+                    column: "a",
+                    kind: SearchProjectionColumnKind::Text,
+                    weight: 1.0,
+                }],
+                tag_column: None,
+                language: LanguagePolicy::PerRow {
+                    column: "row_config",
+                },
+                bands: &[],
+                substring: SubstringArm::Off,
+            },
+            embedding: EmbeddingRecipe::Never {
+                why: "a fixture, not a memory",
+            },
+            transfer: TransferRule::StaysOnKey,
+            provenance: Provenance::None,
+            surfaces: &[],
+            natural_key_columns: &[],
+            special_category: false,
+        }],
+        state_surfaces: &[],
+        kernel_surfaces: &[],
+        tools: &[],
+        resources: &[],
+        projection: ProjectionDecl::Table(crate::flavor::contract::ProjectionSpec {
+            table: "test_flavor.projection",
+            index: "test_flavor_projection_owner_tsv_gin",
+            overfetch_k: 0,
+            band_comparability: crate::flavor::contract::BandComparability::CoreBands,
+        }),
+    };
+    /// Five distinct relative weights on one projection unit. The
+    /// declaration is free of `PostgreSQL`'s four-class limit right up to
+    /// the moment the generator has to emit `setweight`, and this is that
+    /// moment.
+    static TOO_MANY_WEIGHT_LEVELS: FlavorContract = contract(
+        7,
+        &[SchemaContract {
+            id: SchemaRef::new(FIXTURE_FLAVOR, "thing", 1),
+            kind: PayloadKind::CitedObject,
+            sidecar_table: Some("test_flavor.thing_v1"),
+            search: SearchProjectionDecl::Projected {
+                fields: &[
+                    WeightedField {
+                        column: "a",
+                        kind: SearchProjectionColumnKind::Text,
+                        weight: 5.0,
+                    },
+                    WeightedField {
+                        column: "b",
+                        kind: SearchProjectionColumnKind::Text,
+                        weight: 4.0,
+                    },
+                    WeightedField {
+                        column: "c",
+                        kind: SearchProjectionColumnKind::Text,
+                        weight: 3.0,
+                    },
+                    WeightedField {
+                        column: "d",
+                        kind: SearchProjectionColumnKind::Text,
+                        weight: 2.0,
+                    },
+                    WeightedField {
+                        column: "e",
+                        kind: SearchProjectionColumnKind::Text,
+                        weight: 1.0,
+                    },
+                ],
+                tag_column: None,
+                language: LanguagePolicy::Pinned("simple"),
+                bands: &[],
+                substring: SubstringArm::Off,
+            },
+            embedding: EmbeddingRecipe::Never {
+                why: "a fixture, not a memory",
+            },
+            transfer: TransferRule::StaysOnKey,
+            provenance: Provenance::None,
+            surfaces: &[],
+            natural_key_columns: &[],
+            special_category: false,
+        }],
+        &[],
+        &[],
+    );
+
     static UNREGISTERED_TOOL: FlavorContract = contract(
         7,
         &[],
@@ -539,6 +741,9 @@ mod tests {
     /// going red — and the resource rejection in particular is the whole of
     /// the resources-are-substrate ruling, enforced in five lines.
     #[test]
+    // One line per cross-check plus its fixture reference. Splitting it
+    // would put half the checks in a second function to forget one in.
+    #[allow(clippy::too_many_lines)]
     fn each_contract_cross_check_rejects_its_own_shape() {
         #[allow(clippy::type_complexity)]
         let cases: Vec<(
@@ -597,6 +802,47 @@ mod tests {
                     registry.contracts.push(&EMPTY);
                 },
                 |err| matches!(err, FlavorRegistryError::SchemaWithoutContract { .. }),
+            ),
+            (
+                "one projection unit declares more weight levels than PG has classes",
+                |registry| registry.contracts.push(&TOO_MANY_WEIGHT_LEVELS),
+                |err| {
+                    matches!(
+                        err,
+                        FlavorRegistryError::ProjectionWeightLevels {
+                            levels: 5,
+                            classes: 4,
+                            ..
+                        }
+                    )
+                },
+            ),
+            (
+                "a citation payload declares a sidecar the blob remap cannot reach",
+                |registry| registry.contracts.push(&CITATION_WITH_A_SIDECAR),
+                |err| {
+                    matches!(
+                        err,
+                        FlavorRegistryError::CitationSidecarNotRemappable {
+                            table: "test_flavor.thing_v1",
+                            ..
+                        }
+                    )
+                },
+            ),
+            (
+                "a PerRow policy names a column the projection table does not have",
+                |registry| registry.contracts.push(&PER_ROW_ON_THE_WRONG_COLUMN),
+                |err| {
+                    matches!(
+                        err,
+                        FlavorRegistryError::ProjectionLanguageColumn {
+                            declared: "row_config",
+                            projection_column: Some("lexical_language"),
+                            ..
+                        }
+                    )
+                },
             ),
             (
                 "the contract names an MCP tool nothing registered",

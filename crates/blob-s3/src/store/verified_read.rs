@@ -28,10 +28,12 @@ fn within_ceiling(byte_len: u64, max_bytes: NonZeroU64) -> Result<(), CitedBlobR
 
 /// Byte-exact locator provenance, the same rule `read_url` applies.
 ///
-/// The key derives from `blob_uploads.upload_id` — the row's own primary
-/// key — so a row can only ever vouch for its own object.
+/// The key derives from the row's own columns — its `upload_id`, or the
+/// upload row it mounts — so a row can only ever vouch for the object it
+/// was given, and never for one it names by assertion.
 fn canonical_for_store(store: &CitedBlobStore, row: &BlobReadRecord) -> bool {
-    row.bucket == store.config.bucket && locator_was_minted_here(&row.object_key, row.upload_id)
+    row.bucket == store.config.bucket
+        && locator_was_minted_here(&row.object_key, row.upload_id, row.mounted_from_upload_id)
 }
 
 async fn verify_body(
@@ -180,6 +182,7 @@ mod tests {
         BlobReadRecord {
             cited_object_id: Uuid::now_v7(),
             upload_id: Uuid::now_v7(),
+            mounted_from_upload_id: None,
             content_hash: *blake3::hash(bytes).as_bytes(),
             bucket: "bucket".into(),
             object_key: "objects/owner/core/uploaded-blob-v1/hash".into(),

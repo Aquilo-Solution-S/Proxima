@@ -113,6 +113,30 @@ pub enum FlavorRegistryError {
         flavor_id: &'static str,
         name: &'static str,
     },
+    /// One projection unit declares more distinct weight levels than
+    /// `PostgreSQL` has tsvector weight classes.
+    ProjectionWeightLevels {
+        flavor_id: &'static str,
+        schema_id: SchemaId,
+        levels: usize,
+        classes: usize,
+    },
+    /// A cited-object or citation-mapping schema declared a sidecar table.
+    /// Those tables point at a blob row by convention rather than by
+    /// constraint, so the shared-blob dedupe arm's remap cannot find them.
+    CitationSidecarNotRemappable {
+        flavor_id: &'static str,
+        schema_id: SchemaId,
+        table: &'static str,
+    },
+    /// A `LanguagePolicy::PerRow` names a projection column the projection
+    /// table does not have.
+    ProjectionLanguageColumn {
+        flavor_id: &'static str,
+        schema_id: SchemaId,
+        declared: &'static str,
+        projection_column: Option<&'static str>,
+    },
 }
 
 impl std::fmt::Display for FlavorRegistryError {
@@ -250,6 +274,46 @@ impl std::fmt::Display for FlavorRegistryError {
                 f,
                 "flavor {flavor_id} declares MCP tool {name} in its contract but never \
                  registered it"
+            ),
+            Self::ProjectionWeightLevels {
+                flavor_id,
+                schema_id,
+                levels,
+                classes,
+            } => write!(
+                f,
+                "flavor {flavor_id} schema {schema_id} declares {levels} distinct field \
+                 weights, but `PostgreSQL` stores a two-bit weight per lexeme position and \
+                 offers exactly {classes} tsvector classes (A, B, C, D — see `PostgreSQL` \
+                 12.3.1); collapsing two levels into one class would make ts_rank's weight \
+                 array describe a document it is not scoring"
+            ),
+            Self::CitationSidecarNotRemappable {
+                flavor_id,
+                schema_id,
+                table,
+            } => write!(
+                f,
+                "flavor {flavor_id} schema {schema_id} declares sidecar table {table} for a \
+                 citation payload; a cross-owner transfer now dedupes a shared blob onto a \
+                 NEW blob row, and the columns that must follow it are the ones declared on \
+                 `TransferRule::FollowOrDedupe` -- a citation sidecar points at a blob by \
+                 convention with no SQL foreign key, so nothing would repoint it and the \
+                 rows would keep naming the source owner's row"
+            ),
+            Self::ProjectionLanguageColumn {
+                flavor_id,
+                schema_id,
+                declared,
+                projection_column,
+            } => write!(
+                f,
+                "flavor {flavor_id} schema {schema_id} declares LanguagePolicy::PerRow on \
+                 projection column {declared}, but its projection table's language column is \
+                 {}; the generator writes one column per projection table, so a second name \
+                 would be a declaration nothing renders and every row would be stamped and \
+                 ranked under a configuration the contract never named",
+                projection_column.unwrap_or("absent")
             ),
         }
     }

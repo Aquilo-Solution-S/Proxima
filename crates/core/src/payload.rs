@@ -484,63 +484,6 @@ pub fn schema_only_key(schema_id: &str, schema_version: u32) -> Vec<u8> {
 pub enum SearchProjectionColumnKind {
     Text,
     TextArray,
-    /// Not a sidecar column: the owning memory's rendered text (the
-    /// string the memory was embedded from).
-    ///
-    /// A sidecar usually declares a projection to contribute *retrieval
-    /// structure* rather than new content — above all a `tag_column`,
-    /// which is the only predicate that can scope a search to a subset
-    /// of a corpus. The unscoped branch has no tags to offer
-    /// (`push_tag_filter` gets the literal `NULL::text[]` there), so a
-    /// tag-filtered query is served by projection branches alone.
-    ///
-    /// Construct it as [`SearchProjectionField::MEMORY_TEXT`].
-    MemoryText,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct SearchProjectionField {
-    pub column: &'static str,
-    pub kind: SearchProjectionColumnKind,
-}
-
-impl SearchProjectionField {
-    /// The owning memory row's `text`. `column` is unused — the value
-    /// does not come from the sidecar table.
-    ///
-    /// A projection of exactly this one field, with no `language_column`,
-    /// is the whole reason the kind exists: the branch then projects the
-    /// same string as the unscoped search path, so a tag-scoped search
-    /// and an unscoped one cannot return different text for the same
-    /// memory. Combine it with sidecar fields when the sidecar genuinely
-    /// adds searchable content the render does not carry.
-    pub const MEMORY_TEXT: Self = Self {
-        column: "",
-        kind: SearchProjectionColumnKind::MemoryText,
-    };
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SearchProjection {
-    pub fields: &'static [SearchProjectionField],
-    pub tag_column: Option<String>,
-    /// Column holding the row's pre-computed lexical vector, for sidecar
-    /// tables whose migration adds one (see `proxima_core.lexical_tsv`).
-    /// Declaring it lets search read the stored vector instead of
-    /// tokenising the projected text on every candidate row.
-    pub tsv_column: Option<&'static str>,
-    /// Column holding the row's pre-computed embed string. Drain reads
-    /// this instead of re-concatenating projection columns.
-    pub embed_text_column: Option<&'static str>,
-    /// Column holding the row's lexical language (`regconfig`), for
-    /// sidecar tables whose migration adds one. Search ranks each
-    /// candidate with its own language's tsquery; declared, it reads the
-    /// sidecar's column (which may be pinned, as the code flavor pins
-    /// `english`), absent it falls back to the owning memory row's
-    /// `lexical_language`. A sidecar declaring `tsv_column` over a
-    /// per-row-language vector should declare this too, or ranking uses
-    /// the wrong configuration for pinned rows.
-    pub language_column: Option<&'static str>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -625,13 +568,6 @@ pub trait FactPayload:
     fn tombstone() -> Option<FactTombstone> {
         None
     }
-    /// Build-time lexical search projection. Only human-meaningful
-    /// text columns belong here; raw JSON, code bodies, logs, and
-    /// opaque ids stay out of `core/search_memories`.
-    #[must_use]
-    fn search_projection() -> Option<SearchProjection> {
-        None
-    }
     #[must_use]
     fn json_schema() -> Option<serde_json::Value> {
         None
@@ -660,10 +596,6 @@ pub trait AbstractionPayload:
         Vec::new()
     }
     #[must_use]
-    fn search_projection() -> Option<SearchProjection> {
-        None
-    }
-    #[must_use]
     fn json_schema() -> Option<serde_json::Value> {
         None
     }
@@ -689,10 +621,6 @@ pub trait PerspectivePayload:
     #[must_use]
     fn references(&self) -> Vec<PayloadReference> {
         Vec::new()
-    }
-    #[must_use]
-    fn search_projection() -> Option<SearchProjection> {
-        None
     }
     #[must_use]
     fn json_schema() -> Option<serde_json::Value> {

@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use proxima_core::verbs::schema::MemorySearchProjection;
+use proxima_core::verbs::schema::MemoryEmbedUnit;
 use proxima_core::{EntityKind, MemoryId, Owner, StorageError};
 use sqlx::{Executor, PgPool, Postgres, Transaction};
 use uuid::Uuid;
@@ -17,16 +17,16 @@ pub async fn load_fact_text(
     pool: &PgPool,
     owner: &Owner,
     memory_id: MemoryId,
-    projections: &[MemorySearchProjection],
+    units: &[MemoryEmbedUnit],
 ) -> Result<Option<String>, StorageError> {
-    load_embedding_text(pool, owner, EntityKind::Fact, memory_id, &[], projections).await
+    load_embedding_text(pool, owner, EntityKind::Fact, memory_id, &[], units).await
 }
 
 /// Owner-scoped embed text for one memory.
 ///
-/// Text comes from the sidecar named by the row's schema in `projections`
-/// (the frozen flavor search registry). A schema that is not projected,
-/// or that is listed in `non_embeddable_schemas`, has nothing to embed.
+/// Text comes from the `(table, column)` the row's schema declares as its
+/// [`proxima_core::flavor::EmbedUnit`]. A schema that declares none, or
+/// that is listed in `non_embeddable_schemas`, has nothing to embed.
 ///
 /// # Errors
 ///
@@ -37,13 +37,13 @@ pub async fn load_embedding_text(
     entity_kind: EntityKind,
     memory_id: MemoryId,
     non_embeddable_schemas: &[String],
-    projections: &[MemorySearchProjection],
+    units: &[MemoryEmbedUnit],
 ) -> Result<Option<String>, StorageError> {
     let texts = load_embedding_texts(
         pool,
         &[(*owner, entity_kind, memory_id)],
         non_embeddable_schemas,
-        projections,
+        units,
     )
     .await?;
     Ok(texts.into_iter().next().flatten())
@@ -61,7 +61,7 @@ pub async fn load_embedding_texts(
     pool: &PgPool,
     items: &[(Owner, EntityKind, MemoryId)],
     non_embeddable_schemas: &[String],
-    projections: &[MemorySearchProjection],
+    units: &[MemoryEmbedUnit],
 ) -> Result<Vec<Option<String>>, StorageError> {
     if items.is_empty() {
         return Ok(Vec::new());
@@ -91,18 +91,12 @@ pub async fn load_embedding_texts(
         let Some(schema_id) = schema_by_key.get(&(t, owner.stored_owner_id())) else {
             continue;
         };
-        let Some(projection) = resolve_projection(
-            Some(schema_id.as_str()),
-            non_embeddable_schemas,
-            projections,
-        ) else {
-            continue;
-        };
-        let Some(column) = projection.embed_text_column.as_deref() else {
+        let Some(unit) = resolve_unit(Some(schema_id.as_str()), non_embeddable_schemas, units)
+        else {
             continue;
         };
         buckets
-            .entry((projection.sidecar_table.clone(), column.to_owned()))
+            .entry((unit.sidecar_table.clone(), unit.column.clone()))
             .or_default()
             .push((index, t));
     }
@@ -148,20 +142,20 @@ pub async fn load_fact_text_in_tx(
     tx: &mut Transaction<'_, Postgres>,
     owner: &Owner,
     memory_id: MemoryId,
-    projections: &[MemorySearchProjection],
+    units: &[MemoryEmbedUnit],
 ) -> Result<Option<String>, StorageError> {
     let schema_id = fetch_schema_id(tx.as_mut(), owner, memory_id).await?;
-    let Some(projection) = resolve_projection(schema_id.as_deref(), &[], projections) else {
+    let Some(unit) = resolve_unit(schema_id.as_deref(), &[], units) else {
         return Ok(None);
     };
-    fetch_projection_text(tx.as_mut(), memory_id, projection).await
+    fetch_unit_text(tx.as_mut(), memory_id, unit).await
 }
 
-fn resolve_projection<'a>(
+fn resolve_unit<'a>(
     schema_id: Option<&str>,
     non_embeddable_schemas: &[String],
-    projections: &'a [MemorySearchProjection],
-) -> Option<&'a MemorySearchProjection> {
+    units: &'a [MemoryEmbedUnit],
+) -> Option<&'a MemoryEmbedUnit> {
     let schema_id = schema_id?;
     if non_embeddable_schemas
         .iter()
@@ -169,9 +163,9 @@ fn resolve_projection<'a>(
     {
         return None;
     }
-    projections
+    units
         .iter()
-        .find(|projection| projection.schema_id.as_str() == schema_id)
+        .find(|unit| unit.schema_id.as_str() == schema_id)
 }
 
 async fn fetch_schema_id<'e, E>(
@@ -195,19 +189,16 @@ where
     .map_err(map_err)
 }
 
-async fn fetch_projection_text<'e, E>(
+async fn fetch_unit_text<'e, E>(
     exec: E,
     memory_id: MemoryId,
-    projection: &MemorySearchProjection,
+    unit: &MemoryEmbedUnit,
 ) -> Result<Option<String>, StorageError>
 where
     E: Executor<'e, Database = Postgres>,
 {
-    let Some(column) = projection.embed_text_column.as_deref() else {
-        return Ok(None);
-    };
-    let table = PgIdent::table(&projection.sidecar_table)?;
-    let column = PgIdent::column(column)?;
+    let table = PgIdent::table(&unit.sidecar_table)?;
+    let column = PgIdent::column(&unit.column)?;
     let sql = format!(
         "SELECT c.{column}
            FROM {table} c
@@ -247,7 +238,7 @@ mod tests {
             "W6: drain does not re-concat projection columns"
         );
         assert!(
-            src.contains("embed_text_column"),
+            src.contains("unit.column"),
             "W6: drain selects the stored sidecar column"
         );
     }
