@@ -850,17 +850,7 @@ async fn every_cascade_the_contract_declares_is_a_cascade_the_schema_enforces() 
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let mut relations = Vec::new();
         let mut names = Vec::new();
-        for surface in proxima_code::contract::CODE_FLAVOR_CONTRACT
-            .schemas
-            .iter()
-            .flat_map(|schema| schema.surfaces.iter())
-            .chain(
-                proxima_code::contract::CODE_FLAVOR_CONTRACT
-                    .state_surfaces
-                    .iter(),
-            )
-            .copied()
-        {
+        for surface in proxima_code::contract::CODE_FLAVOR_CONTRACT.all_surfaces() {
             if let proxima_core::flavor::EraseRule::Cascade { via } = surface.erase {
                 relations.push(via.relation.to_owned());
                 names.push(via.name.to_owned());
@@ -869,6 +859,14 @@ async fn every_cascade_the_contract_declares_is_a_cascade_the_schema_enforces() 
         assert!(
             !names.is_empty(),
             "the code flavor declares at least one cascading surface"
+        );
+        assert!(
+            relations
+                .iter()
+                .any(|relation| relation == "proxima_code.projection"),
+            "the projection is Cascade-declared and exempt from the repo sweep on that \
+             declaration alone, so it is the one surface this test may not be blind to; \
+             found {relations:?}"
         );
         let unenforced: Vec<(String, String)> = sqlx::query_as(
             "SELECT d.relation, d.name
