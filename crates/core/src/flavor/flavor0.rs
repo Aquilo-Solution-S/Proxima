@@ -22,11 +22,13 @@
 
 use crate::SearchProjectionColumnKind as ColumnKind;
 use crate::flavor::contract::{
-    BAND_EXACT, BAND_RESCUE, BAND_SUBSTRING, Band, BandComparability, CORE_ORDINAL, DbConstraint,
-    DbTrigger, EmbedUnit, EmbeddingRecipe, Enforcement, EraseRule, ExportRule, FlavorContract,
-    ForgetRule, KeyShape, LanguagePolicy, ProjectionDecl, ProjectionSpec, Provenance,
-    ResourceContract, SLOT_DEFAULT, SchemaContract, SchemaRef, SearchProjectionDecl, SubstringArm,
-    Surface, ToolContract, TransferRule, WEIGHT_UNIFORM, WeightedField,
+    BAND_NAME_EXACT, BAND_NAME_RESCUE, BAND_NAME_SUBSTRING, Band, BandComparability, CORE_ORDINAL,
+    DbConstraint, DbTrigger, EmbedUnit, EmbeddingRecipe, Enforcement, EraseRule, ExportRule,
+    FlavorContract, ForgetRule, KeyShape, LanguagePolicy, ProjectionDecl, ProjectionSpec,
+    Provenance, RankSource, ResourceContract, SLOT_DEFAULT, SchemaContract, SchemaRef,
+    SearchProjectionDecl, SubstringArm, Surface, TS_RANK_NORMALIZATION_LOG_LENGTH_SCALE,
+    TS_RANK_NORMALIZATION_NONE, TS_RANK_NORMALIZATION_SCALE, ToolContract, TransferRule,
+    WEIGHT_UNIFORM, WeightedField,
 };
 use crate::protocol::resource as scope;
 use crate::protocol::tool;
@@ -34,6 +36,36 @@ use crate::verbs::schema::PayloadKind;
 
 /// The flavor id every core schema and tool is already prefixed with.
 pub const FLAVOR_ID: &str = "core";
+
+/// Exact `tsquery` match: `0.50 + LEAST(ts_rank_cd(.., 32), 1.0) * 0.50`.
+///
+/// Flavor #0's, not the contract module's. A flavor that writes
+/// `proxima_core::flavor0::BAND_EXACT` into its own declaration is saying
+/// "my exact band is core's", which is exactly the claim
+/// [`BandComparability::CoreBands`] makes at flavor level. As
+/// `flavor::contract` vocabulary these three masqueraded as universal while
+/// three renderers spelled three different score functions inside them.
+pub const BAND_EXACT: Band = Band {
+    name: BAND_NAME_EXACT,
+    floor: 0.50,
+    ceiling: 1.00,
+    normalization: TS_RANK_NORMALIZATION_SCALE,
+};
+/// Rescue `any_tsq` arm: `0.25 + LEAST(ts_rank(.., 1|32) * 100, 1.0) * 0.20`.
+pub const BAND_RESCUE: Band = Band {
+    name: BAND_NAME_RESCUE,
+    floor: 0.25,
+    ceiling: 0.45,
+    normalization: TS_RANK_NORMALIZATION_LOG_LENGTH_SCALE,
+};
+/// Substring arm: the flat `0.25::real`. It admits, it does not rank —
+/// hence zero width and no `ts_rank` call to normalize.
+pub const BAND_SUBSTRING: Band = Band {
+    name: BAND_NAME_SUBSTRING,
+    floor: 0.25,
+    ceiling: 0.25,
+    normalization: TS_RANK_NORMALIZATION_NONE,
+};
 
 const BANDS: &[Band] = &[BAND_EXACT, BAND_RESCUE, BAND_SUBSTRING];
 
@@ -46,11 +78,16 @@ const BANDS: &[Band] = &[BAND_EXACT, BAND_RESCUE, BAND_SUBSTRING];
 const CORE_PROJECTION: ProjectionSpec = ProjectionSpec {
     table: "proxima_core.projection",
     index: "core_projection_owner_tsv_gin",
-    // RESERVED, UNCONSUMED. The value is today's `SIDECAR_OVERFETCH_CAP`,
-    // recorded so the deployment layer inherits the number rather than
-    // inventing one.
+    // The candidate budget for ONE statement over this table. It was
+    // `SIDECAR_OVERFETCH_CAP` in `storage-pg`, applied per projected
+    // schema, so core's four statements could hand the merge 4 000 rows;
+    // the collapse makes it what the number always said it was.
     overfetch_k: 1_000,
     band_comparability: BandComparability::CoreBands,
+    // Core IS the projection-ranking shape: `core_search_memories` ranks
+    // `proxima_core.projection` alone and joins a sidecar only to hydrate
+    // the snippet of a row that already made the page.
+    rank_source: RankSource::Projection,
 };
 
 /// Goals do not transfer, and the refusal is real in three places. There is

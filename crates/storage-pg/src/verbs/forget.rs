@@ -1050,8 +1050,21 @@ pub async fn hydrate_memory(
     // at this commit; restoring language fidelity means putting the stamp
     // in the cold record, which is a cold-format change.
     for (table, _) in &rec.sidecar_dumps {
+        // `rec.schema_id`, NOT `rec.row.schema_id`. `HotRow` carries a
+        // `schema_id` field that `decode_record` leaves EMPTY — the cold
+        // format stores the schema id once, on the record — and the memory
+        // INSERT above binds `rec.schema_id` for exactly that reason. This
+        // has to be the same value or the generator's
+        // `memory.schema_id = $3` guard matches nothing and the hydrated
+        // row comes back unsearchable.
         sidecars
-            .rebuild_projection_for_table(tx, proxima_core::MemoryId::new(rec.row.t), table, None)
+            .rebuild_projection_for_table(
+                tx,
+                proxima_core::MemoryId::new(rec.row.t),
+                table,
+                &rec.schema_id,
+                None,
+            )
             .await?;
     }
     let hydrate_line = rec.sketch.clone().unwrap_or_else(|| {

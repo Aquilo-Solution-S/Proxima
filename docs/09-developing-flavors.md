@@ -631,33 +631,67 @@ Four contract points that are easy to get wrong:
   open defers the vector rather than hold the pool slot across HTTP.
   Only a provider that is genuinely unavailable fails the write.
 - **`text` is the whole semantic surface.** `render()` / authored text
-  is the only string ever embedded; `search_projection()` adds lexical
-  reach over sidecar columns but never affects the vector.
-- **Scoping a search takes a projection, not a copy of the text.** A tag
-  filter is the only predicate that narrows `core_search_memories` to
-  part of a corpus — `schema_id` is exact-match and there is no
-  per-column filter — and the unscoped branch carries no tags, so
-  a tag-filtered query is served by projection branches alone. Declare a
-  `tags text[]` column, name it as `tag_column`, and project the memory's
-  own text with `SearchProjectionField::MEMORY_TEXT`:
+  is the only string ever embedded. The schema's `search` declaration
+  adds LEXICAL reach over sidecar columns and never affects the vector;
+  the two surfaces are declared separately (`search` vs `embedding`) and
+  a schema may have either, both, or neither.
+- **Search is declared on the schema, not implemented by the payload.**
+  There is no `search_projection()` method: a `SchemaContract` carries a
+  `search: SearchProjectionDecl`, and a schema that is not a search
+  surface says so with a reason rather than returning `None`.
 
   ```rust
-  fn search_projection() -> Option<SearchProjection> {
-      Some(SearchProjection {
-          fields: &[SearchProjectionField::MEMORY_TEXT],
-          tag_column: Some("tags".to_owned()),
-          tsv_column: None,
-          embed_text_column: None,
-          language_column: None,
-      })
-  }
+  search: SearchProjectionDecl::Projected {
+      // Sidecar columns, with relative weights. Distinct weight levels
+      // are bucketed into PostgreSQL's four tsvector classes; more than
+      // four distinct levels on one schema is a freeze error.
+      fields: &[
+          WeightedField { column: "title", kind: ColumnKind::Text, weight: WEIGHT_UNIFORM },
+          WeightedField { column: "body",  kind: ColumnKind::Text, weight: WEIGHT_UNIFORM },
+          WeightedField { column: "tags",  kind: ColumnKind::TextArray, weight: WEIGHT_UNIFORM },
+      ],
+      // The sidecar column whose `text[]` is copied to the projection's
+      // own `tags`. Naming it is what makes the schema reachable by a
+      // tag-scoped search.
+      tag_column: Some("tags"),
+      // Which configuration tokenises and ranks the row. `PerRow` names
+      // the projection's language column (the caller's language);
+      // `Pinned`/`PinnedUnion` fix it for the whole surface.
+      language: LanguagePolicy::PerRow { column: "lexical_language" },
+      // The score windows every arm over this schema renders, resolved
+      // by name (`BAND_NAME_EXACT` / `_RESCUE` / `_SUBSTRING`). Reuse
+      // flavor #0's `BAND_EXACT` / `BAND_RESCUE` / `BAND_SUBSTRING` to
+      // stay comparable with core scores.
+      bands: BANDS,
+      // Opt-in. `SubstringArm::Off` is the default answer.
+      substring: SubstringArm::MemoryFirstNestedLoop,
+  },
   ```
+
+  A non-surface declares the absence and why:
+  `search: SearchProjectionDecl::None { why: "a receipt, not a memory" }`.
+  Registering a schema that declares neither is refused at freeze.
+- **Scoping a search takes tags, not a copy of the text.** A tag filter
+  is the only predicate that narrows `core_search_memories` to part of a
+  corpus — `schema_id` is exact-match and there is no per-column filter
+  — and the unscoped branch carries no tags, so a tag-filtered query is
+  served by the schemas that declare a `tag_column`, plus a comparable
+  score shape (`BandComparability::CoreBands` and
+  `RankSource::Projection`; see
+  [08](08-core-and-flavors.md#contract-reach)).
 
   Do not copy rendered text into the sidecar to achieve this. The copy
   is a second corpus that must stay byte-identical forever, and the day
   it drifts a scoped and an unscoped search return different text for
-  one memory. Add sidecar fields alongside `MEMORY_TEXT` when the sidecar
-  genuinely holds searchable content the render does not.
+  one memory. Declare the sidecar fields that genuinely hold searchable
+  content the render does not.
+- **Nothing reads the sidecar to rank.** The write path copies the
+  declared fields into `<flavor>.projection` as one `search_tsv` per
+  `(memory_id, schema_id)`, and search scans exactly that table — one
+  statement per flavor, on the composite `gin (owner_id, search_tsv)`.
+  The sidecar is read only for the rows that made the page, to build
+  their snippets. A field a schema does not declare is not searchable,
+  and adding one is a projection backfill, not a query change.
 
 ## Background Workers
 

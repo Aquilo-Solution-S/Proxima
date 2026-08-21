@@ -137,6 +137,40 @@ pub enum FlavorRegistryError {
         declared: &'static str,
         projection_column: Option<&'static str>,
     },
+    /// A flavor declaring `RankSource::Projection` is served by ONE
+    /// statement per flavor, and a property that statement can only spell
+    /// once differs between two of its projected schemas.
+    ///
+    /// Caught at freeze rather than at query-build time on purpose: finding
+    /// out that a flavor cannot be rendered is a `StorageError` on a hot
+    /// path, and the answer never depends on the request.
+    ProjectionRenderNotUniform {
+        flavor_id: &'static str,
+        schema_id: SchemaId,
+        /// `"language"` or `"bands"`.
+        property: &'static str,
+    },
+    /// A `RankSource::Projection` schema does not declare a band under a
+    /// name the core renderer resolves. A `&[Band]` is an unordered set
+    /// with a `name` on each member, so the renderer's lookup is by string
+    /// — and this is the check that keeps the string honest.
+    ProjectionBandName {
+        flavor_id: &'static str,
+        schema_id: SchemaId,
+        missing: &'static str,
+    },
+    /// A flavor claims `BandComparability::CoreBands` while one of its
+    /// schemas declares a band outside flavor #0's `[0.0, 1.0]` window.
+    /// The claim is what a cross-flavor merge compares scores on, so it has
+    /// to be earned rather than decorated.
+    ProjectionBandOutsideCoreWindow {
+        flavor_id: &'static str,
+        schema_id: SchemaId,
+        band: &'static str,
+        /// The offending window, rendered — the enum derives `Eq`, and an
+        /// `f32` pair would not.
+        window: String,
+    },
 }
 
 impl std::fmt::Display for FlavorRegistryError {
@@ -314,6 +348,39 @@ impl std::fmt::Display for FlavorRegistryError {
                  would be a declaration nothing renders and every row would be stamped and \
                  ranked under a configuration the contract never named",
                 projection_column.unwrap_or("absent")
+            ),
+            Self::ProjectionRenderNotUniform {
+                flavor_id,
+                schema_id,
+                property,
+            } => write!(
+                f,
+                "flavor {flavor_id} declares RankSource::Projection, so one statement serves \
+                 all of its projected schemas -- but schema {schema_id} declares a different \
+                 {property} from the flavor's first projected schema, and one statement can \
+                 spell {property} only once"
+            ),
+            Self::ProjectionBandName {
+                flavor_id,
+                schema_id,
+                missing,
+            } => write!(
+                f,
+                "flavor {flavor_id} declares RankSource::Projection, whose renderer resolves \
+                 its arms by band name -- but schema {schema_id} declares no band named \
+                 {missing:?}, so that arm would have no window to score in"
+            ),
+            Self::ProjectionBandOutsideCoreWindow {
+                flavor_id,
+                schema_id,
+                band,
+                window,
+            } => write!(
+                f,
+                "flavor {flavor_id} claims BandComparability::CoreBands, but schema \
+                 {schema_id} declares band {band:?} as {window}, outside flavor #0's \
+                 [0, 1] window; a merge that compared those scores numerically would be \
+                 comparing two different scales"
             ),
         }
     }

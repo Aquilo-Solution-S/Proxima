@@ -189,37 +189,103 @@ pub enum SubstringArm {
     SameTableLike,
 }
 
+/// `ts_rank`'s normalization flag when the argument is omitted
+/// (`PostgreSQL` *12.3.3*: "normalization … default 0", i.e. the rank
+/// ignores document length).
+///
+/// A band declaring this renders NO normalization argument, so declaring
+/// the flag an arm already has cannot move that arm's score by a byte.
+pub const TS_RANK_NORMALIZATION_NONE: i32 = 0;
+/// Flag `32` — "divides the rank by itself + 1", i.e. `rank/(rank+1)`,
+/// which is what maps an unbounded `ts_rank` onto a `[0, 1)` band.
+pub const TS_RANK_NORMALIZATION_SCALE: i32 = 32;
+/// Flag `1|32` — log document length, then `rank/(rank+1)`. Every rescue
+/// arm in the tree renders this one.
+pub const TS_RANK_NORMALIZATION_LOG_LENGTH_SCALE: i32 = 1 | TS_RANK_NORMALIZATION_SCALE;
+
 /// A score band — the cross-flavor merge contract. Raw `ts_rank` is not
 /// comparable across corpora; a band is.
 ///
-/// The three constants below are today's inline literals in
-/// `storage-pg/src/verbs/query/search.rs`, named. Naming them does not move
-/// a single score.
+/// The band values live in the DECLARATION that renders them: flavor #0's
+/// are `flavor0::BAND_EXACT` and its two siblings, and a flavor writing
+/// `proxima_core::flavor0::BAND_EXACT` in its own declaration is literally
+/// saying "my exact band is core's" — which is what
+/// [`BandComparability::CoreBands`] asserts at flavor level. They are
+/// deliberately NOT `flavor::contract` vocabulary: as module constants they
+/// masqueraded as universal while three renderers spelled three different
+/// score functions inside them.
+///
+/// `normalization` is the last undeclared author of what a score means.
+/// Core's exact arm passes `32`; the code flavor's commit arm passes
+/// nothing; every rescue arm passes `1|32`. Three renderers, three
+/// conventions, one claimed band — so the flag becomes a declared property
+/// of the band, initialised to what each arm renders today.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Band {
     pub name: &'static str,
     pub floor: f32,
     pub ceiling: f32,
+    /// `ts_rank`'s normalization flag for the arm that renders this band.
+    /// [`TS_RANK_NORMALIZATION_NONE`] means the argument is omitted.
+    pub normalization: i32,
 }
 
-/// Exact `tsquery` match: `0.5 + LEAST(ts_rank_cd(..), 1.0) * 0.5`.
-pub const BAND_EXACT: Band = Band {
-    name: "exact",
-    floor: 0.50,
-    ceiling: 1.00,
-};
-/// Rescue `any_tsq` arm: `0.25 + LEAST(ts_rank(..) * 100, 1.0) * 0.2`.
-pub const BAND_RESCUE: Band = Band {
-    name: "rescue",
-    floor: 0.25,
-    ceiling: 0.45,
-};
-/// Substring arm: the flat `0.25::real`.
-pub const BAND_SUBSTRING: Band = Band {
-    name: "substring",
-    floor: 0.25,
-    ceiling: 0.25,
-};
+impl Band {
+    /// The same window under a different `ts_rank` normalization.
+    ///
+    /// This is how a flavor states "core's band, my flag": the floor and
+    /// ceiling still come from flavor #0's constant — so the comparability
+    /// claim is still a reference to core's numbers rather than a copy of
+    /// them — and the one thing that diverges is the one thing declared.
+    #[must_use]
+    pub const fn with_normalization(self, normalization: i32) -> Self {
+        Self {
+            name: self.name,
+            floor: self.floor,
+            ceiling: self.ceiling,
+            normalization,
+        }
+    }
+
+    /// The band as SQL renders it: the floor, and the width a normalized
+    /// rank is scaled by to fill the window.
+    ///
+    /// Rendered at two decimals rather than through `f32`'s own `Display`,
+    /// because `0.45f32 - 0.25f32` is `0.19999999`, which is a different
+    /// NUMBER from the `0.2` the shipped builders emit. Two decimals is the
+    /// precision the bands are declared at. The spelling does change —
+    /// `0.5` becomes `0.50` — but `0.5` and `0.50` are the same `numeric`
+    /// to `PostgreSQL`, so no score moves.
+    ///
+    /// One author, in the crate that owns [`Band`]. There used to be two
+    /// byte-identical copies of this arithmetic — `storage-pg`'s private
+    /// `band_parts` and the code flavor's public one — because the first
+    /// was private.
+    #[must_use]
+    pub fn parts(self) -> (String, String) {
+        (
+            format!("{:.2}", self.floor),
+            format!("{:.2}", self.ceiling - self.floor),
+        )
+    }
+
+    /// The trailing `ts_rank` normalization argument, or the empty string
+    /// when the band declares [`TS_RANK_NORMALIZATION_NONE`].
+    ///
+    /// Omitted rather than rendered as `, 0` so that declaring the flag an
+    /// arm already renders is provably score-free at the level of the
+    /// emitted TEXT, not just of the value: `ts_rank_cd(v, q)` and
+    /// `ts_rank_cd(v, q, 0)` are the same call, and an arm that passed
+    /// nothing keeps passing nothing.
+    #[must_use]
+    pub fn normalization_arg(self) -> String {
+        if self.normalization == TS_RANK_NORMALIZATION_NONE {
+            String::new()
+        } else {
+            format!(", {}", self.normalization)
+        }
+    }
+}
 
 /// Whether a schema is a search surface — and, when it is not, *why*.
 ///
@@ -238,29 +304,33 @@ pub enum SearchProjectionDecl {
         /// Sidecar column the projection's `tag` array is copied from.
         tag_column: Option<&'static str>,
         language: LanguagePolicy,
-        /// DECLARED, RENDERING DEFERRED TO PHASE 3. Every projected schema
-        /// states its bands and no reader consumes them: core's arms render
-        /// [`BAND_EXACT`] and [`BAND_RESCUE`] from the module constants and
-        /// the code flavor's render its own `CHUNK_BAND_*`, so a flavor
-        /// declaring different bands here is silently ignored today.
+        /// CONSUMED. The score windows every arm over this schema renders,
+        /// resolved by [`Band::name`] at query-build time.
         ///
-        /// Deferred rather than wired because consuming it is the merge
-        /// contract, not a rename. A `&[Band]` is an unordered set with a
-        /// `name` on each member; rendering from it means resolving "which
-        /// of these is the exact arm" by string at query-build time, and
-        /// the answer decides what a score MEANS across flavors. Phase 3
-        /// owns that (`overfetch_k` and band-comparability on
-        /// `ProjectionSpec` are reserved for the same reason). Wiring a
-        /// name lookup now would ship the mechanism without the contract it
-        /// is supposed to enforce.
-        ///
-        /// The parity pin stays either way: flavor #0's declared bands are
-        /// the module constants, value for value, so the day this is
-        /// consumed no score moves.
+        /// A `&[Band]` is an unordered set with a `name` on each member, so
+        /// rendering from it means resolving "which of these is the exact
+        /// arm" by string — and the answer decides what a score MEANS. The
+        /// arm-typed alternative (`Bands { exact, rescue, substring }`) was
+        /// rejected on evidence: chunk search has FOUR arms, so a three-arm
+        /// struct cannot express it and a four-arm one cannot express core.
+        /// The set is the right shape; the NAMES are the contract, and
+        /// freeze checks that a schema served by the core renderer declares
+        /// the three names that renderer resolves
+        /// ([`BAND_NAME_EXACT`], [`BAND_NAME_RESCUE`],
+        /// [`BAND_NAME_SUBSTRING`]).
         bands: &'static [Band],
         substring: SubstringArm,
     },
 }
+
+/// The band the exact `tsquery` arm renders. Resolved by name, not by
+/// position: see [`SearchProjectionDecl::Projected::bands`].
+pub const BAND_NAME_EXACT: &str = "exact";
+/// The band the `any_tsq` rescue arm renders.
+pub const BAND_NAME_RESCUE: &str = "rescue";
+/// The band the substring arm renders — flat, because it admits rather
+/// than ranks.
+pub const BAND_NAME_SUBSTRING: &str = "substring";
 
 impl SearchProjectionDecl {
     #[must_use]
@@ -281,6 +351,33 @@ impl SearchProjectionDecl {
         match self {
             Self::None { .. } => &[],
             Self::Projected { fields, .. } => fields,
+        }
+    }
+
+    /// The score windows this schema declares. Empty for a non-surface.
+    #[must_use]
+    pub const fn bands(&self) -> &'static [Band] {
+        match self {
+            Self::None { .. } => &[],
+            Self::Projected { bands, .. } => bands,
+        }
+    }
+
+    /// The band this schema declares under `name`, if any. This is the
+    /// lookup R1 settled on, in the one place that can be freeze-checked.
+    #[must_use]
+    pub fn band(&self, name: &str) -> Option<Band> {
+        self.bands().iter().copied().find(|band| band.name == name)
+    }
+
+    /// The declared substring arm. A non-surface has none, which is not the
+    /// same value as [`SubstringArm::Off`] — a non-surface has no arm to
+    /// turn off.
+    #[must_use]
+    pub const fn substring(&self) -> Option<SubstringArm> {
+        match self {
+            Self::None { .. } => None,
+            Self::Projected { substring, .. } => Some(*substring),
         }
     }
 
@@ -669,13 +766,71 @@ pub struct Surface {
 
 // ── Projection ──────────────────────────────────────────────────────────
 
+/// Where a flavor's search verb ranks, and therefore which shape of
+/// statement serves it.
+///
+/// This used to be a doc comment in one Rust file
+/// (`flavors/code/src/mcp/search_chunks.rs`, "why this arm drives from the
+/// sidecar"). A deployment layer that has to know whether a shard ranks on
+/// its projection cannot read a doc comment, and a freeze check cannot
+/// scope itself to a prose paragraph.
+///
+/// **What this is NOT.** Freeze checks what a `Projection` claim implies
+/// about the rest of the DECLARATION — that the three band names are
+/// present, and that language, bands and the `ts_rank` weight array agree
+/// across the flavor's projected schemas, because one statement can spell
+/// each of those only once. Nothing checks the claim against the SQL a
+/// flavor actually runs: a flavor whose verbs read sidecar columns can
+/// declare [`Self::Projection`] and be believed. The consumer that reads
+/// this is core's renderer deciding whether it can serve the flavor at all,
+/// so a false claim costs that flavor a statement shape it cannot use — not
+/// a leak — but it is a declaration on trust, and `docs/08` §Contract Reach
+/// records it as one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum RankSource {
+    /// Rank the projection ALONE, then join the owning sidecar for the
+    /// surviving top-k. One statement per flavor, `schema_id = ANY(..)` as
+    /// a row predicate. `core_search_memories` serves exactly these
+    /// flavors, and freeze holds them to the invariants one statement
+    /// needs: one [`LanguagePolicy`] and one band set across the flavor's
+    /// projected schemas.
+    Projection,
+    /// Rank on the flavor's own sidecar, reaching the owner through a join
+    /// to the flavor's OWN projection (never `proxima_core.memory`).
+    ///
+    /// A declared deviation, not an oversight: it is correct when the score
+    /// reads sidecar columns the projection does not carry, or when the
+    /// selective filters are sidecar-side — in both cases a projection-side
+    /// top-k truncates before the deciding half of the score or of the
+    /// predicate is known, which changes WHICH ROWS COME BACK. What the
+    /// projection is for survives either way: both index columns sit on the
+    /// projection alias, so the composite `gin(owner_id, search_tsv)` is
+    /// reached and the owner is an Index Cond.
+    ///
+    /// Such a flavor is not served by `core_search_memories`; it ships its
+    /// own tools.
+    SidecarWithProjectionOwner { why: &'static str },
+}
+
+impl RankSource {
+    /// Whether the core renderer can serve this flavor — one statement per
+    /// flavor over the projection alone.
+    #[must_use]
+    pub const fn is_projection(&self) -> bool {
+        matches!(self, Self::Projection)
+    }
+}
+
 /// How this flavor's score bands compare to flavor #0's.
 ///
-/// RESERVED AND UNCONSUMED in v0.0.8, exactly as `EraseRule` / `ForgetRule`
-/// / `ExportRule` were reserved in Phase 1. The scatter-gather deployment
-/// layer (plan §3) merges per-flavor result sets and cannot do it on raw
-/// `ts_rank`, which is not comparable across corpora. What it needs is a
-/// per-*flavor* statement, not a per-row column — see the map's R3/R7.
+/// CONSUMED in Phase 3 by `core_search_projections`: a non-core projection
+/// may enter core's merge only if its flavor declares [`Self::CoreBands`].
+/// The admitted set does not change — the code flavor declares no
+/// `tag_column`, so it was already excluded in every request shape — but
+/// the exclusion stops being an accident of a `None` and becomes the
+/// declaration doing its job. Freeze earns the declaration: a flavor
+/// claiming `CoreBands` whose schemas declare a band outside `[0.0, 1.0]`
+/// is a freeze error naming the schema and the band.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum BandComparability {
     /// Every projected surface scores inside flavor #0's `BAND_*` windows,
@@ -703,13 +858,21 @@ pub struct ProjectionSpec {
     pub table: &'static str,
     /// The composite `gin (owner_id, search_tsv)` index name.
     pub index: &'static str,
-    /// RESERVED, UNCONSUMED in v0.0.8. Rows a shard fetches before the
-    /// merge trims to the caller's limit. Reserving it costs a field;
-    /// not reserving it means the deployment layer's first change reopens
-    /// the contract.
+    /// CONSUMED. The candidate budget ONE statement over this flavor's
+    /// projection may fetch before the merge trims to the caller's limit.
+    ///
+    /// It used to be a per-schema window (`SIDECAR_OVERFETCH_CAP`, in
+    /// `storage-pg`), so a flavor's four statements could hand the merge
+    /// four times this number. One statement per flavor hands it at most
+    /// this. The request-scaling rule — a caller asking for `n` rows
+    /// overfetches `n * 20` — has no contract home and stays in code; this
+    /// is the CAP that rule is clamped to, which is a shard-level property
+    /// and therefore the flavor's to declare.
     pub overfetch_k: u32,
-    /// RESERVED, UNCONSUMED in v0.0.8. See [`BandComparability`].
+    /// CONSUMED. See [`BandComparability`].
     pub band_comparability: BandComparability,
+    /// CONSUMED. See [`RankSource`].
+    pub rank_source: RankSource,
 }
 
 impl ProjectionSpec {
@@ -1009,9 +1172,9 @@ impl FlavorContract {
 #[cfg(test)]
 mod tests {
     use super::{
-        BAND_EXACT, BAND_RESCUE, BAND_SUBSTRING, EmbedText, EmbedUnit, EmbeddingRecipe,
-        LanguagePolicy, SLOT_DEFAULT, SchemaRef, SearchProjectionDecl, SubstringArm,
-        WEIGHT_UNIFORM, WeightedField,
+        Band, EmbedText, EmbedUnit, EmbeddingRecipe, LanguagePolicy, SLOT_DEFAULT, SchemaRef,
+        SearchProjectionDecl, SubstringArm, TS_RANK_NORMALIZATION_LOG_LENGTH_SCALE,
+        TS_RANK_NORMALIZATION_NONE, TS_RANK_NORMALIZATION_SCALE, WEIGHT_UNIFORM, WeightedField,
     };
 
     #[test]
@@ -1101,12 +1264,91 @@ mod tests {
         );
     }
 
-    /// The bands are today's inline literals in `lexical_sidecar_sql`,
-    /// named. If naming them moved a number the goldens would move with it.
+    /// The width is RENDERED, not printed: `0.45f32 - 0.25f32` is
+    /// `0.19999999`, a different number from the `0.2` the shipped SQL
+    /// carried. One author for this arithmetic, in the crate that owns
+    /// `Band` — there used to be two byte-identical copies.
     #[test]
-    fn the_bands_are_the_shipped_score_windows() {
-        assert_eq!((BAND_EXACT.floor, BAND_EXACT.ceiling), (0.50, 1.00));
-        assert_eq!((BAND_RESCUE.floor, BAND_RESCUE.ceiling), (0.25, 0.45));
-        assert_eq!((BAND_SUBSTRING.floor, BAND_SUBSTRING.ceiling), (0.25, 0.25));
+    fn a_band_renders_the_arithmetic_the_sql_already_had() {
+        let exact = Band {
+            name: "exact",
+            floor: 0.50,
+            ceiling: 1.00,
+            normalization: TS_RANK_NORMALIZATION_SCALE,
+        };
+        let rescue = Band {
+            name: "rescue",
+            floor: 0.25,
+            ceiling: 0.45,
+            normalization: TS_RANK_NORMALIZATION_LOG_LENGTH_SCALE,
+        };
+        assert_eq!(exact.parts(), ("0.50".to_owned(), "0.50".to_owned()));
+        assert_eq!(rescue.parts(), ("0.25".to_owned(), "0.20".to_owned()));
+    }
+
+    /// The declared flag renders as `ts_rank`'s trailing argument, and
+    /// `NONE` renders as absence — so declaring the flag an arm already
+    /// passes cannot move that arm's score even at the level of the text.
+    #[test]
+    fn normalization_none_renders_as_the_omitted_argument() {
+        let band = Band {
+            name: "exact",
+            floor: 0.5,
+            ceiling: 1.0,
+            normalization: TS_RANK_NORMALIZATION_NONE,
+        };
+        assert_eq!(band.normalization_arg(), "");
+        assert_eq!(
+            band.with_normalization(TS_RANK_NORMALIZATION_SCALE)
+                .normalization_arg(),
+            ", 32"
+        );
+        assert_eq!(
+            band.with_normalization(TS_RANK_NORMALIZATION_LOG_LENGTH_SCALE)
+                .normalization_arg(),
+            ", 33",
+            "`1|32` is 33; the flavor declares the value, the renderer spells it"
+        );
+        assert_eq!(
+            band.with_normalization(TS_RANK_NORMALIZATION_SCALE).parts(),
+            band.parts(),
+            "changing the flag must not move the window"
+        );
+    }
+
+    /// R1's lookup, and the reason the arm-typed struct was rejected: the
+    /// NAME is the contract.
+    #[test]
+    fn a_band_resolves_by_name() {
+        const BANDS: &[Band] = &[
+            Band {
+                name: "exact",
+                floor: 0.5,
+                ceiling: 1.0,
+                normalization: TS_RANK_NORMALIZATION_SCALE,
+            },
+            Band {
+                name: "rescue",
+                floor: 0.25,
+                ceiling: 0.45,
+                normalization: TS_RANK_NORMALIZATION_LOG_LENGTH_SCALE,
+            },
+        ];
+        let decl = SearchProjectionDecl::Projected {
+            fields: &[],
+            tag_column: None,
+            language: LanguagePolicy::Pinned("simple"),
+            bands: BANDS,
+            substring: SubstringArm::Off,
+        };
+        assert_eq!(decl.band("exact").map(|band| band.floor), Some(0.5));
+        assert_eq!(decl.band("rescue").map(|band| band.ceiling), Some(0.45));
+        assert_eq!(decl.band("substring"), None);
+        assert_eq!(decl.substring(), Some(SubstringArm::Off));
+        assert_eq!(
+            SearchProjectionDecl::None { why: "a receipt" }.substring(),
+            None,
+            "a non-surface has no arm to turn off"
+        );
     }
 }

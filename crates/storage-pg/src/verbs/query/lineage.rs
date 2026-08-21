@@ -377,7 +377,14 @@ async fn load_lineage_snippets(
     Ok(batches.into_iter().flatten().collect())
 }
 
-async fn load_one_schema_snippets(
+/// One primary-key lookup over one sidecar, rendering the declared snippet
+/// expression for the ids given.
+///
+/// Shared with `search`, which hydrates the snippets of the rows that made
+/// its page the same way — the lineage walk got there first, and a second
+/// copy of "group by schema, look the projection up, `c.t = ANY($1)`" would
+/// be a second place for the snippet expression to drift.
+pub(super) async fn load_one_schema_snippets(
     pool: &PgPool,
     projection: &MemorySearchProjection,
     ts: Vec<Uuid>,

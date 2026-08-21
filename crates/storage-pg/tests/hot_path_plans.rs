@@ -16,8 +16,8 @@ use proxima_storage_pg::PgStorage;
 use proxima_storage_pg::verbs::fact_embeddings::claim_embedding_jobs_sql_for_tests;
 use proxima_storage_pg::verbs::query::{
     ancestor_hop_sql_for_tests, descendant_hop_sql_for_tests, inbound_pin_sql_for_tests,
-    lexical_sidecar_sql_for_tests, memory_page_sql_for_tests, search_admit_sql_for_tests,
-    semantic_search_sql_for_tests, set_hnsw_search_sql_for_tests,
+    memory_page_sql_for_tests, ranked_projection_sql_for_tests, search_admit_sql_for_tests,
+    semantic_search_sql_for_tests, set_hnsw_search_sql_for_tests, substring_sql_for_tests,
 };
 use uuid::Uuid;
 
@@ -215,6 +215,38 @@ async fn seed_projection_corpus(pool: &sqlx::PgPool, owner: OwnerRef) -> Result<
     .map(|_| ())
 }
 
+/// The first plan node scanning `relation`, or `None`.
+fn scan_of(plan: &serde_json::Value, relation: &str) -> Option<serde_json::Value> {
+    match plan {
+        serde_json::Value::Array(items) => items.iter().find_map(|item| scan_of(item, relation)),
+        serde_json::Value::Object(node) => {
+            if node
+                .get("Relation Name")
+                .and_then(serde_json::Value::as_str)
+                == Some(relation)
+            {
+                return Some(plan.clone());
+            }
+            node.values().find_map(|value| scan_of(value, relation))
+        }
+        _ => None,
+    }
+}
+
+/// Everything one plan node says it narrows on, whichever way the planner
+/// chose to spell it. The declaration's claim is that the owner reaches
+/// candidate selection at all — `MemoryFirstNestedLoop` explicitly does NOT
+/// claim the composite index, which is the probe-measured point of it — so
+/// an `Index Cond` and a `Filter` both satisfy it and the pin must not
+/// prefer one.
+fn predicates(node: &serde_json::Value) -> String {
+    ["Index Cond", "Filter", "Recheck Cond"]
+        .iter()
+        .filter_map(|key| node.get(*key).and_then(serde_json::Value::as_str))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 /// The `Index Cond` of the first scan of `index` in an
 /// `EXPLAIN (FORMAT JSON)` tree, or `None` when the plan never reaches it.
 fn gin_index_cond(plan: &serde_json::Value, index: &str) -> Option<String> {
@@ -317,6 +349,8 @@ async fn hot_path_plans_use_expected_indexes() {
         let owner_ids = vec![owner.stored_owner_id()];
         let req = search_req(owner);
         let like = proxima_core::verbs::query::like_pattern(&req.query);
+        let projection = note_projection();
+        let schema_ids = vec![projection.schema_id.as_str()];
 
         let mut tx = pool.begin().await?;
         sqlx::query("SET LOCAL enable_seqscan = off")
@@ -326,19 +360,21 @@ async fn hot_path_plans_use_expected_indexes() {
             .execute(&mut *tx)
             .await?;
 
-        let lexical = lexical_sidecar_sql_for_tests(&note_projection(), &req, true, false)?;
+        // ONE statement for the flavor. `schema_id` is a row predicate now
+        // (`= ANY($8)`), and the LIKE pattern is not bound at all — which
+        // renumbered every placeholder that followed it.
+        let lexical = ranked_projection_sql_for_tests(&[&projection], &req, true)?;
         let lexical_explain = format!("EXPLAIN (FORMAT JSON, COSTS OFF) {lexical}");
         // SQL-POLICY: PgIdent — production lexical builder
         let plan: serde_json::Value = sqlx::query_scalar(sqlx::AssertSqlSafe(lexical_explain))
             .bind(&req.query)
-            .bind(&like)
             .bind(20_i64)
             .bind(None::<Vec<String>>)
             .bind(None::<time::OffsetDateTime>)
             .bind(None::<time::OffsetDateTime>)
             .bind(None::<Uuid>)
             .bind(&owner_ids)
-            .bind(note_projection().schema_id.as_str())
+            .bind(&schema_ids)
             .fetch_one(&mut *tx)
             .await?;
         let lexical_plan = plan.to_string();
@@ -366,6 +402,113 @@ async fn hot_path_plans_use_expected_indexes() {
         assert!(
             !lexical_plan.contains("agent_note_v1_search_tsv_gin"),
             "the per-sidecar tsvector index is gone; plan:\n{lexical_plan}"
+        );
+
+        // The admit-side restriction reaches both `memory` and `memory_head`,
+        // and on a corpus this size it reaches them by index.  `HeadsOnly` is
+        // the request shape above and the tool default, and putting the
+        // restriction on the candidate side is only worth doing if reaching
+        // the head is cheap.
+        //
+        // What this pin does NOT assert is the join STRATEGY, and that is a
+        // correction. An earlier version rejected `Hash Join` outright, on
+        // the stated ground that it "would build over every head in the
+        // deployment". Measured, that ground is false at scale: at 25 000
+        // heads the hash join ran in 51.5 ms against the nested loop's
+        // 85.8 ms, so the pin forbade the plan that wins. The nested loop is
+        // right for the small corpus here and for the sparse case the
+        // overfetch window is designed around; the hash join is right once
+        // the candidate set is large. Both are correct plans over the same
+        // indexes, and choosing between them is the planner's job with
+        // statistics this test does not have. So: assert the index names
+        // when the shape IS a nested loop, and let the planner have the
+        // other shape.
+        //
+        // The cost the restriction actually adds is documented on
+        // `admit_side_restriction`: one probe per MATCHING row rather than
+        // per returned candidate, measured at +51% on 50 000 matching rows.
+        let nested_loop = lexical_plan.contains("\"Node Type\":\"Nested Loop\"");
+        let head = scan_of(&plan, "memory_head")
+            .unwrap_or_else(|| panic!("HeadsOnly must reach memory_head; plan:\n{lexical_plan}"));
+        let memory = scan_of(&plan, "memory")
+            .unwrap_or_else(|| panic!("the admit-side restriction joins memory; plan:\n{lexical_plan}"));
+        if nested_loop {
+            assert_eq!(
+                head.get("Index Name").and_then(serde_json::Value::as_str),
+                Some("memory_head_pkey"),
+                "the head lookup rides the handle primary key; plan:\n{lexical_plan}"
+            );
+            assert_eq!(
+                memory.get("Index Name").and_then(serde_json::Value::as_str),
+                Some("memory_t_key"),
+                "…and reaches the memory row on its unique `t`; plan:\n{lexical_plan}"
+            );
+        }
+        // There is deliberately no `else` arm, and the first draft of this
+        // correction had one: "neither table may be read by a sequential
+        // scan under any join strategy". That is false too, and by the same
+        // measurement — the hash plan reads BOTH by seq scan (Hash Join over
+        // Seq Scan memory + Seq Scan memory_head, with the projection on a
+        // bitmap scan; that plan was measured at 55.1 ms). It was green
+        // only because this corpus plans
+        // a nested loop, so the arm was dead code asserting something the
+        // plan it permits would fail. Two tables in the plan and the index
+        // names when the shape is a nested loop is what this test actually
+        // knows.
+
+        // The substring arm plans as the nested loop it DECLARES.
+        //
+        // `MemoryFirstNestedLoop` is a claim about a plan: drive
+        // `proxima_core.memory` on the owner index, probe the sidecar by
+        // `t`, filter `LIKE` on an already-fetched row. The alternative — a
+        // sidecar-first scan — is what the declaration's `why` records as a
+        // probe-measured regression, and it is what a missing owner
+        // predicate would silently produce. No trigram index exists on a
+        // core sidecar, deliberately: an indexed sidecar-first scan would
+        // be a candidate source carrying no `owner_id`, which is the defect
+        // this phase discharges three instances of.
+        let substring = substring_sql_for_tests(&[&projection], &req)?;
+        let substring_explain = format!("EXPLAIN (FORMAT JSON, COSTS OFF) {substring}");
+        // SQL-POLICY: PgIdent — production substring builder
+        let plan: serde_json::Value = sqlx::query_scalar(sqlx::AssertSqlSafe(substring_explain))
+            .bind(&like)
+            .bind(20_i64)
+            .bind(None::<Vec<String>>)
+            .bind(None::<time::OffsetDateTime>)
+            .bind(None::<time::OffsetDateTime>)
+            .bind(None::<Uuid>)
+            .bind(&owner_ids)
+            .bind(&schema_ids)
+            .fetch_one(&mut *tx)
+            .await?;
+        let substring_plan = plan.to_string();
+        assert!(
+            substring_plan.contains("\"Node Type\":\"Nested Loop\""),
+            "MemoryFirstNestedLoop is a claim about a plan; plan:\n{substring_plan}"
+        );
+        assert!(
+            !substring_plan.contains("\"Node Type\":\"Seq Scan\""),
+            "no sequential scan of a sidecar in the substring arm; plan:\n{substring_plan}"
+        );
+        let memory_scan = scan_of(&plan, "memory")
+            .unwrap_or_else(|| panic!("the arm must drive from memory; plan:\n{substring_plan}"));
+        assert!(
+            predicates(&memory_scan).contains("owner_id"),
+            "the owner must narrow candidates on `memory`, not only at admit; \
+             memory node was `{memory_scan}`"
+        );
+        assert!(
+            predicates(&memory_scan).contains("schema_id"),
+            "the narrowed schema set must reach the scan; memory node was `{memory_scan}`"
+        );
+        let sidecar_scan = scan_of(&plan, "agent_note_v1").unwrap_or_else(|| {
+            panic!("the arm must probe the sidecar; plan:\n{substring_plan}")
+        });
+        assert_eq!(
+            sidecar_scan.get("Index Name").and_then(|v| v.as_str()),
+            Some("agent_note_v1_pkey"),
+            "the sidecar is PROBED by t, not scanned — that is the second half of \
+             `MemoryFirstNestedLoop`; sidecar node was `{sidecar_scan}`"
         );
 
         // SQL-POLICY: fixed-fragment

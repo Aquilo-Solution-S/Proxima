@@ -300,3 +300,91 @@ async fn a_compliance_erase_takes_the_owners_projection_rows_by_cascade() {
     })
     .await;
 }
+
+/// A projection row may only be stamped with the schema its memory IS.
+///
+/// `projection_insert_sql` binds `$3` as the schema id it writes onto the
+/// row AND as the id the memory must already carry. Without the second use
+/// the value was a caller's assertion about a row it was not reading: pass
+/// the wrong id and a projection row lands claiming a schema the memory is
+/// not. Search then narrows on `p.schema_id` in the ranked arm and on
+/// `m.schema_id` at admit, so that row is a candidate the window pays for
+/// and admission discards — the starvation defect, arriving from the write
+/// side.
+///
+/// The mismatched call uses the NOTE's generated statement, because that is
+/// the reachable shape: the statement is chosen by sidecar table and the id
+/// is a bind, so nothing about the statement itself says which schema the
+/// row belongs to. Deleting `AND m.schema_id = $3` makes the first half of
+/// this test file a row and fail.
+#[tokio::test]
+async fn a_projection_row_cannot_claim_a_schema_its_memory_is_not() {
+    with_db("proxima_proj_schema_guard", async |pg| {
+        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let pool = pg.pool_for_tests();
+        let t = write_note(pool, owner, None).await?;
+
+        // The write path already filed the row; clear it so the two runs
+        // below are the only writers and the PK cannot mask the result.
+        sqlx::query("DELETE FROM proxima_core.projection WHERE memory_id = $1")
+            .bind(t.into_inner())
+            .execute(pool)
+            .await?;
+        assert_eq!(
+            projection_of(pool, t).await?,
+            None,
+            "the fixture starts empty"
+        );
+
+        let spec = proxima_core::FLAVOR_0
+            .projection
+            .spec()
+            .expect("flavor #0 declares a projection");
+        let note_schema = proxima_core::FLAVOR_0
+            .schemas
+            .iter()
+            .find(|schema| schema.schema_id().as_str() == AgentNoteV1::SCHEMA_ID)
+            .expect("the note schema is declared");
+        let sql = proxima_storage_pg::projection::projection_insert_sql(spec, note_schema)
+            .expect("the generator emits a valid statement");
+
+        // A real, declared schema id — and not this memory's.
+        // SQL-POLICY: generated
+        let wrong = sqlx::query(sqlx::AssertSqlSafe(sql.clone()))
+            .bind(t.into_inner())
+            .bind(None::<&str>)
+            .bind("core/interpretation-v1")
+            .execute(pool)
+            .await?;
+        assert_eq!(
+            wrong.rows_affected(),
+            0,
+            "a projection row stamped with a schema the memory is not must \
+             not be written"
+        );
+        assert_eq!(
+            projection_of(pool, t).await?,
+            None,
+            "…and nothing may be left behind"
+        );
+
+        // The control: the same statement with the memory's own id writes.
+        // Without it, a guard that rejected EVERYTHING would pass the half
+        // above.
+        // SQL-POLICY: generated
+        let right = sqlx::query(sqlx::AssertSqlSafe(sql))
+            .bind(t.into_inner())
+            .bind(None::<&str>)
+            .bind(AgentNoteV1::SCHEMA_ID)
+            .execute(pool)
+            .await?;
+        assert_eq!(right.rows_affected(), 1, "the matching write still lands");
+        assert_eq!(
+            projection_of(pool, t).await?.map(|row| row.schema_id),
+            Some(AgentNoteV1::SCHEMA_ID.to_string()),
+            "…carrying the memory's own schema id"
+        );
+        Ok(())
+    })
+    .await;
+}

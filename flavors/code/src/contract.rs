@@ -18,12 +18,13 @@
 
 use proxima_core::SearchProjectionColumnKind as ColumnKind;
 use proxima_core::flavor::{
-    BAND_EXACT, BAND_RESCUE, BAND_SUBSTRING, Band, BandComparability, DbConstraint, EmbedUnit,
-    EmbeddingRecipe, EraseRule, ExportRule, FlavorContract, ForgetRule, KeyShape, LanguagePolicy,
-    ProjectionDecl, ProjectionSpec, Provenance, SLOT_DEFAULT, SchemaContract, SchemaRef,
-    SearchProjectionDecl, SubstringArm, Surface, ToolContract, TransferRule, WEIGHT_UNIFORM,
-    WeightedField,
+    Band, BandComparability, DbConstraint, EmbedUnit, EmbeddingRecipe, EraseRule, ExportRule,
+    FlavorContract, ForgetRule, KeyShape, LanguagePolicy, ProjectionDecl, ProjectionSpec,
+    Provenance, RankSource, SLOT_DEFAULT, SchemaContract, SchemaRef, SearchProjectionDecl,
+    SubstringArm, Surface, TS_RANK_NORMALIZATION_LOG_LENGTH_SCALE, TS_RANK_NORMALIZATION_NONE,
+    TS_RANK_NORMALIZATION_SCALE, ToolContract, TransferRule, WEIGHT_UNIFORM, WeightedField,
 };
+use proxima_core::flavor0::{BAND_EXACT, BAND_RESCUE, BAND_SUBSTRING};
 use proxima_core::verbs::schema::PayloadKind;
 
 /// The prefix every code schema id and tool name already carries.
@@ -33,56 +34,120 @@ pub const FLAVOR_ID: &str = "proxima-code";
 /// (`FlavorContract::declares_sidecar_table` is asked of flavor #0 only).
 pub const CODE_ORDINAL: u16 = 1;
 
-/// Commit search's three arms, once the exact arm is banded.
-const COMMIT_BANDS: &[Band] = &[BAND_EXACT, BAND_RESCUE, BAND_SUBSTRING];
-
-// Chunk search does not score on core's scale and never has. Its four
-// lexical arms are based at 1.0/2.0/3.0/4.0 with a 0.6 width, and three
-// additive literal bonuses (+10 exact path, +6 path LIKE, +4 text LIKE) can
-// carry a hit to 24.9. Declaring core's `BANDS` here would be a false
-// statement about a merge that has not been written yet; declaring the real
-// windows is what lets the deployment layer discover the divergence from
-// the contract instead of from a score it cannot explain.
-pub const CHUNK_BAND_STRICT: Band = Band {
-    name: "chunk-strict",
-    floor: 4.0,
-    ceiling: 4.6,
-};
-pub const CHUNK_BAND_RARE_ALL: Band = Band {
-    name: "chunk-rare-all",
-    floor: 3.0,
-    ceiling: 3.6,
-};
-pub const CHUNK_BAND_RARE_ANY: Band = Band {
-    name: "chunk-rare-any",
-    floor: 2.0,
-    ceiling: 2.6,
-};
-pub const CHUNK_BAND_RESCUE_ANY: Band = Band {
-    name: "chunk-rescue-any",
-    floor: 1.0,
-    ceiling: 1.6,
-};
-/// A band as SQL renders it: `(floor, ceiling - floor)`, at the two
-/// decimals the bands are declared with.
+/// Commit search's three arms: flavor #0's windows, referenced rather than
+/// respelled — which IS this flavor's band-comparability claim for these
+/// two schemas, in the same way `BandComparability::CoreBands` would be at
+/// flavor level.
 ///
-/// Rendered rather than printed through `f32`'s `Display` for the same
-/// reason core's `band_parts` is: `0.45f32 - 0.25f32` is `0.19999999`,
-/// a different NUMBER from the `0.2` the SQL carried.
+/// The exact arm diverges in exactly one declared property. Core's passes
+/// `ts_rank_cd`'s normalization `32`; this one has always passed nothing,
+/// and `Band::with_normalization` is how that stops being an accident of
+/// two renderers and becomes a value. The WINDOW is still core's: `[0.50,
+/// 1.00]`, from `flavor0::BAND_EXACT`.
+const COMMIT_BANDS: &[Band] = &[
+    BAND_EXACT.with_normalization(TS_RANK_NORMALIZATION_NONE),
+    BAND_RESCUE,
+    BAND_SUBSTRING,
+];
+
+/// Chunk search's four arms.
+///
+/// Chunk search does not score on core's scale and never has: the arms are
+/// based at 1.0/2.0/3.0/4.0 with a 0.6 width, and three additive literal
+/// bonuses (+10 exact path, +6 path LIKE, +4 text LIKE) can carry a hit to
+/// 24.9. Referencing core's bands here would be a false statement about a
+/// merge that has not been written yet; declaring the real windows is what
+/// lets the deployment layer discover the divergence from the contract
+/// instead of from a score it cannot explain.
+///
+/// The values live HERE, in the declaration that renders them — they used
+/// to be four free `pub const`s plus a slice that named them, read by
+/// `search_chunks.rs` directly. A band nothing declares is a number with
+/// no author.
+const CHUNK_BANDS: &[Band] = &[
+    Band {
+        name: CHUNK_BAND_STRICT,
+        floor: 4.0,
+        ceiling: 4.6,
+        normalization: TS_RANK_NORMALIZATION_SCALE,
+    },
+    Band {
+        name: CHUNK_BAND_RARE_ALL,
+        floor: 3.0,
+        ceiling: 3.6,
+        normalization: TS_RANK_NORMALIZATION_LOG_LENGTH_SCALE,
+    },
+    Band {
+        name: CHUNK_BAND_RARE_ANY,
+        floor: 2.0,
+        ceiling: 2.6,
+        normalization: TS_RANK_NORMALIZATION_LOG_LENGTH_SCALE,
+    },
+    Band {
+        name: CHUNK_BAND_RESCUE_ANY,
+        floor: 1.0,
+        ceiling: 1.6,
+        normalization: TS_RANK_NORMALIZATION_LOG_LENGTH_SCALE,
+    },
+];
+
+/// The name chunk search's strict `websearch_to_tsquery` arm resolves.
+pub const CHUNK_BAND_STRICT: &str = "chunk-strict";
+/// The name the all-distinctive-terms arm resolves.
+pub const CHUNK_BAND_RARE_ALL: &str = "chunk-rare-all";
+/// The name the any-distinctive-term arm resolves.
+pub const CHUNK_BAND_RARE_ANY: &str = "chunk-rare-any";
+/// The name the whole-query rescue arm resolves.
+pub const CHUNK_BAND_RESCUE_ANY: &str = "chunk-rescue-any";
+
+/// The schema ids the three search tools rank, spelled once. They are also
+/// the `p.schema_id` literals in the tools' SQL, which
+/// `the_schema_ids_the_search_sql_names_are_declared` pins against the
+/// declaration.
+pub const COMMIT_SCHEMA_ID: &str = "proxima-code/commit-v1";
+/// See [`COMMIT_SCHEMA_ID`].
+pub const COMMIT_SUMMARY_SCHEMA_ID: &str = "proxima-code/commit-summary-v1";
+/// See [`COMMIT_SCHEMA_ID`].
+pub const CODE_CHUNK_SCHEMA_ID: &str = "proxima-code/code-chunk-v1";
+
+/// The band this flavor DECLARES for `schema_id` under `name`.
+///
+/// R1's lookup, applied inside the flavor: the SQL builders resolve their
+/// arms out of the declaration instead of importing free constants that
+/// nothing checked the declaration against. A band that moved in the
+/// contract without moving here used to be a score nobody could explain;
+/// now there is only one place for it to move.
+///
+/// # Panics
+///
+/// When the schema declares no search projection, or no band under `name`.
+/// Both are contract bugs rather than runtime conditions, and
+/// `every_arm_resolves_the_band_it_renders` fails before a query does.
 #[must_use]
-pub fn band_parts(band: Band) -> (String, String) {
-    (
-        format!("{:.2}", band.floor),
-        format!("{:.2}", band.ceiling - band.floor),
-    )
+pub fn band(schema_id: &str, name: &str) -> Band {
+    CODE_FLAVOR_CONTRACT
+        .schemas
+        .iter()
+        .find(|schema| schema.schema_id().as_str() == schema_id)
+        .and_then(|schema| schema.search.band(name))
+        .unwrap_or_else(|| panic!("proxima-code declares no band {name:?} on {schema_id}"))
 }
 
-const CHUNK_BANDS: &[Band] = &[
-    CHUNK_BAND_STRICT,
-    CHUNK_BAND_RARE_ALL,
-    CHUNK_BAND_RARE_ANY,
-    CHUNK_BAND_RESCUE_ANY,
-];
+/// The substring arm `schema_id` DECLARES, or `None` for a schema that is
+/// not a search surface.
+///
+/// This is what gates the three `LIKE` lanes. The mechanism used to be
+/// unconditional — "the `@@` arm returned zero rows, run `LIKE`" — so a
+/// flavor could not turn it off, and `SubstringArm` was a declaration
+/// nothing read.
+#[must_use]
+pub fn substring_arm(schema_id: &str) -> Option<SubstringArm> {
+    CODE_FLAVOR_CONTRACT
+        .schemas
+        .iter()
+        .find(|schema| schema.schema_id().as_str() == schema_id)
+        .and_then(|schema| schema.search.substring())
+}
 
 /// Every code sidecar is keyed on `memory.t` and carries no `owner_id`, so
 /// it reaches its owner through the Memory and follows it. EMPTY
@@ -661,13 +726,29 @@ const CODE_PROJECTION: ProjectionSpec = ProjectionSpec {
     // the cap recorded here is core's, so a shard-aware merge starts from
     // one number rather than three.
     overfetch_k: 1_000,
-    // Reserved, unconsumed: this flavor's bands are not on core's scale,
-    // and plan §3's band-aware merge is the first thing that will need to
-    // know. The divergence is chunk search's, not commit search's.
+    // CONSUMED by `core_search_projections`, which admits a non-core
+    // projection into core's merge only under `CoreBands`. The divergence
+    // is chunk search's, not commit search's.
     band_comparability: BandComparability::Divergent {
         why: "proxima-code/code-chunk-v1 scores on four arms based at 1.0/2.0/3.0/4.0 with \
               additive literal bonuses up to +20.3, so a chunk hit is not comparable to a \
               core hit without a rescale; commit search does score inside core's bands",
+    },
+    // The R6 deviation, declared instead of explained in a doc comment.
+    // Both index columns still sit on `p`, so the composite
+    // `gin(owner_id, search_tsv)` is reached and the owner is an Index Cond
+    // — which is what R6 is FOR — but the top-k is taken on the sidecar,
+    // because the score reads sidecar columns and the selective filters are
+    // sidecar-side. Conforming would need `repo_id`, `language`,
+    // `chunk_type` and `state` on the projection table, i.e. a per-flavor
+    // projection shape, which §4.6.1's slim-generator ruling forbids.
+    rank_source: RankSource::SidecarWithProjectionOwner {
+        why: "chunk search's score reads sidecar columns the projection does not carry \
+              (chunk_type, an exact file_path match, a path LIKE and a text LIKE contribute \
+              up to +20.3, dwarfing the tsvector band), and repo_id / language / chunk_type / \
+              state are the selective predicates and live on the sidecar; a projection-side \
+              top-k would order by the smaller half of the score and spend the whole \
+              candidate budget on the largest repository",
     },
 };
 

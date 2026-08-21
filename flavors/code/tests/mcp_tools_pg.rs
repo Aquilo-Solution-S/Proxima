@@ -2821,6 +2821,17 @@ async fn ingest_code_chunk_with_type(
     .bind(line_count)
     .execute(pool)
     .await?;
+    // Hand-seeded sidecar, hand-kept projection. Without this the chunk is
+    // invisible to the ranked arm, and every assertion below was in fact
+    // being served by the substring fallback — which is exactly the state
+    // an owner-blind, projection-blind fallback can hide.
+    common::project_code(
+        pool,
+        memory_id,
+        <proxima_code::CodeChunkV1 as AbstractionPayload>::SCHEMA_ID,
+        None,
+    )
+    .await?;
     insert_origin_edge(pool, &owner, memory_id, file_revision).await?;
     Ok(memory_id)
 }
@@ -2853,6 +2864,13 @@ async fn ingest_code_chunk_tombstone(
     .bind(file_path)
     .bind(chunk_index)
     .execute(pool)
+    .await?;
+    common::project_code(
+        pool,
+        memory_id,
+        <proxima_code::CodeChunkV1 as AbstractionPayload>::SCHEMA_ID,
+        None,
+    )
     .await?;
     insert_origin_edge(pool, &owner, memory_id, file_revision).await?;
     Ok(memory_id)
@@ -3010,6 +3028,13 @@ async fn ingest_commit(
     .bind(now)
     .bind(message)
     .execute(pool)
+    .await?;
+    common::project_code(
+        pool,
+        memory_id,
+        <proxima_code::CommitV1 as proxima_core::FactPayload>::SCHEMA_ID,
+        None,
+    )
     .await?;
     Ok(memory_id)
 }

@@ -44,7 +44,8 @@ pub use rows::read_seq_high_water_sql_for_tests;
 pub(crate) use search::search_memories;
 #[cfg(any(test, feature = "test-fixtures", debug_assertions))]
 pub use search::{
-    lexical_sidecar_sql_for_tests, search_admit_sql_for_tests, semantic_search_sql_for_tests,
+    ranked_projection_sql_for_tests, search_admit_sql_for_tests, semantic_search_sql_for_tests,
+    substring_sql_for_tests,
 };
 pub(crate) use series_handle::{owned_head_handle, sidecar_atoms_from_payload};
 

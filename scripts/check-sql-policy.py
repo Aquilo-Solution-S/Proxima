@@ -473,7 +473,55 @@ def run_fixture(path: Path) -> int:
 # their projection with the generator's own statement, because a test that
 # proved the projection returns the pre-projection results while writing
 # its vector by hand would have proved nothing about production.
-EXPECTED_DYNAMIC_SQL_SITES = 67
+# 67 -> 73 with the Phase 3 search collapse. Six sites, none of them a new
+# mechanism:
+#
+#   +1 `verbs/query/search.rs` — the single `SidecarScanRow` statement became
+#      `RankedRow` and `SubstringRow`. That is the phase: the ranked arm and
+#      the substring arm are two statements now, not one statement whose
+#      shape a `like_only` flag switched. Both carry the proofs the one they
+#      replace carried.
+#   +3 `flavors/code/src/mcp/search_chunks.rs` (1) and `search_commits.rs`
+#      (2) — the three `LIKE` arms stopped being `&'static str` literals.
+#      Each now renders part of itself from the flavor's DECLARATION (plan
+#      §4.8 R3/R6/R7), and the two arms differ in WHICH part:
+#        * `COMMIT_LIKE_SQL` / `SUMMARY_LIKE_SQL` interpolate the declared
+#          band floor as well as the schema id, and a band floor is a
+#          `format!("{:.2}", ..)` no `const` can produce.
+#        * `CHUNK_LIKE_SQL` interpolates only the declared schema id, which
+#          IS a `&'static str` const — chunk search bands nothing, it adds
+#          literal bonuses. A `const` still cannot build the statement:
+#          `concat!` takes literals, not const items, so the only `const`
+#          spelling is a second copy of the id the declaration exists to be
+#          the one copy of.
+#      Trading three literals for three `LazyLock<String>`s is the cost of
+#      the arms being declared rather than hand-written; each is built once,
+#      from data with no caller text in it, and carries a
+#      `PgIdent`/fixed-fragment proof.
+#   +2 test-only plan pins: `storage-pg/tests/hot_path_plans.rs` EXPLAINs the
+#      new substring statement and `flavors/code/tests/hot_path_plans_pg.rs`
+#      EXPLAINs the three `LIKE` arms to pin the R6 owner predicate on the
+#      flavor's own projection. Both EXPLAIN the audited production builders'
+#      output, which is the same shape as the 2026-07-16 HNSW pin above.
+#
+# 73 -> 74 in the same PR's fix wave. One more test-only EXPLAIN in
+# `flavors/code/tests/hot_path_plans_pg.rs`: R6 discharges the owner-blind
+# candidate follow-up for the whole flavor, but only the chunk RANKED arm
+# and the three `LIKE` arms were plan-proved — the commit and
+# commit-summary ranked arms bound `p.owner_id` with nothing reading it
+# back, so `AND $4::uuid[] IS NOT NULL` passed the entire workspace.
+#
+# 74 -> 76 in the same PR's third fix wave. Two test-only sites in
+# `crates/storage-pg/tests/projection_maintenance.rs`, running the
+# GENERATOR's own statement twice against one seeded memory: once with a
+# schema id the memory does not carry, which must write nothing, and once
+# with its own, which must write one row. That is the pin for
+# `projection_insert_sql`'s `AND m.schema_id = $3` guard, and it cannot be
+# written any other way — the whole property under test is what the
+# generated statement does with a bind, so a hand-restated INSERT would
+# prove nothing about it. Both carry `SQL-POLICY: generated`, whose meaning
+# is exactly this: the string has one producer and that producer is audited.
+EXPECTED_DYNAMIC_SQL_SITES = 76
 
 
 def run_self_test() -> int:

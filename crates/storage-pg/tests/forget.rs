@@ -853,6 +853,28 @@ async fn forget_dumps_every_stamped_extra() {
                 .await?;
         assert_eq!(note, "note");
         assert_eq!(said, "said");
+        // A memory has ONE schema id and `projection` is keyed
+        // `(memory_id, schema_id)`, so hydrate rebuilds at most one row: the
+        // one for the memory's OWN schema. The rebuild loop runs per DUMPED
+        // TABLE, and selecting the statement by table alone made it write a
+        // row per stamped extra, each claiming a schema this memory is not.
+        //
+        // Here the answer is none of them. This fixture's memory is
+        // `core/test-fact-v1`, which declares no projection over either
+        // stamped table, so neither dump can produce a row — the same answer
+        // the write path gives. If that schema ever gains a projection this
+        // assertion is the place to decide what the extras should do.
+        let projected: Vec<String> = sqlx::query_scalar(
+            "SELECT schema_id FROM proxima_core.projection WHERE memory_id = $1",
+        )
+        .bind(t)
+        .fetch_all(pool)
+        .await?;
+        assert!(
+            projected.is_empty(),
+            "a stamped extra must not earn a projection row of its own; got \
+             {projected:?}"
+        );
         Ok(())
     }
     .await;

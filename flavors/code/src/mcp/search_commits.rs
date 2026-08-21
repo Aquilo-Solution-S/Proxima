@@ -1,6 +1,6 @@
 use std::sync::LazyLock;
 
-use proxima_core::flavor::{BAND_EXACT, BAND_RESCUE};
+use proxima_core::flavor::{BAND_NAME_EXACT, BAND_NAME_RESCUE, BAND_NAME_SUBSTRING, SubstringArm};
 use proxima_core::verbs::query::like_pattern;
 use proxima_core::{Tool, ToolCtx, ToolError};
 use schemars::JsonSchema;
@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use crate::contract::band_parts;
+use crate::contract::{COMMIT_SCHEMA_ID, COMMIT_SUMMARY_SCHEMA_ID, band, substring_arm};
 use crate::payloads::{CommitSummaryV1, CommitV1};
 
 use super::CodeToolCtxExt;
@@ -226,14 +226,26 @@ impl Tool for CodeSearchCommitsTool {
 /// planner sees one indexed column on `p` and the other nowhere — and the
 /// scan degrades to driving from `commit_v1` and probing the projection by
 /// primary key, once per candidate. Both commit arms drive from the
-/// sidecar rather than ranking the projection alone (§4.7 R6) because
-/// `repo_id` and `change_kind` are the selective predicates and applying
-/// them after a projection-side `LIMIT` would answer a repo-scoped search
-/// with the wrong repository's rows. See `search_chunks::CHUNK_GIN_SQL`
-/// for the full argument.
+/// sidecar rather than ranking the projection alone
+/// (`RankSource::SidecarWithProjectionOwner`, declared on
+/// `CODE_PROJECTION`) because `repo_id` and `change_kind` are the selective
+/// predicates and applying them after a projection-side `LIMIT` would
+/// answer a repo-scoped search with the wrong repository's rows. See
+/// `search_chunks::CHUNK_GIN_SQL` for the full argument.
+///
+/// The exact arm passes NO `ts_rank_cd` normalization flag where core's
+/// passes `32`. That was an undeclared divergence between two renderers
+/// claiming one band; it is now
+/// `BAND_EXACT.with_normalization(TS_RANK_NORMALIZATION_NONE)` in
+/// `COMMIT_BANDS`, and `Band::normalization_arg` renders the absence — so
+/// declaring it moved no score.
 static COMMIT_SEARCH_SQL: LazyLock<String> = LazyLock::new(|| {
-    let (exact_floor, exact_width) = band_parts(BAND_EXACT);
-    let (rescue_floor, rescue_width) = band_parts(BAND_RESCUE);
+    let exact = band(COMMIT_SCHEMA_ID, BAND_NAME_EXACT);
+    let rescue = band(COMMIT_SCHEMA_ID, BAND_NAME_RESCUE);
+    let (exact_floor, exact_width) = exact.parts();
+    let (rescue_floor, rescue_width) = rescue.parts();
+    let exact_norm = exact.normalization_arg();
+    let rescue_norm = rescue.normalization_arg();
     format!(
         "
 WITH q AS (
@@ -243,16 +255,16 @@ WITH q AS (
 SELECT c.t AS memory_id,
        GREATEST(
            CASE WHEN p.search_tsv @@ q.tsq
-                THEN {exact_floor} + LEAST(ts_rank_cd(p.search_tsv, q.tsq), 1.0) * {exact_width}
+                THEN {exact_floor} + LEAST(ts_rank_cd(p.search_tsv, q.tsq{exact_norm}), 1.0) * {exact_width}
                 ELSE 0.0 END,
            CASE WHEN q.any_tsq IS NOT NULL AND p.search_tsv @@ q.any_tsq
-                THEN {rescue_floor} + LEAST(ts_rank(p.search_tsv, q.any_tsq, 1|32) * 100.0, 1.0) * {rescue_width}
+                THEN {rescue_floor} + LEAST(ts_rank(p.search_tsv, q.any_tsq{rescue_norm}) * 100.0, 1.0) * {rescue_width}
                 ELSE 0.0 END
        )::real AS score
 FROM q, proxima_code.commit_v1 c
 JOIN proxima_code.projection p
   ON p.memory_id = c.t
- AND p.schema_id = 'proxima-code/commit-v1'
+ AND p.schema_id = '{COMMIT_SCHEMA_ID}'
  AND p.owner_id = ANY($4::uuid[])
 WHERE ($2::uuid IS NULL OR c.repo_id = $2)
   AND (p.search_tsv @@ q.tsq
@@ -263,10 +275,15 @@ LIMIT $3
     )
 });
 
-/// The commit-summary GIN arm. Same rewrite, same band.
+/// The commit-summary GIN arm. Same rewrite, same bands, read off the
+/// summary schema's own declaration.
 static SUMMARY_SEARCH_SQL: LazyLock<String> = LazyLock::new(|| {
-    let (exact_floor, exact_width) = band_parts(BAND_EXACT);
-    let (rescue_floor, rescue_width) = band_parts(BAND_RESCUE);
+    let exact = band(COMMIT_SUMMARY_SCHEMA_ID, BAND_NAME_EXACT);
+    let rescue = band(COMMIT_SUMMARY_SCHEMA_ID, BAND_NAME_RESCUE);
+    let (exact_floor, exact_width) = exact.parts();
+    let (rescue_floor, rescue_width) = rescue.parts();
+    let exact_norm = exact.normalization_arg();
+    let rescue_norm = rescue.normalization_arg();
     format!(
         "
 WITH q AS (
@@ -276,16 +293,16 @@ WITH q AS (
 SELECT s.t AS memory_id,
        GREATEST(
            CASE WHEN p.search_tsv @@ q.tsq
-                THEN {exact_floor} + LEAST(ts_rank_cd(p.search_tsv, q.tsq), 1.0) * {exact_width}
+                THEN {exact_floor} + LEAST(ts_rank_cd(p.search_tsv, q.tsq{exact_norm}), 1.0) * {exact_width}
                 ELSE 0.0 END,
            CASE WHEN q.any_tsq IS NOT NULL AND p.search_tsv @@ q.any_tsq
-                THEN {rescue_floor} + LEAST(ts_rank(p.search_tsv, q.any_tsq, 1|32) * 100.0, 1.0) * {rescue_width}
+                THEN {rescue_floor} + LEAST(ts_rank(p.search_tsv, q.any_tsq{rescue_norm}) * 100.0, 1.0) * {rescue_width}
                 ELSE 0.0 END
        )::real AS score
 FROM q, proxima_code.commit_summary_v1 s
 JOIN proxima_code.projection p
   ON p.memory_id = s.t
- AND p.schema_id = 'proxima-code/commit-summary-v1'
+ AND p.schema_id = '{COMMIT_SUMMARY_SCHEMA_ID}'
  AND p.owner_id = ANY($5::uuid[])
 WHERE ($2::uuid IS NULL OR s.repo_id = $2)
   AND ($3::text IS NULL OR s.change_kind = $3)
@@ -297,10 +314,30 @@ LIMIT $4
     )
 });
 
-const COMMIT_LIKE_SQL: &str = "
+/// The commit substring arm, `SameTableLike` as declared.
+///
+/// Two changes from the arm it replaces, both §4.8 rulings:
+///
+/// - **The score is the declared band**, not a bare `0.25::real`. Commit
+///   search's substring window is `flavor0::BAND_SUBSTRING`, referenced —
+///   which is the band-comparability claim for this schema.
+/// - **`p.owner_id = ANY($4)`.** This arm bound pattern, repo and limit and
+///   nothing else: candidate generation was owner-blind, so a neighbour's
+///   repository could consume the whole budget before authorization ran.
+///   The owner reaches a code sidecar through the Memory, and the join is
+///   to this flavor's OWN projection — never `proxima_core.memory`, which
+///   flavor SQL may not name.
+static COMMIT_LIKE_SQL: LazyLock<String> = LazyLock::new(|| {
+    let (floor, _) = band(COMMIT_SCHEMA_ID, BAND_NAME_SUBSTRING).parts();
+    format!(
+        "
 SELECT c.t AS memory_id,
-       0.25::real AS score
+       {floor}::real AS score
 FROM proxima_code.commit_v1 c
+JOIN proxima_code.projection p
+  ON p.memory_id = c.t
+ AND p.schema_id = '{COMMIT_SCHEMA_ID}'
+ AND p.owner_id = ANY($4::uuid[])
 WHERE ($2::uuid IS NULL OR c.repo_id = $2)
   AND (
         lower(c.sha) LIKE $1 ESCAPE '\\'
@@ -310,12 +347,23 @@ WHERE ($2::uuid IS NULL OR c.repo_id = $2)
   )
 ORDER BY score DESC, c.committer_time DESC
 LIMIT $3
-";
+"
+    )
+});
 
-const SUMMARY_LIKE_SQL: &str = "
+/// The commit-summary substring arm. Same two changes as
+/// [`COMMIT_LIKE_SQL`].
+static SUMMARY_LIKE_SQL: LazyLock<String> = LazyLock::new(|| {
+    let (floor, _) = band(COMMIT_SUMMARY_SCHEMA_ID, BAND_NAME_SUBSTRING).parts();
+    format!(
+        "
 SELECT s.t AS memory_id,
-       0.25::real AS score
+       {floor}::real AS score
 FROM proxima_code.commit_summary_v1 s
+JOIN proxima_code.projection p
+  ON p.memory_id = s.t
+ AND p.schema_id = '{COMMIT_SUMMARY_SCHEMA_ID}'
+ AND p.owner_id = ANY($5::uuid[])
 WHERE ($2::uuid IS NULL OR s.repo_id = $2)
   AND ($3::text IS NULL OR s.change_kind = $3)
   AND (
@@ -328,7 +376,21 @@ WHERE ($2::uuid IS NULL OR s.repo_id = $2)
   )
 ORDER BY score DESC, s.t DESC
 LIMIT $4
-";
+"
+    )
+});
+
+/// Whether `schema_id` opts into the substring shape this module renders.
+///
+/// The retry used to be unconditional — "the `@@` arm returned zero rows,
+/// run `LIKE`" — which made `SubstringArm` a declaration no reader
+/// consulted. Each of these tools ranks exactly one schema, so "the ranked
+/// arm returned nothing for this schema" and "the ranked arm returned
+/// nothing" are the same sentence: the trigger keeps exact per-schema
+/// parity with what it replaces, and only the GATE is new.
+fn same_table_like_is_declared(schema_id: &str) -> bool {
+    matches!(substring_arm(schema_id), Some(SubstringArm::SameTableLike))
+}
 
 async fn search_commit_rows(
     pool: &PgPool,
@@ -346,11 +408,13 @@ async fn search_commit_rows(
         .fetch_all(pool)
         .await
         .map_err(map_storage)?;
-    if gin.is_empty() {
-        sqlx::query_as(COMMIT_LIKE_SQL)
+    if gin.is_empty() && same_table_like_is_declared(COMMIT_SCHEMA_ID) {
+        // SQL-POLICY: fixed-fragment
+        sqlx::query_as(sqlx::AssertSqlSafe(COMMIT_LIKE_SQL.as_str()))
             .bind(like_pattern(query))
             .bind(repo_id)
             .bind(limit)
+            .bind(read_owner_ids)
             .fetch_all(pool)
             .await
             .map_err(map_storage)
@@ -377,18 +441,48 @@ async fn search_summary_rows(
         .fetch_all(pool)
         .await
         .map_err(map_storage)?;
-    if gin.is_empty() {
-        sqlx::query_as(SUMMARY_LIKE_SQL)
+    if gin.is_empty() && same_table_like_is_declared(COMMIT_SUMMARY_SCHEMA_ID) {
+        // SQL-POLICY: fixed-fragment
+        sqlx::query_as(sqlx::AssertSqlSafe(SUMMARY_LIKE_SQL.as_str()))
             .bind(like_pattern(query))
             .bind(repo_id)
             .bind(change_kind)
             .bind(limit)
+            .bind(read_owner_ids)
             .fetch_all(pool)
             .await
             .map_err(map_storage)
     } else {
         Ok(gin)
     }
+}
+
+#[cfg(any(test, debug_assertions))]
+#[doc(hidden)]
+#[must_use]
+pub fn commit_like_sql_for_tests() -> &'static str {
+    COMMIT_LIKE_SQL.as_str()
+}
+
+#[cfg(any(test, debug_assertions))]
+#[doc(hidden)]
+#[must_use]
+pub fn summary_like_sql_for_tests() -> &'static str {
+    SUMMARY_LIKE_SQL.as_str()
+}
+
+#[cfg(any(test, debug_assertions))]
+#[doc(hidden)]
+#[must_use]
+pub fn commit_search_sql_for_tests() -> &'static str {
+    COMMIT_SEARCH_SQL.as_str()
+}
+
+#[cfg(any(test, debug_assertions))]
+#[doc(hidden)]
+#[must_use]
+pub fn summary_search_sql_for_tests() -> &'static str {
+    SUMMARY_SEARCH_SQL.as_str()
 }
 
 #[derive(Debug, sqlx::FromRow)]
@@ -418,22 +512,121 @@ mod tests {
         assert!(super::SUMMARY_SEARCH_SQL.contains("p.search_tsv @@"));
     }
 
+    /// The RANKED arms bind the owner too, and nothing pinned it.
+    ///
+    /// This has been true since the projection landed and was never
+    /// asserted, so `AND $4::uuid[] IS NOT NULL` — a predicate that binds
+    /// the parameter and narrows nothing — left the whole workspace green
+    /// while candidate generation went owner-blind. Phase 3 declares the
+    /// owner-blindness follow-up discharged for this flavor, which is a
+    /// claim about all four arms and not only the three `LIKE` ones.
+    #[test]
+    fn the_ranked_arms_bind_the_owner_as_a_predicate() {
+        assert!(
+            super::COMMIT_SEARCH_SQL.contains("AND p.owner_id = ANY($4::uuid[])"),
+            "the commit arm narrows on the owner, on the projection's own column"
+        );
+        assert!(
+            super::SUMMARY_SEARCH_SQL.contains("AND p.owner_id = ANY($5::uuid[])"),
+            "the summary arm narrows on the owner; its bind is $5, one later than \
+             the commit arm's, because it also binds a kind"
+        );
+        // `IS NOT NULL` on the same bind reads as a use and narrows
+        // nothing. Naming the shape is what makes this assertion outlive
+        // the one spelling it currently rejects.
+        for sql in [
+            super::COMMIT_SEARCH_SQL.as_str(),
+            super::SUMMARY_SEARCH_SQL.as_str(),
+        ] {
+            assert!(
+                !sql.contains("::uuid[] IS NOT NULL"),
+                "a bind that is only checked for NULL is not an owner predicate"
+            );
+        }
+    }
+
     /// The exact arm was raw `ts_rank_cd`, unbanded, merged with banded
-    /// scores from the rescue arm and from core. It reads `BAND_EXACT` now.
+    /// scores from the rescue arm and from core. It renders the window it
+    /// DECLARES now, and the declaration is `flavor0::BAND_EXACT` with one
+    /// property changed — so the window is still core's and the
+    /// normalization divergence is a value rather than an accident.
     #[test]
     fn the_exact_arm_is_banded_like_cores() {
-        use proxima_core::flavor::BAND_EXACT;
-        let (floor, width) = crate::contract::band_parts(BAND_EXACT);
+        use proxima_core::flavor::{BAND_NAME_EXACT, TS_RANK_NORMALIZATION_NONE};
+
+        let declared = crate::contract::band(crate::contract::COMMIT_SCHEMA_ID, BAND_NAME_EXACT);
+        assert_eq!(
+            (declared.floor, declared.ceiling),
+            (
+                proxima_core::flavor0::BAND_EXACT.floor,
+                proxima_core::flavor0::BAND_EXACT.ceiling
+            ),
+            "the window is core's, referenced rather than respelled"
+        );
+        assert_eq!(
+            declared.normalization, TS_RANK_NORMALIZATION_NONE,
+            "this arm has always passed no normalization flag; declaring that must not add one"
+        );
+        let (floor, width) = declared.parts();
         assert_eq!((floor.as_str(), width.as_str()), ("0.50", "0.50"));
         assert!(
             super::COMMIT_SEARCH_SQL
                 .contains("0.50 + LEAST(ts_rank_cd(p.search_tsv, q.tsq), 1.0) * 0.50"),
-            "the exact arm renders BAND_EXACT"
+            "the exact arm renders the declared window and no normalization argument"
         );
         assert!(
             super::SUMMARY_SEARCH_SQL
                 .contains("0.50 + LEAST(ts_rank_cd(p.search_tsv, q.tsq), 1.0) * 0.50"),
         );
+    }
+
+    /// The substring arms are DECLARED and OWNER-SCOPED.
+    ///
+    /// Owner-blindness at candidate time was PR #231's recorded follow-up:
+    /// authorization admits later so nothing leaks, but a neighbour's
+    /// corpus could consume the whole candidate budget. The fix is a join
+    /// to this flavor's own projection — never `proxima_core.memory`.
+    #[test]
+    fn the_substring_arms_are_declared_and_owner_scoped() {
+        use proxima_core::flavor::SubstringArm;
+
+        for schema_id in [
+            crate::contract::COMMIT_SCHEMA_ID,
+            crate::contract::COMMIT_SUMMARY_SCHEMA_ID,
+        ] {
+            assert_eq!(
+                crate::contract::substring_arm(schema_id),
+                Some(SubstringArm::SameTableLike),
+                "{schema_id} declares the arm this module renders"
+            );
+            assert!(super::same_table_like_is_declared(schema_id));
+        }
+        // Spelled in two halves so this assertion is not itself a flavor
+        // literal naming a core table — see
+        // `scripts/check-architecture-guardrails.py`.
+        let core_memory = format!("{}{}", "proxima_core", ".memory");
+        for sql in [
+            super::COMMIT_LIKE_SQL.as_str(),
+            super::SUMMARY_LIKE_SQL.as_str(),
+        ] {
+            assert!(sql.contains("LIKE"), "the substring arm still LIKEs");
+            assert!(
+                sql.contains("JOIN proxima_code.projection p"),
+                "the owner reaches a code sidecar through this flavor's own projection"
+            );
+            assert!(
+                sql.contains("p.owner_id = ANY("),
+                "candidate generation must not be owner-blind"
+            );
+            assert!(
+                !sql.contains(&core_memory),
+                "flavor SQL may not name a core table for this"
+            );
+            assert!(
+                sql.contains("0.25::real AS score"),
+                "the flat score is the declared substring band"
+            );
+        }
     }
 
     #[test]
@@ -444,10 +637,6 @@ mod tests {
             prod.contains("commit_search_web_tsquery")
                 && prod.contains("commit_search_any_tsquery"),
             "query side must use the SQL prose query authorities"
-        );
-        assert!(
-            super::COMMIT_LIKE_SQL.contains("LIKE") && super::SUMMARY_LIKE_SQL.contains("LIKE"),
-            "GIN miss must have a LIKE arm"
         );
     }
 }

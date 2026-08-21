@@ -1,7 +1,12 @@
-//! Sidecar-first core search: GIN on the sidecar, admit via memory_head.
+//! Projection-first core search: one ranked statement per flavor over
+//! `<flavor>.projection`, a DECLARED substring arm over the schemas it
+//! returned nothing for, then admit via `memory_head`.
 #![allow(clippy::doc_markdown, clippy::too_many_lines)]
 
-use proxima_core::flavor::{LanguagePolicy, WEIGHT_UNIFORM};
+use proxima_core::flavor::{
+    Band, BandComparability, LanguagePolicy, RankSource, SubstringArm, WEIGHT_UNIFORM,
+};
+use proxima_core::flavor0::{BAND_EXACT, BAND_RESCUE, BAND_SUBSTRING};
 use proxima_core::storage_ports::MemoryReadPort;
 use proxima_core::verbs::query::{
     EntityKind, MemorySearchRequest, SearchMode, SearchOrder, SupersessionStatus, TagMatch,
@@ -13,6 +18,16 @@ use proxima_core::{OwnerRef, SchemaId, SchemaVersion, SearchProjectionColumnKind
 use proxima_pg_testkit::{create_db, db_url, drop_db};
 use proxima_storage_pg::PgStorage;
 use uuid::Uuid;
+
+/// The out-of-tree fixture flavor's bands: core's, referenced. Referencing
+/// them IS the band-comparability claim, which is what makes
+/// `BandComparability::CoreBands` below an assertion rather than a label.
+const DOCS_BANDS: &[Band] = &[BAND_EXACT, BAND_RESCUE, BAND_SUBSTRING];
+
+/// Superseded substring matches in the starvation corpus. Above the
+/// `overfetch` a `limit = 1` request gets (`1 * 20 = 20`), so the window is
+/// the scarce thing rather than the corpus.
+const SUBSTRING_BACKLOG: usize = 25;
 
 fn note_projection() -> MemorySearchProjection {
     // The shipped declaration, not a second copy of it. This fixture used
@@ -200,19 +215,43 @@ async fn lexical_search_is_sidecar_first_then_owner_admit() {
             "snippet comes from the sidecar scan"
         );
 
-        let like_only = pg
+        // The substring arm is DECLARED, not blanket. `core/agent-note-v1`
+        // declares `MemoryFirstNestedLoop`, so a partial word with no
+        // tsvector lexeme still lands — and it lands at the declared
+        // substring band, from the one statement that runs over exactly
+        // the schemas the ranked arm returned nothing for.
+        let substring = pg
             .search_memories(&search_req(owner, "eedle"), &[note_projection()])
             .await?;
         assert_eq!(
-            like_only.results.len(),
+            substring.results.len(),
             1,
-            "substring with no tsvector lexeme must still hit via LIKE fallback"
+            "a declared substring arm must still hit where no lexeme does"
         );
-        assert_eq!(like_only.results[0].memory_id.into_inner(), ours);
+        assert_eq!(substring.results[0].memory_id.into_inner(), ours);
         assert!(
-            (like_only.results[0].lexical_score - 0.25).abs() < f32::EPSILON,
-            "LIKE fallback score is the 0.25 substring band, got {}",
-            like_only.results[0].lexical_score
+            (substring.results[0].lexical_score - 0.25).abs() < f32::EPSILON,
+            "substring hits score at the declared band floor, got {}",
+            substring.results[0].lexical_score
+        );
+        assert!(
+            substring.results[0].snippet.contains("keyword needle"),
+            "the snippet is hydrated for the page whichever arm found the row"
+        );
+
+        // Mutation target: turn the arm off and the row disappears. This
+        // is the whole price of deleting the blanket retry, stated as a
+        // test rather than as a claim.
+        let arm_off = MemorySearchProjection {
+            substring: proxima_core::flavor::SubstringArm::Off,
+            ..note_projection()
+        };
+        let refused = pg
+            .search_memories(&search_req(owner, "eedle"), &[arm_off])
+            .await?;
+        assert!(
+            refused.results.is_empty(),
+            "a schema declaring SubstringArm::Off contributes no statement and no rows"
         );
 
         let miss = pg
@@ -435,6 +474,16 @@ async fn tagged_search_scans_flavor_sidecars() {
                 column: "lexical_language",
             },
             rank_weights: None,
+            // A hand-built out-of-tree flavor: it has to declare what the
+            // renderer resolves, which is the point of the freeze rule that
+            // holds a real one to the same three names.
+            bands: DOCS_BANDS,
+            substring: SubstringArm::MemoryFirstNestedLoop,
+            overfetch_k: 1_000,
+            // Both new gates, satisfied. Flip either and the tagged search
+            // below returns nothing.
+            band_comparability: BandComparability::CoreBands,
+            rank_source: RankSource::Projection,
         };
 
         let unscoped = pg
@@ -691,6 +740,15 @@ async fn semantic_search_respects_until() {
         inside.embedding_model_id = Some("test-embed".into());
         let hit = pg.search_memories(&inside, &[note_projection()]).await?;
         assert_eq!(hit.results.len(), 1);
+        // Snippets are hydrated from the PAGE now, not carried by the
+        // ranked statement, so a row that reached the page on similarity
+        // alone gets one too. The sidecar-join shape could not do this:
+        // the join lived in the lexical statement, so a semantic-only hit
+        // came back with an empty snippet.
+        assert!(
+            !hit.results[0].snippet.is_empty(),
+            "a semantic-only hit is hydrated by the same per-schema lookup"
+        );
 
         let mut too_old = inside.clone();
         too_old.until = Some(time::OffsetDateTime::UNIX_EPOCH);
@@ -704,6 +762,108 @@ async fn semantic_search_respects_until() {
     .await;
     let _ = drop_db(&db_name).await;
     result.expect("semantic until filter failed");
+}
+
+/// `since` is a LOWER bound and `until` is an UPPER one — proved by rows,
+/// not by the shape of the string.
+///
+/// The two binds have the same type and the same cast, so exchanging their
+/// comparisons (`>= $5` / `<= $4`) is a mutation nothing in the workspace
+/// caught: no lexical-path test bound a non-null window at all, and the one
+/// test that set `until` set it on the SEMANTIC arm, which does not render
+/// these predicates.
+///
+/// Two things make this test actually kill that mutant, and both were
+/// learned by running it:
+///
+/// - The window must be ASYMMETRIC. A symmetric `since == until` asks for
+///   `t >= x AND t <= x` either way round and survives the exchange.
+/// - **The assertion has to be about SCORES, not ids.** `search_admit_sql`
+///   re-applies `since`/`until` on the hit set (`$5`/`$6` there), so a
+///   candidate window that admitted the wrong rows still returns the right
+///   IDS — admission trims them. What it cannot repair is the arm they came
+///   from: an exchanged window empties the RANKED statement, the schema is
+///   then reported missing, the substring arm re-finds the same rows, and
+///   they come back stamped with the flat `BAND_SUBSTRING` floor instead of
+///   their `ts_rank` score. That is the same signature as the head-starvation
+///   defect, and it is what the band assertion below reads.
+#[tokio::test]
+async fn lexical_search_reads_since_as_a_floor_and_until_as_a_ceiling() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    if let Err(e) = create_db(&db_name).await {
+        panic!("PG required for tests but admin connect failed: {e}");
+    }
+    let url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&url).await?;
+        pg.run_migrations().await?;
+        let pool = pg.pool_for_tests();
+        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+
+        // Three notes, strictly increasing in `t` — uuidv7 is millisecond
+        // precision, so the sleeps are what make "strictly".
+        let mut ts = Vec::new();
+        for title in ["Atlas alpha", "Atlas beta", "Atlas gamma"] {
+            let t = seed_note(pool, owner, title, "cartography of the archive").await?;
+            ts.push(t);
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        let stamps: Vec<time::OffsetDateTime> =
+            sqlx::query_scalar("SELECT uuid_extract_timestamp(t) FROM unnest($1::uuid[]) AS t")
+                .bind(&ts)
+                .fetch_all(pool)
+                .await?;
+        assert!(
+            stamps[0] < stamps[1] && stamps[1] < stamps[2],
+            "the fixture needs three distinct instants, got {stamps:?}"
+        );
+
+        let unbounded = pg
+            .search_memories(&search_req(owner, "atlas"), &[note_projection()])
+            .await?;
+        assert_eq!(unbounded.results.len(), 3, "all three match the query");
+
+        let mut windowed = search_req(owner, "atlas");
+        windowed.since = Some(stamps[1]);
+        windowed.until = Some(stamps[2]);
+        let page = pg.search_memories(&windowed, &[note_projection()]).await?;
+        let found: std::collections::BTreeSet<Uuid> = page
+            .results
+            .iter()
+            .map(|row| row.memory_id.into_inner())
+            .collect();
+        assert_eq!(
+            found,
+            [ts[1], ts[2]].into_iter().collect(),
+            "[second, third] is what `since = second, until = third` selects"
+        );
+        for row in &page.results {
+            assert!(
+                row.score >= BAND_EXACT.floor,
+                "the window must not empty the ranked arm and hand these rows \
+                 to the substring fallback at its flat floor; got {}",
+                row.score
+            );
+        }
+
+        // …and the other half of the window, so a mutation that drops one
+        // predicate entirely cannot pass by returning everything.
+        let mut early = search_req(owner, "atlas");
+        early.until = Some(stamps[0]);
+        let page = pg.search_memories(&early, &[note_projection()]).await?;
+        assert_eq!(
+            page.results
+                .iter()
+                .map(|row| row.memory_id.into_inner())
+                .collect::<Vec<_>>(),
+            vec![ts[0]],
+            "`until = first` admits the first row and nothing after it"
+        );
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("lexical time-window direction failed");
 }
 
 #[tokio::test]
@@ -916,4 +1076,132 @@ async fn lexical_language_forget_blocks_on_an_in_flight_writer() {
     .await;
     let _ = drop_db(&db_name).await;
     result.expect("lexical forget concurrency failed");
+}
+
+/// A superseded backlog must not starve the SUBSTRING leg either.
+///
+/// The substring leg is the arm the collapse gave a head restriction to, and
+/// its restriction has a different shape from the ranked arm's — the leg
+/// already drives `proxima_core.memory m`, so it probes `memory_head`
+/// directly instead of through a second `memory` lookup. That shape was
+/// pinned by a string assertion only, and a string assertion cannot see a
+/// join that is present but wrong.
+///
+/// A first attempt at this test seeded one superseded substring match and
+/// asserted it did not come back. It passed with the restriction REMOVED:
+/// `search_admit_sql` drops the row either way, so the candidate-side
+/// predicate changes nothing until the window is the scarce thing. This
+/// corpus makes it scarce — [`SUBSTRING_BACKLOG`] superseded matches against
+/// a `limit = 1` window of twenty — and puts the live row FIRST, because the
+/// substring arm scores everything at one flat floor and breaks the tie on
+/// `t DESC`, so the oldest row is the one a spent window loses.
+///
+/// `artograph` is inside `cartography` and is not a lexeme of it, so
+/// `websearch_to_tsquery` matches nothing, the schema is reported missing,
+/// and the substring leg is the only thing that can answer.
+#[tokio::test]
+async fn a_superseded_backlog_does_not_starve_the_substring_leg() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    if let Err(e) = create_db(&db_name).await {
+        panic!("PG required for tests but admin connect failed: {e}");
+    }
+    let url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&url).await?;
+        pg.run_migrations().await?;
+        let pool = pg.pool_for_tests();
+        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let owner_id = owner.stored_owner_id();
+        sqlx::query(
+            "INSERT INTO proxima_core.owners (owner_id, kind)
+             VALUES ($1, 'personal') ON CONFLICT DO NOTHING",
+        )
+        .bind(owner_id)
+        .execute(pool)
+        .await?;
+
+        // The live row, seeded FIRST so every decoy is newer than it.
+        let live = seed_note(pool, owner, "Atlas", "the cartography of the archive").await?;
+
+        for index in 0..SUBSTRING_BACKLOG {
+            let handle = Uuid::now_v7();
+            let superseded = Uuid::now_v7();
+            sqlx::query(
+                "INSERT INTO proxima_core.memory_head (handle, kind, schema_id, owner_id, t)
+                 VALUES ($1, 'fact', 'core/agent-note-v1', $2, $3)",
+            )
+            .bind(handle)
+            .bind(owner_id)
+            .bind(superseded)
+            .execute(pool)
+            .await?;
+            let head = Uuid::now_v7();
+            for (t, body) in [
+                (superseded, "the cartography of the archive"),
+                (head, "this revision says nothing"),
+            ] {
+                sqlx::query(
+                    "INSERT INTO proxima_core.memory (handle, t, kind, owner_id, schema_id)
+                     VALUES ($1, $2, 'fact', $3, 'core/agent-note-v1')",
+                )
+                .bind(handle)
+                .bind(t)
+                .bind(owner_id)
+                .execute(pool)
+                .await?;
+                sqlx::query(
+                    "INSERT INTO proxima_core.agent_note_v1 (t, note_id, title, body, tags)
+                     VALUES ($1, $2, $3, $4, '{}')",
+                )
+                .bind(t)
+                .bind(t)
+                .bind(format!("Backlog {index}"))
+                .bind(body)
+                .execute(pool)
+                .await?;
+                project(pool, t, "core/agent-note-v1", None).await?;
+            }
+            sqlx::query("UPDATE proxima_core.memory_head SET t = $2 WHERE handle = $1")
+                .bind(handle)
+                .bind(head)
+                .execute(pool)
+                .await?;
+        }
+
+        let mut req = search_req(owner, "artograph");
+        req.limit = 1;
+        let page = pg.search_memories(&req, &[note_projection()]).await?;
+        assert_eq!(
+            page.results
+                .iter()
+                .map(|row| row.memory_id.into_inner())
+                .collect::<Vec<_>>(),
+            vec![live],
+            "the substring window must not be spent on revisions admission \
+             will drop"
+        );
+        assert!(
+            (page.results[0].score - BAND_SUBSTRING.floor).abs() < f32::EPSILON,
+            "…and the row came through the substring arm, at its flat floor; \
+             got {}",
+            page.results[0].score
+        );
+
+        // The control. If this returns one row, the assertion above passed
+        // because the backlog stopped matching, not because the head
+        // restriction worked.
+        req.supersession = SupersessionStatus::IncludeSuperseded;
+        req.limit = 64;
+        let page = pg.search_memories(&req, &[note_projection()]).await?;
+        assert_eq!(
+            page.results.len(),
+            SUBSTRING_BACKLOG + 1,
+            "IncludeSuperseded wants the revisions, and every one of them \
+             carries the substring"
+        );
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("substring starvation check failed");
 }

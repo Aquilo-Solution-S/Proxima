@@ -36,13 +36,18 @@ mod tool_registration;
 #[cfg(test)]
 mod tests;
 
+// `BAND_EXACT` and its two siblings are deliberately NOT here: the core
+// band values live in flavor #0's declaration (`flavor0::BAND_*`), so that
+// a flavor referencing them is making the band-comparability claim rather
+// than reaching for module vocabulary that only looked universal.
 pub use contract::{
-    BAND_EXACT, BAND_RESCUE, BAND_SUBSTRING, Band, BandComparability, CORE_ORDINAL,
+    BAND_NAME_EXACT, BAND_NAME_RESCUE, BAND_NAME_SUBSTRING, Band, BandComparability, CORE_ORDINAL,
     DEFAULT_RANK_WEIGHTS, DbConstraint, DbTrigger, EmbedText, EmbedUnit, EmbeddingRecipe,
     EmbeddingSlot, Enforcement, EraseRule, ExportRule, FlavorContract, ForgetRule, KeyShape,
     LanguagePolicy, PROJECTION_MEMORY_FK, PROJECTION_TABLE_NAME, ProjectionDecl, ProjectionSpec,
-    Provenance, ResolvedEmbedUnit, ResourceContract, SLOT_DEFAULT, SchemaContract, SchemaRef,
-    SearchProjectionDecl, SubstringArm, Surface, TSVECTOR_WEIGHT_CLASSES, ToolContract,
+    Provenance, RankSource, ResolvedEmbedUnit, ResourceContract, SLOT_DEFAULT, SchemaContract,
+    SchemaRef, SearchProjectionDecl, SubstringArm, Surface, TS_RANK_NORMALIZATION_LOG_LENGTH_SCALE,
+    TS_RANK_NORMALIZATION_NONE, TS_RANK_NORMALIZATION_SCALE, TSVECTOR_WEIGHT_CLASSES, ToolContract,
     TransferRule, WEIGHT_UNIFORM, WeightedField,
 };
 pub use descriptor::{FlavorDescriptor, FlavorProvenance};
