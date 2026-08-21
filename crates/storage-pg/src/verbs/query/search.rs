@@ -1543,6 +1543,20 @@ mod tests {
         );
     }
 
+    /// How `search_admit_sql` spells a top-level conjunct: a newline, the
+    /// WHERE body's indentation, and `AND `. The `OR` continuation lines
+    /// inside a predicate are indented further, so they do not count.
+    const ADMIT_PREDICATE_PREFIX: &str = "\n            AND ";
+
+    /// Admit's filters: owner, kind, `schema_id`, since, until — plus the
+    /// candidate id set itself, which is `m.t = ANY($1)` in the WHERE and
+    /// therefore not one of these. Five, and supersession makes six by
+    /// changing the FROM clause rather than adding a predicate.
+    ///
+    /// This number exists to be hard to raise by accident. Raising it is a
+    /// claim that the candidate window already applies whatever was added.
+    const ADMIT_PREDICATES: usize = 5;
+
     /// The class guard: every filter `search_admit_sql` applies is mirrored
     /// on the candidate side.
     ///
@@ -1552,6 +1566,12 @@ mod tests {
     /// that the remaining filters were mirrored already, and both times the
     /// claim was wrong. So this stops being prose: enumerate admit's binds,
     /// require each to be accounted for, and FAIL when admit grows one more.
+    ///
+    /// Counting BINDS is not enough, and that gap was found by mutation: a
+    /// filter needs no bind at all. `AND NOT EXISTS (SELECT 1 FROM
+    /// proxima_core.cooled cl WHERE cl.t = m.t)` — a plausible future
+    /// filter — left the whole workspace green, because it adds a predicate
+    /// and no `$n`. So the PREDICATE count is pinned as well.
     #[test]
     fn every_admit_filter_is_mirrored_on_the_candidate_side() {
         // Admit's binds, and where the candidate side answers each.
@@ -1585,6 +1605,19 @@ mod tests {
                 "admit grew a seventh filter. Mirror it in \
                  `admit_side_restriction` or prove the candidate side already \
                  applies it, then extend MIRRORS. Do not delete this line."
+            );
+            // The bind-free door. `search_admit_sql` renders every top-level
+            // conjunct at one indentation, so counting that spelling counts
+            // the filters — including the ones that carry no `$n` and would
+            // otherwise walk past MIRRORS unnoticed.
+            assert_eq!(
+                admit.matches(ADMIT_PREDICATE_PREFIX).count(),
+                ADMIT_PREDICATES,
+                "admit's predicate count moved. A filter with no bind is \
+                 still a filter the candidate window has to know about: \
+                 mirror it in `admit_side_restriction`, or prove the \
+                 candidate side already applies it, then update this count \
+                 and MIRRORS together. Do not delete this line."
             );
         }
         // …and supersession, which is not a bind but a shape.
