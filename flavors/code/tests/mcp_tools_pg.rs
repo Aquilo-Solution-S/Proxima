@@ -3115,3 +3115,191 @@ async fn ingest_calls_edge(
     let _ = owner;
     Ok(())
 }
+
+// ── Provenance, spent by the lineage walk ───────────────────────────────
+
+/// The handles `core_think` visited, in order.
+fn think_handles(page: &serde_json::Value) -> Vec<String> {
+    page["visits"]
+        .as_array()
+        .expect("visits")
+        .iter()
+        .map(|visit| visit["handle"].as_str().expect("handle").to_owned())
+        .collect()
+}
+
+/// `Provenance::None` means the walk does not read `origins`, and the only
+/// way to see that is a node that HAS origins.
+///
+/// The arm is `Some(Provenance::None) => {}`, sitting next to
+/// `None | Some(OriginEdges) => ancestors.extend(node.origins)`. Replacing
+/// the empty block with the extend killed no test in the tree, because every
+/// `None`-declared schema that reaches this walk is one whose rows never
+/// carry origins: Facts are blocked by `memory_fact_origins_chk` and Goals
+/// are not memory rows at all. The declaration was therefore true by
+/// accident of the data rather than by anything the walk does.
+///
+/// `code/commit-summary-v1` is an Abstraction — so origins are permitted —
+/// and declares `Provenance::None`. The origins are written straight into
+/// `memory.origins` here, because no verb would put them there.
+///
+/// The control is what makes the assertion mean anything: an
+/// `agent-derivation-v1` Abstraction with the SAME origin, declared
+/// `OriginEdges`, must be reached. Without it, "the fact is absent" would be
+/// equally consistent with a broken harness.
+#[tokio::test]
+async fn the_walk_does_not_read_origins_a_schema_declares_it_does_not_use()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fixture = TestDb::fresh().await;
+    let owner = owner_fixture();
+    let registry = registry_for_mcp();
+    let pool = fixture.pg.pool_for_tests();
+
+    let (_, origin_t) =
+        common::seed_memory(pool, &owner, "core/test-fact-v1", "fact", None, None, &[]).await?;
+
+    // Declares Provenance::None, and carries an origin anyway.
+    let (_, silent_t) = common::seed_memory(
+        pool,
+        &owner,
+        "proxima-code/commit-summary-v1",
+        "abstraction",
+        None,
+        None,
+        &[origin_t],
+    )
+    .await?;
+
+    // The control: same origin, a schema that declares OriginEdges.
+    let (_, speaking_t) = common::seed_memory(
+        pool,
+        &owner,
+        "core/agent-derivation-v1",
+        "abstraction",
+        None,
+        None,
+        &[origin_t],
+    )
+    .await?;
+
+    let origin_handle = format!("F:{origin_t}");
+
+    let control = run_tool::<proxima_core::mcp::core_tools::ThinkTool>(
+        ctx(fixture.pg.clone(), owner.clone(), Arc::clone(&registry)),
+        json!({ "seeds": [format!("A:{speaking_t}")], "direction": "ancestors", "depth": 2 }),
+    )
+    .await?;
+    assert!(
+        think_handles(&control).contains(&origin_handle),
+        "an OriginEdges schema's origins ARE the lineage, so the harness can \
+         see them: {:?}",
+        think_handles(&control)
+    );
+
+    let walked = run_tool::<proxima_core::mcp::core_tools::ThinkTool>(
+        ctx(fixture.pg.clone(), owner.clone(), registry),
+        json!({ "seeds": [format!("A:{silent_t}")], "direction": "ancestors", "depth": 2 }),
+    )
+    .await?;
+    let handles = think_handles(&walked);
+    assert!(
+        !handles.contains(&origin_handle),
+        "proxima-code/commit-summary-v1 declares Provenance::None, so the walk \
+         must not treat its origins array as lineage; got {handles:?}"
+    );
+    Ok(())
+}
+
+/// `work-assignment-v1` grounds through two scalar payload columns, and the
+/// walk reaches both.
+///
+/// The declaration changed from `None` to `PayloadOnly` in this branch on
+/// the strength of a comment at the write site. Nothing exercised it: the
+/// only behavioural coverage of the `PayloadOnly` arm is core's
+/// `interpretation-v1`, which grounds through ONE ARRAY column. Two scalar
+/// columns is the other shape, and a `payload_subjects` that handled arrays
+/// and not scalars would have passed every test in the tree.
+///
+/// The assignment's own `origins` array is also asserted absent. `PayloadOnly`
+/// means the walk does not read origins, and `seed_memory` gives every
+/// non-Fact an origin, so that array is populated and must be ignored — the
+/// same property as the test above, from the other arm.
+#[tokio::test]
+async fn a_work_assignment_walk_reaches_both_subjects_its_payload_names()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fixture = TestDb::fresh().await;
+    let owner = owner_fixture();
+    let registry = registry_for_mcp();
+    let pool = fixture.pg.pool_for_tests();
+
+    let (_, work_item_t) =
+        common::seed_memory(pool, &owner, "core/test-fact-v1", "fact", None, None, &[]).await?;
+    let (_, target_t) = common::seed_memory(
+        pool,
+        &owner,
+        "core/interpretation-v1",
+        "perspective",
+        None,
+        None,
+        &[],
+    )
+    .await?;
+
+    let (_, assignment_t) = common::seed_memory_with_sidecars(
+        pool,
+        &owner,
+        "proxima-code/work-assignment-v1",
+        "perspective",
+        None,
+        None,
+        &[],
+        &["proxima_code.work_assignment_v1"],
+    )
+    .await?;
+    sqlx::query(
+        "INSERT INTO proxima_code.work_assignment_v1
+            (t, repo_id, target_perspective_memory_id, work_item_memory_id, reason)
+         VALUES ($1, $2, $3, $4, 'a fixture')",
+    )
+    .bind(assignment_t)
+    .bind(Uuid::now_v7())
+    .bind(target_t)
+    .bind(work_item_t)
+    .execute(pool)
+    .await?;
+
+    let assignment_origins: Vec<Uuid> =
+        sqlx::query_scalar("SELECT origins FROM proxima_core.memory WHERE t = $1")
+            .bind(assignment_t)
+            .fetch_one(pool)
+            .await?;
+    assert!(
+        !assignment_origins.is_empty(),
+        "the origins array has to be non-empty for the second assertion below \
+         to be about anything"
+    );
+
+    let walked = run_tool::<proxima_core::mcp::core_tools::ThinkTool>(
+        ctx(fixture.pg.clone(), owner.clone(), registry),
+        json!({ "seeds": [format!("P:{assignment_t}")], "direction": "ancestors", "depth": 2 }),
+    )
+    .await?;
+    let handles = think_handles(&walked);
+
+    assert!(
+        handles.contains(&format!("F:{work_item_t}")),
+        "the walk reaches the work item the assignment's payload names: {handles:?}"
+    );
+    assert!(
+        handles.contains(&format!("P:{target_t}")),
+        "and the target perspective, which is the second declared subject and \
+         the other endpoint kind: {handles:?}"
+    );
+    for origin in &assignment_origins {
+        assert!(
+            !handles.contains(&format!("A:{origin}")),
+            "PayloadOnly means the origins array is not lineage: {handles:?}"
+        );
+    }
+    Ok(())
+}

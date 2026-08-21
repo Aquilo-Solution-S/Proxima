@@ -39,9 +39,18 @@ impl ReferenceBinding {
 /// chunk A to chunk B are one index row and ten payload entries.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct PayloadReference {
-    /// Payload field the reference was read from. Diagnostics only — it
-    /// is deliberately not persisted, because a field name is schema
-    /// detail and the index carries no content.
+    /// Payload field the reference was read from. Not persisted: a field
+    /// name is schema detail and the index carries no content.
+    ///
+    /// NO LONGER DIAGNOSTICS ONLY, which is what this said until the
+    /// lineage walk started keying on it. `Provenance::PayloadOnly`
+    /// declares `subject_columns`, and `core_think`'s `payload_subjects`
+    /// picks the grounding references out of the rest by matching those
+    /// declared names against THIS string. A rename here is a silent
+    /// lineage dead end — the declaration still resolves to a real SQL
+    /// column, so the catalog gate stays green.
+    /// `every_declared_subject_column_is_a_reference_field_the_payload_emits`
+    /// is what relates the two namespaces.
     pub field: &'static str,
     pub binding: ReferenceBinding,
     pub target: EdgeEndpoint,

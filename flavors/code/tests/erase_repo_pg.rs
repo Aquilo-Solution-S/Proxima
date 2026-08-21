@@ -1715,3 +1715,114 @@ async fn a_lock_the_erase_cannot_get_is_bounded_and_retried_not_waited_out() {
     let _ = drop_db(&db_name).await;
     result.expect("a_lock_the_erase_cannot_get_is_bounded_and_retried_not_waited_out failed");
 }
+
+/// The catalog gate above and the walk key on DIFFERENT namespaces, and
+/// nothing related them.
+///
+/// `every_declared_subject_column_is_a_column_the_catalog_has` proves each
+/// `subject_columns` entry is a uuid-bearing SQL column of the schema's own
+/// sidecar. The walk never looks at SQL columns: `payload_subjects` matches
+/// the declared names against `PayloadReference::field`, a `&'static str`
+/// baked into the payload's `references()` impl. A field name and a column
+/// name are two different things that happen to be spelled the same today.
+///
+/// Rename a `field` literal in `references()` — leaving the SQL column
+/// alone, which no migration forces you to touch — and the catalog gate
+/// stays green while the walk silently returns no subjects. That is exactly
+/// the pre-Phase-4 failure this whole area exists to remove: a lineage dead
+/// end that reports success.
+///
+/// So: every `subject_columns` entry must ALSO be a field name that schema's
+/// `references()` emits. `PayloadReference::field`'s own doc still calls
+/// itself "diagnostics only", which stopped being true when the walk started
+/// keying on it.
+///
+/// `references()` needs an INSTANCE — the erased dispatch is
+/// `fn(&dyn Any) -> Vec<PayloadReference>` and no static list of reference
+/// fields exists anywhere — so the payloads are constructed here. The
+/// coverage assertion is what stops that from being a place to forget: a new
+/// `PayloadOnly` schema that does not add itself below fails on being
+/// unlisted, by name.
+#[test]
+fn every_declared_subject_column_is_a_reference_field_the_payload_emits() {
+    use proxima_core::{PayloadReference, PerspectivePayload};
+
+    let mut registry = proxima_core::FlavorRegistry::new();
+    proxima_code::register(&mut registry).expect("the code flavor registers");
+    let registry = registry
+        .try_freeze()
+        .expect("core plus the code flavor freeze");
+
+    // One instance per `PayloadOnly` schema. Values are arbitrary: only the
+    // FIELD NAMES each `references()` reports are under test, and a
+    // `references()` whose field names depended on its values would be its
+    // own defect.
+    let subject = uuid::Uuid::now_v7();
+    let interpretation = proxima_core::InterpretationV1 {
+        claim: "a fixture".to_owned(),
+        confidence: 50,
+        subject_memory_ids: vec![subject],
+        subject_kinds: vec![proxima_core::InterpretationSubjectKind::Fact],
+        model_id: "test/0".to_owned(),
+        client_name: "test".to_owned(),
+        client_version: "0".to_owned(),
+    };
+    let assignment = proxima_code::CodeWorkAssignmentV1 {
+        repo_id: uuid::Uuid::now_v7(),
+        target_perspective_memory_id: uuid::Uuid::now_v7(),
+        work_item_memory_id: uuid::Uuid::now_v7(),
+        reason: "a fixture".to_owned(),
+    };
+    let emitted: Vec<(&str, Vec<PayloadReference>)> = vec![
+        (
+            <proxima_core::InterpretationV1 as PerspectivePayload>::SCHEMA_ID,
+            interpretation.references(),
+        ),
+        (
+            <proxima_code::CodeWorkAssignmentV1 as PerspectivePayload>::SCHEMA_ID,
+            assignment.references(),
+        ),
+    ];
+
+    let mut checked = 0;
+    for contract in registry.contracts() {
+        for schema in contract.schemas {
+            let proxima_core::flavor::Provenance::PayloadOnly { subject_columns } =
+                schema.provenance
+            else {
+                continue;
+            };
+            let schema_id = schema.schema_id();
+            let Some((_, references)) = emitted
+                .iter()
+                .find(|(id, _)| *id == schema_id.as_str())
+            else {
+                panic!(
+                    "{schema_id} declares Provenance::PayloadOnly, so the lineage walk \
+                     matches its subject_columns against the field names its references() \
+                     emits — add an instance of its payload to this test, or the two \
+                     namespaces can drift with nothing to notice"
+                );
+            };
+            let fields: Vec<&str> = references
+                .iter()
+                .map(|reference| reference.field)
+                .collect();
+            for column in subject_columns {
+                assert!(
+                    fields.contains(column),
+                    "{schema_id} declares subject column {column:?}, and the walk looks \
+                     for it among the field names references() emits: {fields:?}. It is \
+                     not there, so the walk reaches nothing through it and says so to \
+                     nobody"
+                );
+                checked += 1;
+            }
+        }
+    }
+    assert_eq!(
+        checked, 3,
+        "core's interpretation names one subject column and the code flavor's work \
+         assignment names two; the catalog gate counts the same three"
+    );
+}
