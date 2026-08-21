@@ -40,7 +40,7 @@
 //!
 //! The eight original cases are one schema, which cannot see the two
 //! changes that matter most when the per-schema fan-out collapses into one
-//! statement per flavor. The corpus therefore carries `core/interpretation-v1`
+//! statement per flavor. The corpus therefore carries `core/agent-derivation-v1`
 //! rows as well, and the cases below it exercise:
 //!
 //! - **hits in two schemas** — the single flavor-wide overfetch window
@@ -70,6 +70,12 @@
 //! a second `lexical_languages` row changes the query side for EVERY row in
 //! that database, so a corpus that mixes configurations cannot also pin the
 //! single-configuration cases.
+//!
+//! # The starvation probe
+//!
+//! [`a_superseded_backlog_does_not_starve_the_page`] is a third database and
+//! a third corpus, and it exists because the neutrality claim above was
+//! nearly true rather than true. See that test.
 #![allow(clippy::doc_markdown, clippy::too_many_lines)]
 
 use proxima_core::storage_ports::MemoryReadPort;
@@ -289,7 +295,7 @@ fn handle_for(t: Uuid) -> Uuid {
 }
 
 /// `origins` is not decoration: `memory_pin_checks` refuses a non-Fact that
-/// pins no hot memory, so an interpretation has to ground in a note. It
+/// pins no hot memory, so a derivation has to ground in a note. It
 /// grounds in its own owner's first one, which keeps the corpus
 /// deterministic and the pin inside the owner.
 async fn admit(
@@ -536,8 +542,8 @@ fn cases() -> Vec<(&'static str, MemorySearchRequest)> {
             )),
         ),
         (
-            // THE substring-trigger case. `cartograph` is a lexeme in an
-            // interpretation and only a substring in a note, so the ranked
+            // THE substring-trigger case. `cartograph` is a lexeme in a
+            // derivation and only a substring in a note, so the ranked
             // arm returns rows for one schema and nothing for the other.
             // A flavor-wide "ranked returned nothing" trigger drops every
             // note below; a per-schema one keeps them.
@@ -893,6 +899,278 @@ async fn run_identity(
 #[tokio::test]
 async fn the_projection_returns_the_results_the_sidecar_vectors_did() {
     run_identity(cases(), EXPECTED, |_| None).await;
+}
+
+// ── The starvation probe ────────────────────────────────────────────────
+//
+// Its own corpus and its own database: supersession changes what every
+// other case in this file admits, so it cannot share one.
+
+/// Superseded note handles in the probe corpus. Chosen above the
+/// `overfetch` a `limit = 1` request gets (`1 * 20 = 20`) and below the one
+/// a `limit = 8` request gets (`160`), so the same corpus produces the
+/// failure and its control.
+const STARVED_HANDLES: usize = 25;
+
+/// The revision that matches — strongly, in BOTH probe queries — and that
+/// `HeadsOnly` admission is going to throw away.
+const SUPERSEDED_TITLE: &str = "Atlas cartography";
+const SUPERSEDED_BODY: &str = "atlas cartography atlas cartography atlas";
+/// …and the revision that replaced it, which matches neither query by
+/// lexeme nor by substring.
+const HEAD_TITLE: &str = "Retired stub";
+const HEAD_BODY: &str = "this revision says nothing";
+
+/// One live derivation, matching WEAKLY. It is the row the page should
+/// contain; the backlog is what buries it.
+///
+/// The text does not contain the substring `cartographies`, and it does
+/// contain `cartography`, which stems onto it. That is what makes the
+/// second case discriminate: a starved schema is re-found by the substring
+/// arm, and the substring arm cannot find this row at all.
+///
+/// There is deliberately no live NOTE here. The note schema's own window is
+/// what the backlog fills, so a live note would be starved on the baseline
+/// tree too — by the per-schema window, at five times the budget — and a
+/// case whose baseline answer is itself a starvation cannot pin anything.
+/// See the test's own doc.
+const LIVE_DERIVATION_TITLE: &str = "Waypoint";
+const LIVE_DERIVATION_BODY: &str = "a single atlas reference in the cartography of the archive";
+
+/// One revision of one note handle: the memory row, its sidecar, and the
+/// projection row the generator writes for it.
+async fn seed_note_revision(
+    pool: &sqlx::PgPool,
+    owner_id: Uuid,
+    handle: Uuid,
+    t: Uuid,
+    title: &str,
+    body: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "INSERT INTO proxima_core.memory (handle, t, kind, owner_id, schema_id)
+         VALUES ($1, $2, 'fact', $3, $4)",
+    )
+    .bind(handle)
+    .bind(t)
+    .bind(owner_id)
+    .bind(NOTE_SCHEMA)
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        "INSERT INTO proxima_core.agent_note_v1 (t, note_id, title, body, tags)
+         VALUES ($1, $2, $3, $4, '{}')",
+    )
+    .bind(t)
+    .bind(t)
+    .bind(title)
+    .bind(body)
+    .execute(pool)
+    .await?;
+    project(pool, t, NOTE_SCHEMA, None).await?;
+    Ok(())
+}
+
+/// [`STARVED_HANDLES`] two-revision note handles, one live note and one
+/// live derivation, all under one owner.
+async fn seed_starvation(pool: &sqlx::PgPool) -> Result<(), sqlx::Error> {
+    let owner_id = owner_at(0).stored_owner_id();
+    sqlx::query(
+        "INSERT INTO proxima_core.owners (owner_id, kind)
+         VALUES ($1, 'personal') ON CONFLICT DO NOTHING",
+    )
+    .bind(owner_id)
+    .execute(pool)
+    .await?;
+
+    for index in 0..STARVED_HANDLES as u64 {
+        let handle = det_uuid(30_000 + index);
+        let superseded = det_uuid(10_000 + index);
+        let head = det_uuid(20_000 + index);
+        // The head row has to exist before any memory row can reference
+        // the handle, so it is created pointing at the revision it will
+        // later supersede — which is exactly the order a real write takes.
+        sqlx::query(
+            "INSERT INTO proxima_core.memory_head (handle, kind, schema_id, owner_id, t)
+             VALUES ($1, 'fact', $2, $3, $4)",
+        )
+        .bind(handle)
+        .bind(NOTE_SCHEMA)
+        .bind(owner_id)
+        .bind(superseded)
+        .execute(pool)
+        .await?;
+        seed_note_revision(
+            pool,
+            owner_id,
+            handle,
+            superseded,
+            SUPERSEDED_TITLE,
+            SUPERSEDED_BODY,
+        )
+        .await?;
+        seed_note_revision(pool, owner_id, handle, head, HEAD_TITLE, HEAD_BODY).await?;
+        sqlx::query("UPDATE proxima_core.memory_head SET t = $2 WHERE handle = $1")
+            .bind(handle)
+            .bind(head)
+            .execute(pool)
+            .await?;
+    }
+
+    let live_derivation = det_uuid(50_000);
+    admit(
+        pool,
+        owner_id,
+        live_derivation,
+        "abstraction",
+        DERIVATION_SCHEMA,
+        // `memory_pin_checks` wants a hot memory; the first handle's HEAD
+        // revision is one.
+        &[det_uuid(20_000)],
+    )
+    .await?;
+    sqlx::query(
+        "INSERT INTO proxima_core.agent_derivation_v1
+             (t, title, body, tags, model_id, client_name, client_version)
+         VALUES ($1, $2, $3, '{}', 'test-model', 'identity-fixture', '1')",
+    )
+    .bind(live_derivation)
+    .bind(LIVE_DERIVATION_TITLE)
+    .bind(LIVE_DERIVATION_BODY)
+    .execute(pool)
+    .await?;
+    project(pool, live_derivation, DERIVATION_SCHEMA, None).await?;
+    Ok(())
+}
+
+fn starvation_cases() -> Vec<(&'static str, MemorySearchRequest)> {
+    let at = |query: &str, limit: u32| {
+        let mut req = any_kind(request(vec![owner_at(0)], query, SearchOrder::Relevance));
+        req.limit = limit;
+        req
+    };
+    vec![
+        ("starved/limit-1/relevance/atlas", at("atlas", 1)),
+        (
+            "starved/limit-1/relevance/cartographies",
+            at("cartographies", 1),
+        ),
+        ("starved/limit-8/relevance/atlas", at("atlas", 8)),
+    ]
+}
+
+/// Captured from `e7c3c83f` with the starvation corpus, by the same method
+/// as the other two pins. See [`STARVATION_EXPECTED`]'s own test.
+const STARVATION_EXPECTED: &[(&str, &[&str])] = &[
+    (
+        "starved/limit-1/relevance/atlas",
+        &[
+            "018bcfe6-2b50-7350-8050-515253545556 0.545455 Waypoint a single atlas reference in \
+             the cartography of the archive",
+            "has_more=false",
+        ],
+    ),
+    (
+        "starved/limit-1/relevance/cartographies",
+        &[
+            "018bcfe6-2b50-7350-8050-515253545556 0.545455 Waypoint a single atlas reference in \
+             the cartography of the archive",
+            "has_more=false",
+        ],
+    ),
+    (
+        "starved/limit-8/relevance/atlas",
+        &[
+            "018bcfe6-2b50-7350-8050-515253545556 0.545455 Waypoint a single atlas reference in \
+             the cartography of the archive",
+            "has_more=false",
+        ],
+    ),
+];
+
+/// A backlog of superseded revisions must not cost the page its live rows.
+///
+/// **This is the case that falsified "the Lexical + Relevance page cannot
+/// move".** The candidate-superset argument for the collapse is about
+/// candidates; `search_admit_sql(heads_only)` then drops every superseded
+/// revision from the hit set, and `HeadsOnly` is the tool default and what
+/// `core_recall` sends. Five per-schema windows of twenty could absorb a
+/// backlog that one flavor-wide window of twenty cannot, so at `limit = 1`
+/// twenty-five superseded revisions of one schema starved the other
+/// schema's live row out of the window entirely — and the starved schema
+/// was then reported "missing" and re-found by the SUBSTRING arm, which
+/// stamps a flat floor. The two failure modes are:
+///
+/// - `atlas`: the live rows came back at `0.250000` instead of their
+///   `ts_rank` scores, because the substring arm found them.
+/// - `cartographies`: the live rows came back not at all, because
+///   `cartography` stems onto the query but does not contain it as a
+///   substring, so the substring arm has nothing to find.
+///
+/// `limit = 8` is the control: its window is 160, the backlog is 26 rows,
+/// and it never starved on either tree. If the first two cases fail and
+/// this one passes, the window is the cause; if all three fail, the corpus
+/// or the scoring moved.
+///
+/// The literals come from `e7c3c83f`, captured by running this file in a
+/// worktree at that commit. They are the answers the PER-SCHEMA fan-out
+/// gave.
+///
+/// **What this corpus deliberately does NOT contain, and why.** An earlier
+/// version added a live note matching weakly, expecting it on the page
+/// beside the derivation. It is not pinnable: the backlog is in the note
+/// schema, so a live note is starved out of the note schema's window on the
+/// BASELINE tree as well — the per-schema window has the same defect, at
+/// five times the budget. Measured on both trees with 25 handles and
+/// `limit = 1`: `e7c3c83f` returned the derivation at `0.545455` and
+/// dropped the live note entirely; this tree returns the live note at
+/// `0.583333`, which is the higher-scoring admissible row and the answer
+/// the corpus actually justifies. That is a page MOVE against the baseline,
+/// in the correct direction, and it is not something a fix to this tree can
+/// avoid — so the pinned corpus stays inside the region where the baseline
+/// was itself right.
+#[tokio::test]
+async fn a_superseded_backlog_does_not_starve_the_page() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    if let Err(e) = create_db(&db_name).await {
+        panic!("PG required for tests but admin connect failed: {e}");
+    }
+    let url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&url).await?;
+        pg.run_migrations().await?;
+        seed_starvation(pg.pool_for_tests()).await?;
+
+        let projections = projections();
+        let mut actual = Vec::new();
+        for (name, req) in starvation_cases() {
+            let page = pg.search_memories(&req, &projections).await?;
+            actual.push((name, render(&page)));
+        }
+        for (name, lines) in &actual {
+            println!("CASE {name}");
+            for line in lines {
+                println!("  {line}");
+            }
+        }
+        for ((name, lines), (expected_name, expected)) in actual.iter().zip(STARVATION_EXPECTED) {
+            assert_eq!(name, expected_name, "case order drifted");
+            assert_eq!(
+                lines.as_slice(),
+                *expected,
+                "{name}: a superseded backlog moved the page"
+            );
+        }
+        assert_eq!(
+            actual.len(),
+            STARVATION_EXPECTED.len(),
+            "a case lost its pin"
+        );
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("starvation probe failed");
 }
 
 /// A second registered `lexical_languages` row does not move a score.

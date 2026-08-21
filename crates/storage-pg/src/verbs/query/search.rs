@@ -18,7 +18,11 @@
 //! 3. **admit** — owner + optional current-head on the hit `t`s;
 //!    `schema_id` is on `memory`. The projection's `owner_id` is an
 //!    index accelerator; admit still filters `memory.owner_id`, so
-//!    authorization never rests on the copy.
+//!    authorization never rests on the copy. Both candidate arms ALSO
+//!    apply the current-head restriction when the request is `HeadsOnly`,
+//!    because a window spent on revisions this step will drop is a window
+//!    that returns fewer results than the corpus contains — see
+//!    [`head_restriction`].
 //! 4. **snippets** — one primary-key lookup per distinct sidecar present in
 //!    the PAGE, after admission and paging have run. The text lives in
 //!    exactly one place (R6) and is fetched for at most `limit` rows
@@ -181,7 +185,8 @@ pub(crate) async fn search_memories(
     //
     // It used to ride the ranked statement, on a `JOIN {sidecar} c` — and
     // `{sidecar}` is a per-SCHEMA value, so one statement per flavor cannot
-    // carry it without four `LEFT JOIN`s and a `COALESCE` over four snippet
+    // carry it without one `LEFT JOIN` per sidecar TABLE (four, for flavor
+    // #0's five projected schemas) and a `COALESCE` over as many snippet
     // expressions, which is per-schema SQL in a statement whose whole point
     // is that it has none. Hydrating after `page_hits` fetches at most
     // `limit` rows instead of the whole candidate window.
@@ -193,16 +198,26 @@ pub(crate) async fn search_memories(
 /// clamped to what the flavor DECLARES.
 ///
 /// The cap used to be `SIDECAR_OVERFETCH_CAP` in this file, applied per
-/// projected schema, so core's four statements could hand `merge_hits` up
-/// to 4 000 candidates. One statement per flavor hands it at most
+/// projected schema, so core's five statements could hand `merge_hits` up
+/// to 5 000 candidates. One statement per flavor hands it at most
 /// `overfetch_k`, which is the number the declaration always said it was.
 ///
-/// For `Lexical` and `Relevance` the returned page cannot move: the union
-/// of per-schema top-k's is a superset of the global top-k by the same
-/// ordering, and the global top-`overfetch` by `lexical_score` contains the
-/// top-`limit` by `lexical_score`. It CAN move for `Hybrid` — a row with
-/// weak lexical rank but strong similarity could previously ride in on its
-/// own schema's window — and for very deep cursor pages.
+/// For `Lexical` and `Relevance` the returned page cannot move — but the
+/// candidate-superset argument alone does NOT establish that, and reading
+/// it as if it did was a real defect. "The global top-`overfetch` by
+/// `lexical_score` contains the top-`limit` by `lexical_score`" is a claim
+/// about candidates, and admission is not candidate-preserving: it drops
+/// superseded revisions. A window spent on rows admission will drop returns
+/// fewer than `limit` results while admissible rows sat below the cut, and
+/// one global window is five times easier to starve than five per-schema
+/// ones. [`head_restriction`] closes that: with it the window is the global
+/// top-`overfetch` of the ADMISSIBLE set, and the superset argument holds
+/// over the set the page is actually drawn from.
+///
+/// It CAN still move for `Hybrid` — a row with weak lexical rank but strong
+/// similarity could previously ride in on its own schema's window — and for
+/// very deep cursor pages. Both are accepted movement (plan §4.8 R4); the
+/// `Lexical` + `Relevance` page is not.
 fn overfetch(limit: u32, overfetch_k: u32) -> u32 {
     limit
         .saturating_mul(REQUEST_OVERFETCH_FACTOR)
@@ -327,7 +342,8 @@ fn merge_hits(into: &mut BTreeMap<uuid::Uuid, Hit>, rows: Vec<Hit>) {
 /// One job per participating FLAVOR, not one per schema.
 ///
 /// The concurrency did not disappear — it moved down a level. Core used to
-/// run four statements plus up to four retries; it now runs one, and a
+/// run five statements — one per projected SCHEMA, over four distinct
+/// sidecar tables — plus up to five retries; it now runs one, and a
 /// tag-scoped request that reaches a second flavor runs one more, against
 /// that flavor's own shard.
 async fn scan_flavors(
@@ -399,11 +415,19 @@ async fn scan_one_flavor(
 
     // R5, exact per-schema parity: the substring arm runs over the schemas
     // the ranked arm returned NOTHING for, and only where the schema
-    // declares an arm. One extra statement at most, against up to four
-    // before. The one direction this differs from the retry it replaces
-    // ADDS rows: a schema whose hits all fell outside the flavor-global
-    // top-`overfetch` is treated as missing and gets an arm it did not get
-    // when the window was per-schema.
+    // declares an arm. One extra statement at most, against up to five
+    // before.
+    //
+    // This differs from the per-schema retry it replaces in one direction,
+    // and the direction is NOT harmless: a schema whose ranked hits all
+    // fell outside the flavor-global top-`overfetch` is reported missing
+    // and served by the substring arm instead — which stamps the FLAT
+    // substring floor, so a row the ranked arm would have scored 0.545455
+    // comes back at 0.250000, and a lexeme-only match (`cartographies`
+    // stems onto a row that does not contain the substring) comes back not
+    // at all. `head_restriction` is what keeps the window from being spent
+    // on rows admission is going to drop, which is the only way that
+    // starvation was reachable at default limits.
     let missing: Vec<&MemorySearchProjection> = flavor
         .schemas
         .iter()
@@ -471,7 +495,7 @@ fn band(projection: &MemorySearchProjection, name: &str) -> Result<Band, Storage
 ///
 /// One leg per distinct sidecar, `UNION ALL`ed under one `ORDER BY` and one
 /// `LIMIT`, because `lower(<search text>)` is a per-schema expression and
-/// no single table alias can stand for four sidecars. The legs share the
+/// no single table alias can stand for four sidecar tables. The legs share the
 /// bound schema-id array: a leg over `agent_note_v1` can only join memories
 /// that HAVE an `agent_note_v1` row, so the array narrows rather than
 /// selects, and one bind serves every leg.
@@ -552,6 +576,10 @@ fn substring_leg_sql(
     // A flat band: the substring arm ranks nothing, it only admits — hence
     // zero width, and no `ts_rank` call to normalize.
     let (floor, _) = band(projection, BAND_NAME_SUBSTRING)?.parts();
+    // Same reason as the ranked arm's: this window is shared across the
+    // missing schemas now, so a revision admission will drop must not spend
+    // a slot in it. See `head_restriction`.
+    let head_pred = head_restriction(req, SUBSTRING_MEMORY_ID);
     // SQL-POLICY: PgIdent
     Ok(format!(
         "SELECT c.t,
@@ -561,7 +589,7 @@ fn substring_leg_sql(
           WHERE m.owner_id = ANY($7::uuid[])
             AND m.schema_id = ANY($8::text[])
             AND (lower({search_text}) LIKE $1 ESCAPE '\\')
-            {tag_pred}
+            {tag_pred}{head_pred}
             AND ($4::timestamptz IS NULL
                  OR COALESCE(uuid_extract_timestamp(c.t), TIMESTAMPTZ '1970-01-01') >= $4)
             AND ($5::timestamptz IS NULL
@@ -586,7 +614,8 @@ fn substring_leg_sql(
 /// (`access::owner_columns`, driven by `projection_tables()`).
 ///
 /// And there is no sidecar join at all now. `{sidecar}` is a per-SCHEMA
-/// value; one statement over a flavor's four schemas cannot name it, and
+/// value; one statement over a flavor's five projected schemas cannot
+/// name it, and
 /// the snippet it fetched is fetched after paging instead. That also
 /// removed `AND length($2::text) >= 0` — a no-op predicate whose only job
 /// was to keep the `LIKE` pattern a USED parameter in a statement that
@@ -596,6 +625,9 @@ fn substring_leg_sql(
 /// `schema_id` moved from projection-selection time to row-predicate time:
 /// `= ANY($8)`, one statement, the participating set. That is the whole
 /// collapse in one line.
+///
+/// The head restriction ([`head_restriction`]) is the third predicate that
+/// has to be here rather than only at admit. See that function.
 fn ranked_projection_sql(
     flavor: &FlavorScan<'_>,
     req: &MemorySearchRequest,
@@ -657,6 +689,7 @@ fn ranked_projection_sql(
         SearchOrder::Relevance => "lexical_score DESC, p.memory_id DESC",
         SearchOrder::Recency => "p.memory_id DESC",
     };
+    let head_pred = head_restriction(req, RANKED_MEMORY_ID);
     // SQL-POLICY: PgIdent
     Ok(format!(
         "{q_cte}
@@ -667,7 +700,7 @@ fn ranked_projection_sql(
           WHERE p.owner_id = ANY($7::uuid[])
             AND p.schema_id = ANY($8::text[])
             AND ({tsv} @@ q.tsq{rescue_where})
-            {tag_pred}
+            {tag_pred}{head_pred}
             AND ($4::timestamptz IS NULL
                  OR COALESCE(uuid_extract_timestamp(p.memory_id), TIMESTAMPTZ '1970-01-01') >= $4)
             AND ($5::timestamptz IS NULL
@@ -678,6 +711,63 @@ fn ranked_projection_sql(
         q_cte = query_side_cte(multilingual),
         table = table.as_str(),
     ))
+}
+
+/// The candidate-side spelling of "this row's memory" in the ranked arm.
+const RANKED_MEMORY_ID: &str = "p.memory_id";
+/// …and in a substring leg, which already drives `proxima_core.memory m`.
+const SUBSTRING_MEMORY_ID: &str = "m.t";
+
+/// The current-head restriction, applied to the CANDIDATE statements and
+/// not only at admit.
+///
+/// Admission is not candidate-preserving. `search_admit_sql(heads_only)`
+/// drops every superseded revision from the hit set — and `HeadsOnly` is
+/// the tool default and what `core_recall` sends — so a window spent on
+/// superseded rows is a window that admits fewer than `limit` results while
+/// admissible rows sat just below the cut. That was survivable while the
+/// window was per-schema and five statements wide; with ONE global
+/// top-`overfetch` per flavor it is reachable at `limit = 1`
+/// (`overfetch` = 20): twenty-five superseded revisions of one schema will
+/// starve another schema's live row out of the window entirely, and the
+/// starved schema is then reported "missing" and re-found by the substring
+/// arm at its FLAT floor — a real result at a wrong, lower score, or no
+/// result at all when the match is lexeme-only.
+///
+/// Restricting the candidates is what makes the R4 claim ("the page cannot
+/// move for `Lexical` + `Relevance`") true rather than nearly true: with
+/// this predicate the window is the global top-`overfetch` of the
+/// ADMISSIBLE set, and the top-`limit` of an admissible set is contained in
+/// its own top-`overfetch` whenever `overfetch >= limit`, which
+/// [`overfetch`] guarantees. `heads_only` is the only admit-side filter not
+/// already mirrored on the candidate side: owner, `since` and `until` are
+/// row predicates here, and `kind` / `schema_id` narrow the PARTICIPATING
+/// SCHEMA SET in `core_search_flavors` before a statement is rendered.
+///
+/// Two index probes per candidate row: `memory` has `UNIQUE (t)` and
+/// `memory_head` is keyed by `handle`. `include_superseded` requests render
+/// nothing here and keep the unfiltered window.
+fn head_restriction(req: &MemorySearchRequest, memory_id: &str) -> String {
+    if !matches!(req.supersession, SupersessionStatus::HeadsOnly) {
+        return String::new();
+    }
+    if memory_id == SUBSTRING_MEMORY_ID {
+        // The leg already has the memory row in hand; only the head lookup
+        // is left.
+        return "
+            AND EXISTS (SELECT 1
+                          FROM proxima_core.memory_head hh
+                         WHERE hh.handle = m.handle AND hh.t = m.t)"
+            .to_owned();
+    }
+    format!(
+        "
+            AND EXISTS (SELECT 1
+                          FROM proxima_core.memory hm
+                          JOIN proxima_core.memory_head hh
+                            ON hh.handle = hm.handle AND hh.t = hm.t
+                         WHERE hm.t = {memory_id})"
+    )
 }
 
 /// The snippet, for the rows that made the page.
@@ -1202,9 +1292,22 @@ mod tests {
             ranked.contains("p.tag && $3::text[]"),
             "$3 is the tag array"
         );
-        assert!(ranked.contains("($4::timestamptz IS NULL"), "$4 is `since`");
-        assert!(ranked.contains("($5::timestamptz IS NULL"), "$5 is `until`");
-        assert!(ranked.contains("($6::uuid IS NULL"), "$6 is the cursor");
+        // By COMPARISON, not by cast. `>= $4` / `<= $5` and `>= $5` /
+        // `<= $4` cast identically and bind identically; only the direction
+        // tells `since` from `until`, and swapping them left every test in
+        // the workspace green before this line existed.
+        assert!(
+            ranked.contains("TIMESTAMPTZ '1970-01-01') >= $4"),
+            "$4 is `since` — a LOWER bound"
+        );
+        assert!(
+            ranked.contains("TIMESTAMPTZ '1970-01-01') <= $5"),
+            "$5 is `until` — an UPPER bound"
+        );
+        assert!(
+            ranked.contains("($6::uuid IS NULL OR p.memory_id < $6)"),
+            "$6 is the recency cursor, and it pages DOWNWARD"
+        );
         assert!(
             ranked.contains("p.owner_id = ANY($7::uuid[])"),
             "$7 is the owner set, ON THE PROJECTION, for the composite GIN"
@@ -1221,9 +1324,19 @@ mod tests {
             !ranked.contains("length("),
             "the unused-parameter guard went with the LIKE bind it kept alive"
         );
+        // The ranked arm's OWNER never comes through a join — that is what
+        // the composite `gin(owner_id, search_tsv)` needs, and it is what
+        // this used to assert as `!contains("proxima_core.memory")`. The
+        // head restriction now names `memory` and `memory_head` in an
+        // EXISTS, so the blanket string test would have to be weakened or
+        // deleted; asserting the PROPERTY instead is stronger than either.
         assert!(
-            !ranked.contains("proxima_core.memory"),
-            "the ranked arm reads the projection ALONE"
+            !ranked.contains("m.owner_id"),
+            "the ranked arm's owner is on the projection, never reached through memory"
+        );
+        assert!(
+            ranked.contains("FROM proxima_core.projection p, q"),
+            "the projection is the driving relation"
         );
 
         let substring = super::substring_sql(&[&note], &req).expect("substring");
@@ -1231,14 +1344,17 @@ mod tests {
         assert!(substring.contains("LIMIT $2"), "$2 is the overfetch budget");
         assert!(substring.contains("c.tags && $3::text[]"), "$3 is the tags");
         assert!(
-            substring.contains("($4::timestamptz IS NULL"),
-            "$4 is `since`"
+            substring.contains("TIMESTAMPTZ '1970-01-01') >= $4"),
+            "$4 is `since` — a LOWER bound"
         );
         assert!(
-            substring.contains("($5::timestamptz IS NULL"),
-            "$5 is `until`"
+            substring.contains("TIMESTAMPTZ '1970-01-01') <= $5"),
+            "$5 is `until` — an UPPER bound"
         );
-        assert!(substring.contains("($6::uuid IS NULL"), "$6 is the cursor");
+        assert!(
+            substring.contains("($6::uuid IS NULL OR c.t < $6)"),
+            "$6 is the recency cursor, and it pages DOWNWARD"
+        );
         assert!(
             substring.contains("JOIN proxima_core.memory m ON m.t = c.t"),
             "a sidecar carries no owner; the leg must drive from memory"
@@ -1266,6 +1382,60 @@ mod tests {
         let untagged = super::ranked_projection_sql(&flavor, &req, true).expect("ranked");
         assert!(!untagged.contains("p.tag"));
         assert!(untagged.contains("p.owner_id = ANY($7::uuid[])"));
+    }
+
+    /// The head restriction is on the CANDIDATE side, in both arms, and
+    /// only when the request asked for heads.
+    ///
+    /// `request_with_tags` is `HeadsOnly`, which is the tool default and
+    /// what `core_recall` sends. `IncludeSuperseded` must render nothing:
+    /// that request wants the revisions, so restricting its window would
+    /// be a different bug in the other direction.
+    #[test]
+    fn the_candidate_window_is_not_spent_on_rows_admit_will_drop() {
+        let note = proxima_core::FlavorRegistry::new()
+            .freeze_or_panic_for_tests()
+            .search_projections()
+            .iter()
+            .find(|projection| projection.schema_id.as_str() == "core/agent-note-v1")
+            .expect("core/agent-note-v1 is a search surface")
+            .clone();
+        let mut req = request_with_tags();
+        let flavor = super::FlavorScan {
+            schemas: vec![&note],
+        };
+
+        let ranked = super::ranked_projection_sql(&flavor, &req, true).expect("ranked");
+        assert!(
+            ranked.contains("JOIN proxima_core.memory_head hh")
+                && ranked.contains("ON hh.handle = hm.handle AND hh.t = hm.t")
+                && ranked.contains("WHERE hm.t = p.memory_id"),
+            "HeadsOnly must reach the head through the memory row's handle, \
+             not spend the window on superseded revisions"
+        );
+        let substring = super::substring_sql(&[&note], &req).expect("substring");
+        assert!(
+            substring.contains("FROM proxima_core.memory_head hh")
+                && substring.contains("WHERE hh.handle = m.handle AND hh.t = m.t"),
+            "the substring window is shared across the missing schemas now; \
+             it must not be spent on superseded revisions either"
+        );
+
+        req.supersession = SupersessionStatus::IncludeSuperseded;
+        let ranked = super::ranked_projection_sql(&flavor, &req, true).expect("ranked");
+        assert!(
+            !ranked.contains("memory_head"),
+            "IncludeSuperseded keeps the unfiltered window"
+        );
+        assert!(
+            !ranked.contains("proxima_core.memory"),
+            "and then the ranked arm reads the projection ALONE, as it always did"
+        );
+        let substring = super::substring_sql(&[&note], &req).expect("substring");
+        assert!(
+            !substring.contains("memory_head"),
+            "IncludeSuperseded keeps the unfiltered window"
+        );
     }
 
     /// A request the builders can render every clause of.
@@ -1300,15 +1470,20 @@ mod tests {
     /// This was the deferral's parity pin — "the two agree, so the day the
     /// declaration is consumed no score moves". The declaration IS consumed
     /// now, so the test's job changes: it stops comparing two sources and
-    /// starts pinning the one that is left, at the values the shipped SQL
-    /// carried. Render a band from a literal instead of the declaration and
-    /// the first assertion here still passes — but `render_from` reads the
-    /// same path production does, so a band that moved in the declaration
-    /// moves these strings with it.
+    /// starts pinning the one that is left.
+    ///
+    /// It has to do that by calling the BUILDERS. An earlier version of
+    /// this test asserted only `Band::parts()` and `normalization_arg()` —
+    /// which are properties of the declaration, not of the renderer — so
+    /// hardcoding `("0.50", "0.50")` inside `ranked_projection_sql` left
+    /// the whole workspace green. The second half below is what makes the
+    /// direction right: render from a PERTURBED band and require the
+    /// emitted SQL to move with it. A renderer holding a literal cannot
+    /// pass both halves.
     #[test]
     fn the_declared_bands_render_the_arithmetic_the_sql_already_had() {
         use proxima_core::flavor::{
-            BAND_NAME_EXACT, BAND_NAME_RESCUE, BAND_NAME_SUBSTRING,
+            BAND_NAME_EXACT, BAND_NAME_RESCUE, BAND_NAME_SUBSTRING, Band,
             TS_RANK_NORMALIZATION_LOG_LENGTH_SCALE, TS_RANK_NORMALIZATION_NONE,
             TS_RANK_NORMALIZATION_SCALE,
         };
@@ -1326,6 +1501,7 @@ mod tests {
             !projections.is_empty(),
             "flavor #0 has projected schemas to render"
         );
+        let req = request_with_tags();
         for projection in &projections {
             let exact = super::band(projection, BAND_NAME_EXACT).expect("core declares `exact`");
             let rescue = super::band(projection, BAND_NAME_RESCUE).expect("core declares `rescue`");
@@ -1350,7 +1526,65 @@ mod tests {
                 "",
                 "the substring arm calls no ts_rank to normalize"
             );
+
+            // …and what the RENDERER did with them.
+            let flavor = super::FlavorScan {
+                schemas: vec![projection],
+            };
+            let ranked = super::ranked_projection_sql(&flavor, &req, true).expect("ranked");
+            assert!(
+                ranked.contains("THEN 0.50 + LEAST(COALESCE(ts_rank_cd("),
+                "the exact arm opens at the declared floor"
+            );
+            assert!(
+                ranked.contains(", 32), 0.0), 1.0) * 0.50"),
+                "…normalizes with the declared flag and fills the declared width"
+            );
+            assert!(
+                ranked.contains("THEN 0.25 + LEAST(COALESCE(ts_rank("),
+                "the rescue arm opens at the declared floor"
+            );
+            assert!(
+                ranked.contains(", 33), 0.0) * 100.0, 1.0) * 0.20"),
+                "…normalizes with the declared flag and fills the declared width"
+            );
+            let substring_sql = super::substring_sql(&[projection], &req).expect("substring");
+            assert!(
+                substring_sql.contains("0.25::real AS lexical_score"),
+                "the substring arm stamps the declared flat floor"
+            );
         }
+
+        // The mutant killer. Perturb the exact band in a projection the
+        // renderer is handed, and require the SQL to follow. A hardcoded
+        // `0.50` survives every assertion above and dies here.
+        let mut moved = projections[0].clone();
+        moved.bands = Box::leak(Box::new([
+            Band {
+                name: BAND_NAME_EXACT,
+                floor: 0.10,
+                ceiling: 0.90,
+                normalization: TS_RANK_NORMALIZATION_NONE,
+            },
+            super::band(&projections[0], BAND_NAME_RESCUE).expect("rescue"),
+            super::band(&projections[0], BAND_NAME_SUBSTRING).expect("substring"),
+        ]));
+        let flavor = super::FlavorScan {
+            schemas: vec![&moved],
+        };
+        let ranked = super::ranked_projection_sql(&flavor, &req, true).expect("ranked");
+        assert!(
+            ranked.contains("THEN 0.10 + LEAST(COALESCE(ts_rank_cd("),
+            "the floor is READ, not written into the builder"
+        );
+        assert!(
+            ranked.contains("), 0.0), 1.0) * 0.80"),
+            "the width is READ, and a declared `NONE` normalization renders no argument"
+        );
+        assert!(
+            !ranked.contains("THEN 0.50 +"),
+            "nothing in the builder may still carry core's literal"
+        );
     }
 
     /// The band-comparability gate has a consumer, and the consumer moves

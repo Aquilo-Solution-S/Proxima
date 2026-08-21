@@ -404,6 +404,32 @@ async fn hot_path_plans_use_expected_indexes() {
             "the per-sidecar tsvector index is gone; plan:\n{lexical_plan}"
         );
 
+        // The head restriction is TWO index probes per candidate, not a
+        // scan of either table. `HeadsOnly` is the request shape above and
+        // the tool default, and the whole point of putting the restriction
+        // on the candidate side is that the window stops being spent on
+        // rows admit will drop — which is only worth doing if reaching the
+        // head is cheap.
+        let head = scan_of(&plan, "memory_head")
+            .unwrap_or_else(|| panic!("HeadsOnly must reach memory_head; plan:\n{lexical_plan}"));
+        assert_eq!(
+            head.get("Index Name").and_then(serde_json::Value::as_str),
+            Some("memory_head_pkey"),
+            "the head lookup rides the handle primary key; plan:\n{lexical_plan}"
+        );
+        let memory = scan_of(&plan, "memory")
+            .unwrap_or_else(|| panic!("the head restriction joins memory; plan:\n{lexical_plan}"));
+        assert_eq!(
+            memory.get("Index Name").and_then(serde_json::Value::as_str),
+            Some("memory_t_key"),
+            "…and reaches the memory row on its unique `t`; plan:\n{lexical_plan}"
+        );
+        assert!(
+            !lexical_plan.contains("\"Node Type\":\"Hash Join\""),
+            "a hash join here would build over every head in the deployment; \
+             plan:\n{lexical_plan}"
+        );
+
         // The substring arm plans as the nested loop it DECLARES.
         //
         // `MemoryFirstNestedLoop` is a claim about a plan: drive

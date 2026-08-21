@@ -735,6 +735,15 @@ async fn semantic_search_respects_until() {
         inside.embedding_model_id = Some("test-embed".into());
         let hit = pg.search_memories(&inside, &[note_projection()]).await?;
         assert_eq!(hit.results.len(), 1);
+        // Snippets are hydrated from the PAGE now, not carried by the
+        // ranked statement, so a row that reached the page on similarity
+        // alone gets one too. The sidecar-join shape could not do this:
+        // the join lived in the lexical statement, so a semantic-only hit
+        // came back with an empty snippet.
+        assert!(
+            !hit.results[0].snippet.is_empty(),
+            "a semantic-only hit is hydrated by the same per-schema lookup"
+        );
 
         let mut too_old = inside.clone();
         too_old.until = Some(time::OffsetDateTime::UNIX_EPOCH);
@@ -748,6 +757,108 @@ async fn semantic_search_respects_until() {
     .await;
     let _ = drop_db(&db_name).await;
     result.expect("semantic until filter failed");
+}
+
+/// `since` is a LOWER bound and `until` is an UPPER one — proved by rows,
+/// not by the shape of the string.
+///
+/// The two binds have the same type and the same cast, so exchanging their
+/// comparisons (`>= $5` / `<= $4`) is a mutation nothing in the workspace
+/// caught: no lexical-path test bound a non-null window at all, and the one
+/// test that set `until` set it on the SEMANTIC arm, which does not render
+/// these predicates.
+///
+/// Two things make this test actually kill that mutant, and both were
+/// learned by running it:
+///
+/// - The window must be ASYMMETRIC. A symmetric `since == until` asks for
+///   `t >= x AND t <= x` either way round and survives the exchange.
+/// - **The assertion has to be about SCORES, not ids.** `search_admit_sql`
+///   re-applies `since`/`until` on the hit set (`$5`/`$6` there), so a
+///   candidate window that admitted the wrong rows still returns the right
+///   IDS — admission trims them. What it cannot repair is the arm they came
+///   from: an exchanged window empties the RANKED statement, the schema is
+///   then reported missing, the substring arm re-finds the same rows, and
+///   they come back stamped with the flat `BAND_SUBSTRING` floor instead of
+///   their `ts_rank` score. That is the same signature as the head-starvation
+///   defect, and it is what the band assertion below reads.
+#[tokio::test]
+async fn lexical_search_reads_since_as_a_floor_and_until_as_a_ceiling() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    if let Err(e) = create_db(&db_name).await {
+        panic!("PG required for tests but admin connect failed: {e}");
+    }
+    let url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&url).await?;
+        pg.run_migrations().await?;
+        let pool = pg.pool_for_tests();
+        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+
+        // Three notes, strictly increasing in `t` — uuidv7 is millisecond
+        // precision, so the sleeps are what make "strictly".
+        let mut ts = Vec::new();
+        for title in ["Atlas alpha", "Atlas beta", "Atlas gamma"] {
+            let t = seed_note(pool, owner, title, "cartography of the archive").await?;
+            ts.push(t);
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        let stamps: Vec<time::OffsetDateTime> =
+            sqlx::query_scalar("SELECT uuid_extract_timestamp(t) FROM unnest($1::uuid[]) AS t")
+                .bind(&ts)
+                .fetch_all(pool)
+                .await?;
+        assert!(
+            stamps[0] < stamps[1] && stamps[1] < stamps[2],
+            "the fixture needs three distinct instants, got {stamps:?}"
+        );
+
+        let unbounded = pg
+            .search_memories(&search_req(owner, "atlas"), &[note_projection()])
+            .await?;
+        assert_eq!(unbounded.results.len(), 3, "all three match the query");
+
+        let mut windowed = search_req(owner, "atlas");
+        windowed.since = Some(stamps[1]);
+        windowed.until = Some(stamps[2]);
+        let page = pg.search_memories(&windowed, &[note_projection()]).await?;
+        let found: std::collections::BTreeSet<Uuid> = page
+            .results
+            .iter()
+            .map(|row| row.memory_id.into_inner())
+            .collect();
+        assert_eq!(
+            found,
+            [ts[1], ts[2]].into_iter().collect(),
+            "[second, third] is what `since = second, until = third` selects"
+        );
+        for row in &page.results {
+            assert!(
+                row.score >= BAND_EXACT.floor,
+                "the window must not empty the ranked arm and hand these rows \
+                 to the substring fallback at its flat floor; got {}",
+                row.score
+            );
+        }
+
+        // …and the other half of the window, so a mutation that drops one
+        // predicate entirely cannot pass by returning everything.
+        let mut early = search_req(owner, "atlas");
+        early.until = Some(stamps[0]);
+        let page = pg.search_memories(&early, &[note_projection()]).await?;
+        assert_eq!(
+            page.results
+                .iter()
+                .map(|row| row.memory_id.into_inner())
+                .collect::<Vec<_>>(),
+            vec![ts[0]],
+            "`until = first` admits the first row and nothing after it"
+        );
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("lexical time-window direction failed");
 }
 
 #[tokio::test]
