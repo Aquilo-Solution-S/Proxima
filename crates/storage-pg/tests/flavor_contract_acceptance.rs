@@ -1103,3 +1103,123 @@ async fn the_connect_default_resolves_surfaces_through_the_registry() {
     let _ = drop_db(&db_name).await;
     result.expect("the_connect_default_resolves_surfaces_through_the_registry failed");
 }
+
+// ── which declared keys are actually unique ─────────────────────────────
+
+/// `KeyShape` names the columns the erase joins on and the export orders
+/// by. Whether those columns identify ONE row is a property of the schema,
+/// and until this test nothing asked.
+///
+/// `owner_export::order_by` claimed they always do — "every declared key is
+/// unique, so every generated order is total". Five of flavor #0's
+/// twenty-eight are not, and the list below is the measurement rather than
+/// a guess.
+///
+/// Four of the five are `ExportRule::Excluded`, so a non-total order costs
+/// nothing: no bundle orders by them. `ingest_keys` is `ExportRule::Rows`
+/// and its key is `t` while its primary key is
+/// `(owner_id, source_id, ingest_key)` — one memory can hold several
+/// admission receipts, and their order in a bundle is whatever the executor
+/// returns. That is the live one, recorded as a declared follow-up on
+/// `order_by` because fixing it needs the surface to carry a tiebreak the
+/// erase does not use.
+///
+/// The assertion is EQUALITY, not containment, so both directions are
+/// pinned: a new non-unique key has to be added here deliberately, and a
+/// schema change that makes one of these unique has to remove it. Either
+/// way somebody has to look at the export order.
+#[tokio::test]
+async fn every_declared_key_that_is_unique_is_unique_in_the_catalog() {
+    /// Declared keys with no unique index behind them, and why each is
+    /// tolerable. Alphabetical.
+    const NOT_UNIQUE: [&str; 5] = [
+        // One row per (entity, model, version); the key names the entity.
+        "proxima_core.embedding_heads",
+        // One job per (owner, entity, model).
+        "proxima_core.embedding_jobs",
+        // One vector per (entity, model, version).
+        "proxima_core.embeddings",
+        // THE LIVE ONE: PK is (owner_id, source_id, ingest_key), and this
+        // surface is the only ExportRule::Rows member of the list.
+        "proxima_core.ingest_keys",
+        // PK is (memory_id, schema_id): one memory projects per schema.
+        "proxima_core.projection",
+    ];
+
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    if let Err(e) = create_db(&db_name).await {
+        panic!("PG required for tests but admin connect failed: {e}");
+    }
+    let url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&url).await?;
+        pg.run_migrations().await?;
+        let pool = pg.pool_for_tests();
+        let surfaces = pg.surfaces();
+
+        let mut not_unique = Vec::new();
+        for surface in surfaces.surfaces() {
+            let columns: Vec<String> = surface
+                .key
+                .columns()
+                .iter()
+                .map(|column| (*column).to_owned())
+                .collect();
+            // Column-set equality, not prefix: an index over a SUPERSET of
+            // the declared key does not make the key unique.
+            let unique: bool = sqlx::query_scalar(
+                "SELECT EXISTS (
+                     SELECT 1
+                       FROM pg_index i
+                      WHERE i.indrelid = $1::regclass
+                        AND i.indisunique
+                        AND (
+                            SELECT array_agg(a.attname::text ORDER BY a.attname::text)
+                              FROM unnest(i.indkey::int[]) AS k(attnum)
+                              JOIN pg_attribute a
+                                ON a.attrelid = i.indrelid AND a.attnum = k.attnum
+                          ) = (SELECT array_agg(x ORDER BY x) FROM unnest($2::text[]) AS x)
+                 )",
+            )
+            .bind(surface.table)
+            .bind(&columns)
+            .fetch_one(pool)
+            .await?;
+            if !unique {
+                not_unique.push(surface.table);
+            }
+        }
+        not_unique.sort_unstable();
+
+        assert_eq!(
+            not_unique,
+            NOT_UNIQUE.to_vec(),
+            "the set of declared keys with no unique index behind them has \
+             changed. The export orders rows by the declared key, so a new \
+             entry means a bundle whose row order is undefined wherever that \
+             key repeats; a departure means one fewer place to think about"
+        );
+
+        // The one that reaches the export generator, named separately so
+        // the reason this list matters is not buried in it.
+        let exported_and_not_unique: Vec<&str> = surfaces
+            .surfaces()
+            .iter()
+            .filter(|surface| {
+                NOT_UNIQUE.contains(&surface.table)
+                    && matches!(surface.export, proxima_core::flavor::ExportRule::Rows)
+            })
+            .map(|surface| surface.table)
+            .collect();
+        assert_eq!(
+            exported_and_not_unique,
+            vec!["proxima_core.ingest_keys"],
+            "a second exported surface with a non-unique key is a second \
+             place the bundle's bytes stop being a function of its contents"
+        );
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("every_declared_key_that_is_unique_is_unique_in_the_catalog failed");
+}

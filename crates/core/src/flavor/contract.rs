@@ -1351,9 +1351,27 @@ pub const PROJECTION_TABLE_NAME: &str = "projection";
 
 /// The column every flavor's projection table keys its memory on.
 ///
-/// Named once, beside the FK whose name is derived from it, so the surface
-/// declaration and the generated statements cannot drift again: they did,
-/// and the surface spent three phases claiming a column called `t`.
+/// ONE READER: [`ProjectionSpec::surface`]'s `KeyShape::MemoryT`. That is
+/// the drift this constant was minted for — the surface spent three phases
+/// claiming a column called `t`, which no projection table has — and it is
+/// the whole of what naming it fixes.
+///
+/// It is NOT the single source of the column name, and an earlier draft of
+/// this doc said it was ("named once, beside the FK whose name is derived
+/// from it, so the surface declaration and the generated statements cannot
+/// drift again"). Both halves were wrong. [`PROJECTION_MEMORY_FK`] is a
+/// separate literal, not derived from anything. And the generator spells
+/// `memory_id` inline four more times — in the `CREATE TABLE` column list,
+/// in its `PRIMARY KEY`, in the projection `INSERT`'s column list, and in
+/// `PROJECTION_COLUMNS`, the catalog check's expected list. Those are fixed
+/// SQL text by design; interpolating a constant into them would move four
+/// spellings into four `format!` holes and buy nothing.
+///
+/// What makes "cannot drift" true is a test rather than a definition:
+/// `the_projection_column_name_has_one_spelling` in `storage-pg`'s
+/// projection module asserts this constant against the FK name and against
+/// the generator's own emitted DDL. A constant plus a check is honest; a
+/// constant plus a claim is what this was.
 pub const PROJECTION_MEMORY_COLUMN: &str = "memory_id";
 
 /// Whether a flavor has a projection table — and, when it does not, why.
