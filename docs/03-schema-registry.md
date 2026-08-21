@@ -92,7 +92,6 @@ Required registry metadata:
 | `schema_version` | monotonic version for that id |
 | `kind` | closed `PayloadKind` |
 | `sidecar_table` | optional/required per family; qualified SQL table when present, e.g. `proxima_code.commit_v1` |
-| `special_category` | declared compliance flag; see §Special-category declaration |
 
 Fact-only metadata:
 
@@ -226,27 +225,18 @@ this does not relax the A/P escape-hatch rule.
 
 ## Special-category declaration
 
-Every payload schema declares `special_category: bool`.
+There isn't one. `SchemaContract::special_category` was a per-schema `bool`
+every schema declared and nothing read: no verb branched on it, no erase or
+export leg consulted it, and the kernel deliberately does not reason over
+special-category at all (`docs/lean/COVERAGE.md`, SR-30..33, D16). It is
+deleted, not demoted to a marker — see
+[13 §Declared metadata](13-compliance.md#declared-metadata) for what a host
+with Art. 9 obligations does instead.
 
-Semantics:
-
-| Value | Meaning |
-|---|---|
-| `true` | schema can contain GDPR Art. 9 or analogous heightened-protection data |
-| `false` | schema is treated as ordinary data by substrate compliance paths |
-
-Scope:
-
-| Scope | Rule |
-|---|---|
-| per schema | not per row |
-| declared by controller/flavor author | not inferred by substrate |
-| split schemas when mixed | do not mix special and non-special rows in one schema |
-
-The flag is the one piece of processing metadata core reads back, and it
-exists for a host to key heightened handling off — audit emphasis, reporting,
-its own deletion policy (see
-[13 §Declared metadata](13-compliance.md#declared-metadata)).
+The scoping rule it carried survives it, because it was never about the flag:
+a schema is per-schema, not per-row, so rows needing different handling belong
+in a different schema — one with its own surfaces, `EraseRule` and
+`ExportRule`, all three of which are read.
 
 ## Sidecar tables
 
@@ -480,7 +470,6 @@ follow from what those nodes declare (see
 | typed query over F/A/P | sidecar tables |
 | connections without a connection vocabulary | payload `references()` |
 | schema-aware UI/protocol | Schema verb |
-| compliance classification | `special_category` |
 | current-state projections | stateful Fact heads |
 | migration without identity churn | sidecar-only evolution |
 

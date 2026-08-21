@@ -127,37 +127,56 @@ fn impl_target(line: &str) -> Option<&str> {
     (!ident.is_empty()).then_some(ident)
 }
 
-/// The whole `CREATE TRIGGER` statement for `name`, so the relation it
-/// fires on can be checked too.
+/// Whether the migrated catalog carries a non-internal trigger `name` on
+/// `relation`.
 ///
-/// The name is matched as an exact TOKEN. `goal_head_t_only_v2` is a
-/// different trigger and must not satisfy a citation of
-/// `goal_head_t_only`; a `contains` test cannot say so.
+/// Not `tgisinternal`: a constraint's own internal trigger is the
+/// constraint's enforcement, and a `Trigger` citation claims a trigger of
+/// its own.
+async fn trigger_exists(
+    pool: &sqlx::PgPool,
+    relation: &str,
+    name: &str,
+) -> Result<bool, sqlx::Error> {
+    sqlx::query_scalar(
+        "SELECT EXISTS (
+           SELECT 1
+             FROM pg_trigger g
+             JOIN pg_class t ON t.oid = g.tgrelid
+            WHERE NOT g.tgisinternal
+              AND g.tgname = $2
+              AND (t.relnamespace::regnamespace)::text || '.' || t.relname = $1
+         )",
+    )
+    .bind(relation)
+    .bind(name)
+    .fetch_one(pool)
+    .await
+}
+
+/// Whether the migrated catalog carries constraint `name` on `relation`.
 ///
-/// Read line-wise rather than by composing a `CREATE TRIGGER ...` needle:
-/// this test reads SQL and never runs any, and assembling that string would
-/// look exactly like a dynamic statement to the SQL-policy guardrail.
-fn create_trigger_statement(migration: &str, name: &str) -> Option<String> {
-    let mut lines = migration.lines();
-    while let Some(line) = lines.next() {
-        let mut tokens = line.split_whitespace();
-        if tokens.next() != Some("CREATE")
-            || tokens.next() != Some("TRIGGER")
-            || tokens.next() != Some(name)
-        {
-            continue;
-        }
-        let mut statement = line.to_owned();
-        for tail in lines.by_ref() {
-            statement.push('\n');
-            statement.push_str(tail);
-            if tail.contains(';') {
-                break;
-            }
-        }
-        return Some(statement);
-    }
-    None
+/// A separate statement rather than a union with the trigger one: the two
+/// catalogs have different columns, and a citation of a constraint must not
+/// be satisfied by a trigger that happens to share its name.
+async fn constraint_exists(
+    pool: &sqlx::PgPool,
+    relation: &str,
+    name: &str,
+) -> Result<bool, sqlx::Error> {
+    sqlx::query_scalar(
+        "SELECT EXISTS (
+           SELECT 1
+             FROM pg_constraint c
+             JOIN pg_class t ON t.oid = c.conrelid
+            WHERE c.conname = $2
+              AND (t.relnamespace::regnamespace)::text || '.' || t.relname = $1
+         )",
+    )
+    .bind(relation)
+    .bind(name)
+    .fetch_one(pool)
+    .await
 }
 
 /// Every cited enforcement site resolves to something that exists.
@@ -167,20 +186,27 @@ fn create_trigger_statement(migration: &str, name: &str) -> Option<String> {
 /// the contract goes on claiming a refusal at an address nothing answers.
 /// The citation format is `<crate-dir>/<path>::<symbol path>`, so both
 /// halves are resolvable — the file relative to the workspace root, and the
-/// symbol as an item declared in it under the right `impl`. Triggers
-/// resolve against the migration that creates them, name AND relation.
-#[test]
-fn every_cited_enforcement_site_resolves() {
+/// symbol as an item declared in it under the right `impl`.
+///
+/// The two DDL arms are resolved against the CATALOG of a migrated
+/// database, not against the migration's source text. What a `CREATE
+/// TRIGGER` line says and what the server ended up with are different
+/// claims: a later `DROP TRIGGER`, a rename, a relation that the statement
+/// names through a search path, or a trigger created inside a `DO` block
+/// all separate them, and only one of the two is what a transfer attempt
+/// actually meets. `pg_trigger`/`pg_constraint` answer the question the
+/// declaration is making — *this relation is guarded by this thing* —
+/// including the relation, which the source-text version could only check
+/// for `Trigger` and not for `Constraint`.
+#[tokio::test]
+async fn every_cited_enforcement_site_resolves() {
     let workspace = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .and_then(std::path::Path::parent)
         .expect("crates/storage-pg sits two levels under the workspace root")
         .to_owned();
-    let migration = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("migrations/0001_v008.sql"),
-    )
-    .expect("the v0.0.8 migration is readable");
 
+    let mut ddl: Vec<Enforcement> = Vec::new();
     let mut checked = 0_usize;
     let rules = FLAVOR_0
         .schemas
@@ -208,34 +234,7 @@ fn every_cited_enforcement_site_resolves() {
                         file.display()
                     );
                 }
-                Enforcement::Trigger(trigger) => {
-                    let statement = create_trigger_statement(&migration, trigger.name)
-                        .unwrap_or_else(|| {
-                            panic!("the migration creates no trigger named {}", trigger.name)
-                        });
-                    let fires_on = statement
-                        .split_whitespace()
-                        .skip_while(|token| *token != "ON")
-                        .nth(1)
-                        .map(|token| token.trim_end_matches(';'));
-                    assert_eq!(
-                        fires_on,
-                        Some(trigger.relation),
-                        "{} fires on a different relation than the contract claims",
-                        trigger.name
-                    );
-                }
-                // Exact token, for the same reason the trigger name is. No
-                // member today (map RA-6: the goals CHECK constraints went
-                // with the World owner), so the relation is not cross-checked
-                // here — the first `Constraint` citation should add that.
-                Enforcement::Constraint(constraint) => assert!(
-                    migration
-                        .split(|ch: char| !(ch.is_alphanumeric() || ch == '_'))
-                        .any(|token| token == constraint.name),
-                    "the migration names no constraint {}",
-                    constraint.name
-                ),
+                Enforcement::Trigger(_) | Enforcement::Constraint(_) => ddl.push(*site),
             }
         }
     }
@@ -243,6 +242,49 @@ fn every_cited_enforcement_site_resolves() {
         checked >= 3,
         "goals alone cite three sites; found {checked}"
     );
+    assert!(
+        !ddl.is_empty(),
+        "goals cite a DDL backstop; the catalog half of this test must have something to ask about"
+    );
+
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    if let Err(e) = create_db(&db_name).await {
+        panic!("PG required for tests but admin connect failed: {e}");
+    }
+    let url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&url).await?;
+        pg.run_migrations().await?;
+        for site in ddl {
+            let pool = pg.pool_for_tests();
+            let (kind, relation, name, exists) = match site {
+                Enforcement::Trigger(t) => (
+                    "trigger",
+                    t.relation,
+                    t.name,
+                    trigger_exists(pool, t.relation, t.name).await?,
+                ),
+                Enforcement::Constraint(c) => (
+                    "constraint",
+                    c.relation,
+                    c.name,
+                    constraint_exists(pool, c.relation, c.name).await?,
+                ),
+                Enforcement::EngineRefusal { .. } | Enforcement::StorageBackstop { .. } => {
+                    unreachable!("the source-text arms were resolved above")
+                }
+            };
+            assert!(
+                exists,
+                "the contract cites {kind} {name} on {relation}, and the migrated catalog has \
+                 no such {kind} on that relation"
+            );
+        }
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("every_cited_enforcement_site_resolves failed");
 }
 
 // ── §2.5 (2): declared absence ──────────────────────────────────────────

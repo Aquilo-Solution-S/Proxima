@@ -434,6 +434,139 @@ impl FlavorRegistry {
         Ok(())
     }
 
+    /// Where a contract declaration and the registration it describes are
+    /// checked for being ONE fact rather than two copies.
+    ///
+    /// Both fields here were second descriptions of something the registry
+    /// already held, with no mechanism keeping them equal — the
+    /// `compliance_audit_log` counter-literal pattern one layer up.
+    fn validate_registration_agreement(
+        contract: &crate::flavor::contract::FlavorContract,
+        schema: &crate::flavor::contract::SchemaContract,
+        info: &crate::verbs::schema::SchemaInfo,
+    ) -> Result<(), FlavorRegistryError> {
+        let schema_id = schema.schema_id();
+        // The contract and the trait constant are one fact, so they
+        // have to be one answer.
+        //
+        // `EmbeddingRecipe::Never { why }` is the reasoned form of
+        // `FactPayload::EMBEDDABLE = false` and its doc has always said
+        // it feeds `non_embeddable_schema_ids`. It did not: that list
+        // is built from the trait constant, and the two disagreed for
+        // SEVEN Fact schemas — `core/mcp-call-logged-v1` and six code
+        // ones — every one of them in the same direction. The contract
+        // said "never embed, and here is why"; the trait said
+        // "embeddable"; the enqueue lane believed the trait and filed
+        // embedding jobs for rows whose recipe yields zero units, so
+        // the drain had nothing to send and dropped them. A declaration
+        // that costs work and produces nothing is worse than an inert
+        // one.
+        if schema.kind == crate::verbs::schema::PayloadKind::Fact {
+            let never = matches!(
+                schema.embedding,
+                crate::flavor::contract::EmbeddingRecipe::Never { .. }
+            );
+            if never == info.embeddable {
+                return Err(FlavorRegistryError::EmbeddabilityDisagreement {
+                    flavor_id: contract.flavor_id,
+                    schema_id,
+                    recipe_is_never: never,
+                    trait_says_embeddable: info.embeddable,
+                });
+            }
+        }
+        // Same shape, one field over: `natural_key_columns` is declared
+        // twice — on the contract and on the payload trait — and the
+        // ingest reads the trait's copy. Nothing compared them, so the
+        // contract's copy was a description of the ingest that could
+        // stop being true without any test noticing.
+        if schema.natural_key_columns.len() != info.natural_key_columns.len()
+            || !schema
+                .natural_key_columns
+                .iter()
+                .zip(&info.natural_key_columns)
+                .all(|(declared, registered)| *declared == registered.as_str())
+        {
+            return Err(FlavorRegistryError::NaturalKeyDisagreement {
+                flavor_id: contract.flavor_id,
+                schema_id,
+            });
+        }
+        Ok(())
+    }
+
+    /// A tool's contract entry against the descriptor the registry holds.
+    ///
+    /// `actions` and `idempotent` were both second descriptions of facts
+    /// the registry already carried — the dispatcher's `action_arg_specs`
+    /// and the wire's `McpToolAnnotations` — and nothing kept either equal.
+    fn validate_contract_tools(
+        &self,
+        contract: &crate::flavor::contract::FlavorContract,
+    ) -> Result<(), FlavorRegistryError> {
+        for tool in contract.tools {
+            let Some(entry) = self
+                .mcp_tools
+                .iter()
+                .find(|entry| entry.name == tool.wire_name)
+            else {
+                return Err(FlavorRegistryError::ContractToolNotRegistered {
+                    flavor_id: contract.flavor_id,
+                    name: tool.wire_name,
+                });
+            };
+            // `actions` and `idempotent` are a SECOND description of facts
+            // the registry already holds, and until this check nothing kept
+            // the two equal. The dispatcher's truth is
+            // `McpToolDescriptor::action_arg_specs`, validated against the
+            // JSON schema and never against this list; the wire's truth is
+            // `McpToolAnnotations::idempotent`. Flavor #0 declared five
+            // non-empty action lists that nothing read, and the code
+            // flavor's own doc admitted the duplication in prose.
+            //
+            // The list is compared in ORDER, not as a set. A palette scope
+            // key is `"<wire_name>:<action>"`, so the declaration is read by
+            // people composing palettes; a list that agrees on membership
+            // and disagrees on order is still a list that has stopped being
+            // a copy of the thing it describes.
+            let registered_actions = entry
+                .action_arg_specs
+                .iter()
+                .map(|spec| spec.action)
+                .collect::<Vec<_>>();
+            if registered_actions != tool.actions {
+                return Err(FlavorRegistryError::ToolActionsDisagreement {
+                    flavor_id: contract.flavor_id,
+                    name: tool.wire_name,
+                });
+            }
+            let annotations = entry.resolved_annotations();
+            let resolved = annotations
+                .and_then(|value| value.idempotent)
+                // A read-only tool is idempotent by construction — calling
+                // it twice is calling it once — and MCP's `readOnlyHint`
+                // carries that, which is why the substrate annotations do
+                // not restate it. Reading the implication here is what lets
+                // the contract's `idempotent` stay a claim about BEHAVIOUR
+                // rather than a copy of one optional field.
+                .or_else(|| {
+                    annotations
+                        .and_then(|value| value.read_only)
+                        .filter(|ro| *ro)
+                })
+                .unwrap_or(false);
+            if resolved != tool.idempotent {
+                return Err(FlavorRegistryError::ToolIdempotenceDisagreement {
+                    flavor_id: contract.flavor_id,
+                    name: tool.wire_name,
+                    declared: tool.idempotent,
+                    resolved,
+                });
+            }
+        }
+        Ok(())
+    }
+
     fn validate_contract_schemas(
         &self,
         contract: &crate::flavor::contract::FlavorContract,
@@ -525,19 +658,20 @@ impl FlavorRegistry {
                     });
                 }
             }
-            let registered = self.schemas.iter().any(|info| {
+            let registered = self.schemas.iter().find(|info| {
                 info.schema_id == schema_id
                     && info.schema_version == schema.schema_version()
                     && info.kind == schema.kind
             });
-            if !registered {
+            let Some(info) = registered else {
                 return Err(FlavorRegistryError::ContractSchemaNotRegistered {
                     flavor_id: contract.flavor_id,
                     schema_id,
                     schema_version: schema.schema_version(),
                     kind: schema.kind,
                 });
-            }
+            };
+            Self::validate_registration_agreement(contract, schema, info)?;
         }
         for info in &self.schemas {
             if !info.schema_id.as_str().starts_with(&prefix) {
@@ -557,18 +691,7 @@ impl FlavorRegistry {
                 });
             }
         }
-        for tool in contract.tools {
-            if !self
-                .mcp_tools
-                .iter()
-                .any(|entry| entry.name == tool.wire_name)
-            {
-                return Err(FlavorRegistryError::ContractToolNotRegistered {
-                    flavor_id: contract.flavor_id,
-                    name: tool.wire_name,
-                });
-            }
-        }
+        self.validate_contract_tools(contract)?;
         Ok(())
     }
 
@@ -838,7 +961,6 @@ mod tests {
             provenance: Provenance::None,
             surfaces: &[],
             natural_key_columns: &[],
-            special_category: false,
         }
     }
 
@@ -912,7 +1034,6 @@ mod tests {
             provenance: Provenance::None,
             surfaces: &[],
             natural_key_columns: &[],
-            special_category: false,
         }],
         &[],
         &[],
@@ -1206,7 +1327,6 @@ mod tests {
             provenance: Provenance::None,
             surfaces: &[],
             natural_key_columns: &[],
-            special_category: false,
         }],
         state_surfaces: &[],
         kernel_surfaces: &[],
@@ -1261,9 +1381,47 @@ mod tests {
             provenance: Provenance::None,
             surfaces: &[],
             natural_key_columns: &[],
-            special_category: false,
         }
     }
+
+    /// A Fact schema whose recipe says "never embed, and here is why" while
+    /// its registration says the enqueue lane should embed it. The
+    /// registration is what the enqueue lane reads, so the reason would be
+    /// stated and ignored — and the jobs filed for it can only be dropped.
+    static EMBEDDING_DISAGREEMENT: FlavorContract = uniformity_contract(&[SchemaContract {
+        id: SchemaRef::new(FIXTURE_FLAVOR, "thing", 1),
+        kind: PayloadKind::Fact,
+        sidecar_table: Some("test_flavor.thing_v1"),
+        search: SearchProjectionDecl::None {
+            why: "the embedding recipe is what this fixture is about",
+        },
+        embedding: EmbeddingRecipe::Units(&[crate::flavor::contract::EmbedUnit::stored(
+            "embed_text",
+            crate::flavor::contract::SLOT_DEFAULT,
+        )]),
+        transfer: TransferRule::StaysOnKey,
+        provenance: Provenance::None,
+        surfaces: &[],
+        natural_key_columns: &[],
+    }]);
+
+    /// A contract naming natural key columns the ingest does not read: the
+    /// registration's list is empty, and the ingest reads the registration.
+    static NATURAL_KEY_DISAGREEMENT: FlavorContract = uniformity_contract(&[SchemaContract {
+        id: SchemaRef::new(FIXTURE_FLAVOR, "thing", 1),
+        kind: PayloadKind::Fact,
+        sidecar_table: Some("test_flavor.thing_v1"),
+        search: SearchProjectionDecl::None {
+            why: "the natural key is what this fixture is about",
+        },
+        embedding: EmbeddingRecipe::Never {
+            why: "a fixture, not a memory",
+        },
+        transfer: TransferRule::StaysOnKey,
+        provenance: Provenance::None,
+        surfaces: &[],
+        natural_key_columns: &["thing_key"],
+    }]);
 
     /// The `RankSource::Projection` wrapper the three uniformity fixtures
     /// share: one statement serves the whole flavor, which is what makes
@@ -1451,7 +1609,6 @@ mod tests {
             provenance: Provenance::None,
             surfaces: &[],
             natural_key_columns: &[],
-            special_category: false,
         }],
         &[],
         &[],
@@ -1467,6 +1624,72 @@ mod tests {
         }],
         &[],
     );
+
+    /// The registration says nothing dispatches; the declaration names an
+    /// action. `actions` is a copy of `McpActionArgSpec::action`, and a copy
+    /// that has drifted is worse than no copy: palette scope keys are
+    /// `"<wire_name>:<action>"`, so the drifted list is read by people
+    /// composing palettes against actions the dispatcher will not route.
+    static TOOL_ACTIONS_DISAGREE: FlavorContract = contract(
+        8,
+        &[],
+        &[ToolContract {
+            wire_name: "test_flavor_flat",
+            actions: &["compose"],
+            idempotent: false,
+        }],
+        &[],
+    );
+
+    /// The registration's annotations say a second call is a second write;
+    /// the declaration claims idempotence.
+    static TOOL_IDEMPOTENCE_DISAGREES: FlavorContract = contract(
+        9,
+        &[],
+        &[ToolContract {
+            wire_name: "test_flavor_flat",
+            actions: &[],
+            idempotent: true,
+        }],
+        &[],
+    );
+
+    /// A flat MCP tool registration, so a contract's tool declaration has a
+    /// registration to disagree with.
+    ///
+    /// Flat, not a dispatcher: a dispatcher fixture would have to carry a
+    /// hand-written `x-proxima-actions` extension agreeing with its specs
+    /// field-set for field-set, which is a different validator's subject.
+    /// Empty `action_arg_specs` against a declared action is the same
+    /// disagreement with none of that machinery.
+    fn register_fixture_tool(registry: &mut FlavorRegistry, idempotent: bool) {
+        // Registrations live for the process; a leaked closure gives the
+        // descriptor the `'static` call handle its field type demands.
+        let call: crate::mcp::McpCallFn = Box::leak(Box::new(
+            |_ctx: crate::mcp::McpToolCtx, _args: serde_json::Value| {
+                Box::pin(async { Err(crate::mcp::McpToolError::Other("a fixture".to_owned())) })
+                    as futures::future::BoxFuture<'static, _>
+            },
+        ));
+        registry.mcp_tools.push(crate::mcp::McpToolDescriptor {
+            name: "test_flavor_flat",
+            description: "a fixture's flat tool",
+            origin: crate::mcp::McpToolOrigin::Flavor(FIXTURE_FLAVOR.to_owned()),
+            produces_schema_ids: &[],
+            args_schema: serde_json::json!({ "type": "object" }),
+            output_schema: serde_json::json!({ "type": "object" }),
+            action_arg_specs: &[],
+            // Declared, or `validate_tools_declare_behavior` refuses the
+            // fixture for saying nothing at all and the contract check is
+            // never reached.
+            annotations: Some(
+                crate::mcp::McpToolAnnotations::new()
+                    .read_only(false)
+                    .idempotent(idempotent),
+            ),
+            call,
+        });
+    }
 
     /// A fixture's ingress. Never called: the registries below are built to
     /// be REFUSED, so nothing reaches a payload parser.
@@ -1502,7 +1725,11 @@ mod tests {
             tombstone: None,
             has_typed_ingress: true,
             cited_object_schema: None,
-            embeddable: true,
+            // Every fixture contract declares `EmbeddingRecipe::Never`, and
+            // freeze now refuses a Fact whose trait constant disagrees — so
+            // a registration that said `true` here would make every fixture
+            // report the embeddability error instead of its own subject.
+            embeddable: false,
         });
         registry
             .protocol_ingress
@@ -1820,6 +2047,31 @@ mod tests {
                 },
             ),
             (
+                "a Fact's embedding recipe and its registration disagree",
+                |registry| {
+                    register_fixture_schema(registry, "thing", "test_flavor.thing_v1");
+                    registry.contracts.push(&EMBEDDING_DISAGREEMENT);
+                },
+                |err| {
+                    matches!(
+                        err,
+                        FlavorRegistryError::EmbeddabilityDisagreement {
+                            recipe_is_never: false,
+                            trait_says_embeddable: false,
+                            ..
+                        }
+                    )
+                },
+            ),
+            (
+                "a contract names natural key columns the ingest does not read",
+                |registry| {
+                    register_fixture_schema(registry, "thing", "test_flavor.thing_v1");
+                    registry.contracts.push(&NATURAL_KEY_DISAGREEMENT);
+                },
+                |err| matches!(err, FlavorRegistryError::NaturalKeyDisagreement { .. }),
+            ),
+            (
                 "the contract names an MCP tool nothing registered",
                 |registry| registry.contracts.push(&UNREGISTERED_TOOL),
                 |err| {
@@ -1827,6 +2079,37 @@ mod tests {
                         err,
                         FlavorRegistryError::ContractToolNotRegistered { name, .. }
                             if *name == "test_flavor_absent"
+                    )
+                },
+            ),
+            (
+                "the contract's action list is not the dispatcher's",
+                |registry| {
+                    register_fixture_tool(registry, false);
+                    registry.contracts.push(&TOOL_ACTIONS_DISAGREE);
+                },
+                |err| {
+                    matches!(
+                        err,
+                        FlavorRegistryError::ToolActionsDisagreement { name, .. }
+                            if *name == "test_flavor_flat"
+                    )
+                },
+            ),
+            (
+                "the contract claims an idempotence the registration denies",
+                |registry| {
+                    register_fixture_tool(registry, false);
+                    registry.contracts.push(&TOOL_IDEMPOTENCE_DISAGREES);
+                },
+                |err| {
+                    matches!(
+                        err,
+                        FlavorRegistryError::ToolIdempotenceDisagreement {
+                            declared: true,
+                            resolved: false,
+                            ..
+                        }
                     )
                 },
             ),

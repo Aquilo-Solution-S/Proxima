@@ -247,7 +247,6 @@ const fn record_schema(
         provenance,
         surfaces,
         natural_key_columns: &[],
-        special_category: false,
     }
 }
 
@@ -268,7 +267,6 @@ const fn opaque_schema(name: &'static str, kind: PayloadKind) -> SchemaContract 
         provenance: Provenance::None,
         surfaces: &[],
         natural_key_columns: &[],
-        special_category: false,
     }
 }
 
@@ -316,7 +314,6 @@ const COMMIT_V1: SchemaContract = SchemaContract {
     provenance: Provenance::None,
     surfaces: &[memory_sidecar("proxima_code.commit_v1", "commit_v1_t_fkey")],
     natural_key_columns: &[],
-    special_category: false,
 };
 
 const COMMIT_SUMMARY_V1: SchemaContract = SchemaContract {
@@ -354,7 +351,6 @@ const COMMIT_SUMMARY_V1: SchemaContract = SchemaContract {
         "commit_summary_v1_t_fkey",
     )],
     natural_key_columns: &[],
-    special_category: false,
 };
 
 const CODE_CHUNK_V1: SchemaContract = SchemaContract {
@@ -400,7 +396,6 @@ const CODE_CHUNK_V1: SchemaContract = SchemaContract {
         ),
     ],
     natural_key_columns: &[],
-    special_category: false,
 };
 
 /// A file revision is a *path* surface, not a lexical projection: its index
@@ -426,7 +421,6 @@ const FILE_REVISION_V1: SchemaContract = SchemaContract {
         "file_revision_v1_t_fkey",
     )],
     natural_key_columns: &["repo_id", "file_path"],
-    special_category: false,
 };
 
 // ── Record surfaces ─────────────────────────────────────────────────────

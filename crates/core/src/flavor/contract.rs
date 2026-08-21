@@ -487,16 +487,20 @@ impl EmbeddingSlot {
 pub const SLOT_DEFAULT: EmbeddingSlot = EmbeddingSlot("default");
 
 /// Where one unit's text comes from.
+///
+/// One arm, deliberately. `Render` (the memory row's rendered text) and
+/// `Concat` (sidecar columns joined generator-side) were declared beside it
+/// with ZERO members, and `resolve` folded both into the same
+/// `column: None` result — so the vocabulary offered two choices that were
+/// one choice, to nobody. A shape with no member is a guess about a future
+/// need; when that need arrives it arrives with a caller, and the caller is
+/// what tells you which of the two you actually wanted.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum EmbedText {
     /// A pre-computed column on the schema's sidecar table — the shipped
     /// idiom (`SearchProjection::embed_text_column`), read by
     /// `storage-pg/src/verbs/fact_embeddings/text.rs`.
     StoredColumn(&'static str),
-    /// The memory row's rendered text.
-    Render,
-    /// Concatenate sidecar columns generator-side.
-    Concat(&'static [&'static str]),
 }
 
 /// One `(text, slot)` pair: the output grain of a recipe.
@@ -523,8 +527,15 @@ impl EmbedUnit {
 /// unit list reserves the shape per-field target models need later.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum EmbeddingRecipe {
-    /// Structurally non-embeddable, with the reason attached. Feeds
-    /// `FlavorRegistryFrozen::non_embeddable_schema_ids`.
+    /// Structurally non-embeddable, with the reason attached.
+    ///
+    /// The reasoned form of `FactPayload::EMBEDDABLE = false`, and freeze
+    /// refuses the two disagreeing
+    /// (`FlavorRegistryError::EmbeddabilityDisagreement`). The constant is
+    /// what `non_embeddable_schema_ids` is built from and what the enqueue
+    /// lane excludes; this arm is what says why. They drifted for seven
+    /// Fact schemas before the check existed, all in the direction that
+    /// files embedding jobs for rows whose recipe yields no units.
     Never {
         why: &'static str,
     },
@@ -561,17 +572,13 @@ impl EmbeddingRecipe {
     pub fn resolve(&self, sidecar_table: Option<&'static str>) -> Vec<ResolvedEmbedUnit> {
         self.units()
             .iter()
-            .map(|unit| match unit.text {
-                EmbedText::StoredColumn(column) => ResolvedEmbedUnit {
+            .map(|unit| {
+                let EmbedText::StoredColumn(column) = unit.text;
+                ResolvedEmbedUnit {
                     table: sidecar_table,
                     column: Some(column),
                     slot: unit.slot,
-                },
-                EmbedText::Render | EmbedText::Concat(_) => ResolvedEmbedUnit {
-                    table: sidecar_table,
-                    column: None,
-                    slot: unit.slot,
-                },
+                }
             })
             .collect()
     }
@@ -1441,7 +1448,6 @@ pub struct SchemaContract {
     /// empty for a schema with no storage of its own.
     pub surfaces: &'static [Surface],
     pub natural_key_columns: &'static [&'static str],
-    pub special_category: bool,
 }
 
 impl SchemaContract {

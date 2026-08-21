@@ -157,7 +157,6 @@ const WRITE_ACT_V1: SchemaContract = SchemaContract {
         Some(t_fkey("proxima_core.write_act_v1", "write_act_v1_t_fkey")),
     )],
     natural_key_columns: &[],
-    special_category: false,
 };
 
 const AGENT_NOTE_V1: SchemaContract = SchemaContract {
@@ -198,7 +197,6 @@ const AGENT_NOTE_V1: SchemaContract = SchemaContract {
         Some(t_fkey("proxima_core.agent_note_v1", "agent_note_v1_t_fkey")),
     )],
     natural_key_columns: &["note_id"],
-    special_category: false,
 };
 
 /// Utterances ARE searchable in this tree, with their own band set. The
@@ -232,7 +230,6 @@ const UTTERANCE_V1: SchemaContract = SchemaContract {
         Some(t_fkey("proxima_core.utterance_v1", "utterance_v1_t_fkey")),
     )],
     natural_key_columns: &[],
-    special_category: false,
 };
 
 const UPLOAD_V1: SchemaContract = SchemaContract {
@@ -252,7 +249,6 @@ const UPLOAD_V1: SchemaContract = SchemaContract {
     provenance: Provenance::None,
     surfaces: &[],
     natural_key_columns: &[],
-    special_category: false,
 };
 
 /// The one owner-pinned sidecar. Its `owner_id` is the owner that MADE the
@@ -299,7 +295,6 @@ const MCP_CALL_LOGGED_V1: SchemaContract = SchemaContract {
         }),
     }],
     natural_key_columns: &[],
-    special_category: false,
 };
 
 const AGENT_DERIVATION_SEARCH: SearchProjectionDecl = SearchProjectionDecl::Projected {
@@ -350,7 +345,6 @@ const AGENT_DERIVATION_V1_A: SchemaContract = SchemaContract {
     provenance: Provenance::OriginEdges,
     surfaces: &[AGENT_DERIVATION_SURFACE],
     natural_key_columns: &[],
-    special_category: false,
 };
 
 const AGENT_DERIVATION_V1_P: SchemaContract = SchemaContract {
@@ -365,7 +359,6 @@ const AGENT_DERIVATION_V1_P: SchemaContract = SchemaContract {
     // once, so erase and forget cannot delete it twice.
     surfaces: &[],
     natural_key_columns: &[],
-    special_category: false,
 };
 
 /// Checkpoint 9: an interpretation grounds through payload columns and
@@ -407,7 +400,6 @@ const INTERPRETATION_V1: SchemaContract = SchemaContract {
         )),
     )],
     natural_key_columns: &[],
-    special_category: false,
 };
 
 const SIMPLE_TEXT_GOAL_V1: SchemaContract = SchemaContract {
@@ -425,7 +417,6 @@ const SIMPLE_TEXT_GOAL_V1: SchemaContract = SchemaContract {
     provenance: Provenance::None,
     surfaces: &[],
     natural_key_columns: &[],
-    special_category: false,
 };
 
 const TASK_GOAL_V1: SchemaContract = SchemaContract {
@@ -456,7 +447,6 @@ const TASK_GOAL_V1: SchemaContract = SchemaContract {
         completeness: Some(t_fkey("proxima_core.task_goal_v1", "task_goal_v1_t_fkey")),
     }],
     natural_key_columns: &[],
-    special_category: false,
 };
 
 /// Cited objects and citation mappings carry no sidecar of their own in
@@ -477,7 +467,6 @@ const fn citation_schema(
         provenance: Provenance::None,
         surfaces: &[],
         natural_key_columns: &[],
-        special_category: false,
     }
 }
 

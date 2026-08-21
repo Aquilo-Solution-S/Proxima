@@ -253,6 +253,29 @@ writes use the same tool with the matching action key.
    schema nothing registered, a schema registered under a flavor whose
    contract does not declare it, and a contract naming an unregistered MCP
    tool.
+9. A declaration that disagrees with the registration it duplicates. Four,
+   all of the same shape — the contract says one thing, something else in the
+   binary already said another, and until these checks nothing kept the two
+   equal:
+   - `EmbeddingRecipe::Never` on a schema whose payload type declares
+     `EMBEDDABLE = true`, or a recipe with units on one that declares
+     `false`. The disagreement is not symmetric in cost: the `Never`-plus-
+     `true` direction files embedding jobs the drain can only drop.
+   - `natural_key_columns` that are not the columns the registration carries.
+   - A `ToolContract::actions` list that is not the registered
+     `ACTION_ARG_SPECS` action list, compared IN ORDER — palette scope keys
+     are `"<wire_name>:<action>"`, so the list is read by people, and one
+     that agrees on membership while disagreeing on order has stopped being
+     a copy of the thing it describes.
+   - A `ToolContract::idempotent` that is not what the tool's resolved
+     annotations say. Read-only resolves as idempotent: calling a read twice
+     is calling it once, and MCP's `readOnlyHint` carries that.
+10. A surface whose declared rule names no leg the generator can run:
+    `UndeletableSurface`, `UnmovableSurface`, `UnforgettableSurface`.
+    Each of the three partitions (`EraseLeg`, `TransferLeg`, `ForgetLeg`) has
+    an `Unreachable` arm, and freeze refuses a registry that produces one —
+    which is how a rule/`KeyShape` pair that no statement could be generated
+    for becomes a boot failure instead of a silently skipped table.
 
 Prefixes in macro-registered schemas and MCP tools are `const` assertions, so
 a misprefixed id fails the build rather than the first boot.
@@ -295,6 +318,19 @@ caller can see. Same for `BandComparability::CoreBands`: the bands are
 checked for being inside core's window, not for meaning what core's mean.
 Both are declarations on trust, in the same sense as the per-`Surface` rule
 arms below — the difference is that these two have a consumer.
+
+`SubstringArm` is the third of them, and the boundary runs *inside* the
+type. The core renderer discriminates `Off` from not-`Off` and nothing
+finer: every schema it serves gets the memory-first nested loop, so a
+core-served schema declaring `SameTableLike` would be believed and rendered
+as `MemoryFirstNestedLoop`. The distinction is real where it is read — the
+code flavor's chunk and commit search each gate their own `LIKE` lane on
+`matches!(…, SameTableLike)`, which is what keeps that lane a declared arm
+rather than an undeclared third mechanism — and no schema in the tree is
+both `SameTableLike` and core-served. A branch discriminating the two arms
+inside the core renderer would therefore have no reachable input, so the
+boundary is recorded here instead of built: the same treatment
+`RankSource::Projection` gets, for the same reason.
 
 **The per-`Surface` rule arms are the erase and the export.**
 `EraseRule`, `ExportRule` and `KeyShape` are no longer vocabulary. The owner
