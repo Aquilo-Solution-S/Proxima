@@ -133,7 +133,7 @@ impl PgSidecarRegistryFrozen {
     /// Memory sidecar tables that carry their own `owner_id` (see
     /// [`super::PgMemoryPayload::OWNER_PINNED`]), in name order.
     ///
-    /// Compliance erase and export select these by the sidecar's OWN owner
+    /// Owner erase and export select these by the sidecar's OWN owner
     /// rather than through the Memory, because a transfer leaves them
     /// behind: joining through the Memory would put them out of the writing
     /// owner's reach and into the receiving owner's bundle.

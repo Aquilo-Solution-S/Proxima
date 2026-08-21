@@ -1,4 +1,4 @@
-use proxima_core::{ComplianceEraseOutcome, OwnerRef, UserId};
+use proxima_core::{OwnerEraseOutcome, OwnerRef, UserId};
 
 #[test]
 fn public_api_does_not_expose_forgeable_abandoned_owner_constructor() {
@@ -9,9 +9,9 @@ fn public_api_does_not_expose_forgeable_abandoned_owner_constructor() {
     let owner = OwnerRef::Personal(UserId::new(uuid::Uuid::now_v7()));
     assert!(matches!(owner, OwnerRef::Personal(_)));
     assert!(matches!(
-        ComplianceEraseOutcome::NotFound {
+        OwnerEraseOutcome::NotFound {
             operation_id: uuid::Uuid::now_v7()
         },
-        ComplianceEraseOutcome::NotFound { .. }
+        OwnerEraseOutcome::NotFound { .. }
     ));
 }

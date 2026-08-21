@@ -42,7 +42,7 @@ pub trait OwnerTransferPort: Send + Sync {
     /// reaches them keys on that column rather than on `memory.owner_id`:
     /// the payload hydrate joins the memory's owner to the row's, so
     /// `get_memory`/`get_memories`/`query_memories` at the destination see
-    /// nothing; `read_mcp_call_history`, compliance export, and Art. 17
+    /// nothing; `read_mcp_call_history`, owner export, and Art. 17
     /// erase all select by the row's own owner, so the source keeps both the
     /// history and the obligation to delete it.
     ///

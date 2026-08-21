@@ -442,7 +442,7 @@ impl ProximaBuilder {
         }
         if let Some(store) = &blobs {
             // In-band Art. 17 owner erasure: register the blob backend so
-            // owner-scope compliance erase purges the owner's S3 objects
+            // owner-scope owner erase purges the owner's S3 objects
             // (uploaded OCR docs, etc.), not just the Postgres rows. Optional —
             // no S3 configured ⇒ no port ⇒ erase behaves as rows-only.
             engine = engine.with_cited_object_erase(Arc::new(store.clone()));

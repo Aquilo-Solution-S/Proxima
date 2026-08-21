@@ -24,7 +24,7 @@ impl CitedObjectErasePort for CitedBlobStore {
     /// S3 lifecycle rule on `pending/` and by the orphan sweep
     /// `reconcile_all` reports.
     ///
-    /// Wired in-band by owner-scope compliance erase so an Art. 17 owner
+    /// Wired in-band by owner-scope owner erase so an Art. 17 owner
     /// erasure removes the owner's uploaded (PII-bearing) documents, not just
     /// the Postgres rows. Best-effort: the caller has already committed the row
     /// deletes and treats any error here as non-fatal.

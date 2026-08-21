@@ -1,13 +1,13 @@
-//! Engine compliance erasure methods — abandonment-only.
+//! Engine owner erase methods — abandonment-only.
 
 use super::Engine;
 use crate::authz::{AuthPath, AuthzContext};
-use crate::compliance::{
-    ComplianceAuditContext, ComplianceEraseOutcome, ComplianceEraseRefusal, ComplianceEraseTarget,
-    ComplianceExportAuditContext, ComplianceExportBundle, ComplianceExportTarget,
-    EraseAuthorization, ExportAuthorization, OwnerSurfaces,
-};
 use crate::error::ProtocolError;
+use crate::owner_inverse::{
+    EraseAuthorization, ExportAuthorization, OwnerEraseContext, OwnerEraseOutcome,
+    OwnerEraseRefusal, OwnerEraseTarget, OwnerExportBundle, OwnerExportContext, OwnerExportTarget,
+    OwnerSurfaces,
+};
 use crate::storage_ports::OperatorMaintenanceProof;
 use crate::{EmbeddingAnnObservability, EmbeddingOrphanSweepOutcome};
 use crate::{GroupId, OwnerRef, SourceId, UserId};
@@ -18,11 +18,11 @@ enum EraseAdmission {
     Admitted(EraseAuthorization),
     /// Turned away, and already recorded against the operation id the caller
     /// is handed back.
-    Refused(ComplianceEraseOutcome),
+    Refused(OwnerEraseOutcome),
 }
 
 impl Engine {
-    /// The one place the compliance lanes learn which tables exist.
+    /// The one place the owner-inverse lanes learn which tables exist.
     ///
     /// The `owner_pinned` leg used to be appended by the Postgres adapter
     /// from `pg_sidecar!(owner_pinned: true)`, a third source of truth core
@@ -33,11 +33,8 @@ impl Engine {
         OwnerSurfaces::for_registry(&self.registry)
     }
 
-    fn compliance_audit_context(
-        authz: &AuthzContext,
-        target: ComplianceEraseTarget,
-    ) -> ComplianceAuditContext {
-        ComplianceAuditContext::new(
+    fn erase_context(authz: &AuthzContext, target: OwnerEraseTarget) -> OwnerEraseContext {
+        OwnerEraseContext::new(
             uuid::Uuid::now_v7(),
             target,
             authz.subject(),
@@ -46,11 +43,8 @@ impl Engine {
         )
     }
 
-    fn compliance_export_audit_context(
-        authz: &AuthzContext,
-        target: ComplianceExportTarget,
-    ) -> ComplianceExportAuditContext {
-        ComplianceExportAuditContext::new(
+    fn export_context(authz: &AuthzContext, target: OwnerExportTarget) -> OwnerExportContext {
+        OwnerExportContext::new(
             uuid::Uuid::now_v7(),
             target,
             authz.subject(),
@@ -59,10 +53,10 @@ impl Engine {
         )
     }
 
-    pub(in crate::engine) async fn compliance_controller_authorized(
+    pub(in crate::engine) async fn erase_authority_grants(
         &self,
         authz: &AuthzContext,
-        target: &ComplianceEraseTarget,
+        target: &OwnerEraseTarget,
     ) -> bool {
         if authz.auth_path() == AuthPath::Delegated {
             return false;
@@ -70,18 +64,16 @@ impl Engine {
         if authz.auth_path() == AuthPath::System {
             return true;
         }
-        let Some(port) = &self.storage.compliance.compliance_admin else {
+        let Some(port) = &self.storage.owner_inverse.erase_authority else {
             return false;
         };
-        port.may_perform_compliance_erase(authz, target)
-            .await
-            .unwrap_or(false)
+        port.may_erase_owner(authz, target).await.unwrap_or(false)
     }
 
-    async fn compliance_export_controller_authorized(
+    async fn export_authority_grants(
         &self,
         authz: &AuthzContext,
-        target: &ComplianceExportTarget,
+        target: &OwnerExportTarget,
     ) -> bool {
         if authz.auth_path() == AuthPath::Delegated {
             return false;
@@ -89,12 +81,10 @@ impl Engine {
         if authz.auth_path() == AuthPath::System {
             return true;
         }
-        let Some(port) = &self.storage.compliance.compliance_admin else {
+        let Some(port) = &self.storage.owner_inverse.erase_authority else {
             return false;
         };
-        port.may_perform_compliance_export(authz, target)
-            .await
-            .unwrap_or(false)
+        port.may_export_owner(authz, target).await.unwrap_or(false)
     }
 
     async fn operator_maintenance_authorized(&self, authz: &AuthzContext) -> bool {
@@ -104,7 +94,7 @@ impl Engine {
         if authz.auth_path() == AuthPath::System {
             return true;
         }
-        let Some(port) = &self.storage.compliance.compliance_admin else {
+        let Some(port) = &self.storage.owner_inverse.erase_authority else {
             return false;
         };
         port.may_perform_operator_maintenance(authz)
@@ -114,7 +104,7 @@ impl Engine {
 
     /// Owner-agnostic embedding ANN health signals.
     ///
-    /// Requires system or compliance/operator-maintenance authority.
+    /// Requires system or owner-erase or operator-maintenance authority.
     ///
     /// # Errors
     ///
@@ -130,7 +120,7 @@ impl Engine {
             ));
         }
         self.storage
-            .compliance
+            .owner_inverse
             .embedding_maintenance
             .embedding_ann_observability(
                 self.embedding_runtime_policy(),
@@ -142,7 +132,7 @@ impl Engine {
 
     /// Sweep orphaned embedding infrastructure rows.
     ///
-    /// This is crash-residue maintenance only. Compliance erase remains
+    /// This is crash-residue maintenance only. Owner erase remains
     /// synchronous and cannot rely on this sweep for lawful wipe semantics.
     ///
     /// # Errors
@@ -159,7 +149,7 @@ impl Engine {
             ));
         }
         self.storage
-            .compliance
+            .owner_inverse
             .embedding_maintenance
             .sweep_orphan_embedding_rows(OperatorMaintenanceProof::new())
             .await
@@ -170,16 +160,16 @@ impl Engine {
         &self,
         user_id: UserId,
         drop_event_id: &str,
-    ) -> Result<bool, ComplianceEraseRefusal> {
-        let Some(port) = &self.storage.compliance.owner_drop_proof else {
-            return Err(ComplianceEraseRefusal::DropProofPortUnavailable);
+    ) -> Result<bool, OwnerEraseRefusal> {
+        let Some(port) = &self.storage.owner_inverse.owner_drop_proof else {
+            return Err(OwnerEraseRefusal::DropProofPortUnavailable);
         };
         match port
             .verify_personal_owner_dropped(user_id, drop_event_id)
             .await
         {
             Ok(true) => Ok(true),
-            Ok(false) | Err(_) => Err(ComplianceEraseRefusal::PersonalDropNotVerified),
+            Ok(false) | Err(_) => Err(OwnerEraseRefusal::PersonalDropNotVerified),
         }
     }
 
@@ -207,9 +197,9 @@ impl Engine {
     async fn finalize_owner_erase_with_object_purge(
         &self,
         owner: OwnerRef,
-        outcome: ComplianceEraseOutcome,
-    ) -> ComplianceEraseOutcome {
-        let ComplianceEraseOutcome::Completed {
+        outcome: OwnerEraseOutcome,
+    ) -> OwnerEraseOutcome {
+        let OwnerEraseOutcome::Completed {
             operation_id,
             counts,
             cold_object_purge_pending,
@@ -228,7 +218,7 @@ impl Engine {
                     tracing::warn!(
                         ?owner,
                         %error,
-                        "owner-scope compliance erase committed but cited-object purge failed; \
+                        "owner-scope owner erase committed but cited-object purge failed; \
                          object-store cleanup must be retried out-of-band"
                     );
                     true
@@ -237,7 +227,7 @@ impl Engine {
         } else {
             false
         };
-        ComplianceEraseOutcome::Completed {
+        OwnerEraseOutcome::Completed {
             operation_id,
             counts,
             cited_object_purge_pending,
@@ -245,8 +235,8 @@ impl Engine {
         }
     }
 
-    /// The front half of every compliance erase: open the audit row, check
-    /// compliance-controller authority, and — when the target names a drop
+    /// The front half of every owner erase: open the audit row, check
+    /// owner-erase authority, and — when the target names a drop
     /// event — verify it before storage can receive a deletion token.
     ///
     /// Both refusals carry the operation id the caller is handed back, so an
@@ -260,16 +250,16 @@ impl Engine {
     async fn admit_erase(
         &self,
         authz: &AuthzContext,
-        target: ComplianceEraseTarget,
+        target: OwnerEraseTarget,
         drop_event: Option<(UserId, &str)>,
     ) -> Result<EraseAdmission, ProtocolError> {
-        let audit = Self::compliance_audit_context(authz, target.clone());
+        let audit = Self::erase_context(authz, target.clone());
         let operation_id = audit.operation_id();
 
-        if !self.compliance_controller_authorized(authz, &target).await {
-            return Ok(EraseAdmission::Refused(
-                ComplianceEraseOutcome::Unauthorized { operation_id },
-            ));
+        if !self.erase_authority_grants(authz, &target).await {
+            return Ok(EraseAdmission::Refused(OwnerEraseOutcome::Unauthorized {
+                operation_id,
+            }));
         }
 
         if let Some((user_id, drop_event_id)) = drop_event
@@ -277,7 +267,7 @@ impl Engine {
                 .verify_personal_owner_drop(user_id, drop_event_id)
                 .await
         {
-            return Ok(EraseAdmission::Refused(ComplianceEraseOutcome::Refused {
+            return Ok(EraseAdmission::Refused(OwnerEraseOutcome::Refused {
                 operation_id,
                 reason,
             }));
@@ -286,34 +276,31 @@ impl Engine {
         Ok(EraseAdmission::Admitted(EraseAuthorization::new(audit)))
     }
 
-    /// Export one owner's compliance bundle.
+    /// Export one owner's owner bundle.
     ///
-    /// Requires compliance-controller authorization. Export is
+    /// Requires owner-erase authority. Export is
     /// non-destructive: personal-owner drop proof does not gate it.
     ///
     /// # Errors
     ///
-    /// Returns forbidden when the caller lacks compliance-controller authority,
+    /// Returns forbidden when the caller lacks owner-erase authority,
     /// or internal when storage export fails.
     pub async fn export_owner_bundle(
         &self,
         authz: &AuthzContext,
-        target: ComplianceExportTarget,
-    ) -> Result<ComplianceExportBundle, ProtocolError> {
-        if !self
-            .compliance_export_controller_authorized(authz, &target)
-            .await
-        {
+        target: OwnerExportTarget,
+    ) -> Result<OwnerExportBundle, ProtocolError> {
+        if !self.export_authority_grants(authz, &target).await {
             return Err(ProtocolError::forbidden(
-                "compliance export requires compliance-controller authorization",
+                "owner export requires owner-erase authority",
             ));
         }
 
-        let auth = ExportAuthorization::new(Self::compliance_export_audit_context(authz, target));
+        let auth = ExportAuthorization::new(Self::export_context(authz, target));
         let surfaces = self.owner_surfaces();
         self.storage
-            .compliance
-            .compliance_erase
+            .owner_inverse
+            .owner_erase
             .export_owner_bundle(&auth, &surfaces)
             .await
             .map_err(|e| ProtocolError::internal(format!("export_owner_bundle: {e}")))
@@ -321,19 +308,19 @@ impl Engine {
 
     /// Erase an abandoned group owner and all its owned rows.
     ///
-    /// Requires `ComplianceAdminPort` approval or [`AuthPath::System`].
+    /// Requires `OwnerEraseAuthorityPort` approval or [`AuthPath::System`].
     /// Storage rechecks abandonment under lock before deleting.
     ///
     /// # Errors
     ///
     /// Returns a protocol error when audit recording or storage execution fails.
-    pub async fn erase_abandoned_group_owner(
+    pub async fn erase_group_owner(
         &self,
         authz: &AuthzContext,
         group_id: GroupId,
-    ) -> Result<ComplianceEraseOutcome, ProtocolError> {
+    ) -> Result<OwnerEraseOutcome, ProtocolError> {
         let auth = match self
-            .admit_erase(authz, ComplianceEraseTarget::GroupOwner { group_id }, None)
+            .admit_erase(authz, OwnerEraseTarget::GroupOwner { group_id }, None)
             .await?
         {
             EraseAdmission::Admitted(auth) => auth,
@@ -343,11 +330,11 @@ impl Engine {
         let object_purge_planned = self.owner_object_purge_planned();
         let outcome = self
             .storage
-            .compliance
-            .compliance_erase
-            .erase_group_owner_if_abandoned(&auth, group_id, object_purge_planned, &surfaces)
+            .owner_inverse
+            .owner_erase
+            .erase_group_owner(&auth, group_id, object_purge_planned, &surfaces)
             .await
-            .map_err(|e| ProtocolError::internal(format!("erase_group_owner_if_abandoned: {e}")))?;
+            .map_err(|e| ProtocolError::internal(format!("erase_group_owner: {e}")))?;
         Ok(self
             .finalize_owner_erase_with_object_purge(OwnerRef::Group(group_id), outcome)
             .await)
@@ -355,19 +342,19 @@ impl Engine {
 
     /// Erase a dropped personal owner and all its owned rows.
     ///
-    /// Requires `ComplianceAdminPort`/system authorization and trusted host
+    /// Requires `OwnerEraseAuthorityPort`/system authorization and trusted host
     /// drop proof before storage can receive a deletion token.
     ///
     /// # Errors
     ///
     /// Returns a protocol error when audit recording, drop-proof access, or storage execution fails.
-    pub async fn erase_dropped_personal_owner(
+    pub async fn erase_personal_owner(
         &self,
         authz: &AuthzContext,
         user_id: UserId,
         drop_event_id: String,
-    ) -> Result<ComplianceEraseOutcome, ProtocolError> {
-        let target = ComplianceEraseTarget::PersonalOwner {
+    ) -> Result<OwnerEraseOutcome, ProtocolError> {
+        let target = OwnerEraseTarget::PersonalOwner {
             user_id,
             drop_event_id: drop_event_id.clone(),
         };
@@ -382,13 +369,11 @@ impl Engine {
         let object_purge_planned = self.owner_object_purge_planned();
         let outcome = self
             .storage
-            .compliance
-            .compliance_erase
-            .erase_personal_owner_if_drop_verified(&auth, user_id, object_purge_planned, &surfaces)
+            .owner_inverse
+            .owner_erase
+            .erase_personal_owner(&auth, user_id, object_purge_planned, &surfaces)
             .await
-            .map_err(|e| {
-                ProtocolError::internal(format!("erase_personal_owner_if_drop_verified: {e}"))
-            })?;
+            .map_err(|e| ProtocolError::internal(format!("erase_personal_owner: {e}")))?;
         Ok(self
             .finalize_owner_erase_with_object_purge(OwnerRef::Personal(user_id), outcome)
             .await)
@@ -400,13 +385,13 @@ impl Engine {
     /// # Errors
     ///
     /// Returns a protocol error when audit recording or storage execution fails.
-    pub async fn erase_abandoned_group_source_scope(
+    pub async fn erase_group_source_scope(
         &self,
         authz: &AuthzContext,
         group_id: GroupId,
         source_id: SourceId,
-    ) -> Result<ComplianceEraseOutcome, ProtocolError> {
-        let target = ComplianceEraseTarget::GroupSourceScope {
+    ) -> Result<OwnerEraseOutcome, ProtocolError> {
+        let target = OwnerEraseTarget::GroupSourceScope {
             group_id,
             source_id: source_id.clone(),
         };
@@ -420,13 +405,11 @@ impl Engine {
         // would over-delete the owner's other sources. Only owner-scope erase
         // purges the object store.
         self.storage
-            .compliance
-            .compliance_erase
-            .erase_group_source_scope_if_owner_abandoned(&auth, group_id, &source_id, &surfaces)
+            .owner_inverse
+            .owner_erase
+            .erase_group_source_scope(&auth, group_id, &source_id, &surfaces)
             .await
-            .map_err(|e| {
-                ProtocolError::internal(format!("erase_group_source_scope_if_owner_abandoned: {e}"))
-            })
+            .map_err(|e| ProtocolError::internal(format!("erase_group_source_scope: {e}")))
     }
 
     /// Erase one source scope for a dropped personal owner.
@@ -434,14 +417,14 @@ impl Engine {
     /// # Errors
     ///
     /// Returns a protocol error when audit recording, drop-proof access, or storage execution fails.
-    pub async fn erase_dropped_personal_source_scope(
+    pub async fn erase_personal_source_scope(
         &self,
         authz: &AuthzContext,
         user_id: UserId,
         source_id: SourceId,
         drop_event_id: String,
-    ) -> Result<ComplianceEraseOutcome, ProtocolError> {
-        let target = ComplianceEraseTarget::PersonalSourceScope {
+    ) -> Result<OwnerEraseOutcome, ProtocolError> {
+        let target = OwnerEraseTarget::PersonalSourceScope {
             user_id,
             source_id: source_id.clone(),
             drop_event_id: drop_event_id.clone(),
@@ -455,18 +438,14 @@ impl Engine {
         };
         let surfaces = self.owner_surfaces();
         // Source-scope blob purge is deferred (see
-        // `erase_abandoned_group_source_scope`): prefix-delete keys by owner,
+        // `erase_group_source_scope`): prefix-delete keys by owner,
         // so it would over-delete the owner's other sources.
         self.storage
-            .compliance
-            .compliance_erase
-            .erase_personal_source_scope_if_drop_verified(&auth, user_id, &source_id, &surfaces)
+            .owner_inverse
+            .owner_erase
+            .erase_personal_source_scope(&auth, user_id, &source_id, &surfaces)
             .await
-            .map_err(|e| {
-                ProtocolError::internal(format!(
-                    "erase_personal_source_scope_if_drop_verified: {e}"
-                ))
-            })
+            .map_err(|e| ProtocolError::internal(format!("erase_personal_source_scope: {e}")))
     }
 }
 
@@ -480,13 +459,13 @@ mod purge_tests {
     use super::Engine;
     use crate::access::AccessError;
     use crate::authz::{AuthPath, AuthzContext};
-    use crate::compliance::{
-        ComplianceEraseCounts, ComplianceEraseOutcome, ComplianceEraseRefusal,
-        ComplianceExportBundle, EraseAuthorization, ExportAuthorization,
+    use crate::owner_inverse::{
+        EraseAuthorization, ExportAuthorization, OwnerEraseCounts, OwnerEraseOutcome,
+        OwnerEraseRefusal, OwnerExportBundle,
     };
     use crate::storage::StorageError;
     use crate::storage_ports::{
-        CitedObjectErasePort, ComplianceAdminPort, ComplianceErasePort, OwnerDropProofPort,
+        CitedObjectErasePort, OwnerDropProofPort, OwnerEraseAuthorityPort, OwnerInversePort,
         StoragePorts,
     };
     use crate::{GroupId, OwnerRef, SourceId, UserId};
@@ -497,11 +476,11 @@ mod purge_tests {
     }
 
     #[async_trait]
-    impl ComplianceAdminPort for PermissiveAdmin {
-        async fn may_perform_compliance_erase(
+    impl OwnerEraseAuthorityPort for PermissiveAdmin {
+        async fn may_erase_owner(
             &self,
             _authz: &AuthzContext,
-            _target: &crate::compliance::ComplianceEraseTarget,
+            _target: &crate::owner_inverse::OwnerEraseTarget,
         ) -> Result<bool, AccessError> {
             self.calls.fetch_add(1, Ordering::SeqCst);
             Ok(true)
@@ -516,10 +495,10 @@ mod purge_tests {
         }
     }
 
-    /// `ComplianceErasePort` whose erase verbs return a fixed outcome.
+    /// `OwnerInversePort` whose erase verbs return a fixed outcome.
     #[derive(Debug)]
     struct FixedOutcomeErase {
-        outcome: ComplianceEraseOutcome,
+        outcome: OwnerEraseOutcome,
         /// Bumped by every erase verb, so a test can assert an attempt was
         /// turned away before storage rather than merely reporting a refusal.
         erase_calls: AtomicUsize,
@@ -532,9 +511,9 @@ mod purge_tests {
 
         fn completed_with_cold_pending() -> Self {
             Self {
-                outcome: ComplianceEraseOutcome::Completed {
+                outcome: OwnerEraseOutcome::Completed {
                     operation_id: uuid::Uuid::now_v7(),
-                    counts: ComplianceEraseCounts::default(),
+                    counts: OwnerEraseCounts::default(),
                     cited_object_purge_pending: false,
                     cold_object_purge_pending: true,
                 },
@@ -544,9 +523,9 @@ mod purge_tests {
 
         fn completed_outcome() -> Self {
             Self {
-                outcome: ComplianceEraseOutcome::Completed {
+                outcome: OwnerEraseOutcome::Completed {
                     operation_id: uuid::Uuid::now_v7(),
-                    counts: ComplianceEraseCounts::default(),
+                    counts: OwnerEraseCounts::default(),
                     cited_object_purge_pending: false,
                     cold_object_purge_pending: false,
                 },
@@ -556,47 +535,47 @@ mod purge_tests {
     }
 
     #[async_trait]
-    impl ComplianceErasePort for FixedOutcomeErase {
-        async fn erase_group_owner_if_abandoned(
+    impl OwnerInversePort for FixedOutcomeErase {
+        async fn erase_group_owner(
             &self,
             _auth: &EraseAuthorization,
             _group_id: GroupId,
             _object_purge_planned: bool,
-            _tables: &crate::compliance::OwnerSurfaces,
-        ) -> Result<ComplianceEraseOutcome, StorageError> {
+            _tables: &crate::owner_inverse::OwnerSurfaces,
+        ) -> Result<OwnerEraseOutcome, StorageError> {
             self.erase_calls.fetch_add(1, Ordering::SeqCst);
             Ok(self.outcome.clone())
         }
 
-        async fn erase_personal_owner_if_drop_verified(
+        async fn erase_personal_owner(
             &self,
             _auth: &EraseAuthorization,
             _user_id: UserId,
             _object_purge_planned: bool,
-            _tables: &crate::compliance::OwnerSurfaces,
-        ) -> Result<ComplianceEraseOutcome, StorageError> {
+            _tables: &crate::owner_inverse::OwnerSurfaces,
+        ) -> Result<OwnerEraseOutcome, StorageError> {
             self.erase_calls.fetch_add(1, Ordering::SeqCst);
             Ok(self.outcome.clone())
         }
 
-        async fn erase_group_source_scope_if_owner_abandoned(
+        async fn erase_group_source_scope(
             &self,
             _auth: &EraseAuthorization,
             _group_id: GroupId,
             _source_id: &SourceId,
-            _tables: &crate::compliance::OwnerSurfaces,
-        ) -> Result<ComplianceEraseOutcome, StorageError> {
+            _tables: &crate::owner_inverse::OwnerSurfaces,
+        ) -> Result<OwnerEraseOutcome, StorageError> {
             self.erase_calls.fetch_add(1, Ordering::SeqCst);
             Ok(self.outcome.clone())
         }
 
-        async fn erase_personal_source_scope_if_drop_verified(
+        async fn erase_personal_source_scope(
             &self,
             _auth: &EraseAuthorization,
             _user_id: UserId,
             _source_id: &SourceId,
-            _tables: &crate::compliance::OwnerSurfaces,
-        ) -> Result<ComplianceEraseOutcome, StorageError> {
+            _tables: &crate::owner_inverse::OwnerSurfaces,
+        ) -> Result<OwnerEraseOutcome, StorageError> {
             self.erase_calls.fetch_add(1, Ordering::SeqCst);
             Ok(self.outcome.clone())
         }
@@ -604,8 +583,8 @@ mod purge_tests {
         async fn export_owner_bundle(
             &self,
             _auth: &ExportAuthorization,
-            _tables: &crate::compliance::OwnerSurfaces,
-        ) -> Result<ComplianceExportBundle, StorageError> {
+            _tables: &crate::owner_inverse::OwnerSurfaces,
+        ) -> Result<OwnerExportBundle, StorageError> {
             Err(StorageError::Internal("export not used in test".into()))
         }
     }
@@ -669,14 +648,14 @@ mod purge_tests {
         purge: Arc<RecordingPurge>,
     ) -> Engine {
         let drop_proof = drop_proof.map(|d| d as Arc<dyn OwnerDropProofPort>);
-        let storage = StoragePorts::rejecting_with_compliance_erase(erase, drop_proof);
+        let storage = StoragePorts::rejecting_with_owner_inverse(erase, drop_proof);
         Engine::compose_or_panic_for_tests(storage, |_| {}).with_cited_object_erase(purge)
     }
 
     #[tokio::test]
     async fn raw_delegated_maintenance_is_denied_before_admin_or_storage() {
         let admin = Arc::new(PermissiveAdmin::default());
-        let storage = StoragePorts::rejecting_with_compliance_admin(admin.clone());
+        let storage = StoragePorts::rejecting_with_erase_authority(admin.clone());
         let engine = Engine::compose_or_panic_for_tests(storage, |_| {});
         let subject = UserId::new(uuid::Uuid::now_v7());
         let owner = OwnerRef::Group(GroupId::new(uuid::Uuid::now_v7()));
@@ -703,11 +682,11 @@ mod purge_tests {
         let engine = engine_with(erase.clone(), None, purge.clone());
 
         let outcome = engine
-            .erase_abandoned_group_owner(&system_authz(), group)
+            .erase_group_owner(&system_authz(), group)
             .await
             .expect("erase returns an outcome");
 
-        let ComplianceEraseOutcome::Completed {
+        let OwnerEraseOutcome::Completed {
             cited_object_purge_pending,
             ..
         } = outcome
@@ -732,11 +711,11 @@ mod purge_tests {
         let engine = engine_with(erase.clone(), Some(Arc::new(DropVerified)), purge.clone());
 
         let outcome = engine
-            .erase_dropped_personal_owner(&system_authz(), user, "drop-1".into())
+            .erase_personal_owner(&system_authz(), user, "drop-1".into())
             .await
             .expect("erase returns an outcome");
 
-        let ComplianceEraseOutcome::Completed {
+        let OwnerEraseOutcome::Completed {
             cited_object_purge_pending,
             ..
         } = outcome
@@ -761,12 +740,12 @@ mod purge_tests {
         let engine = engine_with(erase, None, purge);
 
         let outcome = engine
-            .erase_abandoned_group_owner(&system_authz(), group)
+            .erase_group_owner(&system_authz(), group)
             .await
             .expect("erase returns an outcome");
         assert!(matches!(
             outcome,
-            ComplianceEraseOutcome::Completed {
+            OwnerEraseOutcome::Completed {
                 cited_object_purge_pending: false,
                 cold_object_purge_pending: true,
                 ..
@@ -788,11 +767,11 @@ mod purge_tests {
         );
 
         let outcome = engine
-            .erase_abandoned_group_source_scope(&system_authz(), group, source)
+            .erase_group_source_scope(&system_authz(), group, source)
             .await
             .expect("source-scope erase completes");
 
-        assert!(matches!(outcome, ComplianceEraseOutcome::Completed { .. }));
+        assert!(matches!(outcome, OwnerEraseOutcome::Completed { .. }));
         assert!(purge.purged.lock().unwrap().is_empty());
     }
 
@@ -807,14 +786,14 @@ mod purge_tests {
         let engine = engine_with(erase.clone(), None, purge.clone());
 
         let outcome = engine
-            .erase_abandoned_group_owner(&system_authz(), group)
+            .erase_group_owner(&system_authz(), group)
             .await
             .expect("best-effort purge failure must not fail the erase");
 
         assert!(
             matches!(
                 outcome,
-                ComplianceEraseOutcome::Completed {
+                OwnerEraseOutcome::Completed {
                     cited_object_purge_pending: true,
                     ..
                 }
@@ -827,28 +806,25 @@ mod purge_tests {
 
     /// Drive all four erase entry points against one engine, so a gate that
     /// only some of them apply cannot pass.
-    async fn attempt_every_scope(
-        engine: &Engine,
-        authz: &AuthzContext,
-    ) -> Vec<ComplianceEraseOutcome> {
+    async fn attempt_every_scope(engine: &Engine, authz: &AuthzContext) -> Vec<OwnerEraseOutcome> {
         let group = GroupId::new(uuid::Uuid::now_v7());
         let user = UserId::new(uuid::Uuid::now_v7());
         let source = SourceId::new("source/a");
         vec![
             engine
-                .erase_abandoned_group_owner(authz, group)
+                .erase_group_owner(authz, group)
                 .await
                 .expect("group owner erase returns an outcome"),
             engine
-                .erase_dropped_personal_owner(authz, user, "drop-1".into())
+                .erase_personal_owner(authz, user, "drop-1".into())
                 .await
                 .expect("personal owner erase returns an outcome"),
             engine
-                .erase_abandoned_group_source_scope(authz, group, source.clone())
+                .erase_group_source_scope(authz, group, source.clone())
                 .await
                 .expect("group source scope erase returns an outcome"),
             engine
-                .erase_dropped_personal_source_scope(authz, user, source, "drop-1".into())
+                .erase_personal_source_scope(authz, user, source, "drop-1".into())
                 .await
                 .expect("personal source scope erase returns an outcome"),
         ]
@@ -856,7 +832,7 @@ mod purge_tests {
 
     #[tokio::test]
     async fn every_scope_turns_an_unauthorized_attempt_away_before_storage() {
-        // No `ComplianceAdminPort` and a caller who is not `System`: nothing
+        // No `OwnerEraseAuthorityPort` and a caller who is not `System`: nothing
         // can vouch for this attempt, so none of the four may reach storage.
         let erase = Arc::new(FixedOutcomeErase::completed());
         let engine = engine_with(
@@ -871,7 +847,7 @@ mod purge_tests {
 
         for outcome in &outcomes {
             assert!(
-                matches!(outcome, ComplianceEraseOutcome::Unauthorized { .. }),
+                matches!(outcome, OwnerEraseOutcome::Unauthorized { .. }),
                 "expected an unauthorized outcome, got {outcome:?}"
             );
         }
@@ -881,8 +857,8 @@ mod purge_tests {
             "an unauthorized attempt must be turned away before storage"
         );
         for outcome in &outcomes {
-            let (ComplianceEraseOutcome::Unauthorized { operation_id }
-            | ComplianceEraseOutcome::Refused { operation_id, .. }) = outcome
+            let (OwnerEraseOutcome::Unauthorized { operation_id }
+            | OwnerEraseOutcome::Refused { operation_id, .. }) = outcome
             else {
                 panic!("expected a refusal carrying an operation id, got {outcome:?}");
             };
@@ -901,19 +877,19 @@ mod purge_tests {
         for (drop_proof, expected) in [
             (
                 Some(Arc::new(DropUnverified)),
-                ComplianceEraseRefusal::PersonalDropNotVerified,
+                OwnerEraseRefusal::PersonalDropNotVerified,
             ),
-            (None, ComplianceEraseRefusal::DropProofPortUnavailable),
+            (None, OwnerEraseRefusal::DropProofPortUnavailable),
         ] {
             let erase = Arc::new(FixedOutcomeErase::completed());
             let drop_proof = drop_proof.map(|d| d as Arc<dyn OwnerDropProofPort>);
-            let storage = StoragePorts::rejecting_with_compliance_erase(erase.clone(), drop_proof);
+            let storage = StoragePorts::rejecting_with_owner_inverse(erase.clone(), drop_proof);
             let engine = Engine::compose_or_panic_for_tests(storage, |_| {});
 
             let outcomes = attempt_every_scope(&engine, &system_authz()).await;
 
             for outcome in [&outcomes[1], &outcomes[3]] {
-                let ComplianceEraseOutcome::Refused { reason, .. } = outcome else {
+                let OwnerEraseOutcome::Refused { reason, .. } = outcome else {
                     panic!("expected a refusal for a personal scope, got {outcome:?}");
                 };
                 assert_eq!(*reason, expected);

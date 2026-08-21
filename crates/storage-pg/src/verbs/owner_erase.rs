@@ -5,11 +5,10 @@
 // earn it, below.
 #![allow(clippy::too_many_arguments)]
 
-use proxima_core::compliance::{
-    ComplianceEraseCounts, ComplianceEraseOutcome, ComplianceEraseRefusal, EraseAuthorization,
-    OwnerSurfaces,
-};
 use proxima_core::flavor::{EraseRule, KeyShape, Surface};
+use proxima_core::owner_inverse::{
+    EraseAuthorization, OwnerEraseCounts, OwnerEraseOutcome, OwnerEraseRefusal, OwnerSurfaces,
+};
 use proxima_core::{ColdObjectStore, GroupId, OwnerRef, SourceId, StorageError, UserId};
 use sqlx::{PgPool, Postgres, Transaction};
 
@@ -44,23 +43,23 @@ async fn begin_bulk_erase_tx(pool: &PgPool) -> Result<Tx<'_>, StorageError> {
     Ok(tx)
 }
 
-pub async fn erase_group_owner_if_abandoned(
+pub async fn erase_group_owner(
     pool: &PgPool,
     cold: &dyn ColdObjectStore,
     auth: &EraseAuthorization,
     group_id: GroupId,
     object_purge_planned: bool,
     surfaces: &OwnerSurfaces,
-) -> Result<ComplianceEraseOutcome, StorageError> {
+) -> Result<OwnerEraseOutcome, StorageError> {
     let owner = OwnerRef::Group(group_id);
     let mut tx = begin_bulk_erase_tx(pool).await?;
     lock_group_membership_tx(&mut tx, group_id).await?;
     if group_member_count(&mut tx, group_id).await? > 0 {
-        return Ok(refused(auth, ComplianceEraseRefusal::OwnerNotAbandoned));
+        return Ok(refused(auth, OwnerEraseRefusal::OwnerNotAbandoned));
     }
     let cold_purge = erase_selected(&mut tx, owner, SelectionScope::Owner, surfaces).await?;
     let counts = final_counts(&mut tx).await?;
-    let outcome = ComplianceEraseOutcome::Completed {
+    let outcome = OwnerEraseOutcome::Completed {
         operation_id: auth.audit().operation_id(),
         counts,
         cited_object_purge_pending: object_purge_planned,
@@ -70,19 +69,19 @@ pub async fn erase_group_owner_if_abandoned(
     Ok(finalize_cold_purge(pool, cold, &cold_purge, outcome).await)
 }
 
-pub async fn erase_personal_owner_if_drop_verified(
+pub async fn erase_personal_owner(
     pool: &PgPool,
     cold: &dyn ColdObjectStore,
     auth: &EraseAuthorization,
     user_id: UserId,
     object_purge_planned: bool,
     surfaces: &OwnerSurfaces,
-) -> Result<ComplianceEraseOutcome, StorageError> {
+) -> Result<OwnerEraseOutcome, StorageError> {
     let owner = OwnerRef::Personal(user_id);
     let mut tx = begin_bulk_erase_tx(pool).await?;
     let cold_purge = erase_selected(&mut tx, owner, SelectionScope::Owner, surfaces).await?;
     let counts = final_counts(&mut tx).await?;
-    let outcome = ComplianceEraseOutcome::Completed {
+    let outcome = OwnerEraseOutcome::Completed {
         operation_id: auth.audit().operation_id(),
         counts,
         cited_object_purge_pending: object_purge_planned,
@@ -92,27 +91,24 @@ pub async fn erase_personal_owner_if_drop_verified(
     Ok(finalize_cold_purge(pool, cold, &cold_purge, outcome).await)
 }
 
-pub async fn erase_group_source_scope_if_owner_abandoned(
+pub async fn erase_group_source_scope(
     pool: &PgPool,
     cold: &dyn ColdObjectStore,
     auth: &EraseAuthorization,
     group_id: GroupId,
     source_id: &SourceId,
     surfaces: &OwnerSurfaces,
-) -> Result<ComplianceEraseOutcome, StorageError> {
+) -> Result<OwnerEraseOutcome, StorageError> {
     let owner = OwnerRef::Group(group_id);
     let mut tx = begin_bulk_erase_tx(pool).await?;
     lock_group_membership_tx(&mut tx, group_id).await?;
     if group_member_count(&mut tx, group_id).await? > 0 {
-        return Ok(refused(
-            auth,
-            ComplianceEraseRefusal::SourceScopeOwnerStillLive,
-        ));
+        return Ok(refused(auth, OwnerEraseRefusal::SourceScopeOwnerStillLive));
     }
     let cold_purge =
         erase_selected(&mut tx, owner, SelectionScope::Source(source_id), surfaces).await?;
     let counts = final_counts(&mut tx).await?;
-    let outcome = ComplianceEraseOutcome::Completed {
+    let outcome = OwnerEraseOutcome::Completed {
         operation_id: auth.audit().operation_id(),
         counts,
         cited_object_purge_pending: false,
@@ -122,20 +118,20 @@ pub async fn erase_group_source_scope_if_owner_abandoned(
     Ok(finalize_cold_purge(pool, cold, &cold_purge, outcome).await)
 }
 
-pub async fn erase_personal_source_scope_if_drop_verified(
+pub async fn erase_personal_source_scope(
     pool: &PgPool,
     cold: &dyn ColdObjectStore,
     auth: &EraseAuthorization,
     user_id: UserId,
     source_id: &SourceId,
     surfaces: &OwnerSurfaces,
-) -> Result<ComplianceEraseOutcome, StorageError> {
+) -> Result<OwnerEraseOutcome, StorageError> {
     let owner = OwnerRef::Personal(user_id);
     let mut tx = begin_bulk_erase_tx(pool).await?;
     let cold_purge =
         erase_selected(&mut tx, owner, SelectionScope::Source(source_id), surfaces).await?;
     let counts = final_counts(&mut tx).await?;
-    let outcome = ComplianceEraseOutcome::Completed {
+    let outcome = OwnerEraseOutcome::Completed {
         operation_id: auth.audit().operation_id(),
         counts,
         cited_object_purge_pending: false,
@@ -149,10 +145,10 @@ async fn finalize_cold_purge(
     pool: &PgPool,
     cold: &dyn ColdObjectStore,
     plan: &ColdPurgePlan,
-    outcome: ComplianceEraseOutcome,
-) -> ComplianceEraseOutcome {
+    outcome: OwnerEraseOutcome,
+) -> OwnerEraseOutcome {
     let purge = super::forget::purge_cold_objects_after_commit(pool, cold, plan).await;
-    let ComplianceEraseOutcome::Completed {
+    let OwnerEraseOutcome::Completed {
         operation_id,
         counts,
         cited_object_purge_pending,
@@ -161,7 +157,7 @@ async fn finalize_cold_purge(
     else {
         return outcome;
     };
-    ComplianceEraseOutcome::Completed {
+    OwnerEraseOutcome::Completed {
         operation_id,
         counts,
         cited_object_purge_pending,
@@ -474,7 +470,7 @@ async fn erase_selected(
 /// correct: a declared counter whose leg deleted nothing is present at zero,
 /// so a host reading the receipt can tell "the erase counted none" from "the
 /// erase does not count this". A count nothing declares cannot appear, and a
-/// declared counter cannot be missing — the property `ComplianceEraseCounts`
+/// declared counter cannot be missing — the property `OwnerEraseCounts`
 /// used to try to get from a fixed struct definition, and got wrong in four
 /// fields at once.
 ///
@@ -490,7 +486,7 @@ async fn open_erase_bookkeeping(
 ) -> Result<(), StorageError> {
     create_selected_sets(tx, owner, scope).await?;
     capture_selected_handles(tx).await?;
-    sqlx::query("CREATE TEMP TABLE compliance_counts(name text PRIMARY KEY, count bigint NOT NULL) ON COMMIT DROP")
+    sqlx::query("CREATE TEMP TABLE erase_counts(name text PRIMARY KEY, count bigint NOT NULL) ON COMMIT DROP")
         .execute(&mut **tx)
         .await
         .map_err(map_err)?;
@@ -708,8 +704,8 @@ async fn sync_selected_heads(tx: &mut Tx<'_>) -> Result<(), StorageError> {
     Ok(())
 }
 
-fn refused(auth: &EraseAuthorization, reason: ComplianceEraseRefusal) -> ComplianceEraseOutcome {
-    ComplianceEraseOutcome::Refused {
+fn refused(auth: &EraseAuthorization, reason: OwnerEraseRefusal) -> OwnerEraseOutcome {
+    OwnerEraseOutcome::Refused {
         operation_id: auth.audit().operation_id(),
         reason,
     }
@@ -717,8 +713,8 @@ fn refused(auth: &EraseAuthorization, reason: ComplianceEraseRefusal) -> Complia
 
 async fn record_count(tx: &mut Tx<'_>, name: &str, count: u64) -> Result<(), StorageError> {
     sqlx::query(
-        "INSERT INTO compliance_counts(name, count) VALUES ($1, $2)
-         ON CONFLICT (name) DO UPDATE SET count = compliance_counts.count + EXCLUDED.count",
+        "INSERT INTO erase_counts(name, count) VALUES ($1, $2)
+         ON CONFLICT (name) DO UPDATE SET count = erase_counts.count + EXCLUDED.count",
     )
     .bind(name)
     .bind(i64::try_from(count).unwrap_or(i64::MAX))
@@ -735,13 +731,13 @@ async fn record_count(tx: &mut Tx<'_>, name: &str, count: u64) -> Result<(), Sto
 /// cooled-export fix — never reached a caller, and why the code flavor's
 /// `repo_rows` and `ingestion_run_rows` could not. Reading the whole table
 /// makes the receipt exactly what the erase counted.
-async fn final_counts(tx: &mut Tx<'_>) -> Result<ComplianceEraseCounts, StorageError> {
+async fn final_counts(tx: &mut Tx<'_>) -> Result<OwnerEraseCounts, StorageError> {
     let rows: Vec<(String, i64)> =
-        sqlx::query_as("SELECT name, count FROM compliance_counts ORDER BY name")
+        sqlx::query_as("SELECT name, count FROM erase_counts ORDER BY name")
             .fetch_all(&mut **tx)
             .await
             .map_err(map_err)?;
-    Ok(ComplianceEraseCounts::new(
+    Ok(OwnerEraseCounts::new(
         rows.into_iter()
             .map(|(name, count)| (name, u64::try_from(count).unwrap_or_default()))
             .collect(),
@@ -1143,7 +1139,7 @@ mod tests {
 
     #[test]
     fn erase_sql_does_not_name_retired_suppression_table() {
-        let src = include_str!("compliance_erase.rs");
+        let src = include_str!("owner_erase.rs");
         let needle = format!("{}.{}", "proxima_core", "compliance_suppression_keys");
         assert!(
             !src.contains(&needle),
@@ -1153,7 +1149,7 @@ mod tests {
 
     #[test]
     fn owner_erase_names_cooled() {
-        let src = include_str!("compliance_erase.rs");
+        let src = include_str!("owner_erase.rs");
         assert!(
             src.contains("proxima_core.cooled"),
             "owner erase must select and delete cooled"
@@ -1166,7 +1162,7 @@ mod tests {
 
     #[test]
     fn group_abandonment_counts_group_memberships() {
-        let src = include_str!("compliance_erase.rs");
+        let src = include_str!("owner_erase.rs");
         let retired = format!("{}.{}", "proxima_core", "resolved_group_memberships");
         let live = format!("{}.{}", "proxima_core", "group_memberships");
         assert!(
@@ -1189,7 +1185,7 @@ mod tests {
     #[test]
     fn the_registry_pass_reaches_every_core_sidecar() {
         let registry = proxima_core::FlavorRegistry::new().freeze_or_panic_for_tests();
-        let surfaces = proxima_core::compliance::OwnerSurfaces::for_registry(&registry);
+        let surfaces = proxima_core::owner_inverse::OwnerSurfaces::for_registry(&registry);
         let leg = |table: &str| {
             surfaces
                 .surfaces()
@@ -1226,7 +1222,7 @@ mod tests {
         use proxima_core::flavor::EraseRule;
 
         let registry = proxima_core::FlavorRegistry::new().freeze_or_panic_for_tests();
-        let surfaces = proxima_core::compliance::OwnerSurfaces::for_registry(&registry);
+        let surfaces = proxima_core::owner_inverse::OwnerSurfaces::for_registry(&registry);
         assert!(
             surfaces.surfaces().len() > 20,
             "the registry should carry the whole core contract, got {}",
@@ -1260,7 +1256,7 @@ mod tests {
     #[test]
     fn every_bespoke_leg_names_a_declared_surface() {
         let registry = proxima_core::FlavorRegistry::new().freeze_or_panic_for_tests();
-        let surfaces = proxima_core::compliance::OwnerSurfaces::for_registry(&registry);
+        let surfaces = proxima_core::owner_inverse::OwnerSurfaces::for_registry(&registry);
         for (table, leg) in BESPOKE_LEGS {
             assert!(
                 surfaces

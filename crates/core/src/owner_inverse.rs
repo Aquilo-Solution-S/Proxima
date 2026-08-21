@@ -1,10 +1,10 @@
-//! Compliance erasure API — abandonment-only hard deletion.
+//! Owner erase API — abandonment-only hard deletion.
 //!
-//! Public callers can build [`ComplianceEraseRequest`] and inspect
-//! [`ComplianceEraseOutcome`]. They cannot supply `operation_id`, requester/
+//! Public callers can build [`OwnerEraseRequest`] and inspect
+//! [`OwnerEraseOutcome`]. They cannot supply `operation_id`, requester/
 //! auth-path audit identity, or deletion witnesses.
 //!
-//! `Engine` mints a fresh `operation_id = Uuid::now_v7()` for every compliance
+//! `Engine` mints a fresh `operation_id = Uuid::now_v7()` for every erase
 //! attempt, derives requester/auth path/request time from [`crate::AuthzContext`],
 //! creates [`EraseAuthorization`], and `PG` still rechecks abandonment in the
 //! delete transaction.
@@ -83,9 +83,9 @@ impl OwnerSurfaces {
     }
 }
 
-/// The entity to erase under compliance.
+/// The entity an owner erase names.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub enum ComplianceEraseTarget {
+pub enum OwnerEraseTarget {
     /// Erase a group owner and all its owned rows.
     GroupOwner { group_id: GroupId },
     /// Erase a personal owner and all its owned rows.
@@ -108,23 +108,23 @@ pub enum ComplianceEraseTarget {
     },
 }
 
-/// A request to perform compliance erasure.
+/// A request to perform owner erase.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct ComplianceEraseRequest {
+pub struct OwnerEraseRequest {
     /// The target to erase.
-    pub target: ComplianceEraseTarget,
+    pub target: OwnerEraseTarget,
 }
 
-/// The owner to export under compliance access/portability.
+/// The owner whose bundle to export.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub enum ComplianceExportTarget {
+pub enum OwnerExportTarget {
     /// Export a group owner bundle.
     GroupOwner { group_id: GroupId },
     /// Export a personal owner bundle.
     PersonalOwner { user_id: UserId },
 }
 
-impl ComplianceExportTarget {
+impl OwnerExportTarget {
     /// Return the concrete owner for this export target.
     #[must_use]
     pub const fn owner(&self) -> OwnerRef {
@@ -139,12 +139,12 @@ impl ComplianceExportTarget {
     /// Export is non-destructive: personal-owner export does not require drop
     /// proof, but it does require the same controller authority family as erase.
     #[must_use]
-    pub fn erase_authority_target(&self) -> ComplianceEraseTarget {
+    pub fn erase_authority_target(&self) -> OwnerEraseTarget {
         match self {
-            Self::GroupOwner { group_id } => ComplianceEraseTarget::GroupOwner {
+            Self::GroupOwner { group_id } => OwnerEraseTarget::GroupOwner {
                 group_id: *group_id,
             },
-            Self::PersonalOwner { user_id } => ComplianceEraseTarget::PersonalOwner {
+            Self::PersonalOwner { user_id } => OwnerEraseTarget::PersonalOwner {
                 user_id: *user_id,
                 drop_event_id: String::new(),
             },
@@ -152,11 +152,11 @@ impl ComplianceExportTarget {
     }
 }
 
-/// A request to export one owner's compliance bundle.
+/// A request to export one owner's owner bundle.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct ComplianceExportRequest {
+pub struct OwnerExportRequest {
     /// The target owner to export.
-    pub target: ComplianceExportTarget,
+    pub target: OwnerExportTarget,
 }
 
 /// Owner-scoped export bundle: one entry per declared exportable surface.
@@ -170,9 +170,9 @@ pub struct ComplianceExportRequest {
 /// `Allowlist`, and `counts` is a projection of `tables`, so a new surface
 /// joins the bundle by declaring itself and nothing else.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct ComplianceExportBundle {
+pub struct OwnerExportBundle {
     pub operation_id: uuid::Uuid,
-    pub target: ComplianceExportTarget,
+    pub target: OwnerExportTarget,
     pub owner: OwnerRef,
     pub derived_requester: Option<UserId>,
     pub derived_auth_path: String,
@@ -191,7 +191,7 @@ pub struct ComplianceExportBundle {
     pub edges: Vec<serde_json::Value>,
 }
 
-impl ComplianceExportBundle {
+impl OwnerExportBundle {
     /// The rows exported from one table, or an empty slice when the table is
     /// not part of the bundle.
     #[must_use]
@@ -234,9 +234,9 @@ impl ComplianceExportBundle {
 /// whole tally, not the subset a struct definition anticipated.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(transparent)]
-pub struct ComplianceEraseCounts(BTreeMap<String, u64>);
+pub struct OwnerEraseCounts(BTreeMap<String, u64>);
 
-impl ComplianceEraseCounts {
+impl OwnerEraseCounts {
     #[must_use]
     pub fn new(counts: BTreeMap<String, u64>) -> Self {
         Self(counts)
@@ -273,13 +273,13 @@ impl ComplianceEraseCounts {
     }
 }
 
-/// The outcome of a compliance erase operation.
+/// The outcome of a owner erase operation.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub enum ComplianceEraseOutcome {
+pub enum OwnerEraseOutcome {
     /// Erasure completed successfully.
     Completed {
         operation_id: uuid::Uuid,
-        counts: ComplianceEraseCounts,
+        counts: OwnerEraseCounts,
         /// Postgres rows are deleted but cited-object purge in the wired object
         /// store failed or was not attempted. Operators must retry purge
         /// out-of-band before treating erasure as fully complete.
@@ -293,7 +293,7 @@ pub enum ComplianceEraseOutcome {
     /// Erasure was refused due to policy.
     Refused {
         operation_id: uuid::Uuid,
-        reason: ComplianceEraseRefusal,
+        reason: OwnerEraseRefusal,
     },
     /// Target not found.
     NotFound { operation_id: uuid::Uuid },
@@ -301,9 +301,9 @@ pub enum ComplianceEraseOutcome {
     Unauthorized { operation_id: uuid::Uuid },
 }
 
-/// Reasons for refusing a compliance erase request.
+/// Reasons for refusing a owner erase request.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub enum ComplianceEraseRefusal {
+pub enum OwnerEraseRefusal {
     /// The owner is not abandoned (still has members for groups, or drop not verified for personal).
     OwnerNotAbandoned,
     /// The source scope's owner is still live.
@@ -314,12 +314,12 @@ pub enum ComplianceEraseRefusal {
     DropProofPortUnavailable,
 }
 
-/// Internal audit context for a compliance operation.
+/// Internal audit context for a owner-erase operation.
 /// Derived by `Engine` from `AuthzContext`; never caller-supplied.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ComplianceAuditContext {
+pub struct OwnerEraseContext {
     operation_id: uuid::Uuid,
-    target: ComplianceEraseTarget,
+    target: OwnerEraseTarget,
     /// Derived by `Engine` from `AuthzContext`; never caller-supplied.
     derived_requester: Option<UserId>,
     /// Derived by `Engine` from `AuthzContext`; never caller-supplied.
@@ -327,11 +327,11 @@ pub struct ComplianceAuditContext {
     requested_at: time::OffsetDateTime,
 }
 
-impl ComplianceAuditContext {
+impl OwnerEraseContext {
     /// Create a new audit context.
     pub(crate) fn new(
         operation_id: uuid::Uuid,
-        target: ComplianceEraseTarget,
+        target: OwnerEraseTarget,
         derived_requester: Option<UserId>,
         derived_auth_path: AuthPath,
         requested_at: time::OffsetDateTime,
@@ -353,7 +353,7 @@ impl ComplianceAuditContext {
 
     /// Return the erase target.
     #[must_use]
-    pub fn target(&self) -> &ComplianceEraseTarget {
+    pub fn target(&self) -> &OwnerEraseTarget {
         &self.target
     }
 
@@ -376,12 +376,12 @@ impl ComplianceAuditContext {
     }
 }
 
-/// Internal audit context for a compliance export operation.
+/// Internal audit context for a owner export operation.
 /// Derived by `Engine` from `AuthzContext`; never caller-supplied.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ComplianceExportAuditContext {
+pub struct OwnerExportContext {
     operation_id: uuid::Uuid,
-    target: ComplianceExportTarget,
+    target: OwnerExportTarget,
     /// Derived by `Engine` from `AuthzContext`; never caller-supplied.
     derived_requester: Option<UserId>,
     /// Derived by `Engine` from `AuthzContext`; never caller-supplied.
@@ -389,11 +389,11 @@ pub struct ComplianceExportAuditContext {
     requested_at: time::OffsetDateTime,
 }
 
-impl ComplianceExportAuditContext {
+impl OwnerExportContext {
     /// Create a new export audit context.
     pub(crate) fn new(
         operation_id: uuid::Uuid,
-        target: ComplianceExportTarget,
+        target: OwnerExportTarget,
         derived_requester: Option<UserId>,
         derived_auth_path: AuthPath,
         requested_at: time::OffsetDateTime,
@@ -415,7 +415,7 @@ impl ComplianceExportAuditContext {
 
     /// Return the export target.
     #[must_use]
-    pub fn target(&self) -> &ComplianceExportTarget {
+    pub fn target(&self) -> &OwnerExportTarget {
         &self.target
     }
 
@@ -444,19 +444,19 @@ impl ComplianceExportAuditContext {
     }
 }
 
-/// Non-forgeable authorization for compliance erasure.
+/// Non-forgeable authorization for owner erase.
 /// Callers cannot construct this; Engine creates it internally.
 #[derive(Debug)]
 pub struct EraseAuthorization {
-    audit: ComplianceAuditContext,
+    audit: OwnerEraseContext,
     _private: private::Seal,
 }
 
-/// Non-forgeable authorization for compliance export.
+/// Non-forgeable authorization for owner export.
 /// Callers cannot construct this; Engine creates it internally.
 #[derive(Debug)]
 pub struct ExportAuthorization {
-    audit: ComplianceExportAuditContext,
+    audit: OwnerExportContext,
     _private: private::Seal,
 }
 
@@ -468,12 +468,12 @@ mod private {
 impl EraseAuthorization {
     /// Return the audit context.
     #[must_use]
-    pub const fn audit(&self) -> &ComplianceAuditContext {
+    pub const fn audit(&self) -> &OwnerEraseContext {
         &self.audit
     }
 
     /// Create a new erase authorization (internal only).
-    pub(crate) fn new(audit: ComplianceAuditContext) -> Self {
+    pub(crate) fn new(audit: OwnerEraseContext) -> Self {
         Self {
             audit,
             _private: private::Seal,
@@ -483,8 +483,8 @@ impl EraseAuthorization {
     /// Test-only constructor. Engine remains the production mint.
     #[cfg(any(test, feature = "test-fixtures"))]
     #[must_use]
-    pub fn new_for_tests(target: ComplianceEraseTarget) -> Self {
-        Self::new(ComplianceAuditContext::new(
+    pub fn new_for_tests(target: OwnerEraseTarget) -> Self {
+        Self::new(OwnerEraseContext::new(
             uuid::Uuid::now_v7(),
             target,
             None,
@@ -497,12 +497,12 @@ impl EraseAuthorization {
 impl ExportAuthorization {
     /// Return the audit context.
     #[must_use]
-    pub const fn audit(&self) -> &ComplianceExportAuditContext {
+    pub const fn audit(&self) -> &OwnerExportContext {
         &self.audit
     }
 
     /// Create a new export authorization (internal only).
-    pub(crate) fn new(audit: ComplianceExportAuditContext) -> Self {
+    pub(crate) fn new(audit: OwnerExportContext) -> Self {
         Self {
             audit,
             _private: private::Seal,
@@ -512,8 +512,8 @@ impl ExportAuthorization {
     /// Test-only constructor. Engine remains the production mint.
     #[cfg(any(test, feature = "test-fixtures"))]
     #[must_use]
-    pub fn new_for_tests(target: ComplianceExportTarget) -> Self {
-        Self::new(ComplianceExportAuditContext::new(
+    pub fn new_for_tests(target: OwnerExportTarget) -> Self {
+        Self::new(OwnerExportContext::new(
             uuid::Uuid::now_v7(),
             target,
             None,

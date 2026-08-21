@@ -2,7 +2,6 @@ use std::sync::Arc;
 
 use super::access::{OwnerAccessReadPort, OwnerMembershipAdminPort, OwnerTransferPort};
 use super::change::ChangeEventPort;
-use super::compliance::{ComplianceAdminPort, ComplianceErasePort, OwnerDropProofPort};
 use super::cursors::SourceCursorPort;
 use super::embeddings::{
     EmbeddingJobPort, EmbeddingMaintenancePort, EmbeddingTextPort, EmbeddingWritePort,
@@ -11,6 +10,7 @@ use super::fact::{FactIngestPort, SourceBatchPort};
 use super::goals::{GoalReadPort, GoalWakeCandidatePort, GoalWritePort};
 use super::mcp::{McpCallReadPort, McpCallWritePort};
 use super::memory::{CitationPort, MemoryAuthoringPort, MemoryInspectPort, MemoryReadPort};
+use super::owner_inverse::{OwnerDropProofPort, OwnerEraseAuthorityPort, OwnerInversePort};
 use super::registry::RegistryProjectionPort;
 use super::write_session::WriteSessionFactory;
 
@@ -34,8 +34,8 @@ pub type OwnerMembershipAdminHandle = Arc<dyn OwnerMembershipAdminPort>;
 pub type OwnerTransferHandle = Arc<dyn OwnerTransferPort>;
 pub type SourceBatchHandle = Arc<dyn SourceBatchPort>;
 pub type SourceCursorHandle = Arc<dyn SourceCursorPort>;
-pub type ComplianceEraseHandle = Arc<dyn ComplianceErasePort>;
+pub type OwnerInverseHandle = Arc<dyn OwnerInversePort>;
 pub type RegistryProjectionHandle = Arc<dyn RegistryProjectionPort>;
-pub type ComplianceAdminHandle = Arc<dyn ComplianceAdminPort>;
+pub type OwnerEraseAuthorityHandle = Arc<dyn OwnerEraseAuthorityPort>;
 pub type OwnerDropProofHandle = Arc<dyn OwnerDropProofPort>;
 pub type WriteSessionFactoryHandle = Arc<dyn WriteSessionFactory>;

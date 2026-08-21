@@ -380,7 +380,7 @@ pub(crate) async fn visible_home_owner(
 /// sidecar is scoped by the sidecar's OWN owner rather than the memory's:
 /// hydrate joins `memory` on `m.owner_id = s.owner_id` so a moved memory
 /// stops matching, `read_mcp_call_history` selects on `fact.owner_id` with
-/// no `memory` join at all, and compliance erase/export select the same
+/// no `memory` join at all, and owner erase/export select the same
 /// way. Forget skips them in both directions, so cooling or forgetting a
 /// received memory cannot dump or destroy the source's audit trail.
 ///

@@ -631,55 +631,55 @@ impl SourceCursorPort for SourceCursorFake {
 }
 
 #[derive(Debug)]
-struct ComplianceEraseFake;
+struct OwnerInverseFake;
 
 #[async_trait::async_trait]
-impl ComplianceErasePort for ComplianceEraseFake {
-    async fn erase_group_owner_if_abandoned(
+impl OwnerInversePort for OwnerInverseFake {
+    async fn erase_group_owner(
         &self,
-        _auth: &proxima_core::compliance::EraseAuthorization,
+        _auth: &proxima_core::owner_inverse::EraseAuthorization,
         _group_id: GroupId,
         _object_purge_planned: bool,
-        _tables: &proxima_core::compliance::OwnerSurfaces,
-    ) -> Result<proxima_core::compliance::ComplianceEraseOutcome, StorageError> {
+        _tables: &proxima_core::owner_inverse::OwnerSurfaces,
+    ) -> Result<proxima_core::owner_inverse::OwnerEraseOutcome, StorageError> {
         fake_error()
     }
 
-    async fn erase_personal_owner_if_drop_verified(
+    async fn erase_personal_owner(
         &self,
-        _auth: &proxima_core::compliance::EraseAuthorization,
+        _auth: &proxima_core::owner_inverse::EraseAuthorization,
         _user_id: UserId,
         _object_purge_planned: bool,
-        _tables: &proxima_core::compliance::OwnerSurfaces,
-    ) -> Result<proxima_core::compliance::ComplianceEraseOutcome, StorageError> {
+        _tables: &proxima_core::owner_inverse::OwnerSurfaces,
+    ) -> Result<proxima_core::owner_inverse::OwnerEraseOutcome, StorageError> {
         fake_error()
     }
 
-    async fn erase_group_source_scope_if_owner_abandoned(
+    async fn erase_group_source_scope(
         &self,
-        _auth: &proxima_core::compliance::EraseAuthorization,
+        _auth: &proxima_core::owner_inverse::EraseAuthorization,
         _group_id: GroupId,
         _source_id: &SourceId,
-        _tables: &proxima_core::compliance::OwnerSurfaces,
-    ) -> Result<proxima_core::compliance::ComplianceEraseOutcome, StorageError> {
+        _tables: &proxima_core::owner_inverse::OwnerSurfaces,
+    ) -> Result<proxima_core::owner_inverse::OwnerEraseOutcome, StorageError> {
         fake_error()
     }
 
-    async fn erase_personal_source_scope_if_drop_verified(
+    async fn erase_personal_source_scope(
         &self,
-        _auth: &proxima_core::compliance::EraseAuthorization,
+        _auth: &proxima_core::owner_inverse::EraseAuthorization,
         _user_id: UserId,
         _source_id: &SourceId,
-        _tables: &proxima_core::compliance::OwnerSurfaces,
-    ) -> Result<proxima_core::compliance::ComplianceEraseOutcome, StorageError> {
+        _tables: &proxima_core::owner_inverse::OwnerSurfaces,
+    ) -> Result<proxima_core::owner_inverse::OwnerEraseOutcome, StorageError> {
         fake_error()
     }
 
     async fn export_owner_bundle(
         &self,
-        _auth: &proxima_core::compliance::ExportAuthorization,
-        _tables: &proxima_core::compliance::OwnerSurfaces,
-    ) -> Result<proxima_core::compliance::ComplianceExportBundle, StorageError> {
+        _auth: &proxima_core::owner_inverse::ExportAuthorization,
+        _tables: &proxima_core::owner_inverse::OwnerSurfaces,
+    ) -> Result<proxima_core::owner_inverse::OwnerExportBundle, StorageError> {
         fake_error()
     }
 }
@@ -729,6 +729,6 @@ fn public_storage_ports_can_be_mocked_independently() {
     assert_port::<OwnerMembershipAdminFake>();
     assert_port::<SourceBatchFake>();
     assert_port::<SourceCursorFake>();
-    assert_port::<ComplianceEraseFake>();
+    assert_port::<OwnerInverseFake>();
     assert_port::<RegistryProjectionFake>();
 }

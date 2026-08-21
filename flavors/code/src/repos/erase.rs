@@ -56,7 +56,7 @@ use crate::store::CodeFlavorStore;
 /// oversight: the payload documents `None` as "cross-repo observations", so
 /// a perspective SERIES that never named this repository belongs to the
 /// owner the way the self-model rows do, and no single repository's erase is
-/// entitled to it. It goes with the owner, through the compliance erase.
+/// entitled to it. It goes with the owner, through the owner erase.
 ///
 /// The unit is the series, not the version. A perspective whose current
 /// version says `None` but whose history was filed under this repository IS

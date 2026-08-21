@@ -444,7 +444,7 @@ const TASK_GOAL_V1: SchemaContract = SchemaContract {
         export: ExportRule::Rows,
         forget: ForgetRule::Keep {
             why: "no goal-forget verb exists: Abandoned is an append, not a delete. \
-                  Only compliance erase ever removes a goal",
+                  Only owner erase ever removes a goal",
         },
         lexical_language_column: None,
         counter: Some("sidecar_rows"),

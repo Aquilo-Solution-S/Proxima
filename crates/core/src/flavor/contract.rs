@@ -632,7 +632,7 @@ pub enum TransferRule {
     /// a `blob_id` with no SQL FK — cannot be listed here, because the
     /// flavor declaring them is not the flavor declaring this surface.
     /// The transfer walks the frozen registry for those, exactly as
-    /// compliance erase does.
+    /// owner erase does.
     FollowOrDedupe {
         dedupe_key: &'static [&'static str],
         remaps: &'static [&'static str],
@@ -790,7 +790,7 @@ pub enum ForgetRule {
 }
 
 /// One physical relation a flavor (or the kernel) owns, with every rule the
-/// compliance and transfer lanes need. No field is optional-by-omission:
+/// inverse and transfer lanes need. No field is optional-by-omission:
 /// adding a table without saying what forget does is a compile error.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Surface {
@@ -936,7 +936,7 @@ impl ProjectionSpec {
     /// what makes owner erase, memory forget and flavor repo erase all
     /// reach the projection with no new list, no new counter and no code
     /// that knows the word "projection". That is the inverse-at-scope
-    /// property: compliance never learns about this table.
+    /// property: the owner erase never learns about this table.
     #[must_use]
     pub const fn surface(&self) -> Surface {
         Surface {
@@ -1163,7 +1163,7 @@ impl FlavorContract {
     }
 
     /// Sidecar tables whose rows stay with the source owner on transfer.
-    /// This is the list `compliance_erase` / `compliance_export` / `forget`
+    /// This is the list `owner_erase` / `owner_export` / `forget`
     /// hold out of the Memory-keyed sweep.
     #[must_use]
     pub fn retain_at_source_tables(&self) -> Vec<String> {

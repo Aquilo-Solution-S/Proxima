@@ -501,7 +501,7 @@ pub trait FactPayload:
     /// Defaults to `false`; controllers handling health, biometric,
     /// political, or other heightened-protection categories must
     /// override to `true`. See docs/03 §Special-category declaration
-    /// and docs/13 §Compliance vocabulary.
+    /// and docs/13 §Vocabulary.
     const SPECIAL_CATEGORY: bool = false;
     /// Whether this schema's rendered text earns a VECTOR. Defaults to
     /// `true`; a schema whose render is a template rather than prose

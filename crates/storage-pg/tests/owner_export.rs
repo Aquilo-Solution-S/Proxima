@@ -1,8 +1,8 @@
 //! Export projects pins from memory rows; no reconstructed Edge table.
 #![allow(clippy::doc_markdown, clippy::too_many_lines)]
 
-use proxima_core::compliance::{ComplianceExportTarget, ExportAuthorization, OwnerSurfaces};
-use proxima_core::storage_ports::{ComplianceErasePort, OwnerWritePermit};
+use proxima_core::owner_inverse::{ExportAuthorization, OwnerExportTarget, OwnerSurfaces};
+use proxima_core::storage_ports::{OwnerInversePort, OwnerWritePermit};
 use proxima_core::verbs::fact_ingest::FactWriteCommand;
 use proxima_core::verbs::query::EntityKind;
 use proxima_core::{AccessKind, EdgeEndpoint, MemoryId, OwnerRef, SchemaId, SchemaVersion, UserId};
@@ -100,9 +100,8 @@ async fn export_edges_are_the_pins_already_on_memory() {
         )
         .await?;
 
-        let auth = ExportAuthorization::new_for_tests(ComplianceExportTarget::PersonalOwner {
-            user_id: user,
-        });
+        let auth =
+            ExportAuthorization::new_for_tests(OwnerExportTarget::PersonalOwner { user_id: user });
         let bundle = pg
             .export_owner_bundle(&auth, &contract_sidecar_tables())
             .await?;
@@ -191,9 +190,8 @@ async fn export_carries_cooled_locators_and_sketches() {
         .await?;
         tx.commit().await?;
 
-        let auth = ExportAuthorization::new_for_tests(ComplianceExportTarget::PersonalOwner {
-            user_id: user,
-        });
+        let auth =
+            ExportAuthorization::new_for_tests(OwnerExportTarget::PersonalOwner { user_id: user });
         let bundle = pg
             .export_owner_bundle(&auth, &contract_sidecar_tables())
             .await?;
@@ -318,9 +316,8 @@ async fn export_carries_registered_citation_sidecar_rows() {
             .await?;
         }
 
-        let auth = ExportAuthorization::new_for_tests(ComplianceExportTarget::PersonalOwner {
-            user_id: user,
-        });
+        let auth =
+            ExportAuthorization::new_for_tests(OwnerExportTarget::PersonalOwner { user_id: user });
         let bundle = pg.export_owner_bundle(&auth, &citation_surfaces()).await?;
 
         let tables: Vec<&str> = bundle.tables.keys().map(String::as_str).collect();
@@ -390,9 +387,8 @@ async fn export_carries_owner_scoped_opaque_blob_metadata() {
         .execute(pool)
         .await?;
 
-        let auth = ExportAuthorization::new_for_tests(ComplianceExportTarget::PersonalOwner {
-            user_id: user,
-        });
+        let auth =
+            ExportAuthorization::new_for_tests(OwnerExportTarget::PersonalOwner { user_id: user });
         let bundle = pg
             .export_owner_bundle(&auth, &contract_sidecar_tables())
             .await?;

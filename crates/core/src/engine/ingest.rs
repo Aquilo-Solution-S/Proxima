@@ -1189,7 +1189,7 @@ impl Engine {
             return Ok(crate::EmbeddingReconcileOutcome::default());
         };
         self.storage
-            .compliance
+            .owner_inverse
             .embedding_maintenance
             .reconcile_embeddings(
                 crate::EmbeddingReconcileOptions {

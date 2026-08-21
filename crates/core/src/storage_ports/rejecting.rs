@@ -1,6 +1,5 @@
 use super::access::{OwnerAccessReadPort, OwnerMembershipAdminPort, OwnerTransferPort};
 use super::change::ChangeEventPort;
-use super::compliance::{ComplianceAdminPort, ComplianceErasePort, OwnerDropProofPort};
 use super::cursors::SourceCursorPort;
 use super::embeddings::{
     EmbeddingJobPort, EmbeddingMaintenancePort, EmbeddingTextPort, EmbeddingWriteOutcome,
@@ -12,12 +11,13 @@ use super::mcp::{McpCallReadPort, McpCallWritePort};
 use super::memory::{
     CitationPort, MemoryAuthoringPort, MemoryInspectPort, MemoryReadPort, OperatorWriteProof,
 };
+use super::owner_inverse::{OwnerDropProofPort, OwnerEraseAuthorityPort, OwnerInversePort};
 use super::proof::{OperatorMaintenanceProof, OwnerWritePermit};
 use super::registry::RegistryProjectionPort;
 use super::write_session::{WriteSession, WriteSessionFactory};
 
 use crate::access::AccessError;
-use crate::compliance::ComplianceEraseTarget;
+use crate::owner_inverse::OwnerEraseTarget;
 use crate::read_models::{
     AbstractionRow, ActiveGoalSummary, ChangeEventForWake, FactRow, GoalWakeCandidate,
     GoalWakeCandidateRequest, MemorySnapshot, SidecarSpec,
@@ -696,50 +696,50 @@ impl SourceCursorPort for RejectingStorage {
 }
 
 #[async_trait::async_trait]
-impl ComplianceErasePort for RejectingStorage {
-    async fn erase_group_owner_if_abandoned(
+impl OwnerInversePort for RejectingStorage {
+    async fn erase_group_owner(
         &self,
-        _auth: &crate::compliance::EraseAuthorization,
+        _auth: &crate::owner_inverse::EraseAuthorization,
         _group_id: GroupId,
         _object_purge_planned: bool,
-        _tables: &crate::compliance::OwnerSurfaces,
-    ) -> Result<crate::compliance::ComplianceEraseOutcome, StorageError> {
+        _tables: &crate::owner_inverse::OwnerSurfaces,
+    ) -> Result<crate::owner_inverse::OwnerEraseOutcome, StorageError> {
         Err(StorageError::Internal(
             "RejectingStorage rejects writes".into(),
         ))
     }
 
-    async fn erase_personal_owner_if_drop_verified(
+    async fn erase_personal_owner(
         &self,
-        _auth: &crate::compliance::EraseAuthorization,
+        _auth: &crate::owner_inverse::EraseAuthorization,
         _user_id: UserId,
         _object_purge_planned: bool,
-        _tables: &crate::compliance::OwnerSurfaces,
-    ) -> Result<crate::compliance::ComplianceEraseOutcome, StorageError> {
+        _tables: &crate::owner_inverse::OwnerSurfaces,
+    ) -> Result<crate::owner_inverse::OwnerEraseOutcome, StorageError> {
         Err(StorageError::Internal(
             "RejectingStorage rejects writes".into(),
         ))
     }
 
-    async fn erase_group_source_scope_if_owner_abandoned(
+    async fn erase_group_source_scope(
         &self,
-        _auth: &crate::compliance::EraseAuthorization,
+        _auth: &crate::owner_inverse::EraseAuthorization,
         _group_id: GroupId,
         _source_id: &SourceId,
-        _tables: &crate::compliance::OwnerSurfaces,
-    ) -> Result<crate::compliance::ComplianceEraseOutcome, StorageError> {
+        _tables: &crate::owner_inverse::OwnerSurfaces,
+    ) -> Result<crate::owner_inverse::OwnerEraseOutcome, StorageError> {
         Err(StorageError::Internal(
             "RejectingStorage rejects writes".into(),
         ))
     }
 
-    async fn erase_personal_source_scope_if_drop_verified(
+    async fn erase_personal_source_scope(
         &self,
-        _auth: &crate::compliance::EraseAuthorization,
+        _auth: &crate::owner_inverse::EraseAuthorization,
         _user_id: UserId,
         _source_id: &SourceId,
-        _tables: &crate::compliance::OwnerSurfaces,
-    ) -> Result<crate::compliance::ComplianceEraseOutcome, StorageError> {
+        _tables: &crate::owner_inverse::OwnerSurfaces,
+    ) -> Result<crate::owner_inverse::OwnerEraseOutcome, StorageError> {
         Err(StorageError::Internal(
             "RejectingStorage rejects writes".into(),
         ))
@@ -747,9 +747,9 @@ impl ComplianceErasePort for RejectingStorage {
 
     async fn export_owner_bundle(
         &self,
-        _auth: &crate::compliance::ExportAuthorization,
-        _tables: &crate::compliance::OwnerSurfaces,
-    ) -> Result<crate::compliance::ComplianceExportBundle, StorageError> {
+        _auth: &crate::owner_inverse::ExportAuthorization,
+        _tables: &crate::owner_inverse::OwnerSurfaces,
+    ) -> Result<crate::owner_inverse::OwnerExportBundle, StorageError> {
         Err(StorageError::Internal(
             "RejectingStorage rejects reads".into(),
         ))
@@ -757,11 +757,11 @@ impl ComplianceErasePort for RejectingStorage {
 }
 
 #[async_trait::async_trait]
-impl ComplianceAdminPort for RejectingStorage {
-    async fn may_perform_compliance_erase(
+impl OwnerEraseAuthorityPort for RejectingStorage {
+    async fn may_erase_owner(
         &self,
         _authz: &crate::AuthzContext,
-        _target: &ComplianceEraseTarget,
+        _target: &OwnerEraseTarget,
     ) -> Result<bool, AccessError> {
         Err(AccessError::Resolution(
             "RejectingStorage rejects all auth".into(),

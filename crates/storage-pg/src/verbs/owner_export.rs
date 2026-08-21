@@ -1,8 +1,8 @@
 use std::collections::BTreeMap;
 
 use proxima_core::StorageError;
-use proxima_core::compliance::{ComplianceExportBundle, ExportAuthorization, OwnerSurfaces};
 use proxima_core::flavor::{ExportRule, Surface};
+use proxima_core::owner_inverse::{ExportAuthorization, OwnerExportBundle, OwnerSurfaces};
 use serde_json::Value;
 use sqlx::PgPool;
 
@@ -27,7 +27,7 @@ pub async fn export_owner_bundle(
     pool: &PgPool,
     auth: &ExportAuthorization,
     surfaces: &OwnerSurfaces,
-) -> Result<ComplianceExportBundle, StorageError> {
+) -> Result<OwnerExportBundle, StorageError> {
     let owner = auth.audit().owner();
     let (_owner_kind, owner_id) = owner_binds(&owner);
     let mut tables: BTreeMap<String, Vec<Value>> = BTreeMap::new();
@@ -55,7 +55,7 @@ pub async fn export_owner_bundle(
         .collect();
     counts.insert("edges".to_owned(), edges.len());
 
-    Ok(ComplianceExportBundle {
+    Ok(OwnerExportBundle {
         operation_id: auth.audit().operation_id(),
         target: auth.audit().target().clone(),
         owner,
@@ -212,7 +212,7 @@ mod tests {
 
     #[test]
     fn export_sql_does_not_rebuild_an_edge_table() {
-        let src = include_str!("compliance_export.rs");
+        let src = include_str!("owner_export.rs");
         let needle = format!("{}{}", "JOIN unnest", "(src.origins)");
         assert!(
             !src.contains(&needle),

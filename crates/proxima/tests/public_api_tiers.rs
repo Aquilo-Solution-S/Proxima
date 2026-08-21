@@ -3,11 +3,11 @@ use std::num::NonZeroU32;
 #[test]
 fn host_api_imports_from_root() {
     fn assert_send_sync<T: Send + Sync>() {}
-    assert_send_sync::<proxima::ComplianceEraseCounts>();
-    assert_send_sync::<proxima::ComplianceEraseOutcome>();
-    assert_send_sync::<proxima::ComplianceEraseRefusal>();
-    assert_send_sync::<proxima::ComplianceEraseRequest>();
-    assert_send_sync::<proxima::ComplianceEraseTarget>();
+    assert_send_sync::<proxima::OwnerEraseCounts>();
+    assert_send_sync::<proxima::OwnerEraseOutcome>();
+    assert_send_sync::<proxima::OwnerEraseRefusal>();
+    assert_send_sync::<proxima::OwnerEraseRequest>();
+    assert_send_sync::<proxima::OwnerEraseTarget>();
     assert_send_sync::<proxima::CancellationToken>();
     assert_send_sync::<proxima::RuntimeBuilder>();
     assert_send_sync::<proxima::RuntimeConfig>();
@@ -26,9 +26,9 @@ fn host_api_imports_from_root() {
     let _cancel = proxima::CancellationToken::new();
     std::hint::black_box(proxima::load_source_cursor);
     std::hint::black_box(proxima::store_source_cursor);
-    let _outcome = proxima::ComplianceEraseOutcome::Refused {
+    let _outcome = proxima::OwnerEraseOutcome::Refused {
         operation_id: uuid::Uuid::nil(),
-        reason: proxima::ComplianceEraseRefusal::OwnerNotAbandoned,
+        reason: proxima::OwnerEraseRefusal::OwnerNotAbandoned,
     };
 }
 
@@ -85,8 +85,8 @@ fn flavor_api_reuses_the_shared_endpoint_transport_policy() {
 }
 
 #[test]
-fn host_api_can_construct_every_compliance_erase_target() {
-    // `ComplianceEraseTarget` was already on the facade, but two of its
+fn host_api_can_construct_every_owner_erase_target() {
+    // `OwnerEraseTarget` was already on the facade, but two of its
     // five variants take a `GroupId`/`SourceId` the facade did not name,
     // so a host depending on `proxima` alone could not build them. An
     // exported enum whose variants are unconstructible is not exported.
@@ -94,17 +94,17 @@ fn host_api_can_construct_every_compliance_erase_target() {
     let source_id = proxima::SourceId::new("proxima-tier/scope/0");
     let user_id = proxima::UserId::new(uuid::Uuid::nil());
 
-    let targets: [proxima::ComplianceEraseTarget; 4] = [
-        proxima::ComplianceEraseTarget::GroupOwner { group_id },
-        proxima::ComplianceEraseTarget::PersonalOwner {
+    let targets: [proxima::OwnerEraseTarget; 4] = [
+        proxima::OwnerEraseTarget::GroupOwner { group_id },
+        proxima::OwnerEraseTarget::PersonalOwner {
             user_id,
             drop_event_id: "drop-1".to_owned(),
         },
-        proxima::ComplianceEraseTarget::GroupSourceScope {
+        proxima::OwnerEraseTarget::GroupSourceScope {
             group_id,
             source_id: source_id.clone(),
         },
-        proxima::ComplianceEraseTarget::PersonalSourceScope {
+        proxima::OwnerEraseTarget::PersonalSourceScope {
             user_id,
             source_id,
             drop_event_id: "drop-1".to_owned(),
@@ -119,33 +119,33 @@ fn host_api_can_construct_every_compliance_erase_target() {
 #[test]
 fn host_api_can_ask_for_and_hold_an_owner_export() {
     // `Engine::export_owner_bundle` is `pub`, takes a
-    // `ComplianceExportTarget` and returns a `ComplianceExportBundle`, and
+    // `OwnerExportTarget` and returns a `OwnerExportBundle`, and
     // neither was on the facade: a host could call the verb, could not
     // build its argument, and could not name what came back. Erase was
     // reachable and export was not, so the destructive half of an owner's
     // rights shipped without the portable half.
     // Naming the return type is the half that inference cannot supply.
-    fn count_rows(bundle: &proxima::ComplianceExportBundle, table: &str) -> usize {
+    fn count_rows(bundle: &proxima::OwnerExportBundle, table: &str) -> usize {
         bundle.table(table).len()
     }
     let _ = count_rows;
 
-    let targets: [proxima::ComplianceExportTarget; 2] = [
-        proxima::ComplianceExportTarget::GroupOwner {
+    let targets: [proxima::OwnerExportTarget; 2] = [
+        proxima::OwnerExportTarget::GroupOwner {
             group_id: proxima::GroupId::new(uuid::Uuid::nil()),
         },
-        proxima::ComplianceExportTarget::PersonalOwner {
+        proxima::OwnerExportTarget::PersonalOwner {
             user_id: proxima::UserId::new(uuid::Uuid::nil()),
         },
     ];
     assert_eq!(targets.len(), 2);
 
-    let request = proxima::ComplianceExportRequest {
+    let request = proxima::OwnerExportRequest {
         target: targets[1].clone(),
     };
     assert!(matches!(
         request.target,
-        proxima::ComplianceExportTarget::PersonalOwner { .. }
+        proxima::OwnerExportTarget::PersonalOwner { .. }
     ));
 }
 

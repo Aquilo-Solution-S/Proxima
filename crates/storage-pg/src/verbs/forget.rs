@@ -1247,7 +1247,7 @@ pub async fn erase_memory(
 /// `goal.evidence_t[]`, `wake_config.trigger_t` and
 /// `wake_config.hard_memory_t[]` name memories without a foreign key, so an
 /// erase here can leave them pointing at nothing. That is deliberate and
-/// not new: [`erase_memory`] has always left them, and the compliance
+/// not new: [`erase_memory`] has always left them, and the owner-erase
 /// erase's own partial arm (source scope) leaves `goal` and `wake_config`
 /// untouched too — it deletes them only in the owner arm, where the whole
 /// row goes rather than one column of it. Nulling them here would make the
@@ -1523,7 +1523,7 @@ SELECT b.blob_id FROM proxima_core.blob b
 /// snapshot. That is what makes the object anti-join ask the right
 /// question: "does a row OUTSIDE this orphan set name the key", evaluated
 /// against the rows as they stood before any of them went, exactly as the
-/// compliance arm evaluates it.
+/// owner-erase arm evaluates it.
 ///
 /// One snapshot is not one lock, though: the reference question is asked of
 /// this transaction's snapshot and the delete is enforced against the

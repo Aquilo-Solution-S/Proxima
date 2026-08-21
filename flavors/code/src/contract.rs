@@ -806,7 +806,7 @@ mod tests {
     }
 
     /// The freeze rejects resources from any flavor but #0. This one has
-    /// never declared any, so compliance is by absence — pin it so a future
+    /// never declared any, so conformance is by absence — pin it so a future
     /// `proxima://code/...` has to argue with a test.
     #[test]
     fn the_flavor_declares_no_resources_and_is_not_core() {

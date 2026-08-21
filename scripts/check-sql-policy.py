@@ -307,7 +307,7 @@ def run_fixture(path: Path) -> int:
 # 2026-08-01 analysis: -5 — the v0.0.7 edge reset. An edge has no id and no
 # payload, so the sidecar-driven edge read (whose statement text grew with the
 # registered payload specs) is gone, and the edge write, lineage walk and
-# compliance erase now assemble fixed fragments instead of per-request column
+# owner erase now assemble fixed fragments instead of per-request column
 # lists. Fewer places where SQL is built at all.
 # 2026-08-04 analysis: +3 — the per-flavor ledger split. The migration facade's
 # one-time cutover interpolates the flavor migrator's compiled-in tracking
@@ -421,8 +421,8 @@ def run_fixture(path: Path) -> int:
 # the frozen sidecar registry through `PgIdent::table`, exactly as the
 # memory-keyed sidecar sweeps beside them already do — every value is bound.
 #
-# `compliance_erase::delete_owner_pinned_sidecars` and
-# `compliance_export::owner_pinned_sidecar_rows` replace what used to be a
+# `owner_erase::delete_owner_pinned_sidecars` and
+# `owner_export::owner_pinned_sidecar_rows` replace what used to be a
 # single hardcoded `proxima_core.mcp_call_logged_v1` statement each, so the
 # count rises while the hardcoded table name disappears. The third,
 # `sidecars::read_ctx::fetch_all_by_memory_ids_owner_pinned`, is the read
@@ -521,7 +521,16 @@ def run_fixture(path: Path) -> int:
 # generated statement does with a bind, so a hand-restated INSERT would
 # prove nothing about it. Both carry `SQL-POLICY: generated`, whose meaning
 # is exactly this: the string has one producer and that producer is audited.
-EXPECTED_DYNAMIC_SQL_SITES = 76
+#
+# 76 -> 75 in the Phase C compliance clean. Net of a bigger reshuffle than
+# the number suggests. The owner export lost NINE hand-written SQL constants
+# and four dynamic sidecar builders and gained ONE generator
+# (`export_statement`), and the owner erase lost five hand-assembled table
+# sweeps for two generic loops. Generating a statement per DECLARED surface
+# instead of writing one per remembered table is not more dynamic SQL — it
+# is the same statement shapes with one producer each, which is what this
+# ratchet was built to reward.
+EXPECTED_DYNAMIC_SQL_SITES = 75
 
 
 def run_self_test() -> int:

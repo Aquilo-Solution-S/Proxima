@@ -1,14 +1,13 @@
-//! Compliance owner erase against blank `0001_v008.sql`.
+//! Owner erase against blank `0001_v008.sql`.
 #![allow(clippy::doc_markdown, clippy::too_many_lines)]
 
 use std::sync::Arc;
 
-use proxima_core::compliance::{
-    ComplianceEraseOutcome, ComplianceEraseRefusal, ComplianceEraseTarget, EraseAuthorization,
-    OwnerSurfaces,
+use proxima_core::owner_inverse::{
+    EraseAuthorization, OwnerEraseOutcome, OwnerEraseRefusal, OwnerEraseTarget, OwnerSurfaces,
 };
 use proxima_core::storage_ports::{
-    ComplianceErasePort, MemoryAuthoringPort, OwnerMembershipAdminPort, OwnerWritePermit,
+    MemoryAuthoringPort, OwnerInversePort, OwnerMembershipAdminPort, OwnerWritePermit,
 };
 use proxima_core::verbs::fact_ingest::FactWriteCommand;
 use proxima_core::verbs::goal_write::GoalState;
@@ -68,7 +67,7 @@ impl ColdObjectStore for RefusingDeleteCold {
 /// The two synthetic surfaces, declared exactly as a flavor would declare
 /// them: keyed on a blob under a column of their own naming, carrying no
 /// `owner_id` of their own, and tallying into `sidecar_rows`.
-fn citation_surfaces() -> proxima_core::compliance::OwnerSurfaces {
+fn citation_surfaces() -> proxima_core::owner_inverse::OwnerSurfaces {
     use proxima_core::flavor::{
         EraseRule, ExportRule, ForgetRule, KeyShape, Surface, TransferRule,
     };
@@ -88,7 +87,7 @@ fn citation_surfaces() -> proxima_core::compliance::OwnerSurfaces {
             completeness: None,
         }
     }
-    proxima_core::compliance::OwnerSurfaces::from_surfaces(vec![
+    proxima_core::owner_inverse::OwnerSurfaces::from_surfaces(vec![
         citation(CITED_TABLE, "cited_object_id"),
         citation(MAPPING_TABLE, "citation_mapping_id"),
     ])
@@ -313,14 +312,14 @@ async fn erase_personal_owner_drops_memory_keys_and_embeddings() {
         let other_written =
             ingest_fact_atomic(pool, &other_permit, &draft(Some(("src", "k-other"))), None).await?;
 
-        let auth = EraseAuthorization::new_for_tests(ComplianceEraseTarget::PersonalOwner {
+        let auth = EraseAuthorization::new_for_tests(OwnerEraseTarget::PersonalOwner {
             user_id: user,
             drop_event_id: "test-drop".into(),
         });
         let outcome = pg
-            .erase_personal_owner_if_drop_verified(&auth, user, false, &contract_sidecar_tables())
+            .erase_personal_owner(&auth, user, false, &contract_sidecar_tables())
             .await?;
-        let ComplianceEraseOutcome::Completed { counts, .. } = outcome else {
+        let OwnerEraseOutcome::Completed { counts, .. } = outcome else {
             panic!("expected completed erase, got {outcome:?}");
         };
         assert_eq!(counts.get("memories"), 1);
@@ -421,7 +420,7 @@ async fn erase_personal_owner_drops_memory_keys_and_embeddings() {
     }
     .await;
     let _ = drop_db(&db_name).await;
-    result.expect("compliance erase failed");
+    result.expect("owner erase failed");
 }
 
 #[tokio::test]
@@ -454,15 +453,15 @@ async fn erase_personal_owner_destroys_cooled_and_gcs_content() {
                 .await?;
         assert_eq!(cooled_before, 1);
 
-        let auth = EraseAuthorization::new_for_tests(ComplianceEraseTarget::PersonalOwner {
+        let auth = EraseAuthorization::new_for_tests(OwnerEraseTarget::PersonalOwner {
             user_id: user,
             drop_event_id: "test-drop-cooled".into(),
         });
         let outcome = pg
-            .erase_personal_owner_if_drop_verified(&auth, user, false, &contract_sidecar_tables())
+            .erase_personal_owner(&auth, user, false, &contract_sidecar_tables())
             .await?;
         assert!(
-            matches!(outcome, ComplianceEraseOutcome::Completed { .. }),
+            matches!(outcome, OwnerEraseOutcome::Completed { .. }),
             "got {outcome:?}"
         );
         let cooled_after: i64 =
@@ -525,14 +524,14 @@ async fn erase_personal_owner_destroys_wake_config() {
         let other_wake = insert_wake_config(&mut tx, &other, &wake_draft("other prompt")).await?;
         tx.commit().await?;
 
-        let auth = EraseAuthorization::new_for_tests(ComplianceEraseTarget::PersonalOwner {
+        let auth = EraseAuthorization::new_for_tests(OwnerEraseTarget::PersonalOwner {
             user_id: user,
             drop_event_id: "test-drop-wake".into(),
         });
         let outcome = pg
-            .erase_personal_owner_if_drop_verified(&auth, user, false, &contract_sidecar_tables())
+            .erase_personal_owner(&auth, user, false, &contract_sidecar_tables())
             .await?;
-        let ComplianceEraseOutcome::Completed { counts, .. } = outcome else {
+        let OwnerEraseOutcome::Completed { counts, .. } = outcome else {
             panic!("expected completed erase, got {outcome:?}");
         };
         assert_eq!(
@@ -599,20 +598,20 @@ async fn erase_source_scope_keeps_all_wake_configs() {
         write_armed_goal(&mut tx, &owner, "armed goal", "wake-src", armed).await?;
         tx.commit().await?;
 
-        let auth = EraseAuthorization::new_for_tests(ComplianceEraseTarget::PersonalSourceScope {
+        let auth = EraseAuthorization::new_for_tests(OwnerEraseTarget::PersonalSourceScope {
             user_id: user,
             source_id: SourceId::new("src-wake"),
             drop_event_id: "test-drop-wake-src".into(),
         });
         let outcome = pg
-            .erase_personal_source_scope_if_drop_verified(
+            .erase_personal_source_scope(
                 &auth,
                 user,
                 &SourceId::new("src-wake"),
                 &contract_sidecar_tables(),
             )
             .await?;
-        let ComplianceEraseOutcome::Completed { counts, .. } = outcome else {
+        let OwnerEraseOutcome::Completed { counts, .. } = outcome else {
             panic!("expected completed erase, got {outcome:?}");
         };
         assert_eq!(
@@ -677,15 +676,15 @@ async fn erase_personal_owner_purges_cold_objects_after_commit() {
                 .await?;
         assert!(cold.get(&key).await.is_ok(), "forget wrote the cold object");
 
-        let auth = EraseAuthorization::new_for_tests(ComplianceEraseTarget::PersonalOwner {
+        let auth = EraseAuthorization::new_for_tests(OwnerEraseTarget::PersonalOwner {
             user_id: user,
             drop_event_id: "test-drop-cold".into(),
         });
         let outcome = pg
-            .erase_personal_owner_if_drop_verified(&auth, user, false, &contract_sidecar_tables())
+            .erase_personal_owner(&auth, user, false, &contract_sidecar_tables())
             .await?;
         assert!(
-            matches!(outcome, ComplianceEraseOutcome::Completed { .. }),
+            matches!(outcome, OwnerEraseOutcome::Completed { .. }),
             "got {outcome:?}"
         );
         assert!(
@@ -724,16 +723,16 @@ async fn failed_cold_purge_is_attributed_and_bounded_retry_clears_audit() {
         let written = ingest_fact_atomic(pool, &permit, &draft(None), None).await?;
         MemoryAuthoringPort::forget_memory(&pg, &permit, written.memory_id).await?;
 
-        let auth = EraseAuthorization::new_for_tests(ComplianceEraseTarget::PersonalOwner {
+        let auth = EraseAuthorization::new_for_tests(OwnerEraseTarget::PersonalOwner {
             user_id: user,
             drop_event_id: "test-drop-retry".into(),
         });
         let outcome = pg
-            .erase_personal_owner_if_drop_verified(&auth, user, false, &contract_sidecar_tables())
+            .erase_personal_owner(&auth, user, false, &contract_sidecar_tables())
             .await?;
         assert!(matches!(
             outcome,
-            ComplianceEraseOutcome::Completed {
+            OwnerEraseOutcome::Completed {
                 cold_object_purge_pending: true,
                 cited_object_purge_pending: false,
                 ..
@@ -849,12 +848,12 @@ async fn an_aborted_owner_erase_keeps_the_cold_object_and_its_locator() {
         write_armed_goal(&mut tx, &outsider, "outsider goal", "held", wake).await?;
         tx.commit().await?;
 
-        let auth = EraseAuthorization::new_for_tests(ComplianceEraseTarget::PersonalOwner {
+        let auth = EraseAuthorization::new_for_tests(OwnerEraseTarget::PersonalOwner {
             user_id: user,
             drop_event_id: "test-drop-abort".into(),
         });
         let err = pg
-            .erase_personal_owner_if_drop_verified(&auth, user, false, &contract_sidecar_tables())
+            .erase_personal_owner(&auth, user, false, &contract_sidecar_tables())
             .await
             .expect_err("the RESTRICT FK aborts the erase");
         assert!(err.to_string().contains("wake_config"), "got: {err}");
@@ -916,14 +915,14 @@ async fn erase_personal_owner_destroys_blobs_uploads_and_citation_sidecars() {
         let neighbour = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
         let neighbour_blob = cite_blob(pool, neighbour, Some(("src", "k-other")), 5).await?;
 
-        let auth = EraseAuthorization::new_for_tests(ComplianceEraseTarget::PersonalOwner {
+        let auth = EraseAuthorization::new_for_tests(OwnerEraseTarget::PersonalOwner {
             user_id: user,
             drop_event_id: "test-drop-blob".into(),
         });
         let outcome = pg
-            .erase_personal_owner_if_drop_verified(&auth, user, false, &citation_surfaces())
+            .erase_personal_owner(&auth, user, false, &citation_surfaces())
             .await?;
-        let ComplianceEraseOutcome::Completed { counts, .. } = outcome else {
+        let OwnerEraseOutcome::Completed { counts, .. } = outcome else {
             panic!("expected completed erase, got {outcome:?}");
         };
         assert_eq!(counts.get("blobs"), 1);
@@ -1001,20 +1000,15 @@ async fn erase_source_scope_deletes_only_unshared_selected_blobs_and_objects() {
         .await?;
 
         let source = SourceId::new("src-drop");
-        let auth = EraseAuthorization::new_for_tests(ComplianceEraseTarget::PersonalSourceScope {
+        let auth = EraseAuthorization::new_for_tests(OwnerEraseTarget::PersonalSourceScope {
             user_id: user,
             source_id: source.clone(),
             drop_event_id: "test-drop-blob-scope".into(),
         });
         let outcome = pg
-            .erase_personal_source_scope_if_drop_verified(
-                &auth,
-                user,
-                &source,
-                &citation_surfaces(),
-            )
+            .erase_personal_source_scope(&auth, user, &source, &citation_surfaces())
             .await?;
-        let ComplianceEraseOutcome::Completed { counts, .. } = outcome else {
+        let OwnerEraseOutcome::Completed { counts, .. } = outcome else {
             panic!("expected completed erase, got {outcome:?}");
         };
         assert_eq!(counts.get("blobs"), 1, "only the unreferenced blob goes");
@@ -1101,16 +1095,15 @@ async fn erase_group_owner_refuses_while_membership_rows_exist() {
         let written = ingest_fact_atomic(pool, &permit, &draft(Some(("src", "g1"))), None).await?;
         let t = written.memory_id.into_inner();
 
-        let auth = EraseAuthorization::new_for_tests(ComplianceEraseTarget::GroupOwner {
-            group_id: group,
-        });
+        let auth =
+            EraseAuthorization::new_for_tests(OwnerEraseTarget::GroupOwner { group_id: group });
         let outcome = pg
-            .erase_group_owner_if_abandoned(&auth, group, false, &contract_sidecar_tables())
+            .erase_group_owner(&auth, group, false, &contract_sidecar_tables())
             .await?;
-        let ComplianceEraseOutcome::Refused { reason, .. } = outcome else {
+        let OwnerEraseOutcome::Refused { reason, .. } = outcome else {
             panic!("expected OwnerNotAbandoned, got {outcome:?}");
         };
-        assert_eq!(reason, ComplianceEraseRefusal::OwnerNotAbandoned);
+        assert_eq!(reason, OwnerEraseRefusal::OwnerNotAbandoned);
 
         let remaining: i64 =
             sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_core.memory WHERE t = $1")
@@ -1165,13 +1158,12 @@ async fn erase_group_owner_completes_when_abandoned() {
         .await?;
         gtx.commit().await?;
 
-        let auth = EraseAuthorization::new_for_tests(ComplianceEraseTarget::GroupOwner {
-            group_id: group,
-        });
+        let auth =
+            EraseAuthorization::new_for_tests(OwnerEraseTarget::GroupOwner { group_id: group });
         let outcome = pg
-            .erase_group_owner_if_abandoned(&auth, group, false, &contract_sidecar_tables())
+            .erase_group_owner(&auth, group, false, &contract_sidecar_tables())
             .await?;
-        let ComplianceEraseOutcome::Completed { counts, .. } = outcome else {
+        let OwnerEraseOutcome::Completed { counts, .. } = outcome else {
             panic!("expected completed erase, got {outcome:?}");
         };
         assert_eq!(counts.get("memories"), 1);
@@ -1225,20 +1217,20 @@ async fn erase_source_scope_rewinds_head_to_remaining_t() {
         let second = ingest_fact_atomic(pool, &permit, &later, None).await?;
         assert_eq!(second.handle, first.handle);
 
-        let auth = EraseAuthorization::new_for_tests(ComplianceEraseTarget::PersonalSourceScope {
+        let auth = EraseAuthorization::new_for_tests(OwnerEraseTarget::PersonalSourceScope {
             user_id: user,
             source_id: SourceId::new("src-new"),
             drop_event_id: "test-drop".into(),
         });
         let outcome = pg
-            .erase_personal_source_scope_if_drop_verified(
+            .erase_personal_source_scope(
                 &auth,
                 user,
                 &SourceId::new("src-new"),
                 &contract_sidecar_tables(),
             )
             .await?;
-        let ComplianceEraseOutcome::Completed { counts, .. } = outcome else {
+        let OwnerEraseOutcome::Completed { counts, .. } = outcome else {
             panic!("expected completed erase, got {outcome:?}");
         };
         assert_eq!(counts.get("memories"), 1);
@@ -1287,13 +1279,13 @@ async fn erase_source_scope_destroys_cooled_from_that_source() {
             ingest_fact_atomic(pool, &permit, &draft(Some(("src-keep", "k-keep"))), None).await?;
         MemoryAuthoringPort::forget_memory(&pg, &permit, target.memory_id).await?;
 
-        let auth = EraseAuthorization::new_for_tests(ComplianceEraseTarget::PersonalSourceScope {
+        let auth = EraseAuthorization::new_for_tests(OwnerEraseTarget::PersonalSourceScope {
             user_id: user,
             source_id: SourceId::new("src-cool"),
             drop_event_id: "test-drop-cooled-src".into(),
         });
         let outcome = pg
-            .erase_personal_source_scope_if_drop_verified(
+            .erase_personal_source_scope(
                 &auth,
                 user,
                 &SourceId::new("src-cool"),
@@ -1301,7 +1293,7 @@ async fn erase_source_scope_destroys_cooled_from_that_source() {
             )
             .await?;
         assert!(
-            matches!(outcome, ComplianceEraseOutcome::Completed { .. }),
+            matches!(outcome, OwnerEraseOutcome::Completed { .. }),
             "got {outcome:?}"
         );
         let cooled: i64 =

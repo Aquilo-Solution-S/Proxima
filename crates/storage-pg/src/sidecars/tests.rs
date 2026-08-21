@@ -377,7 +377,7 @@ fn public_sidecar_batch_read_denies_core_schema_unless_registry_admits_it() {
 /// Parity pin for the RA-11 unification.
 ///
 /// `owner_pinned` was declared in `pg_sidecar!` and consumed only by the
-/// Postgres adapter, which appended it to the compliance table lists on the
+/// Postgres adapter, which appended it to the owner-inverse table lists on the
 /// way past — a fifth leg core never saw. The engine now builds all five
 /// legs from the flavor contracts, and `freeze_against` refuses a
 /// registration whose macro flag contradicts its schema's transfer rule.

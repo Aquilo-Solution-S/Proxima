@@ -3,13 +3,13 @@
 
 use std::sync::Arc;
 
-use proxima_core::compliance::{
-    ComplianceEraseOutcome, ComplianceEraseTarget, ComplianceExportTarget, EraseAuthorization,
-    ExportAuthorization, OwnerSurfaces,
+use proxima_core::owner_inverse::{
+    EraseAuthorization, ExportAuthorization, OwnerEraseOutcome, OwnerEraseTarget,
+    OwnerExportTarget, OwnerSurfaces,
 };
 use proxima_core::storage_ports::MemoryAuthoringPort;
 use proxima_core::storage_ports::{
-    ChangeEventPort, ComplianceErasePort, McpCallReadPort, MemoryReadPort, OwnerTransferPort,
+    ChangeEventPort, McpCallReadPort, MemoryReadPort, OwnerInversePort, OwnerTransferPort,
     OwnerWritePermit,
 };
 use proxima_core::verbs::fact_ingest::FactIngestOutcome;
@@ -161,10 +161,10 @@ fn history_request(owner: OwnerRef) -> McpCallHistoryRequest {
 async fn export_bundle(
     pg: &PgStorage,
     owner: OwnerRef,
-) -> Result<proxima_core::compliance::ComplianceExportBundle, StorageError> {
+) -> Result<proxima_core::owner_inverse::OwnerExportBundle, StorageError> {
     let target = match owner {
-        OwnerRef::Personal(user_id) => ComplianceExportTarget::PersonalOwner { user_id },
-        OwnerRef::Group(group_id) => ComplianceExportTarget::GroupOwner { group_id },
+        OwnerRef::Personal(user_id) => OwnerExportTarget::PersonalOwner { user_id },
+        OwnerRef::Group(group_id) => OwnerExportTarget::GroupOwner { group_id },
     };
     pg.export_owner_bundle(
         &ExportAuthorization::new_for_tests(target),
@@ -180,9 +180,7 @@ async fn export_bundle(
 /// primary key where the row belonged (`to_jsonb(t)` resolves to the column
 /// named `t`, not the range table, when only one table is in scope). The
 /// cardinality was right and the bundle was empty of content.
-fn mcp_rows_in(
-    bundle: &proxima_core::compliance::ComplianceExportBundle,
-) -> Vec<&serde_json::Value> {
+fn mcp_rows_in(bundle: &proxima_core::owner_inverse::OwnerExportBundle) -> Vec<&serde_json::Value> {
     bundle
         .table("proxima_core.mcp_call_logged_v1")
         .iter()
@@ -783,7 +781,7 @@ async fn transfer_refuses_goal_entities() {
 
 /// The erase-poison scenario: transferring an armed goal would strand its
 /// `wake_config` row under the prior owner while the moved goal keeps arming
-/// it, and that owner's compliance erase would abort forever on the
+/// it, and that owner's owner erase would abort forever on the
 /// `ON DELETE RESTRICT` FK. Refusal keeps the wake row erasable.
 #[tokio::test]
 async fn transfer_refuses_armed_goal_and_owner_erase_still_succeeds() {
@@ -832,14 +830,14 @@ async fn transfer_refuses_armed_goal_and_owner_erase_still_succeeds() {
             "the wake row must stay with the goal's owner"
         );
 
-        let auth = EraseAuthorization::new_for_tests(ComplianceEraseTarget::PersonalOwner {
+        let auth = EraseAuthorization::new_for_tests(OwnerEraseTarget::PersonalOwner {
             user_id: user,
             drop_event_id: "test-drop-armed-transfer".into(),
         });
         let outcome = pg
-            .erase_personal_owner_if_drop_verified(&auth, user, false, &contract_sidecar_tables())
+            .erase_personal_owner(&auth, user, false, &contract_sidecar_tables())
             .await?;
-        let ComplianceEraseOutcome::Completed { counts, .. } = outcome else {
+        let OwnerEraseOutcome::Completed { counts, .. } = outcome else {
             panic!("erase must complete after the refused transfer, got {outcome:?}");
         };
         assert_eq!(
@@ -1148,20 +1146,15 @@ async fn transfer_leaves_the_actor_call_log_with_the_owner_that_made_the_call() 
         // de-registration would have lost: rows reachable by nobody are
         // rows Art. 17 cannot honour.
         let user_id = UserId::new(owner.stored_owner_id());
-        let auth = EraseAuthorization::new_for_tests(ComplianceEraseTarget::PersonalOwner {
+        let auth = EraseAuthorization::new_for_tests(OwnerEraseTarget::PersonalOwner {
             user_id,
             drop_event_id: "test-drop-retained-audit".into(),
         });
         let erased = pg
-            .erase_personal_owner_if_drop_verified(
-                &auth,
-                user_id,
-                false,
-                &contract_sidecar_tables(),
-            )
+            .erase_personal_owner(&auth, user_id, false, &contract_sidecar_tables())
             .await?;
         assert!(
-            matches!(erased, ComplianceEraseOutcome::Completed { .. }),
+            matches!(erased, OwnerEraseOutcome::Completed { .. }),
             "source erase completed: {erased:?}"
         );
         let left: i64 = sqlx::query_scalar(
@@ -1249,12 +1242,12 @@ async fn the_destination_can_forget_and_erase_without_touching_the_source_audit_
             OwnerRef::Personal(_) => panic!("a transfer destination is a group"),
         };
         let auth =
-            EraseAuthorization::new_for_tests(ComplianceEraseTarget::GroupOwner { group_id });
+            EraseAuthorization::new_for_tests(OwnerEraseTarget::GroupOwner { group_id });
         let erased = pg
-            .erase_group_owner_if_abandoned(&auth, group_id, false, &contract_sidecar_tables())
+            .erase_group_owner(&auth, group_id, false, &contract_sidecar_tables())
             .await?;
         assert!(
-            matches!(erased, ComplianceEraseOutcome::Completed { .. }),
+            matches!(erased, OwnerEraseOutcome::Completed { .. }),
             "the destination's erase completes over a Memory whose audit row it does not own: {erased:?}"
         );
         let memories_left: i64 = sqlx::query_scalar(
@@ -1797,13 +1790,12 @@ async fn erasing_one_owner_of_a_mounted_object_does_not_destroy_the_bytes() {
             OwnerRef::Group(group_id) => group_id,
             OwnerRef::Personal(_) => panic!("a transfer destination is a group"),
         };
-        let auth =
-            EraseAuthorization::new_for_tests(ComplianceEraseTarget::GroupOwner { group_id });
+        let auth = EraseAuthorization::new_for_tests(OwnerEraseTarget::GroupOwner { group_id });
         let erased = pg
-            .erase_group_owner_if_abandoned(&auth, group_id, false, &contract_sidecar_tables())
+            .erase_group_owner(&auth, group_id, false, &contract_sidecar_tables())
             .await?;
         assert!(
-            matches!(erased, ComplianceEraseOutcome::Completed { .. }),
+            matches!(erased, OwnerEraseOutcome::Completed { .. }),
             "the destination's erase completes: {erased:?}"
         );
         assert_eq!(
@@ -1824,20 +1816,15 @@ async fn erasing_one_owner_of_a_mounted_object_does_not_destroy_the_bytes() {
             OwnerRef::Personal(user_id) => user_id,
             OwnerRef::Group(_) => panic!("seeded as a personal owner"),
         };
-        let last = EraseAuthorization::new_for_tests(ComplianceEraseTarget::PersonalOwner {
+        let last = EraseAuthorization::new_for_tests(OwnerEraseTarget::PersonalOwner {
             user_id,
             drop_event_id: "drop-1".into(),
         });
         let erased = pg
-            .erase_personal_owner_if_drop_verified(
-                &last,
-                user_id,
-                false,
-                &contract_sidecar_tables(),
-            )
+            .erase_personal_owner(&last, user_id, false, &contract_sidecar_tables())
             .await?;
         assert!(
-            matches!(erased, ComplianceEraseOutcome::Completed { .. }),
+            matches!(erased, OwnerEraseOutcome::Completed { .. }),
             "the last owner's erase completes: {erased:?}"
         );
         assert!(
@@ -1900,13 +1887,13 @@ async fn erasing_one_source_scope_of_a_mounted_object_does_not_destroy_the_bytes
 
         // The source owner erases the scope that holds its only remaining
         // citation. Its blob row and upload row go; the object must not.
-        let auth = EraseAuthorization::new_for_tests(ComplianceEraseTarget::PersonalSourceScope {
+        let auth = EraseAuthorization::new_for_tests(OwnerEraseTarget::PersonalSourceScope {
             user_id,
             source_id: proxima_core::SourceId::new("src-drop"),
             drop_event_id: "drop-source-mounted".into(),
         });
         let outcome = pg
-            .erase_personal_source_scope_if_drop_verified(
+            .erase_personal_source_scope(
                 &auth,
                 user_id,
                 &proxima_core::SourceId::new("src-drop"),
@@ -1914,7 +1901,7 @@ async fn erasing_one_source_scope_of_a_mounted_object_does_not_destroy_the_bytes
             )
             .await?;
         assert!(
-            matches!(outcome, ComplianceEraseOutcome::Completed { .. }),
+            matches!(outcome, OwnerEraseOutcome::Completed { .. }),
             "the source-scope erase completes: {outcome:?}"
         );
         let source_rows: i64 = sqlx::query_scalar(
@@ -1939,13 +1926,12 @@ async fn erasing_one_source_scope_of_a_mounted_object_does_not_destroy_the_bytes
             OwnerRef::Group(group_id) => group_id,
             OwnerRef::Personal(_) => panic!("a transfer destination is a group"),
         };
-        let last =
-            EraseAuthorization::new_for_tests(ComplianceEraseTarget::GroupOwner { group_id });
+        let last = EraseAuthorization::new_for_tests(OwnerEraseTarget::GroupOwner { group_id });
         let outcome = pg
-            .erase_group_owner_if_abandoned(&last, group_id, false, &contract_sidecar_tables())
+            .erase_group_owner(&last, group_id, false, &contract_sidecar_tables())
             .await?;
         assert!(
-            matches!(outcome, ComplianceEraseOutcome::Completed { .. }),
+            matches!(outcome, OwnerEraseOutcome::Completed { .. }),
             "the destination's erase completes: {outcome:?}"
         );
         assert!(
@@ -1969,7 +1955,7 @@ async fn erasing_one_source_scope_of_a_mounted_object_does_not_destroy_the_bytes
 /// `blob_id` into its hot row and used it for nothing: erasing a repository
 /// left the `blob` row, the `blob_uploads` row and the S3 object behind,
 /// with no admission left anywhere to reach them from. Nothing would ever
-/// have collected them — compliance erase is the only other thing that
+/// have collected them — owner erase is the only other thing that
 /// deletes blobs, and it works by owner or by source, not by flavor scope.
 ///
 /// Both directions, because a refcount that only ever says "delete" is not

@@ -846,7 +846,7 @@ impl PgStorage {
         // connection indefinitely and starve the gateway. Generous by default
         // (5 min — only a truly stuck statement hits it); tune or disable (0)
         // per deployment. The two operations that can legitimately exceed it —
-        // schema migrations and bulk compliance erase — explicitly opt out
+        // schema migrations and bulk owner erase — explicitly opt out
         // (`run_migrations` runs on a detached timeout-free connection; the erase
         // transaction issues `SET LOCAL statement_timeout = 0`).
         let connect_options = pool_config.connect_options(url)?;
@@ -968,7 +968,7 @@ impl PgStorage {
             .owner_transfer(self.clone())
             .source_batch(self.clone())
             .source_cursor(self.clone())
-            .compliance_erase(self.clone())
+            .owner_erase(self.clone())
             .registry_projection(self.clone())
             .write_session(self)
             .build()

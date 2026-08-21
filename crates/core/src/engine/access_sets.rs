@@ -825,50 +825,50 @@ pub(in crate::engine) mod tests {
     }
 
     #[async_trait::async_trait]
-    impl ComplianceErasePort for MembershipStorage {
-        async fn erase_group_owner_if_abandoned(
+    impl OwnerInversePort for MembershipStorage {
+        async fn erase_group_owner(
             &self,
-            _auth: &proxima_core::compliance::EraseAuthorization,
+            _auth: &proxima_core::owner_inverse::EraseAuthorization,
             _group_id: GroupId,
             _object_purge_planned: bool,
-            _tables: &proxima_core::compliance::OwnerSurfaces,
-        ) -> Result<proxima_core::compliance::ComplianceEraseOutcome, StorageError> {
+            _tables: &proxima_core::owner_inverse::OwnerSurfaces,
+        ) -> Result<proxima_core::owner_inverse::OwnerEraseOutcome, StorageError> {
             Err(StorageError::Internal(
                 "MembershipStorage rejects writes".into(),
             ))
         }
 
-        async fn erase_personal_owner_if_drop_verified(
+        async fn erase_personal_owner(
             &self,
-            _auth: &proxima_core::compliance::EraseAuthorization,
+            _auth: &proxima_core::owner_inverse::EraseAuthorization,
             _user_id: UserId,
             _object_purge_planned: bool,
-            _tables: &proxima_core::compliance::OwnerSurfaces,
-        ) -> Result<proxima_core::compliance::ComplianceEraseOutcome, StorageError> {
+            _tables: &proxima_core::owner_inverse::OwnerSurfaces,
+        ) -> Result<proxima_core::owner_inverse::OwnerEraseOutcome, StorageError> {
             Err(StorageError::Internal(
                 "MembershipStorage rejects writes".into(),
             ))
         }
 
-        async fn erase_group_source_scope_if_owner_abandoned(
+        async fn erase_group_source_scope(
             &self,
-            _auth: &proxima_core::compliance::EraseAuthorization,
+            _auth: &proxima_core::owner_inverse::EraseAuthorization,
             _group_id: GroupId,
             _source_id: &SourceId,
-            _tables: &proxima_core::compliance::OwnerSurfaces,
-        ) -> Result<proxima_core::compliance::ComplianceEraseOutcome, StorageError> {
+            _tables: &proxima_core::owner_inverse::OwnerSurfaces,
+        ) -> Result<proxima_core::owner_inverse::OwnerEraseOutcome, StorageError> {
             Err(StorageError::Internal(
                 "MembershipStorage rejects writes".into(),
             ))
         }
 
-        async fn erase_personal_source_scope_if_drop_verified(
+        async fn erase_personal_source_scope(
             &self,
-            _auth: &proxima_core::compliance::EraseAuthorization,
+            _auth: &proxima_core::owner_inverse::EraseAuthorization,
             _user_id: UserId,
             _source_id: &SourceId,
-            _tables: &proxima_core::compliance::OwnerSurfaces,
-        ) -> Result<proxima_core::compliance::ComplianceEraseOutcome, StorageError> {
+            _tables: &proxima_core::owner_inverse::OwnerSurfaces,
+        ) -> Result<proxima_core::owner_inverse::OwnerEraseOutcome, StorageError> {
             Err(StorageError::Internal(
                 "MembershipStorage rejects writes".into(),
             ))
@@ -876,9 +876,9 @@ pub(in crate::engine) mod tests {
 
         async fn export_owner_bundle(
             &self,
-            _auth: &proxima_core::compliance::ExportAuthorization,
-            _tables: &proxima_core::compliance::OwnerSurfaces,
-        ) -> Result<proxima_core::compliance::ComplianceExportBundle, StorageError> {
+            _auth: &proxima_core::owner_inverse::ExportAuthorization,
+            _tables: &proxima_core::owner_inverse::OwnerSurfaces,
+        ) -> Result<proxima_core::owner_inverse::OwnerExportBundle, StorageError> {
             Err(StorageError::Internal(
                 "MembershipStorage rejects reads".into(),
             ))
@@ -940,7 +940,7 @@ pub(in crate::engine) mod tests {
                 .owner_transfer(storage.clone())
                 .source_batch(storage.clone())
                 .source_cursor(storage.clone())
-                .compliance_erase(storage.clone())
+                .owner_erase(storage.clone())
                 .registry_projection(storage.clone())
                 .write_session(storage)
                 .build()
