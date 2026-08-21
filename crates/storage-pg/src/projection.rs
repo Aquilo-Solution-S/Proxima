@@ -598,6 +598,9 @@ mod tests {
                 index: "code_projection_owner_tsv_gin",
                 overfetch_k: 1_000,
                 band_comparability: proxima_core::flavor::BandComparability::CoreBands,
+                // The DDL is what this fixture tests, and the generator
+                // emits the same table whatever the read shape says.
+                rank_source: proxima_core::flavor::RankSource::Projection,
             });
         contract
     }

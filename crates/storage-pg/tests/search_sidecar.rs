@@ -1,7 +1,12 @@
-//! Sidecar-first core search: GIN on the sidecar, admit via memory_head.
+//! Projection-first core search: one ranked statement per flavor over
+//! `<flavor>.projection`, a DECLARED substring arm over the schemas it
+//! returned nothing for, then admit via `memory_head`.
 #![allow(clippy::doc_markdown, clippy::too_many_lines)]
 
-use proxima_core::flavor::{LanguagePolicy, WEIGHT_UNIFORM};
+use proxima_core::flavor::{
+    Band, BandComparability, LanguagePolicy, RankSource, SubstringArm, WEIGHT_UNIFORM,
+};
+use proxima_core::flavor0::{BAND_EXACT, BAND_RESCUE, BAND_SUBSTRING};
 use proxima_core::storage_ports::MemoryReadPort;
 use proxima_core::verbs::query::{
     EntityKind, MemorySearchRequest, SearchMode, SearchOrder, SupersessionStatus, TagMatch,
@@ -13,6 +18,11 @@ use proxima_core::{OwnerRef, SchemaId, SchemaVersion, SearchProjectionColumnKind
 use proxima_pg_testkit::{create_db, db_url, drop_db};
 use proxima_storage_pg::PgStorage;
 use uuid::Uuid;
+
+/// The out-of-tree fixture flavor's bands: core's, referenced. Referencing
+/// them IS the band-comparability claim, which is what makes
+/// `BandComparability::CoreBands` below an assertion rather than a label.
+const DOCS_BANDS: &[Band] = &[BAND_EXACT, BAND_RESCUE, BAND_SUBSTRING];
 
 fn note_projection() -> MemorySearchProjection {
     // The shipped declaration, not a second copy of it. This fixture used
@@ -200,19 +210,43 @@ async fn lexical_search_is_sidecar_first_then_owner_admit() {
             "snippet comes from the sidecar scan"
         );
 
-        let like_only = pg
+        // The substring arm is DECLARED, not blanket. `core/agent-note-v1`
+        // declares `MemoryFirstNestedLoop`, so a partial word with no
+        // tsvector lexeme still lands — and it lands at the declared
+        // substring band, from the one statement that runs over exactly
+        // the schemas the ranked arm returned nothing for.
+        let substring = pg
             .search_memories(&search_req(owner, "eedle"), &[note_projection()])
             .await?;
         assert_eq!(
-            like_only.results.len(),
+            substring.results.len(),
             1,
-            "substring with no tsvector lexeme must still hit via LIKE fallback"
+            "a declared substring arm must still hit where no lexeme does"
         );
-        assert_eq!(like_only.results[0].memory_id.into_inner(), ours);
+        assert_eq!(substring.results[0].memory_id.into_inner(), ours);
         assert!(
-            (like_only.results[0].lexical_score - 0.25).abs() < f32::EPSILON,
-            "LIKE fallback score is the 0.25 substring band, got {}",
-            like_only.results[0].lexical_score
+            (substring.results[0].lexical_score - 0.25).abs() < f32::EPSILON,
+            "substring hits score at the declared band floor, got {}",
+            substring.results[0].lexical_score
+        );
+        assert!(
+            substring.results[0].snippet.contains("keyword needle"),
+            "the snippet is hydrated for the page whichever arm found the row"
+        );
+
+        // Mutation target: turn the arm off and the row disappears. This
+        // is the whole price of deleting the blanket retry, stated as a
+        // test rather than as a claim.
+        let arm_off = MemorySearchProjection {
+            substring: proxima_core::flavor::SubstringArm::Off,
+            ..note_projection()
+        };
+        let refused = pg
+            .search_memories(&search_req(owner, "eedle"), &[arm_off])
+            .await?;
+        assert!(
+            refused.results.is_empty(),
+            "a schema declaring SubstringArm::Off contributes no statement and no rows"
         );
 
         let miss = pg
@@ -435,6 +469,16 @@ async fn tagged_search_scans_flavor_sidecars() {
                 column: "lexical_language",
             },
             rank_weights: None,
+            // A hand-built out-of-tree flavor: it has to declare what the
+            // renderer resolves, which is the point of the freeze rule that
+            // holds a real one to the same three names.
+            bands: DOCS_BANDS,
+            substring: SubstringArm::MemoryFirstNestedLoop,
+            overfetch_k: 1_000,
+            // Both new gates, satisfied. Flip either and the tagged search
+            // below returns nothing.
+            band_comparability: BandComparability::CoreBands,
+            rank_source: RankSource::Projection,
         };
 
         let unscoped = pg

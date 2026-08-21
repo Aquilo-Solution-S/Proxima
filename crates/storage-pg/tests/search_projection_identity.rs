@@ -35,6 +35,41 @@
 //! [`CI_NOTES_PER_OWNER`]; the 500k re-proof on the bench cluster calls the
 //! same function with a larger number and compares two builds against each
 //! other rather than against these literals.
+//!
+//! # What the Phase 3 cases add, and why
+//!
+//! The eight original cases are one schema, which cannot see the two
+//! changes that matter most when the per-schema fan-out collapses into one
+//! statement per flavor. The corpus therefore carries `core/interpretation-v1`
+//! rows as well, and the cases below it exercise:
+//!
+//! - **hits in two schemas** — the single flavor-wide overfetch window
+//!   replaces the union of per-schema windows.
+//! - **mixed arms across schemas** — `cartograph` is a LEXEME in a
+//!   derivation (the word appears verbatim) and only a SUBSTRING in a note
+//!   (`cartography` stems to `cartographi`). This is the exact case a
+//!   flavor-wide "the ranked arm returned nothing" trigger would lose: the
+//!   ranked arm returns derivations, so it is not empty, and the note rows
+//!   only survive because the trigger is computed per SCHEMA.
+//! - **a tag filter** — the `p.tag` predicate across two schemas.
+//! - **a schema-scoped request** — `schema_id = ANY(..)` with one member.
+//!
+//! The second schema is `core/agent-derivation-v1`, an ABSTRACTION. The
+//! eight original cases all pass `kind: Some(Fact)`, so the new rows are
+//! structurally invisible to them and the original literals stay valid
+//! without a re-capture — which is what makes them a pin rather than a
+//! snapshot. The new cases pass `kind: None`, which is how they see both.
+//!
+//! `Hybrid` is deliberately NOT pinned. One global top-k per flavor can
+//! move a hybrid page — a row with weak lexical rank but strong similarity
+//! could previously ride in on its own schema's window — and that movement
+//! is a documented v0.0.8 breaking change, not an identity claim.
+//!
+//! Language variation gets its own database
+//! ([`a_second_lexical_configuration_scores_what_it_scored`]): registering
+//! a second `lexical_languages` row changes the query side for EVERY row in
+//! that database, so a corpus that mixes configurations cannot also pin the
+//! single-configuration cases.
 #![allow(clippy::doc_markdown, clippy::too_many_lines)]
 
 use proxima_core::storage_ports::MemoryReadPort;
@@ -51,6 +86,11 @@ use uuid::Uuid;
 /// Small enough for CI, large enough that the overfetch window, the tie
 /// break and the rescue band all have something to do.
 const CI_NOTES_PER_OWNER: usize = 6;
+
+/// Two per owner: enough that a two-schema query has hits under more than
+/// one owner in both schemas, which is what makes the multi-owner claim
+/// testable in the schema the Phase 2 corpus did not have.
+const CI_DERIVATIONS_PER_OWNER: usize = 2;
 
 const OWNERS: usize = 4;
 
@@ -95,6 +135,23 @@ const WORDS: [&str; 12] = [
     "projection",
 ];
 
+/// Derivation text is built from its own pool, overlapping the note pool in
+/// `atlas`, `vector`, `index` and `substrate` — so a query can hit both
+/// schemas — and disjoint in `cartograph` and `waypoint`.
+///
+/// `cartograph` is the load-bearing one. It is a whole word here, so it is
+/// a LEXEME in a derivation; the note pool has `cartography`, which the
+/// English stemmer reduces to `cartographi`, so the same query reaches a
+/// note only through the substring arm.
+const DERIVED_WORDS: [&str; 6] = [
+    "cartograph",
+    "vector",
+    "waypoint",
+    "atlas",
+    "index",
+    "substrate",
+];
+
 /// One note, deterministically. `seq` is global across owners so no two
 /// notes share a `t`.
 struct Note {
@@ -102,6 +159,47 @@ struct Note {
     title: String,
     body: String,
     tags: Vec<String>,
+}
+
+/// One derivation, deterministically.
+struct Derivation {
+    t: Uuid,
+    title: String,
+    body: String,
+    tags: Vec<String>,
+}
+
+/// `OWNERS * per_owner` derivations, deterministic in every field.
+///
+/// `seq` starts at 1_000 so no derivation can collide with a note's `t` at
+/// any corpus size CI or the bench cluster runs.
+fn derivations(per_owner: usize) -> Vec<(OwnerRef, Derivation)> {
+    let mut out = Vec::with_capacity(OWNERS * per_owner);
+    let mut seq = 1_000_u64;
+    for index in 0..per_owner {
+        for owner_index in 0..OWNERS {
+            seq += 1;
+            out.push((
+                owner_at(owner_index),
+                Derivation {
+                    t: det_uuid(seq),
+                    title: format!(
+                        "{} {}",
+                        DERIVED_WORDS[(index + owner_index) % DERIVED_WORDS.len()],
+                        DERIVED_WORDS[(index * 2 + owner_index + 1) % DERIVED_WORDS.len()]
+                    ),
+                    body: format!(
+                        "{} {} {}",
+                        DERIVED_WORDS[(index + owner_index + 2) % DERIVED_WORDS.len()],
+                        DERIVED_WORDS[(index * 3 + owner_index) % DERIVED_WORDS.len()],
+                        DERIVED_WORDS[(index + owner_index * 2 + 1) % DERIVED_WORDS.len()]
+                    ),
+                    tags: vec![format!("bucket-{}", (index + 1) % 3)],
+                },
+            ));
+        }
+    }
+    out
 }
 
 /// `owners * notes_per_owner` notes, deterministic in every field.
@@ -137,18 +235,30 @@ fn corpus(notes_per_owner: usize) -> Vec<(OwnerRef, Note)> {
     out
 }
 
-fn note_projection() -> MemorySearchProjection {
+const NOTE_SCHEMA: &str = "core/agent-note-v1";
+const DERIVATION_SCHEMA: &str = "core/agent-derivation-v1";
+
+/// EVERY projected schema the frozen registry declares, which is exactly
+/// what `Engine::search` passes. The fixture used to hand-pick one, so the
+/// projection-selection gates were never exercised by this test at all.
+fn projections() -> Vec<MemorySearchProjection> {
     proxima_core::FlavorRegistry::new()
         .freeze_or_panic_for_tests()
         .search_projections()
-        .iter()
-        .find(|projection| projection.schema_id.as_str() == "core/agent-note-v1")
-        .expect("core/agent-note-v1 is a search surface")
-        .clone()
+        .to_vec()
 }
 
 /// The production maintenance statement, over a hand-seeded row.
-async fn project(pool: &sqlx::PgPool, t: Uuid) -> Result<(), sqlx::Error> {
+///
+/// `language` is the `PerRow` bind: `None` takes the deployment default,
+/// `Some(config)` stamps that configuration on the projection row and
+/// registers it in `lexical_languages` through the table's own trigger.
+async fn project(
+    pool: &sqlx::PgPool,
+    t: Uuid,
+    schema_id: &str,
+    language: Option<&str>,
+) -> Result<(), sqlx::Error> {
     let spec = proxima_core::FLAVOR_0
         .projection
         .spec()
@@ -156,21 +266,104 @@ async fn project(pool: &sqlx::PgPool, t: Uuid) -> Result<(), sqlx::Error> {
     let schema = proxima_core::FLAVOR_0
         .schemas
         .iter()
-        .find(|schema| schema.schema_id().as_str() == "core/agent-note-v1")
-        .expect("core/agent-note-v1 is declared");
+        .find(|schema| schema.schema_id().as_str() == schema_id)
+        .unwrap_or_else(|| panic!("{schema_id} is declared"));
     let sql = proxima_storage_pg::projection::projection_insert_sql(spec, schema)
         .expect("the generator emits a valid statement");
     // SQL-POLICY: generated
     sqlx::query(sqlx::AssertSqlSafe(sql))
         .bind(t)
-        .bind(None::<&str>)
-        .bind("core/agent-note-v1")
+        .bind(language)
+        .bind(schema_id)
         .execute(pool)
         .await?;
     Ok(())
 }
 
-async fn seed(pool: &sqlx::PgPool, notes_per_owner: usize) -> Result<(), sqlx::Error> {
+/// The handle a hand-seeded row gets: deterministic in `t`, so the
+/// `memory_head` and `memory` rows agree without a lookup.
+fn handle_for(t: Uuid) -> Uuid {
+    det_uuid(u64::from_be_bytes(
+        t.as_bytes()[8..16].try_into().expect("8 bytes"),
+    ))
+}
+
+/// `origins` is not decoration: `memory_pin_checks` refuses a non-Fact that
+/// pins no hot memory, so an interpretation has to ground in a note. It
+/// grounds in its own owner's first one, which keeps the corpus
+/// deterministic and the pin inside the owner.
+async fn admit(
+    pool: &sqlx::PgPool,
+    owner_id: Uuid,
+    t: Uuid,
+    kind: &str,
+    schema_id: &str,
+    origins: &[Uuid],
+) -> Result<(), sqlx::Error> {
+    let handle = handle_for(t);
+    sqlx::query(
+        "INSERT INTO proxima_core.memory_head (handle, kind, schema_id, owner_id, t)
+         VALUES ($1, $2::proxima_core.memory_kind, $3, $4, $5)",
+    )
+    .bind(handle)
+    .bind(kind)
+    .bind(schema_id)
+    .bind(owner_id)
+    .bind(t)
+    .execute(pool)
+    .await?;
+    // `memory_ap_content_chk`: only a Fact may have no content row. The
+    // hash is `t`'s bytes doubled, which is deterministic, 32 bytes, and
+    // unique per memory — the corpus is a fixture, not an ingest.
+    let content_id: Option<Uuid> = if kind == "fact" {
+        None
+    } else {
+        let mut hash = Vec::with_capacity(32);
+        hash.extend_from_slice(t.as_bytes());
+        hash.extend_from_slice(t.as_bytes());
+        Some(
+            sqlx::query_scalar(
+                "INSERT INTO proxima_core.content (content_id, owner_id, schema_id, content_hash)
+                 VALUES ($1, $2, $3, $4) RETURNING content_id",
+            )
+            .bind(t)
+            .bind(owner_id)
+            .bind(schema_id)
+            .bind(hash)
+            .fetch_one(pool)
+            .await?,
+        )
+    };
+    sqlx::query(
+        "INSERT INTO proxima_core.memory (handle, t, kind, owner_id, schema_id, origins, content_id)
+         VALUES ($1, $2, $3::proxima_core.memory_kind, $4, $5, $6, $7)",
+    )
+    .bind(handle)
+    .bind(t)
+    .bind(kind)
+    .bind(owner_id)
+    .bind(schema_id)
+    .bind(origins)
+    .bind(content_id)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// The `t` of `owner_index`'s first note. `corpus` numbers `seq` with the
+/// owner as the inner loop, so owner `o`'s first note is `det_uuid(o + 1)`.
+fn first_note_of(owner_index: usize) -> Uuid {
+    det_uuid(owner_index as u64 + 1)
+}
+
+/// `language` is threaded to [`project`] so one call can seed either the
+/// single-configuration corpus (`None` everywhere) or the mixed one.
+async fn seed(
+    pool: &sqlx::PgPool,
+    notes_per_owner: usize,
+    derivations_per_owner: usize,
+    language_for: impl Fn(usize) -> Option<&'static str>,
+) -> Result<(), sqlx::Error> {
     for owner_index in 0..OWNERS {
         sqlx::query(
             "INSERT INTO proxima_core.owners (owner_id, kind)
@@ -180,29 +373,9 @@ async fn seed(pool: &sqlx::PgPool, notes_per_owner: usize) -> Result<(), sqlx::E
         .execute(pool)
         .await?;
     }
-    for (owner, note) in corpus(notes_per_owner) {
+    for (index, (owner, note)) in corpus(notes_per_owner).into_iter().enumerate() {
         let owner_id = owner.stored_owner_id();
-        let handle = det_uuid(u64::from_be_bytes(
-            note.t.as_bytes()[8..16].try_into().expect("8 bytes"),
-        ));
-        sqlx::query(
-            "INSERT INTO proxima_core.memory_head (handle, kind, schema_id, owner_id, t)
-             VALUES ($1, 'fact', 'core/agent-note-v1', $2, $3)",
-        )
-        .bind(handle)
-        .bind(owner_id)
-        .bind(note.t)
-        .execute(pool)
-        .await?;
-        sqlx::query(
-            "INSERT INTO proxima_core.memory (handle, t, kind, owner_id, schema_id)
-             VALUES ($1, $2, 'fact', $3, 'core/agent-note-v1')",
-        )
-        .bind(handle)
-        .bind(note.t)
-        .bind(owner_id)
-        .execute(pool)
-        .await?;
+        admit(pool, owner_id, note.t, "fact", NOTE_SCHEMA, &[]).await?;
         sqlx::query(
             "INSERT INTO proxima_core.agent_note_v1 (t, note_id, title, body, tags)
              VALUES ($1, $2, $3, $4, $5)",
@@ -214,7 +387,31 @@ async fn seed(pool: &sqlx::PgPool, notes_per_owner: usize) -> Result<(), sqlx::E
         .bind(&note.tags)
         .execute(pool)
         .await?;
-        project(pool, note.t).await?;
+        project(pool, note.t, NOTE_SCHEMA, language_for(index)).await?;
+    }
+    for (index, (owner, derivation)) in derivations(derivations_per_owner).into_iter().enumerate() {
+        let owner_id = owner.stored_owner_id();
+        admit(
+            pool,
+            owner_id,
+            derivation.t,
+            "abstraction",
+            DERIVATION_SCHEMA,
+            &[first_note_of(index % OWNERS)],
+        )
+        .await?;
+        sqlx::query(
+            "INSERT INTO proxima_core.agent_derivation_v1
+                 (t, title, body, tags, model_id, client_name, client_version)
+             VALUES ($1, $2, $3, $4, 'test-model', 'identity-fixture', '1')",
+        )
+        .bind(derivation.t)
+        .bind(&derivation.title)
+        .bind(&derivation.body)
+        .bind(&derivation.tags)
+        .execute(pool)
+        .await?;
+        project(pool, derivation.t, DERIVATION_SCHEMA, language_for(index)).await?;
     }
     Ok(())
 }
@@ -318,7 +515,122 @@ fn cases() -> Vec<(&'static str, MemorySearchRequest)> {
                 SearchOrder::Recency,
             ),
         ),
+        // ── Phase 3: the cases one schema cannot see ──────────────────
+        (
+            // Both schemas match by lexeme. Before the collapse this was
+            // two statements with two overfetch windows; after, it is one
+            // statement with one.
+            "all-owners/relevance/two-schemas/vector",
+            any_kind(request(
+                (0..OWNERS).map(owner_at).collect(),
+                "vector",
+                SearchOrder::Relevance,
+            )),
+        ),
+        (
+            "two-owners/recency/two-schemas/atlas",
+            any_kind(request(
+                vec![owner_at(0), owner_at(2)],
+                "atlas",
+                SearchOrder::Recency,
+            )),
+        ),
+        (
+            // THE substring-trigger case. `cartograph` is a lexeme in an
+            // interpretation and only a substring in a note, so the ranked
+            // arm returns rows for one schema and nothing for the other.
+            // A flavor-wide "ranked returned nothing" trigger drops every
+            // note below; a per-schema one keeps them.
+            "all-owners/relevance/mixed-arms/cartograph",
+            any_kind(request(
+                (0..OWNERS).map(owner_at).collect(),
+                "cartograph",
+                SearchOrder::Relevance,
+            )),
+        ),
+        (
+            // The `p.tag` predicate, across two schemas in one statement.
+            // Both declare a `tag_column`; the request narrows rows, and
+            // `core_search_flavors` is what would narrow the SCHEMA SET if
+            // one of them did not.
+            "all-owners/relevance/tagged/bucket-1",
+            tagged(any_kind(request(
+                (0..OWNERS).map(owner_at).collect(),
+                "atlas edges",
+                SearchOrder::Relevance,
+            ))),
+        ),
+        (
+            // `schema_id = ANY(..)` with one member: the narrowing that
+            // used to be projection selection is a row predicate now.
+            "all-owners/relevance/schema-scoped/derivation",
+            scoped(any_kind(request(
+                (0..OWNERS).map(owner_at).collect(),
+                "atlas",
+                SearchOrder::Relevance,
+            ))),
+        ),
     ]
+}
+
+/// Facts AND perspectives, so a request can reach both projected schemas.
+fn any_kind(mut req: MemorySearchRequest) -> MemorySearchRequest {
+    req.kind = None;
+    req
+}
+
+fn tagged(mut req: MemorySearchRequest) -> MemorySearchRequest {
+    req.tags = vec!["bucket-1".into()];
+    req.tag_match = TagMatch::Any;
+    req
+}
+
+fn scoped(mut req: MemorySearchRequest) -> MemorySearchRequest {
+    req.schema_id = Some(proxima_core::SchemaId::new(DERIVATION_SCHEMA.to_owned()));
+    req
+}
+
+/// The mixed-configuration cases. Their own database: registering a second
+/// `lexical_languages` row rewrites the query side for every row in it.
+fn language_cases() -> Vec<(&'static str, MemorySearchRequest)> {
+    vec![
+        (
+            "mixed-language/all-owners/relevance/atlas",
+            any_kind(request(
+                (0..OWNERS).map(owner_at).collect(),
+                "atlas",
+                SearchOrder::Relevance,
+            )),
+        ),
+        (
+            // `the` is a stop word under `english` and a real lexeme under
+            // `simple`, so this case is where a second registered
+            // configuration is visible at all: the rows stamped `simple`
+            // reach the exact arm, the rows stamped `english` reach only
+            // the substring arm.
+            "mixed-language/all-owners/relevance/the",
+            any_kind(request(
+                (0..OWNERS).map(owner_at).collect(),
+                "the",
+                SearchOrder::Relevance,
+            )),
+        ),
+        (
+            "mixed-language/two-owners/recency/vector",
+            any_kind(request(
+                vec![owner_at(1), owner_at(3)],
+                "vector",
+                SearchOrder::Recency,
+            )),
+        ),
+    ]
+}
+
+/// Every third seeded row is stamped `simple` instead of the deployment
+/// default. Deterministic, so the capture and the assertion see the same
+/// corpus.
+fn alternating_language(index: usize) -> Option<&'static str> {
+    index.is_multiple_of(3).then_some("simple")
 }
 
 /// Captured from `b5fe11ad` — the pre-projection tree — with this exact
@@ -405,10 +717,133 @@ const EXPECTED: &[(&str, &[&str])] = &[
         ],
     ),
     ("one-owner/relevance/miss", &["has_more=false"]),
+    // ── Phase 3 cases, captured from `e7c3c83f` by the same method ───
+    (
+        "all-owners/relevance/two-schemas/vector",
+        &[
+            "018bcfe5-6810-7010-8010-111213141516 0.615385 the vector the vector atlas substrate the vector bucket-0",
+            "018bcfe5-6bea-73ea-80ea-ebecedeeeff0 0.583333 vector waypoint atlas vector atlas bucket-1",
+            "018bcfe5-6be9-73e9-80e9-eaebecedeeef 0.583333 cartograph vector waypoint cartograph vector bucket-1",
+            "018bcfe5-6813-7013-8013-141516171819 0.583333 the owner the vector atlas substrate the vector atlas bucket-1",
+            "018bcfe5-6bed-73ed-80ed-eeeff0f1f2f3 0.545455 vector atlas atlas atlas waypoint bucket-2",
+            "018bcfe5-6bec-73ec-80ec-edeeeff0f1f2 0.545455 atlas index substrate atlas vector bucket-1",
+            "018bcfe5-6816-7016-8016-1718191a1b1c 0.545455 the projection the vector atlas bucket-2",
+            "018bcfe5-6812-7012-8012-131415161718 0.545455 needle vector needle index projection retrieval needle index projection bucket-1",
+            "has_more=true",
+        ],
+    ),
+    (
+        "two-owners/recency/two-schemas/atlas",
+        &[
+            "018bcfe5-6bef-73ef-80ef-f0f1f2f3f4f5 0.545455 atlas substrate substrate substrate cartograph bucket-2",
+            "018bcfe5-6bed-73ed-80ed-eeeff0f1f2f3 0.615385 vector atlas atlas atlas waypoint bucket-2",
+            "018bcfe5-6beb-73eb-80eb-ecedeeeff0f1 0.545455 waypoint atlas index waypoint substrate bucket-1",
+            "018bcfe5-6817-7017-8017-18191a1b1c1d 0.545455 cartography atlas cartography owner edges bucket-2",
+            "018bcfe5-6813-7013-8013-141516171819 0.583333 the owner the vector atlas substrate the vector atlas bucket-1",
+            "018bcfe5-680d-700d-800d-0e0f10111213 0.545455 substrate the substrate the vector atlas substrate the bucket-0",
+            "018bcfe5-6807-7007-8007-08090a0b0c0d 0.545455 substrate keyword substrate the vector atlas bucket-1",
+            "018bcfe5-6801-7001-8001-020304050607 0.615385 atlas atlas atlas substrate the bucket-0",
+            "has_more=false",
+        ],
+    ),
+    (
+        "all-owners/relevance/mixed-arms/cartograph",
+        &[
+            "018bcfe5-6bf0-73f0-80f0-f1f2f3f4f5f6 0.615385 index cartograph cartograph cartograph waypoint bucket-2",
+            "018bcfe5-6be9-73e9-80e9-eaebecedeeef 0.583333 cartograph vector waypoint cartograph vector bucket-1",
+            "018bcfe5-6bef-73ef-80ef-f0f1f2f3f4f5 0.545455 atlas substrate substrate substrate cartograph bucket-2",
+            "018bcfe5-6817-7017-8017-18191a1b1c1d 0.250000 cartography atlas cartography owner edges bucket-2",
+            "018bcfe5-6814-7014-8014-15161718191a 0.250000 cartography projection cartography owner edges keyword cartography owner edges bucket-1",
+            "018bcfe5-6811-7011-8011-121314151617 0.250000 keyword index keyword cartography owner edges keyword cartography owner bucket-1",
+            "018bcfe5-680e-700e-800e-0f1011121314 0.250000 keyword cartography keyword cartography owner edges keyword cartography bucket-0",
+            "018bcfe5-680c-700c-800c-0d0e0f101112 0.250000 needle cartography needle index projection retrieval needle bucket-2",
+            "has_more=true",
+        ],
+    ),
+    (
+        "all-owners/relevance/tagged/bucket-1",
+        &[
+            "018bcfe5-6bec-73ec-80ec-edeeeff0f1f2 0.450000 atlas index substrate atlas vector bucket-1",
+            "018bcfe5-6beb-73eb-80eb-ecedeeeff0f1 0.450000 waypoint atlas index waypoint substrate bucket-1",
+            "018bcfe5-6bea-73ea-80ea-ebecedeeeff0 0.450000 vector waypoint atlas vector atlas bucket-1",
+            "018bcfe5-6814-7014-8014-15161718191a 0.450000 cartography projection cartography owner edges keyword cartography owner edges bucket-1",
+            "018bcfe5-6813-7013-8013-141516171819 0.450000 the owner the vector atlas substrate the vector atlas bucket-1",
+            "018bcfe5-6807-7007-8007-08090a0b0c0d 0.450000 substrate keyword substrate the vector atlas bucket-1",
+            "018bcfe5-6805-7005-8005-060708090a0b 0.450000 edges retrieval edges keyword cartography owner bucket-1",
+            "018bcfe5-6808-7008-8008-090a0b0c0d0e 0.439958 keyword needle keyword cartography owner edges bucket-1",
+            "has_more=true",
+        ],
+    ),
+    (
+        "all-owners/relevance/schema-scoped/derivation",
+        &[
+            "018bcfe5-6bed-73ed-80ed-eeeff0f1f2f3 0.615385 vector atlas atlas atlas waypoint bucket-2",
+            "018bcfe5-6bec-73ec-80ec-edeeeff0f1f2 0.583333 atlas index substrate atlas vector bucket-1",
+            "018bcfe5-6bea-73ea-80ea-ebecedeeeff0 0.583333 vector waypoint atlas vector atlas bucket-1",
+            "018bcfe5-6bef-73ef-80ef-f0f1f2f3f4f5 0.545455 atlas substrate substrate substrate cartograph bucket-2",
+            "018bcfe5-6beb-73eb-80eb-ecedeeeff0f1 0.545455 waypoint atlas index waypoint substrate bucket-1",
+            "has_more=false",
+        ],
+    ),
 ];
 
-#[tokio::test]
-async fn the_projection_returns_the_results_the_sidecar_vectors_did() {
+/// Captured from `e7c3c83f` with the mixed-configuration corpus. See
+/// [`a_second_lexical_configuration_scores_what_it_scored`].
+const LANGUAGE_EXPECTED: &[(&str, &[&str])] = &[
+    (
+        "mixed-language/all-owners/relevance/atlas",
+        &[
+            "018bcfe5-6bed-73ed-80ed-eeeff0f1f2f3 0.615385 vector atlas atlas atlas waypoint bucket-2",
+            "018bcfe5-6801-7001-8001-020304050607 0.615385 atlas atlas atlas substrate the bucket-0",
+            "018bcfe5-6bec-73ec-80ec-edeeeff0f1f2 0.583333 atlas index substrate atlas vector bucket-1",
+            "018bcfe5-6bea-73ea-80ea-ebecedeeeff0 0.583333 vector waypoint atlas vector atlas bucket-1",
+            "018bcfe5-6813-7013-8013-141516171819 0.583333 the owner the vector atlas substrate the vector atlas bucket-1",
+            "018bcfe5-6bef-73ef-80ef-f0f1f2f3f4f5 0.545455 atlas substrate substrate substrate cartograph bucket-2",
+            "018bcfe5-6beb-73eb-80eb-ecedeeeff0f1 0.545455 waypoint atlas index waypoint substrate bucket-1",
+            "018bcfe5-6817-7017-8017-18191a1b1c1d 0.545455 cartography atlas cartography owner edges bucket-2",
+            "has_more=true",
+        ],
+    ),
+    (
+        "mixed-language/all-owners/relevance/the",
+        &[
+            "018bcfe5-6813-7013-8013-141516171819 0.615385 the owner the vector atlas substrate the vector atlas bucket-1",
+            "018bcfe5-6810-7010-8010-111213141516 0.615385 the vector the vector atlas substrate the vector bucket-0",
+            "018bcfe5-680d-700d-800d-0e0f10111213 0.615385 substrate the substrate the vector atlas substrate the bucket-0",
+            "018bcfe5-6816-7016-8016-1718191a1b1c 0.583333 the projection the vector atlas bucket-2",
+            "018bcfe5-680a-700a-800a-0b0c0d0e0f10 0.545455 substrate needle substrate the vector atlas substrate bucket-2",
+            "018bcfe5-6807-7007-8007-08090a0b0c0d 0.545455 substrate keyword substrate the vector atlas bucket-1",
+            "018bcfe5-6804-7004-8004-05060708090a 0.545455 substrate substrate substrate the vector bucket-0",
+            "018bcfe5-6801-7001-8001-020304050607 0.545455 atlas atlas atlas substrate the bucket-0",
+            "has_more=false",
+        ],
+    ),
+    (
+        "mixed-language/two-owners/recency/vector",
+        &[
+            "018bcfe5-6bec-73ec-80ec-edeeeff0f1f2 0.545455 atlas index substrate atlas vector bucket-1",
+            "018bcfe5-6bea-73ea-80ea-ebecedeeeff0 0.583333 vector waypoint atlas vector atlas bucket-1",
+            "018bcfe5-6816-7016-8016-1718191a1b1c 0.545455 the projection the vector atlas bucket-2",
+            "018bcfe5-6812-7012-8012-131415161718 0.545455 needle vector needle index projection retrieval needle index projection bucket-1",
+            "018bcfe5-6810-7010-8010-111213141516 0.615385 the vector the vector atlas substrate the vector bucket-0",
+            "018bcfe5-680a-700a-800a-0b0c0d0e0f10 0.545455 substrate needle substrate the vector atlas substrate bucket-2",
+            "018bcfe5-6804-7004-8004-05060708090a 0.545455 substrate substrate substrate the vector bucket-0",
+            "has_more=false",
+        ],
+    ),
+];
+
+/// Run `cases` against a freshly migrated database seeded by
+/// `language_for`, print every result, then assert it against `expected`.
+///
+/// Printing before asserting is deliberate and load-bearing: capturing the
+/// pins for a NEW case, or re-capturing them on a baseline worktree, is a
+/// matter of reading this output rather than of instrumenting the test.
+async fn run_identity(
+    cases: Vec<(&'static str, MemorySearchRequest)>,
+    expected: &[(&str, &[&str])],
+    language_for: impl Fn(usize) -> Option<&'static str>,
+) {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
     if let Err(e) = create_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
@@ -417,18 +852,21 @@ async fn the_projection_returns_the_results_the_sidecar_vectors_did() {
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect(&url).await?;
         pg.run_migrations().await?;
-        seed(pg.pool_for_tests(), CI_NOTES_PER_OWNER).await?;
+        seed(
+            pg.pool_for_tests(),
+            CI_NOTES_PER_OWNER,
+            CI_DERIVATIONS_PER_OWNER,
+            language_for,
+        )
+        .await?;
 
-        let projections = [note_projection()];
+        let projections = projections();
         let mut actual = Vec::new();
-        for (name, req) in cases() {
+        for (name, req) in cases {
             let page = pg.search_memories(&req, &projections).await?;
             actual.push((name, render(&page)));
         }
 
-        // Print before asserting: capturing the pins for a NEW case, or
-        // re-capturing them on the pre-projection tree, is a matter of
-        // reading this output rather than of instrumenting the test.
         for (name, lines) in &actual {
             println!("CASE {name}");
             for line in lines {
@@ -436,18 +874,35 @@ async fn the_projection_returns_the_results_the_sidecar_vectors_did() {
             }
         }
 
-        for ((name, lines), (expected_name, expected)) in actual.iter().zip(EXPECTED) {
+        for ((name, lines), (expected_name, expected)) in actual.iter().zip(expected) {
             assert_eq!(name, expected_name, "case order drifted");
             assert_eq!(
                 lines.as_slice(),
                 *expected,
-                "{name}: the projection moved a result"
+                "{name}: the collapsed search moved a result"
             );
         }
-        assert_eq!(actual.len(), EXPECTED.len(), "a case lost its pin");
+        assert_eq!(actual.len(), expected.len(), "a case lost its pin");
         Ok(())
     }
     .await;
     let _ = drop_db(&db_name).await;
     result.expect("projection identity re-proof failed");
+}
+
+#[tokio::test]
+async fn the_projection_returns_the_results_the_sidecar_vectors_did() {
+    run_identity(cases(), EXPECTED, |_| None).await;
+}
+
+/// A second registered `lexical_languages` row does not move a score.
+///
+/// `LanguagePolicy::PerRow` is the whole reason the query side ORs one
+/// `websearch_to_tsquery` per registered configuration, and the collapse
+/// computes that CTE once per flavor where it used to be computed once per
+/// schema. If one statement over four schemas got the multilingual query
+/// side wrong, this is the case that says so.
+#[tokio::test]
+async fn a_second_lexical_configuration_scores_what_it_scored() {
+    run_identity(language_cases(), LANGUAGE_EXPECTED, alternating_language).await;
 }
