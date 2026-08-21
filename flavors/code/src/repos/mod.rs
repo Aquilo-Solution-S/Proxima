@@ -7,7 +7,9 @@ mod rows;
 pub mod runs;
 pub mod scope;
 
-pub use erase::{erase_footprint, erase_repo, reference_closure_sql};
+pub use erase::erase_repo;
+#[cfg(any(test, debug_assertions))]
+pub use erase::{erase_footprint, reference_closure_sql};
 pub use records::{
     RepoEraseReceipt, RepoIngestionRun, RepoRecord, RepoRegistryError, RunStage, RunStatus,
     StageCounters,

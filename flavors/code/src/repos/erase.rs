@@ -500,6 +500,7 @@ async fn erase_repo_once(
 
 /// The statements whose column lists the `pg_constraint` tests check, so
 /// that neither the question nor the deletion can drift from the schema.
+#[cfg(any(test, debug_assertions))]
 #[must_use]
 pub fn reference_closure_sql() -> [&'static str; 2] {
     [FIND_DANGLING_REFERENCES_SQL, CLOSE_DANGLING_REFERENCES_SQL]
