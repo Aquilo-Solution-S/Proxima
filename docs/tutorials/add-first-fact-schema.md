@@ -35,37 +35,33 @@ impl FactPayload for DocumentFiledV1 {
     fn sidecar_table() -> Option<&'static str> {
         Some("my_flavor.document_filed_v1")
     }
-
-    fn search_projection() -> Option<SearchProjection> {
-        Some(SearchProjection {
-            fields: &[SearchProjectionField {
-                column: "title",
-                kind: SearchProjectionColumnKind::Text,
-            }],
-            tag_column: None,
-            // Compute the lexical vector at query time. Set this to the
-            // name of a STORED generated column calling the two-argument
-            // `proxima_core.lexical_tsv(lexical_language, ...)` once your
-            // sidecar migration adds one; see [03](../03-schema-registry.md).
-            tsv_column: None,
-            // Drain reads this instead of re-concatenating projection
-            // columns. Name a STORED generated `embed_text` column when
-            // the sidecar has one.
-            embed_text_column: None,
-            // With a stored vector, also add a `lexical_language regconfig`
-            // column and name it here, so search ranks each row with the
-            // configuration its vector was tokenised with. Either pin it to
-            // a flavor-local `*_lexical_config()` function (DEFAULT + CHECK,
-            // the code flavor's idiom) or stamp the deployment default:
-            // `DEFAULT proxima_core.lexical_config() NOT NULL` plus a
-            // BEFORE INSERT trigger calling
-            // `proxima_core.remember_lexical_language()`, as the core
-            // sidecars do.
-            language_column: None,
-        })
-    }
 }
 ```
+
+The payload does not declare its own search surface — there is no
+`search_projection()` method. Searchability is a `SchemaContract` field on
+the flavor's `FlavorContract`:
+
+```rust
+search: SearchProjectionDecl::Projected {
+    fields: &[WeightedField {
+        column: "title",
+        kind: SearchProjectionColumnKind::Text,
+        weight: WEIGHT_UNIFORM,
+    }],
+    tag_column: None,
+    language: LanguagePolicy::PerRow { column: "lexical_language" },
+    bands: BANDS,
+    substring: SubstringArm::Off,
+},
+```
+
+The declared `fields` are copied into `<flavor>.projection` on write and
+ranked from there; the sidecar itself is read only to build the snippets of
+rows that made the page. A schema that is not a search surface says so —
+`SearchProjectionDecl::None { why: "…" }` — and one that declares neither is
+refused at freeze. See [09](../09-developing-flavors.md) for the full field
+list.
 
 Key rule: the Fact identity key is schema-owned semantic identity bytes, not raw
 JSON serialization.

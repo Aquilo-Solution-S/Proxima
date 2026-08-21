@@ -260,10 +260,30 @@ a misprefixed id fails the build rather than the first boot.
 <a id="contract-reach"></a>
 ## Contract Reach
 
-**What the registry derives is the LISTS.** Erase, export, the owner-pinned
-sidecar set, the MCP resource catalog, the lexical-stamp migration guardrail
-and unscoped search's core-sidecar selection all iterate the contracts to
-learn *which tables exist*. That is the whole of it.
+**What the registry derives is mostly the LISTS.** Erase, export, the
+owner-pinned sidecar set, the MCP resource catalog, the lexical-stamp
+migration guardrail and unscoped search's core-sidecar selection all iterate
+the contracts to learn *which tables exist*.
+
+**Search is the exception: it reads VALUES.** `core_search_memories` renders
+its statements FROM the declaration, so these fields are consumed, not
+described:
+
+| Declared | Consumed as |
+|---|---|
+| `SearchProjectionDecl::Projected { fields, tag_column, language }` | the projection row's `search_tsv`, `tags` and `regconfig` |
+| `bands` (resolved by `BAND_NAME_EXACT` / `_RESCUE` / `_SUBSTRING`) | the floor and width each arm's `ts_rank` is scaled into |
+| `Band::normalization` | the trailing `ts_rank` normalization flag — omitted entirely for `TS_RANK_NORMALIZATION_NONE`, so declaring the flag an arm already renders is score-free at the level of the emitted text |
+| `substring` | whether a schema contributes to the substring statement at all; `SubstringArm::Off` contributes no statement and no rows |
+| `ProjectionSpec::overfetch_k` | the ranked statement's `LIMIT` |
+| `ProjectionSpec::band_comparability` | whether a tag-scoped query may merge this flavor's scores with core's |
+| `ProjectionSpec::rank_source` | whether the core renderer can serve the flavor at all (`SidecarWithProjectionOwner` names a shape it cannot) |
+
+Freeze checks what it can: a flavor claiming `CoreBands` must declare bands
+inside `[0, 1]`, and one claiming `RankSource::Projection` must declare all
+three band names and a uniform language and band set across its projected
+schemas. A wrong VALUE is therefore a boot failure, not a silently different
+score — which is a stronger guarantee than the list-shaped lanes above have.
 
 **The per-`Surface` rule arms are vocabulary, not behaviour.**
 `ExportRule`, `EraseRule`, `ForgetRule` and `KeyShape` are read by no lane
@@ -302,10 +322,14 @@ it declares one:
   neither the sweep, a cascade, nor a named exemption. The substrate half is
   gone outright: the flavor hands its admissions to
   `verbs::forget::erase_memory_series`, which walks the sidecar registry.
-- `flavors/code/src/mcp/search_commits.rs` read `BAND_RESCUE` and
-  `BAND_SUBSTRING` from the shared constants and banded its exact arm with
-  `BAND_EXACT`, which is what makes a code-flavor exact score comparable
-  with core's.
+- `flavors/code/src/mcp/search_commits.rs` and `search_chunks.rs` render
+  their score windows from the flavor's own `bands` declaration, and that
+  declaration is built from flavor #0's `BAND_EXACT` / `BAND_RESCUE` /
+  `BAND_SUBSTRING` — which is what makes a code-flavor score comparable with
+  core's. The window values live in exactly one place now: flavor #0's
+  declaration. There is no `proxima_core::flavor::BAND_*` free constant to
+  read them from, deliberately, so "comparable with core" cannot be claimed
+  by copying a number.
 
 **Not every kernel relation is a declared `Surface`.** Six carry owner-scoped
 state and appear in no contract: `group_memberships` (boot-probed and swept
