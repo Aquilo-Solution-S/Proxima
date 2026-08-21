@@ -216,38 +216,61 @@ impl ComplianceExportBundle {
     }
 }
 
-/// Counts of rows erased by a compliance operation.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct ComplianceEraseCounts {
-    pub memories: u64,
-    pub goals: u64,
-    /// Owner-authored wake configuration rows destroyed (`prompt`,
-    /// `tool_ids`, `hard_memory_t`).
-    #[serde(default)]
-    pub wake_configs: u64,
-    /// Cited-blob rows destroyed (`schema_id`, `content_hash`).
-    #[serde(default)]
-    pub blobs: u64,
-    /// Blob upload records destroyed (`bucket`, `object_key`, `filename`,
-    /// `mime`, `sha256`, `etag`, `error_message`).
-    #[serde(default)]
-    pub blob_uploads: u64,
-    /// Registered sidecar rows destroyed across all four families: memory,
-    /// goal, cited-object, and citation-mapping.
-    #[serde(default)]
-    pub sidecar_rows: u64,
-    pub edges: u64,
-    pub receipts: u64,
-    pub source_batches: u64,
-    pub source_cursors: u64,
-    pub embeddings: u64,
-    pub embedding_jobs: u64,
-    pub mcp_call_rows: u64,
-    pub change_events: u64,
-    pub redacted_edge_targets: u64,
-    pub suppressed_keys: u64,
-    #[serde(default)]
-    pub delegated_authority_grants: u64,
+/// The receipt of one erase: what it destroyed, per declared counter.
+///
+/// It used to be seventeen `u64` fields, and the fixed shape was the defect.
+/// A surface declaring a NEW counter had nowhere to put it — the code
+/// flavor's `repo_rows` and `ingestion_run_rows` were tallied into a temp
+/// table and dropped on the floor — while four fields (`edges`,
+/// `source_batches`, `redacted_edge_targets`, `suppressed_keys`) counted
+/// things v0.0.8 does not have and reported a structural zero forever.
+/// `sketches` was recorded and then not read back, so an erase that
+/// destroyed a hundred one-liners said nothing about them.
+///
+/// The key set is now DERIVED: exactly the `counter` names the frozen
+/// contracts declare, seeded to zero before the first delete so a declared
+/// counter is present whether or not its leg ran. That is what makes the
+/// receipt COMPLETE — the host that must answer for the erase gets the
+/// whole tally, not the subset a struct definition anticipated.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(transparent)]
+pub struct ComplianceEraseCounts(BTreeMap<String, u64>);
+
+impl ComplianceEraseCounts {
+    #[must_use]
+    pub fn new(counts: BTreeMap<String, u64>) -> Self {
+        Self(counts)
+    }
+
+    /// The tally under `name`, or zero. Zero and absent are the same answer
+    /// on purpose: a counter no contract declares counted nothing.
+    #[must_use]
+    pub fn get(&self, name: &str) -> u64 {
+        self.0.get(name).copied().unwrap_or_default()
+    }
+
+    /// Every counter in the receipt, sorted by name.
+    pub fn iter(&self) -> impl Iterator<Item = (&str, u64)> {
+        self.0.iter().map(|(name, count)| (name.as_str(), *count))
+    }
+
+    /// The number of distinct counters. A receipt over an empty registry is
+    /// empty; the erase verbs never produce one.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// Total rows destroyed across every counter.
+    #[must_use]
+    pub fn total(&self) -> u64 {
+        self.0.values().copied().fold(0, u64::saturating_add)
+    }
 }
 
 /// The outcome of a compliance erase operation.

@@ -697,16 +697,6 @@ impl SourceCursorPort for RejectingStorage {
 
 #[async_trait::async_trait]
 impl ComplianceErasePort for RejectingStorage {
-    async fn record_compliance_outcome(
-        &self,
-        _audit: &crate::compliance::ComplianceAuditContext,
-        _outcome: &crate::compliance::ComplianceEraseOutcome,
-    ) -> Result<(), StorageError> {
-        Err(StorageError::Internal(
-            "RejectingStorage rejects writes".into(),
-        ))
-    }
-
     async fn erase_group_owner_if_abandoned(
         &self,
         _auth: &crate::compliance::EraseAuthorization,
@@ -762,15 +752,6 @@ impl ComplianceErasePort for RejectingStorage {
     ) -> Result<crate::compliance::ComplianceExportBundle, StorageError> {
         Err(StorageError::Internal(
             "RejectingStorage rejects reads".into(),
-        ))
-    }
-
-    async fn clear_cited_object_purge_pending(
-        &self,
-        _operation_id: uuid::Uuid,
-    ) -> Result<(), StorageError> {
-        Err(StorageError::Internal(
-            "RejectingStorage rejects writes".into(),
         ))
     }
 }

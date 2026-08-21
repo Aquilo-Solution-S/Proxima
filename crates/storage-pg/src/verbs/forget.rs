@@ -630,34 +630,21 @@ pub async fn purge_cold_objects_after_commit(
     outcome
 }
 
+/// The object is gone, so its debt is gone: one statement, no second write.
+///
+/// It used to be two, in a transaction — delete the queue row, then reconcile
+/// a `cold_object_purge_pending` flag on the journal row the erase had
+/// stamped, but only once no OTHER queue row still named that operation. The
+/// journal is gone and the debt is the queue itself, which is where it was
+/// always durable: `pending_cold_purge_count` answers "is anything owed" by
+/// counting rows, not by trusting a flag that a crash between the two writes
+/// could leave set forever.
 async fn clear_cold_purge_pending(pool: &PgPool, object_key: &str) -> Result<(), StorageError> {
-    let mut tx = pool.begin().await.map_err(map_err)?;
-    let operation_id: Option<Option<Uuid>> = sqlx::query_scalar(
-        "DELETE FROM proxima_core.cold_purge_pending
-          WHERE object_key = $1
-          RETURNING compliance_operation_id",
-    )
-    .bind(object_key)
-    .fetch_optional(&mut *tx)
-    .await
-    .map_err(map_err)?;
-    if let Some(Some(operation_id)) = operation_id {
-        sqlx::query(
-            "UPDATE proxima_core.compliance_audit_log a
-                SET cold_object_purge_pending = false
-              WHERE a.operation_id = $1
-                AND NOT EXISTS (
-                    SELECT 1
-                      FROM proxima_core.cold_purge_pending p
-                     WHERE p.compliance_operation_id = a.operation_id
-                )",
-        )
-        .bind(operation_id)
-        .execute(&mut *tx)
+    sqlx::query("DELETE FROM proxima_core.cold_purge_pending WHERE object_key = $1")
+        .bind(object_key)
+        .execute(pool)
         .await
         .map_err(map_err)?;
-    }
-    tx.commit().await.map_err(map_err)?;
     Ok(())
 }
 

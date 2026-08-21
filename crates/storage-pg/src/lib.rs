@@ -367,52 +367,10 @@ pub async fn ensure_core_schema_markers(pool: &PgPool) -> Result<(), StorageErro
          WHEN NOT EXISTS (
                   SELECT 1 FROM information_schema.columns
                    WHERE table_schema = 'proxima_core' AND table_name = 'cold_purge_pending'
-                     AND column_name = 'compliance_operation_id' AND data_type = 'uuid'
-                     AND is_nullable = 'YES'
-                )
-           THEN 'cold_purge_pending.compliance_operation_id must be nullable uuid'
-         WHEN NOT EXISTS (
-                  SELECT 1 FROM information_schema.columns
-                   WHERE table_schema = 'proxima_core' AND table_name = 'cold_purge_pending'
                      AND column_name = 'enqueued_at'
                      AND data_type = 'timestamp with time zone' AND is_nullable = 'NO'
                 )
            THEN 'cold_purge_pending.enqueued_at must be timestamptz NOT NULL'
-         WHEN NOT EXISTS (
-                  SELECT 1 FROM information_schema.columns
-                   WHERE table_schema = 'proxima_core' AND table_name = 'compliance_audit_log'
-                     AND column_name = 'wake_configs_count' AND data_type = 'bigint'
-                     AND is_nullable = 'NO'
-                )
-           THEN 'compliance_audit_log.wake_configs_count must be bigint NOT NULL'
-         WHEN NOT EXISTS (
-                  SELECT 1 FROM information_schema.columns
-                   WHERE table_schema = 'proxima_core' AND table_name = 'compliance_audit_log'
-                     AND column_name = 'blobs_count' AND data_type = 'bigint'
-                     AND is_nullable = 'NO'
-                )
-           THEN 'compliance_audit_log.blobs_count must be bigint NOT NULL'
-         WHEN NOT EXISTS (
-                  SELECT 1 FROM information_schema.columns
-                   WHERE table_schema = 'proxima_core' AND table_name = 'compliance_audit_log'
-                     AND column_name = 'blob_uploads_count' AND data_type = 'bigint'
-                     AND is_nullable = 'NO'
-                )
-           THEN 'compliance_audit_log.blob_uploads_count must be bigint NOT NULL'
-         WHEN NOT EXISTS (
-                  SELECT 1 FROM information_schema.columns
-                   WHERE table_schema = 'proxima_core' AND table_name = 'compliance_audit_log'
-                     AND column_name = 'sidecar_rows_count' AND data_type = 'bigint'
-                     AND is_nullable = 'NO'
-                )
-           THEN 'compliance_audit_log.sidecar_rows_count must be bigint NOT NULL'
-         WHEN NOT EXISTS (
-                  SELECT 1 FROM information_schema.columns
-                   WHERE table_schema = 'proxima_core' AND table_name = 'compliance_audit_log'
-                     AND column_name = 'cold_object_purge_pending' AND data_type = 'boolean'
-                     AND is_nullable = 'NO'
-                )
-           THEN 'compliance_audit_log.cold_object_purge_pending must be boolean NOT NULL'
          WHEN NOT EXISTS (
                   SELECT 1
                     FROM information_schema.columns

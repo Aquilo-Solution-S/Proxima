@@ -340,7 +340,6 @@ CREATE INDEX cooled_owner_source_idx
 CREATE TABLE proxima_core.cold_purge_pending (
     object_key text PRIMARY KEY,
     owner_id uuid NOT NULL REFERENCES proxima_core.owners (owner_id),
-    compliance_operation_id uuid,
     enqueued_at timestamptz NOT NULL DEFAULT now()
 );
 
@@ -766,57 +765,6 @@ CREATE TYPE proxima_core.access_ceiling AS ENUM (
     'perspective',
     'goal'
 );
-
-CREATE TYPE proxima_core.compliance_erase_outcome AS ENUM (
-    'Completed',
-    'Refused',
-    'NotFound',
-    'Unauthorized'
-);
-
-CREATE TYPE proxima_core.compliance_erase_refusal AS ENUM (
-    'OwnerNotAbandoned',
-    'SourceScopeOwnerStillLive',
-    'PersonalDropNotVerified',
-    'DropProofPortUnavailable'
-);
-
-CREATE TABLE proxima_core.compliance_audit_log (
-    operation_id uuid PRIMARY KEY,
-    target_kind text NOT NULL,
-    outcome proxima_core.compliance_erase_outcome NOT NULL,
-    refusal proxima_core.compliance_erase_refusal,
-    owner_ref_digest bytea NOT NULL,
-    requester_digest bytea,
-    source_scope_digest bytea,
-    derived_auth_path text NOT NULL,
-    requested_at timestamptz NOT NULL,
-    completed_at timestamptz,
-    memories_count bigint NOT NULL DEFAULT 0,
-    goals_count bigint NOT NULL DEFAULT 0,
-    wake_configs_count bigint NOT NULL DEFAULT 0,
-    blobs_count bigint NOT NULL DEFAULT 0,
-    blob_uploads_count bigint NOT NULL DEFAULT 0,
-    sidecar_rows_count bigint NOT NULL DEFAULT 0,
-    edges_count bigint NOT NULL DEFAULT 0,
-    receipts_count bigint NOT NULL DEFAULT 0,
-    source_batches_count bigint NOT NULL DEFAULT 0,
-    source_cursors_count bigint NOT NULL DEFAULT 0,
-    embeddings_count bigint NOT NULL DEFAULT 0,
-    embedding_jobs_count bigint NOT NULL DEFAULT 0,
-    mcp_call_rows_count bigint NOT NULL DEFAULT 0,
-    change_events_count bigint NOT NULL DEFAULT 0,
-    redacted_edge_targets_count bigint NOT NULL DEFAULT 0,
-    suppressed_keys_count bigint NOT NULL DEFAULT 0,
-    delegated_authority_grants_count bigint NOT NULL DEFAULT 0,
-    cold_object_purge_pending boolean NOT NULL DEFAULT false,
-    cited_object_purge_pending boolean NOT NULL DEFAULT false
-);
-
-ALTER TABLE proxima_core.cold_purge_pending
-    ADD CONSTRAINT cold_purge_pending_compliance_operation_fk
-    FOREIGN KEY (compliance_operation_id)
-    REFERENCES proxima_core.compliance_audit_log (operation_id);
 
 CREATE TABLE proxima_core.delegated_authority_grants (
     delegation_id uuid PRIMARY KEY,

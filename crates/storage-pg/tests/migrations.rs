@@ -204,7 +204,6 @@ async fn migrations_apply_to_fresh_db() {
             "ingest_keys",
             "announce",
             "cold_purge_pending",
-            "compliance_audit_log",
             "delegated_authority_grants",
             "source_cursors",
         ] {
@@ -214,6 +213,7 @@ async fn migrations_apply_to_fresh_db() {
             );
         }
         for dead in [
+            "compliance_audit_log",
             "owner_fact_retention",
             "owner_legal_holds",
             "edges",
@@ -247,12 +247,8 @@ async fn migrations_apply_to_fresh_db() {
             "cooled carries source_id so source-scope erase can select"
         );
         assert!(
-            column_exists(&pg, "cold_purge_pending", "compliance_operation_id").await,
-            "cold purge debts must carry optional compliance attribution"
-        );
-        assert!(
-            column_exists(&pg, "compliance_audit_log", "cold_object_purge_pending").await,
-            "audit rows must expose exact-key purge debt independently"
+            !column_exists(&pg, "cold_purge_pending", "compliance_operation_id").await,
+            "the purge queue is the debt; it attributes itself to no journal"
         );
         assert!(
             column_exists(&pg, "cooled", "ingest_key").await,
@@ -560,27 +556,6 @@ async fn schema_markers_accept_fresh_schema_and_reject_incomplete_claim_lane() {
 
         sqlx::query(
             "ALTER TABLE proxima_core.cold_purge_pending
-             RENAME COLUMN compliance_operation_id TO compliance_operation_id_old",
-        )
-        .execute(pg.pool_for_tests())
-        .await?;
-        let err = ensure_core_schema_markers(pg.pool_for_tests())
-            .await
-            .expect_err("missing cold purge attribution must reject --stamp");
-        assert!(
-            err.to_string()
-                .contains("cold_purge_pending.compliance_operation_id"),
-            "marker error must name the missing cold-purge attribution: {err}"
-        );
-        sqlx::query(
-            "ALTER TABLE proxima_core.cold_purge_pending
-             RENAME COLUMN compliance_operation_id_old TO compliance_operation_id",
-        )
-        .execute(pg.pool_for_tests())
-        .await?;
-
-        sqlx::query(
-            "ALTER TABLE proxima_core.cold_purge_pending
              DROP CONSTRAINT cold_purge_pending_pkey",
         )
         .execute(pg.pool_for_tests())
@@ -595,26 +570,6 @@ async fn schema_markers_accept_fresh_schema_and_reject_incomplete_claim_lane() {
         sqlx::query(
             "ALTER TABLE proxima_core.cold_purge_pending
              ADD PRIMARY KEY (object_key)",
-        )
-        .execute(pg.pool_for_tests())
-        .await?;
-
-        sqlx::query(
-            "ALTER TABLE proxima_core.compliance_audit_log
-             RENAME COLUMN cold_object_purge_pending TO cold_object_purge_pending_old",
-        )
-        .execute(pg.pool_for_tests())
-        .await?;
-        let err = ensure_core_schema_markers(pg.pool_for_tests())
-            .await
-            .expect_err("missing audit cold purge flag must reject --stamp");
-        assert!(
-            err.to_string().contains("cold_object_purge_pending"),
-            "marker error must name the missing audit purge flag: {err}"
-        );
-        sqlx::query(
-            "ALTER TABLE proxima_core.compliance_audit_log
-             RENAME COLUMN cold_object_purge_pending_old TO cold_object_purge_pending",
         )
         .execute(pg.pool_for_tests())
         .await?;

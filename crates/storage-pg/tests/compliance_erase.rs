@@ -34,6 +34,14 @@ fn contract_sidecar_tables() -> OwnerSurfaces {
     OwnerSurfaces::for_registry(&proxima_core::FlavorRegistry::new().freeze_or_panic_for_tests())
 }
 
+/// Outstanding cold-object debts. The queue is the debt: a row means the
+/// object still exists and the erase that promised to reclaim it has not.
+async fn pending_debts(pool: &sqlx::PgPool) -> Result<i64, sqlx::Error> {
+    sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_core.cold_purge_pending")
+        .fetch_one(pool)
+        .await
+}
+
 const CITED_TABLE: &str = "proxima_core.test_cited_object_v1";
 const MAPPING_TABLE: &str = "proxima_core.test_citation_mapping_v1";
 
@@ -315,16 +323,35 @@ async fn erase_personal_owner_drops_memory_keys_and_embeddings() {
         let ComplianceEraseOutcome::Completed { counts, .. } = outcome else {
             panic!("expected completed erase, got {outcome:?}");
         };
-        assert_eq!(counts.memories, 1);
-        assert_eq!(counts.embeddings, 2);
-        assert_eq!(counts.suppressed_keys, 0);
+        assert_eq!(counts.get("memories"), 1);
+        assert_eq!(counts.get("embeddings"), 2);
         // `ingest_keys` declares `counter: Some("receipts")`, and the
         // generated leg tallies whatever its surface declares. The
         // hand-written leg it replaced deleted the same row and counted it
-        // nowhere, so `receipts` was structurally zero: a counter in the
+        // nowhere, so `receipts` was structurally zero: a field on the
         // outcome, a column in the journal, and never once a number.
-        assert_eq!(counts.receipts, 1, "the erased admission's ingest key");
-        assert_eq!(counts.source_batches, 0);
+        assert_eq!(
+            counts.get("receipts"),
+            1,
+            "the erased admission's ingest key"
+        );
+
+        // The receipt is COMPLETE: exactly the counters the frozen contracts
+        // declare, no more and no fewer. Fewer is what shipped — `sketches`
+        // was tallied and then never read back — and more is what the old
+        // struct had, with four fields (`edges`, `source_batches`,
+        // `redacted_edge_targets`, `suppressed_keys`) reporting a structural
+        // zero for things v0.0.8 does not have.
+        let declared = contract_sidecar_tables().counters();
+        let reported: Vec<&str> = counts.iter().map(|(name, _)| name).collect();
+        assert_eq!(
+            reported, declared,
+            "the receipt is the declared counter set"
+        );
+        assert!(
+            declared.contains(&"sketches"),
+            "the sketch surface declares a counter, so the receipt carries it"
+        );
 
         let remaining: i64 =
             sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_core.memory WHERE t = $1")
@@ -508,7 +535,11 @@ async fn erase_personal_owner_destroys_wake_config() {
         let ComplianceEraseOutcome::Completed { counts, .. } = outcome else {
             panic!("expected completed erase, got {outcome:?}");
         };
-        assert_eq!(counts.wake_configs, 2, "both wake rows are owner-authored");
+        assert_eq!(
+            counts.get("wake_configs"),
+            2,
+            "both wake rows are owner-authored"
+        );
 
         let remaining: i64 = sqlx::query_scalar(
             "SELECT count(*)::bigint FROM proxima_core.wake_config WHERE owner_id = $1",
@@ -529,14 +560,7 @@ async fn erase_personal_owner_destroys_wake_config() {
             .await?;
             assert_eq!(rows, 0);
         }
-        let audited: i64 = sqlx::query_scalar(
-            "SELECT wake_configs_count FROM proxima_core.compliance_audit_log
-              WHERE operation_id = $1",
-        )
-        .bind(auth.audit().operation_id())
-        .fetch_one(pool)
-        .await?;
-        assert_eq!(audited, 2, "the audit row counts the destroyed wake rows");
+
         let untouched: i64 = sqlx::query_scalar(
             "SELECT count(*)::bigint FROM proxima_core.wake_config WHERE wake_id = $1",
         )
@@ -591,7 +615,11 @@ async fn erase_source_scope_keeps_all_wake_configs() {
         let ComplianceEraseOutcome::Completed { counts, .. } = outcome else {
             panic!("expected completed erase, got {outcome:?}");
         };
-        assert_eq!(counts.wake_configs, 0, "source erase owns no wake rows");
+        assert_eq!(
+            counts.get("wake_configs"),
+            0,
+            "source erase owns no wake rows"
+        );
 
         let armed_rows: i64 = sqlx::query_scalar(
             "SELECT count(*)::bigint FROM proxima_core.wake_config WHERE wake_id = $1",
@@ -700,7 +728,6 @@ async fn failed_cold_purge_is_attributed_and_bounded_retry_clears_audit() {
             user_id: user,
             drop_event_id: "test-drop-retry".into(),
         });
-        let operation_id = auth.audit().operation_id();
         let outcome = pg
             .erase_personal_owner_if_drop_verified(&auth, user, false, &contract_sidecar_tables())
             .await?;
@@ -712,29 +739,17 @@ async fn failed_cold_purge_is_attributed_and_bounded_retry_clears_audit() {
                 ..
             }
         ));
-        let pending_operation: Uuid = sqlx::query_scalar(
-            "SELECT compliance_operation_id
-               FROM proxima_core.cold_purge_pending",
-        )
-        .fetch_one(pool)
-        .await?;
-        assert_eq!(pending_operation, operation_id);
-        let audit_pending: bool = sqlx::query_scalar(
-            "SELECT cold_object_purge_pending
-               FROM proxima_core.compliance_audit_log
-              WHERE operation_id = $1",
-        )
-        .bind(operation_id)
-        .fetch_one(pool)
-        .await?;
-        assert!(audit_pending);
+        // The queue IS the debt. It used to also stamp the operation that
+        // enqueued the row and mirror a `cold_object_purge_pending` boolean
+        // onto a journal row, so two writes had to agree about one fact;
+        // now the outstanding debt is a row count, which cannot disagree
+        // with itself.
+        assert_eq!(pending_debts(pool).await?, 1);
         sqlx::query(
-            "INSERT INTO proxima_core.cold_purge_pending
-                 (object_key, owner_id, compliance_operation_id)
-             VALUES ('cold/test-second-debt', $1, $2)",
+            "INSERT INTO proxima_core.cold_purge_pending (object_key, owner_id)
+             VALUES ('cold/test-second-debt', $1)",
         )
         .bind(owner.stored_owner_id())
-        .bind(operation_id)
         .execute(pool)
         .await?;
 
@@ -775,17 +790,10 @@ async fn failed_cold_purge_is_attributed_and_bounded_retry_clears_audit() {
             .await?;
         assert_eq!((first.selected, first.purged, first.failed), (1, 1, 0));
         assert_eq!(first.remaining, 1);
-        let audit_pending: bool = sqlx::query_scalar(
-            "SELECT cold_object_purge_pending
-               FROM proxima_core.compliance_audit_log
-              WHERE operation_id = $1",
-        )
-        .bind(operation_id)
-        .fetch_one(pool)
-        .await?;
-        assert!(
-            audit_pending,
-            "the first of two keys may not clear audit state"
+        assert_eq!(
+            pending_debts(pool).await?,
+            1,
+            "the first of two keys clears its own debt and no more"
         );
         let second = retry_pg
             .retry_cold_object_purges(ColdPurgeRetryOptions {
@@ -795,15 +803,7 @@ async fn failed_cold_purge_is_attributed_and_bounded_retry_clears_audit() {
             .await?;
         assert_eq!((second.selected, second.purged, second.failed), (1, 1, 0));
         assert_eq!(second.remaining, 0);
-        let audit_pending: bool = sqlx::query_scalar(
-            "SELECT cold_object_purge_pending
-               FROM proxima_core.compliance_audit_log
-              WHERE operation_id = $1",
-        )
-        .bind(operation_id)
-        .fetch_one(pool)
-        .await?;
-        assert!(!audit_pending);
+        assert_eq!(pending_debts(pool).await?, 0);
         Ok(())
     }
     .await;
@@ -926,9 +926,9 @@ async fn erase_personal_owner_destroys_blobs_uploads_and_citation_sidecars() {
         let ComplianceEraseOutcome::Completed { counts, .. } = outcome else {
             panic!("expected completed erase, got {outcome:?}");
         };
-        assert_eq!(counts.blobs, 1);
-        assert_eq!(counts.blob_uploads, 2, "the pending upload goes too");
-        assert_eq!(counts.sidecar_rows, 2, "both citation families");
+        assert_eq!(counts.get("blobs"), 1);
+        assert_eq!(counts.get("blob_uploads"), 2, "the pending upload goes too");
+        assert_eq!(counts.get("sidecar_rows"), 2, "both citation families");
 
         assert_eq!(
             rows_for_blob(pool, blob).await?,
@@ -942,14 +942,6 @@ async fn erase_personal_owner_destroys_blobs_uploads_and_citation_sidecars() {
         .fetch_one(pool)
         .await?;
         assert_eq!(owner_uploads, 0, "no upload row of the owner survives");
-        let audited: (i64, i64, i64) = sqlx::query_as(
-            "SELECT blobs_count, blob_uploads_count, sidecar_rows_count
-               FROM proxima_core.compliance_audit_log WHERE operation_id = $1",
-        )
-        .bind(auth.audit().operation_id())
-        .fetch_one(pool)
-        .await?;
-        assert_eq!(audited, (1, 2, 2), "the audit row carries the counts");
 
         assert_eq!(
             rows_for_blob(pool, neighbour_blob).await?,
@@ -1025,9 +1017,13 @@ async fn erase_source_scope_deletes_only_unshared_selected_blobs_and_objects() {
         let ComplianceEraseOutcome::Completed { counts, .. } = outcome else {
             panic!("expected completed erase, got {outcome:?}");
         };
-        assert_eq!(counts.blobs, 1, "only the unreferenced blob goes");
-        assert_eq!(counts.blob_uploads, 1, "its upload row goes with it");
-        assert_eq!(counts.sidecar_rows, 2, "its two citation sidecar rows");
+        assert_eq!(counts.get("blobs"), 1, "only the unreferenced blob goes");
+        assert_eq!(counts.get("blob_uploads"), 1, "its upload row goes with it");
+        assert_eq!(
+            counts.get("sidecar_rows"),
+            2,
+            "its two citation sidecar rows"
+        );
 
         assert_eq!(
             rows_for_blob(pool, dropped).await?,
@@ -1178,8 +1174,8 @@ async fn erase_group_owner_completes_when_abandoned() {
         let ComplianceEraseOutcome::Completed { counts, .. } = outcome else {
             panic!("expected completed erase, got {outcome:?}");
         };
-        assert_eq!(counts.memories, 1);
-        assert_eq!(counts.goals, 1);
+        assert_eq!(counts.get("memories"), 1);
+        assert_eq!(counts.get("goals"), 1);
 
         let remaining: i64 =
             sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_core.memory WHERE t = $1")
@@ -1245,7 +1241,7 @@ async fn erase_source_scope_rewinds_head_to_remaining_t() {
         let ComplianceEraseOutcome::Completed { counts, .. } = outcome else {
             panic!("expected completed erase, got {outcome:?}");
         };
-        assert_eq!(counts.memories, 1);
+        assert_eq!(counts.get("memories"), 1);
         let remaining: i64 =
             sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_core.memory WHERE t = $1")
                 .bind(first.memory_id.into_inner())

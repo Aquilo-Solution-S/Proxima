@@ -635,14 +635,6 @@ struct ComplianceEraseFake;
 
 #[async_trait::async_trait]
 impl ComplianceErasePort for ComplianceEraseFake {
-    async fn record_compliance_outcome(
-        &self,
-        _audit: &proxima_core::compliance::ComplianceAuditContext,
-        _outcome: &proxima_core::compliance::ComplianceEraseOutcome,
-    ) -> Result<(), StorageError> {
-        fake_error()
-    }
-
     async fn erase_group_owner_if_abandoned(
         &self,
         _auth: &proxima_core::compliance::EraseAuthorization,
@@ -688,13 +680,6 @@ impl ComplianceErasePort for ComplianceEraseFake {
         _auth: &proxima_core::compliance::ExportAuthorization,
         _tables: &proxima_core::compliance::OwnerSurfaces,
     ) -> Result<proxima_core::compliance::ComplianceExportBundle, StorageError> {
-        fake_error()
-    }
-
-    async fn clear_cited_object_purge_pending(
-        &self,
-        _operation_id: uuid::Uuid,
-    ) -> Result<(), StorageError> {
         fake_error()
     }
 }

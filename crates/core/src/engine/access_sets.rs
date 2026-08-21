@@ -826,16 +826,6 @@ pub(in crate::engine) mod tests {
 
     #[async_trait::async_trait]
     impl ComplianceErasePort for MembershipStorage {
-        async fn record_compliance_outcome(
-            &self,
-            _audit: &proxima_core::compliance::ComplianceAuditContext,
-            _outcome: &proxima_core::compliance::ComplianceEraseOutcome,
-        ) -> Result<(), StorageError> {
-            Err(StorageError::Internal(
-                "MembershipStorage rejects writes".into(),
-            ))
-        }
-
         async fn erase_group_owner_if_abandoned(
             &self,
             _auth: &proxima_core::compliance::EraseAuthorization,
@@ -891,15 +881,6 @@ pub(in crate::engine) mod tests {
         ) -> Result<proxima_core::compliance::ComplianceExportBundle, StorageError> {
             Err(StorageError::Internal(
                 "MembershipStorage rejects reads".into(),
-            ))
-        }
-
-        async fn clear_cited_object_purge_pending(
-            &self,
-            _operation_id: uuid::Uuid,
-        ) -> Result<(), StorageError> {
-            Err(StorageError::Internal(
-                "MembershipStorage rejects writes".into(),
             ))
         }
     }

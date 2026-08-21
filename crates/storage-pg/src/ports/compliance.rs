@@ -1,6 +1,5 @@
 use proxima_core::compliance::{
-    ComplianceAuditContext, ComplianceEraseOutcome, ComplianceExportBundle, EraseAuthorization,
-    ExportAuthorization,
+    ComplianceEraseOutcome, ComplianceExportBundle, EraseAuthorization, ExportAuthorization,
 };
 use proxima_core::storage_ports::ComplianceErasePort;
 use proxima_core::{GroupId, SourceId, StorageError, UserId};
@@ -9,14 +8,6 @@ use crate::{PgStorage, verbs};
 
 #[async_trait::async_trait]
 impl ComplianceErasePort for PgStorage {
-    async fn record_compliance_outcome(
-        &self,
-        audit: &ComplianceAuditContext,
-        outcome: &ComplianceEraseOutcome,
-    ) -> Result<(), StorageError> {
-        verbs::compliance_erase::record_compliance_outcome(&self.pool, audit, outcome).await
-    }
-
     async fn erase_group_owner_if_abandoned(
         &self,
         auth: &EraseAuthorization,
@@ -95,12 +86,5 @@ impl ComplianceErasePort for PgStorage {
         tables: &proxima_core::compliance::OwnerSurfaces,
     ) -> Result<ComplianceExportBundle, StorageError> {
         verbs::compliance_export::export_owner_bundle(&self.pool, auth, tables).await
-    }
-
-    async fn clear_cited_object_purge_pending(
-        &self,
-        operation_id: uuid::Uuid,
-    ) -> Result<(), StorageError> {
-        verbs::compliance_erase::clear_cited_object_purge_pending(&self.pool, operation_id).await
     }
 }

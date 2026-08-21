@@ -1800,17 +1800,16 @@ async fn a_refusing_cold_store_leaves_the_purge_mark_for_retry() {
         let purged = purge_cold_objects_after_commit(pool, &FailDeleteCold, &plan).await;
         assert_eq!(purged.purged, 0, "a refusing object store destroys nothing");
         assert!(purged.pending);
-        let pending: Vec<(String, Option<Uuid>)> = sqlx::query_as(
-            "SELECT object_key, compliance_operation_id
-               FROM proxima_core.cold_purge_pending WHERE owner_id = $1",
+        let pending: Vec<String> = sqlx::query_scalar(
+            "SELECT object_key FROM proxima_core.cold_purge_pending WHERE owner_id = $1",
         )
         .bind(owner.stored_owner_id())
         .fetch_all(pool)
         .await?;
         assert_eq!(
             pending,
-            vec![(key, None)],
-            "standalone erase keeps a durable, unattributed purge debt"
+            vec![key],
+            "the object outlived its erase, so the queue keeps the debt"
         );
         Ok(())
     }

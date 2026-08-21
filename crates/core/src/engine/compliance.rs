@@ -59,29 +59,6 @@ impl Engine {
         )
     }
 
-    async fn record_pre_storage_compliance_outcome(
-        &self,
-        audit: &ComplianceAuditContext,
-        outcome: &ComplianceEraseOutcome,
-    ) -> Result<(), ProtocolError> {
-        self.storage
-            .compliance
-            .compliance_erase
-            .record_compliance_outcome(audit, outcome)
-            .await
-            .map_err(|e| ProtocolError::internal(format!("record_compliance_outcome: {e}")))
-    }
-
-    async fn pre_storage_outcome(
-        &self,
-        audit: &ComplianceAuditContext,
-        outcome: ComplianceEraseOutcome,
-    ) -> Result<ComplianceEraseOutcome, ProtocolError> {
-        self.record_pre_storage_compliance_outcome(audit, &outcome)
-            .await?;
-        Ok(outcome)
-    }
-
     pub(in crate::engine) async fn compliance_controller_authorized(
         &self,
         authz: &AuthzContext,
@@ -216,15 +193,17 @@ impl Engine {
     }
 
     /// Reclaim cited-object payloads from the host-wired object store after an
-    /// owner-scope erase completes in Postgres, then reconcile the durable
-    /// `cited_object_purge_pending` audit flag to match reality:
+    /// owner-scope erase completes in Postgres, and report on the receipt
+    /// whether a debt is outstanding:
     ///
-    /// - no port configured: the storage verb already persisted `false`.
-    /// - purge succeeds: clear the durable flag and report `false`.
-    /// - purge fails: leave the durable flag set (already `true` from the
-    ///   storage verb) and report `true`; retried out-of-band.
-    /// - purge succeeds but the clear itself fails: warn and report `true` —
-    ///   over-reporting pending is safe, under-reporting is not.
+    /// - no port configured: nothing was planned, so nothing is pending.
+    /// - purge succeeds: `false`.
+    /// - purge fails: `true`, and the host retries out-of-band.
+    ///
+    /// There used to be a fourth case — the purge succeeded but clearing the
+    /// durable audit flag failed, so the row over-reported forever. There is
+    /// no durable flag now: the receipt states what this operation did, and
+    /// the host records it if its promises require a record.
     async fn finalize_owner_erase_with_object_purge(
         &self,
         owner: OwnerRef,
@@ -243,25 +222,7 @@ impl Engine {
             match port.purge_owner_objects(owner).await {
                 Ok(purged) => {
                     tracing::debug!(?owner, purged, "owner-scope erase purged cited objects");
-                    match self
-                        .storage
-                        .compliance
-                        .compliance_erase
-                        .clear_cited_object_purge_pending(operation_id)
-                        .await
-                    {
-                        Ok(()) => false,
-                        Err(error) => {
-                            tracing::warn!(
-                                ?owner,
-                                %error,
-                                "owner-scope erase purged cited objects but failed to clear \
-                                 the durable purge-pending audit flag; the row stays pending \
-                                 until an operator retries the clear"
-                            );
-                            true
-                        }
-                    }
+                    false
                 }
                 Err(error) => {
                     tracing::warn!(
@@ -288,11 +249,10 @@ impl Engine {
     /// compliance-controller authority, and — when the target names a drop
     /// event — verify it before storage can receive a deletion token.
     ///
-    /// Both refusals are recorded before storage, against the operation id
-    /// the caller is handed back, so an attempt that deleted nothing leaves
-    /// the same trail as one that deleted everything. Sharing this is what
-    /// makes that true of all four erasures rather than of whichever ones
-    /// remembered to do it.
+    /// Both refusals carry the operation id the caller is handed back, so an
+    /// attempt that deleted nothing is as identifiable as one that deleted
+    /// everything. Core writes no trail of either: the receipt goes to the
+    /// host, which owns whatever record its own promises require.
     ///
     /// `drop_event` is `Some` exactly for the two personal targets. A group
     /// owner declares no drop event; its abandonment is what storage rechecks
@@ -307,13 +267,9 @@ impl Engine {
         let operation_id = audit.operation_id();
 
         if !self.compliance_controller_authorized(authz, &target).await {
-            return self
-                .pre_storage_outcome(
-                    &audit,
-                    ComplianceEraseOutcome::Unauthorized { operation_id },
-                )
-                .await
-                .map(EraseAdmission::Refused);
+            return Ok(EraseAdmission::Refused(
+                ComplianceEraseOutcome::Unauthorized { operation_id },
+            ));
         }
 
         if let Some((user_id, drop_event_id)) = drop_event
@@ -321,16 +277,10 @@ impl Engine {
                 .verify_personal_owner_drop(user_id, drop_event_id)
                 .await
         {
-            return self
-                .pre_storage_outcome(
-                    &audit,
-                    ComplianceEraseOutcome::Refused {
-                        operation_id,
-                        reason,
-                    },
-                )
-                .await
-                .map(EraseAdmission::Refused);
+            return Ok(EraseAdmission::Refused(ComplianceEraseOutcome::Refused {
+                operation_id,
+                reason,
+            }));
         }
 
         Ok(EraseAdmission::Admitted(EraseAuthorization::new(audit)))
@@ -531,8 +481,8 @@ mod purge_tests {
     use crate::access::AccessError;
     use crate::authz::{AuthPath, AuthzContext};
     use crate::compliance::{
-        ComplianceAuditContext, ComplianceEraseCounts, ComplianceEraseOutcome,
-        ComplianceEraseRefusal, ComplianceExportBundle, EraseAuthorization, ExportAuthorization,
+        ComplianceEraseCounts, ComplianceEraseOutcome, ComplianceEraseRefusal,
+        ComplianceExportBundle, EraseAuthorization, ExportAuthorization,
     };
     use crate::storage::StorageError;
     use crate::storage_ports::{
@@ -566,33 +516,18 @@ mod purge_tests {
         }
     }
 
-    /// `ComplianceErasePort` whose erase verbs return a fixed outcome and whose
-    /// `record_compliance_outcome` succeeds (so the refused audit path can
-    /// run). Also records every `clear_cited_object_purge_pending` call so
-    /// tests can assert the durable flag was (or was not) cleared.
+    /// `ComplianceErasePort` whose erase verbs return a fixed outcome.
     #[derive(Debug)]
     struct FixedOutcomeErase {
         outcome: ComplianceEraseOutcome,
-        clear_calls: Mutex<Vec<uuid::Uuid>>,
-        fail_clear: bool,
         /// Bumped by every erase verb, so a test can assert an attempt was
         /// turned away before storage rather than merely reporting a refusal.
         erase_calls: AtomicUsize,
-        /// Bumped by every audit write, so a test can assert the refusal it
-        /// was handed is also the one that got recorded.
-        recorded: AtomicUsize,
     }
 
     impl FixedOutcomeErase {
         fn completed() -> Self {
-            Self::completed_with_clear_outcome(true)
-        }
-
-        /// Same fixed `Completed` outcome, but
-        /// `clear_cited_object_purge_pending` fails every call — exercises
-        /// the "purge succeeded but the durable clear itself failed" corner.
-        fn completed_with_failing_clear() -> Self {
-            Self::completed_with_clear_outcome(false)
+            Self::completed_outcome()
         }
 
         fn completed_with_cold_pending() -> Self {
@@ -603,14 +538,11 @@ mod purge_tests {
                     cited_object_purge_pending: false,
                     cold_object_purge_pending: true,
                 },
-                clear_calls: Mutex::new(Vec::new()),
-                fail_clear: false,
                 erase_calls: AtomicUsize::new(0),
-                recorded: AtomicUsize::new(0),
             }
         }
 
-        fn completed_with_clear_outcome(clear_succeeds: bool) -> Self {
+        fn completed_outcome() -> Self {
             Self {
                 outcome: ComplianceEraseOutcome::Completed {
                     operation_id: uuid::Uuid::now_v7(),
@@ -618,25 +550,13 @@ mod purge_tests {
                     cited_object_purge_pending: false,
                     cold_object_purge_pending: false,
                 },
-                clear_calls: Mutex::new(Vec::new()),
-                fail_clear: !clear_succeeds,
                 erase_calls: AtomicUsize::new(0),
-                recorded: AtomicUsize::new(0),
             }
         }
     }
 
     #[async_trait]
     impl ComplianceErasePort for FixedOutcomeErase {
-        async fn record_compliance_outcome(
-            &self,
-            _audit: &ComplianceAuditContext,
-            _outcome: &ComplianceEraseOutcome,
-        ) -> Result<(), StorageError> {
-            self.recorded.fetch_add(1, Ordering::SeqCst);
-            Ok(())
-        }
-
         async fn erase_group_owner_if_abandoned(
             &self,
             _auth: &EraseAuthorization,
@@ -687,20 +607,6 @@ mod purge_tests {
             _tables: &crate::compliance::OwnerSurfaces,
         ) -> Result<ComplianceExportBundle, StorageError> {
             Err(StorageError::Internal("export not used in test".into()))
-        }
-
-        async fn clear_cited_object_purge_pending(
-            &self,
-            operation_id: uuid::Uuid,
-        ) -> Result<(), StorageError> {
-            self.clear_calls.lock().unwrap().push(operation_id);
-            if self.fail_clear {
-                Err(StorageError::Internal(
-                    "clear_cited_object_purge_pending failed in test".into(),
-                ))
-            } else {
-                Ok(())
-            }
         }
     }
 
@@ -802,7 +708,6 @@ mod purge_tests {
             .expect("erase returns an outcome");
 
         let ComplianceEraseOutcome::Completed {
-            operation_id,
             cited_object_purge_pending,
             ..
         } = outcome
@@ -811,16 +716,11 @@ mod purge_tests {
         };
         assert!(
             !cited_object_purge_pending,
-            "a successful purge must clear the pending flag"
+            "a successful purge leaves no debt on the receipt"
         );
         assert_eq!(
             purge.purged.lock().unwrap().as_slice(),
             &[OwnerRef::Group(group)]
-        );
-        assert_eq!(
-            erase.clear_calls.lock().unwrap().as_slice(),
-            &[operation_id],
-            "purge success must clear the durable audit flag exactly once"
         );
     }
 
@@ -837,7 +737,6 @@ mod purge_tests {
             .expect("erase returns an outcome");
 
         let ComplianceEraseOutcome::Completed {
-            operation_id,
             cited_object_purge_pending,
             ..
         } = outcome
@@ -846,16 +745,11 @@ mod purge_tests {
         };
         assert!(
             !cited_object_purge_pending,
-            "a successful purge must clear the pending flag"
+            "a successful purge leaves no debt on the receipt"
         );
         assert_eq!(
             purge.purged.lock().unwrap().as_slice(),
             &[OwnerRef::Personal(user)]
-        );
-        assert_eq!(
-            erase.clear_calls.lock().unwrap().as_slice(),
-            &[operation_id],
-            "purge success must clear the durable audit flag exactly once"
         );
     }
 
@@ -929,40 +823,6 @@ mod purge_tests {
         );
         // Attempted exactly once even though it errored.
         assert_eq!(purge.purged.lock().unwrap().len(), 1);
-        assert!(
-            erase.clear_calls.lock().unwrap().is_empty(),
-            "a failed purge must leave the durable pending flag untouched (already true)"
-        );
-    }
-
-    #[tokio::test]
-    async fn clear_failure_after_successful_purge_still_reports_pending() {
-        let group = GroupId::new(uuid::Uuid::now_v7());
-        let purge = Arc::new(RecordingPurge::default());
-        let erase = Arc::new(FixedOutcomeErase::completed_with_failing_clear());
-        let engine = engine_with(erase.clone(), None, purge.clone());
-
-        let outcome = engine
-            .erase_abandoned_group_owner(&system_authz(), group)
-            .await
-            .expect("a failed clear must not fail the erase itself");
-
-        assert!(
-            matches!(
-                outcome,
-                ComplianceEraseOutcome::Completed {
-                    cited_object_purge_pending: true,
-                    ..
-                }
-            ),
-            "a failed clear must over-report pending rather than silently under-report"
-        );
-        assert_eq!(purge.purged.lock().unwrap().len(), 1);
-        assert_eq!(
-            erase.clear_calls.lock().unwrap().len(),
-            1,
-            "the clear must still be attempted exactly once"
-        );
     }
 
     /// Drive all four erase entry points against one engine, so a gate that
@@ -995,7 +855,7 @@ mod purge_tests {
     }
 
     #[tokio::test]
-    async fn every_scope_audits_an_unauthorized_attempt_before_storage() {
+    async fn every_scope_turns_an_unauthorized_attempt_away_before_storage() {
         // No `ComplianceAdminPort` and a caller who is not `System`: nothing
         // can vouch for this attempt, so none of the four may reach storage.
         let erase = Arc::new(FixedOutcomeErase::completed());
@@ -1020,11 +880,17 @@ mod purge_tests {
             0,
             "an unauthorized attempt must be turned away before storage"
         );
-        assert_eq!(
-            erase.recorded.load(Ordering::SeqCst),
-            outcomes.len(),
-            "every unauthorized attempt must leave an audit row"
-        );
+        for outcome in &outcomes {
+            let (ComplianceEraseOutcome::Unauthorized { operation_id }
+            | ComplianceEraseOutcome::Refused { operation_id, .. }) = outcome
+            else {
+                panic!("expected a refusal carrying an operation id, got {outcome:?}");
+            };
+            assert!(
+                !operation_id.is_nil(),
+                "a refusal the host must answer for still names the operation"
+            );
+        }
     }
 
     #[tokio::test]

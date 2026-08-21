@@ -842,7 +842,11 @@ async fn transfer_refuses_armed_goal_and_owner_erase_still_succeeds() {
         let ComplianceEraseOutcome::Completed { counts, .. } = outcome else {
             panic!("erase must complete after the refused transfer, got {outcome:?}");
         };
-        assert_eq!(counts.wake_configs, 1, "the armed wake row is erased");
+        assert_eq!(
+            counts.get("wake_configs"),
+            1,
+            "the armed wake row is erased"
+        );
         let remaining: i64 = sqlx::query_scalar(
             "SELECT count(*)::bigint FROM proxima_core.wake_config WHERE owner_id = $1",
         )

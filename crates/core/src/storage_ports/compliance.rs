@@ -6,18 +6,11 @@ use crate::{GroupId, SourceId, UserId};
 #[allow(clippy::too_many_arguments)]
 #[async_trait::async_trait]
 pub trait ComplianceErasePort: Send + Sync {
-    async fn record_compliance_outcome(
-        &self,
-        audit: &crate::compliance::ComplianceAuditContext,
-        outcome: &crate::compliance::ComplianceEraseOutcome,
-    ) -> Result<(), StorageError>;
-
     /// `object_purge_planned` is true iff the engine has a cited-object erase
-    /// port configured for this owner-scope erase. The verb persists
-    /// `cited_object_purge_pending = object_purge_planned` on the audit row in
-    /// the same transaction as the erase and echoes it back on the outcome, so
-    /// the durable record never claims a clean erase while a planned purge is
-    /// still outstanding.
+    /// port configured for this owner-scope erase. It is echoed back on the
+    /// outcome so the receipt never claims a clean erase while a planned
+    /// purge is still outstanding — a fact about THIS operation, handed to
+    /// the caller, not a row core keeps.
     async fn erase_group_owner_if_abandoned(
         &self,
         auth: &crate::compliance::EraseAuthorization,
@@ -57,16 +50,6 @@ pub trait ComplianceErasePort: Send + Sync {
         auth: &crate::compliance::ExportAuthorization,
         tables: &crate::compliance::OwnerSurfaces,
     ) -> Result<crate::compliance::ComplianceExportBundle, StorageError>;
-
-    /// Clear the durable purge-pending flag on one audit row after a
-    /// cited-object purge has been confirmed to succeed. A single-statement
-    /// `UPDATE … WHERE operation_id = $1`; never sets the flag, only clears
-    /// it — a failed clear must leave the row over-reporting pending rather
-    /// than silently losing the signal.
-    async fn clear_cited_object_purge_pending(
-        &self,
-        operation_id: uuid::Uuid,
-    ) -> Result<(), StorageError>;
 }
 
 /// Trusted host port for compliance erase authorization.
