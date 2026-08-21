@@ -4,8 +4,8 @@
 use std::sync::Arc;
 
 use proxima_core::compliance::{
-    ComplianceEraseOutcome, ComplianceEraseTarget, ComplianceExportTarget, ComplianceSidecarTables,
-    EraseAuthorization, ExportAuthorization,
+    ComplianceEraseOutcome, ComplianceEraseTarget, ComplianceExportTarget, EraseAuthorization,
+    ExportAuthorization, OwnerSurfaces,
 };
 use proxima_core::storage_ports::MemoryAuthoringPort;
 use proxima_core::storage_ports::{
@@ -37,10 +37,8 @@ use uuid::Uuid;
 /// frozen flavor registry. Passing empty slices here would silently skip
 /// the owner-pinned leg, which is the difference these tests exist to
 /// measure.
-fn contract_sidecar_tables() -> ComplianceSidecarTables {
-    ComplianceSidecarTables::for_registry(
-        &proxima_core::FlavorRegistry::new().freeze_or_panic_for_tests(),
-    )
+fn contract_sidecar_tables() -> OwnerSurfaces {
+    OwnerSurfaces::for_registry(&proxima_core::FlavorRegistry::new().freeze_or_panic_for_tests())
 }
 
 fn draft() -> FactWriteCommand {
@@ -186,10 +184,8 @@ fn mcp_rows_in(
     bundle: &proxima_core::compliance::ComplianceExportBundle,
 ) -> Vec<&serde_json::Value> {
     bundle
-        .sidecars
+        .table("proxima_core.mcp_call_logged_v1")
         .iter()
-        .filter(|sidecar| sidecar.table == "proxima_core.mcp_call_logged_v1")
-        .flat_map(|sidecar| sidecar.rows.iter())
         .collect()
 }
 

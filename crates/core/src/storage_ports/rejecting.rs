@@ -712,7 +712,7 @@ impl ComplianceErasePort for RejectingStorage {
         _auth: &crate::compliance::EraseAuthorization,
         _group_id: GroupId,
         _object_purge_planned: bool,
-        _tables: &crate::compliance::ComplianceSidecarTables,
+        _tables: &crate::compliance::OwnerSurfaces,
     ) -> Result<crate::compliance::ComplianceEraseOutcome, StorageError> {
         Err(StorageError::Internal(
             "RejectingStorage rejects writes".into(),
@@ -724,7 +724,7 @@ impl ComplianceErasePort for RejectingStorage {
         _auth: &crate::compliance::EraseAuthorization,
         _user_id: UserId,
         _object_purge_planned: bool,
-        _tables: &crate::compliance::ComplianceSidecarTables,
+        _tables: &crate::compliance::OwnerSurfaces,
     ) -> Result<crate::compliance::ComplianceEraseOutcome, StorageError> {
         Err(StorageError::Internal(
             "RejectingStorage rejects writes".into(),
@@ -736,7 +736,7 @@ impl ComplianceErasePort for RejectingStorage {
         _auth: &crate::compliance::EraseAuthorization,
         _group_id: GroupId,
         _source_id: &SourceId,
-        _tables: &crate::compliance::ComplianceSidecarTables,
+        _tables: &crate::compliance::OwnerSurfaces,
     ) -> Result<crate::compliance::ComplianceEraseOutcome, StorageError> {
         Err(StorageError::Internal(
             "RejectingStorage rejects writes".into(),
@@ -748,7 +748,7 @@ impl ComplianceErasePort for RejectingStorage {
         _auth: &crate::compliance::EraseAuthorization,
         _user_id: UserId,
         _source_id: &SourceId,
-        _tables: &crate::compliance::ComplianceSidecarTables,
+        _tables: &crate::compliance::OwnerSurfaces,
     ) -> Result<crate::compliance::ComplianceEraseOutcome, StorageError> {
         Err(StorageError::Internal(
             "RejectingStorage rejects writes".into(),
@@ -758,7 +758,7 @@ impl ComplianceErasePort for RejectingStorage {
     async fn export_owner_bundle(
         &self,
         _auth: &crate::compliance::ExportAuthorization,
-        _tables: &crate::compliance::ComplianceSidecarTables,
+        _tables: &crate::compliance::OwnerSurfaces,
     ) -> Result<crate::compliance::ComplianceExportBundle, StorageError> {
         Err(StorageError::Internal(
             "RejectingStorage rejects reads".into(),

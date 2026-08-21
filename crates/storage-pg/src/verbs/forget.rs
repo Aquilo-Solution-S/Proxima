@@ -1529,7 +1529,7 @@ SELECT b.blob_id FROM proxima_core.blob b
 /// `cooled.blob_id`, `blob_uploads.blob_id`, all `NO ACTION` — so "no
 /// admission cites it" is the whole reference question. Citation sidecars
 /// hold no foreign key on it: they are opaque payload tables, which is why
-/// `ComplianceSidecarTables::for_registry` finds no cited-object family for
+/// `OwnerSurfaces::for_registry` finds no cited-object family for
 /// core or code to consult.
 ///
 /// The three deletes and the enqueue are one statement so they share one

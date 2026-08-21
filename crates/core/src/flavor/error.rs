@@ -86,6 +86,13 @@ pub enum FlavorRegistryError {
         flavor_id: &'static str,
         schema_id: SchemaId,
     },
+    /// A surface declares itself exportable while carrying neither an owner
+    /// column nor a key with a home table, so no statement can reach it from
+    /// the owner. It would go missing from every bundle.
+    UnreachableExportSurface {
+        flavor_id: &'static str,
+        table: &'static str,
+    },
     /// A schema declared `NotTransferable` without naming where the refusal
     /// is enforced. A refusal nothing backs is a comment.
     UnenforcedTransferRefusal {
@@ -274,6 +281,12 @@ impl std::fmt::Display for FlavorRegistryError {
             } => write!(
                 f,
                 "flavor {flavor_id} declares schema {schema_id}, which does not carry its prefix"
+            ),
+            Self::UnreachableExportSurface { flavor_id, table } => write!(
+                f,
+                "flavor {flavor_id} declares {table} exportable, but it carries no owner \
+                 column and its key has no home table, so no export statement can reach \
+                 its owner"
             ),
             Self::UnenforcedTransferRefusal {
                 flavor_id,

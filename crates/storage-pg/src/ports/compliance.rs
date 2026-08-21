@@ -22,7 +22,7 @@ impl ComplianceErasePort for PgStorage {
         auth: &EraseAuthorization,
         group_id: GroupId,
         object_purge_planned: bool,
-        tables: &proxima_core::compliance::ComplianceSidecarTables,
+        tables: &proxima_core::compliance::OwnerSurfaces,
     ) -> Result<ComplianceEraseOutcome, StorageError> {
         verbs::compliance_erase::erase_group_owner_if_abandoned(
             &self.pool,
@@ -40,7 +40,7 @@ impl ComplianceErasePort for PgStorage {
         auth: &EraseAuthorization,
         user_id: UserId,
         object_purge_planned: bool,
-        tables: &proxima_core::compliance::ComplianceSidecarTables,
+        tables: &proxima_core::compliance::OwnerSurfaces,
     ) -> Result<ComplianceEraseOutcome, StorageError> {
         verbs::compliance_erase::erase_personal_owner_if_drop_verified(
             &self.pool,
@@ -58,7 +58,7 @@ impl ComplianceErasePort for PgStorage {
         auth: &EraseAuthorization,
         group_id: GroupId,
         source_id: &SourceId,
-        tables: &proxima_core::compliance::ComplianceSidecarTables,
+        tables: &proxima_core::compliance::OwnerSurfaces,
     ) -> Result<ComplianceEraseOutcome, StorageError> {
         verbs::compliance_erase::erase_group_source_scope_if_owner_abandoned(
             &self.pool,
@@ -76,7 +76,7 @@ impl ComplianceErasePort for PgStorage {
         auth: &EraseAuthorization,
         user_id: UserId,
         source_id: &SourceId,
-        tables: &proxima_core::compliance::ComplianceSidecarTables,
+        tables: &proxima_core::compliance::OwnerSurfaces,
     ) -> Result<ComplianceEraseOutcome, StorageError> {
         verbs::compliance_erase::erase_personal_source_scope_if_drop_verified(
             &self.pool,
@@ -92,7 +92,7 @@ impl ComplianceErasePort for PgStorage {
     async fn export_owner_bundle(
         &self,
         auth: &ExportAuthorization,
-        tables: &proxima_core::compliance::ComplianceSidecarTables,
+        tables: &proxima_core::compliance::OwnerSurfaces,
     ) -> Result<ComplianceExportBundle, StorageError> {
         verbs::compliance_export::export_owner_bundle(&self.pool, auth, tables).await
     }

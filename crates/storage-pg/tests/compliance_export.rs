@@ -1,9 +1,7 @@
 //! Export projects pins from memory rows; no reconstructed Edge table.
 #![allow(clippy::doc_markdown, clippy::too_many_lines)]
 
-use proxima_core::compliance::{
-    ComplianceExportTarget, ComplianceSidecarTables, ExportAuthorization,
-};
+use proxima_core::compliance::{ComplianceExportTarget, ExportAuthorization, OwnerSurfaces};
 use proxima_core::storage_ports::{ComplianceErasePort, OwnerWritePermit};
 use proxima_core::verbs::fact_ingest::FactWriteCommand;
 use proxima_core::verbs::query::EntityKind;
@@ -19,10 +17,41 @@ use uuid::Uuid;
 /// frozen flavor registry. Passing empty slices here would silently skip
 /// the owner-pinned leg, which is the difference these tests exist to
 /// measure.
-fn contract_sidecar_tables() -> ComplianceSidecarTables {
-    ComplianceSidecarTables::for_registry(
-        &proxima_core::FlavorRegistry::new().freeze_or_panic_for_tests(),
-    )
+fn contract_sidecar_tables() -> OwnerSurfaces {
+    OwnerSurfaces::for_registry(&proxima_core::FlavorRegistry::new().freeze_or_panic_for_tests())
+}
+
+/// The two synthetic citation surfaces, declared exactly as a flavor would:
+/// keyed on a blob under a column of their own naming, carrying no `owner_id`
+/// of their own, so the generated statement reaches the owner through
+/// `proxima_core.blob`.
+fn citation_surfaces() -> OwnerSurfaces {
+    use proxima_core::flavor::{
+        EraseRule, ExportRule, ForgetRule, KeyShape, Surface, TransferRule,
+    };
+    const fn citation(table: &'static str, column: &'static str) -> Surface {
+        Surface {
+            table,
+            key: KeyShape::BlobId { column },
+            owner_columns: &[],
+            transfer: TransferRule::StaysOnKey,
+            erase: EraseRule::ByKey,
+            export: ExportRule::Rows,
+            forget: ForgetRule::Keep {
+                why: "a citation outlives the Fact that made it",
+            },
+            lexical_language_column: None,
+            counter: Some("sidecar_rows"),
+            completeness: None,
+        }
+    }
+    OwnerSurfaces::from_surfaces(vec![
+        citation("proxima_core.test_cited_object_v1", "cited_object_id"),
+        citation(
+            "proxima_core.test_citation_mapping_v1",
+            "citation_mapping_id",
+        ),
+    ])
 }
 
 fn draft(kind: &str, refs: Vec<Uuid>, origins: Vec<Uuid>) -> FactWriteCommand {
@@ -77,8 +106,8 @@ async fn export_edges_are_the_pins_already_on_memory() {
         let bundle = pg
             .export_owner_bundle(&auth, &contract_sidecar_tables())
             .await?;
-        assert_eq!(bundle.counts.memories, 2);
-        assert_eq!(bundle.counts.edges, 1);
+        assert_eq!(bundle.count("proxima_core.memory"), 2);
+        assert_eq!(bundle.count("edges"), 1);
         assert_eq!(bundle.edges.len(), 1);
         assert_eq!(
             bundle.edges[0]["kind"].as_str(),
@@ -170,35 +199,40 @@ async fn export_carries_cooled_locators_and_sketches() {
             .await?;
 
         assert_eq!(
-            bundle.counts.memories, 1,
+            bundle.count("proxima_core.memory"),
+            1,
             "the cooled admission left memory"
         );
-        assert_eq!(bundle.counts.cooled, 1);
-        assert_eq!(bundle.cooled.len(), 1);
+        let cooled_rows = bundle.table("proxima_core.cooled");
+        assert_eq!(bundle.count("proxima_core.cooled"), 1);
+        assert_eq!(cooled_rows.len(), 1);
         assert_eq!(
-            bundle.cooled[0]["t"].as_str(),
+            cooled_rows[0]["t"].as_str(),
             Some(cooled_t.to_string()).as_deref()
         );
         assert_eq!(
-            bundle.cooled[0]["object_key"].as_str(),
+            cooled_rows[0]["object_key"].as_str(),
             Some(key.as_str()),
             "the bundle carries the locator, not the cold bytes"
         );
 
+        let sketches = bundle.table("proxima_core.sketch");
         assert_eq!(
-            bundle.counts.sketches, 1,
+            bundle.count("proxima_core.sketch"),
+            1,
             "forget deletes the cooled row's sketch; the hot one remains"
         );
-        assert_eq!(bundle.sketches.len(), 1);
+        assert_eq!(sketches.len(), 1);
         assert_eq!(
-            bundle.sketches[0]["t"].as_str(),
+            sketches[0]["t"].as_str(),
             Some(hot.memory_id.into_inner().to_string()).as_deref()
         );
-        assert_eq!(bundle.sketches[0]["text"].as_str(), Some("Still hot"));
+        assert_eq!(sketches[0]["text"].as_str(), Some("Still hot"));
         assert!(
-            bundle.sketches[0].get("search_tsv").is_none(),
-            "the generated lexical index is not owner data: {:?}",
-            bundle.sketches[0]
+            sketches[0].get("search_tsv").is_none(),
+            "the sketch allowlist names four columns; the generated lexical index \
+             is not one of them: {:?}",
+            sketches[0]
         );
         Ok(())
     }
@@ -287,32 +321,19 @@ async fn export_carries_registered_citation_sidecar_rows() {
         let auth = ExportAuthorization::new_for_tests(ComplianceExportTarget::PersonalOwner {
             user_id: user,
         });
-        let bundle = pg
-            .export_owner_bundle(
-                &auth,
-                &ComplianceSidecarTables {
-                    citation_mapping: vec!["proxima_core.test_citation_mapping_v1".to_owned()],
-                    cited_object: vec!["proxima_core.test_cited_object_v1".to_owned()],
-                    ..ComplianceSidecarTables::default()
-                },
-            )
-            .await?;
+        let bundle = pg.export_owner_bundle(&auth, &citation_surfaces()).await?;
 
-        assert_eq!(bundle.counts.sidecar_rows, 2, "got {:?}", bundle.sidecars);
-        let tables: Vec<&str> = bundle
-            .sidecars
-            .iter()
-            .map(|sidecar| sidecar.table.as_str())
-            .collect();
+        let tables: Vec<&str> = bundle.tables.keys().map(String::as_str).collect();
         assert_eq!(
             tables,
             vec![
                 "proxima_core.test_citation_mapping_v1",
                 "proxima_core.test_cited_object_v1"
-            ]
+            ],
+            "the bundle carries exactly the declared surfaces"
         );
-        let mapping = &bundle.sidecars[0].rows;
-        let cited = &bundle.sidecars[1].rows;
+        let mapping = bundle.table("proxima_core.test_citation_mapping_v1");
+        let cited = bundle.table("proxima_core.test_cited_object_v1");
         assert_eq!(mapping.len(), 1);
         assert_eq!(mapping[0]["page_from"].as_i64(), Some(4));
         assert_eq!(cited.len(), 1);
@@ -376,9 +397,10 @@ async fn export_carries_owner_scoped_opaque_blob_metadata() {
             .export_owner_bundle(&auth, &contract_sidecar_tables())
             .await?;
 
-        assert_eq!(bundle.counts.blobs, 1);
-        assert_eq!(bundle.blobs.len(), 1);
-        let blob = &bundle.blobs[0];
+        assert_eq!(bundle.count("proxima_core.blob"), 1);
+        let blobs = bundle.table("proxima_core.blob");
+        assert_eq!(blobs.len(), 1);
+        let blob = &blobs[0];
         assert_eq!(
             blob["blob_id"].as_str(),
             Some(blob_id.to_string()).as_deref()
@@ -400,7 +422,10 @@ async fn export_carries_owner_scoped_opaque_blob_metadata() {
             vec!["blob_id", "content_hash", "schema_id"],
             "the blob export is a stable allowlist"
         );
-        assert!(bundle.sidecars.is_empty(), "opaque schemas need no sidecar");
+        assert!(
+            bundle.table("proxima_core.agent_note_v1").is_empty(),
+            "an opaque schema registers no sidecar, so its declared families stay empty"
+        );
         Ok(())
     }
     .await;

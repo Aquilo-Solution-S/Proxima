@@ -1,50 +1,59 @@
-use proxima_core::compliance::{
-    ComplianceExportBundle, ComplianceExportCounts, ComplianceExportSidecarRows,
-    ComplianceSidecarTables, ExportAuthorization,
-};
-use proxima_core::{OwnerRef, StorageError};
+use std::collections::BTreeMap;
+
+use proxima_core::StorageError;
+use proxima_core::compliance::{ComplianceExportBundle, ExportAuthorization, OwnerSurfaces};
+use proxima_core::flavor::{ExportRule, Surface};
 use serde_json::Value;
 use sqlx::PgPool;
 
 use crate::access::owner_columns::owner_binds;
 use crate::error::map_err;
 use crate::pg_ident::PgIdent;
-use crate::verbs::compliance_erase::owner_digest;
 
+/// One owner's bundle: every surface the contract declares exportable, as
+/// table name → rows, plus the pins projected from those rows.
+///
+/// There used to be nine hand-written SQL constants and five hand-assembled
+/// table-name lists here, each a second spelling of an `ExportRule` the
+/// flavor had already declared. Two of the nine were dead (`source_batches`
+/// selected `WHERE FALSE` from a surface declared `Excluded`; the audit
+/// query read a journal that no longer exists), and one had gone stale
+/// without failing anything: `SKETCH_ROWS_SQL` subtracted a `search_tsv`
+/// column Phase 2 deleted, so the bundle matched the declaration by
+/// accident. Generating the statement from the declaration removes the
+/// class — a surface is in the bundle iff it declares `Rows` or `Allowlist`,
+/// with exactly the fields it names, ordered by the key it names.
 pub async fn export_owner_bundle(
     pool: &PgPool,
     auth: &ExportAuthorization,
-    tables: &ComplianceSidecarTables,
+    surfaces: &OwnerSurfaces,
 ) -> Result<ComplianceExportBundle, StorageError> {
     let owner = auth.audit().owner();
-    let memories = owner_rows(pool, owner, OwnerRowsTable::Memories).await?;
-    let goals = owner_rows(pool, owner, OwnerRowsTable::Goals).await?;
-    let edges = pins_from_memories(&memories);
-    let receipts = owner_rows(pool, owner, OwnerRowsTable::Receipts).await?;
-    let source_batches = owner_rows(pool, owner, OwnerRowsTable::SourceBatches).await?;
-    let source_cursors = owner_rows(pool, owner, OwnerRowsTable::SourceCursors).await?;
-    let delegated_authority_grants =
-        owner_rows(pool, owner, OwnerRowsTable::DelegatedAuthorityGrants).await?;
-    let cooled = owner_rows(pool, owner, OwnerRowsTable::Cooled).await?;
-    let sketches = owner_rows(pool, owner, OwnerRowsTable::Sketches).await?;
-    let blobs = owner_rows(pool, owner, OwnerRowsTable::Blobs).await?;
-    let compliance_audit_rows = audit_rows(pool, owner).await?;
-    let sidecars = export_sidecars(pool, owner, tables).await?;
+    let (_owner_kind, owner_id) = owner_binds(&owner);
+    let mut tables: BTreeMap<String, Vec<Value>> = BTreeMap::new();
+    for surface in surfaces.surfaces() {
+        let Some(sql) = export_statement(surface)? else {
+            continue;
+        };
+        // SQL-POLICY: PgIdent
+        let rows: Vec<Value> = sqlx::query_scalar::<_, Value>(sqlx::AssertSqlSafe(sql))
+            .bind(owner_id)
+            .fetch_all(pool)
+            .await
+            .map_err(map_err)?;
+        tables.insert(surface.table.to_owned(), rows);
+    }
 
-    let counts = ComplianceExportCounts {
-        memories: memories.len(),
-        goals: goals.len(),
-        edges: edges.len(),
-        receipts: receipts.len(),
-        source_batches: source_batches.len(),
-        source_cursors: source_cursors.len(),
-        delegated_authority_grants: delegated_authority_grants.len(),
-        cooled: cooled.len(),
-        sketches: sketches.len(),
-        blobs: blobs.len(),
-        sidecar_rows: sidecars.iter().map(|sidecar| sidecar.rows.len()).sum(),
-        compliance_audit_rows: compliance_audit_rows.len(),
-    };
+    let edges = tables
+        .get("proxima_core.memory")
+        .map(|memories| pins_from_memories(memories))
+        .unwrap_or_default();
+
+    let mut counts: BTreeMap<String, usize> = tables
+        .iter()
+        .map(|(table, rows)| (table.clone(), rows.len()))
+        .collect();
+    counts.insert("edges".to_owned(), edges.len());
 
     Ok(ComplianceExportBundle {
         operation_id: auth.audit().operation_id(),
@@ -54,355 +63,97 @@ pub async fn export_owner_bundle(
         derived_auth_path: format!("{:?}", auth.audit().derived_auth_path()),
         exported_at: auth.audit().requested_at(),
         counts,
-        memories,
-        goals,
+        tables,
         edges,
-        receipts,
-        source_batches,
-        source_cursors,
-        delegated_authority_grants,
-        cooled,
-        sketches,
-        blobs,
-        sidecars,
-        compliance_audit_rows,
     })
 }
 
-#[derive(Clone, Copy)]
-enum OwnerRowsTable {
-    Memories,
-    Goals,
-    Receipts,
-    SourceBatches,
-    SourceCursors,
-    DelegatedAuthorityGrants,
-    Cooled,
-    Sketches,
-    Blobs,
-}
-
-/// Walk every declared sidecar surface for one owner.
+/// The statement one surface's declaration earns it, or `None` when the
+/// surface declares itself out of the bundle.
 ///
-/// `tables.owner_pinned` is exported by the sidecar's own `owner_id`
-/// instead of through the Memory, so an audit row stays in the bundle of
-/// the owner that wrote it after the Memory it describes has been
-/// transferred away — and stays out of the receiving owner's.
-async fn export_sidecars(
-    pool: &PgPool,
-    owner: OwnerRef,
-    tables: &ComplianceSidecarTables,
-) -> Result<Vec<ComplianceExportSidecarRows>, StorageError> {
-    let mut sidecars = Vec::new();
-    let memory_keyed_fact_tables = tables
-        .fact
-        .iter()
-        .filter(|table| !tables.owner_pinned.contains(table))
-        .cloned()
-        .collect::<Vec<_>>();
-    extend_sidecars(
-        pool,
-        owner,
-        &mut sidecars,
-        &memory_keyed_fact_tables,
-        SidecarJoin {
-            sidecar_column: "t",
-            base_table: "proxima_core.memory",
-            base_column: "t",
-        },
-    )
-    .await?;
-    extend_owner_pinned_sidecars(pool, owner, &mut sidecars, &tables.owner_pinned).await?;
-    extend_sidecars(
-        pool,
-        owner,
-        &mut sidecars,
-        &tables.goal,
-        SidecarJoin {
-            sidecar_column: "t",
-            base_table: "proxima_core.goal",
-            base_column: "t",
-        },
-    )
-    .await?;
-    // A v0.0.8 citation *is* the `proxima_core.blob` row a Memory names through
-    // `memory.blob_id`: `citation_of_fact` reads the cited-object id and the
-    // citation-mapping id off that one row, so both citation sidecar families
-    // key on `blob_id` and both are owner-filtered by `blob.owner_id`. Before
-    // this, the registered table lists arrived here and were discarded, so a
-    // flavor's citation sidecar rows were silently absent from the bundle.
-    extend_sidecars(
-        pool,
-        owner,
-        &mut sidecars,
-        &tables.cited_object,
-        SidecarJoin {
-            sidecar_column: "cited_object_id",
-            base_table: "proxima_core.blob",
-            base_column: "blob_id",
-        },
-    )
-    .await?;
-    extend_sidecars(
-        pool,
-        owner,
-        &mut sidecars,
-        &tables.citation_mapping,
-        SidecarJoin {
-            sidecar_column: "citation_mapping_id",
-            base_table: "proxima_core.blob",
-            base_column: "blob_id",
-        },
-    )
-    .await?;
-    sidecars.sort_by(|left, right| left.table.cmp(&right.table));
-    Ok(sidecars)
-}
-
-async fn owner_rows(
-    pool: &PgPool,
-    owner: OwnerRef,
-    table: OwnerRowsTable,
-) -> Result<Vec<Value>, StorageError> {
-    let (owner_kind, owner_id) = owner_binds(&owner);
-    match table {
-        OwnerRowsTable::Memories => sqlx::query_scalar::<_, Value>(MEMORY_ROWS_SQL)
-            .bind(owner_kind)
-            .bind(owner_id)
-            .fetch_all(pool)
-            .await
-            .map_err(map_err),
-        OwnerRowsTable::Goals => sqlx::query_scalar::<_, Value>(GOAL_ROWS_SQL)
-            .bind(owner_kind)
-            .bind(owner_id)
-            .fetch_all(pool)
-            .await
-            .map_err(map_err),
-        OwnerRowsTable::Receipts => sqlx::query_scalar::<_, Value>(RECEIPT_ROWS_SQL)
-            .bind(owner_kind)
-            .bind(owner_id)
-            .fetch_all(pool)
-            .await
-            .map_err(map_err),
-        OwnerRowsTable::SourceBatches => sqlx::query_scalar::<_, Value>(SOURCE_BATCH_ROWS_SQL)
-            .bind(owner_kind)
-            .bind(owner_id)
-            .fetch_all(pool)
-            .await
-            .map_err(map_err),
-        OwnerRowsTable::SourceCursors => sqlx::query_scalar::<_, Value>(SOURCE_CURSOR_ROWS_SQL)
-            .bind(owner_kind)
-            .bind(owner_id)
-            .fetch_all(pool)
-            .await
-            .map_err(map_err),
-        OwnerRowsTable::DelegatedAuthorityGrants => {
-            sqlx::query_scalar::<_, Value>(DELEGATED_AUTHORITY_GRANT_ROWS_SQL)
-                .bind(owner_kind)
-                .bind(owner_id)
-                .fetch_all(pool)
-                .await
-                .map_err(map_err)
+/// Two shapes, decided by `owner_columns` — which is a claim, not an
+/// omission. A surface carrying its own owner is filtered on it directly:
+/// that is the transfer doctrine for owner-pinned rows, whose audit history
+/// stays in the bundle of the owner that wrote it after the Memory it
+/// describes has been transferred away, and out of the receiving owner's. A
+/// surface with EMPTY `owner_columns` asserts it is reached through its
+/// key's owner, so the statement joins that key's home table and filters
+/// there. `try_freeze` refuses a flavor that declares an exportable surface
+/// which is neither, so the `Internal` arm below is unreachable through a
+/// frozen registry and is kept for the synthetic surfaces tests build.
+fn export_statement(surface: &Surface) -> Result<Option<String>, StorageError> {
+    let projection = match surface.export {
+        ExportRule::Excluded { .. } => return Ok(None),
+        // The surface is aliased `s`, never `t`. With a single range table
+        // in scope Postgres resolves a bare `t` in `to_jsonb(t)` to *the
+        // column*, exporting a JSON string holding the uuid where the whole
+        // row belongs — silent data loss in a portability bundle — and with
+        // a joined base table that also has a `t` it raises `column
+        // reference "t" is ambiguous`.
+        ExportRule::Rows => "to_jsonb(s)".to_owned(),
+        // An explicit field allowlist: the table is an unsupported
+        // persistence detail, the bundle is a supported serialized contract,
+        // and a storage-only column added later must not leak into it merely
+        // because the table changed. `jsonb_build_object` normalizes key
+        // order exactly as `to_jsonb` does, so an allowlist naming every
+        // column is byte-identical to the row.
+        ExportRule::Allowlist(fields) => {
+            let mut parts = Vec::with_capacity(fields.len());
+            for field in fields {
+                let column = PgIdent::column(field)?;
+                parts.push(format!("'{}', s.{}", field, column.as_str()));
+            }
+            format!("jsonb_build_object({})", parts.join(", "))
         }
-        OwnerRowsTable::Cooled => sqlx::query_scalar::<_, Value>(COOLED_ROWS_SQL)
-            .bind(owner_kind)
-            .bind(owner_id)
-            .fetch_all(pool)
-            .await
-            .map_err(map_err),
-        OwnerRowsTable::Sketches => sqlx::query_scalar::<_, Value>(SKETCH_ROWS_SQL)
-            .bind(owner_kind)
-            .bind(owner_id)
-            .fetch_all(pool)
-            .await
-            .map_err(map_err),
-        OwnerRowsTable::Blobs => sqlx::query_scalar::<_, Value>(BLOB_ROWS_SQL)
-            .bind(owner_kind)
-            .bind(owner_id)
-            .fetch_all(pool)
-            .await
-            .map_err(map_err),
+    };
+    let table = PgIdent::table(surface.table)?;
+    let order = order_by(surface)?;
+    // SQL-POLICY: PgIdent
+    let sql = if surface.owner_columns.is_empty() {
+        let Some((base_table, base_column, key_column)) = surface.key.home() else {
+            return Err(StorageError::Internal(format!(
+                "{} declares no owner column and a key with no home table, so no \
+                 export statement can reach its owner",
+                surface.table
+            )));
+        };
+        let base_table = PgIdent::table(base_table)?;
+        let base_column = PgIdent::column(base_column)?;
+        let key_column = PgIdent::column(key_column)?;
+        format!(
+            "SELECT {projection}
+               FROM {table} s
+               JOIN {base} base
+                 ON base.{base_column} = s.{key_column}
+              WHERE base.owner_id IS NOT DISTINCT FROM $1
+              ORDER BY {order}",
+            table = table.as_str(),
+            base = base_table.as_str(),
+            base_column = base_column.as_str(),
+            key_column = key_column.as_str(),
+        )
+    } else {
+        format!(
+            "SELECT {projection}
+               FROM {table} s
+              WHERE s.owner_id IS NOT DISTINCT FROM $1
+              ORDER BY {order}",
+            table = table.as_str(),
+        )
+    };
+    Ok(Some(sql))
+}
+
+/// Row order is part of the bundle's bytes, so it comes off the declared
+/// key rather than off whichever column a hand-written statement happened to
+/// name. Every declared key is unique, so every generated order is total.
+fn order_by(surface: &Surface) -> Result<String, StorageError> {
+    let mut parts = Vec::new();
+    for column in surface.key.columns() {
+        parts.push(format!("s.{}", PgIdent::column(column)?.as_str()));
     }
+    Ok(parts.join(", "))
 }
-
-async fn audit_rows(pool: &PgPool, owner: OwnerRef) -> Result<Vec<Value>, StorageError> {
-    sqlx::query_scalar::<_, Value>(
-        "SELECT to_jsonb(a)
-           FROM proxima_core.compliance_audit_log a
-          WHERE a.owner_ref_digest = $1
-          ORDER BY a.requested_at, a.operation_id",
-    )
-    .bind(owner_digest(owner))
-    .fetch_all(pool)
-    .await
-    .map_err(map_err)
-}
-
-#[derive(Clone, Copy)]
-struct SidecarJoin {
-    sidecar_column: &'static str,
-    base_table: &'static str,
-    base_column: &'static str,
-}
-
-async fn extend_sidecars(
-    pool: &PgPool,
-    owner: OwnerRef,
-    sidecars: &mut Vec<ComplianceExportSidecarRows>,
-    tables: &[String],
-    join: SidecarJoin,
-) -> Result<(), StorageError> {
-    for table in tables {
-        let rows = sidecar_rows(pool, owner, table, join).await?;
-        if rows.is_empty() {
-            continue;
-        }
-        sidecars.push(ComplianceExportSidecarRows {
-            table: table.clone(),
-            rows,
-        });
-    }
-    Ok(())
-}
-
-async fn extend_owner_pinned_sidecars(
-    pool: &PgPool,
-    owner: OwnerRef,
-    sidecars: &mut Vec<ComplianceExportSidecarRows>,
-    tables: &[String],
-) -> Result<(), StorageError> {
-    for table in tables {
-        let rows = owner_pinned_sidecar_rows(pool, owner, table).await?;
-        if rows.is_empty() {
-            continue;
-        }
-        sidecars.push(ComplianceExportSidecarRows {
-            table: table.clone(),
-            rows,
-        });
-    }
-    Ok(())
-}
-
-async fn owner_pinned_sidecar_rows(
-    pool: &PgPool,
-    owner: OwnerRef,
-    table: &str,
-) -> Result<Vec<Value>, StorageError> {
-    let table = PgIdent::table(table)?;
-    let (owner_kind, owner_id) = owner_binds(&owner);
-    // No join: the row's own `owner_id` is the authority. Joining
-    // `proxima_core.memory` would drop rows whose Memory has been
-    // transferred away, which is exactly the history this owner is
-    // entitled to a copy of.
-    //
-    // The table is aliased `s`, not `t`, for the same reason as the joined
-    // form below and one worse: an owner-pinned sidecar has a column named
-    // `t`, and with a single range table in scope Postgres resolves the bare
-    // `t` in `to_jsonb(t)` to *the column* rather than the row. That is not
-    // an error — it exports a JSON string holding the uuid where the whole
-    // row belongs, which is silent data loss in a portability bundle.
-    // SQL-POLICY: PgIdent
-    let sql = format!(
-        "SELECT to_jsonb(s)
-           FROM {table} s
-          WHERE s.owner_id IS NOT DISTINCT FROM $2
-          ORDER BY s.t",
-        table = table.as_str(),
-    );
-    // SQL-POLICY: PgIdent
-    sqlx::query_scalar::<_, Value>(sqlx::AssertSqlSafe(sql))
-        .bind(owner_kind)
-        .bind(owner_id)
-        .fetch_all(pool)
-        .await
-        .map_err(map_err)
-}
-
-async fn sidecar_rows(
-    pool: &PgPool,
-    owner: OwnerRef,
-    table: &str,
-    join: SidecarJoin,
-) -> Result<Vec<Value>, StorageError> {
-    let table = PgIdent::table(table)?;
-    let sidecar_column = PgIdent::column(join.sidecar_column)?;
-    let base_table = PgIdent::table(join.base_table)?;
-    let base_column = PgIdent::column(join.base_column)?;
-    let (owner_kind, owner_id) = owner_binds(&owner);
-    // SQL-POLICY: PgIdent
-    // The sidecar is aliased `s`, not `t`. Every memory- and goal-keyed
-    // sidecar joins a base table that itself has a column named `t`, so a
-    // bare `to_jsonb(t)` is an ambiguous column reference, not a whole-row
-    // reference — `column reference "t" is ambiguous`. No test reached this
-    // until the compliance lanes started passing the registry's real table
-    // list instead of an empty slice.
-    let sql = format!(
-        "SELECT to_jsonb(s)
-           FROM {table} s
-           JOIN {base_table} base
-             ON base.{base_column} = s.{sidecar_column}
-          WHERE base.owner_id IS NOT DISTINCT FROM $2
-          ORDER BY s.{sidecar_column}",
-        table = table.as_str(),
-        base_table = base_table.as_str(),
-        base_column = base_column.as_str(),
-        sidecar_column = sidecar_column.as_str(),
-    );
-    // SQL-POLICY: PgIdent
-    sqlx::query_scalar::<_, Value>(sqlx::AssertSqlSafe(sql))
-        .bind(owner_kind)
-        .bind(owner_id)
-        .fetch_all(pool)
-        .await
-        .map_err(map_err)
-}
-
-const MEMORY_ROWS_SQL: &str = "
-SELECT to_jsonb(m)
-  FROM proxima_core.memory m
- WHERE m.owner_id IS NOT DISTINCT FROM $2
- ORDER BY m.t";
-
-const GOAL_ROWS_SQL: &str = "
-SELECT to_jsonb(g)
-  FROM proxima_core.goal g
- WHERE g.owner_id IS NOT DISTINCT FROM $2
- ORDER BY g.t";
-
-// A cooled admission's content has left `memory` for the object store, so
-// omitting this table returned an incomplete owner bundle for every forgotten
-// admission. The row is exported as a locator manifest — `object_key` names
-// where the dumped payload lives — and the bundle deliberately does not stream
-// cold-store bytes: it is a database export, and the payload is recoverable by
-// hydrating the admission.
-const COOLED_ROWS_SQL: &str = "
-SELECT to_jsonb(c)
-  FROM proxima_core.cooled c
- WHERE c.owner_id IS NOT DISTINCT FROM $2
- ORDER BY c.t";
-
-// The derived one-liner of each of the owner's memories and goals. `search_tsv`
-// is a generated lexical-index column over `text`, not owner data, so it is
-// dropped rather than dumped into a portability bundle.
-const SKETCH_ROWS_SQL: &str = "
-SELECT to_jsonb(s) - 'search_tsv'
-  FROM proxima_core.sketch s
- WHERE s.owner_id IS NOT DISTINCT FROM $2
- ORDER BY s.t";
-
-// Keep this an explicit field allowlist: the blob row is the authoritative
-// cited-object identity even for opaque schemas, while upload coordinates and
-// object-store bytes are not part of a database compliance export.
-const BLOB_ROWS_SQL: &str = "
-SELECT jsonb_build_object(
-           'blob_id', b.blob_id,
-           'schema_id', b.schema_id,
-           'content_hash', b.content_hash
-       )
-  FROM proxima_core.blob b
- WHERE b.owner_id IS NOT DISTINCT FROM $2
- ORDER BY b.blob_id";
 
 fn pins_from_memories(memories: &[Value]) -> Vec<Value> {
     let mut edges = Vec::new();
@@ -445,53 +196,19 @@ fn push_pins(edges: &mut Vec<Value>, source_t: &Value, pins: Option<&Value>, kin
     }
 }
 
-const RECEIPT_ROWS_SQL: &str = "
-SELECT to_jsonb(ik)
-  FROM proxima_core.ingest_keys ik
- WHERE ik.owner_id IS NOT DISTINCT FROM $2
- ORDER BY ik.t";
-
-const SOURCE_BATCH_ROWS_SQL: &str = "
-SELECT to_jsonb(a)
-  FROM proxima_core.announce a
- WHERE FALSE
- ORDER BY a.seq";
-
-const SOURCE_CURSOR_ROWS_SQL: &str = "
-SELECT to_jsonb(sc)
-  FROM proxima_core.source_cursors sc
- WHERE sc.owner_kind = $1
-   AND sc.owner_id IS NOT DISTINCT FROM $2
- ORDER BY sc.source";
-
-// Keep this an explicit field allowlist: the durable grant table is an
-// unsupported persistence detail, while the compliance bundle is a supported
-// serialized contract. A future storage-only column must not leak into export
-// merely because the table changed.
-const DELEGATED_AUTHORITY_GRANT_ROWS_SQL: &str = "
-SELECT jsonb_build_object(
-           'subject_user_id', dag.subject_user_id,
-           'owner_kind', dag.owner_kind,
-           'owner_id', dag.owner_id,
-           'tool_name', dag.tool_name,
-           'action_name', dag.action_name,
-           'read_ceiling', dag.read_ceiling,
-           'write_ceiling', dag.write_ceiling,
-           'expires_at', dag.expires_at,
-           'auth_epoch', dag.auth_epoch,
-           'issued_at', dag.issued_at,
-           'revoked_at', dag.revoked_at,
-           'revoked_by_user_id', dag.revoked_by_user_id
-       )
-  FROM proxima_core.delegated_authority_grants dag
- WHERE dag.owner_kind = $1
-   AND dag.owner_id IS NOT DISTINCT FROM $2
- ORDER BY dag.issued_at, dag.delegation_id";
-
 #[cfg(test)]
 mod tests {
-    use super::{pin_sort_key, pins_from_memories};
+    use super::{export_statement, pin_sort_key, pins_from_memories};
+    use proxima_core::FLAVOR_0;
+    use proxima_core::flavor::{ExportRule, Surface};
     use serde_json::json;
+
+    fn surface(table: &str) -> Surface {
+        FLAVOR_0
+            .all_surfaces()
+            .find(|surface| surface.table == table)
+            .unwrap_or_else(|| panic!("flavor #0 declares {table}"))
+    }
 
     #[test]
     fn export_sql_does_not_rebuild_an_edge_table() {
@@ -521,5 +238,87 @@ mod tests {
             ]
         );
         assert!(pin_sort_key(&edges[0]) < pin_sort_key(&edges[1]));
+    }
+
+    /// The blob statement, previously the hand-written `BLOB_ROWS_SQL`.
+    /// Pinning the generated text is what keeps an allowlist an allowlist
+    /// rather than a comment.
+    #[test]
+    fn an_allowlisted_surface_generates_exactly_its_declared_fields() {
+        let sql = export_statement(&surface("proxima_core.blob"))
+            .expect("generates")
+            .expect("blob is exported");
+        assert!(
+            sql.contains(
+                "jsonb_build_object('blob_id', s.blob_id, 'schema_id', s.schema_id, \
+                 'content_hash', s.content_hash)"
+            ),
+            "{sql}"
+        );
+        assert!(sql.contains("ORDER BY s.blob_id"), "{sql}");
+    }
+
+    /// A surface with EMPTY `owner_columns` claims it is reached through its
+    /// key's owner, and the generated join is what makes the claim true.
+    #[test]
+    fn a_keyed_sidecar_reaches_the_owner_through_its_home_table() {
+        let sql = export_statement(&surface("proxima_core.agent_note_v1"))
+            .expect("generates")
+            .expect("the note sidecar is exported");
+        assert!(sql.contains("JOIN proxima_core.memory base"), "{sql}");
+        assert!(
+            sql.contains("WHERE base.owner_id IS NOT DISTINCT FROM $1"),
+            "{sql}"
+        );
+        assert!(sql.contains("to_jsonb(s)"), "{sql}");
+    }
+
+    /// The owner-pinned shape: no join, because joining `memory` would drop
+    /// the rows whose Memory has been transferred away — exactly the history
+    /// this owner is entitled to a copy of.
+    #[test]
+    fn an_owner_pinned_sidecar_is_filtered_on_its_own_owner() {
+        let sql = export_statement(&surface("proxima_core.mcp_call_logged_v1"))
+            .expect("generates")
+            .expect("the call log is exported");
+        assert!(!sql.contains("JOIN"), "{sql}");
+        assert!(
+            sql.contains("WHERE s.owner_id IS NOT DISTINCT FROM $1"),
+            "{sql}"
+        );
+    }
+
+    #[test]
+    fn a_surface_declared_excluded_generates_nothing() {
+        for table in [
+            "proxima_core.content",
+            "proxima_core.blob_uploads",
+            "proxima_core.wake_config",
+            "proxima_core.announce",
+            "proxima_core.owners",
+        ] {
+            let declared = surface(table);
+            assert!(matches!(declared.export, ExportRule::Excluded { .. }));
+            assert!(
+                export_statement(&declared).expect("generates").is_none(),
+                "{table} declares Excluded and must emit no statement"
+            );
+        }
+    }
+
+    /// The collision-safety rule, as a property of every generated
+    /// statement rather than of the two that happened to be written by hand.
+    #[test]
+    fn no_generated_statement_aliases_a_table_t() {
+        for surface in FLAVOR_0.all_surfaces() {
+            let Some(sql) = export_statement(&surface).expect("generates") else {
+                continue;
+            };
+            assert!(
+                !sql.contains(" t\n") && !sql.contains("to_jsonb(t)"),
+                "{}: an alias of `t` makes to_jsonb resolve the COLUMN, not the row: {sql}",
+                surface.table
+            );
+        }
     }
 }

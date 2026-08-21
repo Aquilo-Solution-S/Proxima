@@ -692,11 +692,64 @@ pub enum Provenance {
 /// What a surface's rows are keyed on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum KeyShape {
-    MemoryT,
-    GoalT,
-    BlobId,
+    /// Keyed on a `proxima_core.memory` t, under the column named here.
+    MemoryT {
+        column: &'static str,
+    },
+    /// Keyed on a `proxima_core.goal` t, under the column named here.
+    GoalT {
+        column: &'static str,
+    },
+    /// Keyed on a `proxima_core.blob` id, under the column named here.
+    ///
+    /// Every keyed variant names its column, because the two verbs that
+    /// consume this field have no other way to learn which one carries the
+    /// id: the owner erase reaches keyed sidecars through a selection set,
+    /// and the owner export joins the key's home table to find the owner.
+    /// A citation sidecar calls its blob `cited_object_id`, a mapping
+    /// sidecar `citation_mapping_id`, `blob` itself `blob_id`; a code
+    /// detail table calls its memory `plan_memory_id` or
+    /// `caller_memory_id`. Four such tables declared `Custom(&["memory_id"])`
+    /// — a column none of them has — and it went unnoticed for as long as
+    /// nothing read the field for a `Cascade` surface.
+    BlobId {
+        column: &'static str,
+    },
     OwnerId,
     Custom(&'static [&'static str]),
+}
+
+impl KeyShape {
+    /// The table this key lives in and the column it is stored under there,
+    /// for the three keys that name a core entity.
+    ///
+    /// This is what makes EMPTY `owner_columns` a checkable claim rather
+    /// than a hope: a surface that carries no owner asserts it is reached
+    /// through its key's owner, and the pair returned here is the join that
+    /// reaches it.
+    #[must_use]
+    pub const fn home(self) -> Option<(&'static str, &'static str, &'static str)> {
+        match self {
+            Self::MemoryT { column } => Some(("proxima_core.memory", "t", column)),
+            Self::GoalT { column } => Some(("proxima_core.goal", "t", column)),
+            Self::BlobId { column } => Some(("proxima_core.blob", "blob_id", column)),
+            Self::OwnerId | Self::Custom(_) => None,
+        }
+    }
+
+    /// Every column this key is stored under, in declaration order. Row
+    /// order in an export bundle comes off this, so it is part of the
+    /// bundle's bytes.
+    #[must_use]
+    pub fn columns(self) -> Vec<&'static str> {
+        match self {
+            Self::MemoryT { column } | Self::GoalT { column } | Self::BlobId { column } => {
+                vec![column]
+            }
+            Self::OwnerId => vec!["owner_id"],
+            Self::Custom(columns) => columns.to_vec(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -888,7 +941,7 @@ impl ProjectionSpec {
     pub const fn surface(&self) -> Surface {
         Surface {
             table: self.table,
-            key: KeyShape::MemoryT,
+            key: KeyShape::MemoryT { column: "t" },
             owner_columns: &["owner_id"],
             transfer: TransferRule::Follow,
             erase: EraseRule::Cascade {

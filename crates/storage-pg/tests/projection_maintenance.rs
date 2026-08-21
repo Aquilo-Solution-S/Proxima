@@ -13,7 +13,7 @@
 #![allow(clippy::doc_markdown)]
 
 use proxima_core::compliance::{
-    ComplianceEraseOutcome, ComplianceEraseTarget, ComplianceSidecarTables, EraseAuthorization,
+    ComplianceEraseOutcome, ComplianceEraseTarget, EraseAuthorization, OwnerSurfaces,
 };
 use proxima_core::storage_ports::{ComplianceErasePort, OwnerTransferPort, OwnerWritePermit};
 use proxima_core::verbs::fact_ingest::FactWriteCommand;
@@ -276,7 +276,7 @@ async fn a_compliance_erase_takes_the_owners_projection_rows_by_cascade() {
             user_id: user,
             drop_event_id: "projection-cascade".into(),
         });
-        let sidecar_tables = ComplianceSidecarTables::for_registry(
+        let sidecar_tables = OwnerSurfaces::for_registry(
             &proxima_core::FlavorRegistry::new().freeze_or_panic_for_tests(),
         );
         let outcome = pg

@@ -121,7 +121,7 @@ const fn memory_sidecar(
 ) -> Surface {
     Surface {
         table,
-        key: KeyShape::MemoryT,
+        key: KeyShape::MemoryT { column: "t" },
         owner_columns: &[],
         transfer: TransferRule::StaysOnKey,
         erase: EraseRule::ByKey,
@@ -277,7 +277,7 @@ const MCP_CALL_LOGGED_V1: SchemaContract = SchemaContract {
     provenance: Provenance::None,
     surfaces: &[Surface {
         table: "proxima_core.mcp_call_logged_v1",
-        key: KeyShape::MemoryT,
+        key: KeyShape::MemoryT { column: "t" },
         owner_columns: &["owner_id"],
         transfer: TransferRule::RetainAtSource {
             why: "see the schema declaration",
@@ -437,7 +437,7 @@ const TASK_GOAL_V1: SchemaContract = SchemaContract {
     provenance: Provenance::None,
     surfaces: &[Surface {
         table: "proxima_core.task_goal_v1",
-        key: KeyShape::GoalT,
+        key: KeyShape::GoalT { column: "t" },
         owner_columns: &[],
         transfer: GOAL_NOT_TRANSFERABLE,
         erase: EraseRule::ByKey,
@@ -507,7 +507,7 @@ const MCP_CALL_IO_CITATION_V1: SchemaContract = citation_schema(
 const STATE_SURFACES: &[Surface] = &[
     Surface {
         table: "proxima_core.goal",
-        key: KeyShape::GoalT,
+        key: KeyShape::GoalT { column: "t" },
         owner_columns: &["owner_id"],
         transfer: GOAL_NOT_TRANSFERABLE,
         erase: EraseRule::ByOwner,
@@ -568,7 +568,7 @@ const STATE_SURFACES: &[Surface] = &[
 const KERNEL_SURFACES: &[Surface] = &[
     Surface {
         table: "proxima_core.memory",
-        key: KeyShape::MemoryT,
+        key: KeyShape::MemoryT { column: "t" },
         owner_columns: &["owner_id"],
         transfer: TransferRule::Follow,
         erase: EraseRule::ByKey,
@@ -602,7 +602,7 @@ const KERNEL_SURFACES: &[Surface] = &[
     },
     Surface {
         table: "proxima_core.cooled",
-        key: KeyShape::MemoryT,
+        key: KeyShape::MemoryT { column: "t" },
         owner_columns: &["owner_id"],
         transfer: TransferRule::Follow,
         erase: EraseRule::ByKey,
@@ -679,7 +679,7 @@ const KERNEL_SURFACES: &[Surface] = &[
     },
     Surface {
         table: "proxima_core.ingest_keys",
-        key: KeyShape::MemoryT,
+        key: KeyShape::MemoryT { column: "t" },
         owner_columns: &["owner_id"],
         transfer: TransferRule::Drop {
             why: "a receipt proves admission by THIS owner. It does not travel, so a \
@@ -723,7 +723,7 @@ const KERNEL_SURFACES: &[Surface] = &[
     },
     Surface {
         table: "proxima_core.blob",
-        key: KeyShape::BlobId,
+        key: KeyShape::BlobId { column: "blob_id" },
         owner_columns: &["owner_id"],
         // The dedupe arm. A blob shared across owners used to refuse the
         // transfer outright; now the destination gets its own row over the

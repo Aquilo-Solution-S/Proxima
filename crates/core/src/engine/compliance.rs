@@ -5,7 +5,7 @@ use crate::authz::{AuthPath, AuthzContext};
 use crate::compliance::{
     ComplianceAuditContext, ComplianceEraseOutcome, ComplianceEraseRefusal, ComplianceEraseTarget,
     ComplianceExportAuditContext, ComplianceExportBundle, ComplianceExportTarget,
-    ComplianceSidecarTables, EraseAuthorization, ExportAuthorization,
+    EraseAuthorization, ExportAuthorization, OwnerSurfaces,
 };
 use crate::error::ProtocolError;
 use crate::storage_ports::OperatorMaintenanceProof;
@@ -29,8 +29,8 @@ impl Engine {
     /// could not see. It now comes off the same flavor contracts as the
     /// other four, via `TransferRule::RetainAtSource`, and the adapter's
     /// macro flag is checked against it when the sidecar registry freezes.
-    fn compliance_sidecar_tables(&self) -> ComplianceSidecarTables {
-        ComplianceSidecarTables::for_registry(&self.registry)
+    fn owner_surfaces(&self) -> OwnerSurfaces {
+        OwnerSurfaces::for_registry(&self.registry)
     }
 
     fn compliance_audit_context(
@@ -360,11 +360,11 @@ impl Engine {
         }
 
         let auth = ExportAuthorization::new(Self::compliance_export_audit_context(authz, target));
-        let sidecars = self.compliance_sidecar_tables();
+        let surfaces = self.owner_surfaces();
         self.storage
             .compliance
             .compliance_erase
-            .export_owner_bundle(&auth, &sidecars)
+            .export_owner_bundle(&auth, &surfaces)
             .await
             .map_err(|e| ProtocolError::internal(format!("export_owner_bundle: {e}")))
     }
@@ -389,13 +389,13 @@ impl Engine {
             EraseAdmission::Admitted(auth) => auth,
             EraseAdmission::Refused(outcome) => return Ok(outcome),
         };
-        let sidecars = self.compliance_sidecar_tables();
+        let surfaces = self.owner_surfaces();
         let object_purge_planned = self.owner_object_purge_planned();
         let outcome = self
             .storage
             .compliance
             .compliance_erase
-            .erase_group_owner_if_abandoned(&auth, group_id, object_purge_planned, &sidecars)
+            .erase_group_owner_if_abandoned(&auth, group_id, object_purge_planned, &surfaces)
             .await
             .map_err(|e| ProtocolError::internal(format!("erase_group_owner_if_abandoned: {e}")))?;
         Ok(self
@@ -428,13 +428,13 @@ impl Engine {
             EraseAdmission::Admitted(auth) => auth,
             EraseAdmission::Refused(outcome) => return Ok(outcome),
         };
-        let sidecars = self.compliance_sidecar_tables();
+        let surfaces = self.owner_surfaces();
         let object_purge_planned = self.owner_object_purge_planned();
         let outcome = self
             .storage
             .compliance
             .compliance_erase
-            .erase_personal_owner_if_drop_verified(&auth, user_id, object_purge_planned, &sidecars)
+            .erase_personal_owner_if_drop_verified(&auth, user_id, object_purge_planned, &surfaces)
             .await
             .map_err(|e| {
                 ProtocolError::internal(format!("erase_personal_owner_if_drop_verified: {e}"))
@@ -464,7 +464,7 @@ impl Engine {
             EraseAdmission::Admitted(auth) => auth,
             EraseAdmission::Refused(outcome) => return Ok(outcome),
         };
-        let sidecars = self.compliance_sidecar_tables();
+        let surfaces = self.owner_surfaces();
         // Source-scope blob purge is deferred: a source scope is a partial
         // owner, and the object store keys purely by owner, so a prefix-delete
         // would over-delete the owner's other sources. Only owner-scope erase
@@ -472,7 +472,7 @@ impl Engine {
         self.storage
             .compliance
             .compliance_erase
-            .erase_group_source_scope_if_owner_abandoned(&auth, group_id, &source_id, &sidecars)
+            .erase_group_source_scope_if_owner_abandoned(&auth, group_id, &source_id, &surfaces)
             .await
             .map_err(|e| {
                 ProtocolError::internal(format!("erase_group_source_scope_if_owner_abandoned: {e}"))
@@ -503,14 +503,14 @@ impl Engine {
             EraseAdmission::Admitted(auth) => auth,
             EraseAdmission::Refused(outcome) => return Ok(outcome),
         };
-        let sidecars = self.compliance_sidecar_tables();
+        let surfaces = self.owner_surfaces();
         // Source-scope blob purge is deferred (see
         // `erase_abandoned_group_source_scope`): prefix-delete keys by owner,
         // so it would over-delete the owner's other sources.
         self.storage
             .compliance
             .compliance_erase
-            .erase_personal_source_scope_if_drop_verified(&auth, user_id, &source_id, &sidecars)
+            .erase_personal_source_scope_if_drop_verified(&auth, user_id, &source_id, &surfaces)
             .await
             .map_err(|e| {
                 ProtocolError::internal(format!(
@@ -642,7 +642,7 @@ mod purge_tests {
             _auth: &EraseAuthorization,
             _group_id: GroupId,
             _object_purge_planned: bool,
-            _tables: &crate::compliance::ComplianceSidecarTables,
+            _tables: &crate::compliance::OwnerSurfaces,
         ) -> Result<ComplianceEraseOutcome, StorageError> {
             self.erase_calls.fetch_add(1, Ordering::SeqCst);
             Ok(self.outcome.clone())
@@ -653,7 +653,7 @@ mod purge_tests {
             _auth: &EraseAuthorization,
             _user_id: UserId,
             _object_purge_planned: bool,
-            _tables: &crate::compliance::ComplianceSidecarTables,
+            _tables: &crate::compliance::OwnerSurfaces,
         ) -> Result<ComplianceEraseOutcome, StorageError> {
             self.erase_calls.fetch_add(1, Ordering::SeqCst);
             Ok(self.outcome.clone())
@@ -664,7 +664,7 @@ mod purge_tests {
             _auth: &EraseAuthorization,
             _group_id: GroupId,
             _source_id: &SourceId,
-            _tables: &crate::compliance::ComplianceSidecarTables,
+            _tables: &crate::compliance::OwnerSurfaces,
         ) -> Result<ComplianceEraseOutcome, StorageError> {
             self.erase_calls.fetch_add(1, Ordering::SeqCst);
             Ok(self.outcome.clone())
@@ -675,7 +675,7 @@ mod purge_tests {
             _auth: &EraseAuthorization,
             _user_id: UserId,
             _source_id: &SourceId,
-            _tables: &crate::compliance::ComplianceSidecarTables,
+            _tables: &crate::compliance::OwnerSurfaces,
         ) -> Result<ComplianceEraseOutcome, StorageError> {
             self.erase_calls.fetch_add(1, Ordering::SeqCst);
             Ok(self.outcome.clone())
@@ -684,7 +684,7 @@ mod purge_tests {
         async fn export_owner_bundle(
             &self,
             _auth: &ExportAuthorization,
-            _tables: &crate::compliance::ComplianceSidecarTables,
+            _tables: &crate::compliance::OwnerSurfaces,
         ) -> Result<ComplianceExportBundle, StorageError> {
             Err(StorageError::Internal("export not used in test".into()))
         }

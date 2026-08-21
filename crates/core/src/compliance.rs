@@ -9,62 +9,77 @@
 //! creates [`EraseAuthorization`], and `PG` still rechecks abandonment in the
 //! delete transaction.
 
+use std::collections::BTreeMap;
+
+use crate::flavor::Surface;
 use crate::{AuthPath, GroupId, OwnerRef, SourceId, UserId};
 
-/// Every sidecar table an owner-scoped erase or export has to reach, in the
-/// four shapes the sweep treats differently, plus the ones that do not move
-/// with a transfer.
+/// Every relation an owner-scoped erase or export has to answer for, read
+/// off the frozen flavor contracts.
 ///
-/// This exists because the legs used to be assembled twice. Core built four
-/// of them from the schema registry and handed them to the port as four
-/// separate slices; the Postgres adapter then appended a fifth of its own,
-/// derived from `pg_sidecar!(owner_pinned: true)` — a source of truth that
-/// core could not see and no test compared against. A schema whose contract
-/// said `RetainAtSource` while its macro said nothing (or the reverse) had
-/// two lanes disagreeing about which owner's bundle its rows belonged in.
+/// This replaces five hand-assembled `Vec<String>` name lists. Those were
+/// built from the schema registry — `PayloadKind` plus `sidecar_table` — and
+/// from `pg_sidecar!(owner_pinned: true)`, which are two projections of the
+/// contract rather than the contract. What a surface's inverse is,
+/// `Surface::erase` already says; what it is keyed on, `Surface::key`
+/// already says; which counter it feeds, `Surface::counter` already says.
+/// The lanes now read those instead of a list written to agree with them.
 ///
-/// One struct, built once, from the flavor contracts.
+/// The set is deduplicated by table: two schemas may share one sidecar, and
+/// a table appears in the sweep once.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct ComplianceSidecarTables {
-    /// Memory-keyed sidecars: Fact, Abstraction and Perspective together,
-    /// because all three are reached through `proxima_core.memory`.
-    pub fact: Vec<String>,
-    pub goal: Vec<String>,
-    pub citation_mapping: Vec<String>,
-    pub cited_object: Vec<String>,
-    /// Sidecars carrying their own `owner_id`, declared
-    /// [`TransferRule::RetainAtSource`](crate::flavor::TransferRule::RetainAtSource).
-    ///
-    /// A subset of [`Self::fact`], and held out of the Memory-keyed sweep:
-    /// a transfer leaves these rows behind, so joining them through the
-    /// Memory would move them into the receiving owner's bundle and out of
-    /// the writing owner's reach.
-    pub owner_pinned: Vec<String>,
+pub struct OwnerSurfaces {
+    surfaces: Vec<Surface>,
 }
 
-impl ComplianceSidecarTables {
-    /// Read all five legs off one frozen registry.
+impl OwnerSurfaces {
+    /// Read every flavor's declared surfaces off one frozen registry.
     ///
     /// The engine calls this; so should anything else that needs the set,
     /// because assembling the legs by hand is what let them disagree.
     #[must_use]
     pub fn for_registry(registry: &crate::FlavorRegistryFrozen) -> Self {
-        use crate::verbs::schema::PayloadKind;
-        use crate::verbs::schema::sidecar_tables;
+        Self::from_surfaces(
+            registry
+                .contracts()
+                .iter()
+                .flat_map(|contract| contract.all_surfaces())
+                .collect(),
+        )
+    }
 
-        let schemas = registry.schemas();
-        let mut fact = sidecar_tables(schemas, PayloadKind::Fact);
-        fact.extend(sidecar_tables(schemas, PayloadKind::Abstraction));
-        fact.extend(sidecar_tables(schemas, PayloadKind::Perspective));
-        fact.sort();
-        fact.dedup();
-        Self {
-            fact,
-            goal: sidecar_tables(schemas, PayloadKind::Goal),
-            citation_mapping: sidecar_tables(schemas, PayloadKind::CitationMapping),
-            cited_object: sidecar_tables(schemas, PayloadKind::CitedObject),
-            owner_pinned: registry.retain_at_source_sidecar_tables(),
-        }
+    /// Build a set from surfaces given directly.
+    ///
+    /// The seam a test uses to exercise a shape core declares no instance of
+    /// — blob-keyed citation sidecars, or a second `RetainAtSource` table —
+    /// without registering a whole flavor. Production reaches for
+    /// [`Self::for_registry`].
+    #[must_use]
+    pub fn from_surfaces(mut surfaces: Vec<Surface>) -> Self {
+        surfaces.sort_by_key(|surface| surface.table);
+        surfaces.dedup_by_key(|surface| surface.table);
+        Self { surfaces }
+    }
+
+    /// Every declared surface, ordered by table name.
+    #[must_use]
+    pub fn surfaces(&self) -> &[Surface] {
+        &self.surfaces
+    }
+
+    /// Every counter any declared surface contributes to, deduplicated and
+    /// ordered. This is the receipt's key set: a count the declarations do
+    /// not name cannot appear, and a counter they do name cannot be missing.
+    #[must_use]
+    pub fn counters(&self) -> Vec<&'static str> {
+        let mut counters = self
+            .surfaces
+            .iter()
+            .filter_map(|surface| surface.counter)
+            .collect::<Vec<_>>();
+        counters.sort_unstable();
+        counters.dedup();
+        counters
     }
 }
 
@@ -144,38 +159,16 @@ pub struct ComplianceExportRequest {
     pub target: ComplianceExportTarget,
 }
 
-/// Counts of rows included in a compliance export bundle.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct ComplianceExportCounts {
-    pub memories: usize,
-    pub goals: usize,
-    pub edges: usize,
-    pub receipts: usize,
-    pub source_batches: usize,
-    pub source_cursors: usize,
-    #[serde(default)]
-    pub delegated_authority_grants: usize,
-    /// Cooled admissions, exported as locator metadata only (see
-    /// [`ComplianceExportBundle::cooled`]).
-    #[serde(default)]
-    pub cooled: usize,
-    #[serde(default)]
-    pub sketches: usize,
-    /// Authoritative cited-object identities exported from `proxima_core.blob`.
-    #[serde(default)]
-    pub blobs: usize,
-    pub sidecar_rows: usize,
-    pub compliance_audit_rows: usize,
-}
-
-/// JSON rows exported from one sidecar table.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct ComplianceExportSidecarRows {
-    pub table: String,
-    pub rows: Vec<serde_json::Value>,
-}
-
-/// Owner-scoped compliance export bundle.
+/// Owner-scoped export bundle: one entry per declared exportable surface.
+///
+/// It used to be eleven typed `Vec<Value>` fields plus a twelve-field counts
+/// struct, each of which had to be added by hand when a table joined the
+/// export — which is how `cooled`, `sketches` and `blobs` arrived three
+/// separate times, and how the code flavor's four detail tables never
+/// arrived at all. The shape is now derived: `tables` has exactly the
+/// surfaces whose [`ExportRule`](crate::flavor::ExportRule) is `Rows` or
+/// `Allowlist`, and `counts` is a projection of `tables`, so a new surface
+/// joins the bundle by declaring itself and nothing else.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ComplianceExportBundle {
     pub operation_id: uuid::Uuid,
@@ -184,38 +177,34 @@ pub struct ComplianceExportBundle {
     pub derived_requester: Option<UserId>,
     pub derived_auth_path: String,
     pub exported_at: time::OffsetDateTime,
-    pub counts: ComplianceExportCounts,
-    pub memories: Vec<serde_json::Value>,
-    pub goals: Vec<serde_json::Value>,
+    /// Row counts, DERIVED: one entry per `tables` key, plus `edges`. A
+    /// count that disagrees with the rows beside it is not representable.
+    pub counts: BTreeMap<String, usize>,
+    /// Table name → its rows, in the surface's declared key order. Every
+    /// exportable surface is present, including the ones that came back
+    /// empty: absence in the bundle would otherwise be indistinguishable
+    /// from a surface the export forgot.
+    pub tables: BTreeMap<String, Vec<serde_json::Value>>,
+    /// Pins projected from the exported `proxima_core.memory` rows'
+    /// `origins` and `refs` arrays. Not a surface — there is no edge table —
+    /// so it stays its own field.
     pub edges: Vec<serde_json::Value>,
-    pub receipts: Vec<serde_json::Value>,
-    pub source_batches: Vec<serde_json::Value>,
-    pub source_cursors: Vec<serde_json::Value>,
-    #[serde(default)]
-    pub delegated_authority_grants: Vec<serde_json::Value>,
-    /// Cooled admissions of the owner: one row per admission whose content
-    /// left `memory` for cold storage, carrying the `object_key` that locates
-    /// the dumped payload. A manifest, not the payload — the bundle stays a
-    /// database export and never streams object-store bytes.
-    #[serde(default)]
-    pub cooled: Vec<serde_json::Value>,
-    /// The owner's derived one-liners, minus the generated `search_tsv`
-    /// lexical-index column.
-    #[serde(default)]
-    pub sketches: Vec<serde_json::Value>,
-    /// The owner's authoritative cited-object identities. Each row contains
-    /// only `blob_id`, `schema_id`, and `content_hash`; upload coordinates and
-    /// object-store bytes are outside the compliance bundle.
-    #[serde(default)]
-    pub blobs: Vec<serde_json::Value>,
-    /// Registered memory, goal, cited-object, and citation-mapping sidecar
-    /// rows. Citation sidecars are owner-filtered through
-    /// `proxima_core.blob`, the row a v0.0.8 citation is.
-    pub sidecars: Vec<ComplianceExportSidecarRows>,
-    pub compliance_audit_rows: Vec<serde_json::Value>,
 }
 
 impl ComplianceExportBundle {
+    /// The rows exported from one table, or an empty slice when the table is
+    /// not part of the bundle.
+    #[must_use]
+    pub fn table(&self, table: &str) -> &[serde_json::Value] {
+        self.tables.get(table).map_or(&[], Vec::as_slice)
+    }
+
+    /// The count recorded under `key`, or zero.
+    #[must_use]
+    pub fn count(&self, key: &str) -> usize {
+        self.counts.get(key).copied().unwrap_or_default()
+    }
+
     /// Serialize the bundle to recursively sorted-key JSON bytes.
     ///
     /// # Errors

@@ -4,8 +4,8 @@
 use std::sync::Arc;
 
 use proxima_core::compliance::{
-    ComplianceEraseOutcome, ComplianceEraseRefusal, ComplianceEraseTarget, ComplianceSidecarTables,
-    EraseAuthorization,
+    ComplianceEraseOutcome, ComplianceEraseRefusal, ComplianceEraseTarget, EraseAuthorization,
+    OwnerSurfaces,
 };
 use proxima_core::storage_ports::{
     ComplianceErasePort, MemoryAuthoringPort, OwnerMembershipAdminPort, OwnerWritePermit,
@@ -30,10 +30,8 @@ use uuid::Uuid;
 /// frozen flavor registry. Passing empty slices here would silently skip
 /// the owner-pinned leg, which is the difference these tests exist to
 /// measure.
-fn contract_sidecar_tables() -> ComplianceSidecarTables {
-    ComplianceSidecarTables::for_registry(
-        &proxima_core::FlavorRegistry::new().freeze_or_panic_for_tests(),
-    )
+fn contract_sidecar_tables() -> OwnerSurfaces {
+    OwnerSurfaces::for_registry(&proxima_core::FlavorRegistry::new().freeze_or_panic_for_tests())
 }
 
 const CITED_TABLE: &str = "proxima_core.test_cited_object_v1";
@@ -59,9 +57,38 @@ impl ColdObjectStore for RefusingDeleteCold {
     }
 }
 
+/// The two synthetic surfaces, declared exactly as a flavor would declare
+/// them: keyed on a blob under a column of their own naming, carrying no
+/// `owner_id` of their own, and tallying into `sidecar_rows`.
+fn citation_surfaces() -> proxima_core::compliance::OwnerSurfaces {
+    use proxima_core::flavor::{
+        EraseRule, ExportRule, ForgetRule, KeyShape, Surface, TransferRule,
+    };
+    const fn citation(table: &'static str, column: &'static str) -> Surface {
+        Surface {
+            table,
+            key: KeyShape::BlobId { column },
+            owner_columns: &[],
+            transfer: TransferRule::StaysOnKey,
+            erase: EraseRule::ByKey,
+            export: ExportRule::Rows,
+            forget: ForgetRule::Keep {
+                why: "a citation outlives the Fact that made it",
+            },
+            lexical_language_column: None,
+            counter: Some("sidecar_rows"),
+            completeness: None,
+        }
+    }
+    proxima_core::compliance::OwnerSurfaces::from_surfaces(vec![
+        citation(CITED_TABLE, "cited_object_id"),
+        citation(MAPPING_TABLE, "citation_mapping_id"),
+    ])
+}
+
 /// No core payload registers a citation sidecar, so blob-keyed sidecar coverage
-/// is a synthetic registration: erase takes the table lists as arguments,
-/// exactly as a flavor's frozen registry supplies them.
+/// is a synthetic registration: erase takes the declared surfaces as an
+/// argument, exactly as a flavor's frozen registry supplies them.
 async fn create_citation_sidecar_tables(pool: &sqlx::PgPool) -> Result<(), sqlx::Error> {
     sqlx::query(
         "CREATE TABLE proxima_core.test_cited_object_v1 (
@@ -291,7 +318,12 @@ async fn erase_personal_owner_drops_memory_keys_and_embeddings() {
         assert_eq!(counts.memories, 1);
         assert_eq!(counts.embeddings, 2);
         assert_eq!(counts.suppressed_keys, 0);
-        assert_eq!(counts.receipts, 0);
+        // `ingest_keys` declares `counter: Some("receipts")`, and the
+        // generated leg tallies whatever its surface declares. The
+        // hand-written leg it replaced deleted the same row and counted it
+        // nowhere, so `receipts` was structurally zero: a counter in the
+        // outcome, a column in the journal, and never once a number.
+        assert_eq!(counts.receipts, 1, "the erased admission's ingest key");
         assert_eq!(counts.source_batches, 0);
 
         let remaining: i64 =
@@ -889,16 +921,7 @@ async fn erase_personal_owner_destroys_blobs_uploads_and_citation_sidecars() {
             drop_event_id: "test-drop-blob".into(),
         });
         let outcome = pg
-            .erase_personal_owner_if_drop_verified(
-                &auth,
-                user,
-                false,
-                &ComplianceSidecarTables {
-                    citation_mapping: vec![MAPPING_TABLE.to_owned()],
-                    cited_object: vec![CITED_TABLE.to_owned()],
-                    ..ComplianceSidecarTables::default()
-                },
-            )
+            .erase_personal_owner_if_drop_verified(&auth, user, false, &citation_surfaces())
             .await?;
         let ComplianceEraseOutcome::Completed { counts, .. } = outcome else {
             panic!("expected completed erase, got {outcome:?}");
@@ -996,11 +1019,7 @@ async fn erase_source_scope_deletes_only_unshared_selected_blobs_and_objects() {
                 &auth,
                 user,
                 &source,
-                &ComplianceSidecarTables {
-                    citation_mapping: vec![MAPPING_TABLE.to_owned()],
-                    cited_object: vec![CITED_TABLE.to_owned()],
-                    ..ComplianceSidecarTables::default()
-                },
+                &citation_surfaces(),
             )
             .await?;
         let ComplianceEraseOutcome::Completed { counts, .. } = outcome else {

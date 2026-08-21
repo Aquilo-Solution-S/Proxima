@@ -140,9 +140,45 @@ impl FlavorRegistry {
             // (see `register_fixture_schema`).
             self.validate_contract_schemas(contract)?;
             Self::validate_contract_projection(contract)?;
+            Self::validate_contract_surfaces(contract)?;
         }
         if !self.contracts.is_empty() && !has_core {
             return Err(FlavorRegistryError::MissingCoreContract);
+        }
+        Ok(())
+    }
+
+    /// Every surface the flavor says is exportable must be REACHABLE from
+    /// the owner, and the check is here because the answer never depends on
+    /// the request.
+    ///
+    /// The owner export no longer keeps a hand-written statement per table;
+    /// it generates one per declared surface. That generator has exactly two
+    /// shapes — filter the surface's own `owner_id`, or join the home table
+    /// of its key and filter there — so a surface that declares `Rows` or
+    /// `Allowlist` while carrying neither an owner column nor a key with a
+    /// home is a bundle leg nothing can emit. Before the generator, such a
+    /// surface simply went missing from every bundle, silently, which is the
+    /// class of defect this refuses at boot.
+    ///
+    /// It is deliberately not a check on ERASE. An unreachable surface that
+    /// declares `Excluded` is a stated non-export; one that cascades is
+    /// deleted by a constraint whether or not anything can name its owner.
+    fn validate_contract_surfaces(
+        contract: &crate::flavor::contract::FlavorContract,
+    ) -> Result<(), FlavorRegistryError> {
+        use crate::flavor::contract::ExportRule;
+
+        for surface in contract.all_surfaces() {
+            if matches!(surface.export, ExportRule::Excluded { .. }) {
+                continue;
+            }
+            if surface.owner_columns.is_empty() && surface.key.home().is_none() {
+                return Err(FlavorRegistryError::UnreachableExportSurface {
+                    flavor_id: contract.flavor_id,
+                    table: surface.table,
+                });
+            }
         }
         Ok(())
     }

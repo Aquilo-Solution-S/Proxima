@@ -7,8 +7,9 @@
 
 use proxima_core::compliance::{
     ComplianceAuditContext, ComplianceEraseCounts, ComplianceEraseOutcome, ComplianceEraseRefusal,
-    ComplianceEraseTarget, ComplianceSidecarTables, EraseAuthorization,
+    ComplianceEraseTarget, EraseAuthorization, OwnerSurfaces,
 };
+use proxima_core::flavor::{EraseRule, KeyShape, Surface};
 use proxima_core::{ColdObjectStore, GroupId, OwnerRef, SourceId, StorageError, UserId};
 use sqlx::{PgPool, Postgres, Transaction};
 
@@ -80,7 +81,7 @@ pub async fn erase_group_owner_if_abandoned(
     auth: &EraseAuthorization,
     group_id: GroupId,
     object_purge_planned: bool,
-    tables: &ComplianceSidecarTables,
+    surfaces: &OwnerSurfaces,
 ) -> Result<ComplianceEraseOutcome, StorageError> {
     let owner = OwnerRef::Group(group_id);
     let mut tx = begin_bulk_erase_tx(pool).await?;
@@ -97,7 +98,7 @@ pub async fn erase_group_owner_if_abandoned(
         tx.commit().await.map_err(map_err)?;
         return Ok(outcome);
     }
-    let cold_purge = erase_selected(&mut tx, auth, owner, SelectionScope::Owner, tables).await?;
+    let cold_purge = erase_selected(&mut tx, auth, owner, SelectionScope::Owner, surfaces).await?;
     let counts = final_counts(&mut tx).await?;
     let outcome = ComplianceEraseOutcome::Completed {
         operation_id: auth.audit().operation_id(),
@@ -116,11 +117,11 @@ pub async fn erase_personal_owner_if_drop_verified(
     auth: &EraseAuthorization,
     user_id: UserId,
     object_purge_planned: bool,
-    tables: &ComplianceSidecarTables,
+    surfaces: &OwnerSurfaces,
 ) -> Result<ComplianceEraseOutcome, StorageError> {
     let owner = OwnerRef::Personal(user_id);
     let mut tx = begin_bulk_erase_tx(pool).await?;
-    let cold_purge = erase_selected(&mut tx, auth, owner, SelectionScope::Owner, tables).await?;
+    let cold_purge = erase_selected(&mut tx, auth, owner, SelectionScope::Owner, surfaces).await?;
     let counts = final_counts(&mut tx).await?;
     let outcome = ComplianceEraseOutcome::Completed {
         operation_id: auth.audit().operation_id(),
@@ -139,7 +140,7 @@ pub async fn erase_group_source_scope_if_owner_abandoned(
     auth: &EraseAuthorization,
     group_id: GroupId,
     source_id: &SourceId,
-    tables: &ComplianceSidecarTables,
+    surfaces: &OwnerSurfaces,
 ) -> Result<ComplianceEraseOutcome, StorageError> {
     let owner = OwnerRef::Group(group_id);
     let mut tx = begin_bulk_erase_tx(pool).await?;
@@ -161,7 +162,7 @@ pub async fn erase_group_source_scope_if_owner_abandoned(
         auth,
         owner,
         SelectionScope::Source(source_id),
-        tables,
+        surfaces,
     )
     .await?;
     let counts = final_counts(&mut tx).await?;
@@ -182,7 +183,7 @@ pub async fn erase_personal_source_scope_if_drop_verified(
     auth: &EraseAuthorization,
     user_id: UserId,
     source_id: &SourceId,
-    tables: &ComplianceSidecarTables,
+    surfaces: &OwnerSurfaces,
 ) -> Result<ComplianceEraseOutcome, StorageError> {
     let owner = OwnerRef::Personal(user_id);
     let mut tx = begin_bulk_erase_tx(pool).await?;
@@ -191,7 +192,7 @@ pub async fn erase_personal_source_scope_if_drop_verified(
         auth,
         owner,
         SelectionScope::Source(source_id),
-        tables,
+        surfaces,
     )
     .await?;
     let counts = final_counts(&mut tx).await?;
@@ -240,12 +241,232 @@ async fn group_member_count(tx: &mut Tx<'_>, group_id: GroupId) -> Result<i64, S
     .map_err(map_err)
 }
 
+/// The relations an explicit leg of this erase owns, and the leg that owns
+/// them.
+///
+/// Everything else is reached by a generated statement, or by a declared
+/// `Cascade` the catalog enforces, or is a declared `Never`. A surface that
+/// is none of those four is a hole, and
+/// `every_declared_surface_is_reached_or_named` is what refuses to let one
+/// open: the erase used to reach whichever tables its author remembered, and
+/// three owner-scoped ones survived every erase because nobody asked the
+/// question in a form a test could fail.
+///
+/// A leg is bespoke when its statement is not the generic shape: it enqueues
+/// before it deletes (`cooled`, `blob_uploads`), it spans two selection sets
+/// (`sketch`, the embedding trio), it carries a refcount guard (`content`),
+/// it rewinds rather than deletes (the two heads), or it sweeps something
+/// beyond the owner (`delegated_authority_grants`).
+const BESPOKE_LEGS: &[(&str, &str)] = &[
+    ("proxima_core.announce", "delete_change_events"),
+    ("proxima_core.blob", "delete_blobs"),
+    ("proxima_core.blob_uploads", "delete_blobs"),
+    ("proxima_core.content", "gc_unreferenced_content_batch"),
+    ("proxima_core.cooled", "delete_selected_cooled"),
+    (
+        "proxima_core.delegated_authority_grants",
+        "delete_delegated_authority_grants",
+    ),
+    ("proxima_core.embedding_heads", "delete_embeddings"),
+    ("proxima_core.embedding_jobs", "delete_embeddings"),
+    ("proxima_core.embeddings", "delete_embeddings"),
+    ("proxima_core.goal", "delete_selected_table"),
+    ("proxima_core.goal_head", "sync_selected_heads"),
+    ("proxima_core.memory", "delete_selected_table"),
+    ("proxima_core.memory_head", "sync_selected_heads"),
+    ("proxima_core.sketch", "delete_selected_sketches"),
+    ("proxima_core.source_cursors", "delete_source_cursors"),
+    ("proxima_core.wake_config", "delete_wake_configs"),
+];
+
+/// Which selection set a generated `ByKey` statement joins.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum KeyedSet {
+    Memories,
+    Goals,
+    Blobs,
+}
+
+impl KeyedSet {
+    const fn table(self) -> &'static str {
+        match self {
+            Self::Memories => "selected_memories",
+            Self::Goals => "selected_goals",
+            Self::Blobs => "selected_blobs",
+        }
+    }
+
+    const fn column(self) -> &'static str {
+        match self {
+            Self::Memories => "memory_id",
+            Self::Goals => "goal_id",
+            Self::Blobs => "blob_id",
+        }
+    }
+}
+
+/// The generated leg a surface's declaration earns it, or `None` when an
+/// explicit leg owns it, a constraint removes it, or it is a declared
+/// non-erase.
+fn generated_leg(surface: &Surface) -> Option<GeneratedLeg> {
+    if BESPOKE_LEGS
+        .iter()
+        .any(|(table, _)| *table == surface.table)
+    {
+        return None;
+    }
+    match surface.erase {
+        EraseRule::ByKey => match surface.key {
+            KeyShape::MemoryT { column } => Some(GeneratedLeg::Keyed(KeyedSet::Memories, column)),
+            KeyShape::GoalT { column } => Some(GeneratedLeg::Keyed(KeyedSet::Goals, column)),
+            KeyShape::BlobId { column } => Some(GeneratedLeg::Keyed(KeyedSet::Blobs, column)),
+            KeyShape::OwnerId | KeyShape::Custom(_) => None,
+        },
+        // A surface that keeps its rows on transfer and is keyed on a
+        // memory is the owner-pinned shape: erased by its OWN owner_id, and
+        // asked which source the memory belonged to when the scope is a
+        // source. Everything else owned is owner-scope only, exactly as
+        // `wake_config` and the grants are: a source scope is a partial
+        // owner, and a row with no source attribution belongs to neither
+        // half of it.
+        EraseRule::ByOwner => Some(GeneratedLeg::Owned {
+            source_scoped: match surface.key {
+                KeyShape::MemoryT { column } if surface.transfer.retains_at_source() => {
+                    Some(column)
+                }
+                _ => None,
+            },
+        }),
+        EraseRule::Cascade { .. } | EraseRule::Never { .. } => None,
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GeneratedLeg {
+    Keyed(KeyedSet, &'static str),
+    /// `source_scoped` carries the memory-key column when the surface is
+    /// reachable from a source scope, and `None` when a source scope cannot
+    /// reach it at all.
+    Owned {
+        source_scoped: Option<&'static str>,
+    },
+}
+
+/// Delete every surface the contract keys on one selection set, tallying
+/// each into the counter it declares.
+async fn delete_keyed_surfaces(
+    tx: &mut Tx<'_>,
+    surfaces: &OwnerSurfaces,
+    set: KeyedSet,
+) -> Result<u64, StorageError> {
+    let mut total = 0;
+    for surface in surfaces.surfaces() {
+        let Some(GeneratedLeg::Keyed(declared, column)) = generated_leg(surface) else {
+            continue;
+        };
+        if declared != set {
+            continue;
+        }
+        let rows =
+            delete_fixed_by_selected(tx, surface.table, column, set.table(), set.column()).await?;
+        if let Some(counter) = surface.counter {
+            record_count(tx, counter, rows).await?;
+        }
+        total += rows;
+    }
+    Ok(total)
+}
+
+/// Erase surfaces the contract says carry their own owner.
+///
+/// The owner-pinned half is the transfer doctrine: these rows record an act,
+/// not a Memory. An owner transfer moves the Memory and leaves them behind,
+/// so reaching them through `selected_memories` would make them unerasable
+/// by the owner that wrote them (its Memory is gone) and erasable by the
+/// owner that received it (which never owned them) — zombie rows on one
+/// side, someone else's audit trail on the other.
+///
+/// Source-scoped erase still asks the Memory which source a call belongs to,
+/// deliberately without an owner predicate on that lookup: the row being
+/// erased is already proven to be this owner's, and the Memory is only being
+/// consulted for its `source_id`.
+async fn delete_owned_surfaces(
+    tx: &mut Tx<'_>,
+    surfaces: &OwnerSurfaces,
+    owner: OwnerRef,
+    scope: SelectionScope<'_>,
+) -> Result<u64, StorageError> {
+    let (_owner_kind, owner_id) = owner_binds(&owner);
+    let mut total = 0;
+    for surface in surfaces.surfaces() {
+        let Some(GeneratedLeg::Owned { source_scoped }) = generated_leg(surface) else {
+            continue;
+        };
+        let ident = PgIdent::table(surface.table)?;
+        // SQL-POLICY: PgIdent
+        let sql = match scope {
+            SelectionScope::Owner => {
+                format!(
+                    "DELETE FROM {tbl} WHERE owner_id = $1",
+                    tbl = ident.as_str()
+                )
+            }
+            SelectionScope::Source(_) => {
+                let Some(column) = source_scoped else {
+                    continue;
+                };
+                let key = PgIdent::column(column)?;
+                format!(
+                    "DELETE FROM {tbl} a
+                      WHERE a.owner_id = $1
+                        AND (EXISTS (SELECT 1 FROM proxima_core.memory m
+                                      WHERE m.t = a.{key} AND m.source_id = $2)
+                          OR EXISTS (SELECT 1 FROM proxima_core.cooled c
+                                      WHERE c.t = a.{key} AND c.source_id = $2))",
+                    tbl = ident.as_str(),
+                    key = key.as_str(),
+                )
+            }
+        };
+        // SQL-POLICY: PgIdent
+        let mut query = sqlx::query(sqlx::AssertSqlSafe(sql)).bind(owner_id);
+        if let SelectionScope::Source(source_id) = scope {
+            query = query.bind(source_id.as_str());
+        }
+        let rows = query
+            .execute(&mut **tx)
+            .await
+            .map_err(map_err)?
+            .rows_affected();
+        if let Some(counter) = surface.counter {
+            record_count(tx, counter, rows).await?;
+        }
+        total += rows;
+    }
+    Ok(total)
+}
+
+/// `proxima_core.sketch` is keyed on a memory `t` OR a goal `t` — one
+/// column, two home tables, which is also why it carries no foreign key.
+/// No generated statement spans two selection sets, so this leg is named.
+async fn delete_selected_sketches(tx: &mut Tx<'_>) -> Result<u64, StorageError> {
+    Ok(sqlx::query(
+        "DELETE FROM proxima_core.sketch s
+          WHERE EXISTS (SELECT 1 FROM selected_memories sm WHERE sm.memory_id = s.t)
+             OR EXISTS (SELECT 1 FROM selected_goals sg WHERE sg.goal_id = s.t)",
+    )
+    .execute(&mut **tx)
+    .await
+    .map_err(map_err)?
+    .rows_affected())
+}
+
 async fn erase_selected(
     tx: &mut Tx<'_>,
     auth: &EraseAuthorization,
     owner: OwnerRef,
     scope: SelectionScope<'_>,
-    tables: &ComplianceSidecarTables,
+    surfaces: &OwnerSurfaces,
 ) -> Result<ColdPurgePlan, StorageError> {
     open_erase_bookkeeping(tx, auth, owner, scope).await?;
 
@@ -260,52 +481,18 @@ async fn erase_selected(
     let source_cursors = delete_source_cursors(tx, owner, scope).await?;
     record_count(tx, "source_cursors", source_cursors).await?;
 
-    delete_ingest_keys(tx).await?;
-    delete_goal_refs(tx);
-    delete_memory_refs(tx);
+    // The whole sidecar story, read off the declarations. A surface whose
+    // inverse is `ByKey` and whose key is a memory or goal `t` is deleted
+    // through the matching selection set; owner-pinned surfaces are held out
+    // of it, because their rows do not follow a transfer and the selection
+    // set is the wrong set for them in both directions. There used to be five
+    // hand-assembled name lists here, built from `PayloadKind` and from a
+    // `pg_sidecar!` macro flag — two projections of the contract, written to
+    // agree with it and checked against nothing.
+    delete_keyed_surfaces(tx, surfaces, KeyedSet::Memories).await?;
+    delete_keyed_surfaces(tx, surfaces, KeyedSet::Goals).await?;
 
-    // These two sweeps are the whole sidecar story. There used to be a
-    // second, hardcoded pass underneath each of them —
-    // `delete_fixed_goal_sidecars` naming `task_goal_v1`, and
-    // `delete_fixed_memory_sidecars` naming `agent_derivation_v1`,
-    // `agent_note_v1` and `utterance_v1`. All four are registered schemas,
-    // so the registry pass already deleted their rows and the fixed pass
-    // deleted nothing, every time. What it did instead was hide the failure
-    // mode it looked like insurance against: a core table that fell out of
-    // the registry would have kept working here and gone missing everywhere
-    // else. `the_registry_pass_reaches_every_core_sidecar` pins the set.
-    let mut sidecar_rows =
-        delete_dynamic_sidecars(tx, tables.goal.as_slice(), "t", "selected_goals", "goal_id")
-            .await?;
-    // Owner-pinned sidecars are held out of the Memory-keyed sweep: their
-    // rows do not follow a transfer, so `selected_memories` is the wrong
-    // set for them in both directions. They are erased below, by their own
-    // `owner_id`.
-    let memory_keyed_fact_tables = tables
-        .fact
-        .as_slice()
-        .iter()
-        .filter(|table| !tables.owner_pinned.as_slice().contains(table))
-        .cloned()
-        .collect::<Vec<_>>();
-    sidecar_rows += delete_dynamic_sidecars(
-        tx,
-        &memory_keyed_fact_tables,
-        "t",
-        "selected_memories",
-        "memory_id",
-    )
-    .await?;
-
-    let sketches = sqlx::query(
-        "DELETE FROM proxima_core.sketch s
-          WHERE EXISTS (SELECT 1 FROM selected_memories sm WHERE sm.memory_id = s.t)
-             OR EXISTS (SELECT 1 FROM selected_goals sg WHERE sg.goal_id = s.t)",
-    )
-    .execute(&mut **tx)
-    .await
-    .map_err(map_err)?
-    .rows_affected();
+    let sketches = delete_selected_sketches(tx).await?;
     record_count(tx, "sketches", sketches).await?;
 
     let embedding_jobs = delete_embeddings(tx, "proxima_core.embedding_jobs").await?;
@@ -314,9 +501,7 @@ async fn erase_selected(
     let embeddings = delete_embeddings(tx, "proxima_core.embeddings").await?;
     record_count(tx, "embeddings", embeddings.saturating_add(embedding_heads)).await?;
 
-    let mcp_rows =
-        delete_owner_pinned_sidecars(tx, tables.owner_pinned.as_slice(), owner, scope).await?;
-    record_count(tx, "mcp_call_rows", mcp_rows).await?;
+    delete_owned_surfaces(tx, surfaces, owner, scope).await?;
 
     let content_ids = selected_content_ids(tx).await?;
     let memories = delete_selected_table(
@@ -329,18 +514,14 @@ async fn erase_selected(
     .await?;
     let operation_id = auth.audit().operation_id();
     let (cooled, cold_purge) = delete_selected_cooled(tx, operation_id).await?;
-    for id in content_ids {
-        super::content::gc_unreferenced_content(tx, id).await?;
-    }
+    super::content::gc_unreferenced_content_batch(tx, &content_ids).await?;
     record_count(tx, "memories", memories.saturating_add(cooled)).await?;
     let goals =
         delete_selected_table(tx, "proxima_core.goal", "t", "selected_goals", "goal_id").await?;
     record_count(tx, "goals", goals).await?;
     let wake_configs = delete_wake_configs(tx, owner, scope).await?;
     record_count(tx, "wake_configs", wake_configs).await?;
-    let blobs = delete_blobs(tx, owner, scope, operation_id, tables).await?;
-    sidecar_rows += blobs.sidecar_rows;
-    record_count(tx, "sidecar_rows", sidecar_rows).await?;
+    let blobs = delete_blobs(tx, owner, scope, operation_id, surfaces).await?;
     record_count(tx, "blob_uploads", blobs.uploads).await?;
     record_count(tx, "blobs", blobs.blobs).await?;
     sync_selected_heads(tx).await?;
@@ -593,21 +774,6 @@ async fn sync_selected_heads(tx: &mut Tx<'_>) -> Result<(), StorageError> {
     Ok(())
 }
 
-async fn delete_ingest_keys(tx: &mut Tx<'_>) -> Result<(), StorageError> {
-    sqlx::query(
-        "DELETE FROM proxima_core.ingest_keys k
-          WHERE EXISTS (
-                SELECT 1
-                  FROM selected_memories sm
-                 WHERE sm.memory_id = k.t
-          )",
-    )
-    .execute(&mut **tx)
-    .await
-    .map_err(map_err)?;
-    Ok(())
-}
-
 fn insert_redactions(_tx: &mut Tx<'_>, _operation_id: uuid::Uuid) -> u64 {
     0
 }
@@ -843,89 +1009,12 @@ async fn final_counts(tx: &mut Tx<'_>) -> Result<ComplianceEraseCounts, StorageE
     })
 }
 
-async fn delete_dynamic_sidecars(
-    tx: &mut Tx<'_>,
-    tables: &[String],
-    sidecar_column: &str,
-    selected_table: &str,
-    selected_column: &str,
-) -> Result<u64, StorageError> {
-    let mut total = 0;
-    for table in tables {
-        total += delete_fixed_by_selected(
-            tx,
-            table,
-            sidecar_column,
-            selected_table,
-            selected_column,
-            "sidecar",
-        )
-        .await?;
-    }
-    Ok(total)
-}
-
-/// Erase owner-pinned sidecars by the sidecar's OWN owner.
-///
-/// These rows record an act, not a Memory: an owner transfer moves the
-/// Memory and leaves them behind. Reached through `selected_memories` they
-/// would be unerasable by the owner that wrote them (its Memory is gone)
-/// and erasable by the owner that received it (which never owned them) —
-/// zombie rows on one side, someone else's audit trail on the other.
-///
-/// Source-scoped erase still asks the Memory which source a call belongs
-/// to, deliberately without an owner predicate on that lookup: the row
-/// being erased is already proven to be this owner's, and the Memory is
-/// only being consulted for its `source_id`.
-async fn delete_owner_pinned_sidecars(
-    tx: &mut Tx<'_>,
-    tables: &[String],
-    owner: OwnerRef,
-    scope: SelectionScope<'_>,
-) -> Result<u64, StorageError> {
-    let (_owner_kind, owner_id) = owner_binds(&owner);
-    let mut total = 0;
-    for table in tables {
-        let ident = PgIdent::table(table)?;
-        // SQL-POLICY: PgIdent
-        let sql = match scope {
-            SelectionScope::Owner => {
-                format!(
-                    "DELETE FROM {tbl} WHERE owner_id = $1",
-                    tbl = ident.as_str()
-                )
-            }
-            SelectionScope::Source(_) => format!(
-                "DELETE FROM {tbl} a
-                  WHERE a.owner_id = $1
-                    AND (EXISTS (SELECT 1 FROM proxima_core.memory m
-                                  WHERE m.t = a.t AND m.source_id = $2)
-                      OR EXISTS (SELECT 1 FROM proxima_core.cooled c
-                                  WHERE c.t = a.t AND c.source_id = $2))",
-                tbl = ident.as_str()
-            ),
-        };
-        // SQL-POLICY: PgIdent
-        let mut query = sqlx::query(sqlx::AssertSqlSafe(sql)).bind(owner_id);
-        if let SelectionScope::Source(source_id) = scope {
-            query = query.bind(source_id.as_str());
-        }
-        total += query
-            .execute(&mut **tx)
-            .await
-            .map_err(map_err)?
-            .rows_affected();
-    }
-    Ok(total)
-}
-
 async fn delete_fixed_by_selected(
     tx: &mut Tx<'_>,
     table: &str,
     table_column: &str,
     selected_table: &str,
     selected_column: &str,
-    _name: &str,
 ) -> Result<u64, StorageError> {
     let table = PgIdent::table(table)?;
     let table_column = PgIdent::column(table_column)?;
@@ -954,15 +1043,7 @@ async fn delete_selected_table(
     selected_table: &str,
     selected_column: &str,
 ) -> Result<u64, StorageError> {
-    delete_fixed_by_selected(
-        tx,
-        table,
-        table_column,
-        selected_table,
-        selected_column,
-        table,
-    )
-    .await
+    delete_fixed_by_selected(tx, table, table_column, selected_table, selected_column).await
 }
 
 /// Delete cooled stubs for selected admissions and mark their cold objects
@@ -1040,10 +1121,6 @@ async fn delete_embeddings(tx: &mut Tx<'_>, table: &str) -> Result<u64, StorageE
         .map_err(map_err)?;
     Ok(result.rows_affected())
 }
-
-fn delete_goal_refs(_tx: &mut Tx<'_>) {}
-
-fn delete_memory_refs(_tx: &mut Tx<'_>) {}
 
 async fn delete_change_events(tx: &mut Tx<'_>, owner: OwnerRef) -> Result<u64, StorageError> {
     let (_owner_kind, owner_id) = owner_binds(&owner);
@@ -1130,7 +1207,6 @@ async fn delete_wake_configs(
 /// tables hold different owner data: content hashes, S3 upload metadata, and
 /// whatever a flavor's citation payload carries.
 struct BlobEraseCounts {
-    sidecar_rows: u64,
     uploads: u64,
     blobs: u64,
     cold_purge: ColdPurgePlan,
@@ -1171,7 +1247,7 @@ async fn delete_blobs(
     owner: OwnerRef,
     scope: SelectionScope<'_>,
     operation_id: uuid::Uuid,
-    tables: &ComplianceSidecarTables,
+    surfaces: &OwnerSurfaces,
 ) -> Result<BlobEraseCounts, StorageError> {
     let (_owner_kind, owner_id) = owner_binds(&owner);
     if matches!(scope, SelectionScope::Source(_)) {
@@ -1188,22 +1264,9 @@ async fn delete_blobs(
         .await
         .map_err(map_err)?;
     }
-    let mut sidecar_rows = delete_dynamic_sidecars(
-        tx,
-        tables.cited_object.as_slice(),
-        "cited_object_id",
-        "selected_blobs",
-        "blob_id",
-    )
-    .await?;
-    sidecar_rows += delete_dynamic_sidecars(
-        tx,
-        tables.citation_mapping.as_slice(),
-        "citation_mapping_id",
-        "selected_blobs",
-        "blob_id",
-    )
-    .await?;
+    // The blob-keyed sweep tallies itself into whatever counter each
+    // surface declares, so nothing is returned here to be re-counted.
+    delete_keyed_surfaces(tx, surfaces, KeyedSet::Blobs).await?;
     let object_keys = enqueue_blob_object_keys(tx, owner_id, scope, operation_id).await?;
     let uploads = match scope {
         SelectionScope::Owner => {
@@ -1234,7 +1297,6 @@ async fn delete_blobs(
     )
     .await?;
     Ok(BlobEraseCounts {
-        sidecar_rows,
         uploads,
         blobs,
         cold_purge: ColdPurgePlan::from_keys(object_keys),
@@ -1364,6 +1426,8 @@ async fn delete_source_cursors(
 
 #[cfg(test)]
 mod tests {
+    use super::{BESPOKE_LEGS, GeneratedLeg, KeyedSet, generated_leg};
+
     #[test]
     fn erase_sql_does_not_name_retired_suppression_table() {
         let src = include_str!("compliance_erase.rs");
@@ -1412,24 +1476,93 @@ mod tests {
     #[test]
     fn the_registry_pass_reaches_every_core_sidecar() {
         let registry = proxima_core::FlavorRegistry::new().freeze_or_panic_for_tests();
-        let tables = proxima_core::compliance::ComplianceSidecarTables::for_registry(&registry);
+        let surfaces = proxima_core::compliance::OwnerSurfaces::for_registry(&registry);
+        let leg = |table: &str| {
+            surfaces
+                .surfaces()
+                .iter()
+                .find(|surface| surface.table == table)
+                .and_then(generated_leg)
+        };
 
         for table in [
             "proxima_core.agent_derivation_v1",
             "proxima_core.agent_note_v1",
             "proxima_core.utterance_v1",
         ] {
-            assert!(
-                tables.fact.iter().any(|entry| entry == table),
+            assert_eq!(
+                leg(table),
+                Some(GeneratedLeg::Keyed(KeyedSet::Memories, "t")),
                 "{table} was in delete_fixed_memory_sidecars; the memory-keyed sweep must reach it"
             );
         }
-        assert!(
-            tables
-                .goal
-                .iter()
-                .any(|entry| entry == "proxima_core.task_goal_v1"),
+        assert_eq!(
+            leg("proxima_core.task_goal_v1"),
+            Some(GeneratedLeg::Keyed(KeyedSet::Goals, "t")),
             "task_goal_v1 was in delete_fixed_goal_sidecars; the goal sweep must reach it"
+        );
+    }
+
+    /// The completeness property, in the shape the code flavor already
+    /// proves for its own repo erase: every declared surface is reached by
+    /// a generated leg, named by an explicit one, removed by a constraint,
+    /// or declared a non-erase with a reason. There is no fifth answer, and
+    /// "nobody added it to the list" is not one of the four.
+    #[test]
+    fn every_declared_surface_is_reached_or_named() {
+        use proxima_core::flavor::EraseRule;
+
+        let registry = proxima_core::FlavorRegistry::new().freeze_or_panic_for_tests();
+        let surfaces = proxima_core::compliance::OwnerSurfaces::for_registry(&registry);
+        assert!(
+            surfaces.surfaces().len() > 20,
+            "the registry should carry the whole core contract, got {}",
+            surfaces.surfaces().len()
+        );
+        for surface in surfaces.surfaces() {
+            let bespoke = BESPOKE_LEGS
+                .iter()
+                .find(|(table, _)| *table == surface.table);
+            let generated = generated_leg(surface);
+            match surface.erase {
+                EraseRule::Cascade { .. } | EraseRule::Never { .. } => assert!(
+                    generated.is_none() && bespoke.is_none(),
+                    "{} declares {:?} and must emit no statement",
+                    surface.table,
+                    surface.erase
+                ),
+                EraseRule::ByKey | EraseRule::ByOwner => assert!(
+                    generated.is_some() != bespoke.is_some(),
+                    "{} declares {:?}: exactly one of a generated leg ({generated:?}) and a \
+                     named bespoke leg ({bespoke:?}) must own it",
+                    surface.table,
+                    surface.erase
+                ),
+            }
+        }
+    }
+
+    /// A named exemption for a table nothing declares is a stale name, and
+    /// a stale name is how the hand-written lists rotted in the first place.
+    #[test]
+    fn every_bespoke_leg_names_a_declared_surface() {
+        let registry = proxima_core::FlavorRegistry::new().freeze_or_panic_for_tests();
+        let surfaces = proxima_core::compliance::OwnerSurfaces::for_registry(&registry);
+        for (table, leg) in BESPOKE_LEGS {
+            assert!(
+                surfaces
+                    .surfaces()
+                    .iter()
+                    .any(|surface| surface.table == *table),
+                "{leg} claims {table}, which no contract declares"
+            );
+        }
+        let mut sorted = BESPOKE_LEGS.to_vec();
+        sorted.sort_unstable();
+        assert_eq!(
+            sorted,
+            BESPOKE_LEGS.to_vec(),
+            "keep the exemption list sorted; a list nobody can scan is a list nobody prunes"
         );
     }
 }

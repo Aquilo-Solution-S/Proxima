@@ -56,8 +56,7 @@ pub use citations::*;
 pub use cold::{ColdObjectStore, cold_object_key};
 pub use compliance::{
     ComplianceEraseCounts, ComplianceEraseOutcome, ComplianceEraseRefusal, ComplianceEraseRequest,
-    ComplianceEraseTarget, ComplianceExportBundle, ComplianceExportCounts, ComplianceExportRequest,
-    ComplianceExportSidecarRows, ComplianceExportTarget,
+    ComplianceEraseTarget, ComplianceExportBundle, ComplianceExportRequest, ComplianceExportTarget,
 };
 pub use cursor::*;
 pub use edge::*;

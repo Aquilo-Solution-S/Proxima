@@ -841,7 +841,7 @@ pub(in crate::engine) mod tests {
             _auth: &proxima_core::compliance::EraseAuthorization,
             _group_id: GroupId,
             _object_purge_planned: bool,
-            _tables: &proxima_core::compliance::ComplianceSidecarTables,
+            _tables: &proxima_core::compliance::OwnerSurfaces,
         ) -> Result<proxima_core::compliance::ComplianceEraseOutcome, StorageError> {
             Err(StorageError::Internal(
                 "MembershipStorage rejects writes".into(),
@@ -853,7 +853,7 @@ pub(in crate::engine) mod tests {
             _auth: &proxima_core::compliance::EraseAuthorization,
             _user_id: UserId,
             _object_purge_planned: bool,
-            _tables: &proxima_core::compliance::ComplianceSidecarTables,
+            _tables: &proxima_core::compliance::OwnerSurfaces,
         ) -> Result<proxima_core::compliance::ComplianceEraseOutcome, StorageError> {
             Err(StorageError::Internal(
                 "MembershipStorage rejects writes".into(),
@@ -865,7 +865,7 @@ pub(in crate::engine) mod tests {
             _auth: &proxima_core::compliance::EraseAuthorization,
             _group_id: GroupId,
             _source_id: &SourceId,
-            _tables: &proxima_core::compliance::ComplianceSidecarTables,
+            _tables: &proxima_core::compliance::OwnerSurfaces,
         ) -> Result<proxima_core::compliance::ComplianceEraseOutcome, StorageError> {
             Err(StorageError::Internal(
                 "MembershipStorage rejects writes".into(),
@@ -877,7 +877,7 @@ pub(in crate::engine) mod tests {
             _auth: &proxima_core::compliance::EraseAuthorization,
             _user_id: UserId,
             _source_id: &SourceId,
-            _tables: &proxima_core::compliance::ComplianceSidecarTables,
+            _tables: &proxima_core::compliance::OwnerSurfaces,
         ) -> Result<proxima_core::compliance::ComplianceEraseOutcome, StorageError> {
             Err(StorageError::Internal(
                 "MembershipStorage rejects writes".into(),
@@ -887,7 +887,7 @@ pub(in crate::engine) mod tests {
         async fn export_owner_bundle(
             &self,
             _auth: &proxima_core::compliance::ExportAuthorization,
-            _tables: &proxima_core::compliance::ComplianceSidecarTables,
+            _tables: &proxima_core::compliance::OwnerSurfaces,
         ) -> Result<proxima_core::compliance::ComplianceExportBundle, StorageError> {
             Err(StorageError::Internal(
                 "MembershipStorage rejects reads".into(),

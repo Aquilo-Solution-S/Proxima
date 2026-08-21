@@ -23,7 +23,7 @@ pub trait ComplianceErasePort: Send + Sync {
         auth: &crate::compliance::EraseAuthorization,
         group_id: GroupId,
         object_purge_planned: bool,
-        tables: &crate::compliance::ComplianceSidecarTables,
+        tables: &crate::compliance::OwnerSurfaces,
     ) -> Result<crate::compliance::ComplianceEraseOutcome, StorageError>;
 
     /// See [`ComplianceErasePort::erase_group_owner_if_abandoned`] for the
@@ -33,7 +33,7 @@ pub trait ComplianceErasePort: Send + Sync {
         auth: &crate::compliance::EraseAuthorization,
         user_id: UserId,
         object_purge_planned: bool,
-        tables: &crate::compliance::ComplianceSidecarTables,
+        tables: &crate::compliance::OwnerSurfaces,
     ) -> Result<crate::compliance::ComplianceEraseOutcome, StorageError>;
 
     async fn erase_group_source_scope_if_owner_abandoned(
@@ -41,7 +41,7 @@ pub trait ComplianceErasePort: Send + Sync {
         auth: &crate::compliance::EraseAuthorization,
         group_id: GroupId,
         source_id: &SourceId,
-        tables: &crate::compliance::ComplianceSidecarTables,
+        tables: &crate::compliance::OwnerSurfaces,
     ) -> Result<crate::compliance::ComplianceEraseOutcome, StorageError>;
 
     async fn erase_personal_source_scope_if_drop_verified(
@@ -49,13 +49,13 @@ pub trait ComplianceErasePort: Send + Sync {
         auth: &crate::compliance::EraseAuthorization,
         user_id: UserId,
         source_id: &SourceId,
-        tables: &crate::compliance::ComplianceSidecarTables,
+        tables: &crate::compliance::OwnerSurfaces,
     ) -> Result<crate::compliance::ComplianceEraseOutcome, StorageError>;
 
     async fn export_owner_bundle(
         &self,
         auth: &crate::compliance::ExportAuthorization,
-        tables: &crate::compliance::ComplianceSidecarTables,
+        tables: &crate::compliance::OwnerSurfaces,
     ) -> Result<crate::compliance::ComplianceExportBundle, StorageError>;
 
     /// Clear the durable purge-pending flag on one audit row after a
