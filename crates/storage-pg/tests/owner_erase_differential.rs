@@ -25,6 +25,32 @@
 //! in the same order; and every uuid and timestamp is replaced by an
 //! order-of-first-appearance token, so values that are freshly generated on
 //! every run still compare.
+//!
+//! ## What this does NOT cover
+//!
+//! Read the claim narrowly. This is an EQUIVALENCE gate over a corpus, and a
+//! corpus writes what it writes.
+//!
+//! The dump skips empty sections, so a surface with no rows in the corpus is
+//! absent from both sides and compares equal whatever happens to it. Four
+//! exportable core surfaces are in that position, and that is why the
+//! bundle's key set is pinned separately, against the DECLARATIONS rather
+//! than against a corpus:
+//! `owner_export::the_bundle_carries_every_exportable_surface_even_when_empty`
+//! and the cross-flavor half in `proxima-code`'s `owner_inverse_reach_pg`.
+//! Neither belongs here — regenerating these goldens would destroy their
+//! provenance, which is the whole of this file's argument.
+//!
+//! The corpus also produces no projection rows: it writes under
+//! `core/test-fact-v1`, which is unregistered and therefore projects
+//! nowhere. So the `Cascade` leg — a projection row leaving with the memory
+//! it derives from — is NOT witnessed here. It is carried by
+//! `projection_maintenance::an_owner_erase_takes_the_owners_projection_rows_by_cascade`,
+//! which erases an owner that does have projection rows, and by
+//! `erase_repo_pg::every_cascade_the_contract_declares_is_a_cascade_the_schema_enforces`,
+//! which asks `pg_constraint` whether every declared cascade is really
+//! `confdeltype = 'c'`. Those two are the projection leg's evidence; this
+//! file is silent about it.
 #![allow(
     clippy::doc_markdown,
     clippy::format_push_string,

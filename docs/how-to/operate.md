@@ -58,7 +58,7 @@ version/GUC preflight (see [15 §Runtime requirements](../15-deployment.md#runti
 | `pending_embedding_jobs` | `> 0`, flat/rising | drainer stalled or client unreachable; check embedding client reachability and logs |
 
 `Engine::embedding_ann_observability(authz)` — host-only operator method
-(`AuthPath::System` or `ComplianceAdminPort::may_perform_operator_maintenance`),
+(`AuthPath::System` or `OwnerEraseAuthorityPort::may_perform_operator_maintenance`),
 not an MCP tool (see [15 §Embedding Ops](../15-deployment.md#embedding-ops)):
 
 | Signal | Condition | Action |

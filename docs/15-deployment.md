@@ -249,12 +249,14 @@ Host-only operator methods:
 
 | Verb | Authorization | Contract |
 |---|---|---|
-| `Engine::embedding_ann_observability(authz)` | `AuthPath::System` or `ComplianceAdminPort::may_perform_operator_maintenance` | owner-agnostic rows/bytes/backlog/stale/orphan/recall-canary signals |
+| `Engine::embedding_ann_observability(authz)` | `AuthPath::System` or `OwnerEraseAuthorityPort::may_perform_operator_maintenance` | owner-agnostic rows/bytes/backlog/stale/orphan/recall-canary signals |
 | `Engine::sweep_orphan_embedding_rows(authz)` | same | deletes embedding infra rows whose source memory/goal row no longer exists |
 
-Compliance erase is separate: owner/source erasure deletes embeddings,
-`embedding_heads`, and `embedding_jobs` synchronously at commit. The orphan
-sweep is crash-residue maintenance only.
+An owner erase is separate: owner- and source-scope erasure delete
+embeddings, `embedding_heads` and `embedding_jobs` synchronously at commit.
+The orphan sweep is crash-residue maintenance only — it removes infra rows
+whose memory or goal is already gone, and destroys nothing an erase was
+responsible for.
 
 Day-2 operations — backup/restore, failed-migration behavior, readiness probe,
 and the embedding signal→action runbook: [how-to/operate.md](how-to/operate.md).

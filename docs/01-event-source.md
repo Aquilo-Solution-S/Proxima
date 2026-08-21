@@ -313,28 +313,34 @@ principal = { group = "org_AQS_everyone" }
 # principals bill to the user's personal org. No explicit org field —
 # org is not part of Owner.
 
-# see §Compliance metadata
-[sources.compliance]
+# see §Compliance metadata — design contract, and the host's to act on
+[sources.processing_metadata]
 lawful_basis       = { legitimate_interest = "internal engineering knowledge graph for AQS staff" }
 collection_purpose = "Index AQS source repositories for code-flavor consolidation"
-retention_policy   = { retain_for = "7y" }      # AO §147 alignment
+retention_policy   = { retain_for = "7y" }
 data_residency     = "eu"
 ```
 
-A US-only deployment with no GDPR-equivalent state regulation
-declares trivial values across the board:
+A deployment under no comparable obligation declares trivial values across
+the board:
 
 ```toml
-[sources.compliance]
+[sources.processing_metadata]
 lawful_basis       = "not_applicable"
 collection_purpose = "internal use"
-retention_policy   = { indefinite = { reason = "no applicable retention regime" } }
+retention_policy   = { indefinite = { reason = "nothing schedules a deletion here" } }
 data_residency     = "unrestricted"
 ```
 
-Both forms are valid; the substrate enforcement mechanics
-(residency allowlist, retention-driven cleanup, refusal-with-reason
-on `delete_owner`) act only on non-trivial values.
+Both forms are valid, and **the substrate enforces neither**. There is no
+residency allowlist, no retention-driven cleanup, and no refusal-with-reason
+on an owner erase; earlier drafts of this page promised all three, and the
+v0.0.8 position is their opposite. Proxima stores, and offers the inverse of
+storing. These four fields would ride along with the rows so the hosting
+application's own policy engine has something to read when IT decides an
+erase is owed, on its own schedule, under whatever rules it answers to. A
+substrate that acted on them would be making a judgement it has no standing
+to make.
 
 ## What this gives us
 
