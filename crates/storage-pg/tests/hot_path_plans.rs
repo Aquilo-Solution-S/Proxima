@@ -404,10 +404,11 @@ async fn hot_path_plans_use_expected_indexes() {
             "the per-sidecar tsvector index is gone; plan:\n{lexical_plan}"
         );
 
-        // The admit-side restriction reaches both tables BY INDEX, not by
-        // scanning either. `HeadsOnly` is the request shape above and the
-        // tool default, and putting the restriction on the candidate side is
-        // only worth doing if reaching the head is cheap.
+        // The admit-side restriction reaches both `memory` and `memory_head`,
+        // and on a corpus this size it reaches them by index.  `HeadsOnly` is
+        // the request shape above and the tool default, and putting the
+        // restriction on the candidate side is only worth doing if reaching
+        // the head is cheap.
         //
         // What this pin does NOT assert is the join STRATEGY, and that is a
         // correction. An earlier version rejected `Hash Join` outright, on
@@ -442,19 +443,18 @@ async fn hot_path_plans_use_expected_indexes() {
                 Some("memory_t_key"),
                 "…and reaches the memory row on its unique `t`; plan:\n{lexical_plan}"
             );
-        } else {
-            // Whatever the strategy, neither table may be read by a
-            // sequential scan — that is the assertion the index names were
-            // standing in for, and it holds under both shapes.
-            for (label, node) in [("memory_head", &head), ("memory", &memory)] {
-                assert_ne!(
-                    node.get("Node Type").and_then(serde_json::Value::as_str),
-                    Some("Seq Scan"),
-                    "{label} must be reached by index under any join strategy; \
-                     plan:\n{lexical_plan}"
-                );
-            }
         }
+        // There is deliberately no `else` arm, and the first draft of this
+        // correction had one: "neither table may be read by a sequential
+        // scan under any join strategy". That is false too, and by the same
+        // measurement — the hash plan reads BOTH by seq scan (Hash Join over
+        // Seq Scan memory + Seq Scan memory_head, with the projection on a
+        // bitmap scan; that plan was measured at 55.1 ms). It was green
+        // only because this corpus plans
+        // a nested loop, so the arm was dead code asserting something the
+        // plan it permits would fail. Two tables in the plan and the index
+        // names when the shape is a nested loop is what this test actually
+        // knows.
 
         // The substring arm plans as the nested loop it DECLARES.
         //
