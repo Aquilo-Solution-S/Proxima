@@ -21,6 +21,9 @@ Pre-1.0 the git tag (e.g. `v0.0.3`) is the version; workspace crates are unpubli
 - **core**: Transfer a memory to another owner, not to World ([`e01b648`](https://github.com/Aquilo-Solution-S/Proxima/commit/e01b648799b140c0ded9f4a547c85654b4141757))
 
 ### Bug Fixes
+- **breaking:** **storage-pg**: The kind filter reaches the candidate window too ([`f114f1f`](https://github.com/Aquilo-Solution-S/Proxima/commit/f114f1f683e74a9c641b4d892b5bb3208868b8bf)). `core/agent-derivation-v1` registers under two payload kinds, so a `kind`-filtered request narrows the participating schema set but not the rows; the abstraction-kind rows entered the window and admission dropped them, leaving the starved schema at the substring arm's flat floor. Measured on the same corpus and the same row: `0.250000` at `limit = 1`, `0.545455` at `limit = 8`.
+- **storage-pg**: The projection generator writes only the schema it was asked for ([`a8a74cb`](https://github.com/Aquilo-Solution-S/Proxima/commit/a8a74cba4c3cc377df9e3c3123685d925c61a521))
+- **core**: The projection uniformity arms each get a fixture, and the validators get their order back ([`e745c17`](https://github.com/Aquilo-Solution-S/Proxima/commit/e745c171a470a9aebcb958c0f6beafcea157a1ba))
 - **breaking:** **storage-pg**: HeadsOnly restricts the candidate window, not only admission ([`fc790e9`](https://github.com/Aquilo-Solution-S/Proxima/commit/fc790e9674e3bf6eba7728366bf6fe0578a03618))
 - **core**: The ts_rank weight array joins the uniformity check ([`010e5a5`](https://github.com/Aquilo-Solution-S/Proxima/commit/010e5a5d8e18c40438cb05a0937f12e5af32f929))
 - **breaking:** **code**: The substring arms are declared, and their owner is a real predicate ([`0d95ff2`](https://github.com/Aquilo-Solution-S/Proxima/commit/0d95ff2bfbaa6aba418e291c405c75a35b962c55))
@@ -65,6 +68,9 @@ Pre-1.0 the git tag (e.g. `v0.0.3`) is the version; workspace crates are unpubli
 - **breaking:** The World owner is gone from prose, Lean, and the changelog ([`9abf3de`](https://github.com/Aquilo-Solution-S/Proxima/commit/9abf3de134b6e986f1ea0cec6885f3dc58bec8df))
 
 ### Testing
+- **storage-pg**: The band pin perturbs all three bands, not one ([`d908e93`](https://github.com/Aquilo-Solution-S/Proxima/commit/d908e9375e74eb1a8bcc2f012248e39131f03264))
+- **storage-pg**: The substring leg's head restriction gets a runtime case ([`6887b0b`](https://github.com/Aquilo-Solution-S/Proxima/commit/6887b0b5a59dc02417d20bae603d13c0393db0ce))
+- **storage-pg**: The plan pin stops forbidding the plan that wins at scale ([`e659ebd`](https://github.com/Aquilo-Solution-S/Proxima/commit/e659ebda62ac3cbaebf8b93fba9b15b12aa0a2f6)). Measured: 51.5 ms hash join against 85.8 ms nested loop at 25 000 heads.
 - **code**: The ranked commit arms bind the owner, and the ratchet says why ([`4487adf`](https://github.com/Aquilo-Solution-S/Proxima/commit/4487adfaa8ddc1eb2d3501e491f3d9a55d8d9208))
 - **code**: The cascade check sees every surface the contract declares ([`fb37282`](https://github.com/Aquilo-Solution-S/Proxima/commit/fb37282d80518c23d9cf5e0b9bc8b8113780b935))
 - **search**: The core plan pin asserts the owner is an INDEX condition ([`c90016a`](https://github.com/Aquilo-Solution-S/Proxima/commit/c90016abc0661e08969b3b9907839733c7690d8f))
