@@ -4,7 +4,8 @@
 mod common;
 
 use common::{migrated_db, project_code, seed_memory, test_owner};
-use proxima_code::mcp::search_chunks::chunk_gin_sql_for_tests;
+use proxima_code::mcp::search_chunks::{chunk_gin_sql_for_tests, chunk_like_sql_for_tests};
+use proxima_code::mcp::search_commits::{commit_like_sql_for_tests, summary_like_sql_for_tests};
 use proxima_code::{CodeChunkV1, FileRevisionV1};
 use proxima_core::{AbstractionPayload, FactPayload};
 use proxima_pg_testkit::drop_db;
@@ -129,6 +130,95 @@ async fn code_hot_path_plans_use_expected_indexes() {
              index cond was `{index_cond}`; plan:\n{chunk_plan}"
         );
 
+        // The R6 fix, plan-proved: every substring arm reaches the owner
+        // through THIS FLAVOR's own projection.
+        //
+        // These three arms bound pattern, repo, kind and limit and nothing
+        // else — candidate generation was owner-blind, so a neighbour's
+        // repository could consume the whole candidate budget before
+        // authorization ever ran (PR #231's own recorded follow-up). The
+        // owner reaches a code sidecar through the Memory; the join is to
+        // `proxima_code.projection`, never `proxima_core.memory`, because
+        // flavor SQL may not name a core table for this.
+        for (label, sql, binds) in [
+            (
+                "chunk",
+                chunk_like_sql_for_tests(),
+                LikeBinds {
+                    text: Some("needle"),
+                    repo: Some(repo_id),
+                    kind: None,
+                },
+            ),
+            (
+                "commit",
+                commit_like_sql_for_tests(),
+                LikeBinds {
+                    text: None,
+                    repo: Some(repo_id),
+                    kind: None,
+                },
+            ),
+            (
+                "summary",
+                summary_like_sql_for_tests(),
+                LikeBinds {
+                    text: None,
+                    repo: Some(repo_id),
+                    kind: None,
+                },
+            ),
+        ] {
+            let explain = format!("EXPLAIN (FORMAT JSON, COSTS OFF) {sql}");
+            let owner_ids = vec![owner.stored_owner_id()];
+            // SQL-POLICY: fixed-fragment
+            let query = sqlx::query_scalar(sqlx::AssertSqlSafe(explain));
+            let plan: serde_json::Value = if label == "chunk" {
+                query
+                    .bind(binds.text)
+                    .bind(binds.repo)
+                    .bind(None::<String>)
+                    .bind("%needle%")
+                    .bind(binds.kind)
+                    .bind(20_i64)
+                    .bind(&owner_ids)
+                    .fetch_one(&mut *tx)
+                    .await?
+            } else if label == "commit" {
+                query
+                    .bind("%needle%")
+                    .bind(binds.repo)
+                    .bind(20_i64)
+                    .bind(&owner_ids)
+                    .fetch_one(&mut *tx)
+                    .await?
+            } else {
+                query
+                    .bind("%needle%")
+                    .bind(binds.repo)
+                    .bind(binds.kind)
+                    .bind(20_i64)
+                    .bind(&owner_ids)
+                    .fetch_one(&mut *tx)
+                    .await?
+            };
+            let rendered = plan.to_string();
+            assert!(
+                rendered.contains("\"Relation Name\":\"projection\""),
+                "{label} substring arm must reach the flavor's own projection; \
+                 plan:\n{rendered}"
+            );
+            assert!(
+                !rendered.contains("proxima_core.memory")
+                    && !rendered.contains("\"Relation Name\":\"memory\""),
+                "{label} substring arm must not name a core table; plan:\n{rendered}"
+            );
+            assert!(
+                projection_predicates(&plan).contains("owner_id"),
+                "{label} substring arm must narrow candidates by owner; plan:\n{rendered}"
+            );
+        }
+
         let heads = file_revision_heads_sql_for_tests();
         let heads_explain = format!("EXPLAIN (FORMAT JSON, COSTS OFF) {heads}");
         // SQL-POLICY: fixed-fragment
@@ -151,6 +241,50 @@ async fn code_hot_path_plans_use_expected_indexes() {
     .await;
     let _ = drop_db(&db_name).await;
     result.expect("code hot-path EXPLAIN failed");
+}
+
+/// The binds the three substring arms differ on. Named rather than
+/// positional so the loop above reads as three arms rather than as three
+/// tuples of `None`.
+struct LikeBinds {
+    text: Option<&'static str>,
+    repo: Option<Uuid>,
+    kind: Option<&'static str>,
+}
+
+/// Every predicate the plan puts on a scan of `projection`, whichever way
+/// the planner spelled it. R6's claim is that the owner narrows candidates
+/// at all; which access path serves it is the planner's business and a cost
+/// question, not a contract one.
+fn projection_predicates(plan: &serde_json::Value) -> String {
+    match plan {
+        serde_json::Value::Array(items) => items
+            .iter()
+            .map(projection_predicates)
+            .collect::<Vec<_>>()
+            .join(" "),
+        serde_json::Value::Object(node) => {
+            let mut out = String::new();
+            if node
+                .get("Relation Name")
+                .and_then(serde_json::Value::as_str)
+                == Some("projection")
+            {
+                for key in ["Index Cond", "Filter", "Recheck Cond"] {
+                    if let Some(value) = node.get(key).and_then(serde_json::Value::as_str) {
+                        out.push_str(value);
+                        out.push(' ');
+                    }
+                }
+            }
+            for value in node.values() {
+                out.push_str(&projection_predicates(value));
+                out.push(' ');
+            }
+            out
+        }
+        _ => String::new(),
+    }
 }
 
 /// How many decoy chunks the plan pin needs. Small enough to seed in two

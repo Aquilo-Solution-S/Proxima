@@ -473,7 +473,28 @@ def run_fixture(path: Path) -> int:
 # their projection with the generator's own statement, because a test that
 # proved the projection returns the pre-projection results while writing
 # its vector by hand would have proved nothing about production.
-EXPECTED_DYNAMIC_SQL_SITES = 67
+# 67 -> 73 with the Phase 3 search collapse. Six sites, none of them a new
+# mechanism:
+#
+#   +1 `verbs/query/search.rs` — the single `SidecarScanRow` statement became
+#      `RankedRow` and `SubstringRow`. That is the phase: the ranked arm and
+#      the substring arm are two statements now, not one statement whose
+#      shape a `like_only` flag switched. Both carry the proofs the one they
+#      replace carried.
+#   +3 `flavors/code/src/mcp/search_chunks.rs` (1) and `search_commits.rs`
+#      (2) — the three `LIKE` arms stopped being `&'static str` literals.
+#      They render their owner join and their score floor from the flavor's
+#      DECLARATION now (plan §4.8 R3/R6/R7), and a band floor is a
+#      `format!("{:.2}", ..)`, which no `const` can produce. Trading three
+#      literals for three `LazyLock<String>`s is the cost of the arms being
+#      declared rather than hand-written; each is built once, from data with
+#      no caller text in it, and carries a `PgIdent`/fixed-fragment proof.
+#   +2 test-only plan pins: `storage-pg/tests/hot_path_plans.rs` EXPLAINs the
+#      new substring statement and `flavors/code/tests/hot_path_plans_pg.rs`
+#      EXPLAINs the three `LIKE` arms to pin the R6 owner predicate on the
+#      flavor's own projection. Both EXPLAIN the audited production builders'
+#      output, which is the same shape as the 2026-07-16 HNSW pin above.
+EXPECTED_DYNAMIC_SQL_SITES = 73
 
 
 def run_self_test() -> int:

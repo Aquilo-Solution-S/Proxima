@@ -20,7 +20,8 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::contract::{
-    CHUNK_BAND_RARE_ALL, CHUNK_BAND_RARE_ANY, CHUNK_BAND_RESCUE_ANY, CHUNK_BAND_STRICT, band_parts,
+    CHUNK_BAND_RARE_ALL, CHUNK_BAND_RARE_ANY, CHUNK_BAND_RESCUE_ANY, CHUNK_BAND_STRICT,
+    CODE_CHUNK_SCHEMA_ID,
 };
 use crate::payloads::{CodeChunkV1, FileState};
 use proxima_storage_pg::query::{CodeChunkVectorCandidate, CodeChunkVectorFilters};
@@ -358,7 +359,13 @@ impl Tool for CodeSearchChunksTool {
                             read_owner_ids: &read_owner_ids,
                         };
                         let gin = scan_chunk_sidecar(pool.pool(), query, &scan).await?;
-                        if gin.is_empty() {
+                        // The substring arm is DECLARED, not blanket. A
+                        // schema whose contract says `SubstringArm::Off`
+                        // contributes no statement and no rows; the price
+                        // for stopword-only and partial-word queries is
+                        // then paid per declaration, visibly, instead of
+                        // being a mechanism nobody can turn off.
+                        if gin.is_empty() && chunk_substring_arm_is_declared() {
                             scan_chunk_sidecar_like(pool.pool(), query, &scan).await?
                         } else {
                             gin
@@ -834,19 +841,24 @@ async fn scan_chunk_sidecar(
 
 /// The GIN arm, over `proxima_code.projection`.
 ///
-/// Built from the contract's own bands rather than from float literals:
-/// `CHUNK_BAND_STRICT` and its three siblings ARE these numbers, and a
-/// band that moved in the contract without moving here would be a score
-/// nobody could explain. The rendering is `{:.2}`, so `0.6` becomes
-/// `0.60` — the same `numeric` to `PostgreSQL`, so no score moves.
+/// Every window and every `ts_rank` normalization flag below is READ OFF
+/// the declaration (`contract::band`), not spelled here: the four
+/// `CHUNK_BAND_*` names are the lookup keys, and the numbers they resolve
+/// to live in `CHUNK_BANDS` where the contract can be checked. The
+/// rendering is `{:.2}`, so `0.6` becomes `0.60` — the same `numeric` to
+/// `PostgreSQL`, so no score moves.
 ///
 /// # Why this arm drives from the sidecar, where core's drives from the
 /// projection
 ///
-/// §4.7 R6 has core rank on the projection alone and join the owning
-/// sidecar for the top-k. A chunk search cannot be shaped that way, for two
-/// independent reasons, both of which change *which rows come back*, not
-/// just how fast:
+/// Because the contract SAYS so:
+/// `RankSource::SidecarWithProjectionOwner` on `CODE_PROJECTION`, whose
+/// `why` carries the argument below. §4.8 R3 ruled the deviation kept and
+/// declared — it used to be this doc comment and nothing else, which a
+/// deployment layer cannot read.
+///
+/// The two reasons, in short, both of which change *which rows come back*
+/// and not just how fast:
 ///
 /// 1. The score reads sidecar columns. `chunk_type <> 'file'`, an exact
 ///    `file_path` match, a path substring and a text substring contribute
@@ -867,10 +879,18 @@ async fn scan_chunk_sidecar(
 /// read set, so the scan reads only rows phase 2 could have admitted
 /// anyway. `code_hot_path_plans_use_expected_indexes` pins the index.
 static CHUNK_GIN_SQL: LazyLock<String> = LazyLock::new(|| {
-    let (strict_floor, strict_width) = band_parts(CHUNK_BAND_STRICT);
-    let (rare_all_floor, rare_all_width) = band_parts(CHUNK_BAND_RARE_ALL);
-    let (rare_any_floor, rare_any_width) = band_parts(CHUNK_BAND_RARE_ANY);
-    let (rescue_floor, rescue_width) = band_parts(CHUNK_BAND_RESCUE_ANY);
+    let strict = crate::contract::band(CODE_CHUNK_SCHEMA_ID, CHUNK_BAND_STRICT);
+    let rare_all = crate::contract::band(CODE_CHUNK_SCHEMA_ID, CHUNK_BAND_RARE_ALL);
+    let rare_any = crate::contract::band(CODE_CHUNK_SCHEMA_ID, CHUNK_BAND_RARE_ANY);
+    let rescue = crate::contract::band(CODE_CHUNK_SCHEMA_ID, CHUNK_BAND_RESCUE_ANY);
+    let (strict_floor, strict_width) = strict.parts();
+    let (rare_all_floor, rare_all_width) = rare_all.parts();
+    let (rare_any_floor, rare_any_width) = rare_any.parts();
+    let (rescue_floor, rescue_width) = rescue.parts();
+    let strict_norm = strict.normalization_arg();
+    let rare_all_norm = rare_all.normalization_arg();
+    let rare_any_norm = rare_any.normalization_arg();
+    let rescue_norm = rescue.normalization_arg();
     format!(
         "WITH q AS (
              SELECT websearch_to_tsquery(proxima_code.code_lexical_config(),
@@ -894,16 +914,16 @@ static CHUNK_GIN_SQL: LazyLock<String> = LazyLock::new(|| {
                 (
                     GREATEST(
                         CASE WHEN p.search_tsv @@ q.tsq
-                             THEN {strict_floor} + LEAST(ts_rank_cd(p.search_tsv, q.tsq, 32), 1.0) * {strict_width}
+                             THEN {strict_floor} + LEAST(ts_rank_cd(p.search_tsv, q.tsq{strict_norm}), 1.0) * {strict_width}
                              ELSE 0.0 END,
                         CASE WHEN q.rare_all_tsq IS NOT NULL AND p.search_tsv @@ q.rare_all_tsq
-                             THEN {rare_all_floor} + LEAST(ts_rank(p.search_tsv, q.rare_all_tsq, 1|32) * 100.0, 1.0) * {rare_all_width}
+                             THEN {rare_all_floor} + LEAST(ts_rank(p.search_tsv, q.rare_all_tsq{rare_all_norm}) * 100.0, 1.0) * {rare_all_width}
                              ELSE 0.0 END,
                         CASE WHEN q.rare_any_tsq IS NOT NULL AND p.search_tsv @@ q.rare_any_tsq
-                             THEN {rare_any_floor} + LEAST(ts_rank(p.search_tsv, q.rare_any_tsq, 1|32) * 100.0, 1.0) * {rare_any_width}
+                             THEN {rare_any_floor} + LEAST(ts_rank(p.search_tsv, q.rare_any_tsq{rare_any_norm}) * 100.0, 1.0) * {rare_any_width}
                              ELSE 0.0 END,
                         CASE WHEN q.any_tsq IS NOT NULL AND p.search_tsv @@ q.any_tsq
-                             THEN {rescue_floor} + LEAST(ts_rank(p.search_tsv, q.any_tsq, 1|32) * 100.0, 1.0) * {rescue_width}
+                             THEN {rescue_floor} + LEAST(ts_rank(p.search_tsv, q.any_tsq{rescue_norm}) * 100.0, 1.0) * {rescue_width}
                              ELSE 0.0 END
                     )
                     + CASE WHEN c.chunk_type <> 'file' THEN 0.3 ELSE 0.0 END
@@ -942,13 +962,25 @@ pub fn chunk_gin_sql_for_tests() -> &'static str {
     CHUNK_GIN_SQL.as_str()
 }
 
-/// Substring fallback: only when GIN returned nothing. Same filters, no `@@`.
-async fn scan_chunk_sidecar_like(
-    pool: &sqlx::PgPool,
-    query: &str,
-    scan: &ChunkSidecarScan<'_>,
-) -> Result<Vec<ChunkCandidateRow>, ToolError> {
-    sqlx::query_as(
+/// The substring arm, over the sidecar's own trigram-indexed columns.
+///
+/// `SubstringArm::SameTableLike` is what declares this shape, and
+/// `chunk_substring_arm_is_declared` is what stops it running for a schema
+/// that turned it off. It fires only when the `@@` arm returned nothing —
+/// per-schema parity with the retry it replaces, because this tool ranks
+/// exactly one schema, so "the ranked arm returned nothing for this schema"
+/// and "the ranked arm returned nothing" are the same sentence.
+///
+/// **It carries an owner predicate now** (§4.8 R6). It used to bind six
+/// parameters, none of them owners: candidate generation was owner-blind,
+/// so a neighbour's repository could consume the whole candidate budget
+/// before authorization ever ran. The owner reaches a code sidecar through
+/// the Memory, and the spelling is a join to THIS FLAVOR's own projection
+/// — the same table, the same composite index and the same alias the `@@`
+/// arm already joins — rather than to `proxima_core.memory`, which flavor
+/// SQL may not name.
+static CHUNK_LIKE_SQL: LazyLock<String> = LazyLock::new(|| {
+    format!(
         "SELECT c.t AS memory_id,
                 (
                     CASE WHEN c.chunk_type <> 'file' THEN 0.3 ELSE 0.0 END
@@ -962,6 +994,10 @@ async fn scan_chunk_sidecar_like(
                     + CASE WHEN lower(c.text) LIKE $4 ESCAPE '\\' THEN 4.0 ELSE 0.0 END
                 )::real AS literal_bonus
            FROM proxima_code.code_chunk_v1 c
+           JOIN proxima_code.projection p
+             ON p.memory_id = c.t
+            AND p.schema_id = '{CODE_CHUNK_SCHEMA_ID}'
+            AND p.owner_id = ANY($7::uuid[])
           WHERE c.state = 'Present'
             AND ($2::uuid IS NULL OR c.repo_id = $2)
             AND ($3::text IS NULL OR c.language = $3)
@@ -972,17 +1008,46 @@ async fn scan_chunk_sidecar_like(
                 OR lower(c.text) LIKE $4 ESCAPE '\\'
             )
           ORDER BY score DESC, c.t DESC
-          LIMIT $6",
+          LIMIT $6"
     )
-    .bind(query)
-    .bind(scan.repo_id)
-    .bind(scan.language)
-    .bind(scan.exact_pattern)
-    .bind(scan.chunk_type)
-    .bind(scan.candidate_limit)
-    .fetch_all(pool)
-    .await
-    .map_err(map_storage)
+});
+
+#[cfg(any(test, debug_assertions))]
+#[doc(hidden)]
+#[must_use]
+pub fn chunk_like_sql_for_tests() -> &'static str {
+    CHUNK_LIKE_SQL.as_str()
+}
+
+/// Whether `proxima-code/code-chunk-v1` opts into a substring arm.
+///
+/// `SameTableLike` is the shape this tool implements; anything else — an
+/// `Off`, or a shape this renderer does not have — contributes nothing
+/// rather than silently running the one lane that exists.
+fn chunk_substring_arm_is_declared() -> bool {
+    matches!(
+        crate::contract::substring_arm(CODE_CHUNK_SCHEMA_ID),
+        Some(proxima_core::flavor::SubstringArm::SameTableLike)
+    )
+}
+
+async fn scan_chunk_sidecar_like(
+    pool: &sqlx::PgPool,
+    query: &str,
+    scan: &ChunkSidecarScan<'_>,
+) -> Result<Vec<ChunkCandidateRow>, ToolError> {
+    // SQL-POLICY: fixed-fragment
+    sqlx::query_as(sqlx::AssertSqlSafe(CHUNK_LIKE_SQL.as_str()))
+        .bind(query)
+        .bind(scan.repo_id)
+        .bind(scan.language)
+        .bind(scan.exact_pattern)
+        .bind(scan.chunk_type)
+        .bind(scan.candidate_limit)
+        .bind(scan.read_owner_ids)
+        .fetch_all(pool)
+        .await
+        .map_err(map_storage)
 }
 
 #[derive(Debug, sqlx::FromRow)]
