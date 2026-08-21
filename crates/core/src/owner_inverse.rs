@@ -11,7 +11,7 @@
 
 use std::collections::BTreeMap;
 
-use crate::flavor::{EraseLeg, Surface};
+use crate::flavor::{EraseLeg, Surface, TransferLeg};
 use crate::{AuthPath, GroupId, OwnerRef, SourceId, UserId};
 
 /// Every relation an owner-scoped erase or export has to answer for, read
@@ -31,6 +31,7 @@ use crate::{AuthPath, GroupId, OwnerRef, SourceId, UserId};
 pub struct OwnerSurfaces {
     surfaces: Vec<Surface>,
     legs: BTreeMap<&'static str, EraseLeg>,
+    transfer_legs: BTreeMap<&'static str, TransferLeg>,
 }
 
 impl OwnerSurfaces {
@@ -47,15 +48,21 @@ impl OwnerSurfaces {
     pub fn for_registry(registry: &crate::FlavorRegistryFrozen) -> Self {
         let mut surfaces = Vec::new();
         let mut legs = BTreeMap::new();
+        let mut transfer_legs = BTreeMap::new();
         for contract in registry.contracts() {
             for surface in contract.all_surfaces() {
                 legs.insert(surface.table, contract.erase_leg(&surface));
+                transfer_legs.insert(surface.table, contract.transfer_leg(&surface));
                 surfaces.push(surface);
             }
         }
         surfaces.sort_by_key(|surface| surface.table);
         surfaces.dedup_by_key(|surface| surface.table);
-        Self { surfaces, legs }
+        Self {
+            surfaces,
+            legs,
+            transfer_legs,
+        }
     }
 
     /// Build a set from surfaces given directly, with no bespoke legs.
@@ -74,7 +81,15 @@ impl OwnerSurfaces {
             .iter()
             .map(|surface| (surface.table, EraseLeg::derive(surface, &[])))
             .collect();
-        Self { surfaces, legs }
+        let transfer_legs = surfaces
+            .iter()
+            .map(|surface| (surface.table, TransferLeg::derive(surface, &[])))
+            .collect();
+        Self {
+            surfaces,
+            legs,
+            transfer_legs,
+        }
     }
 
     /// Every declared surface, ordered by table name.
@@ -95,6 +110,45 @@ impl OwnerSurfaces {
             .get(table)
             .copied()
             .unwrap_or(EraseLeg::Unreachable)
+    }
+
+    /// Which leg moves `table`'s rows on a transfer, as its declaring
+    /// flavor resolved it at registry time.
+    ///
+    /// [`TransferLeg::Unreachable`] for a table this set does not carry —
+    /// the same answer as a surface nothing moves, because to this set they
+    /// are the same thing. The transfer reads this and never re-derives:
+    /// the whole point of resolving once, where the surface and the flavor
+    /// that declared it are both in scope, is that the boot check and the
+    /// verb cannot disagree.
+    #[must_use]
+    pub fn transfer_leg(&self, table: &str) -> TransferLeg {
+        self.transfer_legs
+            .get(table)
+            .copied()
+            .unwrap_or(TransferLeg::Unreachable)
+    }
+
+    /// Every surface a transfer moves with a GENERATED statement, in table
+    /// order, paired with the leg that moves it.
+    ///
+    /// The transfer's whole generic input. Ordered by table name so the
+    /// statements a transfer runs are a function of the declarations and
+    /// nothing else — not of hash iteration, not of declaration order
+    /// inside a flavor.
+    #[must_use]
+    pub fn generated_transfer_legs(&self) -> Vec<(&'static str, TransferLeg)> {
+        self.surfaces
+            .iter()
+            .filter_map(|surface| {
+                let leg = self.transfer_leg(surface.table);
+                matches!(
+                    leg,
+                    TransferLeg::Rehomed { .. } | TransferLeg::Dropped { .. }
+                )
+                .then_some((surface.table, leg))
+            })
+            .collect()
     }
 
     /// Every counter any declared surface contributes to, deduplicated and

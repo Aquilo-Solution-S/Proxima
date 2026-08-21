@@ -142,6 +142,7 @@ impl FlavorRegistry {
             Self::validate_contract_projection(contract)?;
             Self::validate_contract_surfaces(contract)?;
             Self::validate_erase_legs(contract)?;
+            Self::validate_transfer_legs(contract)?;
         }
         if !self.contracts.is_empty() && !has_core {
             return Err(FlavorRegistryError::MissingCoreContract);
@@ -242,6 +243,71 @@ impl FlavorRegistry {
                 },
             };
             return Err(FlavorRegistryError::BespokeEraseLegMismatch {
+                flavor_id: contract.flavor_id,
+                table,
+                why,
+            });
+        }
+        Ok(())
+    }
+
+    /// Every surface must have a leg that MOVES it, or a declaration
+    /// saying it deliberately does not move, and the check is at boot for
+    /// the same reason the erase's is: a missing one is discovered nowhere
+    /// else.
+    ///
+    /// The transfer partitions every declared surface into exactly one of
+    /// seven answers — a generated re-home, a generated drop, a generated
+    /// dedupe, a named hand-written leg, a key-owned non-move, a deliberate
+    /// retention at the source, or a refusal. There is no eighth, and the
+    /// eighth that was there until Phase 4 was silence: `owner_columns.rs`
+    /// named its fourteen tables as string literals and referenced no
+    /// contract type at all, so a flavor adding a `Follow` surface got no
+    /// statement, no error, and no way to find out.
+    ///
+    /// That silence is worse here than on the erase side, which is why the
+    /// partition was worth its lines. An unerased row outlives its owner
+    /// and is found by reconcile. An unmoved row is readable by the SOURCE
+    /// owner after the memory became the destination's — a cross-tenant
+    /// read under the multi-owner design centre, produced by nobody
+    /// deciding anything.
+    ///
+    /// [`FlavorContract::transfer_leg`] is the classifier both this and the
+    /// transfer itself call, so this is a check on the code that runs
+    /// rather than on a second description of it.
+    fn validate_transfer_legs(
+        contract: &crate::flavor::contract::FlavorContract,
+    ) -> Result<(), FlavorRegistryError> {
+        use crate::flavor::contract::TransferLeg;
+
+        for surface in contract.all_surfaces() {
+            if contract.transfer_leg(&surface) == TransferLeg::Unreachable {
+                return Err(FlavorRegistryError::UnmovableSurface {
+                    flavor_id: contract.flavor_id,
+                    table: surface.table,
+                });
+            }
+        }
+
+        // A stale name is how the hand-written lists rotted in the first
+        // place, and an exemption claiming a surface whose rule says NO
+        // statement runs is a flavor arguing with itself about whether one
+        // does.
+        for table in contract.bespoke_transfer_legs {
+            let why = match contract
+                .all_surfaces()
+                .find(|surface| surface.table == *table)
+            {
+                None => "this flavor does not declare",
+                Some(surface) => {
+                    if contract.transfer_leg(&surface).moves_rows() {
+                        continue;
+                    }
+                    "declares a transfer that moves no rows, so no hand-written statement \
+                     should touch it"
+                }
+            };
+            return Err(FlavorRegistryError::BespokeTransferLegMismatch {
                 flavor_id: contract.flavor_id,
                 table,
                 why,
@@ -724,6 +790,7 @@ mod tests {
             tools,
             resources,
             bespoke_erase_legs: &[],
+            bespoke_transfer_legs: &[],
             projection: ProjectionDecl::None {
                 why: "a fixture registry has no schema that is a search surface",
             },
@@ -849,6 +916,29 @@ mod tests {
         }
     }
 
+    /// `erase_fixture`'s twin for the transfer partition: the surfaces are
+    /// declared non-erasing so the erase check cannot fire first and mask
+    /// the case under test.
+    const fn transfer_fixture(
+        surfaces: &'static [Surface],
+        bespoke: &'static [&'static str],
+    ) -> FlavorContract {
+        FlavorContract {
+            flavor_id: FIXTURE_FLAVOR,
+            ordinal: 7,
+            schemas: &[],
+            state_surfaces: surfaces,
+            kernel_surfaces: &[],
+            tools: &[],
+            resources: &[],
+            bespoke_erase_legs: &[],
+            bespoke_transfer_legs: bespoke,
+            projection: ProjectionDecl::None {
+                why: "a fixture registry has no schema that is a search surface",
+            },
+        }
+    }
+
     const fn erase_fixture(
         surfaces: &'static [Surface],
         bespoke: &'static [&'static str],
@@ -862,6 +952,7 @@ mod tests {
             tools: &[],
             resources: &[],
             bespoke_erase_legs: bespoke,
+            bespoke_transfer_legs: &[],
             projection: ProjectionDecl::None {
                 why: "a fixture registry has no schema that is a search surface",
             },
@@ -892,6 +983,93 @@ mod tests {
             ExportRule::Rows,
         )],
         &["test_flavor.gone_v1"],
+    );
+
+    /// A `Follow` surface whose transfer no leg can perform, and the whole
+    /// reason the transfer partition exists.
+    ///
+    /// Keyed on a `Custom` column the transfer builds no `t` set for, and
+    /// claimed by no bespoke leg. Before Phase 4 this froze cleanly, booted
+    /// cleanly, and its rows stayed with the SOURCE owner after every
+    /// memory that referenced them moved — which is not a stale row, it is
+    /// a cross-tenant read arrived at by silence.
+    static UNMOVABLE_SURFACE: FlavorContract = transfer_fixture(
+        &[Surface {
+            table: "test_flavor.thing_v1",
+            key: KeyShape::Custom(&["thing_id"]),
+            owner_columns: &["owner_id"],
+            transfer: TransferRule::Follow,
+            erase: EraseRule::Never {
+                why: "the transfer rule is what this fixture is about",
+            },
+            export: ExportRule::Excluded {
+                why: "the transfer rule is what this fixture is about",
+            },
+            forget: ForgetRule::Keep {
+                why: "a fixture, not a memory",
+            },
+            lexical_language_column: None,
+            counter: None,
+            completeness: None,
+        }],
+        &[],
+    );
+
+    /// `Follow` with no owner column to set. The rows are reached through
+    /// their key's owner, which is what `StaysOnKey` says and what an empty
+    /// `owner_columns` claims; declaring `Follow` over it asks for an
+    /// `UPDATE` with an empty `SET`.
+    static FOLLOW_WITH_NOTHING_TO_SET: FlavorContract = transfer_fixture(
+        &[Surface {
+            table: "test_flavor.thing_v1",
+            key: KeyShape::MemoryT { column: "t" },
+            owner_columns: &[],
+            transfer: TransferRule::Follow,
+            erase: EraseRule::Never {
+                why: "the transfer rule is what this fixture is about",
+            },
+            export: ExportRule::Excluded {
+                why: "the transfer rule is what this fixture is about",
+            },
+            forget: ForgetRule::Keep {
+                why: "a fixture, not a memory",
+            },
+            lexical_language_column: None,
+            counter: None,
+            completeness: None,
+        }],
+        &[],
+    );
+
+    /// A bespoke transfer leg naming a table the flavor does not declare.
+    static BESPOKE_TRANSFER_LEG_FOR_NOTHING: FlavorContract = transfer_fixture(
+        &[state_surface(
+            "test_flavor.thing_v1",
+            KeyShape::MemoryT { column: "t" },
+            EraseRule::Never {
+                why: "the transfer rule is what this fixture is about",
+            },
+            ExportRule::Excluded {
+                why: "the transfer rule is what this fixture is about",
+            },
+        )],
+        &["test_flavor.gone_v1"],
+    );
+
+    /// A flavor arguing with itself: `StaysOnKey` says nothing moves, and
+    /// the exemption list says a hand-written statement moves it.
+    static BESPOKE_TRANSFER_LEG_OVER_A_NON_MOVE: FlavorContract = transfer_fixture(
+        &[state_surface(
+            "test_flavor.thing_v1",
+            KeyShape::MemoryT { column: "t" },
+            EraseRule::Never {
+                why: "the transfer rule is what this fixture is about",
+            },
+            ExportRule::Excluded {
+                why: "the transfer rule is what this fixture is about",
+            },
+        )],
+        &["test_flavor.thing_v1"],
     );
 
     /// A flavor arguing with itself: the declaration says a constraint
@@ -976,6 +1154,7 @@ mod tests {
         tools: &[],
         resources: &[],
         bespoke_erase_legs: &[],
+        bespoke_transfer_legs: &[],
         projection: ProjectionDecl::Table(crate::flavor::contract::ProjectionSpec {
             table: "test_flavor.projection",
             index: "test_flavor_projection_owner_tsv_gin",
@@ -1040,6 +1219,7 @@ mod tests {
             tools: &[],
             resources: &[],
             bespoke_erase_legs: &[],
+            bespoke_transfer_legs: &[],
             projection: ProjectionDecl::Table(crate::flavor::contract::ProjectionSpec {
                 table: "test_flavor.projection",
                 index: "test_flavor_projection_owner_tsv_gin",
@@ -1466,6 +1646,62 @@ mod tests {
                     matches!(
                         err,
                         FlavorRegistryError::UndeletableSurface {
+                            table: "test_flavor.thing_v1",
+                            ..
+                        }
+                    )
+                },
+            ),
+            (
+                "a surface declares a transfer no leg can perform",
+                |registry| registry.contracts.push(&UNMOVABLE_SURFACE),
+                |err| {
+                    matches!(
+                        err,
+                        FlavorRegistryError::UnmovableSurface {
+                            table: "test_flavor.thing_v1",
+                            ..
+                        }
+                    )
+                },
+            ),
+            (
+                "a surface declares Follow with no owner column to set",
+                |registry| registry.contracts.push(&FOLLOW_WITH_NOTHING_TO_SET),
+                |err| {
+                    matches!(
+                        err,
+                        FlavorRegistryError::UnmovableSurface {
+                            table: "test_flavor.thing_v1",
+                            ..
+                        }
+                    )
+                },
+            ),
+            (
+                "a bespoke transfer leg names a table the flavor does not declare",
+                |registry| registry.contracts.push(&BESPOKE_TRANSFER_LEG_FOR_NOTHING),
+                |err| {
+                    matches!(
+                        err,
+                        FlavorRegistryError::BespokeTransferLegMismatch {
+                            table: "test_flavor.gone_v1",
+                            ..
+                        }
+                    )
+                },
+            ),
+            (
+                "a bespoke transfer leg claims a surface nothing moves",
+                |registry| {
+                    registry
+                        .contracts
+                        .push(&BESPOKE_TRANSFER_LEG_OVER_A_NON_MOVE);
+                },
+                |err| {
+                    matches!(
+                        err,
+                        FlavorRegistryError::BespokeTransferLegMismatch {
                             table: "test_flavor.thing_v1",
                             ..
                         }

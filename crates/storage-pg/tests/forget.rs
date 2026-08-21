@@ -21,6 +21,15 @@ use proxima_storage_pg::verbs::forget::{
 use proxima_storage_pg::verbs::memory_timeseries::ingest_fact_timeseries;
 use uuid::Uuid;
 
+/// The transfer's registry-resolved legs, exactly as the engine assembles
+/// them. Passing a hand-built set here would test a registry production
+/// never sees.
+fn transfer_surfaces() -> proxima_core::owner_inverse::OwnerSurfaces {
+    proxima_core::owner_inverse::OwnerSurfaces::for_registry(
+        &proxima_core::FlavorRegistry::new().freeze_or_panic_for_tests(),
+    )
+}
+
 const AGENT_NOTE: &str = "proxima_core.agent_note_v1";
 const UTTERANCE: &str = "proxima_core.utterance_v1";
 const GHOST_TABLE: &str = "proxima_core.w4_does_not_exist_v1";
@@ -1657,8 +1666,13 @@ async fn commit_forget_aborts_when_owner_transferred() {
         drop(conn);
         let dest = OwnerRef::Group(GroupId::new(Uuid::now_v7()));
         assert!(
-            pg.transfer_to_owner(&permit, EntityId::Memory(written.memory_id), dest)
-                .await?
+            pg.transfer_to_owner(
+                &permit,
+                EntityId::Memory(written.memory_id),
+                dest,
+                &transfer_surfaces()
+            )
+            .await?
         );
 
         let cold = MemoryColdStore::default();

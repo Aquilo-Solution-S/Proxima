@@ -715,6 +715,35 @@ pub enum KeyShape {
     BlobId {
         column: &'static str,
     },
+    /// Keyed on an entity `t` that is a memory t OR a goal t, under the
+    /// column named here.
+    ///
+    /// Four kernel tables are this shape and no other: `sketch.t`, and
+    /// `entity_id` on the three embedding tables. Each holds a row for a
+    /// memory version and a row for a goal version, in the same column,
+    /// with no discriminator — `sketch`'s own declaration has said so in
+    /// prose since Phase 1 ("`t` is a Memory t OR a Goal t, and there is no
+    /// constraint that can span two home tables").
+    ///
+    /// They declared [`Self::Custom`] until Phase 4, which was true but
+    /// said nothing: `Custom` is the arm for "this crate cannot reason
+    /// about the key at all", and it put `sketch.t` in the same class as
+    /// `blob_uploads.upload_id`, which is not an entity t and never was.
+    /// The distinction earns its arm because the two verbs answer it
+    /// differently:
+    ///
+    /// - **Erase** cannot reach it. It builds one selection set per home
+    ///   table, and a key with two homes belongs to neither; all four are
+    ///   declared bespoke erase legs and [`EraseLeg::derive`] keeps
+    ///   returning [`EraseLeg::Unreachable`] for this arm so a flavor that
+    ///   forgot the exemption still gets a boot refusal.
+    /// - **Transfer** can. Goals do not transfer at all — the refusal is
+    ///   the first thing the verb does — so the `t` set a transfer carries
+    ///   contains only memory versions, and a goal-keyed row simply does
+    ///   not match it.
+    EntityT {
+        column: &'static str,
+    },
     OwnerId,
     Custom(&'static [&'static str]),
 }
@@ -733,7 +762,8 @@ impl KeyShape {
             Self::MemoryT { column } => Some(("proxima_core.memory", "t", column)),
             Self::GoalT { column } => Some(("proxima_core.goal", "t", column)),
             Self::BlobId { column } => Some(("proxima_core.blob", "blob_id", column)),
-            Self::OwnerId | Self::Custom(_) => None,
+            // `EntityT` has two homes, so it has none a join can name.
+            Self::EntityT { .. } | Self::OwnerId | Self::Custom(_) => None,
         }
     }
 
@@ -743,9 +773,10 @@ impl KeyShape {
     #[must_use]
     pub fn columns(self) -> Vec<&'static str> {
         match self {
-            Self::MemoryT { column } | Self::GoalT { column } | Self::BlobId { column } => {
-                vec![column]
-            }
+            Self::MemoryT { column }
+            | Self::GoalT { column }
+            | Self::BlobId { column }
+            | Self::EntityT { column } => vec![column],
             Self::OwnerId => vec!["owner_id"],
             Self::Custom(columns) => columns.to_vec(),
         }
@@ -826,7 +857,9 @@ impl EraseLeg {
                         // for, and no bespoke leg claimed it. The generator
                         // has no statement for this shape, so nothing at all
                         // would delete these rows.
-                        KeyShape::OwnerId | KeyShape::Custom(_) => Self::Unreachable,
+                        KeyShape::EntityT { .. } | KeyShape::OwnerId | KeyShape::Custom(_) => {
+                            Self::Unreachable
+                        }
                     },
                     // A surface that keeps its rows on transfer and is keyed
                     // on a memory is the owner-pinned shape: erased by its
@@ -849,6 +882,140 @@ impl EraseLeg {
                 }
             }
         }
+    }
+}
+
+/// Which leg moves — or deliberately does not move — a surface's rows when
+/// a memory series changes owner.
+///
+/// The exact shape of [`EraseLeg`], for the same reason and against a worse
+/// failure. Erase's hole was a table nothing deleted: rows outliving their
+/// owner, discovered nowhere. Transfer's hole is a table nothing MOVED, and
+/// under a multi-owner deployment that is not a stale row — it is a row the
+/// SOURCE owner can still read after the memory it belongs to became
+/// someone else's. A cross-tenant read, arrived at by silence.
+///
+/// Before this, the silence was total: `owner_columns.rs` held no reference
+/// to `Surface`, `TransferRule` or the registry in 732 lines, a new `Follow`
+/// surface was simply not followed, and the only thing standing where a
+/// check belongs was an eight-line comment. Every arm below is derived in
+/// ONE place, so freeze and the verb cannot hold different opinions about
+/// which tables a transfer covers.
+///
+/// [`Self::Unreachable`] is the silence turned into a value, so freeze can
+/// refuse it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TransferLeg {
+    /// Generated: set every one of `owner_columns` to the destination, for
+    /// the rows whose `key_column` is in the transferred series' `t` set.
+    Rehomed {
+        key_column: &'static str,
+        owner_columns: &'static [&'static str],
+    },
+    /// Generated: delete the surface's rows for the transferred series,
+    /// with the reason the declaration gave.
+    Dropped {
+        key_column: &'static str,
+        why: &'static str,
+    },
+    /// Generated dedupe: the destination-owned row is found (or minted)
+    /// under `dedupe_key`, and `remaps` names every referring column a
+    /// generated statement repoints at it. The orchestration around those
+    /// statements — a refcount probe, an object mount, an orphan GC — is
+    /// the flavor's, which is why the surface is also in the bespoke list.
+    Deduped {
+        dedupe_key: &'static [&'static str],
+        remaps: &'static [&'static str],
+    },
+    /// A hand-written statement, claimed by the flavor's exemption list.
+    Bespoke,
+    /// Reached through its key's owner; there is nothing to move.
+    StaysOnKey,
+    /// The row stays with the SOURCE, and the destination must never gain
+    /// read access to it.
+    Retained { why: &'static str },
+    /// The entity does not transfer at all; the attempt is refused.
+    Refused { why: &'static str },
+    /// Nothing moves it and nothing said so. Always a freeze error, never a
+    /// runtime state.
+    Unreachable,
+}
+
+impl TransferLeg {
+    /// Classify one surface against a flavor's declared bespoke list.
+    ///
+    /// THE classifier. `validate_transfer_legs` calls it at freeze and
+    /// `OwnerSurfaces::for_registry` calls it once per surface at registry
+    /// time; the verb reads the resolved answer and never re-derives one.
+    ///
+    /// The three arms that say NO STATEMENT RUNS — `StaysOnKey`,
+    /// `RetainAtSource`, `NotTransferable` — win over the bespoke list,
+    /// exactly as `Cascade` and `Never` do on the erase side. A flavor that
+    /// declares one of those AND names a hand-written leg is contradicting
+    /// itself, and `validate_transfer_legs` refuses that rather than
+    /// letting this pick a winner.
+    ///
+    /// For the three that DO move rows, the exemption list is consulted
+    /// first. That ordering is what lets `memory_head` and `blob_uploads`
+    /// be `Follow` and still be hand-written: both are keyed on a single
+    /// column (`handle`, `upload_id`) that is not an entity `t`, so a
+    /// generated `WHERE <column> = ANY($1)` would match nothing at all —
+    /// silently. Unclaimed, they are [`Self::Unreachable`] and freeze says
+    /// so.
+    #[must_use]
+    pub fn derive(surface: &Surface, bespoke: &[&'static str]) -> Self {
+        match surface.transfer {
+            TransferRule::StaysOnKey => Self::StaysOnKey,
+            TransferRule::RetainAtSource { why } => Self::Retained { why },
+            TransferRule::NotTransferable { why, .. } => Self::Refused { why },
+            TransferRule::Follow | TransferRule::Drop { .. }
+                if bespoke.contains(&surface.table) =>
+            {
+                Self::Bespoke
+            }
+            TransferRule::Follow => match surface.key {
+                // The two keys that name a memory version. A `Follow` with
+                // no owner column to set is a contradiction, not a leg:
+                // `StaysOnKey` is the arm for "reached through the key's
+                // owner", and it is what an empty `owner_columns` claims.
+                KeyShape::MemoryT { column } | KeyShape::EntityT { column }
+                    if !surface.owner_columns.is_empty() =>
+                {
+                    Self::Rehomed {
+                        key_column: column,
+                        owner_columns: surface.owner_columns,
+                    }
+                }
+                _ => Self::Unreachable,
+            },
+            TransferRule::Drop { why } => match surface.key {
+                KeyShape::MemoryT { column } | KeyShape::EntityT { column } => Self::Dropped {
+                    key_column: column,
+                    why,
+                },
+                _ => Self::Unreachable,
+            },
+            // The dedupe arm always needs an orchestrator, so it is always
+            // in the exemption list too — but the two generated halves come
+            // from here, which is what makes `dedupe_key` and `remaps`
+            // consumed rather than described.
+            TransferRule::FollowOrDedupe { dedupe_key, remaps }
+                if bespoke.contains(&surface.table) =>
+            {
+                Self::Deduped { dedupe_key, remaps }
+            }
+            TransferRule::FollowOrDedupe { .. } => Self::Unreachable,
+        }
+    }
+
+    /// Whether this leg runs any statement at all. The three silent arms
+    /// are the ones an exemption list must not claim.
+    #[must_use]
+    pub const fn moves_rows(&self) -> bool {
+        matches!(
+            self,
+            Self::Rehomed { .. } | Self::Dropped { .. } | Self::Deduped { .. } | Self::Bespoke
+        )
     }
 }
 
@@ -1217,6 +1384,16 @@ pub struct FlavorContract {
     /// rather than a generated one. Empty for a flavor whose every surface
     /// the generator reaches, which is the ordinary case.
     pub bespoke_erase_legs: &'static [&'static str],
+    /// Surfaces of this flavor whose transfer is a hand-written statement
+    /// rather than a generated one — the same exemption shape the erase
+    /// side uses, and the same reason it cannot be derived: which tables
+    /// need an interleaved hand-written move is a fact about the substrate
+    /// crate's code, invisible to core's freeze.
+    ///
+    /// Every `FollowOrDedupe` surface belongs here by construction: the
+    /// arm's generated halves come off the declaration, but the refcount
+    /// probe and the object mount between them do not.
+    pub bespoke_transfer_legs: &'static [&'static str],
 }
 
 /// The ordinal that marks core. Load-bearing at runtime in exactly two
@@ -1267,6 +1444,18 @@ impl FlavorContract {
     #[must_use]
     pub fn erase_leg(&self, surface: &Surface) -> EraseLeg {
         EraseLeg::derive(surface, self.bespoke_erase_legs)
+    }
+
+    /// Which leg moves this surface's rows on a transfer, resolved against
+    /// THIS flavor's exemption list.
+    ///
+    /// The transfer twin of [`Self::erase_leg`], and the same warning
+    /// applies: the three arms that say no statement runs win over the
+    /// exemption list, and `validate_transfer_legs` refuses a flavor that
+    /// claims one of them rather than letting this pick a winner.
+    #[must_use]
+    pub fn transfer_leg(&self, surface: &Surface) -> TransferLeg {
+        TransferLeg::derive(surface, self.bespoke_transfer_legs)
     }
 
     /// Every schema of this flavor that is a search surface, paired with

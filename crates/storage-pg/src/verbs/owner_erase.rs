@@ -213,7 +213,12 @@ const fn keyed_set(key: KeyShape) -> Option<(KeyedSet, &'static str)> {
         KeyShape::MemoryT { column } => Some((KeyedSet::Memories, column)),
         KeyShape::GoalT { column } => Some((KeyedSet::Goals, column)),
         KeyShape::BlobId { column } => Some((KeyedSet::Blobs, column)),
-        KeyShape::OwnerId | KeyShape::Custom(_) => None,
+        // An entity `t` has two home tables and therefore two selection
+        // sets; the erase fills one per home and can join neither
+        // unambiguously. All four such surfaces are declared bespoke erase
+        // legs, and a flavor that forgets the exemption gets
+        // `UndeletableSurface` rather than this returning a guess.
+        KeyShape::EntityT { .. } | KeyShape::OwnerId | KeyShape::Custom(_) => None,
     }
 }
 

@@ -102,10 +102,11 @@ impl OwnerTransferPort for PgStorage {
         permit: &OwnerWritePermit,
         entity: EntityId,
         to_owner: OwnerRef,
+        surfaces: &proxima_core::owner_inverse::OwnerSurfaces,
     ) -> Result<bool, StorageError> {
         access::owner_columns::transfer_to_owner(
             &self.pool,
-            &self.sidecars,
+            surfaces,
             entity,
             *permit.owner(),
             to_owner,

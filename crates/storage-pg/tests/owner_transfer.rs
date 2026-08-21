@@ -250,7 +250,12 @@ async fn transfer_moves_same_memory_t_and_sidecar() {
             .await?;
 
         let first = pg
-            .transfer_to_owner(&permit, EntityId::Memory(written.memory_id), dest)
+            .transfer_to_owner(
+                &permit,
+                EntityId::Memory(written.memory_id),
+                dest,
+                &contract_sidecar_tables(),
+            )
             .await?;
         assert!(first);
         let content_owner: Uuid = sqlx::query_scalar(
@@ -314,7 +319,12 @@ async fn transfer_moves_same_memory_t_and_sidecar() {
         .await?;
         assert_eq!(keys, 0);
         let replay = pg
-            .transfer_to_owner(&permit, EntityId::Memory(written.memory_id), dest)
+            .transfer_to_owner(
+                &permit,
+                EntityId::Memory(written.memory_id),
+                dest,
+                &contract_sidecar_tables(),
+            )
             .await?;
         assert!(
             !replay,
@@ -372,7 +382,12 @@ async fn transfer_rehomes_cooled_versions_and_remints_object_key() {
         assert_eq!(second.handle, first.handle);
 
         let transferred = pg
-            .transfer_to_owner(&permit, EntityId::Memory(second.memory_id), dest)
+            .transfer_to_owner(
+                &permit,
+                EntityId::Memory(second.memory_id),
+                dest,
+                &contract_sidecar_tables(),
+            )
             .await?;
         assert!(transferred);
         let cooled_owner: uuid::Uuid =
@@ -519,7 +534,12 @@ async fn transfer_retries_when_ingest_advances_the_captured_head() {
         let transfer = tokio::spawn(async move {
             let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
             transfer_pg
-                .transfer_to_owner(&permit, EntityId::Memory(transferred_id), dest)
+                .transfer_to_owner(
+                    &permit,
+                    EntityId::Memory(transferred_id),
+                    dest,
+                    &contract_sidecar_tables(),
+                )
                 .await
         });
 
@@ -641,7 +661,12 @@ async fn transfer_is_unchanged_when_the_head_owner_is_already_lost() {
                 .await?;
 
         let transferred = pg
-            .transfer_to_owner(&permit, EntityId::Memory(second.memory_id), dest)
+            .transfer_to_owner(
+                &permit,
+                EntityId::Memory(second.memory_id),
+                dest,
+                &contract_sidecar_tables(),
+            )
             .await?;
         assert!(
             !transferred,
@@ -720,7 +745,12 @@ async fn transfer_refuses_goal_entities() {
         tx.commit().await?;
 
         let err = pg
-            .transfer_to_owner(&permit, EntityId::Goal(GoalId::new(out.t)), dest)
+            .transfer_to_owner(
+                &permit,
+                EntityId::Goal(GoalId::new(out.t)),
+                dest,
+                &contract_sidecar_tables(),
+            )
             .await
             .expect_err("goals do not transfer");
         assert!(
@@ -815,7 +845,12 @@ async fn transfer_refuses_armed_goal_and_owner_erase_still_succeeds() {
             .await?;
 
         let err = pg
-            .transfer_to_owner(&permit, EntityId::Goal(GoalId::new(goal_t)), dest)
+            .transfer_to_owner(
+                &permit,
+                EntityId::Goal(GoalId::new(goal_t)),
+                dest,
+                &contract_sidecar_tables(),
+            )
             .await
             .expect_err("an armed goal is refused like any goal");
         assert!(matches!(err, StorageError::ConstraintViolation(_)));
@@ -872,8 +907,13 @@ async fn transfer_writes_announce_rows_under_both_lanes() {
         let t = written.memory_id.into_inner();
 
         assert!(
-            pg.transfer_to_owner(&permit, EntityId::Memory(written.memory_id), dest)
-                .await?
+            pg.transfer_to_owner(
+                &permit,
+                EntityId::Memory(written.memory_id),
+                dest,
+                &contract_sidecar_tables()
+            )
+            .await?
         );
 
         // Raw rail: exactly one 'transfer' row per lane, same (handle, t).
@@ -984,8 +1024,13 @@ async fn transfer_moves_exclusive_blob_with_the_fact() {
         cited.blob_id = Some(blob_id);
         let written = ingest_fact_atomic(pool, &permit, &cited, None).await?;
         assert!(
-            pg.transfer_to_owner(&permit, EntityId::Memory(written.memory_id), dest)
-                .await?
+            pg.transfer_to_owner(
+                &permit,
+                EntityId::Memory(written.memory_id),
+                dest,
+                &contract_sidecar_tables()
+            )
+            .await?
         );
         let blob_owner: Uuid =
             sqlx::query_scalar("SELECT owner_id FROM proxima_core.blob WHERE blob_id = $1")
@@ -1058,8 +1103,13 @@ async fn transfer_leaves_the_actor_call_log_with_the_owner_that_made_the_call() 
         );
 
         assert!(
-            pg.transfer_to_owner(&permit, EntityId::Memory(written.memory_id), dest)
-                .await?
+            pg.transfer_to_owner(
+                &permit,
+                EntityId::Memory(written.memory_id),
+                dest,
+                &contract_sidecar_tables()
+            )
+            .await?
         );
 
         let still_pinned: Vec<Uuid> =
@@ -1200,7 +1250,7 @@ async fn the_destination_can_forget_and_erase_without_touching_the_source_audit_
         later.ingest_key = Some("k2".into());
         let second = ingest_fact_atomic(pool, &permit, &later, None).await?;
         assert!(
-            pg.transfer_to_owner(&permit, EntityId::Memory(second.memory_id), dest)
+            pg.transfer_to_owner(&permit, EntityId::Memory(second.memory_id), dest, &contract_sidecar_tables())
                 .await?
         );
 
@@ -1298,8 +1348,13 @@ async fn transfer_mints_the_destination_owner_row_in_the_same_transaction() {
         assert_eq!(before, 0, "the destination owner row must not pre-exist");
 
         assert!(
-            pg.transfer_to_owner(&permit, EntityId::Memory(written.memory_id), dest)
-                .await?
+            pg.transfer_to_owner(
+                &permit,
+                EntityId::Memory(written.memory_id),
+                dest,
+                &contract_sidecar_tables()
+            )
+            .await?
         );
 
         let kind: String =
@@ -1338,7 +1393,12 @@ async fn transfer_refuses_the_current_owner_as_destination() {
         let written = ingest_fact_atomic(pool, &permit, &draft(), None).await?;
 
         let err = pg
-            .transfer_to_owner(&permit, EntityId::Memory(written.memory_id), owner)
+            .transfer_to_owner(
+                &permit,
+                EntityId::Memory(written.memory_id),
+                owner,
+                &contract_sidecar_tables(),
+            )
             .await
             .expect_err("a self-transfer is refused");
         assert!(matches!(err, StorageError::ConstraintViolation(_)));
@@ -1475,8 +1535,13 @@ async fn a_shared_blob_transfer_dedupes_instead_of_refusing() {
         let _also_mine = cite(pool, &permit, "shared-also-mine", blob_id).await?;
 
         assert!(
-            pg.transfer_to_owner(&permit, EntityId::Memory(mine.memory_id), dest)
-                .await?,
+            pg.transfer_to_owner(
+                &permit,
+                EntityId::Memory(mine.memory_id),
+                dest,
+                &contract_sidecar_tables()
+            )
+            .await?,
             "a shared cited blob must no longer refuse the transfer"
         );
 
@@ -1568,8 +1633,13 @@ async fn an_unshared_blob_still_moves_in_place_with_no_mount() {
         let (blob_id, upload_id) = seed_cited_blob(pool, owner, &[12_u8; 32]).await?;
         let written = cite(pool, &permit, "solo", blob_id).await?;
         assert!(
-            pg.transfer_to_owner(&permit, EntityId::Memory(written.memory_id), dest)
-                .await?
+            pg.transfer_to_owner(
+                &permit,
+                EntityId::Memory(written.memory_id),
+                dest,
+                &contract_sidecar_tables()
+            )
+            .await?
         );
 
         let (blob_owner, blob_count): (Uuid, i64) = sqlx::query_as(
@@ -1632,8 +1702,13 @@ async fn a_destination_that_already_holds_the_bytes_keeps_its_own_row() {
 
         let written = cite(pool, &permit, "collide", source_blob).await?;
         assert!(
-            pg.transfer_to_owner(&permit, EntityId::Memory(written.memory_id), dest)
-                .await?,
+            pg.transfer_to_owner(
+                &permit,
+                EntityId::Memory(written.memory_id),
+                dest,
+                &contract_sidecar_tables()
+            )
+            .await?,
             "the destination already holding these bytes is not a conflict"
         );
 
@@ -1697,8 +1772,13 @@ async fn a_mount_of_a_mount_still_names_the_object_that_was_uploaded() {
 
         // Hop one: shared, so the destination mounts.
         assert!(
-            pg.transfer_to_owner(&permit, EntityId::Memory(mine.memory_id), first)
-                .await?
+            pg.transfer_to_owner(
+                &permit,
+                EntityId::Memory(mine.memory_id),
+                first,
+                &contract_sidecar_tables()
+            )
+            .await?
         );
         let hop_one: Uuid =
             sqlx::query_scalar("SELECT blob_id FROM proxima_core.memory WHERE t = $1")
@@ -1711,8 +1791,13 @@ async fn a_mount_of_a_mount_still_names_the_object_that_was_uploaded() {
         let shadow = cite(pool, &first_permit, "chain-shadow", hop_one).await?;
         let _ = shadow;
         assert!(
-            pg.transfer_to_owner(&first_permit, EntityId::Memory(mine.memory_id), second)
-                .await?
+            pg.transfer_to_owner(
+                &first_permit,
+                EntityId::Memory(mine.memory_id),
+                second,
+                &contract_sidecar_tables()
+            )
+            .await?
         );
 
         let hop_two: Uuid =
@@ -1773,8 +1858,13 @@ async fn erasing_one_owner_of_a_mounted_object_does_not_destroy_the_bytes() {
         let mine = cite(pool, &permit, "purge-mine", blob_id).await?;
         let _also_mine = cite(pool, &permit, "purge-also-mine", blob_id).await?;
         assert!(
-            pg.transfer_to_owner(&permit, EntityId::Memory(mine.memory_id), dest)
-                .await?
+            pg.transfer_to_owner(
+                &permit,
+                EntityId::Memory(mine.memory_id),
+                dest,
+                &contract_sidecar_tables()
+            )
+            .await?
         );
         let mounts: i64 = sqlx::query_scalar(
             "SELECT count(*)::bigint FROM proxima_core.blob_uploads WHERE object_key = $1",
@@ -1873,8 +1963,13 @@ async fn erasing_one_source_scope_of_a_mounted_object_does_not_destroy_the_bytes
         let dropped = cite_from(pool, &permit, "src-drop", "scope-drop", blob_id).await?;
         let handed_over = cite_from(pool, &permit, "src-keep", "scope-keep", blob_id).await?;
         assert!(
-            pg.transfer_to_owner(&permit, EntityId::Memory(handed_over.memory_id), dest)
-                .await?
+            pg.transfer_to_owner(
+                &permit,
+                EntityId::Memory(handed_over.memory_id),
+                dest,
+                &contract_sidecar_tables()
+            )
+            .await?
         );
         let mounts: i64 = sqlx::query_scalar(
             "SELECT count(*)::bigint FROM proxima_core.blob_uploads WHERE object_key = $1",
@@ -2034,8 +2129,13 @@ async fn a_series_erase_does_not_owe_bytes_another_owner_mounted() {
         let mine = cite(pool, &permit, "series-mine", blob_id).await?;
         let handed_over = cite(pool, &permit, "series-handed-over", blob_id).await?;
         assert!(
-            pg.transfer_to_owner(&permit, EntityId::Memory(handed_over.memory_id), dest)
-                .await?
+            pg.transfer_to_owner(
+                &permit,
+                EntityId::Memory(handed_over.memory_id),
+                dest,
+                &contract_sidecar_tables()
+            )
+            .await?
         );
 
         let mut tx = pool.begin().await?;

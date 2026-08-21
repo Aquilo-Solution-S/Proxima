@@ -628,7 +628,11 @@ const KERNEL_SURFACES: &[Surface] = &[
     },
     Surface {
         table: "proxima_core.sketch",
-        key: KeyShape::Custom(&["t"]),
+        // A memory t OR a goal t, in one column, with no discriminator —
+        // which is exactly what `EntityT` names. It said `Custom` until
+        // Phase 4, and `Custom` is the arm for a key this crate cannot
+        // reason about at all.
+        key: KeyShape::EntityT { column: "t" },
         owner_columns: &["owner_id"],
         transfer: TransferRule::Follow,
         erase: EraseRule::ByKey,
@@ -649,7 +653,9 @@ const KERNEL_SURFACES: &[Surface] = &[
     },
     Surface {
         table: "proxima_core.embeddings",
-        key: KeyShape::Custom(&["entity_id"]),
+        key: KeyShape::EntityT {
+            column: "entity_id",
+        },
         owner_columns: &["owner_id"],
         transfer: TransferRule::Follow,
         erase: EraseRule::ByKey,
@@ -663,7 +669,9 @@ const KERNEL_SURFACES: &[Surface] = &[
     },
     Surface {
         table: "proxima_core.embedding_heads",
-        key: KeyShape::Custom(&["entity_id"]),
+        key: KeyShape::EntityT {
+            column: "entity_id",
+        },
         owner_columns: &["owner_id"],
         transfer: TransferRule::Follow,
         erase: EraseRule::ByKey,
@@ -677,7 +685,9 @@ const KERNEL_SURFACES: &[Surface] = &[
     },
     Surface {
         table: "proxima_core.embedding_jobs",
-        key: KeyShape::Custom(&["entity_id"]),
+        key: KeyShape::EntityT {
+            column: "entity_id",
+        },
         owner_columns: &["owner_id"],
         transfer: TransferRule::Follow,
         erase: EraseRule::ByKey,
@@ -1186,6 +1196,38 @@ const BESPOKE_ERASE_LEGS: &[&str] = &[
     "proxima_core.wake_config",
 ];
 
+/// The kernel surfaces a transfer moves with a hand-written statement
+/// instead of a generated one.
+///
+/// Four entries, each earning the exemption for a reason a generated
+/// `UPDATE <table> SET owner_id = $2 WHERE <key> = ANY($1)` cannot express:
+///
+/// - `memory_head` is a compare-and-set, not a move. Its statement carries
+///   the head `t` the series was read at and its `rows_affected` is what
+///   DECIDES whether the transfer happened; the two head-advanced races
+///   hang off that answer.
+/// - `blob_uploads` moves with the blob row it describes, one blob at a
+///   time — the read path requires both to name the same owner — and in
+///   the dedupe case it is not moved at all but re-minted as a mount.
+/// - `blob` and `content` are the two `FollowOrDedupe` surfaces. Their
+///   generated halves come off the declaration (`dedupe_key` finds the
+///   destination-owned row, `remaps` repoints the referring columns); what
+///   sits between those halves — a refcount probe, an OCI-style object
+///   mount, an orphan GC — does not.
+///
+/// `memory_head` and `blob_uploads` are the two that would otherwise be
+/// SILENTLY wrong rather than absent: both are keyed on a single column
+/// (`handle`, `upload_id`) that is not an entity `t`, so a generated
+/// `WHERE <column> = ANY($1)` would run cleanly and match nothing. That is
+/// the class `TransferLeg::Unreachable` exists to refuse, and the list is
+/// what tells freeze the statement is elsewhere.
+const BESPOKE_TRANSFER_LEGS: &[&str] = &[
+    "proxima_core.blob",
+    "proxima_core.blob_uploads",
+    "proxima_core.content",
+    "proxima_core.memory_head",
+];
+
 /// Core's contract. Fifteen schema registrations over fourteen distinct
 /// schema ids (`core/agent-derivation-v1` registers as both Abstraction and
 /// Perspective), fifteen tools, ten resources.
@@ -1215,6 +1257,7 @@ pub const FLAVOR_0: FlavorContract = FlavorContract {
     resources: RESOURCES,
     projection: ProjectionDecl::Table(CORE_PROJECTION),
     bespoke_erase_legs: BESPOKE_ERASE_LEGS,
+    bespoke_transfer_legs: BESPOKE_TRANSFER_LEGS,
 };
 
 /// Look up a flavor-#0 resource by its palette scope key.

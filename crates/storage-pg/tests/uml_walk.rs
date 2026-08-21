@@ -21,6 +21,15 @@ use proxima_storage_pg::verbs::wake_timeseries::{
 };
 use uuid::Uuid;
 
+/// The transfer's registry-resolved legs, exactly as the engine assembles
+/// them. Passing a hand-built set here would test a registry production
+/// never sees.
+fn transfer_surfaces() -> proxima_core::owner_inverse::OwnerSurfaces {
+    proxima_core::owner_inverse::OwnerSurfaces::for_registry(
+        &proxima_core::FlavorRegistry::new().freeze_or_panic_for_tests(),
+    )
+}
+
 fn fact(schema: &str, refs: Vec<Uuid>, origins: Vec<Uuid>, kind: &str) -> FactWriteCommand {
     FactWriteCommand {
         schema_id: SchemaId::new(schema.to_string()),
@@ -159,7 +168,12 @@ async fn uml_section_10_walk_query_history_transfer() {
 
         let dest = OwnerRef::Group(GroupId::new(Uuid::now_v7()));
         let transferred = pg
-            .transfer_to_owner(&permit, EntityId::Memory(file.memory_id), dest)
+            .transfer_to_owner(
+                &permit,
+                EntityId::Memory(file.memory_id),
+                dest,
+                &transfer_surfaces(),
+            )
             .await?;
         assert!(
             transferred,

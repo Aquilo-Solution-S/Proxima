@@ -51,11 +51,19 @@ pub trait OwnerTransferPort: Send + Sync {
     /// nothing for the source's own erase to reach, which is the worse half:
     /// rows a host cannot export are an inconvenience, rows a host cannot
     /// destroy are a promise it cannot keep.
+    /// `surfaces` carries the registry-resolved [`TransferLeg`] per table.
+    /// The verb READS those answers; it does not re-derive them, and it
+    /// holds no table list of its own — which is the whole of Phase 4's
+    /// change to this lane. Erase and export have taken the same argument
+    /// since #233, for the same reason.
+    ///
+    /// [`TransferLeg`]: crate::flavor::TransferLeg
     async fn transfer_to_owner(
         &self,
         permit: &OwnerWritePermit,
         entity: EntityId,
         to_owner: OwnerRef,
+        surfaces: &crate::owner_inverse::OwnerSurfaces,
     ) -> Result<bool, StorageError>;
 }
 

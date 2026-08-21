@@ -535,7 +535,49 @@ def run_fixture(path: Path) -> int:
 # query with `format(..., %I)` inside `query_to_xml`, so the obvious spelling
 # — a `format!` per name read from `information_schema` — never enters the
 # tree. A harness should cost nothing to keep.
-EXPECTED_DYNAMIC_SQL_SITES = 75
+# 75 -> 77 in Phase 4, "policy onto the contract". Operator-ruled (plan
+# §4.12 R8), and the arithmetic is stated rather than absorbed, because the
+# standing rule is that this number should not rise.
+#
+#   -1  crates/storage-pg/src/access/owner_columns.rs, the projection
+#       registry walk. It was the transfer path's ONLY registry-derived
+#       statement — one generated UPDATE over the frozen sidecar
+#       registry's projection tables — and it is subsumed by the leg loop
+#       below, which reaches the projection because the projection is a
+#       declared `Follow` surface like any other.
+#   +1  the same file, `series_leg_sql` under the generated-leg loop. ONE
+#       call site that replaces NINE hand-written statements over nine
+#       remembered tables: `cooled`, `memory`, `sketch`, three embedding
+#       tables differing only in a name, every flavor's projection, and the
+#       `DELETE FROM ingest_keys`. The statement is chosen by the surface's
+#       resolved `TransferLeg` and the only values substituted into it are
+#       the table name, the key column and the owner columns — all
+#       `&'static str` from a `const` contract that `try_freeze` validated
+#       and that `every_column_a_declaration_names_is_a_column_the_catalog_has`
+#       resolved against `information_schema`. %I-equivalent substitution.
+#   +1  `dedupe_lookup_sql`, the "does the destination already hold these
+#       bytes" probe, generated from `blob`'s declared `dedupe_key` instead
+#       of restating its three columns in SQL. Same substitution class, and
+#       `every_dedupe_key_is_a_unique_constraint_the_schema_enforces` asks
+#       `pg_constraint` whether the declared key is the constraint the arm
+#       exists to avoid colliding with.
+#   +1  `remap_sql` under `remap_handle_refs`, generated from the declared
+#       `remaps`. This is the site that pays for itself twice: the function
+#       it replaces carried a doc comment reading "This is
+#       `TransferRule::FollowOrDedupe { remaps }` executed" above two
+#       hardcoded UPDATEs, while the declaration named three columns. Prose
+#       claiming a declaration drives code that it does not drive is the
+#       exact defect the whole phase exists to remove.
+#
+# Net +2, and the trade is nine static statements over remembered tables for
+# three generated ones over declared surfaces. That is the ratchet's
+# purpose, not a concession to it: dynamic SQL should be DELIBERATE, and a
+# statement whose only variable is an identifier from a frozen, freeze-
+# validated, catalog-checked contract is the most deliberate SQL in the
+# tree. What the trade buys is that a flavor adding a `Follow` surface can
+# no longer be silently not-followed — `FlavorRegistryError::UnmovableSurface`
+# refuses it at boot.
+EXPECTED_DYNAMIC_SQL_SITES = 77
 
 
 def run_self_test() -> int:

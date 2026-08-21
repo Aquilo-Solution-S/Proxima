@@ -652,6 +652,7 @@ impl OwnerTransferPort for RejectingStorage {
         _permit: &OwnerWritePermit,
         _entity: EntityId,
         _to_owner: OwnerRef,
+        _surfaces: &crate::owner_inverse::OwnerSurfaces,
     ) -> Result<bool, StorageError> {
         Err(StorageError::Internal(
             "RejectingStorage rejects writes".into(),

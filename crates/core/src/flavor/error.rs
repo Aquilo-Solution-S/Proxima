@@ -109,6 +109,23 @@ pub enum FlavorRegistryError {
         table: &'static str,
         why: &'static str,
     },
+    /// A surface declares a transfer no leg can perform: keyed on
+    /// something the transfer builds no statement for, and claimed by no
+    /// bespoke leg. The transfer would skip it in silence and report
+    /// success, leaving rows the SOURCE owner can still read after the
+    /// memory they belong to became someone else's.
+    UnmovableSurface {
+        flavor_id: &'static str,
+        table: &'static str,
+    },
+    /// A declared bespoke transfer leg that names nothing it could own — a
+    /// table the flavor does not declare, or one whose declaration says no
+    /// statement runs at all.
+    BespokeTransferLegMismatch {
+        flavor_id: &'static str,
+        table: &'static str,
+        why: &'static str,
+    },
     /// A schema declared `NotTransferable` without naming where the refusal
     /// is enforced. A refusal nothing backs is a comment.
     UnenforcedTransferRefusal {
@@ -317,6 +334,21 @@ impl std::fmt::Display for FlavorRegistryError {
             } => write!(
                 f,
                 "flavor {flavor_id} declares a bespoke erase leg for {table}, which {why}"
+            ),
+            Self::UnmovableSurface { flavor_id, table } => write!(
+                f,
+                "flavor {flavor_id} declares a transfer for {table} that no leg can perform: it \
+                 is keyed on neither a memory nor an entity t, and no bespoke transfer leg \
+                 claims it, so a transfer would skip it and still report success — leaving rows \
+                 the source owner can read after the memory became someone else's"
+            ),
+            Self::BespokeTransferLegMismatch {
+                flavor_id,
+                table,
+                why,
+            } => write!(
+                f,
+                "flavor {flavor_id} declares a bespoke transfer leg for {table}, which {why}"
             ),
             Self::UnenforcedTransferRefusal {
                 flavor_id,

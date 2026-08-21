@@ -855,3 +855,82 @@ async fn every_column_a_declaration_names_is_a_column_the_catalog_has() {
     let _ = drop_db(&db_name).await;
     result.expect("every_column_a_declaration_names_is_a_column_the_catalog_has failed");
 }
+
+/// Every `dedupe_key` is a key the schema actually enforces as unique.
+///
+/// `FollowOrDedupe`'s generated half asks the destination owner "do you
+/// already hold this row?" and repoints the referring columns at whatever
+/// comes back. That question has ONE answer only if the declared columns
+/// are unique on the destination. If they are not, the lookup picks an
+/// arbitrary row out of several and the transfer silently rehomes a
+/// memory onto a body it did not have — a corruption no error reports.
+///
+/// So the declaration is not free to name any tuple it likes: it must name
+/// a tuple `pg_constraint` agrees is unique. This is the `dedupe_key`
+/// counterpart of the `Cascade`/`confdeltype` gate above, and the reason it
+/// is a catalog question rather than a code review one is that the SQL is
+/// generated from the string — nothing in Rust can see the constraint.
+#[tokio::test]
+async fn every_dedupe_key_is_a_uniqueness_the_schema_enforces() {
+    let declared: Vec<(&'static str, &'static [&'static str])> = FLAVOR_0
+        .all_surfaces()
+        .filter_map(|surface| match surface.transfer {
+            TransferRule::FollowOrDedupe { dedupe_key, .. } => Some((surface.table, dedupe_key)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        declared.len(),
+        2,
+        "blob and content are flavor #0's dedupe surfaces; found {declared:?}"
+    );
+
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    if let Err(e) = create_db(&db_name).await {
+        panic!("PG required for tests but admin connect failed: {e}");
+    }
+    let url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&url).await?;
+        pg.run_migrations().await?;
+        for (table, dedupe_key) in declared {
+            let columns: Vec<String> = dedupe_key.iter().map(|c| (*c).to_owned()).collect();
+            // Both a UNIQUE constraint and a bare unique index enforce the
+            // same thing; `pg_index` sees both, so ask it rather than
+            // `pg_constraint`, and compare the column SET (order is the
+            // index's business, not the declaration's).
+            let enforced: bool = sqlx::query_scalar(
+                "SELECT EXISTS (
+                   SELECT 1
+                     FROM pg_index i
+                     JOIN pg_class t ON t.oid = i.indrelid
+                    WHERE i.indisunique
+                      AND NOT i.indisexclusion
+                      AND i.indpred IS NULL
+                      AND (t.relnamespace::regnamespace)::text || '.' || t.relname = $1
+                      AND (
+                            SELECT array_agg(a.attname::text ORDER BY a.attname::text)
+                              FROM unnest(i.indkey::int[]) AS k(attnum)
+                              JOIN pg_attribute a
+                                ON a.attrelid = i.indrelid AND a.attnum = k.attnum
+                          ) = (SELECT array_agg(x ORDER BY x) FROM unnest($2::text[]) AS x)
+                 )",
+            )
+            .bind(table)
+            .bind(&columns)
+            .fetch_one(pg.pool_for_tests())
+            .await?;
+            assert!(
+                enforced,
+                "{table} declares TransferRule::FollowOrDedupe with dedupe_key \
+                 {dedupe_key:?}, and the transfer generator trusts that tuple to \
+                 identify at most one destination-owned row, but no unique index \
+                 over exactly those columns exists"
+            );
+        }
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("every_dedupe_key_is_a_uniqueness_the_schema_enforces failed");
+}

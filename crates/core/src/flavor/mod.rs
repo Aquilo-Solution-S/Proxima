@@ -48,7 +48,7 @@ pub use contract::{
     ProjectionSpec, Provenance, RankSource, ResolvedEmbedUnit, ResourceContract, SLOT_DEFAULT,
     SchemaContract, SchemaRef, SearchProjectionDecl, SubstringArm, Surface,
     TS_RANK_NORMALIZATION_LOG_LENGTH_SCALE, TS_RANK_NORMALIZATION_NONE,
-    TS_RANK_NORMALIZATION_SCALE, TSVECTOR_WEIGHT_CLASSES, ToolContract, TransferRule,
+    TS_RANK_NORMALIZATION_SCALE, TSVECTOR_WEIGHT_CLASSES, ToolContract, TransferLeg, TransferRule,
     WEIGHT_UNIFORM, WeightedField,
 };
 pub use descriptor::{FlavorDescriptor, FlavorProvenance};

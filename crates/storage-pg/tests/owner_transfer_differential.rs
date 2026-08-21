@@ -18,11 +18,39 @@
 //! source is entitled to keep. Both halves are dumped: the whole database,
 //! every owner in it.
 //!
-//! Determinism comes from the same two choices `owner_erase_differential`
-//! makes. `ORDER BY ctid` is physical insertion order, identical across two
-//! runs executing the same statements in the same order; and every uuid and
-//! timestamp is replaced by an order-of-first-appearance token, so values
-//! freshly generated on every run still compare.
+//! Determinism comes from two choices, and the SECOND one is where this
+//! file departs from `owner_erase_differential` — deliberately, and with a
+//! cost worth stating.
+//!
+//! Every uuid and timestamp is replaced by an order-of-first-appearance
+//! token, so values freshly generated on every run still compare. That is
+//! the same.
+//!
+//! The dump is still `ORDER BY ctid`, but the COMPARISON is per-relation
+//! order-independent: two dumps are equal when every relation holds the
+//! same multiset of rows. The erase differential could demand byte-order
+//! equality because it changed which statements ran, not the predicates
+//! they ran with. This phase changes the predicates — `memory`'s re-home
+//! goes from `WHERE handle = $1 AND owner_id = $2` to the generated
+//! `WHERE t = ANY($1::uuid[])` — and `ctid` is where MVCC happened to put
+//! the new tuple, which is a function of scan order and free space. When
+//! the goldens were first compared, three `proxima_core.memory` rows
+//! differed in position and in nothing else: same values, same tokens, same
+//! relation.
+//!
+//! **What that gives up, precisely:** this file can no longer see a change
+//! that reorders rows within one relation while preserving their contents.
+//! Nothing reads physical order — no query in the tree orders by `ctid`,
+//! and the export bundle's row order comes off `KeyShape::columns()` — so
+//! the property was a proxy for determinism rather than a claim about
+//! behaviour. What is NOT given up is the whole of the claim that matters:
+//! every relation, every row, every column, every owner, on both sides of
+//! the move.
+//!
+//! The golden file itself is untouched. It is still the bytes the
+//! hand-written transfer produced at `eef54c8e`; only the equality
+//! relation applied to it is weaker, and this paragraph is the record of by
+//! how much.
 //!
 //! ## What this does NOT cover
 //!
@@ -586,6 +614,33 @@ pub async fn dump_database(pool: &PgPool) -> Result<String, Box<dyn std::error::
     Ok(out)
 }
 
+/// Split a dump into `## relation` sections with their rows sorted.
+///
+/// Sorting is on the canonical JSON text, which is a total order over row
+/// CONTENT — so two dumps compare equal exactly when every relation holds
+/// the same rows. The section headers carry their own row counts, so a
+/// relation that gained or lost a row still fails on the header alone.
+pub fn by_relation(text: &str) -> BTreeMap<String, Vec<String>> {
+    let mut sections: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    let mut current = String::new();
+    for line in text.lines() {
+        if let Some(header) = line.strip_prefix("## ") {
+            current.clear();
+            current.push_str(header);
+            sections.entry(current.clone()).or_default();
+        } else {
+            sections
+                .entry(current.clone())
+                .or_default()
+                .push(line.to_owned());
+        }
+    }
+    for rows in sections.values_mut() {
+        rows.sort();
+    }
+    sections
+}
+
 pub fn canonical(value: &Value) -> String {
     String::from_utf8(proxima_core::canonical_json_bytes(value)).expect("utf8")
 }
@@ -692,6 +747,15 @@ pub async fn teardown(db_name: &str) {
 
 use proxima_core::storage_ports::OwnerTransferPort;
 
+/// The transfer's registry-resolved legs, exactly as the engine assembles
+/// them. Passing a hand-built set here would test a registry production
+/// never sees.
+fn transfer_surfaces() -> proxima_core::owner_inverse::OwnerSurfaces {
+    proxima_core::owner_inverse::OwnerSurfaces::for_registry(
+        &proxima_core::FlavorRegistry::new().freeze_or_panic_for_tests(),
+    )
+}
+
 async fn run_transfers(
     pg: &PgStorage,
     corpus: &Corpus,
@@ -705,7 +769,12 @@ async fn run_transfers(
         ("mount", corpus.mount),
     ] {
         let moved = pg
-            .transfer_to_owner(&permit, EntityId::Memory(memory), corpus.destination)
+            .transfer_to_owner(
+                &permit,
+                EntityId::Memory(memory),
+                corpus.destination,
+                &transfer_surfaces(),
+            )
             .await?;
         out.push_str(&format!("## transfer {name} -> {moved}\n"));
     }
@@ -716,6 +785,7 @@ async fn run_transfers(
             &goal_permit,
             EntityId::Goal(proxima_core::GoalId::new(corpus.goal)),
             corpus.destination,
+            &transfer_surfaces(),
         )
         .await
         .expect_err("goals do not transfer");
@@ -726,6 +796,7 @@ async fn run_transfers(
             &permit,
             EntityId::Memory(corpus.in_place),
             corpus.destination,
+            &transfer_surfaces(),
         )
         .await;
     out.push_str(&format!("## transfer already-there -> {same:?}\n"));
@@ -748,7 +819,8 @@ async fn transfer_differential() {
         }
         let golden = include_str!("golden/owner_transfer.txt");
         assert_eq!(
-            actual, golden,
+            by_relation(&actual),
+            by_relation(golden),
             "the transfer diverged from the pinned eef54c8e baseline"
         );
         Ok(())

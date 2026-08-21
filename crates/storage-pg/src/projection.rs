@@ -400,26 +400,6 @@ SELECT c.t,
     ))
 }
 
-/// `UPDATE <flavor>.projection SET owner_id = ...` for a transferred series.
-///
-/// The projection is the first memory-keyed surface that carries an
-/// `owner_id`, so it is the first that does not follow implicitly. It is an
-/// index accelerator, not the authorization source of truth — the search
-/// scan keeps its `memory` join and `admit_hits` re-checks the owner — so a
-/// stale value can cost a plan, never a disclosure.
-///
-/// # Errors
-///
-/// `StorageError::Internal` when the projection table name is invalid.
-pub fn projection_transfer_sql(table: &str) -> Result<String, StorageError> {
-    let table = PgIdent::table(table)?;
-    // SQL-POLICY: PgIdent
-    Ok(format!(
-        "UPDATE {} SET owner_id = $2 WHERE memory_id = ANY($1::uuid[])",
-        table.as_str()
-    ))
-}
-
 /// Every projection table a composed binary declares, in name order.
 #[must_use]
 pub fn projection_tables(contracts: &[&'static FlavorContract]) -> Vec<String> {

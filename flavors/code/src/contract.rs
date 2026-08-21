@@ -740,6 +740,7 @@ pub static CODE_FLAVOR_CONTRACT: FlavorContract = FlavorContract {
     // hand-written statement, and freeze now proves that rather than the
     // flavor asserting it.
     bespoke_erase_legs: &[],
+    bespoke_transfer_legs: &[],
 };
 
 /// The code flavor's projection: three search surfaces, one table, one

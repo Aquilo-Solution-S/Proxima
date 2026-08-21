@@ -10,6 +10,20 @@ use proxima_core::{AccessKind, AuthPath, AuthzContext, EntityId, SourceBatchId};
 use proxima_pg_testkit::drop_db;
 use uuid::Uuid;
 
+/// The transfer's registry-resolved legs, over BOTH flavors.
+///
+/// The code flavor's own projection table is a `Follow` surface, so a
+/// core-only registry would leave its rows behind — which is exactly the
+/// class the partition exists to refuse, and exactly why the engine builds
+/// this from the composed registry.
+fn transfer_surfaces() -> proxima_core::owner_inverse::OwnerSurfaces {
+    let mut registry = proxima_core::FlavorRegistry::new();
+    proxima_code::register(&mut registry).expect("code schema registration");
+    proxima_core::owner_inverse::OwnerSurfaces::for_registry(
+        &registry.try_freeze().expect("core + code freeze"),
+    )
+}
+
 fn source_batch_id() -> SourceBatchId {
     SourceBatchId::new(Uuid::now_v7())
 }
@@ -108,7 +122,12 @@ async fn code_stateful_ingest_mints_after_owner_transfer() {
         .await?;
         let destination = proxima_core::OwnerRef::Group(proxima_core::GroupId::new(Uuid::now_v7()));
         let transferred = pg
-            .transfer_to_owner(&permit, EntityId::Memory(first.memory_id), destination)
+            .transfer_to_owner(
+                &permit,
+                EntityId::Memory(first.memory_id),
+                destination,
+                &transfer_surfaces(),
+            )
             .await?;
         assert!(transferred);
         let after = ingest_file_revision(

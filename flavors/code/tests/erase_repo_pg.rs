@@ -10,6 +10,20 @@ use proxima_pg_testkit::{db_url, drop_db};
 use proxima_storage_pg::MAX_TRANSACTION_ATTEMPTS;
 use uuid::Uuid;
 
+/// The transfer's registry-resolved legs, over BOTH flavors.
+///
+/// The code flavor's own projection table is a `Follow` surface, so a
+/// core-only registry would leave its rows behind — which is exactly the
+/// class the partition exists to refuse, and exactly why the engine builds
+/// this from the composed registry.
+fn transfer_surfaces() -> proxima_core::owner_inverse::OwnerSurfaces {
+    let mut registry = proxima_core::FlavorRegistry::new();
+    proxima_code::register(&mut registry).expect("code schema registration");
+    proxima_core::owner_inverse::OwnerSurfaces::for_registry(
+        &registry.try_freeze().expect("core + code freeze"),
+    )
+}
+
 async fn insert_repo_commit_with_test_request(
     pool: &sqlx::PgPool,
     owner: &Owner,
@@ -1482,6 +1496,7 @@ async fn a_transferred_admission_stops_the_erase_instead_of_being_swept() {
             &permit,
             proxima_core::EntityId::Memory(proxima_core::MemoryId::new(work_item)),
             stranger,
+            &transfer_surfaces(),
         )
         .await?;
         assert!(moved, "the transfer verb must move the work item");
