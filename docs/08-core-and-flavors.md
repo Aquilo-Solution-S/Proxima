@@ -369,13 +369,17 @@ it declares one:
   read them from, deliberately, so "comparable with core" cannot be claimed
   by copying a number.
 
-**Not every kernel relation is a declared `Surface`.** Three carry
-owner-scoped state and appear in no contract: `group_memberships`
-(boot-probed and swept by erase) and `lexical_languages` /
-`lexical_default` (boot-probed by the stamp guardrail). There were six —
+**Not every kernel relation is a declared `Surface`.** Two carry
+owner-scoped state and appear in no contract: `lexical_languages` and
+`lexical_default`, both boot-probed by the stamp guardrail. There were six —
 `owner_fact_retention`, `owner_legal_holds` and `compliance_audit_log` were
-the other three, and Phase C deleted all three tables.
-Two of them are named in a `ResourceContract`'s `reads`, which is a different
+three of the others, and Phase C deleted all three tables;
+`group_memberships` was the fourth, and Phase 4 declared it rather than
+deleting it, with `EraseRule::Never { why }` saying in the contract what
+`UNDECLARED_BUT_INTENTIONAL` used to say in a test. A membership names two
+owners and belongs to neither exclusively, which is what its EMPTY
+`owner_columns` claims.
+Both are named in a `ResourceContract`'s `reads`, which is a different
 claim — what a handler touches, not a surface with erase/export/forget rules.
 
 **`flavor_surface` enforces one direction, not both.** The database trigger

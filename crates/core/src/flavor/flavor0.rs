@@ -920,6 +920,38 @@ const KERNEL_SURFACES: &[Surface] = &[
         counter: None,
         completeness: None,
     },
+    // A membership names TWO owners and belongs to neither exclusively, so
+    // `owner_columns` is EMPTY and means it: there is no column here whose
+    // value makes the row somebody's to erase. That is the whole content of
+    // the declaration, and stating it is what turns a recorded follow-up
+    // into a position.
+    Surface {
+        table: "proxima_core.group_memberships",
+        key: KeyShape::Custom(&["group_id", "member_user_id", "relation"]),
+        owner_columns: &[],
+        transfer: TransferRule::StaysOnKey,
+        erase: EraseRule::Never {
+            why: "a membership is a relation between two owners, not a row about \
+                  one. Erasing a personal owner does not shrink the groups it \
+                  belonged to: a host that must remove a departed user calls \
+                  remove_group_member before erase, which is the same division of \
+                  labour retention and legal holds already take. Erase READS this \
+                  table — the abandonment precondition counts a group's remaining \
+                  members — and writes to it never",
+        },
+        export: ExportRule::Excluded {
+            why: "a membership is the group's row as much as the member's; \
+                  exporting a personal owner's bundle would hand out the \
+                  membership list of every group they belong to",
+        },
+        forget: ForgetRule::Keep {
+            why: "an access relation, not a memory: no forget reaches it and no \
+                  cold record carries it",
+        },
+        lexical_language_column: None,
+        counter: None,
+        completeness: None,
+    },
 ];
 
 // ── MCP surface ─────────────────────────────────────────────────────────

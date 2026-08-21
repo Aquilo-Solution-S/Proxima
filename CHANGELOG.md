@@ -8,14 +8,9 @@ Pre-1.0 the git tag (e.g. `v0.0.3`) is the version; workspace crates are unpubli
 
 ### Declared follow-ups
 
-Stated here rather than fixed, because closing either changes behaviour a
+Stated here rather than fixed, because closing it changes behaviour a
 pinned equivalence gate currently proves unchanged.
 
-- **`proxima_core.group_memberships` outlives a personal-owner erase.** Rows
-  naming the erased `member_user_id` survive; they are removed only by
-  `remove_group_member`. Pre-v0.0.8 code behaved identically, so the
-  differential proves parity rather than correctness. Recorded with its
-  reason in `owner_inverse_reach_pg::UNDECLARED_BUT_INTENTIONAL`.
 - **`Surface::counter: None` carries no `why`.** Every other declared
   absence in the contract states a reason and this one does not, so "feeds
   no counter" and "nobody said" are the same value — the exact shape the

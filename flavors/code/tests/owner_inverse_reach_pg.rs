@@ -108,14 +108,6 @@ const UNDECLARED_BUT_INTENTIONAL: &[(&str, &str)] = &[
          AGAINST.",
     ),
     (
-        "proxima_core.group_memberships",
-        "DECLARED FOLLOW-UP, not a decision. A personal-owner erase leaves \
-         membership rows naming the erased member_user_id; they are removed \
-         only by remove_group_member. Pre-phase code behaved identically \
-         (the differential proves parity), so this wave records the gap \
-         rather than moving it: closing it changes what an erase destroys.",
-    ),
-    (
         "proxima_core.lexical_languages",
         "The FK domain of permitted regconfig values. Schema metadata \
          written by migrations, identical for every owner.",
