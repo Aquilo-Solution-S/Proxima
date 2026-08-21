@@ -506,7 +506,11 @@ async fn create_selected_sets(
     // statement below: plain `=` is exactly `IS NOT DISTINCT FROM` while
     // staying an index condition (`PostgreSQL` has no index strategy for
     // DistinctExpr).
-    let (owner_kind, owner_id) = owner_binds(&owner);
+    //
+    // Nothing in this function binds the kind. Every selection here reaches
+    // its rows by `owner_id` alone, which is unique across kinds because
+    // `proxima_core.owners` refuses a second kind for an id already stored.
+    let (_owner_kind, owner_id) = owner_binds(&owner);
 
     sqlx::query("CREATE TEMP TABLE selected_memories(memory_id uuid PRIMARY KEY, kind text NOT NULL) ON COMMIT DROP")
         .execute(&mut **tx)
@@ -594,9 +598,8 @@ async fn create_selected_sets(
         sqlx::query(
             "INSERT INTO selected_goals(goal_id)
              SELECT t FROM proxima_core.goal
-              WHERE owner_id = $2",
+              WHERE owner_id = $1",
         )
-        .bind(owner_kind)
         .bind(owner_id)
         .execute(&mut **tx)
         .await
