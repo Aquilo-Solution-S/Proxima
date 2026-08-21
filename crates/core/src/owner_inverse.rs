@@ -11,7 +11,7 @@
 
 use std::collections::BTreeMap;
 
-use crate::flavor::Surface;
+use crate::flavor::{EraseLeg, Surface};
 use crate::{AuthPath, GroupId, OwnerRef, SourceId, UserId};
 
 /// Every relation an owner-scoped erase or export has to answer for, read
@@ -30,6 +30,7 @@ use crate::{AuthPath, GroupId, OwnerRef, SourceId, UserId};
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct OwnerSurfaces {
     surfaces: Vec<Surface>,
+    legs: BTreeMap<&'static str, EraseLeg>,
 }
 
 impl OwnerSurfaces {
@@ -37,34 +38,63 @@ impl OwnerSurfaces {
     ///
     /// The engine calls this; so should anything else that needs the set,
     /// because assembling the legs by hand is what let them disagree.
+    ///
+    /// Each surface's [`EraseLeg`] is resolved HERE, where the surface and
+    /// the flavor that declared it are both in scope, because a bespoke leg
+    /// is a per-flavor declaration and the flattened set has no flavor left
+    /// in it. The erase then reads the answer instead of re-deriving one.
     #[must_use]
     pub fn for_registry(registry: &crate::FlavorRegistryFrozen) -> Self {
-        Self::from_surfaces(
-            registry
-                .contracts()
-                .iter()
-                .flat_map(|contract| contract.all_surfaces())
-                .collect(),
-        )
+        let mut surfaces = Vec::new();
+        let mut legs = BTreeMap::new();
+        for contract in registry.contracts() {
+            for surface in contract.all_surfaces() {
+                legs.insert(surface.table, contract.erase_leg(&surface));
+                surfaces.push(surface);
+            }
+        }
+        surfaces.sort_by_key(|surface| surface.table);
+        surfaces.dedup_by_key(|surface| surface.table);
+        Self { surfaces, legs }
     }
 
-    /// Build a set from surfaces given directly.
+    /// Build a set from surfaces given directly, with no bespoke legs.
     ///
     /// The seam a test uses to exercise a shape core declares no instance of
     /// — blob-keyed citation sidecars, or a second `RetainAtSource` table —
     /// without registering a whole flavor. Production reaches for
-    /// [`Self::for_registry`].
+    /// [`Self::for_registry`]. Every surface here classifies against an
+    /// EMPTY bespoke list, which is the honest answer: a surface no contract
+    /// declares has no flavor to have exempted it.
     #[must_use]
     pub fn from_surfaces(mut surfaces: Vec<Surface>) -> Self {
         surfaces.sort_by_key(|surface| surface.table);
         surfaces.dedup_by_key(|surface| surface.table);
-        Self { surfaces }
+        let legs = surfaces
+            .iter()
+            .map(|surface| (surface.table, EraseLeg::derive(surface, &[])))
+            .collect();
+        Self { surfaces, legs }
     }
 
     /// Every declared surface, ordered by table name.
     #[must_use]
     pub fn surfaces(&self) -> &[Surface] {
         &self.surfaces
+    }
+
+    /// Which leg destroys `table`'s rows, as its declaring flavor resolved
+    /// it at registry time.
+    ///
+    /// [`EraseLeg::Unreachable`] for a table this set does not carry — the
+    /// same answer as a surface nothing deletes, because to this set they
+    /// are the same thing.
+    #[must_use]
+    pub fn erase_leg(&self, table: &str) -> EraseLeg {
+        self.legs
+            .get(table)
+            .copied()
+            .unwrap_or(EraseLeg::Unreachable)
     }
 
     /// Every counter any declared surface contributes to, deduplicated and

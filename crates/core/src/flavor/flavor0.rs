@@ -22,13 +22,13 @@
 
 use crate::SearchProjectionColumnKind as ColumnKind;
 use crate::flavor::contract::{
-    BAND_NAME_EXACT, BAND_NAME_RESCUE, BAND_NAME_SUBSTRING, Band, BandComparability, CORE_ORDINAL,
-    DbConstraint, DbTrigger, EmbedUnit, EmbeddingRecipe, Enforcement, EraseRule, ExportRule,
-    FlavorContract, ForgetRule, KeyShape, LanguagePolicy, ProjectionDecl, ProjectionSpec,
-    Provenance, RankSource, ResourceContract, SLOT_DEFAULT, SchemaContract, SchemaRef,
-    SearchProjectionDecl, SubstringArm, Surface, TS_RANK_NORMALIZATION_LOG_LENGTH_SCALE,
-    TS_RANK_NORMALIZATION_NONE, TS_RANK_NORMALIZATION_SCALE, ToolContract, TransferRule,
-    WEIGHT_UNIFORM, WeightedField,
+    BAND_NAME_EXACT, BAND_NAME_RESCUE, BAND_NAME_SUBSTRING, Band, BandComparability,
+    BespokeEraseLeg, CORE_ORDINAL, DbConstraint, DbTrigger, EmbedUnit, EmbeddingRecipe,
+    Enforcement, EraseRule, ExportRule, FlavorContract, ForgetRule, KeyShape, LanguagePolicy,
+    ProjectionDecl, ProjectionSpec, Provenance, RankSource, ResourceContract, SLOT_DEFAULT,
+    SchemaContract, SchemaRef, SearchProjectionDecl, SubstringArm, Surface,
+    TS_RANK_NORMALIZATION_LOG_LENGTH_SCALE, TS_RANK_NORMALIZATION_NONE,
+    TS_RANK_NORMALIZATION_SCALE, ToolContract, TransferRule, WEIGHT_UNIFORM, WeightedField,
 };
 use crate::protocol::resource as scope;
 use crate::protocol::tool;
@@ -1105,6 +1105,52 @@ const RESOURCES: &[ResourceContract] = &[
     },
 ];
 
+/// The kernel surfaces the owner erase reaches with a hand-written
+/// statement instead of a generated one, each naming the function that owns
+/// it.
+///
+/// Sixteen entries, and every one of them earns the exemption by needing
+/// something a generated `DELETE ... USING <selection set>` cannot express:
+/// a refcount anti-join before a shared object may go (`blob`,
+/// `blob_uploads`, `content`), a cold-purge row enqueued in the same
+/// transaction as the delete (`cooled`, `wake_config`), a head table
+/// resynchronised rather than emptied (`memory_head`, `goal_head`), an
+/// ordering the embedding tables have to be taken in, or the spine itself
+/// (`memory`, `goal`) which the selection sets were built FROM.
+///
+/// The list lives in the contract rather than in `proxima-storage-pg`
+/// because freeze reads it: a surface that neither the generator reaches
+/// nor this list claims is [`FlavorRegistryError::UndeletableSurface`], and
+/// that refusal has to be available to a flavor the substrate crate has
+/// never heard of.
+///
+/// [`FlavorRegistryError::UndeletableSurface`]: crate::flavor::FlavorRegistryError::UndeletableSurface
+const BESPOKE_ERASE_LEGS: &[BespokeEraseLeg] = &[
+    leg("proxima_core.announce", "delete_change_events"),
+    leg("proxima_core.blob", "delete_blobs"),
+    leg("proxima_core.blob_uploads", "delete_blobs"),
+    leg("proxima_core.content", "gc_unreferenced_content_batch"),
+    leg("proxima_core.cooled", "delete_selected_cooled"),
+    leg(
+        "proxima_core.delegated_authority_grants",
+        "delete_delegated_authority_grants",
+    ),
+    leg("proxima_core.embedding_heads", "delete_embeddings"),
+    leg("proxima_core.embedding_jobs", "delete_embeddings"),
+    leg("proxima_core.embeddings", "delete_embeddings"),
+    leg("proxima_core.goal", "delete_selected_table"),
+    leg("proxima_core.goal_head", "sync_selected_heads"),
+    leg("proxima_core.memory", "delete_selected_table"),
+    leg("proxima_core.memory_head", "sync_selected_heads"),
+    leg("proxima_core.sketch", "delete_selected_sketches"),
+    leg("proxima_core.source_cursors", "delete_source_cursors"),
+    leg("proxima_core.wake_config", "delete_wake_configs"),
+];
+
+const fn leg(table: &'static str, leg: &'static str) -> BespokeEraseLeg {
+    BespokeEraseLeg { table, leg }
+}
+
 /// Core's contract. Fifteen schema registrations over fourteen distinct
 /// schema ids (`core/agent-derivation-v1` registers as both Abstraction and
 /// Perspective), fifteen tools, ten resources.
@@ -1133,6 +1179,7 @@ pub const FLAVOR_0: FlavorContract = FlavorContract {
     tools: TOOLS,
     resources: RESOURCES,
     projection: ProjectionDecl::Table(CORE_PROJECTION),
+    bespoke_erase_legs: BESPOKE_ERASE_LEGS,
 };
 
 /// Look up a flavor-#0 resource by its palette scope key.

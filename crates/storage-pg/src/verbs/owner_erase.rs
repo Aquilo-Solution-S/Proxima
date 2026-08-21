@@ -5,7 +5,7 @@
 // earn it, below.
 #![allow(clippy::too_many_arguments)]
 
-use proxima_core::flavor::{EraseRule, KeyShape, Surface};
+use proxima_core::flavor::{EraseLeg, KeyShape};
 use proxima_core::owner_inverse::{
     EraseAuthorization, OwnerEraseCounts, OwnerEraseOutcome, OwnerEraseRefusal, OwnerSurfaces,
 };
@@ -175,44 +175,6 @@ async fn group_member_count(tx: &mut Tx<'_>, group_id: GroupId) -> Result<i64, S
     .map_err(map_err)
 }
 
-/// The relations an explicit leg of this erase owns, and the leg that owns
-/// them.
-///
-/// Everything else is reached by a generated statement, or by a declared
-/// `Cascade` the catalog enforces, or is a declared `Never`. A surface that
-/// is none of those four is a hole, and
-/// `every_declared_surface_is_reached_or_named` is what refuses to let one
-/// open: the erase used to reach whichever tables its author remembered, and
-/// three owner-scoped ones survived every erase because nobody asked the
-/// question in a form a test could fail.
-///
-/// A leg is bespoke when its statement is not the generic shape: it enqueues
-/// before it deletes (`cooled`, `blob_uploads`), it spans two selection sets
-/// (`sketch`, the embedding trio), it carries a refcount guard (`content`),
-/// it rewinds rather than deletes (the two heads), or it sweeps something
-/// beyond the owner (`delegated_authority_grants`).
-const BESPOKE_LEGS: &[(&str, &str)] = &[
-    ("proxima_core.announce", "delete_change_events"),
-    ("proxima_core.blob", "delete_blobs"),
-    ("proxima_core.blob_uploads", "delete_blobs"),
-    ("proxima_core.content", "gc_unreferenced_content_batch"),
-    ("proxima_core.cooled", "delete_selected_cooled"),
-    (
-        "proxima_core.delegated_authority_grants",
-        "delete_delegated_authority_grants",
-    ),
-    ("proxima_core.embedding_heads", "delete_embeddings"),
-    ("proxima_core.embedding_jobs", "delete_embeddings"),
-    ("proxima_core.embeddings", "delete_embeddings"),
-    ("proxima_core.goal", "delete_selected_table"),
-    ("proxima_core.goal_head", "sync_selected_heads"),
-    ("proxima_core.memory", "delete_selected_table"),
-    ("proxima_core.memory_head", "sync_selected_heads"),
-    ("proxima_core.sketch", "delete_selected_sketches"),
-    ("proxima_core.source_cursors", "delete_source_cursors"),
-    ("proxima_core.wake_config", "delete_wake_configs"),
-];
-
 /// Which selection set a generated `ByKey` statement joins.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum KeyedSet {
@@ -239,51 +201,20 @@ impl KeyedSet {
     }
 }
 
-/// The generated leg a surface's declaration earns it, or `None` when an
-/// explicit leg owns it, a constraint removes it, or it is a declared
-/// non-erase.
-fn generated_leg(surface: &Surface) -> Option<GeneratedLeg> {
-    if BESPOKE_LEGS
-        .iter()
-        .any(|(table, _)| *table == surface.table)
-    {
-        return None;
+/// Which selection set a keyed leg joins, from the key shape the flavor
+/// declared.
+///
+/// The classification itself is [`EraseLeg`], resolved by the contract at
+/// registry time and refused at freeze when it comes back
+/// `Unreachable`. All that is left here is the mapping from a homed key to
+/// the temp table this transaction filled for it.
+const fn keyed_set(key: KeyShape) -> Option<(KeyedSet, &'static str)> {
+    match key {
+        KeyShape::MemoryT { column } => Some((KeyedSet::Memories, column)),
+        KeyShape::GoalT { column } => Some((KeyedSet::Goals, column)),
+        KeyShape::BlobId { column } => Some((KeyedSet::Blobs, column)),
+        KeyShape::OwnerId | KeyShape::Custom(_) => None,
     }
-    match surface.erase {
-        EraseRule::ByKey => match surface.key {
-            KeyShape::MemoryT { column } => Some(GeneratedLeg::Keyed(KeyedSet::Memories, column)),
-            KeyShape::GoalT { column } => Some(GeneratedLeg::Keyed(KeyedSet::Goals, column)),
-            KeyShape::BlobId { column } => Some(GeneratedLeg::Keyed(KeyedSet::Blobs, column)),
-            KeyShape::OwnerId | KeyShape::Custom(_) => None,
-        },
-        // A surface that keeps its rows on transfer and is keyed on a
-        // memory is the owner-pinned shape: erased by its OWN owner_id, and
-        // asked which source the memory belonged to when the scope is a
-        // source. Everything else owned is owner-scope only, exactly as
-        // `wake_config` and the grants are: a source scope is a partial
-        // owner, and a row with no source attribution belongs to neither
-        // half of it.
-        EraseRule::ByOwner => Some(GeneratedLeg::Owned {
-            source_scoped: match surface.key {
-                KeyShape::MemoryT { column } if surface.transfer.retains_at_source() => {
-                    Some(column)
-                }
-                _ => None,
-            },
-        }),
-        EraseRule::Cascade { .. } | EraseRule::Never { .. } => None,
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum GeneratedLeg {
-    Keyed(KeyedSet, &'static str),
-    /// `source_scoped` carries the memory-key column when the surface is
-    /// reachable from a source scope, and `None` when a source scope cannot
-    /// reach it at all.
-    Owned {
-        source_scoped: Option<&'static str>,
-    },
 }
 
 /// Delete every surface the contract keys on one selection set, tallying
@@ -295,7 +226,10 @@ async fn delete_keyed_surfaces(
 ) -> Result<u64, StorageError> {
     let mut total = 0;
     for surface in surfaces.surfaces() {
-        let Some(GeneratedLeg::Keyed(declared, column)) = generated_leg(surface) else {
+        let EraseLeg::Keyed(key) = surfaces.erase_leg(surface.table) else {
+            continue;
+        };
+        let Some((declared, column)) = keyed_set(key) else {
             continue;
         };
         if declared != set {
@@ -333,7 +267,7 @@ async fn delete_owned_surfaces(
     let (_owner_kind, owner_id) = owner_binds(&owner);
     let mut total = 0;
     for surface in surfaces.surfaces() {
-        let Some(GeneratedLeg::Owned { source_scoped }) = generated_leg(surface) else {
+        let EraseLeg::Owned { source_scoped } = surfaces.erase_leg(surface.table) else {
             continue;
         };
         let ident = PgIdent::table(surface.table)?;
@@ -1138,7 +1072,7 @@ async fn delete_source_cursors(
 
 #[cfg(test)]
 mod tests {
-    use super::{BESPOKE_LEGS, GeneratedLeg, KeyedSet, generated_leg};
+    use super::{KeyedSet, keyed_set};
 
     #[test]
     fn erase_sql_does_not_name_retired_suppression_table() {
@@ -1187,15 +1121,10 @@ mod tests {
     /// removing the overlay removed duplicate work and not coverage.
     #[test]
     fn the_registry_pass_reaches_every_core_sidecar() {
+        use proxima_core::flavor::{EraseLeg, KeyShape};
+
         let registry = proxima_core::FlavorRegistry::new().freeze_or_panic_for_tests();
         let surfaces = proxima_core::owner_inverse::OwnerSurfaces::for_registry(&registry);
-        let leg = |table: &str| {
-            surfaces
-                .surfaces()
-                .iter()
-                .find(|surface| surface.table == table)
-                .and_then(generated_leg)
-        };
 
         for table in [
             "proxima_core.agent_derivation_v1",
@@ -1203,26 +1132,32 @@ mod tests {
             "proxima_core.utterance_v1",
         ] {
             assert_eq!(
-                leg(table),
-                Some(GeneratedLeg::Keyed(KeyedSet::Memories, "t")),
+                surfaces.erase_leg(table),
+                EraseLeg::Keyed(KeyShape::MemoryT { column: "t" }),
                 "{table} was in delete_fixed_memory_sidecars; the memory-keyed sweep must reach it"
             );
         }
         assert_eq!(
-            leg("proxima_core.task_goal_v1"),
-            Some(GeneratedLeg::Keyed(KeyedSet::Goals, "t")),
+            surfaces.erase_leg("proxima_core.task_goal_v1"),
+            EraseLeg::Keyed(KeyShape::GoalT { column: "t" }),
             "task_goal_v1 was in delete_fixed_goal_sidecars; the goal sweep must reach it"
         );
     }
 
-    /// The completeness property, in the shape the code flavor already
-    /// proves for its own repo erase: every declared surface is reached by
-    /// a generated leg, named by an explicit one, removed by a constraint,
-    /// or declared a non-erase with a reason. There is no fifth answer, and
-    /// "nobody added it to the list" is not one of the four.
+    /// The substrate half of the completeness property.
+    ///
+    /// Which leg owns a surface is decided in core, at freeze, for every
+    /// flavor (`FlavorRegistryError::UndeletableSurface`). What core cannot
+    /// know is whether THIS crate can actually execute the answer, and the
+    /// two generic loops skip anything they cannot map: a `Keyed` leg whose
+    /// key shape has no selection set here would be silently dropped in
+    /// exactly the way freeze now prevents one flavor-side.
+    ///
+    /// So: no core surface resolves to `Unreachable`, and every keyed one
+    /// maps to a temp table this transaction fills.
     #[test]
-    fn every_declared_surface_is_reached_or_named() {
-        use proxima_core::flavor::EraseRule;
+    fn every_declared_surface_has_a_leg_this_crate_can_run() {
+        use proxima_core::flavor::EraseLeg;
 
         let registry = proxima_core::FlavorRegistry::new().freeze_or_panic_for_tests();
         let surfaces = proxima_core::owner_inverse::OwnerSurfaces::for_registry(&registry);
@@ -1232,49 +1167,96 @@ mod tests {
             surfaces.surfaces().len()
         );
         for surface in surfaces.surfaces() {
-            let bespoke = BESPOKE_LEGS
-                .iter()
-                .find(|(table, _)| *table == surface.table);
-            let generated = generated_leg(surface);
-            match surface.erase {
-                EraseRule::Cascade { .. } | EraseRule::Never { .. } => assert!(
-                    generated.is_none() && bespoke.is_none(),
-                    "{} declares {:?} and must emit no statement",
-                    surface.table,
-                    surface.erase
+            match surfaces.erase_leg(surface.table) {
+                EraseLeg::Unreachable => panic!(
+                    "{} resolves to Unreachable, which freeze should have refused",
+                    surface.table
                 ),
-                EraseRule::ByKey | EraseRule::ByOwner => assert!(
-                    generated.is_some() != bespoke.is_some(),
-                    "{} declares {:?}: exactly one of a generated leg ({generated:?}) and a \
-                     named bespoke leg ({bespoke:?}) must own it",
-                    surface.table,
-                    surface.erase
+                EraseLeg::Keyed(key) => assert!(
+                    keyed_set(key).is_some(),
+                    "{} is keyed on {key:?}, which this crate builds no selection set for",
+                    surface.table
                 ),
+                EraseLeg::Owned { .. }
+                | EraseLeg::Bespoke { .. }
+                | EraseLeg::Cascade
+                | EraseLeg::Never { .. } => {}
             }
         }
     }
 
-    /// A named exemption for a table nothing declares is a stale name, and
-    /// a stale name is how the hand-written lists rotted in the first place.
+    /// Every declared bespoke leg names a function this crate defines.
+    ///
+    /// The name is a claim about `proxima-storage-pg`, made in
+    /// `proxima-core` where nothing can check it: the contract says
+    /// "`proxima_core.blob` is deleted by `delete_blobs`" and a reader
+    /// follows that name here. Core's freeze proves the TABLE half of the
+    /// claim — it is a surface the flavor declares, and one whose
+    /// declaration runs a statement — and this proves the FUNCTION half.
+    ///
+    /// A stale name is how the hand-written lists rotted in the first
+    /// place, and a name pointing at a function that was renamed away is
+    /// the same rot one indirection further out.
     #[test]
-    fn every_bespoke_leg_names_a_declared_surface() {
-        let registry = proxima_core::FlavorRegistry::new().freeze_or_panic_for_tests();
-        let surfaces = proxima_core::owner_inverse::OwnerSurfaces::for_registry(&registry);
-        for (table, leg) in BESPOKE_LEGS {
+    fn every_bespoke_leg_names_a_function_this_crate_defines() {
+        fn rust_sources(dir: &std::path::Path, into: &mut String) {
+            for entry in std::fs::read_dir(dir).expect("read src") {
+                let path = entry.expect("dir entry").path();
+                if path.is_dir() {
+                    rust_sources(&path, into);
+                } else if path.extension().is_some_and(|ext| ext == "rs") {
+                    into.push_str(&std::fs::read_to_string(&path).expect("read source"));
+                }
+            }
+        }
+
+        let mut src = String::new();
+        rust_sources(
+            std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/src")),
+            &mut src,
+        );
+        for entry in proxima_core::flavor::FLAVOR_0.bespoke_erase_legs {
             assert!(
-                surfaces
-                    .surfaces()
-                    .iter()
-                    .any(|surface| surface.table == *table),
-                "{leg} claims {table}, which no contract declares"
+                src.contains(&format!("fn {}(", entry.leg)),
+                "{} claims {} deletes it, but this crate defines no such function",
+                entry.table,
+                entry.leg
             );
         }
-        let mut sorted = BESPOKE_LEGS.to_vec();
+    }
+
+    /// The exemption list stays sorted. A list nobody can scan is a list
+    /// nobody prunes, and this one is now read by two crates.
+    #[test]
+    fn the_bespoke_leg_list_is_sorted_by_table() {
+        let tables: Vec<&str> = proxima_core::flavor::FLAVOR_0
+            .bespoke_erase_legs
+            .iter()
+            .map(|entry| entry.table)
+            .collect();
+        let mut sorted = tables.clone();
         sorted.sort_unstable();
+        assert_eq!(sorted, tables, "keep the exemption list sorted by table");
+    }
+
+    /// The three selection sets are the whole vocabulary of a keyed leg.
+    #[test]
+    fn every_homed_key_shape_maps_to_a_selection_set() {
+        use proxima_core::flavor::KeyShape;
+
         assert_eq!(
-            sorted,
-            BESPOKE_LEGS.to_vec(),
-            "keep the exemption list sorted; a list nobody can scan is a list nobody prunes"
+            keyed_set(KeyShape::MemoryT { column: "t" }),
+            Some((KeyedSet::Memories, "t"))
         );
+        assert_eq!(
+            keyed_set(KeyShape::GoalT { column: "g" }),
+            Some((KeyedSet::Goals, "g"))
+        );
+        assert_eq!(
+            keyed_set(KeyShape::BlobId { column: "b" }),
+            Some((KeyedSet::Blobs, "b"))
+        );
+        assert_eq!(keyed_set(KeyShape::OwnerId), None);
+        assert_eq!(keyed_set(KeyShape::Custom(&["a", "b"])), None);
     }
 }

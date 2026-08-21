@@ -735,6 +735,11 @@ pub static CODE_FLAVOR_CONTRACT: FlavorContract = FlavorContract {
     tools: TOOLS,
     resources: &[],
     projection: ProjectionDecl::Table(CODE_PROJECTION),
+    // Every code surface is a memory-keyed sidecar or the repo state table,
+    // and the generic loops reach all of them. Nothing here needs a
+    // hand-written statement, and freeze now proves that rather than the
+    // flavor asserting it.
+    bespoke_erase_legs: &[],
 };
 
 /// The code flavor's projection: three search surfaces, one table, one
