@@ -24,6 +24,11 @@ use uuid::Uuid;
 /// `BandComparability::CoreBands` below an assertion rather than a label.
 const DOCS_BANDS: &[Band] = &[BAND_EXACT, BAND_RESCUE, BAND_SUBSTRING];
 
+/// Superseded substring matches in the starvation corpus. Above the
+/// `overfetch` a `limit = 1` request gets (`1 * 20 = 20`), so the window is
+/// the scarce thing rather than the corpus.
+const SUBSTRING_BACKLOG: usize = 25;
+
 fn note_projection() -> MemorySearchProjection {
     // The shipped declaration, not a second copy of it. This fixture used
     // to restate `core/agent-note-v1`'s columns by hand, which meant the
@@ -1071,4 +1076,132 @@ async fn lexical_language_forget_blocks_on_an_in_flight_writer() {
     .await;
     let _ = drop_db(&db_name).await;
     result.expect("lexical forget concurrency failed");
+}
+
+/// A superseded backlog must not starve the SUBSTRING leg either.
+///
+/// The substring leg is the arm the collapse gave a head restriction to, and
+/// its restriction has a different shape from the ranked arm's — the leg
+/// already drives `proxima_core.memory m`, so it probes `memory_head`
+/// directly instead of through a second `memory` lookup. That shape was
+/// pinned by a string assertion only, and a string assertion cannot see a
+/// join that is present but wrong.
+///
+/// A first attempt at this test seeded one superseded substring match and
+/// asserted it did not come back. It passed with the restriction REMOVED:
+/// `search_admit_sql` drops the row either way, so the candidate-side
+/// predicate changes nothing until the window is the scarce thing. This
+/// corpus makes it scarce — [`SUBSTRING_BACKLOG`] superseded matches against
+/// a `limit = 1` window of twenty — and puts the live row FIRST, because the
+/// substring arm scores everything at one flat floor and breaks the tie on
+/// `t DESC`, so the oldest row is the one a spent window loses.
+///
+/// `artograph` is inside `cartography` and is not a lexeme of it, so
+/// `websearch_to_tsquery` matches nothing, the schema is reported missing,
+/// and the substring leg is the only thing that can answer.
+#[tokio::test]
+async fn a_superseded_backlog_does_not_starve_the_substring_leg() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    if let Err(e) = create_db(&db_name).await {
+        panic!("PG required for tests but admin connect failed: {e}");
+    }
+    let url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&url).await?;
+        pg.run_migrations().await?;
+        let pool = pg.pool_for_tests();
+        let owner = OwnerRef::Personal(UserId::new(Uuid::now_v7()));
+        let owner_id = owner.stored_owner_id();
+        sqlx::query(
+            "INSERT INTO proxima_core.owners (owner_id, kind)
+             VALUES ($1, 'personal') ON CONFLICT DO NOTHING",
+        )
+        .bind(owner_id)
+        .execute(pool)
+        .await?;
+
+        // The live row, seeded FIRST so every decoy is newer than it.
+        let live = seed_note(pool, owner, "Atlas", "the cartography of the archive").await?;
+
+        for index in 0..SUBSTRING_BACKLOG {
+            let handle = Uuid::now_v7();
+            let superseded = Uuid::now_v7();
+            sqlx::query(
+                "INSERT INTO proxima_core.memory_head (handle, kind, schema_id, owner_id, t)
+                 VALUES ($1, 'fact', 'core/agent-note-v1', $2, $3)",
+            )
+            .bind(handle)
+            .bind(owner_id)
+            .bind(superseded)
+            .execute(pool)
+            .await?;
+            let head = Uuid::now_v7();
+            for (t, body) in [
+                (superseded, "the cartography of the archive"),
+                (head, "this revision says nothing"),
+            ] {
+                sqlx::query(
+                    "INSERT INTO proxima_core.memory (handle, t, kind, owner_id, schema_id)
+                     VALUES ($1, $2, 'fact', $3, 'core/agent-note-v1')",
+                )
+                .bind(handle)
+                .bind(t)
+                .bind(owner_id)
+                .execute(pool)
+                .await?;
+                sqlx::query(
+                    "INSERT INTO proxima_core.agent_note_v1 (t, note_id, title, body, tags)
+                     VALUES ($1, $2, $3, $4, '{}')",
+                )
+                .bind(t)
+                .bind(t)
+                .bind(format!("Backlog {index}"))
+                .bind(body)
+                .execute(pool)
+                .await?;
+                project(pool, t, "core/agent-note-v1", None).await?;
+            }
+            sqlx::query("UPDATE proxima_core.memory_head SET t = $2 WHERE handle = $1")
+                .bind(handle)
+                .bind(head)
+                .execute(pool)
+                .await?;
+        }
+
+        let mut req = search_req(owner, "artograph");
+        req.limit = 1;
+        let page = pg.search_memories(&req, &[note_projection()]).await?;
+        assert_eq!(
+            page.results
+                .iter()
+                .map(|row| row.memory_id.into_inner())
+                .collect::<Vec<_>>(),
+            vec![live],
+            "the substring window must not be spent on revisions admission \
+             will drop"
+        );
+        assert!(
+            (page.results[0].score - BAND_SUBSTRING.floor).abs() < f32::EPSILON,
+            "…and the row came through the substring arm, at its flat floor; \
+             got {}",
+            page.results[0].score
+        );
+
+        // The control. If this returns one row, the assertion above passed
+        // because the backlog stopped matching, not because the head
+        // restriction worked.
+        req.supersession = SupersessionStatus::IncludeSuperseded;
+        req.limit = 64;
+        let page = pg.search_memories(&req, &[note_projection()]).await?;
+        assert_eq!(
+            page.results.len(),
+            SUBSTRING_BACKLOG + 1,
+            "IncludeSuperseded wants the revisions, and every one of them \
+             carries the substring"
+        );
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("substring starvation check failed");
 }
