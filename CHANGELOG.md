@@ -21,6 +21,7 @@ Pre-1.0 the git tag (e.g. `v0.0.3`) is the version; workspace crates are unpubli
 - **core**: Transfer a memory to another owner, not to World ([`e01b648`](https://github.com/Aquilo-Solution-S/Proxima/commit/e01b648799b140c0ded9f4a547c85654b4141757))
 
 ### Bug Fixes
+- **storage-pg**: The projection rebuild picks its statement by schema, and the guard gets a pin ([`88848d3`](https://github.com/Aquilo-Solution-S/Proxima/commit/88848d3023b7a373a056f865093702194a150dad)). Hydrate looked the projection statement up by sidecar table alone and ran it for every stamped extra, so a memory with extra sidecars got projection rows claiming schemas it is not.
 - **breaking:** **storage-pg**: The kind filter reaches the candidate window too ([`f114f1f`](https://github.com/Aquilo-Solution-S/Proxima/commit/f114f1f683e74a9c641b4d892b5bb3208868b8bf)). `core/agent-derivation-v1` registers under two payload kinds, so a `kind`-filtered request narrows the participating schema set but not the rows; the abstraction-kind rows entered the window and admission dropped them, leaving the starved schema at the substring arm's flat floor. Measured on the same corpus and the same row: `0.250000` at `limit = 1`, `0.545455` at `limit = 8`.
 - **storage-pg**: The projection generator writes only the schema it was asked for ([`a8a74cb`](https://github.com/Aquilo-Solution-S/Proxima/commit/a8a74cba4c3cc377df9e3c3123685d925c61a521))
 - **core**: The projection uniformity arms each get a fixture, and the validators get their order back ([`e745c17`](https://github.com/Aquilo-Solution-S/Proxima/commit/e745c171a470a9aebcb958c0f6beafcea157a1ba))
@@ -68,6 +69,8 @@ Pre-1.0 the git tag (e.g. `v0.0.3`) is the version; workspace crates are unpubli
 - **breaking:** The World owner is gone from prose, Lean, and the changelog ([`9abf3de`](https://github.com/Aquilo-Solution-S/Proxima/commit/9abf3de134b6e986f1ea0cec6885f3dc58bec8df))
 
 ### Testing
+- **storage-pg**: The mirror guard counts predicates, not just binds ([`7e5fb81`](https://github.com/Aquilo-Solution-S/Proxima/commit/7e5fb81fe2b38bf5e4c95656d97e2e95019a47a8))
+- **storage-pg**: The plan pin drops the fallback that its own permitted plan would fail ([`656bac6`](https://github.com/Aquilo-Solution-S/Proxima/commit/656bac636d2da80d09225d0ff06d46a80653d21a))
 - **storage-pg**: The band pin perturbs all three bands, not one ([`d908e93`](https://github.com/Aquilo-Solution-S/Proxima/commit/d908e9375e74eb1a8bcc2f012248e39131f03264))
 - **storage-pg**: The substring leg's head restriction gets a runtime case ([`6887b0b`](https://github.com/Aquilo-Solution-S/Proxima/commit/6887b0b5a59dc02417d20bae603d13c0393db0ce))
 - **storage-pg**: The plan pin stops forbidding the plan that wins at scale ([`e659ebd`](https://github.com/Aquilo-Solution-S/Proxima/commit/e659ebda62ac3cbaebf8b93fba9b15b12aa0a2f6)). Measured: 51.5 ms hash join against 85.8 ms nested loop at 25 000 heads.
