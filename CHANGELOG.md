@@ -7,6 +7,7 @@ Pre-1.0 the git tag (e.g. `v0.0.3`) is the version; workspace crates are unpubli
 ## [Unreleased]
 
 ### Features
+- **breaking:** **core**: Bands, substring arms and read shape become declared values ([`8264804`](https://github.com/Aquilo-Solution-S/Proxima/commit/82648043b93087bfb1db457be7d23a6335b89fc3))
 - **storage-pg**: The substrate answers what a scope erase may take and whose it is ([`474fb2b`](https://github.com/Aquilo-Solution-S/Proxima/commit/474fb2bd241fc72e9c665229a8689ae0d26914eb))
 - **storage-pg**: A caller with its own error type can still recognise a deadlock ([`bed891e`](https://github.com/Aquilo-Solution-S/Proxima/commit/bed891e68227c049485d34038b714532d35724ce))
 - **breaking:** **core**: PerRow's column name becomes a constraint; bands stay a stated deferral ([`5fd2bf8`](https://github.com/Aquilo-Solution-S/Proxima/commit/5fd2bf8d2204b450cdf348a1a96a1114e8ef79c9))
@@ -20,6 +21,7 @@ Pre-1.0 the git tag (e.g. `v0.0.3`) is the version; workspace crates are unpubli
 - **core**: Transfer a memory to another owner, not to World ([`e01b648`](https://github.com/Aquilo-Solution-S/Proxima/commit/e01b648799b140c0ded9f4a547c85654b4141757))
 
 ### Bug Fixes
+- **breaking:** **code**: The substring arms are declared, and their owner is a real predicate ([`0d95ff2`](https://github.com/Aquilo-Solution-S/Proxima/commit/0d95ff2bfbaa6aba418e291c405c75a35b962c55))
 - **breaking:** **code**: The owner boundary covers the seed leg, and the erase stops waiting ([`2075839`](https://github.com/Aquilo-Solution-S/Proxima/commit/2075839cc4edcff813c18cfa35bfb8d2d6590c59))
 - **storage-pg**: Giving up on a lock is transient, not a fault ([`42270bd`](https://github.com/Aquilo-Solution-S/Proxima/commit/42270bd3fcd6cdbc2acd2a7d31f0ddc2dd639b52))
 - **breaking:** **code**: The erase footprint is a joint fixpoint, locked once, inside one owner ([`8543d52`](https://github.com/Aquilo-Solution-S/Proxima/commit/8543d52db41abfb3538ead6190ff609f900608c9))
@@ -40,6 +42,9 @@ Pre-1.0 the git tag (e.g. `v0.0.3`) is the version; workspace crates are unpubli
 - **core**: Type owner kind in sketch hydration ([`21aeba5`](https://github.com/Aquilo-Solution-S/Proxima/commit/21aeba5bec1bd6b5bf8ed79ef657e930f5acb0ea))
 - **breaking:** **core**: Delete the World owner ([`87e69a5`](https://github.com/Aquilo-Solution-S/Proxima/commit/87e69a528476d03548a95767ea9df4887523c499))
 
+### Performance
+- **breaking:** **storage-pg**: One ranked statement per flavor, and the LIKE retry dies ([`5374e9c`](https://github.com/Aquilo-Solution-S/Proxima/commit/5374e9cd3e7e927e527b5f9eebd06850b83cd2d2))
+
 ### Refactor
 - **storage-pg**: The erase row lock is a substrate primitive, not flavor SQL ([`abd08fa`](https://github.com/Aquilo-Solution-S/Proxima/commit/abd08fac819ef9dc6deef1765ab3c1fc956ae27d))
 - **breaking:** **code**: Repo erase moves to the flavor that owns the rows ([`cdfb3aa`](https://github.com/Aquilo-Solution-S/Proxima/commit/cdfb3aa6c3a1bfed161f92a4f2fdf53a745f393e))
@@ -50,6 +55,7 @@ Pre-1.0 the git tag (e.g. `v0.0.3`) is the version; workspace crates are unpubli
 - **breaking:** **code**: A shared repo is a group, not the World ([`a9bc93d`](https://github.com/Aquilo-Solution-S/Proxima/commit/a9bc93d050b25cb2349dfd1de2c6ce580c2fa10f))
 
 ### Documentation
+- The flavor search surface is a declaration, and pg_trgm's blocker was wrong ([`237282d`](https://github.com/Aquilo-Solution-S/Proxima/commit/237282d4d515a11ec4acc31966032314cce6af0a))
 - What the contract does not yet reach, said where a reader looks ([`0e280ed`](https://github.com/Aquilo-Solution-S/Proxima/commit/0e280edc6f16a58eb43fc22ec901e0c8c6ba94a5))
 - The resource catalog is named after what it is now ([`791894d`](https://github.com/Aquilo-Solution-S/Proxima/commit/791894dd92ee6836313eb73a32179a5fffe2debd))
 - The coverage row and the transfer port name what actually exists ([`5270686`](https://github.com/Aquilo-Solution-S/Proxima/commit/5270686c604cae8964b504021332c4ba76b8a806))
