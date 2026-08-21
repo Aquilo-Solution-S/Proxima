@@ -1642,6 +1642,11 @@ mod tests {
     /// emitted SQL to move with it. A renderer holding a literal cannot
     /// pass both halves.
     #[test]
+    // Three bands, each with a declared half and a rendered half, and
+    // the perturbation that kills a hardcode. Splitting it would put
+    // one band in a second function to forget the other two in — which
+    // is the shape this test exists to correct.
+    #[allow(clippy::too_many_lines)]
     fn the_declared_bands_render_the_arithmetic_the_sql_already_had() {
         use proxima_core::flavor::{
             BAND_NAME_EXACT, BAND_NAME_RESCUE, BAND_NAME_SUBSTRING, Band,
@@ -1716,9 +1721,10 @@ mod tests {
             );
         }
 
-        // The mutant killer. Perturb the exact band in a projection the
-        // renderer is handed, and require the SQL to follow. A hardcoded
-        // `0.50` survives every assertion above and dies here.
+        // The mutant killer. Perturb ALL THREE bands in a projection the
+        // renderer is handed, and require the SQL to follow. Perturbing only
+        // `exact` left the rescue floor, the rescue width and the substring
+        // floor hardcodable with the whole workspace green.
         let mut moved = projections[0].clone();
         moved.bands = Box::leak(Box::new([
             Band {
@@ -1727,8 +1733,18 @@ mod tests {
                 ceiling: 0.90,
                 normalization: TS_RANK_NORMALIZATION_NONE,
             },
-            super::band(&projections[0], BAND_NAME_RESCUE).expect("rescue"),
-            super::band(&projections[0], BAND_NAME_SUBSTRING).expect("substring"),
+            Band {
+                name: BAND_NAME_RESCUE,
+                floor: 0.02,
+                ceiling: 0.09,
+                normalization: TS_RANK_NORMALIZATION_SCALE,
+            },
+            Band {
+                name: BAND_NAME_SUBSTRING,
+                floor: 0.01,
+                ceiling: 0.01,
+                normalization: TS_RANK_NORMALIZATION_NONE,
+            },
         ]));
         let flavor = super::FlavorScan {
             schemas: vec![&moved],
@@ -1736,15 +1752,37 @@ mod tests {
         let ranked = super::ranked_projection_sql(&flavor, &req, true).expect("ranked");
         assert!(
             ranked.contains("THEN 0.10 + LEAST(COALESCE(ts_rank_cd("),
-            "the floor is READ, not written into the builder"
+            "the exact floor is READ, not written into the builder"
         );
         assert!(
             ranked.contains("), 0.0), 1.0) * 0.80"),
-            "the width is READ, and a declared `NONE` normalization renders no argument"
+            "the exact width is READ, and a declared `NONE` normalization \
+             renders no argument"
         );
         assert!(
-            !ranked.contains("THEN 0.50 +"),
-            "nothing in the builder may still carry core's literal"
+            ranked.contains("THEN 0.02 + LEAST(COALESCE(ts_rank("),
+            "the rescue floor is READ too"
+        );
+        assert!(
+            ranked.contains(", 32), 0.0) * 100.0, 1.0) * 0.07"),
+            "…and so are the rescue width and the rescue normalization flag"
+        );
+        assert!(
+            !ranked.contains("THEN 0.50 +") && !ranked.contains("THEN 0.25 +"),
+            "nothing in the builder may still carry core's literals"
+        );
+        assert!(
+            !ranked.contains(", 33)"),
+            "…including the normalization flags"
+        );
+        let substring_sql = super::substring_sql(&[&moved], &req).expect("substring");
+        assert!(
+            substring_sql.contains("0.01::real AS lexical_score"),
+            "the substring floor is READ as well"
+        );
+        assert!(
+            !substring_sql.contains("0.25::real"),
+            "…and core's literal is gone from the substring arm too"
         );
     }
 
