@@ -34,6 +34,7 @@ mod delegated_authority;
 mod error;
 #[doc(hidden)]
 pub use error::map_err;
+pub use error::{MAX_TRANSACTION_ATTEMPTS, is_transient_conflict};
 mod pg_ident;
 mod pgvector;
 mod pool_config;

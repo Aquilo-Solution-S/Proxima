@@ -76,6 +76,28 @@ fn is_retryable_sqlstate(code: Option<&str>) -> bool {
     matches!(code, Some("40P01" | "40001"))
 }
 
+/// Whether a sqlx failure is a transient conflict whose transaction is safe
+/// to re-run from the beginning.
+///
+/// The same classification [`map_err`] applies, for a caller that keeps its
+/// own error type and therefore never sees a [`StorageError`]. A flavor
+/// running a multi-statement scope erase is the case in hand: it takes row
+/// locks in an order derived from its own data, a concurrent writer takes
+/// `FOR KEY SHARE` in an order derived from its, and no amount of ordering
+/// on one side makes the pair acyclic. `40P01` is therefore a normal
+/// outcome, not a fault, and the only correct response is to roll back and
+/// try again — which is a decision the caller can only make if it can
+/// recognise the code.
+#[must_use]
+pub fn is_transient_conflict(err: &sqlx::Error) -> bool {
+    matches!(err, sqlx::Error::Database(db) if is_retryable_sqlstate(db.code().as_deref()))
+}
+
+/// The number of attempts (initial try plus retries) a caller re-running a
+/// whole transaction should allow, so every retry loop in the workspace has
+/// the same budget.
+pub const MAX_TRANSACTION_ATTEMPTS: usize = MAX_STORAGE_ATTEMPTS;
+
 /// Bounded retry budget for [`with_bounded_retry`]: the total number of
 /// attempts (initial try + retries) for a transient transaction.
 pub(crate) const MAX_STORAGE_ATTEMPTS: usize = 3;
