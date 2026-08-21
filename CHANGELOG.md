@@ -7,6 +7,8 @@ Pre-1.0 the git tag (e.g. `v0.0.3`) is the version; workspace crates are unpubli
 ## [Unreleased]
 
 ### Features
+- **storage-pg**: The substrate answers what a scope erase may take and whose it is ([`474fb2b`](https://github.com/Aquilo-Solution-S/Proxima/commit/474fb2bd241fc72e9c665229a8689ae0d26914eb))
+- **storage-pg**: A caller with its own error type can still recognise a deadlock ([`bed891e`](https://github.com/Aquilo-Solution-S/Proxima/commit/bed891e68227c049485d34038b714532d35724ce))
 - **breaking:** **core**: PerRow's column name becomes a constraint; bands stay a stated deferral ([`5fd2bf8`](https://github.com/Aquilo-Solution-S/Proxima/commit/5fd2bf8d2204b450cdf348a1a96a1114e8ef79c9))
 - **breaking:** **blob**: A shared cited blob dedupes on transfer instead of refusing ([`b95c294`](https://github.com/Aquilo-Solution-S/Proxima/commit/b95c2949d6cb44e3798257a4aeaa12a0137d8ab3))
 - **breaking:** **search**: One projection table per flavor replaces eight sidecar tsvectors ([`6f31fa1`](https://github.com/Aquilo-Solution-S/Proxima/commit/6f31fa1cb5aaf05f387b3d9f8ae3a6131b5035c2))
@@ -18,6 +20,8 @@ Pre-1.0 the git tag (e.g. `v0.0.3`) is the version; workspace crates are unpubli
 - **core**: Transfer a memory to another owner, not to World ([`e01b648`](https://github.com/Aquilo-Solution-S/Proxima/commit/e01b648799b140c0ded9f4a547c85654b4141757))
 
 ### Bug Fixes
+- **breaking:** **code**: The erase footprint is a joint fixpoint, locked once, inside one owner ([`8543d52`](https://github.com/Aquilo-Solution-S/Proxima/commit/8543d52db41abfb3538ead6190ff609f900608c9))
+- **storage-pg**: A cited blob is held before the erase decides nothing cites it ([`c483af1`](https://github.com/Aquilo-Solution-S/Proxima/commit/c483af13a36dec6d4ecd24d75adce7c01c677037))
 - **dev-migrate**: The reset owns the namespace the boot check probes ([`3f502ce`](https://github.com/Aquilo-Solution-S/Proxima/commit/3f502cee258ddca4850e7334879c288ff8829986))
 - **breaking:** **storage-pg**: A series erase takes the blobs its admissions cited ([`11149c7`](https://github.com/Aquilo-Solution-S/Proxima/commit/11149c7100b5eea347538ca20bb7219892f7e53f))
 - **breaking:** **code**: A repo erase closes its reference footprint and locks what it erases ([`12e8a93`](https://github.com/Aquilo-Solution-S/Proxima/commit/12e8a93a1147ad695686cc8883c55fec0afcb2c0))
@@ -50,6 +54,7 @@ Pre-1.0 the git tag (e.g. `v0.0.3`) is the version; workspace crates are unpubli
 - **breaking:** The World owner is gone from prose, Lean, and the changelog ([`9abf3de`](https://github.com/Aquilo-Solution-S/Proxima/commit/9abf3de134b6e986f1ea0cec6885f3dc58bec8df))
 
 ### Testing
+- **code**: The cascade check sees every surface the contract declares ([`fb37282`](https://github.com/Aquilo-Solution-S/Proxima/commit/fb37282d80518c23d9cf5e0b9bc8b8113780b935))
 - **search**: The core plan pin asserts the owner is an INDEX condition ([`c90016a`](https://github.com/Aquilo-Solution-S/Proxima/commit/c90016abc0661e08969b3b9907839733c7690d8f))
 - **compliance**: Pin the source arm's object refcount, not just the owner arm's ([`6fb5a84`](https://github.com/Aquilo-Solution-S/Proxima/commit/6fb5a84c3dfcb370fb26b08991d2257cf7980fe2))
 - **compliance**: Pin that an erased owner keeps no searchable row ([`4ba05af`](https://github.com/Aquilo-Solution-S/Proxima/commit/4ba05afa8564fe48c3ff4a1f18402cad33715c2c))
