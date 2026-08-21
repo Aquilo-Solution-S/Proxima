@@ -404,31 +404,57 @@ async fn hot_path_plans_use_expected_indexes() {
             "the per-sidecar tsvector index is gone; plan:\n{lexical_plan}"
         );
 
-        // The head restriction is TWO index probes per candidate, not a
-        // scan of either table. `HeadsOnly` is the request shape above and
-        // the tool default, and the whole point of putting the restriction
-        // on the candidate side is that the window stops being spent on
-        // rows admit will drop — which is only worth doing if reaching the
-        // head is cheap.
+        // The admit-side restriction reaches both tables BY INDEX, not by
+        // scanning either. `HeadsOnly` is the request shape above and the
+        // tool default, and putting the restriction on the candidate side is
+        // only worth doing if reaching the head is cheap.
+        //
+        // What this pin does NOT assert is the join STRATEGY, and that is a
+        // correction. An earlier version rejected `Hash Join` outright, on
+        // the stated ground that it "would build over every head in the
+        // deployment". Measured, that ground is false at scale: at 25 000
+        // heads the hash join ran in 51.5 ms against the nested loop's
+        // 85.8 ms, so the pin forbade the plan that wins. The nested loop is
+        // right for the small corpus here and for the sparse case the
+        // overfetch window is designed around; the hash join is right once
+        // the candidate set is large. Both are correct plans over the same
+        // indexes, and choosing between them is the planner's job with
+        // statistics this test does not have. So: assert the index names
+        // when the shape IS a nested loop, and let the planner have the
+        // other shape.
+        //
+        // The cost the restriction actually adds is documented on
+        // `admit_side_restriction`: one probe per MATCHING row rather than
+        // per returned candidate, measured at +51% on 50 000 matching rows.
+        let nested_loop = lexical_plan.contains("\"Node Type\":\"Nested Loop\"");
         let head = scan_of(&plan, "memory_head")
             .unwrap_or_else(|| panic!("HeadsOnly must reach memory_head; plan:\n{lexical_plan}"));
-        assert_eq!(
-            head.get("Index Name").and_then(serde_json::Value::as_str),
-            Some("memory_head_pkey"),
-            "the head lookup rides the handle primary key; plan:\n{lexical_plan}"
-        );
         let memory = scan_of(&plan, "memory")
-            .unwrap_or_else(|| panic!("the head restriction joins memory; plan:\n{lexical_plan}"));
-        assert_eq!(
-            memory.get("Index Name").and_then(serde_json::Value::as_str),
-            Some("memory_t_key"),
-            "…and reaches the memory row on its unique `t`; plan:\n{lexical_plan}"
-        );
-        assert!(
-            !lexical_plan.contains("\"Node Type\":\"Hash Join\""),
-            "a hash join here would build over every head in the deployment; \
-             plan:\n{lexical_plan}"
-        );
+            .unwrap_or_else(|| panic!("the admit-side restriction joins memory; plan:\n{lexical_plan}"));
+        if nested_loop {
+            assert_eq!(
+                head.get("Index Name").and_then(serde_json::Value::as_str),
+                Some("memory_head_pkey"),
+                "the head lookup rides the handle primary key; plan:\n{lexical_plan}"
+            );
+            assert_eq!(
+                memory.get("Index Name").and_then(serde_json::Value::as_str),
+                Some("memory_t_key"),
+                "…and reaches the memory row on its unique `t`; plan:\n{lexical_plan}"
+            );
+        } else {
+            // Whatever the strategy, neither table may be read by a
+            // sequential scan — that is the assertion the index names were
+            // standing in for, and it holds under both shapes.
+            for (label, node) in [("memory_head", &head), ("memory", &memory)] {
+                assert_ne!(
+                    node.get("Node Type").and_then(serde_json::Value::as_str),
+                    Some("Seq Scan"),
+                    "{label} must be reached by index under any join strategy; \
+                     plan:\n{lexical_plan}"
+                );
+            }
+        }
 
         // The substring arm plans as the nested loop it DECLARES.
         //
