@@ -7,6 +7,7 @@ use proxima_code::RepoScope;
 use proxima_code::testkit::{erase_footprint, erase_repo, register_repo};
 use proxima_core::{FactPayload, Owner};
 use proxima_pg_testkit::{db_url, drop_db};
+use proxima_storage_pg::MAX_TRANSACTION_ATTEMPTS;
 use uuid::Uuid;
 
 async fn insert_repo_commit_with_test_request(
@@ -1579,6 +1580,16 @@ async fn a_lock_the_erase_cannot_get_is_bounded_and_retried_not_waited_out() {
             waited < std::time::Duration::from_mins(2),
             "the erase waited {waited:?} — with no lock_timeout it waits out the pool's \
              statement_timeout instead of giving up and retrying"
+        );
+        // Each attempt provably holds for the full 5s lock_timeout before 55P03
+        // fires, so the elapsed floor observes that the production call site
+        // spends its whole MAX_TRANSACTION_ATTEMPTS budget, not a reduced one.
+        let full_budget =
+            std::time::Duration::from_secs(5) * u32::try_from(MAX_TRANSACTION_ATTEMPTS)?;
+        assert!(
+            waited >= full_budget,
+            "the erase gave up after {waited:?} — fewer than the {MAX_TRANSACTION_ATTEMPTS} \
+             attempts the production call site is required to spend"
         );
         let message = err.to_string();
         assert!(
