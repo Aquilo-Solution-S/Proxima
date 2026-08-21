@@ -5,7 +5,10 @@
 
 use crate::authz::{AuthorizationHook, AuthzContext, AuthzInput, AuthzOutcome, OwnerResolver};
 use crate::error::ProtocolError;
-use crate::flavor::contract::{FlavorContract, LanguagePolicy, SearchProjectionDecl};
+use crate::flavor::contract::{
+    Band, BandComparability, FlavorContract, LanguagePolicy, RankSource, SearchProjectionDecl,
+    SubstringArm,
+};
 use crate::mcp::RequestBehavior;
 use crate::{
     CapabilityTag, FlavorDescriptor, McpToolDescriptor, Owner, SchemaId, SchemaVersion,
@@ -173,6 +176,32 @@ pub struct MemorySearchProjection {
     /// weight level. `None` — the uniform case — passes no array, which is
     /// what keeps the score identical to the unweighted vector's.
     pub rank_weights: Option<[f32; 4]>,
+    /// The score windows the arms over this schema render, resolved by
+    /// [`Band::name`]. Read at query-build time; freeze holds a
+    /// projection-ranked flavor to the three names the core renderer
+    /// resolves.
+    pub bands: &'static [Band],
+    /// Whether this schema opts into a substring arm, and in which shape.
+    /// [`SubstringArm::Off`] means the arm contributes no statement and no
+    /// rows — which is what makes deleting the blanket `LIKE` retry a
+    /// mechanism change rather than a recall cut.
+    pub substring: SubstringArm,
+    /// The owning flavor's candidate budget for ONE statement over its
+    /// projection ([`ProjectionSpec::overfetch_k`]).
+    ///
+    /// [`ProjectionSpec::overfetch_k`]: crate::flavor::contract::ProjectionSpec::overfetch_k
+    pub overfetch_k: u32,
+    /// The owning flavor's band-comparability claim
+    /// ([`ProjectionSpec::band_comparability`]). Core's merge admits a
+    /// non-core projection only under [`BandComparability::CoreBands`].
+    ///
+    /// [`ProjectionSpec::band_comparability`]: crate::flavor::contract::ProjectionSpec::band_comparability
+    pub band_comparability: BandComparability,
+    /// The owning flavor's read shape ([`ProjectionSpec::rank_source`]).
+    /// Core's renderer serves [`RankSource::Projection`] flavors only.
+    ///
+    /// [`ProjectionSpec::rank_source`]: crate::flavor::contract::ProjectionSpec::rank_source
+    pub rank_source: RankSource,
 }
 
 /// One `(sidecar table, column)` the embedding drain reads text from.
@@ -295,11 +324,16 @@ fn contract_search_projections(
             continue;
         };
         for (schema, sidecar_table) in contract.projected_schemas() {
+            // Nothing is discarded here any more. `bands` and `substring`
+            // used to fall into the `..`, which is what made a declared
+            // band a value no reader could reach and the substring arm a
+            // blanket retry rather than an opt-in.
             let SearchProjectionDecl::Projected {
                 fields,
                 tag_column,
                 language,
-                ..
+                bands,
+                substring,
             } = &schema.search
             else {
                 continue;
@@ -321,6 +355,11 @@ fn contract_search_projections(
                 tag_column: tag_column.map(str::to_owned),
                 language: *language,
                 rank_weights: schema.search.rank_weight_array(),
+                bands,
+                substring: *substring,
+                overfetch_k: spec.overfetch_k,
+                band_comparability: spec.band_comparability,
+                rank_source: spec.rank_source,
             });
         }
     }

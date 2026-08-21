@@ -114,9 +114,85 @@ impl FlavorRegistry {
                 });
             }
             self.validate_contract_schemas(contract)?;
+            Self::validate_contract_projection(contract)?;
         }
         if !self.contracts.is_empty() && !has_core {
             return Err(FlavorRegistryError::MissingCoreContract);
+        }
+        Ok(())
+    }
+
+    /// What the flavor's PROJECTION declares, checked against the schemas
+    /// that project into it.
+    ///
+    /// Two rules, both earning a declaration that would otherwise decorate:
+    ///
+    /// 1. `RankSource::Projection` means ONE statement serves the whole
+    ///    flavor, so every property that statement can spell only once —
+    ///    the lexical configuration and the score windows — must agree
+    ///    across the flavor's projected schemas, and the renderer's three
+    ///    band names must all be declared. Deciding this at freeze rather
+    ///    than at query-build time is the point: the answer never depends
+    ///    on the request, and discovering it on a hot path would be a
+    ///    `StorageError` where a boot refusal belongs.
+    /// 2. `BandComparability::CoreBands` is the claim a cross-flavor merge
+    ///    compares scores on. A flavor whose bands leave flavor #0's
+    ///    `[0, 1]` window cannot make it.
+    fn validate_contract_projection(
+        contract: &crate::flavor::contract::FlavorContract,
+    ) -> Result<(), FlavorRegistryError> {
+        use crate::flavor::contract::{
+            BAND_NAME_EXACT, BAND_NAME_RESCUE, BAND_NAME_SUBSTRING, BandComparability,
+        };
+
+        let Some(spec) = contract.projection.spec() else {
+            return Ok(());
+        };
+        let mut reference: Option<&'static crate::flavor::contract::SchemaContract> = None;
+        for (schema, _) in contract.projected_schemas() {
+            let schema_id = schema.schema_id();
+            if matches!(spec.band_comparability, BandComparability::CoreBands) {
+                for band in schema.search.bands() {
+                    if band.floor < 0.0 || band.ceiling > 1.0 {
+                        return Err(FlavorRegistryError::ProjectionBandOutsideCoreWindow {
+                            flavor_id: contract.flavor_id,
+                            schema_id,
+                            band: band.name,
+                            window: format!("[{}, {}]", band.floor, band.ceiling),
+                        });
+                    }
+                }
+            }
+            if !spec.rank_source.is_projection() {
+                continue;
+            }
+            for name in [BAND_NAME_EXACT, BAND_NAME_RESCUE, BAND_NAME_SUBSTRING] {
+                if schema.search.band(name).is_none() {
+                    return Err(FlavorRegistryError::ProjectionBandName {
+                        flavor_id: contract.flavor_id,
+                        schema_id,
+                        missing: name,
+                    });
+                }
+            }
+            let Some(first) = reference else {
+                reference = Some(schema);
+                continue;
+            };
+            if first.search.language() != schema.search.language() {
+                return Err(FlavorRegistryError::ProjectionRenderNotUniform {
+                    flavor_id: contract.flavor_id,
+                    schema_id,
+                    property: "language",
+                });
+            }
+            if first.search.bands() != schema.search.bands() {
+                return Err(FlavorRegistryError::ProjectionRenderNotUniform {
+                    flavor_id: contract.flavor_id,
+                    schema_id,
+                    property: "bands",
+                });
+            }
         }
         Ok(())
     }
@@ -646,6 +722,13 @@ mod tests {
             index: "test_flavor_projection_owner_tsv_gin",
             overfetch_k: 0,
             band_comparability: crate::flavor::contract::BandComparability::CoreBands,
+            // Sidecar-ranked so this fixture tests ONE rule. Under
+            // `Projection` the empty band set would trip
+            // `ProjectionBandName` as well, and a fixture that can fail two
+            // ways proves neither.
+            rank_source: crate::flavor::contract::RankSource::SidecarWithProjectionOwner {
+                why: "a fixture, not a search surface",
+            },
         }),
     };
     /// Five distinct relative weights on one projection unit. The
