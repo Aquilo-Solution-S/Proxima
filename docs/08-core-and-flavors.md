@@ -309,8 +309,25 @@ exists. The three `DECLARED GAP` exclusions (`wake_config`, `blob_uploads`,
 `content` — erased but never exported) are still gaps; they are now gaps the
 declaration causes rather than gaps it merely describes.
 
-`ForgetRule` remains vocabulary: the forget lane walks the sidecar registry,
-not the contract.
+`ForgetRule` is consumed, and by two iteration sources rather than one. The
+`Dumped` legs are still walked from the ROW STAMP (`memory.sidecar_tables`),
+deliberately: the stamp is the historical record of what the dump actually
+read, so a registry that gained a sidecar after a row was written cannot
+delete from a table that row never touched, and one that lost a table can
+still forget rows written before it went. The `Deleted` legs — the embedding
+triple and the sketch, derived rows nothing stamps — come off the
+declaration, and a `DeleteWithMemory` surface the forget cannot reach is
+`FlavorRegistryError::UnforgettableSurface` at boot. `Surface::completeness`
+is what separates the two: a `DeleteWithMemory` surface whose parent FK
+already cascades generates no statement, because the constraint is the list.
+
+Two declarations were wrong when the field was first read, and neither could
+have been found by reading: `ingest_keys` said `DeleteWithMemory` while the
+shipped forget kept the rows (as `core_forget`'s own wire description
+promises), and `memory_head` said it while the shipped forget rewinds. Both
+are `Keep { why }` now, and
+`cooling_keeps_the_receipt_and_rewinds_the_head_while_erase_takes_both` fails
+if either is restored.
 
 Two places are worth knowing about individually, because each looks like it
 reads the contract and does not:
@@ -319,11 +336,16 @@ reads the contract and does not:
    are a hand-written list. It names `proxima_core.agent_note_v1`, which is a
    flavor-#0 declared sidecar, and `proxima_code.code_chunk_v1`, which is
    another flavor's sidecar named in kernel code.
-2. `storage-pg/src/access/owner_columns.rs` — the transfer chain never reads
-   `TransferRule`. *Which columns move on a transfer* is still code. The
-   contract's transfer arms describe that behaviour and do not yet drive it;
-   the goals refusal is the exception, and it is enforced at the three sites
-   its declaration cites.
+One more used to be on that list, and Phase 4 removed it:
+`storage-pg/src/access/owner_columns.rs` did not read `TransferRule` at all —
+*which columns move on a transfer* was code, and the declaration merely
+described it. It is a `TransferLeg` partition now, resolved once by
+`OwnerSurfaces::for_registry` and read by the verb: `Rehomed` and `Dropped`
+generate their statements from the declared key and owner columns,
+`FollowOrDedupe`'s `dedupe_key` and `remaps` generate the dedupe probe and
+the repointing updates, and a `Follow` surface no leg reaches is
+`FlavorRegistryError::UnmovableSurface` at boot rather than a row that stays
+readable by the source owner after the memory moved.
 
 Two more used to be on that list, and both were symptoms of the code flavor
 shipping no `FlavorContract`: nothing existed for those lanes to iterate, and

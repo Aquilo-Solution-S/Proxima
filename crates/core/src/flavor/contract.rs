@@ -1041,6 +1041,80 @@ pub enum ForgetRule {
     Keep { why: &'static str },
 }
 
+/// What the forget verb actually does to one surface, resolved once at
+/// registry time. The third partition, after [`EraseLeg`] and
+/// [`TransferLeg`], and the same bargain: the silence becomes a value.
+///
+/// Forget has TWO iteration sources and that is deliberate, not an
+/// oversight. The `Dumped` legs are walked from the ROW STAMP
+/// (`memory.sidecar_tables`), because the stamp is what the dump read: a
+/// registry that gained a sidecar after a row was written must not delete
+/// from a table that row never touched, and one that lost a table must
+/// still forget rows written before it went. The `Deleted` legs have no
+/// stamp to walk — they are derived rows written by a lane the memory does
+/// not record — so they come off the declaration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ForgetLeg {
+    /// Dumped into the cold record, then deleted. The stamp names it; this
+    /// leg says the declaration agrees.
+    Dumped { key_column: &'static str },
+    /// Deleted for the forgotten `t` and not preserved: derived state
+    /// hydrate recomputes, or a queue entry with nothing to restore.
+    Deleted { key_column: &'static str },
+    /// Deleted with the memory by a constraint that already proves it — the
+    /// declared `completeness`, spent. No statement is generated, and the
+    /// constraint is the list.
+    ///
+    /// A recorded gap rides on this arm: the code flavor's four cascade
+    /// detail tables go with their parent sidecar row and nothing dumps
+    /// them, so hydrate restores the parent without its details. Naming the
+    /// leg is what makes that a visible hole rather than an absence.
+    Cascaded { via: DbConstraint },
+    /// Untouched, with the reason stated.
+    Kept { why: &'static str },
+    /// `DeleteWithMemory` over a key the forget cannot reach. Refused at
+    /// freeze; a value here only for a hand-assembled registry.
+    Unreachable,
+}
+
+impl ForgetLeg {
+    /// The single classifier. Called at freeze and resolved once into
+    /// [`crate::owner_inverse::OwnerSurfaces`]; the verb reads the answer.
+    #[must_use]
+    pub const fn derive(surface: &Surface) -> Self {
+        match surface.forget {
+            ForgetRule::Keep { why } => Self::Kept { why },
+            // `completeness` is checked FIRST inside the delete arm and only
+            // there: every memory sidecar carries a `t` FK too, and it is
+            // still dumped and still deleted by the stamp walk. A cascade
+            // means "no statement" only where the rule already said "no
+            // preservation".
+            ForgetRule::DeleteWithMemory => match surface.completeness {
+                Some(via) => Self::Cascaded { via },
+                None => match surface.key {
+                    KeyShape::MemoryT { column } | KeyShape::EntityT { column } => {
+                        Self::Deleted { key_column: column }
+                    }
+                    _ => Self::Unreachable,
+                },
+            },
+            ForgetRule::DumpThenDelete => match surface.key {
+                KeyShape::MemoryT { column } | KeyShape::EntityT { column } => {
+                    Self::Dumped { key_column: column }
+                }
+                _ => Self::Unreachable,
+            },
+        }
+    }
+
+    /// Whether the forget runs a statement built from this declaration.
+    /// `Dumped` is false: the stamp drives that statement, not the walk.
+    #[must_use]
+    pub const fn is_generated(&self) -> bool {
+        matches!(self, Self::Deleted { .. })
+    }
+}
+
 /// One physical relation a flavor (or the kernel) owns, with every rule the
 /// inverse and transfer lanes need. No field is optional-by-omission:
 /// adding a table without saying what forget does is a compile error.

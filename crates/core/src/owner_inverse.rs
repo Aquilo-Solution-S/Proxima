@@ -11,7 +11,7 @@
 
 use std::collections::BTreeMap;
 
-use crate::flavor::{EraseLeg, Surface, TransferLeg};
+use crate::flavor::{EraseLeg, ForgetLeg, Surface, TransferLeg};
 use crate::{AuthPath, GroupId, OwnerRef, SourceId, UserId};
 
 /// Every relation an owner-scoped erase or export has to answer for, read
@@ -32,6 +32,7 @@ pub struct OwnerSurfaces {
     surfaces: Vec<Surface>,
     legs: BTreeMap<&'static str, EraseLeg>,
     transfer_legs: BTreeMap<&'static str, TransferLeg>,
+    forget_legs: BTreeMap<&'static str, ForgetLeg>,
 }
 
 impl OwnerSurfaces {
@@ -49,10 +50,12 @@ impl OwnerSurfaces {
         let mut surfaces = Vec::new();
         let mut legs = BTreeMap::new();
         let mut transfer_legs = BTreeMap::new();
+        let mut forget_legs = BTreeMap::new();
         for contract in registry.contracts() {
             for surface in contract.all_surfaces() {
                 legs.insert(surface.table, contract.erase_leg(&surface));
                 transfer_legs.insert(surface.table, contract.transfer_leg(&surface));
+                forget_legs.insert(surface.table, ForgetLeg::derive(&surface));
                 surfaces.push(surface);
             }
         }
@@ -62,6 +65,7 @@ impl OwnerSurfaces {
             surfaces,
             legs,
             transfer_legs,
+            forget_legs,
         }
     }
 
@@ -85,10 +89,15 @@ impl OwnerSurfaces {
             .iter()
             .map(|surface| (surface.table, TransferLeg::derive(surface, &[])))
             .collect();
+        let forget_legs = surfaces
+            .iter()
+            .map(|surface| (surface.table, ForgetLeg::derive(surface)))
+            .collect();
         Self {
             surfaces,
             legs,
             transfer_legs,
+            forget_legs,
         }
     }
 
@@ -127,6 +136,36 @@ impl OwnerSurfaces {
             .get(table)
             .copied()
             .unwrap_or(TransferLeg::Unreachable)
+    }
+
+    /// What the forget does to `table`, as resolved at registry time.
+    ///
+    /// [`ForgetLeg::Unreachable`] for a table this set does not carry.
+    #[must_use]
+    pub fn forget_leg(&self, table: &str) -> ForgetLeg {
+        self.forget_legs
+            .get(table)
+            .copied()
+            .unwrap_or(ForgetLeg::Unreachable)
+    }
+
+    /// Every surface the forget deletes with a GENERATED statement, in table
+    /// order, paired with the key column it deletes on.
+    ///
+    /// The `Dumped` legs are deliberately NOT here: the row stamp drives
+    /// those, and the stamp is the historical record of what the dump read.
+    /// What is left is the derived rows nothing stamps — the embedding
+    /// triple and the sketch — which were four hand-written statements over
+    /// four `proxima_core.*` literals.
+    #[must_use]
+    pub fn generated_forget_legs(&self) -> Vec<(&'static str, &'static str)> {
+        self.surfaces
+            .iter()
+            .filter_map(|surface| match self.forget_leg(surface.table) {
+                ForgetLeg::Deleted { key_column } => Some((surface.table, key_column)),
+                _ => None,
+            })
+            .collect()
     }
 
     /// Every surface a transfer moves with a GENERATED statement, in table

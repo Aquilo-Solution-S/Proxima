@@ -163,6 +163,7 @@ async fn export_carries_cooled_locators_and_sketches() {
         forget_memory(
             &mut tx,
             &core_pg_sidecars(),
+            &contract_sidecar_tables(),
             &cold,
             &key,
             cooled_t,
@@ -182,6 +183,7 @@ async fn export_carries_cooled_locators_and_sketches() {
         forget_memory(
             &mut tx,
             &core_pg_sidecars(),
+            &contract_sidecar_tables(),
             &cold,
             &neighbour_key,
             neighbour_t,

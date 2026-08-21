@@ -477,7 +477,7 @@ async fn erase_repo_once(
     }
 
     let (memories_deleted, cold_purge) =
-        erase_memory_series(&mut tx, store.sidecars(), owner, &ts).await?;
+        erase_memory_series(&mut tx, store.sidecars(), store.surfaces(), owner, &ts).await?;
 
     let repo_record_deleted = sqlx::query(DELETE_REPO_SQL)
         .bind(kind)

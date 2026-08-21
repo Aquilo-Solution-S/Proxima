@@ -2072,6 +2072,7 @@ async fn erasing_the_last_admission_citing_a_blob_takes_the_blob_and_owes_its_by
         let (erased, plan) = erase_memory_series(
             &mut tx,
             &core_pg_sidecars(),
+            &contract_sidecar_tables(),
             &owner,
             &[mine.memory_id.into_inner()],
         )
@@ -2142,6 +2143,7 @@ async fn a_series_erase_does_not_owe_bytes_another_owner_mounted() {
         let (erased, plan) = erase_memory_series(
             &mut tx,
             &core_pg_sidecars(),
+            &contract_sidecar_tables(),
             &owner,
             &[mine.memory_id.into_inner()],
         )

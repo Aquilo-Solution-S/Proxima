@@ -712,6 +712,16 @@ async fn ensure_pgvector_runtime_compatible(
 pub struct PgStorage {
     pool: PgPool,
     sidecars: PgSidecarRegistryFrozen,
+    /// The declared surfaces, resolved into legs once.
+    ///
+    /// Defaults to flavor #0's, exactly as `sidecars` defaults to
+    /// `core_pg_sidecars()`: a storage built without `with_flavors` still
+    /// forgets the kernel's derived rows, which is what the four hardcoded
+    /// `DELETE`s this replaced did unconditionally. `with_flavors` widens
+    /// it to every registered flavor, and a flavor that declares its own
+    /// `DeleteWithMemory` surface is reached only after that call — the
+    /// same coverage contract `with_sidecars` already states.
+    surfaces: proxima_core::owner_inverse::OwnerSurfaces,
     search_projections: Vec<proxima_core::verbs::schema::MemorySearchProjection>,
     embed_units: Vec<proxima_core::verbs::schema::MemoryEmbedUnit>,
     tuning: PgTuning,
@@ -869,6 +879,9 @@ impl PgStorage {
         Ok(Self {
             pool,
             sidecars: core_pg_sidecars(),
+            surfaces: proxima_core::owner_inverse::OwnerSurfaces::from_surfaces(
+                proxima_core::FLAVOR_0.all_surfaces().collect(),
+            ),
             search_projections: Vec::new(),
             embed_units: Vec::new(),
             tuning,
@@ -908,6 +921,14 @@ impl PgStorage {
         &self.sidecars
     }
 
+    /// The declared surfaces this storage resolves its legs from.
+    ///
+    /// Flavor #0's until [`Self::with_flavors`] widens it; see the field.
+    #[must_use]
+    pub fn surfaces(&self) -> &proxima_core::owner_inverse::OwnerSurfaces {
+        &self.surfaces
+    }
+
     /// Replace the entire sidecar registry.
     ///
     /// The caller must include the core sidecars. The boot/facade path
@@ -935,6 +956,7 @@ impl PgStorage {
     pub fn with_flavors(mut self, registry: &proxima_core::FlavorRegistryFrozen) -> Self {
         self.search_projections = registry.search_projections().to_vec();
         self.embed_units = registry.embed_units().to_vec();
+        self.surfaces = proxima_core::owner_inverse::OwnerSurfaces::for_registry(registry);
         self
     }
 

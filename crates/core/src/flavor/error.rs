@@ -126,6 +126,14 @@ pub enum FlavorRegistryError {
         table: &'static str,
         why: &'static str,
     },
+    /// A surface declares that forget destroys its rows and the forget
+    /// reaches none of them: `DeleteWithMemory` over a key it builds no
+    /// `t` for, with no constraint claiming completeness either. The rows
+    /// would outlive the memory that declared them gone.
+    UnforgettableSurface {
+        flavor_id: &'static str,
+        table: &'static str,
+    },
     /// A schema declared `NotTransferable` without naming where the refusal
     /// is enforced. A refusal nothing backs is a comment.
     UnenforcedTransferRefusal {
@@ -349,6 +357,12 @@ impl std::fmt::Display for FlavorRegistryError {
             } => write!(
                 f,
                 "flavor {flavor_id} declares a bespoke transfer leg for {table}, which {why}"
+            ),
+            Self::UnforgettableSurface { flavor_id, table } => write!(
+                f,
+                "flavor {flavor_id} declares that forget deletes {table} with the memory, and \
+                 the forget reaches none of its rows: the key is neither a memory nor an entity \
+                 t, and no completeness constraint claims them either"
             ),
             Self::UnenforcedTransferRefusal {
                 flavor_id,

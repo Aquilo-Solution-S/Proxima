@@ -535,9 +535,10 @@ def run_fixture(path: Path) -> int:
 # query with `format(..., %I)` inside `query_to_xml`, so the obvious spelling
 # — a `format!` per name read from `information_schema` — never enters the
 # tree. A harness should cost nothing to keep.
-# 75 -> 77 in Phase 4, "policy onto the contract". Operator-ruled (plan
-# §4.12 R8), and the arithmetic is stated rather than absorbed, because the
-# standing rule is that this number should not rise.
+# 75 -> 76 in Phase 4, "policy onto the contract". Operator-ruled (plan
+# §4.12 R8, which sanctioned up to 77), and the arithmetic is stated rather
+# than absorbed, because the standing rule is that this number should not
+# rise.
 #
 #   -1  crates/storage-pg/src/access/owner_columns.rs, the projection
 #       registry walk. It was the transfer path's ONLY registry-derived
@@ -558,8 +559,8 @@ def run_fixture(path: Path) -> int:
 #   +1  `dedupe_lookup_sql`, the "does the destination already hold these
 #       bytes" probe, generated from `blob`'s declared `dedupe_key` instead
 #       of restating its three columns in SQL. Same substitution class, and
-#       `every_dedupe_key_is_a_unique_constraint_the_schema_enforces` asks
-#       `pg_constraint` whether the declared key is the constraint the arm
+#       `every_dedupe_key_is_a_uniqueness_the_schema_enforces` asks
+#       `pg_index` whether the declared key is the constraint the arm
 #       exists to avoid colliding with.
 #   +1  `remap_sql` under `remap_handle_refs`, generated from the declared
 #       `remaps`. This is the site that pays for itself twice: the function
@@ -568,16 +569,24 @@ def run_fixture(path: Path) -> int:
 #       hardcoded UPDATEs, while the declaration named three columns. Prose
 #       claiming a declaration drives code that it does not drive is the
 #       exact defect the whole phase exists to remove.
+#   -1  crates/storage-pg/src/verbs/forget.rs. The stamped-sidecar delete
+#       built its statement with a single-line `format!` (one site) and ran
+#       it (a second). It now shares `forget_leg_sql` with the declared
+#       `ForgetLeg::Deleted` legs, whose `format!` spans lines and is
+#       therefore not a counted site, and ONE loop runs both — so the four
+#       hand-written `DELETE`s over `embedding_jobs`, `embedding_heads`,
+#       `embeddings` and `sketch` were absorbed at a cost of minus one.
 #
-# Net +2, and the trade is nine static statements over remembered tables for
-# three generated ones over declared surfaces. That is the ratchet's
+# Net +1, and the trade is thirteen static statements over remembered tables
+# for three generated ones over declared surfaces. That is the ratchet's
 # purpose, not a concession to it: dynamic SQL should be DELIBERATE, and a
 # statement whose only variable is an identifier from a frozen, freeze-
 # validated, catalog-checked contract is the most deliberate SQL in the
 # tree. What the trade buys is that a flavor adding a `Follow` surface can
 # no longer be silently not-followed — `FlavorRegistryError::UnmovableSurface`
-# refuses it at boot.
-EXPECTED_DYNAMIC_SQL_SITES = 77
+# refuses it at boot, and `UnforgettableSurface` does the same for a surface
+# that claims forget destroys its rows.
+EXPECTED_DYNAMIC_SQL_SITES = 76
 
 
 def run_self_test() -> int:

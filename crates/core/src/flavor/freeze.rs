@@ -143,6 +143,7 @@ impl FlavorRegistry {
             Self::validate_contract_surfaces(contract)?;
             Self::validate_erase_legs(contract)?;
             Self::validate_transfer_legs(contract)?;
+            Self::validate_forget_legs(contract)?;
         }
         if !self.contracts.is_empty() && !has_core {
             return Err(FlavorRegistryError::MissingCoreContract);
@@ -312,6 +313,30 @@ impl FlavorRegistry {
                 table,
                 why,
             });
+        }
+        Ok(())
+    }
+
+    /// Every surface says what forget does to it, and every answer is one
+    /// the forget can carry out.
+    ///
+    /// The arm this closes is `DeleteWithMemory` over a key shaped like
+    /// nothing the forget builds a `t` for — an owner-scoped `Custom` key,
+    /// say. Such a surface declared that forgetting a memory destroys its
+    /// rows, and no statement anywhere would have. Same shape as
+    /// `UndeletableSurface` and `UnmovableSurface`, one verb over.
+    fn validate_forget_legs(
+        contract: &crate::flavor::contract::FlavorContract,
+    ) -> Result<(), FlavorRegistryError> {
+        use crate::flavor::contract::ForgetLeg;
+
+        for surface in contract.all_surfaces() {
+            if ForgetLeg::derive(&surface) == ForgetLeg::Unreachable {
+                return Err(FlavorRegistryError::UnforgettableSurface {
+                    flavor_id: contract.flavor_id,
+                    table: surface.table,
+                });
+            }
         }
         Ok(())
     }
@@ -1041,6 +1066,29 @@ mod tests {
         &[],
     );
 
+    /// A surface claiming forget destroys its rows over a key the forget
+    /// builds no `t` for, and no constraint to claim completeness either.
+    /// The rows outlive the memory that declared them gone.
+    static UNFORGETTABLE_SURFACE: FlavorContract = transfer_fixture(
+        &[Surface {
+            table: "test_flavor.thing_v1",
+            key: KeyShape::Custom(&["thing_id"]),
+            owner_columns: &[],
+            transfer: TransferRule::StaysOnKey,
+            erase: EraseRule::Never {
+                why: "the forget rule is what this fixture is about",
+            },
+            export: ExportRule::Excluded {
+                why: "the forget rule is what this fixture is about",
+            },
+            forget: ForgetRule::DeleteWithMemory,
+            lexical_language_column: None,
+            counter: None,
+            completeness: None,
+        }],
+        &[],
+    );
+
     /// A bespoke transfer leg naming a table the flavor does not declare.
     static BESPOKE_TRANSFER_LEG_FOR_NOTHING: FlavorContract = transfer_fixture(
         &[state_surface(
@@ -1702,6 +1750,19 @@ mod tests {
                     matches!(
                         err,
                         FlavorRegistryError::BespokeTransferLegMismatch {
+                            table: "test_flavor.thing_v1",
+                            ..
+                        }
+                    )
+                },
+            ),
+            (
+                "a surface declares a forget that reaches none of its rows",
+                |registry| registry.contracts.push(&UNFORGETTABLE_SURFACE),
+                |err| {
+                    matches!(
+                        err,
+                        FlavorRegistryError::UnforgettableSurface {
                             table: "test_flavor.thing_v1",
                             ..
                         }

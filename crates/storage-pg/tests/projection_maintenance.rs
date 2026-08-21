@@ -208,6 +208,7 @@ async fn forgetting_to_cold_takes_the_projection_row_with_the_sidecar_row() {
         forget_memory_oneshot(
             pool,
             &core_pg_sidecars(),
+            &transfer_surfaces(),
             &cold,
             &cold_object_key(t.into_inner()),
             t.into_inner(),
@@ -245,7 +246,14 @@ async fn erasing_an_admission_takes_its_projection_row() {
         let erased = write_note(pool, owner, None).await?;
 
         let mut tx = pool.begin().await?;
-        erase_memory(&mut tx, &core_pg_sidecars(), &owner, erased.into_inner()).await?;
+        erase_memory(
+            &mut tx,
+            &core_pg_sidecars(),
+            &transfer_surfaces(),
+            &owner,
+            erased.into_inner(),
+        )
+        .await?;
         tx.commit().await?;
 
         assert_eq!(projection_of(pool, erased).await?, None);

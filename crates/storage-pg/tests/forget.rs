@@ -21,6 +21,14 @@ use proxima_storage_pg::verbs::forget::{
 use proxima_storage_pg::verbs::memory_timeseries::ingest_fact_timeseries;
 use uuid::Uuid;
 
+/// The forget's registry-resolved legs, exactly as `PgStorage` assembles
+/// them. An alias for [`transfer_surfaces`]: both verbs read the same set,
+/// and calling it by the verb under test is what keeps a reader from
+/// wondering whether they differ.
+fn surfaces() -> proxima_core::owner_inverse::OwnerSurfaces {
+    transfer_surfaces()
+}
+
 /// The transfer's registry-resolved legs, exactly as the engine assembles
 /// them. Passing a hand-built set here would test a registry production
 /// never sees.
@@ -115,6 +123,7 @@ async fn forget_hydrate_and_erase() {
         forget_memory(
             &mut tx,
             &core_pg_sidecars(),
+            &surfaces(),
             &cold,
             &key,
             t,
@@ -197,13 +206,14 @@ async fn forget_hydrate_and_erase() {
         forget_memory(
             &mut tx,
             &core_pg_sidecars(),
+            &surfaces(),
             &cold,
             &key,
             t,
             owner.stored_owner_id(),
         )
         .await?;
-        let plan = erase_memory(&mut tx, &core_pg_sidecars(), &owner, t).await?;
+        let plan = erase_memory(&mut tx, &core_pg_sidecars(), &surfaces(), &owner, t).await?;
         tx.commit().await?;
         assert_eq!(
             plan.object_keys(),
@@ -265,7 +275,7 @@ async fn erase_announce_carries_the_series_handle() {
         assert_ne!(t, second.handle, "the erased t is not its own handle");
 
         let mut tx = pool.begin().await?;
-        erase_memory(&mut tx, &core_pg_sidecars(), &owner, t).await?;
+        erase_memory(&mut tx, &core_pg_sidecars(), &surfaces(), &owner, t).await?;
         tx.commit().await?;
 
         let announced: Uuid = sqlx::query_scalar(
@@ -423,6 +433,7 @@ async fn forget_non_last_t_rewinds_memory_head() {
         forget_memory(
             &mut tx,
             &core_pg_sidecars(),
+            &surfaces(),
             &cold,
             &key,
             second.memory_id.into_inner(),
@@ -559,6 +570,7 @@ async fn concurrent_forget_serializes_before_cold_put() {
                 forget_memory_oneshot(
                     &pool,
                     &sidecars,
+                    &surfaces(),
                     cold.as_ref(),
                     &key,
                     t,
@@ -578,6 +590,7 @@ async fn concurrent_forget_serializes_before_cold_put() {
                 forget_memory_oneshot(
                     &pool,
                     &sidecars,
+                    &surfaces(),
                     cold.as_ref(),
                     &key,
                     t,
@@ -698,6 +711,7 @@ async fn commit_forget_reputs_when_a_sidecar_row_lands_after_the_snapshot() {
         commit_forget(
             &mut tx,
             &core_pg_sidecars(),
+            &surfaces(),
             &cold,
             &key,
             &snapshot,
@@ -757,7 +771,16 @@ async fn forget_dumps_only_stamped_tables_and_skips_unregistered_scan() {
         let cold = MemoryColdStore::default();
         let key = cold_object_key(t);
         let mut tx = pool.begin().await?;
-        forget_memory(&mut tx, &sidecars, &cold, &key, t, owner.stored_owner_id()).await?;
+        forget_memory(
+            &mut tx,
+            &sidecars,
+            &surfaces(),
+            &cold,
+            &key,
+            t,
+            owner.stored_owner_id(),
+        )
+        .await?;
         tx.commit().await?;
 
         let notes: i64 = sqlx::query_scalar(
@@ -824,6 +847,7 @@ async fn forget_dumps_every_stamped_extra() {
         forget_memory(
             &mut tx,
             &core_pg_sidecars(),
+            &surfaces(),
             &cold,
             &key,
             t,
@@ -938,6 +962,7 @@ async fn forget_and_admit_preserve_grounding_support() {
         let err = forget_memory(
             &mut tx,
             &core_pg_sidecars(),
+            &surfaces(),
             &cold,
             "cold/refuse-a",
             abs.memory_id.into_inner(),
@@ -961,6 +986,7 @@ async fn forget_and_admit_preserve_grounding_support() {
         forget_memory(
             &mut tx,
             &core_pg_sidecars(),
+            &surfaces(),
             &cold,
             "cold/fact",
             fact.memory_id.into_inner(),
@@ -984,6 +1010,7 @@ async fn forget_and_admit_preserve_grounding_support() {
         forget_memory(
             &mut tx,
             &core_pg_sidecars(),
+            &surfaces(),
             &cold,
             "cold/mixed-src",
             abs.memory_id.into_inner(),
@@ -997,6 +1024,7 @@ async fn forget_and_admit_preserve_grounding_support() {
         forget_memory(
             &mut tx,
             &core_pg_sidecars(),
+            &surfaces(),
             &cold,
             "cold/a2",
             abs2.memory_id.into_inner(),
@@ -1010,6 +1038,7 @@ async fn forget_and_admit_preserve_grounding_support() {
         forget_memory(
             &mut tx,
             &core_pg_sidecars(),
+            &surfaces(),
             &cold,
             "cold/a-after-a2",
             abs.memory_id.into_inner(),
@@ -1083,6 +1112,7 @@ async fn refused_forget_does_not_leave_untracked_cold_object() {
         forget_memory(
             &mut tx,
             &core_pg_sidecars(),
+            &surfaces(),
             &cold,
             key,
             abs.memory_id.into_inner(),
@@ -1134,14 +1164,22 @@ async fn concurrent_erase_after_forget_put_does_not_leave_cold_object() {
             let cold = Arc::clone(&cold);
             let key = key.clone();
             tokio::spawn(async move {
-                forget_memory_oneshot(&pool, &core_pg_sidecars(), cold.as_ref(), &key, t, owner_id)
-                    .await
+                forget_memory_oneshot(
+                    &pool,
+                    &core_pg_sidecars(),
+                    &surfaces(),
+                    cold.as_ref(),
+                    &key,
+                    t,
+                    owner_id,
+                )
+                .await
             })
         };
         cold.first_put_entered.acquire().await?.forget();
 
         let mut erase_tx = pool.begin().await?;
-        erase_memory(&mut erase_tx, &core_pg_sidecars(), &owner, t).await?;
+        erase_memory(&mut erase_tx, &core_pg_sidecars(), &surfaces(), &owner, t).await?;
         erase_tx.commit().await?;
 
         // The PUT completes only after erase committed. The forget reread is
@@ -1207,6 +1245,7 @@ async fn forget_of_an_already_cooled_t_reports_not_found() {
         let err = forget_memory(
             &mut tx,
             &core_pg_sidecars(),
+            &surfaces(),
             cold.as_ref(),
             &key,
             t,
@@ -1267,6 +1306,7 @@ async fn redelivering_a_cooled_ingest_key_is_an_idempotent_replay() {
         forget_memory(
             &mut tx,
             &core_pg_sidecars(),
+            &surfaces(),
             &cold,
             &key,
             t,
@@ -1443,6 +1483,7 @@ async fn concurrent_forget_keeps_one_grounding_support() {
             let r = forget_memory(
                 &mut tx,
                 &core_pg_sidecars(),
+                &surfaces(),
                 &MemoryColdStore::default(),
                 "cold/conc-a1",
                 a1_t,
@@ -1460,6 +1501,7 @@ async fn concurrent_forget_keeps_one_grounding_support() {
             let r = forget_memory(
                 &mut tx,
                 &core_pg_sidecars(),
+                &surfaces(),
                 &MemoryColdStore::default(),
                 "cold/conc-a2",
                 a2_t,
@@ -1609,6 +1651,7 @@ async fn forget_blocks_admit_until_grounding_rechecked() {
         forget_memory(
             &mut tx_f,
             &core_pg_sidecars(),
+            &surfaces(),
             &MemoryColdStore::default(),
             "cold/admit-race",
             a_t,
@@ -1681,6 +1724,7 @@ async fn commit_forget_aborts_when_owner_transferred() {
         let err = commit_forget(
             &mut tx,
             &core_pg_sidecars(),
+            &surfaces(),
             &cold,
             &key,
             &snapshot,
@@ -1735,6 +1779,7 @@ async fn a_rolled_back_erase_keeps_the_cold_object_and_its_locator() {
         forget_memory(
             &mut tx,
             &core_pg_sidecars(),
+            &surfaces(),
             &cold,
             &key,
             t,
@@ -1744,7 +1789,7 @@ async fn a_rolled_back_erase_keeps_the_cold_object_and_its_locator() {
         tx.commit().await?;
 
         let mut tx = pool.begin().await?;
-        let plan = erase_memory(&mut tx, &core_pg_sidecars(), &owner, t).await?;
+        let plan = erase_memory(&mut tx, &core_pg_sidecars(), &surfaces(), &owner, t).await?;
         assert_eq!(plan.object_keys(), std::slice::from_ref(&key));
         tx.rollback().await?;
 
@@ -1799,6 +1844,7 @@ async fn a_refusing_cold_store_leaves_the_purge_mark_for_retry() {
         forget_memory(
             &mut tx,
             &core_pg_sidecars(),
+            &surfaces(),
             &ok_cold,
             &key,
             t,
@@ -1808,7 +1854,7 @@ async fn a_refusing_cold_store_leaves_the_purge_mark_for_retry() {
         tx.commit().await?;
 
         let mut tx = pool.begin().await?;
-        let plan = erase_memory(&mut tx, &core_pg_sidecars(), &owner, t).await?;
+        let plan = erase_memory(&mut tx, &core_pg_sidecars(), &surfaces(), &owner, t).await?;
         tx.commit().await?;
 
         let purged = purge_cold_objects_after_commit(pool, &FailDeleteCold, &plan).await;
@@ -1907,6 +1953,7 @@ async fn cooling_keeps_the_receipt_and_rewinds_the_head_while_erase_takes_both()
         forget_memory_oneshot(
             &pool,
             &core_pg_sidecars(),
+            &surfaces(),
             &cold,
             &cold_object_key(t2),
             t2,
@@ -1931,7 +1978,7 @@ async fn cooling_keeps_the_receipt_and_rewinds_the_head_while_erase_takes_both()
 
         // ── Erase is the verb that takes them. ──────────────────────────
         let mut tx = pool.begin().await?;
-        erase_memory(&mut tx, &core_pg_sidecars(), &owner, t1).await?;
+        erase_memory(&mut tx, &core_pg_sidecars(), &surfaces(), &owner, t1).await?;
         tx.commit().await?;
         assert_eq!(
             receipts(t1).await?,

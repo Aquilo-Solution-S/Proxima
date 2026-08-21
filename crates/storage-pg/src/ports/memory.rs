@@ -197,15 +197,18 @@ impl MemoryAuthoringPort for PgStorage {
         let pool = self.pool.clone();
         let cold = Arc::clone(&self.cold);
         let sidecars = self.sidecars.clone();
+        let surfaces = self.surfaces.clone();
         with_bounded_retry(move || {
             let key = key.clone();
             let pool = pool.clone();
             let cold = Arc::clone(&cold);
             let sidecars = sidecars.clone();
+            let surfaces = surfaces.clone();
             async move {
                 verbs::forget::forget_memory_oneshot(
                     &pool,
                     &sidecars,
+                    &surfaces,
                     cold.as_ref(),
                     &key,
                     t,
