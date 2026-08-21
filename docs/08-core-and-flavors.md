@@ -278,12 +278,23 @@ described:
 | `ProjectionSpec::overfetch_k` | the ranked statement's `LIMIT` |
 | `ProjectionSpec::band_comparability` | whether a tag-scoped query may merge this flavor's scores with core's |
 | `ProjectionSpec::rank_source` | whether the core renderer can serve the flavor at all (`SidecarWithProjectionOwner` names a shape it cannot) |
+| declared field `weight`s | `ts_rank`'s `{D,C,B,A}` array, bucketed into PostgreSQL's four classes; one uniform level passes no array at all |
 
 Freeze checks what it can: a flavor claiming `CoreBands` must declare bands
 inside `[0, 1]`, and one claiming `RankSource::Projection` must declare all
-three band names and a uniform language and band set across its projected
-schemas. A wrong VALUE is therefore a boot failure, not a silently different
-score — which is a stronger guarantee than the list-shaped lanes above have.
+three band names plus a uniform language, band set and weight array across
+its projected schemas — because one statement per flavor can spell each of
+those only once. A wrong VALUE is therefore a boot failure, not a silently
+different score, which is a stronger guarantee than the list-shaped lanes
+above have.
+
+**What freeze does not check is the claim against the behaviour.** A flavor
+whose verbs read sidecar columns can declare `RankSource::Projection` and be
+believed; what it loses is a statement shape it cannot use, not anything a
+caller can see. Same for `BandComparability::CoreBands`: the bands are
+checked for being inside core's window, not for meaning what core's mean.
+Both are declarations on trust, in the same sense as the per-`Surface` rule
+arms below — the difference is that these two have a consumer.
 
 **The per-`Surface` rule arms are vocabulary, not behaviour.**
 `ExportRule`, `EraseRule`, `ForgetRule` and `KeyShape` are read by no lane
