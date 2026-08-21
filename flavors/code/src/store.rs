@@ -355,15 +355,12 @@ impl CodeFlavorStore {
     }
 }
 
-/// The host's boot composition, repeated for a store built without a host.
-///
-/// Deliberately the same four steps `ProximaBuilder::boot` runs, in the same
-/// order, so a fixture-built store answers `sidecars()` with the registry a
-/// real deployment would have frozen. Test-only: production goes through
-/// [`CodeFlavorStore::from_backend_pool_for_host`], which is handed the
-/// boot's own registry.
-#[cfg(any(test, debug_assertions))]
 /// Core's surfaces plus this flavor's, resolved once. See the field.
+///
+/// NOT test-only, unlike [`test_sidecars`] below: the host constructor needs
+/// it too, and a `#[cfg(any(test, debug_assertions))]` gate on it compiled in
+/// dev and vanished under `--release`, which is the same trap the erase
+/// exports fell into.
 fn flavor_surfaces() -> proxima_core::owner_inverse::OwnerSurfaces {
     let mut registry = proxima_core::FlavorRegistry::new();
     crate::register(&mut registry).expect("the code flavor registers against a fresh registry");
@@ -373,6 +370,14 @@ fn flavor_surfaces() -> proxima_core::owner_inverse::OwnerSurfaces {
     proxima_core::owner_inverse::OwnerSurfaces::for_registry(&registry)
 }
 
+/// The host's boot composition, repeated for a store built without a host.
+///
+/// Deliberately the same four steps `ProximaBuilder::boot` runs, in the same
+/// order, so a fixture-built store answers `sidecars()` with the registry a
+/// real deployment would have frozen. Test-only: production goes through
+/// [`CodeFlavorStore::from_backend_pool_for_host`], which is handed the
+/// boot's own registry.
+#[cfg(any(test, debug_assertions))]
 fn test_sidecars() -> PgSidecarRegistryFrozen {
     let mut registry = proxima_core::FlavorRegistry::new();
     crate::register(&mut registry).expect("the code flavor registers against a fresh registry");
