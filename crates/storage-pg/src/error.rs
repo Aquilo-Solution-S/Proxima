@@ -62,8 +62,9 @@ pub fn map_err(e: sqlx::Error) -> StorageError {
         Error::Database(db) if db.is_foreign_key_violation() => {
             StorageError::Conflict(db.message().to_string())
         }
-        // Deadlock (40P01) and serialization failure (40001) are transient:
-        // the whole transaction can be re-run. See `with_bounded_retry`.
+        // Deadlock (40P01), serialization failure (40001) and a lock the
+        // caller declined to keep waiting for (55P03) are transient: the
+        // whole transaction can be re-run. See `with_bounded_retry`.
         Error::Database(db) if is_retryable_sqlstate(db.code().as_deref()) => {
             StorageError::Retryable(db.message().to_string())
         }
@@ -72,8 +73,16 @@ pub fn map_err(e: sqlx::Error) -> StorageError {
 }
 
 /// SQLSTATE codes that mark a transient, retry-after-rollback failure.
+///
+/// `55P03` (`lock_not_available`) is here because it can only be raised
+/// where someone set a `lock_timeout`, and setting one is precisely the
+/// statement "I would rather come back than wait". Without it, a
+/// transaction that gives up on a lock reports a hard failure that no
+/// retry loop recognises — which is worse than the unbounded wait the
+/// timeout was added to prevent, because at least the wait eventually
+/// succeeded.
 fn is_retryable_sqlstate(code: Option<&str>) -> bool {
-    matches!(code, Some("40P01" | "40001"))
+    matches!(code, Some("40P01" | "40001" | "55P03"))
 }
 
 /// Whether a sqlx failure is a transient conflict whose transaction is safe
@@ -87,7 +96,8 @@ fn is_retryable_sqlstate(code: Option<&str>) -> bool {
 /// on one side makes the pair acyclic. `40P01` is therefore a normal
 /// outcome, not a fault, and the only correct response is to roll back and
 /// try again — which is a decision the caller can only make if it can
-/// recognise the code.
+/// recognise the code. The same goes for `55P03` when that caller has set
+/// a `lock_timeout` rather than wait behind a long-lived reader.
 #[must_use]
 pub fn is_transient_conflict(err: &sqlx::Error) -> bool {
     matches!(err, sqlx::Error::Database(db) if is_retryable_sqlstate(db.code().as_deref()))
@@ -132,9 +142,15 @@ mod tests {
     use std::cell::Cell;
 
     #[test]
-    fn deadlock_and_serialization_sqlstates_are_retryable() {
+    fn transient_sqlstates_are_retryable_and_faults_are_not() {
         assert!(is_retryable_sqlstate(Some("40P01")));
         assert!(is_retryable_sqlstate(Some("40001")));
+        // A caller that set a lock_timeout asked to come back, not to fail.
+        assert!(is_retryable_sqlstate(Some("55P03")));
+        // Waiting past a statement_timeout is not the same statement: it
+        // says nothing about whether a lock was involved, so re-running
+        // blindly would loop on a genuinely slow query.
+        assert!(!is_retryable_sqlstate(Some("57014")));
         assert!(!is_retryable_sqlstate(Some("23503")));
         assert!(!is_retryable_sqlstate(Some("23505")));
         assert!(!is_retryable_sqlstate(None));
