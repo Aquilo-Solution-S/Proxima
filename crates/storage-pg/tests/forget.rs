@@ -2056,8 +2056,7 @@ async fn a_kept_sidecar_that_is_not_owner_pinned_stops_the_forget() {
         assert_eq!(rewritten, 1, "the note sidecar is a declared surface");
         let kept_surfaces = proxima_core::owner_inverse::OwnerSurfaces::from_surfaces(declared);
 
-        let written =
-            ingest_stamped(pool, &permit, &draft(None), &[AGENT_NOTE.to_owned()]).await?;
+        let written = ingest_stamped(pool, &permit, &draft(None), &[AGENT_NOTE.to_owned()]).await?;
         let t = written.memory_id.into_inner();
         sqlx::query(
             "INSERT INTO proxima_core.agent_note_v1 (t, note_id, title, body, tags)

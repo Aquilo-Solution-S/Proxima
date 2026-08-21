@@ -475,9 +475,10 @@ async fn transfer_rehomes_cooled_versions_and_remints_object_key() {
         // for this `t` under the giver, so the assertion has to be scoped to
         // what THIS hydrate appends. `seq` is a uuidv7 PK; the pre-hydrate
         // set is the watermark.
-        let announce_before: Vec<Uuid> = sqlx::query_scalar("SELECT seq FROM proxima_core.announce")
-            .fetch_all(pool)
-            .await?;
+        let announce_before: Vec<Uuid> =
+            sqlx::query_scalar("SELECT seq FROM proxima_core.announce")
+                .fetch_all(pool)
+                .await?;
 
         let mut tx = pool.begin().await?;
         hydrate_memory(

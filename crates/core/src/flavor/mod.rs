@@ -42,15 +42,14 @@ mod tests;
 // than reaching for module vocabulary that only looked universal.
 pub use contract::{
     BAND_NAME_EXACT, BAND_NAME_RESCUE, BAND_NAME_SUBSTRING, Band, BandComparability, CORE_ORDINAL,
-    CounterRule, DEFAULT_RANK_WEIGHTS, DbConstraint, DbTrigger, EmbedUnit,
-    EmbeddingRecipe, EmbeddingSlot, Enforcement, EraseLeg, EraseRule, ExportRule, FlavorContract,
-    ForgetLeg, ForgetRule, KeyShape, LanguagePolicy, PROJECTION_MEMORY_COLUMN,
-    PROJECTION_MEMORY_FK, PROJECTION_TABLE_NAME,
-    ProjectionDecl, ProjectionSpec, Provenance, RankSource, ResolvedEmbedUnit, ResourceContract,
-    SLOT_DEFAULT, SchemaContract, SchemaRef, SearchProjectionDecl, SubstringArm, Surface,
-    TS_RANK_NORMALIZATION_LOG_LENGTH_SCALE, TS_RANK_NORMALIZATION_NONE,
-    TS_RANK_NORMALIZATION_SCALE, TSVECTOR_WEIGHT_CLASSES, ToolContract, TransferLeg, TransferRule,
-    WEIGHT_UNIFORM, WeightedField,
+    CounterRule, DEFAULT_RANK_WEIGHTS, DbConstraint, DbTrigger, EmbedUnit, EmbeddingRecipe,
+    EmbeddingSlot, Enforcement, EraseLeg, EraseRule, ExportRule, FlavorContract, ForgetLeg,
+    ForgetRule, KeyShape, LanguagePolicy, PROJECTION_MEMORY_COLUMN, PROJECTION_MEMORY_FK,
+    PROJECTION_TABLE_NAME, ProjectionDecl, ProjectionSpec, Provenance, RankSource,
+    ResolvedEmbedUnit, ResourceContract, SLOT_DEFAULT, SchemaContract, SchemaRef,
+    SearchProjectionDecl, SubstringArm, Surface, TS_RANK_NORMALIZATION_LOG_LENGTH_SCALE,
+    TS_RANK_NORMALIZATION_NONE, TS_RANK_NORMALIZATION_SCALE, TSVECTOR_WEIGHT_CLASSES, ToolContract,
+    TransferLeg, TransferRule, WEIGHT_UNIFORM, WeightedField,
 };
 pub use descriptor::{FlavorDescriptor, FlavorProvenance};
 pub use error::FlavorRegistryError;

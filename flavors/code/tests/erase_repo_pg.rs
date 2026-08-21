@@ -1793,9 +1793,7 @@ fn every_declared_subject_column_is_a_reference_field_the_payload_emits() {
                 continue;
             };
             let schema_id = schema.schema_id();
-            let Some((_, references)) = emitted
-                .iter()
-                .find(|(id, _)| *id == schema_id.as_str())
+            let Some((_, references)) = emitted.iter().find(|(id, _)| *id == schema_id.as_str())
             else {
                 panic!(
                     "{schema_id} declares Provenance::PayloadOnly, so the lineage walk \
@@ -1804,10 +1802,7 @@ fn every_declared_subject_column_is_a_reference_field_the_payload_emits() {
                      namespaces can drift with nothing to notice"
                 );
             };
-            let fields: Vec<&str> = references
-                .iter()
-                .map(|reference| reference.field)
-                .collect();
+            let fields: Vec<&str> = references.iter().map(|reference| reference.field).collect();
             for column in subject_columns {
                 assert!(
                     fields.contains(column),

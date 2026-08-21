@@ -592,7 +592,9 @@ mod tests {
             "the emitted CREATE TABLE declares the column this constant names: {ddl}"
         );
         assert!(
-            ddl.contains(&format!("PRIMARY KEY ({PROJECTION_MEMORY_COLUMN}, schema_id)")),
+            ddl.contains(&format!(
+                "PRIMARY KEY ({PROJECTION_MEMORY_COLUMN}, schema_id)"
+            )),
             "and keys on it: {ddl}"
         );
 

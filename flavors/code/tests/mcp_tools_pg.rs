@@ -3185,7 +3185,7 @@ async fn the_walk_does_not_read_origins_a_schema_declares_it_does_not_use()
     let origin_handle = format!("F:{origin_t}");
 
     let control = run_tool::<proxima_core::mcp::core_tools::ThinkTool>(
-        ctx(fixture.pg.clone(), owner.clone(), Arc::clone(&registry)),
+        ctx(fixture.pg.clone(), owner, Arc::clone(&registry)),
         json!({ "seeds": [format!("A:{speaking_t}")], "direction": "ancestors", "depth": 2 }),
     )
     .await?;
@@ -3197,7 +3197,7 @@ async fn the_walk_does_not_read_origins_a_schema_declares_it_does_not_use()
     );
 
     let walked = run_tool::<proxima_core::mcp::core_tools::ThinkTool>(
-        ctx(fixture.pg.clone(), owner.clone(), registry),
+        ctx(fixture.pg.clone(), owner, registry),
         json!({ "seeds": [format!("A:{silent_t}")], "direction": "ancestors", "depth": 2 }),
     )
     .await?;
@@ -3280,7 +3280,7 @@ async fn a_work_assignment_walk_reaches_both_subjects_its_payload_names()
     );
 
     let walked = run_tool::<proxima_core::mcp::core_tools::ThinkTool>(
-        ctx(fixture.pg.clone(), owner.clone(), registry),
+        ctx(fixture.pg.clone(), owner, registry),
         json!({ "seeds": [format!("P:{assignment_t}")], "direction": "ancestors", "depth": 2 }),
     )
     .await?;
