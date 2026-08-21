@@ -441,10 +441,11 @@ impl ProximaBuilder {
             engine = engine.with_deployment_tool_scope(scope);
         }
         if let Some(store) = &blobs {
-            // In-band Art. 17 owner erasure: register the blob backend so
-            // owner-scope owner erase purges the owner's S3 objects
-            // (uploaded OCR docs, etc.), not just the Postgres rows. Optional —
-            // no S3 configured ⇒ no port ⇒ erase behaves as rows-only.
+            // The object-store half of the inverse, wired in-band: register
+            // the blob backend so an owner-scope erase destroys the owner's
+            // S3 objects (uploaded OCR docs, etc.) and not just the Postgres
+            // rows. Optional — no S3 configured ⇒ no port ⇒ erase behaves as
+            // rows-only, which is complete over what it can reach.
             engine = engine.with_cited_object_erase(Arc::new(store.clone()));
         }
         if let Some(client) = embed_client {

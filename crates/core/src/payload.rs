@@ -497,11 +497,17 @@ pub trait FactPayload:
 {
     const SCHEMA_ID: &'static str;
     const SCHEMA_VERSION: u32;
-    /// GDPR Art. 9 (and analogous regimes') special-category flag.
-    /// Defaults to `false`; controllers handling health, biometric,
-    /// political, or other heightened-protection categories must
-    /// override to `true`. See docs/03 §Special-category declaration
-    /// and docs/13 §Vocabulary.
+    /// Declared metadata: whether a host should treat this schema's rows as
+    /// a heightened-protection category of its own definition — health,
+    /// biometric, political, or whatever its regime names.
+    ///
+    /// The kernel never reasons over it. Nothing in core reads this flag to
+    /// decide anything: no predicate consults it, no erase or export branches
+    /// on it, and a schema that sets it is stored, searched and destroyed
+    /// exactly like one that does not. It exists so a hosting application can
+    /// ask a registered schema what it declared itself to be and apply its own
+    /// rules, which is the only place such a judgement can be made. Defaults
+    /// to `false`. See docs/03 §Special-category declaration.
     const SPECIAL_CATEGORY: bool = false;
     /// Whether this schema's rendered text earns a VECTOR. Defaults to
     /// `true`; a schema whose render is a template rather than prose

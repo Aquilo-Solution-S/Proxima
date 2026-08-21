@@ -250,6 +250,33 @@ async fn migrations_apply_to_fresh_db() {
             !column_exists(&pg, "cold_purge_pending", "compliance_operation_id").await,
             "the purge queue is the debt; it attributes itself to no journal"
         );
+
+        // A COMMENT is not a comment. `COMMENT ON` writes to pg_description,
+        // which ships into every deployment's catalog and comes back out of
+        // \d+, information_schema and every schema-dump tool an operator
+        // points at the database. A statute named there is the substrate
+        // asserting a legal position on behalf of a host it has never met —
+        // and a migration is the one place a wrong claim is hardest to
+        // retract, because it is already applied.
+        //
+        // Comments that describe the MECHANISM are welcome and there are
+        // many. This asks only that none of them argue from a regulation.
+        let statute_comments: i64 = sqlx::query_scalar(
+            "SELECT count(*)::bigint
+               FROM pg_description d
+               JOIN pg_class c ON c.oid = d.objoid
+               JOIN pg_namespace n ON n.oid = c.relnamespace
+              WHERE n.nspname LIKE 'proxima%'
+                AND (d.description ~* '(Art\\.|Article)\\s+[0-9]+'
+                  OR d.description ~* '\\m(GDPR|DSGVO)\\M')",
+        )
+        .fetch_one(pg.pool_for_tests())
+        .await
+        .expect("pg_description scan");
+        assert_eq!(
+            statute_comments, 0,
+            "no shipped catalog comment may name a statute; found {statute_comments}"
+        );
         assert!(
             column_exists(&pg, "cooled", "ingest_key").await,
             "cooled carries ingest_key next to source_id"

@@ -699,8 +699,8 @@ async fn persist_hot_series_transfer(
     // source keeps answering "what did my agents do" after giving the
     // Memory away, and the destination never sees it, because every read of
     // it filters on the sidecar's own owner. Deleting the rows here — the
-    // shape this replaced — destroyed audit history that Art. 17 and the
-    // owner's own export are both entitled to.
+    // shape this replaced — destroyed history that both the source's own
+    // erase and its own export are entitled to reach.
     sqlx::query("DELETE FROM proxima_core.ingest_keys WHERE t = ANY($1::uuid[])")
         .bind(ts)
         .execute(&mut **tx)

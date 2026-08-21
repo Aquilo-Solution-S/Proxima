@@ -42,13 +42,15 @@ pub trait OwnerTransferPort: Send + Sync {
     /// reaches them keys on that column rather than on `memory.owner_id`:
     /// the payload hydrate joins the memory's owner to the row's, so
     /// `get_memory`/`get_memories`/`query_memories` at the destination see
-    /// nothing; `read_mcp_call_history`, owner export, and Art. 17
-    /// erase all select by the row's own owner, so the source keeps both the
-    /// history and the obligation to delete it.
+    /// nothing; `read_mcp_call_history`, the owner export and the owner erase
+    /// all select by the row's own owner, so the source keeps both the history
+    /// and the ability to destroy it.
     ///
-    /// This replaced a DELETE. Deleting kept the destination out, but it
-    /// destroyed audit history the source was entitled to under Art. 15 and
-    /// still obliged to erase under Art. 17.
+    /// This replaced a DELETE. Deleting kept the destination out, but it also
+    /// destroyed history the source could still be asked to produce — and left
+    /// nothing for the source's own erase to reach, which is the worse half:
+    /// rows a host cannot export are an inconvenience, rows a host cannot
+    /// destroy are a promise it cannot keep.
     async fn transfer_to_owner(
         &self,
         permit: &OwnerWritePermit,

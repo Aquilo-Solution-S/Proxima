@@ -26,7 +26,7 @@ enum SelectionScope<'a> {
 }
 
 /// Begin a bulk-erase transaction: disable the pool's request-serving
-/// `statement_timeout` — a full-owner Art. 17 erase DELETEs across every
+/// `statement_timeout` — a full-owner erase DELETEs across every
 /// owner-scoped table and can legitimately run longer than the request bound;
 /// `SET LOCAL` scopes the override to this transaction only) and defer
 /// constraint checks until commit.

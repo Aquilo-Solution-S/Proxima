@@ -271,8 +271,8 @@ const MCP_CALL_LOGGED_V1: SchemaContract = SchemaContract {
     },
     transfer: TransferRule::RetainAtSource {
         why: "the row is about the actor, not the memory. Deleting or moving it on \
-              transfer destroys audit history that Art. 17 and the owner's own export \
-              are both entitled to, and would disclose actor_upn to the destination",
+              transfer destroys history that both the acting owner's erase and its own \
+              export are entitled to reach, and would disclose actor_upn to the destination",
     },
     provenance: Provenance::None,
     surfaces: &[Surface {

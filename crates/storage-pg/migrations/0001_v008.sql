@@ -129,7 +129,7 @@ CREATE INDEX memory_head_owner_kind_idx
 -- until this table existed nothing related the two: a stamp naming a table
 -- no flavor declares was accepted at write time and then quietly skipped by
 -- erase, export, forget and hydrate, because each of those walks the
--- registry. A row nobody can reach is the one shape Art. 17 cannot honour.
+-- registry. A row nobody can reach is the one shape no erase can destroy.
 --
 -- Stamp ⊆ registry is therefore a database constraint (see
 -- `assert_sidecar_stamp_declared` below), not a check in one of the callers.
@@ -516,7 +516,7 @@ CREATE TABLE proxima_core.mcp_call_logged_v1 (
 );
 
 COMMENT ON COLUMN proxima_core.mcp_call_logged_v1.owner_id IS
-'The owner that made the call, pinned at write time. Deliberately NOT derived from proxima_core.memory.owner_id on read: an owner transfer moves the Memory and leaves this row behind, so history, export, and Art. 17 erase all stay with the acting owner and the destination never sees the prior owner''s actor identities.';
+'The owner that made the call, pinned at write time. Deliberately NOT derived from proxima_core.memory.owner_id on read: an owner transfer moves the Memory and leaves this row behind, so history, export and erase all stay with the acting owner and the destination never sees the prior owner''s actor identities.';
 
 -- read_mcp_call_history pages by (time, t) for one owner, optionally
 -- filtered by actor. The Memory-side index cannot serve it any more: the
@@ -734,7 +734,7 @@ CREATE TABLE proxima_core.blob_uploads (
     -- DELIBERATELY NOT A FOREIGN KEY, against the projection map's §3.5
     -- prescription. A reference to blob_uploads (upload_id) makes one
     -- owner's mount a veto over another owner's erase: NO ACTION aborts
-    -- the source's Art. 17 deletion, SET NULL silently breaks the
+    -- the source's deletion, SET NULL silently breaks the
     -- destination's read (the row would then claim a key it did not mint
     -- and the gate would reject it), and CASCADE deletes the
     -- destination's row outright. Erase must stay owner-scoped, so the

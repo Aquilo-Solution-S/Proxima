@@ -9,7 +9,8 @@
 //! - [`verified_read`] — bounded in-process bytes, verified before release
 //! - [`port`] — the [`CitedBlobPort`](proxima_core::storage_ports::CitedBlobPort)
 //!   adapter, translation only
-//! - [`erase`] — Art. 17 purge of an owner's bytes
+//! - [`erase`] — destroy an owner's bytes; the object-store half of an
+//!   owner erase
 //! - [`rows`] / [`digest`] / [`keys`] / [`guards`] / [`transitions`] — the
 //!   support the verbs are assembled from
 //!
