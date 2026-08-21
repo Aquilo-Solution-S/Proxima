@@ -774,6 +774,18 @@ pub struct Surface {
 /// sidecar"). A deployment layer that has to know whether a shard ranks on
 /// its projection cannot read a doc comment, and a freeze check cannot
 /// scope itself to a prose paragraph.
+///
+/// **What this is NOT.** Freeze checks what a `Projection` claim implies
+/// about the rest of the DECLARATION — that the three band names are
+/// present, and that language, bands and the `ts_rank` weight array agree
+/// across the flavor's projected schemas, because one statement can spell
+/// each of those only once. Nothing checks the claim against the SQL a
+/// flavor actually runs: a flavor whose verbs read sidecar columns can
+/// declare [`Self::Projection`] and be believed. The consumer that reads
+/// this is core's renderer deciding whether it can serve the flavor at all,
+/// so a false claim costs that flavor a statement shape it cannot use — not
+/// a leak — but it is a declaration on trust, and `docs/08` §Contract Reach
+/// records it as one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum RankSource {
     /// Rank the projection ALONE, then join the owning sidecar for the

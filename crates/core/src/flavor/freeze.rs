@@ -3,6 +3,23 @@ use super::{
     McpToolDescriptor, PayloadKind, SchemaCapabilityTags, SchemaId, SchemaVersion,
 };
 
+/// Whether two schemas would hand `ts_rank` different weight arrays.
+///
+/// `total_cmp` rather than `==`: the values are `f32`s derived from
+/// declared relative weights, and a bit-exact total order is both what the
+/// renderer's `{}`-formatting reproduces and the only comparison that is
+/// meaningful for a float nobody arithmetically combined.
+fn weight_arrays_differ(first: Option<[f32; 4]>, second: Option<[f32; 4]>) -> bool {
+    match (first, second) {
+        (None, None) => false,
+        (Some(first), Some(second)) => first
+            .iter()
+            .zip(second.iter())
+            .any(|(a, b)| a.total_cmp(b) != std::cmp::Ordering::Equal),
+        _ => true,
+    }
+}
+
 impl FlavorRegistry {
     /// Validate the registry and seal it for runtime use.
     /// # Errors
@@ -113,8 +130,13 @@ impl FlavorRegistry {
                     flavor_id: contract.flavor_id,
                 });
             }
-            self.validate_contract_schemas(contract)?;
+            // Before `validate_contract_schemas`, which cross-checks the
+            // contract against the REGISTRATIONS. This one reads the
+            // contract alone, so it needs no registry and reports the
+            // declaration's own defect rather than the missing
+            // registration a broken declaration usually comes with.
             Self::validate_contract_projection(contract)?;
+            self.validate_contract_schemas(contract)?;
         }
         if !self.contracts.is_empty() && !has_core {
             return Err(FlavorRegistryError::MissingCoreContract);
@@ -129,12 +151,20 @@ impl FlavorRegistry {
     ///
     /// 1. `RankSource::Projection` means ONE statement serves the whole
     ///    flavor, so every property that statement can spell only once —
-    ///    the lexical configuration and the score windows — must agree
-    ///    across the flavor's projected schemas, and the renderer's three
-    ///    band names must all be declared. Deciding this at freeze rather
-    ///    than at query-build time is the point: the answer never depends
-    ///    on the request, and discovering it on a hot path would be a
-    ///    `StorageError` where a boot refusal belongs.
+    ///    the lexical configuration, the score windows and `ts_rank`'s
+    ///    weight array — must agree across the flavor's projected schemas,
+    ///    and the renderer's three band names must all be declared.
+    ///    Deciding this at freeze rather than at query-build time is the
+    ///    point: the answer never depends on the request, and discovering
+    ///    it on a hot path would be a `StorageError` where a boot refusal
+    ///    belongs.
+    ///
+    ///    The weight array joined this list late. The renderer reads it off
+    ///    the flavor's FIRST participating schema, like the other two, but
+    ///    only language and bands were checked — so a flavor whose schemas
+    ///    declared different weight LEVELS would have had one schema's
+    ///    array applied to every schema's vector, silently, and the doc
+    ///    claiming freeze guaranteed otherwise would have been wrong.
     /// 2. `BandComparability::CoreBands` is the claim a cross-flavor merge
     ///    compares scores on. A flavor whose bands leave flavor #0's
     ///    `[0, 1]` window cannot make it.
@@ -191,6 +221,16 @@ impl FlavorRegistry {
                     flavor_id: contract.flavor_id,
                     schema_id,
                     property: "bands",
+                });
+            }
+            if weight_arrays_differ(
+                first.search.rank_weight_array(),
+                schema.search.rank_weight_array(),
+            ) {
+                return Err(FlavorRegistryError::ProjectionRenderNotUniform {
+                    flavor_id: contract.flavor_id,
+                    schema_id,
+                    property: "rank_weights",
                 });
             }
         }
@@ -731,6 +771,98 @@ mod tests {
             },
         }),
     };
+    /// Two projected schemas under one `RankSource::Projection` flavor
+    /// agreeing on language and bands and DISAGREEING on weight levels.
+    ///
+    /// One statement serves both, and it reads the weight array off the
+    /// first participating schema — so without this check the second
+    /// schema's vector would be ranked with an array that describes a
+    /// document it is not scoring. The two schemas share a `bands` const
+    /// and a `Pinned` language on purpose: a fixture that can fail three
+    /// ways proves none of them.
+    static WEIGHTS_NOT_UNIFORM: FlavorContract = FlavorContract {
+        flavor_id: FIXTURE_FLAVOR,
+        ordinal: 7,
+        schemas: &[
+            SchemaContract {
+                id: SchemaRef::new(FIXTURE_FLAVOR, "thing", 1),
+                kind: PayloadKind::Fact,
+                sidecar_table: Some("test_flavor.thing_v1"),
+                search: SearchProjectionDecl::Projected {
+                    // One level: no array at all.
+                    fields: &[WeightedField {
+                        column: "a",
+                        kind: SearchProjectionColumnKind::Text,
+                        weight: 1.0,
+                    }],
+                    tag_column: None,
+                    language: LanguagePolicy::Pinned("simple"),
+                    bands: FIXTURE_BANDS,
+                    substring: SubstringArm::Off,
+                },
+                embedding: EmbeddingRecipe::Never {
+                    why: "a fixture, not a memory",
+                },
+                transfer: TransferRule::StaysOnKey,
+                provenance: Provenance::None,
+                surfaces: &[],
+                natural_key_columns: &[],
+                special_category: false,
+            },
+            SchemaContract {
+                id: SchemaRef::new(FIXTURE_FLAVOR, "other", 1),
+                kind: PayloadKind::Fact,
+                sidecar_table: Some("test_flavor.other_v1"),
+                search: SearchProjectionDecl::Projected {
+                    // Two levels: an array the first schema does not have.
+                    fields: &[
+                        WeightedField {
+                            column: "a",
+                            kind: SearchProjectionColumnKind::Text,
+                            weight: 1.0,
+                        },
+                        WeightedField {
+                            column: "b",
+                            kind: SearchProjectionColumnKind::Text,
+                            weight: 2.0,
+                        },
+                    ],
+                    tag_column: None,
+                    language: LanguagePolicy::Pinned("simple"),
+                    bands: FIXTURE_BANDS,
+                    substring: SubstringArm::Off,
+                },
+                embedding: EmbeddingRecipe::Never {
+                    why: "a fixture, not a memory",
+                },
+                transfer: TransferRule::StaysOnKey,
+                provenance: Provenance::None,
+                surfaces: &[],
+                natural_key_columns: &[],
+                special_category: false,
+            },
+        ],
+        state_surfaces: &[],
+        kernel_surfaces: &[],
+        tools: &[],
+        resources: &[],
+        projection: ProjectionDecl::Table(crate::flavor::contract::ProjectionSpec {
+            table: "test_flavor.projection",
+            index: "test_flavor_projection_owner_tsv_gin",
+            overfetch_k: 0,
+            band_comparability: crate::flavor::contract::BandComparability::CoreBands,
+            rank_source: crate::flavor::contract::RankSource::Projection,
+        }),
+    };
+
+    /// Core's own windows, which is what makes `CoreBands` above legal and
+    /// keeps the fixture from tripping the band-name rule.
+    static FIXTURE_BANDS: &[crate::flavor::contract::Band] = &[
+        crate::flavor::flavor0::BAND_EXACT,
+        crate::flavor::flavor0::BAND_RESCUE,
+        crate::flavor::flavor0::BAND_SUBSTRING,
+    ];
+
     /// Five distinct relative weights on one projection unit. The
     /// declaration is free of `PostgreSQL`'s four-class limit right up to
     /// the moment the generator has to emit `setweight`, and this is that
@@ -922,6 +1054,19 @@ mod tests {
                         FlavorRegistryError::ProjectionLanguageColumn {
                             declared: "row_config",
                             projection_column: Some("lexical_language"),
+                            ..
+                        }
+                    )
+                },
+            ),
+            (
+                "two projection-ranked schemas disagree about the ts_rank weight array",
+                |registry| registry.contracts.push(&WEIGHTS_NOT_UNIFORM),
+                |err| {
+                    matches!(
+                        err,
+                        FlavorRegistryError::ProjectionRenderNotUniform {
+                            property: "rank_weights",
                             ..
                         }
                     )
