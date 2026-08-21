@@ -1031,6 +1031,34 @@ pub enum ExportRule {
     Excluded { why: &'static str },
 }
 
+/// Which key on the erase receipt a surface's destroyed rows land under.
+///
+/// Was `Option<&'static str>`, and `None` was the last declared absence in
+/// the contract with no reason attached — "feeds no counter" and "nobody
+/// said" were the same value, which is the exact shape the first rule of
+/// this module forbids. `wake_config` and `goal_head` are both `None` in the
+/// shipped tree and for entirely different reasons: one is counted under
+/// another surface's key, the other is not owner-scoped rows at all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CounterRule {
+    /// Rows destroyed here are counted under this receipt key. Several
+    /// surfaces may share one key; the receipt sums them.
+    Counted(&'static str),
+    /// Contributes to no count, with the reason stated.
+    Uncounted { why: &'static str },
+}
+
+impl CounterRule {
+    /// The receipt key, or `None` for a declared non-count.
+    #[must_use]
+    pub const fn key(self) -> Option<&'static str> {
+        match self {
+            Self::Counted(key) => Some(key),
+            Self::Uncounted { .. } => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ForgetRule {
     /// Dumped into the cold record, then deleted from the hot table.
@@ -1135,9 +1163,8 @@ pub struct Surface {
     /// expected FK set is a projection of exactly this field, which is what
     /// retires its hardcoded five-table `IN (...)`.
     pub lexical_language_column: Option<&'static str>,
-    /// Audit counter this surface contributes to. `None` is a declared
-    /// non-count.
-    pub counter: Option<&'static str>,
+    /// Which audit counter this surface's destroyed rows are counted under.
+    pub counter: CounterRule,
     /// A constraint that already proves completeness. Present ⇒ no list is
     /// generated anywhere; the constraint is the proof.
     pub completeness: Option<DbConstraint>,
@@ -1292,7 +1319,12 @@ impl ProjectionSpec {
             },
             forget: ForgetRule::DeleteWithMemory,
             lexical_language_column: Some("lexical_language"),
-            counter: None,
+            counter: CounterRule::Uncounted {
+                why: "a derived index, deleted by the cascade the erase never runs a \
+                      statement for. There is no `rows_affected` to report, and a \
+                      count of index rows would say how the deployment tokenizes \
+                      rather than what the owner lost",
+            },
             completeness: Some(DbConstraint {
                 relation: self.table,
                 name: PROJECTION_MEMORY_FK,

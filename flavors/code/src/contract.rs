@@ -18,11 +18,12 @@
 
 use proxima_core::SearchProjectionColumnKind as ColumnKind;
 use proxima_core::flavor::{
-    Band, BandComparability, DbConstraint, EmbedUnit, EmbeddingRecipe, EraseRule, ExportRule,
-    FlavorContract, ForgetRule, KeyShape, LanguagePolicy, ProjectionDecl, ProjectionSpec,
-    Provenance, RankSource, SLOT_DEFAULT, SchemaContract, SchemaRef, SearchProjectionDecl,
-    SubstringArm, Surface, TS_RANK_NORMALIZATION_LOG_LENGTH_SCALE, TS_RANK_NORMALIZATION_NONE,
-    TS_RANK_NORMALIZATION_SCALE, ToolContract, TransferRule, WEIGHT_UNIFORM, WeightedField,
+    Band, BandComparability, CounterRule, DbConstraint, EmbedUnit, EmbeddingRecipe, EraseRule,
+    ExportRule, FlavorContract, ForgetRule, KeyShape, LanguagePolicy, ProjectionDecl,
+    ProjectionSpec, Provenance, RankSource, SLOT_DEFAULT, SchemaContract, SchemaRef,
+    SearchProjectionDecl, SubstringArm, Surface, TS_RANK_NORMALIZATION_LOG_LENGTH_SCALE,
+    TS_RANK_NORMALIZATION_NONE, TS_RANK_NORMALIZATION_SCALE, ToolContract, TransferRule,
+    WEIGHT_UNIFORM, WeightedField,
 };
 use proxima_core::flavor0::{BAND_EXACT, BAND_RESCUE, BAND_SUBSTRING};
 use proxima_core::verbs::schema::PayloadKind;
@@ -164,7 +165,7 @@ const fn memory_sidecar(table: &'static str, t_fkey: &'static str) -> Surface {
         export: ExportRule::Rows,
         forget: ForgetRule::DumpThenDelete,
         lexical_language_column: None,
-        counter: Some("sidecar_rows"),
+        counter: CounterRule::Counted("sidecar_rows"),
         completeness: Some(DbConstraint {
             relation: table,
             name: t_fkey,
@@ -206,7 +207,13 @@ const fn detail_table(
         export: ExportRule::Rows,
         forget: ForgetRule::DeleteWithMemory,
         lexical_language_column: None,
-        counter: None,
+        counter: CounterRule::Uncounted {
+            why: "a detail table's rows go with the parent sidecar row, and the \
+                  parent is already counted under `sidecar_rows`. Counting both \
+                  would report one memory's destruction twice, at a ratio that \
+                  varies with how many criteria or call edges it happened to \
+                  have",
+        },
         completeness: Some(DbConstraint {
             relation: table,
             name: parent_fkey,
@@ -596,7 +603,7 @@ const STATE_SURFACES: &[Surface] = &[
                   from; the row holds no foreign key into memory",
         },
         lexical_language_column: None,
-        counter: Some("repo_rows"),
+        counter: CounterRule::Counted("repo_rows"),
         completeness: None,
     },
     Surface {
@@ -614,7 +621,7 @@ const STATE_SURFACES: &[Surface] = &[
                   ingest_keys does in the kernel",
         },
         lexical_language_column: None,
-        counter: Some("ingestion_run_rows"),
+        counter: CounterRule::Counted("ingestion_run_rows"),
         completeness: None,
     },
 ];

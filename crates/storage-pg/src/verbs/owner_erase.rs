@@ -242,7 +242,7 @@ async fn delete_keyed_surfaces(
         }
         let rows =
             delete_fixed_by_selected(tx, surface.table, column, set.table(), set.column()).await?;
-        if let Some(counter) = surface.counter {
+        if let Some(counter) = surface.counter.key() {
             record_count(tx, counter, rows).await?;
         }
         total += rows;
@@ -311,7 +311,7 @@ async fn delete_owned_surfaces(
             .await
             .map_err(map_err)?
             .rows_affected();
-        if let Some(counter) = surface.counter {
+        if let Some(counter) = surface.counter.key() {
             record_count(tx, counter, rows).await?;
         }
         total += rows;

@@ -198,7 +198,7 @@ impl OwnerSurfaces {
         let mut counters = self
             .surfaces
             .iter()
-            .filter_map(|surface| surface.counter)
+            .filter_map(|surface| surface.counter.key())
             .collect::<Vec<_>>();
         counters.sort_unstable();
         counters.dedup();

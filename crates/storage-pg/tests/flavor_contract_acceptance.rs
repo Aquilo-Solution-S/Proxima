@@ -305,6 +305,50 @@ fn declared_absence_is_a_value_with_a_reason() {
     );
 }
 
+/// Every declared non-count states a reason, in every registered flavor.
+///
+/// `Surface::counter` was `Option<&'static str>` and `None` was the last
+/// declared absence in the contract with nothing attached — "feeds no
+/// counter" and "nobody said" were the same value. The seven `None`s in the
+/// shipped tree turned out to have six DIFFERENT reasons: a pointer into a
+/// counted table, a refcounted shared row, a work queue counted after the
+/// commit, a derived index with no `rows_affected`, a detail table already
+/// counted under its parent, and two surfaces the erase never touches at
+/// all. None of that was recoverable from the word `None`.
+#[test]
+fn every_declared_non_count_says_why() {
+    let registry = FlavorRegistry::new().freeze_or_panic_for_tests();
+    let mut uncounted = 0;
+    let mut counted = 0;
+    for contract in registry.contracts() {
+        for surface in contract.all_surfaces() {
+            match surface.counter {
+                proxima_core::flavor::CounterRule::Counted(key) => {
+                    assert!(
+                        !key.is_empty(),
+                        "{} names an empty counter key",
+                        surface.table
+                    );
+                    counted += 1;
+                }
+                proxima_core::flavor::CounterRule::Uncounted { why } => {
+                    assert!(
+                        why.len() > 40,
+                        "{} contributes to no count and must say why, not \
+                         gesture at it: {why:?}",
+                        surface.table
+                    );
+                    uncounted += 1;
+                }
+            }
+        }
+    }
+    assert!(
+        counted > 10 && uncounted >= 7,
+        "{counted} counted, {uncounted} uncounted"
+    );
+}
+
 // ── §2.5 (3): forget touches everything ─────────────────────────────────
 
 /// Every declared surface says what forget does to it, non-optionally.

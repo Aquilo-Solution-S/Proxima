@@ -23,10 +23,10 @@
 use crate::SearchProjectionColumnKind as ColumnKind;
 use crate::flavor::contract::{
     BAND_NAME_EXACT, BAND_NAME_RESCUE, BAND_NAME_SUBSTRING, Band, BandComparability, CORE_ORDINAL,
-    DbConstraint, DbTrigger, EmbedUnit, EmbeddingRecipe, Enforcement, EraseRule, ExportRule,
-    FlavorContract, ForgetRule, KeyShape, LanguagePolicy, ProjectionDecl, ProjectionSpec,
-    Provenance, RankSource, ResourceContract, SLOT_DEFAULT, SchemaContract, SchemaRef,
-    SearchProjectionDecl, SubstringArm, Surface, TS_RANK_NORMALIZATION_LOG_LENGTH_SCALE,
+    CounterRule, DbConstraint, DbTrigger, EmbedUnit, EmbeddingRecipe, Enforcement, EraseRule,
+    ExportRule, FlavorContract, ForgetRule, KeyShape, LanguagePolicy, ProjectionDecl,
+    ProjectionSpec, Provenance, RankSource, ResourceContract, SLOT_DEFAULT, SchemaContract,
+    SchemaRef, SearchProjectionDecl, SubstringArm, Surface, TS_RANK_NORMALIZATION_LOG_LENGTH_SCALE,
     TS_RANK_NORMALIZATION_NONE, TS_RANK_NORMALIZATION_SCALE, ToolContract, TransferRule,
     WEIGHT_UNIFORM, WeightedField,
 };
@@ -128,7 +128,7 @@ const fn memory_sidecar(
         export: ExportRule::Rows,
         forget: ForgetRule::DumpThenDelete,
         lexical_language_column,
-        counter: Some("sidecar_rows"),
+        counter: CounterRule::Counted("sidecar_rows"),
         completeness,
     }
 }
@@ -290,7 +290,7 @@ const MCP_CALL_LOGGED_V1: SchemaContract = SchemaContract {
                   simply stay in the hot table",
         },
         lexical_language_column: None,
-        counter: Some("mcp_call_rows"),
+        counter: CounterRule::Counted("mcp_call_rows"),
         // Deliberately NO FK to memory: the row must outlive the Memory.
         // Completeness rests on owner_id -> owners instead.
         completeness: Some(DbConstraint {
@@ -447,7 +447,7 @@ const TASK_GOAL_V1: SchemaContract = SchemaContract {
                   Only owner erase ever removes a goal",
         },
         lexical_language_column: None,
-        counter: Some("sidecar_rows"),
+        counter: CounterRule::Counted("sidecar_rows"),
         completeness: Some(t_fkey("proxima_core.task_goal_v1", "task_goal_v1_t_fkey")),
     }],
     natural_key_columns: &[],
@@ -516,7 +516,7 @@ const STATE_SURFACES: &[Surface] = &[
             why: "no goal-forget verb exists; Abandoned is an append, not a delete",
         },
         lexical_language_column: None,
-        counter: Some("goals"),
+        counter: CounterRule::Counted("goals"),
         // WAS goal_not_world_owner_chk. That CHECK went with the World
         // owner; the DDL backstop is now the goal_head_t_only trigger, which
         // TransferRule::NotTransferable names directly.
@@ -535,7 +535,10 @@ const STATE_SURFACES: &[Surface] = &[
             why: "see proxima_core.goal",
         },
         lexical_language_column: None,
-        counter: None,
+        counter: CounterRule::Uncounted {
+            why: "the head is a POINTER into `goal`, not a row of its own: \
+                  counting it would report every goal twice on one receipt",
+        },
         completeness: None,
     },
     Surface {
@@ -553,7 +556,7 @@ const STATE_SURFACES: &[Surface] = &[
             why: "the goal lifecycle owns it",
         },
         lexical_language_column: None,
-        counter: Some("wake_configs"),
+        counter: CounterRule::Counted("wake_configs"),
         completeness: None,
     },
 ];
@@ -577,7 +580,7 @@ const KERNEL_SURFACES: &[Surface] = &[
         // The Memory row itself carries no text and no `lexical_language`:
         // ranking happens in the sidecars and in `sketch`.
         lexical_language_column: None,
-        counter: Some("memories"),
+        counter: CounterRule::Counted("memories"),
         completeness: None,
     },
     Surface {
@@ -609,7 +612,10 @@ const KERNEL_SURFACES: &[Surface] = &[
                   bespoke leg list already names",
         },
         lexical_language_column: None,
-        counter: None,
+        counter: CounterRule::Uncounted {
+            why: "the head is a POINTER into `memory`, and the erase deletes it \
+                  through the same statement that takes the series it names",
+        },
         completeness: None,
     },
     Surface {
@@ -623,7 +629,7 @@ const KERNEL_SURFACES: &[Surface] = &[
             why: "cooled IS the forgotten form; forget writes it rather than deleting it",
         },
         lexical_language_column: None,
-        counter: Some("memories"),
+        counter: CounterRule::Counted("memories"),
         completeness: None,
     },
     Surface {
@@ -646,7 +652,7 @@ const KERNEL_SURFACES: &[Surface] = &[
         // Recorded by erase today and dropped on the floor: there is no
         // `sketches` key in the final counts and no audit-log column.
         // Declaring it is what makes the gap addressable.
-        counter: Some("sketches"),
+        counter: CounterRule::Counted("sketches"),
         // No FK: `t` is a Memory t OR a Goal t, and there is no constraint
         // that can span two home tables.
         completeness: None,
@@ -664,7 +670,7 @@ const KERNEL_SURFACES: &[Surface] = &[
         },
         forget: ForgetRule::DeleteWithMemory,
         lexical_language_column: None,
-        counter: Some("embeddings"),
+        counter: CounterRule::Counted("embeddings"),
         completeness: None,
     },
     Surface {
@@ -680,7 +686,7 @@ const KERNEL_SURFACES: &[Surface] = &[
         },
         forget: ForgetRule::DeleteWithMemory,
         lexical_language_column: None,
-        counter: Some("embeddings"),
+        counter: CounterRule::Counted("embeddings"),
         completeness: None,
     },
     Surface {
@@ -696,7 +702,7 @@ const KERNEL_SURFACES: &[Surface] = &[
         },
         forget: ForgetRule::DeleteWithMemory,
         lexical_language_column: None,
-        counter: Some("embedding_jobs"),
+        counter: CounterRule::Counted("embedding_jobs"),
         completeness: None,
     },
     Surface {
@@ -725,7 +731,7 @@ const KERNEL_SURFACES: &[Surface] = &[
                   across a cool",
         },
         lexical_language_column: None,
-        counter: Some("receipts"),
+        counter: CounterRule::Counted("receipts"),
         completeness: None,
     },
     Surface {
@@ -753,7 +759,7 @@ const KERNEL_SURFACES: &[Surface] = &[
             why: "forget APPENDS an announce row; it never removes one",
         },
         lexical_language_column: None,
-        counter: Some("change_events"),
+        counter: CounterRule::Counted("change_events"),
         completeness: None,
     },
     Surface {
@@ -783,7 +789,7 @@ const KERNEL_SURFACES: &[Surface] = &[
             why: "the citation outlives the cooling of the Fact that names it",
         },
         lexical_language_column: None,
-        counter: Some("blobs"),
+        counter: CounterRule::Counted("blobs"),
         completeness: None,
     },
     Surface {
@@ -802,7 +808,7 @@ const KERNEL_SURFACES: &[Surface] = &[
             why: "upload coordination outlives the Fact",
         },
         lexical_language_column: None,
-        counter: Some("blob_uploads"),
+        counter: CounterRule::Counted("blob_uploads"),
         completeness: None,
     },
     Surface {
@@ -832,7 +838,12 @@ const KERNEL_SURFACES: &[Surface] = &[
             why: "many admissions may share one ContentId",
         },
         lexical_language_column: None,
-        counter: None,
+        counter: CounterRule::Uncounted {
+            why: "content is refcounted and shared: the rows an owner erase \
+                  destroys here are the ones NO surviving owner still cites, \
+                  which is a number about the deployment's deduplication and \
+                  not about this owner",
+        },
         completeness: None,
     },
     Surface {
@@ -846,7 +857,7 @@ const KERNEL_SURFACES: &[Surface] = &[
             why: "external ingest cursors are owner policy, not memory content",
         },
         lexical_language_column: None,
-        counter: Some("source_cursors"),
+        counter: CounterRule::Counted("source_cursors"),
         completeness: None,
     },
     Surface {
@@ -873,7 +884,7 @@ const KERNEL_SURFACES: &[Surface] = &[
             why: "owner-level authority, never memory content",
         },
         lexical_language_column: None,
-        counter: Some("delegated_authority_grants"),
+        counter: CounterRule::Counted("delegated_authority_grants"),
         completeness: None,
     },
     Surface {
@@ -898,7 +909,13 @@ const KERNEL_SURFACES: &[Surface] = &[
             why: "the purge queue outlives the transaction that enqueued it",
         },
         lexical_language_column: None,
-        counter: None,
+        counter: CounterRule::Uncounted {
+            why: "a work queue, not owned rows. Its entries are enqueued BY the \
+                  erase and drained after it commits, so a count taken \
+                  inside the transaction would report intent rather than \
+                  destruction — `cold_object_purge_pending` on the outcome \
+                  is where that number belongs",
+        },
         completeness: None,
     },
     Surface {
@@ -917,7 +934,10 @@ const KERNEL_SURFACES: &[Surface] = &[
             why: "the star centre",
         },
         lexical_language_column: None,
-        counter: None,
+        counter: CounterRule::Uncounted {
+            why: "the erase never deletes the owners row, so there is nothing to \
+                  count; `EraseRule::Never` already says why",
+        },
         completeness: None,
     },
     // A membership names TWO owners and belongs to neither exclusively, so
@@ -949,7 +969,10 @@ const KERNEL_SURFACES: &[Surface] = &[
                   cold record carries it",
         },
         lexical_language_column: None,
-        counter: None,
+        counter: CounterRule::Uncounted {
+            why: "the erase never deletes a membership, so there is nothing to \
+                  count; `EraseRule::Never` already says why",
+        },
         completeness: None,
     },
 ];

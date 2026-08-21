@@ -791,9 +791,10 @@ pub(crate) fn schema_capability_map(
 mod tests {
     use crate::SearchProjectionColumnKind;
     use crate::flavor::contract::{
-        DbConstraint, EmbeddingRecipe, EraseRule, ExportRule, FlavorContract, ForgetRule, KeyShape,
-        LanguagePolicy, ProjectionDecl, Provenance, ResourceContract, SchemaContract, SchemaRef,
-        SearchProjectionDecl, SubstringArm, Surface, ToolContract, TransferRule, WeightedField,
+        CounterRule, DbConstraint, EmbeddingRecipe, EraseRule, ExportRule, FlavorContract,
+        ForgetRule, KeyShape, LanguagePolicy, ProjectionDecl, Provenance, ResourceContract,
+        SchemaContract, SchemaRef, SearchProjectionDecl, SubstringArm, Surface, ToolContract,
+        TransferRule, WeightedField,
     };
     use crate::verbs::schema::{PayloadKind, SchemaInfo};
     use crate::{FlavorRegistry, FlavorRegistryError, SchemaId, SchemaVersion};
@@ -936,7 +937,9 @@ mod tests {
                 why: "a fixture, not a memory",
             },
             lexical_language_column: None,
-            counter: None,
+            counter: CounterRule::Uncounted {
+                why: "a fixture contributes to no receipt",
+            },
             completeness: None,
         }
     }
@@ -1034,7 +1037,9 @@ mod tests {
                 why: "a fixture, not a memory",
             },
             lexical_language_column: None,
-            counter: None,
+            counter: CounterRule::Uncounted {
+                why: "a fixture contributes to no receipt",
+            },
             completeness: None,
         }],
         &[],
@@ -1060,7 +1065,9 @@ mod tests {
                 why: "a fixture, not a memory",
             },
             lexical_language_column: None,
-            counter: None,
+            counter: CounterRule::Uncounted {
+                why: "a fixture contributes to no receipt",
+            },
             completeness: None,
         }],
         &[],
@@ -1083,7 +1090,9 @@ mod tests {
             },
             forget: ForgetRule::DeleteWithMemory,
             lexical_language_column: None,
-            counter: None,
+            counter: CounterRule::Uncounted {
+                why: "a fixture contributes to no receipt",
+            },
             completeness: None,
         }],
         &[],
@@ -1155,7 +1164,9 @@ mod tests {
                 why: "a fixture, not a memory",
             },
             lexical_language_column: None,
-            counter: None,
+            counter: CounterRule::Uncounted {
+                why: "a fixture contributes to no receipt",
+            },
             completeness: None,
         }],
         &[],

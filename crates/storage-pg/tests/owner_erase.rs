@@ -69,7 +69,7 @@ impl ColdObjectStore for RefusingDeleteCold {
 /// `owner_id` of their own, and tallying into `sidecar_rows`.
 fn citation_surfaces() -> proxima_core::owner_inverse::OwnerSurfaces {
     use proxima_core::flavor::{
-        EraseRule, ExportRule, ForgetRule, KeyShape, Surface, TransferRule,
+        CounterRule, EraseRule, ExportRule, ForgetRule, KeyShape, Surface, TransferRule,
     };
     const fn citation(table: &'static str, column: &'static str) -> Surface {
         Surface {
@@ -83,7 +83,7 @@ fn citation_surfaces() -> proxima_core::owner_inverse::OwnerSurfaces {
                 why: "a citation outlives the Fact that made it",
             },
             lexical_language_column: None,
-            counter: Some("sidecar_rows"),
+            counter: CounterRule::Counted("sidecar_rows"),
             completeness: None,
         }
     }
@@ -324,7 +324,7 @@ async fn erase_personal_owner_drops_memory_keys_and_embeddings() {
         };
         assert_eq!(counts.get("memories"), 1);
         assert_eq!(counts.get("embeddings"), 2);
-        // `ingest_keys` declares `counter: Some("receipts")`, and the
+        // `ingest_keys` declares `counter: CounterRule::Counted("receipts")`, and the
         // generated leg tallies whatever its surface declares. The
         // hand-written leg it replaced deleted the same row and counted it
         // nowhere, so `receipts` was structurally zero: a field on the
