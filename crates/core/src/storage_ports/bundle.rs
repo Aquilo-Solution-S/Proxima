@@ -4,11 +4,10 @@ use std::sync::Arc;
 use super::handles::{
     ChangeEventHandle, CitationHandle, ComplianceAdminHandle, ComplianceEraseHandle,
     EmbeddingJobHandle, EmbeddingMaintenanceHandle, EmbeddingTextHandle, EmbeddingWriteHandle,
-    FactIngestHandle, FactRetentionHandle, GoalReadHandle, GoalWakeCandidateHandle,
-    GoalWriteHandle, McpCallReadHandle, McpCallWriteHandle, MemoryAuthoringHandle,
-    MemoryInspectHandle, MemoryReadHandle, OwnerAccessReadHandle, OwnerDropProofHandle,
-    OwnerMembershipAdminHandle, OwnerTransferHandle, RegistryProjectionHandle, SourceBatchHandle,
-    SourceCursorHandle, WriteSessionFactoryHandle,
+    FactIngestHandle, GoalReadHandle, GoalWakeCandidateHandle, GoalWriteHandle, McpCallReadHandle,
+    McpCallWriteHandle, MemoryAuthoringHandle, MemoryInspectHandle, MemoryReadHandle,
+    OwnerAccessReadHandle, OwnerDropProofHandle, OwnerMembershipAdminHandle, OwnerTransferHandle,
+    RegistryProjectionHandle, SourceBatchHandle, SourceCursorHandle, WriteSessionFactoryHandle,
 };
 use super::rejecting::RejectingStorage;
 
@@ -36,7 +35,6 @@ pub struct StoragePorts {
     #[allow(dead_code)]
     source_batch: SourceBatchHandle,
     source_cursor: SourceCursorHandle,
-    fact_retention: FactRetentionHandle,
     compliance_erase: ComplianceEraseHandle,
     compliance_admin: Option<ComplianceAdminHandle>,
     owner_drop_proof: Option<OwnerDropProofHandle>,
@@ -50,11 +48,6 @@ pub(crate) struct AccessAdminStoragePorts {
     pub owner_membership_admin: OwnerMembershipAdminHandle,
     pub owner_access_read: OwnerAccessReadHandle,
     pub owner_transfer: OwnerTransferHandle,
-}
-
-#[derive(Clone)]
-pub(crate) struct FactRetentionStoragePorts {
-    pub fact_retention: FactRetentionHandle,
 }
 
 #[derive(Clone)]
@@ -104,7 +97,6 @@ pub(crate) struct ReadVerbStoragePorts {
     pub memory_inspect: MemoryInspectHandle,
     pub change_event: ChangeEventHandle,
     pub citation: CitationHandle,
-    pub fact_retention: FactRetentionHandle,
     pub goal_wake_candidate: GoalWakeCandidateHandle,
     pub goal_read: GoalReadHandle,
 }
@@ -122,7 +114,6 @@ pub(crate) struct ComplianceStoragePorts {
 pub(crate) struct EngineStoragePorts {
     pub access_admin: AccessAdminStoragePorts,
     pub compliance: ComplianceStoragePorts,
-    pub fact_retention: FactRetentionStoragePorts,
     pub source_cursor: SourceCursorStoragePorts,
     pub goal_command: GoalCommandStoragePorts,
     pub ingest: IngestStoragePorts,
@@ -155,7 +146,6 @@ pub struct StoragePortsBuilder {
     owner_transfer: Option<OwnerTransferHandle>,
     source_batch: Option<SourceBatchHandle>,
     source_cursor: Option<SourceCursorHandle>,
-    fact_retention: Option<FactRetentionHandle>,
     compliance_erase: Option<ComplianceEraseHandle>,
     compliance_admin: Option<ComplianceAdminHandle>,
     owner_drop_proof: Option<OwnerDropProofHandle>,
@@ -206,7 +196,6 @@ impl StoragePorts {
             owner_transfer: rejecting.clone(),
             source_batch: rejecting.clone(),
             source_cursor: rejecting.clone(),
-            fact_retention: rejecting.clone(),
             compliance_erase: rejecting.clone(),
             compliance_admin: None,
             owner_drop_proof: None,
@@ -264,9 +253,6 @@ impl From<StoragePorts> for EngineStoragePorts {
                 owner_drop_proof: ports.owner_drop_proof.clone(),
                 embedding_maintenance: ports.embedding_maintenance.clone(),
             },
-            fact_retention: FactRetentionStoragePorts {
-                fact_retention: ports.fact_retention.clone(),
-            },
             source_cursor: SourceCursorStoragePorts {
                 source_cursor: ports.source_cursor.clone(),
             },
@@ -300,7 +286,6 @@ impl From<StoragePorts> for EngineStoragePorts {
                 memory_inspect: ports.memory_inspect.clone(),
                 change_event: ports.change_event.clone(),
                 citation: ports.citation.clone(),
-                fact_retention: ports.fact_retention.clone(),
                 goal_wake_candidate: ports.goal_wake_candidate.clone(),
                 goal_read: ports.goal_read.clone(),
             },
@@ -431,12 +416,6 @@ impl StoragePortsBuilder {
     }
 
     #[must_use]
-    pub fn fact_retention(mut self, handle: FactRetentionHandle) -> Self {
-        self.fact_retention = Some(handle);
-        self
-    }
-
-    #[must_use]
     pub fn compliance_erase(mut self, handle: ComplianceEraseHandle) -> Self {
         self.compliance_erase = Some(handle);
         self
@@ -518,7 +497,6 @@ impl StoragePortsBuilder {
             owner_transfer,
             source_batch,
             source_cursor,
-            fact_retention,
             compliance_erase,
             registry_projection,
             write_session,

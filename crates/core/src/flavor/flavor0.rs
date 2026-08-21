@@ -995,11 +995,7 @@ const RESOURCES: &[ResourceContract] = &[
         scope_key: scope::GRAPH,
         is_template: false,
         read_only: true,
-        reads: &[
-            "proxima_core.embedding_jobs",
-            "proxima_core.owner_fact_retention",
-            "proxima_core.owner_legal_holds",
-        ],
+        reads: &["proxima_core.embedding_jobs"],
     },
     ResourceContract {
         uri_template: "proxima://memory/{id}{?expand_neighbors}",

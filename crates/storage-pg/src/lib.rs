@@ -19,9 +19,9 @@ pub use verbs::fact_embeddings::{
     EmbeddingInlineDrainOutcome, EmbeddingReconcileOptions, EmbeddingReconcileOutcome,
     EmbeddingReconcileScope,
 };
-pub use verbs::retention_maintenance::{
+pub use verbs::maintenance::{
     ChangeEventPruneOptions, ChangeEventPruneOutcome, ColdPurgeRetryOptions, ColdPurgeRetryOutcome,
-    PruneOwnerOutcome, RetentionEnforceOptions, RetentionEnforceOutcome, RetentionOwnerOutcome,
+    PruneOwnerOutcome,
 };
 
 use crate::error::internal;
@@ -328,8 +328,6 @@ pub async fn ensure_core_schema_markers(pool: &PgPool) -> Result<(), StorageErro
            THEN 'missing relation proxima_core.agent_note_v1'
          WHEN to_regclass('proxima_core.group_memberships') IS NULL
            THEN 'missing relation proxima_core.group_memberships'
-         WHEN to_regclass('proxima_core.owner_fact_retention') IS NULL
-           THEN 'missing relation proxima_core.owner_fact_retention'
          WHEN to_regclass('proxima_core.cold_purge_pending') IS NULL
            THEN 'missing relation proxima_core.cold_purge_pending'
          WHEN NOT EXISTS (
@@ -788,20 +786,20 @@ impl std::fmt::Debug for EmbeddingMaintenanceLock {
     }
 }
 
-/// Advisory-lock key serializing retention maintenance passes across
+/// Advisory-lock key serializing storage-maintenance passes across
 /// processes. ASCII `proxretn` as a big-endian i64 — arbitrary but stable,
 /// distinct from [`EMBEDDING_MAINTENANCE_LOCK_KEY`] so the two maintenance
 /// families may run concurrently but never overlap themselves.
-const RETENTION_MAINTENANCE_LOCK_KEY: i64 = i64::from_be_bytes(*b"proxretn");
+const STORAGE_MAINTENANCE_LOCK_KEY: i64 = i64::from_be_bytes(*b"proxretn");
 
-/// Guard for the global retention-maintenance advisory lock. Same
+/// Guard for the global storage-maintenance advisory lock. Same
 /// detached-connection design as [`EmbeddingMaintenanceLock`]: dropping the
 /// guard closes the connection, and Postgres releases the session lock.
-pub struct RetentionMaintenanceLock {
+pub struct StorageMaintenanceLock {
     _conn: sqlx::postgres::PgConnection,
 }
 
-impl std::fmt::Debug for RetentionMaintenanceLock {
+impl std::fmt::Debug for StorageMaintenanceLock {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("RetentionMaintenanceLock")
             .finish_non_exhaustive()
@@ -1012,7 +1010,6 @@ impl PgStorage {
             .owner_transfer(self.clone())
             .source_batch(self.clone())
             .source_cursor(self.clone())
-            .fact_retention(self.clone())
             .compliance_erase(self.clone())
             .registry_projection(self.clone())
             .write_session(self)
@@ -1108,22 +1105,22 @@ impl PgStorage {
             .map(|conn| EmbeddingMaintenanceLock { _conn: conn }))
     }
 
-    /// Try to take the global retention-maintenance advisory lock.
+    /// Try to take the global storage-maintenance advisory lock.
     ///
     /// Same contract as [`Self::try_embedding_maintenance_lock`], on its own
-    /// key: `None` means another retention pass already holds it and this
+    /// key: `None` means another maintenance pass already holds it and this
     /// run should skip.
     ///
     /// # Errors
     ///
     /// Returns storage errors from acquiring the connection or the lock query.
-    pub async fn try_retention_maintenance_lock(
+    pub async fn try_storage_maintenance_lock(
         &self,
-    ) -> Result<Option<RetentionMaintenanceLock>, StorageError> {
+    ) -> Result<Option<StorageMaintenanceLock>, StorageError> {
         Ok(self
-            .try_maintenance_lock_conn(RETENTION_MAINTENANCE_LOCK_KEY)
+            .try_maintenance_lock_conn(STORAGE_MAINTENANCE_LOCK_KEY)
             .await?
-            .map(|conn| RetentionMaintenanceLock { _conn: conn }))
+            .map(|conn| StorageMaintenanceLock { _conn: conn }))
     }
 
     /// Session-scoped `pg_try_advisory_lock` on a connection detached from
@@ -1149,44 +1146,23 @@ impl PgStorage {
         Ok(locked.then_some(conn))
     }
 
-    /// Forget Facts past their owner's configured retention window, leaving
-    /// cold stubs and `announce.forget` events.
-    /// Operator surface for the maintenance CLI; see
-    /// [`Self::sweep_orphan_embedding_rows`] for the authority note. Each
-    /// owner is processed under the per-owner legal-hold advisory lock and
-    /// skipped while a hold is active (docs/13 forward rule).
+    /// Delete change-log rows older than an explicit age horizon. Log
+    /// rotation, not a retention promise: the horizon is an operator choice
+    /// with no default, and the rows are `proxima_core.announce`, the
+    /// substrate's own change log.
     ///
-    /// # Errors
-    ///
-    /// Returns storage errors from the sweep transactions, and
-    /// `ConstraintViolation` for a non-positive batch size.
-    pub async fn enforce_fact_retention(
-        &self,
-        options: RetentionEnforceOptions,
-    ) -> Result<RetentionEnforceOutcome, StorageError> {
-        verbs::retention_maintenance::enforce_fact_retention(
-            &self.pool,
-            &self.sidecars,
-            self.cold.as_ref(),
-            options,
-        )
-        .await
-    }
-
-    /// Delete `change_event` rows older than an explicit age horizon.
     /// Operator surface for the maintenance CLI; see
-    /// [`Self::sweep_orphan_embedding_rows`] for the authority note. Same
-    /// per-owner legal-hold gate as [`Self::enforce_fact_retention`].
+    /// [`Self::sweep_orphan_embedding_rows`] for the authority note.
     ///
     /// # Errors
     ///
     /// Returns storage errors from the prune transactions, and
     /// `ConstraintViolation` for a non-positive horizon or batch size.
-    pub async fn prune_change_events(
+    pub async fn prune_change_log(
         &self,
         options: ChangeEventPruneOptions,
     ) -> Result<ChangeEventPruneOutcome, StorageError> {
-        verbs::retention_maintenance::prune_change_events(&self.pool, options).await
+        verbs::maintenance::prune_change_log(&self.pool, options).await
     }
 
     /// Retry a bounded batch of durable exact-key cold/object-store purge debts.
@@ -1201,12 +1177,7 @@ impl PgStorage {
         &self,
         options: ColdPurgeRetryOptions,
     ) -> Result<ColdPurgeRetryOutcome, StorageError> {
-        verbs::retention_maintenance::retry_cold_object_purges(
-            &self.pool,
-            self.cold.as_ref(),
-            options,
-        )
-        .await
+        verbs::maintenance::retry_cold_object_purges(&self.pool, self.cold.as_ref(), options).await
     }
 
     /// Apply all pending migrations under

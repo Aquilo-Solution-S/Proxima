@@ -2,9 +2,7 @@ use std::sync::Arc;
 
 use super::access::{OwnerAccessReadPort, OwnerMembershipAdminPort, OwnerTransferPort};
 use super::change::ChangeEventPort;
-use super::compliance::{
-    ComplianceAdminPort, ComplianceErasePort, FactRetentionPort, OwnerDropProofPort,
-};
+use super::compliance::{ComplianceAdminPort, ComplianceErasePort, OwnerDropProofPort};
 use super::cursors::SourceCursorPort;
 use super::embeddings::{
     EmbeddingJobPort, EmbeddingMaintenancePort, EmbeddingTextPort, EmbeddingWritePort,
@@ -36,7 +34,6 @@ pub type OwnerMembershipAdminHandle = Arc<dyn OwnerMembershipAdminPort>;
 pub type OwnerTransferHandle = Arc<dyn OwnerTransferPort>;
 pub type SourceBatchHandle = Arc<dyn SourceBatchPort>;
 pub type SourceCursorHandle = Arc<dyn SourceCursorPort>;
-pub type FactRetentionHandle = Arc<dyn FactRetentionPort>;
 pub type ComplianceEraseHandle = Arc<dyn ComplianceErasePort>;
 pub type RegistryProjectionHandle = Arc<dyn RegistryProjectionPort>;
 pub type ComplianceAdminHandle = Arc<dyn ComplianceAdminPort>;

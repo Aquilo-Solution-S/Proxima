@@ -532,12 +532,6 @@ def check_owner_write_permit_surfaces(findings: list[Finding]) -> None:
             "remove_group_member",
         ],
         "crates/core/src/storage_ports/cursors.rs": ["store_source_cursor"],
-        "crates/core/src/storage_ports/compliance.rs": [
-            "upsert_fact_retention",
-            "clear_fact_retention",
-            "set_legal_hold",
-            "clear_legal_hold",
-        ],
     }
     storage_pg_verbs = {
         "crates/storage-pg/src/verbs/fact_ingest.rs": [
@@ -554,12 +548,6 @@ def check_owner_write_permit_surfaces(findings: list[Finding]) -> None:
         "crates/storage-pg/src/verbs/persist_mcp_call.rs": [
             "persist_mcp_call_atomic",
             "persist_mcp_call_in_tx",
-        ],
-        "crates/storage-pg/src/verbs/fact_retention.rs": [
-            "upsert_fact_retention",
-            "clear_fact_retention",
-            "set_legal_hold",
-            "clear_legal_hold",
         ],
         "crates/storage-pg/src/verbs/fact_embeddings/jobs.rs": ["enqueue_missing_embedding_jobs"],
         "crates/storage-pg/src/verbs/source_cursors.rs": ["store_source_cursor"],

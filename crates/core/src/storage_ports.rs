@@ -45,9 +45,7 @@ pub use cited_blob_reconcile::{
     CitedBlobReconcilePort, MAX_RECONCILE_SAMPLE,
 };
 pub use cited_object_erase::CitedObjectErasePort;
-pub use compliance::{
-    ComplianceAdminPort, ComplianceErasePort, FactRetentionPort, OwnerDropProofPort,
-};
+pub use compliance::{ComplianceAdminPort, ComplianceErasePort, OwnerDropProofPort};
 pub use cursors::SourceCursorPort;
 pub use delegated_authority::{
     DelegatedAuthorityError, DelegatedAuthorityService, DelegatedCommand, DelegationGrant,
@@ -66,11 +64,10 @@ pub use goals::{GoalReadPort, GoalWakeCandidatePort, GoalWritePort};
 pub use handles::{
     ChangeEventHandle, CitationHandle, ComplianceAdminHandle, ComplianceEraseHandle,
     EmbeddingJobHandle, EmbeddingMaintenanceHandle, EmbeddingTextHandle, EmbeddingWriteHandle,
-    FactIngestHandle, FactRetentionHandle, GoalReadHandle, GoalWakeCandidateHandle,
-    GoalWriteHandle, McpCallReadHandle, McpCallWriteHandle, MemoryAuthoringHandle,
-    MemoryInspectHandle, MemoryReadHandle, OwnerAccessReadHandle, OwnerDropProofHandle,
-    OwnerMembershipAdminHandle, OwnerTransferHandle, RegistryProjectionHandle, SourceBatchHandle,
-    SourceCursorHandle, WriteSessionFactoryHandle,
+    FactIngestHandle, GoalReadHandle, GoalWakeCandidateHandle, GoalWriteHandle, McpCallReadHandle,
+    McpCallWriteHandle, MemoryAuthoringHandle, MemoryInspectHandle, MemoryReadHandle,
+    OwnerAccessReadHandle, OwnerDropProofHandle, OwnerMembershipAdminHandle, OwnerTransferHandle,
+    RegistryProjectionHandle, SourceBatchHandle, SourceCursorHandle, WriteSessionFactoryHandle,
 };
 pub use mcp::{McpCallReadPort, McpCallWritePort};
 pub use memory::{

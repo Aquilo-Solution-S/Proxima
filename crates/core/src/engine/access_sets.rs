@@ -825,58 +825,6 @@ pub(in crate::engine) mod tests {
     }
 
     #[async_trait::async_trait]
-    impl FactRetentionPort for MembershipStorage {
-        async fn upsert_fact_retention(
-            &self,
-            _permit: &crate::storage_ports::OwnerWritePermit,
-            _seconds: i64,
-        ) -> Result<(), StorageError> {
-            Err(StorageError::Internal(
-                "MembershipStorage rejects writes".into(),
-            ))
-        }
-
-        async fn get_fact_retention(&self, _owner: &Owner) -> Result<Option<i64>, StorageError> {
-            Err(StorageError::Internal(
-                "MembershipStorage rejects writes".into(),
-            ))
-        }
-
-        async fn clear_fact_retention(
-            &self,
-            _permit: &crate::storage_ports::OwnerWritePermit,
-        ) -> Result<bool, StorageError> {
-            Err(StorageError::Internal(
-                "MembershipStorage rejects writes".into(),
-            ))
-        }
-
-        async fn set_legal_hold(
-            &self,
-            _permit: &crate::storage_ports::OwnerWritePermit,
-        ) -> Result<(), StorageError> {
-            Err(StorageError::Internal(
-                "MembershipStorage rejects writes".into(),
-            ))
-        }
-
-        async fn get_legal_hold(&self, _owner: &Owner) -> Result<bool, StorageError> {
-            Err(StorageError::Internal(
-                "MembershipStorage rejects writes".into(),
-            ))
-        }
-
-        async fn clear_legal_hold(
-            &self,
-            _permit: &crate::storage_ports::OwnerWritePermit,
-        ) -> Result<bool, StorageError> {
-            Err(StorageError::Internal(
-                "MembershipStorage rejects writes".into(),
-            ))
-        }
-    }
-
-    #[async_trait::async_trait]
     impl ComplianceErasePort for MembershipStorage {
         async fn record_compliance_outcome(
             &self,
@@ -1011,7 +959,6 @@ pub(in crate::engine) mod tests {
                 .owner_transfer(storage.clone())
                 .source_batch(storage.clone())
                 .source_cursor(storage.clone())
-                .fact_retention(storage.clone())
                 .compliance_erase(storage.clone())
                 .registry_projection(storage.clone())
                 .write_session(storage)

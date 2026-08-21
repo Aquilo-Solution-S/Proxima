@@ -1,8 +1,6 @@
 use super::access::{OwnerAccessReadPort, OwnerMembershipAdminPort, OwnerTransferPort};
 use super::change::ChangeEventPort;
-use super::compliance::{
-    ComplianceAdminPort, ComplianceErasePort, FactRetentionPort, OwnerDropProofPort,
-};
+use super::compliance::{ComplianceAdminPort, ComplianceErasePort, OwnerDropProofPort};
 use super::cursors::SourceCursorPort;
 use super::embeddings::{
     EmbeddingJobPort, EmbeddingMaintenancePort, EmbeddingTextPort, EmbeddingWriteOutcome,
@@ -693,49 +691,6 @@ impl SourceCursorPort for RejectingStorage {
     ) -> Result<Option<std::time::Duration>, StorageError> {
         Err(StorageError::Internal(
             "RejectingStorage rejects source cursor reads".into(),
-        ))
-    }
-}
-
-#[async_trait::async_trait]
-impl FactRetentionPort for RejectingStorage {
-    async fn upsert_fact_retention(
-        &self,
-        _permit: &OwnerWritePermit,
-        _seconds: i64,
-    ) -> Result<(), StorageError> {
-        Err(StorageError::Internal(
-            "RejectingStorage rejects writes".into(),
-        ))
-    }
-
-    async fn get_fact_retention(&self, _owner: &Owner) -> Result<Option<i64>, StorageError> {
-        Err(StorageError::Internal(
-            "RejectingStorage rejects writes".into(),
-        ))
-    }
-
-    async fn clear_fact_retention(&self, _permit: &OwnerWritePermit) -> Result<bool, StorageError> {
-        Err(StorageError::Internal(
-            "RejectingStorage rejects writes".into(),
-        ))
-    }
-
-    async fn set_legal_hold(&self, _permit: &OwnerWritePermit) -> Result<(), StorageError> {
-        Err(StorageError::Internal(
-            "RejectingStorage rejects writes".into(),
-        ))
-    }
-
-    async fn get_legal_hold(&self, _owner: &Owner) -> Result<bool, StorageError> {
-        Err(StorageError::Internal(
-            "RejectingStorage rejects writes".into(),
-        ))
-    }
-
-    async fn clear_legal_hold(&self, _permit: &OwnerWritePermit) -> Result<bool, StorageError> {
-        Err(StorageError::Internal(
-            "RejectingStorage rejects writes".into(),
         ))
     }
 }

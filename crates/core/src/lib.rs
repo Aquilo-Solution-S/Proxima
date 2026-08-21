@@ -375,8 +375,8 @@ pub use storage_ports::{
     EmbeddingMaintenancePort, EmbeddingOrphanCounts, EmbeddingOrphanSweepOutcome,
     EmbeddingRecallCanary, EmbeddingReconcileOptions, EmbeddingReconcileOutcome,
     EmbeddingReconcileScope, EmbeddingTextPort, EmbeddingWriteOutcome, EmbeddingWritePort,
-    FactIngestPort, FactRetentionPort, GoalReadPort, GoalWritePort, InboundPinQuery,
-    McpCallReadPort, McpCallWritePort, MemoryAuthoringPort, MemoryInspectPort, MemoryReadPort,
+    FactIngestPort, GoalReadPort, GoalWritePort, InboundPinQuery, McpCallReadPort,
+    McpCallWritePort, MemoryAuthoringPort, MemoryInspectPort, MemoryReadPort,
     OperatorMaintenanceProof, OwnerAccessReadPort, OwnerDropProofPort, OwnerMembershipAdminPort,
     OwnerTransferPort, RegistryProjectionPort, SourceBatchPort, SourceCursorPort, StoragePorts,
 };

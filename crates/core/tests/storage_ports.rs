@@ -631,40 +631,6 @@ impl SourceCursorPort for SourceCursorFake {
 }
 
 #[derive(Debug)]
-struct FactRetentionFake;
-
-#[async_trait::async_trait]
-impl FactRetentionPort for FactRetentionFake {
-    async fn upsert_fact_retention(
-        &self,
-        _permit: &OwnerWritePermit,
-        seconds: i64,
-    ) -> Result<(), StorageError> {
-        fake_error()
-    }
-
-    async fn get_fact_retention(&self, owner: &Owner) -> Result<Option<i64>, StorageError> {
-        fake_error()
-    }
-
-    async fn clear_fact_retention(&self, _permit: &OwnerWritePermit) -> Result<bool, StorageError> {
-        fake_error()
-    }
-
-    async fn set_legal_hold(&self, _permit: &OwnerWritePermit) -> Result<(), StorageError> {
-        fake_error()
-    }
-
-    async fn get_legal_hold(&self, owner: &Owner) -> Result<bool, StorageError> {
-        fake_error()
-    }
-
-    async fn clear_legal_hold(&self, _permit: &OwnerWritePermit) -> Result<bool, StorageError> {
-        fake_error()
-    }
-}
-
-#[derive(Debug)]
 struct ComplianceEraseFake;
 
 #[async_trait::async_trait]
@@ -778,7 +744,6 @@ fn public_storage_ports_can_be_mocked_independently() {
     assert_port::<OwnerMembershipAdminFake>();
     assert_port::<SourceBatchFake>();
     assert_port::<SourceCursorFake>();
-    assert_port::<FactRetentionFake>();
     assert_port::<ComplianceEraseFake>();
     assert_port::<RegistryProjectionFake>();
 }

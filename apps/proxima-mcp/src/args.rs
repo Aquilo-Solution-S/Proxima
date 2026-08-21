@@ -18,7 +18,7 @@ pub const USAGE: &str = "\
 Usage:
   proxima-mcp [serve] [OPTIONS]
   proxima-mcp maintain-embeddings [OPTIONS]
-  proxima-mcp maintain-retention [OPTIONS]
+  proxima-mcp maintain-storage [OPTIONS]
 
 Proxima Streamable HTTP MCP server.
 
@@ -81,9 +81,9 @@ Maintenance:
   maintain-embeddings      One self-healing pass: orphan sweep, reconcile
                            enqueue, optional inline drain, health report.
                            Cron-safe (skips if another pass holds the lock)
-  maintain-retention       One retention pass: forget Facts past their
-                           owner's retention window and/or prune old
-                           change_event rows. Cron-safe; legal holds skip
+  maintain-storage         One storage pass: retry the object-store purge
+                           debts committed erases left, and/or rotate the
+                           change log on an explicit horizon. Cron-safe
   maintain-blobs           One reconcile pass over the S3 bucket: report
                            artefacts whose object is gone, objects no row
                            claims, and rows naming another store. Read-only
@@ -156,37 +156,34 @@ Optional:
   -h, --help               Print this help
 ";
 
-pub const RETENTION_USAGE: &str = "\
-Usage: proxima-mcp maintain-retention [OPTIONS]
+pub const STORAGE_MAINTENANCE_USAGE: &str = "\
+Usage: proxima-mcp maintain-storage [OPTIONS]
 
-One retention pass over owner-scoped data. Passes are serialized by a
-Postgres advisory lock; when another pass holds it, this run prints a
-skip notice and exits 0 — safe to fire from cron. Every owner is
-processed under its legal-hold gate: owners with an active legal/security
-hold are skipped and reported.
+One storage-maintenance pass. Passes are serialized by a Postgres advisory
+lock; when another pass holds it, this run prints a skip notice and exits 0
+— safe to fire from cron.
+
+Neither action is a promise to a user. The drain finishes destruction a
+committed owner erase already owes the object store; the prune is log
+rotation. What a host promises about retention or holds is the host's to
+enforce before it calls erase.
 
 At least one action flag is required — there are deliberately no
 destruction defaults.
 
 Actions (at least one):
-  --enforce-fact-retention Forget (cool) Facts older than their owner's
-                           configured retention window. Owners without a
-                           configured window are untouched; MCP-call audit
-                           Facts are never aged out (indefinite controller
-                           evidence). Live enforcement requires the same
-                           PROXIMA_S3_* block as the serving host
   --retry-cold-object-purges
                            Retry a bounded batch of exact object-store keys
-                           left by committed compliance erases. Live retry
+                           left by committed owner erases. Live retry
                            requires the serving host's PROXIMA_S3_* block
-  --prune-change-events-older-than <DURATION>
-                           Delete change_event rows older than the horizon
+  --prune-change-log-older-than <DURATION>
+                           Delete change-log rows older than the horizon
                            (e.g. 90d, 36h, 45m, 3600s)
 
 Optional:
   --database-url <URL>     Postgres URL (defaults to DATABASE_URL or proxima_dev)
   --batch-size <N>         Rows per transaction (default 1000)
-  --dry-run                Report what would be forgotten/pruned without
+  --dry-run                Report what would be purged/pruned without
                            changing anything
   -h, --help               Print this message
 ";
@@ -235,24 +232,22 @@ pub enum ReconcileScope {
 }
 
 #[derive(Clone, PartialEq, Eq)]
-pub struct RetentionConfig {
+pub struct StorageMaintenanceConfig {
     pub database_url: String,
-    pub enforce_fact_retention: bool,
     pub retry_cold_object_purges: bool,
-    pub prune_change_events_older_than_seconds: Option<i64>,
+    pub prune_change_log_older_than_seconds: Option<i64>,
     pub batch_size: i64,
     pub dry_run: bool,
 }
 
-impl std::fmt::Debug for RetentionConfig {
+impl std::fmt::Debug for StorageMaintenanceConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("RetentionConfig")
+        f.debug_struct("StorageMaintenanceConfig")
             .field("database_url", &"<redacted>")
-            .field("enforce_fact_retention", &self.enforce_fact_retention)
             .field("retry_cold_object_purges", &self.retry_cold_object_purges)
             .field(
-                "prune_change_events_older_than_seconds",
-                &self.prune_change_events_older_than_seconds,
+                "prune_change_log_older_than_seconds",
+                &self.prune_change_log_older_than_seconds,
             )
             .field("batch_size", &self.batch_size)
             .field("dry_run", &self.dry_run)
@@ -428,11 +423,10 @@ pub fn parse_maintain_blobs_args<I: IntoIterator<Item = String>>(
 /// Returns `ArgsError` for help, unknown flags, missing values, an invalid
 /// duration or batch size, or when no action flag is given — destruction
 /// must be an explicit operator choice, so there is no default action.
-pub fn parse_retention_args<I: IntoIterator<Item = String>>(
+pub fn parse_storage_maintenance_args<I: IntoIterator<Item = String>>(
     args: I,
-) -> Result<RetentionConfig, ArgsError> {
+) -> Result<StorageMaintenanceConfig, ArgsError> {
     let mut database_url: Option<String> = None;
-    let mut enforce_fact_retention = false;
     let mut retry_cold_object_purges = false;
     let mut prune_older_than: Option<i64> = None;
     let mut batch_size: i64 = 1000;
@@ -442,7 +436,6 @@ pub fn parse_retention_args<I: IntoIterator<Item = String>>(
     while let Some(flag) = iter.next() {
         match flag.as_str() {
             "-h" | "--help" => return Err(ArgsError::Help),
-            "--enforce-fact-retention" => enforce_fact_retention = true,
             "--retry-cold-object-purges" => retry_cold_object_purges = true,
             "--dry-run" => dry_run = true,
             f => {
@@ -451,10 +444,10 @@ pub fn parse_retention_args<I: IntoIterator<Item = String>>(
                     .ok_or_else(|| ArgsError::Invalid(format!("flag {f} expects a value")))?;
                 match f {
                     "--database-url" => database_url = Some(value),
-                    "--prune-change-events-older-than" => {
+                    "--prune-change-log-older-than" => {
                         let seconds = parse_duration_seconds(&value).map_err(|err| {
                             ArgsError::Invalid(format!(
-                                "invalid --prune-change-events-older-than {value:?}: {err}"
+                                "invalid --prune-change-log-older-than {value:?}: {err}"
                             ))
                         })?;
                         prune_older_than = Some(seconds);
@@ -474,21 +467,20 @@ pub fn parse_retention_args<I: IntoIterator<Item = String>>(
         }
     }
 
-    if !enforce_fact_retention && !retry_cold_object_purges && prune_older_than.is_none() {
+    if !retry_cold_object_purges && prune_older_than.is_none() {
         return Err(ArgsError::Invalid(
-            "maintain-retention requires at least one action: --enforce-fact-retention, \
-             --retry-cold-object-purges, and/or --prune-change-events-older-than <DURATION>"
+            "maintain-storage requires at least one action: --retry-cold-object-purges \
+             and/or --prune-change-log-older-than <DURATION>"
                 .into(),
         ));
     }
 
     let database_url = database_url.unwrap_or_else(database_url_from_env);
 
-    Ok(RetentionConfig {
+    Ok(StorageMaintenanceConfig {
         database_url,
-        enforce_fact_retention,
         retry_cold_object_purges,
-        prune_change_events_older_than_seconds: prune_older_than,
+        prune_change_log_older_than_seconds: prune_older_than,
         batch_size,
         dry_run,
     })
@@ -609,25 +601,25 @@ mod tests {
     }
 
     #[test]
-    fn retention_help_flag_returns_help() {
-        let err = parse_retention_args(["--help".to_string()]).expect_err("help");
+    fn storage_maintenance_help_flag_returns_help() {
+        let err = parse_storage_maintenance_args(["--help".to_string()]).expect_err("help");
         assert!(err.is_help());
-        assert!(RETENTION_USAGE.contains("PROXIMA_S3_*"));
+        assert!(STORAGE_MAINTENANCE_USAGE.contains("PROXIMA_S3_*"));
     }
 
     #[test]
-    fn retention_requires_an_action_flag() {
-        let err = parse_retention_args(["--dry-run".to_string()]).expect_err("no action");
+    fn storage_maintenance_requires_an_action_flag() {
+        let err = parse_storage_maintenance_args(["--dry-run".to_string()]).expect_err("no action");
         assert!(err.to_string().contains("at least one action"));
     }
 
     #[test]
-    fn retention_full_args_parse() {
-        let cfg = parse_retention_args([
+    fn storage_maintenance_full_args_parse() {
+        let cfg = parse_storage_maintenance_args([
             "--database-url".into(),
             "postgres://x/y".into(),
-            "--enforce-fact-retention".into(),
-            "--prune-change-events-older-than".into(),
+            "--retry-cold-object-purges".into(),
+            "--prune-change-log-older-than".into(),
             "90d".into(),
             "--batch-size".into(),
             "250".into(),
@@ -635,28 +627,26 @@ mod tests {
         ])
         .expect("valid args");
         assert_eq!(cfg.database_url, "postgres://x/y");
-        assert!(cfg.enforce_fact_retention);
-        assert_eq!(
-            cfg.prune_change_events_older_than_seconds,
-            Some(90 * 86_400)
-        );
+        assert!(cfg.retry_cold_object_purges);
+        assert_eq!(cfg.prune_change_log_older_than_seconds, Some(90 * 86_400));
         assert_eq!(cfg.batch_size, 250);
         assert!(cfg.dry_run);
     }
 
     #[test]
-    fn retention_single_action_is_enough() {
-        let cfg = parse_retention_args(["--enforce-fact-retention".to_string()])
-            .expect("enforce alone is a valid pass");
-        assert!(cfg.enforce_fact_retention);
-        assert_eq!(cfg.prune_change_events_older_than_seconds, None);
+    fn storage_maintenance_single_action_is_enough() {
+        let cfg =
+            parse_storage_maintenance_args(["--prune-change-log-older-than".into(), "7d".into()])
+                .expect("a prune alone is a valid pass");
+        assert!(!cfg.retry_cold_object_purges);
+        assert_eq!(cfg.prune_change_log_older_than_seconds, Some(7 * 86_400));
         assert_eq!(cfg.batch_size, 1000);
         assert!(!cfg.dry_run);
     }
 
     #[test]
-    fn retention_cold_purge_retry_is_an_explicit_action() {
-        let cfg = parse_retention_args([
+    fn storage_maintenance_cold_purge_retry_is_an_explicit_action() {
+        let cfg = parse_storage_maintenance_args([
             "--retry-cold-object-purges".to_string(),
             "--batch-size".to_string(),
             "17".to_string(),
@@ -664,14 +654,13 @@ mod tests {
         ])
         .expect("retry alone is a valid bounded pass");
         assert!(cfg.retry_cold_object_purges);
-        assert!(!cfg.enforce_fact_retention);
-        assert_eq!(cfg.prune_change_events_older_than_seconds, None);
+        assert_eq!(cfg.prune_change_log_older_than_seconds, None);
         assert_eq!(cfg.batch_size, 17);
         assert!(cfg.dry_run);
     }
 
     #[test]
-    fn retention_duration_units_parse() {
+    fn storage_maintenance_duration_units_parse() {
         for (raw, seconds) in [
             ("3600s", 3_600),
             ("45m", 45 * 60),
@@ -679,10 +668,13 @@ mod tests {
             ("90d", 90 * 86_400),
             ("2w", 2 * 604_800),
         ] {
-            let cfg = parse_retention_args(["--prune-change-events-older-than".into(), raw.into()])
-                .expect("valid duration");
+            let cfg = parse_storage_maintenance_args([
+                "--prune-change-log-older-than".into(),
+                raw.into(),
+            ])
+            .expect("valid duration");
             assert_eq!(
-                cfg.prune_change_events_older_than_seconds,
+                cfg.prune_change_log_older_than_seconds,
                 Some(seconds),
                 "{raw}"
             );
@@ -692,16 +684,19 @@ mod tests {
     #[test]
     fn retention_duration_rejects_bare_number_zero_and_junk() {
         for raw in ["90", "0d", "-3h", "", "d", "1.5h", "90x"] {
-            let err = parse_retention_args(["--prune-change-events-older-than".into(), raw.into()])
-                .expect_err(raw);
+            let err = parse_storage_maintenance_args([
+                "--prune-change-log-older-than".into(),
+                raw.into(),
+            ])
+            .expect_err(raw);
             assert!(err.to_string().contains("invalid"), "{raw}: {err}");
         }
     }
 
     #[test]
-    fn retention_batch_size_must_be_positive() {
-        let err = parse_retention_args([
-            "--enforce-fact-retention".into(),
+    fn storage_maintenance_batch_size_must_be_positive() {
+        let err = parse_storage_maintenance_args([
+            "--retry-cold-object-purges".into(),
             "--batch-size".into(),
             "0".into(),
         ])

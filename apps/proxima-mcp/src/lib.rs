@@ -2,9 +2,9 @@ pub mod args;
 
 pub use args::{
     ArgsError, DEFAULT_BIND, DEFAULT_DATABASE_URL, MAINTAIN_BLOBS_USAGE, MAINTAIN_USAGE,
-    MaintainBlobsConfig, MaintainConfig, McpConfig, RETENTION_USAGE, ReconcileScope,
-    RetentionConfig, USAGE, parse_args, parse_maintain_args, parse_maintain_blobs_args,
-    parse_retention_args,
+    MaintainBlobsConfig, MaintainConfig, McpConfig, ReconcileScope, STORAGE_MAINTENANCE_USAGE,
+    StorageMaintenanceConfig, USAGE, parse_args, parse_maintain_args, parse_maintain_blobs_args,
+    parse_storage_maintenance_args,
 };
 
 use proxima_blob_s3::{CitedBlobStore, S3RuntimeConfig};
@@ -27,8 +27,7 @@ use proxima_core::{
 use proxima_llm_openai_compat::OpenAiCompatEmbeddingClient;
 use proxima_storage_pg::{
     ChangeEventPruneOptions, ChangeEventPruneOutcome, ColdPurgeRetryOptions, ColdPurgeRetryOutcome,
-    EmbeddingReconcileOptions, EmbeddingReconcileScope, PgStorage, RetentionEnforceOptions,
-    RetentionEnforceOutcome,
+    EmbeddingReconcileOptions, EmbeddingReconcileScope, PgStorage,
 };
 
 const PROXIMA_EMBED_MODEL: &str = "PROXIMA_EMBED_MODEL";
@@ -219,13 +218,13 @@ pub async fn run<I: IntoIterator<Item = String>>(args: I) -> Result<(), CliError
         })?;
         return run_maintain(config).await;
     }
-    if args.first().is_some_and(|arg| arg == "maintain-retention") {
+    if args.first().is_some_and(|arg| arg == "maintain-storage") {
         args.remove(0);
-        let config = parse_retention_args(args).map_err(|err| match err {
-            ArgsError::Help => CliError::Help(RETENTION_USAGE),
+        let config = parse_storage_maintenance_args(args).map_err(|err| match err {
+            ArgsError::Help => CliError::Help(STORAGE_MAINTENANCE_USAGE),
             other @ ArgsError::Invalid(_) => CliError::Args(other),
         })?;
-        return run_maintain_retention(config).await;
+        return run_maintain_storage(config).await;
     }
     if args.first().is_some_and(|arg| arg == "maintain-blobs") {
         args.remove(0);
@@ -304,7 +303,7 @@ pub async fn run<I: IntoIterator<Item = String>>(args: I) -> Result<(), CliError
 /// wrong.
 ///
 /// EXITS 0 EVEN WHEN ARTEFACTS ARE MISSING, matching `maintain-embeddings`
-/// and `maintain-retention`. A non-zero exit here would mean "the pass
+/// and `maintain-storage`. A non-zero exit here would mean "the pass
 /// failed", and the pass did not fail — it succeeded, and the news is bad.
 /// Alert on the `missing=` number.
 async fn run_maintain_blobs(config: MaintainBlobsConfig) -> Result<(), CliError> {
@@ -471,19 +470,16 @@ async fn run_maintain(config: MaintainConfig) -> Result<(), CliError> {
     Ok(())
 }
 
-/// One retention pass: Fact-retention enforcement (forget/cool sweep) and/or
-/// `change_event` pruning, per the explicit action flags. Serialized across
+/// One storage-maintenance pass: the cold-object purge drain and/or
+/// change-log rotation, per the explicit action flags. Serialized across
 /// processes by its own Postgres advisory lock — an overlapping pass skips
-/// with exit 0, like `maintain-embeddings`. Owners under an active
-/// legal/security hold are skipped inside each owner's transaction and
-/// surface in the report.
-async fn run_maintain_retention(config: RetentionConfig) -> Result<(), CliError> {
-    let s3 = ((config.enforce_fact_retention || config.retry_cold_object_purges)
-        && !config.dry_run)
+/// with exit 0, like `maintain-embeddings`.
+async fn run_maintain_storage(config: StorageMaintenanceConfig) -> Result<(), CliError> {
+    let s3 = (config.retry_cold_object_purges && !config.dry_run)
         .then(|| {
             S3RuntimeConfig::from_env().map_err(|err| {
                 ProximaError::Config(format!(
-                    "retention maintenance object-store actions need the host's \
+                    "storage maintenance object-store actions need the host's \
                      PROXIMA_S3_* block: {err}"
                 ))
             })
@@ -517,26 +513,15 @@ async fn run_maintain_retention(config: RetentionConfig) -> Result<(), CliError>
     };
 
     let Some(_lock) = storage
-        .try_retention_maintenance_lock()
+        .try_storage_maintenance_lock()
         .await
         .map_err(|err| ProximaError::Storage(err.to_string()))?
     else {
-        println!("skipped: another retention maintenance pass holds the lock");
+        println!("skipped: another storage maintenance pass holds the lock");
         return Ok(());
     };
 
     let dry_run_suffix = if config.dry_run { " (dry-run)" } else { "" };
-
-    if config.enforce_fact_retention {
-        let outcome = storage
-            .enforce_fact_retention(RetentionEnforceOptions {
-                batch_size: config.batch_size,
-                dry_run: config.dry_run,
-            })
-            .await
-            .map_err(|err| ProximaError::Storage(err.to_string()))?;
-        print_retention_report(&outcome, dry_run_suffix);
-    }
 
     if config.retry_cold_object_purges {
         let outcome = storage
@@ -549,9 +534,9 @@ async fn run_maintain_retention(config: RetentionConfig) -> Result<(), CliError>
         print_cold_purge_retry_report(&outcome, dry_run_suffix);
     }
 
-    if let Some(older_than_seconds) = config.prune_change_events_older_than_seconds {
+    if let Some(older_than_seconds) = config.prune_change_log_older_than_seconds {
         let outcome = storage
-            .prune_change_events(ChangeEventPruneOptions {
+            .prune_change_log(ChangeEventPruneOptions {
                 older_than_seconds,
                 batch_size: config.batch_size,
                 dry_run: config.dry_run,
@@ -571,47 +556,19 @@ fn print_cold_purge_retry_report(outcome: &ColdPurgeRetryOutcome, dry_run_suffix
     );
 }
 
-fn print_retention_report(outcome: &RetentionEnforceOutcome, dry_run_suffix: &str) {
-    println!(
-        "fact-retention: owners={} forgotten={} skipped-hold={}{dry_run_suffix}",
-        outcome.owners.len(),
-        outcome.facts_forgotten,
-        outcome.owners_skipped_hold
-    );
-    for owner in &outcome.owners {
-        let hold = if owner.skipped_legal_hold {
-            " [legal hold — skipped]"
-        } else {
-            ""
-        };
-        println!(
-            "  {} retention={}s forgotten={}{hold}",
-            owner.owner.external_key(),
-            owner.retention_seconds,
-            owner.facts_forgotten
-        );
-    }
-}
-
 fn print_prune_report(
     outcome: &ChangeEventPruneOutcome,
     older_than_seconds: i64,
     dry_run_suffix: &str,
 ) {
     println!(
-        "change-event-prune: horizon={older_than_seconds}s owners={} pruned={} skipped-hold={}{dry_run_suffix}",
+        "change-log-prune: horizon={older_than_seconds}s owners={} pruned={}{dry_run_suffix}",
         outcome.owners.len(),
-        outcome.events_pruned,
-        outcome.owners_skipped_hold
+        outcome.events_pruned
     );
     for owner in &outcome.owners {
-        let hold = if owner.skipped_legal_hold {
-            " [legal hold — skipped]"
-        } else {
-            ""
-        };
         println!(
-            "  {} pruned={}{hold}",
+            "  {} pruned={}",
             owner.owner.external_key(),
             owner.events_pruned
         );

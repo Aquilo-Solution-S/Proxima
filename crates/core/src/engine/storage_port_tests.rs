@@ -195,7 +195,6 @@ async fn read_verb_helper_accepts_only_read_verb_handles() {
         memory_inspect: Arc::new(storage_port_tests_support::MemoryInspectFake),
         change_event: Arc::new(storage_port_tests_support::ChangeEventFake),
         citation: Arc::new(storage_port_tests_support::CitationFake),
-        fact_retention: Arc::new(storage_port_tests_support::FactRetentionFake),
         goal_wake_candidate: Arc::new(storage_port_tests_support::GoalWakeCandidateFake),
         goal_read: Arc::new(storage_port_tests_support::GoalReadFake),
     };
@@ -487,52 +486,6 @@ mod storage_port_tests_support {
             _fact_memory_id: crate::MemoryId,
         ) -> Result<Option<crate::verbs::query::FactCitationReadback>, StorageError> {
             Ok(None)
-        }
-    }
-
-    #[derive(Debug)]
-    pub struct FactRetentionFake;
-
-    #[async_trait::async_trait]
-    impl crate::FactRetentionPort for FactRetentionFake {
-        async fn upsert_fact_retention(
-            &self,
-            _permit: &crate::storage_ports::OwnerWritePermit,
-            _seconds: i64,
-        ) -> Result<(), StorageError> {
-            Ok(())
-        }
-
-        async fn get_fact_retention(
-            &self,
-            _owner: &crate::Owner,
-        ) -> Result<Option<i64>, StorageError> {
-            Ok(None)
-        }
-
-        async fn clear_fact_retention(
-            &self,
-            _permit: &crate::storage_ports::OwnerWritePermit,
-        ) -> Result<bool, StorageError> {
-            Ok(false)
-        }
-
-        async fn set_legal_hold(
-            &self,
-            _permit: &crate::storage_ports::OwnerWritePermit,
-        ) -> Result<(), StorageError> {
-            Ok(())
-        }
-
-        async fn get_legal_hold(&self, _owner: &crate::Owner) -> Result<bool, StorageError> {
-            Ok(false)
-        }
-
-        async fn clear_legal_hold(
-            &self,
-            _permit: &crate::storage_ports::OwnerWritePermit,
-        ) -> Result<bool, StorageError> {
-            Ok(false)
         }
     }
 }

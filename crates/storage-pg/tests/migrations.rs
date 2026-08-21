@@ -203,8 +203,6 @@ async fn migrations_apply_to_fresh_db() {
             "memory_head",
             "ingest_keys",
             "announce",
-            "owner_fact_retention",
-            "owner_legal_holds",
             "cold_purge_pending",
             "compliance_audit_log",
             "delegated_authority_grants",
@@ -216,6 +214,8 @@ async fn migrations_apply_to_fresh_db() {
             );
         }
         for dead in [
+            "owner_fact_retention",
+            "owner_legal_holds",
             "edges",
             "fact_entities",
             "fact_receipts",

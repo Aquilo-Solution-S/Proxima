@@ -300,8 +300,6 @@ pub enum ComplianceEraseRefusal {
     PersonalDropNotVerified,
     /// The required drop proof port is unavailable.
     DropProofPortUnavailable,
-    /// A legal/security hold is active for the owner.
-    LegalHoldActive,
 }
 
 /// Internal audit context for a compliance operation.

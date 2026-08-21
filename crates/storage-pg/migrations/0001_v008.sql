@@ -778,30 +778,7 @@ CREATE TYPE proxima_core.compliance_erase_refusal AS ENUM (
     'OwnerNotAbandoned',
     'SourceScopeOwnerStillLive',
     'PersonalDropNotVerified',
-    'DropProofPortUnavailable',
-    'LegalHoldActive'
-);
-
-CREATE TABLE proxima_core.owner_legal_holds (
-    owner_kind proxima_core.owner_kind NOT NULL,
-    owner_id uuid NOT NULL,
-    hold_active boolean NOT NULL,
-    updated_at timestamptz NOT NULL DEFAULT now(),
-    UNIQUE (owner_kind, owner_id)
-);
-
--- Per-owner Fact-retention window, read by `proxima://graph` and enforced by
--- the `maintain-retention` sweep. `(owner_kind, owner_id)` is the ON CONFLICT
--- arbiter `upsert_fact_retention` names; every owner kind carries an id, so
--- no NULL arbiter arm is needed.
-CREATE TABLE proxima_core.owner_fact_retention (
-    owner_kind proxima_core.owner_kind NOT NULL,
-    owner_id uuid NOT NULL,
-    retention_seconds bigint NOT NULL,
-    updated_at timestamptz NOT NULL DEFAULT now(),
-    CONSTRAINT owner_fact_retention_retention_seconds_check
-        CHECK (retention_seconds > 0),
-    UNIQUE (owner_kind, owner_id)
+    'DropProofPortUnavailable'
 );
 
 CREATE TABLE proxima_core.compliance_audit_log (

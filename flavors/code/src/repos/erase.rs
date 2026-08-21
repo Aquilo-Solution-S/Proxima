@@ -342,7 +342,7 @@ DELETE FROM proxima_code.repos
 /// was cooled has its bytes in the object store, and destroying them from
 /// inside this transaction would lose them outright on a rollback — so the
 /// erase leaves a durable `cold_purge_pending` row per object and
-/// `proxima-mcp maintain-retention --retry-cold-object-purges` (the lane
+/// `proxima-mcp maintain-storage --retry-cold-object-purges` (the lane
 /// that already exists for exactly this) destroys them. The receipt reports
 /// how many, so a caller can see the queue it just added to. The version
 /// this replaced never deleted the `cooled` rows at all, which leaked both

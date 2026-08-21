@@ -339,7 +339,7 @@ impl Engine {
     /// Export one owner's compliance bundle.
     ///
     /// Requires compliance-controller authorization. Export is
-    /// non-destructive: legal hold and personal-owner drop proof do not gate it.
+    /// non-destructive: personal-owner drop proof does not gate it.
     ///
     /// # Errors
     ///
@@ -372,7 +372,7 @@ impl Engine {
     /// Erase an abandoned group owner and all its owned rows.
     ///
     /// Requires `ComplianceAdminPort` approval or [`AuthPath::System`].
-    /// Storage rechecks legal hold and abandonment under lock before deleting.
+    /// Storage rechecks abandonment under lock before deleting.
     ///
     /// # Errors
     ///
@@ -406,8 +406,7 @@ impl Engine {
     /// Erase a dropped personal owner and all its owned rows.
     ///
     /// Requires `ComplianceAdminPort`/system authorization and trusted host
-    /// drop proof before storage can receive a deletion token. Storage refuses
-    /// with `LegalHoldActive` when the owner hold is active.
+    /// drop proof before storage can receive a deletion token.
     ///
     /// # Errors
     ///
@@ -446,7 +445,7 @@ impl Engine {
     }
 
     /// Erase one source scope for an abandoned group owner.
-    /// Storage rechecks legal hold and abandonment under lock before deleting.
+    /// Storage rechecks abandonment under lock before deleting.
     ///
     /// # Errors
     ///
@@ -481,7 +480,6 @@ impl Engine {
     }
 
     /// Erase one source scope for a dropped personal owner.
-    /// Storage refuses with `LegalHoldActive` when the owner hold is active.
     ///
     /// # Errors
     ///
